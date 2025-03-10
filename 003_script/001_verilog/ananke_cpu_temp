@@ -1,0 +1,124 @@
+parameter                NUM_THREADS         
+parameter                ASYNC_BRIDGE        
+input                                   clk                                     clk                                     INTR
+input                                   nwarmreset                              nwarmreset                              INTR
+input                                   ndbgreset                               ndbgreset                               INTR
+input                                   dftcgen                                 dftcgen                                 INTR
+input                                   dftrstdisable                           dftrstdisable                           INTR
+input                                   dftramhold                              dftramhold                              INTR
+input                                   dftmcphold                              dftmcphold                              INTR
+input     [NUM_THREADS-1:0]             cb_cfgend_i                             cb_cfgend_i                             INTR
+input                                   cb_cryptodisable_i                      cb_cryptodisable_i                      INTR
+input                                   cb_vinithi_i                            cb_vinithi_i                            INTR
+input                                   cb_cfgte_i                              cb_cfgte_i                              INTR
+input     [7-1:0]                       cb_clusteridaff2_i                      cb_clusteridaff2_i                      INTR
+input     [7:0]                         cb_clusteridaff3_i                      cb_clusteridaff3_i                      INTR
+input     [3:0]                         cb_coreid_i                             cb_coreid_i                             INTR
+input                                   cb_aa64naa32_i                          cb_aa64naa32_i                          INTR
+input     [39:2]                        cb_rvbaraddr0_i                         cb_rvbaraddr0_i                         INTR
+input                                   cb_nfiq_i                               cb_nfiq_i                               INTR
+input                                   cb_nirq_i                               cb_nirq_i                               INTR
+input                                   cb_nvfiq_i                              cb_nvfiq_i                              INTR
+input                                   cb_nvirq_i                              cb_nvirq_i                              INTR
+output                                  cpu_nvcpumntirq_o                       cpu_nvcpumntirq_o                       INTR
+output                                  cpu_elastopclock_o                      cpu_elastopclock_o                      INTR
+input                                   cb_dbgconnected_i                       cb_dbgconnected_i                       INTR
+input                                   cb_giccdisable_i                        cb_giccdisable_i                        INTR
+output                                  cpu_iritready_o                         cpu_iritready_o                         INTR
+input                                   cb_iritvalid_i                          cb_iritvalid_i                          INTR
+input     [15:0]                        cb_iritdata_i                           cb_iritdata_i                           INTR
+input                                   cb_iritlast_i                           cb_iritlast_i                           INTR
+input                                   cb_iritdest_i                           cb_iritdest_i                           INTR
+input                                   cb_icctready_i                          cb_icctready_i                          INTR
+output                                  cpu_icctvalid_o                         cpu_icctvalid_o                         INTR
+output    [15:0]                        cpu_icctdata_o                          cpu_icctdata_o                          INTR
+output                                  cpu_icctlast_o                          cpu_icctlast_o                          INTR
+output                                  cpu_icctid_o                            cpu_icctid_o                            INTR
+output                                  cpu_wfireq_o                            cpu_wfireq_o                            INTR
+input     [NUM_THREADS-1:0]             cb_wfiack_i                             cb_wfiack_i                             INTR
+output                                  cpu_wfereq_o                            cpu_wfereq_o                            INTR
+input     [NUM_THREADS-1:0]             cb_wfeack_i                             cb_wfeack_i                             INTR
+output                                  cpu_wfxwake_o                           cpu_wfxwake_o                           INTR
+output                                  cpu_intfidle_o                          cpu_intfidle_o                          INTR
+output                                  cpu_dbgidle_o                           cpu_dbgidle_o                           INTR
+input                                   cb_dbgconreq_i                          cb_dbgconreq_i                          INTR
+output                                  cpu_dbgconack_o                         cpu_dbgconack_o                         INTR
+input                                   cb_hwflushreq_i                         cb_hwflushreq_i                         INTR
+output                                  cpu_hwflushack_o                        cpu_hwflushack_o                        INTR
+input                                   cb_discacheinvld_i                      cb_discacheinvld_i                      INTR
+output                                  cpu_dbgrstreq_o                         cpu_dbgrstreq_o                         INTR
+input     [NUM_THREADS-1:0]             cb_eventi_i                             cb_eventi_i                             INTR
+output                                  cpu_evento_o                            cpu_evento_o                            INTR
+input                                   cb_neonqreqn_i                          cb_neonqreqn_i                          INTR
+output                                  cpu_neonqacceptn_o                      cpu_neonqacceptn_o                      INTR
+output                                  cpu_neonqdeny_o                         cpu_neonqdeny_o                         INTR
+output                                  cpu_neonqactive_o                       cpu_neonqactive_o                       INTR
+output                                  cpu_warmrstreq_o                        cpu_warmrstreq_o                        INTR
+output                                  cpu_dbgnopwrdwn_o                       cpu_dbgnopwrdwn_o                       INTR
+output                                  cpu_srreq_o                             cpu_srreq_o                             INTR
+input                                   cb_srack_i                              cb_srack_i                              INTR
+output                                  cpu_srdest_o                            cpu_srdest_o                            INTR
+output    [6:0]                         cpu_sraddr_o                            cpu_sraddr_o                            INTR
+output                                  cpu_srwrite_o                           cpu_srwrite_o                           INTR
+output    [63:0]                        cpu_srwdata_o                           cpu_srwdata_o                           INTR
+input     [63:0]                        cb_srrdata_i                            cb_srrdata_i                            INTR
+output                                  cpu_nerrirq_o                           cpu_nerrirq_o                           INTR
+output                                  cpu_nfaultirq_o                         cpu_nfaultirq_o                         INTR
+input                                   cb_broadcastcachemaintpou_i             cb_broadcastcachemaintpou_i             INTR
+output                                  cpu_txsactive_o                         cpu_txsactive_o                         INTR
+output                                  cpu_txreqflitpend_o                     cpu_txreqflitpend_o                     INTR
+output                                  cpu_txreqflitv_o                        cpu_txreqflitv_o                        INTR
+input                                   cb_txreqlcrdv_i                         cb_txreqlcrdv_i                         INTR
+output                                  cpu_txrspflitpend_o                     cpu_txrspflitpend_o                     INTR
+output                                  cpu_txrspflitv_o                        cpu_txrspflitv_o                        INTR
+input                                   cb_txrsplcrdv_i                         cb_txrsplcrdv_i                         INTR
+output                                  cpu_txdatflitpend_o                     cpu_txdatflitpend_o                     INTR
+output                                  cpu_txdatflitv_o                        cpu_txdatflitv_o                        INTR
+input                                   cb_txdatlcrdv_i                         cb_txdatlcrdv_i                         INTR
+input                                   cb_rxsnpflitpend_i                      cb_rxsnpflitpend_i                      INTR
+input                                   cb_rxsnpflitv_i                         cb_rxsnpflitv_i                         INTR
+output                                  cpu_rxsnplcrdv_o                        cpu_rxsnplcrdv_o                        INTR
+input                                   cb_rxrspflitpend_i                      cb_rxrspflitpend_i                      INTR
+input                                   cb_rxrspflitv_i                         cb_rxrspflitv_i                         INTR
+output                                  cpu_rxrsplcrdv_o                        cpu_rxrsplcrdv_o                        INTR
+input                                   cb_rxdatflitpend_i                      cb_rxdatflitpend_i                      INTR
+input                                   cb_rxdatflitv_i                         cb_rxdatflitv_i                         INTR
+output                                  cpu_rxdatlcrdv_o                        cpu_rxdatlcrdv_o                        INTR
+output                                  cpu_ncommirq_o                          cpu_ncommirq_o                          INTR
+output                                  cpu_npmuirq_o                           cpu_npmuirq_o                           INTR
+input                                   cb_pseldc_i                             cb_pseldc_i                             INTR
+input     [16:2]                        cb_paddrdc_i                            cb_paddrdc_i                            INTR
+input                                   cb_penabledc_i                          cb_penabledc_i                          INTR
+input                                   cb_pwritedc_i                           cb_pwritedc_i                           INTR
+input     [31:0]                        cb_pwdatadc_i                           cb_pwdatadc_i                           INTR
+output    [31:0]                        cpu_prdatadc_o                          cpu_prdatadc_o                          INTR
+output                                  cpu_preadydc_o                          cpu_preadydc_o                          INTR
+output                                  cpu_pslverrdc_o                         cpu_pslverrdc_o                         INTR
+output                                  cpu_pselcd_o                            cpu_pselcd_o                            INTR
+output    [4:2]                         cpu_paddrcd_o                           cpu_paddrcd_o                           INTR
+output                                  cpu_penablecd_o                         cpu_penablecd_o                         INTR
+output                                  cpu_pwritecd_o                          cpu_pwritecd_o                          INTR
+output    [7:0]                         cpu_pwdatacd_o                          cpu_pwdatacd_o                          INTR
+input                                   cb_preadycd_i                           cb_preadycd_i                           INTR
+input                                   cb_pslverrcd_i                          cb_pslverrcd_i                          INTR
+input     [63:0]                        cb_tsvalueb_i                           cb_tsvalueb_i                           INTR
+input                                   cb_atready_i                            cb_atready_i                            INTR
+input                                   cb_afvalid_i                            cb_afvalid_i                            INTR
+output    [31:0]                        cpu_atdata_o                            cpu_atdata_o                            INTR
+output                                  cpu_atvalid_o                           cpu_atvalid_o                           INTR
+output    [1:0]                         cpu_atbytes_o                           cpu_atbytes_o                           INTR
+output                                  cpu_afready_o                           cpu_afready_o                           INTR
+output    [6:0]                         cpu_atid_o                              cpu_atid_o                              INTR
+output                                  cpu_etmenabled_o                        cpu_etmenabled_o                        INTR
+input                                   cb_syncreq_i                            cb_syncreq_i                            INTR
+input                                   cb_dbgen_i                              cb_dbgen_i                              INTR
+input                                   cb_niden_i                              cb_niden_i                              INTR
+input                                   cb_spiden_i                             cb_spiden_i                             INTR
+input                                   cb_spniden_i                            cb_spniden_i                            INTR
+input                                   cb_mbistreq_i                           cb_mbistreq_i                           INTR
+input                                   cb_l3present_i                          cb_l3present_i                          INTR
+input     [2:0]                         cb_l3size_i                             cb_l3size_i                             INTR
+input                                   cb_pmusnapshotreq_i                     cb_pmusnapshotreq_i                     INTR
+output    [0:0]                         cpu_coreinstrret_o                      cpu_coreinstrret_o                      INTR
+output    [0:0]                         cpu_eventstrmdisable_o                  cpu_eventstrmdisable_o                  INTR
+output                                  cpu_pmusnapshotack_o                    cpu_pmusnapshotack_o                    INTR
