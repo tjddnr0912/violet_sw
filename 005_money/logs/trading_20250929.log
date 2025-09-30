@@ -1,0 +1,813 @@
+2025-09-29 00:29:29,992 - TradingBot - ERROR - [ERROR] 빗썸 API 인증 실패
+2025-09-29 06:34:40,881 - TradingBot - ERROR - [ERROR] 인증 과정에서 오류 발생: 'BithumbAPI' object has no attribute 'get_balance'
+2025-09-29 06:36:59,332 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 06:36:59,333 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 06:36:59,429 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T06:36:59.429362", "current_price": 158719000.0, "current_volume": 45.98570997, "short_ma": 158466800.0, "long_ma": 160162150.0, "rsi": 45.398533770082665, "bb_position": 0.26760784260457215, "volume_ratio": 0.11286527888713462, "price_change_24h": 2.2529022947778024}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 06:36:59,429 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 06:36:59,429 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T06:36:59.429705"}
+2025-09-29 06:36:59,475 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 80,359,500원, 수익률: +217.44%
+2025-09-29 06:36:59,475 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 06:41:01,694 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 06:41:01,695 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 06:41:01,782 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T06:41:01.781905", "current_price": 158711000.0, "current_volume": 46.61015847, "short_ma": 158465200.0, "long_ma": 160161750.0, "rsi": 45.364445138130165, "bb_position": 0.26644303491018495, "volume_ratio": 0.11438036733217265, "price_change_24h": 2.247748386182371}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 06:41:01,782 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 06:41:01,782 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T06:41:01.782224"}
+2025-09-29 06:41:01,829 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 80,355,500원, 수익률: +217.42%
+2025-09-29 06:41:01,829 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 06:41:10,312 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 06:41:10,312 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 06:41:10,383 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T06:41:10.383296", "current_price": 158676000.0, "current_volume": 46.61966076, "short_ma": 158458200.0, "long_ma": 160160000.0, "rsi": 45.214805540339626, "bb_position": 0.26135745116855835, "volume_ratio": 0.11440341898506445, "price_change_24h": 2.2252000360773603}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 06:41:10,383 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 06:41:10,383 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T06:41:10.383590"}
+2025-09-29 06:41:10,431 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 80,338,000원, 수익률: +217.35%
+2025-09-29 06:41:10,431 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 21:51:58,129 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 21:51:58,131 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 21:51:58,229 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T21:51:58.229616", "current_price": 160652000.0, "current_volume": 393.64395431, "short_ma": 158853400.0, "long_ma": 160258800.0, "rsi": 52.55167739749237, "bb_position": 0.5647689646975931, "volume_ratio": 0.8901847808832786, "price_change_24h": 3.498215459148832}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 21:51:58,229 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 21:51:58,230 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T21:51:58.229999"}
+2025-09-29 21:51:58,283 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,326,000원, 수익률: +221.30%
+2025-09-29 21:51:58,283 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 21:52:13,691 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 21:52:13,692 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 21:52:13,789 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T21:52:13.789449", "current_price": 160604000.0, "current_volume": 393.66024006, "short_ma": 158843800.0, "long_ma": 160256400.0, "rsi": 52.396817841844026, "bb_position": 0.5572808843522051, "volume_ratio": 0.8902183308668219, "price_change_24h": 3.4672920075762454}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 21:52:13,789 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 21:52:13,789 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T21:52:13.789776"}
+2025-09-29 21:52:13,848 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,302,000원, 수익률: +221.21%
+2025-09-29 21:52:13,848 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:18:44,768 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 22:18:44,769 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:18:44,865 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:18:44.865269", "current_price": 160905000.0, "current_volume": 405.89923436, "short_ma": 158904000.0, "long_ma": 160271450.0, "rsi": 53.35154584221748, "bb_position": 0.604051721586204, "volume_ratio": 0.9153619818494168, "price_change_24h": 3.6612078184793395}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:18:44,865 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:18:44,865 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:18:44.865590"}
+2025-09-29 22:18:44,918 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,450,500원, 수익률: +221.80%
+2025-09-29 22:18:44,918 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:24:52,268 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 22:24:52,269 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:24:52,339 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:24:52,373 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:24:52.373195", "current_price": 160984000.0, "current_volume": 416.06181599, "short_ma": 158919800.0, "long_ma": 160275400.0, "rsi": 53.595810963080794, "bb_position": 0.6162377436641695, "volume_ratio": 0.9361346427281586, "price_change_24h": 3.712102665859221}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:24:52,373 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:24:52,373 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:24:52.373539"}
+2025-09-29 22:24:52,428 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,492,000원, 수익률: +221.97%
+2025-09-29 22:24:52,428 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:24:57,414 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:02,491 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:07,568 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:12,640 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:17,724 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:22,783 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:27,851 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:32,922 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:37,992 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:43,059 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:48,133 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:53,191 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:55,205 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-29 22:25:55,206 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:25:55,259 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:25:55,296 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:25:55.296645", "current_price": 160899000.0, "current_volume": 416.43887948, "short_ma": 158902800.0, "long_ma": 160271150.0, "rsi": 53.33288894814025, "bb_position": 0.6031244409183155, "volume_ratio": 0.9369035457039883, "price_change_24h": 3.6573423870327657}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:25:55,296 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:25:55,296 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:25:55.296936"}
+2025-09-29 22:25:55,352 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,449,500원, 수익률: +221.80%
+2025-09-29 22:25:55,352 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:26:00,350 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:05,450 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:10,540 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:15,635 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:20,701 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:25,806 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:30,871 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:35,953 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:41,032 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:46,105 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:51,180 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:26:55,551 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:26:55,646 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:26:55.646123", "current_price": 160986000.0, "current_volume": 416.96232682, "short_ma": 158920200.0, "long_ma": 160275500.0, "rsi": 53.601961693949235, "bb_position": 0.616545669318454, "volume_ratio": 0.9379707364994133, "price_change_24h": 3.713391143008079}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:26:55,646 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:26:55,646 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:26:55.646462"}
+2025-09-29 22:26:55,719 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,493,000원, 수익률: +221.97%
+2025-09-29 22:26:55,719 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:26:56,255 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:01,318 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:06,393 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:11,468 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:16,557 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:21,638 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:26,717 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:31,805 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:36,876 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:41,953 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:47,037 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:52,116 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:27:55,914 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:27:56,042 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:27:56.041914", "current_price": 160920000.0, "current_volume": 417.11407017, "short_ma": 158907000.0, "long_ma": 160272200.0, "rsi": 53.39812287825335, "bb_position": 0.6063688680342798, "volume_ratio": 0.9382800598993127, "price_change_24h": 3.6708713970957727}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:27:56,042 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:27:56,042 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:27:56.042388"}
+2025-09-29 22:27:56,112 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,460,000원, 수익률: +221.84%
+2025-09-29 22:27:56,112 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:27:57,191 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:28:02,275 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:28:07,361 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:28:12,449 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:28:17,524 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:28:22,579 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:28:27,657 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:28:32,719 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-29 22:30:47,297 - TradingBot - INFO - 모의 거래 모드로 실행 중입니다.
+2025-09-29 22:30:47,298 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:30:47,400 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:30:47.400612", "current_price": 160979000.0, "current_volume": 417.84000958, "short_ma": 158918800.0, "long_ma": 160275150.0, "rsi": 53.58042699907175, "bb_position": 0.615467799897794, "volume_ratio": 0.9397595693508538, "price_change_24h": 3.7088814729870765}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:30:47,400 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:30:47,401 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:30:47.400999"}
+2025-09-29 22:30:47,401 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:30:47,401 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:30:55,557 - TradingBot - INFO - 모의 거래 모드로 실행 중입니다.
+2025-09-29 22:30:55,558 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:30:55,654 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:30:55.654774", "current_price": 160929000.0, "current_volume": 418.25463319, "short_ma": 158908800.0, "long_ma": 160272650.0, "rsi": 53.42602448110697, "bb_position": 0.6077584220561707, "volume_ratio": 0.9406043811833609, "price_change_24h": 3.6766695442656325}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:30:55,655 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:30:55,655 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:30:55.655066"}
+2025-09-29 22:30:55,655 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:30:55,655 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:31:55,867 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:31:56,005 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:31:56.005023", "current_price": 160931000.0, "current_volume": 418.41558311, "short_ma": 158909200.0, "long_ma": 160272750.0, "rsi": 53.432220300651856, "bb_position": 0.6080671361905464, "volume_ratio": 0.940932280497358, "price_change_24h": 3.67795802141449}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:31:56,005 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:31:56,005 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:31:56.005529"}
+2025-09-29 22:31:56,005 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:31:56,005 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:32:56,197 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:32:56,323 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:32:56.322901", "current_price": 160953000.0, "current_volume": 418.49210862, "short_ma": 158913600.0, "long_ma": 160273850.0, "rsi": 53.50026567481403, "bb_position": 0.6114611486306318, "volume_ratio": 0.9410881757113536, "price_change_24h": 3.692131270051926}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:32:56,323 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:32:56,323 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:32:56.323445"}
+2025-09-29 22:32:56,323 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:32:56,323 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:33:56,529 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:33:56,646 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:33:56.646475", "current_price": 160952000.0, "current_volume": 418.63819761, "short_ma": 158913400.0, "long_ma": 160273800.0, "rsi": 53.49717701760212, "bb_position": 0.6113069494008789, "volume_ratio": 0.9413857684263303, "price_change_24h": 3.6914870314774966}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:33:56,646 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:33:56,646 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:33:56.646902"}
+2025-09-29 22:33:56,646 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:33:56,647 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:34:56,834 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:34:56,950 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:34:56.950645", "current_price": 160954000.0, "current_volume": 418.6914903, "short_ma": 158913800.0, "long_ma": 160273900.0, "rsi": 53.50335392176397, "bb_position": 0.6116153407344622, "volume_ratio": 0.9414943242131679, "price_change_24h": 3.6927755086263545}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:34:56,951 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:34:56,951 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:34:56.951342"}
+2025-09-29 22:34:56,951 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:34:56,951 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:35:57,162 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:35:57,283 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:35:57.282947", "current_price": 161000000.0, "current_volume": 419.04536677, "short_ma": 158923000.0, "long_ma": 160276200.0, "rsi": 53.64497119777528, "bb_position": 0.6187003119392444, "volume_ratio": 0.9422150951420711, "price_change_24h": 3.722410483050083}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:35:57,283 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:35:57,283 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:35:57.283682"}
+2025-09-29 22:35:57,283 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:35:57,283 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:36:57,509 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:36:57,604 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:36:57.604217", "current_price": 161061000.0, "current_volume": 420.64904486, "short_ma": 158935200.0, "long_ma": 160279250.0, "rsi": 53.83144289105776, "bb_position": 0.6280707579571254, "volume_ratio": 0.9454800083611845, "price_change_24h": 3.761709036090245}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:36:57,604 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:36:57,604 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:36:57.604546"}
+2025-09-29 22:36:57,604 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:36:57,604 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:37:57,846 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:37:57,987 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:37:57.986939", "current_price": 161100000.0, "current_volume": 422.15766096, "short_ma": 158943000.0, "long_ma": 160281200.0, "rsi": 53.94987831349076, "bb_position": 0.6340459784657364, "volume_ratio": 0.9485492379385915, "price_change_24h": 3.7868343404929714}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:37:57,987 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:37:57,987 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:37:57.987614"}
+2025-09-29 22:37:57,987 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:37:57,987 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:38:58,199 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:38:58,297 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:38:58.297265", "current_price": 161162000.0, "current_volume": 423.68867102, "short_ma": 158955400.0, "long_ma": 160284300.0, "rsi": 54.13691451031772, "bb_position": 0.6435182654587241, "volume_ratio": 0.9516619006927297, "price_change_24h": 3.8267771321075625}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:38:58,297 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:38:58,297 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:38:58.297624"}
+2025-09-29 22:38:58,297 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:38:58,297 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:39:58,613 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:39:58,711 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:39:58.711606", "current_price": 161190000.0, "current_volume": 426.13587522, "short_ma": 158961000.0, "long_ma": 160285700.0, "rsi": 54.220885372392594, "bb_position": 0.647784808091569, "volume_ratio": 0.9566328141864961, "price_change_24h": 3.844815812191571}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:39:58,712 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:39:58,712 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:39:58.712223"}
+2025-09-29 22:39:58,712 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:39:58,712 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:40:59,087 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:40:59,221 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:40:59.221642", "current_price": 161200000.0, "current_volume": 426.63831948, "short_ma": 158963000.0, "long_ma": 160286200.0, "rsi": 54.250800496634646, "bb_position": 0.6493068184167234, "volume_ratio": 0.9576527345126746, "price_change_24h": 3.8512581979358598}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:40:59,222 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:40:59,222 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:40:59.222343"}
+2025-09-29 22:40:59,222 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:40:59,222 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:41:59,587 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:41:59,702 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:41:59.702638", "current_price": 161333000.0, "current_volume": 430.30550273, "short_ma": 158989600.0, "long_ma": 160292850.0, "rsi": 54.64498574760301, "bb_position": 0.6694569945986747, "volume_ratio": 0.9650898520169572, "price_change_24h": 3.9369419283349005}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:41:59,703 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:41:59,703 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:41:59.703318"}
+2025-09-29 22:41:59,703 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:41:59,703 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:43:00,098 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:43:00,222 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:43:00.222669", "current_price": 161333000.0, "current_volume": 430.38366154, "short_ma": 158989600.0, "long_ma": 160292850.0, "rsi": 54.64498574760301, "bb_position": 0.6694569945986747, "volume_ratio": 0.9652482264279006, "price_change_24h": 3.9369419283349005}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:43:00,223 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:43:00,223 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:43:00.223181"}
+2025-09-29 22:43:00,223 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:43:00,223 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:44:00,686 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:44:00,811 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:44:00.811057", "current_price": 161719000.0, "current_volume": 436.46420827, "short_ma": 159066800.0, "long_ma": 160312150.0, "rsi": 55.75148527366957, "bb_position": 0.7268165722250056, "volume_ratio": 0.9775523373653425, "price_change_24h": 4.18561801806445}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:44:00,811 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:44:00,811 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:44:00.811548"}
+2025-09-29 22:44:00,811 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:44:00,811 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:45:01,182 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:45:01,283 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:45:01.283011", "current_price": 162100000.0, "current_volume": 454.85480475, "short_ma": 159143000.0, "long_ma": 160331200.0, "rsi": 56.79195210763439, "bb_position": 0.7814684346061059, "volume_ratio": 1.0145629610402866, "price_change_24h": 4.431072914921854}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:45:01,283 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:45:01,283 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:45:01.283346"}
+2025-09-29 22:45:01,283 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:45:01,283 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:46:01,662 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:46:01,799 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:46:01.798956", "current_price": 162278000.0, "current_volume": 461.22891281, "short_ma": 159178600.0, "long_ma": 160340100.0, "rsi": 57.261461449239974, "bb_position": 0.8062305333368281, "volume_ratio": 1.0273199394598196, "price_change_24h": 4.5457473811701945}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:46:01,799 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:46:01,799 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:46:01.799326"}
+2025-09-29 22:46:01,799 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:46:01,799 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:47:02,177 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:47:02,269 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:47:02.269389", "current_price": 162279000.0, "current_volume": 463.41969429, "short_ma": 159178800.0, "long_ma": 160340150.0, "rsi": 57.26407032108411, "bb_position": 0.8063681666549953, "volume_ratio": 1.0316961536326377, "price_change_24h": 4.546391619744624}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:47:02,269 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:47:02,269 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:47:02.269759"}
+2025-09-29 22:47:02,269 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:47:02,269 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:48:02,739 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:48:02,858 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:48:02.858533", "current_price": 162416000.0, "current_volume": 466.89325098, "short_ma": 159206200.0, "long_ma": 160347000.0, "rsi": 57.61849990919547, "bb_position": 0.825062816928758, "volume_ratio": 1.0386260432485095, "price_change_24h": 4.6346523044413805}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:48:02,859 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:48:02,859 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:48:02.859225"}
+2025-09-29 22:48:02,859 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:48:02,859 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:49:03,247 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:49:03,367 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:49:03.366869", "current_price": 162425000.0, "current_volume": 468.69806145, "short_ma": 159208000.0, "long_ma": 160347450.0, "rsi": 57.64157792836399, "bb_position": 0.82627958907595, "volume_ratio": 1.0422224887630331, "price_change_24h": 4.640450451611241}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:49:03,367 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:49:03,367 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:49:03.367564"}
+2025-09-29 22:49:03,367 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:49:03,367 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:50:03,747 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:50:03,889 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:50:03.889422", "current_price": 162400000.0, "current_volume": 474.8709882, "short_ma": 159203000.0, "long_ma": 160346200.0, "rsi": 57.577410167848264, "bb_position": 0.8228961777593944, "volume_ratio": 1.0545014874828684, "price_change_24h": 4.624344487250519}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:50:03,890 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:50:03,890 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:50:03.890115"}
+2025-09-29 22:50:03,890 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:50:03,890 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:51:04,356 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:51:04,466 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:51:04.465746", "current_price": 162300000.0, "current_volume": 475.95258306, "short_ma": 159183000.0, "long_ma": 160341200.0, "rsi": 57.31878314942388, "bb_position": 0.8092545708319032, "volume_ratio": 1.0566494981092145, "price_change_24h": 4.55992062980763}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:51:04,466 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:51:04,466 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:51:04.466304"}
+2025-09-29 22:51:04,466 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:51:04,466 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:52:04,804 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:52:04,914 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:52:04.914041", "current_price": 162316000.0, "current_volume": 477.38661736, "short_ma": 159186200.0, "long_ma": 160342000.0, "rsi": 57.360375175102014, "bb_position": 0.8114487264359237, "volume_ratio": 1.0594958514471444, "price_change_24h": 4.570228446998492}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:52:04,914 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:52:04,914 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:52:04.914585"}
+2025-09-29 22:52:04,914 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:52:04,914 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:53:05,283 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:53:05,402 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:53:05.402458", "current_price": 162092000.0, "current_volume": 480.33225465, "short_ma": 159141400.0, "long_ma": 160330800.0, "rsi": 56.77060821241124, "bb_position": 0.7803434722806795, "volume_ratio": 1.0653368415914282, "price_change_24h": 4.425919006326423}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:53:05,403 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:53:05,403 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:53:05.403157"}
+2025-09-29 22:53:05,403 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:53:05,403 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:54:05,808 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:54:05,962 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:54:05.961943", "current_price": 162164000.0, "current_volume": 481.28574276, "short_ma": 159155800.0, "long_ma": 160334400.0, "rsi": 56.9619475010758, "bb_position": 0.7904312537003206, "volume_ratio": 1.0672259062714227, "price_change_24h": 4.472304183685302}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:54:05,962 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:54:05,962 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:54:05.962649"}
+2025-09-29 22:54:05,962 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:54:05,962 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:55:06,327 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:55:06,443 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:55:06.442855", "current_price": 162225000.0, "current_volume": 482.1790759, "short_ma": 159168000.0, "long_ma": 160337450.0, "rsi": 57.12273395394415, "bb_position": 0.798912009121488, "volume_ratio": 1.068995066374453, "price_change_24h": 4.511602736725464}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:55:06,443 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:55:06,443 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:55:06.443563"}
+2025-09-29 22:55:06,443 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:55:06,443 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:56:06,868 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:56:07,009 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:56:07.009033", "current_price": 162050000.0, "current_volume": 483.39338584, "short_ma": 159133000.0, "long_ma": 160328700.0, "rsi": 56.658205906023646, "bb_position": 0.7744208339134364, "volume_ratio": 1.0713987666744316, "price_change_24h": 4.39886098620041}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:56:07,009 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:56:07,009 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:56:07.009782"}
+2025-09-29 22:56:07,009 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:56:07,010 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:57:07,438 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:57:07,714 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:57:07.713947", "current_price": 162116000.0, "current_volume": 485.26113398, "short_ma": 159146200.0, "long_ma": 160332000.0, "rsi": 56.83457673099452, "bb_position": 0.7837153027679988, "volume_ratio": 1.075093409248264, "price_change_24h": 4.441380732112716}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:57:07,714 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:57:07,714 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:57:07.714721"}
+2025-09-29 22:57:07,714 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:57:07,714 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:58:08,156 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:58:08,259 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:58:08.259766", "current_price": 162155000.0, "current_volume": 486.32666313, "short_ma": 159154000.0, "long_ma": 160333950.0, "rsi": 56.93812277032845, "bb_position": 0.7891748471557866, "volume_ratio": 1.0771997915389315, "price_change_24h": 4.466506036515443}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:58:08,260 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:58:08,260 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:58:08.260278"}
+2025-09-29 22:58:08,260 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:58:08,260 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 22:59:08,708 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 22:59:08,845 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T22:59:08.845009", "current_price": 162163000.0, "current_volume": 486.92981291, "short_ma": 159155600.0, "long_ma": 160334350.0, "rsi": 56.95930161072175, "bb_position": 0.7902917179063462, "volume_ratio": 1.078391682445629, "price_change_24h": 4.471659945110874}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 22:59:08,845 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 22:59:08,845 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T22:59:08.845767"}
+2025-09-29 22:59:08,845 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 22:59:08,846 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:00:09,284 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:00:09,424 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:00:09.423892", "current_price": 162190000.0, "current_volume": 487.20866998, "short_ma": 159161000.0, "long_ma": 160335700.0, "rsi": 57.03062664948137, "bb_position": 0.7940534648862205, "volume_ratio": 1.078942627331583, "price_change_24h": 4.489054386620453}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:00:09,424 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:00:09,424 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:00:09.424635"}
+2025-09-29 23:00:09,424 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:00:09,424 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:01:09,814 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:01:09,913 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:01:09.913618", "current_price": 162194000.0, "current_volume": 487.94193354, "short_ma": 159161800.0, "long_ma": 160335900.0, "rsi": 57.04117322206541, "bb_position": 0.7946097472193704, "volume_ratio": 1.0803910298199737, "price_change_24h": 4.491631340918169}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:01:09,913 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:01:09,913 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:01:09.913934"}
+2025-09-29 23:01:09,914 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:01:09,914 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:02:10,353 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:02:10,477 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:02:10.476786", "current_price": 162203000.0, "current_volume": 488.42179418, "short_ma": 159163600.0, "long_ma": 160336350.0, "rsi": 57.06488409174537, "bb_position": 0.7958604221210847, "volume_ratio": 1.081338635445264, "price_change_24h": 4.497429488088029}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:02:10,477 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:02:10,477 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:02:10.477555"}
+2025-09-29 23:02:10,477 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:02:10,477 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:03:10,942 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:03:11,080 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:03:11.080643", "current_price": 162216000.0, "current_volume": 488.75596348, "short_ma": 159166200.0, "long_ma": 160337000.0, "rsi": 57.099086953857466, "bb_position": 0.7976645986545118, "volume_ratio": 1.08199841792622, "price_change_24h": 4.505804589555605}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:03:11,081 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:03:11,081 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:03:11.081360"}
+2025-09-29 23:03:11,081 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:03:11,081 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:04:11,522 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:04:11,639 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:04:11.639181", "current_price": 162218000.0, "current_volume": 489.03594206, "short_ma": 159166600.0, "long_ma": 160337100.0, "rsi": 57.10434409656271, "bb_position": 0.7979419167518255, "volume_ratio": 1.0825511313223588, "price_change_24h": 4.507093066704463}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:04:11,639 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:04:11,639 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:04:11.639923"}
+2025-09-29 23:04:11,640 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:04:11,640 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:05:13,002 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:05:13,244 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:05:13.244280", "current_price": 162305000.0, "current_volume": 489.86935518, "short_ma": 159184000.0, "long_ma": 160341450.0, "rsi": 57.33178937103851, "bb_position": 0.8099407109937726, "volume_ratio": 1.0841959896022184, "price_change_24h": 4.563141822679775}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:05:13,245 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:05:13,245 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:05:13.245156"}
+2025-09-29 23:05:13,245 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:05:13,245 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:21:11,990 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:21:12,257 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:21:12.257097", "current_price": 162670000.0, "current_volume": 510.85186044, "short_ma": 159257000.0, "long_ma": 160359700.0, "rsi": 58.26029929052645, "bb_position": 0.8588488422052443, "volume_ratio": 1.1254088935877127, "price_change_24h": 4.798288902346317}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:21:12,257 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:21:12,258 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:21:12.257990"}
+2025-09-29 23:21:12,258 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:21:12,258 - TradingBot - INFO - 일일 거래 통계 - 총 2회 (매수: 1, 매도: 1)
+2025-09-29 23:37:11,285 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:37:11,506 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:37:11.505664", "current_price": 162650000.0, "current_volume": 523.64312204, "short_ma": 159253000.0, "long_ma": 160358700.0, "rsi": 58.210469766608966, "bb_position": 0.8562308482169366, "volume_ratio": 1.1503465140225997, "price_change_24h": 4.7854041308577395}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:37:11,506 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:37:11,506 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:37:11.506523"}
+2025-09-29 23:37:11,506 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:37:11,506 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-29 23:38:11,867 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:38:11,983 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:38:11.983544", "current_price": 162710000.0, "current_volume": 525.59384423, "short_ma": 159265000.0, "long_ma": 160361700.0, "rsi": 58.35960268839589, "bb_position": 0.8640627168888689, "volume_ratio": 1.1541372967738572, "price_change_24h": 4.824058445323472}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:38:11,984 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:38:11,984 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:38:11.984358"}
+2025-09-29 23:38:11,984 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:38:11,984 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-29 23:39:12,381 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:39:12,499 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:39:12.499642", "current_price": 162720000.0, "current_volume": 526.05006202, "short_ma": 159267000.0, "long_ma": 160362200.0, "rsi": 58.384354752422276, "bb_position": 0.8653615600693548, "volume_ratio": 1.1550233832560537, "price_change_24h": 4.830500831067761}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:39:12,500 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:39:12,500 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:39:12.500411"}
+2025-09-29 23:39:12,500 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:39:12,500 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-29 23:46:39,176 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:46:39,580 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:46:39.580023", "current_price": 162840000.0, "current_volume": 537.99188396, "short_ma": 159291000.0, "long_ma": 160368200.0, "rsi": 58.67910051348639, "bb_position": 0.8808020383625806, "volume_ratio": 1.178154348003995, "price_change_24h": 4.907809459999227}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:46:39,580 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:46:39,580 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:46:39.580699"}
+2025-09-29 23:46:39,580 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:46:39,580 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-29 23:51:52,948 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:51:53,158 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:51:53.157645", "current_price": 162950000.0, "current_volume": 542.97390206, "short_ma": 159313000.0, "long_ma": 160373700.0, "rsi": 58.945640063331965, "bb_position": 0.8947168502626303, "volume_ratio": 1.1877686477433556, "price_change_24h": 4.978675703186404}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:51:53,158 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:51:53,158 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:51:53.158520"}
+2025-09-29 23:51:53,158 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:51:53,158 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-29 23:57:06,508 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-29 23:57:06,617 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-29T23:57:06.616835", "current_price": 163004000.0, "current_volume": 554.09797328, "short_ma": 159323800.0, "long_ma": 160376400.0, "rsi": 59.0752323610218, "bb_position": 0.9014630844602199, "volume_ratio": 1.2091604323310499, "price_change_24h": 5.013464586205563}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-29 23:57:06,617 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-29 23:57:06,617 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-29T23:57:06.617557"}
+2025-09-29 23:57:06,617 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-29 23:57:06,617 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:02:20,144 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:02:20,360 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:02:20.360196", "current_price": 162862000.0, "current_volume": 5.86550208, "short_ma": 159898800.0, "long_ma": 160612550.0, "rsi": 56.465249285092625, "bb_position": 0.8481827842839987, "volume_ratio": 0.01348757072848444, "price_change_24h": 4.9950359090733265}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:02:20,361 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:02:20,361 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:02:20.361132"}
+2025-09-30 00:02:20,361 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:02:20,361 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:11:45,281 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:11:45,498 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:11:45.497435", "current_price": 162556000.0, "current_volume": 12.26253647, "short_ma": 159837600.0, "long_ma": 160597250.0, "rsi": 55.411176183504146, "bb_position": 0.807203468101621, "volume_ratio": 0.028155969380926914, "price_change_24h": 4.797761646273064}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:11:45,503 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:11:45,503 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:11:45.503538"}
+2025-09-30 00:11:45,503 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:11:45,503 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:28:28,334 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:28:28,552 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:28:28.551652", "current_price": 162341000.0, "current_volume": 24.67822405, "short_ma": 159794600.0, "long_ma": 160586500.0, "rsi": 54.693803817667245, "bb_position": 0.7774734507902828, "volume_ratio": 0.056502513305397496, "price_change_24h": 4.659153912606212}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:28:28,552 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:28:28,552 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:28:28.552382"}
+2025-09-30 00:28:28,552 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:28:28,552 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:40:53,309 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:40:53,550 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:40:53.550315", "current_price": 162445000.0, "current_volume": 34.08291967, "short_ma": 159815400.0, "long_ma": 160591700.0, "rsi": 55.03847785251167, "bb_position": 0.7919473067459751, "volume_ratio": 0.07786754925339968, "price_change_24h": 4.726201374472968}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:40:53,551 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:40:53,551 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:40:53.551179"}
+2025-09-30 00:40:53,551 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:40:53,551 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:41:53,966 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:41:54,209 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:41:54.208941", "current_price": 162444000.0, "current_volume": 34.72439847, "short_ma": 159815200.0, "long_ma": 160591650.0, "rsi": 55.03514299563742, "bb_position": 0.7918089534227502, "volume_ratio": 0.07932147892597656, "price_change_24h": 4.725556687339634}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:41:54,209 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:41:54,209 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:41:54.209801"}
+2025-09-30 00:41:54,209 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:41:54,210 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:42:54,626 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:42:54,741 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:42:54.740876", "current_price": 162478000.0, "current_volume": 34.84816411, "short_ma": 159822000.0, "long_ma": 160593350.0, "rsi": 55.14875531268974, "bb_position": 0.7965039185958517, "volume_ratio": 0.07960194818170621, "price_change_24h": 4.747476049872996}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:42:54,741 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:42:54,741 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:42:54.741640"}
+2025-09-30 00:42:54,741 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:42:54,741 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:43:55,125 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:43:55,243 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:43:55.242967", "current_price": 162416000.0, "current_volume": 35.30970153, "short_ma": 159809600.0, "long_ma": 160590250.0, "rsi": 54.94193080087104, "bb_position": 0.7879285553907575, "volume_ratio": 0.08064771299739705, "price_change_24h": 4.707505447606277}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:43:55,243 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:43:55,243 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:43:55.243812"}
+2025-09-30 00:43:55,243 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:43:55,244 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:44:55,597 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:44:55,729 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:44:55.729217", "current_price": 162494000.0, "current_volume": 35.40758098, "short_ma": 159825200.0, "long_ma": 160594150.0, "rsi": 55.202382399416564, "bb_position": 0.7987068297919752, "volume_ratio": 0.08086946274576211, "price_change_24h": 4.757791044006344}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:44:55,729 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:44:55,729 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:44:55.729953"}
+2025-09-30 00:44:55,730 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:44:55,730 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:45:56,156 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:45:56,255 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:45:56.255627", "current_price": 162463000.0, "current_volume": 35.60582109, "short_ma": 159819000.0, "long_ma": 160592600.0, "rsi": 55.09857446163179, "bb_position": 0.7944349130147013, "volume_ratio": 0.08131855314767221, "price_change_24h": 4.737805742872983}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:45:56,256 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:45:56,256 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:45:56.256269"}
+2025-09-30 00:45:56,256 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:45:56,256 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:46:56,652 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:46:56,779 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:46:56.778848", "current_price": 162495000.0, "current_volume": 36.35125187, "short_ma": 159825400.0, "long_ma": 160594200.0, "rsi": 55.205737555461006, "bb_position": 0.798844373230764, "volume_ratio": 0.08300687783570597, "price_change_24h": 4.758435731139678}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:46:56,779 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:46:56,779 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:46:56.779711"}
+2025-09-30 00:46:56,779 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:46:56,779 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:47:57,177 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:47:57,288 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:47:57.287615", "current_price": 162454000.0, "current_volume": 36.610128, "short_ma": 159817200.0, "long_ma": 160592150.0, "rsi": 55.06850976112526, "bb_position": 0.7931917627254178, "volume_ratio": 0.08359307141187398, "price_change_24h": 4.732003558672976}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:47:57,288 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:47:57,288 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:47:57.288473"}
+2025-09-30 00:47:57,288 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:47:57,288 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:48:57,675 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:48:57,797 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:48:57.797378", "current_price": 162441000.0, "current_volume": 36.66702134, "short_ma": 159814600.0, "long_ma": 160591500.0, "rsi": 55.02514084933665, "bb_position": 0.7913937970623237, "volume_ratio": 0.08372189018660046, "price_change_24h": 4.7236226259396314}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:48:57,798 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:48:57,798 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:48:57.798230"}
+2025-09-30 00:48:57,798 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:48:57,798 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:49:58,220 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:49:58,343 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:49:58.342991", "current_price": 162341000.0, "current_volume": 36.91324059, "short_ma": 159794600.0, "long_ma": 160586500.0, "rsi": 54.693803817667245, "bb_position": 0.7774734507902828, "volume_ratio": 0.08427934501436357, "price_change_24h": 4.659153912606212}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:49:58,343 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:49:58,343 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:49:58.343826"}
+2025-09-30 00:49:58,344 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:49:58,344 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:50:58,793 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:50:58,910 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:50:58.909761", "current_price": 162292000.0, "current_volume": 37.40646905, "short_ma": 159784800.0, "long_ma": 160584050.0, "rsi": 54.532901056676266, "bb_position": 0.7705954936757228, "volume_ratio": 0.085395854676131, "price_change_24h": 4.627564243072837}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:50:58,910 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:50:58,910 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:50:58.910586"}
+2025-09-30 00:50:58,910 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:50:58,910 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:51:59,379 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:51:59,486 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:51:59.486043", "current_price": 162397000.0, "current_volume": 38.07750427, "short_ma": 159805800.0, "long_ma": 160589300.0, "rsi": 54.878859283426976, "bb_position": 0.7852883114520425, "volume_ratio": 0.08691445764010411, "price_change_24h": 4.6952563920729276}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:51:59,486 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:51:59,486 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:51:59.486855"}
+2025-09-30 00:51:59,487 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:51:59,487 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:52:59,926 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:53:00,046 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:53:00.045726", "current_price": 162287000.0, "current_volume": 38.58586115, "short_ma": 159783800.0, "long_ma": 160583800.0, "rsi": 54.51653562211152, "bb_position": 0.7698915922326361, "volume_ratio": 0.08806459766600139, "price_change_24h": 4.624340807406166}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:53:00,046 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:53:00,046 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:53:00.046611"}
+2025-09-30 00:53:00,046 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:53:00,046 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:54:00,476 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:54:00,572 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:54:00.572758", "current_price": 162287000.0, "current_volume": 38.58586115, "short_ma": 159783800.0, "long_ma": 160583800.0, "rsi": 54.51653562211152, "bb_position": 0.7698915922326361, "volume_ratio": 0.08806459766600139, "price_change_24h": 4.624340807406166}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:54:00,573 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:54:00,573 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:54:00.573107"}
+2025-09-30 00:54:00,573 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:54:00,573 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:55:00,981 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:55:01,125 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:55:01.125240", "current_price": 162253000.0, "current_volume": 39.33562963, "short_ma": 159777000.0, "long_ma": 160582100.0, "rsi": 54.40551063192573, "bb_position": 0.7650950122005512, "volume_ratio": 0.08976043616335139, "price_change_24h": 4.602421444872803}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:55:01,126 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:55:01,126 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:55:01.126104"}
+2025-09-30 00:55:01,126 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:55:01,126 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:56:01,531 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:56:01,658 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:56:01.657925", "current_price": 162275000.0, "current_volume": 39.60335334, "short_ma": 159781400.0, "long_ma": 160583200.0, "rsi": 54.47729862652192, "bb_position": 0.7682006782534295, "volume_ratio": 0.09036583740106621, "price_change_24h": 4.616604561806156}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:56:01,658 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:56:01,658 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:56:01.658797"}
+2025-09-30 00:56:01,658 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:56:01,659 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:57:02,042 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:57:02,170 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:57:02.170290", "current_price": 162266000.0, "current_volume": 39.92331453, "short_ma": 159779600.0, "long_ma": 160582750.0, "rsi": 54.44790792470927, "bb_position": 0.7669310609904728, "volume_ratio": 0.09108926577141595, "price_change_24h": 4.610802377606148}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:57:02,171 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:57:02,171 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:57:02.171139"}
+2025-09-30 00:57:02,171 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:57:02,171 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:58:02,542 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:58:02,666 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:58:02.666164", "current_price": 162276000.0, "current_volume": 43.52059301, "short_ma": 159781600.0, "long_ma": 160583250.0, "rsi": 54.48056621880998, "bb_position": 0.7683416711888602, "volume_ratio": 0.099215405443524, "price_change_24h": 4.61724924893949}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:58:02,666 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:58:02,666 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:58:02.666932"}
+2025-09-30 00:58:02,667 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:58:02,667 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 00:59:03,038 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 00:59:03,139 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T00:59:03.138777", "current_price": 162284000.0, "current_volume": 44.28562999, "short_ma": 159783200.0, "long_ma": 160583650.0, "rsi": 54.506721075372056, "bb_position": 0.7694690687459341, "volume_ratio": 0.10094188169773768, "price_change_24h": 4.622406746006163}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 00:59:03,139 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 00:59:03,139 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T00:59:03.139471"}
+2025-09-30 00:59:03,139 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 00:59:03,139 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:00:03,591 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:00:03,709 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:00:03.709253", "current_price": 162327000.0, "current_volume": 44.40753812, "short_ma": 159791800.0, "long_ma": 160585800.0, "rsi": 54.64773479333373, "bb_position": 0.7755120936479817, "volume_ratio": 0.1012169389151263, "price_change_24h": 4.6501282927395335}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:00:03,710 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:00:03,710 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:00:03.710116"}
+2025-09-30 01:00:03,710 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:00:03,710 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:01:04,102 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:01:04,235 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:01:04.235439", "current_price": 162370000.0, "current_volume": 45.22795365, "short_ma": 159800400.0, "long_ma": 160587950.0, "rsi": 54.789480033779704, "bb_position": 0.7815265686607978, "volume_ratio": 0.10306761740574505, "price_change_24h": 4.677849839472904}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:01:04,236 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:01:04,236 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:01:04.236165"}
+2025-09-30 01:01:04,236 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:01:04,236 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:02:04,635 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:02:04,750 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:02:04.749704", "current_price": 162347000.0, "current_volume": 45.78416332, "short_ma": 159795800.0, "long_ma": 160586800.0, "rsi": 54.713571471598094, "bb_position": 0.778313102159044, "volume_ratio": 0.10432191154291044, "price_change_24h": 4.663022035406217}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:02:04,750 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:02:04,750 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:02:04.750568"}
+2025-09-30 01:02:04,750 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:02:04,750 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:03:05,133 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:03:05,230 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:03:05.230081", "current_price": 162329000.0, "current_volume": 45.97958358, "short_ma": 159792200.0, "long_ma": 160585900.0, "rsi": 54.65431133040495, "bb_position": 0.7757924731782079, "volume_ratio": 0.10476252328048336, "price_change_24h": 4.651417667006202}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:03:05,230 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:03:05,230 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:03:05.230425"}
+2025-09-30 01:03:05,230 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:03:05,230 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:04:05,628 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:04:05,743 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:04:05.742650", "current_price": 162333000.0, "current_volume": 46.13441534, "short_ma": 159793000.0, "long_ma": 160586100.0, "rsi": 54.66746915437857, "bb_position": 0.7763530467641101, "volume_ratio": 0.1051115927513351, "price_change_24h": 4.653996415539539}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:04:05,743 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:04:05,743 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:04:05.743407"}
+2025-09-30 01:04:05,743 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:04:05,743 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:05:06,163 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:05:06,271 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:05:06.271041", "current_price": 162424000.0, "current_volume": 46.29340605, "short_ma": 159811200.0, "long_ma": 160590650.0, "rsi": 54.96853062212539, "bb_position": 0.7890385194133872, "volume_ratio": 0.10547001298085756, "price_change_24h": 4.71266294467295}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:05:06,271 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:05:06,271 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:05:06.271704"}
+2025-09-30 01:05:06,271 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:05:06,271 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:06:06,664 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:06:06,777 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:06:06.777483", "current_price": 162450000.0, "current_volume": 46.67283732, "short_ma": 159816400.0, "long_ma": 160591950.0, "rsi": 55.055158200994065, "bb_position": 0.7926388321545208, "volume_ratio": 0.1063252778069161, "price_change_24h": 4.72942481013964}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:06:06,778 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:06:06,778 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:06:06.778219"}
+2025-09-30 01:06:06,778 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:06:06,778 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:07:07,184 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:07:07,302 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:07:07.302262", "current_price": 162397000.0, "current_volume": 46.96951815, "short_ma": 159805800.0, "long_ma": 160589300.0, "rsi": 54.878859283426976, "bb_position": 0.7852883114520425, "volume_ratio": 0.10699391431311361, "price_change_24h": 4.6952563920729276}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:07:07,303 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:07:07,303 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:07:07.303161"}
+2025-09-30 01:07:07,303 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:07:07,303 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:08:07,744 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:08:07,887 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:08:07.886933", "current_price": 162346000.0, "current_volume": 47.03334165, "short_ma": 159795600.0, "long_ma": 160586750.0, "rsi": 54.71027587037707, "bb_position": 0.7781731991129319, "volume_ratio": 0.1071377430115153, "price_change_24h": 4.662377348272883}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:08:07,887 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:08:07,887 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:08:07.887528"}
+2025-09-30 01:08:07,887 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:08:07,887 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:09:08,308 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:09:08,435 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:09:08.434999", "current_price": 162437000.0, "current_volume": 47.16580539, "short_ma": 159813800.0, "long_ma": 160591300.0, "rsi": 55.01181030827933, "bb_position": 0.7908400305285517, "volume_ratio": 0.10743624176932888, "price_change_24h": 4.721043877406295}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:09:08,435 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:09:08,435 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:09:08.435889"}
+2025-09-30 01:09:08,436 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:09:08,436 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:10:08,835 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:10:08,951 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:10:08.951020", "current_price": 162378000.0, "current_volume": 47.75425262, "short_ma": 159802000.0, "long_ma": 160588350.0, "rsi": 54.8159324079662, "bb_position": 0.7826423554346778, "volume_ratio": 0.10876205309759156, "price_change_24h": 4.6830073365395775}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:10:08,951 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:10:08,951 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:10:08.951813"}
+2025-09-30 01:10:08,951 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:10:08,952 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:11:09,349 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:11:09,465 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:11:09.464852", "current_price": 162500000.0, "current_volume": 48.17206265, "short_ma": 159826400.0, "long_ma": 160594450.0, "rsi": 55.22251945525292, "bb_position": 0.7995318454499248, "volume_ratio": 0.10970319157870283, "price_change_24h": 4.761659166806349}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:11:09,465 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:11:09,465 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:11:09.465602"}
+2025-09-30 01:11:09,465 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:11:09,465 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:12:09,883 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:12:10,088 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:12:10.088409", "current_price": 162562000.0, "current_volume": 48.59901546, "short_ma": 159838800.0, "long_ma": 160597550.0, "rsi": 55.43146588551202, "bb_position": 0.8080223513497563, "volume_ratio": 0.11066473964005084, "price_change_24h": 4.8016297690730685}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:12:10,088 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:12:10,088 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:12:10.088802"}
+2025-09-30 01:12:10,088 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:12:10,088 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:13:10,477 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:13:10,588 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:13:10.587772", "current_price": 162634000.0, "current_volume": 49.74617087, "short_ma": 159853200.0, "long_ma": 160601150.0, "rsi": 55.67610641167096, "bb_position": 0.8178019231845187, "volume_ratio": 0.11324734306268683, "price_change_24h": 4.848047242673131}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:13:10,588 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:13:10,588 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:13:10.588348"}
+2025-09-30 01:13:10,588 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:13:10,588 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:14:10,973 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:14:11,092 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:14:11.092012", "current_price": 162598000.0, "current_volume": 49.77472056, "short_ma": 159846000.0, "long_ma": 160599350.0, "rsi": 55.55351681957187, "bb_position": 0.8129230310926974, "volume_ratio": 0.1133116000867185, "price_change_24h": 4.8248385058731}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:14:11,092 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:14:11,092 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:14:11.092867"}
+2025-09-30 01:14:11,093 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:14:11,093 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:15:11,453 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:15:11,569 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:15:11.569520", "current_price": 162562000.0, "current_volume": 49.83307047, "short_ma": 159838800.0, "long_ma": 160597550.0, "rsi": 55.43146588551202, "bb_position": 0.8080223513497563, "volume_ratio": 0.11344292611503604, "price_change_24h": 4.8016297690730685}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:15:11,570 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:15:11,570 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:15:11.570269"}
+2025-09-30 01:15:11,570 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:15:11,570 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:16:11,943 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:16:12,063 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:16:12.063518", "current_price": 162541000.0, "current_volume": 49.86544714, "short_ma": 159834600.0, "long_ma": 160596500.0, "rsi": 55.360516852562924, "bb_position": 0.8051536448009846, "volume_ratio": 0.11351579360815052, "price_change_24h": 4.78809133927305}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:16:12,064 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:16:12,064 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:16:12.064247"}
+2025-09-30 01:16:12,064 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:16:12,064 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:17:12,466 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:17:12,588 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:17:12.588348", "current_price": 162582000.0, "current_volume": 49.88444479, "short_ma": 159842800.0, "long_ma": 160598550.0, "rsi": 55.49920567029206, "bb_position": 0.8107476284530086, "volume_ratio": 0.113558549547567, "price_change_24h": 4.814523511739752}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:17:12,589 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:17:12,589 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:17:12.589126"}
+2025-09-30 01:17:12,589 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:17:12,589 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:18:12,992 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:18:13,117 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:18:13.117425", "current_price": 162450000.0, "current_volume": 50.49407824, "short_ma": 159816400.0, "long_ma": 160591950.0, "rsi": 55.055158200994065, "bb_position": 0.7926388321545208, "volume_ratio": 0.11493038876516536, "price_change_24h": 4.72942481013964}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:18:13,118 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:18:13,118 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:18:13.118319"}
+2025-09-30 01:18:13,118 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:18:13,118 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:19:13,494 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:19:13,607 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:19:13.607047", "current_price": 162382000.0, "current_volume": 50.676553, "short_ma": 159802800.0, "long_ma": 160588550.0, "rsi": 54.82916817578172, "bb_position": 0.7831998716823304, "volume_ratio": 0.11534093202165009, "price_change_24h": 4.685586085072914}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:19:13,607 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:19:13,607 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:19:13.607818"}
+2025-09-30 01:19:13,607 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:19:13,608 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:20:13,968 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:20:14,086 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:20:14.086225", "current_price": 162400000.0, "current_volume": 50.78006162, "short_ma": 159806400.0, "long_ma": 160589450.0, "rsi": 54.88880831520426, "bb_position": 0.7857055727593943, "volume_ratio": 0.1155737971038748, "price_change_24h": 4.697190453472929}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:20:14,086 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:20:14,087 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:20:14.086979"}
+2025-09-30 01:20:14,087 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:20:14,087 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:36:15,356 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:36:15,469 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:36:15.469271", "current_price": 162555000.0, "current_volume": 55.71350631, "short_ma": 159837400.0, "long_ma": 160597200.0, "rsi": 55.40779601049229, "bb_position": 0.8070669293684058, "volume_ratio": 0.12665994115243281, "price_change_24h": 4.797116959139729}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:36:15,469 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:36:15,470 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:36:15.469993"}
+2025-09-30 01:36:15,470 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:36:15,470 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:42:06,990 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:42:07,120 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:42:07.120225", "current_price": 162571000.0, "current_volume": 56.55618128, "short_ma": 159840600.0, "long_ma": 160598000.0, "rsi": 55.46192831409904, "bb_position": 0.8092495522695398, "volume_ratio": 0.12855106420196916, "price_change_24h": 4.807431953273077}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:42:07,120 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:42:07,120 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:42:07.120896"}
+2025-09-30 01:42:07,121 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:42:07,121 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:58:51,183 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:58:51,407 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:58:51.407318", "current_price": 162285000.0, "current_volume": 59.11476172, "short_ma": 159783400.0, "long_ma": 160583700.0, "rsi": 54.50999219828361, "bb_position": 0.7696099251131644, "volume_ratio": 0.13428856927017976, "price_change_24h": 4.623051433139498}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:58:51,408 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:58:51,408 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:58:51.408177"}
+2025-09-30 01:58:51,408 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:58:51,408 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 01:59:51,841 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 01:59:51,957 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T01:59:51.957030", "current_price": 162289000.0, "current_volume": 59.25120503, "short_ma": 159784200.0, "long_ma": 160583900.0, "rsi": 54.52308061708386, "bb_position": 0.7701731984937957, "volume_ratio": 0.13459435012991236, "price_change_24h": 4.625630181672834}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 01:59:51,957 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 01:59:51,957 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T01:59:51.957895"}
+2025-09-30 01:59:51,958 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 01:59:51,958 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 02:00:52,398 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 02:00:52,499 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T02:00:52.499792", "current_price": 162317000.0, "current_volume": 59.52754287, "short_ma": 159789800.0, "long_ma": 160585300.0, "rsi": 54.61487583428537, "bb_position": 0.7741092704136752, "volume_ratio": 0.1352135882559709, "price_change_24h": 4.643681421406192}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 02:00:52,500 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 02:00:52,500 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T02:00:52.500144"}
+2025-09-30 02:00:52,500 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 02:00:52,500 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 02:01:52,903 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 02:01:53,017 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T02:01:53.017533", "current_price": 162285000.0, "current_volume": 59.67178992, "short_ma": 159783400.0, "long_ma": 160583700.0, "rsi": 54.50999219828361, "bb_position": 0.7696099251131644, "volume_ratio": 0.13553679675987726, "price_change_24h": 4.623051433139498}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 02:01:53,018 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 02:01:53,018 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T02:01:53.018384"}
+2025-09-30 02:01:53,018 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 02:01:53,018 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 02:02:53,444 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 02:02:53,565 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T02:02:53.564786", "current_price": 162256000.0, "current_volume": 62.41001083, "short_ma": 159777600.0, "long_ma": 160582250.0, "rsi": 54.415288761083154, "bb_position": 0.7655189414909339, "volume_ratio": 0.14166820263569382, "price_change_24h": 4.604355506272806}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 02:02:53,565 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 02:02:53,565 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T02:02:53.565438"}
+2025-09-30 02:02:53,565 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 02:02:53,565 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 02:20:33,486 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 02:20:33,712 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T02:20:33.712240", "current_price": 162428000.0, "current_volume": 67.7486129, "short_ma": 159812000.0, "long_ma": 160590850.0, "rsi": 54.981840193704606, "bb_position": 0.78959311842832, "volume_ratio": 0.1536004742379257, "price_change_24h": 4.715241693206287}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 02:20:33,712 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 02:20:33,713 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T02:20:33.713065"}
+2025-09-30 02:20:33,713 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 02:20:33,713 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 02:25:29,702 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 02:25:29,958 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T02:25:29.957890", "current_price": 162587000.0, "current_volume": 68.55258151, "short_ma": 159843800.0, "long_ma": 160598800.0, "rsi": 55.51616649349062, "bb_position": 0.8114279029803261, "volume_ratio": 0.15539491671229116, "price_change_24h": 4.817746947406424}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 02:25:29,958 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 02:25:29,958 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T02:25:29.958772"}
+2025-09-30 02:25:29,958 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 02:25:29,959 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 02:36:19,961 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 02:36:20,181 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T02:36:20.181573", "current_price": 162560000.0, "current_volume": 70.99304905, "short_ma": 159838400.0, "long_ma": 160597450.0, "rsi": 55.42470100073225, "bb_position": 0.8077494568032273, "volume_ratio": 0.1608379894937548, "price_change_24h": 4.8003403948064}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 02:36:20,182 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 02:36:20,182 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T02:36:20.182449"}
+2025-09-30 02:36:20,182 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 02:36:20,182 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 03:05:16,781 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 03:05:16,982 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T03:05:16.982009", "current_price": 162857000.0, "current_volume": 80.05667682, "short_ma": 159897800.0, "long_ma": 160612300.0, "rsi": 56.44770368528991, "bb_position": 0.8475263386977081, "volume_ratio": 0.18100038414519523, "price_change_24h": 4.991812473406656}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 03:05:16,982 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 03:05:16,982 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T03:05:16.982879"}
+2025-09-30 03:05:16,983 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 03:05:16,983 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 03:21:38,602 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 03:21:38,844 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T03:21:38.843741", "current_price": 162698000.0, "current_volume": 82.90435523, "short_ma": 159866000.0, "long_ma": 160604350.0, "rsi": 55.89538461538462, "bb_position": 0.8264210706171454, "volume_ratio": 0.18731810744338256, "price_change_24h": 4.889307219206519}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 03:21:38,844 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 03:21:38,844 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T03:21:38.844380"}
+2025-09-30 03:21:38,844 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 03:21:38,844 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 03:39:58,961 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 03:39:59,181 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T03:39:59.180851", "current_price": 162701000.0, "current_volume": 85.4470439, "short_ma": 159866600.0, "long_ma": 160604500.0, "rsi": 55.90570566873885, "bb_position": 0.8268233686491079, "volume_ratio": 0.19295232859239816, "price_change_24h": 4.891241280606522}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 03:39:59,181 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 03:39:59,181 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T03:39:59.181660"}
+2025-09-30 03:39:59,181 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 03:39:59,181 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 03:54:13,394 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 03:54:13,508 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T03:54:13.508849", "current_price": 162800000.0, "current_volume": 87.40442335, "short_ma": 159886400.0, "long_ma": 160609450.0, "rsi": 56.2484518206589, "bb_position": 0.840011424177958, "volume_ratio": 0.19728518577289492, "price_change_24h": 4.955065306806607}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 03:54:13,509 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 03:54:13,509 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T03:54:13.509118"}
+2025-09-30 03:54:13,509 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 03:54:13,509 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:00:42,235 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:00:42,660 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:00:42.660166", "current_price": 162770000.0, "current_volume": 88.16262173, "short_ma": 159880400.0, "long_ma": 160607950.0, "rsi": 56.144146371615776, "bb_position": 0.8360331360121135, "volume_ratio": 0.1989625059294614, "price_change_24h": 4.935724692806581}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:00:42,660 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:00:42,660 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:00:42.660854"}
+2025-09-30 04:00:42,660 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:00:42,661 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:33:22,157 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:33:22,386 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:33:22.385715", "current_price": 162630000.0, "current_volume": 91.52300168, "short_ma": 159852400.0, "long_ma": 160600950.0, "rsi": 55.6624586346366, "bb_position": 0.8172609065121343, "volume_ratio": 0.20638958341028082, "price_change_24h": 4.845468494139793}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:33:22,386 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:33:22,386 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:33:22.386566"}
+2025-09-30 04:33:22,386 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:33:22,386 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:49:46,286 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:49:46,500 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:49:46.499688", "current_price": 162913000.0, "current_volume": 93.97727018, "short_ma": 159909000.0, "long_ma": 160615100.0, "rsi": 56.60447529907643, "bb_position": 0.8548529365732976, "volume_ratio": 0.21180687387392513, "price_change_24h": 5.02791495287337}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:49:46,500 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:49:46,500 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:49:46.500516"}
+2025-09-30 04:49:46,500 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:49:46,500 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:51:46,583 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:51:46,799 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:51:46.799083", "current_price": 162902000.0, "current_volume": 94.75799324, "short_ma": 159906800.0, "long_ma": 160614550.0, "rsi": 56.57486664185585, "bb_position": 0.8534182303773177, "volume_ratio": 0.21352890243304998, "price_change_24h": 5.020823394406695}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:51:46,799 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:51:46,799 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:51:46.799892"}
+2025-09-30 04:51:46,800 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:51:46,800 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:52:47,236 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:52:47,370 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:52:47.369966", "current_price": 162882000.0, "current_volume": 94.79473958, "short_ma": 159902800.0, "long_ma": 160613550.0, "rsi": 56.520929077133275, "bb_position": 0.8508040949725666, "volume_ratio": 0.21360993832631245, "price_change_24h": 5.00792965174001}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:52:47,370 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:52:47,370 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:52:47.370841"}
+2025-09-30 04:52:47,371 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:52:47,371 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:53:47,695 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:53:47,816 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:53:47.815997", "current_price": 162859000.0, "current_volume": 95.18143155, "short_ma": 159898200.0, "long_ma": 160612400.0, "rsi": 56.45472061657033, "bb_position": 0.8477889705120575, "volume_ratio": 0.21446262023900015, "price_change_24h": 4.993101847673325}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:53:47,816 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:53:47,816 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:53:47.816755"}
+2025-09-30 04:53:47,816 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:53:47,816 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:54:48,229 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:54:48,494 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:54:48.494474", "current_price": 162815000.0, "current_volume": 95.30352391, "short_ma": 159889400.0, "long_ma": 160610200.0, "rsi": 56.30075001549619, "bb_position": 0.8419946193209542, "volume_ratio": 0.21473181127691182, "price_change_24h": 4.964735613806619}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:54:48,495 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:54:48,495 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:54:48.495220"}
+2025-09-30 04:54:48,495 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:54:48,495 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:55:48,861 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:55:48,961 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:55:48.960715", "current_price": 162804000.0, "current_volume": 95.54991905, "short_ma": 159887200.0, "long_ma": 160609650.0, "rsi": 56.26238850346878, "bb_position": 0.8405406649318741, "volume_ratio": 0.2152750218179547, "price_change_24h": 4.9576440553399435}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:55:48,961 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:55:48,961 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:55:48.961456"}
+2025-09-30 04:55:48,961 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:55:48,961 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:56:49,323 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:56:49,420 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:56:49.420034", "current_price": 162779000.0, "current_volume": 95.61639577, "short_ma": 159882200.0, "long_ma": 160608400.0, "rsi": 56.17539736532872, "bb_position": 0.8372282838939585, "volume_ratio": 0.21542156817275845, "price_change_24h": 4.941526877006589}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:56:49,420 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:56:49,420 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:56:49.420783"}
+2025-09-30 04:56:49,420 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:56:49,421 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:57:49,808 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:57:49,906 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:57:49.906696", "current_price": 162756000.0, "current_volume": 95.62047815, "short_ma": 159877600.0, "long_ma": 160607250.0, "rsi": 56.09560276679842, "bb_position": 0.8341711955259469, "volume_ratio": 0.21543056753971793, "price_change_24h": 4.926699072939902}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:57:49,906 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:57:49,906 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:57:49.906967"}
+2025-09-30 04:57:49,907 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:57:49,907 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:58:50,282 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:58:50,381 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:58:50.381842", "current_price": 162872000.0, "current_volume": 95.93580403, "short_ma": 159900800.0, "long_ma": 160613050.0, "rsi": 56.49391001739995, "bb_position": 0.8494943348265233, "volume_ratio": 0.2161256349052742, "price_change_24h": 5.001482780406668}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:58:50,382 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:58:50,382 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:58:50.382125"}
+2025-09-30 04:58:50,382 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:58:50,382 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 04:59:50,752 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 04:59:50,839 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T04:59:50.839088", "current_price": 162806000.0, "current_volume": 95.98069977, "short_ma": 159887600.0, "long_ma": 160609750.0, "rsi": 56.26935943501425, "bb_position": 0.8408051793621653, "volume_ratio": 0.21622458977501371, "price_change_24h": 4.9589334296066125}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 04:59:50,839 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 04:59:50,839 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T04:59:50.839359"}
+2025-09-30 04:59:50,839 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 04:59:50,839 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 05:15:51,123 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 05:15:51,360 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T05:15:51.360432", "current_price": 162940000.0, "current_volume": 99.3113615, "short_ma": 159914400.0, "long_ma": 160616450.0, "rsi": 56.6769801980198, "bb_position": 0.8583652234877208, "volume_ratio": 0.2235601355259212, "price_change_24h": 5.045321505473393}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 05:15:51,361 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 05:15:51,361 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T05:15:51.361323"}
+2025-09-30 05:15:51,361 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 05:15:51,361 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 05:32:17,264 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 05:32:17,502 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T05:32:17.501795", "current_price": 162912000.0, "current_volume": 101.28412033, "short_ma": 159908800.0, "long_ma": 160615050.0, "rsi": 56.60178527151004, "bb_position": 0.8547225988829483, "volume_ratio": 0.22789981181483, "price_change_24h": 5.027270265740037}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 05:32:17,502 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 05:32:17,502 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T05:32:17.502342"}
+2025-09-30 05:32:17,502 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 05:32:17,502 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 05:54:42,799 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 05:54:42,996 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T05:54:42.995940", "current_price": 162925000.0, "current_volume": 105.06100956, "short_ma": 159911400.0, "long_ma": 160615700.0, "rsi": 56.63672963765872, "bb_position": 0.8564155806141719, "volume_ratio": 0.23619747574197913, "price_change_24h": 5.0356511984733805}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 05:54:42,996 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 05:54:42,996 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T05:54:42.996799"}
+2025-09-30 05:54:42,996 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 05:54:42,997 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:01:15,943 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:01:16,039 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:01:16.039627", "current_price": 162933000.0, "current_volume": 106.57103132, "short_ma": 159913000.0, "long_ma": 160616100.0, "rsi": 56.658205906023646, "bb_position": 0.8574558971266907, "volume_ratio": 0.2395109871094146, "price_change_24h": 5.040808695540054}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:01:16,040 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:01:16,040 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:01:16.040283"}
+2025-09-30 06:01:16,040 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 06:01:16,040 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)

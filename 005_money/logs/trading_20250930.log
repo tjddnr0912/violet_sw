@@ -1,0 +1,804 @@
+2025-09-30 06:04:47,067 - TradingBot - INFO - 모의 거래 모드로 실행 중입니다.
+2025-09-30 06:04:47,068 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:04:47,167 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:04:47.167433", "current_price": 162940000.0, "current_volume": 107.51978423, "short_ma": 159914400.0, "long_ma": 160616450.0, "rsi": 56.6769801980198, "bb_position": 0.8583652234877208, "volume_ratio": 0.2415917297971465, "price_change_24h": 5.045321505473393}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:04:47,167 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:04:47,167 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:04:47.167761"}
+2025-09-30 06:04:47,167 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 06:04:47,167 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:04:59,423 - TradingBot - INFO - 모의 거래 모드로 실행 중입니다.
+2025-09-30 06:04:59,424 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:04:59,514 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:04:59.513906", "current_price": 162940000.0, "current_volume": 107.52198423, "short_ma": 159914400.0, "long_ma": 160616450.0, "rsi": 56.6769801980198, "bb_position": 0.8583652234877208, "volume_ratio": 0.24159655366197116, "price_change_24h": 5.045321505473393}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:04:59,514 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:04:59,514 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:04:59.514216"}
+2025-09-30 06:04:59,514 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 26,000,000원, 수익률: +0.00%
+2025-09-30 06:04:59,514 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:05:48,329 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 06:05:48,330 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:05:48,391 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:05:48,417 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:05:48.417504", "current_price": 162920000.0, "current_volume": 107.62638774, "short_ma": 159910400.0, "long_ma": 160615450.0, "rsi": 56.62329615861214, "bb_position": 0.8557647950355158, "volume_ratio": 0.24182547018751388, "price_change_24h": 5.03242776280671}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:05:48,417 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:05:48,417 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:05:48.417855"}
+2025-09-30 06:05:48,471 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,000원, 수익률: +225.84%
+2025-09-30 06:05:48,471 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:05:53,466 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:05:58,526 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:03,592 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:08,666 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:13,735 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:18,823 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:23,889 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:28,957 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:34,020 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:39,090 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:44,161 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:48,652 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:06:48,750 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:06:48.750283", "current_price": 162940000.0, "current_volume": 108.19619572, "short_ma": 159914400.0, "long_ma": 160616450.0, "rsi": 56.6769801980198, "bb_position": 0.8583652234877208, "volume_ratio": 0.24307464950745647, "price_change_24h": 5.045321505473393}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:06:48,750 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:06:48,750 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:06:48.750934"}
+2025-09-30 06:06:48,804 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,470,000원, 수익률: +225.88%
+2025-09-30 06:06:48,805 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:06:49,248 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:54,319 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:06:59,392 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:04,459 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:09,538 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:14,630 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:19,712 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:24,783 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:29,846 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:34,939 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:40,030 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:45,151 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:48,991 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:07:49,115 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:07:49.115657", "current_price": 162941000.0, "current_volume": 108.24944125, "short_ma": 159914600.0, "long_ma": 160616500.0, "rsi": 56.67966091207227, "bb_position": 0.8584950547593254, "volume_ratio": 0.24319136234258537, "price_change_24h": 5.045966192606728}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:07:49,115 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:07:49,115 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:07:49.115983"}
+2025-09-30 06:07:49,176 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,470,500원, 수익률: +225.88%
+2025-09-30 06:07:49,179 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:07:50,271 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:07:55,359 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:00,474 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:05,540 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:10,607 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:15,698 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:20,800 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:25,888 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:30,978 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:36,061 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:41,133 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:46,218 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:49,367 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:08:49,460 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:08:49.459785", "current_price": 162941000.0, "current_volume": 108.44998499, "short_ma": 159914600.0, "long_ma": 160616500.0, "rsi": 56.67966091207227, "bb_position": 0.8584950547593254, "volume_ratio": 0.2436309240111019, "price_change_24h": 5.045966192606728}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:08:49,460 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:08:49,460 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:08:49.460426"}
+2025-09-30 06:08:49,515 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,470,500원, 수익률: +225.88%
+2025-09-30 06:08:49,516 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:08:51,290 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:08:56,365 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:01,441 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:06,516 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:11,582 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:16,651 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:21,717 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:26,801 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:31,872 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:36,943 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:42,019 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:47,094 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:49,722 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:09:49,820 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:09:49.820561", "current_price": 162950000.0, "current_volume": 108.86384598, "short_ma": 159916400.0, "long_ma": 160616950.0, "rsi": 56.703772418058136, "bb_position": 0.8596627198300106, "volume_ratio": 0.24453791976422973, "price_change_24h": 5.051768376806735}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:09:49,821 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:09:49,821 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:09:49.821182"}
+2025-09-30 06:09:49,881 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,475,000원, 수익률: +225.90%
+2025-09-30 06:09:49,881 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:09:52,166 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:09:57,237 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:02,305 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:07,374 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:12,455 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:17,512 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:22,576 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:27,643 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:32,716 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:37,802 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:42,864 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:47,934 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:50,072 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:10:50,174 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:10:50.174648", "current_price": 162939000.0, "current_volume": 108.90888249, "short_ma": 159914200.0, "long_ma": 160616400.0, "rsi": 56.67429915217526, "bb_position": 0.8582353740861546, "volume_ratio": 0.24463660921236383, "price_change_24h": 5.04467681834006}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:10:50,175 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:10:50,175 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:10:50.175286"}
+2025-09-30 06:10:50,221 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,469,500원, 수익률: +225.88%
+2025-09-30 06:10:50,221 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:10:53,003 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:10:58,079 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:03,146 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:08,215 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:13,284 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:18,355 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:23,426 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:28,503 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:33,572 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:38,650 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:43,722 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:48,808 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:50,415 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:11:50,511 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:11:50.511290", "current_price": 162950000.0, "current_volume": 108.98062569, "short_ma": 159916400.0, "long_ma": 160616950.0, "rsi": 56.703772418058136, "bb_position": 0.8596627198300106, "volume_ratio": 0.24479381746607895, "price_change_24h": 5.051768376806735}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:11:50,511 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:11:50,511 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:11:50.511907"}
+2025-09-30 06:11:50,561 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,475,000원, 수익률: +225.90%
+2025-09-30 06:11:50,561 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:11:53,885 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:11:58,970 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:04,046 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:09,131 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:14,198 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:19,269 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:24,348 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:29,423 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:34,486 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:39,551 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:44,618 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:49,691 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:50,726 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:12:50,817 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:12:50.817366", "current_price": 162940000.0, "current_volume": 109.20890118, "short_ma": 159914400.0, "long_ma": 160616450.0, "rsi": 56.6769801980198, "bb_position": 0.8583652234877208, "volume_ratio": 0.2452939955016242, "price_change_24h": 5.045321505473393}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:12:50,817 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:12:50,817 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:12:50.817909"}
+2025-09-30 06:12:50,904 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,470,000원, 수익률: +225.88%
+2025-09-30 06:12:50,905 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:12:54,749 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:12:59,807 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:04,882 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:09,954 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:15,031 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:20,110 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:25,171 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:30,246 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:35,316 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:40,406 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:45,470 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:50,553 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:13:51,153 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:13:51,242 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:13:51.242095", "current_price": 162965000.0, "current_volume": 109.3256965, "short_ma": 159919400.0, "long_ma": 160617700.0, "rsi": 56.743898671609514, "bb_position": 0.8616055580474304, "volume_ratio": 0.2455498877397179, "price_change_24h": 5.061438683806749}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:13:51,242 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:13:51,242 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:13:51.242723"}
+2025-09-30 06:13:51,305 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,482,500원, 수익률: +225.93%
+2025-09-30 06:13:51,306 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:13:55,631 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:00,717 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:05,781 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:10,859 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:15,944 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:21,011 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:26,079 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:31,154 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:36,230 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:41,312 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:46,388 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:51,469 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:14:51,679 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:14:51,777 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:14:51.776838", "current_price": 162967000.0, "current_volume": 109.63003431, "short_ma": 159919800.0, "long_ma": 160617800.0, "rsi": 56.74924321986779, "bb_position": 0.8618642938260005, "volume_ratio": 0.2462166123784461, "price_change_24h": 5.062728058073417}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:14:51,777 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:14:51,777 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:14:51.777418"}
+2025-09-30 06:14:51,833 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,462,500원, 수익률: +225.85%
+2025-09-30 06:14:51,833 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:14:56,556 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:01,627 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:06,691 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:11,785 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:16,854 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:21,935 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:27,020 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:32,103 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:37,186 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:42,263 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:47,336 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:52,200 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:15:52,302 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:15:52.302466", "current_price": 162921000.0, "current_volume": 110.12101267, "short_ma": 159910600.0, "long_ma": 160615500.0, "rsi": 56.62598352022799, "bb_position": 0.8558949882949778, "volume_ratio": 0.2472920256032656, "price_change_24h": 5.033072449940044}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:15:52,303 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:15:52,303 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:15:52.303115"}
+2025-09-30 06:15:52,363 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,500원, 수익률: +225.84%
+2025-09-30 06:15:52,364 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:15:52,428 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:15:57,502 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:02,577 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:07,654 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:12,730 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:17,806 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:22,884 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:27,963 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:33,049 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:38,113 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:43,194 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:48,262 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:52,717 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:16:52,821 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:16:52.821558", "current_price": 162922000.0, "current_volume": 110.41903559, "short_ma": 159910800.0, "long_ma": 160615550.0, "rsi": 56.6286705488787, "bb_position": 0.8560251634858399, "volume_ratio": 0.24794468371041026, "price_change_24h": 5.033717137073379}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:16:52,822 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:16:52,822 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:16:52.822191"}
+2025-09-30 06:16:52,897 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,461,000원, 수익률: +225.84%
+2025-09-30 06:16:52,898 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:16:53,339 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:16:58,470 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:03,539 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:08,606 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:13,699 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:18,769 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:23,855 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:28,927 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:34,009 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:39,106 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:44,171 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:49,249 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:53,243 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:17:53,343 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:17:53.343113", "current_price": 162920000.0, "current_volume": 110.51502491, "short_ma": 159910400.0, "long_ma": 160615450.0, "rsi": 56.62329615861214, "bb_position": 0.8557647950355158, "volume_ratio": 0.2481548778297641, "price_change_24h": 5.03242776280671}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:17:53,343 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:17:53,343 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:17:53.343753"}
+2025-09-30 06:17:53,402 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,000원, 수익률: +225.84%
+2025-09-30 06:17:53,402 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:17:54,329 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:17:59,410 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:04,494 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:09,567 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:14,638 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:19,714 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:24,793 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:29,864 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:34,947 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:40,036 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:45,112 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:50,189 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:18:53,763 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:18:53,865 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:18:53.865644", "current_price": 162925000.0, "current_volume": 110.71088952, "short_ma": 159911400.0, "long_ma": 160615700.0, "rsi": 56.63672963765872, "bb_position": 0.8564155806141719, "volume_ratio": 0.2485837473260799, "price_change_24h": 5.0356511984733805}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:18:53,866 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:18:53,866 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:18:53.866287"}
+2025-09-30 06:18:53,920 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,462,500원, 수익률: +225.85%
+2025-09-30 06:18:53,921 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:18:55,263 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:00,345 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:05,436 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:10,498 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:15,583 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:20,675 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:25,767 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:30,837 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:35,911 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:40,989 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:46,072 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:51,142 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:19:54,258 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:19:54,364 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:19:54.364534", "current_price": 162920000.0, "current_volume": 110.76413251, "short_ma": 159910400.0, "long_ma": 160615450.0, "rsi": 56.62329615861214, "bb_position": 0.8557647950355158, "volume_ratio": 0.24870032283772872, "price_change_24h": 5.03242776280671}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:19:54,365 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:19:54,365 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:19:54.365115"}
+2025-09-30 06:19:54,419 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,000원, 수익률: +225.84%
+2025-09-30 06:19:54,419 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:19:56,214 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:01,321 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:06,407 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:11,502 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:16,580 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:21,661 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:26,761 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:31,837 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:36,928 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:41,999 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:47,075 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:52,159 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:20:54,755 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:20:54,855 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:20:54.854857", "current_price": 162921000.0, "current_volume": 110.96442721, "short_ma": 159910600.0, "long_ma": 160615500.0, "rsi": 56.62598352022799, "bb_position": 0.8558949882949778, "volume_ratio": 0.2491388430630935, "price_change_24h": 5.033072449940044}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:20:54,855 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:20:54,855 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:20:54.855494"}
+2025-09-30 06:20:54,914 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,500원, 수익률: +225.84%
+2025-09-30 06:20:54,914 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:20:57,244 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:02,324 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:07,397 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:12,469 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:17,541 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:22,621 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:27,688 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:32,762 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:37,834 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:42,900 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:47,981 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:53,063 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:21:55,262 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:21:55,355 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:21:55.355431", "current_price": 162925000.0, "current_volume": 111.06486118, "short_ma": 159911400.0, "long_ma": 160615700.0, "rsi": 56.63672963765872, "bb_position": 0.8564155806141719, "volume_ratio": 0.24935871584798175, "price_change_24h": 5.0356511984733805}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:21:55,355 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:21:55,356 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:21:55.356061"}
+2025-09-30 06:21:55,410 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,462,500원, 수익률: +225.85%
+2025-09-30 06:21:55,410 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:21:58,151 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:03,229 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:08,309 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:13,375 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:18,446 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:23,522 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:28,604 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:33,687 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:38,767 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:43,839 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:48,910 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:54,002 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:22:55,826 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:22:55,937 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:22:55.936797", "current_price": 162920000.0, "current_volume": 111.53398428, "short_ma": 159910400.0, "long_ma": 160615450.0, "rsi": 56.62329615861214, "bb_position": 0.8557647950355158, "volume_ratio": 0.2503856016106707, "price_change_24h": 5.03242776280671}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:22:55,937 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:22:55,937 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:22:55.937441"}
+2025-09-30 06:22:55,997 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,000원, 수익률: +225.84%
+2025-09-30 06:22:55,997 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:22:59,085 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:04,165 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:09,242 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:14,318 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:19,387 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:24,454 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:29,520 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:34,589 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:39,671 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:44,758 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:49,828 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:54,902 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:23:56,374 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:23:56,477 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:23:56.477189", "current_price": 162925000.0, "current_volume": 111.6973769, "short_ma": 159911400.0, "long_ma": 160615700.0, "rsi": 56.63672963765872, "bb_position": 0.8564155806141719, "volume_ratio": 0.2507432086680681, "price_change_24h": 5.0356511984733805}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:23:56,477 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:23:56,477 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:23:56.477793"}
+2025-09-30 06:23:56,526 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,462,500원, 수익률: +225.85%
+2025-09-30 06:23:56,527 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:23:59,977 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:05,066 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:10,147 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:15,217 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:20,303 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:25,393 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:30,478 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:35,576 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:40,647 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:45,730 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:50,806 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:55,883 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:24:56,925 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:24:57,013 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:24:57.013355", "current_price": 162921000.0, "current_volume": 111.78341068, "short_ma": 159910600.0, "long_ma": 160615500.0, "rsi": 56.62598352022799, "bb_position": 0.8558949882949778, "volume_ratio": 0.25093149479910276, "price_change_24h": 5.033072449940044}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:24:57,014 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:24:57,014 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:24:57.014073"}
+2025-09-30 06:24:57,063 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,500원, 수익률: +225.84%
+2025-09-30 06:24:57,063 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:25:00,962 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:06,047 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:11,131 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:16,211 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:21,272 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:26,331 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:31,391 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:36,452 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:41,525 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:46,594 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:51,669 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:56,738 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:25:57,532 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:25:57,611 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:25:57.611357", "current_price": 162921000.0, "current_volume": 111.88400352, "short_ma": 159910600.0, "long_ma": 160615500.0, "rsi": 56.62598352022799, "bb_position": 0.8558949882949778, "volume_ratio": 0.25115163441391225, "price_change_24h": 5.033072449940044}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:25:57,611 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:25:57,611 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:25:57.611751"}
+2025-09-30 06:25:57,662 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,460,500원, 수익률: +225.84%
+2025-09-30 06:25:57,662 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:26:01,808 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:06,889 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:11,966 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:17,044 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:22,129 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:27,212 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:32,284 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:37,373 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:42,457 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:47,537 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:52,614 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:57,716 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:26:58,028 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:26:58,104 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:26:58.104525", "current_price": 162921000.0, "current_volume": 112.13957771, "short_ma": 159910600.0, "long_ma": 160615500.0, "rsi": 56.62598352022799, "bb_position": 0.8558949882949778, "volume_ratio": 0.2517108939578217, "price_change_24h": 5.033072449940044}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:26:58,105 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:26:58,105 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:26:58.105065"}
+2025-09-30 06:26:58,170 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,466,000원, 수익률: +225.86%
+2025-09-30 06:26:58,170 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:27:02,804 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:07,880 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:12,967 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:18,053 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:23,130 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:28,220 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:33,280 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:38,351 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:43,417 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:48,490 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:53,603 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:58,509 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 06:27:58,608 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T06:27:58.608051", "current_price": 162918000.0, "current_volume": 112.77274848, "short_ma": 159910000.0, "long_ma": 160615350.0, "rsi": 56.617920436237455, "bb_position": 0.8555043543238467, "volume_ratio": 0.25309615185676765, "price_change_24h": 5.031138388540041}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": -1, "volume_signal": 0, "overall_signal": -1, "confidence": 0.5}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 06:27:58,608 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 06:27:58,608 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T06:27:58.608650"}
+2025-09-30 06:27:58,666 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,459,000원, 수익률: +225.84%
+2025-09-30 06:27:58,667 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:27:58,667 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 06:28:03,749 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:28:08,836 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:28:13,904 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:28:18,986 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:28:24,063 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:28:29,144 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 06:28:34,218 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:07,418 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 21:12:07,419 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:12:07,491 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:07,525 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:12:07.525336", "current_price": 161802000.0, "current_volume": 481.00061463, "short_ma": 159686800.0, "long_ma": 160559550.0, "rsi": 52.97445468330806, "bb_position": 0.6999233672423973, "volume_ratio": 0.9971083432470318, "price_change_24h": 4.3116675477390825}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:12:07,525 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:12:07,525 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:12:07.525651"}
+2025-09-30 21:12:07,587 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,901,000원, 수익률: +223.60%
+2025-09-30 21:12:07,587 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:12:12,565 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:17,645 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:22,719 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:27,794 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:32,869 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:37,984 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:43,057 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:48,148 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:53,248 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:12:58,341 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:03,412 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:07,811 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:13:07,936 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:13:07.936468", "current_price": 161862000.0, "current_volume": 481.01408796, "short_ma": 159698800.0, "long_ma": 160562550.0, "rsi": 53.16048226618284, "bb_position": 0.7087484718975154, "volume_ratio": 0.9971334882954763, "price_change_24h": 4.350348775739134}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:13:07,936 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:13:07,937 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:13:07.936982"}
+2025-09-30 21:13:07,994 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,931,000원, 수익률: +223.72%
+2025-09-30 21:13:07,994 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:13:08,490 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:13,566 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:18,700 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:23,787 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:28,865 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:33,964 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:39,048 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:44,131 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:49,204 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:54,283 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:13:59,361 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:04,433 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:08,255 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:14:08,385 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:14:08.385409", "current_price": 161861000.0, "current_volume": 481.17987629, "short_ma": 159698600.0, "long_ma": 160562500.0, "rsi": 53.15737110083689, "bb_position": 0.7086017490611489, "volume_ratio": 0.9974428847610254, "price_change_24h": 4.3497040886058}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:14:08,385 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:14:08,385 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:14:08.385757"}
+2025-09-30 21:14:08,457 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,930,500원, 수익률: +223.72%
+2025-09-30 21:14:08,457 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:14:09,487 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:14,576 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:19,651 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:24,731 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:29,814 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:34,898 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:39,978 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:45,059 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:50,142 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:14:55,229 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:00,308 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:05,399 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:08,709 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:15:08,796 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:15:08.796480", "current_price": 161804000.0, "current_volume": 481.19739636, "short_ma": 159687200.0, "long_ma": 160559650.0, "rsi": 52.98063462435838, "bb_position": 0.7002182414068394, "volume_ratio": 0.9974755797146454, "price_change_24h": 4.312956922005751}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:15:08,796 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:15:08,797 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:15:08.796989"}
+2025-09-30 21:15:08,888 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,902,000원, 수익률: +223.61%
+2025-09-30 21:15:08,888 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:15:10,479 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:15,552 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:20,628 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:25,698 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:30,781 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:35,867 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:40,944 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:46,025 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:51,103 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:15:56,186 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:01,259 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:06,348 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:09,141 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:16:09,245 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:16:09.245377", "current_price": 161849000.0, "current_volume": 481.22934833, "short_ma": 159696200.0, "long_ma": 160561900.0, "rsi": 53.12006550090649, "bb_position": 0.7068401081959993, "volume_ratio": 0.9975352060440003, "price_change_24h": 4.34196784300579}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:16:09,245 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:16:09,245 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:16:09.245775"}
+2025-09-30 21:16:09,312 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,924,500원, 수익률: +223.70%
+2025-09-30 21:16:09,312 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:16:11,425 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:16,549 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:21,633 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:26,710 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:31,793 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:36,873 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:41,958 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:47,048 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:52,125 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:16:57,204 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:02,298 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:07,369 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:09,563 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:17:09,660 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:17:09.660151", "current_price": 161806000.0, "current_volume": 481.40199913, "short_ma": 159687600.0, "long_ma": 160559750.0, "rsi": 52.986816007467034, "bb_position": 0.7005130675776398, "volume_ratio": 0.9978573801343358, "price_change_24h": 4.314246296272419}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:17:09,660 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:17:09,660 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:17:09.660684"}
+2025-09-30 21:17:09,737 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,924,000원, 수익률: +223.70%
+2025-09-30 21:17:09,737 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:17:12,456 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:17,536 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:22,619 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:27,709 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:32,799 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:37,890 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:42,987 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:48,061 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:53,129 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:17:58,219 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:03,384 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:08,478 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:10,244 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:18:10,347 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:18:10.347543", "current_price": 161847000.0, "current_volume": 481.43072395, "short_ma": 159695800.0, "long_ma": 160561800.0, "rsi": 53.113852991053164, "bb_position": 0.7065463283667831, "volume_ratio": 0.9979109796917321, "price_change_24h": 4.340678468739121}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:18:10,347 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:18:10,348 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:18:10.348024"}
+2025-09-30 21:18:10,400 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,923,500원, 수익률: +223.69%
+2025-09-30 21:18:10,400 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:18:13,559 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:18,659 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:23,731 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:28,825 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:33,906 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:39,009 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:44,100 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:49,195 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:54,376 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:18:59,460 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:04,541 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:09,615 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:10,774 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:19:10,891 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:19:10.891013", "current_price": 161848000.0, "current_volume": 481.62101657, "short_ma": 159696000.0, "long_ma": 160561850.0, "rsi": 53.11695906432748, "bb_position": 0.7066932244446514, "volume_ratio": 0.9982660432633972, "price_change_24h": 4.3413231558724545}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:19:10,891 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:19:10,891 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:19:10.891619"}
+2025-09-30 21:19:10,960 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,941,000원, 수익률: +223.76%
+2025-09-30 21:19:10,960 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:19:14,695 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:19,766 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:24,860 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:29,958 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:35,071 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:40,153 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:45,235 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:50,339 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:19:55,422 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:00,523 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:05,620 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:10,708 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:11,364 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:20:11,482 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:20:11.482366", "current_price": 161848000.0, "current_volume": 481.79335283, "short_ma": 159696000.0, "long_ma": 160561850.0, "rsi": 53.11695906432748, "bb_position": 0.7066932244446514, "volume_ratio": 0.9985875782179722, "price_change_24h": 4.3413231558724545}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:20:11,482 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:20:11,482 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:20:11.482879"}
+2025-09-30 21:20:11,545 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,924,000원, 수익률: +223.70%
+2025-09-30 21:20:11,545 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:20:15,789 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:20,905 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:25,987 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:31,080 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:36,168 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:41,277 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:46,369 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:51,442 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:20:56,509 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:01,586 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:06,663 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:11,767 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:11,930 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:21:12,006 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:21:12.006428", "current_price": 161881000.0, "current_volume": 481.92269364, "short_ma": 159702600.0, "long_ma": 160563500.0, "rsi": 53.21966367844378, "bb_position": 0.7115338358422686, "volume_ratio": 0.9988288796782104, "price_change_24h": 4.362597831272484}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:21:12,006 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:21:12,006 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:21:12.006712"}
+2025-09-30 21:21:12,066 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,940,500원, 수익률: +223.76%
+2025-09-30 21:21:12,066 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:21:16,853 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:21,924 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:27,002 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:37,188 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 21:21:37,189 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:21:37,246 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:21:37,263 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:21:37.263534", "current_price": 161882000.0, "current_volume": 482.04945671, "short_ma": 159702800.0, "long_ma": 160563550.0, "rsi": 53.22278213992734, "bb_position": 0.7116803086997118, "volume_ratio": 0.9990653594893757, "price_change_24h": 4.3632425184058174}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:21:37,263 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:21:37,263 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:21:37.263832"}
+2025-09-30 21:21:37,338 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 81,941,000원, 수익률: +223.76%
+2025-09-30 21:21:37,338 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:43:40,881 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 21:43:40,882 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:43:40,962 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:43:41,033 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:43:41.033148", "current_price": 162044000.0, "current_volume": 489.48768488, "short_ma": 159735200.0, "long_ma": 160571650.0, "rsi": 53.732844297207755, "bb_position": 0.7352378351556472, "volume_ratio": 1.0129198453803545, "price_change_24h": 4.467681834005957}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:43:41,033 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:43:41,033 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:43:41.033431"}
+2025-09-30 21:43:41,092 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,022,000원, 수익률: +224.09%
+2025-09-30 21:43:41,092 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:43:46,060 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:43:47,039 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 21:43:47,039 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:43:47,090 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:43:47,197 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:43:47.197411", "current_price": 162035000.0, "current_volume": 489.53582299, "short_ma": 159733400.0, "long_ma": 160571200.0, "rsi": 53.70425116774079, "bb_position": 0.7339382515409704, "volume_ratio": 1.0130093687940267, "price_change_24h": 4.461879649805949}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:43:47,197 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:43:47,197 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:43:47.197695"}
+2025-09-30 21:43:47,246 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,017,500원, 수익률: +224.07%
+2025-09-30 21:43:47,246 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:43:52,157 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:43:57,226 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:02,305 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:07,377 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:12,449 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:17,534 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:22,609 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:27,691 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:32,804 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:37,945 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:43,056 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:47,479 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:44:47,656 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:44:47.656004", "current_price": 162045000.0, "current_volume": 489.83092012, "short_ma": 159735400.0, "long_ma": 160571700.0, "rsi": 53.736023191149506, "bb_position": 0.7353821649009918, "volume_ratio": 1.0135581278992307, "price_change_24h": 4.468326521139291}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:44:47,656 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:44:47,656 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:44:47.656302"}
+2025-09-30 21:44:47,704 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,022,500원, 수익률: +224.09%
+2025-09-30 21:44:47,704 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:44:48,190 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:53,290 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:44:58,407 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:03,485 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:08,570 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:13,664 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:18,794 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:23,904 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:28,978 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:34,094 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:39,172 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:44,248 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:47,896 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:45:48,077 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:45:48.077496", "current_price": 162057000.0, "current_volume": 490.3284826, "short_ma": 159737800.0, "long_ma": 160572300.0, "rsi": 53.77419927772187, "bb_position": 0.7371130504589337, "volume_ratio": 1.014483237412712, "price_change_24h": 4.476062766739301}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:45:48,077 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:45:48,077 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:45:48.077770"}
+2025-09-30 21:45:48,133 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,040,500원, 수익률: +224.16%
+2025-09-30 21:45:48,133 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:45:49,308 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:54,374 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:45:59,487 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:04,620 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:09,698 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:14,768 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:19,864 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:24,967 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:30,035 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:35,105 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:40,195 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:45,271 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:48,320 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:46:48,475 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:46:48.475756", "current_price": 162098000.0, "current_volume": 490.46417585, "short_ma": 159746000.0, "long_ma": 160574350.0, "rsi": 53.905044510385764, "bb_position": 0.7430118563073013, "volume_ratio": 1.0147354965257624, "price_change_24h": 4.502494939206003}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:46:48,476 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:46:48,476 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:46:48.476030"}
+2025-09-30 21:46:48,527 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,049,000원, 수익률: +224.20%
+2025-09-30 21:46:48,527 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:46:50,359 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:46:55,444 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:00,547 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:05,665 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:10,790 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:15,850 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:20,959 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:26,073 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:31,187 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:36,275 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:41,356 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:46,458 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:48,740 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:47:48,952 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:47:48.952611", "current_price": 162100000.0, "current_volume": 490.7802907, "short_ma": 159746400.0, "long_ma": 160574450.0, "rsi": 53.91144349477683, "bb_position": 0.7432990020115967, "volume_ratio": 1.0153231115923713, "price_change_24h": 4.503784313472671}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:47:48,952 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:47:48,952 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:47:48.952913"}
+2025-09-30 21:47:49,004 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,050,000원, 수익률: +224.20%
+2025-09-30 21:47:49,004 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:47:51,547 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:47:56,626 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:01,707 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:06,772 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:11,837 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:16,898 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:21,985 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:27,110 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:32,257 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:37,346 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:42,445 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:47,550 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:49,255 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:48:49,458 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:48:49.458480", "current_price": 162057000.0, "current_volume": 491.21726745, "short_ma": 159737800.0, "long_ma": 160572300.0, "rsi": 53.77419927772187, "bb_position": 0.7371130504589337, "volume_ratio": 1.0161352661637095, "price_change_24h": 4.476062766739301}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:48:49,458 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:48:49,458 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 1000000.0, "btc_balance": 0.1, "timestamp": "2025-09-30T21:48:49.458773"}
+2025-09-30 21:48:49,506 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,028,500원, 수익률: +224.11%
+2025-09-30 21:48:49,506 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:48:52,608 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:48:57,694 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:49:02,765 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:49:07,853 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:49:12,978 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:49:18,068 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:49:23,185 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:49:28,276 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:52:00,613 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: KRW - 상장 코인이 아닙니다.
+2025-09-30 21:52:00,917 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 21:52:01,070 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: ETH - Bad Request.(Auth Data)
+2025-09-30 21:52:01,233 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: XRP - Bad Request.(Auth Data)
+2025-09-30 21:55:21,605 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 21:55:21,606 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 21:55:21,781 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "timestamp": "2025-09-30T21:55:21.780866", "current_price": 162005000.0, "current_volume": 493.18926418, "short_ma": 159727400.0, "long_ma": 160569700.0, "rsi": 53.60916012512542, "bb_position": 0.7295983517692953, "volume_ratio": 1.0197985466219412, "price_change_24h": 4.442539035805924}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 21:55:21,781 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 21:55:21,830 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 21:55:21,830 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:55:21,902 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: KRW - Bad Request.(Auth Data)
+2025-09-30 21:55:22,027 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 21:55:22,027 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 0.0, "btc_balance": 0.0, "timestamp": "2025-09-30T21:55:22.027605"}
+2025-09-30 21:55:22,076 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,002,500원, 수익률: +224.01%
+2025-09-30 21:55:22,076 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 21:55:27,067 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 21:55:27,067 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:55:32,279 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 21:55:32,279 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:55:37,467 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 21:55:37,467 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 21:55:42,694 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 21:55:42,694 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:41:26,141 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 22:41:26,141 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 22:41:26,316 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "interval": "1h", "timestamp": "2025-09-30T22:41:26.316062", "current_price": 162237000.0, "current_volume": 15.75471552, "short_ma": 161804000.0, "long_ma": 162481720.0, "rsi": 42.13914335231493, "bb_position": 0.4040625334527722, "volume_ratio": 0.7754575021363487, "price_change_24h": -0.38498379015620393, "indicator_config": {"short_ma_window": 7, "long_ma_window": 25, "rsi_period": 14}}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 22:41:26,316 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 22:41:26,350 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:41:26,350 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:41:26,430 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: KRW - Bad Request.(Auth Data)
+2025-09-30 22:41:26,559 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:41:26,559 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 0.0, "btc_balance": 0.0, "timestamp": "2025-09-30T22:41:26.559151"}
+2025-09-30 22:41:26,613 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,118,500원, 수익률: +224.47%
+2025-09-30 22:41:26,613 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 22:41:31,586 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:41:31,586 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:41:36,793 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:41:36,793 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:41:42,050 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:41:42,050 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:55:48,518 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: KRW - Bad Request.(Auth Data)
+2025-09-30 22:55:48,646 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:55:48,768 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: ETH - Bad Request.(Auth Data)
+2025-09-30 22:55:48,916 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: XRP - Bad Request.(Auth Data)
+2025-09-30 22:57:16,045 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 22:57:16,045 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 22:57:16,205 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "interval": "24h", "timestamp": "2025-09-30T22:57:16.205283", "current_price": 162200000.0, "current_volume": 518.57814331, "short_ma": 159766400.0, "long_ma": 160579450.0, "rsi": 54.233341294482926, "bb_position": 0.7575834562560989, "volume_ratio": 1.0666967686522748, "price_change_24h": 4.568253026806091, "indicator_config": {"short_ma_window": 5, "long_ma_window": 20, "rsi_period": 14}}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 22:57:16,205 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 22:57:16,256 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:16,256 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:57:16,333 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: KRW - Bad Request.(Auth Data)
+2025-09-30 22:57:16,464 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:16,464 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 0.0, "btc_balance": 0.0, "timestamp": "2025-09-30T22:57:16.464579"}
+2025-09-30 22:57:16,513 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,100,000원, 수익률: +224.40%
+2025-09-30 22:57:16,513 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 22:57:21,490 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:21,490 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:57:25,142 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 22:57:25,143 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 22:57:25,300 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "interval": "1h", "timestamp": "2025-09-30T22:57:25.300827", "current_price": 162207000.0, "current_volume": 23.97243124, "short_ma": 161799714.2857143, "long_ma": 162480520.0, "rsi": 41.70616113744076, "bb_position": 0.3931213280345292, "volume_ratio": 1.1340679578451796, "price_change_24h": -0.40340406719717065, "indicator_config": {"short_ma_window": 7, "long_ma_window": 25, "rsi_period": 14}}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 22:57:25,301 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 22:57:25,315 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:25,315 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:57:25,438 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: KRW - Bad Request.(Auth Data)
+2025-09-30 22:57:25,572 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:25,572 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 0.0, "btc_balance": 0.0, "timestamp": "2025-09-30T22:57:25.572248"}
+2025-09-30 22:57:25,622 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,103,500원, 수익률: +224.41%
+2025-09-30 22:57:25,622 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 22:57:30,555 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:30,556 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:57:35,782 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:35,782 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 22:57:41,000 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 22:57:41,000 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 23:00:33,968 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-09-30 23:00:33,969 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-09-30 23:00:34,144 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "interval": "24h", "timestamp": "2025-09-30T23:00:34.144720", "current_price": 162373000.0, "current_volume": 519.51457721, "short_ma": 159801000.0, "long_ma": 160588100.0, "rsi": 54.79939668174963, "bb_position": 0.781945106435545, "volume_ratio": 1.0684171801168285, "price_change_24h": 4.6797839008729065, "indicator_config": {"short_ma_window": 5, "long_ma_window": 20, "rsi_period": 14}}, "signals": {"ma_signal": -1, "rsi_signal": 0, "bb_signal": 0, "volume_signal": 0, "overall_signal": 0, "confidence": 0.3}, "action": "HOLD", "reason": "추세 유지"}
+2025-09-30 23:00:34,144 - TradingBot - INFO - [DECISION] BTC: HOLD - 추세 유지 | Price: N/A
+2025-09-30 23:00:34,193 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 23:00:34,193 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-09-30 23:00:34,261 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: KRW - Bad Request.(Auth Data)
+2025-09-30 23:00:34,394 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 23:00:34,394 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 0.0, "btc_balance": 0.0, "timestamp": "2025-09-30T23:00:34.394162"}
+2025-09-30 23:00:34,454 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 82,186,500원, 수익률: +224.75%
+2025-09-30 23:00:34,454 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-09-30 23:00:39,403 - TradingBot - ERROR - [ERROR] 잔고 조회 실패: BTC - Bad Request.(Auth Data)
+2025-09-30 23:00:39,403 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
