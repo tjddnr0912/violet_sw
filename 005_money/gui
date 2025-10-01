@@ -54,9 +54,9 @@ check_system_requirements() {
     local all_good=true
 
     # 1. 디렉토리 확인
-    if [[ ! -f "gui_app.py" ]] || [[ ! -f "trading_bot.py" ]]; then
+    if [[ ! -f "001_python_code/gui_app.py" ]] || [[ ! -f "001_python_code/trading_bot.py" ]]; then
         echo -e "${RED}❌ 005_money 디렉토리에서 실행해주세요.${NC}"
-        echo "   필요한 파일: gui_app.py, trading_bot.py"
+        echo "   필요한 파일: 001_python_code/gui_app.py, 001_python_code/trading_bot.py"
         all_good=false
     else
         echo -e "${GREEN}✅ 디렉토리 확인 완료${NC}"
@@ -178,7 +178,7 @@ except ImportError as e:
 
 # GUI 파일 확인
 import os
-required_files = ['gui_app.py', 'gui_trading_bot.py', 'trading_bot.py', 'config.py']
+required_files = ['001_python_code/gui_app.py', '001_python_code/gui_trading_bot.py', '001_python_code/trading_bot.py', '001_python_code/config.py']
 missing = [f for f in required_files if not os.path.exists(f)]
 if missing:
     print(f'❌ 누락된 파일: {missing}')

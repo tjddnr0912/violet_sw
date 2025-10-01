@@ -10,9 +10,20 @@ import threading
 import queue
 import time
 import json
+import sys
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 import logging
+
+# Ensure working directory is project root (parent of 001_python_code)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+os.chdir(project_root)
+
+# Add 001_python_code to Python path for imports
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 from gui_trading_bot import GUITradingBot
 from logger import TradingLogger, TransactionHistory

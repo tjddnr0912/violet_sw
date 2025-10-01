@@ -21,9 +21,9 @@ echo -e "${NC}"
 echo ""
 
 # 현재 디렉토리 확인
-if [[ ! -f "gui_app.py" ]] || [[ ! -f "trading_bot.py" ]]; then
+if [[ ! -f "001_python_code/gui_app.py" ]] || [[ ! -f "001_python_code/trading_bot.py" ]]; then
     echo -e "${RED}❌ 005_money 디렉토리에서 실행해주세요.${NC}"
-    echo "   필요한 파일: gui_app.py, trading_bot.py"
+    echo "   필요한 파일: 001_python_code/gui_app.py, 001_python_code/trading_bot.py"
     exit 1
 fi
 
@@ -81,4 +81,4 @@ echo -e "${BLUE}💡 추천: 더 나은 경험을 위해 ./gui 또는 python run
 echo ""
 
 # GUI 실행
-python3 run_gui.py
+python3 003_Execution_script/run_gui.py
