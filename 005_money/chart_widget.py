@@ -1,263 +1,289 @@
 #!/usr/bin/env python3
 """
-실시간 캔들스틱 차트 위젯
-기술적 지표와 매수/매도 시그널을 시각화
+실시간 캔들스틱 차트 위젯 (v3.0 - Clean Rebuild)
+Step 1: Simple, clean candlestick chart implementation
+Step 2: Technical indicator checkboxes
+Step 3: Dynamic on/off functionality for indicators
 """
 
 import tkinter as tk
 from tkinter import ttk
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-import mplfinance as mpf
+from typing import Dict, Any
+import platform
 
-from bithumb_api import get_candlestick
-from strategy import calculate_moving_average, calculate_rsi, calculate_bollinger_bands
+from strategy import TradingStrategy
+
+# OS에 맞는 한글 폰트 설정
+try:
+    if platform.system() == 'Windows':
+        plt.rc('font', family='Malgun Gothic')
+    elif platform.system() == 'Darwin':  # macOS
+        plt.rc('font', family='AppleGothic')
+    else:  # Linux
+        plt.rc('font', family='NanumGothic')
+except OSError:
+    print("경고: 지정된 한글 폰트가 없습니다. 차트의 한글이 깨질 수 있습니다.")
+
+# 마이너스 부호 깨짐 방지
+import matplotlib
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 
 class ChartWidget:
-    """실시간 차트 위젯"""
+    """실시간 차트 위젯 - 단계별 구현"""
 
     def __init__(self, parent_frame, config: Dict):
         self.parent = parent_frame
         self.config = config
-
-        # 차트 데이터
+        self.strategy = TradingStrategy()
         self.df = None
-        self.indicators = {}
-        self.signals = []
+        self.analysis = None
+        self.signals = None
 
-        # UI 설정
+        # Step 2: 기술적 지표 체크박스 상태
+        self.indicator_checkboxes = {}
+
         self.setup_ui()
 
     def setup_ui(self):
         """UI 구성"""
-        # 메인 프레임
         self.main_frame = ttk.Frame(self.parent)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 상단 컨트롤 패널
+        # 상단 제어 패널
         control_frame = ttk.Frame(self.main_frame)
         control_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # 차트 설정 컨트롤
-        ttk.Label(control_frame, text="표시 지표:").pack(side=tk.LEFT, padx=5)
+        # 새로고침 버튼
+        ttk.Button(control_frame, text="🔄 차트 새로고침",
+                  command=self.refresh_chart).pack(side=tk.LEFT, padx=5)
 
-        self.show_ma = tk.BooleanVar(value=True)
-        self.show_rsi = tk.BooleanVar(value=True)
-        self.show_bollinger = tk.BooleanVar(value=False)
-
-        ttk.Checkbutton(control_frame, text="이동평균선(MA)", variable=self.show_ma,
-                       command=self.update_chart).pack(side=tk.LEFT, padx=5)
-        ttk.Checkbutton(control_frame, text="RSI", variable=self.show_rsi,
-                       command=self.update_chart).pack(side=tk.LEFT, padx=5)
-        ttk.Checkbutton(control_frame, text="볼린저밴드", variable=self.show_bollinger,
-                       command=self.update_chart).pack(side=tk.LEFT, padx=5)
-
-        ttk.Button(control_frame, text="새로고침",
-                  command=self.refresh_chart).pack(side=tk.LEFT, padx=20)
+        # Step 2: 기술적 지표 체크박스 패널
+        self.create_indicator_checkboxes(control_frame)
 
         # 차트 영역
         self.chart_frame = ttk.Frame(self.main_frame)
         self.chart_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # matplotlib 차트 생성
-        self.create_chart()
-
-    def create_chart(self):
-        """matplotlib 차트 생성"""
-        # Figure 생성 (2개의 서브플롯: 가격차트, RSI)
-        self.fig = Figure(figsize=(12, 8), dpi=100)
-
-        # 캔버스 생성
+        # Figure 생성 (적절한 크기와 DPI)
+        self.fig = Figure(figsize=(14, 8), dpi=100)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.chart_frame)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # 툴바 추가
-        toolbar = NavigationToolbar2Tk(self.canvas, self.chart_frame)
-        toolbar.update()
+    def create_indicator_checkboxes(self, parent):
+        """Step 2: 기술적 지표 체크박스 생성"""
+        indicator_frame = ttk.LabelFrame(parent, text="📊 기술적 지표", padding="5")
+        indicator_frame.pack(side=tk.LEFT, padx=10)
 
-    def load_data(self, ticker: str, interval: str) -> bool:
-        """캔들스틱 데이터 로드"""
+        # 지표 목록 (초기값: 모두 체크 해제)
+        indicators = [
+            ('ma', 'MA (이동평균선)'),
+            ('rsi', 'RSI'),
+            ('bb', 'Bollinger Bands'),
+            ('macd', 'MACD'),
+            ('volume', 'Volume'),
+            ('stochastic', 'Stochastic'),
+            ('atr', 'ATR'),
+            ('adx', 'ADX')
+        ]
+
+        # 2열로 배치
+        for i, (key, label) in enumerate(indicators):
+            var = tk.BooleanVar(value=False)  # 초기값: 모두 비활성화
+            self.indicator_checkboxes[key] = var
+
+            row = i // 2
+            col = i % 2
+
+            checkbox = ttk.Checkbutton(
+                indicator_frame,
+                text=label,
+                variable=var,
+                command=self.on_indicator_toggle  # Step 3: 체크박스 토글 시 차트 업데이트
+            )
+            checkbox.grid(row=row, column=col, sticky=tk.W, padx=5, pady=2)
+
+    def on_indicator_toggle(self):
+        """Step 3: 지표 체크박스 토글 시 차트 즉시 업데이트"""
+        if self.df is not None and not self.df.empty:
+            self.update_chart()
+
+    def load_and_prepare_data(self) -> bool:
+        """데이터 로드 및 모든 지표 계산"""
         try:
-            # 빗썸 API로 데이터 가져오기
-            df = get_candlestick(ticker, interval)
+            ticker = self.config.get('trading', {}).get('target_ticker', 'BTC')
+            interval = self.config.get('strategy', {}).get('candlestick_interval', '1h')
 
-            if df is None or df.empty:
-                print(f"데이터 로드 실패: {ticker}")
+            analysis_data = self.strategy.analyze_market_data(ticker, interval)
+
+            if analysis_data is None or 'price_data' not in analysis_data:
+                print(f"차트 데이터 분석 실패: {ticker}")
+                self.df = None
                 return False
 
-            # 최근 100개 데이터만 사용
-            self.df = df.tail(100).copy()
-
-            # 기술적 지표 계산
-            self.calculate_indicators()
-
-            # 매수/매도 시그널 계산
-            self.calculate_signals()
+            self.df = analysis_data['price_data'].tail(100).copy()
+            self.analysis = analysis_data
+            self.signals = self.strategy.generate_weighted_signals(self.analysis)
 
             return True
 
         except Exception as e:
-            print(f"데이터 로드 오류: {e}")
+            print(f"차트 데이터 준비 오류: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
-    def calculate_indicators(self):
-        """기술적 지표 계산"""
-        if self.df is None or self.df.empty:
-            return
-
-        try:
-            # 이동평균선 계산
-            short_window = self.config.get('strategy', {}).get('short_ma_window', 5)
-            long_window = self.config.get('strategy', {}).get('long_ma_window', 20)
-
-            self.df['MA_short'] = self.df['close'].rolling(window=short_window).mean()
-            self.df['MA_long'] = self.df['close'].rolling(window=long_window).mean()
-
-            # RSI 계산
-            rsi_period = self.config.get('strategy', {}).get('rsi_period', 14)
-            delta = self.df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
-
-            rs = gain / loss
-            self.df['RSI'] = 100 - (100 / (1 + rs))
-
-            # 볼린저 밴드 계산
-            bb_period = 20
-            bb_std = 2
-            self.df['BB_middle'] = self.df['close'].rolling(window=bb_period).mean()
-            rolling_std = self.df['close'].rolling(window=bb_period).std()
-            self.df['BB_upper'] = self.df['BB_middle'] + (rolling_std * bb_std)
-            self.df['BB_lower'] = self.df['BB_middle'] - (rolling_std * bb_std)
-
-            self.indicators = {
-                'MA_short': short_window,
-                'MA_long': long_window,
-                'RSI': rsi_period,
-                'BB': bb_period
-            }
-
-        except Exception as e:
-            print(f"지표 계산 오류: {e}")
-
-    def calculate_signals(self):
-        """매수/매도 시그널 계산"""
-        if self.df is None or self.df.empty:
-            return
-
-        self.signals = []
-
-        try:
-            rsi_buy = self.config.get('strategy', {}).get('rsi_oversold', 30)
-            rsi_sell = self.config.get('strategy', {}).get('rsi_overbought', 70)
-
-            for i in range(1, len(self.df)):
-                idx = self.df.index[i]
-
-                # 골든크로스 (MA 기반 매수 시그널)
-                if (self.df['MA_short'].iloc[i] > self.df['MA_long'].iloc[i] and
-                    self.df['MA_short'].iloc[i-1] <= self.df['MA_long'].iloc[i-1] and
-                    self.df['RSI'].iloc[i] < rsi_sell):
-                    self.signals.append({
-                        'time': idx,
-                        'type': 'BUY',
-                        'price': self.df['close'].iloc[i],
-                        'reason': 'Golden Cross + RSI'
-                    })
-
-                # 데드크로스 (MA 기반 매도 시그널)
-                elif (self.df['MA_short'].iloc[i] < self.df['MA_long'].iloc[i] and
-                      self.df['MA_short'].iloc[i-1] >= self.df['MA_long'].iloc[i-1] and
-                      self.df['RSI'].iloc[i] > rsi_buy):
-                    self.signals.append({
-                        'time': idx,
-                        'type': 'SELL',
-                        'price': self.df['close'].iloc[i],
-                        'reason': 'Dead Cross + RSI'
-                    })
-
-                # RSI 과매수 (매도 시그널)
-                elif self.df['RSI'].iloc[i] > rsi_sell and self.df['RSI'].iloc[i-1] <= rsi_sell:
-                    self.signals.append({
-                        'time': idx,
-                        'type': 'SELL',
-                        'price': self.df['close'].iloc[i],
-                        'reason': f'RSI Overbought ({self.df["RSI"].iloc[i]:.1f})'
-                    })
-
-                # RSI 과매도 (매수 시그널)
-                elif self.df['RSI'].iloc[i] < rsi_buy and self.df['RSI'].iloc[i-1] >= rsi_buy:
-                    self.signals.append({
-                        'time': idx,
-                        'type': 'BUY',
-                        'price': self.df['close'].iloc[i],
-                        'reason': f'RSI Oversold ({self.df["RSI"].iloc[i]:.1f})'
-                    })
-
-        except Exception as e:
-            print(f"시그널 계산 오류: {e}")
-
     def update_chart(self):
-        """차트 업데이트"""
+        """Step 1 & 3: 캔들스틱 차트 + 활성화된 지표 표시"""
         if self.df is None or self.df.empty:
             return
 
         try:
-            # 기존 차트 지우기
             self.fig.clear()
 
-            # RSI 표시 여부에 따라 서브플롯 개수 결정
-            if self.show_rsi.get():
+            # 활성화된 서브플롯 확인
+            has_rsi = self.indicator_checkboxes['rsi'].get()
+            has_macd = self.indicator_checkboxes['macd'].get()
+            has_volume = self.indicator_checkboxes['volume'].get()
+
+            # 서브플롯 개수 계산
+            num_subplots = 1  # 메인 캔들스틱 차트
+            if has_rsi:
+                num_subplots += 1
+            if has_macd:
+                num_subplots += 1
+            if has_volume:
+                num_subplots += 1
+
+            # 서브플롯 레이아웃 생성
+            if num_subplots == 1:
+                # 캔들스틱만
+                ax_main = self.fig.add_subplot(111)
+                ax_rsi = None
+                ax_macd = None
+                ax_volume = None
+            elif num_subplots == 2:
+                # 캔들스틱 + 1개 지표
                 gs = self.fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
-                ax1 = self.fig.add_subplot(gs[0])
-                ax2 = self.fig.add_subplot(gs[1], sharex=ax1)
-            else:
-                ax1 = self.fig.add_subplot(111)
-                ax2 = None
+                ax_main = self.fig.add_subplot(gs[0])
 
-            # 1. 캔들스틱 차트
-            self.plot_candlestick(ax1)
+                # 활성화된 지표에 두 번째 서브플롯 할당
+                if has_rsi:
+                    ax_rsi = self.fig.add_subplot(gs[1], sharex=ax_main)
+                    ax_macd = None
+                    ax_volume = None
+                elif has_macd:
+                    ax_rsi = None
+                    ax_macd = self.fig.add_subplot(gs[1], sharex=ax_main)
+                    ax_volume = None
+                else:  # has_volume
+                    ax_rsi = None
+                    ax_macd = None
+                    ax_volume = self.fig.add_subplot(gs[1], sharex=ax_main)
+            elif num_subplots == 3:
+                # 캔들스틱 + 2개 지표
+                gs = self.fig.add_gridspec(3, 1, height_ratios=[3, 1, 1], hspace=0.1)
+                ax_main = self.fig.add_subplot(gs[0])
 
-            # 2. 이동평균선
-            if self.show_ma.get():
-                self.plot_moving_averages(ax1)
+                subplot_idx = 1
+                ax_rsi = None
+                ax_macd = None
+                ax_volume = None
 
-            # 3. 볼린저 밴드
-            if self.show_bollinger.get():
-                self.plot_bollinger_bands(ax1)
+                if has_rsi:
+                    ax_rsi = self.fig.add_subplot(gs[subplot_idx], sharex=ax_main)
+                    subplot_idx += 1
+                if has_macd:
+                    ax_macd = self.fig.add_subplot(gs[subplot_idx], sharex=ax_main)
+                    subplot_idx += 1
+                if has_volume and subplot_idx < 3:
+                    ax_volume = self.fig.add_subplot(gs[subplot_idx], sharex=ax_main)
+            else:  # num_subplots >= 4
+                # 캔들스틱 + 3개 지표
+                gs = self.fig.add_gridspec(4, 1, height_ratios=[3, 1, 1, 1], hspace=0.1)
+                ax_main = self.fig.add_subplot(gs[0])
 
-            # 4. 매수/매도 시그널 배경
-            self.plot_signal_backgrounds(ax1)
+                subplot_idx = 1
+                ax_rsi = None
+                ax_macd = None
+                ax_volume = None
 
-            # 5. RSI
-            if self.show_rsi.get() and ax2 is not None:
-                self.plot_rsi(ax2)
+                if has_rsi:
+                    ax_rsi = self.fig.add_subplot(gs[subplot_idx], sharex=ax_main)
+                    subplot_idx += 1
+                if has_macd:
+                    ax_macd = self.fig.add_subplot(gs[subplot_idx], sharex=ax_main)
+                    subplot_idx += 1
+                if has_volume:
+                    ax_volume = self.fig.add_subplot(gs[subplot_idx], sharex=ax_main)
+
+            # Step 1: 캔들스틱 그리기
+            self.plot_candlesticks(ax_main)
+
+            # Step 3: 활성화된 메인 차트 지표
+            if self.indicator_checkboxes['ma'].get():
+                self.plot_moving_averages(ax_main)
+
+            if self.indicator_checkboxes['bb'].get():
+                self.plot_bollinger_bands(ax_main)
+
+            # Stochastic, ATR, ADX는 텍스트 정보로 표시
+            info_text = self.get_indicator_info_text()
+            if info_text:
+                ax_main.text(0.99, 0.97, info_text,
+                           transform=ax_main.transAxes,
+                           verticalalignment='top',
+                           horizontalalignment='right',
+                           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+                           fontsize=8)
+
+            # Step 3: 서브플롯 지표
+            if has_rsi and ax_rsi:
+                self.plot_rsi(ax_rsi)
+                plt.setp(ax_rsi.get_xticklabels(), visible=False)
+
+            if has_macd and ax_macd:
+                self.plot_macd(ax_macd)
+                plt.setp(ax_macd.get_xticklabels(), visible=False)
+
+            if has_volume and ax_volume:
+                self.plot_volume(ax_volume)
 
             # 차트 스타일 설정
-            ax1.set_title(f"실시간 차트 - {self.config.get('trading', {}).get('target_ticker', 'BTC')}",
-                         fontsize=14, fontweight='bold')
-            ax1.set_ylabel('가격 (KRW)', fontsize=10)
-            ax1.grid(True, alpha=0.3)
-            ax1.legend(loc='upper left')
+            ticker = self.config.get('trading', {}).get('target_ticker', 'BTC')
+            ax_main.set_title(f"{ticker} 실시간 차트", fontsize=14, fontweight='bold', pad=20)
+            ax_main.set_ylabel('가격 (KRW)', fontsize=11)
+            ax_main.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
 
-            # x축 레이블 회전
-            if ax2 is not None:
-                plt.setp(ax1.get_xticklabels(), visible=False)
-                ax2.set_xlabel('시간', fontsize=10)
+            # 메인 차트 x축 레이블 숨김 (서브플롯이 있을 때)
+            if num_subplots > 1:
+                plt.setp(ax_main.get_xticklabels(), visible=False)
             else:
-                ax1.set_xlabel('시간', fontsize=10)
+                ax_main.set_xlabel('시간', fontsize=11)
 
-            self.fig.autofmt_xdate()
+            # 범례 표시 (지표가 있을 때만)
+            handles, labels = ax_main.get_legend_handles_labels()
+            if labels:
+                ax_main.legend(loc='upper left', fontsize=9)
 
-            # 캔버스 업데이트
+            # 마지막 서브플롯에만 x축 레이블 표시
+            bottom_ax = ax_volume if ax_volume else (ax_macd if ax_macd else (ax_rsi if ax_rsi else ax_main))
+            bottom_ax.set_xlabel('시간', fontsize=11)
+            bottom_ax.tick_params(axis='x', rotation=45, labelsize=9)
+
+            # x축 눈금 개수 제한
+            bottom_ax.xaxis.set_major_locator(plt.MaxNLocator(12))
+
+            # 레이아웃 최적화
+            self.fig.tight_layout(pad=1.5)
+
             self.canvas.draw()
 
         except Exception as e:
@@ -265,156 +291,216 @@ class ChartWidget:
             import traceback
             traceback.print_exc()
 
-    def plot_candlestick(self, ax):
-        """캔들스틱 플롯"""
-        try:
-            # 상승/하락 구분
-            up = self.df[self.df['close'] >= self.df['open']]
-            down = self.df[self.df['close'] < self.df['open']]
+    def plot_candlesticks(self, ax):
+        """Step 1: 깔끔한 캔들스틱 직접 그리기 (matplotlib만 사용)"""
 
-            # 상승 캔들 (빨강)
-            ax.bar(up.index, up['close'] - up['open'],
-                  bottom=up['open'], color='red', alpha=0.8, width=0.6)
-            ax.bar(up.index, up['high'] - up['close'],
-                  bottom=up['close'], color='red', alpha=0.3, width=0.1)
-            ax.bar(up.index, up['open'] - up['low'],
-                  bottom=up['low'], color='red', alpha=0.3, width=0.1)
+        # 캔들 너비 계산 (데이터 포인트 간격의 60%)
+        width = 0.6
 
-            # 하락 캔들 (파랑)
-            ax.bar(down.index, down['open'] - down['close'],
-                  bottom=down['close'], color='blue', alpha=0.8, width=0.6)
-            ax.bar(down.index, down['high'] - down['open'],
-                  bottom=down['open'], color='blue', alpha=0.3, width=0.1)
-            ax.bar(down.index, down['close'] - down['low'],
-                  bottom=down['low'], color='blue', alpha=0.3, width=0.1)
+        for idx, (timestamp, row) in enumerate(self.df.iterrows()):
+            open_price = row['open']
+            high_price = row['high']
+            low_price = row['low']
+            close_price = row['close']
 
-        except Exception as e:
-            print(f"캔들스틱 플롯 오류: {e}")
+            # 상승/하락 색상 결정
+            if close_price >= open_price:
+                color = 'red'  # 상승
+                body_color = 'red'
+                edge_color = 'darkred'
+            else:
+                color = 'blue'  # 하락
+                body_color = 'blue'
+                edge_color = 'darkblue'
+
+            # 고가-저가 선 (심지)
+            ax.plot([idx, idx], [low_price, high_price],
+                   color=color, linewidth=1, solid_capstyle='round')
+
+            # 시가-종가 박스 (몸통)
+            height = abs(close_price - open_price)
+            bottom = min(open_price, close_price)
+
+            rect = Rectangle((idx - width/2, bottom), width, height,
+                           facecolor=body_color, edgecolor=edge_color,
+                           linewidth=1, alpha=0.8)
+            ax.add_patch(rect)
+
+        # x축 설정 (시간 레이블)
+        ax.set_xlim(-1, len(self.df))
+
+        # x축 눈금을 시간으로 표시
+        step = max(1, len(self.df) // 10)  # 최대 10개 레이블
+        tick_positions = list(range(0, len(self.df), step))
+        tick_labels = [self.df.index[i].strftime('%m/%d %H:%M')
+                      for i in tick_positions if i < len(self.df)]
+
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, fontsize=9)
+
+        # y축 가격 범위 설정 (여유 5%)
+        price_min = self.df['low'].min()
+        price_max = self.df['high'].max()
+        price_range = price_max - price_min
+        ax.set_ylim(price_min - price_range * 0.05,
+                   price_max + price_range * 0.05)
+
+        # 가격 포맷 (천 단위 구분)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(
+            lambda x, p: f'{x:,.0f}'
+        ))
 
     def plot_moving_averages(self, ax):
-        """이동평균선 플롯"""
-        try:
-            if 'MA_short' in self.df.columns:
-                ax.plot(self.df.index, self.df['MA_short'],
-                       label=f"MA({self.indicators['MA_short']})",
-                       color='orange', linewidth=1.5, alpha=0.8)
+        """Step 3: 이동평균선 표시"""
+        if 'short_ma' not in self.df.columns or 'long_ma' not in self.df.columns:
+            return
 
-            if 'MA_long' in self.df.columns:
-                ax.plot(self.df.index, self.df['MA_long'],
-                       label=f"MA({self.indicators['MA_long']})",
-                       color='purple', linewidth=1.5, alpha=0.8)
+        config = self.analysis.get('indicator_config', {})
+        short_window = config.get('short_ma_window', 10)
+        long_window = config.get('long_ma_window', 30)
 
-        except Exception as e:
-            print(f"이동평균선 플롯 오류: {e}")
+        x = list(range(len(self.df)))
+        ax.plot(x, self.df['short_ma'],
+               label=f'MA({short_window})',
+               color='orange', linewidth=1.5, alpha=0.9)
+        ax.plot(x, self.df['long_ma'],
+               label=f'MA({long_window})',
+               color='purple', linewidth=1.5, alpha=0.9)
 
     def plot_bollinger_bands(self, ax):
-        """볼린저 밴드 플롯"""
-        try:
-            if all(col in self.df.columns for col in ['BB_upper', 'BB_middle', 'BB_lower']):
-                ax.plot(self.df.index, self.df['BB_upper'],
-                       label='BB Upper', color='gray', linewidth=1, alpha=0.5, linestyle='--')
-                ax.plot(self.df.index, self.df['BB_middle'],
-                       label='BB Middle', color='gray', linewidth=1, alpha=0.5)
-                ax.plot(self.df.index, self.df['BB_lower'],
-                       label='BB Lower', color='gray', linewidth=1, alpha=0.5, linestyle='--')
+        """Step 3: 볼린저 밴드 표시"""
+        if 'bb_upper' not in self.df.columns or 'bb_lower' not in self.df.columns:
+            return
 
-                # 밴드 사이 영역 채우기
-                ax.fill_between(self.df.index, self.df['BB_upper'], self.df['BB_lower'],
-                               alpha=0.1, color='gray')
-
-        except Exception as e:
-            print(f"볼린저 밴드 플롯 오류: {e}")
-
-    def plot_signal_backgrounds(self, ax):
-        """매수/매도 시그널 배경색 표시"""
-        try:
-            if not self.signals:
-                return
-
-            # y축 범위 가져오기
-            ymin, ymax = ax.get_ylim()
-
-            for signal in self.signals:
-                signal_time = signal['time']
-                signal_type = signal['type']
-
-                # 시그널 위치의 인덱스 찾기
-                try:
-                    idx = self.df.index.get_loc(signal_time)
-                except:
-                    continue
-
-                # 배경색 설정
-                if signal_type == 'BUY':
-                    color = 'red'
-                    alpha = 0.15
-                else:  # SELL
-                    color = 'blue'
-                    alpha = 0.15
-
-                # 캔들 하나의 너비만큼 배경색 표시
-                ax.axvspan(signal_time, signal_time,
-                          alpha=alpha, color=color, zorder=0)
-
-                # 마커 표시
-                marker = '^' if signal_type == 'BUY' else 'v'
-                marker_color = 'red' if signal_type == 'BUY' else 'blue'
-                y_pos = signal['price'] * 0.98 if signal_type == 'BUY' else signal['price'] * 1.02
-
-                ax.plot(signal_time, y_pos, marker=marker,
-                       markersize=12, color=marker_color,
-                       markeredgecolor='black', markeredgewidth=1, zorder=5)
-
-        except Exception as e:
-            print(f"시그널 배경 플롯 오류: {e}")
-            import traceback
-            traceback.print_exc()
+        x = list(range(len(self.df)))
+        ax.plot(x, self.df['bb_upper'],
+               color='gray', linewidth=1, alpha=0.7, linestyle='--', label='BB Upper')
+        ax.plot(x, self.df['bb_lower'],
+               color='gray', linewidth=1, alpha=0.7, linestyle='--', label='BB Lower')
+        ax.fill_between(x, self.df['bb_upper'], self.df['bb_lower'],
+                        alpha=0.1, color='gray')
 
     def plot_rsi(self, ax):
-        """RSI 플롯"""
-        try:
-            if 'RSI' not in self.df.columns:
-                return
+        """Step 3: RSI 지표 표시"""
+        if 'rsi' not in self.df.columns:
+            return
 
-            rsi_overbought = self.config.get('strategy', {}).get('rsi_overbought', 70)
-            rsi_oversold = self.config.get('strategy', {}).get('rsi_oversold', 30)
+        x = list(range(len(self.df)))
 
-            # RSI 선
-            ax.plot(self.df.index, self.df['RSI'],
-                   label='RSI', color='purple', linewidth=1.5)
+        # RSI 설정값
+        overbought = 70
+        oversold = 30
 
-            # 과매수/과매도 라인
-            ax.axhline(y=rsi_overbought, color='red', linestyle='--',
-                      alpha=0.5, linewidth=1, label=f'Overbought ({rsi_overbought})')
-            ax.axhline(y=rsi_oversold, color='blue', linestyle='--',
-                      alpha=0.5, linewidth=1, label=f'Oversold ({rsi_oversold})')
-            ax.axhline(y=50, color='gray', linestyle='-',
-                      alpha=0.3, linewidth=0.5)
+        # RSI 라인
+        ax.plot(x, self.df['rsi'], label='RSI', color='purple', linewidth=1.5)
 
-            # 과매수 영역 색칠
-            ax.fill_between(self.df.index, rsi_overbought, 100,
-                           alpha=0.1, color='red')
-            ax.fill_between(self.df.index, 0, rsi_oversold,
-                           alpha=0.1, color='blue')
+        # 과매수/과매도 선
+        ax.axhline(y=overbought, color='red', linestyle='--', alpha=0.5, linewidth=1)
+        ax.axhline(y=oversold, color='blue', linestyle='--', alpha=0.5, linewidth=1)
+        ax.axhline(y=50, color='gray', linestyle=':', alpha=0.3, linewidth=0.8)
 
-            ax.set_ylabel('RSI', fontsize=10)
-            ax.set_ylim(0, 100)
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc='upper left', fontsize=8)
+        # 과매수/과매도 영역 색칠
+        ax.fill_between(x, overbought, 100, alpha=0.1, color='red')
+        ax.fill_between(x, 0, oversold, alpha=0.1, color='blue')
 
-        except Exception as e:
-            print(f"RSI 플롯 오류: {e}")
+        ax.set_ylabel('RSI', fontsize=10)
+        ax.set_ylim(0, 100)
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        ax.legend(loc='upper left', fontsize=8)
+
+    def plot_macd(self, ax):
+        """Step 3: MACD 지표 표시"""
+        if 'macd_line' not in self.df.columns:
+            return
+
+        x = list(range(len(self.df)))
+
+        # MACD 라인과 시그널 라인
+        ax.plot(x, self.df['macd_line'], label='MACD', color='blue', linewidth=1.3)
+        ax.plot(x, self.df['macd_signal'], label='Signal', color='red',
+               linestyle='--', linewidth=1.3)
+
+        # 히스토그램 (MACD - Signal)
+        if 'macd_histogram' in self.df.columns:
+            colors = ['green' if v >= 0 else 'red' for v in self.df['macd_histogram']]
+            ax.bar(x, self.df['macd_histogram'], label='Histogram',
+                  color=colors, alpha=0.4, width=0.8)
+
+        # 제로 라인
+        ax.axhline(y=0, color='gray', linestyle='-', alpha=0.5, linewidth=1)
+
+        ax.set_ylabel('MACD', fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        ax.legend(loc='upper left', fontsize=8)
+
+    def plot_volume(self, ax):
+        """Step 3: 거래량 표시"""
+        if 'volume' not in self.df.columns:
+            return
+
+        x = list(range(len(self.df)))
+
+        # 상승/하락에 따라 색상 다르게
+        colors = []
+        for i, (timestamp, row) in enumerate(self.df.iterrows()):
+            if row['close'] >= row['open']:
+                colors.append('red')  # 상승
+            else:
+                colors.append('blue')  # 하락
+
+        # 거래량 바 차트
+        ax.bar(x, self.df['volume'], color=colors, alpha=0.6, width=0.8)
+
+        ax.set_ylabel('거래량', fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+
+        # y축 포맷 (천 단위 구분)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(
+            lambda x, p: f'{x:,.0f}'
+        ))
+
+    def get_indicator_info_text(self) -> str:
+        """Step 3: Stochastic, ATR, ADX 지표 정보를 텍스트로 생성"""
+        info_lines = []
+
+        # Stochastic
+        if self.indicator_checkboxes['stochastic'].get():
+            if 'stoch_k' in self.df.columns and 'stoch_d' in self.df.columns:
+                stoch_k = self.df['stoch_k'].iloc[-1]
+                stoch_d = self.df['stoch_d'].iloc[-1]
+                info_lines.append(f"Stochastic: K={stoch_k:.1f}, D={stoch_d:.1f}")
+
+        # ATR
+        if self.indicator_checkboxes['atr'].get():
+            if self.analysis and 'atr' in self.analysis:
+                atr = self.analysis['atr']
+                atr_pct = self.analysis.get('atr_percent', 0)
+                info_lines.append(f"ATR: {atr:,.0f} ({atr_pct:.2f}%)")
+
+        # ADX
+        if self.indicator_checkboxes['adx'].get():
+            if self.analysis and 'adx' in self.analysis:
+                adx = self.analysis['adx']
+                trend_text = "강한 추세" if adx > 25 else "약한 추세"
+                info_lines.append(f"ADX: {adx:.1f} ({trend_text})")
+
+        return '\n'.join(info_lines) if info_lines else ""
 
     def refresh_chart(self):
         """차트 새로고침"""
-        ticker = self.config.get('trading', {}).get('target_ticker', 'BTC')
-        interval = self.config.get('strategy', {}).get('candlestick_interval', '24h')
-
-        if self.load_data(ticker, interval):
+        if self.load_and_prepare_data():
             self.update_chart()
-            print(f"차트 업데이트 완료: {ticker} ({interval})")
+            print("✅ Step 1 완료: 캔들스틱 차트 업데이트 성공")
         else:
-            print(f"차트 업데이트 실패")
+            self.fig.clear()
+            ax = self.fig.add_subplot(111)
+            ax.text(0.5, 0.5, "차트 데이터 로드 실패\n새로고침 버튼을 다시 클릭해주세요",
+                   ha='center', va='center', fontsize=12, color='red')
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis('off')
+            self.canvas.draw()
+            print("❌ 차트 데이터 로드 실패")
 
     def update_config(self, new_config: Dict):
         """설정 업데이트"""
