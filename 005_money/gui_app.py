@@ -19,6 +19,8 @@ from logger import TradingLogger, TransactionHistory
 from config_manager import ConfigManager
 import config
 from bithumb_api import get_ticker
+from chart_widget import ChartWidget
+from signal_history_widget import SignalHistoryWidget
 
 class TradingBotGUI:
     def __init__(self, root):
@@ -80,20 +82,24 @@ class TradingBotGUI:
         self.create_control_panel(main_frame)
 
         # 중앙 메인 영역을 노트북(탭)으로 구성
-        notebook = ttk.Notebook(main_frame)
-        notebook.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
 
         # 메인 탭 (기존 거래 화면)
-        main_tab = ttk.Frame(notebook)
-        notebook.add(main_tab, text='거래 현황')
+        main_tab = ttk.Frame(self.notebook)
+        self.notebook.add(main_tab, text='거래 현황')
 
-        # 계정 정보 탭 (제거됨 - 잔고 조회 기능 비활성화)
-        account_tab = ttk.Frame(notebook)
-        notebook.add(account_tab, text='계정 정보')
+        # 실시간 차트 탭 (NEW!)
+        chart_tab = ttk.Frame(self.notebook)
+        self.notebook.add(chart_tab, text='📊 실시간 차트')
+
+        # 신호 히스토리 탭 (NEW!)
+        signal_history_tab = ttk.Frame(self.notebook)
+        self.notebook.add(signal_history_tab, text='📋 신호 히스토리')
 
         # 거래 내역 탭
-        history_tab = ttk.Frame(notebook)
-        notebook.add(history_tab, text='거래 내역')
+        history_tab = ttk.Frame(self.notebook)
+        self.notebook.add(history_tab, text='거래 내역')
 
         # 메인 탭 내용 (좌우 분할)
         main_paned = ttk.PanedWindow(main_tab, orient=tk.HORIZONTAL)
@@ -109,16 +115,26 @@ class TradingBotGUI:
         right_frame = ttk.Frame(main_paned)
         main_paned.add(right_frame, weight=2)
 
-        # 왼쪽 패널 구성
+        # 왼쪽 패널 구성 (엘리트 전략 패널들 추가!)
         self.create_status_panel(left_frame)
         self.create_settings_panel(left_frame)
+        self.create_market_regime_panel(left_frame)  # NEW!
+        self.create_signal_panel(left_frame)          # NEW!
+        self.create_risk_panel(left_frame)            # NEW!
         self.create_profit_panel(left_frame)
 
         # 오른쪽 패널 구성 (로그)
         self.create_log_panel(right_frame)
 
-        # 계정 정보 탭 구성 (제거됨 - 잔고 조회 기능 비활성화)
-        self.create_account_info_panel(account_tab)
+        # 실시간 차트 탭 구성 (NEW!)
+        chart_tab.columnconfigure(0, weight=1)
+        chart_tab.rowconfigure(0, weight=1)
+        self.chart_widget = ChartWidget(chart_tab, self.config_manager.get_config())
+
+        # 신호 히스토리 탭 구성 (NEW!)
+        signal_history_tab.columnconfigure(0, weight=1)
+        signal_history_tab.rowconfigure(0, weight=1)
+        self.signal_history_widget = SignalHistoryWidget(signal_history_tab)
 
         # 거래 내역 탭 구성
         self.create_trading_history_panel(history_tab)
@@ -180,19 +196,46 @@ class TradingBotGUI:
 
     def create_settings_panel(self, parent):
         """설정 패널"""
-        settings_frame = ttk.LabelFrame(parent, text="⚙️ 실시간 설정", padding="10")
+        settings_frame = ttk.LabelFrame(parent, text="⚙️ 엘리트 전략 설정", padding="10")
         settings_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
 
-        # 기술 지표 선택 패널 (새로 추가)
-        indicator_frame = ttk.LabelFrame(settings_frame, text="📊 기술 지표 선택 (최소 2개)", padding="10")
-        indicator_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        # 전략 프리셋 선택 (NEW!)
+        preset_frame = ttk.LabelFrame(settings_frame, text="🎯 전략 프리셋", padding="10")
+        preset_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        # 지표 체크박스 및 LED 변수 초기화
+        ttk.Label(preset_frame, text="전략:", style='Title.TLabel').pack(side=tk.LEFT, padx=(0, 10))
+
+        self.strategy_preset_var = tk.StringVar(value="Balanced Elite")
+        strategy_combo = ttk.Combobox(preset_frame, textvariable=self.strategy_preset_var, width=20, state='readonly')
+        strategy_combo['values'] = (
+            'Balanced Elite',
+            'MACD + RSI Filter',
+            'Trend Following',
+            'Mean Reversion',
+            'Custom'
+        )
+        strategy_combo.pack(side=tk.LEFT, padx=(0, 10))
+        strategy_combo.bind('<<ComboboxSelected>>', self.on_strategy_preset_changed)
+
+        # 프리셋 설명 레이블
+        self.preset_desc_var = tk.StringVar(value="균형잡힌 올라운드 전략")
+        ttk.Label(preset_frame, textvariable=self.preset_desc_var,
+                 foreground='blue', font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=(10, 0))
+
+        # 기술 지표 선택 패널 (8개 지표로 확장!)
+        indicator_frame = ttk.LabelFrame(settings_frame, text="📊 엘리트 기술 지표 (8개)", padding="10")
+        indicator_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # 지표 체크박스 및 LED 변수 초기화 (8개 지표)
         self.indicator_vars = {
             'ma': tk.BooleanVar(value=True),
             'rsi': tk.BooleanVar(value=True),
             'bb': tk.BooleanVar(value=True),
-            'volume': tk.BooleanVar(value=True)
+            'volume': tk.BooleanVar(value=True),
+            'macd': tk.BooleanVar(value=True),      # NEW!
+            'atr': tk.BooleanVar(value=True),       # NEW!
+            'stochastic': tk.BooleanVar(value=True), # NEW!
+            'adx': tk.BooleanVar(value=True)        # NEW!
         }
 
         self.indicator_leds = {}
@@ -200,129 +243,204 @@ class TradingBotGUI:
             'ma': 0,    # -1: 매도(파랑), 0: 중립(회색), 1: 매수(빨강)
             'rsi': 0,
             'bb': 0,
-            'volume': 0
+            'volume': 0,
+            'macd': 0,      # NEW!
+            'atr': 0,       # NEW! (ATR은 신호가 아니라 상태 표시)
+            'stochastic': 0, # NEW!
+            'adx': 0        # NEW! (ADX도 상태 표시)
         }
         self.led_blink_state = False
 
-        # 각 지표별 행 생성
+        # 각 지표별 행 생성 (2열 레이아웃)
         indicators = [
-            ('ma', '이동평균선 (MA)'),
-            ('rsi', '상대강도지수 (RSI)'),
-            ('bb', '볼린저 밴드 (BB)'),
-            ('volume', '거래량 (Volume)')
+            ('ma', '이동평균선 (MA)', 0, 0),
+            ('macd', 'MACD (NEW)', 0, 1),
+            ('rsi', 'RSI', 1, 0),
+            ('stochastic', 'Stochastic (NEW)', 1, 1),
+            ('bb', '볼린저 밴드 (BB)', 2, 0),
+            ('atr', 'ATR (NEW)', 2, 1),
+            ('volume', '거래량', 3, 0),
+            ('adx', 'ADX (NEW)', 3, 1)
         ]
 
-        for idx, (key, label) in enumerate(indicators):
-            row_frame = ttk.Frame(indicator_frame)
-            row_frame.grid(row=idx, column=0, sticky=tk.W, pady=2)
+        # 지표 값 표시 레이블 저장용
+        self.indicator_value_labels = {}
+
+        for key, label, row, col in indicators:
+            # 각 지표를 담을 프레임
+            indicator_item_frame = ttk.Frame(indicator_frame)
+            indicator_item_frame.grid(row=row, column=col, sticky=tk.W, padx=10, pady=5)
+
+            # LED + 체크박스 행
+            led_check_frame = ttk.Frame(indicator_item_frame)
+            led_check_frame.pack(side=tk.TOP, anchor=tk.W)
 
             # LED 캔버스 (깜빡이는 원형)
-            led_canvas = tk.Canvas(row_frame, width=20, height=20, bg='white', highlightthickness=0)
+            led_canvas = tk.Canvas(led_check_frame, width=20, height=20, bg='white', highlightthickness=0)
             led_canvas.pack(side=tk.LEFT, padx=(0, 5))
             led_circle = led_canvas.create_oval(5, 5, 15, 15, fill='gray', outline='darkgray')
             self.indicator_leds[key] = {'canvas': led_canvas, 'circle': led_circle}
 
             # 체크박스
             check = ttk.Checkbutton(
-                row_frame,
+                led_check_frame,
                 text=label,
                 variable=self.indicator_vars[key],
                 command=self.validate_indicator_selection
             )
             check.pack(side=tk.LEFT)
 
+            # 지표 값 표시 레이블
+            value_label = ttk.Label(indicator_item_frame, text="값: -",
+                                   font=('Arial', 8), foreground='gray')
+            value_label.pack(side=tk.TOP, anchor=tk.W, padx=(25, 0))
+            self.indicator_value_labels[key] = value_label
+
         # 거래 코인 선택
-        ttk.Label(settings_frame, text="거래 코인:", style='Title.TLabel').grid(row=1, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Label(settings_frame, text="거래 코인:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
         self.coin_var = tk.StringVar()
         coin_combo = ttk.Combobox(settings_frame, textvariable=self.coin_var, width=10)
         coin_combo['values'] = ('BTC', 'ETH', 'XRP', 'ADA', 'DOT', 'LINK', 'LTC', 'BCH', 'EOS', 'TRX')
-        coin_combo.grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 0))
+        coin_combo.grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 0))
         coin_combo.set(self.config_manager.get_config()['trading']['target_ticker'])
 
-        # 캔들 간격 선택 (새로 추가)
-        ttk.Label(settings_frame, text="캔들 간격:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        # 캔들 간격 선택 (기본값 1h로 변경!)
+        ttk.Label(settings_frame, text="캔들 간격:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
         self.candle_interval_var = tk.StringVar()
         candle_interval_combo = ttk.Combobox(settings_frame, textvariable=self.candle_interval_var, width=10, state='readonly')
-        candle_interval_combo['values'] = ('1h', '6h', '12h', '24h')
-        candle_interval_combo.grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        candle_interval_combo.set(self.config_manager.get_config()['strategy'].get('candlestick_interval', '24h'))
+        candle_interval_combo['values'] = ('30m', '1h', '6h', '12h', '24h')
+        candle_interval_combo.grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        # DEFAULT TO 1h (중요!)
+        default_interval = self.config_manager.get_config()['strategy'].get('candlestick_interval', '1h')
+        candle_interval_combo.set(default_interval if default_interval else '1h')
         candle_interval_combo.bind('<<ComboboxSelected>>', self.on_candle_interval_changed)
 
         # 체크 간격 선택
-        ttk.Label(settings_frame, text="체크 간격:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        ttk.Label(settings_frame, text="체크 간격:", style='Title.TLabel').grid(row=4, column=0, sticky=tk.W, pady=(5, 0))
         self.interval_var = tk.StringVar()
         interval_combo = ttk.Combobox(settings_frame, textvariable=self.interval_var, width=10)
         interval_combo['values'] = ('10s', '30s', '1m', '5m', '10m', '30m', '1h', '2h', '4h')
-        interval_combo.grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        interval_combo.grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
         interval_combo.set('30m')  # 기본값
 
         # 거래 금액
-        ttk.Label(settings_frame, text="거래 금액:", style='Title.TLabel').grid(row=4, column=0, sticky=tk.W, pady=(5, 0))
+        ttk.Label(settings_frame, text="거래 금액:", style='Title.TLabel').grid(row=5, column=0, sticky=tk.W, pady=(5, 0))
         self.amount_var = tk.StringVar()
         amount_entry = ttk.Entry(settings_frame, textvariable=self.amount_var, width=12)
-        amount_entry.grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        amount_entry.grid(row=5, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
         amount_entry.insert(0, str(self.config_manager.get_config()['trading']['trade_amount_krw']))
 
-        # 손절 비율 (%)
-        ttk.Label(settings_frame, text="손절 비율:", style='Title.TLabel').grid(row=5, column=0, sticky=tk.W, pady=(5, 0))
-        self.stop_loss_var = tk.StringVar()
-        stop_loss_entry = ttk.Entry(settings_frame, textvariable=self.stop_loss_var, width=8)
-        stop_loss_entry.grid(row=5, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        stop_loss_entry.insert(0, "5.0")  # 기본 5% 손절
-        ttk.Label(settings_frame, text="%", style='Status.TLabel').grid(row=5, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-
-        # 익절 비율 (%)
-        ttk.Label(settings_frame, text="익절 비율:", style='Title.TLabel').grid(row=6, column=0, sticky=tk.W, pady=(5, 0))
-        self.take_profit_var = tk.StringVar()
-        take_profit_entry = ttk.Entry(settings_frame, textvariable=self.take_profit_var, width=8)
-        take_profit_entry.grid(row=6, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        take_profit_entry.insert(0, "3.0")  # 기본 3% 익절
-        ttk.Label(settings_frame, text="%", style='Status.TLabel').grid(row=5, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-
-        # RSI 매수 임계값
-        ttk.Label(settings_frame, text="RSI 매수:", style='Title.TLabel').grid(row=6, column=0, sticky=tk.W, pady=(5, 0))
-        self.rsi_buy_var = tk.StringVar()
-        rsi_buy_entry = ttk.Entry(settings_frame, textvariable=self.rsi_buy_var, width=8)
-        rsi_buy_entry.grid(row=6, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        rsi_buy_entry.insert(0, "30")  # 기본 RSI 30 이하 매수
-        ttk.Label(settings_frame, text="이하", style='Status.TLabel').grid(row=6, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-
-        # RSI 매도 임계값
-        ttk.Label(settings_frame, text="RSI 매도:", style='Title.TLabel').grid(row=7, column=0, sticky=tk.W, pady=(5, 0))
-        self.rsi_sell_var = tk.StringVar()
-        rsi_sell_entry = ttk.Entry(settings_frame, textvariable=self.rsi_sell_var, width=8)
-        rsi_sell_entry.grid(row=7, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        rsi_sell_entry.insert(0, "70")  # 기본 RSI 70 이상 매도
-        ttk.Label(settings_frame, text="이상", style='Status.TLabel').grid(row=7, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-
-        # 단위 기간 (캔들 수)
-        ttk.Label(settings_frame, text="분석 기간:", style='Title.TLabel').grid(row=8, column=0, sticky=tk.W, pady=(5, 0))
-        self.period_var = tk.StringVar()
-        period_combo = ttk.Combobox(settings_frame, textvariable=self.period_var, width=8)
-        period_combo['values'] = ('10', '20', '50', '100', '200')
-        period_combo.grid(row=8, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        period_combo.set('20')  # 기본 20캔들
-        ttk.Label(settings_frame, text="캔들", style='Status.TLabel').grid(row=8, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-
-        # 설정 적용 버튼
+        # 설정 적용 버튼 (간소화)
         apply_button = ttk.Button(settings_frame, text="📝 설정 적용", command=self.apply_settings)
-        apply_button.grid(row=9, column=0, columnspan=3, pady=(15, 0))
+        apply_button.grid(row=6, column=0, columnspan=3, pady=(15, 0))
 
         # 변수 저장
         self.coin_combo = coin_combo
         self.interval_combo = interval_combo
         self.amount_entry = amount_entry
-        self.stop_loss_entry = stop_loss_entry
-        self.take_profit_entry = take_profit_entry
-        self.rsi_buy_entry = rsi_buy_entry
-        self.rsi_sell_entry = rsi_sell_entry
-        self.period_combo = period_combo
+
+    def create_market_regime_panel(self, parent):
+        """시장 국면 패널 (NEW!)"""
+        regime_frame = ttk.LabelFrame(parent, text="🔵 시장 국면 분석", padding="10")
+        regime_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+
+        # 시장 국면 표시
+        ttk.Label(regime_frame, text="시장 국면:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W)
+        self.regime_var = tk.StringVar(value="분석 대기 중")
+        self.regime_label = ttk.Label(regime_frame, textvariable=self.regime_var,
+                                      font=('Arial', 10, 'bold'), foreground='blue')
+        self.regime_label.grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
+
+        # 변동성 수준
+        ttk.Label(regime_frame, text="변동성:", style='Title.TLabel').grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
+        self.volatility_var = tk.StringVar(value="-")
+        ttk.Label(regime_frame, textvariable=self.volatility_var, style='Status.TLabel').grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # 추세 강도 (ADX)
+        ttk.Label(regime_frame, text="추세 강도:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        self.trend_strength_var = tk.StringVar(value="-")
+        ttk.Label(regime_frame, textvariable=self.trend_strength_var, style='Status.TLabel').grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # 권장 전략
+        ttk.Label(regime_frame, text="권장 전략:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        self.recommendation_var = tk.StringVar(value="-")
+        self.recommendation_label = ttk.Label(regime_frame, textvariable=self.recommendation_var,
+                                             font=('Arial', 9), foreground='green')
+        self.recommendation_label.grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+    def create_signal_panel(self, parent):
+        """종합 신호 패널 (NEW!)"""
+        signal_frame = ttk.LabelFrame(parent, text="🎯 종합 신호", padding="10")
+        signal_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+
+        # 종합 신호
+        ttk.Label(signal_frame, text="신호:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W)
+        self.overall_signal_var = tk.StringVar(value="HOLD")
+        self.overall_signal_label = ttk.Label(signal_frame, textvariable=self.overall_signal_var,
+                                             font=('Arial', 14, 'bold'), foreground='gray')
+        self.overall_signal_label.grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
+
+        # 신호 강도 (Progress bar)
+        ttk.Label(signal_frame, text="신호 강도:", style='Title.TLabel').grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
+        self.signal_strength_var = tk.StringVar(value="0.00")
+        strength_frame = ttk.Frame(signal_frame)
+        strength_frame.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=(5, 0))
+
+        self.signal_strength_bar = ttk.Progressbar(strength_frame, length=150, mode='determinate')
+        self.signal_strength_bar.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(strength_frame, textvariable=self.signal_strength_var, style='Status.TLabel').pack(side=tk.LEFT)
+
+        # 신뢰도 (Progress bar)
+        ttk.Label(signal_frame, text="신뢰도:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        self.confidence_var = tk.StringVar(value="0.00")
+        confidence_frame = ttk.Frame(signal_frame)
+        confidence_frame.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=(5, 0))
+
+        self.confidence_bar = ttk.Progressbar(confidence_frame, length=150, mode='determinate')
+        self.confidence_bar.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(confidence_frame, textvariable=self.confidence_var, style='Status.TLabel').pack(side=tk.LEFT)
+
+    def create_risk_panel(self, parent):
+        """리스크 관리 패널 (ATR 기반, NEW!)"""
+        risk_frame = ttk.LabelFrame(parent, text="⚠️ ATR 기반 리스크 관리", padding="10")
+        risk_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+
+        # 진입가
+        ttk.Label(risk_frame, text="진입가:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W)
+        self.entry_price_var = tk.StringVar(value="-")
+        ttk.Label(risk_frame, textvariable=self.entry_price_var, style='Status.TLabel').grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
+
+        # 손절가
+        ttk.Label(risk_frame, text="손절가:", style='Title.TLabel').grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
+        self.stop_loss_price_var = tk.StringVar(value="-")
+        self.stop_loss_price_label = ttk.Label(risk_frame, textvariable=self.stop_loss_price_var,
+                                               foreground='red', font=('Arial', 9))
+        self.stop_loss_price_label.grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # 1차 익절가
+        ttk.Label(risk_frame, text="익절1:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        self.tp1_price_var = tk.StringVar(value="-")
+        self.tp1_price_label = ttk.Label(risk_frame, textvariable=self.tp1_price_var,
+                                        foreground='green', font=('Arial', 9))
+        self.tp1_price_label.grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # 2차 익절가
+        ttk.Label(risk_frame, text="익절2:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        self.tp2_price_var = tk.StringVar(value="-")
+        self.tp2_price_label = ttk.Label(risk_frame, textvariable=self.tp2_price_var,
+                                        foreground='darkgreen', font=('Arial', 9))
+        self.tp2_price_label.grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # Risk:Reward 비율
+        ttk.Label(risk_frame, text="R:R 비율:", style='Title.TLabel').grid(row=4, column=0, sticky=tk.W, pady=(5, 0))
+        self.rr_ratio_var = tk.StringVar(value="-")
+        ttk.Label(risk_frame, textvariable=self.rr_ratio_var, style='Status.TLabel').grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
     def create_profit_panel(self, parent):
         """수익 현황 패널"""
         profit_frame = ttk.LabelFrame(parent, text="💰 수익 현황", padding="10")
-        profit_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        parent.rowconfigure(2, weight=1)
+        profit_frame.grid(row=5, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        parent.rowconfigure(5, weight=1)
 
         # 일일 수익
         ttk.Label(profit_frame, text="오늘 수익:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W)
@@ -373,22 +491,6 @@ class TradingBotGUI:
         clear_button = ttk.Button(log_frame, text="🗑 로그 지우기", command=self.clear_logs)
         clear_button.pack(pady=(10, 0))
 
-    def create_account_info_panel(self, parent):
-        """계정 정보 탭 생성"""
-        info_frame = ttk.LabelFrame(parent, text="📋 계정 정보", padding="20")
-        info_frame.pack(fill="both", expand=True, padx=20, pady=20)
-
-        # 잔고 조회 기능 활성화 알림
-        message = ttk.Label(info_frame,
-                           text="✅ 잔고 조회 기능이 활성화되었습니다.\n\n" +
-                                "실제 거래 모드(dry_run=False)에서는 빗썸 API를 통해 실제 계정 잔고를 조회합니다.\n" +
-                                "모의 거래 모드(dry_run=True)에서는 가상 잔고를 사용합니다.\n\n" +
-                                "거래 상태 탭에서 현재 잔고와 보유 수량을 확인할 수 있습니다.",
-                           font=('Arial', 11),
-                           foreground='green',
-                           justify='center')
-        message.pack(expand=True)
-
     def on_candle_interval_changed(self, event=None):
         """캔들 간격 변경 시 호출"""
         interval = self.candle_interval_var.get()
@@ -420,6 +522,47 @@ class TradingBotGUI:
 
         self.log_message(f"캔들 간격이 {interval}로 변경되었습니다.")
 
+    def on_strategy_preset_changed(self, event=None):
+        """전략 프리셋 변경 시 호출"""
+        preset = self.strategy_preset_var.get()
+
+        # 프리셋별 설명 및 가중치
+        preset_info = {
+            'Balanced Elite': {
+                'desc': '균형잡힌 올라운드 전략',
+                'weights': {'macd': 0.35, 'ma': 0.25, 'rsi': 0.20, 'bb': 0.10, 'volume': 0.10}
+            },
+            'MACD + RSI Filter': {
+                'desc': '추세 추종 + 모멘텀 필터',
+                'weights': {'macd': 0.40, 'rsi': 0.30, 'ma': 0.20, 'bb': 0.10, 'volume': 0.00}
+            },
+            'Trend Following': {
+                'desc': '추세장 전용 (ADX > 25)',
+                'weights': {'macd': 0.40, 'ma': 0.30, 'rsi': 0.15, 'bb': 0.05, 'volume': 0.10}
+            },
+            'Mean Reversion': {
+                'desc': '횡보장 전용 (ADX < 20)',
+                'weights': {'rsi': 0.35, 'bb': 0.25, 'macd': 0.15, 'ma': 0.15, 'volume': 0.10}
+            },
+            'Custom': {
+                'desc': '사용자 정의 (수동 조정)',
+                'weights': None
+            }
+        }
+
+        if preset in preset_info:
+            info = preset_info[preset]
+            self.preset_desc_var.set(info['desc'])
+
+            # 가중치를 config에 저장 (apply_settings에서 사용)
+            if info['weights'] is not None:
+                config = self.config_manager.get_config()
+                config['strategy']['signal_weights'] = info['weights']
+                config['strategy']['current_preset'] = preset
+                self.add_log("INFO", f"전략 프리셋 변경: {preset} - {info['desc']}")
+            else:
+                self.add_log("INFO", f"커스텀 전략 선택됨 - 수동으로 가중치를 조정하세요")
+
     def validate_indicator_selection(self):
         """지표 선택 검증 - 최소 2개 이상 선택 필요"""
         selected_count = sum(1 for var in self.indicator_vars.values() if var.get())
@@ -439,20 +582,51 @@ class TradingBotGUI:
             return False
         return True
 
-    def update_indicator_leds(self, signals: Dict[str, int]):
-        """지표별 LED 상태 업데이트"""
+    def update_indicator_leds(self, signals: Dict[str, Any], analysis: Dict[str, Any] = None):
+        """지표별 LED 상태 및 값 업데이트 (8개 지표 지원)"""
         try:
-            # 신호 매핑: ma_signal, rsi_signal, bb_signal, volume_signal
+            # 가중치 기반 신호 (연속값 -1.0 ~ +1.0)를 3단계로 변환
+            def signal_to_led_state(signal_value: float) -> int:
+                """신호 강도를 LED 상태로 변환"""
+                if signal_value >= 0.3:
+                    return 1  # 매수 (빨강)
+                elif signal_value <= -0.3:
+                    return -1  # 매도 (파랑)
+                else:
+                    return 0  # 중립 (회색)
+
+            # 신호 매핑 (8개 지표)
             signal_mapping = {
-                'ma': signals.get('ma_signal', 0),
-                'rsi': signals.get('rsi_signal', 0),
-                'bb': signals.get('bb_signal', 0),
-                'volume': signals.get('volume_signal', 0)
+                'ma': signal_to_led_state(signals.get('ma_signal', 0)),
+                'rsi': signal_to_led_state(signals.get('rsi_signal', 0)),
+                'bb': signal_to_led_state(signals.get('bb_signal', 0)),
+                'volume': signal_to_led_state(signals.get('volume_signal', 0)),
+                'macd': signal_to_led_state(signals.get('macd_signal', 0)),
+                'stochastic': signal_to_led_state(signals.get('stoch_signal', 0)),
+                'atr': 0,  # ATR은 신호가 아니므로 항상 중립
+                'adx': 0   # ADX도 신호가 아니므로 항상 중립
             }
 
             # 각 지표의 LED 상태 업데이트
             for key, signal_value in signal_mapping.items():
                 self.led_states[key] = signal_value
+
+            # 지표 값 표시 레이블 업데이트 (analysis가 있을 때만)
+            if analysis is not None:
+                value_texts = {
+                    'ma': f"차이: {((analysis.get('short_ma', 0) - analysis.get('long_ma', 1)) / analysis.get('long_ma', 1) * 100):.2f}%",
+                    'rsi': f"RSI: {analysis.get('rsi', 0):.1f}",
+                    'bb': f"위치: {(analysis.get('bb_position', 0.5) * 100):.0f}%",
+                    'volume': f"배율: {analysis.get('volume_ratio', 1.0):.2f}x",
+                    'macd': f"히스토그램: {analysis.get('macd_histogram', 0):.2f}",
+                    'stochastic': f"K: {analysis.get('stoch_k', 50):.1f}, D: {analysis.get('stoch_d', 50):.1f}",
+                    'atr': f"ATR: {analysis.get('atr_percent', 0):.2f}%",
+                    'adx': f"ADX: {analysis.get('adx', 0):.1f}"
+                }
+
+                for key, value_text in value_texts.items():
+                    if key in self.indicator_value_labels:
+                        self.indicator_value_labels[key].config(text=value_text)
 
             # LED 색상 즉시 업데이트
             self.update_led_colors()
@@ -584,6 +758,11 @@ class TradingBotGUI:
 
             self.add_log("SUCCESS", f"설정 적용됨: {self.coin_var.get()}, {self.interval_var.get()}, {self.amount_var.get()}원, 손절:{self.stop_loss_var.get()}%, 익절:{self.take_profit_var.get()}%, RSI:{self.rsi_buy_var.get()}-{self.rsi_sell_var.get()}")
 
+            # 차트 업데이트
+            if hasattr(self, 'chart_widget'):
+                self.chart_widget.update_config(current_config)
+                self.add_log("INFO", "차트가 새로운 설정으로 업데이트되었습니다.")
+
         except Exception as e:
             self.add_log("ERROR", f"설정 적용 실패: {e}")
             messagebox.showerror("설정 오류", f"설정 적용 중 오류가 발생했습니다:\n{e}")
@@ -602,6 +781,11 @@ class TradingBotGUI:
             # 봇 실행 스레드 시작
             self.bot_thread = threading.Thread(target=self.run_bot, daemon=True)
             self.bot_thread.start()
+
+            # 차트 초기화 및 로드
+            if hasattr(self, 'chart_widget'):
+                self.add_log("INFO", "차트 데이터 로딩 중...")
+                self.chart_widget.refresh_chart()
 
             self.add_log("SUCCESS", "거래 봇이 시작되었습니다.")
 
@@ -693,18 +877,6 @@ class TradingBotGUI:
 
             # 수익 현황 업데이트
             self.update_profit_status()
-
-            # 계정 정보 자동 업데이트 제거됨 (잔고 조회 기능 비활성화)
-            # if self.bot and self.is_running and hasattr(self, 'auto_refresh_counter'):
-            #     self.auto_refresh_counter = getattr(self, 'auto_refresh_counter', 0) + 1
-            #     if self.auto_refresh_counter >= 30:  # 30초마다 (30 * 1초)
-            #         self.auto_refresh_counter = 0
-            #         try:
-            #             detailed_info = self.bot.get_detailed_balance_info()
-            #             if not detailed_info.get('error') and hasattr(self, 'krw_total_var'):
-            #                 self.update_account_display(detailed_info)
-            #         except:
-            #             pass  # 자동 업데이트 오류는 무시
 
             # 거래 내역 자동 새로고침 (봇이 실행 중이고 60초마다)
             if self.bot and self.is_running and hasattr(self, 'history_refresh_counter'):
@@ -801,7 +973,7 @@ class TradingBotGUI:
             print(f"수익 차트 업데이트 오류: {e}")
 
     def update_bot_status(self, status: Dict[str, Any]):
-        """봇 상태 업데이트 (콜백 함수)"""
+        """봇 상태 업데이트 (콜백 함수) - 엘리트 기능 포함"""
         try:
             # 현재 상태 업데이트
             self.bot_status.update(status)
@@ -830,10 +1002,96 @@ class TradingBotGUI:
             else:
                 self.pending_orders_var.set("없음")
 
-            # LED 신호 업데이트 (기술 지표 상태)
+            # 엘리트 신호 업데이트 (가중치 기반)
             signals = status.get('signals', {})
+            analysis = status.get('analysis', {})
+
             if signals:
-                self.update_indicator_leds(signals)
+                # LED 신호 업데이트 (8개 지표)
+                self.update_indicator_leds(signals, analysis)
+
+                # 시장 국면 업데이트
+                regime = signals.get('regime', 'unknown')
+                volatility_level = signals.get('volatility_level', 'normal')
+                trend_strength = signals.get('trend_strength', 0.0)
+
+                regime_text_map = {
+                    'trending': '🔵 추세장',
+                    'ranging': '🟡 횡보장',
+                    'transitional': '🟠 전환기',
+                    'unknown': '⚪ 분석 중'
+                }
+                self.regime_var.set(regime_text_map.get(regime, regime))
+
+                volatility_color_map = {
+                    'low': 'green',
+                    'normal': 'blue',
+                    'high': 'red'
+                }
+                volatility_text = f"{volatility_level.upper()} ({analysis.get('current_atr_pct', 0):.2f}%)"
+                self.volatility_var.set(volatility_text)
+
+                trend_strength_text = f"{trend_strength:.2f} (ADX: {analysis.get('adx', 0):.1f})"
+                self.trend_strength_var.set(trend_strength_text)
+
+                recommendation = analysis.get('regime', {}).get('recommendation', 'WAIT')
+                recommendation_text_map = {
+                    'TREND_FOLLOW': '✅ 추세 추종',
+                    'MEAN_REVERSION': '✅ 평균회귀',
+                    'REDUCE_SIZE': '⚠️ 포지션 축소',
+                    'WAIT': '⏸️ 관망'
+                }
+                self.recommendation_var.set(recommendation_text_map.get(recommendation, recommendation))
+
+                # 종합 신호 업데이트
+                overall_signal = signals.get('overall_signal', 0)
+                final_action = signals.get('final_action', 'HOLD')
+
+                action_color_map = {
+                    'BUY': 'red',
+                    'SELL': 'blue',
+                    'HOLD': 'gray'
+                }
+                self.overall_signal_var.set(final_action)
+                self.overall_signal_label.config(foreground=action_color_map.get(final_action, 'gray'))
+
+                # 신호 강도 및 신뢰도 (Progress bar)
+                signal_strength_percent = (overall_signal + 1.0) / 2.0 * 100  # -1~+1을 0~100으로 변환
+                confidence = signals.get('confidence', 0) * 100
+
+                self.signal_strength_bar['value'] = signal_strength_percent
+                self.signal_strength_var.set(f"{overall_signal:+.2f}")
+
+                self.confidence_bar['value'] = confidence
+                self.confidence_var.set(f"{signals.get('confidence', 0):.2f}")
+
+                # ATR 기반 리스크 관리 업데이트
+                if current_price > 0 and analysis.get('atr', 0) > 0:
+                    from strategy import calculate_exit_levels
+
+                    exit_levels = calculate_exit_levels(
+                        entry_price=current_price,
+                        atr=analysis.get('atr', 0),
+                        direction='LONG',
+                        volatility_level=volatility_level
+                    )
+
+                    self.entry_price_var.set(f"{current_price:,.0f}원")
+                    self.stop_loss_price_var.set(
+                        f"{exit_levels['stop_loss']:,.0f}원 "
+                        f"({((exit_levels['stop_loss'] - current_price) / current_price * 100):+.2f}%)"
+                    )
+                    self.tp1_price_var.set(
+                        f"{exit_levels['take_profit_1']:,.0f}원 "
+                        f"({((exit_levels['take_profit_1'] - current_price) / current_price * 100):+.2f}%)"
+                    )
+                    self.tp2_price_var.set(
+                        f"{exit_levels['take_profit_2']:,.0f}원 "
+                        f"({((exit_levels['take_profit_2'] - current_price) / current_price * 100):+.2f}%)"
+                    )
+                    self.rr_ratio_var.set(
+                        f"TP1: 1:{exit_levels['rr_ratio_1']:.2f}, TP2: 1:{exit_levels['rr_ratio_2']:.2f}"
+                    )
 
             # 마지막 액션 로그 추가
             last_action = status.get('last_action', '')
@@ -845,21 +1103,8 @@ class TradingBotGUI:
 
         except Exception as e:
             print(f"봇 상태 업데이트 오류: {e}")
-
-    # 계정 정보 새로고침 제거됨 (잔고 조회 기능 비활성화)
-    def refresh_account_info(self):
-        """계정 정보 새로고침 - 비활성화됨"""
-        self.add_log("WARNING", "계정 정보 조회 기능이 비활성화되어 있습니다.")
-
-    # 계정 정보 화면 업데이트 제거됨 (잔고 조회 기능 비활성화)
-    def update_account_display(self, detailed_info):
-        """계정 정보 화면 업데이트 - 비활성화됨"""
-        pass
-
-    # 포트폴리오 데이터 내보내기 제거됨 (잔고 조회 기능 비활성화)
-    def export_portfolio_data(self):
-        """포트폴리오 데이터 내보내기 - 비활성화됨"""
-        self.add_log("WARNING", "포트폴리오 내보내기 기능이 비활성화되어 있습니다.")
+            import traceback
+            traceback.print_exc()
 
     def create_trading_history_panel(self, parent):
         """거래 내역 탭 패널"""

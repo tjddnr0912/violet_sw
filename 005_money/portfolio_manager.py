@@ -57,30 +57,49 @@ class PortfolioManager:
                 # 모의 거래 모드에서는 가상 잔고 반환
                 return self._get_mock_balances()
 
-            # 잔고 조회 기능 비활성화 - 모의 거래 모드와 동일한 가상 잔고 반환
-            return self._get_mock_balances()
+            # 실제 거래 모드: 실제 API 호출
+            balance_response = self.api.get_balance("ALL")
+            if balance_response and balance_response.get('status') == '0000':
+                return balance_response.get('data', {})
+
+            # API 호출 실패 시 None 반환
+            print("API 잔고 조회 실패")
+            return None
 
         except Exception as e:
             print(f"잔고 조회 오류: {e}")
             return None
 
     def _get_mock_balances(self) -> Dict:
-        """모의 거래 모드용 가상 잔고"""
+        """모의 거래 모드용 가상 잔고 (거래 내역 기반 계산)"""
         mock_data = {
             'total_krw': '1000000',
             'available_krw': '800000',
             'in_use_krw': '200000',
         }
 
-        # 거래 내역이 있는 코인들에 대한 가상 잔고 생성
+        # 거래 내역에서 실제 보유량 계산 (매수 - 매도)
         if self.transaction_history:
+            holdings = {}
+
             for transaction in self.transaction_history.transactions:
                 if transaction['success'] and transaction['ticker'] != 'KRW':
                     ticker = transaction['ticker'].lower()
-                    if f'total_{ticker}' not in mock_data:
-                        mock_data[f'total_{ticker}'] = '0.5'
-                        mock_data[f'available_{ticker}'] = '0.5'
-                        mock_data[f'in_use_{ticker}'] = '0'
+
+                    if ticker not in holdings:
+                        holdings[ticker] = 0.0
+
+                    if transaction['action'] == 'BUY':
+                        holdings[ticker] += transaction['amount']
+                    elif transaction['action'] == 'SELL':
+                        holdings[ticker] -= transaction['amount']
+
+            # 실제 보유량이 있는 경우만 추가 (0보다 큰 경우)
+            for ticker, amount in holdings.items():
+                if amount > 0:
+                    mock_data[f'total_{ticker}'] = str(amount)
+                    mock_data[f'available_{ticker}'] = str(amount)
+                    mock_data[f'in_use_{ticker}'] = '0'
 
         return mock_data
 
