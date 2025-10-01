@@ -107,21 +107,43 @@ class TradingBotGUI:
         main_tab.columnconfigure(0, weight=1)
         main_tab.rowconfigure(0, weight=1)
 
-        # 왼쪽 패널 (상태 및 설정)
-        left_frame = ttk.Frame(main_paned)
-        main_paned.add(left_frame, weight=1)
+        # 왼쪽 패널 (스크롤 가능한 영역으로 변경)
+        # 1. 스크롤바와 캔버스를 담을 컨테이너 프레임 생성
+        left_scroll_container = ttk.Frame(main_paned)
+        main_paned.add(left_scroll_container, weight=1)
+        left_scroll_container.grid_rowconfigure(0, weight=1)
+        left_scroll_container.grid_columnconfigure(0, weight=1)
+
+        # 2. 캔버스 생성
+        canvas = tk.Canvas(left_scroll_container)
+        canvas.grid(row=0, column=0, sticky='nsew')
+
+        # 3. 스크롤바 생성 및 캔버스와 연결
+        scrollbar = ttk.Scrollbar(left_scroll_container, orient='vertical', command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky='ns')
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # 4. 캔버스 내부에 실제 위젯들이 들어갈 프레임 생성
+        scrollable_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=scrollable_frame, anchor='nw')
+
+        # 5. 스크롤 영역이 변경될 때 캔버스 업데이트
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        scrollable_frame.bind('<Configure>', on_frame_configure)
 
         # 오른쪽 패널 (로그)
         right_frame = ttk.Frame(main_paned)
         main_paned.add(right_frame, weight=2)
 
         # 왼쪽 패널 구성 (엘리트 전략 패널들 추가!)
-        self.create_status_panel(left_frame)
-        self.create_settings_panel(left_frame)
-        self.create_market_regime_panel(left_frame)  # NEW!
-        self.create_signal_panel(left_frame)          # NEW!
-        self.create_risk_panel(left_frame)            # NEW!
-        self.create_profit_panel(left_frame)
+        # 이제 scrollable_frame에 위젯들을 추가합니다.
+        self.create_status_panel(scrollable_frame)
+        self.create_settings_panel(scrollable_frame)
+        self.create_market_regime_panel(scrollable_frame)  # NEW!
+        self.create_signal_panel(scrollable_frame)          # NEW!
+        self.create_risk_panel(scrollable_frame)            # NEW!
+        self.create_profit_panel(scrollable_frame)
 
         # 오른쪽 패널 구성 (로그)
         self.create_log_panel(right_frame)
@@ -198,10 +220,11 @@ class TradingBotGUI:
         """설정 패널"""
         settings_frame = ttk.LabelFrame(parent, text="⚙️ 엘리트 전략 설정", padding="10")
         settings_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+        current_config = self.config_manager.get_config()
 
         # 전략 프리셋 선택 (NEW!)
         preset_frame = ttk.LabelFrame(settings_frame, text="🎯 전략 프리셋", padding="10")
-        preset_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        preset_frame.grid(row=0, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 10))
 
         ttk.Label(preset_frame, text="전략:", style='Title.TLabel').pack(side=tk.LEFT, padx=(0, 10))
 
@@ -224,120 +247,99 @@ class TradingBotGUI:
 
         # 기술 지표 선택 패널 (8개 지표로 확장!)
         indicator_frame = ttk.LabelFrame(settings_frame, text="📊 엘리트 기술 지표 (8개)", padding="10")
-        indicator_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        indicator_frame.grid(row=1, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 10))
 
         # 지표 체크박스 및 LED 변수 초기화 (8개 지표)
         self.indicator_vars = {
-            'ma': tk.BooleanVar(value=True),
-            'rsi': tk.BooleanVar(value=True),
-            'bb': tk.BooleanVar(value=True),
-            'volume': tk.BooleanVar(value=True),
-            'macd': tk.BooleanVar(value=True),      # NEW!
-            'atr': tk.BooleanVar(value=True),       # NEW!
-            'stochastic': tk.BooleanVar(value=True), # NEW!
-            'adx': tk.BooleanVar(value=True)        # NEW!
+            'ma': tk.BooleanVar(value=True), 'rsi': tk.BooleanVar(value=True),
+            'bb': tk.BooleanVar(value=True), 'volume': tk.BooleanVar(value=True),
+            'macd': tk.BooleanVar(value=True), 'atr': tk.BooleanVar(value=True),
+            'stochastic': tk.BooleanVar(value=True), 'adx': tk.BooleanVar(value=True)
         }
-
         self.indicator_leds = {}
-        self.led_states = {
-            'ma': 0,    # -1: 매도(파랑), 0: 중립(회색), 1: 매수(빨강)
-            'rsi': 0,
-            'bb': 0,
-            'volume': 0,
-            'macd': 0,      # NEW!
-            'atr': 0,       # NEW! (ATR은 신호가 아니라 상태 표시)
-            'stochastic': 0, # NEW!
-            'adx': 0        # NEW! (ADX도 상태 표시)
-        }
+        self.led_states = { 'ma': 0, 'rsi': 0, 'bb': 0, 'volume': 0, 'macd': 0, 'atr': 0, 'stochastic': 0, 'adx': 0 }
         self.led_blink_state = False
-
-        # 각 지표별 행 생성 (2열 레이아웃)
-        indicators = [
-            ('ma', '이동평균선 (MA)', 0, 0),
-            ('macd', 'MACD (NEW)', 0, 1),
-            ('rsi', 'RSI', 1, 0),
-            ('stochastic', 'Stochastic (NEW)', 1, 1),
-            ('bb', '볼린저 밴드 (BB)', 2, 0),
-            ('atr', 'ATR (NEW)', 2, 1),
-            ('volume', '거래량', 3, 0),
-            ('adx', 'ADX (NEW)', 3, 1)
-        ]
-
-        # 지표 값 표시 레이블 저장용
         self.indicator_value_labels = {}
 
+        indicators = [
+            ('ma', '이동평균선 (MA)', 0, 0), ('macd', 'MACD (NEW)', 0, 1),
+            ('rsi', 'RSI', 1, 0), ('stochastic', 'Stochastic (NEW)', 1, 1),
+            ('bb', '볼린저 밴드 (BB)', 2, 0), ('atr', 'ATR (NEW)', 2, 1),
+            ('volume', '거래량', 3, 0), ('adx', 'ADX (NEW)', 3, 1)
+        ]
+
         for key, label, row, col in indicators:
-            # 각 지표를 담을 프레임
             indicator_item_frame = ttk.Frame(indicator_frame)
             indicator_item_frame.grid(row=row, column=col, sticky=tk.W, padx=10, pady=5)
-
-            # LED + 체크박스 행
             led_check_frame = ttk.Frame(indicator_item_frame)
             led_check_frame.pack(side=tk.TOP, anchor=tk.W)
-
-            # LED 캔버스 (깜빡이는 원형)
             led_canvas = tk.Canvas(led_check_frame, width=20, height=20, bg='white', highlightthickness=0)
             led_canvas.pack(side=tk.LEFT, padx=(0, 5))
             led_circle = led_canvas.create_oval(5, 5, 15, 15, fill='gray', outline='darkgray')
             self.indicator_leds[key] = {'canvas': led_canvas, 'circle': led_circle}
-
-            # 체크박스
-            check = ttk.Checkbutton(
-                led_check_frame,
-                text=label,
-                variable=self.indicator_vars[key],
-                command=self.validate_indicator_selection
-            )
+            check = ttk.Checkbutton(led_check_frame, text=label, variable=self.indicator_vars[key], command=self.validate_indicator_selection)
             check.pack(side=tk.LEFT)
-
-            # 지표 값 표시 레이블
-            value_label = ttk.Label(indicator_item_frame, text="값: -",
-                                   font=('Arial', 8), foreground='gray')
+            value_label = ttk.Label(indicator_item_frame, text="값: -", font=('Arial', 8), foreground='gray')
             value_label.pack(side=tk.TOP, anchor=tk.W, padx=(25, 0))
             self.indicator_value_labels[key] = value_label
 
-        # 거래 코인 선택
-        ttk.Label(settings_frame, text="거래 코인:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
-        self.coin_var = tk.StringVar()
-        coin_combo = ttk.Combobox(settings_frame, textvariable=self.coin_var, width=10)
-        coin_combo['values'] = ('BTC', 'ETH', 'XRP', 'ADA', 'DOT', 'LINK', 'LTC', 'BCH', 'EOS', 'TRX')
-        coin_combo.grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 0))
-        coin_combo.set(self.config_manager.get_config()['trading']['target_ticker'])
+        # 리스크 및 상세 전략 설정
+        risk_rsi_frame = ttk.LabelFrame(settings_frame, text="⚙️ 리스크 및 상세 전략", padding="10")
+        risk_rsi_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 0))
 
-        # 캔들 간격 선택 (기본값 1h로 변경!)
-        ttk.Label(settings_frame, text="캔들 간격:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        ttk.Label(risk_rsi_frame, text="손절(%):").grid(row=0, column=0, sticky=tk.W)
+        self.stop_loss_var = tk.StringVar(value=str(current_config['trading']['stop_loss_percent']))
+        ttk.Entry(risk_rsi_frame, textvariable=self.stop_loss_var, width=8).grid(row=0, column=1, sticky=tk.W, padx=(5, 15))
+
+        ttk.Label(risk_rsi_frame, text="익절(%):").grid(row=0, column=2, sticky=tk.W)
+        self.take_profit_var = tk.StringVar(value=str(current_config['trading']['take_profit_percent']))
+        ttk.Entry(risk_rsi_frame, textvariable=self.take_profit_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=5)
+
+        ttk.Label(risk_rsi_frame, text="RSI 매수(≤):").grid(row=1, column=0, sticky=tk.W, pady=(5,0))
+        self.rsi_buy_var = tk.StringVar(value=str(current_config['strategy']['rsi_buy_threshold']))
+        ttk.Entry(risk_rsi_frame, textvariable=self.rsi_buy_var, width=8).grid(row=1, column=1, sticky=tk.W, padx=(5, 15), pady=(5,0))
+
+        ttk.Label(risk_rsi_frame, text="RSI 매도(≥):").grid(row=1, column=2, sticky=tk.W, pady=(5,0))
+        self.rsi_sell_var = tk.StringVar(value=str(current_config['strategy']['rsi_sell_threshold']))
+        ttk.Entry(risk_rsi_frame, textvariable=self.rsi_sell_var, width=8).grid(row=1, column=3, sticky=tk.W, padx=5, pady=(5,0))
+
+        ttk.Label(risk_rsi_frame, text="분석 기간(봉):").grid(row=2, column=0, sticky=tk.W, pady=(5,0))
+        self.period_var = tk.StringVar(value=str(current_config['strategy']['analysis_period']))
+        ttk.Entry(risk_rsi_frame, textvariable=self.period_var, width=8).grid(row=2, column=1, sticky=tk.W, padx=(5, 15), pady=(5,0))
+
+        # 기본 거래 설정
+        base_trade_frame = ttk.LabelFrame(settings_frame, text="🔩 기본 거래 설정", padding="10")
+        base_trade_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 0))
+
+        ttk.Label(base_trade_frame, text="거래 코인:").grid(row=0, column=0, sticky=tk.W)
+        self.coin_var = tk.StringVar()
+        self.coin_combo = ttk.Combobox(base_trade_frame, textvariable=self.coin_var, width=10, values=('BTC', 'ETH', 'XRP', 'ADA', 'DOT', 'LINK', 'LTC', 'BCH', 'EOS', 'TRX'))
+        self.coin_combo.grid(row=0, column=1, sticky=tk.W, padx=(10, 20))
+        self.coin_combo.set(current_config['trading']['target_ticker'])
+
+        ttk.Label(base_trade_frame, text="캔들 간격:").grid(row=0, column=2, sticky=tk.W)
         self.candle_interval_var = tk.StringVar()
-        candle_interval_combo = ttk.Combobox(settings_frame, textvariable=self.candle_interval_var, width=10, state='readonly')
-        candle_interval_combo['values'] = ('30m', '1h', '6h', '12h', '24h')
-        candle_interval_combo.grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        # DEFAULT TO 1h (중요!)
-        default_interval = self.config_manager.get_config()['strategy'].get('candlestick_interval', '1h')
+        candle_interval_combo = ttk.Combobox(base_trade_frame, textvariable=self.candle_interval_var, width=10, state='readonly', values=('30m', '1h', '6h', '12h', '24h'))
+        candle_interval_combo.grid(row=0, column=3, sticky=tk.W, padx=10)
+        default_interval = current_config['strategy'].get('candlestick_interval', '1h')
         candle_interval_combo.set(default_interval if default_interval else '1h')
         candle_interval_combo.bind('<<ComboboxSelected>>', self.on_candle_interval_changed)
 
-        # 체크 간격 선택
-        ttk.Label(settings_frame, text="체크 간격:", style='Title.TLabel').grid(row=4, column=0, sticky=tk.W, pady=(5, 0))
+        ttk.Label(base_trade_frame, text="체크 간격:").grid(row=1, column=0, sticky=tk.W, pady=(5,0))
         self.interval_var = tk.StringVar()
-        interval_combo = ttk.Combobox(settings_frame, textvariable=self.interval_var, width=10)
-        interval_combo['values'] = ('10s', '30s', '1m', '5m', '10m', '30m', '1h', '2h', '4h')
-        interval_combo.grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        interval_combo.set('30m')  # 기본값
+        self.interval_combo = ttk.Combobox(base_trade_frame, textvariable=self.interval_var, width=10, values=('10s', '30s', '1m', '5m', '10m', '30m', '1h', '2h', '4h'))
+        self.interval_combo.grid(row=1, column=1, sticky=tk.W, padx=(10, 20), pady=(5,0))
+        self.interval_combo.set('15m')
 
-        # 거래 금액
-        ttk.Label(settings_frame, text="거래 금액:", style='Title.TLabel').grid(row=5, column=0, sticky=tk.W, pady=(5, 0))
+        ttk.Label(base_trade_frame, text="거래 금액(원):").grid(row=1, column=2, sticky=tk.W, pady=(5,0))
         self.amount_var = tk.StringVar()
-        amount_entry = ttk.Entry(settings_frame, textvariable=self.amount_var, width=12)
-        amount_entry.grid(row=5, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-        amount_entry.insert(0, str(self.config_manager.get_config()['trading']['trade_amount_krw']))
+        self.amount_entry = ttk.Entry(base_trade_frame, textvariable=self.amount_var, width=12)
+        self.amount_entry.grid(row=1, column=3, sticky=tk.W, padx=10, pady=(5,0))
+        self.amount_entry.insert(0, str(current_config['trading']['trade_amount_krw']))
 
-        # 설정 적용 버튼 (간소화)
-        apply_button = ttk.Button(settings_frame, text="📝 설정 적용", command=self.apply_settings)
-        apply_button.grid(row=6, column=0, columnspan=3, pady=(15, 0))
-
-        # 변수 저장
-        self.coin_combo = coin_combo
-        self.interval_combo = interval_combo
-        self.amount_entry = amount_entry
+        # 설정 적용 버튼
+        apply_button = ttk.Button(settings_frame, text="📝 모든 설정 적용", command=self.apply_settings)
+        apply_button.grid(row=4, column=0, columnspan=4, pady=(15, 0))
 
     def create_market_regime_panel(self, parent):
         """시장 국면 패널 (NEW!)"""
@@ -722,41 +724,32 @@ class TradingBotGUI:
             current_config['trading']['target_ticker'] = self.coin_var.get()
             current_config['trading']['trade_amount_krw'] = int(self.amount_var.get())
 
-            # 수익률 관련 설정
+            # 리스크 및 상세 전략 설정
             current_config['trading']['stop_loss_percent'] = float(self.stop_loss_var.get())
             current_config['trading']['take_profit_percent'] = float(self.take_profit_var.get())
-
-            # RSI 설정
             current_config['strategy']['rsi_buy_threshold'] = int(self.rsi_buy_var.get())
             current_config['strategy']['rsi_sell_threshold'] = int(self.rsi_sell_var.get())
             current_config['strategy']['analysis_period'] = int(self.period_var.get())
 
-            # 기술 지표 활성화 설정 추가
-            current_config['strategy']['enabled_indicators'] = {
-                'ma': self.indicator_vars['ma'].get(),
-                'rsi': self.indicator_vars['rsi'].get(),
-                'bb': self.indicator_vars['bb'].get(),
-                'volume': self.indicator_vars['volume'].get()
-            }
+            # 8개 기술 지표 활성화 설정
+            enabled_indicators = {key: var.get() for key, var in self.indicator_vars.items()}
+            current_config['strategy']['enabled_indicators'] = enabled_indicators
 
             # 간격 파싱
             interval_info = self.config_manager.parse_interval(self.interval_var.get())
             if interval_info['type'] == 'seconds':
                 current_config['schedule']['check_interval_seconds'] = interval_info['value']
-                current_config['schedule']['check_interval_minutes'] = max(1, interval_info['value'] // 60)
             elif interval_info['type'] == 'minutes':
-                current_config['schedule']['check_interval_minutes'] = interval_info['value']
                 current_config['schedule']['check_interval_seconds'] = interval_info['value'] * 60
             elif interval_info['type'] == 'hours':
-                current_config['schedule']['check_interval_minutes'] = interval_info['value'] * 60
                 current_config['schedule']['check_interval_seconds'] = interval_info['value'] * 3600
 
             # 실행 중인 봇이 있으면 재시작
             if self.is_running:
                 self.stop_bot()
-                self.root.after(1000, self.start_bot)  # 1초 후 재시작
+                self.root.after(1000, self.start_bot)
 
-            self.add_log("SUCCESS", f"설정 적용됨: {self.coin_var.get()}, {self.interval_var.get()}, {self.amount_var.get()}원, 손절:{self.stop_loss_var.get()}%, 익절:{self.take_profit_var.get()}%, RSI:{self.rsi_buy_var.get()}-{self.rsi_sell_var.get()}")
+            self.add_log("SUCCESS", f"새로운 설정이 적용되었습니다: {self.coin_var.get()}, 체크 간격:{self.interval_var.get()}, 거래 금액:{self.amount_var.get()}원")
 
             # 차트 업데이트
             if hasattr(self, 'chart_widget'):
@@ -1245,19 +1238,7 @@ class TradingBotGUI:
 
             # 테이블에 데이터 추가
             for transaction in transactions:
-                # 거래 유형에 따라 행 색상 구분을 위한 태그 설정
-                if '매수' in transaction[3]:
-                    tags = ('buy',)
-                elif '매도' in transaction[3]:
-                    tags = ('sell',)
-                else:
-                    tags = ()
-
-                self.history_tree.insert('', 'end', values=transaction, tags=tags)
-
-            # 태그별 색상 설정
-            self.history_tree.tag_configure('buy', background='#e8f5e8')  # 연한 녹색
-            self.history_tree.tag_configure('sell', background='#ffe8e8')  # 연한 빨간색
+                self.history_tree.insert('', 'end', values=transaction)
 
             self.add_log("SUCCESS", f"거래 내역 {len(transactions)}건을 로드했습니다.")
 

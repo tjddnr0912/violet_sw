@@ -67,6 +67,12 @@ STRATEGY_CONFIG = {
     # 엘리트 전략: Volume 파라미터
     'volume_window': 20,    # 거래량 평균 계산 윈도우
 
+    # 엘리트 전략: 활성화된 지표 (GUI 연동용)
+    'enabled_indicators': {
+        'ma': True, 'rsi': True, 'bb': True, 'volume': True,
+        'macd': True, 'atr': True, 'stochastic': True, 'adx': True
+    },
+
     # 엘리트 전략: 신호 가중치 (합계 = 1.0)
     'signal_weights': {
         'macd': 0.35,       # MACD 신호 가중치 (추세 지표 - 가장 높음)
