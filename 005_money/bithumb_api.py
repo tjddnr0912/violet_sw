@@ -78,28 +78,25 @@ class BithumbAPI:
         except Exception:
             return False
 
-    def _get_signature(self, endpoint: str, parameters: Dict[str, Any], nonce: str) -> str:
+    def _get_signature(self, endpoint: str, parameters: Dict[str, Any], nonce: str) -> bytes:
         """빗썸 API 서명 생성 (pybithumb 방식)"""
         if not self.secret_key:
             raise ValueError("Secret key is required for private API calls")
 
         try:
-            # 1. 파라미터에 endpoint 추가 (pybithumb 방식)
-            sign_params = parameters.copy()
-            sign_params['endpoint'] = endpoint
-
-            # 2. URL 인코딩 (safe='' 사용)
-            query_string = urllib.parse.urlencode(sign_params, safe='')
+            # 1. 파라미터는 이미 endpoint를 포함하고 있음 (pybithumb 방식)
+            # 2. URL 인코딩
+            query_string = urllib.parse.urlencode(parameters)
 
             # 3. 서명 메시지 구성: endpoint + chr(0) + query_string + chr(0) + nonce
             message = endpoint + chr(0) + query_string + chr(0) + nonce
 
-            # 4. Secret Key는 UTF-8 인코딩만 (Base64 디코딩 하지 않음)
+            # 4. Secret Key를 UTF-8로 인코딩
             secret_key_bytes = self.secret_key.encode('utf-8')
 
-            # 5. HMAC-SHA512 서명 생성 (hexdigest 사용)
+            # 5. HMAC-SHA512 서명 생성 (pybithumb 방식: hexdigest를 다시 인코딩!)
             h = hmac.new(secret_key_bytes, message.encode('utf-8'), hashlib.sha512)
-            signature = base64.b64encode(h.hexdigest().encode('utf-8')).decode('utf-8')
+            signature = base64.b64encode(h.hexdigest().encode('utf-8'))
 
             # 디버깅 출력
             self.logger.debug(f"🔐 빗썸 API 서명 생성:")
@@ -133,21 +130,25 @@ class BithumbAPI:
                 if parameters is None:
                     parameters = {}
 
-                # 서명 생성 (endpoint는 별도로 전달, parameters만 서명에 사용)
+                # endpoint를 파라미터에 추가 (pybithumb 방식)
+                parameters['endpoint'] = endpoint
+
+                # 서명 생성
                 try:
                     signature = self._get_signature(endpoint, parameters, nonce)
                 except Exception as e:
                     self.logger.error(f"서명 생성 실패: {e}")
                     return None
 
-                # HTTP 헤더 구성 (빗썸 공식 형식)
-                headers.update({
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Api-Key': self.connect_key,
+                # API 키를 bytes로 변환 (pybithumb 방식)
+                connect_key_bytes = self.connect_key.encode('utf-8')
+
+                # HTTP 헤더 구성 (pybithumb 방식)
+                headers = {
+                    'Api-Key': connect_key_bytes,
                     'Api-Sign': signature,
                     'Api-Nonce': nonce,
-                    'User-Agent': 'Mozilla/5.0 (compatible; Bithumb-Trading-Bot/1.0)'
-                })
+                }
 
                 # 디버깅 정보
                 print(f"\n🌐 HTTP 요청 정보:")
@@ -155,9 +156,8 @@ class BithumbAPI:
                 print(f"   🔑 API Key: {self.connect_key[:10]}...")
                 print(f"   ⏰ Nonce: {nonce}")
                 print(f"   📦 Request Data: {parameters}")
-                print(f"   📋 Headers: {dict(headers)}")
 
-                # POST 요청 (실제 파라미터만 전송, endpoint 제외)
+                # POST 요청 (dict를 그대로 전달 - requests가 자동으로 form-urlencoded로 변환)
                 response = requests.post(url, data=parameters, headers=headers, timeout=15)
 
                 # 응답 정보 상세 출력

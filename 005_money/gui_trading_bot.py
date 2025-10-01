@@ -33,6 +33,9 @@ class GUITradingBot(TradingBot):
         self.price_monitor_thread = None
         self.monitoring = False
 
+        # 미체결 주문 조회 비활성화 로그 플래그 (1회만 출력)
+        self._pending_orders_log_shown = False
+
     def start_price_monitoring(self):
         """가격 모니터링 시작"""
         if not self.monitoring:
@@ -90,7 +93,10 @@ class GUITradingBot(TradingBot):
         try:
             if not self.config['safety']['dry_run']:
                 # 실제 거래 모드에서는 미체결 주문 조회 비활성화 (보안상 이유)
-                self.logger.logger.info("미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.")
+                # 처음 1회만 로그 출력
+                if not self._pending_orders_log_shown:
+                    self.logger.logger.info("미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.")
+                    self._pending_orders_log_shown = True
                 self.current_status['pending_orders'] = []
                 return
 
@@ -166,28 +172,47 @@ class GUITradingBot(TradingBot):
             return False
 
     def execute_trading_decision(self, ticker: str) -> bool:
-        """거래 결정 실행 (GUI용 오버라이드)"""
+        """거래 결정 실행 (GUI용 오버라이드) - 엘리트 전략 사용"""
         try:
-            # 시장 데이터 분석
-            analysis = self.strategy.analyze_market_data(ticker)
+            # 시장 데이터 분석 (엘리트 지표 포함)
+            interval = self.config.get('strategy', {}).get('candlestick_interval', '1h')
+            analysis = self.strategy.analyze_market_data(ticker, interval)
             if not analysis:
                 return False
 
-            # 신호 생성
-            signals = self.strategy.generate_signals(analysis)
+            # 가중치 기반 신호 생성 (엘리트 전략)
+            signals = self.strategy.generate_weighted_signals(analysis)
 
-            # 신호를 상태에 추가 (GUI LED 업데이트용)
+            # 신호 및 분석 결과를 상태에 추가 (GUI 업데이트용)
             self.current_status['signals'] = signals
+            self.current_status['analysis'] = analysis
 
-            # 전략 분석
-            action, details = self.strategy.decide_action(ticker)
-            self.current_status['last_action'] = action
+            # 최종 액션 결정
+            final_action = signals.get('final_action', 'HOLD')
+            self.current_status['last_action'] = final_action
 
-            if action == "HOLD":
+            # 로깅
+            log_analysis = analysis.copy()
+            log_analysis.pop('price_data', None)  # DataFrame 제거
+            self.logger.log_strategy_analysis(ticker, {
+                'analysis': log_analysis,
+                'signals': signals,
+                'action': final_action,
+                'reason': signals.get('reason', '')
+            })
+
+            if final_action == "HOLD":
                 return True
 
-            # 거래 실행
-            success = super().execute_trading_decision(ticker)
+            # 거래 실행 (실제 매수/매도)
+            # NOTE: 이 부분은 기존 TradingBot의 로직을 사용
+            # 실제로는 더 세밀한 주문 관리 필요
+            if final_action == "BUY":
+                success = self._execute_buy(ticker, analysis['current_price'])
+            elif final_action == "SELL":
+                success = self._execute_sell(ticker, analysis['current_price'])
+            else:
+                success = False
 
             # 거래 실행 후 상태 업데이트
             if success:
@@ -198,6 +223,68 @@ class GUITradingBot(TradingBot):
 
         except Exception as e:
             self.logger.log_error(f"GUI 거래 결정 실행 오류: {e}")
+            return False
+
+    def _execute_buy(self, ticker: str, current_price: float) -> bool:
+        """매수 실행 (내부 메서드)"""
+        try:
+            trade_amount_krw = self.config['trading']['trade_amount_krw']
+
+            if self.config['safety']['dry_run']:
+                # 모의 거래
+                amount = trade_amount_krw / current_price
+                self.transaction_history.add_transaction(
+                    ticker=ticker,
+                    action='BUY',
+                    amount=amount,
+                    price=current_price,
+                    total_value=trade_amount_krw,
+                    fee=0,
+                    success=True,
+                    note='모의 거래'
+                )
+                self.logger.logger.info(f"[모의 거래] 매수: {ticker} {amount:.6f}개 @ {current_price:,.0f}원")
+                return True
+            else:
+                # 실제 거래 (여기서는 간단하게 처리, 실제로는 더 복잡함)
+                # TODO: 실제 빗썸 API 호출
+                return False
+
+        except Exception as e:
+            self.logger.log_error(f"매수 실행 오류: {e}")
+            return False
+
+    def _execute_sell(self, ticker: str, current_price: float) -> bool:
+        """매도 실행 (내부 메서드)"""
+        try:
+            holdings = self.calculate_holdings_from_history()
+
+            if holdings <= 0:
+                self.logger.logger.warning(f"매도 실패: 보유 수량 없음 ({ticker})")
+                return False
+
+            if self.config['safety']['dry_run']:
+                # 모의 거래
+                total_value = holdings * current_price
+                self.transaction_history.add_transaction(
+                    ticker=ticker,
+                    action='SELL',
+                    amount=holdings,
+                    price=current_price,
+                    total_value=total_value,
+                    fee=0,
+                    success=True,
+                    note='모의 거래'
+                )
+                self.logger.logger.info(f"[모의 거래] 매도: {ticker} {holdings:.6f}개 @ {current_price:,.0f}원")
+                return True
+            else:
+                # 실제 거래
+                # TODO: 실제 빗썸 API 호출
+                return False
+
+        except Exception as e:
+            self.logger.log_error(f"매도 실행 오류: {e}")
             return False
 
     def change_coin(self, new_coin: str):

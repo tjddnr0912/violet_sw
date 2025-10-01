@@ -47,6 +47,331 @@ def calculate_volume_ratio(df: pd.DataFrame, window: int = 10) -> pd.Series:
     avg_volume = df['volume'].rolling(window=window).mean()
     return df['volume'] / avg_volume
 
+def calculate_macd(df: pd.DataFrame, fast: int = 8, slow: int = 17, signal: int = 9) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    MACD 계산 (1시간봉 최적화)
+
+    Args:
+        df: OHLCV 데이터프레임
+        fast: 단기 EMA 기간 (기본값: 8, 1h 기준 8시간)
+        slow: 장기 EMA 기간 (기본값: 17, 1h 기준 17시간)
+        signal: 시그널선 EMA 기간 (기본값: 9, 1h 기준 9시간)
+
+    Returns:
+        macd_line: MACD선 (fast EMA - slow EMA)
+        signal_line: 시그널선 (MACD의 signal 기간 EMA)
+        histogram: 히스토그램 (MACD - Signal)
+    """
+    exp1 = df['close'].ewm(span=fast, adjust=False).mean()
+    exp2 = df['close'].ewm(span=slow, adjust=False).mean()
+    macd_line = exp1 - exp2
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+
+    return macd_line, signal_line, histogram
+
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    ATR (Average True Range) 계산
+
+    30분봉/1시간봉 권장: 14주기 (7시간/14시간 데이터)
+
+    Args:
+        df: OHLCV 데이터프레임
+        period: ATR 계산 기간
+
+    Returns:
+        ATR 값 (pandas Series)
+    """
+    high = df['high']
+    low = df['low']
+    close = df['close']
+
+    # True Range 계산
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+
+    return atr
+
+def calculate_atr_percent(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    ATR을 가격 대비 퍼센트로 계산 (더 직관적)
+
+    Args:
+        df: OHLCV 데이터프레임
+        period: ATR 계산 기간
+
+    Returns:
+        ATR 퍼센트 값
+    """
+    atr = calculate_atr(df, period)
+    atr_percent = (atr / df['close']) * 100
+    return atr_percent
+
+def calculate_stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> Tuple[pd.Series, pd.Series]:
+    """
+    Stochastic Oscillator 계산
+
+    30분봉/1시간봉 권장: K=14 (7시간/14시간), D=3 (1.5시간/3시간)
+
+    Args:
+        df: OHLCV 데이터프레임
+        k_period: %K 계산 기간
+        d_period: %D 계산 기간 (%K의 이동평균)
+
+    Returns:
+        k_percent: %K 값
+        d_percent: %D 값
+    """
+    low_min = df['low'].rolling(window=k_period).min()
+    high_max = df['high'].rolling(window=k_period).max()
+
+    # %K 계산
+    k_percent = 100 * ((df['close'] - low_min) / (high_max - low_min))
+
+    # %D 계산 (K의 이동평균)
+    d_percent = k_percent.rolling(window=d_period).mean()
+
+    return k_percent, d_percent
+
+def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    ADX (Average Directional Index) 계산
+    추세의 강도를 측정 (0~100, 높을수록 강한 추세)
+
+    Args:
+        df: OHLCV 데이터프레임
+        period: ADX 계산 기간
+
+    Returns:
+        ADX 값 (pandas Series)
+    """
+    high = df['high']
+    low = df['low']
+    close = df['close']
+
+    # +DM, -DM 계산
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+
+    # True Range
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # ATR
+    atr = tr.rolling(period).mean()
+
+    # +DI, -DI
+    plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+
+    # DX
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+
+    # ADX
+    adx = dx.rolling(period).mean()
+
+    return adx
+
+def detect_market_regime(df: pd.DataFrame, atr_period: int = 14, adx_period: int = 14) -> Dict[str, Any]:
+    """
+    시장 국면 감지: 추세장 vs 횡보장
+
+    Args:
+        df: OHLCV 데이터프레임
+        atr_period: ATR 계산 기간
+        adx_period: ADX 계산 기간
+
+    Returns:
+        regime: 'trending', 'ranging', 'transitional'
+        trend_strength: 0.0~1.0 (추세 강도)
+        volatility_level: 'low', 'normal', 'high'
+        recommendation: 'TREND_FOLLOW', 'MEAN_REVERSION', 'REDUCE_SIZE', 'WAIT'
+    """
+    # 1. ADX 계산 (추세 강도 측정)
+    adx = calculate_adx(df, adx_period)
+    current_adx = adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 15
+
+    # 2. ATR 퍼센트 계산 (변동성 측정)
+    atr_pct = calculate_atr_percent(df, atr_period)
+    current_atr_pct = atr_pct.iloc[-1] if not pd.isna(atr_pct.iloc[-1]) else 2.0
+    avg_atr_pct = atr_pct.rolling(50).mean().iloc[-1] if len(atr_pct) >= 50 and not pd.isna(atr_pct.rolling(50).mean().iloc[-1]) else current_atr_pct
+
+    # 3. 추세 vs 횡보 판단
+    if current_adx > 25:
+        regime = 'trending'
+        trend_strength = min(current_adx / 50, 1.0)
+    elif current_adx < 15:
+        regime = 'ranging'
+        trend_strength = 0.0
+    else:
+        regime = 'transitional'
+        trend_strength = (current_adx - 15) / 10
+
+    # 4. 변동성 수준 판단
+    if current_atr_pct > avg_atr_pct * 1.5:
+        volatility_level = 'high'
+    elif current_atr_pct < avg_atr_pct * 0.7:
+        volatility_level = 'low'
+    else:
+        volatility_level = 'normal'
+
+    # 5. 거래 권장 사항
+    if regime == 'trending' and volatility_level == 'normal':
+        recommendation = 'TREND_FOLLOW'
+        indicator_preference = ['macd', 'ma']  # 추세 지표 우선
+    elif regime == 'ranging' and volatility_level == 'normal':
+        recommendation = 'MEAN_REVERSION'
+        indicator_preference = ['rsi', 'bb']  # 평균회귀 지표 우선
+    elif volatility_level == 'high':
+        recommendation = 'REDUCE_SIZE'
+        indicator_preference = []
+    else:
+        recommendation = 'WAIT'
+        indicator_preference = []
+
+    return {
+        'regime': regime,
+        'trend_strength': trend_strength,
+        'volatility_level': volatility_level,
+        'current_adx': current_adx,
+        'current_atr_pct': current_atr_pct,
+        'avg_atr_pct': avg_atr_pct,
+        'recommendation': recommendation,
+        'indicator_preference': indicator_preference
+    }
+
+def calculate_position_size_by_atr(account_balance: float, risk_percent: float,
+                                   entry_price: float, atr: float,
+                                   atr_multiplier: float = 2.0) -> float:
+    """
+    ATR 기반 포지션 사이징
+
+    Example:
+        계좌 잔고: 1,000,000원
+        위험률: 1% (10,000원까지 손실 가능)
+        진입가: 50,000,000원
+        ATR: 1,000,000원 (2%)
+        ATR 배수: 2.0
+
+        손절 거리 = 1,000,000 × 2.0 = 2,000,000원
+        포지션 크기 = 10,000 / 2,000,000 = 0.005 BTC
+
+    Args:
+        account_balance: 계좌 잔고 (원)
+        risk_percent: 위험 비율 (%)
+        entry_price: 진입 가격
+        atr: ATR 값
+        atr_multiplier: ATR 배수 (손절 거리 계산용)
+
+    Returns:
+        포지션 크기 (코인 수량)
+    """
+    risk_amount = account_balance * (risk_percent / 100)
+    stop_distance = atr * atr_multiplier
+
+    # 손절 거리 대비 위험 금액으로 포지션 크기 계산
+    if stop_distance > 0:
+        position_size = risk_amount / stop_distance
+    else:
+        position_size = 0.0
+
+    return position_size
+
+def calculate_dynamic_stop_loss(entry_price: float, atr: float,
+                               direction: str = 'LONG',
+                               multiplier: float = 2.0) -> float:
+    """
+    ATR 기반 동적 손절가 계산
+
+    Args:
+        entry_price: 진입 가격
+        atr: ATR 값
+        direction: 'LONG' or 'SHORT'
+        multiplier: ATR 배수 (2.0 = 정상 변동성의 2배에서 손절)
+
+    Returns:
+        stop_loss_price: 손절 가격
+    """
+    stop_distance = atr * multiplier
+
+    if direction == 'LONG':
+        stop_loss_price = entry_price - stop_distance
+    else:  # SHORT
+        stop_loss_price = entry_price + stop_distance
+
+    return stop_loss_price
+
+def calculate_exit_levels(entry_price: float, atr: float,
+                         direction: str = 'LONG',
+                         volatility_level: str = 'normal') -> Dict[str, float]:
+    """
+    진입가 기반 청산 레벨 계산 (다단계 익절/손절)
+
+    Args:
+        entry_price: 진입 가격
+        atr: ATR 값
+        direction: 'LONG' or 'SHORT'
+        volatility_level: 'low', 'normal', 'high'
+
+    Returns:
+        stop_loss: 손절가
+        take_profit_1: 1차 익절가 (50% 청산)
+        take_profit_2: 2차 익절가 (나머지 청산)
+        rr_ratio_1: 1차 익절 Risk:Reward 비율
+        rr_ratio_2: 2차 익절 Risk:Reward 비율
+    """
+    # ATR 배수는 변동성에 따라 조정
+    if volatility_level == 'high':
+        stop_atr_mult = 2.5
+        tp1_atr_mult = 3.0
+        tp2_atr_mult = 5.0
+    elif volatility_level == 'low':
+        stop_atr_mult = 1.5
+        tp1_atr_mult = 2.0
+        tp2_atr_mult = 3.5
+    else:  # normal
+        stop_atr_mult = 2.0
+        tp1_atr_mult = 2.5
+        tp2_atr_mult = 4.0
+
+    if direction == 'LONG':
+        stop_loss = entry_price - (atr * stop_atr_mult)
+        take_profit_1 = entry_price + (atr * tp1_atr_mult)
+        take_profit_2 = entry_price + (atr * tp2_atr_mult)
+    else:  # SHORT
+        stop_loss = entry_price + (atr * stop_atr_mult)
+        take_profit_1 = entry_price - (atr * tp1_atr_mult)
+        take_profit_2 = entry_price - (atr * tp2_atr_mult)
+
+    # Risk:Reward 비율 계산
+    risk = abs(entry_price - stop_loss)
+    reward_1 = abs(take_profit_1 - entry_price)
+    reward_2 = abs(take_profit_2 - entry_price)
+
+    rr_ratio_1 = reward_1 / risk if risk > 0 else 0
+    rr_ratio_2 = reward_2 / risk if risk > 0 else 0
+
+    return {
+        'stop_loss': stop_loss,
+        'take_profit_1': take_profit_1,
+        'take_profit_2': take_profit_2,
+        'risk_amount': risk,
+        'reward_1': reward_1,
+        'reward_2': reward_2,
+        'rr_ratio_1': rr_ratio_1,
+        'rr_ratio_2': rr_ratio_2
+    }
+
 class TradingStrategy:
     def __init__(self, logger: TradingLogger = None, config_manager=None):
         self.logger = logger or TradingLogger()
@@ -83,14 +408,14 @@ class TradingStrategy:
 
     def analyze_market_data(self, ticker: str, interval: str = None) -> Optional[Dict[str, Any]]:
         """
-        시장 데이터 분석
+        시장 데이터 분석 (엘리트 전략: MACD, ATR, Stochastic, ADX 포함)
         :param ticker: 코인 티커 (예: 'BTC')
-        :param interval: 캔들스틱 간격 ('1h', '6h', '12h', '24h'). None이면 config에서 가져옴
+        :param interval: 캔들스틱 간격 ('30m', '1h', '6h', '12h', '24h'). None이면 config에서 가져옴
         """
         try:
             # interval이 지정되지 않으면 config에서 가져오기
             if interval is None:
-                interval = self.strategy_config.get('candlestick_interval', '24h')
+                interval = self.strategy_config.get('candlestick_interval', '1h')
 
             # 간격에 맞는 지표 설정 적용
             indicator_config = self._get_indicator_config_for_interval(interval)
@@ -101,7 +426,7 @@ class TradingStrategy:
                 self.logger.log_error(f"데이터가 부족합니다: {ticker} (interval: {interval})")
                 return None
 
-            # 기술적 지표 계산 (간격에 맞는 설정 사용)
+            # 기본 기술적 지표 계산
             price_data['short_ma'] = calculate_moving_average(
                 price_data, indicator_config['short_ma_window']
             )
@@ -109,15 +434,62 @@ class TradingStrategy:
                 price_data, indicator_config['long_ma_window']
             )
             price_data['rsi'] = calculate_rsi(
-                price_data, indicator_config['rsi_period']
+                price_data, indicator_config.get('rsi_period', 14)
             )
 
-            upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(price_data)
+            upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(
+                price_data,
+                window=indicator_config.get('bb_period', 20),
+                num_std=indicator_config.get('bb_std', 2.0)
+            )
             price_data['bb_upper'] = upper_bb
             price_data['bb_middle'] = middle_bb
             price_data['bb_lower'] = lower_bb
 
-            price_data['volume_ratio'] = calculate_volume_ratio(price_data)
+            price_data['volume_ratio'] = calculate_volume_ratio(
+                price_data,
+                window=indicator_config.get('volume_window', 10)
+            )
+
+            # 엘리트 지표 계산
+            macd_line, signal_line, histogram = calculate_macd(
+                price_data,
+                fast=indicator_config.get('macd_fast', 8),
+                slow=indicator_config.get('macd_slow', 17),
+                signal=indicator_config.get('macd_signal', 9)
+            )
+            price_data['macd_line'] = macd_line
+            price_data['macd_signal'] = signal_line
+            price_data['macd_histogram'] = histogram
+
+            price_data['atr'] = calculate_atr(
+                price_data,
+                period=indicator_config.get('atr_period', 14)
+            )
+            price_data['atr_percent'] = calculate_atr_percent(
+                price_data,
+                period=indicator_config.get('atr_period', 14)
+            )
+
+            stoch_k, stoch_d = calculate_stochastic(
+                price_data,
+                k_period=indicator_config.get('stoch_k_period', 14),
+                d_period=indicator_config.get('stoch_d_period', 3)
+            )
+            price_data['stoch_k'] = stoch_k
+            price_data['stoch_d'] = stoch_d
+
+            price_data['adx'] = calculate_adx(
+                price_data,
+                period=indicator_config.get('adx_period', 14)
+            )
+
+            # 시장 국면 감지
+            regime = detect_market_regime(
+                price_data,
+                atr_period=indicator_config.get('atr_period', 14),
+                adx_period=indicator_config.get('adx_period', 14)
+            )
 
             # 현재 가격 정보
             current_price = price_data['close'].iloc[-1]
@@ -126,24 +498,45 @@ class TradingStrategy:
             # 분석 결과
             analysis = {
                 'ticker': ticker,
-                'interval': interval,  # 사용된 캔들 간격 추가
+                'interval': interval,
                 'timestamp': datetime.now().isoformat(),
                 'current_price': current_price,
                 'current_volume': current_volume,
+
+                # 기본 지표
                 'short_ma': price_data['short_ma'].iloc[-1],
                 'long_ma': price_data['long_ma'].iloc[-1],
                 'rsi': price_data['rsi'].iloc[-1],
                 'bb_position': (current_price - price_data['bb_lower'].iloc[-1]) /
-                              (price_data['bb_upper'].iloc[-1] - price_data['bb_lower'].iloc[-1]),
+                              (price_data['bb_upper'].iloc[-1] - price_data['bb_lower'].iloc[-1])
+                              if (price_data['bb_upper'].iloc[-1] - price_data['bb_lower'].iloc[-1]) > 0 else 0.5,
+                'bb_upper': price_data['bb_upper'].iloc[-1],
+                'bb_middle': price_data['bb_middle'].iloc[-1],
+                'bb_lower': price_data['bb_lower'].iloc[-1],
                 'volume_ratio': price_data['volume_ratio'].iloc[-1],
+
+                # 엘리트 지표
+                'macd_line': price_data['macd_line'].iloc[-1] if not pd.isna(price_data['macd_line'].iloc[-1]) else 0,
+                'macd_signal': price_data['macd_signal'].iloc[-1] if not pd.isna(price_data['macd_signal'].iloc[-1]) else 0,
+                'macd_histogram': price_data['macd_histogram'].iloc[-1] if not pd.isna(price_data['macd_histogram'].iloc[-1]) else 0,
+                'atr': price_data['atr'].iloc[-1] if not pd.isna(price_data['atr'].iloc[-1]) else 0,
+                'atr_percent': price_data['atr_percent'].iloc[-1] if not pd.isna(price_data['atr_percent'].iloc[-1]) else 0,
+                'stoch_k': price_data['stoch_k'].iloc[-1] if not pd.isna(price_data['stoch_k'].iloc[-1]) else 50,
+                'stoch_d': price_data['stoch_d'].iloc[-1] if not pd.isna(price_data['stoch_d'].iloc[-1]) else 50,
+                'adx': price_data['adx'].iloc[-1] if not pd.isna(price_data['adx'].iloc[-1]) else 15,
+
+                # 시장 국면
+                'regime': regime,
+
+                # 가격 변화
                 'price_change_24h': ((current_price - price_data['close'].iloc[-24]) /
                                    price_data['close'].iloc[-24]) * 100 if len(price_data) >= 24 else 0,
-                # 사용된 지표 설정 정보 추가
-                'indicator_config': {
-                    'short_ma_window': indicator_config['short_ma_window'],
-                    'long_ma_window': indicator_config['long_ma_window'],
-                    'rsi_period': indicator_config['rsi_period']
-                }
+
+                # 사용된 지표 설정 정보
+                'indicator_config': indicator_config,
+
+                # 원본 데이터 (고급 분석용)
+                'price_data': price_data
             }
 
             return analysis
@@ -233,6 +626,201 @@ class TradingStrategy:
             signals['confidence'] = 0.3
 
         return signals
+
+    def generate_weighted_signals(self, analysis: Dict[str, Any],
+                                  weights_override: Dict[str, float] = None) -> Dict[str, Any]:
+        """
+        가중치 기반 신호 생성 (엘리트 전략: 1시간봉 최적화)
+
+        신호 강도: -1.0 (강한 매도) ~ +1.0 (강한 매수)
+
+        Args:
+            analysis: analyze_market_data()의 결과
+            weights_override: 가중치 덮어쓰기 (시장 국면별로 다른 가중치 적용 가능)
+
+        Returns:
+            신호 딕셔너리 (각 지표별 신호 + 종합 신호 + 신뢰도)
+        """
+        current_config = self.get_current_config()
+        strategy_config = current_config.get('strategy', self.strategy_config)
+
+        # 기본 신호 가중치 (합계 = 1.0)
+        default_weights = strategy_config.get('signal_weights', {
+            'macd': 0.35,      # 추세 신호에 가장 높은 가중치
+            'ma': 0.25,        # 추세 확인
+            'rsi': 0.20,       # 과매수/과매도 필터
+            'bb': 0.10,        # 평균회귀 신호
+            'volume': 0.10     # 거래량 확인
+        })
+
+        # 가중치 덮어쓰기 (시장 국면별 조정)
+        weights = weights_override if weights_override else default_weights
+
+        signals = {}
+
+        # 1. MA 신호 (강도 포함)
+        ma_diff = analysis['short_ma'] - analysis['long_ma']
+        ma_diff_percent = (ma_diff / analysis['long_ma']) * 100 if analysis['long_ma'] > 0 else 0
+
+        # 0.5% 이상 차이나면 명확한 신호
+        ma_signal = np.clip(ma_diff_percent / 0.5, -1.0, 1.0)
+        signals['ma_signal'] = ma_signal
+        signals['ma_strength'] = abs(ma_signal)
+
+        # 2. RSI 신호 (비선형 스케일링)
+        rsi = analysis['rsi']
+
+        if rsi <= 30:
+            # 과매도: RSI가 낮을수록 강한 매수 신호
+            rsi_signal = np.clip((30 - rsi) / 15, 0, 1.0)  # RSI 15에서 최대값
+        elif rsi >= 70:
+            # 과매수: RSI가 높을수록 강한 매도 신호
+            rsi_signal = -np.clip((rsi - 70) / 15, 0, 1.0)  # RSI 85에서 최대값
+        else:
+            # 중립 구간: 50에서 멀어질수록 약한 신호
+            rsi_signal = (50 - rsi) / 20  # 약한 신호
+
+        signals['rsi_signal'] = rsi_signal
+        signals['rsi_strength'] = abs(rsi_signal)
+
+        # 3. MACD 신호 (크로스오버 + 히스토그램 강도)
+        macd_line = analysis.get('macd_line', 0)
+        macd_signal_line = analysis.get('macd_signal', 0)
+        macd_histogram = analysis.get('macd_histogram', 0)
+
+        # MACD 신호 생성
+        if macd_line > macd_signal_line:
+            # 골든 크로스 (매수 신호)
+            macd_strength = min(abs(macd_histogram) / (abs(macd_line) + 0.0001), 1.0)
+            macd_signal = macd_strength
+        elif macd_line < macd_signal_line:
+            # 데드 크로스 (매도 신호)
+            macd_strength = min(abs(macd_histogram) / (abs(macd_line) + 0.0001), 1.0)
+            macd_signal = -macd_strength
+        else:
+            macd_signal = 0
+            macd_strength = 0
+
+        signals['macd_signal'] = macd_signal
+        signals['macd_strength'] = abs(macd_signal)
+        signals['macd_histogram'] = macd_histogram
+
+        # 4. Bollinger Bands 신호
+        bb_pos = analysis['bb_position']
+
+        if bb_pos < 0.2:
+            # 하단 근처: 강도는 0에 가까울수록 강함
+            bb_signal = (0.2 - bb_pos) / 0.2  # 0~1.0
+        elif bb_pos > 0.8:
+            # 상단 근처: 강도는 1에 가까울수록 강함
+            bb_signal = -((bb_pos - 0.8) / 0.2)  # -1.0~0
+        else:
+            # 중간 구간: 약한 신호
+            bb_signal = (0.5 - bb_pos) / 0.3
+
+        signals['bb_signal'] = np.clip(bb_signal, -1.0, 1.0)
+        signals['bb_strength'] = abs(signals['bb_signal'])
+
+        # 5. Volume 신호
+        vol_ratio = analysis['volume_ratio']
+
+        if vol_ratio > 1.5:
+            # 높은 거래량: 다른 신호를 강화
+            volume_signal = min((vol_ratio - 1.0) / 2.0, 1.0)
+        elif vol_ratio > 1.0:
+            # 정상 거래량
+            volume_signal = 0.2
+        else:
+            # 낮은 거래량: 신뢰도 감소
+            volume_signal = -0.3
+
+        signals['volume_signal'] = np.clip(volume_signal, -1.0, 1.0)
+        signals['volume_strength'] = abs(volume_signal)
+
+        # 6. Stochastic 신호 (추가 확인용)
+        stoch_k = analysis.get('stoch_k', 50)
+        stoch_d = analysis.get('stoch_d', 50)
+
+        if stoch_k < 20 and stoch_d < 20:
+            # 과매도
+            stoch_signal = 0.7
+        elif stoch_k > 80 and stoch_d > 80:
+            # 과매수
+            stoch_signal = -0.7
+        elif stoch_k > stoch_d:
+            # 상승 모멘텀
+            stoch_signal = 0.3
+        else:
+            # 하락 모멘텀
+            stoch_signal = -0.3
+
+        signals['stoch_signal'] = stoch_signal
+        signals['stoch_strength'] = abs(stoch_signal)
+
+        # 7. 최종 가중 합산
+        overall_signal = (
+            weights.get('ma', 0.25) * signals['ma_signal'] +
+            weights.get('rsi', 0.20) * signals['rsi_signal'] +
+            weights.get('macd', 0.35) * signals['macd_signal'] +
+            weights.get('bb', 0.10) * signals['bb_signal'] +
+            weights.get('volume', 0.10) * signals['volume_signal']
+        )
+
+        signals['overall_signal'] = overall_signal
+
+        # 8. 신뢰도 계산 (각 신호의 강도 기반)
+        avg_strength = (
+            weights.get('ma', 0.25) * signals['ma_strength'] +
+            weights.get('rsi', 0.20) * signals['rsi_strength'] +
+            weights.get('macd', 0.35) * signals['macd_strength'] +
+            weights.get('bb', 0.10) * signals['bb_strength'] +
+            weights.get('volume', 0.10) * signals['volume_strength']
+        )
+
+        signals['confidence'] = avg_strength
+
+        # 9. 시장 국면 정보 포함
+        regime = analysis.get('regime', {})
+        signals['regime'] = regime.get('regime', 'unknown')
+        signals['volatility_level'] = regime.get('volatility_level', 'normal')
+        signals['trend_strength'] = regime.get('trend_strength', 0.0)
+
+        # 10. 최종 판단 (1시간봉 특성상 높은 임계값 사용)
+        confidence_threshold = strategy_config.get('confidence_threshold', 0.6)
+        signal_threshold = strategy_config.get('signal_threshold', 0.5)
+
+        if overall_signal >= signal_threshold and avg_strength >= confidence_threshold:
+            signals['final_action'] = 'BUY'
+        elif overall_signal <= -signal_threshold and avg_strength >= confidence_threshold:
+            signals['final_action'] = 'SELL'
+        else:
+            signals['final_action'] = 'HOLD'
+
+        # 11. 상세 설명
+        signals['reason'] = self._generate_signal_reason(signals, analysis)
+
+        return signals
+
+    def _generate_signal_reason(self, signals: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+        """신호에 대한 상세 설명 생성"""
+        action = signals['final_action']
+        confidence = signals['confidence']
+
+        if action == 'HOLD':
+            return f"관망 (신호강도: {signals['overall_signal']:+.2f}, 신뢰도: {confidence:.2f})"
+
+        # 강한 신호 찾기
+        strong_signals = []
+        if abs(signals['macd_signal']) > 0.5:
+            strong_signals.append(f"MACD({signals['macd_signal']:+.2f})")
+        if abs(signals['rsi_signal']) > 0.5:
+            strong_signals.append(f"RSI({signals['rsi_signal']:+.2f})")
+        if abs(signals['ma_signal']) > 0.5:
+            strong_signals.append(f"MA({signals['ma_signal']:+.2f})")
+
+        signal_str = ", ".join(strong_signals) if strong_signals else "종합신호"
+
+        return f"{action} 신호 - {signal_str} | 신뢰도: {confidence:.2f} | 국면: {signals['regime']}"
 
     def decide_action(self, ticker: str) -> Tuple[str, Dict[str, Any]]:
         """
