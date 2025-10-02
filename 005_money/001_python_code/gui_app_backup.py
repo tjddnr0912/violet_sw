@@ -78,54 +78,6 @@ class TradingBotGUI:
         style.configure('Status.TLabel', font=('Arial', 10))
         style.configure('Profit.TLabel', font=('Arial', 11, 'bold'))
         style.configure('Loss.TLabel', font=('Arial', 11, 'bold'), foreground='red')
-        style.configure('Card.TFrame', background='#f5f5f5')
-
-    def _create_scrollable_column(self, parent, bg='#f5f5f5'):
-        """
-        스크롤 가능한 컬럼 생성 헬퍼 함수
-        Returns: {'frame': container_frame, 'scrollable': scrollable_frame, 'canvas': canvas}
-        """
-        # 컨테이너 프레임 생성
-        container = ttk.Frame(parent)
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
-
-        # 캔버스 생성 (배경색 설정으로 흰색 문제 해결)
-        canvas = tk.Canvas(container, bg=bg, highlightthickness=0)
-        canvas.grid(row=0, column=0, sticky='nsew')
-
-        # 스크롤바 생성
-        scrollbar = ttk.Scrollbar(container, orient='vertical', command=canvas.yview)
-        scrollbar.grid(row=0, column=1, sticky='ns')
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        # 스크롤 가능한 내부 프레임 생성 (배경색 매칭)
-        scrollable_frame = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=scrollable_frame, anchor='nw')
-
-        # 스크롤 영역 자동 업데이트
-        def on_frame_configure(event):
-            canvas.configure(scrollregion=canvas.bbox('all'))
-            # 캔버스 너비를 프레임 너비에 맞춤 (가로 스크롤 방지)
-            canvas_width = canvas.winfo_width()
-            canvas.itemconfig(canvas.find_all()[0], width=canvas_width)
-
-        scrollable_frame.bind('<Configure>', on_frame_configure)
-        canvas.bind('<Configure>', lambda e: canvas.itemconfig(
-            canvas.find_all()[0], width=e.width
-        ))
-
-        # 마우스 휠 스크롤 지원
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        return {
-            'frame': container,
-            'scrollable': scrollable_frame,
-            'canvas': canvas
-        }
 
     def create_widgets(self):
         """GUI 위젯 생성"""
@@ -162,53 +114,53 @@ class TradingBotGUI:
         history_tab = ttk.Frame(self.notebook)
         self.notebook.add(history_tab, text='거래 내역')
 
-        # 메인 탭 내용 - 4-COLUMN LAYOUT: 상단(4개 열) + 하단(로그)
+        # 메인 탭 내용 (좌우 분할)
+        main_paned = ttk.PanedWindow(main_tab, orient=tk.HORIZONTAL)
+        main_paned.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
         main_tab.columnconfigure(0, weight=1)
         main_tab.rowconfigure(0, weight=1)
-        main_tab.rowconfigure(1, weight=0)  # 로그는 고정 높이
 
-        # 상단 영역 - 4개 열로 분할 (PanedWindow 사용)
-        top_paned = ttk.PanedWindow(main_tab, orient=tk.HORIZONTAL)
-        top_paned.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+        # 왼쪽 패널 (스크롤 가능한 영역으로 변경)
+        # 1. 스크롤바와 캔버스를 담을 컨테이너 프레임 생성
+        left_scroll_container = ttk.Frame(main_paned)
+        main_paned.add(left_scroll_container, weight=1)
+        left_scroll_container.grid_rowconfigure(0, weight=1)
+        left_scroll_container.grid_columnconfigure(0, weight=1)
 
-        # ==================== COLUMN 1 (Screen 1) ====================
-        # 📊 거래 요약, 📊 거래 상태, 🕯️ 캔들스틱 패턴, 📈 다이버전스
-        col1_container = self._create_scrollable_column(top_paned, bg='#f5f5f5')
-        top_paned.add(col1_container['frame'], weight=1)
+        # 2. 캔버스 생성
+        canvas = tk.Canvas(left_scroll_container)
+        canvas.grid(row=0, column=0, sticky='nsew')
 
-        self.create_summary_panel(col1_container['scrollable'])
-        self.create_status_panel(col1_container['scrollable'])
-        self.create_candlestick_pattern_panel(col1_container['scrollable'])
-        self.create_divergence_panel(col1_container['scrollable'])
-        self.create_market_regime_panel(col1_container['scrollable'])
+        # 3. 스크롤바 생성 및 캔버스와 연결
+        scrollbar = ttk.Scrollbar(left_scroll_container, orient='vertical', command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky='ns')
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-        # ==================== COLUMN 2 (Screen 2) ====================
-        # ⚙️ 엘리트 전략 설정, 🎯 종합 신호
-        col2_container = self._create_scrollable_column(top_paned, bg='#f5f5f5')
-        top_paned.add(col2_container['frame'], weight=1)
+        # 4. 캔버스 내부에 실제 위젯들이 들어갈 프레임 생성
+        scrollable_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=scrollable_frame, anchor='nw')
 
-        self.create_settings_panel(col2_container['scrollable'])
-        self.create_signal_panel(col2_container['scrollable'])
+        # 5. 스크롤 영역이 변경될 때 캔버스 업데이트
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        scrollable_frame.bind('<Configure>', on_frame_configure)
 
-        # ==================== COLUMN 3 (Screen 3) ====================
-        # ⚖️ 신호 가중치 조정
-        col3_container = self._create_scrollable_column(top_paned, bg='#f5f5f5')
-        top_paned.add(col3_container['frame'], weight=1)
+        # 오른쪽 패널 (로그)
+        right_frame = ttk.Frame(main_paned)
+        main_paned.add(right_frame, weight=2)
 
-        self.create_weight_adjustment_panel(col3_container['scrollable'])
+        # 왼쪽 패널 구성 (엘리트 전략 패널들 추가!)
+        # 이제 scrollable_frame에 위젯들을 추가합니다.
+        self.create_status_panel(scrollable_frame)
+        self.create_settings_panel(scrollable_frame)
+        self.create_weight_adjustment_panel(scrollable_frame)  # NEW! Weight Adjustment Panel
+        self.create_market_regime_panel(scrollable_frame)  # NEW!
+        self.create_signal_panel(scrollable_frame)          # NEW!
+        self.create_risk_panel(scrollable_frame)            # NEW!
+        self.create_profit_panel(scrollable_frame)
 
-        # ==================== COLUMN 4 (Screen 4) ====================
-        # ⚠️ ATR 기반 리스크 관리, 💰 수익 현황
-        col4_container = self._create_scrollable_column(top_paned, bg='#f5f5f5')
-        top_paned.add(col4_container['frame'], weight=1)
-
-        self.create_risk_panel(col4_container['scrollable'])
-        self.create_profit_panel(col4_container['scrollable'])
-
-        # ==================== BOTTOM: LOG PANEL (DOUBLE WIDTH) ====================
-        log_container = ttk.Frame(main_tab, style='Card.TFrame')
-        log_container.grid(row=1, column=0, sticky=(tk.W, tk.E), padx=5, pady=(5, 5))
-        self.create_log_panel(log_container)
+        # 오른쪽 패널 구성 (로그)
+        self.create_log_panel(right_frame)
 
         # 실시간 차트 탭 구성 (NEW!)
         chart_tab.columnconfigure(0, weight=1)
@@ -250,7 +202,7 @@ class TradingBotGUI:
     def create_status_panel(self, parent):
         """거래 상태 패널"""
         status_frame = ttk.LabelFrame(parent, text="📊 거래 상태", padding="10")
-        status_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+        status_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
         parent.columnconfigure(0, weight=1)
 
         # 현재 거래 코인
@@ -278,77 +230,10 @@ class TradingBotGUI:
         self.pending_orders_var = tk.StringVar(value="없음")
         ttk.Label(status_frame, textvariable=self.pending_orders_var, style='Status.TLabel').grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
-    def create_candlestick_pattern_panel(self, parent):
-        """캔들스틱 패턴 패널 (NEW!)"""
-        pattern_frame = ttk.LabelFrame(parent, text="🕯️ 캔들스틱 패턴", padding="10")
-        pattern_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
-        parent.columnconfigure(0, weight=1)
-
-        # 패턴 타입
-        ttk.Label(pattern_frame, text="패턴:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W)
-        self.pattern_type_var = tk.StringVar(value="None")
-        self.pattern_type_label = ttk.Label(pattern_frame, textvariable=self.pattern_type_var,
-                                           font=('Arial', 10, 'bold'), foreground='blue')
-        self.pattern_type_label.grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
-
-        # 패턴 점수
-        ttk.Label(pattern_frame, text="점수:", style='Title.TLabel').grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
-        self.pattern_score_var = tk.StringVar(value="0.00")
-        ttk.Label(pattern_frame, textvariable=self.pattern_score_var, style='Status.TLabel').grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # 패턴 신뢰도
-        ttk.Label(pattern_frame, text="신뢰도:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
-        self.pattern_confidence_var = tk.StringVar(value="0%")
-        ttk.Label(pattern_frame, textvariable=self.pattern_confidence_var, style='Status.TLabel').grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # 패턴 설명
-        ttk.Label(pattern_frame, text="설명:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
-        self.pattern_desc_var = tk.StringVar(value="-")
-        pattern_desc_label = ttk.Label(pattern_frame, textvariable=self.pattern_desc_var,
-                                      font=('Arial', 8), foreground='gray', wraplength=200)
-        pattern_desc_label.grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-    def create_divergence_panel(self, parent):
-        """다이버전스 신호 패널 (NEW!)"""
-        div_frame = ttk.LabelFrame(parent, text="📈 다이버전스 신호", padding="10")
-        div_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
-        parent.columnconfigure(0, weight=1)
-
-        # RSI 다이버전스
-        ttk.Label(div_frame, text="RSI 다이버전스:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W)
-        self.rsi_div_type_var = tk.StringVar(value="None")
-        self.rsi_div_label = ttk.Label(div_frame, textvariable=self.rsi_div_type_var,
-                                      font=('Arial', 9), foreground='blue')
-        self.rsi_div_label.grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
-
-        # RSI 다이버전스 강도
-        ttk.Label(div_frame, text="RSI 강도:", style='Title.TLabel').grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
-        self.rsi_div_strength_var = tk.StringVar(value="0%")
-        ttk.Label(div_frame, textvariable=self.rsi_div_strength_var, style='Status.TLabel').grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # MACD 다이버전스
-        ttk.Label(div_frame, text="MACD 다이버전스:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
-        self.macd_div_type_var = tk.StringVar(value="None")
-        self.macd_div_label = ttk.Label(div_frame, textvariable=self.macd_div_type_var,
-                                       font=('Arial', 9), foreground='purple')
-        self.macd_div_label.grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # MACD 다이버전스 강도
-        ttk.Label(div_frame, text="MACD 강도:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
-        self.macd_div_strength_var = tk.StringVar(value="0%")
-        ttk.Label(div_frame, textvariable=self.macd_div_strength_var, style='Status.TLabel').grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # 종합 다이버전스 보너스
-        ttk.Label(div_frame, text="종합 보너스:", style='Title.TLabel').grid(row=4, column=0, sticky=tk.W, pady=(5, 0))
-        self.div_bonus_var = tk.StringVar(value="+0.0%")
-        self.div_bonus_label = ttk.Label(div_frame, textvariable=self.div_bonus_var,
-                                        font=('Arial', 9, 'bold'), foreground='green')
-        self.div_bonus_label.grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
     def create_settings_panel(self, parent):
         """설정 패널"""
         settings_frame = ttk.LabelFrame(parent, text="⚙️ 엘리트 전략 설정", padding="10")
-        settings_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+        settings_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
         current_config = self.config_manager.get_config()
 
         # 전략 프리셋 선택 (NEW!)
@@ -470,409 +355,6 @@ class TradingBotGUI:
         apply_button = ttk.Button(settings_frame, text="📝 모든 설정 적용", command=self.apply_settings)
         apply_button.grid(row=4, column=0, columnspan=4, pady=(15, 0))
 
-    def create_weight_adjustment_panel(self, parent):
-        """신호 가중치 조정 패널 (NEW!)"""
-        weight_frame = ttk.LabelFrame(parent, text="⚖️ 신호 가중치 조정", padding="10")
-        weight_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
-        parent.columnconfigure(0, weight=1)
-
-        current_config = self.config_manager.get_config()
-        current_weights = current_config['strategy']['signal_weights']
-
-        # 가중치 슬라이더 변수 초기화
-        self.weight_vars = {}
-        self.weight_labels = {}
-        self.weight_sliders = {}
-
-        # 5개 주요 지표 가중치 슬라이더
-        indicators = [
-            ('macd', 'MACD', 0),
-            ('ma', 'Moving Average', 1),
-            ('rsi', 'RSI', 2),
-            ('bb', 'Bollinger Bands', 3),
-            ('volume', 'Volume', 4)
-        ]
-
-        for key, label_text, row in indicators:
-            # 지표 레이블
-            ttk.Label(weight_frame, text=f"{label_text}:", style='Title.TLabel').grid(
-                row=row, column=0, sticky=tk.W, pady=(5, 0)
-            )
-
-            # 슬라이더
-            self.weight_vars[key] = tk.DoubleVar(value=current_weights.get(key, 0.2))
-            slider = ttk.Scale(
-                weight_frame,
-                from_=0.0,
-                to=1.0,
-                orient=tk.HORIZONTAL,
-                variable=self.weight_vars[key],
-                command=lambda val, k=key: self.on_weight_changed(k, val)
-            )
-            slider.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(10, 10), pady=(5, 0))
-            self.weight_sliders[key] = slider
-
-            # 현재 값 표시 레이블
-            value_label = ttk.Label(
-                weight_frame,
-                text=f"{current_weights.get(key, 0.2):.2f} ({current_weights.get(key, 0.2)*100:.0f}%)",
-                style='Status.TLabel',
-                width=12
-            )
-            value_label.grid(row=row, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-            self.weight_labels[key] = value_label
-
-        # 컬럼 가중치 설정 (슬라이더가 확장되도록)
-        weight_frame.columnconfigure(1, weight=1)
-
-        # 구분선
-        ttk.Separator(weight_frame, orient=tk.HORIZONTAL).grid(
-            row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10)
-        )
-
-        # 합계 표시 및 상태 표시
-        summary_frame = ttk.Frame(weight_frame)
-        summary_frame.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(5, 0))
-
-        ttk.Label(summary_frame, text="합계:", style='Title.TLabel').pack(side=tk.LEFT)
-        self.total_weight_var = tk.StringVar(value="1.00")
-        self.total_weight_label = ttk.Label(
-            summary_frame,
-            textvariable=self.total_weight_var,
-            font=('Arial', 10, 'bold'),
-            foreground='green'
-        )
-        self.total_weight_label.pack(side=tk.LEFT, padx=(10, 20))
-
-        # 자동 정규화 체크박스
-        self.auto_normalize_var = tk.BooleanVar(value=True)
-        auto_normalize_check = ttk.Checkbutton(
-            summary_frame,
-            text="자동 정규화",
-            variable=self.auto_normalize_var,
-            command=self.on_auto_normalize_changed
-        )
-        auto_normalize_check.pack(side=tk.LEFT, padx=(0, 10))
-
-        # 상태 아이콘
-        self.weight_status_var = tk.StringVar(value="✓")
-        status_label = ttk.Label(
-            summary_frame,
-            textvariable=self.weight_status_var,
-            font=('Arial', 12, 'bold'),
-            foreground='green'
-        )
-        status_label.pack(side=tk.LEFT)
-
-        # 구분선
-        ttk.Separator(weight_frame, orient=tk.HORIZONTAL).grid(
-            row=7, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10)
-        )
-
-        # 임계값 슬라이더
-        threshold_title = ttk.Label(
-            weight_frame,
-            text="거래 임계값",
-            font=('Arial', 10, 'bold')
-        )
-        threshold_title.grid(row=8, column=0, columnspan=3, sticky=tk.W, pady=(5, 5))
-
-        # 신호 임계값 슬라이더
-        ttk.Label(weight_frame, text="신호 임계값:", style='Title.TLabel').grid(
-            row=9, column=0, sticky=tk.W, pady=(5, 0)
-        )
-        self.signal_threshold_var = tk.DoubleVar(
-            value=current_config['strategy'].get('signal_threshold', 0.5)
-        )
-        signal_threshold_slider = ttk.Scale(
-            weight_frame,
-            from_=-1.0,
-            to=1.0,
-            orient=tk.HORIZONTAL,
-            variable=self.signal_threshold_var,
-            command=self.on_signal_threshold_changed
-        )
-        signal_threshold_slider.grid(row=9, column=1, sticky=(tk.W, tk.E), padx=(10, 10), pady=(5, 0))
-
-        self.signal_threshold_label = ttk.Label(
-            weight_frame,
-            text=f"{current_config['strategy'].get('signal_threshold', 0.5):.2f}",
-            style='Status.TLabel',
-            width=12
-        )
-        self.signal_threshold_label.grid(row=9, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-
-        # 신뢰도 임계값 슬라이더
-        ttk.Label(weight_frame, text="신뢰도 임계값:", style='Title.TLabel').grid(
-            row=10, column=0, sticky=tk.W, pady=(5, 0)
-        )
-        self.confidence_threshold_var = tk.DoubleVar(
-            value=current_config['strategy'].get('confidence_threshold', 0.6)
-        )
-        confidence_threshold_slider = ttk.Scale(
-            weight_frame,
-            from_=0.0,
-            to=1.0,
-            orient=tk.HORIZONTAL,
-            variable=self.confidence_threshold_var,
-            command=self.on_confidence_threshold_changed
-        )
-        confidence_threshold_slider.grid(row=10, column=1, sticky=(tk.W, tk.E), padx=(10, 10), pady=(5, 0))
-
-        self.confidence_threshold_label = ttk.Label(
-            weight_frame,
-            text=f"{current_config['strategy'].get('confidence_threshold', 0.6):.2f}",
-            style='Status.TLabel',
-            width=12
-        )
-        self.confidence_threshold_label.grid(row=10, column=2, sticky=tk.W, padx=(5, 0), pady=(5, 0))
-
-        # 구분선
-        ttk.Separator(weight_frame, orient=tk.HORIZONTAL).grid(
-            row=11, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10)
-        )
-
-        # 버튼 프레임
-        button_frame = ttk.Frame(weight_frame)
-        button_frame.grid(row=12, column=0, columnspan=3, pady=(5, 0))
-
-        # 기본값 복원 버튼
-        reset_button = ttk.Button(
-            button_frame,
-            text="🔄 기본값 복원",
-            command=self.reset_weights_to_default
-        )
-        reset_button.pack(side=tk.LEFT, padx=(0, 10))
-
-        # 설정 저장 버튼
-        save_button = ttk.Button(
-            button_frame,
-            text="💾 가중치 저장",
-            command=self.save_weight_settings
-        )
-        save_button.pack(side=tk.LEFT)
-
-        # 초기 합계 계산
-        self.update_total_weight()
-
-    def on_weight_changed(self, key, value):
-        """가중치 슬라이더 변경 시 호출"""
-        try:
-            value = float(value)
-
-            # 레이블 업데이트
-            self.weight_labels[key].config(text=f"{value:.2f} ({value*100:.0f}%)")
-
-            # 자동 정규화가 활성화된 경우
-            if self.auto_normalize_var.get():
-                self.auto_normalize_weights(changed_key=key)
-            else:
-                # 수동 모드: 합계만 업데이트
-                self.update_total_weight()
-
-        except Exception as e:
-            print(f"가중치 변경 오류: {e}")
-
-    def auto_normalize_weights(self, changed_key):
-        """가중치 자동 정규화"""
-        try:
-            # 현재 변경된 가중치를 제외한 나머지 가중치들의 합 계산
-            changed_value = self.weight_vars[changed_key].get()
-            remaining = 1.0 - changed_value
-
-            # 나머지 가중치들의 현재 합 계산
-            other_keys = [k for k in self.weight_vars.keys() if k != changed_key]
-            other_sum = sum(self.weight_vars[k].get() for k in other_keys)
-
-            if other_sum > 0 and remaining >= 0:
-                # 나머지 가중치들을 비율에 맞게 조정
-                for key in other_keys:
-                    old_value = self.weight_vars[key].get()
-                    new_value = (old_value / other_sum) * remaining
-                    self.weight_vars[key].set(new_value)
-                    self.weight_labels[key].config(text=f"{new_value:.2f} ({new_value*100:.0f}%)")
-
-            # 합계 업데이트
-            self.update_total_weight()
-
-        except Exception as e:
-            print(f"자동 정규화 오류: {e}")
-
-    def on_auto_normalize_changed(self):
-        """자동 정규화 체크박스 변경 시"""
-        if self.auto_normalize_var.get():
-            # 자동 정규화 활성화 시 즉시 정규화 수행
-            self.normalize_all_weights()
-            self.add_log("INFO", "자동 정규화가 활성화되었습니다")
-        else:
-            self.add_log("INFO", "자동 정규화가 비활성화되었습니다 (수동 조정 모드)")
-
-    def normalize_all_weights(self):
-        """모든 가중치를 정규화"""
-        try:
-            # 현재 가중치 수집
-            weights = {key: var.get() for key, var in self.weight_vars.items()}
-
-            # ConfigManager를 통해 정규화
-            normalized = self.config_manager.normalize_weights(weights)
-
-            # 정규화된 값으로 업데이트
-            for key, value in normalized.items():
-                self.weight_vars[key].set(value)
-                self.weight_labels[key].config(text=f"{value:.2f} ({value*100:.0f}%)")
-
-            self.update_total_weight()
-
-        except Exception as e:
-            print(f"정규화 오류: {e}")
-
-    def update_total_weight(self):
-        """가중치 합계 업데이트 및 상태 표시"""
-        try:
-            total = sum(var.get() for var in self.weight_vars.values())
-            self.total_weight_var.set(f"{total:.2f}")
-
-            # 합계에 따른 색상 및 상태 변경
-            if 0.99 <= total <= 1.01:
-                # 정상 범위
-                self.total_weight_label.config(foreground='green')
-                self.weight_status_var.set("✓")
-            elif 0.95 <= total <= 1.05:
-                # 경고 범위
-                self.total_weight_label.config(foreground='orange')
-                self.weight_status_var.set("⚠")
-            else:
-                # 오류 범위
-                self.total_weight_label.config(foreground='red')
-                self.weight_status_var.set("✗")
-
-        except Exception as e:
-            print(f"합계 업데이트 오류: {e}")
-
-    def on_signal_threshold_changed(self, value):
-        """신호 임계값 슬라이더 변경 시"""
-        try:
-            value = float(value)
-            self.signal_threshold_label.config(text=f"{value:.2f}")
-        except Exception as e:
-            print(f"신호 임계값 변경 오류: {e}")
-
-    def on_confidence_threshold_changed(self, value):
-        """신뢰도 임계값 슬라이더 변경 시"""
-        try:
-            value = float(value)
-            self.confidence_threshold_label.config(text=f"{value:.2f}")
-        except Exception as e:
-            print(f"신뢰도 임계값 변경 오류: {e}")
-
-    def reset_weights_to_default(self):
-        """가중치를 기본값으로 복원"""
-        try:
-            # 확인 대화상자
-            result = messagebox.askyesno(
-                "기본값 복원",
-                "가중치를 기본값으로 복원하시겠습니까?\n\n"
-                "MACD: 0.35, MA: 0.25, RSI: 0.20\n"
-                "BB: 0.10, Volume: 0.10"
-            )
-
-            if not result:
-                return
-
-            # 기본 가중치 (config.py에서 가져오기)
-            default_weights = {
-                'macd': 0.35,
-                'ma': 0.25,
-                'rsi': 0.20,
-                'bb': 0.10,
-                'volume': 0.10
-            }
-
-            # 슬라이더 및 레이블 업데이트
-            for key, value in default_weights.items():
-                self.weight_vars[key].set(value)
-                self.weight_labels[key].config(text=f"{value:.2f} ({value*100:.0f}%)")
-
-            # 임계값도 기본값으로 복원
-            self.signal_threshold_var.set(0.5)
-            self.signal_threshold_label.config(text="0.50")
-
-            self.confidence_threshold_var.set(0.6)
-            self.confidence_threshold_label.config(text="0.60")
-
-            # 합계 업데이트
-            self.update_total_weight()
-
-            self.add_log("SUCCESS", "가중치가 기본값으로 복원되었습니다")
-
-        except Exception as e:
-            self.add_log("ERROR", f"기본값 복원 실패: {e}")
-            messagebox.showerror("오류", f"기본값 복원 중 오류가 발생했습니다:\n{e}")
-
-    def save_weight_settings(self):
-        """가중치 설정 저장"""
-        try:
-            # 현재 가중치 수집
-            weights = {key: var.get() for key, var in self.weight_vars.items()}
-
-            # 자동 정규화가 비활성화된 경우 합계 검증
-            if not self.auto_normalize_var.get():
-                total = sum(weights.values())
-                if not (0.99 <= total <= 1.01):
-                    result = messagebox.askyesno(
-                        "가중치 합계 오류",
-                        f"가중치 합계가 1.0이 아닙니다 (현재: {total:.3f})\n\n"
-                        "자동으로 정규화하시겠습니까?"
-                    )
-                    if result:
-                        weights = self.config_manager.normalize_weights(weights)
-                        # 정규화된 값으로 슬라이더 업데이트
-                        for key, value in weights.items():
-                            self.weight_vars[key].set(value)
-                            self.weight_labels[key].config(text=f"{value:.2f} ({value*100:.0f}%)")
-                        self.update_total_weight()
-                    else:
-                        return
-
-            # ConfigManager를 통해 가중치 업데이트
-            if self.config_manager.update_signal_weights(weights):
-                # 임계값도 함께 업데이트
-                signal_threshold = self.signal_threshold_var.get()
-                confidence_threshold = self.confidence_threshold_var.get()
-
-                self.config_manager.update_thresholds(
-                    signal_threshold=signal_threshold,
-                    confidence_threshold=confidence_threshold
-                )
-
-                self.add_log("SUCCESS", f"가중치가 저장되었습니다: {weights}")
-                self.add_log("INFO", f"신호 임계값: {signal_threshold:.2f}, 신뢰도 임계값: {confidence_threshold:.2f}")
-
-                messagebox.showinfo(
-                    "저장 완료",
-                    "가중치 설정이 저장되었습니다.\n\n"
-                    "변경사항은 다음 거래 사이클부터 적용됩니다."
-                )
-
-                # 봇이 실행 중이면 재시작 제안
-                if self.is_running:
-                    result = messagebox.askyesno(
-                        "봇 재시작",
-                        "새로운 가중치를 즉시 적용하려면 봇을 재시작해야 합니다.\n\n"
-                        "지금 재시작하시겠습니까?"
-                    )
-                    if result:
-                        self.stop_bot()
-                        self.root.after(1000, self.start_bot)
-
-            else:
-                self.add_log("ERROR", "가중치 저장 실패 - 검증 오류")
-                messagebox.showerror("저장 실패", "가중치 검증에 실패했습니다.")
-
-        except Exception as e:
-            self.add_log("ERROR", f"가중치 저장 실패: {e}")
-            messagebox.showerror("오류", f"가중치 저장 중 오류가 발생했습니다:\n{e}")
-
     def create_market_regime_panel(self, parent):
         """시장 국면 패널 (NEW!)"""
         regime_frame = ttk.LabelFrame(parent, text="🔵 시장 국면 분석", padding="10")
@@ -970,50 +452,6 @@ class TradingBotGUI:
         self.rr_ratio_var = tk.StringVar(value="-")
         ttk.Label(risk_frame, textvariable=self.rr_ratio_var, style='Status.TLabel').grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
-        # Separator
-        ttk.Separator(risk_frame, orient=tk.HORIZONTAL).grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 10))
-
-        # Chandelier Exit (Trailing Stop)
-        ttk.Label(risk_frame, text="Chandelier Stop:", style='Title.TLabel').grid(row=6, column=0, sticky=tk.W)
-        self.chandelier_stop_var = tk.StringVar(value="-")
-        self.chandelier_stop_label = ttk.Label(risk_frame, textvariable=self.chandelier_stop_var,
-                                              foreground='orange', font=('Arial', 9))
-        self.chandelier_stop_label.grid(row=6, column=1, sticky=tk.W, padx=(10, 0))
-
-        # Chandelier Exit Distance
-        ttk.Label(risk_frame, text="Stop 거리:", style='Title.TLabel').grid(row=7, column=0, sticky=tk.W, pady=(5, 0))
-        self.chandelier_distance_var = tk.StringVar(value="-")
-        ttk.Label(risk_frame, textvariable=self.chandelier_distance_var, style='Status.TLabel').grid(row=7, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # Chandelier Exit Status
-        ttk.Label(risk_frame, text="Stop 상태:", style='Title.TLabel').grid(row=8, column=0, sticky=tk.W, pady=(5, 0))
-        self.chandelier_status_var = tk.StringVar(value="-")
-        self.chandelier_status_label = ttk.Label(risk_frame, textvariable=self.chandelier_status_var,
-                                                 font=('Arial', 9))
-        self.chandelier_status_label.grid(row=8, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # Separator
-        ttk.Separator(risk_frame, orient=tk.HORIZONTAL).grid(row=9, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 10))
-
-        # BB Squeeze Status
-        ttk.Label(risk_frame, text="BB Squeeze:", style='Title.TLabel').grid(row=10, column=0, sticky=tk.W)
-        self.bb_squeeze_var = tk.StringVar(value="Inactive")
-        self.bb_squeeze_label = ttk.Label(risk_frame, textvariable=self.bb_squeeze_var,
-                                         font=('Arial', 9), foreground='gray')
-        self.bb_squeeze_label.grid(row=10, column=1, sticky=tk.W, padx=(10, 0))
-
-        # BB Squeeze Duration
-        ttk.Label(risk_frame, text="Squeeze 지속:", style='Title.TLabel').grid(row=11, column=0, sticky=tk.W, pady=(5, 0))
-        self.bb_squeeze_duration_var = tk.StringVar(value="-")
-        ttk.Label(risk_frame, textvariable=self.bb_squeeze_duration_var, style='Status.TLabel').grid(row=11, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
-        # BB Breakout Direction
-        ttk.Label(risk_frame, text="예상 방향:", style='Title.TLabel').grid(row=12, column=0, sticky=tk.W, pady=(5, 0))
-        self.bb_breakout_var = tk.StringVar(value="-")
-        self.bb_breakout_label = ttk.Label(risk_frame, textvariable=self.bb_breakout_var,
-                                          font=('Arial', 9), foreground='blue')
-        self.bb_breakout_label.grid(row=12, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
-
     def create_profit_panel(self, parent):
         """수익 현황 패널"""
         profit_frame = ttk.LabelFrame(parent, text="💰 수익 현황", padding="10")
@@ -1051,125 +489,23 @@ class TradingBotGUI:
         self.profit_chart.pack(fill=tk.BOTH, expand=True)
 
     def create_log_panel(self, parent):
-        """로그 패널 - 콘솔 스타일 (DOUBLE WIDTH - 가로 확장)"""
-        log_frame = ttk.LabelFrame(parent, text="📝 실시간 로그 (콘솔)", padding="5")
-        log_frame.pack(fill=tk.BOTH, expand=True)  # expand=True로 변경하여 가로 확장
+        """로그 패널"""
+        log_frame = ttk.LabelFrame(parent, text="📝 실시간 로그", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 로그 텍스트 위젯 - 고정 높이, 모노스페이스 폰트, 작은 크기
-        # WIDTH DOUBLED: 기본 80 → 160 characters for horizontal expansion
-        self.log_text = scrolledtext.ScrolledText(
-            log_frame,
-            height=8,  # 줄어든 높이 (20 → 8)
-            width=160,  # NEW! 가로 너비 2배 확장 (80 → 160)
-            wrap=tk.WORD,
-            font=('Monaco', 9),  # 모노스페이스 폰트, 작은 크기
-            bg='#1e1e1e',  # 다크 배경 (콘솔 느낌)
-            fg='#d4d4d4'   # 밝은 글자색
-        )
-        self.log_text.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)  # expand=True 추가
+        # 로그 텍스트 위젯
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=20, wrap=tk.WORD)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
 
-        # 로그 레벨별 색상 태그 설정 (콘솔 스타일)
-        self.log_text.tag_configure("INFO", foreground="#4ec9b0")      # 청록색
-        self.log_text.tag_configure("WARNING", foreground="#ce9178")   # 주황색
-        self.log_text.tag_configure("ERROR", foreground="#f48771")     # 빨간색
-        self.log_text.tag_configure("SUCCESS", foreground="#b5cea8")   # 연두색
-
-        # 오른쪽 버튼 영역
-        button_frame = ttk.Frame(log_frame)
-        button_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
+        # 로그 레벨별 색상 태그 설정
+        self.log_text.tag_configure("INFO", foreground="blue")
+        self.log_text.tag_configure("WARNING", foreground="orange")
+        self.log_text.tag_configure("ERROR", foreground="red")
+        self.log_text.tag_configure("SUCCESS", foreground="green")
 
         # 로그 클리어 버튼
-        clear_button = ttk.Button(button_frame, text="🗑\n지우기", command=self.clear_logs, width=6)
-        clear_button.pack(pady=(0, 5))
-
-        # 자동 스크롤 토글
-        self.auto_scroll_var = tk.BooleanVar(value=True)
-        auto_scroll_check = ttk.Checkbutton(
-            button_frame,
-            text="자동\n스크롤",
-            variable=self.auto_scroll_var,
-            width=6
-        )
-        auto_scroll_check.pack()
-
-    def create_summary_panel(self, parent):
-        """오른쪽 요약 패널 - 주요 정보 표시"""
-        summary_frame = ttk.LabelFrame(parent, text="📊 거래 요약", padding="10")
-        summary_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
-        parent.columnconfigure(0, weight=1)
-
-        # 큰 글씨로 주요 정보 표시
-        price_frame = ttk.Frame(summary_frame)
-        price_frame.pack(fill=tk.X, pady=(0, 10))
-
-        self.summary_price_var = tk.StringVar(value="0 KRW")
-        price_label = ttk.Label(
-            price_frame,
-            textvariable=self.summary_price_var,
-            font=('Arial', 24, 'bold')
-        )
-        price_label.pack()
-
-        ttk.Label(price_frame, text="현재 가격", font=('Arial', 10)).pack()
-
-        # 수익률 표시
-        profit_frame = ttk.Frame(summary_frame)
-        profit_frame.pack(fill=tk.X, pady=(10, 0))
-
-        self.summary_profit_var = tk.StringVar(value="0%")
-        self.summary_profit_label = ttk.Label(
-            profit_frame,
-            textvariable=self.summary_profit_var,
-            font=('Arial', 20, 'bold'),
-            foreground='gray'
-        )
-        self.summary_profit_label.pack()
-
-        ttk.Label(profit_frame, text="수익률", font=('Arial', 10)).pack()
-
-        # 마지막 액션 표시
-        action_frame = ttk.Frame(summary_frame)
-        action_frame.pack(fill=tk.X, pady=(10, 0))
-
-        self.summary_action_var = tk.StringVar(value="HOLD")
-        ttk.Label(
-            action_frame,
-            textvariable=self.summary_action_var,
-            font=('Arial', 16, 'bold')
-        )  .pack()
-
-        ttk.Label(action_frame, text="마지막 신호", font=('Arial', 10)).pack()
-
-    def update_summary_panel(self):
-        """요약 패널 업데이트"""
-        try:
-            # 현재 가격 업데이트
-            current_price = self.bot_status.get('current_price', 0)
-            self.summary_price_var.set(f"{current_price:,.0f} KRW" if current_price > 0 else "0 KRW")
-
-            # 수익률 계산 및 업데이트
-            avg_buy_price = self.bot_status.get('avg_buy_price', 0)
-            if avg_buy_price > 0 and current_price > 0:
-                profit_rate = ((current_price - avg_buy_price) / avg_buy_price) * 100
-                self.summary_profit_var.set(f"{profit_rate:+.2f}%")
-
-                # 수익/손실에 따라 색상 변경
-                if profit_rate > 0:
-                    self.summary_profit_label.configure(foreground='green')
-                elif profit_rate < 0:
-                    self.summary_profit_label.configure(foreground='red')
-                else:
-                    self.summary_profit_label.configure(foreground='gray')
-            else:
-                self.summary_profit_var.set("0.00%")
-                self.summary_profit_label.configure(foreground='gray')
-
-            # 마지막 액션 업데이트
-            last_action = self.bot_status.get('last_action', 'HOLD')
-            self.summary_action_var.set(last_action)
-
-        except Exception as e:
-            pass  # 조용히 실패
+        clear_button = ttk.Button(log_frame, text="🗑 로그 지우기", command=self.clear_logs)
+        clear_button.pack(pady=(10, 0))
 
     def on_candle_interval_changed(self, event=None):
         """캔들 간격 변경 시 호출"""
@@ -1539,9 +875,7 @@ class TradingBotGUI:
                 try:
                     level, message = self.log_queue.get_nowait()
                     self.log_text.insert(tk.END, message + "\n", level)
-                    # 자동 스크롤 옵션에 따라 스크롤
-                    if self.auto_scroll_var.get():
-                        self.log_text.see(tk.END)
+                    self.log_text.see(tk.END)
                 except queue.Empty:
                     break
 
@@ -1550,9 +884,6 @@ class TradingBotGUI:
 
             # 수익 현황 업데이트
             self.update_profit_status()
-
-            # 요약 패널 업데이트
-            self.update_summary_panel()
 
             # 거래 내역 자동 새로고침 (봇이 실행 중이고 60초마다)
             if self.bot and self.is_running and hasattr(self, 'history_refresh_counter'):
@@ -1626,7 +957,7 @@ class TradingBotGUI:
             current_coin = self.config_manager.get_config()['trading']['target_ticker']
 
             # 최근 거래 내역 표시
-            recent_transactions = list(self.transaction_history.transactions)[-10:]  # 최근 10건 (deque를 list로 변환 후 슬라이싱)
+            recent_transactions = self.transaction_history.transactions[-10:]  # 최근 10건
 
             chart_text = f"=== {current_coin} 최근 거래 ===\n\n"
 
@@ -1768,125 +1099,6 @@ class TradingBotGUI:
                     self.rr_ratio_var.set(
                         f"TP1: 1:{exit_levels['rr_ratio_1']:.2f}, TP2: 1:{exit_levels['rr_ratio_2']:.2f}"
                     )
-
-                # NEW: 캔들스틱 패턴 업데이트
-                candlestick_pattern = analysis.get('candlestick_pattern', {})
-                if candlestick_pattern:
-                    pattern_type = candlestick_pattern.get('pattern_type', 'None')
-                    pattern_score = candlestick_pattern.get('pattern_score', 0.0)
-                    pattern_confidence = candlestick_pattern.get('pattern_confidence', 0.0)
-                    pattern_desc = candlestick_pattern.get('pattern_description', '-')
-
-                    self.pattern_type_var.set(pattern_type)
-                    self.pattern_score_var.set(f"{pattern_score:+.2f}")
-                    self.pattern_confidence_var.set(f"{pattern_confidence:.0f}%")
-                    self.pattern_desc_var.set(pattern_desc)
-
-                    # Color coding
-                    if pattern_score > 0:
-                        self.pattern_type_label.config(foreground='green')
-                    elif pattern_score < 0:
-                        self.pattern_type_label.config(foreground='red')
-                    else:
-                        self.pattern_type_label.config(foreground='blue')
-
-                # NEW: 다이버전스 업데이트
-                rsi_divergence = analysis.get('rsi_divergence', {})
-                if rsi_divergence:
-                    rsi_div_type = rsi_divergence.get('divergence_type', 'None')
-                    rsi_div_strength = rsi_divergence.get('strength', 0.0)
-
-                    self.rsi_div_type_var.set(rsi_div_type)
-                    self.rsi_div_strength_var.set(f"{rsi_div_strength:.0f}%")
-
-                    if rsi_div_type == 'Bullish':
-                        self.rsi_div_label.config(foreground='green')
-                    elif rsi_div_type == 'Bearish':
-                        self.rsi_div_label.config(foreground='red')
-                    else:
-                        self.rsi_div_label.config(foreground='gray')
-
-                macd_divergence = analysis.get('macd_divergence', {})
-                if macd_divergence:
-                    macd_div_type = macd_divergence.get('divergence_type', 'None')
-                    macd_div_strength = macd_divergence.get('strength', 0.0)
-
-                    self.macd_div_type_var.set(macd_div_type)
-                    self.macd_div_strength_var.set(f"{macd_div_strength:.0f}%")
-
-                    if macd_div_type == 'Bullish':
-                        self.macd_div_label.config(foreground='green')
-                    elif macd_div_type == 'Bearish':
-                        self.macd_div_label.config(foreground='red')
-                    else:
-                        self.macd_div_label.config(foreground='gray')
-
-                # Calculate combined divergence bonus
-                total_div_bonus = (rsi_divergence.get('strength', 0) + macd_divergence.get('strength', 0)) / 2
-                self.div_bonus_var.set(f"+{total_div_bonus:.1f}%")
-                if total_div_bonus > 50:
-                    self.div_bonus_label.config(foreground='darkgreen')
-                elif total_div_bonus > 0:
-                    self.div_bonus_label.config(foreground='green')
-                else:
-                    self.div_bonus_label.config(foreground='gray')
-
-                # NEW: Chandelier Exit 업데이트
-                chandelier_exit = analysis.get('chandelier_exit', {})
-                if chandelier_exit:
-                    stop_price = chandelier_exit.get('stop_price', 0)
-                    distance_percent = chandelier_exit.get('distance_percent', 0)
-                    trailing_status = chandelier_exit.get('trailing_status', '-')
-
-                    if stop_price > 0:
-                        self.chandelier_stop_var.set(f"{stop_price:,.0f}원")
-                        self.chandelier_distance_var.set(f"{distance_percent:.2f}%")
-
-                        status_text_map = {
-                            'active': '✅ Active',
-                            'triggered': '🚨 Triggered',
-                            'initial': '🔵 Initial'
-                        }
-                        status_display = status_text_map.get(trailing_status, trailing_status)
-                        self.chandelier_status_var.set(status_display)
-
-                        if trailing_status == 'triggered':
-                            self.chandelier_status_label.config(foreground='red')
-                        elif trailing_status == 'active':
-                            self.chandelier_status_label.config(foreground='green')
-                        else:
-                            self.chandelier_status_label.config(foreground='blue')
-
-                # NEW: BB Squeeze 업데이트
-                bb_squeeze = analysis.get('bb_squeeze', {})
-                if bb_squeeze:
-                    is_squeezing = bb_squeeze.get('is_squeezing', False)
-                    squeeze_duration = bb_squeeze.get('squeeze_duration', 0)
-                    breakout_direction = bb_squeeze.get('breakout_direction', 'neutral')
-
-                    if is_squeezing:
-                        self.bb_squeeze_var.set("🟡 Active")
-                        self.bb_squeeze_label.config(foreground='orange')
-                        self.bb_squeeze_duration_var.set(f"{squeeze_duration} candles")
-                    else:
-                        self.bb_squeeze_var.set("Inactive")
-                        self.bb_squeeze_label.config(foreground='gray')
-                        self.bb_squeeze_duration_var.set("-")
-
-                    direction_text_map = {
-                        'up': '⬆️ Upward',
-                        'down': '⬇️ Downward',
-                        'neutral': '➡️ Neutral'
-                    }
-                    breakout_text = direction_text_map.get(breakout_direction, breakout_direction)
-                    self.bb_breakout_var.set(breakout_text)
-
-                    if breakout_direction == 'up':
-                        self.bb_breakout_label.config(foreground='green')
-                    elif breakout_direction == 'down':
-                        self.bb_breakout_label.config(foreground='red')
-                    else:
-                        self.bb_breakout_label.config(foreground='gray')
 
             # 마지막 액션 로그 추가
             last_action = status.get('last_action', '')

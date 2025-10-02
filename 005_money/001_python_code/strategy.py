@@ -6,6 +6,31 @@ from logger import TradingLogger
 from datetime import datetime, timedelta
 import config
 
+def _validate_indicator_series(series: pd.Series, min_val: float = None, max_val: float = None, fill_value: float = 0) -> pd.Series:
+    """
+    FIX: Validate and clean indicator values to prevent NaN/Inf propagation
+
+    Args:
+        series: pandas Series to validate
+        min_val: Minimum allowed value (clips below this)
+        max_val: Maximum allowed value (clips above this)
+        fill_value: Value to use for NaN replacement
+
+    Returns:
+        Cleaned series with no NaN or Inf values
+    """
+    # Remove inf values (replace with NaN first, then fill)
+    series = series.replace([np.inf, -np.inf], np.nan)
+
+    # Clip to valid range if specified
+    if min_val is not None or max_val is not None:
+        series = series.clip(lower=min_val, upper=max_val)
+
+    # Fill remaining NaN values
+    series = series.fillna(fill_value)
+
+    return series
+
 def calculate_moving_average(df: pd.DataFrame, window: int) -> pd.Series:
     """
     주어진 데이터프레임과 윈도우 크기를 사용하여 이동평균을 계산합니다.
@@ -24,8 +49,16 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
 
+    # FIX: Prevent division by zero and handle edge cases
+    # Replace zero loss with small epsilon to avoid Inf
+    loss = loss.replace(0, 1e-10)
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
+
+    # FIX: Clip to valid range [0, 100] and fill any remaining NaN with neutral value
+    rsi = rsi.clip(0, 100)
+    rsi = rsi.fillna(50)  # Neutral RSI when insufficient data
+
     return rsi
 
 def calculate_bollinger_bands(df: pd.DataFrame, window: int = 20, num_std: float = 2) -> Tuple[pd.Series, pd.Series, pd.Series]:
@@ -181,6 +214,713 @@ def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     adx = dx.rolling(period).mean()
 
     return adx
+
+def detect_candlestick_patterns(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    촛대 패턴 인식 (Candlestick Pattern Recognition)
+
+    주요 패턴:
+    - Bullish/Bearish Engulfing (강세/약세 포용형)
+    - Hammer/Inverted Hammer (망치형/역망치형)
+    - Dragonfly/Gravestone Doji (잠자리/비석형 도지)
+
+    Args:
+        df: OHLCV 데이터프레임 (최소 3개 캔들 필요)
+
+    Returns:
+        pattern_type: 감지된 패턴 이름
+        pattern_score: 패턴 신호 강도 (-1.0 ~ +1.0)
+        pattern_confidence: 패턴 신뢰도 (0.0 ~ 1.0)
+        pattern_description: 패턴 설명
+    """
+    if len(df) < 3:
+        return {
+            'pattern_type': 'none',
+            'pattern_score': 0.0,
+            'pattern_confidence': 0.0,
+            'pattern_description': '데이터 부족'
+        }
+
+    try:
+        # 최근 3개 캔들 추출
+        last_candle = df.iloc[-1]
+        prev_candle = df.iloc[-2]
+        prev_prev_candle = df.iloc[-3] if len(df) >= 3 else None
+
+        open_price = last_candle['open']
+        close_price = last_candle['close']
+        high_price = last_candle['high']
+        low_price = last_candle['low']
+
+        prev_open = prev_candle['open']
+        prev_close = prev_candle['close']
+        prev_high = prev_candle['high']
+        prev_low = prev_candle['low']
+
+        # 캔들 바디와 꼬리 크기 계산
+        body_size = abs(close_price - open_price)
+        candle_range = high_price - low_price
+        upper_shadow = high_price - max(open_price, close_price)
+        lower_shadow = min(open_price, close_price) - low_price
+
+        prev_body_size = abs(prev_close - prev_open)
+
+        # NaN 체크 및 제로 디비전 방지
+        if candle_range == 0 or pd.isna(candle_range):
+            candle_range = 0.0001
+        if prev_body_size == 0 or pd.isna(prev_body_size):
+            prev_body_size = 0.0001
+
+        body_ratio = body_size / candle_range
+
+        # 패턴 감지 변수 초기화
+        pattern_type = 'none'
+        pattern_score = 0.0
+        pattern_confidence = 0.0
+        pattern_description = '패턴 없음'
+
+        # 1. Bullish Engulfing (강세 포용형)
+        # 이전 캔들이 음봉, 현재 캔들이 양봉이면서 이전 캔들을 완전히 포용
+        if (prev_close < prev_open and  # 이전 캔들이 음봉
+            close_price > open_price and  # 현재 캔들이 양봉
+            open_price < prev_close and   # 현재 시가가 이전 종가보다 낮음
+            close_price > prev_open):     # 현재 종가가 이전 시가보다 높음
+
+            # 포용 강도 계산 (현재 바디가 이전 바디를 얼마나 초과하는지)
+            engulfing_strength = min(body_size / prev_body_size, 2.0) / 2.0
+            pattern_type = 'bullish_engulfing'
+            pattern_score = 0.7 + (engulfing_strength * 0.3)  # 0.7 ~ 1.0
+            pattern_confidence = 0.8 if engulfing_strength > 1.5 else 0.6
+            pattern_description = '강세 포용형 (Bullish Engulfing) - 반등 신호'
+
+        # 2. Bearish Engulfing (약세 포용형)
+        elif (prev_close > prev_open and  # 이전 캔들이 양봉
+              close_price < open_price and  # 현재 캔들이 음봉
+              open_price > prev_close and   # 현재 시가가 이전 종가보다 높음
+              close_price < prev_open):     # 현재 종가가 이전 시가보다 낮음
+
+            engulfing_strength = min(body_size / prev_body_size, 2.0) / 2.0
+            pattern_type = 'bearish_engulfing'
+            pattern_score = -(0.7 + (engulfing_strength * 0.3))  # -1.0 ~ -0.7
+            pattern_confidence = 0.8 if engulfing_strength > 1.5 else 0.6
+            pattern_description = '약세 포용형 (Bearish Engulfing) - 하락 신호'
+
+        # 3. Hammer (망치형) - 하락 추세에서 반등 신호
+        elif (body_ratio < 0.3 and  # 작은 바디
+              lower_shadow > body_size * 2 and  # 긴 아래 꼬리 (바디의 2배 이상)
+              upper_shadow < body_size * 0.5):  # 짧은 위 꼬리
+
+            # 하락 추세 확인 (이전 2개 캔들이 하락)
+            is_downtrend = (prev_close < prev_open and
+                           (prev_prev_candle is not None and prev_prev_candle['close'] > prev_open))
+
+            pattern_type = 'hammer'
+            pattern_score = 0.6 if is_downtrend else 0.4
+            pattern_confidence = 0.7 if is_downtrend else 0.5
+            pattern_description = '망치형 (Hammer) - 하락 후 반등 가능'
+
+        # 4. Inverted Hammer (역망치형) - 하락 추세에서 반등 신호
+        elif (body_ratio < 0.3 and
+              upper_shadow > body_size * 2 and  # 긴 위 꼬리
+              lower_shadow < body_size * 0.5):  # 짧은 아래 꼬리
+
+            is_downtrend = (prev_close < prev_open and
+                           (prev_prev_candle is not None and prev_prev_candle['close'] > prev_open))
+
+            pattern_type = 'inverted_hammer'
+            pattern_score = 0.5 if is_downtrend else 0.3
+            pattern_confidence = 0.6 if is_downtrend else 0.4
+            pattern_description = '역망치형 (Inverted Hammer) - 반등 시도'
+
+        # 5. Dragonfly Doji (잠자리 도지) - 강한 반등 신호
+        elif (body_size < candle_range * 0.1 and  # 매우 작은 바디
+              lower_shadow > candle_range * 0.7 and  # 긴 아래 꼬리
+              upper_shadow < candle_range * 0.1):  # 거의 없는 위 꼬리
+
+            pattern_type = 'dragonfly_doji'
+            pattern_score = 0.7
+            pattern_confidence = 0.75
+            pattern_description = '잠자리 도지 (Dragonfly Doji) - 강한 반등 신호'
+
+        # 6. Gravestone Doji (비석 도지) - 강한 하락 신호
+        elif (body_size < candle_range * 0.1 and
+              upper_shadow > candle_range * 0.7 and  # 긴 위 꼬리
+              lower_shadow < candle_range * 0.1):  # 거의 없는 아래 꼬리
+
+            pattern_type = 'gravestone_doji'
+            pattern_score = -0.7
+            pattern_confidence = 0.75
+            pattern_description = '비석 도지 (Gravestone Doji) - 강한 하락 신호'
+
+        return {
+            'pattern_type': pattern_type,
+            'pattern_score': float(pattern_score),
+            'pattern_confidence': float(pattern_confidence),
+            'pattern_description': pattern_description,
+            'body_ratio': float(body_ratio),
+            'upper_shadow_ratio': float(upper_shadow / candle_range) if candle_range > 0 else 0.0,
+            'lower_shadow_ratio': float(lower_shadow / candle_range) if candle_range > 0 else 0.0
+        }
+
+    except Exception as e:
+        # 오류 발생 시 안전하게 중립 반환
+        return {
+            'pattern_type': 'error',
+            'pattern_score': 0.0,
+            'pattern_confidence': 0.0,
+            'pattern_description': f'패턴 감지 오류: {str(e)}'
+        }
+
+def detect_rsi_divergence(df: pd.DataFrame, lookback: int = 30, rsi_period: int = 14) -> Dict[str, Any]:
+    """
+    RSI 다이버전스 감지 (RSI Divergence Detection)
+
+    Bullish Divergence (강세 다이버전스):
+    - 가격은 lower low를 만들지만, RSI는 higher low를 만드는 경우
+    - 하락 추세의 약화, 반등 가능성 시사
+
+    Bearish Divergence (약세 다이버전스):
+    - 가격은 higher high를 만들지만, RSI는 lower high를 만드는 경우
+    - 상승 추세의 약화, 하락 가능성 시사
+
+    Args:
+        df: OHLCV 데이터프레임
+        lookback: 다이버전스 탐지 기간 (기본 30 캔들)
+        rsi_period: RSI 계산 기간 (기본 14)
+
+    Returns:
+        divergence_type: 'bullish', 'bearish', 'none'
+        strength: 다이버전스 강도 (0.0 ~ 1.0)
+        price_change: 가격 변화율 (%)
+        rsi_change: RSI 변화율
+        description: 설명
+    """
+    if len(df) < lookback + rsi_period:
+        return {
+            'divergence_type': 'none',
+            'strength': 0.0,
+            'price_change': 0.0,
+            'rsi_change': 0.0,
+            'description': '데이터 부족'
+        }
+
+    try:
+        # RSI 계산 (아직 계산되지 않은 경우)
+        if 'rsi' not in df.columns:
+            df['rsi'] = calculate_rsi(df, rsi_period)
+
+        # 최근 lookback 기간의 데이터 추출
+        recent_df = df.tail(lookback).copy()
+
+        # 가격과 RSI의 고점/저점 찾기
+        close_prices = recent_df['close'].values
+        rsi_values = recent_df['rsi'].values
+
+        # NaN 제거
+        valid_indices = ~(pd.isna(close_prices) | pd.isna(rsi_values))
+        if valid_indices.sum() < 10:  # 최소 10개 데이터 필요
+            return {
+                'divergence_type': 'none',
+                'strength': 0.0,
+                'price_change': 0.0,
+                'rsi_change': 0.0,
+                'description': '유효 데이터 부족'
+            }
+
+        close_prices = close_prices[valid_indices]
+        rsi_values = rsi_values[valid_indices]
+
+        # 고점과 저점 찾기 (rolling window 사용)
+        window = 5  # 전후 5개 캔들 범위에서 고점/저점 검색
+
+        # 가격 고점/저점 인덱스
+        price_highs = []
+        price_lows = []
+        rsi_highs = []
+        rsi_lows = []
+
+        for i in range(window, len(close_prices) - window):
+            # 가격 고점
+            if close_prices[i] == max(close_prices[i-window:i+window+1]):
+                price_highs.append((i, close_prices[i]))
+            # 가격 저점
+            if close_prices[i] == min(close_prices[i-window:i+window+1]):
+                price_lows.append((i, close_prices[i]))
+
+            # RSI 고점
+            if rsi_values[i] == max(rsi_values[i-window:i+window+1]):
+                rsi_highs.append((i, rsi_values[i]))
+            # RSI 저점
+            if rsi_values[i] == min(rsi_values[i-window:i+window+1]):
+                rsi_lows.append((i, rsi_values[i]))
+
+        # Bullish Divergence 확인 (가격 lower low, RSI higher low)
+        if len(price_lows) >= 2 and len(rsi_lows) >= 2:
+            # 최근 2개 저점 비교
+            recent_price_lows = sorted(price_lows, key=lambda x: x[0])[-2:]
+            recent_rsi_lows = sorted(rsi_lows, key=lambda x: x[0])[-2:]
+
+            price_low_1, price_low_2 = recent_price_lows[0][1], recent_price_lows[1][1]
+            rsi_low_1, rsi_low_2 = recent_rsi_lows[0][1], recent_rsi_lows[1][1]
+
+            # 가격은 하락했지만 RSI는 상승 (bullish divergence)
+            if price_low_2 < price_low_1 and rsi_low_2 > rsi_low_1:
+                price_change = ((price_low_2 - price_low_1) / price_low_1) * 100
+                rsi_change = rsi_low_2 - rsi_low_1
+
+                # 강도 계산: RSI 상승폭과 가격 하락폭의 비율
+                strength = min(abs(rsi_change) / 10.0, 1.0) * min(abs(price_change) / 5.0, 1.0)
+
+                return {
+                    'divergence_type': 'bullish',
+                    'strength': float(strength),
+                    'price_change': float(price_change),
+                    'rsi_change': float(rsi_change),
+                    'description': f'강세 다이버전스: 가격 {price_change:.2f}% 하락, RSI {rsi_change:.1f} 상승'
+                }
+
+        # Bearish Divergence 확인 (가격 higher high, RSI lower high)
+        if len(price_highs) >= 2 and len(rsi_highs) >= 2:
+            recent_price_highs = sorted(price_highs, key=lambda x: x[0])[-2:]
+            recent_rsi_highs = sorted(rsi_highs, key=lambda x: x[0])[-2:]
+
+            price_high_1, price_high_2 = recent_price_highs[0][1], recent_price_highs[1][1]
+            rsi_high_1, rsi_high_2 = recent_rsi_highs[0][1], recent_rsi_highs[1][1]
+
+            # 가격은 상승했지만 RSI는 하락 (bearish divergence)
+            if price_high_2 > price_high_1 and rsi_high_2 < rsi_high_1:
+                price_change = ((price_high_2 - price_high_1) / price_high_1) * 100
+                rsi_change = rsi_high_2 - rsi_high_1
+
+                strength = min(abs(rsi_change) / 10.0, 1.0) * min(abs(price_change) / 5.0, 1.0)
+
+                return {
+                    'divergence_type': 'bearish',
+                    'strength': float(strength),
+                    'price_change': float(price_change),
+                    'rsi_change': float(rsi_change),
+                    'description': f'약세 다이버전스: 가격 {price_change:.2f}% 상승, RSI {rsi_change:.1f} 하락'
+                }
+
+        # 다이버전스 없음
+        return {
+            'divergence_type': 'none',
+            'strength': 0.0,
+            'price_change': 0.0,
+            'rsi_change': 0.0,
+            'description': '다이버전스 없음'
+        }
+
+    except Exception as e:
+        return {
+            'divergence_type': 'error',
+            'strength': 0.0,
+            'price_change': 0.0,
+            'rsi_change': 0.0,
+            'description': f'RSI 다이버전스 감지 오류: {str(e)}'
+        }
+
+def detect_macd_divergence(df: pd.DataFrame, lookback: int = 30,
+                          macd_fast: int = 8, macd_slow: int = 17, macd_signal: int = 9) -> Dict[str, Any]:
+    """
+    MACD 다이버전스 감지 (MACD Divergence Detection)
+
+    RSI 다이버전스와 유사하게 동작하지만 MACD 라인을 사용
+
+    Bullish Divergence:
+    - 가격은 lower low, MACD는 higher low
+    - 강한 반등 신호
+
+    Bearish Divergence:
+    - 가격은 higher high, MACD는 lower high
+    - 강한 하락 신호
+
+    Args:
+        df: OHLCV 데이터프레임
+        lookback: 다이버전스 탐지 기간
+        macd_fast: MACD 단기 EMA
+        macd_slow: MACD 장기 EMA
+        macd_signal: MACD 시그널선 EMA
+
+    Returns:
+        divergence_type: 'bullish', 'bearish', 'none'
+        strength: 다이버전스 강도 (0.0 ~ 1.0)
+        price_change: 가격 변화율 (%)
+        macd_change: MACD 변화값
+        description: 설명
+    """
+    if len(df) < lookback + max(macd_fast, macd_slow):
+        return {
+            'divergence_type': 'none',
+            'strength': 0.0,
+            'price_change': 0.0,
+            'macd_change': 0.0,
+            'description': '데이터 부족'
+        }
+
+    try:
+        # MACD 계산 (아직 계산되지 않은 경우)
+        if 'macd_line' not in df.columns:
+            macd_line, signal_line, histogram = calculate_macd(df, macd_fast, macd_slow, macd_signal)
+            df['macd_line'] = macd_line
+            df['macd_signal'] = signal_line
+            df['macd_histogram'] = histogram
+
+        # 최근 lookback 기간의 데이터 추출
+        recent_df = df.tail(lookback).copy()
+
+        # 가격과 MACD 값 추출
+        close_prices = recent_df['close'].values
+        macd_values = recent_df['macd_line'].values
+
+        # NaN 제거
+        valid_indices = ~(pd.isna(close_prices) | pd.isna(macd_values))
+        if valid_indices.sum() < 10:
+            return {
+                'divergence_type': 'none',
+                'strength': 0.0,
+                'price_change': 0.0,
+                'macd_change': 0.0,
+                'description': '유효 데이터 부족'
+            }
+
+        close_prices = close_prices[valid_indices]
+        macd_values = macd_values[valid_indices]
+
+        # 고점과 저점 찾기
+        window = 5
+
+        price_highs = []
+        price_lows = []
+        macd_highs = []
+        macd_lows = []
+
+        for i in range(window, len(close_prices) - window):
+            # 가격 고점
+            if close_prices[i] == max(close_prices[i-window:i+window+1]):
+                price_highs.append((i, close_prices[i]))
+            # 가격 저점
+            if close_prices[i] == min(close_prices[i-window:i+window+1]):
+                price_lows.append((i, close_prices[i]))
+
+            # MACD 고점
+            if macd_values[i] == max(macd_values[i-window:i+window+1]):
+                macd_highs.append((i, macd_values[i]))
+            # MACD 저점
+            if macd_values[i] == min(macd_values[i-window:i+window+1]):
+                macd_lows.append((i, macd_values[i]))
+
+        # Bullish Divergence 확인 (가격 lower low, MACD higher low)
+        if len(price_lows) >= 2 and len(macd_lows) >= 2:
+            recent_price_lows = sorted(price_lows, key=lambda x: x[0])[-2:]
+            recent_macd_lows = sorted(macd_lows, key=lambda x: x[0])[-2:]
+
+            price_low_1, price_low_2 = recent_price_lows[0][1], recent_price_lows[1][1]
+            macd_low_1, macd_low_2 = recent_macd_lows[0][1], recent_macd_lows[1][1]
+
+            # 가격은 하락했지만 MACD는 상승 (bullish divergence)
+            if price_low_2 < price_low_1 and macd_low_2 > macd_low_1:
+                price_change = ((price_low_2 - price_low_1) / price_low_1) * 100
+                macd_change = macd_low_2 - macd_low_1
+
+                # 강도 계산 (MACD 변화가 클수록, 가격 하락이 클수록 강함)
+                macd_strength = min(abs(macd_change) / (abs(macd_low_1) + 0.0001), 1.0)
+                price_strength = min(abs(price_change) / 5.0, 1.0)
+                strength = (macd_strength + price_strength) / 2.0
+
+                return {
+                    'divergence_type': 'bullish',
+                    'strength': float(strength),
+                    'price_change': float(price_change),
+                    'macd_change': float(macd_change),
+                    'description': f'MACD 강세 다이버전스: 가격 {price_change:.2f}% 하락, MACD {macd_change:.4f} 상승'
+                }
+
+        # Bearish Divergence 확인 (가격 higher high, MACD lower high)
+        if len(price_highs) >= 2 and len(macd_highs) >= 2:
+            recent_price_highs = sorted(price_highs, key=lambda x: x[0])[-2:]
+            recent_macd_highs = sorted(macd_highs, key=lambda x: x[0])[-2:]
+
+            price_high_1, price_high_2 = recent_price_highs[0][1], recent_price_highs[1][1]
+            macd_high_1, macd_high_2 = recent_macd_highs[0][1], recent_macd_highs[1][1]
+
+            # 가격은 상승했지만 MACD는 하락 (bearish divergence)
+            if price_high_2 > price_high_1 and macd_high_2 < macd_high_1:
+                price_change = ((price_high_2 - price_high_1) / price_high_1) * 100
+                macd_change = macd_high_2 - macd_high_1
+
+                macd_strength = min(abs(macd_change) / (abs(macd_high_1) + 0.0001), 1.0)
+                price_strength = min(abs(price_change) / 5.0, 1.0)
+                strength = (macd_strength + price_strength) / 2.0
+
+                return {
+                    'divergence_type': 'bearish',
+                    'strength': float(strength),
+                    'price_change': float(price_change),
+                    'macd_change': float(macd_change),
+                    'description': f'MACD 약세 다이버전스: 가격 {price_change:.2f}% 상승, MACD {macd_change:.4f} 하락'
+                }
+
+        # 다이버전스 없음
+        return {
+            'divergence_type': 'none',
+            'strength': 0.0,
+            'price_change': 0.0,
+            'macd_change': 0.0,
+            'description': 'MACD 다이버전스 없음'
+        }
+
+    except Exception as e:
+        return {
+            'divergence_type': 'error',
+            'strength': 0.0,
+            'price_change': 0.0,
+            'macd_change': 0.0,
+            'description': f'MACD 다이버전스 감지 오류: {str(e)}'
+        }
+
+def calculate_chandelier_exit(df: pd.DataFrame, entry_price: float = None,
+                             atr_period: int = 14, atr_multiplier: float = 3.0,
+                             direction: str = 'LONG') -> Dict[str, Any]:
+    """
+    Chandelier Exit 계산 (트레일링 스톱-로스)
+
+    기존 ATR 기반 고정 손절보다 우수한 트레일링 스톱 방식:
+    - LONG: Stop = Highest High (since entry) - (ATR × multiplier)
+    - SHORT: Stop = Lowest Low (since entry) + (ATR × multiplier)
+
+    특징:
+    - 가격이 상승하면 손절가도 따라 상승 (이익 보호)
+    - 변동성에 따라 자동 조정
+    - 급락 시 손절 회피 가능 (ATR 배수가 적절하면)
+
+    Args:
+        df: OHLCV 데이터프레임
+        entry_price: 진입 가격 (None이면 현재가 기준으로 계산)
+        atr_period: ATR 계산 기간 (기본 14)
+        atr_multiplier: ATR 배수 (기본 3.0, 2.0보다 여유있음)
+        direction: 'LONG' or 'SHORT'
+
+    Returns:
+        stop_price: 현재 손절가
+        highest_high: 진입 후 최고가 (LONG의 경우)
+        lowest_low: 진입 후 최저가 (SHORT의 경우)
+        atr_value: 현재 ATR 값
+        distance_percent: 현재가 대비 손절가 거리 (%)
+        trailing_status: 'active', 'triggered', 'initial'
+    """
+    if len(df) < atr_period:
+        return {
+            'stop_price': 0.0,
+            'highest_high': 0.0,
+            'lowest_low': 0.0,
+            'atr_value': 0.0,
+            'distance_percent': 0.0,
+            'trailing_status': 'initial',
+            'description': '데이터 부족'
+        }
+
+    try:
+        # ATR 계산
+        if 'atr' not in df.columns:
+            df['atr'] = calculate_atr(df, atr_period)
+
+        current_atr = df['atr'].iloc[-1]
+        current_price = df['close'].iloc[-1]
+
+        # NaN 체크
+        if pd.isna(current_atr) or pd.isna(current_price):
+            return {
+                'stop_price': 0.0,
+                'highest_high': 0.0,
+                'lowest_low': 0.0,
+                'atr_value': 0.0,
+                'distance_percent': 0.0,
+                'trailing_status': 'initial',
+                'description': 'ATR 또는 가격 데이터 없음'
+            }
+
+        # 진입가가 없으면 현재가 사용 (initial setup)
+        if entry_price is None:
+            entry_price = current_price
+
+        if direction == 'LONG':
+            # LONG 포지션: 진입 후 최고가 찾기
+            # 실제 트레이딩에서는 진입 시점을 기록해야 함
+            # 여기서는 최근 데이터에서 최고가 사용
+            highest_high = df['high'].tail(atr_period * 2).max()  # 최근 기간의 최고가
+
+            # Chandelier Exit 계산
+            stop_price = highest_high - (current_atr * atr_multiplier)
+
+            # 현재가 대비 거리
+            distance_percent = ((current_price - stop_price) / current_price) * 100
+
+            # 손절 트리거 여부
+            trailing_status = 'triggered' if current_price <= stop_price else 'active'
+
+            return {
+                'stop_price': float(stop_price),
+                'highest_high': float(highest_high),
+                'lowest_low': 0.0,
+                'atr_value': float(current_atr),
+                'distance_percent': float(distance_percent),
+                'trailing_status': trailing_status,
+                'description': f'LONG Chandelier Exit: 손절가 {stop_price:,.0f} (최고가 {highest_high:,.0f} - {atr_multiplier}×ATR)'
+            }
+
+        else:  # SHORT
+            # SHORT 포지션: 진입 후 최저가 찾기
+            lowest_low = df['low'].tail(atr_period * 2).min()
+
+            stop_price = lowest_low + (current_atr * atr_multiplier)
+            distance_percent = ((stop_price - current_price) / current_price) * 100
+
+            trailing_status = 'triggered' if current_price >= stop_price else 'active'
+
+            return {
+                'stop_price': float(stop_price),
+                'highest_high': 0.0,
+                'lowest_low': float(lowest_low),
+                'atr_value': float(current_atr),
+                'distance_percent': float(distance_percent),
+                'trailing_status': trailing_status,
+                'description': f'SHORT Chandelier Exit: 손절가 {stop_price:,.0f} (최저가 {lowest_low:,.0f} + {atr_multiplier}×ATR)'
+            }
+
+    except Exception as e:
+        return {
+            'stop_price': 0.0,
+            'highest_high': 0.0,
+            'lowest_low': 0.0,
+            'atr_value': 0.0,
+            'distance_percent': 0.0,
+            'trailing_status': 'error',
+            'description': f'Chandelier Exit 계산 오류: {str(e)}'
+        }
+
+def detect_bb_squeeze(df: pd.DataFrame, bb_period: int = 20, bb_std: float = 2.0,
+                     squeeze_threshold: float = 0.8, lookback: int = 50) -> Dict[str, Any]:
+    """
+    볼린저 밴드 스퀴즈 감지 (Bollinger Band Squeeze Detection)
+
+    스퀴즈 (Squeeze):
+    - 볼린저 밴드 폭이 역사적 평균 대비 좁아진 상태
+    - 변동성 수축 → 곧 변동성 확대 (브레이크아웃) 예상
+    - 매매 기회 포착의 신호
+
+    Args:
+        df: OHLCV 데이터프레임
+        bb_period: 볼린저 밴드 기간
+        bb_std: 볼린저 밴드 표준편차 배수
+        squeeze_threshold: 스퀴즈 판단 임계값 (0.8 = 평균의 80% 이하)
+        lookback: 역사적 평균 계산 기간
+
+    Returns:
+        is_squeezing: 스퀴즈 상태 여부 (bool)
+        squeeze_duration: 스퀴즈 지속 캔들 수
+        bb_width_ratio: 현재 BB 폭 / 평균 BB 폭 비율
+        breakout_direction: 브레이크아웃 방향 예측 ('up', 'down', 'neutral')
+        potential_move: 예상 변동폭 (%)
+        description: 설명
+    """
+    if len(df) < bb_period + lookback:
+        return {
+            'is_squeezing': False,
+            'squeeze_duration': 0,
+            'bb_width_ratio': 1.0,
+            'breakout_direction': 'neutral',
+            'potential_move': 0.0,
+            'description': '데이터 부족'
+        }
+
+    try:
+        # 볼린저 밴드 계산
+        if 'bb_upper' not in df.columns or 'bb_lower' not in df.columns:
+            upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(df, bb_period, bb_std)
+            df['bb_upper'] = upper_bb
+            df['bb_middle'] = middle_bb
+            df['bb_lower'] = lower_bb
+
+        # BB 폭 계산 (상단 - 하단)
+        df['bb_width'] = df['bb_upper'] - df['bb_lower']
+
+        # 최근 lookback 기간의 평균 BB 폭
+        avg_bb_width = df['bb_width'].tail(lookback).mean()
+        current_bb_width = df['bb_width'].iloc[-1]
+
+        # NaN 체크
+        if pd.isna(avg_bb_width) or pd.isna(current_bb_width) or avg_bb_width == 0:
+            return {
+                'is_squeezing': False,
+                'squeeze_duration': 0,
+                'bb_width_ratio': 1.0,
+                'breakout_direction': 'neutral',
+                'potential_move': 0.0,
+                'description': 'BB 폭 데이터 없음'
+            }
+
+        # BB 폭 비율 계산
+        bb_width_ratio = current_bb_width / avg_bb_width
+
+        # 스퀴즈 여부 판단 (현재 폭이 평균의 80% 이하)
+        is_squeezing = bb_width_ratio < squeeze_threshold
+
+        # 스퀴즈 지속 기간 계산
+        squeeze_duration = 0
+        if is_squeezing:
+            for i in range(len(df) - 1, max(0, len(df) - 20), -1):
+                width_at_i = df['bb_width'].iloc[i]
+                avg_at_i = df['bb_width'].iloc[max(0, i-lookback):i].mean()
+                if width_at_i < avg_at_i * squeeze_threshold:
+                    squeeze_duration += 1
+                else:
+                    break
+
+        # 브레이크아웃 방향 예측
+        # 현재 가격이 BB 중심선 대비 어디에 있는지 확인
+        current_price = df['close'].iloc[-1]
+        bb_middle = df['bb_middle'].iloc[-1]
+
+        # 최근 추세 확인 (단기 MA vs 장기 MA)
+        if len(df) >= 20:
+            recent_trend = df['close'].tail(10).mean() - df['close'].tail(20).mean()
+            if current_price > bb_middle and recent_trend > 0:
+                breakout_direction = 'up'
+            elif current_price < bb_middle and recent_trend < 0:
+                breakout_direction = 'down'
+            else:
+                breakout_direction = 'neutral'
+        else:
+            breakout_direction = 'neutral'
+
+        # 예상 변동폭 (과거 평균 BB 폭을 기준으로)
+        potential_move = (avg_bb_width / current_price) * 100 if current_price > 0 else 0.0
+
+        description = '볼린저 밴드 스퀴즈 없음'
+        if is_squeezing:
+            description = f'볼린저 밴드 스퀴즈 감지 ({squeeze_duration}캔들 지속, 폭 비율 {bb_width_ratio:.2f})'
+            if breakout_direction != 'neutral':
+                description += f' - {breakout_direction.upper()} 브레이크아웃 가능성'
+
+        return {
+            'is_squeezing': bool(is_squeezing),
+            'squeeze_duration': int(squeeze_duration),
+            'bb_width_ratio': float(bb_width_ratio),
+            'breakout_direction': breakout_direction,
+            'potential_move': float(potential_move),
+            'description': description
+        }
+
+    except Exception as e:
+        return {
+            'is_squeezing': False,
+            'squeeze_duration': 0,
+            'bb_width_ratio': 1.0,
+            'breakout_direction': 'neutral',
+            'potential_move': 0.0,
+            'description': f'BB 스퀴즈 감지 오류: {str(e)}'
+        }
 
 def detect_market_regime(df: pd.DataFrame, atr_period: int = 14, adx_period: int = 14) -> Dict[str, Any]:
     """
@@ -427,8 +1167,12 @@ class TradingStrategy:
                 return None
 
             # 기본 기술적 지표 계산
+            short_ma_window = indicator_config['short_ma_window']
+            bb_period = indicator_config.get('bb_period', 20)
+
+            # Calculate short MA
             price_data['short_ma'] = calculate_moving_average(
-                price_data, indicator_config['short_ma_window']
+                price_data, short_ma_window
             )
             price_data['long_ma'] = calculate_moving_average(
                 price_data, indicator_config['long_ma_window']
@@ -437,14 +1181,25 @@ class TradingStrategy:
                 price_data, indicator_config.get('rsi_period', 14)
             )
 
-            upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(
-                price_data,
-                window=indicator_config.get('bb_period', 20),
-                num_std=indicator_config.get('bb_std', 2.0)
-            )
-            price_data['bb_upper'] = upper_bb
-            price_data['bb_middle'] = middle_bb
-            price_data['bb_lower'] = lower_bb
+            # Optimization: Reuse short_ma for BB middle band if same window
+            if short_ma_window == bb_period:
+                # Reuse already calculated short_ma as BB middle band
+                bb_middle = price_data['short_ma']
+                bb_std = price_data['close'].rolling(window=bb_period).std()
+                num_std = indicator_config.get('bb_std', 2.0)
+                price_data['bb_upper'] = bb_middle + (bb_std * num_std)
+                price_data['bb_middle'] = bb_middle
+                price_data['bb_lower'] = bb_middle - (bb_std * num_std)
+            else:
+                # Different windows, calculate separately
+                upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(
+                    price_data,
+                    window=bb_period,
+                    num_std=indicator_config.get('bb_std', 2.0)
+                )
+                price_data['bb_upper'] = upper_bb
+                price_data['bb_middle'] = middle_bb
+                price_data['bb_lower'] = lower_bb
 
             price_data['volume_ratio'] = calculate_volume_ratio(
                 price_data,
@@ -491,6 +1246,43 @@ class TradingStrategy:
                 adx_period=indicator_config.get('adx_period', 14)
             )
 
+            # 엘리트 전략 확장: 촛대 패턴 감지
+            candlestick_pattern = detect_candlestick_patterns(price_data)
+
+            # 엘리트 전략 확장: RSI 다이버전스 감지
+            rsi_divergence = detect_rsi_divergence(
+                price_data,
+                lookback=indicator_config.get('divergence_lookback', 30),
+                rsi_period=indicator_config.get('rsi_period', 14)
+            )
+
+            # 엘리트 전략 확장: MACD 다이버전스 감지
+            macd_divergence = detect_macd_divergence(
+                price_data,
+                lookback=indicator_config.get('divergence_lookback', 30),
+                macd_fast=indicator_config.get('macd_fast', 8),
+                macd_slow=indicator_config.get('macd_slow', 17),
+                macd_signal=indicator_config.get('macd_signal', 9)
+            )
+
+            # 엘리트 전략 확장: Chandelier Exit (트레일링 스톱)
+            chandelier_exit = calculate_chandelier_exit(
+                price_data,
+                entry_price=None,  # None이면 현재가 기준
+                atr_period=indicator_config.get('atr_period', 14),
+                atr_multiplier=indicator_config.get('chandelier_atr_multiplier', 3.0),
+                direction='LONG'
+            )
+
+            # 엘리트 전략 확장: BB 스퀴즈 감지
+            bb_squeeze = detect_bb_squeeze(
+                price_data,
+                bb_period=indicator_config.get('bb_period', 20),
+                bb_std=indicator_config.get('bb_std', 2.0),
+                squeeze_threshold=indicator_config.get('bb_squeeze_threshold', 0.8),
+                lookback=50
+            )
+
             # 현재 가격 정보
             current_price = price_data['close'].iloc[-1]
             current_volume = price_data['volume'].iloc[-1]
@@ -527,6 +1319,21 @@ class TradingStrategy:
 
                 # 시장 국면
                 'regime': regime,
+
+                # 엘리트 전략 확장: 촛대 패턴
+                'candlestick_pattern': candlestick_pattern,
+
+                # 엘리트 전략 확장: RSI 다이버전스
+                'rsi_divergence': rsi_divergence,
+
+                # 엘리트 전략 확장: MACD 다이버전스
+                'macd_divergence': macd_divergence,
+
+                # 엘리트 전략 확장: Chandelier Exit
+                'chandelier_exit': chandelier_exit,
+
+                # 엘리트 전략 확장: BB 스퀴즈
+                'bb_squeeze': bb_squeeze,
 
                 # 가격 변화
                 'price_change_24h': ((current_price - price_data['close'].iloc[-24]) /
@@ -757,46 +1564,98 @@ class TradingStrategy:
         signals['stoch_signal'] = stoch_signal
         signals['stoch_strength'] = abs(stoch_signal)
 
-        # 7. 최종 가중 합산
+        # 7. 엘리트 확장: 촛대 패턴 신호
+        candlestick = analysis.get('candlestick_pattern', {})
+        pattern_signal = candlestick.get('pattern_score', 0.0)
+        pattern_confidence = candlestick.get('pattern_confidence', 0.0)
+
+        signals['pattern_signal'] = pattern_signal
+        signals['pattern_strength'] = abs(pattern_signal) * pattern_confidence  # 신뢰도로 가중
+        signals['pattern_type'] = candlestick.get('pattern_type', 'none')
+
+        # 8. 엘리트 확장: 다이버전스 보너스 (신뢰도 향상 효과)
+        rsi_div = analysis.get('rsi_divergence', {})
+        macd_div = analysis.get('macd_divergence', {})
+
+        # 다이버전스 신호 통합 (강도 평균)
+        divergence_signal = 0.0
+        divergence_bonus = 0.0
+
+        if rsi_div.get('divergence_type') == 'bullish':
+            divergence_signal += rsi_div.get('strength', 0.0)
+            divergence_bonus += 0.15  # 신뢰도 보너스
+        elif rsi_div.get('divergence_type') == 'bearish':
+            divergence_signal -= rsi_div.get('strength', 0.0)
+            divergence_bonus += 0.15
+
+        if macd_div.get('divergence_type') == 'bullish':
+            divergence_signal += macd_div.get('strength', 0.0)
+            divergence_bonus += 0.20  # MACD 다이버전스는 더 강력
+        elif macd_div.get('divergence_type') == 'bearish':
+            divergence_signal -= macd_div.get('strength', 0.0)
+            divergence_bonus += 0.20
+
+        signals['divergence_signal'] = np.clip(divergence_signal, -1.0, 1.0)
+        signals['divergence_bonus'] = min(divergence_bonus, 0.25)  # 최대 25% 보너스
+        signals['rsi_divergence_type'] = rsi_div.get('divergence_type', 'none')
+        signals['macd_divergence_type'] = macd_div.get('divergence_type', 'none')
+
+        # 9. BB 스퀴즈 정보 (거래 타이밍 참고용)
+        bb_squeeze = analysis.get('bb_squeeze', {})
+        signals['is_squeezing'] = bb_squeeze.get('is_squeezing', False)
+        signals['breakout_direction'] = bb_squeeze.get('breakout_direction', 'neutral')
+
+        # 10. 최종 가중 합산 (패턴 가중치 추가)
         overall_signal = (
             weights.get('ma', 0.25) * signals['ma_signal'] +
             weights.get('rsi', 0.20) * signals['rsi_signal'] +
             weights.get('macd', 0.35) * signals['macd_signal'] +
             weights.get('bb', 0.10) * signals['bb_signal'] +
-            weights.get('volume', 0.10) * signals['volume_signal']
+            weights.get('volume', 0.10) * signals['volume_signal'] +
+            weights.get('pattern', 0.0) * signals['pattern_signal']  # 패턴 가중치 (기본 0, config에서 설정 가능)
         )
+
+        # 다이버전스 신호 추가 (별도 가중치 또는 보너스로 적용)
+        # 다이버전스는 신호 자체보다는 다른 신호의 신뢰도를 높이는 역할
+        if abs(signals['divergence_signal']) > 0.3:
+            overall_signal += signals['divergence_signal'] * 0.1  # 10% 가중치로 추가
 
         signals['overall_signal'] = overall_signal
 
-        # 8. 신뢰도 계산 (각 신호의 강도 기반)
+        # 11. 신뢰도 계산 (각 신호의 강도 기반 + 다이버전스 보너스)
         avg_strength = (
             weights.get('ma', 0.25) * signals['ma_strength'] +
             weights.get('rsi', 0.20) * signals['rsi_strength'] +
             weights.get('macd', 0.35) * signals['macd_strength'] +
             weights.get('bb', 0.10) * signals['bb_strength'] +
-            weights.get('volume', 0.10) * signals['volume_strength']
+            weights.get('volume', 0.10) * signals['volume_strength'] +
+            weights.get('pattern', 0.0) * signals['pattern_strength']  # 패턴 강도 추가
         )
 
-        signals['confidence'] = avg_strength
+        # 다이버전스 보너스 적용 (최대 신뢰도 1.0 제한)
+        confidence_with_bonus = min(avg_strength + signals['divergence_bonus'], 1.0)
 
-        # 9. 시장 국면 정보 포함
+        signals['confidence'] = confidence_with_bonus
+        signals['base_confidence'] = avg_strength  # 보너스 적용 전 기본 신뢰도
+
+        # 12. 시장 국면 정보 포함
         regime = analysis.get('regime', {})
         signals['regime'] = regime.get('regime', 'unknown')
         signals['volatility_level'] = regime.get('volatility_level', 'normal')
         signals['trend_strength'] = regime.get('trend_strength', 0.0)
 
-        # 10. 최종 판단 (1시간봉 특성상 높은 임계값 사용)
+        # 13. 최종 판단 (1시간봉 특성상 높은 임계값 사용)
         confidence_threshold = strategy_config.get('confidence_threshold', 0.6)
         signal_threshold = strategy_config.get('signal_threshold', 0.5)
 
-        if overall_signal >= signal_threshold and avg_strength >= confidence_threshold:
+        if overall_signal >= signal_threshold and confidence_with_bonus >= confidence_threshold:
             signals['final_action'] = 'BUY'
-        elif overall_signal <= -signal_threshold and avg_strength >= confidence_threshold:
+        elif overall_signal <= -signal_threshold and confidence_with_bonus >= confidence_threshold:
             signals['final_action'] = 'SELL'
         else:
             signals['final_action'] = 'HOLD'
 
-        # 11. 상세 설명
+        # 14. 상세 설명 (패턴과 다이버전스 정보 포함)
         signals['reason'] = self._generate_signal_reason(signals, analysis)
 
         return signals

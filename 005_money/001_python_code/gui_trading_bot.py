@@ -185,7 +185,10 @@ class GUITradingBot(TradingBot):
 
             # 신호 및 분석 결과를 상태에 추가 (GUI 업데이트용)
             self.current_status['signals'] = signals
-            self.current_status['analysis'] = analysis
+            # FIX: Remove DataFrame to prevent memory leak (price_data can be 2-5 MB)
+            analysis_copy = analysis.copy()
+            analysis_copy.pop('price_data', None)
+            self.current_status['analysis'] = analysis_copy
 
             # 최종 액션 결정
             final_action = signals.get('final_action', 'HOLD')

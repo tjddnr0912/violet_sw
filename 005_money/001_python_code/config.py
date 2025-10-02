@@ -49,7 +49,8 @@ STRATEGY_CONFIG = {
 
     # 엘리트 전략: ATR 파라미터 (변동성 측정)
     'atr_period': 14,       # ATR 계산 기간 (14시간)
-    'atr_stop_multiplier': 2.0,  # ATR 기반 손절 배수
+    'atr_stop_multiplier': 2.0,  # ATR 기반 손절 배수 (기존)
+    'chandelier_atr_multiplier': 3.0,  # Chandelier Exit ATR 배수 (트레일링 스톱용, 더 여유있게)
 
     # 엘리트 전략: Stochastic 파라미터
     'stoch_k_period': 14,   # Stochastic %K 기간
@@ -67,19 +68,33 @@ STRATEGY_CONFIG = {
     # 엘리트 전략: Volume 파라미터
     'volume_window': 20,    # 거래량 평균 계산 윈도우
 
+    # 엘리트 전략 확장: 촛대 패턴 인식 (Candlestick Patterns)
+    # 패턴 감지는 항상 활성화, 가중치로 영향력 조절
+    'pattern_detection_enabled': True,  # 촛대 패턴 감지 활성화
+
+    # 엘리트 전략 확장: 다이버전스 감지 (Divergence Detection)
+    'divergence_lookback': 30,  # 다이버전스 탐지 기간 (캔들 수)
+    'divergence_detection_enabled': True,  # 다이버전스 감지 활성화
+
+    # 엘리트 전략 확장: BB 스퀴즈 (Bollinger Band Squeeze)
+    'bb_squeeze_threshold': 0.8,  # 스퀴즈 판단 임계값 (평균 BB 폭의 80% 이하)
+    'bb_squeeze_lookback': 50,    # 역사적 평균 계산 기간
+
     # 엘리트 전략: 활성화된 지표 (GUI 연동용)
     'enabled_indicators': {
         'ma': True, 'rsi': True, 'bb': True, 'volume': True,
         'macd': True, 'atr': True, 'stochastic': True, 'adx': True
     },
 
-    # 엘리트 전략: 신호 가중치 (합계 = 1.0)
+    # 엘리트 전략: 신호 가중치 (기본 합계 = 1.0, pattern 추가 시 재조정 권장)
     'signal_weights': {
         'macd': 0.35,       # MACD 신호 가중치 (추세 지표 - 가장 높음)
         'ma': 0.25,         # 이동평균 가중치 (추세 확인)
         'rsi': 0.20,        # RSI 가중치 (과매수/과매도 필터)
         'bb': 0.10,         # 볼린저밴드 가중치 (평균회귀)
-        'volume': 0.10      # 거래량 가중치 (확인용)
+        'volume': 0.10,     # 거래량 가중치 (확인용)
+        'pattern': 0.0      # 촛대 패턴 가중치 (기본 0, 필요시 0.10~0.15 권장, 다른 가중치 줄여야 함)
+        # 참고: 다이버전스는 별도 보너스로 적용 (신뢰도 향상 효과)
     },
 
     # 엘리트 전략: 신호 임계값
@@ -104,10 +119,13 @@ STRATEGY_CONFIG = {
             'macd_slow': 17,            # 8.5시간
             'macd_signal': 9,           # 4.5시간
             'atr_period': 14,           # 7시간
+            'chandelier_atr_multiplier': 3.0,  # Chandelier Exit ATR 배수
             'stoch_k_period': 14,       # 7시간
             'stoch_d_period': 3,        # 1.5시간
             'adx_period': 14,           # 7시간
             'volume_window': 20,        # 10시간
+            'divergence_lookback': 30,  # 다이버전스 탐지 기간
+            'bb_squeeze_threshold': 0.8, # BB 스퀴즈 임계값
             'analysis_period': 100,     # 50시간 (충분한 데이터)
         },
         '1h': {  # 1시간 봉 - 중단기 트레이딩 (DEFAULT, 엘리트 전략 최적화)
@@ -120,10 +138,13 @@ STRATEGY_CONFIG = {
             'macd_slow': 17,            # 17시간
             'macd_signal': 9,           # 9시간
             'atr_period': 14,           # 14시간
+            'chandelier_atr_multiplier': 3.0,  # Chandelier Exit ATR 배수
             'stoch_k_period': 14,       # 14시간
             'stoch_d_period': 3,        # 3시간
             'adx_period': 14,           # 14시간
             'volume_window': 20,        # 20시간
+            'divergence_lookback': 30,  # 다이버전스 탐지 기간
+            'bb_squeeze_threshold': 0.8, # BB 스퀴즈 임계값
             'analysis_period': 100,     # 100시간 (약 4일)
         },
         '6h': {  # 6시간 봉 - 중기 트레이딩
@@ -136,10 +157,13 @@ STRATEGY_CONFIG = {
             'macd_slow': 26,            # 156시간 (6.5일)
             'macd_signal': 9,           # 54시간 (2.25일)
             'atr_period': 14,           # 84시간
+            'chandelier_atr_multiplier': 3.0,
             'stoch_k_period': 14,
             'stoch_d_period': 3,
             'adx_period': 14,
             'volume_window': 10,
+            'divergence_lookback': 30,
+            'bb_squeeze_threshold': 0.8,
             'analysis_period': 50,      # 300시간 (12.5일)
         },
         '12h': {  # 12시간 봉 - 중장기 트레이딩
@@ -152,10 +176,13 @@ STRATEGY_CONFIG = {
             'macd_slow': 26,            # 312시간 (13일)
             'macd_signal': 9,           # 108시간 (4.5일)
             'atr_period': 14,
+            'chandelier_atr_multiplier': 3.0,
             'stoch_k_period': 14,
             'stoch_d_period': 3,
             'adx_period': 14,
             'volume_window': 10,
+            'divergence_lookback': 30,
+            'bb_squeeze_threshold': 0.8,
             'analysis_period': 40,      # 480시간 (20일)
         },
         '24h': {  # 24시간 봉 - 장기 트레이딩
@@ -168,10 +195,13 @@ STRATEGY_CONFIG = {
             'macd_slow': 26,            # 26일
             'macd_signal': 9,           # 9일
             'atr_period': 14,           # 14일
+            'chandelier_atr_multiplier': 3.0,
             'stoch_k_period': 14,
             'stoch_d_period': 3,
             'adx_period': 14,
             'volume_window': 10,
+            'divergence_lookback': 30,
+            'bb_squeeze_threshold': 0.8,
             'analysis_period': 30,      # 30일
         },
     }
