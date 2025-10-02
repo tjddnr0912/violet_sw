@@ -392,3 +392,101 @@ class ConfigManager:
         """설정을 기본값으로 리셋"""
         self.config = self.original_config.copy()
         print("✅ 설정이 기본값으로 리셋되었습니다.")
+
+    def update_signal_weights(self, weights: Dict[str, float]) -> bool:
+        """신호 가중치 업데이트
+
+        Args:
+            weights: 지표별 가중치 딕셔너리 {'macd': 0.35, 'ma': 0.25, ...}
+
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        try:
+            # 가중치 합이 1.0인지 검증
+            total_weight = sum(weights.values())
+            if not (0.99 <= total_weight <= 1.01):  # 부동소수점 오차 허용
+                print(f"⚠️ 경고: 가중치 합이 1.0이 아닙니다 (현재: {total_weight:.3f})")
+                return False
+
+            # 각 가중치가 0~1 범위인지 검증
+            for key, value in weights.items():
+                if not (0.0 <= value <= 1.0):
+                    print(f"❌ 오류: '{key}' 가중치가 범위를 벗어났습니다 ({value:.3f})")
+                    return False
+
+            # 설정 업데이트
+            self.config['strategy']['signal_weights'] = weights.copy()
+            print(f"✅ 신호 가중치가 업데이트되었습니다: {weights}")
+            return True
+
+        except Exception as e:
+            print(f"❌ 가중치 업데이트 실패: {e}")
+            return False
+
+    def update_thresholds(self, signal_threshold: float = None,
+                         confidence_threshold: float = None) -> bool:
+        """거래 임계값 업데이트
+
+        Args:
+            signal_threshold: 신호 임계값 (-1.0 ~ 1.0)
+            confidence_threshold: 신뢰도 임계값 (0.0 ~ 1.0)
+
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        try:
+            updated = []
+
+            if signal_threshold is not None:
+                # 신호 임계값 검증
+                if not (-1.0 <= signal_threshold <= 1.0):
+                    print(f"❌ 오류: 신호 임계값이 범위를 벗어났습니다 ({signal_threshold:.3f})")
+                    return False
+
+                self.config['strategy']['signal_threshold'] = signal_threshold
+                updated.append(f"신호 임계값: {signal_threshold:.2f}")
+
+            if confidence_threshold is not None:
+                # 신뢰도 임계값 검증
+                if not (0.0 <= confidence_threshold <= 1.0):
+                    print(f"❌ 오류: 신뢰도 임계값이 범위를 벗어났습니다 ({confidence_threshold:.3f})")
+                    return False
+
+                self.config['strategy']['confidence_threshold'] = confidence_threshold
+                updated.append(f"신뢰도 임계값: {confidence_threshold:.2f}")
+
+            if updated:
+                print(f"✅ 임계값이 업데이트되었습니다: {', '.join(updated)}")
+                return True
+            else:
+                print("⚠️ 경고: 업데이트할 임계값이 없습니다")
+                return False
+
+        except Exception as e:
+            print(f"❌ 임계값 업데이트 실패: {e}")
+            return False
+
+    def normalize_weights(self, weights: Dict[str, float]) -> Dict[str, float]:
+        """가중치 정규화 (합이 1.0이 되도록 조정)
+
+        Args:
+            weights: 정규화할 가중치 딕셔너리
+
+        Returns:
+            정규화된 가중치 딕셔너리
+        """
+        try:
+            total = sum(weights.values())
+            if total == 0:
+                # 모든 가중치가 0인 경우 균등 분배
+                num_weights = len(weights)
+                return {key: 1.0 / num_weights for key in weights.keys()}
+
+            # 비율 유지하면서 합이 1.0이 되도록 조정
+            normalized = {key: value / total for key, value in weights.items()}
+            return normalized
+
+        except Exception as e:
+            print(f"❌ 가중치 정규화 실패: {e}")
+            return weights

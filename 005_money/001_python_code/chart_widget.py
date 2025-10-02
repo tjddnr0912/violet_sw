@@ -78,7 +78,7 @@ class ChartWidget:
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def create_indicator_checkboxes(self, parent):
-        """Step 2: 기술적 지표 체크박스 생성"""
+        """Step 2: 기술적 지표 체크박스 생성 (엘리트 기능 포함)"""
         indicator_frame = ttk.LabelFrame(parent, text="📊 기술적 지표", padding="5")
         indicator_frame.pack(side=tk.LEFT, padx=10)
 
@@ -107,6 +107,35 @@ class ChartWidget:
                 text=label,
                 variable=var,
                 command=self.on_indicator_toggle  # Step 3: 체크박스 토글 시 차트 업데이트
+            )
+            checkbox.grid(row=row, column=col, sticky=tk.W, padx=5, pady=2)
+
+        # Separator
+        ttk.Separator(indicator_frame, orient=tk.HORIZONTAL).grid(
+            row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 5)
+        )
+
+        # NEW: 엘리트 기능 체크박스
+        elite_indicators = [
+            ('candlestick_patterns', '캔들 패턴'),
+            ('rsi_divergence', 'RSI 다이버전스'),
+            ('macd_divergence', 'MACD 다이버전스'),
+            ('chandelier_stop', 'Chandelier Stop'),
+            ('bb_squeeze', 'BB Squeeze')
+        ]
+
+        for i, (key, label) in enumerate(elite_indicators):
+            var = tk.BooleanVar(value=False)
+            self.indicator_checkboxes[key] = var
+
+            row = 5 + (i // 2)
+            col = i % 2
+
+            checkbox = ttk.Checkbutton(
+                indicator_frame,
+                text=label,
+                variable=var,
+                command=self.on_indicator_toggle
             )
             checkbox.grid(row=row, column=col, sticky=tk.W, padx=5, pady=2)
 
@@ -146,6 +175,10 @@ class ChartWidget:
             return
 
         try:
+            # Explicitly close old figure to prevent memory leaks
+            if hasattr(self, 'fig') and self.fig is not None:
+                plt.close(self.fig)
+
             self.fig.clear()
 
             # 활성화된 서브플롯 확인
@@ -234,7 +267,19 @@ class ChartWidget:
             if self.indicator_checkboxes['bb'].get():
                 self.plot_bollinger_bands(ax_main)
 
-            # Stochastic, ATR, ADX는 텍스트 정보로 표시
+            # NEW: 엘리트 기능 - BB Squeeze 영역 표시 (BB보다 먼저 그려서 배경에 위치)
+            if self.indicator_checkboxes.get('bb_squeeze', tk.BooleanVar()).get():
+                self.plot_bb_squeeze_zones(ax_main)
+
+            # NEW: 엘리트 기능 - Chandelier Exit 트레일링 스톱
+            if self.indicator_checkboxes.get('chandelier_stop', tk.BooleanVar()).get():
+                self.plot_chandelier_stop(ax_main)
+
+            # NEW: 엘리트 기능 - 캔들스틱 패턴 마커
+            if self.indicator_checkboxes.get('candlestick_patterns', tk.BooleanVar()).get():
+                self.plot_candlestick_patterns(ax_main)
+
+            # Stochastic, ATR, ADX는 텍스트 정보로 표시 (엘리트 기능 추가)
             info_text = self.get_indicator_info_text()
             if info_text:
                 ax_main.text(0.99, 0.97, info_text,
@@ -247,10 +292,16 @@ class ChartWidget:
             # Step 3: 서브플롯 지표
             if has_rsi and ax_rsi:
                 self.plot_rsi(ax_rsi)
+                # NEW: RSI 다이버전스 표시
+                if self.indicator_checkboxes.get('rsi_divergence', tk.BooleanVar()).get():
+                    self.plot_rsi_divergence(ax_rsi)
                 plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
             if has_macd and ax_macd:
                 self.plot_macd(ax_macd)
+                # NEW: MACD 다이버전스 표시
+                if self.indicator_checkboxes.get('macd_divergence', tk.BooleanVar()).get():
+                    self.plot_macd_divergence(ax_macd)
                 plt.setp(ax_macd.get_xticklabels(), visible=False)
 
             if has_volume and ax_volume:
@@ -460,7 +511,7 @@ class ChartWidget:
         ))
 
     def get_indicator_info_text(self) -> str:
-        """Step 3: Stochastic, ATR, ADX 지표 정보를 텍스트로 생성"""
+        """Step 3: Stochastic, ATR, ADX 지표 정보를 텍스트로 생성 (엘리트 기능 포함)"""
         info_lines = []
 
         # Stochastic
@@ -484,6 +535,47 @@ class ChartWidget:
                 trend_text = "강한 추세" if adx > 25 else "약한 추세"
                 info_lines.append(f"ADX: {adx:.1f} ({trend_text})")
 
+        # NEW: 캔들스틱 패턴
+        if self.indicator_checkboxes.get('candlestick_patterns', tk.BooleanVar()).get():
+            if self.analysis and 'candlestick_pattern' in self.analysis:
+                pattern = self.analysis['candlestick_pattern']
+                pattern_type = pattern.get('pattern_type', 'None')
+                pattern_score = pattern.get('pattern_score', 0.0)
+                if pattern_type != 'None':
+                    info_lines.append(f"Pattern: {pattern_type} ({pattern_score:+.2f})")
+
+        # NEW: RSI 다이버전스
+        if self.indicator_checkboxes.get('rsi_divergence', tk.BooleanVar()).get():
+            if self.analysis and 'rsi_divergence' in self.analysis:
+                div = self.analysis['rsi_divergence']
+                div_type = div.get('divergence_type', 'None')
+                if div_type != 'None':
+                    info_lines.append(f"RSI Div: {div_type}")
+
+        # NEW: MACD 다이버전스
+        if self.indicator_checkboxes.get('macd_divergence', tk.BooleanVar()).get():
+            if self.analysis and 'macd_divergence' in self.analysis:
+                div = self.analysis['macd_divergence']
+                div_type = div.get('divergence_type', 'None')
+                if div_type != 'None':
+                    info_lines.append(f"MACD Div: {div_type}")
+
+        # NEW: Chandelier Stop
+        if self.indicator_checkboxes.get('chandelier_stop', tk.BooleanVar()).get():
+            if self.analysis and 'chandelier_exit' in self.analysis:
+                stop = self.analysis['chandelier_exit']
+                stop_price = stop.get('stop_price', 0)
+                if stop_price > 0:
+                    info_lines.append(f"Chandelier: {stop_price:,.0f}")
+
+        # NEW: BB Squeeze
+        if self.indicator_checkboxes.get('bb_squeeze', tk.BooleanVar()).get():
+            if self.analysis and 'bb_squeeze' in self.analysis:
+                squeeze = self.analysis['bb_squeeze']
+                if squeeze.get('is_squeezing', False):
+                    duration = squeeze.get('squeeze_duration', 0)
+                    info_lines.append(f"BB Squeeze: {duration} candles")
+
         return '\n'.join(info_lines) if info_lines else ""
 
     def refresh_chart(self):
@@ -506,3 +598,225 @@ class ChartWidget:
         """설정 업데이트"""
         self.config = new_config
         self.refresh_chart()
+
+    # ==================== NEW: 엘리트 기능 플로팅 함수 ====================
+
+    def plot_candlestick_patterns(self, ax):
+        """캔들스틱 패턴 마커 표시"""
+        if not self.analysis or 'candlestick_pattern' not in self.analysis:
+            return
+
+        pattern = self.analysis['candlestick_pattern']
+        pattern_type = pattern.get('pattern_type', 'None')
+        pattern_score = pattern.get('pattern_score', 0.0)
+
+        if pattern_type == 'None' or pattern_score == 0:
+            return
+
+        # 마지막 캔들 위치에 패턴 마커 표시
+        last_idx = len(self.df) - 1
+        last_price = self.df['high'].iloc[-1]
+
+        # 패턴 타입에 따른 마커 및 색상 결정
+        if pattern_score > 0:  # Bullish
+            marker = '^'
+            color = 'green'
+            y_offset = -self.df['low'].iloc[-1] * 0.02  # 아래쪽에 표시
+            va = 'top'
+        else:  # Bearish
+            marker = 'v'
+            color = 'red'
+            y_offset = self.df['high'].iloc[-1] * 0.02  # 위쪽에 표시
+            va = 'bottom'
+
+        # 마커 그리기
+        ax.scatter([last_idx], [last_price + y_offset], marker=marker, s=200,
+                  color=color, alpha=0.8, zorder=10, edgecolors='black', linewidths=1.5)
+
+        # 패턴 이름 표시
+        ax.text(last_idx, last_price + y_offset * 1.5, pattern_type,
+               fontsize=8, color=color, fontweight='bold',
+               ha='center', va=va, zorder=11,
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor=color))
+
+    def plot_rsi_divergence(self, ax):
+        """RSI 다이버전스 라인 표시"""
+        if not self.analysis or 'rsi_divergence' not in self.analysis:
+            return
+
+        divergence = self.analysis['rsi_divergence']
+        div_type = divergence.get('divergence_type', 'None')
+
+        if div_type == 'None':
+            return
+
+        # 다이버전스 타입에 따른 색상 설정
+        if div_type == 'Bullish':
+            color = 'green'
+            label_text = 'Bullish Div'
+        else:  # Bearish
+            color = 'red'
+            label_text = 'Bearish Div'
+
+        # 최근 데이터에서 다이버전스 포인트 찾기 (간략화된 표시)
+        # 실제로는 strategy.py에서 계산된 정확한 포인트를 사용해야 하지만,
+        # 여기서는 최근 30개 캔들에서 극값을 찾아 표시
+        lookback = min(30, len(self.df))
+        recent_data = self.df.tail(lookback)
+
+        if 'rsi' not in recent_data.columns:
+            return
+
+        # RSI 극값 찾기
+        rsi_values = recent_data['rsi'].values
+        if div_type == 'Bullish':
+            # 저점 찾기
+            local_mins = []
+            for i in range(1, len(rsi_values) - 1):
+                if rsi_values[i] < rsi_values[i-1] and rsi_values[i] < rsi_values[i+1]:
+                    local_mins.append(i)
+            if len(local_mins) >= 2:
+                # 마지막 두 저점 연결
+                idx1 = len(self.df) - lookback + local_mins[-2]
+                idx2 = len(self.df) - lookback + local_mins[-1]
+                ax.plot([idx1, idx2], [rsi_values[local_mins[-2]], rsi_values[local_mins[-1]]],
+                       linestyle='--', color=color, linewidth=2, alpha=0.7, label=label_text)
+        else:  # Bearish
+            # 고점 찾기
+            local_maxs = []
+            for i in range(1, len(rsi_values) - 1):
+                if rsi_values[i] > rsi_values[i-1] and rsi_values[i] > rsi_values[i+1]:
+                    local_maxs.append(i)
+            if len(local_maxs) >= 2:
+                # 마지막 두 고점 연결
+                idx1 = len(self.df) - lookback + local_maxs[-2]
+                idx2 = len(self.df) - lookback + local_maxs[-1]
+                ax.plot([idx1, idx2], [rsi_values[local_maxs[-2]], rsi_values[local_maxs[-1]]],
+                       linestyle='--', color=color, linewidth=2, alpha=0.7, label=label_text)
+
+    def plot_macd_divergence(self, ax):
+        """MACD 다이버전스 라인 표시"""
+        if not self.analysis or 'macd_divergence' not in self.analysis:
+            return
+
+        divergence = self.analysis['macd_divergence']
+        div_type = divergence.get('divergence_type', 'None')
+
+        if div_type == 'None':
+            return
+
+        # 다이버전스 타입에 따른 색상 설정
+        if div_type == 'Bullish':
+            color = 'green'
+            label_text = 'Bullish Div'
+        else:  # Bearish
+            color = 'red'
+            label_text = 'Bearish Div'
+
+        # RSI와 동일한 로직으로 MACD 히스토그램에서 극값 찾기
+        lookback = min(30, len(self.df))
+        recent_data = self.df.tail(lookback)
+
+        if 'macd_histogram' not in recent_data.columns:
+            return
+
+        macd_hist = recent_data['macd_histogram'].values
+        if div_type == 'Bullish':
+            local_mins = []
+            for i in range(1, len(macd_hist) - 1):
+                if macd_hist[i] < macd_hist[i-1] and macd_hist[i] < macd_hist[i+1]:
+                    local_mins.append(i)
+            if len(local_mins) >= 2:
+                idx1 = len(self.df) - lookback + local_mins[-2]
+                idx2 = len(self.df) - lookback + local_mins[-1]
+                ax.plot([idx1, idx2], [macd_hist[local_mins[-2]], macd_hist[local_mins[-1]]],
+                       linestyle='--', color=color, linewidth=2, alpha=0.7, label=label_text)
+        else:  # Bearish
+            local_maxs = []
+            for i in range(1, len(macd_hist) - 1):
+                if macd_hist[i] > macd_hist[i-1] and macd_hist[i] > macd_hist[i+1]:
+                    local_maxs.append(i)
+            if len(local_maxs) >= 2:
+                idx1 = len(self.df) - lookback + local_maxs[-2]
+                idx2 = len(self.df) - lookback + local_maxs[-1]
+                ax.plot([idx1, idx2], [macd_hist[local_maxs[-2]], macd_hist[local_maxs[-1]]],
+                       linestyle='--', color=color, linewidth=2, alpha=0.7, label=label_text)
+
+    def plot_chandelier_stop(self, ax):
+        """Chandelier Exit 트레일링 스톱 라인 표시"""
+        if not self.analysis or 'chandelier_exit' not in self.analysis:
+            return
+
+        chandelier = self.analysis['chandelier_exit']
+        stop_price = chandelier.get('stop_price', 0)
+        trailing_status = chandelier.get('trailing_status', 'initial')
+
+        if stop_price <= 0:
+            return
+
+        # 상태에 따른 색상 설정
+        if trailing_status == 'triggered':
+            color = 'red'
+            linestyle = '-'
+            alpha = 0.9
+        elif trailing_status == 'active':
+            color = 'orange'
+            linestyle = '--'
+            alpha = 0.7
+        else:  # initial
+            color = 'gold'
+            linestyle = ':'
+            alpha = 0.6
+
+        # 전체 차트에 수평선 그리기
+        x = list(range(len(self.df)))
+        ax.axhline(y=stop_price, color=color, linestyle=linestyle,
+                  linewidth=2, alpha=alpha, label=f'Chandelier Stop ({stop_price:,.0f})')
+
+        # 마지막 지점에 레이블 표시
+        ax.text(len(self.df) - 1, stop_price, f' {stop_price:,.0f}',
+               fontsize=8, color=color, fontweight='bold',
+               ha='left', va='center',
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor=color))
+
+    def plot_bb_squeeze_zones(self, ax):
+        """BB Squeeze 영역 표시 (배경 음영)"""
+        if not self.analysis or 'bb_squeeze' not in self.analysis:
+            return
+
+        squeeze = self.analysis['bb_squeeze']
+        is_squeezing = squeeze.get('is_squeezing', False)
+        squeeze_duration = squeeze.get('squeeze_duration', 0)
+        breakout_direction = squeeze.get('breakout_direction', 'neutral')
+
+        if not is_squeezing or squeeze_duration <= 0:
+            return
+
+        # 스퀴즈 영역 계산 (최근 squeeze_duration 개 캔들)
+        start_idx = max(0, len(self.df) - squeeze_duration)
+        end_idx = len(self.df) - 1
+
+        # 방향에 따른 색상 설정
+        if breakout_direction == 'up':
+            color = 'green'
+            alpha = 0.1
+        elif breakout_direction == 'down':
+            color = 'red'
+            alpha = 0.1
+        else:  # neutral
+            color = 'gray'
+            alpha = 0.08
+
+        # 배경 음영 그리기
+        y_min, y_max = ax.get_ylim()
+        ax.axvspan(start_idx, end_idx, facecolor=color, alpha=alpha, zorder=0)
+
+        # 스퀴즈 표시 텍스트
+        mid_idx = (start_idx + end_idx) / 2
+        mid_price = (self.df['high'].iloc[start_idx:end_idx+1].max() +
+                    self.df['low'].iloc[start_idx:end_idx+1].min()) / 2
+
+        ax.text(mid_idx, mid_price, 'BB SQUEEZE',
+               fontsize=9, color=color, fontweight='bold',
+               ha='center', va='center', alpha=0.6,
+               bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.5, edgecolor=color))

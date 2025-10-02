@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Dict, Any
+from collections import deque
 import json
 
 class TradingLogger:
@@ -65,9 +66,14 @@ class TradingLogger:
         self.logger.info(message)
 
 class TransactionHistory:
+    # Maximum number of transactions to keep in memory (about 3-6 months of active trading)
+    MAX_TRANSACTIONS = 1000
+
     def __init__(self, history_file: str = "transaction_history.json"):
         self.history_file = history_file
-        self.transactions = self.load_history()
+        loaded_history = self.load_history()
+        # Use deque with maxlen for automatic size limiting
+        self.transactions = deque(loaded_history, maxlen=self.MAX_TRANSACTIONS)
 
     def load_history(self) -> list:
         """거래 내역 로드"""
@@ -84,7 +90,8 @@ class TransactionHistory:
         """거래 내역 저장"""
         try:
             with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(self.transactions, f, ensure_ascii=False, indent=2)
+                # Convert deque to list for JSON serialization
+                json.dump(list(self.transactions), f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Error saving transaction history: {e}")
 
