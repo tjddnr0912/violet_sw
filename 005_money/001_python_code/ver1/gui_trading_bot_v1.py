@@ -10,10 +10,10 @@ import queue
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable
 
-from trading_bot import TradingBot
-from bithumb_api import get_ticker
-from logger import TradingLogger, TransactionHistory
-import config
+from .trading_bot_v1 import TradingBot
+from lib.api.bithumb_api import get_ticker
+from lib.core.logger import TradingLogger, TransactionHistory
+import config  # Still using compatibility layer
 
 class GUITradingBot(TradingBot):
     def __init__(self, status_callback: Callable = None):

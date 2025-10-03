@@ -17,7 +17,7 @@ import numpy as np
 from typing import Dict, Any
 import platform
 
-from strategy import TradingStrategy
+from ver1.strategy_v1 import StrategyV1 as TradingStrategy
 
 # OS에 맞는 한글 폰트 설정
 try:

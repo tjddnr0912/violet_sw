@@ -10,7 +10,7 @@ from typing import Dict, Optional, Tuple
 import logging
 
 # Import existing strategy functions
-from strategy import (
+from ver1.strategy_v1 import (
     calculate_moving_average,
     calculate_rsi,
     calculate_bollinger_bands,

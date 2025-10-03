@@ -9,8 +9,8 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
-from bithumb_api import BithumbAPI, get_ticker
-import config
+from lib.api.bithumb_api import BithumbAPI, get_ticker
+import config  # Still using compatibility layer
 
 @dataclass
 class CoinHolding:

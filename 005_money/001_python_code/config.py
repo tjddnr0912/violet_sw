@@ -1,313 +1,84 @@
-# ⚠️ 보안 경고: API 키는 환경변수로 설정하세요!
-#
-# 방법 1) 환경변수 설정 (권장):
-#   export BITHUMB_CONNECT_KEY="실제_Connect_Key"
-#   export BITHUMB_SECRET_KEY="실제_Secret_Key"
-#
-# 방법 2) .env 파일 사용 (python-dotenv 필요):
-#   .env 파일에 키를 저장하고 .gitignore에 .env 추가
-#
-# ⚠️ 이 파일에 실제 API 키를 직접 입력하지 마세요!
-# ⚠️ 만약 실수로 입력했다면 config.py를 .gitignore에 추가하세요!
+# Temporary compatibility layer for config migration
+# This file re-exports configurations from the new split structure
+# to maintain backward compatibility during migration
 
 import os
-from typing import Dict, Any
+import sys
+from pathlib import Path
 
-# 빗썸 API 정보
-BITHUMB_CONNECT_KEY = os.getenv("BITHUMB_CONNECT_KEY", "YOUR_CONNECT_KEY")
-BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "YOUR_SECRET_KEY")
+# Add lib/ to path for imports
+base_path = Path(__file__).parent
+if str(base_path) not in sys.path:
+    sys.path.insert(0, str(base_path))
 
-# 거래 설정
-TRADING_CONFIG = {
-    'target_ticker': 'BTC',
-    'trade_amount_krw': 10000,  # 거래 금액 (원)
-    'min_trade_amount': 5000,   # 최소 거래 금액
-    'max_trade_amount': 100000, # 최대 거래 금액
-    'stop_loss_percent': 5.0,   # 손절매 비율 (%)
-    'take_profit_percent': 10.0, # 익절 비율 (%)
-    'trading_fee_rate': 0.0025,  # 거래 수수료율 (0.25%)
-}
+# Import common configurations
+from lib.core.config_common import (
+    API_CONFIG,
+    LOGGING_CONFIG,
+    GUI_CONFIG,
+    SAFETY_CONFIG,
+    EXECUTION_CONFIG,
+    SCHEDULE_CONFIG,
+    TRADING_CONFIG,
+    merge_configs,
+    get_common_config,
+    validate_api_config,
+    validate_common_config,
+)
 
-# 전략 설정
-STRATEGY_CONFIG = {
-    # 기본 설정 - DEFAULT: 1h (1시간봉)
-    'candlestick_interval': '1h',  # 캔들스틱 간격 ('30m', '1h', '6h', '12h', '24h')
-    'short_ma_window': 20,   # 단기 이동평균선 기간 (캔들 개수)
-    'long_ma_window': 50,   # 장기 이동평균선 기간 (캔들 개수)
-    'rsi_period': 14,       # RSI 기간 (캔들 개수)
-    'rsi_overbought': 70,   # RSI 과매수 기준
-    'rsi_oversold': 30,     # RSI 과매도 기준
-    'rsi_buy_threshold': 30,  # GUI RSI 매수 임계값
-    'rsi_sell_threshold': 70, # GUI RSI 매도 임계값
-    'analysis_period': 100,    # GUI 분석 기간 (캔들 수) - 1h 기준 100시간
-    'volume_threshold': 1.5, # 거래량 임계값 (평균 대비 배수)
+# Import version 1 configurations
+from ver1.config_v1 import (
+    VERSION_METADATA,
+    INDICATOR_CONFIG,
+    SIGNAL_WEIGHTS,
+    REGIME_CONFIG,
+    RISK_CONFIG,
+    INTERVAL_PRESETS,
+    CHART_CONFIG,
+    MULTI_CHART_CONFIG,
+    get_version_config,
+    validate_version_config,
+)
 
-    # 엘리트 전략: MACD 파라미터 (1시간봉 최적화)
-    'macd_fast': 8,         # MACD 단기 EMA (기본: 8시간)
-    'macd_slow': 17,        # MACD 장기 EMA (기본: 17시간)
-    'macd_signal': 9,       # MACD 시그널선 EMA (기본: 9시간)
+# Re-export API credentials for backward compatibility
+BITHUMB_CONNECT_KEY = API_CONFIG['bithumb_connect_key']
+BITHUMB_SECRET_KEY = API_CONFIG['bithumb_secret_key']
 
-    # 엘리트 전략: ATR 파라미터 (변동성 측정)
-    'atr_period': 14,       # ATR 계산 기간 (14시간)
-    'atr_stop_multiplier': 2.0,  # ATR 기반 손절 배수 (기존)
-    'chandelier_atr_multiplier': 3.0,  # Chandelier Exit ATR 배수 (트레일링 스톱용, 더 여유있게)
+# Re-construct TRADING_CONFIG with EXECUTION_CONFIG keys for backward compatibility
+# Merge execution parameters into trading config
+TRADING_CONFIG_MERGED = TRADING_CONFIG.copy()
+TRADING_CONFIG_MERGED['trade_amount_krw'] = EXECUTION_CONFIG['trade_amount_krw']
+TRADING_CONFIG_MERGED['min_trade_amount'] = EXECUTION_CONFIG['min_trade_amount']
+TRADING_CONFIG_MERGED['max_trade_amount'] = EXECUTION_CONFIG['max_trade_amount']
+TRADING_CONFIG_MERGED['trading_fee_rate'] = EXECUTION_CONFIG['trading_fee_rate']
 
-    # 엘리트 전략: Stochastic 파라미터
-    'stoch_k_period': 14,   # Stochastic %K 기간
-    'stoch_d_period': 3,    # Stochastic %D 기간 (K의 이동평균)
+# Re-construct STRATEGY_CONFIG for backward compatibility
+STRATEGY_CONFIG = INDICATOR_CONFIG.copy()
+STRATEGY_CONFIG['signal_weights'] = SIGNAL_WEIGHTS
+STRATEGY_CONFIG['confidence_threshold'] = REGIME_CONFIG['confidence_threshold']
+STRATEGY_CONFIG['signal_threshold'] = REGIME_CONFIG['signal_threshold']
+STRATEGY_CONFIG['max_daily_loss_pct'] = RISK_CONFIG['max_daily_loss_pct']
+STRATEGY_CONFIG['max_consecutive_losses'] = RISK_CONFIG['max_consecutive_losses']
+STRATEGY_CONFIG['max_daily_trades'] = RISK_CONFIG['max_daily_trades']
+STRATEGY_CONFIG['position_risk_pct'] = RISK_CONFIG['position_risk_pct']
+STRATEGY_CONFIG['interval_presets'] = INTERVAL_PRESETS
+STRATEGY_CONFIG['multi_chart_config'] = MULTI_CHART_CONFIG
 
-    # 엘리트 전략: ADX 파라미터 (추세 강도)
-    'adx_period': 14,       # ADX 계산 기간
-    'adx_trending_threshold': 25,   # 추세장 판단 기준 (ADX > 25)
-    'adx_ranging_threshold': 15,    # 횡보장 판단 기준 (ADX < 15)
-
-    # 엘리트 전략: Bollinger Bands 파라미터
-    'bb_period': 20,        # 볼린저 밴드 기간
-    'bb_std': 2.0,          # 볼린저 밴드 표준편차 (암호화폐는 2.5 권장)
-
-    # 엘리트 전략: Volume 파라미터
-    'volume_window': 20,    # 거래량 평균 계산 윈도우
-
-    # 엘리트 전략 확장: 촛대 패턴 인식 (Candlestick Patterns)
-    # 패턴 감지는 항상 활성화, 가중치로 영향력 조절
-    'pattern_detection_enabled': True,  # 촛대 패턴 감지 활성화
-
-    # 엘리트 전략 확장: 다이버전스 감지 (Divergence Detection)
-    'divergence_lookback': 30,  # 다이버전스 탐지 기간 (캔들 수)
-    'divergence_detection_enabled': True,  # 다이버전스 감지 활성화
-
-    # 엘리트 전략 확장: BB 스퀴즈 (Bollinger Band Squeeze)
-    'bb_squeeze_threshold': 0.8,  # 스퀴즈 판단 임계값 (평균 BB 폭의 80% 이하)
-    'bb_squeeze_lookback': 50,    # 역사적 평균 계산 기간
-
-    # 엘리트 전략: 활성화된 지표 (GUI 연동용)
-    'enabled_indicators': {
-        'ma': True, 'rsi': True, 'bb': True, 'volume': True,
-        'macd': True, 'atr': True, 'stochastic': True, 'adx': True
-    },
-
-    # 엘리트 전략: 신호 가중치 (기본 합계 = 1.0, pattern 추가 시 재조정 권장)
-    'signal_weights': {
-        'macd': 0.35,       # MACD 신호 가중치 (추세 지표 - 가장 높음)
-        'ma': 0.25,         # 이동평균 가중치 (추세 확인)
-        'rsi': 0.20,        # RSI 가중치 (과매수/과매도 필터)
-        'bb': 0.10,         # 볼린저밴드 가중치 (평균회귀)
-        'volume': 0.10,     # 거래량 가중치 (확인용)
-        'pattern': 0.0      # 촛대 패턴 가중치 (기본 0, 필요시 0.10~0.15 권장, 다른 가중치 줄여야 함)
-        # 참고: 다이버전스는 별도 보너스로 적용 (신뢰도 향상 효과)
-    },
-
-    # 엘리트 전략: 신호 임계값
-    'confidence_threshold': 0.6,  # 최소 신뢰도 (0.0~1.0)
-    'signal_threshold': 0.5,      # 최소 신호 강도 (-1.0~1.0)
-
-    # 엘리트 전략: 리스크 관리
-    'max_daily_loss_pct': 3.0,    # 일일 최대 손실률 (%)
-    'max_consecutive_losses': 3,   # 최대 연속 손실 횟수
-    'max_daily_trades': 5,         # 일일 최대 거래 횟수
-    'position_risk_pct': 1.0,      # 거래당 위험 비율 (계좌의 %)
-
-    # 간격별 권장 지표 설정 (엘리트 전략 최적화)
-    'interval_presets': {
-        '30m': {  # 30분봉 - 단기 스윙 트레이딩 (NEW)
-            'short_ma_window': 20,      # 10시간
-            'long_ma_window': 50,       # 25시간
-            'rsi_period': 9,            # 4.5시간 (빠른 반응)
-            'bb_period': 20,            # 10시간
-            'bb_std': 2.5,              # 암호화폐 높은 변동성 반영
-            'macd_fast': 8,             # 4시간
-            'macd_slow': 17,            # 8.5시간
-            'macd_signal': 9,           # 4.5시간
-            'atr_period': 14,           # 7시간
-            'chandelier_atr_multiplier': 3.0,  # Chandelier Exit ATR 배수
-            'stoch_k_period': 14,       # 7시간
-            'stoch_d_period': 3,        # 1.5시간
-            'adx_period': 14,           # 7시간
-            'volume_window': 20,        # 10시간
-            'divergence_lookback': 30,  # 다이버전스 탐지 기간
-            'bb_squeeze_threshold': 0.8, # BB 스퀴즈 임계값
-            'analysis_period': 100,     # 50시간 (충분한 데이터)
-        },
-        '1h': {  # 1시간 봉 - 중단기 트레이딩 (DEFAULT, 엘리트 전략 최적화)
-            'short_ma_window': 20,      # 20시간
-            'long_ma_window': 50,       # 50시간 (약 2일)
-            'rsi_period': 14,           # 14시간
-            'bb_period': 20,            # 20시간
-            'bb_std': 2.0,              # 표준 편차 (암호화폐는 2.5도 가능)
-            'macd_fast': 8,             # 8시간
-            'macd_slow': 17,            # 17시간
-            'macd_signal': 9,           # 9시간
-            'atr_period': 14,           # 14시간
-            'chandelier_atr_multiplier': 3.0,  # Chandelier Exit ATR 배수
-            'stoch_k_period': 14,       # 14시간
-            'stoch_d_period': 3,        # 3시간
-            'adx_period': 14,           # 14시간
-            'volume_window': 20,        # 20시간
-            'divergence_lookback': 30,  # 다이버전스 탐지 기간
-            'bb_squeeze_threshold': 0.8, # BB 스퀴즈 임계값
-            'analysis_period': 100,     # 100시간 (약 4일)
-        },
-        '6h': {  # 6시간 봉 - 중기 트레이딩
-            'short_ma_window': 10,      # 60시간 (2.5일)
-            'long_ma_window': 30,       # 180시간 (7.5일)
-            'rsi_period': 14,           # 84시간 (3.5일)
-            'bb_period': 20,            # 120시간 (5일)
-            'bb_std': 2.0,
-            'macd_fast': 12,            # 72시간 (3일)
-            'macd_slow': 26,            # 156시간 (6.5일)
-            'macd_signal': 9,           # 54시간 (2.25일)
-            'atr_period': 14,           # 84시간
-            'chandelier_atr_multiplier': 3.0,
-            'stoch_k_period': 14,
-            'stoch_d_period': 3,
-            'adx_period': 14,
-            'volume_window': 10,
-            'divergence_lookback': 30,
-            'bb_squeeze_threshold': 0.8,
-            'analysis_period': 50,      # 300시간 (12.5일)
-        },
-        '12h': {  # 12시간 봉 - 중장기 트레이딩
-            'short_ma_window': 7,       # 84시간 (3.5일)
-            'long_ma_window': 25,       # 300시간 (12.5일)
-            'rsi_period': 14,           # 168시간 (7일)
-            'bb_period': 20,            # 240시간 (10일)
-            'bb_std': 2.0,
-            'macd_fast': 12,            # 144시간 (6일)
-            'macd_slow': 26,            # 312시간 (13일)
-            'macd_signal': 9,           # 108시간 (4.5일)
-            'atr_period': 14,
-            'chandelier_atr_multiplier': 3.0,
-            'stoch_k_period': 14,
-            'stoch_d_period': 3,
-            'adx_period': 14,
-            'volume_window': 10,
-            'divergence_lookback': 30,
-            'bb_squeeze_threshold': 0.8,
-            'analysis_period': 40,      # 480시간 (20일)
-        },
-        '24h': {  # 24시간 봉 - 장기 트레이딩
-            'short_ma_window': 5,       # 5일
-            'long_ma_window': 20,       # 20일
-            'rsi_period': 14,           # 14일
-            'bb_period': 20,            # 20일
-            'bb_std': 2.0,
-            'macd_fast': 12,            # 12일
-            'macd_slow': 26,            # 26일
-            'macd_signal': 9,           # 9일
-            'atr_period': 14,           # 14일
-            'chandelier_atr_multiplier': 3.0,
-            'stoch_k_period': 14,
-            'stoch_d_period': 3,
-            'adx_period': 14,
-            'volume_window': 10,
-            'divergence_lookback': 30,
-            'bb_squeeze_threshold': 0.8,
-            'analysis_period': 30,      # 30일
-        },
-    },
-
-    # 멀티 차트 설정 (Multi-Timeframe Chart Configuration)
-    'multi_chart_config': {
-        # Timing settings
-        'refresh_interval_seconds': 15,     # Auto-refresh interval (seconds)
-        'cache_ttl_seconds': 15,            # Cache time-to-live (seconds)
-        'api_rate_limit_seconds': 1.0,      # Minimum gap between API calls (seconds)
-
-        # Chart dimensions
-        'chart_width_pixels': 400,          # Individual chart width
-        'chart_height_pixels': 600,         # Individual chart height
-
-        # Default intervals
-        'default_column1_interval': '1h',   # Column 1 default (user-selectable)
-        'available_intervals': ['30m', '1h', '6h', '12h', '24h'],  # Dropdown options
-
-        # Indicator colors (consistent with existing chart_widget.py)
-        'colors': {
-            'candle_up': 'red',             # Bullish candle color
-            'candle_down': 'blue',          # Bearish candle color
-            'ma_short': 'orange',           # Short MA line color
-            'ma_long': 'purple',            # Long MA line color
-            'bb_band': 'gray',              # Bollinger Band color
-            'bb_fill': 'gray',              # Bollinger Band fill color
-            'rsi_line': 'purple',           # RSI line color
-            'rsi_overbought': 'red',        # RSI overbought zone
-            'rsi_oversold': 'blue',         # RSI oversold zone
-            'macd_line': 'blue',            # MACD line color
-            'macd_signal': 'red',           # MACD signal line color
-            'macd_histogram_pos': 'green',  # MACD histogram (positive)
-            'macd_histogram_neg': 'red',    # MACD histogram (negative)
-            'volume_up': 'red',             # Volume bar (bullish)
-            'volume_down': 'blue',          # Volume bar (bearish)
-        },
-
-        # Performance settings
-        'max_candles_per_chart': 200,      # Limit data for memory efficiency
-        'debounce_delay_ms': 200,          # Checkbox toggle debounce delay
-    }
-}
-
-# 스케줄링 설정
-SCHEDULE_CONFIG = {
-    'check_interval_minutes': 15,  # 시장 체크 간격 (분) - 1h 기본값에 맞춤
-    'daily_check_time': '09:05',   # 일일 체크 시간
-    'enable_night_trading': False, # 야간 거래 여부
-    'night_start_hour': 22,        # 야간 거래 시작 시간
-    'night_end_hour': 6,           # 야간 거래 종료 시간
-
-    # 캔들 간격별 권장 체크 주기 (분)
-    'interval_check_periods': {
-        '30m': 10,   # 30분 봉 → 10분마다 체크
-        '1h': 15,    # 1시간 봉 → 15분마다 체크 (DEFAULT)
-        '6h': 60,    # 6시간 봉 → 1시간마다 체크
-        '12h': 120,  # 12시간 봉 → 2시간마다 체크
-        '24h': 240,  # 24시간 봉 → 4시간마다 체크
-    }
-}
-
-# 로깅 설정
-LOGGING_CONFIG = {
-    'log_level': 'INFO',
-    'log_dir': 'logs',
-    'max_log_files': 30,    # 최대 로그 파일 수
-    'enable_console_log': True,
-    'enable_file_log': True,
-}
-
-# 안전 설정
-SAFETY_CONFIG = {
-    'dry_run': False,         # 모의 거래 모드 (실제 거래 X)
-    'test_mode': False,      # 테스트 모드 (거래 내역 기록 안함)
-    'max_daily_trades': 10, # 일일 최대 거래 횟수
-    'emergency_stop': False, # 긴급 정지
-    'balance_check_interval': 60, # 잔고 체크 간격 (분)
-}
 
 def validate_config() -> bool:
-    """설정값 검증"""
-    # API 키 확인 - 모의 거래 모드에서는 필수가 아님
-    if BITHUMB_CONNECT_KEY == "YOUR_CONNECT_KEY" or BITHUMB_SECRET_KEY == "YOUR_SECRET_KEY":
-        if SAFETY_CONFIG['dry_run']:
-            print("⚠️ 경고: API 키가 설정되지 않았습니다. 모의 거래 모드로 실행됩니다.")
-        else:
-            print("❌ 오류: 실제 거래 모드에서는 API 키가 필요합니다.")
-            print("   config.py에서 API 키를 설정하거나 dry_run: True로 변경하세요.")
-            return False
+    """Validate configuration (backward compatibility)"""
+    return validate_common_config()
 
-    # 거래 금액 검증
-    if TRADING_CONFIG['trade_amount_krw'] < TRADING_CONFIG['min_trade_amount']:
-        print("⚠️ 경고: 거래 금액이 최소 거래 금액보다 작습니다.")
-        return False
 
-    return True
-
-def get_config() -> Dict[str, Any]:
-    """전체 설정 반환"""
+def get_config():
+    """Get all configuration (backward compatibility)"""
     return {
-        'trading': TRADING_CONFIG,
+        'trading': TRADING_CONFIG_MERGED,  # Use merged config with execution params
         'strategy': STRATEGY_CONFIG,
         'schedule': SCHEDULE_CONFIG,
         'logging': LOGGING_CONFIG,
         'safety': SAFETY_CONFIG,
+        'execution': EXECUTION_CONFIG,  # Also include execution separately for new code
         'api': {
             'connect_key': BITHUMB_CONNECT_KEY,
             'secret_key': BITHUMB_SECRET_KEY

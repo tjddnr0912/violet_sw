@@ -10,9 +10,9 @@ from typing import Optional
 import logging
 from datetime import datetime
 
-from data_manager import DataManager
-from indicator_calculator import IndicatorCalculator
-from chart_column import ChartColumn
+from lib.gui.data_manager import DataManager
+from lib.gui.indicator_calculator import IndicatorCalculator
+from lib.gui.components.chart_column import ChartColumn
 
 
 class MultiTimeframeChartTab:

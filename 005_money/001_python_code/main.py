@@ -14,10 +14,15 @@ os.chdir(project_root)
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-from trading_bot import TradingBot
-from logger import TradingLogger
-from config_manager import ConfigManager
-import config
+# Import from new lib structure
+from ver1.trading_bot_v1 import TradingBot
+from lib.core.logger import TradingLogger
+from lib.core.config_manager import ConfigManager
+import config  # Still using compatibility layer
+
+# New version loading system
+from lib.core.arg_parser import parse_trading_args, print_available_versions, build_config_override
+from lib.core.version_loader import get_version_loader
 
 # 전역 변수
 trading_bot = None
@@ -128,11 +133,19 @@ def main():
     print("="*50)
 
     try:
+        # Parse arguments using new arg parser (includes --version flag)
+        args = parse_trading_args()
+
+        # Handle --list-versions flag
+        if args.list_versions:
+            print_available_versions()
+            return
+
         # 설정 관리자 초기화
         config_manager = ConfigManager()
 
-        # 명령행 인수 파싱
-        args = config_manager.parse_arguments()
+        # Also parse with old config manager for backward compatibility
+        old_args = config_manager.parse_arguments()
 
         # 설정 표시 요청 시
         if args.show_config:
@@ -215,7 +228,27 @@ def main():
         # 로거 초기화
         logger = TradingLogger(final_config['logging']['log_dir'])
 
+        # Load trading strategy version
+        version_name = args.version if hasattr(args, 'version') else 'ver1'
+        logger.logger.info(f"Loading trading strategy version: {version_name}")
+        print(f"\n🔧 Loading strategy: {version_name}")
+
+        try:
+            # Build config override from command-line args
+            config_override = build_config_override(args)
+
+            # Load version
+            strategy_version = load_version(version_name, config_override)
+            logger.logger.info(f"Strategy loaded: {strategy_version.get_version_info()['display_name']}")
+            print(f"✓ Strategy: {strategy_version.get_version_info()['display_name']}")
+        except Exception as e:
+            logger.log_error(f"Failed to load strategy version '{version_name}'", e)
+            print(f"❌ Error loading version '{version_name}': {e}")
+            print(f"\nAvailable versions: {', '.join(list_available_versions())}")
+            return
+
         # 거래 봇 초기화 (업데이트된 설정 사용)
+        # TODO: Pass strategy_version to TradingBot in future
         trading_bot = TradingBot()
 
         # 초기 인증
