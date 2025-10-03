@@ -1,0 +1,19 @@
+# Version 2 Strategy Requirements
+# Bitcoin Multi-Timeframe Trading Strategy with Backtrader
+
+# Core Dependencies
+backtrader>=1.9.76.123
+pandas>=1.3.0
+numpy>=1.21.0
+
+# Data Fetching
+python-binance>=1.0.16
+
+# Optional: For enhanced plotting
+matplotlib>=3.3.0
+
+# Optional: For testing
+pytest>=7.0.0
+
+# Optional: For type checking
+mypy>=0.910
