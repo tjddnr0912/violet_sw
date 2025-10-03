@@ -25,14 +25,19 @@ os.chdir(project_root)
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-from gui_trading_bot import GUITradingBot
-from logger import TradingLogger, TransactionHistory
-from config_manager import ConfigManager
-import config
-from bithumb_api import get_ticker
-from chart_widget import ChartWidget
-from signal_history_widget import SignalHistoryWidget
-from multi_chart_tab import MultiTimeframeChartTab
+# Import from new lib structure
+from ver1.gui_trading_bot_v1 import GUITradingBot
+from lib.core.logger import TradingLogger, TransactionHistory
+from lib.core.config_manager import ConfigManager
+import config  # Still using compatibility layer
+from lib.api.bithumb_api import get_ticker
+from lib.gui.components.chart_widget import ChartWidget
+from lib.gui.components.signal_history_widget import SignalHistoryWidget
+from lib.gui.components.multi_chart_tab import MultiTimeframeChartTab
+
+# New version loading system
+from lib.core.arg_parser import parse_gui_args, build_config_override
+from lib.core.version_loader import get_version_loader
 
 class TradingBotGUI:
     def __init__(self, root):
@@ -2115,8 +2120,29 @@ class TradingBotGUI:
 
 def main():
     """GUI 애플리케이션 실행"""
+    # Parse command-line arguments (includes --version flag)
+    args = parse_gui_args()
+
+    # Load trading strategy version
+    version_name = args.version if hasattr(args, 'version') else 'ver1'
+    print(f"Loading trading strategy: {version_name}")
+
+    try:
+        config_override = build_config_override(args)
+        strategy_version = load_version(version_name, config_override)
+        version_info = strategy_version.get_version_info()
+        print(f"✓ Loaded: {version_info['display_name']}")
+    except Exception as e:
+        print(f"❌ Error loading version '{version_name}': {e}")
+        print(f"Available versions: {', '.join(list_available_versions())}")
+        return
+
     root = tk.Tk()
     app = TradingBotGUI(root)
+
+    # Store version info in app for display
+    app.strategy_version = strategy_version
+    app.version_info = version_info
 
     # Register cleanup on window close
     def on_closing():

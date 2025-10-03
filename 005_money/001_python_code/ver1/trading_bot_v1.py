@@ -2,11 +2,11 @@ import time
 import json
 from datetime import datetime
 from typing import Dict, Any, Optional
-from bithumb_api import BithumbAPI
-from strategy import TradingStrategy
-from logger import TradingLogger, TransactionHistory, MarkdownTransactionLogger
-from portfolio_manager import PortfolioManager
-import config
+from lib.api.bithumb_api import BithumbAPI
+from .strategy_v1 import StrategyV1 as TradingStrategy
+from lib.core.logger import TradingLogger, TransactionHistory, MarkdownTransactionLogger
+from lib.core.portfolio_manager import PortfolioManager
+import config  # Still using compatibility layer
 
 class TradingBot:
     def __init__(self):
@@ -22,8 +22,8 @@ class TradingBot:
             secret_key=api_config['secret_key']
         )
 
-        # 전략 초기화
-        self.strategy = TradingStrategy(self.logger)
+        # 전략 초기화 (FIX: Pass logger as keyword argument to avoid confusion with config parameter)
+        self.strategy = TradingStrategy(logger=self.logger)
 
         # 포트폴리오 관리자 초기화
         self.portfolio_manager = PortfolioManager(self.api, self.transaction_history)

@@ -54,15 +54,31 @@ def check_dependencies():
     return True
 
 def check_files():
-    """필요한 파일 확인"""
+    """필요한 파일 확인 (NEW structure)"""
     required_files = [
+        # Core GUI files
         '001_python_code/gui_app.py',
-        '001_python_code/trading_bot.py',
-        '001_python_code/config.py',
-        '001_python_code/logger.py',
-        '001_python_code/config_manager.py',
-        '001_python_code/bithumb_api.py',
-        '001_python_code/strategy.py'
+        '001_python_code/config.py',  # Compatibility layer
+
+        # Version 1 files
+        '001_python_code/ver1/gui_trading_bot_v1.py',
+        '001_python_code/ver1/trading_bot_v1.py',
+        '001_python_code/ver1/strategy_v1.py',
+        '001_python_code/ver1/config_v1.py',
+
+        # Library core files
+        '001_python_code/lib/core/logger.py',
+        '001_python_code/lib/core/config_manager.py',
+        '001_python_code/lib/core/version_loader.py',
+        '001_python_code/lib/core/arg_parser.py',
+
+        # Library API files
+        '001_python_code/lib/api/bithumb_api.py',
+
+        # Library GUI components
+        '001_python_code/lib/gui/components/chart_widget.py',
+        '001_python_code/lib/gui/components/signal_history_widget.py',
+        '001_python_code/lib/gui/components/multi_chart_tab.py'
     ]
 
     missing_files = []
@@ -74,7 +90,8 @@ def check_files():
         messagebox.showerror(
             "파일 누락",
             f"다음 파일들이 누락되었습니다:\n" + "\n".join(missing_files) + "\n\n"
-            "005_money 디렉토리에서 실행해주세요."
+            "005_money 디렉토리에서 실행해주세요.\n\n"
+            "또는 ver1 버전 파일이 누락되었을 수 있습니다."
         )
         return False
 

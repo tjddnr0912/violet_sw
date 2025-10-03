@@ -9,7 +9,7 @@ import time
 from typing import Dict, List, Optional
 from datetime import datetime
 import logging
-from bithumb_api import get_candlestick
+from lib.api.bithumb_api import get_candlestick
 
 class DataManager:
     """

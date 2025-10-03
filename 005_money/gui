@@ -28,11 +28,23 @@ show_logo() {
 show_help() {
     show_logo
     echo -e "${YELLOW}사용법:${NC}"
-    echo "  ./gui                    # GUI 실행"
-    echo "  ./gui --help            # 도움말 표시"
-    echo "  ./gui --setup-only      # 환경 설정만 실행"
-    echo "  ./gui --check           # 시스템 요구사항 확인"
-    echo "  ./gui --force-install   # 패키지 강제 재설치"
+    echo "  ./gui                       # GUI 실행 (기본: ver1)"
+    echo "  ./gui --version ver1        # Ver1으로 GUI 실행"
+    echo "  ./gui --version ver2        # Ver2로 GUI 실행"
+    echo "  ./gui -v ver1               # 버전 선택 (축약형)"
+    echo "  ./gui --help                # 도움말 표시"
+    echo "  ./gui --setup-only          # 환경 설정만 실행"
+    echo "  ./gui --check               # 시스템 요구사항 확인"
+    echo "  ./gui --force-install       # 패키지 강제 재설치"
+    echo ""
+    echo -e "${CYAN}버전 정보:${NC}"
+    echo "  📊 ver1: Elite 8-Indicator Strategy"
+    echo "      - 8개 기술 지표 (MA, RSI, BB, Volume, MACD, ATR, Stochastic, ADX)"
+    echo "      - 가중치 기반 신호 조합"
+    echo "      - 시장 상황 인식 (Trending/Ranging/Transitional)"
+    echo ""
+    echo "  📊 ver2: (구현 예정)"
+    echo "      - 새로운 거래 전략"
     echo ""
     echo -e "${CYAN}주요 기능:${NC}"
     echo "  🎮 실시간 봇 제어 (시작/정지)"
@@ -53,10 +65,10 @@ check_system_requirements() {
 
     local all_good=true
 
-    # 1. 디렉토리 확인
-    if [[ ! -f "001_python_code/gui_app.py" ]] || [[ ! -f "001_python_code/trading_bot.py" ]]; then
+    # 1. 디렉토리 확인 (버전 기반 구조로 업데이트)
+    if [[ ! -f "001_python_code/gui_app.py" ]] || [[ ! -f "001_python_code/ver1/trading_bot_v1.py" ]]; then
         echo -e "${RED}❌ 005_money 디렉토리에서 실행해주세요.${NC}"
-        echo "   필요한 파일: 001_python_code/gui_app.py, 001_python_code/trading_bot.py"
+        echo "   필요한 파일: 001_python_code/gui_app.py, 001_python_code/ver1/trading_bot_v1.py"
         all_good=false
     else
         echo -e "${GREEN}✅ 디렉토리 확인 완료${NC}"
@@ -176,9 +188,14 @@ except ImportError as e:
     print(f'❌ 패키지 오류: {e}')
     sys.exit(1)
 
-# GUI 파일 확인
+# GUI 파일 확인 (버전 기반 구조로 업데이트)
 import os
-required_files = ['001_python_code/gui_app.py', '001_python_code/gui_trading_bot.py', '001_python_code/trading_bot.py', '001_python_code/config.py']
+required_files = [
+    '001_python_code/gui_app.py',
+    '001_python_code/ver1/gui_trading_bot_v1.py',
+    '001_python_code/ver1/trading_bot_v1.py',
+    '001_python_code/config.py'
+]
 missing = [f for f in required_files if not os.path.exists(f)]
 if missing:
     print(f'❌ 누락된 파일: {missing}')
@@ -236,6 +253,13 @@ show_gui_info() {
 
 launch_gui() {
     echo -e "${BLUE}🚀 GUI를 시작합니다...${NC}"
+
+    # 버전 정보 표시
+    if [[ -n "$VERSION" ]]; then
+        echo -e "${CYAN}📊 선택된 버전: $VERSION${NC}"
+    else
+        echo -e "${CYAN}📊 선택된 버전: ver1 (기본)${NC}"
+    fi
     echo ""
 
     # 가상환경이 있으면 활성화
@@ -243,9 +267,13 @@ launch_gui() {
         source .venv/bin/activate
     fi
 
-    # GUI 실행
+    # GUI 실행 (버전 인수 전달)
     echo "GUI 애플리케이션을 실행하고 있습니다..."
-    python3 run_gui.py
+    if [[ -n "$VERSION" ]]; then
+        python3 run_gui.py --version "$VERSION"
+    else
+        python3 run_gui.py
+    fi
 }
 
 # 인수 파싱
@@ -253,9 +281,14 @@ SETUP_ONLY=false
 CHECK_ONLY=false
 FORCE_INSTALL=false
 SHOW_HELP=false
+VERSION=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --version|-v)
+            VERSION="$2"
+            shift 2
+            ;;
         --setup-only)
             SETUP_ONLY=true
             shift
@@ -268,13 +301,13 @@ while [[ $# -gt 0 ]]; do
             FORCE_INSTALL=true
             shift
             ;;
-        --help)
+        --help|-h)
             SHOW_HELP=true
             shift
             ;;
         *)
             echo -e "${RED}❌ 알 수 없는 옵션: $1${NC}"
-            echo "사용법: ./gui [--setup-only|--check|--force-install|--help]"
+            echo "사용법: ./gui [--version ver1|ver2] [--setup-only|--check|--force-install|--help]"
             exit 1
             ;;
     esac
