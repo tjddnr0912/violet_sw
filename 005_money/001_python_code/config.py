@@ -204,6 +204,45 @@ STRATEGY_CONFIG = {
             'bb_squeeze_threshold': 0.8,
             'analysis_period': 30,      # 30일
         },
+    },
+
+    # 멀티 차트 설정 (Multi-Timeframe Chart Configuration)
+    'multi_chart_config': {
+        # Timing settings
+        'refresh_interval_seconds': 15,     # Auto-refresh interval (seconds)
+        'cache_ttl_seconds': 15,            # Cache time-to-live (seconds)
+        'api_rate_limit_seconds': 1.0,      # Minimum gap between API calls (seconds)
+
+        # Chart dimensions
+        'chart_width_pixels': 400,          # Individual chart width
+        'chart_height_pixels': 600,         # Individual chart height
+
+        # Default intervals
+        'default_column1_interval': '1h',   # Column 1 default (user-selectable)
+        'available_intervals': ['30m', '1h', '6h', '12h', '24h'],  # Dropdown options
+
+        # Indicator colors (consistent with existing chart_widget.py)
+        'colors': {
+            'candle_up': 'red',             # Bullish candle color
+            'candle_down': 'blue',          # Bearish candle color
+            'ma_short': 'orange',           # Short MA line color
+            'ma_long': 'purple',            # Long MA line color
+            'bb_band': 'gray',              # Bollinger Band color
+            'bb_fill': 'gray',              # Bollinger Band fill color
+            'rsi_line': 'purple',           # RSI line color
+            'rsi_overbought': 'red',        # RSI overbought zone
+            'rsi_oversold': 'blue',         # RSI oversold zone
+            'macd_line': 'blue',            # MACD line color
+            'macd_signal': 'red',           # MACD signal line color
+            'macd_histogram_pos': 'green',  # MACD histogram (positive)
+            'macd_histogram_neg': 'red',    # MACD histogram (negative)
+            'volume_up': 'red',             # Volume bar (bullish)
+            'volume_down': 'blue',          # Volume bar (bearish)
+        },
+
+        # Performance settings
+        'max_candles_per_chart': 200,      # Limit data for memory efficiency
+        'debounce_delay_ms': 200,          # Checkbox toggle debounce delay
     }
 }
 

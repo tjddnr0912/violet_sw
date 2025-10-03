@@ -32,6 +32,7 @@ import config
 from bithumb_api import get_ticker
 from chart_widget import ChartWidget
 from signal_history_widget import SignalHistoryWidget
+from multi_chart_tab import MultiTimeframeChartTab
 
 class TradingBotGUI:
     def __init__(self, root):
@@ -154,13 +155,17 @@ class TradingBotGUI:
         chart_tab = ttk.Frame(self.notebook)
         self.notebook.add(chart_tab, text='📊 실시간 차트')
 
+        # 멀티 타임프레임 차트 탭 (NEW! - 3-column multi-timeframe chart)
+        multi_chart_tab = ttk.Frame(self.notebook)
+        self.notebook.add(multi_chart_tab, text='📊 멀티 타임프레임')
+
         # 신호 히스토리 탭 (NEW!)
         signal_history_tab = ttk.Frame(self.notebook)
         self.notebook.add(signal_history_tab, text='📋 신호 히스토리')
 
         # 거래 내역 탭
         history_tab = ttk.Frame(self.notebook)
-        self.notebook.add(history_tab, text='거래 내역')
+        self.notebook.add(history_tab, text='📜 거래 내역')
 
         # 메인 탭 내용 - 4-COLUMN LAYOUT: 상단(4개 열) + 하단(로그)
         main_tab.columnconfigure(0, weight=1)
@@ -214,6 +219,17 @@ class TradingBotGUI:
         chart_tab.columnconfigure(0, weight=1)
         chart_tab.rowconfigure(0, weight=1)
         self.chart_widget = ChartWidget(chart_tab, self.config_manager.get_config())
+
+        # 멀티 타임프레임 차트 탭 구성 (NEW! - 3-column multi-timeframe)
+        multi_chart_tab.columnconfigure(0, weight=1)
+        multi_chart_tab.rowconfigure(0, weight=1)
+        coin_symbol = self.config_manager.get_config().get('trading', {}).get('target_ticker', 'BTC')
+        self.multi_chart_widget = MultiTimeframeChartTab(
+            parent=multi_chart_tab,
+            coin_symbol=coin_symbol,
+            api_instance=None,  # Not used, kept for compatibility
+            config=self.config_manager.get_config()
+        )
 
         # 신호 히스토리 탭 구성 (NEW!)
         signal_history_tab.columnconfigure(0, weight=1)
@@ -2101,6 +2117,20 @@ def main():
     """GUI 애플리케이션 실행"""
     root = tk.Tk()
     app = TradingBotGUI(root)
+
+    # Register cleanup on window close
+    def on_closing():
+        """Clean up resources before closing"""
+        try:
+            # Stop multi-chart tab auto-refresh
+            if hasattr(app, 'multi_chart_widget'):
+                app.multi_chart_widget.stop()
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+        finally:
+            root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_closing)
 
     try:
         root.mainloop()

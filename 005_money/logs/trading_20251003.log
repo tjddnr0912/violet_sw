@@ -1,0 +1,585 @@
+2025-10-03 10:02:29,534 - data_manager - INFO - DataManager initialized for BTC (TTL=15s, Rate=1.0s)
+2025-10-03 10:02:29,538 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:02:29,538 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:02:29,615 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:02:53,791 - data_manager - INFO - DataManager initialized for BTC (TTL=15s, Rate=1.0s)
+2025-10-03 10:02:53,795 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:02:53,795 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:02:53,869 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:02:54,019 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:02:54,870 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:02:54,960 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:02:55,101 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:02:55,960 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:02:56,044 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:03:05,628 - data_manager - INFO - DataManager initialized for BTC (TTL=15s, Rate=1.0s)
+2025-10-03 10:03:05,632 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:03:05,632 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:03:05,713 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:03:05,863 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:03:06,714 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:03:06,803 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:03:06,946 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:03:07,804 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:03:07,891 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:03:08,061 - multi_chart_tab - INFO - MultiTimeframeChartTab initialized for BTC
+2025-10-03 10:03:08,061 - multi_chart_tab - INFO - Loading initial data for intervals: ['1h', '4h', '24h']
+2025-10-03 10:08:38,483 - data_manager - INFO - DataManager initialized for BTC (TTL=15s, Rate=1.0s)
+2025-10-03 10:08:38,486 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:08:38,487 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:08:38,568 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:08:38,713 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:08:39,569 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:08:39,661 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:08:39,796 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:08:40,663 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:08:40,744 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:08:40,904 - multi_chart_tab - INFO - MultiTimeframeChartTab initialized for BTC
+2025-10-03 10:08:40,904 - multi_chart_tab - INFO - Loading initial data for intervals: ['1h', '4h', '24h']
+2025-10-03 10:08:48,288 - TradingBot - INFO - 빗썸 API 인증 확인 (잔고 조회 비활성화)
+2025-10-03 10:08:48,289 - TradingBot - INFO - 거래 사이클 시작: BTC
+2025-10-03 10:08:48,431 - TradingBot - INFO - [ANALYSIS] BTC: {"analysis": {"ticker": "BTC", "interval": "1h", "timestamp": "2025-10-03T10:08:48.431685", "current_price": 169745000.0, "current_volume": 9.23334566, "short_ma": 169560200.0, "long_ma": 167389700.0, "rsi": 58.640226628895185, "bb_position": 0.5509143388556748, "bb_upper": 171375012.92061797, "bb_middle": 169560200.0, "bb_lower": 167745387.07938203, "volume_ratio": 0.2614611820606811, "macd_line": 409740.9270040691, "macd_signal": 583013.3901015766, "macd_histogram": -173272.46309750748, "atr": 734571.4285714285, "atr_percent": 0.43274996528406046, "stoch_k": 50.12315270935961, "stoch_d": 70.44631219000222, "adx": 48.260439381754715, "regime": {"regime": "trending", "trend_strength": 0.9652087876350943, "volatility_level": "normal", "current_adx": 48.260439381754715, "current_atr_pct": 0.43274996528406046, "avg_atr_pct": 0.3789565855190824, "recommendation": "TREND_FOLLOW", "indicator_preference": ["macd", "ma"]}, "candlestick_pattern": {"pattern_type": "none", "pattern_score": 0.0, "pattern_confidence": 0.0, "pattern_description": "패턴 없음", "body_ratio": 0.9183673469387755, "upper_shadow_ratio": 0.05714285714285714, "lower_shadow_ratio": 0.024489795918367346}, "rsi_divergence": {"divergence_type": "none", "strength": 0.0, "price_change": 0.0, "rsi_change": 0.0, "description": "다이버전스 없음"}, "macd_divergence": {"divergence_type": "none", "strength": 0.0, "price_change": 0.0, "macd_change": 0.0, "description": "MACD 다이버전스 없음"}, "chandelier_exit": {"stop_price": 168756285.7142857, "highest_high": 170960000.0, "lowest_low": 0.0, "atr_value": 734571.4285714285, "distance_percent": 0.5824703441717273, "trailing_status": "active", "description": "LONG Chandelier Exit: 손절가 168,756,286 (최고가 170,960,000 - 3.0×ATR)"}, "bb_squeeze": {"is_squeezing": false, "squeeze_duration": 0, "bb_width_ratio": 0.9153431287279707, "breakout_direction": "up", "potential_move": 2.336043587717305, "description": "볼린저 밴드 스퀴즈 없음"}, "price_change_24h": 0.6791221826809015, "indicator_config": {"short_ma_window": 20, "long_ma_window": 50, "rsi_period": 14, "bb_period": 20, "bb_std": 2.0, "macd_fast": 8, "macd_slow": 17, "macd_signal": 9, "atr_period": 14, "chandelier_atr_multiplier": 3.0, "stoch_k_period": 14, "stoch_d_period": 3, "adx_period": 14, "volume_window": 20, "divergence_lookback": 30, "bb_squeeze_threshold": 0.8, "analysis_period": 100}}, "signals": {"ma_signal": 1.0, "ma_strength": 1.0, "rsi_signal": -0.43201133144475923, "rsi_strength": 0.43201133144475923, "macd_signal": -0.4228829771098225, "macd_strength": 0.4228829771098225, "macd_histogram": -173272.46309750748, "bb_signal": -0.1697144628522492, "bb_strength": 0.1697144628522492, "volume_signal": -0.3, "volume_strength": 0.3, "stoch_signal": -0.3, "stoch_strength": 0.3, "pattern_signal": 0.0, "pattern_strength": 0.0, "pattern_type": "none", "divergence_signal": 0.0, "divergence_bonus": 0.0, "rsi_divergence_type": "none", "macd_divergence_type": "none", "is_squeezing": false, "breakout_direction": "up", "overall_signal": -0.031382754562614655, "confidence": 0.5313827545626147, "base_confidence": 0.5313827545626147, "regime": "trending", "volatility_level": "normal", "trend_strength": 0.9652087876350943, "final_action": "HOLD", "reason": "관망 (신호강도: -0.03, 신뢰도: 0.53)"}, "action": "HOLD", "reason": "관망 (신호강도: -0.03, 신뢰도: 0.53)"}
+2025-10-03 10:08:48,510 - TradingBot - INFO - 미체결 주문 조회가 보안상의 이유로 비활성화되었습니다.
+2025-10-03 10:08:48,723 - TradingBot - INFO - [BALANCE] Updated balance: {"krw_balance": 499213.001894, "btc_balance": 0.0, "timestamp": "2025-10-03T10:08:48.723887"}
+2025-10-03 10:08:48,909 - TradingBot - INFO - 포트폴리오 현황 - 총자산: 514,576원, 수익률: +0.00%
+2025-10-03 10:08:48,909 - TradingBot - INFO - 일일 거래 통계 - 총 0회 (매수: 0, 매도: 0)
+2025-10-03 10:08:55,906 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:08:55,908 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:08:55,993 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:08:56,994 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:08:57,082 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:08:58,084 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:08:58,167 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:08:58,167 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:08:58,167 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:08:58,278 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:08:58,384 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:09:13,494 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:09:13,496 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:09:13,592 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:09:14,593 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:09:14,664 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:09:15,665 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:09:15,759 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:09:15,759 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:09:15,759 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:09:15,869 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:09:16,181 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:09:31,433 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:09:31,434 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:09:31,522 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:09:32,524 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:09:32,609 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:09:33,610 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:09:33,693 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:09:33,693 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:09:33,693 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:09:33,805 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:09:34,108 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:09:49,356 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:09:49,358 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:09:49,445 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:09:50,447 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:09:50,544 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:09:51,545 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:09:51,637 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:09:51,637 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:09:51,637 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:09:51,748 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:09:51,990 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:10:07,235 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:10:07,237 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:10:07,333 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:10:08,334 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:10:08,427 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:10:09,428 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:10:09,515 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:10:09,515 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:10:09,515 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:10:09,690 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:10:09,932 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:10:25,175 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:10:25,177 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:10:25,282 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:10:26,283 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:10:26,378 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:10:27,379 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:10:27,476 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:10:27,476 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:10:27,476 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:10:27,611 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:10:27,861 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:10:43,176 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:10:43,178 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:10:43,272 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:10:44,273 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:10:44,366 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:10:45,367 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:10:45,463 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:10:45,463 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:10:45,463 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:10:45,589 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:10:45,833 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:11:01,080 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:11:01,081 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:11:01,178 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:11:02,179 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:11:02,277 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:11:03,278 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:11:03,378 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:11:03,378 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:11:03,378 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:11:03,509 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:11:03,811 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:11:19,060 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:11:19,062 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:11:19,154 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:11:20,155 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:11:20,239 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:11:21,240 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:11:21,325 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:11:21,325 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:11:21,325 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:11:21,451 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:11:21,694 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:11:37,003 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:11:37,004 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:11:37,111 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:11:38,112 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:11:38,212 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:11:39,213 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:11:39,306 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:11:39,306 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:11:39,306 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:11:39,435 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:11:39,679 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:11:54,925 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:11:54,927 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:11:55,026 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:11:56,027 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:11:56,129 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:11:57,130 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:11:57,227 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:11:57,227 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:11:57,227 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:11:57,357 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:11:57,662 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:12:12,909 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:12:12,911 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:12:13,004 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:12:14,005 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:12:14,106 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:12:15,107 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:12:15,195 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:12:15,195 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:12:15,195 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:12:15,326 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:12:15,569 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:12:30,814 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:12:30,816 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:12:30,918 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:12:31,919 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:12:32,019 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:12:33,020 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:12:33,120 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:12:33,120 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:12:33,120 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:12:33,314 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:12:33,560 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:12:48,804 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:12:48,806 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:12:48,904 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:12:49,905 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:12:50,004 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:12:51,005 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:12:51,104 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:12:51,104 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:12:51,104 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:12:51,234 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:12:51,477 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:13:06,790 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:13:06,792 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:13:06,891 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:13:07,893 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:13:07,991 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:13:08,992 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:13:09,079 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:13:09,080 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:13:09,080 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:13:09,209 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:13:09,451 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:13:24,697 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:13:24,699 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:13:24,795 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:13:25,797 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:13:25,905 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:13:26,905 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:13:26,999 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:13:27,000 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:13:27,000 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:13:27,131 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:13:27,431 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:13:42,676 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:13:42,677 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:13:42,764 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:13:43,765 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:13:43,905 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:13:44,906 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:13:45,007 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:13:45,007 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:13:45,007 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:13:45,139 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:13:45,382 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:14:00,690 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:14:00,691 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:14:00,783 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:14:01,784 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:14:01,881 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:14:02,882 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:14:02,985 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:14:02,985 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:14:02,985 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:14:03,116 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:14:03,359 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:14:18,606 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:14:18,608 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:14:18,726 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:14:19,727 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:14:19,826 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:14:20,828 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:14:20,934 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:14:20,934 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:14:20,934 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:14:21,066 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:14:21,371 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:14:36,619 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:14:36,621 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:14:36,716 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:14:37,718 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:14:37,829 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:14:38,831 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:14:38,919 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:14:38,919 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:14:38,919 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:14:39,047 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:14:39,292 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:14:54,537 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:14:54,540 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:14:54,640 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:14:55,642 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:14:55,733 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:14:56,735 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:14:56,820 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:14:56,821 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:14:56,821 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:14:57,012 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:14:57,255 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:15:12,502 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:15:12,504 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:15:12,597 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:15:13,599 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:15:13,685 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:15:14,687 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:15:14,781 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:15:14,782 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:15:14,782 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:15:14,910 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:15:15,152 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:15:30,466 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:15:30,468 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:15:30,564 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:15:31,566 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:15:31,664 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:15:32,666 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:15:32,753 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:15:32,753 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:15:32,753 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:15:32,884 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:15:33,125 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:15:48,371 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:15:48,373 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:15:48,475 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:15:49,477 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:15:49,581 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:15:50,583 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:15:50,678 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:15:50,679 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:15:50,679 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:15:50,808 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:15:51,110 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:16:06,358 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:16:06,359 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:16:06,451 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:16:07,453 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:16:07,553 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:16:08,555 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:16:08,646 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:16:08,647 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:16:08,647 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:16:08,773 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:16:09,016 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:16:24,327 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:16:24,329 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:16:24,436 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:16:25,438 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:16:25,525 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:16:26,527 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:16:26,626 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:16:26,626 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:16:26,626 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:16:26,755 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:16:26,997 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:16:42,244 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:16:42,245 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:16:42,335 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:16:43,337 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:16:43,460 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:16:44,462 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:16:44,556 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:16:44,556 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:16:44,556 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:16:44,685 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:16:44,990 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:17:00,233 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:17:00,234 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:17:00,329 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:17:01,331 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:17:01,440 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:17:02,443 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:17:02,534 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:17:02,534 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:17:02,534 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:17:02,664 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:17:02,905 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:17:18,150 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:17:18,152 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:17:18,249 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:17:19,251 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:17:19,351 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:17:20,352 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:17:20,450 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:17:20,450 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:17:20,450 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:17:20,644 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:17:20,886 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:17:36,132 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:17:36,134 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:17:36,226 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:17:37,228 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:17:37,328 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:17:38,330 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:17:38,416 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:17:38,416 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:17:38,416 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:17:38,544 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:17:38,786 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:17:54,104 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:17:54,106 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:17:54,216 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:17:55,218 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:17:55,319 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:17:56,321 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:17:56,409 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:17:56,409 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:17:56,409 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:17:56,537 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:17:56,780 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:18:12,026 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:18:12,028 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:18:12,125 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:18:13,127 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:18:13,229 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:18:14,231 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:18:14,321 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:18:14,322 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:18:14,322 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:18:14,451 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:18:14,754 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:18:30,001 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:18:30,003 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:18:30,110 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:18:31,112 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:18:31,211 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:18:32,213 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:18:32,320 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:18:32,320 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:18:32,320 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:18:32,452 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:18:32,696 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:18:48,005 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:18:48,006 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:18:48,113 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:18:49,115 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:18:49,216 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:18:50,218 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:18:50,316 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:18:50,316 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:18:50,316 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:18:50,446 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:18:50,691 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:19:05,936 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:19:05,938 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:19:06,049 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:19:07,051 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:19:07,142 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:19:08,144 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:19:08,231 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:19:08,231 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:19:08,232 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:19:08,362 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:19:08,671 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:19:23,917 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:19:23,919 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:19:24,020 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:19:25,022 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:19:25,129 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:19:26,131 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:19:26,218 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:19:26,219 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:19:26,219 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:19:26,346 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:19:26,590 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:19:41,834 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:19:41,835 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:19:41,935 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:19:42,938 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:19:43,038 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:19:44,040 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:19:44,137 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:19:44,137 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:19:44,137 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:19:44,333 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:19:44,575 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:19:59,821 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:19:59,821 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:19:59,910 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:20:00,912 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:20:01,012 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:20:02,014 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:20:02,121 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:20:02,122 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:20:02,122 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:20:02,253 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:20:02,496 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:20:17,813 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:20:17,814 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:20:17,913 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:20:18,915 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:20:19,027 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:20:20,029 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:20:20,132 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:20:20,132 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:20:20,132 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:20:20,262 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:20:20,507 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:20:35,753 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:20:35,755 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:20:35,866 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:20:36,868 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:20:36,964 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:20:37,966 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:20:38,054 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:20:38,054 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:20:38,055 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:20:38,182 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:20:38,485 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:20:53,732 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:20:53,734 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:20:53,833 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:20:54,835 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:20:54,937 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:20:55,939 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:20:56,052 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:20:56,052 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:20:56,052 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:20:56,183 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:20:56,426 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:21:11,739 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:21:11,741 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:21:11,849 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:21:12,851 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:21:12,951 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:21:13,953 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:21:14,044 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:21:14,044 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:21:14,044 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:21:14,173 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:21:14,416 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:21:29,660 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:21:29,661 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:21:29,764 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:21:30,767 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:21:30,867 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:21:31,869 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:21:31,974 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:21:31,975 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:21:31,975 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:21:32,107 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:21:32,416 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:21:47,661 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:21:47,663 - data_manager - INFO - Fetching BTC data for 1h from API
+2025-10-03 10:21:47,758 - data_manager - INFO - Successfully fetched 200 candles for 1h
+2025-10-03 10:21:48,759 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:21:48,853 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:21:49,855 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:21:49,950 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:21:49,950 - data_manager - INFO - Refreshed 3 intervals: ['1h', '4h', '24h']
+2025-10-03 10:21:49,950 - chart_column - INFO - Refreshing data for 1h
+2025-10-03 10:21:50,274 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:21:50,521 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:21:54,844 - chart_column - INFO - Interval changed from 1h to 30m
+2025-10-03 10:21:54,844 - chart_column - INFO - Refreshing data for 30m
+2025-10-03 10:21:54,844 - data_manager - INFO - Fetching BTC data for 30m from API
+2025-10-03 10:21:54,915 - data_manager - INFO - Successfully fetched 200 candles for 30m
+2025-10-03 10:22:05,770 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:22:05,770 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:22:05,847 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:22:06,849 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:22:06,946 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:22:06,946 - data_manager - INFO - Refreshed 2 intervals: ['4h', '24h']
+2025-10-03 10:22:06,946 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:22:07,195 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:22:22,464 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:22:22,465 - data_manager - INFO - Fetching BTC data for 30m from API
+2025-10-03 10:22:22,528 - data_manager - INFO - Successfully fetched 200 candles for 30m
+2025-10-03 10:22:23,529 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:22:23,613 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:22:24,614 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:22:24,707 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:22:24,707 - data_manager - INFO - Refreshed 3 intervals: ['30m', '4h', '24h']
+2025-10-03 10:22:24,707 - chart_column - INFO - Refreshing data for 30m
+2025-10-03 10:22:25,035 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:22:25,279 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:22:40,524 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:22:40,526 - data_manager - INFO - Fetching BTC data for 30m from API
+2025-10-03 10:22:40,618 - data_manager - INFO - Successfully fetched 200 candles for 30m
+2025-10-03 10:22:41,619 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:22:41,703 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:22:42,704 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:22:42,800 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:22:42,800 - data_manager - INFO - Refreshed 3 intervals: ['30m', '4h', '24h']
+2025-10-03 10:22:42,800 - chart_column - INFO - Refreshing data for 30m
+2025-10-03 10:22:43,061 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:22:43,374 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:22:58,620 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:22:58,621 - data_manager - INFO - Fetching BTC data for 30m from API
+2025-10-03 10:22:58,720 - data_manager - INFO - Successfully fetched 200 candles for 30m
+2025-10-03 10:22:59,721 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:22:59,816 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:23:00,817 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:23:00,900 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:23:00,900 - data_manager - INFO - Refreshed 3 intervals: ['30m', '4h', '24h']
+2025-10-03 10:23:00,900 - chart_column - INFO - Refreshing data for 30m
+2025-10-03 10:23:01,173 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:23:01,496 - chart_column - INFO - Refreshing data for 24h
+2025-10-03 10:23:16,743 - multi_chart_tab - INFO - Auto-refreshing charts...
+2025-10-03 10:23:16,744 - data_manager - INFO - Fetching BTC data for 30m from API
+2025-10-03 10:23:16,824 - data_manager - INFO - Successfully fetched 200 candles for 30m
+2025-10-03 10:23:17,825 - data_manager - INFO - Fetching BTC data for 4h from API
+2025-10-03 10:23:17,933 - data_manager - INFO - Successfully fetched 200 candles for 4h
+2025-10-03 10:23:18,934 - data_manager - INFO - Fetching BTC data for 24h from API
+2025-10-03 10:23:19,034 - data_manager - INFO - Successfully fetched 200 candles for 24h
+2025-10-03 10:23:19,034 - data_manager - INFO - Refreshed 3 intervals: ['30m', '4h', '24h']
+2025-10-03 10:23:19,034 - chart_column - INFO - Refreshing data for 30m
+2025-10-03 10:23:19,314 - chart_column - INFO - Refreshing data for 4h
+2025-10-03 10:23:19,564 - chart_column - INFO - Refreshing data for 24h
