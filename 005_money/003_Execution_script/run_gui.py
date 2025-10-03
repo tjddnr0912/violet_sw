@@ -10,8 +10,12 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 
-def check_dependencies():
-    """필요한 패키지 확인"""
+def check_dependencies(version="ver1"):
+    """필요한 패키지 확인
+
+    Args:
+        version: 실행할 버전 (ver1, ver2 등)
+    """
     missing_packages = []
 
     try:
@@ -38,11 +42,21 @@ def check_dependencies():
     except ImportError:
         missing_packages.append("numpy")
 
+    # v2에서는 backtrader가 필수
+    if version == "ver2":
+        try:
+            import backtrader
+            print("✅ backtrader 패키지 확인됨 (v2 필수)")
+        except ImportError:
+            missing_packages.append("backtrader (v2 전용)")
+
     if missing_packages:
         error_msg = f"다음 패키지들이 설치되지 않았습니다:\n" + "\n".join(f"• {pkg}" for pkg in missing_packages)
         error_msg += "\n\n해결 방법:\n"
         error_msg += "1. 터미널에서 다음 명령 실행:\n"
-        error_msg += "   pip install " + " ".join(missing_packages) + "\n\n"
+        error_msg += "   cd /Users/seongwookjang/project/git/violet_sw/005_money\n"
+        error_msg += "   source .venv/bin/activate  # if using venv\n"
+        error_msg += "   pip install -r requirements.txt\n\n"
         error_msg += "2. 또는 ./gui 스크립트 사용 (자동 설치):\n"
         error_msg += "   ./gui\n\n"
         error_msg += "3. 또는 전체 설정 실행:\n"
@@ -97,11 +111,15 @@ def check_files():
 
     return True
 
-def show_startup_info():
-    """시작 정보 창 표시"""
+def show_startup_info(version="ver1"):
+    """시작 정보 창 표시
+
+    Args:
+        version: 실행할 버전 (ver1, ver2 등)
+    """
     info_window = tk.Tk()
-    info_window.title("빗썸 자동매매 봇 GUI - 시작")
-    info_window.geometry("600x500")
+    info_window.title(f"빗썸 자동매매 봇 GUI - 시작 ({version})")
+    info_window.geometry("600x550")
     info_window.resizable(False, False)
 
     # 중앙 정렬
@@ -111,25 +129,52 @@ def show_startup_info():
         # 중앙 정렬이 실패하면 수동으로 중앙에 배치
         info_window.update_idletasks()
         x = (info_window.winfo_screenwidth() // 2) - (600 // 2)
-        y = (info_window.winfo_screenheight() // 2) - (500 // 2)
-        info_window.geometry(f"600x500+{x}+{y}")
+        y = (info_window.winfo_screenheight() // 2) - (550 // 2)
+        info_window.geometry(f"600x550+{x}+{y}")
 
     # 메인 프레임
     main_frame = tk.Frame(info_window, padx=20, pady=20)
     main_frame.pack(fill=tk.BOTH, expand=True)
 
     # 제목
+    version_display = "v2 - 다중 시간대 전략" if version == "ver2" else "v1 - Elite 8-Indicator"
     title_label = tk.Label(
         main_frame,
-        text="🤖 빗썸 자동매매 봇 GUI",
+        text=f"🤖 빗썸 자동매매 봇 GUI\n{version_display}",
         font=("Arial", 16, "bold"),
         fg="blue"
     )
     title_label.pack(pady=(0, 20))
 
-    # 기능 설명
-    features_text = """
-🔥 주요 기능:
+    # 버전별 기능 설명
+    if version == "ver2":
+        features_text = """
+🔥 주요 기능 (v2):
+
+📊 다중 시간대 전략
+  • 일봉: EMA 50/200 골든크로스 체제 필터
+  • 4시간봉: 점수 기반 진입 시스템 (3점 이상)
+  • BB 하단 터치 +1, RSI 과매도 +1, 스토캐스틱 교차 +2
+
+💼 포지션 관리
+  • 50% 분할 진입/청산
+  • 샹들리에 엑시트 (ATR 3배 추적 손절)
+  • 본전 손절 자동 전환
+
+⚙️ 위험 관리
+  • 연속 손실 5회 제한
+  • 일일 손실 5% 한도
+  • 하루 최대 2회 거래
+
+🎮 실시간 모니터링
+  • 시장 체제 상태 (강세/약세/중립)
+  • 진입 점수 실시간 계산 (0/4)
+  • 회로차단기 상태
+  • 포지션 단계 추적
+"""
+    else:
+        features_text = """
+🔥 주요 기능 (v1):
 
 📊 실시간 모니터링
   • 현재 거래 코인 및 가격 표시
@@ -177,14 +222,14 @@ def show_startup_info():
 
     # GUI 시작 버튼
     def start_gui():
-        print("🚀 실제 GUI 애플리케이션으로 전환합니다...")
+        print(f"🚀 {version} GUI 애플리케이션으로 전환합니다...")
         info_window.destroy()
 
         # 잠시 대기하여 창이 완전히 닫히도록 함
         info_window.update()
         time.sleep(0.1)
 
-        launch_gui()
+        launch_gui(version)
 
     start_button = tk.Button(
         button_frame,
@@ -209,26 +254,58 @@ def show_startup_info():
 
     info_window.mainloop()
 
-def launch_gui():
-    """GUI 실행"""
+def launch_gui(version="ver1"):
+    """GUI 실행
+
+    Args:
+        version: 실행할 버전 (ver1, ver2 등)
+    """
     try:
-        print("🔄 GUI 애플리케이션을 시작하고 있습니다...")
+        print(f"🔄 GUI 애플리케이션을 시작하고 있습니다... (버전: {version})")
 
         # Add 001_python_code to Python path for imports
         python_code_dir = os.path.join(os.getcwd(), '001_python_code')
         if python_code_dir not in sys.path:
             sys.path.insert(0, python_code_dir)
 
-        # 필요한 모듈들을 하나씩 임포트하여 오류 확인
+        # 버전별로 다른 GUI 모듈 임포트
         try:
-            from gui_app import TradingBotGUI
-            print("✅ GUI 모듈 임포트 성공")
+            if version == "ver2":
+                # v2 GUI 실행
+                ver2_dir = os.path.join(python_code_dir, 'ver2')
+                if ver2_dir not in sys.path:
+                    sys.path.insert(0, ver2_dir)
+
+                from ver2.gui_app_v2 import TradingBotGUIV2
+                print("✅ v2 GUI 모듈 임포트 성공")
+                gui_class = TradingBotGUIV2
+            else:
+                # v1 GUI 실행 (기본)
+                from gui_app import TradingBotGUI
+                print("✅ v1 GUI 모듈 임포트 성공")
+                gui_class = TradingBotGUI
+
         except ImportError as e:
             error_msg = f"GUI 모듈 임포트 실패: {e}\n\n" + \
-                       "다음을 확인해주세요:\n" + \
-                       "1. run.py 또는 ./gui를 먼저 실행해서 환경을 설정하세요\n" + \
-                       "2. pip install -r requirements.txt 실행\n" + \
-                       "3. 필요한 파일들이 모두 있는지 확인"
+                       "다음을 확인해주세요:\n"
+
+            # v2 특화 에러 메시지
+            if version == "ver2" and "backtrader" in str(e):
+                error_msg += "⚠️ v2는 Backtrader 라이브러리가 필요합니다!\n\n" + \
+                            "해결 방법:\n" + \
+                            "1. 터미널에서 다음 명령 실행:\n" + \
+                            "   cd /Users/seongwookjang/project/git/violet_sw/005_money\n" + \
+                            "   source .venv/bin/activate  # if using venv\n" + \
+                            "   pip install -r requirements.txt\n\n" + \
+                            "2. 또는 개별 설치:\n" + \
+                            "   pip install backtrader python-binance\n\n" + \
+                            "3. 또는 v1 버전 사용:\n" + \
+                            "   ./gui --version ver1"
+            else:
+                error_msg += "1. run.py 또는 ./gui를 먼저 실행해서 환경을 설정하세요\n" + \
+                            "2. pip install -r requirements.txt 실행\n" + \
+                            "3. 필요한 파일들이 모두 있는지 확인"
+
             messagebox.showerror("임포트 오류", error_msg)
             return
 
@@ -237,17 +314,20 @@ def launch_gui():
 
         # 창 닫기 이벤트 처리
         def on_closing():
-            if messagebox.askokcancel("종료", "GUI를 종료하시겠습니까?"):
+            if messagebox.askokcancel("종료", f"{version} GUI를 종료하시겠습니까?"):
                 root.destroy()
 
         root.protocol("WM_DELETE_WINDOW", on_closing)
 
         # GUI 애플리케이션 시작
-        print("🚀 GUI 인터페이스를 생성하고 있습니다...")
-        app = TradingBotGUI(root)
+        print(f"🚀 {version} GUI 인터페이스를 생성하고 있습니다...")
+        app = gui_class(root)
 
-        print("✅ GUI가 성공적으로 시작되었습니다!")
-        print("💡 GUI 창에서 봇을 제어할 수 있습니다.")
+        print(f"✅ {version} GUI가 성공적으로 시작되었습니다!")
+        if version == "ver2":
+            print("💡 v2 전략: 다중 시간대 분석 (일봉 체제 + 4시간 진입)")
+        else:
+            print("💡 v1 전략: Elite 8-Indicator Strategy")
 
         # 메인 루프 시작
         root.mainloop()
@@ -269,9 +349,13 @@ def launch_gui():
             "3. 오류가 계속되면 RUN_SCRIPTS_SUMMARY.md를 참고하세요"
         )
 
-def main():
-    """메인 실행 함수"""
-    print("🔄 빗썸 자동매매 봇 GUI를 시작합니다...")
+def main(version="ver1"):
+    """메인 실행 함수
+
+    Args:
+        version: 실행할 버전 (ver1, ver2 등)
+    """
+    print(f"🔄 빗썸 자동매매 봇 GUI를 시작합니다... (버전: {version})")
     print("📍 현재 디렉토리:", os.getcwd())
 
     # 파일 확인
@@ -283,7 +367,7 @@ def main():
 
     # 의존성 확인 (GUI 모드에서는 경고만 표시)
     print("📦 의존성 패키지를 확인하고 있습니다...")
-    if not check_dependencies():
+    if not check_dependencies(version):
         print("⚠️ 일부 패키지가 누락되었지만 GUI를 시작해봅니다.")
         print("💡 문제가 발생하면 ./gui 스크립트를 사용해보세요.")
     else:
@@ -292,23 +376,44 @@ def main():
     # 시작 정보 표시
     print("🎮 GUI 시작 화면을 표시합니다...")
     print("💡 '🚀 GUI 시작' 버튼을 클릭하여 실제 거래 인터페이스로 이동하세요.")
-    show_startup_info()
+    show_startup_info(version)
 
 if __name__ == "__main__":
-    # 명령행 인수 확인
-    if len(sys.argv) > 1 and sys.argv[1] == "--direct":
+    # 명령행 인수 파싱
+    version = "ver1"  # 기본값
+    direct_mode = False
+
+    # 간단한 인수 파싱
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] in ["--version", "-v"]:
+            if i + 1 < len(sys.argv):
+                version = sys.argv[i + 1]
+                i += 2
+            else:
+                print("❌ --version 옵션에 값이 필요합니다 (예: --version ver2)")
+                sys.exit(1)
+        elif sys.argv[i] == "--direct":
+            direct_mode = True
+            i += 1
+        else:
+            print(f"❌ 알 수 없는 옵션: {sys.argv[i]}")
+            print("사용법: python run_gui.py [--version ver1|ver2] [--direct]")
+            sys.exit(1)
+
+    if direct_mode:
         # 바로 GUI 실행 (시작 화면 건너뛰기)
-        print("🚀 바로 GUI로 실행합니다...")
+        print(f"🚀 바로 {version} GUI로 실행합니다...")
 
         if not check_files():
             sys.exit(1)
 
         try:
-            launch_gui()
+            launch_gui(version)
         except KeyboardInterrupt:
             print("\n⏹️ 사용자에 의해 중단되었습니다.")
         except Exception as e:
             print(f"❌ 직접 실행 중 오류: {e}")
             print("💡 대신 'python run_gui.py' (시작 화면 포함)를 시도해보세요.")
     else:
-        main()
+        main(version)

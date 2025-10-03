@@ -1,0 +1,599 @@
+"""
+Live Executor V2 - Order Execution and Position Management
+
+This module handles order execution, position tracking, and risk management
+for the Version 2 live trading system.
+
+Features:
+- Order placement (market/limit orders)
+- Position tracking with persistent state
+- Partial position management (50% scaling)
+- Stop-loss monitoring
+- Transaction logging
+
+Usage:
+    from ver2.live_executor_v2 import LiveExecutorV2
+
+    executor = LiveExecutorV2(api, logger)
+    success = executor.execute_order(ticker='BTC', action='BUY', units=0.001, price=50000000)
+"""
+
+import json
+import os
+import time
+from datetime import datetime
+from typing import Dict, Any, Optional, List
+from pathlib import Path
+
+from lib.api.bithumb_api import BithumbAPI
+from lib.core.logger import TradingLogger
+
+
+class Position:
+    """
+    Position data class for tracking open positions.
+    """
+
+    def __init__(
+        self,
+        ticker: str,
+        size: float,
+        entry_price: float,
+        entry_time: datetime,
+        stop_loss: float = 0.0,
+        highest_high: float = 0.0
+    ):
+        self.ticker = ticker
+        self.size = size
+        self.entry_price = entry_price
+        self.entry_time = entry_time
+        self.stop_loss = stop_loss
+        self.highest_high = highest_high if highest_high > 0 else entry_price
+        self.position_pct = 100.0  # 100% = full position
+        self.first_target_hit = False
+        self.second_target_hit = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert position to dictionary for serialization."""
+        return {
+            'ticker': self.ticker,
+            'size': self.size,
+            'entry_price': self.entry_price,
+            'entry_time': self.entry_time.isoformat() if self.entry_time else None,
+            'stop_loss': self.stop_loss,
+            'highest_high': self.highest_high,
+            'position_pct': self.position_pct,
+            'first_target_hit': self.first_target_hit,
+            'second_target_hit': self.second_target_hit,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Position':
+        """Create position from dictionary."""
+        pos = cls(
+            ticker=data.get('ticker', ''),
+            size=data.get('size', 0.0),
+            entry_price=data.get('entry_price', 0.0),
+            entry_time=datetime.fromisoformat(data['entry_time']) if data.get('entry_time') else None,
+            stop_loss=data.get('stop_loss', 0.0),
+            highest_high=data.get('highest_high', 0.0)
+        )
+        pos.position_pct = data.get('position_pct', 100.0)
+        pos.first_target_hit = data.get('first_target_hit', False)
+        pos.second_target_hit = data.get('second_target_hit', False)
+        return pos
+
+
+class LiveExecutorV2:
+    """
+    Order executor and position manager for Version 2 live trading.
+
+    Responsibilities:
+    - Execute buy/sell orders via Bithumb API
+    - Track open positions with state persistence
+    - Manage partial exits (50% scaling strategy)
+    - Monitor stop-loss levels
+    - Log all transactions
+    """
+
+    def __init__(
+        self,
+        api: BithumbAPI,
+        logger: TradingLogger,
+        config: Dict[str, Any] = None,
+        state_file: str = None
+    ):
+        """
+        Initialize Live Executor.
+
+        Args:
+            api: BithumbAPI instance
+            logger: TradingLogger instance
+            config: Configuration dictionary
+            state_file: Path to position state file (default: logs/positions_v2.json)
+        """
+        self.api = api
+        self.logger = logger
+        self.config = config or {}
+
+        # Position state file
+        if state_file is None:
+            log_dir = self.config.get('LOGGING_CONFIG', {}).get('log_dir', 'logs')
+            self.state_file = Path(log_dir) / 'positions_v2.json'
+        else:
+            self.state_file = Path(state_file)
+
+        # Ensure state file directory exists
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Load positions
+        self.positions: Dict[str, Position] = self._load_positions()
+
+        self.logger.logger.info(f"LiveExecutorV2 initialized | Positions loaded: {len(self.positions)}")
+
+    # ========== POSITION MANAGEMENT ==========
+
+    def _load_positions(self) -> Dict[str, Position]:
+        """Load positions from state file."""
+        try:
+            if not self.state_file.exists():
+                self.logger.logger.debug("No existing position state file found")
+                return {}
+
+            with open(self.state_file, 'r') as f:
+                data = json.load(f)
+
+            positions = {}
+            for ticker, pos_data in data.items():
+                try:
+                    positions[ticker] = Position.from_dict(pos_data)
+                except Exception as e:
+                    self.logger.log_error(f"Error loading position for {ticker}", e)
+
+            self.logger.logger.info(f"Loaded {len(positions)} positions from state file")
+            return positions
+
+        except Exception as e:
+            self.logger.log_error("Error loading position state", e)
+            return {}
+
+    def _save_positions(self):
+        """Save positions to state file."""
+        try:
+            data = {
+                ticker: pos.to_dict()
+                for ticker, pos in self.positions.items()
+            }
+
+            with open(self.state_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            self.logger.logger.debug(f"Saved {len(self.positions)} positions to state file")
+
+        except Exception as e:
+            self.logger.log_error("Error saving position state", e)
+
+    def get_position(self, ticker: str) -> Optional[Position]:
+        """
+        Get current position for a ticker.
+
+        Args:
+            ticker: Cryptocurrency symbol
+
+        Returns:
+            Position object or None if no position
+        """
+        return self.positions.get(ticker)
+
+    def has_position(self, ticker: str) -> bool:
+        """Check if there's an open position for ticker."""
+        return ticker in self.positions and self.positions[ticker].size > 0
+
+    # ========== ORDER EXECUTION ==========
+
+    def execute_order(
+        self,
+        ticker: str,
+        action: str,
+        units: float,
+        price: float,
+        dry_run: bool = True,
+        reason: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute a buy or sell order.
+
+        Args:
+            ticker: Cryptocurrency symbol
+            action: 'BUY' or 'SELL'
+            units: Amount in cryptocurrency units
+            price: Current price (for dry-run and logging)
+            dry_run: If True, simulate order without real execution
+            reason: Reason for order (for logging)
+
+        Returns:
+            Dictionary with execution result:
+            - success: bool
+            - order_id: str
+            - executed_price: float
+            - executed_units: float
+            - message: str
+        """
+        try:
+            total_value = units * price
+
+            self.logger.logger.info(
+                f"{'[DRY-RUN] ' if dry_run else '[LIVE] '}"
+                f"Executing {action}: {units:.6f} {ticker} @ {price:,.0f} KRW "
+                f"(Total: {total_value:,.0f} KRW)"
+            )
+
+            if reason:
+                self.logger.logger.info(f"  Reason: {reason}")
+
+            if dry_run:
+                # Simulate execution
+                order_id = f"DRY_RUN_{action}_{int(time.time())}"
+                result = {
+                    'success': True,
+                    'order_id': order_id,
+                    'executed_price': price,
+                    'executed_units': units,
+                    'message': 'Dry-run execution successful'
+                }
+
+            else:
+                # Real execution
+                self.logger.logger.warning("🔴 EXECUTING REAL ORDER ON BITHUMB")
+
+                if action == 'BUY':
+                    response = self.api.place_buy_order(ticker, units=units)
+                elif action == 'SELL':
+                    response = self.api.place_sell_order(ticker, units=units)
+                else:
+                    return {
+                        'success': False,
+                        'order_id': None,
+                        'executed_price': 0.0,
+                        'executed_units': 0.0,
+                        'message': f'Invalid action: {action}'
+                    }
+
+                if response and response.get('status') == '0000':
+                    order_id = response.get('order_id', 'N/A')
+                    result = {
+                        'success': True,
+                        'order_id': order_id,
+                        'executed_price': price,
+                        'executed_units': units,
+                        'message': 'Order executed successfully'
+                    }
+                else:
+                    error_msg = response.get('message', 'Unknown error') if response else 'No response'
+                    result = {
+                        'success': False,
+                        'order_id': None,
+                        'executed_price': 0.0,
+                        'executed_units': 0.0,
+                        'message': f'Order failed: {error_msg}'
+                    }
+
+            # Update position if successful
+            if result['success']:
+                self._update_position_after_trade(ticker, action, units, price)
+
+            return result
+
+        except Exception as e:
+            self.logger.log_error(f"Error executing order: {action} {ticker}", e)
+            return {
+                'success': False,
+                'order_id': None,
+                'executed_price': 0.0,
+                'executed_units': 0.0,
+                'message': f'Exception: {str(e)}'
+            }
+
+    def _update_position_after_trade(
+        self,
+        ticker: str,
+        action: str,
+        units: float,
+        price: float
+    ):
+        """Update position state after trade execution."""
+        try:
+            if action == 'BUY':
+                if ticker in self.positions:
+                    # Scaling into existing position - update average entry price
+                    pos = self.positions[ticker]
+                    old_value = pos.size * pos.entry_price
+                    new_value = units * price
+                    total_size = pos.size + units
+
+                    pos.entry_price = (old_value + new_value) / total_size
+                    pos.size = total_size
+
+                    self.logger.logger.info(
+                        f"Position scaled: {ticker} | "
+                        f"New size: {pos.size:.6f} | "
+                        f"Avg entry: {pos.entry_price:,.0f}"
+                    )
+                else:
+                    # New position
+                    pos = Position(
+                        ticker=ticker,
+                        size=units,
+                        entry_price=price,
+                        entry_time=datetime.now(),
+                        highest_high=price
+                    )
+                    self.positions[ticker] = pos
+
+                    self.logger.logger.info(
+                        f"Position opened: {ticker} | "
+                        f"Size: {pos.size:.6f} | "
+                        f"Entry: {pos.entry_price:,.0f}"
+                    )
+
+            elif action == 'SELL':
+                if ticker in self.positions:
+                    pos = self.positions[ticker]
+                    pos.size -= units
+
+                    if pos.size <= 0:
+                        # Position fully closed
+                        profit = (price - pos.entry_price) * (pos.size + units)  # Use original size
+                        profit_pct = (profit / (pos.entry_price * (pos.size + units))) * 100
+
+                        self.logger.logger.info(
+                            f"Position closed: {ticker} | "
+                            f"Profit: {profit:,.0f} KRW ({profit_pct:+.2f}%)"
+                        )
+
+                        del self.positions[ticker]
+                    else:
+                        # Partial exit
+                        exit_pct = (units / (pos.size + units)) * 100
+                        self.logger.logger.info(
+                            f"Partial exit: {ticker} | "
+                            f"Exited: {exit_pct:.1f}% | "
+                            f"Remaining: {pos.size:.6f}"
+                        )
+
+                        # Update position percentage
+                        pos.position_pct = (pos.size / (pos.size + units)) * 100
+
+            # Save updated positions
+            self._save_positions()
+
+        except Exception as e:
+            self.logger.log_error(f"Error updating position after trade: {ticker}", e)
+
+    # ========== POSITION SCALING ==========
+
+    def execute_scale_entry(
+        self,
+        ticker: str,
+        additional_units: float,
+        price: float,
+        dry_run: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Scale into existing position (add to position).
+
+        Args:
+            ticker: Cryptocurrency symbol
+            additional_units: Additional units to buy
+            price: Current price
+            dry_run: Dry-run mode flag
+
+        Returns:
+            Execution result dictionary
+        """
+        if not self.has_position(ticker):
+            return {
+                'success': False,
+                'message': 'Cannot scale - no existing position'
+            }
+
+        return self.execute_order(
+            ticker=ticker,
+            action='BUY',
+            units=additional_units,
+            price=price,
+            dry_run=dry_run,
+            reason="Scaling into existing position"
+        )
+
+    def execute_partial_exit(
+        self,
+        ticker: str,
+        exit_pct: float,
+        price: float,
+        dry_run: bool = True,
+        reason: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute partial exit of position.
+
+        Args:
+            ticker: Cryptocurrency symbol
+            exit_pct: Percentage of position to exit (0-100)
+            price: Current price
+            dry_run: Dry-run mode flag
+            reason: Reason for exit
+
+        Returns:
+            Execution result dictionary
+        """
+        if not self.has_position(ticker):
+            return {
+                'success': False,
+                'message': 'Cannot exit - no position'
+            }
+
+        pos = self.positions[ticker]
+        exit_units = pos.size * (exit_pct / 100.0)
+
+        return self.execute_order(
+            ticker=ticker,
+            action='SELL',
+            units=exit_units,
+            price=price,
+            dry_run=dry_run,
+            reason=reason or f"Partial exit ({exit_pct:.0f}%)"
+        )
+
+    # ========== STOP-LOSS MONITORING ==========
+
+    def update_stop_loss(self, ticker: str, new_stop: float):
+        """
+        Update stop-loss level for a position.
+
+        Args:
+            ticker: Cryptocurrency symbol
+            new_stop: New stop-loss price
+        """
+        if ticker in self.positions:
+            old_stop = self.positions[ticker].stop_loss
+            self.positions[ticker].stop_loss = new_stop
+
+            self.logger.logger.info(
+                f"Stop-loss updated: {ticker} | "
+                f"Old: {old_stop:,.0f} → New: {new_stop:,.0f}"
+            )
+
+            self._save_positions()
+
+    def update_highest_high(self, ticker: str, current_price: float):
+        """
+        Update highest high for trailing stop calculation.
+
+        Args:
+            ticker: Cryptocurrency symbol
+            current_price: Current price
+        """
+        if ticker in self.positions:
+            pos = self.positions[ticker]
+
+            if current_price > pos.highest_high:
+                pos.highest_high = current_price
+                self.logger.logger.debug(
+                    f"Highest high updated: {ticker} | {pos.highest_high:,.0f}"
+                )
+                self._save_positions()
+
+    def check_stop_loss(self, ticker: str, current_price: float) -> bool:
+        """
+        Check if current price has hit stop-loss.
+
+        Args:
+            ticker: Cryptocurrency symbol
+            current_price: Current price
+
+        Returns:
+            True if stop-loss hit
+        """
+        if ticker not in self.positions:
+            return False
+
+        pos = self.positions[ticker]
+
+        if pos.stop_loss > 0 and current_price <= pos.stop_loss:
+            self.logger.logger.warning(
+                f"⚠️  STOP-LOSS HIT: {ticker} | "
+                f"Price: {current_price:,.0f} <= Stop: {pos.stop_loss:,.0f}"
+            )
+            return True
+
+        return False
+
+    # ========== TARGET MANAGEMENT ==========
+
+    def mark_first_target_hit(self, ticker: str):
+        """Mark first target as hit."""
+        if ticker in self.positions:
+            self.positions[ticker].first_target_hit = True
+            self.logger.logger.info(f"First target marked as hit: {ticker}")
+            self._save_positions()
+
+    def mark_second_target_hit(self, ticker: str):
+        """Mark second target as hit."""
+        if ticker in self.positions:
+            self.positions[ticker].second_target_hit = True
+            self.logger.logger.info(f"Second target marked as hit: {ticker}")
+            self._save_positions()
+
+    # ========== UTILITY METHODS ==========
+
+    def get_all_positions(self) -> Dict[str, Position]:
+        """Get all open positions."""
+        return self.positions.copy()
+
+    def get_position_summary(self, ticker: str) -> Dict[str, Any]:
+        """
+        Get summary of position for display.
+
+        Args:
+            ticker: Cryptocurrency symbol
+
+        Returns:
+            Dictionary with position details
+        """
+        if ticker not in self.positions:
+            return {
+                'has_position': False,
+                'ticker': ticker
+            }
+
+        pos = self.positions[ticker]
+
+        return {
+            'has_position': True,
+            'ticker': ticker,
+            'size': pos.size,
+            'entry_price': pos.entry_price,
+            'entry_time': pos.entry_time.strftime('%Y-%m-%d %H:%M:%S') if pos.entry_time else 'N/A',
+            'stop_loss': pos.stop_loss,
+            'highest_high': pos.highest_high,
+            'position_pct': pos.position_pct,
+            'first_target_hit': pos.first_target_hit,
+            'second_target_hit': pos.second_target_hit,
+        }
+
+    def close_position(self, ticker: str, price: float, dry_run: bool = True, reason: str = "") -> Dict[str, Any]:
+        """
+        Close entire position.
+
+        Args:
+            ticker: Cryptocurrency symbol
+            price: Current price
+            dry_run: Dry-run mode flag
+            reason: Reason for closing
+
+        Returns:
+            Execution result dictionary
+        """
+        if not self.has_position(ticker):
+            return {
+                'success': False,
+                'message': 'No position to close'
+            }
+
+        pos = self.positions[ticker]
+
+        return self.execute_order(
+            ticker=ticker,
+            action='SELL',
+            units=pos.size,
+            price=price,
+            dry_run=dry_run,
+            reason=reason or "Closing full position"
+        )
+
+    def reset_all_positions(self):
+        """Reset all positions (use with caution!)."""
+        self.logger.logger.warning("⚠️  RESETTING ALL POSITIONS")
+        self.positions = {}
+        self._save_positions()

@@ -43,8 +43,11 @@ show_help() {
     echo "      - 가중치 기반 신호 조합"
     echo "      - 시장 상황 인식 (Trending/Ranging/Transitional)"
     echo ""
-    echo "  📊 ver2: (구현 예정)"
-    echo "      - 새로운 거래 전략"
+    echo "  📊 ver2: 비트코인 다중 시간대 전략 ⭐"
+    echo "      - 일봉 EMA 50/200 체제 필터"
+    echo "      - 4시간봉 점수 기반 진입 (3점 이상)"
+    echo "      - 샹들리에 엑시트 (ATR 3배 추적 손절)"
+    echo "      - 50% 분할 진입/청산"
     echo ""
     echo -e "${CYAN}주요 기능:${NC}"
     echo "  🎮 실시간 봇 제어 (시작/정지)"
@@ -172,6 +175,9 @@ verify_installation() {
     echo ""
     echo -e "${CYAN}🔍 설치를 검증하고 있습니다...${NC}"
 
+    # 버전 정보 가져오기 (전역 변수)
+    local check_version="${VERSION:-ver1}"
+
     python3 -c "
 import sys
 try:
@@ -187,6 +193,17 @@ try:
 except ImportError as e:
     print(f'❌ 패키지 오류: {e}')
     sys.exit(1)
+
+# v2에서는 backtrader 확인
+check_version = '$check_version'
+if check_version == 'ver2':
+    try:
+        import backtrader
+        print('✅ backtrader 확인 완료 (v2 필수)')
+    except ImportError:
+        print('⚠️  경고: backtrader가 설치되지 않음 (v2 필수)')
+        print('   해결: pip install backtrader python-binance')
+        sys.exit(1)
 
 # GUI 파일 확인 (버전 기반 구조로 업데이트)
 import os
@@ -209,7 +226,7 @@ print('✅ 모든 요구사항이 충족되었습니다!')
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✅ 설치 검증 완료${NC}"
         return 0
-    else
+    else:
         echo -e "${RED}❌ 설치 검증 실패${NC}"
         return 1
     fi
@@ -259,6 +276,7 @@ launch_gui() {
         echo -e "${CYAN}📊 선택된 버전: $VERSION${NC}"
     else
         echo -e "${CYAN}📊 선택된 버전: ver1 (기본)${NC}"
+        VERSION="ver1"
     fi
     echo ""
 
@@ -269,11 +287,7 @@ launch_gui() {
 
     # GUI 실행 (버전 인수 전달)
     echo "GUI 애플리케이션을 실행하고 있습니다..."
-    if [[ -n "$VERSION" ]]; then
-        python3 run_gui.py --version "$VERSION"
-    else
-        python3 run_gui.py
-    fi
+    python3 003_Execution_script/run_gui.py --version "$VERSION"
 }
 
 # 인수 파싱
