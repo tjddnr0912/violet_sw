@@ -9,6 +9,20 @@ score-based entry system and dynamic risk management.
 from typing import Dict, Any, List, Tuple
 
 
+# ========== AVAILABLE COINS ==========
+# Major cryptocurrencies with high liquidity on Bithumb (updated 2025-10)
+# Reduced to 4 major coins for focused trading strategy
+AVAILABLE_COINS = [
+    'BTC',   # Bitcoin - Market leader, highest liquidity
+    'ETH',   # Ethereum - Smart contract platform, 2nd largest
+    'XRP',   # Ripple - High volume, fast payment network
+    'SOL',   # Solana - Modern L1 blockchain, growing ecosystem
+]
+
+# Popular coins are the same as available (all 4 are major liquid assets)
+POPULAR_COINS = AVAILABLE_COINS
+
+
 # Version Metadata
 VERSION_METADATA = {
     "name": "ver2",
@@ -53,7 +67,7 @@ REGIME_FILTER_CONFIG = {
 # Entry Signal Scoring System (4H Timeframe)
 ENTRY_SCORING_CONFIG = {
     # Minimum score required to enter position
-    'min_entry_score': 3,
+    'min_entry_score': 2, # 3 -> 2
 
     # Score components
     'scoring_rules': {
@@ -89,7 +103,7 @@ INDICATOR_CONFIG = {
 
     # RSI (for entry confirmation)
     'rsi_period': 14,
-    'rsi_oversold': 30,
+    'rsi_oversold': 35, # 30 -> 35
 
     # Stochastic RSI (for timing)
     'stoch_rsi_period': 14,      # RSI period for Stochastic calculation
@@ -211,7 +225,9 @@ API_CONFIG = {
 
 # Trading Configuration (for live trading)
 TRADING_CONFIG = {
-    'symbol': 'BTC',  # Trading pair
+    'symbol': 'BTC',  # Default trading pair (can be changed to any coin in AVAILABLE_COINS)
+    'available_symbols': AVAILABLE_COINS,  # List of all tradable coins on Bithumb
+    'popular_symbols': POPULAR_COINS,  # Popular coins for quick selection
     'trade_amount_krw': 50000,  # KRW amount per trade
     'min_trade_amount': 10000,  # Minimum trade size
     'trading_fee_rate': 0.0005,  # 0.05% fee
@@ -339,3 +355,114 @@ def validate_version_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
 
     is_valid = len(errors) == 0
     return is_valid, errors
+
+
+def validate_symbol(symbol: str) -> Tuple[bool, str]:
+    """
+    Validate if a cryptocurrency symbol is supported on Bithumb.
+
+    Args:
+        symbol: Cryptocurrency symbol (e.g., 'BTC', 'ETH', 'XRP')
+
+    Returns:
+        Tuple of (is_valid, error_message)
+        - is_valid: True if symbol is supported, False otherwise
+        - error_message: Empty string if valid, error description if invalid
+
+    Example:
+        >>> is_valid, msg = validate_symbol('BTC')
+        >>> print(is_valid)  # True
+        >>> is_valid, msg = validate_symbol('INVALID')
+        >>> print(msg)  # "Symbol INVALID not supported. Available: [...]"
+    """
+    if not symbol:
+        return False, "Symbol cannot be empty"
+
+    symbol_upper = symbol.upper()
+
+    if symbol_upper not in AVAILABLE_COINS:
+        # Provide helpful error message
+        popular_str = ', '.join(POPULAR_COINS)
+        return False, (
+            f"Symbol '{symbol}' is not supported.\n"
+            f"Available coins: {popular_str}\n"
+            f"Total available: {len(AVAILABLE_COINS)} major coins (BTC, ETH, XRP, SOL)"
+        )
+
+    return True, ""
+
+
+def get_symbol_from_config(config: Dict[str, Any] = None) -> str:
+    """
+    Get the trading symbol from configuration, with validation.
+
+    Args:
+        config: Configuration dictionary (optional). If None, uses TRADING_CONFIG.
+
+    Returns:
+        Validated symbol string (uppercase)
+
+    Raises:
+        ValueError: If symbol is not supported
+
+    Example:
+        >>> symbol = get_symbol_from_config()
+        >>> print(symbol)  # 'BTC'
+    """
+    if config is None:
+        config = TRADING_CONFIG
+
+    symbol = config.get('symbol', 'BTC')
+    is_valid, error_msg = validate_symbol(symbol)
+
+    if not is_valid:
+        raise ValueError(error_msg)
+
+    return symbol.upper()
+
+
+def set_symbol_in_config(symbol: str) -> Dict[str, Any]:
+    """
+    Update TRADING_CONFIG with a new symbol after validation.
+
+    Args:
+        symbol: New cryptocurrency symbol to trade
+
+    Returns:
+        Updated TRADING_CONFIG dictionary
+
+    Raises:
+        ValueError: If symbol is not supported
+
+    Example:
+        >>> config = set_symbol_in_config('ETH')
+        >>> print(config['symbol'])  # 'ETH'
+    """
+    is_valid, error_msg = validate_symbol(symbol)
+
+    if not is_valid:
+        raise ValueError(error_msg)
+
+    TRADING_CONFIG['symbol'] = symbol.upper()
+    return TRADING_CONFIG
+
+
+def list_available_symbols(filter_popular: bool = False) -> List[str]:
+    """
+    Get list of available cryptocurrency symbols.
+
+    Args:
+        filter_popular: If True, return only popular coins. If False, return all.
+
+    Returns:
+        List of cryptocurrency symbols
+
+    Example:
+        >>> popular = list_available_symbols(filter_popular=True)
+        >>> print(popular)  # ['BTC', 'ETH', 'XRP', 'SOL']
+        >>> all_coins = list_available_symbols()
+        >>> print(len(all_coins))  # 4
+    """
+    if filter_popular:
+        return POPULAR_COINS.copy()
+    return AVAILABLE_COINS.copy()

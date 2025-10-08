@@ -15,7 +15,8 @@ Usage:
     from ver2.live_executor_v2 import LiveExecutorV2
 
     executor = LiveExecutorV2(api, logger)
-    success = executor.execute_order(ticker='BTC', action='BUY', units=0.001, price=50000000)
+    # Example: Buy order for any supported coin (BTC, ETH, XRP, etc.)
+    success = executor.execute_order(ticker='ETH', action='BUY', units=0.1, price=3000000)
 """
 
 import json
@@ -247,9 +248,21 @@ class LiveExecutorV2:
                 self.logger.logger.warning("🔴 EXECUTING REAL ORDER ON BITHUMB")
 
                 if action == 'BUY':
-                    response = self.api.place_buy_order(ticker, units=units)
+                    # Bithumb API: place_buy_order(order_currency, payment_currency, units, price, type_order)
+                    response = self.api.place_buy_order(
+                        order_currency=ticker,
+                        payment_currency="KRW",
+                        units=units,
+                        type_order="market"
+                    )
                 elif action == 'SELL':
-                    response = self.api.place_sell_order(ticker, units=units)
+                    # Bithumb API: place_sell_order(order_currency, payment_currency, units, price, type_order)
+                    response = self.api.place_sell_order(
+                        order_currency=ticker,
+                        payment_currency="KRW",
+                        units=units,
+                        type_order="market"
+                    )
                 else:
                     return {
                         'success': False,

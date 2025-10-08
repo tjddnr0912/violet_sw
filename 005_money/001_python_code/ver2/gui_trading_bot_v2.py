@@ -23,12 +23,15 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Callable
 import sys
 import os
+import logging
 
 # Add paths
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib.api.bithumb_api import get_candlestick, get_ticker
+from lib.api.bithumb_api import get_candlestick, get_ticker, BithumbAPI
+from lib.core.logger import TradingLogger
 from ver2 import config_v2
+from ver2.live_executor_v2 import LiveExecutorV2
 
 
 class GUITradingBotV2:
@@ -43,14 +46,55 @@ class GUITradingBotV2:
     - Tracking Chandelier Exit trailing stop
     """
 
-    def __init__(self, log_callback: Optional[Callable] = None):
+    def __init__(self, log_callback: Optional[Callable] = None, signal_callback: Optional[Callable] = None, score_tracking_callback: Optional[Callable] = None):
         self.log_callback = log_callback
+        self.signal_callback = signal_callback
+        self.score_tracking_callback = score_tracking_callback
         self.config = config_v2.get_version_config()
         self.is_running = False
 
         # Trading mode from config
         self.dry_run = self.config['EXECUTION_CONFIG'].get('dry_run', True)
         self.live_mode = self.config['EXECUTION_CONFIG'].get('mode', 'backtest') == 'live'
+
+        # Get trading symbol from config (defaults to 'BTC')
+        self.symbol = self.config.get('TRADING_CONFIG', {}).get('symbol', 'BTC').upper()
+
+        # Initialize API and Logger (needed for LiveExecutorV2)
+        self.api = None
+        self.logger = None
+        self.executor = None
+
+        # Initialize live trading components if in live mode
+        if self.live_mode:
+            try:
+                # Get API keys from environment variables or config
+                connect_key = os.environ.get('BITHUMB_CONNECT_KEY')
+                secret_key = os.environ.get('BITHUMB_SECRET_KEY')
+
+                if not connect_key or not secret_key:
+                    self.log("⚠️ WARNING: API keys not found in environment variables")
+                    self.log("   Set BITHUMB_CONNECT_KEY and BITHUMB_SECRET_KEY to enable live trading")
+                    self.log("   Falling back to dry-run mode")
+                    self.dry_run = True
+                else:
+                    # Initialize API and Logger
+                    self.api = BithumbAPI(connect_key=connect_key, secret_key=secret_key)
+                    self.logger = TradingLogger(log_dir=self.config['LOGGING_CONFIG'].get('log_dir', 'logs'))
+
+                    # Initialize LiveExecutorV2
+                    self.executor = LiveExecutorV2(
+                        api=self.api,
+                        logger=self.logger,
+                        config=self.config
+                    )
+                    self.log("✅ LiveExecutorV2 initialized successfully")
+
+            except Exception as e:
+                self.log(f"❌ Error initializing live trading components: {str(e)}")
+                self.log("   Falling back to dry-run mode")
+                self.dry_run = True
+                self.executor = None
 
         # Strategy state
         self.regime = 'NEUTRAL'
@@ -85,11 +129,16 @@ class GUITradingBotV2:
             self.log("✅ Dry-run mode: Simulating trades without real execution")
 
     def log(self, message: str):
-        """Log message to GUI"""
+        """Log message to GUI and file"""
+        # Log to GUI callback
         if self.log_callback:
             self.log_callback(message)
         else:
             print(f"[BOT] {message}")
+
+        # Also log to file for debugging
+        logger = logging.getLogger('GUITradingBotV2')
+        logger.info(message)
 
     def run(self):
         """Main bot loop (runs in separate thread)"""
@@ -111,16 +160,20 @@ class GUITradingBotV2:
 
     def analyze_market(self):
         """Analyze market and make trading decisions"""
+        self.log(f"[ANALYZE] Starting market analysis at {datetime.now().strftime('%H:%M:%S')}")
+
         # Step 1: Check regime filter (Daily)
         self.update_regime_filter()
 
         if self.regime != 'BULLISH':
             # Bearish or neutral - only manage existing position
+            self.log(f"[ANALYZE] Regime is {self.regime}, skipping entry signals")
             if self.position:
                 self.manage_position()
             return
 
         # Step 2: Bullish regime - check entry signals (4H)
+        self.log("[ANALYZE] Bullish regime detected, checking 4H entry signals")
         if not self.position:
             self.check_entry_signals()
         else:
@@ -130,7 +183,7 @@ class GUITradingBotV2:
         """Update regime filter using Daily EMA 50/200"""
         try:
             # Fetch daily data (Bithumb uses '24h' for daily candles, not '1d')
-            df = get_candlestick('BTC', '24h')
+            df = get_candlestick(self.symbol, '24h')
             if df is None or len(df) < 200:
                 self.regime = 'NEUTRAL'
                 return
@@ -166,8 +219,10 @@ class GUITradingBotV2:
         """Check entry signals on 4H timeframe"""
         try:
             # Fetch 4H data
-            df = get_candlestick('BTC', '4h')
+            self.log("[ENTRY] Fetching 4H candlestick data...")
+            df = get_candlestick(self.symbol, '4h')
             if df is None or len(df) < 50:
+                self.log(f"[ENTRY] Insufficient data: {len(df) if df is not None else 0} candles")
                 return
 
             # Sort by time index (get_candlestick returns DataFrame with 'time' as index)
@@ -190,7 +245,8 @@ class GUITradingBotV2:
                 components['bb_touch'] = 1
 
             # Component 2: RSI Oversold (+1)
-            if latest['rsi'] < 30:
+            rsi_threshold = self.config['INDICATOR_CONFIG'].get('rsi_oversold', 30)
+            if latest['rsi'] < rsi_threshold:
                 score += 1
                 components['rsi_oversold'] = 1
 
@@ -202,13 +258,29 @@ class GUITradingBotV2:
             self.entry_score = score
             self.entry_components = components
 
+            # Log current score
+            self.log(f"[ENTRY] Current score: {score}/4 - {components}")
+
+            # Track ALL scores for monitoring (including 0-2 points)
+            if self.score_tracking_callback:
+                self.score_tracking_callback({
+                    'timestamp': datetime.now(),
+                    'score': score,
+                    'components': components.copy(),
+                    'regime': self.regime,
+                    'price': latest['close']
+                })
+
             # Entry decision
-            if score >= 3:
-                self.log(f"ENTRY SIGNAL: Score {score}/4 - {components}")
+            min_score = self.config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
+            if score >= min_score:
+                self.log(f"✅ ENTRY SIGNAL TRIGGERED: Score {score}/4 (min: {min_score}) - {components}")
                 self.execute_entry(latest)
+            else:
+                self.log(f"[ENTRY] Score insufficient ({score}/4), waiting for {min_score}+ score")
 
         except Exception as e:
-            self.log(f"Error checking entry signals: {str(e)}")
+            self.log(f"❌ Error checking entry signals: {str(e)}")
 
     def execute_entry(self, bar: pd.Series):
         """Execute entry with 50% position"""
@@ -220,25 +292,57 @@ class GUITradingBotV2:
             stop_distance = atr * 3.0
             stop_price = entry_price - stop_distance
 
-            # Check if real trading is enabled
-            if self.live_mode and not self.dry_run:
-                # REAL TRADING MODE
-                self.log("🚨 REAL TRADING: Attempting to execute LIVE order...")
-                # TODO: Integrate with live_executor_v2.py for actual order placement
-                # from live_executor_v2 import LiveExecutorV2
-                # executor = LiveExecutorV2(self.config)
-                # order_result = executor.place_buy_order('BTC', amount)
-                self.log("⚠️ Real order execution not yet connected to live_executor_v2.py")
-                self.log("   For now, operating in simulation mode")
+            # Calculate trade amount and units
+            trade_amount_krw = self.config['TRADING_CONFIG'].get('trade_amount_krw', 50000)
+            units = trade_amount_krw / entry_price
+
+            # Execute order through LiveExecutorV2 if enabled
+            order_result = None
+            if self.live_mode and not self.dry_run and self.executor:
+                # REAL TRADING MODE - Use LiveExecutorV2
+                self.log("🚨 REAL TRADING: Executing LIVE BUY order via LiveExecutorV2...")
+
+                order_result = self.executor.execute_order(
+                    ticker=self.symbol,
+                    action='BUY',
+                    units=units,
+                    price=entry_price,
+                    dry_run=False,
+                    reason=f"Entry signal score: {self.entry_score}/4 - {self.entry_components}"
+                )
+
+                if order_result and order_result.get('success'):
+                    self.log(f"✅ LIVE ORDER EXECUTED: Order ID {order_result.get('order_id')}")
+                    self.log(f"   Units: {order_result.get('executed_units'):.6f} BTC")
+                    self.log(f"   Price: {order_result.get('executed_price'):,.0f} KRW")
+
+                    # Update stop-loss in executor
+                    self.executor.update_stop_loss(self.symbol, stop_price)
+                else:
+                    self.log(f"❌ LIVE ORDER FAILED: {order_result.get('message') if order_result else 'Unknown error'}")
+                    return  # Don't create position if order failed
+
+            elif self.live_mode and self.dry_run:
+                # DRY-RUN MODE - Simulate order
+                self.log("💚 DRY-RUN: Simulating BUY order...")
+                order_result = {
+                    'success': True,
+                    'order_id': f"DRY_RUN_BUY_{int(time.time())}",
+                    'executed_price': entry_price,
+                    'executed_units': units,
+                    'message': 'Dry-run simulation'
+                }
+                self.log(f"💚 DRY-RUN ORDER SIMULATED: {units:.6f} BTC @ {entry_price:,.0f} KRW")
 
             # Initialize position (works for both dry-run and live)
             self.position = {
                 'entry_price': entry_price,
                 'entry_time': datetime.now(),
                 'entry_score': self.entry_score,
-                'entry_size': 0.01,  # Placeholder
+                'entry_size': units,
                 'stop_price': stop_price,
-                'atr_at_entry': atr
+                'atr_at_entry': atr,
+                'order_id': order_result.get('order_id') if order_result else None
             }
 
             self.position_phase = 'INITIAL_ENTRY'
@@ -251,8 +355,20 @@ class GUITradingBotV2:
             self.log(f"{mode_prefix} ENTRY EXECUTED: Price ${entry_price:.0f}, Stop ${stop_price:.0f}")
             self.log(f"  Score: {self.entry_score}/4, Components: {self.entry_components}")
 
+            # Notify signal history widget
+            if self.signal_callback:
+                self.signal_callback('entry', {
+                    'timestamp': datetime.now(),
+                    'regime': self.regime,
+                    'score': self.entry_score,
+                    'components': self.entry_components.copy(),
+                    'price': entry_price
+                })
+
         except Exception as e:
-            self.log(f"Error executing entry: {str(e)}")
+            self.log(f"❌ Error executing entry: {str(e)}")
+            import traceback
+            self.log(f"   Traceback: {traceback.format_exc()}")
 
     def manage_position(self):
         """Manage existing position"""
@@ -261,7 +377,7 @@ class GUITradingBotV2:
 
         try:
             # Fetch current 4H bar
-            df = get_candlestick('BTC', '4h')
+            df = get_candlestick(self.symbol, '4h')
             if df is None:
                 return
 
@@ -275,12 +391,30 @@ class GUITradingBotV2:
             if latest['high'] > self.highest_high:
                 self.highest_high = latest['high']
 
+                # Update highest high in executor if live trading
+                if self.executor:
+                    self.executor.update_highest_high(self.symbol, latest['high'])
+
             # Update Chandelier stop (trails upward only)
             new_stop = self.highest_high - (latest['atr'] * 3.0)
             if new_stop > self.chandelier_stop:
                 old_stop = self.chandelier_stop
                 self.chandelier_stop = new_stop
                 self.log(f"STOP TRAILED: ${old_stop:.0f} -> ${new_stop:.0f}")
+
+                # Update stop-loss in executor if live trading
+                if self.executor:
+                    self.executor.update_stop_loss(self.symbol, new_stop)
+
+                # Notify signal history widget
+                if self.signal_callback:
+                    self.signal_callback('event', {
+                        'timestamp': datetime.now(),
+                        'event_type': 'STOP_TRAIL',
+                        'old_value': old_stop,
+                        'new_value': new_stop,
+                        'current_price': latest['close']
+                    })
 
             # Check exits
             # Exit 1: Chandelier stop hit
@@ -303,6 +437,16 @@ class GUITradingBotV2:
                 self.position_phase = 'RISK_FREE_RUNNER'
                 self.log("  Stop moved to BREAKEVEN")
 
+                # Notify signal history widget
+                if self.signal_callback:
+                    self.signal_callback('event', {
+                        'timestamp': datetime.now(),
+                        'event_type': 'FIRST_TARGET_HIT',
+                        'target_price': latest['bb_mid'],
+                        'new_stop': self.position['entry_price'],
+                        'current_price': latest['close']
+                    })
+
         except Exception as e:
             self.log(f"Error managing position: {str(e)}")
 
@@ -312,19 +456,42 @@ class GUITradingBotV2:
             return
 
         entry_price = self.position['entry_price']
-        pnl = exit_price - entry_price
-        pnl_pct = (pnl / entry_price) * 100
+        units = self.position.get('entry_size', 0)
+        pnl = (exit_price - entry_price) * units
+        pnl_pct = (pnl / (entry_price * units)) * 100 if units > 0 else 0
 
-        # Check if real trading is enabled
-        if self.live_mode and not self.dry_run:
-            # REAL TRADING MODE
-            self.log("🚨 REAL TRADING: Attempting to execute LIVE exit order...")
-            # TODO: Integrate with live_executor_v2.py for actual order placement
-            # from live_executor_v2 import LiveExecutorV2
-            # executor = LiveExecutorV2(self.config)
-            # order_result = executor.place_sell_order('BTC', amount)
-            self.log("⚠️ Real order execution not yet connected to live_executor_v2.py")
-            self.log("   For now, operating in simulation mode")
+        # Execute order through LiveExecutorV2 if enabled
+        order_result = None
+        if self.live_mode and not self.dry_run and self.executor:
+            # REAL TRADING MODE - Use LiveExecutorV2
+            self.log("🚨 REAL TRADING: Executing LIVE SELL order via LiveExecutorV2...")
+
+            order_result = self.executor.close_position(
+                ticker=self.symbol,
+                price=exit_price,
+                dry_run=False,
+                reason=f"Exit: {exit_type}"
+            )
+
+            if order_result and order_result.get('success'):
+                self.log(f"✅ LIVE EXIT EXECUTED: Order ID {order_result.get('order_id')}")
+                self.log(f"   Units: {order_result.get('executed_units'):.6f} BTC")
+                self.log(f"   Price: {order_result.get('executed_price'):,.0f} KRW")
+            else:
+                self.log(f"❌ LIVE EXIT FAILED: {order_result.get('message') if order_result else 'Unknown error'}")
+                # Continue with position tracking even if order failed (for monitoring)
+
+        elif self.live_mode and self.dry_run:
+            # DRY-RUN MODE - Simulate order
+            self.log("💚 DRY-RUN: Simulating SELL order...")
+            order_result = {
+                'success': True,
+                'order_id': f"DRY_RUN_SELL_{int(time.time())}",
+                'executed_price': exit_price,
+                'executed_units': units,
+                'message': 'Dry-run simulation'
+            }
+            self.log(f"💚 DRY-RUN EXIT SIMULATED: {units:.6f} BTC @ {exit_price:,.0f} KRW")
 
         self.total_trades += 1
         if pnl > 0:
@@ -335,6 +502,16 @@ class GUITradingBotV2:
         self.log(f"{mode_prefix} EXIT: {exit_type} at ${exit_price:.0f}")
         self.log(f"  P&L: ${pnl:+.0f} ({pnl_pct:+.2f}%)")
         self.log(f"  Total Trades: {self.total_trades}, Win Rate: {self.get_win_rate():.1f}%")
+
+        # Notify signal history widget
+        if self.signal_callback:
+            self.signal_callback('exit', {
+                'timestamp': datetime.now(),
+                'exit_type': exit_type,
+                'price': exit_price,
+                'pnl': pnl,
+                'pnl_pct': pnl_pct
+            })
 
         # Reset position
         self.position = None
@@ -387,8 +564,9 @@ class GUITradingBotV2:
         # Crossover: K was below D, now above D
         crossover = (k_prev < d_prev) and (k_curr > d_curr)
 
-        # Oversold zone
-        in_oversold = (k_curr < 20) and (d_curr < 20)
+        # Oversold zone (use config value)
+        stoch_threshold = self.config['INDICATOR_CONFIG'].get('stoch_oversold', 20)
+        in_oversold = (k_curr < stoch_threshold) and (d_curr < stoch_threshold)
 
         return crossover and in_oversold
 
@@ -439,10 +617,12 @@ class GUITradingBotV2:
                 return 'HOLDING (RISK-FREE)'
             else:
                 return 'HOLDING'
-        elif self.entry_score >= 3:
-            return 'SIGNAL DETECTED'
         else:
-            return 'WAITING'
+            min_score = self.config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
+            if self.entry_score >= min_score:
+                return 'SIGNAL DETECTED'
+            else:
+                return 'WAITING'
 
 
 # Test function

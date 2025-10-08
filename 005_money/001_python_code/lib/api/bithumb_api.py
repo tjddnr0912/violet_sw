@@ -230,51 +230,72 @@ class BithumbAPI:
 
 
     def place_buy_order(self, order_currency: str, payment_currency: str = "KRW", units: float = None, price: int = None, type_order: str = "market") -> Optional[Dict]:
-        """매수 주문"""
+        """매수 주문 (Bithumb API 1.2.0)"""
         # 사전 검증
         if not self._validate_api_keys():
             self.logger.error("매수 주문 실패: API 키 검증 실패")
             return None
 
-        endpoint = "/trade/place"
+        # 빗썸 API 1.2.0: 시장가/지정가 별도 엔드포인트 사용
+        if type_order == "market":
+            endpoint = "/trade/market_buy"
+        else:
+            endpoint = "/trade/place"  # 지정가 주문
+
         url = PRIVATE_URL + endpoint
 
+        # 빗썸 API 1.2.0 파라미터 구조
         parameters = {
             'order_currency': order_currency,
-            'payment_currency': payment_currency,
-            'type': type_order
+            'payment_currency': payment_currency
         }
 
+        # 시장가 매수: units (코인 수량) 필수
         if type_order == "market":
             if units:
                 parameters['units'] = str(units)
-            elif price:
-                parameters['total'] = str(price)
+            else:
+                self.logger.error("시장가 매수: units 파라미터 필수")
+                return None
+        # 지정가 주문
         else:
+            parameters['type'] = type_order
             parameters['units'] = str(units)
             parameters['price'] = str(price)
 
         return self._make_request(url, endpoint, parameters, is_private=True)
 
     def place_sell_order(self, order_currency: str, payment_currency: str = "KRW", units: float = None, price: int = None, type_order: str = "market") -> Optional[Dict]:
-        """매도 주문"""
+        """매도 주문 (Bithumb API 1.2.0)"""
         # 사전 검증
         if not self._validate_api_keys():
             self.logger.error("매도 주문 실패: API 키 검증 실패")
             return None
 
-        endpoint = "/trade/place"
+        # 빗썸 API 1.2.0: 시장가/지정가 별도 엔드포인트 사용
+        if type_order == "market":
+            endpoint = "/trade/market_sell"
+        else:
+            endpoint = "/trade/place"  # 지정가 주문
+
         url = PRIVATE_URL + endpoint
 
+        # 빗썸 API 1.2.0 파라미터 구조
         parameters = {
             'order_currency': order_currency,
-            'payment_currency': payment_currency,
-            'type': type_order
+            'payment_currency': payment_currency
         }
 
+        # 시장가 매도: units (코인 수량) 필수
         if type_order == "market":
-            parameters['units'] = str(units)
+            if units:
+                parameters['units'] = str(units)
+            else:
+                self.logger.error("시장가 매도: units 파라미터 필수")
+                return None
+        # 지정가 주문
         else:
+            parameters['type'] = type_order
             parameters['units'] = str(units)
             parameters['price'] = str(price)
 
