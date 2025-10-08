@@ -34,10 +34,11 @@ sys.path.insert(0, script_dir)
 from ver2.gui_trading_bot_v2 import GUITradingBotV2
 from lib.core.logger import TradingLogger, TransactionHistory
 from lib.core.config_manager import ConfigManager
-from lib.api.bithumb_api import get_ticker
+from lib.api.bithumb_api import get_ticker, BithumbAPI
 from ver2.chart_widget_v2 import ChartWidgetV2
 from ver2.signal_history_widget_v2 import SignalHistoryWidgetV2
 from ver2.multi_chart_widget_v2 import MultiChartWidgetV2
+from ver2.score_monitoring_widget_v2 import ScoreMonitoringWidgetV2
 from ver2 import config_v2
 
 
@@ -45,14 +46,30 @@ class TradingBotGUIV2:
     def __init__(self, root):
         self.root = root
 
+        # User preferences file path
+        self.preferences_file = os.path.join(script_dir, 'user_preferences_v2.json')
+
+        # Load saved preferences (including coin selection)
+        saved_coin = self._load_user_preferences()
+
         # Read trading mode from config
         self.config = config_v2.get_version_config()
         self.dry_run = self.config['EXECUTION_CONFIG'].get('dry_run', True)
         self.live_mode = self.config['EXECUTION_CONFIG'].get('mode', 'backtest') == 'live'
 
-        # Set window title with mode indicator
+        # Apply saved coin to config if it was persisted
+        if saved_coin:
+            try:
+                config_v2.set_symbol_in_config(saved_coin)
+                self.config = config_v2.get_version_config()
+            except ValueError:
+                # Invalid saved coin, use default from config
+                pass
+
+        # Set window title with mode indicator and coin
+        current_coin = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
         mode_str = self._get_trading_mode_string()
-        self.root.title(f"🤖 Bitcoin Multi-Timeframe Strategy v2.0 - {mode_str}")
+        self.root.title(f"🤖 Bitcoin Multi-Timeframe Strategy v2.0 - {mode_str} - {current_coin}")
         self.root.geometry("1400x850")
         self.root.minsize(1200, 700)
 
@@ -63,6 +80,9 @@ class TradingBotGUIV2:
         self.log_queue = queue.Queue(maxsize=1000)
         self.config_manager = ConfigManager()
         self.transaction_history = TransactionHistory()
+
+        # API client for balance/holdings (will be initialized if keys available)
+        self.api_client = None
 
         # v2-specific status data
         self.bot_status = {
@@ -102,6 +122,9 @@ class TradingBotGUIV2:
         self.setup_styles()
         self.create_widgets()
         self.setup_logging()
+
+        # Initialize API client AFTER widgets are created (so log_text exists)
+        self._initialize_api_client()
 
         # Start periodic updates
         self.update_gui()
@@ -146,11 +169,15 @@ class TradingBotGUIV2:
         multi_chart_tab = ttk.Frame(self.notebook)
         self.notebook.add(multi_chart_tab, text='📊 멀티 타임프레임')
 
-        # TAB 4: Signal History
+        # TAB 4: Score Monitoring (NEW)
+        score_monitoring_tab = ttk.Frame(self.notebook)
+        self.notebook.add(score_monitoring_tab, text='📈 점수 모니터링')
+
+        # TAB 5: Signal History
         signal_history_tab = ttk.Frame(self.notebook)
         self.notebook.add(signal_history_tab, text='📋 신호 히스토리')
 
-        # TAB 5: Transaction History
+        # TAB 6: Transaction History
         history_tab = ttk.Frame(self.notebook)
         self.notebook.add(history_tab, text='📜 거래 내역')
 
@@ -161,11 +188,13 @@ class TradingBotGUIV2:
         main_tab.rowconfigure(0, weight=1)
         main_tab.rowconfigure(1, weight=0)
 
-        # Left column - Market & Entry
+        # Left column - Market & Entry & Coin Selector & Config
         left_frame = ttk.Frame(main_tab)
         left_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 2), pady=5)
         self.create_regime_panel(left_frame)
         self.create_entry_score_panel(left_frame)
+        self.create_coin_selector_panel(left_frame)
+        self.create_config_panel(left_frame)
 
         # Middle column - Position & Risk
         middle_frame = ttk.Frame(main_tab)
@@ -173,12 +202,11 @@ class TradingBotGUIV2:
         self.create_position_panel(middle_frame)
         self.create_chandelier_panel(middle_frame)
 
-        # Right column - Status & Config
+        # Right column - Status & Risk Management
         right_frame = ttk.Frame(main_tab)
         right_frame.grid(row=0, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(2, 5), pady=5)
         self.create_status_panel(right_frame)
         self.create_risk_management_panel(right_frame)
-        self.create_config_panel(right_frame)
 
         # Bottom console (full width)
         console_frame = ttk.Frame(main_tab, style='Card.TFrame')
@@ -196,12 +224,21 @@ class TradingBotGUIV2:
         multi_chart_tab.rowconfigure(0, weight=1)
         self.multi_chart_widget = MultiChartWidgetV2(multi_chart_tab, v2_config)
 
-        # Configure Tab 4 (Signal History)
+        # Configure Tab 4 (Score Monitoring) - NEW
+        score_monitoring_tab.columnconfigure(0, weight=1)
+        score_monitoring_tab.rowconfigure(0, weight=1)
+        self.score_monitoring_widget = ScoreMonitoringWidgetV2(score_monitoring_tab, v2_config)
+        # Load persisted score checks from previous sessions
+        self.score_monitoring_widget.load_from_file()
+
+        # Configure Tab 5 (Signal History)
         signal_history_tab.columnconfigure(0, weight=1)
         signal_history_tab.rowconfigure(0, weight=1)
         self.signal_history_widget = SignalHistoryWidgetV2(signal_history_tab)
+        # Load persisted signals from previous sessions
+        self.signal_history_widget.load_from_file()
 
-        # Configure Tab 5 (Transaction History)
+        # Configure Tab 6 (Transaction History)
         self.create_trading_history_panel(history_tab)
 
     def create_control_panel(self, parent):
@@ -229,7 +266,7 @@ class TradingBotGUIV2:
     def create_regime_panel(self, parent):
         """Market regime filter panel (Daily EMA)"""
         regime_frame = ttk.LabelFrame(parent, text="🔍 시장 체제 필터 (Daily EMA)", padding="10")
-        regime_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+        regime_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         parent.columnconfigure(0, weight=1)
 
         # Regime status with color badge
@@ -264,7 +301,7 @@ class TradingBotGUIV2:
     def create_entry_score_panel(self, parent):
         """Entry signal scoring panel (4H)"""
         score_frame = ttk.LabelFrame(parent, text="🎯 진입 신호 시스템 (4H)", padding="10")
-        score_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+        score_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
 
         # Total score with visual indicator
         score_row = ttk.Frame(score_frame)
@@ -319,12 +356,13 @@ class TradingBotGUIV2:
         self.stoch_kd_var = tk.StringVar(value="- / -")
         ttk.Label(score_frame, textvariable=self.stoch_kd_var, font=('Arial', 9)).grid(row=7, column=1, sticky=tk.W, padx=(10, 0))
 
-        # Entry threshold
+        # Entry threshold (dynamic from config)
         ttk.Separator(score_frame, orient='horizontal').grid(row=8, column=0, columnspan=2,
                                                               sticky=(tk.W, tk.E), pady=5)
         ttk.Label(score_frame, text="진입 기준:", style='Title.TLabel').grid(row=9, column=0, sticky=tk.W, pady=(5, 0))
-        threshold_label = ttk.Label(score_frame, text="≥ 3점", font=('Arial', 10, 'bold'), foreground='blue')
-        threshold_label.grid(row=9, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        min_entry_score = self.config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
+        self.threshold_label = ttk.Label(score_frame, text=f"≥ {min_entry_score}점", font=('Arial', 10, 'bold'), foreground='blue')
+        self.threshold_label.grid(row=9, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
     def create_position_panel(self, parent):
         """Position state panel"""
@@ -383,30 +421,67 @@ class TradingBotGUIV2:
                   foreground='blue').grid(row=8, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
     def create_status_panel(self, parent):
-        """Trading status panel"""
+        """Trading status panel with balance and holdings"""
         status_frame = ttk.LabelFrame(parent, text="📊 거래 상태", padding="10")
         status_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
         parent.columnconfigure(0, weight=1)
 
         # Current coin
         ttk.Label(status_frame, text="거래 코인:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W)
-        self.current_coin_var = tk.StringVar(value="BTC")
+        initial_coin = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+        self.current_coin_var = tk.StringVar(value=initial_coin)
         ttk.Label(status_frame, textvariable=self.current_coin_var, style='Status.TLabel').grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
 
         # Current price
         ttk.Label(status_frame, text="현재 가격:", style='Title.TLabel').grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
-        self.current_price_var = tk.StringVar(value="0 KRW")
-        ttk.Label(status_frame, textvariable=self.current_price_var, style='Status.TLabel').grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        self.current_price_var = tk.StringVar(value="조회 중...")
+        self.current_price_label = ttk.Label(status_frame, textvariable=self.current_price_var,
+                                              font=('Arial', 10, 'bold'), foreground='blue')
+        self.current_price_label.grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # Separator
+        ttk.Separator(status_frame, orient='horizontal').grid(row=2, column=0, columnspan=2,
+                                                              sticky=(tk.W, tk.E), pady=5)
+
+        # Account balance (Cash)
+        ttk.Label(status_frame, text="보유 현금:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        self.cash_balance_var = tk.StringVar(value="API 키 필요")
+        self.cash_balance_label = ttk.Label(status_frame, textvariable=self.cash_balance_var,
+                                             font=('Arial', 10, 'bold'), foreground='green')
+        self.cash_balance_label.grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # Coin holdings (dynamic label based on selected coin)
+        current_coin = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+        self.coin_holdings_label_text = tk.StringVar(value=f"보유 {current_coin}:")
+        self.coin_holdings_label = ttk.Label(status_frame, textvariable=self.coin_holdings_label_text, style='Title.TLabel')
+        self.coin_holdings_label.grid(row=4, column=0, sticky=tk.W, pady=(5, 0))
+        self.coin_holdings_var = tk.StringVar(value="API 키 필요")
+        ttk.Label(status_frame, textvariable=self.coin_holdings_var, style='Status.TLabel').grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # Average buy price
+        ttk.Label(status_frame, text="평균 매수가:", style='Title.TLabel').grid(row=5, column=0, sticky=tk.W, pady=(5, 0))
+        self.avg_buy_price_var = tk.StringVar(value="-")
+        ttk.Label(status_frame, textvariable=self.avg_buy_price_var, font=('Arial', 9)).grid(row=5, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # Current value
+        ttk.Label(status_frame, text="평가 금액:", style='Title.TLabel').grid(row=6, column=0, sticky=tk.W, pady=(5, 0))
+        self.coin_value_var = tk.StringVar(value="-")
+        self.coin_value_label = ttk.Label(status_frame, textvariable=self.coin_value_var, font=('Arial', 9))
+        self.coin_value_label.grid(row=6, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # Separator
+        ttk.Separator(status_frame, orient='horizontal').grid(row=7, column=0, columnspan=2,
+                                                              sticky=(tk.W, tk.E), pady=5)
 
         # Execution interval
-        ttk.Label(status_frame, text="실행 주기:", style='Title.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        ttk.Label(status_frame, text="실행 주기:", style='Title.TLabel').grid(row=8, column=0, sticky=tk.W, pady=(5, 0))
         interval_label = ttk.Label(status_frame, text="4H", style='Status.TLabel')
-        interval_label.grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        interval_label.grid(row=8, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
         # Last action
-        ttk.Label(status_frame, text="마지막 행동:", style='Title.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        ttk.Label(status_frame, text="마지막 행동:", style='Title.TLabel').grid(row=9, column=0, sticky=tk.W, pady=(5, 0))
         self.last_action_var = tk.StringVar(value="HOLD")
-        ttk.Label(status_frame, textvariable=self.last_action_var, style='Status.TLabel').grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        ttk.Label(status_frame, textvariable=self.last_action_var, style='Status.TLabel').grid(row=9, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
     def create_chandelier_panel(self, parent):
         """Chandelier Exit panel - ATR-based trailing stop"""
@@ -509,27 +584,83 @@ class TradingBotGUIV2:
         self.total_trades_var = tk.StringVar(value="0")
         ttk.Label(risk_frame, textvariable=self.total_trades_var, font=('Arial', 9)).grid(row=8, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
+    def create_coin_selector_panel(self, parent):
+        """Coin selection panel - simplified for 4 major coins"""
+        coin_frame = ttk.LabelFrame(parent, text="💰 거래 코인 선택", padding="10")
+        coin_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # Label
+        ttk.Label(coin_frame, text="거래 코인:", style='Title.TLabel').grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+
+        # Build dropdown with only 4 major coins (reduced from 427 for focused strategy)
+        from ver2 import config_v2
+
+        # Coin descriptions mapping
+        coin_descriptions = {
+            'BTC': 'Bitcoin (Market Leader)',
+            'ETH': 'Ethereum (Smart Contracts)',
+            'XRP': 'Ripple (Fast Payments)',
+            'SOL': 'Solana (High Performance)'
+        }
+
+        # Create dropdown options with descriptions
+        dropdown_values = [
+            f"{coin} - {coin_descriptions[coin]}"
+            for coin in config_v2.AVAILABLE_COINS
+        ]
+
+        # Set initial value with description
+        current_symbol = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+        initial_value = f"{current_symbol} - {coin_descriptions.get(current_symbol, 'Unknown')}"
+
+        self.coin_selector_var = tk.StringVar(value=initial_value)
+        self.coin_selector = ttk.Combobox(coin_frame, textvariable=self.coin_selector_var,
+                                         values=dropdown_values, state='readonly', width=35)
+        self.coin_selector.grid(row=0, column=1, sticky=tk.W, padx=(10, 0), pady=(0, 5))
+        self.coin_selector.bind('<<ComboboxSelected>>', self.on_coin_changed)
+
+        # Change button
+        change_button = ttk.Button(coin_frame, text="변경", command=self.change_coin)
+        change_button.grid(row=0, column=2, sticky=tk.W, padx=(10, 0), pady=(0, 5))
+
+        # Current status
+        self.coin_status_var = tk.StringVar(value=f"현재: {current_symbol}")
+        ttk.Label(coin_frame, textvariable=self.coin_status_var, font=('Arial', 9),
+                 foreground='blue').grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
+
     def create_config_panel(self, parent):
         """Configuration panel for strategy parameters"""
         config_frame = ttk.LabelFrame(parent, text="⚙️ 전략 설정", padding="10")
-        config_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+        config_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
 
         # Config button
         config_button = ttk.Button(config_frame, text="설정 편집", command=self.open_config_editor)
         config_button.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 5))
 
-        # Key parameters display
+        # Reload button
+        reload_button = ttk.Button(config_frame, text="🔄 설정 새로고침", command=self.reload_config)
+        reload_button.grid(row=0, column=2, sticky=(tk.W, tk.E), pady=(0, 5), padx=(5, 0))
+
+        # Key parameters display (dynamic from config)
         ttk.Label(config_frame, text="진입 점수:", font=('Arial', 9)).grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
-        ttk.Label(config_frame, text="≥ 3점", font=('Arial', 9), foreground='blue').grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        min_entry_score = self.config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
+        self.config_entry_score_var = tk.StringVar(value=f"≥ {min_entry_score}점")
+        ttk.Label(config_frame, textvariable=self.config_entry_score_var, font=('Arial', 9), foreground='blue').grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
-        ttk.Label(config_frame, text="ATR 배수:", font=('Arial', 9)).grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
-        ttk.Label(config_frame, text="3.0x", font=('Arial', 9), foreground='blue').grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        ttk.Label(config_frame, text="RSI 기준:", font=('Arial', 9)).grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        self.config_rsi_var = tk.StringVar(value="< 30")
+        ttk.Label(config_frame, textvariable=self.config_rsi_var, font=('Arial', 9), foreground='blue').grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
-        ttk.Label(config_frame, text="리스크:", font=('Arial', 9)).grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
-        ttk.Label(config_frame, text="2% per trade", font=('Arial', 9), foreground='blue').grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        ttk.Label(config_frame, text="Stoch 기준:", font=('Arial', 9)).grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        self.config_stoch_var = tk.StringVar(value="< 20")
+        ttk.Label(config_frame, textvariable=self.config_stoch_var, font=('Arial', 9), foreground='blue').grid(row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
 
         ttk.Label(config_frame, text="실행 주기:", font=('Arial', 9)).grid(row=4, column=0, sticky=tk.W, pady=(5, 0))
-        ttk.Label(config_frame, text="4H", font=('Arial', 9), foreground='blue').grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        self.config_interval_var = tk.StringVar(value="4H")
+        ttk.Label(config_frame, textvariable=self.config_interval_var, font=('Arial', 9), foreground='blue').grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+
+        # Update config display
+        self.update_config_display()
 
     def create_log_panel(self, parent):
         """Console log panel"""
@@ -568,6 +699,104 @@ class TradingBotGUIV2:
         self.history_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
 
+        # Track last entries to avoid duplicates
+        self._last_tx_count = 0
+
+    def _initialize_api_client(self):
+        """Initialize Bithumb API client for balance/holdings queries"""
+        try:
+            import os
+            # Try to get API keys from environment variables
+            connect_key = os.getenv('BITHUMB_CONNECT_KEY')
+            secret_key = os.getenv('BITHUMB_SECRET_KEY')
+
+            if connect_key and secret_key:
+                self.api_client = BithumbAPI(connect_key, secret_key)
+                self.log_to_console("API 클라이언트 초기화 성공")
+            else:
+                self.log_to_console("API 키 미설정 - 잔고 조회 불가")
+        except Exception as e:
+            self.log_to_console(f"API 클라이언트 초기화 오류: {str(e)}")
+            self.api_client = None
+
+    def update_balance_and_holdings(self):
+        """Update account balance and coin holdings"""
+        if not self.api_client:
+            return
+
+        try:
+            # Get balance information
+            balance_data = self.api_client.get_balance('BTC')
+
+            if balance_data and balance_data.get('status') == '0000':
+                data = balance_data.get('data', {})
+
+                # KRW balance (available cash)
+                krw_balance = float(data.get('total_krw', 0))
+                self.cash_balance_var.set(f"{krw_balance:,.0f} KRW")
+
+                # Update label color based on balance
+                if krw_balance > 1000000:  # 100만원 이상
+                    self.cash_balance_label.config(foreground='green')
+                elif krw_balance > 100000:  # 10만원 이상
+                    self.cash_balance_label.config(foreground='orange')
+                else:
+                    self.cash_balance_label.config(foreground='red')
+
+                # BTC holdings
+                btc_balance = float(data.get('total_btc', 0))
+                btc_available = float(data.get('available_btc', 0))
+                btc_in_use = float(data.get('in_use_btc', 0))
+
+                if btc_balance > 0:
+                    self.coin_holdings_var.set(f"{btc_balance:.8f} BTC")
+
+                    # Average buy price (if available)
+                    avg_price = float(data.get('average_buy_price', 0))
+                    if avg_price > 0:
+                        self.avg_buy_price_var.set(f"{avg_price:,.0f} KRW")
+                    else:
+                        self.avg_buy_price_var.set("-")
+
+                    # Calculate current value
+                    current_price = self.bot_status.get('current_price', 0)
+                    if current_price > 0:
+                        current_value = btc_balance * current_price
+                        self.coin_value_var.set(f"{current_value:,.0f} KRW")
+
+                        # Calculate P&L if we have avg price
+                        if avg_price > 0:
+                            pnl = current_value - (btc_balance * avg_price)
+                            pnl_pct = ((current_price - avg_price) / avg_price) * 100
+
+                            # Update value label with P&L
+                            value_str = f"{current_value:,.0f} KRW ({pnl_pct:+.2f}%)"
+                            self.coin_value_var.set(value_str)
+
+                            # Color code based on P&L
+                            if pnl > 0:
+                                self.coin_value_label.config(foreground='green')
+                            elif pnl < 0:
+                                self.coin_value_label.config(foreground='red')
+                            else:
+                                self.coin_value_label.config(foreground='gray')
+                    else:
+                        self.coin_value_var.set(f"{btc_balance * 50000000:,.0f} KRW (추정)")
+                else:
+                    self.coin_holdings_var.set("0 BTC")
+                    self.avg_buy_price_var.set("-")
+                    self.coin_value_var.set("-")
+
+            else:
+                # API call failed
+                error_msg = balance_data.get('message', 'Unknown error') if balance_data else 'No response'
+                self.cash_balance_var.set("조회 실패")
+                self.coin_holdings_var.set("조회 실패")
+
+        except Exception as e:
+            # Silent fail - don't spam logs with balance errors
+            pass
+
     def setup_logging(self):
         """Setup logging system"""
         self.logger = TradingLogger()
@@ -592,8 +821,39 @@ class TradingBotGUIV2:
 
         self.log_to_console("봇 시작됨")
 
-        # Start bot in separate thread
-        self.bot = GUITradingBotV2(log_callback=self.log_to_console)
+        # Start bot in separate thread with signal callback
+        def handle_signal_event(event_type, signal_data):
+            """Handle signal events from trading bot"""
+            if event_type == 'entry':
+                # Pass entire signal_data dict to enhanced v2 widget
+                self.signal_history_widget.add_entry_signal(signal_data)
+            elif event_type == 'exit':
+                # Pass entire signal_data dict to enhanced v2 widget
+                self.signal_history_widget.add_exit_signal(signal_data)
+            elif event_type == 'event':
+                # Build description string and add to event_data
+                event_desc = ""
+                if signal_data['event_type'] == 'STOP_TRAIL':
+                    event_desc = f"Stop trailed: ${signal_data['old_value']:.0f} → ${signal_data['new_value']:.0f}"
+                elif signal_data['event_type'] == 'FIRST_TARGET_HIT':
+                    event_desc = f"First target hit at ${signal_data['target_price']:.0f}, stop → BE"
+
+                # Add description to signal_data
+                signal_data['description'] = event_desc
+                signal_data['price'] = signal_data.get('current_price', 0)
+
+                # Pass entire signal_data dict to enhanced v2 widget
+                self.signal_history_widget.add_position_event(signal_data)
+
+        def handle_score_tracking(score_data):
+            """Handle ALL score checks (including 0-2 points) for monitoring"""
+            self.score_monitoring_widget.add_score_check(score_data)
+
+        self.bot = GUITradingBotV2(
+            log_callback=self.log_to_console,
+            signal_callback=handle_signal_event,
+            score_tracking_callback=handle_score_tracking
+        )
         self.bot_thread = threading.Thread(target=self.bot.run, daemon=True)
         self.bot_thread.start()
 
@@ -612,6 +872,130 @@ class TradingBotGUIV2:
 
         self.log_to_console("봇 정지됨")
 
+    def update_config_display(self):
+        """Update configuration display with current values from config_v2.py"""
+        try:
+            from ver2 import config_v2
+            # Reload config module to get latest values
+            import importlib
+            importlib.reload(config_v2)
+            config = config_v2.get_version_config()
+
+            # Update display variables
+            min_score = config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
+            self.config_entry_score_var.set(f"≥ {min_score}점")
+
+            rsi_oversold = config['INDICATOR_CONFIG'].get('rsi_oversold', 30)
+            self.config_rsi_var.set(f"< {rsi_oversold}")
+
+            stoch_oversold = config['INDICATOR_CONFIG'].get('stoch_oversold', 20)
+            self.config_stoch_var.set(f"< {stoch_oversold}")
+
+            interval = config['TIMEFRAME_CONFIG'].get('execution_interval', '4h')
+            self.config_interval_var.set(interval.upper())
+
+        except Exception as e:
+            self.log_to_console(f"설정 표시 업데이트 오류: {str(e)}")
+
+    def _save_config_to_file(self, new_values: dict):
+        """Save configuration values to config_v2.py file"""
+        import os
+        import re
+
+        config_file_path = os.path.join(
+            os.path.dirname(__file__),
+            'config_v2.py'
+        )
+
+        # Read current file
+        with open(config_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Map GUI keys to config file variable names
+        config_mapping = {
+            'min_entry_score': ('ENTRY_SCORING_CONFIG', 'min_entry_score'),
+            'rsi_oversold': ('INDICATOR_CONFIG', 'rsi_oversold'),
+            'rsi_period': ('INDICATOR_CONFIG', 'rsi_period'),
+            'stoch_oversold': ('INDICATOR_CONFIG', 'stoch_oversold'),
+            'stoch_rsi_period': ('INDICATOR_CONFIG', 'stoch_rsi_period'),
+            'stoch_k_smooth': ('INDICATOR_CONFIG', 'stoch_k_smooth'),
+            'stoch_d_smooth': ('INDICATOR_CONFIG', 'stoch_d_smooth'),
+            'bb_period': ('INDICATOR_CONFIG', 'bb_period'),
+            'bb_std': ('INDICATOR_CONFIG', 'bb_std'),
+            'atr_period': ('INDICATOR_CONFIG', 'atr_period'),
+            'chandelier_multiplier': ('INDICATOR_CONFIG', 'chandelier_multiplier'),
+            'ema_fast': ('REGIME_FILTER_CONFIG', 'ema_fast'),
+            'ema_slow': ('REGIME_FILTER_CONFIG', 'ema_slow'),
+            'risk_per_trade': ('POSITION_CONFIG', 'risk_per_trade_pct'),
+            'initial_position_pct': ('POSITION_CONFIG', 'initial_position_pct'),
+            'first_target_pct': ('POSITION_CONFIG', 'first_target_pct'),
+            'max_consecutive_losses': ('RISK_CONFIG', 'max_consecutive_losses'),
+            'max_daily_loss': ('RISK_CONFIG', 'max_daily_loss_pct'),
+            'max_daily_trades': ('RISK_CONFIG', 'max_daily_trades'),
+        }
+
+        # Update each value in the file
+        for gui_key, new_value in new_values.items():
+            if gui_key not in config_mapping:
+                continue
+
+            section, config_key = config_mapping[gui_key]
+
+            # Find and replace the value in config file
+            # Pattern: 'config_key': value, # comment
+            pattern = rf"('{config_key}':\s*)([0-9.]+)(.*)"
+
+            def replace_value(match):
+                prefix = match.group(1)  # 'key':
+                old_value = match.group(2)  # old value
+                suffix = match.group(3)  # comments, etc.
+                return f"{prefix}{new_value}{suffix}"
+
+            content = re.sub(pattern, replace_value, content)
+
+        # Write back to file
+        with open(config_file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        self.log_to_console(f"✅ config_v2.py 파일 업데이트 완료")
+
+    def reload_config(self):
+        """Reload configuration without restart"""
+        try:
+            self.log_to_console("⏳ 설정 새로고침 중...")
+
+            # Reload config module
+            from ver2 import config_v2
+            import importlib
+            importlib.reload(config_v2)
+
+            # Update bot config if running
+            if self.bot:
+                self.bot.config = config_v2.get_version_config()
+                self.log_to_console("✅ 봇 설정이 업데이트되었습니다")
+
+            # Update internal config reference
+            self.config = config_v2.get_version_config()
+
+            # Update score monitoring widget config
+            if hasattr(self, 'score_monitoring_widget') and self.score_monitoring_widget:
+                self.score_monitoring_widget.config = self.config
+                self.score_monitoring_widget.refresh_display()
+
+            # Update GUI display
+            self.update_config_display()
+
+            # Update threshold label in entry score panel
+            min_entry_score = self.config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
+            if hasattr(self, 'threshold_label'):
+                self.threshold_label.config(text=f"≥ {min_entry_score}점")
+
+            self.log_to_console("✅ 설정 새로고침 완료")
+            self.log_to_console("   변경사항이 즉시 적용됩니다 (재시작 불필요)")
+
+        except Exception as e:
+            self.log_to_console(f"❌ 설정 새로고침 오류: {str(e)}")
+
     def update_gui(self):
         """Periodic GUI update (every 1 second)"""
         try:
@@ -622,6 +1006,21 @@ class TradingBotGUIV2:
 
             # Update price (independent of bot)
             self.update_current_price()
+
+            # Update balance and holdings (every 10 seconds to avoid API rate limits)
+            if not hasattr(self, '_last_balance_update'):
+                self._last_balance_update = 0
+            current_time = time.time()
+            if current_time - self._last_balance_update >= 10:
+                self.update_balance_and_holdings()
+                self._last_balance_update = current_time
+
+            # Update transaction history display (every 5 seconds to avoid performance hit)
+            if not hasattr(self, '_last_tx_update'):
+                self._last_tx_update = 0
+            if current_time - self._last_tx_update >= 5:
+                self.update_transaction_history()
+                self._last_tx_update = current_time
 
         except Exception as e:
             pass
@@ -659,8 +1058,9 @@ class TradingBotGUIV2:
         score = status.get('entry_score', 0)
         self.entry_score_var.set(f"{score}/4")
 
-        # Update score label color based on threshold
-        if score >= 3:
+        # Update score label color based on threshold (from config)
+        min_entry_score = self.config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
+        if score >= min_entry_score:
             self.entry_score_label.config(foreground='green')
             self.entry_permission_var.set("진입 가능")
             self.entry_permission_label.config(foreground='white', background='#28a745')
@@ -805,16 +1205,94 @@ class TradingBotGUIV2:
         # Last action
         self.last_action_var.set(status.get('last_action', 'HOLD'))
 
+    def update_transaction_history(self):
+        """Update transaction history display from TransactionHistory storage"""
+        if not hasattr(self, 'transaction_history'):
+            return
+
+        try:
+            # Get current transaction count
+            current_count = len(self.transaction_history.transactions)
+
+            # Only update if there are new transactions
+            if current_count == self._last_tx_count:
+                return
+
+            # Clear existing items
+            for item in self.history_tree.get_children():
+                self.history_tree.delete(item)
+
+            # Populate from transaction_history (newest first)
+            buy_prices = {}  # Track buy prices for P&L calculation
+            for tx in reversed(list(self.transaction_history.transactions)):
+                timestamp = tx['timestamp']
+                action = tx['action']
+                price = tx['price']
+                amount = tx['amount']
+                total_value = tx['total_value']
+
+                # Calculate P&L for sell transactions
+                pnl_str = ""
+                pnl_color = 'black'
+                if action == 'SELL':
+                    ticker = tx.get('ticker', 'BTC')
+                    if ticker in buy_prices and buy_prices[ticker] > 0:
+                        buy_price = buy_prices[ticker]
+                        pnl = (price - buy_price) * amount
+                        pnl_pct = ((price - buy_price) / buy_price) * 100
+                        pnl_str = f"{pnl:+,.0f} ({pnl_pct:+.1f}%)"
+                        pnl_color = 'green' if pnl > 0 else 'red'
+                elif action == 'BUY':
+                    ticker = tx.get('ticker', 'BTC')
+                    buy_prices[ticker] = price
+
+                # Insert into tree
+                item = self.history_tree.insert('', 'end', values=(
+                    timestamp,
+                    action,
+                    f"{price:,.0f}",
+                    f"{amount:.6f}",
+                    f"{total_value:,.0f}",
+                    pnl_str
+                ))
+
+                # Color code P&L column
+                if pnl_str:
+                    self.history_tree.tag_configure(f'tag_{item}', foreground=pnl_color)
+                    self.history_tree.item(item, tags=(f'tag_{item}',))
+
+            self._last_tx_count = current_count
+
+        except Exception as e:
+            self.log_to_console(f"Error updating transaction history: {str(e)}")
+
     def update_current_price(self):
         """Update current price display"""
         try:
-            ticker = get_ticker('BTC')
-            if ticker:
-                price = ticker.get('closing_price', 0)
-                self.current_price_var.set(f"{price:,.0f} KRW")
-                self.bot_status['current_price'] = price
-        except:
-            pass
+            # Get current coin from config
+            current_coin = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+
+            ticker = get_ticker(current_coin)
+            if ticker and isinstance(ticker, dict):
+                # Try multiple possible field names from Bithumb API
+                price = (ticker.get('closing_price') or
+                        ticker.get('close_price') or
+                        ticker.get('last_price') or
+                        ticker.get('current_price') or
+                        ticker.get('trade_price') or 0)
+
+                if isinstance(price, (str, int, float)):
+                    price = float(price)
+                    if price > 0:
+                        self.current_price_var.set(f"{price:,.0f} KRW")
+                        self.bot_status['current_price'] = price
+                        return
+
+            # If we get here, price fetch failed
+            self.current_price_var.set("조회 실패")
+        except Exception as e:
+            self.current_price_var.set("오류 발생")
+            # Silent fail - price updates happen every second
 
     def open_config_editor(self):
         """Open configuration editor dialog"""
@@ -837,6 +1315,12 @@ class TradingBotGUIV2:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
+        # Load current configuration
+        from ver2 import config_v2
+        import importlib
+        importlib.reload(config_v2)
+        cfg = config_v2.get_version_config()
+
         # Configuration sections
         config_vars = {}
 
@@ -844,41 +1328,60 @@ class TradingBotGUIV2:
         regime_frame = ttk.LabelFrame(scrollable_frame, text="시장 체제 필터 (Daily)", padding="10")
         regime_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=10, pady=5)
 
-        config_vars['ema_fast'] = self._add_config_entry(regime_frame, "EMA 빠름 (일봉)", 50, 0)
-        config_vars['ema_slow'] = self._add_config_entry(regime_frame, "EMA 느림 (일봉)", 200, 1)
+        config_vars['ema_fast'] = self._add_config_entry(regime_frame, "EMA 빠름 (일봉)",
+            cfg['REGIME_FILTER_CONFIG'].get('ema_fast', 50), 0)
+        config_vars['ema_slow'] = self._add_config_entry(regime_frame, "EMA 느림 (일봉)",
+            cfg['REGIME_FILTER_CONFIG'].get('ema_slow', 200), 1)
         config_vars['confirmation_bars'] = self._add_config_entry(regime_frame, "확인 봉 수", 2, 2)
 
         # Section 2: Entry Scoring
         entry_frame = ttk.LabelFrame(scrollable_frame, text="진입 신호 점수 시스템 (4H)", padding="10")
         entry_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), padx=10, pady=5)
 
-        config_vars['min_entry_score'] = self._add_config_entry(entry_frame, "최소 진입 점수", 3, 0)
-        config_vars['bb_period'] = self._add_config_entry(entry_frame, "볼린저밴드 기간", 20, 1)
-        config_vars['bb_std'] = self._add_config_entry(entry_frame, "볼린저밴드 표준편차", 2.0, 2)
-        config_vars['rsi_period'] = self._add_config_entry(entry_frame, "RSI 기간", 14, 3)
-        config_vars['rsi_oversold'] = self._add_config_entry(entry_frame, "RSI 과매도 수준", 30, 4)
-        config_vars['stoch_rsi_period'] = self._add_config_entry(entry_frame, "Stoch RSI 기간", 14, 5)
-        config_vars['stoch_k_smooth'] = self._add_config_entry(entry_frame, "Stoch %K 평활", 3, 6)
-        config_vars['stoch_d_smooth'] = self._add_config_entry(entry_frame, "Stoch %D 평활", 3, 7)
-        config_vars['stoch_oversold'] = self._add_config_entry(entry_frame, "Stoch 과매도 수준", 20, 8)
+        config_vars['min_entry_score'] = self._add_config_entry(entry_frame, "최소 진입 점수",
+            cfg['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3), 0)
+        config_vars['bb_period'] = self._add_config_entry(entry_frame, "볼린저밴드 기간",
+            cfg['INDICATOR_CONFIG'].get('bb_period', 20), 1)
+        config_vars['bb_std'] = self._add_config_entry(entry_frame, "볼린저밴드 표준편차",
+            cfg['INDICATOR_CONFIG'].get('bb_std', 2.0), 2)
+        config_vars['rsi_period'] = self._add_config_entry(entry_frame, "RSI 기간",
+            cfg['INDICATOR_CONFIG'].get('rsi_period', 14), 3)
+        config_vars['rsi_oversold'] = self._add_config_entry(entry_frame, "RSI 과매도 수준",
+            cfg['INDICATOR_CONFIG'].get('rsi_oversold', 30), 4)
+        config_vars['stoch_rsi_period'] = self._add_config_entry(entry_frame, "Stoch RSI 기간",
+            cfg['INDICATOR_CONFIG'].get('stoch_rsi_period', 14), 5)
+        config_vars['stoch_k_smooth'] = self._add_config_entry(entry_frame, "Stoch %K 평활",
+            cfg['INDICATOR_CONFIG'].get('stoch_k_smooth', 3), 6)
+        config_vars['stoch_d_smooth'] = self._add_config_entry(entry_frame, "Stoch %D 평활",
+            cfg['INDICATOR_CONFIG'].get('stoch_d_smooth', 3), 7)
+        config_vars['stoch_oversold'] = self._add_config_entry(entry_frame, "Stoch 과매도 수준",
+            cfg['INDICATOR_CONFIG'].get('stoch_oversold', 20), 8)
 
         # Section 3: Risk Management
         risk_frame = ttk.LabelFrame(scrollable_frame, text="위험 관리", padding="10")
         risk_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), padx=10, pady=5)
 
-        config_vars['atr_period'] = self._add_config_entry(risk_frame, "ATR 기간", 14, 0)
-        config_vars['chandelier_multiplier'] = self._add_config_entry(risk_frame, "Chandelier ATR 배수", 3.0, 1)
-        config_vars['risk_per_trade'] = self._add_config_entry(risk_frame, "거래당 리스크 (%)", 2.0, 2)
-        config_vars['max_consecutive_losses'] = self._add_config_entry(risk_frame, "최대 연속 손실", 5, 3)
-        config_vars['max_daily_loss'] = self._add_config_entry(risk_frame, "최대 일일 손실 (%)", 5.0, 4)
-        config_vars['max_daily_trades'] = self._add_config_entry(risk_frame, "최대 일일 거래", 2, 5)
+        config_vars['atr_period'] = self._add_config_entry(risk_frame, "ATR 기간",
+            cfg['INDICATOR_CONFIG'].get('atr_period', 14), 0)
+        config_vars['chandelier_multiplier'] = self._add_config_entry(risk_frame, "Chandelier ATR 배수",
+            cfg['INDICATOR_CONFIG'].get('chandelier_multiplier', 3.0), 1)
+        config_vars['risk_per_trade'] = self._add_config_entry(risk_frame, "거래당 리스크 (%)",
+            cfg['POSITION_CONFIG'].get('risk_per_trade_pct', 2.0), 2)
+        config_vars['max_consecutive_losses'] = self._add_config_entry(risk_frame, "최대 연속 손실",
+            cfg['RISK_CONFIG'].get('max_consecutive_losses', 5), 3)
+        config_vars['max_daily_loss'] = self._add_config_entry(risk_frame, "최대 일일 손실 (%)",
+            cfg['RISK_CONFIG'].get('max_daily_loss_pct', 5.0), 4)
+        config_vars['max_daily_trades'] = self._add_config_entry(risk_frame, "최대 일일 거래",
+            cfg['RISK_CONFIG'].get('max_daily_trades', 2), 5)
 
         # Section 4: Position Management
         position_frame = ttk.LabelFrame(scrollable_frame, text="포지션 관리", padding="10")
         position_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), padx=10, pady=5)
 
-        config_vars['initial_position_pct'] = self._add_config_entry(position_frame, "초기 진입 비율 (%)", 50, 0)
-        config_vars['first_target_pct'] = self._add_config_entry(position_frame, "1차 목표 청산 (%)", 50, 1)
+        config_vars['initial_position_pct'] = self._add_config_entry(position_frame, "초기 진입 비율 (%)",
+            cfg['POSITION_CONFIG'].get('initial_position_pct', 50), 0)
+        config_vars['first_target_pct'] = self._add_config_entry(position_frame, "1차 목표 청산 (%)",
+            cfg['POSITION_CONFIG'].get('first_target_pct', 50), 1)
 
         # Buttons
         button_frame = ttk.Frame(scrollable_frame)
@@ -886,15 +1389,28 @@ class TradingBotGUIV2:
 
         def save_config():
             try:
-                # Update config_v2.py with new values
+                # Collect values from GUI
+                new_values = {}
                 for key, var in config_vars.items():
-                    value = float(var.get()) if '.' in var.get() else int(var.get())
-                    # Here you would update the config file
-                    # For now, just show success message
-                messagebox.showinfo("성공", "설정이 저장되었습니다.\n재시작 후 적용됩니다.")
+                    value_str = var.get()
+                    # Convert to appropriate type
+                    if '.' in value_str:
+                        new_values[key] = float(value_str)
+                    else:
+                        new_values[key] = int(value_str)
+
+                # Update config_v2.py file
+                self._save_config_to_file(new_values)
+
+                # Reload config immediately
+                self.reload_config()
+
+                messagebox.showinfo("성공", "설정이 저장되었습니다.\n즉시 적용되었습니다 (재시작 불필요).")
                 config_window.destroy()
-            except ValueError:
-                messagebox.showerror("오류", "올바른 숫자 값을 입력하세요.")
+            except ValueError as e:
+                messagebox.showerror("오류", f"올바른 숫자 값을 입력하세요.\n{str(e)}")
+            except Exception as e:
+                messagebox.showerror("오류", f"설정 저장 실패:\n{str(e)}")
 
         def reset_config():
             if messagebox.askyesno("확인", "기본 설정으로 초기화하시겠습니까?"):
@@ -944,6 +1460,228 @@ class TradingBotGUIV2:
             return ("💚 모의 거래 모드", "green")
         else:
             return ("🟡 백테스팅 모드", "orange")
+
+    def _get_coin_display_value(self, symbol):
+        """
+        Get formatted display value for coin dropdown.
+
+        Args:
+            symbol: Coin symbol (e.g., 'BTC')
+
+        Returns:
+            Formatted string (e.g., 'BTC - Bitcoin (Market Leader)')
+        """
+        coin_descriptions = {
+            'BTC': 'Bitcoin (Market Leader)',
+            'ETH': 'Ethereum (Smart Contracts)',
+            'XRP': 'Ripple (Fast Payments)',
+            'SOL': 'Solana (High Performance)'
+        }
+        return f"{symbol} - {coin_descriptions.get(symbol, 'Unknown')}"
+
+    def _load_user_preferences(self):
+        """
+        Load user preferences from JSON file.
+
+        Returns:
+            Selected coin symbol (str) or None if no saved preference
+        """
+        try:
+            if os.path.exists(self.preferences_file):
+                with open(self.preferences_file, 'r', encoding='utf-8') as f:
+                    preferences = json.load(f)
+                    saved_coin = preferences.get('selected_coin', None)
+                    if saved_coin:
+                        # Validate the saved coin
+                        is_valid, _ = config_v2.validate_symbol(saved_coin)
+                        if is_valid:
+                            return saved_coin
+            return None
+        except Exception as e:
+            # If there's any error reading preferences, just use default
+            print(f"Warning: Could not load user preferences: {e}")
+            return None
+
+    def _save_user_preferences(self, selected_coin):
+        """
+        Save user preferences to JSON file.
+
+        Args:
+            selected_coin: Coin symbol to save (e.g., 'BTC', 'ETH')
+        """
+        try:
+            preferences = {
+                'selected_coin': selected_coin,
+                'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            with open(self.preferences_file, 'w', encoding='utf-8') as f:
+                json.dump(preferences, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Warning: Could not save user preferences: {e}")
+
+    def on_coin_changed(self, event=None):
+        """Handle coin selection change in dropdown (4 major coins only)"""
+        # No special handling needed - all 4 options are valid coins
+        # User must click "변경" button to apply the change
+        pass
+
+    def change_coin(self):
+        """Change the trading coin and refresh all tabs"""
+        selected = self.coin_selector_var.get()
+
+        # Extract coin symbol from "BTC - Bitcoin (Market Leader)" format
+        selected_coin = selected.split(' - ')[0].strip()
+
+        # Get current coin
+        current_coin = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+
+        # Check if coin is actually changing
+        if selected_coin == current_coin:
+            messagebox.showinfo("알림", f"이미 {selected_coin}을(를) 사용 중입니다.")
+            return
+
+        # Warning if bot is running
+        if self.is_running:
+            messagebox.showwarning("경고", "봇 실행 중에는 코인을 변경할 수 없습니다.\n먼저 봇을 정지하세요.")
+            self.coin_selector_var.set(self._get_coin_display_value(current_coin))
+            return
+
+        # Warning if position is open
+        if self.bot and self.bot.position:
+            messagebox.showwarning("경고", "포지션 청산 후 코인을 변경할 수 있습니다.")
+            self.coin_selector_var.set(self._get_coin_display_value(current_coin))
+            return
+
+        # Validate symbol (all 4 major coins are valid, but check just in case)
+        from ver2 import config_v2
+        is_valid, error_msg = config_v2.validate_symbol(selected_coin)
+        if not is_valid:
+            messagebox.showerror("오류", error_msg)
+            self.coin_selector_var.set(self._get_coin_display_value(current_coin))
+            return
+
+        # Confirm change
+        response = messagebox.askyesno(
+            "코인 변경 확인",
+            f"거래 코인을 {current_coin}에서 {selected_coin}(으)로 변경하시겠습니까?\n\n"
+            f"모든 차트와 데이터가 새로고침됩니다."
+        )
+
+        if not response:
+            self.coin_selector_var.set(self._get_coin_display_value(current_coin))
+            return
+
+        # Show loading indicator
+        self.log_to_console(f"⏳ 코인 변경 중: {current_coin} → {selected_coin}")
+
+        try:
+            # Update config
+            config_v2.set_symbol_in_config(selected_coin)
+            self.config = config_v2.get_version_config()
+
+            # Save coin preference to persist across restarts
+            self._save_user_preferences(selected_coin)
+            self.log_to_console(f"💾 사용자 설정 저장: {selected_coin}")
+
+            # Update bot symbol if bot exists
+            if self.bot:
+                self.bot.symbol = selected_coin
+                self.log_to_console(f"✅ Bot symbol updated to {selected_coin}")
+
+            # Update status display
+            self.coin_status_var.set(f"현재: {selected_coin}")
+            self.current_coin_var.set(selected_coin)
+            self.coin_selector_var.set(self._get_coin_display_value(selected_coin))
+
+            # Update coin holdings label (dynamic "보유 BTC:" -> "보유 ETH:" etc.)
+            self.coin_holdings_label_text.set(f"보유 {selected_coin}:")
+            self.log_to_console(f"✅ 코인 라벨 업데이트: 보유 {selected_coin}")
+
+            # Update window title
+            mode_str = self._get_trading_mode_string()
+            self.root.title(f"🤖 Bitcoin Multi-Timeframe Strategy v2.0 - {mode_str} - {selected_coin}")
+
+            # Refresh all tabs
+            self.refresh_all_tabs()
+
+            self.log_to_console(f"✅ 코인 변경 완료: {selected_coin}")
+            messagebox.showinfo("완료", f"거래 코인이 {selected_coin}(으)로 변경되었습니다.")
+
+        except Exception as e:
+            self.log_to_console(f"❌ 코인 변경 오류: {str(e)}")
+            messagebox.showerror("오류", f"코인 변경 실패:\n{str(e)}")
+            # Revert to previous coin with full display format
+            self.coin_selector_var.set(self._get_coin_display_value(current_coin))
+
+    def refresh_all_tabs(self):
+        """Refresh all tabs after coin change"""
+        try:
+            self.log_to_console("🔄 모든 탭 새로고침 중...")
+
+            # Tab 1: Refresh trading status
+            self.log_to_console("  - 거래 현황 새로고침")
+            self.update_current_price()
+
+            # Clear entry signals
+            self.entry_score = 0
+            self.entry_components = {
+                'bb_touch': 0,
+                'bb_distance': 0,
+                'rsi_oversold': 0,
+                'rsi_value': 0,
+                'stoch_cross': 0,
+                'stoch_k': 0,
+                'stoch_d': 0
+            }
+
+            # Tab 2: Refresh single chart
+            if hasattr(self, 'chart_widget') and self.chart_widget:
+                self.log_to_console("  - 실시간 차트 새로고침")
+                try:
+                    # Get new coin symbol
+                    new_symbol = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+                    # Update chart widget's symbol
+                    self.chart_widget.coin_symbol = new_symbol
+                    # Trigger chart refresh
+                    self.chart_widget.update_chart()
+                except Exception as e:
+                    self.log_to_console(f"    ⚠️ 차트 새로고침 오류: {str(e)}")
+
+            # Tab 3: Refresh multi-timeframe charts
+            if hasattr(self, 'multi_chart_widget') and self.multi_chart_widget:
+                self.log_to_console("  - 멀티 타임프레임 차트 새로고침")
+                try:
+                    # Get new coin symbol
+                    new_symbol = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+                    # Update multi-chart widget's symbol
+                    self.multi_chart_widget.coin_symbol = new_symbol
+                    # Trigger full data reload
+                    self.multi_chart_widget.load_all_data()
+                except Exception as e:
+                    self.log_to_console(f"    ⚠️ 멀티 차트 새로고침 오류: {str(e)}")
+
+            # Tab 4: Clear score monitoring (or filter by coin)
+            if hasattr(self, 'score_monitoring_widget') and self.score_monitoring_widget:
+                self.log_to_console("  - 점수 모니터링 초기화")
+                try:
+                    # Clear all data for new coin
+                    self.score_monitoring_widget.clear_scores()
+                except Exception as e:
+                    self.log_to_console(f"    ⚠️ 점수 모니터링 초기화 오류: {str(e)}")
+
+            # Tab 5: Clear signal history (or filter by coin)
+            if hasattr(self, 'signal_history_widget') and self.signal_history_widget:
+                self.log_to_console("  - 신호 히스토리 초기화")
+                try:
+                    # Clear all signals for new coin
+                    self.signal_history_widget.clear_signals()
+                except Exception as e:
+                    self.log_to_console(f"    ⚠️ 신호 히스토리 초기화 오류: {str(e)}")
+
+            self.log_to_console("✅ 모든 탭 새로고침 완료")
+
+        except Exception as e:
+            self.log_to_console(f"❌ 탭 새로고침 오류: {str(e)}")
 
     def on_closing(self):
         """Handle window close"""

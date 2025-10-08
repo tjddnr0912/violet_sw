@@ -3,22 +3,28 @@
 ## 🎯 Mission Accomplished
 
 Created a complete GUI implementation for the Bitcoin Multi-Timeframe Strategy v2 that:
-- ✅ **Maintains exact 5-tab layout from v1**
+- ✅ **Upgraded to 6-tab layout with enhanced monitoring**
 - ✅ **Integrates all v2-specific features**
 - ✅ **Preserves console format and visual design**
 - ✅ **Provides comprehensive v2 metrics display**
+- ✅ **NEW: Score monitoring with trend visualization**
+- ✅ **NEW: Account balance and holdings display**
+- ✅ **UPDATED: Signal history with Entry Score tracking**
 
 ## 📁 Files Created
 
-### Core GUI Files (5 files)
+### Core GUI Files (7 files)
 
-1. **gui_app_v2.py** (24KB)
+1. **gui_app_v2.py** (42KB)
    - Main GUI application with Tkinter
-   - Exact 5-tab structure: 거래 현황, 실시간 차트, 멀티 타임프레임, 신호 히스토리, 거래 내역
-   - 2-column main layout + console (same as v1)
-   - v2-specific panels: Regime Filter, Entry Score, Chandelier Exit
+   - 6-tab structure: 거래 현황, 실시간 차트, 멀티 타임프레임, 점수 모니터링, 신호 히스토리, 거래 내역
+   - **NEW: 3-column main layout** (added strategy settings panel)
+   - v2-specific panels: Regime Filter, Entry Score, Chandelier Exit, Risk Management
+   - **NEW: Balance & Holdings display** (requires API keys)
+   - **NEW: Current price display** with real-time updates
    - Real-time status updates
    - Thread-safe bot integration
+   - Callbacks for score tracking and signal events
 
 2. **chart_widget_v2.py** (13KB)
    - Multi-subplot chart visualization
@@ -29,25 +35,52 @@ Created a complete GUI implementation for the Bitcoin Multi-Timeframe Strategy v
    - Subcharts: RSI, Stochastic RSI, ATR
    - Real-time data fetching from Bithumb API
 
-3. **signal_history_widget_v2.py** (16KB)
-   - Entry/exit signal tracking
-   - Score breakdown display (BB+1, RSI+1, Stoch+2)
+3. **signal_history_widget_v2.py** (33KB - Enhanced)
+   - **UPDATED: Entry signal tracking with Entry Score display**
+   - **NEW: Enhanced column layout** (Time, Score, Breakdown, Regime, Coin, Price, Type, Result)
+   - Score breakdown display (BB Lower Touch +1, RSI Oversold +1, Stoch Cross +2)
    - Regime status at signal time
    - Position phase transitions
-   - Performance statistics (win rate, avg score)
-   - Export to JSON functionality
+   - Exit tracking with P&L calculation
+   - Performance statistics (win rate, avg score, regime-based analysis)
+   - **NEW: Detailed statistics window** (score-based performance, component contribution)
+   - Export to JSON/CSV functionality
    - Double-click for detailed view
+   - Color-coded rows (4/4=green, 3/4=light green, 2/4=yellow, etc.)
 
-4. **gui_trading_bot_v2.py** (14KB)
+4. **score_monitoring_widget_v2.py** (25KB - NEW)
+   - **NEW: Tracks ALL score checks** (0-4 points, not just entries)
+   - Real-time monitoring (every 60 seconds)
+   - Score distribution statistics
+   - Component occurrence tracking (BB, RSI, Stoch)
+   - **NEW: Interactive trend graph visualization**
+   - Time-based filtering (15M, 30M, 1H, 4H, 24H)
+   - Score filtering (minimum score threshold)
+   - Regime filtering (BULLISH/BEARISH/NEUTRAL)
+   - CSV export for analysis
+   - **NEW: Component breakdown graph** (stacked area chart)
+   - Auto-save/load from persistent storage
+   - Separate from signal history (for strategy analysis)
+
+5. **multi_chart_widget_v2.py** (15KB)
+   - Multi-timeframe synchronized view
+   - 2x2 grid layout (Daily, 12H, 4H, 1H)
+   - Auto-refresh capability
+   - Indicator display on all timeframes
+
+6. **gui_trading_bot_v2.py** (15KB - Updated)
    - Real-time bot adapter for GUI
    - Regime filter calculation (Daily EMA 50/200)
    - Entry signal scoring (4H timeframe)
    - Position management simulation
    - Chandelier Exit tracking
+   - **NEW: Score tracking callback** (sends ALL score checks to monitoring widget)
+   - **NEW: Signal event callback** (entry, exit, position events)
    - Status reporting to GUI
    - Threaded execution
+   - Live/dry-run mode support
 
-5. **run_gui_v2.py** (3.7KB)
+7. **run_gui_v2.py** (3.7KB)
    - Launcher script with dependency checks
    - Environment setup
    - Welcome message with strategy overview
@@ -223,22 +256,23 @@ python ver2/run_gui_v2.py  # Auto-checks packages
 
 ## 📊 Feature Mapping
 
-### Tab 1: 거래 현황 (Main)
+### Tab 1: 거래 현황 (Main Trading Status)
 
-**v2-Specific Panels:**
+**v2-Specific Panels (3-column layout):**
 
-| Panel | Content | v2 Feature |
-|-------|---------|------------|
-| 시장 상태 | Regime, EMA 50/200, Trading permission | Daily regime filter |
-| 진입 신호 점수 | Score 0-4, BB/RSI/Stoch components | 4H entry scoring |
-| 포지션 상태 | Phase, entry price, size, first target | Position tracking |
-| 거래 상태 | Coin, price, interval, last action | Basic status |
-| Chandelier Exit | Stop price, ATR 3x, highest high, breakeven | Trailing stop |
-| 수익 현황 | Total profit, win rate, trades | Performance |
+| Column | Panel | Content | v2 Feature |
+|--------|-------|---------|------------|
+| **Left** | 시장 체제 필터 | Regime, EMA 50/200, Confirmation bars, Trading permission | Daily regime filter |
+| **Left** | 진입 신호 시스템 | Score 0-4/4, BB touch (+1), RSI oversold (+1), Stoch cross (+2), Entry permission badge | 4H entry scoring |
+| **Left** | ⚙️ 전략 설정 | Key parameters, Config editor button | Quick settings |
+| **Middle** | 포지션 관리 프로토콜 | Phase, entry price, size, P&L, first target, scaling info | Position tracking |
+| **Middle** | Chandelier Exit | Stop price, highest high, ATR value, breakeven status, protection info | Trailing stop |
+| **Right** | 거래 상태 | **NEW: Balance (KRW)**, **NEW: Holdings (BTC)**, **NEW: Avg buy price**, **NEW: Current value**, Coin, **FIXED: Current price**, Interval, Last action | Basic status + account info |
+| **Right** | 위험 관리 | Circuit breaker, consecutive losses, daily loss %, daily trades, total profit, win rate | Performance & risk |
 
-**Console:** Real-time logs (regime changes, signals, exits)
+**Console (Bottom, full width):** Real-time logs (regime changes, score checks, signals, exits)
 
-### Tab 2: 📊 실시간 차트
+### Tab 2: 📊 실시간 차트 (Real-time Chart)
 
 **Features:**
 - Timeframe: 1h, 4h, 1d selector
@@ -251,32 +285,87 @@ python ver2/run_gui_v2.py  # Auto-checks packages
 - Auto-refresh on toggle
 - Multi-subplot layout
 
-### Tab 3: 📊 멀티 타임프레임
+### Tab 3: 📊 멀티 타임프레임 (Multi-Timeframe)
 
-**Status:** Placeholder
-- Future: Synchronized Daily/4H/1H view
-- Currently: "Coming Soon" message
+**Implemented:**
+- **2x2 Grid layout:** Daily, 12H, 4H, 1H
+- Synchronized candlestick charts
+- Auto-refresh capability
+- Multi-timeframe trend analysis
 
-### Tab 4: 📋 신호 히스토리
+### Tab 4: 📈 점수 모니터링 (Score Monitoring) - NEW!
+
+**Purpose:** Track ALL score checks (0-4 points), not just entries
+
+**Statistics Panel:**
+- Total checks, average score, entry-ready count (3-4점)
+- Score distribution (4/4, 3/4, 2/4, 1/4, 0/4) with color badges
+- Component occurrence (BB, RSI, Stoch) tracking
+
+**Filters:**
+- Time period (15M, 30M, 1H, 4H, 24H)
+- Minimum score (0-4)
+- Regime (ALL, BULLISH, BEARISH, NEUTRAL)
+
+**Score Check List:**
+- Time, Total score, BB score, RSI score, Stoch score, Regime, Price, Note
+- Color-coded rows (green for high scores, red for low)
+- Entry-ready indicators
+
+**NEW: Trend Graph:**
+- **📊 점수 추세 그래프** button opens visualization window
+- Entry Score trend line (0-4 points) with color coding
+- Entry-ready zone shading (3-4 points)
+- Reference lines (entry threshold at 3 points)
+- **Component breakdown graph** (optional toggle)
+  - Stacked area chart showing BB/RSI/Stoch contribution
+- Statistics box (avg, max, min, entry-ready %)
+- Filter synchronization with table
+- Zoom/Pan/Save tools (Matplotlib toolbar)
+
+**Export:**
+- CSV export for Excel/spreadsheet analysis
+- Auto-save/load from `logs/score_checks_v2.json`
+
+### Tab 5: 📋 신호 히스토리 (Signal History) - ENHANCED!
 
 **Displays:**
-- Entry signals with score breakdown
+- **UPDATED: Entry signals with Entry Score column**
+- Score breakdown column (BB Lower Touch(+1), RSI<30(+1), Stoch Cross(+2))
 - Exit signals with P&L
-- Position events (scaling, stop movement)
-- Statistics: avg score, win rate, regime count
+- Position events (scaling, stop movement, breakeven)
+- Regime at signal time
+
+**Statistics:**
+- Overall: Total signals, avg score, total trades, success rate
+- Score distribution (4/4, 3/4, 2/4, 1/4, 0/4) with color badges
+- Regime distribution (BULLISH/BEARISH/NEUTRAL) with win rates
+
+**Filters:**
+- Minimum score (0, 2, 3, 4)
+- Regime (ALL, BULLISH, BEARISH, NEUTRAL)
+- Result (ALL, PROFIT, LOSS, PENDING)
 
 **Features:**
-- Double-click for details
-- Export to JSON
+- Double-click for JSON detail view
+- **NEW: 상세 통계 button** - Comprehensive analysis window:
+  - Score-based performance (win rate by score)
+  - Regime-based performance
+  - Component contribution analysis
+  - Best combination analysis (4/4 perfect scores, BULLISH+3-4점)
+- Export to CSV (with all columns)
+- Export to JSON (with metadata)
 - Clear history
-- Filter by type
+- Color-coded rows and tags
 
-### Tab 5: 📜 거래 내역
+### Tab 6: 📜 거래 내역 (Transaction History)
 
 **Transaction Log:**
-- Time, Type, Price, Amount, Total, P&L
-- Scrollable table
-- Color-coded (green/red)
+- Time, Type (BUY/SELL), Price, Amount, Total, P&L
+- Scrollable table (Treeview)
+- Color-coded (green for profit, red for loss)
+- Buy price tracking for P&L calculation
+- Auto-updates every 5 seconds
 
 ## 🔧 Configuration
 
