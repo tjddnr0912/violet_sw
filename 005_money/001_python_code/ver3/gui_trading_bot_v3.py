@@ -101,8 +101,11 @@ class GUITradingBotV3:
                     decisions = self.bot.portfolio_manager.make_portfolio_decision(results)
 
                     if decisions:
-                        for coin, action in decisions:
-                            self._send_log("INFO", f"Decision: {coin} -> {action}")
+                        for coin, action, entry_number in decisions:
+                            if entry_number > 1:
+                                self._send_log("INFO", f"Decision: {coin} -> {action} (Pyramid #{entry_number})")
+                            else:
+                                self._send_log("INFO", f"Decision: {coin} -> {action}")
                     else:
                         self._send_log("INFO", "No trading actions required (HOLD)")
 

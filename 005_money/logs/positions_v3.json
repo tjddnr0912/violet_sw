@@ -1,13 +1,23 @@
 {
   "ETH": {
     "ticker": "ETH",
-    "size": 0.0008,
-    "entry_price": 6356000.0,
-    "entry_time": "2025-10-09T17:35:31.097628",
-    "stop_loss": 0.0,
-    "highest_high": 6356000.0,
+    "size": 0.007901390644753476,
+    "entry_price": 6328000.0,
+    "entry_time": "2025-10-09T18:45:07.060765",
+    "stop_loss": 6473071.428571428,
+    "highest_high": 6328000.0,
     "position_pct": 100.0,
     "first_target_hit": false,
-    "second_target_hit": false
+    "second_target_hit": false,
+    "entry_count": 1,
+    "entry_prices": [
+      6328000.0
+    ],
+    "entry_times": [
+      "2025-10-09T18:45:07.060765"
+    ],
+    "entry_sizes": [
+      0.007901390644753476
+    ]
   }
 }

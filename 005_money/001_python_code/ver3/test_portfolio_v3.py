@@ -186,8 +186,11 @@ def test_portfolio_decision():
         decisions = pm.make_portfolio_decision(results)
 
         print(f"\nPortfolio Decisions: {len(decisions)} actions")
-        for coin, action in decisions:
-            print(f"  {action}: {coin}")
+        for coin, action, entry_number in decisions:
+            if entry_number > 1:
+                print(f"  {action}: {coin} (Pyramid #{entry_number})")
+            else:
+                print(f"  {action}: {coin}")
 
         # Verify portfolio limits respected
         buy_decisions = [d for d in decisions if d[1] == 'BUY']
