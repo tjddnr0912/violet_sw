@@ -182,7 +182,323 @@ entry_priority: 'volatility' → 변동성 비교 후 결정
 
 ---
 
-## 2. 진입/청산 설정
+## 2. 피라미딩 설정 (PYRAMIDING_CONFIG)
+
+Ver3는 **피라미딩 전략**을 지원합니다. 피라미딩은 수익이 나는 포지션에 추가 매수를 진행하여 수익을 극대화하는 전략입니다.
+
+### 기본 구조
+
+```python
+PYRAMIDING_CONFIG = {
+    # 피라미딩 활성화
+    'enabled': True,
+
+    # 진입 제한
+    'max_entries_per_coin': 3,
+
+    # 추가 진입 조건
+    'min_score_for_pyramid': 3,
+    'min_signal_strength_for_pyramid': 0.7,
+
+    # 포지션 크기 조절
+    'position_size_multiplier': [1.0, 0.5, 0.25],
+
+    # 가격 조건
+    'min_price_increase_pct': 2.0,
+
+    # 시장 체제 조건
+    'allow_pyramid_in_regime': ['bullish', 'neutral'],
+}
+```
+
+### 세부 설명
+
+#### enabled (피라미딩 활성화)
+
+```python
+'enabled': True  # True or False
+```
+
+**의미:**
+- 피라미딩 전략 사용 여부
+- `True`: 코인당 여러 번 진입 가능 (최대 3회)
+- `False`: 코인당 1번만 진입 (기존 방식)
+
+**기본값:** `True`
+**권장 설정:** `True` (수익 극대화를 위해)
+**변경 시 영향:**
+- 끄면 기존 Ver2 방식으로 작동 (코인당 1회 진입)
+- 켜면 추가 진입으로 수익 증가 가능하지만 리스크도 증가
+
+#### max_entries_per_coin (최대 진입 횟수)
+
+```python
+'max_entries_per_coin': 3  # 1, 2, 3, ... (권장: 2-3)
+```
+
+**의미:**
+- 한 코인에 대해 최대 몇 번까지 진입할 수 있는지
+- 예: 3이면 1차 진입 + 2회 추가 = 총 3회
+
+**기본값:** 3
+**권장 범위:** 2-3
+**변경 시 영향:**
+- 1: 피라미딩 없음 (`enabled: False`와 동일)
+- 2: 1차 + 1회 추가 (보수적)
+- 3: 1차 + 2회 추가 (기본, 균형)
+- 4+: 너무 많은 추가 진입 (비권장, 리스크 큼)
+
+**예시:**
+```python
+# 보수적 (최대 2회)
+'max_entries_per_coin': 2
+
+# 공격적 (최대 4회, 비권장)
+'max_entries_per_coin': 4
+```
+
+#### min_score_for_pyramid (추가 진입 최소 점수)
+
+```python
+'min_score_for_pyramid': 3  # 0-4 (권장: 3-4)
+```
+
+**의미:**
+- 추가 진입 시 요구되는 최소 진입 점수
+- 첫 진입보다 높은 기준 적용하여 안전성 확보
+- 진입 점수는 Ver2 전략에서 계산 (BB터치 + RSI + 스토캐스틱 = 최대 4점)
+
+**기본값:** 3 (3/4 이상)
+**권장 범위:** 3-4
+**변경 시 영향:**
+- 2: 낮은 점수에서도 추가 (자주 추가, 리스크 증가)
+- 3: 강한 신호만 추가 (균형)
+- 4: 완벽한 신호만 추가 (드물게 추가, 안전)
+
+**비교:**
+```
+첫 진입: min_entry_score = 2 (더 낮은 기준)
+추가 진입: min_score_for_pyramid = 3 (더 높은 기준)
+
+→ 추가 진입은 더 강한 신호가 필요함
+```
+
+**예시:**
+```python
+# 보수적 (완벽한 신호만)
+'min_score_for_pyramid': 4
+
+# 공격적 (낮은 점수도 허용)
+'min_score_for_pyramid': 2
+```
+
+#### min_signal_strength_for_pyramid (추가 진입 최소 신호 강도)
+
+```python
+'min_signal_strength_for_pyramid': 0.7  # 0.0-1.0 (권장: 0.6-0.8)
+```
+
+**의미:**
+- 추가 진입 시 요구되는 최소 신호 강도
+- signal_strength는 Ver2 전략에서 계산 (0.0 = 약함, 1.0 = 매우 강함)
+- 진입 점수와 함께 이중 확인
+
+**기본값:** 0.7 (70% 이상)
+**권장 범위:** 0.6-0.8
+**변경 시 영향:**
+- 낮추면 (0.5): 더 자주 추가 진입
+- 높이면 (0.9): 매우 강한 신호만 추가
+
+#### position_size_multiplier (포지션 크기 비율)
+
+```python
+'position_size_multiplier': [1.0, 0.5, 0.25]  # 각 진입의 크기 비율
+```
+
+**의미:**
+- 각 진입 시 사용할 포지션 크기의 비율
+- 리스트의 첫 번째 = 1차 진입, 두 번째 = 2차 진입, 세 번째 = 3차 진입
+- 기본 trade_amount_krw에 곱해짐
+
+**기본값:** `[1.0, 0.5, 0.25]`
+**권장 패턴:** 감소하는 크기 (1.0 → 0.5 → 0.25)
+**변경 시 영향:**
+- 첫 진입을 크게, 추가 진입을 작게 하는 것이 리스크 관리에 유리
+
+**계산 예시:**
+```
+base_amount_krw = 50,000 원
+
+1차 진입: 50,000 × 1.0 = 50,000 원
+2차 진입: 50,000 × 0.5 = 25,000 원
+3차 진입: 50,000 × 0.25 = 12,500 원
+
+총 투자: 87,500 원 (175%)
+```
+
+**다양한 설정:**
+```python
+# 보수적 (작은 추가 진입)
+'position_size_multiplier': [1.0, 0.3, 0.15]  # 총 145%
+
+# 기본 (균형)
+'position_size_multiplier': [1.0, 0.5, 0.25]  # 총 175%
+
+# 공격적 (큰 추가 진입, 비권장)
+'position_size_multiplier': [1.0, 0.7, 0.5]   # 총 220%
+```
+
+#### min_price_increase_pct (최소 가격 상승 비율)
+
+```python
+'min_price_increase_pct': 2.0  # 퍼센트 (권장: 1.5-3.0)
+```
+
+**의미:**
+- 추가 진입하려면 마지막 진입가 대비 가격이 최소 몇 % 상승해야 하는지
+- 수익이 나고 있는 상태에서만 추가 진입하도록 보장
+
+**기본값:** 2.0% (2% 상승)
+**권장 범위:** 1.5% - 3.0%
+**변경 시 영향:**
+- 낮추면 (1.5%): 더 자주 추가 진입 (작은 상승에도 반응)
+- 높이면 (3.0%): 덜 추가 진입 (큰 상승 후에만)
+
+**동작 예시:**
+```
+1차 진입: 100,000,000 원
+현재 가격: 101,500,000 원
+가격 상승: 1.5%
+
+min_price_increase_pct = 2.0%인 경우:
+→ 1.5% < 2.0% → 추가 진입 불가
+
+min_price_increase_pct = 1.5%인 경우:
+→ 1.5% = 1.5% → 추가 진입 가능
+```
+
+**권장 설정:**
+```python
+# 변동성 낮은 코인 (BTC, ETH)
+'min_price_increase_pct': 1.5
+
+# 변동성 높은 코인 (XRP, SOL)
+'min_price_increase_pct': 2.5
+```
+
+#### allow_pyramid_in_regime (허용 시장 체제)
+
+```python
+'allow_pyramid_in_regime': ['bullish', 'neutral']  # 리스트
+```
+
+**의미:**
+- 어떤 시장 체제에서 추가 진입을 허용할지
+- 가능한 값: `'bullish'` (상승), `'neutral'` (중립), `'bearish'` (하락)
+- Ver2 regime filter에서 판단한 체제 사용
+
+**기본값:** `['bullish', 'neutral']`
+**권장 설정:** `['bullish']` (상승 추세만) 또는 `['bullish', 'neutral']` (기본)
+**변경 시 영향:**
+- bullish만: 강한 상승 추세에서만 추가 (가장 안전)
+- bullish + neutral: 횡보장에서도 추가 (기본, 더 많은 기회)
+- bearish 포함: 비권장 (하락 추세에서 추가는 위험)
+
+**설정 예시:**
+```python
+# 보수적 (상승 추세만)
+'allow_pyramid_in_regime': ['bullish']
+
+# 균형 (기본)
+'allow_pyramid_in_regime': ['bullish', 'neutral']
+
+# 비권장 (모든 체제)
+'allow_pyramid_in_regime': ['bullish', 'neutral', 'bearish']
+```
+
+### 피라미딩 전략 조합 예시
+
+#### 보수적 피라미딩
+
+```python
+PYRAMIDING_CONFIG = {
+    'enabled': True,
+    'max_entries_per_coin': 2,           # 최대 2회만
+    'min_score_for_pyramid': 4,          # 완벽한 점수
+    'min_signal_strength_for_pyramid': 0.8,  # 매우 강한 신호
+    'position_size_multiplier': [1.0, 0.3],  # 작은 추가
+    'min_price_increase_pct': 3.0,       # 3% 상승 필요
+    'allow_pyramid_in_regime': ['bullish'],  # 상승 추세만
+}
+```
+
+**특징:**
+- 매우 강한 신호에서만 추가
+- 작은 크기로 추가
+- 상승 추세에서만 추가
+
+#### 균형적 피라미딩 (기본)
+
+```python
+PYRAMIDING_CONFIG = {
+    'enabled': True,
+    'max_entries_per_coin': 3,
+    'min_score_for_pyramid': 3,
+    'min_signal_strength_for_pyramid': 0.7,
+    'position_size_multiplier': [1.0, 0.5, 0.25],
+    'min_price_increase_pct': 2.0,
+    'allow_pyramid_in_regime': ['bullish', 'neutral'],
+}
+```
+
+**특징:**
+- 강한 신호에서 추가
+- 표준 크기로 추가
+- 상승/중립 추세 모두 허용
+
+#### 공격적 피라미딩 (고위험)
+
+```python
+PYRAMIDING_CONFIG = {
+    'enabled': True,
+    'max_entries_per_coin': 3,
+    'min_score_for_pyramid': 2,          # 낮은 점수도 허용
+    'min_signal_strength_for_pyramid': 0.6,  # 낮은 강도도 허용
+    'position_size_multiplier': [1.0, 0.6, 0.4],  # 큰 추가
+    'min_price_increase_pct': 1.5,       # 작은 상승에도 추가
+    'allow_pyramid_in_regime': ['bullish', 'neutral'],
+}
+```
+
+**특징:**
+- 약한 신호에서도 추가
+- 큰 크기로 추가
+- 더 자주 추가 진입
+
+⚠️ **주의:** 공격적 설정은 수익도 크지만 손실도 클 수 있습니다.
+
+### 피라미딩 비활성화
+
+피라미딩을 사용하지 않으려면:
+
+```python
+PYRAMIDING_CONFIG = {
+    'enabled': False,  # 단순히 False로 설정
+}
+```
+
+또는
+
+```python
+PYRAMIDING_CONFIG = {
+    'enabled': True,
+    'max_entries_per_coin': 1,  # 1회만 진입 (피라미딩 없음)
+}
+```
+
+---
+
+## 3. 진입/청산 설정
 
 Ver3는 Ver2의 진입/청산 설정을 그대로 사용합니다.
 
@@ -235,7 +551,7 @@ EXIT_CONFIG = {
 
 ---
 
-## 3. 리스크 관리
+## 4. 리스크 관리
 
 ### 리스크 설정 (RISK_CONFIG)
 
@@ -287,7 +603,7 @@ RISK_CONFIG = {
 
 ---
 
-## 4. API 설정
+## 5. API 설정
 
 ### API 설정 (API_CONFIG)
 

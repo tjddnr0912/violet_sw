@@ -14,6 +14,7 @@ Version 3 extends Ver2 with **multi-coin portfolio management capabilities**, en
 ### Key Features
 
 - ✅ **Multi-Coin Portfolio Trading** - Simultaneously trade BTC, ETH, XRP, SOL
+- ✅ **Pyramiding Support** - Scale into winning positions (up to 3 entries per coin)
 - ✅ **Parallel Market Analysis** - ThreadPoolExecutor for concurrent coin analysis
 - ✅ **Portfolio-Level Risk Management** - Max 2 positions, 6% total risk limit
 - ✅ **Smart Entry Prioritization** - Highest-scoring signals executed first
@@ -213,7 +214,7 @@ python 001_python_code/ver3/test_portfolio_v3.py
 ### Position Limits
 
 - **Max Simultaneous Positions:** 2 (configurable)
-- **Max Positions Per Coin:** 1
+- **Max Entries Per Coin:** Up to 3 pyramid entries (configurable)
 - **Total Portfolio Risk:** 6% maximum
 
 ### Risk Controls
@@ -322,6 +323,7 @@ ver3/
 | **Coins** | Single coin (BTC, ETH, XRP, or SOL) | Multi-coin (2-3 simultaneously) |
 | **Analysis** | Sequential (one coin at a time) | Parallel (all coins together) |
 | **Position Limits** | Per-coin only | Portfolio-level |
+| **Pyramiding** | Not supported | Up to 3 entries per coin |
 | **Entry Selection** | Immediate on signal | Prioritized by score |
 | **Risk Management** | Per-coin | Portfolio-wide |
 | **Thread Safety** | N/A (single thread) | Full threading.Lock |
@@ -397,6 +399,9 @@ export BITHUMB_SECRET_KEY="your_secret"
 - **Dynamic Position Sizing:** Larger positions for higher scores
 - **Multi-Exchange Support:** Binance, Upbit integration
 - **GUI Enhancement:** Multi-coin portfolio dashboard
+
+### Recently Implemented
+- ✅ **Pyramiding Strategy** - Scale into winning positions with decreasing size (100% → 50% → 25%)
 
 ### Scaling Considerations
 - **4+ Coins:** Consider async architecture (Option D)

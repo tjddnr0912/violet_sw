@@ -84,6 +84,19 @@ PORTFOLIO_CONFIG = {
 }
 
 
+# ========== PYRAMIDING CONFIGURATION ==========
+
+PYRAMIDING_CONFIG = {
+    'enabled': True,                     # Enable pyramiding (additional entries)
+    'max_entries_per_coin': 3,           # Maximum pyramid entries per coin (1st + 2 pyramids)
+    'min_score_for_pyramid': 3,          # Require score 3+ for additional entries
+    'min_signal_strength_for_pyramid': 0.7,  # Require high signal strength (0-1)
+    'position_size_multiplier': [1.0, 0.5, 0.25],  # 100%, 50%, 25% of base amount
+    'min_price_increase_pct': 2.0,       # Only pyramid if price increased 2%+ from last entry
+    'allow_pyramid_in_regime': ['bullish', 'neutral'],  # Only pyramid in these regimes
+}
+
+
 # ========== PER-COIN POSITION SIZING ==========
 
 POSITION_SIZING_CONFIG = {
@@ -193,6 +206,7 @@ def get_version_config(interval: str = '4h', mode: str = None, coins: List[str] 
     return {
         'VERSION_METADATA': VERSION_METADATA,
         'PORTFOLIO_CONFIG': portfolio_config,
+        'PYRAMIDING_CONFIG': PYRAMIDING_CONFIG,
         'POSITION_SIZING_CONFIG': POSITION_SIZING_CONFIG,
         'TIMEFRAME_CONFIG': timeframe_config,
         'REGIME_FILTER_CONFIG': REGIME_FILTER_CONFIG,

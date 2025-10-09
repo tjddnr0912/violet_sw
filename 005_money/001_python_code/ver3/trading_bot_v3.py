@@ -78,8 +78,18 @@ class TradingBotV3(VersionInterface):
         log_config = config.get('LOGGING_CONFIG', {})
         self.logger = TradingLogger(log_dir=log_config.get('log_dir', 'logs'))
 
-        # Initialize API
-        self.api = BithumbAPI()
+        # Initialize API with keys from environment variables or config
+        import os
+        api_config = config.get('API_CONFIG', {})
+        connect_key = os.getenv('BITHUMB_CONNECT_KEY') or api_config.get('bithumb_connect_key')
+        secret_key = os.getenv('BITHUMB_SECRET_KEY') or api_config.get('bithumb_secret_key')
+
+        if connect_key and secret_key:
+            self.api = BithumbAPI(connect_key, secret_key)
+            self.logger.logger.info("API initialized with credentials")
+        else:
+            self.api = BithumbAPI()
+            self.logger.logger.warning("API initialized WITHOUT credentials - trading will fail")
 
         # Initialize Portfolio Manager
         self.portfolio_manager = PortfolioManagerV3(

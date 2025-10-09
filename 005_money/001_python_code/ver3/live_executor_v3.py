@@ -35,9 +35,41 @@ from lib.api.bithumb_api import BithumbAPI
 from lib.core.logger import TradingLogger
 
 
+# Bithumb 코인별 소수점 자릿수 제한
+BITHUMB_DECIMAL_LIMITS = {
+    'BTC': 4,   # Bitcoin: 소수점 4자리
+    'ETH': 4,   # Ethereum: 소수점 4자리
+    'XRP': 0,   # Ripple: 정수 단위
+    'SOL': 2,   # Solana: 소수점 2자리
+    'ADA': 0,   # Cardano: 정수 단위
+    'DOGE': 0,  # Dogecoin: 정수 단위
+    'MATIC': 0, # Polygon: 정수 단위
+    'DOT': 2,   # Polkadot: 소수점 2자리
+    'AVAX': 2,  # Avalanche: 소수점 2자리
+    'LINK': 2,  # Chainlink: 소수점 2자리
+    'BCH': 4,   # Bitcoin Cash: 소수점 4자리
+    'LTC': 4,   # Litecoin: 소수점 4자리
+}
+
+
+def round_units_for_bithumb(ticker: str, units: float) -> float:
+    """
+    빗썸 API 요구사항에 맞게 수량을 반올림합니다.
+
+    Args:
+        ticker: 코인 심볼
+        units: 원본 수량
+
+    Returns:
+        반올림된 수량
+    """
+    decimal_places = BITHUMB_DECIMAL_LIMITS.get(ticker, 4)  # 기본값 4자리
+    return round(units, decimal_places)
+
+
 class Position:
     """
-    Position data class for tracking open positions.
+    Position data class for tracking open positions with pyramiding support.
     """
 
     def __init__(
@@ -59,6 +91,12 @@ class Position:
         self.first_target_hit = False
         self.second_target_hit = False
 
+        # Pyramiding support - track multiple entries
+        self.entry_count = 1  # Number of entries (initial = 1)
+        self.entry_prices = [entry_price]  # List of all entry prices
+        self.entry_times = [entry_time]  # List of all entry times
+        self.entry_sizes = [size]  # List of entry sizes for each pyramid
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert position to dictionary for serialization."""
         return {
@@ -71,6 +109,11 @@ class Position:
             'position_pct': self.position_pct,
             'first_target_hit': self.first_target_hit,
             'second_target_hit': self.second_target_hit,
+            # Pyramiding fields
+            'entry_count': self.entry_count,
+            'entry_prices': self.entry_prices,
+            'entry_times': [t.isoformat() if t else None for t in self.entry_times],
+            'entry_sizes': self.entry_sizes,
         }
 
     @classmethod
@@ -87,6 +130,17 @@ class Position:
         pos.position_pct = data.get('position_pct', 100.0)
         pos.first_target_hit = data.get('first_target_hit', False)
         pos.second_target_hit = data.get('second_target_hit', False)
+
+        # Load pyramiding fields (backward compatible)
+        pos.entry_count = data.get('entry_count', 1)
+        pos.entry_prices = data.get('entry_prices', [pos.entry_price])
+        entry_times_iso = data.get('entry_times', [])
+        pos.entry_times = [
+            datetime.fromisoformat(t) if t else None
+            for t in entry_times_iso
+        ] if entry_times_iso else [pos.entry_time]
+        pos.entry_sizes = data.get('entry_sizes', [pos.size])
+
         return pos
 
 
@@ -261,12 +315,19 @@ class LiveExecutorV3:
                 # Real execution
                 self.logger.logger.warning("🔴 EXECUTING REAL ORDER ON BITHUMB")
 
+                # 빗썸 API 요구사항에 맞게 수량 반올림
+                rounded_units = round_units_for_bithumb(ticker, units)
+                self.logger.logger.info(
+                    f"Units adjusted for Bithumb: {units:.8f} -> {rounded_units} "
+                    f"(decimal places: {BITHUMB_DECIMAL_LIMITS.get(ticker, 4)})"
+                )
+
                 if action == 'BUY':
                     # Bithumb API: place_buy_order(order_currency, payment_currency, units, price, type_order)
                     response = self.api.place_buy_order(
                         order_currency=ticker,
                         payment_currency="KRW",
-                        units=units,
+                        units=rounded_units,
                         type_order="market"
                     )
                 elif action == 'SELL':
@@ -274,7 +335,7 @@ class LiveExecutorV3:
                     response = self.api.place_sell_order(
                         order_currency=ticker,
                         payment_currency="KRW",
-                        units=units,
+                        units=rounded_units,
                         type_order="market"
                     )
                 else:
@@ -328,26 +389,34 @@ class LiveExecutorV3:
         units: float,
         price: float
     ):
-        """Update position state after trade execution."""
+        """Update position state after trade execution (supports pyramiding)."""
         try:
             if action == 'BUY':
                 if ticker in self.positions:
-                    # Scaling into existing position - update average entry price
+                    # Pyramiding - add to existing position
                     pos = self.positions[ticker]
                     old_value = pos.size * pos.entry_price
                     new_value = units * price
                     total_size = pos.size + units
 
+                    # Update weighted average entry price
                     pos.entry_price = (old_value + new_value) / total_size
                     pos.size = total_size
 
+                    # Track pyramid entry
+                    pos.entry_count += 1
+                    pos.entry_prices.append(price)
+                    pos.entry_times.append(datetime.now())
+                    pos.entry_sizes.append(units)
+
                     self.logger.logger.info(
-                        f"Position scaled: {ticker} | "
-                        f"New size: {pos.size:.6f} | "
-                        f"Avg entry: {pos.entry_price:,.0f}"
+                        f"PYRAMID ENTRY #{pos.entry_count}: {ticker} | "
+                        f"Added: {units:.6f} @ {price:,.0f} KRW | "
+                        f"Total size: {pos.size:.6f} | "
+                        f"Avg entry: {pos.entry_price:,.0f} KRW"
                     )
                 else:
-                    # New position
+                    # New position (first entry)
                     pos = Position(
                         ticker=ticker,
                         size=units,
@@ -375,6 +444,7 @@ class LiveExecutorV3:
 
                         self.logger.logger.info(
                             f"Position closed: {ticker} | "
+                            f"Entries: {pos.entry_count} | "
                             f"Profit: {profit:,.0f} KRW ({profit_pct:+.2f}%)"
                         )
 
@@ -587,6 +657,10 @@ class LiveExecutorV3:
             'position_pct': pos.position_pct,
             'first_target_hit': pos.first_target_hit,
             'second_target_hit': pos.second_target_hit,
+            # Pyramiding info
+            'entry_count': pos.entry_count,
+            'entry_prices': pos.entry_prices,
+            'entry_sizes': pos.entry_sizes,
         }
 
     def close_position(self, ticker: str, price: float, dry_run: bool = True, reason: str = "") -> Dict[str, Any]:
@@ -624,3 +698,52 @@ class LiveExecutorV3:
         self.logger.logger.warning("⚠️  RESETTING ALL POSITIONS")
         self.positions = {}
         self._save_positions()
+
+    # ========== PYRAMIDING HELPER METHODS ==========
+
+    def get_entry_count(self, ticker: str) -> int:
+        """
+        Get number of entries for a position (for pyramiding).
+
+        Args:
+            ticker: Cryptocurrency symbol
+
+        Returns:
+            Number of entries (0 if no position)
+        """
+        if ticker not in self.positions:
+            return 0
+        return self.positions[ticker].entry_count
+
+    def get_last_entry_price(self, ticker: str) -> float:
+        """
+        Get price of the last entry for pyramiding comparison.
+
+        Args:
+            ticker: Cryptocurrency symbol
+
+        Returns:
+            Last entry price (0.0 if no position)
+        """
+        if ticker not in self.positions:
+            return 0.0
+
+        pos = self.positions[ticker]
+        if not pos.entry_prices:
+            return pos.entry_price
+
+        return pos.entry_prices[-1]  # Last entry price
+
+    def get_all_entry_prices(self, ticker: str) -> List[float]:
+        """
+        Get all entry prices for a position.
+
+        Args:
+            ticker: Cryptocurrency symbol
+
+        Returns:
+            List of entry prices (empty if no position)
+        """
+        if ticker not in self.positions:
+            return []
+        return self.positions[ticker].entry_prices.copy()

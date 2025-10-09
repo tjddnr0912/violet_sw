@@ -652,9 +652,13 @@ Portfolio Multi-Coin Strategy (Ver3):
         decision_lines.append("=" * 30)
 
         if decisions:
-            for coin, action in decisions:
+            for coin, action, entry_number in decisions:
                 timestamp = datetime.now().strftime('%H:%M:%S')
-                decision_lines.append(f"[{timestamp}] {coin}: {action}")
+                # Show pyramid info if entry_number > 1
+                if entry_number > 1:
+                    decision_lines.append(f"[{timestamp}] {coin}: {action} (Pyramid #{entry_number})")
+                else:
+                    decision_lines.append(f"[{timestamp}] {coin}: {action}")
         else:
             decision_lines.append("No decisions yet...")
 
@@ -978,7 +982,17 @@ Portfolio Multi-Coin Strategy (Ver3):
         """Process messages from log queue"""
         try:
             while True:
-                log_level, message = self.log_queue.get_nowait()
+                record = self.log_queue.get_nowait()
+
+                # Handle both tuple format and LogRecord format
+                if isinstance(record, tuple):
+                    # Tuple format: (level, message)
+                    log_level, message = record
+                else:
+                    # LogRecord format (from QueueHandler)
+                    log_level = record.levelname
+                    message = record.getMessage()
+
                 self._log_to_gui(log_level, message)
         except queue.Empty:
             pass

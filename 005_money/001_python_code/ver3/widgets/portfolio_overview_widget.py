@@ -130,7 +130,7 @@ class PortfolioOverviewWidget(ttk.Frame):
                         },
                         ...
                     },
-                    'last_decisions': List[Tuple[str, str]]
+                    'last_decisions': List[Tuple[str, str, int]]  # (coin, action, entry_number)
                 }
         """
         # Update summary stats

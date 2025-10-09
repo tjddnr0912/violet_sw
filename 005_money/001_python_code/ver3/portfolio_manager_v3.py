@@ -250,22 +250,24 @@ class PortfolioManagerV3:
         self.last_results = results
         return results
 
-    def make_portfolio_decision(self, coin_results: Dict[str, Dict]) -> List[Tuple[str, str]]:
+    def make_portfolio_decision(self, coin_results: Dict[str, Dict]) -> List[Tuple[str, str, int]]:
         """
-        Make portfolio-level trading decisions with risk limits.
+        Make portfolio-level trading decisions with risk limits and pyramiding support.
 
         Decision Logic:
         1. Count current positions
         2. Check portfolio position limit
         3. Prioritize entry signals by score (highest first)
-        4. Allow exits regardless of limits
+        4. Allow pyramiding if conditions met
+        5. Allow exits regardless of limits
 
         Args:
             coin_results: Analysis results from analyze_all()
 
         Returns:
-            List of (coin, action) tuples to execute:
-            [('XRP', 'BUY'), ('BTC', 'BUY')] - in priority order
+            List of (coin, action, entry_number) tuples to execute:
+            [('XRP', 'BUY', 1), ('BTC', 'BUY', 2)] - in priority order
+            entry_number: 1=new position, 2+=pyramiding
         """
         decisions = []
 
@@ -286,16 +288,26 @@ class PortfolioManagerV3:
         if active_positions:
             self.logger.logger.info(f"Active positions: {active_positions}")
 
-        # 3. Process entry signals
-        entry_candidates = [
-            (coin, result)
-            for coin, result in coin_results.items()
-            if result['action'] == 'BUY' and not self.executor.has_position(coin)
-        ]
+        # 3. Process entry signals (including pyramiding)
+        entry_candidates = []
+        for coin, result in coin_results.items():
+            if result['action'] == 'BUY':
+                has_pos = self.executor.has_position(coin)
+
+                if not has_pos:
+                    # New position entry
+                    entry_candidates.append((coin, result, 1))  # entry_number=1
+                elif self._can_pyramid(coin, result):
+                    # Pyramiding entry
+                    entry_number = self.executor.get_entry_count(coin) + 1
+                    entry_candidates.append((coin, result, entry_number))
+                    self.logger.logger.info(
+                        f"Pyramid opportunity: {coin} (entry #{entry_number})"
+                    )
 
         if entry_candidates:
             self.logger.logger.info(
-                f"Entry candidates: {[c[0] for c in entry_candidates]}"
+                f"Entry candidates: {[(c[0], f'#{c[2]}') for c in entry_candidates]}"
             )
 
             # Prioritize by entry score (highest first), then signal strength
@@ -315,20 +327,27 @@ class PortfolioManagerV3:
                 reverse=True
             )
 
-            # Apply portfolio position limit
-            for coin, result in entry_candidates:
-                if total_positions >= max_positions:
-                    self.logger.logger.info(
-                        f"Portfolio limit reached ({max_positions} positions), skipping {coin} entry"
-                    )
-                    break
+            # Apply portfolio position limit (only for NEW positions, not pyramiding)
+            for coin, result, entry_number in entry_candidates:
+                if entry_number == 1:  # New position
+                    if total_positions >= max_positions:
+                        self.logger.logger.info(
+                            f"Portfolio limit reached ({max_positions} positions), skipping {coin} entry"
+                        )
+                        continue
 
-                decisions.append((coin, 'BUY'))
-                total_positions += 1
-                self.logger.logger.info(
-                    f"Entry decision: {coin} (score: {result.get('entry_score')}/4, "
-                    f"strength: {result.get('signal_strength', 0):.2f})"
-                )
+                    decisions.append((coin, 'BUY', entry_number))
+                    total_positions += 1
+                    self.logger.logger.info(
+                        f"Entry decision: {coin} (score: {result.get('entry_score')}/4, "
+                        f"strength: {result.get('signal_strength', 0):.2f})"
+                    )
+                else:  # Pyramiding
+                    decisions.append((coin, 'BUY', entry_number))
+                    self.logger.logger.info(
+                        f"Pyramid decision: {coin} entry #{entry_number} (score: {result.get('entry_score')}/4, "
+                        f"strength: {result.get('signal_strength', 0):.2f})"
+                    )
 
         # 4. Process exit signals (always allow exits)
         exit_candidates = [
@@ -338,22 +357,106 @@ class PortfolioManagerV3:
         ]
 
         for coin, result in exit_candidates:
-            decisions.append((coin, 'SELL'))
+            decisions.append((coin, 'SELL', 0))  # entry_number=0 for exits
             exit_reason = result.get('reason', 'Exit signal')
             self.logger.logger.info(f"Exit decision: {coin} ({exit_reason})")
 
         self.last_decisions = decisions
         return decisions
 
-    def execute_decisions(self, decisions: List[Tuple[str, str]]):
+    def _can_pyramid(self, coin: str, result: Dict) -> bool:
         """
-        Execute trading decisions through LiveExecutorV3.
+        Check if additional entry (pyramiding) is allowed for a coin.
+
+        Pyramiding Conditions:
+        1. Pyramiding enabled in config
+        2. Entry count below maximum
+        3. Score meets pyramid threshold
+        4. Signal strength meets threshold
+        5. Price increased enough from last entry
+        6. Market regime allows pyramiding
 
         Args:
-            decisions: List of (coin, action) tuples from make_portfolio_decision()
-                      Example: [('ETH', 'BUY'), ('BTC', 'SELL')]
+            coin: Cryptocurrency symbol
+            result: Analysis result from strategy
+
+        Returns:
+            True if pyramiding is allowed
         """
-        for coin, action in decisions:
+        pyramid_config = self.config.get('PYRAMIDING_CONFIG', {})
+
+        # Check if pyramiding enabled
+        if not pyramid_config.get('enabled', False):
+            return False
+
+        # Check entry count limit
+        entry_count = self.executor.get_entry_count(coin)
+        max_entries = pyramid_config.get('max_entries_per_coin', 3)
+        if entry_count >= max_entries:
+            self.logger.logger.debug(
+                f"Pyramid blocked for {coin}: Max entries reached ({entry_count}/{max_entries})"
+            )
+            return False
+
+        # Check score threshold
+        min_score = pyramid_config.get('min_score_for_pyramid', 3)
+        entry_score = result.get('entry_score', 0)
+        if entry_score < min_score:
+            self.logger.logger.debug(
+                f"Pyramid blocked for {coin}: Score too low ({entry_score}/{min_score})"
+            )
+            return False
+
+        # Check signal strength threshold
+        min_strength = pyramid_config.get('min_signal_strength_for_pyramid', 0.7)
+        signal_strength = result.get('signal_strength', 0.0)
+        if signal_strength < min_strength:
+            self.logger.logger.debug(
+                f"Pyramid blocked for {coin}: Signal strength too low ({signal_strength:.2f}/{min_strength})"
+            )
+            return False
+
+        # Check price increase from last entry
+        current_price = result.get('current_price', 0)
+        last_entry_price = self.executor.get_last_entry_price(coin)
+        min_increase_pct = pyramid_config.get('min_price_increase_pct', 2.0)
+
+        if last_entry_price > 0:
+            price_increase_pct = ((current_price - last_entry_price) / last_entry_price) * 100
+            if price_increase_pct < min_increase_pct:
+                self.logger.logger.debug(
+                    f"Pyramid blocked for {coin}: Price increase too low "
+                    f"({price_increase_pct:.2f}%/{min_increase_pct}%)"
+                )
+                return False
+
+        # Check market regime
+        allowed_regimes = pyramid_config.get('allow_pyramid_in_regime', ['bullish', 'neutral'])
+        market_regime = result.get('market_regime', 'neutral')
+        if market_regime not in allowed_regimes:
+            self.logger.logger.debug(
+                f"Pyramid blocked for {coin}: Regime not allowed ({market_regime} not in {allowed_regimes})"
+            )
+            return False
+
+        # All checks passed
+        self.logger.logger.info(
+            f"Pyramid allowed for {coin}: "
+            f"Score={entry_score}, Strength={signal_strength:.2f}, "
+            f"Price increase={price_increase_pct:.2f}%"
+        )
+        return True
+
+    def execute_decisions(self, decisions: List[Tuple[str, str, int]]):
+        """
+        Execute trading decisions through LiveExecutorV3 with pyramiding support.
+
+        Args:
+            decisions: List of (coin, action, entry_number) tuples from make_portfolio_decision()
+                      Example: [('ETH', 'BUY', 1), ('BTC', 'BUY', 2), ('XRP', 'SELL', 0)]
+                      entry_number: 1=new position, 2+=pyramiding, 0=exit
+        """
+        for coin, action, entry_number in decisions:
             monitor = self.monitors[coin]
             analysis = monitor.last_analysis
 
@@ -368,8 +471,22 @@ class PortfolioManagerV3:
                     )
                     continue
 
-                # Calculate position size
-                trade_amount_krw = self.config['TRADING_CONFIG'].get('trade_amount_krw', 50000)
+                # Calculate position size with pyramiding multiplier
+                base_amount_krw = self.config['TRADING_CONFIG'].get('trade_amount_krw', 50000)
+
+                if entry_number > 1:  # Pyramiding
+                    pyramid_config = self.config.get('PYRAMIDING_CONFIG', {})
+                    multipliers = pyramid_config.get('position_size_multiplier', [1.0, 0.5, 0.25])
+                    multiplier = multipliers[entry_number - 1] if entry_number <= len(multipliers) else multipliers[-1]
+                    trade_amount_krw = base_amount_krw * multiplier
+
+                    self.logger.logger.info(
+                        f"Pyramid entry #{entry_number} for {coin}: "
+                        f"Using {multiplier*100:.0f}% position size ({trade_amount_krw:,.0f} KRW)"
+                    )
+                else:  # New position
+                    trade_amount_krw = base_amount_krw
+
                 units = trade_amount_krw / price
 
                 # Execute buy order
@@ -380,7 +497,7 @@ class PortfolioManagerV3:
                     price=price,
                     dry_run=self.config['EXECUTION_CONFIG'].get('dry_run', True),
                     reason=(
-                        f"Entry score: {analysis.get('entry_score')}/4, "
+                        f"{'Pyramid ' if entry_number > 1 else ''}Entry score: {analysis.get('entry_score')}/4, "
                         f"regime: {analysis.get('market_regime')}"
                     )
                 )
@@ -388,9 +505,14 @@ class PortfolioManagerV3:
                 if order_result.get('success'):
                     # Update stop-loss
                     self.executor.update_stop_loss(coin, stop_loss)
-                    self.logger.logger.info(
-                        f"{coin} position opened: {units:.6f} @ {price:,.0f} KRW"
-                    )
+                    if entry_number > 1:
+                        self.logger.logger.info(
+                            f"{coin} pyramid #{entry_number} added: {units:.6f} @ {price:,.0f} KRW"
+                        )
+                    else:
+                        self.logger.logger.info(
+                            f"{coin} position opened: {units:.6f} @ {price:,.0f} KRW"
+                        )
                 else:
                     self.logger.logger.error(
                         f"{coin} order failed: {order_result.get('message')}"
@@ -441,7 +563,7 @@ class PortfolioManagerV3:
                     },
                     ...
                 },
-                'last_decisions': List[Tuple[str, str]]
+                'last_decisions': List[Tuple[str, str, int]]  # (coin, action, entry_number)
             }
         """
         # Count positions
