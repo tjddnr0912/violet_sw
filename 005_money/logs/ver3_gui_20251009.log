@@ -1,0 +1,244 @@
+=== Ver3 GUI Log Started at 2025-10-09 17:30:13 ===
+[2025-10-09 17:30:13] [INFO] API client initialized successfully
+[2025-10-09 17:30:16] [INFO] Dry-run mode disabled
+[2025-10-09 17:30:19] [INFO] Bot started successfully
+[2025-10-09 17:30:23] [INFO] GUI Trading Bot V3 initialized
+[2025-10-09 17:30:23] [INFO] Bot main loop started
+[2025-10-09 17:30:23] [INFO] === Analysis Cycle #1 - 2025-10-09 17:30:19 ===
+[2025-10-09 17:30:23] [INFO] Analyzing all coins...
+[2025-10-09 17:30:23] [INFO]   [SOL] BULLISH | Score: 0/4 | Action: HOLD
+[2025-10-09 17:30:23] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-09 17:30:23] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-09 17:30:23] [INFO] Making portfolio decisions...
+[2025-10-09 17:30:23] [INFO] No trading actions required (HOLD)
+[2025-10-09 17:30:23] [INFO] ------------------------------------------------------------
+[2025-10-09 17:30:23] [INFO] Portfolio Summary
+[2025-10-09 17:30:23] [INFO]   Positions: 0/2
+[2025-10-09 17:30:23] [INFO]   Total P&L: +0 KRW
+[2025-10-09 17:30:23] [INFO] Per-Coin Status:
+[2025-10-09 17:30:23] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD
+[2025-10-09 17:30:23] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD
+[2025-10-09 17:30:23] [INFO]   [SOL] BULLISH  | Score: 0/4 | Action: HOLD
+[2025-10-09 17:30:23] [INFO] ------------------------------------------------------------
+[2025-10-09 17:30:23] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-09 17:35:33] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:35:33] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:35:38] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:35:38] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:35:44] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:35:44] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:35:49] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:35:49] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:35:54] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:35:54] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:00] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:00] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:05] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:05] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:10] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:10] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:16] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:16] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:21] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:21] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:26] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:26] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:32] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:32] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:37] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:37] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:42] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:42] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:48] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:48] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:53] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:53] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:36:58] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:36:59] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:04] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:04] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:09] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:09] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:15] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:15] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:20] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:20] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:25] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:25] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:31] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:31] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:36] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:36] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:41] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:42] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:47] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:47] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:52] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:52] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:37:58] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:37:58] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:03] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:03] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:08] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:08] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:14] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:14] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:19] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:19] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:25] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:25] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:30] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:30] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:35] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:35] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:41] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:41] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:46] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:46] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:51] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:51] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:38:57] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:38:57] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:02] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:02] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:07] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:07] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:13] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:13] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:18] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:18] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:23] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:24] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:29] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:29] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:34] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:34] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:39] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:40] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:45] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:45] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:50] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:51] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:39:56] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:39:56] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:40:01] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:01] [WARNING] SOL: No position data found - P&L will show 0%
+[2025-10-09 17:40:06] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:12] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:17] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:22] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:28] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:33] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:38] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:44] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:49] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:54] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:40:59] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:05] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:10] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:15] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:20] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:26] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:31] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:37] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:42] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:47] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:52] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:41:58] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:03] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:08] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:13] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:19] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:24] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:29] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:35] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:40] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:45] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:50] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:42:56] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:43:01] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:43:06] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:43:12] [INFO] Bot stopped by user
+[2025-10-09 17:43:12] [INFO] Stopping bot...
+[2025-10-09 17:43:28] [INFO] API client initialized successfully
+[2025-10-09 17:43:30] [INFO] Dry-run mode disabled
+[2025-10-09 17:43:34] [INFO] Bot started successfully
+[2025-10-09 17:43:34] [INFO] GUI Trading Bot V3 initialized
+[2025-10-09 17:43:34] [INFO] Bot main loop started
+[2025-10-09 17:43:34] [INFO] === Analysis Cycle #1 - 2025-10-09 17:43:34 ===
+[2025-10-09 17:43:34] [INFO] Analyzing all coins...
+[2025-10-09 17:43:34] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:43:39] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-09 17:43:39] [INFO]   [SOL] BULLISH | Score: 0/4 | Action: HOLD
+[2025-10-09 17:43:39] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-09 17:43:39] [INFO] Making portfolio decisions...
+[2025-10-09 17:43:39] [INFO] No trading actions required (HOLD)
+[2025-10-09 17:43:39] [INFO] ------------------------------------------------------------
+[2025-10-09 17:43:39] [INFO] Portfolio Summary
+[2025-10-09 17:43:39] [INFO]   Positions: 1/2
+[2025-10-09 17:43:39] [INFO]   Total P&L: -14 KRW
+[2025-10-09 17:43:39] [INFO] Per-Coin Status:
+[2025-10-09 17:43:39] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 6,356,000 KRW | P&L: +0
+[2025-10-09 17:43:39] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD
+[2025-10-09 17:43:39] [INFO]   [SOL] BULLISH  | Score: 0/4 | Action: HOLD
+[2025-10-09 17:43:39] [INFO] ------------------------------------------------------------
+[2025-10-09 17:43:39] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-09 17:43:39] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:43:45] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:43:50] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:43:55] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:00] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:06] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:11] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:16] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:21] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:27] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:32] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:37] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:43] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:48] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:53] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:44:58] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:04] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:09] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:14] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:19] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:25] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:30] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:35] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:41] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:46] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:51] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:45:56] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:02] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:07] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:12] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:18] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:23] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:28] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:33] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:39] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:44] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:49] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:46:55] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:00] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:05] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:10] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:16] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:21] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:26] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:31] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:37] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:42] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:47] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:53] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:47:58] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:03] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:09] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:14] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:19] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:25] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:30] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:35] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:40] [WARNING] XRP: No position data found - P&L will show 0%
+[2025-10-09 17:48:46] [WARNING] XRP: No position data found - P&L will show 0%

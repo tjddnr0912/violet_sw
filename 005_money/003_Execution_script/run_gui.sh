@@ -12,10 +12,34 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# 버전 기본값
+VERSION="ver2"
+
+# 명령행 인수 파싱
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --version)
+            VERSION="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# 버전 검증
+if [[ "$VERSION" != "ver1" && "$VERSION" != "ver2" && "$VERSION" != "ver3" ]]; then
+    echo -e "${RED}❌ 잘못된 버전: $VERSION${NC}"
+    echo "사용 가능한 버전: ver1, ver2, ver3"
+    exit 1
+fi
+
 echo -e "${BLUE}${BOLD}"
 echo "╔══════════════════════════════════════════════════════════════════╗"
 echo "║                   🤖 빗썸 자동매매 봇 GUI                     ║"
 echo "║                      Bithumb Trading Bot                         ║"
+echo "║                       Version: $VERSION                              ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 echo ""
@@ -75,10 +99,24 @@ if [[ $? -ne 0 ]]; then
 fi
 
 echo ""
-echo -e "${GREEN}🚀 GUI를 시작합니다...${NC}"
+echo -e "${GREEN}🚀 $VERSION GUI를 시작합니다...${NC}"
 echo -e "${YELLOW}💡 팁: GUI에서 Ctrl+C를 눌러 안전하게 종료할 수 있습니다.${NC}"
-echo -e "${BLUE}💡 추천: 더 나은 경험을 위해 ./gui 또는 python run.py --gui를 사용하세요.${NC}"
+echo -e "${BLUE}💡 추천: 더 나은 경험을 위해 ./gui --version $VERSION를 사용하세요.${NC}"
+
+# 버전별 설명
+case $VERSION in
+    ver1)
+        echo -e "${GREEN}📊 Ver1: Elite 8-Indicator Strategy${NC}"
+        ;;
+    ver2)
+        echo -e "${GREEN}📊 Ver2: Multi-Timeframe Strategy (Daily + 4H)${NC}"
+        ;;
+    ver3)
+        echo -e "${GREEN}📊 Ver3: Portfolio Multi-Coin Strategy (2-3 coins)${NC}"
+        ;;
+esac
+
 echo ""
 
 # GUI 실행
-python3 003_Execution_script/run_gui.py
+python3 003_Execution_script/run_gui.py --version "$VERSION"

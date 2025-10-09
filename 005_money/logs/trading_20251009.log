@@ -1,0 +1,10 @@
+2025-10-09 17:35:30,886 - TradingBot - INFO - LiveExecutorV3 initialized (thread-safe) | Positions loaded: 0
+2025-10-09 17:35:30,886 - TradingBot - INFO - [LIVE] Executing BUY: 0.000800 ETH @ 6,356,000 KRW (Total: 5,085 KRW)
+2025-10-09 17:35:30,886 - TradingBot - INFO -   Reason: Test purchase: 5000 KRW worth of ETH
+2025-10-09 17:35:30,886 - TradingBot - WARNING - 🔴 EXECUTING REAL ORDER ON BITHUMB
+2025-10-09 17:35:31,097 - TradingBot - INFO - Position opened: ETH | Size: 0.000800 | Entry: 6,356,000
+2025-10-09 17:40:03,900 - TradingBot - INFO - Loaded 1 positions from state file
+2025-10-09 17:40:03,900 - TradingBot - INFO - LiveExecutorV3 initialized (thread-safe) | Positions loaded: 1
+2025-10-09 17:40:03,900 - TradingBot - INFO - [LIVE] Executing SELL: 0.015645 SOL @ 322,700 KRW (Total: 5,048 KRW)
+2025-10-09 17:40:03,900 - TradingBot - INFO -   Reason: Test sale: Selling ALL 0.015645 SOL holdings
+2025-10-09 17:40:03,900 - TradingBot - WARNING - 🔴 EXECUTING REAL ORDER ON BITHUMB

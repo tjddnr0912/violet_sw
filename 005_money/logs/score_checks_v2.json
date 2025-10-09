@@ -2434,5 +2434,1119 @@
     },
     "regime": "BULLISH",
     "price": 321200.0
+  },
+  {
+    "id": "I100",
+    "timestamp": "2025-10-08 20:24:51.226169",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I101",
+    "timestamp": "2025-10-08 20:25:51.471082",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I102",
+    "timestamp": "2025-10-08 20:26:51.882482",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I103",
+    "timestamp": "2025-10-08 20:27:52.190421",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I104",
+    "timestamp": "2025-10-08 20:28:52.414681",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I105",
+    "timestamp": "2025-10-08 20:29:52.651932",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I106",
+    "timestamp": "2025-10-08 20:30:53.638469",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I107",
+    "timestamp": "2025-10-08 20:31:53.842584",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321100.0
+  },
+  {
+    "id": "I108",
+    "timestamp": "2025-10-08 20:32:54.087980",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I109",
+    "timestamp": "2025-10-08 20:33:54.293908",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321100.0
+  },
+  {
+    "id": "I10A",
+    "timestamp": "2025-10-08 20:34:54.494871",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I10B",
+    "timestamp": "2025-10-08 20:35:54.727971",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I10C",
+    "timestamp": "2025-10-08 20:36:54.993447",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I10D",
+    "timestamp": "2025-10-08 20:37:55.397767",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321100.0
+  },
+  {
+    "id": "I10E",
+    "timestamp": "2025-10-08 20:38:55.621577",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I10F",
+    "timestamp": "2025-10-08 20:39:55.804978",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320800.0
+  },
+  {
+    "id": "I110",
+    "timestamp": "2025-10-08 20:40:56.066661",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I111",
+    "timestamp": "2025-10-08 20:41:56.311988",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320500.0
+  },
+  {
+    "id": "I112",
+    "timestamp": "2025-10-08 20:42:56.528061",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I113",
+    "timestamp": "2025-10-08 20:43:56.757806",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320400.0
+  },
+  {
+    "id": "I114",
+    "timestamp": "2025-10-08 20:44:56.970507",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320300.0
+  },
+  {
+    "id": "I076",
+    "timestamp": "2025-10-08 20:45:57.170251",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320300.0
+  },
+  {
+    "id": "I075",
+    "timestamp": "2025-10-08 20:46:57.375032",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320400.0
+  },
+  {
+    "id": "I074",
+    "timestamp": "2025-10-08 20:47:58.080619",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I073",
+    "timestamp": "2025-10-08 20:48:58.588435",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I072",
+    "timestamp": "2025-10-08 20:49:58.804015",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320700.0
+  },
+  {
+    "id": "I071",
+    "timestamp": "2025-10-08 20:50:59.312774",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320700.0
+  },
+  {
+    "id": "I070",
+    "timestamp": "2025-10-08 20:51:59.522140",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320800.0
+  },
+  {
+    "id": "I06F",
+    "timestamp": "2025-10-08 20:52:59.761916",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I06E",
+    "timestamp": "2025-10-08 20:53:59.935442",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320500.0
+  },
+  {
+    "id": "I06D",
+    "timestamp": "2025-10-08 20:55:00.134093",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I066",
+    "timestamp": "2025-10-08 20:56:00.393510",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I09A",
+    "timestamp": "2025-10-08 20:57:00.598908",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I0CE",
+    "timestamp": "2025-10-08 20:58:00.800286",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320600.0
+  },
+  {
+    "id": "I0CD",
+    "timestamp": "2025-10-08 20:59:01.051905",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320700.0
+  },
+  {
+    "id": "I0CC",
+    "timestamp": "2025-10-08 21:00:01.330716",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320900.0
+  },
+  {
+    "id": "I0CB",
+    "timestamp": "2025-10-08 21:01:01.559429",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320800.0
+  },
+  {
+    "id": "I0CA",
+    "timestamp": "2025-10-08 21:02:01.782623",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320900.0
+  },
+  {
+    "id": "I0C9",
+    "timestamp": "2025-10-08 21:03:02.222386",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320900.0
+  },
+  {
+    "id": "I0C8",
+    "timestamp": "2025-10-08 21:04:02.633225",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I0C7",
+    "timestamp": "2025-10-08 21:05:02.938052",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I0C6",
+    "timestamp": "2025-10-08 21:06:03.186800",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I0C5",
+    "timestamp": "2025-10-08 21:07:03.730837",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320800.0
+  },
+  {
+    "id": "I0C4",
+    "timestamp": "2025-10-08 21:08:03.986933",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I0C3",
+    "timestamp": "2025-10-08 21:09:04.428894",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321300.0
+  },
+  {
+    "id": "I0C2",
+    "timestamp": "2025-10-08 21:10:04.689762",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321100.0
+  },
+  {
+    "id": "I0C1",
+    "timestamp": "2025-10-08 21:11:05.024550",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321300.0
+  },
+  {
+    "id": "I0C0",
+    "timestamp": "2025-10-08 21:12:05.503021",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321700.0
+  },
+  {
+    "id": "I0BF",
+    "timestamp": "2025-10-08 21:13:05.809678",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321700.0
+  },
+  {
+    "id": "I0BE",
+    "timestamp": "2025-10-08 21:14:06.010397",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321900.0
+  },
+  {
+    "id": "I0BD",
+    "timestamp": "2025-10-08 21:15:06.288049",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321700.0
+  },
+  {
+    "id": "I0BC",
+    "timestamp": "2025-10-08 21:16:06.562587",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I0BB",
+    "timestamp": "2025-10-08 21:17:06.787892",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321400.0
+  },
+  {
+    "id": "I0BA",
+    "timestamp": "2025-10-08 21:18:07.226081",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321300.0
+  },
+  {
+    "id": "I0B9",
+    "timestamp": "2025-10-08 21:19:07.642716",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321300.0
+  },
+  {
+    "id": "I0B8",
+    "timestamp": "2025-10-08 21:20:07.916190",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321300.0
+  },
+  {
+    "id": "I0B7",
+    "timestamp": "2025-10-08 21:21:08.126091",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I0B6",
+    "timestamp": "2025-10-08 21:22:08.354036",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321100.0
+  },
+  {
+    "id": "I0B5",
+    "timestamp": "2025-10-08 21:23:09.235252",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321000.0
+  },
+  {
+    "id": "I0B4",
+    "timestamp": "2025-10-08 21:24:09.572565",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321200.0
+  },
+  {
+    "id": "I0B3",
+    "timestamp": "2025-10-08 21:25:09.784076",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 320900.0
+  },
+  {
+    "id": "I0B2",
+    "timestamp": "2025-10-08 21:26:10.010751",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321100.0
+  },
+  {
+    "id": "I0B1",
+    "timestamp": "2025-10-08 21:27:10.227365",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321400.0
+  },
+  {
+    "id": "I0B0",
+    "timestamp": "2025-10-08 21:28:10.513213",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321600.0
+  },
+  {
+    "id": "I0AF",
+    "timestamp": "2025-10-08 21:29:10.743999",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321800.0
+  },
+  {
+    "id": "I0AE",
+    "timestamp": "2025-10-08 21:30:10.950867",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321900.0
+  },
+  {
+    "id": "I0AD",
+    "timestamp": "2025-10-08 21:31:11.182931",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321400.0
+  },
+  {
+    "id": "I0AC",
+    "timestamp": "2025-10-08 21:32:11.628881",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321500.0
+  },
+  {
+    "id": "I0AB",
+    "timestamp": "2025-10-08 21:33:11.850252",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321300.0
+  },
+  {
+    "id": "I0AA",
+    "timestamp": "2025-10-08 21:34:12.723928",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321700.0
+  },
+  {
+    "id": "I0A9",
+    "timestamp": "2025-10-08 21:35:12.985924",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321800.0
+  },
+  {
+    "id": "I0A8",
+    "timestamp": "2025-10-08 21:36:13.339641",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321700.0
+  },
+  {
+    "id": "I0A7",
+    "timestamp": "2025-10-08 21:37:13.745315",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321600.0
+  },
+  {
+    "id": "I0A6",
+    "timestamp": "2025-10-08 21:38:13.977683",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321600.0
+  },
+  {
+    "id": "I0A5",
+    "timestamp": "2025-10-08 21:39:14.386908",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321600.0
+  },
+  {
+    "id": "I0A4",
+    "timestamp": "2025-10-08 21:40:14.641664",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 322000.0
+  },
+  {
+    "id": "I0A3",
+    "timestamp": "2025-10-08 21:41:14.835805",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 322100.0
+  },
+  {
+    "id": "I0A2",
+    "timestamp": "2025-10-08 21:42:15.043264",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 322200.0
+  },
+  {
+    "id": "I0A1",
+    "timestamp": "2025-10-08 21:43:15.255785",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321900.0
+  },
+  {
+    "id": "I0A0",
+    "timestamp": "2025-10-08 21:44:15.600020",
+    "score": 1,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 1,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 321900.0
+  },
+  {
+    "id": "I09F",
+    "timestamp": "2025-10-08 21:45:20.330769",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177747000.0
+  },
+  {
+    "id": "I09E",
+    "timestamp": "2025-10-08 21:46:20.549089",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177727000.0
+  },
+  {
+    "id": "I09D",
+    "timestamp": "2025-10-08 21:56:02.525930",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177638000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I09C",
+    "timestamp": "2025-10-08 21:57:02.783126",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177647000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0CF",
+    "timestamp": "2025-10-08 21:58:03.071634",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177640000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0D0",
+    "timestamp": "2025-10-08 21:59:03.445062",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177640000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0D1",
+    "timestamp": "2025-10-08 22:00:04.008265",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177640000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0D2",
+    "timestamp": "2025-10-08 22:01:04.269586",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177697000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0D3",
+    "timestamp": "2025-10-08 22:02:04.773140",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177800000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0D4",
+    "timestamp": "2025-10-08 22:03:05.343290",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177777000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0D5",
+    "timestamp": "2025-10-08 22:04:05.811388",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177745000.0,
+    "coin": "BTC"
+  },
+  {
+    "id": "I0D6",
+    "timestamp": "2025-10-08 22:05:06.086018",
+    "score": 0,
+    "components": {
+      "bb_touch": 0,
+      "rsi_oversold": 0,
+      "stoch_cross": 0
+    },
+    "regime": "BULLISH",
+    "price": 177700000.0,
+    "coin": "BTC"
   }
 ]

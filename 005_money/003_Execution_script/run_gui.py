@@ -42,13 +42,13 @@ def check_dependencies(version="ver1"):
     except ImportError:
         missing_packages.append("numpy")
 
-    # v2에서는 backtrader가 필수
-    if version == "ver2":
+    # v2 and v3에서는 backtrader가 필수
+    if version in ["ver2", "ver3"]:
         try:
             import backtrader
-            print("✅ backtrader 패키지 확인됨 (v2 필수)")
+            print(f"✅ backtrader 패키지 확인됨 ({version} 필수)")
         except ImportError:
-            missing_packages.append("backtrader (v2 전용)")
+            missing_packages.append(f"backtrader ({version} 전용)")
 
     if missing_packages:
         error_msg = f"다음 패키지들이 설치되지 않았습니다:\n" + "\n".join(f"• {pkg}" for pkg in missing_packages)
@@ -115,11 +115,11 @@ def show_startup_info(version="ver1"):
     """시작 정보 창 표시
 
     Args:
-        version: 실행할 버전 (ver1, ver2 등)
+        version: 실행할 버전 (ver1, ver2, ver3 등)
     """
     info_window = tk.Tk()
     info_window.title(f"빗썸 자동매매 봇 GUI - 시작 ({version})")
-    info_window.geometry("600x550")
+    info_window.geometry("600x650")
     info_window.resizable(False, False)
 
     # 중앙 정렬
@@ -137,7 +137,12 @@ def show_startup_info(version="ver1"):
     main_frame.pack(fill=tk.BOTH, expand=True)
 
     # 제목
-    version_display = "v2 - 다중 시간대 전략" if version == "ver2" else "v1 - Elite 8-Indicator"
+    version_display_map = {
+        "ver1": "v1 - Elite 8-Indicator",
+        "ver2": "v2 - 다중 시간대 전략",
+        "ver3": "v3 - 포트폴리오 멀티코인"
+    }
+    version_display = version_display_map.get(version, version)
     title_label = tk.Label(
         main_frame,
         text=f"🤖 빗썸 자동매매 봇 GUI\n{version_display}",
@@ -147,7 +152,35 @@ def show_startup_info(version="ver1"):
     title_label.pack(pady=(0, 20))
 
     # 버전별 기능 설명
-    if version == "ver2":
+    if version == "ver3":
+        features_text = """
+🔥 주요 기능 (v3):
+
+📊 포트폴리오 멀티코인 전략
+  • 2-3개 코인 동시 모니터링 (BTC, ETH, XRP 등)
+  • 최대 2개 포지션 동시 보유
+  • 진입 점수 기반 우선순위 (높은 점수 우선)
+  • 병렬 분석으로 빠른 의사결정
+
+💼 포트폴리오 관리
+  • 포트폴리오 레벨 리스크 관리
+  • 개별 코인 Ver2 전략 적용
+  • 스레드 안전 동시 실행
+  • 6% 총 포트폴리오 리스크 제한
+
+⚙️ 코인 선택
+  • 동적 코인 선택 (체크박스)
+  • 최소 1개, 최대 4개 코인
+  • 실시간 코인 변경 가능
+  • 코인별 상태 추적
+
+🎮 실시간 모니터링
+  • 포트폴리오 오버뷰 테이블
+  • 코인별 진입 점수 (0-4)
+  • 전체 P&L 및 포지션 현황
+  • 15분 주기 자동 분석
+"""
+    elif version == "ver2":
         features_text = """
 🔥 주요 기능 (v2):
 
@@ -258,7 +291,7 @@ def launch_gui(version="ver1"):
     """GUI 실행
 
     Args:
-        version: 실행할 버전 (ver1, ver2 등)
+        version: 실행할 버전 (ver1, ver2, ver3 등)
     """
     try:
         print(f"🔄 GUI 애플리케이션을 시작하고 있습니다... (버전: {version})")
@@ -270,7 +303,16 @@ def launch_gui(version="ver1"):
 
         # 버전별로 다른 GUI 모듈 임포트
         try:
-            if version == "ver2":
+            if version == "ver3":
+                # v3 GUI 실행 (Portfolio Multi-Coin)
+                ver3_dir = os.path.join(python_code_dir, 'ver3')
+                if ver3_dir not in sys.path:
+                    sys.path.insert(0, ver3_dir)
+
+                from ver3.gui_app_v3 import TradingBotGUIV3
+                print("✅ v3 GUI 모듈 임포트 성공")
+                gui_class = TradingBotGUIV3
+            elif version == "ver2":
                 # v2 GUI 실행
                 ver2_dir = os.path.join(python_code_dir, 'ver2')
                 if ver2_dir not in sys.path:
@@ -289,9 +331,9 @@ def launch_gui(version="ver1"):
             error_msg = f"GUI 모듈 임포트 실패: {e}\n\n" + \
                        "다음을 확인해주세요:\n"
 
-            # v2 특화 에러 메시지
-            if version == "ver2" and "backtrader" in str(e):
-                error_msg += "⚠️ v2는 Backtrader 라이브러리가 필요합니다!\n\n" + \
+            # v2/v3 특화 에러 메시지
+            if version in ["ver2", "ver3"] and "backtrader" in str(e):
+                error_msg += f"⚠️ {version}는 Backtrader 라이브러리가 필요합니다!\n\n" + \
                             "해결 방법:\n" + \
                             "1. 터미널에서 다음 명령 실행:\n" + \
                             "   cd /Users/seongwookjang/project/git/violet_sw/005_money\n" + \
@@ -324,7 +366,9 @@ def launch_gui(version="ver1"):
         app = gui_class(root)
 
         print(f"✅ {version} GUI가 성공적으로 시작되었습니다!")
-        if version == "ver2":
+        if version == "ver3":
+            print("💡 v3 전략: Portfolio Multi-Coin Strategy (2-3 coins, max 2 positions)")
+        elif version == "ver2":
             print("💡 v2 전략: 다중 시간대 분석 (일봉 체제 + 4시간 진입)")
         else:
             print("💡 v1 전략: Elite 8-Indicator Strategy")
@@ -353,7 +397,7 @@ def main(version="ver1"):
     """메인 실행 함수
 
     Args:
-        version: 실행할 버전 (ver1, ver2 등)
+        version: 실행할 버전 (ver1, ver2, ver3 등)
     """
     print(f"🔄 빗썸 자동매매 봇 GUI를 시작합니다... (버전: {version})")
     print("📍 현재 디렉토리:", os.getcwd())
@@ -389,6 +433,11 @@ if __name__ == "__main__":
         if sys.argv[i] in ["--version", "-v"]:
             if i + 1 < len(sys.argv):
                 version = sys.argv[i + 1]
+                # Validate version
+                if version not in ["ver1", "ver2", "ver3"]:
+                    print(f"❌ 잘못된 버전: {version}")
+                    print("사용 가능한 버전: ver1, ver2, ver3")
+                    sys.exit(1)
                 i += 2
             else:
                 print("❌ --version 옵션에 값이 필요합니다 (예: --version ver2)")
@@ -398,7 +447,7 @@ if __name__ == "__main__":
             i += 1
         else:
             print(f"❌ 알 수 없는 옵션: {sys.argv[i]}")
-            print("사용법: python run_gui.py [--version ver1|ver2] [--direct]")
+            print("사용법: python run_gui.py [--version ver1|ver2|ver3] [--direct]")
             sys.exit(1)
 
     if direct_mode:
