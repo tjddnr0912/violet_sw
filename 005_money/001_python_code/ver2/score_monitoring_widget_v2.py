@@ -33,14 +33,18 @@ class ScoreMonitoringWidgetV2:
     records every score calculation for analysis purposes.
     """
 
-    def __init__(self, parent, config=None):
+    def __init__(self, parent, config=None, coin_symbol: str = 'BTC'):
         self.parent = parent
         self.score_checks = deque(maxlen=1440)  # 24 hours at 1-minute intervals
+
+        # Store coin symbol for filtering
+        self.coin_symbol = coin_symbol
 
         # Store config reference for dynamic threshold
         if config is None:
             from ver2 import config_v2
             self.config = config_v2.get_version_config()
+            self.coin_symbol = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
         else:
             self.config = config
 
@@ -73,8 +77,9 @@ class ScoreMonitoringWidgetV2:
         main_frame.rowconfigure(2, weight=1)
 
         # === Statistics Panel ===
-        stats_frame = ttk.LabelFrame(main_frame, text="📊 점수 체크 통계 (실시간 모니터링)", padding="10")
-        stats_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.stats_frame = ttk.LabelFrame(main_frame, text=f"📊 {self.coin_symbol} 점수 체크 통계 (실시간 모니터링)", padding="10")
+        self.stats_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        stats_frame = self.stats_frame  # Alias for existing code
 
         # Row 1: Overall stats
         stats_row1 = ttk.Frame(stats_frame)
@@ -233,12 +238,18 @@ class ScoreMonitoringWidgetV2:
                 - components: Dict with bb_touch, rsi_oversold, stoch_cross
                 - regime: Market regime
                 - price: Current price
+                - coin: Coin symbol (optional, defaults to widget's current coin)
         """
         timestamp = score_data.get('timestamp', datetime.now())
         score = score_data.get('score', 0)
         components = score_data.get('components', {})
         regime = score_data.get('regime', 'NEUTRAL')
         price = score_data.get('price', 0)
+        coin = score_data.get('coin', self.coin_symbol)  # Use widget's coin if not specified
+
+        # Filter: Only add if coin matches current widget coin
+        if coin != self.coin_symbol:
+            return  # Silently ignore checks from different coins
 
         # Get dynamic threshold from config
         min_entry_score = self.config['ENTRY_SCORING_CONFIG'].get('min_entry_score', 3)
@@ -280,7 +291,8 @@ class ScoreMonitoringWidgetV2:
             'score': score,
             'components': components,
             'regime': regime,
-            'price': price
+            'price': price,
+            'coin': coin  # Store coin symbol
         }
         self.score_checks.append(check_record)
 
@@ -691,6 +703,24 @@ class ScoreMonitoringWidgetV2:
             except Exception as e:
                 messagebox.showerror("오류", f"CSV 저장 실패: {str(e)}")
 
+    def update_coin(self, new_coin: str):
+        """
+        Update widget when coin changes.
+
+        Args:
+            new_coin: New coin symbol (e.g., 'SOL', 'ETH')
+        """
+        self.coin_symbol = new_coin
+
+        # Update title (LabelFrame uses configure, not StringVar)
+        self.stats_frame.configure(text=f"📊 {self.coin_symbol} 점수 체크 통계 (실시간 모니터링)")
+
+        # Load data for new coin from file (will filter by coin)
+        self.load_from_file()
+
+        # Refresh display
+        self.refresh_display()
+
     def clear_scores(self):
         """Clear all score checks"""
         from tkinter import messagebox
@@ -718,7 +748,7 @@ class ScoreMonitoringWidgetV2:
             print(f"Error saving score checks to {file_path}: {str(e)}")
 
     def load_from_file(self, file_path: str = None):
-        """Load score checks from JSON file"""
+        """Load score checks from JSON file (filtered by current coin)"""
         if file_path is None:
             file_path = os.path.join('logs', 'score_checks_v2.json')
 
@@ -727,12 +757,18 @@ class ScoreMonitoringWidgetV2:
                 with open(file_path, 'r') as f:
                     data = json.load(f)
 
-                # Convert timestamp strings back to datetime
+                # Convert timestamp strings back to datetime and filter by coin
+                filtered_data = []
                 for check in data:
                     if isinstance(check['timestamp'], str):
                         check['timestamp'] = datetime.fromisoformat(check['timestamp'])
 
-                self.score_checks = deque(data, maxlen=1440)
+                    # Filter by coin symbol (backwards compatible: include if no coin field)
+                    check_coin = check.get('coin', self.coin_symbol)  # Assume current coin if not specified
+                    if check_coin == self.coin_symbol:
+                        filtered_data.append(check)
+
+                self.score_checks = deque(filtered_data, maxlen=1440)
                 self.refresh_display()
                 return True
         except Exception as e:

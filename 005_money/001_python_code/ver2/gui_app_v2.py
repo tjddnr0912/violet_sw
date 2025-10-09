@@ -227,8 +227,9 @@ class TradingBotGUIV2:
         # Configure Tab 4 (Score Monitoring) - NEW
         score_monitoring_tab.columnconfigure(0, weight=1)
         score_monitoring_tab.rowconfigure(0, weight=1)
-        self.score_monitoring_widget = ScoreMonitoringWidgetV2(score_monitoring_tab, v2_config)
-        # Load persisted score checks from previous sessions
+        current_coin = v2_config['TRADING_CONFIG'].get('symbol', 'BTC')
+        self.score_monitoring_widget = ScoreMonitoringWidgetV2(score_monitoring_tab, v2_config, coin_symbol=current_coin)
+        # Load persisted score checks from previous sessions (filtered by coin)
         self.score_monitoring_widget.load_from_file()
 
         # Configure Tab 5 (Signal History)
@@ -849,10 +850,14 @@ class TradingBotGUIV2:
             """Handle ALL score checks (including 0-2 points) for monitoring"""
             self.score_monitoring_widget.add_score_check(score_data)
 
+        # Get current coin from config to pass to bot
+        current_symbol = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+
         self.bot = GUITradingBotV2(
             log_callback=self.log_to_console,
             signal_callback=handle_signal_event,
-            score_tracking_callback=handle_score_tracking
+            score_tracking_callback=handle_score_tracking,
+            symbol=current_symbol  # Explicitly pass current coin symbol
         )
         self.bot_thread = threading.Thread(target=self.bot.run, daemon=True)
         self.bot_thread.start()
@@ -1660,14 +1665,15 @@ class TradingBotGUIV2:
                 except Exception as e:
                     self.log_to_console(f"    ⚠️ 멀티 차트 새로고침 오류: {str(e)}")
 
-            # Tab 4: Clear score monitoring (or filter by coin)
+            # Tab 4: Update score monitoring for new coin
             if hasattr(self, 'score_monitoring_widget') and self.score_monitoring_widget:
-                self.log_to_console("  - 점수 모니터링 초기화")
+                self.log_to_console("  - 점수 모니터링 코인 변경")
                 try:
-                    # Clear all data for new coin
-                    self.score_monitoring_widget.clear_scores()
+                    # Update to new coin (will reload filtered data)
+                    new_symbol = self.config['TRADING_CONFIG'].get('symbol', 'BTC')
+                    self.score_monitoring_widget.update_coin(new_symbol)
                 except Exception as e:
-                    self.log_to_console(f"    ⚠️ 점수 모니터링 초기화 오류: {str(e)}")
+                    self.log_to_console(f"    ⚠️ 점수 모니터링 코인 변경 오류: {str(e)}")
 
             # Tab 5: Clear signal history (or filter by coin)
             if hasattr(self, 'signal_history_widget') and self.signal_history_widget:

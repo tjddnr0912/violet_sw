@@ -46,7 +46,7 @@ class GUITradingBotV2:
     - Tracking Chandelier Exit trailing stop
     """
 
-    def __init__(self, log_callback: Optional[Callable] = None, signal_callback: Optional[Callable] = None, score_tracking_callback: Optional[Callable] = None):
+    def __init__(self, log_callback: Optional[Callable] = None, signal_callback: Optional[Callable] = None, score_tracking_callback: Optional[Callable] = None, symbol: Optional[str] = None):
         self.log_callback = log_callback
         self.signal_callback = signal_callback
         self.score_tracking_callback = score_tracking_callback
@@ -57,8 +57,11 @@ class GUITradingBotV2:
         self.dry_run = self.config['EXECUTION_CONFIG'].get('dry_run', True)
         self.live_mode = self.config['EXECUTION_CONFIG'].get('mode', 'backtest') == 'live'
 
-        # Get trading symbol from config (defaults to 'BTC')
-        self.symbol = self.config.get('TRADING_CONFIG', {}).get('symbol', 'BTC').upper()
+        # Get trading symbol: prioritize explicit parameter, fallback to config
+        if symbol:
+            self.symbol = symbol.upper()
+        else:
+            self.symbol = self.config.get('TRADING_CONFIG', {}).get('symbol', 'BTC').upper()
 
         # Initialize API and Logger (needed for LiveExecutorV2)
         self.api = None
@@ -120,9 +123,9 @@ class GUITradingBotV2:
         self.total_trades = 0
         self.winning_trades = 0
 
-        # Log initialization with mode info
+        # Log initialization with mode and symbol info
         mode_str = "LIVE TRADING" if (self.live_mode and not self.dry_run) else "DRY-RUN"
-        self.log(f"GUITradingBotV2 initialized - Mode: {mode_str}")
+        self.log(f"GUITradingBotV2 initialized - Mode: {mode_str}, Symbol: {self.symbol}")
         if self.live_mode and not self.dry_run:
             self.log("⚠️ WARNING: REAL TRADING MODE ACTIVE - Real money will be used!")
         elif self.live_mode and self.dry_run:
@@ -219,7 +222,7 @@ class GUITradingBotV2:
         """Check entry signals on 4H timeframe"""
         try:
             # Fetch 4H data
-            self.log("[ENTRY] Fetching 4H candlestick data...")
+            self.log(f"[ENTRY] Fetching 4H candlestick data for {self.symbol}...")
             df = get_candlestick(self.symbol, '4h')
             if df is None or len(df) < 50:
                 self.log(f"[ENTRY] Insufficient data: {len(df) if df is not None else 0} candles")
@@ -268,7 +271,8 @@ class GUITradingBotV2:
                     'score': score,
                     'components': components.copy(),
                     'regime': self.regime,
-                    'price': latest['close']
+                    'price': latest['close'],
+                    'coin': self.symbol  # Include coin symbol for filtering
                 })
 
             # Entry decision

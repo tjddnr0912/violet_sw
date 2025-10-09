@@ -28,10 +28,12 @@ show_logo() {
 show_help() {
     show_logo
     echo -e "${YELLOW}사용법:${NC}"
-    echo "  ./gui                       # GUI 실행 (기본: ver1)"
+    echo "  ./gui                       # GUI 실행 (기본: ver2)"
     echo "  ./gui --version ver1        # Ver1으로 GUI 실행"
     echo "  ./gui --version ver2        # Ver2로 GUI 실행"
+    echo "  ./gui --version ver3        # Ver3로 GUI 실행 (멀티코인)"
     echo "  ./gui -v ver1               # 버전 선택 (축약형)"
+    echo "  ./gui -v ver3               # Ver3 실행 (축약형)"
     echo "  ./gui --help                # 도움말 표시"
     echo "  ./gui --setup-only          # 환경 설정만 실행"
     echo "  ./gui --check               # 시스템 요구사항 확인"
@@ -43,11 +45,17 @@ show_help() {
     echo "      - 가중치 기반 신호 조합"
     echo "      - 시장 상황 인식 (Trending/Ranging/Transitional)"
     echo ""
-    echo "  📊 ver2: 비트코인 다중 시간대 전략 ⭐"
+    echo "  📊 ver2: 비트코인 다중 시간대 전략"
     echo "      - 일봉 EMA 50/200 체제 필터"
-    echo "      - 4시간봉 점수 기반 진입 (3점 이상)"
+    echo "      - 4시간봉 점수 기반 진입 (2점 이상)"
     echo "      - 샹들리에 엑시트 (ATR 3배 추적 손절)"
     echo "      - 50% 분할 진입/청산"
+    echo ""
+    echo "  📊 ver3: Portfolio Multi-Coin Strategy ⭐ NEW"
+    echo "      - 2-3개 코인 동시 모니터링 (BTC, ETH, XRP, SOL)"
+    echo "      - 병렬 시장 분석 (ThreadPoolExecutor)"
+    echo "      - 포트폴리오 리스크 관리 (최대 2 포지션, 6% 리스크)"
+    echo "      - 진입 신호 우선순위화 (점수 기반)"
     echo ""
     echo -e "${CYAN}주요 기능:${NC}"
     echo "  🎮 실시간 봇 제어 (시작/정지)"
@@ -194,14 +202,14 @@ except ImportError as e:
     print(f'❌ 패키지 오류: {e}')
     sys.exit(1)
 
-# v2에서는 backtrader 확인
+# v2, v3에서는 backtrader 확인
 check_version = '$check_version'
-if check_version == 'ver2':
+if check_version in ['ver2', 'ver3']:
     try:
         import backtrader
-        print('✅ backtrader 확인 완료 (v2 필수)')
+        print(f'✅ backtrader 확인 완료 ({check_version} 필수)')
     except ImportError:
-        print('⚠️  경고: backtrader가 설치되지 않음 (v2 필수)')
+        print(f'⚠️  경고: backtrader가 설치되지 않음 ({check_version} 필수)')
         print('   해결: pip install backtrader python-binance')
         sys.exit(1)
 
@@ -275,9 +283,22 @@ launch_gui() {
     if [[ -n "$VERSION" ]]; then
         echo -e "${CYAN}📊 선택된 버전: $VERSION${NC}"
     else
-        echo -e "${CYAN}📊 선택된 버전: ver1 (기본)${NC}"
-        VERSION="ver1"
+        echo -e "${CYAN}📊 선택된 버전: ver2 (기본)${NC}"
+        VERSION="ver2"
     fi
+
+    # 버전별 설명 표시
+    case "$VERSION" in
+        ver1)
+            echo -e "${YELLOW}   Elite 8-Indicator Strategy${NC}"
+            ;;
+        ver2)
+            echo -e "${YELLOW}   Multi-Timeframe Trend-Following Strategy${NC}"
+            ;;
+        ver3)
+            echo -e "${YELLOW}   Portfolio Multi-Coin Strategy (멀티코인)${NC}"
+            ;;
+    esac
     echo ""
 
     # 가상환경이 있으면 활성화
@@ -321,11 +342,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo -e "${RED}❌ 알 수 없는 옵션: $1${NC}"
-            echo "사용법: ./gui [--version ver1|ver2] [--setup-only|--check|--force-install|--help]"
+            echo "사용법: ./gui [--version ver1|ver2|ver3] [--setup-only|--check|--force-install|--help]"
             exit 1
             ;;
     esac
 done
+
+# 버전 유효성 검사
+if [[ -n "$VERSION" ]] && [[ "$VERSION" != "ver1" ]] && [[ "$VERSION" != "ver2" ]] && [[ "$VERSION" != "ver3" ]]; then
+    echo -e "${RED}❌ 유효하지 않은 버전: $VERSION${NC}"
+    echo "사용 가능한 버전: ver1, ver2, ver3"
+    exit 1
+fi
 
 # 메인 실행 로직
 main() {
