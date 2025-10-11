@@ -327,6 +327,41 @@ class PortfolioManagerV3:
                         f"🚨 STOP-LOSS TRIGGERED: {coin} at {current_price:,.0f} KRW"
                     )
 
+        # 0.5 SECOND PRIORITY: Check profit targets for all active positions
+        exit_config = self.config.get('EXIT_CONFIG', {})
+        for coin in self.coins:
+            if self.executor.has_position(coin):
+                result = coin_results.get(coin, {})
+                current_price = result.get('current_price', 0)
+                target_prices = result.get('target_prices', {})
+
+                if current_price <= 0 or not target_prices:
+                    continue
+
+                pos_summary = self.executor.get_position_summary(coin)
+                first_target_hit = pos_summary.get('first_target_hit', False)
+                second_target_hit = pos_summary.get('second_target_hit', False)
+
+                # Check first target (50% partial exit)
+                first_target = target_prices.get('first_target', 0)
+                if not first_target_hit and first_target > 0 and current_price >= first_target:
+                    decisions.append((coin, 'PARTIAL_SELL_50', 0))
+                    profit_pct = ((current_price - pos_summary['entry_price']) / pos_summary['entry_price']) * 100
+                    self.logger.logger.info(
+                        f"🎯 FIRST TARGET HIT: {coin} at {current_price:,.0f} KRW "
+                        f"(+{profit_pct:.2f}%) - Selling 50%"
+                    )
+
+                # Check second target (remaining 100% exit)
+                second_target = target_prices.get('second_target', 0)
+                if first_target_hit and not second_target_hit and second_target > 0 and current_price >= second_target:
+                    decisions.append((coin, 'SELL', 0))
+                    profit_pct = ((current_price - pos_summary['entry_price']) / pos_summary['entry_price']) * 100
+                    self.logger.logger.info(
+                        f"🎯 SECOND TARGET HIT: {coin} at {current_price:,.0f} KRW "
+                        f"(+{profit_pct:.2f}%) - Closing position"
+                    )
+
         # 1. Count current positions
         active_positions = [
             coin for coin in self.coins
@@ -595,8 +630,8 @@ class PortfolioManagerV3:
                         f"{coin} order failed: {order_result.get('message')}"
                     )
 
-            elif action == 'SELL':
-                # Exit at current price
+            elif action == 'PARTIAL_SELL_50':
+                # First target hit - 50% partial exit
                 price = analysis.get('current_price', 0)
 
                 if price <= 0:
@@ -605,15 +640,64 @@ class PortfolioManagerV3:
                     )
                     continue
 
+                # Execute 50% partial exit
+                order_result = self.executor.execute_partial_exit(
+                    ticker=coin,
+                    exit_pct=50.0,
+                    price=price,
+                    dry_run=self.config['EXECUTION_CONFIG'].get('dry_run', True),
+                    reason="First target (BB middle) reached"
+                )
+
+                if order_result.get('success'):
+                    # Mark first target as hit
+                    self.executor.mark_first_target_hit(coin)
+
+                    # Move stop-loss to breakeven
+                    exit_config = self.config.get('EXIT_CONFIG', {})
+                    if exit_config.get('trail_after_breakeven', True):
+                        pos_summary = self.executor.get_position_summary(coin)
+                        entry_price = pos_summary['entry_price']
+                        self.executor.update_stop_loss(coin, entry_price)
+                        self.logger.logger.info(
+                            f"{coin} stop-loss moved to breakeven: {entry_price:,.0f} KRW"
+                        )
+
+                    self.logger.logger.info(
+                        f"{coin} first target reached: 50% sold @ {price:,.0f} KRW"
+                    )
+                else:
+                    self.logger.logger.error(
+                        f"{coin} partial exit failed: {order_result.get('message')}"
+                    )
+
+            elif action == 'SELL':
+                # Exit at current price (full exit or second target)
+                price = analysis.get('current_price', 0)
+
+                if price <= 0:
+                    self.logger.logger.error(
+                        f"Invalid price for {coin}: {price}, skipping order"
+                    )
+                    continue
+
+                # Check if this is second target or regular exit
+                pos_summary = self.executor.get_position_summary(coin)
+                first_target_hit = pos_summary.get('first_target_hit', False)
+
                 # Close entire position
                 order_result = self.executor.close_position(
                     ticker=coin,
                     price=price,
                     dry_run=self.config['EXECUTION_CONFIG'].get('dry_run', True),
-                    reason=analysis.get('reason', 'Exit signal')
+                    reason="Second target (BB upper) reached" if first_target_hit else analysis.get('reason', 'Exit signal')
                 )
 
                 if order_result.get('success'):
+                    # Mark second target as hit if first was hit
+                    if first_target_hit:
+                        self.executor.mark_second_target_hit(coin)
+
                     # Track last executed action
                     self.last_executed_actions[coin] = 'SELL'
                     self._save_last_actions()  # Persist to file
