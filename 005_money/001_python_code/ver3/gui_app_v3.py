@@ -114,7 +114,7 @@ class TradingBotGUIV3:
         self.bot_status = {
             'coins': self.active_coins,
             'total_positions': 0,
-            'max_positions': 2,
+            'max_positions': self.config['PORTFOLIO_CONFIG'].get('max_positions', 2),
             'total_pnl': 0,
             'portfolio_risk': 0,
             'last_analysis_time': None,
@@ -636,7 +636,11 @@ Portfolio Multi-Coin Strategy (Ver3):
             analysis = data.get('analysis', {})
             regime = analysis.get('market_regime', '?')
             score = analysis.get('entry_score', 0)
-            stats_lines.append(f"{coin}: {regime.upper()} | Score: {score}/4")
+            score_details = analysis.get('score_details', '')
+            if score_details:
+                stats_lines.append(f"{coin}: {regime.upper()} | {score}/4 ({score_details})")
+            else:
+                stats_lines.append(f"{coin}: {regime.upper()} | Score: {score}/4")
 
         self.stats_text.config(state='normal')
         self.stats_text.delete('1.0', tk.END)

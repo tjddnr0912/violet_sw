@@ -1,23 +1,65 @@
 {
-  "ETH": {
-    "ticker": "ETH",
-    "size": 0.007901390644753476,
-    "entry_price": 6328000.0,
-    "entry_time": "2025-10-09T18:45:07.060765",
-    "stop_loss": 6473071.428571428,
-    "highest_high": 6328000.0,
+  "SOL": {
+    "ticker": "SOL",
+    "size": 0.16903313049357674,
+    "entry_price": 295800.0,
+    "entry_time": "2025-10-11T08:36:12.570248",
+    "stop_loss": 270492.85714285716,
+    "highest_high": 295800.0,
     "position_pct": 100.0,
     "first_target_hit": false,
     "second_target_hit": false,
     "entry_count": 1,
     "entry_prices": [
-      6328000.0
+      295800.0
     ],
     "entry_times": [
-      "2025-10-09T18:45:07.060765"
+      "2025-10-11T08:36:12.570248"
     ],
     "entry_sizes": [
-      0.007901390644753476
+      0.16903313049357674
+    ]
+  },
+  "ETH": {
+    "ticker": "ETH",
+    "size": 0.008480325644504749,
+    "entry_price": 5896000.0,
+    "entry_time": "2025-10-11T08:58:28.762363",
+    "stop_loss": 5497000.0,
+    "highest_high": 5896000.0,
+    "position_pct": 100.0,
+    "first_target_hit": false,
+    "second_target_hit": false,
+    "entry_count": 1,
+    "entry_prices": [
+      5896000.0
+    ],
+    "entry_times": [
+      "2025-10-11T08:58:28.762363"
+    ],
+    "entry_sizes": [
+      0.008480325644504749
+    ]
+  },
+  "XRP": {
+    "ticker": "XRP",
+    "size": 13.642564802182811,
+    "entry_price": 3665.0,
+    "entry_time": "2025-10-11T08:58:28.964451",
+    "stop_loss": 3296.857142857143,
+    "highest_high": 3665.0,
+    "position_pct": 100.0,
+    "first_target_hit": false,
+    "second_target_hit": false,
+    "entry_count": 1,
+    "entry_prices": [
+      3665.0
+    ],
+    "entry_times": [
+      "2025-10-11T08:58:28.964451"
+    ],
+    "entry_sizes": [
+      13.642564802182811
     ]
   }
 }

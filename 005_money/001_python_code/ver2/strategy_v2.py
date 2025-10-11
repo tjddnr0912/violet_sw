@@ -392,6 +392,7 @@ class StrategyV2(VersionInterface):
 
         Returns:
             Tuple of (total_score, details_string)
+            details_string format: "BB:1✓, RSI:0✗, Stoch:0✗" (shows points earned per criterion)
         """
         if df is None or len(df) < 2:
             return 0, "Insufficient data"
@@ -405,23 +406,26 @@ class StrategyV2(VersionInterface):
 
         # Condition 1: BB lower touch (+1 point)
         if rules.get('bb_touch', {}).get('enabled', True):
+            bb_points = rules['bb_touch']['points']
             if latest['low'] <= latest['bb_lower']:
-                score += rules['bb_touch']['points']
-                details.append("BB touch ✓")
+                score += bb_points
+                details.append(f"BB:{bb_points}✓")
             else:
-                details.append("BB touch ✗")
+                details.append(f"BB:0✗")
 
         # Condition 2: RSI oversold (+1 point)
         if rules.get('rsi_oversold', {}).get('enabled', True):
+            rsi_points = rules['rsi_oversold']['points']
             rsi_threshold = self.indicator_config.get('rsi_oversold', 30)
             if latest['rsi'] < rsi_threshold:
-                score += rules['rsi_oversold']['points']
-                details.append(f"RSI<{rsi_threshold} ✓")
+                score += rsi_points
+                details.append(f"RSI:{rsi_points}✓")
             else:
-                details.append(f"RSI<{rsi_threshold} ✗")
+                details.append(f"RSI:0✗")
 
         # Condition 3: Stochastic RSI bullish cross below 20 (+2 points)
         if rules.get('stoch_rsi_cross', {}).get('enabled', True):
+            stoch_points = rules['stoch_rsi_cross']['points']
             stoch_threshold = self.indicator_config.get('stoch_oversold', 20)
 
             # Check for bullish cross: %K crosses above %D
@@ -437,10 +441,10 @@ class StrategyV2(VersionInterface):
             )
 
             if k_cross_above and both_below_threshold:
-                score += rules['stoch_rsi_cross']['points']
-                details.append(f"Stoch cross<{stoch_threshold} ✓")
+                score += stoch_points
+                details.append(f"Stoch:{stoch_points}✓")
             else:
-                details.append(f"Stoch cross<{stoch_threshold} ✗")
+                details.append(f"Stoch:0✗")
 
         details_str = ", ".join(details)
         return score, details_str

@@ -92,7 +92,7 @@ class PortfolioOverviewWidget(ttk.Frame):
         # Configure column widths
         self.tree.column('coin', width=80, anchor='center')
         self.tree.column('status', width=100, anchor='center')
-        self.tree.column('score', width=100, anchor='center')
+        self.tree.column('score', width=180, anchor='center')  # Increased for score breakdown
         self.tree.column('position', width=150, anchor='center')
         self.tree.column('pnl', width=120, anchor='center')
         self.tree.column('action', width=100, anchor='center')
@@ -159,7 +159,7 @@ class PortfolioOverviewWidget(ttk.Frame):
 
         Args:
             coin: Cryptocurrency symbol (e.g., 'BTC')
-            data: Coin data dictionary with 'analysis' and 'position' keys
+            data: Coin data dictionary with 'analysis', 'position', and 'last_executed_action' keys
         """
         analysis = data.get('analysis', {})
         position = data.get('position', {})
@@ -167,7 +167,9 @@ class PortfolioOverviewWidget(ttk.Frame):
         # Extract data
         regime = analysis.get('market_regime', 'neutral')
         entry_score = analysis.get('entry_score', 0)
-        action = analysis.get('action', 'HOLD')
+        score_details = analysis.get('score_details', '')
+        # Use last executed action instead of strategy's recommended action
+        last_action = data.get('last_executed_action', '-')
 
         has_position = position.get('has_position', False)
         position_text = '-'
@@ -185,8 +187,11 @@ class PortfolioOverviewWidget(ttk.Frame):
         else:
             status = regime.upper()
 
-        # Format entry score
-        score_text = f"{entry_score}/4"
+        # Format entry score with details
+        if score_details:
+            score_text = f"{entry_score}/4 ({score_details})"
+        else:
+            score_text = f"{entry_score}/4"
 
         # Format P&L
         if has_position:
@@ -196,7 +201,7 @@ class PortfolioOverviewWidget(ttk.Frame):
             pnl_text = '-'
 
         # Row values
-        values = (coin, status, score_text, position_text, pnl_text, action)
+        values = (coin, status, score_text, position_text, pnl_text, last_action)
 
         # Determine row tags for coloring
         tags = []

@@ -46,6 +46,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime
+import json
+import os
+from pathlib import Path
 
 from ver2.strategy_v2 import StrategyV2
 from ver3.live_executor_v3 import LiveExecutorV3
@@ -198,7 +201,47 @@ class PortfolioManagerV3:
         self.last_results = {}
         self.last_decisions = []
 
+        # State file for last executed actions
+        log_dir = config.get('LOGGING_CONFIG', {}).get('log_dir', 'logs')
+        self.actions_state_file = Path(log_dir) / 'last_executed_actions_v3.json'
+
+        # Track last executed action per coin: {coin: 'BUY'|'SELL'|'-'}
+        self.last_executed_actions = self._load_last_actions()
+
         self.logger.logger.info(f"Portfolio Manager V3 initialized with coins: {coins}")
+
+    def _load_last_actions(self) -> Dict[str, str]:
+        """
+        Load last executed actions from state file.
+
+        Returns:
+            Dictionary mapping coin to last action ('BUY'|'SELL'|'-')
+        """
+        try:
+            if self.actions_state_file.exists():
+                with open(self.actions_state_file, 'r') as f:
+                    data = json.load(f)
+                self.logger.logger.info(f"Loaded last actions for {len(data)} coins from state file")
+                return data
+            else:
+                self.logger.logger.debug("No existing last actions state file found")
+                return {}
+        except Exception as e:
+            self.logger.log_error("Error loading last actions state", e)
+            return {}
+
+    def _save_last_actions(self):
+        """Save last executed actions to state file."""
+        try:
+            # Ensure directory exists
+            self.actions_state_file.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(self.actions_state_file, 'w') as f:
+                json.dump(self.last_executed_actions, f, indent=2)
+
+            self.logger.logger.debug(f"Saved last actions for {len(self.last_executed_actions)} coins")
+        except Exception as e:
+            self.logger.log_error("Error saving last actions state", e)
 
     def analyze_all(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -255,11 +298,12 @@ class PortfolioManagerV3:
         Make portfolio-level trading decisions with risk limits and pyramiding support.
 
         Decision Logic:
-        1. Count current positions
-        2. Check portfolio position limit
-        3. Prioritize entry signals by score (highest first)
-        4. Allow pyramiding if conditions met
-        5. Allow exits regardless of limits
+        1. Check stop-loss for all positions (FIRST PRIORITY)
+        2. Count current positions
+        3. Check portfolio position limit
+        4. Prioritize entry signals by score (highest first)
+        5. Allow pyramiding if conditions met
+        6. Allow exits regardless of limits
 
         Args:
             coin_results: Analysis results from analyze_all()
@@ -270,6 +314,18 @@ class PortfolioManagerV3:
             entry_number: 1=new position, 2+=pyramiding
         """
         decisions = []
+
+        # 0. PRIORITY: Check stop-loss for all active positions
+        for coin in self.coins:
+            if self.executor.has_position(coin):
+                result = coin_results.get(coin, {})
+                current_price = result.get('current_price', 0)
+
+                if current_price > 0 and self.executor.check_stop_loss(coin, current_price):
+                    decisions.append((coin, 'SELL', 0))  # entry_number=0 for stop-loss
+                    self.logger.logger.warning(
+                        f"🚨 STOP-LOSS TRIGGERED: {coin} at {current_price:,.0f} KRW"
+                    )
 
         # 1. Count current positions
         active_positions = [
@@ -338,14 +394,16 @@ class PortfolioManagerV3:
 
                     decisions.append((coin, 'BUY', entry_number))
                     total_positions += 1
+                    score_details = result.get('score_details', '')
                     self.logger.logger.info(
-                        f"Entry decision: {coin} (score: {result.get('entry_score')}/4, "
+                        f"Entry decision: {coin} (score: {result.get('entry_score')}/4 [{score_details}], "
                         f"strength: {result.get('signal_strength', 0):.2f})"
                     )
                 else:  # Pyramiding
                     decisions.append((coin, 'BUY', entry_number))
+                    score_details = result.get('score_details', '')
                     self.logger.logger.info(
-                        f"Pyramid decision: {coin} entry #{entry_number} (score: {result.get('entry_score')}/4, "
+                        f"Pyramid decision: {coin} entry #{entry_number} (score: {result.get('entry_score')}/4 [{score_details}], "
                         f"strength: {result.get('signal_strength', 0):.2f})"
                     )
 
@@ -463,7 +521,23 @@ class PortfolioManagerV3:
             if action == 'BUY':
                 # Entry parameters from analysis
                 price = analysis.get('current_price', 0)
-                stop_loss = analysis.get('stop_loss_price', 0)
+
+                # For NEW positions, calculate stop-loss based on entry price
+                # For pyramiding, use existing stop-loss from analysis
+                if entry_number == 1:  # New position
+                    # Calculate stop-loss using entry price as initial highest_high
+                    # Formula: entry_price - (ATR × multiplier)
+                    execution_data = analysis.get('execution_data', {})
+                    atr = execution_data.get('atr', 0)
+                    chandelier_multiplier = self.config.get('INDICATOR_CONFIG', {}).get('chandelier_multiplier', 3.0)
+                    stop_loss = price - (atr * chandelier_multiplier)
+
+                    self.logger.logger.info(
+                        f"Calculated initial stop-loss for {coin}: {stop_loss:,.0f} KRW "
+                        f"(Entry: {price:,.0f}, ATR: {atr:,.2f}, Multiplier: {chandelier_multiplier})"
+                    )
+                else:  # Pyramiding - use existing stop-loss
+                    stop_loss = analysis.get('stop_loss_price', 0)
 
                 if price <= 0:
                     self.logger.logger.error(
@@ -505,6 +579,9 @@ class PortfolioManagerV3:
                 if order_result.get('success'):
                     # Update stop-loss
                     self.executor.update_stop_loss(coin, stop_loss)
+                    # Track last executed action
+                    self.last_executed_actions[coin] = 'BUY'
+                    self._save_last_actions()  # Persist to file
                     if entry_number > 1:
                         self.logger.logger.info(
                             f"{coin} pyramid #{entry_number} added: {units:.6f} @ {price:,.0f} KRW"
@@ -537,6 +614,9 @@ class PortfolioManagerV3:
                 )
 
                 if order_result.get('success'):
+                    # Track last executed action
+                    self.last_executed_actions[coin] = 'SELL'
+                    self._save_last_actions()  # Persist to file
                     self.logger.logger.info(
                         f"{coin} position closed @ {price:,.0f} KRW"
                     )
@@ -597,6 +677,7 @@ class PortfolioManagerV3:
                         if self.monitors[coin].last_update
                         else None
                     ),
+                    'last_executed_action': self.last_executed_actions.get(coin, '-'),  # Add last executed action
                 }
                 for coin in self.coins
             },
