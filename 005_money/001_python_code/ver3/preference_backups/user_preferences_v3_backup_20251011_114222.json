@@ -1,6 +1,6 @@
 {
   "portfolio_config": {
-    "max_positions": 2,
+    "max_positions": 3,
     "default_coins": [
       "ETH",
       "XRP",
@@ -21,7 +21,7 @@
     "max_daily_trades": 5,
     "daily_loss_limit_pct": 3.0,
     "max_consecutive_losses": 3,
-    "position_amount_krw": 100000
+    "position_amount_krw": 50000
   },
-  "last_updated": "2025-10-09 18:36:42"
+  "last_updated": "2025-10-11 09:18:50"
 }
