@@ -167,6 +167,14 @@ BACKTESTING_CONFIG = VER2_BACKTESTING_CONFIG.copy()
 API_CONFIG = VER2_API_CONFIG.copy()
 SAFETY_CONFIG = VER2_SAFETY_CONFIG.copy()
 
+# ========== VER3 EXIT CONFIGURATION OVERRIDE ==========
+
+# Override EXIT_CONFIG with dual profit-taking modes
+EXIT_CONFIG['profit_target_mode'] = 'bb_based'  # 'bb_based' or 'percentage_based'
+EXIT_CONFIG['tp1_percentage'] = 1.5  # First target percentage (only used in percentage mode)
+EXIT_CONFIG['tp2_percentage'] = 2.5  # Second target percentage (only used in percentage mode)
+EXIT_CONFIG['trail_after_breakeven'] = True  # Move stop to breakeven after first target hit
+
 
 # ========== CONFIGURATION FUNCTIONS ==========
 

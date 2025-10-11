@@ -1011,3 +1011,906 @@
 [2025-10-11 11:42:31] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
 [2025-10-11 11:42:31] [INFO] ------------------------------------------------------------
 [2025-10-11 11:42:31] [INFO] Cycle completed in 0.20s. Sleeping 900s until next cycle...
+[2025-10-11 11:57:34] [INFO] === Analysis Cycle #2 - 2025-10-11 11:57:29 ===
+[2025-10-11 11:57:34] [INFO] Analyzing all coins...
+[2025-10-11 11:57:34] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 11:57:34] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 11:57:34] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 11:57:34] [INFO] Making portfolio decisions...
+[2025-10-11 11:57:34] [INFO] No trading actions required (HOLD)
+[2025-10-11 11:57:34] [INFO] ------------------------------------------------------------
+[2025-10-11 11:57:34] [INFO] Portfolio Summary
+[2025-10-11 11:57:34] [INFO]   Positions: 3/3
+[2025-10-11 11:57:34] [INFO]   Total P&L: -464 KRW
+[2025-10-11 11:57:34] [INFO] Per-Coin Status:
+[2025-10-11 11:57:34] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 11:57:34] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: HOLD | Position: 3,665 KRW | P&L: +0
+[2025-10-11 11:57:34] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 11:57:34] [INFO] ------------------------------------------------------------
+[2025-10-11 11:57:34] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-11 12:12:33] [INFO] === Analysis Cycle #3 - 2025-10-11 12:12:29 ===
+[2025-10-11 12:12:33] [INFO] Analyzing all coins...
+[2025-10-11 12:12:33] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:12:33] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:12:33] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:12:33] [INFO] Making portfolio decisions...
+[2025-10-11 12:12:33] [INFO] No trading actions required (HOLD)
+[2025-10-11 12:12:33] [INFO] ------------------------------------------------------------
+[2025-10-11 12:12:33] [INFO] Portfolio Summary
+[2025-10-11 12:12:33] [INFO]   Positions: 3/3
+[2025-10-11 12:12:33] [INFO]   Total P&L: -3,092 KRW
+[2025-10-11 12:12:33] [INFO] Per-Coin Status:
+[2025-10-11 12:12:33] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 12:12:33] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: HOLD | Position: 3,665 KRW | P&L: +0
+[2025-10-11 12:12:33] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 12:12:33] [INFO] ------------------------------------------------------------
+[2025-10-11 12:12:33] [INFO] Cycle completed in 0.46s. Sleeping 900s until next cycle...
+[2025-10-11 12:27:33] [INFO] === Analysis Cycle #4 - 2025-10-11 12:27:29 ===
+[2025-10-11 12:27:33] [INFO] Analyzing all coins...
+[2025-10-11 12:27:33] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:27:33] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:27:33] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:27:33] [INFO] Making portfolio decisions...
+[2025-10-11 12:27:33] [INFO] No trading actions required (HOLD)
+[2025-10-11 12:27:33] [INFO] ------------------------------------------------------------
+[2025-10-11 12:27:33] [INFO] Portfolio Summary
+[2025-10-11 12:27:33] [INFO]   Positions: 3/3
+[2025-10-11 12:27:33] [INFO]   Total P&L: -3,177 KRW
+[2025-10-11 12:27:33] [INFO] Per-Coin Status:
+[2025-10-11 12:27:33] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 12:27:33] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: HOLD | Position: 3,665 KRW | P&L: +0
+[2025-10-11 12:27:33] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 12:27:33] [INFO] ------------------------------------------------------------
+[2025-10-11 12:27:33] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 12:42:34] [INFO] === Analysis Cycle #5 - 2025-10-11 12:42:29 ===
+[2025-10-11 12:42:34] [INFO] Analyzing all coins...
+[2025-10-11 12:42:34] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:42:34] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:42:34] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 12:42:34] [INFO] Making portfolio decisions...
+[2025-10-11 12:42:34] [INFO] No trading actions required (HOLD)
+[2025-10-11 12:42:34] [INFO] ------------------------------------------------------------
+[2025-10-11 12:42:34] [INFO] Portfolio Summary
+[2025-10-11 12:42:34] [INFO]   Positions: 3/3
+[2025-10-11 12:42:34] [INFO]   Total P&L: -3,611 KRW
+[2025-10-11 12:42:34] [INFO] Per-Coin Status:
+[2025-10-11 12:42:34] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 12:42:34] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: HOLD | Position: 3,665 KRW | P&L: +0
+[2025-10-11 12:42:34] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 12:42:34] [INFO] ------------------------------------------------------------
+[2025-10-11 12:42:34] [INFO] Cycle completed in 0.19s. Sleeping 900s until next cycle...
+[2025-10-11 12:54:14] [INFO] Bot stopped by user
+[2025-10-11 12:54:24] [INFO] API client initialized successfully
+[2025-10-11 12:54:28] [INFO] Settings applied and saved successfully
+[2025-10-11 12:54:31] [INFO] Dry-run mode disabled
+[2025-10-11 12:54:38] [INFO] Settings applied and saved successfully
+[2025-10-11 12:54:44] [INFO] Bot started successfully
+[2025-10-11 12:54:45] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 12:54:45] [INFO] Bot main loop started
+[2025-10-11 12:54:45] [INFO] === Analysis Cycle #1 - 2025-10-11 12:54:44 ===
+[2025-10-11 12:54:45] [INFO] Analyzing all coins...
+[2025-10-11 12:54:45] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 12:54:45] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 12:54:45] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 12:54:45] [INFO] Making portfolio decisions...
+[2025-10-11 12:54:45] [INFO] No trading actions required (HOLD)
+[2025-10-11 12:54:45] [INFO] ------------------------------------------------------------
+[2025-10-11 12:54:45] [INFO] Portfolio Summary
+[2025-10-11 12:54:45] [INFO]   Positions: 3/3
+[2025-10-11 12:54:45] [INFO]   Total P&L: -3,071 KRW
+[2025-10-11 12:54:45] [INFO] Per-Coin Status:
+[2025-10-11 12:54:45] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 12:54:45] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 12:54:45] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 12:54:45] [INFO] ------------------------------------------------------------
+[2025-10-11 12:54:45] [INFO] Cycle completed in 0.22s. Sleeping 900s until next cycle...
+[2025-10-11 13:09:46] [INFO] === Analysis Cycle #2 - 2025-10-11 13:09:44 ===
+[2025-10-11 13:09:46] [INFO] Analyzing all coins...
+[2025-10-11 13:09:46] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:09:46] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:09:46] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:09:46] [INFO] Making portfolio decisions...
+[2025-10-11 13:09:46] [INFO] No trading actions required (HOLD)
+[2025-10-11 13:09:46] [INFO] ------------------------------------------------------------
+[2025-10-11 13:09:46] [INFO] Portfolio Summary
+[2025-10-11 13:09:46] [INFO]   Positions: 3/3
+[2025-10-11 13:09:46] [INFO]   Total P&L: -2,094 KRW
+[2025-10-11 13:09:46] [INFO] Per-Coin Status:
+[2025-10-11 13:09:46] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 13:09:46] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 13:09:46] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 13:09:46] [INFO] ------------------------------------------------------------
+[2025-10-11 13:09:46] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-11 13:24:45] [INFO] === Analysis Cycle #3 - 2025-10-11 13:24:44 ===
+[2025-10-11 13:24:45] [INFO] Analyzing all coins...
+[2025-10-11 13:24:45] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:24:45] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:24:45] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:24:45] [INFO] Making portfolio decisions...
+[2025-10-11 13:24:45] [INFO] Decision: XRP -> PARTIAL_SELL_50
+[2025-10-11 13:24:45] [INFO] Executing decisions...
+[2025-10-11 13:24:45] [WARNING] 🔴 EXECUTING REAL ORDER ON BITHUMB
+[2025-10-11 13:24:45] [INFO] ------------------------------------------------------------
+[2025-10-11 13:24:45] [INFO] Portfolio Summary
+[2025-10-11 13:24:45] [INFO]   Positions: 3/3
+[2025-10-11 13:24:45] [INFO]   Total P&L: -1,692 KRW
+[2025-10-11 13:24:45] [INFO] Per-Coin Status:
+[2025-10-11 13:24:45] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 13:24:45] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 13:24:45] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 13:24:45] [INFO] ------------------------------------------------------------
+[2025-10-11 13:24:45] [INFO] Cycle completed in 0.50s. Sleeping 900s until next cycle...
+[2025-10-11 13:39:49] [INFO] === Analysis Cycle #4 - 2025-10-11 13:39:44 ===
+[2025-10-11 13:39:49] [INFO] Analyzing all coins...
+[2025-10-11 13:39:49] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:39:49] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:39:49] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:39:49] [INFO] Making portfolio decisions...
+[2025-10-11 13:39:49] [INFO] No trading actions required (HOLD)
+[2025-10-11 13:39:49] [INFO] ------------------------------------------------------------
+[2025-10-11 13:39:49] [INFO] Portfolio Summary
+[2025-10-11 13:39:49] [INFO]   Positions: 3/3
+[2025-10-11 13:39:49] [INFO]   Total P&L: -3,034 KRW
+[2025-10-11 13:39:49] [INFO] Per-Coin Status:
+[2025-10-11 13:39:49] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 13:39:49] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 13:39:49] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 13:39:49] [INFO] ------------------------------------------------------------
+[2025-10-11 13:39:49] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 13:54:47] [INFO] === Analysis Cycle #5 - 2025-10-11 13:54:44 ===
+[2025-10-11 13:54:47] [INFO] Analyzing all coins...
+[2025-10-11 13:54:47] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:54:47] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:54:47] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 13:54:47] [INFO] Making portfolio decisions...
+[2025-10-11 13:54:47] [INFO] No trading actions required (HOLD)
+[2025-10-11 13:54:47] [INFO] ------------------------------------------------------------
+[2025-10-11 13:54:47] [INFO] Portfolio Summary
+[2025-10-11 13:54:47] [INFO]   Positions: 3/3
+[2025-10-11 13:54:47] [INFO]   Total P&L: -2,291 KRW
+[2025-10-11 13:54:47] [INFO] Per-Coin Status:
+[2025-10-11 13:54:47] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 13:54:47] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 13:54:47] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 13:54:47] [INFO] ------------------------------------------------------------
+[2025-10-11 13:54:47] [INFO] Cycle completed in 0.51s. Sleeping 899s until next cycle...
+[2025-10-11 14:09:47] [INFO] === Analysis Cycle #6 - 2025-10-11 14:09:44 ===
+[2025-10-11 14:09:47] [INFO] Analyzing all coins...
+[2025-10-11 14:09:47] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:09:47] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:09:47] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:09:47] [INFO] Making portfolio decisions...
+[2025-10-11 14:09:47] [INFO] No trading actions required (HOLD)
+[2025-10-11 14:09:47] [INFO] ------------------------------------------------------------
+[2025-10-11 14:09:47] [INFO] Portfolio Summary
+[2025-10-11 14:09:47] [INFO]   Positions: 3/3
+[2025-10-11 14:09:47] [INFO]   Total P&L: -2,465 KRW
+[2025-10-11 14:09:47] [INFO] Per-Coin Status:
+[2025-10-11 14:09:47] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 14:09:47] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 14:09:47] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 14:09:47] [INFO] ------------------------------------------------------------
+[2025-10-11 14:09:47] [INFO] Cycle completed in 0.31s. Sleeping 900s until next cycle...
+[2025-10-11 14:24:48] [INFO] === Analysis Cycle #7 - 2025-10-11 14:24:44 ===
+[2025-10-11 14:24:48] [INFO] Analyzing all coins...
+[2025-10-11 14:24:48] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:24:48] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:24:48] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:24:48] [INFO] Making portfolio decisions...
+[2025-10-11 14:24:48] [INFO] No trading actions required (HOLD)
+[2025-10-11 14:24:48] [INFO] ------------------------------------------------------------
+[2025-10-11 14:24:48] [INFO] Portfolio Summary
+[2025-10-11 14:24:48] [INFO]   Positions: 3/3
+[2025-10-11 14:24:48] [INFO]   Total P&L: -3,077 KRW
+[2025-10-11 14:24:48] [INFO] Per-Coin Status:
+[2025-10-11 14:24:48] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 14:24:48] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 14:24:48] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 14:24:48] [INFO] ------------------------------------------------------------
+[2025-10-11 14:24:48] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 14:27:51] [INFO] Bot stopped by user
+[2025-10-11 14:27:51] [INFO] Stopping bot...
+[2025-10-11 14:28:01] [INFO] API client initialized successfully
+[2025-10-11 14:28:07] [INFO] Dry-run mode disabled
+[2025-10-11 14:28:11] [INFO] Bot started successfully
+[2025-10-11 14:28:11] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 14:28:11] [INFO] Bot main loop started
+[2025-10-11 14:28:11] [INFO] === Analysis Cycle #1 - 2025-10-11 14:28:11 ===
+[2025-10-11 14:28:11] [INFO] Analyzing all coins...
+[2025-10-11 14:28:11] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:28:11] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:28:11] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:28:11] [INFO] Making portfolio decisions...
+[2025-10-11 14:28:11] [INFO] No trading actions required (HOLD)
+[2025-10-11 14:28:11] [INFO] ------------------------------------------------------------
+[2025-10-11 14:28:11] [INFO] Portfolio Summary
+[2025-10-11 14:28:11] [INFO]   Positions: 3/3
+[2025-10-11 14:28:11] [INFO]   Total P&L: -3,414 KRW
+[2025-10-11 14:28:11] [INFO] Per-Coin Status:
+[2025-10-11 14:28:11] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 14:28:11] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 14:28:11] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 14:28:11] [INFO] ------------------------------------------------------------
+[2025-10-11 14:28:11] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-11 14:43:12] [INFO] === Analysis Cycle #2 - 2025-10-11 14:43:11 ===
+[2025-10-11 14:43:12] [INFO] Analyzing all coins...
+[2025-10-11 14:43:12] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:43:12] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:43:12] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:43:12] [INFO] Making portfolio decisions...
+[2025-10-11 14:43:12] [INFO] No trading actions required (HOLD)
+[2025-10-11 14:43:12] [INFO] ------------------------------------------------------------
+[2025-10-11 14:43:12] [INFO] Portfolio Summary
+[2025-10-11 14:43:12] [INFO]   Positions: 3/3
+[2025-10-11 14:43:12] [INFO]   Total P&L: -3,734 KRW
+[2025-10-11 14:43:12] [INFO] Per-Coin Status:
+[2025-10-11 14:43:12] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 14:43:12] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 14:43:12] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 14:43:12] [INFO] ------------------------------------------------------------
+[2025-10-11 14:43:12] [INFO] Cycle completed in 0.50s. Sleeping 900s until next cycle...
+[2025-10-11 14:58:13] [INFO] === Analysis Cycle #3 - 2025-10-11 14:58:11 ===
+[2025-10-11 14:58:13] [INFO] Analyzing all coins...
+[2025-10-11 14:58:13] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:58:13] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:58:13] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 14:58:13] [INFO] Making portfolio decisions...
+[2025-10-11 14:58:13] [INFO] No trading actions required (HOLD)
+[2025-10-11 14:58:13] [INFO] ------------------------------------------------------------
+[2025-10-11 14:58:13] [INFO] Portfolio Summary
+[2025-10-11 14:58:13] [INFO]   Positions: 3/3
+[2025-10-11 14:58:13] [INFO]   Total P&L: -3,306 KRW
+[2025-10-11 14:58:13] [INFO] Per-Coin Status:
+[2025-10-11 14:58:13] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 14:58:13] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 14:58:13] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 14:58:13] [INFO] ------------------------------------------------------------
+[2025-10-11 14:58:13] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 15:13:12] [INFO] === Analysis Cycle #4 - 2025-10-11 15:13:11 ===
+[2025-10-11 15:13:12] [INFO] Analyzing all coins...
+[2025-10-11 15:13:12] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:13:12] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:13:12] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:13:12] [INFO] Making portfolio decisions...
+[2025-10-11 15:13:12] [INFO] No trading actions required (HOLD)
+[2025-10-11 15:13:12] [INFO] ------------------------------------------------------------
+[2025-10-11 15:13:12] [INFO] Portfolio Summary
+[2025-10-11 15:13:12] [INFO]   Positions: 3/3
+[2025-10-11 15:13:12] [INFO]   Total P&L: -3,089 KRW
+[2025-10-11 15:13:12] [INFO] Per-Coin Status:
+[2025-10-11 15:13:12] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 15:13:12] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 15:13:12] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 15:13:12] [INFO] ------------------------------------------------------------
+[2025-10-11 15:13:12] [INFO] Cycle completed in 0.25s. Sleeping 900s until next cycle...
+[2025-10-11 15:28:16] [INFO] === Analysis Cycle #5 - 2025-10-11 15:28:11 ===
+[2025-10-11 15:28:16] [INFO] Analyzing all coins...
+[2025-10-11 15:28:16] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:28:16] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:28:16] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:28:16] [INFO] Making portfolio decisions...
+[2025-10-11 15:28:16] [INFO] No trading actions required (HOLD)
+[2025-10-11 15:28:16] [INFO] ------------------------------------------------------------
+[2025-10-11 15:28:16] [INFO] Portfolio Summary
+[2025-10-11 15:28:16] [INFO]   Positions: 3/3
+[2025-10-11 15:28:16] [INFO]   Total P&L: -2,996 KRW
+[2025-10-11 15:28:16] [INFO] Per-Coin Status:
+[2025-10-11 15:28:16] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 15:28:16] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 15:28:16] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 15:28:16] [INFO] ------------------------------------------------------------
+[2025-10-11 15:28:16] [INFO] Cycle completed in 0.20s. Sleeping 900s until next cycle...
+[2025-10-11 15:43:14] [INFO] === Analysis Cycle #6 - 2025-10-11 15:43:11 ===
+[2025-10-11 15:43:14] [INFO] Analyzing all coins...
+[2025-10-11 15:43:14] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:43:14] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:43:14] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:43:14] [INFO] Making portfolio decisions...
+[2025-10-11 15:43:14] [INFO] No trading actions required (HOLD)
+[2025-10-11 15:43:14] [INFO] ------------------------------------------------------------
+[2025-10-11 15:43:14] [INFO] Portfolio Summary
+[2025-10-11 15:43:14] [INFO]   Positions: 3/3
+[2025-10-11 15:43:14] [INFO]   Total P&L: -3,025 KRW
+[2025-10-11 15:43:14] [INFO] Per-Coin Status:
+[2025-10-11 15:43:14] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 15:43:14] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 15:43:14] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 15:43:14] [INFO] ------------------------------------------------------------
+[2025-10-11 15:43:14] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 15:58:14] [INFO] === Analysis Cycle #7 - 2025-10-11 15:58:11 ===
+[2025-10-11 15:58:14] [INFO] Analyzing all coins...
+[2025-10-11 15:58:14] [INFO]   [ETH] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:58:14] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:58:14] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 15:58:14] [INFO] Making portfolio decisions...
+[2025-10-11 15:58:14] [INFO] No trading actions required (HOLD)
+[2025-10-11 15:58:14] [INFO] ------------------------------------------------------------
+[2025-10-11 15:58:14] [INFO] Portfolio Summary
+[2025-10-11 15:58:14] [INFO]   Positions: 3/3
+[2025-10-11 15:58:14] [INFO]   Total P&L: -3,852 KRW
+[2025-10-11 15:58:14] [INFO] Per-Coin Status:
+[2025-10-11 15:58:14] [INFO]   [ETH] BULLISH  | Score: 2/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 15:58:14] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 15:58:14] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 15:58:14] [INFO] ------------------------------------------------------------
+[2025-10-11 15:58:14] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 16:13:13] [INFO] === Analysis Cycle #8 - 2025-10-11 16:13:11 ===
+[2025-10-11 16:13:13] [INFO] Analyzing all coins...
+[2025-10-11 16:13:13] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 16:13:13] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 16:13:13] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 16:13:13] [INFO] Making portfolio decisions...
+[2025-10-11 16:13:13] [INFO] No trading actions required (HOLD)
+[2025-10-11 16:13:13] [INFO] ------------------------------------------------------------
+[2025-10-11 16:13:13] [INFO] Portfolio Summary
+[2025-10-11 16:13:13] [INFO]   Positions: 3/3
+[2025-10-11 16:13:13] [INFO]   Total P&L: -3,704 KRW
+[2025-10-11 16:13:13] [INFO] Per-Coin Status:
+[2025-10-11 16:13:13] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 16:13:13] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,665 KRW | P&L: +0
+[2025-10-11 16:13:13] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 16:13:13] [INFO] ------------------------------------------------------------
+[2025-10-11 16:13:13] [INFO] Cycle completed in 0.27s. Sleeping 900s until next cycle...
+[2025-10-11 16:28:13] [INFO] === Analysis Cycle #9 - 2025-10-11 16:28:11 ===
+[2025-10-11 16:28:13] [INFO] Analyzing all coins...
+[2025-10-11 16:28:13] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 16:28:13] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 16:28:13] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 16:28:13] [INFO] Making portfolio decisions...
+[2025-10-11 16:28:13] [INFO] No trading actions required (HOLD)
+[2025-10-11 16:28:13] [INFO] ------------------------------------------------------------
+[2025-10-11 16:28:13] [INFO] Portfolio Summary
+[2025-10-11 16:28:13] [INFO]   Positions: 3/3
+[2025-10-11 16:28:13] [INFO]   Total P&L: -3,703 KRW
+[2025-10-11 16:28:13] [INFO] Per-Coin Status:
+[2025-10-11 16:28:13] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 16:28:13] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 16:28:13] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 16:28:13] [INFO] ------------------------------------------------------------
+[2025-10-11 16:28:13] [INFO] Cycle completed in 0.29s. Sleeping 900s until next cycle...
+[2025-10-11 16:43:13] [INFO] === Analysis Cycle #10 - 2025-10-11 16:43:11 ===
+[2025-10-11 16:43:13] [INFO] Analyzing all coins...
+[2025-10-11 16:43:13] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 16:43:13] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 16:43:13] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 16:43:13] [INFO] Making portfolio decisions...
+[2025-10-11 16:43:13] [INFO] No trading actions required (HOLD)
+[2025-10-11 16:43:13] [INFO] ------------------------------------------------------------
+[2025-10-11 16:43:13] [INFO] Portfolio Summary
+[2025-10-11 16:43:13] [INFO]   Positions: 3/3
+[2025-10-11 16:43:13] [INFO]   Total P&L: -4,077 KRW
+[2025-10-11 16:43:13] [INFO] Per-Coin Status:
+[2025-10-11 16:43:13] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 16:43:13] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 16:43:13] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 16:43:13] [INFO] ------------------------------------------------------------
+[2025-10-11 16:43:13] [INFO] Cycle completed in 0.27s. Sleeping 900s until next cycle...
+[2025-10-11 16:58:12] [INFO] === Analysis Cycle #11 - 2025-10-11 16:58:11 ===
+[2025-10-11 16:58:12] [INFO] Analyzing all coins...
+[2025-10-11 16:58:12] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 16:58:12] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: BUY
+[2025-10-11 16:58:12] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 16:58:12] [INFO] Making portfolio decisions...
+[2025-10-11 16:58:12] [INFO] No trading actions required (HOLD)
+[2025-10-11 16:58:12] [INFO] ------------------------------------------------------------
+[2025-10-11 16:58:12] [INFO] Portfolio Summary
+[2025-10-11 16:58:12] [INFO]   Positions: 3/3
+[2025-10-11 16:58:12] [INFO]   Total P&L: -3,893 KRW
+[2025-10-11 16:58:12] [INFO] Per-Coin Status:
+[2025-10-11 16:58:12] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 16:58:12] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 16:58:12] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 16:58:12] [INFO] ------------------------------------------------------------
+[2025-10-11 16:58:12] [INFO] Cycle completed in 0.29s. Sleeping 900s until next cycle...
+[2025-10-11 17:10:27] [INFO] Bot stopped by user
+[2025-10-11 17:10:28] [INFO] Stopping bot...
+[2025-10-11 17:10:37] [INFO] API client initialized successfully
+[2025-10-11 17:10:39] [INFO] Dry-run mode disabled
+[2025-10-11 17:10:49] [INFO] Settings applied and saved successfully
+[2025-10-11 17:10:54] [INFO] Bot started successfully
+[2025-10-11 17:10:57] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 17:10:57] [INFO] Bot main loop started
+[2025-10-11 17:10:57] [INFO] === Analysis Cycle #1 - 2025-10-11 17:10:54 ===
+[2025-10-11 17:10:57] [INFO] Analyzing all coins...
+[2025-10-11 17:10:57] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 17:10:57] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 17:10:57] [INFO]   [XRP] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 17:10:57] [INFO] Making portfolio decisions...
+[2025-10-11 17:10:57] [INFO] No trading actions required (HOLD)
+[2025-10-11 17:10:57] [INFO] ------------------------------------------------------------
+[2025-10-11 17:10:57] [INFO] Portfolio Summary
+[2025-10-11 17:10:57] [INFO]   Positions: 3/3
+[2025-10-11 17:10:57] [INFO]   Total P&L: -3,930 KRW
+[2025-10-11 17:10:57] [INFO] Per-Coin Status:
+[2025-10-11 17:10:57] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 17:10:57] [INFO]   [XRP] BULLISH  | Score: 2/4 | Action: HOLD | Position: 3,665 KRW | P&L: +0
+[2025-10-11 17:10:57] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 17:10:57] [INFO] ------------------------------------------------------------
+[2025-10-11 17:10:57] [INFO] Cycle completed in 0.20s. Sleeping 900s until next cycle...
+[2025-10-11 17:15:48] [INFO] Bot stopped by user
+[2025-10-11 17:15:49] [INFO] Stopping bot...
+[2025-10-11 17:15:57] [INFO] API client initialized successfully
+[2025-10-11 17:16:03] [INFO] Dry-run mode disabled
+[2025-10-11 17:16:09] [INFO] Bot started successfully
+[2025-10-11 17:16:09] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 17:16:09] [INFO] Bot main loop started
+[2025-10-11 17:16:09] [INFO] === Analysis Cycle #1 - 2025-10-11 17:16:09 ===
+[2025-10-11 17:16:09] [INFO] Analyzing all coins...
+[2025-10-11 17:16:16] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 17:16:16] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 17:16:16] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 17:16:16] [INFO] Making portfolio decisions...
+[2025-10-11 17:16:16] [INFO] No trading actions required (HOLD)
+[2025-10-11 17:16:16] [INFO] ------------------------------------------------------------
+[2025-10-11 17:16:16] [INFO] Portfolio Summary
+[2025-10-11 17:16:16] [INFO]   Positions: 3/3
+[2025-10-11 17:16:16] [INFO]   Total P&L: -3,390 KRW
+[2025-10-11 17:16:16] [INFO] Per-Coin Status:
+[2025-10-11 17:16:16] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 17:16:16] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 17:16:16] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 17:16:16] [INFO] ------------------------------------------------------------
+[2025-10-11 17:16:16] [INFO] Cycle completed in 0.22s. Sleeping 900s until next cycle...
+[2025-10-11 17:31:09] [INFO] === Analysis Cycle #2 - 2025-10-11 17:31:09 ===
+[2025-10-11 17:31:09] [INFO] Analyzing all coins...
+[2025-10-11 17:31:15] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 17:31:15] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 17:31:15] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 17:31:15] [INFO] Making portfolio decisions...
+[2025-10-11 17:31:15] [INFO] No trading actions required (HOLD)
+[2025-10-11 17:31:15] [INFO] ------------------------------------------------------------
+[2025-10-11 17:31:15] [INFO] Portfolio Summary
+[2025-10-11 17:31:15] [INFO]   Positions: 3/3
+[2025-10-11 17:31:15] [INFO]   Total P&L: -2,805 KRW
+[2025-10-11 17:31:15] [INFO] Per-Coin Status:
+[2025-10-11 17:31:15] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 17:31:15] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,665 KRW | P&L: +0
+[2025-10-11 17:31:15] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 17:31:15] [INFO] ------------------------------------------------------------
+[2025-10-11 17:31:15] [INFO] Cycle completed in 0.28s. Sleeping 900s until next cycle...
+[2025-10-11 17:46:13] [INFO] === Analysis Cycle #3 - 2025-10-11 17:46:09 ===
+[2025-10-11 17:46:13] [INFO] Analyzing all coins...
+[2025-10-11 17:46:13] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 17:46:13] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 17:46:13] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 17:46:13] [INFO] Making portfolio decisions...
+[2025-10-11 17:46:13] [INFO] Decision: XRP -> BUY (Pyramid #2)
+[2025-10-11 17:46:13] [INFO] Executing decisions...
+[2025-10-11 17:46:13] [WARNING] 🔴 EXECUTING REAL ORDER ON BITHUMB
+[2025-10-11 17:46:13] [INFO] ------------------------------------------------------------
+[2025-10-11 17:46:13] [INFO] Portfolio Summary
+[2025-10-11 17:46:13] [INFO]   Positions: 3/3
+[2025-10-11 17:46:13] [INFO]   Total P&L: -2,465 KRW
+[2025-10-11 17:46:13] [INFO] Per-Coin Status:
+[2025-10-11 17:46:13] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 17:46:13] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 17:46:13] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 17:46:13] [INFO] ------------------------------------------------------------
+[2025-10-11 17:46:13] [INFO] Cycle completed in 0.50s. Sleeping 900s until next cycle...
+[2025-10-11 18:01:10] [INFO] === Analysis Cycle #4 - 2025-10-11 18:01:09 ===
+[2025-10-11 18:01:10] [INFO] Analyzing all coins...
+[2025-10-11 18:01:10] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 18:01:10] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:01:10] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:01:10] [INFO] Making portfolio decisions...
+[2025-10-11 18:01:10] [INFO] No trading actions required (HOLD)
+[2025-10-11 18:01:10] [INFO] ------------------------------------------------------------
+[2025-10-11 18:01:10] [INFO] Portfolio Summary
+[2025-10-11 18:01:10] [INFO]   Positions: 3/3
+[2025-10-11 18:01:10] [INFO]   Total P&L: -1,949 KRW
+[2025-10-11 18:01:10] [INFO] Per-Coin Status:
+[2025-10-11 18:01:10] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:01:10] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:01:10] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:01:10] [INFO] ------------------------------------------------------------
+[2025-10-11 18:01:10] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-11 18:16:14] [INFO] === Analysis Cycle #5 - 2025-10-11 18:16:09 ===
+[2025-10-11 18:16:14] [INFO] Analyzing all coins...
+[2025-10-11 18:16:14] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:16:14] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:16:14] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 18:16:14] [INFO] Making portfolio decisions...
+[2025-10-11 18:16:14] [INFO] No trading actions required (HOLD)
+[2025-10-11 18:16:14] [INFO] ------------------------------------------------------------
+[2025-10-11 18:16:14] [INFO] Portfolio Summary
+[2025-10-11 18:16:14] [INFO]   Positions: 3/3
+[2025-10-11 18:16:14] [INFO]   Total P&L: -1,433 KRW
+[2025-10-11 18:16:14] [INFO] Per-Coin Status:
+[2025-10-11 18:16:14] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:16:14] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:16:14] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:16:14] [INFO] ------------------------------------------------------------
+[2025-10-11 18:16:14] [INFO] Cycle completed in 0.20s. Sleeping 900s until next cycle...
+[2025-10-11 18:21:46] [INFO] Bot stopped by user
+[2025-10-11 18:21:54] [INFO] API client initialized successfully
+[2025-10-11 18:21:56] [INFO] Dry-run mode disabled
+[2025-10-11 18:22:03] [INFO] Bot started successfully
+[2025-10-11 18:22:04] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 18:22:04] [INFO] Bot main loop started
+[2025-10-11 18:22:04] [INFO] === Analysis Cycle #1 - 2025-10-11 18:22:03 ===
+[2025-10-11 18:22:04] [INFO] Analyzing all coins...
+[2025-10-11 18:22:04] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:22:04] [INFO]   [SOL] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:22:04] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:22:04] [INFO] Making portfolio decisions...
+[2025-10-11 18:22:04] [INFO] No trading actions required (HOLD)
+[2025-10-11 18:22:04] [INFO] ------------------------------------------------------------
+[2025-10-11 18:22:04] [INFO] Portfolio Summary
+[2025-10-11 18:22:04] [INFO]   Positions: 3/3
+[2025-10-11 18:22:04] [INFO]   Total P&L: -1,146 KRW
+[2025-10-11 18:22:04] [INFO] Per-Coin Status:
+[2025-10-11 18:22:04] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:22:04] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:22:04] [INFO]   [SOL] BULLISH  | Score: 4/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:22:04] [INFO] ------------------------------------------------------------
+[2025-10-11 18:22:04] [INFO] Cycle completed in 0.24s. Sleeping 900s until next cycle...
+[2025-10-11 18:33:10] [INFO] Bot stopped by user
+[2025-10-11 18:33:10] [INFO] Stopping bot...
+[2025-10-11 18:33:20] [INFO] API client initialized successfully
+[2025-10-11 18:33:25] [INFO] Dry-run mode disabled
+[2025-10-11 18:33:31] [INFO] Settings applied and saved successfully
+[2025-10-11 18:33:35] [INFO] Bot started successfully
+[2025-10-11 18:33:35] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 18:33:35] [INFO] Bot main loop started
+[2025-10-11 18:33:35] [INFO] === Analysis Cycle #1 - 2025-10-11 18:33:35 ===
+[2025-10-11 18:33:35] [INFO] Analyzing all coins...
+[2025-10-11 18:33:35] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:33:35] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:33:35] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 18:33:35] [INFO] Making portfolio decisions...
+[2025-10-11 18:33:35] [INFO] Decision: XRP -> PARTIAL_SELL_50
+[2025-10-11 18:33:35] [INFO] Executing decisions...
+[2025-10-11 18:33:35] [WARNING] 🔴 EXECUTING REAL ORDER ON BITHUMB
+[2025-10-11 18:33:40] [INFO] ------------------------------------------------------------
+[2025-10-11 18:33:40] [INFO] Portfolio Summary
+[2025-10-11 18:33:40] [INFO]   Positions: 3/3
+[2025-10-11 18:33:40] [INFO]   Total P&L: -1,979 KRW
+[2025-10-11 18:33:40] [INFO] Per-Coin Status:
+[2025-10-11 18:33:40] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:33:40] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:33:40] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:33:40] [INFO] ------------------------------------------------------------
+[2025-10-11 18:33:40] [INFO] Cycle completed in 0.43s. Sleeping 900s until next cycle...
+[2025-10-11 18:34:35] [INFO] Bot stopped by user
+[2025-10-11 18:34:41] [ERROR] Failed to apply settings: 'GUITradingBotV3' object has no attribute 'update_config'
+[2025-10-11 18:34:43] [INFO] Stopping bot...
+[2025-10-11 18:34:55] [ERROR] Failed to apply settings: 'GUITradingBotV3' object has no attribute 'update_config'
+[2025-10-11 18:35:29] [INFO] Bot started successfully
+[2025-10-11 18:35:29] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 18:35:29] [INFO] Bot main loop started
+[2025-10-11 18:35:29] [INFO] === Analysis Cycle #1 - 2025-10-11 18:35:29 ===
+[2025-10-11 18:35:29] [INFO] Analyzing all coins...
+[2025-10-11 18:35:34] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 18:35:34] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:35:34] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:35:34] [INFO] Making portfolio decisions...
+[2025-10-11 18:35:34] [INFO] No trading actions required (HOLD)
+[2025-10-11 18:35:34] [INFO] ------------------------------------------------------------
+[2025-10-11 18:35:34] [INFO] Portfolio Summary
+[2025-10-11 18:35:34] [INFO]   Positions: 3/3
+[2025-10-11 18:35:34] [INFO]   Total P&L: -1,999 KRW
+[2025-10-11 18:35:34] [INFO] Per-Coin Status:
+[2025-10-11 18:35:34] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:35:34] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:35:34] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:35:34] [INFO] ------------------------------------------------------------
+[2025-10-11 18:35:34] [INFO] Cycle completed in 0.20s. Sleeping 900s until next cycle...
+[2025-10-11 18:36:52] [INFO] Bot stopped by user
+[2025-10-11 18:37:00] [INFO] API client initialized successfully
+[2025-10-11 18:37:05] [INFO] Dry-run mode disabled
+[2025-10-11 18:37:09] [INFO] Bot started successfully
+[2025-10-11 18:37:10] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 18:37:10] [INFO] Bot main loop started
+[2025-10-11 18:37:10] [INFO] === Analysis Cycle #1 - 2025-10-11 18:37:09 ===
+[2025-10-11 18:37:10] [INFO] Analyzing all coins...
+[2025-10-11 18:37:10] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 18:37:10] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:37:10] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:37:10] [INFO] Making portfolio decisions...
+[2025-10-11 18:37:10] [INFO] No trading actions required (HOLD)
+[2025-10-11 18:37:10] [INFO] ------------------------------------------------------------
+[2025-10-11 18:37:10] [INFO] Portfolio Summary
+[2025-10-11 18:37:10] [INFO]   Positions: 3/3
+[2025-10-11 18:37:10] [INFO]   Total P&L: -2,147 KRW
+[2025-10-11 18:37:10] [INFO] Per-Coin Status:
+[2025-10-11 18:37:10] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:37:10] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:37:10] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:37:10] [INFO] ------------------------------------------------------------
+[2025-10-11 18:37:10] [INFO] Cycle completed in 0.18s. Sleeping 900s until next cycle...
+[2025-10-11 18:43:56] [INFO] Bot stopped by user
+[2025-10-11 18:43:56] [INFO] Stopping bot...
+[2025-10-11 18:44:04] [INFO] API client initialized successfully
+[2025-10-11 18:44:07] [INFO] Dry-run mode disabled
+[2025-10-11 18:44:13] [INFO] Bot started successfully
+[2025-10-11 18:44:14] [INFO] GUI Trading Bot V3 initialized
+[2025-10-11 18:44:14] [INFO] Bot main loop started
+[2025-10-11 18:44:14] [INFO] === Analysis Cycle #1 - 2025-10-11 18:44:13 ===
+[2025-10-11 18:44:14] [INFO] Analyzing all coins...
+[2025-10-11 18:44:14] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 18:44:14] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:44:14] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:44:14] [INFO] Making portfolio decisions...
+[2025-10-11 18:44:14] [INFO] No trading actions required (HOLD)
+[2025-10-11 18:44:14] [INFO] ------------------------------------------------------------
+[2025-10-11 18:44:14] [INFO] Portfolio Summary
+[2025-10-11 18:44:14] [INFO]   Positions: 3/3
+[2025-10-11 18:44:14] [INFO]   Total P&L: -1,982 KRW
+[2025-10-11 18:44:14] [INFO] Per-Coin Status:
+[2025-10-11 18:44:14] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:44:14] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:44:14] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:44:14] [INFO] ------------------------------------------------------------
+[2025-10-11 18:44:14] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-11 18:59:17] [INFO] === Analysis Cycle #2 - 2025-10-11 18:59:13 ===
+[2025-10-11 18:59:17] [INFO] Analyzing all coins...
+[2025-10-11 18:59:17] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 18:59:17] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:59:17] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 18:59:17] [INFO] Making portfolio decisions...
+[2025-10-11 18:59:17] [INFO] No trading actions required (HOLD)
+[2025-10-11 18:59:17] [INFO] ------------------------------------------------------------
+[2025-10-11 18:59:17] [INFO] Portfolio Summary
+[2025-10-11 18:59:17] [INFO]   Positions: 3/3
+[2025-10-11 18:59:17] [INFO]   Total P&L: -2,794 KRW
+[2025-10-11 18:59:17] [INFO] Per-Coin Status:
+[2025-10-11 18:59:17] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 18:59:17] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 18:59:17] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 18:59:17] [INFO] ------------------------------------------------------------
+[2025-10-11 18:59:17] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 19:15:07] [INFO] === Analysis Cycle #3 - 2025-10-11 19:15:02 ===
+[2025-10-11 19:15:07] [INFO] Analyzing all coins...
+[2025-10-11 19:15:07] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 19:15:07] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 19:15:07] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 19:15:07] [INFO] Making portfolio decisions...
+[2025-10-11 19:15:07] [INFO] No trading actions required (HOLD)
+[2025-10-11 19:15:07] [INFO] ------------------------------------------------------------
+[2025-10-11 19:15:07] [INFO] Portfolio Summary
+[2025-10-11 19:15:07] [INFO]   Positions: 3/3
+[2025-10-11 19:15:07] [INFO]   Total P&L: -2,331 KRW
+[2025-10-11 19:15:07] [INFO] Per-Coin Status:
+[2025-10-11 19:15:07] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 19:15:07] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 19:15:07] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 19:15:07] [INFO] ------------------------------------------------------------
+[2025-10-11 19:15:07] [INFO] Cycle completed in 0.21s. Sleeping 900s until next cycle...
+[2025-10-11 19:33:26] [INFO] === Analysis Cycle #4 - 2025-10-11 19:33:24 ===
+[2025-10-11 19:33:26] [INFO] Analyzing all coins...
+[2025-10-11 19:33:26] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 19:33:26] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 19:33:26] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 19:33:26] [INFO] Making portfolio decisions...
+[2025-10-11 19:33:26] [INFO] No trading actions required (HOLD)
+[2025-10-11 19:33:26] [INFO] ------------------------------------------------------------
+[2025-10-11 19:33:26] [INFO] Portfolio Summary
+[2025-10-11 19:33:26] [INFO]   Positions: 3/3
+[2025-10-11 19:33:26] [INFO]   Total P&L: -2,425 KRW
+[2025-10-11 19:33:26] [INFO] Per-Coin Status:
+[2025-10-11 19:33:26] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 19:33:26] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 19:33:26] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 19:33:26] [INFO] ------------------------------------------------------------
+[2025-10-11 19:33:27] [INFO] Cycle completed in 0.34s. Sleeping 900s until next cycle...
+[2025-10-11 19:48:27] [INFO] === Analysis Cycle #5 - 2025-10-11 19:48:24 ===
+[2025-10-11 19:48:27] [INFO] Analyzing all coins...
+[2025-10-11 19:48:27] [INFO]   [SOL] BULLISH | Score: 2/4 | Action: HOLD
+[2025-10-11 19:48:27] [INFO]   [ETH] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 19:48:27] [INFO]   [XRP] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 19:48:27] [INFO] Making portfolio decisions...
+[2025-10-11 19:48:27] [INFO] No trading actions required (HOLD)
+[2025-10-11 19:48:27] [INFO] ------------------------------------------------------------
+[2025-10-11 19:48:27] [INFO] Portfolio Summary
+[2025-10-11 19:48:27] [INFO]   Positions: 3/3
+[2025-10-11 19:48:27] [INFO]   Total P&L: -3,013 KRW
+[2025-10-11 19:48:27] [INFO] Per-Coin Status:
+[2025-10-11 19:48:27] [INFO]   [ETH] BULLISH  | Score: 4/4 | Action: BUY  | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 19:48:27] [INFO]   [XRP] BULLISH  | Score: 4/4 | Action: BUY  | Position: 3,707 KRW | P&L: +0
+[2025-10-11 19:48:27] [INFO]   [SOL] BULLISH  | Score: 2/4 | Action: HOLD | Position: 295,800 KRW | P&L: +0
+[2025-10-11 19:48:27] [INFO] ------------------------------------------------------------
+[2025-10-11 19:48:27] [INFO] Cycle completed in 0.24s. Sleeping 900s until next cycle...
+[2025-10-11 20:03:28] [INFO] === Analysis Cycle #6 - 2025-10-11 20:03:24 ===
+[2025-10-11 20:03:28] [INFO] Analyzing all coins...
+[2025-10-11 20:03:28] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:03:28] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 20:03:28] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:03:28] [INFO] Making portfolio decisions...
+[2025-10-11 20:03:28] [INFO] No trading actions required (HOLD)
+[2025-10-11 20:03:28] [INFO] ------------------------------------------------------------
+[2025-10-11 20:03:28] [INFO] Portfolio Summary
+[2025-10-11 20:03:28] [INFO]   Positions: 3/3
+[2025-10-11 20:03:28] [INFO]   Total P&L: -2,826 KRW
+[2025-10-11 20:03:28] [INFO] Per-Coin Status:
+[2025-10-11 20:03:28] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 20:03:28] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 20:03:28] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 20:03:28] [INFO] ------------------------------------------------------------
+[2025-10-11 20:03:28] [INFO] Cycle completed in 0.26s. Sleeping 900s until next cycle...
+[2025-10-11 20:18:29] [INFO] === Analysis Cycle #7 - 2025-10-11 20:18:24 ===
+[2025-10-11 20:18:29] [INFO] Analyzing all coins...
+[2025-10-11 20:18:29] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 20:18:29] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:18:29] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:18:29] [INFO] Making portfolio decisions...
+[2025-10-11 20:18:29] [INFO] No trading actions required (HOLD)
+[2025-10-11 20:18:29] [INFO] ------------------------------------------------------------
+[2025-10-11 20:18:29] [INFO] Portfolio Summary
+[2025-10-11 20:18:29] [INFO]   Positions: 3/3
+[2025-10-11 20:18:29] [INFO]   Total P&L: -3,609 KRW
+[2025-10-11 20:18:29] [INFO] Per-Coin Status:
+[2025-10-11 20:18:29] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 20:18:29] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 20:18:29] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 20:18:29] [INFO] ------------------------------------------------------------
+[2025-10-11 20:18:29] [INFO] Cycle completed in 0.27s. Sleeping 900s until next cycle...
+[2025-10-11 20:33:24] [INFO] === Analysis Cycle #8 - 2025-10-11 20:33:24 ===
+[2025-10-11 20:33:24] [INFO] Analyzing all coins...
+[2025-10-11 20:33:24] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 20:33:24] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:33:24] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:33:24] [INFO] Making portfolio decisions...
+[2025-10-11 20:33:24] [INFO] No trading actions required (HOLD)
+[2025-10-11 20:33:24] [INFO] ------------------------------------------------------------
+[2025-10-11 20:33:25] [INFO] Portfolio Summary
+[2025-10-11 20:33:25] [INFO]   Positions: 3/3
+[2025-10-11 20:33:25] [INFO]   Total P&L: -2,971 KRW
+[2025-10-11 20:33:25] [INFO] Per-Coin Status:
+[2025-10-11 20:33:25] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 20:33:25] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 20:33:25] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 20:33:25] [INFO] ------------------------------------------------------------
+[2025-10-11 20:33:25] [INFO] Cycle completed in 0.25s. Sleeping 900s until next cycle...
+[2025-10-11 20:48:25] [INFO] === Analysis Cycle #9 - 2025-10-11 20:48:24 ===
+[2025-10-11 20:48:25] [INFO] Analyzing all coins...
+[2025-10-11 20:48:25] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 20:48:25] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:48:25] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 20:48:25] [INFO] Making portfolio decisions...
+[2025-10-11 20:48:25] [INFO] No trading actions required (HOLD)
+[2025-10-11 20:48:25] [INFO] ------------------------------------------------------------
+[2025-10-11 20:48:25] [INFO] Portfolio Summary
+[2025-10-11 20:48:25] [INFO]   Positions: 3/3
+[2025-10-11 20:48:25] [INFO]   Total P&L: -2,663 KRW
+[2025-10-11 20:48:25] [INFO] Per-Coin Status:
+[2025-10-11 20:48:25] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 20:48:25] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 20:48:25] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 20:48:25] [INFO] ------------------------------------------------------------
+[2025-10-11 20:48:25] [INFO] Cycle completed in 0.41s. Sleeping 900s until next cycle...
+[2025-10-11 21:03:26] [INFO] === Analysis Cycle #10 - 2025-10-11 21:03:24 ===
+[2025-10-11 21:03:26] [INFO] Analyzing all coins...
+[2025-10-11 21:03:26] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:03:26] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 21:03:26] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:03:26] [INFO] Making portfolio decisions...
+[2025-10-11 21:03:26] [INFO] No trading actions required (HOLD)
+[2025-10-11 21:03:26] [INFO] ------------------------------------------------------------
+[2025-10-11 21:03:26] [INFO] Portfolio Summary
+[2025-10-11 21:03:26] [INFO]   Positions: 3/3
+[2025-10-11 21:03:26] [INFO]   Total P&L: -2,871 KRW
+[2025-10-11 21:03:26] [INFO] Per-Coin Status:
+[2025-10-11 21:03:26] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 21:03:26] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 21:03:26] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 21:03:26] [INFO] ------------------------------------------------------------
+[2025-10-11 21:03:26] [INFO] Cycle completed in 0.29s. Sleeping 900s until next cycle...
+[2025-10-11 21:18:27] [INFO] === Analysis Cycle #11 - 2025-10-11 21:18:24 ===
+[2025-10-11 21:18:27] [INFO] Analyzing all coins...
+[2025-10-11 21:18:27] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 21:18:27] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:18:27] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:18:27] [INFO] Making portfolio decisions...
+[2025-10-11 21:18:27] [INFO] No trading actions required (HOLD)
+[2025-10-11 21:18:27] [INFO] ------------------------------------------------------------
+[2025-10-11 21:18:27] [INFO] Portfolio Summary
+[2025-10-11 21:18:27] [INFO]   Positions: 3/3
+[2025-10-11 21:18:27] [INFO]   Total P&L: -2,949 KRW
+[2025-10-11 21:18:27] [INFO] Per-Coin Status:
+[2025-10-11 21:18:27] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 21:18:27] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 21:18:27] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 21:18:27] [INFO] ------------------------------------------------------------
+[2025-10-11 21:18:27] [INFO] Cycle completed in 0.28s. Sleeping 900s until next cycle...
+[2025-10-11 21:33:29] [INFO] === Analysis Cycle #12 - 2025-10-11 21:33:24 ===
+[2025-10-11 21:33:29] [INFO] Analyzing all coins...
+[2025-10-11 21:33:29] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 21:33:29] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:33:29] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:33:29] [INFO] Making portfolio decisions...
+[2025-10-11 21:33:29] [INFO] No trading actions required (HOLD)
+[2025-10-11 21:33:29] [INFO] ------------------------------------------------------------
+[2025-10-11 21:33:29] [INFO] Portfolio Summary
+[2025-10-11 21:33:29] [INFO]   Positions: 3/3
+[2025-10-11 21:33:29] [INFO]   Total P&L: -2,623 KRW
+[2025-10-11 21:33:29] [INFO] Per-Coin Status:
+[2025-10-11 21:33:29] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 21:33:29] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 21:33:29] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 21:33:29] [INFO] ------------------------------------------------------------
+[2025-10-11 21:33:29] [INFO] Cycle completed in 0.28s. Sleeping 900s until next cycle...
+[2025-10-11 21:48:26] [INFO] === Analysis Cycle #13 - 2025-10-11 21:48:24 ===
+[2025-10-11 21:48:26] [INFO] Analyzing all coins...
+[2025-10-11 21:48:26] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:48:26] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 21:48:26] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 21:48:26] [INFO] Making portfolio decisions...
+[2025-10-11 21:48:26] [INFO] No trading actions required (HOLD)
+[2025-10-11 21:48:26] [INFO] ------------------------------------------------------------
+[2025-10-11 21:48:26] [INFO] Portfolio Summary
+[2025-10-11 21:48:26] [INFO]   Positions: 3/3
+[2025-10-11 21:48:26] [INFO]   Total P&L: -3,306 KRW
+[2025-10-11 21:48:26] [INFO] Per-Coin Status:
+[2025-10-11 21:48:26] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 21:48:26] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 21:48:26] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 21:48:26] [INFO] ------------------------------------------------------------
+[2025-10-11 21:48:26] [INFO] Cycle completed in 0.27s. Sleeping 900s until next cycle...
+[2025-10-11 22:03:24] [INFO] === Analysis Cycle #14 - 2025-10-11 22:03:22 ===
+[2025-10-11 22:03:24] [INFO] Analyzing all coins...
+[2025-10-11 22:03:24] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 22:03:25] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:03:25] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:03:25] [INFO] Making portfolio decisions...
+[2025-10-11 22:03:25] [INFO] No trading actions required (HOLD)
+[2025-10-11 22:03:25] [INFO] ------------------------------------------------------------
+[2025-10-11 22:03:25] [INFO] Portfolio Summary
+[2025-10-11 22:03:25] [INFO]   Positions: 3/3
+[2025-10-11 22:03:25] [INFO]   Total P&L: -3,035 KRW
+[2025-10-11 22:03:25] [INFO] Per-Coin Status:
+[2025-10-11 22:03:25] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 22:03:25] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 22:03:25] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 22:03:25] [INFO] ------------------------------------------------------------
+[2025-10-11 22:03:25] [INFO] Cycle completed in 0.27s. Sleeping 900s until next cycle...
+[2025-10-11 22:18:26] [INFO] === Analysis Cycle #15 - 2025-10-11 22:18:22 ===
+[2025-10-11 22:18:26] [INFO] Analyzing all coins...
+[2025-10-11 22:18:26] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 22:18:26] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:18:26] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:18:26] [INFO] Making portfolio decisions...
+[2025-10-11 22:18:26] [INFO] No trading actions required (HOLD)
+[2025-10-11 22:18:26] [INFO] ------------------------------------------------------------
+[2025-10-11 22:18:26] [INFO] Portfolio Summary
+[2025-10-11 22:18:26] [INFO]   Positions: 3/3
+[2025-10-11 22:18:26] [INFO]   Total P&L: -3,077 KRW
+[2025-10-11 22:18:26] [INFO] Per-Coin Status:
+[2025-10-11 22:18:26] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 22:18:26] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 22:18:26] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 22:18:26] [INFO] ------------------------------------------------------------
+[2025-10-11 22:18:26] [INFO] Cycle completed in 0.24s. Sleeping 900s until next cycle...
+[2025-10-11 22:33:24] [INFO] === Analysis Cycle #16 - 2025-10-11 22:33:22 ===
+[2025-10-11 22:33:24] [INFO] Analyzing all coins...
+[2025-10-11 22:33:24] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:33:24] [INFO]   [SOL] BULLISH | Score: 3/4 | Action: BUY
+[2025-10-11 22:33:24] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:33:24] [INFO] Making portfolio decisions...
+[2025-10-11 22:33:24] [INFO] No trading actions required (HOLD)
+[2025-10-11 22:33:24] [INFO] ------------------------------------------------------------
+[2025-10-11 22:33:24] [INFO] Portfolio Summary
+[2025-10-11 22:33:24] [INFO]   Positions: 3/3
+[2025-10-11 22:33:24] [INFO]   Total P&L: -3,500 KRW
+[2025-10-11 22:33:24] [INFO] Per-Coin Status:
+[2025-10-11 22:33:24] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 22:33:24] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 22:33:24] [INFO]   [SOL] BULLISH  | Score: 3/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 22:33:24] [INFO] ------------------------------------------------------------
+[2025-10-11 22:33:24] [INFO] Cycle completed in 0.23s. Sleeping 900s until next cycle...
+[2025-10-11 22:48:25] [INFO] === Analysis Cycle #17 - 2025-10-11 22:48:22 ===
+[2025-10-11 22:48:25] [INFO] Analyzing all coins...
+[2025-10-11 22:48:25] [INFO]   [XRP] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:48:25] [INFO]   [SOL] BULLISH | Score: 4/4 | Action: BUY
+[2025-10-11 22:48:25] [INFO]   [ETH] BULLISH | Score: 1/4 | Action: HOLD
+[2025-10-11 22:48:25] [INFO] Making portfolio decisions...
+[2025-10-11 22:48:25] [INFO] No trading actions required (HOLD)
+[2025-10-11 22:48:25] [INFO] ------------------------------------------------------------
+[2025-10-11 22:48:25] [INFO] Portfolio Summary
+[2025-10-11 22:48:25] [INFO]   Positions: 3/3
+[2025-10-11 22:48:25] [INFO]   Total P&L: -2,908 KRW
+[2025-10-11 22:48:25] [INFO] Per-Coin Status:
+[2025-10-11 22:48:25] [INFO]   [ETH] BULLISH  | Score: 1/4 | Action: HOLD | Position: 5,896,000 KRW | P&L: +0
+[2025-10-11 22:48:25] [INFO]   [XRP] BULLISH  | Score: 1/4 | Action: HOLD | Position: 3,707 KRW | P&L: +0
+[2025-10-11 22:48:25] [INFO]   [SOL] BULLISH  | Score: 4/4 | Action: BUY  | Position: 295,800 KRW | P&L: +0
+[2025-10-11 22:48:25] [INFO] ------------------------------------------------------------
+[2025-10-11 22:48:25] [INFO] Cycle completed in 0.23s. Sleeping 900s until next cycle...

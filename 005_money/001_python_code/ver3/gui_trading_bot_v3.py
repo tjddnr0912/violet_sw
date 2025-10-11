@@ -157,6 +157,24 @@ class GUITradingBotV3:
         if self.bot:
             self.bot.stop()
 
+    def update_config(self, new_config: Dict[str, Any]):
+        """
+        Update bot configuration at runtime.
+
+        Args:
+            new_config: New configuration dictionary
+
+        Note:
+            This updates the config for the underlying TradingBotV3 instance.
+            Changes take effect on the next analysis cycle.
+        """
+        with self.lock:
+            if self.bot:
+                self.bot.config = new_config
+                self._send_log("INFO", "Bot configuration updated")
+            else:
+                self._send_log("WARNING", "Cannot update config: Bot not initialized")
+
     def get_portfolio_summary(self) -> Optional[Dict[str, Any]]:
         """
         Get current portfolio summary (thread-safe).

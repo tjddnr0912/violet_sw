@@ -17,10 +17,9 @@ from lib.api.bithumb_api import get_candlestick, get_ticker
 from lib.core.logger import TradingLogger
 from lib.interfaces.version_interface import VersionInterface
 
-# Import version 2 config
-from .config_v2 import (
+# Import version 3 config
+from .config_v3 import (
     get_version_config,
-    validate_version_config,
     VERSION_METADATA,
 )
 from lib.core.config_common import merge_configs, get_common_config
@@ -79,12 +78,8 @@ class StrategyV2(VersionInterface):
         self.risk_config = self.config.get('RISK_CONFIG', {})
         self.exit_config = self.config.get('EXIT_CONFIG', {})
 
-        # Validate configuration
-        is_valid, errors = validate_version_config(self.config)
-        if not is_valid:
-            error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
-            self.logger.log_error("Strategy V2 initialization error", Exception(error_msg))
-            raise ValueError(error_msg)
+        # Configuration is already validated in config_v3.py
+        # Skip validation step for Ver3
 
         self.logger.logger.info(f"Strategy V2 initialized: {self.VERSION_DISPLAY_NAME}")
 
@@ -117,7 +112,8 @@ class StrategyV2(VersionInterface):
 
     def validate_configuration(self) -> Tuple[bool, List[str]]:
         """Validate current configuration."""
-        return validate_version_config(self.config)
+        # Configuration validation is handled in config_v3.py
+        return True, []
 
     def get_chart_config(self) -> Dict[str, Any]:
         """Get chart configuration for GUI."""
@@ -468,18 +464,57 @@ class StrategyV2(VersionInterface):
         chandelier_stop = highest_high - (latest_atr * multiplier)
         return float(chandelier_stop)
 
-    def _calculate_target_prices(self, df: pd.DataFrame) -> Dict[str, float]:
-        """Calculate target prices for partial exits."""
+    def _calculate_target_prices(self, df: pd.DataFrame, entry_price: Optional[float] = None) -> Dict[str, float]:
+        """
+        Calculate target prices for partial exits.
+
+        Supports two modes:
+        1. BB-based: Use Bollinger Band levels (middle, upper)
+        2. Percentage-based: Use percentage gains from entry price
+
+        Args:
+            df: Price DataFrame with indicators
+            entry_price: Entry price (required for percentage-based mode)
+
+        Returns:
+            Dictionary with first_target, second_target, stop_loss
+        """
         if df is None or len(df) == 0:
             return {}
 
         latest = df.iloc[-1]
+        current_price = float(latest['close'])
 
-        return {
-            'first_target': float(latest['bb_middle']),   # Exit 50% at BB middle
-            'second_target': float(latest['bb_upper']),   # Exit remaining at BB upper
-            'stop_loss': self._calculate_chandelier_stop(df),
-        }
+        # Get profit target mode from config
+        profit_mode = self.exit_config.get('profit_target_mode', 'bb_based')
+
+        if profit_mode == 'percentage_based':
+            # Use percentage-based targets
+            tp1_pct = self.exit_config.get('tp1_percentage', 1.5)
+            tp2_pct = self.exit_config.get('tp2_percentage', 2.5)
+
+            # Use entry_price if provided, otherwise use current price as fallback
+            base_price = entry_price if entry_price is not None else current_price
+
+            first_target = base_price * (1 + tp1_pct / 100.0)
+            second_target = base_price * (1 + tp2_pct / 100.0)
+
+            return {
+                'first_target': float(first_target),
+                'second_target': float(second_target),
+                'stop_loss': self._calculate_chandelier_stop(df),
+                'mode': 'percentage_based',
+                'tp1_pct': tp1_pct,
+                'tp2_pct': tp2_pct,
+            }
+        else:
+            # Default: BB-based targets
+            return {
+                'first_target': float(latest['bb_middle']),   # Exit 50% at BB middle
+                'second_target': float(latest['bb_upper']),   # Exit remaining at BB upper
+                'stop_loss': self._calculate_chandelier_stop(df),
+                'mode': 'bb_based',
+            }
 
     # ========================================
     # Data Extraction

@@ -74,10 +74,7 @@ class TradingBotGUIV3:
         # Read trading mode from config
         self.config = config_v3.get_version_config()
 
-        # Apply saved preferences to config
-        self.config = self.pref_manager.merge_with_config(saved_prefs, self.config)
-
-        # Update active coins in config module
+        # Update active coins in config module FIRST (before preference merge)
         active_coins_from_prefs = saved_prefs.get('portfolio_config', {}).get('default_coins', ['BTC', 'ETH', 'XRP'])
         try:
             config_v3.update_active_coins(active_coins_from_prefs)
@@ -85,6 +82,9 @@ class TradingBotGUIV3:
         except (ValueError, KeyError):
             # Invalid saved coins, use default from config
             pass
+
+        # Apply saved preferences to config (AFTER updating active coins)
+        self.config = self.pref_manager.merge_with_config(saved_prefs, self.config)
 
         self.dry_run = self.config['EXECUTION_CONFIG'].get('dry_run', True)
         self.live_mode = self.config['EXECUTION_CONFIG'].get('mode', 'backtest') == 'live'
@@ -722,6 +722,7 @@ Portfolio Multi-Coin Strategy (Ver3):
                 if position.get('has_position', False):
                     entry_price = position.get('entry_price', 0)
                     size = position.get('size', 0)
+                    stop_loss = position.get('stop_loss', 0)
 
                     # Fetch actual current market price
                     ticker_data = get_ticker(coin)
@@ -729,12 +730,32 @@ Portfolio Multi-Coin Strategy (Ver3):
                     if ticker_data:
                         current_price = float(ticker_data.get('closing_price', entry_price))
 
+                    # Calculate profit target prices based on current config
+                    exit_config = self.config.get('EXIT_CONFIG', {})
+                    profit_mode = exit_config.get('profit_target_mode', 'bb_based')
+
+                    if profit_mode == 'percentage_based':
+                        # Use percentage-based targets from entry price
+                        tp1_pct = exit_config.get('tp1_percentage', 1.5)
+                        tp2_pct = exit_config.get('tp2_percentage', 2.5)
+                        tp1_price = entry_price * (1 + tp1_pct / 100.0)
+                        tp2_price = entry_price * (1 + tp2_pct / 100.0)
+                    else:
+                        # Use BB-based targets from analysis (if available)
+                        analysis = data.get('analysis', {})
+                        target_prices = analysis.get('target_prices', {})
+                        tp1_price = target_prices.get('first_target', 0)
+                        tp2_price = target_prices.get('second_target', 0)
+
                     positions_value += size * entry_price
 
                     holdings_data[coin] = {
                         'avg_price': entry_price,
                         'quantity': size,
-                        'current_price': current_price
+                        'current_price': current_price,
+                        'stop_loss': stop_loss,
+                        'tp1_price': tp1_price,
+                        'tp2_price': tp2_price
                     }
 
             # Update balance (capital - invested)
@@ -783,11 +804,33 @@ Portfolio Multi-Coin Strategy (Ver3):
 
                                 # Try to get avg_price from portfolio summary first
                                 avg_price = current_price  # Default fallback
+                                stop_loss = 0
+                                tp1_price = 0
+                                tp2_price = 0
+
                                 if coin in coins_data:
                                     position = coins_data[coin].get('position', {})
                                     if position.get('has_position', False):
                                         # Use entry_price from portfolio summary
                                         avg_price = position.get('entry_price', current_price)
+                                        stop_loss = position.get('stop_loss', 0)
+
+                                        # Calculate profit target prices based on current config
+                                        exit_config = self.config.get('EXIT_CONFIG', {})
+                                        profit_mode = exit_config.get('profit_target_mode', 'bb_based')
+
+                                        if profit_mode == 'percentage_based':
+                                            # Use percentage-based targets from entry price
+                                            tp1_pct = exit_config.get('tp1_percentage', 1.5)
+                                            tp2_pct = exit_config.get('tp2_percentage', 2.5)
+                                            tp1_price = avg_price * (1 + tp1_pct / 100.0)
+                                            tp2_price = avg_price * (1 + tp2_pct / 100.0)
+                                        else:
+                                            # Use BB-based targets from analysis (if available)
+                                            analysis = coins_data[coin].get('analysis', {})
+                                            target_prices = analysis.get('target_prices', {})
+                                            tp1_price = target_prices.get('first_target', 0)
+                                            tp2_price = target_prices.get('second_target', 0)
                                     else:
                                         # No position in summary, try positions file
                                         avg_price = self._get_avg_price_from_positions(coin, current_price)
@@ -798,7 +841,10 @@ Portfolio Multi-Coin Strategy (Ver3):
                                 holdings_data[coin] = {
                                     'avg_price': avg_price,
                                     'quantity': quantity,
-                                    'current_price': current_price
+                                    'current_price': current_price,
+                                    'stop_loss': stop_loss,
+                                    'tp1_price': tp1_price,
+                                    'tp2_price': tp2_price
                                 }
 
                     # Update holdings

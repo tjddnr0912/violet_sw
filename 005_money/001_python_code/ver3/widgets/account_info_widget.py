@@ -124,7 +124,8 @@ class AccountInfoWidget(ttk.LabelFrame):
         time_str = self.last_update.strftime('%H:%M:%S')
         self.update_time_label.config(text=f"Last update: {time_str}")
 
-    def update_holding(self, coin: str, avg_price: float, quantity: float, current_price: float):
+    def update_holding(self, coin: str, avg_price: float, quantity: float, current_price: float,
+                      stop_loss: float = 0, tp1_price: float = 0, tp2_price: float = 0):
         """
         Update single coin holding information.
 
@@ -133,6 +134,9 @@ class AccountInfoWidget(ttk.LabelFrame):
             avg_price: Average purchase price in KRW
             quantity: Quantity held
             current_price: Current market price in KRW
+            stop_loss: Stop-loss price in KRW (optional)
+            tp1_price: First profit target price in KRW (optional)
+            tp2_price: Second profit target price in KRW (optional)
         """
         # Calculate P&L
         pnl_pct = self.calculate_pnl(avg_price, current_price)
@@ -144,7 +148,10 @@ class AccountInfoWidget(ttk.LabelFrame):
             'quantity': quantity,
             'current_price': current_price,
             'pnl_pct': pnl_pct,
-            'current_value': current_value
+            'current_value': current_value,
+            'stop_loss': stop_loss,
+            'tp1_price': tp1_price,
+            'tp2_price': tp2_price
         }
 
         # Update display
@@ -155,7 +162,7 @@ class AccountInfoWidget(ttk.LabelFrame):
         Update multiple holdings at once.
 
         Args:
-            holdings_data: Dictionary of coin -> {avg_price, quantity, current_price}
+            holdings_data: Dictionary of coin -> {avg_price, quantity, current_price, stop_loss, tp1_price, tp2_price}
         """
         self.holdings.clear()
 
@@ -163,6 +170,9 @@ class AccountInfoWidget(ttk.LabelFrame):
             avg_price = data.get('avg_price', 0)
             quantity = data.get('quantity', 0)
             current_price = data.get('current_price', 0)
+            stop_loss = data.get('stop_loss', 0)
+            tp1_price = data.get('tp1_price', 0)
+            tp2_price = data.get('tp2_price', 0)
 
             if quantity > 0:  # Only show if we actually hold this coin
                 pnl_pct = self.calculate_pnl(avg_price, current_price)
@@ -173,7 +183,10 @@ class AccountInfoWidget(ttk.LabelFrame):
                     'quantity': quantity,
                     'current_price': current_price,
                     'pnl_pct': pnl_pct,
-                    'current_value': current_value
+                    'current_value': current_value,
+                    'stop_loss': stop_loss,
+                    'tp1_price': tp1_price,
+                    'tp2_price': tp2_price
                 }
 
         self._update_holdings_display()
@@ -259,13 +272,43 @@ class AccountInfoWidget(ttk.LabelFrame):
         )
         value_label.pack(anchor=tk.W)
 
+        # Stop-loss price
+        stop_loss_label = ttk.Label(
+            details_frame,
+            text="Stop-Loss: - KRW",
+            font=('Arial', 9),
+            foreground='red'
+        )
+        stop_loss_label.pack(anchor=tk.W)
+
+        # First target (TP1)
+        tp1_label = ttk.Label(
+            details_frame,
+            text="TP1: - KRW",
+            font=('Arial', 9),
+            foreground='green'
+        )
+        tp1_label.pack(anchor=tk.W)
+
+        # Second target (TP2)
+        tp2_label = ttk.Label(
+            details_frame,
+            text="TP2: - KRW",
+            font=('Arial', 9),
+            foreground='green'
+        )
+        tp2_label.pack(anchor=tk.W)
+
         # Store references
         self.holding_widgets[coin] = {
             'frame': holding_frame,
             'pnl_label': pnl_label,
             'avg_label': avg_label,
             'qty_label': qty_label,
-            'value_label': value_label
+            'value_label': value_label,
+            'stop_loss_label': stop_loss_label,
+            'tp1_label': tp1_label,
+            'tp2_label': tp2_label
         }
 
     def _update_holding_widget(self, coin: str, data: Dict[str, float]):
@@ -287,6 +330,9 @@ class AccountInfoWidget(ttk.LabelFrame):
         current_price = data['current_price']
         pnl_pct = data['pnl_pct']
         current_value = data['current_value']
+        stop_loss = data.get('stop_loss', 0)
+        tp1_price = data.get('tp1_price', 0)
+        tp2_price = data.get('tp2_price', 0)
 
         # Update P&L label
         pnl_sign = '+' if pnl_pct >= 0 else ''
@@ -305,6 +351,27 @@ class AccountInfoWidget(ttk.LabelFrame):
         # Update current value
         value_text = f"Value: {current_value:,.0f} KRW"
         widgets['value_label'].config(text=value_text)
+
+        # Update stop-loss
+        if stop_loss > 0:
+            stop_loss_text = f"Stop-Loss: {stop_loss:,.0f} KRW"
+            widgets['stop_loss_label'].config(text=stop_loss_text)
+        else:
+            widgets['stop_loss_label'].config(text="Stop-Loss: - KRW")
+
+        # Update TP1
+        if tp1_price > 0:
+            tp1_text = f"TP1: {tp1_price:,.0f} KRW"
+            widgets['tp1_label'].config(text=tp1_text)
+        else:
+            widgets['tp1_label'].config(text="TP1: - KRW")
+
+        # Update TP2
+        if tp2_price > 0:
+            tp2_text = f"TP2: {tp2_price:,.0f} KRW"
+            widgets['tp2_label'].config(text=tp2_text)
+        else:
+            widgets['tp2_label'].config(text="TP2: - KRW")
 
     def calculate_pnl(self, avg_price: float, current_price: float) -> float:
         """

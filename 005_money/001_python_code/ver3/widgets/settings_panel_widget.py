@@ -357,12 +357,47 @@ class SettingsPanelWidget(ttk.LabelFrame):
 
         row += 1
 
-        # First profit target (TP1)
+        # Profit target mode selection
         ttk.Label(
+            parent,
+            text="Profit Target Mode:",
+            font=('Arial', 10, 'bold')
+        ).grid(row=row, column=0, sticky=tk.W, pady=5)
+
+        profit_mode_var = tk.StringVar(value='bb_based')
+        self.setting_vars['profit_target_mode'] = profit_mode_var
+
+        mode_frame = ttk.Frame(parent)
+        mode_frame.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5)
+
+        # Radio buttons for mode selection
+        rb_bb = ttk.Radiobutton(
+            mode_frame,
+            text="BB-based (Middle/Upper)",
+            variable=profit_mode_var,
+            value='bb_based',
+            command=self._on_profit_mode_changed
+        )
+        rb_bb.pack(side=tk.LEFT, padx=(0, 15))
+
+        rb_pct = ttk.Radiobutton(
+            mode_frame,
+            text="Percentage-based",
+            variable=profit_mode_var,
+            value='percentage_based',
+            command=self._on_profit_mode_changed
+        )
+        rb_pct.pack(side=tk.LEFT)
+
+        row += 1
+
+        # First profit target (TP1) - percentage mode only
+        self.tp1_label = ttk.Label(
             parent,
             text="First Target (TP1) %:",
             font=('Arial', 10)
-        ).grid(row=row, column=0, sticky=tk.W, pady=5)
+        )
+        self.tp1_label.grid(row=row, column=0, sticky=tk.W, pady=5)
 
         tp1_var = tk.DoubleVar(value=1.5)
         self.setting_vars['tp1_target_pct'] = tp1_var
@@ -370,7 +405,7 @@ class SettingsPanelWidget(ttk.LabelFrame):
         tp1_frame = ttk.Frame(parent)
         tp1_frame.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5)
 
-        tp1_spinbox = ttk.Spinbox(
+        self.tp1_spinbox = ttk.Spinbox(
             tp1_frame,
             from_=0.5,
             to=5.0,
@@ -378,23 +413,25 @@ class SettingsPanelWidget(ttk.LabelFrame):
             textvariable=tp1_var,
             width=10
         )
-        tp1_spinbox.pack(side=tk.LEFT)
+        self.tp1_spinbox.pack(side=tk.LEFT)
 
-        ttk.Label(
+        self.tp1_help_label = ttk.Label(
             tp1_frame,
             text="(Exit 50% of position)",
             font=('Arial', 9),
             foreground='gray'
-        ).pack(side=tk.LEFT, padx=10)
+        )
+        self.tp1_help_label.pack(side=tk.LEFT, padx=10)
 
         row += 1
 
-        # Second profit target (TP2)
-        ttk.Label(
+        # Second profit target (TP2) - percentage mode only
+        self.tp2_label = ttk.Label(
             parent,
             text="Second Target (TP2) %:",
             font=('Arial', 10)
-        ).grid(row=row, column=0, sticky=tk.W, pady=5)
+        )
+        self.tp2_label.grid(row=row, column=0, sticky=tk.W, pady=5)
 
         tp2_var = tk.DoubleVar(value=2.5)
         self.setting_vars['tp2_target_pct'] = tp2_var
@@ -402,7 +439,7 @@ class SettingsPanelWidget(ttk.LabelFrame):
         tp2_frame = ttk.Frame(parent)
         tp2_frame.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5)
 
-        tp2_spinbox = ttk.Spinbox(
+        self.tp2_spinbox = ttk.Spinbox(
             tp2_frame,
             from_=1.0,
             to=10.0,
@@ -410,14 +447,36 @@ class SettingsPanelWidget(ttk.LabelFrame):
             textvariable=tp2_var,
             width=10
         )
-        tp2_spinbox.pack(side=tk.LEFT)
+        self.tp2_spinbox.pack(side=tk.LEFT)
 
-        ttk.Label(
+        self.tp2_help_label = ttk.Label(
             tp2_frame,
             text="(Exit remaining position)",
             font=('Arial', 9),
             foreground='gray'
-        ).pack(side=tk.LEFT, padx=10)
+        )
+        self.tp2_help_label.pack(side=tk.LEFT, padx=10)
+
+        row += 1
+
+        # Explanation label
+        self.mode_explanation = ttk.Label(
+            parent,
+            text="BB mode: Uses Bollinger Bands (dynamic). Percentage mode: Fixed % from entry.",
+            font=('Arial', 9),
+            foreground='blue',
+            wraplength=400
+        )
+        self.mode_explanation.grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=(5, 0))
+
+        # Store widgets for enable/disable control
+        self.pct_mode_widgets = [
+            self.tp1_label, self.tp1_spinbox, self.tp1_help_label,
+            self.tp2_label, self.tp2_spinbox, self.tp2_help_label
+        ]
+
+        # Set initial state
+        self._on_profit_mode_changed()
 
     def create_risk_settings(self, parent):
         """Create risk management settings inputs"""
@@ -529,6 +588,21 @@ class SettingsPanelWidget(ttk.LabelFrame):
             foreground='gray'
         ).pack(side=tk.LEFT, padx=10)
 
+    def _on_profit_mode_changed(self):
+        """Handle profit target mode change - enable/disable percentage inputs."""
+        mode = self.setting_vars['profit_target_mode'].get()
+
+        if mode == 'percentage_based':
+            # Enable percentage inputs
+            state = 'normal'
+        else:
+            # Disable percentage inputs (BB mode doesn't use them)
+            state = 'disabled'
+
+        # Update widget states
+        self.tp1_spinbox.config(state=state)
+        self.tp2_spinbox.config(state=state)
+
     def load_settings(self, config: Dict[str, Any]):
         """
         Load settings from configuration.
@@ -556,11 +630,19 @@ class SettingsPanelWidget(ttk.LabelFrame):
         self.setting_vars['stoch_oversold'].set(indicator_config.get('stoch_oversold', 20))
 
         # Exit scoring
+        exit_config = config.get('EXIT_CONFIG', {})
         self.setting_vars['chandelier_atr_multiplier'].set(indicator_config.get('chandelier_multiplier', 3.0))
 
+        # Profit target mode
+        profit_mode = exit_config.get('profit_target_mode', 'bb_based')
+        self.setting_vars['profit_target_mode'].set(profit_mode)
+
         # Profit targets (stored as percentages, displayed as percentages)
-        self.setting_vars['tp1_target_pct'].set(1.5)  # Default 1.5%
-        self.setting_vars['tp2_target_pct'].set(2.5)  # Default 2.5%
+        self.setting_vars['tp1_target_pct'].set(exit_config.get('tp1_percentage', 1.5))
+        self.setting_vars['tp2_target_pct'].set(exit_config.get('tp2_percentage', 2.5))
+
+        # Update UI state based on mode
+        self._on_profit_mode_changed()
 
         # Risk management
         risk_config = config.get('RISK_CONFIG', {})
@@ -614,18 +696,20 @@ class SettingsPanelWidget(ttk.LabelFrame):
         if min_entry < 1 or min_entry > 4:
             errors.append("Min entry score must be between 1 and 4")
 
-        # Validate profit targets
-        tp1 = self.setting_vars['tp1_target_pct'].get()
-        tp2 = self.setting_vars['tp2_target_pct'].get()
+        # Validate profit targets (only if in percentage mode)
+        profit_mode = self.setting_vars['profit_target_mode'].get()
+        if profit_mode == 'percentage_based':
+            tp1 = self.setting_vars['tp1_target_pct'].get()
+            tp2 = self.setting_vars['tp2_target_pct'].get()
 
-        if tp1 <= 0 or tp1 > 10:
-            errors.append("TP1 target must be between 0.5% and 10%")
+            if tp1 <= 0 or tp1 > 10:
+                errors.append("TP1 target must be between 0.5% and 10%")
 
-        if tp2 <= 0 or tp2 > 10:
-            errors.append("TP2 target must be between 1% and 10%")
+            if tp2 <= 0 or tp2 > 10:
+                errors.append("TP2 target must be between 1% and 10%")
 
-        if tp1 >= tp2:
-            errors.append("TP2 target must be greater than TP1 target")
+            if tp1 >= tp2:
+                errors.append("TP2 target must be greater than TP1 target")
 
         # Validate risk limits
         daily_loss = self.setting_vars['daily_loss_limit_pct'].get()
@@ -660,6 +744,11 @@ class SettingsPanelWidget(ttk.LabelFrame):
 
         # Update exit scoring
         updated_config['INDICATOR_CONFIG']['chandelier_multiplier'] = self.setting_vars['chandelier_atr_multiplier'].get()
+
+        # Update profit target mode and percentages
+        updated_config['EXIT_CONFIG']['profit_target_mode'] = self.setting_vars['profit_target_mode'].get()
+        updated_config['EXIT_CONFIG']['tp1_percentage'] = self.setting_vars['tp1_target_pct'].get()
+        updated_config['EXIT_CONFIG']['tp2_percentage'] = self.setting_vars['tp2_target_pct'].get()
 
         # Update risk management
         updated_config['RISK_CONFIG']['max_daily_loss_pct'] = self.setting_vars['daily_loss_limit_pct'].get()
