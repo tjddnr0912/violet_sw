@@ -2,8 +2,8 @@
   "portfolio_config": {
     "max_positions": 2,
     "default_coins": [
+      "BTC",
       "ETH",
-      "XRP",
       "SOL"
     ]
   },
@@ -23,5 +23,5 @@
     "max_consecutive_losses": 3,
     "position_amount_krw": 50000
   },
-  "last_updated": "2025-10-08 23:22:49"
+  "last_updated": "2025-10-11 08:36:02"
 }
