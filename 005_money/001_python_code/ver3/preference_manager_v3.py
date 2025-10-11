@@ -64,8 +64,9 @@ class PreferenceManagerV3:
             },
             'exit_scoring': {
                 'chandelier_atr_multiplier': 3.0,
-                'tp1_target': 1.5,  # 1.5%
-                'tp2_target': 2.5   # 2.5%
+                'profit_target_mode': 'bb_based',  # 'bb_based' or 'percentage_based'
+                'tp1_target': 1.5,  # 1.5% (used in percentage mode)
+                'tp2_target': 2.5   # 2.5% (used in percentage mode)
             },
             'risk_management': {
                 'max_daily_trades': 10,
@@ -181,7 +182,12 @@ class PreferenceManagerV3:
             exit_prefs = preferences['exit_scoring']
             if 'chandelier_atr_multiplier' in exit_prefs:
                 merged_config['INDICATOR_CONFIG']['chandelier_multiplier'] = exit_prefs['chandelier_atr_multiplier']
-            # Note: TP1/TP2 targets are not in the base config structure, handled separately
+            if 'profit_target_mode' in exit_prefs:
+                merged_config['EXIT_CONFIG']['profit_target_mode'] = exit_prefs['profit_target_mode']
+            if 'tp1_target' in exit_prefs:
+                merged_config['EXIT_CONFIG']['tp1_percentage'] = exit_prefs['tp1_target']
+            if 'tp2_target' in exit_prefs:
+                merged_config['EXIT_CONFIG']['tp2_percentage'] = exit_prefs['tp2_target']
 
         # Merge risk management
         if 'risk_management' in preferences:
@@ -219,8 +225,9 @@ class PreferenceManagerV3:
             },
             'exit_scoring': {
                 'chandelier_atr_multiplier': config['INDICATOR_CONFIG'].get('chandelier_multiplier', 3.0),
-                'tp1_target': 1.5,  # Default values (not in config)
-                'tp2_target': 2.5
+                'profit_target_mode': config['EXIT_CONFIG'].get('profit_target_mode', 'bb_based'),
+                'tp1_target': config['EXIT_CONFIG'].get('tp1_percentage', 1.5),
+                'tp2_target': config['EXIT_CONFIG'].get('tp2_percentage', 2.5)
             },
             'risk_management': {
                 'max_daily_trades': config['SAFETY_CONFIG'].get('max_daily_trades', 10),

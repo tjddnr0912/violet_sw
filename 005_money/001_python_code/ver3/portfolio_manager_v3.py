@@ -172,7 +172,8 @@ class PortfolioManagerV3:
         coins: List[str],
         config: Dict[str, Any],
         api,
-        logger: TradingLogger
+        logger: TradingLogger,
+        markdown_logger=None
     ):
         """
         Initialize portfolio manager.
@@ -182,6 +183,7 @@ class PortfolioManagerV3:
             config: Ver3 configuration dictionary from config_v3.py
             api: BithumbAPI instance
             logger: TradingLogger instance
+            markdown_logger: MarkdownTransactionLogger instance for transaction history
         """
         self.coins = coins
         self.config = config
@@ -189,7 +191,7 @@ class PortfolioManagerV3:
 
         # Shared components
         self.strategy = StrategyV2(config, logger)
-        self.executor = LiveExecutorV3(api, logger, config)
+        self.executor = LiveExecutorV3(api, logger, config, markdown_logger=markdown_logger)
 
         # Per-coin monitors
         self.monitors = {
@@ -333,12 +335,22 @@ class PortfolioManagerV3:
             if self.executor.has_position(coin):
                 result = coin_results.get(coin, {})
                 current_price = result.get('current_price', 0)
-                target_prices = result.get('target_prices', {})
+
+                # Get position details
+                pos_summary = self.executor.get_position_summary(coin)
+                entry_price = pos_summary.get('entry_price', 0)
+
+                # Use CURRENT global settings to calculate target prices
+                # This allows dynamic adjustment of profit targets
+                price_data = result.get('price_data')
+                if price_data is not None and not price_data.empty:
+                    target_prices = self.strategy._calculate_target_prices(price_data, entry_price)
+                else:
+                    target_prices = result.get('target_prices', {})
 
                 if current_price <= 0 or not target_prices:
                     continue
 
-                pos_summary = self.executor.get_position_summary(coin)
                 first_target_hit = pos_summary.get('first_target_hit', False)
                 second_target_hit = pos_summary.get('second_target_hit', False)
 
@@ -346,9 +358,11 @@ class PortfolioManagerV3:
                 first_target = target_prices.get('first_target', 0)
                 if not first_target_hit and first_target > 0 and current_price >= first_target:
                     decisions.append((coin, 'PARTIAL_SELL_50', 0))
-                    profit_pct = ((current_price - pos_summary['entry_price']) / pos_summary['entry_price']) * 100
+                    profit_pct = ((current_price - entry_price) / entry_price) * 100
+                    mode = target_prices.get('mode', 'bb_based')
+                    mode_str = f"TP1 {target_prices.get('tp1_pct', 0):.1f}%" if mode == 'percentage_based' else "BB middle"
                     self.logger.logger.info(
-                        f"🎯 FIRST TARGET HIT: {coin} at {current_price:,.0f} KRW "
+                        f"🎯 FIRST TARGET HIT ({mode_str}): {coin} at {current_price:,.0f} KRW "
                         f"(+{profit_pct:.2f}%) - Selling 50%"
                     )
 
@@ -356,28 +370,42 @@ class PortfolioManagerV3:
                 second_target = target_prices.get('second_target', 0)
                 if first_target_hit and not second_target_hit and second_target > 0 and current_price >= second_target:
                     decisions.append((coin, 'SELL', 0))
-                    profit_pct = ((current_price - pos_summary['entry_price']) / pos_summary['entry_price']) * 100
+                    profit_pct = ((current_price - entry_price) / entry_price) * 100
+                    mode = target_prices.get('mode', 'bb_based')
+                    mode_str = f"TP2 {target_prices.get('tp2_pct', 0):.1f}%" if mode == 'percentage_based' else "BB upper"
                     self.logger.logger.info(
-                        f"🎯 SECOND TARGET HIT: {coin} at {current_price:,.0f} KRW "
+                        f"🎯 SECOND TARGET HIT ({mode_str}): {coin} at {current_price:,.0f} KRW "
                         f"(+{profit_pct:.2f}%) - Closing position"
                     )
 
-        # 1. Count current positions
+        # 1. Count current positions (ALL positions, not just monitored coins)
+        all_positions = self.executor.get_all_positions()
+        total_positions = len(all_positions)
+
+        # Get positions for monitored coins only
         active_positions = [
             coin for coin in self.coins
             if self.executor.has_position(coin)
         ]
-        total_positions = len(active_positions)
 
         # 2. Get portfolio limits
         portfolio_config = self.config.get('PORTFOLIO_CONFIG', {})
         max_positions = portfolio_config.get('max_positions', 2)
 
-        self.logger.logger.info(
-            f"Portfolio status: {total_positions}/{max_positions} positions"
-        )
-        if active_positions:
-            self.logger.logger.info(f"Active positions: {active_positions}")
+        # Log portfolio status
+        if total_positions > len(active_positions):
+            # Some positions are outside monitored coins
+            non_monitored = [coin for coin in all_positions.keys() if coin not in self.coins]
+            self.logger.logger.info(
+                f"Portfolio status: {total_positions}/{max_positions} positions "
+                f"(Monitored: {active_positions}, Non-monitored: {non_monitored})"
+            )
+        else:
+            self.logger.logger.info(
+                f"Portfolio status: {total_positions}/{max_positions} positions"
+            )
+            if active_positions:
+                self.logger.logger.info(f"Active positions: {active_positions}")
 
         # 3. Process entry signals (including pyramiding)
         entry_candidates = []

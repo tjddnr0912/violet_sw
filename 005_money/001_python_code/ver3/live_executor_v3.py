@@ -79,7 +79,10 @@ class Position:
         entry_price: float,
         entry_time: datetime,
         stop_loss: float = 0.0,
-        highest_high: float = 0.0
+        highest_high: float = 0.0,
+        profit_target_mode: str = 'bb_based',
+        tp1_percentage: float = 1.5,
+        tp2_percentage: float = 2.5
     ):
         self.ticker = ticker
         self.size = size
@@ -90,6 +93,11 @@ class Position:
         self.position_pct = 100.0  # 100% = full position
         self.first_target_hit = False
         self.second_target_hit = False
+
+        # Profit target mode configuration (locked when position opened)
+        self.profit_target_mode = profit_target_mode  # 'bb_based' or 'percentage_based'
+        self.tp1_percentage = tp1_percentage  # TP1 percentage (only used if mode is percentage_based)
+        self.tp2_percentage = tp2_percentage  # TP2 percentage (only used if mode is percentage_based)
 
         # Pyramiding support - track multiple entries
         self.entry_count = 1  # Number of entries (initial = 1)
@@ -109,6 +117,10 @@ class Position:
             'position_pct': self.position_pct,
             'first_target_hit': self.first_target_hit,
             'second_target_hit': self.second_target_hit,
+            # Profit target mode (locked at position open)
+            'profit_target_mode': self.profit_target_mode,
+            'tp1_percentage': self.tp1_percentage,
+            'tp2_percentage': self.tp2_percentage,
             # Pyramiding fields
             'entry_count': self.entry_count,
             'entry_prices': self.entry_prices,
@@ -125,7 +137,10 @@ class Position:
             entry_price=data.get('entry_price', 0.0),
             entry_time=datetime.fromisoformat(data['entry_time']) if data.get('entry_time') else None,
             stop_loss=data.get('stop_loss', 0.0),
-            highest_high=data.get('highest_high', 0.0)
+            highest_high=data.get('highest_high', 0.0),
+            profit_target_mode=data.get('profit_target_mode', 'bb_based'),  # Backward compatible
+            tp1_percentage=data.get('tp1_percentage', 1.5),
+            tp2_percentage=data.get('tp2_percentage', 2.5)
         )
         pos.position_pct = data.get('position_pct', 100.0)
         pos.first_target_hit = data.get('first_target_hit', False)
@@ -166,7 +181,8 @@ class LiveExecutorV3:
         api: BithumbAPI,
         logger: TradingLogger,
         config: Dict[str, Any] = None,
-        state_file: str = None
+        state_file: str = None,
+        markdown_logger=None
     ):
         """
         Initialize Live Executor V3.
@@ -176,9 +192,11 @@ class LiveExecutorV3:
             logger: TradingLogger instance
             config: Configuration dictionary
             state_file: Path to position state file (default: logs/positions_v3.json)
+            markdown_logger: MarkdownTransactionLogger instance for transaction history
         """
         self.api = api
         self.logger = logger
+        self.markdown_logger = markdown_logger
         self.config = config or {}
 
         # Position state file (Ver3 uses separate state file)
@@ -370,6 +388,19 @@ class LiveExecutorV3:
             if result['success']:
                 self._update_position_after_trade(ticker, action, units, price)
 
+                # Log transaction to markdown file (if markdown logger is available)
+                if self.markdown_logger:
+                    self.markdown_logger.log_transaction(
+                        ticker=ticker,
+                        action=action,
+                        amount=units,  # Amount in cryptocurrency units (not KRW value)
+                        price=price,
+                        order_id=result.get('order_id', 'N/A'),
+                        fee=0.0,  # TODO: Get actual fee from Bithumb response
+                        success=True,
+                        transaction_history=None  # Ver3 doesn't use in-memory transaction history
+                    )
+
             return result
 
         except Exception as e:
@@ -409,6 +440,15 @@ class LiveExecutorV3:
                     pos.entry_times.append(datetime.now())
                     pos.entry_sizes.append(units)
 
+                    # IMPORTANT: Reset profit target flags when pyramiding
+                    # This allows TP1/TP2 to trigger again for the increased position
+                    if pos.first_target_hit:
+                        pos.first_target_hit = False
+                        pos.position_pct = 100.0  # Reset to full position
+                        self.logger.logger.info(
+                            f"PYRAMID: Resetting TP flags for {ticker} - position now 100%"
+                        )
+
                     self.logger.logger.info(
                         f"PYRAMID ENTRY #{pos.entry_count}: {ticker} | "
                         f"Added: {units:.6f} @ {price:,.0f} KRW | "
@@ -416,18 +456,27 @@ class LiveExecutorV3:
                         f"Avg entry: {pos.entry_price:,.0f} KRW"
                     )
                 else:
-                    # New position (first entry)
+                    # New position (first entry) - capture profit target mode from current config
+                    exit_config = self.config.get('EXIT_CONFIG', {})
+                    profit_mode = exit_config.get('profit_target_mode', 'bb_based')
+                    tp1_pct = exit_config.get('tp1_percentage', 1.5)
+                    tp2_pct = exit_config.get('tp2_percentage', 2.5)
+
                     pos = Position(
                         ticker=ticker,
                         size=units,
                         entry_price=price,
                         entry_time=datetime.now(),
-                        highest_high=price
+                        highest_high=price,
+                        profit_target_mode=profit_mode,
+                        tp1_percentage=tp1_pct,
+                        tp2_percentage=tp2_pct
                     )
                     self.positions[ticker] = pos
 
+                    mode_str = f"% mode (TP1: {tp1_pct}%, TP2: {tp2_pct}%)" if profit_mode == 'percentage_based' else "BB mode"
                     self.logger.logger.info(
-                        f"Position opened: {ticker} | "
+                        f"Position opened: {ticker} ({mode_str}) | "
                         f"Size: {pos.size:.6f} | "
                         f"Entry: {pos.entry_price:,.0f}"
                     )
@@ -657,6 +706,10 @@ class LiveExecutorV3:
             'position_pct': pos.position_pct,
             'first_target_hit': pos.first_target_hit,
             'second_target_hit': pos.second_target_hit,
+            # Profit target mode (locked at position open)
+            'profit_target_mode': pos.profit_target_mode,
+            'tp1_percentage': pos.tp1_percentage,
+            'tp2_percentage': pos.tp2_percentage,
             # Pyramiding info
             'entry_count': pos.entry_count,
             'entry_prices': pos.entry_prices,

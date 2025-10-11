@@ -27,7 +27,7 @@ from datetime import datetime
 from ver3.portfolio_manager_v3 import PortfolioManagerV3
 from ver3.config_v3 import get_version_config, get_portfolio_config
 from lib.api.bithumb_api import BithumbAPI
-from lib.core.logger import TradingLogger
+from lib.core.logger import TradingLogger, MarkdownTransactionLogger
 from lib.interfaces.version_interface import VersionInterface
 
 
@@ -77,6 +77,7 @@ class TradingBotV3(VersionInterface):
         # Initialize logger
         log_config = config.get('LOGGING_CONFIG', {})
         self.logger = TradingLogger(log_dir=log_config.get('log_dir', 'logs'))
+        self.markdown_logger = MarkdownTransactionLogger()
 
         # Initialize API with keys from environment variables or config
         import os
@@ -96,7 +97,8 @@ class TradingBotV3(VersionInterface):
             coins=self.coins,
             config=config,
             api=self.api,
-            logger=self.logger
+            logger=self.logger,
+            markdown_logger=self.markdown_logger
         )
 
         # State tracking

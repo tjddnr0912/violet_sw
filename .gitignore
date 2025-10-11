@@ -6,3 +6,6 @@
 
 # 로컬 설정 파일 (실제 키가 포함된 경우)
 config.local.py
+
+#Log files
+*.log
