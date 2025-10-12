@@ -182,7 +182,8 @@ class LiveExecutorV3:
         logger: TradingLogger,
         config: Dict[str, Any] = None,
         state_file: str = None,
-        markdown_logger=None
+        markdown_logger=None,
+        transaction_history=None
     ):
         """
         Initialize Live Executor V3.
@@ -192,11 +193,13 @@ class LiveExecutorV3:
             logger: TradingLogger instance
             config: Configuration dictionary
             state_file: Path to position state file (default: logs/positions_v3.json)
-            markdown_logger: MarkdownTransactionLogger instance for transaction history
+            markdown_logger: MarkdownTransactionLogger instance for markdown transaction log
+            transaction_history: TransactionHistory instance for JSON transaction log (GUI display)
         """
         self.api = api
         self.logger = logger
         self.markdown_logger = markdown_logger
+        self.transaction_history = transaction_history
         self.config = config or {}
 
         # Position state file (Ver3 uses separate state file)
@@ -388,7 +391,36 @@ class LiveExecutorV3:
             if result['success']:
                 self._update_position_after_trade(ticker, action, units, price)
 
-                # Log transaction to markdown file (if markdown logger is available)
+                # Calculate fee
+                total_value = units * price
+                fee = total_value * 0.0005  # 0.05% Bithumb fee
+
+                # Calculate P&L for SELL transactions
+                pnl = 0.0
+                if action == 'SELL' and self.markdown_logger and self.transaction_history:
+                    profit_amount, profit_rate = self.markdown_logger.calculate_sell_profit(
+                        ticker=ticker,
+                        sell_amount=units,
+                        sell_price=price,
+                        transaction_history=self.transaction_history
+                    )
+                    pnl = profit_amount
+                    self.logger.logger.info(f"SELL P&L: {pnl:+,.0f} KRW ({profit_rate:+.2f}%)")
+
+                # Log transaction to JSON (for GUI display)
+                if self.transaction_history:
+                    self.transaction_history.add_transaction(
+                        ticker=ticker,
+                        action=action,
+                        amount=units,
+                        price=price,
+                        order_id=result.get('order_id', 'N/A'),
+                        fee=fee,
+                        success=True,
+                        pnl=pnl  # Include P&L for SELL transactions
+                    )
+
+                # Log transaction to markdown file (for human-readable history)
                 if self.markdown_logger:
                     self.markdown_logger.log_transaction(
                         ticker=ticker,
@@ -396,9 +428,9 @@ class LiveExecutorV3:
                         amount=units,  # Amount in cryptocurrency units (not KRW value)
                         price=price,
                         order_id=result.get('order_id', 'N/A'),
-                        fee=0.0,  # TODO: Get actual fee from Bithumb response
+                        fee=fee,
                         success=True,
-                        transaction_history=None  # Ver3 doesn't use in-memory transaction history
+                        transaction_history=self.transaction_history
                     )
 
             return result

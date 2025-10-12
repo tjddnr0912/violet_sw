@@ -19,10 +19,10 @@
     "tp2_target": 2.5
   },
   "risk_management": {
-    "max_daily_trades": 5,
+    "max_daily_trades": 10,
     "daily_loss_limit_pct": 3.0,
     "max_consecutive_losses": 3,
     "position_amount_krw": 50000
   },
-  "last_updated": "2025-10-11 17:10:49"
+  "last_updated": "2025-10-12 00:00:48"
 }

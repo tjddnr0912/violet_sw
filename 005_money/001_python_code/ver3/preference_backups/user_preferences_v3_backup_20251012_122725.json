@@ -1,14 +1,14 @@
 {
   "portfolio_config": {
-    "max_positions": 3,
+    "max_positions": 2,
     "default_coins": [
+      "BTC",
       "ETH",
-      "XRP",
       "SOL"
     ]
   },
   "entry_scoring": {
-    "min_entry_score": 3,
+    "min_entry_score": 2,
     "rsi_threshold": 35,
     "stoch_threshold": 20
   },
@@ -24,5 +24,5 @@
     "max_consecutive_losses": 3,
     "position_amount_krw": 50000
   },
-  "last_updated": "2025-10-11 11:42:22"
+  "last_updated": "2025-10-12 12:22:08"
 }

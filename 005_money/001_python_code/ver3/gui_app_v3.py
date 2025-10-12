@@ -105,7 +105,7 @@ class TradingBotGUIV3:
         self.is_running = False
         self.log_queue = queue.Queue(maxsize=1000)
         self.config_manager = ConfigManager()
-        self.transaction_history = TransactionHistory()
+        self.transaction_history = TransactionHistory(history_file='logs/transaction_history.json')
 
         # API client
         self.api_client = None
@@ -878,16 +878,19 @@ Portfolio Multi-Coin Strategy (Ver3):
         # Add transactions (most recent first)
         for tx in reversed(transactions[-50:]):  # Last 50 transactions
             timestamp = tx.get('timestamp', '')
-            coin = tx.get('coin', '')
+            coin = tx.get('ticker', tx.get('coin', ''))  # Try 'ticker' first, fallback to 'coin'
             action = tx.get('action', '')
             price = tx.get('price', 0)
             amount = tx.get('amount', 0)
             pnl = tx.get('pnl', 0)
 
+            # Format P&L: show "-" if zero/missing, otherwise format with sign
+            pnl_display = "-" if pnl == 0 else f"{pnl:+,.0f}"
+
             self.transaction_tree.insert(
                 '',
                 tk.END,
-                values=(timestamp, coin, action, f"{price:,.0f}", f"{amount:.6f}", f"{pnl:+,.0f}")
+                values=(timestamp, coin, action, f"{price:,.0f}", f"{amount:.6f}", pnl_display)
             )
 
     def _get_avg_price_from_positions(self, coin: str, fallback_price: float) -> float:
@@ -960,9 +963,15 @@ Portfolio Multi-Coin Strategy (Ver3):
             # Update config
             self.config = updated_config
 
-            # Extract preferences from config and save
-            preferences = self.pref_manager.extract_preferences_from_config(updated_config)
-            self.pref_manager.save_preferences(preferences)
+            # Save preferences - preserve default_coins from current selection
+            # Load existing preferences first to avoid overwriting coin selection
+            existing_prefs = self.pref_manager.load_preferences()
+            new_prefs = self.pref_manager.extract_preferences_from_config(updated_config)
+
+            # Preserve default_coins from existing preferences (user's coin selection)
+            new_prefs['portfolio_config']['default_coins'] = existing_prefs['portfolio_config']['default_coins']
+
+            self.pref_manager.save_preferences(new_prefs)
 
             # Update bot config if it exists
             if self.bot:
@@ -999,10 +1008,11 @@ Portfolio Multi-Coin Strategy (Ver3):
             mode_str = self._get_trading_mode_string()
             self.root.title(f"🤖 Portfolio Multi-Coin Strategy v3.0 - {mode_str} - [{coins_str}]")
 
-            # Save preferences - update only coins, keep other settings
-            preferences = self.pref_manager.extract_preferences_from_config(self.config)
-            preferences['portfolio_config']['default_coins'] = new_coins
-            self.pref_manager.save_preferences(preferences)
+            # Save preferences - update only coins, preserve all other settings
+            # Load existing preferences first to avoid overwriting user settings
+            existing_prefs = self.pref_manager.load_preferences()
+            existing_prefs['portfolio_config']['default_coins'] = new_coins
+            self.pref_manager.save_preferences(existing_prefs)
 
             # Update portfolio widget
             self.portfolio_widget.clear()

@@ -1,0 +1,98 @@
+[
+  {
+    "timestamp": "2025-10-12T04:45:53",
+    "ticker": "XRP",
+    "action": "SELL",
+    "amount": 6.743975,
+    "price": 3705.0,
+    "total_value": 24986.427375,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_04:45:53",
+    "success": true,
+    "pnl": 24986.427375
+  },
+  {
+    "timestamp": "2025-10-12T06:15:53",
+    "ticker": "SOL",
+    "action": "SELL",
+    "amount": 0.169033,
+    "price": 270100.0,
+    "total_value": 45655.813299999994,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_06:15:53",
+    "success": true,
+    "pnl": 45655.813299999994
+  },
+  {
+    "timestamp": "2025-10-12T08:15:53",
+    "ticker": "SOL",
+    "action": "BUY",
+    "amount": 0.18315,
+    "price": 273000.0,
+    "total_value": 49999.950000000004,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_08:15:53",
+    "success": true,
+    "pnl": 0.0
+  },
+  {
+    "timestamp": "2025-10-12T12:28:12",
+    "ticker": "BTC",
+    "action": "BUY",
+    "amount": 0.000295,
+    "price": 169522000.0,
+    "total_value": 50008.990000000005,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_12:28:12",
+    "success": true,
+    "pnl": 0.0
+  },
+  {
+    "timestamp": "2025-10-12T14:28:12",
+    "ticker": "SOL",
+    "action": "SELL",
+    "amount": 0.091575,
+    "price": 278000.0,
+    "total_value": 25457.850000000002,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_14:28:12",
+    "success": true,
+    "pnl": 457.875
+  },
+  {
+    "timestamp": "2025-10-12T15:13:12",
+    "ticker": "SOL",
+    "action": "BUY",
+    "amount": 0.089767,
+    "price": 278500.0,
+    "total_value": 25000.1095,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_15:13:12",
+    "success": true,
+    "pnl": 0.0
+  },
+  {
+    "timestamp": "2025-10-12T15:28:12",
+    "ticker": "SOL",
+    "action": "SELL",
+    "amount": 0.181342,
+    "price": 278700.0,
+    "total_value": 50540.015400000004,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_15:28:12",
+    "success": true,
+    "pnl": 1033.649400000002
+  },
+  {
+    "timestamp": "2025-10-12T15:43:12",
+    "ticker": "SOL",
+    "action": "BUY",
+    "amount": 0.179147,
+    "price": 279100.0,
+    "total_value": 49999.9277,
+    "fee": 0.0,
+    "order_id": "MD_2025-10-12_15:43:12",
+    "success": true,
+    "pnl": 0.0
+  }
+]

@@ -173,7 +173,8 @@ class PortfolioManagerV3:
         config: Dict[str, Any],
         api,
         logger: TradingLogger,
-        markdown_logger=None
+        markdown_logger=None,
+        transaction_history=None
     ):
         """
         Initialize portfolio manager.
@@ -183,7 +184,8 @@ class PortfolioManagerV3:
             config: Ver3 configuration dictionary from config_v3.py
             api: BithumbAPI instance
             logger: TradingLogger instance
-            markdown_logger: MarkdownTransactionLogger instance for transaction history
+            markdown_logger: MarkdownTransactionLogger instance for markdown transaction log
+            transaction_history: TransactionHistory instance for JSON transaction log
         """
         self.coins = coins
         self.config = config
@@ -191,7 +193,7 @@ class PortfolioManagerV3:
 
         # Shared components
         self.strategy = StrategyV2(config, logger)
-        self.executor = LiveExecutorV3(api, logger, config, markdown_logger=markdown_logger)
+        self.executor = LiveExecutorV3(api, logger, config, markdown_logger=markdown_logger, transaction_history=transaction_history)
 
         # Per-coin monitors
         self.monitors = {

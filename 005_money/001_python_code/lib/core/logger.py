@@ -96,7 +96,7 @@ class TransactionHistory:
             print(f"Error saving transaction history: {e}")
 
     def add_transaction(self, ticker: str, action: str, amount: float, price: float,
-                       order_id: str = None, fee: float = 0.0, success: bool = True):
+                       order_id: str = None, fee: float = 0.0, success: bool = True, pnl: float = 0.0):
         """거래 기록 추가"""
         transaction = {
             'timestamp': datetime.now().isoformat(),
@@ -107,7 +107,8 @@ class TransactionHistory:
             'total_value': amount * price,
             'fee': fee,
             'order_id': order_id,
-            'success': success
+            'success': success,
+            'pnl': pnl  # Profit/Loss amount (only for SELL transactions)
         }
 
         self.transactions.append(transaction)
