@@ -1,28 +1,4 @@
 {
-  "SOL": {
-    "ticker": "SOL",
-    "size": 0.16903313049357674,
-    "entry_price": 295800.0,
-    "entry_time": "2025-10-11T08:36:12.570248",
-    "stop_loss": 270492.85714285716,
-    "highest_high": 295800.0,
-    "position_pct": 100.0,
-    "first_target_hit": false,
-    "second_target_hit": false,
-    "profit_target_mode": "bb_based",
-    "tp1_percentage": 1.5,
-    "tp2_percentage": 2.5,
-    "entry_count": 1,
-    "entry_prices": [
-      295800.0
-    ],
-    "entry_times": [
-      "2025-10-11T08:36:12.570248"
-    ],
-    "entry_sizes": [
-      0.16903313049357674
-    ]
-  },
   "ETH": {
     "ticker": "ETH",
     "size": 0.008480325644504749,
@@ -47,31 +23,52 @@
       0.008480325644504749
     ]
   },
-  "XRP": {
-    "ticker": "XRP",
-    "size": 6.743974533879037,
-    "entry_price": 3707.012811867835,
-    "entry_time": "2025-10-11T08:58:28.964451",
-    "stop_loss": 3707.012811867835,
-    "highest_high": 3665.0,
-    "position_pct": 50.0,
-    "first_target_hit": true,
+  "BTC": {
+    "ticker": "BTC",
+    "size": 0.0002949469685350574,
+    "entry_price": 169522000.0,
+    "entry_time": "2025-10-12T12:28:12.276760",
+    "stop_loss": 162574642.85714287,
+    "highest_high": 169522000.0,
+    "position_pct": 100.0,
+    "first_target_hit": false,
     "second_target_hit": false,
     "profit_target_mode": "percentage_based",
     "tp1_percentage": 1.5,
     "tp2_percentage": 2.5,
-    "entry_count": 2,
+    "entry_count": 1,
     "entry_prices": [
-      3665.0,
-      3750.0
+      169522000.0
     ],
     "entry_times": [
-      "2025-10-11T08:58:28.964451",
-      "2025-10-11T17:46:10.162398"
+      "2025-10-12T12:28:12.276760"
     ],
     "entry_sizes": [
-      13.642564802182811,
-      6.666666666666667
+      0.0002949469685350574
+    ]
+  },
+  "SOL": {
+    "ticker": "SOL",
+    "size": 0.17914725904693657,
+    "entry_price": 279100.0,
+    "entry_time": "2025-10-12T15:43:12.722729",
+    "stop_loss": 246892.85714285713,
+    "highest_high": 279100.0,
+    "position_pct": 100.0,
+    "first_target_hit": false,
+    "second_target_hit": false,
+    "profit_target_mode": "percentage_based",
+    "tp1_percentage": 1.5,
+    "tp2_percentage": 2.5,
+    "entry_count": 1,
+    "entry_prices": [
+      279100.0
+    ],
+    "entry_times": [
+      "2025-10-12T15:43:12.722729"
+    ],
+    "entry_sizes": [
+      0.17914725904693657
     ]
   }
 }

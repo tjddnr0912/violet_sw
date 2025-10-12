@@ -1,9 +1,9 @@
 {
   "portfolio_config": {
-    "max_positions": 3,
+    "max_positions": 2,
     "default_coins": [
+      "BTC",
       "ETH",
-      "XRP",
       "SOL"
     ]
   },
@@ -14,6 +14,7 @@
   },
   "exit_scoring": {
     "chandelier_atr_multiplier": 3.0,
+    "profit_target_mode": "bb_based",
     "tp1_target": 1.5,
     "tp2_target": 2.5
   },
@@ -23,5 +24,5 @@
     "max_consecutive_losses": 3,
     "position_amount_krw": 50000
   },
-  "last_updated": "2025-10-11 09:18:50"
+  "last_updated": "2025-10-12 09:22:36"
 }
