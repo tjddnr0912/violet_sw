@@ -118,20 +118,42 @@ if [ ! -f "$PYTHON_SCRIPT" ]; then
     exit 1
 fi
 
+# Parse arguments
+LIVE_MODE=false
+CLOSE_ALL=false
+COIN=""
+
+for arg in "$@"; do
+    if [ "$arg" == "--live" ] || [ "$arg" == "-live" ]; then
+        LIVE_MODE=true
+    elif [ "$arg" == "--all" ] || [ "$arg" == "-all" ]; then
+        CLOSE_ALL=true
+    else
+        COIN="$arg"
+    fi
+done
+
+# Build Python command arguments
+PYTHON_ARGS=()
+if [ "$LIVE_MODE" == true ]; then
+    PYTHON_ARGS+=("--live")
+    echo "${YELLOW}Closing --live position...${NC}"
+fi
+
 # Run Python script with arguments
 if [ $# -eq 0 ]; then
     # No arguments - interactive mode
     echo "${GREEN}Starting interactive mode...${NC}"
     python "$PYTHON_SCRIPT"
-elif [ "$1" == "-all" ] || [ "$1" == "--all" ]; then
+elif [ "$CLOSE_ALL" == true ]; then
     # Close all positions
     echo "${YELLOW}⚠️  Closing ALL positions...${NC}"
-    python "$PYTHON_SCRIPT" --ALL
+    python "$PYTHON_SCRIPT" "${PYTHON_ARGS[@]}" --all
 else
     # Close specific coin
-    COIN=$(echo "$1" | tr '[:lower:]' '[:upper:]')
+    COIN=$(echo "$COIN" | tr '[:lower:]' '[:upper:]')
     echo "${YELLOW}Closing $COIN position...${NC}"
-    python "$PYTHON_SCRIPT" "$COIN"
+    python "$PYTHON_SCRIPT" "${PYTHON_ARGS[@]}" "$COIN"
 fi
 
 # Deactivate virtual environment
