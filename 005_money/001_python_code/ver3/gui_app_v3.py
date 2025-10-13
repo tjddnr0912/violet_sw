@@ -107,6 +107,9 @@ class TradingBotGUIV3:
         self.config_manager = ConfigManager()
         self.transaction_history = TransactionHistory(history_file='logs/transaction_history.json')
 
+        # Track coins that have already been warned about missing position data
+        self.warned_missing_positions = set()
+
         # API client
         self.api_client = None
 
@@ -913,10 +916,14 @@ Portfolio Multi-Coin Strategy (Ver3):
 
                     if coin in positions:
                         entry_price = positions[coin].get('entry_price', fallback_price)
+                        # Remove from warned set if position exists now
+                        self.warned_missing_positions.discard(coin)
                         return entry_price
                     else:
                         # Coin has balance but no position entry - log warning once
-                        self._log_to_gui("WARNING", f"{coin}: No position data found - P&L will show 0%")
+                        if coin not in self.warned_missing_positions:
+                            self._log_to_gui("INFO", f"{coin}: No position data found - P&L will show 0%")
+                            self.warned_missing_positions.add(coin)
         except Exception as e:
             self._log_to_gui("WARNING", f"Could not read position data for {coin}: {str(e)}")
 

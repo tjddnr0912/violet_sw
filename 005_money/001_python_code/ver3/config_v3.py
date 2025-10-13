@@ -111,7 +111,7 @@ POSITION_SIZING_CONFIG = {
 
 EXECUTION_CONFIG = {
     'mode': 'live',                  # 'backtest' or 'live'
-    'dry_run': True,                 # Start in dry-run mode for safety
+    'dry_run': False,                # Live trading mode (actual orders)
     'confirmation_required': False,  # Don't require confirmation (portfolio auto-decides)
     'thread_safe': True,             # Enable thread-safe execution
 }

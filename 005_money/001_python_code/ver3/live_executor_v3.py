@@ -36,19 +36,20 @@ from lib.core.logger import TradingLogger
 
 
 # Bithumb 코인별 소수점 자릿수 제한
+# 주의: Bithumb은 실제로 8자리까지 지원하지만, 주문 시 적절한 반올림 필요
 BITHUMB_DECIMAL_LIMITS = {
-    'BTC': 4,   # Bitcoin: 소수점 4자리
-    'ETH': 4,   # Ethereum: 소수점 4자리
-    'XRP': 0,   # Ripple: 정수 단위
-    'SOL': 2,   # Solana: 소수점 2자리
-    'ADA': 0,   # Cardano: 정수 단위
-    'DOGE': 0,  # Dogecoin: 정수 단위
-    'MATIC': 0, # Polygon: 정수 단위
-    'DOT': 2,   # Polkadot: 소수점 2자리
-    'AVAX': 2,  # Avalanche: 소수점 2자리
-    'LINK': 2,  # Chainlink: 소수점 2자리
-    'BCH': 4,   # Bitcoin Cash: 소수점 4자리
-    'LTC': 4,   # Litecoin: 소수점 4자리
+    'BTC': 8,   # Bitcoin: 소수점 8자리 (실제 Bithumb 지원)
+    'ETH': 8,   # Ethereum: 소수점 8자리
+    'XRP': 4,   # Ripple: 소수점 4자리 (가격이 낮아서 많은 자릿수 필요)
+    'SOL': 8,   # Solana: 소수점 8자리
+    'ADA': 4,   # Cardano: 소수점 4자리
+    'DOGE': 2,  # Dogecoin: 소수점 2자리
+    'MATIC': 4, # Polygon: 소수점 4자리
+    'DOT': 6,   # Polkadot: 소수점 6자리
+    'AVAX': 6,  # Avalanche: 소수점 6자리
+    'LINK': 6,  # Chainlink: 소수점 6자리
+    'BCH': 8,   # Bitcoin Cash: 소수점 8자리
+    'LTC': 8,   # Litecoin: 소수점 8자리
 }
 
 
