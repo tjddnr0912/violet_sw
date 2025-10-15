@@ -200,6 +200,8 @@ class PreferenceManagerV3:
                 merged_config['RISK_CONFIG']['max_consecutive_losses'] = risk_prefs['max_consecutive_losses']
             if 'position_amount_krw' in risk_prefs:
                 merged_config['POSITION_SIZING_CONFIG']['base_amount_krw'] = risk_prefs['position_amount_krw']
+                # Also update TRADING_CONFIG for consistency
+                merged_config['TRADING_CONFIG']['trade_amount_krw'] = risk_prefs['position_amount_krw']
 
         return merged_config
 

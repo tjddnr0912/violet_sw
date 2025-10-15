@@ -611,7 +611,7 @@ class PortfolioManagerV3:
                     continue
 
                 # Calculate position size with pyramiding multiplier
-                base_amount_krw = self.config['TRADING_CONFIG'].get('trade_amount_krw', 50000)
+                base_amount_krw = self.config['POSITION_SIZING_CONFIG'].get('base_amount_krw', 50000)
 
                 if entry_number > 1:  # Pyramiding
                     pyramid_config = self.config.get('PYRAMIDING_CONFIG', {})

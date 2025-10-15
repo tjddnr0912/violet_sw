@@ -734,8 +734,10 @@ class SettingsPanelWidget(ttk.LabelFrame):
         updated_config['PORTFOLIO_CONFIG']['max_positions'] = self.setting_vars['max_positions'].get()
         updated_config['PORTFOLIO_CONFIG']['max_portfolio_risk_pct'] = self.setting_vars['max_portfolio_risk_pct'].get()
 
-        # Update position sizing
-        updated_config['POSITION_SIZING_CONFIG']['base_amount_krw'] = self.setting_vars['position_size_krw'].get()
+        # Update position sizing (sync both configs for consistency)
+        position_size = self.setting_vars['position_size_krw'].get()
+        updated_config['POSITION_SIZING_CONFIG']['base_amount_krw'] = position_size
+        updated_config['TRADING_CONFIG']['trade_amount_krw'] = position_size
 
         # Update entry scoring
         updated_config['ENTRY_SCORING_CONFIG']['min_entry_score'] = self.setting_vars['min_entry_score'].get()

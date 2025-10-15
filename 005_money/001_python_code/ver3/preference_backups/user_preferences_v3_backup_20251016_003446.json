@@ -1,9 +1,9 @@
 {
   "portfolio_config": {
-    "max_positions": 4,
+    "max_positions": 3,
     "default_coins": [
+      "BTC",
       "ETH",
-      "XRP",
       "SOL"
     ]
   },
@@ -19,10 +19,10 @@
     "tp2_target": 2.5
   },
   "risk_management": {
-    "max_daily_trades": 10,
+    "max_daily_trades": 9,
     "daily_loss_limit_pct": 3.0,
     "max_consecutive_losses": 3,
-    "position_amount_krw": 50000
+    "position_amount_krw": 100000
   },
-  "last_updated": "2025-10-12 00:00:00"
+  "last_updated": "2025-10-13 23:42:54"
 }
