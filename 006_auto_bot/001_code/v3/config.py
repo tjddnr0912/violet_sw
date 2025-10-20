@@ -15,6 +15,9 @@ class Config:
     # News API Configuration (optional - if you want to use NewsAPI)
     NEWS_API_KEY = os.getenv('NEWS_API_KEY', '')
 
+    # News Fetching Settings
+    NEWS_HOURS_LIMIT = int(os.getenv('NEWS_HOURS_LIMIT', '24'))  # Default: 24 hours
+
     # Korean News Sources by Category (RSS Feeds)
     NEWS_SOURCES_BY_CATEGORY = {
         '정치': [
@@ -77,7 +80,7 @@ class Config:
     # Version Info
     VERSION = "3"
     VERSION_NAME = "Korean News - All Categories"
-    VERSION_DESCRIPTION = "모든 카테고리(정치,경제,사회,국제,문화,IT/과학) 수집 → 카테고리별 정리된 Raw 파일만 생성"
+    VERSION_DESCRIPTION = "모든 카테고리(정치,경제,사회,국제,문화,IT/과학) 수집 → 카테고리별 Raw 파일 + Gemini AI 블로그 요약 생성"
 
     # Validation
     @classmethod
