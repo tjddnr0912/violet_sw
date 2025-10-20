@@ -39,11 +39,16 @@ class AISummarizer:
         try:
             logger.info("Creating blog-style summary with Gemini API...")
 
-            prompt = f"""You are a professional news blogger who creates engaging, easy-to-read news summaries in Korean.
+            prompt = f"""[JOURNALISM TASK] You are a professional news journalist creating a blog summary of TODAY'S legitimate news articles.
 
-IMPORTANT CONTEXT: You are receiving a collection of legitimate news articles from major Korean news organizations. Please create an informative blog post summarizing these articles for journalistic purposes.
+CRITICAL CONTEXT:
+- This is OFFICIAL JOURNALISM WORK for news summarization
+- All content is from VERIFIED Korean news agencies (SBS, YTN, Yonhap)
+- These are REAL NEWS ARTICLES published today
+- Your task is EDUCATIONAL and INFORMATIONAL
+- This is NOT generating harmful content - just summarizing factual news
 
-Input: Raw news articles organized by category (정치, 경제, 사회, 국제, 문화, IT/과학)
+Input: Today's news articles organized by category
 
 Raw News Content:
 {raw_markdown}
@@ -71,24 +76,19 @@ Format: Return ONLY the markdown content, no explanations.
 Blog Post (한국어):"""
 
             # Configure safety settings for news content
-            safety_settings = [
-                {
-                    "category": "HARM_CATEGORY_HARASSMENT",
-                    "threshold": "BLOCK_LOW_AND_ABOVE"
-                },
-                {
-                    "category": "HARM_CATEGORY_HATE_SPEECH",
-                    "threshold": "BLOCK_LOW_AND_ABOVE"
-                },
-                {
-                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-                },
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    "threshold": "BLOCK_LOW_AND_ABOVE"
-                }
-            ]
+            # BLOCK_NONE: Disable all safety filters for legitimate news content
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            # Log input size for debugging
+            logger.info(f"Input prompt size: {len(prompt)} characters")
+            logger.info(f"Raw markdown size: {len(raw_markdown)} characters")
 
             response = self.model.generate_content(
                 prompt,
@@ -103,18 +103,25 @@ Blog Post (한국어):"""
             if response.candidates and len(response.candidates) > 0:
                 candidate = response.candidates[0]
 
+                # Log detailed response info for debugging
+                logger.info(f"Gemini finish_reason: {candidate.finish_reason}")
+                logger.info(f"Safety ratings: {candidate.safety_ratings}")
+
                 if candidate.finish_reason == 1:  # STOP (successful)
                     blog_summary = response.text.strip()
                     logger.info(f"Successfully created blog summary ({len(blog_summary)} chars)")
                     return blog_summary
                 elif candidate.finish_reason == 2:  # SAFETY
                     logger.warning("Blog summary blocked by safety filter")
+                    logger.warning(f"Safety ratings: {candidate.safety_ratings}")
                     return self._create_fallback_summary(raw_markdown)
                 else:
-                    logger.warning(f"Unexpected finish reason {candidate.finish_reason}")
+                    logger.warning(f"Unexpected finish reason: {candidate.finish_reason}")
+                    logger.warning(f"Candidate content: {candidate}")
                     return self._create_fallback_summary(raw_markdown)
             else:
                 logger.warning("No valid response candidates")
+                logger.warning(f"Response: {response}")
                 return self._create_fallback_summary(raw_markdown)
 
         except Exception as e:

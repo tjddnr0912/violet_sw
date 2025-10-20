@@ -23,20 +23,24 @@ cd 005_money
 python run.py                     # Python script with argument parsing
 
 # GUI mode
-./gui                             # Direct GUI executable
 ./run.sh --gui                    # GUI through run script
 python run_gui.py                 # Python GUI launcher
+
+# Version selection (ver1 = Elite 8-Indicator, ver2 = Advanced Backtrader)
+python 001_python_code/main.py --version ver1    # Use version 1 strategy
+python 001_python_code/main.py --version ver2    # Use version 2 strategy
+python 001_python_code/main.py --list-versions   # List all available versions
 
 # Manual setup
 python3 -m venv .venv
 source .venv/bin/activate  # On macOS/Linux
 pip install -r requirements.txt
-python main.py
+cd 001_python_code && python main.py
 
 # Advanced usage with parameters
 python run.py --interval 30s --coin ETH --amount 50000
 ./run.sh --coin BTC --live        # Real trading mode (careful!)
-python main.py --interactive      # Interactive configuration
+python 001_python_code/main.py --interactive      # Interactive configuration
 ```
 
 ### Swift Projects (002_study_swift/)
@@ -61,37 +65,52 @@ python 004_hacker_rank/calendar_module.py
 
 ### Cryptocurrency Trading Bot (005_money/)
 
+**Project Structure:**
+The trading bot uses a version-based architecture allowing multiple trading strategies:
+- `001_python_code/` - Main source code directory
+  - `ver1/` - Version 1: Elite 8-Indicator Strategy (Production Ready)
+  - `ver2/` - Version 2: Advanced Backtrader Strategy (In Development)
+  - `lib/` - Shared library code (API, GUI components, core utilities)
+- `003_Execution_script/` - Execution wrappers (run.sh, run_gui.sh)
+- `004_trade_rule/` - Strategy documentation and rules
+- `002_Doc/` - Comprehensive documentation
+
 **Core Trading System:**
-- `main.py` - Entry point with scheduling loop, coordinates bot execution every 15 minutes (configurable)
-- `trading_bot.py` - Trading logic coordinator, calls strategy analysis and executes trades via API
-- `strategy.py` - **Elite trading strategy implementation** with 8 technical indicators:
+- `001_python_code/main.py` - Entry point with scheduling loop, version selection
+- `001_python_code/lib/core/version_loader.py` - Dynamic strategy version loader
+- `001_python_code/ver1/trading_bot_v1.py` - V1 trading logic coordinator
+- `001_python_code/ver1/strategy_v1.py` - **Elite 8-indicator strategy**:
   - Classic: MA (Moving Average), RSI, Bollinger Bands, Volume
   - Elite additions: MACD, ATR (volatility), Stochastic, ADX (trend strength)
   - Market regime detection (Trending/Ranging/Transitional)
-  - Weighted signal combination system (returns -1.0 to +1.0 gradual signals instead of binary)
+  - Weighted signal combination system (returns -1.0 to +1.0 gradual signals)
   - ATR-based dynamic stop-loss and position sizing
+- `001_python_code/ver2/strategy_v2.py` - **Advanced Backtrader strategy** (separate approach)
 
 **API & Data:**
-- `bithumb_api.py` - Bithumb exchange API wrapper (public ticker, candlestick data)
-- `pybithumb/` - Third-party Bithumb library (cloned from GitHub if missing)
-- Balance inquiry intentionally disabled for security in this implementation
+- `001_python_code/lib/api/bithumb_api.py` - Bithumb exchange API wrapper (public ticker, candlestick data)
+- `pybithumb/` - Third-party Bithumb library (auto-cloned from GitHub if missing)
+- Balance inquiry intentionally disabled for security
 
 **Configuration:**
-- `config.py` - **Central configuration hub**:
-  - Default candlestick interval: `1h` (changed from 24h)
+- `001_python_code/config.py` - Legacy central configuration (being phased out)
+- `001_python_code/ver1/config_v1.py` - **Version 1 configuration hub**:
+  - Default candlestick interval: `1h` (optimized from 24h)
   - Interval presets: 30m, 1h, 6h, 12h, 24h with optimized parameters
   - Signal weights: MACD=0.35, MA=0.25, RSI=0.20, BB=0.10, Volume=0.10
   - Risk management: max daily loss, consecutive losses, ATR-based stops
-  - All indicator parameters (MACD fast/slow/signal, ATR period, Stochastic K/D, etc.)
-- `config_manager.py` - Dynamic configuration updates during runtime
+  - All indicator parameters (MACD fast/slow/signal, ATR period, Stochastic K/D)
+- `001_python_code/ver2/config_v2.py` - Version 2 configuration
+- `001_python_code/lib/core/config_manager.py` - Dynamic configuration updates
 
 **GUI System (Tkinter-based):**
-- `gui_app.py` - Main GUI application with 4 tabs:
+- `001_python_code/gui_app.py` - Main GUI application with version selector
+- `001_python_code/ver1/gui_app_v1.py` - V1-specific GUI with 4 tabs:
   1. "거래 현황" - Trading status, logs, profit tracking
   2. "📊 실시간 차트" - Real-time candlestick chart with indicator overlays
   3. "📋 신호 히스토리" - Signal history tracking
   4. "📜 거래 내역" - Transaction history
-- `chart_widget.py` - **Chart visualization module (v3.0)**:
+- `001_python_code/lib/gui/components/chart_widget.py` - **Chart visualization (v3.0)**:
   - Pure matplotlib implementation (no mplfinance dependency issues)
   - 8 indicator checkboxes for on/off control (all off by default)
   - Dynamic subplot layout (adjusts based on active indicators)
@@ -99,27 +118,37 @@ python 004_hacker_rank/calendar_module.py
   - Separate subplots: RSI, MACD, Volume bar chart
   - Info box display: Stochastic, ATR, ADX values
   - Real-time updates when checkboxes toggled (no refresh needed)
-- `gui_trading_bot.py` - GUI-specific trading bot adapter, integrates with weighted signal system
-- `signal_history_widget.py` - Displays historical trading signals
+- `001_python_code/ver1/gui_trading_bot_v1.py` - V1 GUI trading adapter
+- `001_python_code/lib/gui/components/signal_history_widget.py` - Signal history display
 
 **Logging & History:**
-- `logger.py` - Multi-channel logging system:
+- `001_python_code/lib/core/logger.py` - Multi-channel logging system:
   - Trade log, decision log, error log, transaction history
-  - Separate log files per day in `logs/` directory
+  - Separate log files per day in `logs/trading_YYYYMMDD.log`
 - Transaction history stored in JSON format
 
 **Launchers & Utilities:**
-- `run.py` / `run.sh` - Environment setup scripts with argument parsing
-- `run_gui.py` - GUI launcher with dependency checks
-- `./gui` - Precompiled GUI executable
-- `portfolio_manager.py` - Portfolio tracking (if multi-coin trading enabled)
+- `run.py` / `003_Execution_script/run.sh` - Environment setup scripts with argument parsing
+- `run_gui.py` / `003_Execution_script/run_gui.sh` - GUI launcher with dependency checks
+- `001_python_code/lib/core/portfolio_manager.py` - Portfolio tracking
+- `001_python_code/lib/interfaces/version_interface.py` - Strategy version interface contract
+- `001_python_code/lib/core/arg_parser.py` - Command-line argument parsing
+
+**Version System Architecture:**
+Each version (ver1, ver2) must implement:
+- `VersionInterface` from `lib/interfaces/version_interface.py`
+- Required methods: `analyze_market()`, `get_strategy_description()`, `get_version_info()`, etc.
+- `VERSION_METADATA` dict with name, display_name, description, author, date
+- `get_version_instance()` factory function in `__init__.py`
 
 **Key Design Patterns:**
-- **Strategy pattern**: Indicator calculations separated into individual functions in `strategy.py`
-- **Weighted signal combination**: Each indicator returns gradual strength (-1.0 to +1.0), combined with configurable weights instead of simple binary vote counting
+- **Version-based strategy pattern**: Multiple strategy implementations switchable via `--version` flag
+- **Interface-driven design**: All versions implement common `VersionInterface` contract
+- **Strategy pattern**: Indicator calculations separated into individual functions
+- **Weighted signal combination**: Each indicator returns gradual strength (-1.0 to +1.0), combined with configurable weights
 - **Market regime awareness**: Different strategies applied based on detected market conditions (trending vs ranging)
 - **Risk-first design**: ATR-based position sizing, daily loss limits, consecutive loss tracking
-- **Separation of concerns**: API layer, strategy layer, execution layer, GUI layer all independent
+- **Separation of concerns**: API layer, strategy layer, execution layer, GUI layer all independent and shared via `lib/`
 
 ### Swift Learning Projects
 - Basic iOS apps with UIKit framework
@@ -143,6 +172,8 @@ Required packages (installed via `pip install -r requirements.txt`):
 - `matplotlib` - Chart plotting (candlesticks, indicators, subplots)
 - `mplfinance` - Financial chart utilities (optional, v3.0 chart uses pure matplotlib)
 - `tkinter` - GUI framework (usually bundled with Python, no pip install needed)
+- `backtrader` - Backtesting framework (ver2 only, >= 1.9.76.123)
+- `python-binance` - Binance API wrapper (ver2 multi-exchange support, >= 1.0.16)
 
 **Installation troubleshooting:**
 If you encounter ModuleNotFoundError, run:
@@ -151,6 +182,10 @@ cd 005_money
 source .venv/bin/activate  # if using venv
 pip install -r requirements.txt
 ```
+
+**Version-specific dependencies:**
+- Ver1 (Elite 8-Indicator): pandas, numpy, matplotlib, requests, schedule
+- Ver2 (Backtrader): All Ver1 deps + backtrader, python-binance
 
 **pybithumb library:**
 The system automatically clones pybithumb from GitHub if not found:
@@ -169,9 +204,10 @@ fi
 ### Trading Bot (005_money/)
 
 **Execution Modes:**
-- CLI mode: `python main.py` - Headless automated trading with scheduling
-- GUI mode: `python run_gui.py` or `./gui` - Visual interface with live chart
-- Interactive mode: `python main.py --interactive` - Step-by-step configuration
+- CLI mode: `python 001_python_code/main.py` - Headless automated trading with scheduling
+- GUI mode: `python run_gui.py` or `./run.sh --gui` - Visual interface with live chart
+- Interactive mode: `python 001_python_code/main.py --interactive` - Step-by-step configuration
+- Version selection: `python 001_python_code/main.py --version ver1` or `--version ver2`
 
 **Elite Trading Strategy (Implemented 2025-10):**
 - **8 Technical Indicators**: MA, RSI, Bollinger Bands, Volume, MACD, ATR, Stochastic, ADX
@@ -227,17 +263,17 @@ pip install -r requirements.txt
 ```
 
 **Chart x-axis compression / Graph looks squished:**
-- Fixed in v3.0 of `chart_widget.py` (2025-10 rebuild)
+- Fixed in v3.0 of `001_python_code/lib/gui/components/chart_widget.py` (2025-10 rebuild)
 - If you see older code using mplfinance or fixed figure sizes, the chart was rebuilt to use pure matplotlib with dynamic sizing
 
 **"Object of type DataFrame is not JSON serializable":**
 - This occurs when trying to serialize analysis results containing pandas DataFrames
 - Solution: Exclude 'price_data' field from JSON serialization in GUI code
-- The `analyze_market_data()` method in `strategy.py` returns a dict with DataFrames that must be handled carefully
+- The `analyze_market()` method in strategy modules returns a dict with DataFrames that must be handled carefully
 
 **API authentication errors (401 Unauthorized):**
-- Check API keys are set via environment variables or in `config.py`
-- For testing, set `dry_run: True` in `SAFETY_CONFIG` to skip real API calls
+- Check API keys are set via environment variables or in version config files
+- For testing, set `dry_run: True` in version-specific config to skip real API calls
 - Balance inquiry is intentionally disabled in current implementation
 
 **pybithumb not found:**
@@ -245,18 +281,37 @@ pip install -r requirements.txt
 - Manual: `cd 005_money && git clone https://github.com/sharebook-kr/pybithumb.git`
 
 **Chart not updating when checkboxes toggled:**
-- Ensure you're using v3.0 of `chart_widget.py` which has `on_indicator_toggle()` method
+- Ensure you're using v3.0 of chart_widget.py which has `on_indicator_toggle()` method
 - Check that checkboxes are connected: `indicator_var.trace('w', lambda *args: self.update_chart())`
+
+**Version not found or import errors:**
+- Ensure the version directory (ver1, ver2) has `__init__.py` with `get_version_instance()` function
+- Check that version implements all required methods from `lib.interfaces.version_interface.VersionInterface`
+- List available versions: `python 001_python_code/main.py --list-versions`
 
 ## Important Development Guidelines
 
 - **File creation**: Only create new files when absolutely necessary; prefer editing existing files
 - **Documentation**: Do not proactively create .md or README files unless explicitly requested
 - **Code changes**: Focus on what was asked; avoid unnecessary refactoring or improvements
-- **Strategy modifications**: When changing trading logic, always update corresponding config presets in `config.py`
-- **Indicator additions**: If adding new indicators, update:
-  1. Calculation function in `strategy.py`
+- **Version-aware changes**: When modifying trading logic:
+  - Determine which version (ver1, ver2) is affected
+  - Update version-specific config files (`config_v1.py` or `config_v2.py`)
+  - Keep shared library code (`lib/`) version-agnostic
+- **Strategy modifications (Ver1)**: When changing Ver1 trading logic, update:
+  1. Calculation function in `001_python_code/ver1/strategy_v1.py`
   2. Signal generation in `generate_weighted_signals()`
-  3. Chart display in `chart_widget.py`
+  3. Chart display in `001_python_code/lib/gui/components/chart_widget.py`
   4. Checkbox in GUI if user-controllable
-  5. Signal weights in `config.py`
+  5. Signal weights in `001_python_code/ver1/config_v1.py`
+- **Adding new versions**: To create ver3 or beyond:
+  1. Create directory `001_python_code/ver3/`
+  2. Implement `VersionInterface` in strategy module
+  3. Add `__init__.py` with `get_version_instance()` factory
+  4. Create `config_v3.py` with VERSION_METADATA
+  5. Add README.md documenting strategy approach
+  6. Test with `python 001_python_code/main.py --version ver3`
+- **Shared library modifications**: When changing `lib/` code:
+  - Ensure backward compatibility with all existing versions
+  - Test changes with both ver1 and ver2
+  - Update interface definitions if adding required methods

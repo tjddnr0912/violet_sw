@@ -88,8 +88,11 @@ class NewsBot:
             logger.info("=" * 60)
 
             # Step 1: Fetch and select top news
-            logger.info(f"Step 1: Fetching top {self.config.MAX_NEWS_COUNT} news articles...")
-            news_items = self.news_aggregator.get_daily_news(count=self.config.MAX_NEWS_COUNT)
+            logger.info(f"Step 1: Fetching top {self.config.MAX_NEWS_COUNT} news articles (within {self.config.NEWS_HOURS_LIMIT}h)...")
+            news_items = self.news_aggregator.get_daily_news(
+                count=self.config.MAX_NEWS_COUNT,
+                hours_limit=self.config.NEWS_HOURS_LIMIT
+            )
 
             if not news_items:
                 logger.warning("No news items found. Aborting task.")
@@ -97,17 +100,36 @@ class NewsBot:
 
             logger.info(f"Successfully fetched {len(news_items)} news articles")
 
-            # V3 specific workflow: raw markdown only (no AI summary)
+            # V3 specific workflow: raw markdown + AI blog summary
             if self.version == 'v3':
                 # Step 2: Save raw news organized by category
                 logger.info("Step 2: Saving raw news by category...")
                 raw_result = self.markdown_writer.save_raw_news_by_category(news_items)
 
                 if raw_result['success']:
-                    logger.info("=" * 60)
-                    logger.info("✅ Daily task completed successfully!")
                     logger.info(f"Raw news saved: {raw_result.get('filepath', 'N/A')}")
-                    logger.info("=" * 60)
+
+                    # Step 3: Create AI blog summary from raw markdown
+                    logger.info("Step 3: Creating AI blog summary with Gemini...")
+                    raw_markdown = raw_result.get('markdown_content', '')
+
+                    if raw_markdown:
+                        blog_summary = self.ai_summarizer.create_blog_summary(raw_markdown)
+
+                        # Step 4: Save blog summary
+                        logger.info("Step 4: Saving blog summary...")
+                        blog_result = self.markdown_writer.save_blog_summary(blog_summary)
+
+                        if blog_result['success']:
+                            logger.info("=" * 60)
+                            logger.info("✅ Daily task completed successfully!")
+                            logger.info(f"Raw news saved: {raw_result.get('filepath', 'N/A')}")
+                            logger.info(f"Blog summary saved: {blog_result.get('filepath', 'N/A')}")
+                            logger.info("=" * 60)
+                        else:
+                            logger.warning(f"Failed to save blog summary: {blog_result['message']}")
+                    else:
+                        logger.warning("No markdown content to summarize")
                 else:
                     logger.error(f"❌ Failed to save raw news: {raw_result['message']}")
 
@@ -218,7 +240,10 @@ def main():
         if args.test:
             logger.info("Running in TEST mode (no saving)")
             # Test: fetch and summarize only
-            news_items = bot.news_aggregator.get_daily_news(count=bot.config.MAX_NEWS_COUNT)
+            news_items = bot.news_aggregator.get_daily_news(
+                count=bot.config.MAX_NEWS_COUNT,
+                hours_limit=bot.config.NEWS_HOURS_LIMIT
+            )
             summarized_news = bot.ai_summarizer.summarize_news_batch(news_items)
 
             # Generate preview

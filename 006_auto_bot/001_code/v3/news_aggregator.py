@@ -30,30 +30,40 @@ class NewsAggregator:
         self.category_map = category_map or {}
         self.news_items = []
 
-    def fetch_news(self) -> List[Dict]:
+    def fetch_news(self, hours_limit: int = 24) -> List[Dict]:
         """
         Fetch news from all RSS feeds
+
+        Args:
+            hours_limit: Only include news published within this many hours (default: 24)
 
         Returns:
             List of news items as dictionaries
         """
         self.news_items = []
+        cutoff_time = datetime.now() - timedelta(hours=hours_limit)
 
         for feed_url in self.rss_feeds:
             try:
                 logger.info(f"Fetching news from: {feed_url}")
                 feed = feedparser.parse(feed_url)
 
-                for entry in feed.entries[:5]:  # Get top 5 from each source
+                for entry in feed.entries[:10]:  # Get top 10 from each source (increased from 5)
                     news_item = self._parse_entry(entry, feed_url)
                     if news_item:
-                        self.news_items.append(news_item)
+                        # Filter by publication date (only recent news)
+                        pub_date = news_item.get('published_date')
+                        if pub_date and pub_date >= cutoff_time:
+                            self.news_items.append(news_item)
+                            logger.debug(f"Added news: {news_item['title'][:50]}... (published: {pub_date})")
+                        else:
+                            logger.debug(f"Skipped old news: {news_item['title'][:50]}... (published: {pub_date})")
 
             except Exception as e:
                 logger.error(f"Error fetching from {feed_url}: {str(e)}")
                 continue
 
-        logger.info(f"Total news items fetched: {len(self.news_items)}")
+        logger.info(f"Total news items fetched (within {hours_limit}h): {len(self.news_items)}")
         return self.news_items
 
     def _fetch_full_article(self, url: str) -> str:
@@ -233,15 +243,16 @@ class NewsAggregator:
         logger.info(f"Selected {len(selected)} news items")
         return selected[:count]
 
-    def get_daily_news(self, count: int = 10) -> List[Dict]:
+    def get_daily_news(self, count: int = 10, hours_limit: int = 24) -> List[Dict]:
         """
         Fetch and select daily news
 
         Args:
             count: Number of news items to select
+            hours_limit: Only include news published within this many hours
 
         Returns:
             List of selected news items
         """
-        self.fetch_news()
+        self.fetch_news(hours_limit=hours_limit)
         return self.select_top_news(count)
