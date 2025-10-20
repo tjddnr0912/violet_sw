@@ -195,8 +195,8 @@ class MarkdownTransactionLogger:
             except Exception as e:
                 print(f"마크다운 파일 초기화 오류: {e}")
 
-    def calculate_sell_profit(self, ticker: str, sell_amount: float, sell_price: float, transaction_history) -> tuple:
-        """매도 시 수익 계산 (FIFO 방식)"""
+    def calculate_sell_profit(self, ticker: str, sell_amount: float, sell_price: float, transaction_history, sell_fee: float = 0.0) -> tuple:
+        """매도 시 수익 계산 (FIFO 방식, 수수료 포함, 부분 매도 지원)"""
         try:
             if not transaction_history:
                 return 0.0, 0.0
@@ -210,30 +210,59 @@ class MarkdownTransactionLogger:
             ]
             buy_transactions.sort(key=lambda x: x['timestamp'])
 
-            total_buy_cost = 0.0
+            # 해당 코인의 매도 거래 (이전 매도 수량 추적용)
+            sell_transactions = [
+                t for t in transaction_history.transactions
+                if (t['ticker'] == ticker and
+                    t['action'] == 'SELL' and
+                    t['success'])
+            ]
+            sell_transactions.sort(key=lambda x: x['timestamp'])
+
+            # 각 매수 거래에서 이미 매도된 수량 계산 (FIFO)
+            buy_remaining = {i: buy_tx['amount'] for i, buy_tx in enumerate(buy_transactions)}
+
+            for sell_tx in sell_transactions:
+                remaining_to_deduct = sell_tx['amount']
+                for i, buy_tx in enumerate(buy_transactions):
+                    if remaining_to_deduct <= 0:
+                        break
+                    if buy_remaining[i] > 0:
+                        deduct = min(remaining_to_deduct, buy_remaining[i])
+                        buy_remaining[i] -= deduct
+                        remaining_to_deduct -= deduct
+
+            # 현재 매도에 대한 P&L 계산
+            total_buy_cost = 0.0  # 매수 비용 (수수료 포함)
             remaining_sell_amount = sell_amount
 
-            # FIFO 방식으로 매수 거래와 매칭
-            for buy_tx in buy_transactions:
+            # FIFO 방식으로 매수 거래와 매칭 (남은 수량만 사용)
+            for i, buy_tx in enumerate(buy_transactions):
                 if remaining_sell_amount <= 0:
                     break
 
+                available_amount = buy_remaining[i]
+                if available_amount <= 0:
+                    continue
+
                 buy_amount = buy_tx['amount']
                 buy_price = buy_tx['price']
+                buy_fee = buy_tx.get('fee', 0.0)  # 매수 수수료
 
-                # 이번 매수 거래에서 처리할 수량
-                matched_amount = min(remaining_sell_amount, buy_amount)
+                # 이번 매수 거래에서 처리할 수량 (남은 수량 기준)
+                matched_amount = min(remaining_sell_amount, available_amount)
 
-                # 해당 수량에 대한 매수 비용 계산
+                # 해당 수량에 대한 매수 비용 계산 (수수료 비례 배분)
                 matched_cost = matched_amount * buy_price
-                total_buy_cost += matched_cost
+                matched_fee = (matched_amount / buy_amount) * buy_fee if buy_amount > 0 else 0.0
+                total_buy_cost += matched_cost + matched_fee
 
                 remaining_sell_amount -= matched_amount
 
-            # 매도 총액
-            sell_total = sell_amount * sell_price
+            # 매도 총액 (수수료 차감)
+            sell_total = (sell_amount * sell_price) - sell_fee
 
-            # 수익 계산
+            # 수익 계산 (실제 수령액 - 실제 투자액)
             profit_amount = sell_total - total_buy_cost
             profit_rate = (profit_amount / total_buy_cost * 100) if total_buy_cost > 0 else 0.0
 
@@ -262,7 +291,7 @@ class MarkdownTransactionLogger:
             profit_rate_str = "-"
 
             if action == "SELL" and success and transaction_history:
-                profit_amount, profit_rate = self.calculate_sell_profit(ticker, amount, price, transaction_history)
+                profit_amount, profit_rate = self.calculate_sell_profit(ticker, amount, price, transaction_history, sell_fee=fee)
                 if profit_amount != 0:
                     profit_str = f"{profit_amount:+,.0f}원"
                     profit_rate_str = f"{profit_rate:+.2f}%"

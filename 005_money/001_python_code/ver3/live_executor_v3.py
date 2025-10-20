@@ -403,7 +403,8 @@ class LiveExecutorV3:
                         ticker=ticker,
                         sell_amount=units,
                         sell_price=price,
-                        transaction_history=self.transaction_history
+                        transaction_history=self.transaction_history,
+                        sell_fee=fee
                     )
                     pnl = profit_amount
                     self.logger.logger.info(f"SELL P&L: {pnl:+,.0f} KRW ({profit_rate:+.2f}%)")
