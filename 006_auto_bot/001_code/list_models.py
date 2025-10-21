@@ -6,7 +6,9 @@ Gemini 사용 가능한 모델 목록 확인
 import os
 import google.generativeai as genai
 
-api_key = "AIzaSyDFLJVSXHHZAueuWZPxSap4KKCfNFySk78"
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    raise ValueError("❌ GEMINI_API_KEY environment variable is not set. Please set it in .env file or export it.")
 
 print(f"📝 API 키: {api_key[:20]}...{api_key[-4:]}")
 print("\n🔍 사용 가능한 Gemini 모델 목록:\n")

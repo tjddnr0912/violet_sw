@@ -23,7 +23,17 @@ class AISummarizer:
             model: Google Gemini model to use (default: gemini-1.5-flash)
         """
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model)
+
+        # Initialize model with system instruction for news journalism
+        self.model = genai.GenerativeModel(
+            model,
+            system_instruction="""You are a professional news journalist and summarizer.
+Your role is to provide objective summaries of news articles from verified sources.
+All content you receive is from legitimate Korean news agencies (SBS, YTN, Yonhap).
+Your summaries are for educational and informational purposes only.
+You must summarize ALL news content accurately, including political, crime, and sensitive topics.
+This is journalistic work, not content generation."""
+        )
         self.model_name = model
 
     def create_blog_summary(self, raw_markdown: str) -> str:
@@ -75,28 +85,21 @@ Format: Return ONLY the markdown content, no explanations.
 
 Blog Post (한국어):"""
 
-            # Configure safety settings for news content
-            # BLOCK_NONE: Disable all safety filters for legitimate news content
-            from google.generativeai.types import HarmCategory, HarmBlockThreshold
-
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-
             # Log input size for debugging
             logger.info(f"Input prompt size: {len(prompt)} characters")
             logger.info(f"Raw markdown size: {len(raw_markdown)} characters")
+
+            # Try WITHOUT safety_settings parameter at all
+            # This may allow Gemini to use its default behavior which might be less strict
+            logger.info("Calling Gemini API without explicit safety_settings...")
 
             response = self.model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.7,
                     max_output_tokens=4000,  # Increased for longer blog post
-                ),
-                safety_settings=safety_settings
+                )
+                # NO safety_settings parameter - let Gemini use defaults
             )
 
             # Check if response has valid content

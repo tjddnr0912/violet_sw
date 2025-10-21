@@ -11,7 +11,9 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # API 키 설정
-api_key = "AIzaSyDFLJVSXHHZAueuWZPxSap4KKCfNFySk78"
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    raise ValueError("❌ GEMINI_API_KEY environment variable is not set. Please set it in .env file or export it.")
 genai.configure(api_key=api_key)
 
 # 모델 설정
