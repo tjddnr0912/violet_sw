@@ -396,15 +396,26 @@ class LiveExecutorV3:
                 total_value = units * price
                 fee = total_value * 0.0005  # 0.05% Bithumb fee
 
+                # Get position entry time for accurate P&L calculation (SELL only)
+                position_entry_time = None
+                if action == 'SELL' and ticker in self.positions:
+                    # Convert datetime to ISO format string
+                    position_entry_time = self.positions[ticker].entry_time.isoformat()
+
                 # Calculate P&L for SELL transactions
                 pnl = 0.0
                 if action == 'SELL' and self.markdown_logger and self.transaction_history:
+                    # Get current timestamp for excluding current sell from history
+                    current_sell_time = datetime.now().isoformat()
+
                     profit_amount, profit_rate = self.markdown_logger.calculate_sell_profit(
                         ticker=ticker,
                         sell_amount=units,
                         sell_price=price,
                         transaction_history=self.transaction_history,
-                        sell_fee=fee
+                        sell_fee=fee,
+                        position_entry_time=position_entry_time,
+                        current_sell_time=current_sell_time
                     )
                     pnl = profit_amount
                     self.logger.logger.info(f"SELL P&L: {pnl:+,.0f} KRW ({profit_rate:+.2f}%)")
@@ -432,7 +443,8 @@ class LiveExecutorV3:
                         order_id=result.get('order_id', 'N/A'),
                         fee=fee,
                         success=True,
-                        transaction_history=self.transaction_history
+                        transaction_history=self.transaction_history,
+                        position_entry_time=position_entry_time
                     )
 
             return result

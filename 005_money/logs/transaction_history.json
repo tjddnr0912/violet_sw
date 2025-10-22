@@ -310,5 +310,53 @@
     "order_id": "C0101000002519815038",
     "success": true,
     "pnl": -975.1937470009507
+  },
+  {
+    "timestamp": "2025-10-21T23:44:59.045389",
+    "ticker": "SOL",
+    "action": "BUY",
+    "amount": 0.35298270384751146,
+    "price": 283300.0,
+    "total_value": 100000.0,
+    "fee": 50.0,
+    "order_id": "C0587000000945565828",
+    "success": true,
+    "pnl": 0.0
+  },
+  {
+    "timestamp": "2025-10-21T23:59:59.232981",
+    "ticker": "SOL",
+    "action": "SELL",
+    "amount": 0.17649135192375573,
+    "price": 287900.0,
+    "total_value": 50811.86021884927,
+    "fee": 25.405930109424638,
+    "order_id": "C0587000000945598464",
+    "success": true,
+    "pnl": 761.35
+  },
+  {
+    "timestamp": "2025-10-22T00:44:59.204799",
+    "ticker": "SOL",
+    "action": "SELL",
+    "amount": 0.17649135192375573,
+    "price": 292800.0,
+    "total_value": 51676.667843275674,
+    "fee": 25.838333921637837,
+    "order_id": "C0587000000945699641",
+    "success": true,
+    "pnl": 1625.73
+  },
+  {
+    "timestamp": "2025-10-22T23:21:06.616717",
+    "ticker": "SOL",
+    "action": "BUY",
+    "amount": 0.35880875493362036,
+    "price": 278700.0,
+    "total_value": 100000.0,
+    "fee": 50.0,
+    "order_id": "C0587000000947676608",
+    "success": true,
+    "pnl": 0.0
   }
 ]
