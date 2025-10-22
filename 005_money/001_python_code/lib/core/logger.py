@@ -195,28 +195,59 @@ class MarkdownTransactionLogger:
             except Exception as e:
                 print(f"마크다운 파일 초기화 오류: {e}")
 
-    def calculate_sell_profit(self, ticker: str, sell_amount: float, sell_price: float, transaction_history, sell_fee: float = 0.0) -> tuple:
-        """매도 시 수익 계산 (FIFO 방식, 수수료 포함, 부분 매도 지원)"""
+    def calculate_sell_profit(self, ticker: str, sell_amount: float, sell_price: float,
+                             transaction_history, sell_fee: float = 0.0,
+                             position_entry_time: str = None, current_sell_time: str = None) -> tuple:
+        """
+        매도 시 수익 계산 (포지션 기반 FIFO, 수수료 포함, 부분 매도 지원)
+
+        Args:
+            ticker: 코인 심볼
+            sell_amount: 매도 수량
+            sell_price: 매도 단가
+            transaction_history: 거래 내역 객체
+            sell_fee: 매도 수수료
+            position_entry_time: 현재 포지션의 진입 시각 (ISO format)
+            current_sell_time: 현재 매도 시각 (자기 자신 제외용, ISO format)
+
+        Returns:
+            (profit_amount, profit_rate) 튜플
+        """
         try:
             if not transaction_history:
                 return 0.0, 0.0
 
-            # 해당 코인의 매수 거래만 필터링 (시간순 정렬)
-            buy_transactions = [
-                t for t in transaction_history.transactions
+            # 현재 포지션의 매수 거래만 필터링 (시간순 정렬)
+            buy_transactions = []
+            for t in transaction_history.transactions:
                 if (t['ticker'] == ticker and
                     t['action'] == 'BUY' and
-                    t['success'])
-            ]
+                    t['success']):
+                    # 포지션 진입 시각이 주어진 경우 해당 포지션의 매수만 포함
+                    if position_entry_time:
+                        if t['timestamp'] >= position_entry_time:
+                            buy_transactions.append(t)
+                    else:
+                        buy_transactions.append(t)
+
             buy_transactions.sort(key=lambda x: x['timestamp'])
 
-            # 해당 코인의 매도 거래 (이전 매도 수량 추적용)
-            sell_transactions = [
-                t for t in transaction_history.transactions
+            # 현재 포지션의 매도 거래 (이전 매도 수량 추적용, 현재 매도 제외)
+            sell_transactions = []
+            for t in transaction_history.transactions:
                 if (t['ticker'] == ticker and
                     t['action'] == 'SELL' and
-                    t['success'])
-            ]
+                    t['success']):
+                    # 현재 매도 제외
+                    if current_sell_time and t['timestamp'] >= current_sell_time:
+                        continue
+                    # 포지션 진입 시각이 주어진 경우 해당 포지션의 매도만 포함
+                    if position_entry_time:
+                        if t['timestamp'] >= position_entry_time:
+                            sell_transactions.append(t)
+                    else:
+                        sell_transactions.append(t)
+
             sell_transactions.sort(key=lambda x: x['timestamp'])
 
             # 각 매수 거래에서 이미 매도된 수량 계산 (FIFO)
@@ -274,7 +305,7 @@ class MarkdownTransactionLogger:
 
     def log_transaction(self, ticker: str, action: str, amount: float, price: float,
                        order_id: str = None, fee: float = 0.0, success: bool = True,
-                       transaction_history=None):
+                       transaction_history=None, position_entry_time: str = None):
         """거래 내역을 마크다운 테이블에 기록"""
         try:
             now = datetime.now()
@@ -291,7 +322,14 @@ class MarkdownTransactionLogger:
             profit_rate_str = "-"
 
             if action == "SELL" and success and transaction_history:
-                profit_amount, profit_rate = self.calculate_sell_profit(ticker, amount, price, transaction_history, sell_fee=fee)
+                # 현재 시각을 ISO format으로 전달 (자기 자신 제외용)
+                current_sell_time = now.isoformat()
+                profit_amount, profit_rate = self.calculate_sell_profit(
+                    ticker, amount, price, transaction_history,
+                    sell_fee=fee,
+                    position_entry_time=position_entry_time,
+                    current_sell_time=current_sell_time
+                )
                 if profit_amount != 0:
                     profit_str = f"{profit_amount:+,.0f}원"
                     profit_rate_str = f"{profit_rate:+.2f}%"
