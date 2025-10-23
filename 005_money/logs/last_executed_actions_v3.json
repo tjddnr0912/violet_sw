@@ -1,6 +1,6 @@
 {
-  "SOL": "BUY",
-  "ETH": "SELL",
+  "SOL": "SELL",
+  "ETH": "BUY",
   "XRP": "SELL",
   "BTC": "BUY"
 }

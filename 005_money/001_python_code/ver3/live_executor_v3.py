@@ -390,17 +390,20 @@ class LiveExecutorV3:
 
             # Update position if successful
             if result['success']:
+                # Get position entry time BEFORE updating position (SELL only)
+                # IMPORTANT: Must get this before _update_position_after_trade
+                # because the position might be deleted after full exit
+                position_entry_time = None
+                if action == 'SELL' and ticker in self.positions:
+                    # Convert datetime to ISO format string
+                    position_entry_time = self.positions[ticker].entry_time.isoformat()
+
+                # Update position (may delete position if fully closed)
                 self._update_position_after_trade(ticker, action, units, price)
 
                 # Calculate fee
                 total_value = units * price
                 fee = total_value * 0.0005  # 0.05% Bithumb fee
-
-                # Get position entry time for accurate P&L calculation (SELL only)
-                position_entry_time = None
-                if action == 'SELL' and ticker in self.positions:
-                    # Convert datetime to ISO format string
-                    position_entry_time = self.positions[ticker].entry_time.isoformat()
 
                 # Calculate P&L for SELL transactions
                 pnl = 0.0
