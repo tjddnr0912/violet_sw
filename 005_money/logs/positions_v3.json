@@ -23,28 +23,28 @@
       0.000612332374012614
     ]
   },
-  "SOL": {
-    "ticker": "SOL",
-    "size": 0.35880875493362036,
-    "entry_price": 278700.0,
-    "entry_time": "2025-10-22T23:21:06.615703",
-    "stop_loss": 261707.14285714284,
-    "highest_high": 278700.0,
-    "position_pct": 100.0,
-    "first_target_hit": false,
+  "ETH": {
+    "ticker": "ETH",
+    "size": 0.008721437292865864,
+    "entry_price": 5733000.0,
+    "entry_time": "2025-10-23T08:06:06.800832",
+    "stop_loss": 5733000.0,
+    "highest_high": 5733000.0,
+    "position_pct": 50.0,
+    "first_target_hit": true,
     "second_target_hit": false,
     "profit_target_mode": "percentage_based",
     "tp1_percentage": 1.5,
     "tp2_percentage": 2.5,
     "entry_count": 1,
     "entry_prices": [
-      278700.0
+      5733000.0
     ],
     "entry_times": [
-      "2025-10-22T23:21:06.615703"
+      "2025-10-23T08:06:06.800832"
     ],
     "entry_sizes": [
-      0.35880875493362036
+      0.017442874585731728
     ]
   }
 }
