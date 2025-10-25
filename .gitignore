@@ -9,3 +9,9 @@ config.local.py
 
 #Log files
 *.log
+
+# OS
+.DS_Store
+
+# Other git files
+pybithumb/
