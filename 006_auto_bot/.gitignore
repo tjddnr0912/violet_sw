@@ -38,3 +38,6 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+# Generated files
+004_News_paper/
