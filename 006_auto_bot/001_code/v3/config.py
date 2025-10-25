@@ -10,7 +10,7 @@ class Config:
 
     # Google Gemini API Configuration
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash')
+    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 
     # News API Configuration (optional - if you want to use NewsAPI)
     NEWS_API_KEY = os.getenv('NEWS_API_KEY', '')
@@ -49,6 +49,29 @@ class Config:
             'https://news.sbs.co.kr/news/SectionRssFeed.do?sectionId=09',  # SBS IT/과학
             'https://www.ytn.co.kr/_ln/0106_xml',  # YTN IT/과학
         ],
+        '주식': [
+            # 국내 주식 뉴스
+            'https://www.hankyung.com/feed/economy',  # 한국경제 경제
+            'https://www.mk.co.kr/rss/40300001/',  # 매일경제 증권/금융
+            'https://www.sedaily.com/NewsRSS/1S11',  # 서울경제 증권
+            # 해외 주식 뉴스
+            'https://feeds.bloomberg.com/markets/news.rss',  # Bloomberg Markets
+            'https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best',  # Reuters Business
+            'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147',  # CNBC Top News
+            'https://www.marketwatch.com/rss/topstories',  # MarketWatch Top Stories
+            'https://www.ft.com/?format=rss',  # Financial Times
+        ],
+        '암호화폐': [
+            # 국내 암호화폐 뉴스
+            'https://www.blockmedia.co.kr/feed',  # 블록미디어
+            'https://decenter.kr/NewsRSS/S1N14',  # 디센터
+            # 해외 암호화폐 뉴스
+            'https://www.coindesk.com/arc/outboundfeeds/rss/',  # CoinDesk
+            'https://cointelegraph.com/rss',  # CoinTelegraph
+            'https://decrypt.co/feed',  # Decrypt
+            'https://www.theblock.co/rss.xml',  # The Block
+            'https://cryptoslate.com/feed/',  # CryptoSlate
+        ],
     }
 
     # V3: Collect ALL categories
@@ -68,7 +91,7 @@ class Config:
             CATEGORY_MAP[url] = category
 
     # Bot Settings
-    MAX_NEWS_COUNT = 30  # Increased for more categories
+    MAX_NEWS_COUNT = 50  # Increased for more categories (8 categories now)
     SUMMARY_MAX_LENGTH = 300  # Maximum length of AI summary in words
 
     # Output Settings
@@ -79,8 +102,8 @@ class Config:
 
     # Version Info
     VERSION = "3"
-    VERSION_NAME = "Korean News - All Categories"
-    VERSION_DESCRIPTION = "모든 카테고리(정치,경제,사회,국제,문화,IT/과학) 수집 → 카테고리별 Raw 파일 + Gemini AI 블로그 요약 생성"
+    VERSION_NAME = "Korean News - All Categories (Including Stock & Crypto)"
+    VERSION_DESCRIPTION = "모든 카테고리(정치,경제,사회,국제,문화,IT/과학,주식,암호화폐) 수집 → 카테고리별 Raw 파일 + Gemini AI 블로그 요약 생성"
 
     # Validation
     @classmethod
