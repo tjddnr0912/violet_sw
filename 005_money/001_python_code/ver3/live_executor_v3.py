@@ -322,6 +322,9 @@ class LiveExecutorV3:
             if reason:
                 self.logger.logger.info(f"  Reason: {reason}")
 
+            # Track actual executed units (for position update)
+            actual_executed_units = units
+
             if dry_run:
                 # Simulate execution
                 order_id = f"DRY_RUN_{action}_{int(time.time())}"
@@ -339,6 +342,8 @@ class LiveExecutorV3:
 
                 # 빗썸 API 요구사항에 맞게 수량 반올림
                 rounded_units = round_units_for_bithumb(ticker, units)
+                actual_executed_units = rounded_units  # Use rounded value for position update
+
                 self.logger.logger.info(
                     f"Units adjusted for Bithumb: {units:.8f} -> {rounded_units} "
                     f"(decimal places: {BITHUMB_DECIMAL_LIMITS.get(ticker, 4)})"
@@ -375,7 +380,7 @@ class LiveExecutorV3:
                         'success': True,
                         'order_id': order_id,
                         'executed_price': price,
-                        'executed_units': units,
+                        'executed_units': rounded_units,  # Return actual executed units
                         'message': 'Order executed successfully'
                     }
                 else:
@@ -398,11 +403,11 @@ class LiveExecutorV3:
                     # Convert datetime to ISO format string
                     position_entry_time = self.positions[ticker].entry_time.isoformat()
 
-                # Update position (may delete position if fully closed)
-                self._update_position_after_trade(ticker, action, units, price)
+                # Update position with ACTUAL executed units (rounded in LIVE mode)
+                self._update_position_after_trade(ticker, action, actual_executed_units, price)
 
-                # Calculate fee
-                total_value = units * price
+                # Calculate fee (using actual executed units)
+                total_value = actual_executed_units * price
                 fee = total_value * 0.0005  # 0.05% Bithumb fee
 
                 # Calculate P&L for SELL transactions
@@ -413,7 +418,7 @@ class LiveExecutorV3:
 
                     profit_amount, profit_rate = self.markdown_logger.calculate_sell_profit(
                         ticker=ticker,
-                        sell_amount=units,
+                        sell_amount=actual_executed_units,  # Use actual executed units
                         sell_price=price,
                         transaction_history=self.transaction_history,
                         sell_fee=fee,
@@ -428,7 +433,7 @@ class LiveExecutorV3:
                     self.transaction_history.add_transaction(
                         ticker=ticker,
                         action=action,
-                        amount=units,
+                        amount=actual_executed_units,  # Use actual executed units
                         price=price,
                         order_id=result.get('order_id', 'N/A'),
                         fee=fee,
@@ -441,7 +446,7 @@ class LiveExecutorV3:
                     self.markdown_logger.log_transaction(
                         ticker=ticker,
                         action=action,
-                        amount=units,  # Amount in cryptocurrency units (not KRW value)
+                        amount=actual_executed_units,  # Use actual executed units
                         price=price,
                         order_id=result.get('order_id', 'N/A'),
                         fee=fee,
@@ -767,7 +772,7 @@ class LiveExecutorV3:
 
     def close_position(self, ticker: str, price: float, dry_run: bool = True, reason: str = "") -> Dict[str, Any]:
         """
-        Close entire position.
+        Close entire position with Bithumb balance verification.
 
         Args:
             ticker: Cryptocurrency symbol
@@ -785,11 +790,56 @@ class LiveExecutorV3:
             }
 
         pos = self.positions[ticker]
+        sell_units = pos.size
+
+        # Verify actual Bithumb balance (LIVE mode only)
+        if not dry_run:
+            try:
+                balance_response = self.api.get_balance(ticker)
+
+                if balance_response and balance_response.get('status') == '0000':
+                    data = balance_response.get('data', {})
+                    # Bithumb returns available_{currency} in lowercase
+                    available_key = f'available_{ticker.lower()}'
+                    actual_balance = float(data.get(available_key, 0))
+
+                    self.logger.logger.info(
+                        f"Balance verification: {ticker} | "
+                        f"Position: {pos.size:.8f} | "
+                        f"Actual: {actual_balance:.8f}"
+                    )
+
+                    # Use the smaller value with 0.1% safety margin
+                    if actual_balance < pos.size:
+                        self.logger.logger.warning(
+                            f"⚠️  Balance mismatch: {ticker} | "
+                            f"Position file: {pos.size:.8f} | "
+                            f"Bithumb actual: {actual_balance:.8f} | "
+                            f"Using safe amount: {actual_balance * 0.999:.8f}"
+                        )
+                        sell_units = actual_balance * 0.999  # 99.9% of actual balance
+                    else:
+                        # Even if position <= actual, use 99.9% to prevent rounding issues
+                        sell_units = pos.size * 0.999
+                        self.logger.logger.debug(
+                            f"Using 99.9% of position size to prevent rounding errors: "
+                            f"{sell_units:.8f} {ticker}"
+                        )
+                else:
+                    self.logger.logger.warning(
+                        f"⚠️  Failed to verify balance, using position size with safety margin"
+                    )
+                    sell_units = pos.size * 0.999
+
+            except Exception as e:
+                self.logger.logger.error(f"Balance verification error: {e}")
+                # Fallback to safe amount
+                sell_units = pos.size * 0.999
 
         return self.execute_order(
             ticker=ticker,
             action='SELL',
-            units=pos.size,
+            units=sell_units,
             price=price,
             dry_run=dry_run,
             reason=reason or "Closing full position"
