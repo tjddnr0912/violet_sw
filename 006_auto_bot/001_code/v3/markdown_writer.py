@@ -131,11 +131,13 @@ class MarkdownWriter:
             '국제': '🌍',
             '문화': '🎭',
             'IT/과학': '🔬',
+            '주식': '📈',
+            '암호화폐': '💎',
             '기타': '📌'
         }
 
         # Add each category section
-        for category in ['정치', '경제', '사회', '국제', '문화', 'IT/과학', '기타']:
+        for category in ['정치', '경제', '사회', '국제', '문화', 'IT/과학', '주식', '암호화폐', '기타']:
             if category not in news_by_category:
                 continue
 

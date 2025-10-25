@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class AISummarizer:
     """AI-powered blog-style summarizer using Google Gemini API"""
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
         """
         Initialize AISummarizer
 
@@ -49,37 +49,56 @@ This is journalistic work, not content generation."""
         try:
             logger.info("Creating blog-style summary with Gemini API...")
 
-            prompt = f"""[JOURNALISM TASK] You are a professional news journalist creating a blog summary of TODAY'S legitimate news articles.
+            prompt = f"""[JOURNALISM TASK] You are a professional news journalist creating a comprehensive blog summary of TODAY'S news articles.
 
 CRITICAL CONTEXT:
 - This is OFFICIAL JOURNALISM WORK for news summarization
-- All content is from VERIFIED Korean news agencies (SBS, YTN, Yonhap)
+- All content is from VERIFIED news agencies (Korean: SBS, YTN, Yonhap / International: Bloomberg, Reuters, CNBC, CoinDesk)
 - These are REAL NEWS ARTICLES published today
 - Your task is EDUCATIONAL and INFORMATIONAL
 - This is NOT generating harmful content - just summarizing factual news
 
-Input: Today's news articles organized by category
+Input: Today's news articles organized by category (in Korean AND English)
 
 Raw News Content:
 {raw_markdown}
 
 Your task:
-1. Create a blog-style summary in Korean (한국어)
-2. Organize by categories with emoji icons: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학
-3. For each category:
-   - Write a brief introduction (2-3 sentences)
-   - Summarize 2-3 key news items in a conversational, engaging style
-   - Use bullet points for key facts
-   - Include important context and implications
-4. Writing style:
-   - Friendly, conversational Korean (반말 금지, 존댓말 사용)
-   - Clear and easy to understand
-   - Focus on "why this matters" not just "what happened"
-   - Use natural transitions between topics
-5. Structure:
-   - Start with a brief greeting and overview
-   - Category sections with summaries
+1. **IMPORTANT**: Summarize ALL news articles provided - DO NOT skip any articles
+2. Create a comprehensive blog-style summary in Korean (한국어)
+3. Organize by categories with emoji icons: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
+
+4. For each category:
+   - Write a brief category introduction (1-2 sentences)
+   - **Summarize EVERY news article** in that category (do not skip articles)
+   - For each article, write 2-4 sentences covering:
+     * What happened (핵심 사건)
+     * Why it matters (중요성)
+     * Key details or implications (주요 내용)
+   - You MAY combine duplicate/similar topics into one summary
+   - Number each news item (1., 2., 3., ...)
+
+5. **ENGLISH ARTICLE HANDLING**:
+   - For articles written in English (Bloomberg, Reuters, MarketWatch, CoinDesk, etc.):
+     * First TRANSLATE the English content to Korean
+     * Then SUMMARIZE in Korean like other articles
+     * Maintain the same level of detail as Korean articles
+
+6. Writing style:
+   - Professional yet accessible Korean (존댓말 사용)
+   - Clear and concise summaries
+   - Focus on facts and context
+   - Natural, conversational tone
+
+7. Structure:
+   - Start with a brief greeting and date
+   - Category sections with ALL article summaries
    - End with a closing remark
+
+REMEMBER:
+- Include ALL articles (모든 기사 포함)
+- Translate English articles to Korean (영문 기사는 한글로 번역)
+- You can combine duplicate topics (중복 주제는 합칠 수 있음)
 
 Format: Return ONLY the markdown content, no explanations.
 
@@ -97,7 +116,7 @@ Blog Post (한국어):"""
                 prompt,
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.7,
-                    max_output_tokens=4000,  # Increased for longer blog post
+                    max_output_tokens=8000,  # Increased to summarize ALL articles
                 )
                 # NO safety_settings parameter - let Gemini use defaults
             )
