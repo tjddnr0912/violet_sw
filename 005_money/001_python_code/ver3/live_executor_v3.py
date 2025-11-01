@@ -795,10 +795,8 @@ class LiveExecutorV3:
         pos = self.positions[ticker]
         sell_units = pos.size
 
-        # Check if this is TP2 (second target exit)
-        is_tp2 = pos.first_target_hit and not pos.second_target_hit
-
         # Verify actual Bithumb balance (LIVE mode only)
+        # close_position is for FULL exit (TP2, Stop-Loss, etc.) → Always sell 100%
         if not dry_run:
             try:
                 balance_response = self.api.get_balance(ticker)
@@ -812,45 +810,33 @@ class LiveExecutorV3:
                     self.logger.logger.info(
                         f"Balance verification: {ticker} | "
                         f"Position: {pos.size:.8f} | "
-                        f"Actual: {actual_balance:.8f} | "
-                        f"TP2: {is_tp2}"
+                        f"Actual: {actual_balance:.8f}"
                     )
 
-                    # TP2: Sell 100% of actual balance (full exit, no dust)
-                    if is_tp2:
-                        sell_units = actual_balance
-                        self.logger.logger.info(
-                            f"🎯 TP2 Exit: Selling 100% of actual balance "
-                            f"({sell_units:.8f} {ticker}) to prevent dust"
+                    # FULL EXIT: Always sell 100% of actual balance (no dust)
+                    sell_units = actual_balance
+
+                    if actual_balance < pos.size:
+                        self.logger.logger.warning(
+                            f"⚠️  Balance mismatch detected: {ticker} | "
+                            f"Position file: {pos.size:.8f} | "
+                            f"Bithumb actual: {actual_balance:.8f}"
                         )
-                    # Normal exit or stop-loss: Use safety margin
-                    else:
-                        if actual_balance < pos.size:
-                            self.logger.logger.warning(
-                                f"⚠️  Balance mismatch: {ticker} | "
-                                f"Position file: {pos.size:.8f} | "
-                                f"Bithumb actual: {actual_balance:.8f} | "
-                                f"Using safe amount: {actual_balance * 0.999:.8f}"
-                            )
-                            sell_units = actual_balance * 0.999  # 99.9% of actual balance
-                        else:
-                            # Even if position <= actual, use 99.9% to prevent rounding issues
-                            sell_units = pos.size * 0.999
-                            self.logger.logger.debug(
-                                f"Using 99.9% of position size to prevent rounding errors: "
-                                f"{sell_units:.8f} {ticker}"
-                            )
+
+                    self.logger.logger.info(
+                        f"💯 Full Exit: Selling 100% of actual balance "
+                        f"({sell_units:.8f} {ticker}) - Reason: {reason}"
+                    )
                 else:
                     self.logger.logger.warning(
-                        f"⚠️  Failed to verify balance, using position size with safety margin"
+                        f"⚠️  Failed to verify balance, using position file size"
                     )
-                    # TP2: Use position size as-is, otherwise use safety margin
-                    sell_units = pos.size if is_tp2 else pos.size * 0.999
+                    sell_units = pos.size
 
             except Exception as e:
                 self.logger.logger.error(f"Balance verification error: {e}")
-                # TP2: Use position size as-is, otherwise use safety margin
-                sell_units = pos.size if is_tp2 else pos.size * 0.999
+                # Fallback to position file size
+                sell_units = pos.size
 
         return self.execute_order(
             ticker=ticker,
