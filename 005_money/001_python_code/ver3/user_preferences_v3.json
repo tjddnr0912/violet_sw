@@ -22,7 +22,7 @@
     "max_daily_trades": 9,
     "daily_loss_limit_pct": 3.0,
     "max_consecutive_losses": 3,
-    "position_amount_krw": 150000
+    "position_amount_krw": 100000
   },
-  "last_updated": "2025-10-26 21:53:20"
+  "last_updated": "2025-11-12 20:13:24"
 }
