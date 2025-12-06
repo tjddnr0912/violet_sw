@@ -250,7 +250,7 @@ class BithumbAPI:
             'payment_currency': payment_currency
         }
 
-        # 시장가 매수: units (코인 수량) 필수
+        # 시장가 매수: units (KRW 금액) 필수 - 코인 수량이 아님!
         if type_order == "market":
             if units:
                 parameters['units'] = str(units)

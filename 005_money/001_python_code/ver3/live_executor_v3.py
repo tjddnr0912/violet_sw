@@ -52,6 +52,10 @@ BITHUMB_DECIMAL_LIMITS = {
     'LTC': 8,   # Litecoin: 소수점 8자리
 }
 
+# Dust threshold: 극소량 포지션 자동 정리 기준
+# 부동소수점 계산 오차나 TP2 후 남은 극소량 포지션을 자동 정리
+DUST_THRESHOLD = 1e-7  # 0.0000001 이하는 dust로 간주
+
 
 def round_units_for_bithumb(ticker: str, units: float) -> float:
     """
@@ -219,6 +223,9 @@ class LiveExecutorV3:
         # Load positions
         self.positions: Dict[str, Position] = self._load_positions()
 
+        # Startup dust cleanup: 기존 dust 포지션 자동 정리
+        self._cleanup_dust_positions_on_startup()
+
         self.logger.logger.info(f"LiveExecutorV3 initialized (thread-safe) | Positions loaded: {len(self.positions)}")
 
     # ========== POSITION MANAGEMENT ==========
@@ -263,6 +270,34 @@ class LiveExecutorV3:
 
         except Exception as e:
             self.logger.log_error("Error saving position state", e)
+
+    def _cleanup_dust_positions_on_startup(self):
+        """
+        시작 시 극소량(dust) 포지션 자동 정리.
+
+        부동소수점 계산 오차나 TP2 후 남은 극소량 포지션을 감지하고 삭제합니다.
+        """
+        dust_tickers = []
+
+        for ticker, pos in list(self.positions.items()):
+            if pos.size < DUST_THRESHOLD:
+                dust_tickers.append(ticker)
+                self.logger.logger.warning(
+                    f"🧹 STARTUP DUST CLEANUP: {ticker} | "
+                    f"Size {pos.size:.2e} < threshold {DUST_THRESHOLD:.2e} | "
+                    f"Deleting position"
+                )
+
+        # Dust 포지션 삭제
+        for ticker in dust_tickers:
+            del self.positions[ticker]
+
+        # 삭제된 포지션이 있으면 저장
+        if dust_tickers:
+            self._save_positions()
+            self.logger.logger.info(
+                f"🧹 Cleaned up {len(dust_tickers)} dust position(s) on startup: {dust_tickers}"
+            )
 
     def get_position(self, ticker: str) -> Optional[Position]:
         """
@@ -350,11 +385,19 @@ class LiveExecutorV3:
                 )
 
                 if action == 'BUY':
-                    # Bithumb API: place_buy_order(order_currency, payment_currency, units, price, type_order)
+                    # Bithumb API 시장가 매수: units 파라미터에 KRW 금액을 전달해야 함
+                    # (코인 수량이 아닌 KRW 금액을 넣어야 정상 주문됨)
+                    krw_amount = rounded_units * price  # 코인 수량 × 가격 = 주문할 KRW 금액
+
+                    self.logger.logger.info(
+                        f"Market buy order: {krw_amount:,.0f} KRW worth of {ticker} "
+                        f"(expected: ~{rounded_units:.6f} {ticker})"
+                    )
+
                     response = self.api.place_buy_order(
                         order_currency=ticker,
                         payment_currency="KRW",
-                        units=rounded_units,
+                        units=krw_amount,  # KRW 금액 전달 (빗썸 시장가 매수 스펙)
                         type_order="market"
                     )
                 elif action == 'SELL':
@@ -540,6 +583,15 @@ class LiveExecutorV3:
                     pos = self.positions[ticker]
                     pos.size -= units
 
+                    # Dust cleanup: 극소량 남은 경우 자동 정리
+                    if 0 < pos.size < DUST_THRESHOLD:
+                        self.logger.logger.warning(
+                            f"🧹 DUST CLEANUP: {ticker} | "
+                            f"Remaining size {pos.size:.2e} < threshold {DUST_THRESHOLD:.2e} | "
+                            f"Auto-closing position"
+                        )
+                        pos.size = 0  # Force to zero for cleanup
+
                     if pos.size <= 0:
                         # Position fully closed
                         profit = (price - pos.entry_price) * (pos.size + units)  # Use original size
@@ -719,11 +771,29 @@ class LiveExecutorV3:
             self._save_positions()
 
     def mark_second_target_hit(self, ticker: str):
-        """Mark second target as hit."""
+        """
+        Mark second target as hit.
+
+        Note: TP2는 전량 청산이므로, 실제로는 close_position()이 호출되어
+        포지션이 이미 삭제된 상태입니다. 혹시 dust가 남아있다면 강제 정리합니다.
+        """
         if ticker in self.positions:
-            self.positions[ticker].second_target_hit = True
-            self.logger.logger.info(f"Second target marked as hit: {ticker}")
-            self._save_positions()
+            pos = self.positions[ticker]
+
+            # TP2 달성: 전량 청산이므로 dust 체크 및 강제 정리
+            if pos.size < DUST_THRESHOLD:
+                self.logger.logger.warning(
+                    f"🧹 TP2 DUST CLEANUP: {ticker} | "
+                    f"Size {pos.size:.2e} < threshold {DUST_THRESHOLD:.2e} | "
+                    f"Force deleting position"
+                )
+                del self.positions[ticker]
+                self._save_positions()
+            else:
+                # 정상 케이스: TP2 마크만 함 (이미 close_position으로 삭제됐을 것임)
+                pos.second_target_hit = True
+                self.logger.logger.info(f"Second target marked as hit: {ticker}")
+                self._save_positions()
 
     # ========== UTILITY METHODS ==========
 
@@ -838,7 +908,7 @@ class LiveExecutorV3:
                 # Fallback to position file size
                 sell_units = pos.size
 
-        return self.execute_order(
+        result = self.execute_order(
             ticker=ticker,
             action='SELL',
             units=sell_units,
@@ -846,6 +916,20 @@ class LiveExecutorV3:
             dry_run=dry_run,
             reason=reason or "Closing full position"
         )
+
+        # 추가 안전장치: close_position 후 혹시 dust가 남았다면 강제 정리
+        if result.get('success') and ticker in self.positions:
+            pos = self.positions[ticker]
+            if pos.size < DUST_THRESHOLD:
+                self.logger.logger.warning(
+                    f"🧹 POST-CLOSE DUST CLEANUP: {ticker} | "
+                    f"Size {pos.size:.2e} < threshold {DUST_THRESHOLD:.2e} | "
+                    f"Force deleting position"
+                )
+                del self.positions[ticker]
+                self._save_positions()
+
+        return result
 
     def reset_all_positions(self):
         """Reset all positions (use with caution!)."""
