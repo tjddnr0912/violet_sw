@@ -48,8 +48,8 @@ class GUITradingBotV3:
         self.gui_app = gui_app
         self.log_queue = log_queue
 
-        # Create underlying bot
-        self.bot = TradingBotV3(config)
+        # Create underlying bot with GUI log prefix
+        self.bot = TradingBotV3(config, log_prefix='ver3_gui_bot')
 
         # Bot state
         self.running = False

@@ -6,8 +6,16 @@ from collections import deque
 import json
 
 class TradingLogger:
-    def __init__(self, log_dir: str = "logs"):
+    def __init__(self, log_dir: str = "logs", log_prefix: str = "trading"):
+        """
+        Initialize Trading Logger.
+
+        Args:
+            log_dir: Directory to store log files
+            log_prefix: Prefix for log filename (e.g., 'ver3_cli', 'trading')
+        """
         self.log_dir = log_dir
+        self.log_prefix = log_prefix
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
 
@@ -15,7 +23,7 @@ class TradingLogger:
 
     def setup_logger(self):
         """로깅 설정"""
-        log_filename = os.path.join(self.log_dir, f"trading_{datetime.now().strftime('%Y%m%d')}.log")
+        log_filename = os.path.join(self.log_dir, f"{self.log_prefix}_{datetime.now().strftime('%Y%m%d')}.log")
 
         logging.basicConfig(
             level=logging.INFO,

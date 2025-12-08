@@ -59,12 +59,13 @@ class TradingBotV3(VersionInterface):
     VERSION_AUTHOR = "Claude AI"
     VERSION_DATE = "2025-10-08"
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], log_prefix: str = 'ver3_cli'):
         """
         Initialize Trading Bot V3.
 
         Args:
             config: Configuration dictionary from config_v3.py
+            log_prefix: Prefix for log filename (default: 'ver3_cli')
         """
         self.config = config
         self.running = False
@@ -74,10 +75,10 @@ class TradingBotV3(VersionInterface):
         self.coins = self.portfolio_config.get('default_coins', ['BTC', 'ETH', 'XRP'])
         self.check_interval = config.get('SCHEDULE_CONFIG', {}).get('check_interval_seconds', 900)
 
-        # Initialize logger
+        # Initialize logger with specified prefix
         log_config = config.get('LOGGING_CONFIG', {})
         log_dir = log_config.get('log_dir', 'logs')
-        self.logger = TradingLogger(log_dir=log_dir)
+        self.logger = TradingLogger(log_dir=log_dir, log_prefix=log_prefix)
         self.markdown_logger = MarkdownTransactionLogger()
         self.transaction_history = TransactionHistory(history_file=f'{log_dir}/transaction_history.json')
 
