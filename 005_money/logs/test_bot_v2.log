@@ -1,8 +1,0 @@
-2025-10-04 08:03:05,778 - GUITradingBotV2 - INFO - GUITradingBotV2 initialized - Mode: LIVE TRADING
-2025-10-04 08:03:05,778 - GUITradingBotV2 - INFO - ⚠️ WARNING: REAL TRADING MODE ACTIVE - Real money will be used!
-2025-10-04 08:03:05,778 - GUITradingBotV2 - INFO - [ANALYZE] Starting market analysis at 08:03:05
-2025-10-04 08:03:05,866 - GUITradingBotV2 - INFO - Regime changed to BULLISH (EMA50: 160572991 > EMA200: 150045268)
-2025-10-04 08:03:05,866 - GUITradingBotV2 - INFO - [ANALYZE] Bullish regime detected, checking 4H entry signals
-2025-10-04 08:03:05,866 - GUITradingBotV2 - INFO - [ENTRY] Fetching 4H candlestick data...
-2025-10-04 08:03:05,943 - GUITradingBotV2 - INFO - [ENTRY] Current score: 0/4 - {'bb_touch': 0, 'rsi_oversold': 0, 'stoch_cross': 0}
-2025-10-04 08:03:05,943 - GUITradingBotV2 - INFO - [ENTRY] Score insufficient (0/4), waiting for 3+ score

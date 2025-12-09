@@ -1,3 +1,6 @@
+# ===================================
+# Environment Variables & API Keys
+# ===================================
 # config.py는 환경변수를 사용하므로 안전하게 Git에 포함
 # 대신 .env 파일은 절대 업로드하지 않음
 .env
@@ -6,12 +9,151 @@
 
 # 로컬 설정 파일 (실제 키가 포함된 경우)
 config.local.py
+**/api_keys.py
+**/secrets.py
 
-#Log files
+# ===================================
+# Python
+# ===================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# ===================================
+# Trading Bot Data Files
+# ===================================
+# Log files
 *.log
+logs/*.log
 
+# Trading data (민감한 거래 정보)
+logs/positions*.json
+logs/transaction_history.json
+logs/trading_history.md
+logs/last_executed_actions*.json
+logs/score_checks*.json
+logs/signals*.json
+logs/*_history.json
+
+# User preferences (개인 설정)
+**/user_preferences*.json
+
+# Backtest results
+logs/backtests/
+logs/optimization/
+
+# ===================================
+# IDE & Editor
+# ===================================
+# VSCode
+.vscode/
+.history/
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ===================================
 # OS
+# ===================================
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
 
-# Other git files
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ===================================
+# Dependencies
+# ===================================
+# Node modules (if any)
+node_modules/
+package-lock.json
+
+# Python packages (외부 라이브러리 소스)
 pybithumb/
+
+# ===================================
+# Project Specific
+# ===================================
+# Swift/Xcode (002_study_swift)
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+xcuserdata/
+DerivedData/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
