@@ -33,6 +33,7 @@ from pathlib import Path
 
 from lib.api.bithumb_api import BithumbAPI
 from lib.core.logger import TradingLogger
+from lib.core.telegram_notifier import get_telegram_notifier
 
 
 # Bithumb 코인별 소수점 자릿수 제한
@@ -225,6 +226,9 @@ class LiveExecutorV3:
 
         # Startup dust cleanup: 기존 dust 포지션 자동 정리
         self._cleanup_dust_positions_on_startup()
+
+        # Initialize Telegram notifier
+        self.telegram = get_telegram_notifier()
 
         self.logger.logger.info(f"LiveExecutorV3 initialized (thread-safe) | Positions loaded: {len(self.positions)}")
 
@@ -446,8 +450,23 @@ class LiveExecutorV3:
                     # Convert datetime to ISO format string
                     position_entry_time = self.positions[ticker].entry_time.isoformat()
 
-                # Update position with ACTUAL executed units (rounded in LIVE mode)
+                # Update position with ACTUAL executed units FIRST (rounded in LIVE mode)
+                # This must happen BEFORE sending notification to ensure data consistency
                 self._update_position_after_trade(ticker, action, actual_executed_units, price)
+
+                # Send Telegram notification AFTER position update succeeds
+                try:
+                    self.telegram.send_trade_alert(
+                        action=action,
+                        ticker=ticker,
+                        amount=actual_executed_units,
+                        price=price,
+                        success=True,
+                        reason=reason or f"{'DRY-RUN' if dry_run else 'LIVE'} mode",
+                        order_id=result.get('order_id', 'N/A')
+                    )
+                except Exception as e:
+                    self.logger.logger.warning(f"Failed to send Telegram notification: {e}")
 
                 # Calculate fee (using actual executed units)
                 total_value = actual_executed_units * price
@@ -502,6 +521,17 @@ class LiveExecutorV3:
 
         except Exception as e:
             self.logger.log_error(f"Error executing order: {action} {ticker}", e)
+
+            # Send Telegram error notification
+            try:
+                self.telegram.send_error_alert(
+                    error_type="Order Execution Error",
+                    error_message=f"{action} {ticker} failed",
+                    details=str(e)
+                )
+            except Exception as telegram_error:
+                self.logger.logger.warning(f"Failed to send Telegram error notification: {telegram_error}")
+
             return {
                 'success': False,
                 'order_id': None,
@@ -916,6 +946,21 @@ class LiveExecutorV3:
             dry_run=dry_run,
             reason=reason or "Closing full position"
         )
+
+        # Send Telegram notification for position close
+        if result.get('success'):
+            try:
+                self.telegram.send_trade_alert(
+                    action="CLOSE",
+                    ticker=ticker,
+                    amount=sell_units,
+                    price=price,
+                    success=True,
+                    reason=reason or "Position closed",
+                    order_id=result.get('order_id', 'N/A')
+                )
+            except Exception as e:
+                self.logger.logger.warning(f"Failed to send Telegram close notification: {e}")
 
         # 추가 안전장치: close_position 후 혹시 dust가 남았다면 강제 정리
         if result.get('success') and ticker in self.positions:

@@ -29,6 +29,7 @@ from ver3.config_v3 import get_version_config, get_portfolio_config
 from lib.api.bithumb_api import BithumbAPI
 from lib.core.logger import TradingLogger, MarkdownTransactionLogger, TransactionHistory
 from lib.interfaces.version_interface import VersionInterface
+from lib.core.telegram_notifier import get_telegram_notifier
 
 
 class TradingBotV3(VersionInterface):
@@ -108,6 +109,9 @@ class TradingBotV3(VersionInterface):
         # State tracking
         self.cycle_count = 0
         self.last_analysis_time = None
+
+        # Initialize Telegram notifier
+        self.telegram = get_telegram_notifier()
 
         self.logger.logger.info("=" * 60)
         self.logger.logger.info(f"Trading Bot V3 Initialized")
@@ -198,6 +202,19 @@ class TradingBotV3(VersionInterface):
         self.logger.logger.info("Trading Bot V3 Started")
         self.logger.logger.info("=" * 60)
 
+        # Send startup notification
+        try:
+            current_positions = len(self.portfolio_manager.executor.positions)
+            self.telegram.send_bot_status(
+                status="STARTED",
+                positions=current_positions,
+                max_positions=self.portfolio_config.get('max_positions', 2),
+                total_pnl=0,
+                coins=self.coins
+            )
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to send startup Telegram notification: {e}")
+
         try:
             while self.running:
                 self.cycle_count += 1
@@ -261,6 +278,19 @@ class TradingBotV3(VersionInterface):
         self.logger.logger.info("\n" + "=" * 60)
         self.logger.logger.info("Trading Bot V3 Stopped")
         self.logger.logger.info(f"Total cycles completed: {self.cycle_count}")
+
+        # Send shutdown notification
+        try:
+            current_positions = len(self.portfolio_manager.executor.positions)
+            self.telegram.send_bot_status(
+                status="STOPPED",
+                positions=current_positions,
+                max_positions=self.portfolio_config.get('max_positions', 2),
+                total_pnl=0,  # Could calculate actual P&L if needed
+                coins=self.coins
+            )
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to send shutdown Telegram notification: {e}")
         self.logger.logger.info("=" * 60)
 
     def _log_portfolio_summary(self, summary: Dict[str, Any]):
