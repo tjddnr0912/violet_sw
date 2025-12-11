@@ -414,20 +414,68 @@ class TistorySeleniumUploader:
             else:
                 html_content = content
 
-            # Enter content using JavaScript (more reliable)
-            content_script = """
-                var editor = document.querySelector('.CodeMirror');
-                if (editor && editor.CodeMirror) {
-                    editor.CodeMirror.setValue(arguments[0]);
-                } else {
-                    var textarea = document.querySelector('#content');
-                    if (textarea) {
-                        textarea.value = arguments[0];
+            # Enter content - try multiple methods
+            content_entered = False
+
+            # Method 1: TinyMCE API (most reliable for Tistory)
+            try:
+                tinymce_script = """
+                    if (typeof tinymce !== 'undefined' && tinymce.activeEditor) {
+                        tinymce.activeEditor.setContent(arguments[0]);
+                        return true;
                     }
-                }
-            """
-            self.driver.execute_script(content_script, html_content)
-            logger.info("Content entered")
+                    return false;
+                """
+                result = self.driver.execute_script(tinymce_script, html_content)
+                if result:
+                    content_entered = True
+                    logger.info("Content entered via TinyMCE API")
+            except Exception as e:
+                logger.debug(f"TinyMCE API method failed: {e}")
+
+            # Method 2: TinyMCE iframe direct manipulation with sync
+            if not content_entered:
+                try:
+                    iframe = self.driver.find_element(By.CSS_SELECTOR, "iframe[id*='editor-tistory']")
+                    self.driver.switch_to.frame(iframe)
+                    body = self.driver.find_element(By.TAG_NAME, "body")
+                    self.driver.execute_script("arguments[0].innerHTML = arguments[1];", body, html_content)
+                    self.driver.switch_to.default_content()
+
+                    # Trigger TinyMCE sync
+                    self.driver.execute_script("""
+                        if (typeof tinymce !== 'undefined' && tinymce.activeEditor) {
+                            tinymce.activeEditor.save();
+                        }
+                    """)
+                    content_entered = True
+                    logger.info("Content entered via TinyMCE iframe + sync")
+                except Exception as e:
+                    logger.debug(f"TinyMCE iframe method failed: {e}")
+                    self.driver.switch_to.default_content()
+
+            # Method 3: CodeMirror (HTML mode)
+            if not content_entered:
+                try:
+                    content_script = """
+                        var editor = document.querySelector('.CodeMirror');
+                        if (editor && editor.CodeMirror) {
+                            editor.CodeMirror.setValue(arguments[0]);
+                            return true;
+                        }
+                        return false;
+                    """
+                    result = self.driver.execute_script(content_script, html_content)
+                    if result:
+                        content_entered = True
+                        logger.info("Content entered via CodeMirror")
+                except Exception as e:
+                    logger.debug(f"CodeMirror method failed: {e}")
+
+            if not content_entered:
+                logger.warning("Could not enter content - all methods failed")
+            else:
+                logger.info("Content entered successfully")
 
             # Add tags if provided
             if tags:
