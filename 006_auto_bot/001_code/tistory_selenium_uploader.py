@@ -485,6 +485,24 @@ class TistorySeleniumUploader:
             if category:
                 self._select_category(category)
 
+            # CRITICAL: Sync TinyMCE content to form before publishing
+            # Without this, content appears in editor but doesn't get saved
+            try:
+                sync_script = """
+                    if (typeof tinymce !== 'undefined' && tinymce.activeEditor) {
+                        tinymce.activeEditor.save();
+                        tinymce.triggerSave();
+                        return true;
+                    }
+                    return false;
+                """
+                sync_result = self.driver.execute_script(sync_script)
+                if sync_result:
+                    logger.info("TinyMCE content synced to form before publish")
+                time.sleep(1)  # Wait for sync to complete
+            except Exception as e:
+                logger.warning(f"TinyMCE sync warning: {e}")
+
             # Set visibility and publish
             self._set_visibility_and_publish(visibility)
 
