@@ -41,3 +41,7 @@ dist/
 
 # Generated files
 004_News_paper/
+
+# Selenium cookies (session data)
+cookies/*.pkl
+!cookies/.gitkeep

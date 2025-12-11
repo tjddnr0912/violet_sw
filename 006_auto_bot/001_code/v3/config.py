@@ -2,7 +2,8 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+# override=True ensures .env takes precedence over system environment variables
+load_dotenv(override=True)
 
 
 class Config:
@@ -10,7 +11,7 @@ class Config:
 
     # Google Gemini API Configuration
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash-lite')
 
     # News API Configuration (optional - if you want to use NewsAPI)
     NEWS_API_KEY = os.getenv('NEWS_API_KEY', '')
@@ -98,7 +99,7 @@ class Config:
     OUTPUT_DIR = '../004_News_paper'  # Directory to save markdown files
 
     # Scheduling
-    POSTING_TIME = "09:00"  # Time to run daily (HH:MM format)
+    POSTING_TIME = "07:00"  # Time to run daily (HH:MM format)
 
     # Version Info
     VERSION = "3"
@@ -106,6 +107,15 @@ class Config:
     VERSION_DESCRIPTION = "모든 카테고리(정치,경제,사회,국제,문화,IT/과학,주식,암호화폐) 수집 → 카테고리별 Raw 파일 + Gemini AI 블로그 요약 생성"
 
     # Validation
+    # Tistory Configuration (Selenium-based)
+    TISTORY_ENABLED = os.getenv('TISTORY_ENABLED', 'false').lower() == 'true'
+    TISTORY_BLOG_URL = os.getenv('TISTORY_BLOG_URL', '')
+    TISTORY_CATEGORY = os.getenv('TISTORY_CATEGORY', '')
+    TISTORY_TAGS = os.getenv('TISTORY_TAGS', '뉴스,AI요약,자동화').split(',')
+    TISTORY_HEADLESS = os.getenv('TISTORY_HEADLESS', 'true').lower() == 'true'
+    TISTORY_COOKIE_PATH = os.getenv('TISTORY_COOKIE_PATH', './cookies/tistory_cookies.pkl')
+    TISTORY_VISIBILITY = os.getenv('TISTORY_VISIBILITY', 'public')  # public, private, protected
+
     @classmethod
     def validate(cls):
         """Validate that all required configuration is set"""
@@ -113,6 +123,9 @@ class Config:
 
         if not cls.GEMINI_API_KEY:
             errors.append("GEMINI_API_KEY is not set")
+
+        if cls.TISTORY_ENABLED and not cls.TISTORY_BLOG_URL:
+            errors.append("TISTORY_BLOG_URL is not set but TISTORY_ENABLED is true")
 
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")

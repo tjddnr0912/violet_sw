@@ -157,3 +157,8 @@ DerivedData/
 tmp/
 temp/
 *.tmp
+
+# News Bot Output (006_auto_bot)
+006_auto_bot/004_News_paper/
+006_auto_bot/001_code/cookies/
+006_auto_bot/001_code/logs/
