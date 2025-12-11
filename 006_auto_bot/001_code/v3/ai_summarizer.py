@@ -70,41 +70,39 @@ Raw News Content:
 {raw_markdown}
 
 Your task:
-1. **IMPORTANT**: Summarize ALL news articles provided - DO NOT skip any articles
-2. Create a comprehensive blog-style summary in Korean (한국어)
-3. Organize by categories with emoji icons: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
+1. Create a comprehensive blog-style summary in Korean (한국어)
+2. Organize by categories with emoji icons: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
 
-4. For each category:
+3. For each category:
    - Write a brief category introduction (1-2 sentences)
-   - **Summarize EVERY news article** in that category (do not skip articles)
-   - For each article, write 2-4 sentences covering:
+   - **Select TOP 3-5 most important/impactful news** per category (중요도 높은 3-5개만 선별)
+   - Combine similar/duplicate topics into one summary (중복 주제는 반드시 통합)
+   - For each selected article, write 2-3 sentences covering:
      * What happened (핵심 사건)
      * Why it matters (중요성)
-     * Key details or implications (주요 내용)
-   - You MAY combine duplicate/similar topics into one summary
    - Number each news item (1., 2., 3., ...)
+   - **ALL categories should have similar length** (모든 카테고리 분량 균등하게)
 
-5. **ENGLISH ARTICLE HANDLING**:
+4. **ENGLISH ARTICLE HANDLING**:
    - For articles written in English (Bloomberg, Reuters, MarketWatch, CoinDesk, etc.):
-     * First TRANSLATE the English content to Korean
-     * Then SUMMARIZE in Korean like other articles
-     * Maintain the same level of detail as Korean articles
+     * Translate and summarize in Korean like other articles
 
-6. Writing style:
+5. Writing style:
    - Professional yet accessible Korean (존댓말 사용)
    - Clear and concise summaries
    - Focus on facts and context
    - Natural, conversational tone
 
-7. Structure:
+6. Structure:
    - Start with a brief greeting and date
-   - Category sections with ALL article summaries
+   - Category sections with selected top news summaries
    - End with a closing remark
 
 REMEMBER:
-- Include ALL articles (모든 기사 포함)
+- Select only TOP 3-5 important news per category (카테고리당 중요 뉴스 3-5개만 선별)
+- ALL categories must have SIMILAR length (모든 카테고리 분량 균등)
+- Combine duplicate topics (중복 주제는 반드시 통합)
 - Translate English articles to Korean (영문 기사는 한글로 번역)
-- You can combine duplicate topics (중복 주제는 합칠 수 있음)
 
 Format: Return ONLY the markdown content, no explanations.
 

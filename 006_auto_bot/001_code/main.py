@@ -121,6 +121,41 @@ class NewsBot:
                         blog_result = self.markdown_writer.save_blog_summary(blog_summary)
 
                         if blog_result['success']:
+                            # Step 5: Upload to Tistory (if enabled)
+                            if getattr(self.config, 'TISTORY_ENABLED', False):
+                                logger.info("Step 5: Uploading to Tistory...")
+                                try:
+                                    from tistory_selenium_uploader import TistorySeleniumUploader
+
+                                    current_date = datetime.now().strftime("%Y년 %m월 %d일")
+                                    post_title = f"{current_date} 뉴스 요약"
+
+                                    with TistorySeleniumUploader(
+                                        blog_url=self.config.TISTORY_BLOG_URL,
+                                        cookie_path=self.config.TISTORY_COOKIE_PATH,
+                                        headless=self.config.TISTORY_HEADLESS
+                                    ) as uploader:
+                                        upload_result = uploader.upload_post(
+                                            title=post_title,
+                                            content=blog_summary,
+                                            category=self.config.TISTORY_CATEGORY or None,
+                                            tags=self.config.TISTORY_TAGS,
+                                            visibility=self.config.TISTORY_VISIBILITY,
+                                            is_markdown=True
+                                        )
+
+                                        if upload_result['success']:
+                                            logger.info(f"Tistory upload success: {upload_result.get('url', 'N/A')}")
+                                        else:
+                                            logger.warning(f"Tistory upload failed: {upload_result['message']}")
+
+                                except ImportError:
+                                    logger.error("tistory_selenium_uploader not found. Run: pip install selenium webdriver-manager")
+                                except Exception as e:
+                                    logger.error(f"Tistory upload error: {e}")
+                            else:
+                                logger.info("Tistory upload disabled (TISTORY_ENABLED=false)")
+
                             logger.info("=" * 60)
                             logger.info("✅ Daily task completed successfully!")
                             logger.info(f"Raw news saved: {raw_result.get('filepath', 'N/A')}")
