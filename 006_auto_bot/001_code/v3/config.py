@@ -115,6 +115,13 @@ class Config:
     TISTORY_HEADLESS = os.getenv('TISTORY_HEADLESS', 'true').lower() == 'true'
     TISTORY_COOKIE_PATH = os.getenv('TISTORY_COOKIE_PATH', './cookies/tistory_cookies.pkl')
     TISTORY_VISIBILITY = os.getenv('TISTORY_VISIBILITY', 'public')  # public, private, protected
+    # Chrome User Profile for persistent login (replaces cookie-based auth)
+    TISTORY_USER_DATA_DIR = os.getenv('TISTORY_USER_DATA_DIR', './chrome_profile/tistory')
+
+    # Telegram Notification Configuration
+    TELEGRAM_ENABLED = os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true'
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
     @classmethod
     def validate(cls):

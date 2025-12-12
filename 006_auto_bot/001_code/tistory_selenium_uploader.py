@@ -57,8 +57,11 @@ class TistorySeleniumUploader:
         self.driver = None
         self.wait = None
 
-        # Ensure cookies directory exists
+        # Ensure directories exist
         os.makedirs(os.path.dirname(cookie_path), exist_ok=True)
+        if user_data_dir:
+            os.makedirs(user_data_dir, exist_ok=True)
+            logger.info(f"Using Chrome profile directory: {user_data_dir}")
 
         # Initialize driver
         self._init_driver()
@@ -204,6 +207,63 @@ class TistorySeleniumUploader:
             logger.error(f"Error checking login status: {e}")
             return False
 
+    def refresh_session(self) -> dict:
+        """
+        Refresh the login session to prevent cookie expiration.
+
+        This method visits the Tistory manage page to keep the session alive
+        and re-saves the cookies with updated expiration times.
+
+        Returns:
+            dict with 'success' and 'message' keys
+        """
+        try:
+            logger.info("Refreshing Tistory session...")
+
+            # First try to load existing cookies
+            if not self.load_cookies():
+                return {
+                    'success': False,
+                    'message': 'No cookies found. Please run manual login first.'
+                }
+
+            # Check if we're logged in
+            if not self.is_logged_in():
+                return {
+                    'success': False,
+                    'message': 'Session expired. Please run manual login again.'
+                }
+
+            # Visit a few pages to refresh the session
+            pages_to_visit = [
+                f"{self.blog_url}/manage",
+                f"{self.blog_url}/manage/posts",
+            ]
+
+            for page in pages_to_visit:
+                self.driver.get(page)
+                time.sleep(2)
+
+            # Re-save cookies with refreshed expiration
+            if self.save_cookies():
+                logger.info("Session refreshed and cookies saved successfully")
+                return {
+                    'success': True,
+                    'message': 'Session refreshed successfully'
+                }
+            else:
+                return {
+                    'success': False,
+                    'message': 'Failed to save refreshed cookies'
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to refresh session: {e}")
+            return {
+                'success': False,
+                'message': str(e)
+            }
+
     def login_with_kakao(self, username: str, password: str) -> bool:
         """
         Login to Tistory using Kakao account
@@ -343,6 +403,85 @@ class TistorySeleniumUploader:
             logger.info("✅ Login verification SUCCESS!")
             logger.info(f"Cookie file saved: {self.cookie_path}")
 
+    def setup_persistent_login(self):
+        """
+        Setup persistent login using Chrome profile.
+
+        This creates a Chrome profile with your login session that persists
+        across browser restarts. Much more reliable than cookie-based auth.
+
+        Run this ONCE to setup, then automated uploads will work indefinitely.
+        """
+        if not self.user_data_dir:
+            logger.error("user_data_dir is not set. Cannot setup persistent login.")
+            logger.info("Please set TISTORY_USER_DATA_DIR in .env file")
+            return False
+
+        logger.info("=" * 60)
+        logger.info("PERSISTENT LOGIN SETUP (Chrome Profile)")
+        logger.info("=" * 60)
+        logger.info(f"Chrome profile directory: {self.user_data_dir}")
+        logger.info("")
+        logger.info("This will save your login session permanently.")
+        logger.info("You only need to do this ONCE!")
+        logger.info("")
+        logger.info("Steps:")
+        logger.info("1. Browser will open Tistory login page")
+        logger.info("2. Login with Kakao (check 'Stay logged in' / '로그인 상태 유지')")
+        logger.info("3. Navigate to your blog's manage page")
+        logger.info(f"   ({self.blog_url}/manage)")
+        logger.info("4. Press Enter when you see the dashboard")
+        logger.info("=" * 60)
+
+        # Ensure non-headless mode for manual login
+        if self.headless:
+            logger.info("Restarting browser in GUI mode...")
+            self.close()
+            self.headless = False
+            self._init_driver()
+
+        # Navigate to login page
+        self.driver.get("https://www.tistory.com/auth/login")
+
+        input("\n[1/2] 카카오로 로그인 완료 후 Enter를 누르세요 (로그인 상태 유지 체크!)...")
+
+        # Navigate to blog's manage page
+        logger.info(f"블로그 관리 페이지로 이동 중: {self.blog_url}/manage")
+        self.driver.get(f"{self.blog_url}/manage")
+        time.sleep(3)
+
+        input("\n[2/2] 관리자 대시보드가 보이면 Enter를 누르세요...")
+
+        # Verify login
+        current_url = self.driver.current_url
+        logger.info(f"Current URL: {current_url}")
+
+        if "login" in current_url:
+            logger.error("❌ Setup FAILED - still on login page")
+            return False
+
+        # Test by navigating to newpost
+        test_url = f"{self.blog_url}/manage/newpost"
+        logger.info(f"Verifying access to: {test_url}")
+        self.driver.get(test_url)
+        time.sleep(3)
+
+        source = self.driver.page_source
+        if '권한이 없거나' in source or '존재하지 않는' in source:
+            logger.error("❌ Setup FAILED - no permission")
+            return False
+
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("✅ PERSISTENT LOGIN SETUP SUCCESS!")
+        logger.info("=" * 60)
+        logger.info(f"Chrome profile saved at: {self.user_data_dir}")
+        logger.info("")
+        logger.info("Your login session is now permanently saved.")
+        logger.info("Automated uploads will work without re-login!")
+        logger.info("=" * 60)
+        return True
+
     def convert_markdown_to_html(self, markdown_content: str) -> str:
         """Convert markdown content to HTML"""
         html = markdown.markdown(
@@ -379,12 +518,21 @@ class TistorySeleniumUploader:
 
             # Check login status
             if not self.is_logged_in():
-                logger.info("Not logged in. Attempting to load cookies...")
-                if not self.load_cookies() or not self.is_logged_in():
+                if self.user_data_dir:
+                    # Using Chrome profile - no cookie fallback needed
+                    logger.error("Not logged in. Chrome profile needs initial setup.")
                     return {
                         'success': False,
-                        'message': 'Not logged in. Please run manual_login_and_save_session() first.'
+                        'message': 'Not logged in. Please run setup_persistent_login() first to initialize Chrome profile.'
                     }
+                else:
+                    # Fallback to cookie-based auth
+                    logger.info("Not logged in. Attempting to load cookies...")
+                    if not self.load_cookies() or not self.is_logged_in():
+                        return {
+                            'success': False,
+                            'message': 'Not logged in. Please run manual_login_and_save_session() first.'
+                        }
 
             # Navigate to new post page
             self.driver.get(f"{self.blog_url}/manage/newpost")
@@ -618,28 +766,38 @@ class TistorySeleniumUploader:
                 publish_btn.click()
                 time.sleep(2)
 
-            # Try to set visibility (may not be available in all Tistory themes)
+            # Tistory visibility uses 'basicSet' radio buttons (updated 2024)
+            # Values: 20=public(공개), 15=protected(보호), 0=private(비공개)
             visibility_map = {
-                'public': '0',
-                'protected': '1',
-                'private': '3'
+                'public': '20',
+                'protected': '15',
+                'private': '0'
             }
 
+            target_value = visibility_map.get(visibility, '20')  # Default to public
+            logger.info(f"Setting visibility to: {visibility} (value={target_value})")
+
+            # Primary selector: name='basicSet' (current Tistory UI)
             visibility_selectors = [
-                f"input[name='visibility'][value='{visibility_map.get(visibility, '0')}']",
-                f"input[value='{visibility_map.get(visibility, '0')}']",
-                ".radio_visibility input",
-                "[name='visibility']"
+                f"input[name='basicSet'][value='{target_value}']",
+                f"input[name='visibility'][value='{target_value}']",  # Legacy fallback
+                f"input[type='radio'][value='{target_value}']",
             ]
 
+            visibility_set = False
             for selector in visibility_selectors:
                 try:
                     vis_radio = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    self.driver.execute_script("arguments[0].click();", vis_radio)
-                    logger.info(f"Visibility set using: {selector}")
-                    break
+                    if vis_radio.is_displayed():
+                        self.driver.execute_script("arguments[0].click();", vis_radio)
+                        logger.info(f"Visibility set using: {selector}")
+                        visibility_set = True
+                        break
                 except:
                     continue
+
+            if not visibility_set:
+                logger.warning(f"Could not find visibility radio button for {visibility}")
 
             # Try to find and click final publish/save button
             final_btn_selectors = [
@@ -714,32 +872,54 @@ class TistorySeleniumUploader:
 # CLI interface for testing
 if __name__ == '__main__':
     import argparse
+    from dotenv import load_dotenv
+    load_dotenv()
 
     parser = argparse.ArgumentParser(description='Tistory Selenium Uploader')
-    parser.add_argument('--blog-url', required=True, help='Tistory blog URL')
-    parser.add_argument('--login', action='store_true', help='Manual login mode')
+    parser.add_argument('--blog-url', default=os.getenv('TISTORY_BLOG_URL', ''), help='Tistory blog URL')
+    parser.add_argument('--login', action='store_true', help='Manual login mode (cookie-based)')
+    parser.add_argument('--setup', action='store_true', help='Setup persistent login (Chrome profile) - RECOMMENDED')
     parser.add_argument('--check', action='store_true', help='Check login status')
     parser.add_argument('--headless', action='store_true', help='Run in headless mode')
+    parser.add_argument('--user-data-dir', default=os.getenv('TISTORY_USER_DATA_DIR', './chrome_profile/tistory'),
+                        help='Chrome profile directory for persistent login')
 
     args = parser.parse_args()
 
+    if not args.blog_url:
+        print("Error: --blog-url is required or set TISTORY_BLOG_URL in .env")
+        parser.print_help()
+        exit(1)
+
     uploader = TistorySeleniumUploader(
         blog_url=args.blog_url,
-        headless=args.headless
+        headless=args.headless,
+        user_data_dir=args.user_data_dir if args.setup or args.user_data_dir != './chrome_profile/tistory' else None
     )
 
     try:
-        if args.login:
+        if args.setup:
+            # Recommended: Setup persistent login with Chrome profile
+            uploader.setup_persistent_login()
+        elif args.login:
+            # Legacy: Manual login with cookies
             uploader.manual_login_and_save_session()
         elif args.check:
-            if uploader.load_cookies():
-                if uploader.is_logged_in():
-                    print("Login status: OK")
-                else:
-                    print("Login status: FAILED - cookies invalid")
+            if uploader.is_logged_in():
+                print("Login status: OK")
+            elif uploader.load_cookies() and uploader.is_logged_in():
+                print("Login status: OK (via cookies)")
             else:
-                print("Login status: FAILED - no cookies found")
+                print("Login status: FAILED")
+                print("Run: python tistory_selenium_uploader.py --setup")
         else:
             parser.print_help()
+            print("\n" + "=" * 60)
+            print("QUICK START (Recommended):")
+            print("=" * 60)
+            print("python tistory_selenium_uploader.py --setup")
+            print("")
+            print("This will setup persistent login that never expires!")
+            print("=" * 60)
     finally:
         uploader.close()

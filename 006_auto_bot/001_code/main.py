@@ -121,6 +121,11 @@ class NewsBot:
                         blog_result = self.markdown_writer.save_blog_summary(blog_summary)
 
                         if blog_result['success']:
+                            # Track upload status for telegram notification
+                            tistory_upload_success = False
+                            tistory_url = None
+                            tistory_error = None
+
                             # Step 5: Upload to Tistory (if enabled)
                             if getattr(self.config, 'TISTORY_ENABLED', False):
                                 logger.info("Step 5: Uploading to Tistory...")
@@ -146,15 +151,52 @@ class NewsBot:
 
                                         if upload_result['success']:
                                             logger.info(f"Tistory upload success: {upload_result.get('url', 'N/A')}")
+                                            tistory_upload_success = True
+                                            tistory_url = upload_result.get('url')
                                         else:
                                             logger.warning(f"Tistory upload failed: {upload_result['message']}")
+                                            tistory_error = upload_result['message']
 
                                 except ImportError:
+                                    tistory_error = "tistory_selenium_uploader not found"
                                     logger.error("tistory_selenium_uploader not found. Run: pip install selenium webdriver-manager")
                                 except Exception as e:
+                                    tistory_error = str(e)
                                     logger.error(f"Tistory upload error: {e}")
                             else:
                                 logger.info("Tistory upload disabled (TISTORY_ENABLED=false)")
+                                tistory_upload_success = True  # Consider disabled as "success"
+                                tistory_error = "Tistory upload disabled"
+
+                            # Step 6: Send Telegram notification (if enabled)
+                            if getattr(self.config, 'TELEGRAM_ENABLED', False):
+                                logger.info("Step 6: Sending Telegram notification...")
+                                try:
+                                    from telegram_notifier import TelegramNotifier
+
+                                    notifier = TelegramNotifier(
+                                        bot_token=self.config.TELEGRAM_BOT_TOKEN,
+                                        chat_id=self.config.TELEGRAM_CHAT_ID
+                                    )
+
+                                    telegram_result = notifier.send_blog_notification(
+                                        summary_content=blog_summary,
+                                        upload_success=tistory_upload_success,
+                                        blog_url=tistory_url,
+                                        error_message=tistory_error if not tistory_upload_success else None
+                                    )
+
+                                    if telegram_result['success']:
+                                        logger.info("Telegram notification sent successfully")
+                                    else:
+                                        logger.warning(f"Telegram notification failed: {telegram_result.get('error', 'Unknown')}")
+
+                                except ImportError:
+                                    logger.error("telegram_notifier not found")
+                                except Exception as e:
+                                    logger.error(f"Telegram notification error: {e}")
+                            else:
+                                logger.info("Telegram notification disabled (TELEGRAM_ENABLED=false)")
 
                             logger.info("=" * 60)
                             logger.info("✅ Daily task completed successfully!")
@@ -222,12 +264,43 @@ class NewsBot:
         logger.info("Running task immediately (one-time execution)")
         self.run_daily_task()
 
+    def refresh_tistory_session(self):
+        """Refresh Tistory session to prevent cookie expiration"""
+        if not getattr(self.config, 'TISTORY_ENABLED', False):
+            return
+
+        try:
+            from tistory_selenium_uploader import TistorySeleniumUploader
+
+            logger.info("Refreshing Tistory session...")
+
+            with TistorySeleniumUploader(
+                blog_url=self.config.TISTORY_BLOG_URL,
+                cookie_path=self.config.TISTORY_COOKIE_PATH,
+                headless=True
+            ) as uploader:
+                result = uploader.refresh_session()
+
+                if result['success']:
+                    logger.info("Tistory session refreshed successfully")
+                else:
+                    logger.warning(f"Tistory session refresh failed: {result['message']}")
+
+        except Exception as e:
+            logger.error(f"Error refreshing Tistory session: {e}")
+
     def run_scheduled(self):
         """Run the task on a daily schedule"""
         posting_time = self.config.POSTING_TIME
         logger.info(f"Scheduling daily task at {posting_time}")
 
+        # Schedule daily news task
         schedule.every().day.at(posting_time).do(self.run_daily_task)
+
+        # Schedule Tistory session refresh every 4 hours to prevent cookie expiration
+        if getattr(self.config, 'TISTORY_ENABLED', False):
+            schedule.every(4).hours.do(self.refresh_tistory_session)
+            logger.info("Tistory session refresh scheduled every 4 hours")
 
         logger.info("News bot is now running. Press Ctrl+C to stop.")
         logger.info(f"Next run scheduled at: {posting_time}")
