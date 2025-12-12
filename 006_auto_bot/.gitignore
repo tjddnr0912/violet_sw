@@ -45,3 +45,7 @@ dist/
 # Selenium cookies (session data)
 cookies/*.pkl
 !cookies/.gitkeep
+
+# Chrome profile (persistent login session)
+chrome_profile/
+001_code/chrome_profile/
