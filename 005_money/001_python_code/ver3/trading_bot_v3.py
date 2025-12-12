@@ -113,6 +113,9 @@ class TradingBotV3(VersionInterface):
         # Initialize Telegram notifier
         self.telegram = get_telegram_notifier()
 
+        # Daily summary tracking
+        self._daily_summary_sent_date = None  # Track which date we sent summary for
+
         self.logger.logger.info("=" * 60)
         self.logger.logger.info(f"Trading Bot V3 Initialized")
         self.logger.logger.info(f"  Version: {self.VERSION_NAME}")
@@ -247,6 +250,9 @@ class TradingBotV3(VersionInterface):
                     self.logger.log_error("Error in analysis cycle", e)
                     import traceback
                     self.logger.logger.error(traceback.format_exc())
+
+                # Check and send daily summary at 23:50
+                self._check_and_send_daily_summary()
 
                 # Sleep until next cycle
                 cycle_elapsed = time.time() - cycle_start
@@ -422,3 +428,88 @@ Configuration:
             Portfolio summary dictionary
         """
         return self.portfolio_manager.get_portfolio_summary()
+
+    # ========================================
+    # Daily Summary Methods
+    # ========================================
+
+    def _check_and_send_daily_summary(self):
+        """
+        Check if it's time to send daily summary (23:50) and send if needed.
+
+        This method checks:
+        1. Current time is between 23:45 and 23:59
+        2. Summary hasn't been sent for today yet
+        """
+        now = datetime.now()
+        current_hour = now.hour
+        current_minute = now.minute
+        today_date = now.strftime('%Y-%m-%d')
+
+        # Check if it's between 23:45 and 23:59 (to catch 23:50 within 15-min cycle)
+        if current_hour == 23 and 45 <= current_minute <= 59:
+            # Check if we already sent summary today
+            if self._daily_summary_sent_date != today_date:
+                self.logger.logger.info(f"Sending daily summary for {today_date}...")
+                success = self._send_daily_summary()
+                if success:
+                    self._daily_summary_sent_date = today_date
+                    self.logger.logger.info("Daily summary sent successfully")
+                else:
+                    self.logger.logger.warning("Failed to send daily summary")
+
+    def _send_daily_summary(self) -> bool:
+        """
+        Generate and send daily trading summary via Telegram.
+
+        Returns:
+            bool: True if sent successfully, False otherwise
+        """
+        try:
+            today_date = datetime.now().strftime('%Y-%m-%d')
+
+            # Get today's trading summary (days=1 means today only)
+            summary = self.transaction_history.get_summary(days=1)
+
+            # Prepare summary data for Telegram
+            summary_data = {
+                'date': today_date,
+                'buy_count': summary.get('buy_count', 0),
+                'sell_count': summary.get('sell_count', 0),
+                'total_volume': summary.get('total_volume', 0),
+                'total_fees': summary.get('total_fees', 0),
+                'net_pnl': summary.get('net_pnl', 0),
+                'success_count': summary.get('successful_transactions', 0),
+                'fail_count': summary.get('fail_count', 0)
+            }
+
+            # Log summary locally
+            self.logger.logger.info(f"\n{'='*60}")
+            self.logger.logger.info(f"Daily Summary - {today_date}")
+            self.logger.logger.info(f"{'='*60}")
+            self.logger.logger.info(f"  Buy orders: {summary_data['buy_count']}")
+            self.logger.logger.info(f"  Sell orders: {summary_data['sell_count']}")
+            self.logger.logger.info(f"  Total volume: {summary_data['total_volume']:,.0f} KRW")
+            self.logger.logger.info(f"  Total fees: {summary_data['total_fees']:,.0f} KRW")
+            self.logger.logger.info(f"  Net P&L: {summary_data['net_pnl']:+,.0f} KRW")
+            self.logger.logger.info(f"  Success: {summary_data['success_count']}, Failed: {summary_data['fail_count']}")
+            self.logger.logger.info(f"{'='*60}")
+
+            # Send via Telegram
+            return self.telegram.send_daily_summary(summary_data)
+
+        except Exception as e:
+            self.logger.log_error("Error generating daily summary", e)
+            import traceback
+            self.logger.logger.error(traceback.format_exc())
+            return False
+
+    def send_daily_summary_now(self) -> bool:
+        """
+        Manually trigger sending daily summary (for testing or manual invocation).
+
+        Returns:
+            bool: True if sent successfully, False otherwise
+        """
+        self.logger.logger.info("Manually triggered daily summary...")
+        return self._send_daily_summary()
