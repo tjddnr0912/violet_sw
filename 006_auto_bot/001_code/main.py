@@ -165,8 +165,53 @@ class NewsBot:
                                     logger.error(f"Tistory upload error: {e}")
                             else:
                                 logger.info("Tistory upload disabled (TISTORY_ENABLED=false)")
-                                tistory_upload_success = True  # Consider disabled as "success"
-                                tistory_error = "Tistory upload disabled"
+
+                            # Step 5b: Upload to Google Blogger (if enabled)
+                            blogger_upload_success = False
+                            blogger_url = None
+                            blogger_error = None
+
+                            if getattr(self.config, 'BLOGGER_ENABLED', False):
+                                logger.info("Step 5b: Uploading to Google Blogger...")
+                                try:
+                                    from blogger_uploader import BloggerUploader
+
+                                    current_date = datetime.now().strftime("%Y년 %m월 %d일")
+                                    post_title = f"{current_date} 뉴스 요약"
+
+                                    with BloggerUploader(
+                                        blog_id=self.config.BLOGGER_BLOG_ID,
+                                        credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
+                                        token_path=self.config.BLOGGER_TOKEN_PATH
+                                    ) as uploader:
+                                        upload_result = uploader.upload_post(
+                                            title=post_title,
+                                            content=blog_summary,
+                                            labels=self.config.BLOGGER_LABELS,
+                                            is_draft=self.config.BLOGGER_IS_DRAFT,
+                                            is_markdown=True
+                                        )
+
+                                        if upload_result['success']:
+                                            logger.info(f"Blogger upload success: {upload_result.get('url', 'N/A')}")
+                                            blogger_upload_success = True
+                                            blogger_url = upload_result.get('url')
+                                            # Use Blogger URL for telegram if Tistory is disabled
+                                            if not tistory_upload_success and blogger_url:
+                                                tistory_upload_success = True
+                                                tistory_url = blogger_url
+                                        else:
+                                            logger.warning(f"Blogger upload failed: {upload_result['message']}")
+                                            blogger_error = upload_result['message']
+
+                                except ImportError:
+                                    blogger_error = "blogger_uploader not found"
+                                    logger.error("blogger_uploader not found. Run: pip install google-api-python-client google-auth-oauthlib")
+                                except Exception as e:
+                                    blogger_error = str(e)
+                                    logger.error(f"Blogger upload error: {e}")
+                            else:
+                                logger.info("Blogger upload disabled (BLOGGER_ENABLED=false)")
 
                             # Step 6: Send Telegram notification (if enabled)
                             if getattr(self.config, 'TELEGRAM_ENABLED', False):
