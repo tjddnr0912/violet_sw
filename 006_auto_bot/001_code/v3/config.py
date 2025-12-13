@@ -123,6 +123,14 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
+    # Google Blogger Configuration (API-based - more stable than Tistory)
+    BLOGGER_ENABLED = os.getenv('BLOGGER_ENABLED', 'false').lower() == 'true'
+    BLOGGER_BLOG_ID = os.getenv('BLOGGER_BLOG_ID', '')
+    BLOGGER_CREDENTIALS_PATH = os.getenv('BLOGGER_CREDENTIALS_PATH', './credentials/blogger_credentials.json')
+    BLOGGER_TOKEN_PATH = os.getenv('BLOGGER_TOKEN_PATH', './credentials/blogger_token.pkl')
+    BLOGGER_LABELS = os.getenv('BLOGGER_LABELS', '뉴스,AI요약,자동화').split(',')
+    BLOGGER_IS_DRAFT = os.getenv('BLOGGER_IS_DRAFT', 'false').lower() == 'true'
+
     @classmethod
     def validate(cls):
         """Validate that all required configuration is set"""
@@ -133,6 +141,9 @@ class Config:
 
         if cls.TISTORY_ENABLED and not cls.TISTORY_BLOG_URL:
             errors.append("TISTORY_BLOG_URL is not set but TISTORY_ENABLED is true")
+
+        if cls.BLOGGER_ENABLED and not cls.BLOGGER_BLOG_ID:
+            errors.append("BLOGGER_BLOG_ID is not set but BLOGGER_ENABLED is true")
 
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
