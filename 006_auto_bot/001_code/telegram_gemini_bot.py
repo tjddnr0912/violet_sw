@@ -134,7 +134,7 @@ SOURCES: [참고한 자료의 출처를 "제목|URL" 형식으로 쉼표로 구�
                 ["gemini", prompt],
                 capture_output=True,
                 text=True,
-                timeout=300  # 5분 타임아웃
+                timeout=600  # 10분 타임아웃
             )
 
             if result.returncode == 0:
@@ -151,7 +151,7 @@ SOURCES: [참고한 자료의 출처를 "제목|URL" 형식으로 쉼표로 구�
                 return False, f"Gemini 오류: {error}", "", [], []
 
         except subprocess.TimeoutExpired:
-            return False, "Gemini 응답 시간 초과 (5분)", "", [], []
+            return False, "Gemini 응답 시간 초과 (10분)", "", [], []
         except FileNotFoundError:
             return False, "gemini CLI를 찾을 수 없습니다. 설치되어 있는지 확인하세요.", "", [], []
         except Exception as e:
