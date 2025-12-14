@@ -97,12 +97,12 @@ class TelegramGeminiBot:
             logger.error(f"메시지 전송 실패: {e}")
             return False
 
-    def run_gemini(self, question: str) -> Tuple[bool, str, str, list]:
+    def run_gemini(self, question: str) -> Tuple[bool, str, str, list, list]:
         """
         Gemini CLI 실행
 
         Returns:
-            Tuple[bool, str, str, list]: (성공 여부, 본문 내용, 제목, 라벨 리스트)
+            Tuple[bool, str, str, list, list]: (성공 여부, 본문 내용, 제목, 라벨 리스트, 출처 리스트)
         """
         try:
             logger.info(f"Gemini 실행 중: {question[:50]}...")
@@ -122,56 +122,78 @@ class TelegramGeminiBot:
 - 핵심 내용은 굵게 또는 리스트로 강조
 - 필요시 예시나 코드 포함
 - 친근하고 읽기 쉬운 문체 사용
+- 정보의 출처가 있다면 반드시 포함
 
 답변이 끝난 후 맨 마지막에 다음 형식으로 작성해줘:
 TITLE: [전체 내용을 대표하는 간결한 제목]
-LABELS: [핵심 키워드 2~3개를 쉼표로 구분]"""
+LABELS: [핵심 키워드 2~3개를 쉼표로 구분]
+SOURCES: [참고한 자료의 출처를 "제목|URL" 형식으로 쉼표로 구분. 예: 공식문서|https://example.com, 블로그글|https://blog.com]"""
 
-            # gemini CLI 실행
+            # gemini CLI 실행 (출처 검색 포함 시 시간이 더 걸릴 수 있음)
             result = subprocess.run(
                 ["gemini", prompt],
                 capture_output=True,
                 text=True,
-                timeout=120  # 2분 타임아웃
+                timeout=300  # 5분 타임아웃
             )
 
             if result.returncode == 0:
                 output = result.stdout.strip()
                 if output:
                     logger.info("Gemini 응답 성공")
-                    # 제목, 라벨, 본문 분리
-                    content, title, labels = self._parse_response(output)
-                    return True, content, title, labels
+                    # 제목, 라벨, 본문, 출처 분리
+                    content, title, labels, sources = self._parse_response(output)
+                    return True, content, title, labels, sources
                 else:
-                    return False, "Gemini 응답이 비어있습니다.", "", []
+                    return False, "Gemini 응답이 비어있습니다.", "", [], []
             else:
                 error = result.stderr.strip() or "알 수 없는 오류"
-                return False, f"Gemini 오류: {error}", "", []
+                return False, f"Gemini 오류: {error}", "", [], []
 
         except subprocess.TimeoutExpired:
-            return False, "Gemini 응답 시간 초과 (2분)", "", []
+            return False, "Gemini 응답 시간 초과 (5분)", "", [], []
         except FileNotFoundError:
-            return False, "gemini CLI를 찾을 수 없습니다. 설치되어 있는지 확인하세요.", "", []
+            return False, "gemini CLI를 찾을 수 없습니다. 설치되어 있는지 확인하세요.", "", [], []
         except Exception as e:
-            return False, f"Gemini 실행 오류: {str(e)}", "", []
+            return False, f"Gemini 실행 오류: {str(e)}", "", [], []
 
-    def _parse_response(self, response: str) -> Tuple[str, str, list]:
+    def _parse_response(self, response: str) -> Tuple[str, str, list, list]:
         """
-        Gemini 응답에서 본문, 제목, 라벨 분리
+        Gemini 응답에서 본문, 제목, 라벨, 출처 분리
 
         Returns:
-            Tuple[str, str, list]: (본문, 제목, 라벨 리스트)
+            Tuple[str, str, list, list]: (본문, 제목, 라벨 리스트, 출처 리스트)
+            출처 리스트는 [{"title": "제목", "url": "URL"}, ...] 형식
         """
         import re
 
         lines = response.strip().split('\n')
         title = ""
         labels = []
+        sources = []
         content_end_idx = len(lines)
 
-        # 뒤에서부터 TITLE:과 LABELS: 찾기
+        # 뒤에서부터 TITLE:, LABELS:, SOURCES: 찾기
         for i in range(len(lines) - 1, -1, -1):
             line = lines[i].strip()
+
+            # SOURCES: 패턴
+            source_match = re.match(r'^SOURCES?:\s*(.+)$', line, re.IGNORECASE)
+            if source_match:
+                source_str = source_match.group(1).strip()
+                # 쉼표로 구분된 출처 파싱
+                for src in source_str.split(','):
+                    src = src.strip()
+                    if '|' in src:
+                        parts = src.split('|', 1)
+                        src_title = parts[0].strip()
+                        src_url = parts[1].strip()
+                        if src_url and src_title:
+                            sources.append({"title": src_title, "url": src_url})
+                    elif src.startswith('http'):
+                        # URL만 있는 경우
+                        sources.append({"title": src, "url": src})
+                content_end_idx = min(content_end_idx, i)
 
             # LABELS: 패턴
             label_match = re.match(r'^LABELS?:\s*(.+)$', line, re.IGNORECASE)
@@ -187,7 +209,7 @@ LABELS: [핵심 키워드 2~3개를 쉼표로 구분]"""
                 title = title_match.group(1).strip()
                 content_end_idx = min(content_end_idx, i)
 
-        # 본문 추출 (TITLE/LABELS 이전까지)
+        # 본문 추출 (TITLE/LABELS/SOURCES 이전까지)
         content_lines = lines[:content_end_idx]
 
         # 마지막의 구분선(---) 및 빈 줄 제거
@@ -203,9 +225,33 @@ LABELS: [핵심 키워드 2~3개를 쉼표로 구분]"""
             labels = ["AI", "Gemini"]
 
         content = '\n'.join(content_lines).strip()
-        return content, title, labels
+        return content, title, labels, sources
 
-    def upload_to_blogger(self, title: str, content: str, labels: list = None) -> Tuple[bool, str]:
+    def _format_sources_section(self, sources: list) -> str:
+        """
+        출처 리스트를 마크다운 형식의 출처 섹션으로 변환
+
+        Args:
+            sources: [{"title": "제목", "url": "URL"}, ...] 형식의 리스트
+
+        Returns:
+            마크다운 형식의 출처 섹션 문자열
+        """
+        if not sources:
+            return ""
+
+        source_lines = ["", "---", "", "## 📚 참고 자료", ""]
+        for i, src in enumerate(sources, 1):
+            title = src.get("title", "출처")
+            url = src.get("url", "")
+            if url:
+                source_lines.append(f"- [{title}]({url})")
+            else:
+                source_lines.append(f"- {title}")
+
+        return '\n'.join(source_lines)
+
+    def upload_to_blogger(self, title: str, content: str, labels: list = None, sources: list = None) -> Tuple[bool, str]:
         """Google Blogger에 업로드"""
         if not self.upload_to_blog:
             return True, "(테스트 모드 - 업로드 스킵)"
@@ -225,7 +271,11 @@ LABELS: [핵심 키워드 2~3개를 쉼표로 구분]"""
             if not blog_id:
                 return False, "BLOGGER_BLOG_ID 환경변수가 설정되지 않았습니다."
 
-            logger.info(f"Blogger 업로더 초기화 중... (라벨: {labels})")
+            # 출처 섹션 추가
+            sources_section = self._format_sources_section(sources)
+            full_content = content + sources_section
+
+            logger.info(f"Blogger 업로더 초기화 중... (라벨: {labels}, 출처: {len(sources) if sources else 0}개)")
             uploader = BloggerUploader(
                 blog_id=blog_id,
                 credentials_path=credentials_path,
@@ -235,7 +285,7 @@ LABELS: [핵심 키워드 2~3개를 쉼표로 구분]"""
             logger.info("블로그에 포스팅 중...")
             result = uploader.upload_post(
                 title=title,
-                content=content,
+                content=full_content,
                 labels=labels,
                 is_draft=is_draft,
                 is_markdown=True  # BloggerUploader가 자체적으로 마크다운 변환
@@ -276,41 +326,59 @@ LABELS: [핵심 키워드 2~3개를 쉼표로 구분]"""
         # 처리 시작 알림
         self.send_message(f"질문을 받았습니다. Gemini에게 물어보는 중...")
 
-        # Gemini 실행 (본문, 제목, 라벨 함께 반환)
-        success, gemini_content, gemini_title, gemini_labels = self.run_gemini(text)
+        # Gemini 실행 (본문, 제목, 라벨, 출처 함께 반환)
+        success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(text)
 
         if not success:
             self.send_message(f"Gemini 오류: {gemini_content}")
             return
 
-        # 블로그 업로드 (Gemini가 생성한 제목과 라벨 사용)
-        upload_success, upload_result = self.upload_to_blogger(gemini_title, gemini_content, gemini_labels)
+        # 블로그 업로드 (Gemini가 생성한 제목, 라벨, 출처 사용)
+        upload_success, upload_result = self.upload_to_blogger(
+            gemini_title, gemini_content, gemini_labels, gemini_sources
+        )
 
         # 결과 메시지 작성
         labels_str = ', '.join(gemini_labels) if gemini_labels else '-'
+        sources_count = len(gemini_sources) if gemini_sources else 0
+
+        # 출처 정보 문자열 생성
+        sources_str = ""
+        if gemini_sources:
+            sources_str = "\n<b>📚 참고 자료:</b>\n"
+            for src in gemini_sources[:5]:  # 텔레그램 메시지는 최대 5개까지
+                title = src.get("title", "출처")
+                url = src.get("url", "")
+                if url:
+                    sources_str += f"• <a href=\"{url}\">{title}</a>\n"
+                else:
+                    sources_str += f"• {title}\n"
+            if len(gemini_sources) > 5:
+                sources_str += f"... 외 {len(gemini_sources) - 5}개\n"
+
         if upload_success:
-            result_msg = f"""<b>Gemini 응답 완료!</b>
+            result_msg = f"""<b>✅ Gemini 응답 완료!</b>
 
 <b>제목:</b> {gemini_title}
 <b>라벨:</b> {labels_str}
 
-<b>블로그 업로드:</b> {upload_result}
+<b>🌐 블로그 업로드:</b> {upload_result}
 
 <b>응답 미리보기:</b>
-{gemini_content[:500]}{'...' if len(gemini_content) > 500 else ''}"""
+{gemini_content[:500]}{'...' if len(gemini_content) > 500 else ''}{sources_str}"""
         else:
-            result_msg = f"""<b>Gemini 응답 완료!</b>
+            result_msg = f"""<b>✅ Gemini 응답 완료!</b>
 
 <b>제목:</b> {gemini_title}
 <b>라벨:</b> {labels_str}
 
-<b>블로그 업로드 실패:</b> {upload_result}
+<b>❌ 블로그 업로드 실패:</b> {upload_result}
 
 <b>응답:</b>
-{gemini_content[:1000]}"""
+{gemini_content[:1000]}{sources_str}"""
 
         self.send_message(result_msg)
-        logger.info(f"처리 완료 - 제목: {gemini_title}, 라벨: {gemini_labels}")
+        logger.info(f"처리 완료 - 제목: {gemini_title}, 라벨: {gemini_labels}, 출처: {sources_count}개")
 
     def _handle_command(self, command: str) -> None:
         """명령어 처리"""
