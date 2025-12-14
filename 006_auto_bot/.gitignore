@@ -49,3 +49,10 @@ cookies/*.pkl
 # Chrome profile (persistent login session)
 chrome_profile/
 001_code/chrome_profile/
+
+# Credentials (API keys, tokens)
+credentials/
+001_code/credentials/
+*.pkl
+*_credentials.json
+*_token.pkl

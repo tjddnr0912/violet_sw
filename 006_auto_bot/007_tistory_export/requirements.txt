@@ -1,0 +1,19 @@
+# Tistory Blog Export Tool Dependencies
+
+# Web scraping
+selenium>=4.15.0
+webdriver-manager>=4.0.1
+
+# HTML parsing and conversion
+beautifulsoup4>=4.12.0
+markdownify>=0.11.6
+html2text>=2020.1.16
+
+# HTTP requests for image download
+requests>=2.31.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Progress bar
+tqdm>=4.66.0
