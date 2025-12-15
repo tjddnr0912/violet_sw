@@ -106,24 +106,12 @@ class Config:
     VERSION_NAME = "Korean News - All Categories (Including Stock & Crypto)"
     VERSION_DESCRIPTION = "모든 카테고리(정치,경제,사회,국제,문화,IT/과학,주식,암호화폐) 수집 → 카테고리별 Raw 파일 + Gemini AI 블로그 요약 생성"
 
-    # Validation
-    # Tistory Configuration (Selenium-based)
-    TISTORY_ENABLED = os.getenv('TISTORY_ENABLED', 'false').lower() == 'true'
-    TISTORY_BLOG_URL = os.getenv('TISTORY_BLOG_URL', '')
-    TISTORY_CATEGORY = os.getenv('TISTORY_CATEGORY', '')
-    TISTORY_TAGS = os.getenv('TISTORY_TAGS', '뉴스,AI요약,자동화').split(',')
-    TISTORY_HEADLESS = os.getenv('TISTORY_HEADLESS', 'true').lower() == 'true'
-    TISTORY_COOKIE_PATH = os.getenv('TISTORY_COOKIE_PATH', './cookies/tistory_cookies.pkl')
-    TISTORY_VISIBILITY = os.getenv('TISTORY_VISIBILITY', 'public')  # public, private, protected
-    # Chrome User Profile for persistent login (replaces cookie-based auth)
-    TISTORY_USER_DATA_DIR = os.getenv('TISTORY_USER_DATA_DIR', './chrome_profile/tistory')
-
     # Telegram Notification Configuration
     TELEGRAM_ENABLED = os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true'
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
-    # Google Blogger Configuration (API-based - more stable than Tistory)
+    # Google Blogger Configuration (API-based)
     BLOGGER_ENABLED = os.getenv('BLOGGER_ENABLED', 'false').lower() == 'true'
     BLOGGER_BLOG_ID = os.getenv('BLOGGER_BLOG_ID', '')
     BLOGGER_CREDENTIALS_PATH = os.getenv('BLOGGER_CREDENTIALS_PATH', './credentials/blogger_credentials.json')
@@ -138,9 +126,6 @@ class Config:
 
         if not cls.GEMINI_API_KEY:
             errors.append("GEMINI_API_KEY is not set")
-
-        if cls.TISTORY_ENABLED and not cls.TISTORY_BLOG_URL:
-            errors.append("TISTORY_BLOG_URL is not set but TISTORY_ENABLED is true")
 
         if cls.BLOGGER_ENABLED and not cls.BLOGGER_BLOG_ID:
             errors.append("BLOGGER_BLOG_ID is not set but BLOGGER_ENABLED is true")

@@ -2,7 +2,7 @@
 """
 Automated News Aggregation and Blog Posting Bot
 ------------------------------------------------
-Daily news aggregation, AI summarization, and automatic Tistory blog posting
+Daily news aggregation, AI summarization, and automatic blog posting
 """
 
 import logging
@@ -122,57 +122,13 @@ class NewsBot:
 
                         if blog_result['success']:
                             # Track upload status for telegram notification
-                            tistory_upload_success = False
-                            tistory_url = None
-                            tistory_error = None
+                            blog_upload_success = False
+                            blog_url = None
+                            blog_error = None
 
-                            # Step 5: Upload to Tistory (if enabled)
-                            if getattr(self.config, 'TISTORY_ENABLED', False):
-                                logger.info("Step 5: Uploading to Tistory...")
-                                try:
-                                    from tistory_selenium_uploader import TistorySeleniumUploader
-
-                                    current_date = datetime.now().strftime("%Y년 %m월 %d일")
-                                    post_title = f"{current_date} 뉴스 요약"
-
-                                    with TistorySeleniumUploader(
-                                        blog_url=self.config.TISTORY_BLOG_URL,
-                                        cookie_path=self.config.TISTORY_COOKIE_PATH,
-                                        headless=self.config.TISTORY_HEADLESS
-                                    ) as uploader:
-                                        upload_result = uploader.upload_post(
-                                            title=post_title,
-                                            content=blog_summary,
-                                            category=self.config.TISTORY_CATEGORY or None,
-                                            tags=self.config.TISTORY_TAGS,
-                                            visibility=self.config.TISTORY_VISIBILITY,
-                                            is_markdown=True
-                                        )
-
-                                        if upload_result['success']:
-                                            logger.info(f"Tistory upload success: {upload_result.get('url', 'N/A')}")
-                                            tistory_upload_success = True
-                                            tistory_url = upload_result.get('url')
-                                        else:
-                                            logger.warning(f"Tistory upload failed: {upload_result['message']}")
-                                            tistory_error = upload_result['message']
-
-                                except ImportError:
-                                    tistory_error = "tistory_selenium_uploader not found"
-                                    logger.error("tistory_selenium_uploader not found. Run: pip install selenium webdriver-manager")
-                                except Exception as e:
-                                    tistory_error = str(e)
-                                    logger.error(f"Tistory upload error: {e}")
-                            else:
-                                logger.info("Tistory upload disabled (TISTORY_ENABLED=false)")
-
-                            # Step 5b: Upload to Google Blogger (if enabled)
-                            blogger_upload_success = False
-                            blogger_url = None
-                            blogger_error = None
-
+                            # Step 5: Upload to Google Blogger (if enabled)
                             if getattr(self.config, 'BLOGGER_ENABLED', False):
-                                logger.info("Step 5b: Uploading to Google Blogger...")
+                                logger.info("Step 5: Uploading to Google Blogger...")
                                 try:
                                     from blogger_uploader import BloggerUploader
 
@@ -194,21 +150,17 @@ class NewsBot:
 
                                         if upload_result['success']:
                                             logger.info(f"Blogger upload success: {upload_result.get('url', 'N/A')}")
-                                            blogger_upload_success = True
-                                            blogger_url = upload_result.get('url')
-                                            # Use Blogger URL for telegram if Tistory is disabled
-                                            if not tistory_upload_success and blogger_url:
-                                                tistory_upload_success = True
-                                                tistory_url = blogger_url
+                                            blog_upload_success = True
+                                            blog_url = upload_result.get('url')
                                         else:
                                             logger.warning(f"Blogger upload failed: {upload_result['message']}")
-                                            blogger_error = upload_result['message']
+                                            blog_error = upload_result['message']
 
                                 except ImportError:
-                                    blogger_error = "blogger_uploader not found"
+                                    blog_error = "blogger_uploader not found"
                                     logger.error("blogger_uploader not found. Run: pip install google-api-python-client google-auth-oauthlib")
                                 except Exception as e:
-                                    blogger_error = str(e)
+                                    blog_error = str(e)
                                     logger.error(f"Blogger upload error: {e}")
                             else:
                                 logger.info("Blogger upload disabled (BLOGGER_ENABLED=false)")
@@ -226,9 +178,9 @@ class NewsBot:
 
                                     telegram_result = notifier.send_blog_notification(
                                         summary_content=blog_summary,
-                                        upload_success=tistory_upload_success,
-                                        blog_url=tistory_url,
-                                        error_message=tistory_error if not tistory_upload_success else None
+                                        upload_success=blog_upload_success,
+                                        blog_url=blog_url,
+                                        error_message=blog_error if not blog_upload_success else None
                                     )
 
                                     if telegram_result['success']:
@@ -309,31 +261,6 @@ class NewsBot:
         logger.info("Running task immediately (one-time execution)")
         self.run_daily_task()
 
-    def refresh_tistory_session(self):
-        """Refresh Tistory session to prevent cookie expiration"""
-        if not getattr(self.config, 'TISTORY_ENABLED', False):
-            return
-
-        try:
-            from tistory_selenium_uploader import TistorySeleniumUploader
-
-            logger.info("Refreshing Tistory session...")
-
-            with TistorySeleniumUploader(
-                blog_url=self.config.TISTORY_BLOG_URL,
-                cookie_path=self.config.TISTORY_COOKIE_PATH,
-                headless=True
-            ) as uploader:
-                result = uploader.refresh_session()
-
-                if result['success']:
-                    logger.info("Tistory session refreshed successfully")
-                else:
-                    logger.warning(f"Tistory session refresh failed: {result['message']}")
-
-        except Exception as e:
-            logger.error(f"Error refreshing Tistory session: {e}")
-
     def run_scheduled(self):
         """Run the task on a daily schedule"""
         posting_time = self.config.POSTING_TIME
@@ -341,11 +268,6 @@ class NewsBot:
 
         # Schedule daily news task
         schedule.every().day.at(posting_time).do(self.run_daily_task)
-
-        # Schedule Tistory session refresh every 4 hours to prevent cookie expiration
-        if getattr(self.config, 'TISTORY_ENABLED', False):
-            schedule.every(4).hours.do(self.refresh_tistory_session)
-            logger.info("Tistory session refresh scheduled every 4 hours")
 
         logger.info("News bot is now running. Press Ctrl+C to stop.")
         logger.info(f"Next run scheduled at: {posting_time}")

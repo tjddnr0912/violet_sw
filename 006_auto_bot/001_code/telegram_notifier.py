@@ -217,7 +217,7 @@ if __name__ == "__main__":
         result = notifier.send_blog_notification(
             summary_content=test_summary,
             upload_success=True,
-            blog_url="https://example.tistory.com/123"
+            blog_url="https://example.blogspot.com/2024/12/test-post.html"
         )
 
         if result["success"]:
