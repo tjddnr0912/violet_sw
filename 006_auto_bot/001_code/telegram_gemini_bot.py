@@ -108,25 +108,31 @@ class TelegramGeminiBot:
             logger.info(f"Gemini 실행 중: {question[:50]}...")
 
             # 블로그 스타일 + 제목/라벨 생성을 포함한 프롬프트 구성
+            # 영어/한국어 모두 대응하도록 양쪽 언어로 지시
             prompt = f"""{question}
 
 ---
+IMPORTANT / 중요:
+- DO NOT include any thinking process, reasoning steps, or internal analysis.
+- Start with the final answer directly. No "Let me think", "I will", "Let's analyze", "First, I need to" or similar phrases.
+- 사고 과정이나 분석 과정 없이 최종 답변만 바로 작성해줘.
+- "Let me think", "I will", "Let's" 같은 중간 과정 설명 없이 독자에게 보여줄 완성된 글만 출력해.
+
+Write a blog-style article answering the question above.
 위 질문에 대해 블로그 게시글 형식으로 답변해줘.
 
-중요: 사고 과정이나 분석 과정 없이 최종 답변만 바로 작성해줘. "Let me think", "I will", "Let's" 같은 중간 과정 설명 없이 독자에게 보여줄 완성된 글만 출력해.
+Writing Guidelines / 작성 가이드:
+- Use clear structure with subheadings and paragraphs / 독자가 이해하기 쉽게 구조화된 형식으로 작성
+- Highlight key points with bold text or lists / 핵심 내용은 굵게 또는 리스트로 강조
+- Include examples or code if helpful / 필요시 예시나 코드 포함
+- Use a friendly, readable tone / 친근하고 읽기 쉬운 문체 사용
+- Include sources if available / 정보의 출처가 있다면 반드시 포함
 
-작성 가이드:
-- 독자가 이해하기 쉽게 구조화된 형식으로 작성
-- 적절한 소제목과 단락 구분 사용
-- 핵심 내용은 굵게 또는 리스트로 강조
-- 필요시 예시나 코드 포함
-- 친근하고 읽기 쉬운 문체 사용
-- 정보의 출처가 있다면 반드시 포함
-
+At the very end, add these metadata lines:
 답변이 끝난 후 맨 마지막에 다음 형식으로 작성해줘:
-TITLE: [전체 내용을 대표하는 간결한 제목]
-LABELS: [핵심 키워드 2~3개를 쉼표로 구분]
-SOURCES: [참고한 자료의 출처를 "제목|URL" 형식으로 쉼표로 구분. 예: 공식문서|https://example.com, 블로그글|https://blog.com]"""
+TITLE: [A concise title representing the content / 전체 내용을 대표하는 간결한 제목]
+LABELS: [2-3 keywords separated by commas / 핵심 키워드 2~3개를 쉼표로 구분]
+SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 출처를 "제목|URL" 형식으로 쉼표로 구분]"""
 
             # gemini CLI 실행 (출처 검색 포함 시 시간이 더 걸릴 수 있음)
             result = subprocess.run(
