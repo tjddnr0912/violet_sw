@@ -56,23 +56,46 @@ class TelegramGeminiBot:
             logger.error("requests 모듈이 필요합니다. pip install requests")
             sys.exit(1)
 
-    def get_updates(self, offset: int = None) -> list:
-        """텔레그램에서 새 메시지 가져오기"""
-        try:
-            url = f"{self.api_base}/getUpdates"
-            params = {"timeout": 30}  # Long polling
-            if offset:
-                params["offset"] = offset
+    def get_updates(self, offset: int = None, max_retries: int = 3) -> list:
+        """텔레그램에서 새 메시지 가져오기 (재시도 로직 포함)"""
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.api_base}/getUpdates"
+                params = {"timeout": 30}  # Long polling
+                if offset:
+                    params["offset"] = offset
 
-            response = self.requests.get(url, params=params, timeout=35)
-            result = response.json()
+                response = self.requests.get(url, params=params, timeout=35)
+                result = response.json()
 
-            if result.get("ok"):
-                return result.get("result", [])
-            return []
-        except Exception as e:
-            logger.error(f"메시지 가져오기 실패: {e}")
-            return []
+                if result.get("ok"):
+                    return result.get("result", [])
+                return []
+
+            except (ConnectionResetError, ConnectionError, ConnectionAbortedError) as e:
+                logger.warning(f"연결 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # 지수 백오프: 1초, 2초, 4초
+                    continue
+                logger.error(f"최대 재시도 횟수 초과: {e}")
+                return []
+
+            except self.requests.exceptions.Timeout:
+                # Long polling 타임아웃은 정상적인 경우
+                return []
+
+            except self.requests.exceptions.RequestException as e:
+                logger.warning(f"네트워크 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return []
+
+            except Exception as e:
+                logger.error(f"메시지 가져오기 실패: {e}")
+                return []
+
+        return []
 
     def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         """텔레그램으로 메시지 보내기"""
@@ -82,6 +105,10 @@ class TelegramGeminiBot:
             # 메시지 길이 제한 (4096자)
             if len(text) > 4000:
                 text = text[:3900] + "\n\n... (내용이 길어 일부 생략됨)"
+
+            # HTML 파싱 모드일 때 닫히지 않은 태그 수정
+            if parse_mode == "HTML":
+                text = self._fix_unclosed_html_tags(text)
 
             payload = {
                 "chat_id": self.chat_id,
@@ -96,6 +123,37 @@ class TelegramGeminiBot:
         except Exception as e:
             logger.error(f"메시지 전송 실패: {e}")
             return False
+
+    def _fix_unclosed_html_tags(self, text: str) -> str:
+        """닫히지 않은 HTML 태그 수정"""
+        import re
+
+        simple_tags = ['b', 'i', 'u', 's', 'code', 'pre']
+
+        for tag in simple_tags:
+            open_pattern = f'<{tag}>'
+            close_pattern = f'</{tag}>'
+
+            open_count = text.lower().count(open_pattern)
+            close_count = text.lower().count(close_pattern)
+
+            if open_count > close_count:
+                text += close_pattern * (open_count - close_count)
+            elif close_count > open_count:
+                for _ in range(close_count - open_count):
+                    text = re.sub(f'</{tag}>', '', text, count=1, flags=re.IGNORECASE)
+
+        # <a> 태그 처리
+        open_a = len(re.findall(r'<a\s+href=', text, re.IGNORECASE))
+        close_a = text.lower().count('</a>')
+
+        if open_a > close_a:
+            text += '</a>' * (open_a - close_a)
+        elif close_a > open_a:
+            for _ in range(close_a - open_a):
+                text = re.sub(r'</a>', '', text, count=1, flags=re.IGNORECASE)
+
+        return text
 
     def run_gemini(self, question: str) -> Tuple[bool, str, str, list, list]:
         """

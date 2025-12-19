@@ -147,7 +147,54 @@ class TelegramNotifier:
         # Remove horizontal rules
         text = re.sub(r'^-{3,}$', '─' * 20, text, flags=re.MULTILINE)
 
+        # Validate and fix unclosed HTML tags
+        text = self._fix_unclosed_html_tags(text)
+
         return text.strip()
+
+    def _fix_unclosed_html_tags(self, text: str) -> str:
+        """
+        Fix unclosed HTML tags to prevent Telegram API parsing errors
+
+        Args:
+            text: HTML text to validate
+
+        Returns:
+            Text with properly closed HTML tags
+        """
+        import re
+
+        # Tags that Telegram supports: b, i, u, s, code, pre, a
+        simple_tags = ['b', 'i', 'u', 's', 'code', 'pre']
+
+        for tag in simple_tags:
+            # Count opening and closing tags
+            open_pattern = f'<{tag}>'
+            close_pattern = f'</{tag}>'
+
+            open_count = text.lower().count(open_pattern)
+            close_count = text.lower().count(close_pattern)
+
+            # Add missing closing tags at the end
+            if open_count > close_count:
+                text += close_pattern * (open_count - close_count)
+            # Remove orphan closing tags
+            elif close_count > open_count:
+                for _ in range(close_count - open_count):
+                    # Remove first orphan closing tag found
+                    text = re.sub(f'</{tag}>', '', text, count=1, flags=re.IGNORECASE)
+
+        # Handle <a> tags separately (they have href attribute)
+        open_a = len(re.findall(r'<a\s+href=', text, re.IGNORECASE))
+        close_a = text.lower().count('</a>')
+
+        if open_a > close_a:
+            text += '</a>' * (open_a - close_a)
+        elif close_a > open_a:
+            for _ in range(close_a - open_a):
+                text = re.sub(r'</a>', '', text, count=1, flags=re.IGNORECASE)
+
+        return text
 
     def test_connection(self) -> bool:
         """Test if bot token and chat_id are valid"""
