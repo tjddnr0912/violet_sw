@@ -8,3 +8,6 @@ mplfinance
 # Version 2 dependencies (Backtrader strategy)
 backtrader>=1.9.76.123
 python-binance>=1.0.16
+
+# Telegram interactive bot (for /status, /stop commands)
+python-telegram-bot>=20.7
