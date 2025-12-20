@@ -256,25 +256,89 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Error during daily task execution: {str(e)}", exc_info=True)
 
-    def run_once(self):
-        """Run the task once immediately"""
+    def run_once(self, max_retries: int = 3):
+        """Run the task once immediately with retry logic"""
         logger.info("Running task immediately (one-time execution)")
-        self.run_daily_task()
+        for attempt in range(max_retries):
+            try:
+                self.run_daily_task()
+                return True
+            except (ConnectionError, ConnectionResetError, ConnectionAbortedError) as e:
+                logger.warning(f"네트워크 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** (attempt + 1) * 10  # 20초, 40초, 80초
+                    logger.info(f"{wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error("최대 재시도 횟수 초과")
+                    return False
+            except Exception as e:
+                logger.error(f"작업 실행 중 오류: {e}", exc_info=True)
+                return False
+        return False
+
+    def run_daily_task_with_retry(self, max_retries: int = 3) -> bool:
+        """
+        Execute daily task with retry logic for network errors
+
+        Args:
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            True if task completed successfully, False otherwise
+        """
+        for attempt in range(max_retries):
+            try:
+                self.run_daily_task()
+                return True
+            except (ConnectionError, ConnectionResetError, ConnectionAbortedError) as e:
+                logger.warning(f"네트워크 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** (attempt + 1) * 30  # 60초, 120초, 240초
+                    logger.info(f"{wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"최대 재시도 횟수 초과. 다음 스케줄에서 다시 시도합니다.")
+                    return False
+            except Exception as e:
+                logger.error(f"작업 실행 중 오류: {e}", exc_info=True)
+                return False
+        return False
 
     def run_scheduled(self):
-        """Run the task on a daily schedule"""
+        """Run the task on a daily schedule with error recovery"""
         posting_time = self.config.POSTING_TIME
         logger.info(f"Scheduling daily task at {posting_time}")
 
-        # Schedule daily news task
-        schedule.every().day.at(posting_time).do(self.run_daily_task)
+        # Schedule daily news task with retry logic
+        schedule.every().day.at(posting_time).do(self.run_daily_task_with_retry)
 
         logger.info("News bot is now running. Press Ctrl+C to stop.")
         logger.info(f"Next run scheduled at: {posting_time}")
 
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+
         try:
             while True:
-                schedule.run_pending()
+                try:
+                    schedule.run_pending()
+                    consecutive_errors = 0  # Reset on success
+                except (ConnectionError, ConnectionResetError, ConnectionAbortedError) as e:
+                    consecutive_errors += 1
+                    logger.warning(f"스케줄러 네트워크 에러 ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.error("연속 에러 한도 초과. 60초 대기 후 계속...")
+                        time.sleep(60)
+                        consecutive_errors = 0
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.error(f"스케줄러 오류 ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.error("연속 에러 한도 초과. 60초 대기 후 계속...")
+                        time.sleep(60)
+                        consecutive_errors = 0
+
                 time.sleep(60)  # Check every minute
 
         except KeyboardInterrupt:
