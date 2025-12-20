@@ -30,6 +30,7 @@ from lib.api.bithumb_api import BithumbAPI
 from lib.core.logger import TradingLogger, MarkdownTransactionLogger, TransactionHistory
 from lib.interfaces.version_interface import VersionInterface
 from lib.core.telegram_notifier import get_telegram_notifier
+from lib.core.telegram_bot_handler import get_telegram_bot_handler
 
 
 class TradingBotV3(VersionInterface):
@@ -112,6 +113,9 @@ class TradingBotV3(VersionInterface):
 
         # Initialize Telegram notifier
         self.telegram = get_telegram_notifier()
+
+        # Initialize Telegram bot handler (for interactive commands)
+        self.telegram_handler = get_telegram_bot_handler(self)
 
         # Daily summary tracking
         self._daily_summary_sent_date = None  # Track which date we sent summary for
@@ -218,6 +222,13 @@ class TradingBotV3(VersionInterface):
         except Exception as e:
             self.logger.logger.warning(f"Failed to send startup Telegram notification: {e}")
 
+        # Start Telegram command handler (for /status, /stop, etc.)
+        try:
+            self.telegram_handler.start()
+            self.logger.logger.info("Telegram command handler started")
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to start Telegram command handler: {e}")
+
         try:
             while self.running:
                 self.cycle_count += 1
@@ -284,6 +295,13 @@ class TradingBotV3(VersionInterface):
         self.logger.logger.info("\n" + "=" * 60)
         self.logger.logger.info("Trading Bot V3 Stopped")
         self.logger.logger.info(f"Total cycles completed: {self.cycle_count}")
+
+        # Stop Telegram command handler
+        try:
+            self.telegram_handler.stop()
+            self.logger.logger.info("Telegram command handler stopped")
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to stop Telegram command handler: {e}")
 
         # Send shutdown notification
         try:
