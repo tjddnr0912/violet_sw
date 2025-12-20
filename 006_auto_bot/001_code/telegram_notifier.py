@@ -122,6 +122,12 @@ class TelegramNotifier:
 
         text = markdown_text
 
+        # Escape HTML special characters first (before adding our own HTML tags)
+        # This prevents stray < > & from breaking Telegram HTML parsing
+        text = text.replace('&', '&amp;')
+        text = text.replace('<', '&lt;')
+        text = text.replace('>', '&gt;')
+
         # Remove image links ![alt](url)
         text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
 
