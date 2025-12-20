@@ -100,6 +100,8 @@ class TelegramNotifier:
         max_length = 4000
         if len(telegram_summary) > max_length:
             telegram_summary = telegram_summary[:max_length - 100] + "\n\n... (내용이 길어 일부 생략)"
+            # Fix unclosed tags AFTER truncation (truncation can break tags)
+            telegram_summary = self._fix_unclosed_html_tags(telegram_summary)
 
         # Build full message
         message = f"{status_header}\n\n{'─' * 30}\n\n{telegram_summary}"
