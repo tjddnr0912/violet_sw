@@ -25,12 +25,26 @@ from dotenv import load_dotenv
 # Load environment variables (override=True to use .env values over system env)
 load_dotenv(override=True)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Configure logging with file handler
+def setup_logging():
+    """로그 설정 - 콘솔 + 파일 출력"""
+    log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_filename = f'telegram_bot_{datetime.now().strftime("%Y%m%d")}.log'
+    log_path = os.path.join(log_dir, log_filename)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_path, encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 
 class TelegramGeminiBot:
@@ -197,27 +211,35 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
                 ["gemini", prompt],
                 capture_output=True,
                 text=True,
-                timeout=600  # 10분 타임아웃
+                timeout=900  # 15분 타임아웃
             )
 
             if result.returncode == 0:
                 output = result.stdout.strip()
                 if output:
-                    logger.info("Gemini 응답 성공")
+                    logger.info(f"Gemini 응답 성공 (길이: {len(output)}자)")
+                    # 원본 응답의 마지막 500자 로그 (TITLE/LABELS/SOURCES 확인용)
+                    logger.info(f"Gemini 응답 끝부분:\n{output[-500:]}")
                     # 제목, 라벨, 본문, 출처 분리
                     content, title, labels, sources = self._parse_response(output)
+                    logger.info(f"파싱 결과 - 제목: {title}, 라벨: {labels}, 출처: {len(sources)}개, 본문: {len(content)}자")
                     return True, content, title, labels, sources
                 else:
+                    logger.warning("Gemini 응답이 비어있음")
                     return False, "Gemini 응답이 비어있습니다.", "", [], []
             else:
                 error = result.stderr.strip() or "알 수 없는 오류"
+                logger.error(f"Gemini 실행 실패 (returncode={result.returncode}): {error}")
                 return False, f"Gemini 오류: {error}", "", [], []
 
         except subprocess.TimeoutExpired:
-            return False, "Gemini 응답 시간 초과 (10분)", "", [], []
+            logger.error("Gemini 응답 시간 초과 (15분)")
+            return False, "Gemini 응답 시간 초과 (15분)", "", [], []
         except FileNotFoundError:
+            logger.error("gemini CLI를 찾을 수 없음")
             return False, "gemini CLI를 찾을 수 없습니다. 설치되어 있는지 확인하세요.", "", [], []
         except Exception as e:
+            logger.error(f"Gemini 실행 오류: {str(e)}", exc_info=True)
             return False, f"Gemini 실행 오류: {str(e)}", "", [], []
 
     def _parse_response(self, response: str) -> Tuple[str, str, list, list]:
@@ -279,13 +301,25 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
         while content_lines and content_lines[-1].strip() in ['---', '']:
             content_lines.pop()
 
-        # 제목을 찾지 못한 경우 기본값
+        # 제목을 찾지 못한 경우 기본값 (첫 문장 또는 첫 50자 사용)
         if not title:
-            title = response[:30].replace('\n', ' ').strip() + "..."
+            first_line = response.split('\n')[0].strip()
+            # 마크다운 헤더 제거 (# ## ### 등)
+            if first_line.startswith('#'):
+                first_line = first_line.lstrip('#').strip()
+            if len(first_line) > 60:
+                title = first_line[:57] + "..."
+            elif len(first_line) > 10:
+                title = first_line
+            else:
+                # 첫 줄이 너무 짧으면 50자까지 사용
+                title = response[:50].replace('\n', ' ').strip() + "..."
+            logger.warning(f"TITLE: 라인을 찾지 못해 기본값 사용: {title}")
 
         # 라벨을 찾지 못한 경우 기본값
         if not labels:
             labels = ["AI", "Gemini"]
+            logger.warning("LABELS: 라인을 찾지 못해 기본값 사용: ['AI', 'Gemini']")
 
         content = '\n'.join(content_lines).strip()
         return content, title, labels, sources
@@ -384,7 +418,8 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
         if not text:
             return
 
-        logger.info(f"질문 수신: {text[:50]}...")
+        logger.info(f"질문 수신 (길이: {len(text)}자): {text[:100]}{'...' if len(text) > 100 else ''}")
+        logger.debug(f"질문 전체:\n{text}")
 
         # 처리 시작 알림
         self.send_message(f"질문을 받았습니다. Gemini에게 물어보는 중...")
