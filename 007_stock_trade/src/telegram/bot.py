@@ -40,6 +40,13 @@ class NotificationType(Enum):
     INFO = "정보"
     ERROR = "오류"
     SYSTEM = "시스템"
+    # 퀀트 전략 알림 유형
+    SCREENING = "스크리닝"
+    SIGNAL = "신호"
+    REBALANCE = "리밸런싱"
+    RISK = "리스크"
+    STOP_LOSS = "손절"
+    TAKE_PROFIT = "익절"
 
 
 class TelegramNotifier:
@@ -114,7 +121,13 @@ class TelegramNotifier:
             NotificationType.CANCEL: "⚪",
             NotificationType.INFO: "ℹ️",
             NotificationType.ERROR: "❌",
-            NotificationType.SYSTEM: "⚙️"
+            NotificationType.SYSTEM: "⚙️",
+            NotificationType.SCREENING: "🔍",
+            NotificationType.SIGNAL: "📊",
+            NotificationType.REBALANCE: "🔄",
+            NotificationType.RISK: "⚠️",
+            NotificationType.STOP_LOSS: "🛑",
+            NotificationType.TAKE_PROFIT: "🎯"
         }
 
         icon = icons.get(notification_type, "📌")
@@ -284,6 +297,276 @@ class TelegramNotifier:
 
         return self.send_message("\n".join(lines))
 
+    # ========== 퀀트 전략 알림 메서드 ==========
+
+    def notify_screening_result(
+        self,
+        top_stocks: list,
+        total_screened: int,
+        passed_filter: int
+    ) -> bool:
+        """스크리닝 결과 알림"""
+        lines = [
+            "🔍 <b>[스크리닝 완료]</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 분석 종목: <code>{total_screened}개</code>",
+            f"• 필터 통과: <code>{passed_filter}개</code>",
+            "━━━━━━━━━━━━━━━",
+            "<b>상위 종목:</b>"
+        ]
+
+        for i, stock in enumerate(top_stocks[:5], 1):
+            score = stock.get('score', stock.get('composite_score', 0))
+            name = stock.get('name', '')[:8]
+            code = stock.get('code', '')
+            lines.append(
+                f"  {i}. <b>{name}</b> ({code})\n"
+                f"     점수: {score:.1f} | 12M: {stock.get('return_12m', 0):+.1f}%"
+            )
+
+        lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return self.send_message("\n".join(lines))
+
+    def notify_buy_signal(
+        self,
+        stock_name: str,
+        stock_code: str,
+        signal_type: str,
+        score: float,
+        price: int,
+        stop_loss: int,
+        take_profit: int,
+        reason: str = ""
+    ) -> bool:
+        """매수 신호 알림"""
+        signal_emoji = "🟢" if "STRONG" in signal_type else "🔵"
+
+        lines = [
+            f"{signal_emoji} <b>[매수 신호] {stock_name}</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 종목: <code>{stock_name} ({stock_code})</code>",
+            f"• 신호: <code>{signal_type}</code>",
+            f"• 점수: <code>{score:.1f}/100</code>",
+            f"• 현재가: <code>{price:,}원</code>",
+            "━━━━━━━━━━━━━━━",
+            f"• 손절가: <code>{stop_loss:,}원</code> ({(stop_loss/price-1)*100:+.1f}%)",
+            f"• 익절가: <code>{take_profit:,}원</code> ({(take_profit/price-1)*100:+.1f}%)"
+        ]
+
+        if reason:
+            lines.append(f"• 사유: {reason}")
+
+        lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return self.send_message("\n".join(lines))
+
+    def notify_sell_signal(
+        self,
+        stock_name: str,
+        stock_code: str,
+        signal_type: str,
+        current_price: int,
+        entry_price: int,
+        reason: str = ""
+    ) -> bool:
+        """매도 신호 알림"""
+        pnl_pct = (current_price / entry_price - 1) * 100
+        pnl_emoji = "📈" if pnl_pct >= 0 else "📉"
+
+        lines = [
+            f"🔴 <b>[매도 신호] {stock_name}</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 종목: <code>{stock_name} ({stock_code})</code>",
+            f"• 신호: <code>{signal_type}</code>",
+            f"• 매입가: <code>{entry_price:,}원</code>",
+            f"• 현재가: <code>{current_price:,}원</code>",
+            f"• 수익률: {pnl_emoji} <code>{pnl_pct:+.1f}%</code>"
+        ]
+
+        if reason:
+            lines.append(f"• 사유: {reason}")
+
+        lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return self.send_message("\n".join(lines))
+
+    def notify_stop_loss(
+        self,
+        stock_name: str,
+        stock_code: str,
+        entry_price: int,
+        stop_price: int,
+        qty: int
+    ) -> bool:
+        """손절 알림"""
+        loss_pct = (stop_price / entry_price - 1) * 100
+        loss_amount = (stop_price - entry_price) * qty
+
+        lines = [
+            f"🛑 <b>[손절 실행] {stock_name}</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 종목: <code>{stock_name} ({stock_code})</code>",
+            f"• 수량: <code>{qty:,}주</code>",
+            f"• 매입가: <code>{entry_price:,}원</code>",
+            f"• 손절가: <code>{stop_price:,}원</code>",
+            "━━━━━━━━━━━━━━━",
+            f"• 손실률: <code>{loss_pct:+.1f}%</code>",
+            f"• 손실금액: <code>{loss_amount:+,}원</code>",
+            f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        ]
+
+        return self.send_message("\n".join(lines))
+
+    def notify_take_profit(
+        self,
+        stock_name: str,
+        stock_code: str,
+        entry_price: int,
+        sell_price: int,
+        qty: int,
+        stage: int = 1
+    ) -> bool:
+        """익절 알림"""
+        profit_pct = (sell_price / entry_price - 1) * 100
+        profit_amount = (sell_price - entry_price) * qty
+
+        lines = [
+            f"🎯 <b>[익절 실행] {stock_name}</b> ({stage}차)",
+            "━━━━━━━━━━━━━━━",
+            f"• 종목: <code>{stock_name} ({stock_code})</code>",
+            f"• 수량: <code>{qty:,}주</code>",
+            f"• 매입가: <code>{entry_price:,}원</code>",
+            f"• 매도가: <code>{sell_price:,}원</code>",
+            "━━━━━━━━━━━━━━━",
+            f"• 수익률: <code>{profit_pct:+.1f}%</code>",
+            f"• 수익금액: <code>{profit_amount:+,}원</code>",
+            f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        ]
+
+        return self.send_message("\n".join(lines))
+
+    def notify_rebalance(
+        self,
+        sells: list,
+        buys: list,
+        portfolio_value: int
+    ) -> bool:
+        """리밸런싱 알림"""
+        lines = [
+            "🔄 <b>[리밸런싱 실행]</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 포트폴리오: <code>{portfolio_value:,}원</code>",
+            ""
+        ]
+
+        if sells:
+            lines.append("<b>매도 종목:</b>")
+            for s in sells[:3]:
+                lines.append(f"  🔴 {s['name']} ({s.get('pnl_pct', 0):+.1f}%)")
+
+        if buys:
+            lines.append("<b>매수 종목:</b>")
+            for b in buys[:3]:
+                lines.append(f"  🟢 {b['name']} ({b.get('weight', 0)*100:.1f}%)")
+
+        lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return self.send_message("\n".join(lines))
+
+    def notify_risk_alert(
+        self,
+        alert_type: str,
+        current_value: float,
+        threshold: float,
+        message: str = ""
+    ) -> bool:
+        """리스크 경고 알림"""
+        lines = [
+            "⚠️ <b>[리스크 경고]</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 유형: <code>{alert_type}</code>",
+            f"• 현재값: <code>{current_value:.1f}%</code>",
+            f"• 기준값: <code>{threshold:.1f}%</code>"
+        ]
+
+        if message:
+            lines.append(f"• 상세: {message}")
+
+        lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return self.send_message("\n".join(lines))
+
+    def notify_daily_report(
+        self,
+        date: str,
+        starting_value: int,
+        ending_value: int,
+        daily_pnl: int,
+        trades_count: int,
+        positions: list
+    ) -> bool:
+        """일일 리포트 알림"""
+        daily_return = (ending_value / starting_value - 1) * 100 if starting_value > 0 else 0
+        return_emoji = "📈" if daily_return >= 0 else "📉"
+
+        lines = [
+            f"📋 <b>[일일 리포트] {date}</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 시작 자산: <code>{starting_value:,}원</code>",
+            f"• 종료 자산: <code>{ending_value:,}원</code>",
+            f"• 일일 손익: {return_emoji} <code>{daily_pnl:+,}원</code>",
+            f"• 수익률: <code>{daily_return:+.2f}%</code>",
+            f"• 거래 횟수: <code>{trades_count}회</code>",
+            "━━━━━━━━━━━━━━━"
+        ]
+
+        if positions:
+            lines.append("<b>보유 종목:</b>")
+            for p in positions[:5]:
+                pnl_emoji = "📈" if p.get('pnl_pct', 0) >= 0 else "📉"
+                lines.append(
+                    f"  {pnl_emoji} {p['name']}: {p.get('pnl_pct', 0):+.1f}%"
+                )
+
+        lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return self.send_message("\n".join(lines))
+
+    def notify_technical_signal(
+        self,
+        stock_name: str,
+        stock_code: str,
+        signal_type: str,
+        score: float,
+        rsi: float,
+        macd_signal: str,
+        trend: str
+    ) -> bool:
+        """기술적 분석 신호 알림"""
+        signal_emoji = {
+            "STRONG_BUY": "🟢",
+            "BUY": "🔵",
+            "HOLD": "⚪",
+            "SELL": "🟠",
+            "STRONG_SELL": "🔴"
+        }.get(signal_type, "⚪")
+
+        lines = [
+            f"📊 <b>[기술적 신호] {stock_name}</b>",
+            "━━━━━━━━━━━━━━━",
+            f"• 종목: <code>{stock_name} ({stock_code})</code>",
+            f"• 신호: {signal_emoji} <code>{signal_type}</code>",
+            f"• 점수: <code>{score:.0f}/100</code>",
+            "━━━━━━━━━━━━━━━",
+            f"• RSI: <code>{rsi:.1f}</code>",
+            f"• MACD: <code>{macd_signal}</code>",
+            f"• 추세: <code>{trend}</code>",
+            f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        ]
+
+        return self.send_message("\n".join(lines))
+
 
 class TelegramBot:
     """텔레그램 봇 클래스 (양방향 명령어 처리용)"""
@@ -310,6 +593,8 @@ class TelegramBot:
             "사용 가능한 명령어:\n"
             "/잔고 - 계좌 잔고 조회\n"
             "/시세 [종목코드] - 현재가 조회\n"
+            "/스크리닝 - 멀티팩터 스크리닝\n"
+            "/신호 [종목코드] - 기술적 분석\n"
             "/상태 - 시스템 상태 확인\n"
             "/도움말 - 명령어 도움말"
         )
@@ -323,6 +608,9 @@ class TelegramBot:
             "/잔고 - 계좌 잔고 및 보유종목 조회\n"
             "/시세 005930 - 종목 현재가 조회\n"
             "/주문내역 - 당일 주문내역 조회\n\n"
+            "<b>퀀트 전략:</b>\n"
+            "/스크리닝 - 멀티팩터 종목 스크리닝\n"
+            "/신호 005930 - 기술적 분석 신호\n\n"
             "<b>시스템 명령어:</b>\n"
             "/상태 - 봇 상태 확인\n"
             "/도움말 - 이 도움말 표시"
@@ -440,6 +728,177 @@ class TelegramBot:
         except Exception as e:
             await update.message.reply_text(f"❌ 주문내역 조회 실패: {e}")
 
+    async def cmd_screening(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """스크리닝 명령어"""
+        await update.message.reply_text("🔍 스크리닝 실행 중... 잠시만 기다려주세요.")
+
+        try:
+            from src.api.kis_quant import KISQuantClient
+            from src.strategy.quant import CompositeScoreCalculator, TechnicalAnalyzer
+            import time
+
+            client = KISQuantClient()
+            score_calc = CompositeScoreCalculator()
+            analyzer = TechnicalAnalyzer()
+
+            # 시가총액 상위 종목 조회
+            rankings = client.get_market_cap_ranking(count=20)
+
+            scores = []
+            for r in rankings:
+                if r.code.endswith("5"):  # 우선주 제외
+                    continue
+
+                try:
+                    ratio = client.get_financial_ratio_ext(r.code)
+                    momentum = client.calculate_momentum(r.code)
+
+                    score = score_calc.calculate(
+                        code=r.code,
+                        name=r.name,
+                        per=ratio.per,
+                        pbr=ratio.pbr,
+                        roe=ratio.roe,
+                        return_1m=momentum.return_1m,
+                        return_3m=momentum.return_3m,
+                        return_6m=momentum.return_6m,
+                        return_12m=momentum.return_12m,
+                        distance_from_high=momentum.distance_from_high,
+                        volatility=momentum.volatility_20d,
+                        market_cap=r.market_cap
+                    )
+
+                    if score.passed_filter:
+                        # 기술적 분석
+                        prices = client.get_daily_prices(r.code, count=60)
+                        closes = [p.close for p in prices]
+                        tech = analyzer.analyze(closes)
+
+                        scores.append({
+                            "code": r.code,
+                            "name": r.name,
+                            "composite_score": score.composite_score,
+                            "return_12m": momentum.return_12m,
+                            "per": ratio.per,
+                            "tech_score": tech.score,
+                            "tech_signal": tech.signal_type.value,
+                            "price": prices[0].close
+                        })
+
+                    time.sleep(0.05)
+
+                except Exception:
+                    continue
+
+            # 정렬
+            scores.sort(key=lambda x: x["composite_score"], reverse=True)
+
+            # 결과 메시지
+            lines = [
+                "🔍 <b>[스크리닝 결과]</b>",
+                f"━━━━━━━━━━━━━━━",
+                f"• 분석: {len(rankings)}개 → 통과: {len(scores)}개",
+                "━━━━━━━━━━━━━━━",
+                ""
+            ]
+
+            for i, s in enumerate(scores[:8], 1):
+                signal_emoji = {
+                    "STRONG_BUY": "🟢",
+                    "BUY": "🔵",
+                    "HOLD": "⚪",
+                    "SELL": "🟠",
+                    "STRONG_SELL": "🔴"
+                }.get(s["tech_signal"], "⚪")
+
+                lines.append(
+                    f"<b>{i}. {s['name']}</b> ({s['code']})\n"
+                    f"   복합: {s['composite_score']:.1f} | 기술: {signal_emoji} {s['tech_score']:.0f}\n"
+                    f"   PER: {s['per']:.1f} | 12M: {s['return_12m']:+.1f}%\n"
+                    f"   현재가: {s['price']:,}원"
+                )
+
+            lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+            await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ 스크리닝 실패: {e}")
+
+    async def cmd_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """기술적 분석 신호 명령어"""
+        if not context.args:
+            await update.message.reply_text("사용법: /신호 [종목코드]\n예: /신호 005930")
+            return
+
+        stock_code = context.args[0]
+
+        try:
+            from src.api.kis_quant import KISQuantClient
+            from src.strategy.quant import TechnicalAnalyzer
+
+            client = KISQuantClient()
+            analyzer = TechnicalAnalyzer()
+
+            # 가격 데이터 조회
+            prices_data = client.get_daily_prices(stock_code, count=100)
+            ratio = client.get_financial_ratio_ext(stock_code)
+
+            closes = [p.close for p in prices_data]
+            current_price = closes[0]
+
+            # 기술적 분석
+            signal = analyzer.analyze(closes)
+
+            # 이동평균
+            ma5 = analyzer.calculate_ma(closes, 5)
+            ma20 = analyzer.calculate_ma(closes, 20)
+            ma60 = analyzer.calculate_ma(closes, 60)
+
+            # 추세 판단
+            if current_price > ma20 > ma60:
+                trend = "상승 ↑"
+            elif current_price < ma20 < ma60:
+                trend = "하락 ↓"
+            else:
+                trend = "횡보 →"
+
+            signal_emoji = {
+                "STRONG_BUY": "🟢 강력매수",
+                "BUY": "🔵 매수",
+                "HOLD": "⚪ 관망",
+                "SELL": "🟠 매도",
+                "STRONG_SELL": "🔴 강력매도"
+            }.get(signal.signal_type.value, "⚪")
+
+            # 손절/익절가
+            stop_loss = int(current_price * 0.93)
+            take_profit = int(current_price * 1.10)
+
+            message = (
+                f"📊 <b>[기술적 분석] {ratio.name}</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"• 현재가: <code>{current_price:,}원</code>\n"
+                f"• 추세: <code>{trend}</code>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"• 신호: {signal_emoji}\n"
+                f"• 점수: <code>{signal.score:.0f}/100</code>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"• RSI: <code>{signal.rsi:.1f}</code>\n"
+                f"• MACD: <code>{signal.macd_signal}</code>\n"
+                f"• MA: <code>{signal.ma_signal}</code>\n"
+                f"• BB: <code>{signal.bb_signal}</code>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"• MA5: {ma5:,.0f} | MA20: {ma20:,.0f}\n"
+                f"• 손절가: <code>{stop_loss:,}원</code> (-7%)\n"
+                f"• 익절가: <code>{take_profit:,}원</code> (+10%)"
+            )
+
+            await update.message.reply_text(message, parse_mode='HTML')
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ 분석 실패: {e}")
+
     def build_application(self) -> Application:
         """Application 빌드"""
         if not self.bot_token:
@@ -459,6 +918,11 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("status", self.cmd_status))
         self.application.add_handler(CommandHandler("주문내역", self.cmd_orders))
         self.application.add_handler(CommandHandler("orders", self.cmd_orders))
+        # 퀀트 전략 명령어
+        self.application.add_handler(CommandHandler("스크리닝", self.cmd_screening))
+        self.application.add_handler(CommandHandler("screening", self.cmd_screening))
+        self.application.add_handler(CommandHandler("신호", self.cmd_signal))
+        self.application.add_handler(CommandHandler("signal", self.cmd_signal))
 
         return self.application
 

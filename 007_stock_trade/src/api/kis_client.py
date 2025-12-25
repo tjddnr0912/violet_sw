@@ -26,6 +26,30 @@ class StockPrice:
 
 
 @dataclass
+class FinancialRatio:
+    """재무비율 정보"""
+    code: str           # 종목코드
+    name: str           # 종목명
+    per: float          # PER (주가수익비율)
+    pbr: float          # PBR (주가순자산비율)
+    eps: float          # EPS (주당순이익)
+    bps: float          # BPS (주당순자산)
+    roe: float          # ROE (자기자본이익률)
+    dividend_yield: float  # 배당수익률
+
+
+@dataclass
+class MinuteCandle:
+    """분봉 데이터"""
+    time: str           # 시간 (HHMMSS)
+    open: int           # 시가
+    high: int           # 고가
+    low: int            # 저가
+    close: int          # 종가
+    volume: int         # 거래량
+
+
+@dataclass
 class OrderResult:
     """주문 결과"""
     success: bool       # 성공 여부
@@ -128,6 +152,96 @@ class KISClient:
             low=int(output.get("stck_lwpr", 0)),
             open=int(output.get("stck_oprc", 0))
         )
+
+    def get_financial_ratio(self, stock_code: str) -> FinancialRatio:
+        """
+        국내주식 재무비율 조회 (PER, PBR, EPS, BPS, ROE, 배당수익률)
+
+        Args:
+            stock_code: 종목코드 (예: "005930")
+
+        Returns:
+            FinancialRatio 객체
+        """
+        # 현재가 상세 조회 API 사용 (재무비율 포함)
+        tr_id = "FHKST01010100"
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": stock_code
+        }
+
+        data = self._request(
+            method="GET",
+            endpoint="/uapi/domestic-stock/v1/quotations/inquire-price",
+            tr_id=tr_id,
+            params=params
+        )
+
+        output = data.get("output", {})
+
+        return FinancialRatio(
+            code=stock_code,
+            name=output.get("hts_kor_isnm", ""),
+            per=float(output.get("per", 0) or 0),
+            pbr=float(output.get("pbr", 0) or 0),
+            eps=float(output.get("eps", 0) or 0),
+            bps=float(output.get("bps", 0) or 0),
+            roe=float(output.get("roe", 0) or 0),
+            dividend_yield=float(output.get("hts_avls_dl_rt", 0) or 0)
+        )
+
+    def get_minute_chart(
+        self,
+        stock_code: str,
+        time: str = "",
+        count: int = 30
+    ) -> list:
+        """
+        국내주식 당일 분봉 조회
+
+        Args:
+            stock_code: 종목코드 (예: "005930")
+            time: 조회 기준 시간 (HHMMSS, 빈값이면 현재시간)
+            count: 조회 개수 (최대 30개)
+
+        Returns:
+            MinuteCandle 리스트 (최신 데이터가 앞)
+        """
+        tr_id = "FHKST03010200"
+
+        # 시간이 지정되지 않으면 현재 시간 사용
+        if not time:
+            from datetime import datetime
+            time = datetime.now().strftime("%H%M%S")
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": stock_code,
+            "FID_INPUT_HOUR_1": time,
+            "FID_PW_DATA_INCU_YN": "N",  # 당일 데이터만
+            "FID_ETC_CLS_CODE": ""
+        }
+
+        data = self._request(
+            method="GET",
+            endpoint="/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+            tr_id=tr_id,
+            params=params
+        )
+
+        result = []
+        for item in data.get("output2", [])[:count]:
+            result.append(MinuteCandle(
+                time=item.get("stck_cntg_hour", ""),
+                open=int(item.get("stck_oprc", 0)),
+                high=int(item.get("stck_hgpr", 0)),
+                low=int(item.get("stck_lwpr", 0)),
+                close=int(item.get("stck_prpr", 0)),
+                volume=int(item.get("cntg_vol", 0))
+            ))
+
+        return result
 
     def get_stock_history(
         self,
