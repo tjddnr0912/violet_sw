@@ -80,9 +80,13 @@ print_help() {
     echo "사용법: $0 [명령어] [옵션]"
     echo ""
     echo "명령어:"
-    echo "  start         자동매매 엔진 시작 (스케줄 기반)"
+    echo "  daemon        통합 데몬 실행 (자동매매 + 자동관리 + 텔레그램)"
+    echo "  start         자동매매 엔진만 시작"
     echo "  screen        수동 스크리닝 실행 (1회)"
     echo "  screen-full   200종목 전체 스크리닝 + 엑셀 저장"
+    echo "  backtest      백테스트 실행"
+    echo "  optimize      팩터 가중치 최적화"
+    echo "  monitor       전략 성과 모니터링"
     echo "  rebalance     수동 리밸런싱 실행"
     echo "  status        현재 상태 조회"
     echo "  test          API 연결 테스트"
@@ -303,7 +307,7 @@ COMMAND=""
 # 인자 파싱
 while [[ $# -gt 0 ]]; do
     case $1 in
-        start|screen|screen-full|rebalance|status|test|telegram|install|help)
+        daemon|start|screen|screen-full|backtest|optimize|monitor|rebalance|status|test|telegram|install|help)
             COMMAND=$1
             shift
             ;;
@@ -359,6 +363,16 @@ case $COMMAND in
     install)
         install_deps
         ;;
+    daemon)
+        check_api_keys
+        install_deps
+        echo -e "${GREEN}[INFO]${NC} 통합 데몬 시작 (자동매매 + 자동관리 + 텔레그램)..."
+        if [ "$DRY_RUN" = "True" ]; then
+            python3 scripts/run_daemon.py --dry-run
+        else
+            python3 scripts/run_daemon.py --no-dry-run
+        fi
+        ;;
     start)
         check_api_keys
         install_deps
@@ -371,6 +385,21 @@ case $COMMAND in
     screen-full)
         install_deps
         cmd_screen_full
+        ;;
+    backtest)
+        install_deps
+        echo -e "${GREEN}[INFO]${NC} 백테스트 실행..."
+        python3 scripts/run_backtest.py
+        ;;
+    optimize)
+        install_deps
+        echo -e "${GREEN}[INFO]${NC} 팩터 가중치 최적화..."
+        python3 scripts/optimize_weights.py
+        ;;
+    monitor)
+        install_deps
+        echo -e "${GREEN}[INFO]${NC} 전략 성과 모니터링..."
+        python3 scripts/monitor_strategy.py
         ;;
     status)
         cmd_status

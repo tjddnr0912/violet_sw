@@ -1,0 +1,13 @@
+{
+  "momentum_weight": 0.20,
+  "short_mom_weight": 0.10,
+  "volatility_weight": 0.50,
+  "volume_weight": 0.00,
+  "target_count": 15,
+  "optimized_date": "2025-12-27",
+  "baseline_sharpe": 2.39,
+  "baseline_return": 8.99,
+  "baseline_mdd": -2.14,
+  "auto_update": true,
+  "updated_at": "2025-12-27 15:20:00"
+}
