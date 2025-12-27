@@ -26,4 +26,12 @@ if [[ -d ".venv" ]]; then
     source .venv/bin/activate
 fi
 
+# Load environment variables from .env file
+if [[ -f ".env" ]]; then
+    echo -e "${GREEN}Loading .env file...${NC}"
+    set -a
+    source .env
+    set +a
+fi
+
 python 001_python_code/ver2/main_v2.py "$@"

@@ -4,6 +4,7 @@ schedule
 numpy
 matplotlib
 mplfinance
+python-dotenv
 
 # Version 2 dependencies (Backtrader strategy)
 backtrader>=1.9.76.123
