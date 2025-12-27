@@ -208,3 +208,85 @@ def _trigger_callback(self, name, *args, **kwargs):
             logger.error(f"콜백 오류 ({name}): {e}")
     return None
 ```
+
+### 종료 시 Event Loop 처리 (2024-12 수정)
+```python
+# src/telegram/bot.py - send_message_async()
+async def send_message_async(self, message: str) -> bool:
+    try:
+        await self.bot.send_message(...)
+        return True
+    except Exception as e:
+        # 이벤트 루프 종료 시 발생하는 에러는 무시
+        if "Event loop is closed" in str(e):
+            logger.debug(f"메시지 전송 스킵 (종료 중): {e}")
+        else:
+            logger.error(f"메시지 전송 실패: {e}")
+        return False
+```
+
+---
+
+## 데몬 설정 동기화 (2024-12 추가)
+
+### scripts/run_daemon.py
+
+**설정 로드 흐름:**
+```python
+def start_trading_engine(self):
+    from src.core import get_controller
+
+    # 1. SystemController에서 설정 로드
+    controller = get_controller()
+    sys_config = controller.config
+
+    # 2. 팩터 가중치는 별도 파일에서 로드
+    self.weights = WeightConfig.load()
+
+    # 3. SystemController 설정 우선 사용
+    self.dry_run = sys_config.dry_run
+    self.is_virtual = sys_config.is_virtual
+    self.target_count = sys_config.target_count or self.weights.get('target_count', 15)
+
+    # 4. QuantEngine에 설정 전달
+    config = QuantEngineConfig(
+        universe_size=sys_config.universe_size,
+        target_stock_count=self.target_count,
+        total_capital=self.total_capital,
+        dry_run=self.dry_run
+    )
+```
+
+**명령줄 인자 처리:**
+```python
+def main():
+    # SystemController에서 저장된 설정 로드
+    controller = get_controller()
+
+    # 명령줄 인자가 지정된 경우 SystemController에 저장
+    if args.no_dry_run:
+        controller.config.dry_run = False
+        controller.save_config()
+
+    if args.real:
+        controller.config.is_virtual = False
+        controller.save_config()
+
+    # SystemController 설정 사용
+    dry_run = controller.config.dry_run
+    is_virtual = controller.config.is_virtual
+```
+
+**설정 동기화 흐름:**
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Telegram   │────▶│   System    │────▶│    Quant    │
+│  Commands   │     │ Controller  │     │   Engine    │
+└─────────────┘     └─────────────┘     └─────────────┘
+       │                   │                   │
+       │                   ▼                   │
+       │           ┌─────────────┐             │
+       │           │ system_     │             │
+       └──────────▶│ config.json │◀────────────┘
+                   └─────────────┘
+```
