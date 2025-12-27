@@ -1043,20 +1043,20 @@ class QuantTradingEngine:
 
                 logger.info(f"초기 설정 완료: {len(orders)}개 주문 생성")
 
-                # 장 시간인 경우 즉시 실행 안내
+                # 장 시간인 경우 즉시 실행
                 if self._is_trading_time():
                     self.notifier.send_message(
                         f"✅ <b>초기 스크리닝 완료</b>\n\n"
                         f"• 생성된 주문: {len(orders)}개\n\n"
-                        f"현재 장 시간입니다.\n"
-                        f"09:00 주문 실행 스케줄에 따라 자동 실행되거나,\n"
-                        f"수동으로 /run_rebalance 후 대기 주문을 실행할 수 있습니다."
+                        f"현재 장 시간입니다. 즉시 주문을 실행합니다."
                     )
+                    logger.info("장중 초기 스크리닝 - 즉시 주문 실행")
+                    self.execute_pending_orders()
                 else:
                     self.notifier.send_message(
                         f"✅ <b>초기 스크리닝 완료</b>\n\n"
                         f"• 생성된 주문: {len(orders)}개\n\n"
-                        f"내일 09:00 장 시작 시 자동 실행됩니다."
+                        f"다음 거래일 09:00 장 시작 시 자동 실행됩니다."
                     )
             else:
                 logger.info("초기 설정 완료: 생성된 주문 없음")
