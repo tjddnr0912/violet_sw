@@ -20,8 +20,12 @@ from telegram.ext import (
     filters
 )
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+# 프로젝트 루트의 .env 파일 명시적 로드
+project_root = Path(__file__).parent.parent.parent
+env_path = project_root / ".env"
+load_dotenv(env_path, override=True)
 
 # 로깅 설정
 logging.basicConfig(
@@ -591,12 +595,12 @@ class TelegramBot:
         message = (
             "🤖 <b>주식 자동매매 봇</b>\n\n"
             "사용 가능한 명령어:\n"
-            "/잔고 - 계좌 잔고 조회\n"
-            "/시세 [종목코드] - 현재가 조회\n"
-            "/스크리닝 - 멀티팩터 스크리닝\n"
-            "/신호 [종목코드] - 기술적 분석\n"
-            "/상태 - 시스템 상태 확인\n"
-            "/도움말 - 명령어 도움말"
+            "/balance - 계좌 잔고 조회\n"
+            "/price [종목코드] - 현재가 조회\n"
+            "/screening - 멀티팩터 스크리닝\n"
+            "/signal [종목코드] - 기술적 분석\n"
+            "/status - 시스템 상태 확인\n"
+            "/help - 명령어 도움말"
         )
         await update.message.reply_text(message, parse_mode='HTML')
 
@@ -605,15 +609,15 @@ class TelegramBot:
         message = (
             "📚 <b>명령어 도움말</b>\n\n"
             "<b>조회 명령어:</b>\n"
-            "/잔고 - 계좌 잔고 및 보유종목 조회\n"
-            "/시세 005930 - 종목 현재가 조회\n"
-            "/주문내역 - 당일 주문내역 조회\n\n"
+            "/balance - 계좌 잔고 및 보유종목 조회\n"
+            "/price 005930 - 종목 현재가 조회\n"
+            "/orders - 당일 주문내역 조회\n\n"
             "<b>퀀트 전략:</b>\n"
-            "/스크리닝 - 멀티팩터 종목 스크리닝\n"
-            "/신호 005930 - 기술적 분석 신호\n\n"
+            "/screening - 멀티팩터 종목 스크리닝\n"
+            "/signal 005930 - 기술적 분석 신호\n\n"
             "<b>시스템 명령어:</b>\n"
-            "/상태 - 봇 상태 확인\n"
-            "/도움말 - 이 도움말 표시"
+            "/status - 봇 상태 확인\n"
+            "/help - 이 도움말 표시"
         )
         await update.message.reply_text(message, parse_mode='HTML')
 
@@ -906,22 +910,15 @@ class TelegramBot:
 
         self.application = Application.builder().token(self.bot_token).build()
 
-        # 명령어 핸들러 등록
+        # 명령어 핸들러 등록 (영문만 지원)
         self.application.add_handler(CommandHandler("start", self.cmd_start))
-        self.application.add_handler(CommandHandler("도움말", self.cmd_help))
         self.application.add_handler(CommandHandler("help", self.cmd_help))
-        self.application.add_handler(CommandHandler("잔고", self.cmd_balance))
         self.application.add_handler(CommandHandler("balance", self.cmd_balance))
-        self.application.add_handler(CommandHandler("시세", self.cmd_price))
         self.application.add_handler(CommandHandler("price", self.cmd_price))
-        self.application.add_handler(CommandHandler("상태", self.cmd_status))
         self.application.add_handler(CommandHandler("status", self.cmd_status))
-        self.application.add_handler(CommandHandler("주문내역", self.cmd_orders))
         self.application.add_handler(CommandHandler("orders", self.cmd_orders))
         # 퀀트 전략 명령어
-        self.application.add_handler(CommandHandler("스크리닝", self.cmd_screening))
         self.application.add_handler(CommandHandler("screening", self.cmd_screening))
-        self.application.add_handler(CommandHandler("신호", self.cmd_signal))
         self.application.add_handler(CommandHandler("signal", self.cmd_signal))
 
         return self.application
@@ -931,6 +928,54 @@ class TelegramBot:
         app = self.build_application()
         logger.info("텔레그램 봇 시작...")
         app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+class TelegramBotHandler:
+    """데몬용 텔레그램 봇 핸들러 (스레드 안전)"""
+
+    def __init__(self, kis_client=None):
+        self.bot = TelegramBot(kis_client=kis_client)
+        self.running = False
+        self._loop = None
+
+    def start(self):
+        """봇 시작 (블로킹)"""
+        self.running = True
+        logger.info("텔레그램 봇 핸들러 시작...")
+
+        try:
+            app = self.bot.build_application()
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+
+            # 시작 알림 전송
+            self.bot.notifier.send_message("🤖 텔레그램 봇이 시작되었습니다.\n/help 명령어로 사용법을 확인하세요.")
+
+            # 폴링 시작
+            self._loop.run_until_complete(app.initialize())
+            self._loop.run_until_complete(app.start())
+            self._loop.run_until_complete(app.updater.start_polling(allowed_updates=Update.ALL_TYPES))
+
+            # 무한 대기
+            while self.running:
+                self._loop.run_until_complete(asyncio.sleep(1))
+
+        except Exception as e:
+            logger.error(f"텔레그램 봇 오류: {e}")
+        finally:
+            self.stop()
+
+    def stop(self):
+        """봇 중지"""
+        self.running = False
+        if self._loop and self.bot.application:
+            try:
+                self._loop.run_until_complete(self.bot.application.updater.stop())
+                self._loop.run_until_complete(self.bot.application.stop())
+                self._loop.run_until_complete(self.bot.application.shutdown())
+            except Exception as e:
+                logger.error(f"봇 종료 오류: {e}")
+        logger.info("텔레그램 봇 핸들러 종료됨")
 
 
 # 싱글톤 인스턴스
