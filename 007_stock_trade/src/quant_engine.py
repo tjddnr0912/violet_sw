@@ -9,10 +9,12 @@
 5. 매월 첫 거래일 - 리밸런싱 스크리닝
 """
 
+import os
 import time
 import logging
 import schedule
 import json
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
@@ -165,6 +167,11 @@ class QuantTradingEngine:
         self.last_rebalance_month: Optional[str] = None      # 마지막 리밸런싱 월 (YYYY-MM)
         self.daily_trades: List[Dict] = []
 
+        # 동시성 제어
+        self._position_lock = threading.Lock()  # 포지션 접근 보호
+        self._order_lock = threading.Lock()     # 주문 접근 보호
+        self._state_lock = threading.Lock()     # 상태 저장 보호
+
         # 데이터 저장 경로
         self.data_dir = Path(__file__).parent.parent / "data" / "quant"
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -216,38 +223,45 @@ class QuantTradingEngine:
                 logger.error(f"상태 로드 실패: {e}")
 
     def _save_state(self):
-        """현재 상태 저장"""
+        """현재 상태 저장 (Thread-safe, Atomic write)"""
         state_file = self.data_dir / "engine_state.json"
+        temp_file = self.data_dir / "engine_state.json.tmp"
 
-        try:
-            positions_data = []
-            for code, pos in self.portfolio.positions.items():
-                positions_data.append({
-                    "code": pos.code,
-                    "name": pos.name,
-                    "entry_price": pos.entry_price,
-                    "current_price": pos.current_price,
-                    "quantity": pos.quantity,
-                    "entry_date": pos.entry_date.isoformat(),
-                    "stop_loss": pos.stop_loss,
-                    "take_profit_1": pos.take_profit_1,
-                    "take_profit_2": pos.take_profit_2,
-                    "highest_price": pos.highest_price
-                })
+        with self._state_lock:
+            try:
+                # 포지션 데이터 수집 (position lock 보호)
+                with self._position_lock:
+                    positions_data = []
+                    for code, pos in self.portfolio.positions.items():
+                        positions_data.append({
+                            "code": pos.code,
+                            "name": pos.name,
+                            "entry_price": pos.entry_price,
+                            "current_price": pos.current_price,
+                            "quantity": pos.quantity,
+                            "entry_date": pos.entry_date.isoformat(),
+                            "stop_loss": pos.stop_loss,
+                            "take_profit_1": pos.take_profit_1,
+                            "take_profit_2": pos.take_profit_2,
+                            "highest_price": pos.highest_price
+                        })
 
-            data = {
-                "positions": positions_data,
-                "last_screening_date": self.last_screening_date.isoformat() if self.last_screening_date else None,
-                "last_rebalance_date": self.last_rebalance_date.isoformat() if self.last_rebalance_date else None,
-                "last_rebalance_month": self.last_rebalance_month,
-                "updated_at": datetime.now().isoformat()
-            }
+                data = {
+                    "positions": positions_data,
+                    "last_screening_date": self.last_screening_date.isoformat() if self.last_screening_date else None,
+                    "last_rebalance_date": self.last_rebalance_date.isoformat() if self.last_rebalance_date else None,
+                    "last_rebalance_month": self.last_rebalance_month,
+                    "updated_at": datetime.now().isoformat()
+                }
 
-            with open(state_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                # Atomic write: 임시 파일에 쓰고 이름 변경
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
 
-        except Exception as e:
-            logger.error(f"상태 저장 실패: {e}")
+                os.replace(str(temp_file), str(state_file))  # atomic on POSIX
+
+            except Exception as e:
+                logger.error(f"상태 저장 실패: {e}")
 
     # ========== 시간/스케줄 관리 ==========
 
@@ -499,15 +513,19 @@ class QuantTradingEngine:
 
         장 시작 시(09:00) 호출
         """
-        if not self.pending_orders:
-            logger.info("대기 주문 없음")
-            return
+        # 대기 주문 스냅샷 (Lock 보호)
+        with self._order_lock:
+            if not self.pending_orders:
+                logger.info("대기 주문 없음")
+                return
+            # 복사본으로 작업
+            orders_to_execute = list(self.pending_orders)
 
-        logger.info(f"대기 주문 실행: {len(self.pending_orders)}건")
+        logger.info(f"대기 주문 실행: {len(orders_to_execute)}건")
 
         # 매도 먼저 실행 (자금 확보)
-        sell_orders = [o for o in self.pending_orders if o.order_type == "SELL"]
-        buy_orders = [o for o in self.pending_orders if o.order_type == "BUY"]
+        sell_orders = [o for o in orders_to_execute if o.order_type == "SELL"]
+        buy_orders = [o for o in orders_to_execute if o.order_type == "BUY"]
 
         executed = []
 
@@ -523,8 +541,9 @@ class QuantTradingEngine:
             if self._execute_order(order):
                 executed.append(order)
 
-        # 대기 주문 초기화
-        self.pending_orders = [o for o in self.pending_orders if o not in executed]
+        # 대기 주문 업데이트 (Lock 보호)
+        with self._order_lock:
+            self.pending_orders = [o for o in self.pending_orders if o not in executed]
 
         # 상태 저장
         self._save_state()
@@ -703,16 +722,25 @@ class QuantTradingEngine:
 
         장중 5분마다 실행
         """
-        if not self.portfolio.positions:
-            return
+        # 포지션 스냅샷 생성 (Lock 보호)
+        with self._position_lock:
+            if not self.portfolio.positions:
+                return
+            # 복사본으로 순회하여 race condition 방지
+            positions_snapshot = list(self.portfolio.positions.items())
 
-        logger.info(f"포지션 모니터링: {len(self.portfolio.positions)}개")
+        logger.info(f"포지션 모니터링: {len(positions_snapshot)}개")
 
-        for code, position in list(self.portfolio.positions.items()):
+        for code, position in positions_snapshot:
             try:
                 # 현재가 업데이트
                 price_info = self.client.get_stock_price(code)
-                position.current_price = price_info.price
+
+                with self._position_lock:
+                    # 포지션이 아직 존재하는지 확인
+                    if code not in self.portfolio.positions:
+                        continue
+                    position.current_price = price_info.price
 
                 # 손절 체크
                 if position.current_price <= position.stop_loss:
@@ -731,9 +759,10 @@ class QuantTradingEngine:
                         position,
                         self.config.stop_loss_pct
                     )
-                    if new_stop > position.stop_loss:
-                        position.stop_loss = new_stop
-                        logger.info(f"{position.name}: 손절가 상향 → {new_stop:,.0f}원")
+                    with self._position_lock:
+                        if new_stop > position.stop_loss:
+                            position.stop_loss = new_stop
+                            logger.info(f"{position.name}: 손절가 상향 → {new_stop:,.0f}원")
 
             except Exception as e:
                 logger.error(f"모니터링 오류 ({code}): {e}")
@@ -742,7 +771,8 @@ class QuantTradingEngine:
         self._save_state()
 
         # 리스크 체크
-        alerts = self.portfolio.check_risks()
+        with self._position_lock:
+            alerts = self.portfolio.check_risks()
         for alert in alerts:
             if alert.level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
                 self.notifier.send_message(

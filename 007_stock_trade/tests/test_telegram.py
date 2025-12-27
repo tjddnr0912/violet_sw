@@ -249,7 +249,7 @@ class TestTelegramBot:
 
             update.message.reply_text.assert_called_once()
             call_args = update.message.reply_text.call_args[0][0]
-            assert "주식 자동매매 봇" in call_args
+            assert "퀀트 자동매매 봇" in call_args
 
     @pytest.mark.asyncio
     async def test_cmd_status(self):
