@@ -6,7 +6,14 @@ from .kis_client import (
     OrderResult,
     StockBalance,
     FinancialRatio,
-    MinuteCandle
+    MinuteCandle,
+    # 예외 클래스
+    KISAPIError,
+    KISTimeoutError,
+    KISConnectionError,
+    KISHTTPError,
+    KISRateLimitError,
+    KISBusinessError,
 )
 from .kis_websocket import KISWebSocket, RealtimePrice, RealtimeOrderbook
 from .kis_quant import (
@@ -30,6 +37,13 @@ __all__ = [
     "StockBalance",
     "FinancialRatio",
     "MinuteCandle",
+    # 예외 클래스
+    "KISAPIError",
+    "KISTimeoutError",
+    "KISConnectionError",
+    "KISHTTPError",
+    "KISRateLimitError",
+    "KISBusinessError",
     # WebSocket 클라이언트
     "KISWebSocket",
     "RealtimePrice",

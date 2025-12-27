@@ -890,7 +890,20 @@ class QuantTradingEngine:
         # 리밸런싱 일인 경우 스크리닝 실행
         if self._is_rebalance_day():
             logger.info("리밸런싱 일 - 스크리닝 실행")
-            self.run_screening()
+
+            # 스크리닝 실행 및 결과 체크
+            screening_result = self.run_screening()
+            if screening_result is None:
+                logger.error("스크리닝 실패 - 리밸런싱 중단")
+                self.notifier.send_message(
+                    "⚠️ <b>스크리닝 실패</b>\n\n"
+                    "리밸런싱 일이지만 스크리닝이 실패했습니다.\n"
+                    "수동으로 /run_screening 명령을 실행하거나\n"
+                    "로그를 확인해주세요."
+                )
+                return
+
+            # 리밸런싱 주문 생성
             orders = self.generate_rebalance_orders()
 
             # 리밸런싱 날짜 기록 (중복 실행 방지)
@@ -900,6 +913,8 @@ class QuantTradingEngine:
                 self.last_rebalance_month = now.strftime("%Y-%m")
                 self._save_state()
                 logger.info(f"리밸런싱 완료 기록: {self.last_rebalance_month}")
+            else:
+                logger.info("생성된 리밸런싱 주문 없음 (포트폴리오 유지)")
         else:
             logger.info("리밸런싱 일 아님 - 스크리닝 스킵")
 
@@ -1044,16 +1059,17 @@ class QuantTradingEngine:
         """수동 스크리닝 실행"""
         return self.run_screening()
 
-    def manual_rebalance(self):
+    def manual_rebalance(self) -> Dict[str, Any]:
         """수동 리밸런싱 실행"""
         if not self._is_trading_time():
             logger.warning("거래 시간이 아닙니다")
-            return
+            return {"success": False, "message": "거래 시간이 아닙니다"}
 
         # 스크리닝
         result = self.run_screening()
         if not result:
-            return
+            logger.error("스크리닝 실패 - 리밸런싱 중단")
+            return {"success": False, "message": "스크리닝 실패"}
 
         # 주문 생성
         orders = self.generate_rebalance_orders()
@@ -1069,6 +1085,12 @@ class QuantTradingEngine:
 
         # 즉시 실행
         self.execute_pending_orders()
+
+        return {
+            "success": True,
+            "message": f"리밸런싱 완료: {len(orders)}건 주문 생성",
+            "orders": len(orders)
+        }
 
     def manual_monitor(self):
         """수동 모니터링 실행"""
