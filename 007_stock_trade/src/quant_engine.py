@@ -1097,18 +1097,29 @@ class QuantTradingEngine:
         self.current_phase = SchedulePhase.PRE_MARKET
         logger.info("=" * 60)
         logger.info("장 전 처리 시작")
+        self.notifier.send_message(
+            f"🌅 <b>장 전 처리 시작</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
 
         # 포지션이 없으면 초기 스크리닝 실행 (주말 시작 후 첫 평일 대응)
         if not self.portfolio.positions:
             current_month = datetime.now().strftime("%Y-%m")
             if self.last_rebalance_month != current_month:
                 logger.info("포지션 없음 - 초기 스크리닝 실행")
+                self.notifier.send_message(
+                    "📋 <b>포지션 없음</b> - 초기 스크리닝을 실행합니다."
+                )
                 self._check_initial_setup()
                 return
 
         # 리밸런싱 일인 경우 스크리닝 실행
         if self._is_rebalance_day():
             logger.info("리밸런싱 일 - 스크리닝 실행")
+            self.notifier.send_message(
+                "📆 <b>리밸런싱 일</b> - 스크리닝을 실행합니다."
+            )
 
             # 스크리닝 실행 및 결과 체크
             screening_result = self.run_screening()
@@ -1149,6 +1160,20 @@ class QuantTradingEngine:
         logger.info("=" * 60)
         logger.info("장 시작 - 대기 주문 실행")
 
+        pending_count = len(self.pending_orders)
+        if pending_count > 0:
+            self.notifier.send_message(
+                f"🔔 <b>장 시작</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"대기 주문 {pending_count}개 실행 중..."
+            )
+        else:
+            self.notifier.send_message(
+                f"🔔 <b>장 시작</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"대기 주문 없음 - 모니터링 모드"
+            )
+
         # 대기 주문 실행
         self.execute_pending_orders()
 
@@ -1175,6 +1200,11 @@ class QuantTradingEngine:
         self.current_phase = SchedulePhase.MARKET_CLOSE
         logger.info("=" * 60)
         logger.info("장 마감 - 일일 리포트 생성")
+        self.notifier.send_message(
+            f"🌙 <b>장 마감</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"일일 리포트를 생성합니다..."
+        )
 
         # 일일 리포트
         self.generate_daily_report()
