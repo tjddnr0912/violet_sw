@@ -1098,6 +1098,14 @@ class QuantTradingEngine:
         logger.info("=" * 60)
         logger.info("장 전 처리 시작")
 
+        # 포지션이 없으면 초기 스크리닝 실행 (주말 시작 후 첫 평일 대응)
+        if not self.portfolio.positions:
+            current_month = datetime.now().strftime("%Y-%m")
+            if self.last_rebalance_month != current_month:
+                logger.info("포지션 없음 - 초기 스크리닝 실행")
+                self._check_initial_setup()
+                return
+
         # 리밸런싱 일인 경우 스크리닝 실행
         if self._is_rebalance_day():
             logger.info("리밸런싱 일 - 스크리닝 실행")
