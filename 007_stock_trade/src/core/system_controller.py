@@ -380,6 +380,43 @@ class SystemController:
     def set_weights(self, momentum: float = None, short_mom: float = None,
                    volatility: float = None, volume: float = None) -> Dict[str, Any]:
         """팩터 가중치 설정"""
+        # 입력값 검증
+        weights_to_set = {
+            "momentum": momentum,
+            "short_mom": short_mom,
+            "volatility": volatility,
+            "volume": volume
+        }
+
+        errors = []
+        for name, value in weights_to_set.items():
+            if value is not None:
+                if not isinstance(value, (int, float)):
+                    errors.append(f"{name}은(는) 숫자여야 합니다: {value}")
+                elif not (0.0 <= value <= 1.0):
+                    errors.append(f"{name}은(는) 0.0~1.0 사이여야 합니다: {value:.2f}")
+
+        if errors:
+            return {
+                "success": False,
+                "message": "가중치 검증 실패:\n" + "\n".join(f"  - {e}" for e in errors)
+            }
+
+        # 새 가중치 적용 후 합계 검증
+        new_momentum = momentum if momentum is not None else self.config.momentum_weight
+        new_short_mom = short_mom if short_mom is not None else self.config.short_mom_weight
+        new_volatility = volatility if volatility is not None else self.config.volatility_weight
+        new_volume = volume if volume is not None else self.config.volume_weight
+
+        weight_sum = new_momentum + new_short_mom + new_volatility + new_volume
+        if not (0.99 <= weight_sum <= 1.01):
+            return {
+                "success": False,
+                "message": f"가중치 합계는 1.0이어야 합니다 (현재: {weight_sum:.2f})\n"
+                          f"  모멘텀: {new_momentum:.2f}, 단기모멘텀: {new_short_mom:.2f}, "
+                          f"변동성: {new_volatility:.2f}, 거래량: {new_volume:.2f}"
+            }
+
         changes = []
 
         if momentum is not None:

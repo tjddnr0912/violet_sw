@@ -186,8 +186,28 @@ class KISClient:
                     continue
 
                 if response.status_code >= 400:
-                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
-                    raise KISHTTPError(error_msg, response.status_code)
+                    # 상태코드별 사용자 친화적 메시지
+                    user_messages = {
+                        400: "잘못된 요청입니다. 파라미터를 확인하세요.",
+                        401: "API 인증 실패. 앱키와 시크릿을 확인하세요.",
+                        403: "접근 권한이 없습니다. API 권한 설정을 확인하세요.",
+                        404: "요청한 리소스를 찾을 수 없습니다.",
+                        429: "API 요청 제한입니다. 잠시 후 다시 시도하세요.",
+                        500: "증권사 서버 내부 오류입니다. 잠시 후 다시 시도하세요.",
+                        502: "증권사 서버 연결 오류입니다. 잠시 후 다시 시도하세요.",
+                        503: "증권사 서버 점검 중입니다. 잠시 후 다시 시도하세요.",
+                        504: "증권사 서버 응답 시간 초과입니다."
+                    }
+                    user_msg = user_messages.get(
+                        response.status_code,
+                        f"서버 오류가 발생했습니다 (코드: {response.status_code})"
+                    )
+                    # 로그에는 상세 정보 기록
+                    logger.error(
+                        f"HTTP 에러 [{response.status_code}] {endpoint}: {response.text[:200]}",
+                        extra={"status_code": response.status_code, "endpoint": endpoint}
+                    )
+                    raise KISHTTPError(user_msg, response.status_code)
 
                 # JSON 파싱
                 data = response.json()
@@ -410,6 +430,50 @@ class KISClient:
 
     # ========== 주문 ==========
 
+    def _validate_order_params(
+        self,
+        stock_code: str,
+        qty: int,
+        price: int,
+        order_type: str
+    ) -> tuple[bool, str]:
+        """
+        주문 파라미터 검증
+
+        Returns:
+            (유효여부, 에러메시지)
+        """
+        import re
+
+        # 종목코드 검증 (6자리 숫자)
+        if not stock_code or not re.match(r'^\d{6}$', stock_code):
+            return False, f"올바른 종목코드를 입력하세요 (6자리 숫자): {stock_code}"
+
+        # 수량 검증
+        if not isinstance(qty, int) or qty < 1:
+            return False, f"주문수량은 1 이상의 정수여야 합니다: {qty}"
+        if qty > 999999:
+            return False, f"주문수량이 너무 큽니다 (최대 999,999주): {qty}"
+
+        # 가격 검증
+        if not isinstance(price, int) or price < 0:
+            return False, f"주문가격은 0 이상의 정수여야 합니다: {price}"
+
+        # 주문유형 검증
+        valid_order_types = ["00", "01"]  # 00: 지정가, 01: 시장가
+        if order_type not in valid_order_types:
+            return False, f"주문유형은 00(지정가) 또는 01(시장가)이어야 합니다: {order_type}"
+
+        # 시장가 주문 시 가격은 0이어야 함
+        if order_type == "01" and price != 0:
+            return False, f"시장가 주문 시 가격은 0이어야 합니다: {price}"
+
+        # 지정가 주문 시 가격은 0보다 커야 함
+        if order_type == "00" and price <= 0:
+            return False, f"지정가 주문 시 가격을 지정해야 합니다: {price}"
+
+        return True, ""
+
     def buy_stock(
         self,
         stock_code: str,
@@ -429,6 +493,11 @@ class KISClient:
         Returns:
             OrderResult 객체
         """
+        # 파라미터 검증
+        is_valid, error_msg = self._validate_order_params(stock_code, qty, price, order_type)
+        if not is_valid:
+            return OrderResult(success=False, order_no="", message=error_msg)
+
         # 모의투자/실전투자 거래ID
         tr_id = "VTTC0802U" if self.is_virtual else "TTTC0802U"
 
@@ -486,6 +555,11 @@ class KISClient:
         Returns:
             OrderResult 객체
         """
+        # 파라미터 검증
+        is_valid, error_msg = self._validate_order_params(stock_code, qty, price, order_type)
+        if not is_valid:
+            return OrderResult(success=False, order_no="", message=error_msg)
+
         # 모의투자/실전투자 거래ID
         tr_id = "VTTC0801U" if self.is_virtual else "TTTC0801U"
 

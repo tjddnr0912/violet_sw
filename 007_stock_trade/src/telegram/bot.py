@@ -168,7 +168,7 @@ class TelegramNotifier:
             )
             return True
         except Exception as e:
-            logger.error(f"메시지 전송 실패: {e}")
+            logger.error(f"메시지 전송 실패: {e}", exc_info=True)
             return False
 
     def send_message(self, message: str) -> bool:
@@ -1567,7 +1567,7 @@ class TelegramBotHandler:
                 self._loop.run_until_complete(asyncio.sleep(1))
 
         except Exception as e:
-            logger.error(f"텔레그램 봇 오류: {e}")
+            logger.error(f"텔레그램 봇 오류: {e}", exc_info=True)
         finally:
             self.stop()
 
