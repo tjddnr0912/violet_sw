@@ -5,11 +5,13 @@
 """
 
 import os
+import re
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, Tuple
 from enum import Enum
+from functools import wraps
 
 from telegram import Update, Bot
 from telegram.ext import (
@@ -51,6 +53,79 @@ class NotificationType(Enum):
     RISK = "리스크"
     STOP_LOSS = "손절"
     TAKE_PROFIT = "익절"
+
+
+# ========== 입력 검증 유틸리티 ==========
+
+class InputValidator:
+    """명령어 인자 검증 유틸리티"""
+
+    # 종목코드 패턴 (6자리 숫자)
+    STOCK_CODE_PATTERN = re.compile(r'^\d{6}$')
+
+    @staticmethod
+    def validate_stock_code(code: str) -> Tuple[bool, str]:
+        """
+        종목코드 유효성 검증
+
+        Returns:
+            (유효여부, 에러메시지)
+        """
+        if not code:
+            return False, "종목코드를 입력해주세요."
+        if not InputValidator.STOCK_CODE_PATTERN.match(code):
+            return False, f"올바른 종목코드를 입력하세요 (6자리 숫자). 입력값: {code}"
+        return True, ""
+
+    @staticmethod
+    def validate_positive_int(value: str, min_val: int = 1, max_val: int = 100,
+                               field_name: str = "값") -> Tuple[bool, int, str]:
+        """
+        양의 정수 검증
+
+        Returns:
+            (유효여부, 파싱된값, 에러메시지)
+        """
+        try:
+            num = int(value)
+            if num < min_val or num > max_val:
+                return False, 0, f"{field_name}은(는) {min_val}~{max_val} 사이여야 합니다. 입력값: {num}"
+            return True, num, ""
+        except ValueError:
+            return False, 0, f"{field_name}은(는) 숫자로 입력해주세요. 입력값: {value}"
+
+    @staticmethod
+    def validate_positive_float(value: str, min_val: float = 0.0, max_val: float = 100.0,
+                                  field_name: str = "값") -> Tuple[bool, float, str]:
+        """
+        양의 실수 검증
+
+        Returns:
+            (유효여부, 파싱된값, 에러메시지)
+        """
+        try:
+            num = float(value)
+            if num < min_val or num > max_val:
+                return False, 0.0, f"{field_name}은(는) {min_val}~{max_val} 사이여야 합니다. 입력값: {num}"
+            return True, num, ""
+        except ValueError:
+            return False, 0.0, f"{field_name}은(는) 숫자로 입력해주세요. 입력값: {value}"
+
+    @staticmethod
+    def validate_on_off(value: str) -> Tuple[bool, bool, str]:
+        """
+        on/off 값 검증
+
+        Returns:
+            (유효여부, 불리언값, 에러메시지)
+        """
+        value_lower = value.lower()
+        if value_lower in ('on', 'true', '1', 'yes', '활성'):
+            return True, True, ""
+        elif value_lower in ('off', 'false', '0', 'no', '비활성'):
+            return True, False, ""
+        else:
+            return False, False, f"on 또는 off로 입력해주세요. 입력값: {value}"
 
 
 class TelegramNotifier:
@@ -678,10 +753,16 @@ class TelegramBot:
             return
 
         if not context.args:
-            await update.message.reply_text("사용법: /시세 [종목코드]\n예: /시세 005930")
+            await update.message.reply_text("사용법: /price [종목코드]\n예: /price 005930")
             return
 
         stock_code = context.args[0]
+
+        # 종목코드 검증
+        is_valid, error_msg = InputValidator.validate_stock_code(stock_code)
+        if not is_valid:
+            await update.message.reply_text(f"❌ {error_msg}")
+            return
 
         try:
             price = self.kis_client.get_stock_price(stock_code)
@@ -877,10 +958,16 @@ class TelegramBot:
     async def cmd_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """기술적 분석 신호 명령어"""
         if not context.args:
-            await update.message.reply_text("사용법: /신호 [종목코드]\n예: /신호 005930")
+            await update.message.reply_text("사용법: /signal [종목코드]\n예: /signal 005930")
             return
 
         stock_code = context.args[0]
+
+        # 종목코드 검증
+        is_valid, error_msg = InputValidator.validate_stock_code(stock_code)
+        if not is_valid:
+            await update.message.reply_text(f"❌ {error_msg}")
+            return
 
         try:
             from src.api.kis_quant import KISQuantClient
@@ -1132,12 +1219,11 @@ class TelegramBot:
             await update.message.reply_text("사용법: /set_dryrun on|off")
             return
 
-        value = context.args[0].lower()
-        if value not in ['on', 'off', 'true', 'false', '1', '0']:
-            await update.message.reply_text("사용법: /set_dryrun on|off")
+        # on/off 검증
+        is_valid, enabled, error_msg = InputValidator.validate_on_off(context.args[0])
+        if not is_valid:
+            await update.message.reply_text(f"❌ {error_msg}")
             return
-
-        enabled = value in ['on', 'true', '1']
 
         controller = get_controller()
         result = controller.set_dry_run(enabled)
@@ -1165,10 +1251,12 @@ class TelegramBot:
             await update.message.reply_text("사용법: /set_target [숫자]\n예: /set_target 15")
             return
 
-        try:
-            count = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("숫자를 입력해주세요.")
+        # 목표 종목 수 검증 (1~50)
+        is_valid, count, error_msg = InputValidator.validate_positive_int(
+            context.args[0], min_val=1, max_val=50, field_name="목표 종목 수"
+        )
+        if not is_valid:
+            await update.message.reply_text(f"❌ {error_msg}")
             return
 
         controller = get_controller()
@@ -1195,10 +1283,12 @@ class TelegramBot:
             await update.message.reply_text("사용법: /set_stoploss [비율]\n예: /set_stoploss 7")
             return
 
-        try:
-            pct = float(context.args[0])
-        except ValueError:
-            await update.message.reply_text("숫자를 입력해주세요.")
+        # 손절 비율 검증 (1~30%)
+        is_valid, pct, error_msg = InputValidator.validate_positive_float(
+            context.args[0], min_val=1.0, max_val=30.0, field_name="손절 비율"
+        )
+        if not is_valid:
+            await update.message.reply_text(f"❌ {error_msg}")
             return
 
         controller = get_controller()
@@ -1267,6 +1357,13 @@ class TelegramBot:
             return
 
         stock_code = context.args[0]
+
+        # 종목코드 검증
+        is_valid, error_msg = InputValidator.validate_stock_code(stock_code)
+        if not is_valid:
+            await update.message.reply_text(f"❌ {error_msg}")
+            return
+
         controller = get_controller()
         result = controller.close_position(stock_code)
 
@@ -1300,10 +1397,14 @@ class TelegramBot:
 
         lines = 10
         if context.args:
-            try:
-                lines = min(int(context.args[0]), 30)
-            except ValueError:
-                pass
+            # 줄 수 검증 (1~30)
+            is_valid, parsed_lines, error_msg = InputValidator.validate_positive_int(
+                context.args[0], min_val=1, max_val=30, field_name="로그 줄 수"
+            )
+            if not is_valid:
+                await update.message.reply_text(f"❌ {error_msg}")
+                return
+            lines = parsed_lines
 
         controller = get_controller()
         result = controller.get_logs(lines)
