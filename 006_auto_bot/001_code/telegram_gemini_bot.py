@@ -566,7 +566,9 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
         logger.info(f"Blogger 업로드: {'활성화' if self.upload_to_blog else '비활성화'}")
         logger.info("=" * 50)
 
+        logger.info("시작 메시지 전송 중...")
         self.send_message("Gemini Blogger 봇이 시작되었습니다! 질문을 입력하세요.")
+        logger.info("시작 메시지 전송 완료, 폴링 시작...")
 
         loop_errors = 0  # 메인 루프 에러 카운터
 
