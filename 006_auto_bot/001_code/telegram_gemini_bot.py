@@ -61,11 +61,28 @@ class TelegramGeminiBot:
         self.upload_to_blog = upload_to_blog
         self.api_base = f"https://api.telegram.org/bot{bot_token}"
         self.last_update_id = 0
+        self.consecutive_failures = 0  # 연속 실패 카운터
 
         # Import requests here to handle missing module gracefully
         try:
             import requests
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
             self.requests = requests
+
+            # Session with connection pooling and retry
+            self.session = requests.Session()
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=1,
+                status_forcelist=[429, 500, 502, 503, 504],
+            )
+            adapter = HTTPAdapter(
+                max_retries=retry_strategy,
+                pool_connections=10,
+                pool_maxsize=10
+            )
+            self.session.mount("https://", adapter)
         except ImportError:
             logger.error("requests 모듈이 필요합니다. pip install requests")
             sys.exit(1)
@@ -79,19 +96,26 @@ class TelegramGeminiBot:
                 if offset:
                     params["offset"] = offset
 
-                response = self.requests.get(url, params=params, timeout=35)
+                response = self.session.get(url, params=params, timeout=35)
                 result = response.json()
 
                 if result.get("ok"):
+                    # 성공 시 연속 실패 카운터 리셋
+                    if self.consecutive_failures > 0:
+                        logger.info(f"네트워크 복구됨 (이전 연속 실패: {self.consecutive_failures}회)")
+                        self.consecutive_failures = 0
                     return result.get("result", [])
                 return []
 
             except (ConnectionResetError, ConnectionError, ConnectionAbortedError) as e:
-                logger.warning(f"연결 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                # Connection reset은 long polling에서 흔히 발생 - DEBUG 레벨로 변경
+                if attempt == 0:
+                    logger.debug(f"연결 리셋 (정상적인 long polling 종료): {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # 지수 백오프: 1초, 2초, 4초
+                    time.sleep(2 ** attempt)
                     continue
-                logger.error(f"최대 재시도 횟수 초과: {e}")
+                # 마지막 시도 실패 시에만 WARNING
+                self.consecutive_failures += 1
                 return []
 
             except self.requests.exceptions.Timeout:
@@ -99,44 +123,67 @@ class TelegramGeminiBot:
                 return []
 
             except self.requests.exceptions.RequestException as e:
-                logger.warning(f"네트워크 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                self.consecutive_failures += 1
+                # 연속 실패 횟수에 따라 대기 시간 조절
+                base_wait = min(2 ** attempt, 8)  # 최대 8초
+                extra_wait = min(self.consecutive_failures * 2, 30)  # 연속 실패 시 추가 대기 (최대 30초)
+                wait_time = base_wait + extra_wait
+
+                if self.consecutive_failures <= 3:
+                    logger.warning(f"네트워크 에러 (시도 {attempt + 1}/{max_retries}): {e}")
+                elif self.consecutive_failures % 10 == 0:
+                    # 연속 실패가 많으면 10회마다만 로그
+                    logger.warning(f"네트워크 불안정 지속 중 (연속 {self.consecutive_failures}회 실패)")
+
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(wait_time)
                     continue
                 return []
 
             except Exception as e:
                 logger.error(f"메시지 가져오기 실패: {e}")
+                self.consecutive_failures += 1
                 return []
 
         return []
 
-    def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
+    def send_message(self, text: str, parse_mode: str = "HTML", max_retries: int = 3) -> bool:
         """텔레그램으로 메시지 보내기"""
-        try:
-            url = f"{self.api_base}/sendMessage"
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.api_base}/sendMessage"
 
-            # 메시지 길이 제한 (4096자)
-            if len(text) > 4000:
-                text = text[:3900] + "\n\n... (내용이 길어 일부 생략됨)"
+                # 메시지 길이 제한 (4096자)
+                if len(text) > 4000:
+                    text = text[:3900] + "\n\n... (내용이 길어 일부 생략됨)"
 
-            # HTML 파싱 모드일 때 닫히지 않은 태그 수정
-            if parse_mode == "HTML":
-                text = self._fix_unclosed_html_tags(text)
+                # HTML 파싱 모드일 때 닫히지 않은 태그 수정
+                if parse_mode == "HTML":
+                    text = self._fix_unclosed_html_tags(text)
 
-            payload = {
-                "chat_id": self.chat_id,
-                "text": text,
-                "parse_mode": parse_mode,
-                "disable_web_page_preview": True
-            }
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "disable_web_page_preview": True
+                }
 
-            response = self.requests.post(url, json=payload, timeout=30)
-            result = response.json()
-            return result.get("ok", False)
-        except Exception as e:
-            logger.error(f"메시지 전송 실패: {e}")
-            return False
+                response = self.session.post(url, json=payload, timeout=30)
+                result = response.json()
+                return result.get("ok", False)
+
+            except self.requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"메시지 전송 재시도 ({attempt + 1}/{max_retries}): {e}")
+                    time.sleep(2 ** attempt)
+                    continue
+                logger.error(f"메시지 전송 실패 (최대 재시도 초과): {e}")
+                return False
+
+            except Exception as e:
+                logger.error(f"메시지 전송 실패: {e}")
+                return False
+        return False
 
     def _fix_unclosed_html_tags(self, text: str) -> str:
         """닫히지 않은 HTML 태그 수정"""
@@ -521,6 +568,8 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
 
         self.send_message("Gemini Blogger 봇이 시작되었습니다! 질문을 입력하세요.")
 
+        loop_errors = 0  # 메인 루프 에러 카운터
+
         while True:
             try:
                 updates = self.get_updates(offset=self.last_update_id + 1)
@@ -531,15 +580,25 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
                     if "message" in update:
                         self.process_message(update["message"])
 
-                time.sleep(1)  # 짧은 대기
+                # 성공 시 에러 카운터 리셋
+                loop_errors = 0
+
+                # 연속 네트워크 실패가 많으면 대기 시간 증가
+                if self.consecutive_failures > 5:
+                    wait_time = min(self.consecutive_failures, 30)
+                    time.sleep(wait_time)
+                else:
+                    time.sleep(1)
 
             except KeyboardInterrupt:
                 logger.info("봇 종료...")
                 self.send_message("봇이 종료되었습니다.")
                 break
             except Exception as e:
-                logger.error(f"오류 발생: {e}")
-                time.sleep(5)
+                loop_errors += 1
+                wait_time = min(5 * loop_errors, 60)  # 최대 60초
+                logger.error(f"오류 발생 (대기 {wait_time}초): {e}")
+                time.sleep(wait_time)
 
 
 def main():
