@@ -137,7 +137,7 @@ class TelegramReporter:
                 message += f"{icon} {alert['message']}\n"
                 message += f"   → {alert['action']}\n"
 
-        message += f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        message += f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
         self.notifier.send_message(message.strip())
 
@@ -163,7 +163,7 @@ class TelegramReporter:
 • 수익률: {result.get('total_return', 0):+.2f}%
 • MDD: {result.get('max_drawdown', 0):.2f}%
 
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         self.notifier.send_message(message.strip())
 
@@ -183,24 +183,11 @@ class TelegramReporter:
 
 {message}
 
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         self.notifier.send_message(full_message.strip())
 
-    def send_daily_summary(self, portfolio_value: float, daily_pnl: float, daily_pnl_pct: float):
-        """일간 요약 전송"""
-        pnl_icon = "📈" if daily_pnl >= 0 else "📉"
-
-        message = f"""
-{pnl_icon} <b>일간 포트폴리오 요약</b>
-━━━━━━━━━━━━━━━━━━━━
-
-💰 총 자산: ₩{portfolio_value:,.0f}
-{pnl_icon} 오늘 손익: {daily_pnl:+,.0f}원 ({daily_pnl_pct:+.2f}%)
-
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}
-"""
-        self.notifier.send_message(message.strip())
+    # 참고: 일일 요약은 QuantTradingEngine.generate_daily_report()에서 15:20에 발송됨
 
 
 class AutoStrategyManager:
@@ -326,9 +313,6 @@ class AutoStrategyManager:
         """스케줄 작업 등록"""
         # 매월 1일 09:00 모니터링
         schedule.every().day.at("09:00").do(self._check_monthly_monitoring)
-
-        # 매일 18:00 일간 요약 (선택적)
-        # schedule.every().day.at("18:00").do(self._send_daily_summary)
 
         # 매일 체크 - 반기 최적화 (1월, 7월 첫째주)
         schedule.every().day.at("08:00").do(self._check_semiannual_optimization)

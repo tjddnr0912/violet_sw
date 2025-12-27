@@ -28,8 +28,12 @@ from datetime import datetime
 # 로그 디렉토리 생성
 Path("logs").mkdir(exist_ok=True)
 
+# LOG_LEVEL 환경변수에서 읽기 (기본값: INFO)
+log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_str, logging.INFO)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(f'logs/daemon_{datetime.now().strftime("%Y%m%d")}.log'),
@@ -37,6 +41,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"로그 레벨: {log_level_str}")
 
 
 class QuantDaemon:
@@ -52,13 +57,30 @@ class QuantDaemon:
         """자동매매 엔진 시작"""
         from src.quant_engine import QuantTradingEngine, QuantEngineConfig
         from src.scheduler import WeightConfig
+        from src.api import KISClient
 
         # 최적 가중치 로드
-        weights = WeightConfig.load()
+        self.weights = WeightConfig.load()
+
+        # 실제 계좌 잔고 조회 (조회 실패 시 1천만원 기본값 사용)
+        self.total_capital = 10_000_000
+        try:
+            client = KISClient(is_virtual=self.is_virtual)
+            balance = client.get_balance()
+            if balance and 'cash' in balance:
+                self.total_capital = balance['cash']
+                logger.info(f"계좌 잔고 조회 성공: {self.total_capital:,}원")
+            else:
+                logger.warning(f"계좌 잔고 조회 실패 - 기본값 사용: {self.total_capital:,}원")
+        except Exception as e:
+            logger.warning(f"계좌 잔고 조회 오류: {e} - 기본값 사용: {self.total_capital:,}원")
+
+        self.target_count = self.weights.get('target_count', 15)
 
         config = QuantEngineConfig(
             universe_size=200,
-            target_stock_count=weights.get('target_count', 15),
+            target_stock_count=self.target_count,
+            total_capital=self.total_capital,
             dry_run=self.dry_run
         )
 
@@ -118,16 +140,27 @@ class QuantDaemon:
         mode = "🧪 모의투자" if self.is_virtual else "💰 실전투자"
         dry_run = "✅ Dry-Run" if self.dry_run else "🔴 실제 주문"
 
+        # 가중치 정보 (기본값 처리)
+        weights = getattr(self, 'weights', {})
+        total_capital = getattr(self, 'total_capital', 10_000_000)
+        target_count = getattr(self, 'target_count', 15)
+
+        mom_w = weights.get('momentum_weight', 0.2)
+        short_mom_w = weights.get('short_mom_weight', 0.1)
+        vol_w = weights.get('volatility_weight', 0.5)
+
         message = f"""
 🚀 <b>퀀트 시스템 시작</b>
 ━━━━━━━━━━━━━━━━━━━━
 
 {mode} | {dry_run}
 
-<b>활성화된 서비스:</b>
-• 자동매매 엔진
-• 전략 자동 관리
-• 텔레그램 봇
+<b>투자 설정:</b>
+• 투자금: {total_capital:,}원
+• 목표 종목: {target_count}개
+
+<b>팩터 가중치:</b>
+• 모멘텀: {mom_w:.0%} | 단기: {short_mom_w:.0%} | 변동성: {vol_w:.0%}
 
 <b>자동 관리 일정:</b>
 • 월간 모니터링: 매월 1일 09:00

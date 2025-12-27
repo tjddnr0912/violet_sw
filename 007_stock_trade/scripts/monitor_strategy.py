@@ -292,7 +292,7 @@ def main():
     os.makedirs("data", exist_ok=True)
     with open("data/strategy_monitor.json", "w") as f:
         json.dump({
-            "check_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "check_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "current_weights": CURRENT_WEIGHTS,
             "metrics": metrics,
             "alerts": alerts,

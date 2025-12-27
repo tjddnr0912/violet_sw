@@ -13,7 +13,7 @@ from typing import Optional, Callable, Dict, Any, Tuple
 from enum import Enum
 from functools import wraps
 
-from telegram import Update, Bot
+from telegram import Update, Bot, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1007,9 +1007,14 @@ class TelegramBot:
                 "STRONG_SELL": "🔴 강력매도"
             }.get(signal.signal_type.value, "⚪")
 
-            # 손절/익절가
-            stop_loss = int(current_price * 0.93)
-            take_profit = int(current_price * 1.10)
+            # 손절/익절가 (설정에서 읽기)
+            from src.core import get_controller
+            controller = get_controller()
+            stop_loss_pct = controller.config.stop_loss_pct
+            take_profit_pct = controller.config.take_profit_pct
+
+            stop_loss = int(current_price * (1 - stop_loss_pct / 100))
+            take_profit = int(current_price * (1 + take_profit_pct / 100))
 
             message = (
                 f"📊 <b>[기술적 분석] {ratio.name}</b>\n"
@@ -1026,8 +1031,8 @@ class TelegramBot:
                 f"• BB: <code>{signal.bb_signal}</code>\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"• MA5: {ma5:,.0f} | MA20: {ma20:,.0f}\n"
-                f"• 손절가: <code>{stop_loss:,}원</code> (-7%)\n"
-                f"• 익절가: <code>{take_profit:,}원</code> (+10%)"
+                f"• 손절가: <code>{stop_loss:,}원</code> (-{stop_loss_pct:.0f}%)\n"
+                f"• 익절가: <code>{take_profit:,}원</code> (+{take_profit_pct:.0f}%)"
             )
 
             await update.message.reply_text(message, parse_mode='HTML')
@@ -1481,12 +1486,31 @@ class TelegramBot:
 
         await update.message.reply_text(message, parse_mode='HTML')
 
+    async def _post_init(self, application: Application) -> None:
+        """Application 초기화 후 명령어 등록"""
+        try:
+            commands = [
+                BotCommand("start", "Start bot"),
+                BotCommand("help", "Show help"),
+                BotCommand("status", "System status"),
+                BotCommand("balance", "Account balance"),
+                BotCommand("positions", "Position list"),
+                BotCommand("start_trading", "Start trading"),
+                BotCommand("stop_trading", "Stop trading"),
+                BotCommand("pause", "Pause trading"),
+                BotCommand("resume", "Resume trading"),
+            ]
+            await application.bot.set_my_commands(commands)
+            logger.info("텔레그램 명령어 목록 등록 완료")
+        except Exception as e:
+            logger.warning(f"명령어 목록 등록 실패 (무시됨): {e}")
+
     def build_application(self) -> Application:
         """Application 빌드"""
         if not self.bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN이 설정되지 않았습니다.")
 
-        self.application = Application.builder().token(self.bot_token).build()
+        self.application = Application.builder().token(self.bot_token).post_init(self._post_init).build()
 
         # 기본 명령어
         self.application.add_handler(CommandHandler("start", self.cmd_start))
