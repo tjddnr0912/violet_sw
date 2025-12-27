@@ -593,14 +593,14 @@ class TelegramBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시작 명령어"""
         message = (
-            "🤖 <b>주식 자동매매 봇</b>\n\n"
-            "사용 가능한 명령어:\n"
-            "/balance - 계좌 잔고 조회\n"
-            "/price [종목코드] - 현재가 조회\n"
-            "/screening - 멀티팩터 스크리닝\n"
-            "/signal [종목코드] - 기술적 분석\n"
-            "/status - 시스템 상태 확인\n"
-            "/help - 명령어 도움말"
+            "🤖 <b>퀀트 자동매매 봇</b>\n\n"
+            "📋 /help - 전체 명령어 보기\n\n"
+            "<b>주요 명령어:</b>\n"
+            "/status - 시스템 상태\n"
+            "/start_trading - 자동매매 시작\n"
+            "/stop_trading - 자동매매 중지\n"
+            "/positions - 보유 포지션\n"
+            "/emergency_stop - 긴급 정지"
         )
         await update.message.reply_text(message, parse_mode='HTML')
 
@@ -608,16 +608,31 @@ class TelegramBot:
         """도움말 명령어"""
         message = (
             "📚 <b>명령어 도움말</b>\n\n"
-            "<b>조회 명령어:</b>\n"
-            "/balance - 계좌 잔고 및 보유종목 조회\n"
-            "/price 005930 - 종목 현재가 조회\n"
-            "/orders - 당일 주문내역 조회\n\n"
-            "<b>퀀트 전략:</b>\n"
-            "/screening - 멀티팩터 종목 스크리닝\n"
-            "/signal 005930 - 기술적 분석 신호\n\n"
-            "<b>시스템 명령어:</b>\n"
-            "/status - 봇 상태 확인\n"
-            "/help - 이 도움말 표시"
+            "<b>🔧 시스템 제어:</b>\n"
+            "/start_trading - 자동매매 시작\n"
+            "/stop_trading - 자동매매 중지\n"
+            "/pause - 일시 정지\n"
+            "/resume - 재개\n"
+            "/emergency_stop - 긴급 정지\n"
+            "/clear_emergency - 긴급 정지 해제\n\n"
+            "<b>🔄 수동 실행:</b>\n"
+            "/run_screening - 스크리닝 실행\n"
+            "/run_rebalance - 리밸런싱 실행\n"
+            "/run_optimize - 최적화 실행\n\n"
+            "<b>⚙️ 설정 변경:</b>\n"
+            "/set_dryrun on|off - Dry-run 모드\n"
+            "/set_target [N] - 목표 종목 수\n"
+            "/set_stoploss [N] - 손절 비율(%)\n\n"
+            "<b>📊 조회:</b>\n"
+            "/status - 시스템 상태\n"
+            "/positions - 보유 포지션\n"
+            "/balance - 계좌 잔고\n"
+            "/logs - 최근 로그\n"
+            "/report - 일일 리포트\n\n"
+            "<b>📈 분석:</b>\n"
+            "/screening - 스크리닝 결과\n"
+            "/signal [코드] - 기술적 분석\n"
+            "/price [코드] - 현재가 조회"
         )
         await update.message.reply_text(message, parse_mode='HTML')
 
@@ -692,14 +707,44 @@ class TelegramBot:
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시스템 상태 명령어"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        status = controller.get_status()
+
+        state_icons = {
+            "stopped": "⏹️ 중지",
+            "running": "▶️ 실행중",
+            "paused": "⏸️ 일시정지",
+            "emergency_stop": "🚨 긴급정지"
+        }
+        state_display = state_icons.get(status['state'], status['state'])
         api_status = "🟢 연결됨" if self.kis_client else "🔴 미연결"
+
+        config = status['config']
+        dry_run = "✅ 활성화" if config['dry_run'] else "🔴 비활성화"
+        mode = "🧪 모의투자" if config['is_virtual'] else "💰 실전투자"
 
         message = (
             "⚙️ <b>시스템 상태</b>\n"
             "━━━━━━━━━━━━━━━\n"
-            f"• 봇 상태: 🟢 정상\n"
+            f"• 상태: {state_display}\n"
+            f"• 모드: {mode}\n"
+            f"• Dry-Run: {dry_run}\n"
             f"• API 연결: {api_status}\n"
-            f"• 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            "━━━━━━━━━━━━━━━\n"
+            f"<b>설정:</b>\n"
+            f"• 목표 종목: {config['target_count']}개\n"
+            f"• 손절: {config['stop_loss_pct']}%\n"
+            f"• 익절: {config['take_profit_pct']}%\n"
+            "━━━━━━━━━━━━━━━\n"
+            f"<b>가중치:</b>\n"
+            f"• 모멘텀: {config['momentum_weight']:.2f}\n"
+            f"• 단기모멘텀: {config['short_mom_weight']:.2f}\n"
+            f"• 변동성: {config['volatility_weight']:.2f}\n"
+            f"• 거래량: {config['volume_weight']:.2f}\n"
+            "━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         await update.message.reply_text(message, parse_mode='HTML')
@@ -903,6 +948,438 @@ class TelegramBot:
         except Exception as e:
             await update.message.reply_text(f"❌ 분석 실패: {e}")
 
+    # ==================== 시스템 제어 명령어 ====================
+
+    async def cmd_start_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """자동매매 시작"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.start_trading()
+
+        if result['success']:
+            config = result.get('config', {})
+            message = (
+                "▶️ <b>자동매매 시작</b>\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"• Dry-Run: {'✅' if config.get('dry_run') else '🔴 실제주문'}\n"
+                f"• 목표 종목: {config.get('target_count', 15)}개\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_stop_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """자동매매 중지"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.stop_trading()
+
+        if result['success']:
+            message = (
+                "⏹️ <b>자동매매 중지</b>\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"이전 상태: {result.get('previous_state', 'N/A')}\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """자동매매 일시정지"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.pause_trading()
+
+        if result['success']:
+            message = (
+                "⏸️ <b>자동매매 일시정지</b>\n"
+                "━━━━━━━━━━━━━━━\n"
+                "신규 주문이 중지됩니다.\n"
+                "/resume 명령으로 재개할 수 있습니다.\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """자동매매 재개"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.resume_trading()
+
+        if result['success']:
+            message = (
+                "▶️ <b>자동매매 재개</b>\n"
+                "━━━━━━━━━━━━━━━\n"
+                "자동매매가 재개되었습니다.\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_emergency_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """긴급 정지"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.emergency_stop()
+
+        message = (
+            "🚨 <b>긴급 정지 실행</b>\n"
+            "━━━━━━━━━━━━━━━\n"
+            "모든 거래가 즉시 중단됩니다.\n"
+            "━━━━━━━━━━━━━━━\n"
+            f"이전 상태: {result.get('previous_state', 'N/A')}\n"
+            "━━━━━━━━━━━━━━━\n"
+            "/clear_emergency 명령으로 해제\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_clear_emergency(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """긴급 정지 해제"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.clear_emergency()
+
+        if result['success']:
+            message = (
+                "✅ <b>긴급 정지 해제</b>\n"
+                "━━━━━━━━━━━━━━━\n"
+                "/start_trading 명령으로\n"
+                "거래를 재개할 수 있습니다.\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    # ==================== 수동 실행 명령어 ====================
+
+    async def cmd_run_screening(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """스크리닝 수동 실행"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.run_screening()
+
+        if result['success']:
+            await update.message.reply_text(
+                "🔍 <b>스크리닝 시작</b>\n완료되면 결과가 전송됩니다.",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(f"❌ {result['message']}")
+
+    async def cmd_run_rebalance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """리밸런싱 수동 실행"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.run_rebalance()
+
+        if result['success']:
+            await update.message.reply_text(
+                "🔄 <b>리밸런싱 시작</b>\n완료되면 결과가 전송됩니다.",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(f"❌ {result['message']}")
+
+    async def cmd_run_optimize(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """최적화 수동 실행"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.run_optimize()
+
+        await update.message.reply_text(
+            "🔧 <b>최적화 시작</b>\n"
+            "━━━━━━━━━━━━━━━\n"
+            "팩터 가중치 최적화가 시작되었습니다.\n"
+            "완료되면 결과가 전송됩니다.\n"
+            "(약 5~10분 소요)",
+            parse_mode='HTML'
+        )
+
+    # ==================== 설정 변경 명령어 ====================
+
+    async def cmd_set_dryrun(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Dry-run 모드 설정"""
+        from src.core import get_controller
+
+        if not context.args:
+            await update.message.reply_text("사용법: /set_dryrun on|off")
+            return
+
+        value = context.args[0].lower()
+        if value not in ['on', 'off', 'true', 'false', '1', '0']:
+            await update.message.reply_text("사용법: /set_dryrun on|off")
+            return
+
+        enabled = value in ['on', 'true', '1']
+
+        controller = get_controller()
+        result = controller.set_dry_run(enabled)
+
+        if result['success']:
+            status = "✅ 활성화" if enabled else "🔴 비활성화 (실제 주문!)"
+            message = (
+                f"⚙️ <b>Dry-Run 모드 변경</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"상태: {status}\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            if not enabled:
+                message += "\n⚠️ <b>주의: 실제 주문이 실행됩니다!</b>"
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_set_target(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """목표 종목 수 설정"""
+        from src.core import get_controller
+
+        if not context.args:
+            await update.message.reply_text("사용법: /set_target [숫자]\n예: /set_target 15")
+            return
+
+        try:
+            count = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("숫자를 입력해주세요.")
+            return
+
+        controller = get_controller()
+        result = controller.set_target_count(count)
+
+        if result['success']:
+            message = (
+                f"⚙️ <b>목표 종목 수 변경</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"이전: {result['previous']}개\n"
+                f"현재: {result['current']}개\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_set_stoploss(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """손절 비율 설정"""
+        from src.core import get_controller
+
+        if not context.args:
+            await update.message.reply_text("사용법: /set_stoploss [비율]\n예: /set_stoploss 7")
+            return
+
+        try:
+            pct = float(context.args[0])
+        except ValueError:
+            await update.message.reply_text("숫자를 입력해주세요.")
+            return
+
+        controller = get_controller()
+        result = controller.set_stop_loss(pct)
+
+        if result['success']:
+            message = (
+                f"⚙️ <b>손절 비율 변경</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"이전: {result['previous']}%\n"
+                f"현재: {result['current']}%\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    # ==================== 포지션 관리 명령어 ====================
+
+    async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """보유 포지션 조회"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.get_positions()
+
+        positions = result.get('positions', [])
+
+        if not positions:
+            await update.message.reply_text("📊 보유 포지션이 없습니다.")
+            return
+
+        lines = [
+            "📊 <b>보유 포지션</b>",
+            "━━━━━━━━━━━━━━━"
+        ]
+
+        total_value = 0
+        total_pnl = 0
+
+        for p in positions:
+            pnl_pct = p.get('pnl_pct', 0)
+            pnl_emoji = "📈" if pnl_pct >= 0 else "📉"
+            lines.append(
+                f"{pnl_emoji} <b>{p.get('name', 'N/A')}</b> ({p.get('code', '')})\n"
+                f"   {p.get('quantity', 0)}주 × {p.get('current_price', 0):,}원\n"
+                f"   손익: {pnl_pct:+.2f}%"
+            )
+            total_value += p.get('current_price', 0) * p.get('quantity', 0)
+            total_pnl += p.get('pnl', 0)
+
+        lines.append("━━━━━━━━━━━━━━━")
+        lines.append(f"총 평가: <code>{total_value:,}원</code>")
+        lines.append(f"총 손익: <code>{total_pnl:+,}원</code>")
+        lines.append(f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+    async def cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """특정 포지션 청산"""
+        from src.core import get_controller
+
+        if not context.args:
+            await update.message.reply_text("사용법: /close [종목코드]\n예: /close 005930")
+            return
+
+        stock_code = context.args[0]
+        controller = get_controller()
+        result = controller.close_position(stock_code)
+
+        if result['success']:
+            await update.message.reply_text(
+                f"🔴 <b>{stock_code} 청산 요청</b>\n체결되면 알림이 전송됩니다.",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(f"❌ {result['message']}")
+
+    async def cmd_close_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """전체 포지션 청산"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        result = controller.close_all_positions()
+
+        await update.message.reply_text(
+            "🔴 <b>전체 청산 요청</b>\n"
+            "━━━━━━━━━━━━━━━\n"
+            "모든 포지션 청산이 요청되었습니다.\n"
+            "체결되면 알림이 전송됩니다.\n"
+            "━━━━━━━━━━━━━━━",
+            parse_mode='HTML'
+        )
+
+    async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """최근 로그 조회"""
+        from src.core import get_controller
+
+        lines = 10
+        if context.args:
+            try:
+                lines = min(int(context.args[0]), 30)
+            except ValueError:
+                pass
+
+        controller = get_controller()
+        result = controller.get_logs(lines)
+
+        if result['success']:
+            log_lines = result.get('lines', [])
+            if log_lines:
+                # 로그를 간략화
+                formatted = []
+                for line in log_lines[-lines:]:
+                    # 시간과 메시지만 추출
+                    if ' - ' in line:
+                        parts = line.split(' - ', 3)
+                        if len(parts) >= 4:
+                            time_part = parts[0].split(',')[0][-8:]  # HH:MM:SS
+                            level = parts[2][:4]
+                            msg = parts[3][:50]
+                            formatted.append(f"<code>{time_part}</code> [{level}] {msg}")
+                        else:
+                            formatted.append(f"<code>{line[:60]}</code>")
+                    else:
+                        formatted.append(f"<code>{line[:60]}</code>")
+
+                message = (
+                    f"📋 <b>최근 로그</b> ({result.get('file', '')})\n"
+                    "━━━━━━━━━━━━━━━\n" +
+                    "\n".join(formatted)
+                )
+            else:
+                message = "로그가 비어있습니다."
+        else:
+            message = f"❌ {result['message']}"
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """일일 리포트 요청"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        status = controller.get_status()
+        positions = controller.get_positions().get('positions', [])
+
+        config = status['config']
+        state_icons = {
+            "stopped": "⏹️ 중지",
+            "running": "▶️ 실행중",
+            "paused": "⏸️ 일시정지",
+            "emergency_stop": "🚨 긴급정지"
+        }
+
+        total_value = sum(p.get('current_price', 0) * p.get('quantity', 0) for p in positions)
+        total_pnl = sum(p.get('pnl', 0) for p in positions)
+        pnl_emoji = "📈" if total_pnl >= 0 else "📉"
+
+        message = (
+            f"📋 <b>일일 리포트</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"<b>시스템 상태:</b>\n"
+            f"• 상태: {state_icons.get(status['state'], status['state'])}\n"
+            f"• Dry-Run: {'✅' if config['dry_run'] else '🔴'}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"<b>포트폴리오:</b>\n"
+            f"• 보유 종목: {len(positions)}개\n"
+            f"• 총 평가: <code>{total_value:,}원</code>\n"
+            f"• 총 손익: {pnl_emoji} <code>{total_pnl:+,}원</code>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"<b>설정:</b>\n"
+            f"• 목표 종목: {config['target_count']}개\n"
+            f"• 손절: {config['stop_loss_pct']}%\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        await update.message.reply_text(message, parse_mode='HTML')
+
     def build_application(self) -> Application:
         """Application 빌드"""
         if not self.bot_token:
@@ -910,16 +1387,44 @@ class TelegramBot:
 
         self.application = Application.builder().token(self.bot_token).build()
 
-        # 명령어 핸들러 등록 (영문만 지원)
+        # 기본 명령어
         self.application.add_handler(CommandHandler("start", self.cmd_start))
         self.application.add_handler(CommandHandler("help", self.cmd_help))
-        self.application.add_handler(CommandHandler("balance", self.cmd_balance))
-        self.application.add_handler(CommandHandler("price", self.cmd_price))
+
+        # 시스템 제어 명령어
+        self.application.add_handler(CommandHandler("start_trading", self.cmd_start_trading))
+        self.application.add_handler(CommandHandler("stop_trading", self.cmd_stop_trading))
+        self.application.add_handler(CommandHandler("pause", self.cmd_pause))
+        self.application.add_handler(CommandHandler("resume", self.cmd_resume))
+        self.application.add_handler(CommandHandler("emergency_stop", self.cmd_emergency_stop))
+        self.application.add_handler(CommandHandler("clear_emergency", self.cmd_clear_emergency))
+
+        # 수동 실행 명령어
+        self.application.add_handler(CommandHandler("run_screening", self.cmd_run_screening))
+        self.application.add_handler(CommandHandler("run_rebalance", self.cmd_run_rebalance))
+        self.application.add_handler(CommandHandler("run_optimize", self.cmd_run_optimize))
+
+        # 설정 변경 명령어
+        self.application.add_handler(CommandHandler("set_dryrun", self.cmd_set_dryrun))
+        self.application.add_handler(CommandHandler("set_target", self.cmd_set_target))
+        self.application.add_handler(CommandHandler("set_stoploss", self.cmd_set_stoploss))
+
+        # 조회 명령어
         self.application.add_handler(CommandHandler("status", self.cmd_status))
+        self.application.add_handler(CommandHandler("positions", self.cmd_positions))
+        self.application.add_handler(CommandHandler("balance", self.cmd_balance))
         self.application.add_handler(CommandHandler("orders", self.cmd_orders))
-        # 퀀트 전략 명령어
+        self.application.add_handler(CommandHandler("logs", self.cmd_logs))
+        self.application.add_handler(CommandHandler("report", self.cmd_report))
+
+        # 포지션 관리 명령어
+        self.application.add_handler(CommandHandler("close", self.cmd_close))
+        self.application.add_handler(CommandHandler("close_all", self.cmd_close_all))
+
+        # 분석 명령어
         self.application.add_handler(CommandHandler("screening", self.cmd_screening))
         self.application.add_handler(CommandHandler("signal", self.cmd_signal))
+        self.application.add_handler(CommandHandler("price", self.cmd_price))
 
         return self.application
 
