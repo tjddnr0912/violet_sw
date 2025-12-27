@@ -111,6 +111,54 @@ class QuantEngineConfig:
     # 모드
     dry_run: bool = True              # True: 모의 실행
 
+    def __post_init__(self):
+        """설정값 검증"""
+        errors = []
+
+        # 투자 설정 검증
+        if not (1_000_000 <= self.total_capital <= 10_000_000_000):
+            errors.append(f"total_capital은 100만~100억 사이여야 합니다: {self.total_capital:,}")
+        if not (1 <= self.target_stock_count <= 50):
+            errors.append(f"target_stock_count는 1~50 사이여야 합니다: {self.target_stock_count}")
+
+        # 스크리닝 설정 검증
+        if not (10 <= self.universe_size <= 500):
+            errors.append(f"universe_size는 10~500 사이여야 합니다: {self.universe_size}")
+        if self.target_stock_count > self.universe_size:
+            errors.append(f"target_stock_count({self.target_stock_count})가 universe_size({self.universe_size})보다 클 수 없습니다")
+        if not (100 <= self.min_market_cap <= 100000):
+            errors.append(f"min_market_cap은 100~100000억 사이여야 합니다: {self.min_market_cap}")
+
+        # 팩터 가중치 검증
+        for name, weight in [
+            ("value_weight", self.value_weight),
+            ("momentum_weight", self.momentum_weight),
+            ("quality_weight", self.quality_weight)
+        ]:
+            if not (0.0 <= weight <= 1.0):
+                errors.append(f"{name}은(는) 0.0~1.0 사이여야 합니다: {weight}")
+
+        weight_sum = self.value_weight + self.momentum_weight + self.quality_weight
+        if not (0.99 <= weight_sum <= 1.01):
+            errors.append(f"팩터 가중치 합계는 1.0이어야 합니다: {weight_sum:.2f}")
+
+        # 모니터링 간격 검증
+        if not (1 <= self.monitoring_interval <= 60):
+            errors.append(f"monitoring_interval은 1~60분 사이여야 합니다: {self.monitoring_interval}")
+
+        # 리밸런싱 일 검증
+        if not (1 <= self.rebalance_day <= 28):
+            errors.append(f"rebalance_day는 1~28 사이여야 합니다: {self.rebalance_day}")
+
+        # 리스크 관리 검증
+        if not (0.01 <= self.max_single_weight <= 0.5):
+            errors.append(f"max_single_weight는 0.01~0.5 사이여야 합니다: {self.max_single_weight}")
+        if not (0.01 <= self.stop_loss_pct <= 0.5):
+            errors.append(f"stop_loss_pct는 0.01~0.5 (1%~50%) 사이여야 합니다: {self.stop_loss_pct}")
+
+        if errors:
+            raise ValueError("설정 검증 실패:\n" + "\n".join(f"  - {e}" for e in errors))
+
 
 class QuantTradingEngine:
     """퀀트 전략 통합 자동매매 엔진"""
@@ -182,15 +230,20 @@ class QuantTradingEngine:
     # ========== 상태 관리 ==========
 
     def _load_state(self):
-        """저장된 상태 로드"""
+        """저장된 상태 로드 (손상된 파일 복구 포함)"""
         state_file = self.data_dir / "engine_state.json"
-        if state_file.exists():
-            try:
-                with open(state_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+        if not state_file.exists():
+            logger.info("저장된 상태 파일 없음. 새로 시작합니다.")
+            return
 
-                # 포지션 복원
-                for pos_data in data.get("positions", []):
+        try:
+            with open(state_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # 포지션 복원
+            restored_count = 0
+            for pos_data in data.get("positions", []):
+                try:
                     position = Position(
                         code=pos_data["code"],
                         name=pos_data["name"],
@@ -204,23 +257,64 @@ class QuantTradingEngine:
                         highest_price=pos_data.get("highest_price", pos_data["entry_price"])
                     )
                     self.portfolio.positions[position.code] = position
+                    restored_count += 1
+                except (KeyError, TypeError, ValueError) as e:
+                    logger.warning(f"포지션 복원 실패 ({pos_data.get('code', 'unknown')}): {e}")
 
-                # 마지막 스크리닝 날짜
-                if data.get("last_screening_date"):
+            # 마지막 스크리닝 날짜
+            if data.get("last_screening_date"):
+                try:
                     self.last_screening_date = datetime.fromisoformat(data["last_screening_date"])
+                except ValueError as e:
+                    logger.warning(f"스크리닝 날짜 복원 실패: {e}")
 
-                # 마지막 리밸런싱 날짜
-                if data.get("last_rebalance_date"):
+            # 마지막 리밸런싱 날짜
+            if data.get("last_rebalance_date"):
+                try:
                     self.last_rebalance_date = datetime.fromisoformat(data["last_rebalance_date"])
-                if data.get("last_rebalance_month"):
-                    self.last_rebalance_month = data["last_rebalance_month"]
+                except ValueError as e:
+                    logger.warning(f"리밸런싱 날짜 복원 실패: {e}")
+            if data.get("last_rebalance_month"):
+                self.last_rebalance_month = data["last_rebalance_month"]
 
-                logger.info(f"상태 로드 완료: {len(self.portfolio.positions)}개 포지션")
-                if self.last_rebalance_date:
-                    logger.info(f"마지막 리밸런싱: {self.last_rebalance_date.strftime('%Y-%m-%d')}")
+            logger.info(f"상태 로드 완료: {restored_count}개 포지션")
+            if self.last_rebalance_date:
+                logger.info(f"마지막 리밸런싱: {self.last_rebalance_date.strftime('%Y-%m-%d')}")
 
-            except Exception as e:
-                logger.error(f"상태 로드 실패: {e}")
+        except json.JSONDecodeError as e:
+            # JSON 파싱 오류: 파일 손상
+            self._handle_corrupted_state_file(state_file, f"JSON 파싱 오류: {e}")
+
+        except Exception as e:
+            logger.error(f"상태 로드 실패: {e}", exc_info=True)
+            self.notifier.notify_error(
+                "상태 로드 실패",
+                f"이전 거래 정보를 복구하지 못했습니다. 신규 시작됩니다. 오류: {str(e)[:100]}"
+            )
+
+    def _handle_corrupted_state_file(self, state_file: Path, reason: str):
+        """손상된 상태 파일 처리"""
+        backup_file = self.data_dir / f"engine_state.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+        try:
+            # 손상된 파일 백업
+            import shutil
+            shutil.copy2(state_file, backup_file)
+            logger.warning(f"손상된 상태 파일을 백업했습니다: {backup_file}")
+
+            # 손상된 원본 파일 삭제
+            state_file.unlink()
+            logger.info("손상된 상태 파일을 삭제했습니다.")
+
+        except Exception as backup_error:
+            logger.error(f"손상된 파일 백업 실패: {backup_error}")
+
+        # 사용자 알림
+        logger.error(f"상태 파일 손상: {reason}")
+        self.notifier.notify_error(
+            "상태 파일 손상",
+            f"이전 거래 정보가 손상되어 신규 시작됩니다.\n백업: {backup_file.name}\n원인: {reason[:100]}"
+        )
 
     def _save_state(self):
         """현재 상태 저장 (Thread-safe, Atomic write)"""
@@ -261,7 +355,7 @@ class QuantTradingEngine:
                 os.replace(str(temp_file), str(state_file))  # atomic on POSIX
 
             except Exception as e:
-                logger.error(f"상태 저장 실패: {e}")
+                logger.error(f"상태 저장 실패: {e}", exc_info=True)
 
     # ========== 시간/스케줄 관리 ==========
 
@@ -350,7 +444,7 @@ class QuantTradingEngine:
             return result
 
         except Exception as e:
-            logger.error(f"스크리닝 실패: {e}")
+            logger.error(f"스크리닝 실패: {e}", exc_info=True)
             self.notifier.notify_error("스크리닝 실패", str(e))
             return None
 
@@ -500,7 +594,7 @@ class QuantTradingEngine:
                     ))
 
             except Exception as e:
-                logger.error(f"주문 생성 실패 ({code}): {e}")
+                logger.error(f"주문 생성 실패 ({code}): {e}", exc_info=True)
 
         self.pending_orders = orders
         return orders
@@ -560,7 +654,7 @@ class QuantTradingEngine:
             else:
                 return self._execute_buy(order)
         except Exception as e:
-            logger.error(f"주문 실행 실패 ({order.code}): {e}")
+            logger.error(f"주문 실행 실패 ({order.code}): {e}", exc_info=True)
             return False
 
     def _execute_buy(self, order: PendingOrder) -> bool:
@@ -620,7 +714,7 @@ class QuantTradingEngine:
             return True
 
         except Exception as e:
-            logger.error(f"매수 실행 오류: {e}")
+            logger.error(f"매수 실행 오류: {e}", exc_info=True)
             return False
 
     def _execute_sell(self, order: PendingOrder) -> bool:
@@ -679,7 +773,7 @@ class QuantTradingEngine:
             return True
 
         except Exception as e:
-            logger.error(f"매도 실행 오류: {e}")
+            logger.error(f"매도 실행 오류: {e}", exc_info=True)
             return False
 
     def _notify_rebalance_result(self, executed_orders: List[PendingOrder]):
@@ -765,7 +859,7 @@ class QuantTradingEngine:
                             logger.info(f"{position.name}: 손절가 상향 → {new_stop:,.0f}원")
 
             except Exception as e:
-                logger.error(f"모니터링 오류 ({code}): {e}")
+                logger.error(f"모니터링 오류 ({code}): {e}", exc_info=True)
 
         # 상태 저장
         self._save_state()
