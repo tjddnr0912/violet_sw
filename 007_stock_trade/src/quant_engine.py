@@ -161,6 +161,8 @@ class QuantTradingEngine:
         self.pending_orders: List[PendingOrder] = []
         self.last_screening_result: Optional[ScreeningResult] = None
         self.last_screening_date: Optional[datetime] = None
+        self.last_rebalance_date: Optional[datetime] = None  # 마지막 리밸런싱 날짜
+        self.last_rebalance_month: Optional[str] = None      # 마지막 리밸런싱 월 (YYYY-MM)
         self.daily_trades: List[Dict] = []
 
         # 데이터 저장 경로
@@ -200,7 +202,15 @@ class QuantTradingEngine:
                 if data.get("last_screening_date"):
                     self.last_screening_date = datetime.fromisoformat(data["last_screening_date"])
 
+                # 마지막 리밸런싱 날짜
+                if data.get("last_rebalance_date"):
+                    self.last_rebalance_date = datetime.fromisoformat(data["last_rebalance_date"])
+                if data.get("last_rebalance_month"):
+                    self.last_rebalance_month = data["last_rebalance_month"]
+
                 logger.info(f"상태 로드 완료: {len(self.portfolio.positions)}개 포지션")
+                if self.last_rebalance_date:
+                    logger.info(f"마지막 리밸런싱: {self.last_rebalance_date.strftime('%Y-%m-%d')}")
 
             except Exception as e:
                 logger.error(f"상태 로드 실패: {e}")
@@ -228,6 +238,8 @@ class QuantTradingEngine:
             data = {
                 "positions": positions_data,
                 "last_screening_date": self.last_screening_date.isoformat() if self.last_screening_date else None,
+                "last_rebalance_date": self.last_rebalance_date.isoformat() if self.last_rebalance_date else None,
+                "last_rebalance_month": self.last_rebalance_month,
                 "updated_at": datetime.now().isoformat()
             }
 
@@ -263,6 +275,12 @@ class QuantTradingEngine:
     def _is_rebalance_day(self) -> bool:
         """리밸런싱 일 확인"""
         now = datetime.now()
+        current_month = now.strftime("%Y-%m")
+
+        # 이미 이번 달에 리밸런싱을 실행한 경우 스킵
+        if self.last_rebalance_month == current_month:
+            logger.debug(f"이번 달({current_month}) 리밸런싱 이미 완료됨")
+            return False
 
         # 매월 첫 거래일 (주말 제외)
         if now.day <= 3:
@@ -873,7 +891,15 @@ class QuantTradingEngine:
         if self._is_rebalance_day():
             logger.info("리밸런싱 일 - 스크리닝 실행")
             self.run_screening()
-            self.generate_rebalance_orders()
+            orders = self.generate_rebalance_orders()
+
+            # 리밸런싱 날짜 기록 (중복 실행 방지)
+            if orders:
+                now = datetime.now()
+                self.last_rebalance_date = now
+                self.last_rebalance_month = now.strftime("%Y-%m")
+                self._save_state()
+                logger.info(f"리밸런싱 완료 기록: {self.last_rebalance_month}")
         else:
             logger.info("리밸런싱 일 아님 - 스크리닝 스킵")
 
@@ -1007,7 +1033,9 @@ class QuantTradingEngine:
             "positions": len(self.portfolio.positions),
             "pending_orders": len(self.pending_orders),
             "total_pnl_pct": snapshot.total_pnl_pct,
-            "last_screening": self.last_screening_date.isoformat() if self.last_screening_date else None
+            "last_screening": self.last_screening_date.isoformat() if self.last_screening_date else None,
+            "last_rebalance": self.last_rebalance_date.isoformat() if self.last_rebalance_date else None,
+            "last_rebalance_month": self.last_rebalance_month
         }
 
     # ========== 수동 실행 메서드 ==========
@@ -1030,6 +1058,14 @@ class QuantTradingEngine:
         # 주문 생성
         orders = self.generate_rebalance_orders()
         logger.info(f"리밸런싱 주문 생성: {len(orders)}건")
+
+        # 리밸런싱 날짜 기록
+        if orders:
+            now = datetime.now()
+            self.last_rebalance_date = now
+            self.last_rebalance_month = now.strftime("%Y-%m")
+            self._save_state()
+            logger.info(f"리밸런싱 완료 기록: {self.last_rebalance_month}")
 
         # 즉시 실행
         self.execute_pending_orders()
