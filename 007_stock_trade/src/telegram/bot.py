@@ -168,7 +168,11 @@ class TelegramNotifier:
             )
             return True
         except Exception as e:
-            logger.error(f"메시지 전송 실패: {e}", exc_info=True)
+            # 이벤트 루프 종료 시 발생하는 에러는 무시 (종료 중 정상 동작)
+            if "Event loop is closed" in str(e):
+                logger.debug(f"메시지 전송 스킵 (종료 중): {e}")
+            else:
+                logger.error(f"메시지 전송 실패: {e}", exc_info=True)
             return False
 
     def send_message(self, message: str) -> bool:

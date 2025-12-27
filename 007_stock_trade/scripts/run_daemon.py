@@ -224,9 +224,13 @@ class QuantDaemon:
         """데몬 중지"""
         self.running = False
 
-        from src.telegram import get_notifier
-        notifier = get_notifier()
-        notifier.send_message("🛑 퀀트 시스템이 종료되었습니다.")
+        # 종료 알림 (이벤트 루프 닫힘 오류 무시)
+        try:
+            from src.telegram import get_notifier
+            notifier = get_notifier()
+            notifier.send_message("🛑 퀀트 시스템이 종료되었습니다.")
+        except Exception as e:
+            logger.debug(f"종료 알림 전송 실패 (무시): {e}")
 
         logger.info("데몬 종료 중...")
         print("\n데몬 종료됨")
