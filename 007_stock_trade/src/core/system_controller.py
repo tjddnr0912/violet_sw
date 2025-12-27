@@ -43,16 +43,17 @@ class SystemConfig:
 
 
 class SystemController:
-    """시스템 원격 제어기"""
+    """시스템 원격 제어기 (Thread-safe Singleton)"""
 
     STATE_FILE = "data/quant/system_state.json"
     CONFIG_FILE = "config/system_config.json"
 
     _instance = None
     _lock = threading.Lock()
+    _init_lock = threading.Lock()  # __init__ 보호용 별도 락
 
     def __new__(cls):
-        """싱글톤 패턴"""
+        """싱글톤 패턴 (Double-checked locking)"""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -61,26 +62,34 @@ class SystemController:
         return cls._instance
 
     def __init__(self):
-        if self._initialized:
+        # 빠른 체크 (락 없이)
+        if getattr(self, '_initialized', False):
             return
 
-        self._initialized = True
-        self.state = SystemState.STOPPED
-        self.config = SystemConfig()
-        self.engine = None
-        self.callbacks: Dict[str, Callable] = {}
-        self.last_action = None
-        self.last_action_time = None
+        # 스레드 안전한 초기화
+        with self._init_lock:
+            # 이중 체크 (락 획득 후)
+            if self._initialized:
+                return
 
-        # 디렉토리 생성
-        Path("data/quant").mkdir(parents=True, exist_ok=True)
-        Path("config").mkdir(parents=True, exist_ok=True)
+            self._initialized = True
+            self.state = SystemState.STOPPED
+            self.config = SystemConfig()
+            self.engine = None
+            self.callbacks: Dict[str, Callable] = {}
+            self.last_action = None
+            self.last_action_time = None
+            self._state_lock = threading.Lock()  # 상태 변경 보호용 락
 
-        # 저장된 상태/설정 로드
-        self._load_state()
-        self._load_config()
+            # 디렉토리 생성
+            Path("data/quant").mkdir(parents=True, exist_ok=True)
+            Path("config").mkdir(parents=True, exist_ok=True)
 
-        logger.info("SystemController 초기화 완료")
+            # 저장된 상태/설정 로드
+            self._load_state()
+            self._load_config()
+
+            logger.info("SystemController 초기화 완료")
 
     def _load_state(self):
         """상태 로드"""
@@ -96,7 +105,7 @@ class SystemController:
                 logger.error(f"상태 로드 실패: {e}")
 
     def _save_state(self):
-        """상태 저장"""
+        """상태 저장 (atomic write)"""
         try:
             data = {
                 'state': self.state.value,
@@ -104,8 +113,12 @@ class SystemController:
                 'last_action_time': datetime.now().isoformat(),
                 'updated_at': datetime.now().isoformat()
             }
-            with open(self.STATE_FILE, 'w') as f:
+            # Atomic write: 임시 파일에 쓰고 이름 변경
+            temp_file = f"{self.STATE_FILE}.tmp"
+            with open(temp_file, 'w') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            import os
+            os.replace(temp_file, self.STATE_FILE)  # atomic on POSIX
         except Exception as e:
             logger.error(f"상태 저장 실패: {e}")
 
@@ -147,17 +160,18 @@ class SystemController:
 
     def start_trading(self) -> Dict[str, Any]:
         """자동매매 시작"""
-        if self.state == SystemState.EMERGENCY_STOP:
-            return {"success": False, "message": "긴급 정지 상태입니다. 먼저 해제하세요."}
+        with self._state_lock:
+            if self.state == SystemState.EMERGENCY_STOP:
+                return {"success": False, "message": "긴급 정지 상태입니다. 먼저 해제하세요."}
 
-        if self.state == SystemState.RUNNING:
-            return {"success": False, "message": "이미 실행 중입니다."}
+            if self.state == SystemState.RUNNING:
+                return {"success": False, "message": "이미 실행 중입니다."}
 
-        self.state = SystemState.RUNNING
-        self.last_action = "start_trading"
-        self._save_state()
+            self.state = SystemState.RUNNING
+            self.last_action = "start_trading"
+            self._save_state()
 
-        # 엔진 시작 콜백
+        # 엔진 시작 콜백 (락 외부에서 실행 - 데드락 방지)
         self._trigger_callback('on_start')
 
         logger.info("자동매매 시작됨")
@@ -173,13 +187,14 @@ class SystemController:
 
     def stop_trading(self) -> Dict[str, Any]:
         """자동매매 중지"""
-        if self.state == SystemState.STOPPED:
-            return {"success": False, "message": "이미 중지 상태입니다."}
+        with self._state_lock:
+            if self.state == SystemState.STOPPED:
+                return {"success": False, "message": "이미 중지 상태입니다."}
 
-        prev_state = self.state
-        self.state = SystemState.STOPPED
-        self.last_action = "stop_trading"
-        self._save_state()
+            prev_state = self.state
+            self.state = SystemState.STOPPED
+            self.last_action = "stop_trading"
+            self._save_state()
 
         # 엔진 중지 콜백
         self._trigger_callback('on_stop')
@@ -194,12 +209,13 @@ class SystemController:
 
     def pause_trading(self) -> Dict[str, Any]:
         """자동매매 일시정지"""
-        if self.state != SystemState.RUNNING:
-            return {"success": False, "message": "실행 중 상태에서만 일시정지할 수 있습니다."}
+        with self._state_lock:
+            if self.state != SystemState.RUNNING:
+                return {"success": False, "message": "실행 중 상태에서만 일시정지할 수 있습니다."}
 
-        self.state = SystemState.PAUSED
-        self.last_action = "pause_trading"
-        self._save_state()
+            self.state = SystemState.PAUSED
+            self.last_action = "pause_trading"
+            self._save_state()
 
         self._trigger_callback('on_pause')
 
@@ -212,12 +228,13 @@ class SystemController:
 
     def resume_trading(self) -> Dict[str, Any]:
         """자동매매 재개"""
-        if self.state != SystemState.PAUSED:
-            return {"success": False, "message": "일시정지 상태에서만 재개할 수 있습니다."}
+        with self._state_lock:
+            if self.state != SystemState.PAUSED:
+                return {"success": False, "message": "일시정지 상태에서만 재개할 수 있습니다."}
 
-        self.state = SystemState.RUNNING
-        self.last_action = "resume_trading"
-        self._save_state()
+            self.state = SystemState.RUNNING
+            self.last_action = "resume_trading"
+            self._save_state()
 
         self._trigger_callback('on_resume')
 
@@ -230,10 +247,11 @@ class SystemController:
 
     def emergency_stop(self) -> Dict[str, Any]:
         """긴급 정지 - 모든 거래 즉시 중단"""
-        prev_state = self.state
-        self.state = SystemState.EMERGENCY_STOP
-        self.last_action = "emergency_stop"
-        self._save_state()
+        with self._state_lock:
+            prev_state = self.state
+            self.state = SystemState.EMERGENCY_STOP
+            self.last_action = "emergency_stop"
+            self._save_state()
 
         # 긴급 정지 콜백 (포지션 정리 등)
         self._trigger_callback('on_emergency_stop')
@@ -248,12 +266,13 @@ class SystemController:
 
     def clear_emergency(self) -> Dict[str, Any]:
         """긴급 정지 해제"""
-        if self.state != SystemState.EMERGENCY_STOP:
-            return {"success": False, "message": "긴급 정지 상태가 아닙니다."}
+        with self._state_lock:
+            if self.state != SystemState.EMERGENCY_STOP:
+                return {"success": False, "message": "긴급 정지 상태가 아닙니다."}
 
-        self.state = SystemState.STOPPED
-        self.last_action = "clear_emergency"
-        self._save_state()
+            self.state = SystemState.STOPPED
+            self.last_action = "clear_emergency"
+            self._save_state()
 
         logger.info("긴급 정지 해제됨")
         return {

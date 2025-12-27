@@ -4,11 +4,54 @@
 - 국내주식 시세/주문/잔고 조회
 """
 
+import time
+import logging
 import requests
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
+from requests.exceptions import Timeout, ConnectionError, RequestException
 
 from .kis_auth import KISAuth, get_auth
+
+logger = logging.getLogger(__name__)
+
+
+# ========== 커스텀 예외 ==========
+
+class KISAPIError(Exception):
+    """KIS API 에러 기본 클래스"""
+    def __init__(self, message: str, code: str = "", response: dict = None):
+        self.message = message
+        self.code = code
+        self.response = response or {}
+        super().__init__(f"[{code}] {message}" if code else message)
+
+
+class KISTimeoutError(KISAPIError):
+    """API 호출 타임아웃"""
+    pass
+
+
+class KISConnectionError(KISAPIError):
+    """네트워크 연결 오류"""
+    pass
+
+
+class KISHTTPError(KISAPIError):
+    """HTTP 오류 (4xx, 5xx)"""
+    def __init__(self, message: str, status_code: int, response: dict = None):
+        self.status_code = status_code
+        super().__init__(message, str(status_code), response)
+
+
+class KISRateLimitError(KISAPIError):
+    """API 요청 제한 초과"""
+    pass
+
+
+class KISBusinessError(KISAPIError):
+    """KIS 비즈니스 로직 오류 (rt_cd != 0)"""
+    pass
 
 
 @dataclass
@@ -72,6 +115,11 @@ class StockBalance:
 class KISClient:
     """한국투자증권 API 클라이언트"""
 
+    # API 설정
+    DEFAULT_TIMEOUT = 10  # 초
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1  # 초
+
     def __init__(self, is_virtual: bool = True):
         """
         Args:
@@ -86,10 +134,12 @@ class KISClient:
         endpoint: str,
         tr_id: str,
         params: Optional[Dict] = None,
-        body: Optional[Dict] = None
+        body: Optional[Dict] = None,
+        timeout: int = None,
+        retries: int = None
     ) -> Dict[str, Any]:
         """
-        API 요청 공통 메서드
+        API 요청 공통 메서드 (with retry & error handling)
 
         Args:
             method: HTTP 메서드 (GET/POST)
@@ -97,20 +147,89 @@ class KISClient:
             tr_id: 거래ID
             params: 쿼리 파라미터
             body: 요청 바디
+            timeout: 타임아웃 (초)
+            retries: 재시도 횟수
 
         Returns:
             응답 JSON
+
+        Raises:
+            KISTimeoutError: 타임아웃 발생
+            KISConnectionError: 네트워크 오류
+            KISHTTPError: HTTP 4xx/5xx 오류
+            KISRateLimitError: 요청 제한 초과 (429)
+            KISBusinessError: KIS 비즈니스 오류 (rt_cd != 0)
         """
         url = f"{self.auth.base_url}{endpoint}"
         headers = self.auth.get_headers(tr_id)
+        timeout = timeout or self.DEFAULT_TIMEOUT
+        retries = retries if retries is not None else self.MAX_RETRIES
 
-        if method.upper() == "GET":
-            response = requests.get(url, headers=headers, params=params)
-        else:
-            response = requests.post(url, headers=headers, json=body)
+        last_error = None
 
-        response.raise_for_status()
-        return response.json()
+        for attempt in range(retries):
+            try:
+                if method.upper() == "GET":
+                    response = requests.get(
+                        url, headers=headers, params=params, timeout=timeout
+                    )
+                else:
+                    response = requests.post(
+                        url, headers=headers, json=body, timeout=timeout
+                    )
+
+                # HTTP 상태 코드 체크
+                if response.status_code == 429:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"API 요청 제한 초과. {wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                    continue
+
+                if response.status_code >= 400:
+                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                    raise KISHTTPError(error_msg, response.status_code)
+
+                # JSON 파싱
+                data = response.json()
+
+                # KIS API 응답 코드 검증
+                rt_cd = data.get("rt_cd", "0")
+                if rt_cd != "0":
+                    error_msg = data.get("msg1", "Unknown error")
+                    logger.warning(f"KIS API 오류 [{rt_cd}]: {error_msg}")
+                    raise KISBusinessError(error_msg, rt_cd, data)
+
+                return data
+
+            except Timeout as e:
+                last_error = KISTimeoutError(f"API 호출 타임아웃: {endpoint}")
+                logger.warning(f"타임아웃 (시도 {attempt + 1}/{retries}): {endpoint}")
+
+            except ConnectionError as e:
+                last_error = KISConnectionError(f"네트워크 연결 오류: {e}")
+                logger.warning(f"연결 오류 (시도 {attempt + 1}/{retries}): {e}")
+
+            except KISHTTPError:
+                raise  # HTTP 에러는 재시도 안함
+
+            except KISBusinessError:
+                raise  # 비즈니스 에러는 재시도 안함
+
+            except RequestException as e:
+                last_error = KISAPIError(f"요청 오류: {e}")
+                logger.warning(f"요청 오류 (시도 {attempt + 1}/{retries}): {e}")
+
+            # 재시도 대기 (exponential backoff)
+            if attempt < retries - 1:
+                wait_time = self.RETRY_DELAY * (2 ** attempt)
+                time.sleep(wait_time)
+
+        # 모든 재시도 실패
+        if last_error:
+            logger.error(f"API 호출 최종 실패: {endpoint} - {last_error}")
+            raise last_error
+
+        raise KISAPIError(f"API 호출 실패: {endpoint}")
 
     # ========== 시세 조회 ==========
 
