@@ -62,9 +62,19 @@ class QuantDaemon:
         from src.quant_engine import QuantTradingEngine, QuantEngineConfig
         from src.scheduler import WeightConfig
         from src.api import KISClient
+        from src.core import get_controller
 
-        # 최적 가중치 로드
+        # SystemController에서 저장된 설정 로드
+        controller = get_controller()
+        sys_config = controller.config
+
+        # 팩터 가중치 로드 (optimal_weights.json)
         self.weights = WeightConfig.load()
+
+        # SystemController 설정과 동기화
+        # (텔레그램 명령으로 변경된 설정 반영)
+        self.dry_run = sys_config.dry_run
+        self.is_virtual = sys_config.is_virtual
 
         # 실제 계좌 잔고 조회 (조회 실패 시 1천만원 기본값 사용)
         self.total_capital = 10_000_000
@@ -79,14 +89,17 @@ class QuantDaemon:
         except Exception as e:
             logger.warning(f"계좌 잔고 조회 오류: {e} - 기본값 사용: {self.total_capital:,}원")
 
-        self.target_count = self.weights.get('target_count', 15)
+        # 목표 종목 수: SystemController 우선, 없으면 optimal_weights
+        self.target_count = sys_config.target_count or self.weights.get('target_count', 15)
 
         config = QuantEngineConfig(
-            universe_size=200,
+            universe_size=sys_config.universe_size,
             target_stock_count=self.target_count,
             total_capital=self.total_capital,
             dry_run=self.dry_run
         )
+
+        logger.info(f"설정 로드: dry_run={self.dry_run}, target={self.target_count}, virtual={self.is_virtual}")
 
         engine = QuantTradingEngine(config=config, is_virtual=self.is_virtual)
 
@@ -251,14 +264,28 @@ def main():
 
     args = parser.parse_args()
 
-    dry_run = not args.no_dry_run
-    is_virtual = not args.real
+    # SystemController에서 저장된 설정 로드
+    from src.core import get_controller
+    controller = get_controller()
+
+    # 명령줄 인자가 명시적으로 지정된 경우 SystemController에 저장
+    if args.no_dry_run:
+        controller.config.dry_run = False
+        controller.save_config()
+        logger.info("명령줄 인자로 dry_run=False 설정됨")
 
     if args.real:
         confirm = input("⚠️ 실전투자 모드입니다. 계속하시겠습니까? (yes/no): ")
         if confirm.lower() != 'yes':
             print("취소됨")
             return
+        controller.config.is_virtual = False
+        controller.save_config()
+        logger.info("명령줄 인자로 is_virtual=False 설정됨")
+
+    # SystemController의 설정 사용 (기본값 또는 이전에 저장된 값)
+    dry_run = controller.config.dry_run
+    is_virtual = controller.config.is_virtual
 
     daemon = QuantDaemon(dry_run=dry_run, is_virtual=is_virtual)
     daemon.start()
