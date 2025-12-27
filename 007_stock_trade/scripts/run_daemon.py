@@ -40,6 +40,10 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# httpx 로거 레벨 올리기 (텔레그램 getUpdates 폴링 로그 숨김)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 logger.info(f"로그 레벨: {log_level_str}")
 
