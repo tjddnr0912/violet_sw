@@ -65,7 +65,7 @@ class TelegramReporter:
     # 텔레그램 리포트 전송
     send_monitoring_report(metrics, alerts)
     send_optimization_report(result, updated)
-    send_daily_summary(...)
+    send_alert(title, message, level)
 
 class AutoStrategyManager:
     # 자동 관리

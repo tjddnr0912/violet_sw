@@ -782,28 +782,36 @@ class QuantTradingEngine:
             buys = [o for o in executed_orders if o.order_type == "BUY"]
             sells = [o for o in executed_orders if o.order_type == "SELL"]
 
-            message = (
-                f"🔄 <b>리밸런싱 완료</b>\n\n"
-                f"매수: {len(buys)}종목\n"
-                f"매도: {len(sells)}종목\n\n"
+            # 포트폴리오 현재 가치
+            snapshot = self.portfolio.get_snapshot()
+            portfolio_value = int(snapshot.total_value)
+
+            # 매도 종목 정보 (손익률 포함)
+            sell_list = []
+            for o in sells:
+                pos = self.portfolio.positions.get(o.code)
+                pnl_pct = 0
+                if pos and pos.entry_price > 0:
+                    pnl_pct = (o.price - pos.entry_price) / pos.entry_price * 100
+                sell_list.append({
+                    'name': o.name,
+                    'pnl_pct': pnl_pct
+                })
+
+            # 매수 종목 정보 (비중 포함)
+            buy_list = []
+            for o in buys:
+                buy_list.append({
+                    'name': o.name,
+                    'weight': o.weight
+                })
+
+            # 통합된 알림 메서드 사용
+            self.notifier.notify_rebalance(
+                sells=sell_list,
+                buys=buy_list,
+                portfolio_value=portfolio_value
             )
-
-            if sells:
-                message += "<b>매도:</b>\n"
-                for o in sells[:5]:
-                    message += f"• {o.name}\n"
-                if len(sells) > 5:
-                    message += f"...외 {len(sells)-5}종목\n"
-                message += "\n"
-
-            if buys:
-                message += "<b>매수:</b>\n"
-                for o in buys[:5]:
-                    message += f"• {o.name} ({o.quantity}주)\n"
-                if len(buys) > 5:
-                    message += f"...외 {len(buys)-5}종목\n"
-
-            self.notifier.send_message(message)
 
         except Exception as e:
             logger.error(f"리밸런싱 알림 실패: {e}")
@@ -978,6 +986,85 @@ class QuantTradingEngine:
 
     # ========== 스케줄러 ==========
 
+    def _check_initial_setup(self):
+        """
+        최초 실행 시 자동 스크리닝
+
+        조건:
+        1. 보유 포지션이 없음
+        2. 이번 달 리밸런싱을 아직 하지 않음
+        """
+        current_month = datetime.now().strftime("%Y-%m")
+
+        # 이미 이번 달 리밸런싱을 완료한 경우 스킵
+        if self.last_rebalance_month == current_month:
+            logger.info(f"이번 달({current_month}) 리밸런싱 완료됨 - 초기 스크리닝 스킵")
+            return
+
+        # 보유 포지션이 있으면 스킵
+        if self.portfolio.positions:
+            logger.info(f"보유 포지션 {len(self.portfolio.positions)}개 - 초기 스크리닝 스킵")
+            return
+
+        # 주말이면 스킵
+        if datetime.now().weekday() >= 5:
+            logger.info("주말 - 초기 스크리닝 스킵 (다음 거래일에 자동 실행)")
+            return
+
+        logger.info("=" * 60)
+        logger.info("🚀 최초 실행 감지 - 초기 스크리닝 시작")
+        logger.info("=" * 60)
+
+        self.notifier.send_message(
+            "🚀 <b>최초 실행 감지</b>\n\n"
+            "보유 포지션이 없어 초기 스크리닝을 시작합니다.\n"
+            "스크리닝 완료 후 리밸런싱 주문이 생성됩니다."
+        )
+
+        try:
+            # 스크리닝 실행
+            screening_result = self.run_screening()
+            if screening_result is None:
+                logger.error("초기 스크리닝 실패")
+                self.notifier.send_message(
+                    "⚠️ <b>초기 스크리닝 실패</b>\n\n"
+                    "수동으로 /run_screening 명령을 실행해주세요."
+                )
+                return
+
+            # 리밸런싱 주문 생성
+            orders = self.generate_rebalance_orders()
+
+            if orders:
+                now = datetime.now()
+                self.last_rebalance_date = now
+                self.last_rebalance_month = now.strftime("%Y-%m")
+                self._save_state()
+
+                logger.info(f"초기 설정 완료: {len(orders)}개 주문 생성")
+
+                # 장 시간인 경우 즉시 실행 안내
+                if self._is_trading_time():
+                    self.notifier.send_message(
+                        f"✅ <b>초기 스크리닝 완료</b>\n\n"
+                        f"• 생성된 주문: {len(orders)}개\n\n"
+                        f"현재 장 시간입니다.\n"
+                        f"09:00 주문 실행 스케줄에 따라 자동 실행되거나,\n"
+                        f"수동으로 /run_rebalance 후 대기 주문을 실행할 수 있습니다."
+                    )
+                else:
+                    self.notifier.send_message(
+                        f"✅ <b>초기 스크리닝 완료</b>\n\n"
+                        f"• 생성된 주문: {len(orders)}개\n\n"
+                        f"내일 09:00 장 시작 시 자동 실행됩니다."
+                    )
+            else:
+                logger.info("초기 설정 완료: 생성된 주문 없음")
+
+        except Exception as e:
+            logger.error(f"초기 스크리닝 오류: {e}", exc_info=True)
+            self.notifier.notify_error("초기 스크리닝 오류", str(e))
+
     def _setup_schedule(self):
         """스케줄 설정"""
         # 장 전 스크리닝 (리밸런싱 일에만)
@@ -1115,11 +1202,16 @@ class QuantTradingEngine:
         logger.info("=" * 60)
 
         # 알림
+        order_mode = "Dry-Run (모의)" if self.config.dry_run else "실제 주문"
         self.notifier.notify_system("퀀트 엔진 시작", {
             "모드": mode,
-            "목표 종목": self.config.target_stock_count,
+            "주문": order_mode,
+            "목표 종목": f"{self.config.target_stock_count}개",
             "투자금": f"{self.config.total_capital:,}원"
         })
+
+        # 최초 실행 시 자동 스크리닝
+        self._check_initial_setup()
 
         # 스케줄 설정
         self._setup_schedule()
