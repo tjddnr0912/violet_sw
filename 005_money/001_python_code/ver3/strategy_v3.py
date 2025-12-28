@@ -1,10 +1,11 @@
 """
-Version 2 Strategy: Multi-Timeframe Stability-Focused Trading
+Version 3 Strategy: Multi-Timeframe Stability-Focused Trading with Dynamic Factors
 
-This module implements a dual-timeframe trading strategy:
-- Daily timeframe: EMA 50/200 Golden Cross for market regime filtering
-- 4H timeframe: Score-based entry system with Bollinger Bands, RSI, and Stochastic RSI
-- Risk management: ATR-based Chandelier Exit with split position management
+This module implements a dual-timeframe trading strategy with dynamic factor adjustment:
+- Daily timeframe: Extended regime detection (6 regimes including bearish mean reversion)
+- 4H timeframe: Score-based entry system with dynamic weights
+- Risk management: ATR-based dynamic stop-loss with regime-specific adjustments
+- Dynamic factors: Real-time, 4H, Daily, Weekly parameter adjustments
 """
 
 import pandas as pd
@@ -24,19 +25,27 @@ from .config_v3 import (
 )
 from lib.core.config_common import merge_configs, get_common_config
 
+# Import dynamic factor system
+from .dynamic_factor_manager import get_dynamic_factor_manager, DynamicFactorManager
+from .regime_detector import RegimeDetector, ExtendedRegime
 
-class StrategyV2(VersionInterface):
+
+class StrategyV3(VersionInterface):
     """
-    Version 2: Multi-Timeframe Stability-Focused Strategy
+    Version 3: Multi-Timeframe Strategy with Dynamic Factor Adjustment
 
     Strategy Logic:
-    1. Market Regime Filter (Daily): Only trade when EMA50 > EMA200 (Golden Cross)
-    2. Entry Scoring (4H): Score-based system (need 3+ points)
-       - BB lower touch: +1
-       - RSI < 30: +1
-       - Stoch RSI bullish cross below 20: +2
-    3. Position Management: Split entry (50%), partial exits at BB mid/upper
-    4. Stop-Loss: ATR-based Chandelier Exit with breakeven adjustment
+    1. Market Regime Detection (Daily): Extended 6-regime classification
+       - Strong Bullish, Bullish, Neutral, Bearish, Strong Bearish, Ranging
+    2. Entry Scoring (4H): Dynamic weight-based system
+       - BB lower touch: dynamic weight
+       - RSI oversold: dynamic weight with dynamic threshold
+       - Stoch RSI cross: dynamic weight with dynamic threshold
+    3. Regime-Specific Strategy:
+       - Bullish: Trend following with BB Upper targets
+       - Bearish: Mean reversion with BB Middle targets and full exit
+       - Ranging: Oscillation trading with tight stops
+    4. Dynamic Factors: ATR-based position sizing and stop-loss adjustments
     """
 
     VERSION_NAME = VERSION_METADATA['name']
@@ -47,7 +56,7 @@ class StrategyV2(VersionInterface):
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, logger: Optional[TradingLogger] = None):
         """
-        Initialize Version 2 Strategy.
+        Initialize Version 3 Strategy with Dynamic Factors.
 
         Args:
             config: Optional configuration overrides
@@ -78,10 +87,16 @@ class StrategyV2(VersionInterface):
         self.risk_config = self.config.get('RISK_CONFIG', {})
         self.exit_config = self.config.get('EXIT_CONFIG', {})
 
-        # Configuration is already validated in config_v3.py
-        # Skip validation step for Ver3
+        # Initialize dynamic factor system
+        self.factor_manager = get_dynamic_factor_manager(self.config, self.logger)
+        self.regime_detector = RegimeDetector(self.config)
 
-        self.logger.logger.info(f"Strategy V2 initialized: {self.VERSION_DISPLAY_NAME}")
+        # Cache for current regime strategy
+        self._current_regime = ExtendedRegime.UNKNOWN
+        self._current_regime_strategy = {}
+
+        self.logger.logger.info(f"Strategy V3 initialized: {self.VERSION_DISPLAY_NAME}")
+        self.logger.logger.info(f"  Dynamic factors enabled: True")
 
     # ========================================
     # VersionInterface Implementation
@@ -121,7 +136,7 @@ class StrategyV2(VersionInterface):
 
     def analyze_market(self, coin_symbol: str, interval: str = "4h", limit: int = 200) -> Dict[str, Any]:
         """
-        Analyze market using dual timeframe strategy.
+        Analyze market using dual timeframe strategy with dynamic factors.
 
         Args:
             coin_symbol: Cryptocurrency symbol (e.g., 'BTC')
@@ -129,12 +144,11 @@ class StrategyV2(VersionInterface):
             limit: Number of candles to analyze
 
         Returns:
-            Dictionary containing analysis results
+            Dictionary containing analysis results with dynamic factor adjustments
         """
         try:
             # Step 1: Fetch data for both timeframes
-            regime_interval = self.timeframe_config.get('regime_interval', '24h')  # Bithumb uses '24h' not '1d'
-            regime_limit = self.timeframe_config.get('regime_candles', 250)
+            regime_interval = self.timeframe_config.get('regime_interval', '24h')
 
             # Fetch daily data for regime filter
             regime_df = get_candlestick(coin_symbol, regime_interval)
@@ -158,65 +172,119 @@ class StrategyV2(VersionInterface):
                     'entry_score': 0,
                 }
 
-            # Step 2: Determine market regime (Daily timeframe)
-            regime_df = self._calculate_regime_indicators(regime_df)
-            market_regime = self._determine_market_regime(regime_df)
+            # Step 2: Calculate technical indicators (4H timeframe)
+            exec_df = self._calculate_execution_indicators(exec_df)
 
-            # Step 3: If not bullish regime, do not enter
-            if market_regime != 'bullish':
+            # Step 3: Apply dynamic factors based on ATR
+            current_atr = float(exec_df['atr'].iloc[-1])
+            current_price = float(exec_df['close'].iloc[-1])
+            dynamic_factors = self.factor_manager.update_realtime_factors(
+                coin_symbol, current_atr, current_price
+            )
+
+            # Step 4: Detect extended market regime (6 regimes)
+            regime_df = self._calculate_regime_indicators(regime_df)
+            extended_regime, regime_metadata = self.regime_detector.detect_regime(regime_df, exec_df)
+            self._current_regime = extended_regime
+            market_regime = extended_regime.value
+
+            # Step 5: Get regime-specific strategy parameters
+            regime_strategy = self.regime_detector.get_regime_strategy(extended_regime)
+            self._current_regime_strategy = regime_strategy
+
+            # Update daily factors if regime changed
+            self.factor_manager.update_daily_factors(
+                market_regime,
+                regime_metadata.get('ema_diff_pct', 0.0)
+            )
+
+            # Step 6: Check if entry is allowed for this regime
+            if not regime_strategy['allow_entry']:
                 return {
                     'action': 'HOLD',
                     'signal_strength': 0.0,
-                    'reason': f'Market regime is {market_regime}, only trading in bullish regime',
+                    'reason': f'Entry not allowed in {market_regime} regime',
                     'market_regime': market_regime,
                     'entry_score': 0,
                     'regime_data': self._get_regime_data(regime_df),
+                    'regime_metadata': regime_metadata,
+                    'dynamic_factors': dynamic_factors,
                     'price_data': exec_df,
                 }
 
-            # Step 4: Calculate technical indicators (4H timeframe)
-            exec_df = self._calculate_execution_indicators(exec_df)
+            # Step 7: Calculate entry score with dynamic weights
+            entry_score, score_details = self._calculate_entry_score_dynamic(exec_df)
 
-            # Step 5: Calculate entry score
-            entry_score, score_details = self._calculate_entry_score(exec_df)
+            # Step 8: Apply regime-specific entry threshold modifier
+            base_min_score = self.scoring_config.get('min_entry_score', 2)
+            adjusted_min_score = max(1, min(4, int(
+                base_min_score * regime_strategy['entry_threshold_modifier']
+            )))
 
-            # Step 6: Determine action based on entry score
-            min_score = self.scoring_config.get('min_entry_score', 3)
+            # Step 9: For bearish regimes, also check extreme oversold conditions
+            if extended_regime in [ExtendedRegime.BEARISH, ExtendedRegime.STRONG_BEARISH]:
+                bearish_conditions = self.regime_detector.get_bearish_entry_conditions(exec_df)
+                if not bearish_conditions.get('is_extreme_oversold', False):
+                    # Not extreme enough for bearish entry
+                    return {
+                        'action': 'HOLD',
+                        'signal_strength': 0.0,
+                        'reason': f'Not extreme oversold for {market_regime} entry. '
+                                  f'({bearish_conditions.get("extreme_condition_count", 0)}/3 conditions)',
+                        'market_regime': market_regime,
+                        'entry_score': entry_score,
+                        'score_details': score_details,
+                        'regime_data': self._get_regime_data(regime_df),
+                        'regime_metadata': regime_metadata,
+                        'bearish_conditions': bearish_conditions,
+                        'dynamic_factors': dynamic_factors,
+                        'price_data': exec_df,
+                    }
 
-            if entry_score >= min_score:
+            # Step 10: Determine action based on adjusted entry score
+            if entry_score >= adjusted_min_score:
                 action = 'BUY'
-                signal_strength = entry_score / 4.0  # Normalize to 0-1 (max score is 4)
-                reason = f'Entry score {entry_score}/4 (min: {min_score}). {score_details}'
+                signal_strength = min(1.0, entry_score / 4.0)
+                reason = (f'Entry score {entry_score:.1f}/4 >= {adjusted_min_score} '
+                         f'({market_regime} regime). {score_details}')
             else:
                 action = 'HOLD'
                 signal_strength = 0.0
-                reason = f'Entry score {entry_score}/4 below threshold {min_score}. {score_details}'
+                reason = (f'Entry score {entry_score:.1f}/4 < {adjusted_min_score} '
+                         f'({market_regime} regime). {score_details}')
 
-            # Step 7: Calculate stop-loss and targets
-            stop_loss_price = self._calculate_chandelier_stop(exec_df)
-            target_prices = self._calculate_target_prices(exec_df)
+            # Step 11: Calculate stop-loss with dynamic multiplier
+            stop_loss_price = self._calculate_chandelier_stop_dynamic(exec_df, regime_strategy)
 
-            # Get current price
-            current_price = float(exec_df['close'].iloc[-1])
+            # Step 12: Calculate targets based on regime
+            target_prices = self._calculate_target_prices_dynamic(exec_df, regime_strategy)
 
             return {
                 'action': action,
                 'signal_strength': signal_strength,
                 'reason': reason,
                 'market_regime': market_regime,
+                'extended_regime': extended_regime.value,
                 'entry_score': entry_score,
+                'adjusted_min_score': adjusted_min_score,
                 'score_details': score_details,
                 'current_price': current_price,
                 'stop_loss_price': stop_loss_price,
                 'target_prices': target_prices,
                 'regime_data': self._get_regime_data(regime_df),
+                'regime_metadata': regime_metadata,
+                'regime_strategy': regime_strategy,
                 'execution_data': self._get_execution_data(exec_df),
+                'dynamic_factors': dynamic_factors,
                 'price_data': exec_df,
                 'indicators': self._get_latest_indicators(exec_df),
+                'entry_conditions': self._get_entry_conditions(entry_score, exec_df),
             }
 
         except Exception as e:
             self.logger.log_error(f"Market analysis failed for {coin_symbol}", e)
+            import traceback
+            self.logger.logger.error(traceback.format_exc())
             return {
                 'action': 'HOLD',
                 'signal_strength': 0.0,
@@ -224,6 +292,38 @@ class StrategyV2(VersionInterface):
                 'market_regime': 'error',
                 'entry_score': 0,
             }
+
+    def _get_entry_conditions(self, score: float, df: pd.DataFrame) -> List[str]:
+        """Extract which entry conditions were met for performance tracking."""
+        if df is None or len(df) < 2:
+            return []
+
+        conditions = []
+        latest = df.iloc[-1]
+        previous = df.iloc[-2]
+
+        # Get dynamic thresholds
+        factors = self.factor_manager.get_current_factors()
+        rsi_threshold = factors.get('rsi_oversold_threshold', 30)
+        stoch_threshold = factors.get('stoch_oversold_threshold', 20)
+
+        # Check BB touch
+        if latest['low'] <= latest['bb_lower']:
+            conditions.append('bb_touch')
+
+        # Check RSI oversold
+        if latest['rsi'] < rsi_threshold:
+            conditions.append('rsi_oversold')
+
+        # Check Stoch cross
+        k_cross = (previous['stoch_rsi_k'] <= previous['stoch_rsi_d'] and
+                   latest['stoch_rsi_k'] > latest['stoch_rsi_d'])
+        both_low = (latest['stoch_rsi_k'] < stoch_threshold and
+                    latest['stoch_rsi_d'] < stoch_threshold)
+        if k_cross and both_low:
+            conditions.append('stoch_cross')
+
+        return conditions
 
     # ========================================
     # Regime Filter (Daily Timeframe)
@@ -547,4 +647,262 @@ class StrategyV2(VersionInterface):
             indicator: float(latest.get(indicator, 0))
             for indicator in self.get_indicator_names()
             if indicator in latest.index
+        }
+
+    # ========================================
+    # Dynamic Factor Methods
+    # ========================================
+
+    def _calculate_entry_score_dynamic(self, df: pd.DataFrame) -> Tuple[float, str]:
+        """
+        Calculate entry score with dynamic weights from factor manager.
+
+        Dynamic weights adjust based on:
+        - Recent performance (weekly update)
+        - Market volatility (realtime)
+        - Per-condition win rates
+
+        Returns:
+            Tuple of (weighted_score, details_string)
+        """
+        if df is None or len(df) < 2:
+            return 0.0, "Insufficient data"
+
+        # Get current dynamic factors
+        factors = self.factor_manager.get_current_factors()
+        dynamic_weights = factors.get('entry_weights', {
+            'bb_touch': 1.0,
+            'rsi_oversold': 1.0,
+            'stoch_cross': 2.0,
+        })
+
+        # Get dynamic thresholds
+        rsi_threshold = factors.get('rsi_oversold_threshold', 30)
+        stoch_threshold = factors.get('stoch_oversold_threshold', 20)
+
+        score = 0.0
+        details = []
+        rules = self.scoring_config.get('scoring_rules', {})
+
+        latest = df.iloc[-1]
+        previous = df.iloc[-2]
+
+        # Condition 1: BB lower touch (dynamic weight)
+        if rules.get('bb_touch', {}).get('enabled', True):
+            base_points = rules['bb_touch'].get('points', 1)
+            weight = dynamic_weights.get('bb_touch', 1.0)
+
+            if latest['low'] <= latest['bb_lower']:
+                score += base_points * weight
+                details.append(f"BB touch ✓ ({weight:.1f}x)")
+            else:
+                details.append("BB touch ✗")
+
+        # Condition 2: RSI oversold with dynamic threshold (+dynamic weight)
+        if rules.get('rsi_oversold', {}).get('enabled', True):
+            base_points = rules['rsi_oversold'].get('points', 1)
+            weight = dynamic_weights.get('rsi_oversold', 1.0)
+
+            if latest['rsi'] < rsi_threshold:
+                score += base_points * weight
+                details.append(f"RSI<{rsi_threshold:.0f} ✓ ({weight:.1f}x)")
+            else:
+                details.append(f"RSI<{rsi_threshold:.0f} ✗")
+
+        # Condition 3: Stochastic RSI bullish cross with dynamic threshold (+dynamic weight)
+        if rules.get('stoch_rsi_cross', {}).get('enabled', True):
+            base_points = rules['stoch_rsi_cross'].get('points', 2)
+            weight = dynamic_weights.get('stoch_cross', 1.0)
+
+            # Check for bullish cross: %K crosses above %D
+            k_cross_above = (
+                previous['stoch_rsi_k'] <= previous['stoch_rsi_d'] and
+                latest['stoch_rsi_k'] > latest['stoch_rsi_d']
+            )
+
+            # Both must be below dynamic threshold
+            both_below_threshold = (
+                latest['stoch_rsi_k'] < stoch_threshold and
+                latest['stoch_rsi_d'] < stoch_threshold
+            )
+
+            if k_cross_above and both_below_threshold:
+                score += base_points * weight
+                details.append(f"Stoch cross<{stoch_threshold:.0f} ✓ ({weight:.1f}x)")
+            else:
+                details.append(f"Stoch cross<{stoch_threshold:.0f} ✗")
+
+        details_str = ", ".join(details)
+        return score, details_str
+
+    def _calculate_chandelier_stop_dynamic(
+        self,
+        df: pd.DataFrame,
+        regime_strategy: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate Chandelier Exit stop-loss with regime-specific adjustments.
+
+        Regime adjustments:
+        - Bullish: Wider stops (1.0-1.2x multiplier)
+        - Bearish: Tighter stops (0.5-0.7x multiplier)
+        - Ranging: Tight stops (0.6x multiplier)
+
+        Formula: Highest High - (ATR × Base Multiplier × Regime Modifier × Dynamic Factor)
+
+        Args:
+            df: Price DataFrame with ATR calculated
+            regime_strategy: Regime-specific strategy parameters
+
+        Returns:
+            Stop-loss price
+        """
+        if df is None or len(df) < 14:
+            return 0.0
+
+        # Get current dynamic factors
+        factors = self.factor_manager.get_current_factors()
+
+        # Base chandelier multiplier from config
+        base_multiplier = self.indicator_config.get('chandelier_multiplier', 3.0)
+
+        # Dynamic multiplier adjustment (from ATR-based volatility)
+        dynamic_multiplier = factors.get('chandelier_multiplier_modifier', 1.0)
+
+        # Regime-specific stop-loss modifier
+        regime_stop_modifier = regime_strategy.get('stop_loss_modifier', 1.0)
+
+        # Calculate final multiplier
+        final_multiplier = base_multiplier * dynamic_multiplier * regime_stop_modifier
+
+        # Clamp to reasonable bounds
+        bounds = self.config.get('DYNAMIC_FACTOR_CONFIG', {}).get(
+            'chandelier_multiplier_bounds', (2.0, 5.0)
+        )
+        final_multiplier = max(bounds[0], min(bounds[1], final_multiplier))
+
+        # Calculate stop price
+        atr_period = self.indicator_config.get('atr_period', 14)
+        latest_atr = df['atr'].iloc[-1]
+        highest_high = df['high'].iloc[-atr_period:].max()
+
+        chandelier_stop = highest_high - (latest_atr * final_multiplier)
+
+        self.logger.logger.debug(
+            f"Chandelier stop: base={base_multiplier:.1f}, "
+            f"dynamic={dynamic_multiplier:.2f}, regime={regime_stop_modifier:.2f}, "
+            f"final={final_multiplier:.2f}, price={chandelier_stop:.0f}"
+        )
+
+        return float(chandelier_stop)
+
+    def _calculate_target_prices_dynamic(
+        self,
+        df: pd.DataFrame,
+        regime_strategy: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Calculate target prices with regime-specific adjustments.
+
+        Regime-based targets:
+        - Bullish/Strong Bullish: BB Middle (TP1) → BB Upper (TP2)
+        - Neutral: BB Middle only, partial exit
+        - Bearish/Strong Bearish: BB Middle only, FULL EXIT (conservative)
+        - Ranging: BB Middle only
+
+        Args:
+            df: Price DataFrame with Bollinger Bands
+            regime_strategy: Regime-specific parameters
+
+        Returns:
+            Dictionary with target prices and exit strategy
+        """
+        if df is None or len(df) == 0:
+            return {}
+
+        latest = df.iloc[-1]
+        current_price = float(latest['close'])
+        bb_middle = float(latest['bb_middle'])
+        bb_upper = float(latest['bb_upper'])
+
+        # Get regime-specific profit target setting
+        profit_target = regime_strategy.get('profit_target', 'bb_middle_upper')
+        full_exit_at_first = regime_strategy.get('full_exit_at_first_target', False)
+
+        # Also check config for bearish override
+        if self.exit_config.get('full_exit_at_first_target', False):
+            full_exit_at_first = True
+
+        # Calculate stop-loss using dynamic method
+        stop_loss = self._calculate_chandelier_stop_dynamic(df, regime_strategy)
+
+        if profit_target == 'bb_upper_only':
+            # Strong bullish: aggressive target
+            return {
+                'first_target': bb_upper,
+                'second_target': bb_upper * 1.01,  # Slight buffer above upper
+                'stop_loss': stop_loss,
+                'mode': 'bb_upper_only',
+                'full_exit_at_first': False,
+                'exit_strategy': 'Trail stop after first target',
+            }
+
+        elif profit_target == 'bb_middle_upper':
+            # Bullish: Standard dual target
+            return {
+                'first_target': bb_middle,
+                'second_target': bb_upper,
+                'stop_loss': stop_loss,
+                'mode': 'bb_middle_upper',
+                'full_exit_at_first': False,
+                'exit_strategy': 'Exit 50% at BB middle, trail remaining to BB upper',
+            }
+
+        elif profit_target == 'bb_middle_only':
+            # Bearish/Ranging: Conservative single target
+            return {
+                'first_target': bb_middle,
+                'second_target': bb_middle,  # Same as first (full exit)
+                'stop_loss': stop_loss,
+                'mode': 'bb_middle_only',
+                'full_exit_at_first': full_exit_at_first,
+                'exit_strategy': 'FULL EXIT at BB middle (conservative bear market)',
+            }
+
+        else:
+            # Default fallback
+            return {
+                'first_target': bb_middle,
+                'second_target': bb_upper,
+                'stop_loss': stop_loss,
+                'mode': 'default',
+                'full_exit_at_first': False,
+                'exit_strategy': 'Standard dual target',
+            }
+
+    # ========================================
+    # Version Interface Methods
+    # ========================================
+
+    def get_strategy_description(self) -> str:
+        """Return strategy description."""
+        return self.VERSION_DESCRIPTION
+
+    def get_version_info(self) -> Dict[str, Any]:
+        """Return version metadata."""
+        return {
+            'name': self.VERSION_NAME,
+            'display_name': self.VERSION_DISPLAY_NAME,
+            'description': self.VERSION_DESCRIPTION,
+            'author': self.VERSION_AUTHOR,
+            'date': self.VERSION_DATE,
+            'features': [
+                'Multi-coin portfolio trading',
+                'Dual timeframe analysis (Daily + 4H)',
+                'Extended 6-regime detection',
+                'Dynamic factor adjustment',
+                'Bearish mean reversion strategy',
+                'ATR-based position sizing',
+                'Performance-based weekly optimization',
+            ],
         }

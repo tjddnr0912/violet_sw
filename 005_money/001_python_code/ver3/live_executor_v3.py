@@ -34,6 +34,7 @@ from pathlib import Path
 from lib.api.bithumb_api import BithumbAPI
 from lib.core.logger import TradingLogger
 from lib.core.telegram_notifier import get_telegram_notifier
+from ver3.performance_tracker import get_performance_tracker
 
 
 # Bithumb 코인별 소수점 자릿수 제한
@@ -230,6 +231,9 @@ class LiveExecutorV3:
         # Initialize Telegram notifier
         self.telegram = get_telegram_notifier()
 
+        # Initialize performance tracker for dynamic factor optimization
+        self.performance_tracker = get_performance_tracker()
+
         self.logger.logger.info(f"LiveExecutorV3 initialized (thread-safe) | Positions loaded: {len(self.positions)}")
 
     # ========== POSITION MANAGEMENT ==========
@@ -328,7 +332,9 @@ class LiveExecutorV3:
         units: float,
         price: float,
         dry_run: bool = True,
-        reason: str = ""
+        reason: str = "",
+        entry_conditions: List[str] = None,
+        market_regime: str = "unknown"
     ) -> Dict[str, Any]:
         """
         Execute a buy or sell order.
@@ -340,6 +346,8 @@ class LiveExecutorV3:
             price: Current price (for dry-run and logging)
             dry_run: If True, simulate order without real execution
             reason: Reason for order (for logging)
+            entry_conditions: List of entry conditions met (for performance tracking)
+            market_regime: Market regime at entry time (for performance tracking)
 
         Returns:
             Dictionary with execution result:
@@ -349,6 +357,7 @@ class LiveExecutorV3:
             - executed_units: float
             - message: str
         """
+        entry_conditions = entry_conditions or []
         try:
             total_value = units * price
 
@@ -468,6 +477,19 @@ class LiveExecutorV3:
                 except Exception as e:
                     self.logger.logger.warning(f"Failed to send Telegram notification: {e}")
 
+                # Record entry for performance tracking (BUY only, new positions only)
+                if action == 'BUY' and entry_conditions:
+                    try:
+                        trade_id = self.performance_tracker.record_entry(
+                            coin=ticker,
+                            entry_price=price,
+                            entry_conditions=entry_conditions,
+                            regime=market_regime
+                        )
+                        self.logger.logger.debug(f"Performance tracker: Recorded entry {trade_id}")
+                    except Exception as e:
+                        self.logger.logger.warning(f"Failed to record entry for performance tracking: {e}")
+
                 # Calculate fee (using actual executed units)
                 total_value = actual_executed_units * price
                 fee = total_value * 0.0005  # 0.05% Bithumb fee
@@ -489,6 +511,21 @@ class LiveExecutorV3:
                     )
                     pnl = profit_amount
                     self.logger.logger.info(f"SELL P&L: {pnl:+,.0f} KRW ({profit_rate:+.2f}%)")
+
+                    # Record exit for performance tracking
+                    try:
+                        exit_recorded = self.performance_tracker.record_exit(
+                            coin=ticker,
+                            exit_price=price,
+                            profit_krw=pnl,
+                            profit_pct=profit_rate
+                        )
+                        if exit_recorded:
+                            self.logger.logger.debug(f"Performance tracker: Recorded exit for {ticker}")
+                        else:
+                            self.logger.logger.debug(f"Performance tracker: No open trade found for {ticker}")
+                    except Exception as e:
+                        self.logger.logger.warning(f"Failed to record exit for performance tracking: {e}")
 
                 # Log transaction to JSON (for GUI display)
                 if self.transaction_history:

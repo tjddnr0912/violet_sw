@@ -32,6 +32,10 @@ from lib.interfaces.version_interface import VersionInterface
 from lib.core.telegram_notifier import get_telegram_notifier
 from lib.core.telegram_bot_handler import get_telegram_bot_handler
 
+# Dynamic factor system imports
+from ver3.dynamic_factor_manager import get_dynamic_factor_manager
+from ver3.performance_tracker import get_performance_tracker
+
 
 class TradingBotV3(VersionInterface):
     """
@@ -119,6 +123,14 @@ class TradingBotV3(VersionInterface):
 
         # Daily summary tracking
         self._daily_summary_sent_date = None  # Track which date we sent summary for
+
+        # Initialize dynamic factor system
+        self.factor_manager = get_dynamic_factor_manager(config, self.logger)
+        self.performance_tracker = get_performance_tracker()
+
+        # Factor update tracking
+        self._last_daily_factor_update = None  # Track last daily factor update date
+        self._last_weekly_factor_update = None  # Track last weekly factor update week
 
         self.logger.logger.info("=" * 60)
         self.logger.logger.info(f"Trading Bot V3 Initialized")
@@ -261,6 +273,9 @@ class TradingBotV3(VersionInterface):
                     self.logger.log_error("Error in analysis cycle", e)
                     import traceback
                     self.logger.logger.error(traceback.format_exc())
+
+                # Check and run scheduled factor updates (daily at 00:00, weekly on Sunday)
+                self._check_scheduled_factor_updates()
 
                 # Check and send daily summary at 23:50
                 self._check_and_send_daily_summary()
@@ -531,3 +546,219 @@ Configuration:
         """
         self.logger.logger.info("Manually triggered daily summary...")
         return self._send_daily_summary()
+
+    # ========================================
+    # Dynamic Factor Update Methods
+    # ========================================
+
+    def _check_scheduled_factor_updates(self):
+        """
+        Check and run scheduled factor updates.
+
+        Update Schedule:
+        - Daily (00:00-00:15): Update regime-based factors (EMA diff, volatility classification)
+        - Weekly (Sunday 00:00-00:15): Update entry weights based on performance
+        """
+        now = datetime.now()
+        current_hour = now.hour
+        current_minute = now.minute
+        today_date = now.strftime('%Y-%m-%d')
+        current_week = now.strftime('%Y-W%W')  # e.g., '2025-W51'
+
+        # Check for daily update window (00:00 ~ 00:15)
+        if current_hour == 0 and 0 <= current_minute <= 15:
+            if self._last_daily_factor_update != today_date:
+                self.logger.logger.info(f"Running daily factor update for {today_date}...")
+                success = self._run_daily_factor_update()
+                if success:
+                    self._last_daily_factor_update = today_date
+                    self.logger.logger.info("Daily factor update completed")
+
+                # Check for weekly update (Sunday = weekday 6)
+                if now.weekday() == 6:  # Sunday
+                    weekly_update_day = self.config.get('DYNAMIC_FACTOR_CONFIG', {}).get('weekly_update_day', 6)
+                    if now.weekday() == weekly_update_day:
+                        if self._last_weekly_factor_update != current_week:
+                            self.logger.logger.info(f"Running weekly factor update for {current_week}...")
+                            success = self._run_weekly_factor_update()
+                            if success:
+                                self._last_weekly_factor_update = current_week
+                                self.logger.logger.info("Weekly factor update completed")
+
+    def _run_daily_factor_update(self) -> bool:
+        """
+        Run daily factor update.
+
+        Updates:
+        - Regime-based parameters (based on latest daily candle)
+        - Volatility level classification
+        - BB parameters (if needed)
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            self.logger.logger.info("\n" + "=" * 60)
+            self.logger.logger.info("Daily Factor Update")
+            self.logger.logger.info("=" * 60)
+
+            # Get latest analysis results for regime information
+            # We use the first coin as reference for daily regime
+            if self.coins:
+                reference_coin = self.coins[0]
+                monitor = self.portfolio_manager.get_monitor(reference_coin)
+                if monitor:
+                    analysis = monitor.analyze()
+                    regime = analysis.get('market_regime', 'unknown')
+                    regime_metadata = analysis.get('regime_metadata', {})
+                    ema_diff_pct = regime_metadata.get('ema_diff_pct', 0.0)
+
+                    # Update daily factors in factor manager
+                    new_factors = self.factor_manager.update_daily_factors(regime, ema_diff_pct)
+
+                    self.logger.logger.info(f"  Regime: {regime}")
+                    self.logger.logger.info(f"  EMA Diff: {ema_diff_pct:.2f}%")
+                    self.logger.logger.info(f"  Updated factors: {list(new_factors.keys())}")
+
+                    # Send notification
+                    self._send_factor_update_notification('daily', new_factors)
+
+                    return True
+
+            self.logger.logger.warning("No coins available for daily factor update")
+            return False
+
+        except Exception as e:
+            self.logger.log_error("Error in daily factor update", e)
+            import traceback
+            self.logger.logger.error(traceback.format_exc())
+            return False
+
+    def _run_weekly_factor_update(self) -> bool:
+        """
+        Run weekly factor update based on trading performance.
+
+        Updates:
+        - Entry condition weights (BB, RSI, Stoch)
+        - RSI/Stoch thresholds based on win rates
+        - Minimum entry score
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            self.logger.logger.info("\n" + "=" * 60)
+            self.logger.logger.info("Weekly Factor Update (Performance-Based)")
+            self.logger.logger.info("=" * 60)
+
+            # Get recent performance from tracker
+            performance = self.performance_tracker.get_recent_performance(days=7)
+
+            total_trades = performance.get('total_trades', 0)
+            min_trades = self.config.get('DYNAMIC_FACTOR_CONFIG', {}).get('min_trades_for_weekly_update', 5)
+
+            if total_trades < min_trades:
+                self.logger.logger.info(
+                    f"  Skipping weekly update: {total_trades} trades < {min_trades} required"
+                )
+                return True  # Not an error, just skip
+
+            # Extract performance metrics
+            win_rate = performance.get('win_rate', 0.5)
+            profit_factor = performance.get('profit_factor', 1.0)
+
+            # Get trade records for detailed analysis
+            trades = performance.get('trades', [])
+
+            self.logger.logger.info(f"  7-Day Performance:")
+            self.logger.logger.info(f"    Total Trades: {total_trades}")
+            self.logger.logger.info(f"    Win Rate: {win_rate:.1%}")
+            self.logger.logger.info(f"    Profit Factor: {profit_factor:.2f}")
+
+            # Update weekly factors
+            new_factors = self.factor_manager.update_weekly_factors(
+                win_rate=win_rate,
+                profit_factor=profit_factor,
+                trades=trades
+            )
+
+            # Log updated weights
+            entry_weights = new_factors.get('entry_weights', {})
+            self.logger.logger.info(f"  Updated Entry Weights:")
+            for condition, weight in entry_weights.items():
+                self.logger.logger.info(f"    {condition}: {weight:.2f}")
+
+            # Send notification
+            self._send_factor_update_notification('weekly', new_factors)
+
+            return True
+
+        except Exception as e:
+            self.logger.log_error("Error in weekly factor update", e)
+            import traceback
+            self.logger.logger.error(traceback.format_exc())
+            return False
+
+    def _send_factor_update_notification(self, update_type: str, factors: Dict[str, Any]):
+        """
+        Send Telegram notification for factor updates.
+
+        Args:
+            update_type: 'daily' or 'weekly'
+            factors: Updated factors dictionary
+        """
+        try:
+            if update_type == 'daily':
+                message = (
+                    f"📊 Daily Factor Update\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Chandelier Mult: {factors.get('chandelier_multiplier_modifier', 1.0):.2f}x\n"
+                    f"Position Size: {factors.get('position_size_modifier', 1.0):.0%}\n"
+                    f"RSI Threshold: {factors.get('rsi_oversold_threshold', 30):.0f}\n"
+                    f"Volatility: {factors.get('volatility_level', 'unknown')}"
+                )
+            else:
+                entry_weights = factors.get('entry_weights', {})
+                message = (
+                    f"📈 Weekly Factor Update\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Entry Weights:\n"
+                    f"  BB Touch: {entry_weights.get('bb_touch', 1.0):.2f}\n"
+                    f"  RSI: {entry_weights.get('rsi_oversold', 1.0):.2f}\n"
+                    f"  Stoch: {entry_weights.get('stoch_cross', 2.0):.2f}\n"
+                    f"Min Score: {factors.get('min_entry_score', 2)}"
+                )
+
+            self.telegram.send_message(message)
+
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to send factor update notification: {e}")
+
+    def get_current_factors(self) -> Dict[str, Any]:
+        """
+        Get current dynamic factors (for GUI display).
+
+        Returns:
+            Dictionary with all current dynamic factors
+        """
+        return self.factor_manager.get_current_factors()
+
+    def force_factor_update(self, update_type: str = 'all') -> bool:
+        """
+        Manually force factor update (for testing or manual adjustment).
+
+        Args:
+            update_type: 'daily', 'weekly', or 'all'
+
+        Returns:
+            bool: True if successful
+        """
+        self.logger.logger.info(f"Manually forcing {update_type} factor update...")
+
+        success = True
+        if update_type in ['daily', 'all']:
+            success = self._run_daily_factor_update() and success
+        if update_type in ['weekly', 'all']:
+            success = self._run_weekly_factor_update() and success
+
+        return success

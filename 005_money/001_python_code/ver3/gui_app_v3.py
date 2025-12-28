@@ -48,6 +48,8 @@ from lib.core.logger import TradingLogger, TransactionHistory
 from lib.core.config_manager import ConfigManager
 from lib.api.bithumb_api import get_ticker, BithumbAPI
 from ver3 import config_v3
+from ver3.dynamic_factor_manager import get_dynamic_factor_manager
+from ver3.performance_tracker import get_performance_tracker
 
 
 class TradingBotGUIV3:
@@ -112,6 +114,10 @@ class TradingBotGUIV3:
 
         # API client
         self.api_client = None
+
+        # Initialize dynamic factor system (for GUI display)
+        self.factor_manager = get_dynamic_factor_manager(self.config, None)  # No logger for GUI
+        self.performance_tracker = get_performance_tracker()
 
         # v3-specific status data
         self.bot_status = {
@@ -183,6 +189,10 @@ class TradingBotGUIV3:
         history_tab = ttk.Frame(self.notebook)
         self.notebook.add(history_tab, text='📋 Transaction History')
 
+        # TAB 5: Dynamic Factors
+        factors_tab = ttk.Frame(self.notebook)
+        self.notebook.add(factors_tab, text='🎚️ Dynamic Factors')
+
         # Configure Portfolio Tab
         portfolio_tab.columnconfigure(0, weight=1)
         portfolio_tab.rowconfigure(1, weight=1)
@@ -202,6 +212,9 @@ class TradingBotGUIV3:
 
         # Configure Transaction History Tab
         self.create_transaction_history_tab(history_tab)
+
+        # Configure Dynamic Factors Tab
+        self.create_dynamic_factors_tab(factors_tab)
 
     def create_control_panel(self, parent):
         """Create top control panel"""
@@ -487,6 +500,192 @@ Portfolio Multi-Coin Strategy (Ver3):
         scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self.transaction_tree.yview)
         self.transaction_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+
+    def create_dynamic_factors_tab(self, parent):
+        """Create dynamic factors monitoring tab"""
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(0, weight=0)
+        parent.rowconfigure(1, weight=1)
+        parent.rowconfigure(2, weight=1)
+
+        # Header with refresh button
+        header_frame = ttk.Frame(parent)
+        header_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), padx=10, pady=10)
+
+        ttk.Label(
+            header_frame,
+            text="🎚️ Dynamic Factor Adjustment System",
+            style='Title.TLabel',
+            font=('Arial', 14, 'bold')
+        ).pack(side=tk.LEFT)
+
+        refresh_btn = ttk.Button(
+            header_frame,
+            text="🔄 Refresh",
+            command=self._refresh_dynamic_factors
+        )
+        refresh_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Left column: Current Factors
+        factors_frame = ttk.LabelFrame(parent, text="Current Dynamic Factors", padding=10)
+        factors_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+
+        self.factors_text = tk.Text(factors_frame, height=18, width=45, font=('Courier', 9))
+        self.factors_text.pack(fill=tk.BOTH, expand=True)
+        self.factors_text.insert('1.0', "Loading dynamic factors...")
+        self.factors_text.config(state='disabled')
+
+        # Right column: Performance Summary
+        performance_frame = ttk.LabelFrame(parent, text="7-Day Performance Summary", padding=10)
+        performance_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+
+        self.performance_text = tk.Text(performance_frame, height=18, width=45, font=('Courier', 9))
+        self.performance_text.pack(fill=tk.BOTH, expand=True)
+        self.performance_text.insert('1.0', "Loading performance data...")
+        self.performance_text.config(state='disabled')
+
+        # Bottom: Factor Explanation
+        explanation_frame = ttk.LabelFrame(parent, text="Factor Adjustment Schedule", padding=10)
+        explanation_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+
+        explanation_text = """
+Update Schedule:
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  📊 REALTIME (Every Analysis Cycle)
+     • ATR-based stop-loss multiplier
+     • Position size modifier based on volatility
+
+  ⏰ 4-HOUR (When ATR changes >15%)
+     • RSI/Stochastic oversold thresholds
+     • Entry score requirements
+
+  🌅 DAILY (00:00 KST)
+     • Market regime detection (6 types)
+     • Bollinger Band parameters
+     • Chandelier Exit multiplier
+
+  📅 WEEKLY (Sunday 00:00 KST)
+     • Entry condition weights (BB, RSI, Stoch)
+     • Based on recent trading performance
+     • Requires minimum 5 trades for update
+
+Extended Market Regimes:
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  🟢 STRONG_BULLISH  │ EMA50 > EMA200 by >5%    │ Aggressive trend following
+  🟢 BULLISH         │ EMA50 > EMA200           │ Standard strategy
+  ⚪ NEUTRAL         │ EMAs within ±1%          │ Cautious entries
+  🔴 BEARISH         │ EMA50 < EMA200           │ Mean reversion only (strict)
+  🔴 STRONG_BEARISH  │ EMA50 < EMA200 by >5%    │ Extreme oversold only
+  🟡 RANGING         │ ADX < 15                 │ Oscillation strategy
+        """
+
+        explanation_display = scrolledtext.ScrolledText(
+            explanation_frame,
+            wrap=tk.WORD,
+            font=('Courier', 9),
+            height=14
+        )
+        explanation_display.pack(fill=tk.BOTH, expand=True)
+        explanation_display.insert('1.0', explanation_text)
+        explanation_display.config(state='disabled')
+
+        # Initial load
+        self._refresh_dynamic_factors()
+
+    def _refresh_dynamic_factors(self):
+        """Refresh dynamic factors display"""
+        try:
+            # Get current factors
+            factors = self.factor_manager.get_current_factors()
+
+            # Format factors display
+            lines = []
+            lines.append("CURRENT DYNAMIC FACTORS")
+            lines.append("=" * 40)
+            lines.append("")
+            lines.append("📊 Volatility & Stop-Loss:")
+            lines.append(f"   Volatility Level: {factors.get('volatility_level', 'unknown').upper()}")
+            lines.append(f"   Chandelier Mult: {factors.get('chandelier_multiplier_modifier', 1.0):.2f}x")
+            lines.append(f"   Position Size: {factors.get('position_size_modifier', 1.0):.0%}")
+            lines.append("")
+            lines.append("📈 Entry Thresholds:")
+            lines.append(f"   RSI Oversold: < {factors.get('rsi_oversold_threshold', 30):.0f}")
+            lines.append(f"   Stoch Oversold: < {factors.get('stoch_oversold_threshold', 20):.0f}")
+            lines.append(f"   Min Entry Score: {factors.get('min_entry_score', 2)}")
+            lines.append("")
+            lines.append("⚖️ Entry Condition Weights:")
+            entry_weights = factors.get('entry_weights', {})
+            lines.append(f"   BB Touch: {entry_weights.get('bb_touch', 1.0):.2f}")
+            lines.append(f"   RSI Oversold: {entry_weights.get('rsi_oversold', 1.0):.2f}")
+            lines.append(f"   Stoch Cross: {entry_weights.get('stoch_cross', 2.0):.2f}")
+            lines.append("")
+            lines.append("🕐 Last Updates:")
+            lines.append(f"   Daily: {factors.get('last_daily_update', 'Never')}")
+            lines.append(f"   Weekly: {factors.get('last_weekly_update', 'Never')}")
+
+            self.factors_text.config(state='normal')
+            self.factors_text.delete('1.0', tk.END)
+            self.factors_text.insert('1.0', '\n'.join(lines))
+            self.factors_text.config(state='disabled')
+
+            # Get performance summary
+            performance = self.performance_tracker.get_recent_performance(days=7)
+
+            # Format performance display
+            perf_lines = []
+            perf_lines.append("7-DAY PERFORMANCE")
+            perf_lines.append("=" * 40)
+            perf_lines.append("")
+
+            total_trades = performance.get('total_trades', 0)
+            if total_trades > 0:
+                perf_lines.append(f"📊 Overview:")
+                perf_lines.append(f"   Total Trades: {total_trades}")
+                perf_lines.append(f"   Wins: {performance.get('wins', 0)}")
+                perf_lines.append(f"   Losses: {performance.get('losses', 0)}")
+                perf_lines.append(f"   Win Rate: {performance.get('win_rate', 0):.1%}")
+                perf_lines.append(f"   Profit Factor: {performance.get('profit_factor', 0):.2f}")
+                perf_lines.append("")
+                perf_lines.append(f"💰 Profit/Loss:")
+                perf_lines.append(f"   Total P&L: {performance.get('total_profit_krw', 0):+,.0f} KRW")
+                perf_lines.append(f"   Avg Profit: {performance.get('avg_profit_pct', 0):+.2f}%")
+                perf_lines.append(f"   Max Drawdown: {performance.get('max_drawdown_pct', 0):.2f}%")
+                perf_lines.append("")
+
+                # Per-condition performance
+                perf_lines.append("📋 Per-Condition Performance:")
+                cond_perf = performance.get('condition_performance', {})
+                for cond, data in cond_perf.items():
+                    if data.get('total', 0) > 0:
+                        perf_lines.append(f"   {cond}: {data.get('win_rate', 0):.0%} ({data.get('total', 0)} trades)")
+
+                # Per-regime performance
+                regime_perf = performance.get('regime_performance', {})
+                if regime_perf:
+                    perf_lines.append("")
+                    perf_lines.append("🌍 Per-Regime Performance:")
+                    for regime, data in regime_perf.items():
+                        perf_lines.append(f"   {regime}: {data.get('win_rate', 0):.0%} ({data.get('total', 0)} trades)")
+            else:
+                perf_lines.append("No trades in the last 7 days.")
+                perf_lines.append("")
+                perf_lines.append("Start trading to see performance")
+                perf_lines.append("metrics and enable weekly factor")
+                perf_lines.append("optimization.")
+
+            self.performance_text.config(state='normal')
+            self.performance_text.delete('1.0', tk.END)
+            self.performance_text.insert('1.0', '\n'.join(perf_lines))
+            self.performance_text.config(state='disabled')
+
+        except Exception as e:
+            self.factors_text.config(state='normal')
+            self.factors_text.delete('1.0', tk.END)
+            self.factors_text.insert('1.0', f"Error loading factors: {str(e)}")
+            self.factors_text.config(state='disabled')
 
     # ========================================
     # Bot Control Methods

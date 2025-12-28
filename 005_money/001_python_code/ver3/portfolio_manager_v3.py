@@ -50,14 +50,15 @@ import json
 import os
 from pathlib import Path
 
-from ver2.strategy_v2 import StrategyV2
+from ver3.strategy_v3 import StrategyV3
 from ver3.live_executor_v3 import LiveExecutorV3
+from ver3.dynamic_factor_manager import get_dynamic_factor_manager
 from lib.core.logger import TradingLogger
 
 
 class CoinMonitor:
     """
-    Wrapper around Ver2 strategy for monitoring a single coin.
+    Wrapper around Ver3 strategy for monitoring a single coin.
 
     Responsibilities:
     - Run strategy analysis for one coin
@@ -66,7 +67,7 @@ class CoinMonitor:
     - Provide position status
     """
 
-    def __init__(self, coin: str, strategy: StrategyV2, executor: LiveExecutorV3, logger: TradingLogger):
+    def __init__(self, coin: str, strategy: StrategyV3, executor: LiveExecutorV3, logger: TradingLogger):
         """
         Initialize coin monitor.
 
@@ -159,10 +160,11 @@ class PortfolioManagerV3:
     - Entry signal prioritization by score
     - Centralized risk management
     - Thread-safe execution
+    - Dynamic factor adjustment
 
     Architecture:
     - Uses CoinMonitor for each coin
-    - Shares single StrategyV2 instance (stateless)
+    - Shares single StrategyV3 instance (with dynamic factors)
     - Shares single LiveExecutorV3 instance (thread-safe)
     - Coordinates decisions across all coins
     """
@@ -191,8 +193,11 @@ class PortfolioManagerV3:
         self.config = config
         self.logger = logger
 
-        # Shared components
-        self.strategy = StrategyV2(config, logger)
+        # Initialize dynamic factor manager
+        self.factor_manager = get_dynamic_factor_manager(config, logger)
+
+        # Shared components (StrategyV3 with dynamic factors)
+        self.strategy = StrategyV3(config, logger)
         self.executor = LiveExecutorV3(api, logger, config, markdown_logger=markdown_logger, transaction_history=transaction_history)
 
         # Per-coin monitors
@@ -342,13 +347,18 @@ class PortfolioManagerV3:
                 pos_summary = self.executor.get_position_summary(coin)
                 entry_price = pos_summary.get('entry_price', 0)
 
-                # Use CURRENT global settings to calculate target prices
-                # This allows dynamic adjustment of profit targets
-                price_data = result.get('price_data')
-                if price_data is not None and not price_data.empty:
-                    target_prices = self.strategy._calculate_target_prices(price_data, entry_price)
-                else:
-                    target_prices = result.get('target_prices', {})
+                # Use target prices from analysis (already includes dynamic factors)
+                # The strategy.analyze_market() now returns regime-specific targets
+                target_prices = result.get('target_prices', {})
+
+                # Fallback to static calculation if not available
+                if not target_prices:
+                    price_data = result.get('price_data')
+                    regime_strategy = result.get('regime_strategy', {})
+                    if price_data is not None and not price_data.empty and regime_strategy:
+                        target_prices = self.strategy._calculate_target_prices_dynamic(price_data, regime_strategy)
+                    elif price_data is not None and not price_data.empty:
+                        target_prices = self.strategy._calculate_target_prices(price_data, entry_price)
 
                 if current_price <= 0 or not target_prices:
                     continue
@@ -356,17 +366,30 @@ class PortfolioManagerV3:
                 first_target_hit = pos_summary.get('first_target_hit', False)
                 second_target_hit = pos_summary.get('second_target_hit', False)
 
-                # Check first target (50% partial exit)
+                # Check first target
                 first_target = target_prices.get('first_target', 0)
+                full_exit_at_first = target_prices.get('full_exit_at_first', False)
+
                 if not first_target_hit and first_target > 0 and current_price >= first_target:
-                    decisions.append((coin, 'PARTIAL_SELL_50', 0))
                     profit_pct = ((current_price - entry_price) / entry_price) * 100
                     mode = target_prices.get('mode', 'bb_based')
-                    mode_str = f"TP1 {target_prices.get('tp1_pct', 0):.1f}%" if mode == 'percentage_based' else "BB middle"
-                    self.logger.logger.info(
-                        f"🎯 FIRST TARGET HIT ({mode_str}): {coin} at {current_price:,.0f} KRW "
-                        f"(+{profit_pct:.2f}%) - Selling 50%"
-                    )
+                    exit_strategy = target_prices.get('exit_strategy', '')
+
+                    if full_exit_at_first:
+                        # Bearish regime: FULL EXIT at BB middle (conservative)
+                        decisions.append((coin, 'SELL', 0))
+                        self.logger.logger.info(
+                            f"🎯 FULL EXIT at first target ({mode}): {coin} at {current_price:,.0f} KRW "
+                            f"(+{profit_pct:.2f}%) - {exit_strategy}"
+                        )
+                    else:
+                        # Normal: 50% partial exit
+                        decisions.append((coin, 'PARTIAL_SELL_50', 0))
+                        mode_str = f"TP1 {target_prices.get('tp1_pct', 0):.1f}%" if mode == 'percentage_based' else "BB middle"
+                        self.logger.logger.info(
+                            f"🎯 FIRST TARGET HIT ({mode_str}): {coin} at {current_price:,.0f} KRW "
+                            f"(+{profit_pct:.2f}%) - Selling 50%"
+                        )
 
                 # Check second target (remaining 100% exit)
                 second_target = target_prices.get('second_target', 0)
@@ -628,6 +651,10 @@ class PortfolioManagerV3:
 
                 units = trade_amount_krw / price
 
+                # Get entry conditions and regime for performance tracking
+                entry_conditions = analysis.get('entry_conditions', [])
+                market_regime = analysis.get('market_regime', 'unknown')
+
                 # Execute buy order
                 order_result = self.executor.execute_order(
                     ticker=coin,
@@ -637,8 +664,10 @@ class PortfolioManagerV3:
                     dry_run=self.config['EXECUTION_CONFIG'].get('dry_run', True),
                     reason=(
                         f"{'Pyramid ' if entry_number > 1 else ''}Entry score: {analysis.get('entry_score')}/4, "
-                        f"regime: {analysis.get('market_regime')}"
-                    )
+                        f"regime: {market_regime}"
+                    ),
+                    entry_conditions=entry_conditions,
+                    market_regime=market_regime
                 )
 
                 if order_result.get('success'):
