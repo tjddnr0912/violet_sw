@@ -191,6 +191,7 @@ class QuantDaemon:
         for attempt in range(max_retries):
             try:
                 if notifier.send_message(message.strip()):
+                    logger.info("시작 알림 전송 성공")
                     return  # 성공
                 else:
                     raise Exception("send_message returned False")
