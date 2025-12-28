@@ -1,0 +1,155 @@
+# CLAUDE.md - Bithumb Trading Bot
+
+빗썸 거래소 자동매매 봇 프로젝트입니다.
+
+## 프로젝트 개요
+
+| 항목 | 내용 |
+|------|------|
+| 거래소 | Bithumb (빗썸) |
+| 언어 | Python 3.13+ |
+| 현재 버전 | **Ver3** (Portfolio Multi-Coin Strategy) |
+| 실행 모드 | CLI / GUI |
+| 기본 분석 주기 | 15분 |
+
+## 빠른 시작
+
+```bash
+# CLI 모드 실행
+./scripts/run_v3_cli.sh
+
+# GUI 모드 실행
+./scripts/run_v3_gui.sh
+
+# 수동 실행
+source .venv/bin/activate
+python 001_python_code/ver3/run_cli.py
+```
+
+## 디렉토리 구조
+
+```
+005_money/
+├── 001_python_code/          # 메인 소스 코드
+│   ├── ver1/                 # Version 1: Elite 8-Indicator (구버전)
+│   ├── ver2/                 # Version 2: Backtrader 기반 (개발중)
+│   ├── ver3/                 # Version 3: 포트폴리오 멀티코인 전략 (현재 사용)
+│   └── lib/                  # 공유 라이브러리
+│       ├── api/              # Bithumb API 래퍼
+│       ├── core/             # 핵심 유틸리티 (로깅, 텔레그램)
+│       ├── gui/              # GUI 컴포넌트
+│       └── interfaces/       # 인터페이스 정의
+├── scripts/                  # 실행 스크립트
+├── logs/                     # 로그 파일
+├── tests/                    # 테스트 코드
+└── .env                      # 환경변수 (API 키, 텔레그램 토큰)
+```
+
+## Ver3 핵심 아키텍처
+
+### 주요 컴포넌트
+
+| 파일 | 역할 |
+|------|------|
+| `trading_bot_v3.py` | 메인 봇 오케스트레이터 |
+| `strategy_v3.py` | 매매 전략 (진입/청산 로직) |
+| `portfolio_manager_v3.py` | 멀티코인 포트폴리오 관리 |
+| `live_executor_v3.py` | 실제 주문 실행 |
+| `regime_detector.py` | 6단계 시장 레짐 분류 |
+| `dynamic_factor_manager.py` | 동적 파라미터 관리 |
+
+### 시장 레짐 분류 (6단계)
+
+| 레짐 | EMA50-EMA200 차이 | 전략 |
+|------|-------------------|------|
+| Strong Bullish | > +5% | 추세추종 (공격적) |
+| Bullish | +2% ~ +5% | 추세추종 (표준) |
+| Neutral | -2% ~ +2% | 관망 |
+| Bearish | -5% ~ -2% | 평균회귀 (보수적) |
+| Strong Bearish | < -5% | 평균회귀 (매우 보수적) |
+| Ranging | ADX < 20 | 박스권 매매 |
+
+### 진입 스코어 시스템
+
+```
+Entry Score = BB Touch (1점) + RSI Oversold (1점) + Stoch Cross (2점)
+최대 4점, 레짐별 최소 스코어 충족 시 진입
+```
+
+### 청산 전략
+
+- **Chandelier Exit**: ATR 기반 동적 손절
+- **Profit Target**: BB Middle (약세장) / BB Upper (강세장)
+- **Pyramiding**: 최대 3회 추가 진입 (100% → 50% → 25%)
+
+## 텔레그램 명령어
+
+| 명령어 | 설명 |
+|--------|------|
+| `/status` | 봇 상태 개요 |
+| `/positions` | 포지션 상세 정보 |
+| `/factors` | 동적 팩터 현황 |
+| `/performance` | 7일 성과 |
+| `/close <COIN>` | 특정 코인 청산 |
+| `/stop` | 봇 중지 |
+
+## 환경변수 (.env)
+
+```bash
+# Bithumb API
+BITHUMB_API_KEY=your_api_key
+BITHUMB_SECRET_KEY=your_secret_key
+
+# Telegram
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+TELEGRAM_NOTIFICATIONS_ENABLED=True
+```
+
+## 개발 가이드라인
+
+### 코드 수정 시 주의사항
+
+1. **버전 확인**: ver1/ver2/ver3 중 어느 버전인지 확인
+2. **lib/ 수정 시**: 모든 버전과의 호환성 테스트 필요
+3. **전략 수정 시**: `strategy_v3.py`와 `config_v3.py` 동시 수정
+
+### 테스트 실행
+
+```bash
+# 단일 분석 테스트
+python -c "
+from ver3.config_v3 import get_version_config
+from ver3.trading_bot_v3 import TradingBotV3
+config = get_version_config()
+bot = TradingBotV3(config)
+result = bot.analyze_market('BTC')
+print(result)
+"
+```
+
+### 로그 확인
+
+```bash
+# 오늘 로그
+tail -f logs/ver3_cli_$(date +%Y%m%d).log
+
+# 에러만 확인
+grep -i error logs/ver3_cli_*.log
+```
+
+## 주요 설정값 (config_v3.py)
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `check_interval` | 900 (15분) | 분석 주기 |
+| `coins` | BTC, ETH, XRP | 모니터링 코인 |
+| `max_positions` | 2 | 최대 동시 포지션 |
+| `dry_run` | True | 시뮬레이션 모드 |
+| `chandelier_multiplier` | 3.0 | ATR 손절 배수 |
+
+## 참고 문서
+
+- `ver3/VER3_CLI_OPERATION_GUIDE.md` - CLI 운영 가이드
+- `002_Doc/` - 상세 문서
+- `.claude/rules/` - 코드 분석 규칙
