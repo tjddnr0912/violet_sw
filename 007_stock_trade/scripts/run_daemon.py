@@ -149,7 +149,8 @@ class QuantDaemon:
         logger.info("텔레그램 봇 시작됨")
 
     def send_startup_notification(self):
-        """시작 알림 전송"""
+        """시작 알림 전송 (재시도 포함)"""
+        import time
         from src.telegram import get_notifier
 
         notifier = get_notifier()
@@ -185,7 +186,20 @@ class QuantDaemon:
 
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
-        notifier.send_message(message.strip())
+        # 재시도 로직 (최대 3회, 2초 간격)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if notifier.send_message(message.strip()):
+                    return  # 성공
+                else:
+                    raise Exception("send_message returned False")
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"시작 알림 전송 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(2)  # 2초 대기 후 재시도
+                else:
+                    logger.error(f"시작 알림 전송 최종 실패: {e}")
 
     def start(self):
         """데몬 시작"""
