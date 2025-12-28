@@ -14,6 +14,9 @@ Supported Commands:
     /help - List available commands
     /status - Current bot status, positions, and cycle info
     /positions - Detailed position information
+    /factors - Dynamic factor status
+    /performance - 7-day performance summary
+    /close <COIN> - Close position for specific coin (with confirmation)
     /stop - Stop the trading bot (with confirmation)
     /summary - Get today's trading summary
 
@@ -94,6 +97,9 @@ class TelegramBotHandler:
         # Pending stop confirmation
         self._stop_pending = False
         self._stop_confirm_time: Optional[datetime] = None
+
+        # Pending close confirmation (per-coin)
+        self._close_pending: Dict[str, datetime] = {}
 
         # Start time for uptime calculation
         self._start_time: Optional[datetime] = None
@@ -177,6 +183,9 @@ Use /help to see available commands.
 /summary - Today's trading summary
 /factors - Dynamic factor status
 /performance - 7-day performance
+
+*Trading Commands*
+/close <COIN> - Close position (e.g. /close BTC)
 /stop - Stop the trading bot
 
 *Info Commands*
@@ -579,6 +588,122 @@ Profit Factor: `{profit_factor:.2f}`
         except Exception as e:
             await update.message.reply_text(f"Error getting performance: {e}")
 
+    async def cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle /close command - Close position for specific coin.
+
+        Usage: /close BTC or /close ETH
+        """
+        user_chat_id = str(update.effective_chat.id)
+        if user_chat_id != self.chat_id:
+            await update.message.reply_text("Unauthorized.")
+            return
+
+        if not self.trading_bot:
+            await update.message.reply_text("Trading bot not connected.")
+            return
+
+        # Parse coin argument
+        args = context.args
+        if not args or len(args) < 1:
+            # Show available coins with positions
+            try:
+                summary = self.trading_bot.get_portfolio_summary()
+                coins_with_positions = []
+                coins_data = summary.get('coins', {})
+
+                for coin, data in coins_data.items():
+                    position = data.get('position', {})
+                    if position.get('has_position', False):
+                        pnl = position.get('pnl', 0)
+                        pnl_pct = position.get('pnl_pct', 0)
+                        coins_with_positions.append(f"  {coin}: {pnl:+,.0f} KRW ({pnl_pct:+.1f}%)")
+
+                if coins_with_positions:
+                    positions_str = "\n".join(coins_with_positions)
+                    message = f"""
+*Usage:* `/close <COIN>`
+
+*Example:* `/close BTC`
+
+*Open Positions:*
+{positions_str}
+"""
+                else:
+                    message = "*No open positions to close.*"
+
+                await update.message.reply_text(message, parse_mode='Markdown')
+            except Exception as e:
+                await update.message.reply_text(f"Error: {e}")
+            return
+
+        coin = args[0].upper()
+
+        # Validate coin
+        if coin not in self.trading_bot.coins:
+            available = ', '.join(self.trading_bot.coins)
+            await update.message.reply_text(
+                f"Invalid coin: {coin}\n\nAvailable: {available}"
+            )
+            return
+
+        try:
+            # Check if position exists
+            executor = self.trading_bot.portfolio_manager.executor
+            if not executor.has_position(coin):
+                await update.message.reply_text(f"No open position for {coin}.")
+                return
+
+            # Get position details
+            position_info = executor.get_position_info(coin)
+            entry_price = position_info.get('entry_price', 0)
+            size = position_info.get('size', 0)
+            pnl = position_info.get('unrealized_pnl', 0)
+            pnl_pct = position_info.get('pnl_percent', 0)
+            entry_time = position_info.get('entry_time', 'N/A')
+
+            # Get current price
+            from lib.api.bithumb_api import get_ticker
+            ticker_data = get_ticker(coin)
+            current_price = float(ticker_data.get('closing_price', 0)) if ticker_data else 0
+
+            pnl_emoji = "📈" if pnl >= 0 else "📉"
+
+            # Create confirmation keyboard
+            keyboard = [
+                [
+                    InlineKeyboardButton("Close Position", callback_data=f"close_confirm_{coin}"),
+                    InlineKeyboardButton("Cancel", callback_data="close_cancel"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            message = f"""
+*Close {coin} Position?*
+
+{pnl_emoji} *Current P&L: `{pnl:+,.0f} KRW` ({pnl_pct:+.1f}%)*
+
+*Position Details*
+  Entry: `{entry_price:,.0f} KRW`
+  Current: `{current_price:,.0f} KRW`
+  Size: `{size:.8f} {coin}`
+  Since: `{entry_time}`
+
+Are you sure you want to close this position?
+"""
+
+            # Set pending confirmation
+            self._close_pending[coin] = datetime.now()
+
+            await update.message.reply_text(
+                message,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
     async def callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle callback queries from inline keyboards."""
         query = update.callback_query
@@ -617,6 +742,68 @@ Profit Factor: `{profit_factor:.2f}`
             self._stop_pending = False
             self._stop_confirm_time = None
             await query.edit_message_text("Stop cancelled. Bot continues running.")
+
+        # Handle close position confirmations
+        elif query.data.startswith("close_confirm_"):
+            coin = query.data.replace("close_confirm_", "")
+
+            # Check if confirmation is still valid (within 60 seconds)
+            if coin in self._close_pending:
+                elapsed = (datetime.now() - self._close_pending[coin]).total_seconds()
+                if elapsed <= 60:
+                    try:
+                        executor = self.trading_bot.portfolio_manager.executor
+                        dry_run = self.trading_bot.config.get('dry_run', True)
+
+                        # Get current price
+                        from lib.api.bithumb_api import get_ticker
+                        ticker_data = get_ticker(coin)
+                        current_price = float(ticker_data.get('closing_price', 0)) if ticker_data else 0
+
+                        if current_price <= 0:
+                            await query.edit_message_text(f"Failed to get current price for {coin}.")
+                            del self._close_pending[coin]
+                            return
+
+                        # Execute close position
+                        result = executor.close_position(
+                            ticker=coin,
+                            price=current_price,
+                            dry_run=dry_run,
+                            reason="Manual close via Telegram"
+                        )
+
+                        if result.get('success'):
+                            pnl = result.get('realized_pnl', 0)
+                            mode = "DRY-RUN" if dry_run else "LIVE"
+                            await query.edit_message_text(
+                                f"*{coin} Position Closed* [{mode}]\n\n"
+                                f"Realized P&L: `{pnl:+,.0f} KRW`\n"
+                                f"Close Price: `{current_price:,.0f} KRW`",
+                                parse_mode='Markdown'
+                            )
+                        else:
+                            error_msg = result.get('message', 'Unknown error')
+                            await query.edit_message_text(
+                                f"Failed to close {coin} position:\n{error_msg}"
+                            )
+
+                    except Exception as e:
+                        await query.edit_message_text(f"Error closing position: {e}")
+
+                    del self._close_pending[coin]
+                else:
+                    await query.edit_message_text(
+                        "Confirmation expired. Use /close again if needed."
+                    )
+                    del self._close_pending[coin]
+            else:
+                await query.edit_message_text("No pending close request for this coin.")
+
+        elif query.data == "close_cancel":
+            # Clear all pending close requests
+            self._close_pending.clear()
+            await query.edit_message_text("Close cancelled. Position unchanged.")
 
     # ========================================
     # Lifecycle Methods
@@ -674,6 +861,7 @@ Profit Factor: `{profit_factor:.2f}`
             self._application.add_handler(CommandHandler("summary", self.cmd_summary))
             self._application.add_handler(CommandHandler("factors", self.cmd_factors))
             self._application.add_handler(CommandHandler("performance", self.cmd_performance))
+            self._application.add_handler(CommandHandler("close", self.cmd_close))
             self._application.add_handler(CommandHandler("stop", self.cmd_stop))
 
             # Add callback query handler for inline buttons
