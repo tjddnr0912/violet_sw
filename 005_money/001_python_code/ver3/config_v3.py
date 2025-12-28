@@ -174,6 +174,48 @@ EXIT_CONFIG['profit_target_mode'] = 'bb_based'  # 'bb_based' or 'percentage_base
 EXIT_CONFIG['tp1_percentage'] = 1.5  # First target percentage (only used in percentage mode)
 EXIT_CONFIG['tp2_percentage'] = 2.5  # Second target percentage (only used in percentage mode)
 EXIT_CONFIG['trail_after_breakeven'] = True  # Move stop to breakeven after first target hit
+EXIT_CONFIG['full_exit_at_first_target'] = False  # Set True for bearish regime (dynamic)
+
+
+# ========== DYNAMIC FACTOR CONFIGURATION ==========
+
+DYNAMIC_FACTOR_CONFIG = {
+    # Update frequency settings
+    'realtime_update_enabled': True,        # Update ATR-based factors every cycle
+    '4h_update_threshold_pct': 15.0,        # ATR change % to trigger 4H factor update
+    'daily_update_time': '00:00',           # Daily factor update time
+    'weekly_update_day': 6,                 # Sunday (0=Monday, 6=Sunday)
+
+    # Factor bounds (prevent extreme values)
+    'chandelier_multiplier_bounds': (2.0, 5.0),
+    'position_size_multiplier_bounds': (0.3, 1.5),
+    'rsi_threshold_bounds': (20, 40),
+    'min_entry_score_bounds': (1, 4),
+
+    # Volatility classification thresholds (ATR%)
+    'volatility_levels': {
+        'low': 1.5,      # ATR% < 1.5 = low volatility
+        'normal': 3.0,   # ATR% < 3.0 = normal volatility
+        'high': 5.0,     # ATR% < 5.0 = high volatility
+        # Above 5.0 = extreme volatility
+    },
+
+    # Regime detection thresholds
+    'ema_strong_threshold_pct': 5.0,   # EMA diff % for strong bullish/bearish
+    'adx_trending_threshold': 25,       # ADX above this = trending market
+    'adx_weak_threshold': 15,           # ADX below this = ranging market
+    'neutral_zone_pct': 1.0,            # EMA diff within this = neutral
+    'regime_hysteresis_count': 3,       # Consecutive readings for regime switch
+
+    # Performance-based adjustment settings
+    'min_trades_for_weekly_update': 5,  # Minimum trades before adjusting weights
+    'win_rate_aggressive_threshold': 0.6,  # Above this = can be more aggressive
+    'win_rate_conservative_threshold': 0.4,  # Below this = be more conservative
+
+    # Factor persistence
+    'factors_file': 'logs/dynamic_factors_v3.json',
+    'performance_history_file': 'logs/performance_history_v3.json',
+}
 
 
 # ========== CONFIGURATION FUNCTIONS ==========
@@ -231,6 +273,7 @@ def get_version_config(interval: str = '4h', mode: str = None, coins: List[str] 
         'SAFETY_CONFIG': SAFETY_CONFIG,
         'SCHEDULE_CONFIG': SCHEDULE_CONFIG,
         'LOGGING_CONFIG': LOGGING_CONFIG,
+        'DYNAMIC_FACTOR_CONFIG': DYNAMIC_FACTOR_CONFIG,
     }
 
 
