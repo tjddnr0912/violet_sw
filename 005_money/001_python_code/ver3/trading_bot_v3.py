@@ -132,6 +132,9 @@ class TradingBotV3(VersionInterface):
         self._last_daily_factor_update = None  # Track last daily factor update date
         self._last_weekly_factor_update = None  # Track last weekly factor update week
 
+        # Regime change tracking (for telegram alerts)
+        self._previous_regime = None  # Track previous regime for change detection
+
         self.logger.logger.info("=" * 60)
         self.logger.logger.info(f"Trading Bot V3 Initialized")
         self.logger.logger.info(f"  Version: {self.VERSION_NAME}")
@@ -254,16 +257,19 @@ class TradingBotV3(VersionInterface):
                     # 1. Analyze all coins in parallel
                     results = self.portfolio_manager.analyze_all()
 
-                    # 2. Make portfolio-level decisions
+                    # 2. Check for regime changes and send alerts
+                    self._check_and_send_regime_change_alert(results)
+
+                    # 3. Make portfolio-level decisions
                     decisions = self.portfolio_manager.make_portfolio_decision(results)
 
-                    # 3. Execute trading decisions
+                    # 4. Execute trading decisions
                     if decisions:
                         self.portfolio_manager.execute_decisions(decisions)
                     else:
                         self.logger.logger.info("No trading actions required (HOLD)")
 
-                    # 4. Log portfolio summary
+                    # 5. Log portfolio summary
                     summary = self.portfolio_manager.get_portfolio_summary()
                     self._log_portfolio_summary(summary)
 
@@ -733,6 +739,51 @@ Configuration:
 
         except Exception as e:
             self.logger.logger.warning(f"Failed to send factor update notification: {e}")
+
+    def _check_and_send_regime_change_alert(self, analysis_results: Dict[str, Any]):
+        """
+        Check if market regime has changed and send Telegram alert.
+
+        Args:
+            analysis_results: Analysis results from portfolio manager
+        """
+        try:
+            # Get regime from first coin's analysis (reference coin)
+            if not self.coins:
+                return
+
+            reference_coin = self.coins[0]
+            if reference_coin not in analysis_results:
+                return
+
+            analysis = analysis_results[reference_coin]
+            current_regime = analysis.get('market_regime', 'unknown')
+            regime_metadata = analysis.get('regime_metadata', {})
+            ema_diff_pct = regime_metadata.get('ema_diff_pct', 0.0)
+
+            # Skip if regime is unknown
+            if current_regime == 'unknown':
+                return
+
+            # Check for regime change
+            if self._previous_regime is not None and self._previous_regime != current_regime:
+                self.logger.logger.info(
+                    f"Regime change detected: {self._previous_regime} -> {current_regime}"
+                )
+
+                # Send telegram alert
+                self.telegram.send_regime_change_alert(
+                    old_regime=self._previous_regime,
+                    new_regime=current_regime,
+                    coin=reference_coin,
+                    ema_diff_pct=ema_diff_pct
+                )
+
+            # Update previous regime
+            self._previous_regime = current_regime
+
+        except Exception as e:
+            self.logger.logger.warning(f"Error checking regime change: {e}")
 
     def get_current_factors(self) -> Dict[str, Any]:
         """
