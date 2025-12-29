@@ -1655,13 +1655,16 @@ class TelegramBotHandler:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
 
-            # 시작 알림 전송
-            self.bot.notifier.send_message("🤖 텔레그램 봇이 시작되었습니다.\n/help 명령어로 사용법을 확인하세요.")
-
-            # 폴링 시작
+            # 폴링 시작 (먼저 시작해야 명령어 수신 가능)
             self._loop.run_until_complete(app.initialize())
             self._loop.run_until_complete(app.start())
             self._loop.run_until_complete(app.updater.start_polling(allowed_updates=Update.ALL_TYPES))
+
+            # 시작 알림 전송 (실패해도 봇은 계속 실행)
+            try:
+                self.bot.notifier.send_message("🤖 텔레그램 봇이 시작되었습니다.\n/help 명령어로 사용법을 확인하세요.")
+            except Exception as e:
+                logger.warning(f"시작 알림 전송 실패 (무시): {e}")
 
             # 무한 대기
             while self.running:
