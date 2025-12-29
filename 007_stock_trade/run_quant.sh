@@ -366,6 +366,13 @@ case $COMMAND in
     daemon)
         check_api_keys
         install_deps
+        # 기존 데몬 프로세스 종료
+        if pgrep -f "run_daemon.py" > /dev/null; then
+            echo -e "${YELLOW}[INFO]${NC} 기존 데몬 프로세스 종료 중..."
+            pkill -9 -f "run_daemon.py"
+            sleep 2
+            echo -e "${GREEN}[INFO]${NC} 기존 프로세스 종료 완료"
+        fi
         echo -e "${GREEN}[INFO]${NC} 통합 데몬 시작 (자동매매 + 자동관리 + 텔레그램)..."
         if [ "$DRY_RUN" = "True" ]; then
             python3 scripts/run_daemon.py --dry-run
