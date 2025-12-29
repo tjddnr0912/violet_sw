@@ -1455,14 +1455,17 @@ class TelegramBot:
         controller = get_controller()
         result = controller.close_all_positions()
 
-        await update.message.reply_text(
-            "🔴 <b>전체 청산 요청</b>\n"
-            "━━━━━━━━━━━━━━━\n"
-            "모든 포지션 청산이 요청되었습니다.\n"
-            "체결되면 알림이 전송됩니다.\n"
-            "━━━━━━━━━━━━━━━",
-            parse_mode='HTML'
-        )
+        if result['success']:
+            await update.message.reply_text(
+                f"🔴 <b>전체 청산 요청</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"{result['message']}\n"
+                f"체결되면 알림이 전송됩니다.\n"
+                f"━━━━━━━━━━━━━━━",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(f"❌ {result['message']}")
 
     async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """최근 로그 조회"""
