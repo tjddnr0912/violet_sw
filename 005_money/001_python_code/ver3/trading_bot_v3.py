@@ -170,7 +170,7 @@ class TradingBotV3(VersionInterface):
 
     def get_supported_intervals(self) -> List[str]:
         """Get supported candlestick intervals."""
-        return ['4h', '24h']
+        return ['1h', '24h']
 
     def validate_configuration(self) -> tuple:
         """Validate current configuration."""
@@ -181,7 +181,7 @@ class TradingBotV3(VersionInterface):
         """Get chart configuration for GUI."""
         return self.config.get('CHART_CONFIG', {})
 
-    def analyze_market(self, coin_symbol: str, interval: str = "4h", limit: int = 200) -> Dict[str, Any]:
+    def analyze_market(self, coin_symbol: str, interval: str = "1h", limit: int = 200) -> Dict[str, Any]:
         """
         Analyze market for a single coin (delegates to portfolio manager).
 
