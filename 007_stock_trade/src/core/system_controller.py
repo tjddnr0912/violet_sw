@@ -468,12 +468,40 @@ class SystemController:
         if result:
             return {"success": True, "positions": result}
 
-        # 저장된 포지션 파일에서 로드
-        positions_file = Path("data/quant/positions.json")
-        if positions_file.exists():
-            with open(positions_file, 'r') as f:
-                positions = json.load(f)
-            return {"success": True, "positions": positions}
+        # engine_state.json에서 포지션 로드
+        state_file = Path("data/quant/engine_state.json")
+        if state_file.exists():
+            try:
+                with open(state_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                positions = data.get("positions", [])
+                # 포지션 데이터 변환 (손익률 계산 추가)
+                formatted_positions = []
+                for pos in positions:
+                    entry_price = pos.get("entry_price", 0)
+                    current_price = pos.get("current_price", entry_price)
+                    quantity = pos.get("quantity", 0)
+
+                    pnl = (current_price - entry_price) * quantity
+                    pnl_pct = ((current_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+
+                    formatted_positions.append({
+                        "code": pos.get("code"),
+                        "name": pos.get("name"),
+                        "quantity": quantity,
+                        "entry_price": entry_price,
+                        "current_price": current_price,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "stop_loss": pos.get("stop_loss", 0),
+                        "take_profit_1": pos.get("take_profit_1", 0)
+                    })
+
+                return {"success": True, "positions": formatted_positions}
+            except Exception as e:
+                logger.error(f"포지션 로드 실패: {e}")
+                return {"success": False, "positions": [], "message": f"로드 오류: {e}"}
 
         return {"success": True, "positions": [], "message": "보유 포지션 없음"}
 
