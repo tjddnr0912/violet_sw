@@ -134,8 +134,17 @@ class QuantDaemon:
     def start_telegram_bot(self):
         """텔레그램 봇 시작"""
         from src.telegram.bot import TelegramBotHandler
+        from src.api import KISClient
 
-        bot = TelegramBotHandler()
+        # API 클라이언트 생성 (잔고/시세 조회용)
+        try:
+            kis_client = KISClient(is_virtual=self.is_virtual)
+            logger.info("텔레그램 봇용 KIS 클라이언트 연결됨")
+        except Exception as e:
+            logger.warning(f"KIS 클라이언트 연결 실패: {e} - 캐시 데이터 사용")
+            kis_client = None
+
+        bot = TelegramBotHandler(kis_client=kis_client)
 
         def run_bot():
             try:
