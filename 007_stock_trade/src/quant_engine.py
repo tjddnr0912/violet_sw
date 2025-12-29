@@ -76,6 +76,8 @@ class PendingOrder:
     take_profit_2: float = 0
     weight: float = 0  # 목표 비중
     created_at: datetime = field(default_factory=datetime.now)
+    retry_count: int = 0  # 재시도 횟수
+    last_error: str = ""  # 마지막 에러 메시지
 
 
 @dataclass
@@ -209,6 +211,7 @@ class QuantTradingEngine:
 
         # 상태 관리
         self.pending_orders: List[PendingOrder] = []
+        self.failed_orders: List[PendingOrder] = []  # 실패한 주문 (다음 장 재시도)
         self.last_screening_result: Optional[ScreeningResult] = None
         self.last_screening_date: Optional[datetime] = None
         self.last_rebalance_date: Optional[datetime] = None  # 마지막 리밸런싱 날짜
@@ -219,6 +222,8 @@ class QuantTradingEngine:
         self._position_lock = threading.Lock()  # 포지션 접근 보호
         self._order_lock = threading.Lock()     # 주문 접근 보호
         self._state_lock = threading.Lock()     # 상태 저장 보호
+        self._screening_lock = threading.Lock() # 스크리닝 중복 실행 방지
+        self._screening_in_progress = False     # 스크리닝 진행 중 플래그
 
         # 데이터 저장 경로
         self.data_dir = Path(__file__).parent.parent / "data" / "quant"
@@ -277,7 +282,31 @@ class QuantTradingEngine:
             if data.get("last_rebalance_month"):
                 self.last_rebalance_month = data["last_rebalance_month"]
 
-            logger.info(f"상태 로드 완료: {restored_count}개 포지션")
+            # 실패 주문 복원
+            failed_count = 0
+            for order_data in data.get("failed_orders", []):
+                try:
+                    order = PendingOrder(
+                        code=order_data["code"],
+                        name=order_data["name"],
+                        order_type=order_data["order_type"],
+                        quantity=order_data["quantity"],
+                        price=order_data["price"],
+                        reason=order_data["reason"],
+                        stop_loss=order_data.get("stop_loss", 0),
+                        take_profit_1=order_data.get("take_profit_1", 0),
+                        take_profit_2=order_data.get("take_profit_2", 0),
+                        weight=order_data.get("weight", 0),
+                        created_at=datetime.fromisoformat(order_data["created_at"]),
+                        retry_count=order_data.get("retry_count", 0),
+                        last_error=order_data.get("last_error", "")
+                    )
+                    self.failed_orders.append(order)
+                    failed_count += 1
+                except (KeyError, TypeError, ValueError) as e:
+                    logger.warning(f"실패 주문 복원 실패 ({order_data.get('code', 'unknown')}): {e}")
+
+            logger.info(f"상태 로드 완료: {restored_count}개 포지션, {failed_count}개 실패 주문")
             if self.last_rebalance_date:
                 logger.info(f"마지막 리밸런싱: {self.last_rebalance_date.strftime('%Y-%m-%d')}")
 
@@ -340,8 +369,28 @@ class QuantTradingEngine:
                             "highest_price": pos.highest_price
                         })
 
+                # 실패 주문 데이터 수집
+                failed_orders_data = []
+                for order in self.failed_orders:
+                    failed_orders_data.append({
+                        "code": order.code,
+                        "name": order.name,
+                        "order_type": order.order_type,
+                        "quantity": order.quantity,
+                        "price": order.price,
+                        "reason": order.reason,
+                        "stop_loss": order.stop_loss,
+                        "take_profit_1": order.take_profit_1,
+                        "take_profit_2": order.take_profit_2,
+                        "weight": order.weight,
+                        "created_at": order.created_at.isoformat(),
+                        "retry_count": order.retry_count,
+                        "last_error": order.last_error
+                    })
+
                 data = {
                     "positions": positions_data,
+                    "failed_orders": failed_orders_data,  # 실패 주문 저장
                     "last_screening_date": self.last_screening_date.isoformat() if self.last_screening_date else None,
                     "last_rebalance_date": self.last_rebalance_date.isoformat() if self.last_rebalance_date else None,
                     "last_rebalance_month": self.last_rebalance_month,
@@ -419,6 +468,13 @@ class QuantTradingEngine:
 
         장 전(08:30) 또는 리밸런싱 일에 실행
         """
+        # 중복 실행 방지
+        with self._screening_lock:
+            if self._screening_in_progress:
+                logger.warning("스크리닝이 이미 진행 중입니다. 중복 실행 스킵.")
+                return None
+            self._screening_in_progress = True
+
         logger.info("=" * 60)
         logger.info("멀티팩터 스크리닝 시작")
         logger.info("=" * 60)
@@ -447,6 +503,11 @@ class QuantTradingEngine:
             logger.error(f"스크리닝 실패: {e}", exc_info=True)
             self.notifier.notify_error("스크리닝 실패", str(e))
             return None
+
+        finally:
+            # 스크리닝 플래그 해제 (성공/실패 무관)
+            with self._screening_lock:
+                self._screening_in_progress = False
 
     def _save_screening_result(self, result: ScreeningResult):
         """스크리닝 결과 저장"""
@@ -555,10 +616,48 @@ class QuantTradingEngine:
         for code in to_buy:
             stock = target_stocks[code]
 
-            # 포지션 사이징
+            # 포지션 사이징 (API 재시도 로직 포함)
             try:
-                price_info = self.client.get_stock_price(code)
-                current_price = price_info.price
+                # 가격 조회 (최대 3회 재시도, 1초 간격)
+                current_price = None
+                max_retries = 3
+                retry_delay = 1.0
+
+                for attempt in range(max_retries):
+                    try:
+                        price_info = self.client.get_stock_price(code)
+                        current_price = price_info.price
+                        break  # 성공 시 루프 탈출
+                    except Exception as retry_error:
+                        if attempt < max_retries - 1:
+                            error_msg = str(retry_error)
+                            if "500" in error_msg or "서버" in error_msg:
+                                logger.warning(
+                                    f"가격 조회 재시도 ({code}): {attempt + 1}/{max_retries} - {retry_error}"
+                                )
+                                import time
+                                time.sleep(retry_delay)
+                                retry_delay *= 1.5  # 백오프
+                            else:
+                                raise  # 500 에러가 아니면 즉시 재발생
+                        else:
+                            raise  # 최대 재시도 횟수 초과
+
+                if current_price is None:
+                    error_msg = "가격 조회 재시도 모두 실패"
+                    logger.error(f"가격 조회 최종 실패 ({code}): {error_msg}")
+                    # 실패 주문으로 기록 (다음 장 재시도)
+                    self.failed_orders.append(PendingOrder(
+                        code=code,
+                        name=stock.name,
+                        order_type="BUY",
+                        quantity=0,  # 나중에 다시 계산
+                        price=0,
+                        reason=f"리밸런싱 매수 (순위 {stock.rank}위)",
+                        retry_count=0,
+                        last_error=error_msg
+                    ))
+                    continue
 
                 # 목표 비중 계산
                 weight = min(
@@ -594,12 +693,164 @@ class QuantTradingEngine:
                     ))
 
             except Exception as e:
+                error_msg = str(e)
                 logger.error(f"주문 생성 실패 ({code}): {e}", exc_info=True)
+                # 실패 주문으로 기록 (다음 장 재시도)
+                self.failed_orders.append(PendingOrder(
+                    code=code,
+                    name=stock.name,
+                    order_type="BUY",
+                    quantity=0,  # 나중에 다시 계산
+                    price=0,
+                    reason=f"리밸런싱 매수 (순위 {stock.rank}위)",
+                    retry_count=0,
+                    last_error=error_msg[:200]  # 에러 메시지 제한
+                ))
+
+        # 실패 주문이 있으면 저장
+        if self.failed_orders:
+            logger.info(f"실패 주문 {len(self.failed_orders)}개 - 다음 장 재시도 예정")
+            self._save_state()
 
         self.pending_orders = orders
         return orders
 
     # ========== 주문 실행 ==========
+
+    def retry_failed_orders(self) -> int:
+        """
+        실패 주문 재시도
+
+        장 시작 시(09:00) 호출, 이전에 실패한 주문을 다시 시도
+        Returns: 성공한 주문 수
+        """
+        if not self.failed_orders:
+            return 0
+
+        logger.info(f"=" * 60)
+        logger.info(f"실패 주문 재시도: {len(self.failed_orders)}건")
+        logger.info(f"=" * 60)
+
+        # 텔레그램 알림
+        self.notifier.send_message(
+            f"🔄 <b>실패 주문 재시도</b>\n\n"
+            f"• 재시도 대상: {len(self.failed_orders)}건\n"
+            f"• 최대 재시도: 3회"
+        )
+
+        success_count = 0
+        still_failed = []
+        max_total_retries = 3  # 최대 재시도 횟수
+
+        for order in self.failed_orders:
+            # 이미 보유 중인 종목은 스킵
+            if order.code in self.portfolio.positions:
+                logger.info(f"이미 보유 중 - 재시도 스킵: {order.name}")
+                continue
+
+            # 최대 재시도 횟수 초과
+            if order.retry_count >= max_total_retries:
+                logger.warning(f"최대 재시도 초과 ({order.name}): {order.retry_count}회")
+                continue
+
+            order.retry_count += 1
+            logger.info(f"재시도 {order.retry_count}/{max_total_retries}: {order.name} ({order.code})")
+
+            try:
+                # 현재가 조회 (재시도 로직 포함)
+                current_price = None
+                for attempt in range(3):
+                    try:
+                        price_info = self.client.get_stock_price(order.code)
+                        current_price = price_info.price
+                        break
+                    except Exception as e:
+                        if attempt < 2:
+                            logger.warning(f"가격 조회 재시도 ({order.code}): {e}")
+                            time.sleep(1.5 ** attempt)
+                        else:
+                            raise
+
+                if current_price is None:
+                    raise Exception("가격 조회 실패")
+
+                # 수량 재계산 (처음 실패 시 quantity가 0일 수 있음)
+                quantity = order.quantity
+                if quantity <= 0:
+                    weight = 1.0 / self.config.target_stock_count
+                    invest_amount = self.config.total_capital * weight
+                    quantity = int(invest_amount / current_price)
+
+                if quantity <= 0:
+                    logger.warning(f"수량 계산 실패 ({order.name}): 가격 {current_price}")
+                    continue
+
+                # 주문 실행
+                if self.config.dry_run:
+                    logger.info(f"[DRY RUN] 재시도 매수: {order.name} {quantity}주 @ {current_price:,}원")
+                    order_no = f"RETRY_{datetime.now().strftime('%H%M%S')}"
+                else:
+                    result = self.client.buy_stock(order.code, quantity, price=0, order_type="01")
+                    if not result.success:
+                        raise Exception(f"매수 실패: {result.message}")
+                    order_no = result.order_no
+
+                # 포지션 추가
+                stop_loss = StopLossManager.calculate_fixed_stop(current_price, self.config.stop_loss_pct)
+                tp1, tp2 = TakeProfitManager.calculate_targets(current_price, stop_loss)
+
+                position = Position(
+                    code=order.code,
+                    name=order.name,
+                    entry_price=current_price,
+                    current_price=current_price,
+                    quantity=quantity,
+                    entry_date=datetime.now(),
+                    stop_loss=stop_loss,
+                    take_profit_1=tp1,
+                    take_profit_2=tp2,
+                    highest_price=current_price
+                )
+                self.portfolio.add_position(position)
+
+                # 거래 기록
+                self.daily_trades.append({
+                    "type": "BUY",
+                    "code": order.code,
+                    "name": order.name,
+                    "quantity": quantity,
+                    "price": current_price,
+                    "order_no": order_no,
+                    "reason": f"[재시도] {order.reason}",
+                    "timestamp": datetime.now().isoformat()
+                })
+
+                logger.info(f"매수 완료 (재시도): {order.name} {quantity}주 @ {current_price:,}원")
+                self.notifier.notify_buy(order.code, order.name, quantity, current_price, order.reason)
+                success_count += 1
+
+            except Exception as e:
+                order.last_error = str(e)[:200]
+                logger.error(f"재시도 실패 ({order.name}): {e}")
+
+                # 아직 재시도 가능하면 다시 저장
+                if order.retry_count < max_total_retries:
+                    still_failed.append(order)
+
+        # 아직 재시도 가능한 주문만 유지
+        self.failed_orders = still_failed
+        self._save_state()
+
+        # 결과 알림
+        if success_count > 0 or still_failed:
+            self.notifier.send_message(
+                f"✅ <b>재시도 결과</b>\n\n"
+                f"• 성공: {success_count}건\n"
+                f"• 실패: {len(still_failed)}건"
+            )
+
+        logger.info(f"재시도 완료: 성공 {success_count}건, 실패 {len(still_failed)}건")
+        return success_count
 
     def execute_pending_orders(self):
         """
@@ -607,7 +858,11 @@ class QuantTradingEngine:
 
         장 시작 시(09:00) 호출
         """
-        # 대기 주문 스냅샷 (Lock 보호)
+        # 1. 먼저 실패 주문 재시도
+        if self.failed_orders:
+            self.retry_failed_orders()
+
+        # 2. 대기 주문 스냅샷 (Lock 보호)
         with self._order_lock:
             if not self.pending_orders:
                 logger.info("대기 주문 없음")
