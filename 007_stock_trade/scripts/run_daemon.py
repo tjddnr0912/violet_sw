@@ -56,6 +56,7 @@ class QuantDaemon:
         self.is_virtual = is_virtual
         self.running = False
         self.threads = []
+        self.engine = None  # QuantTradingEngine 인스턴스
 
     def start_trading_engine(self):
         """자동매매 엔진 시작"""
@@ -101,11 +102,14 @@ class QuantDaemon:
 
         logger.info(f"설정 로드: dry_run={self.dry_run}, target={self.target_count}, virtual={self.is_virtual}")
 
-        engine = QuantTradingEngine(config=config, is_virtual=self.is_virtual)
+        self.engine = QuantTradingEngine(config=config, is_virtual=self.is_virtual)
+
+        # SystemController에 콜백 등록 (텔레그램 명령어 연동)
+        self._register_callbacks(controller)
 
         def run_engine():
             try:
-                engine.start()
+                self.engine.start()
             except Exception as e:
                 logger.error(f"트레이딩 엔진 오류: {e}")
 
@@ -113,6 +117,99 @@ class QuantDaemon:
         thread.start()
         self.threads.append(thread)
         logger.info("자동매매 엔진 시작됨")
+
+    def _register_callbacks(self, controller):
+        """SystemController에 엔진 콜백 등록"""
+        if not self.engine:
+            logger.warning("엔진이 없어 콜백 등록 스킵")
+            return
+
+        # 스크리닝 콜백
+        controller.register_callback('on_screening', self.engine.run_screening)
+
+        # 리밸런싱 콜백
+        controller.register_callback('on_rebalance', self.engine.manual_rebalance)
+
+        # 엔진 제어 콜백
+        controller.register_callback('on_stop', self.engine.stop)
+        controller.register_callback('on_pause', self.engine.pause)
+        controller.register_callback('on_resume', self.engine.resume)
+
+        # 포지션 청산 콜백
+        controller.register_callback('close_position', self._close_position)
+        controller.register_callback('close_all_positions', self._close_all_positions)
+
+        logger.info("SystemController 콜백 등록 완료")
+
+    def _close_position(self, stock_code: str) -> dict:
+        """특정 포지션 청산"""
+        if not self.engine:
+            return {"success": False, "message": "엔진이 실행 중이 아닙니다"}
+
+        try:
+            # 엔진의 포지션에서 해당 종목 찾기
+            position = None
+            for pos in self.engine.positions:
+                if pos.code == stock_code:
+                    position = pos
+                    break
+
+            if not position:
+                return {"success": False, "message": f"포지션 없음: {stock_code}"}
+
+            # 매도 주문 생성
+            from src.quant_engine import PendingOrder
+            order = PendingOrder(
+                code=position.code,
+                name=position.name,
+                order_type="SELL",
+                quantity=position.quantity,
+                price=0,  # 시장가
+                reason="수동 청산"
+            )
+
+            # 대기 주문에 추가
+            self.engine.pending_orders.append(order)
+            self.engine._save_state()
+
+            logger.info(f"청산 주문 생성: {position.name} ({stock_code}) {position.quantity}주")
+            return {"success": True, "message": f"{position.name} 청산 주문 생성됨"}
+
+        except Exception as e:
+            logger.error(f"청산 오류: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _close_all_positions(self) -> dict:
+        """전체 포지션 청산"""
+        if not self.engine:
+            return {"success": False, "message": "엔진이 실행 중이 아닙니다"}
+
+        try:
+            if not self.engine.positions:
+                return {"success": False, "message": "보유 포지션 없음"}
+
+            from src.quant_engine import PendingOrder
+            count = 0
+
+            for position in self.engine.positions:
+                order = PendingOrder(
+                    code=position.code,
+                    name=position.name,
+                    order_type="SELL",
+                    quantity=position.quantity,
+                    price=0,  # 시장가
+                    reason="전체 청산"
+                )
+                self.engine.pending_orders.append(order)
+                count += 1
+
+            self.engine._save_state()
+            logger.info(f"전체 청산 주문 생성: {count}개 종목")
+            return {"success": True, "message": f"{count}개 종목 청산 주문 생성됨"}
+
+        except Exception as e:
+            logger.error(f"전체 청산 오류: {e}")
+            return {"success": False, "message": str(e)}
 
     def start_auto_manager(self):
         """자동 관리 스케줄러 시작"""

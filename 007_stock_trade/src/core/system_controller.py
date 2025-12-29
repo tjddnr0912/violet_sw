@@ -288,6 +288,10 @@ class SystemController:
         if self.state == SystemState.EMERGENCY_STOP:
             return {"success": False, "message": "긴급 정지 상태에서는 실행할 수 없습니다."}
 
+        # 콜백 등록 여부 확인
+        if 'on_screening' not in self.callbacks:
+            return {"success": False, "message": "스크리닝 콜백이 등록되지 않았습니다. 데몬이 실행 중인지 확인하세요."}
+
         result = self._trigger_callback('on_screening')
 
         if result:
@@ -309,7 +313,15 @@ class SystemController:
         if self.state != SystemState.RUNNING and self.state != SystemState.PAUSED:
             return {"success": False, "message": "거래 시스템이 활성화되어 있지 않습니다."}
 
+        # 콜백 등록 여부 확인
+        if 'on_rebalance' not in self.callbacks:
+            return {"success": False, "message": "리밸런싱 콜백이 등록되지 않았습니다. 데몬이 실행 중인지 확인하세요."}
+
         result = self._trigger_callback('on_rebalance')
+
+        # 콜백 결과가 dict면 그대로 반환
+        if isinstance(result, dict):
+            return result
 
         return {
             "success": True,
@@ -319,6 +331,10 @@ class SystemController:
 
     def run_optimize(self) -> Dict[str, Any]:
         """최적화 수동 실행"""
+        # 콜백 등록 여부 확인
+        if 'on_optimize' not in self.callbacks:
+            return {"success": False, "message": "최적화 콜백이 등록되지 않았습니다. 데몬이 실행 중인지 확인하세요."}
+
         result = self._trigger_callback('on_optimize')
 
         return {
@@ -512,6 +528,10 @@ class SystemController:
 
         result = self._trigger_callback('close_position', stock_code)
 
+        # 콜백 결과가 dict면 그대로 반환
+        if isinstance(result, dict):
+            return result
+
         if result:
             return {
                 "success": True,
@@ -519,7 +539,7 @@ class SystemController:
                 "result": result
             }
 
-        return {"success": False, "message": "청산 처리 중 오류가 발생했습니다."}
+        return {"success": False, "message": "청산 콜백이 등록되지 않았습니다. 데몬이 실행 중인지 확인하세요."}
 
     def close_all_positions(self) -> Dict[str, Any]:
         """전체 포지션 청산"""
@@ -528,11 +548,18 @@ class SystemController:
 
         result = self._trigger_callback('close_all_positions')
 
-        return {
-            "success": True,
-            "message": "전체 청산 요청이 전송되었습니다.",
-            "result": result
-        }
+        # 콜백 결과가 dict면 그대로 반환
+        if isinstance(result, dict):
+            return result
+
+        if result:
+            return {
+                "success": True,
+                "message": "전체 청산 요청이 전송되었습니다.",
+                "result": result
+            }
+
+        return {"success": False, "message": "청산 콜백이 등록되지 않았습니다. 데몬이 실행 중인지 확인하세요."}
 
     def get_logs(self, lines: int = 20) -> Dict[str, Any]:
         """최근 로그 조회"""
