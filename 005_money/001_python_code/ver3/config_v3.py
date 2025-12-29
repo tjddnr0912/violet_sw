@@ -133,8 +133,8 @@ TRADING_CONFIG = {
 # ========== SCHEDULE CONFIGURATION (Ver3 Override) ==========
 
 SCHEDULE_CONFIG = {
-    'check_interval_seconds': 900,   # 15 minutes (900 seconds) - more frequent for multi-coin
-    'check_interval_minutes': 15,    # 15 minutes
+    'check_interval_seconds': 300,   # 5 minutes (300 seconds) - optimized for 1H candle analysis
+    'check_interval_minutes': 5,     # 5 minutes
     'daily_report_time': '23:59',
     'balance_check_interval': 30,    # minutes
 }
@@ -220,12 +220,12 @@ DYNAMIC_FACTOR_CONFIG = {
 
 # ========== CONFIGURATION FUNCTIONS ==========
 
-def get_version_config(interval: str = '4h', mode: str = None, coins: List[str] = None) -> Dict[str, Any]:
+def get_version_config(interval: str = '1h', mode: str = None, coins: List[str] = None) -> Dict[str, Any]:
     """
     Get version 3 configuration.
 
     Args:
-        interval: Execution timeframe interval (default: '4h')
+        interval: Execution timeframe interval (default: '1h')
         mode: Execution mode ('backtest' or 'live', optional)
         coins: List of coins to trade (optional, uses default if None)
 

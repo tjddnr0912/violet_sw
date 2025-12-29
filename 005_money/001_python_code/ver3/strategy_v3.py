@@ -123,7 +123,7 @@ class StrategyV3(VersionInterface):
 
     def get_supported_intervals(self) -> List[str]:
         """Get supported candlestick intervals."""
-        return ['4h', '24h']  # Execution and regime timeframes (Bithumb uses '24h' not '1d')
+        return ['1h', '24h']  # Execution and regime timeframes (Bithumb uses '24h' not '1d')
 
     def validate_configuration(self) -> Tuple[bool, List[str]]:
         """Validate current configuration."""
@@ -134,13 +134,13 @@ class StrategyV3(VersionInterface):
         """Get chart configuration for GUI."""
         return self.config.get('CHART_CONFIG', {})
 
-    def analyze_market(self, coin_symbol: str, interval: str = "4h", limit: int = 200) -> Dict[str, Any]:
+    def analyze_market(self, coin_symbol: str, interval: str = "1h", limit: int = 200) -> Dict[str, Any]:
         """
         Analyze market using dual timeframe strategy with dynamic factors.
 
         Args:
             coin_symbol: Cryptocurrency symbol (e.g., 'BTC')
-            interval: Execution timeframe (default: '4h')
+            interval: Execution timeframe (default: '1h')
             limit: Number of candles to analyze
 
         Returns:

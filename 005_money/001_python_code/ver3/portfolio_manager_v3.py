@@ -104,7 +104,7 @@ class CoinMonitor:
         """
         try:
             # Use Ver2 strategy for analysis
-            result = self.strategy.analyze_market(self.coin, interval='4h')
+            result = self.strategy.analyze_market(self.coin, interval='1h')
 
             # Cache result
             self.last_analysis = result

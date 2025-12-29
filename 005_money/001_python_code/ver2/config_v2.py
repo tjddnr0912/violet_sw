@@ -36,13 +36,13 @@ VERSION_METADATA = {
 # Multi-Timeframe Configuration
 TIMEFRAME_CONFIG = {
     # Primary execution timeframe (for entry/exit signals)
-    'execution_interval': '4h',
+    'execution_interval': '1h',  # Changed from 4h to 1h for better responsiveness in 24/7 crypto market
 
     # Regime filter timeframe (for market trend analysis)
     'regime_interval': '24h',  # Bithumb API uses '24h' for daily candles, NOT '1d'
 
     # Data requirements
-    'execution_candles': 200,  # Number of 4H candles to fetch
+    'execution_candles': 200,  # Number of 1H candles to fetch
     'regime_candles': 250,     # Number of daily candles to fetch (need 200 for EMA)
 }
 
