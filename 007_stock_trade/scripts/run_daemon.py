@@ -118,6 +118,12 @@ class QuantDaemon:
         self.threads.append(thread)
         logger.info("자동매매 엔진 시작됨")
 
+        # SystemController 상태를 RUNNING으로 변경
+        from src.core.system_controller import SystemState
+        controller.state = SystemState.RUNNING
+        controller._save_state()
+        logger.info("시스템 상태: RUNNING")
+
     def _register_callbacks(self, controller):
         """SystemController에 엔진 콜백 등록"""
         if not self.engine:
@@ -357,6 +363,17 @@ class QuantDaemon:
     def stop(self):
         """데몬 중지"""
         self.running = False
+
+        # SystemController 상태를 STOPPED로 변경
+        try:
+            from src.core import get_controller
+            from src.core.system_controller import SystemState
+            controller = get_controller()
+            controller.state = SystemState.STOPPED
+            controller._save_state()
+            logger.info("시스템 상태: STOPPED")
+        except Exception as e:
+            logger.debug(f"상태 저장 실패 (무시): {e}")
 
         # 종료 알림 (이벤트 루프 닫힘 오류 무시)
         try:

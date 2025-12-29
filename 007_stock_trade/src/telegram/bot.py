@@ -1650,30 +1650,50 @@ class TelegramBotHandler:
         self.running = True
         logger.info("텔레그램 봇 핸들러 시작...")
 
-        try:
-            app = self.bot.build_application()
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
+        max_retries = 5
+        retry_delay = 3  # seconds
 
-            # 폴링 시작 (먼저 시작해야 명령어 수신 가능)
-            self._loop.run_until_complete(app.initialize())
-            self._loop.run_until_complete(app.start())
-            self._loop.run_until_complete(app.updater.start_polling(allowed_updates=Update.ALL_TYPES))
-
-            # 시작 알림 전송 (실패해도 봇은 계속 실행)
+        for attempt in range(max_retries):
             try:
-                self.bot.notifier.send_message("🤖 텔레그램 봇이 시작되었습니다.\n/help 명령어로 사용법을 확인하세요.")
+                app = self.bot.build_application()
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+
+                # 폴링 시작 (재시도 포함)
+                logger.info(f"텔레그램 봇 초기화 중... (시도 {attempt + 1}/{max_retries})")
+                self._loop.run_until_complete(app.initialize())
+                self._loop.run_until_complete(app.start())
+                self._loop.run_until_complete(app.updater.start_polling(allowed_updates=Update.ALL_TYPES))
+                logger.info("텔레그램 봇 초기화 성공")
+
+                # 시작 알림 전송 (실패해도 봇은 계속 실행)
+                try:
+                    self.bot.notifier.send_message("🤖 텔레그램 봇이 시작되었습니다.\n/help 명령어로 사용법을 확인하세요.")
+                except Exception as e:
+                    logger.warning(f"시작 알림 전송 실패 (무시): {e}")
+
+                # 무한 대기
+                while self.running:
+                    self._loop.run_until_complete(asyncio.sleep(1))
+                break  # 정상 종료 시 루프 탈출
+
             except Exception as e:
-                logger.warning(f"시작 알림 전송 실패 (무시): {e}")
-
-            # 무한 대기
-            while self.running:
-                self._loop.run_until_complete(asyncio.sleep(1))
-
-        except Exception as e:
-            logger.error(f"텔레그램 봇 오류: {e}", exc_info=True)
-        finally:
-            self.stop()
+                error_str = str(e)
+                if "Timed out" in error_str or "ReadTimeout" in error_str:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"텔레그램 봇 초기화 타임아웃 (시도 {attempt + 1}/{max_retries}), {retry_delay}초 후 재시도...")
+                        import time
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # 지수 백오프
+                        continue
+                    else:
+                        logger.error(f"텔레그램 봇 초기화 실패 (최대 재시도 초과): {e}")
+                else:
+                    logger.error(f"텔레그램 봇 오류: {e}", exc_info=True)
+                break
+            finally:
+                if not self.running:
+                    self.stop()
 
     def stop(self):
         """봇 중지"""
