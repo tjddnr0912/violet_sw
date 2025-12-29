@@ -168,10 +168,16 @@ class TelegramNotifier:
             )
             return True
         except Exception as e:
-            # 이벤트 루프 종료 시 발생하는 에러는 무시 (종료 중 정상 동작)
-            if "Event loop is closed" in str(e):
-                logger.debug(f"메시지 전송 스킵 (종료 중): {e}")
+            error_str = str(e)
+            # 일시적/무시 가능한 에러는 간단히 로깅
+            if "Event loop is closed" in error_str:
+                logger.debug(f"메시지 전송 스킵 (종료 중)")
+            elif "Timed out" in error_str or "ConnectTimeout" in error_str:
+                logger.warning(f"메시지 전송 타임아웃 (네트워크 지연)")
+            elif "Conflict" in error_str:
+                logger.warning(f"메시지 전송 충돌 (다른 봇 인스턴스 실행 중)")
             else:
+                # 심각한 에러만 traceback 출력
                 logger.error(f"메시지 전송 실패: {e}", exc_info=True)
             return False
 
