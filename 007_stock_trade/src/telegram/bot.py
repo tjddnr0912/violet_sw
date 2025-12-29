@@ -717,33 +717,97 @@ class TelegramBot:
 
     async def cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """잔고 조회 명령어"""
-        if not self.kis_client:
-            await update.message.reply_text("❌ API 클라이언트가 연결되지 않았습니다.")
-            return
+        # API 클라이언트가 있으면 실시간 조회
+        if self.kis_client:
+            try:
+                balance = self.kis_client.get_balance()
 
+                lines = [
+                    "💰 <b>계좌 잔고</b>",
+                    "━━━━━━━━━━━━━━━",
+                    f"예수금: <code>{balance['cash']:,}원</code>",
+                    f"총평가: <code>{balance['total_eval']:,}원</code>",
+                    f"총손익: <code>{balance['total_profit']:+,}원</code>",
+                    "━━━━━━━━━━━━━━━"
+                ]
+
+                if balance['stocks']:
+                    lines.append("\n<b>보유종목:</b>")
+                    for stock in balance['stocks']:
+                        emoji = "📈" if stock.profit >= 0 else "📉"
+                        lines.append(
+                            f"{emoji} <b>{stock.name}</b>\n"
+                            f"   {stock.qty}주 × {stock.current_price:,}원\n"
+                            f"   손익: {stock.profit:+,}원 ({stock.profit_rate:+.2f}%)"
+                        )
+                else:
+                    lines.append("\n보유종목 없음")
+
+                await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+                return
+
+            except Exception as e:
+                logger.warning(f"API 잔고 조회 실패, 파일에서 읽기 시도: {e}")
+
+        # API 없거나 실패 시 engine_state.json에서 읽기
         try:
-            balance = self.kis_client.get_balance()
+            import json
+            state_file = Path(__file__).parent.parent.parent / "data" / "quant" / "engine_state.json"
+
+            if not state_file.exists():
+                await update.message.reply_text("❌ 잔고 데이터가 없습니다.\n데몬이 실행 중이 아닐 수 있습니다.")
+                return
+
+            with open(state_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            positions = data.get("positions", [])
+
+            if not positions:
+                await update.message.reply_text("💰 보유 포지션이 없습니다.")
+                return
 
             lines = [
-                "💰 <b>계좌 잔고</b>",
+                "💰 <b>계좌 잔고</b> (캐시 데이터)",
                 "━━━━━━━━━━━━━━━",
-                f"예수금: <code>{balance['cash']:,}원</code>",
-                f"총평가: <code>{balance['total_eval']:,}원</code>",
-                f"총손익: <code>{balance['total_profit']:+,}원</code>",
+                "⚠️ API 미연결 - 저장된 데이터 표시",
                 "━━━━━━━━━━━━━━━"
             ]
 
-            if balance['stocks']:
-                lines.append("\n<b>보유종목:</b>")
-                for stock in balance['stocks']:
-                    emoji = "📈" if stock.profit >= 0 else "📉"
-                    lines.append(
-                        f"{emoji} <b>{stock.name}</b>\n"
-                        f"   {stock.qty}주 × {stock.current_price:,}원\n"
-                        f"   손익: {stock.profit:+,}원 ({stock.profit_rate:+.2f}%)"
-                    )
-            else:
-                lines.append("\n보유종목 없음")
+            total_value = 0
+            total_cost = 0
+            total_pnl = 0
+
+            lines.append("\n<b>보유종목:</b>")
+            for pos in positions:
+                entry_price = pos.get("entry_price", 0)
+                current_price = pos.get("current_price", entry_price)
+                quantity = pos.get("quantity", 0)
+
+                position_value = current_price * quantity
+                position_cost = entry_price * quantity
+                pnl = position_value - position_cost
+                pnl_pct = ((current_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+
+                total_value += position_value
+                total_cost += position_cost
+                total_pnl += pnl
+
+                emoji = "📈" if pnl >= 0 else "📉"
+                lines.append(
+                    f"{emoji} <b>{pos.get('name', 'N/A')}</b>\n"
+                    f"   {quantity}주 × {current_price:,}원\n"
+                    f"   손익: {pnl:+,}원 ({pnl_pct:+.2f}%)"
+                )
+
+            lines.append("━━━━━━━━━━━━━━━")
+            lines.append(f"총평가: <code>{total_value:,}원</code>")
+            lines.append(f"총손익: <code>{total_pnl:+,}원</code>")
+
+            # 업데이트 시간 표시
+            updated_at = data.get("updated_at", "")
+            if updated_at:
+                lines.append(f"\n📅 마지막 업데이트: {updated_at[:19]}")
 
             await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
