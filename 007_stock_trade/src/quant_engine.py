@@ -41,6 +41,7 @@ from .strategy.quant import (
     RiskLevel
 )
 from .telegram import TelegramNotifier, get_notifier
+from .utils import is_trading_day, get_trading_hours, get_market_open_time
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -412,20 +413,29 @@ class QuantTradingEngine:
         """현재 시간 단계 확인"""
         now = datetime.now()
 
-        # 주말 체크
-        if now.weekday() >= 5:
+        # 휴장일 체크 (주말 + 공휴일)
+        if not is_trading_day(now):
             return SchedulePhase.AFTER_MARKET
 
         current_time = now.strftime("%H:%M")
 
-        if current_time < self.config.screening_time:
+        # 특수 개장 시간 적용 (1/2 등 10시 개장)
+        market_open, market_close = get_trading_hours(now)
+        screening_time = self.config.screening_time
+
+        # 스크리닝 시간을 개장 30분 전으로 동적 조정
+        open_dt = datetime.strptime(market_open, "%H:%M")
+        pre_market_dt = open_dt - timedelta(minutes=30)
+        adjusted_screening = pre_market_dt.strftime("%H:%M")
+        if market_open > "09:00":
+            screening_time = adjusted_screening
+
+        if current_time < screening_time:
             return SchedulePhase.AFTER_MARKET
-        elif current_time < self.config.market_open_time:
+        elif current_time < market_open:
             return SchedulePhase.PRE_MARKET
-        elif current_time < self.config.market_close_time:
+        elif current_time < market_close:  # 실제 마감 시간 사용
             return SchedulePhase.MARKET_HOURS
-        elif current_time < "15:30":
-            return SchedulePhase.MARKET_CLOSE
         else:
             return SchedulePhase.AFTER_MARKET
 
@@ -439,19 +449,23 @@ class QuantTradingEngine:
             logger.debug(f"이번 달({current_month}) 리밸런싱 이미 완료됨")
             return False
 
-        # 매월 첫 거래일 (주말 제외)
-        if now.day <= 3:
-            # 1~3일 중 첫 평일
-            first_weekday = now.replace(day=1)
-            while first_weekday.weekday() >= 5:
-                first_weekday += timedelta(days=1)
+        # 오늘이 거래일이 아니면 리밸런싱 불가
+        if not is_trading_day(now):
+            return False
 
-            if now.date() == first_weekday.date():
+        # 매월 첫 거래일 (휴장일 제외)
+        if now.day <= 7:  # 연휴 대비 7일까지 체크
+            # 1일부터 첫 거래일 찾기
+            first_trading_day = now.replace(day=1)
+            while not is_trading_day(first_trading_day):
+                first_trading_day += timedelta(days=1)
+
+            if now.date() == first_trading_day.date():
                 return True
 
         # 설정된 일자
         if now.day == self.config.rebalance_day:
-            return now.weekday() < 5  # 평일만
+            return is_trading_day(now)
 
         return False
 
@@ -1209,7 +1223,7 @@ class QuantTradingEngine:
         # 오늘 거래 내역
         trades_text = ""
         if self.daily_trades:
-            for t in self.daily_trades[-5:]:
+            for t in self.daily_trades:
                 pnl_str = ""
                 if t["type"] == "SELL" and "pnl" in t:
                     pnl_str = f" ({t['pnl_pct']:+.1f}%)"
@@ -1261,9 +1275,9 @@ class QuantTradingEngine:
             logger.info(f"보유 포지션 {len(self.portfolio.positions)}개 - 초기 스크리닝 스킵")
             return
 
-        # 주말이면 스킵
-        if datetime.now().weekday() >= 5:
-            logger.info("주말 - 초기 스크리닝 스킵 (다음 거래일에 자동 실행)")
+        # 휴장일이면 스킵
+        if not is_trading_day():
+            logger.info("휴장일 - 초기 스크리닝 스킵 (다음 거래일에 자동 실행)")
             return
 
         logger.info("=" * 60)
@@ -1324,9 +1338,11 @@ class QuantTradingEngine:
         """스케줄 설정"""
         # 장 전 스크리닝 (리밸런싱 일에만)
         schedule.every().day.at(self.config.screening_time).do(self._on_pre_market)
+        schedule.every().day.at("09:30").do(self._on_pre_market)  # 10시 개장일 대비
 
-        # 장 시작 - 주문 실행
+        # 장 시작 - 주문 실행 (특수 개장일 대비 여러 시간 등록)
         schedule.every().day.at(self.config.market_open_time).do(self._on_market_open)
+        schedule.every().day.at("10:00").do(self._on_market_open)  # 1/2 등 10시 개장
 
         # 장중 모니터링
         schedule.every(self.config.monitoring_interval).minutes.do(self._on_monitoring)
@@ -1336,7 +1352,7 @@ class QuantTradingEngine:
 
         logger.info("스케줄 설정 완료")
         logger.info(f"  - 스크리닝: {self.config.screening_time} (리밸런싱 일)")
-        logger.info(f"  - 주문 실행: {self.config.market_open_time}")
+        logger.info(f"  - 주문 실행: {self.config.market_open_time} (특수일: 10:00)")
         logger.info(f"  - 모니터링: {self.config.monitoring_interval}분 간격")
         logger.info(f"  - 리포트: {self.config.market_close_time}")
 
@@ -1345,17 +1361,36 @@ class QuantTradingEngine:
         if self.state != EngineState.RUNNING:
             return
 
-        # 주말 제외
-        if datetime.now().weekday() >= 5:
+        # 휴장일 제외
+        if not is_trading_day():
+            return
+
+        # 이미 장 전 처리가 완료된 경우 스킵 (중복 실행 방지)
+        if self.current_phase in [SchedulePhase.PRE_MARKET, SchedulePhase.MARKET_OPEN, SchedulePhase.MARKET_HOURS]:
+            return
+
+        # 실제 개장 시간 확인 (특수 개장일 대응)
+        market_open_time = get_market_open_time()
+        current_time = datetime.now().strftime("%H:%M")
+
+        # 개장 30분 전부터 장 전 처리 가능
+        open_dt = datetime.strptime(market_open_time, "%H:%M")
+        pre_market_dt = open_dt - timedelta(minutes=30)
+        pre_market_start = pre_market_dt.strftime("%H:%M")
+
+        # 현재 시간이 장 전 처리 시간보다 이전이면 스킵
+        if current_time < pre_market_start:
+            logger.debug(f"장 전 처리 시간 전 ({current_time} < {pre_market_start}) - 스킵")
             return
 
         self.current_phase = SchedulePhase.PRE_MARKET
         logger.info("=" * 60)
-        logger.info("장 전 처리 시작")
+        logger.info(f"장 전 처리 시작 (개장: {market_open_time})")
         self.notifier.send_message(
             f"🌅 <b>장 전 처리 시작</b>\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}\n"
+            f"📅 개장: {market_open_time}"
         )
 
         # 포지션이 없으면 초기 스크리닝 실행 (주말 시작 후 첫 평일 대응)
@@ -1408,23 +1443,36 @@ class QuantTradingEngine:
         if self.state != EngineState.RUNNING:
             return
 
-        if datetime.now().weekday() >= 5:
+        if not is_trading_day():
+            return
+
+        # 이미 장 시작 처리가 완료된 경우 스킵 (중복 실행 방지)
+        if self.current_phase in [SchedulePhase.MARKET_OPEN, SchedulePhase.MARKET_HOURS]:
+            return
+
+        # 실제 개장 시간 확인 (특수 개장일 대응)
+        market_open_time = get_market_open_time()
+        current_time = datetime.now().strftime("%H:%M")
+
+        # 현재 시간이 개장 시간보다 이전이면 스킵
+        if current_time < market_open_time:
+            logger.debug(f"개장 전 ({current_time} < {market_open_time}) - 스킵")
             return
 
         self.current_phase = SchedulePhase.MARKET_OPEN
         logger.info("=" * 60)
-        logger.info("장 시작 - 대기 주문 실행")
+        logger.info(f"장 시작 ({market_open_time}) - 대기 주문 실행")
 
         pending_count = len(self.pending_orders)
         if pending_count > 0:
             self.notifier.send_message(
-                f"🔔 <b>장 시작</b>\n"
+                f"🔔 <b>장 시작</b> ({market_open_time})\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"대기 주문 {pending_count}개 실행 중..."
             )
         else:
             self.notifier.send_message(
-                f"🔔 <b>장 시작</b>\n"
+                f"🔔 <b>장 시작</b> ({market_open_time})\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"대기 주문 없음 - 모니터링 모드"
             )
@@ -1449,7 +1497,7 @@ class QuantTradingEngine:
         if self.state != EngineState.RUNNING:
             return
 
-        if datetime.now().weekday() >= 5:
+        if not is_trading_day():
             return
 
         self.current_phase = SchedulePhase.MARKET_CLOSE
