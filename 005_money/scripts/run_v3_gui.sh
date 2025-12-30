@@ -16,6 +16,15 @@ cd "$PROJECT_ROOT"
 echo -e "${BLUE}Ver3 Trading Bot (GUI Mode)${NC}"
 echo ""
 
+# Kill existing bot instances (CLI or GUI) to prevent Telegram token conflict
+if pgrep -f "ver3/run_cli.py\|ver3/gui_app_v3.py" > /dev/null 2>&1; then
+    echo -e "${RED}Killing existing bot instance...${NC}"
+    pkill -f "ver3/run_cli.py" 2>/dev/null
+    pkill -f "ver3/gui_app_v3.py" 2>/dev/null
+    sleep 2
+    echo -e "${GREEN}Previous instance terminated${NC}"
+fi
+
 if [[ ! -f "001_python_code/ver3/gui_app_v3.py" ]]; then
     echo -e "${RED}Error: Run from 005_money directory${NC}"
     exit 1
