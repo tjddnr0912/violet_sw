@@ -25,6 +25,7 @@ from .strategy import (
     StrategyManager
 )
 from .telegram import TelegramNotifier, get_notifier
+from .utils import is_trading_day
 
 load_dotenv()
 
@@ -126,8 +127,8 @@ class TradingEngine:
         """거래 시간 확인"""
         now = datetime.now()
 
-        # 주말 체크
-        if now.weekday() >= 5:
+        # 휴장일 체크 (주말 + 공휴일)
+        if not is_trading_day(now):
             return False
 
         start_time = datetime.strptime(self.config.trading_start, "%H:%M").time()
