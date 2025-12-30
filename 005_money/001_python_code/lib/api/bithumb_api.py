@@ -360,7 +360,7 @@ def get_candlestick(ticker: str, interval: str = "24h") -> pd.DataFrame:
     try:
         # API 요청 URL 생성
         url = f"{PUBLIC_URL}/candlestick/{ticker}_KRW/{interval}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()  # HTTP 에러 발생 시 예외 발생
 
         data = response.json()
@@ -397,7 +397,7 @@ def get_ticker(ticker: str = "ALL") -> Optional[Dict]:
     """
     try:
         url = f"{PUBLIC_URL}/ticker/{ticker}_KRW"
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
 
         data = response.json()
