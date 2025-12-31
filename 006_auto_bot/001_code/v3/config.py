@@ -100,6 +100,8 @@ class Config:
 
     # Scheduling
     POSTING_TIME = "07:00"  # Time to run daily (HH:MM format)
+    WEEKLY_POSTING_TIME = "09:00"  # 매주 일요일 오전 9시
+    MONTHLY_POSTING_TIME = "10:00"  # 매달 1일 오전 10시
 
     # Version Info
     VERSION = "3"
@@ -118,6 +120,10 @@ class Config:
     BLOGGER_TOKEN_PATH = os.getenv('NEWS_BLOGGER_TOKEN_PATH', './credentials/news_blogger_token.pkl')
     BLOGGER_LABELS = os.getenv('NEWS_BLOGGER_LABELS', '뉴스,AI요약,자동화').split(',')
     BLOGGER_IS_DRAFT = os.getenv('NEWS_BLOGGER_IS_DRAFT', 'false').lower() == 'true'
+
+    # Weekly/Monthly Blog Labels
+    BLOGGER_WEEKLY_LABELS = ['뉴스', '주간']
+    BLOGGER_MONTHLY_LABELS = ['뉴스', '월간']
 
     @classmethod
     def validate(cls):

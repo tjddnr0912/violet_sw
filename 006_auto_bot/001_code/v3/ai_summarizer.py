@@ -191,3 +191,185 @@ Blog Post (한국어):"""
 
 ※ AI 요약 기능에 일시적인 문제가 발생했습니다. 원본 뉴스를 참고해주세요.
 """
+
+    def create_weekly_summary(self, daily_summaries: str, start_date: str, end_date: str) -> str:
+        """
+        Create a weekly summary from daily blog summaries
+
+        Args:
+            daily_summaries: Combined daily summary content
+            start_date: Week start date string (e.g., "2025년 12월 23일")
+            end_date: Week end date string (e.g., "2025년 12월 29일")
+
+        Returns:
+            Weekly summary in markdown format
+        """
+        try:
+            logger.info("Creating weekly summary with Gemini API...")
+
+            prompt = f"""[주간 뉴스 요약 작성 - 전문 뉴스 저널리즘]
+
+당신은 전문 뉴스 저널리스트입니다. 아래는 {start_date}부터 {end_date}까지의 일간 뉴스 요약입니다.
+이 일간 요약들을 종합하여 한 주간의 주요 뉴스를 정리해주세요.
+
+일간 뉴스 요약 모음:
+{daily_summaries}
+
+작성 요청:
+1. 이번 주의 가장 중요한 뉴스와 트렌드를 카테고리별로 정리
+2. 카테고리: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
+3. 각 카테고리별로 이번 주 가장 중요한 이슈 3-5개를 선별
+4. 단순 나열이 아닌, 한 주간의 흐름과 맥락을 파악할 수 있도록 작성
+5. 각 이슈에 대해:
+   - 이번 주에 무슨 일이 있었는지 (사건 요약)
+   - 왜 중요한지 (의의와 영향)
+   - 향후 전망 (간단히)
+
+작성 스타일:
+- 전문적이면서도 읽기 쉬운 한국어 (존댓말)
+- 명확하고 간결한 요약
+- 자연스러운 흐름
+
+구조:
+- 인사말과 기간 안내로 시작
+- 카테고리별 주간 핵심 뉴스 요약
+- 마무리 인사
+
+형식: 마크다운 형식으로 작성. 설명 없이 본문만 반환.
+
+주간 뉴스 요약 (한국어):"""
+
+            logger.info(f"Weekly summary input size: {len(prompt)} characters")
+
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                    max_output_tokens=8000,
+                ),
+                safety_settings=safety_settings
+            )
+
+            if response.candidates and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if candidate.finish_reason == 1:  # STOP (successful)
+                    weekly_summary = response.text.strip()
+                    logger.info(f"Successfully created weekly summary ({len(weekly_summary)} chars)")
+                    return weekly_summary
+
+            logger.warning("Failed to create weekly summary, returning fallback")
+            return f"""# 📅 주간 뉴스 요약 ({start_date} ~ {end_date})
+
+> AI 요약 생성 중 오류가 발생했습니다.
+
+{daily_summaries}
+"""
+
+        except Exception as e:
+            logger.error(f"Error creating weekly summary: {str(e)}")
+            return f"""# 📅 주간 뉴스 요약 ({start_date} ~ {end_date})
+
+> 오류: {str(e)}
+
+{daily_summaries}
+"""
+
+    def create_monthly_summary(self, daily_summaries: str, year: int, month: int) -> str:
+        """
+        Create a monthly summary from daily blog summaries
+
+        Args:
+            daily_summaries: Combined daily summary content
+            year: Year (e.g., 2025)
+            month: Month (e.g., 12)
+
+        Returns:
+            Monthly summary in markdown format
+        """
+        try:
+            logger.info("Creating monthly summary with Gemini API...")
+
+            prompt = f"""[월간 뉴스 요약 작성 - 전문 뉴스 저널리즘]
+
+당신은 전문 뉴스 저널리스트입니다. 아래는 {year}년 {month}월 한 달간의 일간 뉴스 요약입니다.
+이 일간 요약들을 종합하여 한 달간의 주요 뉴스를 정리해주세요.
+
+일간 뉴스 요약 모음:
+{daily_summaries}
+
+작성 요청:
+1. 이번 달의 가장 중요한 뉴스와 트렌드를 카테고리별로 정리
+2. 카테고리: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
+3. 각 카테고리별로 이번 달 가장 중요한 이슈 5-7개를 선별
+4. 한 달간의 흐름과 변화를 파악할 수 있도록 작성
+5. 각 이슈에 대해:
+   - 이번 달에 무슨 일이 있었는지 (사건 요약)
+   - 왜 중요한지 (의의와 영향)
+   - 향후 전망 또는 다음 달 주목할 점
+
+작성 스타일:
+- 전문적이면서도 읽기 쉬운 한국어 (존댓말)
+- 명확하고 간결한 요약
+- 월간 리뷰 느낌의 종합적인 분석
+
+구조:
+- 인사말과 월간 개요로 시작
+- 카테고리별 월간 핵심 뉴스 요약
+- 이번 달 총평 및 마무리 인사
+
+형식: 마크다운 형식으로 작성. 설명 없이 본문만 반환.
+
+월간 뉴스 요약 (한국어):"""
+
+            logger.info(f"Monthly summary input size: {len(prompt)} characters")
+
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                    max_output_tokens=10000,  # Larger for monthly summary
+                ),
+                safety_settings=safety_settings
+            )
+
+            if response.candidates and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if candidate.finish_reason == 1:  # STOP (successful)
+                    monthly_summary = response.text.strip()
+                    logger.info(f"Successfully created monthly summary ({len(monthly_summary)} chars)")
+                    return monthly_summary
+
+            logger.warning("Failed to create monthly summary, returning fallback")
+            return f"""# 📆 {year}년 {month}월 월간 뉴스 요약
+
+> AI 요약 생성 중 오류가 발생했습니다.
+
+{daily_summaries}
+"""
+
+        except Exception as e:
+            logger.error(f"Error creating monthly summary: {str(e)}")
+            return f"""# 📆 {year}년 {month}월 월간 뉴스 요약
+
+> 오류: {str(e)}
+
+{daily_summaries}
+"""

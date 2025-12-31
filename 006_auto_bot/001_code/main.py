@@ -9,7 +9,7 @@ import logging
 import schedule
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Suppress gRPC/ALTS warnings from Google API
 os.environ['GRPC_VERBOSITY'] = 'ERROR'
@@ -305,6 +305,223 @@ class NewsBot:
                 return False
         return False
 
+    def run_weekly_task(self):
+        """Execute weekly news summary task (every Sunday at 9am)"""
+        if self.version != 'v3':
+            logger.info("Weekly task is only available for v3")
+            return
+
+        try:
+            logger.info("=" * 60)
+            logger.info("Starting weekly news summary task")
+            logger.info("=" * 60)
+
+            # Step 1: Collect daily summaries for this week
+            logger.info("Step 1: Collecting daily summaries for this week...")
+            daily_content, start_date_str, end_date_str = self.markdown_writer.collect_daily_summaries_for_week()
+
+            if not daily_content:
+                logger.warning("No daily summaries found for this week. Aborting.")
+                return
+
+            logger.info(f"Collected summaries from {start_date_str} to {end_date_str}")
+
+            # Step 2: Create weekly summary with AI
+            logger.info("Step 2: Creating weekly summary with Gemini AI...")
+            weekly_summary = self.ai_summarizer.create_weekly_summary(
+                daily_content, start_date_str, end_date_str
+            )
+
+            # Step 3: Save weekly summary
+            logger.info("Step 3: Saving weekly summary...")
+            today = datetime.now()
+            days_since_monday = today.weekday()
+            if days_since_monday == 6:
+                days_since_monday = 6
+            monday = today - timedelta(days=days_since_monday)
+            save_result = self.markdown_writer.save_weekly_summary(weekly_summary, monday)
+
+            if not save_result['success']:
+                logger.error(f"Failed to save weekly summary: {save_result['message']}")
+                return
+
+            # Step 4: Upload to Blogger (if enabled)
+            if getattr(self.config, 'BLOGGER_ENABLED', False):
+                logger.info("Step 4: Uploading weekly summary to Blogger...")
+                try:
+                    from blogger_uploader import BloggerUploader
+
+                    post_title = f"📅 주간 뉴스 요약 ({start_date_str} ~ {end_date_str})"
+
+                    with BloggerUploader(
+                        blog_id=self.config.BLOGGER_BLOG_ID,
+                        credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
+                        token_path=self.config.BLOGGER_TOKEN_PATH
+                    ) as uploader:
+                        upload_result = uploader.upload_post(
+                            title=post_title,
+                            content=weekly_summary,
+                            labels=self.config.BLOGGER_WEEKLY_LABELS,
+                            is_draft=self.config.BLOGGER_IS_DRAFT,
+                            is_markdown=True
+                        )
+
+                        if upload_result['success']:
+                            logger.info(f"Weekly summary uploaded: {upload_result.get('url', 'N/A')}")
+                        else:
+                            logger.warning(f"Blogger upload failed: {upload_result['message']}")
+
+                except Exception as e:
+                    logger.error(f"Blogger upload error: {e}")
+
+            # Step 5: Send Telegram notification (if enabled)
+            if getattr(self.config, 'TELEGRAM_ENABLED', False):
+                logger.info("Step 5: Sending Telegram notification...")
+                try:
+                    from telegram_notifier import TelegramNotifier
+
+                    notifier = TelegramNotifier(
+                        bot_token=self.config.TELEGRAM_BOT_TOKEN,
+                        chat_id=self.config.TELEGRAM_CHAT_ID
+                    )
+
+                    message = f"📅 주간 뉴스 요약 완료!\n기간: {start_date_str} ~ {end_date_str}"
+                    notifier.send_message(message)
+
+                except Exception as e:
+                    logger.error(f"Telegram notification error: {e}")
+
+            logger.info("=" * 60)
+            logger.info("✅ Weekly task completed successfully!")
+            logger.info("=" * 60)
+
+        except Exception as e:
+            logger.error(f"Error during weekly task: {str(e)}", exc_info=True)
+
+    def run_monthly_task(self):
+        """Execute monthly news summary task (every 1st of month at 10am)"""
+        if self.version != 'v3':
+            logger.info("Monthly task is only available for v3")
+            return
+
+        try:
+            logger.info("=" * 60)
+            logger.info("Starting monthly news summary task")
+            logger.info("=" * 60)
+
+            # Get last month's year and month
+            today = datetime.now()
+            if today.month == 1:
+                last_month = 12
+                last_year = today.year - 1
+            else:
+                last_month = today.month - 1
+                last_year = today.year
+
+            logger.info(f"Processing {last_year}년 {last_month}월")
+
+            # Step 1: Collect daily summaries for last month
+            logger.info("Step 1: Collecting daily summaries for last month...")
+            daily_content = self.markdown_writer.collect_daily_summaries_for_month(last_year, last_month)
+
+            if not daily_content:
+                logger.warning("No daily summaries found for last month. Aborting.")
+                return
+
+            # Step 2: Create monthly summary with AI
+            logger.info("Step 2: Creating monthly summary with Gemini AI...")
+            monthly_summary = self.ai_summarizer.create_monthly_summary(
+                daily_content, last_year, last_month
+            )
+
+            # Step 3: Save monthly summary
+            logger.info("Step 3: Saving monthly summary...")
+            save_result = self.markdown_writer.save_monthly_summary(monthly_summary, last_year, last_month)
+
+            if not save_result['success']:
+                logger.error(f"Failed to save monthly summary: {save_result['message']}")
+                return
+
+            # Step 4: Upload to Blogger (if enabled)
+            blog_upload_success = False
+            blog_url = None
+
+            if getattr(self.config, 'BLOGGER_ENABLED', False):
+                logger.info("Step 4: Uploading monthly summary to Blogger...")
+                try:
+                    from blogger_uploader import BloggerUploader
+
+                    post_title = f"📆 {last_year}년 {last_month}월 월간 뉴스 요약"
+
+                    with BloggerUploader(
+                        blog_id=self.config.BLOGGER_BLOG_ID,
+                        credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
+                        token_path=self.config.BLOGGER_TOKEN_PATH
+                    ) as uploader:
+                        upload_result = uploader.upload_post(
+                            title=post_title,
+                            content=monthly_summary,
+                            labels=self.config.BLOGGER_MONTHLY_LABELS,
+                            is_draft=self.config.BLOGGER_IS_DRAFT,
+                            is_markdown=True
+                        )
+
+                        if upload_result['success']:
+                            logger.info(f"Monthly summary uploaded: {upload_result.get('url', 'N/A')}")
+                            blog_upload_success = True
+                            blog_url = upload_result.get('url')
+                        else:
+                            logger.warning(f"Blogger upload failed: {upload_result['message']}")
+
+                except Exception as e:
+                    logger.error(f"Blogger upload error: {e}")
+
+            # Step 5: Cleanup last month's folders (only after successful blog upload)
+            if blog_upload_success:
+                logger.info("Step 5: Cleaning up last month's news folders...")
+                cleanup_result = self.markdown_writer.cleanup_month_folders(last_year, last_month)
+                logger.info(f"Cleanup result: {cleanup_result['message']}")
+            else:
+                logger.warning("Skipping cleanup because blog upload was not successful")
+
+            # Step 6: Send Telegram notification (if enabled)
+            if getattr(self.config, 'TELEGRAM_ENABLED', False):
+                logger.info("Step 6: Sending Telegram notification...")
+                try:
+                    from telegram_notifier import TelegramNotifier
+
+                    notifier = TelegramNotifier(
+                        bot_token=self.config.TELEGRAM_BOT_TOKEN,
+                        chat_id=self.config.TELEGRAM_CHAT_ID
+                    )
+
+                    message = f"📆 {last_year}년 {last_month}월 월간 뉴스 요약 완료!"
+                    if blog_url:
+                        message += f"\n🔗 {blog_url}"
+                    if blog_upload_success:
+                        message += f"\n🗑️ {last_month}월 뉴스 폴더 정리 완료"
+
+                    notifier.send_message(message)
+
+                except Exception as e:
+                    logger.error(f"Telegram notification error: {e}")
+
+            logger.info("=" * 60)
+            logger.info("✅ Monthly task completed successfully!")
+            logger.info("=" * 60)
+
+        except Exception as e:
+            logger.error(f"Error during monthly task: {str(e)}", exc_info=True)
+
+    def _check_and_run_monthly(self):
+        """Check if today is the 1st of the month and run monthly task"""
+        if datetime.now().day == 1:
+            logger.info("Today is the 1st of the month, running monthly task...")
+            self.run_monthly_task()
+        else:
+            # Silent pass - don't log every day
+            pass
+
     def run_scheduled(self):
         """Run the task on a daily schedule with error recovery"""
         posting_time = self.config.POSTING_TIME
@@ -312,6 +529,20 @@ class NewsBot:
 
         # Schedule daily news task with retry logic
         schedule.every().day.at(posting_time).do(self.run_daily_task_with_retry)
+
+        # V3: Schedule weekly and monthly tasks
+        if self.version == 'v3':
+            weekly_time = getattr(self.config, 'WEEKLY_POSTING_TIME', '09:00')
+            monthly_time = getattr(self.config, 'MONTHLY_POSTING_TIME', '10:00')
+
+            # Weekly task: Every Sunday at 9am
+            schedule.every().sunday.at(weekly_time).do(self.run_weekly_task)
+            logger.info(f"Scheduled weekly task: Every Sunday at {weekly_time}")
+
+            # Monthly task: Every 1st of month at 10am
+            # schedule doesn't support "1st of month" directly, so we check in a wrapper
+            schedule.every().day.at(monthly_time).do(self._check_and_run_monthly)
+            logger.info(f"Scheduled monthly task: Every 1st at {monthly_time}")
 
         logger.info("News bot is now running. Press Ctrl+C to stop.")
         logger.info(f"Next run scheduled at: {posting_time}")
@@ -360,14 +591,19 @@ def main():
     )
     parser.add_argument(
         '--mode',
-        choices=['once', 'scheduled'],
+        choices=['once', 'scheduled', 'weekly', 'monthly'],
         default='once',
-        help='Execution mode: "once" for immediate run, "scheduled" for daily scheduling'
+        help='Execution mode: "once" for daily, "scheduled" for auto, "weekly" for weekly summary, "monthly" for monthly summary'
     )
     parser.add_argument(
         '--test',
         action='store_true',
         help='Test mode: fetch news and summarize without saving'
+    )
+    parser.add_argument(
+        '--no-cleanup',
+        action='store_true',
+        help='Skip cleanup of old folders after monthly summary (useful for testing)'
     )
 
     args = parser.parse_args()
@@ -401,6 +637,26 @@ def main():
 
         elif args.mode == 'once':
             bot.run_once()
+
+        elif args.mode == 'weekly':
+            if args.version != 'v3':
+                logger.error("Weekly mode is only available for v3")
+            else:
+                logger.info("Running weekly summary task...")
+                bot.run_weekly_task()
+
+        elif args.mode == 'monthly':
+            if args.version != 'v3':
+                logger.error("Monthly mode is only available for v3")
+            else:
+                logger.info("Running monthly summary task...")
+                # If --no-cleanup flag is set, temporarily disable cleanup
+                if args.no_cleanup:
+                    original_cleanup = bot.markdown_writer.cleanup_month_folders
+                    bot.markdown_writer.cleanup_month_folders = lambda y, m: {'success': True, 'message': 'Skipped (--no-cleanup)'}
+                bot.run_monthly_task()
+                if args.no_cleanup:
+                    bot.markdown_writer.cleanup_month_folders = original_cleanup
 
         elif args.mode == 'scheduled':
             bot.run_scheduled()
