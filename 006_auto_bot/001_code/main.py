@@ -409,7 +409,7 @@ class NewsBot:
             logger.info("Starting monthly news summary task")
             logger.info("=" * 60)
 
-            # Get last month's year and month
+            # Get last month's year and month (for summary)
             today = datetime.now()
             if today.month == 1:
                 last_month = 12
@@ -418,7 +418,15 @@ class NewsBot:
                 last_month = today.month - 1
                 last_year = today.year
 
-            logger.info(f"Processing {last_year}년 {last_month}월")
+            # Get 2 months ago (for cleanup - keep last month for 1 month)
+            if today.month <= 2:
+                cleanup_month = today.month + 10  # 1->11, 2->12
+                cleanup_year = today.year - 1
+            else:
+                cleanup_month = today.month - 2
+                cleanup_year = today.year
+
+            logger.info(f"Processing {last_year}년 {last_month}월 (cleanup target: {cleanup_year}년 {cleanup_month}월)")
 
             # Step 1: Collect daily summaries for last month
             logger.info("Step 1: Collecting daily summaries for last month...")
@@ -476,10 +484,11 @@ class NewsBot:
                 except Exception as e:
                     logger.error(f"Blogger upload error: {e}")
 
-            # Step 5: Cleanup last month's folders (only after successful blog upload)
+            # Step 5: Cleanup 2-month-old folders (only after successful blog upload)
+            # Keep last month's data for 1 month before deletion
             if blog_upload_success:
-                logger.info("Step 5: Cleaning up last month's news folders...")
-                cleanup_result = self.markdown_writer.cleanup_month_folders(last_year, last_month)
+                logger.info(f"Step 5: Cleaning up {cleanup_year}년 {cleanup_month}월 news folders...")
+                cleanup_result = self.markdown_writer.cleanup_month_folders(cleanup_year, cleanup_month)
                 logger.info(f"Cleanup result: {cleanup_result['message']}")
             else:
                 logger.warning("Skipping cleanup because blog upload was not successful")
@@ -499,7 +508,7 @@ class NewsBot:
                     if blog_url:
                         message += f"\n🔗 {blog_url}"
                     if blog_upload_success:
-                        message += f"\n🗑️ {last_month}월 뉴스 폴더 정리 완료"
+                        message += f"\n🗑️ {cleanup_year}년 {cleanup_month}월 뉴스 폴더 정리 완료"
 
                     notifier.send_message(message)
 
