@@ -1,0 +1,34 @@
+[
+  {
+    "coin": "BTC",
+    "entry_time": "2025-12-28T23:11:37.377255",
+    "exit_time": "2025-12-28T23:11:37.377546",
+    "entry_price": 95000000,
+    "exit_price": 97000000,
+    "entry_conditions": [
+      "bb_touch",
+      "rsi_oversold"
+    ],
+    "profit_krw": 100000,
+    "profit_pct": 2.1,
+    "regime": "bullish",
+    "trade_id": "BTC_1766931097",
+    "status": "closed"
+  },
+  {
+    "coin": "BTC",
+    "entry_time": "2025-12-28T23:12:52.122921",
+    "exit_time": "2025-12-28T23:12:52.123155",
+    "entry_price": 95000000,
+    "exit_price": 97000000,
+    "entry_conditions": [
+      "bb_touch",
+      "rsi_oversold"
+    ],
+    "profit_krw": 100000,
+    "profit_pct": 2.1,
+    "regime": "bullish",
+    "trade_id": "BTC_1766931172",
+    "status": "closed"
+  }
+]

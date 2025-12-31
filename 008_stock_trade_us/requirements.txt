@@ -1,0 +1,31 @@
+# Stock Auto Trading System - Dependencies
+# Python 3.9+ required
+
+# HTTP 요청
+requests>=2.28.0
+
+# 데이터 처리
+pandas>=1.5.0
+numpy>=1.23.0
+
+# 환경 변수 관리
+python-dotenv>=1.0.0
+
+# 텔레그램 봇
+python-telegram-bot>=20.0
+
+# 스케줄링
+schedule>=1.2.0
+
+# WebSocket (실시간 데이터)
+websocket-client>=1.6.0
+
+# 타임존 처리 (미국 시장)
+pytz>=2023.3
+
+# 미국 주식 데이터 (백업 소스)
+yfinance>=0.2.0
+
+# 테스트
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
