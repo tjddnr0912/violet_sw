@@ -1,7 +1,9 @@
 import os
-from datetime import datetime
-from typing import Dict, List
+import shutil
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 import logging
+import glob
 
 # Configure logging
 logging.basicConfig(
@@ -235,6 +237,218 @@ class MarkdownWriter:
 
         except Exception as e:
             logger.error(f"Error saving blog summary: {str(e)}")
+            return {
+                'success': False,
+                'message': f'Error: {str(e)}'
+            }
+
+    def collect_daily_summaries_for_week(self) -> Tuple[str, str, str]:
+        """
+        Collect daily blog summaries from Monday to Sunday morning
+
+        Returns:
+            Tuple of (combined_content, start_date_str, end_date_str)
+        """
+        today = datetime.now()
+
+        # Find the Monday of this week (if today is Sunday, it's the previous Monday)
+        # weekday(): Monday=0, Sunday=6
+        days_since_monday = today.weekday()
+        if days_since_monday == 6:  # Sunday
+            days_since_monday = 6
+        monday = today - timedelta(days=days_since_monday)
+
+        # Collect from Monday to Saturday (Sunday's summary might not exist yet at 9am)
+        saturday = monday + timedelta(days=5)
+
+        start_date_str = monday.strftime("%Y년 %m월 %d일")
+        end_date_str = saturday.strftime("%Y년 %m월 %d일")
+
+        logger.info(f"Collecting daily summaries from {start_date_str} to {end_date_str}")
+
+        combined_content = []
+        current_date = monday
+
+        while current_date <= saturday:
+            date_folder = current_date.strftime("%Y%m%d")
+            folder_path = os.path.join(self.base_dir, date_folder)
+
+            if os.path.exists(folder_path):
+                # Find blog_summary files in this folder
+                summary_files = glob.glob(os.path.join(folder_path, "blog_summary_*.md"))
+
+                for summary_file in sorted(summary_files):
+                    try:
+                        with open(summary_file, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            date_header = current_date.strftime("%Y년 %m월 %d일")
+                            combined_content.append(f"\n\n---\n## 📅 {date_header}\n\n{content}")
+                            logger.info(f"Added summary from {summary_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to read {summary_file}: {e}")
+
+            current_date += timedelta(days=1)
+
+        return '\n'.join(combined_content), start_date_str, end_date_str
+
+    def collect_daily_summaries_for_month(self, year: int, month: int) -> str:
+        """
+        Collect daily blog summaries for a specific month
+
+        Args:
+            year: Year (e.g., 2025)
+            month: Month (e.g., 12)
+
+        Returns:
+            Combined content of all daily summaries
+        """
+        logger.info(f"Collecting daily summaries for {year}년 {month}월")
+
+        combined_content = []
+
+        # Find all folders matching YYYYMM*
+        month_prefix = f"{year}{month:02d}"
+        all_folders = sorted(glob.glob(os.path.join(self.base_dir, f"{month_prefix}*")))
+
+        for folder_path in all_folders:
+            if os.path.isdir(folder_path):
+                # Find blog_summary files in this folder
+                summary_files = glob.glob(os.path.join(folder_path, "blog_summary_*.md"))
+
+                for summary_file in sorted(summary_files):
+                    try:
+                        with open(summary_file, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            folder_name = os.path.basename(folder_path)
+                            # Extract date from folder name (YYYYMMDD)
+                            if len(folder_name) == 8:
+                                day = int(folder_name[6:8])
+                                date_header = f"{year}년 {month}월 {day}일"
+                                combined_content.append(f"\n\n---\n## 📅 {date_header}\n\n{content}")
+                                logger.info(f"Added summary from {summary_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to read {summary_file}: {e}")
+
+        return '\n'.join(combined_content)
+
+    def cleanup_month_folders(self, year: int, month: int) -> Dict:
+        """
+        Delete all folders for a specific month
+
+        Args:
+            year: Year (e.g., 2025)
+            month: Month (e.g., 12)
+
+        Returns:
+            Response dictionary with cleanup results
+        """
+        logger.info(f"Cleaning up folders for {year}년 {month}월")
+
+        deleted_folders = []
+        errors = []
+
+        # Find all folders matching YYYYMM*
+        month_prefix = f"{year}{month:02d}"
+        all_folders = glob.glob(os.path.join(self.base_dir, f"{month_prefix}*"))
+
+        for folder_path in all_folders:
+            if os.path.isdir(folder_path):
+                try:
+                    shutil.rmtree(folder_path)
+                    deleted_folders.append(folder_path)
+                    logger.info(f"Deleted folder: {folder_path}")
+                except Exception as e:
+                    errors.append(f"{folder_path}: {str(e)}")
+                    logger.error(f"Failed to delete {folder_path}: {e}")
+
+        return {
+            'success': len(errors) == 0,
+            'deleted_folders': deleted_folders,
+            'errors': errors,
+            'message': f"Deleted {len(deleted_folders)} folders" + (f", {len(errors)} errors" if errors else "")
+        }
+
+    def save_weekly_summary(self, content: str, start_date: datetime) -> Dict:
+        """
+        Save weekly summary to a file
+
+        Args:
+            content: Weekly summary content
+            start_date: Start date of the week
+
+        Returns:
+            Response dictionary with file information
+        """
+        try:
+            # Create weekly folder
+            week_folder = os.path.join(self.base_dir, "weekly")
+            if not os.path.exists(week_folder):
+                os.makedirs(week_folder)
+
+            # Generate filename
+            week_str = start_date.strftime("%Y%m%d")
+            filename = f"weekly_summary_{week_str}.md"
+            filepath = os.path.join(week_folder, filename)
+
+            # Write to file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            logger.info(f"Successfully saved weekly summary: {filepath}")
+
+            return {
+                'success': True,
+                'filepath': filepath,
+                'filename': filename,
+                'content': content,
+                'message': 'Weekly summary saved successfully'
+            }
+
+        except Exception as e:
+            logger.error(f"Error saving weekly summary: {str(e)}")
+            return {
+                'success': False,
+                'message': f'Error: {str(e)}'
+            }
+
+    def save_monthly_summary(self, content: str, year: int, month: int) -> Dict:
+        """
+        Save monthly summary to a file
+
+        Args:
+            content: Monthly summary content
+            year: Year (e.g., 2025)
+            month: Month (e.g., 12)
+
+        Returns:
+            Response dictionary with file information
+        """
+        try:
+            # Create monthly folder
+            month_folder = os.path.join(self.base_dir, "monthly")
+            if not os.path.exists(month_folder):
+                os.makedirs(month_folder)
+
+            # Generate filename
+            filename = f"monthly_summary_{year}{month:02d}.md"
+            filepath = os.path.join(month_folder, filename)
+
+            # Write to file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            logger.info(f"Successfully saved monthly summary: {filepath}")
+
+            return {
+                'success': True,
+                'filepath': filepath,
+                'filename': filename,
+                'content': content,
+                'message': 'Monthly summary saved successfully'
+            }
+
+        except Exception as e:
+            logger.error(f"Error saving monthly summary: {str(e)}")
             return {
                 'success': False,
                 'message': f'Error: {str(e)}'
