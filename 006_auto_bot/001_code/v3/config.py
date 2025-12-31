@@ -111,13 +111,13 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
-    # Google Blogger Configuration (API-based)
-    BLOGGER_ENABLED = os.getenv('BLOGGER_ENABLED', 'false').lower() == 'true'
-    BLOGGER_BLOG_ID = os.getenv('BLOGGER_BLOG_ID', '')
-    BLOGGER_CREDENTIALS_PATH = os.getenv('BLOGGER_CREDENTIALS_PATH', './credentials/blogger_credentials.json')
-    BLOGGER_TOKEN_PATH = os.getenv('BLOGGER_TOKEN_PATH', './credentials/blogger_token.pkl')
-    BLOGGER_LABELS = os.getenv('BLOGGER_LABELS', '뉴스,AI요약,자동화').split(',')
-    BLOGGER_IS_DRAFT = os.getenv('BLOGGER_IS_DRAFT', 'false').lower() == 'true'
+    # Google Blogger Configuration for News Bot (별도 블로그 사용)
+    BLOGGER_ENABLED = os.getenv('NEWS_BLOGGER_ENABLED', 'false').lower() == 'true'
+    BLOGGER_BLOG_ID = os.getenv('NEWS_BLOGGER_BLOG_ID', '')
+    BLOGGER_CREDENTIALS_PATH = os.getenv('NEWS_BLOGGER_CREDENTIALS_PATH', './credentials/news_blogger_credentials.json')
+    BLOGGER_TOKEN_PATH = os.getenv('NEWS_BLOGGER_TOKEN_PATH', './credentials/news_blogger_token.pkl')
+    BLOGGER_LABELS = os.getenv('NEWS_BLOGGER_LABELS', '뉴스,AI요약,자동화').split(',')
+    BLOGGER_IS_DRAFT = os.getenv('NEWS_BLOGGER_IS_DRAFT', 'false').lower() == 'true'
 
     @classmethod
     def validate(cls):
@@ -128,7 +128,7 @@ class Config:
             errors.append("GEMINI_API_KEY is not set")
 
         if cls.BLOGGER_ENABLED and not cls.BLOGGER_BLOG_ID:
-            errors.append("BLOGGER_BLOG_ID is not set but BLOGGER_ENABLED is true")
+            errors.append("NEWS_BLOGGER_BLOG_ID is not set but NEWS_BLOGGER_ENABLED is true")
 
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
