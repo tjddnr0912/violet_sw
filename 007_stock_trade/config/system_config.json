@@ -1,0 +1,13 @@
+{
+  "dry_run": false,
+  "is_virtual": true,
+  "target_count": 15,
+  "universe_size": 200,
+  "stop_loss_pct": 7.0,
+  "take_profit_pct": 10.0,
+  "max_daily_trades": 10,
+  "momentum_weight": 0.2,
+  "short_mom_weight": 0.1,
+  "volatility_weight": 0.5,
+  "volume_weight": 0.0
+}

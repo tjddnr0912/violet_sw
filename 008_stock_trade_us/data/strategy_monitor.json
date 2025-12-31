@@ -1,0 +1,28 @@
+{
+  "check_date": "2025-12-27 15:15",
+  "current_weights": {
+    "momentum_weight": 0.2,
+    "short_mom_weight": 0.1,
+    "volatility_weight": 0.5,
+    "volume_weight": 0.0,
+    "target_count": 15,
+    "optimized_date": "2025-12-27",
+    "baseline_sharpe": 2.39,
+    "baseline_return": 8.99,
+    "baseline_mdd": -2.14
+  },
+  "metrics": {
+    "period_months": 3,
+    "start_date": "2025-09-26",
+    "end_date": "2025-12-25",
+    "total_return": 8.989748785512287,
+    "sharpe_ratio": 3.9095595101065186,
+    "sortino_ratio": 8.711807216838436,
+    "max_drawdown": -2.135189304767382,
+    "win_rate": 54.83870967741935,
+    "profit_factor": 2.534006085911105,
+    "total_trades": 31
+  },
+  "alerts": [],
+  "status": "OK"
+}
