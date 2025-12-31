@@ -3,7 +3,7 @@
 # Start All Bots - iTerm2 Multi-Tab Launcher
 # ==============================================
 # Opens a new iTerm2 window with 3 tabs:
-#   Tab 1: Trading Bot (Ver3 CLI)
+#   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart)
 #   Tab 2: News Bot (Scheduled)
 #   Tab 3: Telegram Gemini Bot
 #   Tab 4: Quant Trading Daemon (TODO: 개발 완료 후 활성화)
@@ -12,7 +12,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Script paths
-TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_cli.sh"
+TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_watchdog.sh"
 NEWS_BOT="$SCRIPT_DIR/006_auto_bot/run_scheduled.sh"
 TELEGRAM_BOT="$SCRIPT_DIR/006_auto_bot/run_telegram_bot.sh"
 # QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"  # TODO: 개발 완료 후 활성화
