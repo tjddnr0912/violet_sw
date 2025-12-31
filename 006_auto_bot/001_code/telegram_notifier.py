@@ -106,7 +106,32 @@ class TelegramNotifier:
         # Build full message
         message = f"{status_header}\n\n{'─' * 30}\n\n{telegram_summary}"
 
-        return self.send_message(message, parse_mode="HTML")
+        # Try HTML first, fallback to plain text if parsing fails
+        result = self.send_message(message, parse_mode="HTML")
+
+        if not result.get("success") and "parse entities" in result.get("error", ""):
+            logger.warning("HTML parsing failed, retrying with plain text...")
+            # Build plain text version
+            plain_header = "✅ 블로그 업로드 성공!" if upload_success else "❌ 블로그 업로드 실패"
+            if upload_success and blog_url:
+                plain_header += f"\n🔗 {blog_url}"
+            elif not upload_success and error_message:
+                plain_header += f"\n⚠️ 오류: {error_message}"
+
+            # Simple text cleanup (remove markdown/html)
+            import re
+            plain_summary = summary_content
+            plain_summary = re.sub(r'[#*_`]', '', plain_summary)
+            plain_summary = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', plain_summary)
+            plain_summary = re.sub(r'<[^>]+>', '', plain_summary)
+
+            if len(plain_summary) > max_length:
+                plain_summary = plain_summary[:max_length - 100] + "\n\n... (내용이 길어 일부 생략)"
+
+            plain_message = f"{plain_header}\n\n{'─' * 30}\n\n{plain_summary}"
+            result = self.send_message(plain_message, parse_mode=None)
+
+        return result
 
     def _convert_markdown_to_telegram(self, markdown_text: str) -> str:
         """
