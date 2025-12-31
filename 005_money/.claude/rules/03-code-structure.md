@@ -12,9 +12,17 @@
 ├── live_executor_v3.py            # 주문 실행 (1069줄)
 ├── regime_detector.py             # 레짐 분류 (490줄)
 ├── dynamic_factor_manager.py      # 동적 파라미터 (764줄)
+├── monthly_optimizer.py           # 월간 파라미터 최적화 (715줄)
 ├── performance_tracker.py         # 성과 추적 (458줄)
+├── preference_manager_v3.py       # 사용자 설정 관리 (362줄)
 ├── gui_app_v3.py                  # GUI 메인 (1373줄)
-└── run_cli.py                     # CLI 엔트리포인트
+├── run_cli.py                     # CLI 엔트리포인트 (102줄)
+└── widgets/                       # GUI 위젯 컴포넌트
+    ├── __init__.py
+    ├── account_info_widget.py     # 계정 정보 위젯 (419줄)
+    ├── coin_selector_widget.py    # 코인 선택 위젯 (270줄)
+    ├── portfolio_overview_widget.py # 포트폴리오 개요 (247줄)
+    └── settings_panel_widget.py   # 설정 패널 (769줄)
 ```
 
 ## 클래스 관계도
@@ -24,12 +32,20 @@ TradingBotV3 (trading_bot_v3.py)
 ├── StrategyV3 (strategy_v3.py)
 │   ├── RegimeDetector (regime_detector.py)
 │   └── DynamicFactorManager (dynamic_factor_manager.py)
+│       └── MonthlyOptimizer (monthly_optimizer.py)
 ├── PortfolioManagerV3 (portfolio_manager_v3.py)
 │   └── LiveExecutorV3 (live_executor_v3.py)
 │       └── BithumbAPI (lib/api/bithumb_api.py)
 ├── TelegramNotifier (lib/core/telegram_notifier.py)
 ├── TelegramBotHandler (lib/core/telegram_bot_handler.py)
-└── PerformanceTracker (performance_tracker.py)
+├── PerformanceTracker (performance_tracker.py)
+└── PreferenceManager (preference_manager_v3.py)
+
+GUIAppV3 (gui_app_v3.py)
+├── AccountInfoWidget (widgets/account_info_widget.py)
+├── CoinSelectorWidget (widgets/coin_selector_widget.py)
+├── PortfolioOverviewWidget (widgets/portfolio_overview_widget.py)
+└── SettingsPanelWidget (widgets/settings_panel_widget.py)
 ```
 
 ## 핵심 클래스 상세
@@ -160,6 +176,33 @@ class DynamicFactorManager:
 
 ## 공유 라이브러리 (lib/)
 
+```
+001_python_code/lib/
+├── __init__.py
+├── api/                           # 거래소 API
+│   ├── __init__.py
+│   └── bithumb_api.py             # 빗썸 API 래퍼 (약 400줄)
+├── core/                          # 핵심 유틸리티
+│   ├── __init__.py
+│   ├── arg_parser.py              # CLI 인자 파서 (208줄)
+│   ├── config_common.py           # 공통 설정 (171줄)
+│   ├── config_manager.py          # 설정 관리자 (491줄)
+│   ├── logger.py                  # 로깅 유틸리티 (412줄)
+│   ├── portfolio_manager.py       # 공통 포트폴리오 (334줄)
+│   ├── telegram_bot_handler.py    # 텔레그램 명령어 (934줄)
+│   ├── telegram_notifier.py       # 텔레그램 알림 (673줄)
+│   └── version_loader.py          # 버전 로더 (92줄)
+├── gui/                           # GUI 공통 컴포넌트
+│   ├── __init__.py
+│   ├── components/                # GUI 서브 컴포넌트
+│   ├── data_manager.py            # 데이터 관리 (278줄)
+│   └── indicator_calculator.py    # 지표 계산기 (318줄)
+└── interfaces/                    # 인터페이스 정의
+    ├── __init__.py
+    ├── strategy_interface.py      # 전략 인터페이스 (47줄)
+    └── version_interface.py       # 버전 인터페이스 (46줄)
+```
+
 ### lib/api/bithumb_api.py
 
 ```python
@@ -173,7 +216,7 @@ def get_balance(ticker: str) -> Dict:
     # 잔고 조회 (인증 필요)
 ```
 
-### lib/core/telegram_notifier.py
+### lib/core/telegram_notifier.py (673줄)
 
 ```python
 class TelegramNotifier:
@@ -183,7 +226,7 @@ class TelegramNotifier:
     def send_regime_change_alert(self, old, new, coin, ema_diff) -> bool
 ```
 
-### lib/core/telegram_bot_handler.py
+### lib/core/telegram_bot_handler.py (934줄)
 
 ```python
 class TelegramBotHandler:
@@ -193,6 +236,47 @@ class TelegramBotHandler:
     async def cmd_factors(self, update, context)
     async def cmd_close(self, update, context)  # /close <COIN>
     async def cmd_stop(self, update, context)
+```
+
+### lib/core/config_manager.py (491줄)
+
+```python
+class ConfigManager:
+    # 설정 파일 로드/저장
+    def load_config(self, config_path: str) -> Dict
+    def save_config(self, config: Dict, config_path: str) -> bool
+    def get_default_config(self) -> Dict
+```
+
+### lib/core/logger.py (412줄)
+
+```python
+def setup_logger(name: str, log_file: str, level: int) -> logging.Logger
+    # 로거 설정 및 반환
+
+class ColoredFormatter:
+    # 컬러 로그 포매터
+```
+
+### lib/gui/indicator_calculator.py (318줄)
+
+```python
+class IndicatorCalculator:
+    # 기술적 지표 계산
+    def calculate_ema(self, df: pd.DataFrame, period: int) -> pd.Series
+    def calculate_bb(self, df: pd.DataFrame, period: int, std: float) -> Dict
+    def calculate_rsi(self, df: pd.DataFrame, period: int) -> pd.Series
+```
+
+### lib/interfaces/strategy_interface.py
+
+```python
+class StrategyInterface(ABC):
+    @abstractmethod
+    def analyze(self, coin: str) -> Dict[str, Any]
+
+    @abstractmethod
+    def get_signal(self, coin: str) -> str
 ```
 
 ## 데이터 흐름

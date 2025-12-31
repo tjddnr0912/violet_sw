@@ -57,6 +57,9 @@ python 001_python_code/ver3/run_cli.py
 | `live_executor_v3.py` | 실제 주문 실행 |
 | `regime_detector.py` | 6단계 시장 레짐 분류 |
 | `dynamic_factor_manager.py` | 동적 파라미터 관리 |
+| `monthly_optimizer.py` | 월간 파라미터 최적화 |
+| `performance_tracker.py` | 성과 추적 및 분석 |
+| `preference_manager_v3.py` | 사용자 설정 관리 |
 
 ### 시장 레짐 분류 (6단계)
 
