@@ -333,7 +333,7 @@ class MarkdownWriter:
 
     def cleanup_month_folders(self, year: int, month: int) -> Dict:
         """
-        Delete all folders for a specific month
+        Delete all folders and weekly summaries for a specific month
 
         Args:
             year: Year (e.g., 2025)
@@ -345,9 +345,10 @@ class MarkdownWriter:
         logger.info(f"Cleaning up folders for {year}년 {month}월")
 
         deleted_folders = []
+        deleted_files = []
         errors = []
 
-        # Find all folders matching YYYYMM*
+        # Find all daily folders matching YYYYMM*
         month_prefix = f"{year}{month:02d}"
         all_folders = glob.glob(os.path.join(self.base_dir, f"{month_prefix}*"))
 
@@ -361,11 +362,25 @@ class MarkdownWriter:
                     errors.append(f"{folder_path}: {str(e)}")
                     logger.error(f"Failed to delete {folder_path}: {e}")
 
+        # Also delete weekly summaries for this month
+        weekly_folder = os.path.join(self.base_dir, "weekly")
+        if os.path.exists(weekly_folder):
+            weekly_files = glob.glob(os.path.join(weekly_folder, f"weekly_summary_{month_prefix}*.md"))
+            for weekly_file in weekly_files:
+                try:
+                    os.remove(weekly_file)
+                    deleted_files.append(weekly_file)
+                    logger.info(f"Deleted weekly summary: {weekly_file}")
+                except Exception as e:
+                    errors.append(f"{weekly_file}: {str(e)}")
+                    logger.error(f"Failed to delete {weekly_file}: {e}")
+
         return {
             'success': len(errors) == 0,
             'deleted_folders': deleted_folders,
+            'deleted_files': deleted_files,
             'errors': errors,
-            'message': f"Deleted {len(deleted_folders)} folders" + (f", {len(errors)} errors" if errors else "")
+            'message': f"Deleted {len(deleted_folders)} folders, {len(deleted_files)} weekly files" + (f", {len(errors)} errors" if errors else "")
         }
 
     def save_weekly_summary(self, content: str, start_date: datetime) -> Dict:
