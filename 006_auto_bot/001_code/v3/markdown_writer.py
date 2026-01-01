@@ -174,14 +174,6 @@ class MarkdownWriter:
 """
                 markdown += news_section
 
-        # Add footer
-        markdown += """
-
----
-
-*원본 뉴스 수집 by Automated News Bot (Version 3)*
-"""
-
         return markdown
 
     def save_blog_summary(self, blog_content: str) -> Dict:
@@ -203,24 +195,7 @@ class MarkdownWriter:
             filename = f"blog_summary_{timestamp}.md"
             filepath = os.path.join(date_folder, filename)
 
-            # Add header
-            current_date = datetime.now().strftime("%Y년 %m월 %d일")
-            current_time = datetime.now().strftime("%H:%M:%S")
-
-            full_content = f"""# 📰 {current_date} 뉴스 블로그 요약
-
-> 생성 일시: {current_date} {current_time}
-> 생성: Gemini AI
-> 버전: Version 3 (All Categories)
-
----
-
-{blog_content}
-
----
-
-*자동 생성: Gemini API | Version 3*
-"""
+            full_content = blog_content
 
             # Write to file
             with open(filepath, 'w', encoding='utf-8') as f:
