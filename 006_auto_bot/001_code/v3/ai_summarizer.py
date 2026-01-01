@@ -103,6 +103,7 @@ REMEMBER:
 - ALL categories must have SIMILAR length (모든 카테고리 분량 균등)
 - Combine duplicate topics (중복 주제는 반드시 통합)
 - Translate English articles to Korean (영문 기사는 한글로 번역)
+- NEVER add footer text like "자동 생성", "Gemini", "AI", "Version" etc. (푸터/서명 절대 금지)
 
 Format: Return ONLY the markdown content, no explanations.
 
@@ -235,6 +236,8 @@ Blog Post (한국어):"""
 - 카테고리별 주간 핵심 뉴스 요약
 - 마무리 인사
 
+중요: "자동 생성", "Gemini", "AI", "Version" 등의 푸터나 서명을 절대 추가하지 마세요.
+
 형식: 마크다운 형식으로 작성. 설명 없이 본문만 반환.
 
 주간 뉴스 요약 (한국어):"""
@@ -325,6 +328,8 @@ Blog Post (한국어):"""
 - 인사말과 월간 개요로 시작
 - 카테고리별 월간 핵심 뉴스 요약
 - 이번 달 총평 및 마무리 인사
+
+중요: "자동 생성", "Gemini", "AI", "Version" 등의 푸터나 서명을 절대 추가하지 마세요.
 
 형식: 마크다운 형식으로 작성. 설명 없이 본문만 반환.
 
