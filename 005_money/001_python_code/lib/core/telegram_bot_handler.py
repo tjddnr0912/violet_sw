@@ -330,11 +330,27 @@ Coins: `{coins}`
   Since: `{entry_time}`
 """)
                 else:
+                    # Build extreme oversold info for bearish regimes
+                    extreme_info = ""
+                    bearish_conditions = analysis.get('bearish_conditions', {})
+                    if bearish_conditions and regime.lower() in ['bearish', 'strong_bearish']:
+                        extreme_count = bearish_conditions.get('extreme_condition_count', 0)
+                        is_extreme = bearish_conditions.get('is_extreme_oversold', False)
+                        extreme_emoji = "✅" if is_extreme else "❌"
+
+                        rsi_val = bearish_conditions.get('current_rsi', 0)
+                        stoch_val = bearish_conditions.get('current_stoch_k', 0)
+                        rsi_ok = "✓" if bearish_conditions.get('rsi_extreme', False) else "✗"
+                        stoch_ok = "✓" if bearish_conditions.get('stoch_extreme', False) else "✗"
+                        bb_ok = "✓" if bearish_conditions.get('price_at_bb_lower', False) else "✗"
+
+                        extreme_info = f"\n  Extreme: `{extreme_count}/3` {extreme_emoji} (RSI:{rsi_val:.0f}{rsi_ok} Stoch:{stoch_val:.0f}{stoch_ok} BB:{bb_ok})"
+
                     message_lines.append(f"""
 *{coin}* (No Position)
   Regime: `{regime.upper()}`
   Score: `{score}/4`
-  Signal: `{action}`
+  Signal: `{action}`{extreme_info}
 """)
 
             if not has_positions:

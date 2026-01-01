@@ -259,6 +259,9 @@ class StrategyV3(VersionInterface):
             # Step 12: Calculate targets based on regime
             target_prices = self._calculate_target_prices_dynamic(exec_df, regime_strategy)
 
+            # Step 13: Get bearish conditions for all regimes (for display purposes)
+            bearish_conditions = self.regime_detector.get_bearish_entry_conditions(exec_df)
+
             return {
                 'action': action,
                 'signal_strength': signal_strength,
@@ -279,6 +282,7 @@ class StrategyV3(VersionInterface):
                 'price_data': exec_df,
                 'indicators': self._get_latest_indicators(exec_df),
                 'entry_conditions': self._get_entry_conditions(entry_score, exec_df),
+                'bearish_conditions': bearish_conditions,
             }
 
         except Exception as e:
