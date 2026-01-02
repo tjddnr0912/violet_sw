@@ -57,7 +57,7 @@ debug_logger.addHandler(_debug_handler)
 debug_logger.propagate = False  # 터미널에 출력하지 않음
 
 # API Rate Limit 설정 (한투 API 제한: 실전 20건/초, 모의 5건/초)
-API_DELAY_VIRTUAL = 0.35   # 모의투자: 350ms (초당 ~2.8건, 여유있게)
+API_DELAY_VIRTUAL = 0.5    # 모의투자: 500ms (초당 2건, 충분한 여유)
 API_DELAY_REAL = 0.1       # 실전투자: 100ms (초당 ~10건)
 
 

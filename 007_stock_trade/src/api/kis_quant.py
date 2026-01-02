@@ -112,9 +112,11 @@ class DailyPrice:
 class KISQuantClient(KISClient):
     """퀀트 전략용 확장 API 클라이언트"""
 
-    # API 호출 제한 관리
-    _last_call_time: float = 0
-    _min_interval: float = 0.05  # 초당 20회 = 50ms 간격
+    def __init__(self, is_virtual: bool = True):
+        super().__init__(is_virtual)
+        # API 호출 제한 관리 (모의: 5건/초, 실전: 20건/초)
+        self._last_call_time: float = 0
+        self._min_interval: float = 0.5 if is_virtual else 0.05
 
     def _rate_limit(self):
         """API 호출 속도 제한"""
