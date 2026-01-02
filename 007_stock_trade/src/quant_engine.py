@@ -655,7 +655,7 @@ class QuantTradingEngine:
         for idx, code in enumerate(to_buy):
             # API Rate Limit 방지: 호출 간격 200ms
             if idx > 0:
-                time.sleep(0.2)
+                time.sleep(0.25)
 
             stock = target_stocks[code]
 
@@ -800,7 +800,7 @@ class QuantTradingEngine:
         for i, order in enumerate(self.failed_orders):
             # API Rate Limit 방지
             if i > 0:
-                time.sleep(0.2)
+                time.sleep(0.25)
 
             # 이미 보유 중인 종목은 스킵
             if order.code in self.portfolio.positions:
@@ -954,7 +954,7 @@ class QuantTradingEngine:
         for i, order in enumerate(sell_orders):
             # API Rate Limit 방지
             if i > 0:
-                time.sleep(0.2)
+                time.sleep(0.25)
             if self._execute_order(order):
                 executed.append(order)
 
@@ -965,7 +965,7 @@ class QuantTradingEngine:
         for i, order in enumerate(buy_orders):
             # API Rate Limit 방지
             if i > 0:
-                time.sleep(0.2)
+                time.sleep(0.25)
             if self._execute_order(order):
                 executed.append(order)
 
@@ -1206,13 +1206,28 @@ class QuantTradingEngine:
         debug_logger.info(f"모니터링 시작: {len(positions_snapshot)}개 포지션")
 
         for i, (code, position) in enumerate(positions_snapshot):
-            # API Rate Limit 방지: 호출 간격 150ms (초당 ~6회)
+            # API Rate Limit 방지: 호출 간격 250ms (초당 4회)
             if i > 0:
-                time.sleep(0.15)
+                time.sleep(0.25)
 
             try:
-                # 현재가 업데이트
-                price_info = self.client.get_stock_price(code)
+                # 현재가 업데이트 (Rate Limit 시 재시도)
+                price_info = None
+                for retry in range(3):
+                    try:
+                        price_info = self.client.get_stock_price(code)
+                        break
+                    except Exception as e:
+                        if "EGW00201" in str(e) or "초당 거래건수" in str(e):
+                            wait_time = 1.0 * (retry + 1)  # 1초, 2초, 3초
+                            debug_logger.warning(f"[{code}] Rate Limit - {wait_time}초 대기 후 재시도")
+                            time.sleep(wait_time)
+                        else:
+                            raise
+
+                if price_info is None:
+                    debug_logger.error(f"[{code}] 3회 재시도 실패")
+                    continue
 
                 with self._position_lock:
                     # 포지션이 아직 존재하는지 확인
