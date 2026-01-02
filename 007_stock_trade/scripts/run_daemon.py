@@ -8,6 +8,7 @@
 
 import sys
 import os
+import atexit
 
 # 프로젝트 루트 경로 설정
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,6 +25,77 @@ import logging
 import signal
 import threading
 from datetime import datetime
+
+# PID 파일 경로
+PID_FILE = Path(project_root) / "data" / "daemon.pid"
+
+
+def kill_existing_daemon() -> bool:
+    """기존 데몬 프로세스 종료"""
+    if not PID_FILE.exists():
+        return False
+
+    try:
+        with open(PID_FILE, 'r') as f:
+            old_pid = int(f.read().strip())
+
+        # 프로세스 존재 여부 확인
+        try:
+            os.kill(old_pid, 0)  # 시그널 0은 프로세스 존재 확인용
+        except OSError:
+            # 프로세스가 없음 - PID 파일만 삭제
+            PID_FILE.unlink()
+            return False
+
+        # 기존 프로세스 종료
+        print(f"⚠️  기존 데몬 프로세스 발견 (PID: {old_pid})")
+        print("   종료 중...")
+
+        os.kill(old_pid, signal.SIGTERM)
+
+        # 종료 대기 (최대 5초)
+        import time
+        for _ in range(10):
+            time.sleep(0.5)
+            try:
+                os.kill(old_pid, 0)
+            except OSError:
+                print("   ✅ 기존 프로세스 종료됨")
+                break
+        else:
+            # SIGTERM으로 안 되면 SIGKILL
+            print("   강제 종료 시도...")
+            try:
+                os.kill(old_pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+        # Telegram 세션 정리 대기
+        print("   텔레그램 세션 정리 대기 (3초)...")
+        time.sleep(3)
+
+        PID_FILE.unlink(missing_ok=True)
+        return True
+
+    except Exception as e:
+        print(f"⚠️  기존 프로세스 확인 오류: {e}")
+        PID_FILE.unlink(missing_ok=True)
+        return False
+
+
+def write_pid_file():
+    """현재 프로세스 PID 파일 생성"""
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PID_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+
+
+def cleanup_pid_file():
+    """종료 시 PID 파일 삭제"""
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 # 로그 디렉토리 생성
 Path("logs").mkdir(exist_ok=True)
@@ -236,6 +308,13 @@ class QuantDaemon:
 
     def start_telegram_bot(self):
         """텔레그램 봇 시작"""
+        thread = self._create_telegram_thread()
+        thread.start()
+        self.threads.append(thread)
+        logger.info("텔레그램 봇 시작됨")
+
+    def _create_telegram_thread(self):
+        """텔레그램 봇 스레드 생성"""
         from src.telegram.bot import TelegramBotHandler
         from src.api import KISClient
 
@@ -248,6 +327,7 @@ class QuantDaemon:
             kis_client = None
 
         bot = TelegramBotHandler(kis_client=kis_client)
+        self._telegram_bot = bot  # 재시작 시 참조용
 
         def run_bot():
             try:
@@ -255,10 +335,7 @@ class QuantDaemon:
             except Exception as e:
                 logger.error(f"텔레그램 봇 오류: {e}")
 
-        thread = threading.Thread(target=run_bot, name="TelegramBot", daemon=True)
-        thread.start()
-        self.threads.append(thread)
-        logger.info("텔레그램 봇 시작됨")
+        return threading.Thread(target=run_bot, name="TelegramBot", daemon=True)
 
     def send_startup_notification(self):
         """시작 알림 전송 (재시도 포함)"""
@@ -342,14 +419,33 @@ class QuantDaemon:
             signal.signal(signal.SIGINT, self._signal_handler)
             signal.signal(signal.SIGTERM, self._signal_handler)
 
-            # 메인 루프
-            while self.running:
-                # 스레드 상태 체크
-                for thread in self.threads:
-                    if not thread.is_alive():
-                        logger.warning(f"스레드 종료됨: {thread.name}")
+            # 메인 루프 (스레드 모니터링 및 자동 재시작)
+            import time
+            restart_counts = {}  # 스레드별 재시작 횟수
+            max_restarts = 5     # 최대 재시작 횟수
 
-                import time
+            while self.running:
+                # 스레드 상태 체크 및 재시작
+                for i, thread in enumerate(self.threads):
+                    if not thread.is_alive():
+                        thread_name = thread.name
+                        restart_counts[thread_name] = restart_counts.get(thread_name, 0) + 1
+
+                        if restart_counts[thread_name] <= max_restarts:
+                            logger.warning(f"스레드 종료 감지: {thread_name} - 재시작 시도 ({restart_counts[thread_name]}/{max_restarts})")
+
+                            # 텔레그램 봇 스레드 재시작
+                            if thread_name == "TelegramBot":
+                                time.sleep(5)  # 잠시 대기 후 재시작
+                                new_thread = self._create_telegram_thread()
+                                new_thread.start()
+                                self.threads[i] = new_thread
+                                logger.info(f"텔레그램 봇 스레드 재시작됨")
+                            else:
+                                logger.warning(f"{thread_name} 스레드는 자동 재시작 미지원")
+                        else:
+                            logger.error(f"스레드 {thread_name} 최대 재시작 횟수 초과 - 재시작 중단")
+
                 time.sleep(10)
 
         except KeyboardInterrupt:
@@ -399,8 +495,21 @@ def main():
                         help='모의투자 (기본값)')
     parser.add_argument('--real', action='store_true',
                         help='실전투자')
+    parser.add_argument('--force', '-f', action='store_true',
+                        help='기존 프로세스 강제 종료 후 시작')
 
     args = parser.parse_args()
+
+    # ========== 중복 실행 방지 ==========
+    # 기존 데몬이 실행 중이면 종료
+    if kill_existing_daemon():
+        print("")  # 줄바꿈
+
+    # PID 파일 생성 및 종료 시 정리 등록
+    write_pid_file()
+    atexit.register(cleanup_pid_file)
+
+    logger.info(f"데몬 시작 (PID: {os.getpid()})")
 
     # SystemController에서 저장된 설정 로드
     from src.core import get_controller
@@ -416,6 +525,7 @@ def main():
         confirm = input("⚠️ 실전투자 모드입니다. 계속하시겠습니까? (yes/no): ")
         if confirm.lower() != 'yes':
             print("취소됨")
+            cleanup_pid_file()
             return
         controller.config.is_virtual = False
         controller.save_config()

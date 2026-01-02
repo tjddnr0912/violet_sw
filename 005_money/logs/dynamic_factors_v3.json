@@ -2,7 +2,7 @@
   "atr_stop_loss_multiplier": 0.8,
   "position_size_multiplier": 1.2,
   "volatility_level": "low",
-  "current_atr_pct": 0.34,
+  "current_atr_pct": 0.31,
   "rsi_oversold_threshold": 30.0,
   "rsi_overbought_threshold": 70.0,
   "stoch_oversold_threshold": 20.0,
@@ -20,8 +20,8 @@
   "entry_weight_rsi_oversold": 1.0,
   "entry_weight_stoch_cross": 2.0,
   "min_entry_score": 2,
-  "last_realtime_update": "2025-12-30T23:25:41.150820",
+  "last_realtime_update": "2026-01-02T10:32:49.971092",
   "last_4h_update": null,
-  "last_daily_update": "2025-12-30T23:25:41.185697",
+  "last_daily_update": "2026-01-02T10:32:49.981055",
   "last_weekly_update": null
 }

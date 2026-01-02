@@ -1,13 +1,23 @@
-Folder Tree
+# 006_auto_bot
 
-000_proposal
-  -> Write to project goal's to tell the AI model.
+뉴스 자동 수집/요약/블로그 포스팅 봇
 
-001_code
-  -> All of software code will be saved here.
+## Structure
 
-002_doc
-  -> All of documents what I want, is saved here.
+```
+000_proposal/   # 기획 문서 (legacy)
+001_code/       # 소스 코드 (main)
+002_doc/        # 문서 (deprecated)
+003_test_code/  # 테스트 코드
+004_News_paper/ # 생성된 뉴스 요약 파일
+```
 
-003_test_code
-  -> This folder is located for test code.
+## Quick Start
+
+```bash
+cd 001_code
+source .venv/bin/activate
+python main.py --version v3 --mode once
+```
+
+자세한 내용은 `CLAUDE.md` 참조

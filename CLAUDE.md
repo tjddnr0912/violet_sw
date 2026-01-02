@@ -14,6 +14,7 @@ Multi-language learning and development repository.
 | `003_script/` | Utility scripts | Bash/Python |
 | `004_hacker_rank/` | HackerRank solutions | Python |
 | `005_money/` | **Cryptocurrency Trading Bot** | Python |
+| `006_auto_bot/` | **News Bot** (RSS→Gemini→Blogger) | Python |
 
 ## Main Project: Trading Bot (005_money/)
 

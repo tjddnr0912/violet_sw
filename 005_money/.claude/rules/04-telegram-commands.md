@@ -45,6 +45,8 @@
 - 현재 레짐
 - 현재 스코어
 - 마지막 신호
+- Extreme Oversold 상태 (Bearish 레짐만): `2/3 ✅` 또는 `1/3 ❌`
+  - RSI, Stoch, BB 각 조건 충족 여부 표시
 
 ### /factors
 

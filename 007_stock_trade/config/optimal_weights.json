@@ -1,13 +1,39 @@
 {
-  "momentum_weight": 0.20,
-  "short_mom_weight": 0.10,
-  "volatility_weight": 0.50,
-  "volume_weight": 0.00,
+  "momentum_weight": 0.2,
+  "short_mom_weight": 0.1,
+  "volatility_weight": 0.5,
+  "volume_weight": 0.0,
   "target_count": 15,
-  "optimized_date": "2025-12-27",
-  "baseline_sharpe": 2.39,
-  "baseline_return": 8.99,
-  "baseline_mdd": -2.14,
+  "optimized_date": "2026-01-01",
+  "baseline_sharpe": 2.553945948910455,
+  "baseline_return": 9.544517006380415,
+  "baseline_mdd": -2.135189304767382,
   "auto_update": true,
-  "updated_at": "2025-12-27 15:20:00"
+  "previous_weights": {
+    "momentum_weight": 0.2,
+    "short_mom_weight": 0.1,
+    "volatility_weight": 0.5,
+    "volume_weight": 0.0,
+    "target_count": 15,
+    "optimized_date": "2026-01-01",
+    "baseline_sharpe": 2.553945948910455,
+    "baseline_return": 9.544517006380415,
+    "baseline_mdd": -2.135189304767382,
+    "auto_update": true,
+    "previous_weights": {
+      "momentum_weight": 0.2,
+      "short_mom_weight": 0.1,
+      "volatility_weight": 0.5,
+      "volume_weight": 0.0,
+      "target_count": 15,
+      "optimized_date": "2025-12-27",
+      "baseline_sharpe": 2.39,
+      "baseline_return": 8.99,
+      "baseline_mdd": -2.14,
+      "auto_update": true,
+      "updated_at": "2025-12-27 15:20:00"
+    },
+    "updated_at": "2026-01-01 08:06:12"
+  },
+  "updated_at": "2026-01-01 08:07:33"
 }
