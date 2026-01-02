@@ -1307,6 +1307,10 @@ class QuantTradingEngine:
         """손절 실행"""
         logger.warning(f"손절 트리거: {position.name} ({position.profit_pct:+.1f}%)")
 
+        # API Rate Limit 방지: 가격 조회 후 딜레이
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
+        time.sleep(api_delay)
+
         order = PendingOrder(
             code=position.code,
             name=position.name,
@@ -1332,6 +1336,10 @@ class QuantTradingEngine:
             return
 
         logger.info(f"익절 트리거 ({stage}차): {position.name} {qty}주 ({position.profit_pct:+.1f}%)")
+
+        # API Rate Limit 방지: 가격 조회 후 딜레이
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
+        time.sleep(api_delay)
 
         order = PendingOrder(
             code=position.code,
