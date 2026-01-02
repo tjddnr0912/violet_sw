@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import threading
 
+# AutoStrategyManager용 독립 스케줄러 인스턴스
+# (QuantTradingEngine과 스케줄 충돌 방지)
+auto_scheduler = schedule.Scheduler()
+
 # 프로젝트 루트의 .env 파일 명시적 로드
 from dotenv import load_dotenv
 project_root = Path(__file__).parent.parent.parent
@@ -310,14 +314,14 @@ class AutoStrategyManager:
             return {"error": str(e)}
 
     def schedule_jobs(self):
-        """스케줄 작업 등록"""
+        """스케줄 작업 등록 (독립 스케줄러 사용)"""
         # 매월 1일 09:00 모니터링
-        schedule.every().day.at("09:00").do(self._check_monthly_monitoring)
+        auto_scheduler.every().day.at("09:00").do(self._check_monthly_monitoring)
 
         # 매일 체크 - 반기 최적화 (1월, 7월 첫째주)
-        schedule.every().day.at("08:00").do(self._check_semiannual_optimization)
+        auto_scheduler.every().day.at("08:00").do(self._check_semiannual_optimization)
 
-        logger.info("스케줄 작업 등록 완료")
+        logger.info("스케줄 작업 등록 완료 (독립 스케줄러)")
         logger.info("  - 월간 모니터링: 매월 1일 09:00")
         logger.info("  - 반기 최적화: 1월/7월 첫째주")
 
@@ -372,7 +376,7 @@ class AutoStrategyManager:
         logger.info("자동 관리 스케줄러 시작")
 
         while self.running:
-            schedule.run_pending()
+            auto_scheduler.run_pending()
             time.sleep(60)  # 1분마다 체크
 
     def stop(self):
