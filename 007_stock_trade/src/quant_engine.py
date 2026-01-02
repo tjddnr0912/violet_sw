@@ -56,6 +56,10 @@ _debug_handler.setFormatter(logging.Formatter(
 debug_logger.addHandler(_debug_handler)
 debug_logger.propagate = False  # 터미널에 출력하지 않음
 
+# API Rate Limit 설정 (한투 API 제한: 실전 20건/초, 모의 5건/초)
+API_DELAY_VIRTUAL = 0.35   # 모의투자: 350ms (초당 ~2.8건, 여유있게)
+API_DELAY_REAL = 0.1       # 실전투자: 100ms (초당 ~10건)
+
 
 class EngineState(Enum):
     """엔진 상태"""
@@ -652,10 +656,11 @@ class QuantTradingEngine:
         # 매수 주문 생성
         available_capital = self.portfolio.cash * 0.95  # 5% 여유
 
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
+
         for idx, code in enumerate(to_buy):
-            # API Rate Limit 방지: 호출 간격 200ms
             if idx > 0:
-                time.sleep(0.25)
+                time.sleep(api_delay)
 
             stock = target_stocks[code]
 
@@ -797,10 +802,11 @@ class QuantTradingEngine:
         permanently_failed = []  # 최대 재시도 초과로 포기한 주문
         max_total_retries = 3  # 최대 재시도 횟수
 
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
+
         for i, order in enumerate(self.failed_orders):
-            # API Rate Limit 방지
             if i > 0:
-                time.sleep(0.25)
+                time.sleep(api_delay)
 
             # 이미 보유 중인 종목은 스킵
             if order.code in self.portfolio.positions:
@@ -950,11 +956,11 @@ class QuantTradingEngine:
         buy_orders = [o for o in orders_to_execute if o.order_type == "BUY"]
 
         executed = []
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
 
         for i, order in enumerate(sell_orders):
-            # API Rate Limit 방지
             if i > 0:
-                time.sleep(0.25)
+                time.sleep(api_delay)
             if self._execute_order(order):
                 executed.append(order)
 
@@ -963,9 +969,8 @@ class QuantTradingEngine:
             time.sleep(3)
 
         for i, order in enumerate(buy_orders):
-            # API Rate Limit 방지
             if i > 0:
-                time.sleep(0.25)
+                time.sleep(api_delay)
             if self._execute_order(order):
                 executed.append(order)
 
@@ -1205,10 +1210,12 @@ class QuantTradingEngine:
         debug_logger.info(f"{'='*60}")
         debug_logger.info(f"모니터링 시작: {len(positions_snapshot)}개 포지션")
 
+        # API 호출 딜레이 (모의투자: 350ms, 실전: 100ms)
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
+
         for i, (code, position) in enumerate(positions_snapshot):
-            # API Rate Limit 방지: 호출 간격 250ms (초당 4회)
             if i > 0:
-                time.sleep(0.25)
+                time.sleep(api_delay)
 
             try:
                 # 현재가 업데이트 (Rate Limit 시 재시도)
