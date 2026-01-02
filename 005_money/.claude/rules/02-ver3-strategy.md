@@ -61,9 +61,29 @@ if stoch_k < stoch_oversold and stoch_k crosses above stoch_d:
 | Strong Bullish | 1 |
 | Bullish | 1 |
 | Neutral | 2 |
-| Bearish | 2 |
-| Strong Bearish | 3 |
+| Bearish | 2 + Extreme Oversold |
+| Strong Bearish | 3 + Extreme Oversold |
 | Ranging | 2 |
+
+### Extreme Oversold 조건 (Bearish 레짐 전용)
+
+Bearish/Strong Bearish 레짐에서는 스코어 충족 외에 **Extreme Oversold** 조건 필요:
+
+```python
+# 3가지 중 2가지 이상 충족 시 진입 허용
+extreme_conditions = [
+    rsi < 20,           # RSI 극단적 과매도
+    stoch_k < 10,       # Stochastic 극단적 과매도
+    price <= bb_lower   # BB Lower 터치
+]
+is_extreme_oversold = sum(extreme_conditions) >= 2
+```
+
+| 조건 | 임계값 |
+|------|--------|
+| RSI | < 20 |
+| Stochastic K | < 10 |
+| BB Lower | price <= bb_lower |
 
 ## 청산 전략
 

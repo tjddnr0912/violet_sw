@@ -567,13 +567,28 @@ class QuantTradingEngine:
                 for s in top_5
             ])
 
+            # 목표 미달 경고
+            target_count = self.config.target_stock_count
+            selected_count = len(result.selected_stocks)
+            shortage_warning = ""
+
+            if selected_count < target_count:
+                shortage = target_count - selected_count
+                shortage_warning = (
+                    f"\n\n⚠️ <b>목표 미달 경고</b>\n"
+                    f"목표: {target_count}개 / 선정: {selected_count}개\n"
+                    f"부족: {shortage}개 (필터 조건 미충족)"
+                )
+                logger.warning(f"스크리닝 목표 미달: {target_count}개 목표 중 {selected_count}개만 선정")
+
             message = (
                 f"📊 <b>멀티팩터 스크리닝 완료</b>\n\n"
                 f"유니버스: {result.universe_count}개\n"
                 f"필터 통과: {result.filtered_count}개\n"
-                f"최종 선정: {len(result.selected_stocks)}개\n"
+                f"최종 선정: {selected_count}개 / 목표: {target_count}개\n"
                 f"소요시간: {result.elapsed_seconds:.1f}초\n\n"
                 f"<b>상위 5종목:</b>\n{stocks_text}"
+                f"{shortage_warning}"
             )
 
             self.notifier.send_message(message)
@@ -627,7 +642,11 @@ class QuantTradingEngine:
         # 매수 주문 생성
         available_capital = self.portfolio.cash * 0.95  # 5% 여유
 
-        for code in to_buy:
+        for idx, code in enumerate(to_buy):
+            # API Rate Limit 방지: 호출 간격 200ms
+            if idx > 0:
+                time.sleep(0.2)
+
             stock = target_stocks[code]
 
             # 포지션 사이징 (API 재시도 로직 포함)
@@ -721,8 +740,19 @@ class QuantTradingEngine:
                     last_error=error_msg[:200]  # 에러 메시지 제한
                 ))
 
-        # 실패 주문이 있으면 저장
+        # 실패 주문이 있으면 저장 및 알림
         if self.failed_orders:
+            failed_names = [f"• {o.name} ({o.code})" for o in self.failed_orders[-5:]]  # 최근 5개
+            failed_text = "\n".join(failed_names)
+            if len(self.failed_orders) > 5:
+                failed_text += f"\n... 외 {len(self.failed_orders) - 5}개"
+
+            self.notifier.send_message(
+                f"⚠️ <b>주문 생성 실패</b>\n\n"
+                f"실패: {len(self.failed_orders)}건\n"
+                f"다음 장 09:00 재시도 예정\n\n"
+                f"<b>실패 종목:</b>\n{failed_text}"
+            )
             logger.info(f"실패 주문 {len(self.failed_orders)}개 - 다음 장 재시도 예정")
             self._save_state()
 
@@ -754,9 +784,14 @@ class QuantTradingEngine:
 
         success_count = 0
         still_failed = []
+        permanently_failed = []  # 최대 재시도 초과로 포기한 주문
         max_total_retries = 3  # 최대 재시도 횟수
 
-        for order in self.failed_orders:
+        for i, order in enumerate(self.failed_orders):
+            # API Rate Limit 방지
+            if i > 0:
+                time.sleep(0.2)
+
             # 이미 보유 중인 종목은 스킵
             if order.code in self.portfolio.positions:
                 logger.info(f"이미 보유 중 - 재시도 스킵: {order.name}")
@@ -765,6 +800,7 @@ class QuantTradingEngine:
             # 최대 재시도 횟수 초과
             if order.retry_count >= max_total_retries:
                 logger.warning(f"최대 재시도 초과 ({order.name}): {order.retry_count}회")
+                permanently_failed.append(order)
                 continue
 
             order.retry_count += 1
@@ -863,7 +899,20 @@ class QuantTradingEngine:
                 f"• 실패: {len(still_failed)}건"
             )
 
-        logger.info(f"재시도 완료: 성공 {success_count}건, 실패 {len(still_failed)}건")
+        # 영구 실패 (최대 재시도 초과) 알림
+        if permanently_failed:
+            failed_names = [f"• {o.name} ({o.code})" for o in permanently_failed]
+            failed_text = "\n".join(failed_names)
+
+            self.notifier.send_message(
+                f"🚫 <b>매수 포기 (재시도 초과)</b>\n\n"
+                f"다음 종목은 3회 재시도 후 매수 포기되었습니다:\n"
+                f"{failed_text}\n\n"
+                f"다음 리밸런싱까지 편입되지 않습니다."
+            )
+            logger.warning(f"매수 포기 (재시도 초과): {[o.name for o in permanently_failed]}")
+
+        logger.info(f"재시도 완료: 성공 {success_count}건, 실패 {len(still_failed)}건, 포기 {len(permanently_failed)}건")
         return success_count
 
     def execute_pending_orders(self):
@@ -892,7 +941,10 @@ class QuantTradingEngine:
 
         executed = []
 
-        for order in sell_orders:
+        for i, order in enumerate(sell_orders):
+            # API Rate Limit 방지
+            if i > 0:
+                time.sleep(0.2)
             if self._execute_order(order):
                 executed.append(order)
 
@@ -900,7 +952,10 @@ class QuantTradingEngine:
         if sell_orders:
             time.sleep(3)
 
-        for order in buy_orders:
+        for i, order in enumerate(buy_orders):
+            # API Rate Limit 방지
+            if i > 0:
+                time.sleep(0.2)
             if self._execute_order(order):
                 executed.append(order)
 
@@ -914,6 +969,9 @@ class QuantTradingEngine:
         # 리밸런싱 결과 알림
         if executed:
             self._notify_rebalance_result(executed)
+
+        # 최종 보유 종목 미달 알림
+        self._check_position_shortage()
 
     def _execute_order(self, order: PendingOrder) -> bool:
         """개별 주문 실행"""
@@ -1085,6 +1143,39 @@ class QuantTradingEngine:
         except Exception as e:
             logger.error(f"리밸런싱 알림 실패: {e}")
 
+    def _check_position_shortage(self):
+        """최종 보유 종목 수 미달 체크 및 알림"""
+        try:
+            target_count = self.config.target_stock_count
+            current_count = len(self.portfolio.positions)
+            failed_count = len(self.failed_orders)
+
+            # 미달이면 알림
+            if current_count < target_count:
+                shortage = target_count - current_count
+
+                # 원인 분석
+                reasons = []
+                if failed_count > 0:
+                    reasons.append(f"재시도 대기: {failed_count}건")
+                if shortage > failed_count:
+                    reasons.append(f"스크리닝 미달: {shortage - failed_count}건")
+
+                reason_text = " / ".join(reasons) if reasons else "알 수 없음"
+
+                self.notifier.send_message(
+                    f"📉 <b>포트폴리오 목표 미달</b>\n\n"
+                    f"목표: {target_count}개\n"
+                    f"현재 보유: {current_count}개\n"
+                    f"부족: {shortage}개\n\n"
+                    f"<b>원인:</b> {reason_text}\n\n"
+                    f"다음 리밸런싱 시 자동으로 보충 시도됩니다."
+                )
+                logger.warning(f"포트폴리오 목표 미달: {target_count}개 목표 중 {current_count}개 보유")
+
+        except Exception as e:
+            logger.error(f"포지션 미달 체크 오류: {e}")
+
     # ========== 장중 모니터링 ==========
 
     def monitor_positions(self):
@@ -1102,7 +1193,11 @@ class QuantTradingEngine:
 
         logger.info(f"포지션 모니터링: {len(positions_snapshot)}개")
 
-        for code, position in positions_snapshot:
+        for i, (code, position) in enumerate(positions_snapshot):
+            # API Rate Limit 방지: 호출 간격 150ms (초당 ~6회)
+            if i > 0:
+                time.sleep(0.15)
+
             try:
                 # 현재가 업데이트
                 price_info = self.client.get_stock_price(code)
