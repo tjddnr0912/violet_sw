@@ -151,6 +151,29 @@ grep -i error logs/ver3_cli_*.log
 | `dry_run` | True | 시뮬레이션 모드 |
 | `chandelier_multiplier` | 3.0 | ATR 손절 배수 |
 
+## 트러블슈팅
+
+### telegram.error.Conflict 에러
+
+`start_all_bots.sh`로 실행 시 3개의 봇이 서로 다른 프로젝트/토큰을 사용:
+
+| 탭 | 프로젝트 | 토큰 |
+|----|---------|------|
+| Trading Bot | 005_money | `859...` |
+| News Bot | 006_auto_bot | `843...` |
+| Telegram Bot | 006_auto_bot | `843...` |
+
+→ **프로젝트 간 토큰 충돌 아님**. Conflict 발생 시 같은 프로젝트 내 중복 실행 확인:
+```bash
+ps aux | grep "ver3/run_cli.py"
+```
+
+### 봇이 멈추고 API 조회 안 됨
+
+로그에서 Cycle 시작 후 분석 결과가 없으면 **Bithumb API hang** 의심:
+- 네트워크 문제 또는 API 서버 응답 지연
+- Mac sleep 상태에서 발생 가능
+
 ## 참고 문서
 
 - `ver3/VER3_CLI_OPERATION_GUIDE.md` - CLI 운영 가이드

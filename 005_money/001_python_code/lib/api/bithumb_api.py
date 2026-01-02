@@ -190,8 +190,8 @@ class BithumbAPI:
                     return None
 
             else:
-                # FIX: Use session for connection pooling
-                response = self.session.get(url)
+                # FIX: Use session for connection pooling + timeout
+                response = self.session.get(url, timeout=30)
                 try:
                     result = response.json()
                 except ValueError:
