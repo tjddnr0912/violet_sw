@@ -1218,9 +1218,14 @@ class QuantTradingEngine:
                         price_info = self.client.get_stock_price(code)
                         break
                     except Exception as e:
-                        if "EGW00201" in str(e) or "초당 거래건수" in str(e):
-                            wait_time = 1.0 * (retry + 1)  # 1초, 2초, 3초
-                            debug_logger.warning(f"[{code}] Rate Limit - {wait_time}초 대기 후 재시도")
+                        error_str = str(e)
+                        # Rate Limit 에러 체크 (원본 또는 변환된 메시지)
+                        is_rate_limit = any(x in error_str for x in [
+                            "EGW00201", "초당 거래건수", "증권사 서버 내부 오류"
+                        ])
+                        if is_rate_limit and retry < 2:
+                            wait_time = 1.0 * (retry + 1)  # 1초, 2초
+                            debug_logger.warning(f"[{code}] Rate Limit - {wait_time}초 대기 후 재시도 ({retry+1}/3)")
                             time.sleep(wait_time)
                         else:
                             raise
