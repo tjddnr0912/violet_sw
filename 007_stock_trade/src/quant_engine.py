@@ -1304,12 +1304,8 @@ class QuantTradingEngine:
                 )
 
     def _trigger_stop_loss(self, position: Position):
-        """손절 실행"""
+        """손절 실행 (재시도 포함)"""
         logger.warning(f"손절 트리거: {position.name} ({position.profit_pct:+.1f}%)")
-
-        # API Rate Limit 방지: 가격 조회 후 딜레이
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-        time.sleep(api_delay)
 
         order = PendingOrder(
             code=position.code,
@@ -1320,26 +1316,43 @@ class QuantTradingEngine:
             reason=f"손절 ({position.profit_pct:+.1f}%)"
         )
 
-        if self._execute_order(order):
-            self.notifier.send_message(
-                f"🔴 <b>손절 실행</b>\n\n"
-                f"종목: {position.name}\n"
-                f"수량: {position.quantity}주\n"
-                f"손익: {position.profit_pct:+.1f}%"
-            )
+        # 최대 3회 재시도
+        max_retries = 3
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
+
+        for attempt in range(max_retries):
+            # API Rate Limit 방지 딜레이
+            time.sleep(api_delay * (attempt + 1))  # 재시도마다 딜레이 증가
+
+            if self._execute_order(order):
+                self.notifier.send_message(
+                    f"🔴 <b>손절 실행</b>\n\n"
+                    f"종목: {position.name}\n"
+                    f"수량: {position.quantity}주\n"
+                    f"손익: {position.profit_pct:+.1f}%"
+                )
+                return  # 성공
+
+            if attempt < max_retries - 1:
+                logger.warning(f"손절 재시도 ({attempt + 2}/{max_retries}): {position.name}")
+
+        # 모든 재시도 실패
+        logger.error(f"손절 실패 (재시도 소진): {position.name}")
+        self.notifier.send_message(
+            f"🚨 <b>손절 실패</b>\n\n"
+            f"종목: {position.name}\n"
+            f"수량: {position.quantity}주\n"
+            f"⚠️ 수동 확인 필요"
+        )
 
     def _trigger_take_profit(self, position: Position, stage: int):
-        """익절 실행"""
+        """익절 실행 (재시도 포함)"""
         qty = TakeProfitManager.calculate_staged_sell_qty(position.quantity, stage)
 
         if qty <= 0:
             return
 
         logger.info(f"익절 트리거 ({stage}차): {position.name} {qty}주 ({position.profit_pct:+.1f}%)")
-
-        # API Rate Limit 방지: 가격 조회 후 딜레이
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-        time.sleep(api_delay)
 
         order = PendingOrder(
             code=position.code,
@@ -1350,18 +1363,39 @@ class QuantTradingEngine:
             reason=f"{stage}차 익절 ({position.profit_pct:+.1f}%)"
         )
 
-        if self._execute_order(order):
-            if stage == 1:
-                position.tp1_executed = True
-            else:
-                position.tp2_executed = True
+        # 최대 3회 재시도
+        max_retries = 3
+        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
 
-            self.notifier.send_message(
-                f"🟢 <b>{stage}차 익절 실행</b>\n\n"
-                f"종목: {position.name}\n"
-                f"수량: {qty}주\n"
-                f"수익: {position.profit_pct:+.1f}%"
-            )
+        for attempt in range(max_retries):
+            # API Rate Limit 방지 딜레이
+            time.sleep(api_delay * (attempt + 1))  # 재시도마다 딜레이 증가
+
+            if self._execute_order(order):
+                if stage == 1:
+                    position.tp1_executed = True
+                else:
+                    position.tp2_executed = True
+
+                self.notifier.send_message(
+                    f"🟢 <b>{stage}차 익절 실행</b>\n\n"
+                    f"종목: {position.name}\n"
+                    f"수량: {qty}주\n"
+                    f"수익: {position.profit_pct:+.1f}%"
+                )
+                return  # 성공
+
+            if attempt < max_retries - 1:
+                logger.warning(f"익절 재시도 ({attempt + 2}/{max_retries}): {position.name}")
+
+        # 모든 재시도 실패
+        logger.error(f"익절 실패 (재시도 소진): {position.name}")
+        self.notifier.send_message(
+            f"🚨 <b>익절 실패</b>\n\n"
+            f"종목: {position.name}\n"
+            f"수량: {qty}주\n"
+            f"⚠️ 수동 확인 필요"
+        )
 
     # ========== 일일 리포트 ==========
 
