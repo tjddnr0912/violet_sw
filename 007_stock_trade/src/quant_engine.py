@@ -46,6 +46,16 @@ from .utils import is_trading_day, get_trading_hours, get_market_open_time
 # 로깅 설정
 logger = logging.getLogger(__name__)
 
+# 디버그 전용 로거 (별도 파일에 상세 로그 기록)
+debug_logger = logging.getLogger("quant_debug")
+debug_logger.setLevel(logging.DEBUG)
+_debug_handler = logging.FileHandler("logs/quant_debug.log", encoding="utf-8")
+_debug_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(message)s"
+))
+debug_logger.addHandler(_debug_handler)
+debug_logger.propagate = False  # 터미널에 출력하지 않음
+
 
 class EngineState(Enum):
     """엔진 상태"""
@@ -1192,6 +1202,8 @@ class QuantTradingEngine:
             positions_snapshot = list(self.portfolio.positions.items())
 
         logger.info(f"포지션 모니터링: {len(positions_snapshot)}개")
+        debug_logger.info(f"{'='*60}")
+        debug_logger.info(f"모니터링 시작: {len(positions_snapshot)}개 포지션")
 
         for i, (code, position) in enumerate(positions_snapshot):
             # API Rate Limit 방지: 호출 간격 150ms (초당 ~6회)
@@ -1207,6 +1219,19 @@ class QuantTradingEngine:
                     if code not in self.portfolio.positions:
                         continue
                     position.current_price = price_info.price
+
+                # 디버그 로그 (별도 파일에 기록)
+                pnl_pct = ((position.current_price - position.entry_price) / position.entry_price) * 100
+                to_stop = ((position.current_price - position.stop_loss) / position.current_price) * 100
+                to_tp1 = ((position.take_profit_1 - position.current_price) / position.current_price) * 100
+                debug_logger.debug(
+                    f"[{position.name}({code})] "
+                    f"현재가: {position.current_price:,}원 | "
+                    f"진입가: {position.entry_price:,}원 | "
+                    f"수익률: {pnl_pct:+.2f}% | "
+                    f"손절까지: {to_stop:.2f}% | "
+                    f"익절1까지: {to_tp1:.2f}%"
+                )
 
                 # 손절 체크
                 if position.current_price <= position.stop_loss:
@@ -1232,6 +1257,9 @@ class QuantTradingEngine:
 
             except Exception as e:
                 logger.error(f"모니터링 오류 ({code}): {e}", exc_info=True)
+                debug_logger.error(f"[{code}] 오류: {e}")
+
+        debug_logger.info(f"모니터링 완료")
 
         # 상태 저장
         self._save_state()
