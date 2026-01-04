@@ -24,6 +24,7 @@ RAPID_RESTART_THRESHOLD=60  # if crash within N seconds, count as rapid restart
 MAX_RAPID_RESTARTS=5  # stop if too many rapid restarts
 HANG_TIMEOUT=600  # 10 minutes - kill bot if no log activity
 HANG_CHECK_INTERVAL=60  # check every 60 seconds
+HANG_GRACE_PERIOD=120  # 2 minutes grace period after bot start
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -82,15 +83,31 @@ get_log_mtime() {
 }
 
 # Check if bot is hanging (no log activity)
+# Args: $1 = bot start time (epoch seconds)
 check_hang() {
+    local bot_start_time="$1"
+    local current_time=$(date +%s)
+    local time_since_start=$((current_time - bot_start_time))
+
+    # Skip hang check during grace period
+    if [[ $time_since_start -lt $HANG_GRACE_PERIOD ]]; then
+        return 1  # Still in grace period
+    fi
+
     local log_file=$(get_latest_log)
     if [[ -z "$log_file" ]]; then
         return 1  # No log file, can't determine hang
     fi
 
     local log_mtime=$(get_log_mtime "$log_file")
-    local current_time=$(date +%s)
-    local elapsed=$((current_time - log_mtime))
+
+    # Only check log activity since bot started
+    # If log was modified before bot start, use bot start time as reference
+    if [[ $log_mtime -lt $bot_start_time ]]; then
+        local elapsed=$((current_time - bot_start_time))
+    else
+        local elapsed=$((current_time - log_mtime))
+    fi
 
     if [[ $elapsed -gt $HANG_TIMEOUT ]]; then
         log "${RED}HANG DETECTED: No log activity for ${elapsed}s (threshold: ${HANG_TIMEOUT}s)${NC}"
@@ -176,7 +193,7 @@ while true; do
         fi
 
         # Check for hang
-        if check_hang; then
+        if check_hang $last_start_time; then
             log "${RED}Killing hung bot (PID: $bot_pid)...${NC}"
             kill -9 $bot_pid 2>/dev/null
             wait $bot_pid 2>/dev/null
