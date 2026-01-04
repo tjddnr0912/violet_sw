@@ -15,16 +15,23 @@
 ## 빠른 시작
 
 ```bash
-# CLI 모드 실행
+# 권장: Watchdog 모드 (자동 재시작 + hang 감지)
+./scripts/run_v3_watchdog.sh
+
+# 단순 CLI 모드
 ./scripts/run_v3_cli.sh
 
-# GUI 모드 실행
+# GUI 모드
 ./scripts/run_v3_gui.sh
-
-# 수동 실행
-source .venv/bin/activate
-python 001_python_code/ver3/run_cli.py
 ```
+
+### Watchdog 기능
+
+| 기능 | 설명 |
+|------|------|
+| Auto-restart | crash 시 자동 재시작 |
+| Hang Detection | 10분간 로그 없으면 재시작 |
+| Grace Period | 시작 후 2분간 hang 체크 안 함 |
 
 ## 디렉토리 구조
 
