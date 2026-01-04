@@ -1,9 +1,10 @@
 #!/bin/bash
-# Ver3 Trading Bot Watchdog - Auto-restart on crash
+# Ver3 Trading Bot Watchdog - Auto-restart on crash or hang
 #
 # Usage: ./scripts/run_v3_watchdog.sh
 #        ./scripts/run_v3_watchdog.sh --max-restarts 10
 #        ./scripts/run_v3_watchdog.sh --restart-delay 30
+#        ./scripts/run_v3_watchdog.sh --hang-timeout 600
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -21,6 +22,8 @@ MAX_RESTARTS=0  # 0 = unlimited
 RESTART_DELAY=10  # seconds between restarts
 RAPID_RESTART_THRESHOLD=60  # if crash within N seconds, count as rapid restart
 MAX_RAPID_RESTARTS=5  # stop if too many rapid restarts
+HANG_TIMEOUT=600  # 10 minutes - kill bot if no log activity
+HANG_CHECK_INTERVAL=60  # check every 60 seconds
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -33,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             RESTART_DELAY="$2"
             shift 2
             ;;
+        --hang-timeout)
+            HANG_TIMEOUT="$2"
+            shift 2
+            ;;
         *)
             shift
             ;;
@@ -42,6 +49,7 @@ done
 restart_count=0
 rapid_restart_count=0
 last_start_time=0
+bot_pid=0
 
 log() {
     echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -49,11 +57,48 @@ log() {
 
 cleanup() {
     log "${RED}Watchdog stopped. Cleaning up...${NC}"
+    if [[ $bot_pid -gt 0 ]]; then
+        kill $bot_pid 2>/dev/null
+    fi
     pkill -f "ver3/run_cli.py" 2>/dev/null
     exit 0
 }
 
 trap cleanup SIGINT SIGTERM
+
+# Get the latest log file
+get_latest_log() {
+    ls -t "$PROJECT_ROOT/logs/ver3_cli_"*.log 2>/dev/null | head -1
+}
+
+# Get log file modification time in seconds since epoch
+get_log_mtime() {
+    local log_file="$1"
+    if [[ -f "$log_file" ]]; then
+        stat -f %m "$log_file" 2>/dev/null || stat -c %Y "$log_file" 2>/dev/null
+    else
+        echo "0"
+    fi
+}
+
+# Check if bot is hanging (no log activity)
+check_hang() {
+    local log_file=$(get_latest_log)
+    if [[ -z "$log_file" ]]; then
+        return 1  # No log file, can't determine hang
+    fi
+
+    local log_mtime=$(get_log_mtime "$log_file")
+    local current_time=$(date +%s)
+    local elapsed=$((current_time - log_mtime))
+
+    if [[ $elapsed -gt $HANG_TIMEOUT ]]; then
+        log "${RED}HANG DETECTED: No log activity for ${elapsed}s (threshold: ${HANG_TIMEOUT}s)${NC}"
+        log "${RED}Last log file: $log_file${NC}"
+        return 0  # Hang detected
+    fi
+    return 1  # No hang
+}
 
 log "${BLUE}========================================${NC}"
 log "${BLUE}Ver3 Trading Bot Watchdog${NC}"
@@ -61,6 +106,7 @@ log "${BLUE}========================================${NC}"
 log "Max restarts: ${MAX_RESTARTS:-unlimited}"
 log "Restart delay: ${RESTART_DELAY}s"
 log "Rapid restart threshold: ${RAPID_RESTART_THRESHOLD}s"
+log "${GREEN}Hang detection: ${HANG_TIMEOUT}s timeout${NC}"
 log ""
 
 # Kill existing instances
@@ -114,9 +160,33 @@ while true; do
 
     log "${GREEN}Starting bot (attempt #$restart_count)...${NC}"
 
-    # Run the bot
-    python 001_python_code/ver3/run_cli.py
-    exit_code=$?
+    # Run the bot in background
+    python 001_python_code/ver3/run_cli.py &
+    bot_pid=$!
+
+    log "Bot started with PID: $bot_pid"
+
+    # Monitor bot process and check for hangs
+    while true; do
+        # Check if bot process is still running
+        if ! kill -0 $bot_pid 2>/dev/null; then
+            wait $bot_pid
+            exit_code=$?
+            break
+        fi
+
+        # Check for hang
+        if check_hang; then
+            log "${RED}Killing hung bot (PID: $bot_pid)...${NC}"
+            kill -9 $bot_pid 2>/dev/null
+            wait $bot_pid 2>/dev/null
+            exit_code=137  # Killed by signal
+            break
+        fi
+
+        # Sleep before next check
+        sleep $HANG_CHECK_INTERVAL
+    done
 
     end_time=$(date +%s)
     runtime=$((end_time - last_start_time))
