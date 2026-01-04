@@ -2,11 +2,11 @@
 # ==============================================
 # Start All Bots - iTerm2 Multi-Tab Launcher
 # ==============================================
-# Opens a new iTerm2 window with 3 tabs:
+# Opens a new iTerm2 window with 4 tabs:
 #   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart)
 #   Tab 2: News Bot (Scheduled)
 #   Tab 3: Telegram Gemini Bot
-#   Tab 4: Quant Trading Daemon (TODO: 개발 완료 후 활성화)
+#   Tab 4: Quant Trading Daemon (주식 자동매매)
 # ==============================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,10 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_watchdog.sh"
 NEWS_BOT="$SCRIPT_DIR/006_auto_bot/run_scheduled.sh"
 TELEGRAM_BOT="$SCRIPT_DIR/006_auto_bot/run_telegram_bot.sh"
-# QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"  # TODO: 개발 완료 후 활성화
+QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"
 
 # Check if scripts exist
-for script in "$TRADING_BOT" "$NEWS_BOT" "$TELEGRAM_BOT"; do
+for script in "$TRADING_BOT" "$NEWS_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON"; do
     if [[ ! -f "$script" ]]; then
         echo "Error: Script not found: $script"
         exit 1
@@ -55,15 +55,14 @@ tell application "iTerm2"
         end tell
     end tell
 
-    -- TODO: 개발 완료 후 활성화
     -- Create fourth tab (Quant Trading Daemon)
-    -- tell current window
-    --     create tab with default profile
-    --     tell current session
-    --         set name to "Quant Daemon"
-    --         write text "cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon"
-    --     end tell
-    -- end tell
+    tell current window
+        create tab with default profile
+        tell current session
+            set name to "Quant Daemon"
+            write text "cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+        end tell
+    end tell
 
     -- Select first tab
     tell current window
