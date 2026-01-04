@@ -5,7 +5,10 @@
 ### CLI 모드
 
 ```bash
-# 권장 방법 (환경변수 자동 로드)
+# 권장: Watchdog 모드 (자동 재시작 + hang 감지)
+./scripts/run_v3_watchdog.sh
+
+# 단순 실행 (watchdog 없음)
 ./scripts/run_v3_cli.sh
 
 # 직접 실행
@@ -13,6 +16,25 @@ source .venv/bin/activate
 cd 001_python_code
 python ver3/run_cli.py
 ```
+
+### Watchdog 옵션
+
+```bash
+# 기본 실행 (10분 hang timeout)
+./scripts/run_v3_watchdog.sh
+
+# 커스텀 hang timeout (5분)
+./scripts/run_v3_watchdog.sh --hang-timeout 300
+
+# 최대 재시작 횟수 제한
+./scripts/run_v3_watchdog.sh --max-restarts 10
+```
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `HANG_TIMEOUT` | 600초 | 로그 활동 없으면 hang 판단 |
+| `HANG_GRACE_PERIOD` | 120초 | 봇 시작 후 대기 시간 |
+| `HANG_CHECK_INTERVAL` | 60초 | hang 체크 주기 |
 
 ### GUI 모드
 

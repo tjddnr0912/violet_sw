@@ -3,10 +3,15 @@
 # Start All Bots - iTerm2 Multi-Tab Launcher
 # ==============================================
 # Opens a new iTerm2 window with 4 tabs:
-#   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart)
+#   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart + Hang Detection)
 #   Tab 2: News Bot (Scheduled)
 #   Tab 3: Telegram Gemini Bot
 #   Tab 4: Quant Trading Daemon (주식 자동매매)
+#
+# Watchdog Features:
+#   - Auto-restart on crash
+#   - Hang detection: kills bot if no log activity for 10 min
+#   - Grace period: 2 min after start before hang check
 # ==============================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
