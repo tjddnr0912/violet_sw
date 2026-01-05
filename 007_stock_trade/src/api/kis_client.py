@@ -719,10 +719,18 @@ class KISClient:
 
         Returns:
             휴장일 리스트 ["YYYYMMDD", ...]
+
+        Note:
+            모의투자에서는 지원되지 않음 (빈 리스트 반환)
         """
         from datetime import datetime
 
-        # TR-ID: CTCA0903R (실전/모의 공통)
+        # 모의투자에서는 지원되지 않음 (CTCA0903R은 실전투자 전용)
+        if self.is_virtual:
+            logger.debug("휴장일조회 API는 모의투자에서 지원되지 않음")
+            return []
+
+        # TR-ID: CTCA0903R (실전투자 전용)
         tr_id = "CTCA0903R"
 
         if not base_date:
