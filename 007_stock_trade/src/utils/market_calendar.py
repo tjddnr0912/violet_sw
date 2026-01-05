@@ -68,6 +68,62 @@ SPECIAL_TRADING_HOURS = {
 _trading_day_cache = {}
 _cache_lock = threading.Lock()
 
+# KIS API 연동을 위한 변수
+_kis_client_ref = None
+_last_update_date = None
+
+
+def set_kis_client(kis_client):
+    """
+    데몬 시작 시 KIS 클라이언트 참조 설정
+
+    Args:
+        kis_client: KISClient 인스턴스
+    """
+    global _kis_client_ref
+    _kis_client_ref = kis_client
+    logger.info("KIS 클라이언트 참조 설정됨")
+
+
+def _update_holidays_from_api() -> bool:
+    """KIS API로 휴장일 목록 업데이트 (내부 사용)"""
+    global KNOWN_HOLIDAYS, _kis_client_ref
+
+    if not _kis_client_ref:
+        return False
+
+    try:
+        holidays = _kis_client_ref.get_holiday_schedule()
+        for h in holidays:
+            KNOWN_HOLIDAYS.add(h)
+        logger.info(f"KIS API에서 {len(holidays)}개 휴장일 업데이트")
+        return True
+    except Exception as e:
+        # 모의투자에서는 지원 안 됨 - debug 레벨로 로깅 (정상 동작)
+        logger.debug(f"KIS 휴장일 조회 실패 (KNOWN_HOLIDAYS 사용): {e}")
+        return False
+
+
+def _auto_update_if_needed():
+    """필요 시 휴장일 자동 업데이트 (일 1회)"""
+    global _last_update_date
+
+    today = datetime.now().date()
+
+    # 이미 오늘 업데이트 했으면 스킵
+    if _last_update_date == today:
+        return
+
+    # 연도가 바뀌면 캐시 초기화
+    if _last_update_date and _last_update_date.year != today.year:
+        clear_cache()
+        logger.info(f"연도 변경 감지 ({_last_update_date.year} → {today.year}), 캐시 초기화")
+
+    # KIS API로 휴장일 업데이트
+    _update_holidays_from_api()
+
+    _last_update_date = today
+
 
 def is_trading_day(date: Optional[datetime] = None) -> bool:
     """
@@ -79,6 +135,9 @@ def is_trading_day(date: Optional[datetime] = None) -> bool:
     Returns:
         bool: 거래일이면 True
     """
+    # 자정 후 처음 호출 시 자동 휴장일 업데이트
+    _auto_update_if_needed()
+
     if date is None:
         date = datetime.now()
 
@@ -102,9 +161,10 @@ def is_trading_day(date: Optional[datetime] = None) -> bool:
         logger.info(f"{date_str}: 휴장일 (사전 등록됨)")
         return False
 
-    # 미래 날짜는 pykrx로 확인 불가 - 알려진 휴장일이 아니면 거래일로 가정
-    if date.date() > datetime.now().date():
-        logger.debug(f"{date_str}: 미래 날짜 - 평일이므로 거래일로 가정")
+    # 오늘/미래 날짜는 pykrx로 확인 불가 (장 시작 전에는 데이터 없음)
+    # 알려진 휴장일이 아니면 거래일로 가정
+    if date.date() >= datetime.now().date():
+        logger.debug(f"{date_str}: 오늘/미래 날짜 - 평일이므로 거래일로 가정")
         return True
 
     # pykrx로 실제 거래 데이터 확인
