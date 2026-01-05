@@ -261,6 +261,65 @@ from ver3.live_executor_v3 import LiveExecutorV3
 "
 ```
 
+**5. 분석 Timeout 발생**
+
+로그에서 `market_regime='timeout'` 또는 `Analysis timeout` 메시지 확인:
+```bash
+grep -i "timeout" logs/ver3_cli_*.log
+```
+
+Timeout 발생 원인:
+- Bithumb API 응답 지연 (네트워크 문제)
+- Mac sleep 복귀 시 네트워크 재연결 지연
+- 서버 과부하
+
+해결 방법:
+- 자동 복구됨 (해당 코인만 HOLD 처리)
+- 반복 발생 시 네트워크 상태 확인
+- Telegram으로 `⚠️ Analysis Timeout` 알림 수신
+
+## Timeout 설정
+
+### 다층 방어 체계
+
+```
+Layer 1: API Timeout
+├── Public API: (5s connect, 30s read)
+└── Private API: (5s connect, 15s read)
+
+Layer 2: ThreadPoolExecutor Timeout
+├── Per-coin: 60 seconds
+└── Total: 120 seconds
+
+Layer 3: Analysis Cycle Warning
+└── Threshold: 180 seconds
+
+Layer 4: Watchdog
+└── Hang detection: 600 seconds
+```
+
+### Timeout 상수 위치
+
+| 파일 | 상수 | 값 |
+|------|------|-----|
+| `lib/api/bithumb_api.py` | `API_TIMEOUT_PUBLIC` | `(5, 30)` |
+| `lib/api/bithumb_api.py` | `API_TIMEOUT_PRIVATE` | `(5, 15)` |
+| `ver3/portfolio_manager_v3.py` | `ANALYSIS_TIMEOUT_PER_COIN` | `60` |
+| `ver3/portfolio_manager_v3.py` | `TOTAL_ANALYSIS_TIMEOUT` | `120` |
+| `lib/core/telegram_notifier.py` | `TELEGRAM_TIMEOUT` | `(5, 10)` |
+
+### Timeout 수정 시
+
+```python
+# bithumb_api.py - API timeout 조정
+API_TIMEOUT_PUBLIC = (5, 30)   # (connect, read)
+API_TIMEOUT_PRIVATE = (5, 15)
+
+# portfolio_manager_v3.py - 분석 timeout 조정
+ANALYSIS_TIMEOUT_PER_COIN = 60  # seconds
+TOTAL_ANALYSIS_TIMEOUT = 120    # seconds
+```
+
 ## Git 커밋 규칙
 
 ```bash
