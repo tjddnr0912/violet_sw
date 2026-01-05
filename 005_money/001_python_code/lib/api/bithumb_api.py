@@ -12,6 +12,12 @@ from typing import Optional, Dict, Any
 PUBLIC_URL = "https://api.bithumb.com/public"
 PRIVATE_URL = "https://api.bithumb.com"
 
+# Timeout settings (connect_timeout, read_timeout) in seconds
+# - connect_timeout: Time to establish connection (DNS + TCP handshake + SSL)
+# - read_timeout: Time to wait for server response after connection established
+API_TIMEOUT_PUBLIC = (5, 30)   # Public API: 5s connect, 30s read
+API_TIMEOUT_PRIVATE = (5, 15)  # Private API: 5s connect, 15s read
+
 class BithumbAPI:
     def __init__(self, connect_key: str = None, secret_key: str = None):
         self.connect_key = connect_key
@@ -168,8 +174,8 @@ class BithumbAPI:
                 print(f"   📦 Request Data: {parameters}")
 
                 # POST 요청 (dict를 그대로 전달 - requests가 자동으로 form-urlencoded로 변환)
-                # FIX: Use session for connection pooling
-                response = self.session.post(url, data=parameters, headers=headers, timeout=15)
+                # FIX: Use session for connection pooling + separate connect/read timeout
+                response = self.session.post(url, data=parameters, headers=headers, timeout=API_TIMEOUT_PRIVATE)
 
                 # 응답 정보 상세 출력
                 print(f"📡 API 응답 정보:")
@@ -190,8 +196,8 @@ class BithumbAPI:
                     return None
 
             else:
-                # FIX: Use session for connection pooling + timeout
-                response = self.session.get(url, timeout=30)
+                # FIX: Use session for connection pooling + separate connect/read timeout
+                response = self.session.get(url, timeout=API_TIMEOUT_PUBLIC)
                 try:
                     result = response.json()
                 except ValueError:
@@ -360,7 +366,8 @@ def get_candlestick(ticker: str, interval: str = "24h") -> pd.DataFrame:
     try:
         # API 요청 URL 생성
         url = f"{PUBLIC_URL}/candlestick/{ticker}_KRW/{interval}"
-        response = requests.get(url, timeout=30)
+        # Use separate connect/read timeout for hang prevention
+        response = requests.get(url, timeout=API_TIMEOUT_PUBLIC)
         response.raise_for_status()  # HTTP 에러 발생 시 예외 발생
 
         data = response.json()
@@ -397,7 +404,8 @@ def get_ticker(ticker: str = "ALL") -> Optional[Dict]:
     """
     try:
         url = f"{PUBLIC_URL}/ticker/{ticker}_KRW"
-        response = requests.get(url, timeout=30)
+        # Use separate connect/read timeout for hang prevention
+        response = requests.get(url, timeout=API_TIMEOUT_PUBLIC)
         response.raise_for_status()
 
         data = response.json()

@@ -33,8 +33,12 @@ import os
 import requests
 import threading
 import time
+from queue import Queue, Empty
 from typing import Optional, Dict, Any
 from datetime import datetime
+
+# Telegram API timeout settings (connect, read)
+TELEGRAM_TIMEOUT = (5, 10)  # 5s connect, 10s read
 
 
 class TelegramNotifier:
@@ -77,6 +81,115 @@ class TelegramNotifier:
         # Track consecutive failures for alerting
         self._consecutive_failures = 0
         self._failure_threshold = 3  # Alert after 3 consecutive failures
+
+        # Async message queue for non-blocking sends
+        self._message_queue = Queue(maxsize=100)
+        self._worker_thread = None
+        self._stop_worker = threading.Event()
+
+        # Start async worker if enabled
+        if self.enabled:
+            self._start_async_worker()
+
+    def _start_async_worker(self):
+        """Start the background worker thread for async message sending."""
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            self._stop_worker.clear()
+            self._worker_thread = threading.Thread(
+                target=self._async_worker,
+                daemon=True,
+                name="TelegramAsyncWorker"
+            )
+            self._worker_thread.start()
+
+    def _async_worker(self):
+        """Background worker that processes the message queue."""
+        while not self._stop_worker.is_set():
+            try:
+                # Wait for message with timeout
+                message, parse_mode = self._message_queue.get(timeout=1.0)
+                self._send_message_sync(message, parse_mode)
+                self._message_queue.task_done()
+            except Empty:
+                continue
+            except Exception as e:
+                print(f"❌ Telegram async worker error: {e}")
+
+    def send_message_async(self, message: str, parse_mode: str = "Markdown") -> bool:
+        """
+        Queue a message for async sending (non-blocking).
+
+        Args:
+            message: Message text
+            parse_mode: Format mode - "Markdown" or "HTML"
+
+        Returns:
+            bool: True if queued successfully, False if queue is full
+        """
+        if not self.enabled:
+            return False
+
+        try:
+            self._message_queue.put_nowait((message, parse_mode))
+            return True
+        except:
+            print("⚠️ Telegram message queue full, dropping message")
+            return False
+
+    def _send_message_sync(self, message: str, parse_mode: str = "Markdown", max_retries: int = 3) -> bool:
+        """
+        Internal synchronous message send with timeout and retry.
+
+        Args:
+            message: Message text
+            parse_mode: Format mode
+            max_retries: Maximum retry attempts
+
+        Returns:
+            bool: True if sent successfully
+        """
+        if not self.enabled:
+            return False
+
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.base_url}/sendMessage"
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": message,
+                    "parse_mode": parse_mode
+                }
+
+                # Use separate connect/read timeout for hang prevention
+                response = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
+                response.raise_for_status()
+
+                self._consecutive_failures = 0
+                return True
+
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    backoff_time = 2 ** attempt
+                    time.sleep(backoff_time)
+                    continue
+                else:
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= self._failure_threshold:
+                        print(f"🚨 Telegram: {self._consecutive_failures} consecutive failures")
+                    return False
+
+            except Exception as e:
+                self._consecutive_failures += 1
+                print(f"❌ Telegram sync send error: {e}")
+                return False
+
+        return False
+
+    def stop_async_worker(self):
+        """Stop the async worker thread gracefully."""
+        self._stop_worker.set()
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=5.0)
 
     def _escape_markdown(self, text: str) -> str:
         """
@@ -126,7 +239,8 @@ class TelegramNotifier:
                     "parse_mode": parse_mode
                 }
 
-                response = requests.post(url, json=payload, timeout=10)
+                # Use separate connect/read timeout for hang prevention
+                response = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
                 response.raise_for_status()
 
                 # Success - reset failure counter
