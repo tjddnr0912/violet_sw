@@ -157,6 +157,10 @@ class QuantDaemon:
             if balance and 'cash' in balance:
                 self.total_capital = balance['cash']
                 logger.info(f"계좌 잔고 조회 성공: {self.total_capital:,}원")
+
+                # market_calendar에 KIS 클라이언트 등록 (휴장일 자동 업데이트용)
+                from src.utils.market_calendar import set_kis_client
+                set_kis_client(client)
             else:
                 logger.warning(f"계좌 잔고 조회 실패 - 기본값 사용: {self.total_capital:,}원")
         except Exception as e:

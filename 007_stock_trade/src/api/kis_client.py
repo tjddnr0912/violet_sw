@@ -707,3 +707,44 @@ class KISClient:
             })
 
         return result
+
+    # ========== 휴장일 조회 ==========
+
+    def get_holiday_schedule(self, base_date: str = None) -> list:
+        """
+        국내휴장일조회
+
+        Args:
+            base_date: 기준일자 (YYYYMMDD), None이면 오늘
+
+        Returns:
+            휴장일 리스트 ["YYYYMMDD", ...]
+        """
+        from datetime import datetime
+
+        # TR-ID: CTCA0903R (실전/모의 공통)
+        tr_id = "CTCA0903R"
+
+        if not base_date:
+            base_date = datetime.now().strftime("%Y%m%d")
+
+        params = {
+            "BASS_DT": base_date,
+            "CTX_AREA_NK": "",
+            "CTX_AREA_FK": ""
+        }
+
+        data = self._request(
+            method="GET",
+            endpoint="/uapi/domestic-stock/v1/quotations/chk-holiday",
+            tr_id=tr_id,
+            params=params
+        )
+
+        holidays = []
+        for item in data.get("output", []):
+            # opnd_yn: 개장 여부 (Y=개장, N=휴장)
+            if item.get("opnd_yn") == "N":
+                holidays.append(item.get("bass_dt", ""))
+
+        return holidays
