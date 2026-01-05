@@ -181,6 +181,38 @@ ps aux | grep "ver3/run_cli.py"
 - 네트워크 문제 또는 API 서버 응답 지연
 - Mac sleep 상태에서 발생 가능
 
+## Hang 방지 시스템
+
+다층 Timeout 보호 체계로 hang 발생 시 자동 복구:
+
+```
+Layer 1: API Timeout (5s connect + 15~30s read)
+    ↓
+Layer 2: ThreadPoolExecutor (60s/coin, 120s total)
+    ↓
+Layer 3: Analysis Cycle Warning (180s)
+    ↓
+Layer 4: Watchdog (600s → kill & restart)
+```
+
+### Timeout 설정값
+
+| 레이어 | 위치 | 값 |
+|--------|------|-----|
+| API (Public) | `bithumb_api.py` | connect=5s, read=30s |
+| API (Private) | `bithumb_api.py` | connect=5s, read=15s |
+| ThreadPool (per coin) | `portfolio_manager_v3.py` | 60s |
+| ThreadPool (total) | `portfolio_manager_v3.py` | 120s |
+| Telegram | `telegram_notifier.py` | connect=5s, read=10s |
+| Watchdog | `run_v3_watchdog.sh` | 600s |
+
+### Timeout 발생 시 동작
+
+- **API Timeout**: 해당 요청 실패, 재시도 로직
+- **ThreadPool Timeout**: 해당 코인 HOLD 처리, `market_regime='timeout'`
+- **Telegram Timeout**: 메시지 드롭, 봇 동작 영향 없음
+- **Watchdog Timeout**: 봇 강제 종료 후 재시작
+
 ## 참고 문서
 
 - `ver3/VER3_CLI_OPERATION_GUIDE.md` - CLI 운영 가이드
