@@ -270,6 +270,10 @@ class PortfolioManagerV3:
         portfolio_config = self.config.get('PORTFOLIO_CONFIG', {})
         max_workers = portfolio_config.get('max_workers', len(self.coins))
 
+        # Timeout settings for hang prevention
+        ANALYSIS_TIMEOUT_PER_COIN = 60  # 60 seconds per coin analysis
+        TOTAL_ANALYSIS_TIMEOUT = 120    # 120 seconds for all coins
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all analysis tasks
             futures = {
@@ -277,27 +281,54 @@ class PortfolioManagerV3:
                 for coin, monitor in self.monitors.items()
             }
 
-            # Collect results as they complete
-            for future in as_completed(futures):
-                coin = futures[future]
-                try:
-                    results[coin] = future.result()
-                    action = results[coin].get('action', 'HOLD')
-                    score = results[coin].get('entry_score', 0)
-                    self.logger.logger.debug(
-                        f"Analysis complete for {coin}: {action} (score {score}/4)"
-                    )
-                except Exception as e:
-                    self.logger.log_error(f"Failed to get result for {coin}", e)
-                    results[coin] = {
-                        'action': 'HOLD',
-                        'signal_strength': 0.0,
-                        'reason': f'Exception: {str(e)}',
-                        'market_regime': 'error',
-                        'entry_score': 0,
-                        'exit_score': 0,
-                        'current_price': 0,
-                    }
+            # Collect results as they complete with timeout
+            try:
+                for future in as_completed(futures, timeout=TOTAL_ANALYSIS_TIMEOUT):
+                    coin = futures[future]
+                    try:
+                        results[coin] = future.result(timeout=ANALYSIS_TIMEOUT_PER_COIN)
+                        action = results[coin].get('action', 'HOLD')
+                        score = results[coin].get('entry_score', 0)
+                        self.logger.logger.debug(
+                            f"Analysis complete for {coin}: {action} (score {score}/4)"
+                        )
+                    except TimeoutError:
+                        self.logger.logger.error(f"Analysis timeout for {coin} (>{ANALYSIS_TIMEOUT_PER_COIN}s)")
+                        results[coin] = {
+                            'action': 'HOLD',
+                            'signal_strength': 0.0,
+                            'reason': f'Analysis timeout (>{ANALYSIS_TIMEOUT_PER_COIN}s)',
+                            'market_regime': 'timeout',
+                            'entry_score': 0,
+                            'exit_score': 0,
+                            'current_price': 0,
+                        }
+                    except Exception as e:
+                        self.logger.log_error(f"Failed to get result for {coin}", e)
+                        results[coin] = {
+                            'action': 'HOLD',
+                            'signal_strength': 0.0,
+                            'reason': f'Exception: {str(e)}',
+                            'market_regime': 'error',
+                            'entry_score': 0,
+                            'exit_score': 0,
+                            'current_price': 0,
+                        }
+            except TimeoutError:
+                # Total timeout exceeded - handle remaining coins
+                self.logger.logger.error(f"Total analysis timeout exceeded (>{TOTAL_ANALYSIS_TIMEOUT}s)")
+                for future, coin in futures.items():
+                    if coin not in results:
+                        future.cancel()
+                        results[coin] = {
+                            'action': 'HOLD',
+                            'signal_strength': 0.0,
+                            'reason': f'Total analysis timeout (>{TOTAL_ANALYSIS_TIMEOUT}s)',
+                            'market_regime': 'timeout',
+                            'entry_score': 0,
+                            'exit_score': 0,
+                            'current_price': 0,
+                        }
 
         self.last_results = results
         return results

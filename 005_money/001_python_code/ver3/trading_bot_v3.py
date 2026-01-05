@@ -254,8 +254,28 @@ class TradingBotV3(VersionInterface):
                 self.logger.logger.info(f"{'='*60}")
 
                 try:
+                    # Track analysis time for hang detection
+                    analysis_start = time.time()
+                    ANALYSIS_CYCLE_WARNING_THRESHOLD = 180  # 3 minutes warning
+
                     # 1. Analyze all coins in parallel
                     results = self.portfolio_manager.analyze_all()
+
+                    # Check for timeout results
+                    timeout_coins = [
+                        coin for coin, result in results.items()
+                        if result.get('market_regime') == 'timeout'
+                    ]
+                    if timeout_coins:
+                        self.logger.logger.warning(f"Analysis timeout occurred for: {timeout_coins}")
+                        try:
+                            self.telegram.send_message(
+                                f"⚠️ Analysis Timeout\n"
+                                f"Coins: {', '.join(timeout_coins)}\n"
+                                f"Bot continues with HOLD for these coins."
+                            )
+                        except Exception:
+                            pass  # Don't let telegram failure block the cycle
 
                     # 2. Check for regime changes and send alerts
                     self._check_and_send_regime_change_alert(results)
@@ -274,6 +294,13 @@ class TradingBotV3(VersionInterface):
                     self._log_portfolio_summary(summary)
 
                     self.last_analysis_time = datetime.now()
+
+                    # Check if analysis took too long (warning threshold)
+                    analysis_elapsed = time.time() - analysis_start
+                    if analysis_elapsed > ANALYSIS_CYCLE_WARNING_THRESHOLD:
+                        self.logger.logger.warning(
+                            f"Analysis cycle took {analysis_elapsed:.1f}s (threshold: {ANALYSIS_CYCLE_WARNING_THRESHOLD}s)"
+                        )
 
                 except Exception as e:
                     self.logger.log_error("Error in analysis cycle", e)
