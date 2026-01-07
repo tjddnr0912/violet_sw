@@ -398,19 +398,16 @@ class LiveExecutorV3:
                 )
 
                 if action == 'BUY':
-                    # Bithumb API 시장가 매수: units 파라미터에 KRW 금액을 전달해야 함
-                    # (코인 수량이 아닌 KRW 금액을 넣어야 정상 주문됨)
-                    krw_amount = rounded_units * price  # 코인 수량 × 가격 = 주문할 KRW 금액
-
+                    # Bithumb API 시장가 매수: units 파라미터에 코인 수량 전달
                     self.logger.logger.info(
-                        f"Market buy order: {krw_amount:,.0f} KRW worth of {ticker} "
-                        f"(expected: ~{rounded_units:.6f} {ticker})"
+                        f"Market buy order: {rounded_units:.6f} {ticker} "
+                        f"(~{rounded_units * price:,.0f} KRW)"
                     )
 
                     response = self.api.place_buy_order(
                         order_currency=ticker,
                         payment_currency="KRW",
-                        units=krw_amount,  # KRW 금액 전달 (빗썸 시장가 매수 스펙)
+                        units=rounded_units,  # 코인 수량 전달
                         type_order="market"
                     )
                 elif action == 'SELL':
