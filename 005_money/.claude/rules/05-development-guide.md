@@ -289,7 +289,8 @@ Layer 1: API Timeout
 
 Layer 2: ThreadPoolExecutor Timeout
 ├── Per-coin: 60 seconds
-└── Total: 120 seconds
+├── Total: 120 seconds
+└── Shutdown: wait=False, cancel_futures=True (non-blocking)
 
 Layer 3: Analysis Cycle Warning
 └── Threshold: 180 seconds
@@ -297,6 +298,13 @@ Layer 3: Analysis Cycle Warning
 Layer 4: Watchdog
 └── Hang detection: 600 seconds
 ```
+
+### Non-blocking Shutdown
+
+Timeout 발생 시 `executor.shutdown(wait=False, cancel_futures=True)` 호출:
+- **wait=False**: 실행 중인 스레드 완료를 기다리지 않고 즉시 반환
+- **cancel_futures=True**: 대기 중인 태스크 취소
+- **효과**: Timeout 후 hang 없이 즉시 다음 분석 사이클로 진행
 
 ### Timeout 상수 위치
 

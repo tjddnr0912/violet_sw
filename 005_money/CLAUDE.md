@@ -189,7 +189,7 @@ ps aux | grep "ver3/run_cli.py"
 Layer 1: API Timeout (5s connect + 15~30s read)
     ↓
 Layer 2: ThreadPoolExecutor (60s/coin, 120s total)
-    ↓
+    ↓  + Non-blocking shutdown (wait=False, cancel_futures=True)
 Layer 3: Analysis Cycle Warning (180s)
     ↓
 Layer 4: Watchdog (600s → kill & restart)
@@ -209,7 +209,7 @@ Layer 4: Watchdog (600s → kill & restart)
 ### Timeout 발생 시 동작
 
 - **API Timeout**: 해당 요청 실패, 재시도 로직
-- **ThreadPool Timeout**: 해당 코인 HOLD 처리, `market_regime='timeout'`
+- **ThreadPool Timeout**: 해당 코인 HOLD 처리, `market_regime='timeout'`, **즉시 다음 사이클 진행** (non-blocking shutdown)
 - **Telegram Timeout**: 메시지 드롭, 봇 동작 영향 없음
 - **Watchdog Timeout**: 봇 강제 종료 후 재시작
 
