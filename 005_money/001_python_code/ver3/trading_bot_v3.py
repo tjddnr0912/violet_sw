@@ -788,8 +788,8 @@ Configuration:
             regime_metadata = analysis.get('regime_metadata', {})
             ema_diff_pct = regime_metadata.get('ema_diff_pct', 0.0)
 
-            # Skip if regime is unknown
-            if current_regime == 'unknown':
+            # Skip if regime is unknown, timeout, or error (these are not real market regimes)
+            if current_regime in ('unknown', 'timeout', 'error'):
                 return
 
             # Check for regime change
