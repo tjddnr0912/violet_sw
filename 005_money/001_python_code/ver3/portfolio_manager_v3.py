@@ -274,7 +274,12 @@ class PortfolioManagerV3:
         ANALYSIS_TIMEOUT_PER_COIN = 60  # 60 seconds per coin analysis
         TOTAL_ANALYSIS_TIMEOUT = 120    # 120 seconds for all coins
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Use manual executor management to prevent hang on timeout
+        # shutdown(wait=False, cancel_futures=True) ensures immediate return
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        timeout_occurred = False
+
+        try:
             # Submit all analysis tasks
             futures = {
                 executor.submit(monitor.analyze): coin
@@ -294,6 +299,7 @@ class PortfolioManagerV3:
                         )
                     except TimeoutError:
                         self.logger.logger.error(f"Analysis timeout for {coin} (>{ANALYSIS_TIMEOUT_PER_COIN}s)")
+                        timeout_occurred = True
                         results[coin] = {
                             'action': 'HOLD',
                             'signal_strength': 0.0,
@@ -316,10 +322,10 @@ class PortfolioManagerV3:
                         }
             except TimeoutError:
                 # Total timeout exceeded - handle remaining coins
+                timeout_occurred = True
                 self.logger.logger.error(f"Total analysis timeout exceeded (>{TOTAL_ANALYSIS_TIMEOUT}s)")
                 for future, coin in futures.items():
                     if coin not in results:
-                        future.cancel()
                         results[coin] = {
                             'action': 'HOLD',
                             'signal_strength': 0.0,
@@ -329,6 +335,14 @@ class PortfolioManagerV3:
                             'exit_score': 0,
                             'current_price': 0,
                         }
+        finally:
+            # Non-blocking shutdown to prevent hang
+            # cancel_futures=True cancels pending tasks, running tasks complete in background
+            if timeout_occurred:
+                self.logger.logger.warning(
+                    "Executor shutdown with wait=False due to timeout (pending tasks cancelled)"
+                )
+            executor.shutdown(wait=False, cancel_futures=True)
 
         self.last_results = results
         return results
