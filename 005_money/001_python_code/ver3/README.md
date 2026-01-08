@@ -1,15 +1,14 @@
 # Version 3: Portfolio Multi-Coin Trading Strategy
 
 **Status:** Production Ready
-**Date:** 2025-10-08
+**Date:** 2025-10-08 (Updated: 2026-01-08)
 **Author:** Claude AI
-**Base Version:** Ver2 (Multi-Timeframe Stability Strategy)
 
 ---
 
 ## Overview
 
-Version 3 extends Ver2 with **multi-coin portfolio management capabilities**, enabling simultaneous trading of 2-3 cryptocurrencies with coordinated risk management and parallel market analysis.
+Version 3 is the **production trading system** with **multi-coin portfolio management capabilities**, enabling simultaneous trading of 2-3 cryptocurrencies with coordinated risk management and parallel market analysis.
 
 ### Key Features
 
@@ -19,8 +18,8 @@ Version 3 extends Ver2 with **multi-coin portfolio management capabilities**, en
 - ✅ **Portfolio-Level Risk Management** - Max 2 positions, 6% total risk limit
 - ✅ **Smart Entry Prioritization** - Highest-scoring signals executed first
 - ✅ **Thread-Safe Execution** - Safe concurrent order placement
-- ✅ **Ver2 Strategy Per Coin** - Proven EMA regime + score-based entry system
-- ✅ **Independent from Ver1/Ver2** - Runs alongside other versions
+- ✅ **StrategyV3 Per Coin** - Proven EMA regime + score-based entry system
+- ✅ **Self-Contained** - All dependencies included within ver3
 
 ---
 
@@ -32,9 +31,9 @@ Version 3 extends Ver2 with **multi-coin portfolio management capabilities**, en
 │  ┌────────────────────────────────────────────────────┐  │
 │  │  PortfolioManagerV3                                │  │
 │  │  ┌──────────────────────────────────────────────┐  │  │
-│  │  │  CoinMonitor(BTC) → StrategyV2               │  │  │
-│  │  │  CoinMonitor(ETH) → StrategyV2 (shared)      │  │  │
-│  │  │  CoinMonitor(XRP) → StrategyV2               │  │  │
+│  │  │  CoinMonitor(BTC) → StrategyV3               │  │  │
+│  │  │  CoinMonitor(ETH) → StrategyV3 (shared)      │  │  │
+│  │  │  CoinMonitor(XRP) → StrategyV3               │  │  │
 │  │  │                                              │  │  │
 │  │  │  LiveExecutorV3 (thread-safe, shared)       │  │  │
 │  │  └──────────────────────────────────────────────┘  │  │
@@ -62,16 +61,16 @@ Version 3 extends Ver2 with **multi-coin portfolio management capabilities**, en
    - Executes trades
 
 3. **CoinMonitor** - Single coin wrapper
-   - Delegates to StrategyV2 for analysis
+   - Delegates to StrategyV3 for analysis
    - Caches last result
    - Tracks update timestamp
 
 4. **LiveExecutorV3** - Thread-safe executor
-   - Extends Ver2 executor with threading.Lock
+   - Thread-safe with threading.Lock
    - Manages multi-coin positions
    - Safe concurrent execution
 
-5. **StrategyV2 (Shared)** - Per-coin analysis
+5. **StrategyV3 (Shared)** - Per-coin analysis
    - Daily EMA(50/200) regime filter
    - 4H score-based entry (BB/RSI/Stoch)
    - ATR-based Chandelier Exit
@@ -122,11 +121,14 @@ EXECUTION_CONFIG = {
 # Navigate to project directory
 cd /Users/seongwookjang/project/git/violet_sw/005_money
 
-# Run Ver3
-python 001_python_code/main.py --version ver3
+# Run Ver3 with Watchdog (Recommended)
+./scripts/run_v3_watchdog.sh
+
+# Or run Ver3 CLI directly
+./scripts/run_v3_cli.sh
 
 # Verify Ver3 is running
-# Check logs: tail -f logs/ver3_trading_*.log
+# Check logs: tail -f logs/ver3_cli_$(date +%Y%m%d).log
 ```
 
 ### Programmatic Usage
@@ -171,9 +173,9 @@ python 001_python_code/ver3/test_portfolio_v3.py
 
 ```
 1. Parallel Analysis (ThreadPoolExecutor)
-   ├─ BTC analysis (StrategyV2) ──┐
-   ├─ ETH analysis (StrategyV2) ──┤ Concurrent
-   └─ XRP analysis (StrategyV2) ──┘
+   ├─ BTC analysis (StrategyV3) ──┐
+   ├─ ETH analysis (StrategyV3) ──┤ Concurrent
+   └─ XRP analysis (StrategyV3) ──┘
    ↓
 2. Portfolio Decision Making
    ├─ Count current positions (e.g., 1/2)
@@ -236,9 +238,9 @@ python 001_python_code/ver3/test_portfolio_v3.py
 
 ---
 
-## Individual Coin Strategy (Ver2)
+## Individual Coin Strategy (StrategyV3)
 
-Each coin analyzed using Ver2's proven strategy:
+Each coin analyzed using the proven strategy:
 
 ### 1. Market Regime Filter (Daily Timeframe)
 - **Golden Cross:** EMA50 > EMA200 → Trade allowed
@@ -289,12 +291,15 @@ Requires **2+ points** to enter:
 ```
 ver3/
 ├── __init__.py                    # Version factory and metadata
-├── config_v3.py                   # Configuration (extends Ver2)
+├── config_v3.py                   # Configuration
+├── config_base.py                 # Base configuration
 ├── portfolio_manager_v3.py        # Core portfolio management
 ├── trading_bot_v3.py              # Main coordinator
 ├── live_executor_v3.py            # Thread-safe executor
-├── strategy_v3.py                 # Copy of Ver2 strategy
-├── test_portfolio_v3.py           # Comprehensive test suite
+├── strategy_v3.py                 # Trading strategy
+├── regime_detector.py             # Market regime detection
+├── dynamic_factor_manager.py      # Dynamic parameter management
+├── run_cli.py                     # CLI entry point
 └── README.md                      # This file
 ```
 
@@ -303,10 +308,10 @@ ver3/
 ## Dependencies
 
 ### Required
-- `ver2/strategy_v2.py` - Strategy for individual coin analysis
 - `lib/api/bithumb_api.py` - Exchange API wrapper
 - `lib/core/logger.py` - Logging infrastructure
-- `lib/interfaces/version_interface.py` - Version interface
+- `lib/core/telegram_notifier.py` - Telegram notifications
+- `lib/core/telegram_bot_handler.py` - Telegram commands
 
 ### Python Packages
 - `pandas` - Data manipulation
@@ -316,27 +321,26 @@ ver3/
 
 ---
 
-## Comparison: Ver2 vs Ver3
+## Key Capabilities
 
-| Feature | Ver2 | Ver3 |
-|---------|------|------|
-| **Coins** | Single coin (BTC, ETH, XRP, or SOL) | Multi-coin (2-3 simultaneously) |
-| **Analysis** | Sequential (one coin at a time) | Parallel (all coins together) |
-| **Position Limits** | Per-coin only | Portfolio-level |
-| **Pyramiding** | Not supported | Up to 3 entries per coin |
-| **Entry Selection** | Immediate on signal | Prioritized by score |
-| **Risk Management** | Per-coin | Portfolio-wide |
-| **Thread Safety** | N/A (single thread) | Full threading.Lock |
-| **Analysis Interval** | 4H candle close | 15 minutes |
-| **Use Case** | Focused single-coin trading | Diversified portfolio |
+| Feature | Description |
+|---------|-------------|
+| **Coins** | Multi-coin (2-3 simultaneously) |
+| **Analysis** | Parallel (all coins together) |
+| **Position Limits** | Portfolio-level management |
+| **Pyramiding** | Up to 3 entries per coin |
+| **Entry Selection** | Prioritized by score |
+| **Risk Management** | Portfolio-wide |
+| **Thread Safety** | Full threading.Lock |
+| **Analysis Interval** | 15 minutes |
+| **Watchdog** | Auto-restart on hang |
 
 ---
 
 ## Performance Expectations
 
 ### Analysis Time
-- **Sequential (Ver2):** 3-4 seconds per coin
-- **Parallel (Ver3):** 4-5 seconds for 3 coins (concurrent)
+- **Parallel (3 coins):** 4-5 seconds for all coins (concurrent)
 
 ### API Usage
 - **Calls per Cycle:** 6 (1D + 4H for each coin)
@@ -344,8 +348,7 @@ ver3/
 - **Well within Bithumb limit:** <20/min
 
 ### Memory Usage
-- **Ver2:** ~50 MB
-- **Ver3:** ~150 MB (3× coins, minor overhead)
+- **Ver3:** ~150 MB (3 coins, minor overhead)
 
 ---
 
@@ -358,10 +361,10 @@ ver3/
 - ✅ GUI responsive <100ms
 
 ### Trading Metrics
-- **Entry Frequency:** 3× more signals (3 coins vs 1)
-- **Win Rate:** Compare to Ver2 single-coin
+- **Entry Frequency:** Multiple signals from 3 coins
+- **Win Rate:** Track performance over time
 - **Portfolio Sharpe Ratio:** Measure risk-adjusted returns
-- **Max Drawdown:** Should be lower (diversification)
+- **Max Drawdown:** Lower through diversification
 
 ---
 
@@ -386,9 +389,12 @@ export BITHUMB_SECRET_KEY="your_secret"
 2. Verify positions cleared: check `logs/positions_v3.json`
 3. Reset if needed: `rm logs/positions_v3.json`
 
-### Issue: "Import error: ver2.strategy_v2"
-**Cause:** Ver2 not available
-**Fix:** Ver3 requires Ver2 to be present. Ensure `ver2/strategy_v2.py` exists.
+### Issue: "Analysis timeout detected"
+**Cause:** Bithumb API slow response or network issue
+**Fix:** Ver3 has multi-layer timeout protection. If issue persists:
+1. Check network connectivity
+2. Watchdog will auto-restart if hung for 10 minutes
+3. Check logs for specific timeout layer
 
 ---
 
@@ -410,21 +416,27 @@ export BITHUMB_SECRET_KEY="your_secret"
 
 ---
 
-## Migration from Ver2
+## Deployment
 
-### If Currently Using Ver2
+### Getting Started
 
 ```bash
-# Ver2 continues working unchanged
-python main.py --version ver2
+# Navigate to project
+cd /Users/seongwookjang/project/git/violet_sw/005_money
 
-# Ver3 runs independently
-python main.py --version ver3
+# Start with watchdog (recommended for production)
+./scripts/run_v3_watchdog.sh
+
+# Or start CLI directly
+./scripts/run_v3_cli.sh
+
+# Or start with GUI
+./scripts/run_v3_gui.sh
 ```
 
-### Gradual Adoption
+### Gradual Adoption for Live Trading
 
-1. **Week 1:** Run Ver3 in dry-run mode alongside Ver2
+1. **Week 1:** Run Ver3 in dry-run mode, verify analysis
 2. **Week 2:** Enable small live positions (10,000 KRW)
 3. **Week 3:** Increase to normal sizes (50,000 KRW)
 4. **Week 4:** Full deployment, monitor performance
@@ -434,31 +446,25 @@ python main.py --version ver3
 ## Support & Documentation
 
 ### Documentation
-- **Architecture Analysis:** `ver2/MULTI_COIN_ARCHITECTURE_ANALYSIS.md`
-- **Quick Start Guide:** `ver2/MULTI_COIN_QUICK_START.md`
-- **Architecture Diagrams:** `ver2/MULTI_COIN_ARCHITECTURE_DIAGRAM.md`
-
-### Testing
-- **Test Suite:** `python 001_python_code/ver3/test_portfolio_v3.py`
-- **Expected Result:** 6/6 tests passed
+- **Main Documentation:** `CLAUDE.md` in project root
+- **Development Rules:** `.claude/rules/` directory
+- **CLI Operation Guide:** `ver3/VER3_CLI_OPERATION_GUIDE.md`
 
 ### Logs
-- **Main Log:** `logs/ver3_trading_YYYYMMDD.log`
+- **Main Log:** `logs/ver3_cli_YYYYMMDD.log`
 - **Positions:** `logs/positions_v3.json`
-- **Transactions:** `logs/transactions_v3.json`
+- **Transactions:** `logs/transaction_history.json`
+- **Dynamic Factors:** `logs/dynamic_factors_v3.json`
 
 ---
 
 ## License & Credits
 
-**Version 3** was developed by Claude AI based on:
-- **Ver2 Strategy:** Multi-Timeframe Stability Strategy
-- **Architecture Documents:** MULTI_COIN_*.md series
-- **Base Framework:** Trading Bot Team
+**Version 3** - Production Trading System
 
-**Date:** 2025-10-08
+**Original Date:** 2025-10-08
+**Last Updated:** 2026-01-08 (Legacy cleanup refactoring)
 **Status:** Production Ready
-**Tested:** Yes (6/6 tests passing)
 
 ---
 
@@ -466,22 +472,28 @@ python main.py --version ver3
 
 ### Start Ver3
 ```bash
-python 001_python_code/main.py --version ver3
-```
-
-### Run Tests
-```bash
-python 001_python_code/ver3/test_portfolio_v3.py
+./scripts/run_v3_watchdog.sh   # With watchdog (recommended)
+./scripts/run_v3_cli.sh        # CLI only
+./scripts/run_v3_gui.sh        # GUI mode
 ```
 
 ### Check Logs
 ```bash
-tail -f logs/ver3_trading_*.log
+tail -f logs/ver3_cli_$(date +%Y%m%d).log
 ```
 
 ### View Positions
 ```bash
 cat logs/positions_v3.json
+```
+
+### Telegram Commands
+```
+/status     - Bot status
+/positions  - Current positions
+/factors    - Dynamic factors
+/close BTC  - Close specific position
+/stop       - Stop bot
 ```
 
 ### Stop Bot
@@ -491,4 +503,4 @@ Ctrl+C (KeyboardInterrupt)
 
 ---
 
-**For questions or issues, refer to the comprehensive documentation in `ver2/MULTI_COIN_*.md` files.**
+**For questions or issues, refer to `CLAUDE.md` and `.claude/rules/` documentation.**

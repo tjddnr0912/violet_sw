@@ -33,7 +33,7 @@ except ImportError as e:
 sys.path.insert(0, str(base_dir / '001_python_code'))
 from ver3.config_v3 import get_version_config
 from ver3.preference_manager_v3 import PreferenceManagerV3
-from ver2.strategy_v2 import StrategyV2
+from ver3.strategy_v3 import StrategyV3
 
 
 class PortfolioBacktestV3:
@@ -74,7 +74,7 @@ class PortfolioBacktestV3:
         self.trading_fee = 0.0005  # 0.05%
 
         # Initialize strategy
-        self.strategy = StrategyV2(self.config, None)
+        self.strategy = StrategyV3(self.config, None)
 
         print(f"📊 Portfolio Backtest V3 Initialized")
         print(f"Coins: {coins}")

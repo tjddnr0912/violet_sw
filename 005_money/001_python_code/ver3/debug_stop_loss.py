@@ -16,7 +16,7 @@ if str(base_path) not in sys.path:
     sys.path.insert(0, str(base_path))
 
 from lib.api.bithumb_api import get_candlestick, get_ticker
-from ver2.strategy_v2 import StrategyV2
+from ver3.strategy_v3 import StrategyV3
 from ver3.config_v3 import get_version_config
 
 
@@ -33,7 +33,7 @@ def test_stop_loss_calculation(ticker: str):
 
     # Get config and strategy
     config = get_version_config()
-    strategy = StrategyV2(config, None)
+    strategy = StrategyV3(config, None)
 
     # Get current price
     ticker_data = get_ticker(ticker)
@@ -99,7 +99,7 @@ def test_stop_loss_calculation(ticker: str):
         print(f"\n⚠️  WARNING: Stop-loss is very close to current price")
 
     # Test strategy's _calculate_chandelier_stop() method
-    print(f"\n🔍 Testing StrategyV2._calculate_chandelier_stop()...")
+    print(f"\n🔍 Testing StrategyV3._calculate_chandelier_stop()...")
     strategy_stop = strategy._calculate_chandelier_stop(df)
     print(f"   Strategy Result: {strategy_stop:,.0f} KRW")
 

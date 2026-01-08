@@ -20,7 +20,7 @@ if str(base_path) not in sys.path:
     sys.path.insert(0, str(base_path))
 
 from lib.api.bithumb_api import get_candlestick, get_ticker
-from ver2.strategy_v2 import StrategyV2
+from ver3.strategy_v3 import StrategyV3
 from ver3.config_v3 import get_version_config
 
 
@@ -45,7 +45,7 @@ def check_profit_targets():
 
     # Initialize strategy
     config = get_version_config()
-    strategy = StrategyV2(config, None)
+    strategy = StrategyV3(config, None)
 
     print(f"\n현재 보유 포지션: {len(positions)}개\n")
 

@@ -38,9 +38,16 @@
 ```
 005_money/
 ├── 001_python_code/          # 메인 소스 코드
-│   ├── ver1/                 # Version 1: Elite 8-Indicator (구버전)
-│   ├── ver2/                 # Version 2: Backtrader 기반 (개발중)
-│   ├── ver3/                 # Version 3: 포트폴리오 멀티코인 전략 (현재 사용)
+│   ├── ver3/                 # Version 3: 포트폴리오 멀티코인 전략 (프로덕션)
+│   │   ├── config_v3.py      # 설정
+│   │   ├── config_base.py    # 기본 설정
+│   │   ├── trading_bot_v3.py # 메인 봇
+│   │   ├── strategy_v3.py    # 매매 전략
+│   │   ├── portfolio_manager_v3.py  # 포트폴리오 관리
+│   │   ├── live_executor_v3.py      # 주문 실행
+│   │   ├── regime_detector.py       # 레짐 분류
+│   │   ├── dynamic_factor_manager.py # 동적 파라미터
+│   │   └── run_cli.py        # CLI 엔트리포인트
 │   └── lib/                  # 공유 라이브러리
 │       ├── api/              # Bithumb API 래퍼
 │       ├── core/             # 핵심 유틸리티 (로깅, 텔레그램)
@@ -120,8 +127,8 @@ TELEGRAM_NOTIFICATIONS_ENABLED=True
 
 ### 코드 수정 시 주의사항
 
-1. **버전 확인**: ver1/ver2/ver3 중 어느 버전인지 확인
-2. **lib/ 수정 시**: 모든 버전과의 호환성 테스트 필요
+1. **ver3 전용**: 현재 프로덕션은 ver3만 사용
+2. **lib/ 수정 시**: ver3와의 호환성 테스트 필요
 3. **전략 수정 시**: `strategy_v3.py`와 `config_v3.py` 동시 수정
 
 ### 테스트 실행
