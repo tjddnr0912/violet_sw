@@ -23,16 +23,28 @@ KIS Open API 기반 멀티팩터 퀀트 자동매매 시스템.
 
 ```
 src/
-├── quant_engine.py           # 자동매매 엔진
-├── api/kis_client.py         # KIS API 클라이언트
-├── core/system_controller.py # 원격 제어 (싱글톤)
-├── scheduler/auto_manager.py # 월간 모니터링, 반기 최적화
-├── telegram/bot.py           # 텔레그램 봇 (20+ 명령어)
-└── strategy/quant/           # 팩터, 스크리너, 리스크
-scripts/run_daemon.py         # 통합 데몬
+├── quant_engine.py              # 자동매매 엔진 (오케스트레이션)
+├── quant_modules/               # 퀀트 엔진 모듈 (2026-01 리팩토링)
+│   ├── state_manager.py         # 상태 저장/로드, Lock 관리
+│   └── order_executor.py        # 주문 생성/실행/재시도
+├── api/
+│   ├── kis_client.py            # KIS API 클라이언트
+│   └── kis_quant.py             # 퀀트용 API 확장
+├── core/system_controller.py    # 원격 제어 (싱글톤)
+├── scheduler/auto_manager.py    # 월간 모니터링, 반기 최적화
+├── telegram/
+│   ├── bot.py                   # 텔레그램 봇 (20+ 명령어)
+│   ├── notifier.py              # 알림 전송 전담
+│   └── validators.py            # 입력 검증 유틸리티
+├── strategy/quant/              # 팩터, 스크리너, 리스크
+└── utils/
+    ├── converters.py            # 타입 변환, 포맷팅
+    ├── retry.py                 # 재시도 데코레이터/설정
+    └── market_calendar.py       # 휴장일 판단
+scripts/run_daemon.py            # 통합 데몬
 config/
-├── optimal_weights.json      # 팩터 가중치
-└── system_config.json        # 시스템 설정
+├── optimal_weights.json         # 팩터 가중치
+└── system_config.json           # 시스템 설정
 ```
 
 ## 텔레그램 명령어
@@ -95,7 +107,7 @@ TELEGRAM_CHAT_ID=xxx
 | 실전투자 | 20건/초 | 100ms | ~10건 |
 
 **관련 코드:**
-- `src/quant_engine.py`: `API_DELAY_VIRTUAL`, `API_DELAY_REAL`
+- `src/quant_modules/order_executor.py`: `API_DELAY_VIRTUAL`, `API_DELAY_REAL`
 - `src/api/kis_quant.py`: `_min_interval` (생성자에서 설정)
 
 **주의:** 슬라이딩 윈도우 방식으로 계산되므로 한계치에 딱 맞추면 초과될 수 있음. 충분한 여유 필요.
@@ -137,10 +149,32 @@ TELEGRAM_CHAT_ID=xxx
 2. `build_application()`에 핸들러 등록
 3. `cmd_help()` 업데이트
 
+### 알림 전송
+```python
+from src.telegram import get_notifier
+notifier = get_notifier()
+notifier.notify_buy(code, name, qty, price, reason)
+notifier.notify_error("제목", "상세 내용")
+```
+
 ### 콜백 등록
 ```python
 controller = get_controller()
 controller.register_callback('on_screening', engine.run_screening)
+```
+
+### 유틸리티 사용
+```python
+from src.utils import safe_float, safe_int, format_currency
+from src.utils.retry import with_retry, API_RETRY_CONFIG
+
+# 안전한 타입 변환
+price = safe_float(data.get('price'), 0)
+
+# 재시도 데코레이터
+@with_retry(API_RETRY_CONFIG)
+def api_call():
+    ...
 ```
 
 ## 봇 운영 구조
