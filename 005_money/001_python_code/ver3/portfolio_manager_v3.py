@@ -840,9 +840,11 @@ class PortfolioManagerV3:
             if self.executor.has_position(coin)
         ]
 
-        # Portfolio-level stats
+        # Calculate P&L for each coin and build coin data
         total_pnl = 0.0
-        for coin in active_positions:
+        coin_pnl_data = {}  # Store P&L data for each coin
+
+        for coin in self.coins:
             position = self.executor.get_position(coin)
             if position:
                 # Get current price from last analysis
@@ -850,25 +852,41 @@ class PortfolioManagerV3:
                     'current_price', position.entry_price
                 )
                 pnl = (current_price - position.entry_price) * position.size
+                pnl_pct = ((current_price - position.entry_price) / position.entry_price * 100) if position.entry_price > 0 else 0
                 total_pnl += pnl
+                coin_pnl_data[coin] = {
+                    'current_price': current_price,
+                    'pnl': pnl,
+                    'pnl_pct': pnl_pct,
+                }
+
+        # Build coins dictionary with P&L included in position
+        coins_data = {}
+        for coin in self.coins:
+            position_summary = self.monitors[coin].get_position_summary()
+
+            # Add P&L data to position if available
+            if coin in coin_pnl_data:
+                position_summary['current_price'] = coin_pnl_data[coin]['current_price']
+                position_summary['pnl'] = coin_pnl_data[coin]['pnl']
+                position_summary['pnl_pct'] = coin_pnl_data[coin]['pnl_pct']
+
+            coins_data[coin] = {
+                'analysis': self.last_results.get(coin, {}),
+                'position': position_summary,
+                'last_update': (
+                    self.monitors[coin].last_update.isoformat()
+                    if self.monitors[coin].last_update
+                    else None
+                ),
+                'last_executed_action': self.last_executed_actions.get(coin, '-'),
+            }
 
         return {
             'total_positions': len(active_positions),
             'max_positions': self.config.get('PORTFOLIO_CONFIG', {}).get('max_positions', 2),
             'total_pnl_krw': total_pnl,
-            'coins': {
-                coin: {
-                    'analysis': self.last_results.get(coin, {}),
-                    'position': self.monitors[coin].get_position_summary(),
-                    'last_update': (
-                        self.monitors[coin].last_update.isoformat()
-                        if self.monitors[coin].last_update
-                        else None
-                    ),
-                    'last_executed_action': self.last_executed_actions.get(coin, '-'),  # Add last executed action
-                }
-                for coin in self.coins
-            },
+            'coins': coins_data,
             'last_decisions': self.last_decisions,
         }
 
