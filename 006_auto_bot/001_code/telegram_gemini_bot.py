@@ -2,14 +2,14 @@
 """
 Telegram + Gemini CLI + Blogger Integration Bot
 ------------------------------------------------
-1. 텔레그램에서 메시지 수신 (polling)
-2. Gemini CLI로 질문 전달
-3. 결과를 Google Blogger에 업로드
-4. 텔레그램으로 결과 알림
+1. Receive messages from Telegram (polling)
+2. Send questions to Gemini CLI
+3. Upload results to Google Blogger
+4. Send notification via Telegram
 
 Usage:
-    python telegram_gemini_bot.py           # 일반 실행
-    python telegram_gemini_bot.py --test    # 테스트 모드 (블로그 업로드 스킵)
+    python telegram_gemini_bot.py           # Normal execution
+    python telegram_gemini_bot.py --test    # Test mode (skip blog upload)
 """
 
 import os
@@ -18,16 +18,21 @@ import time
 import subprocess
 import logging
 import argparse
+import re
 from datetime import datetime
-from typing import Optional, Dict, Tuple
+from typing import Optional, Tuple
 from dotenv import load_dotenv
 
-# Load environment variables (override=True to use .env values over system env)
+# Load environment variables
 load_dotenv(override=True)
 
-# Configure logging with file handler
+# Import shared modules
+from shared.telegram_api import TelegramClient
+from shared.html_utils import HtmlUtils
+
+
 def setup_logging():
-    """로그 설정 - 콘솔 + 파일 출력"""
+    """Configure logging - console + file output"""
     log_dir = os.path.join(os.path.dirname(__file__), 'logs')
     os.makedirs(log_dir, exist_ok=True)
 
@@ -44,11 +49,12 @@ def setup_logging():
     )
     return logging.getLogger(__name__)
 
+
 logger = setup_logging()
 
 
-class TelegramGeminiBot:
-    """텔레그램 메시지를 받아 Gemini로 처리하고 Google Blogger에 업로드하는 봇"""
+class TelegramGeminiBot(TelegramClient):
+    """Telegram bot that processes messages with Gemini and uploads to Blogger"""
 
     def __init__(
         self,
@@ -56,264 +62,97 @@ class TelegramGeminiBot:
         chat_id: str,
         upload_to_blog: bool = True
     ):
-        self.bot_token = bot_token
-        self.chat_id = chat_id
+        super().__init__(bot_token, chat_id)
         self.upload_to_blog = upload_to_blog
-        self.api_base = f"https://api.telegram.org/bot{bot_token}"
         self.last_update_id = 0
-        self.consecutive_failures = 0  # 연속 실패 카운터
-
-        # Import requests here to handle missing module gracefully
-        try:
-            import requests
-            from requests.adapters import HTTPAdapter
-            from urllib3.util.retry import Retry
-            self.requests = requests
-
-            # Session with connection pooling and retry
-            self.session = requests.Session()
-            retry_strategy = Retry(
-                total=3,
-                backoff_factor=1,
-                status_forcelist=[429, 500, 502, 503, 504],
-            )
-            adapter = HTTPAdapter(
-                max_retries=retry_strategy,
-                pool_connections=10,
-                pool_maxsize=10
-            )
-            self.session.mount("https://", adapter)
-        except ImportError:
-            logger.error("requests 모듈이 필요합니다. pip install requests")
-            sys.exit(1)
-
-    def get_updates(self, offset: int = None, max_retries: int = 3) -> list:
-        """텔레그램에서 새 메시지 가져오기 (재시도 로직 포함)"""
-        for attempt in range(max_retries):
-            try:
-                url = f"{self.api_base}/getUpdates"
-                params = {"timeout": 30}  # Long polling
-                if offset:
-                    params["offset"] = offset
-
-                response = self.session.get(url, params=params, timeout=35)
-                result = response.json()
-
-                if result.get("ok"):
-                    # 성공 시 연속 실패 카운터 리셋
-                    if self.consecutive_failures > 0:
-                        logger.info(f"네트워크 복구됨 (이전 연속 실패: {self.consecutive_failures}회)")
-                        self.consecutive_failures = 0
-                    return result.get("result", [])
-                return []
-
-            except (ConnectionResetError, ConnectionError, ConnectionAbortedError) as e:
-                # Connection reset은 long polling에서 흔히 발생 - DEBUG 레벨로 변경
-                if attempt == 0:
-                    logger.debug(f"연결 리셋 (정상적인 long polling 종료): {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                # 마지막 시도 실패 시에만 WARNING
-                self.consecutive_failures += 1
-                return []
-
-            except self.requests.exceptions.Timeout:
-                # Long polling 타임아웃은 정상적인 경우
-                return []
-
-            except self.requests.exceptions.RequestException as e:
-                self.consecutive_failures += 1
-                # 연속 실패 횟수에 따라 대기 시간 조절
-                base_wait = min(2 ** attempt, 8)  # 최대 8초
-                extra_wait = min(self.consecutive_failures * 2, 30)  # 연속 실패 시 추가 대기 (최대 30초)
-                wait_time = base_wait + extra_wait
-
-                if self.consecutive_failures <= 3:
-                    logger.warning(f"네트워크 에러 (시도 {attempt + 1}/{max_retries}): {e}")
-                elif self.consecutive_failures % 10 == 0:
-                    # 연속 실패가 많으면 10회마다만 로그
-                    logger.warning(f"네트워크 불안정 지속 중 (연속 {self.consecutive_failures}회 실패)")
-
-                if attempt < max_retries - 1:
-                    time.sleep(wait_time)
-                    continue
-                return []
-
-            except Exception as e:
-                logger.error(f"메시지 가져오기 실패: {e}")
-                self.consecutive_failures += 1
-                return []
-
-        return []
-
-    def send_message(self, text: str, parse_mode: str = "HTML", max_retries: int = 3) -> bool:
-        """텔레그램으로 메시지 보내기"""
-        for attempt in range(max_retries):
-            try:
-                url = f"{self.api_base}/sendMessage"
-
-                # 메시지 길이 제한 (4096자)
-                if len(text) > 4000:
-                    text = text[:3900] + "\n\n... (내용이 길어 일부 생략됨)"
-
-                # HTML 파싱 모드일 때 닫히지 않은 태그 수정
-                if parse_mode == "HTML":
-                    text = self._fix_unclosed_html_tags(text)
-
-                payload = {
-                    "chat_id": self.chat_id,
-                    "text": text,
-                    "parse_mode": parse_mode,
-                    "disable_web_page_preview": True
-                }
-
-                response = self.session.post(url, json=payload, timeout=30)
-                result = response.json()
-                return result.get("ok", False)
-
-            except self.requests.exceptions.RequestException as e:
-                if attempt < max_retries - 1:
-                    logger.warning(f"메시지 전송 재시도 ({attempt + 1}/{max_retries}): {e}")
-                    time.sleep(2 ** attempt)
-                    continue
-                logger.error(f"메시지 전송 실패 (최대 재시도 초과): {e}")
-                return False
-
-            except Exception as e:
-                logger.error(f"메시지 전송 실패: {e}")
-                return False
-        return False
-
-    def _fix_unclosed_html_tags(self, text: str) -> str:
-        """닫히지 않은 HTML 태그 수정"""
-        import re
-
-        simple_tags = ['b', 'i', 'u', 's', 'code', 'pre']
-
-        for tag in simple_tags:
-            open_pattern = f'<{tag}>'
-            close_pattern = f'</{tag}>'
-
-            open_count = text.lower().count(open_pattern)
-            close_count = text.lower().count(close_pattern)
-
-            if open_count > close_count:
-                text += close_pattern * (open_count - close_count)
-            elif close_count > open_count:
-                for _ in range(close_count - open_count):
-                    text = re.sub(f'</{tag}>', '', text, count=1, flags=re.IGNORECASE)
-
-        # <a> 태그 처리
-        open_a = len(re.findall(r'<a\s+href=', text, re.IGNORECASE))
-        close_a = text.lower().count('</a>')
-
-        if open_a > close_a:
-            text += '</a>' * (open_a - close_a)
-        elif close_a > open_a:
-            for _ in range(close_a - open_a):
-                text = re.sub(r'</a>', '', text, count=1, flags=re.IGNORECASE)
-
-        return text
 
     def run_gemini(self, question: str) -> Tuple[bool, str, str, list, list]:
         """
-        Gemini CLI 실행
+        Run Gemini CLI
 
         Returns:
-            Tuple[bool, str, str, list, list]: (성공 여부, 본문 내용, 제목, 라벨 리스트, 출처 리스트)
+            Tuple[bool, str, str, list, list]: (success, content, title, labels, sources)
         """
         try:
-            logger.info(f"Gemini 실행 중: {question[:50]}...")
+            logger.info(f"Running Gemini: {question[:50]}...")
 
-            # 블로그 스타일 + 제목/라벨 생성을 포함한 프롬프트 구성
-            # 영어/한국어 모두 대응하도록 양쪽 언어로 지시
+            # Build prompt with blog style + title/labels generation
             prompt = f"""{question}
 
 ---
-IMPORTANT / 중요:
+IMPORTANT:
 - DO NOT include any thinking process, reasoning steps, or internal analysis.
 - Start with the final answer directly. No "Let me think", "I will", "Let's analyze", "First, I need to" or similar phrases.
-- 사고 과정이나 분석 과정 없이 최종 답변만 바로 작성해줘.
-- "Let me think", "I will", "Let's" 같은 중간 과정 설명 없이 독자에게 보여줄 완성된 글만 출력해.
 
 Write a blog-style article answering the question above.
-위 질문에 대해 블로그 게시글 형식으로 답변해줘.
 
-Writing Guidelines / 작성 가이드:
-- Use clear structure with subheadings and paragraphs / 독자가 이해하기 쉽게 구조화된 형식으로 작성
-- Highlight key points with bold text or lists / 핵심 내용은 굵게 또는 리스트로 강조
-- Include examples or code if helpful / 필요시 예시나 코드 포함
-- Use a friendly, readable tone / 친근하고 읽기 쉬운 문체 사용
-- Include sources if available / 정보의 출처가 있다면 반드시 포함
+Writing Guidelines:
+- Use clear structure with subheadings and paragraphs
+- Highlight key points with bold text or lists
+- Include examples or code if helpful
+- Use a friendly, readable tone
+- Include sources if available
 
 At the very end, add these metadata lines:
-답변이 끝난 후 맨 마지막에 다음 형식으로 작성해줘:
-TITLE: [A concise title representing the content / 전체 내용을 대표하는 간결한 제목]
-LABELS: [2-3 keywords separated by commas / 핵심 키워드 2~3개를 쉼표로 구분]
-SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 출처를 "제목|URL" 형식으로 쉼표로 구분]"""
+TITLE: [A concise title representing the content]
+LABELS: [2-3 keywords separated by commas]
+SOURCES: [Sources in "title|URL" format, comma-separated]"""
 
-            # gemini CLI 실행 (출처 검색 포함 시 시간이 더 걸릴 수 있음)
+            # Run gemini CLI
             result = subprocess.run(
                 ["gemini", prompt],
                 capture_output=True,
                 text=True,
-                timeout=900  # 15분 타임아웃
+                timeout=900  # 15 minute timeout
             )
 
             if result.returncode == 0:
                 output = result.stdout.strip()
                 if output:
-                    logger.info(f"Gemini 응답 성공 (길이: {len(output)}자)")
-                    # 원본 응답의 마지막 500자 로그 (TITLE/LABELS/SOURCES 확인용)
-                    logger.info(f"Gemini 응답 끝부분:\n{output[-500:]}")
-                    # 제목, 라벨, 본문, 출처 분리
+                    logger.info(f"Gemini response success (length: {len(output)})")
+                    logger.info(f"Gemini response tail:\n{output[-500:]}")
                     content, title, labels, sources = self._parse_response(output)
-                    logger.info(f"파싱 결과 - 제목: {title}, 라벨: {labels}, 출처: {len(sources)}개, 본문: {len(content)}자")
+                    logger.info(f"Parsed - title: {title}, labels: {labels}, sources: {len(sources)}, content: {len(content)}")
                     return True, content, title, labels, sources
                 else:
-                    logger.warning("Gemini 응답이 비어있음")
-                    return False, "Gemini 응답이 비어있습니다.", "", [], []
+                    logger.warning("Gemini response is empty")
+                    return False, "Gemini response is empty.", "", [], []
             else:
-                error = result.stderr.strip() or "알 수 없는 오류"
-                logger.error(f"Gemini 실행 실패 (returncode={result.returncode}): {error}")
-                return False, f"Gemini 오류: {error}", "", [], []
+                error = result.stderr.strip() or "Unknown error"
+                logger.error(f"Gemini execution failed (returncode={result.returncode}): {error}")
+                return False, f"Gemini error: {error}", "", [], []
 
         except subprocess.TimeoutExpired:
-            logger.error("Gemini 응답 시간 초과 (15분)")
-            return False, "Gemini 응답 시간 초과 (15분)", "", [], []
+            logger.error("Gemini response timeout (15 min)")
+            return False, "Gemini response timeout (15 min)", "", [], []
         except FileNotFoundError:
-            logger.error("gemini CLI를 찾을 수 없음")
-            return False, "gemini CLI를 찾을 수 없습니다. 설치되어 있는지 확인하세요.", "", [], []
+            logger.error("gemini CLI not found")
+            return False, "gemini CLI not found. Please check installation.", "", [], []
         except Exception as e:
-            logger.error(f"Gemini 실행 오류: {str(e)}", exc_info=True)
-            return False, f"Gemini 실행 오류: {str(e)}", "", [], []
+            logger.error(f"Gemini execution error: {str(e)}", exc_info=True)
+            return False, f"Gemini execution error: {str(e)}", "", [], []
 
     def _parse_response(self, response: str) -> Tuple[str, str, list, list]:
         """
-        Gemini 응답에서 본문, 제목, 라벨, 출처 분리
+        Parse Gemini response to extract content, title, labels, and sources
 
         Returns:
-            Tuple[str, str, list, list]: (본문, 제목, 라벨 리스트, 출처 리스트)
-            출처 리스트는 [{"title": "제목", "url": "URL"}, ...] 형식
+            Tuple[str, str, list, list]: (content, title, labels, sources)
         """
-        import re
-
         lines = response.strip().split('\n')
         title = ""
         labels = []
         sources = []
         content_end_idx = len(lines)
 
-        # 뒤에서부터 TITLE:, LABELS:, SOURCES: 찾기
+        # Find TITLE:, LABELS:, SOURCES: from the end
         for i in range(len(lines) - 1, -1, -1):
             line = lines[i].strip()
 
-            # SOURCES: 패턴
+            # SOURCES: pattern
             source_match = re.match(r'^SOURCES?:\s*(.+)$', line, re.IGNORECASE)
             if source_match:
                 source_str = source_match.group(1).strip()
-                # 쉼표로 구분된 출처 파싱
                 for src in source_str.split(','):
                     src = src.strip()
                     if '|' in src:
@@ -323,35 +162,32 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
                         if src_url and src_title:
                             sources.append({"title": src_title, "url": src_url})
                     elif src.startswith('http'):
-                        # URL만 있는 경우
                         sources.append({"title": src, "url": src})
                 content_end_idx = min(content_end_idx, i)
 
-            # LABELS: 패턴
+            # LABELS: pattern
             label_match = re.match(r'^LABELS?:\s*(.+)$', line, re.IGNORECASE)
             if label_match:
                 label_str = label_match.group(1).strip()
-                # 쉼표로 구분된 라벨 파싱
                 labels = [l.strip() for l in label_str.split(',') if l.strip()]
                 content_end_idx = min(content_end_idx, i)
 
-            # TITLE: 패턴
+            # TITLE: pattern
             title_match = re.match(r'^TITLE:\s*(.+)$', line, re.IGNORECASE)
             if title_match:
                 title = title_match.group(1).strip()
                 content_end_idx = min(content_end_idx, i)
 
-        # 본문 추출 (TITLE/LABELS/SOURCES 이전까지)
+        # Extract content (before TITLE/LABELS/SOURCES)
         content_lines = lines[:content_end_idx]
 
-        # 마지막의 구분선(---) 및 빈 줄 제거
+        # Remove trailing separators and empty lines
         while content_lines and content_lines[-1].strip() in ['---', '']:
             content_lines.pop()
 
-        # 제목을 찾지 못한 경우 기본값 (첫 문장 또는 첫 50자 사용)
+        # Default title if not found
         if not title:
             first_line = response.split('\n')[0].strip()
-            # 마크다운 헤더 제거 (# ## ### 등)
             if first_line.startswith('#'):
                 first_line = first_line.lstrip('#').strip()
             if len(first_line) > 60:
@@ -359,34 +195,25 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
             elif len(first_line) > 10:
                 title = first_line
             else:
-                # 첫 줄이 너무 짧으면 50자까지 사용
                 title = response[:50].replace('\n', ' ').strip() + "..."
-            logger.warning(f"TITLE: 라인을 찾지 못해 기본값 사용: {title}")
+            logger.warning(f"TITLE not found, using default: {title}")
 
-        # 라벨을 찾지 못한 경우 기본값
+        # Default labels if not found
         if not labels:
             labels = ["AI", "Gemini"]
-            logger.warning("LABELS: 라인을 찾지 못해 기본값 사용: ['AI', 'Gemini']")
+            logger.warning("LABELS not found, using default: ['AI', 'Gemini']")
 
         content = '\n'.join(content_lines).strip()
         return content, title, labels, sources
 
     def _format_sources_section(self, sources: list) -> str:
-        """
-        출처 리스트를 마크다운 형식의 출처 섹션으로 변환
-
-        Args:
-            sources: [{"title": "제목", "url": "URL"}, ...] 형식의 리스트
-
-        Returns:
-            마크다운 형식의 출처 섹션 문자열
-        """
+        """Format sources list as markdown section"""
         if not sources:
             return ""
 
-        source_lines = ["", "---", "", "## 📚 참고 자료", ""]
-        for i, src in enumerate(sources, 1):
-            title = src.get("title", "출처")
+        source_lines = ["", "---", "", "## References", ""]
+        for src in sources:
+            title = src.get("title", "Source")
             url = src.get("url", "")
             if url:
                 source_lines.append(f"- [{title}]({url})")
@@ -396,68 +223,66 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
         return '\n'.join(source_lines)
 
     def upload_to_blogger(self, title: str, content: str, labels: list = None, sources: list = None) -> Tuple[bool, str]:
-        """Google Blogger에 업로드"""
+        """Upload to Google Blogger"""
         if not self.upload_to_blog:
-            return True, "(테스트 모드 - 업로드 스킵)"
+            return True, "(Test mode - upload skipped)"
 
         try:
-            from blogger_uploader import BloggerUploader
+            from shared.blogger_uploader import BloggerUploader
 
             blog_id = os.getenv("BLOGGER_BLOG_ID")
             credentials_path = os.getenv("BLOGGER_CREDENTIALS_PATH", "./credentials/blogger_credentials.json")
             token_path = os.getenv("BLOGGER_TOKEN_PATH", "./credentials/blogger_token.pkl")
             is_draft = os.getenv("BLOGGER_IS_DRAFT", "false").lower() == "true"
 
-            # 라벨이 없으면 기본값 사용
             if not labels:
                 labels = ["AI", "Gemini"]
 
             if not blog_id:
-                return False, "BLOGGER_BLOG_ID 환경변수가 설정되지 않았습니다."
+                return False, "BLOGGER_BLOG_ID environment variable not set."
 
-            # 출처 섹션 추가
+            # Add sources section
             sources_section = self._format_sources_section(sources)
             full_content = content + sources_section
 
-            logger.info(f"Blogger 업로더 초기화 중... (라벨: {labels}, 출처: {len(sources) if sources else 0}개)")
+            logger.info(f"Initializing Blogger uploader... (labels: {labels}, sources: {len(sources) if sources else 0})")
             uploader = BloggerUploader(
                 blog_id=blog_id,
                 credentials_path=credentials_path,
                 token_path=token_path
             )
 
-            logger.info("블로그에 포스팅 중...")
+            logger.info("Uploading to blog...")
             result = uploader.upload_post(
                 title=title,
                 content=full_content,
                 labels=labels,
                 is_draft=is_draft,
-                is_markdown=True  # BloggerUploader가 자체적으로 마크다운 변환
+                is_markdown=True
             )
 
             if result.get("success"):
-                post_url = result.get("url", "URL 없음")
+                post_url = result.get("url", "URL not available")
                 return True, post_url
             else:
-                return False, result.get("message", "업로드 실패")
+                return False, result.get("message", "Upload failed")
 
         except ImportError:
-            return False, "blogger_uploader 모듈을 찾을 수 없습니다."
+            return False, "blogger_uploader module not found."
         except Exception as e:
-            return False, f"업로드 오류: {str(e)}"
+            return False, f"Upload error: {str(e)}"
 
     def process_message(self, message: dict) -> None:
-        """받은 메시지 처리"""
+        """Process received message"""
         text = message.get("text", "")
         chat = message.get("chat", {})
-        from_user = message.get("from", {})
 
-        # 허용된 chat_id만 처리
+        # Only process allowed chat_id
         if str(chat.get("id")) != self.chat_id:
-            logger.warning(f"허용되지 않은 chat_id: {chat.get('id')}")
+            logger.warning(f"Unauthorized chat_id: {chat.get('id')}")
             return
 
-        # 명령어 처리
+        # Handle commands
         if text.startswith("/"):
             self._handle_command(text)
             return
@@ -465,112 +290,117 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
         if not text:
             return
 
-        logger.info(f"질문 수신 (길이: {len(text)}자): {text[:100]}{'...' if len(text) > 100 else ''}")
-        logger.debug(f"질문 전체:\n{text}")
+        logger.info(f"Question received (length: {len(text)}): {text[:100]}{'...' if len(text) > 100 else ''}")
 
-        # 처리 시작 알림
-        self.send_message(f"질문을 받았습니다. Gemini에게 물어보는 중...")
+        # Send processing notification
+        self.send_message("Question received. Asking Gemini...")
 
-        # Gemini 실행 (본문, 제목, 라벨, 출처 함께 반환)
+        # Run Gemini
         success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(text)
 
         if not success:
-            self.send_message(f"Gemini 오류: {gemini_content}")
+            self.send_message(f"Gemini error: {gemini_content}")
             return
 
-        # 블로그 업로드 (Gemini가 생성한 제목, 라벨, 출처 사용)
+        # Upload to blog
         upload_success, upload_result = self.upload_to_blogger(
             gemini_title, gemini_content, gemini_labels, gemini_sources
         )
 
-        # 결과 메시지 작성
+        # Build result message
         labels_str = ', '.join(gemini_labels) if gemini_labels else '-'
         sources_count = len(gemini_sources) if gemini_sources else 0
 
-        # 출처 정보 문자열 생성
+        # Format sources for Telegram
         sources_str = ""
         if gemini_sources:
-            sources_str = "\n<b>📚 참고 자료:</b>\n"
-            for src in gemini_sources[:5]:  # 텔레그램 메시지는 최대 5개까지
-                title = src.get("title", "출처")
+            sources_str = "\n<b>References:</b>\n"
+            for src in gemini_sources[:5]:
+                title = src.get("title", "Source")
                 url = src.get("url", "")
                 if url:
-                    sources_str += f"• <a href=\"{url}\">{title}</a>\n"
+                    sources_str += f"- <a href=\"{url}\">{title}</a>\n"
                 else:
-                    sources_str += f"• {title}\n"
+                    sources_str += f"- {title}\n"
             if len(gemini_sources) > 5:
-                sources_str += f"... 외 {len(gemini_sources) - 5}개\n"
+                sources_str += f"... and {len(gemini_sources) - 5} more\n"
+
+        # Truncate preview
+        preview = gemini_content[:500] + ('...' if len(gemini_content) > 500 else '')
+        preview = HtmlUtils.fix_unclosed_tags(preview)
 
         if upload_success:
-            result_msg = f"""<b>✅ Gemini 응답 완료!</b>
+            result_msg = f"""<b>Gemini response complete!</b>
 
-<b>제목:</b> {gemini_title}
-<b>라벨:</b> {labels_str}
+<b>Title:</b> {gemini_title}
+<b>Labels:</b> {labels_str}
 
-<b>🌐 블로그 업로드:</b> {upload_result}
+<b>Blog upload:</b> {upload_result}
 
-<b>응답 미리보기:</b>
-{gemini_content[:500]}{'...' if len(gemini_content) > 500 else ''}{sources_str}"""
+<b>Preview:</b>
+{preview}{sources_str}"""
         else:
-            result_msg = f"""<b>✅ Gemini 응답 완료!</b>
+            preview_long = gemini_content[:1000]
+            preview_long = HtmlUtils.fix_unclosed_tags(preview_long)
+            result_msg = f"""<b>Gemini response complete!</b>
 
-<b>제목:</b> {gemini_title}
-<b>라벨:</b> {labels_str}
+<b>Title:</b> {gemini_title}
+<b>Labels:</b> {labels_str}
 
-<b>❌ 블로그 업로드 실패:</b> {upload_result}
+<b>Blog upload failed:</b> {upload_result}
 
-<b>응답:</b>
-{gemini_content[:1000]}{sources_str}"""
+<b>Response:</b>
+{preview_long}{sources_str}"""
 
         self.send_message(result_msg)
-        logger.info(f"처리 완료 - 제목: {gemini_title}, 라벨: {gemini_labels}, 출처: {sources_count}개")
+        logger.info(f"Completed - title: {gemini_title}, labels: {gemini_labels}, sources: {sources_count}")
 
     def _handle_command(self, command: str) -> None:
-        """명령어 처리"""
+        """Handle bot commands"""
         cmd = command.split()[0].lower()
 
         if cmd == "/start":
-            self.send_message("""<b>Gemini 블로그 봇</b>
+            self.send_message("""<b>Gemini Blogger Bot</b>
 
-질문을 입력하면:
-1. Gemini CLI로 답변 생성
-2. Google Blogger에 자동 업로드
-3. 결과를 텔레그램으로 알림
+Enter a question and:
+1. Gemini CLI generates response
+2. Auto-upload to Google Blogger
+3. Notification via Telegram
 
-<b>명령어:</b>
-/help - 도움말
-/status - 상태 확인""")
+<b>Commands:</b>
+/help - Help
+/status - Status check""")
 
         elif cmd == "/help":
-            self.send_message("""<b>사용법:</b>
-그냥 질문을 입력하세요!
+            self.send_message("""<b>Usage:</b>
+Just type your question!
 
-예시:
-- Python에서 리스트 컴프리헨션이란?
-- 블록체인 기술 설명해줘
-- React와 Vue 차이점""")
+Examples:
+- What is list comprehension in Python?
+- Explain blockchain technology
+- Difference between React and Vue""")
 
         elif cmd == "/status":
-            upload_status = "활성화" if self.upload_to_blog else "테스트 모드"
-            self.send_message(f"""<b>봇 상태</b>
-- 블로그 업로드: {upload_status}
-- 마지막 업데이트 ID: {self.last_update_id}""")
+            upload_status = "Enabled" if self.upload_to_blog else "Test mode"
+            self.send_message(f"""<b>Bot Status</b>
+- Blog upload: {upload_status}
+- Last update ID: {self.last_update_id}""")
 
         else:
-            self.send_message(f"알 수 없는 명령어: {cmd}")
+            self.send_message(f"Unknown command: {cmd}")
 
     def run(self) -> None:
-        """봇 메인 루프"""
+        """Bot main loop"""
         logger.info("=" * 50)
-        logger.info("Telegram Gemini Blogger Bot 시작")
-        logger.info(f"Blogger 업로드: {'활성화' if self.upload_to_blog else '비활성화'}")
+        logger.info("Telegram Gemini Blogger Bot started")
+        logger.info(f"Blogger upload: {'Enabled' if self.upload_to_blog else 'Disabled'}")
         logger.info("=" * 50)
 
-        logger.info("시작 메시지 전송 중...")
-        self.send_message("Gemini Blogger 봇이 시작되었습니다! 질문을 입력하세요.")
-        logger.info("시작 메시지 전송 완료, 폴링 시작...")
+        logger.info("Sending startup message...")
+        self.send_message("Gemini Blogger bot started! Enter your question.")
+        logger.info("Startup message sent, starting polling...")
 
-        loop_errors = 0  # 메인 루프 에러 카운터
+        loop_errors = 0
 
         while True:
             try:
@@ -582,10 +412,9 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
                     if "message" in update:
                         self.process_message(update["message"])
 
-                # 성공 시 에러 카운터 리셋
                 loop_errors = 0
 
-                # 연속 네트워크 실패가 많으면 대기 시간 증가
+                # Adaptive wait based on consecutive failures
                 if self.consecutive_failures > 5:
                     wait_time = min(self.consecutive_failures, 30)
                     time.sleep(wait_time)
@@ -593,30 +422,30 @@ SOURCES: [Sources in "title|URL" format, comma-separated / 참고한 자료의 �
                     time.sleep(1)
 
             except KeyboardInterrupt:
-                logger.info("봇 종료...")
-                self.send_message("봇이 종료되었습니다.")
+                logger.info("Bot stopping...")
+                self.send_message("Bot stopped.")
                 break
             except Exception as e:
                 loop_errors += 1
-                wait_time = min(5 * loop_errors, 60)  # 최대 60초
-                logger.error(f"오류 발생 (대기 {wait_time}초): {e}")
+                wait_time = min(5 * loop_errors, 60)
+                logger.error(f"Error (waiting {wait_time}s): {e}")
                 time.sleep(wait_time)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Telegram Gemini Blogger Bot")
-    parser.add_argument("--test", action="store_true", help="테스트 모드 (블로그 업로드 스킵)")
+    parser.add_argument("--test", action="store_true", help="Test mode (skip blog upload)")
     args = parser.parse_args()
 
-    # 환경 변수 확인
+    # Check environment variables
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not bot_token or not chat_id:
-        print("오류: .env 파일에 TELEGRAM_BOT_TOKEN과 TELEGRAM_CHAT_ID를 설정하세요.")
+        print("Error: Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env file.")
         sys.exit(1)
 
-    # 봇 실행
+    # Run bot
     bot = TelegramGeminiBot(
         bot_token=bot_token,
         chat_id=chat_id,
