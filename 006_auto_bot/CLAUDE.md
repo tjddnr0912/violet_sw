@@ -9,38 +9,65 @@ cd 006_auto_bot/001_code
 source .venv/bin/activate
 
 # Daily (즉시 1회)
-python main.py --version v3 --mode once
+python main.py --mode once
 
 # Weekly (주간 요약)
-python main.py --version v3 --mode weekly
+python main.py --mode weekly
 
 # Monthly (월간 요약, --no-cleanup으로 정리 스킵 가능)
-python main.py --version v3 --mode monthly
+python main.py --mode monthly
 
 # Scheduled (일간 07:00, 주간 일요일 09:00, 월간 1일 10:00)
-python main.py --version v3 --mode scheduled
+python main.py --mode scheduled
 
 # Test (저장/업로드 없이)
-python main.py --version v3 --test
+python main.py --test
 
 # Telegram Gemini Bot
 python telegram_gemini_bot.py
+python telegram_gemini_bot.py --test  # Blog 업로드 스킵
 ```
 
 ## Architecture
 
 ```
 001_code/
-├── main.py                 # Entry point (daily/weekly/monthly tasks)
-├── telegram_gemini_bot.py  # Telegram Q&A bot → Blogger
-├── telegram_notifier.py    # Telegram notifications
-├── blogger_uploader.py     # Google Blogger API
-├── v3/                     # Current version
-│   ├── config.py           # RSS sources, schedule times, labels
-│   ├── news_aggregator.py  # RSS parsing
-│   ├── ai_summarizer.py    # Gemini AI summary (daily/weekly/monthly)
-│   └── markdown_writer.py  # File I/O, cleanup
-└── credentials/            # OAuth tokens
+├── main.py                   # 뉴스봇 진입점 (daily/weekly/monthly)
+├── telegram_gemini_bot.py    # Telegram Q&A → Gemini → Blogger
+│
+├── news_bot/                 # 뉴스봇 전용 모듈
+│   ├── __init__.py
+│   ├── config.py             # RSS sources, schedule times, labels
+│   ├── aggregator.py         # RSS 파싱
+│   ├── summarizer.py         # Gemini AI 요약 (daily/weekly/monthly)
+│   └── writer.py             # 마크다운 파일 I/O, cleanup
+│
+├── shared/                   # 공유 모듈
+│   ├── __init__.py
+│   ├── html_utils.py         # HTML 태그 처리, 마크다운 변환
+│   ├── telegram_api.py       # Telegram Bot API 기본 클라이언트
+│   ├── telegram_notifier.py  # Telegram 알림 발송
+│   └── blogger_uploader.py   # Google Blogger API
+│
+├── credentials/              # OAuth tokens
+└── logs/                     # 로그 파일
+```
+
+## Module Dependencies
+
+```
+main.py
+├── news_bot.config
+├── news_bot.aggregator
+├── news_bot.summarizer
+├── news_bot.writer
+├── shared.blogger_uploader
+└── shared.telegram_notifier
+
+telegram_gemini_bot.py
+├── shared.telegram_api (상속)
+├── shared.html_utils
+└── shared.blogger_uploader
 ```
 
 ## Data Flow
@@ -64,7 +91,7 @@ TELEGRAM_BOT_TOKEN=your_token
 TELEGRAM_CHAT_ID=your_id
 ```
 
-## Key Settings (v3/config.py)
+## Key Settings (news_bot/config.py)
 
 | Setting | Value | Description |
 |---------|-------|-------------|
@@ -87,6 +114,15 @@ TELEGRAM_CHAT_ID=your_id
 - `weekly/weekly_summary_YYYYMM*.md` 주간 파일들
 
 연도 전환 처리: 1월→11월(전년), 2월→12월(전년)
+
+## Shared Modules
+
+| Module | Class | Description |
+|--------|-------|-------------|
+| `html_utils.py` | `HtmlUtils` | HTML 태그 수정, Telegram HTML 변환 |
+| `telegram_api.py` | `TelegramClient` | Telegram Bot API 기본 클라이언트 |
+| `telegram_notifier.py` | `TelegramNotifier` | 블로그 알림 발송 (TelegramClient 상속) |
+| `blogger_uploader.py` | `BloggerUploader` | Google Blogger API OAuth2 |
 
 ## Debugging
 
