@@ -12,8 +12,8 @@ Configuration Sections:
 
 from typing import Dict, Any, List, Tuple
 
-# Import Ver2 configuration as base
-from ver2.config_v2 import (
+# Import base configuration (migrated from ver2 for independence)
+from ver3.config_base import (
     AVAILABLE_COINS,
     POPULAR_COINS,
     TIMEFRAME_CONFIG as VER2_TIMEFRAME_CONFIG,

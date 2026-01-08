@@ -5,7 +5,7 @@ This module implements the Portfolio Manager Pattern for coordinating
 multi-coin trading with centralized risk management and parallel analysis.
 
 Key Classes:
-- CoinMonitor: Wrapper for monitoring a single coin using Ver2 strategy
+- CoinMonitor: Wrapper for monitoring a single coin using StrategyV3
 - PortfolioManagerV3: Centralized manager for multi-coin portfolio
 
 Features:
@@ -58,7 +58,7 @@ from lib.core.logger import TradingLogger
 
 class CoinMonitor:
     """
-    Wrapper around Ver3 strategy for monitoring a single coin.
+    Wrapper around StrategyV3 for monitoring a single coin.
 
     Responsibilities:
     - Run strategy analysis for one coin
@@ -73,7 +73,7 @@ class CoinMonitor:
 
         Args:
             coin: Cryptocurrency symbol (e.g., 'BTC', 'ETH')
-            strategy: StrategyV2 instance (shared across monitors)
+            strategy: StrategyV3 instance (shared across monitors)
             executor: LiveExecutorV3 instance (shared across monitors)
             logger: TradingLogger instance
         """

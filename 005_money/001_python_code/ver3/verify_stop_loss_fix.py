@@ -17,7 +17,7 @@ if str(base_path) not in sys.path:
     sys.path.insert(0, str(base_path))
 
 from ver3.config_v3 import get_version_config
-from ver2.strategy_v2 import StrategyV2
+from ver3.strategy_v3 import StrategyV3
 from lib.core.logger import TradingLogger
 
 
@@ -30,7 +30,7 @@ def test_stop_loss_calculation():
     # Initialize
     config = get_version_config()
     logger = TradingLogger()
-    strategy = StrategyV2(config, logger)
+    strategy = StrategyV3(config, logger)
 
     # Test coins
     test_cases = [
