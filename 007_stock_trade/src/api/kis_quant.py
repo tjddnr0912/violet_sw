@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .kis_client import KISClient
+from ..utils import safe_float
 
 
 @dataclass
@@ -152,15 +153,6 @@ class KISQuantClient(KISClient):
         )
 
         output = data.get("output", {})
-
-        # 안전한 float 변환
-        def safe_float(val, default=0.0):
-            try:
-                if val is None or val == "":
-                    return default
-                return float(val)
-            except (ValueError, TypeError):
-                return default
 
         return FinancialRatioExt(
             code=stock_code,

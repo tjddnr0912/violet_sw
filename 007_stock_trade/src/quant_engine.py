@@ -42,6 +42,7 @@ from .strategy.quant import (
 )
 from .telegram import TelegramNotifier, get_notifier
 from .utils import is_trading_day, get_trading_hours, get_market_open_time
+from .quant_modules import EngineState, SchedulePhase, PendingOrder, EngineStateManager, OrderExecutor
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -59,40 +60,6 @@ debug_logger.propagate = False  # 터미널에 출력하지 않음
 # API Rate Limit 설정 (한투 API 제한: 실전 20건/초, 모의 5건/초)
 API_DELAY_VIRTUAL = 0.5    # 모의투자: 500ms (초당 2건, 충분한 여유)
 API_DELAY_REAL = 0.1       # 실전투자: 100ms (초당 ~10건)
-
-
-class EngineState(Enum):
-    """엔진 상태"""
-    STOPPED = "stopped"
-    RUNNING = "running"
-    PAUSED = "paused"
-
-
-class SchedulePhase(Enum):
-    """스케줄 단계"""
-    PRE_MARKET = "장 전"
-    MARKET_OPEN = "장 오픈"
-    MARKET_HOURS = "장중"
-    MARKET_CLOSE = "장 마감"
-    AFTER_MARKET = "장 후"
-
-
-@dataclass
-class PendingOrder:
-    """대기 주문"""
-    code: str
-    name: str
-    order_type: str  # "BUY", "SELL"
-    quantity: int
-    price: float  # 0 = 시장가
-    reason: str
-    stop_loss: float = 0
-    take_profit_1: float = 0
-    take_profit_2: float = 0
-    weight: float = 0  # 목표 비중
-    created_at: datetime = field(default_factory=datetime.now)
-    retry_count: int = 0  # 재시도 횟수
-    last_error: str = ""  # 마지막 에러 메시지
 
 
 @dataclass
@@ -224,202 +191,93 @@ class QuantTradingEngine:
         self.position_sizer = PositionSizer(risk_config)
         self.signal_generator = SignalGenerator(self.client)
 
-        # 상태 관리
-        self.pending_orders: List[PendingOrder] = []
-        self.failed_orders: List[PendingOrder] = []  # 실패한 주문 (다음 장 재시도)
-        self.last_screening_result: Optional[ScreeningResult] = None
-        self.last_screening_date: Optional[datetime] = None
-        self.last_rebalance_date: Optional[datetime] = None  # 마지막 리밸런싱 날짜
-        self.last_rebalance_month: Optional[str] = None      # 마지막 리밸런싱 월 (YYYY-MM)
-        self.daily_trades: List[Dict] = []
-
-        # 동시성 제어
-        self._position_lock = threading.Lock()  # 포지션 접근 보호
-        self._order_lock = threading.Lock()     # 주문 접근 보호
-        self._state_lock = threading.Lock()     # 상태 저장 보호
-        self._screening_lock = threading.Lock() # 스크리닝 중복 실행 방지
-        self._screening_in_progress = False     # 스크리닝 진행 중 플래그
-
-        # 데이터 저장 경로
+        # 상태 관리자
         self.data_dir = Path(__file__).parent.parent / "data" / "quant"
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-
-        # 이전 상태 로드
-        self._load_state()
-
-    # ========== 상태 관리 ==========
-
-    def _load_state(self):
-        """저장된 상태 로드 (손상된 파일 복구 포함)"""
-        state_file = self.data_dir / "engine_state.json"
-        if not state_file.exists():
-            logger.info("저장된 상태 파일 없음. 새로 시작합니다.")
-            return
-
-        try:
-            with open(state_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # 포지션 복원
-            restored_count = 0
-            for pos_data in data.get("positions", []):
-                try:
-                    position = Position(
-                        code=pos_data["code"],
-                        name=pos_data["name"],
-                        entry_price=pos_data["entry_price"],
-                        current_price=pos_data["current_price"],
-                        quantity=pos_data["quantity"],
-                        entry_date=datetime.fromisoformat(pos_data["entry_date"]),
-                        stop_loss=pos_data["stop_loss"],
-                        take_profit_1=pos_data["take_profit_1"],
-                        take_profit_2=pos_data["take_profit_2"],
-                        highest_price=pos_data.get("highest_price", pos_data["entry_price"])
-                    )
-                    self.portfolio.positions[position.code] = position
-                    restored_count += 1
-                except (KeyError, TypeError, ValueError) as e:
-                    logger.warning(f"포지션 복원 실패 ({pos_data.get('code', 'unknown')}): {e}")
-
-            # 마지막 스크리닝 날짜
-            if data.get("last_screening_date"):
-                try:
-                    self.last_screening_date = datetime.fromisoformat(data["last_screening_date"])
-                except ValueError as e:
-                    logger.warning(f"스크리닝 날짜 복원 실패: {e}")
-
-            # 마지막 리밸런싱 날짜
-            if data.get("last_rebalance_date"):
-                try:
-                    self.last_rebalance_date = datetime.fromisoformat(data["last_rebalance_date"])
-                except ValueError as e:
-                    logger.warning(f"리밸런싱 날짜 복원 실패: {e}")
-            if data.get("last_rebalance_month"):
-                self.last_rebalance_month = data["last_rebalance_month"]
-
-            # 실패 주문 복원
-            failed_count = 0
-            for order_data in data.get("failed_orders", []):
-                try:
-                    order = PendingOrder(
-                        code=order_data["code"],
-                        name=order_data["name"],
-                        order_type=order_data["order_type"],
-                        quantity=order_data["quantity"],
-                        price=order_data["price"],
-                        reason=order_data["reason"],
-                        stop_loss=order_data.get("stop_loss", 0),
-                        take_profit_1=order_data.get("take_profit_1", 0),
-                        take_profit_2=order_data.get("take_profit_2", 0),
-                        weight=order_data.get("weight", 0),
-                        created_at=datetime.fromisoformat(order_data["created_at"]),
-                        retry_count=order_data.get("retry_count", 0),
-                        last_error=order_data.get("last_error", "")
-                    )
-                    self.failed_orders.append(order)
-                    failed_count += 1
-                except (KeyError, TypeError, ValueError) as e:
-                    logger.warning(f"실패 주문 복원 실패 ({order_data.get('code', 'unknown')}): {e}")
-
-            logger.info(f"상태 로드 완료: {restored_count}개 포지션, {failed_count}개 실패 주문")
-            if self.last_rebalance_date:
-                logger.info(f"마지막 리밸런싱: {self.last_rebalance_date.strftime('%Y-%m-%d')}")
-
-        except json.JSONDecodeError as e:
-            # JSON 파싱 오류: 파일 손상
-            self._handle_corrupted_state_file(state_file, f"JSON 파싱 오류: {e}")
-
-        except Exception as e:
-            logger.error(f"상태 로드 실패: {e}", exc_info=True)
-            self.notifier.notify_error(
-                "상태 로드 실패",
-                f"이전 거래 정보를 복구하지 못했습니다. 신규 시작됩니다. 오류: {str(e)[:100]}"
-            )
-
-    def _handle_corrupted_state_file(self, state_file: Path, reason: str):
-        """손상된 상태 파일 처리"""
-        backup_file = self.data_dir / f"engine_state.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-
-        try:
-            # 손상된 파일 백업
-            import shutil
-            shutil.copy2(state_file, backup_file)
-            logger.warning(f"손상된 상태 파일을 백업했습니다: {backup_file}")
-
-            # 손상된 원본 파일 삭제
-            state_file.unlink()
-            logger.info("손상된 상태 파일을 삭제했습니다.")
-
-        except Exception as backup_error:
-            logger.error(f"손상된 파일 백업 실패: {backup_error}")
-
-        # 사용자 알림
-        logger.error(f"상태 파일 손상: {reason}")
-        self.notifier.notify_error(
-            "상태 파일 손상",
-            f"이전 거래 정보가 손상되어 신규 시작됩니다.\n백업: {backup_file.name}\n원인: {reason[:100]}"
+        self.state_manager = EngineStateManager(
+            data_dir=self.data_dir,
+            notifier=self.notifier
         )
 
+        # 상태 관리 (state_manager와 동기화)
+        self.pending_orders: List[PendingOrder] = []
+        self.last_screening_result: Optional[ScreeningResult] = None
+        self.daily_trades: List[Dict] = []
+
+        # 이전 상태 로드 (state_manager 사용)
+        self.state_manager.load_state(self.portfolio.positions, Position)
+
+        # 동시성 제어 (state_manager의 lock 사용)
+        self._position_lock = self.state_manager.acquire_position_lock()
+        self._order_lock = self.state_manager.acquire_order_lock()
+        self._screening_lock = self.state_manager.acquire_screening_lock()
+
+        # 주문 실행기
+        self.order_executor = OrderExecutor(
+            client=self.client,
+            portfolio=self.portfolio,
+            notifier=self.notifier,
+            config=self.config,
+            is_virtual=is_virtual
+        )
+
+    # ========== 상태 관리 (state_manager 위임) ==========
+
+    @property
+    def failed_orders(self) -> List[PendingOrder]:
+        """실패한 주문 목록 (state_manager에서 관리)"""
+        return self.state_manager.failed_orders
+
+    @failed_orders.setter
+    def failed_orders(self, value: List[PendingOrder]):
+        """실패한 주문 목록 설정"""
+        self.state_manager.failed_orders = value
+
+    @property
+    def last_screening_date(self) -> Optional[datetime]:
+        """마지막 스크리닝 날짜"""
+        return self.state_manager.last_screening_date
+
+    @last_screening_date.setter
+    def last_screening_date(self, value: Optional[datetime]):
+        """마지막 스크리닝 날짜 설정"""
+        self.state_manager.last_screening_date = value
+
+    @property
+    def last_rebalance_date(self) -> Optional[datetime]:
+        """마지막 리밸런싱 날짜"""
+        return self.state_manager.last_rebalance_date
+
+    @last_rebalance_date.setter
+    def last_rebalance_date(self, value: Optional[datetime]):
+        """마지막 리밸런싱 날짜 설정"""
+        self.state_manager.last_rebalance_date = value
+
+    @property
+    def last_rebalance_month(self) -> Optional[str]:
+        """마지막 리밸런싱 월 (YYYY-MM)"""
+        return self.state_manager.last_rebalance_month
+
+    @last_rebalance_month.setter
+    def last_rebalance_month(self, value: Optional[str]):
+        """마지막 리밸런싱 월 설정"""
+        self.state_manager.last_rebalance_month = value
+
+    @property
+    def _screening_in_progress(self) -> bool:
+        """스크리닝 진행 중 여부"""
+        return self.state_manager.screening_in_progress
+
+    @_screening_in_progress.setter
+    def _screening_in_progress(self, value: bool):
+        """스크리닝 진행 중 상태 설정"""
+        self.state_manager.screening_in_progress = value
+
     def _save_state(self):
-        """현재 상태 저장 (Thread-safe, Atomic write)"""
-        state_file = self.data_dir / "engine_state.json"
-        temp_file = self.data_dir / "engine_state.json.tmp"
-
-        with self._state_lock:
-            try:
-                # 포지션 데이터 수집 (position lock 보호)
-                with self._position_lock:
-                    positions_data = []
-                    for code, pos in self.portfolio.positions.items():
-                        positions_data.append({
-                            "code": pos.code,
-                            "name": pos.name,
-                            "entry_price": pos.entry_price,
-                            "current_price": pos.current_price,
-                            "quantity": pos.quantity,
-                            "entry_date": pos.entry_date.isoformat(),
-                            "stop_loss": pos.stop_loss,
-                            "take_profit_1": pos.take_profit_1,
-                            "take_profit_2": pos.take_profit_2,
-                            "highest_price": pos.highest_price
-                        })
-
-                # 실패 주문 데이터 수집
-                failed_orders_data = []
-                for order in self.failed_orders:
-                    failed_orders_data.append({
-                        "code": order.code,
-                        "name": order.name,
-                        "order_type": order.order_type,
-                        "quantity": order.quantity,
-                        "price": order.price,
-                        "reason": order.reason,
-                        "stop_loss": order.stop_loss,
-                        "take_profit_1": order.take_profit_1,
-                        "take_profit_2": order.take_profit_2,
-                        "weight": order.weight,
-                        "created_at": order.created_at.isoformat(),
-                        "retry_count": order.retry_count,
-                        "last_error": order.last_error
-                    })
-
-                data = {
-                    "positions": positions_data,
-                    "failed_orders": failed_orders_data,  # 실패 주문 저장
-                    "last_screening_date": self.last_screening_date.isoformat() if self.last_screening_date else None,
-                    "last_rebalance_date": self.last_rebalance_date.isoformat() if self.last_rebalance_date else None,
-                    "last_rebalance_month": self.last_rebalance_month,
-                    "updated_at": datetime.now().isoformat()
-                }
-
-                # Atomic write: 임시 파일에 쓰고 이름 변경
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-
-                os.replace(str(temp_file), str(state_file))  # atomic on POSIX
-
-            except Exception as e:
-                logger.error(f"상태 저장 실패: {e}", exc_info=True)
+        """현재 상태 저장 (state_manager 위임)"""
+        self.state_manager.save_state(
+            portfolio_positions=self.portfolio.positions,
+            failed_orders=self.failed_orders
+        )
 
     # ========== 시간/스케줄 관리 ==========
 
@@ -610,586 +468,42 @@ class QuantTradingEngine:
         except Exception as e:
             logger.error(f"스크리닝 알림 실패: {e}")
 
-    # ========== 리밸런싱 주문 생성 ==========
+    # ========== 리밸런싱 주문 생성/실행 (order_executor 위임) ==========
 
     def generate_rebalance_orders(self) -> List[PendingOrder]:
-        """
-        리밸런싱 주문 생성
-
-        스크리닝 결과 기반으로 매수/매도 주문 생성
-        """
-        if not self.last_screening_result:
-            logger.warning("스크리닝 결과 없음 - 스크리닝 먼저 실행 필요")
-            return []
-
-        orders = []
-        result = self.last_screening_result
-
-        # 현재 보유 종목
-        current_holdings = set(self.portfolio.positions.keys())
-
-        # 목표 종목
-        target_stocks = {s.code: s for s in result.selected_stocks}
-        target_holdings = set(target_stocks.keys())
-
-        # 매도 대상: 보유 중이지만 목표에 없는 종목
-        to_sell = current_holdings - target_holdings
-
-        # 매수 대상: 목표에 있지만 미보유 종목
-        to_buy = target_holdings - current_holdings
-
-        logger.info(f"리밸런싱: 매도 {len(to_sell)}개, 매수 {len(to_buy)}개")
-
-        # 매도 주문 생성
-        for code in to_sell:
-            position = self.portfolio.positions.get(code)
-            if position:
-                orders.append(PendingOrder(
-                    code=code,
-                    name=position.name,
-                    order_type="SELL",
-                    quantity=position.quantity,
-                    price=0,  # 시장가
-                    reason="순위권 이탈 - 리밸런싱 매도"
-                ))
-
-        # 매수 주문 생성
-        available_capital = self.portfolio.cash * 0.95  # 5% 여유
-
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-
-        for idx, code in enumerate(to_buy):
-            if idx > 0:
-                time.sleep(api_delay)
-
-            stock = target_stocks[code]
-
-            # 포지션 사이징 (API 재시도 로직 포함)
-            try:
-                # 가격 조회 (최대 3회 재시도, 1초 간격)
-                current_price = None
-                max_retries = 3
-                retry_delay = 1.0
-
-                for attempt in range(max_retries):
-                    try:
-                        price_info = self.client.get_stock_price(code)
-                        current_price = price_info.price
-                        break  # 성공 시 루프 탈출
-                    except Exception as retry_error:
-                        if attempt < max_retries - 1:
-                            error_msg = str(retry_error)
-                            if "500" in error_msg or "서버" in error_msg:
-                                logger.warning(
-                                    f"가격 조회 재시도 ({code}): {attempt + 1}/{max_retries} - {retry_error}"
-                                )
-                                import time
-                                time.sleep(retry_delay)
-                                retry_delay *= 1.5  # 백오프
-                            else:
-                                raise  # 500 에러가 아니면 즉시 재발생
-                        else:
-                            raise  # 최대 재시도 횟수 초과
-
-                if current_price is None:
-                    error_msg = "가격 조회 재시도 모두 실패"
-                    logger.error(f"가격 조회 최종 실패 ({code}): {error_msg}")
-                    # 실패 주문으로 기록 (다음 장 재시도)
-                    self.failed_orders.append(PendingOrder(
-                        code=code,
-                        name=stock.name,
-                        order_type="BUY",
-                        quantity=0,  # 나중에 다시 계산
-                        price=0,
-                        reason=f"리밸런싱 매수 (순위 {stock.rank}위)",
-                        retry_count=0,
-                        last_error=error_msg
-                    ))
-                    continue
-
-                # 목표 비중 계산
-                weight = min(
-                    self.config.max_single_weight,
-                    1.0 / self.config.target_stock_count
-                )
-
-                # 투자금액
-                invest_amount = self.config.total_capital * weight
-                invest_amount = min(invest_amount, available_capital / len(to_buy))
-
-                quantity = int(invest_amount / current_price)
-
-                if quantity > 0:
-                    # 손절/익절가 계산
-                    stop_loss = StopLossManager.calculate_fixed_stop(
-                        current_price,
-                        self.config.stop_loss_pct
-                    )
-                    tp1, tp2 = TakeProfitManager.calculate_targets(current_price, stop_loss)
-
-                    orders.append(PendingOrder(
-                        code=code,
-                        name=stock.name,
-                        order_type="BUY",
-                        quantity=quantity,
-                        price=0,  # 시장가
-                        reason=f"리밸런싱 매수 (순위 {stock.rank}위, 점수 {stock.composite_score:.1f})",
-                        stop_loss=stop_loss,
-                        take_profit_1=tp1,
-                        take_profit_2=tp2,
-                        weight=weight
-                    ))
-
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"주문 생성 실패 ({code}): {e}", exc_info=True)
-                # 실패 주문으로 기록 (다음 장 재시도)
-                self.failed_orders.append(PendingOrder(
-                    code=code,
-                    name=stock.name,
-                    order_type="BUY",
-                    quantity=0,  # 나중에 다시 계산
-                    price=0,
-                    reason=f"리밸런싱 매수 (순위 {stock.rank}위)",
-                    retry_count=0,
-                    last_error=error_msg[:200]  # 에러 메시지 제한
-                ))
-
-        # 실패 주문이 있으면 저장 및 알림
-        if self.failed_orders:
-            failed_names = [f"• {o.name} ({o.code})" for o in self.failed_orders[-5:]]  # 최근 5개
-            failed_text = "\n".join(failed_names)
-            if len(self.failed_orders) > 5:
-                failed_text += f"\n... 외 {len(self.failed_orders) - 5}개"
-
-            self.notifier.send_message(
-                f"⚠️ <b>주문 생성 실패</b>\n\n"
-                f"실패: {len(self.failed_orders)}건\n"
-                f"다음 장 09:00 재시도 예정\n\n"
-                f"<b>실패 종목:</b>\n{failed_text}"
-            )
-            logger.info(f"실패 주문 {len(self.failed_orders)}개 - 다음 장 재시도 예정")
-            self._save_state()
-
-        self.pending_orders = orders
-        return orders
-
-    # ========== 주문 실행 ==========
-
-    def retry_failed_orders(self) -> int:
-        """
-        실패 주문 재시도
-
-        장 시작 시(09:00) 호출, 이전에 실패한 주문을 다시 시도
-        Returns: 성공한 주문 수
-        """
-        if not self.failed_orders:
-            return 0
-
-        logger.info(f"=" * 60)
-        logger.info(f"실패 주문 재시도: {len(self.failed_orders)}건")
-        logger.info(f"=" * 60)
-
-        # 텔레그램 알림
-        self.notifier.send_message(
-            f"🔄 <b>실패 주문 재시도</b>\n\n"
-            f"• 재시도 대상: {len(self.failed_orders)}건\n"
-            f"• 최대 재시도: 3회"
+        """리밸런싱 주문 생성 (order_executor 위임)"""
+        return self.order_executor.generate_rebalance_orders(
+            screening_result=self.last_screening_result,
+            pending_orders=self.pending_orders,
+            failed_orders=self.failed_orders,
+            stop_loss_manager=StopLossManager,
+            take_profit_manager=TakeProfitManager,
+            save_state_callback=self._save_state
         )
 
-        success_count = 0
-        still_failed = []
-        permanently_failed = []  # 최대 재시도 초과로 포기한 주문
-        max_total_retries = 3  # 최대 재시도 횟수
-
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-
-        for i, order in enumerate(self.failed_orders):
-            if i > 0:
-                time.sleep(api_delay)
-
-            # 이미 보유 중인 종목은 스킵
-            if order.code in self.portfolio.positions:
-                logger.info(f"이미 보유 중 - 재시도 스킵: {order.name}")
-                continue
-
-            # 최대 재시도 횟수 초과
-            if order.retry_count >= max_total_retries:
-                logger.warning(f"최대 재시도 초과 ({order.name}): {order.retry_count}회")
-                permanently_failed.append(order)
-                continue
-
-            order.retry_count += 1
-            logger.info(f"재시도 {order.retry_count}/{max_total_retries}: {order.name} ({order.code})")
-
-            try:
-                # 현재가 조회 (재시도 로직 포함)
-                current_price = None
-                for attempt in range(3):
-                    try:
-                        price_info = self.client.get_stock_price(order.code)
-                        current_price = price_info.price
-                        break
-                    except Exception as e:
-                        if attempt < 2:
-                            logger.warning(f"가격 조회 재시도 ({order.code}): {e}")
-                            time.sleep(1.5 ** attempt)
-                        else:
-                            raise
-
-                if current_price is None:
-                    raise Exception("가격 조회 실패")
-
-                # 수량 재계산 (처음 실패 시 quantity가 0일 수 있음)
-                quantity = order.quantity
-                if quantity <= 0:
-                    weight = 1.0 / self.config.target_stock_count
-                    invest_amount = self.config.total_capital * weight
-                    quantity = int(invest_amount / current_price)
-
-                if quantity <= 0:
-                    logger.warning(f"수량 계산 실패 ({order.name}): 가격 {current_price}")
-                    continue
-
-                # 주문 실행
-                if self.config.dry_run:
-                    logger.info(f"[DRY RUN] 재시도 매수: {order.name} {quantity}주 @ {current_price:,}원")
-                    order_no = f"RETRY_{datetime.now().strftime('%H%M%S')}"
-                else:
-                    result = self.client.buy_stock(order.code, quantity, price=0, order_type="01")
-                    if not result.success:
-                        raise Exception(f"매수 실패: {result.message}")
-                    order_no = result.order_no
-
-                # 포지션 추가
-                stop_loss = StopLossManager.calculate_fixed_stop(current_price, self.config.stop_loss_pct)
-                tp1, tp2 = TakeProfitManager.calculate_targets(current_price, stop_loss)
-
-                position = Position(
-                    code=order.code,
-                    name=order.name,
-                    entry_price=current_price,
-                    current_price=current_price,
-                    quantity=quantity,
-                    entry_date=datetime.now(),
-                    stop_loss=stop_loss,
-                    take_profit_1=tp1,
-                    take_profit_2=tp2,
-                    highest_price=current_price
-                )
-                self.portfolio.add_position(position)
-
-                # 거래 기록
-                self.daily_trades.append({
-                    "type": "BUY",
-                    "code": order.code,
-                    "name": order.name,
-                    "quantity": quantity,
-                    "price": current_price,
-                    "order_no": order_no,
-                    "reason": f"[재시도] {order.reason}",
-                    "timestamp": datetime.now().isoformat()
-                })
-
-                logger.info(f"매수 완료 (재시도): {order.name} {quantity}주 @ {current_price:,}원")
-                self.notifier.notify_buy(order.code, order.name, quantity, current_price, order.reason)
-                success_count += 1
-
-            except Exception as e:
-                order.last_error = str(e)[:200]
-                logger.error(f"재시도 실패 ({order.name}): {e}")
-
-                # 아직 재시도 가능하면 다시 저장
-                if order.retry_count < max_total_retries:
-                    still_failed.append(order)
-
-        # 아직 재시도 가능한 주문만 유지
-        self.failed_orders = still_failed
-        self._save_state()
-
-        # 결과 알림
-        if success_count > 0 or still_failed:
-            self.notifier.send_message(
-                f"✅ <b>재시도 결과</b>\n\n"
-                f"• 성공: {success_count}건\n"
-                f"• 실패: {len(still_failed)}건"
-            )
-
-        # 영구 실패 (최대 재시도 초과) 알림
-        if permanently_failed:
-            failed_names = [f"• {o.name} ({o.code})" for o in permanently_failed]
-            failed_text = "\n".join(failed_names)
-
-            self.notifier.send_message(
-                f"🚫 <b>매수 포기 (재시도 초과)</b>\n\n"
-                f"다음 종목은 3회 재시도 후 매수 포기되었습니다:\n"
-                f"{failed_text}\n\n"
-                f"다음 리밸런싱까지 편입되지 않습니다."
-            )
-            logger.warning(f"매수 포기 (재시도 초과): {[o.name for o in permanently_failed]}")
-
-        logger.info(f"재시도 완료: 성공 {success_count}건, 실패 {len(still_failed)}건, 포기 {len(permanently_failed)}건")
-        return success_count
+    def retry_failed_orders(self) -> int:
+        """실패 주문 재시도 (order_executor 위임)"""
+        return self.order_executor.retry_failed_orders(
+            failed_orders=self.failed_orders,
+            daily_trades=self.daily_trades,
+            position_class=Position,
+            stop_loss_manager=StopLossManager,
+            take_profit_manager=TakeProfitManager,
+            save_state_callback=self._save_state
+        )
 
     def execute_pending_orders(self):
-        """
-        대기 중인 주문 실행
-
-        장 시작 시(09:00) 호출
-        """
-        # 1. 먼저 실패 주문 재시도
-        if self.failed_orders:
-            self.retry_failed_orders()
-
-        # 2. 대기 주문 스냅샷 (Lock 보호)
-        with self._order_lock:
-            if not self.pending_orders:
-                logger.info("대기 주문 없음")
-                return
-            # 복사본으로 작업
-            orders_to_execute = list(self.pending_orders)
-
-        logger.info(f"대기 주문 실행: {len(orders_to_execute)}건")
-
-        # 매도 먼저 실행 (자금 확보)
-        sell_orders = [o for o in orders_to_execute if o.order_type == "SELL"]
-        buy_orders = [o for o in orders_to_execute if o.order_type == "BUY"]
-
-        executed = []
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-
-        for i, order in enumerate(sell_orders):
-            if i > 0:
-                time.sleep(api_delay)
-            if self._execute_order(order):
-                executed.append(order)
-
-        # 잠시 대기 (주문 체결 시간)
-        if sell_orders:
-            time.sleep(3)
-
-        for i, order in enumerate(buy_orders):
-            if i > 0:
-                time.sleep(api_delay)
-            if self._execute_order(order):
-                executed.append(order)
-
-        # 대기 주문 업데이트 (Lock 보호)
-        with self._order_lock:
-            self.pending_orders = [o for o in self.pending_orders if o not in executed]
-
-        # 상태 저장
-        self._save_state()
-
-        # 리밸런싱 결과 알림
-        if executed:
-            self._notify_rebalance_result(executed)
-
-        # 최종 보유 종목 미달 알림
-        self._check_position_shortage()
-
-    def _execute_order(self, order: PendingOrder) -> bool:
-        """개별 주문 실행"""
-        try:
-            if order.order_type == "SELL":
-                return self._execute_sell(order)
-            else:
-                return self._execute_buy(order)
-        except Exception as e:
-            logger.error(f"주문 실행 실패 ({order.code}): {e}", exc_info=True)
-            return False
-
-    def _execute_buy(self, order: PendingOrder) -> bool:
-        """매수 주문 실행"""
-        try:
-            price_info = self.client.get_stock_price(order.code)
-            current_price = price_info.price
-
-            if self.config.dry_run:
-                logger.info(f"[DRY RUN] 매수: {order.name} {order.quantity}주 @ {current_price:,}원")
-                order_no = f"DRY_{datetime.now().strftime('%H%M%S')}"
-            else:
-                result = self.client.buy_stock(order.code, order.quantity, price=0, order_type="01")
-                if not result.success:
-                    logger.error(f"매수 실패: {result.message}")
-                    return False
-                order_no = result.order_no
-
-            # 포지션 추가
-            position = Position(
-                code=order.code,
-                name=order.name,
-                entry_price=current_price,
-                current_price=current_price,
-                quantity=order.quantity,
-                entry_date=datetime.now(),
-                stop_loss=order.stop_loss or StopLossManager.calculate_fixed_stop(current_price, self.config.stop_loss_pct),
-                take_profit_1=order.take_profit_1,
-                take_profit_2=order.take_profit_2,
-                highest_price=current_price
-            )
-            self.portfolio.add_position(position)
-
-            # 거래 기록
-            self.daily_trades.append({
-                "type": "BUY",
-                "code": order.code,
-                "name": order.name,
-                "quantity": order.quantity,
-                "price": current_price,
-                "order_no": order_no,
-                "reason": order.reason,
-                "timestamp": datetime.now().isoformat()
-            })
-
-            logger.info(f"매수 완료: {order.name} {order.quantity}주 @ {current_price:,}원")
-
-            # 알림
-            self.notifier.notify_buy(
-                stock_name=order.name,
-                stock_code=order.code,
-                qty=order.quantity,
-                price=current_price,
-                order_no=order_no
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"매수 실행 오류: {e}", exc_info=True)
-            return False
-
-    def _execute_sell(self, order: PendingOrder) -> bool:
-        """매도 주문 실행"""
-        if order.code not in self.portfolio.positions:
-            return False
-
-        try:
-            position = self.portfolio.positions[order.code]
-            price_info = self.client.get_stock_price(order.code)
-            current_price = price_info.price
-
-            if self.config.dry_run:
-                logger.info(f"[DRY RUN] 매도: {order.name} {order.quantity}주 @ {current_price:,}원")
-                order_no = f"DRY_{datetime.now().strftime('%H%M%S')}"
-            else:
-                result = self.client.sell_stock(order.code, order.quantity, price=0, order_type="01")
-                if not result.success:
-                    logger.error(f"매도 실패: {result.message}")
-                    return False
-                order_no = result.order_no
-
-            # 손익 계산
-            pnl = (current_price - position.entry_price) * order.quantity
-            pnl_pct = (current_price - position.entry_price) / position.entry_price * 100
-
-            # 포지션 제거
-            self.portfolio.remove_position(order.code, current_price)
-
-            # 거래 기록
-            self.daily_trades.append({
-                "type": "SELL",
-                "code": order.code,
-                "name": order.name,
-                "quantity": order.quantity,
-                "price": current_price,
-                "pnl": pnl,
-                "pnl_pct": pnl_pct,
-                "order_no": order_no,
-                "reason": order.reason,
-                "timestamp": datetime.now().isoformat()
-            })
-
-            pnl_str = f"+{pnl:,.0f}" if pnl >= 0 else f"{pnl:,.0f}"
-            logger.info(f"매도 완료: {order.name} {order.quantity}주 @ {current_price:,}원 (손익: {pnl_str}원)")
-
-            # 알림
-            self.notifier.notify_sell(
-                stock_name=order.name,
-                stock_code=order.code,
-                qty=order.quantity,
-                price=current_price,
-                order_no=order_no
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"매도 실행 오류: {e}", exc_info=True)
-            return False
-
-    def _notify_rebalance_result(self, executed_orders: List[PendingOrder]):
-        """리밸런싱 결과 알림"""
-        try:
-            buys = [o for o in executed_orders if o.order_type == "BUY"]
-            sells = [o for o in executed_orders if o.order_type == "SELL"]
-
-            # 포트폴리오 현재 가치
-            snapshot = self.portfolio.get_snapshot()
-            portfolio_value = int(snapshot.total_value)
-
-            # 매도 종목 정보 (손익률 포함)
-            sell_list = []
-            for o in sells:
-                pos = self.portfolio.positions.get(o.code)
-                pnl_pct = 0
-                if pos and pos.entry_price > 0:
-                    pnl_pct = (o.price - pos.entry_price) / pos.entry_price * 100
-                sell_list.append({
-                    'name': o.name,
-                    'pnl_pct': pnl_pct
-                })
-
-            # 매수 종목 정보 (비중 포함)
-            buy_list = []
-            for o in buys:
-                buy_list.append({
-                    'name': o.name,
-                    'weight': o.weight
-                })
-
-            # 통합된 알림 메서드 사용
-            self.notifier.notify_rebalance(
-                sells=sell_list,
-                buys=buy_list,
-                portfolio_value=portfolio_value
-            )
-
-        except Exception as e:
-            logger.error(f"리밸런싱 알림 실패: {e}")
-
-    def _check_position_shortage(self):
-        """최종 보유 종목 수 미달 체크 및 알림"""
-        try:
-            target_count = self.config.target_stock_count
-            current_count = len(self.portfolio.positions)
-            failed_count = len(self.failed_orders)
-
-            # 미달이면 알림
-            if current_count < target_count:
-                shortage = target_count - current_count
-
-                # 원인 분석
-                reasons = []
-                if failed_count > 0:
-                    reasons.append(f"재시도 대기: {failed_count}건")
-                if shortage > failed_count:
-                    reasons.append(f"스크리닝 미달: {shortage - failed_count}건")
-
-                reason_text = " / ".join(reasons) if reasons else "알 수 없음"
-
-                self.notifier.send_message(
-                    f"📉 <b>포트폴리오 목표 미달</b>\n\n"
-                    f"목표: {target_count}개\n"
-                    f"현재 보유: {current_count}개\n"
-                    f"부족: {shortage}개\n\n"
-                    f"<b>원인:</b> {reason_text}\n\n"
-                    f"다음 리밸런싱 시 자동으로 보충 시도됩니다."
-                )
-                logger.warning(f"포트폴리오 목표 미달: {target_count}개 목표 중 {current_count}개 보유")
-
-        except Exception as e:
-            logger.error(f"포지션 미달 체크 오류: {e}")
+        """대기 중인 주문 실행 (order_executor 위임)"""
+        self.order_executor.execute_pending_orders(
+            pending_orders=self.pending_orders,
+            failed_orders=self.failed_orders,
+            daily_trades=self.daily_trades,
+            order_lock=self._order_lock,
+            position_class=Position,
+            stop_loss_manager=StopLossManager,
+            take_profit_manager=TakeProfitManager,
+            save_state_callback=self._save_state
+        )
 
     # ========== 장중 모니터링 ==========
 
