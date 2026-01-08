@@ -5,6 +5,7 @@
 ```
 001_python_code/ver3/
 ├── __init__.py                    # 버전 메타데이터, get_version_instance()
+├── config_base.py                 # 기본 설정 (공통 상수)
 ├── config_v3.py                   # 설정값 (400줄)
 ├── trading_bot_v3.py              # 메인 오케스트레이터 (815줄)
 ├── strategy_v3.py                 # 매매 전략 (908줄)
@@ -251,11 +252,14 @@ class ConfigManager:
 ### lib/core/logger.py (412줄)
 
 ```python
-def setup_logger(name: str, log_file: str, level: int) -> logging.Logger
-    # 로거 설정 및 반환
+class TradingLogger:
+    # 트레이딩 봇 전용 로거
+    def __init__(self, name: str, version: str = 'v3')
+    def info(self, msg: str)
+    def error(self, msg: str)
 
-class ColoredFormatter:
-    # 컬러 로그 포매터
+class MarkdownTransactionLogger:
+    # 마크다운 형식 거래 기록
 ```
 
 ### lib/gui/indicator_calculator.py (318줄)
