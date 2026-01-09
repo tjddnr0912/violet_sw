@@ -199,7 +199,9 @@ Layer 2: ThreadPoolExecutor (60s/coin, 120s total)
     ↓  + Non-blocking shutdown (wait=False, cancel_futures=True)
 Layer 3: Analysis Cycle Warning (180s)
     ↓
-Layer 4: Watchdog (600s → kill & restart)
+Layer 4: Consecutive Timeout (3회 연속 → 자동 재시작)
+    ↓
+Layer 5: Watchdog (600s → kill & restart)
 ```
 
 ### Timeout 설정값
@@ -210,13 +212,15 @@ Layer 4: Watchdog (600s → kill & restart)
 | API (Private) | `bithumb_api.py` | connect=5s, read=15s |
 | ThreadPool (per coin) | `portfolio_manager_v3.py` | 60s |
 | ThreadPool (total) | `portfolio_manager_v3.py` | 120s |
+| Consecutive Timeout | `trading_bot_v3.py` | 3회 |
 | Telegram | `telegram_notifier.py` | connect=5s, read=10s |
 | Watchdog | `run_v3_watchdog.sh` | 600s |
 
 ### Timeout 발생 시 동작
 
 - **API Timeout**: 해당 요청 실패, 재시도 로직
-- **ThreadPool Timeout**: 해당 코인 HOLD 처리, `market_regime='timeout'`, **즉시 다음 사이클 진행** (non-blocking shutdown)
+- **ThreadPool Timeout**: 해당 코인 HOLD 처리, 이전 유효 레짐 보존 (`REGIME (⏱)` 표시), 즉시 다음 사이클 진행
+- **Consecutive Timeout (3회)**: 🚨 Telegram 알림 + 봇 종료 → Watchdog 재시작
 - **Telegram Timeout**: 메시지 드롭, 봇 동작 영향 없음
 - **Watchdog Timeout**: 봇 강제 종료 후 재시작
 

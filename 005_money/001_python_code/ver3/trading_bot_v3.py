@@ -135,6 +135,10 @@ class TradingBotV3(VersionInterface):
         # Regime change tracking (for telegram alerts)
         self._previous_regime = None  # Track previous regime for change detection
 
+        # Consecutive timeout tracking (for auto-restart)
+        self._consecutive_timeout_count = 0
+        self._max_consecutive_timeouts = 3  # 3회 연속 timeout 시 자동 재시작 (15분)
+
         self.logger.logger.info("=" * 60)
         self.logger.logger.info(f"Trading Bot V3 Initialized")
         self.logger.logger.info(f"  Version: {self.VERSION_NAME}")
@@ -261,21 +265,58 @@ class TradingBotV3(VersionInterface):
                     # 1. Analyze all coins in parallel
                     results = self.portfolio_manager.analyze_all()
 
-                    # Check for timeout results
+                    # Check for timeout results (now using timeout_occurred flag)
                     timeout_coins = [
                         coin for coin, result in results.items()
-                        if result.get('market_regime') == 'timeout'
+                        if result.get('timeout_occurred', False)
                     ]
+
+                    # Check for consecutive all-timeout and trigger auto-restart
                     if timeout_coins:
                         self.logger.logger.warning(f"Analysis timeout occurred for: {timeout_coins}")
-                        try:
-                            self.telegram.send_message(
-                                f"⚠️ Analysis Timeout\n"
-                                f"Coins: {', '.join(timeout_coins)}\n"
-                                f"Bot continues with HOLD for these coins."
+
+                        # Check if ALL coins timed out
+                        all_timeout = len(timeout_coins) == len(results)
+                        if all_timeout:
+                            self._consecutive_timeout_count += 1
+                            self.logger.logger.warning(
+                                f"All coins timed out ({self._consecutive_timeout_count}/{self._max_consecutive_timeouts})"
                             )
-                        except Exception:
-                            pass  # Don't let telegram failure block the cycle
+
+                            if self._consecutive_timeout_count >= self._max_consecutive_timeouts:
+                                self.logger.logger.error(
+                                    f"Consecutive timeout limit reached. Triggering restart..."
+                                )
+                                try:
+                                    self.telegram.send_message(
+                                        "🚨 *연속 Timeout 감지*\n\n"
+                                        f"연속 {self._consecutive_timeout_count}회 모든 코인 Timeout.\n"
+                                        "자동 재시작을 트리거합니다.",
+                                        parse_mode='Markdown'
+                                    )
+                                except Exception:
+                                    pass
+                                # Exit with non-zero code for watchdog to restart
+                                self.running = False
+                                import sys
+                                sys.exit(1)
+                        else:
+                            # 일부만 timeout - 단건 알림만 전송
+                            try:
+                                self.telegram.send_message(
+                                    f"⚠️ Analysis Timeout\n"
+                                    f"Coins: {', '.join(timeout_coins)}\n"
+                                    f"Bot continues with HOLD for these coins."
+                                )
+                            except Exception:
+                                pass  # Don't let telegram failure block the cycle
+                    else:
+                        # 정상 분석 시 카운터 리셋
+                        if self._consecutive_timeout_count > 0:
+                            self.logger.logger.info(
+                                f"Timeout recovery: consecutive count reset (was {self._consecutive_timeout_count})"
+                            )
+                        self._consecutive_timeout_count = 0
 
                     # 2. Check for regime changes and send alerts
                     self._check_and_send_regime_change_alert(results)
@@ -393,6 +434,9 @@ class TradingBotV3(VersionInterface):
                 position = data.get('position', {})
 
                 regime = analysis.get('market_regime', '?')
+                timeout_flag = analysis.get('timeout_occurred', False)
+                # Timeout 발생 시 (⏱) 표시 추가
+                regime_suffix = " (⏱)" if timeout_flag else ""
                 score = analysis.get('entry_score', 0)
                 action = analysis.get('action', 'HOLD')
 
@@ -404,7 +448,7 @@ class TradingBotV3(VersionInterface):
                     pos_info = f" | Position: {entry_price:,.0f} KRW | P&L: {pnl:+,.0f}"
 
                 self.logger.logger.info(
-                    f"  [{coin}] {regime.upper():8s} | Score: {score}/4 | "
+                    f"  [{coin}] {regime.upper()}{regime_suffix} | Score: {score}/4 | "
                     f"Action: {action:4s}{pos_info}"
                 )
 
@@ -785,8 +829,13 @@ Configuration:
 
             analysis = analysis_results[reference_coin]
             current_regime = analysis.get('market_regime', 'unknown')
+            timeout_occurred = analysis.get('timeout_occurred', False)
             regime_metadata = analysis.get('regime_metadata', {})
             ema_diff_pct = regime_metadata.get('ema_diff_pct', 0.0)
+
+            # Skip if timeout occurred (using last valid regime, but actual analysis failed)
+            if timeout_occurred:
+                return
 
             # Skip if regime is unknown, timeout, or error (these are not real market regimes)
             if current_regime in ('unknown', 'timeout', 'error'):
