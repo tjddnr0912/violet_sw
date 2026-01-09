@@ -263,9 +263,9 @@ from ver3.live_executor_v3 import LiveExecutorV3
 
 **5. 분석 Timeout 발생**
 
-로그에서 `market_regime='timeout'` 또는 `Analysis timeout` 메시지 확인:
+로그에서 `timeout_occurred` 또는 `Analysis timeout` 메시지 확인:
 ```bash
-grep -i "timeout" logs/ver3_cli_*.log
+grep -i "timeout\|⏱" logs/ver3_cli_*.log
 ```
 
 Timeout 발생 원인:
@@ -273,10 +273,15 @@ Timeout 발생 원인:
 - Mac sleep 복귀 시 네트워크 재연결 지연
 - 서버 과부하
 
-해결 방법:
-- 자동 복구됨 (해당 코인만 HOLD 처리)
-- 반복 발생 시 네트워크 상태 확인
-- Telegram으로 `⚠️ Analysis Timeout` 알림 수신
+Timeout 발생 시 동작:
+- 이전 유효 레짐 보존 (`_last_valid_regimes`)
+- 로그/텔레그램에 `REGIME (⏱)` 형식 표시
+- 해당 코인은 HOLD 처리
+
+**연속 Timeout 자동 복구:**
+- 3회 연속 모든 코인 Timeout 시 자동 재시작 트리거
+- Telegram으로 `🚨 연속 Timeout 감지` 알림 수신
+- Watchdog이 봇 자동 재시작
 
 ## Timeout 설정
 
@@ -295,7 +300,12 @@ Layer 2: ThreadPoolExecutor Timeout
 Layer 3: Analysis Cycle Warning
 └── Threshold: 180 seconds
 
-Layer 4: Watchdog
+Layer 4: Consecutive Timeout Auto-Restart
+├── Threshold: 3회 연속 (모든 코인 timeout)
+├── 동작: 봇 종료 (exit code 1) → Watchdog 재시작
+└── 알림: 🚨 연속 Timeout 감지 (Telegram)
+
+Layer 5: Watchdog
 └── Hang detection: 600 seconds
 ```
 
@@ -314,6 +324,7 @@ Timeout 발생 시 `executor.shutdown(wait=False, cancel_futures=True)` 호출:
 | `lib/api/bithumb_api.py` | `API_TIMEOUT_PRIVATE` | `(5, 15)` |
 | `ver3/portfolio_manager_v3.py` | `ANALYSIS_TIMEOUT_PER_COIN` | `60` |
 | `ver3/portfolio_manager_v3.py` | `TOTAL_ANALYSIS_TIMEOUT` | `120` |
+| `ver3/trading_bot_v3.py` | `_max_consecutive_timeouts` | `3` |
 | `lib/core/telegram_notifier.py` | `TELEGRAM_TIMEOUT` | `(5, 10)` |
 
 ### Timeout 수정 시

@@ -209,6 +209,7 @@ class PortfolioManagerV3:
         # Portfolio state
         self.last_results = {}
         self.last_decisions = []
+        self._last_valid_regimes: Dict[str, str] = {}  # 코인별 마지막 유효 레짐 (timeout 시 보존용)
 
         # State file for last executed actions
         log_dir = config.get('LOGGING_CONFIG', {}).get('log_dir', 'logs')
@@ -297,14 +298,21 @@ class PortfolioManagerV3:
                         self.logger.logger.debug(
                             f"Analysis complete for {coin}: {action} (score {score}/4)"
                         )
+                        # 정상 분석 시 유효 레짐 저장
+                        regime = results[coin].get('market_regime', 'unknown')
+                        if regime not in ('unknown', 'timeout', 'error'):
+                            self._last_valid_regimes[coin] = regime
                     except TimeoutError:
                         self.logger.logger.error(f"Analysis timeout for {coin} (>{ANALYSIS_TIMEOUT_PER_COIN}s)")
                         timeout_occurred = True
+                        # 이전 유효 레짐 사용 (없으면 'unknown')
+                        last_valid_regime = self._last_valid_regimes.get(coin, 'unknown')
                         results[coin] = {
                             'action': 'HOLD',
                             'signal_strength': 0.0,
                             'reason': f'Analysis timeout (>{ANALYSIS_TIMEOUT_PER_COIN}s)',
-                            'market_regime': 'timeout',
+                            'market_regime': last_valid_regime,
+                            'timeout_occurred': True,  # timeout 플래그 추가
                             'entry_score': 0,
                             'exit_score': 0,
                             'current_price': 0,
@@ -326,11 +334,14 @@ class PortfolioManagerV3:
                 self.logger.logger.error(f"Total analysis timeout exceeded (>{TOTAL_ANALYSIS_TIMEOUT}s)")
                 for future, coin in futures.items():
                     if coin not in results:
+                        # 이전 유효 레짐 사용 (없으면 'unknown')
+                        last_valid_regime = self._last_valid_regimes.get(coin, 'unknown')
                         results[coin] = {
                             'action': 'HOLD',
                             'signal_strength': 0.0,
                             'reason': f'Total analysis timeout (>{TOTAL_ANALYSIS_TIMEOUT}s)',
-                            'market_regime': 'timeout',
+                            'market_regime': last_valid_regime,
+                            'timeout_occurred': True,  # timeout 플래그 추가
                             'entry_score': 0,
                             'exit_score': 0,
                             'current_price': 0,

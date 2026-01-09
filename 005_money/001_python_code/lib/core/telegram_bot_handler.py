@@ -305,6 +305,9 @@ Coins: `{coins}`
 
                 has_pos = position.get('has_position', False)
                 regime = analysis.get('market_regime', 'unknown')
+                timeout_flag = analysis.get('timeout_occurred', False)
+                # Timeout 발생 시 표시 형식 변경
+                regime_display = f"{regime.upper()} (⏱)" if timeout_flag else regime.upper()
                 score = analysis.get('entry_score', 0)
                 action = analysis.get('action', 'HOLD')
 
@@ -325,7 +328,7 @@ Coins: `{coins}`
   Current: `{current_price:,.0f} KRW`
   Size: `{size:.8f}`
   P&L: `{pnl:+,.0f} KRW ({pnl_pct:+.1f}%)`
-  Regime: `{regime.upper()}`
+  Regime: `{regime_display}`
   Score: `{score}/4`
   Since: `{entry_time}`
 """)
@@ -348,7 +351,7 @@ Coins: `{coins}`
 
                     message_lines.append(f"""
 *{coin}* (No Position)
-  Regime: `{regime.upper()}`
+  Regime: `{regime_display}`
   Score: `{score}/4`
   Signal: `{action}`{extreme_info}
 """)
