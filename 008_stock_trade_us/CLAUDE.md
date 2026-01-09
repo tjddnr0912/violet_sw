@@ -1,36 +1,46 @@
-# CLAUDE.md - 퀀트 자동매매 시스템
+# CLAUDE.md - 미국 주식 퀀트 자동매매 시스템
 
 이 문서는 Claude Code가 코드 작업 시 참조하는 프로젝트 가이드입니다.
 
 ## 프로젝트 개요
 
-한국투자증권(KIS) Open API를 활용한 멀티팩터 퀀트 자동매매 시스템입니다.
+한국투자증권(KIS) Open API를 활용한 **미국 주식** 멀티팩터 퀀트 자동매매 시스템입니다.
 - **전략**: 모멘텀(20%) + 단기모멘텀(10%) + 저변동성(50%) + 거래량(0%)
-- **유니버스**: KOSPI200 구성종목
+- **유니버스**: S&P500 구성종목
 - **목표**: 상위 15개 종목 선정 및 자동 리밸런싱
-- **최적 샤프비율**: 2.39 (2025-12 최적화 결과)
+- **참고**: 007_stock_trade (한국 주식) 버전과 동일한 아키텍처 기반
 
 ## 프로젝트 구조
 
 ```
-007_stock_trade/
+008_stock_trade_us/
 ├── src/
 │   ├── __init__.py
-│   ├── quant_engine.py          # 퀀트 자동매매 엔진 (스케줄러)
+│   ├── quant_engine.py          # 퀀트 자동매매 엔진 (기본)
+│   ├── us_quant_engine.py       # 미국 주식 전용 퀀트 엔진
+│   ├── engine.py                # 엔진 기본 클래스
 │   ├── api/
 │   │   ├── __init__.py
 │   │   ├── kis_client.py        # KIS API 기본 클라이언트
+│   │   ├── kis_us_client.py     # 미국 주식 전용 클라이언트
+│   │   ├── kis_auth.py          # 인증 모듈
 │   │   ├── kis_quant.py         # 퀀트용 확장 클라이언트
 │   │   └── kis_websocket.py     # WebSocket 실시간 시세
-│   ├── core/                    # ⭐ 핵심 제어 모듈
+│   ├── core/
 │   │   ├── __init__.py
 │   │   └── system_controller.py # 시스템 원격 제어 (싱글톤)
-│   ├── scheduler/               # ⭐ 자동 관리
+│   ├── scheduler/
 │   │   ├── __init__.py
 │   │   └── auto_manager.py      # 월간 모니터링, 반기 최적화
 │   ├── strategy/
+│   │   ├── __init__.py
+│   │   ├── base.py              # 전략 기본 클래스
+│   │   ├── indicators.py        # 기술적 지표
+│   │   ├── strategies.py        # 전략 구현
+│   │   ├── us_screener.py       # 미국 주식 스크리너
+│   │   ├── us_universe.py       # 미국 주식 유니버스 (S&P500)
 │   │   └── quant/
-│   │       ├── __init__.py      # 모듈 exports
+│   │       ├── __init__.py
 │   │       ├── factors.py       # 팩터 계산기
 │   │       ├── screener.py      # 멀티팩터 스크리너
 │   │       ├── signals.py       # 기술적 신호 생성
@@ -38,16 +48,17 @@
 │   │       ├── backtest.py      # 백테스팅
 │   │       ├── analytics.py     # 성과 분석
 │   │       └── sector.py        # 섹터 분산
-│   └── telegram/
-│       ├── __init__.py
-│       └── bot.py               # ⭐ 텔레그램 봇 (20+ 명령어)
-├── scripts/                     # ⭐ 실행 스크립트
+│   ├── telegram/
+│   │   ├── __init__.py
+│   │   └── bot.py               # 텔레그램 봇 (알림 + 명령어)
+│   └── utils/
+│       └── __init__.py
+├── scripts/
 │   ├── run_daemon.py            # 통합 데몬 (권장)
 │   ├── run_backtest.py          # 백테스트
-│   ├── optimize_weights.py      # 가중치 최적화
-│   └── monitor_strategy.py      # 전략 모니터링
+│   └── ...
 ├── config/
-│   ├── optimal_weights.json     # ⭐ 최적 가중치
+│   ├── optimal_weights.json     # 최적 가중치
 │   ├── system_config.json       # 시스템 설정
 │   └── token.json               # KIS API 토큰
 ├── data/

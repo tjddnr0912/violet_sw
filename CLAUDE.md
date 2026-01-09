@@ -115,7 +115,16 @@ cd 007_stock_trade
 
 ### 008_stock_trade_us - KIS Quant Trading (US)
 
-007_stock_trade와 동일한 아키텍처의 미국 주식 버전.
+007_stock_trade 기반의 미국 주식 버전. 기본 아키텍처는 동일하나 미국 시장 전용 모듈 포함.
+
+| Item | Value |
+|------|-------|
+| Broker | 한국투자증권 (KIS API) |
+| Universe | S&P500 |
+| Strategy | 007과 동일 (Multi-Factor) |
+| Target | 15 종목 |
+
+**미국 전용 모듈:** `us_quant_engine.py`, `us_screener.py`, `us_universe.py`, `kis_us_client.py`
 
 **상세 문서:** `008_stock_trade_us/CLAUDE.md`
 
@@ -194,9 +203,11 @@ TELEGRAM_CHAT_ID=
 ### Code Modification Rules
 
 1. **프로젝트 경계 존중**: 각 프로젝트는 독립적. 다른 프로젝트 코드 참조 금지.
-2. **005_money**: ver3가 유일한 프로덕션 버전. ver3/ 디렉토리에서 작업.
-3. **Shared Lib 수정 시**: 005_money의 `lib/` 수정 시 ver3 호환성 테스트.
-4. **설정 파일 동기화**: 007/008의 `system_config.json`은 Telegram 명령으로 변경됨.
+2. **005_money**: ver3가 유일한 프로덕션 버전 (ver1/ver2는 2026-01 삭제됨). ver3/ 디렉토리에서 작업.
+3. **006_auto_bot**: v1/v2/v3 구조에서 `news_bot/` + `shared/` 모듈 구조로 변경됨 (2026-01).
+4. **007_stock_trade**: 2026-01 리팩토링으로 `quant_modules/`, `telegram/notifier.py`, `utils/retry.py` 등 모듈화됨.
+5. **Shared Lib 수정 시**: 005_money의 `lib/` 수정 시 ver3 호환성 테스트.
+6. **설정 파일 동기화**: 007/008의 `system_config.json`은 Telegram 명령으로 변경됨.
 
 ### File Creation Policy
 
