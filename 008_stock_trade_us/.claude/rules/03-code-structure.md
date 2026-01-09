@@ -1,6 +1,35 @@
 # 코드 구조 분석
 
+> **참고**: 이 프로젝트는 007_stock_trade (한국 주식)를 기반으로 합니다.
+> 007 대비 주요 차이점: 미국 주식 전용 모듈 (us_quant_engine.py, us_screener.py, us_universe.py, kis_us_client.py) 추가
+
 ## 핵심 모듈
+
+### src/us_quant_engine.py
+
+**역할**: 미국 주식 전용 퀀트 엔진
+
+- 미국 시장 시간대 적용 (EST/EDT)
+- S&P500 유니버스 기반 스크리닝
+- 미국 주식 전용 API 호출 (kis_us_client.py 사용)
+
+### src/api/kis_us_client.py
+
+**역할**: 미국 주식 전용 KIS API 클라이언트
+
+- 해외주식 조회/주문 API
+- 환율 정보 조회
+- 미국 시장 휴장일 처리
+
+### src/strategy/us_screener.py
+
+**역할**: 미국 주식 스크리너
+
+### src/strategy/us_universe.py
+
+**역할**: S&P500 유니버스 관리
+
+---
 
 ### src/core/system_controller.py
 
