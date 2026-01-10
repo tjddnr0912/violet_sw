@@ -366,11 +366,12 @@ def get_candlestick(ticker: str, interval: str = "24h") -> pd.DataFrame:
     try:
         # API 요청 URL 생성
         url = f"{PUBLIC_URL}/candlestick/{ticker}_KRW/{interval}"
-        # Use separate connect/read timeout for hang prevention
-        response = requests.get(url, timeout=API_TIMEOUT_PUBLIC)
-        response.raise_for_status()  # HTTP 에러 발생 시 예외 발생
-
-        data = response.json()
+        # Use isolated session to prevent connection pool contamination
+        # Each request gets its own session that is properly closed after use
+        with requests.Session() as session:
+            response = session.get(url, timeout=API_TIMEOUT_PUBLIC)
+            response.raise_for_status()  # HTTP 에러 발생 시 예외 발생
+            data = response.json()
 
         if data.get("status") == "0000":
             # API 응답이 성공적일 경우 DataFrame으로 변환
@@ -404,11 +405,12 @@ def get_ticker(ticker: str = "ALL") -> Optional[Dict]:
     """
     try:
         url = f"{PUBLIC_URL}/ticker/{ticker}_KRW"
-        # Use separate connect/read timeout for hang prevention
-        response = requests.get(url, timeout=API_TIMEOUT_PUBLIC)
-        response.raise_for_status()
+        # Use isolated session to prevent connection pool contamination
+        with requests.Session() as session:
+            response = session.get(url, timeout=API_TIMEOUT_PUBLIC)
+            response.raise_for_status()
+            data = response.json()
 
-        data = response.json()
         if data.get("status") == "0000":
             return data['data']
         else:
