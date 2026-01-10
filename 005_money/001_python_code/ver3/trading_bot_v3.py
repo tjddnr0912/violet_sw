@@ -297,9 +297,10 @@ class TradingBotV3(VersionInterface):
                                 except Exception:
                                     pass
                                 # Exit with non-zero code for watchdog to restart
+                                # Use os._exit() to force terminate all threads (including Telegram asyncio loop)
                                 self.running = False
-                                import sys
-                                sys.exit(1)
+                                import os
+                                os._exit(1)
                         else:
                             # 일부만 timeout - 단건 알림만 전송
                             try:
