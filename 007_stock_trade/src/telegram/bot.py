@@ -96,7 +96,8 @@ class TelegramBot:
             "/positions - 보유 포지션\n"
             "/balance - 계좌 잔고\n"
             "/logs - 최근 로그\n"
-            "/report - 일일 리포트\n\n"
+            "/report - 일일 리포트\n"
+            "/monthly_report - 월간 리포트\n\n"
             "<b>📈 분석:</b>\n"
             "/screening - 스크리닝 결과\n"
             "/signal [코드] - 기술적 분석\n"
@@ -444,6 +445,30 @@ class TelegramBot:
         )
 
         await update.message.reply_text(message, parse_mode='HTML')
+
+    async def cmd_monthly_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """월간 리포트 요청"""
+        from src.core import get_controller
+
+        await update.message.reply_text("📊 월간 리포트 생성 중...")
+
+        try:
+            controller = get_controller()
+            result = controller.run_monthly_report()
+
+            if result['success']:
+                await update.message.reply_text(
+                    f"✅ {result['message']}",
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ {result['message']}",
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.error(f"월간 리포트 명령 실패: {e}")
+            await update.message.reply_text(f"❌ 오류 발생: {str(e)[:200]}")
 
     # ==================== 분석 명령어 ====================
 
@@ -1005,6 +1030,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("orders", self.cmd_orders))
         self.application.add_handler(CommandHandler("logs", self.cmd_logs))
         self.application.add_handler(CommandHandler("report", self.cmd_report))
+        self.application.add_handler(CommandHandler("monthly_report", self.cmd_monthly_report))
 
         # 포지션 관리 명령어
         self.application.add_handler(CommandHandler("close", self.cmd_close))

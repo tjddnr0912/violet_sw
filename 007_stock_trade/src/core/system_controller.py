@@ -343,6 +343,25 @@ class SystemController:
             "result": result
         }
 
+    def run_monthly_report(self) -> Dict[str, Any]:
+        """월간 리포트 수동 실행"""
+        # 콜백 등록 여부 확인
+        if 'on_monthly_report' not in self.callbacks:
+            return {"success": False, "message": "월간 리포트 콜백이 등록되지 않았습니다. 데몬이 실행 중인지 확인하세요."}
+
+        try:
+            self._trigger_callback('on_monthly_report')
+            return {
+                "success": True,
+                "message": "월간 리포트가 생성되었습니다."
+            }
+        except Exception as e:
+            logger.error(f"월간 리포트 생성 실패: {e}")
+            return {
+                "success": False,
+                "message": f"리포트 생성 중 오류: {str(e)[:100]}"
+            }
+
     # ==================== 설정 변경 ====================
 
     def set_dry_run(self, enabled: bool) -> Dict[str, Any]:
