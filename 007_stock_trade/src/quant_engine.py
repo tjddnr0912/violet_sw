@@ -42,7 +42,7 @@ from .strategy.quant import (
 )
 from .telegram import TelegramNotifier, get_notifier
 from .utils import is_trading_day, get_trading_hours, get_market_open_time
-from .quant_modules import EngineState, SchedulePhase, PendingOrder, EngineStateManager, OrderExecutor
+from .quant_modules import EngineState, SchedulePhase, PendingOrder, EngineStateManager, OrderExecutor, MonthlyTracker
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -219,6 +219,10 @@ class QuantTradingEngine:
             config=self.config,
             is_virtual=is_virtual
         )
+
+        # 월간 트래커
+        self.monthly_tracker = MonthlyTracker(data_dir=self.data_dir)
+        self.monthly_trades: List[Dict] = []  # 월간 거래 추적
 
     # ========== 상태 관리 (state_manager 위임) ==========
 
@@ -754,10 +758,78 @@ class QuantTradingEngine:
 
         self.notifier.send_message(message)
 
+        # 월간 거래에 추가 (일일 거래 초기화 전)
+        self.monthly_trades.extend(self.daily_trades)
+
         # 일일 거래 초기화
         self.daily_trades = []
 
         logger.info("일일 리포트 발송 완료")
+
+    # ========== 월간 리포트 ==========
+
+    def _was_rebalance_today(self) -> bool:
+        """오늘 리밸런싱이 실행되었는지 확인"""
+        if not self.last_rebalance_date:
+            return False
+        return self.last_rebalance_date.date() == datetime.now().date()
+
+    def generate_monthly_report(self, save_snapshot: bool = True):
+        """
+        월간 리포트 생성 및 발송
+
+        Args:
+            save_snapshot: 스냅샷 저장 여부 (수동 요청 시 False)
+        """
+        try:
+            logger.info("월간 리포트 생성 시작")
+
+            # 포트폴리오 스냅샷
+            snapshot = self.portfolio.get_snapshot()
+
+            # 계좌 잔고 조회 (API)
+            try:
+                balance_info = self.client.get_balance()
+                total_assets = balance_info.get('total_eval', 0) + balance_info.get('cash', 0)
+                cash = balance_info.get('cash', 0)
+            except Exception as e:
+                logger.warning(f"잔고 조회 실패, 포트폴리오 데이터 사용: {e}")
+                total_assets = snapshot.total_value
+                cash = snapshot.cash
+
+            # 리포트 생성
+            report_message = self.monthly_tracker.generate_monthly_report(
+                portfolio_snapshot=snapshot,
+                monthly_trades=self.monthly_trades,
+                total_assets=total_assets,
+                cash=cash,
+                is_auto_report=save_snapshot
+            )
+
+            # 텔레그램 발송
+            self.notifier.send_message(report_message)
+
+            # 스냅샷 저장 (자동 리포트인 경우만)
+            if save_snapshot:
+                monthly_snapshot = self.monthly_tracker.create_snapshot_from_portfolio(
+                    portfolio_snapshot=snapshot,
+                    monthly_trades=self.monthly_trades,
+                    total_assets=total_assets,
+                    cash=cash
+                )
+                self.monthly_tracker.save_snapshot(monthly_snapshot)
+
+                # 월간 거래 리셋
+                self.monthly_trades = []
+
+            logger.info("월간 리포트 발송 완료")
+
+        except Exception as e:
+            logger.error(f"월간 리포트 생성 실패: {e}", exc_info=True)
+            self.notifier.send_message(
+                f"⚠️ <b>월간 리포트 생성 실패</b>\n\n"
+                f"오류: {str(e)[:200]}"
+            )
 
     # ========== 스케줄러 ==========
 
@@ -1017,6 +1089,11 @@ class QuantTradingEngine:
 
         # 일일 리포트
         self.generate_daily_report()
+
+        # 리밸런싱 일이면 월간 리포트 발송
+        if self._was_rebalance_today():
+            logger.info("리밸런싱 일 - 월간 리포트 생성")
+            self.generate_monthly_report(save_snapshot=True)
 
         # 상태 저장
         self._save_state()
