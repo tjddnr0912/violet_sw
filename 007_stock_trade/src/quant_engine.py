@@ -638,7 +638,7 @@ class QuantTradingEngine:
             # API Rate Limit 방지 딜레이
             time.sleep(api_delay * (attempt + 1))  # 재시도마다 딜레이 증가
 
-            if self._execute_order(order):
+            if self.order_executor._execute_order(order, self.daily_trades, Position, StopLossManager):
                 self.notifier.send_message(
                     f"🔴 <b>손절 실행</b>\n\n"
                     f"종목: {position.name}\n"
@@ -685,7 +685,7 @@ class QuantTradingEngine:
             # API Rate Limit 방지 딜레이
             time.sleep(api_delay * (attempt + 1))  # 재시도마다 딜레이 증가
 
-            if self._execute_order(order):
+            if self.order_executor._execute_order(order, self.daily_trades, Position, StopLossManager):
                 if stage == 1:
                     position.tp1_executed = True
                 else:
