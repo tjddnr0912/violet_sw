@@ -109,6 +109,7 @@ Entry Score = BB Touch (1점) + RSI Oversold (1점) + Stoch Cross (2점)
 | `/performance` | 7일 성과 |
 | `/close <COIN>` | 특정 코인 청산 |
 | `/stop` | 봇 중지 |
+| `/reboot` | 봇 재시작 (Watchdog 통해) |
 
 ## 환경변수 (.env)
 

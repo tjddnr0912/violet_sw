@@ -13,6 +13,7 @@
 | `/performance` | telegram_bot_handler.py | cmd_performance | 7일 성과 |
 | `/close <COIN>` | telegram_bot_handler.py | cmd_close | 포지션 청산 |
 | `/stop` | telegram_bot_handler.py | cmd_stop | 봇 중지 |
+| `/reboot` | telegram_bot_handler.py | cmd_reboot | 봇 재시작 |
 
 ## 명령어 상세
 
@@ -90,6 +91,28 @@
 3. 60초 내 확인 필요
 4. 포지션은 자동 청산되지 않음
 
+### /reboot
+
+봇을 재시작합니다 (Watchdog이 자동으로 다시 시작).
+
+**사용 시점:**
+- 버그 발생 시 빠른 복구
+- 설정 변경 적용
+- 메모리 정리
+
+**동작 과정:**
+1. 현재 포지션 정보 표시
+2. [Reboot] [Cancel] 버튼
+3. 60초 내 확인 필요
+4. `os._exit(1)` 호출 → Watchdog이 봇 재시작
+5. 포지션은 유지됨 (청산 안 함)
+
+**`/stop`과의 차이:**
+| 명령어 | 동작 | Watchdog |
+|--------|------|----------|
+| `/stop` | 봇 종료 | 종료됨 (exit code 0) |
+| `/reboot` | 봇 재시작 | 재시작 (exit code 1) |
+
 ## 자동 알림
 
 ### 거래 알림 (send_trade_alert)
@@ -123,6 +146,10 @@ Reason: Entry score 3.0 in bearish regime
 
 EMA 격차: -3.50%
 ```
+
+**Debounce (진동 방지):**
+- 30분 쿨다운: 같은 레짐 변경 알림은 30분에 1회만 전송
+- 로그에 `Regime alert suppressed (debounce)` 메시지로 억제 확인 가능
 
 ### 동적 팩터 요약 (send_dynamic_factors_summary)
 
