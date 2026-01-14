@@ -184,7 +184,9 @@ class StrategyV3(VersionInterface):
 
             # Step 4: Detect extended market regime (6 regimes)
             regime_df = self._calculate_regime_indicators(regime_df)
-            extended_regime, regime_metadata = self.regime_detector.detect_regime(regime_df, exec_df)
+            extended_regime, regime_metadata = self.regime_detector.detect_regime(
+                regime_df, exec_df, coin=coin_symbol
+            )
             self._current_regime = extended_regime
             market_regime = extended_regime.value
 
