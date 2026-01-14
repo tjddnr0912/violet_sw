@@ -134,6 +134,8 @@ class TradingBotV3(VersionInterface):
 
         # Regime change tracking (for telegram alerts)
         self._previous_regime = None  # Track previous regime for change detection
+        self._last_regime_alert_time = None  # Debounce: prevent frequent regime alerts
+        self._regime_alert_cooldown = 1800  # 30 minutes cooldown between same regime alerts
 
         # Consecutive timeout tracking (for auto-restart)
         self._consecutive_timeout_count = 0
@@ -848,13 +850,27 @@ Configuration:
                     f"Regime change detected: {self._previous_regime} -> {current_regime}"
                 )
 
-                # Send telegram alert
-                self.telegram.send_regime_change_alert(
-                    old_regime=self._previous_regime,
-                    new_regime=current_regime,
-                    coin=reference_coin,
-                    ema_diff_pct=ema_diff_pct
-                )
+                # Apply debounce: only send alert if cooldown period has passed
+                now = datetime.now()
+                should_send_alert = True
+
+                if self._last_regime_alert_time is not None:
+                    elapsed = (now - self._last_regime_alert_time).total_seconds()
+                    if elapsed < self._regime_alert_cooldown:
+                        should_send_alert = False
+                        self.logger.logger.info(
+                            f"Regime alert suppressed (debounce): {int(self._regime_alert_cooldown - elapsed)}s remaining"
+                        )
+
+                if should_send_alert:
+                    # Send telegram alert
+                    self.telegram.send_regime_change_alert(
+                        old_regime=self._previous_regime,
+                        new_regime=current_regime,
+                        coin=reference_coin,
+                        ema_diff_pct=ema_diff_pct
+                    )
+                    self._last_regime_alert_time = now
 
             # Update previous regime
             self._previous_regime = current_regime

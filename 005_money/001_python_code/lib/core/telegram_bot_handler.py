@@ -18,6 +18,7 @@ Supported Commands:
     /performance - 7-day performance summary
     /close <COIN> - Close position for specific coin (with confirmation)
     /stop - Stop the trading bot (with confirmation)
+    /reboot - Restart the trading bot (with confirmation)
     /summary - Get today's trading summary
 
 Usage:
@@ -97,6 +98,10 @@ class TelegramBotHandler:
         # Pending stop confirmation
         self._stop_pending = False
         self._stop_confirm_time: Optional[datetime] = None
+
+        # Pending reboot confirmation
+        self._reboot_pending = False
+        self._reboot_confirm_time: Optional[datetime] = None
 
         # Pending close confirmation (per-coin)
         self._close_pending: Dict[str, datetime] = {}
@@ -187,6 +192,7 @@ Use /help to see available commands.
 *Trading Commands*
 /close <COIN> - Close position (e.g. /close BTC)
 /stop - Stop the trading bot
+/reboot - Restart the trading bot
 
 *Info Commands*
 /start - Welcome message
@@ -463,6 +469,60 @@ _Positions will NOT be closed automatically._
 
             self._stop_pending = True
             self._stop_confirm_time = datetime.now()
+
+            await update.message.reply_text(
+                message,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
+    async def cmd_reboot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /reboot command - Restart bot via watchdog."""
+        user_chat_id = str(update.effective_chat.id)
+        if user_chat_id != self.chat_id:
+            await update.message.reply_text("Unauthorized.")
+            return
+
+        if not self.trading_bot:
+            await update.message.reply_text("Trading bot not connected.")
+            return
+
+        try:
+            # Get current position info
+            summary = self.trading_bot.get_portfolio_summary()
+            total_positions = summary.get('total_positions', 0)
+
+            # Build position info
+            position_info = ""
+            if total_positions > 0:
+                position_info = f"\nOpen positions: *{total_positions}* (will be preserved)"
+            else:
+                position_info = "\nNo open positions."
+
+            # Create confirmation keyboard
+            keyboard = [
+                [
+                    InlineKeyboardButton("Reboot", callback_data="reboot_confirm"),
+                    InlineKeyboardButton("Cancel", callback_data="reboot_cancel"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            message = f"""
+*Reboot Trading Bot?*
+{position_info}
+
+This will restart the bot process.
+Positions will be preserved across restart.
+
+_Bot will be back online in ~15 seconds._
+"""
+
+            self._reboot_pending = True
+            self._reboot_confirm_time = datetime.now()
 
             await update.message.reply_text(
                 message,
@@ -762,6 +822,36 @@ Are you sure you want to close this position?
             self._stop_confirm_time = None
             await query.edit_message_text("Stop cancelled. Bot continues running.")
 
+        # Handle reboot confirmation
+        elif query.data == "reboot_confirm":
+            if self._reboot_pending and self._reboot_confirm_time:
+                elapsed = (datetime.now() - self._reboot_confirm_time).total_seconds()
+                if elapsed <= 60:
+                    await query.edit_message_text(
+                        "Rebooting bot...\n\n"
+                        "_Bot will restart in ~15 seconds._",
+                        parse_mode='Markdown'
+                    )
+                    self._reboot_pending = False
+                    self._reboot_confirm_time = None
+                    # Use os._exit(1) to trigger watchdog restart
+                    import os
+                    os._exit(1)
+                else:
+                    await query.edit_message_text(
+                        "Confirmation expired. Use /reboot again if needed."
+                    )
+            else:
+                await query.edit_message_text("No pending reboot request.")
+
+            self._reboot_pending = False
+            self._reboot_confirm_time = None
+
+        elif query.data == "reboot_cancel":
+            self._reboot_pending = False
+            self._reboot_confirm_time = None
+            await query.edit_message_text("Reboot cancelled. Bot continues running.")
+
         # Handle close position confirmations
         elif query.data.startswith("close_confirm_"):
             coin = query.data.replace("close_confirm_", "")
@@ -882,6 +972,7 @@ Are you sure you want to close this position?
             self._application.add_handler(CommandHandler("performance", self.cmd_performance))
             self._application.add_handler(CommandHandler("close", self.cmd_close))
             self._application.add_handler(CommandHandler("stop", self.cmd_stop))
+            self._application.add_handler(CommandHandler("reboot", self.cmd_reboot))
 
             # Add callback query handler for inline buttons
             self._application.add_handler(CallbackQueryHandler(self.callback_handler))

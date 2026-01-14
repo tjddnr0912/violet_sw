@@ -17,7 +17,7 @@ Usage:
     strategy = detector.get_regime_strategy(regime)
 """
 
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from enum import Enum
 import pandas as pd
 import numpy as np
@@ -73,13 +73,19 @@ class RegimeDetector:
         self.ema_slow_period = regime_config.get('ema_slow', 200)
 
         # Hysteresis: require N consecutive same-regime readings
-        self._regime_history = []
+        # Per-coin history to prevent cross-coin contamination in parallel analysis
+        self._regime_history_per_coin: Dict[str, List[ExtendedRegime]] = {}
         self._hysteresis_count = dynamic_config.get('regime_hysteresis_count', 3)
+
+        # Deadband: prevent oscillation at regime boundaries
+        # If EMA diff is within ±deadband of threshold, keep previous regime
+        self._deadband_pct = dynamic_config.get('regime_deadband_pct', 0.3)
 
     def detect_regime(
         self,
         daily_df: pd.DataFrame,
-        execution_df: pd.DataFrame = None
+        execution_df: pd.DataFrame = None,
+        coin: str = 'default'
     ) -> Tuple[ExtendedRegime, Dict[str, Any]]:
         """
         Detect market regime from price data.
@@ -87,6 +93,7 @@ class RegimeDetector:
         Args:
             daily_df: Daily OHLCV data (minimum 200 candles for EMA200)
             execution_df: Optional 4H data for additional signals (ADX calculation)
+            coin: Coin symbol for per-coin hysteresis tracking
 
         Returns:
             Tuple of (ExtendedRegime, metadata_dict)
@@ -128,19 +135,37 @@ class RegimeDetector:
             'adx': round(adx_value, 2),
         }
 
-        # Determine regime
-        regime = self._classify_regime(ema_diff_pct, adx_value)
+        # Get previous regime for deadband logic
+        previous_regime = self._get_last_stable_regime(coin)
 
-        # Apply hysteresis
-        regime = self._apply_hysteresis(regime)
+        # Determine regime with deadband
+        regime = self._classify_regime(ema_diff_pct, adx_value, previous_regime)
+
+        # Apply per-coin hysteresis
+        regime = self._apply_hysteresis(regime, coin)
 
         metadata['regime'] = regime.value
         metadata['regime_description'] = self._get_regime_description(regime)
 
         return regime, metadata
 
-    def _classify_regime(self, ema_diff_pct: float, adx_value: float) -> ExtendedRegime:
-        """Classify regime based on EMA difference and ADX."""
+    def _get_last_stable_regime(self, coin: str) -> Optional[ExtendedRegime]:
+        """Get the last stable regime for a coin (first item in hysteresis history)."""
+        history = self._regime_history_per_coin.get(coin, [])
+        return history[0] if history else None
+
+    def _classify_regime(
+        self,
+        ema_diff_pct: float,
+        adx_value: float,
+        previous_regime: Optional[ExtendedRegime] = None
+    ) -> ExtendedRegime:
+        """
+        Classify regime based on EMA difference and ADX with deadband.
+
+        Deadband logic: If EMA diff is within ±deadband of a threshold,
+        keep the previous regime to prevent oscillation.
+        """
         # Ranging market (low ADX) takes priority
         if adx_value < self.adx_weak_threshold:
             return ExtendedRegime.RANGING
@@ -149,17 +174,31 @@ class RegimeDetector:
         if abs(ema_diff_pct) < self.neutral_zone_pct:
             return ExtendedRegime.NEUTRAL
 
-        # Strong Bullish
-        if ema_diff_pct >= self.ema_strong_threshold:
+        # Strong Bullish threshold with deadband
+        strong_bull_threshold = self.ema_strong_threshold
+        if ema_diff_pct >= strong_bull_threshold + self._deadband_pct:
             return ExtendedRegime.STRONG_BULLISH
+        elif ema_diff_pct >= strong_bull_threshold - self._deadband_pct:
+            # Within deadband - keep previous if it was STRONG_BULLISH or BULLISH
+            if previous_regime in (ExtendedRegime.STRONG_BULLISH, ExtendedRegime.BULLISH):
+                return previous_regime
+            # Default to STRONG_BULLISH if above threshold
+            return ExtendedRegime.STRONG_BULLISH if ema_diff_pct >= strong_bull_threshold else ExtendedRegime.BULLISH
 
         # Bullish
         if ema_diff_pct > 0:
             return ExtendedRegime.BULLISH
 
-        # Strong Bearish
-        if ema_diff_pct <= -self.ema_strong_threshold:
+        # Strong Bearish threshold with deadband
+        strong_bear_threshold = -self.ema_strong_threshold
+        if ema_diff_pct <= strong_bear_threshold - self._deadband_pct:
             return ExtendedRegime.STRONG_BEARISH
+        elif ema_diff_pct <= strong_bear_threshold + self._deadband_pct:
+            # Within deadband - keep previous if it was STRONG_BEARISH or BEARISH
+            if previous_regime in (ExtendedRegime.STRONG_BEARISH, ExtendedRegime.BEARISH):
+                return previous_regime
+            # Default to STRONG_BEARISH if below threshold
+            return ExtendedRegime.STRONG_BEARISH if ema_diff_pct <= strong_bear_threshold else ExtendedRegime.BEARISH
 
         # Bearish
         if ema_diff_pct < 0:
@@ -167,25 +206,40 @@ class RegimeDetector:
 
         return ExtendedRegime.NEUTRAL
 
-    def _apply_hysteresis(self, current_regime: ExtendedRegime) -> ExtendedRegime:
+    def _apply_hysteresis(self, current_regime: ExtendedRegime, coin: str = 'default') -> ExtendedRegime:
         """
-        Apply hysteresis to prevent regime oscillation.
+        Apply per-coin hysteresis to prevent regime oscillation.
 
         Require N consecutive same-regime readings before switching.
+        Each coin has its own history to prevent cross-coin contamination
+        during parallel analysis.
+
+        Args:
+            current_regime: The regime detected in current analysis
+            coin: Coin symbol for per-coin tracking
+
+        Returns:
+            The stable regime after applying hysteresis
         """
-        self._regime_history.append(current_regime)
+        # Initialize history for this coin if not exists
+        if coin not in self._regime_history_per_coin:
+            self._regime_history_per_coin[coin] = []
+
+        history = self._regime_history_per_coin[coin]
+        history.append(current_regime)
 
         # Keep only recent history
-        if len(self._regime_history) > self._hysteresis_count:
-            self._regime_history = self._regime_history[-self._hysteresis_count:]
+        if len(history) > self._hysteresis_count:
+            self._regime_history_per_coin[coin] = history[-self._hysteresis_count:]
+            history = self._regime_history_per_coin[coin]
 
         # Check if all recent readings are the same
-        if len(self._regime_history) >= self._hysteresis_count:
-            if all(r == current_regime for r in self._regime_history):
+        if len(history) >= self._hysteresis_count:
+            if all(r == current_regime for r in history):
                 return current_regime
             else:
                 # Return previous stable regime if available
-                return self._regime_history[0]
+                return history[0]
 
         return current_regime
 
@@ -465,9 +519,17 @@ class RegimeDetector:
 
         return result
 
-    def reset_history(self):
-        """Reset regime history (for testing or restart)."""
-        self._regime_history = []
+    def reset_history(self, coin: str = None):
+        """
+        Reset regime history (for testing or restart).
+
+        Args:
+            coin: Optional coin symbol. If None, resets all coins.
+        """
+        if coin is None:
+            self._regime_history_per_coin = {}
+        elif coin in self._regime_history_per_coin:
+            del self._regime_history_per_coin[coin]
 
 
 # Convenience function for quick regime check
