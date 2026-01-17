@@ -366,12 +366,28 @@ case $COMMAND in
     daemon)
         check_api_keys
         install_deps
-        # 기존 데몬 프로세스 종료
+        # 기존 데몬 프로세스 종료 (graceful shutdown)
         if pgrep -f "run_daemon.py" > /dev/null; then
             echo -e "${YELLOW}[INFO]${NC} 기존 데몬 프로세스 종료 중..."
-            pkill -9 -f "run_daemon.py"
-            sleep 2
-            echo -e "${GREEN}[INFO]${NC} 기존 프로세스 종료 완료"
+            pkill -TERM -f "run_daemon.py"
+
+            # SIGTERM으로 종료될 때까지 대기 (최대 5초)
+            for i in {1..10}; do
+                if ! pgrep -f "run_daemon.py" > /dev/null; then break; fi
+                sleep 0.5
+            done
+
+            # 아직 살아있으면 강제 종료
+            if pgrep -f "run_daemon.py" > /dev/null; then
+                echo -e "${YELLOW}[INFO]${NC} 강제 종료..."
+                pkill -9 -f "run_daemon.py"
+                sleep 1
+            fi
+
+            # 텔레그램 세션 정리 대기
+            echo -e "${YELLOW}[INFO]${NC} 텔레그램 세션 정리 대기 (3초)..."
+            sleep 3
+            echo -e "${GREEN}[INFO]${NC} 종료 완료"
         fi
         echo -e "${GREEN}[INFO]${NC} 통합 데몬 시작 (자동매매 + 자동관리 + 텔레그램)..."
         if [ "$DRY_RUN" = "True" ]; then

@@ -1074,6 +1074,7 @@ class TelegramBotHandler:
                 if not self.running:
                     break
 
+                app = None  # finally 블록에서 정리할 수 있도록 미리 선언
                 try:
                     app = self.bot.build_application()
                     self._loop = asyncio.new_event_loop()
@@ -1083,7 +1084,10 @@ class TelegramBotHandler:
                     logger.info(f"텔레그램 봇 초기화 중... (시도 {attempt + 1}/{max_init_retries})")
                     self._loop.run_until_complete(app.initialize())
                     self._loop.run_until_complete(app.start())
-                    self._loop.run_until_complete(app.updater.start_polling(allowed_updates=Update.ALL_TYPES))
+                    self._loop.run_until_complete(app.updater.start_polling(
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True  # 이전 세션의 pending updates 무시
+                    ))
                     logger.info("텔레그램 봇 초기화 성공")
 
                     # 시작 알림 전송 (실패해도 봇은 계속 실행)
@@ -1108,12 +1112,25 @@ class TelegramBotHandler:
 
                 except Exception as e:
                     error_str = str(e)
+
+                    # Conflict: 이전 세션이 아직 활성화된 경우 - 더 긴 딜레이 필요
+                    is_conflict_error = "Conflict" in error_str or "terminated by other" in error_str
+
                     is_network_error = any(x in error_str for x in [
                         "Timed out", "ReadTimeout", "ConnectError",
                         "ConnectTimeout", "NetworkError", "ConnectionError"
                     ])
 
-                    if is_network_error:
+                    if is_conflict_error:
+                        conflict_delay = 10 + (attempt * 5)  # 10s, 15s, 20s...
+                        if attempt < max_init_retries - 1:
+                            logger.warning(f"텔레그램 봇 Conflict 에러 (시도 {attempt + 1}/{max_init_retries}), {conflict_delay}초 후 재시도...")
+                            time.sleep(conflict_delay)
+                            continue
+                        else:
+                            logger.error(f"텔레그램 봇 Conflict 에러 지속: {e}")
+                            break
+                    elif is_network_error:
                         if attempt < max_init_retries - 1:
                             logger.warning(f"텔레그램 봇 네트워크 에러 (시도 {attempt + 1}/{max_init_retries}), {retry_delay}초 후 재시도...")
                             time.sleep(retry_delay)
@@ -1126,12 +1143,13 @@ class TelegramBotHandler:
                         logger.error(f"텔레그램 봇 오류: {e}", exc_info=True)
                         break
                 finally:
-                    # 루프 정리
-                    if self._loop and self.bot.application:
+                    # 루프 정리 - 로컬 app 변수 사용
+                    if self._loop:
                         try:
-                            self._loop.run_until_complete(self.bot.application.updater.stop())
-                            self._loop.run_until_complete(self.bot.application.stop())
-                            self._loop.run_until_complete(self.bot.application.shutdown())
+                            if app is not None:
+                                self._loop.run_until_complete(app.updater.stop())
+                                self._loop.run_until_complete(app.stop())
+                                self._loop.run_until_complete(app.shutdown())
                         except Exception:
                             pass
                         self.bot.application = None
