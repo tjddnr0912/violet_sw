@@ -116,6 +116,17 @@ TELEGRAM_CHAT_ID=xxx
 - 원인: 네트워크 연결 문제 (토큰 충돌 아님)
 - 해결: 자동 복구됨 - 최대 10회 재시도 + 스레드 자동 재시작 (2026-01)
 
+### 텔레그램 Conflict 에러 (409 Error)
+- 증상: `telegram.error.Conflict: terminated by other getUpdates request`
+- 원인: 이전 봇 세션이 완전히 종료되지 않은 상태에서 새 세션 시작
+- 해결: 자동 복구됨 - Conflict 감지 시 10+5n초 딜레이 후 재시도 (2026-01)
+
+**예방 조치:**
+- `run_quant.sh daemon`은 SIGTERM으로 graceful shutdown 후 3초 대기
+- `drop_pending_updates=True`로 이전 세션의 pending updates 무시
+
+**관련 코드:** `src/telegram/bot.py`, `run_quant.sh`
+
 ### 목표 종목 미달
 - 스크리닝 결과 < 목표: 필터 조건 미충족
 - 매수 실패: 다음 장 09:00 재시도 (최대 3회)
