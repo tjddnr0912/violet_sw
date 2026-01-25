@@ -222,6 +222,25 @@ SOURCES: [Sources in "title|URL" format, comma-separated]"""
 
         return '\n'.join(source_lines)
 
+    def _create_original_section(self, cleaned_md: str) -> str:
+        """정제된 Markdown을 접기 형태의 HTML로 생성
+
+        Args:
+            cleaned_md: 메타데이터(TITLE/LABELS/SOURCES) 제거된 정제 콘텐츠
+                        = content + sources_section (기존 업로드 내용)
+        """
+        import html as html_module
+        escaped_content = html_module.escape(cleaned_md)
+
+        return f'''
+<details style="margin-top: 40px !important; padding: 15px !important; background-color: #f5f5f5 !important; border-radius: 8px !important; border: 1px solid #e0e0e0 !important;">
+  <summary style="cursor: pointer !important; font-weight: 600 !important; color: #666666 !important; padding: 10px 0 !important;">
+    📄 Raw Data
+  </summary>
+  <pre style="margin-top: 15px !important; padding: 15px !important; background-color: #ffffff !important; border-radius: 4px !important; white-space: pre-wrap !important; word-wrap: break-word !important; font-size: 13px !important; line-height: 1.6 !important; color: #333333 !important; overflow-x: auto !important;">{escaped_content}</pre>
+</details>
+'''
+
     def upload_to_blogger(self, title: str, content: str, labels: list = None, sources: list = None) -> Tuple[bool, str]:
         """Upload to Google Blogger"""
         if not self.upload_to_blog:
@@ -241,9 +260,28 @@ SOURCES: [Sources in "title|URL" format, comma-separated]"""
             if not blog_id:
                 return False, "BLOGGER_BLOG_ID environment variable not set."
 
-            # Add sources section
+            # Add sources section (정제된 Markdown)
             sources_section = self._format_sources_section(sources)
-            full_content = content + sources_section
+            full_md_content = content + sources_section
+
+            # Claude CLI로 HTML 변환 시도
+            upload_content = full_md_content
+            is_markdown = True
+
+            try:
+                from shared.claude_html_converter import convert_md_to_html_via_claude
+                logger.info("Using Claude CLI for HTML conversion...")
+                html_content = convert_md_to_html_via_claude(full_md_content)
+
+                # 원본을 <details> 태그로 HTML 하단에 추가
+                original_section = self._create_original_section(full_md_content)
+                upload_content = f"{html_content}\n{original_section}"
+                is_markdown = False
+                logger.info(f"Claude HTML conversion complete ({len(upload_content)} chars)")
+            except Exception as e:
+                logger.warning(f"Claude CLI failed, fallback to markdown lib: {e}")
+                upload_content = full_md_content
+                is_markdown = True
 
             logger.info(f"Initializing Blogger uploader... (labels: {labels}, sources: {len(sources) if sources else 0})")
             uploader = BloggerUploader(
@@ -255,10 +293,10 @@ SOURCES: [Sources in "title|URL" format, comma-separated]"""
             logger.info("Uploading to blog...")
             result = uploader.upload_post(
                 title=title,
-                content=full_content,
+                content=upload_content,
                 labels=labels,
                 is_draft=is_draft,
-                is_markdown=True
+                is_markdown=is_markdown
             )
 
             if result.get("success"):
