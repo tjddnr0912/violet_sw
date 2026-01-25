@@ -128,6 +128,30 @@ class NewsBot:
                                 current_date = datetime.now().strftime("%Y년 %m월 %d일")
                                 post_title = f"{current_date} 뉴스 요약"
 
+                                # HTML 변환 방식 결정
+                                upload_content = blog_summary
+                                is_markdown = True
+
+                                if getattr(self.config, 'HTML_CONVERTER', 'markdown_lib') == 'claude_cli':
+                                    try:
+                                        from shared.claude_html_converter import convert_md_to_html_via_claude
+                                        logger.info("Using Claude CLI for HTML conversion...")
+                                        html_output_path = os.path.join(
+                                            self.config.OUTPUT_DIR,
+                                            datetime.now().strftime("%Y%m%d"),
+                                            f"blog_html_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                                        )
+                                        upload_content = convert_md_to_html_via_claude(
+                                            md_content=blog_summary,
+                                            output_path=html_output_path
+                                        )
+                                        is_markdown = False
+                                        logger.info(f"Claude HTML conversion complete: {html_output_path}")
+                                    except Exception as e:
+                                        logger.warning(f"Claude CLI failed, falling back to markdown lib: {e}")
+                                        upload_content = blog_summary
+                                        is_markdown = True
+
                                 with BloggerUploader(
                                     blog_id=self.config.BLOGGER_BLOG_ID,
                                     credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
@@ -135,10 +159,10 @@ class NewsBot:
                                 ) as uploader:
                                     upload_result = uploader.upload_post(
                                         title=post_title,
-                                        content=blog_summary,
+                                        content=upload_content,
                                         labels=self.config.BLOGGER_LABELS,
                                         is_draft=self.config.BLOGGER_IS_DRAFT,
-                                        is_markdown=True
+                                        is_markdown=is_markdown
                                     )
 
                                     if upload_result['success']:
@@ -288,6 +312,30 @@ class NewsBot:
 
                     post_title = f"Weekly News Summary ({start_date_str} ~ {end_date_str})"
 
+                    # HTML 변환 방식 결정
+                    upload_content = weekly_summary
+                    is_markdown = True
+
+                    if getattr(self.config, 'HTML_CONVERTER', 'markdown_lib') == 'claude_cli':
+                        try:
+                            from shared.claude_html_converter import convert_md_to_html_via_claude
+                            logger.info("Using Claude CLI for weekly HTML conversion...")
+                            html_output_path = os.path.join(
+                                self.config.OUTPUT_DIR,
+                                "weekly",
+                                f"weekly_html_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                            )
+                            upload_content = convert_md_to_html_via_claude(
+                                md_content=weekly_summary,
+                                output_path=html_output_path
+                            )
+                            is_markdown = False
+                            logger.info(f"Claude HTML conversion complete: {html_output_path}")
+                        except Exception as e:
+                            logger.warning(f"Claude CLI failed, falling back to markdown lib: {e}")
+                            upload_content = weekly_summary
+                            is_markdown = True
+
                     with BloggerUploader(
                         blog_id=self.config.BLOGGER_BLOG_ID,
                         credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
@@ -295,10 +343,10 @@ class NewsBot:
                     ) as uploader:
                         upload_result = uploader.upload_post(
                             title=post_title,
-                            content=weekly_summary,
+                            content=upload_content,
                             labels=self.config.BLOGGER_WEEKLY_LABELS,
                             is_draft=self.config.BLOGGER_IS_DRAFT,
-                            is_markdown=True
+                            is_markdown=is_markdown
                         )
 
                         if upload_result['success']:
@@ -392,6 +440,30 @@ class NewsBot:
 
                     post_title = f"Monthly News Summary - {last_year}/{last_month}"
 
+                    # HTML 변환 방식 결정
+                    upload_content = monthly_summary
+                    is_markdown = True
+
+                    if getattr(self.config, 'HTML_CONVERTER', 'markdown_lib') == 'claude_cli':
+                        try:
+                            from shared.claude_html_converter import convert_md_to_html_via_claude
+                            logger.info("Using Claude CLI for monthly HTML conversion...")
+                            html_output_path = os.path.join(
+                                self.config.OUTPUT_DIR,
+                                "monthly",
+                                f"monthly_html_{last_year}{last_month:02d}.html"
+                            )
+                            upload_content = convert_md_to_html_via_claude(
+                                md_content=monthly_summary,
+                                output_path=html_output_path
+                            )
+                            is_markdown = False
+                            logger.info(f"Claude HTML conversion complete: {html_output_path}")
+                        except Exception as e:
+                            logger.warning(f"Claude CLI failed, falling back to markdown lib: {e}")
+                            upload_content = monthly_summary
+                            is_markdown = True
+
                     with BloggerUploader(
                         blog_id=self.config.BLOGGER_BLOG_ID,
                         credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
@@ -399,10 +471,10 @@ class NewsBot:
                     ) as uploader:
                         upload_result = uploader.upload_post(
                             title=post_title,
-                            content=monthly_summary,
+                            content=upload_content,
                             labels=self.config.BLOGGER_MONTHLY_LABELS,
                             is_draft=self.config.BLOGGER_IS_DRAFT,
-                            is_markdown=True
+                            is_markdown=is_markdown
                         )
 
                         if upload_result['success']:

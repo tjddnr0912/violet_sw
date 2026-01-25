@@ -125,6 +125,9 @@ class Config:
     BLOGGER_WEEKLY_LABELS = ['뉴스', '주간']
     BLOGGER_MONTHLY_LABELS = ['뉴스', '월간']
 
+    # HTML Converter: 'markdown_lib' (default) or 'claude_cli'
+    HTML_CONVERTER = os.getenv('HTML_CONVERTER', 'markdown_lib')
+
     @classmethod
     def validate(cls):
         """Validate that all required configuration is set"""
