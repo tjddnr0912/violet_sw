@@ -202,3 +202,159 @@ class TelegramClient:
         except Exception as e:
             logger.error(f"Telegram connection test failed: {e}")
             return False
+
+    def send_message_with_inline_keyboard(
+        self,
+        text: str,
+        inline_keyboard: List[List[Dict[str, str]]],
+        parse_mode: Optional[str] = "HTML",
+        disable_web_page_preview: bool = True,
+        max_retries: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Send a message with inline keyboard buttons
+
+        Args:
+            text: Message text
+            inline_keyboard: 2D array of button objects
+                [[{"text": "Button 1", "callback_data": "data1"}, ...], ...]
+            parse_mode: "HTML", "Markdown", or None
+            disable_web_page_preview: Disable link previews
+            max_retries: Maximum retry attempts
+
+        Returns:
+            API response dict with 'success', 'message_id' or 'error'
+        """
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.api_base}/sendMessage"
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "reply_markup": {"inline_keyboard": inline_keyboard},
+                    "disable_web_page_preview": disable_web_page_preview
+                }
+                if parse_mode:
+                    payload["parse_mode"] = parse_mode
+
+                response = self.session.post(url, json=payload, timeout=30)
+                result = response.json()
+
+                if result.get("ok"):
+                    logger.info("Telegram message with inline keyboard sent")
+                    return {"success": True, "message_id": result["result"]["message_id"]}
+                else:
+                    error_msg = result.get("description", "Unknown error")
+                    logger.error(f"Telegram API error: {error_msg}")
+                    return {"success": False, "error": error_msg}
+
+            except requests.exceptions.Timeout:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Telegram timeout, retrying ({attempt + 1}/{max_retries})...")
+                    time.sleep(2 ** attempt)
+                    continue
+                return {"success": False, "error": "Request timeout"}
+
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return {"success": False, "error": str(e)}
+
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        return {"success": False, "error": "Max retries exceeded"}
+
+    def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: Optional[str] = None,
+        show_alert: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Answer a callback query (button click response)
+
+        Telegram requires response within 30 seconds, otherwise shows loading icon
+
+        Args:
+            callback_query_id: ID from callback_query update
+            text: Optional notification text (toast message)
+            show_alert: If True, show alert popup instead of toast
+
+        Returns:
+            API response dict with 'success' or 'error'
+        """
+        try:
+            url = f"{self.api_base}/answerCallbackQuery"
+            payload = {
+                "callback_query_id": callback_query_id,
+                "show_alert": show_alert
+            }
+            if text:
+                payload["text"] = text
+
+            response = self.session.post(url, json=payload, timeout=10)
+            result = response.json()
+
+            if result.get("ok"):
+                return {"success": True}
+            else:
+                error_msg = result.get("description", "Unknown error")
+                logger.error(f"answerCallbackQuery error: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+        except Exception as e:
+            logger.error(f"Failed to answer callback query: {e}")
+            return {"success": False, "error": str(e)}
+
+    def edit_message_text(
+        self,
+        message_id: int,
+        text: str,
+        parse_mode: Optional[str] = "HTML",
+        reply_markup: Optional[Dict] = None,
+        disable_web_page_preview: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Edit text of a previously sent message
+
+        Used to remove inline keyboard after selection or update status
+
+        Args:
+            message_id: ID of the message to edit
+            text: New message text
+            parse_mode: "HTML", "Markdown", or None
+            reply_markup: Optional new inline keyboard (or omit to remove)
+            disable_web_page_preview: Disable link previews
+
+        Returns:
+            API response dict with 'success' or 'error'
+        """
+        try:
+            url = f"{self.api_base}/editMessageText"
+            payload = {
+                "chat_id": self.chat_id,
+                "message_id": message_id,
+                "text": text,
+                "disable_web_page_preview": disable_web_page_preview
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+
+            response = self.session.post(url, json=payload, timeout=30)
+            result = response.json()
+
+            if result.get("ok"):
+                logger.info(f"Message {message_id} edited successfully")
+                return {"success": True}
+            else:
+                error_msg = result.get("description", "Unknown error")
+                logger.error(f"editMessageText error: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+        except Exception as e:
+            logger.error(f"Failed to edit message: {e}")
+            return {"success": False, "error": str(e)}
