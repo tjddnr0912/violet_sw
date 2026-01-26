@@ -300,8 +300,8 @@ class RegimeDetector:
             ExtendedRegime.BEARISH: {
                 'allow_entry': True,  # Allow mean reversion entries
                 'entry_mode': 'reversion',
-                'entry_threshold_modifier': 1.5,
-                'stop_loss_modifier': 0.7,
+                'entry_threshold_modifier': 1.3,  # 완화: 1.5 → 1.3
+                'stop_loss_modifier': 0.85,       # 여유 확보: 0.7 → 0.85
                 'take_profit_target': 'bb_middle',
                 'full_exit_at_first_target': True,  # Full exit at BB middle
                 'description': 'Conservative mean reversion, tight stops, quick exits',
@@ -309,11 +309,11 @@ class RegimeDetector:
             ExtendedRegime.STRONG_BEARISH: {
                 'allow_entry': True,  # Only extreme oversold
                 'entry_mode': 'reversion',
-                'entry_threshold_modifier': 2.0,
-                'stop_loss_modifier': 0.5,
+                'entry_threshold_modifier': 1.5,  # 완화: 2.0 → 1.5 (4점→3점 필요)
+                'stop_loss_modifier': 0.8,        # 여유 확보: 0.5 → 0.8
                 'take_profit_target': 'bb_middle',
                 'full_exit_at_first_target': True,
-                'description': 'Extreme oversold entries only, very tight risk management',
+                'description': 'Extreme oversold entries only, relaxed risk management',
             },
             ExtendedRegime.RANGING: {
                 'allow_entry': True,
