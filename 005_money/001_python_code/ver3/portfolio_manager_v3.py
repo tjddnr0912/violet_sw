@@ -53,6 +53,7 @@ from pathlib import Path
 from ver3.strategy_v3 import StrategyV3
 from ver3.live_executor_v3 import LiveExecutorV3
 from ver3.dynamic_factor_manager import get_dynamic_factor_manager
+from ver3.performance_tracker import get_performance_tracker
 from lib.core.logger import TradingLogger
 
 
@@ -380,6 +381,17 @@ class PortfolioManagerV3:
         """
         decisions = []
 
+        # 관찰 모드 체크 (연속 손실 방지)
+        observation_mode = False
+        observation_reason = ""
+        try:
+            tracker = get_performance_tracker()
+            observation_mode, observation_reason = tracker.is_observation_mode_recommended()
+            if observation_mode:
+                self.logger.logger.warning(f"🔍 관찰 모드 활성: {observation_reason}")
+        except Exception as e:
+            self.logger.logger.debug(f"관찰 모드 체크 실패: {e}")
+
         # 0. PRIORITY: Check stop-loss for all active positions
         for coin in self.coins:
             if self.executor.has_position(coin):
@@ -390,6 +402,18 @@ class PortfolioManagerV3:
                     decisions.append((coin, 'SELL', 0))  # entry_number=0 for stop-loss
                     self.logger.logger.warning(
                         f"🚨 STOP-LOSS TRIGGERED: {coin} at {current_price:,.0f} KRW"
+                    )
+
+        # 0.25 Trailing Stop 업데이트 (TP1 이후 활성화)
+        for coin in self.coins:
+            if self.executor.has_position(coin):
+                result = coin_results.get(coin, {})
+                current_price = result.get('current_price', 0)
+                if current_price > 0:
+                    self.executor.update_trailing_stop(
+                        ticker=coin,
+                        current_price=current_price,
+                        trailing_pct=2.0  # 최고가 대비 2% 하락 시 손절
                     )
 
         # 0.5 SECOND PRIORITY: Check profit targets for all active positions
@@ -489,6 +513,13 @@ class PortfolioManagerV3:
                 self.logger.logger.info(f"Active positions: {active_positions}")
 
         # 3. Process entry signals (including pyramiding)
+        # 관찰 모드일 때 새 진입 건너뛰기 (손절/익절만 처리)
+        if observation_mode:
+            self.logger.logger.info(
+                f"⏸️ 관찰 모드: 새 진입 건너뜀 - {observation_reason}"
+            )
+            return decisions  # 손절/익절 결정만 반환
+
         entry_candidates = []
         for coin, result in coin_results.items():
             if result['action'] == 'BUY':

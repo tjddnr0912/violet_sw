@@ -187,7 +187,7 @@ DYNAMIC_FACTOR_CONFIG = {
     'weekly_update_day': 6,                 # Sunday (0=Monday, 6=Sunday)
 
     # Factor bounds (prevent extreme values)
-    'chandelier_multiplier_bounds': (2.0, 5.0),
+    'chandelier_multiplier_bounds': (2.5, 5.0),  # 최소값 상향: 2.0 → 2.5
     'position_size_multiplier_bounds': (0.3, 1.5),
     'rsi_threshold_bounds': (20, 40),
     'min_entry_score_bounds': (1, 4),
@@ -208,7 +208,7 @@ DYNAMIC_FACTOR_CONFIG = {
     'regime_hysteresis_count': 3,       # Consecutive readings for regime switch
 
     # Performance-based adjustment settings
-    'min_trades_for_weekly_update': 5,  # Minimum trades before adjusting weights
+    'min_trades_for_weekly_update': 3,  # 완화: 5 → 3 (주간 최적화 활성화)
     'win_rate_aggressive_threshold': 0.6,  # Above this = can be more aggressive
     'win_rate_conservative_threshold': 0.4,  # Below this = be more conservative
 

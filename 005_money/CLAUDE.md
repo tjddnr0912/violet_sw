@@ -96,8 +96,13 @@ Entry Score = BB Touch (1점) + RSI Oversold (1점) + Stoch Cross (2점)
 ### 청산 전략
 
 - **Chandelier Exit**: ATR 기반 동적 손절
+- **Trailing Stop**: TP1 도달 후 최고가 추적 (2% 하락 시 손절)
 - **Profit Target**: BB Middle (약세장) / BB Upper (강세장)
 - **Pyramiding**: 최대 3회 추가 진입 (100% → 50% → 25%)
+
+### 리스크 관리
+
+- **관찰 모드**: 연속 손실 시 새 진입 일시 중단 (손절/익절은 정상 처리)
 
 ## 텔레그램 명령어
 
@@ -224,6 +229,19 @@ Layer 5: Watchdog (600s → kill & restart)
 - **Consecutive Timeout (3회)**: 🚨 Telegram 알림 + 봇 종료 → Watchdog 재시작
 - **Telegram Timeout**: 메시지 드롭, 봇 동작 영향 없음
 - **Watchdog Timeout**: 봇 강제 종료 후 재시작
+
+## 최근 업데이트 (2026-01)
+
+### 수익성 개선
+
+| 항목 | 변경 내용 |
+|------|----------|
+| Trailing Stop | TP1 도달 후 최고가 추적, 2% 하락 시 손절 (수익 보호) |
+| 관찰 모드 | 연속 손실 시 새 진입 일시 중단 |
+| Bearish 레짐 | 진입 배수 1.5→1.3, 손절 배수 0.7→0.85 (여유 확보) |
+| Strong Bearish 레짐 | 진입 배수 2.0→1.5, 손절 배수 0.5→0.8 |
+| Chandelier 최소값 | 2.0 → 2.5 (과도한 손절 방지) |
+| 주간 최적화 | 필요 거래수 5 → 3 (최적화 활성화 빈도 증가) |
 
 ## 참고 문서
 

@@ -825,6 +825,57 @@ class LiveExecutorV3:
 
         return False
 
+    def update_trailing_stop(
+        self,
+        ticker: str,
+        current_price: float,
+        trailing_pct: float = 2.0
+    ) -> Optional[float]:
+        """
+        Trailing Stop 업데이트.
+
+        현재가가 최고가를 갱신하면 손절가도 함께 올림.
+        TP1 도달 후에만 활성화하여 수익을 보호.
+
+        Args:
+            ticker: 코인 심볼
+            current_price: 현재가
+            trailing_pct: 트레일링 비율 (%) - 최고가 대비 하락 허용폭
+
+        Returns:
+            새 손절가 (업데이트된 경우) 또는 None
+        """
+        if ticker not in self.positions:
+            return None
+
+        pos = self.positions[ticker]
+
+        # TP1 미달성 시 trailing stop 미적용
+        if not pos.first_target_hit:
+            return None
+
+        # 최고가 갱신
+        if current_price > pos.highest_high:
+            pos.highest_high = current_price
+
+            # 새 손절가 = 최고가 * (1 - trailing_pct/100)
+            new_stop = pos.highest_high * (1 - trailing_pct / 100)
+
+            # 기존 손절가보다 높으면 업데이트 (하향 금지)
+            if new_stop > pos.stop_loss:
+                old_stop = pos.stop_loss
+                pos.stop_loss = new_stop
+                self._save_positions()
+
+                self.logger.logger.info(
+                    f"📈 Trailing stop 업데이트: {ticker} | "
+                    f"최고가: {pos.highest_high:,.0f} | "
+                    f"손절: {old_stop:,.0f} → {new_stop:,.0f}"
+                )
+                return new_stop
+
+        return None
+
     # ========== TARGET MANAGEMENT ==========
 
     def mark_first_target_hit(self, ticker: str):
