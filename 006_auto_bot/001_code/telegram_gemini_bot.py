@@ -19,8 +19,9 @@ import subprocess
 import logging
 import argparse
 import re
+import json
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -66,6 +67,46 @@ class TelegramGeminiBot(TelegramClient):
         self.upload_to_blog = upload_to_blog
         self.last_update_id = 0
 
+        # Blog selection feature
+        self.blogs = self._load_blog_configs()
+        self.default_blog_key = os.getenv("DEFAULT_BLOG", "brave_ogu")
+        self.selection_timeout = int(os.getenv("BLOG_SELECTION_TIMEOUT", "600"))  # 10 minutes
+
+        # Pending uploads awaiting blog selection
+        # key: message_id, value: {md_content, html_content, title, labels, sources, created_at}
+        self.pending_uploads: Dict[int, Dict] = {}
+
+    def _load_blog_configs(self) -> Dict[str, Dict]:
+        """Load blog configurations from .env BLOG_LIST JSON"""
+        blogs = {}
+
+        # Try loading from BLOG_LIST JSON
+        blog_list_json = os.getenv("BLOG_LIST")
+        if blog_list_json:
+            try:
+                blog_list = json.loads(blog_list_json)
+                for blog in blog_list:
+                    key = blog.get("key")
+                    if key:
+                        blogs[key] = {
+                            "id": blog.get("id"),
+                            "name": blog.get("name", key)
+                        }
+                logger.info(f"Loaded {len(blogs)} blogs from BLOG_LIST")
+            except json.JSONDecodeError as e:
+                logger.warning(f"BLOG_LIST JSON parsing failed: {e}")
+
+        # Fallback to individual env vars if BLOG_LIST not set
+        if not blogs:
+            if os.getenv("BLOGGER_BLOG_ID"):
+                blogs["brave_ogu"] = {
+                    "id": os.getenv("BLOGGER_BLOG_ID"),
+                    "name": "Brave Ogu"
+                }
+            logger.info("Using single blog from BLOGGER_BLOG_ID")
+
+        return blogs
+
     def run_gemini(self, question: str) -> Tuple[bool, str, str, list, list]:
         """
         Run Gemini CLI
@@ -92,6 +133,15 @@ Writing Guidelines:
 - Include examples or code if helpful
 - Use a friendly, readable tone
 - Include sources if available
+
+**Length Requirement (CRITICAL):**
+- The article MUST be at least 1500 characters (excluding TITLE/LABELS/SOURCES metadata)
+- If the topic is simple, expand with:
+  - Related background information
+  - Practical examples and use cases
+  - Common mistakes and tips
+  - Comparisons with alternatives
+- Do NOT pad with repetitive or meaningless content. Add genuinely useful information.
 
 At the very end, add these metadata lines:
 TITLE: [A concise title representing the content]
@@ -330,68 +380,483 @@ SOURCES: [Sources in "title|URL" format, comma-separated]"""
 
         logger.info(f"Question received (length: {len(text)}): {text[:100]}{'...' if len(text) > 100 else ''}")
 
-        # Send processing notification
-        self.send_message("Question received. Asking Gemini...")
+        # If multiple blogs configured, show selection UI first (before Gemini processing)
+        if len(self.blogs) > 1 and self.upload_to_blog:
+            self._show_blog_selection_first(question=text)
+        else:
+            # Single blog mode - process and upload directly
+            self._process_and_upload_single(question=text)
 
-        # Run Gemini
-        success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(text)
+    def _show_blog_selection_first(self, question: str) -> None:
+        """Show blog selection UI immediately after receiving question"""
+        # Build inline keyboard (exclude default blog from selection)
+        keyboard = []
+        row = []
+        for key, blog in self.blogs.items():
+            if key == self.default_blog_key:
+                continue
+            row.append({
+                "text": f"{blog['name']}",
+                "callback_data": f"blog:{key}"
+            })
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
 
-        if not success:
-            self.send_message(f"Gemini error: {gemini_content}")
-            return
+        # Add "Default only" button
+        keyboard.append([{
+            "text": "Default only",
+            "callback_data": "blog:default_only"
+        }])
 
-        # Upload to blog
-        upload_success, upload_result = self.upload_to_blogger(
-            gemini_title, gemini_content, gemini_labels, gemini_sources
+        # Preview question
+        question_preview = question[:200] + ('...' if len(question) > 200 else '')
+        timeout_min = self.selection_timeout // 60
+        default_blog_name = self.blogs.get(self.default_blog_key, {}).get("name", "Default")
+
+        msg_text = f"""<b>Question received!</b>
+
+<b>Question:</b>
+{question_preview}
+
+<b>Select blog to upload:</b>
+(Auto-upload to {default_blog_name} only after {timeout_min} min)"""
+
+        # Send message with inline keyboard
+        result = self.send_message_with_inline_keyboard(
+            text=msg_text,
+            inline_keyboard=keyboard
         )
 
-        # Build result message
-        labels_str = ', '.join(gemini_labels) if gemini_labels else '-'
-        sources_count = len(gemini_sources) if gemini_sources else 0
+        if result.get("success"):
+            message_id = result["message_id"]
+            # Store pending with question only (Gemini processing happens after selection)
+            self.pending_uploads[message_id] = {
+                "question": question,
+                "created_at": time.time()
+            }
+            logger.info(f"Blog selection pending (msg_id: {message_id}, timeout: {timeout_min}min)")
+        else:
+            # Fallback to default processing if keyboard send fails
+            logger.warning("Failed to send selection UI, processing with default only")
+            self._process_and_upload_single(question=question)
 
-        # Format sources for Telegram
-        sources_str = ""
-        if gemini_sources:
-            sources_str = "\n<b>References:</b>\n"
-            for src in gemini_sources[:5]:
-                title = src.get("title", "Source")
-                url = src.get("url", "")
-                if url:
-                    sources_str += f"- <a href=\"{url}\">{title}</a>\n"
-                else:
-                    sources_str += f"- {title}\n"
-            if len(gemini_sources) > 5:
-                sources_str += f"... and {len(gemini_sources) - 5} more\n"
+    def _process_and_upload_single(self, question: str, message_id: Optional[int] = None) -> None:
+        """Process question and upload to default blog only (single blog mode)"""
+        # Update status
+        if message_id:
+            self.edit_message_text(message_id, "Processing: Asking Gemini...")
+        else:
+            self.send_message("Processing: Asking Gemini...")
 
-        # Truncate preview
-        preview = gemini_content[:500] + ('...' if len(gemini_content) > 500 else '')
+        # Run Gemini
+        success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(question)
+
+        if not success:
+            error_msg = f"Gemini error: {gemini_content}"
+            if message_id:
+                self.edit_message_text(message_id, error_msg)
+            else:
+                self.send_message(error_msg)
+            return
+
+        # Update status
+        if message_id:
+            self.edit_message_text(message_id, "Processing: Claude HTML conversion...")
+
+        # Prepare content
+        sources_section = self._format_sources_section(gemini_sources)
+        full_md_content = gemini_content + sources_section
+
+        # Convert to HTML
+        html_content = None
+        try:
+            from shared.claude_html_converter import convert_md_to_html_via_claude
+            html_content = convert_md_to_html_via_claude(full_md_content)
+        except Exception as e:
+            logger.warning(f"Claude CLI failed: {e}")
+
+        # Upload to default only
+        self._upload_default_only(
+            md_content=full_md_content,
+            html_content=html_content,
+            title=gemini_title,
+            labels=gemini_labels,
+            sources=gemini_sources,
+            message_id=message_id
+        )
+
+    def _show_blog_selection(
+        self,
+        md_content: str,
+        html_content: Optional[str],
+        title: str,
+        labels: list,
+        sources: list
+    ) -> None:
+        """Show blog selection inline keyboard"""
+        # Build inline keyboard (exclude default blog from selection)
+        keyboard = []
+        row = []
+        for key, blog in self.blogs.items():
+            if key == self.default_blog_key:
+                continue  # Skip default blog in selection
+            row.append({
+                "text": f"{blog['name']}",
+                "callback_data": f"blog:{key}"
+            })
+            if len(row) == 2:  # 2 buttons per row
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        # Add "Default only" button
+        keyboard.append([{
+            "text": "Default only",
+            "callback_data": "blog:default_only"
+        }])
+
+        # Preview message
+        labels_str = ', '.join(labels) if labels else '-'
+        preview = md_content[:300] + ('...' if len(md_content) > 300 else '')
         preview = HtmlUtils.fix_unclosed_tags(preview)
+        timeout_min = self.selection_timeout // 60
 
-        if upload_success:
-            result_msg = f"""<b>Gemini response complete!</b>
+        default_blog_name = self.blogs.get(self.default_blog_key, {}).get("name", "Default")
+        msg_text = f"""<b>Gemini response complete!</b>
 
-<b>Title:</b> {gemini_title}
+<b>Title:</b> {title}
 <b>Labels:</b> {labels_str}
 
-<b>Blog upload:</b> {upload_result}
+<b>Select additional blog to upload:</b>
+(Auto-upload to {default_blog_name} only after {timeout_min} minutes)
 
 <b>Preview:</b>
-{preview}{sources_str}"""
+{preview}"""
+
+        # Send message with inline keyboard
+        result = self.send_message_with_inline_keyboard(
+            text=msg_text,
+            inline_keyboard=keyboard
+        )
+
+        if result.get("success"):
+            message_id = result["message_id"]
+            # Store pending upload data
+            self.pending_uploads[message_id] = {
+                "md_content": md_content,
+                "html_content": html_content,
+                "title": title,
+                "labels": labels,
+                "sources": sources,
+                "created_at": time.time()
+            }
+            logger.info(f"Blog selection pending (msg_id: {message_id}, timeout: {timeout_min}min)")
         else:
-            preview_long = gemini_content[:1000]
-            preview_long = HtmlUtils.fix_unclosed_tags(preview_long)
-            result_msg = f"""<b>Gemini response complete!</b>
+            # Fallback to default upload if keyboard send fails
+            logger.warning("Failed to send selection UI, uploading to default only")
+            self._upload_default_only(md_content, html_content, title, labels, sources)
 
-<b>Title:</b> {gemini_title}
-<b>Labels:</b> {labels_str}
+    def _handle_callback_query(self, callback_query: dict) -> None:
+        """Handle inline keyboard button click"""
+        callback_id = callback_query["id"]
+        data = callback_query.get("data", "")
+        message = callback_query.get("message", {})
+        message_id = message.get("message_id")
 
-<b>Blog upload failed:</b> {upload_result}
+        # Verify user authorization
+        from_user = callback_query.get("from", {})
+        if str(from_user.get("id")) != self.chat_id:
+            self.answer_callback_query(callback_id, "Unauthorized", show_alert=True)
+            return
 
-<b>Response:</b>
-{preview_long}{sources_str}"""
+        # Parse callback data
+        if not data.startswith("blog:"):
+            self.answer_callback_query(callback_id, "Unknown action")
+            return
 
-        self.send_message(result_msg)
-        logger.info(f"Completed - title: {gemini_title}, labels: {gemini_labels}, sources: {sources_count}")
+        blog_key = data.split(":", 1)[1]
+
+        # Check if pending data exists
+        if message_id not in self.pending_uploads:
+            self.answer_callback_query(callback_id, "Expired or already processed", show_alert=True)
+            return
+
+        pending = self.pending_uploads.pop(message_id)
+
+        # Acknowledge button click
+        self.answer_callback_query(callback_id, "Processing started...")
+
+        # Now process the question (Gemini + Claude + Upload)
+        self._process_after_selection(
+            question=pending["question"],
+            blog_key=blog_key,
+            message_id=message_id
+        )
+
+    def _process_after_selection(
+        self,
+        question: str,
+        blog_key: str,
+        message_id: int
+    ) -> None:
+        """Process question after blog selection (Gemini → Claude → Upload)"""
+        # Step 1: Gemini
+        self.edit_message_text(message_id, "Processing: Asking Gemini...")
+        logger.info(f"Processing question after selection (blog: {blog_key})")
+
+        success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(question)
+
+        if not success:
+            self.edit_message_text(message_id, f"Gemini error: {gemini_content}")
+            return
+
+        # Step 2: Claude HTML conversion
+        self.edit_message_text(message_id, "Processing: Claude에서 HTML을 생성 중...")
+
+        sources_section = self._format_sources_section(gemini_sources)
+        full_md_content = gemini_content + sources_section
+
+        html_content = None
+        try:
+            from shared.claude_html_converter import convert_md_to_html_via_claude
+            html_content = convert_md_to_html_via_claude(full_md_content)
+            logger.info(f"Claude HTML conversion complete ({len(html_content)} chars)")
+        except Exception as e:
+            logger.warning(f"Claude CLI failed: {e}")
+
+        # Step 3: Upload
+        self.edit_message_text(message_id, "Processing: Uploading to blog...")
+
+        if blog_key == "default_only":
+            self._upload_default_only(
+                md_content=full_md_content,
+                html_content=html_content,
+                title=gemini_title,
+                labels=gemini_labels,
+                sources=gemini_sources,
+                message_id=message_id
+            )
+        else:
+            self._upload_dual(
+                blog_key=blog_key,
+                md_content=full_md_content,
+                html_content=html_content,
+                title=gemini_title,
+                labels=gemini_labels,
+                sources=gemini_sources,
+                message_id=message_id
+            )
+
+    def _check_pending_timeouts(self) -> None:
+        """Check and process timed out pending uploads"""
+        current_time = time.time()
+        expired_ids = []
+
+        for message_id, pending in self.pending_uploads.items():
+            elapsed = current_time - pending["created_at"]
+            if elapsed >= self.selection_timeout:
+                expired_ids.append(message_id)
+
+        for message_id in expired_ids:
+            pending = self.pending_uploads.pop(message_id)
+            logger.info(f"Selection timeout, processing with default only (msg_id: {message_id})")
+
+            # Process with default_only (question based)
+            self._process_after_selection(
+                question=pending["question"],
+                blog_key="default_only",
+                message_id=message_id
+            )
+
+    def _upload_default_only(
+        self,
+        md_content: str,
+        html_content: Optional[str],
+        title: str,
+        labels: list,
+        sources: list,
+        message_id: Optional[int] = None,
+        is_timeout: bool = False
+    ) -> None:
+        """Upload to default blog only (HTML + original markdown)"""
+        if not self.upload_to_blog:
+            result_msg = f"<b>Test mode - upload skipped</b>\n\nTitle: {title}"
+            if message_id:
+                self.edit_message_text(message_id, result_msg)
+            else:
+                self.send_message(result_msg)
+            return
+
+        default_blog = self.blogs.get(self.default_blog_key)
+        if not default_blog:
+            logger.error(f"Default blog '{self.default_blog_key}' not found")
+            return
+
+        # Prepare content: HTML + original section
+        if html_content:
+            original_section = self._create_original_section(md_content)
+            upload_content = f"{html_content}\n{original_section}"
+            is_markdown = False
+        else:
+            upload_content = md_content
+            is_markdown = True
+
+        # Upload
+        success, url = self._do_upload(
+            blog_id=default_blog["id"],
+            title=title,
+            content=upload_content,
+            labels=labels,
+            is_markdown=is_markdown
+        )
+
+        timeout_notice = " (auto-upload after timeout)" if is_timeout else ""
+        if success:
+            result_msg = f"""<b>Blog upload complete!{timeout_notice}</b>
+
+<b>Blog:</b> {default_blog['name']}
+<b>Title:</b> {title}
+<b>URL:</b> {url}"""
+        else:
+            result_msg = f"""<b>Upload failed{timeout_notice}</b>
+
+<b>Blog:</b> {default_blog['name']}
+<b>Error:</b> {url}"""
+
+        if message_id:
+            self.edit_message_text(message_id, result_msg)
+        else:
+            self.send_message(result_msg)
+
+        logger.info(f"Default upload {'success' if success else 'failed'}: {title}")
+
+    def _upload_dual(
+        self,
+        blog_key: str,
+        md_content: str,
+        html_content: Optional[str],
+        title: str,
+        labels: list,
+        sources: list,
+        message_id: Optional[int] = None
+    ) -> None:
+        """Upload to both default blog and selected blog"""
+        if not self.upload_to_blog:
+            result_msg = f"<b>Test mode - upload skipped</b>\n\nTitle: {title}"
+            if message_id:
+                self.edit_message_text(message_id, result_msg)
+            else:
+                self.send_message(result_msg)
+            return
+
+        default_blog = self.blogs.get(self.default_blog_key)
+        selected_blog = self.blogs.get(blog_key)
+
+        if not default_blog or not selected_blog:
+            logger.error(f"Blog not found: default={self.default_blog_key}, selected={blog_key}")
+            return
+
+        results = []
+
+        # 1. Upload to default blog: HTML + original section
+        if html_content:
+            original_section = self._create_original_section(md_content)
+            default_content = f"{html_content}\n{original_section}"
+            default_is_md = False
+        else:
+            default_content = md_content
+            default_is_md = True
+
+        success1, url1 = self._do_upload(
+            blog_id=default_blog["id"],
+            title=title,
+            content=default_content,
+            labels=labels,
+            is_markdown=default_is_md
+        )
+        results.append((default_blog["name"], success1, url1, "HTML + Raw"))
+
+        # 2. Upload to selected blog: HTML only (no original section)
+        if html_content:
+            selected_content = html_content
+            selected_is_md = False
+        else:
+            selected_content = md_content
+            selected_is_md = True
+
+        success2, url2 = self._do_upload(
+            blog_id=selected_blog["id"],
+            title=title,
+            content=selected_content,
+            labels=labels,
+            is_markdown=selected_is_md
+        )
+        results.append((selected_blog["name"], success2, url2, "HTML only"))
+
+        # Build result message
+        result_lines = ["<b>Dual upload complete!</b>", f"\n<b>Title:</b> {title}\n"]
+        for blog_name, success, url, content_type in results:
+            status = "OK" if success else "FAILED"
+            if success:
+                result_lines.append(f"<b>{blog_name}</b> ({content_type}): {url}")
+            else:
+                result_lines.append(f"<b>{blog_name}</b> ({content_type}): {status} - {url}")
+
+        result_msg = "\n".join(result_lines)
+
+        if message_id:
+            self.edit_message_text(message_id, result_msg)
+        else:
+            self.send_message(result_msg)
+
+        logger.info(f"Dual upload: default={'OK' if success1 else 'FAIL'}, selected={'OK' if success2 else 'FAIL'}")
+
+    def _do_upload(
+        self,
+        blog_id: str,
+        title: str,
+        content: str,
+        labels: list,
+        is_markdown: bool = False
+    ) -> Tuple[bool, str]:
+        """Perform actual blog upload"""
+        try:
+            from shared.blogger_uploader import BloggerUploader
+
+            credentials_path = os.getenv("BLOGGER_CREDENTIALS_PATH", "./credentials/blogger_credentials.json")
+            token_path = os.getenv("BLOGGER_TOKEN_PATH", "./credentials/blogger_token.pkl")
+            is_draft = os.getenv("BLOGGER_IS_DRAFT", "false").lower() == "true"
+
+            if not labels:
+                labels = ["AI", "Gemini"]
+
+            uploader = BloggerUploader(
+                blog_id=blog_id,
+                credentials_path=credentials_path,
+                token_path=token_path
+            )
+
+            result = uploader.upload_post(
+                title=title,
+                content=content,
+                labels=labels,
+                is_draft=is_draft,
+                is_markdown=is_markdown
+            )
+
+            if result.get("success"):
+                return True, result.get("url", "URL not available")
+            else:
+                return False, result.get("message", "Upload failed")
+
+        except ImportError:
+            return False, "blogger_uploader module not found"
+        except Exception as e:
+            return False, f"Upload error: {str(e)}"
 
     def _handle_command(self, command: str) -> None:
         """Handle bot commands"""
@@ -420,8 +885,15 @@ Examples:
 
         elif cmd == "/status":
             upload_status = "Enabled" if self.upload_to_blog else "Test mode"
+            blogs_list = "\n".join([f"  - {k}: {v['name']}" for k, v in self.blogs.items()])
+            pending_count = len(self.pending_uploads)
             self.send_message(f"""<b>Bot Status</b>
 - Blog upload: {upload_status}
+- Blogs configured: {len(self.blogs)}
+{blogs_list}
+- Default blog: {self.default_blog_key}
+- Selection timeout: {self.selection_timeout // 60} min
+- Pending selections: {pending_count}
 - Last update ID: {self.last_update_id}""")
 
         else:
@@ -432,6 +904,9 @@ Examples:
         logger.info("=" * 50)
         logger.info("Telegram Gemini Blogger Bot started")
         logger.info(f"Blogger upload: {'Enabled' if self.upload_to_blog else 'Disabled'}")
+        logger.info(f"Blogs configured: {len(self.blogs)} ({', '.join(self.blogs.keys())})")
+        logger.info(f"Default blog: {self.default_blog_key}")
+        logger.info(f"Selection timeout: {self.selection_timeout}s")
         logger.info("=" * 50)
 
         logger.info("Sending startup message...")
@@ -449,6 +924,13 @@ Examples:
 
                     if "message" in update:
                         self.process_message(update["message"])
+
+                    # Handle callback query (inline keyboard button click)
+                    if "callback_query" in update:
+                        self._handle_callback_query(update["callback_query"])
+
+                # Check for pending upload timeouts
+                self._check_pending_timeouts()
 
                 loop_errors = 0
 
