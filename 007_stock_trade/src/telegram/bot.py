@@ -86,6 +86,7 @@ class TelegramBot:
             "<b>🔄 수동 실행:</b>\n"
             "/run_screening - 스크리닝 실행\n"
             "/run_rebalance - 리밸런싱 실행\n"
+            "/rebalance - 긴급 리밸런싱 (보유 부족 시)\n"
             "/run_optimize - 최적화 실행\n\n"
             "<b>⚙️ 설정 변경:</b>\n"
             "/set_dryrun on|off - Dry-run 모드\n"
@@ -827,6 +828,46 @@ class TelegramBot:
             parse_mode='HTML'
         )
 
+    async def cmd_rebalance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """긴급 리밸런싱 (보유 종목 부족 시 부분 매수)"""
+        from src.core import get_controller
+
+        # force 인자 확인
+        force = False
+        if context.args and context.args[0].lower() == 'force':
+            force = True
+
+        controller = get_controller()
+        result = controller.run_urgent_rebalance(force=force)
+
+        if result['success']:
+            message = result.get('message', '긴급 리밸런싱이 실행되었습니다.')
+            buy_count = result.get('buy_count', 0)
+            current_count = result.get('current_count', 0)
+
+            if buy_count > 0:
+                await update.message.reply_text(
+                    f"📢 <b>긴급 리밸런싱 완료</b>\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"• 매수 주문: {buy_count}건\n"
+                    f"• 현재 보유: {current_count}개\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"{message}",
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(
+                    f"ℹ️ <b>긴급 리밸런싱</b>\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"{message}\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"• 현재 보유: {current_count}개\n"
+                    f"• 추가 매수 불필요",
+                    parse_mode='HTML'
+                )
+        else:
+            await update.message.reply_text(f"❌ {result['message']}")
+
     # ==================== 설정 변경 명령어 ====================
 
     async def cmd_set_dryrun(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1016,6 +1057,7 @@ class TelegramBot:
         # 수동 실행 명령어
         self.application.add_handler(CommandHandler("run_screening", self.cmd_run_screening))
         self.application.add_handler(CommandHandler("run_rebalance", self.cmd_run_rebalance))
+        self.application.add_handler(CommandHandler("rebalance", self.cmd_rebalance))
         self.application.add_handler(CommandHandler("run_optimize", self.cmd_run_optimize))
 
         # 설정 변경 명령어

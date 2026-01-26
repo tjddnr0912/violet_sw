@@ -224,6 +224,9 @@ class QuantTradingEngine:
         self.monthly_tracker = MonthlyTracker(data_dir=self.data_dir)
         self.monthly_trades: List[Dict] = []  # 월간 거래 추적
 
+        # 긴급 리밸런싱 모드 (보유 70% 미만 시 활성화)
+        self._urgent_rebalance_mode = False
+
     # ========== 상태 관리 (state_manager 위임) ==========
 
     @property
@@ -319,6 +322,19 @@ class QuantTradingEngine:
         """리밸런싱 일 확인"""
         now = datetime.now()
         current_month = now.strftime("%Y-%m")
+
+        # 긴급 리밸런싱: 보유 종목이 목표의 70% 미만이면 허용
+        current_count = len(self.portfolio.positions)
+        target_count = self.config.target_stock_count
+        threshold = target_count * 0.7
+
+        if current_count < threshold:
+            logger.info(
+                f"📢 긴급 리밸런싱 트리거: 보유 {current_count}/{target_count}개 "
+                f"({current_count/target_count*100:.0f}% < 70%)"
+            )
+            self._urgent_rebalance_mode = True
+            return True
 
         # 이미 이번 달에 리밸런싱을 실행한 경우 스킵
         if self.last_rebalance_month == current_month:
@@ -1230,6 +1246,88 @@ class QuantTradingEngine:
             "success": True,
             "message": f"리밸런싱 완료: {len(orders)}건 주문 생성",
             "orders": len(orders)
+        }
+
+    def run_urgent_rebalance(self, force: bool = False) -> Dict[str, Any]:
+        """
+        긴급 리밸런싱 실행 (부분 매수만)
+
+        Args:
+            force: True면 70% 미만 조건 무시하고 강제 실행
+
+        보유 종목이 목표의 70% 미만일 때 호출됨
+        - 기존 종목 유지 (매도 없음)
+        - 부족분만 스크리닝 결과에서 매수
+
+        Returns:
+            Dict with success, buy_count, current_count
+        """
+        current_count = len(self.portfolio.positions)
+        target_count = self.config.target_stock_count
+        threshold = target_count * 0.7
+
+        # 70% 미만 조건 확인 (force가 아닌 경우)
+        if not force and current_count >= threshold:
+            ratio_pct = current_count / target_count * 100
+            return {
+                "success": True,
+                "message": f"리밸런싱 불필요 (보유 {ratio_pct:.0f}% >= 70%)",
+                "buy_count": 0,
+                "current_count": current_count
+            }
+
+        logger.info("=" * 60)
+        logger.info(f"📢 긴급 리밸런싱 시작 (부분 매수){' [강제]' if force else ''}")
+        logger.info("=" * 60)
+
+        shortage = target_count - current_count
+
+        logger.info(f"현재 보유: {current_count}개, 목표: {target_count}개, 부족: {shortage}개")
+
+        # 스크리닝 실행
+        result = self.run_screening()
+        if not result:
+            logger.error("스크리닝 실패 - 긴급 리밸런싱 중단")
+            self._urgent_rebalance_mode = False
+            return {"success": False, "message": "스크리닝 실패", "buy_count": 0, "current_count": current_count}
+
+        # 부분 리밸런싱 주문 생성 (매수만)
+        orders = self.order_executor.generate_partial_rebalance_orders(
+            target_stocks=result.selected_stocks,
+            shortage=shortage,
+            stop_loss_manager=StopLossManager,
+            take_profit_manager=TakeProfitManager
+        )
+
+        if not orders:
+            logger.info("추가 매수 대상 없음")
+            self._urgent_rebalance_mode = False
+            return {"success": True, "message": "추가 매수 대상 없음", "buy_count": 0, "current_count": current_count}
+
+        logger.info(f"부분 리밸런싱 주문 생성: {len(orders)}건 (매수만)")
+
+        # 주문 등록
+        self.pending_orders.extend(orders)
+
+        # 주문 실행
+        self.execute_pending_orders()
+
+        # 긴급 모드 해제
+        self._urgent_rebalance_mode = False
+
+        # 알림
+        self.notifier.send_message(
+            f"📢 <b>긴급 리밸런싱 완료</b>\n\n"
+            f"• 매수 주문: {len(orders)}건\n"
+            f"• 이전 보유: {current_count}개\n"
+            f"• 목표: {target_count}개"
+        )
+
+        return {
+            "success": True,
+            "message": f"긴급 리밸런싱 완료: {len(orders)}건 매수",
+            "buy_count": len(orders),
+            "current_count": len(self.portfolio.positions)
         }
 
     def manual_monitor(self):

@@ -212,6 +212,9 @@ class QuantDaemon:
         # 리밸런싱 콜백
         controller.register_callback('on_rebalance', self.engine.manual_rebalance)
 
+        # 긴급 리밸런싱 콜백 (부분 매수)
+        controller.register_callback('on_urgent_rebalance', self.engine.run_urgent_rebalance)
+
         # 월간 리포트 콜백
         controller.register_callback('on_monthly_report', lambda: self.engine.generate_monthly_report(save_snapshot=False))
 

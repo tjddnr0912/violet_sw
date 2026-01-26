@@ -199,6 +199,106 @@ class OrderExecutor:
         pending_orders.extend(orders)
         return orders
 
+    def generate_partial_rebalance_orders(
+        self,
+        target_stocks: list,
+        shortage: int,
+        stop_loss_manager,
+        take_profit_manager,
+    ) -> List[PendingOrder]:
+        """
+        부분 리밸런싱 주문 생성 (매수만, 매도 없음)
+
+        긴급 리밸런싱용 - 기존 보유 종목 유지하고 부족분만 매수
+
+        Args:
+            target_stocks: 스크리닝 결과 SelectedStock 리스트
+            shortage: 부족한 종목 수
+            stop_loss_manager: StopLossManager 클래스
+            take_profit_manager: TakeProfitManager 클래스
+
+        Returns:
+            생성된 매수 주문 리스트
+        """
+        if not target_stocks:
+            logger.warning("스크리닝 결과 없음 - 부분 리밸런싱 불가")
+            return []
+
+        if shortage <= 0:
+            logger.info("부족분 없음 - 부분 리밸런싱 불필요")
+            return []
+
+        orders = []
+
+        # 현재 보유 종목
+        current_holdings = set(self.portfolio.positions.keys())
+
+        # 보유하지 않은 종목 중 상위 순위만 선택
+        candidates = [s for s in target_stocks if s.code not in current_holdings]
+
+        if not candidates:
+            logger.info("매수 후보 없음 (모두 보유 중)")
+            return []
+
+        # 부족분만큼만 매수
+        to_buy = candidates[:shortage]
+
+        logger.info(f"부분 리밸런싱: 매수 대상 {len(to_buy)}개 (부족분: {shortage}개)")
+
+        # 매수 주문 생성
+        available_capital = self.portfolio.cash * 0.95  # 5% 여유
+
+        for idx, stock in enumerate(to_buy):
+            if idx > 0:
+                time.sleep(self.api_delay)
+
+            try:
+                current_price = self._get_price_with_retry(stock.code)
+
+                if current_price is None:
+                    logger.error(f"가격 조회 최종 실패 ({stock.code})")
+                    continue
+
+                # 목표 비중 계산
+                weight = min(
+                    self.config.max_single_weight,
+                    1.0 / self.config.target_stock_count
+                )
+
+                # 투자금액
+                invest_amount = self.config.total_capital * weight
+                invest_amount = min(invest_amount, available_capital / len(to_buy))
+
+                quantity = int(invest_amount / current_price)
+
+                if quantity > 0:
+                    # 손절/익절가 계산
+                    stop_loss = stop_loss_manager.calculate_fixed_stop(
+                        current_price,
+                        self.config.stop_loss_pct
+                    )
+                    tp1, tp2 = take_profit_manager.calculate_targets(current_price, stop_loss)
+
+                    orders.append(PendingOrder(
+                        code=stock.code,
+                        name=stock.name,
+                        order_type="BUY",
+                        quantity=quantity,
+                        price=0,
+                        reason=f"긴급 리밸런싱 매수 (순위 {stock.rank}위, 점수 {stock.composite_score:.1f})",
+                        stop_loss=stop_loss,
+                        take_profit_1=tp1,
+                        take_profit_2=tp2,
+                        weight=weight
+                    ))
+                    logger.info(f"매수 주문 생성: {stock.name} ({stock.code}) {quantity}주")
+
+            except Exception as e:
+                logger.error(f"주문 생성 실패 ({stock.code}): {e}", exc_info=True)
+
+        logger.info(f"부분 리밸런싱 주문 생성 완료: {len(orders)}건")
+        return orders
+
     def _get_price_with_retry(self, code: str, max_retries: int = 3) -> Optional[float]:
         """가격 조회 (재시도 포함)"""
         retry_delay = 1.0

@@ -362,6 +362,38 @@ class SystemController:
                 "message": f"리포트 생성 중 오류: {str(e)[:100]}"
             }
 
+    def run_urgent_rebalance(self, force: bool = False) -> Dict[str, Any]:
+        """
+        긴급 리밸런싱 실행 (부분 매수)
+
+        Args:
+            force: True면 보유 비율 관계없이 강제 실행
+
+        Returns:
+            실행 결과 딕셔너리
+        """
+        if self.state == SystemState.EMERGENCY_STOP:
+            return {"success": False, "message": "긴급 정지 상태에서는 실행할 수 없습니다."}
+
+        if self.state != SystemState.RUNNING and self.state != SystemState.PAUSED:
+            return {"success": False, "message": "거래 시스템이 활성화되어 있지 않습니다."}
+
+        # 콜백 등록 여부 확인
+        if 'on_urgent_rebalance' not in self.callbacks:
+            return {"success": False, "message": "긴급 리밸런싱 콜백이 등록되지 않았습니다. 데몬이 실행 중인지 확인하세요."}
+
+        result = self._trigger_callback('on_urgent_rebalance', force)
+
+        # 콜백 결과가 dict면 그대로 반환
+        if isinstance(result, dict):
+            return result
+
+        return {
+            "success": True,
+            "message": "긴급 리밸런싱 요청이 전송되었습니다.",
+            "result": result
+        }
+
     # ==================== 설정 변경 ====================
 
     def set_dry_run(self, enabled: bool) -> Dict[str, Any]:
