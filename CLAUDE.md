@@ -67,16 +67,23 @@ cd 005_money
 
 | Item | Value |
 |------|-------|
-| AI | Gemini (gemini-2.5-flash) |
-| Output | Blogger |
+| AI | Gemini + Claude (HTML 변환) |
+| Output | Blogger (7개 블로그 지원) |
 | Schedule | Daily 07:00, Weekly 일요일, Monthly 1일 |
 
 **실행:**
 ```bash
 cd 006_auto_bot
 ./run_scheduled.sh           # 스케줄 모드
-./run_telegram_bot.sh        # Telegram Gemini Q&A
+./run_telegram_bot.sh        # Telegram Gemini Q&A (블로그 선택 기능)
 ```
+
+**Telegram Gemini Bot 기능:**
+- 질문 수신 시 Inline Keyboard로 블로그 선택 UI 표시
+- 7개 블로그 지원 (Brave Ogu, SoC Design, OgusInvest, SW Develope, BooksReview, Virtual Life's, Where we go)
+- 선택 시 2군데 업로드: Default (HTML+Raw) + 선택한 블로그 (HTML만)
+- 3분 타임아웃 후 Default만 자동 업로드
+- 최소 글자 수 요구: Gemini 1500자+, Claude HTML 1000자+
 
 **Data Flow:** RSS Feed → Gemini 요약 → Markdown → Blogger → Telegram 알림
 
@@ -184,6 +191,11 @@ GEMINI_API_KEY=
 BLOGGER_BLOG_ID=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+
+# Blog Selection (Telegram Gemini Bot)
+BLOG_LIST='[{"key":"...","id":"...","name":"..."}, ...]'
+DEFAULT_BLOG=brave_ogu
+BLOG_SELECTION_TIMEOUT=180
 ```
 
 ### 007_stock_trade/.env & 008_stock_trade_us/.env
