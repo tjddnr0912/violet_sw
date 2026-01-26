@@ -449,15 +449,15 @@ class DynamicFactorManager:
             },
             'bearish': {
                 'entry_mode': 'reversion',
-                'entry_threshold_modifier': 1.5,  # Stricter entry
-                'stop_loss_modifier': 0.7,        # Tight stops
+                'entry_threshold_modifier': 1.3,  # 완화: 1.5 → 1.3
+                'stop_loss_modifier': 0.85,       # 여유 확보: 0.7 → 0.85
                 'take_profit_target': 'bb_middle',
                 'full_exit_at_first_target': True,  # Full exit at BB middle
             },
             'strong_bearish': {
                 'entry_mode': 'reversion',
-                'entry_threshold_modifier': 2.0,  # Very strict
-                'stop_loss_modifier': 0.5,        # Very tight
+                'entry_threshold_modifier': 1.5,  # 완화: 2.0 → 1.5
+                'stop_loss_modifier': 0.8,        # 여유 확보: 0.5 → 0.8
                 'take_profit_target': 'bb_middle',
                 'full_exit_at_first_target': True,
             },
