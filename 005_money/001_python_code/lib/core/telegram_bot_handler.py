@@ -667,6 +667,99 @@ Profit Factor: `{profit_factor:.2f}`
         except Exception as e:
             await update.message.reply_text(f"Error getting performance: {e}")
 
+    async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle /resume command - Clear observation mode and allow new entries.
+
+        Usage: /resume
+        """
+        user_chat_id = str(update.effective_chat.id)
+        if user_chat_id != self.chat_id:
+            await update.message.reply_text("Unauthorized.")
+            return
+
+        if not self.trading_bot:
+            await update.message.reply_text("Trading bot not connected.")
+            return
+
+        try:
+            performance_tracker = self.trading_bot.performance_tracker
+
+            # 현재 관찰 모드 상태 확인
+            obs_status = performance_tracker.get_observation_status()
+
+            if not obs_status['is_observation_mode']:
+                await update.message.reply_text(
+                    "ℹ️ 관찰 모드가 활성화되어 있지 않습니다.\n"
+                    "새 진입이 이미 허용된 상태입니다."
+                )
+                return
+
+            # 관찰 모드 해제
+            result = performance_tracker.clear_observation_mode()
+
+            message = f"""
+✅ *관찰 모드 해제됨*
+
+{result}
+
+*이전 상태:*
+- 연속 손실: `{obs_status['consecutive_losses']}회`
+- 사유: {obs_status['reason']}
+
+⚠️ 주의: 시장 상황이 개선되지 않았다면 추가 손실 위험이 있습니다.
+"""
+            await update.message.reply_text(message, parse_mode='Markdown')
+
+        except Exception as e:
+            await update.message.reply_text(f"Error clearing observation mode: {e}")
+
+    async def cmd_optimize(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle /optimize command - Force run weekly factor optimization.
+
+        Usage: /optimize
+        """
+        user_chat_id = str(update.effective_chat.id)
+        if user_chat_id != self.chat_id:
+            await update.message.reply_text("Unauthorized.")
+            return
+
+        if not self.trading_bot:
+            await update.message.reply_text("Trading bot not connected.")
+            return
+
+        try:
+            await update.message.reply_text("🔄 주간 최적화 실행 중...")
+
+            # Run weekly factor update
+            success = self.trading_bot._run_weekly_factor_update()
+
+            if success:
+                # Get updated factors
+                factors = self.trading_bot.factor_manager.get_current_factors()
+
+                message = f"""
+✅ *주간 최적화 완료*
+
+*업데이트된 Entry Weights:*
+- BB Touch: `{factors.get('entry_weight_bb_touch', 1.0):.1f}`
+- RSI Oversold: `{factors.get('entry_weight_rsi_oversold', 1.0):.1f}`
+- Stoch Cross: `{factors.get('entry_weight_stoch_cross', 2.0):.1f}`
+
+*Min Entry Score:* `{factors.get('min_entry_score', 2)}`
+*마지막 업데이트:* `{factors.get('last_weekly_update', 'N/A')}`
+"""
+                await update.message.reply_text(message, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(
+                    "⚠️ 최적화가 스킵되었습니다.\n"
+                    "최소 거래 수를 충족하지 못했을 수 있습니다."
+                )
+
+        except Exception as e:
+            await update.message.reply_text(f"Error running optimization: {e}")
+
     async def cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Handle /close command - Close position for specific coin.
@@ -973,6 +1066,8 @@ Are you sure you want to close this position?
             self._application.add_handler(CommandHandler("close", self.cmd_close))
             self._application.add_handler(CommandHandler("stop", self.cmd_stop))
             self._application.add_handler(CommandHandler("reboot", self.cmd_reboot))
+            self._application.add_handler(CommandHandler("resume", self.cmd_resume))
+            self._application.add_handler(CommandHandler("optimize", self.cmd_optimize))
 
             # Add callback query handler for inline buttons
             self._application.add_handler(CallbackQueryHandler(self.callback_handler))
