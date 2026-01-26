@@ -81,6 +81,10 @@ class PerformanceTracker:
         self.trades: List[TradeRecord] = []
         self._lock = threading.Lock()
 
+        # 관찰 모드 상태 관리
+        self._observation_start_time: Optional[datetime] = None
+        self._observation_cleared: bool = False
+
         self._load_history()
 
     def record_entry(
@@ -337,6 +341,117 @@ class PerformanceTracker:
         """
         perf = self.get_recent_performance(days=7)
         return perf.get('trades', [])
+
+    def get_consecutive_losses(self, max_lookback: int = 10) -> int:
+        """
+        최근 연속 손실 횟수 계산.
+
+        Args:
+            max_lookback: 최대 확인할 거래 수
+
+        Returns:
+            연속 손실 횟수 (0이면 손실 없음 또는 최근 수익)
+        """
+        with self._lock:
+            closed_trades = [t for t in self.trades if t.status == 'closed']
+            if not closed_trades:
+                return 0
+
+            # 최근 거래부터 역순 확인
+            recent = sorted(
+                closed_trades,
+                key=lambda t: t.exit_time or '',
+                reverse=True
+            )[:max_lookback]
+
+            consecutive = 0
+            for trade in recent:
+                if trade.profit_krw <= 0:
+                    consecutive += 1
+                else:
+                    break  # 수익 거래 만나면 중단
+
+            return consecutive
+
+    def is_observation_mode_recommended(self) -> tuple:
+        """
+        관찰 모드 권장 여부 판단.
+
+        해제 조건:
+        1. 수동 해제 플래그 (/resume 명령)
+        2. 시간 기반 해제 (2시간 경과)
+        3. 수익 거래 발생
+
+        Returns:
+            Tuple[bool, str]: (관찰 모드 권장 여부, 이유)
+        """
+        # 1. 수동 해제 플래그 체크 (/resume 명령으로 설정)
+        if self._observation_cleared:
+            return False, "수동 해제됨"
+
+        # 2. 시간 기반 해제 (2시간 = 7200초)
+        if self._observation_start_time:
+            elapsed = datetime.now() - self._observation_start_time
+            if elapsed.total_seconds() >= 7200:  # 2시간
+                self._observation_start_time = None
+                return False, "2시간 경과로 자동 해제"
+
+        # 3. 연속 손실 체크
+        consecutive_losses = self.get_consecutive_losses()
+
+        if consecutive_losses >= 3:
+            # 관찰 모드 진입 시간 기록
+            if not self._observation_start_time:
+                self._observation_start_time = datetime.now()
+            return True, f"연속 {consecutive_losses}회 손실로 관찰 모드 활성"
+
+        # 연속 손실이 해소되면 관찰 모드 리셋
+        if consecutive_losses < 3 and self._observation_start_time:
+            self._observation_start_time = None
+            self._observation_cleared = False
+
+        # 최근 7일 승률도 확인
+        perf = self.get_recent_performance(days=7)
+        if perf['total_trades'] >= 5 and perf['win_rate'] < 0.25:
+            if not self._observation_start_time:
+                self._observation_start_time = datetime.now()
+            return True, f"최근 7일 승률 {perf['win_rate']:.0%}로 관찰 모드 권장"
+
+        return False, ""
+
+    def clear_observation_mode(self) -> str:
+        """
+        관찰 모드 수동 해제 (Telegram /resume 명령으로 호출).
+
+        Returns:
+            해제 결과 메시지
+        """
+        self._observation_cleared = True
+        self._observation_start_time = None
+        return "✅ 관찰 모드 해제됨. 새 진입이 허용됩니다."
+
+    def get_observation_status(self) -> Dict[str, Any]:
+        """
+        관찰 모드 상태 정보 반환.
+
+        Returns:
+            관찰 모드 상태 딕셔너리
+        """
+        is_observation, reason = self.is_observation_mode_recommended()
+        remaining_time = None
+
+        if self._observation_start_time and is_observation:
+            elapsed = datetime.now() - self._observation_start_time
+            remaining_seconds = max(0, 7200 - elapsed.total_seconds())
+            remaining_time = f"{int(remaining_seconds // 60)}분 {int(remaining_seconds % 60)}초"
+
+        return {
+            'is_observation_mode': is_observation,
+            'reason': reason,
+            'remaining_time': remaining_time,
+            'consecutive_losses': self.get_consecutive_losses(),
+            'manually_cleared': self._observation_cleared
+        }
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get overall statistics."""
