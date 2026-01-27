@@ -70,8 +70,18 @@ self.application.add_handler(CommandHandler("new_feature", self.cmd_new_feature)
 |------|------|
 | `config/system_config.json` | 시스템 설정 (텔레그램 명령 저장) |
 | `config/optimal_weights.json` | 팩터 가중치 |
-| `data/quant/engine_state.json` | 포지션, 주문 상태 |
+| `data/quant/engine_state.json` | 포지션, 주문 상태, 리밸런싱 추적 |
 | `logs/daemon_YYYYMMDD.log` | 일별 로그 |
+
+### engine_state.json 주요 필드
+```json
+{
+  "positions": [...],
+  "last_rebalance_month": "2026-01",           // 월초 리밸런싱 추적
+  "last_urgent_rebalance_month": "2026-01",    // 긴급 리밸런싱 추적 (2026-01 추가)
+  "last_screening_date": "2026-01-27T08:30:00"
+}
+```
 
 ## 상태 전이
 
@@ -126,6 +136,10 @@ order = PendingOrder(
     price=0,  # 시장가
     reason="리밸런싱 매수"
 )
+
+# 리밸런싱 추적 (2026-01 추가)
+state_manager.last_rebalance_month          # 월초 리밸런싱
+state_manager.last_urgent_rebalance_month   # 긴급 리밸런싱 (월 1회 제한)
 ```
 
 ### 주문 실행 (order_executor.py)
