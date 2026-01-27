@@ -132,11 +132,16 @@ TELEGRAM_CHAT_ID=xxx
 - 매수 실패: 다음 장 09:00 재시도 (최대 3회)
 - 텔레그램으로 미달 알림 발송 (2026-01)
 
-### pykrx 스크리닝 실패 (2026-01 해결)
-- 증상: `유니버스: 0개` 또는 `KeyError: "None of [Index(['종가', '시가총액'..."`
-- 원인: KRX 웹사이트 API 응답 형식 변경으로 pykrx 1.0.x 호환성 문제
-- **해결: pykrx 1.2.3 이상으로 업그레이드**
+### pykrx 스크리닝 실패 (2026-01-27 발생/해결)
 
+**증상:**
+- `유니버스: 0개` 스크리닝 실패
+- `KeyError: "None of [Index(['종가', '시가총액', '거래량', '거래대금']..."`
+- `IndexError: index -1 is out of bounds for axis 0 with size 0`
+
+**원인:** KRX 웹사이트 API 응답 형식 변경으로 pykrx 1.0.x 호환성 문제
+
+**해결:** pykrx 1.2.3 이상으로 업그레이드
 ```bash
 pip install pykrx>=1.2.3 --break-system-packages  # Homebrew Python
 ```
@@ -148,7 +153,7 @@ pip install pykrx>=1.2.3 --break-system-packages  # Homebrew Python
 
 **관련 코드:** `src/strategy/quant/screener.py` - `_build_universe()`
 
-**참고:** pykrx는 KRX 웹 크롤링 기반이라 KRX 사이트 변경 시 영향받음.
+**참고:** pykrx는 KRX 웹 크롤링 기반이라 KRX 사이트 변경 시 영향받음. 유사 문제 발생 시 pykrx 업데이트 먼저 확인.
 
 ### 긴급 리밸런싱 무한 반복 (2026-01 수정)
 - 증상: 매일 08:30에 "긴급 리밸런싱 트리거" 메시지 반복
@@ -227,3 +232,38 @@ def api_call():
 | 암호화폐봇 (005_money) | start_all_bots.sh | 별도 .env |
 
 각 봇은 독립 터미널/토큰 사용 → 토큰 충돌 없음.
+
+## 의존성 요구사항
+
+| 패키지 | 최소 버전 | 용도 | 비고 |
+|--------|----------|------|------|
+| pykrx | **1.2.3** | KOSPI200 유니버스 조회 | 1.0.x는 KRX API 변경으로 실패 |
+| python-telegram-bot | 20.0+ | 텔레그램 봇 | async 지원 필수 |
+| schedule | 1.0+ | 스케줄러 | - |
+| pandas | 1.5+ | 데이터 처리 | - |
+
+**pykrx 버전 주의:** KRX 웹사이트 구조 변경 시 pykrx가 영향받음. 스크리닝 실패 시 pykrx 업데이트 먼저 확인.
+
+---
+
+## 변경 히스토리
+
+### 2026-01-27: pykrx 호환성 문제 및 긴급 리밸런싱 버그 수정
+
+**문제 1: pykrx 스크리닝 실패**
+- 현상: 08:30 스크리닝 시 유니버스 0개, `KeyError` 발생
+- 원인: KRX 웹사이트 API 응답 형식 변경 → pykrx 1.0.51 호환성 깨짐
+- 영향: KOSPI200 조회 실패 → KIS API 폴백(30개)으로 진행
+- 해결: pykrx 1.0.51 → 1.2.3 업그레이드
+- 결과: 유니버스 30개 → 200개 정상화
+
+**문제 2: 긴급 리밸런싱 무한 반복**
+- 현상: 매일 08:30에 "긴급 리밸런싱 트리거" 반복 실행
+- 원인: 긴급 리밸런싱이 `last_rebalance_month` 체크를 우회
+- 영향: 월초 외에도 매일 리밸런싱 시도 → 스크리닝 실패와 맞물려 매도만 발생
+- 해결: `last_urgent_rebalance_month` 별도 추적, 월 1회 제한
+- 관련 커밋: `0b10b36`, `627c4fd`, `aeeae65`
+
+**교훈:**
+1. pykrx는 KRX 웹 크롤링 기반이라 외부 변경에 취약 → 폴백 로직 필수
+2. 긴급 리밸런싱 같은 예외 로직은 별도 추적 변수로 제한 필요
