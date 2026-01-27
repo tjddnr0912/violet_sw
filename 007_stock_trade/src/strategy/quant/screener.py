@@ -97,8 +97,15 @@ class MultiFactorScreener:
 
         # 2. 결과가 부족하면 pykrx 사용
         if len(universe) < self.config.universe_size:
-            logger.info(f"KIS API 결과 부족 ({len(universe)}개), pykrx로 확장 시도...")
-            universe = self._build_universe_from_pykrx()
+            kis_count = len(universe)
+            logger.info(f"KIS API 결과 부족 ({kis_count}개), pykrx로 확장 시도...")
+            pykrx_universe = self._build_universe_from_pykrx()
+
+            # pykrx 결과가 유효하면 사용, 아니면 KIS 결과 유지
+            if pykrx_universe and len(pykrx_universe) > 0:
+                universe = pykrx_universe
+            else:
+                logger.warning(f"pykrx 실패, KIS API 결과({kis_count}개)로 진행")
 
         logger.info(f"유니버스 구성 완료: {len(universe)}개 종목")
         return universe

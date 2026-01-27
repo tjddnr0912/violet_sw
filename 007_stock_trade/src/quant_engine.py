@@ -323,12 +323,17 @@ class QuantTradingEngine:
         now = datetime.now()
         current_month = now.strftime("%Y-%m")
 
-        # 긴급 리밸런싱: 보유 종목이 목표의 70% 미만이면 허용
+        # 1. 긴급 리밸런싱: 보유 종목이 목표의 70% 미만이면 허용 (월 1회 제한)
         current_count = len(self.portfolio.positions)
         target_count = self.config.target_stock_count
         threshold = target_count * 0.7
 
         if current_count < threshold:
+            # 이번 달 긴급 리밸런싱 이미 실행했으면 스킵
+            if self.state_manager.last_urgent_rebalance_month == current_month:
+                logger.debug(f"이번 달({current_month}) 긴급 리밸런싱 이미 완료됨")
+                return False
+
             logger.info(
                 f"📢 긴급 리밸런싱 트리거: 보유 {current_count}/{target_count}개 "
                 f"({current_count/target_count*100:.0f}% < 70%)"
@@ -336,9 +341,9 @@ class QuantTradingEngine:
             self._urgent_rebalance_mode = True
             return True
 
-        # 이미 이번 달에 리밸런싱을 실행한 경우 스킵
+        # 2. 월초 리밸런싱 중복 방지
         if self.last_rebalance_month == current_month:
-            logger.debug(f"이번 달({current_month}) 리밸런싱 이미 완료됨")
+            logger.debug(f"이번 달({current_month}) 월초 리밸런싱 이미 완료됨")
             return False
 
         # 오늘이 거래일이 아니면 리밸런싱 불가
@@ -1025,6 +1030,12 @@ class QuantTradingEngine:
                 now = datetime.now()
                 self.last_rebalance_date = now
                 self.last_rebalance_month = now.strftime("%Y-%m")
+
+                # 긴급 리밸런싱인 경우 별도 추적 (월 1회 제한)
+                if self._urgent_rebalance_mode:
+                    self.state_manager.last_urgent_rebalance_month = now.strftime("%Y-%m")
+                    logger.info(f"긴급 리밸런싱 완료 기록: {self.state_manager.last_urgent_rebalance_month}")
+
                 self._save_state()
                 logger.info(f"리밸런싱 완료 기록: {self.last_rebalance_month}")
             else:
@@ -1311,6 +1322,12 @@ class QuantTradingEngine:
 
         # 주문 실행
         self.execute_pending_orders()
+
+        # 긴급 리밸런싱 월 기록 (월 1회 제한)
+        now = datetime.now()
+        self.state_manager.last_urgent_rebalance_month = now.strftime("%Y-%m")
+        self._save_state()
+        logger.info(f"긴급 리밸런싱 완료 기록: {self.state_manager.last_urgent_rebalance_month}")
 
         # 긴급 모드 해제
         self._urgent_rebalance_mode = False

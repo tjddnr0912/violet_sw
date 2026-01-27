@@ -118,6 +118,7 @@ class EngineStateManager:
         self.last_screening_date: Optional[datetime] = None
         self.last_rebalance_date: Optional[datetime] = None
         self.last_rebalance_month: Optional[str] = None
+        self.last_urgent_rebalance_month: Optional[str] = None  # 긴급 리밸런싱 월 추적
 
         # 동시성 제어
         self._position_lock = threading.Lock()
@@ -183,6 +184,10 @@ class EngineStateManager:
                     logger.warning(f"리밸런싱 날짜 복원 실패: {e}")
             if data.get("last_rebalance_month"):
                 self.last_rebalance_month = data["last_rebalance_month"]
+
+            # 긴급 리밸런싱 월 복원
+            if data.get("last_urgent_rebalance_month"):
+                self.last_urgent_rebalance_month = data["last_urgent_rebalance_month"]
 
             # 실패 주문 복원
             failed_count = 0
@@ -279,6 +284,7 @@ class EngineStateManager:
                     "last_screening_date": self.last_screening_date.isoformat() if self.last_screening_date else None,
                     "last_rebalance_date": self.last_rebalance_date.isoformat() if self.last_rebalance_date else None,
                     "last_rebalance_month": self.last_rebalance_month,
+                    "last_urgent_rebalance_month": self.last_urgent_rebalance_month,
                     "updated_at": datetime.now().isoformat()
                 }
 
