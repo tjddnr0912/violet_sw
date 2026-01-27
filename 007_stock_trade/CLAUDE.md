@@ -132,19 +132,23 @@ TELEGRAM_CHAT_ID=xxx
 - 매수 실패: 다음 장 09:00 재시도 (최대 3회)
 - 텔레그램으로 미달 알림 발송 (2026-01)
 
-### pykrx 스크리닝 실패 (2026-01)
+### pykrx 스크리닝 실패 (2026-01 해결)
 - 증상: `유니버스: 0개` 또는 `KeyError: "None of [Index(['종가', '시가총액'..."`
-- 원인: KRX 웹사이트 API 응답 형식 변경으로 pykrx 라이브러리 호환성 문제
-- 해결: **자동 폴백** - pykrx 실패 시 KIS API 결과(30개)로 스크리닝 진행
+- 원인: KRX 웹사이트 API 응답 형식 변경으로 pykrx 1.0.x 호환성 문제
+- **해결: pykrx 1.2.3 이상으로 업그레이드**
 
-**폴백 동작:**
+```bash
+pip install pykrx>=1.2.3 --break-system-packages  # Homebrew Python
+```
+
+**폴백 동작 (pykrx 실패 시):**
 1. KIS API로 시가총액 상위 30개 조회
 2. pykrx로 KOSPI200 확장 시도
-3. pykrx 실패 시 → KIS 30개로 진행 (정상 동작)
+3. pykrx 실패 시 → KIS 30개로 진행
 
 **관련 코드:** `src/strategy/quant/screener.py` - `_build_universe()`
 
-**참고:** pykrx는 KRX 웹 크롤링 기반이라 KRX 사이트 변경 시 영향받음. GitHub Issue #229 참조.
+**참고:** pykrx는 KRX 웹 크롤링 기반이라 KRX 사이트 변경 시 영향받음.
 
 ### 긴급 리밸런싱 무한 반복 (2026-01 수정)
 - 증상: 매일 08:30에 "긴급 리밸런싱 트리거" 메시지 반복
