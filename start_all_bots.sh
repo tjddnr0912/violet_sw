@@ -2,11 +2,12 @@
 # ==============================================
 # Start All Bots - iTerm2 Multi-Tab Launcher
 # ==============================================
-# Opens a new iTerm2 window with 4 tabs:
+# Opens a new iTerm2 window with 5 tabs:
 #   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart + Hang Detection)
 #   Tab 2: News Bot (Scheduled)
 #   Tab 3: Telegram Gemini Bot
 #   Tab 4: Quant Trading Daemon (주식 자동매매)
+#   Tab 5: Weekly Sector Bot (주간 섹터 투자정보)
 #
 # Watchdog Features:
 #   - Auto-restart on crash
@@ -21,9 +22,10 @@ TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_watchdog.sh"
 NEWS_BOT="$SCRIPT_DIR/006_auto_bot/run_scheduled.sh"
 TELEGRAM_BOT="$SCRIPT_DIR/006_auto_bot/run_telegram_bot.sh"
 QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"
+WEEKLY_SECTOR="$SCRIPT_DIR/006_auto_bot/run_weekly_sector.sh"
 
 # Check if scripts exist
-for script in "$TRADING_BOT" "$NEWS_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON"; do
+for script in "$TRADING_BOT" "$NEWS_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$WEEKLY_SECTOR"; do
     if [[ ! -f "$script" ]]; then
         echo "Error: Script not found: $script"
         exit 1
@@ -38,16 +40,14 @@ tell application "iTerm2"
     -- Create new window with first tab (Trading Bot)
     create window with default profile
     tell current session of current window
-        set name to "Trading Bot"
-        write text "cd '$SCRIPT_DIR' && '$TRADING_BOT'"
+        write text "printf '\\033]0;Trading Bot\\007' && cd '$SCRIPT_DIR' && '$TRADING_BOT'"
     end tell
 
     -- Create second tab (News Bot)
     tell current window
         create tab with default profile
         tell current session
-            set name to "News Bot"
-            write text "cd '$SCRIPT_DIR' && '$NEWS_BOT'"
+            write text "printf '\\033]0;News Bot\\007' && cd '$SCRIPT_DIR' && '$NEWS_BOT'"
         end tell
     end tell
 
@@ -55,8 +55,7 @@ tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session
-            set name to "Telegram Bot"
-            write text "cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
+            write text "printf '\\033]0;Telegram Bot\\007' && cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
         end tell
     end tell
 
@@ -64,8 +63,15 @@ tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session
-            set name to "Quant Daemon"
-            write text "cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+            write text "printf '\\033]0;Quant Daemon\\007' && cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+        end tell
+    end tell
+
+    -- Create fifth tab (Weekly Sector Bot)
+    tell current window
+        create tab with default profile
+        tell current session
+            write text "printf '\\033]0;Weekly Sector\\007' && cd '$SCRIPT_DIR' && '$WEEKLY_SECTOR'"
         end tell
     end tell
 
