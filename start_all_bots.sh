@@ -40,14 +40,14 @@ tell application "iTerm2"
     -- Create new window with first tab (Trading Bot)
     create window with default profile
     tell current session of current window
-        write text "printf '\\033]0;Trading Bot\\007' && cd '$SCRIPT_DIR' && '$TRADING_BOT'"
+        write text "echo -ne '\\\\e]0;Trading Bot\\\\a' && cd '$SCRIPT_DIR' && '$TRADING_BOT'"
     end tell
 
     -- Create second tab (News Bot)
     tell current window
         create tab with default profile
         tell current session
-            write text "printf '\\033]0;News Bot\\007' && cd '$SCRIPT_DIR' && '$NEWS_BOT'"
+            write text "echo -ne '\\\\e]0;News Bot\\\\a' && cd '$SCRIPT_DIR' && '$NEWS_BOT'"
         end tell
     end tell
 
@@ -55,7 +55,7 @@ tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session
-            write text "printf '\\033]0;Telegram Bot\\007' && cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
+            write text "echo -ne '\\\\e]0;Telegram Bot\\\\a' && cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
         end tell
     end tell
 
@@ -63,7 +63,7 @@ tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session
-            write text "printf '\\033]0;Quant Daemon\\007' && cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+            write text "echo -ne '\\\\e]0;Quant Daemon\\\\a' && cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
         end tell
     end tell
 
@@ -71,7 +71,7 @@ tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session
-            write text "printf '\\033]0;Weekly Sector\\007' && cd '$SCRIPT_DIR' && '$WEEKLY_SECTOR'"
+            write text "echo -ne '\\\\e]0;Weekly Sector\\\\a' && cd '$SCRIPT_DIR' && '$WEEKLY_SECTOR'"
         end tell
     end tell
 
