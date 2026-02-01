@@ -26,6 +26,14 @@ python main.py --test
 # Telegram Gemini Bot (블로그 선택 기능 포함)
 python telegram_gemini_bot.py
 python telegram_gemini_bot.py --test  # Blog 업로드 스킵
+
+# Weekly Sector Bot (주간 섹터 투자정보)
+python weekly_sector_bot.py           # 스케줄 모드 (일요일 자동)
+python weekly_sector_bot.py --once    # 즉시 전체 실행
+python weekly_sector_bot.py --resume  # 중단 후 재개
+python weekly_sector_bot.py --sector 1  # 특정 섹터만 (1-9)
+python weekly_sector_bot.py --test    # 테스트 (업로드 스킵)
+python weekly_sector_bot.py --status  # 상태 확인
 ```
 
 ## Architecture
@@ -34,6 +42,7 @@ python telegram_gemini_bot.py --test  # Blog 업로드 스킵
 001_code/
 ├── main.py                   # 뉴스봇 진입점 (daily/weekly/monthly)
 ├── telegram_gemini_bot.py    # Telegram Q&A → Gemini → Blogger (블로그 선택 기능)
+├── weekly_sector_bot.py      # 주간 섹터 투자정보 봇
 │
 ├── news_bot/                 # 뉴스봇 전용 모듈
 │   ├── __init__.py
@@ -42,13 +51,21 @@ python telegram_gemini_bot.py --test  # Blog 업로드 스킵
 │   ├── summarizer.py         # Gemini AI 요약 (daily/weekly/monthly)
 │   └── writer.py             # 마크다운 파일 I/O, cleanup
 │
+├── sector_bot/               # 섹터봇 전용 모듈
+│   ├── __init__.py
+│   ├── config.py             # 9개 섹터 정의, 스케줄, 설정
+│   ├── searcher.py           # Gemini Google Search Grounding
+│   ├── analyzer.py           # 섹터별 분석 프롬프트
+│   ├── writer.py             # 마크다운 파일 I/O
+│   └── state_manager.py      # 상태 저장/복구 (재시작용)
+│
 ├── shared/                   # 공유 모듈
 │   ├── __init__.py
 │   ├── html_utils.py         # HTML 태그 처리, 마크다운 변환
 │   ├── telegram_api.py       # Telegram Bot API (Inline Keyboard 지원)
 │   ├── telegram_notifier.py  # Telegram 알림 발송
 │   ├── blogger_uploader.py   # Google Blogger API
-│   └── claude_html_converter.py  # Claude CLI로 Markdown→HTML 변환
+│   └── claude_html_converter.py  # Claude CLI로 Markdown→HTML 변환 (timeout 15분)
 │
 ├── prompts/                  # AI 프롬프트 템플릿
 │   └── blogger_html_prompt.md    # Claude HTML 변환 프롬프트
@@ -73,6 +90,16 @@ telegram_gemini_bot.py
 ├── shared.html_utils
 ├── shared.blogger_uploader
 └── shared.claude_html_converter
+
+weekly_sector_bot.py
+├── sector_bot.config
+├── sector_bot.searcher
+├── sector_bot.analyzer
+├── sector_bot.writer
+├── sector_bot.state_manager
+├── shared.blogger_uploader
+├── shared.telegram_notifier
+└── shared.claude_html_converter
 ```
 
 ## Data Flow
@@ -81,6 +108,12 @@ telegram_gemini_bot.py
 1. **Daily** (07:00): RSS → Gemini 요약 → `004_News_paper/YYYYMMDD/blog_summary_*.md` → Blogger → Telegram
 2. **Weekly** (일요일 09:00): 월~토 일간요약 수집 → Gemini 주간요약 → `weekly/weekly_summary_*.md` → Blogger
 3. **Monthly** (1일 10:00): 전월 일간요약 수집 → Gemini 월간요약 → `monthly/monthly_summary_*.md` → Blogger → **2개월 전 데이터 정리**
+
+### Weekly Sector Bot
+- **일요일 13:00~17:00**: 9개 섹터 순차 처리
+- 각 섹터: Gemini Google Search → 섹터별 분석 → 마크다운 저장 → Claude HTML → OgusInvest 블로그
+- 저장 경로: `004_Sector_Weekly/YYYYMMDD/sector_XX_name.md`
+- 재시작 기능: 같은 주 내에서 `--resume`로 중단 지점부터 재개
 
 ### Telegram Gemini Bot (블로그 선택 기능)
 ```
@@ -121,6 +154,10 @@ TELEGRAM_CHAT_ID=your_id
 BLOG_LIST='[{"key":"brave_ogu","id":"...","name":"Brave Ogu"}, ...]'
 DEFAULT_BLOG=brave_ogu
 BLOG_SELECTION_TIMEOUT=180  # 3분 (초)
+
+# Weekly Sector Bot
+SECTOR_BLOGGER_BLOG_ID=9115231004981625966  # OgusInvest (ogusinvest.blogspot.com)
+SECTOR_GEMINI_MODEL=gemini-3-flash-preview  # 섹터봇용 Gemini 모델
 ```
 
 ## Key Settings (news_bot/config.py)
@@ -202,3 +239,145 @@ BLOG_SELECTION_TIMEOUT=180  # 3분 (초)
 | Telegram HTML parse error | Plain text fallback 자동 적용 |
 | Claude CLI not found | `pip install claude-cli` 또는 PATH 확인 |
 | Blog selection timeout | `BLOG_SELECTION_TIMEOUT` 값 조정 (기본 180초) |
+| Sector bot resume 실패 | 다른 주에 시작 - `--reset` 후 `--once` 실행 |
+| Gemini Search 실패 | API 키 확인, 재시도 자동 (3회, 지수 백오프) |
+| Sector state 손상 | `python weekly_sector_bot.py --reset` |
+
+---
+
+## Weekly Sector Bot
+
+매주 일요일 9개 섹터별 투자정보를 자동 수집/분석하여 OgusInvest 블로그에 업로드
+
+### 실행 방법
+
+```bash
+cd 006_auto_bot/001_code
+source .venv/bin/activate
+
+python weekly_sector_bot.py           # 스케줄 모드 (일요일 자동)
+python weekly_sector_bot.py --once    # 즉시 전체 실행
+python weekly_sector_bot.py --resume  # 중단 후 재개
+python weekly_sector_bot.py --sector 1  # 특정 섹터만 (1-9)
+python weekly_sector_bot.py --test    # 테스트 (업로드 스킵)
+python weekly_sector_bot.py --status  # 상태 확인
+python weekly_sector_bot.py --reset   # 상태 초기화
+```
+
+### 9개 섹터 상세 정보
+
+| ID | 섹터 | 영문명 | 시간 |
+|----|------|--------|------|
+| 1 | AI/양자컴퓨터 | ai_quantum | 13:00 |
+| 2 | 금융 | finance | 13:30 |
+| 3 | 조선/항공/우주 | shipbuilding_aerospace | 14:00 |
+| 4 | 에너지 | energy | 14:30 |
+| 5 | 바이오 | bio | 15:00 |
+| 6 | IT/통신/Cloud/DC | it_cloud | 15:30 |
+| 7 | 주식시장 | stock_market | 16:00 |
+| 8 | 반도체 | semiconductor | 16:30 |
+| 9 | 자동차/배터리/로봇 | auto_battery_robot | 17:00 |
+
+### 섹터별 분석 초점
+
+| ID | 섹터 | 분석 초점 |
+|----|------|-----------|
+| 1 | AI/양자컴퓨터 | AI 기술발표/벤치마크, MCP/Skills 에이전트, 양자컴퓨팅 (IBM, Google, IonQ), AI 반도체 |
+| 2 | 금융 | 기준금리/통화정책 (Fed, ECB), 월가 전망, CPI/인플레이션, 고용지표, 귀금속(금/은) |
+| 3 | 조선/항공/우주 | 조선 수주 (HD현대, 삼성중공업), Boeing/Airbus, SpaceX/위성, 방산 수출 |
+| 4 | 에너지 | 신재생에너지, 원유 WTI/Brent, 천연가스, 원자력/SMR, ESS |
+| 5 | 바이오 | FDA 승인, 임상시험, 유전자치료/CRISPR, 바이오텍 M&A/IPO |
+| 6 | IT/통신/Cloud/DC | AWS/Azure/GCP, 데이터센터 Capex, 5G/통신, 사이버보안, SaaS |
+| 7 | 주식시장 | S&P500/Nasdaq 전망, 지정학 리스크, 무역분쟁, 글로벌 시장, VIX |
+| 8 | 반도체 | 파운드리 (TSMC, 삼성), 장비 (ASML), Fabless (NVIDIA, AMD), 메모리 가격 |
+| 9 | 자동차/배터리/로봇 | EV 판매 (Tesla, BYD), 배터리 (LG, 삼성SDI, CATL), 자율주행, 휴머노이드 로봇 |
+
+### 파일 저장 구조
+
+```
+004_Sector_Weekly/
+└── YYYYMMDD/
+    ├── sector_01_ai_quantum.md
+    ├── sector_02_finance.md
+    ├── sector_03_shipbuilding_aerospace.md
+    ├── sector_04_energy.md
+    ├── sector_05_bio.md
+    ├── sector_06_it_cloud.md
+    ├── sector_07_stock_market.md
+    ├── sector_08_semiconductor.md
+    └── sector_09_auto_battery_robot.md
+```
+
+### 블로그 업로드 형식
+
+- **블로그**: OgusInvest (Blog ID: `9115231004981625966`)
+- **제목**: `{날짜} {N}주차 {섹터명} 투자정보` (예: "2026-02-02 1주차 AI/양자컴퓨터 투자정보")
+- **라벨**: `[섹터명, 주간, 투자정보]`
+
+### 설정 (sector_bot/config.py)
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `GEMINI_MODEL` | gemini-3-flash-preview | Gemini 모델 |
+| `BLOGGER_BLOG_ID` | 9115231004981625966 | OgusInvest 블로그 ID |
+| `MAX_RETRIES` | 3 | API 호출 최대 재시도 |
+| `RETRY_DELAY` | 60초 | 재시도 대기 (지수 백오프) |
+| `CLAUDE_TIMEOUT` | 900초 (15분) | Claude CLI 타임아웃 |
+| `SCHEDULE_DAY` | 6 (Sunday) | 스케줄 실행 요일 |
+
+### State Management
+
+- **상태 파일**: `sector_bot/state.json`
+- **주차 키**: YYYY-WW 형식 (같은 주 내에서만 재개 가능)
+- **저장 정보**: 완료 섹터, 실패 섹터, 블로그 URL
+
+```bash
+# 상태 확인
+python weekly_sector_bot.py --status
+
+# 출력 예시:
+# === Sector Bot State ===
+# Week: 2026-05
+# Progress: 5/9 (55%)
+# Completed: [1, 2, 3, 4, 5]
+# Failed: []
+# Last Update: 2026-02-02T15:30:00
+```
+
+### Telegram 알림
+
+- **섹터 완료 시**: 섹터명 + 블로그 URL
+- **전체 완료 시**: 요약 (완료/실패 카운트 + 모든 URL)
+
+### 에러 처리
+
+| 에러 | 처리 |
+|------|------|
+| Gemini Search 실패 | 3회 재시도 (60초→120초→240초 지수 백오프) |
+| Gemini Safety Filter | BLOCK_NONE 설정으로 비활성화 |
+| Claude CLI 타임아웃 | 15분 후 마크다운 폴백 |
+| 네트워크 에러 | 지수 백오프 재시도 |
+| SSL 인증서 | `ssl._create_unverified_context` 사용 |
+
+### 로그 파일
+
+섹터봇은 날짜별 로그 파일을 생성합니다:
+
+```
+logs/
+├── news_bot_YYYYMMDD.log      # 뉴스봇
+└── sector_bot_YYYYMMDD.log    # 섹터봇
+```
+
+### Dependencies (2026-02 업데이트)
+
+섹터봇은 Google Search Grounding을 위해 새로운 SDK를 사용합니다:
+
+| 패키지 | 버전 | 용도 |
+|--------|------|------|
+| `google-genai` | 1.61.0+ | 섹터봇 Google Search Grounding |
+| `google-generativeai` | 0.8.5+ | 뉴스봇 Gemini API |
+
+**SDK 마이그레이션 (2026-02-01):**
+- 섹터봇: `google.generativeai` → `google.genai` (새 SDK)
+- 이유: `google_search_retrieval` deprecated → `types.Tool(google_search=types.GoogleSearch())` 사용
