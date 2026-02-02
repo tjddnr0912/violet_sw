@@ -216,7 +216,7 @@ SECTOR_GEMINI_MODEL=gemini-3-flash-preview  # 섹터봇용 Gemini 모델
 | `telegram_api.py` | `TelegramClient` | Telegram Bot API (Inline Keyboard, Callback Query 지원) |
 | `telegram_notifier.py` | `TelegramNotifier` | 블로그 알림 발송 (TelegramClient 상속) |
 | `blogger_uploader.py` | `BloggerUploader` | Google Blogger API OAuth2 |
-| `claude_html_converter.py` | `convert_md_to_html_via_claude()` | Claude CLI로 HTML 변환 |
+| `claude_html_converter.py` | `convert_md_to_html_via_claude()` | Claude CLI로 HTML 변환 (투자 면책조항 옵션) |
 
 ### telegram_api.py 주요 메서드
 
@@ -228,6 +228,20 @@ SECTOR_GEMINI_MODEL=gemini-3-flash-preview  # 섹터봇용 Gemini 모델
 | `edit_message_text()` | 기존 메시지 텍스트 수정 |
 | `get_updates()` | Long polling으로 업데이트 수신 |
 | `test_connection()` | 봇 연결 테스트 |
+
+### claude_html_converter.py 투자 면책조항
+
+`convert_md_to_html_via_claude()` 함수는 `include_investment_disclaimer` 파라미터로 투자 면책조항 포함 여부 제어:
+
+| Bot | include_investment_disclaimer | 면책조항 |
+|-----|-------------------------------|----------|
+| News Bot (main.py) | `True` | 포함 |
+| Sector Bot (weekly_sector_bot.py) | `True` | 포함 |
+| Telegram Gemini Bot (telegram_gemini_bot.py) | `False` (기본값) | 제외 |
+
+**면책조항 내용**: "본 자료는 투자 권유가 아니며, 투자에 대한 결정과 책임은 전적으로 본인에게 있습니다."
+
+**공통 금지 사항**: AI, 자동 생성, Gemini, Claude 등 AI 관련 문구 (모든 봇에 적용)
 
 ## Debugging
 

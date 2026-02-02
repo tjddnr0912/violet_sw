@@ -10,6 +10,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# 투자 면책조항 (뉴스봇, 섹터봇 전용)
+INVESTMENT_DISCLAIMER = """
+## 투자 면책조항 (필수)
+
+HTML 본문 하단에 다음 면책 조항을 반드시 포함할 것:
+
+- **포함할 내용**: "본 자료는 투자 권유가 아니며, 투자에 대한 결정과 책임은 전적으로 본인에게 있습니다."
+- **스타일**: 작은 글씨(12px), 회색(#888), 상단 구분선, 중앙 정렬
+"""
+
 # 프롬프트 파일 경로
 PROMPT_FILE = os.path.join(
     os.path.dirname(__file__),
@@ -59,13 +69,18 @@ def extract_html_from_response(response: str) -> str:
     return response.strip()
 
 
-def convert_md_to_html_via_claude(md_content: str, output_path: str = None) -> str:
+def convert_md_to_html_via_claude(
+    md_content: str,
+    output_path: str = None,
+    include_investment_disclaimer: bool = False
+) -> str:
     """
     Claude CLI를 사용하여 Markdown을 Blogger용 HTML로 변환
 
     Args:
         md_content: Markdown 콘텐츠
         output_path: HTML 저장 경로 (선택)
+        include_investment_disclaimer: 투자 면책조항 포함 여부 (뉴스봇, 섹터봇용)
 
     Returns:
         변환된 HTML 문자열
@@ -75,8 +90,17 @@ def convert_md_to_html_via_claude(md_content: str, output_path: str = None) -> s
     """
     import tempfile
 
-    # 프롬프트 템플릿 로드 + 마크다운 콘텐츠 결합
+    # 프롬프트 템플릿 로드
     prompt_template = load_prompt_template()
+
+    # 투자 면책조항 추가 (뉴스봇, 섹터봇)
+    if include_investment_disclaimer:
+        prompt_template = prompt_template.replace(
+            "## Footer Disclaimer",
+            f"{INVESTMENT_DISCLAIMER}\n\n## Footer Disclaimer"
+        )
+
+    # 마크다운 콘텐츠 결합
     full_prompt = f"{prompt_template}\n\n{md_content}"
 
     logger.info(f"Calling Claude CLI for HTML conversion ({len(md_content)} chars)...")
@@ -94,7 +118,7 @@ def convert_md_to_html_via_claude(md_content: str, output_path: str = None) -> s
                 stdin=f,
                 capture_output=True,
                 text=True,
-                timeout=600  # 10분 타임아웃 (HTML 디자인 생성에 시간 소요)
+                timeout=900  # 15분 타임아웃 (HTML 디자인 생성에 시간 소요)
             )
 
         # 임시 파일 정리
@@ -103,7 +127,7 @@ def convert_md_to_html_via_claude(md_content: str, output_path: str = None) -> s
     except subprocess.TimeoutExpired:
         if 'temp_file' in locals():
             os.unlink(temp_file)
-        logger.error("Claude CLI timed out after 600 seconds")
+        logger.error("Claude CLI timed out after 900 seconds")
         raise Exception("Claude CLI timed out")
     except FileNotFoundError:
         if 'temp_file' in locals():

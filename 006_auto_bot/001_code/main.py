@@ -143,7 +143,8 @@ class NewsBot:
                                         )
                                         upload_content = convert_md_to_html_via_claude(
                                             md_content=blog_summary,
-                                            output_path=html_output_path
+                                            output_path=html_output_path,
+                                            include_investment_disclaimer=True
                                         )
                                         is_markdown = False
                                         logger.info(f"Claude HTML conversion complete: {html_output_path}")
@@ -327,7 +328,8 @@ class NewsBot:
                             )
                             upload_content = convert_md_to_html_via_claude(
                                 md_content=weekly_summary,
-                                output_path=html_output_path
+                                output_path=html_output_path,
+                                include_investment_disclaimer=True
                             )
                             is_markdown = False
                             logger.info(f"Claude HTML conversion complete: {html_output_path}")
@@ -455,7 +457,8 @@ class NewsBot:
                             )
                             upload_content = convert_md_to_html_via_claude(
                                 md_content=monthly_summary,
-                                output_path=html_output_path
+                                output_path=html_output_path,
+                                include_investment_disclaimer=True
                             )
                             is_markdown = False
                             logger.info(f"Claude HTML conversion complete: {html_output_path}")
