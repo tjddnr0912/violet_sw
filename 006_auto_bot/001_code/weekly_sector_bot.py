@@ -160,7 +160,8 @@ class WeeklySectorBot:
                 logger.info(f"[{sector.name}] Step 4: Converting to HTML...")
                 try:
                     html_content = convert_md_to_html_via_claude(
-                        save_result['content']
+                        save_result['content'],
+                        include_investment_disclaimer=True
                     )
                     logger.info(f"[{sector.name}] HTML: {len(html_content)} chars")
                 except Exception as e:
