@@ -10,16 +10,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 투자 면책조항 (뉴스봇, 섹터봇 전용)
-INVESTMENT_DISCLAIMER = """
-## 투자 면책조항 (필수)
-
-HTML 본문 하단에 다음 면책 조항을 반드시 포함할 것:
-
-- **포함할 내용**: "본 자료는 투자 권유가 아니며, 투자에 대한 결정과 책임은 전적으로 본인에게 있습니다."
-- **스타일**: 작은 글씨(12px), 회색(#888), 상단 구분선, 중앙 정렬
-"""
-
 # 프롬프트 파일 경로
 PROMPT_FILE = os.path.join(
     os.path.dirname(__file__),
@@ -72,7 +62,7 @@ def extract_html_from_response(response: str) -> str:
 def convert_md_to_html_via_claude(
     md_content: str,
     output_path: str = None,
-    include_investment_disclaimer: bool = False
+    include_investment_disclaimer: bool = False  # deprecated, 무시됨
 ) -> str:
     """
     Claude CLI를 사용하여 Markdown을 Blogger용 HTML로 변환
@@ -80,7 +70,7 @@ def convert_md_to_html_via_claude(
     Args:
         md_content: Markdown 콘텐츠
         output_path: HTML 저장 경로 (선택)
-        include_investment_disclaimer: 투자 면책조항 포함 여부 (뉴스봇, 섹터봇용)
+        include_investment_disclaimer: deprecated - Claude가 내용에 따라 자체 판단
 
     Returns:
         변환된 HTML 문자열
@@ -92,13 +82,6 @@ def convert_md_to_html_via_claude(
 
     # 프롬프트 템플릿 로드
     prompt_template = load_prompt_template()
-
-    # 투자 면책조항 추가 (뉴스봇, 섹터봇)
-    if include_investment_disclaimer:
-        prompt_template = prompt_template.replace(
-            "## Footer Disclaimer",
-            f"{INVESTMENT_DISCLAIMER}\n\n## Footer Disclaimer"
-        )
 
     # 마크다운 콘텐츠 결합
     full_prompt = f"{prompt_template}\n\n{md_content}"

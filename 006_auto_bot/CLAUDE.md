@@ -229,17 +229,12 @@ SECTOR_GEMINI_MODEL=gemini-3-flash-preview  # 섹터봇용 Gemini 모델
 | `get_updates()` | Long polling으로 업데이트 수신 |
 | `test_connection()` | 봇 연결 테스트 |
 
-### claude_html_converter.py 투자 면책조항
+### claude_html_converter.py
 
-`convert_md_to_html_via_claude()` 함수는 `include_investment_disclaimer` 파라미터로 투자 면책조항 포함 여부 제어:
+`convert_md_to_html_via_claude()` 함수로 Markdown을 Blogger용 HTML로 변환.
 
-| Bot | include_investment_disclaimer | 면책조항 |
-|-----|-------------------------------|----------|
-| News Bot (main.py) | `True` | 포함 |
-| Sector Bot (weekly_sector_bot.py) | `True` | 포함 |
-| Telegram Gemini Bot (telegram_gemini_bot.py) | `False` (기본값) | 제외 |
-
-**면책조항 내용**: "본 자료는 투자 권유가 아니며, 투자에 대한 결정과 책임은 전적으로 본인에게 있습니다."
+- **투자 면책조항**: Claude가 내용에 따라 자체 판단하여 필요 시 포함
+- **`include_investment_disclaimer` 파라미터**: deprecated (하위 호환성 유지, 동작 없음)
 
 **공통 금지 사항**: AI, 자동 생성, Gemini, Claude 등 AI 관련 문구 (모든 봇에 적용)
 
