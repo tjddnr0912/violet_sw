@@ -188,6 +188,7 @@ Use /help to see available commands.
 /summary - Today's trading summary
 /factors - Dynamic factor status
 /performance - 7-day performance
+/bear\\_mode - Bear Quick-Trade mode status
 
 *Trading Commands*
 /close <COIN> - Close position (e.g. /close BTC)
@@ -601,6 +602,58 @@ Min Score: `{min_score}`
 
         except Exception as e:
             await update.message.reply_text(f"Error getting factors: {e}")
+
+    async def cmd_bear_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /bear_mode command - Bear Quick-Trade mode status."""
+        user_chat_id = str(update.effective_chat.id)
+        if user_chat_id != self.chat_id:
+            await update.message.reply_text("Unauthorized.")
+            return
+
+        if not self.trading_bot:
+            await update.message.reply_text("Trading bot not connected.")
+            return
+
+        try:
+            status = self.trading_bot.portfolio_manager.get_bear_mode_status()
+            enabled = status.get('enabled', False)
+            config = status.get('config', {})
+            cooldowns = status.get('cooldowns_hours', {})
+            daily_pnl = status.get('daily_realized_pnl', 0)
+            daily_date = status.get('daily_pnl_date', '')
+
+            status_emoji = "🟢 ON" if enabled else "🔴 OFF"
+
+            message = f"🐻 *Bear Quick-Trade Mode*\n\n"
+            message += f"Status: {status_emoji}\n\n"
+
+            if enabled:
+                message += f"*Settings*\n"
+                message += f"익절: `+{config.get('profit_target_pct', 0.8)}%`\n"
+                message += f"손절 (bearish): `-{config.get('hard_stop_pct_bearish', 1.5)}%`\n"
+                message += f"손절 (strong bear): `-{config.get('hard_stop_pct_strong_bearish', 1.0)}%`\n"
+                message += f"보유한도 (bearish): `{config.get('max_hold_hours_bearish', 4)}h`\n"
+                message += f"보유한도 (strong bear): `{config.get('max_hold_hours_strong_bearish', 2)}h`\n"
+                message += f"포지션 (bearish): `{config.get('position_mult_bearish', 0.5)*100:.0f}%`\n"
+                message += f"포지션 (strong bear): `{config.get('position_mult_strong_bearish', 0.3)*100:.0f}%`\n"
+                message += f"쿨다운 (bearish): `{config.get('cooldown_hours_bearish', 6)}h`\n"
+                message += f"쿨다운 (strong bear): `{config.get('cooldown_hours_strong_bearish', 12)}h`\n\n"
+
+                message += f"*Today ({daily_date})*\n"
+                message += f"실현 P&L: `{daily_pnl:+,.0f} KRW`\n"
+                total_capital = self.trading_bot.config.get('TRADING_CONFIG', {}).get('total_capital_krw', 1000000)
+                daily_limit = total_capital * config.get('daily_loss_limit_pct', 2.0) / 100
+                message += f"일일 한도: `-{daily_limit:,.0f} KRW`\n\n"
+
+                if cooldowns:
+                    message += f"*Cooldowns*\n"
+                    for coin, hours in cooldowns.items():
+                        message += f"{coin}: `{hours:.1f}h` since last exit\n"
+
+            await update.message.reply_text(message, parse_mode='Markdown')
+
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
 
     async def cmd_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /performance command - 7-day performance summary."""
@@ -1068,6 +1121,7 @@ Are you sure you want to close this position?
             self._application.add_handler(CommandHandler("reboot", self.cmd_reboot))
             self._application.add_handler(CommandHandler("resume", self.cmd_resume))
             self._application.add_handler(CommandHandler("optimize", self.cmd_optimize))
+            self._application.add_handler(CommandHandler("bear_mode", self.cmd_bear_mode))
 
             # Add callback query handler for inline buttons
             self._application.add_handler(CallbackQueryHandler(self.callback_handler))

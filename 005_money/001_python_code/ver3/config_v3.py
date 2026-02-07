@@ -177,6 +177,36 @@ EXIT_CONFIG['trail_after_breakeven'] = True  # Move stop to breakeven after firs
 EXIT_CONFIG['full_exit_at_first_target'] = False  # Set True for bearish regime (dynamic)
 
 
+# ========== BEAR QUICK-TRADE CONFIGURATION ==========
+
+BEAR_QUICK_TRADE_CONFIG = {
+    'enabled': True,
+    'active_regimes': ['bearish', 'strong_bearish'],
+
+    # Percent-based quick profit target (replaces BB middle in bear regimes)
+    'profit_target_pct': 0.8,              # +0.8% full exit
+
+    # Time-based forced exit
+    'max_hold_hours_bearish': 4,           # bearish: max 4 hours
+    'max_hold_hours_strong_bearish': 2,    # strong_bearish: max 2 hours
+
+    # Hard stop (independent of Chandelier, whichever triggers first)
+    'hard_stop_pct_bearish': 1.5,          # bearish: -1.5%
+    'hard_stop_pct_strong_bearish': 1.0,   # strong_bearish: -1.0%
+
+    # Position size reduction
+    'position_mult_bearish': 0.5,          # bearish: 50% of base
+    'position_mult_strong_bearish': 0.3,   # strong_bearish: 30% of base
+
+    # Re-entry cooldown after exit
+    'cooldown_hours_bearish': 6,           # bearish: 6 hours
+    'cooldown_hours_strong_bearish': 12,   # strong_bearish: 12 hours
+
+    # Daily loss limit (KRW) - enforced: no new entries after this
+    'daily_loss_limit_pct': 2.0,           # 2% of total capital
+}
+
+
 # ========== DYNAMIC FACTOR CONFIGURATION ==========
 
 DYNAMIC_FACTOR_CONFIG = {
@@ -274,6 +304,7 @@ def get_version_config(interval: str = '1h', mode: str = None, coins: List[str] 
         'SCHEDULE_CONFIG': SCHEDULE_CONFIG,
         'LOGGING_CONFIG': LOGGING_CONFIG,
         'DYNAMIC_FACTOR_CONFIG': DYNAMIC_FACTOR_CONFIG,
+        'BEAR_QUICK_TRADE_CONFIG': BEAR_QUICK_TRADE_CONFIG,
     }
 
 

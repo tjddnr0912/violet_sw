@@ -144,8 +144,8 @@ RISK_CONFIG = {
     'breakeven_after_first_target': True,
 
     # Daily limits
-    'max_daily_loss_pct': 3.0,
-    'max_consecutive_losses': 3,
+    'max_daily_loss_pct': 2.0,
+    'max_consecutive_losses': 2,
     'max_daily_trades': 5,
 
     # Position limits

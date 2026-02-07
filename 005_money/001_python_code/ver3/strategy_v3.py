@@ -215,6 +215,42 @@ class StrategyV3(VersionInterface):
                     'price_data': exec_df,
                 }
 
+            # Step 7a: Crash detection (block entry during flash crashes)
+            if extended_regime in [ExtendedRegime.BEARISH, ExtendedRegime.STRONG_BEARISH]:
+                crash_conditions = self.regime_detector.detect_crash_conditions(exec_df)
+                if crash_conditions.get('is_crash', False):
+                    return {
+                        'action': 'HOLD',
+                        'signal_strength': 0.0,
+                        'reason': f'🚨 Crash detected: {crash_conditions["conditions_met"]}/3 conditions '
+                                  f'(price {crash_conditions["price_change_pct"]:+.1f}%)',
+                        'market_regime': market_regime,
+                        'entry_score': 0,
+                        'current_price': current_price,
+                        'crash_conditions': crash_conditions,
+                        'regime_data': self._get_regime_data(regime_df),
+                        'regime_metadata': regime_metadata,
+                        'dynamic_factors': dynamic_factors,
+                        'price_data': exec_df,
+                    }
+
+            # Step 7b: Momentum filter (block falling knife entries)
+            if extended_regime in [ExtendedRegime.BEARISH, ExtendedRegime.STRONG_BEARISH]:
+                momentum_blocked, momentum_reason = self._check_bear_momentum_filter(exec_df)
+                if momentum_blocked:
+                    return {
+                        'action': 'HOLD',
+                        'signal_strength': 0.0,
+                        'reason': f'Momentum filter: {momentum_reason}',
+                        'market_regime': market_regime,
+                        'entry_score': 0,
+                        'current_price': current_price,
+                        'regime_data': self._get_regime_data(regime_df),
+                        'regime_metadata': regime_metadata,
+                        'dynamic_factors': dynamic_factors,
+                        'price_data': exec_df,
+                    }
+
             # Step 7: Calculate entry score with dynamic weights
             entry_score, score_details = self._calculate_entry_score_dynamic(exec_df)
 
@@ -740,6 +776,35 @@ class StrategyV3(VersionInterface):
             else:
                 details.append(f"Stoch cross<{stoch_threshold:.0f} ✗")
 
+        # === Bonus Signals (for higher score differentiation) ===
+
+        # Bonus 1: Deep BB penetration (price > 1% below BB lower)
+        if latest['bb_lower'] > 0:
+            bb_penetration_pct = ((latest['bb_lower'] - float(latest['close'])) / latest['bb_lower']) * 100
+            if bb_penetration_pct > 1.0:
+                score += 0.5
+                details.append(f"Deep BB -{bb_penetration_pct:.1f}% ✓")
+
+        # Bonus 2: Bullish RSI divergence (price lower low, RSI higher low)
+        if len(df) >= 10:
+            # Compare current vs 5-candle-ago trough
+            price_now = float(latest['close'])
+            rsi_now = float(latest['rsi'])
+            lookback = df.iloc[-10:-3]  # Look for prior trough
+            if len(lookback) > 0:
+                price_prev_low = float(lookback['close'].min())
+                rsi_at_prev_low = float(lookback.loc[lookback['close'].idxmin(), 'rsi'])
+                if price_now < price_prev_low and rsi_now > rsi_at_prev_low:
+                    score += 1.0
+                    details.append("RSI divergence ✓")
+
+        # Bonus 3: Volume confirmation (bullish candle with above-average volume)
+        if float(latest['close']) > float(latest['open']):  # Bullish candle
+            vol_avg = float(df['volume'].iloc[-20:].mean()) if len(df) >= 20 else float(df['volume'].mean())
+            if vol_avg > 0 and float(latest['volume']) > vol_avg * 1.5:
+                score += 0.5
+                details.append("Vol confirm ✓")
+
         details_str = ", ".join(details)
         return score, details_str
 
@@ -887,6 +952,47 @@ class StrategyV3(VersionInterface):
                 'full_exit_at_first': False,
                 'exit_strategy': 'Standard dual target',
             }
+
+    def _check_bear_momentum_filter(self, df: pd.DataFrame) -> Tuple[bool, str]:
+        """
+        Check momentum conditions that should block bearish entries.
+
+        Blocks entry if any of:
+        1. Last 3 candles making consecutive lower lows (falling knife)
+        2. RSI trending down over last 3 candles (not stabilizing)
+        3. Sell volume increasing (down candles with rising volume)
+
+        Returns:
+            Tuple of (is_blocked, reason_string)
+        """
+        if df is None or len(df) < 4:
+            return False, ""
+
+        recent = df.iloc[-4:]  # 4 candles for 3-period comparison
+
+        # Check 1: Consecutive lower lows
+        lows = recent['low'].values
+        lower_lows = all(lows[i] < lows[i-1] for i in range(1, len(lows)))
+        if lower_lows:
+            return True, f"Falling knife: 3 consecutive lower lows"
+
+        # Check 2: RSI trending down
+        rsis = recent['rsi'].values[-3:]  # last 3
+        rsi_declining = all(rsis[i] < rsis[i-1] for i in range(1, len(rsis)))
+        if rsi_declining:
+            return True, f"RSI declining: {rsis[-1]:.0f} < {rsis[-2]:.0f} < {rsis[-3]:.0f}"
+
+        # Check 3: Sell volume increasing (down candles with rising volume)
+        down_candles = recent.iloc[-3:]
+        down_mask = down_candles['close'] < down_candles['open']
+        if down_mask.sum() >= 2:  # At least 2 of 3 are down candles
+            down_volumes = down_candles.loc[down_mask, 'volume'].values
+            if len(down_volumes) >= 2 and all(
+                down_volumes[i] > down_volumes[i-1] for i in range(1, len(down_volumes))
+            ):
+                return True, "Increasing sell volume on down candles"
+
+        return False, ""
 
     # ========================================
     # Version Interface Methods

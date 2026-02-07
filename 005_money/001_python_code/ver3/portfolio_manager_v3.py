@@ -45,7 +45,7 @@ Usage:
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -218,6 +218,11 @@ class PortfolioManagerV3:
 
         # Track last executed action per coin: {coin: 'BUY'|'SELL'|'-'}
         self.last_executed_actions = self._load_last_actions()
+
+        # Bear Quick-Trade state
+        self._last_exit_times: Dict[str, datetime] = {}  # coin -> last exit time (for cooldown)
+        self._daily_realized_pnl: float = 0.0  # accumulated daily realized P&L (KRW)
+        self._daily_pnl_date: str = ''  # date string for daily reset
 
         self.logger.logger.info(f"Portfolio Manager V3 initialized with coins: {coins}")
 
@@ -416,6 +421,81 @@ class PortfolioManagerV3:
                         trailing_pct=2.0  # 최고가 대비 2% 하락 시 손절
                     )
 
+        # 0.3 BEAR QUICK-TRADE: Hard stop + time-based exit + pct profit
+        bear_config = self.config.get('BEAR_QUICK_TRADE_CONFIG', {})
+        bear_enabled = bear_config.get('enabled', False)
+        bear_active_regimes = bear_config.get('active_regimes', ['bearish', 'strong_bearish'])
+
+        if bear_enabled:
+            for coin in self.coins:
+                if not self.executor.has_position(coin):
+                    continue
+                # Skip if already marked for exit by stop-loss
+                if any(d[0] == coin and d[1] == 'SELL' for d in decisions):
+                    continue
+
+                result = coin_results.get(coin, {})
+                current_price = result.get('current_price', 0)
+                market_regime = result.get('market_regime', 'unknown')
+
+                if current_price <= 0 or market_regime not in bear_active_regimes:
+                    continue
+
+                pos_summary = self.executor.get_position_summary(coin)
+                entry_price = pos_summary.get('entry_price', 0)
+                entry_time_str = pos_summary.get('entry_time', '')
+
+                if entry_price <= 0:
+                    continue
+
+                is_strong_bearish = (market_regime == 'strong_bearish')
+                change_pct = ((current_price - entry_price) / entry_price) * 100
+
+                # --- Hard Stop ---
+                hard_stop_pct = bear_config.get(
+                    'hard_stop_pct_strong_bearish' if is_strong_bearish else 'hard_stop_pct_bearish',
+                    1.0 if is_strong_bearish else 1.5
+                )
+                if change_pct <= -hard_stop_pct:
+                    decisions.append((coin, 'SELL', 0))
+                    self.logger.logger.warning(
+                        f"🛑 BEAR HARD STOP: {coin} at {current_price:,.0f} KRW "
+                        f"({change_pct:+.2f}% <= -{hard_stop_pct}%)"
+                    )
+                    continue
+
+                # --- Bear Quick Profit ---
+                profit_target_pct = bear_config.get('profit_target_pct', 0.8)
+                if change_pct >= profit_target_pct:
+                    decisions.append((coin, 'SELL', 0))
+                    self.logger.logger.info(
+                        f"🎯 BEAR QUICK-PROFIT: {coin} at {current_price:,.0f} KRW "
+                        f"(+{change_pct:.2f}% >= +{profit_target_pct}%)"
+                    )
+                    continue
+
+                # --- Time-Based Exit ---
+                if entry_time_str:
+                    try:
+                        if isinstance(entry_time_str, str):
+                            entry_time = datetime.fromisoformat(entry_time_str)
+                        else:
+                            entry_time = entry_time_str
+                        max_hours = bear_config.get(
+                            'max_hold_hours_strong_bearish' if is_strong_bearish else 'max_hold_hours_bearish',
+                            2 if is_strong_bearish else 4
+                        )
+                        elapsed_hours = (datetime.now() - entry_time).total_seconds() / 3600
+                        if elapsed_hours >= max_hours:
+                            decisions.append((coin, 'SELL', 0))
+                            self.logger.logger.info(
+                                f"⏰ BEAR TIME-BASED EXIT: {coin} after {elapsed_hours:.1f}h "
+                                f"(limit: {max_hours}h in {market_regime})"
+                            )
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
         # 0.5 SECOND PRIORITY: Check profit targets for all active positions
         exit_config = self.config.get('EXIT_CONFIG', {})
         for coin in self.coins:
@@ -520,9 +600,46 @@ class PortfolioManagerV3:
             )
             return decisions  # 손절/익절 결정만 반환
 
+        # 3.1 Daily loss limit check
+        daily_loss_blocked = False
+        if bear_enabled:
+            self._update_daily_pnl_tracking()
+            daily_limit_pct = bear_config.get('daily_loss_limit_pct', 2.0)
+            total_capital = self.config.get('TRADING_CONFIG', {}).get('total_capital_krw', 1000000)
+            daily_limit_krw = total_capital * daily_limit_pct / 100
+            if self._daily_realized_pnl <= -daily_limit_krw:
+                daily_loss_blocked = True
+                self.logger.logger.warning(
+                    f"🚫 일일 손실 한도 도달: {self._daily_realized_pnl:,.0f} KRW "
+                    f"(한도: -{daily_limit_krw:,.0f} KRW). 새 진입 차단."
+                )
+
         entry_candidates = []
         for coin, result in coin_results.items():
             if result['action'] == 'BUY':
+                # Daily loss limit check
+                if daily_loss_blocked:
+                    self.logger.logger.info(f"⏸️ {coin} 진입 차단: 일일 손실 한도 초과")
+                    continue
+
+                # Bear cooldown check
+                if bear_enabled:
+                    market_regime = result.get('market_regime', 'unknown')
+                    if market_regime in bear_active_regimes and coin in self._last_exit_times:
+                        is_sb = (market_regime == 'strong_bearish')
+                        cooldown_hours = bear_config.get(
+                            'cooldown_hours_strong_bearish' if is_sb else 'cooldown_hours_bearish',
+                            12 if is_sb else 6
+                        )
+                        elapsed = (datetime.now() - self._last_exit_times[coin]).total_seconds() / 3600
+                        if elapsed < cooldown_hours:
+                            remaining = cooldown_hours - elapsed
+                            self.logger.logger.info(
+                                f"⏳ {coin} 재진입 쿨다운: {remaining:.1f}h 남음 "
+                                f"({cooldown_hours}h in {market_regime})"
+                            )
+                            continue
+
                 has_pos = self.executor.has_position(coin)
 
                 if not has_pos:
@@ -736,6 +853,23 @@ class PortfolioManagerV3:
                 else:  # New position
                     trade_amount_krw = base_amount_krw
 
+                    # Bear Quick-Trade position size reduction
+                    bear_config = self.config.get('BEAR_QUICK_TRADE_CONFIG', {})
+                    if bear_config.get('enabled', False):
+                        market_regime = analysis.get('market_regime', 'unknown')
+                        bear_regimes = bear_config.get('active_regimes', ['bearish', 'strong_bearish'])
+                        if market_regime in bear_regimes:
+                            is_sb = (market_regime == 'strong_bearish')
+                            bear_mult = bear_config.get(
+                                'position_mult_strong_bearish' if is_sb else 'position_mult_bearish',
+                                0.3 if is_sb else 0.5
+                            )
+                            trade_amount_krw = base_amount_krw * bear_mult
+                            self.logger.logger.info(
+                                f"🐻 Bear position sizing: {coin} {bear_mult*100:.0f}% "
+                                f"({trade_amount_krw:,.0f} KRW in {market_regime})"
+                            )
+
                 units = trade_amount_krw / price
 
                 # Get entry conditions and regime for performance tracking
@@ -847,6 +981,16 @@ class PortfolioManagerV3:
                     # Track last executed action
                     self.last_executed_actions[coin] = 'SELL'
                     self._save_last_actions()  # Persist to file
+
+                    # Track exit time for bear cooldown
+                    self._last_exit_times[coin] = datetime.now()
+
+                    # Track daily P&L
+                    pnl = order_result.get('pnl_krw', 0)
+                    if pnl != 0:
+                        self._update_daily_pnl_tracking()
+                        self._daily_realized_pnl += pnl
+
                     self.logger.logger.info(
                         f"{coin} position closed @ {price:,.0f} KRW"
                     )
@@ -930,6 +1074,38 @@ class PortfolioManagerV3:
             'total_pnl_krw': total_pnl,
             'coins': coins_data,
             'last_decisions': self.last_decisions,
+        }
+
+    def _update_daily_pnl_tracking(self):
+        """Reset daily P&L counter if date has changed."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        if self._daily_pnl_date != today:
+            if self._daily_pnl_date and self._daily_realized_pnl != 0:
+                self.logger.logger.info(
+                    f"Daily P&L reset: {self._daily_pnl_date} = {self._daily_realized_pnl:+,.0f} KRW"
+                )
+            self._daily_pnl_date = today
+            self._daily_realized_pnl = 0.0
+
+    def get_bear_mode_status(self) -> Dict[str, Any]:
+        """Get Bear Quick-Trade mode status for Telegram display."""
+        bear_config = self.config.get('BEAR_QUICK_TRADE_CONFIG', {})
+        enabled = bear_config.get('enabled', False)
+
+        cooldowns = {}
+        for coin in self.coins:
+            if coin in self._last_exit_times:
+                elapsed = (datetime.now() - self._last_exit_times[coin]).total_seconds() / 3600
+                cooldowns[coin] = round(elapsed, 1)
+
+        self._update_daily_pnl_tracking()
+
+        return {
+            'enabled': enabled,
+            'config': bear_config,
+            'cooldowns_hours': cooldowns,
+            'daily_realized_pnl': self._daily_realized_pnl,
+            'daily_pnl_date': self._daily_pnl_date,
         }
 
     def get_monitor(self, coin: str) -> Optional[CoinMonitor]:

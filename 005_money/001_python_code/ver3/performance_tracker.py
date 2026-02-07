@@ -389,30 +389,30 @@ class PerformanceTracker:
         if self._observation_cleared:
             return False, "수동 해제됨"
 
-        # 2. 시간 기반 해제 (2시간 = 7200초)
+        # 2. 시간 기반 해제 (4시간 = 14400초)
         if self._observation_start_time:
             elapsed = datetime.now() - self._observation_start_time
-            if elapsed.total_seconds() >= 7200:  # 2시간
+            if elapsed.total_seconds() >= 14400:  # 4시간
                 self._observation_start_time = None
-                return False, "2시간 경과로 자동 해제"
+                return False, "4시간 경과로 자동 해제"
 
         # 3. 연속 손실 체크
         consecutive_losses = self.get_consecutive_losses()
 
-        if consecutive_losses >= 3:
+        if consecutive_losses >= 2:
             # 관찰 모드 진입 시간 기록
             if not self._observation_start_time:
                 self._observation_start_time = datetime.now()
             return True, f"연속 {consecutive_losses}회 손실로 관찰 모드 활성"
 
         # 연속 손실이 해소되면 관찰 모드 리셋
-        if consecutive_losses < 3 and self._observation_start_time:
+        if consecutive_losses < 2 and self._observation_start_time:
             self._observation_start_time = None
             self._observation_cleared = False
 
         # 최근 7일 승률도 확인
         perf = self.get_recent_performance(days=7)
-        if perf['total_trades'] >= 5 and perf['win_rate'] < 0.25:
+        if perf['total_trades'] >= 5 and perf['win_rate'] < 0.30:
             if not self._observation_start_time:
                 self._observation_start_time = datetime.now()
             return True, f"최근 7일 승률 {perf['win_rate']:.0%}로 관찰 모드 권장"
@@ -442,7 +442,7 @@ class PerformanceTracker:
 
         if self._observation_start_time and is_observation:
             elapsed = datetime.now() - self._observation_start_time
-            remaining_seconds = max(0, 7200 - elapsed.total_seconds())
+            remaining_seconds = max(0, 14400 - elapsed.total_seconds())
             remaining_time = f"{int(remaining_seconds // 60)}분 {int(remaining_seconds % 60)}초"
 
         return {
