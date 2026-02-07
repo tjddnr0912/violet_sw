@@ -300,7 +300,7 @@ class RegimeDetector:
             ExtendedRegime.BEARISH: {
                 'allow_entry': True,  # Allow mean reversion entries
                 'entry_mode': 'reversion',
-                'entry_threshold_modifier': 1.3,  # 완화: 1.5 → 1.3
+                'entry_threshold_modifier': 1.5,  # 강화: 1.3 → 1.5 (min_score 2→3)
                 'stop_loss_modifier': 0.85,       # 여유 확보: 0.7 → 0.85
                 'take_profit_target': 'bb_middle',
                 'full_exit_at_first_target': True,  # Full exit at BB middle
@@ -309,11 +309,11 @@ class RegimeDetector:
             ExtendedRegime.STRONG_BEARISH: {
                 'allow_entry': True,  # Only extreme oversold
                 'entry_mode': 'reversion',
-                'entry_threshold_modifier': 1.5,  # 완화: 2.0 → 1.5 (4점→3점 필요)
+                'entry_threshold_modifier': 2.0,  # 강화: 1.5 → 2.0 (min_score 2→4)
                 'stop_loss_modifier': 0.8,        # 여유 확보: 0.5 → 0.8
                 'take_profit_target': 'bb_middle',
                 'full_exit_at_first_target': True,
-                'description': 'Extreme oversold entries only, relaxed risk management',
+                'description': 'Ultra-conservative quick-trade, extreme oversold only',
             },
             ExtendedRegime.RANGING: {
                 'allow_entry': True,
@@ -393,6 +393,57 @@ class RegimeDetector:
         conditions['extreme_condition_count'] = extreme_count
 
         return conditions
+
+    def detect_crash_conditions(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Detect crash/flash-crash conditions that should block new entries.
+
+        Conditions (need 2 of 3 for crash):
+        1. Price dropped > 5% in last 4 candles
+        2. Current candle body > ATR × 2 (extreme range)
+        3. Volume > average × 3 (volume spike)
+
+        Args:
+            df: DataFrame with OHLCV + ATR calculated
+
+        Returns:
+            Dict with is_crash flag and condition details
+        """
+        if df is None or len(df) < 5:
+            return {'is_crash': False, 'reason': 'Insufficient data'}
+
+        latest = df.iloc[-1]
+        lookback = df.iloc[-4:]  # Last 4 candles
+
+        # Condition 1: Price dropped > 5% in last 4 candles
+        price_start = float(lookback.iloc[0]['open'])
+        price_end = float(latest['close'])
+        price_change_pct = ((price_end - price_start) / price_start) * 100
+        sharp_drop = price_change_pct < -5.0
+
+        # Condition 2: Current candle body > ATR × 2
+        candle_body = abs(float(latest['close']) - float(latest['open']))
+        atr = float(latest.get('atr', 0))
+        extreme_candle = candle_body > (atr * 2) if atr > 0 else False
+
+        # Condition 3: Volume > average × 3
+        vol_avg = float(df['volume'].iloc[-20:].mean()) if len(df) >= 20 else float(df['volume'].mean())
+        current_vol = float(latest.get('volume', 0))
+        volume_spike = current_vol > (vol_avg * 3) if vol_avg > 0 else False
+
+        conditions_met = sum([sharp_drop, extreme_candle, volume_spike])
+        is_crash = conditions_met >= 2
+
+        return {
+            'is_crash': is_crash,
+            'conditions_met': conditions_met,
+            'sharp_drop': sharp_drop,
+            'price_change_pct': round(price_change_pct, 2),
+            'extreme_candle': extreme_candle,
+            'candle_body_vs_atr': round(candle_body / atr, 2) if atr > 0 else 0,
+            'volume_spike': volume_spike,
+            'volume_ratio': round(current_vol / vol_avg, 2) if vol_avg > 0 else 0,
+        }
 
     def is_entry_allowed(
         self,

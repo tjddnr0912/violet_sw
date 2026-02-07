@@ -141,6 +141,13 @@ class TradingBotV3(VersionInterface):
         self._consecutive_timeout_count = 0
         self._max_consecutive_timeouts = 3  # 3회 연속 timeout 시 자동 재시작 (15분)
 
+        # Circuit breaker for API failures
+        self._api_failure_count = 0
+        self._circuit_breaker_open = False
+        self._circuit_breaker_open_time = None
+        self._circuit_breaker_threshold = 5  # Open after 5 consecutive failures
+        self._circuit_breaker_cooldown = 300  # 5 minutes
+
         self.logger.logger.info("=" * 60)
         self.logger.logger.info(f"Trading Bot V3 Initialized")
         self.logger.logger.info(f"  Version: {self.VERSION_NAME}")
@@ -260,6 +267,21 @@ class TradingBotV3(VersionInterface):
                 self.logger.logger.info(f"{'='*60}")
 
                 try:
+                    # Circuit breaker check
+                    if self._circuit_breaker_open:
+                        elapsed = time.time() - (self._circuit_breaker_open_time or 0)
+                        if elapsed < self._circuit_breaker_cooldown:
+                            remaining = self._circuit_breaker_cooldown - elapsed
+                            self.logger.logger.warning(
+                                f"⚡ Circuit breaker OPEN: {remaining:.0f}s remaining. Skipping analysis."
+                            )
+                            time.sleep(min(remaining, 60))
+                            continue
+                        else:
+                            self._circuit_breaker_open = False
+                            self._api_failure_count = 0
+                            self.logger.logger.info("⚡ Circuit breaker CLOSED: Resuming analysis.")
+
                     # Track analysis time for hang detection
                     analysis_start = time.time()
                     ANALYSIS_CYCLE_WARNING_THRESHOLD = 180  # 3 minutes warning
@@ -351,25 +373,57 @@ class TradingBotV3(VersionInterface):
                     import traceback
                     self.logger.logger.error(traceback.format_exc())
 
+                    # Circuit breaker: track API failures
+                    self._api_failure_count += 1
+                    if self._api_failure_count >= self._circuit_breaker_threshold:
+                        self._circuit_breaker_open = True
+                        self._circuit_breaker_open_time = time.time()
+                        self.logger.logger.error(
+                            f"⚡ Circuit breaker OPENED: {self._api_failure_count} consecutive failures. "
+                            f"Pausing for {self._circuit_breaker_cooldown}s."
+                        )
+                        try:
+                            self.telegram.send_message(
+                                f"⚡ *Circuit Breaker OPEN*\n\n"
+                                f"연속 {self._api_failure_count}회 분석 실패.\n"
+                                f"{self._circuit_breaker_cooldown // 60}분간 분석 중단.",
+                                parse_mode='Markdown'
+                            )
+                        except Exception:
+                            pass
+                else:
+                    # Reset failure count on successful cycle
+                    if self._api_failure_count > 0:
+                        self.logger.logger.info(
+                            f"API failure count reset (was {self._api_failure_count})"
+                        )
+                    self._api_failure_count = 0
+
                 # Check and run scheduled factor updates (daily at 00:00, weekly on Sunday)
                 self._check_scheduled_factor_updates()
 
                 # Check and send daily summary at 23:50
                 self._check_and_send_daily_summary()
 
+                # Adaptive analysis interval: shorter in bear + high volatility
+                effective_interval = self._get_adaptive_interval()
+
                 # Sleep until next cycle
                 cycle_elapsed = time.time() - cycle_start
-                sleep_time = max(0, self.check_interval - cycle_elapsed)
+                sleep_time = max(0, effective_interval - cycle_elapsed)
 
                 if sleep_time > 0:
+                    interval_note = ""
+                    if effective_interval != self.check_interval:
+                        interval_note = f" (adaptive: {effective_interval}s)"
                     self.logger.logger.info(
                         f"\nCycle completed in {cycle_elapsed:.2f}s. "
-                        f"Sleeping {sleep_time:.0f}s until next cycle..."
+                        f"Sleeping {sleep_time:.0f}s until next cycle...{interval_note}"
                     )
                     time.sleep(sleep_time)
                 else:
                     self.logger.logger.warning(
-                        f"\nCycle took {cycle_elapsed:.2f}s (exceeds interval of {self.check_interval}s)"
+                        f"\nCycle took {cycle_elapsed:.2f}s (exceeds interval of {effective_interval}s)"
                     )
 
         except KeyboardInterrupt:
@@ -877,6 +931,39 @@ Configuration:
 
         except Exception as e:
             self.logger.logger.warning(f"Error checking regime change: {e}")
+
+    def _get_adaptive_interval(self) -> int:
+        """
+        Get adaptive analysis interval based on market conditions.
+
+        In bear regimes with high volatility, reduce interval to half
+        for faster stop-loss/profit-taking response.
+
+        Returns:
+            Effective check interval in seconds
+        """
+        try:
+            factors = self.factor_manager.get_current_factors()
+            volatility = factors.get('volatility_level', 'NORMAL')
+            regime = factors.get('market_regime', 'unknown')
+
+            bear_regimes = ['bearish', 'strong_bearish']
+
+            # Bear + HIGH/EXTREME volatility → half interval
+            if regime in bear_regimes and volatility in ('HIGH', 'EXTREME'):
+                adaptive = max(150, self.check_interval // 2)  # min 2.5 minutes
+                return adaptive
+
+            # Has open positions in bear market → slightly shorter
+            has_positions = len(self.portfolio_manager.executor.positions) > 0
+            if has_positions and regime in bear_regimes:
+                adaptive = max(180, int(self.check_interval * 0.7))
+                return adaptive
+
+        except Exception:
+            pass
+
+        return self.check_interval
 
     def get_current_factors(self) -> Dict[str, Any]:
         """
