@@ -42,7 +42,7 @@ from .strategy.quant import (
 )
 from .telegram import TelegramNotifier, get_notifier
 from .utils import is_trading_day, get_trading_hours, get_market_open_time
-from .quant_modules import EngineState, SchedulePhase, PendingOrder, EngineStateManager, OrderExecutor, MonthlyTracker
+from .quant_modules import EngineState, SchedulePhase, PendingOrder, EngineStateManager, OrderExecutor, MonthlyTracker, DailyTracker, DailySnapshot
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -211,18 +211,25 @@ class QuantTradingEngine:
         self._order_lock = self.state_manager.acquire_order_lock()
         self._screening_lock = self.state_manager.acquire_screening_lock()
 
+        # 월간 트래커
+        self.monthly_tracker = MonthlyTracker(data_dir=self.data_dir)
+        self.monthly_trades: List[Dict] = []  # 월간 거래 추적
+
+        # 일별 트래커
+        self.daily_tracker = DailyTracker(data_dir=self.data_dir)
+        if not self.daily_tracker.initial_capital:
+            self.daily_tracker.initial_capital = self.config.total_capital
+            self.daily_tracker._save_history()
+
         # 주문 실행기
         self.order_executor = OrderExecutor(
             client=self.client,
             portfolio=self.portfolio,
             notifier=self.notifier,
             config=self.config,
-            is_virtual=is_virtual
+            is_virtual=is_virtual,
+            daily_tracker=self.daily_tracker
         )
-
-        # 월간 트래커
-        self.monthly_tracker = MonthlyTracker(data_dir=self.data_dir)
-        self.monthly_trades: List[Dict] = []  # 월간 거래 추적
 
         # 긴급 리밸런싱 모드 (보유 70% 미만 시 활성화)
         self._urgent_rebalance_mode = False
@@ -778,6 +785,57 @@ class QuantTradingEngine:
         )
 
         self.notifier.send_message(message)
+
+        # 일별 스냅샷 저장
+        try:
+            balance_info = self.client.get_balance()
+            total_assets = balance_info.get('total_eval', 0) + balance_info.get('cash', 0)
+            cash = balance_info.get('cash', 0)
+            buy_amount = balance_info.get('buy_amount', 0)
+            invested = balance_info.get('total_eval', 0)
+
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            prev = self.daily_tracker.get_previous_day_snapshot(today_str)
+            daily_pnl = 0
+            daily_pnl_pct = 0
+            if prev:
+                daily_pnl = total_assets - prev.total_assets
+                daily_pnl_pct = (daily_pnl / prev.total_assets * 100) if prev.total_assets > 0 else 0
+
+            initial = self.daily_tracker.initial_capital or self.config.total_capital
+            total_pnl = total_assets - initial
+            total_pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0
+
+            position_data = []
+            for pos in snapshot.positions:
+                pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                position_data.append({
+                    "code": pos.code,
+                    "name": pos.name,
+                    "quantity": pos.quantity,
+                    "entry_price": pos.entry_price,
+                    "current_price": pos.current_price,
+                    "pnl": pnl,
+                    "pnl_pct": pos.profit_pct
+                })
+
+            daily_snapshot = DailySnapshot(
+                date=datetime.now().strftime("%Y-%m-%d"),
+                total_assets=total_assets,
+                cash=cash,
+                invested=invested,
+                buy_amount=buy_amount,
+                position_count=len(snapshot.positions),
+                total_pnl=total_pnl,
+                total_pnl_pct=total_pnl_pct,
+                daily_pnl=daily_pnl,
+                daily_pnl_pct=daily_pnl_pct,
+                trades_today=len(self.daily_trades),
+                positions=position_data
+            )
+            self.daily_tracker.save_daily_snapshot(daily_snapshot)
+        except Exception as e:
+            logger.error(f"일별 스냅샷 저장 실패: {e}", exc_info=True)
 
         # 월간 거래에 추가 (일일 거래 초기화 전)
         self.monthly_trades.extend(self.daily_trades)

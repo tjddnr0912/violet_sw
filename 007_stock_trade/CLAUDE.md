@@ -26,7 +26,9 @@ src/
 ├── quant_engine.py              # 자동매매 엔진 (오케스트레이션)
 ├── quant_modules/               # 퀀트 엔진 모듈 (2026-01 리팩토링)
 │   ├── state_manager.py         # 상태 저장/로드, Lock 관리
-│   └── order_executor.py        # 주문 생성/실행/재시도
+│   ├── order_executor.py        # 주문 생성/실행/재시도
+│   ├── monthly_tracker.py       # 월간 포트폴리오 트래킹
+│   └── daily_tracker.py         # 일별 자산 추적 및 거래 일지 (2026-02)
 ├── api/
 │   ├── kis_client.py            # KIS API 클라이언트
 │   └── kis_quant.py             # 퀀트용 API 확장
@@ -45,6 +47,9 @@ scripts/run_daemon.py            # 통합 데몬
 config/
 ├── optimal_weights.json         # 팩터 가중치
 └── system_config.json           # 시스템 설정
+data/quant/
+├── daily_history.json           # 일별 자산 스냅샷 (2026-02)
+└── transaction_journal.json     # 전체 거래 일지 (2026-02)
 ```
 
 ## 텔레그램 명령어
@@ -63,6 +68,9 @@ config/
 |--------|------|
 | `/status` | 상태 확인 |
 | `/positions` | 보유 종목 |
+| `/history [N]` | 일별 자산 변동 (기본 7일) |
+| `/trades [N]` | 거래 내역 (기본 7일) |
+| `/capital` | 초기 투자금 대비 현황 |
 | `/set_target N` | 목표 종목 수 |
 | `/set_dryrun on\|off` | Dry-run 모드 |
 
@@ -71,9 +79,9 @@ config/
 | 시간 | 동작 |
 |------|------|
 | 08:30 | 장 전 스크리닝 (리밸런싱 일) |
-| 09:00 | 주문 실행 |
+| 09:00 | 주문 실행 → 거래 즉시 기록 (transaction_journal.json) |
 | 5분마다 | 포지션 모니터링 |
-| 15:20 | 일일 리포트 |
+| 15:20 | 일일 리포트 + 일별 스냅샷 저장 (daily_history.json) |
 
 ## 환경 변수 (.env)
 
@@ -267,3 +275,26 @@ def api_call():
 **교훈:**
 1. pykrx는 KRX 웹 크롤링 기반이라 외부 변경에 취약 → 폴백 로직 필수
 2. 긴급 리밸런싱 같은 예외 로직은 별도 추적 변수로 제한 필요
+
+### 2026-02-09: 일별 자산 추적 및 거래 일지 기능 추가
+
+**배경:** 모의투자 계좌는 앱에서 직접 확인 불가. 기존엔 월간 스냅샷만 저장하여 일별 자산 변화 및 매매 기록 검증이 어려웠음.
+
+**추가된 기능:**
+- `src/quant_modules/daily_tracker.py` - 일별 자산 스냅샷 + 영구 거래 일지 모듈
+- 거래 발생 시 `transaction_journal.json`에 즉시 기록 (order_executor 3곳)
+- 15:20 일일 리포트 시 `daily_history.json`에 자산 스냅샷 저장
+- 텔레그램 명령어: `/history [N]`, `/trades [N]`, `/capital`
+- 초기 투자금 기록 (최초 1회), 365일 자동 정리
+
+**데이터 파일:**
+| 파일 | 용도 | 생성 시점 |
+|------|------|----------|
+| `data/quant/daily_history.json` | 일별 자산 스냅샷 | 15:20 일일 리포트 |
+| `data/quant/transaction_journal.json` | 전체 거래 일지 | 매매 즉시 |
+
+**관련 코드:**
+- `src/quant_modules/daily_tracker.py` - DailySnapshot, TransactionRecord, DailyTracker
+- `src/quant_modules/order_executor.py` - `daily_tracker` 파라미터 + `log_transaction()` 호출
+- `src/quant_engine.py` - DailyTracker 초기화, `generate_daily_report()`에서 스냅샷 저장
+- `src/telegram/bot.py` - `/history`, `/trades`, `/capital` 명령어

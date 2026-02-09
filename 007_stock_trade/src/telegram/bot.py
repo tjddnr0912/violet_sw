@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from pathlib import Path
 
@@ -96,6 +96,9 @@ class TelegramBot:
             "/status - 시스템 상태\n"
             "/positions - 보유 포지션\n"
             "/balance - 계좌 잔고\n"
+            "/history [N] - 자산 변동 (N일)\n"
+            "/trades [N] - 거래 내역 (N일)\n"
+            "/capital - 투자 원금 대비 현황\n"
             "/logs - 최근 로그\n"
             "/report - 일일 리포트\n"
             "/monthly_report - 월간 리포트\n\n"
@@ -205,6 +208,262 @@ class TelegramBot:
 
         except Exception as e:
             await update.message.reply_text(f"❌ 잔고 조회 실패: {e}")
+
+    async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """일별 자산 변동 조회"""
+        try:
+            data_dir = Path(__file__).parent.parent.parent / "data" / "quant"
+            history_file = data_dir / "daily_history.json"
+
+            if not history_file.exists():
+                await update.message.reply_text("❌ 일별 히스토리 데이터가 없습니다.\n15:20 일일 리포트 후 생성됩니다.")
+                return
+
+            with open(history_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            initial_capital = data.get("initial_capital", 0)
+            snapshots = data.get("snapshots", [])
+
+            if not snapshots:
+                await update.message.reply_text("❌ 저장된 스냅샷이 없습니다.")
+                return
+
+            # 일수 파라미터
+            days = 7
+            if context.args:
+                try:
+                    days = max(1, min(int(context.args[0]), 90))
+                except ValueError:
+                    pass
+
+            # 최근 N일 필터링
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            recent = sorted(
+                [s for s in snapshots if s["date"] >= cutoff],
+                key=lambda s: s["date"],
+                reverse=True
+            )
+
+            if not recent:
+                await update.message.reply_text(f"❌ 최근 {days}일 내 데이터가 없습니다.")
+                return
+
+            lines = [
+                f"📊 <b>자산 변동 (최근 {days}일)</b>",
+                "━━━━━━━━━━━━━━━"
+            ]
+
+            if initial_capital > 0:
+                lines.append(f"초기 투자금: <code>{initial_capital:,.0f}원</code>")
+                lines.append("━━━━━━━━━━━━━━━")
+
+            for s in recent:
+                date_str = s["date"][5:]  # "02/09"
+                total = s["total_assets"]
+                d_pnl = s.get("daily_pnl", 0)
+                d_pnl_pct = s.get("daily_pnl_pct", 0)
+                trades = s.get("trades_today", 0)
+
+                sign = "+" if d_pnl >= 0 else ""
+                pct_sign = "+" if d_pnl_pct >= 0 else ""
+                trade_str = f" [{trades}건]" if trades > 0 else ""
+
+                lines.append(
+                    f"{date_str}: <code>{total:,.0f}원</code>"
+                    f" ({sign}{d_pnl:,.0f} / {pct_sign}{d_pnl_pct:.2f}%){trade_str}"
+                )
+
+            if initial_capital > 0:
+                latest = recent[0]
+                total_pnl = latest["total_assets"] - initial_capital
+                total_pnl_pct = (total_pnl / initial_capital * 100) if initial_capital > 0 else 0
+                sign = "+" if total_pnl >= 0 else ""
+                lines.append("━━━━━━━━━━━━━━━")
+                lines.append(f"총 수익: <b>{sign}{total_pnl:,.0f}원</b> ({sign}{total_pnl_pct:.1f}%)")
+
+            await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+        except Exception as e:
+            logger.error(f"히스토리 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 히스토리 조회 실패: {e}")
+
+    async def cmd_trades(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """거래 내역 조회"""
+        try:
+            data_dir = Path(__file__).parent.parent.parent / "data" / "quant"
+            tx_file = data_dir / "transaction_journal.json"
+
+            if not tx_file.exists():
+                await update.message.reply_text("❌ 거래 일지 데이터가 없습니다.\n거래 발생 시 자동 기록됩니다.")
+                return
+
+            with open(tx_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            transactions = data.get("transactions", [])
+
+            if not transactions:
+                await update.message.reply_text("❌ 기록된 거래가 없습니다.")
+                return
+
+            # 일수 파라미터
+            days = 7
+            if context.args:
+                try:
+                    days = max(1, min(int(context.args[0]), 90))
+                except ValueError:
+                    pass
+
+            # 최근 N일 필터링
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            recent = sorted(
+                [t for t in transactions if t["date"] >= cutoff],
+                key=lambda t: t["timestamp"],
+                reverse=True
+            )
+
+            if not recent:
+                await update.message.reply_text(f"❌ 최근 {days}일 내 거래가 없습니다.")
+                return
+
+            lines = [
+                f"📋 <b>거래 내역 (최근 {days}일)</b>",
+                "━━━━━━━━━━━━━━━"
+            ]
+
+            buy_count = 0
+            sell_count = 0
+
+            for t in recent[:20]:  # 최대 20건 표시
+                ts = t["timestamp"]
+                date_str = ts[5:10]   # "02/09"
+                time_str = ts[11:16]  # "09:00"
+                tx_type = t["type"]
+
+                if tx_type == "BUY":
+                    emoji = "🟢"
+                    buy_count += 1
+                else:
+                    emoji = "🔴"
+                    sell_count += 1
+
+                qty = t.get("quantity", 0)
+                price = t.get("price", 0)
+
+                lines.append(f"\n{date_str} {time_str}")
+                lines.append(f"  {emoji} {t['name']} {qty}주 × {price:,.0f}원")
+
+                reason = t.get("reason", "")
+                if reason:
+                    lines.append(f"  사유: {reason[:30]}")
+
+                if tx_type == "SELL":
+                    pnl = t.get("pnl", 0)
+                    pnl_pct = t.get("pnl_pct", 0)
+                    sign = "+" if pnl >= 0 else ""
+                    lines.append(f"  손익: {sign}{pnl:,.0f}원 ({sign}{pnl_pct:.1f}%)")
+
+            lines.append("\n━━━━━━━━━━━━━━━")
+            total_shown = min(len(recent), 20)
+            lines.append(f"총: 매수 {buy_count}건, 매도 {sell_count}건")
+            if len(recent) > 20:
+                lines.append(f"(최근 {total_shown}건만 표시, 전체 {len(recent)}건)")
+
+            await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+        except Exception as e:
+            logger.error(f"거래 내역 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 거래 내역 조회 실패: {e}")
+
+    async def cmd_capital(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """초기 투자금 대비 현황"""
+        try:
+            data_dir = Path(__file__).parent.parent.parent / "data" / "quant"
+            history_file = data_dir / "daily_history.json"
+
+            if not history_file.exists():
+                await update.message.reply_text("❌ 일별 히스토리 데이터가 없습니다.\n15:20 일일 리포트 후 생성됩니다.")
+                return
+
+            with open(history_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            initial_capital = data.get("initial_capital", 0)
+            snapshots = data.get("snapshots", [])
+
+            if not initial_capital:
+                await update.message.reply_text("❌ 초기 투자금 정보가 없습니다.")
+                return
+
+            # 실시간 잔고 조회 시도
+            total_assets = 0
+            cash = 0
+            invested = 0
+            buy_amount = 0
+            position_count = 0
+
+            if self.kis_client:
+                try:
+                    balance = self.kis_client.get_balance()
+                    total_assets = balance.get('total_eval', 0) + balance.get('cash', 0)
+                    cash = balance.get('cash', 0)
+                    invested = balance.get('total_eval', 0)
+                    buy_amount = balance.get('buy_amount', 0)
+                    position_count = len(balance.get('stocks', []))
+                except Exception as e:
+                    logger.warning(f"실시간 잔고 조회 실패: {e}")
+
+            # API 실패 시 최신 스냅샷 사용
+            if total_assets == 0 and snapshots:
+                latest = sorted(snapshots, key=lambda s: s["date"])[-1]
+                total_assets = latest["total_assets"]
+                cash = latest["cash"]
+                invested = latest["invested"]
+                buy_amount = latest.get("buy_amount", 0)
+                position_count = latest["position_count"]
+
+            if total_assets == 0:
+                await update.message.reply_text("❌ 자산 정보를 가져올 수 없습니다.")
+                return
+
+            total_pnl = total_assets - initial_capital
+            total_pnl_pct = (total_pnl / initial_capital * 100) if initial_capital > 0 else 0
+            sign = "+" if total_pnl >= 0 else ""
+
+            # 운용 기간 계산
+            days_str = ""
+            if snapshots:
+                first_date = sorted(snapshots, key=lambda s: s["date"])[0]["date"]
+                try:
+                    start = datetime.strptime(first_date, "%Y-%m-%d")
+                    days_count = (datetime.now() - start).days
+                    days_str = f"\n운용 기간: {days_count}일"
+                except ValueError:
+                    pass
+
+            lines = [
+                "💰 <b>투자 원금 대비 현황</b>",
+                "━━━━━━━━━━━━━━━",
+                f"초기 투자금: <code>{initial_capital:,.0f}원</code>",
+                f"현재 총 자산: <code>{total_assets:,.0f}원</code>",
+                "━━━━━━━━━━━━━━━",
+                f"예수금: <code>{cash:,.0f}원</code>",
+                f"투자금(평가): <code>{invested:,.0f}원</code>",
+                f"매입금액: <code>{buy_amount:,.0f}원</code>",
+                f"보유 종목: {position_count}개",
+                "━━━━━━━━━━━━━━━",
+                f"총 수익: <b>{sign}{total_pnl:,.0f}원</b> ({sign}{total_pnl_pct:.1f}%)",
+            ]
+
+            if days_str:
+                lines.append(days_str)
+
+            await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+        except Exception as e:
+            logger.error(f"투자 현황 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 투자 현황 조회 실패: {e}")
 
     async def cmd_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시세 조회 명령어"""
@@ -1069,6 +1328,9 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("status", self.cmd_status))
         self.application.add_handler(CommandHandler("positions", self.cmd_positions))
         self.application.add_handler(CommandHandler("balance", self.cmd_balance))
+        self.application.add_handler(CommandHandler("history", self.cmd_history))
+        self.application.add_handler(CommandHandler("trades", self.cmd_trades))
+        self.application.add_handler(CommandHandler("capital", self.cmd_capital))
         self.application.add_handler(CommandHandler("orders", self.cmd_orders))
         self.application.add_handler(CommandHandler("logs", self.cmd_logs))
         self.application.add_handler(CommandHandler("report", self.cmd_report))

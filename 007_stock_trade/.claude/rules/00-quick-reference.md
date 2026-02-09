@@ -17,12 +17,14 @@ pip install pykrx>=1.2.3
 
 ```
 src/
-├── quant_engine.py              # 엔진 오케스트레이션 (~1,160줄)
+├── quant_engine.py              # 엔진 오케스트레이션 (~1,200줄)
 ├── quant_modules/               # 분리된 엔진 모듈
 │   ├── state_manager.py         # EngineState, PendingOrder, 상태 저장/로드
-│   └── order_executor.py        # 주문 생성/실행/재시도
+│   ├── order_executor.py        # 주문 생성/실행/재시도
+│   ├── monthly_tracker.py       # MonthlySnapshot, MonthlyTracker
+│   └── daily_tracker.py         # DailySnapshot, TransactionRecord, DailyTracker (2026-02)
 ├── telegram/
-│   ├── bot.py                   # 텔레그램 봇 (~1,134줄)
+│   ├── bot.py                   # 텔레그램 봇 (20+ 명령어)
 │   ├── notifier.py              # TelegramNotifier (알림 전송)
 │   └── validators.py            # InputValidator (입력 검증)
 └── utils/
@@ -82,6 +84,8 @@ self.application.add_handler(CommandHandler("new_feature", self.cmd_new_feature)
 | `config/system_config.json` | 시스템 설정 (텔레그램 명령 저장) |
 | `config/optimal_weights.json` | 팩터 가중치 |
 | `data/quant/engine_state.json` | 포지션, 주문 상태, 리밸런싱 추적 |
+| `data/quant/daily_history.json` | 일별 자산 스냅샷 (2026-02 추가) |
+| `data/quant/transaction_journal.json` | 전체 거래 일지 (2026-02 추가) |
 | `logs/daemon_YYYYMMDD.log` | 일별 로그 |
 
 ### engine_state.json 주요 필드
@@ -160,6 +164,31 @@ from src.quant_modules import OrderExecutor
 # OrderExecutor는 QuantTradingEngine 내부에서 사용
 # engine.order_executor.generate_rebalance_orders(...)
 # engine.order_executor.execute_pending_orders(...)
+# 거래 발생 시 daily_tracker.log_transaction() 자동 호출
+```
+
+### 일별 추적 (daily_tracker.py) (2026-02 추가)
+```python
+from src.quant_modules import DailySnapshot, TransactionRecord, DailyTracker
+
+tracker = DailyTracker(data_dir=data_dir)
+
+# 초기 투자금 (최초 1회 저장)
+tracker.initial_capital = 10_000_000
+tracker._save_history()
+
+# 일별 스냅샷 저장 (같은 날짜면 업데이트)
+snapshot = DailySnapshot(date="2026-02-09", total_assets=18_000_000, ...)
+tracker.save_daily_snapshot(snapshot)
+
+# 거래 즉시 기록 (order_executor의 trade_dict 형식 수용)
+tracker.log_transaction({"type": "BUY", "code": "005930", ...})
+
+# 조회
+tracker.get_previous_day_snapshot(today_str)  # 전일 스냅샷 (daily_pnl 계산용)
+tracker.get_recent_snapshots(days=7)          # 최근 N일 스냅샷
+tracker.get_recent_transactions(days=7)       # 최근 N일 거래
+tracker.get_first_snapshot_date()             # 최초 스냅샷 날짜 (운용기간 계산용)
 ```
 
 ## 텔레그램 모듈 사용
