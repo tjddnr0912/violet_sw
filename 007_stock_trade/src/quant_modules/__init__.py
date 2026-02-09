@@ -5,6 +5,7 @@ QuantEngine의 핵심 컴포넌트를 분리하여 관리
 - state_manager: 상태 관리 (저장/로드, Lock)
 - order_executor: 주문 실행 (생성, 재시도, 실행)
 - monthly_tracker: 월간 포트폴리오 트래킹 및 리포트
+- daily_tracker: 일별 자산 추적 및 거래 일지
 """
 
 from .state_manager import (
@@ -15,6 +16,7 @@ from .state_manager import (
 )
 from .order_executor import OrderExecutor
 from .monthly_tracker import MonthlySnapshot, MonthlyTracker
+from .daily_tracker import DailySnapshot, TransactionRecord, DailyTracker
 
 __all__ = [
     'EngineState',
@@ -23,5 +25,8 @@ __all__ = [
     'EngineStateManager',
     'OrderExecutor',
     'MonthlySnapshot',
-    'MonthlyTracker'
+    'MonthlyTracker',
+    'DailySnapshot',
+    'TransactionRecord',
+    'DailyTracker'
 ]

@@ -41,7 +41,8 @@ class OrderExecutor:
         portfolio: 'PortfolioManager',
         notifier,
         config,
-        is_virtual: bool = True
+        is_virtual: bool = True,
+        daily_tracker=None
     ):
         """
         Args:
@@ -50,6 +51,7 @@ class OrderExecutor:
             notifier: 텔레그램 알림기
             config: QuantEngineConfig
             is_virtual: 모의투자 여부
+            daily_tracker: DailyTracker (거래 즉시 기록용)
         """
         self.client = client
         self.portfolio = portfolio
@@ -57,6 +59,7 @@ class OrderExecutor:
         self.config = config
         self.is_virtual = is_virtual
         self.api_delay = API_DELAY_VIRTUAL if is_virtual else API_DELAY_REAL
+        self.daily_tracker = daily_tracker
 
     def generate_rebalance_orders(
         self,
@@ -442,7 +445,7 @@ class OrderExecutor:
                 self.portfolio.add_position(position)
 
                 # 거래 기록
-                daily_trades.append({
+                trade_record = {
                     "type": "BUY",
                     "code": order.code,
                     "name": order.name,
@@ -451,7 +454,11 @@ class OrderExecutor:
                     "order_no": order_no,
                     "reason": f"[재시도] {order.reason}",
                     "timestamp": datetime.now().isoformat()
-                })
+                }
+                daily_trades.append(trade_record)
+
+                if self.daily_tracker:
+                    self.daily_tracker.log_transaction(trade_record)
 
                 logger.info(f"매수 완료 (재시도): {order.name} {quantity}주 @ {current_price:,}원")
                 self.notifier.notify_buy(order.code, order.name, quantity, current_price, order.reason)
@@ -634,7 +641,7 @@ class OrderExecutor:
             self.portfolio.add_position(position)
 
             # 거래 기록
-            daily_trades.append({
+            trade_record = {
                 "type": "BUY",
                 "code": order.code,
                 "name": order.name,
@@ -643,7 +650,11 @@ class OrderExecutor:
                 "order_no": order_no,
                 "reason": order.reason,
                 "timestamp": datetime.now().isoformat()
-            })
+            }
+            daily_trades.append(trade_record)
+
+            if self.daily_tracker:
+                self.daily_tracker.log_transaction(trade_record)
 
             logger.info(f"매수 완료: {order.name} {order.quantity}주 @ {current_price:,}원")
 
@@ -689,7 +700,7 @@ class OrderExecutor:
             self.portfolio.remove_position(order.code, current_price)
 
             # 거래 기록
-            daily_trades.append({
+            trade_record = {
                 "type": "SELL",
                 "code": order.code,
                 "name": order.name,
@@ -700,7 +711,11 @@ class OrderExecutor:
                 "order_no": order_no,
                 "reason": order.reason,
                 "timestamp": datetime.now().isoformat()
-            })
+            }
+            daily_trades.append(trade_record)
+
+            if self.daily_tracker:
+                self.daily_tracker.log_transaction(trade_record)
 
             pnl_str = f"+{pnl:,.0f}" if pnl >= 0 else f"{pnl:,.0f}"
             logger.info(f"매도 완료: {order.name} {order.quantity}주 @ {current_price:,}원 (손익: {pnl_str}원)")
