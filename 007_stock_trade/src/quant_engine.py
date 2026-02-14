@@ -419,7 +419,8 @@ class QuantTradingEngine:
 
         except Exception as e:
             logger.error(f"스크리닝 실패: {e}", exc_info=True)
-            self.notifier.notify_error("스크리닝 실패", str(e))
+            from src.utils.error_formatter import format_user_error
+            self.notifier.send_message(format_user_error(e, "스크리닝"))
             return None
 
         finally:
@@ -989,7 +990,8 @@ class QuantTradingEngine:
 
         except Exception as e:
             logger.error(f"초기 스크리닝 오류: {e}", exc_info=True)
-            self.notifier.notify_error("초기 스크리닝 오류", str(e))
+            from src.utils.error_formatter import format_user_error
+            self.notifier.send_message(format_user_error(e, "초기 스크리닝"))
 
     def _setup_schedule(self):
         """스케줄 설정"""

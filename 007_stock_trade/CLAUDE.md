@@ -41,6 +41,7 @@ src/
 ├── strategy/quant/              # 팩터, 스크리너, 리스크
 └── utils/
     ├── converters.py            # 타입 변환, 포맷팅
+    ├── error_formatter.py       # 사용자 친화적 에러 메시지 (2026-02)
     ├── retry.py                 # 재시도 데코레이터/설정
     └── market_calendar.py       # 휴장일 판단
 scripts/run_daemon.py            # 통합 데몬
@@ -212,6 +213,18 @@ notifier.notify_buy(code, name, qty, price, reason)
 notifier.notify_error("제목", "상세 내용")
 ```
 
+### 에러 메시지 (사용자 친화적)
+```python
+from src.utils.error_formatter import format_user_error
+
+# except 블록에서 사용
+except Exception as e:
+    logger.error(f"작업 실패: {e}", exc_info=True)  # 로그에 raw traceback 유지
+    await reply_text(format_user_error(e, "잔고 조회"), parse_mode='HTML')
+```
+
+에러 카테고리: timeout, connection, rate_limit, server_error, auth, data, file, unknown
+
 ### 콜백 등록
 ```python
 controller = get_controller()
@@ -298,3 +311,30 @@ def api_call():
 - `src/quant_modules/order_executor.py` - `daily_tracker` 파라미터 + `log_transaction()` 호출
 - `src/quant_engine.py` - DailyTracker 초기화, `generate_daily_report()`에서 스냅샷 저장
 - `src/telegram/bot.py` - `/history`, `/trades`, `/capital` 명령어
+
+### 2026-02-14: 사용자 친화적 에러 메시지 시스템
+
+**배경:** 텔레그램 에러 알림이 Python raw exception 형태로 노출되어 사용자가 심각도를 판단하기 어려웠음.
+
+**변경 내용:**
+- `src/utils/error_formatter.py` - 에러 분류 + 사용자 친화적 HTML 메시지 변환 모듈
+- 텔레그램 봇 9곳, 퀀트 엔진 2곳, 자동관리자 2곳의 에러 메시지를 상황/조치/안심 포맷으로 전환
+- 데몬 터미널 출력: WARNING 이상만 표시, traceback 숨김 (로그 파일에는 유지)
+
+**에러 메시지 포맷 (Before → After):**
+```
+Before: ❌ 잔고 조회 실패: HTTPSConnectionPool(...): Read timed out
+After:  ⏱️ 잔고 조회 지연 / 상황: 서버 응답 지연 / 조치: 자동 재시도 / 시스템 정상 운영 중
+```
+
+**설계 원칙:**
+- 로그 파일: raw exception + traceback 그대로 유지 (디버깅용)
+- 텔레그램/터미널: 사용자 친화적 메시지만 표시
+- KIS 커스텀 예외 → 표준 예외 → 문자열 패턴 순으로 분류
+
+**관련 코드:**
+- `src/utils/error_formatter.py` - classify_error(), format_user_error()
+- `src/telegram/bot.py` - 9곳 except 블록 수정
+- `src/quant_engine.py` - 스크리닝/초기 스크리닝 에러 2곳
+- `src/scheduler/auto_manager.py` - 모니터링/최적화 에러 2곳
+- `scripts/run_daemon.py` - CleanFormatter + stream_handler WARNING 레벨

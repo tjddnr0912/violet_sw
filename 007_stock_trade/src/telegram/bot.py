@@ -207,7 +207,9 @@ class TelegramBot:
             await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
         except Exception as e:
-            await update.message.reply_text(f"❌ 잔고 조회 실패: {e}")
+            logger.error(f"잔고 조회 실패: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "잔고 조회"), parse_mode='HTML')
 
     async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일별 자산 변동 조회"""
@@ -286,7 +288,8 @@ class TelegramBot:
 
         except Exception as e:
             logger.error(f"히스토리 조회 실패: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ 히스토리 조회 실패: {e}")
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "히스토리 조회"), parse_mode='HTML')
 
     async def cmd_trades(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """거래 내역 조회"""
@@ -374,7 +377,8 @@ class TelegramBot:
 
         except Exception as e:
             logger.error(f"거래 내역 조회 실패: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ 거래 내역 조회 실패: {e}")
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "거래 내역 조회"), parse_mode='HTML')
 
     async def cmd_capital(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """초기 투자금 대비 현황"""
@@ -463,7 +467,8 @@ class TelegramBot:
 
         except Exception as e:
             logger.error(f"투자 현황 조회 실패: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ 투자 현황 조회 실패: {e}")
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "투자 현황 조회"), parse_mode='HTML')
 
     async def cmd_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시세 조회 명령어"""
@@ -503,7 +508,9 @@ class TelegramBot:
             await update.message.reply_text(message, parse_mode='HTML')
 
         except Exception as e:
-            await update.message.reply_text(f"❌ 시세 조회 실패: {e}")
+            logger.error(f"시세 조회 실패: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "시세 조회"), parse_mode='HTML')
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시스템 상태 명령어"""
@@ -575,7 +582,9 @@ class TelegramBot:
             await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
         except Exception as e:
-            await update.message.reply_text(f"❌ 주문내역 조회 실패: {e}")
+            logger.error(f"주문내역 조회 실패: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "주문내역 조회"), parse_mode='HTML')
 
     async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """보유 포지션 조회"""
@@ -727,8 +736,9 @@ class TelegramBot:
                     parse_mode='HTML'
                 )
         except Exception as e:
-            logger.error(f"월간 리포트 명령 실패: {e}")
-            await update.message.reply_text(f"❌ 오류 발생: {str(e)[:200]}")
+            logger.error(f"월간 리포트 명령 실패: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "월간 리포트"), parse_mode='HTML')
 
     # ==================== 분석 명령어 ====================
 
@@ -826,7 +836,9 @@ class TelegramBot:
             await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
         except Exception as e:
-            await update.message.reply_text(f"❌ 스크리닝 실패: {e}")
+            logger.error(f"스크리닝 실패: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "스크리닝"), parse_mode='HTML')
 
     async def cmd_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """기술적 분석 신호 명령어"""
@@ -911,7 +923,9 @@ class TelegramBot:
             await update.message.reply_text(message, parse_mode='HTML')
 
         except Exception as e:
-            await update.message.reply_text(f"❌ 분석 실패: {e}")
+            logger.error(f"기술적 분석 실패: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "기술적 분석"), parse_mode='HTML')
 
     # ==================== 시스템 제어 명령어 ====================
 

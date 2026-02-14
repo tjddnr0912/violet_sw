@@ -26,6 +26,8 @@ from .retry import (
     RetryExecutor,
 )
 
+from .error_formatter import format_user_error
+
 __all__ = [
     # market_calendar
     "is_trading_day",
@@ -47,4 +49,6 @@ __all__ = [
     "ORDER_RETRY_CONFIG",
     "with_retry",
     "RetryExecutor",
+    # error_formatter
+    "format_user_error",
 ]
