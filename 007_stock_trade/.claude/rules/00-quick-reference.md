@@ -29,6 +29,7 @@ src/
 │   └── validators.py            # InputValidator (입력 검증)
 └── utils/
     ├── converters.py            # safe_float, format_currency 등
+    ├── error_formatter.py       # classify_error, format_user_error (2026-02)
     └── retry.py                 # RetryConfig, @with_retry
 ```
 
@@ -230,6 +231,20 @@ price = safe_float(data.get('price'), 0)  # None/빈문자열 → 0
 qty = safe_int("123.45")  # → 123
 formatted = format_currency(1234567)  # → "1,234,567원"
 pct = format_pct(1.23)  # → "+1.23%"
+```
+
+### 에러 포맷터 (error_formatter.py) (2026-02 추가)
+```python
+from src.utils.error_formatter import format_user_error
+
+# except 블록에서 raw exception → 사용자 친화적 메시지 변환
+except Exception as e:
+    logger.error(f"작업 실패: {e}", exc_info=True)  # 로그: raw traceback 유지
+    msg = format_user_error(e, "잔고 조회")          # 텔레그램: 친화적 메시지
+    await update.message.reply_text(msg, parse_mode='HTML')
+
+# 카테고리: timeout, connection, rate_limit, server_error, auth, data, file, unknown
+# KIS 커스텀 예외(KISTimeoutError 등) → 표준 예외(KeyError 등) → 문자열 패턴 순 분류
 ```
 
 ### 재시도 (retry.py)

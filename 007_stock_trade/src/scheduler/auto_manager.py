@@ -244,8 +244,9 @@ class AutoStrategyManager:
             return metrics
 
         except Exception as e:
-            logger.error(f"모니터링 오류: {e}")
-            self.reporter.send_alert("모니터링 오류", str(e), "CRITICAL")
+            logger.error(f"모니터링 오류: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            self.reporter.send_alert("모니터링 오류", format_user_error(e, "월간 모니터링"), "WARNING")
             return {"error": str(e)}
 
     def run_optimization(self, auto_trigger: bool = False) -> dict:
@@ -309,8 +310,9 @@ class AutoStrategyManager:
             return best
 
         except Exception as e:
-            logger.error(f"최적화 오류: {e}")
-            self.reporter.send_alert("최적화 오류", str(e), "CRITICAL")
+            logger.error(f"최적화 오류: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            self.reporter.send_alert("최적화 오류", format_user_error(e, "팩터 최적화"), "WARNING")
             return {"error": str(e)}
 
     def schedule_jobs(self):

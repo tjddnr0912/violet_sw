@@ -104,13 +104,35 @@ Path("logs").mkdir(exist_ok=True)
 log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
 
+class CleanFormatter(logging.Formatter):
+    """터미널용 포맷터: traceback 없이 메시지만 출력"""
+    def format(self, record):
+        saved_exc_info = record.exc_info
+        saved_exc_text = record.exc_text
+        record.exc_info = None
+        record.exc_text = None
+        result = super().format(record)
+        record.exc_info = saved_exc_info
+        record.exc_text = saved_exc_text
+        return result
+
+# 파일 핸들러: 상세 로그 (traceback 포함)
+file_handler = logging.FileHandler(f'logs/daemon_{datetime.now().strftime("%Y%m%d")}.log')
+file_handler.setLevel(log_level)
+file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+
+# 터미널 핸들러: 간결한 로그 (traceback 제거, WARNING 이상만)
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.WARNING)
+stream_handler.setFormatter(CleanFormatter(
+    '%(asctime)s - %(levelname)s - %(message)s'
+))
+
 logging.basicConfig(
     level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(f'logs/daemon_{datetime.now().strftime("%Y%m%d")}.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[file_handler, stream_handler]
 )
 
 # httpx 로거 레벨 올리기 (텔레그램 getUpdates 폴링 로그 숨김)
