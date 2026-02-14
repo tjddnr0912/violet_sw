@@ -171,22 +171,31 @@ class QuantDaemon:
         self.dry_run = sys_config.dry_run
         self.is_virtual = sys_config.is_virtual
 
-        # 실제 계좌 잔고 조회 (조회 실패 시 1천만원 기본값 사용)
+        # 실제 계좌 잔고 조회 (재시도 포함, 최종 실패 시 1천만원 기본값)
         self.total_capital = 10_000_000
-        try:
-            client = KISClient(is_virtual=self.is_virtual)
-            balance = client.get_balance()
-            if balance and 'cash' in balance:
-                self.total_capital = balance['cash']
-                logger.info(f"계좌 잔고 조회 성공: {self.total_capital:,}원")
+        client = KISClient(is_virtual=self.is_virtual)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                balance = client.get_balance()
+                if balance and 'cash' in balance:
+                    self.total_capital = balance['cash']
+                    logger.info(f"계좌 잔고 조회 성공: {self.total_capital:,}원")
 
-                # market_calendar에 KIS 클라이언트 등록 (휴장일 자동 업데이트용)
-                from src.utils.market_calendar import set_kis_client
-                set_kis_client(client)
-            else:
-                logger.warning(f"계좌 잔고 조회 실패 - 기본값 사용: {self.total_capital:,}원")
-        except Exception as e:
-            logger.warning(f"계좌 잔고 조회 오류: {e} - 기본값 사용: {self.total_capital:,}원")
+                    # market_calendar에 KIS 클라이언트 등록 (휴장일 자동 업데이트용)
+                    from src.utils.market_calendar import set_kis_client
+                    set_kis_client(client)
+                    break
+                else:
+                    logger.warning(f"계좌 잔고 조회 빈 응답 (시도 {attempt + 1}/{max_retries})")
+            except Exception as e:
+                logger.warning(f"계좌 잔고 조회 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(2)
+        else:
+            logger.warning(f"계좌 잔고 조회 최종 실패 - 기본값 사용: {self.total_capital:,}원")
 
         # 목표 종목 수: SystemController 우선, 없으면 optimal_weights
         self.target_count = sys_config.target_count or self.weights.get('target_count', 15)
