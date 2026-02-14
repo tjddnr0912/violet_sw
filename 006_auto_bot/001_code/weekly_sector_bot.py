@@ -2,7 +2,7 @@
 """
 Weekly Sector Investment Bot
 ----------------------------
-매주 일요일 9개 섹터별 투자정보를 자동 수집/분석하여 OgusInvest 블로그에 업로드
+매주 일요일 11개 섹터별 투자정보를 자동 수집/분석하여 OgusInvest 블로그에 업로드
 
 실행 방법:
   python weekly_sector_bot.py --once      # 즉시 전체 실행
@@ -245,8 +245,8 @@ class WeeklySectorBot:
             )
             logger.info(f"Scheduled: {sector.name} at Sunday {sector.scheduled_time}")
 
-        # 일요일 18:00에 전체 완료 알림
-        schedule.every().sunday.at("18:00").do(self._send_weekly_summary)
+        # 일요일 18:30에 전체 완료 알림
+        schedule.every().sunday.at("18:30").do(self._send_weekly_summary)
 
         logger.info("Schedule registered. Waiting for Sunday...")
 
@@ -357,8 +357,8 @@ Examples:
     parser.add_argument(
         '--sector',
         type=int,
-        choices=range(1, 10),
-        help='Run specific sector only (1-9)'
+        choices=range(1, 12),
+        help='Run specific sector only (1-11)'
     )
     parser.add_argument(
         '--test',
