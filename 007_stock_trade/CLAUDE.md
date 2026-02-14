@@ -338,3 +338,9 @@ After:  ⏱️ 잔고 조회 지연 / 상황: 서버 응답 지연 / 조치: 자
 - `src/quant_engine.py` - 스크리닝/초기 스크리닝 에러 2곳
 - `src/scheduler/auto_manager.py` - 모니터링/최적화 에러 2곳
 - `scripts/run_daemon.py` - CleanFormatter + stream_handler WARNING 레벨
+- `scripts/run_daemon.py` - 데몬 시작 시 잔고 조회 재시도 (최대 3회, 2초 간격)
+
+**데몬 시작 시 잔고 조회:**
+- KIS 모의투자 서버가 간헐적으로 `INVALID_CHECK_ACNO` 응답 → 재시도로 해결
+- 재시도 없을 때: 기본값 1천만원으로 시작 → 실제 예수금과 불일치
+- 재시도 추가 후: 2~3번째 시도에서 정상 조회되어 실제 예수금으로 시작
