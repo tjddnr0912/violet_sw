@@ -31,7 +31,7 @@ python telegram_gemini_bot.py --test  # Blog 업로드 스킵
 python weekly_sector_bot.py           # 스케줄 모드 (일요일 자동)
 python weekly_sector_bot.py --once    # 즉시 전체 실행
 python weekly_sector_bot.py --resume  # 중단 후 재개
-python weekly_sector_bot.py --sector 1  # 특정 섹터만 (1-9)
+python weekly_sector_bot.py --sector 1  # 특정 섹터만 (1-11)
 python weekly_sector_bot.py --test    # 테스트 (업로드 스킵)
 python weekly_sector_bot.py --status  # 상태 확인
 ```
@@ -53,7 +53,7 @@ python weekly_sector_bot.py --status  # 상태 확인
 │
 ├── sector_bot/               # 섹터봇 전용 모듈
 │   ├── __init__.py
-│   ├── config.py             # 9개 섹터 정의, 스케줄, 설정
+│   ├── config.py             # 11개 섹터 정의, 스케줄, 설정
 │   ├── searcher.py           # Gemini Google Search Grounding
 │   ├── analyzer.py           # 섹터별 분석 프롬프트
 │   ├── writer.py             # 마크다운 파일 I/O
@@ -110,7 +110,7 @@ weekly_sector_bot.py
 3. **Monthly** (1일 10:00): 전월 일간요약 수집 → Gemini 월간요약 → `monthly/monthly_summary_*.md` → Blogger → **2개월 전 데이터 정리**
 
 ### Weekly Sector Bot
-- **일요일 13:00~17:00**: 9개 섹터 순차 처리
+- **일요일 13:00~18:00**: 11개 섹터 순차 처리
 - 각 섹터: Gemini Google Search → 섹터별 분석 → 마크다운 저장 → Claude HTML → OgusInvest 블로그
 - 저장 경로: `004_Sector_Weekly/YYYYMMDD/sector_XX_name.md`
 - 재시작 기능: 같은 주 내에서 `--resume`로 중단 지점부터 재개
@@ -256,7 +256,7 @@ SECTOR_GEMINI_MODEL=gemini-3-flash-preview  # 섹터봇용 Gemini 모델
 
 ## Weekly Sector Bot
 
-매주 일요일 9개 섹터별 투자정보를 자동 수집/분석하여 OgusInvest 블로그에 업로드
+매주 일요일 11개 섹터별 투자정보를 자동 수집/분석하여 OgusInvest 블로그에 업로드
 
 ### 실행 방법
 
@@ -267,13 +267,13 @@ source .venv/bin/activate
 python weekly_sector_bot.py           # 스케줄 모드 (일요일 자동)
 python weekly_sector_bot.py --once    # 즉시 전체 실행
 python weekly_sector_bot.py --resume  # 중단 후 재개
-python weekly_sector_bot.py --sector 1  # 특정 섹터만 (1-9)
+python weekly_sector_bot.py --sector 1  # 특정 섹터만 (1-11)
 python weekly_sector_bot.py --test    # 테스트 (업로드 스킵)
 python weekly_sector_bot.py --status  # 상태 확인
 python weekly_sector_bot.py --reset   # 상태 초기화
 ```
 
-### 9개 섹터 상세 정보
+### 11개 섹터 상세 정보
 
 | ID | 섹터 | 영문명 | 시간 |
 |----|------|--------|------|
@@ -286,6 +286,8 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 | 7 | 주식시장 | stock_market | 16:00 |
 | 8 | 반도체 | semiconductor | 16:30 |
 | 9 | 자동차/배터리/로봇 | auto_battery_robot | 17:00 |
+| 10 | 리츠(REITs) | reits | 17:30 |
+| 11 | 필수 소비재 | consumer_staples | 18:00 |
 
 ### 섹터별 분석 초점
 
@@ -300,6 +302,8 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 | 7 | 주식시장 | S&P500/Nasdaq 전망, 지정학 리스크, 무역분쟁, 글로벌 시장, VIX |
 | 8 | 반도체 | 파운드리 (TSMC, 삼성), 장비 (ASML), Fabless (NVIDIA, AMD), 메모리 가격 |
 | 9 | 자동차/배터리/로봇 | EV 판매 (Tesla, BYD), 배터리 (LG, 삼성SDI, CATL), 자율주행, 휴머노이드 로봇 |
+| 10 | 리츠(REITs) | 리츠 개별주/ETF 자금 수급, 주간 추이 (FTSE NAREIT), 배당/자산매매, 산업 전망, 경기 사이클 |
+| 11 | 필수 소비재 | 종목/ETF 추천 (P&G, Coca-Cola, XLP), 경기 사이클 분석, 주간 동향 및 주가 전망 |
 
 ### 파일 저장 구조
 
@@ -314,7 +318,9 @@ python weekly_sector_bot.py --reset   # 상태 초기화
     ├── sector_06_it_cloud.md
     ├── sector_07_stock_market.md
     ├── sector_08_semiconductor.md
-    └── sector_09_auto_battery_robot.md
+    ├── sector_09_auto_battery_robot.md
+    ├── sector_10_reits.md
+    └── sector_11_consumer_staples.md
 ```
 
 ### 블로그 업로드 형식

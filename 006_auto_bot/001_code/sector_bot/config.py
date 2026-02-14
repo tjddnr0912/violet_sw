@@ -1,7 +1,7 @@
 """
 Sector Bot Configuration
 ------------------------
-9개 섹터 정의 및 스케줄 설정
+11개 섹터 정의 및 스케줄 설정
 """
 
 import os
@@ -23,7 +23,7 @@ class Sector:
     analysis_focus: List[str]
 
 
-# 9개 섹터 정의
+# 11개 섹터 정의
 SECTORS: List[Sector] = [
     Sector(
         id=1,
@@ -213,6 +213,49 @@ SECTORS: List[Sector] = [
             "배터리 기술 및 원자재 가격",
             "자율주행 기술 동향",
             "로봇/자동화 산업",
+        ]
+    ),
+    Sector(
+        id=10,
+        name="리츠(REITs)",
+        name_en="reits",
+        scheduled_time="17:30",
+        search_keywords=[
+            "REITs ETF fund flow 2026",
+            "REITs weekly performance returns",
+            "REITs sector outlook forecast",
+            "REITs stocks recommendation dividend",
+            "economic cycle REITs real estate",
+            "FTSE NAREIT index",
+            "REITs dividend yield NAV",
+        ],
+        analysis_focus=[
+            "리츠 개별주/ETF 자금 수급",
+            "한주간 추이 분석 (FTSE NAREIT 등)",
+            "리츠 관련 뉴스 (배당, 자산 매매, 임대율)",
+            "리츠 산업 전망 (금리, 공실률, 임대료)",
+            "추천 리츠 종목/ETF",
+            "경기 사이클 분석",
+        ]
+    ),
+    Sector(
+        id=11,
+        name="필수 소비재",
+        name_en="consumer_staples",
+        scheduled_time="18:00",
+        search_keywords=[
+            "consumer staples stocks investment 2026",
+            "consumer staples ETF XLP VDC",
+            "Procter Gamble Coca Cola PepsiCo stocks",
+            "Walmart Costco consumer staples",
+            "defensive stocks consumer staples outlook",
+            "consumer staples dividend yield",
+            "consumer staples sector performance weekly",
+        ],
+        analysis_focus=[
+            "필수 소비재 종목/ETF 추천 및 분석",
+            "경기 사이클 분석 및 필수 소비재 포지셔닝",
+            "주간 동향 및 주가 추이 전망",
         ]
     ),
 ]

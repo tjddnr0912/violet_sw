@@ -28,7 +28,7 @@ violet_sw/
 ### Quick Start (전체 봇 실행)
 
 ```bash
-./start_all_bots.sh    # iTerm2에서 4개 탭으로 모든 봇 실행
+./start_all_bots.sh    # iTerm2에서 5개 탭으로 모든 봇 실행
 ```
 
 | Tab | Project | Script | Description |
@@ -37,6 +37,7 @@ violet_sw/
 | 2 | 006_auto_bot | `run_scheduled.sh` | 뉴스봇 (일간/주간/월간 스케줄) |
 | 3 | 006_auto_bot | `run_telegram_bot.sh` | Telegram Gemini Q&A 봇 |
 | 4 | 007_stock_trade | `run_quant.sh daemon` | 주식 퀀트 데몬 |
+| 5 | 006_auto_bot | `run_weekly_sector.sh` | 주간 섹터 투자정보 (일요일) |
 
 ---
 
@@ -74,8 +75,9 @@ cd 005_money
 **실행:**
 ```bash
 cd 006_auto_bot
-./run_scheduled.sh           # 스케줄 모드
+./run_scheduled.sh           # 뉴스봇 스케줄 모드
 ./run_telegram_bot.sh        # Telegram Gemini Q&A (블로그 선택 기능)
+./run_weekly_sector.sh       # 주간 섹터 투자정보 (일요일 13:00~18:00)
 ```
 
 **Telegram Gemini Bot 기능:**
@@ -84,6 +86,12 @@ cd 006_auto_bot
 - 선택 시 2군데 업로드: Default (HTML+Raw) + 선택한 블로그 (HTML만)
 - 3분 타임아웃 후 Default만 자동 업로드
 - 최소 글자 수 요구: Gemini 1500자+, Claude HTML 1000자+
+
+**Weekly Sector Bot (주간 섹터 투자정보):**
+- 매주 일요일 11개 섹터별 투자정보 자동 수집/분석
+- Gemini Google Search Grounding → 섹터별 분석 → OgusInvest 블로그 업로드
+- 섹터: AI/양자컴퓨터, 금융, 조선/항공/우주, 에너지, 바이오, IT/Cloud, 주식시장, 반도체, 자동차/배터리/로봇, 리츠, 필수 소비재
+- 재시작 기능: `--resume`로 중단 지점부터 재개
 
 **Data Flow:** RSS Feed → Gemini 요약 → Markdown → Blogger → Telegram 알림
 
@@ -196,6 +204,10 @@ TELEGRAM_CHAT_ID=
 BLOG_LIST='[{"key":"...","id":"...","name":"..."}, ...]'
 DEFAULT_BLOG=brave_ogu
 BLOG_SELECTION_TIMEOUT=180
+
+# Weekly Sector Bot
+SECTOR_BLOGGER_BLOG_ID=9115231004981625966  # OgusInvest
+SECTOR_GEMINI_MODEL=gemini-2.0-flash
 ```
 
 ### 007_stock_trade/.env & 008_stock_trade_us/.env
@@ -245,7 +257,8 @@ git commit -m "Refactor <module>"  # 리팩토링
 ```bash
 # 각 프로젝트별 프로세스 확인
 ps aux | grep "ver3/run_cli.py"      # 005_money
-ps aux | grep "main.py"              # 006_auto_bot
+ps aux | grep "main.py"              # 006_auto_bot (뉴스봇)
+ps aux | grep "weekly_sector_bot.py" # 006_auto_bot (섹터봇)
 ps aux | grep "run_daemon.py"        # 007_stock_trade
 ```
 
