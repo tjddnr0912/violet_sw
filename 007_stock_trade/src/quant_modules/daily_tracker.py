@@ -291,6 +291,72 @@ class DailyTracker:
             return None
         return sorted(self.snapshots, key=lambda s: s.date)[0].date
 
+    # ========== 장부 점검 (Reconciliation) ==========
+
+    def reconcile_latest_snapshot(self, kis_data: dict, initial_capital: float) -> dict:
+        """
+        최근 스냅샷을 KIS 실잔고와 대조하여 보정
+
+        Args:
+            kis_data: {cash, scts_evlu, buy_amount, stocks, total_profit}
+            initial_capital: 초기 투자금
+
+        Returns:
+            {"checked": bool, "corrected": bool, "diff": float, "details": str}
+        """
+        latest = self.get_latest_snapshot()
+        if not latest:
+            return {"checked": False, "corrected": False, "diff": 0, "details": "스냅샷 없음"}
+
+        kis_cash = kis_data.get('cash', 0)
+        kis_scts = kis_data.get('scts_evlu', 0)
+        kis_total = kis_cash + kis_scts
+        kis_stocks = kis_data.get('stocks', [])
+        kis_buy_amount = kis_data.get('buy_amount', 0)
+
+        diff = abs(latest.total_assets - kis_total)
+        threshold = kis_total * 0.01 if kis_total > 0 else 0  # 1% 오차 허용
+
+        result = {
+            "checked": True,
+            "corrected": False,
+            "diff": latest.total_assets - kis_total,
+            "snapshot_date": latest.date,
+            "snapshot_total": latest.total_assets,
+            "kis_total": kis_total,
+            "details": ""
+        }
+
+        if diff <= threshold:
+            pct = (diff / kis_total * 100) if kis_total > 0 else 0
+            result["details"] = f"정상 (편차 {diff:,.0f}원, {pct:.2f}%)"
+            return result
+
+        # 편차 발견 → 최근 스냅샷 보정
+        old_total = latest.total_assets
+        latest.total_assets = kis_total
+        latest.cash = kis_cash
+        latest.invested = kis_scts
+        latest.buy_amount = kis_buy_amount
+        latest.position_count = len(kis_stocks)
+
+        # PnL 재계산
+        latest.total_pnl = kis_total - initial_capital
+        latest.total_pnl_pct = (latest.total_pnl / initial_capital * 100) if initial_capital > 0 else 0
+
+        # daily_pnl 재계산 (직전 스냅샷 대비)
+        prev = self.get_previous_day_snapshot(latest.date)
+        if prev:
+            latest.daily_pnl = kis_total - prev.total_assets
+            latest.daily_pnl_pct = (latest.daily_pnl / prev.total_assets * 100) if prev.total_assets > 0 else 0
+
+        self._save_history()
+
+        result["corrected"] = True
+        result["details"] = f"보정 완료: {old_total:,.0f} → {kis_total:,.0f} (편차 {old_total - kis_total:+,.0f}원)"
+        logger.info(f"장부 보정: {result['details']}")
+        return result
+
     # ========== 내부 유틸 ==========
 
     def _cleanup_old_snapshots(self):

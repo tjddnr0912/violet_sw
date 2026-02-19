@@ -234,6 +234,9 @@ class QuantTradingEngine:
         # 긴급 리밸런싱 모드 (보유 70% 미만 시 활성화)
         self._urgent_rebalance_mode = False
 
+        # 제로 포지션 복구 쿨다운 (메모리 전용, 재시작 시 리셋)
+        self._last_zero_recovery_date: Optional[str] = None
+
     # ========== 상태 관리 (state_manager 위임) ==========
 
     @property
@@ -336,7 +339,15 @@ class QuantTradingEngine:
         threshold = target_count * 0.7
 
         if current_count < threshold:
-            # 이번 달 긴급 리밸런싱 이미 실행했으면 스킵
+            if current_count == 0:
+                # 포지션 0개 = 위기 상태 → 월간 잠금 무시 (안전망)
+                logger.info(
+                    f"📢 제로 포지션 긴급 리밸런싱 트리거: 보유 0/{target_count}개"
+                )
+                self._urgent_rebalance_mode = True
+                return True
+
+            # 1개 이상: 이번 달 긴급 리밸런싱 이미 실행했으면 스킵
             if self.state_manager.last_urgent_rebalance_month == current_month:
                 logger.debug(f"이번 달({current_month}) 긴급 리밸런싱 이미 완료됨")
                 return False
@@ -500,6 +511,83 @@ class QuantTradingEngine:
 
         except Exception as e:
             logger.error(f"스크리닝 알림 실패: {e}")
+
+    # ========== KIS 포지션 동기화 ==========
+
+    def sync_positions_from_kis(self) -> dict:
+        """
+        KIS 계좌의 보유종목을 내부 포지션으로 동기화
+
+        내부 포지션이 0개인데 KIS에 보유종목이 있을 때 사용.
+        손절가/익절가는 매입단가 기준으로 재계산.
+
+        Returns:
+            {"success": bool, "message": str, "synced": int}
+        """
+        try:
+            balance_info = self.client.get_balance()
+            kis_stocks = balance_info.get('stocks', [])
+
+            if not kis_stocks:
+                return {"success": False, "message": "KIS 계좌에 보유종목이 없습니다.", "synced": 0}
+
+            # 이미 내부에 있는 종목은 스킵
+            existing_codes = set(self.portfolio.positions.keys())
+            new_stocks = [s for s in kis_stocks if s.code not in existing_codes]
+
+            if not new_stocks:
+                return {"success": True, "message": "모든 KIS 종목이 이미 동기화되어 있습니다.", "synced": 0}
+
+            synced = 0
+            for stock in new_stocks:
+                stop_loss = StopLossManager.calculate_fixed_stop(
+                    stock.avg_price, self.config.stop_loss_pct
+                )
+                tp1, tp2 = TakeProfitManager.calculate_targets(
+                    stock.avg_price, stop_loss
+                )
+
+                position = Position(
+                    code=stock.code,
+                    name=stock.name,
+                    entry_price=float(stock.avg_price),
+                    current_price=float(stock.current_price),
+                    quantity=stock.qty,
+                    entry_date=datetime.now(),
+                    stop_loss=stop_loss,
+                    take_profit_1=tp1,
+                    take_profit_2=tp2,
+                    highest_price=float(max(stock.current_price, stock.avg_price))
+                )
+
+                self.portfolio.positions[position.code] = position
+                synced += 1
+                logger.info(
+                    f"포지션 동기화: {stock.name} ({stock.code}) "
+                    f"{stock.qty}주 @ {stock.avg_price:,}원 "
+                    f"(현재가: {stock.current_price:,}원, 수익: {stock.profit_rate:+.1f}%)"
+                )
+
+            # 현금도 KIS 기준으로 동기화
+            self.portfolio.cash = balance_info.get('cash', self.portfolio.cash)
+
+            self._save_state()
+
+            msg = f"KIS 포지션 {synced}개 동기화 완료 (총 {len(self.portfolio.positions)}종목)"
+            logger.info(msg)
+            self.notifier.send_message(
+                f"🔄 <b>포지션 동기화 완료</b>\n\n"
+                f"동기화: {synced}종목\n"
+                f"총 보유: {len(self.portfolio.positions)}종목\n"
+                f"현금: {self.portfolio.cash:,.0f}원\n\n"
+                f"⚠️ 손절/익절가는 매입단가 기준으로 재설정됨"
+            )
+
+            return {"success": True, "message": msg, "synced": synced}
+
+        except Exception as e:
+            logger.error(f"KIS 포지션 동기화 실패: {e}", exc_info=True)
+            return {"success": False, "message": str(e), "synced": 0}
 
     # ========== 리밸런싱 주문 생성/실행 (order_executor 위임) ==========
 
@@ -750,14 +838,50 @@ class QuantTradingEngine:
         """일일 리포트 생성 및 발송"""
         snapshot = self.portfolio.get_snapshot()
 
-        # 보유 종목 정보
+        # KIS API 잔고 조회 (텔레그램 메시지 + daily_history 공용)
+        kis_cash = snapshot.cash
+        kis_scts_evlu = snapshot.invested
+        kis_stocks = []
+        total_display = snapshot.total_value
+        kis_buy_amount = 0
+        kis_available = False
+
+        try:
+            balance_info = self.client.get_balance()
+            kis_cash = balance_info.get('cash', 0)
+            kis_scts_evlu = balance_info.get('scts_evlu', 0)
+            kis_stocks = balance_info.get('stocks', [])
+            kis_buy_amount = balance_info.get('buy_amount', 0)
+            total_display = kis_cash + kis_scts_evlu  # 현금 + 주식평가 (이중 카운팅 없음)
+            kis_available = True
+        except Exception as e:
+            logger.warning(f"KIS 잔고 조회 실패, 내부 데이터 사용: {e}")
+
+        # 보유 종목 정보 (KIS 데이터 우선)
         positions_text = ""
-        if snapshot.positions:
+        position_count = len(snapshot.positions)
+        if kis_available and kis_stocks:
+            for stock in kis_stocks:
+                pnl_rate = stock.profit_rate if hasattr(stock, 'profit_rate') else 0
+                pnl_str = f"+{pnl_rate:.1f}" if pnl_rate >= 0 else f"{pnl_rate:.1f}"
+                name = stock.name if hasattr(stock, 'name') else str(stock)
+                positions_text += f"• {name}: {pnl_str}%\n"
+            position_count = len(kis_stocks)
+        elif snapshot.positions:
             for pos in snapshot.positions:
                 pnl_str = f"+{pos.profit_pct:.1f}" if pos.profit_pct >= 0 else f"{pos.profit_pct:.1f}"
                 positions_text += f"• {pos.name}: {pnl_str}%\n"
         else:
             positions_text = "없음"
+
+        # KIS에 주식이 있지만 내부 포지션이 없으면 경고
+        sync_warning = ""
+        if kis_stocks and not snapshot.positions:
+            sync_warning = (
+                f"\n⚠️ <b>포지션 불일치</b>\n"
+                f"KIS 보유: {len(kis_stocks)}종목 / 내부: 0종목\n"
+                f"봇이 관리하지 않는 주식이 있습니다.\n"
+            )
 
         # 오늘 거래 내역
         trades_text = ""
@@ -770,17 +894,23 @@ class QuantTradingEngine:
         else:
             trades_text = "없음"
 
+        # 총 손익 계산
+        initial = self.daily_tracker.initial_capital or self.config.total_capital
+        total_pnl = total_display - initial
+        total_pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0
+
         message = (
             f"📈 <b>일일 리포트</b>\n\n"
             f"📅 {datetime.now().strftime('%Y-%m-%d')}\n\n"
             f"<b>포트폴리오</b>\n"
-            f"총 평가: {snapshot.total_value:,.0f}원\n"
-            f"투자금: {snapshot.invested:,.0f}원\n"
-            f"현금: {snapshot.cash:,.0f}원\n"
-            f"총 손익: {snapshot.total_pnl_pct:+.2f}%\n"
+            f"총 평가: {total_display:,.0f}원\n"
+            f"주식: {kis_scts_evlu:,.0f}원\n"
+            f"현금: {kis_cash:,.0f}원\n"
+            f"총 손익: {total_pnl_pct:+.2f}%\n"
             f"MDD: {snapshot.mdd*100:.1f}%\n\n"
-            f"<b>보유 종목 ({len(snapshot.positions)}개)</b>\n"
-            f"{positions_text}\n"
+            f"<b>보유 종목 ({position_count}개)</b>\n"
+            f"{positions_text}"
+            f"{sync_warning}\n"
             f"<b>오늘 거래</b>\n"
             f"{trades_text}"
         )
@@ -789,11 +919,10 @@ class QuantTradingEngine:
 
         # 일별 스냅샷 저장
         try:
-            balance_info = self.client.get_balance()
-            total_assets = balance_info.get('total_eval', 0) + balance_info.get('cash', 0)
-            cash = balance_info.get('cash', 0)
-            buy_amount = balance_info.get('buy_amount', 0)
-            invested = balance_info.get('total_eval', 0)
+            total_assets = total_display  # kis_cash + kis_scts_evlu (이중 카운팅 없음)
+            cash = kis_cash
+            invested = kis_scts_evlu
+            buy_amount = kis_buy_amount
 
             today_str = datetime.now().strftime("%Y-%m-%d")
             prev = self.daily_tracker.get_previous_day_snapshot(today_str)
@@ -803,22 +932,35 @@ class QuantTradingEngine:
                 daily_pnl = total_assets - prev.total_assets
                 daily_pnl_pct = (daily_pnl / prev.total_assets * 100) if prev.total_assets > 0 else 0
 
-            initial = self.daily_tracker.initial_capital or self.config.total_capital
             total_pnl = total_assets - initial
             total_pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0
 
             position_data = []
-            for pos in snapshot.positions:
-                pnl = (pos.current_price - pos.entry_price) * pos.quantity
-                position_data.append({
-                    "code": pos.code,
-                    "name": pos.name,
-                    "quantity": pos.quantity,
-                    "entry_price": pos.entry_price,
-                    "current_price": pos.current_price,
-                    "pnl": pnl,
-                    "pnl_pct": pos.profit_pct
-                })
+            if kis_available and kis_stocks:
+                for stock in kis_stocks:
+                    pnl = stock.profit if hasattr(stock, 'profit') else 0
+                    pnl_pct = stock.profit_rate if hasattr(stock, 'profit_rate') else 0
+                    position_data.append({
+                        "code": stock.code if hasattr(stock, 'code') else "",
+                        "name": stock.name if hasattr(stock, 'name') else "",
+                        "quantity": stock.qty if hasattr(stock, 'qty') else 0,
+                        "entry_price": stock.avg_price if hasattr(stock, 'avg_price') else 0,
+                        "current_price": stock.current_price if hasattr(stock, 'current_price') else 0,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct
+                    })
+            else:
+                for pos in snapshot.positions:
+                    pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                    position_data.append({
+                        "code": pos.code,
+                        "name": pos.name,
+                        "quantity": pos.quantity,
+                        "entry_price": pos.entry_price,
+                        "current_price": pos.current_price,
+                        "pnl": pnl,
+                        "pnl_pct": pos.profit_pct
+                    })
 
             daily_snapshot = DailySnapshot(
                 date=datetime.now().strftime("%Y-%m-%d"),
@@ -826,7 +968,7 @@ class QuantTradingEngine:
                 cash=cash,
                 invested=invested,
                 buy_amount=buy_amount,
-                position_count=len(snapshot.positions),
+                position_count=position_count,
                 total_pnl=total_pnl,
                 total_pnl_pct=total_pnl_pct,
                 daily_pnl=daily_pnl,
@@ -910,6 +1052,68 @@ class QuantTradingEngine:
                 f"⚠️ <b>월간 리포트 생성 실패</b>\n\n"
                 f"오류: {str(e)[:200]}"
             )
+
+    # ========== 주간 장부 점검 ==========
+
+    def _on_weekly_reconciliation(self, force: bool = False):
+        """주간 장부 점검 (토요일 10:00)"""
+        # 토요일에만 실행 (수동 호출 시 force=True로 우회)
+        if not force and datetime.now().weekday() != 5:  # 5 = Saturday
+            return
+
+        logger.info("=" * 60)
+        logger.info("주간 장부 점검 시작")
+
+        try:
+            # 1. KIS 잔고 조회
+            balance_info = self.client.get_balance()
+            kis_data = {
+                'cash': balance_info.get('cash', 0),
+                'scts_evlu': balance_info.get('scts_evlu', 0),
+                'buy_amount': balance_info.get('buy_amount', 0),
+                'stocks': balance_info.get('stocks', []),
+                'total_profit': balance_info.get('total_profit', 0),
+            }
+
+            # 2. 스냅샷 점검/보정
+            initial = self.daily_tracker.initial_capital or self.config.total_capital
+            recon_result = self.daily_tracker.reconcile_latest_snapshot(kis_data, initial)
+
+            # 3. 포지션 동기화 점검
+            kis_stock_count = len(kis_data['stocks'])
+            internal_count = len(self.portfolio.positions)
+            pos_synced = kis_stock_count == internal_count
+
+            # 4. 텔레그램 알림
+            kis_total = kis_data['cash'] + kis_data['scts_evlu']
+            status_icon = "✅" if not recon_result.get('corrected') and pos_synced else "⚠️"
+
+            message = (
+                f"{status_icon} <b>주간 장부 점검</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"<b>KIS 실잔고</b>\n"
+                f"총 자산: {kis_total:,.0f}원\n"
+                f"주식: {kis_data['scts_evlu']:,.0f}원\n"
+                f"현금: {kis_data['cash']:,.0f}원\n"
+                f"보유: {kis_stock_count}종목\n\n"
+                f"<b>장부 점검</b>\n"
+                f"{recon_result.get('details', '-')}\n\n"
+                f"<b>포지션 동기화</b>\n"
+                f"{'✅ 일치' if pos_synced else f'⚠️ 불일치 (KIS: {kis_stock_count} / 내부: {internal_count})'}"
+            )
+            self.notifier.send_message(message)
+
+            # 5. 포지션 불일치 시 자동 동기화
+            if not pos_synced:
+                self.sync_positions_from_kis()
+
+            logger.info(f"주간 점검 완료: {recon_result.get('details')}")
+
+        except Exception as e:
+            logger.error(f"주간 장부 점검 실패: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            self.notifier.send_message(format_user_error(e, "주간 장부 점검"))
 
     # ========== 스케줄러 ==========
 
@@ -1009,11 +1213,15 @@ class QuantTradingEngine:
         # 장 마감 리포트
         schedule.every().day.at(self.config.market_close_time).do(self._on_market_close)
 
+        # 주간 장부 점검 (토요일 10:00)
+        schedule.every().saturday.at("10:00").do(self._on_weekly_reconciliation)
+
         logger.info("스케줄 설정 완료")
         logger.info(f"  - 스크리닝: {self.config.screening_time} (리밸런싱 일)")
         logger.info(f"  - 주문 실행: {self.config.market_open_time} (특수일: 10:00)")
         logger.info(f"  - 모니터링: {self.config.monitoring_interval}분 간격")
         logger.info(f"  - 리포트: {self.config.market_close_time}")
+        logger.info(f"  - 주간 점검: 토요일 10:00")
 
     def _on_pre_market(self):
         """장 전 이벤트"""
@@ -1052,16 +1260,32 @@ class QuantTradingEngine:
             f"📅 개장: {market_open_time}"
         )
 
-        # 포지션이 없으면 초기 스크리닝 실행 (주말 시작 후 첫 평일 대응)
+        # 포지션이 없으면 스크리닝 실행
         if not self.portfolio.positions:
             current_month = datetime.now().strftime("%Y-%m")
             if self.last_rebalance_month != current_month:
+                # 이번 달 리밸런싱 전: 초기 스크리닝
                 logger.info("포지션 없음 - 초기 스크리닝 실행")
                 self.notifier.send_message(
                     "📋 <b>포지션 없음</b> - 초기 스크리닝을 실행합니다."
                 )
                 self._check_initial_setup()
                 return
+            else:
+                # 이번 달 리밸런싱 완료 후 전량 청산 → 제로 포지션 복구 모드
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                if self._last_zero_recovery_date == today_str:
+                    logger.debug("제로 포지션 복구: 오늘 이미 시도함 - 스킵")
+                    return
+                self._last_zero_recovery_date = today_str
+                logger.info("제로 포지션 복구 모드 - 리밸런싱 완료 후 전량 청산 감지")
+                self.notifier.send_message(
+                    "🔄 <b>제로 포지션 복구</b>\n\n"
+                    "리밸런싱 완료 후 전량 청산이 감지되었습니다.\n"
+                    "스크리닝 후 신규 매수를 시도합니다."
+                )
+                # _is_rebalance_day()가 제로 포지션이면 월간 잠금을 무시하므로
+                # 아래 리밸런싱 체크로 넘어감
 
         # 리밸런싱 일인 경우 스크리닝 실행
         if self._is_rebalance_day():
@@ -1220,6 +1444,10 @@ class QuantTradingEngine:
             "목표 종목": f"{self.config.target_stock_count}개",
             "투자금": f"{self.config.total_capital:,}원"
         })
+
+        # KIS 포지션 동기화 (내부 0개 + KIS에 보유종목 있으면)
+        if not self.portfolio.positions:
+            self.sync_positions_from_kis()
 
         # 최초 실행 시 자동 스크리닝
         self._check_initial_setup()

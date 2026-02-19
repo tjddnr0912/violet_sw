@@ -653,6 +653,8 @@ class KISClient:
         return {
             "stocks": stocks,
             "total_eval": int(summary.get("tot_evlu_amt", 0)),       # 총평가금액
+            "scts_evlu": int(summary.get("scts_evlu_amt", 0)),       # 유가증권평가금액 (주식만)
+            "nass": int(summary.get("nass_amt", 0)),                  # 순자산금액
             "total_profit": int(summary.get("evlu_pfls_smtl_amt", 0)),  # 총평가손익
             "cash": int(summary.get("dnca_tot_amt", 0)),             # 예수금총액
             "buy_amount": int(summary.get("pchs_amt_smtl_amt", 0))   # 매입금액합계
