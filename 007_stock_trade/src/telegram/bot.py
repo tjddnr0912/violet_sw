@@ -87,6 +87,8 @@ class TelegramBot:
             "/run_screening - 스크리닝 실행\n"
             "/run_rebalance - 리밸런싱 실행\n"
             "/rebalance - 긴급 리밸런싱 (보유 부족 시)\n"
+            "/reconcile - 장부 점검 (KIS 실잔고 대조)\n"
+            "/sync_positions - KIS 포지션 동기화\n"
             "/run_optimize - 최적화 실행\n\n"
             "<b>⚙️ 설정 변경:</b>\n"
             "/set_dryrun on|off - Dry-run 모드\n"
@@ -1287,6 +1289,57 @@ class TelegramBot:
         else:
             await update.message.reply_text(f"❌ {result['message']}")
 
+    async def cmd_reconcile(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """장부 점검 수동 실행"""
+        from src.core import get_controller
+
+        controller = get_controller()
+        await update.message.reply_text("🔍 장부 점검 중...")
+
+        try:
+            callback = controller.callbacks.get('on_reconcile')
+            if callback:
+                callback(force=True)  # 토요일 체크 없이 실행
+                await update.message.reply_text("✅ 장부 점검 완료 (결과는 위 메시지 참고)")
+            else:
+                await update.message.reply_text("❌ 점검 콜백 미등록. 엔진이 실행 중인지 확인하세요.")
+        except Exception as e:
+            logger.error(f"장부 점검 오류: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "장부 점검"), parse_mode='HTML')
+
+    async def cmd_sync_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """KIS 포지션 동기화"""
+        from src.core import get_controller
+
+        controller = get_controller()
+
+        await update.message.reply_text("🔄 KIS 포지션 동기화 중...")
+
+        try:
+            callback = controller.callbacks.get('sync_positions')
+            if not callback:
+                await update.message.reply_text("❌ 동기화 콜백이 등록되지 않았습니다. 엔진이 실행 중인지 확인하세요.")
+                return
+
+            result = callback()
+
+            if result['success']:
+                await update.message.reply_text(
+                    f"✅ <b>동기화 완료</b>\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"{result['message']}\n"
+                    f"동기화 종목: {result.get('synced', 0)}개\n"
+                    f"━━━━━━━━━━━━━━━",
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(f"❌ {result['message']}")
+        except Exception as e:
+            logger.error(f"포지션 동기화 오류: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "포지션 동기화"), parse_mode='HTML')
+
     # ==================== Application 관련 ====================
 
     async def _post_init(self, application: Application) -> None:
@@ -1331,6 +1384,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("run_screening", self.cmd_run_screening))
         self.application.add_handler(CommandHandler("run_rebalance", self.cmd_run_rebalance))
         self.application.add_handler(CommandHandler("rebalance", self.cmd_rebalance))
+        self.application.add_handler(CommandHandler("reconcile", self.cmd_reconcile))
         self.application.add_handler(CommandHandler("run_optimize", self.cmd_run_optimize))
 
         # 설정 변경 명령어
@@ -1353,6 +1407,7 @@ class TelegramBot:
         # 포지션 관리 명령어
         self.application.add_handler(CommandHandler("close", self.cmd_close))
         self.application.add_handler(CommandHandler("close_all", self.cmd_close_all))
+        self.application.add_handler(CommandHandler("sync_positions", self.cmd_sync_positions))
 
         # 분석 명령어
         self.application.add_handler(CommandHandler("screening", self.cmd_screening))

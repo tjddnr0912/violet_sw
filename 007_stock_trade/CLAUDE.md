@@ -63,6 +63,7 @@ data/quant/
 | `/emergency_stop` | 긴급정지 |
 | `/run_screening` | 스크리닝 실행 |
 | `/run_rebalance` | 리밸런싱 실행 |
+| `/reconcile` | 장부 점검 (KIS 실잔고 대조) |
 
 ### 조회/설정
 | 명령어 | 설명 |
@@ -83,6 +84,7 @@ data/quant/
 | 09:00 | 주문 실행 → 거래 즉시 기록 (transaction_journal.json) |
 | 5분마다 | 포지션 모니터링 |
 | 15:20 | 일일 리포트 + 일별 스냅샷 저장 (daily_history.json) |
+| 토요일 10:00 | 주간 장부 점검 (KIS 실잔고 대조, 편차 시 보정) |
 
 ## 환경 변수 (.env)
 
@@ -344,3 +346,27 @@ After:  ⏱️ 잔고 조회 지연 / 상황: 서버 응답 지연 / 조치: 자
 - KIS 모의투자 서버가 간헐적으로 `INVALID_CHECK_ACNO` 응답 → 재시도로 해결
 - 재시도 없을 때: 기본값 1천만원으로 시작 → 실제 예수금과 불일치
 - 재시도 추가 후: 2~3번째 시도에서 정상 조회되어 실제 예수금으로 시작
+
+### 2026-02-19: 주간 장부 점검 (Weekly Reconciliation) 기능 추가
+
+**배경:** `daily_history.json`의 일일 스냅샷이 내부 계산 오류(이중 카운팅 등)로 실제 KIS 잔고와 불일치할 수 있음이 확인됨.
+
+**추가된 기능:**
+- `src/quant_modules/daily_tracker.py` - `reconcile_latest_snapshot()` 메서드 추가
+- `src/quant_engine.py` - `_on_weekly_reconciliation()` 메서드 + 토요일 10:00 스케줄 등록
+- `src/telegram/bot.py` - `/reconcile` 수동 점검 명령어 추가
+- `scripts/run_daemon.py` - `on_reconcile` 콜백 등록
+- `src/api/kis_client.py` - `get_balance()`에 `scts_evlu`, `nass` 필드 추가
+
+**동작 방식:**
+- 토요일 10:00 자동 실행 (또는 `/reconcile` 수동 실행)
+- KIS API 실잔고 조회 → 최근 스냅샷과 비교
+- 편차 >1% 시 스냅샷 보정 (total_assets, cash, invested, PnL 재계산)
+- 포지션 수 불일치 시 자동 동기화
+- 텔레그램으로 점검 결과 알림
+
+**관련 코드:**
+- `src/quant_modules/daily_tracker.py` - `reconcile_latest_snapshot()`
+- `src/quant_engine.py` - `_on_weekly_reconciliation(force=False)`
+- `src/telegram/bot.py` - `cmd_reconcile()`
+- `scripts/run_daemon.py` - `on_reconcile` 콜백

@@ -258,6 +258,12 @@ class QuantDaemon:
         controller.register_callback('close_position', self._close_position)
         controller.register_callback('close_all_positions', self._close_all_positions)
 
+        # KIS 포지션 동기화 콜백
+        controller.register_callback('sync_positions', self.engine.sync_positions_from_kis)
+
+        # 주간 장부 점검 콜백
+        controller.register_callback('on_reconcile', self.engine._on_weekly_reconciliation)
+
         logger.info("SystemController 콜백 등록 완료")
 
     def _close_position(self, stock_code: str) -> dict:
