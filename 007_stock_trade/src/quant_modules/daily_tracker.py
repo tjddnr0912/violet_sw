@@ -308,9 +308,10 @@ class DailyTracker:
         if not latest:
             return {"checked": False, "corrected": False, "diff": 0, "details": "스냅샷 없음"}
 
-        kis_cash = kis_data.get('cash', 0)
         kis_scts = kis_data.get('scts_evlu', 0)
-        kis_total = kis_cash + kis_scts
+        kis_nass = kis_data.get('nass', 0)
+        kis_total = kis_nass if kis_nass > 0 else (kis_data.get('cash', 0) + kis_scts)
+        kis_cash = kis_total - kis_scts  # 순자산 기준 실질 현금
         kis_stocks = kis_data.get('stocks', [])
         kis_buy_amount = kis_data.get('buy_amount', 0)
 

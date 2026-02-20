@@ -415,9 +415,10 @@ class TelegramBot:
             if self.kis_client:
                 try:
                     balance = self.kis_client.get_balance()
-                    total_assets = balance.get('scts_evlu', 0) + balance.get('cash', 0)
-                    cash = balance.get('cash', 0)
+                    nass = balance.get('nass', 0)
                     invested = balance.get('scts_evlu', 0)
+                    total_assets = nass if nass > 0 else (invested + balance.get('cash', 0))
+                    cash = total_assets - invested
                     buy_amount = balance.get('buy_amount', 0)
                     position_count = len(balance.get('stocks', []))
                 except Exception as e:

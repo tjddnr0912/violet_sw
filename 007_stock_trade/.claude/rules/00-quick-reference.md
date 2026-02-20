@@ -112,6 +112,26 @@ STOPPED ──/start_trading──▶ RUNNING ──/pause──▶ PAUSED
                         EMERGENCY_STOP ──/clear_emergency──▶ STOPPED
 ```
 
+## 총자산 계산 패턴 (T+2 결제 대응)
+
+```python
+# ⚠️ 잘못된 패턴 (T+2 결제 미반영으로 매수일 이중 계산)
+# total_assets = balance.get('cash', 0) + balance.get('scts_evlu', 0)
+
+# ✅ 올바른 패턴 (nass=순자산, 미결제 약정 반영)
+nass = balance.get('nass', 0)
+scts_evlu = balance.get('scts_evlu', 0)
+total_assets = nass if nass > 0 else (scts_evlu + balance.get('cash', 0))
+cash = total_assets - scts_evlu  # 실질 현금 (역산)
+```
+
+**배경:** 한국 주식시장은 T+2 결제. 매수 시 `scts_evlu`에는 즉시 반영되지만 `dnca_tot_amt`(예수금)에서는 차감되지 않음 → 매수 금액만큼 이중 계산. `nass_amt`(순자산)은 미결제 약정을 반영한 정확한 값.
+
+**적용 위치 (5곳):**
+- `src/quant_engine.py` - `generate_daily_report()`, `generate_monthly_report()`, `_on_weekly_reconciliation()`
+- `src/telegram/bot.py` - `cmd_capital()`
+- `src/quant_modules/daily_tracker.py` - `reconcile_latest_snapshot()`
+
 ## API Rate Limit 대응
 
 ```python

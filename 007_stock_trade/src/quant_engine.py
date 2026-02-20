@@ -848,11 +848,13 @@ class QuantTradingEngine:
 
         try:
             balance_info = self.client.get_balance()
-            kis_cash = balance_info.get('cash', 0)
             kis_scts_evlu = balance_info.get('scts_evlu', 0)
             kis_stocks = balance_info.get('stocks', [])
             kis_buy_amount = balance_info.get('buy_amount', 0)
-            total_display = kis_cash + kis_scts_evlu  # 현금 + 주식평가 (이중 카운팅 없음)
+            # nass(순자산) 사용: T+2 결제 미반영 예수금 이중 계산 방지
+            kis_nass = balance_info.get('nass', 0)
+            total_display = kis_nass if kis_nass > 0 else (balance_info.get('cash', 0) + kis_scts_evlu)
+            kis_cash = total_display - kis_scts_evlu  # 순자산 기준 실질 현금
             kis_available = True
         except Exception as e:
             logger.warning(f"KIS 잔고 조회 실패, 내부 데이터 사용: {e}")
@@ -919,7 +921,7 @@ class QuantTradingEngine:
 
         # 일별 스냅샷 저장
         try:
-            total_assets = total_display  # kis_cash + kis_scts_evlu (이중 카운팅 없음)
+            total_assets = total_display  # nass 순자산 기반 (T+2 결제 반영)
             cash = kis_cash
             invested = kis_scts_evlu
             buy_amount = kis_buy_amount
@@ -1012,8 +1014,10 @@ class QuantTradingEngine:
             # 계좌 잔고 조회 (API)
             try:
                 balance_info = self.client.get_balance()
-                total_assets = balance_info.get('scts_evlu', 0) + balance_info.get('cash', 0)
-                cash = balance_info.get('cash', 0)
+                nass = balance_info.get('nass', 0)
+                scts_evlu = balance_info.get('scts_evlu', 0)
+                total_assets = nass if nass > 0 else (scts_evlu + balance_info.get('cash', 0))
+                cash = total_assets - scts_evlu
             except Exception as e:
                 logger.warning(f"잔고 조회 실패, 포트폴리오 데이터 사용: {e}")
                 total_assets = snapshot.total_value
@@ -1070,6 +1074,7 @@ class QuantTradingEngine:
             kis_data = {
                 'cash': balance_info.get('cash', 0),
                 'scts_evlu': balance_info.get('scts_evlu', 0),
+                'nass': balance_info.get('nass', 0),
                 'buy_amount': balance_info.get('buy_amount', 0),
                 'stocks': balance_info.get('stocks', []),
                 'total_profit': balance_info.get('total_profit', 0),
@@ -1085,7 +1090,8 @@ class QuantTradingEngine:
             pos_synced = kis_stock_count == internal_count
 
             # 4. 텔레그램 알림
-            kis_total = kis_data['cash'] + kis_data['scts_evlu']
+            kis_nass = kis_data.get('nass', 0)
+            kis_total = kis_nass if kis_nass > 0 else (kis_data['cash'] + kis_data['scts_evlu'])
             status_icon = "✅" if not recon_result.get('corrected') and pos_synced else "⚠️"
 
             message = (

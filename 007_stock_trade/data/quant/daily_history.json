@@ -1,0 +1,268 @@
+{
+  "initial_capital": 10609298,
+  "snapshots": [
+    {
+      "date": "2026-02-10",
+      "total_assets": 10609298,
+      "cash": 4970786,
+      "invested": 5638512,
+      "buy_amount": 3869340,
+      "position_count": 8,
+      "total_pnl": 0,
+      "total_pnl_pct": 0.0,
+      "daily_pnl": 0,
+      "daily_pnl_pct": 0,
+      "trades_today": 1,
+      "positions": [],
+      "created_at": "2026-02-10T15:20:02.325809"
+    },
+    {
+      "date": "2026-02-11",
+      "total_assets": 10770078,
+      "cash": 5504808,
+      "invested": 5265270,
+      "buy_amount": 3869340,
+      "position_count": 8,
+      "total_pnl": 160780,
+      "total_pnl_pct": 1.515463134318595,
+      "daily_pnl": 160780,
+      "daily_pnl_pct": 1.515463134318595,
+      "trades_today": 0,
+      "positions": [],
+      "created_at": "2026-02-11T15:20:02.450173"
+    },
+    {
+      "date": "2026-02-12",
+      "total_assets": 10916268,
+      "cash": 6119098,
+      "invested": 4797170,
+      "buy_amount": 3869340,
+      "position_count": 8,
+      "total_pnl": 306970,
+      "total_pnl_pct": 2.893405388367826,
+      "daily_pnl": 146190,
+      "daily_pnl_pct": 1.3573717850511389,
+      "trades_today": 0,
+      "positions": [],
+      "created_at": "2026-02-12T15:20:02.167855"
+    },
+    {
+      "date": "2026-02-13",
+      "total_assets": 10976738,
+      "cash": 6119098,
+      "invested": 4857640,
+      "buy_amount": 3869340,
+      "position_count": 8,
+      "total_pnl": 367440,
+      "total_pnl_pct": 3.463377124480809,
+      "daily_pnl": 60470,
+      "daily_pnl_pct": 0.5539438936457038,
+      "trades_today": 0,
+      "positions": [],
+      "created_at": "2026-02-13T15:20:02.016082"
+    },
+    {
+      "date": "2026-02-19",
+      "total_assets": 11003218,
+      "cash": 6119098,
+      "invested": 4884120,
+      "buy_amount": 3869340,
+      "position_count": 8,
+      "total_pnl": 393920,
+      "total_pnl_pct": 3.7129695103295246,
+      "daily_pnl": 26480,
+      "daily_pnl_pct": 0.2412374240871924,
+      "trades_today": 0,
+      "positions": [],
+      "created_at": "2026-02-19T15:20:01.678608"
+    },
+    {
+      "date": "2026-02-20",
+      "total_assets": 11438947,
+      "cash": 1924047,
+      "invested": 9514900,
+      "buy_amount": 8390639,
+      "position_count": 19,
+      "total_pnl": 829649,
+      "total_pnl_pct": 7.820017874886727,
+      "daily_pnl": 435729,
+      "daily_pnl_pct": 3.9600142431059715,
+      "trades_today": 25,
+      "positions": [
+        {
+          "code": "000120",
+          "name": "CJ대한통운",
+          "quantity": 4,
+          "entry_price": 104800,
+          "current_price": 138800,
+          "pnl": 136000,
+          "pnl_pct": 32.44
+        },
+        {
+          "code": "000210",
+          "name": "DL",
+          "quantity": 9,
+          "entry_price": 42300,
+          "current_price": 50000,
+          "pnl": 69300,
+          "pnl_pct": 18.2
+        },
+        {
+          "code": "000240",
+          "name": "한국앤컴퍼니",
+          "quantity": 9,
+          "entry_price": 31800,
+          "current_price": 34700,
+          "pnl": 26100,
+          "pnl_pct": 9.12
+        },
+        {
+          "code": "000270",
+          "name": "기아",
+          "quantity": 2,
+          "entry_price": 169400,
+          "current_price": 171700,
+          "pnl": 4600,
+          "pnl_pct": 1.36
+        },
+        {
+          "code": "001450",
+          "name": "현대해상",
+          "quantity": 11,
+          "entry_price": 36886,
+          "current_price": 38800,
+          "pnl": 21050,
+          "pnl_pct": 5.19
+        },
+        {
+          "code": "001800",
+          "name": "오리온홀딩스",
+          "quantity": 16,
+          "entry_price": 25018,
+          "current_price": 24850,
+          "pnl": -2700,
+          "pnl_pct": -0.67
+        },
+        {
+          "code": "004490",
+          "name": "세방전지",
+          "quantity": 5,
+          "entry_price": 68400,
+          "current_price": 69000,
+          "pnl": 3000,
+          "pnl_pct": 0.88
+        },
+        {
+          "code": "006360",
+          "name": "GS건설",
+          "quantity": 18,
+          "entry_price": 22550,
+          "current_price": 22950,
+          "pnl": 7200,
+          "pnl_pct": 1.77
+        },
+        {
+          "code": "011200",
+          "name": "HMM",
+          "quantity": 17,
+          "entry_price": 22850,
+          "current_price": 23100,
+          "pnl": 4250,
+          "pnl_pct": 1.09
+        },
+        {
+          "code": "011780",
+          "name": "금호석유화학",
+          "quantity": 5,
+          "entry_price": 136570,
+          "current_price": 145500,
+          "pnl": 44650,
+          "pnl_pct": 6.54
+        },
+        {
+          "code": "024110",
+          "name": "기업은행",
+          "quantity": 30,
+          "entry_price": 24020,
+          "current_price": 28600,
+          "pnl": 137400,
+          "pnl_pct": 19.07
+        },
+        {
+          "code": "036460",
+          "name": "한국가스공사",
+          "quantity": 9,
+          "entry_price": 44027,
+          "current_price": 45500,
+          "pnl": 13250,
+          "pnl_pct": 3.34
+        },
+        {
+          "code": "055550",
+          "name": "신한지주",
+          "quantity": 4,
+          "entry_price": 85000,
+          "current_price": 102100,
+          "pnl": 68400,
+          "pnl_pct": 20.12
+        },
+        {
+          "code": "078930",
+          "name": "GS",
+          "quantity": 5,
+          "entry_price": 74900,
+          "current_price": 75100,
+          "pnl": 1000,
+          "pnl_pct": 0.27
+        },
+        {
+          "code": "088350",
+          "name": "한화생명",
+          "quantity": 146,
+          "entry_price": 4341,
+          "current_price": 6600,
+          "pnl": 329760,
+          "pnl_pct": 52.03
+        },
+        {
+          "code": "138930",
+          "name": "BNK금융지주",
+          "quantity": 38,
+          "entry_price": 19484,
+          "current_price": 22750,
+          "pnl": 124100,
+          "pnl_pct": 16.76
+        },
+        {
+          "code": "161390",
+          "name": "한국타이어앤테크놀로지",
+          "quantity": 5,
+          "entry_price": 73500,
+          "current_price": 75600,
+          "pnl": 10500,
+          "pnl_pct": 2.86
+        },
+        {
+          "code": "316140",
+          "name": "우리금융지주",
+          "quantity": 12,
+          "entry_price": 30350,
+          "current_price": 40750,
+          "pnl": 124800,
+          "pnl_pct": 34.27
+        },
+        {
+          "code": "375500",
+          "name": "DL이앤씨",
+          "quantity": 8,
+          "entry_price": 50400,
+          "current_price": 50600,
+          "pnl": 1600,
+          "pnl_pct": 0.4
+        }
+      ],
+      "created_at": "2026-02-20T15:20:02.342750"
+    }
+  ],
+  "updated_at": "2026-02-20T15:20:02.343776"
+}

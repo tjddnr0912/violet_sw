@@ -139,6 +139,12 @@ TELEGRAM_CHAT_ID=xxx
 
 **관련 코드:** `src/telegram/bot.py`, `run_quant.sh`
 
+### 총자산 과대 표시 (T+2 결제 이중 계산)
+- 증상: 매수 발생일 총자산/수익률이 비정상적으로 높게 표시
+- 원인: `cash(dnca_tot_amt)` + `scts_evlu` 계산 시 T+2 결제 미반영으로 매수 금액 이중 계산
+- 해결: `nass_amt`(순자산) 사용 → 미결제 약정 반영
+- 참고: `.claude/rules/00-quick-reference.md`의 "총자산 계산 패턴" 참조
+
 ### 목표 종목 미달
 - 스크리닝 결과 < 목표: 필터 조건 미충족
 - 매수 실패: 다음 장 09:00 재시도 (최대 3회)
@@ -419,3 +425,25 @@ After:  ⏱️ 잔고 조회 지연 / 상황: 서버 응답 지연 / 조치: 자
 **관련 코드:**
 - `src/api/kis_client.py` - `get_execution_history()`, `_last_response_headers` 추가
 - `src/telegram/bot.py` - `cmd_orders()` 확장, `cmd_help()` 업데이트
+
+### 2026-02-20: 총자산 T+2 결제 이중 계산 수정
+
+**버그: 매매일 총자산/일일수익률 과대 계산**
+- 현상: 대량 매수 발생일 일일 수익률 42% 표시 (실제 ~4%)
+- 원인: `total_assets = cash(dnca_tot_amt) + scts_evlu(scts_evlu_amt)` 계산 시 T+2 결제 미반영
+  - `scts_evlu`: 매수 종목 이미 포함 (9,514,900)
+  - `dnca_tot_amt`: 매수 대금 미차감 (6,119,098 그대로)
+  - → 매수 금액만큼 이중 계산
+- 해결: `nass_amt`(순자산) 사용으로 미결제 약정 반영
+
+**수정 패턴 (5곳 통일):**
+```
+Before: total_assets = cash + scts_evlu  ← 결제 전 예수금 이중 계산
+After:  total_assets = nass              ← 순자산 (미결제 반영)
+        cash = nass - scts_evlu          ← 실질 현금 (역산)
+```
+
+**관련 코드:**
+- `src/quant_engine.py` - `generate_daily_report()`, `generate_monthly_report()`, `_on_weekly_reconciliation()`
+- `src/telegram/bot.py` - `cmd_capital()`
+- `src/quant_modules/daily_tracker.py` - `reconcile_latest_snapshot()`
