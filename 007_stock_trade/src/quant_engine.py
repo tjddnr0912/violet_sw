@@ -42,24 +42,14 @@ from .strategy.quant import (
 )
 from .telegram import TelegramNotifier, get_notifier
 from .utils import is_trading_day, get_trading_hours, get_market_open_time
-from .quant_modules import EngineState, SchedulePhase, PendingOrder, EngineStateManager, OrderExecutor, MonthlyTracker, DailyTracker, DailySnapshot
+from .utils.balance_helpers import parse_balance
+from .quant_modules import EngineState, SchedulePhase, PendingOrder, EngineStateManager, OrderExecutor, MonthlyTracker, DailyTracker, DailySnapshot, ReportGenerator, PositionMonitor, ScheduleHandler
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
 
-# 디버그 전용 로거 (별도 파일에 상세 로그 기록)
-debug_logger = logging.getLogger("quant_debug")
-debug_logger.setLevel(logging.DEBUG)
-_debug_handler = logging.FileHandler("logs/quant_debug.log", encoding="utf-8")
-_debug_handler.setFormatter(logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(message)s"
-))
-debug_logger.addHandler(_debug_handler)
-debug_logger.propagate = False  # 터미널에 출력하지 않음
-
-# API Rate Limit 설정 (한투 API 제한: 실전 20건/초, 모의 5건/초)
-API_DELAY_VIRTUAL = 0.5    # 모의투자: 500ms (초당 2건, 충분한 여유)
-API_DELAY_REAL = 0.1       # 실전투자: 100ms (초당 ~10건)
+# API Rate Limit 설정 (order_executor 정의를 공유)
+from .quant_modules.order_executor import API_DELAY_VIRTUAL, API_DELAY_REAL
 
 
 @dataclass
@@ -230,6 +220,29 @@ class QuantTradingEngine:
             is_virtual=is_virtual,
             daily_tracker=self.daily_tracker
         )
+
+        # 리포트 생성기
+        self.report_generator = ReportGenerator(
+            client=self.client,
+            notifier=self.notifier,
+            daily_tracker=self.daily_tracker,
+            monthly_tracker=self.monthly_tracker,
+            portfolio=self.portfolio,
+            config=self.config,
+        )
+
+        # 포지션 모니터
+        self.position_monitor = PositionMonitor(
+            client=self.client,
+            portfolio=self.portfolio,
+            notifier=self.notifier,
+            config=self.config,
+            is_virtual=is_virtual,
+            order_executor=self.order_executor,
+        )
+
+        # 스케줄 핸들러
+        self.schedule_handler = ScheduleHandler(engine=self)
 
         # 긴급 리밸런싱 모드 (보유 70% 미만 시 활성화)
         self._urgent_rebalance_mode = False
@@ -626,371 +639,23 @@ class QuantTradingEngine:
             save_state_callback=self._save_state
         )
 
-    # ========== 장중 모니터링 ==========
+    # ========== 장중 모니터링 (position_monitor 위임) ==========
 
     def monitor_positions(self):
-        """
-        포지션 모니터링 (손절/익절 체크)
-
-        장중 5분마다 실행
-        """
-        # 포지션 스냅샷 생성 (Lock 보호)
-        with self._position_lock:
-            if not self.portfolio.positions:
-                return
-            # 복사본으로 순회하여 race condition 방지
-            positions_snapshot = list(self.portfolio.positions.items())
-
-        logger.info(f"포지션 모니터링: {len(positions_snapshot)}개")
-        debug_logger.info(f"{'='*60}")
-        debug_logger.info(f"모니터링 시작: {len(positions_snapshot)}개 포지션")
-
-        # API 호출 딜레이 (모의투자: 350ms, 실전: 100ms)
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-
-        for i, (code, position) in enumerate(positions_snapshot):
-            if i > 0:
-                time.sleep(api_delay)
-
-            try:
-                # 현재가 업데이트 (Rate Limit 시 재시도)
-                price_info = None
-                for retry in range(3):
-                    try:
-                        price_info = self.client.get_stock_price(code)
-                        break
-                    except Exception as e:
-                        error_str = str(e)
-                        # Rate Limit 에러 체크 (원본 또는 변환된 메시지)
-                        is_rate_limit = any(x in error_str for x in [
-                            "EGW00201", "초당 거래건수", "증권사 서버 내부 오류"
-                        ])
-                        if is_rate_limit and retry < 2:
-                            wait_time = 1.0 * (retry + 1)  # 1초, 2초
-                            debug_logger.warning(f"[{code}] Rate Limit - {wait_time}초 대기 후 재시도 ({retry+1}/3)")
-                            time.sleep(wait_time)
-                        else:
-                            raise
-
-                if price_info is None:
-                    debug_logger.error(f"[{code}] 3회 재시도 실패")
-                    continue
-
-                with self._position_lock:
-                    # 포지션이 아직 존재하는지 확인
-                    if code not in self.portfolio.positions:
-                        continue
-                    position.current_price = price_info.price
-
-                # 디버그 로그 (별도 파일에 기록)
-                pnl_pct = ((position.current_price - position.entry_price) / position.entry_price) * 100
-                to_stop = ((position.current_price - position.stop_loss) / position.current_price) * 100
-                to_tp1 = ((position.take_profit_1 - position.current_price) / position.current_price) * 100
-                debug_logger.debug(
-                    f"[{position.name}({code})] "
-                    f"현재가: {position.current_price:,}원 | "
-                    f"진입가: {position.entry_price:,}원 | "
-                    f"수익률: {pnl_pct:+.2f}% | "
-                    f"손절까지: {to_stop:.2f}% | "
-                    f"익절1까지: {to_tp1:.2f}%"
-                )
-
-                # 손절 체크
-                if position.current_price <= position.stop_loss:
-                    self._trigger_stop_loss(position)
-                    continue
-
-                # 익절 체크
-                if not position.tp1_executed and position.current_price >= position.take_profit_1:
-                    self._trigger_take_profit(position, stage=1)
-                elif not position.tp2_executed and position.current_price >= position.take_profit_2:
-                    self._trigger_take_profit(position, stage=2)
-
-                # 트레일링 스탑 업데이트
-                if self.config.trailing_stop:
-                    new_stop = StopLossManager.update_trailing_stop(
-                        position,
-                        self.config.stop_loss_pct
-                    )
-                    with self._position_lock:
-                        if new_stop > position.stop_loss:
-                            position.stop_loss = new_stop
-                            logger.info(f"{position.name}: 손절가 상향 → {new_stop:,.0f}원")
-
-            except Exception as e:
-                logger.error(f"모니터링 오류 ({code}): {e}", exc_info=True)
-                debug_logger.error(f"[{code}] 오류: {e}")
-
-        debug_logger.info(f"모니터링 완료")
-
-        # 상태 저장
-        self._save_state()
-
-        # 리스크 체크
-        with self._position_lock:
-            alerts = self.portfolio.check_risks()
-        for alert in alerts:
-            if alert.level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
-                self.notifier.send_message(
-                    f"⚠️ <b>리스크 경고</b>\n\n"
-                    f"유형: {alert.alert_type}\n"
-                    f"내용: {alert.message}\n"
-                    f"조치: {alert.action_required}"
-                )
-
-    def _trigger_stop_loss(self, position: Position):
-        """손절 실행 (재시도 포함)"""
-        logger.warning(f"손절 트리거: {position.name} ({position.profit_pct:+.1f}%)")
-
-        order = PendingOrder(
-            code=position.code,
-            name=position.name,
-            order_type="SELL",
-            quantity=position.quantity,
-            price=0,
-            reason=f"손절 ({position.profit_pct:+.1f}%)"
+        """포지션 모니터링 (position_monitor 위임)"""
+        self.position_monitor.monitor(
+            position_lock=self._position_lock,
+            daily_trades=self.daily_trades,
+            save_state_fn=self._save_state,
         )
 
-        # 최대 3회 재시도
-        max_retries = 3
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-
-        for attempt in range(max_retries):
-            # API Rate Limit 방지 딜레이
-            time.sleep(api_delay * (attempt + 1))  # 재시도마다 딜레이 증가
-
-            if self.order_executor._execute_order(order, self.daily_trades, Position, StopLossManager):
-                self.notifier.send_message(
-                    f"🔴 <b>손절 실행</b>\n\n"
-                    f"종목: {position.name}\n"
-                    f"수량: {position.quantity}주\n"
-                    f"손익: {position.profit_pct:+.1f}%"
-                )
-                return  # 성공
-
-            if attempt < max_retries - 1:
-                logger.warning(f"손절 재시도 ({attempt + 2}/{max_retries}): {position.name}")
-
-        # 모든 재시도 실패
-        logger.error(f"손절 실패 (재시도 소진): {position.name}")
-        self.notifier.send_message(
-            f"🚨 <b>손절 실패</b>\n\n"
-            f"종목: {position.name}\n"
-            f"수량: {position.quantity}주\n"
-            f"⚠️ 수동 확인 필요"
-        )
-
-    def _trigger_take_profit(self, position: Position, stage: int):
-        """익절 실행 (재시도 포함)"""
-        qty = TakeProfitManager.calculate_staged_sell_qty(position.quantity, stage)
-
-        if qty <= 0:
-            return
-
-        logger.info(f"익절 트리거 ({stage}차): {position.name} {qty}주 ({position.profit_pct:+.1f}%)")
-
-        order = PendingOrder(
-            code=position.code,
-            name=position.name,
-            order_type="SELL",
-            quantity=qty,
-            price=0,
-            reason=f"{stage}차 익절 ({position.profit_pct:+.1f}%)"
-        )
-
-        # 최대 3회 재시도
-        max_retries = 3
-        api_delay = API_DELAY_VIRTUAL if self.is_virtual else API_DELAY_REAL
-
-        for attempt in range(max_retries):
-            # API Rate Limit 방지 딜레이
-            time.sleep(api_delay * (attempt + 1))  # 재시도마다 딜레이 증가
-
-            if self.order_executor._execute_order(order, self.daily_trades, Position, StopLossManager):
-                if stage == 1:
-                    position.tp1_executed = True
-                else:
-                    position.tp2_executed = True
-
-                self.notifier.send_message(
-                    f"🟢 <b>{stage}차 익절 실행</b>\n\n"
-                    f"종목: {position.name}\n"
-                    f"수량: {qty}주\n"
-                    f"수익: {position.profit_pct:+.1f}%"
-                )
-                return  # 성공
-
-            if attempt < max_retries - 1:
-                logger.warning(f"익절 재시도 ({attempt + 2}/{max_retries}): {position.name}")
-
-        # 모든 재시도 실패
-        logger.error(f"익절 실패 (재시도 소진): {position.name}")
-        self.notifier.send_message(
-            f"🚨 <b>익절 실패</b>\n\n"
-            f"종목: {position.name}\n"
-            f"수량: {qty}주\n"
-            f"⚠️ 수동 확인 필요"
-        )
-
-    # ========== 일일 리포트 ==========
+    # ========== 리포트 (report_generator 위임) ==========
 
     def generate_daily_report(self):
-        """일일 리포트 생성 및 발송"""
-        snapshot = self.portfolio.get_snapshot()
-
-        # KIS API 잔고 조회 (텔레그램 메시지 + daily_history 공용)
-        kis_cash = snapshot.cash
-        kis_scts_evlu = snapshot.invested
-        kis_stocks = []
-        total_display = snapshot.total_value
-        kis_buy_amount = 0
-        kis_available = False
-
-        try:
-            balance_info = self.client.get_balance()
-            kis_scts_evlu = balance_info.get('scts_evlu', 0)
-            kis_stocks = balance_info.get('stocks', [])
-            kis_buy_amount = balance_info.get('buy_amount', 0)
-            # nass(순자산) 사용: T+2 결제 미반영 예수금 이중 계산 방지
-            kis_nass = balance_info.get('nass', 0)
-            total_display = kis_nass if kis_nass > 0 else (balance_info.get('cash', 0) + kis_scts_evlu)
-            kis_cash = total_display - kis_scts_evlu  # 순자산 기준 실질 현금
-            kis_available = True
-        except Exception as e:
-            logger.warning(f"KIS 잔고 조회 실패, 내부 데이터 사용: {e}")
-
-        # 보유 종목 정보 (KIS 데이터 우선)
-        positions_text = ""
-        position_count = len(snapshot.positions)
-        if kis_available and kis_stocks:
-            for stock in kis_stocks:
-                pnl_rate = stock.profit_rate if hasattr(stock, 'profit_rate') else 0
-                pnl_str = f"+{pnl_rate:.1f}" if pnl_rate >= 0 else f"{pnl_rate:.1f}"
-                name = stock.name if hasattr(stock, 'name') else str(stock)
-                positions_text += f"• {name}: {pnl_str}%\n"
-            position_count = len(kis_stocks)
-        elif snapshot.positions:
-            for pos in snapshot.positions:
-                pnl_str = f"+{pos.profit_pct:.1f}" if pos.profit_pct >= 0 else f"{pos.profit_pct:.1f}"
-                positions_text += f"• {pos.name}: {pnl_str}%\n"
-        else:
-            positions_text = "없음"
-
-        # KIS에 주식이 있지만 내부 포지션이 없으면 경고
-        sync_warning = ""
-        if kis_stocks and not snapshot.positions:
-            sync_warning = (
-                f"\n⚠️ <b>포지션 불일치</b>\n"
-                f"KIS 보유: {len(kis_stocks)}종목 / 내부: 0종목\n"
-                f"봇이 관리하지 않는 주식이 있습니다.\n"
-            )
-
-        # 오늘 거래 내역
-        trades_text = ""
-        if self.daily_trades:
-            for t in self.daily_trades:
-                pnl_str = ""
-                if t["type"] == "SELL" and "pnl" in t:
-                    pnl_str = f" ({t['pnl_pct']:+.1f}%)"
-                trades_text += f"• {t['type']} {t['name']}{pnl_str}\n"
-        else:
-            trades_text = "없음"
-
-        # 총 손익 계산
-        initial = self.daily_tracker.initial_capital or self.config.total_capital
-        total_pnl = total_display - initial
-        total_pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0
-
-        message = (
-            f"📈 <b>일일 리포트</b>\n\n"
-            f"📅 {datetime.now().strftime('%Y-%m-%d')}\n\n"
-            f"<b>포트폴리오</b>\n"
-            f"총 평가: {total_display:,.0f}원\n"
-            f"주식: {kis_scts_evlu:,.0f}원\n"
-            f"현금: {kis_cash:,.0f}원\n"
-            f"총 손익: {total_pnl_pct:+.2f}%\n"
-            f"MDD: {snapshot.mdd*100:.1f}%\n\n"
-            f"<b>보유 종목 ({position_count}개)</b>\n"
-            f"{positions_text}"
-            f"{sync_warning}\n"
-            f"<b>오늘 거래</b>\n"
-            f"{trades_text}"
-        )
-
-        self.notifier.send_message(message)
-
-        # 일별 스냅샷 저장
-        try:
-            total_assets = total_display  # nass 순자산 기반 (T+2 결제 반영)
-            cash = kis_cash
-            invested = kis_scts_evlu
-            buy_amount = kis_buy_amount
-
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            prev = self.daily_tracker.get_previous_day_snapshot(today_str)
-            daily_pnl = 0
-            daily_pnl_pct = 0
-            if prev:
-                daily_pnl = total_assets - prev.total_assets
-                daily_pnl_pct = (daily_pnl / prev.total_assets * 100) if prev.total_assets > 0 else 0
-
-            total_pnl = total_assets - initial
-            total_pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0
-
-            position_data = []
-            if kis_available and kis_stocks:
-                for stock in kis_stocks:
-                    pnl = stock.profit if hasattr(stock, 'profit') else 0
-                    pnl_pct = stock.profit_rate if hasattr(stock, 'profit_rate') else 0
-                    position_data.append({
-                        "code": stock.code if hasattr(stock, 'code') else "",
-                        "name": stock.name if hasattr(stock, 'name') else "",
-                        "quantity": stock.qty if hasattr(stock, 'qty') else 0,
-                        "entry_price": stock.avg_price if hasattr(stock, 'avg_price') else 0,
-                        "current_price": stock.current_price if hasattr(stock, 'current_price') else 0,
-                        "pnl": pnl,
-                        "pnl_pct": pnl_pct
-                    })
-            else:
-                for pos in snapshot.positions:
-                    pnl = (pos.current_price - pos.entry_price) * pos.quantity
-                    position_data.append({
-                        "code": pos.code,
-                        "name": pos.name,
-                        "quantity": pos.quantity,
-                        "entry_price": pos.entry_price,
-                        "current_price": pos.current_price,
-                        "pnl": pnl,
-                        "pnl_pct": pos.profit_pct
-                    })
-
-            daily_snapshot = DailySnapshot(
-                date=datetime.now().strftime("%Y-%m-%d"),
-                total_assets=total_assets,
-                cash=cash,
-                invested=invested,
-                buy_amount=buy_amount,
-                position_count=position_count,
-                total_pnl=total_pnl,
-                total_pnl_pct=total_pnl_pct,
-                daily_pnl=daily_pnl,
-                daily_pnl_pct=daily_pnl_pct,
-                trades_today=len(self.daily_trades),
-                positions=position_data
-            )
-            self.daily_tracker.save_daily_snapshot(daily_snapshot)
-        except Exception as e:
-            logger.error(f"일별 스냅샷 저장 실패: {e}", exc_info=True)
-
-        # 월간 거래에 추가 (일일 거래 초기화 전)
-        self.monthly_trades.extend(self.daily_trades)
-
-        # 일일 거래 초기화
+        """일일 리포트 생성 및 발송 (report_generator 위임)"""
+        trades_copy = self.report_generator.generate_daily_report(self.daily_trades)
+        self.monthly_trades.extend(trades_copy)
         self.daily_trades = []
-
-        logger.info("일일 리포트 발송 완료")
-
-    # ========== 월간 리포트 ==========
 
     def _was_rebalance_today(self) -> bool:
         """오늘 리밸런싱이 실행되었는지 확인"""
@@ -999,63 +664,10 @@ class QuantTradingEngine:
         return self.last_rebalance_date.date() == datetime.now().date()
 
     def generate_monthly_report(self, save_snapshot: bool = True):
-        """
-        월간 리포트 생성 및 발송
-
-        Args:
-            save_snapshot: 스냅샷 저장 여부 (수동 요청 시 False)
-        """
-        try:
-            logger.info("월간 리포트 생성 시작")
-
-            # 포트폴리오 스냅샷
-            snapshot = self.portfolio.get_snapshot()
-
-            # 계좌 잔고 조회 (API)
-            try:
-                balance_info = self.client.get_balance()
-                nass = balance_info.get('nass', 0)
-                scts_evlu = balance_info.get('scts_evlu', 0)
-                total_assets = nass if nass > 0 else (scts_evlu + balance_info.get('cash', 0))
-                cash = total_assets - scts_evlu
-            except Exception as e:
-                logger.warning(f"잔고 조회 실패, 포트폴리오 데이터 사용: {e}")
-                total_assets = snapshot.total_value
-                cash = snapshot.cash
-
-            # 리포트 생성
-            report_message = self.monthly_tracker.generate_monthly_report(
-                portfolio_snapshot=snapshot,
-                monthly_trades=self.monthly_trades,
-                total_assets=total_assets,
-                cash=cash,
-                is_auto_report=save_snapshot
-            )
-
-            # 텔레그램 발송
-            self.notifier.send_message(report_message)
-
-            # 스냅샷 저장 (자동 리포트인 경우만)
-            if save_snapshot:
-                monthly_snapshot = self.monthly_tracker.create_snapshot_from_portfolio(
-                    portfolio_snapshot=snapshot,
-                    monthly_trades=self.monthly_trades,
-                    total_assets=total_assets,
-                    cash=cash
-                )
-                self.monthly_tracker.save_snapshot(monthly_snapshot)
-
-                # 월간 거래 리셋
-                self.monthly_trades = []
-
-            logger.info("월간 리포트 발송 완료")
-
-        except Exception as e:
-            logger.error(f"월간 리포트 생성 실패: {e}", exc_info=True)
-            self.notifier.send_message(
-                f"⚠️ <b>월간 리포트 생성 실패</b>\n\n"
-                f"오류: {str(e)[:200]}"
-            )
+        """월간 리포트 생성 및 발송 (report_generator 위임)"""
+        self.report_generator.generate_monthly_report(self.monthly_trades, save_snapshot)
+        if save_snapshot:
+            self.monthly_trades = []
 
     # ========== 주간 장부 점검 ==========
 
@@ -1090,8 +702,8 @@ class QuantTradingEngine:
             pos_synced = kis_stock_count == internal_count
 
             # 4. 텔레그램 알림
-            kis_nass = kis_data.get('nass', 0)
-            kis_total = kis_nass if kis_nass > 0 else (kis_data['cash'] + kis_data['scts_evlu'])
+            bs = parse_balance(kis_data)
+            kis_total = bs.total_assets
             status_icon = "✅" if not recon_result.get('corrected') and pos_synced else "⚠️"
 
             message = (
@@ -1120,302 +732,6 @@ class QuantTradingEngine:
             logger.error(f"주간 장부 점검 실패: {e}", exc_info=True)
             from src.utils.error_formatter import format_user_error
             self.notifier.send_message(format_user_error(e, "주간 장부 점검"))
-
-    # ========== 스케줄러 ==========
-
-    def _check_initial_setup(self):
-        """
-        최초 실행 시 자동 스크리닝
-
-        조건:
-        1. 보유 포지션이 없음
-        2. 이번 달 리밸런싱을 아직 하지 않음
-        """
-        current_month = datetime.now().strftime("%Y-%m")
-
-        # 이미 이번 달 리밸런싱을 완료한 경우 스킵
-        if self.last_rebalance_month == current_month:
-            logger.info(f"이번 달({current_month}) 리밸런싱 완료됨 - 초기 스크리닝 스킵")
-            return
-
-        # 보유 포지션이 있으면 스킵
-        if self.portfolio.positions:
-            logger.info(f"보유 포지션 {len(self.portfolio.positions)}개 - 초기 스크리닝 스킵")
-            return
-
-        # 휴장일이면 스킵
-        if not is_trading_day():
-            logger.info("휴장일 - 초기 스크리닝 스킵 (다음 거래일에 자동 실행)")
-            return
-
-        logger.info("=" * 60)
-        logger.info("🚀 최초 실행 감지 - 초기 스크리닝 시작")
-        logger.info("=" * 60)
-
-        self.notifier.send_message(
-            "🚀 <b>최초 실행 감지</b>\n\n"
-            "보유 포지션이 없어 초기 스크리닝을 시작합니다.\n"
-            "스크리닝 완료 후 리밸런싱 주문이 생성됩니다."
-        )
-
-        try:
-            # 스크리닝 실행
-            screening_result = self.run_screening()
-            if screening_result is None:
-                logger.error("초기 스크리닝 실패")
-                self.notifier.send_message(
-                    "⚠️ <b>초기 스크리닝 실패</b>\n\n"
-                    "수동으로 /run_screening 명령을 실행해주세요."
-                )
-                return
-
-            # 리밸런싱 주문 생성
-            orders = self.generate_rebalance_orders()
-
-            if orders:
-                now = datetime.now()
-                self.last_rebalance_date = now
-                self.last_rebalance_month = now.strftime("%Y-%m")
-                self._save_state()
-
-                logger.info(f"초기 설정 완료: {len(orders)}개 주문 생성")
-
-                # 장 시간인 경우 즉시 실행
-                if self._is_trading_time():
-                    self.notifier.send_message(
-                        f"✅ <b>초기 스크리닝 완료</b>\n\n"
-                        f"• 생성된 주문: {len(orders)}개\n\n"
-                        f"현재 장 시간입니다. 즉시 주문을 실행합니다."
-                    )
-                    logger.info("장중 초기 스크리닝 - 즉시 주문 실행")
-                    self.execute_pending_orders()
-                else:
-                    self.notifier.send_message(
-                        f"✅ <b>초기 스크리닝 완료</b>\n\n"
-                        f"• 생성된 주문: {len(orders)}개\n\n"
-                        f"다음 거래일 09:00 장 시작 시 자동 실행됩니다."
-                    )
-            else:
-                logger.info("초기 설정 완료: 생성된 주문 없음")
-
-        except Exception as e:
-            logger.error(f"초기 스크리닝 오류: {e}", exc_info=True)
-            from src.utils.error_formatter import format_user_error
-            self.notifier.send_message(format_user_error(e, "초기 스크리닝"))
-
-    def _setup_schedule(self):
-        """스케줄 설정"""
-        # 장 전 스크리닝 (리밸런싱 일에만)
-        schedule.every().day.at(self.config.screening_time).do(self._on_pre_market)
-        schedule.every().day.at("09:30").do(self._on_pre_market)  # 10시 개장일 대비
-
-        # 장 시작 - 주문 실행 (특수 개장일 대비 여러 시간 등록)
-        schedule.every().day.at(self.config.market_open_time).do(self._on_market_open)
-        schedule.every().day.at("10:00").do(self._on_market_open)  # 1/2 등 10시 개장
-
-        # 장중 모니터링
-        schedule.every(self.config.monitoring_interval).minutes.do(self._on_monitoring)
-
-        # 장 마감 리포트
-        schedule.every().day.at(self.config.market_close_time).do(self._on_market_close)
-
-        # 주간 장부 점검 (토요일 10:00)
-        schedule.every().saturday.at("10:00").do(self._on_weekly_reconciliation)
-
-        logger.info("스케줄 설정 완료")
-        logger.info(f"  - 스크리닝: {self.config.screening_time} (리밸런싱 일)")
-        logger.info(f"  - 주문 실행: {self.config.market_open_time} (특수일: 10:00)")
-        logger.info(f"  - 모니터링: {self.config.monitoring_interval}분 간격")
-        logger.info(f"  - 리포트: {self.config.market_close_time}")
-        logger.info(f"  - 주간 점검: 토요일 10:00")
-
-    def _on_pre_market(self):
-        """장 전 이벤트"""
-        if self.state != EngineState.RUNNING:
-            return
-
-        # 휴장일 제외
-        if not is_trading_day():
-            return
-
-        # 이미 장 전 처리가 완료된 경우 스킵 (중복 실행 방지)
-        if self.current_phase in [SchedulePhase.PRE_MARKET, SchedulePhase.MARKET_OPEN, SchedulePhase.MARKET_HOURS]:
-            return
-
-        # 실제 개장 시간 확인 (특수 개장일 대응)
-        market_open_time = get_market_open_time()
-        current_time = datetime.now().strftime("%H:%M")
-
-        # 개장 30분 전부터 장 전 처리 가능
-        open_dt = datetime.strptime(market_open_time, "%H:%M")
-        pre_market_dt = open_dt - timedelta(minutes=30)
-        pre_market_start = pre_market_dt.strftime("%H:%M")
-
-        # 현재 시간이 장 전 처리 시간보다 이전이면 스킵
-        if current_time < pre_market_start:
-            logger.debug(f"장 전 처리 시간 전 ({current_time} < {pre_market_start}) - 스킵")
-            return
-
-        self.current_phase = SchedulePhase.PRE_MARKET
-        logger.info("=" * 60)
-        logger.info(f"장 전 처리 시작 (개장: {market_open_time})")
-        self.notifier.send_message(
-            f"🌅 <b>장 전 처리 시작</b>\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"⏰ {datetime.now().strftime('%H:%M:%S')}\n"
-            f"📅 개장: {market_open_time}"
-        )
-
-        # 포지션이 없으면 스크리닝 실행
-        if not self.portfolio.positions:
-            current_month = datetime.now().strftime("%Y-%m")
-            if self.last_rebalance_month != current_month:
-                # 이번 달 리밸런싱 전: 초기 스크리닝
-                logger.info("포지션 없음 - 초기 스크리닝 실행")
-                self.notifier.send_message(
-                    "📋 <b>포지션 없음</b> - 초기 스크리닝을 실행합니다."
-                )
-                self._check_initial_setup()
-                return
-            else:
-                # 이번 달 리밸런싱 완료 후 전량 청산 → 제로 포지션 복구 모드
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                if self._last_zero_recovery_date == today_str:
-                    logger.debug("제로 포지션 복구: 오늘 이미 시도함 - 스킵")
-                    return
-                self._last_zero_recovery_date = today_str
-                logger.info("제로 포지션 복구 모드 - 리밸런싱 완료 후 전량 청산 감지")
-                self.notifier.send_message(
-                    "🔄 <b>제로 포지션 복구</b>\n\n"
-                    "리밸런싱 완료 후 전량 청산이 감지되었습니다.\n"
-                    "스크리닝 후 신규 매수를 시도합니다."
-                )
-                # _is_rebalance_day()가 제로 포지션이면 월간 잠금을 무시하므로
-                # 아래 리밸런싱 체크로 넘어감
-
-        # 리밸런싱 일인 경우 스크리닝 실행
-        if self._is_rebalance_day():
-            logger.info("리밸런싱 일 - 스크리닝 실행")
-            self.notifier.send_message(
-                "📆 <b>리밸런싱 일</b> - 스크리닝을 실행합니다."
-            )
-
-            # 스크리닝 실행 및 결과 체크
-            screening_result = self.run_screening()
-            if screening_result is None:
-                logger.error("스크리닝 실패 - 리밸런싱 중단")
-                self.notifier.send_message(
-                    "⚠️ <b>스크리닝 실패</b>\n\n"
-                    "리밸런싱 일이지만 스크리닝이 실패했습니다.\n"
-                    "수동으로 /run_screening 명령을 실행하거나\n"
-                    "로그를 확인해주세요."
-                )
-                return
-
-            # 리밸런싱 주문 생성
-            orders = self.generate_rebalance_orders()
-
-            # 리밸런싱 날짜 기록 (중복 실행 방지)
-            if orders:
-                now = datetime.now()
-                self.last_rebalance_date = now
-                self.last_rebalance_month = now.strftime("%Y-%m")
-
-                # 긴급 리밸런싱인 경우 별도 추적 (월 1회 제한)
-                if self._urgent_rebalance_mode:
-                    self.state_manager.last_urgent_rebalance_month = now.strftime("%Y-%m")
-                    logger.info(f"긴급 리밸런싱 완료 기록: {self.state_manager.last_urgent_rebalance_month}")
-
-                self._save_state()
-                logger.info(f"리밸런싱 완료 기록: {self.last_rebalance_month}")
-            else:
-                logger.info("생성된 리밸런싱 주문 없음 (포트폴리오 유지)")
-        else:
-            logger.info("리밸런싱 일 아님 - 스크리닝 스킵")
-
-    def _on_market_open(self):
-        """장 시작 이벤트"""
-        if self.state != EngineState.RUNNING:
-            return
-
-        if not is_trading_day():
-            return
-
-        # 이미 장 시작 처리가 완료된 경우 스킵 (중복 실행 방지)
-        if self.current_phase in [SchedulePhase.MARKET_OPEN, SchedulePhase.MARKET_HOURS]:
-            return
-
-        # 실제 개장 시간 확인 (특수 개장일 대응)
-        market_open_time = get_market_open_time()
-        current_time = datetime.now().strftime("%H:%M")
-
-        # 현재 시간이 개장 시간보다 이전이면 스킵
-        if current_time < market_open_time:
-            logger.debug(f"개장 전 ({current_time} < {market_open_time}) - 스킵")
-            return
-
-        self.current_phase = SchedulePhase.MARKET_OPEN
-        logger.info("=" * 60)
-        logger.info(f"장 시작 ({market_open_time}) - 대기 주문 실행")
-
-        pending_count = len(self.pending_orders)
-        if pending_count > 0:
-            self.notifier.send_message(
-                f"🔔 <b>장 시작</b> ({market_open_time})\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"대기 주문 {pending_count}개 실행 중..."
-            )
-        else:
-            self.notifier.send_message(
-                f"🔔 <b>장 시작</b> ({market_open_time})\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"대기 주문 없음 - 모니터링 모드"
-            )
-
-        # 대기 주문 실행
-        self.execute_pending_orders()
-
-        self.current_phase = SchedulePhase.MARKET_HOURS
-
-    def _on_monitoring(self):
-        """모니터링 이벤트"""
-        if self.state != EngineState.RUNNING:
-            return
-
-        if not self._is_trading_time():
-            return
-
-        self.monitor_positions()
-
-    def _on_market_close(self):
-        """장 마감 이벤트"""
-        if self.state != EngineState.RUNNING:
-            return
-
-        if not is_trading_day():
-            return
-
-        self.current_phase = SchedulePhase.MARKET_CLOSE
-        logger.info("=" * 60)
-        logger.info("장 마감 - 일일 리포트 생성")
-        self.notifier.send_message(
-            f"🌙 <b>장 마감</b>\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"일일 리포트를 생성합니다..."
-        )
-
-        # 일일 리포트
-        self.generate_daily_report()
-
-        # 리밸런싱 일이면 월간 리포트 발송
-        if self._was_rebalance_today():
-            logger.info("리밸런싱 일 - 월간 리포트 생성")
-            self.generate_monthly_report(save_snapshot=True)
-
-        # 상태 저장
-        self._save_state()
-
-        self.current_phase = SchedulePhase.AFTER_MARKET
 
     # ========== 엔진 제어 ==========
 
@@ -1456,10 +772,10 @@ class QuantTradingEngine:
             self.sync_positions_from_kis()
 
         # 최초 실행 시 자동 스크리닝
-        self._check_initial_setup()
+        self.schedule_handler.check_initial_setup()
 
         # 스케줄 설정
-        self._setup_schedule()
+        self.schedule_handler.setup_schedule()
 
         # 스케줄 루프
         try:

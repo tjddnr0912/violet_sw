@@ -4,13 +4,13 @@
 일별 스냅샷 저장, 거래 즉시 기록, 조회 기능 담당
 """
 
-import json
-import shutil
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Any
+
+from .tracker_base import TrackerBase
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ class TransactionRecord:
         )
 
 
-class DailyTracker:
+class DailyTracker(TrackerBase):
     """
     일별 자산 추적기
 
@@ -102,7 +102,7 @@ class DailyTracker:
     """
 
     def __init__(self, data_dir: Path):
-        self.data_dir = Path(data_dir)
+        super().__init__(data_dir)
         self.history_file = self.data_dir / "daily_history.json"
         self.transaction_file = self.data_dir / "transaction_journal.json"
 
@@ -116,92 +116,46 @@ class DailyTracker:
     # ========== 히스토리 (일별 스냅샷) ==========
 
     def _load_history(self):
-        if not self.history_file.exists():
-            logger.info("일별 히스토리 파일 없음. 새로 시작합니다.")
+        data = self._load_json(self.history_file, "일별 히스토리")
+        if data is None:
             self.snapshots = []
             return
 
-        try:
-            with open(self.history_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            self.initial_capital = data.get("initial_capital", 0)
-            self.snapshots = [
-                DailySnapshot.from_dict(s) for s in data.get("snapshots", [])
-            ]
-            logger.info(f"일별 히스토리 로드: {len(self.snapshots)}일, 초기자본: {self.initial_capital:,.0f}원")
-
-        except json.JSONDecodeError as e:
-            backup_file = self.data_dir / f"daily_history.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            shutil.copy2(self.history_file, backup_file)
-            logger.error(f"일별 히스토리 파일 손상: {e}. 백업: {backup_file}")
-            self.snapshots = []
-
-        except Exception as e:
-            logger.error(f"일별 히스토리 로드 실패: {e}", exc_info=True)
-            self.snapshots = []
+        self.initial_capital = data.get("initial_capital", 0)
+        self.snapshots = [
+            DailySnapshot.from_dict(s) for s in data.get("snapshots", [])
+        ]
+        logger.info(f"일별 히스토리 로드: {len(self.snapshots)}일, 초기자본: {self.initial_capital:,.0f}원")
 
     def _save_history(self):
-        try:
-            data = {
-                "initial_capital": self.initial_capital,
-                "snapshots": [s.to_dict() for s in self.snapshots],
-                "updated_at": datetime.now().isoformat()
-            }
-
-            temp_file = self.history_file.with_suffix('.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-
-            temp_file.replace(self.history_file)
+        data = {
+            "initial_capital": self.initial_capital,
+            "snapshots": [s.to_dict() for s in self.snapshots],
+            "updated_at": datetime.now().isoformat()
+        }
+        if self._save_json(self.history_file, data, "일별 히스토리"):
             logger.debug(f"일별 히스토리 저장: {len(self.snapshots)}일")
-
-        except Exception as e:
-            logger.error(f"일별 히스토리 저장 실패: {e}", exc_info=True)
 
     # ========== 거래 일지 ==========
 
     def _load_transactions(self):
-        if not self.transaction_file.exists():
-            logger.info("거래 일지 파일 없음. 새로 시작합니다.")
+        data = self._load_json(self.transaction_file, "거래 일지")
+        if data is None:
             self.transactions = []
             return
 
-        try:
-            with open(self.transaction_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            self.transactions = [
-                TransactionRecord.from_dict(t) for t in data.get("transactions", [])
-            ]
-            logger.info(f"거래 일지 로드: {len(self.transactions)}건")
-
-        except json.JSONDecodeError as e:
-            backup_file = self.data_dir / f"transaction_journal.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            shutil.copy2(self.transaction_file, backup_file)
-            logger.error(f"거래 일지 파일 손상: {e}. 백업: {backup_file}")
-            self.transactions = []
-
-        except Exception as e:
-            logger.error(f"거래 일지 로드 실패: {e}", exc_info=True)
-            self.transactions = []
+        self.transactions = [
+            TransactionRecord.from_dict(t) for t in data.get("transactions", [])
+        ]
+        logger.info(f"거래 일지 로드: {len(self.transactions)}건")
 
     def _save_transactions(self):
-        try:
-            data = {
-                "transactions": [t.to_dict() for t in self.transactions],
-                "updated_at": datetime.now().isoformat()
-            }
-
-            temp_file = self.transaction_file.with_suffix('.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-
-            temp_file.replace(self.transaction_file)
+        data = {
+            "transactions": [t.to_dict() for t in self.transactions],
+            "updated_at": datetime.now().isoformat()
+        }
+        if self._save_json(self.transaction_file, data, "거래 일지"):
             logger.debug(f"거래 일지 저장: {len(self.transactions)}건")
-
-        except Exception as e:
-            logger.error(f"거래 일지 저장 실패: {e}", exc_info=True)
 
     # ========== 공개 API ==========
 
@@ -304,16 +258,18 @@ class DailyTracker:
         Returns:
             {"checked": bool, "corrected": bool, "diff": float, "details": str}
         """
+        from src.utils.balance_helpers import parse_balance
+
         latest = self.get_latest_snapshot()
         if not latest:
             return {"checked": False, "corrected": False, "diff": 0, "details": "스냅샷 없음"}
 
-        kis_scts = kis_data.get('scts_evlu', 0)
-        kis_nass = kis_data.get('nass', 0)
-        kis_total = kis_nass if kis_nass > 0 else (kis_data.get('cash', 0) + kis_scts)
-        kis_cash = kis_total - kis_scts  # 순자산 기준 실질 현금
+        bs = parse_balance(kis_data)
+        kis_total = bs.total_assets
+        kis_cash = bs.cash
+        kis_scts = bs.scts_evlu
+        kis_buy_amount = bs.buy_amount
         kis_stocks = kis_data.get('stocks', [])
-        kis_buy_amount = kis_data.get('buy_amount', 0)
 
         diff = abs(latest.total_assets - kis_total)
         threshold = kis_total * 0.01 if kis_total > 0 else 0  # 1% 오차 허용

@@ -27,6 +27,7 @@ from .retry import (
 )
 
 from .error_formatter import format_user_error
+from .balance_helpers import parse_balance, BalanceSummary
 
 __all__ = [
     # market_calendar
@@ -51,4 +52,7 @@ __all__ = [
     "RetryExecutor",
     # error_formatter
     "format_user_error",
+    # balance_helpers
+    "parse_balance",
+    "BalanceSummary",
 ]
