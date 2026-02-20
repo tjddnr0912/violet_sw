@@ -70,6 +70,7 @@ data/quant/
 |--------|------|
 | `/status` | 상태 확인 |
 | `/positions` | 보유 종목 |
+| `/orders [N]` | 체결 내역 (기본 당일, 최대 90일) |
 | `/history [N]` | 일별 자산 변동 (기본 7일) |
 | `/trades [N]` | 거래 내역 (기본 7일) |
 | `/capital` | 초기 투자금 대비 현황 |
@@ -393,3 +394,28 @@ After:  ⏱️ 잔고 조회 지연 / 상황: 서버 응답 지연 / 조치: 자
 **관련 코드:**
 - `src/quant_engine.py` - `generate_monthly_report()`, `manual_rebalance()`, `run_urgent_rebalance()`
 - `src/telegram/bot.py` - `cmd_capital()`, `cmd_run_rebalance()`, `cmd_rebalance()`
+
+### 2026-02-20: 기간별 체결 내역 조회 기능 추가
+
+**배경:** `/orders`가 당일 주문만 조회 가능하고, `/trades`는 봇 자체 기록만 조회 → KIS에서 실제 체결 내역을 기간별로 확인할 수 없었음.
+
+**추가된 기능:**
+- `src/api/kis_client.py` - `get_execution_history()` 메서드 추가 (기간별 체결 조회 + 페이지네이션)
+- `src/telegram/bot.py` - `/orders [N]` 명령어 확장 (최근 N일 체결 내역)
+
+**사용법:**
+```
+/orders       → 당일 주문내역 (기존 동작 유지)
+/orders 7     → 최근 7일 체결 내역
+/orders 30    → 최근 30일 체결 내역 (최대 90일)
+```
+
+**API 세부사항:**
+- 3개월 이내: `VTTC0081R`(모의) / `TTTC0081R`(실전)
+- 3개월 이전: `VTSC9215R`(모의) / `CTSC9215R`(실전)
+- 페이지네이션: `tr_cont` 헤더 + `CTX_AREA_FK100/NK100`으로 연속 조회
+- 모의투자 1회 최대 15건 제한 → 자동 페이지네이션 처리
+
+**관련 코드:**
+- `src/api/kis_client.py` - `get_execution_history()`, `_last_response_headers` 추가
+- `src/telegram/bot.py` - `cmd_orders()` 확장, `cmd_help()` 업데이트
