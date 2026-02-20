@@ -23,10 +23,14 @@ KIS Open API 기반 멀티팩터 퀀트 자동매매 시스템.
 
 ```
 src/
-├── quant_engine.py              # 자동매매 엔진 (오케스트레이션)
-├── quant_modules/               # 퀀트 엔진 모듈 (2026-01 리팩토링)
+├── quant_engine.py              # 자동매매 엔진 오케스트레이션 (~980줄)
+├── quant_modules/               # 퀀트 엔진 모듈
 │   ├── state_manager.py         # 상태 저장/로드, Lock 관리
 │   ├── order_executor.py        # 주문 생성/실행/재시도
+│   ├── position_monitor.py      # 포지션 모니터링 (손절/익절) (2026-02)
+│   ├── schedule_handler.py      # 스케줄 이벤트 핸들러 (2026-02)
+│   ├── report_generator.py      # 일일/월간 리포트 생성 (2026-02)
+│   ├── tracker_base.py          # 트래커 공통 JSON 로드/세이브 (2026-02)
 │   ├── monthly_tracker.py       # 월간 포트폴리오 트래킹
 │   └── daily_tracker.py         # 일별 자산 추적 및 거래 일지 (2026-02)
 ├── api/
@@ -35,11 +39,19 @@ src/
 ├── core/system_controller.py    # 원격 제어 (싱글톤)
 ├── scheduler/auto_manager.py    # 월간 모니터링, 반기 최적화
 ├── telegram/
-│   ├── bot.py                   # 텔레그램 봇 (20+ 명령어)
+│   ├── bot.py                   # 텔레그램 봇 엔트리 (~330줄)
+│   ├── commands/                # 명령어 Mixin 모듈 (2026-02)
+│   │   ├── _base.py             # 공통 유틸 (에러 핸들링 데코레이터 등)
+│   │   ├── query_commands.py    # 조회 명령어 (balance, positions 등)
+│   │   ├── control_commands.py  # 제어 명령어 (start/stop/pause 등)
+│   │   ├── action_commands.py   # 실행 명령어 (rebalance, reconcile 등)
+│   │   ├── setting_commands.py  # 설정 명령어 (set_dryrun 등)
+│   │   └── analysis_commands.py # 분석 명령어 (screening, signal 등)
 │   ├── notifier.py              # 알림 전송 전담
 │   └── validators.py            # 입력 검증 유틸리티
 ├── strategy/quant/              # 팩터, 스크리너, 리스크
 └── utils/
+    ├── balance_helpers.py       # 잔고 계산 헬퍼 (parse_balance) (2026-02)
     ├── converters.py            # 타입 변환, 포맷팅
     ├── error_formatter.py       # 사용자 친화적 에러 메시지 (2026-02)
     ├── retry.py                 # 재시도 데코레이터/설정
@@ -210,8 +222,13 @@ pip install pykrx>=1.2.3 --break-system-packages  # Homebrew Python
 ## 개발 가이드
 
 ### 텔레그램 명령어 추가
-1. `src/telegram/bot.py`에 `async def cmd_XXX()` 추가
-2. `build_application()`에 핸들러 등록
+1. 해당 카테고리의 Mixin 파일에 `async def cmd_XXX()` 추가:
+   - 조회: `src/telegram/commands/query_commands.py`
+   - 제어: `src/telegram/commands/control_commands.py`
+   - 실행: `src/telegram/commands/action_commands.py`
+   - 설정: `src/telegram/commands/setting_commands.py`
+   - 분석: `src/telegram/commands/analysis_commands.py`
+2. `src/telegram/bot.py`의 `build_application()`에 핸들러 등록
 3. `cmd_help()` 업데이트
 
 ### 알림 전송
@@ -447,3 +464,54 @@ After:  total_assets = nass              ← 순자산 (미결제 반영)
 - `src/quant_engine.py` - `generate_daily_report()`, `generate_monthly_report()`, `_on_weekly_reconciliation()`
 - `src/telegram/bot.py` - `cmd_capital()`
 - `src/quant_modules/daily_tracker.py` - `reconcile_latest_snapshot()`
+
+### 2026-02-21: 코드베이스 모듈화 리팩토링 (8단계)
+
+**배경:** `quant_engine.py`(1,664줄)와 `bot.py`(1,653줄) 두 파일이 과도하게 비대하여 유지보수 어려움. Balance 계산 패턴 5곳 중복, 손절/익절 로직 ~60줄 거의 동일 등 코드 중복 다수.
+
+**리팩토링 결과:**
+
+| 파일 | Before | After | 변화 |
+|------|--------|-------|------|
+| `src/quant_engine.py` | 1,664줄 | ~980줄 | -41% |
+| `src/telegram/bot.py` | 1,653줄 | ~330줄 | -80% |
+
+**Phase 1: Balance 계산 헬퍼 추출 + cmd_balance 버그 수정**
+- `src/utils/balance_helpers.py` 신규 생성 (BalanceSummary, parse_balance)
+- nass 기반 T+2 결제 대응 로직을 단일 함수로 통합 (5곳 중복 제거)
+- `cmd_balance`의 `total_eval` 사용 버그 수정
+- `tests/test_balance_helpers.py` 테스트 추가
+
+**Phase 2: API 딜레이 상수 통합**
+- `quant_engine.py`의 중복 상수 삭제 → `order_executor.py`에서 import
+
+**Phase 3: 손절/익절 트리거 통합**
+- `_trigger_sell_with_retry()` 공통 메서드 추출 (손절/익절 ~60줄 중복 제거)
+
+**Phase 4: 리포트 모듈 추출**
+- `src/quant_modules/report_generator.py` 신규 생성 (ReportGenerator 클래스)
+- `generate_daily_report()`, `generate_monthly_report()` 이관
+
+**Phase 5: bot.py 커맨드 모듈 분리**
+- `src/telegram/commands/` 디렉토리 신규 생성 (5개 Mixin + 공통 베이스)
+- Mixin 패턴: QueryCommandsMixin, ControlCommandsMixin, ActionCommandsMixin, SettingCommandsMixin, AnalysisCommandsMixin
+- `with_error_handling` 데코레이터로 11곳 에러 핸들링 통합
+- `parse_days_arg()` 유틸로 일수 검증 3곳 통합
+
+**Phase 6: 포지션 모니터 추출**
+- `src/quant_modules/position_monitor.py` 신규 생성 (PositionMonitor 클래스)
+- `monitor_positions()`, `_trigger_stop_loss()`, `_trigger_take_profit()` 이관
+
+**Phase 7: 스케줄 핸들러 추출**
+- `src/quant_modules/schedule_handler.py` 신규 생성 (ScheduleHandler 클래스)
+- `_setup_schedule()`, `_on_pre_market()`, `_on_market_open()`, `_on_monitoring()`, `_on_market_close()` 이관
+
+**Phase 8: 트래커 베이스 클래스 추출**
+- `src/quant_modules/tracker_base.py` 신규 생성 (TrackerBase 클래스)
+- JSON 로드/세이브 공통 패턴 추출 (원자적 쓰기, 손상 파일 백업)
+- DailyTracker, MonthlyTracker가 TrackerBase 상속
+
+**설계 원칙:**
+- 500줄 초과 파일 없음, 각 파일이 단일 책임
+- 기능 변경 없이 순수 리팩토링 (cmd_balance 버그 수정 제외)
+- 기존 테스트 전체 통과

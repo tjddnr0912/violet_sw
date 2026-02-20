@@ -13,23 +13,35 @@ pip install pykrx>=1.2.3
 |--------|----------|-------------|
 | pykrx | **1.2.3** | `유니버스: 0개`, `KeyError` |
 
-## 모듈 구조 (2026-01 리팩토링)
+## 모듈 구조 (2026-02 리팩토링)
 
 ```
 src/
-├── quant_engine.py              # 엔진 오케스트레이션 (~1,200줄)
-├── quant_modules/               # 분리된 엔진 모듈
+├── quant_engine.py              # 엔진 오케스트레이션 (~980줄)
+├── quant_modules/               # 퀀트 엔진 모듈
 │   ├── state_manager.py         # EngineState, PendingOrder, 상태 저장/로드
 │   ├── order_executor.py        # 주문 생성/실행/재시도
+│   ├── position_monitor.py      # 포지션 모니터링 (손절/익절)
+│   ├── schedule_handler.py      # 스케줄 이벤트 핸들러
+│   ├── report_generator.py      # 일일/월간 리포트 생성
+│   ├── tracker_base.py          # 트래커 공통 JSON 로드/세이브
 │   ├── monthly_tracker.py       # MonthlySnapshot, MonthlyTracker
-│   └── daily_tracker.py         # DailySnapshot, TransactionRecord, DailyTracker (2026-02)
+│   └── daily_tracker.py         # DailySnapshot, TransactionRecord, DailyTracker
 ├── telegram/
-│   ├── bot.py                   # 텔레그램 봇 (20+ 명령어)
+│   ├── bot.py                   # 텔레그램 봇 엔트리 (~330줄)
+│   ├── commands/                # 명령어 Mixin 모듈
+│   │   ├── _base.py             # 공통 유틸 (에러 핸들링 데코레이터 등)
+│   │   ├── query_commands.py    # 조회 (balance, positions, status 등)
+│   │   ├── control_commands.py  # 제어 (start/stop/pause 등)
+│   │   ├── action_commands.py   # 실행 (rebalance, reconcile 등)
+│   │   ├── setting_commands.py  # 설정 (set_dryrun 등)
+│   │   └── analysis_commands.py # 분석 (screening, signal 등)
 │   ├── notifier.py              # TelegramNotifier (알림 전송)
 │   └── validators.py            # InputValidator (입력 검증)
 └── utils/
+    ├── balance_helpers.py       # 잔고 계산 헬퍼 (parse_balance)
     ├── converters.py            # safe_float, format_currency 등
-    ├── error_formatter.py       # classify_error, format_user_error (2026-02)
+    ├── error_formatter.py       # classify_error, format_user_error
     └── retry.py                 # RetryConfig, @with_retry
 ```
 
@@ -55,26 +67,24 @@ controller.register_callback('on_rebalance', engine.rebalance)
 
 ## 텔레그램 명령어 추가
 
+명령어는 Mixin 클래스에 추가하고, bot.py의 `build_application()`에 핸들러 등록.
+
 ```python
-# src/telegram/bot.py
+# src/telegram/commands/query_commands.py (또는 적절한 Mixin 파일)
 
-async def cmd_new_feature(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """새 기능"""
-    from src.core import get_controller
-    controller = get_controller()
+from ._base import with_error_handling
 
-    # 인자 처리
-    if context.args:
-        value = context.args[0]
+class QueryCommandsMixin:
+    @with_error_handling("새 기능")
+    async def cmd_new_feature(self, update, context):
+        """새 기능"""
+        from src.core import get_controller
+        controller = get_controller()
 
-    result = controller.some_method()
-
-    if result['success']:
+        result = controller.some_method()
         await update.message.reply_text(f"✅ {result['message']}", parse_mode='HTML')
-    else:
-        await update.message.reply_text(f"❌ {result['message']}")
 
-# build_application()에 추가
+# src/telegram/bot.py - build_application()에 핸들러 등록
 self.application.add_handler(CommandHandler("new_feature", self.cmd_new_feature))
 ```
 
@@ -115,22 +125,17 @@ STOPPED ──/start_trading──▶ RUNNING ──/pause──▶ PAUSED
 ## 총자산 계산 패턴 (T+2 결제 대응)
 
 ```python
-# ⚠️ 잘못된 패턴 (T+2 결제 미반영으로 매수일 이중 계산)
-# total_assets = balance.get('cash', 0) + balance.get('scts_evlu', 0)
+# ✅ 올바른 패턴: parse_balance() 사용
+from src.utils.balance_helpers import parse_balance
 
-# ✅ 올바른 패턴 (nass=순자산, 미결제 약정 반영)
-nass = balance.get('nass', 0)
-scts_evlu = balance.get('scts_evlu', 0)
-total_assets = nass if nass > 0 else (scts_evlu + balance.get('cash', 0))
-cash = total_assets - scts_evlu  # 실질 현금 (역산)
+bs = parse_balance(balance)
+total_assets = bs.total_assets  # nass 우선, fallback: scts_evlu + cash
+cash = bs.cash                  # total_assets - scts_evlu (역산)
+scts_evlu = bs.scts_evlu        # 주식평가금
+buy_amount = bs.buy_amount      # 매입금액
 ```
 
-**배경:** 한국 주식시장은 T+2 결제. 매수 시 `scts_evlu`에는 즉시 반영되지만 `dnca_tot_amt`(예수금)에서는 차감되지 않음 → 매수 금액만큼 이중 계산. `nass_amt`(순자산)은 미결제 약정을 반영한 정확한 값.
-
-**적용 위치 (5곳):**
-- `src/quant_engine.py` - `generate_daily_report()`, `generate_monthly_report()`, `_on_weekly_reconciliation()`
-- `src/telegram/bot.py` - `cmd_capital()`
-- `src/quant_modules/daily_tracker.py` - `reconcile_latest_snapshot()`
+**배경:** 한국 주식시장은 T+2 결제. 매수 시 `scts_evlu`에는 즉시 반영되지만 `dnca_tot_amt`(예수금)에서는 차감되지 않음 → 매수 금액만큼 이중 계산. `nass_amt`(순자산)은 미결제 약정을 반영한 정확한 값. `parse_balance()`가 이 로직을 통합 관리.
 
 ## API Rate Limit 대응
 

@@ -4,13 +4,13 @@
 월간 스냅샷 저장, 리포트 생성, 전월 대비 비교 기능 담당
 """
 
-import json
-import shutil
 import logging
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
+
+from .tracker_base import TrackerBase
 
 if TYPE_CHECKING:
     from ..strategy.quant import PortfolioSnapshot
@@ -56,7 +56,7 @@ class MonthlySnapshot:
         )
 
 
-class MonthlyTracker:
+class MonthlyTracker(TrackerBase):
     """
     월간 포트폴리오 트래커
 
@@ -68,56 +68,31 @@ class MonthlyTracker:
         Args:
             data_dir: 데이터 저장 디렉토리 (예: data/quant)
         """
-        self.data_dir = Path(data_dir)
+        super().__init__(data_dir)
         self.history_file = self.data_dir / "monthly_history.json"
         self.snapshots: List[MonthlySnapshot] = []
         self._load_history()
 
     def _load_history(self):
         """월간 히스토리 로드"""
-        if not self.history_file.exists():
-            logger.info("월간 히스토리 파일 없음. 새로 시작합니다.")
+        data = self._load_json(self.history_file, "월간 히스토리")
+        if data is None:
             self.snapshots = []
             return
 
-        try:
-            with open(self.history_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            self.snapshots = [
-                MonthlySnapshot.from_dict(s) for s in data.get("snapshots", [])
-            ]
-            logger.info(f"월간 히스토리 로드: {len(self.snapshots)}개월")
-
-        except json.JSONDecodeError as e:
-            # 파일 손상 시 백업 후 새로 시작
-            backup_file = self.data_dir / f"monthly_history.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            shutil.copy2(self.history_file, backup_file)
-            logger.error(f"월간 히스토리 파일 손상: {e}. 백업: {backup_file}")
-            self.snapshots = []
-
-        except Exception as e:
-            logger.error(f"월간 히스토리 로드 실패: {e}", exc_info=True)
-            self.snapshots = []
+        self.snapshots = [
+            MonthlySnapshot.from_dict(s) for s in data.get("snapshots", [])
+        ]
+        logger.info(f"월간 히스토리 로드: {len(self.snapshots)}개월")
 
     def _save_history(self):
         """월간 히스토리 저장"""
-        try:
-            data = {
-                "snapshots": [s.to_dict() for s in self.snapshots],
-                "updated_at": datetime.now().isoformat()
-            }
-
-            # 임시 파일로 먼저 저장 후 이동 (안전한 저장)
-            temp_file = self.history_file.with_suffix('.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-
-            temp_file.replace(self.history_file)
+        data = {
+            "snapshots": [s.to_dict() for s in self.snapshots],
+            "updated_at": datetime.now().isoformat()
+        }
+        if self._save_json(self.history_file, data, "월간 히스토리"):
             logger.info(f"월간 히스토리 저장: {len(self.snapshots)}개월")
-
-        except Exception as e:
-            logger.error(f"월간 히스토리 저장 실패: {e}", exc_info=True)
 
     def get_previous_month_snapshot(self, current_month: str) -> Optional[MonthlySnapshot]:
         """
