@@ -1,0 +1,444 @@
+{
+  "snapshots": [
+    {
+      "month": "2026-01",
+      "date": "2026-01-27",
+      "total_assets": 18133865,
+      "cash": 8112620,
+      "invested": 668050,
+      "position_count": 1,
+      "total_pnl": 13950,
+      "total_pnl_pct": 0.1719543131565388,
+      "positions": [
+        {
+          "code": "024110",
+          "name": "기업은행",
+          "quantity": 31,
+          "entry_price": 21100,
+          "current_price": 21550,
+          "market_value": 668050,
+          "pnl": 13950,
+          "pnl_pct": 2.132701421800948
+        }
+      ],
+      "trades": [],
+      "created_at": "2026-01-27T15:20:02.950714"
+    },
+    {
+      "month": "2026-02",
+      "date": "2026-02-20",
+      "total_assets": 11438947,
+      "cash": 6449147,
+      "invested": 4989800,
+      "position_count": 13,
+      "total_pnl": 92400,
+      "total_pnl_pct": 1.51002647775865,
+      "positions": [
+        {
+          "code": "000270",
+          "name": "기아",
+          "quantity": 2,
+          "entry_price": 169400,
+          "current_price": 171800,
+          "market_value": 343600,
+          "pnl": 4800,
+          "pnl_pct": 1.4167650531286895
+        },
+        {
+          "code": "006360",
+          "name": "GS건설",
+          "quantity": 18,
+          "entry_price": 22550,
+          "current_price": 22900,
+          "market_value": 412200,
+          "pnl": 6300,
+          "pnl_pct": 1.5521064301552108
+        },
+        {
+          "code": "161390",
+          "name": "한국타이어앤테크놀로지",
+          "quantity": 5,
+          "entry_price": 73500,
+          "current_price": 75500,
+          "market_value": 377500,
+          "pnl": 10000,
+          "pnl_pct": 2.7210884353741496
+        },
+        {
+          "code": "375500",
+          "name": "DL이앤씨",
+          "quantity": 8,
+          "entry_price": 50400,
+          "current_price": 50900,
+          "market_value": 407200,
+          "pnl": 4000,
+          "pnl_pct": 0.992063492063492
+        },
+        {
+          "code": "001450",
+          "name": "현대해상",
+          "quantity": 11,
+          "entry_price": 36750,
+          "current_price": 38750,
+          "market_value": 426250,
+          "pnl": 22000,
+          "pnl_pct": 5.442176870748299
+        },
+        {
+          "code": "004490",
+          "name": "세방전지",
+          "quantity": 5,
+          "entry_price": 68500,
+          "current_price": 69000,
+          "market_value": 345000,
+          "pnl": 2500,
+          "pnl_pct": 0.7299270072992701
+        },
+        {
+          "code": "001800",
+          "name": "오리온홀딩스",
+          "quantity": 16,
+          "entry_price": 25000,
+          "current_price": 24850,
+          "market_value": 397600,
+          "pnl": -2400,
+          "pnl_pct": -0.6
+        },
+        {
+          "code": "024110",
+          "name": "기업은행",
+          "quantity": 14,
+          "entry_price": 27450,
+          "current_price": 28600,
+          "market_value": 400400,
+          "pnl": 16100,
+          "pnl_pct": 4.189435336976321
+        },
+        {
+          "code": "138930",
+          "name": "BNK금융지주",
+          "quantity": 18,
+          "entry_price": 22350,
+          "current_price": 22750,
+          "market_value": 409500,
+          "pnl": 7200,
+          "pnl_pct": 1.7897091722595078
+        },
+        {
+          "code": "078930",
+          "name": "GS",
+          "quantity": 5,
+          "entry_price": 75000,
+          "current_price": 75300,
+          "market_value": 376500,
+          "pnl": 1500,
+          "pnl_pct": 0.4
+        },
+        {
+          "code": "011780",
+          "name": "금호석유화학",
+          "quantity": 2,
+          "entry_price": 144800,
+          "current_price": 145500,
+          "market_value": 291000,
+          "pnl": 1400,
+          "pnl_pct": 0.48342541436464087
+        },
+        {
+          "code": "036460",
+          "name": "한국가스공사",
+          "quantity": 9,
+          "entry_price": 44050,
+          "current_price": 45500,
+          "market_value": 409500,
+          "pnl": 13050,
+          "pnl_pct": 3.2917139614074915
+        },
+        {
+          "code": "011200",
+          "name": "HMM",
+          "quantity": 17,
+          "entry_price": 22800,
+          "current_price": 23150,
+          "market_value": 393550,
+          "pnl": 5950,
+          "pnl_pct": 1.5350877192982455
+        }
+      ],
+      "trades": [
+        {
+          "type": "SELL",
+          "code": "000120",
+          "name": "CJ대한통운",
+          "quantity": 1,
+          "price": 140400,
+          "pnl": 35600.0,
+          "pnl_pct": 33.969465648854964,
+          "order_no": "0000001056",
+          "reason": "1차 익절 (+34.5%)",
+          "timestamp": "2026-02-20T09:03:30.407574"
+        },
+        {
+          "type": "SELL",
+          "code": "000210",
+          "name": "DL",
+          "quantity": 3,
+          "price": 48850,
+          "pnl": 19650.0,
+          "pnl_pct": 15.484633569739954,
+          "order_no": "0000001063",
+          "reason": "1차 익절 (+15.5%)",
+          "timestamp": "2026-02-20T09:03:34.299348"
+        },
+        {
+          "type": "SELL",
+          "code": "011780",
+          "name": "금호석유화학",
+          "quantity": 1,
+          "price": 146000,
+          "pnl": 14650.0,
+          "pnl_pct": 11.153406928054816,
+          "order_no": "0000001067",
+          "reason": "1차 익절 (+11.2%)",
+          "timestamp": "2026-02-20T09:03:36.732349"
+        },
+        {
+          "type": "SELL",
+          "code": "024110",
+          "name": "기업은행",
+          "quantity": 6,
+          "price": 27100,
+          "pnl": 36600.0,
+          "pnl_pct": 29.04761904761905,
+          "order_no": "0000001078",
+          "reason": "1차 익절 (+29.3%)",
+          "timestamp": "2026-02-20T09:03:39.179491"
+        },
+        {
+          "type": "SELL",
+          "code": "055550",
+          "name": "신한지주",
+          "quantity": 1,
+          "price": 101900,
+          "pnl": 16900.0,
+          "pnl_pct": 19.88235294117647,
+          "order_no": "0000001084",
+          "reason": "1차 익절 (+19.9%)",
+          "timestamp": "2026-02-20T09:03:41.535218"
+        },
+        {
+          "type": "SELL",
+          "code": "088350",
+          "name": "한화생명",
+          "quantity": 40,
+          "price": 5260,
+          "pnl": 70800.0,
+          "pnl_pct": 50.71633237822349,
+          "order_no": "0000001098",
+          "reason": "1차 익절 (+50.7%)",
+          "timestamp": "2026-02-20T09:03:44.214192"
+        },
+        {
+          "type": "SELL",
+          "code": "138930",
+          "name": "BNK금융지주",
+          "quantity": 8,
+          "price": 22450,
+          "pnl": 44720.0,
+          "pnl_pct": 33.15539739027283,
+          "order_no": "0000001110",
+          "reason": "1차 익절 (+33.2%)",
+          "timestamp": "2026-02-20T09:03:46.618639"
+        },
+        {
+          "type": "SELL",
+          "code": "316140",
+          "name": "우리금융지주",
+          "quantity": 4,
+          "price": 39900,
+          "pnl": 38200.0,
+          "pnl_pct": 31.466227347611202,
+          "order_no": "0000001118",
+          "reason": "1차 익절 (+31.5%)",
+          "timestamp": "2026-02-20T09:03:49.109346"
+        },
+        {
+          "type": "BUY",
+          "code": "000270",
+          "name": "기아",
+          "quantity": 2,
+          "price": 169400,
+          "order_no": "0000002922",
+          "reason": "긴급 리밸런싱 매수 (순위 1위, 점수 73.5)",
+          "timestamp": "2026-02-20T09:13:52.096708"
+        },
+        {
+          "type": "BUY",
+          "code": "006360",
+          "name": "GS건설",
+          "quantity": 18,
+          "price": 22550,
+          "order_no": "0000002928",
+          "reason": "긴급 리밸런싱 매수 (순위 3위, 점수 72.2)",
+          "timestamp": "2026-02-20T09:13:53.683815"
+        },
+        {
+          "type": "BUY",
+          "code": "161390",
+          "name": "한국타이어앤테크놀로지",
+          "quantity": 5,
+          "price": 73500,
+          "order_no": "0000002933",
+          "reason": "긴급 리밸런싱 매수 (순위 4위, 점수 72.0)",
+          "timestamp": "2026-02-20T09:13:54.558735"
+        },
+        {
+          "type": "BUY",
+          "code": "088350",
+          "name": "한화생명",
+          "quantity": 74,
+          "price": 5430,
+          "order_no": "0000002947",
+          "reason": "긴급 리밸런싱 매수 (순위 5위, 점수 71.6)",
+          "timestamp": "2026-02-20T09:13:55.425129"
+        },
+        {
+          "type": "BUY",
+          "code": "375500",
+          "name": "DL이앤씨",
+          "quantity": 8,
+          "price": 50400,
+          "order_no": "0000002959",
+          "reason": "긴급 리밸런싱 매수 (순위 6위, 점수 71.4)",
+          "timestamp": "2026-02-20T09:13:56.255664"
+        },
+        {
+          "type": "BUY",
+          "code": "001450",
+          "name": "현대해상",
+          "quantity": 11,
+          "price": 36750,
+          "order_no": "0000002962",
+          "reason": "긴급 리밸런싱 매수 (순위 8위, 점수 70.5)",
+          "timestamp": "2026-02-20T09:13:57.812200"
+        },
+        {
+          "type": "BUY",
+          "code": "004490",
+          "name": "세방전지",
+          "quantity": 5,
+          "price": 68500,
+          "order_no": "0000002964",
+          "reason": "긴급 리밸런싱 매수 (순위 9위, 점수 70.2)",
+          "timestamp": "2026-02-20T09:13:58.699749"
+        },
+        {
+          "type": "BUY",
+          "code": "001800",
+          "name": "오리온홀딩스",
+          "quantity": 16,
+          "price": 25000,
+          "order_no": "0000002965",
+          "reason": "긴급 리밸런싱 매수 (순위 10위, 점수 70.0)",
+          "timestamp": "2026-02-20T09:13:59.520909"
+        },
+        {
+          "type": "BUY",
+          "code": "024110",
+          "name": "기업은행",
+          "quantity": 14,
+          "price": 27450,
+          "order_no": "0000002966",
+          "reason": "긴급 리밸런싱 매수 (순위 12위, 점수 69.1)",
+          "timestamp": "2026-02-20T09:14:00.351942"
+        },
+        {
+          "type": "BUY",
+          "code": "138930",
+          "name": "BNK금융지주",
+          "quantity": 18,
+          "price": 22350,
+          "order_no": "0000002969",
+          "reason": "긴급 리밸런싱 매수 (순위 13위, 점수 69.1)",
+          "timestamp": "2026-02-20T09:14:01.198608"
+        },
+        {
+          "type": "BUY",
+          "code": "078930",
+          "name": "GS",
+          "quantity": 5,
+          "price": 75000,
+          "order_no": "0000002972",
+          "reason": "긴급 리밸런싱 매수 (순위 15위, 점수 69.0)",
+          "timestamp": "2026-02-20T09:14:02.651200"
+        },
+        {
+          "type": "BUY",
+          "code": "000240",
+          "name": "한국앤컴퍼니",
+          "quantity": 12,
+          "price": 31800,
+          "order_no": "0000003663",
+          "reason": "리밸런싱 매수 (순위 11위, 점수 70.0)",
+          "timestamp": "2026-02-20T09:17:37.473753"
+        },
+        {
+          "type": "BUY",
+          "code": "011780",
+          "name": "금호석유화학",
+          "quantity": 2,
+          "price": 144800,
+          "order_no": "0000003666",
+          "reason": "리밸런싱 매수 (순위 2위, 점수 72.2)",
+          "timestamp": "2026-02-20T09:17:38.327353"
+        },
+        {
+          "type": "BUY",
+          "code": "036460",
+          "name": "한국가스공사",
+          "quantity": 9,
+          "price": 44050,
+          "order_no": "0000003685",
+          "reason": "리밸런싱 매수 (순위 7위, 점수 71.0)",
+          "timestamp": "2026-02-20T09:17:39.796224"
+        },
+        {
+          "type": "BUY",
+          "code": "011200",
+          "name": "HMM",
+          "quantity": 17,
+          "price": 22800,
+          "order_no": "0000003688",
+          "reason": "리밸런싱 매수 (순위 14위, 점수 69.3)",
+          "timestamp": "2026-02-20T09:17:40.607739"
+        },
+        {
+          "type": "SELL",
+          "code": "088350",
+          "name": "한화생명",
+          "quantity": 22,
+          "price": 6250,
+          "pnl": 18040,
+          "pnl_pct": 15.101289134438305,
+          "order_no": "0000009490",
+          "reason": "1차 익절 (+15.1%)",
+          "timestamp": "2026-02-20T10:10:31.594677"
+        },
+        {
+          "type": "SELL",
+          "code": "000240",
+          "name": "한국앤컴퍼니",
+          "quantity": 3,
+          "price": 35200,
+          "pnl": 10200,
+          "pnl_pct": 10.69182389937107,
+          "order_no": "0000021635",
+          "reason": "1차 익절 (+10.7%)",
+          "timestamp": "2026-02-20T13:46:58.809160"
+        }
+      ],
+      "created_at": "2026-02-20T15:20:04.024975"
+    }
+  ],
+  "updated_at": "2026-02-20T15:20:04.026223"
+}
