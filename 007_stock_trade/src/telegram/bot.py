@@ -103,6 +103,7 @@ class TelegramBot:
             "/history [N] - 자산 변동 (N일)\n"
             "/trades [N] - 거래 내역 (N일)\n"
             "/capital - 투자 원금 대비 현황\n"
+            "/orders [N] - 체결 내역 (N일)\n"
             "/logs - 최근 로그\n"
             "/report - 일일 리포트\n"
             "/monthly_report - 월간 리포트\n\n"
@@ -566,24 +567,89 @@ class TelegramBot:
             await update.message.reply_text("❌ API 클라이언트가 연결되지 않았습니다.")
             return
 
-        try:
-            orders = self.kis_client.get_order_history()
-
-            if not orders:
-                await update.message.reply_text("📋 당일 주문내역이 없습니다.")
+        # 일수 파라미터 (기본 1 = 당일)
+        days = 1
+        if context.args:
+            try:
+                days = max(1, min(int(context.args[0]), 90))
+            except ValueError:
+                await update.message.reply_text("사용법: /orders [일수]\n예: /orders 7")
                 return
 
-            lines = ["📋 <b>당일 주문내역</b>", "━━━━━━━━━━━━━━━"]
+        try:
+            if days == 1:
+                # 당일 조회 (기존 방식)
+                orders = self.kis_client.get_order_history()
 
-            for order in orders[:10]:  # 최대 10개
-                emoji = "🟢" if order['side'] == "매수" else "🔴"
-                lines.append(
-                    f"{emoji} <b>{order['name']}</b>\n"
-                    f"   {order['side']} {order['qty']}주 × {order['price']:,}원\n"
-                    f"   체결: {order['filled_qty']}주 | {order['status']}"
-                )
+                if not orders:
+                    await update.message.reply_text("📋 당일 주문내역이 없습니다.")
+                    return
 
-            await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+                lines = ["📋 <b>당일 주문내역</b>", "━━━━━━━━━━━━━━━"]
+
+                for order in orders[:10]:
+                    emoji = "🟢" if order['side'] == "매수" else "🔴"
+                    lines.append(
+                        f"{emoji} <b>{order['name']}</b>\n"
+                        f"   {order['side']} {order['qty']}주 × {order['price']:,}원\n"
+                        f"   체결: {order['filled_qty']}주 | {order['status']}"
+                    )
+
+                await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+            else:
+                # 기간별 체결 조회
+                end_date = datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.now() - timedelta(days=days - 1)).strftime("%Y%m%d")
+
+                orders = self.kis_client.get_execution_history(start_date, end_date)
+
+                if not orders:
+                    await update.message.reply_text(f"📋 최근 {days}일간 체결 내역이 없습니다.")
+                    return
+
+                # 날짜별 그룹핑
+                from collections import OrderedDict
+                by_date = OrderedDict()
+                for order in orders:
+                    date_key = order.get("order_date", "")
+                    if date_key not in by_date:
+                        by_date[date_key] = []
+                    by_date[date_key].append(order)
+
+                lines = [
+                    f"📋 <b>체결 내역 (최근 {days}일)</b>",
+                    "━━━━━━━━━━━━━━━"
+                ]
+
+                shown = 0
+                for date_str, date_orders in by_date.items():
+                    if shown >= 20:
+                        break
+
+                    display_date = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) == 8 else date_str
+                    lines.append(f"\n📅 <b>{display_date}</b>")
+
+                    for order in date_orders:
+                        if shown >= 20:
+                            break
+
+                        emoji = "🟢" if order['side'] == "매수" else "🔴"
+                        avg_price = order.get('avg_price', 0)
+                        price_str = f"{avg_price:,}" if avg_price > 0 else f"{order['price']:,}"
+
+                        lines.append(
+                            f"  {emoji} {order['name']} "
+                            f"{order['side']} {order['filled_qty']}주 × {price_str}원"
+                        )
+                        shown += 1
+
+                total = len(orders)
+                lines.append("\n━━━━━━━━━━━━━━━")
+                lines.append(f"총 {total}건")
+                if total > 20:
+                    lines.append(f"(최근 20건만 표시)")
+
+                await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
         except Exception as e:
             logger.error(f"주문내역 조회 실패: {e}", exc_info=True)

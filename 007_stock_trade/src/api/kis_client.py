@@ -127,6 +127,7 @@ class KISClient:
         """
         self.auth = get_auth(is_virtual)
         self.is_virtual = is_virtual
+        self._last_response_headers = {}  # 페이지네이션용 응답 헤더 저장
 
     def _request(
         self,
@@ -211,6 +212,7 @@ class KISClient:
 
                 # JSON 파싱
                 data = response.json()
+                self._last_response_headers = dict(response.headers)
 
                 # KIS API 응답 코드 검증
                 rt_cd = data.get("rt_cd", "0")
@@ -705,6 +707,100 @@ class KISClient:
                 "qty": int(item.get("ord_qty", 0)),
                 "price": int(item.get("ord_unpr", 0)),
                 "filled_qty": int(item.get("tot_ccld_qty", 0)),
+                "status": item.get("ord_dvsn_name", "")
+            })
+
+        return result
+
+    def get_execution_history(self, start_date: str, end_date: str,
+                              side: str = "00", settled_only: bool = True) -> list:
+        """
+        기간별 체결 내역 조회
+
+        Args:
+            start_date: 시작일 (YYYYMMDD)
+            end_date: 종료일 (YYYYMMDD)
+            side: "00"=전체, "01"=매도, "02"=매수
+            settled_only: True면 체결건만, False면 전체
+
+        Returns:
+            체결 내역 리스트
+        """
+        from datetime import datetime, timedelta
+
+        # 3개월 기준 TR_ID 선택
+        three_months_ago = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
+        if start_date >= three_months_ago:
+            tr_id = "VTTC0081R" if self.is_virtual else "TTTC0081R"
+        else:
+            tr_id = "VTSC9215R" if self.is_virtual else "CTSC9215R"
+
+        acct_no, acct_suffix = self.auth.get_account_info()
+        ccld_dvsn = "01" if settled_only else "00"
+
+        all_items = []
+        ctx_fk = ""
+        ctx_nk = ""
+        max_pages = 10  # 무한루프 방지
+
+        for page in range(max_pages):
+            params = {
+                "CANO": acct_no,
+                "ACNT_PRDT_CD": acct_suffix,
+                "INQR_STRT_DT": start_date,
+                "INQR_END_DT": end_date,
+                "SLL_BUY_DVSN_CD": side,
+                "INQR_DVSN": "00",
+                "PDNO": "",
+                "CCLD_DVSN": ccld_dvsn,
+                "ORD_GNO_BRNO": "",
+                "ODNO": "",
+                "INQR_DVSN_3": "00",
+                "INQR_DVSN_1": "",
+                "CTX_AREA_FK100": ctx_fk,
+                "CTX_AREA_NK100": ctx_nk
+            }
+
+            data = self._request(
+                method="GET",
+                endpoint="/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                tr_id=tr_id,
+                params=params
+            )
+
+            items = data.get("output1", [])
+            all_items.extend(items)
+
+            # 페이지네이션 확인
+            tr_cont = self._last_response_headers.get("tr_cont", "")
+            if tr_cont in ("M", "F") and items:
+                ctx_fk = data.get("ctx_area_fk100", "")
+                ctx_nk = data.get("ctx_area_nk100", "")
+                if not ctx_fk and not ctx_nk:
+                    break
+                time.sleep(0.5)  # API Rate Limit 방지
+            else:
+                break
+
+        # 결과 파싱
+        result = []
+        for item in all_items:
+            filled_qty = int(item.get("tot_ccld_qty", 0))
+            if settled_only and filled_qty == 0:
+                continue
+
+            result.append({
+                "order_date": item.get("ord_dt", ""),
+                "order_time": item.get("ord_tmd", ""),
+                "order_no": item.get("odno", ""),
+                "code": item.get("pdno", ""),
+                "name": item.get("prdt_name", ""),
+                "side": "매수" if item.get("sll_buy_dvsn_cd") == "02" else "매도",
+                "qty": int(item.get("ord_qty", 0)),
+                "price": int(item.get("ord_unpr", 0)),
+                "filled_qty": filled_qty,
+                "filled_amount": int(item.get("tot_ccld_amt", 0)),
+                "avg_price": int(float(item.get("avg_prvs", 0) or 0)),
                 "status": item.get("ord_dvsn_name", "")
             })
 
