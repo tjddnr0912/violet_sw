@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+
+{% block title %}Trading Dashboard - Crypto{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">Crypto Trading</h2>
+
+<!-- Regime & Performance Cards -->
+<div class="row mb-4">
+    <!-- Market Regime -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Market Regime</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Regime</h6>
+                        <span class="badge fs-5
+                            {% if 'bullish' in regime.market_regime %}bg-success
+                            {% elif 'bearish' in regime.market_regime %}bg-danger
+                            {% else %}bg-secondary{% endif %}">
+                            {{ regime.market_regime }}
+                        </span>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Volatility</h6>
+                        <span class="badge fs-5
+                            {% if regime.volatility_level == 'high' %}bg-danger
+                            {% elif regime.volatility_level == 'medium' %}bg-warning
+                            {% else %}bg-success{% endif %}">
+                            {{ regime.volatility_level }}
+                        </span>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Entry Mode</h6>
+                        <span class="badge bg-info fs-6">{{ regime.entry_mode }}</span>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Entry Threshold</h6>
+                        <span class="fs-4">{{ "{:.2f}".format(regime.entry_threshold_modifier) }}x</span>
+                    </div>
+                    <div class="col-6">
+                        <h6 class="text-muted">Stop Loss Modifier</h6>
+                        <span class="fs-4">{{ "{:.2f}".format(regime.stop_loss_modifier) }}x</span>
+                    </div>
+                </div>
+            </div>
+            <div class="card-footer text-muted">
+                Updated: {{ regime.last_update[:19] if regime.last_update else 'N/A' }}
+            </div>
+        </div>
+    </div>
+
+    <!-- Performance -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Performance Summary</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Total Trades</h6>
+                        <span class="fs-3 fw-bold">{{ performance.total_trades }}</span>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Win Rate</h6>
+                        <span class="fs-3 fw-bold {% if performance.win_rate >= 50 %}text-success{% else %}text-danger{% endif %}">
+                            {{ "{:.1f}".format(performance.win_rate) }}%
+                        </span>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Total P&L</h6>
+                        <span class="fs-4 {% if performance.total_profit_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+                            {{ "{:+.2f}".format(performance.total_profit_pct) }}%
+                        </span>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <h6 class="text-muted">Avg P&L per Trade</h6>
+                        <span class="fs-4 {% if performance.avg_profit_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+                            {{ "{:+.2f}".format(performance.avg_profit_pct) }}%
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Win/Loss Chart -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Win/Loss Distribution</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="winLossChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Profit by Regime</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="regimeChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Trade History -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Trade History</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Coin</th>
+                        <th>Entry Time</th>
+                        <th>Exit Time</th>
+                        <th class="text-end">Entry Price</th>
+                        <th class="text-end">Exit Price</th>
+                        <th class="text-end">P&L %</th>
+                        <th class="text-end">P&L KRW</th>
+                        <th>Regime</th>
+                        <th>Conditions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for trade in trades %}
+                    <tr>
+                        <td><strong>{{ trade.coin }}</strong></td>
+                        <td>{{ trade.entry_time[:16] }}</td>
+                        <td>{{ trade.exit_time[:16] if trade.exit_time else '-' }}</td>
+                        <td class="text-end">{{ "{:,.0f}".format(trade.entry_price) }}</td>
+                        <td class="text-end">{{ "{:,.0f}".format(trade.exit_price) if trade.exit_price else '-' }}</td>
+                        <td class="text-end {% if trade.profit_pct >= 0 %}text-success{% else %}text-danger{% endif %} fw-bold">
+                            {{ "{:+.2f}".format(trade.profit_pct) }}%
+                        </td>
+                        <td class="text-end {% if trade.profit_krw >= 0 %}text-success{% else %}text-danger{% endif %}">
+                            {{ "{:+,.0f}".format(trade.profit_krw) }}
+                        </td>
+                        <td>
+                            <span class="badge
+                                {% if 'bullish' in trade.regime %}bg-success
+                                {% elif 'bearish' in trade.regime %}bg-danger
+                                {% else %}bg-secondary{% endif %}">
+                                {{ trade.regime }}
+                            </span>
+                        </td>
+                        <td>
+                            {% for cond in trade.entry_conditions %}
+                            <span class="badge bg-light text-dark">{{ cond }}</span>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="9" class="text-center text-muted py-4">No trades</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const trades = {{ trades | tojson | safe }};
+
+    // Win/Loss Chart
+    const wins = trades.filter(t => t.profit_pct > 0).length;
+    const losses = trades.filter(t => t.profit_pct <= 0).length;
+
+    new Chart(document.getElementById('winLossChart'), {
+        type: 'doughnut',
+        data: {
+            labels: ['Wins', 'Losses'],
+            datasets: [{
+                data: [wins, losses],
+                backgroundColor: ['#198754', '#dc3545'],
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { position: 'bottom' }
+            }
+        }
+    });
+
+    // Regime Performance Chart
+    const regimes = [...new Set(trades.map(t => t.regime))];
+    const regimeData = regimes.map(r => {
+        const regimeTrades = trades.filter(t => t.regime === r);
+        return regimeTrades.reduce((sum, t) => sum + t.profit_pct, 0) / regimeTrades.length;
+    });
+
+    new Chart(document.getElementById('regimeChart'), {
+        type: 'bar',
+        data: {
+            labels: regimes,
+            datasets: [{
+                label: 'Avg Profit %',
+                data: regimeData,
+                backgroundColor: regimeData.map(v => v >= 0 ? '#198754' : '#dc3545'),
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                y: { beginAtZero: true }
+            }
+        }
+    });
+</script>
+{% endblock %}

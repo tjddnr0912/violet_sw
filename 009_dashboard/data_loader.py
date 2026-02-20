@@ -1,0 +1,233 @@
+"""
+Trading Data Loader - 007/005 데이터 통합 로더
+"""
+import json
+import os
+import time
+from datetime import datetime
+from typing import Dict, List, Any, Optional
+from pathlib import Path
+
+
+class TradingDataLoader:
+    """007/005 트레이딩 데이터 통합 로더"""
+
+    def __init__(self, base_path: Optional[str] = None):
+        if base_path is None:
+            # 기본 경로: 009_dashboard의 상위 디렉토리
+            base_path = Path(__file__).parent.parent
+        self.base_path = Path(base_path)
+
+        self.data_paths = {
+            'stock_engine': self.base_path / '007_stock_trade/data/quant/engine_state.json',
+            'stock_metrics': self.base_path / '007_stock_trade/data/strategy_monitor.json',
+            'crypto_factors': self.base_path / '005_money/logs/dynamic_factors_v3.json',
+            'crypto_history': self.base_path / '005_money/logs/performance_history_v3.json',
+            'stock_system': self.base_path / '007_stock_trade/data/quant/system_state.json',
+            'stock_daily': self.base_path / '007_stock_trade/data/quant/daily_history.json',
+            'stock_transactions': self.base_path / '007_stock_trade/data/quant/transaction_journal.json',
+        }
+
+    def _load_json(self, key: str) -> Optional[Dict | List]:
+        """JSON 파일 로드"""
+        path = self.data_paths.get(key)
+        if not path or not path.exists():
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+
+    # === 주식 데이터 ===
+
+    def get_stock_positions(self) -> List[Dict[str, Any]]:
+        """주식 포지션 조회"""
+        data = self._load_json('stock_engine')
+        if not data:
+            return []
+
+        positions = data.get('positions', [])
+        for pos in positions:
+            # 손익률 계산
+            if pos.get('entry_price') and pos.get('current_price'):
+                pos['profit_pct'] = ((pos['current_price'] - pos['entry_price'])
+                                     / pos['entry_price'] * 100)
+                pos['profit_krw'] = ((pos['current_price'] - pos['entry_price'])
+                                     * pos.get('quantity', 0))
+            # 손절/익절 상태
+            if pos.get('current_price') and pos.get('stop_loss'):
+                pos['stop_loss_pct'] = ((pos['stop_loss'] - pos['entry_price'])
+                                        / pos['entry_price'] * 100)
+            if pos.get('current_price') and pos.get('take_profit_1'):
+                pos['take_profit_1_pct'] = ((pos['take_profit_1'] - pos['entry_price'])
+                                            / pos['entry_price'] * 100)
+        return positions
+
+    def get_stock_state(self) -> Dict[str, Any]:
+        """주식 시스템 상태 조회"""
+        data = self._load_json('stock_engine')
+        if not data:
+            return {}
+        return {
+            'last_rebalance_month': data.get('last_rebalance_month'),
+            'last_urgent_rebalance_month': data.get('last_urgent_rebalance_month'),
+            'updated_at': data.get('updated_at'),
+            'position_count': len(data.get('positions', [])),
+        }
+
+    def get_stock_daily_history(self, days: int = 30) -> Dict[str, Any]:
+        """주식 일일 자산 히스토리"""
+        data = self._load_json('stock_daily')
+        if not data:
+            return {'initial_capital': 0, 'snapshots': []}
+        snapshots = data.get('snapshots', [])
+        return {
+            'initial_capital': data.get('initial_capital', 0),
+            'snapshots': snapshots[-days:],
+        }
+
+    def get_stock_transactions(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """주식 거래 내역"""
+        data = self._load_json('stock_transactions')
+        if not data:
+            return []
+        txns = data.get('transactions', [])
+        sorted_txns = sorted(txns, key=lambda x: x.get('timestamp', ''), reverse=True)
+        return sorted_txns[:limit]
+
+    # === 암호화폐 데이터 ===
+
+    def get_crypto_regime(self) -> Dict[str, Any]:
+        """암호화폐 시장 레짐 조회"""
+        data = self._load_json('crypto_factors')
+        if not data:
+            return {}
+        return {
+            'market_regime': data.get('market_regime', 'unknown'),
+            'volatility_level': data.get('volatility_level', 'unknown'),
+            'entry_mode': data.get('entry_mode', 'unknown'),
+            'entry_threshold_modifier': data.get('entry_threshold_modifier', 1.0),
+            'stop_loss_modifier': data.get('stop_loss_modifier', 1.0),
+            'current_atr_pct': data.get('current_atr_pct'),
+            'take_profit_target': data.get('take_profit_target'),
+            'last_update': data.get('last_realtime_update'),
+        }
+
+    def get_crypto_history(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """암호화폐 거래 내역 조회"""
+        data = self._load_json('crypto_history')
+        if not data:
+            return []
+        # 최신순 정렬
+        sorted_data = sorted(data, key=lambda x: x.get('exit_time', ''), reverse=True)
+        return sorted_data[:limit]
+
+    def get_crypto_performance(self) -> Dict[str, Any]:
+        """암호화폐 성과 통계"""
+        history = self._load_json('crypto_history')
+        if not history:
+            return {'total_trades': 0, 'win_rate': 0, 'total_profit_pct': 0}
+
+        closed_trades = [t for t in history if t.get('status') == 'closed']
+        if not closed_trades:
+            return {'total_trades': 0, 'win_rate': 0, 'total_profit_pct': 0}
+
+        wins = sum(1 for t in closed_trades if t.get('profit_pct', 0) > 0)
+        total_profit_pct = sum(t.get('profit_pct', 0) for t in closed_trades)
+
+        return {
+            'total_trades': len(closed_trades),
+            'win_rate': wins / len(closed_trades) * 100 if closed_trades else 0,
+            'total_profit_pct': total_profit_pct,
+            'avg_profit_pct': total_profit_pct / len(closed_trades) if closed_trades else 0,
+        }
+
+    # === 시스템 상태 ===
+
+    def get_system_status(self) -> Dict[str, Any]:
+        """봇 상태 확인 (파일 freshness 기반)"""
+        statuses = {}
+        checks = {
+            'crypto_bot': 'crypto_factors',
+            'stock_bot': 'stock_engine',
+        }
+        for bot_name, data_key in checks.items():
+            path = self.data_paths.get(data_key)
+            if path and path.exists():
+                mtime = path.stat().st_mtime
+                age_minutes = (time.time() - mtime) / 60
+                statuses[bot_name] = {
+                    'running': age_minutes < 30,
+                    'last_update': datetime.fromtimestamp(mtime).isoformat(),
+                    'age_minutes': round(age_minutes, 1),
+                }
+            else:
+                statuses[bot_name] = {
+                    'running': False,
+                    'last_update': None,
+                    'age_minutes': None,
+                }
+        return statuses
+
+    # === 종합 ===
+
+    def get_portfolio_summary(self) -> Dict[str, Any]:
+        """전체 포트폴리오 요약"""
+        stock_positions = self.get_stock_positions()
+        stock_state = self.get_stock_state()
+        crypto_regime = self.get_crypto_regime()
+        crypto_perf = self.get_crypto_performance()
+        system_status = self.get_system_status()
+
+        # 주식 총 평가액 및 손익
+        stock_total_value = sum(
+            pos.get('current_price', 0) * pos.get('quantity', 0)
+            for pos in stock_positions
+        )
+        stock_total_profit = sum(
+            pos.get('profit_krw', 0) for pos in stock_positions
+        )
+
+        # 일일 P&L (daily_history에서 최신 snapshot)
+        daily_data = self.get_stock_daily_history(days=1)
+        latest_snapshot = daily_data['snapshots'][-1] if daily_data['snapshots'] else {}
+
+        return {
+            'stock': {
+                'position_count': len(stock_positions),
+                'total_value': stock_total_value,
+                'total_profit': stock_total_profit,
+                'total_assets': latest_snapshot.get('total_assets', 0),
+                'daily_pnl': latest_snapshot.get('daily_pnl', 0),
+                'daily_pnl_pct': latest_snapshot.get('daily_pnl_pct', 0),
+                'total_pnl_pct': latest_snapshot.get('total_pnl_pct', 0),
+                'updated_at': stock_state.get('updated_at'),
+            },
+            'crypto': {
+                'market_regime': crypto_regime.get('market_regime'),
+                'volatility_level': crypto_regime.get('volatility_level'),
+                'total_trades': crypto_perf.get('total_trades'),
+                'win_rate': crypto_perf.get('win_rate'),
+                'total_profit_pct': crypto_perf.get('total_profit_pct'),
+                'avg_profit_pct': crypto_perf.get('avg_profit_pct'),
+                'updated_at': crypto_regime.get('last_update'),
+            },
+            'system_status': system_status,
+            'generated_at': datetime.now().isoformat(),
+        }
+
+    def get_recent_trades(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """최근 거래 내역 (암호화폐)"""
+        return self.get_crypto_history(limit)
+
+
+# 테스트용
+if __name__ == '__main__':
+    loader = TradingDataLoader()
+    print("=== Portfolio Summary ===")
+    print(json.dumps(loader.get_portfolio_summary(), indent=2, ensure_ascii=False))
+    print("\n=== Stock Positions ===")
+    print(json.dumps(loader.get_stock_positions(), indent=2, ensure_ascii=False))
+    print("\n=== Crypto Regime ===")
+    print(json.dumps(loader.get_crypto_regime(), indent=2, ensure_ascii=False))
