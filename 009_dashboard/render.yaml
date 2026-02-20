@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: trading-dashboard
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: FLASK_DEBUG
+        value: false
+      - key: PYTHON_VERSION
+        value: "3.11"

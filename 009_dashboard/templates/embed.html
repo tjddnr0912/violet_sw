@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard - Embed</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: transparent;
+            padding: 10px;
+            font-size: 14px;
+        }
+        .card {
+            margin-bottom: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            padding: 8px 12px;
+        }
+        .card-body {
+            padding: 10px 12px;
+        }
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+        .stat-label {
+            font-size: 0.75rem;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid p-0">
+        <div class="row g-2">
+            <!-- Stock Summary -->
+            <div class="col-6">
+                <div class="card border-primary h-100">
+                    <div class="card-header bg-primary text-white py-1">
+                        <strong>Stock</strong>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-2">
+                            <div class="stat-label">Positions</div>
+                            <div class="stat-value">{{ summary.stock.position_count }}</div>
+                        </div>
+                        <div>
+                            <div class="stat-label">P&L</div>
+                            <div class="stat-value {% if summary.stock.total_profit >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                {{ "{:+,.0f}".format(summary.stock.total_profit) }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Crypto Summary -->
+            <div class="col-6">
+                <div class="card border-warning h-100">
+                    <div class="card-header bg-warning text-dark py-1">
+                        <strong>Crypto</strong>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-2">
+                            <div class="stat-label">Regime</div>
+                            <div class="stat-value">
+                                <span class="badge
+                                    {% if 'bullish' in summary.crypto.market_regime %}bg-success
+                                    {% elif 'bearish' in summary.crypto.market_regime %}bg-danger
+                                    {% else %}bg-secondary{% endif %}">
+                                    {{ summary.crypto.market_regime }}
+                                </span>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="stat-label">Win Rate</div>
+                            <div class="stat-value {% if summary.crypto.win_rate >= 50 %}text-success{% else %}text-danger{% endif %}">
+                                {{ "{:.1f}".format(summary.crypto.win_rate) }}%
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center mt-2">
+            <small class="text-muted">Updated: {{ summary.generated_at[:16] }}</small>
+        </div>
+    </div>
+</body>
+</html>

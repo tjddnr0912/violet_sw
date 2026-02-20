@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+
+{% block title %}Trading Dashboard - Overview{% endblock %}
+
+{% block content %}
+<!-- Summary Cards -->
+<div class="row mb-4">
+    <!-- Stock Summary -->
+    <div class="col-lg-4 col-md-6 mb-3">
+        <div class="card h-100 border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Stock Portfolio</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Positions</span>
+                    <span class="fs-4 fw-bold">{{ summary.stock.position_count }}</span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Total Value</span>
+                    <span class="fs-5">{{ "{:,.0f}".format(summary.stock.total_value) }} KRW</span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="text-muted">Total P&L</span>
+                    <span class="fs-5 {% if summary.stock.total_profit >= 0 %}text-success{% else %}text-danger{% endif %}">
+                        {{ "{:+,.0f}".format(summary.stock.total_profit) }} KRW
+                    </span>
+                </div>
+            </div>
+            <div class="card-footer text-muted small">
+                Updated: {{ summary.stock.updated_at[:19] if summary.stock.updated_at else 'N/A' }}
+            </div>
+        </div>
+    </div>
+
+    <!-- Crypto Summary -->
+    <div class="col-lg-4 col-md-6 mb-3">
+        <div class="card h-100 border-warning">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0">Crypto Trading</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Market Regime</span>
+                    <span class="badge
+                        {% if summary.crypto.market_regime == 'bullish' %}bg-success
+                        {% elif summary.crypto.market_regime == 'bearish' %}bg-danger
+                        {% elif summary.crypto.market_regime == 'strong_bullish' %}bg-success
+                        {% elif summary.crypto.market_regime == 'strong_bearish' %}bg-danger
+                        {% else %}bg-secondary{% endif %}
+                        fs-6">
+                        {{ summary.crypto.market_regime }}
+                    </span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Volatility</span>
+                    <span class="badge
+                        {% if summary.crypto.volatility_level == 'high' %}bg-danger
+                        {% elif summary.crypto.volatility_level == 'medium' %}bg-warning
+                        {% else %}bg-success{% endif %}">
+                        {{ summary.crypto.volatility_level }}
+                    </span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Total Trades</span>
+                    <span class="fs-5">{{ summary.crypto.total_trades }}</span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="text-muted">Win Rate</span>
+                    <span class="fs-5 {% if summary.crypto.win_rate >= 50 %}text-success{% else %}text-danger{% endif %}">
+                        {{ "{:.1f}".format(summary.crypto.win_rate) }}%
+                    </span>
+                </div>
+            </div>
+            <div class="card-footer text-muted small">
+                Updated: {{ summary.crypto.updated_at[:19] if summary.crypto.updated_at else 'N/A' }}
+            </div>
+        </div>
+    </div>
+
+    <!-- System Status -->
+    <div class="col-lg-4 col-md-12 mb-3">
+        <div class="card h-100 border-info">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">System Status</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Stock Bot</span>
+                    <span class="badge bg-success">Running</span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Crypto Bot</span>
+                    <span class="badge bg-success">Running</span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="text-muted">Entry Mode</span>
+                    <span class="badge bg-secondary">{{ crypto_regime.entry_mode }}</span>
+                </div>
+            </div>
+            <div class="card-footer text-muted small">
+                Dashboard: {{ summary.generated_at[:19] }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="row mb-4">
+    <!-- Profit Distribution Chart -->
+    <div class="col-lg-6 mb-3">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Crypto Profit Distribution</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="profitDistChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Performance Chart -->
+    <div class="col-lg-6 mb-3">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Recent Trade Performance</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="performanceChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Stock Positions Table -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Stock Positions</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Code</th>
+                                <th>Name</th>
+                                <th class="text-end">Qty</th>
+                                <th class="text-end">Entry</th>
+                                <th class="text-end">Current</th>
+                                <th class="text-end">P&L %</th>
+                                <th class="text-end">Stop Loss</th>
+                                <th class="text-end">TP1</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for pos in stock_positions %}
+                            <tr>
+                                <td><code>{{ pos.code }}</code></td>
+                                <td>{{ pos.name }}</td>
+                                <td class="text-end">{{ pos.quantity }}</td>
+                                <td class="text-end">{{ "{:,.0f}".format(pos.entry_price) }}</td>
+                                <td class="text-end">{{ "{:,.0f}".format(pos.current_price) }}</td>
+                                <td class="text-end {% if pos.profit_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                    {{ "{:+.2f}".format(pos.profit_pct) }}%
+                                </td>
+                                <td class="text-end text-danger">{{ "{:,.0f}".format(pos.stop_loss) }}</td>
+                                <td class="text-end text-success">{{ "{:,.0f}".format(pos.take_profit_1) }}</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="8" class="text-center text-muted">No positions</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Trades Table -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Recent Crypto Trades</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Coin</th>
+                                <th>Entry Time</th>
+                                <th>Exit Time</th>
+                                <th class="text-end">Entry Price</th>
+                                <th class="text-end">Exit Price</th>
+                                <th class="text-end">P&L %</th>
+                                <th>Regime</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for trade in recent_trades %}
+                            <tr>
+                                <td><strong>{{ trade.coin }}</strong></td>
+                                <td>{{ trade.entry_time[:16] }}</td>
+                                <td>{{ trade.exit_time[:16] if trade.exit_time else '-' }}</td>
+                                <td class="text-end">{{ "{:,.0f}".format(trade.entry_price) }}</td>
+                                <td class="text-end">{{ "{:,.0f}".format(trade.exit_price) if trade.exit_price else '-' }}</td>
+                                <td class="text-end {% if trade.profit_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                    {{ "{:+.2f}".format(trade.profit_pct) }}%
+                                </td>
+                                <td>
+                                    <span class="badge
+                                        {% if 'bullish' in trade.regime %}bg-success
+                                        {% elif 'bearish' in trade.regime %}bg-danger
+                                        {% else %}bg-secondary{% endif %}">
+                                        {{ trade.regime }}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="7" class="text-center text-muted">No trades</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    // Profit Distribution Chart
+    const recentTrades = {{ recent_trades | tojson | safe }};
+    const wins = recentTrades.filter(t => t.profit_pct > 0).length;
+    const losses = recentTrades.filter(t => t.profit_pct <= 0).length;
+
+    new Chart(document.getElementById('profitDistChart'), {
+        type: 'doughnut',
+        data: {
+            labels: ['Wins', 'Losses'],
+            datasets: [{
+                data: [wins, losses],
+                backgroundColor: ['#198754', '#dc3545'],
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'bottom'
+                }
+            }
+        }
+    });
+
+    // Performance Chart
+    const profitData = recentTrades.slice(0, 10).reverse().map(t => t.profit_pct);
+    const labels = recentTrades.slice(0, 10).reverse().map(t => t.coin);
+
+    new Chart(document.getElementById('performanceChart'), {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Profit %',
+                data: profitData,
+                backgroundColor: profitData.map(v => v >= 0 ? '#198754' : '#dc3545'),
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+</script>
+{% endblock %}
