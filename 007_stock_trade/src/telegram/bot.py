@@ -9,6 +9,7 @@ import asyncio
 import logging
 import time
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import Optional
 from pathlib import Path
@@ -51,6 +52,7 @@ class TelegramBot:
         self.kis_client = kis_client
         self.application: Optional[Application] = None
         self.notifier = TelegramNotifier()
+        self._rebalance_lock = threading.Lock()
 
     def validate_config(self) -> bool:
         """설정 유효성 검증"""
@@ -412,9 +414,9 @@ class TelegramBot:
             if self.kis_client:
                 try:
                     balance = self.kis_client.get_balance()
-                    total_assets = balance.get('total_eval', 0) + balance.get('cash', 0)
+                    total_assets = balance.get('scts_evlu', 0) + balance.get('cash', 0)
                     cash = balance.get('cash', 0)
-                    invested = balance.get('total_eval', 0)
+                    invested = balance.get('scts_evlu', 0)
                     buy_amount = balance.get('buy_amount', 0)
                     position_count = len(balance.get('stocks', []))
                 except Exception as e:
@@ -1076,16 +1078,33 @@ class TelegramBot:
         """리밸런싱 수동 실행"""
         from src.core import get_controller
 
-        controller = get_controller()
-        result = controller.run_rebalance()
+        if not self._rebalance_lock.acquire(blocking=False):
+            await update.message.reply_text("⏳ 리밸런싱이 이미 진행 중입니다. 완료될 때까지 기다려주세요.")
+            return
 
-        if result['success']:
-            await update.message.reply_text(
-                "🔄 <b>리밸런싱 시작</b>\n완료되면 결과가 전송됩니다.",
-                parse_mode='HTML'
-            )
-        else:
-            await update.message.reply_text(f"❌ {result['message']}")
+        await update.message.reply_text(
+            "🔄 <b>리밸런싱 요청 접수</b>\n스크리닝 → 주문 생성 → 실행 순으로 진행됩니다.",
+            parse_mode='HTML'
+        )
+
+        try:
+            controller = get_controller()
+            result = await asyncio.to_thread(controller.run_rebalance)
+
+            if result['success']:
+                orders = result.get('orders', 0)
+                await update.message.reply_text(
+                    f"✅ <b>리밸런싱 완료</b>\n주문 {orders}건 처리됨",
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(f"❌ {result['message']}")
+        except Exception as e:
+            logger.error(f"리밸런싱 실행 오류: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "리밸런싱"), parse_mode='HTML')
+        finally:
+            self._rebalance_lock.release()
 
     async def cmd_run_optimize(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """최적화 수동 실행"""
@@ -1107,41 +1126,57 @@ class TelegramBot:
         """긴급 리밸런싱 (보유 종목 부족 시 부분 매수)"""
         from src.core import get_controller
 
+        if not self._rebalance_lock.acquire(blocking=False):
+            await update.message.reply_text("⏳ 리밸런싱이 이미 진행 중입니다. 완료될 때까지 기다려주세요.")
+            return
+
         # force 인자 확인
         force = False
         if context.args and context.args[0].lower() == 'force':
             force = True
 
-        controller = get_controller()
-        result = controller.run_urgent_rebalance(force=force)
+        await update.message.reply_text(
+            "📢 <b>긴급 리밸런싱 요청 접수</b>\n스크리닝 → 부분 매수 순으로 진행됩니다.",
+            parse_mode='HTML'
+        )
 
-        if result['success']:
-            message = result.get('message', '긴급 리밸런싱이 실행되었습니다.')
-            buy_count = result.get('buy_count', 0)
-            current_count = result.get('current_count', 0)
+        try:
+            controller = get_controller()
+            result = await asyncio.to_thread(controller.run_urgent_rebalance, force=force)
 
-            if buy_count > 0:
-                await update.message.reply_text(
-                    f"📢 <b>긴급 리밸런싱 완료</b>\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"• 매수 주문: {buy_count}건\n"
-                    f"• 현재 보유: {current_count}개\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"{message}",
-                    parse_mode='HTML'
-                )
+            if result['success']:
+                message = result.get('message', '긴급 리밸런싱이 실행되었습니다.')
+                buy_count = result.get('buy_count', 0)
+                current_count = result.get('current_count', 0)
+
+                if buy_count > 0:
+                    await update.message.reply_text(
+                        f"✅ <b>긴급 리밸런싱 완료</b>\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"• 매수 주문: {buy_count}건\n"
+                        f"• 현재 보유: {current_count}개\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"{message}",
+                        parse_mode='HTML'
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"ℹ️ <b>긴급 리밸런싱</b>\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"{message}\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"• 현재 보유: {current_count}개\n"
+                        f"• 추가 매수 불필요",
+                        parse_mode='HTML'
+                    )
             else:
-                await update.message.reply_text(
-                    f"ℹ️ <b>긴급 리밸런싱</b>\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"{message}\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"• 현재 보유: {current_count}개\n"
-                    f"• 추가 매수 불필요",
-                    parse_mode='HTML'
-                )
-        else:
-            await update.message.reply_text(f"❌ {result['message']}")
+                await update.message.reply_text(f"❌ {result['message']}")
+        except Exception as e:
+            logger.error(f"긴급 리밸런싱 실행 오류: {e}", exc_info=True)
+            from src.utils.error_formatter import format_user_error
+            await update.message.reply_text(format_user_error(e, "긴급 리밸런싱"), parse_mode='HTML')
+        finally:
+            self._rebalance_lock.release()
 
     # ==================== 설정 변경 명령어 ====================
 

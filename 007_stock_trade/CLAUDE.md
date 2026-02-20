@@ -370,3 +370,26 @@ After:  ⏱️ 잔고 조회 지연 / 상황: 서버 응답 지연 / 조치: 자
 - `src/quant_engine.py` - `_on_weekly_reconciliation(force=False)`
 - `src/telegram/bot.py` - `cmd_reconcile()`
 - `scripts/run_daemon.py` - `on_reconcile` 콜백
+
+### 2026-02-20: 월간 리포트 총자산 이중계산 수정 + 리밸런싱 실시간 진행상황 알림
+
+**버그 1: 월간 리포트/`/capital` 총자산 이중 카운팅**
+- 현상: 총자산이 실제보다 ~60% 높게 표시됨
+- 원인: `total_eval`(현금+주식 포함) + `cash`(현금) = 현금 2번 합산
+- 영향: `generate_monthly_report()`, `/capital` 명령어
+- 해결: `total_eval` → `scts_evlu`(주식평가만)로 변경하여 `scts_evlu + cash` 패턴 통일
+- 참고: `generate_daily_report()`, `reconcile_latest_snapshot()`, `/status`는 이미 정상이었음
+
+**개선 2: 리밸런싱 실시간 진행상황 알림**
+- 현상: `/run_rebalance` 실행 시 20~40초간 피드백 없이 블로킹 → 중복 실행 유발
+- 해결 (bot.py):
+  - `threading.Lock`으로 `/run_rebalance`와 `/rebalance` 중복 실행 방지
+  - 즉시 "접수" 메시지 전송 + `asyncio.to_thread()`로 비차단 실행
+  - 완료/에러 시 결과 메시지 전송
+- 해결 (quant_engine.py):
+  - `manual_rebalance()`: 스크리닝 시작/주문 생성 중/주문 완료 단계별 알림
+  - `run_urgent_rebalance()`: 스크리닝 시작/매수 주문 완료 알림
+
+**관련 코드:**
+- `src/quant_engine.py` - `generate_monthly_report()`, `manual_rebalance()`, `run_urgent_rebalance()`
+- `src/telegram/bot.py` - `cmd_capital()`, `cmd_run_rebalance()`, `cmd_rebalance()`

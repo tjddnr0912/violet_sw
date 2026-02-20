@@ -1012,7 +1012,7 @@ class QuantTradingEngine:
             # 계좌 잔고 조회 (API)
             try:
                 balance_info = self.client.get_balance()
-                total_assets = balance_info.get('total_eval', 0) + balance_info.get('cash', 0)
+                total_assets = balance_info.get('scts_evlu', 0) + balance_info.get('cash', 0)
                 cash = balance_info.get('cash', 0)
             except Exception as e:
                 logger.warning(f"잔고 조회 실패, 포트폴리오 데이터 사용: {e}")
@@ -1521,14 +1521,27 @@ class QuantTradingEngine:
             return {"success": False, "message": "거래 시간이 아닙니다"}
 
         # 스크리닝
+        self.notifier.send_message("🔍 스크리닝 진행 중...")
         result = self.run_screening()
         if not result:
             logger.error("스크리닝 실패 - 리밸런싱 중단")
             return {"success": False, "message": "스크리닝 실패"}
 
         # 주문 생성
+        current_count = len(self.portfolio.positions)
+        target_count = self.config.target_stock_count
+        self.notifier.send_message(
+            f"📋 주문 생성 중... (현재 {current_count}개 / 목표 {target_count}개)"
+        )
         orders = self.generate_rebalance_orders()
         logger.info(f"리밸런싱 주문 생성: {len(orders)}건")
+
+        if orders:
+            sell_count = sum(1 for o in orders if o.order_type == "SELL")
+            buy_count = sum(1 for o in orders if o.order_type == "BUY")
+            self.notifier.send_message(
+                f"📋 주문 생성 완료 (매도 {sell_count}건, 매수 {buy_count}건)"
+            )
 
         # 리밸런싱 날짜 기록
         if orders:
@@ -1584,6 +1597,10 @@ class QuantTradingEngine:
         logger.info(f"현재 보유: {current_count}개, 목표: {target_count}개, 부족: {shortage}개")
 
         # 스크리닝 실행
+        self.notifier.send_message(
+            f"🔍 긴급 리밸런싱 스크리닝 시작\n"
+            f"현재 {current_count}개 / 목표 {target_count}개 / 부족 {shortage}개"
+        )
         result = self.run_screening()
         if not result:
             logger.error("스크리닝 실패 - 긴급 리밸런싱 중단")
@@ -1604,6 +1621,7 @@ class QuantTradingEngine:
             return {"success": True, "message": "추가 매수 대상 없음", "buy_count": 0, "current_count": current_count}
 
         logger.info(f"부분 리밸런싱 주문 생성: {len(orders)}건 (매수만)")
+        self.notifier.send_message(f"📋 매수 주문 생성 완료: {len(orders)}건")
 
         # 주문 등록
         self.pending_orders.extend(orders)
