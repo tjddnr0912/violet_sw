@@ -132,25 +132,59 @@ struct StockPositionRow: View {
     let position: StockPosition
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(position.name)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                Text("\(position.code) | \(position.quantity)주")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(Double(position.currentPrice).formattedKRW)
-                    .font(.subheadline)
+        VStack(spacing: 6) {
+            // 상단: 종목명+코드|수량 | 수익률
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(position.name)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text("\(position.code) | \(position.quantity)주")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
                 if let pct = position.profitPct {
                     ProfitText(value: pct, suffix: "%")
                 }
             }
+
+            // 하단: 평균단가 | 현재가격 | 수익금액
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("평균단가")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(position.entryPrice.formattedKRW)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                Spacer()
+                VStack(spacing: 1) {
+                    Text("현재가")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(position.currentPrice.formattedKRW)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("수익금")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    if let krw = position.profitKrw {
+                        Text("\(krw >= 0 ? "+" : "")\(krw.formattedKRW)")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(krw >= 0 ? .green : .red)
+                    } else {
+                        Text("-")
+                            .font(.caption)
+                    }
+                }
+            }
+            .padding(.top, 2)
         }
     }
 }

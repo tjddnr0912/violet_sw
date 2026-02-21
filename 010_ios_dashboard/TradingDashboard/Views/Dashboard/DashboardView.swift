@@ -93,7 +93,7 @@ struct BotStatusRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(status.running ? .green : .red)
+                .fill(status.indicatorColor)
                 .frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)

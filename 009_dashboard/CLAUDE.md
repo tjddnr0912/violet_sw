@@ -40,3 +40,4 @@ python app.py              # localhost:5001
 - [API 레퍼런스](docs/API_REFERENCE.md) - 전체 엔드포인트 목록 및 인증
 - [아키텍처](docs/ARCHITECTURE.md) - 프로젝트 구조, 데이터 흐름, 기술 스택
 - [진행 상태](docs/STATUS.md) - 완료/미완료 작업 추적
+- [iOS 앱](../010_ios_dashboard/CLAUDE.md) - SwiftUI 앱 문서
