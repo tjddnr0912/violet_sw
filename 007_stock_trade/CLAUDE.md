@@ -69,3 +69,6 @@ TELEGRAM_CHAT_ID=
 - [아키텍처](docs/ARCHITECTURE.md) - 프로젝트 구조, 개발 가이드, 유틸리티 사용법
 - [트러블슈팅](docs/TROUBLESHOOTING.md) - API Rate Limit, Telegram 에러, pykrx, 리밸런싱 버그
 - [변경 이력](docs/CHANGELOG.md) - 2026-01~02 변경사항 전체
+- [KIS API 정보](docs/get_api_information.md) - KIS Open API 레퍼런스
+- [멀티팩터 전략](docs/strategy/multi_factor_strategy.md) - 팩터 설계 상세
+- [퀀트 트레이딩 가이드](docs/strategy/quant_trading_guide.md) - 전략 운영 가이드

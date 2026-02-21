@@ -121,7 +121,7 @@ URL Scheme: `tradingdashboard://tab/{dashboard,crypto,stock}`
 |---------|----------|-------------|
 | 005_money | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/TROUBLESHOOTING.md`, `docs/CHANGELOG.md` |
 | 006_auto_bot | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/SECTOR_BOT.md`, `docs/TELEGRAM_BOT.md`, `docs/TROUBLESHOOTING.md` |
-| 007_stock_trade | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/TROUBLESHOOTING.md`, `docs/CHANGELOG.md` |
-| 008_stock_trade_us | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/COMMANDS.md` |
+| 007_stock_trade | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/TROUBLESHOOTING.md`, `docs/CHANGELOG.md`, `docs/get_api_information.md`, `docs/strategy/*.md` |
+| 008_stock_trade_us | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/COMMANDS.md`, `docs/get_api_information.md`, `docs/strategy/*.md` |
 | 009_dashboard | `CLAUDE.md` | `docs/API_REFERENCE.md`, `docs/ARCHITECTURE.md`, `docs/STATUS.md` |
 | 010_ios_dashboard | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/VIEWS.md` |
