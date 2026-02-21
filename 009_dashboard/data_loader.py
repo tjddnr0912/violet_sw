@@ -4,7 +4,7 @@ Trading Data Loader - 007/005 데이터 통합 로더
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
@@ -143,31 +143,206 @@ class TradingDataLoader:
             'avg_profit_pct': total_profit_pct / len(closed_trades) if closed_trades else 0,
         }
 
+    # === 암호화폐 코인별 데이터 ===
+
+    def get_crypto_coin_summary(self) -> List[Dict[str, Any]]:
+        """코인별 성과 집계"""
+        history = self._load_json('crypto_history')
+        if not history:
+            return []
+
+        coin_stats: Dict[str, Dict[str, Any]] = {}
+        for t in history:
+            if t.get('status') != 'closed':
+                continue
+            coin = t.get('coin', 'UNKNOWN')
+            if coin not in coin_stats:
+                coin_stats[coin] = {
+                    'coin': coin, 'trades': 0, 'wins': 0,
+                    'total_profit_pct': 0, 'total_profit_krw': 0,
+                    'last_trade': '',
+                }
+            s = coin_stats[coin]
+            s['trades'] += 1
+            if t.get('profit_pct', 0) > 0:
+                s['wins'] += 1
+            s['total_profit_pct'] += t.get('profit_pct', 0)
+            s['total_profit_krw'] += t.get('profit_krw', 0)
+            exit_time = t.get('exit_time', '')
+            if exit_time > s['last_trade']:
+                s['last_trade'] = exit_time
+
+        result = []
+        for coin, s in coin_stats.items():
+            s['win_rate'] = (s['wins'] / s['trades'] * 100) if s['trades'] > 0 else 0
+            s['avg_profit_pct'] = s['total_profit_pct'] / s['trades'] if s['trades'] > 0 else 0
+            result.append(s)
+
+        result.sort(key=lambda x: x['trades'], reverse=True)
+        return result
+
+    def get_coin_price(self, coin: str) -> Dict[str, Any]:
+        """Bithumb 공개 API로 실시간 시세 조회"""
+        import requests
+        try:
+            resp = requests.get(
+                f'https://api.bithumb.com/public/ticker/{coin.upper()}_KRW',
+                timeout=5,
+            )
+            data = resp.json()
+            if data.get('status') != '0000':
+                return {'error': 'API error', 'coin': coin}
+            d = data['data']
+            closing = float(d.get('closing_price', 0))
+            prev_closing = float(d.get('prev_closing_price', 0))
+            change_pct = ((closing - prev_closing) / prev_closing * 100) if prev_closing else 0
+            return {
+                'coin': coin.upper(),
+                'closing_price': closing,
+                'opening_price': float(d.get('opening_price', 0)),
+                'high_price': float(d.get('max_price', 0)),
+                'low_price': float(d.get('min_price', 0)),
+                'volume': float(d.get('units_traded_24H', 0)),
+                'change_pct': round(change_pct, 2),
+                'timestamp': d.get('date'),
+            }
+        except Exception as e:
+            return {'error': str(e), 'coin': coin}
+
+    def get_coin_chart(self, coin: str, interval: str = '1h') -> List[Dict[str, Any]]:
+        """Bithumb 공개 API로 캔들스틱 차트 데이터 조회"""
+        import requests
+        interval_map = {
+            '5m': '5m', '30m': '30m', '1h': '1h', '6h': '6h', '1d': '24h',
+        }
+        bithumb_interval = interval_map.get(interval, '1h')
+        try:
+            resp = requests.get(
+                f'https://api.bithumb.com/public/candlestick/{coin.upper()}_KRW/{bithumb_interval}',
+                timeout=5,
+            )
+            data = resp.json()
+            if data.get('status') != '0000':
+                return []
+            candles = data.get('data', [])[-100:]
+            result = []
+            for c in candles:
+                result.append({
+                    'timestamp': c[0],
+                    'open': float(c[1]),
+                    'close': float(c[2]),
+                    'high': float(c[3]),
+                    'low': float(c[4]),
+                    'volume': float(c[5]),
+                })
+            return result
+        except Exception:
+            return []
+
+    def get_crypto_coin_trades(self, coin: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """특정 코인 거래 내역 필터"""
+        history = self._load_json('crypto_history')
+        if not history:
+            return []
+        filtered = [t for t in history if t.get('coin', '').upper() == coin.upper()]
+        sorted_data = sorted(filtered, key=lambda x: x.get('exit_time', ''), reverse=True)
+        return sorted_data[:limit]
+
     # === 시스템 상태 ===
 
+    # 2026년 한국 공휴일
+    KR_HOLIDAYS_2026 = {
+        date(2026, 1, 1),   # 신정
+        date(2026, 2, 16),  # 설 연휴
+        date(2026, 2, 17),  # 설날
+        date(2026, 2, 18),  # 설 연휴
+        date(2026, 3, 1),   # 삼일절
+        date(2026, 5, 5),   # 어린이날
+        date(2026, 5, 24),  # 부처님오신날
+        date(2026, 6, 6),   # 현충일
+        date(2026, 8, 15),  # 광복절
+        date(2026, 9, 24),  # 추석 연휴
+        date(2026, 9, 25),  # 추석
+        date(2026, 9, 26),  # 추석 연휴
+        date(2026, 10, 3),  # 개천절
+        date(2026, 10, 9),  # 한글날
+        date(2026, 12, 25), # 성탄절
+    }
+
+    def _get_market_status(self) -> tuple:
+        """한국 주식시장 상태 판별. Returns (market_status, market_status_text)"""
+        now = datetime.now()
+        today = now.date()
+        weekday = today.weekday()  # 0=Mon, 6=Sun
+
+        if weekday >= 5:
+            return ('weekend', '주말 휴장')
+        if today in self.KR_HOLIDAYS_2026:
+            return ('holiday', '공휴일 휴장')
+
+        hour_min = now.hour * 100 + now.minute
+        if hour_min < 900:
+            return ('pre_market', '장 시작 전')
+        elif hour_min <= 1530:
+            return ('trading', '장 운영 중')
+        else:
+            return ('after_hours', '장 마감')
+
+    def _get_daemon_running(self) -> bool:
+        """system_state.json에서 데몬 실행 상태 확인"""
+        data = self._load_json('stock_system')
+        if not data:
+            return False
+        return data.get('state') == 'running'
+
     def get_system_status(self) -> Dict[str, Any]:
-        """봇 상태 확인 (파일 freshness 기반)"""
+        """봇 상태 확인 (장 시간 + 데몬 상태 기반)"""
         statuses = {}
-        checks = {
-            'crypto_bot': 'crypto_factors',
-            'stock_bot': 'stock_engine',
-        }
-        for bot_name, data_key in checks.items():
-            path = self.data_paths.get(data_key)
-            if path and path.exists():
-                mtime = path.stat().st_mtime
-                age_minutes = (time.time() - mtime) / 60
-                statuses[bot_name] = {
-                    'running': age_minutes < 30,
-                    'last_update': datetime.fromtimestamp(mtime).isoformat(),
-                    'age_minutes': round(age_minutes, 1),
-                }
+
+        # 암호화폐 봇 (24시간 운영 - 파일 freshness 기반)
+        crypto_path = self.data_paths.get('crypto_factors')
+        if crypto_path and crypto_path.exists():
+            mtime = crypto_path.stat().st_mtime
+            age_minutes = (time.time() - mtime) / 60
+            statuses['crypto_bot'] = {
+                'running': age_minutes < 30,
+                'last_update': datetime.fromtimestamp(mtime).isoformat(),
+                'age_minutes': round(age_minutes, 1),
+            }
+        else:
+            statuses['crypto_bot'] = {
+                'running': False,
+                'last_update': None,
+                'age_minutes': None,
+            }
+
+        # 주식 봇 (장 시간 인식)
+        market_status, market_status_text = self._get_market_status()
+        daemon_running = self._get_daemon_running()
+
+        stock_path = self.data_paths.get('stock_engine')
+        if stock_path and stock_path.exists():
+            mtime = stock_path.stat().st_mtime
+            age_minutes = (time.time() - mtime) / 60
+
+            if market_status == 'trading':
+                running = age_minutes < 30
             else:
-                statuses[bot_name] = {
-                    'running': False,
-                    'last_update': None,
-                    'age_minutes': None,
-                }
+                running = daemon_running
+        else:
+            age_minutes = None
+            mtime = None
+            running = daemon_running
+
+        statuses['stock_bot'] = {
+            'running': running,
+            'last_update': datetime.fromtimestamp(mtime).isoformat() if mtime else None,
+            'age_minutes': round(age_minutes, 1) if age_minutes is not None else None,
+            'daemon_running': daemon_running,
+            'market_status': market_status,
+            'market_status_text': market_status_text,
+        }
+
         return statuses
 
     # === 종합 ===
