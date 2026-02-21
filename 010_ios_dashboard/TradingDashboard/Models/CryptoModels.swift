@@ -75,3 +75,59 @@ struct CryptoPerformance: Codable {
         case avgProfitPct = "avg_profit_pct"
     }
 }
+
+struct CoinSummary: Codable, Identifiable {
+    var id: String { coin }
+    let coin: String
+    let trades: Int
+    let wins: Int
+    let winRate: Double
+    let totalProfitPct: Double
+    let totalProfitKrw: Double
+    let avgProfitPct: Double
+    let lastTrade: String
+
+    enum CodingKeys: String, CodingKey {
+        case coin, trades, wins
+        case winRate = "win_rate"
+        case totalProfitPct = "total_profit_pct"
+        case totalProfitKrw = "total_profit_krw"
+        case avgProfitPct = "avg_profit_pct"
+        case lastTrade = "last_trade"
+    }
+}
+
+struct CoinPrice: Codable {
+    let coin: String
+    let closingPrice: Double?
+    let openingPrice: Double?
+    let highPrice: Double?
+    let lowPrice: Double?
+    let volume: Double?
+    let changePct: Double?
+    let timestamp: String?
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case coin
+        case closingPrice = "closing_price"
+        case openingPrice = "opening_price"
+        case highPrice = "high_price"
+        case lowPrice = "low_price"
+        case volume
+        case changePct = "change_pct"
+        case timestamp, error
+    }
+
+    var hasData: Bool { closingPrice != nil && error == nil }
+}
+
+struct Candlestick: Codable, Identifiable {
+    var id: Int { timestamp }
+    let timestamp: Int
+    let open: Double
+    let close: Double
+    let high: Double
+    let low: Double
+    let volume: Double
+}

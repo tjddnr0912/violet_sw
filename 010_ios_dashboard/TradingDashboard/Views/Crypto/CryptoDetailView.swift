@@ -24,6 +24,8 @@ struct CryptoDetailView: View {
                             CryptoPnLChart(trades: viewModel.trades)
                         }
 
+                        CoinDetailSection(viewModel: viewModel)
+
                         if !viewModel.trades.isEmpty {
                             TradeListSection(trades: viewModel.trades)
                         }
@@ -34,7 +36,10 @@ struct CryptoDetailView: View {
             .refreshable { await viewModel.loadData() }
             .navigationTitle("암호화폐")
             .onAppear {
-                Task { await viewModel.loadData() }
+                Task {
+                    await viewModel.loadData()
+                    await viewModel.loadCoinDetail(coin: viewModel.selectedCoin)
+                }
                 viewModel.startAutoRefresh(interval: settings.refreshInterval)
             }
             .onDisappear { viewModel.stopAutoRefresh() }
