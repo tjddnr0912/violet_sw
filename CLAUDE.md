@@ -1,348 +1,53 @@
 # CLAUDE.md - violet_sw
 
-멀티 프로젝트 개발 및 운영 저장소. 코딩 학습부터 실전 자동매매 시스템까지 포함.
+멀티 프로젝트 개발 및 운영 저장소.
 
 ## Repository Overview
 
 ```
 violet_sw/
-├── Production Systems (상시 운영)
-│   ├── 005_money/          # 암호화폐 트레이딩 봇 (Bithumb)
-│   ├── 006_auto_bot/       # 뉴스 자동화 봇 (RSS→AI→Blogger)
-│   ├── 007_stock_trade/    # 주식 퀀트 자동매매 (한국, KIS API)
-│   ├── 008_stock_trade_us/ # 주식 퀀트 자동매매 (미국, KIS API)
-│   ├── 009_dashboard/      # 트레이딩 대시보드 Flask 백엔드
-│   └── 010_ios_dashboard/  # 트레이딩 대시보드 iOS 앱 (SwiftUI)
-│
-├── Lab & Study
-│   ├── 000_personal_lib_code/     # Python 유틸리티
-│   ├── 001_coding_test_question/  # 코딩 테스트 풀이
-│   ├── 002_study_swift/           # Swift/iOS 학습
-│   ├── 003_script/                # 유틸리티 스크립트
-│   └── 004_hacker_rank/           # HackerRank 풀이
-│
-├── start_all_bots.sh       # 전체 봇 일괄 실행
-└── CLAUDE.md               # 이 파일
+├── 005_money/          # 암호화폐 트레이딩 봇 (Bithumb)
+├── 006_auto_bot/       # 뉴스 자동화 봇 (RSS→AI→Blogger)
+├── 007_stock_trade/    # 주식 퀀트 자동매매 (한국, KIS API)
+├── 008_stock_trade_us/ # 주식 퀀트 자동매매 (미국, KIS API)
+├── 009_dashboard/      # 트레이딩 대시보드 Flask 백엔드
+├── 010_ios_dashboard/  # 트레이딩 대시보드 iOS 앱 (SwiftUI)
+├── 000~004_*/          # Lab & Study (Archive)
+└── start_all_bots.sh   # 전체 봇 일괄 실행 (iTerm2 5탭)
+```
+
+## Quick Start
+
+```bash
+./start_all_bots.sh    # iTerm2에서 모든 봇 일괄 실행
 ```
 
 ## Production Systems
 
-### Quick Start (전체 봇 실행)
-
-```bash
-./start_all_bots.sh    # iTerm2에서 5개 탭으로 모든 봇 실행
-```
-
-| Tab | Project | Script | Description |
-|-----|---------|--------|-------------|
-| 1 | 005_money | `run_v3_watchdog.sh` | 암호화폐 트레이딩 (Watchdog 모드) |
-| 2 | 006_auto_bot | `run_scheduled.sh` | 뉴스봇 (일간/주간/월간 스케줄) |
-| 3 | 006_auto_bot | `run_telegram_bot.sh` | Telegram Gemini Q&A 봇 |
-| 4 | 007_stock_trade | `run_quant.sh daemon` | 주식 퀀트 데몬 |
-| 5 | 006_auto_bot | `run_weekly_sector.sh` | 주간 섹터 투자정보 (일요일) |
-
----
-
-### 005_money - Bithumb Trading Bot
-
-| Item | Value |
-|------|-------|
-| Exchange | Bithumb |
-| Language | Python 3.13+ |
-| Strategy | Portfolio Multi-Coin (Ver3) |
-| Interval | 15분 |
-
-**실행:**
-```bash
-cd 005_money
-./scripts/run_v3_watchdog.sh   # 권장 (자동 재시작 + hang 감지)
-./scripts/run_v3_cli.sh        # 단순 CLI
-./scripts/run_v3_gui.sh        # GUI 모드
-```
-
-**Telegram 명령어:** `/status`, `/positions`, `/factors`, `/close <COIN>`, `/stop`
-
-**상세 문서:** `005_money/CLAUDE.md`
-
----
-
-### 006_auto_bot - News Automation Bot
-
-| Item | Value |
-|------|-------|
-| AI | Gemini + Claude (HTML 변환) |
-| Output | Blogger (7개 블로그 지원) |
-| Schedule | Daily 07:00, Weekly 일요일, Monthly 1일 |
-
-**실행:**
-```bash
-cd 006_auto_bot
-./run_scheduled.sh           # 뉴스봇 스케줄 모드
-./run_telegram_bot.sh        # Telegram Gemini Q&A (블로그 선택 기능)
-./run_weekly_sector.sh       # 주간 섹터 투자정보 (일요일 13:00~18:00)
-```
-
-**Telegram Gemini Bot 기능:**
-- 질문 수신 시 Inline Keyboard로 블로그 선택 UI 표시
-- 7개 블로그 지원 (Brave Ogu, SoC Design, OgusInvest, SW Develope, BooksReview, Virtual Life's, Where we go)
-- 선택 시 2군데 업로드: Default (HTML+Raw) + 선택한 블로그 (HTML만)
-- 3분 타임아웃 후 Default만 자동 업로드
-- 최소 글자 수 요구: Gemini 1500자+, Claude HTML 1000자+
-
-**Weekly Sector Bot (주간 섹터 투자정보):**
-- 매주 일요일 11개 섹터별 투자정보 자동 수집/분석
-- Gemini Google Search Grounding → 섹터별 분석 → OgusInvest 블로그 업로드
-- 섹터: AI/양자컴퓨터, 금융, 조선/항공/우주, 에너지, 바이오, IT/Cloud, 주식시장, 반도체, 자동차/배터리/로봇, 리츠, 필수 소비재
-- 재시작 기능: `--resume`로 중단 지점부터 재개
-
-**Data Flow:** RSS Feed → Gemini 요약 → Markdown → Blogger → Telegram 알림
-
-**상세 문서:** `006_auto_bot/CLAUDE.md`
-
----
-
-### 007_stock_trade - KIS Quant Trading (Korea)
-
-| Item | Value |
-|------|-------|
-| Broker | 한국투자증권 (KIS API) |
-| Universe | KOSPI200 |
-| Strategy | Multi-Factor (모멘텀 20% + 단기모멘텀 10% + 저변동성 50%) |
-| Target | 15 종목 |
-
-**실행:**
-```bash
-cd 007_stock_trade
-./run_quant.sh daemon        # 통합 데몬 (권장)
-./run_quant.sh screen        # 스크리닝만
-./run_quant.sh backtest      # 백테스트
-```
-
-**Telegram 명령어:** `/start_trading`, `/stop_trading`, `/status`, `/positions`, `/run_screening`, `/set_target N`
-
-**Daily Schedule:**
-- 08:30 장 전 스크리닝
-- 09:00 주문 실행
-- 5분마다 포지션 모니터링
-- 15:20 일일 리포트
-
-**상세 문서:** `007_stock_trade/CLAUDE.md`
-
----
-
-### 008_stock_trade_us - KIS Quant Trading (US)
-
-007_stock_trade 기반의 미국 주식 버전. 기본 아키텍처는 동일하나 미국 시장 전용 모듈 포함.
-
-| Item | Value |
-|------|-------|
-| Broker | 한국투자증권 (KIS API) |
-| Universe | S&P500 |
-| Strategy | 007과 동일 (Multi-Factor) |
-| Target | 15 종목 |
-
-**미국 전용 모듈:** `us_quant_engine.py`, `us_screener.py`, `us_universe.py`, `kis_us_client.py`
-
-**상세 문서:** `008_stock_trade_us/CLAUDE.md`
-
----
-
-### 009_dashboard - Trading Dashboard (Flask)
-
-005_money(암호화폐)와 007_stock_trade(한국주식) 데이터를 통합 조회하는 웹 대시보드.
-
-| Item | Value |
-|------|-------|
-| Framework | Flask 3.0 |
-| Port | 5001 |
-| API | v1 (인증 없음) + v2 (API Key 인증, 12개) |
-
-**실행:**
-```bash
-cd 009_dashboard
-source venv/bin/activate
-python app.py              # localhost:5001
-```
-
-**상세 문서:** `009_dashboard/CLAUDE.md`
-
----
-
-### 010_ios_dashboard - Trading Dashboard (iOS)
-
-009_dashboard의 v2 API를 소비하는 SwiftUI iOS 앱.
-
-| Item | Value |
-|------|-------|
-| Framework | SwiftUI, MVVM |
-| Min iOS | 17.0 |
-| Build | xcodegen |
-| URL Scheme | `tradingdashboard://tab/{dashboard,crypto,stock}` |
-
-**빌드:**
-```bash
-cd 010_ios_dashboard
-xcodegen generate && open TradingDashboard.xcodeproj
-```
-
-**상세 문서:** `010_ios_dashboard/CLAUDE.md`
-
----
-
-## Lab & Study Projects
-
-| Directory | Description | Language | Status |
-|-----------|-------------|----------|--------|
-| 000_personal_lib_code | 재사용 가능한 유틸리티 | Python | Archive |
-| 001_coding_test_question | 코딩 테스트 문제 풀이 | Python | Archive |
-| 002_study_swift | Swift/iOS 학습 자료 | Swift | Lab |
-| 003_script | 유틸리티 스크립트 | Bash/Verilog | Archive |
-| 004_hacker_rank | HackerRank 문제 풀이 | Python | Archive |
-
----
-
-## Architecture Summary
-
-### Tech Stack by Project
-
-| Project | Language | API | Notification | Data Storage |
-|---------|----------|-----|--------------|--------------|
-| 005_money | Python 3.13+ | Bithumb REST | Telegram | JSON files |
-| 006_auto_bot | Python 3.11+ | Gemini, Blogger | Telegram | Markdown files |
-| 007_stock_trade | Python 3.11+ | KIS REST/WebSocket | Telegram | JSON files |
-| 008_stock_trade_us | Python 3.11+ | KIS REST/WebSocket | Telegram | JSON files |
-| 009_dashboard | Python 3.11+ | Flask REST | - | 005/007 JSON 참조 |
-| 010_ios_dashboard | Swift (SwiftUI) | 009 v2 API | - | UserDefaults |
-
-### Telegram Bot Tokens
-
-각 프로젝트는 **독립적인 Telegram Bot Token** 사용. 충돌 없음.
-
-| Project | Bot Purpose |
-|---------|-------------|
-| 005_money | 암호화폐 트레이딩 알림/제어 |
-| 006_auto_bot | 뉴스 알림 + Gemini Q&A |
-| 007_stock_trade | 주식 트레이딩 알림/제어 |
-| 008_stock_trade_us | 미국주식 트레이딩 알림/제어 |
-
----
-
-## Environment Variables
-
-각 프로젝트별 `.env` 파일 필요. **절대 Git에 커밋하지 말 것.**
-
-### 005_money/.env
-```bash
-BITHUMB_API_KEY=
-BITHUMB_SECRET_KEY=
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-```
-
-### 006_auto_bot/001_code/.env
-```bash
-GEMINI_API_KEY=
-BLOGGER_BLOG_ID=
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-
-# Blog Selection (Telegram Gemini Bot)
-BLOG_LIST='[{"key":"...","id":"...","name":"..."}, ...]'
-DEFAULT_BLOG=brave_ogu
-BLOG_SELECTION_TIMEOUT=180
-
-# Weekly Sector Bot
-SECTOR_BLOGGER_BLOG_ID=9115231004981625966  # OgusInvest
-SECTOR_GEMINI_MODEL=gemini-2.0-flash
-```
-
-### 007_stock_trade/.env & 008_stock_trade_us/.env
-```bash
-KIS_APP_KEY=
-KIS_APP_SECRET=
-KIS_ACCOUNT_NO=
-TRADING_MODE=VIRTUAL  # or REAL
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-```
-
-### 009_dashboard/.env
-```bash
-DASHBOARD_API_KEY=    # 비어있으면 인증 비활성화
-FLASK_DEBUG=false
-```
-
----
+| Project | 설명 | 실행 | 상세 |
+|---------|------|------|------|
+| 005_money | Bithumb 암호화폐 봇 (Ver3, 15분 주기) | `./scripts/run_v3_watchdog.sh` | [CLAUDE.md](005_money/CLAUDE.md) |
+| 006_auto_bot | 뉴스/섹터 봇 (Gemini→Blogger) | `./run_scheduled.sh` | [CLAUDE.md](006_auto_bot/CLAUDE.md) |
+| 007_stock_trade | 한국주식 퀀트 (KOSPI200, 15종목) | `./run_quant.sh daemon` | [CLAUDE.md](007_stock_trade/CLAUDE.md) |
+| 008_stock_trade_us | 미국주식 퀀트 (S&P500, 15종목) | `./run_quant.sh daemon` | [CLAUDE.md](008_stock_trade_us/CLAUDE.md) |
+| 009_dashboard | Flask 대시보드 (port 5001) | `python app.py` | [CLAUDE.md](009_dashboard/CLAUDE.md) |
+| 010_ios_dashboard | SwiftUI iOS 앱 (MVVM) | `xcodegen generate` | [CLAUDE.md](010_ios_dashboard/CLAUDE.md) |
 
 ## Development Guidelines
 
-### Code Modification Rules
-
 1. **프로젝트 경계 존중**: 각 프로젝트는 독립적. 다른 프로젝트 코드 참조 금지.
-2. **005_money**: ver3가 유일한 프로덕션 버전 (ver1/ver2는 2026-01 삭제됨). ver3/ 디렉토리에서 작업.
-3. **006_auto_bot**: v1/v2/v3 구조에서 `news_bot/` + `shared/` 모듈 구조로 변경됨 (2026-01).
-4. **007_stock_trade**: 2026-01 리팩토링으로 `quant_modules/`, `telegram/notifier.py`, `utils/retry.py` 등 모듈화됨.
-5. **Shared Lib 수정 시**: 005_money의 `lib/` 수정 시 ver3 호환성 테스트.
-6. **설정 파일 동기화**: 007/008의 `system_config.json`은 Telegram 명령으로 변경됨.
-
-### File Creation Policy
-
-- 새 파일 생성 최소화. 기존 파일 수정 우선.
-- `.md` 문서 파일은 명시적 요청 시에만 생성.
-- 테스트 파일은 `tests/` 디렉토리에만 생성.
+2. **파일 생성 최소화**: 기존 파일 수정 우선. `.md`는 명시적 요청 시에만 생성.
+3. **환경변수**: 각 프로젝트별 `.env` 파일 필요. **절대 Git에 커밋하지 말 것.**
+4. **Telegram**: 각 프로젝트는 독립 Bot Token 사용. 충돌 없음.
 
 ### Git Commit Convention
 
-```bash
-git commit -m "Add <feature>"      # 새 기능
-git commit -m "Fix <bug>"          # 버그 수정
-git commit -m "Update <component>" # 기존 기능 개선
-git commit -m "Refactor <module>"  # 리팩토링
+```
+Add <feature> / Fix <bug> / Update <component> / Refactor <module>
 ```
 
----
+## 상세 문서
 
-## Troubleshooting
-
-### 봇 중복 실행 확인
-
-```bash
-# 각 프로젝트별 프로세스 확인
-ps aux | grep "ver3/run_cli.py"      # 005_money
-ps aux | grep "main.py"              # 006_auto_bot (뉴스봇)
-ps aux | grep "weekly_sector_bot.py" # 006_auto_bot (섹터봇)
-ps aux | grep "run_daemon.py"        # 007_stock_trade
-```
-
-### Telegram Conflict 에러
-
-같은 Bot Token을 여러 프로세스가 사용할 때 발생.
-
-```bash
-# 해당 프로젝트 프로세스 모두 종료 후 재시작
-pkill -f "run_cli.py"
-./scripts/run_v3_watchdog.sh
-```
-
-### API Rate Limit
-
-| Project | API | Limit |
-|---------|-----|-------|
-| 005_money | Bithumb | 제한 없음 (적정 사용) |
-| 007_stock_trade | KIS 모의투자 | 5건/초 |
-| 007_stock_trade | KIS 실전투자 | 20건/초 |
-
----
-
-## Project Documentation Index
-
-| Project | Main Doc | Detail Docs |
-|---------|----------|-------------|
-| 005_money | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/TROUBLESHOOTING.md`, `docs/CHANGELOG.md` |
-| 006_auto_bot | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/SECTOR_BOT.md`, `docs/TELEGRAM_BOT.md`, `docs/TROUBLESHOOTING.md` |
-| 007_stock_trade | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/TROUBLESHOOTING.md`, `docs/CHANGELOG.md` |
-| 008_stock_trade_us | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/COMMANDS.md` |
-| 009_dashboard | `CLAUDE.md` | `docs/API_REFERENCE.md`, `docs/ARCHITECTURE.md`, `docs/STATUS.md` |
-| 010_ios_dashboard | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/VIEWS.md` |
-
-각 프로젝트 작업 시 해당 프로젝트의 CLAUDE.md를 먼저 참조할 것.
+- [프로젝트 상세](docs/PROJECTS.md) - 각 프로젝트 실행 방법, 기능 설명
+- [환경변수](docs/ENVIRONMENT.md) - 프로젝트별 .env 설정
+- [트러블슈팅](docs/TROUBLESHOOTING.md) - 봇 중복 실행, Telegram 에러, API Rate Limit
