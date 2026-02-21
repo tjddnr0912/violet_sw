@@ -10,7 +10,9 @@ violet_sw/
 │   ├── 005_money/          # 암호화폐 트레이딩 봇 (Bithumb)
 │   ├── 006_auto_bot/       # 뉴스 자동화 봇 (RSS→AI→Blogger)
 │   ├── 007_stock_trade/    # 주식 퀀트 자동매매 (한국, KIS API)
-│   └── 008_stock_trade_us/ # 주식 퀀트 자동매매 (미국, KIS API)
+│   ├── 008_stock_trade_us/ # 주식 퀀트 자동매매 (미국, KIS API)
+│   ├── 009_dashboard/      # 트레이딩 대시보드 Flask 백엔드
+│   └── 010_ios_dashboard/  # 트레이딩 대시보드 iOS 앱 (SwiftUI)
 │
 ├── Lab & Study
 │   ├── 000_personal_lib_code/     # Python 유틸리티
@@ -145,6 +147,48 @@ cd 007_stock_trade
 
 ---
 
+### 009_dashboard - Trading Dashboard (Flask)
+
+005_money(암호화폐)와 007_stock_trade(한국주식) 데이터를 통합 조회하는 웹 대시보드.
+
+| Item | Value |
+|------|-------|
+| Framework | Flask 3.0 |
+| Port | 5001 |
+| API | v1 (인증 없음) + v2 (API Key 인증, 12개) |
+
+**실행:**
+```bash
+cd 009_dashboard
+source venv/bin/activate
+python app.py              # localhost:5001
+```
+
+**상세 문서:** `009_dashboard/CLAUDE.md`
+
+---
+
+### 010_ios_dashboard - Trading Dashboard (iOS)
+
+009_dashboard의 v2 API를 소비하는 SwiftUI iOS 앱.
+
+| Item | Value |
+|------|-------|
+| Framework | SwiftUI, MVVM |
+| Min iOS | 17.0 |
+| Build | xcodegen |
+| URL Scheme | `tradingdashboard://tab/{dashboard,crypto,stock}` |
+
+**빌드:**
+```bash
+cd 010_ios_dashboard
+xcodegen generate && open TradingDashboard.xcodeproj
+```
+
+**상세 문서:** `010_ios_dashboard/CLAUDE.md`
+
+---
+
 ## Lab & Study Projects
 
 | Directory | Description | Language | Status |
@@ -167,6 +211,8 @@ cd 007_stock_trade
 | 006_auto_bot | Python 3.11+ | Gemini, Blogger | Telegram | Markdown files |
 | 007_stock_trade | Python 3.11+ | KIS REST/WebSocket | Telegram | JSON files |
 | 008_stock_trade_us | Python 3.11+ | KIS REST/WebSocket | Telegram | JSON files |
+| 009_dashboard | Python 3.11+ | Flask REST | - | 005/007 JSON 참조 |
+| 010_ios_dashboard | Swift (SwiftUI) | 009 v2 API | - | UserDefaults |
 
 ### Telegram Bot Tokens
 
@@ -218,6 +264,12 @@ KIS_ACCOUNT_NO=
 TRADING_MODE=VIRTUAL  # or REAL
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+```
+
+### 009_dashboard/.env
+```bash
+DASHBOARD_API_KEY=    # 비어있으면 인증 비활성화
+FLASK_DEBUG=false
 ```
 
 ---
@@ -290,5 +342,7 @@ pkill -f "run_cli.py"
 | 006_auto_bot | `CLAUDE.md` | - |
 | 007_stock_trade | `CLAUDE.md` | `.claude/rules/*.md` |
 | 008_stock_trade_us | `CLAUDE.md` | `.claude/rules/*.md` |
+| 009_dashboard | `CLAUDE.md` | `docs/API_REFERENCE.md`, `docs/ARCHITECTURE.md`, `docs/STATUS.md` |
+| 010_ios_dashboard | `CLAUDE.md` | `docs/ARCHITECTURE.md`, `docs/VIEWS.md` |
 
 각 프로젝트 작업 시 해당 프로젝트의 CLAUDE.md를 먼저 참조할 것.
