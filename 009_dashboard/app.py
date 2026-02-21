@@ -171,8 +171,34 @@ def api_v2_stock_transactions():
 
 @app.route('/api/v2/system/status')
 def api_v2_system_status():
-    """봇 상태 (파일 freshness 기반)"""
+    """봇 상태 (장 시간 + 데몬 상태 기반)"""
     return api_response(data_loader.get_system_status())
+
+
+@app.route('/api/v2/crypto/coins')
+def api_v2_crypto_coins():
+    """코인별 성과 요약"""
+    return api_response(data_loader.get_crypto_coin_summary())
+
+
+@app.route('/api/v2/crypto/coins/<coin>/trades')
+def api_v2_crypto_coin_trades(coin):
+    """특정 코인 거래 내역"""
+    limit = request.args.get('limit', 20, type=int)
+    return api_response(data_loader.get_crypto_coin_trades(coin, limit=limit))
+
+
+@app.route('/api/v2/crypto/price/<coin>')
+def api_v2_crypto_price(coin):
+    """실시간 코인 시세 (Bithumb)"""
+    return api_response(data_loader.get_coin_price(coin))
+
+
+@app.route('/api/v2/crypto/chart/<coin>')
+def api_v2_crypto_chart(coin):
+    """코인 캔들스틱 차트 데이터"""
+    interval = request.args.get('interval', '1h')
+    return api_response(data_loader.get_coin_chart(coin, interval=interval))
 
 
 # === Health Check ===
