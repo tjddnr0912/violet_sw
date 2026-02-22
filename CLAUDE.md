@@ -13,7 +13,7 @@ violet_sw/
 ├── 009_dashboard/      # 트레이딩 대시보드 Flask 백엔드
 ├── 010_ios_dashboard/  # 트레이딩 대시보드 iOS 앱 (SwiftUI)
 ├── 000~004_*/          # Lab & Study (Archive)
-└── start_all_bots.sh   # 전체 봇 일괄 실행 (iTerm2 5탭)
+└── start_all_bots.sh   # 전체 봇 일괄 실행 (iTerm2 6탭, Dashboard 포함)
 ```
 
 ## Quick Start

@@ -84,6 +84,8 @@ cd 007_stock_trade
 
 v1 API (인증 없음) + v2 API (API Key, 12개 엔드포인트).
 
+`start_all_bots.sh` Tab 6에서 자동 실행. 탭 종료 시 서버도 종료.
+
 ---
 
 ## 010_ios_dashboard - Trading Dashboard (iOS)
