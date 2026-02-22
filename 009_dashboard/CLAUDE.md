@@ -11,6 +11,8 @@ source venv/bin/activate
 python app.py              # localhost:5001
 ```
 
+`start_all_bots.sh` Tab 6에서 자동 실행됨. Foreground 프로세스로 탭 종료 시 서버도 종료.
+
 ## 구조 요약
 
 | 디렉토리 | 역할 |

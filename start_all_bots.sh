@@ -2,12 +2,13 @@
 # ==============================================
 # Start All Bots - iTerm2 Multi-Tab Launcher
 # ==============================================
-# Opens a new iTerm2 window with 5 tabs:
+# Opens a new iTerm2 window with 6 tabs:
 #   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart + Hang Detection)
 #   Tab 2: News Bot (Scheduled)
 #   Tab 3: Telegram Gemini Bot
 #   Tab 4: Quant Trading Daemon (주식 자동매매)
 #   Tab 5: Weekly Sector Bot (주간 섹터 투자정보)
+#   Tab 6: Dashboard Server (Flask, port 5001)
 #
 # Watchdog Features:
 #   - Auto-restart on crash
@@ -23,6 +24,7 @@ NEWS_BOT="$SCRIPT_DIR/006_auto_bot/run_scheduled.sh"
 TELEGRAM_BOT="$SCRIPT_DIR/006_auto_bot/run_telegram_bot.sh"
 QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"
 WEEKLY_SECTOR="$SCRIPT_DIR/006_auto_bot/run_weekly_sector.sh"
+DASHBOARD="$SCRIPT_DIR/009_dashboard"
 
 # Check if scripts exist
 for script in "$TRADING_BOT" "$NEWS_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$WEEKLY_SECTOR"; do
@@ -75,6 +77,14 @@ tell application "iTerm2"
         end tell
     end tell
 
+    -- Create sixth tab (Dashboard Server)
+    tell current window
+        create tab with default profile
+        tell current session
+            write text "echo -ne '\\\\e]0;Dashboard\\\\a' && cd '$DASHBOARD' && source venv/bin/activate && python app.py"
+        end tell
+    end tell
+
     -- Select first tab
     tell current window
         select first tab
@@ -82,4 +92,4 @@ tell application "iTerm2"
 end tell
 EOF
 
-echo "All bots started in iTerm2 tabs!"
+echo "All bots started in iTerm2 tabs! (6 tabs including Dashboard on port 5001)"
