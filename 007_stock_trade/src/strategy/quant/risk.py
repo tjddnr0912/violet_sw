@@ -426,8 +426,20 @@ class PortfolioManager:
         return (self.total_value - self.cash) / self.total_value
 
     def add_position(self, position: Position):
-        """포지션 추가"""
-        self.positions[position.code] = position
+        """포지션 추가 (동일 종목 보유 시 수량 합산 및 평균단가 계산)"""
+        if position.code in self.positions:
+            existing = self.positions[position.code]
+            total_qty = existing.quantity + position.quantity
+            avg_price = (
+                (existing.entry_price * existing.quantity + position.entry_price * position.quantity)
+                / total_qty
+            )
+            existing.quantity = total_qty
+            existing.entry_price = avg_price
+            existing.current_price = position.current_price
+            existing.highest_price = max(existing.highest_price, position.highest_price)
+        else:
+            self.positions[position.code] = position
         self.cash -= position.entry_price * position.quantity
 
     def remove_position(self, code: str, sell_price: float) -> Optional[Dict]:

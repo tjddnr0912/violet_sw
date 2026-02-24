@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-02-24: engine_state ↔ KIS 포지션 동기화 버그 수정
+
+engine_state.json이 실제 KIS 증권사 잔고와 불일치하는 버그 수정.
+
+- `sync_positions_from_kis()` 강화: 3-way 동기화 (추가/업데이트/제거)
+  - 수량 불일치 + 평단가 불일치(>1원) 모두 KIS 기준으로 보정
+  - KIS에 없는 stale 포지션 자동 제거
+  - `_position_lock`으로 thread safety 확보
+  - 현금 동기화: `parse_balance()` 사용 (T+2 대응)
+  - `quiet` 파라미터 추가 (자동 동기화 시 알림 생략)
+- `generate_rebalance_orders()`: 리밸런싱 전 KIS 동기화 자동 호출
+- `start()`: 엔진 시작 시 항상 KIS 동기화 (기존: 포지션 0개일 때만)
+- `add_position()`: 동일 종목 매수 시 수량 합산 + 평균단가 계산 (기존: 덮어쓰기)
+- `/sync_positions` 텔레그램 응답 개선 (added/updated/removed 표시)
+
 ## 2026-02-21: 코드베이스 모듈화 리팩토링
 
 | 파일 | Before | After |

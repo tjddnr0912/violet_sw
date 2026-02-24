@@ -527,85 +527,135 @@ class QuantTradingEngine:
 
     # ========== KIS 포지션 동기화 ==========
 
-    def sync_positions_from_kis(self) -> dict:
+    def sync_positions_from_kis(self, quiet: bool = False) -> dict:
         """
         KIS 계좌의 보유종목을 내부 포지션으로 동기화
 
-        내부 포지션이 0개인데 KIS에 보유종목이 있을 때 사용.
+        내부에 없는 종목 추가, 수량/단가 불일치 업데이트, KIS에 없는 종목 제거.
         손절가/익절가는 매입단가 기준으로 재계산.
 
+        Args:
+            quiet: True면 텔레그램 알림 생략 (리밸런싱 전 자동 동기화용)
+
         Returns:
-            {"success": bool, "message": str, "synced": int}
+            {"success": bool, "message": str, "added": int, "updated": int, "removed": int}
         """
         try:
             balance_info = self.client.get_balance()
             kis_stocks = balance_info.get('stocks', [])
+            kis_codes = {s.code for s in kis_stocks}
 
-            if not kis_stocks:
-                return {"success": False, "message": "KIS 계좌에 보유종목이 없습니다.", "synced": 0}
+            added = 0
+            updated = 0
+            removed = 0
 
-            # 이미 내부에 있는 종목은 스킵
-            existing_codes = set(self.portfolio.positions.keys())
-            new_stocks = [s for s in kis_stocks if s.code not in existing_codes]
+            with self._position_lock:
+                # existing_codes 스냅샷: step 1에서 추가된 종목이 step 3에서 제거되지 않도록
+                existing_codes = set(self.portfolio.positions.keys())
 
-            if not new_stocks:
-                return {"success": True, "message": "모든 KIS 종목이 이미 동기화되어 있습니다.", "synced": 0}
+                # 1. KIS에 있지만 내부에 없는 종목 → 추가
+                for stock in kis_stocks:
+                    if stock.code not in existing_codes:
+                        stop_loss = StopLossManager.calculate_fixed_stop(
+                            stock.avg_price, self.config.stop_loss_pct
+                        )
+                        tp1, tp2 = TakeProfitManager.calculate_targets(
+                            stock.avg_price, stop_loss
+                        )
 
-            synced = 0
-            for stock in new_stocks:
-                stop_loss = StopLossManager.calculate_fixed_stop(
-                    stock.avg_price, self.config.stop_loss_pct
+                        # add_position 대신 직접 할당 (cash는 아래에서 KIS 기준으로 덮어씀)
+                        position = Position(
+                            code=stock.code,
+                            name=stock.name,
+                            entry_price=float(stock.avg_price),
+                            current_price=float(stock.current_price),
+                            quantity=stock.qty,
+                            entry_date=datetime.now(),
+                            stop_loss=stop_loss,
+                            take_profit_1=tp1,
+                            take_profit_2=tp2,
+                            highest_price=float(max(stock.current_price, stock.avg_price))
+                        )
+
+                        self.portfolio.positions[position.code] = position
+                        added += 1
+                        logger.info(
+                            f"포지션 추가: {stock.name} ({stock.code}) "
+                            f"{stock.qty}주 @ {stock.avg_price:,}원"
+                        )
+                    else:
+                        # 2. 양쪽 모두 있는데 수량 또는 평단가 불일치 → KIS 기준으로 업데이트
+                        pos = self.portfolio.positions[stock.code]
+                        price_mismatch = abs(pos.entry_price - float(stock.avg_price)) > 1
+                        if pos.quantity != stock.qty or price_mismatch:
+                            old_qty = pos.quantity
+                            pos.quantity = stock.qty
+                            pos.entry_price = float(stock.avg_price)
+                            pos.current_price = float(stock.current_price)
+                            # 손절/익절가 재계산
+                            pos.stop_loss = StopLossManager.calculate_fixed_stop(
+                                pos.entry_price, self.config.stop_loss_pct
+                            )
+                            pos.take_profit_1, pos.take_profit_2 = TakeProfitManager.calculate_targets(
+                                pos.entry_price, pos.stop_loss
+                            )
+                            updated += 1
+                            logger.info(
+                                f"포지션 업데이트: {stock.name} ({stock.code}) "
+                                f"{old_qty}주 → {stock.qty}주, 평단 {stock.avg_price:,}원"
+                            )
+
+                # 3. 내부에는 있지만 KIS에 없는 종목 → 제거
+                stale_codes = existing_codes - kis_codes
+                for code in stale_codes:
+                    pos = self.portfolio.positions[code]
+                    logger.info(f"포지션 제거 (KIS 미보유): {pos.name} ({code})")
+                    del self.portfolio.positions[code]
+                    removed += 1
+
+            # 현금: T+2 결제 대응 (nass 기반 역산)
+            bs = parse_balance(balance_info)
+            self.portfolio.cash = bs.cash
+
+            total_changes = added + updated + removed
+
+            if total_changes > 0:
+                self._save_state()
+
+                msg = (
+                    f"KIS 동기화: 추가 {added}, 업데이트 {updated}, 제거 {removed} "
+                    f"(총 {len(self.portfolio.positions)}종목)"
                 )
-                tp1, tp2 = TakeProfitManager.calculate_targets(
-                    stock.avg_price, stop_loss
-                )
+                logger.info(msg)
 
-                position = Position(
-                    code=stock.code,
-                    name=stock.name,
-                    entry_price=float(stock.avg_price),
-                    current_price=float(stock.current_price),
-                    quantity=stock.qty,
-                    entry_date=datetime.now(),
-                    stop_loss=stop_loss,
-                    take_profit_1=tp1,
-                    take_profit_2=tp2,
-                    highest_price=float(max(stock.current_price, stock.avg_price))
-                )
+                if not quiet:
+                    self.notifier.send_message(
+                        f"🔄 <b>포지션 동기화 완료</b>\n\n"
+                        f"추가: {added}종목\n"
+                        f"업데이트: {updated}종목\n"
+                        f"제거: {removed}종목\n"
+                        f"총 보유: {len(self.portfolio.positions)}종목\n"
+                        f"현금: {self.portfolio.cash:,.0f}원\n\n"
+                        f"⚠️ 손절/익절가는 매입단가 기준으로 재설정됨"
+                    )
+            else:
+                msg = "KIS 동기화: 변경 없음 (이미 일치)"
+                logger.info(msg)
 
-                self.portfolio.positions[position.code] = position
-                synced += 1
-                logger.info(
-                    f"포지션 동기화: {stock.name} ({stock.code}) "
-                    f"{stock.qty}주 @ {stock.avg_price:,}원 "
-                    f"(현재가: {stock.current_price:,}원, 수익: {stock.profit_rate:+.1f}%)"
-                )
-
-            # 현금도 KIS 기준으로 동기화
-            self.portfolio.cash = balance_info.get('cash', self.portfolio.cash)
-
-            self._save_state()
-
-            msg = f"KIS 포지션 {synced}개 동기화 완료 (총 {len(self.portfolio.positions)}종목)"
-            logger.info(msg)
-            self.notifier.send_message(
-                f"🔄 <b>포지션 동기화 완료</b>\n\n"
-                f"동기화: {synced}종목\n"
-                f"총 보유: {len(self.portfolio.positions)}종목\n"
-                f"현금: {self.portfolio.cash:,.0f}원\n\n"
-                f"⚠️ 손절/익절가는 매입단가 기준으로 재설정됨"
-            )
-
-            return {"success": True, "message": msg, "synced": synced}
+            return {"success": True, "message": msg, "added": added, "updated": updated, "removed": removed}
 
         except Exception as e:
             logger.error(f"KIS 포지션 동기화 실패: {e}", exc_info=True)
-            return {"success": False, "message": str(e), "synced": 0}
+            return {"success": False, "message": str(e), "added": 0, "updated": 0, "removed": 0}
 
     # ========== 리밸런싱 주문 생성/실행 (order_executor 위임) ==========
 
     def generate_rebalance_orders(self) -> List[PendingOrder]:
         """리밸런싱 주문 생성 (order_executor 위임)"""
+        # 리밸런싱 전 KIS 잔고와 내부 포지션 동기화
+        # engine_state와 실제 보유 종목 불일치 방지
+        self.sync_positions_from_kis(quiet=True)
+
         return self.order_executor.generate_rebalance_orders(
             screening_result=self.last_screening_result,
             pending_orders=self.pending_orders,
@@ -767,9 +817,8 @@ class QuantTradingEngine:
             "투자금": f"{self.config.total_capital:,}원"
         })
 
-        # KIS 포지션 동기화 (내부 0개 + KIS에 보유종목 있으면)
-        if not self.portfolio.positions:
-            self.sync_positions_from_kis()
+        # KIS 포지션 동기화 (시작 시 engine_state와 실제 잔고 불일치 보정)
+        self.sync_positions_from_kis()
 
         # 최초 실행 시 자동 스크리닝
         self.schedule_handler.check_initial_setup()
