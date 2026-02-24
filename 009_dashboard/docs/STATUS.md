@@ -1,6 +1,6 @@
 # 프로젝트 진행 상태
 
-최종 업데이트: 2026-02-21
+최종 업데이트: 2026-02-24
 
 ## 완료
 
@@ -12,6 +12,7 @@
 | 시뮬레이터 검증 | iPhone 16 Pro (iOS 18.2) 빌드/실행/데이터 연동 확인 |
 | URL Scheme 딥링크 | `tradingdashboard://tab/{dashboard,crypto,stock}` |
 | UX 개선 | 주식 포지션 상세화, 장시간 인식 봇 상태, 코인별 차트/성과 |
+| Stock 페이지 강화 | 계좌 요약 카드, 거래 히스토리 테이블, 트레이딩 모드(모의/실전) 뱃지, 포지션 Value 컬럼 |
 | xcode-select 전환 | Xcode.app Developer 경로로 전환 완료 |
 
 ## 미완료

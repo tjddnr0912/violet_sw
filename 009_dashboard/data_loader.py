@@ -26,6 +26,7 @@ class TradingDataLoader:
             'stock_system': self.base_path / '007_stock_trade/data/quant/system_state.json',
             'stock_daily': self.base_path / '007_stock_trade/data/quant/daily_history.json',
             'stock_transactions': self.base_path / '007_stock_trade/data/quant/transaction_journal.json',
+            'stock_config': self.base_path / '007_stock_trade/config/system_config.json',
         }
 
     def _load_json(self, key: str) -> Optional[Dict | List]:
@@ -95,6 +96,68 @@ class TradingDataLoader:
         txns = data.get('transactions', [])
         sorted_txns = sorted(txns, key=lambda x: x.get('timestamp', ''), reverse=True)
         return sorted_txns[:limit]
+
+    def get_stock_trading_mode(self) -> Dict[str, Any]:
+        """주식 트레이딩 모드 (모의/실전) 조회"""
+        data = self._load_json('stock_config')
+        if not data:
+            return {'is_virtual': True, 'mode_text': '모의투자', 'mode_badge': 'warning'}
+        is_virtual = data.get('is_virtual', True)
+        return {
+            'is_virtual': is_virtual,
+            'mode_text': '모의투자' if is_virtual else '실전투자',
+            'mode_badge': 'warning' if is_virtual else 'danger',
+        }
+
+    def get_stock_account_summary(self) -> Dict[str, Any]:
+        """주식 계좌 요약 (현금, 매입금, 평가금, 손익)"""
+        daily_data = self._load_json('stock_daily')
+        engine_data = self._load_json('stock_engine')
+
+        initial_capital = 0
+        cash = 0
+        total_pnl = 0
+        total_pnl_pct = 0.0
+        daily_pnl = 0
+        daily_pnl_pct = 0.0
+
+        if daily_data:
+            initial_capital = daily_data.get('initial_capital', 0)
+            snapshots = daily_data.get('snapshots', [])
+            if snapshots:
+                latest = snapshots[-1]
+                cash = latest.get('cash', 0)
+                total_pnl = latest.get('total_pnl', 0)
+                total_pnl_pct = latest.get('total_pnl_pct', 0.0)
+                daily_pnl = latest.get('daily_pnl', 0)
+                daily_pnl_pct = latest.get('daily_pnl_pct', 0.0)
+
+        # engine_state 포지션 기반 실시간 계산
+        buy_amount = 0
+        current_value = 0
+        if engine_data:
+            for pos in engine_data.get('positions', []):
+                qty = pos.get('quantity', 0)
+                buy_amount += pos.get('entry_price', 0) * qty
+                current_value += pos.get('current_price', 0) * qty
+
+        total_assets = cash + current_value
+        unrealized_pnl = current_value - buy_amount
+        unrealized_pnl_pct = (unrealized_pnl / buy_amount * 100) if buy_amount > 0 else 0.0
+
+        return {
+            'initial_capital': initial_capital,
+            'cash': cash,
+            'buy_amount': buy_amount,
+            'current_value': current_value,
+            'unrealized_pnl': unrealized_pnl,
+            'unrealized_pnl_pct': round(unrealized_pnl_pct, 2),
+            'total_assets': total_assets,
+            'total_pnl': total_pnl,
+            'total_pnl_pct': round(total_pnl_pct, 2),
+            'daily_pnl': daily_pnl,
+            'daily_pnl_pct': round(daily_pnl_pct, 2),
+        }
 
     # === 암호화폐 데이터 ===
 

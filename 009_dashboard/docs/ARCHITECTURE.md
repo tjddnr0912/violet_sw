@@ -21,17 +21,18 @@
 
 | 파일 | 역할 |
 |------|------|
-| `app.py` | Flask 라우트 정의 (페이지 4개 + v1 API 5개 + v2 API 12개 + health) |
+| `app.py` | Flask 라우트 정의 (페이지 4개 + v1 API 7개 + v2 API 14개 + health) |
 | `data_loader.py` | `TradingDataLoader` 클래스 - JSON 파일 로드, 가공, Bithumb API 호출 |
 
 ### 데이터 흐름
 
 ```
-007_stock_trade/data/quant/*.json  ─┐
-                                    ├→ data_loader.py → app.py → JSON/HTML 응답
-005_money/logs/*.json              ─┘
-                                         ↑
-                                    Bithumb Public API (실시간 시세/차트)
+007_stock_trade/data/quant/*.json       ─┐
+007_stock_trade/config/system_config.json ┤
+                                          ├→ data_loader.py → app.py → JSON/HTML 응답
+005_money/logs/*.json                    ─┘
+                                               ↑
+                                          Bithumb Public API (실시간 시세/차트)
 ```
 
 ## 010_ios_dashboard (SwiftUI iOS 앱)
