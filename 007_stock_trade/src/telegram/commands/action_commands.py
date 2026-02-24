@@ -165,11 +165,14 @@ class ActionCommandsMixin:
         result = callback()
 
         if result['success']:
+            added = result.get('added', 0)
+            updated = result.get('updated', 0)
+            removed = result.get('removed', 0)
             await update.message.reply_text(
                 f"✅ <b>동기화 완료</b>\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"{result['message']}\n"
-                f"동기화 종목: {result.get('synced', 0)}개\n"
+                f"추가: {added}개 / 업데이트: {updated}개 / 제거: {removed}개\n"
                 f"━━━━━━━━━━━━━━━",
                 parse_mode='HTML'
             )

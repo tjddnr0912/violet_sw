@@ -72,6 +72,19 @@ After:  total_assets = nass              ← 순자산 (미결제 반영)
 
 참고: KIS 휴장일조회(CTCA0903R)는 실전투자에서만 지원.
 
+## engine_state ↔ KIS 포지션 불일치
+
+증상: engine_state.json의 포지션 수가 실제 KIS 잔고와 다름. 모니터링 누락, 리밸런싱 시 이미 보유 종목 중복 매수.
+원인: 데몬 재시작 시 상태 유실, 또는 이전 리밸런싱에서 기존 포지션 미반영.
+해결: `sync_positions_from_kis()` 3-way 동기화 (2026-02-24).
+
+자동 동기화 시점:
+1. 엔진 시작 시 (`start()`)
+2. 리밸런싱 전 (`generate_rebalance_orders()`)
+3. 주간 점검 (토요일 10:00, 불일치 감지 시)
+
+수동: 텔레그램 `/sync_positions`
+
 ## 긴급 정지 해제
 
 ```
