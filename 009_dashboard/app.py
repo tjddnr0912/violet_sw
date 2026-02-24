@@ -64,10 +64,16 @@ def stock_detail():
     """주식 상세 페이지"""
     stock_positions = data_loader.get_stock_positions()
     stock_state = data_loader.get_stock_state()
+    stock_transactions = data_loader.get_stock_transactions(limit=50)
+    account_summary = data_loader.get_stock_account_summary()
+    trading_mode = data_loader.get_stock_trading_mode()
 
     return render_template('stock.html',
                           positions=stock_positions,
-                          state=stock_state)
+                          state=stock_state,
+                          transactions=stock_transactions,
+                          account=account_summary,
+                          trading_mode=trading_mode)
 
 
 @app.route('/crypto')
@@ -102,6 +108,19 @@ def api_summary():
 def api_stock_positions():
     """주식 포지션 API"""
     return jsonify(data_loader.get_stock_positions())
+
+
+@app.route('/api/stock/account')
+def api_stock_account():
+    """주식 계좌 요약 API"""
+    return jsonify(data_loader.get_stock_account_summary())
+
+
+@app.route('/api/stock/transactions')
+def api_stock_transactions():
+    """주식 거래 내역 API"""
+    limit = request.args.get('limit', 50, type=int)
+    return jsonify(data_loader.get_stock_transactions(limit=limit))
 
 
 @app.route('/api/crypto/regime')
@@ -167,6 +186,18 @@ def api_v2_stock_transactions():
     """한국주식 거래 내역"""
     limit = request.args.get('limit', 20, type=int)
     return api_response(data_loader.get_stock_transactions(limit=limit))
+
+
+@app.route('/api/v2/stock/account')
+def api_v2_stock_account():
+    """한국주식 계좌 요약"""
+    return api_response(data_loader.get_stock_account_summary())
+
+
+@app.route('/api/v2/stock/trading-mode')
+def api_v2_stock_trading_mode():
+    """한국주식 트레이딩 모드 (모의/실전)"""
+    return api_response(data_loader.get_stock_trading_mode())
 
 
 @app.route('/api/v2/system/status')

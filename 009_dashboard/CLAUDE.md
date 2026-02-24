@@ -34,6 +34,7 @@ python app.py              # localhost:5001
 | stock_engine | `007_stock_trade/data/quant/engine_state.json` |
 | stock_daily | `007_stock_trade/data/quant/daily_history.json` |
 | stock_transactions | `007_stock_trade/data/quant/transaction_journal.json` |
+| stock_config | `007_stock_trade/config/system_config.json` |
 | crypto_factors | `005_money/logs/dynamic_factors_v3.json` |
 | crypto_history | `005_money/logs/performance_history_v3.json` |
 

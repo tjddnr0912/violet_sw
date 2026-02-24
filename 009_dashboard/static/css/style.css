@@ -40,6 +40,12 @@ main {
     font-weight: 500;
 }
 
+.trade-type-badge {
+    min-width: 45px;
+    display: inline-block;
+    text-align: center;
+}
+
 /* Charts */
 canvas {
     max-height: 300px;

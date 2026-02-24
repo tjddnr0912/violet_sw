@@ -24,6 +24,8 @@ GET /health
 |------------|------|
 | `GET /api/summary` | 포트폴리오 요약 |
 | `GET /api/stock/positions` | 주식 포지션 |
+| `GET /api/stock/account` | 주식 계좌 요약 (현금, 매입금, 평가금, 손익) |
+| `GET /api/stock/transactions` | 주식 거래 내역 (`limit` 기본 50) |
 | `GET /api/crypto/regime` | 암호화폐 레짐 |
 | `GET /api/crypto/trades` | 암호화폐 거래 내역 (최근 20건) |
 | `GET /api/crypto/performance` | 암호화폐 성과 통계 |
@@ -64,6 +66,8 @@ GET /health
 | `GET /api/v2/stock/positions` | - | 현재 포지션 (손익 계산 포함) |
 | `GET /api/v2/stock/daily` | `days` (기본 30) | 일일 자산 변동 히스토리 |
 | `GET /api/v2/stock/transactions` | `limit` (기본 20) | 거래 내역 |
+| `GET /api/v2/stock/account` | - | 계좌 요약 (현금, 매입금, 평가금, 손익) |
+| `GET /api/v2/stock/trading-mode` | - | 트레이딩 모드 (모의/실전) |
 
 ### 시스템
 
