@@ -12,6 +12,7 @@ violet_sw/
 ├── 008_stock_trade_us/ # 주식 퀀트 자동매매 (미국, KIS API)
 ├── 009_dashboard/      # 트레이딩 대시보드 Flask 백엔드
 ├── 010_ios_dashboard/  # 트레이딩 대시보드 iOS 앱 (SwiftUI)
+├── 011_macos_cc_usage/ # Claude Code 사용량 모니터 (macOS 메뉴바)
 ├── 000~004_*/          # Lab & Study (Archive)
 └── start_all_bots.sh   # 전체 봇 일괄 실행 (iTerm2 6탭, Dashboard 포함)
 ```
@@ -32,6 +33,7 @@ violet_sw/
 | 008_stock_trade_us | 미국주식 퀀트 (S&P500, 15종목) | `./run_quant.sh daemon` | [CLAUDE.md](008_stock_trade_us/CLAUDE.md) |
 | 009_dashboard | Flask 대시보드 (port 5001) | `python app.py` | [CLAUDE.md](009_dashboard/CLAUDE.md) |
 | 010_ios_dashboard | SwiftUI iOS 앱 (MVVM) | `xcodegen generate` | [CLAUDE.md](010_ios_dashboard/CLAUDE.md) |
+| 011_macos_cc_usage | Claude Code 사용량 모니터 (macOS 메뉴바) | `./install.sh` | [CLAUDE.md](011_macos_cc_usage/CLAUDE.md) |
 
 ## Development Guidelines
 

@@ -1,0 +1,26 @@
+name: ClaudeUsage
+options:
+  bundleIdPrefix: com.violet
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "26.3"
+  generateEmptyDirectories: true
+
+targets:
+  ClaudeUsage:
+    type: application
+    platform: macOS
+    sources:
+      - ClaudeUsage
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.violet.claudeusage
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_EMIT_LOC_STRINGS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_LSUIElement: YES
+        CODE_SIGN_ENTITLEMENTS: ""
+        ENABLE_APP_SANDBOX: NO
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
