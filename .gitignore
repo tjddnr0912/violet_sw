@@ -78,23 +78,38 @@ coverage.xml
 # ===================================
 # Log files
 *.log
-logs/*.log
+**/logs/*.log
 
-# Trading data (민감한 거래 정보)
-logs/positions*.json
-logs/transaction_history.json
-logs/trading_history.md
-logs/last_executed_actions*.json
-logs/score_checks*.json
-logs/signals*.json
-logs/*_history.json
+# PID files
+**/daemon.pid
+
+# ---- 005_money (Bithumb 암호화폐 봇) ----
+# 모든 로그/런타임 데이터 (거래 이력, 포지션, 성과, 백테스트 등)
+005_money/logs/
+005_money/001_python_code/logs/
+
+# ---- 006_auto_bot (뉴스/섹터 봇) ----
+# 봇 런타임 상태
+006_auto_bot/001_code/sector_bot/state.json
+# 주간 섹터 분석 출력물
+006_auto_bot/004_Sector_Weekly/
+# 임시 테스트/검증 스크립트
+006_auto_bot/001_code/test_*.py
+006_auto_bot/001_code/verify_*.py
+
+# ---- 007_stock_trade / 008_stock_trade_us (주식 퀀트) ----
+# 퀀트 엔진 런타임 데이터 (상태, 이력, 모니터링, 스크리닝)
+007_stock_trade/data/quant/
+007_stock_trade/data/screening/
+007_stock_trade/data/optimization_results.csv
+007_stock_trade/data/strategy_monitor.json
+008_stock_trade_us/data/quant/
+008_stock_trade_us/data/screening/
+008_stock_trade_us/data/optimization_results.csv
+008_stock_trade_us/data/strategy_monitor.json
 
 # User preferences (개인 설정)
 **/user_preferences*.json
-
-# Backtest results
-logs/backtests/
-logs/optimization/
 
 # ===================================
 # IDE & Editor
