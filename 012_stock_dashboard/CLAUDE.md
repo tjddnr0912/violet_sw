@@ -47,8 +47,9 @@ source venv/bin/activate
 ## 핵심 아키텍처
 
 - **데이터 흐름**: Workers → DataStore → WebSocket → Browser
-- **업데이트 주기**: T1(30s) 주요지수, T2(60s) VIX/환율, T3(120s) 섹터, T4(300s) 뉴스, T5(600s) 센티먼트
+- **업데이트 주기**: T1(30s) 주요지수, T2(60s) VIX/환율, T3(120s) 섹터, T4(600s) 뉴스, T5(600s) 센티먼트
 - **뉴스 2단계**: Phase A = 원문 즉시 표시 → Phase B = Gemini AI 한국어 번역 비동기 교체
+- **Gemini 절약**: 한국어(KR) 기사는 Gemini 스킵 (원문 유지), EN/JP/CN만 번역 호출
 - **yfinance**: v1.2.0+ MultiIndex `("Close", ticker)` 형식. 크립토/주식 별도 fetch 필요
 - **차트**: TradingView Lightweight Charts v4 (Row 1), Canvas 스파크라인 (Row 2)
 
@@ -56,5 +57,5 @@ source venv/bin/activate
 
 - 장외 시간: 전체 5분 간격으로 통합 (OFF_HOURS_INTERVAL)
 - CNN Fear & Greed: `User-Agent` + `Referer` 헤더 필수 (없으면 HTTP 418)
-- Gemini RPM: 분당 4회 제한 (자체 rate limiter)
+- Gemini Free Tier: 500 RPD 한도, 10분 주기 + KR 스킵으로 ~100~150회/일 사용
 - Port 5002 사용 (009_dashboard 5001과 충돌 회피)
