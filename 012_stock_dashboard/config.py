@@ -14,7 +14,7 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5002"))
 TIER1_INTERVAL = 30    # S&P 500, NASDAQ, Dow, Bitcoin
 TIER2_INTERVAL = 60    # VIX, 10Y, DXY, Gold, Oil, FX, EU/Asia
 TIER3_INTERVAL = 120   # Sector heatmap, Top movers
-TIER4_INTERVAL = 300   # News RSS + AI summary
+TIER4_INTERVAL = 600   # News RSS + AI summary (10min, Gemini free tier 절약)
 TIER5_INTERVAL = 600   # Fear & Greed, Market Breadth
 OFF_HOURS_INTERVAL = 300  # All tickers during off-hours
 

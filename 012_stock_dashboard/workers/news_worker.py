@@ -91,12 +91,28 @@ class NewsWorker(BaseWorker):
         )
 
     async def _enrich_articles(self, articles):
-        """Background task: summarize with Gemini, then update tiles."""
+        """Background task: summarize with Gemini, then update tiles.
+        Korean articles skip Gemini (already in Korean) to save free tier quota.
+        """
         try:
+            # Korean articles: skip Gemini, cache directly with original title
+            kr_articles = [a for a in articles if a.language == "KR" and not self.summarizer.get_cached(a.article_id)]
+            for a in kr_articles:
+                from data_sources.ai_summarizer import SummarizedArticle
+                sa = SummarizedArticle(a.article_id, a.title, "low", "Asia")
+                self.summarizer._cache[a.article_id] = sa
+                self.rotator.enrich(a.article_id, {
+                    "title": a.title,
+                    "impact": "low",
+                    "market": "Asia",
+                    "ai_ready": True,
+                })
+
+            # Non-Korean articles: send to Gemini for translation
             batch = [
                 {"id": a.article_id, "title": a.title, "source": a.source, "language": a.language}
                 for a in articles
-                if not self.summarizer.get_cached(a.article_id)
+                if a.language != "KR" and not self.summarizer.get_cached(a.article_id)
             ]
 
             if not batch:
