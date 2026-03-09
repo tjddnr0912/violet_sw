@@ -1,0 +1,19 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+
+# Playwright / test artifacts
+.playwright-mcp/
+*.png
+
+# Logs
+*.log
+
+# Claude Code
+.claude/

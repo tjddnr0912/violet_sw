@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Dashboard</title>
+<link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+<script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* Header Bar */
+.header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 16px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.clocks {
+  display: flex;
+  gap: 20px;
+  font-size: 12px;
+}
+
+.clock-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.clock-label { color: #8b949e; }
+.clock-time { color: #e6edf3; font-weight: 600; }
+
+.markets-status {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+}
+
+.market-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.badge-dot.open { background: #3fb950; }
+.badge-dot.closed { background: #484f58; }
+
+.ws-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.ws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f85149;
+}
+
+.ws-dot.connected { background: #3fb950; }
+
+/* Grid Layout */
+.grid-container {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: 4px;
+  padding: 4px;
+  height: calc(100vh - 36px);
+}
+
+.tile {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tile.flash {
+  animation: tileFlash 0.3s ease;
+}
+
+@keyframes tileFlash {
+  0% { background: #1c2530; }
+  100% { background: #161b22; }
+}
+
+/* Tile Header */
+.tile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.tile-name {
+  font-size: 11px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.tile-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-live {
+  background: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
+}
+
+.badge-closed {
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
+}
+
+/* Numeric Tiles */
+.tile-value {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.sparkline-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.sparkline-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.tile-change {
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.positive { color: #3fb950; }
+.negative { color: #f85149; }
+.neutral { color: #8b949e; }
+
+/* Chart Tiles */
+.chart-container {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.chart-price {
+  font-size: 16px;
+  font-weight: 700;
+  margin-left: 8px;
+}
+
+.chart-change {
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+/* Sector Heatmap */
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 3px;
+  flex: 1;
+}
+
+.heatmap-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  min-height: 0;
+}
+
+.heatmap-name { font-size: 10px; opacity: 0.9; }
+.heatmap-pct { font-size: 13px; font-weight: 700; }
+
+/* Region Tiles */
+.region-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+}
+
+.region-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.region-name {
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.region-price {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.region-change {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* FX Tile */
+.fx-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+}
+
+.fx-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.fx-pair { font-size: 11px; color: #8b949e; }
+.fx-rate { font-size: 14px; font-weight: 600; }
+.fx-change { font-size: 10px; }
+
+/* Movers */
+.movers-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.movers-label {
+  font-size: 9px;
+  color: #8b949e;
+  text-transform: uppercase;
+  margin: 2px 0;
+  letter-spacing: 0.5px;
+}
+
+.mover-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  padding: 1px 0;
+}
+
+.mover-symbol { font-weight: 600; }
+
+/* Fear & Greed Gauge */
+.gauge-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.gauge-svg { width: 100%; max-width: 140px; }
+
+.gauge-score {
+  font-size: 28px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.gauge-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* Market Breadth */
+.breadth-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+
+.breadth-bar-wrap {
+  display: flex;
+  height: 20px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.breadth-adv {
+  background: #3fb950;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  transition: width 0.5s ease;
+}
+
+.breadth-dec {
+  background: #f85149;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  transition: width 0.5s ease;
+}
+
+.breadth-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+/* Dynamic News Tiles */
+.news-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+}
+
+.news-title {
+  font-size: 12px;
+  line-height: 1.4;
+  flex: 1;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+
+.news-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: #8b949e;
+  margin-top: 4px;
+}
+
+.news-source { font-weight: 600; }
+
+.news-impact {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.impact-high { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+.impact-medium { background: rgba(210, 153, 34, 0.2); color: #d29922; }
+.impact-low { background: rgba(139, 148, 158, 0.15); color: #8b949e; }
+.impact-unknown { background: rgba(139, 148, 158, 0.1); color: #6e7681; }
+
+.tile.breaking {
+  border-color: #f85149;
+  background: linear-gradient(180deg, #1c1014 0%, #161b22 100%);
+}
+
+.news-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #30363d;
+  border-top-color: #58a6ff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Row spans */
+.tile[data-grid="1/1/2/3"] { grid-row: 1/2; grid-column: 1/3; }
+.tile[data-grid="1/3/2/5"] { grid-row: 1/2; grid-column: 3/5; }
+.tile[data-grid="1/5/2/7"] { grid-row: 1/2; grid-column: 5/7; }
+
+.tile[data-grid="2/1/3/2"] { grid-row: 2/3; grid-column: 1/2; }
+.tile[data-grid="2/2/3/3"] { grid-row: 2/3; grid-column: 2/3; }
+.tile[data-grid="2/3/3/4"] { grid-row: 2/3; grid-column: 3/4; }
+.tile[data-grid="2/4/3/5"] { grid-row: 2/3; grid-column: 4/5; }
+.tile[data-grid="2/5/3/6"] { grid-row: 2/3; grid-column: 5/6; }
+.tile[data-grid="2/6/3/7"] { grid-row: 2/3; grid-column: 6/7; }
+
+.tile[data-grid="3/1/4/3"] { grid-row: 3/4; grid-column: 1/3; }
+.tile[data-grid="3/3/4/4"] { grid-row: 3/4; grid-column: 3/4; }
+.tile[data-grid="3/4/4/5"] { grid-row: 3/4; grid-column: 4/5; }
+.tile[data-grid="3/5/4/6"] { grid-row: 3/4; grid-column: 5/6; }
+.tile[data-grid="3/6/4/7"] { grid-row: 3/4; grid-column: 6/7; }
+
+.tile[data-grid="4/1/5/2"] { grid-row: 4/5; grid-column: 1/2; }
+.tile[data-grid="4/2/5/3"] { grid-row: 4/5; grid-column: 2/3; }
+.tile[data-grid="4/3/5/4"] { grid-row: 4/5; grid-column: 3/4; }
+.tile[data-grid="4/4/5/5"] { grid-row: 4/5; grid-column: 4/5; }
+.tile[data-grid="4/5/5/6"] { grid-row: 4/5; grid-column: 5/6; }
+.tile[data-grid="4/6/5/7"] { grid-row: 4/5; grid-column: 6/7; }
+</style>
+</head>
+<body>
+
+<!-- Header Bar -->
+<div class="header-bar">
+  <div class="clocks">
+    <div class="clock-item"><span class="clock-label">KST</span><span class="clock-time" id="clock-kst">--:--</span></div>
+    <div class="clock-item"><span class="clock-label">EST</span><span class="clock-time" id="clock-est">--:--</span></div>
+    <div class="clock-item"><span class="clock-label">CET</span><span class="clock-time" id="clock-cet">--:--</span></div>
+    <div class="clock-item"><span class="clock-label">JST</span><span class="clock-time" id="clock-jst">--:--</span></div>
+  </div>
+  <div class="markets-status" id="markets-status">
+    <div class="market-badge">🇺🇸<span class="badge-dot closed" id="mkt-us"></span><span>US</span></div>
+    <div class="market-badge">🇪🇺<span class="badge-dot closed" id="mkt-eu"></span><span>EU</span></div>
+    <div class="market-badge">🇯🇵<span class="badge-dot closed" id="mkt-jp"></span><span>JP</span></div>
+    <div class="market-badge">🇰🇷<span class="badge-dot closed" id="mkt-kr"></span><span>KR</span></div>
+    <div class="market-badge">🇨🇳<span class="badge-dot closed" id="mkt-cn"></span><span>CN</span></div>
+  </div>
+  <div class="ws-status">
+    <div class="ws-dot" id="ws-dot"></div>
+    <span id="ws-label">Disconnected</span>
+  </div>
+</div>
+
+<!-- Grid -->
+<div class="grid-container">
+  <!-- Row 1: Chart tiles (2-col span each) -->
+  <div class="tile" id="tile-sp500" data-grid="1/1/2/3">
+    <div class="tile-header"><span class="tile-name">S&P 500</span><span class="chart-price" id="price-sp500">--</span><span class="chart-change neutral" id="change-sp500"></span><span class="tile-badge badge-live">LIVE</span></div>
+    <div class="chart-container" id="chart-sp500"></div>
+  </div>
+  <div class="tile" id="tile-nasdaq" data-grid="1/3/2/5">
+    <div class="tile-header"><span class="tile-name">NASDAQ</span><span class="chart-price" id="price-nasdaq">--</span><span class="chart-change neutral" id="change-nasdaq"></span><span class="tile-badge badge-live">LIVE</span></div>
+    <div class="chart-container" id="chart-nasdaq"></div>
+  </div>
+  <div class="tile" id="tile-dow" data-grid="1/5/2/7">
+    <div class="tile-header"><span class="tile-name">Dow Jones</span><span class="chart-price" id="price-dow">--</span><span class="chart-change neutral" id="change-dow"></span><span class="tile-badge badge-live">LIVE</span></div>
+    <div class="chart-container" id="chart-dow"></div>
+  </div>
+
+  <!-- Row 2: Numeric tiles -->
+  <div class="tile" id="tile-vix" data-grid="2/1/3/2">
+    <div class="tile-header"><span class="tile-name">VIX</span></div>
+    <div class="tile-value" id="value-vix">--</div>
+    <div class="sparkline-wrap"><canvas class="sparkline-canvas" id="spark-vix"></canvas></div>
+    <div class="tile-change neutral" id="change-vix">--</div>
+  </div>
+  <div class="tile" id="tile-treasury" data-grid="2/2/3/3">
+    <div class="tile-header"><span class="tile-name">10Y Yield</span></div>
+    <div class="tile-value" id="value-treasury">--</div>
+    <div class="sparkline-wrap"><canvas class="sparkline-canvas" id="spark-treasury"></canvas></div>
+    <div class="tile-change neutral" id="change-treasury">--</div>
+  </div>
+  <div class="tile" id="tile-dxy" data-grid="2/3/3/4">
+    <div class="tile-header"><span class="tile-name">DXY</span></div>
+    <div class="tile-value" id="value-dxy">--</div>
+    <div class="sparkline-wrap"><canvas class="sparkline-canvas" id="spark-dxy"></canvas></div>
+    <div class="tile-change neutral" id="change-dxy">--</div>
+  </div>
+  <div class="tile" id="tile-gold" data-grid="2/4/3/5">
+    <div class="tile-header"><span class="tile-name">Gold</span></div>
+    <div class="tile-value" id="value-gold">--</div>
+    <div class="sparkline-wrap"><canvas class="sparkline-canvas" id="spark-gold"></canvas></div>
+    <div class="tile-change neutral" id="change-gold">--</div>
+  </div>
+  <div class="tile" id="tile-oil" data-grid="2/5/3/6">
+    <div class="tile-header"><span class="tile-name">WTI Oil</span></div>
+    <div class="tile-value" id="value-oil">--</div>
+    <div class="sparkline-wrap"><canvas class="sparkline-canvas" id="spark-oil"></canvas></div>
+    <div class="tile-change neutral" id="change-oil">--</div>
+  </div>
+  <div class="tile" id="tile-bitcoin" data-grid="2/6/3/7">
+    <div class="tile-header"><span class="tile-name">Bitcoin</span></div>
+    <div class="tile-value" id="value-bitcoin">--</div>
+    <div class="sparkline-wrap"><canvas class="sparkline-canvas" id="spark-bitcoin"></canvas></div>
+    <div class="tile-change neutral" id="change-bitcoin">--</div>
+  </div>
+
+  <!-- Row 3: Analysis + Global -->
+  <div class="tile" id="tile-sector" data-grid="3/1/4/3">
+    <div class="tile-header"><span class="tile-name">S&P 500 Sectors</span></div>
+    <div class="heatmap-grid" id="heatmap-sector"></div>
+  </div>
+  <div class="tile" id="tile-movers" data-grid="3/3/4/4">
+    <div class="tile-header"><span class="tile-name">Top Movers</span></div>
+    <div class="movers-section" id="movers-content">
+      <div><div class="movers-label positive">▲ Gainers</div><div id="movers-gainers"></div></div>
+      <div><div class="movers-label negative">▼ Losers</div><div id="movers-losers"></div></div>
+    </div>
+  </div>
+  <div class="tile" id="tile-feargreed" data-grid="3/4/4/5">
+    <div class="tile-header"><span class="tile-name">Fear & Greed</span></div>
+    <div class="gauge-container" id="gauge-feargreed">
+      <svg class="gauge-svg" viewBox="0 0 120 75">
+        <path d="M 10 65 A 50 50 0 0 1 110 65" fill="none" stroke="#30363d" stroke-width="8" stroke-linecap="round"/>
+        <path id="gauge-arc" d="M 10 65 A 50 50 0 0 1 110 65" fill="none" stroke="#8b949e" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 157"/>
+        <circle id="gauge-needle-dot" cx="60" cy="65" r="4" fill="#e6edf3"/>
+      </svg>
+      <div class="gauge-score" id="gauge-score">--</div>
+      <div class="gauge-label neutral" id="gauge-label">Loading</div>
+    </div>
+  </div>
+  <div class="tile" id="tile-europe" data-grid="3/5/4/6">
+    <div class="tile-header"><span class="tile-name">Europe</span><span class="tile-badge badge-closed" id="badge-eu">CLOSED</span></div>
+    <div class="region-list" id="region-europe"></div>
+  </div>
+  <div class="tile" id="tile-asia" data-grid="3/6/4/7">
+    <div class="tile-header"><span class="tile-name">Asia</span><span class="tile-badge badge-closed" id="badge-asia">CLOSED</span></div>
+    <div class="region-list" id="region-asia"></div>
+  </div>
+
+  <!-- Row 4: FX + Breadth + Dynamic -->
+  <div class="tile" id="tile-fx" data-grid="4/1/5/2">
+    <div class="tile-header"><span class="tile-name">FX Rates</span></div>
+    <div class="fx-list" id="fx-content"></div>
+  </div>
+  <div class="tile" id="tile-breadth" data-grid="4/2/5/3">
+    <div class="tile-header"><span class="tile-name">Market Breadth</span></div>
+    <div class="breadth-container" id="breadth-content">
+      <div class="breadth-bar-wrap">
+        <div class="breadth-adv" id="breadth-adv" style="width:50%">--</div>
+        <div class="breadth-dec" id="breadth-dec" style="width:50%">--</div>
+      </div>
+      <div class="breadth-stats">
+        <span class="positive" id="breadth-adv-count">Adv: --</span>
+        <span id="breadth-ratio">A/D: --</span>
+        <span class="negative" id="breadth-dec-count">Dec: --</span>
+      </div>
+    </div>
+  </div>
+  <div class="tile" id="tile-dynamic_1" data-grid="4/3/5/4">
+    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_1" style="display:none"></span></div>
+    <div class="news-content" id="news-dynamic_1">
+      <div class="news-title" style="color:#484f58">Waiting for news...</div>
+    </div>
+  </div>
+  <div class="tile" id="tile-dynamic_2" data-grid="4/4/5/5">
+    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_2" style="display:none"></span></div>
+    <div class="news-content" id="news-dynamic_2">
+      <div class="news-title" style="color:#484f58">Waiting for news...</div>
+    </div>
+  </div>
+  <div class="tile" id="tile-dynamic_3" data-grid="4/5/5/6">
+    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_3" style="display:none"></span></div>
+    <div class="news-content" id="news-dynamic_3">
+      <div class="news-title" style="color:#484f58">Waiting for news...</div>
+    </div>
+  </div>
+  <div class="tile" id="tile-dynamic_4" data-grid="4/6/5/7">
+    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_4" style="display:none"></span></div>
+    <div class="news-content" id="news-dynamic_4">
+      <div class="news-title" style="color:#484f58">Waiting for news...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// TradingView Lightweight Charts
+// ============================================================
+const charts = {};
+const chartSeries = {};
+const chartTiles = {
+  sp500: { colors: { up: 'rgba(38, 166, 154, 1)', down: 'rgba(239, 83, 80, 1)' } },
+  nasdaq: { colors: { up: 'rgba(38, 166, 154, 1)', down: 'rgba(239, 83, 80, 1)' } },
+  dow: { colors: { up: 'rgba(38, 166, 154, 1)', down: 'rgba(239, 83, 80, 1)' } },
+};
+
+function initCharts() {
+  for (const [id, cfg] of Object.entries(chartTiles)) {
+    const container = document.getElementById('chart-' + id);
+    if (!container) continue;
+    const chart = LightweightCharts.createChart(container, {
+      layout: { background: { color: 'transparent' }, textColor: '#8b949e' },
+      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      crosshair: { mode: 0 },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#30363d' },
+      rightPriceScale: { borderColor: '#30363d' },
+      handleScroll: false,
+      handleScale: false,
+    });
+    const series = chart.addAreaSeries({
+      topColor: 'rgba(38, 166, 154, 0.28)',
+      bottomColor: 'rgba(38, 166, 154, 0.02)',
+      lineColor: 'rgba(38, 166, 154, 1)',
+      lineWidth: 2,
+    });
+    charts[id] = chart;
+    chartSeries[id] = series;
+
+    // Resize observer
+    const ro = new ResizeObserver(() => {
+      chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    });
+    ro.observe(container);
+  }
+}
+
+function updateChart(id, data) {
+  const series = chartSeries[id];
+  if (!series || !data.points || !data.points.length) return;
+
+  const isDown = (data.change_pct || 0) < 0;
+  const lineColor = isDown ? 'rgba(239, 83, 80, 1)' : 'rgba(38, 166, 154, 1)';
+  const topColor = isDown ? 'rgba(239, 83, 80, 0.28)' : 'rgba(38, 166, 154, 0.28)';
+  const bottomColor = isDown ? 'rgba(239, 83, 80, 0.02)' : 'rgba(38, 166, 154, 0.02)';
+
+  series.applyOptions({ lineColor, topColor, bottomColor });
+  series.setData(data.points);
+
+  // Update overlay
+  const priceEl = document.getElementById('price-' + id);
+  const changeEl = document.getElementById('change-' + id);
+  if (priceEl && data.price !== undefined) {
+    priceEl.textContent = formatNumber(data.price);
+    priceEl.className = 'chart-price ' + (isDown ? 'negative' : 'positive');
+  }
+  if (changeEl && data.change !== undefined) {
+    const arrow = isDown ? '▼' : '▲';
+    changeEl.textContent = `${arrow} ${data.change > 0 ? '+' : ''}${data.change.toFixed(2)} (${data.change_pct > 0 ? '+' : ''}${data.change_pct.toFixed(2)}%)`;
+    changeEl.className = 'chart-change ' + (isDown ? 'negative' : 'positive');
+  }
+}
+
+// ============================================================
+// Numeric Tile Updates
+// ============================================================
+function updateNumericTile(tileId, data) {
+  const valueEl = document.getElementById('value-' + tileId);
+  const changeEl = document.getElementById('change-' + tileId);
+  if (!valueEl) return;
+
+  const price = data.price;
+  const change = data.change || 0;
+  const changePct = data.change_pct || 0;
+  const isDown = change < 0;
+  const cls = change === 0 ? 'neutral' : (isDown ? 'negative' : 'positive');
+
+  valueEl.textContent = formatNumber(price);
+  valueEl.className = 'tile-value';
+
+  if (changeEl) {
+    const arrow = isDown ? '▼' : (change > 0 ? '▲' : '');
+    changeEl.textContent = `${arrow} ${change > 0 ? '+' : ''}${change.toFixed(2)} (${changePct > 0 ? '+' : ''}${changePct.toFixed(2)}%)`;
+    changeEl.className = 'tile-change ' + cls;
+  }
+
+  // Draw sparkline if data available
+  if (data.sparkline && data.sparkline.length > 1) {
+    drawSparkline('spark-' + tileId, data.sparkline, isDown);
+  }
+
+  flashTile('tile-' + tileId);
+}
+
+// ============================================================
+// Sparkline Drawing (Canvas)
+// ============================================================
+function drawSparkline(canvasId, values, isDown) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const pad = 2;
+
+  // Gradient fill
+  const color = isDown ? '239, 83, 80' : '63, 185, 80';
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, `rgba(${color}, 0.25)`);
+  grad.addColorStop(1, `rgba(${color}, 0.02)`);
+
+  // Draw area
+  ctx.beginPath();
+  for (let i = 0; i < values.length; i++) {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (values[i] - min) / range) * (h - pad * 2);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  // Close for fill
+  const lastX = pad + (w - pad * 2);
+  ctx.lineTo(lastX, h);
+  ctx.lineTo(pad, h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Draw line
+  ctx.beginPath();
+  for (let i = 0; i < values.length; i++) {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (values[i] - min) / range) * (h - pad * 2);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = `rgba(${color}, 0.9)`;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Current price dot
+  const lastVal = values[values.length - 1];
+  const dotX = pad + (w - pad * 2);
+  const dotY = pad + (1 - (lastVal - min) / range) * (h - pad * 2);
+  ctx.beginPath();
+  ctx.arc(dotX, dotY, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(${color}, 1)`;
+  ctx.fill();
+}
+
+// ============================================================
+// Sector Heatmap
+// ============================================================
+function updateSectorHeatmap(data) {
+  const grid = document.getElementById('heatmap-sector');
+  if (!grid || !data.sectors) return;
+
+  grid.innerHTML = '';
+  for (const s of data.sectors) {
+    const pct = s.change_pct || 0;
+    const color = getHeatmapColor(pct);
+    const cell = document.createElement('div');
+    cell.className = 'heatmap-cell';
+    cell.style.background = color;
+    cell.style.color = Math.abs(pct) > 1.5 ? '#fff' : '#e6edf3';
+    cell.innerHTML = `<div class="heatmap-name">${s.name}</div><div class="heatmap-pct">${pct > 0 ? '+' : ''}${pct.toFixed(1)}%</div>`;
+    grid.appendChild(cell);
+  }
+}
+
+function getHeatmapColor(pct) {
+  if (pct > 2) return '#00d26a';
+  if (pct > 1) return '#26a69a';
+  if (pct > 0.3) return '#2e7d5b';
+  if (pct > -0.3) return '#484f58';
+  if (pct > -1) return '#8b3a3a';
+  if (pct > -2) return '#c0392b';
+  return '#f23645';
+}
+
+// ============================================================
+// Fear & Greed Gauge
+// ============================================================
+function updateFearGreed(data) {
+  const score = data.score || 50;
+  const rating = data.rating || 'neutral';
+
+  // Update arc (157 is full arc length for the semicircle)
+  const arcLen = (score / 100) * 157;
+  const arc = document.getElementById('gauge-arc');
+  if (arc) {
+    arc.setAttribute('stroke-dasharray', `${arcLen} 157`);
+    arc.setAttribute('stroke', getGaugeColor(score));
+  }
+
+  // Update needle position
+  const dot = document.getElementById('gauge-needle-dot');
+  if (dot) {
+    const angle = Math.PI - (score / 100) * Math.PI;
+    const cx = 60 + 50 * Math.cos(angle);
+    const cy = 65 - 50 * Math.sin(angle);
+    dot.setAttribute('cx', cx);
+    dot.setAttribute('cy', cy);
+    dot.setAttribute('fill', getGaugeColor(score));
+  }
+
+  const scoreEl = document.getElementById('gauge-score');
+  const labelEl = document.getElementById('gauge-label');
+  if (scoreEl) scoreEl.textContent = score;
+  if (labelEl) {
+    labelEl.textContent = rating.replace(/_/g, ' ');
+    labelEl.className = 'gauge-label ' + getGaugeClass(score);
+  }
+}
+
+function getGaugeColor(score) {
+  if (score <= 25) return '#f85149';
+  if (score <= 45) return '#d29922';
+  if (score <= 55) return '#e3b341';
+  if (score <= 75) return '#56d364';
+  return '#3fb950';
+}
+
+function getGaugeClass(score) {
+  if (score <= 25) return 'negative';
+  if (score <= 55) return 'neutral';
+  return 'positive';
+}
+
+// ============================================================
+// Region Tiles (Europe / Asia)
+// ============================================================
+function updateRegion(tileId, data) {
+  const container = document.getElementById('region-' + tileId);
+  if (!container || !data.indices) return;
+
+  container.innerHTML = '';
+  for (const [name, quote] of Object.entries(data.indices)) {
+    const pct = quote.change_pct || 0;
+    const cls = pct > 0 ? 'positive' : (pct < 0 ? 'negative' : 'neutral');
+    const arrow = pct > 0 ? '▲' : (pct < 0 ? '▼' : '');
+    const item = document.createElement('div');
+    item.className = 'region-item';
+    item.innerHTML = `
+      <span class="region-name">${name}</span>
+      <span class="region-price">${formatNumber(quote.price)}</span>
+      <span class="region-change ${cls}">${arrow} ${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</span>
+    `;
+    container.appendChild(item);
+  }
+
+  flashTile('tile-' + tileId);
+}
+
+// ============================================================
+// FX Tile
+// ============================================================
+function updateFX(data) {
+  const container = document.getElementById('fx-content');
+  if (!container || !data.pairs) return;
+
+  container.innerHTML = '';
+  const decimals = { 'EUR/USD': 4, 'USD/JPY': 2, 'USD/KRW': 2 };
+  for (const [pair, quote] of Object.entries(data.pairs)) {
+    const dec = decimals[pair] || 2;
+    const pct = quote.change_pct || 0;
+    const cls = pct > 0 ? 'positive' : (pct < 0 ? 'negative' : 'neutral');
+    const item = document.createElement('div');
+    item.className = 'fx-item';
+    item.innerHTML = `
+      <span class="fx-pair">${pair}</span>
+      <span class="fx-rate">${quote.price.toFixed(dec)}</span>
+      <span class="fx-change ${cls}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</span>
+    `;
+    container.appendChild(item);
+  }
+}
+
+// ============================================================
+// Top Movers
+// ============================================================
+function updateMovers(data) {
+  const gainersEl = document.getElementById('movers-gainers');
+  const losersEl = document.getElementById('movers-losers');
+  if (!gainersEl || !losersEl) return;
+
+  gainersEl.innerHTML = '';
+  losersEl.innerHTML = '';
+
+  if (data.gainers) {
+    for (const m of data.gainers) {
+      const item = document.createElement('div');
+      item.className = 'mover-item';
+      item.innerHTML = `<span class="mover-symbol">${m.symbol}</span><span class="positive">+${m.change_pct.toFixed(1)}%</span>`;
+      gainersEl.appendChild(item);
+    }
+  }
+  if (data.losers) {
+    for (const m of data.losers) {
+      const item = document.createElement('div');
+      item.className = 'mover-item';
+      item.innerHTML = `<span class="mover-symbol">${m.symbol}</span><span class="negative">${m.change_pct.toFixed(1)}%</span>`;
+      losersEl.appendChild(item);
+    }
+  }
+}
+
+// ============================================================
+// Market Breadth
+// ============================================================
+function updateBreadth(data) {
+  const total = data.total || 1;
+  const adv = data.advancing || 0;
+  const dec = data.declining || 0;
+  const advPct = (adv / total * 100).toFixed(0);
+  const decPct = (dec / total * 100).toFixed(0);
+
+  const advBar = document.getElementById('breadth-adv');
+  const decBar = document.getElementById('breadth-dec');
+  if (advBar) { advBar.style.width = advPct + '%'; advBar.textContent = adv; }
+  if (decBar) { decBar.style.width = decPct + '%'; decBar.textContent = dec; }
+
+  const advCount = document.getElementById('breadth-adv-count');
+  const decCount = document.getElementById('breadth-dec-count');
+  const ratioEl = document.getElementById('breadth-ratio');
+  if (advCount) advCount.textContent = `Adv: ${adv}`;
+  if (decCount) decCount.textContent = `Dec: ${dec}`;
+  if (ratioEl) ratioEl.textContent = `A/D: ${data.ratio || '--'}`;
+}
+
+// ============================================================
+// Dynamic News Tiles
+// ============================================================
+function updateDynamicTile(slotId, data) {
+  const tile = document.getElementById('tile-' + slotId);
+  const content = document.getElementById('news-' + slotId);
+  const spinner = document.getElementById('spinner-' + slotId);
+  if (!tile || !content) return;
+
+  const isBreaking = data.breaking || data.impact === 'high';
+  tile.className = 'tile' + (isBreaking ? ' breaking' : '');
+
+  const impactCls = {
+    high: 'impact-high', medium: 'impact-medium',
+    low: 'impact-low', unknown: 'impact-unknown'
+  }[data.impact || 'unknown'] || 'impact-unknown';
+
+  const timeAgo = getTimeAgo(data.published);
+  const langFlag = { EN: '🇺🇸', KR: '🇰🇷', JP: '🇯🇵', CN: '🇨🇳' }[data.language] || '🌐';
+
+  content.className = 'news-content fade-in';
+  content.innerHTML = `
+    <div class="news-title">${escapeHtml(data.title || 'No title')}</div>
+    <div class="news-meta">
+      <span class="news-source">${langFlag} ${data.source || 'Unknown'}</span>
+      <span>${timeAgo}</span>
+      <span class="news-impact ${impactCls}">${data.impact || '...'}</span>
+    </div>
+  `;
+
+  if (spinner) {
+    spinner.style.display = data.ai_ready ? 'none' : 'inline-block';
+  }
+}
+
+// ============================================================
+// WebSocket
+// ============================================================
+let ws = null;
+let reconnectDelay = 1000;
+const MAX_RECONNECT = 30000;
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  ws.onopen = () => {
+    reconnectDelay = 1000;
+    document.getElementById('ws-dot').className = 'ws-dot connected';
+    document.getElementById('ws-label').textContent = 'Connected';
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      handleMessage(msg);
+    } catch (err) {
+      console.error('WS parse error:', err);
+    }
+  };
+
+  ws.onclose = () => {
+    document.getElementById('ws-dot').className = 'ws-dot';
+    document.getElementById('ws-label').textContent = 'Disconnected';
+    setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT);
+      connectWS();
+    }, reconnectDelay);
+  };
+
+  ws.onerror = () => ws.close();
+
+  // Keep-alive ping every 30s
+  setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send('ping');
+    }
+  }, 30000);
+}
+
+function handleMessage(msg) {
+  if (msg.type !== 'tile_update') return;
+  const { tile_id, data } = msg;
+
+  // Chart tiles
+  if (tile_id.endsWith('_chart')) {
+    const chartId = tile_id.replace('_chart', '');
+    updateChart(chartId, data);
+    return;
+  }
+
+  // Numeric tiles
+  const numericTiles = ['vix', 'treasury', 'dxy', 'gold', 'oil', 'bitcoin'];
+  if (numericTiles.includes(tile_id)) {
+    updateNumericTile(tile_id, data);
+    return;
+  }
+
+  // Also update chart overlay prices for main indices
+  const chartOverlayMap = { sp500: true, nasdaq: true, dow: true };
+  if (chartOverlayMap[tile_id] && data.price) {
+    const priceEl = document.getElementById('price-' + tile_id);
+    const changeEl = document.getElementById('change-' + tile_id);
+    if (priceEl) priceEl.textContent = formatNumber(data.price);
+    if (changeEl) {
+      const isDown = (data.change_pct || 0) < 0;
+      const arrow = isDown ? '▼' : '▲';
+      changeEl.textContent = `${arrow} ${data.change > 0 ? '+' : ''}${data.change.toFixed(2)} (${data.change_pct > 0 ? '+' : ''}${data.change_pct.toFixed(2)}%)`;
+      changeEl.className = 'chart-change ' + (isDown ? 'negative' : 'positive');
+    }
+  }
+
+  // Sector heatmap
+  if (tile_id === 'sector') { updateSectorHeatmap(data); return; }
+
+  // Top Movers
+  if (tile_id === 'movers') { updateMovers(data); return; }
+
+  // Fear & Greed
+  if (tile_id === 'feargreed') { updateFearGreed(data); return; }
+
+  // Regions
+  if (tile_id === 'europe') { updateRegion('europe', data); return; }
+  if (tile_id === 'asia') { updateRegion('asia', data); return; }
+
+  // FX
+  if (tile_id === 'fx') { updateFX(data); return; }
+
+  // Market Breadth
+  if (tile_id === 'breadth') { updateBreadth(data); return; }
+
+  // Dynamic news tiles
+  if (tile_id.startsWith('dynamic_')) {
+    updateDynamicTile(tile_id, data);
+    return;
+  }
+}
+
+// ============================================================
+// Clock & Market Status
+// ============================================================
+function updateClocks() {
+  const now = new Date();
+  const fmt = (tz) => now.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+  document.getElementById('clock-kst').textContent = fmt('Asia/Seoul');
+  document.getElementById('clock-est').textContent = fmt('America/New_York');
+  document.getElementById('clock-cet').textContent = fmt('Europe/Berlin');
+  document.getElementById('clock-jst').textContent = fmt('Asia/Tokyo');
+
+  // Market status
+  updateMarketBadge('us', 'America/New_York', 9, 30, 16, 0);
+  updateMarketBadge('eu', 'Europe/Berlin', 8, 0, 16, 30);
+  updateMarketBadge('jp', 'Asia/Tokyo', 9, 0, 15, 0);
+  updateMarketBadge('kr', 'Asia/Seoul', 9, 0, 15, 30);
+  updateMarketBadge('cn', 'Asia/Shanghai', 9, 30, 15, 0);
+
+  // Update EU/Asia badges
+  updateRegionBadge('badge-eu', 'Europe/Berlin', 8, 0, 16, 30);
+  updateRegionBadge('badge-asia', 'Asia/Tokyo', 9, 0, 15, 0);
+}
+
+function updateMarketBadge(id, tz, oh, om, ch, cm) {
+  const dot = document.getElementById('mkt-' + id);
+  if (!dot) return;
+  const open = isMarketOpen(tz, oh, om, ch, cm);
+  dot.className = 'badge-dot ' + (open ? 'open' : 'closed');
+}
+
+function updateRegionBadge(id, tz, oh, om, ch, cm) {
+  const badge = document.getElementById(id);
+  if (!badge) return;
+  const open = isMarketOpen(tz, oh, om, ch, cm);
+  badge.className = 'tile-badge ' + (open ? 'badge-live' : 'badge-closed');
+  badge.textContent = open ? 'LIVE' : 'CLOSED';
+}
+
+function isMarketOpen(tz, oh, om, ch, cm) {
+  const now = new Date();
+  const tzNow = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+  const day = tzNow.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = tzNow.getHours() * 60 + tzNow.getMinutes();
+  return mins >= oh * 60 + om && mins <= ch * 60 + cm;
+}
+
+// ============================================================
+// Utilities
+// ============================================================
+function formatNumber(n) {
+  if (n === undefined || n === null) return '--';
+  if (n >= 10000) return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (n >= 100) return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return n.toFixed(2);
+}
+
+function flashTile(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function getTimeAgo(ts) {
+  if (!ts) return '';
+  const secs = Math.floor(Date.now() / 1000 - ts);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+// ============================================================
+// Init
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+  initCharts();
+  connectWS();
+  updateClocks();
+  setInterval(updateClocks, 1000);
+});
+</script>
+</body>
+</html>
