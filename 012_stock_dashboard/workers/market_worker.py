@@ -10,26 +10,30 @@ from config import (
     TIER1_TICKERS, TIER2_TICKERS, EU_TICKERS, ASIA_TICKERS,
     TIER1_INTERVAL, TIER2_INTERVAL, OFF_HOURS_INTERVAL,
     TICKER_TO_TILE, TOP_MOVERS_TICKERS,
-    YIELD_TICKERS, CRYPTO_TICKERS, COMMODITY_TICKERS,
+    YIELD_TICKERS, COMMODITY_TICKERS,
+    WATCHLIST_FIXED_TICKERS, WATCHLIST_DYNAMIC_COUNT,
+    WATCHLIST_DYNAMIC_REFRESH,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class MarketWorker(BaseWorker):
-    def __init__(self, data_store):
+    def __init__(self, data_store, adapter=None):
         super().__init__(data_store, TIER1_INTERVAL)
-        self.adapter = YFinanceAdapter()
+        self.adapter = adapter or YFinanceAdapter()
         self._tasks: list[asyncio.Task] = []
+        self._movers_quotes: dict = {}  # shared with watchlist for dynamic picks
 
     async def run(self):
-        """Start tier1, tier2, global, movers, and extra tiles loops."""
+        """Start tier1, tier2, global, movers, extra tiles, and watchlist loops."""
         self._tasks = [
             asyncio.create_task(self._tier1_loop()),
             asyncio.create_task(self._tier2_loop()),
             asyncio.create_task(self._global_loop()),
             asyncio.create_task(self._movers_loop()),
             asyncio.create_task(self._extra_tiles_loop()),
+            asyncio.create_task(self._watchlist_loop()),
         ]
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
@@ -148,6 +152,7 @@ class MarketWorker(BaseWorker):
         while self._running:
             try:
                 quotes = await self.adapter.fetch_quotes(TOP_MOVERS_TICKERS, ttl=100)
+                self._movers_quotes = quotes  # share with watchlist
                 if quotes:
                     sorted_by_change = sorted(
                         [(t, d) for t, d in quotes.items() if "change_pct" in d],
@@ -165,10 +170,9 @@ class MarketWorker(BaseWorker):
             await asyncio.sleep(120)
 
     async def _extra_tiles_loop(self):
-        """60s: Yield Curve, Crypto (ETH/SOL/XRP), Commodities (Silver/Copper/NatGas)."""
+        """60s: Yield Curve, Commodities (Silver/Copper/NatGas)."""
         await asyncio.sleep(8)  # stagger start
         yield_names = {"^IRX": "3M", "^FVX": "5Y", "^TNX": "10Y", "^TYX": "30Y"}
-        crypto_names = {"ETH-USD": "Ethereum", "SOL-USD": "Solana", "XRP-USD": "XRP"}
         commodity_names = {"SI=F": "Silver", "HG=F": "Copper", "NG=F": "Nat Gas"}
 
         while self._running:
@@ -179,8 +183,6 @@ class MarketWorker(BaseWorker):
                 for ticker in YIELD_TICKERS:
                     if ticker in yld_quotes:
                         yields[yield_names[ticker]] = yld_quotes[ticker]
-                # Treasury yields from yfinance are price*10 for ^TNX etc
-                # Calculate spread: 10Y - 3M
                 spread = None
                 inverted = False
                 tnx = yld_quotes.get("^TNX", {}).get("price")
@@ -196,15 +198,6 @@ class MarketWorker(BaseWorker):
                         "inverted": inverted,
                     })
 
-                # --- Crypto ---
-                crypto_quotes = await self.adapter.fetch_quotes(CRYPTO_TICKERS, ttl=50)
-                crypto_data = {}
-                for ticker in CRYPTO_TICKERS:
-                    if ticker in crypto_quotes:
-                        crypto_data[crypto_names[ticker]] = crypto_quotes[ticker]
-                if crypto_data:
-                    await self.data_store.update("crypto", {"coins": crypto_data})
-
                 # --- Commodities ---
                 cmd_quotes = await self.adapter.fetch_quotes(COMMODITY_TICKERS, ttl=50)
                 cmd_data = {}
@@ -217,6 +210,55 @@ class MarketWorker(BaseWorker):
             except Exception as e:
                 logger.error(f"Extra tiles loop error: {e}")
             await asyncio.sleep(TIER2_INTERVAL if is_us_market_hours() else OFF_HOURS_INTERVAL)
+
+    async def _watchlist_loop(self):
+        """60s: Fixed watchlist (O, SCHD, QQQ, GOOGL, SPY) + 3 dynamic biggest movers."""
+        await asyncio.sleep(20)  # stagger after movers loop (15s)
+        import time as _time
+        dynamic_tickers: list[str] = []
+        last_dynamic_refresh = 0.0
+
+        while self._running:
+            try:
+                now = _time.time()
+                # Re-evaluate dynamic picks every WATCHLIST_DYNAMIC_REFRESH seconds
+                if now - last_dynamic_refresh >= WATCHLIST_DYNAMIC_REFRESH:
+                    dynamic_tickers = self._pick_dynamic_movers()
+                    last_dynamic_refresh = now
+                    if dynamic_tickers:
+                        logger.info(f"Watchlist dynamic picks: {dynamic_tickers}")
+
+                all_tickers = WATCHLIST_FIXED_TICKERS + dynamic_tickers
+                quotes = await self.adapter.fetch_quotes(all_tickers, ttl=50)
+
+                items = []
+                for ticker in all_tickers:
+                    if ticker in quotes:
+                        items.append({
+                            "symbol": ticker,
+                            "dynamic": ticker in dynamic_tickers,
+                            **quotes[ticker],
+                        })
+
+                if items:
+                    await self.data_store.update("watchlist", {"items": items})
+
+            except Exception as e:
+                logger.error(f"Watchlist loop error: {e}")
+            await asyncio.sleep(TIER2_INTERVAL if is_us_market_hours() else OFF_HOURS_INTERVAL)
+
+    def _pick_dynamic_movers(self) -> list[str]:
+        """Pick top N stocks by abs(change_pct) from movers data (no extra API call)."""
+        if not self._movers_quotes:
+            return []
+        exclude = set(WATCHLIST_FIXED_TICKERS)
+        candidates = [
+            (t, abs(d.get("change_pct", 0)))
+            for t, d in self._movers_quotes.items()
+            if t not in exclude and "change_pct" in d
+        ]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return [t for t, _ in candidates[:WATCHLIST_DYNAMIC_COUNT]]
 
     def stop(self):
         self._running = False

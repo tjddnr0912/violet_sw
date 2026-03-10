@@ -10,9 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 class SectorWorker(BaseWorker):
-    def __init__(self, data_store):
+    def __init__(self, data_store, adapter=None):
         super().__init__(data_store, TIER3_INTERVAL)
-        self.adapter = YFinanceAdapter()
+        self.adapter = adapter or YFinanceAdapter()
 
     async def tick(self):
         tickers = list(SECTOR_ETFS.keys())

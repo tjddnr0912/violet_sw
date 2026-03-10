@@ -384,8 +384,8 @@ body {
 }
 
 .news-compact-title {
-  font-size: 10px;
-  line-height: 1.3;
+  font-size: 12px;
+  line-height: 1.4;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -397,7 +397,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 8px;
+  font-size: 10px;
   color: #8b949e;
   margin-top: 2px;
 }
@@ -416,6 +416,43 @@ body {
 .impact-medium { background: rgba(210, 153, 34, 0.2); color: #d29922; }
 .impact-low { background: rgba(139, 148, 158, 0.15); color: #8b949e; }
 .impact-unknown { background: rgba(139, 148, 158, 0.1); color: #6e7681; }
+
+/* Watchlist Tile */
+.watchlist-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  overflow: hidden;
+}
+
+.watchlist-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+  font-size: 11px;
+}
+
+.watchlist-symbol {
+  font-weight: 700;
+  min-width: 42px;
+}
+
+.watchlist-symbol.dynamic { color: #d2a8ff; }
+
+.watchlist-price {
+  font-weight: 600;
+  text-align: right;
+  min-width: 50px;
+}
+
+.watchlist-change {
+  font-weight: 600;
+  text-align: right;
+  min-width: 48px;
+  font-size: 10px;
+}
 
 /* Yield Curve Tile */
 .yield-content {
@@ -468,6 +505,84 @@ body {
   color: #8b949e;
   margin-top: 2px;
   flex-shrink: 0;
+}
+
+/* Ticker Tape Alert Strip */
+.ticker-tape {
+  height: 28px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #30363d;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.ticker-tape-content {
+  display: flex;
+  gap: 40px;
+  white-space: nowrap;
+  animation: tickerScroll 20s linear infinite;
+  padding-left: 100%;
+}
+
+@keyframes tickerScroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+
+.ticker-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ticker-alert .alert-icon { font-size: 10px; }
+
+.ticker-alert.surge { color: #3fb950; }
+.ticker-alert.drop { color: #f85149; }
+
+.ticker-alert.critical {
+  text-shadow: 0 0 6px currentColor;
+}
+
+.ticker-alert .alert-market {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(139, 148, 158, 0.2);
+  color: #8b949e;
+}
+
+body.has-alerts .grid-container {
+  height: calc(100vh - 64px);
+}
+
+/* Movers alert badge */
+.mover-alert-badge {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-weight: 700;
+  margin-left: 4px;
+  animation: badgePulse 2s ease-in-out infinite;
+}
+
+.mover-alert-badge.surge {
+  background: rgba(63, 185, 80, 0.2);
+  color: #3fb950;
+}
+
+.mover-alert-badge.drop {
+  background: rgba(248, 81, 73, 0.2);
+  color: #f85149;
+}
+
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 @keyframes spin {
@@ -530,6 +645,11 @@ body {
     <div class="ws-dot" id="ws-dot"></div>
     <span id="ws-label">Disconnected</span>
   </div>
+</div>
+
+<!-- Ticker Tape Alert Strip -->
+<div class="ticker-tape" id="ticker-tape" style="display:none">
+  <div class="ticker-tape-content" id="ticker-tape-content"></div>
 </div>
 
 <!-- Grid -->
@@ -650,9 +770,9 @@ body {
       <div class="yield-rates" id="yield-rates"></div>
     </div>
   </div>
-  <div class="tile" id="tile-crypto" data-grid="4/4/5/5">
-    <div class="tile-header"><span class="tile-name">Crypto</span></div>
-    <div class="region-list" id="region-crypto"></div>
+  <div class="tile" id="tile-watchlist" data-grid="4/4/5/5">
+    <div class="tile-header"><span class="tile-name">Watchlist</span></div>
+    <div class="watchlist-list" id="watchlist-content"></div>
   </div>
   <div class="tile" id="tile-commodities" data-grid="4/5/5/6">
     <div class="tile-header"><span class="tile-name">Commodities</span></div>
@@ -981,7 +1101,8 @@ function updateMovers(data) {
     for (const m of data.gainers) {
       const item = document.createElement('div');
       item.className = 'mover-item';
-      item.innerHTML = `<span class="mover-symbol">${m.symbol}</span><span class="positive">+${m.change_pct.toFixed(1)}%</span>`;
+      const badge = _getAlertBadge(m.symbol);
+      item.innerHTML = `<span class="mover-symbol">${m.symbol}${badge}</span><span class="positive">+${m.change_pct.toFixed(1)}%</span>`;
       gainersEl.appendChild(item);
     }
   }
@@ -989,10 +1110,19 @@ function updateMovers(data) {
     for (const m of data.losers) {
       const item = document.createElement('div');
       item.className = 'mover-item';
-      item.innerHTML = `<span class="mover-symbol">${m.symbol}</span><span class="negative">${m.change_pct.toFixed(1)}%</span>`;
+      const badge = _getAlertBadge(m.symbol);
+      item.innerHTML = `<span class="mover-symbol">${m.symbol}${badge}</span><span class="negative">${m.change_pct.toFixed(1)}%</span>`;
       losersEl.appendChild(item);
     }
   }
+}
+
+function _getAlertBadge(symbol) {
+  const alert = _currentAlerts[symbol];
+  if (!alert) return '';
+  const cls = alert.type === 'SURGE' ? 'surge' : 'drop';
+  const sign = alert.change_1h_pct > 0 ? '+' : '';
+  return `<span class="mover-alert-badge ${cls}">${sign}${alert.change_1h_pct.toFixed(0)}%/1h</span>`;
 }
 
 // ============================================================
@@ -1164,27 +1294,28 @@ function drawYieldCurveCanvas(canvas, values, labels, inverted) {
 }
 
 // ============================================================
-// Crypto & Commodities (reuse region-list pattern)
+// Watchlist & Commodities
 // ============================================================
-function updateCrypto(data) {
-  const container = document.getElementById('region-crypto');
-  if (!container || !data.coins) return;
+function updateWatchlist(data) {
+  const container = document.getElementById('watchlist-content');
+  if (!container || !data.items) return;
 
   container.innerHTML = '';
-  for (const [name, quote] of Object.entries(data.coins)) {
-    const pct = quote.change_pct || 0;
+  for (const item of data.items) {
+    const pct = item.change_pct || 0;
     const cls = pct > 0 ? 'positive' : (pct < 0 ? 'negative' : 'neutral');
     const arrow = pct > 0 ? '▲' : (pct < 0 ? '▼' : '');
-    const item = document.createElement('div');
-    item.className = 'region-item';
-    item.innerHTML = `
-      <span class="region-name">${name}</span>
-      <span class="region-price">${formatNumber(quote.price)}</span>
-      <span class="region-change ${cls}">${arrow} ${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</span>
+    const symCls = item.dynamic ? 'watchlist-symbol dynamic' : 'watchlist-symbol';
+    const el = document.createElement('div');
+    el.className = 'watchlist-item';
+    el.innerHTML = `
+      <span class="${symCls}">${item.symbol}</span>
+      <span class="watchlist-price">${formatNumber(item.price)}</span>
+      <span class="watchlist-change ${cls}">${arrow}${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</span>
     `;
-    container.appendChild(item);
+    container.appendChild(el);
   }
-  flashTile('tile-crypto');
+  flashTile('tile-watchlist');
 }
 
 function updateCommodities(data) {
@@ -1206,6 +1337,55 @@ function updateCommodities(data) {
     container.appendChild(item);
   }
   flashTile('tile-commodities');
+}
+
+// ============================================================
+// Alerts (Ticker Tape + Movers Badge)
+// ============================================================
+let _currentAlerts = {};  // ticker -> alert object
+
+function updateAlerts(data) {
+  const alerts = data.alerts || [];
+  const tape = document.getElementById('ticker-tape');
+  const content = document.getElementById('ticker-tape-content');
+
+  // Update global alerts map
+  _currentAlerts = {};
+  for (const a of alerts) {
+    _currentAlerts[a.ticker] = a;
+  }
+
+  if (alerts.length === 0) {
+    tape.style.display = 'none';
+    document.body.classList.remove('has-alerts');
+    return;
+  }
+
+  tape.style.display = 'flex';
+  document.body.classList.add('has-alerts');
+
+  // Build ticker tape content (duplicate for seamless scroll)
+  const items = alerts.map(a => {
+    const cls = a.type === 'SURGE' ? 'surge' : 'drop';
+    const sevCls = a.severity === 'critical' ? ' critical' : '';
+    const icon = a.type === 'SURGE' ? '▲' : '▼';
+    const sign = a.change_1h_pct > 0 ? '+' : '';
+    const flag = a.market === 'KR' ? '🇰🇷' : '🇺🇸';
+    return `<span class="ticker-alert ${cls}${sevCls}">` +
+      `<span class="alert-icon">${icon}</span>` +
+      `<span class="alert-market">${flag} ${a.market}</span>` +
+      `<strong>${a.name}</strong>` +
+      `<span>${sign}${a.change_1h_pct.toFixed(1)}%/1h</span>` +
+      `<span style="opacity:0.7">$${formatNumber(a.price)}</span>` +
+      `</span>`;
+  }).join('');
+
+  // Duplicate for seamless loop
+  content.innerHTML = items + items;
+
+  // Adjust scroll speed based on alert count
+  const duration = Math.max(10, alerts.length * 5);
+  content.style.animationDuration = duration + 's';
 }
 
 // ============================================================
@@ -1307,14 +1487,17 @@ function handleMessage(msg) {
   // Yield Curve
   if (tile_id === 'yieldcurve') { updateYieldCurve(data); return; }
 
-  // Crypto
-  if (tile_id === 'crypto') { updateCrypto(data); return; }
+  // Watchlist
+  if (tile_id === 'watchlist') { updateWatchlist(data); return; }
 
   // Commodities
   if (tile_id === 'commodities') { updateCommodities(data); return; }
 
   // News compact (2x2)
   if (tile_id === 'news_compact') { updateNewsCompact(data); return; }
+
+  // Alerts (Ticker Tape)
+  if (tile_id === 'alerts') { updateAlerts(data); return; }
 }
 
 // ============================================================
