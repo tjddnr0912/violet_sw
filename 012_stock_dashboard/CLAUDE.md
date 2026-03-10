@@ -29,7 +29,8 @@ source venv/bin/activate
 │   ├── market_worker.py      # 지수/원자재/환율/스파크라인 (yfinance)
 │   ├── news_worker.py        # RSS + Finnhub 수집 → AI 요약 (2단계)
 │   ├── sentiment_worker.py   # Fear & Greed, Market Breadth
-│   └── sector_worker.py      # S&P 500 섹터 히트맵
+│   ├── sector_worker.py      # S&P 500 섹터 히트맵
+│   └── alert_worker.py       # 급등/급락 감지 (US+KR, 1h ±3%)
 ├── data_sources/
 │   ├── yfinance_adapter.py   # yfinance 비동기 래퍼 + 캐싱
 │   ├── rss_adapter.py        # 다국어 RSS 파서 (EN/KR/JP/CN)
@@ -51,17 +52,21 @@ source venv/bin/activate
 | 1   | S&P 500 (2col) | | NASDAQ (2col) | | Dow Jones (2col) | |
 | 2   | VIX | 10Y Yield | DXY | Gold | WTI Oil | Bitcoin |
 | 3   | Sectors (2col) | | Top Movers | Fear & Greed | Europe | Asia |
-| 4   | FX Rates | Mkt Breadth | Yield Curve | Crypto | Commodities | News Feed |
+| 4   | FX Rates | Mkt Breadth | Yield Curve | Watchlist | Commodities | News Feed |
 
 ## 핵심 아키텍처
 
 - **데이터 흐름**: Workers → DataStore → WebSocket → Browser
-- **업데이트 주기**: T1(30s) 주요지수, T2(60s) VIX/환율/Yield/Crypto/Commodities, T3(120s) 섹터, T4(600s) 뉴스, T5(600s) 센티먼트
+- **공유 어댑터**: 모든 Worker가 단일 YFinanceAdapter 인스턴스 공유 (SQLite 캐시 충돌 방지)
+- **업데이트 주기**: T1(30s) 주요지수, T2(60s) VIX/환율/Yield/Watchlist/Commodities, T3(120s) 섹터, T4(600s) 뉴스, T5(600s) 센티먼트
 - **뉴스 2단계**: Phase A = 원문 즉시 표시 → Phase B = Gemini AI 한국어 번역 비동기 교체
 - **뉴스 Compact**: 4개 뉴스를 1타일 2x2 그리드에 통합 표시 (FIFO 로테이션)
 - **Gemini 절약**: 한국어(KR) 기사는 Gemini 스킵 (원문 유지), EN/JP/CN만 번역 호출
 - **yfinance**: v1.2.0+ MultiIndex `("Close", ticker)` 형식. 크립토/주식 별도 fetch 필요. 개별 티커 fallback + LKG 캐시
 - **차트**: TradingView Lightweight Charts v4 (Row 1), Canvas 스파크라인 (Row 2), Canvas Yield Curve (Row 4)
+- **Alert 스캔**: 120s 주기, Phase1 일간 |±2%| 필터 → Phase2 후보만 인트라데이 5m 캔들 → |1h ±3%| 감지 → Ticker Tape + Movers 배지
+- **Alert 대상**: US S&P 500 (45종목) + KR KOSPI 대형주 (15종목), 장 개장 시간에만 스캔
+- **Watchlist**: 고정 5종목 (O, SCHD, QQQ, GOOGL, SPY) + 동적 3종목 (일간 변동률 상위, 5분 로테이션)
 
 ## 주의사항
 

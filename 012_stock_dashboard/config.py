@@ -39,7 +39,10 @@ SECTOR_ETFS = {
 
 # --- New Row 4 Tiles ---
 YIELD_TICKERS = ["^IRX", "^FVX", "^TNX", "^TYX"]  # 3M, 5Y, 10Y, 30Y
-CRYPTO_TICKERS = ["ETH-USD", "SOL-USD", "XRP-USD"]
+# --- Watchlist (replaced Crypto tile) ---
+WATCHLIST_FIXED_TICKERS = ["O", "SCHD", "QQQ", "GOOGL", "SPY"]
+WATCHLIST_DYNAMIC_COUNT = 3          # rotating high-volume slots
+WATCHLIST_DYNAMIC_REFRESH = 300      # re-evaluate dynamic picks every 5min
 COMMODITY_TICKERS = ["SI=F", "HG=F", "NG=F"]  # Silver, Copper, NatGas
 
 # --- Tile Definitions ---
@@ -69,7 +72,7 @@ TILES = {
     "fx":           {"name": "FX Rates",      "type": "fx",           "grid": "4/1/5/2"},
     "breadth":      {"name": "Mkt Breadth",   "type": "breadth",      "grid": "4/2/5/3"},
     "yieldcurve":   {"name": "Yield Curve",   "type": "yieldcurve",   "grid": "4/3/5/4"},
-    "crypto":       {"name": "Crypto",        "type": "crypto",       "grid": "4/4/5/5"},
+    "watchlist":     {"name": "Watchlist",      "type": "watchlist",    "grid": "4/4/5/5"},
     "commodities":  {"name": "Commodities",   "type": "commodities",  "grid": "4/5/5/6"},
     "news_compact": {"name": "News Feed",     "type": "news_compact", "grid": "4/6/5/7"},
 }
@@ -126,3 +129,25 @@ TOP_MOVERS_TICKERS = [
     "CSCO", "ACN", "ABT", "DHR", "NEE", "NKE", "ORCL", "CRM", "AMD",
     "INTC", "QCOM", "TXN", "NFLX", "ADBE", "BA", "GS", "CAT", "DIS",
 ]
+
+# --- Korean KOSPI Large-cap Tickers for Alert Scanning ---
+KR_ALERT_TICKERS = [
+    "005930.KS", "000660.KS", "373220.KS", "207940.KS", "005380.KS",
+    "006400.KS", "035420.KS", "000270.KS", "068270.KS", "035720.KS",
+    "105560.KS", "055550.KS", "003670.KS", "012330.KS", "051910.KS",
+]
+
+KR_TICKER_NAMES = {
+    "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", "373220.KS": "LG에너지솔루션",
+    "207940.KS": "삼성바이오", "005380.KS": "현대차", "006400.KS": "삼성SDI",
+    "035420.KS": "NAVER", "000270.KS": "기아", "068270.KS": "셀트리온",
+    "035720.KS": "카카오", "105560.KS": "KB금융", "055550.KS": "신한지주",
+    "003670.KS": "POSCO", "012330.KS": "현대모비스", "051910.KS": "LG화학",
+}
+
+# --- Alert Thresholds ---
+ALERT_DAILY_PREFILTER_PCT = 2.0   # Phase 1: daily change filter
+ALERT_1H_SURGE_PCT = 3.0          # Phase 2: 1-hour surge/drop threshold
+ALERT_COOLDOWN_SECONDS = 900      # 15min cooldown per ticker
+ALERT_MAX_ACTIVE = 10             # Max active alerts
+ALERT_SCAN_INTERVAL = 120         # Scan interval (seconds)

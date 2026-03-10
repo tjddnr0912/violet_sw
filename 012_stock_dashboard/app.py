@@ -12,10 +12,12 @@ from starlette.requests import Request
 
 from config import DASHBOARD_PORT
 from tiles.tile_manager import DataStore
+from data_sources.yfinance_adapter import YFinanceAdapter
 from workers.market_worker import MarketWorker
 from workers.sector_worker import SectorWorker
 from workers.sentiment_worker import SentimentWorker
 from workers.news_worker import NewsWorker
+from workers.alert_worker import AlertWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,11 +37,13 @@ async def lifespan(app: FastAPI):
     global workers, worker_tasks
     logger.info("Starting dashboard workers...")
 
+    shared_adapter = YFinanceAdapter()
     workers = [
-        MarketWorker(data_store),
-        SectorWorker(data_store),
-        SentimentWorker(data_store),
+        MarketWorker(data_store, adapter=shared_adapter),
+        SectorWorker(data_store, adapter=shared_adapter),
+        SentimentWorker(data_store, adapter=shared_adapter),
         NewsWorker(data_store),
+        AlertWorker(data_store, adapter=shared_adapter),
     ]
 
     for w in workers:
