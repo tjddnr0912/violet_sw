@@ -37,6 +37,11 @@ SECTOR_ETFS = {
     "XLC": "Comm Svcs", "XLU": "Utilities",
 }
 
+# --- New Row 4 Tiles ---
+YIELD_TICKERS = ["^IRX", "^FVX", "^TNX", "^TYX"]  # 3M, 5Y, 10Y, 30Y
+CRYPTO_TICKERS = ["ETH-USD", "SOL-USD", "XRP-USD"]
+COMMODITY_TICKERS = ["SI=F", "HG=F", "NG=F"]  # Silver, Copper, NatGas
+
 # --- Tile Definitions ---
 # grid format: "row_start / col_start / row_end / col_end"
 TILES = {
@@ -60,13 +65,13 @@ TILES = {
     "europe":    {"name": "Europe",        "type": "region",   "grid": "3/5/4/6"},
     "asia":      {"name": "Asia",          "type": "region",   "grid": "3/6/4/7"},
 
-    # Row 4: FX + Dynamic
-    "fx":        {"name": "FX Rates",      "type": "fx",       "grid": "4/1/5/2"},
-    "breadth":   {"name": "Mkt Breadth",   "type": "breadth",  "grid": "4/2/5/3"},
-    "dynamic_1": {"name": "News",          "type": "dynamic",  "grid": "4/3/5/4"},
-    "dynamic_2": {"name": "News",          "type": "dynamic",  "grid": "4/4/5/5"},
-    "dynamic_3": {"name": "News",          "type": "dynamic",  "grid": "4/5/5/6"},
-    "dynamic_4": {"name": "News",          "type": "dynamic",  "grid": "4/6/5/7"},
+    # Row 4: FX + Breadth + YieldCurve + Crypto + Commodities + News
+    "fx":           {"name": "FX Rates",      "type": "fx",           "grid": "4/1/5/2"},
+    "breadth":      {"name": "Mkt Breadth",   "type": "breadth",      "grid": "4/2/5/3"},
+    "yieldcurve":   {"name": "Yield Curve",   "type": "yieldcurve",   "grid": "4/3/5/4"},
+    "crypto":       {"name": "Crypto",        "type": "crypto",       "grid": "4/4/5/5"},
+    "commodities":  {"name": "Commodities",   "type": "commodities",  "grid": "4/5/5/6"},
+    "news_compact": {"name": "News Feed",     "type": "news_compact", "grid": "4/6/5/7"},
 }
 
 # --- Ticker to Tile ID mapping ---

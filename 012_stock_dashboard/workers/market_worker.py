@@ -10,6 +10,7 @@ from config import (
     TIER1_TICKERS, TIER2_TICKERS, EU_TICKERS, ASIA_TICKERS,
     TIER1_INTERVAL, TIER2_INTERVAL, OFF_HOURS_INTERVAL,
     TICKER_TO_TILE, TOP_MOVERS_TICKERS,
+    YIELD_TICKERS, CRYPTO_TICKERS, COMMODITY_TICKERS,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,12 +23,13 @@ class MarketWorker(BaseWorker):
         self._tasks: list[asyncio.Task] = []
 
     async def run(self):
-        """Start tier1, tier2, and global loops as separate tasks."""
+        """Start tier1, tier2, global, movers, and extra tiles loops."""
         self._tasks = [
             asyncio.create_task(self._tier1_loop()),
             asyncio.create_task(self._tier2_loop()),
             asyncio.create_task(self._global_loop()),
             asyncio.create_task(self._movers_loop()),
+            asyncio.create_task(self._extra_tiles_loop()),
         ]
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
@@ -161,6 +163,60 @@ class MarketWorker(BaseWorker):
             except Exception as e:
                 logger.error(f"Movers loop error: {e}")
             await asyncio.sleep(120)
+
+    async def _extra_tiles_loop(self):
+        """60s: Yield Curve, Crypto (ETH/SOL/XRP), Commodities (Silver/Copper/NatGas)."""
+        await asyncio.sleep(8)  # stagger start
+        yield_names = {"^IRX": "3M", "^FVX": "5Y", "^TNX": "10Y", "^TYX": "30Y"}
+        crypto_names = {"ETH-USD": "Ethereum", "SOL-USD": "Solana", "XRP-USD": "XRP"}
+        commodity_names = {"SI=F": "Silver", "HG=F": "Copper", "NG=F": "Nat Gas"}
+
+        while self._running:
+            try:
+                # --- Yield Curve ---
+                yld_quotes = await self.adapter.fetch_quotes(YIELD_TICKERS, ttl=50)
+                yields = {}
+                for ticker in YIELD_TICKERS:
+                    if ticker in yld_quotes:
+                        yields[yield_names[ticker]] = yld_quotes[ticker]
+                # Treasury yields from yfinance are price*10 for ^TNX etc
+                # Calculate spread: 10Y - 3M
+                spread = None
+                inverted = False
+                tnx = yld_quotes.get("^TNX", {}).get("price")
+                irx = yld_quotes.get("^IRX", {}).get("price")
+                if tnx is not None and irx is not None:
+                    spread = round(tnx - irx, 2)
+                    inverted = spread < 0
+
+                if yields:
+                    await self.data_store.update("yieldcurve", {
+                        "yields": yields,
+                        "spread_10y3m": spread,
+                        "inverted": inverted,
+                    })
+
+                # --- Crypto ---
+                crypto_quotes = await self.adapter.fetch_quotes(CRYPTO_TICKERS, ttl=50)
+                crypto_data = {}
+                for ticker in CRYPTO_TICKERS:
+                    if ticker in crypto_quotes:
+                        crypto_data[crypto_names[ticker]] = crypto_quotes[ticker]
+                if crypto_data:
+                    await self.data_store.update("crypto", {"coins": crypto_data})
+
+                # --- Commodities ---
+                cmd_quotes = await self.adapter.fetch_quotes(COMMODITY_TICKERS, ttl=50)
+                cmd_data = {}
+                for ticker in COMMODITY_TICKERS:
+                    if ticker in cmd_quotes:
+                        cmd_data[commodity_names[ticker]] = cmd_quotes[ticker]
+                if cmd_data:
+                    await self.data_store.update("commodities", {"items": cmd_data})
+
+            except Exception as e:
+                logger.error(f"Extra tiles loop error: {e}")
+            await asyncio.sleep(TIER2_INTERVAL if is_us_market_hours() else OFF_HOURS_INTERVAL)
 
     def stop(self):
         self._running = False
