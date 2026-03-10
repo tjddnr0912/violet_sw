@@ -16,6 +16,7 @@ class SectorWorker(BaseWorker):
 
     async def tick(self):
         tickers = list(SECTOR_ETFS.keys())
+        expected = len(tickers)
         quotes = await self.adapter.fetch_quotes(tickers, ttl=100)
 
         sectors = []
@@ -27,6 +28,10 @@ class SectorWorker(BaseWorker):
                     "change_pct": quotes[ticker].get("change_pct", 0),
                     "price": quotes[ticker].get("price", 0),
                 })
+
+        if len(sectors) < expected:
+            missing = [t for t in tickers if t not in quotes]
+            logger.warning(f"Sector data incomplete: {len(sectors)}/{expected} sectors. Missing: {missing}")
 
         if sectors:
             await self.data_store.update("sector", {"sectors": sectors})

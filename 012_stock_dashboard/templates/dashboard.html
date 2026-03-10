@@ -357,40 +357,57 @@ body {
   font-size: 11px;
 }
 
-/* Dynamic News Tiles */
-.news-content {
+/* News Compact 2x2 Tile */
+.news-compact-grid {
   flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 4px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.news-compact-item {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   overflow: hidden;
+  padding: 3px;
+  border-radius: 3px;
+  background: rgba(48, 54, 61, 0.3);
 }
 
-.news-title {
-  font-size: 12px;
-  line-height: 1.4;
-  flex: 1;
+.news-compact-item.breaking-item {
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.news-compact-title {
+  font-size: 10px;
+  line-height: 1.3;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  flex: 1;
 }
 
-.news-meta {
+.news-compact-meta {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 10px;
+  font-size: 8px;
   color: #8b949e;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
-.news-source { font-weight: 600; }
+.news-compact-source { font-weight: 600; }
 
 .news-impact {
-  padding: 1px 6px;
-  border-radius: 8px;
-  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 6px;
+  font-size: 8px;
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -400,19 +417,57 @@ body {
 .impact-low { background: rgba(139, 148, 158, 0.15); color: #8b949e; }
 .impact-unknown { background: rgba(139, 148, 158, 0.1); color: #6e7681; }
 
-.tile.breaking {
-  border-color: #f85149;
-  background: linear-gradient(180deg, #1c1014 0%, #161b22 100%);
+/* Yield Curve Tile */
+.yield-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
-.news-spinner {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border: 2px solid #30363d;
-  border-top-color: #58a6ff;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+.yield-chart-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.yield-chart-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.yield-spread {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+.yield-spread-value {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.yield-badge {
+  padding: 2px 6px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.badge-normal { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+.badge-inverted { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+
+.yield-rates {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #8b949e;
+  margin-top: 2px;
+  flex-shrink: 0;
 }
 
 @keyframes spin {
@@ -564,7 +619,7 @@ body {
     <div class="region-list" id="region-asia"></div>
   </div>
 
-  <!-- Row 4: FX + Breadth + Dynamic -->
+  <!-- Row 4: FX + Breadth + YieldCurve + Crypto + Commodities + News -->
   <div class="tile" id="tile-fx" data-grid="4/1/5/2">
     <div class="tile-header"><span class="tile-name">FX Rates</span></div>
     <div class="fx-list" id="fx-content"></div>
@@ -583,28 +638,33 @@ body {
       </div>
     </div>
   </div>
-  <div class="tile" id="tile-dynamic_1" data-grid="4/3/5/4">
-    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_1" style="display:none"></span></div>
-    <div class="news-content" id="news-dynamic_1">
-      <div class="news-title" style="color:#484f58">Waiting for news...</div>
+  <div class="tile" id="tile-yieldcurve" data-grid="4/3/5/4">
+    <div class="tile-header"><span class="tile-name">Yield Curve</span></div>
+    <div class="yield-content">
+      <div class="yield-chart-wrap"><canvas class="yield-chart-canvas" id="yield-canvas"></canvas></div>
+      <div class="yield-spread">
+        <span style="font-size:10px;color:#8b949e">10Y-3M Spread</span>
+        <span class="yield-spread-value" id="yield-spread-val">--</span>
+        <span class="yield-badge badge-normal" id="yield-badge">--</span>
+      </div>
+      <div class="yield-rates" id="yield-rates"></div>
     </div>
   </div>
-  <div class="tile" id="tile-dynamic_2" data-grid="4/4/5/5">
-    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_2" style="display:none"></span></div>
-    <div class="news-content" id="news-dynamic_2">
-      <div class="news-title" style="color:#484f58">Waiting for news...</div>
-    </div>
+  <div class="tile" id="tile-crypto" data-grid="4/4/5/5">
+    <div class="tile-header"><span class="tile-name">Crypto</span></div>
+    <div class="region-list" id="region-crypto"></div>
   </div>
-  <div class="tile" id="tile-dynamic_3" data-grid="4/5/5/6">
-    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_3" style="display:none"></span></div>
-    <div class="news-content" id="news-dynamic_3">
-      <div class="news-title" style="color:#484f58">Waiting for news...</div>
-    </div>
+  <div class="tile" id="tile-commodities" data-grid="4/5/5/6">
+    <div class="tile-header"><span class="tile-name">Commodities</span></div>
+    <div class="region-list" id="region-commodities"></div>
   </div>
-  <div class="tile" id="tile-dynamic_4" data-grid="4/6/5/7">
-    <div class="tile-header"><span class="tile-name">News</span><span class="news-spinner" id="spinner-dynamic_4" style="display:none"></span></div>
-    <div class="news-content" id="news-dynamic_4">
-      <div class="news-title" style="color:#484f58">Waiting for news...</div>
+  <div class="tile" id="tile-news_compact" data-grid="4/6/5/7">
+    <div class="tile-header"><span class="tile-name">News Feed</span></div>
+    <div class="news-compact-grid" id="news-compact-grid">
+      <div class="news-compact-item"><div class="news-compact-title" style="color:#484f58">Waiting...</div></div>
+      <div class="news-compact-item"><div class="news-compact-title" style="color:#484f58">Waiting...</div></div>
+      <div class="news-compact-item"><div class="news-compact-title" style="color:#484f58">Waiting...</div></div>
+      <div class="news-compact-item"><div class="news-compact-title" style="color:#484f58">Waiting...</div></div>
     </div>
   </div>
 </div>
@@ -959,38 +1019,193 @@ function updateBreadth(data) {
 }
 
 // ============================================================
-// Dynamic News Tiles
+// News Compact (2x2 Grid)
 // ============================================================
-function updateDynamicTile(slotId, data) {
-  const tile = document.getElementById('tile-' + slotId);
-  const content = document.getElementById('news-' + slotId);
-  const spinner = document.getElementById('spinner-' + slotId);
-  if (!tile || !content) return;
+function updateNewsCompact(data) {
+  const grid = document.getElementById('news-compact-grid');
+  if (!grid || !data.items) return;
 
-  const isBreaking = data.breaking || data.impact === 'high';
-  tile.className = 'tile' + (isBreaking ? ' breaking' : '');
+  grid.innerHTML = '';
+  for (let i = 0; i < 4; i++) {
+    const item = data.items[i];
+    const el = document.createElement('div');
+    if (!item) {
+      el.className = 'news-compact-item';
+      el.innerHTML = '<div class="news-compact-title" style="color:#484f58">--</div>';
+      grid.appendChild(el);
+      continue;
+    }
 
-  const impactCls = {
-    high: 'impact-high', medium: 'impact-medium',
-    low: 'impact-low', unknown: 'impact-unknown'
-  }[data.impact || 'unknown'] || 'impact-unknown';
+    const isBreaking = item.breaking || item.impact === 'high';
+    el.className = 'news-compact-item' + (isBreaking ? ' breaking-item' : '');
 
-  const timeAgo = getTimeAgo(data.published);
-  const langFlag = { EN: '🇺🇸', KR: '🇰🇷', JP: '🇯🇵', CN: '🇨🇳' }[data.language] || '🌐';
+    const impactCls = {
+      high: 'impact-high', medium: 'impact-medium',
+      low: 'impact-low', unknown: 'impact-unknown'
+    }[item.impact || 'unknown'] || 'impact-unknown';
 
-  content.className = 'news-content fade-in';
-  content.innerHTML = `
-    <div class="news-title">${escapeHtml(data.title || 'No title')}</div>
-    <div class="news-meta">
-      <span class="news-source">${langFlag} ${data.source || 'Unknown'}</span>
-      <span>${timeAgo}</span>
-      <span class="news-impact ${impactCls}">${data.impact || '...'}</span>
-    </div>
-  `;
+    const timeAgo = getTimeAgo(item.published);
+    const langFlag = { EN: '🇺🇸', KR: '🇰🇷', JP: '🇯🇵', CN: '🇨🇳' }[item.language] || '🌐';
 
-  if (spinner) {
-    spinner.style.display = data.ai_ready ? 'none' : 'inline-block';
+    el.innerHTML = `
+      <div class="news-compact-title">${escapeHtml(item.title || 'No title')}</div>
+      <div class="news-compact-meta">
+        <span class="news-compact-source">${langFlag} ${item.source || ''}</span>
+        <span>${timeAgo}</span>
+      </div>
+    `;
+    grid.appendChild(el);
   }
+}
+
+// ============================================================
+// Yield Curve
+// ============================================================
+function updateYieldCurve(data) {
+  // Draw mini curve chart
+  const canvas = document.getElementById('yield-canvas');
+  if (canvas && data.yields) {
+    const labels = ['3M', '5Y', '10Y', '30Y'];
+    const values = labels.map(l => data.yields[l] ? data.yields[l].price : null).filter(v => v !== null);
+    if (values.length > 1) {
+      drawYieldCurveCanvas(canvas, values, labels, data.inverted);
+    }
+  }
+
+  // Spread
+  const spreadEl = document.getElementById('yield-spread-val');
+  if (spreadEl && data.spread_10y3m !== null && data.spread_10y3m !== undefined) {
+    spreadEl.textContent = (data.spread_10y3m > 0 ? '+' : '') + data.spread_10y3m.toFixed(2);
+    spreadEl.className = 'yield-spread-value ' + (data.inverted ? 'negative' : 'positive');
+  }
+
+  // Badge
+  const badge = document.getElementById('yield-badge');
+  if (badge) {
+    badge.textContent = data.inverted ? 'INVERTED' : 'NORMAL';
+    badge.className = 'yield-badge ' + (data.inverted ? 'badge-inverted' : 'badge-normal');
+  }
+
+  // Rate labels
+  const ratesEl = document.getElementById('yield-rates');
+  if (ratesEl && data.yields) {
+    const labels = ['3M', '5Y', '10Y', '30Y'];
+    ratesEl.innerHTML = labels.map(l => {
+      const v = data.yields[l] ? data.yields[l].price.toFixed(2) + '%' : '--';
+      return `<span>${l}: ${v}</span>`;
+    }).join('');
+  }
+
+  flashTile('tile-yieldcurve');
+}
+
+function drawYieldCurveCanvas(canvas, values, labels, inverted) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const min = Math.min(...values) - 0.1;
+  const max = Math.max(...values) + 0.1;
+  const range = max - min || 1;
+  const pad = 8;
+
+  const color = inverted ? '248, 81, 73' : '63, 185, 80';
+
+  // Gradient fill
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, `rgba(${color}, 0.3)`);
+  grad.addColorStop(1, `rgba(${color}, 0.02)`);
+
+  // Draw area
+  ctx.beginPath();
+  for (let i = 0; i < values.length; i++) {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (values[i] - min) / range) * (h - pad * 2);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.lineTo(pad + (w - pad * 2), h - pad);
+  ctx.lineTo(pad, h - pad);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Draw line
+  ctx.beginPath();
+  for (let i = 0; i < values.length; i++) {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (values[i] - min) / range) * (h - pad * 2);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = `rgba(${color}, 1)`;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Draw data points
+  for (let i = 0; i < values.length; i++) {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (values[i] - min) / range) * (h - pad * 2);
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${color}, 1)`;
+    ctx.fill();
+  }
+}
+
+// ============================================================
+// Crypto & Commodities (reuse region-list pattern)
+// ============================================================
+function updateCrypto(data) {
+  const container = document.getElementById('region-crypto');
+  if (!container || !data.coins) return;
+
+  container.innerHTML = '';
+  for (const [name, quote] of Object.entries(data.coins)) {
+    const pct = quote.change_pct || 0;
+    const cls = pct > 0 ? 'positive' : (pct < 0 ? 'negative' : 'neutral');
+    const arrow = pct > 0 ? '▲' : (pct < 0 ? '▼' : '');
+    const item = document.createElement('div');
+    item.className = 'region-item';
+    item.innerHTML = `
+      <span class="region-name">${name}</span>
+      <span class="region-price">${formatNumber(quote.price)}</span>
+      <span class="region-change ${cls}">${arrow} ${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</span>
+    `;
+    container.appendChild(item);
+  }
+  flashTile('tile-crypto');
+}
+
+function updateCommodities(data) {
+  const container = document.getElementById('region-commodities');
+  if (!container || !data.items) return;
+
+  container.innerHTML = '';
+  for (const [name, quote] of Object.entries(data.items)) {
+    const pct = quote.change_pct || 0;
+    const cls = pct > 0 ? 'positive' : (pct < 0 ? 'negative' : 'neutral');
+    const arrow = pct > 0 ? '▲' : (pct < 0 ? '▼' : '');
+    const item = document.createElement('div');
+    item.className = 'region-item';
+    item.innerHTML = `
+      <span class="region-name">${name}</span>
+      <span class="region-price">${formatNumber(quote.price)}</span>
+      <span class="region-change ${cls}">${arrow} ${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</span>
+    `;
+    container.appendChild(item);
+  }
+  flashTile('tile-commodities');
 }
 
 // ============================================================
@@ -1089,11 +1304,17 @@ function handleMessage(msg) {
   // Market Breadth
   if (tile_id === 'breadth') { updateBreadth(data); return; }
 
-  // Dynamic news tiles
-  if (tile_id.startsWith('dynamic_')) {
-    updateDynamicTile(tile_id, data);
-    return;
-  }
+  // Yield Curve
+  if (tile_id === 'yieldcurve') { updateYieldCurve(data); return; }
+
+  // Crypto
+  if (tile_id === 'crypto') { updateCrypto(data); return; }
+
+  // Commodities
+  if (tile_id === 'commodities') { updateCommodities(data); return; }
+
+  // News compact (2x2)
+  if (tile_id === 'news_compact') { updateNewsCompact(data); return; }
 }
 
 // ============================================================
