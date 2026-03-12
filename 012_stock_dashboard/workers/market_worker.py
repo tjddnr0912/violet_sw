@@ -85,7 +85,8 @@ class MarketWorker(BaseWorker):
                 quotes = await self.adapter.fetch_quotes(TIER2_TICKERS, ttl=interval * 0.8)
 
                 # Fetch sparkline data for numeric tiles
-                spark_tickers = ["^VIX", "^TNX", "DX-Y.NYB", "GC=F", "CL=F", "BTC-USD"]
+                # ^VIX excluded: yfinance intraday unreliable for VIX index
+                spark_tickers = ["^TNX", "DX-Y.NYB", "GC=F", "CL=F", "BTC-USD"]
                 for ticker in spark_tickers:
                     tile_id = TICKER_TO_TILE.get(ticker)
                     if not tile_id:

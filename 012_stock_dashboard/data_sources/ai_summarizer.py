@@ -24,18 +24,17 @@ class AISummarizer:
         self._cache: dict[str, SummarizedArticle] = {}  # article_id -> result
         self._semaphore = asyncio.Semaphore(GEMINI_RPM_LIMIT)
         self._call_times: list[float] = []
-        self._model = None
+        self._client = None
 
-    def _init_model(self):
-        if self._model is not None:
+    def _init_client(self):
+        if self._client is not None:
             return
         if not GEMINI_API_KEY:
             logger.warning("GEMINI_API_KEY not set, AI summarization disabled")
             return
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=GEMINI_API_KEY)
-            self._model = genai.GenerativeModel(GEMINI_MODEL)
+            from google import genai
+            self._client = genai.Client(api_key=GEMINI_API_KEY)
         except Exception as e:
             logger.error(f"Gemini init error: {e}")
 
@@ -44,8 +43,8 @@ class AISummarizer:
 
     async def summarize_batch(self, articles: list[dict]) -> list[SummarizedArticle]:
         """Summarize a batch of articles using Gemini. Each article: {id, title, source, language}."""
-        self._init_model()
-        if not self._model:
+        self._init_client()
+        if not self._client:
             return [SummarizedArticle(a["id"], a["title"], "unknown", "Global") for a in articles]
 
         # Check cache
@@ -97,7 +96,10 @@ class AISummarizer:
             return self._fallback(batch)
 
     def _sync_generate(self, prompt: str) -> str:
-        response = self._model.generate_content(prompt)
+        response = self._client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
         return response.text
 
     def _parse_response(self, text: str, batch: list[dict]) -> list[SummarizedArticle]:

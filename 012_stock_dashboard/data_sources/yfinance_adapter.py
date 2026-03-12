@@ -67,7 +67,7 @@ class YFinanceAdapter:
         results = {}
         ticker_str = " ".join(tickers)
         try:
-            data = yf.download(ticker_str, period="5d", interval="1d", progress=False, threads=True)
+            data = yf.download(ticker_str, period="5d", interval="1d", progress=False, threads=False)
         except Exception as e:
             logger.error(f"yf.download batch failed: {e}")
             data = None
@@ -101,13 +101,13 @@ class YFinanceAdapter:
         # Fallback: fetch missing tickers individually
         missing = [t for t in tickers if t not in results]
         if missing:
-            logger.info(f"Batch missed {len(missing)}/{len(tickers)} tickers, trying individual fetch...")
+            logger.info(f"Batch missed {len(missing)}/{len(tickers)} tickers, fetching individually...")
+            ok_count = 0
             for ticker in missing:
                 try:
                     t = yf.Ticker(ticker)
                     hist = t.history(period="5d")
                     if hist.empty or len(hist) < 1:
-                        logger.warning(f"Individual fetch empty for {ticker}")
                         continue
                     close_vals = hist["Close"].dropna()
                     if len(close_vals) < 1:
@@ -122,9 +122,11 @@ class YFinanceAdapter:
                         "change_pct": round(change_pct, 2),
                         "prev_close": round(prev, 2),
                     }
-                    logger.info(f"Individual fetch OK for {ticker}")
+                    ok_count += 1
                 except Exception as e:
                     logger.warning(f"Individual fetch failed for {ticker}: {e}")
+            if ok_count:
+                logger.info(f"Individual fallback: {ok_count}/{len(missing)} recovered")
 
         return results
 

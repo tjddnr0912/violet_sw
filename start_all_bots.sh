@@ -91,7 +91,7 @@ tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session
-            write text "echo -ne '\\\\e]0;Stock Dashboard\\\\a' && cd '$STOCK_DASHBOARD' && source venv/bin/activate && python app.py"
+            write text "echo -ne '\\\\e]0;Stock Dashboard\\\\a' && cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
         end tell
     end tell
 
