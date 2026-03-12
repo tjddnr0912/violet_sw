@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import logging.handlers
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -19,11 +21,27 @@ from workers.sentiment_worker import SentimentWorker
 from workers.news_worker import NewsWorker
 from workers.alert_worker import AlertWorker
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S",
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+_log_fmt = logging.Formatter(
+    "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
+_console = logging.StreamHandler()
+_console.setFormatter(_log_fmt)
+
+_file_handler = logging.handlers.TimedRotatingFileHandler(
+    os.path.join(LOG_DIR, "dashboard.log"),
+    when="midnight",
+    backupCount=7,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(_log_fmt)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console, _file_handler])
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Global state

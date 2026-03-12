@@ -95,7 +95,7 @@ RSS_SOURCES = [
     {"url": "https://www.hankyung.com/feed/all-news", "source": "한경", "lang": "KR"},
     {"url": "https://www.mk.co.kr/rss/30000001/", "source": "매경", "lang": "KR"},
     {"url": "https://www.nhk.or.jp/rss/news/cat4.xml", "source": "NHK", "lang": "JP"},
-    {"url": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0JYcG9MVU5PR2dKRFRpZ0FQAQ?hl=zh-CN&gl=CN&ceid=CN:zh-Hans", "source": "Google CN", "lang": "CN"},
+    {"url": "https://news.google.com/rss/search?q=china+economy+OR+china+market&hl=en&gl=US&ceid=US:en", "source": "Google CN", "lang": "EN"},
 ]
 
 # --- Breaking News Keywords ---

@@ -7,7 +7,8 @@ Bloomberg-style 실시간 글로벌 시장 대시보드. 6x4 타일 그리드에
 ```bash
 cd 012_stock_dashboard
 source venv/bin/activate
-./run_dashboard.sh          # http://localhost:5002
+./run_watchdog.sh           # 권장: 헬스체크 + 자동 재시작 (http://localhost:5002)
+./run_dashboard.sh          # 단순 실행 (디버깅용)
 ```
 
 ## 환경변수 (.env)
@@ -22,8 +23,10 @@ source venv/bin/activate
 
 ```
 012_stock_dashboard/
-├── app.py                    # FastAPI 메인 (라우트, WebSocket, 워커 라이프사이클)
+├── app.py                    # FastAPI 메인 (라우트, WebSocket, 워커, 로그 설정)
 ├── config.py                 # 타일 정의, 티커, RSS URL, 업데이트 주기
+├── run_watchdog.sh           # 헬스체크(/health) + 자동 재시작 (30s 간격, 3회 실패 시 재시작)
+├── logs/                     # dashboard.log (7일 로테이션) + uvicorn.log
 ├── workers/
 │   ├── base.py               # BaseWorker (async loop, 에러 백오프)
 │   ├── market_worker.py      # 지수/원자재/환율/스파크라인 (yfinance)
@@ -34,7 +37,7 @@ source venv/bin/activate
 ├── data_sources/
 │   ├── yfinance_adapter.py   # yfinance 비동기 래퍼 + 캐싱
 │   ├── rss_adapter.py        # 다국어 RSS 파서 (EN/KR/JP/CN)
-│   ├── ai_summarizer.py      # Gemini 뉴스 한국어 번역
+│   ├── ai_summarizer.py      # Gemini 뉴스 한국어 번역 (google-genai SDK)
 │   ├── finnhub_adapter.py    # Finnhub REST (뉴스/시세)
 │   ├── fear_greed.py         # CNN Fear & Greed 스크래퍼
 │   └── market_calendar.py    # 시장 시간대 (US/EU/JP/CN/KR)
@@ -72,5 +75,7 @@ source venv/bin/activate
 
 - 장외 시간: 전체 5분 간격으로 통합 (OFF_HOURS_INTERVAL)
 - CNN Fear & Greed: `User-Agent` + `Referer` 헤더 필수 (없으면 HTTP 418)
+- Gemini SDK: `google-genai` 패키지 사용 (구 `google-generativeai`는 deprecated)
 - Gemini Free Tier: 500 RPD 한도, 10분 주기 + KR 스킵으로 ~100~150회/일 사용
+- VIX(^VIX): 인트라데이 스파크라인 미지원 (yfinance 비호환), 가격/변동률만 표시
 - Port 5002 사용 (009_dashboard 5001과 충돌 회피)
