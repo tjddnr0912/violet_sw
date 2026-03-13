@@ -67,6 +67,7 @@ source venv/bin/activate
 - **Gemini 절약**: 한국어(KR) 기사는 Gemini 스킵 (원문 유지), EN/JP/CN만 번역 호출
 - **yfinance**: v1.2.0+ MultiIndex `("Close", ticker)` 형식. 크립토/주식 별도 fetch 필요. 개별 티커 fallback + LKG 캐시
 - **Market Tape**: Header 하단 상시 스크롤 (12종목: 지수/VIX/환율/원자재/BTC/FX), 기존 타일 데이터 재활용, 호버 시 일시정지
+- **장외 선물 전환**: Row 1 지수(^GSPC/^IXIC/^DJI)는 장외 시간에 선물(ES=F/NQ=F/YM=F)로 자동 전환, "FUTURES" 배지 표시
 - **차트**: TradingView Lightweight Charts v4 (Row 1), Canvas 스파크라인 (Row 2), Canvas Yield Curve (Row 4)
 - **Alert 스캔**: 120s 주기, Phase1 일간 |±2%| 필터 → Phase2 후보만 인트라데이 5m 캔들 → |1h ±3%| 감지 → Ticker Tape + Movers 배지
 - **Alert 대상**: US S&P 500 (45종목) + KR KOSPI 대형주 (15종목), 장 개장 시간에만 스캔
@@ -77,6 +78,6 @@ source venv/bin/activate
 - 장외 시간: 전체 5분 간격으로 통합 (OFF_HOURS_INTERVAL)
 - CNN Fear & Greed: `User-Agent` + `Referer` 헤더 필수 (없으면 HTTP 418)
 - Gemini SDK: `google-genai` 패키지 사용 (구 `google-generativeai`는 deprecated)
-- Gemini Free Tier: gemini-2.0-flash 1500 RPD 한도, 10분 주기 + KR 스킵으로 ~100~150회/일 사용
+- Gemini Free Tier: gemini-2.5-flash-lite 사용, 10분 주기 + KR 스킵으로 쿼타 절약
 - VIX(^VIX): 인트라데이 스파크라인 미지원 (yfinance 비호환), 가격/변동률만 표시
 - Port 5002 사용 (009_dashboard 5001과 충돌 회피)
