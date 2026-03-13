@@ -64,13 +64,14 @@ class AISummarizer:
 
     async def _call_gemini(self, batch: list[dict]) -> list[SummarizedArticle]:
         """Call Gemini API for a batch of articles."""
-        await self._rate_limit()
+        async with self._semaphore:
+            await self._rate_limit()
 
-        articles_text = ""
-        for idx, a in enumerate(batch, 1):
-            articles_text += f"\n{idx}. [{a['source']}] ({a['language']}) {a['title']}"
+            articles_text = ""
+            for idx, a in enumerate(batch, 1):
+                articles_text += f"\n{idx}. [{a['source']}] ({a['language']}) {a['title']}"
 
-        prompt = f"""다음 금융/경제 뉴스 제목들을 한국어로 번역하고 핵심 요약하세요.
+            prompt = f"""다음 금융/경제 뉴스 제목들을 한국어로 번역하고 핵심 요약하세요.
 
 규칙:
 - 이미 한국어인 뉴스는 그대로 1줄 요약
@@ -82,18 +83,18 @@ class AISummarizer:
 
 뉴스 목록:{articles_text}"""
 
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(self._sync_generate, prompt),
-                timeout=GEMINI_TIMEOUT,
-            )
-            return self._parse_response(response, batch)
-        except asyncio.TimeoutError:
-            logger.warning("Gemini timeout, using fallback")
-            return self._fallback(batch)
-        except Exception as e:
-            logger.error(f"Gemini error: {e}")
-            return self._fallback(batch)
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(self._sync_generate, prompt),
+                    timeout=GEMINI_TIMEOUT,
+                )
+                return self._parse_response(response, batch)
+            except asyncio.TimeoutError:
+                logger.warning("Gemini timeout, using fallback")
+                return self._fallback(batch)
+            except Exception as e:
+                logger.error(f"Gemini error: {e}")
+                return self._fallback(batch)
 
     def _sync_generate(self, prompt: str) -> str:
         response = self._client.models.generate_content(
@@ -158,11 +159,10 @@ class AISummarizer:
 
     async def _rate_limit(self):
         """Ensure max GEMINI_RPM_LIMIT calls per minute."""
-        async with self._semaphore:
-            now = time.time()
-            self._call_times = [t for t in self._call_times if now - t < 60]
-            if len(self._call_times) >= GEMINI_RPM_LIMIT:
-                wait = 60 - (now - self._call_times[0])
-                if wait > 0:
-                    await asyncio.sleep(wait)
-            self._call_times.append(time.time())
+        now = time.time()
+        self._call_times = [t for t in self._call_times if now - t < 60]
+        if len(self._call_times) >= GEMINI_RPM_LIMIT:
+            wait = 60 - (now - self._call_times[0])
+            if wait > 0:
+                await asyncio.sleep(wait)
+        self._call_times.append(time.time())
