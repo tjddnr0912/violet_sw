@@ -878,7 +878,7 @@ function initCharts() {
       layout: { background: { color: 'transparent' }, textColor: '#8b949e' },
       grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
       crosshair: { mode: 0 },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#30363d' },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#30363d', rightOffset: 2 },
       rightPriceScale: { borderColor: '#30363d' },
       handleScroll: false,
       handleScale: false,
@@ -910,7 +910,10 @@ function updateChart(id, data) {
   const bottomColor = isDown ? 'rgba(239, 83, 80, 0.02)' : 'rgba(38, 166, 154, 0.02)';
 
   series.applyOptions({ lineColor, topColor, bottomColor });
-  series.setData(data.points);
+  // Shift UTC timestamps to ET for display
+  const offset = _getETOffset();
+  const points = data.points.map(p => ({ time: p.time + offset, value: p.value }));
+  series.setData(points);
 
   // Update overlay
   const priceEl = document.getElementById('price-' + id);
@@ -1699,6 +1702,20 @@ function formatNumber(n) {
   if (n >= 10000) return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
   if (n >= 100) return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
   return n.toFixed(2);
+}
+
+let _etOffsetCache = null;
+let _etOffsetCacheTime = 0;
+function _getETOffset() {
+  // Cache for 10 min (handles DST transitions)
+  const now = Date.now();
+  if (_etOffsetCache !== null && now - _etOffsetCacheTime < 600000) return _etOffsetCache;
+  const d = new Date();
+  const etStr = d.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const utcStr = d.toLocaleString('en-US', { timeZone: 'UTC' });
+  _etOffsetCache = Math.round((new Date(etStr) - new Date(utcStr)) / 1000);
+  _etOffsetCacheTime = now;
+  return _etOffsetCache;
 }
 
 function updateSourceBadge(tileId, source) {
