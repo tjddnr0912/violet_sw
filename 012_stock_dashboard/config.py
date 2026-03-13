@@ -21,6 +21,13 @@ OFF_HOURS_INTERVAL = 300  # All tickers during off-hours
 # --- yfinance Ticker Groups ---
 TIER1_TICKERS = ["^GSPC", "^IXIC", "^DJI", "BTC-USD"]
 
+# Index → Futures mapping (for off-hours display)
+INDEX_FUTURES_MAP = {
+    "^GSPC": "ES=F",   # S&P 500 E-mini
+    "^IXIC": "NQ=F",   # NASDAQ 100 E-mini
+    "^DJI": "YM=F",    # Dow Jones E-mini
+}
+
 TIER2_TICKERS = [
     "^VIX", "^TNX", "DX-Y.NYB",   # Volatility, Treasury, Dollar
     "GC=F", "CL=F",                # Gold, Oil
@@ -107,7 +114,7 @@ BREAKING_KEYWORDS = [
 ]
 
 # --- Gemini Config ---
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 GEMINI_BATCH_SIZE = 5
 GEMINI_TIMEOUT = 30  # seconds per batch
 GEMINI_RPM_LIMIT = 4  # max calls per minute

@@ -12,7 +12,7 @@ from config import (
     TICKER_TO_TILE, TOP_MOVERS_TICKERS,
     YIELD_TICKERS, COMMODITY_TICKERS,
     WATCHLIST_FIXED_TICKERS, WATCHLIST_DYNAMIC_COUNT,
-    WATCHLIST_DYNAMIC_REFRESH,
+    WATCHLIST_DYNAMIC_REFRESH, INDEX_FUTURES_MAP,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,39 +38,58 @@ class MarketWorker(BaseWorker):
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def _tier1_loop(self):
-        """30s: S&P 500, NASDAQ, Dow, Bitcoin."""
+        """30s: S&P 500, NASDAQ, Dow, Bitcoin. Uses futures (ES/NQ/YM) when market closed."""
+        # Reverse map: futures ticker -> tile_id
+        futures_to_tile = {v: TICKER_TO_TILE[k] for k, v in INDEX_FUTURES_MAP.items()}
+
         while self._running:
             try:
-                interval = TIER1_INTERVAL if is_us_market_hours() else OFF_HOURS_INTERVAL
-                # Fetch indices and crypto separately (date alignment differs)
-                index_tickers = ["^GSPC", "^IXIC", "^DJI"]
-                crypto_tickers = ["BTC-USD"]
+                us_open = is_us_market_hours()
+                interval = TIER1_INTERVAL if us_open else OFF_HOURS_INTERVAL
 
+                # Choose index or futures tickers based on market hours
+                if us_open:
+                    idx_tickers = ["^GSPC", "^IXIC", "^DJI"]
+                    source = "index"
+                else:
+                    idx_tickers = list(INDEX_FUTURES_MAP.values())  # ES=F, NQ=F, YM=F
+                    source = "futures"
+
+                crypto_tickers = ["BTC-USD"]
                 idx_quotes, crypto_quotes = await asyncio.gather(
-                    self.adapter.fetch_quotes(index_tickers, ttl=interval * 0.8),
+                    self.adapter.fetch_quotes(idx_tickers, ttl=interval * 0.8),
                     self.adapter.fetch_quotes(crypto_tickers, ttl=interval * 0.8),
                 )
                 quotes = {**idx_quotes, **crypto_quotes}
 
                 for ticker, data in quotes.items():
-                    tile_id = TICKER_TO_TILE.get(ticker)
-                    if tile_id:
-                        # Add sparkline for Bitcoin numeric tile
-                        if ticker == "BTC-USD":
-                            sparkline = await self.adapter.fetch_intraday(ticker, period="1d", interval="15m")
-                            if sparkline:
-                                data = {**data, "sparkline": [p["value"] for p in sparkline]}
-                        await self.data_store.update(tile_id, data)
+                    if source == "futures" and ticker in futures_to_tile:
+                        tile_id = futures_to_tile[ticker]
+                    else:
+                        tile_id = TICKER_TO_TILE.get(ticker)
+                    if not tile_id:
+                        continue
+
+                    tile_data = {**data, "source": source}
+                    if ticker == "BTC-USD":
+                        sparkline = await self.adapter.fetch_intraday(ticker, period="1d", interval="15m")
+                        if sparkline:
+                            tile_data["sparkline"] = [p["value"] for p in sparkline]
+                    await self.data_store.update(tile_id, tile_data)
 
                 # Fetch intraday for chart tiles
-                for ticker in index_tickers:
-                    tile_id = TICKER_TO_TILE.get(ticker)
+                for ticker in idx_tickers:
+                    if source == "futures":
+                        tile_id = futures_to_tile.get(ticker)
+                    else:
+                        tile_id = TICKER_TO_TILE.get(ticker)
                     if tile_id:
                         intraday = await self.adapter.fetch_intraday(ticker)
                         if intraday:
                             await self.data_store.update(f"{tile_id}_chart", {
                                 "points": intraday,
                                 **quotes.get(ticker, {}),
+                                "source": source,
                             })
             except Exception as e:
                 logger.error(f"Tier1 error: {e}")
