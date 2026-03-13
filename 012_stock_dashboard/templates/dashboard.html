@@ -83,6 +83,63 @@ body {
 
 .ws-dot.connected { background: #3fb950; }
 
+/* Market Ticker Tape (always visible) */
+.market-tape {
+  height: 26px;
+  background: #0b0e13;
+  border-bottom: 1px solid #21262d;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.market-tape-track {
+  display: flex;
+  white-space: nowrap;
+  will-change: transform;
+  animation: marketTapeScroll 45s linear infinite;
+}
+
+@keyframes marketTapeScroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.market-tape:hover .market-tape-track {
+  animation-play-state: paused;
+}
+
+.tape-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  font-size: 11px;
+  border-right: 1px solid #1b1f27;
+  height: 26px;
+  line-height: 26px;
+}
+
+.tape-symbol {
+  color: #8b949e;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.tape-price {
+  color: #e6edf3;
+}
+
+.tape-change {
+  font-weight: 600;
+  font-size: 10px;
+}
+
+.tape-change.positive { color: #3fb950; }
+.tape-change.negative { color: #f85149; }
+.tape-change.neutral { color: #484f58; }
+
 /* Grid Layout */
 .grid-container {
   display: grid;
@@ -90,7 +147,7 @@ body {
   grid-template-rows: repeat(4, 1fr);
   gap: 4px;
   padding: 4px;
-  height: calc(100vh - 36px);
+  height: calc(100vh - 62px);
 }
 
 .tile {
@@ -557,7 +614,7 @@ body {
 }
 
 body.has-alerts .grid-container {
-  height: calc(100vh - 64px);
+  height: calc(100vh - 90px);
 }
 
 /* Movers alert badge */
@@ -644,6 +701,13 @@ body.has-alerts .grid-container {
   <div class="ws-status">
     <div class="ws-dot" id="ws-dot"></div>
     <span id="ws-label">Disconnected</span>
+  </div>
+</div>
+
+<!-- Market Ticker Tape (always visible) -->
+<div class="market-tape" id="market-tape">
+  <div class="market-tape-track" id="market-tape-track">
+    <div class="tape-item"><span class="tape-symbol">Loading...</span></div>
   </div>
 </div>
 
@@ -1340,6 +1404,75 @@ function updateCommodities(data) {
 }
 
 // ============================================================
+// Market Ticker Tape (always visible)
+// ============================================================
+const _tapeData = {};
+const TAPE_ITEMS = [
+  { key: 'sp500', label: 'S&P 500' },
+  { key: 'nasdaq', label: 'NASDAQ' },
+  { key: 'dow', label: 'Dow' },
+  { key: 'vix', label: 'VIX' },
+  { key: 'treasury', label: '10Y' },
+  { key: 'dxy', label: 'DXY' },
+  { key: 'gold', label: 'Gold' },
+  { key: 'oil', label: 'WTI' },
+  { key: 'bitcoin', label: 'BTC' },
+  { key: 'fx_eurusd', label: 'EUR/USD' },
+  { key: 'fx_usdjpy', label: 'USD/JPY' },
+  { key: 'fx_usdkrw', label: 'USD/KRW' },
+];
+
+function feedMarketTape(tileId, data) {
+  // Direct tiles (price + change_pct)
+  const directTiles = ['sp500','nasdaq','dow','vix','treasury','dxy','gold','oil','bitcoin'];
+  if (directTiles.includes(tileId) && data.price !== undefined) {
+    _tapeData[tileId] = { price: data.price, change_pct: data.change_pct || 0 };
+    rebuildMarketTape();
+    return;
+  }
+  // FX tile: extract pairs
+  if (tileId === 'fx' && data.pairs) {
+    const fxMap = { 'EUR/USD': 'fx_eurusd', 'USD/JPY': 'fx_usdjpy', 'USD/KRW': 'fx_usdkrw' };
+    for (const [label, key] of Object.entries(fxMap)) {
+      if (data.pairs[label]) {
+        _tapeData[key] = { price: data.pairs[label].price, change_pct: data.pairs[label].change_pct || 0 };
+      }
+    }
+    rebuildMarketTape();
+  }
+}
+
+let _tapeRebuildTimer = null;
+function rebuildMarketTape() {
+  // Throttle rebuilds to avoid excessive DOM updates
+  if (_tapeRebuildTimer) return;
+  _tapeRebuildTimer = setTimeout(() => {
+    _tapeRebuildTimer = null;
+    _doRebuildMarketTape();
+  }, 500);
+}
+
+function _doRebuildMarketTape() {
+  const track = document.getElementById('market-tape-track');
+  const items = TAPE_ITEMS.map(cfg => {
+    const d = _tapeData[cfg.key];
+    if (!d) return `<div class="tape-item"><span class="tape-symbol">${cfg.label}</span><span class="tape-price">--</span></div>`;
+    const pct = d.change_pct;
+    const cls = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
+    const arrow = pct > 0 ? '▲' : pct < 0 ? '▼' : '';
+    const sign = pct > 0 ? '+' : '';
+    return `<div class="tape-item">` +
+      `<span class="tape-symbol">${cfg.label}</span>` +
+      `<span class="tape-price">${formatNumber(d.price)}</span>` +
+      `<span class="tape-change ${cls}">${arrow} ${sign}${pct.toFixed(2)}%</span>` +
+      `</div>`;
+  }).join('');
+
+  // Duplicate for seamless infinite scroll
+  track.innerHTML = items + items;
+}
+
+// ============================================================
 // Alerts (Ticker Tape + Movers Badge)
 // ============================================================
 let _currentAlerts = {};  // ticker -> alert object
@@ -1436,6 +1569,9 @@ function connectWS() {
 function handleMessage(msg) {
   if (msg.type !== 'tile_update') return;
   const { tile_id, data } = msg;
+
+  // Feed market ticker tape
+  feedMarketTape(tile_id, data);
 
   // Chart tiles
   if (tile_id.endsWith('_chart')) {
