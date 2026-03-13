@@ -66,6 +66,7 @@ source venv/bin/activate
 - **뉴스 Compact**: 4개 뉴스를 1타일 2x2 그리드에 통합 표시 (FIFO 로테이션)
 - **Gemini 절약**: 한국어(KR) 기사는 Gemini 스킵 (원문 유지), EN/JP/CN만 번역 호출
 - **yfinance**: v1.2.0+ MultiIndex `("Close", ticker)` 형식. 크립토/주식 별도 fetch 필요. 개별 티커 fallback + LKG 캐시
+- **Market Tape**: Header 하단 상시 스크롤 (12종목: 지수/VIX/환율/원자재/BTC/FX), 기존 타일 데이터 재활용, 호버 시 일시정지
 - **차트**: TradingView Lightweight Charts v4 (Row 1), Canvas 스파크라인 (Row 2), Canvas Yield Curve (Row 4)
 - **Alert 스캔**: 120s 주기, Phase1 일간 |±2%| 필터 → Phase2 후보만 인트라데이 5m 캔들 → |1h ±3%| 감지 → Ticker Tape + Movers 배지
 - **Alert 대상**: US S&P 500 (45종목) + KR KOSPI 대형주 (15종목), 장 개장 시간에만 스캔
