@@ -75,7 +75,6 @@ weekly_sector_bot.py
 
 | 패키지 | 버전 | 용도 |
 |--------|------|------|
-| `google-genai` | 1.61.0+ | 섹터봇 Google Search Grounding |
-| `google-generativeai` | 0.8.5+ | 뉴스봇 Gemini API |
+| `google-genai` | 1.0.0+ | Gemini API (뉴스봇 + 섹터봇 통합) |
 
-섹터봇은 2026-02 SDK 마이그레이션: `google.generativeai` → `google.genai` (새 SDK)
+2026-03 전체 SDK 통합 마이그레이션 완료: `google-generativeai` (구) → `google-genai` (신)
