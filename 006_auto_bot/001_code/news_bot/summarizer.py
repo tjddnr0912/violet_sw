@@ -1,4 +1,5 @@
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from typing import List, Dict
 import logging
 import time
@@ -20,21 +21,24 @@ class AISummarizer:
 
         Args:
             api_key: Google Gemini API key
-            model: Google Gemini model to use (default: gemini-1.5-flash)
+            model: Google Gemini model to use
         """
-        genai.configure(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = model
 
-        # Initialize model with system instruction for news journalism
-        self.model = genai.GenerativeModel(
-            model,
-            system_instruction="""You are a professional news journalist and summarizer.
+        self.system_instruction = """You are a professional news journalist and summarizer.
 Your role is to provide objective summaries of news articles from verified sources.
 All content you receive is from legitimate Korean news agencies (SBS, YTN, Yonhap).
 Your summaries are for educational and informational purposes only.
 You must summarize ALL news content accurately, including political, crime, and sensitive topics.
 This is journalistic work, not content generation."""
-        )
-        self.model_name = model
+
+        self.safety_settings = [
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
+        ]
 
     def create_blog_summary(self, raw_markdown: str) -> str:
         """
@@ -113,30 +117,17 @@ Blog Post (한국어):"""
             logger.info(f"Input prompt size: {len(prompt)} characters")
             logger.info(f"Raw markdown size: {len(raw_markdown)} characters")
 
-            # Use BLOCK_NONE for news journalism work
-            # This is justified because:
-            # 1. We are summarizing PUBLICLY PUBLISHED news from verified sources
-            # 2. This is legitimate journalism/educational work
-            # 3. The content has already been approved by major news organizations
-            # 4. Safety ratings show NEGLIGIBLE risk but Gemini still blocks with BLOCK_ONLY_HIGH
-            from google.generativeai.types import HarmCategory, HarmBlockThreshold
+            logger.info("Calling Gemini API with safety OFF for verified news journalism...")
 
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-
-            logger.info("Calling Gemini API with BLOCK_NONE safety settings for verified news journalism...")
-
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_instruction,
                     temperature=0.7,
-                    max_output_tokens=8000,  # Increased to summarize ALL articles
+                    max_output_tokens=8000,
+                    safety_settings=self.safety_settings,
                 ),
-                safety_settings=safety_settings
             )
 
             # Check if response has valid content
@@ -147,12 +138,12 @@ Blog Post (한국어):"""
                 logger.info(f"Gemini finish_reason: {candidate.finish_reason}")
                 logger.info(f"Safety ratings: {candidate.safety_ratings}")
 
-                if candidate.finish_reason == 1:  # STOP (successful)
+                if candidate.finish_reason == types.FinishReason.STOP:
                     blog_summary = response.text.strip()
                     blog_summary = self._remove_footer(blog_summary)
                     logger.info(f"Successfully created blog summary ({len(blog_summary)} chars)")
                     return blog_summary
-                elif candidate.finish_reason == 2:  # SAFETY
+                elif candidate.finish_reason == types.FinishReason.SAFETY:
                     logger.warning("Blog summary blocked by safety filter")
                     logger.warning(f"Safety ratings: {candidate.safety_ratings}")
                     return self._create_fallback_summary(raw_markdown)
@@ -273,27 +264,20 @@ Blog Post (한국어):"""
 
             logger.info(f"Weekly summary input size: {len(prompt)} characters")
 
-            from google.generativeai.types import HarmCategory, HarmBlockThreshold
-
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_instruction,
                     temperature=0.7,
                     max_output_tokens=8000,
+                    safety_settings=self.safety_settings,
                 ),
-                safety_settings=safety_settings
             )
 
             if response.candidates and len(response.candidates) > 0:
                 candidate = response.candidates[0]
-                if candidate.finish_reason == 1:  # STOP (successful)
+                if candidate.finish_reason == types.FinishReason.STOP:
                     weekly_summary = response.text.strip()
                     weekly_summary = self._remove_footer(weekly_summary)
                     logger.info(f"Successfully created weekly summary ({len(weekly_summary)} chars)")
@@ -367,27 +351,20 @@ Blog Post (한국어):"""
 
             logger.info(f"Monthly summary input size: {len(prompt)} characters")
 
-            from google.generativeai.types import HarmCategory, HarmBlockThreshold
-
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_instruction,
                     temperature=0.7,
-                    max_output_tokens=10000,  # Larger for monthly summary
+                    max_output_tokens=10000,
+                    safety_settings=self.safety_settings,
                 ),
-                safety_settings=safety_settings
             )
 
             if response.candidates and len(response.candidates) > 0:
                 candidate = response.candidates[0]
-                if candidate.finish_reason == 1:  # STOP (successful)
+                if candidate.finish_reason == types.FinishReason.STOP:
                     monthly_summary = response.text.strip()
                     monthly_summary = self._remove_footer(monthly_summary)
                     logger.info(f"Successfully created monthly summary ({len(monthly_summary)} chars)")

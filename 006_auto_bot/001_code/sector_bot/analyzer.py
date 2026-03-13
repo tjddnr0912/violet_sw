@@ -10,8 +10,8 @@ import ssl
 from typing import Dict, List, Optional
 from datetime import datetime
 
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai import types
 
 from .config import SectorConfig, Sector, SECTORS
 
@@ -230,19 +230,15 @@ class SectorAnalyzer:
         if not SectorConfig.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is required")
 
-        genai.configure(api_key=SectorConfig.GEMINI_API_KEY)
+        self.client = genai.Client(api_key=SectorConfig.GEMINI_API_KEY)
+        self.model_name = SectorConfig.GEMINI_MODEL
 
-        self.safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
-
-        self.model = genai.GenerativeModel(
-            model_name=SectorConfig.GEMINI_MODEL,
-            safety_settings=self.safety_settings,
-        )
+        self.safety_settings = [
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
+        ]
 
         logger.info("SectorAnalyzer initialized")
 
@@ -293,7 +289,13 @@ class SectorAnalyzer:
 """
 
             # 분석 생성
-            response = self.model.generate_content(full_prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    safety_settings=self.safety_settings,
+                ),
+            )
 
             if not response.candidates:
                 raise ValueError("Empty response from Gemini")
