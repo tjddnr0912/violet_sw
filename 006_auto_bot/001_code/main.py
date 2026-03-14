@@ -228,46 +228,10 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Error during daily task execution: {str(e)}", exc_info=True)
 
-    def run_once(self, max_retries: int = 3):
-        """Run the task once immediately with retry logic"""
+    def run_once(self):
+        """Run the task once immediately"""
         logger.info("Running task immediately (one-time execution)")
-        for attempt in range(max_retries):
-            try:
-                self.run_daily_task()
-                return True
-            except (ConnectionError, ConnectionResetError, ConnectionAbortedError) as e:
-                logger.warning(f"Network error (attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** (attempt + 1) * 10  # 20s, 40s, 80s
-                    logger.info(f"Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error("Max retries exceeded")
-                    return False
-            except Exception as e:
-                logger.error(f"Error during task execution: {e}", exc_info=True)
-                return False
-        return False
-
-    def run_daily_task_with_retry(self, max_retries: int = 3) -> bool:
-        """Execute daily task with retry logic for network errors"""
-        for attempt in range(max_retries):
-            try:
-                self.run_daily_task()
-                return True
-            except (ConnectionError, ConnectionResetError, ConnectionAbortedError) as e:
-                logger.warning(f"Network error (attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** (attempt + 1) * 30  # 60s, 120s, 240s
-                    logger.info(f"Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error("Max retries exceeded. Will retry on next schedule.")
-                    return False
-            except Exception as e:
-                logger.error(f"Error during task execution: {e}", exc_info=True)
-                return False
-        return False
+        self.run_daily_task()
 
     def run_weekly_task(self):
         """Execute weekly news summary task (every Sunday at 9am)"""
@@ -296,8 +260,6 @@ class NewsBot:
             logger.info("Step 3: Saving weekly summary...")
             today = datetime.now()
             days_since_monday = today.weekday()
-            if days_since_monday == 6:
-                days_since_monday = 6
             monday = today - timedelta(days=days_since_monday)
             save_result = self.markdown_writer.save_weekly_summary(weekly_summary, monday)
 
@@ -538,8 +500,8 @@ class NewsBot:
         posting_time = self.config.POSTING_TIME
         logger.info(f"Scheduling daily task at {posting_time}")
 
-        # Schedule daily news task with retry logic
-        schedule.every().day.at(posting_time).do(self.run_daily_task_with_retry)
+        # Schedule daily news task
+        schedule.every().day.at(posting_time).do(self.run_daily_task)
 
         # Schedule weekly and monthly tasks
         weekly_time = getattr(self.config, 'WEEKLY_POSTING_TIME', '09:00')

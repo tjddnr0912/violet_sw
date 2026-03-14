@@ -6,7 +6,6 @@ Sector Analyzer - 섹터별 맞춤 분석 프롬프트
 
 import logging
 import time
-import ssl
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -16,9 +15,6 @@ from google.genai import types
 from .config import SectorConfig, Sector, SECTORS
 
 logger = logging.getLogger(__name__)
-
-# SSL 인증서 검증 비활성화
-ssl._create_default_https_context = ssl._create_unverified_context
 
 
 # 섹터별 맞춤 분석 프롬프트

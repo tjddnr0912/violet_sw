@@ -12,11 +12,6 @@ from newspaper import Article
 # Fix SSL certificate verification issues on macOS
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 

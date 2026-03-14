@@ -18,11 +18,6 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 import markdown
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 # OAuth2 scopes for Blogger API

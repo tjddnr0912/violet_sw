@@ -1,7 +1,7 @@
 """
 Sector Bot - Weekly Sector Investment Information Bot
 -----------------------------------------------------
-9개 섹터별 투자정보를 자동 수집/분석하여 블로그에 업로드
+11개 섹터별 투자정보를 자동 수집/분석하여 블로그에 업로드
 """
 
 from .config import SectorConfig, SECTORS
