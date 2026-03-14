@@ -67,15 +67,20 @@ class DynamicRotator:
 
     def promote_breaking(self, article_id: str):
         """Promote an article to breaking status."""
+        target = None
         for item in self._queue:
             if item.get("article_id") == article_id:
-                item["breaking"] = True
-                self._current.insert(0, item)
-                if len(self._current) > DISPLAY_SLOTS:
-                    self._current = self._current[:DISPLAY_SLOTS]
-                self._breaking_until = time.time() + BREAKING_HOLD_SECONDS
-                asyncio.create_task(self._broadcast_all())
-                return
+                target = item
+                break
+        if target is None:
+            return
+        self._queue.remove(target)
+        target["breaking"] = True
+        self._current.insert(0, target)
+        if len(self._current) > DISPLAY_SLOTS:
+            self._current = self._current[:DISPLAY_SLOTS]
+        self._breaking_until = time.time() + BREAKING_HOLD_SECONDS
+        asyncio.create_task(self._broadcast_all())
 
     async def rotation_loop(self):
         """Rotate one item every ROTATION_INTERVAL seconds."""

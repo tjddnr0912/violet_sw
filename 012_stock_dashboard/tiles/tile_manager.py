@@ -38,28 +38,30 @@ class DataStore:
 
     async def broadcast(self, tile_id: str, data: dict):
         """Send update to all connected WebSocket clients."""
-        if not self._clients:
+        clients = set(self._clients)  # snapshot to avoid set mutation during iteration
+        if not clients:
             return
         msg = json.dumps({"type": "tile_update", "tile_id": tile_id, "data": data})
-        disconnected = []
-        for ws in self._clients:
+
+        async def _send(ws: WebSocket):
             try:
                 await ws.send_text(msg)
             except Exception:
-                disconnected.append(ws)
-        for ws in disconnected:
-            self.unsubscribe(ws)
+                self.unsubscribe(ws)
+
+        await asyncio.gather(*[_send(ws) for ws in clients])
 
     async def broadcast_raw(self, message: dict):
         """Send arbitrary message to all clients."""
-        if not self._clients:
+        clients = set(self._clients)  # snapshot to avoid set mutation during iteration
+        if not clients:
             return
         msg = json.dumps(message)
-        disconnected = []
-        for ws in self._clients:
+
+        async def _send(ws: WebSocket):
             try:
                 await ws.send_text(msg)
             except Exception:
-                disconnected.append(ws)
-        for ws in disconnected:
-            self.unsubscribe(ws)
+                self.unsubscribe(ws)
+
+        await asyncio.gather(*[_send(ws) for ws in clients])

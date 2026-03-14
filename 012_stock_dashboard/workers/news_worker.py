@@ -63,32 +63,34 @@ class NewsWorker(BaseWorker):
             return
 
         # Check breaking keywords (1st filter)
+        breaking_map = {}
         for article in top_articles:
             title_lower = article.title.lower()
-            article._is_breaking = any(kw.lower() in title_lower for kw in BREAKING_KEYWORDS)
+            breaking_map[article.article_id] = any(kw.lower() in title_lower for kw in BREAKING_KEYWORDS)
 
         # Push to rotator immediately with original titles
         for article in top_articles:
             cached = self.summarizer.get_cached(article.article_id)
+            is_breaking = breaking_map.get(article.article_id, False)
             news_item = {
                 "article_id": article.article_id,
                 "title": cached.summary if cached else article.title,
                 "source": article.source,
                 "language": article.language,
                 "published": article.published,
-                "impact": cached.impact if cached else ("high" if getattr(article, '_is_breaking', False) else "unknown"),
+                "impact": cached.impact if cached else ("high" if is_breaking else "unknown"),
                 "market": cached.market if cached else "Global",
                 "ai_ready": cached is not None,
             }
-            is_breaking = getattr(article, '_is_breaking', False)
             self.rotator.push(news_item, breaking=is_breaking)
 
-        # Phase B: Async AI enrichment (non-blocking)
-        if self._enrich_task and not self._enrich_task.done():
-            self._enrich_task.cancel()
-        self._enrich_task = asyncio.create_task(
-            self._enrich_articles(top_articles)
-        )
+        # Phase B: AI enrichment disabled (Gemini free tier RPD too low)
+        # To re-enable: uncomment below and ensure sufficient Gemini quota
+        # if self._enrich_task and not self._enrich_task.done():
+        #     self._enrich_task.cancel()
+        # self._enrich_task = asyncio.create_task(
+        #     self._enrich_articles(top_articles)
+        # )
 
     async def _enrich_articles(self, articles):
         """Background task: summarize with Gemini, then update tiles.

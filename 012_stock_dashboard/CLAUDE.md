@@ -40,7 +40,7 @@ source venv/bin/activate
 │   ├── ai_summarizer.py      # Gemini 뉴스 한국어 번역 (google-genai SDK)
 │   ├── finnhub_adapter.py    # Finnhub REST (뉴스/시세)
 │   ├── fear_greed.py         # CNN Fear & Greed 스크래퍼
-│   └── market_calendar.py    # 시장 시간대 (US/EU/JP/CN/KR)
+│   └── market_calendar.py    # 시장 시간대 + US 공휴일 (US/EU/JP/CN/KR)
 ├── tiles/
 │   ├── tile_manager.py       # DataStore + WebSocket broadcast
 │   └── dynamic_rotator.py    # 뉴스 타일 FIFO 로테이션
