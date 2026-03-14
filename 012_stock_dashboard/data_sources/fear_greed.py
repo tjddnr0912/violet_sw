@@ -12,14 +12,22 @@ HEADERS = {
 }
 
 _last_result = None
+_session: aiohttp.ClientSession | None = None
+
+
+async def _get_session() -> aiohttp.ClientSession:
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(headers=HEADERS)
+    return _session
 
 
 async def fetch_fear_greed() -> dict:
     """Fetch CNN Fear & Greed index. Returns {"score": int, "rating": str}."""
     global _last_result
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(FEAR_GREED_URL, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        session = await _get_session()
+        async with session.get(FEAR_GREED_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     logger.warning(f"Fear & Greed HTTP {resp.status}")
                     return _last_result or {"score": 50, "rating": "neutral"}

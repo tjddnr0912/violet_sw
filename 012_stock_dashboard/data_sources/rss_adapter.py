@@ -29,13 +29,12 @@ class Article:
 
 
 class RSSAdapter:
-    def __init__(self):
-        self._seen_ids: set[str] = set()
-
     async def fetch_feeds(self, sources: list[dict]) -> list[Article]:
         """Fetch articles from multiple RSS sources in parallel."""
-        tasks = [self._fetch_single(s) for s in sources]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; StockDashboard/1.0)"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            tasks = [self._fetch_single(s, session) for s in sources]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
         articles = []
         for result in results:
@@ -61,18 +60,13 @@ class RSSAdapter:
 
         return recent
 
-    async def _fetch_single(self, source: dict) -> list[Article]:
+    async def _fetch_single(self, source: dict, session: aiohttp.ClientSession) -> list[Article]:
         url = source["url"]
         src_name = source["source"]
         lang = source["lang"]
 
         try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (compatible; StockDashboard/1.0)"
-                }
-                async with session.get(url, headers=headers,
-                                       timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
                         logger.warning(f"RSS {src_name} HTTP {resp.status}")
                         return []

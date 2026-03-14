@@ -105,7 +105,7 @@ class MarketWorker(BaseWorker):
 
                 # Fetch sparkline data for numeric tiles
                 # ^VIX excluded: yfinance intraday unreliable for VIX index
-                spark_tickers = ["^TNX", "DX-Y.NYB", "GC=F", "CL=F", "BTC-USD"]
+                spark_tickers = ["^TNX", "DX-Y.NYB", "GC=F", "CL=F"]
                 for ticker in spark_tickers:
                     tile_id = TICKER_TO_TILE.get(ticker)
                     if not tile_id:
