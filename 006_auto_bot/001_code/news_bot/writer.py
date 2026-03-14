@@ -5,11 +5,6 @@ from typing import Dict, List, Optional, Tuple
 import logging
 import glob
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -229,8 +224,6 @@ class MarkdownWriter:
         # Find the Monday of this week (if today is Sunday, it's the previous Monday)
         # weekday(): Monday=0, Sunday=6
         days_since_monday = today.weekday()
-        if days_since_monday == 6:  # Sunday
-            days_since_monday = 6
         monday = today - timedelta(days=days_since_monday)
 
         # Collect from Monday to Saturday (Sunday's summary might not exist yet at 9am)
