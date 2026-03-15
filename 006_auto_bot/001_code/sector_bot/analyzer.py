@@ -2,6 +2,7 @@
 Sector Analyzer - 섹터별 맞춤 분석 프롬프트
 -------------------------------------------
 검색된 정보를 섹터별 맞춤 프롬프트로 분석하여 투자 인사이트 생성
+API 할당량 초과 시 Gemini CLI (gemini -p)로 자동 전환
 """
 
 import logging
@@ -13,6 +14,7 @@ from google import genai
 from google.genai import types
 
 from .config import SectorConfig, Sector, SECTORS
+from .gemini_cli import is_quota_error, call_gemini_cli
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +230,7 @@ class SectorAnalyzer:
 
         self.client = genai.Client(api_key=SectorConfig.GEMINI_API_KEY)
         self.model_name = SectorConfig.GEMINI_MODEL
+        self._use_cli_fallback = False  # API 할당량 초과 시 True로 전환
 
         self.safety_settings = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
@@ -237,6 +240,26 @@ class SectorAnalyzer:
         ]
 
         logger.info("SectorAnalyzer initialized")
+
+    def _build_analysis_prompt(self, sector: Sector, search_result: Dict) -> str:
+        """분석용 전체 프롬프트 구성"""
+        sector_prompt = SECTOR_PROMPTS.get(sector.id, "")
+        if not sector_prompt:
+            sector_prompt = f"## {sector.name} 섹터 분석\n\n투자 관점에서 분석해주세요."
+
+        return f"""{sector_prompt}
+
+### 검색된 정보:
+{search_result['content']}
+
+### 출처:
+{chr(10).join(f"- {url}" for url in search_result.get('sources', [])[:10])}
+
+---
+위 정보를 바탕으로 투자 분석 보고서를 작성해주세요.
+보고서는 한글로 작성하고, 마크다운 형식을 사용하세요.
+최소 2000자 이상으로 상세하게 작성해주세요.
+"""
 
     def analyze_sector(
         self,
@@ -255,34 +278,20 @@ class SectorAnalyzer:
         Returns:
             분석 결과 딕셔너리
         """
-        try:
-            if not search_result.get('success') or not search_result.get('content'):
-                return {
-                    'success': False,
-                    'error': 'No search content to analyze'
-                }
+        if not search_result.get('success') or not search_result.get('content'):
+            return {
+                'success': False,
+                'error': 'No search content to analyze'
+            }
 
+        # API 할당량 초과 후에는 CLI fallback 직접 사용
+        if self._use_cli_fallback:
+            return self._analyze_via_cli(sector, search_result)
+
+        try:
             logger.info(f"Analyzing sector: {sector.name}")
 
-            # 섹터별 맞춤 프롬프트 가져오기
-            sector_prompt = SECTOR_PROMPTS.get(sector.id, "")
-            if not sector_prompt:
-                sector_prompt = f"## {sector.name} 섹터 분석\n\n투자 관점에서 분석해주세요."
-
-            # 전체 프롬프트 구성
-            full_prompt = f"""{sector_prompt}
-
-### 검색된 정보:
-{search_result['content']}
-
-### 출처:
-{chr(10).join(f"- {url}" for url in search_result.get('sources', [])[:10])}
-
----
-위 정보를 바탕으로 투자 분석 보고서를 작성해주세요.
-보고서는 한글로 작성하고, 마크다운 형식을 사용하세요.
-최소 2000자 이상으로 상세하게 작성해주세요.
-"""
+            full_prompt = self._build_analysis_prompt(sector, search_result)
 
             # 분석 생성
             response = self.client.models.generate_content(
@@ -315,6 +324,13 @@ class SectorAnalyzer:
         except Exception as e:
             logger.error(f"Analysis error for {sector.name}: {e}")
 
+            # 429 할당량 초과 → CLI fallback (재시도 불필요)
+            if is_quota_error(e):
+                logger.warning(f"API quota exhausted, switching to Gemini CLI for analysis")
+                self._use_cli_fallback = True
+                return self._analyze_via_cli(sector, search_result)
+
+            # 기타 에러 → 기존 재시도 로직
             if retry_count < SectorConfig.MAX_RETRIES:
                 delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)
                 logger.info(f"Retrying in {delay} seconds...")
@@ -324,6 +340,34 @@ class SectorAnalyzer:
             return {
                 'success': False,
                 'error': str(e)
+            }
+
+    def _analyze_via_cli(self, sector: Sector, search_result: Dict) -> Dict:
+        """Gemini CLI를 사용한 분석 (API 할당량 초과 시 fallback)"""
+        logger.info(f"[CLI Fallback] Analyzing sector: {sector.name}")
+
+        full_prompt = self._build_analysis_prompt(sector, search_result)
+
+        try:
+            analysis_text = call_gemini_cli(full_prompt)
+
+            if not analysis_text or len(analysis_text) < 500:
+                raise ValueError(f"Insufficient CLI response: {len(analysis_text)} chars")
+
+            logger.info(f"[CLI Fallback] Analysis completed: {len(analysis_text)} chars")
+
+            return {
+                'success': True,
+                'analysis': analysis_text,
+                'sources': search_result.get('sources', []),
+                'via_cli': True,
+            }
+
+        except Exception as e:
+            logger.error(f"[CLI Fallback] Analysis failed for {sector.name}: {e}")
+            return {
+                'success': False,
+                'error': f"CLI fallback failed: {e}",
             }
 
     def generate_title(self, sector: Sector, date: datetime = None) -> str:

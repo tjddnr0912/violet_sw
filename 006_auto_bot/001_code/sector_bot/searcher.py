@@ -2,6 +2,7 @@
 Sector Searcher - Gemini Google Search Grounding
 -------------------------------------------------
 Gemini API의 Google Search 도구를 사용하여 섹터별 최신 뉴스 검색
+API 할당량 초과 시 Gemini CLI (gemini -p)로 자동 전환
 """
 
 import logging
@@ -14,6 +15,7 @@ from google import genai
 from google.genai import types
 
 from .config import SectorConfig, Sector
+from .gemini_cli import is_quota_error, call_gemini_cli, extract_urls
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ class SectorSearcher:
         # 새로운 google-genai SDK 클라이언트
         self.client = genai.Client(api_key=SectorConfig.GEMINI_API_KEY)
         self.model_name = SectorConfig.GEMINI_MODEL
+        self._use_cli_fallback = False  # API 할당량 초과 시 True로 전환
 
         logger.info(f"SectorSearcher initialized with model: {self.model_name}")
 
@@ -54,6 +57,10 @@ class SectorSearcher:
                 'success': bool
             }
         """
+        # API 할당량 초과 후에는 CLI fallback 직접 사용
+        if self._use_cli_fallback:
+            return self._search_via_cli(sector)
+
         try:
             logger.info(f"Searching sector: {sector.name} ({sector.name_en})")
 
@@ -119,9 +126,15 @@ class SectorSearcher:
         except Exception as e:
             logger.error(f"Search error for {sector.name}: {e}")
 
-            # 재시도 로직
+            # 429 할당량 초과 → CLI fallback (재시도 불필요)
+            if is_quota_error(e):
+                logger.warning(f"API quota exhausted, switching to Gemini CLI for all remaining sectors")
+                self._use_cli_fallback = True
+                return self._search_via_cli(sector)
+
+            # 기타 에러 → 기존 재시도 로직
             if retry_count < SectorConfig.MAX_RETRIES:
-                delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)  # 지수 백오프
+                delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)
                 logger.info(f"Retrying in {delay} seconds... (attempt {retry_count + 1}/{SectorConfig.MAX_RETRIES})")
                 time.sleep(delay)
                 return self.search_sector(sector, retry_count + 1)
@@ -131,6 +144,37 @@ class SectorSearcher:
                 'sources': [],
                 'success': False,
                 'error': str(e)
+            }
+
+    def _search_via_cli(self, sector: Sector) -> Dict[str, any]:
+        """Gemini CLI를 사용한 검색 (API 할당량 초과 시 fallback)"""
+        logger.info(f"[CLI Fallback] Searching sector: {sector.name}")
+
+        search_prompt = self._build_search_prompt(sector)
+
+        try:
+            content = call_gemini_cli(search_prompt)
+            sources = extract_urls(content)
+
+            if not content or len(content) < 100:
+                raise ValueError(f"Insufficient CLI response: {len(content)} chars")
+
+            logger.info(f"[CLI Fallback] Search completed: {len(content)} chars, {len(sources)} sources")
+
+            return {
+                'content': content,
+                'sources': sources,
+                'success': True,
+                'via_cli': True,
+            }
+
+        except Exception as e:
+            logger.error(f"[CLI Fallback] Search failed for {sector.name}: {e}")
+            return {
+                'content': '',
+                'sources': [],
+                'success': False,
+                'error': f"CLI fallback failed: {e}",
             }
 
     def _build_search_prompt(self, sector: Sector) -> str:

@@ -16,6 +16,7 @@
 │   ├── config.py                # 11개 섹터 정의, 스케줄, 설정
 │   ├── searcher.py              # Gemini Google Search Grounding
 │   ├── analyzer.py              # 섹터별 분석 프롬프트
+│   ├── gemini_cli.py            # Gemini CLI fallback (API 429 시 gemini -p 전환)
 │   ├── writer.py                # 마크다운 I/O
 │   └── state_manager.py         # 상태 저장/복구
 ├── shared/                      # 공유 모듈
