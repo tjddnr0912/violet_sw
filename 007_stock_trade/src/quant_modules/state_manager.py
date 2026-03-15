@@ -53,6 +53,7 @@ class PendingOrder:
     created_at: datetime = field(default_factory=datetime.now)
     retry_count: int = 0  # 재시도 횟수
     last_error: str = ""  # 마지막 에러 메시지
+    order_time_price: float = 0  # P11: 주문 생성 시점 가격 (슬리피지 추적용)
 
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리 변환 (JSON 직렬화용)"""

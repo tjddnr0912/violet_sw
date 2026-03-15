@@ -93,17 +93,51 @@ class OrderExecutor:
         # 현재 보유 종목
         current_holdings = set(self.portfolio.positions.keys())
 
-        # 목표 종목
+        # 목표 종목 (상위 N개)
         target_stocks = {s.code: s for s in screening_result.selected_stocks}
         target_holdings = set(target_stocks.keys())
 
-        # 매도 대상: 보유 중이지만 목표에 없는 종목
-        to_sell = current_holdings - target_holdings
+        # Buffer Rule: 보유 종목이 상위 N위 밖이어도 buffer 이내면 유지
+        # 예: target=15일 때 buffer=25 → 16~25위는 기존 보유 시 매도하지 않음
+        buffer_size = int(self.config.target_stock_count * 1.67)  # 약 1.67배 (15→25)
+        buffer_codes = set()
+        if hasattr(screening_result, 'all_scores') and screening_result.all_scores:
+            ranked = [s for s in screening_result.all_scores if s.passed_filter]
+            ranked.sort(key=lambda x: x.composite_score, reverse=True)
+            buffer_codes = {s.code for s in ranked[:buffer_size]}
+
+        # 매도 대상: 보유 중이지만 buffer 범위도 벗어난 종목만
+        to_sell = current_holdings - buffer_codes if buffer_codes else current_holdings - target_holdings
 
         # 매수 대상: 목표에 있지만 미보유 종목
-        to_buy = target_holdings - current_holdings
+        # P10: Score Gap Threshold — 점수 차이가 미미한 교체 방지
+        min_score_gap = 5.0  # 최소 5점 차이 필요
+        to_buy = set()
+        for code in target_holdings - current_holdings:
+            stock = target_stocks[code]
+            # 교체할 가치가 있는지: 매수 후보의 점수가 buffer 경계 종목보다 충분히 높은가
+            if buffer_codes and ranked:
+                buffer_boundary_score = ranked[min(buffer_size - 1, len(ranked) - 1)].composite_score
+                if stock.composite_score - buffer_boundary_score < min_score_gap:
+                    logger.debug(
+                        f"P10 스킵: {stock.name} 점수차 "
+                        f"{stock.composite_score - buffer_boundary_score:.1f} < {min_score_gap}"
+                    )
+                    continue
+            to_buy.add(code)
 
-        logger.info(f"리밸런싱: 매도 {len(to_sell)}개, 매수 {len(to_buy)}개")
+        # 버퍼로 유지되는 종목 로깅
+        buffer_kept = current_holdings - target_holdings - to_sell
+        if buffer_kept:
+            logger.info(f"Buffer Rule: {len(buffer_kept)}개 종목 유지 (순위 이탈했으나 buffer 이내)")
+            for code in buffer_kept:
+                pos = self.portfolio.positions.get(code)
+                if pos:
+                    # buffer 내 순위 찾기
+                    rank_info = next((s.rank for s in ranked if s.code == code), "?")
+                    logger.info(f"  유지: {pos.name} ({code}) - 현재 순위 {rank_info}")
+
+        logger.info(f"리밸런싱: 매도 {len(to_sell)}개, 매수 {len(to_buy)}개, 버퍼유지 {len(buffer_kept)}개")
 
         # 매도 주문 생성
         for code in to_sell:
@@ -121,11 +155,19 @@ class OrderExecutor:
         # 매수 주문 생성
         available_capital = self.portfolio.cash * 0.95  # 5% 여유
 
-        for idx, code in enumerate(to_buy):
+        # Score-Weighted Allocation: 점수 비례 비중 계산
+        buy_stocks = []
+        for code in to_buy:
+            buy_stocks.append(target_stocks[code])
+
+        total_score = sum(max(s.composite_score, 1) for s in buy_stocks) if buy_stocks else 1
+        min_weight = 0.03  # 최소 3%
+        max_weight = self.config.max_single_weight  # 최대 10%
+
+        for idx, stock in enumerate(buy_stocks):
+            code = stock.code
             if idx > 0:
                 time.sleep(self.api_delay)
-
-            stock = target_stocks[code]
 
             # 포지션 사이징 (API 재시도 로직 포함)
             try:
@@ -146,24 +188,31 @@ class OrderExecutor:
                     ))
                     continue
 
-                # 목표 비중 계산
-                weight = min(
-                    self.config.max_single_weight,
-                    1.0 / self.config.target_stock_count
-                )
+                # Score-Weighted 비중: 점수에 비례 (min/max 클리핑)
+                raw_weight = max(stock.composite_score, 1) / total_score * (1 - 0.10)  # 현금 10% 보존
+                weight = max(min_weight, min(max_weight, raw_weight))
 
                 # 투자금액
                 invest_amount = self.config.total_capital * weight
-                invest_amount = min(invest_amount, available_capital / len(to_buy))
+                invest_amount = min(invest_amount, available_capital / max(len(buy_stocks), 1))
 
                 quantity = int(invest_amount / current_price)
 
                 if quantity > 0:
-                    # 손절/익절가 계산
-                    stop_loss = stop_loss_manager.calculate_fixed_stop(
-                        current_price,
-                        self.config.stop_loss_pct
-                    )
+                    # 손절가 계산: 변동성 기반 동적 손절 (fallback: 고정 비율)
+                    stock_vol = getattr(stock, 'volatility', 0)
+                    if stock_vol > 0:
+                        stop_loss = stop_loss_manager.calculate_dynamic_stop(
+                            current_price,
+                            volatility=stock_vol,
+                            fallback_pct=self.config.stop_loss_pct
+                        )
+                    else:
+                        stop_loss = stop_loss_manager.calculate_fixed_stop(
+                            current_price,
+                            self.config.stop_loss_pct
+                        )
+
                     tp1, tp2 = take_profit_manager.calculate_targets(current_price, stop_loss)
 
                     orders.append(PendingOrder(
@@ -176,7 +225,8 @@ class OrderExecutor:
                         stop_loss=stop_loss,
                         take_profit_1=tp1,
                         take_profit_2=tp2,
-                        weight=weight
+                        weight=weight,
+                        order_time_price=current_price,
                     ))
 
             except Exception as e:
@@ -275,11 +325,20 @@ class OrderExecutor:
                 quantity = int(invest_amount / current_price)
 
                 if quantity > 0:
-                    # 손절/익절가 계산
-                    stop_loss = stop_loss_manager.calculate_fixed_stop(
-                        current_price,
-                        self.config.stop_loss_pct
-                    )
+                    # 손절가 계산: 변동성 기반 동적 손절
+                    stock_vol = getattr(stock, 'volatility', 0)
+                    if stock_vol > 0:
+                        stop_loss = stop_loss_manager.calculate_dynamic_stop(
+                            current_price,
+                            volatility=stock_vol,
+                            fallback_pct=self.config.stop_loss_pct
+                        )
+                    else:
+                        stop_loss = stop_loss_manager.calculate_fixed_stop(
+                            current_price,
+                            self.config.stop_loss_pct
+                        )
+
                     tp1, tp2 = take_profit_manager.calculate_targets(current_price, stop_loss)
 
                     orders.append(PendingOrder(

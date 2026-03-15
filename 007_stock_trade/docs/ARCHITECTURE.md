@@ -103,7 +103,10 @@ controller.register_callback('on_screening', engine.run_screening)
 Telegram 명령으로 변경한 설정 저장. 데몬 재시작 후에도 유지.
 
 ### config/optimal_weights.json
-팩터 가중치. 반기 최적화 시 자동 업데이트.
+팩터 가중치 Single Source of Truth. 두 가지 가중치 체계:
+- `factor_weights`: 엔진 스크리너용 V/M/Q/Vol 4팩터 가중치
+- `signal_weights`: 모니터링/최적화 스크립트용 신호 가중치
+반기 최적화 시 자동 업데이트.
 
 ## 의존성
 

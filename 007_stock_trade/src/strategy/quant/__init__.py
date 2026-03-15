@@ -4,6 +4,7 @@ from .factors import (
     FactorScore,
     CompositeScore,
     FactorWeights,
+    BatchFactorCalculator,
     ValueFactorCalculator,
     MomentumFactorCalculator,
     QualityFactorCalculator,
@@ -17,6 +18,8 @@ from .screener import (
 from .signals import (
     SignalType,
     MarketCondition,
+    RegimeConfig,
+    REGIME_CONFIGS,
     TechnicalSignal,
     TradeSignal,
     Position,
@@ -69,6 +72,7 @@ __all__ = [
     "ValueFactorCalculator",
     "MomentumFactorCalculator",
     "QualityFactorCalculator",
+    "BatchFactorCalculator",
     "CompositeScoreCalculator",
     # Screener
     "ScreeningConfig",
@@ -77,6 +81,8 @@ __all__ = [
     # Signals
     "SignalType",
     "MarketCondition",
+    "RegimeConfig",
+    "REGIME_CONFIGS",
     "TechnicalSignal",
     "TradeSignal",
     "Position",

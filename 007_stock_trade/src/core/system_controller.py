@@ -35,7 +35,8 @@ class SystemConfig:
     take_profit_pct: float = 10.0
     max_daily_trades: int = 10
 
-    # 팩터 가중치
+    # 신호 가중치 (모니터링/최적화용, system_config.json에 저장)
+    # 주의: 엔진 스크리너의 V/M/Q 팩터 가중치는 optimal_weights.json에서 관리
     momentum_weight: float = 0.20
     short_mom_weight: float = 0.10
     volatility_weight: float = 0.50

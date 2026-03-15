@@ -14,10 +14,12 @@ KIS Open API 기반 한국 주식 멀티팩터 퀀트 자동매매.
 
 | 항목 | 값 |
 |------|-----|
-| 전략 | 모멘텀(20%) + 단기모멘텀(10%) + 저변동성(50%) |
+| 전략 | 4팩터 Percentile Ranking (V 34% + M 26% + Q 26% + Vol 15%) |
 | 유니버스 | KOSPI200 |
-| 목표 종목 | 15개 |
-| 손절/익절 | -7% / +10% |
+| 목표 종목 | 15개 (Score-Weighted 비중, Buffer Rule 25위까지 유지) |
+| 손절 | 변동성 기반 동적 3~15% (ATR 2σ) |
+| 익절 | 손익비 3.5:1 / 6.0:1 (20%/30% 부분 익절) |
+| 리스크 | 변동성 타겟팅 15%, 시장 레짐 감지 (Bull/Neutral/Bear) |
 
 ## 주요 모듈
 
@@ -63,6 +65,7 @@ TELEGRAM_CHAT_ID=
 - 텔레그램 명령어 추가: `src/telegram/commands/` Mixin 파일에 추가 → `bot.py`에 핸들러 등록
 - 총자산 계산: `nass_amt`(순자산) 사용 (T+2 결제 대응)
 - 설정 파일: `config/system_config.json`은 Telegram 명령으로 변경됨
+- 팩터 가중치: `config/optimal_weights.json`의 `factor_weights`가 Single Source of Truth
 
 ## 상세 문서
 

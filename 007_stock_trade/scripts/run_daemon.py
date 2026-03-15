@@ -163,8 +163,10 @@ class QuantDaemon:
         controller = get_controller()
         sys_config = controller.config
 
-        # 팩터 가중치 로드 (optimal_weights.json)
+        # 가중치 로드 (optimal_weights.json — Single Source of Truth)
         self.weights = WeightConfig.load()
+        self.factor_weights = WeightConfig.load_factor_weights()
+        self.signal_weights = WeightConfig.load_signal_weights()
 
         # SystemController 설정과 동기화
         # (텔레그램 명령으로 변경된 설정 반영)
@@ -204,10 +206,18 @@ class QuantDaemon:
             universe_size=sys_config.universe_size,
             target_stock_count=self.target_count,
             total_capital=self.total_capital,
-            dry_run=self.dry_run
+            dry_run=self.dry_run,
+            value_weight=self.factor_weights.get('value_weight', 0.40),
+            momentum_weight=self.factor_weights.get('momentum_weight', 0.30),
+            quality_weight=self.factor_weights.get('quality_weight', 0.30),
+            volume_weight=self.factor_weights.get('volume_weight', 0.0),
         )
 
-        logger.info(f"설정 로드: dry_run={self.dry_run}, target={self.target_count}, virtual={self.is_virtual}")
+        logger.info(
+            f"설정 로드: dry_run={self.dry_run}, target={self.target_count}, "
+            f"virtual={self.is_virtual}, "
+            f"팩터가중치=V:{config.value_weight:.0%}/M:{config.momentum_weight:.0%}/Q:{config.quality_weight:.0%}"
+        )
 
         self.engine = QuantTradingEngine(config=config, is_virtual=self.is_virtual)
 
@@ -395,13 +405,10 @@ class QuantDaemon:
         dry_run = "✅ Dry-Run" if self.dry_run else "🔴 실제 주문"
 
         # 가중치 정보 (기본값 처리)
-        weights = getattr(self, 'weights', {})
         total_capital = getattr(self, 'total_capital', 10_000_000)
         target_count = getattr(self, 'target_count', 15)
-
-        mom_w = weights.get('momentum_weight', 0.2)
-        short_mom_w = weights.get('short_mom_weight', 0.1)
-        vol_w = weights.get('volatility_weight', 0.5)
+        fw = getattr(self, 'factor_weights', {})
+        sw = getattr(self, 'signal_weights', {})
 
         message = f"""
 🚀 <b>퀀트 시스템 시작</b>
@@ -413,8 +420,11 @@ class QuantDaemon:
 • 투자금: {total_capital:,}원
 • 목표 종목: {target_count}개
 
-<b>팩터 가중치:</b>
-• 모멘텀: {mom_w:.0%} | 단기: {short_mom_w:.0%} | 변동성: {vol_w:.0%}
+<b>스크리너 팩터 가중치:</b>
+• 가치: {fw.get('value_weight', 0.4):.0%} | 모멘텀: {fw.get('momentum_weight', 0.3):.0%} | 퀄리티: {fw.get('quality_weight', 0.3):.0%}
+
+<b>신호 가중치 (모니터링용):</b>
+• 모멘텀: {sw.get('momentum_weight', 0.2):.0%} | 단기: {sw.get('short_mom_weight', 0.1):.0%} | 변동성: {sw.get('volatility_weight', 0.5):.0%}
 
 <b>자동 관리 일정:</b>
 • 월간 모니터링: 매월 1일 09:00
