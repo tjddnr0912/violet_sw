@@ -4,9 +4,11 @@
 
 ```
 001_code/
-├── main.py                      # 뉴스봇 진입점 (daily/weekly/monthly)
+├── investment_bot.py            # 통합 오케스트레이터 (뉴스+버핏+섹터)
+├── main.py                      # 뉴스봇 (daily/weekly/monthly)
+├── buffett_bot.py               # 버핏봇 (월~금, Claude CLI 분석)
+├── weekly_sector_bot.py         # 섹터봇 (일요일)
 ├── telegram_gemini_bot.py       # Telegram Q&A → Gemini → Blogger
-├── weekly_sector_bot.py         # 주간 섹터 투자정보 봇
 ├── news_bot/                    # 뉴스봇 전용 모듈
 │   ├── config.py                # RSS sources, schedule, labels
 │   ├── aggregator.py            # RSS 파싱
@@ -34,22 +36,32 @@
 ## 모듈 의존성
 
 ```
-main.py
+investment_bot.py (오케스트레이터)
+├── main.NewsBot         (뉴스봇: 07:00 daily, 09:00 weekly, 10:00 monthly)
+├── buffett_bot.BuffettBot   (버핏봇: 07:30 월~금)
+└── weekly_sector_bot.WeeklySectorBot  (섹터봇: 일요일 13:00~19:00)
+
+main.py (뉴스봇)
 ├── news_bot.config / aggregator / summarizer / writer
 ├── shared.blogger_uploader
 └── shared.telegram_notifier
+
+buffett_bot.py (버핏봇)
+├── shared.blogger_uploader
+├── shared.telegram_notifier
+└── shared.claude_html_converter
+
+weekly_sector_bot.py (섹터봇)
+├── sector_bot.config / searcher / analyzer / writer / state_manager
+├── sector_bot.comprehensive_report
+├── shared.blogger_uploader
+├── shared.telegram_notifier
+└── shared.claude_html_converter
 
 telegram_gemini_bot.py
 ├── shared.telegram_api (Inline Keyboard)
 ├── shared.html_utils
 ├── shared.blogger_uploader
-└── shared.claude_html_converter
-
-weekly_sector_bot.py
-├── sector_bot.config / searcher / analyzer / writer / state_manager
-├── sector_bot.comprehensive_report  (19:00 종합 보고서)
-├── shared.blogger_uploader
-├── shared.telegram_notifier
 └── shared.claude_html_converter
 ```
 
@@ -59,6 +71,9 @@ weekly_sector_bot.py
 1. **Daily** (07:00): RSS → Gemini 요약 → `004_News_paper/YYYYMMDD/*.md` → Blogger → Telegram
 2. **Weekly** (일요일 09:00): 월~토 일간요약 → Gemini 주간요약 → Blogger
 3. **Monthly** (1일 10:00): 전월 일간요약 → Gemini 월간요약 → Blogger → 2개월 전 데이터 정리
+
+### Buffett Bot
+1. **Daily** (월~금 07:30): 뉴스봇 `blog_summary_*.md` → Claude CLI (버핏/멍거 관점 분석) → `005_Buffett_Daily/YYYYMMDD/*.md` → Blogger → Telegram
 
 ### Cleanup Logic
 월간 요약 완료 후 2개월 전 데이터 자동 삭제:
