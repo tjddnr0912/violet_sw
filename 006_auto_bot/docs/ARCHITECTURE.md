@@ -17,6 +17,7 @@
 │   ├── searcher.py              # Gemini Google Search Grounding
 │   ├── analyzer.py              # 섹터별 분석 프롬프트
 │   ├── gemini_cli.py            # Gemini CLI fallback (API 429 시 gemini -p 전환)
+│   ├── comprehensive_report.py  # 종합 투자 평가 보고서 (Claude CLI 분석)
 │   ├── writer.py                # 마크다운 I/O
 │   └── state_manager.py         # 상태 저장/복구
 ├── shared/                      # 공유 모듈
@@ -46,6 +47,7 @@ telegram_gemini_bot.py
 
 weekly_sector_bot.py
 ├── sector_bot.config / searcher / analyzer / writer / state_manager
+├── sector_bot.comprehensive_report  (19:00 종합 보고서)
 ├── shared.blogger_uploader
 ├── shared.telegram_notifier
 └── shared.claude_html_converter

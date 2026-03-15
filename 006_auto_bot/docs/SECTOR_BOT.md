@@ -10,6 +10,7 @@ python weekly_sector_bot.py --once    # 즉시 전체 실행
 python weekly_sector_bot.py --resume  # 중단 후 재개
 python weekly_sector_bot.py --sector 1  # 특정 섹터만 (1-11)
 python weekly_sector_bot.py --test    # 테스트 (업로드 스킵)
+python weekly_sector_bot.py --comprehensive  # 종합 투자 평가 보고서
 python weekly_sector_bot.py --status  # 상태 확인
 python weekly_sector_bot.py --reset   # 상태 초기화
 ```
@@ -53,8 +54,18 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 ├── sector_01_ai_quantum.md
 ├── sector_02_finance.md
 ├── ...
-└── sector_11_consumer_staples.md
+├── sector_11_consumer_staples.md
+└── comprehensive_report.md       # 종합 투자 평가 보고서 (19:00)
 ```
+
+## 종합 투자 평가 보고서
+
+- **스케줄**: 일요일 19:00 (11개 섹터 완료 후)
+- **입력**: 당일 생성된 11개 섹터 MD 파일 전체 취합
+- **분석 엔진**: Claude CLI (`claude -p`) — 월스트리트 30년+ 마스터 애널리스트 역할
+- **HTML 변환**: 장문 보고서는 h2 기준 청크 분할 후 개별 변환·합침
+- **라벨**: `[종합분석, 주간, 투자정보]`
+- **최소 섹터**: 8개 이상 존재해야 보고서 생성 (미달 시 스킵)
 
 ## 블로그 업로드
 

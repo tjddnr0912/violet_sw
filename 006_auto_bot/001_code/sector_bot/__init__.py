@@ -9,6 +9,7 @@ from .searcher import SectorSearcher
 from .analyzer import SectorAnalyzer
 from .writer import SectorWriter
 from .state_manager import StateManager
+from .comprehensive_report import ComprehensiveReportGenerator
 
 __all__ = [
     'SectorConfig',
@@ -17,4 +18,5 @@ __all__ = [
     'SectorAnalyzer',
     'SectorWriter',
     'StateManager',
+    'ComprehensiveReportGenerator',
 ]

@@ -14,6 +14,7 @@ python telegram_gemini_bot.py          # Telegram Gemini Q&A 봇
 python weekly_sector_bot.py            # 섹터봇 스케줄 (일요일)
 python weekly_sector_bot.py --once     # 섹터봇 즉시 전체
 python weekly_sector_bot.py --resume   # 섹터봇 중단 후 재개
+python weekly_sector_bot.py --comprehensive  # 종합 투자 평가 보고서
 ```
 
 ## 구조 요약
@@ -31,7 +32,7 @@ python weekly_sector_bot.py --resume   # 섹터봇 중단 후 재개
 | AI | Gemini + Claude (HTML 변환) |
 | 출력 | Blogger (7개 블로그) |
 | 뉴스봇 스케줄 | Daily 07:00, Weekly 일요일, Monthly 1일 |
-| 섹터봇 스케줄 | 일요일 13:00~18:00 (11개 섹터) |
+| 섹터봇 스케줄 | 일요일 13:00~18:00 (11개 섹터), 19:00 종합 보고서 |
 | 최소 글자 수 | Gemini 1500자+, Claude HTML 1000자+ |
 
 ## 환경변수 (.env)
