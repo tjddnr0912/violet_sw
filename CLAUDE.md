@@ -15,7 +15,7 @@ violet_sw/
 ├── 011_macos_cc_usage/ # Claude Code 사용량 모니터 (macOS 메뉴바)
 ├── 012_stock_dashboard/ # 글로벌 시장 대시보드 (Bloomberg-style, FastAPI)
 ├── 000~004_*/          # Lab & Study (Archive)
-└── start_all_bots.sh   # 전체 봇 일괄 실행 (iTerm2 7탭, Dashboard 포함)
+└── start_all_bots.sh   # 전체 봇 일괄 실행 (iTerm2 6탭, Dashboard 포함)
 ```
 
 ## Quick Start
@@ -29,7 +29,7 @@ violet_sw/
 | Project | 설명 | 실행 | 상세 |
 |---------|------|------|------|
 | 005_money | Bithumb 암호화폐 봇 (Ver3, 15분 주기) | `./scripts/run_v3_watchdog.sh` | [CLAUDE.md](005_money/CLAUDE.md) |
-| 006_auto_bot | 뉴스/섹터 봇 (Gemini→Blogger) | `./run_scheduled.sh` | [CLAUDE.md](006_auto_bot/CLAUDE.md) |
+| 006_auto_bot | 뉴스/버핏/섹터 봇 (Gemini+Claude→Blogger) | `./run_investment_bot.sh` | [CLAUDE.md](006_auto_bot/CLAUDE.md) |
 | 007_stock_trade | 한국주식 퀀트 (KOSPI200, 15종목) | `./run_quant.sh daemon` | [CLAUDE.md](007_stock_trade/CLAUDE.md) |
 | 008_stock_trade_us | 미국주식 퀀트 (S&P500, 15종목) | `./run_quant.sh daemon` | [CLAUDE.md](008_stock_trade_us/CLAUDE.md) |
 | 009_dashboard | Flask 대시보드 (port 5001) | `python app.py` | [CLAUDE.md](009_dashboard/CLAUDE.md) |

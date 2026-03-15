@@ -2,14 +2,13 @@
 # ==============================================
 # Start All Bots - iTerm2 Multi-Tab Launcher
 # ==============================================
-# Opens a new iTerm2 window with 7 tabs:
+# Opens a new iTerm2 window with 6 tabs:
 #   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart + Hang Detection)
-#   Tab 2: News Bot (Scheduled)
-#   Tab 3: Telegram Gemini Bot
-#   Tab 4: Quant Trading Daemon (주식 자동매매)
-#   Tab 5: Weekly Sector Bot (주간 섹터 투자정보)
-#   Tab 6: Dashboard Server (Flask, port 5001)
-#   Tab 7: Stock Dashboard (FastAPI, port 5002)
+#   Tab 2: Telegram Gemini Bot
+#   Tab 3: Quant Trading Daemon (주식 자동매매)
+#   Tab 4: Investment Bot (뉴스봇 + 버핏봇 + 섹터봇 통합)
+#   Tab 5: Dashboard Server (Flask, port 5001)
+#   Tab 6: Stock Dashboard (FastAPI, port 5002)
 #
 # Watchdog Features:
 #   - Auto-restart on crash
@@ -21,15 +20,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Script paths
 TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_watchdog.sh"
-NEWS_BOT="$SCRIPT_DIR/006_auto_bot/run_scheduled.sh"
 TELEGRAM_BOT="$SCRIPT_DIR/006_auto_bot/run_telegram_bot.sh"
 QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"
-WEEKLY_SECTOR="$SCRIPT_DIR/006_auto_bot/run_weekly_sector.sh"
+INVESTMENT_BOT="$SCRIPT_DIR/006_auto_bot/run_investment_bot.sh"
 DASHBOARD="$SCRIPT_DIR/009_dashboard"
 STOCK_DASHBOARD="$SCRIPT_DIR/012_stock_dashboard"
 
 # Check if scripts exist
-for script in "$TRADING_BOT" "$NEWS_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$WEEKLY_SECTOR"; do
+for script in "$TRADING_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$INVESTMENT_BOT"; do
     if [[ ! -f "$script" ]]; then
         echo "Error: Script not found: $script"
         exit 1
@@ -47,15 +45,7 @@ tell application "iTerm2"
         write text "echo -ne '\\\\e]0;Trading Bot\\\\a' && cd '$SCRIPT_DIR' && '$TRADING_BOT'"
     end tell
 
-    -- Create second tab (News Bot)
-    tell current window
-        create tab with default profile
-        tell current session
-            write text "echo -ne '\\\\e]0;News Bot\\\\a' && cd '$SCRIPT_DIR' && '$NEWS_BOT'"
-        end tell
-    end tell
-
-    -- Create third tab (Telegram Bot)
+    -- Create second tab (Telegram Bot)
     tell current window
         create tab with default profile
         tell current session
@@ -63,7 +53,7 @@ tell application "iTerm2"
         end tell
     end tell
 
-    -- Create fourth tab (Quant Trading Daemon)
+    -- Create third tab (Quant Trading Daemon)
     tell current window
         create tab with default profile
         tell current session
@@ -71,15 +61,15 @@ tell application "iTerm2"
         end tell
     end tell
 
-    -- Create fifth tab (Weekly Sector Bot)
+    -- Create fourth tab (Investment Bot: News + Buffett + Sector)
     tell current window
         create tab with default profile
         tell current session
-            write text "echo -ne '\\\\e]0;Weekly Sector\\\\a' && cd '$SCRIPT_DIR' && '$WEEKLY_SECTOR'"
+            write text "echo -ne '\\\\e]0;Investment Bot\\\\a' && cd '$SCRIPT_DIR' && '$INVESTMENT_BOT'"
         end tell
     end tell
 
-    -- Create sixth tab (Dashboard Server)
+    -- Create fifth tab (Dashboard Server)
     tell current window
         create tab with default profile
         tell current session
@@ -87,7 +77,7 @@ tell application "iTerm2"
         end tell
     end tell
 
-    -- Create seventh tab (Stock Dashboard)
+    -- Create sixth tab (Stock Dashboard)
     tell current window
         create tab with default profile
         tell current session
@@ -102,4 +92,4 @@ tell application "iTerm2"
 end tell
 EOF
 
-echo "All bots started in iTerm2 tabs! (7 tabs including Dashboards on ports 5001/5002)"
+echo "All bots started in iTerm2 tabs! (6 tabs including Dashboards on ports 5001/5002)"
