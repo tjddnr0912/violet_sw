@@ -33,6 +33,7 @@ from sector_bot import (
     SectorAnalyzer,
     SectorWriter,
     StateManager,
+    ComprehensiveReportGenerator,
 )
 from shared.blogger_uploader import BloggerUploader
 from shared.telegram_notifier import TelegramNotifier
@@ -248,6 +249,10 @@ class WeeklySectorBot:
         # 일요일 18:30에 전체 완료 알림
         schedule.every().sunday.at("18:30").do(self._send_weekly_summary)
 
+        # 일요일 19:00에 종합 투자 평가 보고서 생성
+        schedule.every().sunday.at("19:00").do(self._scheduled_comprehensive_report)
+        logger.info("Scheduled: Comprehensive Report at Sunday 19:00")
+
         logger.info("Schedule registered. Waiting for Sunday...")
 
         # 스케줄 루프
@@ -281,6 +286,154 @@ class WeeklySectorBot:
 
         if self.telegram:
             self.telegram.send_message(summary, parse_mode="HTML")
+
+    def generate_comprehensive_report(self) -> dict:
+        """11개 섹터 종합 투자 평가 보고서 생성 및 업로드"""
+        logger.info("=== Generating Comprehensive Investment Report ===")
+
+        result = {
+            'success': False,
+            'blog_url': None,
+            'error': None,
+        }
+
+        try:
+            report_gen = ComprehensiveReportGenerator()
+
+            # 1. 종합 보고서 생성 (섹터 파일 수집 → Claude 분석 → MD 저장)
+            report_result = report_gen.generate_report()
+
+            if not report_result['success']:
+                raise Exception(report_result.get('error', 'Report generation failed'))
+
+            logger.info(f"Comprehensive report: {len(report_result['content'])} chars")
+
+            # 2. HTML 변환 및 블로그 업로드
+            if not self.test_mode:
+                logger.info("Converting comprehensive report to HTML (chunked)...")
+                html_content = self._convert_long_md_to_html(report_result['content'])
+
+                title = report_gen.generate_title()
+                labels = ['종합분석', '주간', '투자정보']
+
+                upload_result = self.blogger.upload_post(
+                    title=title,
+                    content=html_content,
+                    labels=labels,
+                    is_draft=False,
+                    is_markdown=False,
+                )
+
+                if not upload_result['success']:
+                    raise Exception(f"Upload failed: {upload_result.get('message')}")
+
+                result['blog_url'] = upload_result.get('url')
+                logger.info(f"Comprehensive report uploaded: {result['blog_url']}")
+            else:
+                logger.info("Test mode - skipping upload")
+
+            result['success'] = True
+
+            # Telegram 알림
+            if self.telegram:
+                message = f"""📋 <b>종합 투자 평가 보고서 완료</b>
+
+{f"<a href='{result['blog_url']}'>블로그 보기</a>" if result['blog_url'] else "테스트 모드"}
+"""
+                try:
+                    self.telegram.send_message(message, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Telegram notification failed: {e}")
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Comprehensive report error: {error_msg}")
+            result['error'] = error_msg
+
+            if self.telegram:
+                try:
+                    self.telegram.send_message(
+                        f"❌ <b>종합 투자 평가 보고서 실패</b>\n\n에러: {error_msg}",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+        return result
+
+    def _convert_long_md_to_html(self, md_content: str) -> str:
+        """
+        긴 마크다운을 섹션별로 분할하여 HTML 변환
+
+        h2(##) 기준으로 분할 → 각 청크를 개별 HTML 변환 → 합침
+        """
+        import re
+
+        # h2 기준으로 섹션 분할
+        sections = re.split(r'(?=^## )', md_content, flags=re.MULTILINE)
+
+        # 첫 번째 요소가 h2 이전 내용(제목, 메타 등)이면 별도 처리
+        chunks = []
+        current_chunk = ""
+
+        for section in sections:
+            section = section.strip()
+            if not section:
+                continue
+
+            # 청크가 5000자 이하면 계속 합침
+            if len(current_chunk) + len(section) < 5000:
+                current_chunk += "\n\n" + section if current_chunk else section
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = section
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        logger.info(f"Split into {len(chunks)} chunks for HTML conversion")
+
+        # 각 청크를 개별 HTML 변환
+        html_parts = []
+        for i, chunk in enumerate(chunks, 1):
+            logger.info(f"Converting chunk {i}/{len(chunks)} ({len(chunk)} chars)...")
+            try:
+                html = convert_md_to_html_via_claude(chunk)
+
+                # 변환 결과 검증 (원본의 30% 미만이면 실패)
+                if len(html) < len(chunk) * 0.3:
+                    logger.warning(f"Chunk {i} HTML too short ({len(html)} chars), using markdown")
+                    html = None
+                else:
+                    logger.info(f"Chunk {i} HTML: {len(html)} chars")
+            except Exception as e:
+                logger.warning(f"Chunk {i} HTML conversion failed: {e}")
+                html = None
+
+            html_parts.append(html)
+
+        # 합치기: 성공한 청크는 HTML, 실패한 청크는 마크다운
+        combined = ""
+        all_success = True
+        for i, (html, chunk) in enumerate(zip(html_parts, chunks)):
+            if html:
+                combined += html + "\n\n"
+            else:
+                combined += chunk + "\n\n"
+                all_success = False
+
+        if all_success:
+            logger.info(f"All {len(chunks)} chunks converted to HTML ({len(combined)} chars)")
+        else:
+            logger.warning(f"Some chunks fell back to markdown ({len(combined)} chars)")
+
+        return combined.strip()
+
+    def _scheduled_comprehensive_report(self) -> None:
+        """스케줄된 종합 보고서 생성"""
+        logger.info("Scheduled comprehensive report triggered")
+        self.generate_comprehensive_report()
 
     def _send_completion_notification(self, sector, result: dict) -> None:
         """섹터 완료 알림"""
@@ -336,11 +489,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python weekly_sector_bot.py --once      # 즉시 전체 실행
-  python weekly_sector_bot.py --resume    # 중단 후 재개
-  python weekly_sector_bot.py --sector 1  # 특정 섹터만 실행
-  python weekly_sector_bot.py --test      # 테스트 (업로드 스킵)
-  python weekly_sector_bot.py             # 스케줄 모드 (일요일 자동)
+  python weekly_sector_bot.py --once            # 즉시 전체 실행
+  python weekly_sector_bot.py --resume          # 중단 후 재개
+  python weekly_sector_bot.py --sector 1        # 특정 섹터만 실행
+  python weekly_sector_bot.py --comprehensive   # 종합 보고서만 생성
+  python weekly_sector_bot.py --test            # 테스트 (업로드 스킵)
+  python weekly_sector_bot.py                   # 스케줄 모드 (일요일 자동)
         """
     )
 
@@ -375,6 +529,11 @@ Examples:
         action='store_true',
         help='Reset state and exit'
     )
+    parser.add_argument(
+        '--comprehensive',
+        action='store_true',
+        help='Generate comprehensive investment evaluation report'
+    )
 
     args = parser.parse_args()
 
@@ -394,7 +553,17 @@ Examples:
     bot = WeeklySectorBot(test_mode=args.test)
 
     # 실행 모드 결정
-    if args.sector:
+    if args.comprehensive:
+        # 종합 보고서만 생성
+        logger.info("Generating comprehensive report")
+        result = bot.generate_comprehensive_report()
+        print(f"\nResult: {'Success' if result['success'] else 'Failed'}")
+        if result.get('blog_url'):
+            print(f"URL: {result['blog_url']}")
+        if result.get('error'):
+            print(f"Error: {result['error']}")
+
+    elif args.sector:
         # 특정 섹터만 실행
         logger.info(f"Running single sector: {args.sector}")
         result = bot.process_sector(args.sector)
