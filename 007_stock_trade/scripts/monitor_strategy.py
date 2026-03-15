@@ -21,18 +21,38 @@ warnings.filterwarnings('ignore')
 from src.strategy.quant.backtest import Backtester, BacktestConfig
 
 
-# 현재 최적 가중치 (2025-12 최적화 결과)
-CURRENT_WEIGHTS = {
-    "momentum_weight": 0.20,
-    "short_mom_weight": 0.10,
-    "volatility_weight": 0.50,
-    "volume_weight": 0.00,
-    "target_count": 15,
-    "optimized_date": "2025-12-27",
-    "baseline_sharpe": 2.39,
-    "baseline_return": 8.99,
-    "baseline_mdd": -2.14
-}
+# 가중치를 optimal_weights.json에서 로드 (Single Source of Truth)
+def _load_current_weights() -> dict:
+    """optimal_weights.json에서 신호 가중치 로드"""
+    try:
+        from src.scheduler import WeightConfig
+        config = WeightConfig.load()
+        sw = config.get("signal_weights", {})
+        return {
+            "momentum_weight": sw.get("momentum_weight", 0.20),
+            "short_mom_weight": sw.get("short_mom_weight", 0.10),
+            "volatility_weight": sw.get("volatility_weight", 0.50),
+            "volume_weight": sw.get("volume_weight", 0.00),
+            "target_count": config.get("target_count", 15),
+            "optimized_date": config.get("optimized_date", ""),
+            "baseline_sharpe": config.get("baseline_sharpe", 0),
+            "baseline_return": config.get("baseline_return", 0),
+            "baseline_mdd": config.get("baseline_mdd", 0),
+        }
+    except Exception:
+        return {
+            "momentum_weight": 0.20,
+            "short_mom_weight": 0.10,
+            "volatility_weight": 0.50,
+            "volume_weight": 0.00,
+            "target_count": 15,
+            "optimized_date": "2025-12-27",
+            "baseline_sharpe": 2.39,
+            "baseline_return": 8.99,
+            "baseline_mdd": -2.14,
+        }
+
+CURRENT_WEIGHTS = _load_current_weights()
 
 # 경고 임계값
 ALERT_THRESHOLDS = {

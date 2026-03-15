@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-03-15: 퀀트 전략 대규모 개선 (14개 항목)
+
+15개 파일 변경, 월스트리트 퀀트 관점의 전면 개선.
+
+### 팩터 모델
+- **P1**: Bucket scoring → Cross-Sectional Percentile Ranking + Winsorization
+- **P9**: PER↔PBR 중복 완화 (PBR 35%→20%, PSR/배당 상향), 12-1M 모멘텀 + 1M 반전
+- **P6**: Volume/Liquidity 4번째 팩터 추가 (15%), 3팩터→4팩터 모델 전환
+
+### 포트폴리오 구성
+- **P2**: Buffer Rule — 16~25위 보유종목 유지 (턴오버 30~50% 절감)
+- **P5**: Equal Weight → Score-Weighted Allocation (1위 8.9% / 15위 3.9%)
+- **P10**: Score Gap Threshold — 점수 차이 5점 미만 교체 방지
+
+### 리스크 관리
+- **P3**: 익절 손익비 1.5:1/2.5:1 → 3.5:1/6.0:1, 부분익절 20%/30%로 축소
+- **P4**: 고정 손절 -7% → 변동성 기반 동적 3~15% (ATR 2σ × 20일)
+- **P8**: MDD 강제축소 → 변동성 타겟팅 (EWMA, 목표 15%), 연속손실 중단→축소 전환
+- **P13**: 시장 레짐 감지 (50/200일 MA), Bull/Neutral/Bear별 가중치·투자비중 동적 조정
+
+### 인프라
+- **P7**: Config 통합 — optimal_weights.json에 factor_weights/signal_weights 분리, 엔진 전달
+- **P12**: 백테스트 매도세 0.18% + 슬리피지 0.2% 추가, 비용/턴오버 메트릭
+- **P11**: 주문 시점 가격 기록 (order_time_price) — 슬리피지 실측용
+- **P15**: 벤치마크 수익률 추적 필드 (benchmark_return_pct, active_return_pct)
+
 ## 2026-02-24: engine_state ↔ KIS 포지션 동기화 버그 수정
 
 engine_state.json이 실제 KIS 증권사 잔고와 불일치하는 버그 수정.

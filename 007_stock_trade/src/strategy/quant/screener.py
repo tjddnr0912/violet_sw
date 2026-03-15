@@ -37,6 +37,7 @@ class ScreeningConfig:
     value_weight: float = 0.40
     momentum_weight: float = 0.30
     quality_weight: float = 0.30
+    volume_weight: float = 0.0   # Volume/Liquidity 팩터
 
     # 필터 설정
     filter_per_max: float = 50
@@ -77,7 +78,8 @@ class MultiFactorScreener:
         self.score_calc = CompositeScoreCalculator(
             value_weight=self.config.value_weight,
             momentum_weight=self.config.momentum_weight,
-            quality_weight=self.config.quality_weight
+            quality_weight=self.config.quality_weight,
+            volume_weight=self.config.volume_weight,
         )
 
     def build_universe(self) -> List[Dict]:
@@ -289,7 +291,10 @@ class MultiFactorScreener:
         progress_callback=None
     ) -> List[CompositeScore]:
         """
-        전체 유니버스에 대해 점수 계산
+        전체 유니버스에 대해 Cross-Sectional Percentile Ranking 기반 점수 계산
+
+        1단계: 모든 종목의 원시 데이터 순차 수집 (API Rate Limit 준수)
+        2단계: 전체 데이터를 한번에 percentile ranking으로 점수화
 
         Args:
             universe: 유니버스 종목 리스트
@@ -298,9 +303,12 @@ class MultiFactorScreener:
         Returns:
             CompositeScore 리스트
         """
-        scores = []
         total = len(universe)
         errors = []
+
+        # ========== 1단계: 원시 데이터 수집 ==========
+        all_stock_data = []
+        market_caps = []
 
         for i, stock in enumerate(universe):
             code = stock["code"]
@@ -309,7 +317,6 @@ class MultiFactorScreener:
                 progress_callback(i + 1, total, code)
 
             try:
-                # 종목 데이터 수집 (유니버스에서 종목명 전달)
                 stock_name = stock.get("name", "")
                 data = self.get_stock_data(code, stock_name)
 
@@ -317,34 +324,23 @@ class MultiFactorScreener:
                     errors.append(f"{code}: {data['error']}")
                     continue
 
-                # 복합 점수 계산
-                score = self.score_calc.calculate(
-                    code=code,
-                    name=data.get("name", ""),
-                    per=data.get("per", 0),
-                    pbr=data.get("pbr", 0),
-                    psr=data.get("psr", 0),
-                    dividend_yield=data.get("dividend_yield", 0),
-                    return_1m=data.get("return_1m", 0),
-                    return_3m=data.get("return_3m", 0),
-                    return_6m=data.get("return_6m", 0),
-                    return_12m=data.get("return_12m", 0),
-                    distance_from_high=data.get("distance_from_high", 0),
-                    volatility=data.get("volatility", 0),
-                    roe=data.get("roe", 0),
-                    operating_margin=data.get("operating_margin", 0),
-                    debt_ratio=data.get("debt_ratio", 0),
-                    market_cap=stock.get("market_cap", 0)
-                )
-
-                scores.append(score)
+                all_stock_data.append(data)
+                market_caps.append(stock.get("market_cap", 0))
 
             except Exception as e:
                 errors.append(f"{code}: {str(e)}")
                 continue
 
         if errors:
-            logger.warning(f"점수 계산 중 {len(errors)}개 오류 발생")
+            logger.warning(f"데이터 수집 중 {len(errors)}개 오류 발생")
+
+        # ========== 2단계: Batch Percentile Ranking 점수 계산 ==========
+        scores = self.score_calc.calculate_batch(all_stock_data, market_caps)
+
+        logger.info(
+            f"점수 계산 완료: 수집 {len(all_stock_data)}개, "
+            f"필터통과 {len([s for s in scores if s.passed_filter])}개"
+        )
 
         return scores
 

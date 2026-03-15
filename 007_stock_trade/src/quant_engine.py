@@ -67,6 +67,7 @@ class QuantEngineConfig:
     value_weight: float = 0.40
     momentum_weight: float = 0.30
     quality_weight: float = 0.30
+    volume_weight: float = 0.0   # Volume/Liquidity 팩터 (>0이면 V/M/Q에서 비례 차감)
 
     # 스케줄 시간 (HH:MM)
     screening_time: str = "08:30"     # 스크리닝 시간
@@ -107,14 +108,17 @@ class QuantEngineConfig:
         for name, weight in [
             ("value_weight", self.value_weight),
             ("momentum_weight", self.momentum_weight),
-            ("quality_weight", self.quality_weight)
+            ("quality_weight", self.quality_weight),
+            ("volume_weight", self.volume_weight),
         ]:
             if not (0.0 <= weight <= 1.0):
                 errors.append(f"{name}은(는) 0.0~1.0 사이여야 합니다: {weight}")
 
+        # volume_weight > 0이면 CompositeScoreCalculator가 V/M/Q를 비례 축소하므로
+        # V+M+Q 합계가 1.0이어야 (volume은 별도 처리)
         weight_sum = self.value_weight + self.momentum_weight + self.quality_weight
         if not (0.99 <= weight_sum <= 1.01):
-            errors.append(f"팩터 가중치 합계는 1.0이어야 합니다: {weight_sum:.2f}")
+            errors.append(f"V/M/Q 가중치 합계는 1.0이어야 합니다: {weight_sum:.2f}")
 
         # 모니터링 간격 검증
         if not (1 <= self.monitoring_interval <= 60):
@@ -163,7 +167,8 @@ class QuantTradingEngine:
             target_count=self.config.target_stock_count,
             value_weight=self.config.value_weight,
             momentum_weight=self.config.momentum_weight,
-            quality_weight=self.config.quality_weight
+            quality_weight=self.config.quality_weight,
+            volume_weight=self.config.volume_weight,
         )
         self.screener = MultiFactorScreener(self.client, screening_config)
 

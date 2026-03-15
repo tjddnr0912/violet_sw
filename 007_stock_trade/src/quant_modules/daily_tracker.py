@@ -34,6 +34,9 @@ class DailySnapshot:
     trades_today: int                   # 당일 거래 횟수
     positions: List[Dict] = field(default_factory=list)  # 종목별 상세
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # P15: 벤치마크 추적
+    benchmark_return_pct: float = 0.0    # 벤치마크(KOSPI200) 당일 수익률
+    active_return_pct: float = 0.0       # 초과 수익률 (전략 - 벤치마크)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

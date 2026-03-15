@@ -42,31 +42,76 @@ logger = logging.getLogger(__name__)
 
 
 class WeightConfig:
-    """가중치 설정 관리"""
+    """가중치 설정 관리 (Single Source of Truth)
+
+    config/optimal_weights.json 구조:
+    {
+        "factor_weights": {         ← 엔진 스크리너가 사용하는 V/M/Q 3팩터 가중치
+            "value_weight": 0.40,
+            "momentum_weight": 0.30,
+            "quality_weight": 0.30
+        },
+        "signal_weights": {         ← 모니터링/최적화 스크립트용 신호 가중치
+            "momentum_weight": 0.20,
+            "short_mom_weight": 0.10,
+            "volatility_weight": 0.50,
+            "volume_weight": 0.00
+        },
+        "target_count": 15,
+        ...
+    }
+    """
 
     CONFIG_FILE = "config/optimal_weights.json"
 
-    DEFAULT_WEIGHTS = {
+    DEFAULT_FACTOR_WEIGHTS = {
+        "value_weight": 0.40,
+        "momentum_weight": 0.30,
+        "quality_weight": 0.30,
+    }
+
+    DEFAULT_SIGNAL_WEIGHTS = {
         "momentum_weight": 0.20,
         "short_mom_weight": 0.10,
         "volatility_weight": 0.50,
         "volume_weight": 0.00,
+    }
+
+    DEFAULT_CONFIG = {
+        "factor_weights": DEFAULT_FACTOR_WEIGHTS,
+        "signal_weights": DEFAULT_SIGNAL_WEIGHTS,
         "target_count": 15,
         "optimized_date": "2025-12-27",
         "baseline_sharpe": 2.39,
         "baseline_return": 8.99,
         "baseline_mdd": -2.14,
-        "auto_update": True
+        "auto_update": True,
     }
 
     @classmethod
     def load(cls) -> dict:
-        """가중치 설정 로드"""
+        """전체 설정 로드"""
         config_path = Path(cls.CONFIG_FILE)
         if config_path.exists():
             with open(config_path, 'r') as f:
-                return json.load(f)
-        return cls.DEFAULT_WEIGHTS.copy()
+                data = json.load(f)
+            # 이전 형식(flat) → 새 형식(nested) 호환
+            if "factor_weights" not in data:
+                data = cls._migrate_legacy(data)
+            return data
+        return cls.DEFAULT_CONFIG.copy()
+
+    @classmethod
+    def load_factor_weights(cls) -> dict:
+        """엔진 스크리너용 V/M/Q 팩터 가중치 로드"""
+        config = cls.load()
+        return config.get("factor_weights", cls.DEFAULT_FACTOR_WEIGHTS.copy())
+
+    @classmethod
+    def load_signal_weights(cls) -> dict:
+        """모니터링/최적화용 신호 가중치 로드"""
+        config = cls.load()
+        return config.get("signal_weights", cls.DEFAULT_SIGNAL_WEIGHTS.copy())
 
     @classmethod
     def save(cls, weights: dict):
@@ -89,22 +134,48 @@ class WeightConfig:
         # 최적화 결과가 더 좋으면 업데이트
         if optimization_result.get('sharpe_ratio', 0) > current.get('baseline_sharpe', 0) * 0.8:
             new_weights = {
-                "momentum_weight": optimization_result['momentum_weight'],
-                "short_mom_weight": optimization_result['short_mom_weight'],
-                "volatility_weight": optimization_result['volatility_weight'],
-                "volume_weight": optimization_result['volume_weight'],
+                "factor_weights": current.get("factor_weights", cls.DEFAULT_FACTOR_WEIGHTS),
+                "signal_weights": {
+                    "momentum_weight": optimization_result['momentum_weight'],
+                    "short_mom_weight": optimization_result['short_mom_weight'],
+                    "volatility_weight": optimization_result['volatility_weight'],
+                    "volume_weight": optimization_result['volume_weight'],
+                },
                 "target_count": int(optimization_result['target_count']),
                 "optimized_date": datetime.now().strftime("%Y-%m-%d"),
                 "baseline_sharpe": optimization_result['sharpe_ratio'],
                 "baseline_return": optimization_result['total_return'],
                 "baseline_mdd": optimization_result['max_drawdown'],
                 "auto_update": True,
-                "previous_weights": current
+                "previous_weights": current,
             }
             cls.save(new_weights)
             return new_weights
 
         return current
+
+    @classmethod
+    def _migrate_legacy(cls, data: dict) -> dict:
+        """이전 flat 형식 → 새 nested 형식으로 마이그레이션"""
+        migrated = {
+            "factor_weights": cls.DEFAULT_FACTOR_WEIGHTS.copy(),
+            "signal_weights": {
+                "momentum_weight": data.get("momentum_weight", 0.20),
+                "short_mom_weight": data.get("short_mom_weight", 0.10),
+                "volatility_weight": data.get("volatility_weight", 0.50),
+                "volume_weight": data.get("volume_weight", 0.00),
+            },
+            "target_count": data.get("target_count", 15),
+            "optimized_date": data.get("optimized_date", ""),
+            "baseline_sharpe": data.get("baseline_sharpe", 0),
+            "baseline_return": data.get("baseline_return", 0),
+            "baseline_mdd": data.get("baseline_mdd", 0),
+            "auto_update": data.get("auto_update", True),
+        }
+        if "previous_weights" in data:
+            migrated["previous_weights"] = data["previous_weights"]
+        logger.info("레거시 가중치 형식 → 새 형식으로 마이그레이션")
+        return migrated
 
 
 class TelegramReporter:
@@ -213,9 +284,16 @@ class AutoStrategyManager:
         try:
             from scripts.monitor_strategy import run_validation, check_alerts, CURRENT_WEIGHTS
 
-            # 현재 가중치로 업데이트
+            # 신호 가중치로 모니터 업데이트
             import scripts.monitor_strategy as monitor_module
-            monitor_module.CURRENT_WEIGHTS = self.weights
+            sw = self.weights.get("signal_weights", WeightConfig.DEFAULT_SIGNAL_WEIGHTS)
+            monitor_module.CURRENT_WEIGHTS = {
+                **sw,
+                "target_count": self.weights.get("target_count", 15),
+                "baseline_sharpe": self.weights.get("baseline_sharpe", 0),
+                "baseline_return": self.weights.get("baseline_return", 0),
+                "baseline_mdd": self.weights.get("baseline_mdd", 0),
+            }
 
             # 검증 실행
             metrics = run_validation(months=3)

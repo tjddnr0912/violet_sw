@@ -93,7 +93,7 @@ self.application.add_handler(CommandHandler("new_feature", self.cmd_new_feature)
 | 파일 | 용도 |
 |------|------|
 | `config/system_config.json` | 시스템 설정 (텔레그램 명령 저장) |
-| `config/optimal_weights.json` | 팩터 가중치 |
+| `config/optimal_weights.json` | 팩터 가중치 (factor_weights: V/M/Q/Vol, signal_weights: 모니터링용) |
 | `data/quant/engine_state.json` | 포지션, 주문 상태, 리밸런싱 추적 |
 | `data/quant/daily_history.json` | 일별 자산 스냅샷 (2026-02 추가) |
 | `data/quant/transaction_journal.json` | 전체 거래 일지 (2026-02 추가) |

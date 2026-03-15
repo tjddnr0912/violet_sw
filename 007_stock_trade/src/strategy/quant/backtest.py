@@ -27,7 +27,8 @@ class BacktestConfig:
     """백테스트 설정"""
     initial_capital: float = 100_000_000  # 초기 자본금
     commission_rate: float = 0.00015      # 수수료율 (0.015%)
-    slippage_rate: float = 0.001          # 슬리피지 (0.1%)
+    sell_tax_rate: float = 0.0018         # 매도 증권거래세 (0.18%)
+    slippage_rate: float = 0.002          # 슬리피지 (0.2% — 리밸런싱 동시 교체 반영)
     max_position_size: float = 0.10       # 최대 단일 포지션 비중 (10%)
     target_position_count: int = 20       # 목표 보유 종목 수
     rebalance_frequency: str = "M"        # 리밸런싱 주기 (D:일, W:주, M:월)
@@ -124,6 +125,13 @@ class BacktestResult:
     avg_loss: float = 0.0
     profit_factor: float = 0.0
     avg_holding_days: float = 0.0
+
+    # P12 추가: 비용 & 턴오버
+    total_commission: float = 0.0         # 총 수수료
+    total_sell_tax: float = 0.0           # 총 증권거래세
+    total_slippage_cost: float = 0.0      # 총 슬리피지 비용 (추정)
+    total_cost_pct: float = 0.0           # 총 비용률 (초기자본 대비 %)
+    avg_monthly_turnover: float = 0.0     # 월평균 턴오버율 (%)
 
     # 상세 데이터
     trades: List[Trade] = field(default_factory=list)
@@ -390,11 +398,13 @@ class Backtester:
         actual_price = price * (1 - self.config.slippage_rate)
         amount = actual_price * pos.quantity
         commission = amount * self.config.commission_rate
+        sell_tax = amount * self.config.sell_tax_rate  # 증권거래세
+        total_cost = commission + sell_tax
 
-        pnl = (actual_price - pos.entry_price) * pos.quantity - commission
+        pnl = (actual_price - pos.entry_price) * pos.quantity - total_cost
         pnl_pct = (actual_price / pos.entry_price - 1) * 100
 
-        self.cash += (amount - commission)
+        self.cash += (amount - total_cost)
 
         self.trades.append(Trade(
             date=date,
@@ -540,6 +550,27 @@ class Backtester:
             if month_key not in result.monthly_returns:
                 result.monthly_returns[month_key] = 0
             result.monthly_returns[month_key] = snapshot.cumulative_return
+
+        # P12: 비용 & 턴오버 계산
+        total_commission = sum(t.commission for t in self.trades)
+        total_sell_tax = sum(
+            t.amount * self.config.sell_tax_rate
+            for t in self.trades if t.side == OrderSide.SELL
+        )
+        total_slippage = sum(
+            t.amount * self.config.slippage_rate
+            for t in self.trades
+        )
+        result.total_commission = total_commission
+        result.total_sell_tax = total_sell_tax
+        result.total_slippage_cost = total_slippage
+        total_cost = total_commission + total_sell_tax + total_slippage
+        result.total_cost_pct = total_cost / self.config.initial_capital * 100
+
+        # 월평균 턴오버
+        months = max(1, (end_date - start_date).days / 30)
+        sell_amount = sum(t.amount for t in self.trades if t.side == OrderSide.SELL)
+        result.avg_monthly_turnover = (sell_amount / months) / self.config.initial_capital * 100
 
         return result
 

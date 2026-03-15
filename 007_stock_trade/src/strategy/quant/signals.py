@@ -302,8 +302,51 @@ class TechnicalAnalyzer:
         )
 
 
+@dataclass
+class RegimeConfig:
+    """시장 레짐별 설정
+
+    레짐에 따라 팩터 가중치와 투자 비중을 동적 조정.
+    """
+    condition: MarketCondition
+    value_weight_adj: float = 1.0     # Value 가중치 배수
+    momentum_weight_adj: float = 1.0  # Momentum 가중치 배수
+    quality_weight_adj: float = 1.0   # Quality 가중치 배수
+    invest_ratio: float = 0.90        # 투자 비중 (1 - 현금)
+    description: str = ""
+
+
+# 레짐별 기본 설정
+REGIME_CONFIGS = {
+    MarketCondition.BULLISH: RegimeConfig(
+        condition=MarketCondition.BULLISH,
+        value_weight_adj=0.8,      # Value 축소
+        momentum_weight_adj=1.3,   # Momentum 확대 (추세 추종)
+        quality_weight_adj=0.9,    # Quality 약간 축소
+        invest_ratio=0.90,         # 투자 90% (현금 10%)
+        description="상승장: 모멘텀 추종 강화",
+    ),
+    MarketCondition.NEUTRAL: RegimeConfig(
+        condition=MarketCondition.NEUTRAL,
+        value_weight_adj=1.0,
+        momentum_weight_adj=1.0,
+        quality_weight_adj=1.0,
+        invest_ratio=0.80,         # 투자 80% (현금 20%)
+        description="횡보장: 균형 유지",
+    ),
+    MarketCondition.BEARISH: RegimeConfig(
+        condition=MarketCondition.BEARISH,
+        value_weight_adj=1.2,      # Value 확대 (방어적)
+        momentum_weight_adj=0.6,   # Momentum 대폭 축소
+        quality_weight_adj=1.3,    # Quality 확대 (안전주)
+        invest_ratio=0.60,         # 투자 60% (현금 40%)
+        description="하락장: 방어적 전환",
+    ),
+}
+
+
 class MarketAnalyzer:
-    """시장 환경 분석기"""
+    """시장 환경 분석기 (P13: 레짐 감지 + 동적 조정)"""
 
     def __init__(self, api_client):
         self.client = api_client
@@ -312,25 +355,74 @@ class MarketAnalyzer:
         """
         시장 상태 판단
 
+        200일 이평선 기반 (장기 추세) + 50일/200일 크로스 (골든/데스크로스)
+
         Args:
-            index_prices: 지수 종가 리스트 (최신이 앞)
+            index_prices: 지수 종가 리스트 (최신이 앞, 최소 200개)
         """
         if not index_prices or len(index_prices) < 60:
             return MarketCondition.NEUTRAL
 
         current = index_prices[0]
+        ma50 = sum(index_prices[:min(50, len(index_prices))]) / min(50, len(index_prices))
+        ma200 = sum(index_prices[:min(200, len(index_prices))]) / min(200, len(index_prices))
+
+        # 상승장: 50일선 > 200일선 AND 지수 > 50일선
+        if len(index_prices) >= 200 and ma50 > ma200 and current > ma50:
+            return MarketCondition.BULLISH
+
+        # 하락장: 50일선 < 200일선 AND 지수 < 50일선
+        if len(index_prices) >= 200 and ma50 < ma200 and current < ma50:
+            return MarketCondition.BEARISH
+
+        # 데이터 부족 시 간략 판단 (기존 로직)
         ma20 = sum(index_prices[:20]) / 20
         ma60 = sum(index_prices[:60]) / 60
 
-        # 상승장: 지수 > 20일선 > 60일선
         if current > ma20 > ma60:
             return MarketCondition.BULLISH
-
-        # 하락장: 지수 < 20일선 < 60일선
         if current < ma20 < ma60:
             return MarketCondition.BEARISH
 
         return MarketCondition.NEUTRAL
+
+    def get_regime_config(self, index_prices: List[float] = None) -> RegimeConfig:
+        """
+        현재 시장 레짐에 맞는 설정 반환
+
+        Returns:
+            RegimeConfig (팩터 가중치 조정 배수, 투자 비중)
+        """
+        condition = self.get_market_condition(index_prices)
+        return REGIME_CONFIGS.get(condition, REGIME_CONFIGS[MarketCondition.NEUTRAL])
+
+    @staticmethod
+    def adjust_factor_weights(
+        base_value: float,
+        base_momentum: float,
+        base_quality: float,
+        regime: RegimeConfig
+    ) -> Tuple[float, float, float]:
+        """
+        레짐에 따라 팩터 가중치 조정 후 정규화
+
+        Args:
+            base_value, base_momentum, base_quality: 기본 V/M/Q 가중치
+            regime: 레짐 설정
+
+        Returns:
+            (adjusted_value, adjusted_momentum, adjusted_quality) — 합계 1.0
+        """
+        raw_v = base_value * regime.value_weight_adj
+        raw_m = base_momentum * regime.momentum_weight_adj
+        raw_q = base_quality * regime.quality_weight_adj
+
+        # 정규화 (합계 = 1.0)
+        total = raw_v + raw_m + raw_q
+        if total <= 0:
+            return base_value, base_momentum, base_quality
+
+        return raw_v / total, raw_m / total, raw_q / total
 
 
 class SignalGenerator:
@@ -497,15 +589,56 @@ class SignalGenerator:
 class StopLossManager:
     """손절 관리자"""
 
+    # ATR 기반 동적 손절 한도
+    MIN_STOP_PCT = 0.03   # 최소 손절폭 3%
+    MAX_STOP_PCT = 0.15   # 최대 손절폭 15%
+
     @staticmethod
     def calculate_fixed_stop(entry_price: float, loss_pct: float = 0.07) -> float:
-        """고정 비율 손절가"""
+        """고정 비율 손절가 (fallback)"""
         return entry_price * (1 - loss_pct)
 
     @staticmethod
     def calculate_atr_stop(entry_price: float, atr: float, multiplier: float = 2.0) -> float:
         """ATR 기반 손절가"""
         return entry_price - (atr * multiplier)
+
+    @staticmethod
+    def calculate_dynamic_stop(
+        entry_price: float,
+        volatility: float,
+        fallback_pct: float = 0.07
+    ) -> float:
+        """
+        변동성(연환산 %) 기반 동적 손절가
+
+        변동성이 높은 종목은 넓은 손절, 낮은 종목은 좁은 손절.
+        일일 변동성 × 2.0을 손절폭으로 사용 (약 2 시그마).
+
+        Args:
+            entry_price: 진입가
+            volatility: 연환산 변동성 (%, 예: 25.0)
+            fallback_pct: 변동성 없을 때 고정 비율
+
+        Returns:
+            손절가
+        """
+        if volatility <= 0:
+            return entry_price * (1 - fallback_pct)
+
+        # 연환산 변동성 → 일일 변동성 → 손절폭 (2 시그마)
+        daily_vol = volatility / 100.0 / (252 ** 0.5)
+        stop_pct = daily_vol * 2.0 * (252 ** 0.5) / 100.0  # 다시 비율로
+
+        # 실제로는: stop_pct = volatility / 100 * 2 / sqrt(252) * sqrt(holding_period)
+        # 간소화: 약 1개월(20일) 보유 기준
+        stop_pct = (volatility / 100.0) * 2.0 * ((20 / 252) ** 0.5)
+
+        # 한도 적용
+        stop_pct = max(StopLossManager.MIN_STOP_PCT,
+                       min(StopLossManager.MAX_STOP_PCT, stop_pct))
+
+        return entry_price * (1 - stop_pct)
 
     @staticmethod
     def update_trailing_stop(
@@ -543,16 +676,20 @@ class TakeProfitManager:
         """
         익절 목표가 계산 (손익비 기반)
 
+        모멘텀 전략에서는 winner를 오래 보유해야 right tail 수익 확보 가능.
+        기존 1.5:1 / 2.5:1 → 3.5:1 / 6.0:1로 확대하여
+        +25% / +42% 수준에서 부분 익절.
+
         Returns:
             (1차 익절가, 2차 익절가)
         """
         risk = entry_price - stop_loss
 
-        # 1차: 손익비 1.5:1
-        tp1 = entry_price + (risk * 1.5)
+        # 1차: 손익비 3.5:1 (stop_loss 7% 기준 → +24.5%)
+        tp1 = entry_price + (risk * 3.5)
 
-        # 2차: 손익비 2.5:1
-        tp2 = entry_price + (risk * 2.5)
+        # 2차: 손익비 6.0:1 (stop_loss 7% 기준 → +42%)
+        tp2 = entry_price + (risk * 6.0)
 
         return tp1, tp2
 
@@ -564,6 +701,10 @@ class TakeProfitManager:
         """
         단계별 매도 수량 계산
 
+        1차: 20% (기존 30% → 축소, winner 더 보유)
+        2차: 30% (기존 50% → 축소)
+        나머지는 트레일링 스탑으로 관리
+
         Args:
             total_qty: 총 수량
             stage: 단계 (1 또는 2)
@@ -572,8 +713,8 @@ class TakeProfitManager:
             매도 수량
         """
         if stage == 1:
-            return int(total_qty * 0.30)  # 30%
+            return int(total_qty * 0.20)  # 20% (이익 실현)
         elif stage == 2:
-            return int(total_qty * 0.50)  # 남은 것의 50%
+            return int(total_qty * 0.30)  # 남은 것의 30%
         else:
             return total_qty  # 전량

@@ -37,15 +37,22 @@ class RiskConfig:
     daily_loss_limit: float = 0.02         # 일일 손실 한도 2%
     weekly_loss_limit: float = 0.05        # 주간 손실 한도 5%
     monthly_loss_limit: float = 0.10       # 월간 손실 한도 10%
-    mdd_limit: float = 0.20                # MDD 한도 20%
+    mdd_limit: float = 0.25               # MDD 한도 25% (P8: 20%→25% 완화)
+
+    # 변동성 타겟팅 (P8 추가)
+    target_volatility: float = 0.15        # 목표 포트폴리오 변동성 15%
+    vol_lookback_days: int = 20            # 실현 변동성 계산 기간 (영업일)
+    vol_ewma_decay: float = 0.94           # EWMA decay factor (RiskMetrics)
+    min_invest_ratio: float = 0.40         # 최소 투자 비중 40% (과도한 축소 방지)
+    max_invest_ratio: float = 0.95         # 최대 투자 비중 95%
 
     # 현금 비중
     min_cash_ratio: float = 0.10           # 최소 현금 비중 10%
     crisis_cash_ratio: float = 0.50        # 위기 시 현금 비중 50%
 
-    # 연속 손실 관리
-    max_consecutive_losses: int = 3        # 최대 연속 손실 횟수
-    pause_duration_days: int = 5           # 거래 중단 기간
+    # 연속 손실 관리 (P8: 중단→축소로 전환)
+    max_consecutive_losses: int = 5        # 연속 손실 경고 횟수 (3→5 완화)
+    consecutive_loss_scale: float = 0.70   # 연속 손실 시 포지션 축소 비율 70%
 
     # 섹터 분산
     max_sector_weight: float = 0.30        # 섹터당 최대 비중 30%
@@ -263,15 +270,16 @@ class RiskMonitor:
                 action_required="신규 매수 중단"
             ))
 
-        # MDD 체크
+        # MDD 체크 (P8: 변동성 타겟팅이 사전 조정하므로 한도 완화)
         if snapshot.mdd > self.config.mdd_limit:
+            target_ratio = self.calculate_target_invest_ratio()
             alerts.append(RiskAlert(
                 level=RiskLevel.CRITICAL,
                 alert_type="MDD_EXCEEDED",
                 message=f"MDD 한도 초과: {snapshot.mdd*100:.2f}%",
                 value=snapshot.mdd * 100,
                 threshold=self.config.mdd_limit * 100,
-                action_required="포지션 50% 축소"
+                action_required=f"변동성 타겟팅 투자비중 {target_ratio*100:.0f}%로 조정"
             ))
 
         # 현금 비중 체크
@@ -302,6 +310,56 @@ class RiskMonitor:
         self.alerts.extend(alerts)
         return alerts
 
+    def calculate_target_invest_ratio(self) -> float:
+        """
+        변동성 타겟팅 기반 투자 비중 계산 (P8)
+
+        목표 변동성 대비 실현 변동성이 높으면 투자 비중 축소,
+        낮으면 투자 비중 확대.
+
+        Returns:
+            권장 투자 비중 (0.4 ~ 0.95)
+        """
+        if len(self.history) < 5:
+            return 1.0 - self.config.min_cash_ratio  # 기본 90%
+
+        # 최근 일별 수익률로 실현 변동성 계산 (EWMA)
+        recent = self.history[-self.config.vol_lookback_days:]
+        daily_returns = []
+        for i in range(1, len(recent)):
+            if recent[i - 1].total_value > 0:
+                r = (recent[i].total_value / recent[i - 1].total_value) - 1.0
+                daily_returns.append(r)
+
+        if len(daily_returns) < 5:
+            return 1.0 - self.config.min_cash_ratio
+
+        # EWMA 변동성
+        decay = self.config.vol_ewma_decay
+        ewma_var = daily_returns[0] ** 2
+        for r in daily_returns[1:]:
+            ewma_var = decay * ewma_var + (1 - decay) * r ** 2
+
+        realized_vol = (ewma_var ** 0.5) * (252 ** 0.5)  # 연환산
+
+        if realized_vol <= 0:
+            return 1.0 - self.config.min_cash_ratio
+
+        # 투자 비중 = 목표 변동성 / 실현 변동성
+        target_ratio = self.config.target_volatility / realized_vol
+
+        # 한도 적용
+        invest_ratio = max(self.config.min_invest_ratio,
+                           min(self.config.max_invest_ratio, target_ratio))
+
+        logger.info(
+            f"변동성 타겟팅: 실현vol={realized_vol*100:.1f}%, "
+            f"목표vol={self.config.target_volatility*100:.0f}%, "
+            f"투자비중={invest_ratio*100:.0f}%"
+        )
+
+        return invest_ratio
+
     def check_consecutive_losses(self) -> Optional[RiskAlert]:
         """연속 손실 체크"""
         if len(self.trade_history) < self.config.max_consecutive_losses:
@@ -311,16 +369,15 @@ class RiskMonitor:
         consecutive_losses = sum(1 for t in recent_trades if t.get("pnl", 0) < 0)
 
         if consecutive_losses >= self.config.max_consecutive_losses:
-            self.is_trading_paused = True
-            self.pause_until = datetime.now() + timedelta(days=self.config.pause_duration_days)
-
+            # P8: 완전 중단 대신 포지션 축소
+            scale = self.config.consecutive_loss_scale
             alert = RiskAlert(
-                level=RiskLevel.CRITICAL,
+                level=RiskLevel.HIGH,
                 alert_type="CONSECUTIVE_LOSSES",
                 message=f"{consecutive_losses}연속 손실 발생",
                 value=consecutive_losses,
                 threshold=self.config.max_consecutive_losses,
-                action_required=f"{self.config.pause_duration_days}일간 거래 중단"
+                action_required=f"포지션 사이즈 {scale*100:.0f}%로 축소"
             )
             self.alerts.append(alert)
             return alert
