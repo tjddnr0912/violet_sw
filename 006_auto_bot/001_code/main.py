@@ -194,12 +194,19 @@ class NewsBot:
                                     chat_id=self.config.TELEGRAM_CHAT_ID
                                 )
 
-                                telegram_result = notifier.send_blog_notification(
-                                    summary_content=blog_summary,
-                                    upload_success=blog_upload_success,
-                                    blog_url=blog_url,
-                                    error_message=blog_error if not blog_upload_success else None
-                                )
+                                current_date = datetime.now().strftime("%Y년 %m월 %d일")
+                                if blog_upload_success and blog_url:
+                                    message = (
+                                        f"📰 <b>{current_date} 뉴스 요약</b>\n\n"
+                                        f"<a href='{blog_url}'>블로그 보기</a>"
+                                    )
+                                else:
+                                    message = (
+                                        f"📰 <b>{current_date} 뉴스 요약</b>\n\n"
+                                        f"{'❌ 블로그 업로드 실패: ' + (blog_error or 'Unknown') if blog_error else '블로그 업로드 비활성화'}"
+                                    )
+
+                                telegram_result = notifier.send_message(message, parse_mode="HTML")
 
                                 if telegram_result['success']:
                                     logger.info("Telegram notification sent successfully")
@@ -268,6 +275,7 @@ class NewsBot:
                 return
 
             # Step 4: Upload to Blogger (if enabled)
+            blog_url = None
             if getattr(self.config, 'BLOGGER_ENABLED', False):
                 logger.info("Step 4: Uploading weekly summary to Blogger...")
                 try:
@@ -314,7 +322,8 @@ class NewsBot:
                         )
 
                         if upload_result['success']:
-                            logger.info(f"Weekly summary uploaded: {upload_result.get('url', 'N/A')}")
+                            blog_url = upload_result.get('url')
+                            logger.info(f"Weekly summary uploaded: {blog_url}")
                         else:
                             logger.warning(f"Blogger upload failed: {upload_result['message']}")
 
@@ -332,8 +341,9 @@ class NewsBot:
                         chat_id=self.config.TELEGRAM_CHAT_ID
                     )
 
-                    message = f"Weekly news summary completed!\nPeriod: {start_date_str} ~ {end_date_str}"
-                    notifier.send_message(message)
+                    link_text = f"<a href='{blog_url}'>블로그 보기</a>" if blog_url else "블로그 업로드 없음"
+                    message = f"📰 <b>주간 뉴스 요약 ({start_date_str} ~ {end_date_str})</b>\n\n{link_text}"
+                    notifier.send_message(message, parse_mode="HTML")
 
                 except Exception as e:
                     logger.error(f"Telegram notification error: {e}")
@@ -471,13 +481,9 @@ class NewsBot:
                         chat_id=self.config.TELEGRAM_CHAT_ID
                     )
 
-                    message = f"Monthly news summary completed! ({last_year}/{last_month})"
-                    if blog_url:
-                        message += f"\n{blog_url}"
-                    if blog_upload_success:
-                        message += f"\nCleaned up {cleanup_year}/{cleanup_month} data"
-
-                    notifier.send_message(message)
+                    link_text = f"<a href='{blog_url}'>블로그 보기</a>" if blog_url else "블로그 업로드 없음"
+                    message = f"📰 <b>월간 뉴스 요약 ({last_year}년 {last_month}월)</b>\n\n{link_text}"
+                    notifier.send_message(message, parse_mode="HTML")
 
                 except Exception as e:
                     logger.error(f"Telegram notification error: {e}")
