@@ -79,6 +79,19 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 - **주차 키**: YYYY-WW 형식 (같은 주 내에서만 재개 가능)
 - **저장 정보**: 완료 섹터, 실패 섹터, 블로그 URL
 
+## 분석 프롬프트 (PTCC 프레임워크)
+
+`analyzer.py`의 각 섹터 프롬프트는 6개 섹션으로 구성:
+
+| 섹션 | 위치 | 내용 |
+|------|------|------|
+| **Persona** | `SECTOR_PROMPTS[id]` (섹터별) | 전문가 역할 + 필수 분석 항목 + 형식 특수사항 |
+| **Task** | `_build_analysis_prompt()` (공용) | 해석/판단/행동 3관점 분석 |
+| **Context** | 공용 | 데이터 소스, 독자, 발행 채널 |
+| **Blogger Style** | 공용 | 이모지, 짧은 문단, 표, Hook, h1 미사용 |
+| **SEO** | 공용 | 키워드 전략, Heading 계층, snippet 최적화 |
+| **Constraints** | 공용 | 언어/분량/객관성/정직성/AI 언급 금지 등 9항목 |
+
 ## 설정 (sector_bot/config.py)
 
 | Setting | Value | Description |
