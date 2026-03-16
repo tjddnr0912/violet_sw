@@ -50,10 +50,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 스케줄:
-  매일  07:00  뉴스 수집·요약·업로드
-  월~금 07:30  버핏의 투자 노트
-  일    09:00  주간 뉴스 요약
-  매월1일 10:00  월간 뉴스 요약
+  매일  06:00  뉴스 수집·요약·업로드
+  월~금 06:30  버핏의 투자 노트
+  일    07:00  주간 뉴스 요약
+  매월1일 07:30  월간 뉴스 요약
   일    13:00~18:00  11개 섹터별 투자 분석
   일    18:30  주간 섹터 요약 알림
   일    19:00  종합 투자 평가 보고서
@@ -88,30 +88,30 @@ def main():
 
     # === 스케줄 등록 ===
 
-    # 뉴스봇: 매일 07:00 일간 뉴스
-    schedule.every().day.at("07:00").do(
+    # 뉴스봇: 매일 06:00 일간 뉴스
+    schedule.every().day.at("06:00").do(
         _safe_run, "NewsDaily", news_bot.run_daily_task
     )
-    logger.info("Scheduled: News Daily at 07:00")
+    logger.info("Scheduled: News Daily at 06:00")
 
-    # 버핏봇: 월~금 07:30
+    # 버핏봇: 월~금 06:30
     for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']:
-        getattr(schedule.every(), day).at("07:30").do(
+        getattr(schedule.every(), day).at("06:30").do(
             _safe_run, "Buffett", buffett_bot.run
         )
-    logger.info("Scheduled: Buffett Bot Mon-Fri 07:30")
+    logger.info("Scheduled: Buffett Bot Mon-Fri 06:30")
 
-    # 뉴스봇: 일요일 09:00 주간 뉴스 요약
-    schedule.every().sunday.at("09:00").do(
+    # 뉴스봇: 일요일 07:00 주간 뉴스 요약
+    schedule.every().sunday.at("07:00").do(
         _safe_run, "NewsWeekly", news_bot.run_weekly_task
     )
-    logger.info("Scheduled: News Weekly at Sunday 09:00")
+    logger.info("Scheduled: News Weekly at Sunday 07:00")
 
-    # 뉴스봇: 매일 10:00 월간 체크 (1일에만 실행)
-    schedule.every().day.at("10:00").do(
+    # 뉴스봇: 매일 07:30 월간 체크 (1일에만 실행)
+    schedule.every().day.at("07:30").do(
         _safe_run, "NewsMonthlyCheck", news_bot._check_and_run_monthly
     )
-    logger.info("Scheduled: News Monthly check at 10:00 (runs on 1st only)")
+    logger.info("Scheduled: News Monthly check at 07:30 (runs on 1st only)")
 
     # 섹터봇: 일요일 13:00~18:00 (11개 섹터)
     from sector_bot import SECTORS
