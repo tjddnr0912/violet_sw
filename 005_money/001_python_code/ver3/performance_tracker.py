@@ -84,6 +84,7 @@ class PerformanceTracker:
         # 관찰 모드 상태 관리
         self._observation_start_time: Optional[datetime] = None
         self._observation_cleared: bool = False
+        self._observation_cooldown_until: Optional[datetime] = None  # Cooldown after auto-release
 
         self._load_history()
 
@@ -422,8 +423,9 @@ class PerformanceTracker:
 
         해제 조건:
         1. 수동 해제 플래그 (/resume 명령)
-        2. 시간 기반 해제 (2시간 경과)
-        3. 수익 거래 발생
+        2. 시간 기반 해제 (2시간 경과) + 2시간 쿨다운
+        3. 마지막 손실이 24시간 이상 전 (오래된 손실로 인한 데드락 방지)
+        4. 연속 손실 해소 (3회 미만)
 
         Returns:
             Tuple[bool, str]: (관찰 모드 권장 여부, 이유)
@@ -432,35 +434,67 @@ class PerformanceTracker:
         if self._observation_cleared:
             return False, "수동 해제됨"
 
-        # 2. 시간 기반 해제 (4시간 = 14400초)
+        # 2. 시간 기반 해제 (2시간 = 7200초) + 2시간 쿨다운 설정
         if self._observation_start_time:
-            elapsed = datetime.now() - self._observation_start_time
-            if elapsed.total_seconds() >= 14400:  # 4시간
+            elapsed = (datetime.now() - self._observation_start_time).total_seconds()
+            if elapsed >= 7200:  # 2시간
                 self._observation_start_time = None
-                return False, "4시간 경과로 자동 해제"
+                self._observation_cooldown_until = datetime.now() + timedelta(hours=2)
+                return False, "2시간 경과로 자동 해제 (2시간 쿨다운)"
 
-        # 3. 연속 손실 체크
+        # 3. 자동 해제 쿨다운 중 (데드락 방지: 해제 직후 재진입 차단)
+        if self._observation_cooldown_until:
+            if datetime.now() < self._observation_cooldown_until:
+                return False, "자동 해제 쿨다운 중"
+            else:
+                self._observation_cooldown_until = None
+
+        # 4. 연속 손실 체크 (임계값 2 → 3으로 상향)
         consecutive_losses = self.get_consecutive_losses()
 
-        if consecutive_losses >= 2:
+        if consecutive_losses >= 3:
+            # 오래된 손실 보호: 마지막 손실이 24시간 이상 전이면 관찰 모드 미진입
+            last_loss_time = self._get_last_loss_time()
+            if last_loss_time:
+                hours_since_last_loss = (datetime.now() - last_loss_time).total_seconds() / 3600
+                if hours_since_last_loss > 24:
+                    return False, f"마지막 손실 {hours_since_last_loss:.0f}시간 전 (24시간 경과, 관찰 모드 해제)"
+
             # 관찰 모드 진입 시간 기록
             if not self._observation_start_time:
                 self._observation_start_time = datetime.now()
             return True, f"연속 {consecutive_losses}회 손실로 관찰 모드 활성"
 
         # 연속 손실이 해소되면 관찰 모드 리셋
-        if consecutive_losses < 2 and self._observation_start_time:
+        if consecutive_losses < 3 and self._observation_start_time:
             self._observation_start_time = None
             self._observation_cleared = False
 
-        # 최근 7일 승률도 확인
+        # 최근 7일 승률도 확인 (임계값 0.30 → 0.25로 완화)
         perf = self.get_recent_performance(days=7)
-        if perf['total_trades'] >= 5 and perf['win_rate'] < 0.30:
+        if perf['total_trades'] >= 5 and perf['win_rate'] < 0.25:
             if not self._observation_start_time:
                 self._observation_start_time = datetime.now()
             return True, f"최근 7일 승률 {perf['win_rate']:.0%}로 관찰 모드 권장"
 
         return False, ""
+
+    def _get_last_loss_time(self) -> Optional[datetime]:
+        """
+        Get the timestamp of the most recent losing trade.
+
+        Returns:
+            datetime of the last loss, or None if no losses found
+        """
+        closed = [t for t in self.trades if t.status == 'closed' and t.profit_krw <= 0]
+        if not closed:
+            return None
+        latest = max(closed, key=lambda t: t.exit_time or '')
+        if not latest.exit_time:
+            return None
+        if isinstance(latest.exit_time, str):
+            return datetime.fromisoformat(latest.exit_time)
+        return latest.exit_time
 
     def clear_observation_mode(self) -> str:
         """
@@ -478,20 +512,26 @@ class PerformanceTracker:
         관찰 모드 상태 정보 반환.
 
         Returns:
-            관찰 모드 상태 딕셔너리
+            관찰 모드 상태 딕셔너리 (remaining_time, cooldown_remaining 포함)
         """
         is_observation, reason = self.is_observation_mode_recommended()
         remaining_time = None
+        cooldown_remaining = None
 
         if self._observation_start_time and is_observation:
             elapsed = datetime.now() - self._observation_start_time
-            remaining_seconds = max(0, 14400 - elapsed.total_seconds())
+            remaining_seconds = max(0, 7200 - elapsed.total_seconds())  # 2시간 = 7200초
             remaining_time = f"{int(remaining_seconds // 60)}분 {int(remaining_seconds % 60)}초"
+
+        if self._observation_cooldown_until and datetime.now() < self._observation_cooldown_until:
+            cooldown_seconds = (self._observation_cooldown_until - datetime.now()).total_seconds()
+            cooldown_remaining = f"{int(cooldown_seconds // 60)}분 {int(cooldown_seconds % 60)}초"
 
         return {
             'is_observation_mode': is_observation,
             'reason': reason,
             'remaining_time': remaining_time,
+            'cooldown_remaining': cooldown_remaining,
             'consecutive_losses': self.get_consecutive_losses(),
             'manually_cleared': self._observation_cleared
         }

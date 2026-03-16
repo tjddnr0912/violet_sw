@@ -17,7 +17,7 @@
 | 거래소 | Bithumb |
 | 언어 | Python 3.13+ |
 | 전략 | Portfolio Multi-Coin (Ver3) |
-| 분석 주기 | 15분 |
+| 분석 주기 | 60초 (풀) + 15초 (경량 체크) |
 | 최대 포지션 | 2 |
 | 코인 | BTC, ETH, XRP |
 

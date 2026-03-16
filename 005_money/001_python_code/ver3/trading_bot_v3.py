@@ -405,26 +405,52 @@ class TradingBotV3(VersionInterface):
                 # Check and send daily summary at 23:50
                 self._check_and_send_daily_summary()
 
-                # Adaptive analysis interval: shorter in bear + high volatility
-                effective_interval = self._get_adaptive_interval()
-
-                # Sleep until next cycle
+                # Dual-cycle: lightweight price checks between full analyses
                 cycle_elapsed = time.time() - cycle_start
-                sleep_time = max(0, effective_interval - cycle_elapsed)
+                has_positions = len(self.portfolio_manager.executor.positions) > 0
 
-                if sleep_time > 0:
-                    interval_note = ""
-                    if effective_interval != self.check_interval:
-                        interval_note = f" (adaptive: {effective_interval}s)"
-                    self.logger.logger.info(
-                        f"\nCycle completed in {cycle_elapsed:.2f}s. "
-                        f"Sleeping {sleep_time:.0f}s until next cycle...{interval_note}"
+                if has_positions:
+                    # Positions open: run lightweight price checks every 15s
+                    # Full analysis repeats every 60s (handled by adaptive interval)
+                    lw_interval = self.config.get('SCHEDULE_CONFIG', {}).get(
+                        'lightweight_check_interval', 15
                     )
-                    time.sleep(sleep_time)
+                    full_cycle_interval = self._get_adaptive_interval()  # 60s when positions open
+                    remaining_sleep = max(0, full_cycle_interval - cycle_elapsed)
+                    checks_to_do = int(remaining_sleep / lw_interval)
+
+                    if checks_to_do > 0:
+                        self.logger.logger.info(
+                            f"\nCycle completed in {cycle_elapsed:.2f}s. "
+                            f"Running {checks_to_do} lightweight checks ({lw_interval}s apart)..."
+                        )
+                        for _ in range(checks_to_do):
+                            if not self.running:
+                                break
+                            time.sleep(lw_interval)
+                            self._run_lightweight_check()
+                    else:
+                        self.logger.logger.warning(
+                            f"\nCycle took {cycle_elapsed:.2f}s (exceeds interval of {full_cycle_interval}s)"
+                        )
                 else:
-                    self.logger.logger.warning(
-                        f"\nCycle took {cycle_elapsed:.2f}s (exceeds interval of {effective_interval}s)"
-                    )
+                    # No positions: use adaptive interval for full analysis timing
+                    effective_interval = self._get_adaptive_interval()
+                    sleep_time = max(0, effective_interval - cycle_elapsed)
+
+                    if sleep_time > 0:
+                        interval_note = ""
+                        if effective_interval != self.check_interval:
+                            interval_note = f" (adaptive: {effective_interval}s)"
+                        self.logger.logger.info(
+                            f"\nCycle completed in {cycle_elapsed:.2f}s. "
+                            f"Sleeping {sleep_time:.0f}s until next cycle...{interval_note}"
+                        )
+                        time.sleep(sleep_time)
+                    else:
+                        self.logger.logger.warning(
+                            f"\nCycle took {cycle_elapsed:.2f}s (exceeds interval of {effective_interval}s)"
+                        )
 
         except KeyboardInterrupt:
             self.logger.logger.info("\nKeyboard interrupt received. Stopping bot...")
@@ -936,36 +962,137 @@ Configuration:
 
     def _get_adaptive_interval(self) -> int:
         """
-        Get adaptive analysis interval based on market conditions.
+        Get adaptive full-analysis interval based on market conditions.
 
-        In bear regimes with high volatility, reduce interval to half
-        for faster stop-loss/profit-taking response.
+        With the dual-cycle structure, lightweight checks handle position
+        monitoring between full analyses. This method controls only the
+        full analysis frequency.
 
         Returns:
-            Effective check interval in seconds
+            Effective full-analysis interval in seconds
         """
         try:
+            has_positions = len(self.portfolio_manager.executor.positions) > 0
             factors = self.factor_manager.get_current_factors()
             volatility = factors.get('volatility_level', 'NORMAL')
             regime = factors.get('market_regime', 'unknown')
-
             bear_regimes = ['bearish', 'strong_bearish']
 
-            # Bear + HIGH/EXTREME volatility → half interval
-            if regime in bear_regimes and volatility in ('HIGH', 'EXTREME'):
-                adaptive = max(150, self.check_interval // 2)  # min 2.5 minutes
-                return adaptive
+            if has_positions:
+                # Positions open: full analysis every 60s;
+                # lightweight checks handle exit monitoring between cycles
+                return 60
 
-            # Has open positions in bear market → slightly shorter
-            has_positions = len(self.portfolio_manager.executor.positions) > 0
-            if has_positions and regime in bear_regimes:
-                adaptive = max(180, int(self.check_interval * 0.7))
-                return adaptive
+            # No positions: check entry signals, can afford slightly longer intervals
+            if regime in bear_regimes and volatility in ('HIGH', 'EXTREME'):
+                return 45   # Very active bear market: check entry frequently
+            elif regime in bear_regimes:
+                return 60
+            else:
+                return 90   # Calm/bullish market: 90s is sufficient
 
         except Exception:
             pass
 
         return self.check_interval
+
+    def _run_lightweight_check(self):
+        """
+        Lightweight price check for active positions.
+
+        Fetches only the current ticker price (1 API call per coin with a position).
+        Does NOT recalculate indicators or entry signals - only handles:
+        - Stop-loss hit detection
+        - Trailing stop update
+        - Bear quick-trade exits (hard stop, quick profit)
+
+        This runs between full analysis cycles to reduce exit latency.
+        """
+        try:
+            from lib.api.bithumb_api import get_ticker
+
+            executor = self.portfolio_manager.executor
+            positions = executor.get_all_positions()
+
+            if not positions:
+                return
+
+            for ticker, pos in positions.items():
+                try:
+                    ticker_data = get_ticker(ticker)
+                    if not ticker_data:
+                        continue
+
+                    current_price = float(ticker_data.get('closing_price', 0))
+                    if current_price <= 0:
+                        continue
+
+                    # 1. Check stop-loss (Chandelier Exit)
+                    if executor.check_stop_loss(ticker, current_price):
+                        self.logger.logger.warning(
+                            f"QUICK CHECK: Stop-loss hit for {ticker} at {current_price:,.0f}"
+                        )
+                        result = executor.close_position(
+                            ticker, current_price,
+                            dry_run=self.config['EXECUTION_CONFIG'].get('dry_run', True),
+                            reason="Quick check: stop-loss"
+                        )
+                        if result.get('success'):
+                            self.portfolio_manager._last_exit_times[ticker] = datetime.now()
+                        continue
+
+                    # 2. Update trailing stop (active only after TP1 is hit)
+                    executor.update_trailing_stop(ticker, current_price, trailing_pct=2.0)
+
+                    # 3. Bear quick-trade checks (only in bear regimes if configured)
+                    bear_config = self.config.get('BEAR_QUICK_TRADE_CONFIG', {})
+                    if bear_config.get('enabled', False):
+                        factors = self.factor_manager.get_current_factors()
+                        market_regime = factors.get('market_regime', 'unknown')
+                        bear_regimes = bear_config.get('active_regimes', ['bearish', 'strong_bearish'])
+
+                        if market_regime in bear_regimes:
+                            entry_price = pos.entry_price
+                            if entry_price > 0:
+                                change_pct = ((current_price - entry_price) / entry_price) * 100
+                                is_sb = (market_regime == 'strong_bearish')
+
+                                # Hard stop loss (tighter than Chandelier for bear quick-trades)
+                                hard_stop = bear_config.get(
+                                    'hard_stop_pct_strong_bearish' if is_sb else 'hard_stop_pct_bearish',
+                                    1.0 if is_sb else 1.5
+                                )
+                                if change_pct <= -hard_stop:
+                                    self.logger.logger.warning(
+                                        f"QUICK CHECK: Bear hard stop {ticker} ({change_pct:+.2f}%)"
+                                    )
+                                    executor.close_position(
+                                        ticker, current_price,
+                                        dry_run=self.config['EXECUTION_CONFIG'].get('dry_run', True),
+                                        reason=f"Quick check: bear hard stop ({change_pct:+.2f}%)"
+                                    )
+                                    self.portfolio_manager._last_exit_times[ticker] = datetime.now()
+                                    continue
+
+                                # Quick profit target for bear quick-trades
+                                profit_target = bear_config.get('profit_target_pct', 0.8)
+                                if change_pct >= profit_target:
+                                    self.logger.logger.info(
+                                        f"QUICK CHECK: Bear quick profit {ticker} (+{change_pct:.2f}%)"
+                                    )
+                                    executor.close_position(
+                                        ticker, current_price,
+                                        dry_run=self.config['EXECUTION_CONFIG'].get('dry_run', True),
+                                        reason=f"Quick check: bear profit (+{change_pct:.2f}%)"
+                                    )
+                                    self.portfolio_manager._last_exit_times[ticker] = datetime.now()
+                                    continue
+
+                except Exception as e:
+                    self.logger.logger.debug(f"Lightweight check error for {ticker}: {e}")
+
+        except Exception as e:
+            self.logger.logger.debug(f"Lightweight check cycle error: {e}")
 
     def get_current_factors(self) -> Dict[str, Any]:
         """

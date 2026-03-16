@@ -136,10 +136,11 @@ TRADING_CONFIG = {
 # ========== SCHEDULE CONFIGURATION (Ver3 Override) ==========
 
 SCHEDULE_CONFIG = {
-    'check_interval_seconds': 300,   # 5 minutes (300 seconds) - optimized for 1H candle analysis
-    'check_interval_minutes': 5,     # 5 minutes
+    'check_interval_seconds': 60,        # 60 seconds - full analysis interval (dual-cycle mode)
+    'check_interval_minutes': 1,         # 1 minute
+    'lightweight_check_interval': 15,    # seconds between lightweight price checks (when positions open)
     'daily_report_time': '23:59',
-    'balance_check_interval': 30,    # minutes
+    'balance_check_interval': 30,        # minutes
 }
 
 
