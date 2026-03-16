@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-03-16: 4-Phase 알고리즘 근본 재설계
+
+하락장 수익성 개선을 위한 알고리즘 전면 개편.
+
+| Phase | 내용 | 핵심 변경 |
+|-------|------|-----------|
+| 1 | 멀티TF 레짐 엔진 | 매크로(일봉)+마이크로(1H) 듀얼 레짐, bearish+micro_bullish 시 게이트 완화 |
+| 2 | VWAP+MACD 지표 | 선행 지표 추가, 스코어 4점→6점 체계 |
+| 3 | 적응형 가중치 | 지표별 승률 기반 자동 가중치 조정, 레짐별 독립 테이블 |
+| 4 | 호가창+Volume Profile | 실시간 매수/매도 압력 분석, BUY 시 매도벽 차단 |
+
+수정 파일: `regime_detector.py`, `strategy_v3.py`, `dynamic_factor_manager.py`, `config_base.py`, `config_v3.py`, `portfolio_manager_v3.py`, `performance_tracker.py`, `bithumb_api.py`, `trading_bot_v3.py`
+
 ## 2026-01: 수익성 개선
 
 | 항목 | 변경 내용 |

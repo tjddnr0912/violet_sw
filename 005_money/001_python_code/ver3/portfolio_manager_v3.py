@@ -853,22 +853,33 @@ class PortfolioManagerV3:
                 else:  # New position
                     trade_amount_krw = base_amount_krw
 
-                    # Bear Quick-Trade position size reduction
-                    bear_config = self.config.get('BEAR_QUICK_TRADE_CONFIG', {})
-                    if bear_config.get('enabled', False):
+                    # Phase 1: Composite strategy position_size_override (takes priority)
+                    position_size_override = analysis.get('position_size_override')
+                    if position_size_override is not None:
+                        trade_amount_krw = base_amount_krw * position_size_override
+                        micro_regime = analysis.get('micro_regime', 'unknown')
                         market_regime = analysis.get('market_regime', 'unknown')
-                        bear_regimes = bear_config.get('active_regimes', ['bearish', 'strong_bearish'])
-                        if market_regime in bear_regimes:
-                            is_sb = (market_regime == 'strong_bearish')
-                            bear_mult = bear_config.get(
-                                'position_mult_strong_bearish' if is_sb else 'position_mult_bearish',
-                                0.3 if is_sb else 0.5
-                            )
-                            trade_amount_krw = base_amount_krw * bear_mult
-                            self.logger.logger.info(
-                                f"🐻 Bear position sizing: {coin} {bear_mult*100:.0f}% "
-                                f"({trade_amount_krw:,.0f} KRW in {market_regime})"
-                            )
+                        self.logger.logger.info(
+                            f"🔀 MTF position sizing: {coin} {position_size_override*100:.0f}% "
+                            f"({trade_amount_krw:,.0f} KRW in {market_regime}+{micro_regime})"
+                        )
+                    else:
+                        # Bear Quick-Trade position size reduction (original logic)
+                        bear_config = self.config.get('BEAR_QUICK_TRADE_CONFIG', {})
+                        if bear_config.get('enabled', False):
+                            market_regime = analysis.get('market_regime', 'unknown')
+                            bear_regimes = bear_config.get('active_regimes', ['bearish', 'strong_bearish'])
+                            if market_regime in bear_regimes:
+                                is_sb = (market_regime == 'strong_bearish')
+                                bear_mult = bear_config.get(
+                                    'position_mult_strong_bearish' if is_sb else 'position_mult_bearish',
+                                    0.3 if is_sb else 0.5
+                                )
+                                trade_amount_krw = base_amount_krw * bear_mult
+                                self.logger.logger.info(
+                                    f"🐻 Bear position sizing: {coin} {bear_mult*100:.0f}% "
+                                    f"({trade_amount_krw:,.0f} KRW in {market_regime})"
+                                )
 
                 units = trade_amount_krw / price
 

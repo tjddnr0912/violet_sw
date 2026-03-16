@@ -40,6 +40,69 @@ TIMEFRAME_CONFIG = {
 }
 
 
+# ========== MULTI-TIMEFRAME REGIME CONFIGURATION ==========
+# Phase 1: Macro (Daily) + Micro (1H) dual-layer regime system
+MULTI_TF_REGIME_CONFIG = {
+    'enable_multi_tf_regime': True,   # Phase 1 activated (2026-03-16)
+
+    # Micro regime EMA periods (1H timeframe)
+    'micro_ema_fast': 9,
+    'micro_ema_slow': 21,
+    'micro_slope_threshold': 0.05,   # EMA9 slope % for direction confirmation
+    'micro_hysteresis_count': 2,     # Consecutive same-regime readings to confirm
+
+    # RSI convergence (Multi-TF RSI)
+    'rsi_convergence_enabled': True,
+    'daily_rsi_oversold': 40,        # Daily RSI threshold for oversold zone
+    'h1_rsi_oversold': 35,           # 1H RSI threshold for oversold zone
+    'divergence_rsi_slope_min': 3.0, # Min 1H RSI increase for divergence detection
+
+    # Composite strategy matrix overrides
+    # Key: (macro_regime, micro_regime) -> strategy adjustments
+    # Only bear-zone combos listed here; bull/neutral use macro defaults
+    'composite_overrides': {
+        # === Bearish macro + micro combos (핵심 개선 영역) ===
+        ('bearish', 'micro_bullish'): {
+            'entry_threshold_modifier': 1.1,
+            'position_size_override': 0.6,
+            'extreme_oversold_required': False,  # 핵심: 게이트 제거
+            'bear_momentum_filter': False,        # 모멘텀 필터도 완화
+        },
+        ('bearish', 'micro_neutral'): {
+            'entry_threshold_modifier': 1.3,
+            'position_size_override': 0.5,
+            'extreme_oversold_required': True,
+            'bear_momentum_filter': True,
+        },
+        ('bearish', 'micro_bearish'): {
+            'entry_threshold_modifier': 2.0,
+            'position_size_override': 0.3,
+            'extreme_oversold_required': True,
+            'bear_momentum_filter': True,
+        },
+        # === Strong Bearish macro + micro combos ===
+        ('strong_bearish', 'micro_bullish'): {
+            'entry_threshold_modifier': 1.3,
+            'position_size_override': 0.4,
+            'extreme_oversold_required': True,
+            'bear_momentum_filter': False,        # 반등 중이면 모멘텀 필터 비활성
+        },
+        ('strong_bearish', 'micro_neutral'): {
+            'entry_threshold_modifier': 1.8,
+            'position_size_override': 0.3,
+            'extreme_oversold_required': True,
+            'bear_momentum_filter': True,
+        },
+        ('strong_bearish', 'micro_bearish'): {
+            'entry_threshold_modifier': 2.5,
+            'position_size_override': 0.2,
+            'extreme_oversold_required': True,
+            'bear_momentum_filter': True,
+        },
+    },
+}
+
+
 # ========== REGIME FILTER CONFIGURATION ==========
 # Market Regime Filter (Daily Timeframe)
 REGIME_FILTER_CONFIG = {
@@ -86,6 +149,20 @@ ENTRY_SCORING_CONFIG = {
             'points': 2,
             'condition': 'stoch_k crosses above stoch_d AND stoch_k < 20 AND stoch_d < 20',
         },
+
+        # Condition 4: VWAP cross (+1 point) - Phase 2, gated by enable_vwap_macd
+        'vwap_cross': {
+            'enabled': True,
+            'points': 1,
+            'condition': 'price crosses above VWAP',
+        },
+
+        # Condition 5: MACD cross (+1 point) - Phase 2, gated by enable_vwap_macd
+        'macd_cross': {
+            'enabled': True,
+            'points': 1,
+            'condition': 'MACD crosses above signal line below zero',
+        },
     },
 }
 
@@ -111,6 +188,15 @@ INDICATOR_CONFIG = {
     # ATR (for stop-loss and volatility)
     'atr_period': 14,
     'chandelier_multiplier': 3.0,  # Chandelier Exit multiplier
+
+    # VWAP (Phase 2)
+    'vwap_period': 24,           # Rolling VWAP period (24 hours for 1H candles)
+    'enable_vwap_macd': True,    # Phase 2 activated (2026-03-16)
+
+    # MACD (Phase 2)
+    'macd_fast': 12,
+    'macd_slow': 26,
+    'macd_signal': 9,
 }
 
 
@@ -244,4 +330,44 @@ LOGGING_CONFIG = {
     'log_level': 'INFO',
     'transaction_log': True,
     'markdown_log': True,
+}
+
+
+# ========== ADAPTIVE WEIGHT CONFIGURATION ==========
+# Phase 3: Performance-based indicator weight adjustment
+ADAPTIVE_WEIGHT_CONFIG = {
+    'enable_adaptive_weights': True,   # Phase 3 activated (2026-03-16)
+    'lookback_trades': 50,             # Number of recent trades to analyze
+    'min_trades_per_regime': 5,        # Min trades before adjusting regime-specific weights
+    'weight_min': 0.4,                 # Minimum indicator weight
+    'weight_max': 2.0,                 # Maximum indicator weight
+    'smoothing_factor': 0.3,           # EMA smoothing (0.3 = 30% new + 70% old)
+    'rapid_decay_threshold': 3,        # Consecutive failures to trigger rapid weight decay
+    'rapid_decay_lookback': 5,         # Recent trades to check for rapid decay
+    'rapid_decay_weight': 0.6,         # Weight to apply on rapid decay trigger
+    'weights_file': 'logs/adaptive_weights_v3.json',
+}
+
+
+# ========== ORDERBOOK & VOLUME PROFILE CONFIGURATION ==========
+# Phase 4: Real-time orderbook and historical volume analysis
+ORDERBOOK_CONFIG = {
+    'enable_orderbook_analysis': True,   # Phase 4-OB activated (2026-03-16)
+    'enable_volume_profile': True,       # Phase 4-VP activated (2026-03-16)
+    'orderbook_count': 30,               # Number of orderbook levels to fetch
+    'analysis_range_pct': 5.0,           # Price range for bid/ask analysis (±5%)
+    'wall_threshold_krw': {              # Min KRW value to consider as a wall (per coin)
+        'BTC': 500_000_000,
+        'ETH': 200_000_000,
+        'XRP': 50_000_000,
+        'SOL': 100_000_000,
+    },
+    'default_wall_threshold_krw': 100_000_000,
+    'bid_ask_ratio_strong': 1.5,         # Strong buy pressure threshold
+    'bid_ask_ratio_weak': 1.2,           # Weak buy pressure threshold
+    # Volume Profile settings
+    'vp_lookback': 50,                   # Number of 1H candles for VP
+    'vp_num_bins': 30,                   # Price bins for VP
+    'vp_value_area_pct': 0.70,           # Value Area percentage (70%)
+    'vp_near_va_low_pct': 1.0,          # "Near VA Low" threshold (±1%)
 }

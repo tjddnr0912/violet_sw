@@ -333,6 +333,49 @@ class PerformanceTracker:
         """Get monthly trading summary."""
         return self.get_recent_performance(days=30)
 
+    def get_closed_trades(self, last_n: int = 50) -> List[Dict[str, Any]]:
+        """
+        Get last N closed trades as standardized dicts for AdaptiveWeightEngine.
+
+        Each record contains:
+        - entry_conditions: List[str] - indicators that triggered entry
+        - profit_pct: float           - profit/loss percentage
+        - regime: str                 - market regime at entry time
+        - coin: str                   - traded coin symbol
+        - trade_id: str               - unique identifier
+
+        Args:
+            last_n: Maximum number of most-recent closed trades to return
+
+        Returns:
+            List of trade dicts sorted from oldest to newest.
+            Returns empty list when no closed trades exist.
+        """
+        with self._lock:
+            closed_trades = [t for t in self.trades if t.status == 'closed']
+            if not closed_trades:
+                return []
+
+            # Sort by exit_time ascending; guard against None exit_time
+            sorted_trades = sorted(
+                closed_trades,
+                key=lambda t: t.exit_time or ''
+            )
+
+            # Take the most recent last_n trades
+            recent = sorted_trades[-last_n:] if len(sorted_trades) > last_n else sorted_trades
+
+            return [
+                {
+                    'entry_conditions': t.entry_conditions,
+                    'profit_pct': t.profit_pct,
+                    'regime': t.regime,
+                    'coin': t.coin,
+                    'trade_id': t.trade_id,
+                }
+                for t in recent
+            ]
+
     def get_trades_for_weekly_update(self) -> List[Dict]:
         """
         Get trade data formatted for DynamicFactorManager weekly update.

@@ -399,6 +399,49 @@ def get_candlestick(ticker: str, interval: str = "24h") -> pd.DataFrame:
         print(f"An unexpected error occurred: {e}")
         return None
 
+def get_orderbook(ticker: str, count: int = 30) -> Optional[Dict]:
+    """
+    Fetch orderbook data from Bithumb public API.
+
+    Endpoint: GET https://api.bithumb.com/public/orderbook/{ticker}_KRW
+
+    Args:
+        ticker: Coin symbol (e.g., 'BTC')
+        count: Number of orderbook levels to fetch (1-30, default 30)
+
+    Returns:
+        Dictionary with keys:
+            'timestamp': str,
+            'order_currency': str,
+            'payment_currency': 'KRW',
+            'bids': [{'price': str, 'quantity': str}, ...],
+            'asks': [{'price': str, 'quantity': str}, ...]
+        or None on error
+    """
+    try:
+        count = max(1, min(30, count))  # Clamp to valid range
+        url = f"{PUBLIC_URL}/orderbook/{ticker}_KRW"
+        params = {'count': count}
+        # Use isolated session to prevent connection pool contamination
+        with requests.Session() as session:
+            response = session.get(url, params=params, timeout=API_TIMEOUT_PUBLIC)
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("status") == "0000":
+            return data['data']
+        else:
+            print(f"Orderbook API Error: {data.get('message')}")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        print(f"HTTP Request Error (orderbook): {e}")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred (orderbook): {e}")
+        return None
+
+
 def get_ticker(ticker: str = "ALL") -> Optional[Dict]:
     """
     현재가 정보 조회

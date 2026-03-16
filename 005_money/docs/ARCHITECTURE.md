@@ -29,7 +29,9 @@
 └── .env                             # 환경변수
 ```
 
-## 시장 레짐 분류 (6단계)
+## 시장 레짐 분류 (매크로 6단계 + 마이크로 3단계)
+
+### 매크로 레짐 (일봉 EMA50/EMA200)
 
 | 레짐 | EMA50-EMA200 차이 | 전략 |
 |------|-------------------|------|
@@ -40,12 +42,44 @@
 | Strong Bearish | < -5% | 평균회귀 (매우 보수적) |
 | Ranging | ADX < 20 | 박스권 매매 |
 
-## 진입 스코어 시스템
+### 마이크로 레짐 (1H EMA9/EMA21) — Phase 1
+
+| 마이크로 | 조건 | 역할 |
+|----------|------|------|
+| Micro Bullish | EMA9 > EMA21, 기울기 양수 | 단기 반등 감지 |
+| Micro Neutral | EMA 수렴/횡보 | 방향 미확정 |
+| Micro Bearish | EMA9 < EMA21, 기울기 음수 | 단기 하락 지속 |
+
+### 매크로×마이크로 조합 (Bear 구간 핵심)
+
+| 매크로 | 마이크로 | modifier | extreme_os | 모멘텀 필터 |
+|--------|----------|----------|------------|------------|
+| bearish | micro_bullish | **1.1** | **No** | **No** |
+| bearish | micro_neutral | 1.3 | Yes | Yes |
+| bearish | micro_bearish | 2.0 | Yes | Yes |
+| strong_bearish | micro_bullish | **1.3** | Yes | **No** |
+
+## 진입 스코어 시스템 (6점 체계)
 
 ```
-Entry Score = BB Touch (1점) + RSI Oversold (1점) + Stoch Cross (2점)
-최대 4점, 레짐별 최소 스코어 충족 시 진입
+기본 지표 (4점):
+  BB Touch (1점) + RSI Oversold (1점) + Stoch Cross (2점)
+
+Phase 2 지표 (2점):
+  VWAP Cross (1점) + MACD Cross (1점)
+
+보너스: Deep BB (0.5) + RSI Divergence (1.0) + Vol Confirm (0.5) + RSI Convergence (0~2.0)
 ```
+
+## Phase별 피처 플래그 (config_base.py)
+
+| Phase | 플래그 | 설명 |
+|-------|--------|------|
+| 1 | `enable_multi_tf_regime` | 매크로+마이크로 듀얼 레짐 |
+| 2 | `enable_vwap_macd` | VWAP+MACD 지표 (6점 체계) |
+| 3 | `enable_adaptive_weights` | 승률 기반 자동 가중치 조정 |
+| 4 | `enable_orderbook_analysis` | 호가창 매수/매도 압력 분석 |
+| 4 | `enable_volume_profile` | Volume Profile 참고 지표 |
 
 ## 청산 전략
 
@@ -53,10 +87,12 @@ Entry Score = BB Touch (1점) + RSI Oversold (1점) + Stoch Cross (2점)
 - **Trailing Stop**: TP1 도달 후 최고가 추적 (2% 하락 시 손절)
 - **Profit Target**: BB Middle (약세장) / BB Upper (강세장)
 - **Pyramiding**: 최대 3회 추가 진입 (100% → 50% → 25%)
+- **Orderbook Block**: BUY 시 매도벽 감지 시 진입 차단 (Phase 4)
 
 ## 리스크 관리
 
 - **관찰 모드**: 연속 손실 시 새 진입 일시 중단 (손절/익절은 정상 처리)
+- **적응형 가중치**: 지표별 승률 기반 자동 가중치 조정 (Phase 3)
 
 ## Watchdog 기능
 

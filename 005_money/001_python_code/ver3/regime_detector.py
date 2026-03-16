@@ -24,7 +24,7 @@ import numpy as np
 
 
 class ExtendedRegime(Enum):
-    """Extended market regime classification."""
+    """Extended market regime classification (Macro level - Daily)."""
     STRONG_BULLISH = "strong_bullish"   # EMA50 > EMA200 by >5%
     BULLISH = "bullish"                  # EMA50 > EMA200
     NEUTRAL = "neutral"                  # EMAs very close
@@ -32,6 +32,13 @@ class ExtendedRegime(Enum):
     STRONG_BEARISH = "strong_bearish"   # EMA50 < EMA200 by >5%
     RANGING = "ranging"                  # Low ADX, price oscillating
     UNKNOWN = "unknown"                  # Insufficient data
+
+
+class MicroRegime(Enum):
+    """Micro regime classification (1H timeframe)."""
+    MICRO_BULLISH = "micro_bullish"    # 1H EMA9 > EMA21, slope positive
+    MICRO_NEUTRAL = "micro_neutral"    # EMAs converging or flat
+    MICRO_BEARISH = "micro_bearish"    # 1H EMA9 < EMA21, slope negative
 
 
 class RegimeDetector:
@@ -579,8 +586,244 @@ class RegimeDetector:
         """
         if coin is None:
             self._regime_history_per_coin = {}
+            self._micro_regime_history_per_coin = {}
         elif coin in self._regime_history_per_coin:
             del self._regime_history_per_coin[coin]
+            if coin in self._micro_regime_history_per_coin:
+                del self._micro_regime_history_per_coin[coin]
+
+    # ========================================
+    # Phase 1: Micro Regime Detection (1H)
+    # ========================================
+
+    def detect_micro_regime(
+        self,
+        exec_df: pd.DataFrame,
+        coin: str = 'default'
+    ) -> Tuple[MicroRegime, Dict[str, Any]]:
+        """
+        Detect micro (short-term) regime from 1H candle data.
+
+        Uses EMA9/EMA21 crossover and slope to classify short-term trend.
+
+        Args:
+            exec_df: 1H OHLCV DataFrame (minimum 30 candles)
+            coin: Coin symbol for per-coin hysteresis
+
+        Returns:
+            Tuple of (MicroRegime, metadata_dict)
+        """
+        if exec_df is None or len(exec_df) < 30:
+            return MicroRegime.MICRO_NEUTRAL, {'reason': 'Insufficient 1H data'}
+
+        multi_tf_config = self.config.get('MULTI_TF_REGIME_CONFIG', {})
+        fast_period = multi_tf_config.get('micro_ema_fast', 9)
+        slow_period = multi_tf_config.get('micro_ema_slow', 21)
+        slope_threshold = multi_tf_config.get('micro_slope_threshold', 0.05)
+
+        # Calculate micro EMAs
+        ema_fast = exec_df['close'].ewm(span=fast_period, adjust=False).mean()
+        ema_slow = exec_df['close'].ewm(span=slow_period, adjust=False).mean()
+
+        latest_fast = float(ema_fast.iloc[-1])
+        latest_slow = float(ema_slow.iloc[-1])
+
+        if latest_slow == 0:
+            return MicroRegime.MICRO_NEUTRAL, {'reason': 'Invalid EMA values'}
+
+        ema_gap_pct = (latest_fast - latest_slow) / latest_slow * 100
+
+        # EMA fast slope: change over last 3 candles
+        if len(ema_fast) >= 4:
+            ema_fast_3ago = float(ema_fast.iloc[-4])
+            ema_slope_pct = ((latest_fast - ema_fast_3ago) / ema_fast_3ago * 100) if ema_fast_3ago > 0 else 0.0
+        else:
+            ema_slope_pct = 0.0
+
+        # RSI momentum (1H RSI change over last 3 candles)
+        rsi_momentum = 0.0
+        if 'rsi' in exec_df.columns and len(exec_df) >= 4:
+            rsi_now = float(exec_df['rsi'].iloc[-1])
+            rsi_3ago = float(exec_df['rsi'].iloc[-4])
+            rsi_momentum = rsi_now - rsi_3ago
+
+        # Classify micro regime
+        if latest_fast > latest_slow and ema_slope_pct > slope_threshold:
+            micro_regime = MicroRegime.MICRO_BULLISH
+        elif latest_fast < latest_slow and ema_slope_pct < -slope_threshold:
+            micro_regime = MicroRegime.MICRO_BEARISH
+        else:
+            micro_regime = MicroRegime.MICRO_NEUTRAL
+
+        # Apply per-coin hysteresis
+        micro_regime = self._apply_micro_hysteresis(micro_regime, coin)
+
+        metadata = {
+            'micro_ema_fast': round(latest_fast, 2),
+            'micro_ema_slow': round(latest_slow, 2),
+            'micro_ema_gap_pct': round(ema_gap_pct, 3),
+            'micro_ema_slope_pct': round(ema_slope_pct, 3),
+            'rsi_momentum': round(rsi_momentum, 2),
+            'micro_regime': micro_regime.value,
+        }
+
+        return micro_regime, metadata
+
+    def _apply_micro_hysteresis(self, current: MicroRegime, coin: str) -> MicroRegime:
+        """Apply hysteresis to micro regime to prevent rapid oscillation."""
+        if not hasattr(self, '_micro_regime_history_per_coin'):
+            self._micro_regime_history_per_coin = {}
+
+        micro_hyst_count = self.config.get('MULTI_TF_REGIME_CONFIG', {}).get(
+            'micro_hysteresis_count', 2
+        )
+
+        if coin not in self._micro_regime_history_per_coin:
+            self._micro_regime_history_per_coin[coin] = []
+
+        history = self._micro_regime_history_per_coin[coin]
+        history.append(current)
+
+        if len(history) > micro_hyst_count:
+            self._micro_regime_history_per_coin[coin] = history[-micro_hyst_count:]
+            history = self._micro_regime_history_per_coin[coin]
+
+        if len(history) >= micro_hyst_count:
+            if all(r == current for r in history):
+                return current
+            else:
+                return history[0]
+
+        return current
+
+    def calc_rsi_convergence(
+        self,
+        daily_df: pd.DataFrame,
+        exec_df: pd.DataFrame
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        Calculate Multi-TF RSI convergence score.
+
+        Detects when daily and 1H RSI both indicate oversold (convergence)
+        or when 1H RSI diverges upward while daily RSI still falls (divergence).
+
+        Args:
+            daily_df: Daily OHLCV with RSI or close prices
+            exec_df: 1H OHLCV with RSI already calculated
+
+        Returns:
+            Tuple of (convergence_score: 0.0~2.0, details_dict)
+        """
+        multi_tf_config = self.config.get('MULTI_TF_REGIME_CONFIG', {})
+        if not multi_tf_config.get('rsi_convergence_enabled', True):
+            return 0.0, {'enabled': False}
+
+        daily_rsi_threshold = multi_tf_config.get('daily_rsi_oversold', 40)
+        h1_rsi_threshold = multi_tf_config.get('h1_rsi_oversold', 35)
+        divergence_slope_min = multi_tf_config.get('divergence_rsi_slope_min', 3.0)
+
+        # Calculate daily RSI if not present
+        if 'rsi' not in daily_df.columns:
+            delta = daily_df['close'].diff()
+            gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            loss = loss.replace(0, 1e-10)
+            rs = gain / loss
+            daily_rsi = (100 - (100 / (1 + rs))).clip(0, 100).fillna(50)
+        else:
+            daily_rsi = daily_df['rsi']
+
+        rsi_daily_current = float(daily_rsi.iloc[-1])
+
+        # 1H RSI (already calculated in exec_df)
+        if 'rsi' not in exec_df.columns or len(exec_df) < 4:
+            return 0.0, {'reason': 'No 1H RSI data'}
+
+        rsi_h1_current = float(exec_df['rsi'].iloc[-1])
+
+        score = 0.0
+        details = {}
+
+        # Convergence: both timeframes oversold
+        daily_oversold = rsi_daily_current < daily_rsi_threshold
+        h1_oversold = rsi_h1_current < h1_rsi_threshold
+
+        if daily_oversold and h1_oversold:
+            score += 1.0
+            details['convergence'] = 'both_oversold'
+        elif daily_oversold or h1_oversold:
+            score += 0.5
+            details['convergence'] = 'single_oversold'
+
+        # Divergence: daily RSI falling but 1H RSI rising (reversal signal)
+        if len(daily_rsi) >= 4 and len(exec_df) >= 4:
+            daily_rsi_slope = rsi_daily_current - float(daily_rsi.iloc[-4])
+            h1_rsi_slope = rsi_h1_current - float(exec_df['rsi'].iloc[-4])
+
+            if daily_rsi_slope < 0 and h1_rsi_slope > divergence_slope_min:
+                score += 0.5
+                details['divergence'] = 'h1_rising_vs_daily_falling'
+
+        details['rsi_daily'] = round(rsi_daily_current, 1)
+        details['rsi_h1'] = round(rsi_h1_current, 1)
+        details['score'] = round(score, 1)
+
+        return score, details
+
+    def get_composite_strategy(
+        self,
+        macro_regime: ExtendedRegime,
+        micro_regime: MicroRegime
+    ) -> Dict[str, Any]:
+        """
+        Get composite strategy by combining macro and micro regime.
+
+        For macro regimes that are NOT bearish/strong_bearish, falls back to
+        the standard macro-only strategy with minor micro adjustments.
+        For bearish zones, uses the composite override matrix from config.
+
+        Args:
+            macro_regime: Daily-level regime (ExtendedRegime)
+            micro_regime: 1H-level regime (MicroRegime)
+
+        Returns:
+            Strategy dict compatible with get_regime_strategy() output,
+            plus additional fields: micro_regime, position_size_override,
+            extreme_oversold_required, bear_momentum_filter
+        """
+        # Start with base macro strategy
+        base_strategy = self.get_regime_strategy(macro_regime)
+        composite = dict(base_strategy)
+        composite['micro_regime'] = micro_regime.value
+        composite['position_size_override'] = None
+        composite['extreme_oversold_required'] = True
+        composite['bear_momentum_filter'] = True
+
+        # Check composite override matrix
+        overrides = self.config.get('MULTI_TF_REGIME_CONFIG', {}).get('composite_overrides', {})
+        combo_key = (macro_regime.value, micro_regime.value)
+
+        if combo_key in overrides:
+            override = overrides[combo_key]
+            composite['entry_threshold_modifier'] = override.get(
+                'entry_threshold_modifier', base_strategy['entry_threshold_modifier']
+            )
+            composite['position_size_override'] = override.get('position_size_override')
+            composite['extreme_oversold_required'] = override.get('extreme_oversold_required', True)
+            composite['bear_momentum_filter'] = override.get('bear_momentum_filter', True)
+        else:
+            # Non-bear macros: minor micro adjustments
+            if micro_regime == MicroRegime.MICRO_BULLISH:
+                composite['entry_threshold_modifier'] = max(
+                    0.7, base_strategy['entry_threshold_modifier'] * 0.9
+                )
+            elif micro_regime == MicroRegime.MICRO_BEARISH:
+                composite['entry_threshold_modifier'] = min(
+                    3.0, base_strategy['entry_threshold_modifier'] * 1.2
+                )
+            # MICRO_NEUTRAL: no change
+
+        return composite
 
 
 # Convenience function for quick regime check

@@ -504,8 +504,10 @@ class TradingBotV3(VersionInterface):
                     pnl = position.get('pnl', 0)
                     pos_info = f" | Position: {entry_price:,.0f} KRW | P&L: {pnl:+,.0f}"
 
+                enable_vwap_macd = self.config.get('INDICATOR_CONFIG', {}).get('enable_vwap_macd', False)
+                max_score = 6 if enable_vwap_macd else 4
                 self.logger.logger.info(
-                    f"  [{coin}] {regime.upper()}{regime_suffix} | Score: {score}/4 | "
+                    f"  [{coin}] {regime.upper()}{regime_suffix} | Score: {score}/{max_score} | "
                     f"Action: {action:4s}{pos_info}"
                 )
 

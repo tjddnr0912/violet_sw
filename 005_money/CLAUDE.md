@@ -29,8 +29,8 @@
 | `strategy_v3.py` | 매매 전략 (진입/청산) |
 | `portfolio_manager_v3.py` | 멀티코인 포트폴리오 관리 |
 | `live_executor_v3.py` | 실제 주문 실행 |
-| `regime_detector.py` | 6단계 시장 레짐 분류 |
-| `dynamic_factor_manager.py` | 동적 파라미터 관리 |
+| `regime_detector.py` | 매크로(6단계)+마이크로(3단계) 레짐 분류 |
+| `dynamic_factor_manager.py` | 동적 파라미터 + 적응형 가중치 관리 |
 
 ## 텔레그램 명령어
 

@@ -27,7 +27,7 @@ from lib.core.config_common import merge_configs, get_common_config
 
 # Import dynamic factor system
 from .dynamic_factor_manager import get_dynamic_factor_manager, DynamicFactorManager
-from .regime_detector import RegimeDetector, ExtendedRegime
+from .regime_detector import RegimeDetector, ExtendedRegime, MicroRegime
 
 
 class StrategyV3(VersionInterface):
@@ -108,7 +108,7 @@ class StrategyV3(VersionInterface):
 
     def get_indicator_names(self) -> List[str]:
         """Get list of indicator names used in this version."""
-        return [
+        base_indicators = [
             'ema_fast',
             'ema_slow',
             'bb_upper',
@@ -120,6 +120,13 @@ class StrategyV3(VersionInterface):
             'atr',
             'chandelier_stop',
         ]
+
+        # Phase 2: Add VWAP/MACD when feature flag is enabled
+        enable_vwap_macd = self.indicator_config.get('enable_vwap_macd', False)
+        if enable_vwap_macd:
+            base_indicators.extend(['vwap', 'macd', 'macd_signal', 'macd_hist'])
+
+        return base_indicators
 
     def get_supported_intervals(self) -> List[str]:
         """Get supported candlestick intervals."""
@@ -190,8 +197,39 @@ class StrategyV3(VersionInterface):
             self._current_regime = extended_regime
             market_regime = extended_regime.value
 
-            # Step 5: Get regime-specific strategy parameters
-            regime_strategy = self.regime_detector.get_regime_strategy(extended_regime)
+            # Step 4b: Phase 1 - Detect micro regime and build composite strategy
+            multi_tf_config = self.config.get('MULTI_TF_REGIME_CONFIG', {})
+            use_multi_tf = multi_tf_config.get('enable_multi_tf_regime', False)
+
+            micro_regime = MicroRegime.MICRO_NEUTRAL
+            micro_metadata = {}
+            rsi_convergence_score = 0.0
+            rsi_convergence_details = {}
+
+            if use_multi_tf:
+                micro_regime, micro_metadata = self.regime_detector.detect_micro_regime(
+                    exec_df, coin=coin_symbol
+                )
+                regime_strategy = self.regime_detector.get_composite_strategy(
+                    extended_regime, micro_regime
+                )
+                rsi_convergence_score, rsi_convergence_details = (
+                    self.regime_detector.calc_rsi_convergence(regime_df, exec_df)
+                )
+                regime_metadata['micro_regime'] = micro_regime.value
+                regime_metadata['micro_metadata'] = micro_metadata
+                regime_metadata['rsi_convergence'] = rsi_convergence_details
+
+                self.logger.logger.info(
+                    f"[MTF] {coin_symbol}: macro={market_regime} micro={micro_regime.value} "
+                    f"modifier={regime_strategy['entry_threshold_modifier']:.1f} "
+                    f"extreme_os={regime_strategy.get('extreme_oversold_required', True)} "
+                    f"rsi_conv={rsi_convergence_score:.1f}"
+                )
+            else:
+                # Feature flag OFF: use original macro-only strategy
+                regime_strategy = self.regime_detector.get_regime_strategy(extended_regime)
+
             self._current_regime_strategy = regime_strategy
 
             # Update daily factors if regime changed
@@ -215,7 +253,7 @@ class StrategyV3(VersionInterface):
                     'price_data': exec_df,
                 }
 
-            # Step 7a: Crash detection (block entry during flash crashes)
+            # Step 7a: Crash detection (always active in bear regimes)
             if extended_regime in [ExtendedRegime.BEARISH, ExtendedRegime.STRONG_BEARISH]:
                 crash_conditions = self.regime_detector.detect_crash_conditions(exec_df)
                 if crash_conditions.get('is_crash', False):
@@ -234,64 +272,82 @@ class StrategyV3(VersionInterface):
                         'price_data': exec_df,
                     }
 
-            # Step 7b: Momentum filter (block falling knife entries)
+            # Step 7b: Momentum filter (controlled by composite strategy)
+            apply_momentum_filter = regime_strategy.get('bear_momentum_filter', True)
             if extended_regime in [ExtendedRegime.BEARISH, ExtendedRegime.STRONG_BEARISH]:
-                momentum_blocked, momentum_reason = self._check_bear_momentum_filter(exec_df)
-                if momentum_blocked:
-                    return {
-                        'action': 'HOLD',
-                        'signal_strength': 0.0,
-                        'reason': f'Momentum filter: {momentum_reason}',
-                        'market_regime': market_regime,
-                        'entry_score': 0,
-                        'current_price': current_price,
-                        'regime_data': self._get_regime_data(regime_df),
-                        'regime_metadata': regime_metadata,
-                        'dynamic_factors': dynamic_factors,
-                        'price_data': exec_df,
-                    }
+                if apply_momentum_filter:
+                    momentum_blocked, momentum_reason = self._check_bear_momentum_filter(exec_df)
+                    if momentum_blocked:
+                        return {
+                            'action': 'HOLD',
+                            'signal_strength': 0.0,
+                            'reason': f'Momentum filter: {momentum_reason}',
+                            'market_regime': market_regime,
+                            'entry_score': 0,
+                            'current_price': current_price,
+                            'regime_data': self._get_regime_data(regime_df),
+                            'regime_metadata': regime_metadata,
+                            'dynamic_factors': dynamic_factors,
+                            'price_data': exec_df,
+                        }
 
-            # Step 7: Calculate entry score with dynamic weights
+            # Step 8: Calculate entry score with dynamic weights
             entry_score, score_details = self._calculate_entry_score_dynamic(exec_df)
 
-            # Step 8: Apply regime-specific entry threshold modifier
+            # Phase 1: Add RSI convergence bonus to entry score
+            if use_multi_tf and rsi_convergence_score > 0:
+                entry_score += rsi_convergence_score
+                score_details += f", RSI conv +{rsi_convergence_score:.1f}"
+
+            # Step 8b: Apply regime-specific entry threshold modifier
             base_min_score = self.scoring_config.get('min_entry_score', 2)
             adjusted_min_score = max(1, min(4, int(
                 base_min_score * regime_strategy['entry_threshold_modifier']
             )))
 
-            # Step 9: For bearish regimes, also check extreme oversold conditions
+            # Step 9: For bearish regimes, check extreme oversold (controlled by composite)
+            require_extreme_os = regime_strategy.get('extreme_oversold_required', True)
             if extended_regime in [ExtendedRegime.BEARISH, ExtendedRegime.STRONG_BEARISH]:
-                bearish_conditions = self.regime_detector.get_bearish_entry_conditions(exec_df)
-                if not bearish_conditions.get('is_extreme_oversold', False):
-                    # Not extreme enough for bearish entry
-                    return {
-                        'action': 'HOLD',
-                        'signal_strength': 0.0,
-                        'reason': f'Not extreme oversold for {market_regime} entry. '
-                                  f'({bearish_conditions.get("extreme_condition_count", 0)}/3 conditions)',
-                        'market_regime': market_regime,
-                        'entry_score': entry_score,
-                        'score_details': score_details,
-                        'current_price': current_price,
-                        'regime_data': self._get_regime_data(regime_df),
-                        'regime_metadata': regime_metadata,
-                        'bearish_conditions': bearish_conditions,
-                        'dynamic_factors': dynamic_factors,
-                        'price_data': exec_df,
-                    }
+                if require_extreme_os:
+                    bearish_conditions = self.regime_detector.get_bearish_entry_conditions(exec_df)
+                    if not bearish_conditions.get('is_extreme_oversold', False):
+                        return {
+                            'action': 'HOLD',
+                            'signal_strength': 0.0,
+                            'reason': f'Not extreme oversold for {market_regime} entry. '
+                                      f'({bearish_conditions.get("extreme_condition_count", 0)}/3 conditions)',
+                            'market_regime': market_regime,
+                            'entry_score': entry_score,
+                            'score_details': score_details,
+                            'current_price': current_price,
+                            'regime_data': self._get_regime_data(regime_df),
+                            'regime_metadata': regime_metadata,
+                            'bearish_conditions': bearish_conditions,
+                            'dynamic_factors': dynamic_factors,
+                            'price_data': exec_df,
+                        }
 
             # Step 10: Determine action based on adjusted entry score
+            # Phase 2: max score is 6.0 when VWAP/MACD is enabled, else 4.0
+            enable_vwap_macd = self.indicator_config.get('enable_vwap_macd', False)
+            max_score = 6.0 if enable_vwap_macd else 4.0
+
             if entry_score >= adjusted_min_score:
                 action = 'BUY'
-                signal_strength = min(1.0, entry_score / 4.0)
-                reason = (f'Entry score {entry_score:.1f}/4 >= {adjusted_min_score} '
-                         f'({market_regime} regime). {score_details}')
+                signal_strength = min(1.0, entry_score / max_score)
+                regime_label = market_regime
+                if use_multi_tf:
+                    regime_label = f"{market_regime}+{micro_regime.value}"
+                reason = (f'Entry score {entry_score:.1f}/{max_score:.0f} >= {adjusted_min_score} '
+                         f'({regime_label} regime). {score_details}')
             else:
                 action = 'HOLD'
                 signal_strength = 0.0
-                reason = (f'Entry score {entry_score:.1f}/4 < {adjusted_min_score} '
-                         f'({market_regime} regime). {score_details}')
+                regime_label = market_regime
+                if use_multi_tf:
+                    regime_label = f"{market_regime}+{micro_regime.value}"
+                reason = (f'Entry score {entry_score:.1f}/{max_score:.0f} < {adjusted_min_score} '
+                         f'({regime_label} regime). {score_details}')
 
             # Step 11: Calculate stop-loss with dynamic multiplier
             stop_loss_price = self._calculate_chandelier_stop_dynamic(exec_df, regime_strategy)
@@ -302,7 +358,7 @@ class StrategyV3(VersionInterface):
             # Step 13: Get bearish conditions for all regimes (for display purposes)
             bearish_conditions = self.regime_detector.get_bearish_entry_conditions(exec_df)
 
-            return {
+            result = {
                 'action': action,
                 'signal_strength': signal_strength,
                 'reason': reason,
@@ -324,6 +380,75 @@ class StrategyV3(VersionInterface):
                 'entry_conditions': self._get_entry_conditions(entry_score, exec_df),
                 'bearish_conditions': bearish_conditions,
             }
+
+            # Phase 1: Add composite regime info to result
+            if use_multi_tf:
+                result['micro_regime'] = micro_regime.value
+                result['micro_metadata'] = micro_metadata
+                result['rsi_convergence'] = rsi_convergence_details
+                result['position_size_override'] = regime_strategy.get('position_size_override')
+
+            # Phase 4: Orderbook confirmation (only when BUY signal fires)
+            orderbook_config = self.config.get('ORDERBOOK_CONFIG', {})
+            if result['action'] == 'BUY' and orderbook_config.get('enable_orderbook_analysis', False):
+                try:
+                    from lib.api.bithumb_api import get_orderbook
+                    ob_count = orderbook_config.get('orderbook_count', 30)
+                    orderbook = get_orderbook(coin_symbol, ob_count)
+                    if orderbook is not None:
+                        ob_signal = self._analyze_orderbook(orderbook, current_price, coin_symbol)
+                        result['orderbook_signal'] = ob_signal
+
+                        if 'error' not in ob_signal:
+                            # Block entry: strong ask wall without offsetting bid support
+                            if ob_signal.get('large_ask_wall') and not ob_signal.get('large_bid_wall'):
+                                result['action'] = 'HOLD'
+                                result['signal_strength'] = 0.0
+                                ratio = ob_signal.get('bid_ask_ratio', 1.0)
+                                block_reason = (
+                                    f'Orderbook blocked: ask wall detected '
+                                    f'(ratio {ratio:.2f})'
+                                )
+                                result['reason'] = block_reason
+                                self.logger.logger.info(
+                                    f"[OB] {coin_symbol}: BUY blocked - {block_reason}"
+                                )
+                            # Strengthen signal: strong buy pressure confirms entry
+                            elif (ob_signal.get('bid_ask_ratio', 1.0) >
+                                  orderbook_config.get('bid_ask_ratio_strong', 1.5)):
+                                ob_ratio = ob_signal['bid_ask_ratio']
+                                result['signal_strength'] = min(
+                                    1.0, result['signal_strength'] * 1.2
+                                )
+                                result['reason'] += (
+                                    f' | OB confirmed (ratio {ob_ratio:.1f}x)'
+                                )
+                                self.logger.logger.info(
+                                    f"[OB] {coin_symbol}: BUY confirmed by orderbook "
+                                    f"(ratio {ob_ratio:.1f}x)"
+                                )
+                    else:
+                        self.logger.logger.debug(
+                            f"[OB] {coin_symbol}: orderbook unavailable, skipping confirmation"
+                        )
+                except Exception as ob_err:
+                    self.logger.logger.warning(
+                        f"[OB] {coin_symbol}: orderbook check failed: {ob_err}"
+                    )
+
+            # Phase 4: Volume Profile (reference metadata, does not modify score)
+            if orderbook_config.get('enable_volume_profile', False):
+                vp_signal = self._calculate_volume_profile(exec_df)
+                result['volume_profile'] = vp_signal
+                if 'error' not in vp_signal:
+                    self.logger.logger.debug(
+                        f"[VP] {coin_symbol}: POC={vp_signal['poc_price']:,.0f} "
+                        f"VA=[{vp_signal['va_low']:,.0f}, {vp_signal['va_high']:,.0f}] "
+                        f"near_va_low={vp_signal['near_va_low']} "
+                        f"vs_poc={vp_signal['price_vs_poc_pct']:+.1f}%"
+                    )
+
+            return result
 
         except Exception as e:
             self.logger.log_error(f"Market analysis failed for {coin_symbol}", e)
@@ -366,6 +491,28 @@ class StrategyV3(VersionInterface):
                     latest['stoch_rsi_d'] < stoch_threshold)
         if k_cross and both_low:
             conditions.append('stoch_cross')
+
+        # Phase 2: VWAP and MACD conditions (only when feature flag is enabled)
+        enable_vwap_macd = self.indicator_config.get('enable_vwap_macd', False)
+        if enable_vwap_macd and len(df) >= 2:
+            # Check VWAP cross (price crossed above VWAP)
+            if 'vwap' in df.columns and 'vwap' in latest.index:
+                price_now = float(latest['close'])
+                price_prev = float(previous['close'])
+                vwap_now = float(latest['vwap'])
+                vwap_prev = float(previous['vwap'])
+                if price_prev <= vwap_prev and price_now > vwap_now:
+                    conditions.append('vwap_cross')
+
+            # Check MACD cross (MACD crossed above signal below zero)
+            if 'macd' in df.columns and 'macd_signal' in df.columns:
+                macd_now = float(latest['macd'])
+                macd_prev = float(previous['macd'])
+                sig_now = float(latest['macd_signal'])
+                sig_prev = float(previous['macd_signal'])
+                if (macd_prev <= sig_prev and macd_now > sig_now and
+                        macd_now < 0 and sig_now < 0):
+                    conditions.append('macd_cross')
 
         return conditions
 
@@ -447,6 +594,22 @@ class StrategyV3(VersionInterface):
         # ATR
         df['atr'] = self._calculate_atr(df, self.indicator_config.get('atr_period', 14))
 
+        # Phase 2: VWAP and MACD (only when feature flag is enabled)
+        enable_vwap_macd = self.indicator_config.get('enable_vwap_macd', False)
+        if enable_vwap_macd:
+            vwap_period = self.indicator_config.get('vwap_period', 24)
+            df['vwap'] = self._calculate_vwap(df, vwap_period)
+
+            macd_line, signal_line, histogram = self._calculate_macd(
+                df,
+                fast=self.indicator_config.get('macd_fast', 12),
+                slow=self.indicator_config.get('macd_slow', 26),
+                signal=self.indicator_config.get('macd_signal', 9),
+            )
+            df['macd'] = macd_line
+            df['macd_signal'] = signal_line
+            df['macd_hist'] = histogram
+
         return df
 
     def _calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -521,6 +684,51 @@ class StrategyV3(VersionInterface):
         # ATR is the rolling mean of True Range
         atr = tr.rolling(window=period).mean()
         return atr.fillna(0)
+
+    def _calculate_vwap(self, df: pd.DataFrame, period: int = 24) -> pd.Series:
+        """
+        Calculate rolling VWAP (Volume Weighted Average Price).
+
+        Formula: rolling_sum(TP * Volume) / rolling_sum(Volume)
+        TP (Typical Price) = (high + low + close) / 3
+
+        Args:
+            df: Price DataFrame with 'high', 'low', 'close', 'volume' columns
+            period: Rolling window in bars (default 24 for 24-hour rolling on 1H candles)
+
+        Returns:
+            pd.Series of VWAP values; NaN where rolling window is incomplete
+        """
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        tp_vol = typical_price * df['volume']
+        vwap = tp_vol.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+        return vwap.fillna(typical_price)  # Fallback to TP when volume data is sparse
+
+    def _calculate_macd(
+        self,
+        df: pd.DataFrame,
+        fast: int = 12,
+        slow: int = 26,
+        signal: int = 9
+    ) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """
+        Calculate MACD (Moving Average Convergence/Divergence).
+
+        Args:
+            df: Price DataFrame with 'close' column
+            fast: Fast EMA period (default 12)
+            slow: Slow EMA period (default 26)
+            signal: Signal line EMA period (default 9)
+
+        Returns:
+            Tuple of (macd_line, signal_line, histogram) as pd.Series
+        """
+        ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
+        ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram
 
     # ========================================
     # Entry Scoring System
@@ -805,6 +1013,82 @@ class StrategyV3(VersionInterface):
                 score += 0.5
                 details.append("Vol confirm ✓")
 
+        # === Phase 2: VWAP and MACD signals (gated by enable_vwap_macd feature flag) ===
+        enable_vwap_macd = self.indicator_config.get('enable_vwap_macd', False)
+        if enable_vwap_macd and len(df) >= 2:
+            vwap_weight = dynamic_weights.get('vwap', 1.0)
+            macd_weight = dynamic_weights.get('macd', 1.0)
+
+            # --- VWAP scoring ---
+            # Requires 'vwap' column (added by _calculate_execution_indicators when flag is ON)
+            if 'vwap' in df.columns and 'vwap' in latest.index:
+                current_price_val = float(latest['close'])
+                prev_price_val = float(previous['close'])
+                current_vwap = float(latest['vwap'])
+                prev_vwap = float(previous['vwap'])
+
+                # Full score: price crosses above VWAP (previous below, current above)
+                price_crossed_above_vwap = (
+                    prev_price_val <= prev_vwap and
+                    current_price_val > current_vwap
+                )
+                # Partial score: price is below VWAP but within 2% and RSI is oversold
+                price_near_vwap_oversold = (
+                    current_price_val <= current_vwap and
+                    current_vwap > 0 and
+                    ((current_vwap - current_price_val) / current_vwap * 100) <= 2.0 and
+                    float(latest['rsi']) < 35
+                )
+
+                if price_crossed_above_vwap:
+                    score += 1.0 * vwap_weight
+                    details.append(f"VWAP cross ✓ ({vwap_weight:.1f}x)")
+                elif price_near_vwap_oversold:
+                    score += 0.5 * vwap_weight
+                    details.append(f"VWAP near OS ✓ ({vwap_weight:.1f}x)")
+                else:
+                    details.append("VWAP ✗")
+
+            # --- MACD scoring ---
+            # Requires 'macd', 'macd_signal', 'macd_hist' columns
+            if ('macd' in df.columns and 'macd_signal' in df.columns and
+                    'macd_hist' in df.columns):
+                current_macd = float(latest['macd'])
+                prev_macd = float(previous['macd'])
+                current_sig = float(latest['macd_signal'])
+                prev_sig = float(previous['macd_signal'])
+                current_hist = float(latest['macd_hist'])
+                prev_hist = float(previous['macd_hist'])
+
+                # Full score (1.0x): MACD crosses above signal while both below zero
+                macd_crossed_above_signal = prev_macd <= prev_sig and current_macd > current_sig
+                both_below_zero = current_macd < 0 and current_sig < 0
+
+                # Strong score (0.7x): MACD crosses above signal while crossing from negative to positive
+                macd_cross_at_zero = (
+                    macd_crossed_above_signal and
+                    current_macd >= 0 and prev_macd < 0
+                )
+
+                # Partial score (0.5x): MACD histogram turning up (increasing) while below zero
+                hist_turning_up = (
+                    current_hist > prev_hist and
+                    current_hist < 0 and prev_hist < 0 and
+                    current_macd < 0
+                )
+
+                if macd_crossed_above_signal and both_below_zero:
+                    score += 1.0 * macd_weight
+                    details.append(f"MACD cross<0 ✓ ({macd_weight:.1f}x)")
+                elif macd_cross_at_zero:
+                    score += 0.7 * macd_weight
+                    details.append(f"MACD cross~0 ✓ ({macd_weight:.1f}x)")
+                elif hist_turning_up:
+                    score += 0.5 * macd_weight
+                    details.append(f"MACD hist up ✓ ({macd_weight:.1f}x)")
+                else:
+                    details.append("MACD ✗")
+
         details_str = ", ".join(details)
         return score, details_str
 
@@ -993,6 +1277,264 @@ class StrategyV3(VersionInterface):
                 return True, "Increasing sell volume on down candles"
 
         return False, ""
+
+    # ========================================
+    # Phase 4: Orderbook Analysis
+    # ========================================
+
+    def _analyze_orderbook(
+        self,
+        orderbook_data: Dict[str, Any],
+        current_price: float,
+        coin: str,
+    ) -> Dict[str, Any]:
+        """
+        Analyze orderbook depth to assess buy/sell pressure near current price.
+
+        Calculates bid and ask volume (in KRW) within analysis_range_pct of
+        current price, detects large walls, and returns a signal dict.
+
+        Args:
+            orderbook_data: Raw orderbook dict from get_orderbook() with 'bids'/'asks'
+            current_price: Latest close price
+            coin: Coin symbol (e.g., 'BTC') for wall threshold lookup
+
+        Returns:
+            Dict with keys:
+                bid_volume_krw, ask_volume_krw, bid_ask_ratio, net_pressure,
+                large_bid_wall, large_ask_wall, wall_details, signal_label
+        """
+        try:
+            ob_config = self.config.get('ORDERBOOK_CONFIG', {})
+            analysis_range_pct = ob_config.get('analysis_range_pct', 5.0)
+            wall_thresholds = ob_config.get('wall_threshold_krw', {})
+            wall_threshold = wall_thresholds.get(
+                coin, ob_config.get('default_wall_threshold_krw', 100_000_000)
+            )
+            ratio_strong = ob_config.get('bid_ask_ratio_strong', 1.5)
+            ratio_weak = ob_config.get('bid_ask_ratio_weak', 1.2)
+
+            if current_price <= 0:
+                return {'error': 'Invalid current_price'}
+
+            price_lo = current_price * (1 - analysis_range_pct / 100.0)
+            price_hi = current_price * (1 + analysis_range_pct / 100.0)
+
+            bid_volume_krw = 0.0
+            ask_volume_krw = 0.0
+            large_bid_wall = False
+            large_ask_wall = False
+            wall_details: List[str] = []
+
+            # Process bids (buy side) - bids are sorted high→low by exchange
+            bids = orderbook_data.get('bids', [])
+            for level in bids:
+                price = float(level.get('price', 0))
+                qty = float(level.get('quantity', 0))
+                if price <= 0 or qty <= 0:
+                    continue
+                if price < price_lo:
+                    break  # below range; remaining bids are further out
+                if price <= current_price:
+                    level_krw = price * qty
+                    bid_volume_krw += level_krw
+                    if level_krw >= wall_threshold:
+                        large_bid_wall = True
+                        wall_details.append(
+                            f"BidWall @{price:,.0f} = {level_krw / 1_000_000:.0f}M KRW"
+                        )
+
+            # Process asks (sell side) - asks are sorted low→high by exchange
+            asks = orderbook_data.get('asks', [])
+            for level in asks:
+                price = float(level.get('price', 0))
+                qty = float(level.get('quantity', 0))
+                if price <= 0 or qty <= 0:
+                    continue
+                if price > price_hi:
+                    break  # above range; remaining asks are further out
+                if price >= current_price:
+                    level_krw = price * qty
+                    ask_volume_krw += level_krw
+                    if level_krw >= wall_threshold:
+                        large_ask_wall = True
+                        wall_details.append(
+                            f"AskWall @{price:,.0f} = {level_krw / 1_000_000:.0f}M KRW"
+                        )
+
+            # Bid/ask ratio (avoid division by zero)
+            if ask_volume_krw > 0:
+                bid_ask_ratio = bid_volume_krw / ask_volume_krw
+            elif bid_volume_krw > 0:
+                bid_ask_ratio = ratio_strong * 2  # All bids, no asks
+            else:
+                bid_ask_ratio = 1.0
+
+            net_pressure = bid_volume_krw - ask_volume_krw
+
+            # Signal label
+            if bid_ask_ratio >= ratio_strong:
+                signal_label = 'strong_buy_pressure'
+            elif bid_ask_ratio >= ratio_weak:
+                signal_label = 'buy_pressure'
+            elif bid_ask_ratio <= (1.0 / ratio_strong):
+                signal_label = 'strong_sell_pressure'
+            elif bid_ask_ratio <= (1.0 / ratio_weak):
+                signal_label = 'sell_pressure'
+            else:
+                signal_label = 'neutral'
+
+            return {
+                'bid_volume_krw': bid_volume_krw,
+                'ask_volume_krw': ask_volume_krw,
+                'bid_ask_ratio': bid_ask_ratio,
+                'net_pressure': net_pressure,
+                'large_bid_wall': large_bid_wall,
+                'large_ask_wall': large_ask_wall,
+                'wall_details': wall_details,
+                'signal_label': signal_label,
+                'analysis_range_pct': analysis_range_pct,
+            }
+
+        except Exception as e:
+            self.logger.logger.warning(f"Orderbook analysis error for {coin}: {e}")
+            return {'error': str(e)}
+
+    # ========================================
+    # Phase 4: Volume Profile
+    # ========================================
+
+    def _calculate_volume_profile(self, exec_df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Calculate Volume Profile from recent OHLCV candles.
+
+        Uses Price Range Volume Profile: distributes each candle's volume uniformly
+        across the candle's high-low range, then bins into vp_num_bins price bins.
+
+        Identifies:
+        - POC (Point of Control): price bin with highest total volume
+        - Value Area High/Low: range containing vp_value_area_pct of total volume
+        - near_va_low: whether current price is within vp_near_va_low_pct % of VA Low
+
+        Args:
+            exec_df: DataFrame with 'open','high','low','close','volume' columns
+
+        Returns:
+            Dict with keys:
+                poc_price, va_high, va_low, current_price,
+                near_va_low (bool), price_vs_poc_pct (float),
+                bins (list of dicts), error (str, only on failure)
+        """
+        try:
+            ob_config = self.config.get('ORDERBOOK_CONFIG', {})
+            lookback = ob_config.get('vp_lookback', 50)
+            num_bins = ob_config.get('vp_num_bins', 30)
+            va_pct = ob_config.get('vp_value_area_pct', 0.70)
+            near_va_low_pct = ob_config.get('vp_near_va_low_pct', 1.0)
+
+            if exec_df is None or len(exec_df) < 10:
+                return {'error': 'Insufficient data for Volume Profile'}
+
+            df = exec_df.iloc[-lookback:].copy()
+
+            total_volume = float(df['volume'].sum())
+            if total_volume <= 0:
+                return {'error': 'Zero volume in lookback window'}
+
+            price_min = float(df['low'].min())
+            price_max = float(df['high'].max())
+
+            current_price = float(df['close'].iloc[-1])
+
+            # Edge case: flat price range
+            if price_max <= price_min:
+                return {
+                    'poc_price': current_price,
+                    'va_high': current_price,
+                    'va_low': current_price,
+                    'current_price': current_price,
+                    'near_va_low': True,
+                    'price_vs_poc_pct': 0.0,
+                    'bins': [],
+                    'error': 'Flat price range',
+                }
+
+            bin_size = (price_max - price_min) / num_bins
+            bin_volumes = np.zeros(num_bins)
+
+            for _, row in df.iterrows():
+                candle_low = float(row['low'])
+                candle_high = float(row['high'])
+                candle_volume = float(row['volume'])
+
+                if candle_high <= candle_low or candle_volume <= 0:
+                    continue
+
+                candle_range = candle_high - candle_low
+
+                # Distribute volume proportionally across overlapping bins
+                for i in range(num_bins):
+                    bin_lo = price_min + i * bin_size
+                    bin_hi = bin_lo + bin_size
+                    overlap_lo = max(candle_low, bin_lo)
+                    overlap_hi = min(candle_high, bin_hi)
+                    if overlap_hi > overlap_lo:
+                        overlap_fraction = (overlap_hi - overlap_lo) / candle_range
+                        bin_volumes[i] += candle_volume * overlap_fraction
+
+            # POC: bin with maximum volume
+            poc_bin_idx = int(np.argmax(bin_volumes))
+            poc_price = price_min + (poc_bin_idx + 0.5) * bin_size
+
+            # Value Area: accumulate highest-volume bins until va_pct of total volume
+            total_vol = bin_volumes.sum()
+            if total_vol <= 0:
+                return {'error': 'All bins have zero volume after distribution'}
+
+            target_va_vol = total_vol * va_pct
+            sorted_indices = np.argsort(bin_volumes)[::-1]
+            accumulated_vol = 0.0
+            va_bin_indices = []
+            for idx in sorted_indices:
+                va_bin_indices.append(int(idx))
+                accumulated_vol += bin_volumes[idx]
+                if accumulated_vol >= target_va_vol:
+                    break
+
+            va_low_bin = min(va_bin_indices)
+            va_high_bin = max(va_bin_indices)
+            va_low = price_min + va_low_bin * bin_size
+            va_high = price_min + (va_high_bin + 1) * bin_size
+
+            # near VA Low: current price within near_va_low_pct % of VA Low
+            near_va_low = abs(current_price - va_low) / va_low * 100 <= near_va_low_pct
+
+            price_vs_poc_pct = (current_price - poc_price) / poc_price * 100
+
+            bins = [
+                {
+                    'price_lo': price_min + i * bin_size,
+                    'price_hi': price_min + (i + 1) * bin_size,
+                    'volume': float(bin_volumes[i]),
+                    'is_poc': i == poc_bin_idx,
+                    'in_va': i in va_bin_indices,
+                }
+                for i in range(num_bins)
+            ]
+
+            return {
+                'poc_price': poc_price,
+                'va_high': va_high,
+                'va_low': va_low,
+                'current_price': current_price,
+                'near_va_low': near_va_low,
+                'price_vs_poc_pct': price_vs_poc_pct,
+                'bins': bins,
+            }
+
+        except Exception as e:
+            self.logger.logger.warning(f"Volume Profile calculation error: {e}")
+            return {'error': str(e)}
 
     # ========================================
     # Version Interface Methods
