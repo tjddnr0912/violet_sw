@@ -15,13 +15,15 @@ violet_sw/
 ├── 011_macos_cc_usage/ # Claude Code 사용량 모니터 (macOS 메뉴바)
 ├── 012_stock_dashboard/ # 글로벌 시장 대시보드 (Bloomberg-style, FastAPI)
 ├── 000~004_*/          # Lab & Study (Archive)
-└── start_all_bots.sh   # 전체 봇 일괄 실행 (iTerm2 6탭, Dashboard 포함)
+├── start_all_bots.sh        # 전체 봇 일괄 실행 (iTerm2 6탭)
+└── start_all_bots_cmux.sh   # 전체 봇 일괄 실행 (cmux 워크스페이스)
 ```
 
 ## Quick Start
 
 ```bash
-./start_all_bots.sh    # iTerm2에서 모든 봇 일괄 실행
+./start_all_bots.sh         # iTerm2에서 모든 봇 일괄 실행
+./start_all_bots_cmux.sh    # cmux에서 모든 봇 일괄 실행
 ```
 
 ## Production Systems
