@@ -78,6 +78,6 @@ source venv/bin/activate
 - 장외 시간: 전체 5분 간격으로 통합 (OFF_HOURS_INTERVAL)
 - CNN Fear & Greed: `User-Agent` + `Referer` 헤더 필수 (없으면 HTTP 418)
 - Gemini SDK: `google-genai` 패키지 사용 (구 `google-generativeai`는 deprecated)
-- Gemini Free Tier: gemini-2.5-flash-lite 사용, 10분 주기 + KR 스킵으로 쿼타 절약
+- Gemini Free Tier: gemini-3.1-flash-lite 사용, 10분 주기 + KR 스킵으로 쿼타 절약
 - VIX(^VIX): 인트라데이 스파크라인 미지원 (yfinance 비호환), 가격/변동률만 표시
 - Port 5002 사용 (009_dashboard 5001과 충돌 회피)

@@ -114,7 +114,7 @@ BREAKING_KEYWORDS = [
 ]
 
 # --- Gemini Config ---
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
 GEMINI_BATCH_SIZE = 5
 GEMINI_TIMEOUT = 30  # seconds per batch
 GEMINI_RPM_LIMIT = 4  # max calls per minute
