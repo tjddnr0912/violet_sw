@@ -16,7 +16,7 @@ violet_sw/
 ├── 012_stock_dashboard/ # 글로벌 시장 대시보드 (Bloomberg-style, FastAPI)
 ├── 000~004_*/          # Lab & Study (Archive)
 ├── start_all_bots.sh        # 전체 봇 일괄 실행 (iTerm2 6탭)
-└── start_all_bots_cmux.sh   # 전체 봇 일괄 실행 (cmux 워크스페이스)
+└── start_all_bots_cmux.sh   # 전체 봇 일괄 실행 (cmux 단일 워크스페이스 3×2 pane)
 ```
 
 ## Quick Start

@@ -1,14 +1,14 @@
 #!/bin/bash
 # ==============================================
-# Start All Bots - cmux Workspace Launcher
+# Start All Bots - cmux Single Workspace Launcher
 # ==============================================
-# Creates 6 cmux workspaces (one per bot):
-#   1: Trading Bot (Ver3 Watchdog - Auto-restart + Hang Detection)
-#   2: Telegram Gemini Bot
-#   3: Quant Trading Daemon (주식 자동매매)
-#   4: Investment Bot (뉴스봇 + 버핏봇 + 섹터봇 통합)
-#   5: Dashboard Server (Flask, port 5001)
-#   6: Stock Dashboard (FastAPI, port 5002)
+# Creates 1 cmux workspace "running_machine" with 6 panes (3×2 grid):
+#
+#   +-------------------+-------------------+-------------------+
+#   | Trading Bot       | Telegram Bot      | Quant Daemon      |
+#   +-------------------+-------------------+-------------------+
+#   | Investment Bot    | Dashboard (5001)  | Stock Dash (5002) |
+#   +-------------------+-------------------+-------------------+
 #
 # Usage:
 #   ./start_all_bots_cmux.sh
@@ -49,59 +49,97 @@ for script in "$TRADING_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$INVESTMENT_BOT"; 
     fi
 done
 
-# Helper: create a new workspace, capture its workspace ID, and send a command
-# cmux new-workspace returns: "OK workspace:N"
-create_workspace_and_run() {
-    local name="$1"
-    local cmd="$2"
-
-    # Create new workspace and capture output
-    local output
-    output=$(cmux new-workspace 2>&1)
-
-    # Parse workspace reference from output (format: "OK workspace:N")
-    local ws_ref
-    ws_ref=$(echo "$output" | grep -oE 'workspace:[0-9]+' | head -1)
-
-    # Small delay to let workspace initialize
-    sleep 0.5
-
-    # Set tab title via terminal escape sequence + run command
-    if [[ -n "$ws_ref" ]]; then
-        cmux send --workspace "$ws_ref" "printf '\\e]0;${name}\\a' && ${cmd}\n"
-    else
-        echo "    Error: Could not create workspace for '$name' (output: $output)"
-    fi
-
-    sleep 0.3
+# Helper: parse surface ref from cmux output (format: "OK surface:N ...")
+parse_surface() {
+    echo "$1" | grep -oE 'surface:[0-9]+' | head -1
 }
 
-echo "Starting all bots in cmux..."
+echo "Starting all bots in cmux workspace 'running_machine'..."
 
-# --- Workspace 1: Trading Bot ---
-echo "  [1/6] Trading Bot..."
-create_workspace_and_run "Trading Bot" "cd '$SCRIPT_DIR' && '$TRADING_BOT'"
+# --- Step 1: Create single workspace ---
+echo "  [1/3] Creating workspace..."
+ws_output=$(cmux new-workspace --cwd "$SCRIPT_DIR" 2>&1)
+ws_ref=$(echo "$ws_output" | grep -oE 'workspace:[0-9]+' | head -1)
+if [[ -z "$ws_ref" ]]; then
+    echo "Error: Could not create workspace (output: $ws_output)"
+    exit 1
+fi
+sleep 0.5
 
-# --- Workspace 2: Telegram Bot ---
-echo "  [2/6] Telegram Bot..."
-create_workspace_and_run "Telegram Bot" "cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
+# Rename workspace to "running_machine"
+cmux rename-workspace --workspace "$ws_ref" "running_machine" &>/dev/null
 
-# --- Workspace 3: Quant Trading Daemon ---
-echo "  [3/6] Quant Daemon..."
-create_workspace_and_run "Quant Daemon" "cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+# Get initial surface from tree output
+S_TL=$(cmux tree --workspace "$ws_ref" 2>&1 | grep -oE 'surface:[0-9]+' | head -1)
+if [[ -z "$S_TL" ]]; then
+    echo "Error: Could not find initial surface"
+    exit 1
+fi
 
-# --- Workspace 4: Investment Bot ---
-echo "  [4/6] Investment Bot..."
-create_workspace_and_run "Investment Bot" "cd '$SCRIPT_DIR' && '$INVESTMENT_BOT'"
+# --- Step 2: Build 3×2 grid layout ---
+echo "  [2/3] Building 3×2 grid..."
 
-# --- Workspace 5: Dashboard Server ---
-echo "  [5/6] Dashboard..."
-create_workspace_and_run "Dashboard" "cd '$DASHBOARD' && source venv/bin/activate && python app.py"
+# Split 1: top → top + bottom (2 rows)
+split_out=$(cmux new-split down --workspace "$ws_ref" --surface "$S_TL" 2>&1)
+S_BL=$(parse_surface "$split_out")
+sleep 0.3
 
-# --- Workspace 6: Stock Dashboard ---
-echo "  [6/6] Stock Dashboard..."
-create_workspace_and_run "Stock Dashboard" "cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
+# Split 2: top-left → top-left + top-middle
+split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_TL" 2>&1)
+S_TM=$(parse_surface "$split_out")
+sleep 0.3
+
+# Split 3: top-middle → top-middle + top-right
+split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_TM" 2>&1)
+S_TR=$(parse_surface "$split_out")
+sleep 0.3
+
+# Split 4: bottom-left → bottom-left + bottom-middle
+split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_BL" 2>&1)
+S_BM=$(parse_surface "$split_out")
+sleep 0.3
+
+# Split 5: bottom-middle → bottom-middle + bottom-right
+split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_BM" 2>&1)
+S_BR=$(parse_surface "$split_out")
+sleep 0.3
+
+echo "    Top:    $S_TL | $S_TM | $S_TR"
+echo "    Bottom: $S_BL | $S_BM | $S_BR"
+
+# Verify all 6 surfaces
+for s in "$S_TL" "$S_TM" "$S_TR" "$S_BL" "$S_BM" "$S_BR"; do
+    if [[ -z "$s" ]]; then
+        echo "Error: Failed to create all 6 panes. Check cmux status."
+        exit 1
+    fi
+done
+
+# --- Step 3: Launch bots in each pane ---
+echo "  [3/3] Starting bots..."
+
+# Helper: send command to a specific surface in our workspace
+run_in_pane() {
+    local surface="$1"
+    local name="$2"
+    local cmd="$3"
+    echo "    $name → $surface"
+    cmux send --workspace "$ws_ref" --surface "$surface" "printf '\\e]0;${name}\\a' && ${cmd}\n"
+}
+
+# Top row
+run_in_pane "$S_TL" "Trading Bot"     "cd '$SCRIPT_DIR' && '$TRADING_BOT'"
+run_in_pane "$S_TM" "Telegram Bot"    "cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
+run_in_pane "$S_TR" "Quant Daemon"    "cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+
+# Bottom row
+run_in_pane "$S_BL" "Investment Bot"  "cd '$SCRIPT_DIR' && '$INVESTMENT_BOT'"
+run_in_pane "$S_BM" "Dashboard"       "cd '$DASHBOARD' && source venv/bin/activate && python app.py"
+run_in_pane "$S_BR" "Stock Dashboard" "cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
 
 echo ""
-echo "All bots started in cmux! (6 workspaces including Dashboards on ports 5001/5002)"
-echo "Use 'cmux list-workspaces' to see all running workspaces."
+echo "All 6 bots running in workspace 'running_machine' (3×2 grid)"
+echo "  Top:    Trading Bot | Telegram Bot | Quant Daemon"
+echo "  Bottom: Investment Bot | Dashboard (5001) | Stock Dashboard (5002)"
+echo ""
+echo "Use 'cmux tree --workspace $ws_ref' to see the pane layout."
