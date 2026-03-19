@@ -52,15 +52,19 @@ SECTOR_BLOGGER_BLOG_ID=9115231004981625966
 SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite-preview
 ```
 
-## Claude 스킬 파일 (프롬프트 외부화)
+## 스킬 파일 (프롬프트 외부화)
 
-| 봇 | 스킬 파일 경로 |
-|----|--------------|
-| 버핏봇 분석 | `~/.claude/skills/buffett/SKILL.md` |
-| 섹터 종합 보고서 | `~/.claude/skills/sector-comprehensive/SKILL.md` |
-| HTML 변환 (공유) | `~/.claude/skills/blogger-html/SKILL.md` |
+모든 AI 프롬프트(Claude + Gemini)는 `~/.claude/skills/`에서 로드. 스킬 파일 수정만으로 코드 변경 없이 품질 개선 가능.
 
-스킬 파일 수정만으로 코드 변경 없이 분석/변환 품질 개선 가능.
+| 봇 | 스킬 파일 |
+|----|----------|
+| 뉴스봇 (일간/주간/월간) | `news-summarizer/SKILL.md` |
+| 섹터봇 검색 | `sector-search/SKILL.md` |
+| 섹터봇 분석 | `sector-analysis/SKILL.md` |
+| 섹터 종합 보고서 | `sector-comprehensive/SKILL.md` |
+| 버핏봇 분석 | `buffett/SKILL.md` |
+| 텔레그램 Q&A | `telegram-qa/SKILL.md` |
+| HTML 변환 (공유) | `blogger-html/SKILL.md` |
 
 ## 상세 문서
 

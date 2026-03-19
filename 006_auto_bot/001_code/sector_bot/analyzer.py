@@ -3,9 +3,12 @@ Sector Analyzer - 섹터별 맞춤 분석 프롬프트
 -------------------------------------------
 검색된 정보를 섹터별 맞춤 프롬프트로 분석하여 투자 인사이트 생성
 API 할당량 초과 시 Gemini CLI (gemini -p)로 자동 전환
+스킬 파일: ~/.claude/skills/sector-analysis/SKILL.md
 """
 
 import logging
+import os
+import re
 import time
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -18,9 +21,24 @@ from .gemini_cli import is_quota_error, call_gemini_cli
 
 logger = logging.getLogger(__name__)
 
+# 스킬 파일 경로
+ANALYSIS_SKILL_FILE = os.path.expanduser('~/.claude/skills/sector-analysis/SKILL.md')
 
-# 섹터별 Persona (PTCC 프레임워크의 P)
-# Task, Context, Blogger Style, SEO, Constraints는 _build_analysis_prompt()에서 공용으로 결합
+
+def load_analysis_skill() -> str:
+    """섹터 분석 스킬 파일 로드 (YAML frontmatter 제거)"""
+    if not os.path.exists(ANALYSIS_SKILL_FILE):
+        raise FileNotFoundError(f"Sector analysis skill not found: {ANALYSIS_SKILL_FILE}")
+
+    with open(ANALYSIS_SKILL_FILE, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
+    return content.strip()
+
+
+# SECTOR_PROMPTS는 이제 스킬 파일(sector-analysis/SKILL.md)에 포함
+# 하위 호환성을 위해 빈 dict 유지 (gemini_cli fallback에서 참조 가능)
 SECTOR_PROMPTS = {
     1: """# Persona
 
@@ -243,66 +261,17 @@ class SectorAnalyzer:
         logger.info("SectorAnalyzer initialized")
 
     def _build_analysis_prompt(self, sector: Sector, search_result: Dict) -> str:
-        """PTCC 프레임워크 기반 분석 프롬프트 구성"""
-        persona = SECTOR_PROMPTS.get(sector.id, "")
-        if not persona:
-            persona = f"# Persona\n\n당신은 {sector.name} 섹터 전문 투자 애널리스트입니다."
-
+        """분석 프롬프트 구성 — SKILL.md 파일 참조"""
         sources_str = chr(10).join(f"- {url}" for url in search_result.get('sources', [])[:10])
 
-        return f"""{persona}
+        skill_content = load_analysis_skill()
 
-# Task
+        return f"""{skill_content}
 
-아래 검색된 자료를 바탕으로 지난 한 주간의 {sector.name} 섹터 핵심 동향을 분석하고,
-투자자가 다음 한 주를 준비할 수 있는 실질적 시사점을 제공하는 보고서를 작성하세요.
+# 분석 대상
 
-단순 뉴스 나열이 아니라 다음 관점에서 분석할 것:
-1. **해석**: 이번 주 이슈가 {sector.name} 섹터에 미치는 실질적 영향은?
-2. **판단**: 현재 섹터의 국면(상승/하락/전환점)과 그 근거는?
-3. **행동**: 투자자가 구체적으로 무엇을 해야 하는가? (매수/매도/관망 + 종목)
-마지막에 "시장 영향 분석" 섹션을 추가하여 이번 주 변화가 시장 전체에 미치는 파급 효과를 분석하세요.
-
-# Context
-
-- **데이터 소스**: Gemini AI 웹 검색 기반 수집 자료 (지난 7일간)
-- **독자**: 한국의 개인 투자자 (미국·글로벌 시장 투자자 포함)
-- **발행 채널**: 투자정보 블로그 (Google Blogger, 매주 일요일 발행)
-- **용도**: 블로그 수익화 콘텐츠 — 충분한 분량과 품질 필요
-
-# Blogger 스타일 가이드
-
-이 보고서는 Google Blogger에 게시됩니다. 블로그에 최적화된 콘텐츠 구성을 따르세요:
-
-1. **이모지 활용**: 섹션 제목에 이모지를 사용하여 시각적 가독성 확보
-2. **짧은 문단**: 3~4문장 이내. 긴 문단 금지
-3. **스캔 가능한 레이아웃**: 핵심 내용은 **bold** 강조, 목록/글머리 기호 적극 활용
-4. **첫 문단 Hook**: 첫 150자 내에 이번 주 {sector.name} 섹터의 핵심 메시지를 담아 독자의 관심을 끌 것
-5. **표(Table) 활용**: 종목 비교, 가격 변동, 지표 비교 등은 마크다운 표로 정리
-6. **결론 섹션**: 보고서 말미에 "이번 주 핵심 포인트"를 3~5개로 재요약
-7. **Heading 구조**: h2로 큰 섹션, h3으로 세부 항목. h1은 사용하지 말 것 (Blogger 포스트 제목으로 사용)
-
-# SEO 최적화
-
-1. **키워드 전략**
-   - "{sector.name}", "{sector.name} 투자", "{sector.name} 전망" 등 핵심 키워드를 제목(h2)과 첫 문단에 자연스럽게 포함
-   - 관련 종목명, ETF명, 경제 키워드를 본문 전체에 분산 배치
-   - 키워드 과다 사용(stuffing) 금지
-2. **제목 구조**: h2, h3으로 논리적 계층 구조. 소제목에 검색 의도 반영 키워드 포함
-3. **첫 문단 최적화**: 첫 150자 내에 핵심 요약 (Google snippet 활용)
-4. **관련 키워드 자연 배치**: 동의어 활용 (예: "주식시장" ↔ "증시", "금리인상" ↔ "긴축")
-
-# Constraints
-
-1. **언어**: 한글 작성. 종목명·지수명·전문용어는 영문 병기
-2. **분량**: 최소 2000자 이상, 상세하게
-3. **형식**: 마크다운 형식 사용
-4. **객관성**: 모든 판단에 검색 자료의 구체적 데이터(수치, 날짜, 기업명) 인용
-5. **정직성**: 검색 자료에 없는 데이터 날조 금지. 불확실한 부분은 명시
-6. **실용성**: 추상적 조언 금지, 구체적 종목/ETF/액션 제시
-7. **균형**: 낙관론과 비관론 균형. 일방적 편향 금지
-8. **AI 언급 금지**: "AI가 작성", "Gemini", "Claude" 등 절대 불포함
-9. **면책**: 보고서 말미에 "본 보고서는 정보 제공 목적이며, 투자 판단과 그에 따른 결과는 투자자 본인의 책임입니다" 포함
+- **섹터**: Sector {sector.id}: {sector.name}
+- **데이터 소스**: 웹 검색 기반 수집 자료 (지난 7일간)
 
 # 검색된 정보
 

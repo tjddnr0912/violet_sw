@@ -31,6 +31,21 @@ load_dotenv(override=True)
 from shared.telegram_api import TelegramClient
 from shared.html_utils import HtmlUtils
 
+# 스킬 파일 경로
+QA_SKILL_FILE = os.path.expanduser('~/.claude/skills/telegram-qa/SKILL.md')
+
+
+def load_qa_skill() -> str:
+    """텔레그램 Q&A 스킬 파일 로드 (YAML frontmatter 제거)"""
+    if not os.path.exists(QA_SKILL_FILE):
+        raise FileNotFoundError(f"Telegram QA skill not found: {QA_SKILL_FILE}")
+
+    with open(QA_SKILL_FILE, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
+    return content.strip()
+
 
 def setup_logging():
     """Configure logging - console + file output"""
@@ -117,36 +132,14 @@ class TelegramGeminiBot(TelegramClient):
         try:
             logger.info(f"Running Gemini: {question[:50]}...")
 
-            # Build prompt with blog style + title/labels generation
-            prompt = f"""{question}
+            # Build prompt with skill + question
+            skill_content = load_qa_skill()
+            prompt = f"""{skill_content}
 
----
-IMPORTANT:
-- DO NOT include any thinking process, reasoning steps, or internal analysis.
-- Start with the final answer directly. No "Let me think", "I will", "Let's analyze", "First, I need to" or similar phrases.
+# 질문
 
-Write a blog-style article answering the question above.
-
-Writing Guidelines:
-- Use clear structure with subheadings and paragraphs
-- Highlight key points with bold text or lists
-- Include examples or code if helpful
-- Use a friendly, readable tone
-- Include sources if available
-
-**Length Requirement (CRITICAL):**
-- The article MUST be at least 1500 characters (excluding TITLE/LABELS/SOURCES metadata)
-- If the topic is simple, expand with:
-  - Related background information
-  - Practical examples and use cases
-  - Common mistakes and tips
-  - Comparisons with alternatives
-- Do NOT pad with repetitive or meaningless content. Add genuinely useful information.
-
-At the very end, add these metadata lines:
-TITLE: [A concise title representing the content]
-LABELS: [2-3 keywords separated by commas]
-SOURCES: [Sources in "title|URL" format, comma-separated]"""
+{question}
+"""
 
             # Run gemini CLI
             result = subprocess.run(

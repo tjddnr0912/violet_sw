@@ -89,17 +89,23 @@ telegram_gemini_bot.py
 | `MONTHLY_POSTING_TIME` | "10:00" | 월간 요약 (1일) |
 | `MAX_NEWS_COUNT` | 50 | 수집 뉴스 수 |
 
-## Claude 스킬 파일 (프롬프트 외부화)
+## 스킬 파일 (프롬프트 외부화)
 
-`claude -p`로 호출하는 모든 프롬프트는 외부 스킬 파일에서 로드한다. 코드 수정 없이 스킬 파일만 편집하여 분석/변환 품질을 개선할 수 있다.
+모든 AI 프롬프트(Claude `claude -p` + Gemini API/CLI)는 외부 스킬 파일에서 로드한다. 코드 수정 없이 스킬 파일만 편집하여 분석/변환 품질을 개선할 수 있다.
 
-| 호출 위치 | 용도 | 스킬 파일 |
-|-----------|------|----------|
-| `buffett_bot.py` | 버핏/멍거 투자 분석 | `~/.claude/skills/buffett/SKILL.md` |
-| `sector_bot/comprehensive_report.py` | 11개 섹터 종합 보고서 | `~/.claude/skills/sector-comprehensive/SKILL.md` |
-| `shared/claude_html_converter.py` | MD→HTML 변환 (공유) | `~/.claude/skills/blogger-html/SKILL.md` (fallback: `prompts/blogger_html_prompt.md`) |
+| 호출 위치 | AI | 용도 | 스킬 파일 |
+|-----------|-----|------|----------|
+| `news_bot/summarizer.py` | Gemini API | 뉴스 요약 (일간/주간/월간) | `~/.claude/skills/news-summarizer/SKILL.md` |
+| `sector_bot/searcher.py` | Gemini API | 섹터 뉴스 검색 | `~/.claude/skills/sector-search/SKILL.md` |
+| `sector_bot/analyzer.py` | Gemini API | 섹터별 투자 분석 (11개 페르소나) | `~/.claude/skills/sector-analysis/SKILL.md` |
+| `sector_bot/comprehensive_report.py` | Claude CLI | 11개 섹터 종합 보고서 | `~/.claude/skills/sector-comprehensive/SKILL.md` |
+| `buffett_bot.py` | Claude CLI | 버핏/멍거 투자 분석 | `~/.claude/skills/buffett/SKILL.md` |
+| `telegram_gemini_bot.py` | Gemini CLI | 종합 리서치 Q&A | `~/.claude/skills/telegram-qa/SKILL.md` |
+| `shared/claude_html_converter.py` | Claude CLI | MD→HTML 변환 (공유) | `~/.claude/skills/blogger-html/SKILL.md` (fallback: `prompts/`) |
 
 로딩 방식: YAML frontmatter(`--- ... ---`) 자동 제거 후 프롬프트에 삽입. 동적 데이터(날짜, 뉴스, 섹터 데이터)는 코드에서 추가.
+
+아키텍처 원칙: **콘텐츠 레이어**(분석/데이터 수집 스킬) → **프레젠테이션 레이어**(`blogger-html` 스킬이 HTML 변환 시 블로그 스타일/SEO 처리).
 
 ## Dependencies
 

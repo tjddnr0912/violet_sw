@@ -7,6 +7,7 @@ API 할당량 초과 시 Gemini CLI (gemini -p)로 자동 전환
 
 import logging
 import os
+import re
 import time
 import ssl
 from typing import List, Dict, Optional
@@ -18,6 +19,21 @@ from .config import SectorConfig, Sector
 from .gemini_cli import is_quota_error, call_gemini_cli, extract_urls
 
 logger = logging.getLogger(__name__)
+
+# 스킬 파일 경로
+SEARCH_SKILL_FILE = os.path.expanduser('~/.claude/skills/sector-search/SKILL.md')
+
+
+def load_search_skill() -> str:
+    """섹터 검색 스킬 파일 로드 (YAML frontmatter 제거)"""
+    if not os.path.exists(SEARCH_SKILL_FILE):
+        raise FileNotFoundError(f"Sector search skill not found: {SEARCH_SKILL_FILE}")
+
+    with open(SEARCH_SKILL_FILE, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
+    return content.strip()
 
 # SSL 인증서 검증 비활성화 (일부 환경에서 필요)
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -178,29 +194,22 @@ class SectorSearcher:
             }
 
     def _build_search_prompt(self, sector: Sector) -> str:
-        """섹터별 검색 프롬프트 생성"""
+        """섹터별 검색 프롬프트 생성 — SKILL.md 파일 참조"""
 
-        keywords_str = ", ".join(sector.search_keywords[:5])  # 상위 5개 키워드
+        keywords_str = ", ".join(sector.search_keywords[:5])
         focus_str = "\n".join(f"- {f}" for f in sector.analysis_focus)
 
-        prompt = f"""You are a financial analyst researching the {sector.name} sector for investment insights.
+        skill_content = load_search_skill()
 
-Search for the latest news and developments from the past week about:
+        prompt = f"""{skill_content}
+
+# Search Target
+
+Sector: {sector.name}
 Keywords: {keywords_str}
 
 Focus areas:
 {focus_str}
-
-Requirements:
-1. Find the most recent and relevant news (within the last 7 days)
-2. Include specific company names, stock tickers, and numbers when available
-3. Mention any significant price movements, announcements, or market impacts
-4. Include both US and global market perspectives
-5. Provide factual information with specific dates and figures
-
-Please provide a comprehensive summary of the current state and recent developments in this sector.
-Include all relevant URLs/sources in your response.
-Write in English but include Korean company names in parentheses if applicable.
 """
         return prompt
 

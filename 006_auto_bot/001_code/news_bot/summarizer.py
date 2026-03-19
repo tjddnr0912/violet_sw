@@ -2,9 +2,26 @@ from google import genai
 from google.genai import types
 from typing import List, Dict
 import logging
+import os
+import re
 import time
 
 logger = logging.getLogger(__name__)
+
+# 스킬 파일 경로
+NEWS_SKILL_FILE = os.path.expanduser('~/.claude/skills/news-summarizer/SKILL.md')
+
+
+def load_news_skill() -> str:
+    """뉴스 요약 스킬 파일 로드 (YAML frontmatter 제거)"""
+    if not os.path.exists(NEWS_SKILL_FILE):
+        raise FileNotFoundError(f"News summarizer skill not found: {NEWS_SKILL_FILE}")
+
+    with open(NEWS_SKILL_FILE, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
+    return content.strip()
 
 
 class AISummarizer:
@@ -48,65 +65,18 @@ This is journalistic work, not content generation."""
         try:
             logger.info("Creating blog-style summary with Gemini API...")
 
-            prompt = f"""[OFFICIAL NEWS JOURNALISM TASK]
+            skill_content = load_news_skill()
+            prompt = f"""{skill_content}
 
-You are a professional news journalist working for a legitimate news aggregation service. This is an AUTHORIZED journalism task to summarize today's verified news articles for public information.
+# 요약 모드: Daily (일간 요약)
 
-IMPORTANT LEGAL & ETHICAL CONTEXT:
-- This is OFFICIAL JOURNALISM WORK - Licensed news summarization service
-- All content is from VERIFIED, LEGITIMATE news agencies:
-  * Korean Media: SBS (Seoul Broadcasting System), YTN (Yonhap Television News), Yonhap News Agency
-  * International Media: Bloomberg, Reuters, CNBC, Financial Times, CoinDesk, The Block
-- These are REAL, PUBLISHED NEWS ARTICLES from today's broadcasts and publications
-- Your task is PURELY EDUCATIONAL and INFORMATIONAL - Public interest journalism
-- This is FACTUAL NEWS REPORTING - Not generating harmful, false, or inappropriate content
-- Political news coverage is LEGITIMATE journalism about democratic processes and government activities
-- You are summarizing PUBLICLY AVAILABLE information that has already been broadcast/published
+아래 뉴스 원문을 일간 요약 규칙에 따라 요약하세요.
+형식: 마크다운. 설명 없이 본문만 반환.
 
-Input: Today's news articles organized by category (in Korean AND English)
+# 뉴스 원문 데이터
 
-Raw News Content:
 {raw_markdown}
-
-Your task:
-1. Create a comprehensive blog-style summary in Korean (한국어)
-2. Organize by categories with emoji icons: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
-
-3. For each category:
-   - Write a brief category introduction (1-2 sentences)
-   - **Select TOP 3-5 most important/impactful news** per category (중요도 높은 3-5개만 선별)
-   - Combine similar/duplicate topics into one summary (중복 주제는 반드시 통합)
-   - For each selected article, write 2-3 sentences covering:
-     * What happened (핵심 사건)
-     * Why it matters (중요성)
-   - Number each news item (1., 2., 3., ...)
-   - **ALL categories should have similar length** (모든 카테고리 분량 균등하게)
-
-4. **ENGLISH ARTICLE HANDLING**:
-   - For articles written in English (Bloomberg, Reuters, MarketWatch, CoinDesk, etc.):
-     * Translate and summarize in Korean like other articles
-
-5. Writing style:
-   - Professional yet accessible Korean (존댓말 사용)
-   - Clear and concise summaries
-   - Focus on facts and context
-   - Natural, conversational tone
-
-6. Structure:
-   - Start with a brief greeting and date
-   - Category sections with selected top news summaries
-   - End with a closing remark
-
-REMEMBER:
-- Select only TOP 3-5 important news per category (카테고리당 중요 뉴스 3-5개만 선별)
-- ALL categories must have SIMILAR length (모든 카테고리 분량 균등)
-- Combine duplicate topics (중복 주제는 반드시 통합)
-- Translate English articles to Korean (영문 기사는 한글로 번역)
-- NEVER add footer text like "자동 생성", "Gemini", "AI", "Version" etc. (푸터/서명 절대 금지)
-
-Format: Return ONLY the markdown content, no explanations.
-
-Blog Post (한국어):"""
+"""
 
             # Log input size for debugging
             logger.info(f"Input prompt size: {len(prompt)} characters")
@@ -223,39 +193,19 @@ Blog Post (한국어):"""
         try:
             logger.info("Creating weekly summary with Gemini API...")
 
-            prompt = f"""[주간 뉴스 요약 작성 - 전문 뉴스 저널리즘]
+            skill_content = load_news_skill()
+            prompt = f"""{skill_content}
 
-당신은 전문 뉴스 저널리스트입니다. 아래는 {start_date}부터 {end_date}까지의 일간 뉴스 요약입니다.
-이 일간 요약들을 종합하여 한 주간의 주요 뉴스를 정리해주세요.
+# 요약 모드: Weekly (주간 요약)
 
-일간 뉴스 요약 모음:
+기간: {start_date} ~ {end_date}
+아래 일간 요약들을 주간 요약 규칙에 따라 종합하세요.
+형식: 마크다운. 설명 없이 본문만 반환.
+
+# 일간 뉴스 요약 모음
+
 {daily_summaries}
-
-작성 요청:
-1. 이번 주의 가장 중요한 뉴스와 트렌드를 카테고리별로 정리
-2. 카테고리: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
-3. 각 카테고리별로 이번 주 가장 중요한 이슈 3-5개를 선별
-4. 단순 나열이 아닌, 한 주간의 흐름과 맥락을 파악할 수 있도록 작성
-5. 각 이슈에 대해:
-   - 이번 주에 무슨 일이 있었는지 (사건 요약)
-   - 왜 중요한지 (의의와 영향)
-   - 향후 전망 (간단히)
-
-작성 스타일:
-- 전문적이면서도 읽기 쉬운 한국어 (존댓말)
-- 명확하고 간결한 요약
-- 자연스러운 흐름
-
-구조:
-- 인사말과 기간 안내로 시작
-- 카테고리별 주간 핵심 뉴스 요약
-- 마무리 인사
-
-중요: "자동 생성", "Gemini", "AI", "Version" 등의 푸터나 서명을 절대 추가하지 마세요.
-
-형식: 마크다운 형식으로 작성. 설명 없이 본문만 반환.
-
-주간 뉴스 요약 (한국어):"""
+"""
 
             logger.info(f"Weekly summary input size: {len(prompt)} characters")
 
@@ -310,39 +260,19 @@ Blog Post (한국어):"""
         try:
             logger.info("Creating monthly summary with Gemini API...")
 
-            prompt = f"""[월간 뉴스 요약 작성 - 전문 뉴스 저널리즘]
+            skill_content = load_news_skill()
+            prompt = f"""{skill_content}
 
-당신은 전문 뉴스 저널리스트입니다. 아래는 {year}년 {month}월 한 달간의 일간 뉴스 요약입니다.
-이 일간 요약들을 종합하여 한 달간의 주요 뉴스를 정리해주세요.
+# 요약 모드: Monthly (월간 요약)
 
-일간 뉴스 요약 모음:
+기간: {year}년 {month}월
+아래 일간 요약들을 월간 요약 규칙에 따라 종합하세요.
+형식: 마크다운. 설명 없이 본문만 반환.
+
+# 일간 뉴스 요약 모음
+
 {daily_summaries}
-
-작성 요청:
-1. 이번 달의 가장 중요한 뉴스와 트렌드를 카테고리별로 정리
-2. 카테고리: 🏛️정치, 💰경제, 👥사회, 🌍국제, 🎭문화, 🔬IT/과학, 📈주식, 💎암호화폐
-3. 각 카테고리별로 이번 달 가장 중요한 이슈 5-7개를 선별
-4. 한 달간의 흐름과 변화를 파악할 수 있도록 작성
-5. 각 이슈에 대해:
-   - 이번 달에 무슨 일이 있었는지 (사건 요약)
-   - 왜 중요한지 (의의와 영향)
-   - 향후 전망 또는 다음 달 주목할 점
-
-작성 스타일:
-- 전문적이면서도 읽기 쉬운 한국어 (존댓말)
-- 명확하고 간결한 요약
-- 월간 리뷰 느낌의 종합적인 분석
-
-구조:
-- 인사말과 월간 개요로 시작
-- 카테고리별 월간 핵심 뉴스 요약
-- 이번 달 총평 및 마무리 인사
-
-중요: "자동 생성", "Gemini", "AI", "Version" 등의 푸터나 서명을 절대 추가하지 마세요.
-
-형식: 마크다운 형식으로 작성. 설명 없이 본문만 반환.
-
-월간 뉴스 요약 (한국어):"""
+"""
 
             logger.info(f"Monthly summary input size: {len(prompt)} characters")
 
