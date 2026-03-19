@@ -32,7 +32,7 @@ python weekly_sector_bot.py --comprehensive  # 종합 투자 평가 보고서
 
 | 항목 | 값 |
 |------|-----|
-| AI | Gemini + Claude (분석, HTML 변환) |
+| AI | Gemini + Claude (분석, HTML 변환, 스킬 파일 참조) |
 | 출력 | Blogger (OgusInvest 등 7개 블로그) |
 | 뉴스봇 | Daily 06:00, Weekly 일요일 07:00, Monthly 1일 07:30 |
 | 버핏봇 | 월~금 06:30 (뉴스 기반, Claude CLI 분석) |
@@ -51,6 +51,16 @@ BLOG_SELECTION_TIMEOUT=180
 SECTOR_BLOGGER_BLOG_ID=9115231004981625966
 SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite-preview
 ```
+
+## Claude 스킬 파일 (프롬프트 외부화)
+
+| 봇 | 스킬 파일 경로 |
+|----|--------------|
+| 버핏봇 분석 | `~/.claude/skills/buffett/SKILL.md` |
+| 섹터 종합 보고서 | `~/.claude/skills/sector-comprehensive/SKILL.md` |
+| HTML 변환 (공유) | `~/.claude/skills/blogger-html/SKILL.md` |
+
+스킬 파일 수정만으로 코드 변경 없이 분석/변환 품질 개선 가능.
 
 ## 상세 문서
 

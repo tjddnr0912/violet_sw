@@ -28,7 +28,7 @@
 │   ├── telegram_notifier.py     # 알림 발송
 │   ├── blogger_uploader.py      # Google Blogger API OAuth2
 │   └── claude_html_converter.py # Claude CLI로 MD→HTML (timeout 15분)
-├── prompts/                     # AI 프롬프트 템플릿
+├── prompts/                     # AI 프롬프트 템플릿 (fallback용)
 ├── credentials/                 # OAuth tokens
 └── logs/                        # 로그 파일
 ```
@@ -88,6 +88,18 @@ telegram_gemini_bot.py
 | `WEEKLY_POSTING_TIME` | "09:00" | 주간 요약 (일요일) |
 | `MONTHLY_POSTING_TIME` | "10:00" | 월간 요약 (1일) |
 | `MAX_NEWS_COUNT` | 50 | 수집 뉴스 수 |
+
+## Claude 스킬 파일 (프롬프트 외부화)
+
+`claude -p`로 호출하는 모든 프롬프트는 외부 스킬 파일에서 로드한다. 코드 수정 없이 스킬 파일만 편집하여 분석/변환 품질을 개선할 수 있다.
+
+| 호출 위치 | 용도 | 스킬 파일 |
+|-----------|------|----------|
+| `buffett_bot.py` | 버핏/멍거 투자 분석 | `~/.claude/skills/buffett/SKILL.md` |
+| `sector_bot/comprehensive_report.py` | 11개 섹터 종합 보고서 | `~/.claude/skills/sector-comprehensive/SKILL.md` |
+| `shared/claude_html_converter.py` | MD→HTML 변환 (공유) | `~/.claude/skills/blogger-html/SKILL.md` (fallback: `prompts/blogger_html_prompt.md`) |
+
+로딩 방식: YAML frontmatter(`--- ... ---`) 자동 제거 후 프롬프트에 삽입. 동적 데이터(날짜, 뉴스, 섹터 데이터)는 코드에서 추가.
 
 ## Dependencies
 
