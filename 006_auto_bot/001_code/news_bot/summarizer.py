@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class AISummarizer:
     """AI-powered blog-style summarizer using Google Gemini API"""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite-preview"):
         """
         Initialize AISummarizer
 

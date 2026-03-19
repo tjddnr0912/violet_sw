@@ -49,7 +49,7 @@ BLOG_LIST='[{"key":"...","id":"...","name":"..."}, ...]'
 DEFAULT_BLOG=brave_ogu
 BLOG_SELECTION_TIMEOUT=180
 SECTOR_BLOGGER_BLOG_ID=9115231004981625966
-SECTOR_GEMINI_MODEL=gemini-3-flash-preview
+SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite-preview
 ```
 
 ## 상세 문서

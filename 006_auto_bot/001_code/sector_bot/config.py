@@ -266,7 +266,7 @@ class SectorConfig:
 
     # Gemini API
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_MODEL = os.getenv('SECTOR_GEMINI_MODEL', 'gemini-3-flash-preview')
+    GEMINI_MODEL = os.getenv('SECTOR_GEMINI_MODEL', 'gemini-3.1-flash-lite-preview')
 
     # Blogger
     BLOGGER_BLOG_ID = os.getenv('SECTOR_BLOGGER_BLOG_ID', '9115231004981625966')  # OgusInvest
