@@ -354,7 +354,10 @@ class TelegramNotifier:
 """
 
         if reason:
-            message += f"📝 사유: {reason}\n"
+            # Escape underscores in reason to prevent Markdown parse errors
+            # (e.g., "strong_bearish" has unmatched _ which breaks Telegram Markdown)
+            safe_reason = reason.replace('_', '\\_')
+            message += f"📝 사유: {safe_reason}\n"
 
         if order_id:
             message += f"🔖 주문ID: `{order_id}`\n"

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-03-20: BUY 텔레그램 알림 누락 수정
+
+| 항목 | 변경 내용 |
+|------|----------|
+| 원인 | `send_trade_alert`의 reason 필드에 `strong_bearish` 등 `_` 포함 시 Telegram Markdown 파싱 에러 발생 |
+| 증상 | SELL/CLOSE 알림은 정상, BUY 알림만 전송 실패 (에러가 print로만 출력되어 로그 파일 미기록) |
+| 수정 | `telegram_notifier.py`: reason 내 `_`를 `\_`로 이스케이프 처리 |
+
 ## 2026-03-16: 듀얼 사이클 + 관찰 모드 수정
 
 | 항목 | 변경 내용 |

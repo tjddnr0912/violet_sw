@@ -1,5 +1,13 @@
 # Troubleshooting
 
+## BUY 텔레그램 알림만 안 오는 경우
+
+BUY의 reason에 `strong_bearish` 등 `_` 포함 문자열이 들어가면 Telegram Markdown 파싱 에러 발생.
+SELL/CLOSE는 reason에 `_`가 없어서 정상 전송됨.
+
+- `send_message`의 에러 핸들러가 `print()`만 사용하므로 로그 파일에 에러 미기록
+- 수정: `telegram_notifier.py`의 `send_trade_alert`에서 reason 내 `_`를 `\_`로 이스케이프
+
 ## telegram.error.Conflict 에러
 
 `start_all_bots.sh`로 실행 시 각 봇은 독립 토큰 사용 → 프로젝트 간 충돌 아님.
