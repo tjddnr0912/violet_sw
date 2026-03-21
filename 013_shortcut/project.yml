@@ -1,0 +1,27 @@
+name: ShortcutCraft
+options:
+  bundleIdPrefix: com.violetsw
+  deploymentTarget:
+    iOS: "16.0"
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  ShortcutCraft:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - ShortcutCraft
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.violetsw.ShortcutCraft
+        INFOPLIST_FILE: ShortcutCraft/Info.plist
+        SUPPORTS_MAC_DESIGNED_FOR_IPAD: false
+        CODE_SIGN_ENTITLEMENTS: ShortcutCraft/ShortcutCraft.entitlements

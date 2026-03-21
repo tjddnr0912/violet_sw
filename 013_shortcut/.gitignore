@@ -1,0 +1,6 @@
+# xcodegen generates this
+*.xcodeproj/
+# Build artifacts
+DerivedData/
+build/
+.DS_Store
