@@ -141,7 +141,7 @@ class NewsBot:
                                             datetime.now().strftime("%Y%m%d"),
                                             f"blog_html_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
                                         )
-                                        upload_content = convert_md_to_html_via_claude(
+                                        upload_content, _ = convert_md_to_html_via_claude(
                                             md_content=blog_summary,
                                             output_path=html_output_path,
                                             include_investment_disclaimer=True
@@ -296,7 +296,7 @@ class NewsBot:
                                 "weekly",
                                 f"weekly_html_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
                             )
-                            upload_content = convert_md_to_html_via_claude(
+                            upload_content, _ = convert_md_to_html_via_claude(
                                 md_content=weekly_summary,
                                 output_path=html_output_path,
                                 include_investment_disclaimer=True
@@ -427,7 +427,7 @@ class NewsBot:
                                 "monthly",
                                 f"monthly_html_{last_year}{last_month:02d}.html"
                             )
-                            upload_content = convert_md_to_html_via_claude(
+                            upload_content, _ = convert_md_to_html_via_claude(
                                 md_content=monthly_summary,
                                 output_path=html_output_path,
                                 include_investment_disclaimer=True

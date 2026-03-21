@@ -38,14 +38,32 @@ def load_prompt_template() -> str:
         return f.read()
 
 
+def extract_title_from_response(response: str) -> str:
+    """Claude 응답에서 BLOG_TITLE: 라인을 추출"""
+    import re
+    match = re.search(r'^BLOG_TITLE:\s*(.+)$', response, re.MULTILINE)
+    if match:
+        title = match.group(1).strip()
+        # 마크다운 서식 제거 (혹시 포함된 경우)
+        title = re.sub(r'\*{1,2}(.+?)\*{1,2}', r'\1', title)
+        title = re.sub(r'^#+\s*', '', title)
+        logger.info(f"Extracted BLOG_TITLE: {title}")
+        return title
+    return ""
+
+
 def extract_html_from_response(response: str) -> str:
     """
     Claude 응답에서 순수 HTML만 추출
 
+    - BLOG_TITLE: 라인 제거
     - 코드 블록(```html ... ```) 내용 추출
     - 또는 <div class="news-summary-wrapper"로 시작하는 부분 추출
     """
     import re
+
+    # BLOG_TITLE: 라인 제거
+    response = re.sub(r'^BLOG_TITLE:.*\n?', '', response, count=1, flags=re.MULTILINE).strip()
 
     # 코드 블록에서 HTML 추출
     code_block_pattern = r'```(?:html)?\s*([\s\S]*?)```'
@@ -75,7 +93,7 @@ def convert_md_to_html_via_claude(
     md_content: str,
     output_path: str = None,
     include_investment_disclaimer: bool = False  # deprecated, 무시됨
-) -> str:
+) -> tuple:
     """
     Claude CLI를 사용하여 Markdown을 Blogger용 HTML로 변환
 
@@ -85,7 +103,7 @@ def convert_md_to_html_via_claude(
         include_investment_disclaimer: deprecated - Claude가 내용에 따라 자체 판단
 
     Returns:
-        변환된 HTML 문자열
+        tuple: (html_content, blog_title) — blog_title은 없으면 빈 문자열
 
     Raises:
         Exception: Claude CLI 실행 실패 시
@@ -141,6 +159,9 @@ def convert_md_to_html_via_claude(
         logger.warning("Claude CLI returned empty content")
         raise Exception("Claude CLI returned empty content")
 
+    # 제목 추출
+    blog_title = extract_title_from_response(raw_output)
+
     # HTML 추출 (코드 블록이나 설명 텍스트 제거)
     html_content = extract_html_from_response(raw_output)
 
@@ -153,7 +174,7 @@ def convert_md_to_html_via_claude(
             f.write(html_content)
         logger.info(f"HTML saved to: {output_path}")
 
-    return html_content
+    return html_content, blog_title
 
 
 if __name__ == "__main__":
@@ -174,7 +195,8 @@ if __name__ == "__main__":
 """
 
     try:
-        html = convert_md_to_html_via_claude(test_md)
+        html, title = convert_md_to_html_via_claude(test_md)
+        print(f"=== Blog Title: {title} ===")
         print("=== Generated HTML ===")
         print(html)
     except Exception as e:

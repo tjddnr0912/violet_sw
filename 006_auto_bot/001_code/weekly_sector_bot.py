@@ -160,7 +160,7 @@ class WeeklySectorBot:
             if not self.test_mode:
                 logger.info(f"[{sector.name}] Step 4: Converting to HTML...")
                 try:
-                    html_content = convert_md_to_html_via_claude(
+                    html_content, _ = convert_md_to_html_via_claude(
                         save_result['content'],
                         include_investment_disclaimer=True
                     )
@@ -399,7 +399,7 @@ class WeeklySectorBot:
         for i, chunk in enumerate(chunks, 1):
             logger.info(f"Converting chunk {i}/{len(chunks)} ({len(chunk)} chars)...")
             try:
-                html = convert_md_to_html_via_claude(chunk)
+                html, _ = convert_md_to_html_via_claude(chunk)
 
                 # 변환 결과 검증 (원본의 30% 미만이면 실패)
                 if len(html) < len(chunk) * 0.3:

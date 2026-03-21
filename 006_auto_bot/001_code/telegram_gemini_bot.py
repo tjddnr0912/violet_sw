@@ -396,17 +396,23 @@ class TelegramGeminiBot(TelegramClient):
 
         # Convert to HTML
         html_content = None
+        claude_title = ""
         try:
             from shared.claude_html_converter import convert_md_to_html_via_claude
-            html_content = convert_md_to_html_via_claude(full_md_content)
+            html_content, claude_title = convert_md_to_html_via_claude(full_md_content)
         except Exception as e:
             logger.warning(f"Claude CLI failed: {e}")
+
+        # Claude 제목이 있으면 Gemini 제목 대체
+        final_title = claude_title if claude_title else gemini_title
+        if claude_title:
+            logger.info(f"Using Claude title: {claude_title} (Gemini was: {gemini_title})")
 
         # Upload to default only
         self._upload_default_only(
             md_content=full_md_content,
             html_content=html_content,
-            title=gemini_title,
+            title=final_title,
             labels=gemini_labels,
             sources=gemini_sources,
             message_id=message_id
@@ -473,12 +479,18 @@ class TelegramGeminiBot(TelegramClient):
         full_md_content = gemini_content + sources_section
 
         html_content = None
+        claude_title = ""
         try:
             from shared.claude_html_converter import convert_md_to_html_via_claude
-            html_content = convert_md_to_html_via_claude(full_md_content)
+            html_content, claude_title = convert_md_to_html_via_claude(full_md_content)
             logger.info(f"Claude HTML conversion complete ({len(html_content)} chars)")
         except Exception as e:
             logger.warning(f"Claude CLI failed: {e}")
+
+        # Claude 제목이 있으면 Gemini 제목 대체
+        final_title = claude_title if claude_title else gemini_title
+        if claude_title:
+            logger.info(f"Using Claude title: {claude_title} (Gemini was: {gemini_title})")
 
         # Step 3: Upload
         self.edit_message_text(message_id, "Processing: Uploading to blog...")
@@ -487,7 +499,7 @@ class TelegramGeminiBot(TelegramClient):
             self._upload_default_only(
                 md_content=full_md_content,
                 html_content=html_content,
-                title=gemini_title,
+                title=final_title,
                 labels=gemini_labels,
                 sources=gemini_sources,
                 message_id=message_id
@@ -497,7 +509,7 @@ class TelegramGeminiBot(TelegramClient):
                 blog_key=blog_key,
                 md_content=full_md_content,
                 html_content=html_content,
-                title=gemini_title,
+                title=final_title,
                 labels=gemini_labels,
                 sources=gemini_sources,
                 message_id=message_id

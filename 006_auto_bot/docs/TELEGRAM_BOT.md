@@ -7,11 +7,11 @@
 ```
 질문 수신 → 블로그 선택 UI (Inline Keyboard) → 선택/타임아웃
                     ↓
-         Gemini 처리 (1500자+ 요구)
+         Gemini 처리 (1500자+ 요구, 제목/라벨/출처 메타데이터)
                     ↓
-         Claude HTML 변환 (1000자+ 요구)
+         Claude HTML 변환 (1000자+ 요구, 블로그 제목 생성)
                     ↓
-         블로그 업로드 (Dual 또는 Default만)
+         블로그 업로드 (Claude 제목 우선, Gemini 제목 fallback)
 ```
 
 ## 업로드 방식
@@ -59,6 +59,8 @@
 
 ### shared/claude_html_converter.py
 
-`convert_md_to_html_via_claude()` - Markdown을 Blogger용 HTML로 변환.
+`convert_md_to_html_via_claude()` - Markdown을 Blogger용 HTML로 변환. 반환: `(html, blog_title)` 튜플.
+- **블로그 제목 생성**: Claude가 `BLOG_TITLE:` 라인으로 제목 출력 → 텔레그램봇에서 Gemini 제목 대신 사용
 - 투자 면책조항: Claude가 내용 판단하여 자동 포함
 - 공통 금지: AI, 자동 생성, Gemini, Claude 등 AI 관련 문구
+- 제목 미생성 시 Gemini 제목으로 fallback (뉴스봇/버핏봇/섹터봇은 자체 제목 사용, 제목 무시)
