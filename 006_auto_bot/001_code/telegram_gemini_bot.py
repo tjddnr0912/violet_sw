@@ -139,6 +139,12 @@ class TelegramGeminiBot(TelegramClient):
 # 질문
 
 {question}
+
+---
+[중요] 답변 본문 작성 완료 후 반드시 아래 3줄을 포함할 것 (코드블록 없이 플레인 텍스트로):
+TITLE: (제목)
+LABELS: (키워드 2-3개)
+SOURCES: (출처)
 """
 
             # Run gemini CLI
@@ -243,8 +249,8 @@ class TelegramGeminiBot(TelegramClient):
 
         # Default labels if not found
         if not labels:
-            labels = ["AI", "Gemini"]
-            logger.warning("LABELS not found, using default: ['AI', 'Gemini']")
+            labels = ["리서치", "분석"]
+            logger.warning("LABELS not found, using default: ['리서치', '분석']")
 
         content = '\n'.join(content_lines).strip()
         return content, title, labels, sources
