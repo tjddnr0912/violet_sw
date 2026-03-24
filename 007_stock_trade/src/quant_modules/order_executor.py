@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# API Rate Limit 설정
-API_DELAY_VIRTUAL = 0.5    # 모의투자: 500ms
-API_DELAY_REAL = 0.1       # 실전투자: 100ms
+# API Rate Limit 설정 (주문 1건당 get_price + buy/sell = 2회 API 호출)
+API_DELAY_VIRTUAL = 1.0    # 모의투자: 1000ms (초당 1건 제한 대응)
+API_DELAY_REAL = 0.15      # 실전투자: 150ms
 
 
 class OrderExecutor:
@@ -197,6 +197,24 @@ class OrderExecutor:
                 invest_amount = min(invest_amount, available_capital / max(len(buy_stocks), 1))
 
                 quantity = int(invest_amount / current_price)
+
+                if quantity <= 0:
+                    error_msg = (
+                        f"수량 0 — 투자금({invest_amount:,.0f}원) < 주가({current_price:,.0f}원), "
+                        f"비중 {weight:.2%}"
+                    )
+                    logger.warning(f"주문 생성 스킵 ({stock.name}/{code}): {error_msg}")
+                    failed_orders.append(PendingOrder(
+                        code=code,
+                        name=stock.name,
+                        order_type="BUY",
+                        quantity=0,
+                        price=0,
+                        reason=f"리밸런싱 매수 (순위 {stock.rank}위)",
+                        retry_count=0,
+                        last_error=error_msg
+                    ))
+                    continue
 
                 if quantity > 0:
                     # 손절가 계산: 변동성 기반 동적 손절 (fallback: 고정 비율)
@@ -612,12 +630,15 @@ class OrderExecutor:
         buy_orders = [o for o in orders_to_execute if o.order_type == "BUY"]
 
         executed = []
+        exec_failed = []  # 실행 단계에서 실패한 주문
 
         for i, order in enumerate(sell_orders):
             if i > 0:
                 time.sleep(self.api_delay)
             if self._execute_order(order, daily_trades, position_class, stop_loss_manager):
                 executed.append(order)
+            else:
+                exec_failed.append(order)
 
         # 잠시 대기 (주문 체결 시간)
         if sell_orders:
@@ -628,10 +649,23 @@ class OrderExecutor:
                 time.sleep(self.api_delay)
             if self._execute_order(order, daily_trades, position_class, stop_loss_manager):
                 executed.append(order)
+            else:
+                exec_failed.append(order)
+
+        # 실행 실패 주문을 failed_orders로 이관 (다음 장 재시도 대상)
+        for order in exec_failed:
+            order.retry_count = getattr(order, 'retry_count', 0)
+            order.last_error = "주문 실행 실패 (API 오류)"
+            failed_orders.append(order)
+
+        if exec_failed:
+            logger.warning(f"주문 실행 실패: {len(exec_failed)}건 → failed_orders로 이관")
+            for o in exec_failed:
+                logger.warning(f"  실패: {o.name} ({o.code}) {o.order_type}")
 
         # 대기 주문 업데이트 (Lock 보호)
         with order_lock:
-            for order in executed:
+            for order in executed + exec_failed:
                 if order in pending_orders:
                     pending_orders.remove(order)
 
@@ -643,7 +677,7 @@ class OrderExecutor:
             self._notify_rebalance_result(executed)
 
         # 최종 보유 종목 미달 알림
-        self._check_position_shortage(failed_orders)
+        self._check_position_shortage(failed_orders, exec_failed)
 
     def _execute_order(
         self,
@@ -728,7 +762,7 @@ class OrderExecutor:
             return True
 
         except Exception as e:
-            logger.error(f"매수 실행 오류: {e}", exc_info=True)
+            logger.error(f"매수 실행 오류 ({order.name}/{order.code}): {e}", exc_info=True)
             return False
 
     def _execute_sell(self, order: PendingOrder, daily_trades: List[Dict]) -> bool:
@@ -823,33 +857,53 @@ class OrderExecutor:
         except Exception as e:
             logger.error(f"리밸런싱 알림 실패: {e}")
 
-    def _check_position_shortage(self, failed_orders: List[PendingOrder]):
+    def _check_position_shortage(
+        self,
+        failed_orders: List[PendingOrder],
+        exec_failed: List[PendingOrder] = None
+    ):
         """최종 보유 종목 수 미달 체크 및 알림"""
         try:
             target_count = self.config.target_stock_count
             current_count = len(self.portfolio.positions)
-            failed_count = len(failed_orders)
 
-            if current_count < target_count:
-                shortage = target_count - current_count
+            if current_count >= target_count:
+                return
 
-                reasons = []
-                if failed_count > 0:
-                    reasons.append(f"재시도 대기: {failed_count}건")
-                if shortage > failed_count:
-                    reasons.append(f"스크리닝 미달: {shortage - failed_count}건")
+            shortage = target_count - current_count
+            exec_failed = exec_failed or []
 
-                reason_text = " / ".join(reasons) if reasons else "알 수 없음"
+            # 사유별 분류
+            gen_failed = [o for o in failed_orders if o not in exec_failed]
+            gen_failed_count = len(gen_failed)
+            exec_failed_count = len(exec_failed)
+            accounted = gen_failed_count + exec_failed_count
+            unaccounted = max(0, shortage - accounted)
 
-                self.notifier.send_message(
-                    f"📉 <b>포트폴리오 목표 미달</b>\n\n"
-                    f"목표: {target_count}개\n"
-                    f"현재 보유: {current_count}개\n"
-                    f"부족: {shortage}개\n\n"
-                    f"<b>원인:</b> {reason_text}\n\n"
-                    f"다음 리밸런싱 시 자동으로 보충 시도됩니다."
-                )
-                logger.warning(f"포트폴리오 목표 미달: {target_count}개 목표 중 {current_count}개 보유")
+            reasons = []
+            if exec_failed_count > 0:
+                names = ", ".join(o.name for o in exec_failed[:5])
+                reasons.append(f"주문 실행 실패: {exec_failed_count}건 ({names})")
+            if gen_failed_count > 0:
+                names = ", ".join(o.name for o in gen_failed[:5])
+                reasons.append(f"주문 생성 실패: {gen_failed_count}건 ({names})")
+            if unaccounted > 0:
+                reasons.append(f"기타 (스크리닝 부족 등): {unaccounted}건")
+
+            reason_text = "\n".join(f"• {r}" for r in reasons) if reasons else "알 수 없음"
+
+            self.notifier.send_message(
+                f"📉 <b>포트폴리오 목표 미달</b>\n\n"
+                f"목표: {target_count}개\n"
+                f"현재 보유: {current_count}개\n"
+                f"부족: {shortage}개\n\n"
+                f"<b>원인:</b>\n{reason_text}\n\n"
+                f"실패 주문은 다음 장에서 자동 재시도됩니다."
+            )
+            logger.warning(
+                f"포트폴리오 목표 미달: {target_count}개 목표 중 {current_count}개 보유 "
+                f"(실행실패 {exec_failed_count}, 생성실패 {gen_failed_count}, 기타 {unaccounted})"
+            )
 
         except Exception as e:
             logger.error(f"포지션 미달 체크 오류: {e}")
