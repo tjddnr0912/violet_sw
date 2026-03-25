@@ -60,6 +60,8 @@ TELEGRAM_ENABLED = os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true'
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 CLAUDE_TIMEOUT = 900  # 15분
+CLAUDE_MAX_RETRIES = 3
+CLAUDE_RETRY_DELAY = 30  # 초
 SCHEDULE_TIME = "07:30"
 
 
@@ -126,45 +128,57 @@ def build_buffett_prompt(news_content: str, date: datetime = None) -> str:
 
 
 def call_claude(prompt: str) -> str:
-    """Claude CLI 호출"""
+    """Claude CLI 호출 (빈 응답 시 자동 재시도)"""
     logger.info(f"Calling Claude CLI ({len(prompt)} chars)...")
 
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.txt', delete=False, encoding='utf-8'
-        ) as f:
-            f.write(prompt)
-            temp_file = f.name
+    for attempt in range(1, CLAUDE_MAX_RETRIES + 1):
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.txt', delete=False, encoding='utf-8'
+            ) as f:
+                f.write(prompt)
+                temp_file = f.name
 
-        with open(temp_file, 'r', encoding='utf-8') as f:
-            result = subprocess.run(
-                ['claude', '-p', '-'],
-                stdin=f,
-                capture_output=True,
-                text=True,
-                timeout=CLAUDE_TIMEOUT,
+            with open(temp_file, 'r', encoding='utf-8') as f:
+                result = subprocess.run(
+                    ['claude', '-p', '-'],
+                    stdin=f,
+                    capture_output=True,
+                    text=True,
+                    timeout=CLAUDE_TIMEOUT,
+                )
+
+            os.unlink(temp_file)
+
+        except subprocess.TimeoutExpired:
+            if 'temp_file' in locals():
+                os.unlink(temp_file)
+            raise RuntimeError(f"Claude CLI timed out after {CLAUDE_TIMEOUT}s")
+        except FileNotFoundError:
+            if 'temp_file' in locals():
+                os.unlink(temp_file)
+            raise RuntimeError("Claude CLI not found")
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Claude CLI failed: {(result.stderr or '')[:500]}")
+
+        output = result.stdout.strip()
+        if output:
+            logger.info(f"Claude CLI response: {len(output)} chars")
+            return output
+
+        stderr_hint = f" (stderr: {result.stderr[:200]})" if result.stderr else ""
+        if attempt < CLAUDE_MAX_RETRIES:
+            logger.warning(
+                f"Claude CLI returned empty response (attempt {attempt}/{CLAUDE_MAX_RETRIES}){stderr_hint}, "
+                f"retrying in {CLAUDE_RETRY_DELAY}s..."
             )
-
-        os.unlink(temp_file)
-
-    except subprocess.TimeoutExpired:
-        if 'temp_file' in locals():
-            os.unlink(temp_file)
-        raise RuntimeError(f"Claude CLI timed out after {CLAUDE_TIMEOUT}s")
-    except FileNotFoundError:
-        if 'temp_file' in locals():
-            os.unlink(temp_file)
-        raise RuntimeError("Claude CLI not found")
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Claude CLI failed: {(result.stderr or '')[:500]}")
-
-    output = result.stdout.strip()
-    if not output:
-        raise RuntimeError("Claude CLI returned empty response")
-
-    logger.info(f"Claude CLI response: {len(output)} chars")
-    return output
+            time.sleep(CLAUDE_RETRY_DELAY)
+        else:
+            logger.error(
+                f"Claude CLI returned empty response after {CLAUDE_MAX_RETRIES} attempts{stderr_hint}"
+            )
+            raise RuntimeError(f"Claude CLI returned empty response after {CLAUDE_MAX_RETRIES} retries")
 
 
 def convert_long_md_to_html(md_content: str) -> str:
