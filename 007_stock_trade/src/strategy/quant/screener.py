@@ -97,17 +97,16 @@ class MultiFactorScreener:
         # 1. 먼저 KIS API로 시도
         universe = self._build_universe_from_kis()
 
-        # 2. 결과가 부족하면 pykrx 사용
+        # 2. 결과가 부족하면 네이버 금융에서 KOSPI200 구성종목 조회
         if len(universe) < self.config.universe_size:
             kis_count = len(universe)
-            logger.info(f"KIS API 결과 부족 ({kis_count}개), pykrx로 확장 시도...")
-            pykrx_universe = self._build_universe_from_pykrx()
+            logger.info(f"KIS API 결과 부족 ({kis_count}개), 네이버 금융으로 확장 시도...")
+            naver_universe = self._build_universe_from_naver()
 
-            # pykrx 결과가 유효하면 사용, 아니면 KIS 결과 유지
-            if pykrx_universe and len(pykrx_universe) > 0:
-                universe = pykrx_universe
+            if naver_universe and len(naver_universe) > kis_count:
+                universe = naver_universe
             else:
-                logger.warning(f"pykrx 실패, KIS API 결과({kis_count}개)로 진행")
+                logger.warning(f"네이버 금융 실패, KIS API 결과({kis_count}개)로 진행")
 
         logger.info(f"유니버스 구성 완료: {len(universe)}개 종목")
         return universe
@@ -140,93 +139,71 @@ class MultiFactorScreener:
             logger.error(f"KIS API 유니버스 구성 실패: {e}")
             return []
 
-    def _build_universe_from_pykrx(self) -> List[Dict]:
+    def _build_universe_from_naver(self) -> List[Dict]:
         """
-        pykrx를 사용하여 KOSPI200 기반 유니버스 구성
+        네이버 금융에서 KOSPI200 구성종목 조회
 
-        KOSPI200은 시가총액 상위 대형주로 구성되어
-        퀀트 전략에 적합한 유니버스입니다.
+        네이버 금융 KOSPI200 페이지에서 종목코드를 수집한 후,
+        pykrx로 종목명을 조회합니다. pykrx가 없으면 KIS API로 조회합니다.
         """
         try:
-            from pykrx import stock as pykrx_stock
-            import warnings
-            warnings.filterwarnings('ignore', category=UserWarning)
+            import requests
+            import re
 
-            logger.info("pykrx로 KOSPI200 구성종목 조회 중...")
+            logger.info("네이버 금융에서 KOSPI200 구성종목 조회 중...")
 
-            # KOSPI200 구성종목 조회 (약 200개)
-            kospi200_codes = list(pykrx_stock.get_index_portfolio_deposit_file('1028'))
-            logger.info(f"KOSPI200: {len(kospi200_codes)}개 종목")
+            headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
+            all_codes = []
 
-            # 시가총액 데이터 한 번에 조회 (최적화)
-            # 공휴일/주말인 경우 최근 거래일 데이터 사용
-            try:
-                from datetime import datetime, timedelta
-                cap_df = None
-
-                for days_back in range(7):  # 최대 7일 전까지 탐색
-                    target_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
-                    try:
-                        df = pykrx_stock.get_market_cap_by_ticker(target_date)
-                        if len(df) > 0 and df['시가총액'].sum() > 0:
-                            cap_df = df
-                            logger.info(f"시가총액 데이터 조회 완료 ({target_date}): {len(cap_df)}개")
-                            break
-                    except:
-                        continue
-
-                if cap_df is None:
-                    logger.warning("시가총액 데이터 조회 실패 (최근 7일 내 거래일 없음)")
-            except Exception as e:
-                logger.warning(f"시가총액 데이터 조회 실패: {e}")
-                cap_df = None
-
-            universe = []
-            for code in kospi200_codes:
-                if len(universe) >= self.config.universe_size:
+            for page in range(1, 22):  # 최대 21페이지 (약 200종목)
+                try:
+                    url = f'https://finance.naver.com/sise/entryJongmok.naver?&page={page}'
+                    resp = requests.get(url, headers=headers, timeout=5)
+                    codes = re.findall(r'code=(\d{6})', resp.text)
+                    if not codes:
+                        break
+                    for c in codes:
+                        if c not in all_codes:
+                            all_codes.append(c)
+                except Exception:
                     break
 
-                try:
-                    # pykrx에서 종목명 조회
-                    name = pykrx_stock.get_market_ticker_name(code)
+            if not all_codes:
+                logger.warning("네이버 금융 KOSPI200 조회 실패")
+                return []
 
-                    # 시가총액 조회 (미리 가져온 데이터에서)
-                    if cap_df is not None and code in cap_df.index:
-                        market_cap = int(cap_df.loc[code, '시가총액'] / 100_000_000)  # 억원 단위
-                    else:
-                        market_cap = 0
+            logger.info(f"KOSPI200: {len(all_codes)}개 종목")
 
-                    # 최소 시가총액 필터
-                    if market_cap > 0 and market_cap < self.config.min_market_cap:
-                        continue
+            # 종목명 조회 (pykrx 우선, 실패 시 코드만 사용)
+            name_map = {}
+            try:
+                from pykrx import stock as pykrx_stock
+                for code in all_codes:
+                    try:
+                        name_map[code] = pykrx_stock.get_market_ticker_name(code)
+                    except Exception:
+                        name_map[code] = code
+            except ImportError:
+                logger.info("pykrx 미설치 - 종목명은 스크리닝 시 KIS API에서 조회")
 
-                    # 기본 정보만 저장 (현재가는 나중에 조회)
-                    universe.append({
-                        "code": code,
-                        "name": name,
-                        "price": 0,  # 나중에 개별 조회
-                        "market_cap": market_cap,
-                        "volume": 0,
-                        "change_pct": 0
-                    })
+            universe = []
+            for code in all_codes:
+                if len(universe) >= self.config.universe_size:
+                    break
+                universe.append({
+                    "code": code,
+                    "name": name_map.get(code, code),
+                    "price": 0,
+                    "market_cap": 0,
+                    "volume": 0,
+                    "change_pct": 0
+                })
 
-                except Exception as e:
-                    logger.warning(f"{code}: 데이터 조회 실패 - {e}")
-                    continue
-
-            # 시가총액 기준 정렬
-            universe.sort(key=lambda x: x.get('market_cap', 0), reverse=True)
-
-            logger.info(f"pykrx 유니버스 구성 완료: {len(universe)}개")
+            logger.info(f"네이버 금융 유니버스 구성 완료: {len(universe)}개")
             return universe
 
-        except ImportError:
-            logger.error("pykrx 라이브러리가 설치되지 않았습니다. pip install pykrx")
-            return []
         except Exception as e:
-            logger.error(f"pykrx 유니버스 구성 실패: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"네이버 금융 유니버스 구성 실패: {e}")
             return []
 
     def get_stock_data(self, code: str, stock_name: str = "") -> Dict:

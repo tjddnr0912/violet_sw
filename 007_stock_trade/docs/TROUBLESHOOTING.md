@@ -11,6 +11,15 @@
 
 관련: `src/quant_modules/order_executor.py` (`API_DELAY_VIRTUAL`, `API_DELAY_REAL`)
 
+## pykrx 유니버스 0개 (Python 3.14)
+
+증상: `pykrx 유니버스 구성 실패: index -1 is out of bounds`, 유니버스 30개에 머묾
+
+원인: pykrx 1.2.x가 Python 3.14와 호환되지 않음. KRX 스크래핑이 빈 데이터 반환.
+
+해결: 2026-03-26에 네이버 금융 기반 유니버스 조회로 교체 (`_build_universe_from_naver`).
+네이버 금융 접근 불가 시 KIS API 30개로 fallback.
+
 ## 텔레그램 네트워크 에러 (httpx.ConnectError)
 
 원인: 네트워크 연결 문제 (토큰 충돌 아님).

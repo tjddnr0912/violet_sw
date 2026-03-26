@@ -154,6 +154,7 @@ class OrderExecutor:
 
         # 매수 주문 생성
         available_capital = self.portfolio.cash * 0.95  # 5% 여유
+        remaining_capital = available_capital  # 잔여 자본 추적
 
         # Score-Weighted Allocation: 점수 비례 비중 계산
         buy_stocks = []
@@ -192,15 +193,23 @@ class OrderExecutor:
                 raw_weight = max(stock.composite_score, 1) / total_score * (1 - 0.10)  # 현금 10% 보존
                 weight = max(min_weight, min(max_weight, raw_weight))
 
-                # 투자금액
+                # 투자금액 (잔여 자본 초과 방지)
                 invest_amount = self.config.total_capital * weight
-                invest_amount = min(invest_amount, available_capital / max(len(buy_stocks), 1))
+                invest_amount = min(invest_amount, remaining_capital)
 
                 quantity = int(invest_amount / current_price)
 
+                # 고가 종목: 비중 배분으로 0주면 1주 최소 매수 시도
+                if quantity <= 0 and current_price <= remaining_capital:
+                    quantity = 1
+                    logger.info(
+                        f"고가 종목 1주 최소 매수: {stock.name} "
+                        f"(비중 {weight:.2%} → 1주 {current_price:,.0f}원)"
+                    )
+
                 if quantity <= 0:
                     error_msg = (
-                        f"수량 0 — 투자금({invest_amount:,.0f}원) < 주가({current_price:,.0f}원), "
+                        f"수량 0 — 잔여자본({remaining_capital:,.0f}원) < 주가({current_price:,.0f}원), "
                         f"비중 {weight:.2%}"
                     )
                     logger.warning(f"주문 생성 스킵 ({stock.name}/{code}): {error_msg}")
@@ -217,6 +226,7 @@ class OrderExecutor:
                     continue
 
                 if quantity > 0:
+                    remaining_capital -= current_price * quantity
                     # 손절가 계산: 변동성 기반 동적 손절 (fallback: 고정 비율)
                     stock_vol = getattr(stock, 'volatility', 0)
                     if stock_vol > 0:
@@ -615,6 +625,8 @@ class OrderExecutor:
                 take_profit_manager,
                 save_state_callback
             )
+            # 재시도 → 신규 주문 사이 Rate Limit 방지
+            time.sleep(self.api_delay * 2)
 
         # 2. 대기 주문 스냅샷 (Lock 보호)
         with order_lock:

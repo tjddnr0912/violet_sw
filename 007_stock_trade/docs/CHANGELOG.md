@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-03-26: 유니버스 조회 개선 + 고가 종목 배분 + Rate Limit 수정
+
+### 유니버스 조회
+- **pykrx → 네이버 금융**: pykrx가 Python 3.14 미호환으로 유니버스 30개에 머물던 문제 해결
+  - `screener.py`의 `_build_universe_from_pykrx()` → `_build_universe_from_naver()`로 교체
+  - 네이버 금융 KOSPI200 페이지에서 ~199개 종목 수집
+  - pykrx가 있으면 종목명 조회에 활용, 없으면 KIS API fallback
+
+### 주문 배분 개선
+- **고가 종목 1주 최소 매수**: 비중 배분금 < 주가인 경우 잔여 자본이 충분하면 1주 매수
+- **잔여 자본 추적**: `available_capital / 종목수` 상한 → 실제 `remaining_capital` 추적으로 교체
+- **유휴 현금 감소**: 고가 종목 스킵으로 인한 배분금 사장 방지
+
+### Rate Limit 수정
+- 실패 주문 재시도 → 신규 주문 실행 사이에 `api_delay * 2` 딜레이 추가 (EGW00201 방지)
+
 ## 2026-03-26: 모의투자 계좌 만료 알림 추가
 
 모의투자 계좌 만료 30일 전부터 매일 장 전 텔레그램 알림 발송.
