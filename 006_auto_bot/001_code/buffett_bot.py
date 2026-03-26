@@ -141,7 +141,7 @@ def call_claude(prompt: str) -> str:
 
             with open(temp_file, 'r', encoding='utf-8') as f:
                 result = subprocess.run(
-                    ['claude', '-p', '-'],
+                    ['claude', '-p', '--dangerously-skip-permissions', '-'],
                     stdin=f,
                     capture_output=True,
                     text=True,

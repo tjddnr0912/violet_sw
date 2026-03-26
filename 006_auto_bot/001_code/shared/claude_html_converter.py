@@ -127,7 +127,7 @@ def convert_md_to_html_via_claude(
         # stdin으로 프롬프트 전달 (긴 인자 문제 방지)
         with open(temp_file, 'r', encoding='utf-8') as f:
             result = subprocess.run(
-                ['claude', '-p', '-'],  # '-'는 stdin에서 읽음
+                ['claude', '-p', '--dangerously-skip-permissions', '-'],
                 stdin=f,
                 capture_output=True,
                 text=True,
