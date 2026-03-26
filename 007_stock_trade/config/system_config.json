@@ -9,5 +9,7 @@
   "momentum_weight": 0.2,
   "short_mom_weight": 0.1,
   "volatility_weight": 0.5,
-  "volume_weight": 0.0
+  "volume_weight": 0.0,
+  "virtual_account_expiry": "2026-06-26",
+  "virtual_account_reminder_start": "2026-05-26"
 }

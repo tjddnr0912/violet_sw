@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-03-26: 모의투자 계좌 만료 알림 추가
+
+모의투자 계좌 만료 30일 전부터 매일 장 전 텔레그램 알림 발송.
+
+### 기능 추가
+- **만료 알림**: `schedule_handler.py`에 `_check_virtual_account_expiry()` 추가
+  - 만료 전: "D-N" 카운트다운 알림
+  - 만료 후: 긴급 갱신 알림
+- **설정**: `system_config.json`에 `virtual_account_expiry`, `virtual_account_reminder_start` 필드 추가
+- 갱신 완료 시 설정 날짜를 업데이트하여 알림 중단
+
 ## 2026-03-24: 리밸런싱 주문 실패 추적 및 진단 개선
 
 리밸런싱 시 15개 선정 → 12개만 매수되었으나 실패 사유가 "스크리닝 미달"로 오분류되던 문제 수정.

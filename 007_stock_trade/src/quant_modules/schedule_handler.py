@@ -4,9 +4,11 @@
 퀀트 엔진의 일일 스케줄 관리 (장 전/장중/장마감 이벤트)
 """
 
+import json
 import schedule
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from .state_manager import EngineState, SchedulePhase
 from ..utils import is_trading_day, get_trading_hours, get_market_open_time
@@ -133,11 +135,49 @@ class ScheduleHandler:
             from src.utils.error_formatter import format_user_error
             e.notifier.send_message(format_user_error(ex, "초기 스크리닝"))
 
+    def _check_virtual_account_expiry(self):
+        """모의투자 계좌 만료 알림"""
+        try:
+            config_path = Path(__file__).parent.parent.parent / "config" / "system_config.json"
+            with open(config_path, "r") as f:
+                config = json.load(f)
+
+            reminder_start = config.get("virtual_account_reminder_start")
+            expiry = config.get("virtual_account_expiry")
+            if not reminder_start or not expiry:
+                return
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            if today < reminder_start:
+                return
+
+            days_left = (datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days
+            if days_left < 0:
+                self.engine.notifier.send_message(
+                    "🚨 <b>모의투자 계좌 만료됨!</b>\n\n"
+                    f"만료일: {expiry}\n"
+                    "즉시 갱신이 필요합니다.\n\n"
+                    "👉 https://apiportal.koreainvestment.com"
+                )
+            else:
+                self.engine.notifier.send_message(
+                    "⏰ <b>모의투자 계좌 갱신 필요</b>\n\n"
+                    f"만료일: {expiry} (D-{days_left})\n"
+                    "KIS Developers 포털에서 갱신해주세요.\n\n"
+                    "👉 https://apiportal.koreainvestment.com"
+                )
+        except Exception as ex:
+            logger.error(f"모의투자 만료 알림 오류: {ex}")
+
     def on_pre_market(self):
         """장 전 이벤트"""
         e = self.engine
         if e.state != EngineState.RUNNING:
             return
+
+        # 모의투자 계좌 만료 알림
+        if e.is_virtual:
+            self._check_virtual_account_expiry()
 
         # 휴장일 제외
         if not is_trading_day():
