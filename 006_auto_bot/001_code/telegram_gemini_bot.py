@@ -169,17 +169,34 @@ SOURCES: (출처)
             else:
                 error = result.stderr.strip() or "Unknown error"
                 logger.error(f"Gemini execution failed (returncode={result.returncode}): {error}")
-                return False, f"Gemini error: {error}", "", [], []
+                user_msg = self._summarize_gemini_error(error)
+                return False, user_msg, "", [], []
 
         except subprocess.TimeoutExpired:
             logger.error("Gemini response timeout (15 min)")
-            return False, "Gemini response timeout (15 min)", "", [], []
+            return False, "⚠️ Gemini 응답 시간 초과 (15분). 잠시 후 다시 시도해주세요.", "", [], []
         except FileNotFoundError:
             logger.error("gemini CLI not found")
-            return False, "gemini CLI not found. Please check installation.", "", [], []
+            return False, "⚠️ Gemini CLI를 찾을 수 없습니다. 설치를 확인해주세요.", "", [], []
         except Exception as e:
             logger.error(f"Gemini execution error: {str(e)}", exc_info=True)
-            return False, f"Gemini execution error: {str(e)}", "", [], []
+            return False, f"⚠️ Gemini 실행 오류: {str(e)[:200]}", "", [], []
+
+    @staticmethod
+    def _summarize_gemini_error(stderr: str) -> str:
+        """Summarize Gemini CLI stderr into a user-friendly message (max 500 chars)"""
+        stderr_lower = stderr.lower()
+        if "429" in stderr or "capacity" in stderr_lower or "rate" in stderr_lower:
+            return "⚠️ Gemini 서버 용량 부족 (429). 잠시 후 다시 시도해주세요."
+        if "401" in stderr or "unauthorized" in stderr_lower or "auth" in stderr_lower:
+            return "⚠️ Gemini 인증 오류. API 키 또는 OAuth를 확인해주세요."
+        if "403" in stderr or "forbidden" in stderr_lower:
+            return "⚠️ Gemini 접근 거부 (403). 권한을 확인해주세요."
+        if "500" in stderr or "internal" in stderr_lower:
+            return "⚠️ Gemini 서버 내부 오류 (500). 잠시 후 다시 시도해주세요."
+        # Fallback: truncate raw error
+        short = stderr[:400].rsplit('\n', 1)[0] if '\n' in stderr[:400] else stderr[:400]
+        return f"⚠️ Gemini 오류:\n{short}"
 
     def _parse_response(self, response: str) -> Tuple[str, str, list, list]:
         """
@@ -385,7 +402,7 @@ SOURCES: (출처)
         success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(question)
 
         if not success:
-            error_msg = f"Gemini error: {gemini_content}"
+            error_msg = gemini_content[:4000]
             if message_id:
                 self.edit_message_text(message_id, error_msg)
             else:
@@ -475,7 +492,7 @@ SOURCES: (출처)
         success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(question)
 
         if not success:
-            self.edit_message_text(message_id, f"Gemini error: {gemini_content}")
+            self.edit_message_text(message_id, gemini_content[:4000])
             return
 
         # Step 2: Claude HTML conversion

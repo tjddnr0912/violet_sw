@@ -4,6 +4,7 @@
 |-------|----------|
 | ModuleNotFoundError | `pip install -r requirements.txt` |
 | Gemini API error | Check `GEMINI_API_KEY` |
+| Gemini 429 (서버 용량 부족) | Google 서버 일시적 과부하 — 자동 요약 메시지 전송, 잠시 후 재시도 |
 | Blogger OAuth | Delete `credentials/blogger_token.pkl` |
 | Telegram HTML parse error | Plain text fallback 자동 적용 |
 | Claude CLI not found | `pip install claude-cli` 또는 PATH 확인 |
