@@ -23,6 +23,7 @@ class KISAuth:
         self.app_key = app_key
         self.app_secret = app_secret
         self.base_url = base_url
+        self.is_virtual = "openapivts" in base_url
         self._token: Optional[str] = None
         self._token_expires: float = 0
 
@@ -87,6 +88,10 @@ class KISAuth:
         try:
             with open(TOKEN_FILE, "r") as f:
                 data = json.load(f)
+            # Reject cached token if environment mismatch (live vs paper)
+            if data.get("is_virtual") != self.is_virtual:
+                logger.info("KIS Auth: Token cache env mismatch, requesting new token")
+                return None
             return data
         except (json.JSONDecodeError, IOError):
             return None
@@ -99,6 +104,7 @@ class KISAuth:
                 json.dump({
                     "token": self._token,
                     "expires": self._token_expires,
+                    "is_virtual": self.is_virtual,
                 }, f)
             os.chmod(TOKEN_FILE, 0o600)
         except IOError as e:

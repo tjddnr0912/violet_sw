@@ -117,10 +117,21 @@ class TestCachedToken:
 
     def test_load_valid(self, auth, tmp_path):
         token_file = tmp_path / "token.json"
-        token_file.write_text(json.dumps({"token": "t", "expires": 99999999999}))
+        token_file.write_text(json.dumps({
+            "token": "t", "expires": 99999999999, "is_virtual": auth.is_virtual
+        }))
         with patch("src.api.kis_auth.TOKEN_FILE", str(token_file)):
             result = auth._load_cached_token()
             assert result["token"] == "t"
+
+    def test_load_rejects_env_mismatch(self, auth, tmp_path):
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({
+            "token": "t", "expires": 99999999999, "is_virtual": not auth.is_virtual
+        }))
+        with patch("src.api.kis_auth.TOKEN_FILE", str(token_file)):
+            result = auth._load_cached_token()
+            assert result is None
 
     def test_load_corrupt(self, auth, tmp_path):
         token_file = tmp_path / "token.json"

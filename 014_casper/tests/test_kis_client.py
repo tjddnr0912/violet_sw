@@ -142,14 +142,15 @@ class TestGetUsFilledPrice:
         assert result is None
 
     @patch.object(KISClient, "_request")
-    def test_uses_latest_when_no_exact_match(self, mock_req, client):
+    def test_no_match_returns_none(self, mock_req, client):
+        """When order_no doesn't match any item, returns None (no unsafe fallback)."""
         mock_req.return_value = {
             "output": [
                 {"odno": "other", "ft_ccld_unpr": "56.00"}
             ]
         }
         result = client.get_us_filled_price("123", "TQQQ")
-        assert result == 56.0  # Falls back to first item
+        assert result is None
 
     @patch.object(KISClient, "_request")
     def test_zero_price_skipped(self, mock_req, client):

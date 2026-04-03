@@ -15,6 +15,11 @@ logger = logging.getLogger("casper")
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+API_DELAY = 0.3  # Minimum interval between API calls (rate limiting)
+
+# KIS exchange code mapping: order API uses 4-char, price API uses 3-char
+_EXCHANGE_MAP_4TO3 = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+_EXCHANGE_MAP_3TO4 = {v: k for k, v in _EXCHANGE_MAP_4TO3.items()}
 
 
 class KISClient:
@@ -25,6 +30,7 @@ class KISClient:
         self.account_no = account_no
         self.product_code = product_code
         self.base_url = auth.base_url
+        self._last_call_time: float = 0
 
     def _request(self, method: str, url: str, headers: dict = None,
                  params: dict = None, json_body: dict = None,
@@ -38,8 +44,14 @@ class KISClient:
         hdrs = {**self.auth.headers, **(headers or {})}
         max_attempts = MAX_RETRIES if retry else 1
 
+        # Rate limiting: enforce minimum interval between API calls
+        elapsed = time.time() - self._last_call_time
+        if elapsed < API_DELAY:
+            time.sleep(API_DELAY - elapsed)
+
         for attempt in range(1, max_attempts + 1):
             try:
+                self._last_call_time = time.time()
                 if method == "GET":
                     resp = requests.get(url, headers=hdrs, params=params, timeout=10)
                 else:
@@ -65,7 +77,7 @@ class KISClient:
         logger.error(f"KIS request failed after {max_attempts} attempt(s)")
         return None
 
-    def get_us_price(self, symbol: str, exchange: str = "NAS") -> Optional[dict]:
+    def get_us_price(self, symbol: str, exchange: str = "NASD") -> Optional[dict]:
         """
         Get current US stock price.
 
@@ -78,7 +90,9 @@ class KISClient:
         """
         url = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
         headers = {"tr_id": "HHDFS00000300"}
-        params = {"AUTH": "", "EXCD": exchange, "SYMB": symbol}
+        # Price API uses 3-char exchange code
+        excd = _EXCHANGE_MAP_4TO3.get(exchange, exchange)
+        params = {"AUTH": "", "EXCD": excd, "SYMB": symbol}
 
         data = self._request("GET", url, headers=headers, params=params)
         if data and "output" in data:
@@ -147,24 +161,17 @@ class KISClient:
                                 return fill_price
                         except (ValueError, TypeError):
                             pass
-                # If output exists but order not found, fills might be in list format
-                if isinstance(data["output"], list) and len(data["output"]) > 0:
-                    first = data["output"][0]
-                    try:
-                        fill_price = float(first.get("ft_ccld_unpr")
-                                           or first.get("CCLD_PRIC") or 0)
-                        if fill_price > 0:
-                            logger.info(f"Fill price (latest): ${fill_price:.2f}")
-                            return fill_price
-                    except (ValueError, TypeError):
-                        pass
+                # Do NOT fall back to first item — could be a different order
 
         logger.warning(f"Fill price not found for order #{order_no}")
         return None
 
-    def get_us_balance(self) -> Optional[dict]:
+    def get_us_balance(self, symbol: str = "") -> Optional[dict]:
         """
         Get US stock account balance.
+
+        Args:
+            symbol: Ticker for context (defaults to empty for general query).
 
         Returns:
             Balance dict with available cash and holdings, or None.
@@ -176,7 +183,7 @@ class KISClient:
             "ACNT_PRDT_CD": self.product_code,
             "OVRS_EXCG_CD": "NASD",
             "OVRS_ORD_UNPR": "0",
-            "ITEM_CD": "TQQQ",
+            "ITEM_CD": symbol or "",
         }
 
         data = self._request("GET", url, headers=headers, params=params)

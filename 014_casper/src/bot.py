@@ -66,6 +66,7 @@ class CasperBot:
         self.position: Optional[Position] = None
         self.capital = 0.0
         self.trades_today = 0
+        self._sell_retry_count = 0
 
         # Test mode (live but 1 share only)
         self.test_mode = self.env.get("test_mode", False)
@@ -431,7 +432,7 @@ class CasperBot:
             if self.capital <= 0:
                 # Try to fetch real account balance
                 if self.kis_client:
-                    balance = self.kis_client.get_us_balance()
+                    balance = self.kis_client.get_us_balance(self.signal.symbol)
                     if balance and balance.get("available_cash", 0) > 0:
                         self.capital = balance["available_cash"]
                         logger.info(f"Capital from KIS balance: ${self.capital:.2f}")
@@ -460,7 +461,23 @@ class CasperBot:
                 self.position = None
                 self._transition(BotState.DONE_TODAY, "Order execution failed")
                 return
-            logger.info(f"BUY ORDER OK: #{order_result.get('order_no', 'N/A')}")
+            order_no = order_result.get("order_no", "")
+            logger.info(f"BUY ORDER OK: #{order_no}")
+
+            # Query actual fill price and update position entry
+            if self.kis_client and order_no:
+                fill_price = self.kis_client.get_us_filled_price(
+                    order_no, self.position.symbol
+                )
+                if fill_price and fill_price != self.position.entry_price:
+                    old_price = self.position.entry_price
+                    risk = fill_price - self.position.signal.stop_loss
+                    if risk > 0:
+                        self.position.entry_price = fill_price
+                        self.position.risk_per_share = round(risk, 2)
+                        self.position.take_profit = fill_price + risk * self.position.signal.rr_ratio
+                        logger.info(f"Entry adjusted to fill: ${old_price:.2f} → ${fill_price:.2f}, "
+                                   f"TP ${self.position.take_profit:.2f}")
 
         self.notifier.notify_entry(
             self.position.symbol, self.position.entry_price,
@@ -520,8 +537,13 @@ class CasperBot:
                 self.position.symbol, self.position.shares
             )
             if sell_result is None:
-                logger.error("SELL ORDER FAILED — will retry next tick")
+                self._sell_retry_count += 1
+                logger.error(
+                    f"SELL ORDER FAILED — attempt #{self._sell_retry_count}, "
+                    f"will retry next tick ({self.position.symbol} x{self.position.shares})"
+                )
                 return
+            self._sell_retry_count = 0
             order_no = sell_result.get("order_no", "")
             logger.info(f"SELL ORDER OK: #{order_no}")
 
