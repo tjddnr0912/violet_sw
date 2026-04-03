@@ -2,13 +2,13 @@
 # ==============================================
 # Start All Bots - iTerm2 Multi-Tab Launcher
 # ==============================================
-# Opens a new iTerm2 window with 6 tabs:
+# Opens a new iTerm2 window with 4 tabs:
 #   Tab 1: Trading Bot (Ver3 Watchdog - Auto-restart + Hang Detection)
 #   Tab 2: Telegram Gemini Bot
 #   Tab 3: Quant Trading Daemon (주식 자동매매)
 #   Tab 4: Investment Bot (뉴스봇 + 버핏봇 + 섹터봇 통합)
-#   Tab 5: Dashboard Server (Flask, port 5001)
-#   Tab 6: Stock Dashboard (FastAPI, port 5002)
+#   (Disabled) Tab 5: Dashboard Server (Flask, port 5001)
+#   (Disabled) Tab 6: Stock Dashboard (FastAPI, port 5002)
 #
 # Watchdog Features:
 #   - Auto-restart on crash
@@ -69,21 +69,23 @@ tell application "iTerm2"
         end tell
     end tell
 
-    -- Create fifth tab (Dashboard Server)
-    tell current window
-        create tab with default profile
-        tell current session
-            write text "echo -ne '\\\\e]0;Dashboard\\\\a' && cd '$DASHBOARD' && source venv/bin/activate && python app.py"
-        end tell
-    end tell
+    -- (Disabled) Create fifth tab (Dashboard Server)
+    -- Uncomment to re-enable:
+    -- tell current window
+    --     create tab with default profile
+    --     tell current session
+    --         write text "echo -ne '\\\\e]0;Dashboard\\\\a' && cd '$DASHBOARD' && source venv/bin/activate && python app.py"
+    --     end tell
+    -- end tell
 
-    -- Create sixth tab (Stock Dashboard)
-    tell current window
-        create tab with default profile
-        tell current session
-            write text "echo -ne '\\\\e]0;Stock Dashboard\\\\a' && cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
-        end tell
-    end tell
+    -- (Disabled) Create sixth tab (Stock Dashboard)
+    -- Uncomment to re-enable:
+    -- tell current window
+    --     create tab with default profile
+    --     tell current session
+    --         write text "echo -ne '\\\\e]0;Stock Dashboard\\\\a' && cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
+    --     end tell
+    -- end tell
 
     -- Select first tab
     tell current window
@@ -92,4 +94,4 @@ tell application "iTerm2"
 end tell
 EOF
 
-echo "All bots started in iTerm2 tabs! (6 tabs including Dashboards on ports 5001/5002)"
+echo "All bots started in iTerm2 tabs! (4 tabs)"

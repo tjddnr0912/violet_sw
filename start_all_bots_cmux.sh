@@ -2,13 +2,17 @@
 # ==============================================
 # Start All Bots - cmux Single Workspace Launcher
 # ==============================================
-# Creates 1 cmux workspace "running_machine" with 6 panes (3×2 grid):
+# Creates 1 cmux workspace "running_machine" with 5 panes (2+2+1):
 #
-#   +-------------------+-------------------+-------------------+
-#   | Trading Bot       | Telegram Bot      | Quant Daemon      |
-#   +-------------------+-------------------+-------------------+
-#   | Investment Bot    | Dashboard (5001)  | Stock Dash (5002) |
-#   +-------------------+-------------------+-------------------+
+#   +-------------------+-------------------+
+#   | Trading Bot       | Telegram Bot      |
+#   +-------------------+-------------------+
+#   | Quant Daemon      | Investment Bot    |
+#   +-------------------+-------------------+
+#   |             Casper Bot                |
+#   +---------------------------------------+
+#
+# (Disabled) Dashboard (5001), Stock Dashboard (5002)
 #
 # Usage:
 #   ./start_all_bots_cmux.sh
@@ -25,8 +29,10 @@ TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_watchdog.sh"
 TELEGRAM_BOT="$SCRIPT_DIR/006_auto_bot/run_telegram_bot.sh"
 QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"
 INVESTMENT_BOT="$SCRIPT_DIR/006_auto_bot/run_investment_bot.sh"
-DASHBOARD="$SCRIPT_DIR/009_dashboard"
-STOCK_DASHBOARD="$SCRIPT_DIR/012_stock_dashboard"
+CASPER_BOT="$SCRIPT_DIR/014_casper/run_casper.sh"
+# (Disabled) Uncomment to re-enable dashboards:
+# DASHBOARD="$SCRIPT_DIR/009_dashboard"
+# STOCK_DASHBOARD="$SCRIPT_DIR/012_stock_dashboard"
 
 # Check if cmux is available
 if ! command -v cmux &>/dev/null; then
@@ -42,7 +48,7 @@ if ! cmux ping &>/dev/null; then
 fi
 
 # Check if scripts exist
-for script in "$TRADING_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$INVESTMENT_BOT"; do
+for script in "$TRADING_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$INVESTMENT_BOT" "$CASPER_BOT"; do
     if [[ ! -f "$script" ]]; then
         echo "Error: Script not found: $script"
         exit 1
@@ -76,41 +82,37 @@ if [[ -z "$S_TL" ]]; then
     exit 1
 fi
 
-# --- Step 2: Build 3×2 grid layout ---
-echo "  [2/3] Building 3×2 grid..."
+# --- Step 2: Build 2+2+1 grid layout ---
+echo "  [2/3] Building 2+2+1 grid..."
 
-# Split 1: top → top + bottom (2 rows)
+# Split 1: top → top + middle (row 1 / row 2)
 split_out=$(cmux new-split down --workspace "$ws_ref" --surface "$S_TL" 2>&1)
 S_BL=$(parse_surface "$split_out")
 sleep 0.3
 
-# Split 2: top-left → top-left + top-middle
+# Split 2: top-left → top-left + top-right
 split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_TL" 2>&1)
-S_TM=$(parse_surface "$split_out")
-sleep 0.3
-
-# Split 3: top-middle → top-middle + top-right
-split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_TM" 2>&1)
 S_TR=$(parse_surface "$split_out")
 sleep 0.3
 
-# Split 4: bottom-left → bottom-left + bottom-middle
+# Split 3: bottom-left → bottom-left + bottom-right
 split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_BL" 2>&1)
-S_BM=$(parse_surface "$split_out")
-sleep 0.3
-
-# Split 5: bottom-middle → bottom-middle + bottom-right
-split_out=$(cmux new-split right --workspace "$ws_ref" --surface "$S_BM" 2>&1)
 S_BR=$(parse_surface "$split_out")
 sleep 0.3
 
-echo "    Top:    $S_TL | $S_TM | $S_TR"
-echo "    Bottom: $S_BL | $S_BM | $S_BR"
+# Split 4: bottom-left → bottom-left + casper row
+split_out=$(cmux new-split down --workspace "$ws_ref" --surface "$S_BL" 2>&1)
+S_BOTTOM=$(parse_surface "$split_out")
+sleep 0.3
 
-# Verify all 6 surfaces
-for s in "$S_TL" "$S_TM" "$S_TR" "$S_BL" "$S_BM" "$S_BR"; do
+echo "    Top:    $S_TL | $S_TR"
+echo "    Mid:    $S_BL | $S_BR"
+echo "    Bottom: $S_BOTTOM"
+
+# Verify all 5 surfaces
+for s in "$S_TL" "$S_TR" "$S_BL" "$S_BR" "$S_BOTTOM"; do
     if [[ -z "$s" ]]; then
-        echo "Error: Failed to create all 6 panes. Check cmux status."
+        echo "Error: Failed to create all 5 panes. Check cmux status."
         exit 1
     fi
 done
@@ -129,17 +131,26 @@ run_in_pane() {
 
 # Top row
 run_in_pane "$S_TL" "Trading Bot"     "cd '$SCRIPT_DIR' && '$TRADING_BOT'"
-run_in_pane "$S_TM" "Telegram Bot"    "cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
-run_in_pane "$S_TR" "Quant Daemon"    "cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+run_in_pane "$S_TR" "Telegram Bot"    "cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
 
 # Bottom row
-run_in_pane "$S_BL" "Investment Bot"  "cd '$SCRIPT_DIR' && '$INVESTMENT_BOT'"
-run_in_pane "$S_BM" "Dashboard"       "cd '$DASHBOARD' && source venv/bin/activate && python app.py"
-run_in_pane "$S_BR" "Stock Dashboard" "cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
+run_in_pane "$S_BL" "Quant Daemon"    "cd '$SCRIPT_DIR/007_stock_trade' && '$QUANT_DAEMON' daemon --no-dry-run"
+run_in_pane "$S_BR" "Investment Bot"  "cd '$SCRIPT_DIR' && '$INVESTMENT_BOT'"
+
+# Bottom row
+run_in_pane "$S_BOTTOM" "Casper Bot"  "cd '$SCRIPT_DIR/014_casper' && '$CASPER_BOT' start --yes"
+
+# (Disabled) Dashboard panes - Uncomment to re-enable:
+# run_in_pane "$S_??" "Dashboard"       "cd '$DASHBOARD' && source venv/bin/activate && python app.py"
+# run_in_pane "$S_??" "Stock Dashboard" "cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
 
 echo ""
-echo "All 6 bots running in workspace 'running_machine' (3×2 grid)"
-echo "  Top:    Trading Bot | Telegram Bot | Quant Daemon"
-echo "  Bottom: Investment Bot | Dashboard (5001) | Stock Dashboard (5002)"
+echo "All 5 bots running in workspace 'running_machine' (2+2+1 grid)"
+echo "  Top:    Trading Bot | Telegram Bot"
+echo "  Mid:    Quant Daemon | Investment Bot"
+echo "  Bottom: Casper Bot"
+echo ""
+echo ""
+echo "  (Casper Bot uses --yes flag to skip live mode confirmation)"
 echo ""
 echo "Use 'cmux tree --workspace $ws_ref' to see the pane layout."
