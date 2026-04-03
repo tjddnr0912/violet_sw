@@ -164,8 +164,9 @@ SOURCES: (출처)
                     logger.info(f"Parsed - title: {title}, labels: {labels}, sources: {len(sources)}, content: {len(content)}")
                     return True, content, title, labels, sources
                 else:
-                    logger.warning("Gemini response is empty")
-                    return False, "Gemini response is empty.", "", [], []
+                    stderr_msg = result.stderr.strip() if result.stderr else ""
+                    logger.warning(f"Gemini response is empty (stderr: {stderr_msg[:500] if stderr_msg else 'none'})")
+                    return False, "⚠️ Gemini 응답이 비어있습니다. 잠시 후 다시 시도해주세요.", "", [], []
             else:
                 error = result.stderr.strip() or "Unknown error"
                 logger.error(f"Gemini execution failed (returncode={result.returncode}): {error}")
