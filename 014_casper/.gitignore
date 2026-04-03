@@ -1,0 +1,64 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+.venv/
+
+# Credentials & Keys
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+credentials.json
+token.json
+service_account*.json
+*_secret*.json
+*_credentials*.json
+*.keystore
+
+# API keys / auth tokens (catch-all patterns)
+**/secrets/
+**/private/
+auth_token*
+api_key*
+
+# Data (large files)
+data/
+
+# Logs
+logs/
+
+# Output
+output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+notebooks/.ipynb_checkpoints/
+
+# Broker config (account info, portfolio snapshots)
+config/accounts*.json
+config/portfolio*.json
+config/broker_*.json
+
+# Trade logs with real money
+logs/trades/live_*
+logs/trades/**/live_*
+
+# Backup & temp
+*.bak
+*.tmp
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

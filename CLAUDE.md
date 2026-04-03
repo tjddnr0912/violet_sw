@@ -15,6 +15,7 @@ violet_sw/
 ├── 011_macos_cc_usage/ # Claude Code 사용량 모니터 (macOS 메뉴바)
 ├── 012_stock_dashboard/ # 글로벌 시장 대시보드 (Bloomberg-style, FastAPI)
 ├── 013_shortcut/       # 비주얼 블록 Apple Shortcuts 빌더 (SwiftUI)
+├── 014_casper/         # TQQQ/SQQQ 데이트레이딩 봇 (ORB+FVG, KIS API)
 ├── 000~004_*/          # Lab & Study (Archive)
 ├── start_all_bots.sh        # 전체 봇 일괄 실행 (iTerm2 6탭)
 └── start_all_bots_cmux.sh   # 전체 봇 일괄 실행 (cmux 단일 워크스페이스 3×2 pane)
@@ -40,6 +41,7 @@ violet_sw/
 | 011_macos_cc_usage | Claude Code 사용량 모니터 (macOS 메뉴바) | `./install.sh` | [CLAUDE.md](011_macos_cc_usage/CLAUDE.md) |
 | 012_stock_dashboard | 글로벌 시장 대시보드 (Bloomberg-style, port 5002) | `./run_dashboard.sh` | [CLAUDE.md](012_stock_dashboard/CLAUDE.md) |
 | 013_shortcut | 비주얼 블록 Apple Shortcuts 빌더 (iOS/macOS) | `xcodegen generate` | [CLAUDE.md](013_shortcut/CLAUDE.md) |
+| 014_casper | TQQQ/SQQQ 데이트레이딩 (ORB+FVG, R:R 1:2) | `./run_casper.sh start` | [CLAUDE.md](014_casper/CLAUDE.md) |
 
 ## Development Guidelines
 
