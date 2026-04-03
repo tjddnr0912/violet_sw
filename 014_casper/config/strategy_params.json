@@ -28,7 +28,9 @@
     "risk": {
         "circuit_breaker_losses": 3,
         "max_weekly_loss_pct": 3.0,
-        "max_trades_per_day": 1
+        "max_trades_per_day": 1,
+        "max_shares": 200,
+        "max_position_pct": 1.0
     },
     "commission": {
         "rate_per_side": 0.0009

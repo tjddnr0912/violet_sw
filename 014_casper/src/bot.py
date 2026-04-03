@@ -4,13 +4,19 @@ Runs 24/7 in terminal. Cycles through states:
 WAITING → PRE_MARKET → ORB_FORMING → SCANNING → POSITION_OPEN → DONE_TODAY
 """
 
+import json
 import logging
 import math
+import os
+import signal
 import time
 from enum import Enum
 from typing import Optional
 
 from src.utils.config import load_env, load_strategy_params, get_kis_urls
+from src.api.kis_auth import KISAuth
+from src.api.kis_client import KISClient
+from src.api.kis_order import KISOrder
 from src.utils.logger import setup_logger
 from src.utils import time_utils
 from src.core.orb import calculate_orb, is_orb_too_wide, OpeningRange
@@ -59,6 +65,7 @@ class CasperBot:
         self.signal: Optional[TradeSignal] = None
         self.position: Optional[Position] = None
         self.capital = 0.0
+        self.trades_today = 0
 
         # Test mode (live but 1 share only)
         self.test_mode = self.env.get("test_mode", False)
@@ -73,8 +80,36 @@ class CasperBot:
         # Telegram (disabled)
         self.notifier = TelegramNotifier()
 
+        # KIS API (order execution)
+        self._init_kis()
+
+        # Position state file for crash recovery
+        self._position_state_file = os.path.join(
+            os.path.dirname(__file__), "..", "data", "position_state.json"
+        )
+        self._done_today_logged = False
+
         # Load trade history
         self._init_from_history()
+
+    def _init_kis(self):
+        """Initialize KIS API clients for order execution."""
+        key = self.env.get("kis_app_key", "")
+        secret = self.env.get("kis_app_secret", "")
+        account = self.env.get("kis_account_no", "")
+        mode = self.env.get("trading_mode", "paper")
+        urls = get_kis_urls(mode)
+
+        if key and secret:
+            auth = KISAuth(key, secret, urls["base"])
+            client = KISClient(auth, account)
+            self.kis_order = KISOrder(client, mode)
+            self.kis_client = client
+            logger.info(f"KIS API initialized ({mode})")
+        else:
+            self.kis_order = None
+            self.kis_client = None
+            logger.warning("KIS API not configured (no app_key/secret)")
 
     def _init_from_history(self):
         """Restore state from saved trades."""
@@ -84,6 +119,84 @@ class CasperBot:
             logger.info(f"History: {stats['total_trades']} trades, "
                         f"PnL ${stats['total_pnl']:+.2f}, WR {stats['win_rate']}%")
             self.circuit_breaker.load_from_trades(trades, time_utils.get_week_number())
+
+        # Crash recovery: restore open position
+        self._restore_position()
+
+    def _save_position_state(self):
+        """Persist open position to disk for crash recovery."""
+        if self.position and self.position.is_open:
+            state = {
+                "symbol": self.position.symbol,
+                "direction": self.position.direction,
+                "entry_price": self.position.entry_price,
+                "stop_loss": self.position.stop_loss,
+                "take_profit": self.position.take_profit,
+                "shares": self.position.shares,
+                "risk_per_share": self.position.risk_per_share,
+                "commission_rate": self.position.commission_rate,
+                "entry_time": self.position.entry_time,
+                "original_stop": self.position.original_stop,
+                "be_stop_moved": self.position.be_stop_moved,
+                "capital": self.capital,
+            }
+            try:
+                os.makedirs(os.path.dirname(self._position_state_file), exist_ok=True)
+                tmp = self._position_state_file + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(state, f, indent=2)
+                os.replace(tmp, self._position_state_file)
+            except IOError as e:
+                logger.error(f"Failed to save position state: {e}")
+        else:
+            self._clear_position_state()
+
+    def _clear_position_state(self):
+        """Remove position state file after close."""
+        try:
+            if os.path.exists(self._position_state_file):
+                os.remove(self._position_state_file)
+        except IOError:
+            pass
+
+    def _restore_position(self):
+        """Restore open position from crash recovery file."""
+        if not os.path.exists(self._position_state_file):
+            return
+        try:
+            with open(self._position_state_file, "r") as f:
+                state = json.load(f)
+            logger.warning(f"CRASH RECOVERY: Found open position {state['symbol']} "
+                          f"@ ${state['entry_price']:.2f}")
+            # Reconstruct a minimal position for monitoring
+            # We need a TradeSignal stub for position creation
+            from src.core.orb import OpeningRange
+            from src.core.fvg import FairValueGap
+            from src.core.strategy import TradeSignal
+            stub_orb = OpeningRange(high=0, low=0, range_size=0, date="")
+            stub_fvg = FairValueGap(top=0, bottom=0, size=0, timestamp="")
+            stub_signal = TradeSignal(
+                symbol=state["symbol"], direction=state["direction"],
+                entry_price=state["entry_price"], stop_loss=state["stop_loss"],
+                take_profit=state["take_profit"], risk_per_share=state["risk_per_share"],
+                rr_ratio=2.0, fvg=stub_fvg, orb=stub_orb, signal_time="",
+            )
+            self.position = Position(
+                symbol=state["symbol"], direction=state["direction"],
+                entry_price=state["entry_price"], stop_loss=state["stop_loss"],
+                take_profit=state["take_profit"], shares=state["shares"],
+                risk_per_share=state["risk_per_share"],
+                commission_rate=state["commission_rate"],
+                entry_time=state["entry_time"], signal=stub_signal,
+            )
+            self.position.original_stop = state.get("original_stop", state["stop_loss"])
+            self.position.be_stop_moved = state.get("be_stop_moved", False)
+            self.capital = state.get("capital", 0.0)
+            self.state = BotState.POSITION_OPEN
+            logger.warning("CRASH RECOVERY: Resuming position monitoring")
+        except (json.JSONDecodeError, KeyError, IOError) as e:
+            logger.error(f"Failed to restore position state: {e}")
+            self._clear_position_state()
 
     def run(self):
         """Main event loop. Runs until interrupted."""
@@ -96,12 +209,25 @@ class CasperBot:
         logger.info("=" * 50)
         self.notifier.notify_status("BOT STARTED", f"Mode: {self.env['trading_mode']}")
 
+        # Handle SIGTERM for graceful daemon shutdown
+        def _sigterm_handler(signum, frame):
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
         try:
             while True:
-                self._tick()
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
-            self.notifier.notify_status("BOT STOPPED", "KeyboardInterrupt")
+                try:
+                    self._tick()
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except Exception as e:
+                    logger.exception(f"Unhandled error in tick: {e}")
+                    self.notifier.notify_error(f"Tick error: {e}")
+                    time.sleep(30)
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Bot stopped")
+            self._save_position_state()
+            self.notifier.notify_status("BOT STOPPED", "Graceful shutdown")
 
     def _tick(self):
         """Single iteration of the event loop."""
@@ -142,8 +268,10 @@ class CasperBot:
         self.orb = None
         self.signal = None
         self.position = None
+        self.trades_today = 0
         self.state = BotState.WAITING
-        self.circuit_breaker.reset_if_new_week(time_utils.get_week_number())
+        self._done_today_logged = False
+        self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
         logger.info(f"=== New Day: {today} ===")
 
     # ─── State Handlers ───
@@ -246,6 +374,10 @@ class CasperBot:
             self.notifier.notify_skip("No signal today")
             return
 
+        if self.trend is None:
+            self._transition(BotState.DONE_TODAY, "No trend data available")
+            return
+
         symbol = self.trend.symbol
         bars = get_intraday_bars(symbol, period="1d", interval="5m")
         if bars is None:
@@ -277,6 +409,11 @@ class CasperBot:
 
     def _execute_entry(self):
         """Execute trade entry."""
+        max_trades = self.params.get("risk", {}).get("max_trades_per_day", 1)
+        if self.trades_today >= max_trades:
+            self._transition(BotState.DONE_TODAY, f"Max trades reached ({max_trades})")
+            return
+
         # Determine capital and shares
         price = self.signal.entry_price
         comm_rate = self.params["commission"]["rate_per_side"]
@@ -292,8 +429,22 @@ class CasperBot:
             logger.info("TEST MODE: shares fixed to 1")
         else:
             if self.capital <= 0:
-                self.capital = 1500.0  # Default starting capital
-            shares = int(self.capital / price)
+                # Try to fetch real account balance
+                if self.kis_client:
+                    balance = self.kis_client.get_us_balance()
+                    if balance and balance.get("available_cash", 0) > 0:
+                        self.capital = balance["available_cash"]
+                        logger.info(f"Capital from KIS balance: ${self.capital:.2f}")
+                if self.capital <= 0:
+                    self.capital = 1500.0  # Default fallback
+                    logger.warning(f"Using default capital: ${self.capital:.2f}")
+            shares = int(self.capital / price) if price > 0 else 0
+            # Apply position size cap
+            risk_params = self.params.get("risk", {})
+            max_shares = risk_params.get("max_shares", 200)
+            max_pct = risk_params.get("max_position_pct", 1.0)
+            max_by_pct = int(self.capital * max_pct / price) if price > 0 else 0
+            shares = min(shares, max_shares, max_by_pct)
             if shares < 1:
                 self._transition(BotState.DONE_TODAY, "Insufficient capital for 1 share")
                 return
@@ -301,11 +452,22 @@ class CasperBot:
         entry_time = time_utils.now_et().strftime("%H:%M")
         self.position = create_position(self.signal, shares, comm_rate, entry_time)
 
+        # Execute buy order via KIS API
+        if self.kis_order:
+            order_result = self.kis_order.buy_market(self.position.symbol, shares)
+            if order_result is None:
+                logger.error("BUY ORDER FAILED — aborting entry")
+                self.position = None
+                self._transition(BotState.DONE_TODAY, "Order execution failed")
+                return
+            logger.info(f"BUY ORDER OK: #{order_result.get('order_no', 'N/A')}")
+
         self.notifier.notify_entry(
             self.position.symbol, self.position.entry_price,
             self.position.shares, self.position.stop_loss,
             self.position.take_profit, self.position.risk_per_share,
         )
+        self._save_position_state()
         self._transition(BotState.POSITION_OPEN)
 
     def _handle_position_open(self):
@@ -321,8 +483,14 @@ class CasperBot:
         # 15:50 force close
         if time_utils.is_force_close_time():
             current = get_current_price(self.position.symbol)
+            if current is None and self.kis_client:
+                # Try KIS API price as fallback
+                kis_price = self.kis_client.get_us_price(self.position.symbol)
+                if kis_price and kis_price.get("price", 0) > 0:
+                    current = kis_price["price"]
+                    logger.info(f"Force close: using KIS price ${current:.2f}")
             if current is None:
-                logger.warning("Force close: price unavailable, using entry price")
+                logger.warning("Force close: all price sources failed, using entry price")
                 current = self.position.entry_price
             self._close_and_record(current, "time_force")
             return
@@ -346,15 +514,40 @@ class CasperBot:
 
     def _close_and_record(self, price: float, reason: str):
         """Close position and save to trade store."""
+        # Execute sell order via KIS API
+        if self.kis_order:
+            sell_result = self.kis_order.sell_market(
+                self.position.symbol, self.position.shares
+            )
+            if sell_result is None:
+                logger.error("SELL ORDER FAILED — will retry next tick")
+                return
+            order_no = sell_result.get("order_no", "")
+            logger.info(f"SELL ORDER OK: #{order_no}")
+
+            # Query actual fill price from broker
+            if self.kis_client and order_no:
+                fill_price = self.kis_client.get_us_filled_price(
+                    order_no, self.position.symbol
+                )
+                if fill_price:
+                    logger.info(f"Using fill price ${fill_price:.2f} "
+                               f"(was ${price:.2f})")
+                    price = fill_price
+
         exit_time = time_utils.now_et().strftime("%H:%M")
         close_position(self.position, price, reason, exit_time)
 
         self.capital += self.position.net_pnl
+        self.trades_today += 1
 
         # Save trade
         trade = trade_from_position(self.position)
         trade["capital_after"] = round(self.capital, 2)
         save_trade(trade)
+
+        # Clear position state file
+        self._clear_position_state()
 
         # Update circuit breaker
         self.circuit_breaker.record_trade(
@@ -372,10 +565,11 @@ class CasperBot:
 
     def _handle_done_today(self):
         """Wait until next day."""
-        # Log daily summary once
-        stats = get_cumulative_stats(load_trades())
-        logger.info(f"Cumulative: {stats['total_trades']}T WR={stats['win_rate']}% "
-                     f"PnL=${stats['total_pnl']:+.2f} PF={stats['profit_factor']}")
+        if not self._done_today_logged:
+            stats = get_cumulative_stats(load_trades())
+            logger.info(f"Cumulative: {stats['total_trades']}T WR={stats['win_rate']}% "
+                         f"PnL=${stats['total_pnl']:+.2f} PF={stats['profit_factor']}")
+            self._done_today_logged = True
 
         # Sleep until midnight or long interval
         time.sleep(300)

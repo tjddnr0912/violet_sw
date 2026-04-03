@@ -27,11 +27,18 @@ class KISClient:
         self.base_url = auth.base_url
 
     def _request(self, method: str, url: str, headers: dict = None,
-                 params: dict = None, json_body: dict = None) -> Optional[dict]:
-        """Make an API request with retry logic."""
-        hdrs = {**self.auth.headers, **(headers or {})}
+                 params: dict = None, json_body: dict = None,
+                 retry: bool = True) -> Optional[dict]:
+        """Make an API request with retry logic.
 
-        for attempt in range(1, MAX_RETRIES + 1):
+        Args:
+            retry: If False, do not retry on failure (use for POST orders
+                   to prevent duplicate submissions).
+        """
+        hdrs = {**self.auth.headers, **(headers or {})}
+        max_attempts = MAX_RETRIES if retry else 1
+
+        for attempt in range(1, max_attempts + 1):
             try:
                 if method == "GET":
                     resp = requests.get(url, headers=hdrs, params=params, timeout=10)
@@ -47,15 +54,15 @@ class KISClient:
                         logger.error(f"KIS API error: {msg}")
                         return None
 
-                logger.warning(f"KIS HTTP {resp.status_code} (attempt {attempt}/{MAX_RETRIES})")
+                logger.warning(f"KIS HTTP {resp.status_code} (attempt {attempt}/{max_attempts})")
 
             except requests.RequestException as e:
-                logger.warning(f"KIS request error (attempt {attempt}/{MAX_RETRIES}): {e}")
+                logger.warning(f"KIS request error (attempt {attempt}/{max_attempts}): {e}")
 
-            if attempt < MAX_RETRIES:
+            if attempt < max_attempts:
                 time.sleep(RETRY_DELAY * attempt)
 
-        logger.error(f"KIS request failed after {MAX_RETRIES} attempts")
+        logger.error(f"KIS request failed after {max_attempts} attempt(s)")
         return None
 
     def get_us_price(self, symbol: str, exchange: str = "NAS") -> Optional[dict]:
@@ -76,13 +83,83 @@ class KISClient:
         data = self._request("GET", url, headers=headers, params=params)
         if data and "output" in data:
             output = data["output"]
-            return {
-                "price": float(output.get("last", 0)),
-                "open": float(output.get("open", 0)),
-                "high": float(output.get("high", 0)),
-                "low": float(output.get("low", 0)),
-                "volume": int(output.get("tvol", 0)),
-            }
+            try:
+                return {
+                    "price": float(output.get("last") or 0),
+                    "open": float(output.get("open") or 0),
+                    "high": float(output.get("high") or 0),
+                    "low": float(output.get("low") or 0),
+                    "volume": int(output.get("tvol") or 0),
+                }
+            except (ValueError, TypeError) as e:
+                logger.error(f"KIS price parse error: {e}")
+                return None
+        return None
+
+    def get_us_filled_price(self, order_no: str, symbol: str,
+                             exchange: str = "NASD") -> Optional[float]:
+        """
+        Query fill price of a completed order.
+
+        Uses the overseas order execution inquiry API (체결내역조회).
+        Waits up to 10 seconds for the fill to appear.
+
+        Args:
+            order_no: Order number from the order response.
+            symbol: Ticker symbol.
+            exchange: Exchange code.
+
+        Returns:
+            Fill price as float, or None if not found.
+        """
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        headers = {"tr_id": "TTTS3035R"}
+        params = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.product_code,
+            "PDNO": symbol,
+            "ORD_STRT_DT": "",  # Today
+            "ORD_END_DT": "",
+            "SLL_BUY_DVSN": "00",  # All
+            "CCLD_NCCS_DVSN": "01",  # Filled only
+            "OVRS_EXCG_CD": exchange,
+            "SORT_SQN": "DS",  # Latest first
+            "ORD_GNO_BRNO": "",
+            "ODNO": order_no,
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+
+        # Poll up to 3 times (order fill may take a moment)
+        for attempt in range(3):
+            if attempt > 0:
+                time.sleep(2)
+            data = self._request("GET", url, headers=headers, params=params)
+            if data and "output" in data:
+                for item in data["output"]:
+                    if item.get("odno") == order_no or item.get("ODNO") == order_no:
+                        try:
+                            fill_price = float(item.get("ft_ccld_unpr")
+                                               or item.get("CCLD_PRIC")
+                                               or item.get("avg_prvs") or 0)
+                            if fill_price > 0:
+                                logger.info(f"Fill price for #{order_no}: ${fill_price:.2f}")
+                                return fill_price
+                        except (ValueError, TypeError):
+                            pass
+                # If output exists but order not found, fills might be in list format
+                if isinstance(data["output"], list) and len(data["output"]) > 0:
+                    first = data["output"][0]
+                    try:
+                        fill_price = float(first.get("ft_ccld_unpr")
+                                           or first.get("CCLD_PRIC") or 0)
+                        if fill_price > 0:
+                            logger.info(f"Fill price (latest): ${fill_price:.2f}")
+                            return fill_price
+                    except (ValueError, TypeError):
+                        pass
+
+        logger.warning(f"Fill price not found for order #{order_no}")
         return None
 
     def get_us_balance(self) -> Optional[dict]:
@@ -105,8 +182,12 @@ class KISClient:
         data = self._request("GET", url, headers=headers, params=params)
         if data and "output" in data:
             output = data["output"]
-            return {
-                "available_cash": float(output.get("ovrs_ord_psbl_amt", 0)),
-                "total_value": float(output.get("frcr_pchs_amt1", 0)),
-            }
+            try:
+                return {
+                    "available_cash": float(output.get("ovrs_ord_psbl_amt") or 0),
+                    "total_value": float(output.get("frcr_pchs_amt1") or 0),
+                }
+            except (ValueError, TypeError) as e:
+                logger.error(f"KIS balance parse error: {e}")
+                return None
         return None

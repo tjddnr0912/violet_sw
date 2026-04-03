@@ -28,7 +28,9 @@ print_logo() {
 # .env 로드
 load_env() {
     if [ -f ".env" ]; then
-        export $(grep -v '^#' .env | grep -v '^\s*$' | sed 's/\s*#.*$//' | xargs)
+        set -a
+        source .env
+        set +a
     else
         echo -e "${RED}[ERROR]${NC} .env 파일이 없습니다. .env.example을 참고하세요."
         exit 1

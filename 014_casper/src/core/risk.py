@@ -98,6 +98,7 @@ class CircuitBreaker:
         self.max_weekly_loss_pct = max_weekly_loss_pct
         self._consecutive_losses = 0
         self._weekly_loss = 0.0
+        self._week_start_capital = 0.0
         self._current_week: Optional[int] = None
         self._active = False
 
@@ -105,7 +106,7 @@ class CircuitBreaker:
     def is_active(self) -> bool:
         return self._active
 
-    def reset_if_new_week(self, week_number: int) -> None:
+    def reset_if_new_week(self, week_number: int, capital: float = 0.0) -> None:
         """Reset circuit breaker on new week."""
         if self._current_week != week_number:
             if self._active:
@@ -113,6 +114,7 @@ class CircuitBreaker:
             self._current_week = week_number
             self._consecutive_losses = 0
             self._weekly_loss = 0.0
+            self._week_start_capital = capital
             self._active = False
 
     def record_trade(self, result: str, net_pnl: float, capital: float) -> None:
@@ -139,9 +141,10 @@ class CircuitBreaker:
             )
             return
 
-        # Check weekly loss trigger
-        if capital > 0:
-            loss_pct = (self._weekly_loss / capital) * 100
+        # Check weekly loss trigger (based on week-start capital)
+        base_capital = self._week_start_capital if self._week_start_capital > 0 else capital
+        if base_capital > 0:
+            loss_pct = (self._weekly_loss / base_capital) * 100
             if loss_pct >= self.max_weekly_loss_pct:
                 self._active = True
                 logger.warning(
@@ -153,8 +156,23 @@ class CircuitBreaker:
         self._current_week = current_week
         self._consecutive_losses = 0
         self._weekly_loss = 0.0
+        self._week_start_capital = 0.0
         self._active = False
+
+        # Find week-start capital from the first trade of this week
+        for t in trades:
+            if t.get("week") == current_week:
+                cap = t.get("capital_after", 0)
+                pnl = t.get("net_pnl", 0)
+                if cap > 0 and self._week_start_capital == 0:
+                    self._week_start_capital = cap - pnl  # Capital before first trade
+                break
 
         for t in trades:
             if t.get("week") == current_week:
-                self.record_trade(t["result"], t["net_pnl"], t.get("capital", 1))
+                capital = t.get("capital_after", 0)
+                if capital <= 0:
+                    capital = t.get("capital", 0)
+                if capital <= 0:
+                    continue
+                self.record_trade(t["result"], t["net_pnl"], capital)

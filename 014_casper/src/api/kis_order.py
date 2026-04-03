@@ -114,7 +114,8 @@ class KISOrder:
             f"[{self.trading_mode}]"
         )
 
-        data = self.client._request("POST", url, headers=headers, json_body=body)
+        # retry=False: POST 주문은 재시도하지 않음 (중복 주문 방지)
+        data = self.client._request("POST", url, headers=headers, json_body=body, retry=False)
         if data and "output" in data:
             output = data["output"]
             order_no = output.get("ODNO", "N/A")

@@ -39,8 +39,15 @@ class Position:
 
     @property
     def breakeven_price(self) -> float:
-        """Breakeven price including round-trip commission."""
-        return self.entry_price * (1 + self.commission_rate * 2)
+        """Breakeven price including round-trip commission.
+
+        For a long position: exit_price must cover both entry and exit commissions.
+        entry_cost = entry_price * shares * (1 + rate)
+        exit_revenue = exit_price * shares * (1 - rate)
+        BE when exit_revenue = entry_cost → exit_price = entry_price * (1+rate)/(1-rate)
+        """
+        r = self.commission_rate
+        return self.entry_price * (1 + r) / (1 - r)
 
     @property
     def is_open(self) -> bool:

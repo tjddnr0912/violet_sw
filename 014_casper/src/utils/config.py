@@ -8,6 +8,12 @@ from dotenv import load_dotenv
 _config_cache = {}
 
 
+def reset_config_cache():
+    """Reset cached config for testing."""
+    global _config_cache
+    _config_cache = {}
+
+
 def load_env() -> dict:
     """Load .env file and return environment variables as dict."""
     env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
@@ -36,8 +42,13 @@ def load_strategy_params() -> dict:
     config_path = os.path.join(
         os.path.dirname(__file__), "..", "..", "config", "strategy_params.json"
     )
-    with open(config_path, "r") as f:
-        _config_cache = json.load(f)
+    try:
+        with open(config_path, "r") as f:
+            _config_cache = json.load(f)
+    except FileNotFoundError:
+        raise SystemExit(f"Config file not found: {config_path}")
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"Invalid JSON in config: {config_path}: {e}")
     return _config_cache
 
 

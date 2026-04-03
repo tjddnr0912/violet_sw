@@ -10,7 +10,7 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 ./run_casper.sh daemon --yes  # 백그라운드 데몬
 ./run_casper.sh stop          # 종료
 ./run_casper.sh status        # 누적 매매 통계
-./run_casper.sh test          # 유닛 테스트 (73개)
+./run_casper.sh test          # 유닛 테스트 (223개)
 ```
 
 ## 핵심 정보
@@ -21,7 +21,8 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 | 종목 | TQQQ (강세) / SQQQ (약세), QQQ MA20 기준 |
 | R:R | 1:2 고정 |
 | 매매시간 | 09:45~10:55 ET (스캔), 15:50 강제청산 |
-| 필터 | VIX(12~30), ORB 폭, 서킷브레이커(3연패/주간3%손실) |
+| 필터 | VIX(12~30), ORB 폭, 서킷브레이커(3연패/주간3%손실), 공휴일 |
+| 안전장치 | 크래시 복구(position_state.json), SIGTERM 핸들링, 포지션 상한 |
 | 테스트모드 | `TEST_MODE=on` → live지만 1주 고정 |
 
 ## 상태머신
@@ -55,6 +56,7 @@ TEST_MODE=on         # on | off (1주 고정)
 
 ## 상세 문서
 
+- [코드 리뷰](docs/CODE_REVIEW.md)
 - [설계 스펙](docs/superpowers/specs/2026-04-02-casper-bot-design.md)
 - [전략 리뷰](docs/strategy/STRATEGY_REVIEW.md)
 - [실행 계획](docs/strategy/EXECUTION_PLAN.md)

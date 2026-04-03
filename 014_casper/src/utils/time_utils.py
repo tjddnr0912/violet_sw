@@ -1,10 +1,34 @@
 """Time and timezone utilities for Casper Trading Bot."""
 
+import json
+import os
 from datetime import datetime, time as dtime, date, timedelta
 import pytz
 
 ET = pytz.timezone("US/Eastern")
 KST = pytz.timezone("Asia/Seoul")
+
+# Load US market holidays
+_HOLIDAYS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "config", "us_holidays.json")
+_us_holidays: set = set()
+
+
+def _load_holidays() -> set:
+    """Load US holiday dates from config file."""
+    global _us_holidays
+    if _us_holidays:
+        return _us_holidays
+    try:
+        with open(_HOLIDAYS_FILE, "r") as f:
+            data = json.load(f)
+        for year_key, dates in data.items():
+            if year_key.startswith("_"):
+                continue
+            for d in dates:
+                _us_holidays.add(d)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass  # No holidays file — weekday-only fallback
+    return _us_holidays
 
 
 def now_et() -> datetime:
@@ -27,9 +51,18 @@ def current_time_et() -> dtime:
     return now_et().time()
 
 
+def is_trading_day() -> bool:
+    """True if today is a trading day (weekday and not a US market holiday)."""
+    now = now_et()
+    if now.weekday() >= 5:
+        return False
+    holidays = _load_holidays()
+    return now.strftime("%Y-%m-%d") not in holidays
+
+
 def is_weekday() -> bool:
-    """True if today is Mon-Fri in ET."""
-    return now_et().weekday() < 5
+    """True if today is a trading day (Mon-Fri, not a US holiday)."""
+    return is_trading_day()
 
 
 def is_market_open() -> bool:
@@ -57,13 +90,13 @@ def is_scan_window() -> bool:
 
 
 def is_past_be_time() -> bool:
-    """True if past 11:00 AM ET (breakeven stop move time)."""
-    return current_time_et() >= dtime(11, 0)
+    """True if past 11:00 AM ET (breakeven stop move time) on weekdays."""
+    return current_time_et() >= dtime(11, 0) and is_weekday()
 
 
 def is_force_close_time() -> bool:
-    """True if at or past 15:50 ET (force close)."""
-    return current_time_et() >= dtime(15, 50)
+    """True if at or past 15:50 ET (force close) on weekdays."""
+    return current_time_et() >= dtime(15, 50) and is_weekday()
 
 
 def get_week_number() -> int:

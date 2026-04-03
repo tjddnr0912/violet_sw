@@ -68,7 +68,11 @@ class KISAuth:
             resp.raise_for_status()
             data = resp.json()
 
-            self._token = data.get("access_token", "")
+            token = data.get("access_token", "")
+            if not token:
+                logger.error("KIS Auth: Empty access_token in response")
+                return
+            self._token = token
             # Token valid for ~24h, set expiry to 23h
             self._token_expires = time.time() + 23 * 3600
             self._save_cached_token()
@@ -96,5 +100,6 @@ class KISAuth:
                     "token": self._token,
                     "expires": self._token_expires,
                 }, f)
+            os.chmod(TOKEN_FILE, 0o600)
         except IOError as e:
             logger.error(f"KIS Auth: Token save failed: {e}")
