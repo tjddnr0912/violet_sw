@@ -356,7 +356,8 @@ class USDataCollector:
         """클라이언트 lazy 초기화"""
         if self.kis_client is None:
             from src.api.kis_us_client import get_us_client
-            self.kis_client = get_us_client(is_virtual=True)
+            is_virtual = os.getenv("TRADING_MODE", "VIRTUAL").upper() != "REAL"
+            self.kis_client = get_us_client(is_virtual=is_virtual)
         return self.kis_client
 
     def get_price_data(

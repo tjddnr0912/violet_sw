@@ -87,20 +87,20 @@ class USExchange:
 # - 손절/익절: 15분 지연 감안 필요
 #
 
-    # KIS API에서 사용하는 거래소 코드
+    # KIS API 거래소 코드 (3자리로 통일)
     EXCHANGE_MAP = {
-        "NYS": "NYSE",
-        "NAS": "NASDAQ",
-        "AMS": "AMEX",
         "NYSE": "NYS",
         "NASDAQ": "NAS",
         "NASD": "NAS",
-        "AMEX": "AMS"
+        "AMEX": "AMS",
+        "NYS": "NYS",
+        "NAS": "NAS",
+        "AMS": "AMS"
     }
 
     @classmethod
     def normalize(cls, exchange: str) -> str:
-        """거래소 코드 정규화"""
+        """거래소 코드를 KIS API 3자리 코드로 정규화"""
         return cls.EXCHANGE_MAP.get(exchange.upper(), exchange.upper())
 
 
