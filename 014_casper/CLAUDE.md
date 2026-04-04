@@ -10,7 +10,7 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 ./run_casper.sh daemon --yes  # 백그라운드 데몬
 ./run_casper.sh stop          # 종료
 ./run_casper.sh status        # 누적 매매 통계
-./run_casper.sh test          # 유닛 테스트 (223개)
+./run_casper.sh test          # 유닛 테스트 (247개)
 ```
 
 ## 핵심 정보
@@ -42,7 +42,8 @@ WAITING → PRE_MARKET → ORB_FORMING → SCANNING → POSITION_OPEN → DONE_T
 | `src/core/position.py` | 포지션 관리 (SL/TP/BE) |
 | `src/core/risk.py` | VIX 필터, 트렌드, 서킷브레이커 |
 | `src/api/kis_order.py` | KIS 주문 실행 |
-| `src/data/market_data.py` | yfinance 시세 (VIX, QQQ, 분봉) |
+| `src/api/kis_client.py` | KIS 시세 (현재가, 분봉, 일봉, 체결가) |
+| `src/data/market_data.py` | 시세 통합 (KIS 우선 → yfinance 폴백, VIX는 yf 전용) |
 
 ## 환경변수 (.env)
 

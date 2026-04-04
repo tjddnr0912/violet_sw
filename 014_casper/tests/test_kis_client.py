@@ -163,6 +163,85 @@ class TestGetUsFilledPrice:
         assert result is None
 
 
+class TestGetUsMinuteChart:
+    @patch.object(KISClient, "_request")
+    def test_success(self, mock_req, client):
+        mock_req.return_value = {
+            "output2": [
+                {"xymd": "20260406", "xhms": "094500", "open": "55", "high": "56",
+                 "low": "54", "last": "55.5", "evol": "10000"},
+                {"xymd": "20260406", "xhms": "094000", "open": "54", "high": "55",
+                 "low": "53", "last": "54.5", "evol": "8000"},
+            ]
+        }
+        result = client.get_us_minute_chart("TQQQ", nmin=5)
+        assert result is not None
+        assert len(result) == 2
+        # Should be reversed to ascending order
+        assert result[0]["time"] == "094000"
+        assert result[1]["time"] == "094500"
+
+    @patch.object(KISClient, "_request")
+    def test_api_failure(self, mock_req, client):
+        mock_req.return_value = None
+        assert client.get_us_minute_chart("TQQQ") is None
+
+    @patch.object(KISClient, "_request")
+    def test_empty_bars(self, mock_req, client):
+        mock_req.return_value = {"output2": []}
+        assert client.get_us_minute_chart("TQQQ") is None
+
+    @patch.object(KISClient, "_request")
+    def test_skips_zero_close(self, mock_req, client):
+        mock_req.return_value = {
+            "output2": [
+                {"xymd": "20260406", "xhms": "094000", "open": "0", "high": "0",
+                 "low": "0", "last": "0", "evol": "0"},
+                {"xymd": "20260406", "xhms": "094500", "open": "55", "high": "56",
+                 "low": "54", "last": "55.5", "evol": "1000"},
+            ]
+        }
+        result = client.get_us_minute_chart("TQQQ")
+        assert result is not None
+        assert len(result) == 1
+
+
+class TestGetUsDailyChart:
+    @patch.object(KISClient, "_request")
+    def test_success(self, mock_req, client):
+        mock_req.return_value = {
+            "output2": [
+                {"xymd": "20260402", "open": "52", "high": "54",
+                 "low": "51", "clos": "53", "tvol": "5000000"},
+                {"xymd": "20260401", "open": "50", "high": "53",
+                 "low": "49", "clos": "52", "tvol": "4000000"},
+            ]
+        }
+        result = client.get_us_daily_chart("TQQQ", count=2)
+        assert result is not None
+        assert len(result) == 2
+        # Reversed to ascending
+        assert result[0]["date"] == "20260401"
+
+    @patch.object(KISClient, "_request")
+    def test_api_failure(self, mock_req, client):
+        mock_req.return_value = None
+        assert client.get_us_daily_chart("TQQQ") is None
+
+    @patch.object(KISClient, "_request")
+    def test_trims_to_count(self, mock_req, client):
+        mock_req.return_value = {
+            "output2": [
+                {"xymd": f"2026040{i}", "open": "50", "high": "54",
+                 "low": "49", "clos": "52", "tvol": "1000"}
+                for i in range(5, 0, -1)
+            ]
+        }
+        result = client.get_us_daily_chart("TQQQ", count=3)
+        assert result is not None
+        assert len(result) == 3
+
+
 class TestGetUsBalance:
     @patch.object(KISClient, "_request")
     def test_success(self, mock_req, client):

@@ -30,7 +30,7 @@ from src.core.risk import (
 )
 from src.data.market_data import (
     get_vix_close, get_qqq_trend_data, get_intraday_bars,
-    get_avg_daily_range, get_current_price,
+    get_avg_daily_range, get_current_price, set_kis_client,
 )
 from src.data.trade_store import (
     load_trades, save_trade, trade_from_position, get_cumulative_stats,
@@ -106,10 +106,12 @@ class CasperBot:
             client = KISClient(auth, account)
             self.kis_order = KISOrder(client, mode)
             self.kis_client = client
+            set_kis_client(client)  # Inject into market_data module
             logger.info(f"KIS API initialized ({mode})")
         else:
             self.kis_order = None
             self.kis_client = None
+            set_kis_client(None)
             logger.warning("KIS API not configured (no app_key/secret)")
 
     def _init_from_history(self):
@@ -500,12 +502,6 @@ class CasperBot:
         # 15:50 force close
         if time_utils.is_force_close_time():
             current = get_current_price(self.position.symbol)
-            if current is None and self.kis_client:
-                # Try KIS API price as fallback
-                kis_price = self.kis_client.get_us_price(self.position.symbol)
-                if kis_price and kis_price.get("price", 0) > 0:
-                    current = kis_price["price"]
-                    logger.info(f"Force close: using KIS price ${current:.2f}")
             if current is None:
                 logger.warning("Force close: all price sources failed, using entry price")
                 current = self.position.entry_price

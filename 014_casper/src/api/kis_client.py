@@ -166,6 +166,140 @@ class KISClient:
         logger.warning(f"Fill price not found for order #{order_no}")
         return None
 
+    def get_us_minute_chart(self, symbol: str, nmin: int = 5,
+                             exchange: str = "NASD",
+                             nrec: int = 120) -> Optional[list]:
+        """
+        Fetch intraday minute bars for US stock.
+
+        Uses overseas minute chart API (해외주식분봉조회).
+
+        Args:
+            symbol: Ticker symbol (e.g., "TQQQ").
+            nmin: Minute interval (1, 5, 10, 30, 60).
+            exchange: Exchange code (4-char, auto-mapped to 3-char).
+            nrec: Number of records to fetch (max 120).
+
+        Returns:
+            List of bar dicts [{date, time, open, high, low, close, volume}, ...]
+            sorted ascending by time, or None on error.
+        """
+        url = f"{self.base_url}/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
+        headers = {"tr_id": "HHDFS76950200"}
+        excd = _EXCHANGE_MAP_4TO3.get(exchange, exchange)
+        params = {
+            "AUTH": "",
+            "EXCD": excd,
+            "SYMB": symbol,
+            "NMIN": str(nmin),
+            "PINC": "1",
+            "NEXT": "",
+            "NREC": str(nrec),
+            "FILL": "",
+            "KEYB": "",
+        }
+
+        data = self._request("GET", url, headers=headers, params=params)
+        if not data:
+            return None
+
+        # Response uses output2 for bar array
+        bars_raw = data.get("output2", data.get("output", []))
+        if not bars_raw or not isinstance(bars_raw, list):
+            logger.warning(f"KIS minute chart: no bars for {symbol}")
+            return None
+
+        bars = []
+        for item in bars_raw:
+            try:
+                close_val = float(item.get("last") or item.get("clos") or 0)
+                if close_val <= 0:
+                    continue
+                bars.append({
+                    "date": item.get("xymd", item.get("tymd", "")),
+                    "time": item.get("xhms", item.get("khms", "")),
+                    "open": float(item.get("open") or 0),
+                    "high": float(item.get("high") or 0),
+                    "low": float(item.get("low") or 0),
+                    "close": close_val,
+                    "volume": int(item.get("evol") or item.get("tvol") or 0),
+                })
+            except (ValueError, TypeError):
+                continue
+
+        if not bars:
+            return None
+
+        # KIS returns newest first — reverse to ascending
+        bars.reverse()
+        logger.debug(f"KIS minute chart: {symbol} {len(bars)} bars ({nmin}min)")
+        return bars
+
+    def get_us_daily_chart(self, symbol: str, exchange: str = "NASD",
+                            count: int = 60) -> Optional[list]:
+        """
+        Fetch daily OHLCV bars for US stock.
+
+        Uses overseas daily price API (해외주식 기간별시세).
+
+        Args:
+            symbol: Ticker symbol.
+            exchange: Exchange code.
+            count: Number of days to fetch.
+
+        Returns:
+            List of bar dicts [{date, open, high, low, close, volume}, ...]
+            sorted ascending by date, or None on error.
+        """
+        url = f"{self.base_url}/uapi/overseas-price/v1/quotations/dailyprice"
+        headers = {"tr_id": "HHDFS76240000"}
+        excd = _EXCHANGE_MAP_4TO3.get(exchange, exchange)
+        params = {
+            "AUTH": "",
+            "EXCD": excd,
+            "SYMB": symbol,
+            "GUBN": "0",  # 0=일, 1=주, 2=월
+            "BYMD": "",   # 기준일 (빈값=최근)
+            "MODP": "1",  # 수정주가 반영
+        }
+
+        data = self._request("GET", url, headers=headers, params=params)
+        if not data:
+            return None
+
+        bars_raw = data.get("output2", data.get("output", []))
+        if not bars_raw or not isinstance(bars_raw, list):
+            logger.warning(f"KIS daily chart: no bars for {symbol}")
+            return None
+
+        bars = []
+        for item in bars_raw:
+            try:
+                close_val = float(item.get("clos") or item.get("last") or 0)
+                if close_val <= 0:
+                    continue
+                bars.append({
+                    "date": item.get("xymd", ""),
+                    "open": float(item.get("open") or 0),
+                    "high": float(item.get("high") or 0),
+                    "low": float(item.get("low") or 0),
+                    "close": close_val,
+                    "volume": int(item.get("tvol") or 0),
+                })
+            except (ValueError, TypeError):
+                continue
+
+        if not bars:
+            return None
+
+        # KIS returns newest first — reverse to ascending
+        bars.reverse()
+        # Trim to requested count
+        if len(bars) > count:
+            bars = bars[-count:]
+        logger.debug(f"KIS daily chart: {symbol} {len(bars)} bars")
+        return bars
+
     def get_us_balance(self, symbol: str = "") -> Optional[dict]:
         """
         Get US stock account balance.
