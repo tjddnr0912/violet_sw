@@ -226,7 +226,9 @@ class CasperBot:
                 except Exception as e:
                     logger.exception(f"Unhandled error in tick: {e}")
                     self.notifier.notify_error(f"Tick error: {e}")
-                    time.sleep(30)
+                    # Shorter sleep during position monitoring to not miss exits
+                    sleep_time = 5 if self.state == BotState.POSITION_OPEN else 30
+                    time.sleep(sleep_time)
         except (KeyboardInterrupt, SystemExit):
             logger.info("Bot stopped")
             self._save_position_state()
@@ -266,6 +268,21 @@ class CasperBot:
 
     def _reset_day(self, today: str):
         """Reset daily state for a new trading day."""
+        # Preserve unclosed position across day boundary
+        if self.position and self.position.is_open:
+            logger.critical(
+                f"OVERNIGHT: Unclosed position {self.position.symbol} "
+                f"x{self.position.shares} @ ${self.position.entry_price:.2f} — "
+                f"will attempt to close at next market open"
+            )
+            self.today_date = today
+            self.trades_today = 0
+            self._done_today_logged = False
+            self.state = BotState.POSITION_OPEN
+            self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
+            logger.info(f"=== New Day: {today} (POSITION CARRIED OVER) ===")
+            return
+
         self.today_date = today
         self.trend = None
         self.orb = None
@@ -350,7 +367,12 @@ class CasperBot:
             symbol = self.trend.symbol
             bars = get_intraday_bars(symbol, period="1d", interval="5m")
             if bars is None:
-                self._transition(BotState.DONE_TODAY, "No intraday data")
+                # Retry once after 60 seconds
+                logger.warning(f"ORB: No intraday data for {symbol}, retrying in 60s")
+                time.sleep(60)
+                bars = get_intraday_bars(symbol, period="1d", interval="5m")
+            if bars is None:
+                self._transition(BotState.DONE_TODAY, "No intraday data after retry")
                 return
 
             self.orb = calculate_orb(bars)
@@ -493,6 +515,30 @@ class CasperBot:
         """Monitor open position for exit conditions."""
         if self.position is None or not self.position.is_open:
             self._transition(BotState.DONE_TODAY)
+            return
+
+        # ─── Overnight position: next-day market open → immediate close ───
+        if time_utils.is_next_day_open():
+            logger.critical("OVERNIGHT CLOSE: Selling carried-over position at market open")
+            current = get_current_price(self.position.symbol)
+            if current is None:
+                current = self.position.entry_price
+            self._close_and_record(current, "overnight_force")
+            return
+
+        # ─── After hours (16:00+): attempt limit order if market sell failed ───
+        if time_utils.is_after_hours():
+            if self._sell_retry_count > 0:
+                # Market sell already failed during regular hours, try limit
+                logger.warning(
+                    f"After hours: attempting limit sell for {self.position.symbol} "
+                    f"(market sell failed {self._sell_retry_count}x)"
+                )
+            current = get_current_price(self.position.symbol)
+            if current is None:
+                current = self.position.entry_price
+            self._close_and_record(current, "after_hours_force")
+            time.sleep(30)
             return
 
         # 11:00 BE move

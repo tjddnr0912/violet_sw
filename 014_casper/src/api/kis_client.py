@@ -144,8 +144,8 @@ class KISClient:
             "CTX_AREA_NK200": "",
         }
 
-        # Poll up to 3 times (order fill may take a moment)
-        for attempt in range(3):
+        # Poll up to 5 times (order fill may take a moment, especially at open)
+        for attempt in range(5):
             if attempt > 0:
                 time.sleep(2)
             data = self._request("GET", url, headers=headers, params=params)

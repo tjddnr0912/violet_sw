@@ -182,6 +182,8 @@ class TestMaxTradesPerDay:
 
         bot = CasperBot()
         bot._position_state_file = str(tmp_path / "pos.json")
+        bot.position = None  # Clear any crash recovery
+        bot.state = BotState.SCANNING
         bot.trades_today = 1  # Already traded once
         bot.capital = 1500
 

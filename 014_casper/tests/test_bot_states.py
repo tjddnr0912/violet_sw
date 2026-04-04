@@ -59,8 +59,8 @@ class TestResetDay:
         bot = _make_bot()
         bot.trend = TrendState("bull", 500, 490, "TQQQ")
         bot.orb = OpeningRange(54, 50, 4, "2026-04-06")
-        bot.position = MagicMock()
-        bot.state = BotState.POSITION_OPEN
+        bot.position = None  # No open position → normal reset
+        bot.state = BotState.DONE_TODAY
         bot._done_today_logged = True
 
         bot._reset_day("2026-04-07")
@@ -172,6 +172,8 @@ class TestHandlePositionOpen:
     @patch("src.bot.time_utils")
     @patch("src.bot.get_current_price", return_value=59.0)
     def test_take_profit_exit(self, mock_price, mock_time, tmp_path):
+        mock_time.is_next_day_open.return_value = False
+        mock_time.is_after_hours.return_value = False
         mock_time.is_past_be_time.return_value = False
         mock_time.is_force_close_time.return_value = False
         mock_time.now_et.return_value = MagicMock(

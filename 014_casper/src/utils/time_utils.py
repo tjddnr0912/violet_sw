@@ -89,6 +89,17 @@ def is_scan_window() -> bool:
     return dtime(9, 45) <= t <= dtime(10, 55) and is_weekday()
 
 
+def is_after_hours() -> bool:
+    """True if past regular market close (16:00 ET) on weekdays."""
+    return current_time_et() >= dtime(16, 0) and is_weekday()
+
+
+def is_next_day_open() -> bool:
+    """True if market just opened (09:30-09:35 ET) — for overnight position cleanup."""
+    t = current_time_et()
+    return dtime(9, 30) <= t < dtime(9, 35) and is_weekday()
+
+
 def is_past_be_time() -> bool:
     """True if past 11:00 AM ET (breakeven stop move time) on weekdays."""
     return current_time_et() >= dtime(11, 0) and is_weekday()

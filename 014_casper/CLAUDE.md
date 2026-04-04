@@ -22,7 +22,7 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 | R:R | 1:2 고정 |
 | 매매시간 | 09:45~10:55 ET (스캔), 15:50 강제청산 |
 | 필터 | VIX(12~30), ORB 폭, 서킷브레이커(3연패/주간3%손실), 공휴일 |
-| 안전장치 | 크래시 복구(position_state.json), SIGTERM 핸들링, 포지션 상한 |
+| 안전장치 | 크래시 복구, SIGTERM, 포지션 상한, 오버나잇 방지(장후→익일 자동청산) |
 | 테스트모드 | `TEST_MODE=on` → live지만 1주 고정 |
 
 ## 상태머신
