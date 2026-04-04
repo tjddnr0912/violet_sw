@@ -300,6 +300,50 @@ class KISClient:
         logger.debug(f"KIS daily chart: {symbol} {len(bars)} bars")
         return bars
 
+    def get_us_holdings(self, exchange: str = "NASD") -> Optional[list]:
+        """
+        Get current US stock holdings.
+
+        Args:
+            exchange: Exchange code.
+
+        Returns:
+            List of holding dicts [{symbol, qty, avg_price}, ...] or None.
+        """
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+        headers = {"tr_id": "TTTS3012R"}
+        params = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.product_code,
+            "OVRS_EXCG_CD": exchange,
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+
+        data = self._request("GET", url, headers=headers, params=params)
+        if not data:
+            return None
+
+        output = data.get("output1", data.get("output", []))
+        if not isinstance(output, list):
+            return None
+
+        holdings = []
+        for item in output:
+            try:
+                qty = int(item.get("ovrs_cblc_qty") or item.get("hldg_qty") or 0)
+                if qty > 0:
+                    holdings.append({
+                        "symbol": item.get("ovrs_pdno", item.get("pdno", "")),
+                        "qty": qty,
+                        "avg_price": float(item.get("pchs_avg_pric") or 0),
+                    })
+            except (ValueError, TypeError):
+                continue
+
+        return holdings
+
     def get_us_balance(self, symbol: str = "") -> Optional[dict]:
         """
         Get US stock account balance.

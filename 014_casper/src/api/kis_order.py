@@ -30,6 +30,9 @@ class KISOrder:
         """
         Place a market buy order.
 
+        KIS overseas stocks do not support true market orders on NASD.
+        Uses current price as limit price for immediate execution.
+
         Args:
             symbol: Ticker symbol.
             qty: Number of shares (integer).
@@ -38,15 +41,23 @@ class KISOrder:
         Returns:
             Order result dict or None on failure.
         """
+        price = self._get_market_price(symbol)
+        if price is None:
+            logger.error(f"BUY: Cannot get price for {symbol}")
+            return None
+        # Bid slightly above current price for immediate fill
+        limit_price = round(price * 1.005, 2)  # +0.5% slippage buffer
         return self._place_order(
             symbol=symbol, qty=qty, side="buy",
-            exchange=exchange, price=0, order_type="00"
+            exchange=exchange, price=limit_price, order_type="00"
         )
 
     def sell_market(self, symbol: str, qty: int, exchange: str = "NASD") -> Optional[dict]:
         """
         Place a market sell order.
 
+        KIS overseas stocks: uses current price as limit price.
+
         Args:
             symbol: Ticker symbol.
             qty: Number of shares (integer).
@@ -55,10 +66,23 @@ class KISOrder:
         Returns:
             Order result dict or None on failure.
         """
+        price = self._get_market_price(symbol)
+        if price is None:
+            logger.error(f"SELL: Cannot get price for {symbol}")
+            return None
+        # Ask slightly below current price for immediate fill
+        limit_price = round(price * 0.995, 2)  # -0.5% slippage buffer
         return self._place_order(
             symbol=symbol, qty=qty, side="sell",
-            exchange=exchange, price=0, order_type="00"
+            exchange=exchange, price=limit_price, order_type="00"
         )
+
+    def _get_market_price(self, symbol: str) -> Optional[float]:
+        """Get current price for market-like order execution."""
+        data = self.client.get_us_price(symbol)
+        if data and data.get("price", 0) > 0:
+            return data["price"]
+        return None
 
     def buy_limit(self, symbol: str, qty: int, price: float, exchange: str = "NASD") -> Optional[dict]:
         """Place a limit buy order."""

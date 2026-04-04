@@ -49,7 +49,8 @@ class TestPlaceOrder:
         assert result is None
 
     @patch.object(KISClient, "_request")
-    def test_buy_market_success(self, mock_req, live_order):
+    @patch.object(KISClient, "get_us_price", return_value={"price": 55.0})
+    def test_buy_market_success(self, mock_price, mock_req, live_order):
         mock_req.return_value = {
             "output": {"ODNO": "00001234"},
             "rt_cd": "0",
@@ -61,7 +62,8 @@ class TestPlaceOrder:
         assert result["qty"] == 10
 
     @patch.object(KISClient, "_request")
-    def test_sell_market_success(self, mock_req, live_order):
+    @patch.object(KISClient, "get_us_price", return_value={"price": 55.0})
+    def test_sell_market_success(self, mock_price, mock_req, live_order):
         mock_req.return_value = {
             "output": {"ODNO": "00005678"},
             "rt_cd": "0",
@@ -71,14 +73,22 @@ class TestPlaceOrder:
         assert result["order_no"] == "00005678"
         assert result["side"] == "sell"
 
+    @patch.object(KISClient, "get_us_price", return_value=None)
+    def test_order_no_price(self, mock_price, live_order):
+        """Market order fails if price unavailable."""
+        result = live_order.buy_market("TQQQ", 10)
+        assert result is None
+
     @patch.object(KISClient, "_request")
-    def test_order_api_failure(self, mock_req, live_order):
+    @patch.object(KISClient, "get_us_price", return_value={"price": 55.0})
+    def test_order_api_failure(self, mock_price, mock_req, live_order):
         mock_req.return_value = None
         result = live_order.buy_market("TQQQ", 10)
         assert result is None
 
     @patch.object(KISClient, "_request")
-    def test_order_no_output(self, mock_req, live_order):
+    @patch.object(KISClient, "get_us_price", return_value={"price": 55.0})
+    def test_order_no_output(self, mock_price, mock_req, live_order):
         mock_req.return_value = {"rt_cd": "0"}
         result = live_order.buy_market("TQQQ", 10)
         assert result is None
@@ -105,12 +115,15 @@ class TestPlaceOrder:
 
 class TestPlaceOrderBody:
     @patch.object(KISClient, "_request")
-    def test_market_order_price_is_zero(self, mock_req, live_order):
+    @patch.object(KISClient, "get_us_price", return_value={"price": 55.0})
+    def test_market_order_uses_price(self, mock_price, mock_req, live_order):
+        """Market order sends actual price (not 0) for KIS overseas."""
         mock_req.return_value = {"output": {"ODNO": "X"}, "rt_cd": "0"}
         live_order.buy_market("TQQQ", 3)
         _, kwargs = mock_req.call_args
         body = kwargs["json_body"]
-        assert body["OVRS_ORD_UNPR"] == "0"
+        # Price should be ~55.0 * 1.005 = 55.28 (with slippage)
+        assert float(body["OVRS_ORD_UNPR"]) > 0
         assert body["ORD_QTY"] == "3"
 
     @patch.object(KISClient, "_request")
@@ -122,7 +135,8 @@ class TestPlaceOrderBody:
         assert body["OVRS_ORD_UNPR"] == "45.5"
 
     @patch.object(KISClient, "_request")
-    def test_sell_uses_sell_tr_id(self, mock_req, live_order):
+    @patch.object(KISClient, "get_us_price", return_value={"price": 55.0})
+    def test_sell_uses_sell_tr_id(self, mock_price, mock_req, live_order):
         mock_req.return_value = {"output": {"ODNO": "X"}, "rt_cd": "0"}
         live_order.sell_market("TQQQ", 1)
         _, kwargs = mock_req.call_args

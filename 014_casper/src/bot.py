@@ -163,16 +163,46 @@ class CasperBot:
             pass
 
     def _restore_position(self):
-        """Restore open position from crash recovery file."""
+        """Restore open position from crash recovery file.
+
+        Verifies actual broker holdings before restoring.
+        If no matching holding exists, discards the stale state file.
+        """
         if not os.path.exists(self._position_state_file):
             return
         try:
             with open(self._position_state_file, "r") as f:
                 state = json.load(f)
-            logger.warning(f"CRASH RECOVERY: Found open position {state['symbol']} "
+            symbol = state["symbol"]
+            shares = state["shares"]
+            logger.warning(f"CRASH RECOVERY: Found state file for {symbol} x{shares} "
                           f"@ ${state['entry_price']:.2f}")
-            # Reconstruct a minimal position for monitoring
-            # We need a TradeSignal stub for position creation
+
+            # Verify actual holdings at broker
+            if self.kis_client:
+                holdings = self.kis_client.get_us_holdings()
+                if holdings is not None:
+                    held = next((h for h in holdings if h["symbol"] == symbol), None)
+                    if held is None or held["qty"] <= 0:
+                        logger.warning(
+                            f"CRASH RECOVERY: {symbol} NOT held at broker — "
+                            f"discarding stale position state"
+                        )
+                        self._clear_position_state()
+                        return
+                    # Adjust shares to actual holding if different
+                    if held["qty"] != shares:
+                        logger.warning(
+                            f"CRASH RECOVERY: Broker has {held['qty']} shares "
+                            f"(state says {shares}) — using broker qty"
+                        )
+                        state["shares"] = held["qty"]
+                    logger.info(f"CRASH RECOVERY: Broker confirms {symbol} x{held['qty']}")
+                else:
+                    logger.warning("CRASH RECOVERY: Cannot verify holdings (API unavailable), "
+                                  "proceeding with state file")
+
+            # Reconstruct position
             from src.core.orb import OpeningRange
             from src.core.fvg import FairValueGap
             from src.core.strategy import TradeSignal
