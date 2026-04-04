@@ -169,41 +169,12 @@ SIGTERM 수신     → SystemExit → position state save → ✅
 
 ---
 
-## 6. 수정 예정사항: 시세 데이터 소스 KIS API 전환
+## 6. 시세 데이터 소스 KIS API 전환 — ✅ 완료 (2026-04-04)
 
-### 배경
-
-현재 모든 시세 데이터를 yfinance(비공식 무료 API)에 의존. 장중 실시간 데이터와 장전 데이터가 동일 소스를 공유하므로, rate limit 발생 시 전체 데이터 파이프라인이 차단되는 단일 장애점(SPOF) 리스크.
-
-### 전환 계획
-
-| 데이터 | 현재 소스 | 전환 후 | KIS API | 비고 |
-|--------|----------|--------|---------|------|
-| TQQQ/SQQQ 현재가 | yfinance 1분봉 | **KIS API** | `get_us_price()` 구현됨 | 15초 폴링 |
-| TQQQ/SQQQ 5분봉 | yfinance 5분봉 | **KIS API** | `get_us_minute_chart()` 신규 | TR: HHDFS76950200 |
-| QQQ 일봉/MA20 | yfinance 일봉 | **KIS API** | `get_us_daily_chart()` 신규 | 장전 1회 |
-| TQQQ/SQQQ ADR | yfinance 일봉 | **KIS API** | `get_us_daily_chart()` 공유 | 장전 1회 |
-| **^VIX 종가** | yfinance 일봉 | **yfinance 유지** | KIS 미지원 (지수) | 장전 1회 |
-
-### VIX 예외 처리
-
-- ^VIX는 CBOE 지수로, KIS 해외주식 API로 조회 불가
-- yfinance로 **장전 08시에 1회만** 호출 → rate limit 확률 극히 낮음
-- 실패 시 현재 로직(5분 후 재시도)으로 충분 (일시 throttle 복구 30초~2분)
-- 최종 폴백: VIX 확인 불가 시 해당일 거래 스킵 (안전)
-
-### 예상 KIS API 호출량
-
-- 장전: QQQ 일봉 + TQQQ/SQQQ 일봉 = **3회**
-- ORB 형성: 5분봉 1회 = **1회**
-- 스캐닝(30초×70분): **~140회**
-- 포지션 모니터링(15초×최대6시간): **~1,440회**
-- **하루 총 ~1,600회** — KIS 초당 20건 제한 대비 충분
-
-### 구현 작업
-
-1. `kis_client.py`에 `get_us_minute_chart()` 메서드 추가 (TR: HHDFS76950200)
-2. `kis_client.py`에 `get_us_daily_chart()` 메서드 추가
-3. `market_data.py` 리팩토링: KIS 우선 → yfinance 폴백 (VIX 제외)
-4. `bot.py`에서 KIS client를 market_data에 주입하는 구조 추가
-5. 테스트 추가: KIS 기반 데이터 함수 mock 테스트
+| 데이터 | 소스 | API | 상태 |
+|--------|------|-----|------|
+| TQQQ/SQQQ 현재가 | KIS → yf 폴백 | `get_us_price()` | ✅ |
+| TQQQ/SQQQ 5분봉 | KIS → yf 폴백 | `get_us_minute_chart()` (HHDFS76950200) | ✅ |
+| QQQ 일봉/MA20 | KIS → yf 폴백 | `get_us_daily_chart()` (HHDFS76240000) | ✅ |
+| TQQQ/SQQQ ADR | KIS → yf 폴백 | `get_us_daily_chart()` 공유 | ✅ |
+| ^VIX 종가 | yfinance 전용 | KIS 미지원 (지수), 장전 1회 | ✅ |
