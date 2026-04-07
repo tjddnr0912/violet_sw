@@ -5,6 +5,29 @@ import pytest
 from unittest.mock import patch
 
 
+@pytest.fixture(autouse=True)
+def _isolate_position_state(tmp_path, monkeypatch):
+    """Prevent tests from writing position_state.json to production data dir."""
+    fake_state = str(tmp_path / "position_state.json")
+    original_init = None
+
+    try:
+        from src.bot import CasperBot
+        original_init = CasperBot.__init__
+
+        _real_init = original_init
+
+        def patched_init(self, *args, **kwargs):
+            _real_init(self, *args, **kwargs)
+            self._position_state_file = fake_state
+
+        monkeypatch.setattr(CasperBot, "__init__", patched_init)
+    except ImportError:
+        pass
+
+    yield tmp_path
+
+
 @pytest.fixture
 def tmp_trades_dir(tmp_path):
     """Patch TRADES_DIR to use temp directory."""
