@@ -13,8 +13,8 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-# Gemini CLI timeout (5분)
-GEMINI_CLI_TIMEOUT = 300
+# Gemini CLI timeout (10분)
+GEMINI_CLI_TIMEOUT = 600
 
 
 def is_quota_error(error: Exception) -> bool:

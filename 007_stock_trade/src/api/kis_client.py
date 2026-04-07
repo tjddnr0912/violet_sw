@@ -165,6 +165,7 @@ class KISClient:
         headers = self.auth.get_headers(tr_id)
         timeout = timeout or self.DEFAULT_TIMEOUT
         retries = retries if retries is not None else self.MAX_RETRIES
+        token_refreshed = False
 
         last_error = None
 
@@ -184,6 +185,15 @@ class KISClient:
                     wait_time = 2 ** attempt
                     logger.warning(f"API 요청 제한 초과. {wait_time}초 후 재시도...")
                     time.sleep(wait_time)
+                    continue
+
+                # EGW00103 (유효하지 않은 AppKey) → 토큰 갱신 후 1회 재시도
+                if not token_refreshed and "EGW00103" in response.text:
+                    logger.warning(f"EGW00103 감지 - 토큰 갱신 후 재시도: {endpoint}")
+                    self.auth.get_access_token(force_refresh=True)
+                    headers = self.auth.get_headers(tr_id)
+                    token_refreshed = True
+                    time.sleep(1)
                     continue
 
                 if response.status_code >= 400:
