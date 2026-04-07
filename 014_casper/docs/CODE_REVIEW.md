@@ -12,8 +12,8 @@
 |------|--------|--------|
 | 소스 LOC | 1,853줄 | ~2,300줄 |
 | 테스트 파일 | 8개 | **17개** |
-| 테스트 수 | 73개 | **223개** |
-| 테스트 통과율 | 73/73 | **223/223 (100%)** |
+| 테스트 수 | 73개 | **270개** |
+| 테스트 통과율 | 73/73 | **270/270 (100%)** |
 | Critical 이슈 | 5건 | **0건** |
 | High 이슈 | 9건 | **0건** |
 | Medium 이슈 | 8건 | **0건** |
@@ -75,7 +75,7 @@
 
 ## 3. 테스트 체크리스트 (최종)
 
-### 전체 통과: 223/223 ✅
+### 전체 통과: 270/270 ✅
 
 **core/ 모듈**
 - [x] `calculate_orb()` — 정상, 데이터 부족, 빈 DataFrame, mid값
@@ -169,7 +169,25 @@ SIGTERM 수신     → SystemExit → position state save → ✅
 
 ---
 
-## 6. 시세 데이터 소스 KIS API 전환 — ✅ 완료 (2026-04-04)
+## 6. 체결가 조회 및 잔고 동기화 — ✅ 추가 (2026-04-07)
+
+| 기능 | 설명 | 위치 |
+|------|------|------|
+| Fill price 재시도 | 주문 직후 조회 실패 시 POSITION_OPEN 루프에서 재시도 | `bot._handle_position_open()` |
+| Settlement reconciliation | 포지션 종료 후 KIS 체결내역에서 실제 매수/매도가 조회 → trade 기록 업데이트 | `bot._reconcile_with_broker()` |
+| Capital sync | 매일 거래 전/후 KIS 잔고를 조회하여 self.capital 동기화 | `bot._sync_capital()` |
+| 체결내역 조회 API | `get_us_today_executions()` — 당일 전체 체결 내역 구조화 조회 | `kis_client.py` |
+| Trade 업데이트 | `update_last_trade()` — broker 데이터로 마지막 trade 레코드 보강 | `trade_store.py` |
+
+### Trade 레코드 추가 필드 (broker 데이터)
+
+```
+broker_buy_price, broker_sell_price, broker_buy_amount, broker_sell_amount, broker_gross_pnl
+```
+
+---
+
+## 7. 시세 데이터 소스 KIS API 전환 — ✅ 완료 (2026-04-04)
 
 | 데이터 | 소스 | API | 상태 |
 |--------|------|-----|------|

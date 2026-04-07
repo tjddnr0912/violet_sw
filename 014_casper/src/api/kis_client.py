@@ -111,60 +111,104 @@ class KISClient:
         return None
 
     def get_us_filled_price(self, order_no: str, symbol: str,
-                             exchange: str = "NASD") -> Optional[float]:
+                             exchange: str = "NASD",
+                             max_attempts: int = 5) -> Optional[float]:
         """
         Query fill price of a completed order.
 
         Uses the overseas order execution inquiry API (체결내역조회).
-        Waits up to 10 seconds for the fill to appear.
 
         Args:
             order_no: Order number from the order response.
             symbol: Ticker symbol.
             exchange: Exchange code.
+            max_attempts: Number of polling attempts (2s interval). Use 1 for retry calls.
 
         Returns:
             Fill price as float, or None if not found.
         """
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                time.sleep(2)
+            item = self._query_execution(order_no, symbol, exchange)
+            if item:
+                try:
+                    fill_price = float(item.get("ft_ccld_unpr3")
+                                       or item.get("ft_ccld_unpr")
+                                       or item.get("CCLD_PRIC") or 0)
+                    if fill_price > 0:
+                        logger.info(f"Fill price for #{order_no}: ${fill_price:.4f}")
+                        return fill_price
+                except (ValueError, TypeError):
+                    pass
+
+        if max_attempts > 1:
+            logger.warning(f"Fill price not found for order #{order_no}")
+        return None
+
+    def get_us_today_executions(self, symbol: str,
+                                 exchange: str = "NASD") -> list:
+        """
+        Query all of today's filled orders for a symbol.
+
+        Returns list of dicts with: order_no, side (buy/sell), fill_price,
+        fill_amount, order_qty, order_price.
+        """
+        data = self._query_executions_raw(symbol, exchange)
+        if not data or "output" not in data:
+            return []
+
+        results = []
+        for item in data["output"]:
+            try:
+                fill_qty = int(item.get("ft_ccld_qty") or 0)
+                if fill_qty <= 0:
+                    continue
+                results.append({
+                    "order_no": item.get("odno", ""),
+                    "side": "buy" if item.get("sll_buy_dvsn_cd") == "02" else "sell",
+                    "fill_price": float(item.get("ft_ccld_unpr3") or 0),
+                    "fill_amount": float(item.get("ft_ccld_amt3") or 0),
+                    "fill_qty": fill_qty,
+                    "order_price": float(item.get("ft_ord_unpr3") or 0),
+                    "status": item.get("prcs_stat_name", ""),
+                })
+            except (ValueError, TypeError):
+                continue
+        return results
+
+    def _query_execution(self, order_no: str, symbol: str,
+                          exchange: str = "NASD") -> Optional[dict]:
+        """Query a single execution by order number (single attempt)."""
+        data = self._query_executions_raw(symbol, exchange)
+        if not data or "output" not in data:
+            return None
+        for item in data["output"]:
+            if item.get("odno") == order_no:
+                return item
+        return None
+
+    def _query_executions_raw(self, symbol: str,
+                               exchange: str = "NASD") -> Optional[dict]:
+        """Raw API call for today's executions."""
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         headers = {"tr_id": "TTTS3035R"}
         params = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.product_code,
-            "PDNO": symbol,
-            "ORD_STRT_DT": "",  # Today
+            "PDNO": "",
+            "ORD_STRT_DT": "",
             "ORD_END_DT": "",
-            "SLL_BUY_DVSN": "00",  # All
-            "CCLD_NCCS_DVSN": "01",  # Filled only
+            "SLL_BUY_DVSN": "00",
+            "CCLD_NCCS_DVSN": "01",
             "OVRS_EXCG_CD": exchange,
-            "SORT_SQN": "DS",  # Latest first
+            "SORT_SQN": "DS",
             "ORD_GNO_BRNO": "",
-            "ODNO": order_no,
+            "ODNO": "",
             "CTX_AREA_FK200": "",
             "CTX_AREA_NK200": "",
         }
-
-        # Poll up to 5 times (order fill may take a moment, especially at open)
-        for attempt in range(5):
-            if attempt > 0:
-                time.sleep(2)
-            data = self._request("GET", url, headers=headers, params=params)
-            if data and "output" in data:
-                for item in data["output"]:
-                    if item.get("odno") == order_no or item.get("ODNO") == order_no:
-                        try:
-                            fill_price = float(item.get("ft_ccld_unpr")
-                                               or item.get("CCLD_PRIC")
-                                               or item.get("avg_prvs") or 0)
-                            if fill_price > 0:
-                                logger.info(f"Fill price for #{order_no}: ${fill_price:.2f}")
-                                return fill_price
-                        except (ValueError, TypeError):
-                            pass
-                # Do NOT fall back to first item — could be a different order
-
-        logger.warning(f"Fill price not found for order #{order_no}")
-        return None
+        return self._request("GET", url, headers=headers, params=params)
 
     def get_us_minute_chart(self, symbol: str, nmin: int = 5,
                              exchange: str = "NASD",

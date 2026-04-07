@@ -10,7 +10,7 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 ./run_casper.sh daemon --yes  # 백그라운드 데몬
 ./run_casper.sh stop          # 종료
 ./run_casper.sh status        # 누적 매매 통계
-./run_casper.sh test          # 유닛 테스트 (247개)
+./run_casper.sh test          # 유닛 테스트 (270개)
 ```
 
 ## 핵심 정보
@@ -22,7 +22,7 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 | R:R | 1:2 고정 |
 | 매매시간 | 09:45~10:55 ET (스캔), 15:50 강제청산 |
 | 필터 | VIX(12~30), ORB 폭, 서킷브레이커(3연패/주간3%손실), 공휴일 |
-| 안전장치 | 크래시 복구, SIGTERM, 포지션 상한, 오버나잇 방지(장후→익일 자동청산) |
+| 안전장치 | 크래시 복구, SIGTERM, 포지션 상한, 오버나잇 방지, 잔고 동기화 |
 | 테스트모드 | `TEST_MODE=on` → live지만 1주 고정 |
 
 ## 상태머신
@@ -42,7 +42,7 @@ WAITING → PRE_MARKET → ORB_FORMING → SCANNING → POSITION_OPEN → DONE_T
 | `src/core/position.py` | 포지션 관리 (SL/TP/BE) |
 | `src/core/risk.py` | VIX 필터, 트렌드, 서킷브레이커 |
 | `src/api/kis_order.py` | KIS 주문 실행 |
-| `src/api/kis_client.py` | KIS 시세 (현재가, 분봉, 일봉, 체결가) |
+| `src/api/kis_client.py` | KIS 시세 (현재가, 분봉, 일봉, 체결내역) |
 | `src/data/market_data.py` | 시세 통합 (KIS 우선 → yfinance 폴백, VIX는 yf 전용) |
 
 ## 환경변수 (.env)

@@ -53,10 +53,10 @@ def _make_signal(entry=54.25, stop=52.0):
     )
 
 
-class TestChecklist1_BalancePassesSymbol:
-    """[1] get_us_balance receives active symbol, not empty string."""
+class TestChecklist1_BalanceSyncsCapital:
+    """[1] _sync_capital fetches real balance from KIS."""
 
-    def test_balance_called_with_signal_symbol(self, tmp_path):
+    def test_balance_synced_when_capital_zero(self, tmp_path):
         bot = _make_bot(tmp_path=tmp_path)
         bot.test_mode = False
         bot.capital = 0  # Forces balance fetch
@@ -70,7 +70,8 @@ class TestChecklist1_BalancePassesSymbol:
         with patch("src.bot.get_current_price", return_value=54.25):
             bot._execute_entry()
 
-        mock_client.get_us_balance.assert_called_once_with("TQQQ")
+        mock_client.get_us_balance.assert_called()
+        assert bot.capital == 2000.0
 
 
 class TestChecklist2_FillUpdatesRiskPerShare:

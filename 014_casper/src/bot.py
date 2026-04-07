@@ -33,7 +33,8 @@ from src.data.market_data import (
     get_avg_daily_range, get_current_price, set_kis_client,
 )
 from src.data.trade_store import (
-    load_trades, save_trade, trade_from_position, get_cumulative_stats,
+    load_trades, save_trade, trade_from_position, update_last_trade,
+    get_cumulative_stats,
 )
 from src.telegram.notifier import TelegramNotifier
 
@@ -67,6 +68,7 @@ class CasperBot:
         self.capital = 0.0
         self.trades_today = 0
         self._sell_retry_count = 0
+        self._pending_buy_order_no: Optional[str] = None
 
         # Test mode (live but 1 share only)
         self.test_mode = self.env.get("test_mode", False)
@@ -321,6 +323,7 @@ class CasperBot:
         self.trades_today = 0
         self.state = BotState.WAITING
         self._done_today_logged = False
+        self._sync_capital()
         self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
         logger.info(f"=== New Day: {today} ===")
 
@@ -484,14 +487,9 @@ class CasperBot:
             logger.info("TEST MODE: shares fixed to 1")
         else:
             if self.capital <= 0:
-                # Try to fetch real account balance
-                if self.kis_client:
-                    balance = self.kis_client.get_us_balance(self.signal.symbol)
-                    if balance and balance.get("available_cash", 0) > 0:
-                        self.capital = balance["available_cash"]
-                        logger.info(f"Capital from KIS balance: ${self.capital:.2f}")
+                self._sync_capital()
                 if self.capital <= 0:
-                    self.capital = 1500.0  # Default fallback
+                    self.capital = 1500.0
                     logger.warning(f"Using default capital: ${self.capital:.2f}")
             shares = int(self.capital / price) if price > 0 else 0
             # Apply position size cap
@@ -523,15 +521,11 @@ class CasperBot:
                 fill_price = self.kis_client.get_us_filled_price(
                     order_no, self.position.symbol
                 )
-                if fill_price and fill_price != self.position.entry_price:
-                    old_price = self.position.entry_price
-                    risk = fill_price - self.position.signal.stop_loss
-                    if risk > 0:
-                        self.position.entry_price = fill_price
-                        self.position.risk_per_share = round(risk, 2)
-                        self.position.take_profit = fill_price + risk * self.position.signal.rr_ratio
-                        logger.info(f"Entry adjusted to fill: ${old_price:.2f} → ${fill_price:.2f}, "
-                                   f"TP ${self.position.take_profit:.2f}")
+                if fill_price:
+                    self._apply_fill_price(fill_price)
+                else:
+                    self._pending_buy_order_no = order_no
+                    logger.info(f"Fill price pending — will retry in POSITION_OPEN loop")
 
         self.notifier.notify_entry(
             self.position.symbol, self.position.entry_price,
@@ -541,11 +535,35 @@ class CasperBot:
         self._save_position_state()
         self._transition(BotState.POSITION_OPEN)
 
+    def _apply_fill_price(self, fill_price: float):
+        """Update position entry price, risk, and TP based on actual fill."""
+        if not self.position or fill_price == self.position.entry_price:
+            return
+        old_price = self.position.entry_price
+        risk = fill_price - self.position.signal.stop_loss
+        if risk > 0:
+            self.position.entry_price = fill_price
+            self.position.risk_per_share = round(risk, 2)
+            self.position.take_profit = fill_price + risk * self.position.signal.rr_ratio
+            logger.info(f"Entry adjusted to fill: ${old_price:.2f} → ${fill_price:.4f}, "
+                       f"TP ${self.position.take_profit:.2f}")
+            self._save_position_state()
+
     def _handle_position_open(self):
         """Monitor open position for exit conditions."""
         if self.position is None or not self.position.is_open:
             self._transition(BotState.DONE_TODAY)
             return
+
+        # ─── Retry fill price query if still pending ───
+        if self._pending_buy_order_no and self.kis_client:
+            fill_price = self.kis_client.get_us_filled_price(
+                self._pending_buy_order_no, self.position.symbol,
+                max_attempts=1,
+            )
+            if fill_price:
+                self._apply_fill_price(fill_price)
+                self._pending_buy_order_no = None
 
         # ─── Overnight position: next-day market open → immediate close ───
         if time_utils.is_next_day_open():
@@ -655,11 +673,66 @@ class CasperBot:
             self.position.net_pnl, self.position.result,
         )
 
+        # Reconcile with actual broker execution data
+        self._reconcile_with_broker()
+
         self._transition(BotState.DONE_TODAY, f"{self.position.result} PnL=${self.position.net_pnl:+.2f}")
+
+    def _reconcile_with_broker(self):
+        """Query KIS for actual execution data and update trade record."""
+        if not self.kis_client or not self.position:
+            return
+        try:
+            executions = self.kis_client.get_us_today_executions(self.position.symbol)
+            if not executions:
+                logger.warning("RECONCILE: No executions found from broker")
+                return
+
+            buys = [e for e in executions if e["side"] == "buy"]
+            sells = [e for e in executions if e["side"] == "sell"]
+
+            broker_buy_price = buys[-1]["fill_price"] if buys else None
+            broker_sell_price = sells[-1]["fill_price"] if sells else None
+            broker_buy_amount = sum(e["fill_amount"] for e in buys)
+            broker_sell_amount = sum(e["fill_amount"] for e in sells)
+            broker_gross_pnl = round(broker_sell_amount - broker_buy_amount, 2) if buys and sells else None
+
+            updates = {
+                "broker_buy_price": broker_buy_price,
+                "broker_sell_price": broker_sell_price,
+                "broker_buy_amount": round(broker_buy_amount, 2),
+                "broker_sell_amount": round(broker_sell_amount, 2),
+                "broker_gross_pnl": broker_gross_pnl,
+            }
+            update_last_trade(updates)
+
+            logger.info(
+                f"RECONCILE: Buy ${broker_buy_price:.4f} → Sell ${broker_sell_price:.4f} "
+                f"Gross PnL=${broker_gross_pnl:+.2f}"
+                if broker_buy_price and broker_sell_price and broker_gross_pnl is not None
+                else f"RECONCILE: Partial data — {updates}"
+            )
+        except Exception as e:
+            logger.error(f"RECONCILE failed: {e}")
+
+    def _sync_capital(self):
+        """Sync capital with actual KIS account balance."""
+        if not self.kis_client:
+            return
+        balance = self.kis_client.get_us_balance()
+        if balance and balance.get("available_cash", 0) > 0:
+            old = self.capital
+            self.capital = balance["available_cash"]
+            if old > 0:
+                logger.info(f"Capital synced: ${old:.2f} → ${self.capital:.2f} "
+                           f"(diff ${self.capital - old:+.2f})")
+            else:
+                logger.info(f"Capital synced from KIS: ${self.capital:.2f}")
 
     def _handle_done_today(self):
         """Wait until next day."""
         if not self._done_today_logged:
+            self._sync_capital()
             stats = get_cumulative_stats(load_trades())
             logger.info(f"Cumulative: {stats['total_trades']}T WR={stats['win_rate']}% "
                          f"PnL=${stats['total_pnl']:+.2f} PF={stats['profit_factor']}")
