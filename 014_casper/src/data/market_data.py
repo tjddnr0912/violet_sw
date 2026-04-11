@@ -37,11 +37,17 @@ def set_kis_client(client) -> None:
         logger.info("MarketData: No KIS client (yfinance only)")
 
 
+_yf_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yf")
+
+
 def _yf_with_timeout(func, *args, **kwargs):
     """Run a yfinance call with a timeout to prevent indefinite blocking."""
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(func, *args, **kwargs)
+    future = _yf_executor.submit(func, *args, **kwargs)
+    try:
         return future.result(timeout=_YF_TIMEOUT)
+    except FuturesTimeout:
+        future.cancel()
+        raise
 
 
 def _reset_yf_cache() -> bool:
@@ -114,7 +120,7 @@ def _yf_fetch_with_cache_recovery(fetch_fn, label: str):
     """Run a yfinance fetch, resetting cache on SQLite errors."""
     try:
         return fetch_fn()
-    except (FuturesTimeout, Exception) as e:
+    except Exception as e:
         if _is_sqlite_error(e):
             logger.warning(f"{label}: SQLite error detected, resetting yfinance cache")
             if _reset_yf_cache():

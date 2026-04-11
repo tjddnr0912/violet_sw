@@ -107,3 +107,38 @@ class TestUtilFunctions:
         mock_now.return_value = _mock_et(10, 0)
         secs = seconds_until(dtime(9, 30))
         assert secs < 0
+
+
+class TestHolidayWarning:
+    def test_missing_file_logs_warning(self, tmp_path):
+        import src.utils.time_utils as tu
+        old_file = tu._HOLIDAYS_FILE
+        old_holidays = tu._us_holidays
+        try:
+            tu._HOLIDAYS_FILE = str(tmp_path / "nonexistent.json")
+            tu._us_holidays = set()  # Force reload
+            with patch("src.utils.time_utils.logger") as mock_logger:
+                tu._load_holidays()
+                mock_logger.warning.assert_called_once()
+                assert "holiday" in mock_logger.warning.call_args[0][0].lower()
+        finally:
+            tu._HOLIDAYS_FILE = old_file
+            tu._us_holidays = old_holidays
+
+    def test_valid_file_no_warning(self, tmp_path):
+        import src.utils.time_utils as tu
+        holidays_file = tmp_path / "holidays.json"
+        holidays_file.write_text('{"2026": ["2026-01-01"]}')
+
+        old_file = tu._HOLIDAYS_FILE
+        old_holidays = tu._us_holidays
+        try:
+            tu._HOLIDAYS_FILE = str(holidays_file)
+            tu._us_holidays = set()
+            with patch("src.utils.time_utils.logger") as mock_logger:
+                result = tu._load_holidays()
+                mock_logger.warning.assert_not_called()
+                assert "2026-01-01" in result
+        finally:
+            tu._HOLIDAYS_FILE = old_file
+            tu._us_holidays = old_holidays

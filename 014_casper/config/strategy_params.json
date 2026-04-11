@@ -34,5 +34,9 @@
     },
     "commission": {
         "rate_per_side": 0.0009
+    },
+    "order": {
+        "buy_slippage_pct": 0.01,
+        "sell_slippage_pct": 0.01
     }
 }

@@ -288,3 +288,45 @@ class TestDualSource:
 
         set_kis_client(None)
         assert market_data._kis_client is None
+
+
+class TestYfWithTimeout:
+    @patch("src.data.market_data._YF_TIMEOUT", 0.1)
+    def test_timeout_does_not_block(self):
+        """Timeout should return quickly, not block waiting for thread."""
+        import time
+        from src.data.market_data import _yf_with_timeout
+        from concurrent.futures import TimeoutError as FuturesTimeout
+
+        def slow_func():
+            time.sleep(10)
+            return "never"
+
+        start = time.time()
+        with pytest.raises(FuturesTimeout):
+            _yf_with_timeout(slow_func)
+        elapsed = time.time() - start
+        assert elapsed < 2.0, f"Blocked for {elapsed:.1f}s (should be < 2s)"
+
+    def test_normal_call_returns_result(self):
+        from src.data.market_data import _yf_with_timeout
+        result = _yf_with_timeout(lambda: 42)
+        assert result == 42
+
+
+class TestCacheRecovery:
+    @patch("src.data.market_data._fetch_vix", side_effect=Exception("generic error"))
+    def test_generic_exception_returns_none(self, mock_fetch):
+        assert get_vix_close() is None
+
+    @patch("src.data.market_data._fetch_vix")
+    def test_sqlite_error_triggers_cache_reset(self, mock_fetch):
+        """SQLite error should trigger cache reset and retry."""
+        class FakeSQLiteError(Exception):
+            pass
+        FakeSQLiteError.__name__ = "OperationalError"
+        mock_fetch.side_effect = [FakeSQLiteError("unable to open database"), 18.5]
+
+        with patch("src.data.market_data._reset_yf_cache", return_value=True):
+            result = get_vix_close()
+        assert result == 18.5

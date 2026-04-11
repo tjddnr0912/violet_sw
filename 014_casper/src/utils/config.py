@@ -33,6 +33,24 @@ def load_env() -> dict:
     }
 
 
+def _validate_params(params: dict) -> None:
+    """Validate strategy parameters at startup."""
+    entry = params.get("entry", {})
+    filters = params.get("filters", {})
+    risk = params.get("risk", {})
+
+    if entry.get("rr_ratio", 0) <= 0:
+        raise ValueError(f"rr_ratio must be positive, got {entry.get('rr_ratio')}")
+    if filters.get("vix_low", 0) >= filters.get("vix_high", 0):
+        raise ValueError(
+            f"vix_low ({filters.get('vix_low')}) must be < vix_high ({filters.get('vix_high')})"
+        )
+    if risk.get("max_shares", 0) <= 0:
+        raise ValueError(f"max_shares must be positive, got {risk.get('max_shares')}")
+    if risk.get("max_trades_per_day", 0) <= 0:
+        raise ValueError(f"max_trades_per_day must be positive")
+
+
 def load_strategy_params() -> dict:
     """Load strategy parameters from JSON config."""
     global _config_cache
@@ -49,6 +67,7 @@ def load_strategy_params() -> dict:
         raise SystemExit(f"Config file not found: {config_path}")
     except json.JSONDecodeError as e:
         raise SystemExit(f"Invalid JSON in config: {config_path}: {e}")
+    _validate_params(_config_cache)
     return _config_cache
 
 

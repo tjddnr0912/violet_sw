@@ -1,9 +1,12 @@
 """Time and timezone utilities for Casper Trading Bot."""
 
 import json
+import logging
 import os
 from datetime import datetime, time as dtime, date, timedelta
 import pytz
+
+logger = logging.getLogger("casper")
 
 ET = pytz.timezone("US/Eastern")
 KST = pytz.timezone("Asia/Seoul")
@@ -26,8 +29,10 @@ def _load_holidays() -> set:
                 continue
             for d in dates:
                 _us_holidays.add(d)
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass  # No holidays file — weekday-only fallback
+    except FileNotFoundError:
+        logger.warning(f"Holiday file not found: {_HOLIDAYS_FILE} — weekday-only fallback")
+    except json.JSONDecodeError as e:
+        logger.warning(f"Holiday file parse error: {e} — weekday-only fallback")
     return _us_holidays
 
 

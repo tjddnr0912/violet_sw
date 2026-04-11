@@ -22,7 +22,7 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 | R:R | 1:2 고정 |
 | 매매시간 | 09:45~10:55 ET (스캔), 15:50 강제청산 |
 | 필터 | VIX(12~30), ORB 폭, 서킷브레이커(3연패/주간3%손실), 공휴일 |
-| 안전장치 | 크래시 복구, SIGTERM, 포지션 상한, 오버나잇 방지, 잔고 동기화 |
+| 안전장치 | 크래시 복구, SIGTERM, 포지션 상한, 오버나잇 방지, 잔고 동기화, 부분체결 감지 |
 | 테스트모드 | `TEST_MODE=on` → live지만 1주 고정 |
 
 ## 상태머신
@@ -61,3 +61,4 @@ TEST_MODE=on         # on | off (1주 고정)
 - [설계 스펙](docs/superpowers/specs/2026-04-02-casper-bot-design.md)
 - [전략 리뷰](docs/strategy/STRATEGY_REVIEW.md)
 - [실행 계획](docs/strategy/EXECUTION_PLAN.md)
+- [코드 감사](docs/CODE_AUDIT_2026-04-11.md)

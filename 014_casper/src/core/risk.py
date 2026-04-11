@@ -151,6 +151,46 @@ class CircuitBreaker:
                     f"CB ACTIVE: Weekly loss {loss_pct:.1f}% >= {self.max_weekly_loss_pct}%"
                 )
 
+    def correct_last_trade(self, old_result: str, old_pnl: float, actual_pnl: float) -> None:
+        """Correct the last trade's impact on CB state after broker reconciliation.
+
+        Args:
+            old_result: Original result ("WIN", "LOSS", "BE").
+            old_pnl: Originally recorded net PnL.
+            actual_pnl: Actual net PnL from broker.
+        """
+        actual_result = "LOSS" if actual_pnl < -0.01 else ("WIN" if actual_pnl > 0.01 else "BE")
+
+        # Reverse old impact
+        if old_result == "LOSS":
+            self._weekly_loss -= abs(old_pnl)
+            if self._weekly_loss < 0:
+                self._weekly_loss = 0.0
+            self._consecutive_losses = max(0, self._consecutive_losses - 1)
+
+        # Apply actual impact
+        if actual_result == "LOSS":
+            self._weekly_loss += abs(actual_pnl)
+            self._consecutive_losses += 1
+        elif actual_result in ("WIN", "BE"):
+            # A WIN/BE always resets the streak (mirrors record_trade logic)
+            self._consecutive_losses = 0
+
+        # Re-evaluate CB activation
+        triggered = False
+        if self._consecutive_losses >= self.max_consecutive_losses:
+            triggered = True
+        base = self._week_start_capital if self._week_start_capital > 0 else 1.0
+        if (self._weekly_loss / base) * 100 >= self.max_weekly_loss_pct:
+            triggered = True
+        self._active = triggered
+
+        if not triggered and old_result != actual_result:
+            logger.info(
+                f"CB CORRECTED: {old_result} PnL=${old_pnl:+.2f} → "
+                f"{actual_result} PnL=${actual_pnl:+.2f}"
+            )
+
     def load_from_trades(self, trades: List[dict], current_week: int) -> None:
         """Restore CB state from historical trades for current week."""
         self._current_week = current_week

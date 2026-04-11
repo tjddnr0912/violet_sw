@@ -142,3 +142,32 @@ class TestPlaceOrderBody:
         _, kwargs = mock_req.call_args
         headers = kwargs["headers"]
         assert headers["tr_id"] == "TTTT1006U"
+
+
+class TestSlippageConfig:
+    def test_custom_slippage_buy(self, mock_client):
+        order = KISOrder(mock_client, "live", buy_slippage=0.02, sell_slippage=0.02)
+        with patch.object(KISClient, "get_us_price", return_value={"price": 100.0}):
+            with patch.object(KISClient, "_request", return_value={"output": {"ODNO": "X"}, "rt_cd": "0"}) as mock_req:
+                order.buy_market("TQQQ", 1)
+                _, kwargs = mock_req.call_args
+                body = kwargs["json_body"]
+                assert float(body["OVRS_ORD_UNPR"]) == 102.0
+
+    def test_custom_slippage_sell(self, mock_client):
+        order = KISOrder(mock_client, "live", buy_slippage=0.02, sell_slippage=0.02)
+        with patch.object(KISClient, "get_us_price", return_value={"price": 100.0}):
+            with patch.object(KISClient, "_request", return_value={"output": {"ODNO": "X"}, "rt_cd": "0"}) as mock_req:
+                order.sell_market("TQQQ", 1)
+                _, kwargs = mock_req.call_args
+                body = kwargs["json_body"]
+                assert float(body["OVRS_ORD_UNPR"]) == 98.0
+
+    def test_default_slippage_unchanged(self, mock_client):
+        order = KISOrder(mock_client, "live")
+        with patch.object(KISClient, "get_us_price", return_value={"price": 100.0}):
+            with patch.object(KISClient, "_request", return_value={"output": {"ODNO": "X"}, "rt_cd": "0"}) as mock_req:
+                order.buy_market("TQQQ", 1)
+                _, kwargs = mock_req.call_args
+                body = kwargs["json_body"]
+                assert float(body["OVRS_ORD_UNPR"]) == 100.5

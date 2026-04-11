@@ -106,7 +106,12 @@ class CasperBot:
         if key and secret:
             auth = KISAuth(key, secret, urls["base"])
             client = KISClient(auth, account)
-            self.kis_order = KISOrder(client, mode)
+            order_params = self.params.get("order", {})
+            self.kis_order = KISOrder(
+                client, mode,
+                buy_slippage=order_params.get("buy_slippage_pct", 0.005),
+                sell_slippage=order_params.get("sell_slippage_pct", 0.005),
+            )
             self.kis_client = client
             set_kis_client(client)  # Inject into market_data module
             logger.info(f"KIS API initialized ({mode})")
@@ -502,8 +507,11 @@ class CasperBot:
             if self.capital <= 0:
                 self._sync_capital()
                 if self.capital <= 0:
-                    self.capital = 1500.0
-                    logger.warning(f"Using default capital: ${self.capital:.2f}")
+                    self._transition(
+                        BotState.DONE_TODAY,
+                        "Capital sync failed — skipping today"
+                    )
+                    return
             shares = int(self.capital / price) if price > 0 else 0
             # Apply position size cap
             risk_params = self.params.get("risk", {})
@@ -650,6 +658,24 @@ class CasperBot:
             order_no = sell_result.get("order_no", "")
             logger.info(f"SELL ORDER OK: #{order_no}")
 
+            # Check for partial fill — retry if shares remain
+            if self.kis_client:
+                time.sleep(2)  # Allow settlement
+                holdings = self.kis_client.get_us_holdings()
+                if holdings is not None:
+                    remaining = next(
+                        (h for h in holdings if h["symbol"] == self.position.symbol),
+                        None,
+                    )
+                    if remaining and remaining["qty"] > 0:
+                        logger.warning(
+                            f"PARTIAL FILL: {remaining['qty']} shares remaining — "
+                            f"retrying sell"
+                        )
+                        self.kis_order.sell_market(
+                            self.position.symbol, remaining["qty"]
+                        )
+
             # Query actual fill price from broker
             if self.kis_client and order_no:
                 fill_price = self.kis_client.get_us_filled_price(
@@ -718,6 +744,15 @@ class CasperBot:
                 "broker_gross_pnl": broker_gross_pnl,
             }
             update_last_trade(updates)
+
+            # Correct circuit breaker with actual PnL
+            if broker_gross_pnl is not None and self.position:
+                actual_pnl = broker_gross_pnl - self.position.commission
+                old_pnl = self.position.net_pnl
+                if abs(actual_pnl - old_pnl) > 0.01:
+                    self.circuit_breaker.correct_last_trade(
+                        self.position.result, old_pnl, actual_pnl
+                    )
 
             logger.info(
                 f"RECONCILE: Buy ${broker_buy_price:.4f} → Sell ${broker_sell_price:.4f} "

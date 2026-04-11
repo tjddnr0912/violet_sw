@@ -15,9 +15,12 @@ logger = logging.getLogger("casper")
 class KISOrder:
     """Order execution via KIS API."""
 
-    def __init__(self, client: KISClient, trading_mode: str = "paper"):
+    def __init__(self, client: KISClient, trading_mode: str = "paper",
+                 buy_slippage: float = 0.005, sell_slippage: float = 0.005):
         self.client = client
         self.trading_mode = trading_mode
+        self.buy_slippage = buy_slippage
+        self.sell_slippage = sell_slippage
         # Transaction IDs differ between paper and live
         if trading_mode == "live":
             self.buy_tr_id = "TTTT1002U"   # 미국매수
@@ -46,7 +49,7 @@ class KISOrder:
             logger.error(f"BUY: Cannot get price for {symbol}")
             return None
         # Bid slightly above current price for immediate fill
-        limit_price = round(price * 1.005, 2)  # +0.5% slippage buffer
+        limit_price = round(price * (1 + self.buy_slippage), 2)
         return self._place_order(
             symbol=symbol, qty=qty, side="buy",
             exchange=exchange, price=limit_price, order_type="00"
@@ -71,7 +74,7 @@ class KISOrder:
             logger.error(f"SELL: Cannot get price for {symbol}")
             return None
         # Ask slightly below current price for immediate fill
-        limit_price = round(price * 0.995, 2)  # -0.5% slippage buffer
+        limit_price = round(price * (1 - self.sell_slippage), 2)
         return self._place_order(
             symbol=symbol, qty=qty, side="sell",
             exchange=exchange, price=limit_price, order_type="00"

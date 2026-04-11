@@ -320,3 +320,84 @@ class TestPositionStatePersistence:
         bot._position_state_file = str(state_file)
         bot._restore_position()  # Should not crash
         assert bot.position is None
+
+
+class TestPartialFill:
+    def test_partial_fill_retries_sell(self, tmp_path):
+        bot = _make_bot(tmp_path=tmp_path)
+        signal = _make_signal()
+        bot.position = create_position(signal, 10, 0.0009, "09:50")
+        bot.capital = 1000.0
+        bot.trades_today = 0
+
+        mock_order = MagicMock()
+        mock_order.sell_market.return_value = {"order_no": "S001"}
+        bot.kis_order = mock_order
+
+        mock_client = MagicMock()
+        mock_client.get_us_holdings.return_value = [
+            {"symbol": "TQQQ", "qty": 3, "avg_price": 54.0}
+        ]
+        mock_client.get_us_filled_price.return_value = None
+        mock_client.get_us_today_executions.return_value = []
+        bot.kis_client = mock_client
+
+        with patch("src.bot.load_trades", return_value=[]):
+            bot._close_and_record(55.0, "take_profit")
+
+        assert mock_order.sell_market.call_count == 2
+        retry_call = mock_order.sell_market.call_args_list[1]
+        assert retry_call[0] == ("TQQQ", 3)
+
+    def test_full_fill_no_retry(self, tmp_path):
+        bot = _make_bot(tmp_path=tmp_path)
+        signal = _make_signal()
+        bot.position = create_position(signal, 10, 0.0009, "09:50")
+        bot.capital = 1000.0
+
+        mock_order = MagicMock()
+        mock_order.sell_market.return_value = {"order_no": "S002"}
+        bot.kis_order = mock_order
+
+        mock_client = MagicMock()
+        mock_client.get_us_holdings.return_value = []
+        mock_client.get_us_filled_price.return_value = None
+        mock_client.get_us_today_executions.return_value = []
+        bot.kis_client = mock_client
+
+        with patch("src.bot.load_trades", return_value=[]):
+            bot._close_and_record(55.0, "take_profit")
+
+        assert mock_order.sell_market.call_count == 1
+
+
+class TestCapitalFallback:
+    def test_capital_zero_skips_trade(self, tmp_path):
+        """When capital sync fails, bot should skip — not use $1500 default."""
+        bot = _make_bot(tmp_path=tmp_path)
+        bot.signal = _make_signal()
+        bot.capital = 0.0
+        bot.test_mode = False
+        bot.trades_today = 0
+        bot.kis_client = MagicMock()
+        bot.kis_client.get_us_balance.return_value = None
+
+        bot._execute_entry()
+
+        assert bot.state == BotState.DONE_TODAY
+        assert bot.position is None
+
+    def test_capital_positive_proceeds(self, tmp_path):
+        bot = _make_bot(tmp_path=tmp_path)
+        bot.signal = _make_signal()
+        bot.capital = 5000.0
+        bot.test_mode = False
+        bot.trades_today = 0
+        bot.kis_order = None
+        bot.kis_client = None
+
+        with patch("src.bot.get_current_price", return_value=54.25):
+            bot._execute_entry()
+
+        assert bot.position is not None
+        assert bot.state == BotState.POSITION_OPEN
