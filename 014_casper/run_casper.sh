@@ -83,16 +83,6 @@ check_api_keys() {
 
 # 중복 실행 방지
 PID_FILE="$SCRIPT_DIR/.casper.pid"
-LOCK_FILE="$SCRIPT_DIR/.casper.lock"
-
-lock_instance() {
-    exec 200>"$LOCK_FILE"
-    if ! flock -n 200; then
-        echo -e "${YELLOW}[WARN]${NC} Casper Bot이 이미 실행 중입니다"
-        echo "       종료하려면: $0 stop"
-        exit 1
-    fi
-}
 
 check_running() {
     if [ -f "$PID_FILE" ]; then
@@ -121,7 +111,6 @@ start_bot() {
     check_deps
     check_api_keys
     check_running
-    lock_instance
 
     MODE="${TRADING_MODE:-paper}"
     TEST="${TEST_MODE:-off}"
@@ -158,7 +147,6 @@ start_daemon() {
     check_deps
     check_api_keys
     check_running
-    lock_instance
 
     MODE="${TRADING_MODE:-paper}"
     echo -e "${GREEN}[INFO]${NC} 데몬 모드로 시작 (모드: ${BLUE}${MODE}${NC})"
