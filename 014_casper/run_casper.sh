@@ -34,6 +34,8 @@ load_env() {
             [[ -z "$key" ]] && continue
             # Trim whitespace
             key=$(echo "$key" | xargs)
+            # Strip inline comments (# ...) from value
+            value=$(echo "$value" | sed 's/[[:space:]]*#.*$//')
             value=$(echo "$value" | xargs)
             # Remove surrounding quotes from value
             value="${value%\"}"
