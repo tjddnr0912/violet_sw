@@ -5,7 +5,9 @@ Data source priority: KIS API (primary) → yfinance (fallback).
 VIX: yfinance only (KIS does not provide index data).
 """
 
+import glob
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
 from typing import Optional, Tuple
@@ -19,6 +21,7 @@ logger = logging.getLogger("casper")
 ET = pytz.timezone("US/Eastern")
 
 _YF_TIMEOUT = 30  # seconds
+_yf_cache_reset_count = 0
 
 # KIS client reference — set by bot.py at startup
 _kis_client = None
@@ -41,6 +44,45 @@ def _yf_with_timeout(func, *args, **kwargs):
         return future.result(timeout=_YF_TIMEOUT)
 
 
+def _reset_yf_cache() -> bool:
+    """Delete corrupted yfinance SQLite cache files and reinitialize.
+
+    Returns True if cache was reset successfully.
+    """
+    global _yf_cache_reset_count
+    try:
+        import platformdirs
+        cache_dir = os.path.join(platformdirs.user_cache_dir(), "py-yfinance")
+        if not os.path.isdir(cache_dir):
+            return False
+
+        # Delete all DB files (*.db, *.db-wal, *.db-shm)
+        removed = []
+        for pattern in ("*.db", "*.db-wal", "*.db-shm"):
+            for f in glob.glob(os.path.join(cache_dir, pattern)):
+                os.remove(f)
+                removed.append(os.path.basename(f))
+
+        if not removed:
+            return False
+
+        # Reset yfinance internal DB managers so they reinitialize
+        from yfinance.cache import set_cache_location
+        set_cache_location(cache_dir)
+
+        _yf_cache_reset_count += 1
+        logger.warning(f"yfinance cache reset #{_yf_cache_reset_count}: removed {removed}")
+        return True
+    except Exception as e:
+        logger.error(f"yfinance cache reset failed: {e}")
+        return False
+
+
+def _is_sqlite_error(e: Exception) -> bool:
+    """Check if exception is a SQLite OperationalError."""
+    return "OperationalError" in type(e).__name__ or "unable to open database" in str(e)
+
+
 def _valid_price(value: float) -> bool:
     """Check if a price value is valid (finite, positive)."""
     return isinstance(value, (int, float)) and np.isfinite(value) and value > 0
@@ -50,20 +92,38 @@ def _valid_price(value: float) -> bool:
 
 def get_vix_close() -> Optional[float]:
     """Fetch latest VIX closing price. yfinance only."""
+    return _yf_fetch_with_cache_recovery(_fetch_vix, "VIX")
+
+
+def _fetch_vix() -> Optional[float]:
+    """Internal VIX fetch."""
+    vix = yf.Ticker("^VIX")
+    hist = _yf_with_timeout(vix.history, period="5d", interval="1d")
+    if hist.empty:
+        logger.error("VIX: No data returned")
+        return None
+    close = float(hist["Close"].iloc[-1])
+    if not _valid_price(close):
+        logger.error(f"VIX: Invalid value {close}")
+        return None
+    logger.info(f"VIX: {close:.1f}")
+    return close
+
+
+def _yf_fetch_with_cache_recovery(fetch_fn, label: str):
+    """Run a yfinance fetch, resetting cache on SQLite errors."""
     try:
-        vix = yf.Ticker("^VIX")
-        hist = _yf_with_timeout(vix.history, period="5d", interval="1d")
-        if hist.empty:
-            logger.error("VIX: No data returned")
-            return None
-        close = float(hist["Close"].iloc[-1])
-        if not _valid_price(close):
-            logger.error(f"VIX: Invalid value {close}")
-            return None
-        logger.info(f"VIX: {close:.1f}")
-        return close
+        return fetch_fn()
     except (FuturesTimeout, Exception) as e:
-        logger.error(f"VIX fetch error: {type(e).__name__}: {e}")
+        if _is_sqlite_error(e):
+            logger.warning(f"{label}: SQLite error detected, resetting yfinance cache")
+            if _reset_yf_cache():
+                try:
+                    return fetch_fn()
+                except Exception as e2:
+                    logger.error(f"{label} fetch error after cache reset: {type(e2).__name__}: {e2}")
+                    return None
+        logger.error(f"{label} fetch error: {type(e).__name__}: {e}")
         return None
 
 
@@ -111,7 +171,9 @@ def get_qqq_trend_data(ma_period: int = 20) -> Tuple[Optional[float], Optional[f
             if result[0] is not None:
                 return result
             logger.warning("QQQ: KIS failed, falling back to yfinance")
-        return _get_qqq_trend_yf(ma_period)
+        return _yf_fetch_with_cache_recovery(
+            lambda: _get_qqq_trend_yf(ma_period), "QQQ"
+        ) or (None, None)
     except (FuturesTimeout, Exception) as e:
         logger.error(f"QQQ trend data error: {type(e).__name__}: {e}")
         return None, None
@@ -191,7 +253,9 @@ def get_intraday_bars(symbol: str, period: str = "1d",
             if result is not None:
                 return result
             logger.warning(f"{symbol}: KIS intraday failed, falling back to yfinance")
-        return _get_intraday_yf(symbol, period, interval)
+        return _yf_fetch_with_cache_recovery(
+            lambda: _get_intraday_yf(symbol, period, interval), symbol
+        )
     except (FuturesTimeout, Exception) as e:
         logger.error(f"{symbol} intraday fetch error: {type(e).__name__}: {e}")
         return None
@@ -236,7 +300,9 @@ def get_avg_daily_range(symbol: str, days: int = 20) -> Optional[float]:
             if result is not None:
                 return result
             logger.warning(f"{symbol}: KIS ADR failed, falling back to yfinance")
-        return _get_adr_yf(symbol, days)
+        return _yf_fetch_with_cache_recovery(
+            lambda: _get_adr_yf(symbol, days), f"{symbol} ADR"
+        )
     except (FuturesTimeout, Exception) as e:
         logger.error(f"{symbol} ADR error: {type(e).__name__}: {e}")
         return None
@@ -272,7 +338,9 @@ def get_current_price(symbol: str) -> Optional[float]:
             if result is not None:
                 return result
             logger.warning(f"{symbol}: KIS price failed, falling back to yfinance")
-        return _get_price_yf(symbol)
+        return _yf_fetch_with_cache_recovery(
+            lambda: _get_price_yf(symbol), f"{symbol} price"
+        )
     except (FuturesTimeout, Exception) as e:
         logger.error(f"{symbol} price error: {type(e).__name__}: {e}")
         return None

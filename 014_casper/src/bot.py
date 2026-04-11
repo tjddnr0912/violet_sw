@@ -347,6 +347,19 @@ class CasperBot:
 
     def _handle_pre_market(self):
         """Run pre-market filters (Layer 1 & 2)."""
+        # If trend already determined, skip VIX/QQQ checks and just wait for ORB
+        if self.trend is not None:
+            if time_utils.is_orb_forming():
+                self._transition(BotState.ORB_FORMING)
+            else:
+                secs = time_utils.seconds_until(time_utils.dtime(9, 30))
+                if secs > 0:
+                    time.sleep(min(secs, 60))
+                else:
+                    # Past 9:30 but is_orb_forming() is False — ORB window ended
+                    self._transition(BotState.ORB_FORMING, "Late join")
+            return
+
         # Circuit breaker check
         if self.circuit_breaker.is_active:
             self._transition(BotState.DONE_TODAY, "Circuit breaker active")
@@ -379,7 +392,7 @@ class CasperBot:
 
         logger.info(f"Pre-market complete: {self.trend.direction.upper()} → {self.trend.symbol}")
 
-        # Wait for ORB
+        # Wait for ORB or transition immediately
         if time_utils.is_orb_forming():
             self._transition(BotState.ORB_FORMING)
         else:

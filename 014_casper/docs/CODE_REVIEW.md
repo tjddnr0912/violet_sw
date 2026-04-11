@@ -133,6 +133,8 @@
 
 ```
 yfinance 실패    → 30초 타임아웃 → except → None 반환 → NaN/Inf 검증 → ✅
+yfinance SQLite  → OperationalError 감지 → 캐시 DB 삭제 → 재초기화 → 재시도 → ✅
+PRE_MARKET 반복  → trend 설정 후 VIX/QQQ 재검사 스킵 → ORB 대기만 → ✅
 KIS API 실패     → GET: 3회 재시도 / POST: 재시도 없음 → None → ✅
 KIS 인증 실패    → 빈 토큰 거부 → 재시도 → ✅
 JSON 파일 파손   → except → 빈 리스트 → atomic save로 방지 → ✅
