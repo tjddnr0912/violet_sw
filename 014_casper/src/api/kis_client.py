@@ -32,6 +32,49 @@ class KISClient:
         self.base_url = auth.base_url
         self._last_call_time: float = 0
 
+    def warm_up(self, max_secs: int = 90, poll_interval: int = 10) -> bool:
+        """Poll a cheap quote endpoint until KIS accepts it (cold-start guard).
+
+        KIS returns HTTP 500 with an empty ``rt_cd:"1"`` body on the first
+        API calls issued within ~15-60s of a fresh process + token handshake
+        (observed on ``inquire-present-balance``, ``price`` equally). The
+        fast internal 1/2/4s retry in ``_request`` exhausts long before the
+        server warms, so ``_sync_capital`` — the first real caller — lands
+        on a still-cold path and leaves ``self.capital`` at 0.0, which in
+        turn disables position sizing for the whole day.
+
+        This helper polls at a longer cadence (no internal retry, one shot
+        per attempt) until a 200 comes back. Returns ``True`` on success,
+        ``False`` on timeout; the caller can proceed either way since all
+        other KIS calls have their own retry paths — but a successful warm
+        up means the subsequent ``_sync_capital`` will almost certainly
+        succeed.
+        """
+        url = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
+        deadline = time.time() + max_secs
+        attempt = 0
+        t0 = time.time()
+        while time.time() < deadline:
+            attempt += 1
+            data = self._request(
+                "GET", url,
+                headers={"tr_id": "HHDFS00000300"},
+                params={"AUTH": "", "EXCD": "NAS", "SYMB": "QQQ"},
+                retry=False,
+            )
+            if data is not None:
+                logger.info(
+                    f"KIS warm-up succeeded in {time.time() - t0:.0f}s "
+                    f"(attempt {attempt})"
+                )
+                return True
+            time.sleep(poll_interval)
+        logger.warning(
+            f"KIS warm-up timed out after {max_secs}s ({attempt} attempts); "
+            f"proceeding with cold state (real calls will still retry)"
+        )
+        return False
+
     def _request(self, method: str, url: str, headers: dict = None,
                  params: dict = None, json_body: dict = None,
                  retry: bool = True) -> Optional[dict]:
@@ -66,7 +109,19 @@ class KISClient:
                         logger.error(f"KIS API error: {msg}")
                         return None
 
-                logger.warning(f"KIS HTTP {resp.status_code} (attempt {attempt}/{max_attempts})")
+                # Include endpoint + response body for diagnosis. KIS
+                # frequently returns 4xx/5xx with a JSON body whose msg_cd/msg1
+                # is the real cause (e.g. APBN0746 "상품이 없습니다"). Logging
+                # only the status code or even just the body — without knowing
+                # *which* endpoint/tr_id failed — still wastes debugging time
+                # when multiple KIS calls happen in quick succession.
+                endpoint = url.rsplit("/", 1)[-1]
+                tr_id = hdrs.get("tr_id", "?")
+                body_snip = resp.text[:300].replace("\n", " ")
+                logger.warning(
+                    f"KIS HTTP {resp.status_code} [{endpoint} tr_id={tr_id}] "
+                    f"(attempt {attempt}/{max_attempts}): {body_snip}"
+                )
 
             except requests.RequestException as e:
                 logger.warning(f"KIS request error (attempt {attempt}/{max_attempts}): {e}")
@@ -388,35 +443,75 @@ class KISClient:
 
         return holdings
 
-    def get_us_balance(self, symbol: str = "") -> Optional[dict]:
+    def get_us_balance(self, symbol: str = "", unit_price: float = 0.0) -> Optional[dict]:
         """
-        Get US stock account balance.
+        Get US stock account balance (available cash in USD).
+
+        KIS has two distinct APIs here and the right choice depends on intent:
+          - inquire-present-balance (CTRP6504R): unconditional USD cash balance.
+            No ITEM_CD needed. Use this for generic capital sync.
+          - inquire-psamount (TTTS3007R): "how many shares can I buy of X at
+            price P" — requires a concrete ITEM_CD and non-zero unit price.
+            Passing ITEM_CD="" returns APBN0746 "상품이 없습니다" (sometimes
+            surfaced as HTTP 500), which was the source of an outage where
+            _sync_capital() looped forever.
 
         Args:
-            symbol: Ticker for context (defaults to empty for general query).
+            symbol: Ticker for order-sizing context. If empty, a pure cash
+                    balance query is used instead.
+            unit_price: Price used when symbol is specified (required by KIS).
 
         Returns:
-            Balance dict with available cash and holdings, or None.
+            Dict with ``available_cash`` (float, USD). Includes ``max_qty``
+            when symbol/unit_price are provided. ``None`` on failure.
         """
-        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
-        headers = {"tr_id": "TTTS3007R"}
+        if symbol:
+            if unit_price <= 0:
+                logger.error("KIS balance: symbol given but unit_price missing")
+                return None
+            url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+            headers = {"tr_id": "TTTS3007R"}
+            params = {
+                "CANO": self.account_no,
+                "ACNT_PRDT_CD": self.product_code,
+                "OVRS_EXCG_CD": "NASD",
+                "OVRS_ORD_UNPR": f"{unit_price:.4f}",
+                "ITEM_CD": symbol,
+            }
+            data = self._request("GET", url, headers=headers, params=params)
+            if data and "output" in data:
+                out = data["output"]
+                try:
+                    return {
+                        "available_cash": float(out.get("ovrs_ord_psbl_amt") or 0),
+                        "max_qty": int(out.get("max_ord_psbl_qty") or 0),
+                    }
+                except (ValueError, TypeError) as e:
+                    logger.error(f"KIS balance parse error: {e}")
+                    return None
+            return None
+
+        # No symbol → unconditional USD cash balance.
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-present-balance"
+        headers = {"tr_id": "CTRP6504R"}
         params = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.product_code,
-            "OVRS_EXCG_CD": "NASD",
-            "OVRS_ORD_UNPR": "0",
-            "ITEM_CD": symbol or "",
+            "WCRC_FRCR_DVSN_CD": "02",   # 원화/외화 구분: 02 = 외화
+            "NATN_CD": "840",            # 미국
+            "TR_MKET_CD": "00",
+            "INQR_DVSN_CD": "00",
         }
-
         data = self._request("GET", url, headers=headers, params=params)
-        if data and "output" in data:
-            output = data["output"]
-            try:
-                return {
-                    "available_cash": float(output.get("ovrs_ord_psbl_amt") or 0),
-                    "total_value": float(output.get("frcr_pchs_amt1") or 0),
-                }
-            except (ValueError, TypeError) as e:
-                logger.error(f"KIS balance parse error: {e}")
-                return None
+        if not data or "output2" not in data:
+            return None
+        for row in data["output2"]:
+            if row.get("crcy_cd") == "USD":
+                try:
+                    return {
+                        "available_cash": float(row.get("frcr_drwg_psbl_amt_1") or 0),
+                    }
+                except (ValueError, TypeError) as e:
+                    logger.error(f"KIS balance parse error: {e}")
+                    return None
         return None

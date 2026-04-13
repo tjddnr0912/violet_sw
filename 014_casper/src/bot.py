@@ -115,6 +115,16 @@ class CasperBot:
             self.kis_client = client
             set_kis_client(client)  # Inject into market_data module
             logger.info(f"KIS API initialized ({mode})")
+
+            # Cold-start warm-up. KIS returns HTTP 500 with empty body
+            # (rt_cd:"1", msg:"") on calls issued within ~15-60s of a fresh
+            # process/token handshake. Without a warm-up guard, the first
+            # _sync_capital() call fails and self.capital stays at 0.0 —
+            # which disables position sizing for the entire day. The
+            # warm_up() helper polls a cheap quote every 10s until KIS
+            # responds 200 (no per-call internal retry, to avoid wasting
+            # the polling budget on rate-limit-adjacent paths).
+            client.warm_up(max_secs=90, poll_interval=10)
         else:
             self.kis_order = None
             self.kis_client = None

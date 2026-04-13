@@ -19,6 +19,13 @@ TOKEN_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "config", "toke
 class KISAuth:
     """KIS API authentication manager."""
 
+    # Token-issuance backoff schedule (seconds). KIS rate-limits tokenP at
+    # roughly one call per minute per app; sustained violations escalate to
+    # multi-hour 403 (EGW00103) lockouts. A failed request must therefore
+    # gate subsequent attempts, otherwise the bot's scan loop walks straight
+    # into a punitive cooldown.
+    _BACKOFF_SCHEDULE = (60, 300, 900, 1800, 3600)  # 1m → 5m → 15m → 30m → 1h
+
     def __init__(self, app_key: str, app_secret: str, base_url: str):
         self.app_key = app_key
         self.app_secret = app_secret
@@ -26,6 +33,8 @@ class KISAuth:
         self.is_virtual = "openapivts" in base_url
         self._token: Optional[str] = None
         self._token_expires: float = 0
+        self._failure_count: int = 0
+        self._next_retry_at: float = 0
 
     @property
     def token(self) -> str:
@@ -57,7 +66,16 @@ class KISAuth:
         }
 
     def _request_new_token(self) -> None:
-        """Request a new OAuth2 token from KIS."""
+        """Request a new OAuth2 token from KIS, gated by backoff after failures."""
+        now = time.time()
+        if now < self._next_retry_at:
+            wait = self._next_retry_at - now
+            logger.warning(
+                f"KIS Auth: Skipping token request, in backoff for {wait:.0f}s "
+                f"(consecutive failures: {self._failure_count})"
+            )
+            return
+
         url = f"{self.base_url}/oauth2/tokenP"
         body = {
             "grant_type": "client_credentials",
@@ -72,14 +90,29 @@ class KISAuth:
             token = data.get("access_token", "")
             if not token:
                 logger.error("KIS Auth: Empty access_token in response")
+                self._note_failure()
                 return
             self._token = token
             # Token valid for ~24h, set expiry to 23h
             self._token_expires = time.time() + 23 * 3600
             self._save_cached_token()
+            self._failure_count = 0
+            self._next_retry_at = 0
             logger.info("KIS Auth: New token acquired")
         except Exception as e:
             logger.error(f"KIS Auth: Token request failed: {e}")
+            self._note_failure()
+
+    def _note_failure(self) -> None:
+        """Record a token-issuance failure and schedule the next allowed retry."""
+        self._failure_count += 1
+        idx = min(self._failure_count - 1, len(self._BACKOFF_SCHEDULE) - 1)
+        delay = self._BACKOFF_SCHEDULE[idx]
+        self._next_retry_at = time.time() + delay
+        logger.warning(
+            f"KIS Auth: Backing off {delay}s before next token attempt "
+            f"(failure #{self._failure_count})"
+        )
 
     def _load_cached_token(self) -> Optional[dict]:
         """Load token from cache file."""

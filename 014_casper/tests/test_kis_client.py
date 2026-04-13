@@ -244,15 +244,66 @@ class TestGetUsDailyChart:
 
 class TestGetUsBalance:
     @patch.object(KISClient, "_request")
-    def test_success(self, mock_req, client):
+    def test_success_no_symbol_uses_present_balance(self, mock_req, client):
+        # No symbol → inquire-present-balance, USD row's drawable amount.
         mock_req.return_value = {
-            "output": {"ovrs_ord_psbl_amt": "5000.00", "frcr_pchs_amt1": "10000.00"}
+            "output2": [
+                {"crcy_cd": "KRW", "frcr_drwg_psbl_amt_1": "0"},
+                {"crcy_cd": "USD", "frcr_drwg_psbl_amt_1": "5000.00"},
+            ]
         }
         result = client.get_us_balance()
-        assert result is not None
-        assert result["available_cash"] == 5000.0
+        assert result == {"available_cash": 5000.0}
+
+    @patch.object(KISClient, "_request")
+    def test_success_with_symbol_uses_psamount(self, mock_req, client):
+        # symbol + unit_price → inquire-psamount path, returns max_qty too.
+        mock_req.return_value = {
+            "output": {"ovrs_ord_psbl_amt": "660.20", "max_ord_psbl_qty": "13"}
+        }
+        result = client.get_us_balance(symbol="TQQQ", unit_price=49.03)
+        assert result == {"available_cash": 660.20, "max_qty": 13}
+
+    def test_symbol_without_price_rejected(self, client):
+        assert client.get_us_balance(symbol="TQQQ") is None
 
     @patch.object(KISClient, "_request")
     def test_failure(self, mock_req, client):
         mock_req.return_value = None
         assert client.get_us_balance() is None
+
+    @patch.object(KISClient, "_request")
+    def test_no_usd_row(self, mock_req, client):
+        mock_req.return_value = {"output2": [{"crcy_cd": "KRW"}]}
+        assert client.get_us_balance() is None
+
+
+class TestWarmUp:
+    @pytest.fixture(autouse=True)
+    def _restore_real_warm_up(self, monkeypatch):
+        # conftest autouse stubs out warm_up for everyone else; these tests
+        # actually need to exercise the real polling loop.
+        monkeypatch.setattr(KISClient, "warm_up", KISClient._original_warm_up)
+
+    @patch.object(KISClient, "_request")
+    def test_success_first_try(self, mock_req, client):
+        mock_req.return_value = {"rt_cd": "0", "output": {"last": "400"}}
+        assert client.warm_up(max_secs=30, poll_interval=1) is True
+        assert mock_req.call_count == 1
+
+    @patch("src.api.kis_client.time.sleep")
+    @patch.object(KISClient, "_request")
+    def test_success_after_cold_attempts(self, mock_req, mock_sleep, client):
+        # First two attempts cold (None), third succeeds
+        mock_req.side_effect = [None, None, {"rt_cd": "0"}]
+        assert client.warm_up(max_secs=60, poll_interval=10) is True
+        assert mock_req.call_count == 3
+
+    @patch("src.api.kis_client.time.sleep")
+    @patch.object(KISClient, "_request")
+    def test_timeout_returns_false(self, mock_req, mock_sleep, client):
+        mock_req.return_value = None  # always cold
+        assert client.warm_up(max_secs=5, poll_interval=2) is False
+        # Should not internally retry — retry=False passed through
+        for call in mock_req.call_args_list:
+            assert call.kwargs.get("retry") is False

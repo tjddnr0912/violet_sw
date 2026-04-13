@@ -26,22 +26,33 @@ print_logo() {
 }
 
 # .env 로드
+#
+# CRITICAL: use `IFS=` (no separator) + substring expansion, NOT `IFS='='
+# read -r key value`. bash's `read` strips trailing IFS bytes from the last
+# field, so values ending with '=' (e.g. base64-padded KIS_APP_SECRET) lose
+# their final byte — yielding a corrupt secret that KIS rejects with an
+# opaque HTTP 500 {"rt_cd":"1","msg_cd":"","msg1":""}. This burned an
+# entire debugging session in 2026-04-14.
 load_env() {
     if [ -f ".env" ]; then
-        while IFS='=' read -r key value; do
-            # Skip comments and empty lines
-            [[ "$key" =~ ^[[:space:]]*# ]] && continue
-            [[ -z "$key" ]] && continue
-            # Trim whitespace
-            key=$(echo "$key" | xargs)
-            # Strip inline comments (# ...) from value
-            value=$(echo "$value" | sed 's/[[:space:]]*#.*$//')
-            value=$(echo "$value" | xargs)
-            # Remove surrounding quotes from value
-            value="${value%\"}"
-            value="${value#\"}"
-            value="${value%\'}"
-            value="${value#\'}"
+        while IFS= read -r line || [ -n "$line" ]; do
+            # Skip comments / blank lines
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
+            # Split on the *first* '=' only, preserving any '=' in the value
+            key="${line%%=*}"
+            value="${line#*=}"
+            # Trim whitespace around key
+            key="${key#"${key%%[![:space:]]*}"}"
+            key="${key%"${key##*[![:space:]]}"}"
+            # Strip inline comments from value (space + #...)
+            value="$(printf '%s' "$value" | sed 's/[[:space:]]*#.*$//')"
+            # Trim whitespace around value
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            # Strip surrounding single/double quotes if present
+            [[ "$value" == \"*\" ]] && value="${value#\"}" && value="${value%\"}"
+            [[ "$value" == \'*\' ]] && value="${value#\'}" && value="${value%\'}"
             export "$key=$value"
         done < .env
     else

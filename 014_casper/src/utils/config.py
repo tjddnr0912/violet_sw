@@ -15,9 +15,18 @@ def reset_config_cache():
 
 
 def load_env() -> dict:
-    """Load .env file and return environment variables as dict."""
+    """Load .env file and return environment variables as dict.
+
+    ``override=True`` is deliberate: if the bot was launched via
+    ``run_casper.sh`` which ``export``s values through a bash ``while
+    read`` loop, any subtle parsing bug there (base64 secrets ending
+    with ``=`` were once lost to ``IFS='='`` read) would otherwise shadow
+    the correct value from the file. Treating the on-disk ``.env`` as
+    the single source of truth makes the system robust to shell-side
+    parsing regressions.
+    """
     env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
-    load_dotenv(env_path)
+    load_dotenv(env_path, override=True)
     return {
         "kis_app_key": os.getenv("KIS_APP_KEY", ""),
         "kis_app_secret": os.getenv("KIS_APP_SECRET", ""),
