@@ -25,7 +25,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Script paths
-TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_watchdog.sh"
+# (Disabled) 005_money Trading Bot - commented out by user
+# TRADING_BOT="$SCRIPT_DIR/005_money/scripts/run_v3_watchdog.sh"
 TELEGRAM_BOT="$SCRIPT_DIR/006_auto_bot/run_telegram_bot.sh"
 QUANT_DAEMON="$SCRIPT_DIR/007_stock_trade/run_quant.sh"
 INVESTMENT_BOT="$SCRIPT_DIR/006_auto_bot/run_investment_bot.sh"
@@ -48,7 +49,7 @@ if ! cmux ping &>/dev/null; then
 fi
 
 # Check if scripts exist
-for script in "$TRADING_BOT" "$TELEGRAM_BOT" "$QUANT_DAEMON" "$INVESTMENT_BOT" "$CASPER_BOT"; do
+for script in "$TELEGRAM_BOT" "$QUANT_DAEMON" "$INVESTMENT_BOT" "$CASPER_BOT"; do
     if [[ ! -f "$script" ]]; then
         echo "Error: Script not found: $script"
         exit 1
@@ -130,7 +131,9 @@ run_in_pane() {
 }
 
 # Top row
-run_in_pane "$S_TL" "Trading Bot"     "cd '$SCRIPT_DIR' && '$TRADING_BOT'"
+# (Disabled) Trading Bot (005_money) - commented out by user
+# run_in_pane "$S_TL" "Trading Bot"     "cd '$SCRIPT_DIR' && '$TRADING_BOT'"
+run_in_pane "$S_TL" "(disabled) Trading Bot" "echo 'Trading Bot (005_money) disabled'"
 run_in_pane "$S_TR" "Telegram Bot"    "cd '$SCRIPT_DIR' && '$TELEGRAM_BOT'"
 
 # Bottom row
@@ -145,8 +148,8 @@ run_in_pane "$S_BOTTOM" "Casper Bot"  "cd '$SCRIPT_DIR/014_casper' && '$CASPER_B
 # run_in_pane "$S_??" "Stock Dashboard" "cd '$STOCK_DASHBOARD' && './run_watchdog.sh'"
 
 echo ""
-echo "All 5 bots running in workspace 'running_machine' (2+2+1 grid)"
-echo "  Top:    Trading Bot | Telegram Bot"
+echo "4 bots running in workspace 'running_machine' (2+2+1 grid)"
+echo "  Top:    (disabled) | Telegram Bot"
 echo "  Mid:    Quant Daemon | Investment Bot"
 echo "  Bottom: Casper Bot"
 echo ""
