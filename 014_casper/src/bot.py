@@ -91,6 +91,11 @@ class CasperBot:
             os.path.dirname(__file__), "..", "data", "position_state.json"
         )
         self._done_today_logged = False
+        # Re-sync capital once when entering pre-market, to catch mid-day
+        # USD deposits/FX conversions made after _check_new_day's sync ran
+        # (_check_new_day fires at ET 00:00 ≈ KST 13:00, which is before
+        # the afternoon window when a Korean user typically moves money).
+        self._premarket_synced_today = False
 
         # Load trade history
         self._init_from_history()
@@ -338,6 +343,7 @@ class CasperBot:
         self.trades_today = 0
         self.state = BotState.WAITING
         self._done_today_logged = False
+        self._premarket_synced_today = False
         self._sync_capital()
         self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
         logger.info(f"=== New Day: {today} ===")
@@ -374,6 +380,14 @@ class CasperBot:
                     # Past 9:30 but is_orb_forming() is False — ORB window ended
                     self._transition(BotState.ORB_FORMING, "Late join")
             return
+
+        # First pre-market entry of the day: re-sync capital so mid-day
+        # USD deposits/FX conversions made after _check_new_day are picked
+        # up before position sizing. Gated by a per-day flag to avoid
+        # extra KIS calls on VIX/QQQ retry loops.
+        if not self._premarket_synced_today:
+            self._sync_capital()
+            self._premarket_synced_today = True
 
         # Circuit breaker check
         if self.circuit_breaker.is_active:

@@ -133,6 +133,80 @@ class TestHandlePreMarket:
         bot._handle_pre_market()
         assert bot.state == BotState.DONE_TODAY
 
+    # ─── capital sync timing (mid-day FX/deposit support) ───
+
+    @patch("src.bot.time.sleep")
+    @patch("src.bot.get_qqq_trend_data", return_value=(500.0, 490.0))
+    @patch("src.bot.get_vix_close", return_value=20.0)
+    @patch("src.bot.time_utils")
+    def test_sync_capital_called_on_first_pre_market_entry(
+        self, mock_time, mock_vix, mock_qqq, mock_sleep
+    ):
+        """First pre-market entry of the day must re-sync capital so that
+        USD FX conversions made after _check_new_day are reflected before
+        position sizing. This is the gate for mid-day deposits."""
+        mock_time.is_orb_forming.return_value = True
+        bot = _make_bot()
+        bot.state = BotState.PRE_MARKET
+        bot._premarket_synced_today = False
+
+        with patch.object(bot, "_sync_capital") as mock_sync:
+            bot._handle_pre_market()
+            mock_sync.assert_called_once()
+        assert bot._premarket_synced_today is True
+
+    @patch("src.bot.time.sleep")
+    @patch("src.bot.get_qqq_trend_data", return_value=(500.0, 490.0))
+    @patch("src.bot.get_vix_close", return_value=20.0)
+    @patch("src.bot.time_utils")
+    def test_sync_capital_not_called_when_already_synced_today(
+        self, mock_time, mock_vix, mock_qqq, mock_sleep
+    ):
+        """Flag prevents duplicate KIS calls on VIX/QQQ retry loops."""
+        mock_time.is_orb_forming.return_value = True
+        bot = _make_bot()
+        bot.state = BotState.PRE_MARKET
+        bot._premarket_synced_today = True  # already synced earlier today
+
+        with patch.object(bot, "_sync_capital") as mock_sync:
+            bot._handle_pre_market()
+            mock_sync.assert_not_called()
+
+    @patch("src.bot.time.sleep")
+    @patch("src.bot.time_utils")
+    def test_sync_capital_skipped_when_trend_already_set(
+        self, mock_time, mock_sleep
+    ):
+        """trend-set branch is just ORB waiting; no sync needed."""
+        mock_time.is_orb_forming.return_value = False
+        mock_time.seconds_until.return_value = 30
+        mock_time.dtime.return_value = "09:30"
+        bot = _make_bot()
+        bot.state = BotState.PRE_MARKET
+        bot.trend = TrendState(direction="bull", symbol="TQQQ",
+                               qqq_close=500.0, qqq_ma20=490.0)
+        bot._premarket_synced_today = False
+
+        with patch.object(bot, "_sync_capital") as mock_sync:
+            bot._handle_pre_market()
+            mock_sync.assert_not_called()
+
+    @patch("src.bot.time.sleep")
+    @patch("src.bot.get_vix_close", return_value=None)
+    def test_sync_capital_called_even_if_vix_fails(self, mock_vix, mock_sleep):
+        """Capital sync happens before VIX lookup, so VIX failure doesn't
+        prevent the sync. Second retry won't re-sync due to the flag."""
+        bot = _make_bot()
+        bot.state = BotState.PRE_MARKET
+        bot._premarket_synced_today = False
+
+        with patch.object(bot, "_sync_capital") as mock_sync:
+            bot._handle_pre_market()  # VIX returns None → retry path
+            assert mock_sync.call_count == 1
+            # Retry loop — VIX still None, flag prevents another sync
+            bot._handle_pre_market()
+            assert mock_sync.call_count == 1
+
 
 class TestHandleOrbForming:
     @patch("src.bot.time.sleep")
