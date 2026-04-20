@@ -155,11 +155,21 @@ class SectorSearcher:
                 time.sleep(delay)
                 return self.search_sector(sector, retry_count + 1)
 
+            # 재시도 모두 소진 후 마지막 수단: CLI fallback
+            logger.warning(
+                f"All {SectorConfig.MAX_RETRIES} retries exhausted for {sector.name}; "
+                f"attempting CLI fallback as last resort (last error: {e})"
+            )
+            cli_result = self._search_via_cli(sector)
+            if cli_result.get('success'):
+                return cli_result
+
             return {
                 'content': '',
                 'sources': [],
                 'success': False,
-                'error': str(e)
+                'error': f"API retries exhausted and CLI fallback failed. "
+                         f"API: {e}. CLI: {cli_result.get('error')}"
             }
 
     def _search_via_cli(self, sector: Sector) -> Dict[str, any]:

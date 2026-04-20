@@ -357,9 +357,20 @@ class SectorAnalyzer:
                 time.sleep(delay)
                 return self.analyze_sector(sector, search_result, retry_count + 1)
 
+            # 재시도 모두 소진 후 마지막 수단: CLI fallback
+            # Why: 503 UNAVAILABLE 같은 일시 장애에서 재시도 전부 실패해도 CLI 경로는 성공할 수 있음
+            logger.warning(
+                f"All {SectorConfig.MAX_RETRIES} retries exhausted for {sector.name}; "
+                f"attempting CLI fallback as last resort (last error: {e})"
+            )
+            cli_result = self._analyze_via_cli(sector, search_result)
+            if cli_result.get('success'):
+                return cli_result
+
             return {
                 'success': False,
-                'error': str(e)
+                'error': f"API retries exhausted and CLI fallback failed. "
+                         f"API: {e}. CLI: {cli_result.get('error')}"
             }
 
     def _analyze_via_cli(self, sector: Sector, search_result: Dict) -> Dict:

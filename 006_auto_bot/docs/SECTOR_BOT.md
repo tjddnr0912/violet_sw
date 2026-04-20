@@ -107,14 +107,16 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 | 에러 | 처리 |
 |------|------|
 | Gemini API 429 할당량 초과 | 즉시 Gemini CLI (`gemini -p`) fallback 전환, 이후 섹터도 CLI 사용 |
-| Gemini Search 실패 (기타) | 3회 재시도 (60초→120초→240초 지수 백오프) |
+| Gemini Search 실패 (503 등) | 3회 재시도 (60초→120초→240초 지수 백오프) 후 CLI fallback 시도 |
 | Gemini Safety Filter | BLOCK_NONE 설정으로 비활성화 |
 | Claude CLI 타임아웃 | 15분 후 마크다운 폴백 |
 | 네트워크 에러 | 지수 백오프 재시도 |
 
 ### Gemini CLI Fallback (`gemini_cli.py`)
 
-API 할당량(`RESOURCE_EXHAUSTED`) 감지 시 `gemini -p`로 자동 전환:
+두 가지 경로로 `gemini -p` 자동 전환:
+1. **즉시 전환**: API 할당량(`RESOURCE_EXHAUSTED`/429) 감지 시 첫 발생 후 `_use_cli_fallback=True` → 이후 섹터는 API 시도 없이 바로 CLI
+2. **재시도 소진 후 최후 수단**: `MAX_RETRIES` 재시도를 모두 소진한 뒤(503 UNAVAILABLE 등 일시 장애), API 실패로 반환하기 직전 CLI를 한 번 더 시도. 성공 시 정상 결과 반환, 실패 시 API/CLI 양쪽 에러를 합쳐 기록.
+
 - `searcher.py`, `analyzer.py` 모두 독립적으로 fallback 관리
-- 첫 429 감지 후 `_use_cli_fallback=True` → 이후 섹터는 API 시도 없이 바로 CLI
 - CLI 타임아웃: 300초 (5분)
