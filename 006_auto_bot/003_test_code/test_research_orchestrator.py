@@ -225,6 +225,39 @@ def test_round_n_prompt_includes_targeted_query():
     assert "티스토리 API 종료" in p
 
 
+def test_synthesize_returns_markdown_with_metadata():
+    from shared import research_orchestrator as ro
+
+    fake_md = """# 정리
+
+본문 내용입니다.
+
+TITLE: 티스토리 API 종료 정리
+LABELS: 티스토리, API, 자동화
+SOURCES: 공식 공지|https://notice.tistory.com/2664
+"""
+    class FakeCompleted:
+        returncode = 0
+        stdout = fake_md
+        stderr = ""
+
+    original = ro.subprocess.run
+    ro.subprocess.run = lambda *a, **kw: FakeCompleted()
+    try:
+        md = ro._synthesize(
+            question="q",
+            accumulated_rounds=[("R1", "x")],
+            contradictions=["사례 충돌 1"],
+        )
+    finally:
+        ro.subprocess.run = original
+
+    assert "TITLE:" in md
+    assert "LABELS:" in md
+    assert "SOURCES:" in md
+    assert "본문 내용입니다." in md
+
+
 if __name__ == "__main__":
     test_research_result_fields()
     test_run_research_signature()
@@ -238,4 +271,5 @@ if __name__ == "__main__":
     test_extract_eval_json_invalid_json_returns_safe_default()
     test_extract_eval_json_bare_fallback_regex()
     test_round_n_prompt_includes_targeted_query()
+    test_synthesize_returns_markdown_with_metadata()
     print("OK")

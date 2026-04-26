@@ -167,6 +167,69 @@ def _build_round_n_prompt(original_question: str, targeted_query: str, round_num
     )
 
 
+_SYNTH_PROMPT_TEMPLATE = """다음은 사용자 질문과 그에 대한 다라운드 조사 결과, 그리고 라운드 간 모순 목록이다.
+이를 종합해 telegram-qa 스킬의 톤(싱크탱크 수석 연구원 페르소나, 한국어, 마크다운, 최소 1500자, 근거-기반)으로 최종 보고서를 작성하라.
+
+질문:
+{question}
+
+누적 조사 결과:
+{rounds_dump}
+
+라운드 간 발견된 모순(있으면 본문에 명시):
+{contradictions_dump}
+
+요구사항:
+- 본문은 마크다운. 헤더와 목록을 적극 활용.
+- 모순이 있으면 그대로 살려서 "자료 A는 X라 하지만 자료 B는 Y라 함" 식으로 명시.
+- 근거 없는 추측 금지. 출처는 인라인 인용.
+- 본문 마지막에 빈 줄 하나 두고, 코드블록 없이 정확히 아래 3줄을 출력:
+
+TITLE: (제목)
+LABELS: (키워드 2-3개, 쉼표 구분)
+SOURCES: (제목|URL 형태, 쉼표 구분)
+"""
+
+
+def _synthesize(
+    question: str,
+    accumulated_rounds: list,
+    contradictions: list,
+    timeout: int = DEFAULT_CLAUDE_TIMEOUT,
+) -> str:
+    rounds_dump = "\n\n".join(
+        f"=== {label} ===\n{body}" for label, body in accumulated_rounds
+    )
+    contradictions_dump = (
+        "\n".join(f"- {c}" for c in contradictions) if contradictions else "(없음)"
+    )
+    prompt = _SYNTH_PROMPT_TEMPLATE.format(
+        question=question,
+        rounds_dump=rounds_dump,
+        contradictions_dump=contradictions_dump,
+    )
+
+    result = subprocess.run(
+        ["claude", "-p", prompt],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        logger.error(f"claude synth failed: {result.stderr[:300]}")
+        return _fallback_synthesis(accumulated_rounds, contradictions)
+    return result.stdout.strip()
+
+
+def _fallback_synthesis(accumulated_rounds: list, contradictions: list) -> str:
+    """If Claude synth fails, return a concatenated dump as last resort."""
+    body = "\n\n".join(f"## {label}\n{body}" for label, body in accumulated_rounds)
+    if contradictions:
+        body += "\n\n## 발견된 모순\n" + "\n".join(f"- {c}" for c in contradictions)
+    body += "\n\nTITLE: 조사 결과\nLABELS: 리서치, 분석\nSOURCES: \n"
+    return body
+
+
 def run_research(
     question: str,
     max_rounds: int = 3,
