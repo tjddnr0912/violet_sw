@@ -92,7 +92,8 @@ class TelegramGeminiBot(TelegramClient):
         self.selection_timeout = int(os.getenv("BLOG_SELECTION_TIMEOUT", "600"))  # 10 minutes
 
         # Pending uploads awaiting blog selection
-        # key: message_id, value: {md_content, html_content, title, labels, sources, created_at}
+        # key: message_id, value: {question, mode, created_at}
+        # Research runs after blog selection (deferred), so md/html/title are not pre-stored.
         self.pending_uploads: Dict[int, Dict] = {}
 
     def _load_blog_configs(self) -> Dict[str, Dict]:
@@ -475,10 +476,11 @@ SOURCES: (출처)
         if message_id:
             self.edit_message_text(message_id, "Claude HTML 생성 중…")
 
+        # Contradictions section (if any) goes BEFORE the References block
+        if contradictions:
+            content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
         sources_section = self._format_sources_section(sources)
         full_md_content = content + sources_section
-        if contradictions:
-            full_md_content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
 
         html_content = None
         claude_title = ""
@@ -552,11 +554,11 @@ SOURCES: (출처)
             self.edit_message_text(message_id, content[:4000])
             return
 
-        # Sources + optional contradictions section
+        # Contradictions section (if any) goes BEFORE the References block
+        if contradictions:
+            content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
         sources_section = self._format_sources_section(sources)
         full_md_content = content + sources_section
-        if contradictions:
-            full_md_content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
 
         # Claude HTML conversion
         self.edit_message_text(message_id, "Claude HTML 생성 중…")
@@ -845,7 +847,7 @@ Examples:
         return text.startswith(self.quick_command + " ") or text.strip() == self.quick_command
 
     def _strip_quick_prefix(self, text: str) -> str:
-        return text[len(self.quick_command):].strip()
+        return text.strip()[len(self.quick_command):].strip()
 
     def run(self) -> None:
         """Bot main loop"""
