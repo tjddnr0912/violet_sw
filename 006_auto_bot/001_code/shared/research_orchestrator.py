@@ -61,6 +61,8 @@ QA_SKILL_FILE = os.path.expanduser('~/.claude/skills/telegram-qa/SKILL.md')
 
 def _load_skill_body(path: str) -> str:
     """Load a skill file with YAML frontmatter stripped."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Skill file not found: {path}")
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
     return re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL).strip()
