@@ -10,6 +10,8 @@ the `/quick` command.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -52,6 +54,30 @@ def _run_gemini_round(prompt: str, timeout: int = DEFAULT_GEMINI_TIMEOUT) -> str
     if not out:
         raise GeminiRoundError(f"gemini returned empty stdout (stderr={result.stderr.strip()[:200]})")
     return out
+
+
+QA_SKILL_FILE = os.path.expanduser('~/.claude/skills/telegram-qa/SKILL.md')
+
+
+def _load_skill_body(path: str) -> str:
+    """Load a skill file with YAML frontmatter stripped."""
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    return re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL).strip()
+
+
+_METADATA_TRAILER = """
+---
+[중요] 답변 본문 작성 완료 후 반드시 아래 3줄을 포함할 것 (코드블록 없이 플레인 텍스트로):
+TITLE: (제목)
+LABELS: (키워드 2-3개)
+SOURCES: (출처)
+"""
+
+
+def _build_round1_prompt(question: str) -> str:
+    skill = _load_skill_body(QA_SKILL_FILE)
+    return f"{skill}\n\n# 질문\n\n{question}\n{_METADATA_TRAILER}"
 
 
 def run_research(

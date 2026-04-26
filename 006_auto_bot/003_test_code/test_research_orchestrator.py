@@ -85,9 +85,22 @@ def test_gemini_round_raises_on_failure():
         ro.subprocess.run = original
 
 
+def test_round1_prompt_includes_question_and_skill():
+    from shared.research_orchestrator import _build_round1_prompt
+    p = _build_round1_prompt("티스토리 API 종료 현황")
+    assert "티스토리 API 종료 현황" in p
+    # Skill content marker — telegram-qa SKILL.md contains this Korean phrase
+    assert "싱크탱크" in p or "리서치" in p
+    # Metadata trailer instruction
+    assert "TITLE:" in p
+    assert "LABELS:" in p
+    assert "SOURCES:" in p
+
+
 if __name__ == "__main__":
     test_research_result_fields()
     test_run_research_signature()
     test_gemini_round_returns_stdout_on_success()
     test_gemini_round_raises_on_failure()
+    test_round1_prompt_includes_question_and_skill()
     print("OK")
