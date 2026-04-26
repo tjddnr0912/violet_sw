@@ -64,3 +64,32 @@
 - 투자 면책조항: Claude가 내용 판단하여 자동 포함
 - 공통 금지: AI, 자동 생성, Gemini, Claude 등 AI 관련 문구
 - 제목 미생성 시 Gemini 제목으로 fallback (뉴스봇/버핏봇/섹터봇은 자체 제목 사용, 제목 무시)
+
+## Research Modes (Deep default, `/quick` opt-out)
+
+봇은 **모든 평문 메시지를 다라운드 deep research로 처리**합니다. 결과가 블로그에 게시되므로 사실관계 검증이 항상 가치 있다는 판단입니다. 가벼운 질문이나 Gemini quota가 빠듯할 때는 `/quick <질문>`으로 기존 단발 모드를 사용할 수 있습니다.
+
+### Deep 모드 (기본)
+
+| 단계 | 도구 | 역할 |
+|---|---|---|
+| Round 1 | Gemini CLI | broad sweep (telegram-qa 스킬 프롬프트 그대로) |
+| Eval | Claude CLI | 5차원(정의/현황/근거/반론/적용) 체크, JSON 반환 |
+| Round 2~N | Gemini CLI | 평가가 지목한 빈 차원만 좁힌 query로 재호출 |
+| Synth | Claude CLI | 누적 라운드를 telegram-qa 톤의 마크다운으로 종합 + TITLE/LABELS/SOURCES |
+
+**예상 시간:** 60~300초. Gemini quota 소진 시 누적 결과로 fallback 종합.
+
+### Quick 모드 (`/quick <질문>`)
+
+기존 단발 Gemini 흐름. ~30초. Quota 1회만 소비.
+
+### 환경변수
+
+- `RESEARCH_QUICK_COMMAND` (default: `/quick`) — 단발 모드 트리거 문자열
+- `RESEARCH_MAX_ROUNDS` (default: `3`, 상한 4) — Deep 모드 라운드 최대 횟수
+
+### 운영상 주의
+
+- Gemini 호출 횟수가 단발 대비 평균 3배지만, 운영자가 **Gemini Code Assist (Google One AI Pro) tier**라 일일 한도는 충분히 여유 있음 (예상 사용량의 30배 이상). 분당 RPM 버스트 throttle은 가끔 발생할 수 있으나 오케스트레이터가 누적 결과로 자동 fallback 종합하므로 게시는 끊기지 않음.
+- 다중 블로그 사용자는 두 모드 모두 동일한 블로그 선택 UI를 거침. 선택 후 모드별 흐름이 갈라짐.
