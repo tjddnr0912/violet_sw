@@ -24,9 +24,10 @@ python weekly_sector_bot.py --comprehensive  # 종합 투자 평가 보고서
 |------|------|
 | `investment_bot.py` | 통합 오케스트레이터 (뉴스+버핏+섹터 스케줄 관리) |
 | `buffett_bot.py` | 버핏/멍거 관점 일일 투자 분석 (Claude CLI) |
+| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발 |
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
-| `shared/` | HTML 변환, Telegram API, Blogger 업로드, Claude HTML 변환 |
+| `shared/` | HTML 변환, Telegram API, Blogger 업로드, Claude HTML 변환, **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증) |
 
 ## 핵심 참조
 
@@ -50,6 +51,8 @@ DEFAULT_BLOG=brave_ogu
 BLOG_SELECTION_TIMEOUT=180
 SECTOR_BLOGGER_BLOG_ID=9115231004981625966
 SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite-preview
+RESEARCH_QUICK_COMMAND=/quick    # Telegram Q&A 단발 모드 트리거 (default `/quick`)
+RESEARCH_MAX_ROUNDS=3            # Deep research 라운드 상한 (1~4, default 3)
 ```
 
 ## 스킬 파일 (프롬프트 외부화)

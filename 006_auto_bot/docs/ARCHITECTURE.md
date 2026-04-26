@@ -27,7 +27,8 @@
 │   ├── telegram_api.py          # Telegram Bot API (Inline Keyboard)
 │   ├── telegram_notifier.py     # 알림 발송
 │   ├── blogger_uploader.py      # Google Blogger API OAuth2
-│   └── claude_html_converter.py # Claude CLI로 MD→HTML (timeout 15분)
+│   ├── claude_html_converter.py # Claude CLI로 MD→HTML (timeout 15분)
+│   └── research_orchestrator.py # 다라운드 Gemini × Claude 5차원 검증 (Deep research 엔진)
 ├── prompts/                     # AI 프롬프트 템플릿 (fallback용)
 ├── credentials/                 # OAuth tokens
 └── logs/                        # 로그 파일
@@ -62,8 +63,14 @@ telegram_gemini_bot.py
 ├── shared.telegram_api (Inline Keyboard)
 ├── shared.html_utils
 ├── shared.blogger_uploader
-└── shared.claude_html_converter
+├── shared.claude_html_converter
+└── shared.research_orchestrator   # 평문 메시지 → run_research (Deep, default)
+                                    # /quick 메시지 → run_gemini (Quick opt-out)
 ```
+
+### Research Modes (telegram_gemini_bot.py)
+
+평문 메시지는 `mode="deep"`으로 분류되어 `run_research`(Round 1 Gemini → Claude 5차원 평가 → 필요 시 Round N → Claude 종합)를 거친다. `/quick <질문>`은 `mode="quick"`으로 분류되어 기존 단발 `run_gemini` 흐름을 그대로 사용한다. 두 모드 모두 동일한 Claude HTML 변환 + Blogger 업로드 파이프라인을 통과한다. 상세는 [TELEGRAM_BOT.md](TELEGRAM_BOT.md#research-modes-deep-default-quick-opt-out) 참고.
 
 ## 데이터 흐름
 
