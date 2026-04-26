@@ -331,6 +331,24 @@ def test_run_research_runs_two_rounds_then_synthesizes():
     assert "A vs B" in result.contradictions_noted
 
 
+def test_live_smoke():
+    """Live end-to-end against real gemini + claude. Skipped unless RESEARCH_LIVE=1."""
+    if os.getenv("RESEARCH_LIVE") != "1":
+        print("skip live smoke (set RESEARCH_LIVE=1 to run)")
+        return
+    from shared.research_orchestrator import run_research
+    progress = []
+    result = run_research(
+        "Python의 GIL이란 무엇이며 3.13에서 어떻게 바뀌었나",
+        max_rounds=2,
+        progress_callback=lambda m: progress.append(m),
+    )
+    assert result.rounds_completed >= 1
+    assert len(result.content) > 200
+    assert result.title
+    print(f"live smoke OK: rounds={result.rounds_completed}, title={result.title}")
+
+
 if __name__ == "__main__":
     test_research_result_fields()
     test_run_research_signature()
@@ -347,4 +365,5 @@ if __name__ == "__main__":
     test_synthesize_returns_markdown_with_metadata()
     test_run_research_pass_after_round1()
     test_run_research_runs_two_rounds_then_synthesizes()
+    test_live_smoke()
     print("OK")
