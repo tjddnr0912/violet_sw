@@ -235,4 +235,129 @@ def run_research(
     max_rounds: int = 3,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> ResearchResult:
-    raise NotImplementedError("populated in later tasks")
+    if max_rounds < 1:
+        raise ValueError("max_rounds must be >= 1")
+    if max_rounds > 4:
+        logger.warning(f"max_rounds={max_rounds} clamped to 4")
+        max_rounds = 4
+
+    def report(msg: str):
+        if progress_callback:
+            try:
+                progress_callback(msg)
+            except Exception as e:
+                logger.warning(f"progress_callback raised: {e}")
+
+    accumulated: list = []
+    contradictions: list = []
+    rounds_done = 0
+
+    # Round 1
+    report(f"Round 1/{max_rounds} — broad sweep…")
+    try:
+        round1 = _run_gemini_round(_build_round1_prompt(question))
+        accumulated.append(("Round 1", round1))
+        rounds_done = 1
+    except (GeminiRoundError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.error(f"Round 1 failed: {e}")
+        report(f"Round 1 실패: {str(e)[:120]}")
+        return _empty_result_with_error(question, str(e))
+
+    # Eval / Round N loop
+    next_round = 2
+    while next_round <= max_rounds:
+        report(f"평가 중 (5차원 체크)…")
+        try:
+            decision = _evaluate_round(question, accumulated)
+        except subprocess.TimeoutExpired:
+            logger.warning("eval timed out, treating as pass")
+            decision = {"verdict": "pass", "missing_dimensions": [], "next_query": None, "contradictions": []}
+
+        for c in decision.get("contradictions", []) or []:
+            if c and c not in contradictions:
+                contradictions.append(c)
+
+        if decision.get("verdict") == "pass":
+            report("충분 — 종합 작성 단계로")
+            break
+        targeted = decision.get("next_query")
+        if not targeted:
+            report("후속 query 없음 — 종합 작성으로")
+            break
+
+        report(f"Round {next_round}/{max_rounds} — 보강 ({', '.join(decision.get('missing_dimensions', []) or ['gap'])})…")
+        try:
+            body = _run_gemini_round(
+                _build_round_n_prompt(question, targeted, next_round)
+            )
+            accumulated.append((f"Round {next_round}", body))
+            rounds_done = next_round
+        except (GeminiRoundError, subprocess.TimeoutExpired) as e:
+            logger.warning(f"Round {next_round} failed: {e}")
+            report(f"Round {next_round} 실패 — 누적 결과로 종합 진행")
+            break
+        next_round += 1
+
+    # Synthesis
+    report("Claude 종합 작성 중…")
+    try:
+        final_md = _synthesize(question, accumulated, contradictions)
+    except subprocess.TimeoutExpired:
+        logger.error("synth timed out, using fallback")
+        final_md = _fallback_synthesis(accumulated, contradictions)
+
+    content, title, labels, sources = _parse_metadata_trailer(final_md)
+    return ResearchResult(
+        content=content,
+        title=title,
+        labels=labels,
+        sources=sources,
+        rounds_completed=rounds_done,
+        contradictions_noted=contradictions,
+    )
+
+
+def _empty_result_with_error(question: str, err: str) -> ResearchResult:
+    return ResearchResult(
+        content=f"⚠️ 조사 실패: {err[:200]}",
+        title=question[:60],
+        labels=["오류"],
+        sources=[],
+        rounds_completed=0,
+        contradictions_noted=[],
+    )
+
+
+def _parse_metadata_trailer(text: str):
+    """Reuse the same logic as telegram_gemini_bot._parse_response, in-line copy."""
+    lines = text.strip().split('\n')
+    title = ""
+    labels: list = []
+    sources: list = []
+    content_end = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].strip()
+        if m := re.match(r'^SOURCES?:\s*(.+)$', line, re.IGNORECASE):
+            for src in m.group(1).split(','):
+                src = src.strip()
+                if '|' in src:
+                    t, u = src.split('|', 1)
+                    if u.strip() and t.strip():
+                        sources.append({"title": t.strip(), "url": u.strip()})
+                elif src.startswith('http'):
+                    sources.append({"title": src, "url": src})
+            content_end = min(content_end, i)
+        elif m := re.match(r'^LABELS?:\s*(.+)$', line, re.IGNORECASE):
+            labels = [s.strip() for s in m.group(1).split(',') if s.strip()]
+            content_end = min(content_end, i)
+        elif m := re.match(r'^TITLE:\s*(.+)$', line, re.IGNORECASE):
+            title = m.group(1).strip()
+            content_end = min(content_end, i)
+    body_lines = lines[:content_end]
+    while body_lines and body_lines[-1].strip() in ('---', ''):
+        body_lines.pop()
+    if not title:
+        title = (text.strip().split('\n', 1)[0][:60]).lstrip('#').strip() or "조사 결과"
+    if not labels:
+        labels = ["리서치", "분석"]
+    return ('\n'.join(body_lines).strip(), title, labels, sources)

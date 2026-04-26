@@ -258,6 +258,79 @@ SOURCES: 공식 공지|https://notice.tistory.com/2664
     assert "본문 내용입니다." in md
 
 
+def test_run_research_pass_after_round1():
+    from shared import research_orchestrator as ro
+
+    call_log = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        class C:
+            returncode = 0
+            stderr = ""
+        if cmd[0] == "gemini":
+            call_log.append(("gemini", cmd[1][:30]))
+            C.stdout = "Round 1 broad output\nTITLE: t\nLABELS: a,b\nSOURCES: s|https://x"
+        elif cmd[0] == "claude":
+            call_log.append(("claude", "eval-or-synth"))
+            if "verdict" in cmd[2]:
+                C.stdout = '```json\n{"verdict":"pass","missing_dimensions":[],"next_query":null,"contradictions":[]}\n```'
+            else:
+                C.stdout = "최종 본문\n\nTITLE: 최종\nLABELS: x,y\nSOURCES: s1|https://a"
+        return C()
+
+    progress = []
+    original = ro.subprocess.run
+    ro.subprocess.run = fake_run
+    try:
+        result = ro.run_research(
+            "테스트 질문",
+            max_rounds=3,
+            progress_callback=lambda msg: progress.append(msg),
+        )
+    finally:
+        ro.subprocess.run = original
+
+    gemini_calls = [c for c in call_log if c[0] == "gemini"]
+    assert len(gemini_calls) == 1, f"early-stop expected, got {len(gemini_calls)} gemini calls"
+    assert result.rounds_completed == 1
+    assert result.title == "최종"
+    assert "x" in result.labels
+    assert any("Round 1" in p for p in progress)
+
+
+def test_run_research_runs_two_rounds_then_synthesizes():
+    from shared import research_orchestrator as ro
+
+    state = {"claude_eval_calls": 0}
+
+    def fake_run(cmd, capture_output, text, timeout):
+        class C:
+            returncode = 0
+            stderr = ""
+        if cmd[0] == "gemini":
+            C.stdout = "gemini output"
+        elif cmd[0] == "claude":
+            if "verdict" in cmd[2]:
+                state["claude_eval_calls"] += 1
+                if state["claude_eval_calls"] == 1:
+                    C.stdout = '```json\n{"verdict":"continue","missing_dimensions":["근거"],"next_query":"find primary","contradictions":["A vs B"]}\n```'
+                else:
+                    C.stdout = '```json\n{"verdict":"pass","missing_dimensions":[],"next_query":null,"contradictions":[]}\n```'
+            else:
+                C.stdout = "본문\n\nTITLE: 최종2\nLABELS: a\nSOURCES: "
+        return C()
+
+    original = ro.subprocess.run
+    ro.subprocess.run = fake_run
+    try:
+        result = ro.run_research("q", max_rounds=3)
+    finally:
+        ro.subprocess.run = original
+
+    assert result.rounds_completed == 2
+    assert "A vs B" in result.contradictions_noted
+
+
 if __name__ == "__main__":
     test_research_result_fields()
     test_run_research_signature()
@@ -272,4 +345,6 @@ if __name__ == "__main__":
     test_extract_eval_json_bare_fallback_regex()
     test_round_n_prompt_includes_targeted_query()
     test_synthesize_returns_markdown_with_metadata()
+    test_run_research_pass_after_round1()
+    test_run_research_runs_two_rounds_then_synthesizes()
     print("OK")
