@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+Test script for research_orchestrator module.
+"""
+
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '001_code'))
@@ -17,6 +22,11 @@ def test_research_result_fields():
     assert r.content == "body"
     assert r.rounds_completed == 1
     assert r.contradictions_noted == []
+
+    # default_factory creates an independent list per instance
+    r2 = ResearchResult(content="x", title="y", labels=[], sources=[], rounds_completed=0)
+    assert r2.contradictions_noted == []
+    assert r2.contradictions_noted is not r.contradictions_noted
 
 
 def test_run_research_signature():

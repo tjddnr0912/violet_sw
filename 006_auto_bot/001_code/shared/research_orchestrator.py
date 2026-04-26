@@ -2,8 +2,9 @@
 Multi-round research orchestrator.
 
 Drives Gemini CLI for searching + Claude CLI for evaluation/synthesis
-with a 5-dimension gap-check between rounds. Used by the Telegram bot's
-`/deep` mode to replace single-shot Gemini calls.
+with a 5-dimension gap-check between rounds. Used as the Telegram bot's
+default research path; users can opt out of the multi-round flow with
+the `/quick` command.
 """
 
 from __future__ import annotations
@@ -21,10 +22,10 @@ ProgressCallback = Callable[[str], None]
 class ResearchResult:
     content: str
     title: str
-    labels: list
-    sources: list
+    labels: list[str]
+    sources: list[dict]
     rounds_completed: int
-    contradictions_noted: list = field(default_factory=list)
+    contradictions_noted: list[str] = field(default_factory=list)
 
 
 def run_research(
