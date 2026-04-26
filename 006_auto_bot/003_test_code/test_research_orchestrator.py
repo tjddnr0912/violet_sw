@@ -61,7 +61,7 @@ def test_gemini_round_returns_stdout_on_success():
         ro.subprocess.run = original
 
     assert text == "round 1 output"
-    assert captured["cmd"][0] == "gemini"
+    assert captured["cmd"] == ["gemini", "-p", "hello world prompt"]
     assert captured["timeout"] == 42
 
 
