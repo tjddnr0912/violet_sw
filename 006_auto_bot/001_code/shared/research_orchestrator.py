@@ -10,6 +10,7 @@ the `/quick` command.
 from __future__ import annotations
 
 import logging
+import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -26,6 +27,31 @@ class ResearchResult:
     sources: list[dict]
     rounds_completed: int
     contradictions_noted: list[str] = field(default_factory=list)
+
+
+DEFAULT_GEMINI_TIMEOUT = 600  # 10 min per round
+
+
+class GeminiRoundError(RuntimeError):
+    """Raised when a Gemini CLI round fails (non-zero exit or empty)."""
+
+
+def _run_gemini_round(prompt: str, timeout: int = DEFAULT_GEMINI_TIMEOUT) -> str:
+    """Invoke `gemini -p <prompt>` and return stdout. Raises GeminiRoundError on failure."""
+    result = subprocess.run(
+        ["gemini", "-p", prompt],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise GeminiRoundError(
+            f"gemini exit={result.returncode} stderr={result.stderr.strip()[:300]}"
+        )
+    out = (result.stdout or "").strip()
+    if not out:
+        raise GeminiRoundError(f"gemini returned empty stdout (stderr={result.stderr.strip()[:200]})")
+    return out
 
 
 def run_research(
