@@ -277,7 +277,12 @@ def run_research(
             if c and c not in contradictions:
                 contradictions.append(c)
 
-        if decision.get("verdict") == "pass":
+        verdict = decision.get("verdict")
+        if verdict not in ("pass", "continue"):
+            logger.warning(f"unexpected verdict {verdict!r}, treating as pass")
+            report("평가 결과 비정상 — 종합 작성으로")
+            break
+        if verdict == "pass":
             report("충분 — 종합 작성 단계로")
             break
         targeted = decision.get("next_query")
