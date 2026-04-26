@@ -157,6 +157,16 @@ def _extract_eval_json(raw: str) -> dict:
     return decision
 
 
+def _build_round_n_prompt(original_question: str, targeted_query: str, round_number: int) -> str:
+    return (
+        f"# 후속 조사 — Round {round_number}\n\n"
+        f"## 원래 질문\n{original_question}\n\n"
+        f"## 이번 라운드의 좁힌 질문\n{targeted_query}\n\n"
+        "이전 라운드의 broad sweep을 반복하지 말고, 위 좁힌 질문에만 답하라. "
+        "출처 URL과 날짜를 인용하라. 한국어로 답하되, 1차 자료가 영어면 인용은 영어 그대로."
+    )
+
+
 def run_research(
     question: str,
     max_rounds: int = 3,

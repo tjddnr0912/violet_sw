@@ -213,6 +213,18 @@ def test_extract_eval_json_bare_fallback_regex():
     assert decision["next_query"] == "find primary"
 
 
+def test_round_n_prompt_includes_targeted_query():
+    from shared.research_orchestrator import _build_round_n_prompt
+    p = _build_round_n_prompt(
+        original_question="티스토리 API 종료",
+        targeted_query="공식 공지의 정확한 종료일을 찾아라",
+        round_number=2,
+    )
+    assert "Round 2" in p or "라운드 2" in p
+    assert "공식 공지의 정확한 종료일을 찾아라" in p
+    assert "티스토리 API 종료" in p
+
+
 if __name__ == "__main__":
     test_research_result_fields()
     test_run_research_signature()
@@ -225,4 +237,5 @@ if __name__ == "__main__":
     test_extract_eval_json_no_match_returns_safe_default()
     test_extract_eval_json_invalid_json_returns_safe_default()
     test_extract_eval_json_bare_fallback_regex()
+    test_round_n_prompt_includes_targeted_query()
     print("OK")
