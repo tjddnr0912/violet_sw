@@ -82,6 +82,10 @@ class TelegramGeminiBot(TelegramClient):
         self.upload_to_blog = upload_to_blog
         self.last_update_id = 0
 
+        # Quick-mode opt-out command (deep research is the default)
+        self.quick_command = os.getenv("RESEARCH_QUICK_COMMAND", "/quick")
+        self.research_max_rounds = int(os.getenv("RESEARCH_MAX_ROUNDS", "3"))
+
         # Blog selection feature
         self.blogs = self._load_blog_configs()
         self.default_blog_key = os.getenv("DEFAULT_BLOG", "brave_ogu")
@@ -182,6 +186,45 @@ SOURCES: (출처)
         except Exception as e:
             logger.error(f"Gemini execution error: {str(e)}", exc_info=True)
             return False, f"⚠️ Gemini 실행 오류: {str(e)[:200]}", "", [], []
+
+    def _run_research_stage(
+        self,
+        question: str,
+        message_id: Optional[int],
+        mode: str,
+    ) -> Tuple[bool, str, str, list, list, list]:
+        """
+        Unified research call. Returns the same shape regardless of mode,
+        plus a contradictions list (empty in quick mode).
+
+        Returns: (success, content, title, labels, sources, contradictions)
+        """
+        if mode == "quick":
+            success, content, title, labels, sources = self.run_gemini(question)
+            return success, content, title, labels, sources, []
+
+        # mode == "deep"
+        from shared.research_orchestrator import run_research, ResearchResult
+
+        def progress(msg: str):
+            if message_id:
+                preview = question[:120] + ("…" if len(question) > 120 else "")
+                self.edit_message_text(message_id, f"🔎 {msg}\n질문: {preview}")
+
+        try:
+            result: ResearchResult = run_research(
+                question,
+                max_rounds=self.research_max_rounds,
+                progress_callback=progress,
+            )
+        except Exception as e:
+            logger.error(f"run_research raised: {e}", exc_info=True)
+            return False, f"⚠️ Deep research 오류: {str(e)[:300]}", "", [], [], []
+
+        if result.rounds_completed == 0:
+            return False, result.content, result.title, result.labels, result.sources, []
+
+        return True, result.content, result.title, result.labels, result.sources, result.contradictions_noted
 
     @staticmethod
     def _summarize_gemini_error(stderr: str) -> str:
@@ -318,24 +361,34 @@ SOURCES: (출처)
             logger.warning(f"Unauthorized chat_id: {chat.get('id')}")
             return
 
-        # Handle commands
-        if text.startswith("/"):
+        # Slash commands like /start, /help, /status — but NOT the quick-mode command
+        if text.startswith("/") and not self._is_quick_command(text):
             self._handle_command(text)
             return
 
         if not text:
             return
 
-        logger.info(f"Question received (length: {len(text)}): {text[:100]}{'...' if len(text) > 100 else ''}")
-
-        # If multiple blogs configured, show selection UI first (before Gemini processing)
-        if len(self.blogs) > 1 and self.upload_to_blog:
-            self._show_blog_selection_first(question=text)
+        # Mode classification: /quick = legacy single-shot; everything else = deep research
+        if self._is_quick_command(text):
+            question = self._strip_quick_prefix(text)
+            if not question:
+                self.send_message(f"Usage: {self.quick_command} <질문>")
+                return
+            mode = "quick"
         else:
-            # Single blog mode - process and upload directly
-            self._process_and_upload_single(question=text)
+            question = text
+            mode = "deep"
 
-    def _show_blog_selection_first(self, question: str) -> None:
+        logger.info(f"Question received (mode={mode}, length={len(question)}): {question[:100]}{'...' if len(question) > 100 else ''}")
+
+        # Multi-blog → show selection first; single-blog → process directly
+        if len(self.blogs) > 1 and self.upload_to_blog:
+            self._show_blog_selection_first(question=question, mode=mode)
+        else:
+            self._process_and_upload_single(question=question, mode=mode)
+
+    def _show_blog_selection_first(self, question: str, mode: str = "deep") -> None:
         """Show blog selection UI immediately after receiving question"""
         # Build inline keyboard (exclude default blog from selection)
         keyboard = []
@@ -364,7 +417,8 @@ SOURCES: (출처)
         timeout_min = self.selection_timeout // 60
         default_blog_name = self.blogs.get(self.default_blog_key, {}).get("name", "Default")
 
-        msg_text = f"""<b>Question received!</b>
+        mode_label = "🔎 Deep research" if mode == "deep" else "⚡ Quick"
+        msg_text = f"""<b>Question received! ({mode_label})</b>
 
 <b>Question:</b>
 {question_preview}
@@ -380,66 +434,69 @@ SOURCES: (출처)
 
         if result.get("success"):
             message_id = result["message_id"]
-            # Store pending with question only (Gemini processing happens after selection)
+            # Store pending with question only (research happens after selection)
             self.pending_uploads[message_id] = {
                 "question": question,
+                "mode": mode,
                 "created_at": time.time()
             }
-            logger.info(f"Blog selection pending (msg_id: {message_id}, timeout: {timeout_min}min)")
+            logger.info(f"Blog selection pending (msg_id: {message_id}, mode: {mode}, timeout: {timeout_min}min)")
         else:
             # Fallback to default processing if keyboard send fails
             logger.warning("Failed to send selection UI, processing with default only")
-            self._process_and_upload_single(question=question)
+            self._process_and_upload_single(question=question, mode=mode)
 
-    def _process_and_upload_single(self, question: str, message_id: Optional[int] = None) -> None:
-        """Process question and upload to default blog only (single blog mode)"""
-        # Update status
+    def _process_and_upload_single(
+        self,
+        question: str,
+        message_id: Optional[int] = None,
+        mode: str = "deep",
+    ) -> None:
+        """Process question and upload to default blog only (single-blog mode)."""
+        opening = "🔎 Deep research 시작…" if mode == "deep" else "⚡ Asking Gemini…"
         if message_id:
-            self.edit_message_text(message_id, "Processing: Asking Gemini...")
+            self.edit_message_text(message_id, opening)
         else:
-            self.send_message("Processing: Asking Gemini...")
+            init = self.send_message(opening)
+            if isinstance(init, dict):
+                message_id = init.get("message_id")
 
-        # Run Gemini
-        success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(question)
+        success, content, title_hint, labels, sources, contradictions = \
+            self._run_research_stage(question, message_id, mode)
 
         if not success:
-            error_msg = gemini_content[:4000]
+            err = content[:4000]
             if message_id:
-                self.edit_message_text(message_id, error_msg)
+                self.edit_message_text(message_id, err)
             else:
-                self.send_message(error_msg)
+                self.send_message(err)
             return
 
-        # Update status
         if message_id:
-            self.edit_message_text(message_id, "Processing: Claude HTML conversion...")
+            self.edit_message_text(message_id, "Claude HTML 생성 중…")
 
-        # Prepare content
-        sources_section = self._format_sources_section(gemini_sources)
-        full_md_content = gemini_content + sources_section
+        sources_section = self._format_sources_section(sources)
+        full_md_content = content + sources_section
+        if contradictions:
+            full_md_content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
 
-        # Convert to HTML
         html_content = None
         claude_title = ""
         try:
             from shared.claude_html_converter import convert_md_to_html_via_claude
             html_content, claude_title = convert_md_to_html_via_claude(full_md_content)
         except Exception as e:
-            logger.warning(f"Claude CLI failed: {e}")
+            logger.warning(f"Claude HTML failed: {e}")
 
-        # Claude 제목이 있으면 Gemini 제목 대체
-        final_title = claude_title if claude_title else gemini_title
-        if claude_title:
-            logger.info(f"Using Claude title: {claude_title} (Gemini was: {gemini_title})")
+        final_title = claude_title or title_hint
 
-        # Upload to default only
         self._upload_default_only(
             md_content=full_md_content,
             html_content=html_content,
             title=final_title,
-            labels=gemini_labels,
-            sources=gemini_sources,
-            message_id=message_id
+            labels=labels,
+            sources=sources,
+            message_id=message_id,
         )
 
     def _handle_callback_query(self, callback_query: dict) -> None:
@@ -468,65 +525,62 @@ SOURCES: (출처)
             return
 
         pending = self.pending_uploads.pop(message_id)
-
-        # Acknowledge button click
         self.answer_callback_query(callback_id, "Processing started...")
-
-        # Now process the question (Gemini + Claude + Upload)
         self._process_after_selection(
             question=pending["question"],
             blog_key=blog_key,
-            message_id=message_id
+            message_id=message_id,
+            mode=pending.get("mode", "deep"),
         )
 
     def _process_after_selection(
         self,
         question: str,
         blog_key: str,
-        message_id: int
+        message_id: int,
+        mode: str = "deep",
     ) -> None:
-        """Process question after blog selection (Gemini → Claude → Upload)"""
-        # Step 1: Gemini
-        self.edit_message_text(message_id, "Processing: Asking Gemini...")
-        logger.info(f"Processing question after selection (blog: {blog_key})")
+        """Process question after blog selection (research → Claude HTML → Upload)."""
+        opening = "🔎 Deep research 시작…" if mode == "deep" else "⚡ Asking Gemini…"
+        self.edit_message_text(message_id, opening)
+        logger.info(f"Processing after selection (blog={blog_key}, mode={mode})")
 
-        success, gemini_content, gemini_title, gemini_labels, gemini_sources = self.run_gemini(question)
+        success, content, title_hint, labels, sources, contradictions = \
+            self._run_research_stage(question, message_id, mode)
 
         if not success:
-            self.edit_message_text(message_id, gemini_content[:4000])
+            self.edit_message_text(message_id, content[:4000])
             return
 
-        # Step 2: Claude HTML conversion
-        self.edit_message_text(message_id, "Processing: Claude에서 HTML을 생성 중...")
+        # Sources + optional contradictions section
+        sources_section = self._format_sources_section(sources)
+        full_md_content = content + sources_section
+        if contradictions:
+            full_md_content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
 
-        sources_section = self._format_sources_section(gemini_sources)
-        full_md_content = gemini_content + sources_section
-
+        # Claude HTML conversion
+        self.edit_message_text(message_id, "Claude HTML 생성 중…")
         html_content = None
         claude_title = ""
         try:
             from shared.claude_html_converter import convert_md_to_html_via_claude
             html_content, claude_title = convert_md_to_html_via_claude(full_md_content)
-            logger.info(f"Claude HTML conversion complete ({len(html_content)} chars)")
+            logger.info(f"Claude HTML done ({len(html_content)} chars)")
         except Exception as e:
-            logger.warning(f"Claude CLI failed: {e}")
+            logger.warning(f"Claude HTML failed: {e}")
 
-        # Claude 제목이 있으면 Gemini 제목 대체
-        final_title = claude_title if claude_title else gemini_title
-        if claude_title:
-            logger.info(f"Using Claude title: {claude_title} (Gemini was: {gemini_title})")
+        final_title = claude_title or title_hint
 
-        # Step 3: Upload
-        self.edit_message_text(message_id, "Processing: Uploading to blog...")
-
+        # Upload
+        self.edit_message_text(message_id, "Uploading to blog…")
         if blog_key == "default_only":
             self._upload_default_only(
                 md_content=full_md_content,
                 html_content=html_content,
                 title=final_title,
-                labels=gemini_labels,
-                sources=gemini_sources,
-                message_id=message_id
+                labels=labels,
+                sources=sources,
+                message_id=message_id,
             )
         else:
             self._upload_dual(
@@ -534,9 +588,9 @@ SOURCES: (출처)
                 md_content=full_md_content,
                 html_content=html_content,
                 title=final_title,
-                labels=gemini_labels,
-                sources=gemini_sources,
-                message_id=message_id
+                labels=labels,
+                sources=sources,
+                message_id=message_id,
             )
 
     def _check_pending_timeouts(self) -> None:
@@ -551,13 +605,13 @@ SOURCES: (출처)
 
         for message_id in expired_ids:
             pending = self.pending_uploads.pop(message_id)
-            logger.info(f"Selection timeout, processing with default only (msg_id: {message_id})")
+            logger.info(f"Selection timeout, processing with default only (msg_id: {message_id}, mode: {pending.get('mode', 'deep')})")
 
-            # Process with default_only (question based)
             self._process_after_selection(
                 question=pending["question"],
                 blog_key="default_only",
-                message_id=message_id
+                message_id=message_id,
+                mode=pending.get("mode", "deep"),
             )
 
     def _upload_default_only(
@@ -786,6 +840,12 @@ Examples:
 
         else:
             self.send_message(f"Unknown command: {cmd}")
+
+    def _is_quick_command(self, text: str) -> bool:
+        return text.startswith(self.quick_command + " ") or text.strip() == self.quick_command
+
+    def _strip_quick_prefix(self, text: str) -> str:
+        return text[len(self.quick_command):].strip()
 
     def run(self) -> None:
         """Bot main loop"""
