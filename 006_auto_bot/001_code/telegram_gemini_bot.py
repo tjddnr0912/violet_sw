@@ -84,7 +84,12 @@ class TelegramGeminiBot(TelegramClient):
 
         # Quick-mode opt-out command (deep research is the default)
         self.quick_command = os.getenv("RESEARCH_QUICK_COMMAND", "/quick")
-        self.research_max_rounds = int(os.getenv("RESEARCH_MAX_ROUNDS", "3"))
+        raw_rounds = os.getenv("RESEARCH_MAX_ROUNDS", "3")
+        try:
+            self.research_max_rounds = max(1, min(4, int(raw_rounds)))
+        except ValueError:
+            logger.warning(f"Invalid RESEARCH_MAX_ROUNDS={raw_rounds!r}, defaulting to 3")
+            self.research_max_rounds = 3
 
         # Blog selection feature
         self.blogs = self._load_blog_configs()
@@ -152,9 +157,9 @@ LABELS: (키워드 2-3개)
 SOURCES: (출처)
 """
 
-            # Run gemini CLI
+            # Run gemini CLI (-p forces non-interactive mode, consistent with deep-mode wrapper)
             result = subprocess.run(
-                ["gemini", prompt],
+                ["gemini", "-p", prompt],
                 capture_output=True,
                 text=True,
                 timeout=900  # 15 minute timeout
