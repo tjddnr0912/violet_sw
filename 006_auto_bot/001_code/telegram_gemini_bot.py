@@ -819,19 +819,22 @@ Enter a question and:
 /status - Status check""")
 
         elif cmd == "/help":
-            self.send_message("""<b>Usage:</b>
-Just type your question!
+            self.send_message(f"""<b>Usage</b>
+- 기본 (Deep research): 그냥 메시지 입력 → 다라운드 Gemini + Claude 검증 (~1~5min)
+- 빠른 답변 (Quick): <code>{self.quick_command} 질문</code> → 단발 Gemini (~30s, quota 절약)
 
 Examples:
-- What is list comprehension in Python?
-- Explain blockchain technology
-- Difference between React and Vue""")
+- 티스토리 API 종료 이후 자동 포스팅 현황    ← Deep 모드 (기본)
+- {self.quick_command} What is list comprehension in Python?    ← Quick 모드""")
 
         elif cmd == "/status":
             upload_status = "Enabled" if self.upload_to_blog else "Test mode"
             blogs_list = "\n".join([f"  - {k}: {v['name']}" for k, v in self.blogs.items()])
             pending_count = len(self.pending_uploads)
             self.send_message(f"""<b>Bot Status</b>
+- Default mode: Deep research (multi-round)
+- Quick opt-out: {self.quick_command}
+- Deep max rounds: {self.research_max_rounds}
 - Blog upload: {upload_status}
 - Blogs configured: {len(self.blogs)}
 {blogs_list}
