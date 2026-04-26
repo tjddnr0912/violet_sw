@@ -145,8 +145,14 @@ def test_evaluate_round_parses_continue_with_query():
         stdout = fake_json
         stderr = ""
 
+    captured = {}
+
+    def fake_run(cmd, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        return FakeCompleted()
+
     original = ro.subprocess.run
-    ro.subprocess.run = lambda *a, **kw: FakeCompleted()
+    ro.subprocess.run = fake_run
     try:
         decision = ro._evaluate_round(question="q", accumulated_rounds=[("R1", "x")])
     finally:
@@ -154,6 +160,57 @@ def test_evaluate_round_parses_continue_with_query():
 
     assert decision["verdict"] == "continue"
     assert decision["next_query"] == "Find primary source for X"
+    # cmd argv contract: ["claude", "-p", <prompt>]
+    assert captured["cmd"][0] == "claude"
+    assert captured["cmd"][1] == "-p"
+    assert "5차원" in captured["cmd"][2]
+
+
+def test_evaluate_round_returns_safe_default_on_nonzero_exit():
+    from shared import research_orchestrator as ro
+
+    class FakeCompleted:
+        returncode = 1
+        stdout = ""
+        stderr = "auth error"
+
+    original = ro.subprocess.run
+    ro.subprocess.run = lambda *a, **kw: FakeCompleted()
+    try:
+        decision = ro._evaluate_round(question="q", accumulated_rounds=[("R1", "x")])
+    finally:
+        ro.subprocess.run = original
+
+    assert decision["verdict"] == "pass"
+    assert decision["missing_dimensions"] == []
+    assert decision["next_query"] is None
+    assert decision["contradictions"] == []
+
+
+def test_extract_eval_json_no_match_returns_safe_default():
+    from shared.research_orchestrator import _extract_eval_json
+    decision = _extract_eval_json("Claude returned a casual paragraph with no JSON at all.")
+    assert decision["verdict"] == "pass"
+    assert decision["next_query"] is None
+
+
+def test_extract_eval_json_invalid_json_returns_safe_default():
+    from shared.research_orchestrator import _extract_eval_json
+    bad = '''```json
+{"verdict": "continue", "missing_dimensions": [unclosed
+```'''
+    decision = _extract_eval_json(bad)
+    assert decision["verdict"] == "pass"
+    assert decision["missing_dimensions"] == []
+
+
+def test_extract_eval_json_bare_fallback_regex():
+    from shared.research_orchestrator import _extract_eval_json
+    # No fenced block at all — bare regex must catch it
+    bare = 'Sure, here it is: {"verdict": "continue", "missing_dimensions": ["근거"], "next_query": "find primary", "contradictions": []} thanks!'
+    decision = _extract_eval_json(bare)
+    assert decision["verdict"] == "continue"
+    assert decision["next_query"] == "find primary"
 
 
 if __name__ == "__main__":
@@ -164,4 +221,8 @@ if __name__ == "__main__":
     test_round1_prompt_includes_question_and_skill()
     test_evaluate_round_parses_pass_decision()
     test_evaluate_round_parses_continue_with_query()
+    test_evaluate_round_returns_safe_default_on_nonzero_exit()
+    test_extract_eval_json_no_match_returns_safe_default()
+    test_extract_eval_json_invalid_json_returns_safe_default()
+    test_extract_eval_json_bare_fallback_regex()
     print("OK")
