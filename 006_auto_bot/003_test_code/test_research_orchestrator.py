@@ -97,10 +97,71 @@ def test_round1_prompt_includes_question_and_skill():
     assert "SOURCES:" in p
 
 
+def test_evaluate_round_parses_pass_decision():
+    from shared import research_orchestrator as ro
+
+    fake_json = '''
+    Some preamble.
+    ```json
+    {
+      "verdict": "pass",
+      "missing_dimensions": [],
+      "next_query": null,
+      "contradictions": ["A claims X, B claims Y"]
+    }
+    ```
+    trailing noise.
+    '''
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = fake_json
+        stderr = ""
+
+    original = ro.subprocess.run
+    ro.subprocess.run = lambda *a, **kw: FakeCompleted()
+    try:
+        decision = ro._evaluate_round(
+            question="q",
+            accumulated_rounds=[("Round 1", "content...")],
+        )
+    finally:
+        ro.subprocess.run = original
+
+    assert decision["verdict"] == "pass"
+    assert decision["missing_dimensions"] == []
+    assert decision["contradictions"] == ["A claims X, B claims Y"]
+
+
+def test_evaluate_round_parses_continue_with_query():
+    from shared import research_orchestrator as ro
+
+    fake_json = '''```json
+{"verdict": "continue", "missing_dimensions": ["evidence"], "next_query": "Find primary source for X", "contradictions": []}
+```'''
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = fake_json
+        stderr = ""
+
+    original = ro.subprocess.run
+    ro.subprocess.run = lambda *a, **kw: FakeCompleted()
+    try:
+        decision = ro._evaluate_round(question="q", accumulated_rounds=[("R1", "x")])
+    finally:
+        ro.subprocess.run = original
+
+    assert decision["verdict"] == "continue"
+    assert decision["next_query"] == "Find primary source for X"
+
+
 if __name__ == "__main__":
     test_research_result_fields()
     test_run_research_signature()
     test_gemini_round_returns_stdout_on_success()
     test_gemini_round_raises_on_failure()
     test_round1_prompt_includes_question_and_skill()
+    test_evaluate_round_parses_pass_decision()
+    test_evaluate_round_parses_continue_with_query()
     print("OK")

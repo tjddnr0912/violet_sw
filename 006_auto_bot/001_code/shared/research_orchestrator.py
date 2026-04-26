@@ -9,6 +9,7 @@ the `/quick` command.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -80,6 +81,80 @@ SOURCES: (출처)
 def _build_round1_prompt(question: str) -> str:
     skill = _load_skill_body(QA_SKILL_FILE)
     return f"{skill}\n\n# 질문\n\n{question}\n{_METADATA_TRAILER}"
+
+
+DEFAULT_CLAUDE_TIMEOUT = 240
+
+_EVAL_PROMPT_TEMPLATE = """다음은 사용자 질문과 그에 대한 다라운드 조사 결과다.
+5차원 체크리스트로 평가하고 JSON으로만 답하라.
+
+질문:
+{question}
+
+누적 조사 결과:
+{rounds_dump}
+
+차원:
+1. 정의 — 주제와 핵심 용어가 명확한가
+2. 현황 — 수치/날짜/주체가 있는 구체 사실 3개 이상 있는가
+3. 근거 — 신뢰할 만한 1차/주류 출처 2개 이상 있는가
+4. 반론 — 한계·반대 시각·리스크가 1개 이상 다뤄졌는가
+5. 적용 — 사용자에게 의미 있는 함의가 있는가
+
+JSON 스키마(반드시 이 키들만):
+{{
+  "verdict": "pass" | "continue",
+  "missing_dimensions": ["정의" | "현황" | "근거" | "반론" | "적용", ...],
+  "next_query": "다음 라운드에 Gemini로 던질 한국어 또는 영어 검색 query (continue일 때만, 아니면 null)",
+  "contradictions": ["라운드 간 충돌이 보이면 한 줄씩, 없으면 빈 배열"]
+}}
+
+설명 없이 ```json 코드블록만 출력하라."""
+
+
+def _evaluate_round(
+    question: str,
+    accumulated_rounds: list,
+    timeout: int = DEFAULT_CLAUDE_TIMEOUT,
+) -> dict:
+    rounds_dump = "\n\n".join(
+        f"=== {label} ===\n{body}" for label, body in accumulated_rounds
+    )
+    prompt = _EVAL_PROMPT_TEMPLATE.format(
+        question=question, rounds_dump=rounds_dump
+    )
+
+    result = subprocess.run(
+        ["claude", "-p", prompt],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        logger.warning(f"claude eval exit={result.returncode}: {result.stderr[:300]}")
+        return {"verdict": "pass", "missing_dimensions": [], "next_query": None, "contradictions": []}
+
+    return _extract_eval_json(result.stdout)
+
+
+def _extract_eval_json(raw: str) -> dict:
+    m = re.search(r'```json\s*(\{.*?\})\s*```', raw, re.DOTALL)
+    if not m:
+        m = re.search(r'(\{[^{}]*"verdict"[^{}]*\})', raw, re.DOTALL)
+    if not m:
+        logger.warning("no JSON found in claude eval output, defaulting to pass")
+        return {"verdict": "pass", "missing_dimensions": [], "next_query": None, "contradictions": []}
+    try:
+        decision = json.loads(m.group(1))
+    except json.JSONDecodeError as e:
+        logger.warning(f"json parse failed: {e}; defaulting to pass")
+        return {"verdict": "pass", "missing_dimensions": [], "next_query": None, "contradictions": []}
+
+    decision.setdefault("verdict", "pass")
+    decision.setdefault("missing_dimensions", [])
+    decision.setdefault("next_query", None)
+    decision.setdefault("contradictions", [])
+    return decision
 
 
 def run_research(
