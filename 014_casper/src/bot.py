@@ -536,10 +536,13 @@ class CasperBot:
                         "Capital sync failed — skipping today"
                     )
                     return
-            # Size against the limit price (price * (1 + buy_slippage)) so KIS
-            # doesn't reject for "주문가능금액 초과" when the order layer adds slippage.
+            # Size against the all-in cost-per-share that KIS validates against:
+            # limit price (price * (1 + buy_slippage)) plus entry-side commission.
+            # Without this, "주문가능금액 초과" rejects when capital sits at a
+            # 1-share boundary.
             buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.005)
-            eff_price = price * (1 + buy_slip)
+            comm_rate = self.params.get("commission", {}).get("rate_per_side", 0.0009)
+            eff_price = price * (1 + buy_slip + comm_rate)
             shares = int(self.capital / eff_price) if eff_price > 0 else 0
             # Apply position size cap
             risk_params = self.params.get("risk", {})
@@ -564,6 +567,12 @@ class CasperBot:
                 return
             order_no = order_result.get("order_no", "")
             logger.info(f"BUY ORDER OK: #{order_no}")
+            # Persist position state immediately after order is accepted by KIS,
+            # before the (slow) fill-price polling. If the process crashes
+            # during polling, restart can recover the position via state file
+            # rather than orphaning the broker-side holding.
+            self._pending_buy_order_no = order_no
+            self._save_position_state()
 
             # Query actual fill price and update position entry
             if self.kis_client and order_no:
@@ -572,8 +581,8 @@ class CasperBot:
                 )
                 if fill_price:
                     self._apply_fill_price(fill_price)
+                    self._pending_buy_order_no = None
                 else:
-                    self._pending_buy_order_no = order_no
                     logger.info(f"Fill price pending — will retry in POSITION_OPEN loop")
 
         self.notifier.notify_entry(
@@ -686,23 +695,33 @@ class CasperBot:
             order_no = sell_result.get("order_no", "")
             logger.info(f"SELL ORDER OK: #{order_no}")
 
-            # Check for partial fill — retry if shares remain
-            if self.kis_client:
-                time.sleep(2)  # Allow settlement
-                holdings = self.kis_client.get_us_holdings()
-                if holdings is not None:
-                    remaining = next(
-                        (h for h in holdings if h["symbol"] == self.position.symbol),
-                        None,
+            # Check for partial fill via order_no, not holdings polling — the
+            # holdings endpoint lags KIS settlement by seconds and can return
+            # the pre-fill quantity, causing a duplicate retry sell.
+            if self.kis_client and order_no:
+                time.sleep(2)  # Allow KIS to record execution
+                executions = self.kis_client.get_us_today_executions(
+                    self.position.symbol
+                )
+                filled_qty = sum(
+                    e.get("fill_qty", 0)
+                    for e in executions
+                    if e.get("order_no") == order_no
+                )
+                remaining_qty = self.position.shares - filled_qty
+                if filled_qty > 0 and remaining_qty > 0:
+                    logger.warning(
+                        f"PARTIAL FILL: order #{order_no} filled "
+                        f"{filled_qty}/{self.position.shares} — retrying {remaining_qty}"
                     )
-                    if remaining and remaining["qty"] > 0:
-                        logger.warning(
-                            f"PARTIAL FILL: {remaining['qty']} shares remaining — "
-                            f"retrying sell"
-                        )
-                        self.kis_order.sell_market(
-                            self.position.symbol, remaining["qty"]
-                        )
+                    self.kis_order.sell_market(
+                        self.position.symbol, remaining_qty
+                    )
+                elif filled_qty == 0:
+                    logger.warning(
+                        f"NO FILL DETECTED for #{order_no} after 2s — "
+                        f"skipping retry to avoid duplicate sell; reconcile will adjust"
+                    )
 
             # Query actual fill price from broker
             if self.kis_client and order_no:

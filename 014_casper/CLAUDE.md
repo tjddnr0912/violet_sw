@@ -120,16 +120,27 @@ done < .env
 
 `bot.py` 사이징과 `kis_order.py` 매수 limit price가 같은 가격을 써야 한다. 사이징이 `int(capital/price)`인데 주문은 `price * (1 + buy_slippage_pct)`로 나가면 **자본을 buy_slippage만큼(현 설정 1%) 초과**해서 KIS가 `주문가능금액 초과`로 거부한다. signal은 정상 발사돼도 **그날 거래 0**.
 
-**해결**: 사이징도 limit price 기준으로:
+**해결**: 사이징도 KIS가 검증하는 all-in cost-per-share 기준으로 (slippage + entry-side commission):
 ```python
 buy_slip = self.params["order"]["buy_slippage_pct"]
-eff_price = price * (1 + buy_slip)
+comm_rate = self.params["commission"]["rate_per_side"]
+eff_price = price * (1 + buy_slip + comm_rate)
 shares = int(self.capital / eff_price)
 ```
++ `risk.max_position_pct: 1.0 → 0.99` (FX/정산 lag 흡수용 안전 floor 1%).
 
-백테스트 영향: 25거래 중 2거래에서 주식 1주 감소, 60일 누적 자본 차이 0.04%. 실거래 거부는 제거.
+백테스트 영향: 25거래 중 2거래에서 1주 감소, 60일 누적 자본 차이 0.04%. 실거래 거부 제거.
 
-**사례**: 2026-04-29 TQQQ signal $61.01 → 사이징 51주 → 주문 51 × $61.66 = $3144 > 자본 $3128.22 → 거부 → DONE_TODAY. 같은 패턴은 자본이 `int(capital/price)` 결과가 1주 단위로 빡빡한 모든 날 재발한다.
+**사례**: 2026-04-29 TQQQ signal $61.01 → 사이징 51주 → 주문 51 × $61.66 = $3144 > 자본 $3128.22 → 거부 → DONE_TODAY. 같은 패턴은 자본이 1주 단위로 빡빡한 모든 날 재발한다.
+
+## 추가 KIS 거부·orphan 시나리오 (2026-04-30 다중 관점 감사)
+
+같은 "우리 view ≠ KIS view" 패턴으로 재발 가능한 케이스들. 모두 패치 완료. 코드 수정 시 동일 패턴 도입 금지.
+
+- **매도 limit 너무 타이트(`sell_slippage_pct=0.01`) → SL/TP 미체결**: market × 0.99 limit이 급락장에서 bid 아래로 떨어져 미체결. 16:00 KIS day-order 만료 → 다음날 강제청산. **3%로 확대** (`0.01 → 0.03`). 매수와 달리 매도는 fill 보장이 우선이라 buffer 넓게.
+- **매수 성공 직후 fill polling 중 크래시 → orphan 포지션**: `buy_market`은 성공했는데 `get_us_filled_price`가 5회 × 2s polling 도중 SIGKILL/OOM 시 `position_state.json` 미작성. KIS는 51주 보유, 봇은 재기동 후 포지션 인지 못함 → SL 모니터링 부재. **해결**: 주문 성공 즉시 `_save_position_state()` 호출 (fill price 갱신은 사후 처리, `_apply_fill_price`가 다시 저장).
+- **부분체결 재매도 시 holdings 폴링 lag → 더블 매도**: 첫 매도 후 `time.sleep(2)` + `get_us_holdings`는 KIS 정산 lag로 pre-fill quantity 그대로 리포트 → 잔량 또 매도. **해결**: `get_us_today_executions(order_no)`로 그 주문의 실제 체결량(`fill_qty`) 합산 후 `remaining = ordered - filled`만 재매도. 체결 0이면 retry skip하고 reconcile에 위임.
+- **Token backoff 중 stale/empty 토큰 silent 사용**: `auth.token` property가 만료 토큰을 그대로 반환 → KIS 401 cascade를 매번 다른 endpoint에서 재현 → 진단 시간 허비. **해결**: backoff 활성 + 유효 토큰 없을 시 빈 문자열 반환 + `logger.critical`로 backoff 잔여시간 명시.
 
 ## 테스트 격리 원칙
 

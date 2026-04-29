@@ -38,7 +38,13 @@ class KISAuth:
 
     @property
     def token(self) -> str:
-        """Get valid access token, refreshing if needed."""
+        """Get valid access token, refreshing if needed.
+
+        When refresh is gated by backoff and no valid cached token remains,
+        return an empty string and log CRITICAL so the operator sees the
+        cascade root cause rather than a stream of opaque KIS 401s. KIS
+        rejects empty Bearer headers cleanly, so the cascade fails fast.
+        """
         if self._token and time.time() < self._token_expires - 60:
             return self._token
 
@@ -51,9 +57,20 @@ class KISAuth:
                 logger.debug("KIS Auth: Using cached token")
                 return self._token
 
-        # Request new token
+        # Request new token (may be gated by backoff)
         self._request_new_token()
-        return self._token or ""
+
+        # Verify we have a valid token after the refresh attempt; if not
+        # (backoff blocked the request), surface the failure explicitly.
+        if not self._token or time.time() >= self._token_expires - 60:
+            if self._next_retry_at > time.time():
+                wait = self._next_retry_at - time.time()
+                logger.critical(
+                    f"KIS Auth: No valid token; in backoff for {wait:.0f}s. "
+                    f"All KIS API calls will fail until backoff clears."
+                )
+            return ""
+        return self._token
 
     @property
     def headers(self) -> dict:

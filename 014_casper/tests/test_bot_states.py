@@ -324,6 +324,12 @@ class TestPositionStatePersistence:
 
 class TestPartialFill:
     def test_partial_fill_retries_sell(self, tmp_path):
+        """Partial fill detected via executions endpoint filtered by order_no.
+
+        Holdings polling has settlement lag and was replaced by querying
+        get_us_today_executions for the specific order_no, then computing
+        remaining = ordered - filled.
+        """
         bot = _make_bot(tmp_path=tmp_path)
         signal = _make_signal()
         bot.position = create_position(signal, 10, 0.0009, "09:50")
@@ -335,11 +341,12 @@ class TestPartialFill:
         bot.kis_order = mock_order
 
         mock_client = MagicMock()
-        mock_client.get_us_holdings.return_value = [
-            {"symbol": "TQQQ", "qty": 3, "avg_price": 54.0}
+        # Order S001 partially filled: 7/10 shares — retry should send 3
+        mock_client.get_us_today_executions.return_value = [
+            {"order_no": "S001", "side": "sell", "fill_qty": 7,
+             "fill_price": 55.0, "fill_amount": 385.0},
         ]
         mock_client.get_us_filled_price.return_value = None
-        mock_client.get_us_today_executions.return_value = []
         bot.kis_client = mock_client
 
         with patch("src.bot.load_trades", return_value=[]):
@@ -350,6 +357,7 @@ class TestPartialFill:
         assert retry_call[0] == ("TQQQ", 3)
 
     def test_full_fill_no_retry(self, tmp_path):
+        """Full fill: executions sum to ordered qty → no retry."""
         bot = _make_bot(tmp_path=tmp_path)
         signal = _make_signal()
         bot.position = create_position(signal, 10, 0.0009, "09:50")
@@ -360,14 +368,39 @@ class TestPartialFill:
         bot.kis_order = mock_order
 
         mock_client = MagicMock()
-        mock_client.get_us_holdings.return_value = []
+        mock_client.get_us_today_executions.return_value = [
+            {"order_no": "S002", "side": "sell", "fill_qty": 10,
+             "fill_price": 55.0, "fill_amount": 550.0},
+        ]
         mock_client.get_us_filled_price.return_value = None
-        mock_client.get_us_today_executions.return_value = []
         bot.kis_client = mock_client
 
         with patch("src.bot.load_trades", return_value=[]):
             bot._close_and_record(55.0, "take_profit")
 
+        assert mock_order.sell_market.call_count == 1
+
+    def test_no_fill_skips_retry(self, tmp_path):
+        """No execution recorded yet (settlement lag) → skip retry to avoid duplicate."""
+        bot = _make_bot(tmp_path=tmp_path)
+        signal = _make_signal()
+        bot.position = create_position(signal, 10, 0.0009, "09:50")
+        bot.capital = 1000.0
+
+        mock_order = MagicMock()
+        mock_order.sell_market.return_value = {"order_no": "S003"}
+        bot.kis_order = mock_order
+
+        mock_client = MagicMock()
+        # Executions endpoint hasn't recorded the fill yet — empty list
+        mock_client.get_us_today_executions.return_value = []
+        mock_client.get_us_filled_price.return_value = None
+        bot.kis_client = mock_client
+
+        with patch("src.bot.load_trades", return_value=[]):
+            bot._close_and_record(55.0, "take_profit")
+
+        # No retry — reconcile path will correct broker-side mismatch later
         assert mock_order.sell_market.call_count == 1
 
 

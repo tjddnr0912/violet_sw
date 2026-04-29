@@ -30,13 +30,13 @@
         "max_weekly_loss_pct": 3.0,
         "max_trades_per_day": 1,
         "max_shares": 200,
-        "max_position_pct": 1.0
+        "max_position_pct": 0.99
     },
     "commission": {
         "rate_per_side": 0.0009
     },
     "order": {
         "buy_slippage_pct": 0.01,
-        "sell_slippage_pct": 0.01
+        "sell_slippage_pct": 0.03
     }
 }
