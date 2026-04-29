@@ -536,12 +536,16 @@ class CasperBot:
                         "Capital sync failed — skipping today"
                     )
                     return
-            shares = int(self.capital / price) if price > 0 else 0
+            # Size against the limit price (price * (1 + buy_slippage)) so KIS
+            # doesn't reject for "주문가능금액 초과" when the order layer adds slippage.
+            buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.005)
+            eff_price = price * (1 + buy_slip)
+            shares = int(self.capital / eff_price) if eff_price > 0 else 0
             # Apply position size cap
             risk_params = self.params.get("risk", {})
             max_shares = risk_params.get("max_shares", 200)
             max_pct = risk_params.get("max_position_pct", 1.0)
-            max_by_pct = int(self.capital * max_pct / price) if price > 0 else 0
+            max_by_pct = int(self.capital * max_pct / eff_price) if eff_price > 0 else 0
             shares = min(shares, max_shares, max_by_pct)
             if shares < 1:
                 self._transition(BotState.DONE_TODAY, "Insufficient capital for 1 share")

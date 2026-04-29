@@ -116,6 +116,21 @@ done < .env
 
 **사례**: 2026-04-14 세션 — 모든 KIS 호출(HHDFS00000300, CTRP6504R 등)이 500 반환. 수동 python-dotenv 경로는 200. 차이의 유일한 원인이 `IFS='=' read`의 trailing-byte 누락이었다. 같은 증상 보이면 제일 먼저 `echo "SEC_LEN=${#KIS_APP_SECRET}"`로 bash export된 secret 길이와 `.env` 파일의 원본 길이 비교할 것.
 
+## 포지션 사이징 vs limit price 함정
+
+`bot.py` 사이징과 `kis_order.py` 매수 limit price가 같은 가격을 써야 한다. 사이징이 `int(capital/price)`인데 주문은 `price * (1 + buy_slippage_pct)`로 나가면 **자본을 buy_slippage만큼(현 설정 1%) 초과**해서 KIS가 `주문가능금액 초과`로 거부한다. signal은 정상 발사돼도 **그날 거래 0**.
+
+**해결**: 사이징도 limit price 기준으로:
+```python
+buy_slip = self.params["order"]["buy_slippage_pct"]
+eff_price = price * (1 + buy_slip)
+shares = int(self.capital / eff_price)
+```
+
+백테스트 영향: 25거래 중 2거래에서 주식 1주 감소, 60일 누적 자본 차이 0.04%. 실거래 거부는 제거.
+
+**사례**: 2026-04-29 TQQQ signal $61.01 → 사이징 51주 → 주문 51 × $61.66 = $3144 > 자본 $3128.22 → 거부 → DONE_TODAY. 같은 패턴은 자본이 `int(capital/price)` 결과가 1주 단위로 빡빡한 모든 날 재발한다.
+
 ## 테스트 격리 원칙
 
 테스트가 production 데이터 파일(`data/trades/trades_YYYY.json`, `data/position_state.json`)에 쓰면 **누적 통계·서킷브레이커 기준이 오염**되어 실거래 판단에 영향. `tests/conftest.py`의 격리 fixture는 **반드시 `autouse=True`**여야 함. opt-in fixture는 Bot lifecycle 테스트가 내부적으로 `save_trade`를 호출하는 경로에서 조용히 누수됨. 검증 루프: 테스트 실행 전후 `md5 data/trades/trades_2026.json` 비교 → 동일하지 않으면 격리 실패.
