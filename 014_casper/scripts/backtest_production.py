@@ -41,8 +41,8 @@ logging.disable(logging.CRITICAL)  # Suppress production logs during backtest
 BULL_SYMBOL = "TQQQ"
 BEAR_SYMBOL = "SQQQ"
 TREND_SYMBOL = "QQQ"
-COMMISSION_RATE = 0.0009
-RR_RATIO = 2.0
+COMMISSION_RATE = 0.0025
+RR_RATIO = 3.0
 INITIAL_CAPITAL = 500.0
 VIX_LOW = 12.0
 VIX_HIGH = 30.0

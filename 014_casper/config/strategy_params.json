@@ -12,7 +12,7 @@
     "entry": {
         "scan_start": "09:45",
         "scan_end": "10:55",
-        "rr_ratio": 2.0,
+        "rr_ratio": 3.0,
         "min_risk_dollar": 0.10
     },
     "exit": {
@@ -33,7 +33,7 @@
         "max_position_pct": 0.99
     },
     "commission": {
-        "rate_per_side": 0.0009
+        "rate_per_side": 0.0025
     },
     "order": {
         "buy_slippage_pct": 0.01,
