@@ -80,8 +80,11 @@ class CasperBot:
             max_weekly_loss_pct=cb_params["max_weekly_loss_pct"],
         )
 
-        # Telegram (disabled)
-        self.notifier = TelegramNotifier()
+        # Telegram — env-driven; absent keys disable alerts silently
+        self.notifier = TelegramNotifier(
+            bot_token=self.env.get("telegram_bot_token", ""),
+            chat_id=self.env.get("telegram_chat_id", ""),
+        )
 
         # KIS API (order execution)
         self._init_kis()
