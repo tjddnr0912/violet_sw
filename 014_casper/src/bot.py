@@ -276,6 +276,11 @@ class CasperBot:
             mode_str += " (TEST: 1 share)"
         logger.info(f"Mode: {mode_str}")
         logger.info("=" * 50)
+        # Sync capital from KIS BEFORE the start banner so the Telegram
+        # message reflects the actual orderable USD instead of the
+        # __init__ default ($0.00). _check_new_day will sync again on the
+        # first tick — that second sync is a no-op when nothing changed.
+        self._sync_capital()
         # Build history snapshot for the start banner
         from src.data.trade_store import get_cumulative_stats, load_trades
         try:
