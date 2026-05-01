@@ -130,7 +130,8 @@ start_bot() {
         echo -e "${GREEN}[INFO]${NC} 테스트: ${YELLOW}ON (1주 고정)${NC}"
     fi
     echo -e "${GREEN}[INFO]${NC} 계좌: ${KIS_ACCOUNT_NO}"
-    echo -e "${GREEN}[INFO]${NC} 전략: ORB + FVG + Pullback (R:R 1:2)"
+    RR=$(python3 -c "import json; print(int(json.load(open('config/strategy_params.json'))['entry']['rr_ratio']))" 2>/dev/null || echo "?")
+    echo -e "${GREEN}[INFO]${NC} 전략: ORB + FVG + Pullback (R:R 1:${RR})"
     echo -e "${GREEN}[INFO]${NC} 종목: TQQQ (강세) / SQQQ (약세)"
     echo ""
 

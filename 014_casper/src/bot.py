@@ -160,6 +160,7 @@ class CasperBot:
                 "shares": self.position.shares,
                 "risk_per_share": self.position.risk_per_share,
                 "commission_rate": self.position.commission_rate,
+                "rr_ratio": self.position.signal.rr_ratio,
                 "entry_time": self.position.entry_time,
                 "original_stop": self.position.original_stop,
                 "be_stop_moved": self.position.be_stop_moved,
@@ -230,11 +231,17 @@ class CasperBot:
             from src.core.strategy import TradeSignal
             stub_orb = OpeningRange(high=0, low=0, range_size=0, date="")
             stub_fvg = FairValueGap(top=0, bottom=0, size=0, timestamp="")
+            # rr_ratio: prefer saved value (the R:R the trade was opened with);
+            # fall back to current config for state files written before rr_ratio
+            # was persisted.
+            saved_rr = state.get("rr_ratio")
+            if saved_rr is None:
+                saved_rr = self.params.get("entry", {}).get("rr_ratio", 2.0)
             stub_signal = TradeSignal(
                 symbol=state["symbol"], direction=state["direction"],
                 entry_price=state["entry_price"], stop_loss=state["stop_loss"],
                 take_profit=state["take_profit"], risk_per_share=state["risk_per_share"],
-                rr_ratio=2.0, fvg=stub_fvg, orb=stub_orb, signal_time="",
+                rr_ratio=saved_rr, fvg=stub_fvg, orb=stub_orb, signal_time="",
             )
             self.position = Position(
                 symbol=state["symbol"], direction=state["direction"],
