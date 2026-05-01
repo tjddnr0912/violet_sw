@@ -96,6 +96,10 @@ class CasperBot:
         # (_check_new_day fires at ET 00:00 ≈ KST 13:00, which is before
         # the afternoon window when a Korean user typically moves money).
         self._premarket_synced_today = False
+        # Telegram notification dedup flags (reset per day)
+        self._notified_pre_market = False
+        self._notified_orb = False
+        self._notified_signal = False
 
         # Load trade history
         self._init_from_history()
@@ -269,7 +273,18 @@ class CasperBot:
             mode_str += " (TEST: 1 share)"
         logger.info(f"Mode: {mode_str}")
         logger.info("=" * 50)
-        self.notifier.notify_status("BOT STARTED", f"Mode: {self.env['trading_mode']}")
+        # Build history snapshot for the start banner
+        from src.data.trade_store import get_cumulative_stats, load_trades
+        try:
+            stats = get_cumulative_stats(load_trades())
+            history = {
+                "count": stats.get("total_trades", 0),
+                "win_rate": stats.get("win_rate", 0),
+                "pnl": stats.get("total_pnl", 0),
+            }
+        except Exception:
+            history = {"count": 0, "win_rate": 0, "pnl": 0}
+        self.notifier.notify_bot_started(self.env["trading_mode"], self.capital, history)
 
         # Handle SIGTERM for graceful daemon shutdown
         def _sigterm_handler(signum, frame):
@@ -284,6 +299,7 @@ class CasperBot:
                     raise
                 except Exception as e:
                     logger.exception(f"Unhandled error in tick: {e}")
+                    # notify_error filters network-class errors per spec
                     self.notifier.notify_error(f"Tick error: {e}")
                     # Shorter sleep during position monitoring to not miss exits
                     sleep_time = 5 if self.state == BotState.POSITION_OPEN else 30
@@ -291,7 +307,7 @@ class CasperBot:
         except (KeyboardInterrupt, SystemExit):
             logger.info("Bot stopped")
             self._save_position_state()
-            self.notifier.notify_status("BOT STOPPED", "Graceful shutdown")
+            self.notifier.notify_bot_stopped("Graceful shutdown")
 
     def _tick(self):
         """Single iteration of the event loop."""
@@ -351,6 +367,9 @@ class CasperBot:
         self.state = BotState.WAITING
         self._done_today_logged = False
         self._premarket_synced_today = False
+        self._notified_pre_market = False
+        self._notified_orb = False
+        self._notified_signal = False
         self._sync_capital()
         self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
         logger.info(f"=== New Day: {today} ===")
@@ -427,6 +446,12 @@ class CasperBot:
         self.trend = determine_trend(qqq_close, qqq_ma20, syms["bull"], syms["bear"])
 
         logger.info(f"Pre-market complete: {self.trend.direction.upper()} → {self.trend.symbol}")
+        if not self._notified_pre_market:
+            self.notifier.notify_pre_market(
+                vix, qqq_close, qqq_ma20,
+                self.trend.direction.upper(), self.trend.symbol,
+            )
+            self._notified_pre_market = True
 
         # Wait for ORB or transition immediately
         if time_utils.is_orb_forming():
@@ -469,6 +494,12 @@ class CasperBot:
                 self.notifier.notify_skip(f"ORB too wide ({self.orb.range_size:.2f})")
                 return
 
+            if not self._notified_orb:
+                self.notifier.notify_orb(
+                    symbol, self.orb.high, self.orb.low, self.orb.range_size,
+                )
+                self._notified_orb = True
+
             self._transition(BotState.SCANNING)
             return
 
@@ -504,6 +535,15 @@ class CasperBot:
         if self.signal is None:
             time.sleep(30)  # Check again in 30s
             return
+
+        # Notify on first signal of the day (pre-pullback)
+        if not self._notified_signal:
+            self.notifier.notify_signal(
+                self.signal.symbol, self.signal.entry_price,
+                self.signal.stop_loss, self.signal.take_profit,
+                self.signal.rr_ratio,
+            )
+            self._notified_signal = True
 
         # Check pullback on latest bar
         if len(scan_bars) > 0:
@@ -569,6 +609,10 @@ class CasperBot:
             order_result = self.kis_order.buy_market(self.position.symbol, shares)
             if order_result is None:
                 logger.error("BUY ORDER FAILED — aborting entry")
+                self.notifier.notify_order_failed(
+                    self.position.symbol, "buy", shares,
+                    "KIS rejected (see logs)",
+                )
                 self.position = None
                 self._transition(BotState.DONE_TODAY, "Order execution failed")
                 return
@@ -592,10 +636,15 @@ class CasperBot:
                 else:
                     logger.info(f"Fill price pending — will retry in POSITION_OPEN loop")
 
+        # Mark trade in-progress so any critical Telegram message that fails
+        # with a network error gets queued for end_trade() flush instead of
+        # competing with KIS calls during the live trade window.
+        self.notifier.begin_trade()
         self.notifier.notify_entry(
             self.position.symbol, self.position.entry_price,
             self.position.shares, self.position.stop_loss,
             self.position.take_profit, self.position.risk_per_share,
+            rr_ratio=self.position.signal.rr_ratio,
         )
         self._save_position_state()
         self._transition(BotState.POSITION_OPEN)
@@ -655,8 +704,13 @@ class CasperBot:
             return
 
         # 11:00 BE move
-        if time_utils.is_past_be_time():
+        if time_utils.is_past_be_time() and not self.position.be_stop_moved:
+            old_sl = self.position.stop_loss
             move_stop_to_breakeven(self.position)
+            if self.position.be_stop_moved:
+                self.notifier.notify_be_move(
+                    self.position.symbol, old_sl, self.position.stop_loss,
+                )
 
         # 15:50 force close
         if time_utils.is_force_close_time():
@@ -765,6 +819,9 @@ class CasperBot:
             self.position.exit_price, reason,
             self.position.net_pnl, self.position.result,
         )
+        # Trade is over — flush any queued critical messages that hit a
+        # network error during the live trade window.
+        self.notifier.end_trade()
 
         # Reconcile with actual broker execution data
         self._reconcile_with_broker()
@@ -835,9 +892,26 @@ class CasperBot:
         """Wait until next day."""
         if not self._done_today_logged:
             self._sync_capital()
-            stats = get_cumulative_stats(load_trades())
+            all_trades = load_trades()
+            stats = get_cumulative_stats(all_trades)
             logger.info(f"Cumulative: {stats['total_trades']}T WR={stats['win_rate']}% "
                          f"PnL=${stats['total_pnl']:+.2f} PF={stats['profit_factor']}")
+            # Daily Telegram summary — pull today's trade (if any) from history
+            today_str = time_utils.now_et().strftime("%Y-%m-%d")
+            today_trade = next(
+                (t for t in reversed(all_trades) if t.get("date") == today_str),
+                None,
+            )
+            self.notifier.notify_daily_summary(
+                today_trade,
+                {
+                    "total": stats.get("total_trades", 0),
+                    "wr": stats.get("win_rate", 0),
+                    "pf": stats.get("profit_factor", 0),
+                    "pnl": stats.get("total_pnl", 0),
+                },
+                self.capital,
+            )
             self._done_today_logged = True
 
         # Sleep until midnight or long interval

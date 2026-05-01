@@ -9,10 +9,15 @@
 #   +-------------------+-------------------+
 #   | Quant Daemon      | Investment Bot    |
 #   +-------------------+-------------------+
-#   |             Casper Bot                |
+#   |     Casper Bot (TQQQ/SQQQ + TG)       |
 #   +---------------------------------------+
 #
 # (Disabled) Dashboard (5001), Stock Dashboard (5002)
+#
+# Telegram alerts:
+#   Each bot reads its own TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from
+#   <project>/.env. Casper shares 008's keys (set in 014_casper/.env).
+#   No CLI flag — purely env-driven; absent keys disable alerts silently.
 #
 # Usage:
 #   ./start_all_bots_cmux.sh

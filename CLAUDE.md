@@ -41,7 +41,7 @@ violet_sw/
 | 011_macos_cc_usage | Claude Code 사용량 모니터 (macOS 메뉴바) | `./install.sh` | [CLAUDE.md](011_macos_cc_usage/CLAUDE.md) |
 | 012_stock_dashboard | 글로벌 시장 대시보드 (Bloomberg-style, port 5002) | `./run_dashboard.sh` | [CLAUDE.md](012_stock_dashboard/CLAUDE.md) |
 | 013_shortcut | 비주얼 블록 Apple Shortcuts 빌더 (iOS/macOS) | `xcodegen generate` | [CLAUDE.md](013_shortcut/CLAUDE.md) |
-| 014_casper | TQQQ/SQQQ 데이트레이딩 (ORB+FVG, R:R 1:2) | `./run_casper.sh start` | [CLAUDE.md](014_casper/CLAUDE.md) |
+| 014_casper | TQQQ/SQQQ 데이트레이딩 (ORB+FVG, R:R 1:3, 텔레그램) | `./run_casper.sh start` | [CLAUDE.md](014_casper/CLAUDE.md) |
 
 ## Development Guidelines
 

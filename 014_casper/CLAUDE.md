@@ -23,6 +23,7 @@ TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, R:R 1:2.
 | 매매시간 | 09:45~10:55 ET (스캔), 15:50 강제청산 |
 | 필터 | VIX(12~30), ORB 폭, 서킷브레이커(3연패/주간3%손실), 공휴일 |
 | 안전장치 | 크래시 복구, SIGTERM, 포지션 상한, 오버나잇 방지, 잔고 동기화, 부분체결 감지 |
+| 알림 | 텔레그램 (env-driven, 큐 기반 critical 지연 재전송, 네트워크 에러 silent drop) |
 | 테스트모드 | `TEST_MODE=on` → live지만 1주 고정 |
 
 ## 상태머신
@@ -44,6 +45,8 @@ WAITING → PRE_MARKET → ORB_FORMING → SCANNING → POSITION_OPEN → DONE_T
 | `src/api/kis_order.py` | KIS 주문 실행 |
 | `src/api/kis_client.py` | KIS 시세 (현재가, 분봉, 일봉, 체결내역) |
 | `src/data/market_data.py` | 시세 통합 (KIS 우선 → yfinance 폴백, VIX는 yf 전용) |
+| `src/telegram/notifier.py` | 텔레그램 알림 (큐+필터, send-only) |
+| `scripts/test_telegram_messages.py` | 텔레그램 알림 스모크 테스트 (14건, `[test i/N]` 태그) |
 
 ## 환경변수 (.env)
 
@@ -53,6 +56,8 @@ KIS_APP_SECRET=      # 실전투자 시크릿
 KIS_ACCOUNT_NO=      # 계좌번호 (8자리)
 TRADING_MODE=live    # paper | live
 TEST_MODE=on         # on | off (1주 고정)
+TELEGRAM_BOT_TOKEN=  # 008과 동일 키 사용 (한 봇으로 모든 프로젝트 알림 통합)
+TELEGRAM_CHAT_ID=    # 008과 동일 chat_id
 ```
 
 ## KIS 토큰/AppKey 디버깅 (함정 주의)
@@ -168,6 +173,21 @@ shares = int(self.capital / eff_price)
 - **매수 성공 직후 fill polling 중 크래시 → orphan 포지션**: `buy_market`은 성공했는데 `get_us_filled_price`가 5회 × 2s polling 도중 SIGKILL/OOM 시 `position_state.json` 미작성. KIS는 51주 보유, 봇은 재기동 후 포지션 인지 못함 → SL 모니터링 부재. **해결**: 주문 성공 즉시 `_save_position_state()` 호출 (fill price 갱신은 사후 처리, `_apply_fill_price`가 다시 저장).
 - **부분체결 재매도 시 holdings 폴링 lag → 더블 매도**: 첫 매도 후 `time.sleep(2)` + `get_us_holdings`는 KIS 정산 lag로 pre-fill quantity 그대로 리포트 → 잔량 또 매도. **해결**: `get_us_today_executions(order_no)`로 그 주문의 실제 체결량(`fill_qty`) 합산 후 `remaining = ordered - filled`만 재매도. 체결 0이면 retry skip하고 reconcile에 위임.
 - **Token backoff 중 stale/empty 토큰 silent 사용**: `auth.token` property가 만료 토큰을 그대로 반환 → KIS 401 cascade를 매번 다른 endpoint에서 재현 → 진단 시간 허비. **해결**: backoff 활성 + 유효 토큰 없을 시 빈 문자열 반환 + `logger.critical`로 backoff 잔여시간 명시.
+
+## 텔레그램 알림 (env-driven, send-only)
+
+봇 lifecycle의 핵심 지점에서 텔레그램으로 알림 송출. 수신/명령 처리 없음.
+
+**송출 시점**: bot started/stopped, pre-market 결과, ORB 형성, signal 발사, **entry (critical)**, BE move, **exit (critical)**, **order failed (critical)**, daily summary (DONE_TODAY 시 오늘 거래 + 누적).
+
+**핵심 규칙**:
+- **네트워크 오류는 텔레그램으로 안 보냄**: `notify_error`가 timeout/connection/SSL 등 네트워크-class 메시지 자동 필터(`_is_network_error_text`).
+- **거래 중 실패한 critical 메시지는 큐에 쌓고 거래 종료 후 순차 flush**: `begin_trade()`/`end_trade()`로 lifecycle 토글. entry/exit/order_failed 메시지가 텔레그램 네트워크 오류로 실패하면 즉시 retry 안 하고 `_close_and_record` 끝에서 0.5s 간격으로 flush.
+- **dedup**: pre-market/ORB/signal은 하루 1회만 알림 (`_notified_*` 플래그, `_reset_day`에서 리셋).
+
+**검증**: `python scripts/test_telegram_messages.py` — 14단계 스모크 테스트. 각 메시지에 `[test i/14]` 태그 → 텔레그램 클라이언트에서 도착 확인 가능. 13/14, 14/14는 의도적 silent drop (필터·큐 unit-style 검증)이라 도착하면 안 됨.
+
+**환경변수**: 008과 동일한 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 사용 — 한 텔레그램 봇으로 005/006/007/008/014 모든 프로젝트 알림이 같은 채팅으로 들어옴.
 
 ## 테스트 격리 원칙
 
