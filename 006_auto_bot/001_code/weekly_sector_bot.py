@@ -547,6 +547,11 @@ Examples:
         action='store_true',
         help='Generate comprehensive investment evaluation report'
     )
+    parser.add_argument(
+        '--deep',
+        action='store_true',
+        help='Deep mode: max 3 orchestrator rounds (default 2)',
+    )
 
     args = parser.parse_args()
 
@@ -563,7 +568,7 @@ Examples:
         return
 
     # 봇 초기화
-    bot = WeeklySectorBot(test_mode=args.test)
+    bot = WeeklySectorBot(test_mode=args.test, deep_mode=args.deep)
 
     # 실행 모드 결정
     if args.comprehensive:
