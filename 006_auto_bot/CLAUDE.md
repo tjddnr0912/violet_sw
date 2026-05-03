@@ -37,7 +37,7 @@ python weekly_sector_bot.py --comprehensive  # 종합 투자 평가 보고서
 | 출력 | Blogger (OgusInvest 등 7개 블로그) |
 | 뉴스봇 | Daily 06:00, Weekly 일요일 07:00, Monthly 1일 07:30 |
 | 버핏봇 | 월~금 06:30 (뉴스 기반, Claude CLI 분석) |
-| 섹터봇 | 일요일 13:00~18:00 (11개 섹터), 19:00 종합 보고서 |
+| 섹터봇 | 일요일 12:00~18:40 (11개 섹터, 40분 간격), 19:20 텔레그램 알림, 19:40 종합 보고서. `sector_bot/orchestrator.py`가 5차원 검증 게이트 + 갭필 + 종합 게이트 수행 |
 
 ## 환경변수 (.env)
 
