@@ -35,6 +35,7 @@ from sector_bot import (
     StateManager,
     ComprehensiveReportGenerator,
 )
+from sector_bot.orchestrator import run_sector_research, OrchestrationResult
 from shared.blogger_uploader import BloggerUploader
 from shared.telegram_notifier import TelegramNotifier
 from shared.claude_html_converter import convert_md_to_html_via_claude
@@ -63,14 +64,16 @@ logger = logging.getLogger(__name__)
 class WeeklySectorBot:
     """주간 섹터 투자정보 봇"""
 
-    def __init__(self, test_mode: bool = False):
+    def __init__(self, test_mode: bool = False, deep_mode: bool = False):
         """
         Initialize bot
 
         Args:
             test_mode: True면 블로그 업로드 스킵
+            deep_mode: True면 오케스트레이터 max_rounds=3 (기본 2)
         """
         self.test_mode = test_mode
+        self.deep_mode = deep_mode
 
         # Validate configuration
         SectorConfig.validate()
@@ -124,23 +127,33 @@ class WeeklySectorBot:
         }
 
         try:
-            # 1. 검색
-            logger.info(f"[{sector.name}] Step 1: Searching...")
-            search_result = self.searcher.search_sector(sector)
+            # 1+2. 오케스트레이터: 검색 → 5차원 게이트 → 갭필 → 분석
+            max_rounds = 3 if self.deep_mode else 2
+            logger.info(f"[{sector.name}] Orchestrating (max_rounds={max_rounds})...")
 
-            if not search_result['success']:
-                raise Exception(f"Search failed: {search_result.get('error')}")
+            orch: OrchestrationResult = run_sector_research(
+                sector=sector,
+                searcher=self.searcher,
+                analyzer=self.analyzer,
+                max_rounds=max_rounds,
+            )
 
-            logger.info(f"[{sector.name}] Search: {len(search_result['content'])} chars, {len(search_result['sources'])} sources")
+            if not orch.success:
+                raise Exception(f"Orchestration failed: {orch.error}")
 
-            # 2. 분석
-            logger.info(f"[{sector.name}] Step 2: Analyzing...")
-            analysis_result = self.analyzer.analyze_sector(sector, search_result)
+            logger.info(
+                f"[{sector.name}] Orchestration done: rounds={orch.rounds_completed}, "
+                f"clamped={orch.clamped_to_cli}, elapsed={orch.elapsed_seconds:.1f}s, "
+                f"dims={sum(orch.dimensions_passed.values())}/5, "
+                f"contradictions={len(orch.contradictions)}"
+            )
 
-            if not analysis_result['success']:
-                raise Exception(f"Analysis failed: {analysis_result.get('error')}")
-
-            logger.info(f"[{sector.name}] Analysis: {len(analysis_result['analysis'])} chars")
+            # 하위 호환: 기존 코드는 analysis_result['analysis']를 기대
+            analysis_result = {
+                'success': True,
+                'analysis': orch.analysis,
+                'sources': orch.sources,
+            }
 
             # 3. 마크다운 저장
             logger.info(f"[{sector.name}] Step 3: Saving markdown...")
