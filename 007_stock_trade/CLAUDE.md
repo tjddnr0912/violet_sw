@@ -67,11 +67,19 @@ TELEGRAM_CHAT_ID=
 - 설정 파일: `config/system_config.json`은 Telegram 명령으로 변경됨
 - 팩터 가중치: `config/optimal_weights.json`의 `factor_weights`가 Single Source of Truth
 
+## 트러블슈팅 핵심
+
+API Rate Limit (EGW00201) / pykrx 호환성 / Telegram 409·ConnectError / T+2 결제 nass_amt / 긴급 리밸런싱 무한 반복 / 휴장일 오판단 / engine_state ↔ KIS 동기화 — 각 항목은 6필드 + Claude 진단 미스 기록 → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ## 상세 문서
 
-- [아키텍처](docs/ARCHITECTURE.md) - 프로젝트 구조, 개발 가이드, 유틸리티 사용법
-- [트러블슈팅](docs/TROUBLESHOOTING.md) - API Rate Limit, Telegram 에러, pykrx, 리밸런싱 버그
-- [변경 이력](docs/CHANGELOG.md) - 2026-01~02 변경사항 전체
-- [KIS API 정보](docs/get_api_information.md) - KIS Open API 레퍼런스
-- [멀티팩터 전략](docs/strategy/multi_factor_strategy.md) - 팩터 설계 상세
-- [퀀트 트레이딩 가이드](docs/strategy/quant_trading_guide.md) - 전략 운영 가이드
+| 주제 | 파일 |
+|------|------|
+| 아키텍처·프로젝트 구조·유틸리티 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 명령 카탈로그 (스크립트·텔레그램·디버깅) | [docs/COMMANDS.md](docs/COMMANDS.md) |
+| 트러블슈팅 + Claude 진단 미스 기록 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+| 환경변수·팩터 가중치·rate limit | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| 변경 이력 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
+| KIS API 레퍼런스 (보존) | [docs/get_api_information.md](docs/get_api_information.md) |
+| 멀티팩터 전략 (보존) | [docs/strategy/multi_factor_strategy.md](docs/strategy/multi_factor_strategy.md) |
+| 퀀트 트레이딩 가이드 (보존) | [docs/strategy/quant_trading_guide.md](docs/strategy/quant_trading_guide.md) |

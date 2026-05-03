@@ -69,9 +69,18 @@ RESEARCH_MAX_ROUNDS=3            # Deep research 라운드 상한 (1~4, default 
 | 텔레그램 Q&A | `telegram-qa/SKILL.md` |
 | HTML 변환 (공유) | `blogger-html/SKILL.md` |
 
+## 트러블슈팅 핵심
+
+Gemini 429/503 / Claude CLI empty / Blogger OAuth / Telegram HTML parse / Sector resume·state 손상 — 각 항목은 6필드 + Claude 진단 미스 기록 → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ## 상세 문서
 
-- [아키텍처](docs/ARCHITECTURE.md) - 디렉토리 구조, 모듈 의존성, 데이터 흐름
-- [섹터봇](docs/SECTOR_BOT.md) - 11개 섹터 상세, 상태 관리, 재시작
-- [텔레그램 봇](docs/TELEGRAM_BOT.md) - 블로그 선택 기능, 공유 모듈 상세
-- [트러블슈팅](docs/TROUBLESHOOTING.md) - 에러 대응, 디버깅
+| 주제 | 파일 |
+|------|------|
+| 아키텍처·모듈·데이터 흐름 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 명령 카탈로그 (통합·개별·디버깅) | [docs/COMMANDS.md](docs/COMMANDS.md) |
+| 트러블슈팅 + Claude 진단 미스 기록 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+| 환경변수·블로그·스킬 외부화·Deep research | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| 변경 이력 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
+| 섹터봇 상세 (보존) | [docs/SECTOR_BOT.md](docs/SECTOR_BOT.md) |
+| 텔레그램 봇 상세 (보존) | [docs/TELEGRAM_BOT.md](docs/TELEGRAM_BOT.md) |

@@ -51,8 +51,16 @@ TELEGRAM_CHAT_ID=
 2. **lib/ 수정 시**: ver3 호환성 테스트 필요
 3. **전략 수정 시**: `strategy_v3.py`와 `config_v3.py` 동시 수정
 
+## 트러블슈팅 핵심
+
+Telegram 메시지 escape / Conflict 409 / Bithumb API hang / 연속 timeout lockup — 각 항목은 6필드 + Claude 진단 미스 기록 → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ## 상세 문서
 
-- [아키텍처](docs/ARCHITECTURE.md) - 디렉토리 구조, 레짐 분류, 진입/청산 전략, 설정값
-- [트러블슈팅](docs/TROUBLESHOOTING.md) - Hang 방지 시스템, Timeout 레이어, 에러 대응
-- [변경 이력](docs/CHANGELOG.md) - 수익성 개선 내역 (2026-01)
+| 주제 | 파일 |
+|------|------|
+| 아키텍처·레짐·전략·설정값 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 명령 카탈로그 (스크립트·텔레그램·디버깅) | [docs/COMMANDS.md](docs/COMMANDS.md) |
+| 트러블슈팅 + Claude 진단 미스 기록 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+| 환경변수·파라미터·시크릿 마스킹 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| 변경 이력 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
