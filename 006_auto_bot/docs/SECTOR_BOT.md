@@ -19,17 +19,17 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 
 | ID | 섹터 | 영문명 | 시간 |
 |----|------|--------|------|
-| 1 | AI/양자컴퓨터 | ai_quantum | 13:00 |
-| 2 | 금융 | finance | 13:30 |
-| 3 | 조선/항공/우주 | shipbuilding_aerospace | 14:00 |
-| 4 | 에너지 | energy | 14:30 |
-| 5 | 바이오 | bio | 15:00 |
-| 6 | IT/통신/Cloud/DC | it_cloud | 15:30 |
+| 1 | AI/양자컴퓨터 | ai_quantum | 12:00 |
+| 2 | 금융 | finance | 12:40 |
+| 3 | 조선/항공/우주 | shipbuilding_aerospace | 13:20 |
+| 4 | 에너지 | energy | 14:00 |
+| 5 | 바이오 | bio | 14:40 |
+| 6 | IT/통신/Cloud/DC | it_cloud | 15:20 |
 | 7 | 주식시장 | stock_market | 16:00 |
-| 8 | 반도체 | semiconductor | 16:30 |
-| 9 | 자동차/배터리/로봇 | auto_battery_robot | 17:00 |
-| 10 | 리츠(REITs) | reits | 17:30 |
-| 11 | 필수 소비재 | consumer_staples | 18:00 |
+| 8 | 반도체 | semiconductor | 16:40 |
+| 9 | 자동차/배터리/로봇 | auto_battery_robot | 17:20 |
+| 10 | 리츠(REITs) | reits | 18:00 |
+| 11 | 필수 소비재 | consumer_staples | 18:40 |
 
 ## 섹터별 분석 초점
 
@@ -55,12 +55,12 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 ├── sector_02_finance.md
 ├── ...
 ├── sector_11_consumer_staples.md
-└── comprehensive_report.md       # 종합 투자 평가 보고서 (19:00)
+└── comprehensive_report.md       # 종합 투자 평가 보고서 (19:40)
 ```
 
 ## 종합 투자 평가 보고서
 
-- **스케줄**: 일요일 19:00 (11개 섹터 완료 후)
+- **스케줄**: 일요일 19:40 (11개 섹터 완료 후)
 - **입력**: 당일 생성된 11개 섹터 MD 파일 전체 취합
 - **분석 엔진**: Claude CLI (`claude -p`) — 월스트리트 30년+ 마스터 애널리스트 역할
 - **HTML 변환**: 장문 보고서는 h2 기준 청크 분할 후 개별 변환·합침
@@ -91,6 +91,44 @@ python weekly_sector_bot.py --reset   # 상태 초기화
 | **Blogger Style** | 공용 | 이모지, 짧은 문단, 표, Hook, h1 미사용 |
 | **SEO** | 공용 | 키워드 전략, Heading 계층, snippet 최적화 |
 | **Constraints** | 공용 | 언어/분량/객관성/정직성/AI 언급 금지 등 9항목 |
+
+## 오케스트레이터 (5차원 검증)
+
+`sector_bot/orchestrator.py`가 검색 → 5차원 게이트 → 1회 갭필 → 분석을 시퀀싱한다. 기존 `searcher`/`analyzer`는 변경 없이 재사용.
+
+### 5차원 체크리스트
+
+| 차원 | 통과 기준 (정량 1차) | Claude 2차 |
+|------|------------------|----------|
+| 정의 | 동인 키워드 ≥2 또는 head bullet ≥2 | 항상 실행 (Q4=a) |
+| 현황 | (수치, 날짜) 페어 ≥3 | ↑ |
+| 근거 | Tier 1 도메인 출처 ≥2 (Bloomberg/Reuters/FT/WSJ/SEC/CNBC/MarketWatch) | ↑ |
+| 반론 | 강세/약세 어휘 양쪽 출현 | ↑ |
+| 적용 | 액션 동사 + 티커 패턴 | ↑ (갭필 없음 — analyzer 책임) |
+
+OR-semantics: 한 차원이 정량 OR Claude 중 하나라도 통과하면 그 차원은 통과 처리. Claude는 정량의 false-negative만 구제 가능 (정량 통과를 거부하지는 못함).
+
+### 라운드 예산
+
+- 정상: 2 라운드 (검색 + 갭필 1회)
+- `--deep`: 3 라운드
+- CLI fallback 활성: 강제 1 라운드 (갭필 스킵)
+- 섹터당 hard cap: 8분 — 초과 시 갭필 중단하고 분석으로 진행 (분석 자체는 중단되지 않음)
+
+### 갭필 카운터 분리
+
+- `gap_fills_attempted`: 루프 종료 조건 (실패한 갭필도 카운트해서 무한 루프 방지)
+- `rounds_completed`: 콘텐츠 생산에 성공한 라운드만 카운트 (caller에 보고)
+
+### 모순 명시
+
+분석 결과에 `## 📌 자료 간 차이` 섹션이 있으면 orchestrator가 bullet 항목을 파싱하여 `OrchestrationResult.contradictions`에 적재. 종합 보고서는 `## 📌 섹터 간 시각 차이` 변형 사용.
+
+## 종합 보고서 게이트
+
+`comprehensive_report.generate_report`도 동일한 5차원 게이트 적용 (변형판: "현황"=8 섹터 이상 인용, "적용"=3 포트폴리오 비중 100%). 미달 시 1회 재합성.
+
+게이트 결과는 반환 dict의 `gate_results`(차원별 bool) + `failed_dimensions`(실패한 차원명 리스트) 필드로 노출.
 
 ## 설정 (sector_bot/config.py)
 
