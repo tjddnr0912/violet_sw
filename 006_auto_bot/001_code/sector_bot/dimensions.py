@@ -8,9 +8,13 @@ Each dimension provides:
   - check_description: text passed to Claude judge for 2nd-pass validation
 """
 
+import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 TIER1_DOMAINS = (
@@ -144,12 +148,6 @@ SECTOR_DIMENSIONS: List[Dimension] = [
 ]
 
 
-import json
-import logging
-
-logger = logging.getLogger(__name__)
-
-
 def _build_judge_prompt(sector_name: str, content: str, sources: list) -> str:
     sources_str = "\n".join(
         f"- {s.get('url', s) if isinstance(s, dict) else s}" for s in sources[:10]
@@ -180,7 +178,7 @@ def claude_judge_dimensions(
     sector_name: str,
     content: str,
     sources: list,
-    claude_caller,
+    claude_caller: Callable[[str], str],
 ) -> dict:
     """
     Call Claude (via injected callable) to judge each dimension.
@@ -191,10 +189,17 @@ def claude_judge_dimensions(
     try:
         raw = claude_caller(prompt)
         # extract first {...} block in case Claude wraps it
+        # schema is flat (no nested braces) — see _build_judge_prompt template
         match = re.search(r"\{[^{}]*\}", raw)
         if not match:
             raise ValueError("no JSON object in Claude response")
         parsed = json.loads(match.group(0))
+        missing = [d.name for d in SECTOR_DIMENSIONS if d.name not in parsed]
+        if missing:
+            logger.warning(
+                f"Claude judge response missing dimension keys {missing} for {sector_name}; "
+                f"defaulting missing to True"
+            )
         return {d.name: bool(parsed.get(d.name, True)) for d in SECTOR_DIMENSIONS}
     except Exception as e:
         logger.warning(f"Claude judge failed for {sector_name}: {e}; falling back to all-pass")

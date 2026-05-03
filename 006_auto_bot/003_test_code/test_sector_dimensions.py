@@ -139,3 +139,30 @@ def test_claude_judge_dimensions_falls_back_on_invalid_json():
     )
     # all-pass fallback so we don't trigger spurious gap-fill on Claude error
     assert result == {"정의": True, "현황": True, "근거": True, "반론": True, "적용": True}
+
+
+def test_claude_judge_dimensions_partial_keys_default_to_true(caplog):
+    import logging
+    from sector_bot.dimensions import claude_judge_dimensions
+
+    def partial_caller(prompt: str) -> str:
+        # Only 2 of 5 dimensions present
+        return '{"정의": false, "현황": true}'
+
+    with caplog.at_level(logging.WARNING, logger="sector_bot.dimensions"):
+        result = claude_judge_dimensions(
+            sector_name="반도체",
+            content="x",
+            sources=[],
+            claude_caller=partial_caller,
+        )
+
+    # Present keys honored
+    assert result["정의"] is False
+    assert result["현황"] is True
+    # Missing keys default to True
+    assert result["근거"] is True
+    assert result["반론"] is True
+    assert result["적용"] is True
+    # Warning was emitted
+    assert any("missing dimension keys" in rec.message for rec in caplog.records)
