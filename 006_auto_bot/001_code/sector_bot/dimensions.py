@@ -204,3 +204,51 @@ def claude_judge_dimensions(
     except Exception as e:
         logger.warning(f"Claude judge failed for {sector_name}: {e}; falling back to all-pass")
         return {d.name: True for d in SECTOR_DIMENSIONS}
+
+
+def _build_comprehensive_judge_prompt(report_text: str, sector_count: int) -> str:
+    return f"""You are evaluating a comprehensive weekly investment report that synthesizes {sector_count} sector reports.
+
+Apply this 5-dimension checklist (variant for cross-sector synthesis):
+
+- "정의": Market regime (Bull / Bear / Neutral, Risk-On / Risk-Off) is explicitly named.
+- "현황": At least 8 of the {sector_count} sectors are cited with specific data (numbers + dates).
+- "근거": Each recommended stock/ETF in "Top Picks" cites at least one source sector report.
+- "반론": "Risk Factors and Hedge Strategies" section lists 3+ risks with hedge instruments.
+- "적용": All three portfolio profiles (보수형/중립형/공격형) have sector weights summing to 100%.
+
+Report (truncated to 8000 chars):
+{report_text[:8000]}
+
+Respond with ONLY a JSON object on a single line:
+{{"정의": true|false, "현황": true|false, "근거": true|false, "반론": true|false, "적용": true|false}}
+"""
+
+
+def claude_judge_comprehensive(
+    report_text: str,
+    sector_count: int,
+    claude_caller: Callable[[str], str],
+) -> dict:
+    """
+    Comprehensive-report variant of claude_judge_dimensions.
+    Same fail-open semantics on JSON parse errors.
+    """
+    prompt = _build_comprehensive_judge_prompt(report_text, sector_count)
+    try:
+        raw = claude_caller(prompt)
+        # schema is flat (no nested braces) — see _build_comprehensive_judge_prompt template
+        match = re.search(r"\{[^{}]*\}", raw)
+        if not match:
+            raise ValueError("no JSON object in Claude response")
+        parsed = json.loads(match.group(0))
+        missing = [d.name for d in SECTOR_DIMENSIONS if d.name not in parsed]
+        if missing:
+            logger.warning(
+                f"Comprehensive judge response missing dimension keys {missing}; "
+                f"defaulting missing to True"
+            )
+        return {d.name: bool(parsed.get(d.name, True)) for d in SECTOR_DIMENSIONS}
+    except Exception as e:
+        logger.warning(f"Comprehensive judge failed: {e}; falling back to all-pass")
+        return {d.name: True for d in SECTOR_DIMENSIONS}

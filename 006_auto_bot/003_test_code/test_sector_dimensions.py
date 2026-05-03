@@ -166,3 +166,28 @@ def test_claude_judge_dimensions_partial_keys_default_to_true(caplog):
     assert result["적용"] is True
     # Warning was emitted
     assert any("missing dimension keys" in rec.message for rec in caplog.records)
+
+
+def test_claude_judge_comprehensive_signature():
+    from sector_bot.dimensions import claude_judge_comprehensive
+    import inspect
+    sig = inspect.signature(claude_judge_comprehensive)
+    params = list(sig.parameters.keys())
+    assert params[0] == "report_text"
+    assert "sector_count" in params
+    assert "claude_caller" in params
+
+
+def test_claude_judge_comprehensive_returns_dict_of_five():
+    from sector_bot.dimensions import claude_judge_comprehensive
+
+    def fake_caller(p):
+        return '{"정의": true, "현황": true, "근거": false, "반론": true, "적용": true}'
+
+    result = claude_judge_comprehensive(
+        report_text="some report",
+        sector_count=10,
+        claude_caller=fake_caller,
+    )
+    assert set(result.keys()) == {"정의", "현황", "근거", "반론", "적용"}
+    assert result["근거"] is False
