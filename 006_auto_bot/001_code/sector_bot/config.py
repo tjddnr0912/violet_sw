@@ -29,7 +29,7 @@ SECTORS: List[Sector] = [
         id=1,
         name="AI/양자컴퓨터",
         name_en="ai_quantum",
-        scheduled_time="13:00",
+        scheduled_time="12:00",
         search_keywords=[
             "AI artificial intelligence investment 2026",
             "quantum computing stocks market 2026",
@@ -50,7 +50,7 @@ SECTORS: List[Sector] = [
         id=2,
         name="금융",
         name_en="finance",
-        scheduled_time="13:30",
+        scheduled_time="12:40",
         search_keywords=[
             "Federal Reserve interest rate decision 2026",
             "central bank monetary policy this week",
@@ -72,7 +72,7 @@ SECTORS: List[Sector] = [
         id=3,
         name="조선/항공/우주",
         name_en="shipbuilding_aerospace",
-        scheduled_time="14:00",
+        scheduled_time="13:20",
         search_keywords=[
             "shipbuilding industry investment 2026",
             "Korean shipyard orders news",
@@ -93,7 +93,7 @@ SECTORS: List[Sector] = [
         id=4,
         name="에너지",
         name_en="energy",
-        scheduled_time="14:30",
+        scheduled_time="14:00",
         search_keywords=[
             "renewable energy investment 2026",
             "oil price crude WTI Brent",
@@ -114,7 +114,7 @@ SECTORS: List[Sector] = [
         id=5,
         name="바이오",
         name_en="bio",
-        scheduled_time="15:00",
+        scheduled_time="14:40",
         search_keywords=[
             "biotech pharmaceutical investment 2026",
             "FDA drug approval this week",
@@ -135,7 +135,7 @@ SECTORS: List[Sector] = [
         id=6,
         name="IT/통신/Cloud/DC",
         name_en="it_cloud",
-        scheduled_time="15:30",
+        scheduled_time="15:20",
         search_keywords=[
             "cloud computing AWS Azure Google 2026",
             "data center investment news",
@@ -177,7 +177,7 @@ SECTORS: List[Sector] = [
         id=8,
         name="반도체",
         name_en="semiconductor",
-        scheduled_time="16:30",
+        scheduled_time="16:40",
         search_keywords=[
             "semiconductor chip stocks 2026",
             "TSMC Samsung foundry news",
@@ -198,7 +198,7 @@ SECTORS: List[Sector] = [
         id=9,
         name="자동차/배터리/로봇",
         name_en="auto_battery_robot",
-        scheduled_time="17:00",
+        scheduled_time="17:20",
         search_keywords=[
             "electric vehicle EV stocks 2026",
             "Tesla BYD EV sales",
@@ -219,7 +219,7 @@ SECTORS: List[Sector] = [
         id=10,
         name="리츠(REITs)",
         name_en="reits",
-        scheduled_time="17:30",
+        scheduled_time="18:00",
         search_keywords=[
             "REITs ETF fund flow 2026",
             "REITs weekly performance returns",
@@ -242,7 +242,7 @@ SECTORS: List[Sector] = [
         id=11,
         name="필수 소비재",
         name_en="consumer_staples",
-        scheduled_time="18:00",
+        scheduled_time="18:40",
         search_keywords=[
             "consumer staples stocks investment 2026",
             "consumer staples ETF XLP VDC",
