@@ -95,3 +95,47 @@ def test_check_application_passes_with_action_and_ticker():
 def test_check_application_fails_with_no_action():
     content = "Many companies exist in this sector including NVDA and AMD."
     assert _check_application(content, []) is False
+
+
+def test_claude_judge_dimensions_signature():
+    from sector_bot.dimensions import claude_judge_dimensions
+    import inspect
+    sig = inspect.signature(claude_judge_dimensions)
+    params = list(sig.parameters.keys())
+    assert params[:3] == ["sector_name", "content", "sources"]
+    assert "claude_caller" in params  # injectable for tests
+
+
+def test_claude_judge_dimensions_uses_injected_caller(monkeypatch):
+    from sector_bot.dimensions import claude_judge_dimensions
+
+    captured = {}
+    def fake_caller(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return '{"정의": true, "현황": false, "근거": true, "반론": false, "적용": true}'
+
+    result = claude_judge_dimensions(
+        sector_name="반도체",
+        content="some sector content",
+        sources=[{"url": "https://www.bloomberg.com/x"}],
+        claude_caller=fake_caller,
+    )
+    assert result == {"정의": True, "현황": False, "근거": True, "반론": False, "적용": True}
+    assert "반도체" in captured["prompt"]
+    assert "정의" in captured["prompt"]
+
+
+def test_claude_judge_dimensions_falls_back_on_invalid_json():
+    from sector_bot.dimensions import claude_judge_dimensions
+
+    def bad_caller(prompt: str) -> str:
+        return "not json at all"
+
+    result = claude_judge_dimensions(
+        sector_name="반도체",
+        content="x",
+        sources=[],
+        claude_caller=bad_caller,
+    )
+    # all-pass fallback so we don't trigger spurious gap-fill on Claude error
+    assert result == {"정의": True, "현황": True, "근거": True, "반론": True, "적용": True}

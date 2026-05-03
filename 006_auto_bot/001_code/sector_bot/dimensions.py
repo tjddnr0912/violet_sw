@@ -142,3 +142,60 @@ SECTOR_DIMENSIONS: List[Dimension] = [
         followup_query_template=None,
     ),
 ]
+
+
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _build_judge_prompt(sector_name: str, content: str, sources: list) -> str:
+    sources_str = "\n".join(
+        f"- {s.get('url', s) if isinstance(s, dict) else s}" for s in sources[:10]
+    )
+    dim_lines = "\n".join(f'- "{d.name}": {d.check_description}' for d in SECTOR_DIMENSIONS)
+    return f"""You are evaluating whether a sector research output meets a 5-dimension checklist.
+
+Sector: {sector_name}
+
+Dimensions to check:
+{dim_lines}
+
+Research content (truncated to 6000 chars):
+{content[:6000]}
+
+Sources:
+{sources_str}
+
+For each dimension, decide if the content + sources together pass the dimension's criterion.
+Be strict: missing dates, vague generalities, single-sided opinions all fail.
+
+Respond with ONLY a JSON object on a single line, no prose, no code fences:
+{{"정의": true|false, "현황": true|false, "근거": true|false, "반론": true|false, "적용": true|false}}
+"""
+
+
+def claude_judge_dimensions(
+    sector_name: str,
+    content: str,
+    sources: list,
+    claude_caller,
+) -> dict:
+    """
+    Call Claude (via injected callable) to judge each dimension.
+    On any error or invalid JSON, returns all-True (fail-open) so we don't
+    trigger spurious gap-fill rounds on Claude infrastructure problems.
+    """
+    prompt = _build_judge_prompt(sector_name, content, sources)
+    try:
+        raw = claude_caller(prompt)
+        # extract first {...} block in case Claude wraps it
+        match = re.search(r"\{[^{}]*\}", raw)
+        if not match:
+            raise ValueError("no JSON object in Claude response")
+        parsed = json.loads(match.group(0))
+        return {d.name: bool(parsed.get(d.name, True)) for d in SECTOR_DIMENSIONS}
+    except Exception as e:
+        logger.warning(f"Claude judge failed for {sector_name}: {e}; falling back to all-pass")
+        return {d.name: True for d in SECTOR_DIMENSIONS}
