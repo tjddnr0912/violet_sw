@@ -135,3 +135,85 @@ def test_clamps_to_one_round_when_cli_fallback_active():
     assert result.clamped_to_cli is True
     assert result.rounds_completed == 1  # clamped despite max_rounds=3
     assert searcher.search_sector.call_count == 1  # no gap-fill
+
+
+def test_round1_failure_returns_early_with_zero_rounds():
+    sector = _make_sector()
+
+    searcher = MagicMock()
+    searcher.search_sector.return_value = {
+        "success": False,
+        "error": "Gemini quota exhausted",
+        "content": "",
+        "sources": [],
+    }
+    searcher._use_cli_fallback = False
+
+    analyzer = MagicMock()
+    analyzer._use_cli_fallback = False
+
+    fake_claude = MagicMock(return_value="not used")
+
+    result = run_sector_research(
+        sector=sector,
+        searcher=searcher,
+        analyzer=analyzer,
+        max_rounds=2,
+        claude_caller=fake_claude,
+    )
+
+    assert result.success is False
+    assert result.rounds_completed == 0
+    assert "Gemini quota exhausted" in result.error
+    assert all(v is False for v in result.dimensions_passed.values())
+    # Critically: analyze must not be called when round 1 failed
+    analyzer.analyze_sector.assert_not_called()
+    # Claude judge also must not be called
+    fake_claude.assert_not_called()
+
+
+def test_failed_gap_fill_does_not_consume_rounds_completed_but_does_consume_attempts():
+    """
+    With max_rounds=3 (so 2 gap-fill attempts available), a failed gap-fill
+    should NOT increment rounds_completed but SHOULD count toward the attempt
+    budget so we don't loop forever on chained failures.
+    """
+    sector = _make_sector()
+
+    # Round 1 returns minimal content that fails most quant checks
+    minimal_first = {
+        "success": True,
+        "content": "Some sector text without dates or specific numbers.",
+        "sources": [],
+    }
+    # All gap-fill attempts fail
+    failing_gap = {"success": False, "error": "503 service unavailable"}
+
+    searcher = MagicMock()
+    searcher.search_sector.side_effect = [minimal_first, failing_gap, failing_gap]
+    searcher._use_cli_fallback = False
+
+    analyzer = MagicMock()
+    analyzer.analyze_sector.return_value = {
+        "success": True,
+        "analysis": "x" * 600,
+        "sources": [],
+    }
+    analyzer._use_cli_fallback = False
+
+    # Claude judge says everything fails so gap-fill loop will try
+    fake_claude = MagicMock(return_value='{"정의": false, "현황": false, "근거": false, "반론": false, "적용": false}')
+
+    result = run_sector_research(
+        sector=sector,
+        searcher=searcher,
+        analyzer=analyzer,
+        max_rounds=3,
+        claude_caller=fake_claude,
+    )
+
+    assert result.success is True  # final analyze still ran
+    # Round 1 succeeded; 2 gap-fill attempts both failed → rounds_completed stays at 1
+    assert result.rounds_completed == 1
+    # Searcher was called for round 1 + 2 gap-fill attempts (budget = max_rounds-1 = 2)
+    assert searcher.search_sector.call_count == 3

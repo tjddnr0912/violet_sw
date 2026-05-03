@@ -2,10 +2,15 @@
 Sector Research Orchestrator
 ----------------------------
 Wraps searcher + analyzer with a 5-dimension Claude verification gate
-and one targeted Gemini gap-fill round. Produces a richer search context
+and targeted Gemini gap-fill rounds. Produces a richer search context
 before the final analyzer call without modifying searcher/analyzer themselves.
 
-Hard cap: 8 minutes per sector. CLI fallback active → max_rounds clamped to 1.
+Time budget: SECTOR_HARD_CAP_SECONDS (480s, 8 min) gates the gap-fill loop;
+once elapsed, no new gap-fills start but the final analyze still runs (the
+analyze step is a single API call we do not interrupt mid-flight).
+
+CLI fallback active (searcher or analyzer in `_use_cli_fallback=True` mode)
+→ max_rounds clamped to 1, skipping gap-fill entirely.
 """
 
 import logging
@@ -137,9 +142,14 @@ def run_sector_research(
     logger.info(f"[{sector.name}] Final gate: failing={[d.name for d in failing_dims]}")
 
     # ---- Round 2+: gap-fill (if budget allows) ----
+    # gap_fills_attempted gates the loop (so a chain of failed gap-fills cannot loop forever);
+    # rounds_completed only counts successful content-producing rounds (reported to caller).
+    gap_fills_attempted = 0
+    max_gap_fills = max(0, effective_max_rounds - 1)  # round 1 is the initial search
+
     while (
         failing_dims
-        and rounds_completed < effective_max_rounds
+        and gap_fills_attempted < max_gap_fills
         and time.time() < deadline
     ):
         # pick the highest-priority failing dim that has a follow-up template
@@ -148,24 +158,39 @@ def run_sector_research(
             break
 
         followup_query = target.followup_query_template.format(sector=sector.name)
-        logger.info(f"[{sector.name}] Round {rounds_completed + 1}: gap-fill on '{target.name}'")
+        logger.info(f"[{sector.name}] Gap-fill attempt {gap_fills_attempted + 1}: '{target.name}'")
+        logger.debug(f"[{sector.name}] Followup query: {followup_query!r}")
 
         gap_result = _gap_fill_round(searcher, sector, followup_query, deadline)
-        rounds_completed += 1
+        gap_fills_attempted += 1
 
         if gap_result.get("success"):
+            rounds_completed += 1
             accumulated_content += "\n\n--- gap-fill: " + target.name + " ---\n"
             accumulated_content += gap_result.get("content", "")
             accumulated_sources.extend(gap_result.get("sources", []))
-            # re-evaluate just this dimension
-            new_pass = target.quantitative_check(accumulated_content, accumulated_sources)
-            dimensions_passed[target.name] = new_pass
+            # Full re-sweep: gap-fill content may rescue dims beyond the targeted one
+            # (e.g. a 근거 fill that brings new sources also satisfies 현황).
+            quant_pass = {
+                d.name: d.quantitative_check(accumulated_content, accumulated_sources)
+                for d in SECTOR_DIMENSIONS
+            }
+            dimensions_passed = {
+                name: quant_pass[name] or dimensions_passed.get(name, False)
+                for name in quant_pass
+            }
+        else:
+            logger.warning(f"[{sector.name}] Gap-fill on '{target.name}' failed: {gap_result.get('error')}")
 
         failing_dims = [d for d in SECTOR_DIMENSIONS if not dimensions_passed.get(d.name, True)]
 
     # ---- Final analyze ----
     if time.time() >= deadline:
-        logger.warning(f"[{sector.name}] Hard cap reached before analyze; proceeding anyway")
+        # Hard cap governs gap-fill budget; final analyze always runs (see module docstring).
+        logger.warning(
+            f"[{sector.name}] Hard cap elapsed (gap-fill budget exhausted); "
+            f"proceeding to final analyze"
+        )
 
     enriched_search = {
         "success": True,
@@ -204,12 +229,16 @@ def _gap_fill_round(searcher, sector: Sector, followup_query: str, deadline: flo
     """
     Issue a follow-up search by temporarily overriding the sector's search_keywords.
     Reuses searcher.search_sector so all retry/CLI-fallback logic stays in one place.
+
+    Contract: `followup_query` is a multi-sentence English instruction (from
+    Dimension.followup_query_template). The searcher must treat search_keywords[0]
+    as instruction text — see sector_bot/dimensions.py templates for examples.
     """
     if time.time() >= deadline:
         return {"success": False, "error": "deadline reached"}
 
     original_keywords = list(sector.search_keywords)
-    # Inject followup query as the primary keyword
+    # Inject followup as primary keyword; keep up to 3 original keywords as supporting context.
     sector.search_keywords = [followup_query] + original_keywords[:3]
     try:
         return searcher.search_sector(sector)
