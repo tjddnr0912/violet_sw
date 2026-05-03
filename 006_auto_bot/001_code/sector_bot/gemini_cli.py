@@ -75,3 +75,15 @@ def extract_urls(text: str) -> list[str]:
     urls = re.findall(url_pattern, text)
     # 중복 제거 (순서 유지)
     return list(dict.fromkeys(urls))
+
+
+def is_cli_mode_active(*instances) -> bool:
+    """
+    Returns True if any of the given searcher/analyzer instances has been
+    flipped into Gemini CLI fallback mode. Used by the orchestrator to
+    clamp max_rounds=1 when API quota is exhausted.
+    """
+    for inst in instances:
+        if getattr(inst, "_use_cli_fallback", False):
+            return True
+    return False
