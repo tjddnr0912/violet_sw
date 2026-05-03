@@ -246,12 +246,12 @@ class WeeklySectorBot:
             )
             logger.info(f"Scheduled: {sector.name} at Sunday {sector.scheduled_time}")
 
-        # 일요일 18:30에 전체 완료 알림
-        schedule.every().sunday.at("18:30").do(self._send_weekly_summary)
+        # 일요일 19:20에 전체 완료 알림 (마지막 섹터 18:40 + 40분 여유)
+        schedule.every().sunday.at("19:20").do(self._send_weekly_summary)
 
-        # 일요일 19:00에 종합 투자 평가 보고서 생성
-        schedule.every().sunday.at("19:00").do(self._scheduled_comprehensive_report)
-        logger.info("Scheduled: Comprehensive Report at Sunday 19:00")
+        # 일요일 19:40에 종합 투자 평가 보고서 생성 (텔레그램 알림 후 20분 여유)
+        schedule.every().sunday.at("19:40").do(self._scheduled_comprehensive_report)
+        logger.info("Scheduled: Comprehensive Report at Sunday 19:40")
 
         logger.info("Schedule registered. Waiting for Sunday...")
 
