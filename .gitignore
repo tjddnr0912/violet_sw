@@ -181,6 +181,8 @@ temp/
 # Claude Code worktrees and local session state (must never be committed)
 .claude/
 **/.claude/
+.worktrees/
+worktrees/
 
 # Casper runtime state
 014_casper/.casper.pid
