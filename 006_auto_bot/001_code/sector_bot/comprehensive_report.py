@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .config import SectorConfig, SECTORS, Sector
+from .dimensions import claude_judge_comprehensive
 from .writer import SectorWriter
 
 logger = logging.getLogger(__name__)
@@ -84,10 +85,8 @@ class ComprehensiveReportGenerator:
 
     def generate_report(self, date: datetime = None) -> Dict:
         """
-        종합 투자 평가 보고서 생성
-
-        Returns:
-            {'success': bool, 'content': str, 'filepath': str, 'error': str}
+        종합 투자 평가 보고서 생성.
+        1차 합성 → 5차원 게이트 → 미달 시 1회 재합성.
         """
         if date is None:
             date = datetime.now()
@@ -97,17 +96,45 @@ class ComprehensiveReportGenerator:
         if not collected['success']:
             return {'success': False, 'error': collected['error']}
 
-        # 2. Claude 프롬프트 구성
+        sector_count = len(collected['sectors'])
+
+        # 2. 1차 합성
         prompt = self._build_comprehensive_prompt(collected['sectors'], collected['missing'], date)
         logger.info(f"Comprehensive prompt: {len(prompt)} chars")
 
-        # 3. Claude CLI 호출
         try:
             analysis = self._call_claude(prompt)
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-        # 4. 마크다운 보고서 저장
+        # 3. 게이트 평가 (Claude judge)
+        gate = claude_judge_comprehensive(
+            report_text=analysis,
+            sector_count=sector_count,
+            claude_caller=self._call_claude,
+        )
+        failed_dims = [name for name, ok in gate.items() if not ok]
+        logger.info(f"Comprehensive gate: pass={sum(gate.values())}/5, fail={failed_dims}")
+
+        # 4. 미달 시 1회 재합성 (instruction 추가)
+        if failed_dims:
+            logger.info(f"Re-synthesizing once to address: {failed_dims}")
+            patch_instructions = "\n".join(
+                f"- {name} 차원이 미달입니다. 보고서를 다시 작성하되 이 부분을 강화해 주세요."
+                for name in failed_dims
+            )
+            patched_prompt = (
+                prompt
+                + "\n\n# 재합성 지시 (이전 판본의 보완점)\n"
+                + patch_instructions
+                + "\n\n위 미달 차원을 반드시 충족하도록 새 보고서를 출력하세요."
+            )
+            try:
+                analysis = self._call_claude(patched_prompt)
+            except Exception as e:
+                logger.warning(f"Re-synthesis failed, keeping first draft: {e}")
+
+        # 5. 마크다운 저장
         report_content = self._build_report_markdown(analysis, date)
         filepath = os.path.join(collected['date_dir'], 'comprehensive_report.md')
 
@@ -120,6 +147,8 @@ class ComprehensiveReportGenerator:
             'success': True,
             'content': report_content,
             'filepath': filepath,
+            'gate_results': gate,
+            'failed_dimensions': failed_dims,
         }
 
     def generate_title(self, date: datetime = None) -> str:
