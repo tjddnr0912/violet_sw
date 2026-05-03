@@ -217,3 +217,78 @@ def test_failed_gap_fill_does_not_consume_rounds_completed_but_does_consume_atte
     assert result.rounds_completed == 1
     # Searcher was called for round 1 + 2 gap-fill attempts (budget = max_rounds-1 = 2)
     assert searcher.search_sector.call_count == 3
+
+
+def test_gap_fill_runs_when_dimension_fails_and_budget_allows():
+    sector = _make_sector()
+
+    failing_first = {
+        "success": True,
+        "content": "vague intro text without numbers or dates",
+        "sources": [],  # fails 근거 dimension
+    }
+    rich_second = {
+        "success": True,
+        "content": (
+            "S&P 500 rose 1.2% on 2026-04-28. NVIDIA gained $5.20 on April 29, 2026. "
+            "Korea KOSPI fell 0.8% on 2026-04-30."
+        ),
+        "sources": [
+            {"url": "https://www.bloomberg.com/x"},
+            {"url": "https://www.reuters.com/y"},
+        ],
+    }
+
+    searcher = MagicMock()
+    searcher.search_sector.side_effect = [failing_first, rich_second]
+    searcher._use_cli_fallback = False
+
+    analyzer = MagicMock()
+    analyzer.analyze_sector.return_value = {
+        "success": True,
+        "analysis": "x" * 600,
+        "sources": rich_second["sources"],
+    }
+    analyzer._use_cli_fallback = False
+
+    # Claude judge: fails everything → forces gap-fill on first failing dim with template
+    fake_claude = MagicMock(return_value='{"정의": false, "현황": false, "근거": false, "반론": false, "적용": false}')
+
+    result = run_sector_research(
+        sector=sector,
+        searcher=searcher,
+        analyzer=analyzer,
+        max_rounds=2,
+        claude_caller=fake_claude,
+    )
+
+    assert searcher.search_sector.call_count == 2  # round1 + 1 gap-fill
+    assert result.rounds_completed == 2
+    assert result.success is True
+
+
+def test_extracts_contradictions_from_analysis():
+    from sector_bot.orchestrator import _extract_contradictions
+
+    text = """## Analysis Body
+
+Some content.
+
+## 📌 자료 간 차이
+
+- Bloomberg는 +5.2%, Reuters는 +3.8% — 환율 시점 차이
+- IDC는 점유율 30%, Gartner는 28% — 카테고리 정의 차이
+
+## 면책
+
+disclaimer
+"""
+    items = _extract_contradictions(text)
+    assert len(items) == 2
+    assert "Bloomberg" in items[0]
+    assert "IDC" in items[1]
+
+
+def test_extracts_no_contradictions_when_section_absent():
+    from sector_bot.orchestrator import _extract_contradictions
+    assert _extract_contradictions("## 일반 분석\n\n본문\n") == []
