@@ -129,3 +129,48 @@ def test_global_balance_fails_at_seventy_korean():
     items = [_item(source="SBS") for _ in range(7)] + \
             [_item(source="Bloomberg") for _ in range(3)]
     assert _check_global_balance(items, {}) is False
+
+
+def test_claude_judge_news_signature():
+    from news_bot.dimensions import claude_judge_news
+    import inspect
+    sig = inspect.signature(claude_judge_news)
+    params = list(sig.parameters.keys())
+    assert params[:2] == ["news_items", "stats"]
+    assert "claude_caller" in params
+
+
+def test_claude_judge_news_uses_injected_caller(monkeypatch):
+    from news_bot.dimensions import claude_judge_news
+
+    captured = {}
+    def fake_caller(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return '{"균형": true, "신선도": false, "다양성": true, "출처신뢰": true, "글로벌균형": true}'
+
+    items = [_item(category="경제") for _ in range(5)]
+    stats = {"by_category": {"경제": 5}, "tier1_ratio": 0.4, "korean_ratio": 0.5}
+    result = claude_judge_news(
+        news_items=items,
+        stats=stats,
+        claude_caller=fake_caller,
+    )
+    assert result == {"균형": True, "신선도": False, "다양성": True, "출처신뢰": True, "글로벌균형": True}
+    assert "균형" in captured["prompt"]
+    # stats summary must reach Claude
+    assert "tier1_ratio" in captured["prompt"] or "0.4" in captured["prompt"]
+
+
+def test_claude_judge_news_falls_back_on_invalid_json():
+    from news_bot.dimensions import claude_judge_news
+
+    def bad_caller(prompt: str) -> str:
+        return "not json at all"
+
+    result = claude_judge_news(
+        news_items=[],
+        stats={},
+        claude_caller=bad_caller,
+    )
+    # all-pass fallback
+    assert result == {"균형": True, "신선도": True, "다양성": True, "출처신뢰": True, "글로벌균형": True}

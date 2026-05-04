@@ -164,3 +164,60 @@ NEWS_DIMENSIONS: List[NewsDimension] = [
         ),
     ),
 ]
+
+
+def _build_judge_prompt(news_items: list, stats: dict) -> str:
+    """Build a Claude prompt that asks for a one-line JSON dimension verdict."""
+    sample_titles = "\n".join(
+        f"- [{item.get('category', '?')}] [{item.get('source', '?')}] {item.get('title', '')[:80]}"
+        for item in news_items[:30]
+    )
+    dim_lines = "\n".join(f'- "{d.name}": {d.check_description}' for d in NEWS_DIMENSIONS)
+    stats_str = json.dumps(stats, ensure_ascii=False, default=str)
+    return f"""You are evaluating whether a daily news collection meets a 5-dimension quality checklist.
+
+Dimensions to check:
+{dim_lines}
+
+Aggregate statistics:
+{stats_str}
+
+Sample of titles ({min(len(news_items), 30)} of {len(news_items)} items):
+{sample_titles}
+
+For each dimension, decide if the collection passes the dimension's criterion.
+Be strict: missing categories, dominant single-source, repeated stories, source-trust below the bar all fail.
+
+Respond with ONLY a JSON object on a single line, no prose, no code fences:
+{{"균형": true|false, "신선도": true|false, "다양성": true|false, "출처신뢰": true|false, "글로벌균형": true|false}}
+"""
+
+
+def claude_judge_news(
+    news_items: list,
+    stats: dict,
+    claude_caller: Callable[[str], str],
+) -> dict:
+    """
+    Call Claude to judge each dimension on the assembled news collection.
+    On any error or invalid JSON, returns all-True (fail-open) so we don't
+    trigger spurious gap-fill rounds on Claude infrastructure problems.
+    """
+    prompt = _build_judge_prompt(news_items, stats)
+    try:
+        raw = claude_caller(prompt)
+        # schema is flat (no nested braces) — see _build_judge_prompt template
+        match = re.search(r"\{[^{}]*\}", raw)
+        if not match:
+            raise ValueError("no JSON object in Claude response")
+        parsed = json.loads(match.group(0))
+        missing = [d.name for d in NEWS_DIMENSIONS if d.name not in parsed]
+        if missing:
+            logger.warning(
+                f"News judge response missing dimension keys {missing}; "
+                f"defaulting missing to True"
+            )
+        return {d.name: bool(parsed.get(d.name, True)) for d in NEWS_DIMENSIONS}
+    except Exception as e:
+        logger.warning(f"News judge failed: {e}; falling back to all-pass")
+        return {d.name: True for d in NEWS_DIMENSIONS}
