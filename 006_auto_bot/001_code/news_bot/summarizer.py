@@ -6,6 +6,8 @@ import os
 import re
 import time
 
+from shared.gemini_cli import is_quota_error, call_gemini_cli
+
 logger = logging.getLogger(__name__)
 
 # 스킬 파일 경로
@@ -37,6 +39,7 @@ class AISummarizer:
         """
         self.client = genai.Client(api_key=api_key)
         self.model_name = model
+        self._use_cli_fallback = False  # flips to True after first quota error
 
         self.system_instruction = """You are a professional news journalist and summarizer.
 Your role is to provide objective summaries of news articles from verified sources.
@@ -62,11 +65,8 @@ This is journalistic work, not content generation."""
         Returns:
             Blog-style summary in markdown format
         """
-        try:
-            logger.info("Creating blog-style summary with Gemini API...")
-
-            skill_content = load_news_skill()
-            prompt = f"""{skill_content}
+        skill_content = load_news_skill()
+        prompt = f"""{skill_content}
 
 # 요약 모드: Daily (일간 요약)
 
@@ -77,11 +77,14 @@ This is journalistic work, not content generation."""
 
 {raw_markdown}
 """
+        logger.info(f"Input prompt size: {len(prompt)} characters")
+        logger.info(f"Raw markdown size: {len(raw_markdown)} characters")
 
-            # Log input size for debugging
-            logger.info(f"Input prompt size: {len(prompt)} characters")
-            logger.info(f"Raw markdown size: {len(raw_markdown)} characters")
+        # CLI fallback path: skip API entirely once quota was hit
+        if self._use_cli_fallback:
+            return self._summarize_via_cli(prompt, raw_markdown)
 
+        try:
             logger.info("Calling Gemini API with safety OFF for verified news journalism...")
 
             response = self.client.models.generate_content(
@@ -122,7 +125,26 @@ This is journalistic work, not content generation."""
                 return self._create_fallback_summary(raw_markdown)
 
         except Exception as e:
+            if is_quota_error(e):
+                logger.warning(f"API quota exhausted, switching to Gemini CLI: {e}")
+                self._use_cli_fallback = True
+                return self._summarize_via_cli(prompt, raw_markdown)
             logger.error(f"Error creating blog summary: {str(e)}")
+            return self._create_fallback_summary(raw_markdown)
+
+    def _summarize_via_cli(self, prompt: str, raw_markdown: str) -> str:
+        """Run Gemini summarization via CLI fallback. Returns markdown summary or fallback text."""
+        logger.info("[CLI Fallback] Summarizing via gemini -p...")
+        try:
+            text = call_gemini_cli(prompt)
+            if not text or len(text) < 200:
+                logger.warning(f"[CLI Fallback] Insufficient response: {len(text)} chars")
+                return self._create_fallback_summary(raw_markdown)
+            cleaned = self._remove_footer(text.strip())
+            logger.info(f"[CLI Fallback] Summary completed ({len(cleaned)} chars)")
+            return cleaned
+        except Exception as e:
+            logger.error(f"[CLI Fallback] Failed: {e}")
             return self._create_fallback_summary(raw_markdown)
 
     def _create_fallback_summary(self, raw_markdown: str) -> str:
