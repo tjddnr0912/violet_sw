@@ -24,7 +24,7 @@ from typing import Callable, Dict, List, Optional
 
 from .config import Sector
 from .dimensions import SECTOR_DIMENSIONS, claude_judge_dimensions
-from .gemini_cli import is_cli_mode_active
+from shared.gemini_cli import is_cli_mode_active
 
 logger = logging.getLogger(__name__)
 

@@ -17,7 +17,7 @@ from google import genai
 from google.genai import types
 
 from .config import SectorConfig, Sector, SECTORS
-from .gemini_cli import is_quota_error, call_gemini_cli
+from shared.gemini_cli import is_quota_error, call_gemini_cli
 
 logger = logging.getLogger(__name__)
 

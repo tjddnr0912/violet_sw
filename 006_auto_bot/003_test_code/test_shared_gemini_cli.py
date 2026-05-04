@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for sector_bot.gemini_cli helper functions."""
+"""Tests for shared.gemini_cli helper functions."""
 
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '001_code'))
 
-from sector_bot.gemini_cli import is_cli_mode_active
+from shared.gemini_cli import is_cli_mode_active
 
 
 class _FakeFlagHolder:
