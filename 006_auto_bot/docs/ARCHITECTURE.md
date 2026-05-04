@@ -10,19 +10,23 @@
 ├── weekly_sector_bot.py         # 섹터봇 (일요일)
 ├── telegram_gemini_bot.py       # Telegram Q&A → Gemini → Blogger
 ├── news_bot/                    # 뉴스봇 전용 모듈
-│   ├── config.py                # RSS sources, schedule, labels
-│   ├── aggregator.py            # RSS 파싱
-│   ├── summarizer.py            # Gemini AI 요약
+│   ├── config.py                # RSS sources, schedule, HOURS_LIMIT_BY_CATEGORY
+│   ├── aggregator.py            # RSS 파싱 (per-category freshness 지원)
+│   ├── summarizer.py            # Gemini AI 요약 (CLI fallback)
+│   ├── dimensions.py            # 5차원 (균형/신선도/다양성/출처신뢰/글로벌균형) + claude_judge_news
+│   ├── orchestrator.py          # run_news_research: RSS → 게이트 → CLI 갭필 → 풀 enrich
 │   └── writer.py                # 마크다운 I/O, cleanup
 ├── sector_bot/                  # 섹터봇 전용 모듈
-│   ├── config.py                # 11개 섹터 정의, 스케줄, 설정
+│   ├── config.py                # 11개 섹터 정의, 스케줄 (12:00 시작 40분 간격)
 │   ├── searcher.py              # Gemini Google Search Grounding
 │   ├── analyzer.py              # 섹터별 분석 프롬프트
-│   ├── gemini_cli.py            # Gemini CLI fallback (API 429 시 gemini -p 전환)
-│   ├── comprehensive_report.py  # 종합 투자 평가 보고서 (Claude CLI 분석)
+│   ├── dimensions.py            # 5차원 (정의/현황/근거/반론/적용) + claude_judge + 종합 변형
+│   ├── orchestrator.py          # run_sector_research: 검색 → 게이트 → 갭필 → 분석
+│   ├── comprehensive_report.py  # 종합 보고서 (1차 합성 → 게이트 → 1회 재합성)
 │   ├── writer.py                # 마크다운 I/O
 │   └── state_manager.py         # 상태 저장/복구
 ├── shared/                      # 공유 모듈
+│   ├── gemini_cli.py            # Gemini CLI fallback (sector + news 공용, API 429 시 gemini -p)
 │   ├── html_utils.py            # HTML 태그 처리, 마크다운 변환
 │   ├── telegram_api.py          # Telegram Bot API (Inline Keyboard)
 │   ├── telegram_notifier.py     # 알림 발송

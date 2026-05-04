@@ -16,6 +16,15 @@
 | `RESEARCH_QUICK_COMMAND` | ❌ | `/quick` | Telegram Q&A 단발 모드 트리거 prefix |
 | `RESEARCH_MAX_ROUNDS` | ❌ | 3 | Deep research 라운드 상한 (1~4 clamp) |
 | `RUN_LIVE_RESEARCH_TEST` | ❌ | (unset) | 라이브 통합 테스트 활성화 (`1`) |
+| `NEWS_HOURS_LIMIT` | ❌ | 24 | 뉴스봇 RSS 글로벌 신선도 한도 (시간) — 카테고리별 한도 미설정 시 fallback |
+| `NEWS_HOURS_정치` | ❌ | 6 | 뉴스봇 정치 카테고리 신선도 한도 |
+| `NEWS_HOURS_경제` | ❌ | 12 | 뉴스봇 경제 카테고리 신선도 한도 |
+| `NEWS_HOURS_사회` | ❌ | 12 | 뉴스봇 사회 카테고리 신선도 한도 |
+| `NEWS_HOURS_국제` | ❌ | 12 | 뉴스봇 국제 카테고리 신선도 한도 |
+| `NEWS_HOURS_문화` | ❌ | 24 | 뉴스봇 문화 카테고리 신선도 한도 |
+| `NEWS_HOURS_IT` | ❌ | 12 | 뉴스봇 IT/과학 카테고리 신선도 한도 |
+| `NEWS_HOURS_주식` | ❌ | 6 | 뉴스봇 주식 카테고리 신선도 한도 |
+| `NEWS_HOURS_암호화폐` | ❌ | 6 | 뉴스봇 암호화폐 카테고리 신선도 한도 |
 
 ## OAuth 자격 (`credentials/`)
 
