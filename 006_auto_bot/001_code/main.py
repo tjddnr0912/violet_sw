@@ -34,6 +34,7 @@ from news_bot.config import config
 from news_bot.aggregator import NewsAggregator
 from news_bot.summarizer import AISummarizer
 from news_bot.writer import MarkdownWriter
+from news_bot.orchestrator import run_news_research, NewsOrchestrationResult
 
 
 class NewsBot:
@@ -82,18 +83,26 @@ class NewsBot:
             logger.info("Starting daily news task")
             logger.info("=" * 60)
 
-            # Step 1: Fetch and select top news
-            logger.info(f"Step 1: Fetching top {self.config.MAX_NEWS_COUNT} news articles (within {self.config.NEWS_HOURS_LIMIT}h)...")
-            news_items = self.news_aggregator.get_daily_news(
-                count=self.config.MAX_NEWS_COUNT,
-                hours_limit=self.config.NEWS_HOURS_LIMIT
+            # Step 1: Orchestrated fetch (RSS → 5-dim gate → CLI gap-fill)
+            logger.info(f"Step 1: Orchestrating news collection (max {self.config.MAX_NEWS_COUNT}, per-category freshness)...")
+            orch: NewsOrchestrationResult = run_news_research(
+                aggregator=self.news_aggregator,
+                max_count=self.config.MAX_NEWS_COUNT,
+                hours_by_category=self.config.HOURS_LIMIT_BY_CATEGORY,
+                max_gap_fills=4,
             )
 
-            if not news_items:
-                logger.warning("No news items found. Aborting task.")
+            if not orch.success or not orch.news_items:
+                logger.warning(f"Orchestration failed or empty: {orch.error}. Aborting task.")
                 return
 
-            logger.info(f"Successfully fetched {len(news_items)} news articles")
+            news_items = orch.news_items
+            logger.info(
+                f"Orchestrator done: {len(news_items)} items, "
+                f"rounds={orch.rounds_completed}, gap_fills={orch.gap_fills_attempted}, "
+                f"elapsed={orch.elapsed_seconds:.1f}s, "
+                f"dims={sum(orch.dimensions_passed.values())}/5"
+            )
 
             # Step 2: Save raw news organized by category
             logger.info("Step 2: Saving raw news by category...")
