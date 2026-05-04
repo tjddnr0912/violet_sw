@@ -124,7 +124,7 @@ NEWS_DIMENSIONS: List[NewsDimension] = [
             "Use web search. List the top 3 {category} news items from the past 24 hours. "
             "For each: (1) headline, (2) one-paragraph summary, (3) primary source URL, "
             "(4) publication date in YYYY-MM-DD format. Return as JSON array of "
-            '{"title", "summary", "url", "date", "source"} objects.'
+            '{{"title", "summary", "url", "date", "source"}} objects.'
         ),
     ),
     NewsDimension(
@@ -133,7 +133,7 @@ NEWS_DIMENSIONS: List[NewsDimension] = [
         quantitative_check=_check_freshness,
         followup_query_template=(
             "Use web search. Find the most recent {category} news from the last 6 hours only. "
-            "Return JSON array of {\"title\", \"summary\", \"url\", \"date\", \"source\"} objects, "
+            "Return JSON array of {{\"title\", \"summary\", \"url\", \"date\", \"source\"}} objects, "
             "minimum 3 items, all with timestamps within the last 6 hours."
         ),
     ),
@@ -150,7 +150,7 @@ NEWS_DIMENSIONS: List[NewsDimension] = [
         followup_query_template=(
             "Use web search. Find Tier-1 source coverage (Bloomberg, Reuters, Financial Times, "
             "Wall Street Journal, 연합뉴스, SBS) of today's top {topic} stories. Return JSON array of "
-            "{\"title\", \"summary\", \"url\", \"date\", \"source\"} objects, minimum 3 items."
+            "{{\"title\", \"summary\", \"url\", \"date\", \"source\"}} objects, minimum 3 items."
         ),
     ),
     NewsDimension(
@@ -160,7 +160,7 @@ NEWS_DIMENSIONS: List[NewsDimension] = [
         followup_query_template=(
             "Use web search. Find international (non-Korean) perspectives on today's top global news "
             "topics (focus areas: {topic}). Return JSON array of "
-            "{\"title\", \"summary\", \"url\", \"date\", \"source\"} objects, minimum 3 items."
+            "{{\"title\", \"summary\", \"url\", \"date\", \"source\"}} objects, minimum 3 items."
         ),
     ),
 ]

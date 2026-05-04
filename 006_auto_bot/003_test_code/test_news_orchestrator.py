@@ -40,3 +40,91 @@ def test_run_news_research_signature():
 
 def test_hard_cap_is_twelve_minutes():
     assert NEWS_HARD_CAP_SECONDS == 720
+
+
+import json
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock
+
+
+def _passing_items():
+    """A balanced collection that should pass all 5 dimensions."""
+    items = []
+    cats = ("정치", "경제", "사회", "국제", "문화", "IT/과학", "주식", "암호화폐")
+    sources = ("Bloomberg", "Reuters", "SBS", "YTN", "연합뉴스", "Financial Times")
+    now = datetime.now()
+    for i, cat in enumerate(cats):
+        for j in range(3):  # 3 per category
+            items.append({
+                "title": f"Topic {cat} {j} variant",
+                "category": cat,
+                "source": sources[(i + j) % len(sources)],
+                "published_date": now - timedelta(hours=2),
+                "link": f"https://example.com/{cat}/{j}",
+                "description": "x",
+            })
+    return items
+
+
+def test_round1_passes_when_all_dimensions_satisfied():
+    aggregator = MagicMock()
+    aggregator.fetch_news.return_value = _passing_items()
+    aggregator.select_top_news.return_value = _passing_items()
+
+    fake_claude = MagicMock(return_value='{"균형": true, "신선도": true, "다양성": true, "출처신뢰": true, "글로벌균형": true}')
+
+    result = run_news_research(
+        aggregator=aggregator,
+        max_count=50,
+        max_gap_fills=4,
+        claude_caller=fake_claude,
+    )
+    assert result.success is True
+    assert result.gap_fills_attempted == 0
+    assert all(result.dimensions_passed.values())
+
+
+def test_failed_dim_triggers_gap_fill_via_cli(monkeypatch):
+    """When 균형 fails on round 1, orchestrator should call gemini CLI for the missing category."""
+    from news_bot import orchestrator as orch_mod
+
+    # Aggregator returns items missing the '암호화폐' category (1 item only)
+    items = [
+        item for item in _passing_items()
+        if item["category"] != "암호화폐"
+    ]
+    items.append({
+        "title": "Bitcoin update",
+        "category": "암호화폐",
+        "source": "CoinDesk",
+        "published_date": datetime.now() - timedelta(hours=2),
+        "link": "https://example.com/x",
+        "description": "x",
+    })
+    aggregator = MagicMock()
+    aggregator.fetch_news.return_value = items
+    aggregator.select_top_news.return_value = items
+
+    # Force claude to confirm failure on 균형 dim
+    fake_claude = MagicMock(return_value='{"균형": false, "신선도": true, "다양성": true, "출처신뢰": true, "글로벌균형": true}')
+
+    # Monkeypatch the CLI call to return a JSON gap-fill result
+    cli_response = json.dumps([
+        {"title": "Crypto big news 1", "summary": "x", "url": "https://reuters.com/c1", "date": "2026-05-04", "source": "Reuters"},
+        {"title": "Crypto big news 2", "summary": "y", "url": "https://bloomberg.com/c2", "date": "2026-05-04", "source": "Bloomberg"},
+        {"title": "Crypto big news 3", "summary": "z", "url": "https://coindesk.com/c3", "date": "2026-05-04", "source": "CoinDesk"},
+    ])
+    monkeypatch.setattr(orch_mod, "call_gemini_cli", lambda prompt, timeout=600: cli_response)
+
+    result = run_news_research(
+        aggregator=aggregator,
+        max_count=50,
+        max_gap_fills=4,
+        claude_caller=fake_claude,
+    )
+    assert result.gap_fills_attempted >= 1
+    # After gap-fill, total items should include the 3 new entries
+    assert len(result.news_items) >= len(items) + 3
+    # Crypto items should now be sufficient
+    crypto_count = sum(1 for it in result.news_items if it["category"] == "암호화폐")
+    assert crypto_count >= 4
