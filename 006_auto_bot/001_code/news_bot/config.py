@@ -19,6 +19,23 @@ class Config:
     # News Fetching Settings
     NEWS_HOURS_LIMIT = int(os.getenv('NEWS_HOURS_LIMIT', '24'))  # Default: 24 hours
 
+    # Per-category freshness limits (hours). Falls back to NEWS_HOURS_LIMIT if not listed.
+    HOURS_LIMIT_BY_CATEGORY = {
+        '정치': int(os.getenv('NEWS_HOURS_정치', '6')),
+        '경제': int(os.getenv('NEWS_HOURS_경제', '12')),
+        '사회': int(os.getenv('NEWS_HOURS_사회', '12')),
+        '국제': int(os.getenv('NEWS_HOURS_국제', '12')),
+        '문화': int(os.getenv('NEWS_HOURS_문화', '24')),
+        'IT/과학': int(os.getenv('NEWS_HOURS_IT', '12')),
+        '주식': int(os.getenv('NEWS_HOURS_주식', '6')),
+        '암호화폐': int(os.getenv('NEWS_HOURS_암호화폐', '6')),
+    }
+
+    # Categories the orchestrator's balance check expects (must match dimensions.py EXPECTED_CATEGORIES).
+    EXPECTED_CATEGORIES = (
+        '정치', '경제', '사회', '국제', '문화', 'IT/과학', '주식', '암호화폐',
+    )
+
     # Korean News Sources by Category (RSS Feeds)
     NEWS_SOURCES_BY_CATEGORY = {
         '정치': [
