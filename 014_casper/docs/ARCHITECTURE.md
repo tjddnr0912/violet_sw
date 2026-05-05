@@ -13,11 +13,34 @@ WAITING → PRE_MARKET → ORB_FORMING → SCANNING → POSITION_OPEN → DONE_T
 | 상태 | 진입 조건 | 핵심 동작 |
 |------|---------|---------|
 | `WAITING` | 봇 기동 | KIS warm-up, 자본 동기화, 트레이드 히스토리 로드 |
-| `PRE_MARKET` | ET 09:30 직전 | VIX 필터, 트렌드 점검, 공휴일 체크 |
-| `ORB_FORMING` | ET 09:30~09:45 | 15분 ORB 고가/저가 계산 |
-| `SCANNING` | ET 09:45~10:55 | FVG 감지, Pullback 진입 시그널 |
+| `PRE_MARKET` | ET 09:30 직전 | VIX 필터, 트렌드 점검 (정보용 — dual scan에서 진입 결정 무관), 공휴일 체크 |
+| `ORB_FORMING` | ET 09:30~09:45 | 15분 ORB 계산 (dual scan: TQQQ+SQQQ 양쪽, single: trend leg만) |
+| `SCANNING` | ET 09:45~10:55 | FVG 감지(strict: 몸통 가로지르기 + FVG-ORB intersect), Pullback 진입 시그널. dual scan: 첫 풀백 측 진입 |
 | `POSITION_OPEN` | 시그널 + 진입 성공 | SL/TP 모니터링, BE move (11:00) |
 | `DONE_TODAY` | 청산 또는 15:50 | 일일 요약, 다음날 대기 |
+
+### Scan 모드 — `mode.dual_scan`
+
+| 값 | 동작 |
+|---|------|
+| `true` (default) | TQQQ + SQQQ 양쪽 ORB 동시 계산. 양쪽 leg를 9:45~10:55 동안 스캔. 첫 풀백 발생한 leg가 그날의 단일 거래를 차지. trend(QQQ MA20)는 정보용으로만 보존 |
+| `false` | 기존 trend mode — QQQ MA20 기준으로 BULL→TQQQ 또는 BEAR→SQQQ 한 심볼만 스캔 |
+
+dual scan 채택 근거: 60일 백테스트에서 단일 trend(±$5.41)보다 거래 기회 확대 + 승률·PF 동시 개선(+$18.94, PF 2.01, MDD -2.83%, 2026-05-06 결과). SQQQ에서 잡힌 Long FVG는 의미적으로 QQQ에서의 Bearish FVG(하락 displacement)에 대응 — 인버스 ETF 매핑이 자연스럽게 양방향 매매를 제공.
+
+### FVG strict 조건 — `entry.strict_fvg`
+
+원본 전략(Casper SMC / FMZ Quant 정의)의 핵심: "bullish FVG가 upper ORB boundary와 **intersect** 해야 함". `strict=true`(default)에서 두 조건 동시 검증:
+
+```
+(S1) displacement 캔들의 몸통이 ORB 라인을 가로지름:
+     candle.Open  <= orb_high <= candle.Close
+
+(S2) 검출된 FVG zone이 ORB 라인을 포함:
+     fvg.bottom   <= orb_high <= fvg.top
+```
+
+`strict=false`로 두면 기존 baseline(`Close > orb_high`만 검증) 동작. 백테스트에서 가짜 시그널 ~70% 제거.
 
 ## 주요 모듈
 

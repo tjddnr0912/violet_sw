@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-05-06: ORB-FVG strict + dual scan default
+
+원본 영상(Casper SMC / Jesse Rogers, "6 Figure ICT Trading Strategy")의 핵심 트리거 — **FVG가 ORB 라인을 가로지를(intersect) 때만 유효** — 가 코드에 누락돼 있었음. 사용자 지적으로 발견 → 외부 검증(FMZ Quant 공식 정의) → 강화 조건 도입.
+
+- `src/core/fvg.py::check_breakout_with_fvg(..., strict=False)` — strict=True에서 두 조건 추가:
+  - (S1) displacement 캔들 몸통이 ORB 가로지르기: `Open <= orb_high <= Close`
+  - (S2) FVG zone이 ORB 라인 포함: `fvg.bottom <= orb_high <= fvg.top`
+- `src/bot.py::_handle_orb_forming` / `_handle_scanning` — dual leg(TQQQ+SQQQ) 동시 ORB 계산 및 스캔, 첫 풀백 측 진입. trend mode는 `mode.dual_scan=false`로 fallback 가능
+- `config/strategy_params.json`: `entry.strict_fvg=true`, `mode.dual_scan=true` 추가. R:R 1:3 유지
+- `run_casper.sh` 헤더 + 텔레그램 BOT STARTED — scan/fvg 모드 표시
+- 백테스트(60일, R:R 1:3, 비대칭 수수료 0.65%):
+  | 모드 | 거래 | 승률 | PF | 순손익 | MDD |
+  |------|---:|---:|---:|---:|---:|
+  | dual baseline | 37 | 18.9% | 1.10 | +$5.41 | -5.78% |
+  | dual + strict | **13** | **23.1%** | **2.01** | **+$18.94** | **-2.83%** |
+- 가짜 시그널 ~70% 제거. SQQQ Long FVG = QQQ Bearish FVG 의미 검증됨 (strict dual에서 SQQQ 6/13건 정상 작동)
+- 단위 테스트 310건 전부 통과. `test_overnight.py::TestOrbRetry`만 dual leg semantics에 맞춰 assertion 업데이트 (call_count 2→4)
+- 상세 → [STRATEGY_REVIEW.md](strategy/STRATEGY_REVIEW.md), 진단 미스 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md#전략-문서의-핵심-조건이-구현에서-누락)
+
 ## 2026-05-01: commission 0.25% + R:R 1:3
 
 - `commission.rate_per_side`: 0.0009 → 0.0025 (사용자 실계좌 기준)

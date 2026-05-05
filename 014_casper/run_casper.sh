@@ -130,8 +130,24 @@ start_bot() {
         echo -e "${GREEN}[INFO]${NC} 테스트: ${YELLOW}ON (1주 고정)${NC}"
     fi
     echo -e "${GREEN}[INFO]${NC} 계좌: ${KIS_ACCOUNT_NO}"
-    RR=$(python3 -c "import json; print(int(json.load(open('config/strategy_params.json'))['entry']['rr_ratio']))" 2>/dev/null || echo "?")
-    echo -e "${GREEN}[INFO]${NC} 전략: ORB + FVG + Pullback (R:R 1:${RR})"
+    CONFIG_INFO=$(python3 -c "
+import json
+c = json.load(open('config/strategy_params.json'))
+rr = c['entry'].get('rr_ratio', 2.0)
+strict = c['entry'].get('strict_fvg', False)
+dual = c.get('mode', {}).get('dual_scan', False)
+print(f'{rr}|{strict}|{dual}')
+" 2>/dev/null || echo "?|?|?")
+    RR=$(echo "$CONFIG_INFO" | cut -d'|' -f1)
+    STRICT_FVG=$(echo "$CONFIG_INFO" | cut -d'|' -f2)
+    DUAL_SCAN=$(echo "$CONFIG_INFO" | cut -d'|' -f3)
+    SCAN_MODE="단일 (QQQ MA20 추세)"
+    [ "$DUAL_SCAN" = "True" ] && SCAN_MODE="${CYAN}DUAL SCAN${NC} (TQQQ+SQQQ 동시)"
+    FVG_MODE="baseline (Close>ORB)"
+    [ "$STRICT_FVG" = "True" ] && FVG_MODE="${CYAN}STRICT${NC} (몸통 가로지르기 + FVG-ORB intersect)"
+    echo -e "${GREEN}[INFO]${NC} 전략: ORB + FVG + Pullback (R:R 1:${RR%.*})"
+    echo -e "${GREEN}[INFO]${NC} 스캔: ${SCAN_MODE}"
+    echo -e "${GREEN}[INFO]${NC} FVG : ${FVG_MODE}"
     echo -e "${GREEN}[INFO]${NC} 종목: TQQQ (강세) / SQQQ (약세)"
     echo ""
 

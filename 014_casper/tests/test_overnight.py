@@ -199,16 +199,17 @@ class TestOrbRetry:
     @patch("src.bot.get_intraday_bars")
     @patch("src.bot.time_utils")
     def test_retries_once_on_failure(self, mock_time, mock_bars, mock_adr, mock_sleep):
+        """Each ORB leg retries once on failure (dual_scan: TQQQ + SQQQ → 4 calls)."""
         import pandas as pd
         mock_time.is_orb_forming.return_value = False
 
-        # First call fails, second succeeds
         idx = pd.date_range("2026-04-06 09:30", periods=6, freq="5min", tz=ET)
         good_bars = pd.DataFrame({
             "Open": [50]*6, "High": [54]*6, "Low": [49]*6,
             "Close": [52]*6, "Volume": [1000]*6,
         }, index=idx)
-        mock_bars.side_effect = [None, good_bars]
+        # TQQQ: fail → retry → good. SQQQ: fail → retry → good.
+        mock_bars.side_effect = [None, good_bars, None, good_bars]
 
         from src.core.risk import TrendState
         bot = _make_bot()
@@ -217,14 +218,16 @@ class TestOrbRetry:
 
         bot._handle_orb_forming()
 
-        assert mock_bars.call_count == 2  # Called twice (retry)
+        assert mock_bars.call_count == 4  # 2 legs × 2 attempts each
         assert bot.orb is not None
+        assert len(bot.orbs) == 2
         assert bot.state == BotState.SCANNING
 
     @patch("src.bot.time.sleep")
     @patch("src.bot.get_intraday_bars", return_value=None)
     @patch("src.bot.time_utils")
     def test_done_after_both_fail(self, mock_time, mock_bars, mock_sleep):
+        """When all legs fail twice → DONE_TODAY (dual_scan: 4 total calls)."""
         mock_time.is_orb_forming.return_value = False
 
         from src.core.risk import TrendState
@@ -234,7 +237,7 @@ class TestOrbRetry:
 
         bot._handle_orb_forming()
 
-        assert mock_bars.call_count == 2  # Tried twice
+        assert mock_bars.call_count == 4  # 2 legs × 2 attempts each
         assert bot.state == BotState.DONE_TODAY
 
 

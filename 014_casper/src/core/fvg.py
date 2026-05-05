@@ -61,7 +61,10 @@ def detect_bullish_fvg(candles: pd.DataFrame) -> Optional[FairValueGap]:
 
 
 def check_breakout_with_fvg(
-    bars: pd.DataFrame, orb_high: float, bar_index: int
+    bars: pd.DataFrame,
+    orb_high: float,
+    bar_index: int,
+    strict: bool = False,
 ) -> Optional[FairValueGap]:
     """
     Check if bar at bar_index shows ORB breakout AND has a bullish FVG.
@@ -69,10 +72,19 @@ def check_breakout_with_fvg(
     Breakout condition: Close > ORB high AND Close > Open (bullish candle).
     FVG checked on 3-candle window: [bar_index-1, bar_index, bar_index+1].
 
+    When ``strict`` is True, two extra constraints are enforced to match the
+    Casper SMC / FMZ Quant ORB+FVG rule that the FVG must intersect the ORB
+    boundary (not merely form somewhere after a breakout):
+      (S1) The displacement candle's body straddles the ORB line:
+           Open <= orb_high <= Close (open below the line, close above).
+      (S2) The detected FVG zone contains the ORB line:
+           fvg.bottom <= orb_high <= fvg.top.
+
     Args:
         bars: DataFrame of 5-min bars (post-ORB window).
         orb_high: ORB high price.
         bar_index: Index of the candidate breakout bar.
+        strict: If True, require body+FVG intersection with the ORB line.
 
     Returns:
         FairValueGap if breakout + FVG found, None otherwise.
@@ -86,6 +98,17 @@ def check_breakout_with_fvg(
     if not (candle["Close"] > orb_high and candle["Close"] > candle["Open"]):
         return None
 
+    if strict and not (candle["Open"] <= orb_high <= candle["Close"]):
+        return None
+
     # Check FVG on 3-candle window
     three = bars.iloc[bar_index - 1 : bar_index + 2]
-    return detect_bullish_fvg(three)
+    fvg = detect_bullish_fvg(three)
+
+    if fvg is None:
+        return None
+
+    if strict and not (fvg.bottom <= orb_high <= fvg.top):
+        return None
+
+    return fvg

@@ -37,6 +37,7 @@ def scan_for_signal(
     symbol: str,
     rr_ratio: float = 2.0,
     min_risk: float = 0.10,
+    strict: bool = False,
 ) -> Optional[TradeSignal]:
     """
     Scan post-ORB 5-minute bars for a trade signal.
@@ -62,7 +63,7 @@ def scan_for_signal(
         return None
 
     for i in range(1, len(bars_5m) - 1):
-        fvg = check_breakout_with_fvg(bars_5m, orb.high, i)
+        fvg = check_breakout_with_fvg(bars_5m, orb.high, i, strict=strict)
         if fvg is None:
             continue
 

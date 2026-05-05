@@ -104,16 +104,21 @@ class TelegramNotifier:
 
     # ── High-level notifications ────────────────────────────────────────
 
-    def notify_bot_started(self, mode: str, capital: float, history: dict) -> None:
-        msg = (
-            f"🤖 <b>BOT STARTED</b>\n"
-            f"Mode: {mode.upper()}\n"
-            f"Capital: ${capital:.2f}\n"
+    def notify_bot_started(self, mode: str, capital: float, history: dict,
+                           strategy_info: dict = None) -> None:
+        lines = [f"🤖 <b>BOT STARTED</b>", f"Mode: {mode.upper()}"]
+        if strategy_info:
+            scan = "DUAL (TQQQ+SQQQ)" if strategy_info.get("dual_scan") else "TREND (QQQ MA20)"
+            fvg = "STRICT" if strategy_info.get("strict_fvg") else "baseline"
+            rr = strategy_info.get("rr_ratio", 2.0)
+            lines.append(f"Scan: {scan}  FVG: {fvg}  R:R: 1:{rr:g}")
+        lines.append(f"Capital: ${capital:.2f}")
+        lines.append(
             f"History: {history.get('count', 0)}T  "
             f"WR {history.get('win_rate', 0):.1f}%  "
             f"PnL ${history.get('pnl', 0):+.2f}"
         )
-        self.send(msg)
+        self.send("\n".join(lines))
 
     def notify_bot_stopped(self, reason: str = "Graceful shutdown") -> None:
         self.send(f"🛑 <b>BOT STOPPED</b>\n{reason}")

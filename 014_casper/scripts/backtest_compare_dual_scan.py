@@ -54,6 +54,8 @@ SELL_RATE = float(os.environ.get("BT_SELL_RATE", "0.0040"))
 COMMISSION_RATE = BUY_RATE
 # R:R override for sensitivity analysis
 RR_RATIO = float(os.environ.get("BT_RR_RATIO", "2.0"))
+# Strict ORB-FVG intersection (Casper SMC original rule)
+STRICT_FVG = os.environ.get("BT_STRICT", "0") in ("1", "true", "True")
 INITIAL_CAPITAL = 500.0
 VIX_LOW = 12.0
 VIX_HIGH = 30.0
@@ -135,6 +137,7 @@ def evaluate_symbol(day_data, sym, sym_daily, day, skip_reasons):
     signal = scan_for_signal(
         post_orb, orb, sym,
         rr_ratio=RR_RATIO, min_risk=MIN_RISK_DOLLAR,
+        strict=STRICT_FVG,
     )
     if signal is None:
         skip_reasons["no_signal"] += 1
@@ -348,7 +351,8 @@ def main():
     print(f"[capital] ${INITIAL_CAPITAL:.2f}")
     print(f"[commission] buy {BUY_RATE*100:.2f}% / sell {SELL_RATE*100:.2f}% "
           f"(round-trip {(BUY_RATE+SELL_RATE)*100:.2f}%)")
-    print(f"[R:R] 1:{RR_RATIO:.1f}\n")
+    print(f"[R:R] 1:{RR_RATIO:.1f}")
+    print(f"[FVG mode] {'STRICT (body straddles ORB + FVG intersects ORB)' if STRICT_FVG else 'baseline (Close>ORB only)'}\n")
 
     print("=" * 72)
     print("  MODE A — trend (QQQ MA20 → single symbol)")

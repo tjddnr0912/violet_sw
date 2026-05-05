@@ -39,6 +39,10 @@
     "entry": {
         "rr_ratio": 3.0,                     # R:R (2026-05-01 1:2 → 1:3)
         "fvg_min_size": 0.0015,
+        "strict_fvg": True,                  # 2026-05-06: FVG가 ORB 라인 가로지를 때만 유효
+    },
+    "mode": {
+        "dual_scan": True,                   # 2026-05-06: TQQQ+SQQQ 양쪽 동시 스캔 default
     },
     "risk": {
         "max_position_pct": 0.99,            # FX/정산 lag 안전 floor 1%

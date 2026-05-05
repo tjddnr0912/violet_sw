@@ -212,3 +212,30 @@
   - 첫 의심 영역: **모든 `pytest.fixture`의 `autouse` 여부**
   - 빨리 배제할 가설: "fixture 자체가 없다" — 있어도 적용 범위가 좁으면 똑같이 누수
   - 핵심 진단 명령: 테스트 전후 prod 데이터 파일 md5 비교
+
+---
+
+## 전략 문서의 핵심 조건이 구현에서 누락 (ORB-FVG intersect)
+
+- **증상**: 백테스트는 잘 돌아가고 시그널은 잡히지만, 60일 trend baseline에서 PF 0.61, 승률 16.7%로 적자(-$16.28). 봇은 정상 작동하는데 결과가 전략 의도와 동떨어짐.
+- **원인**: 전략 명세서(`docs/strategy/STRATEGY_REVIEW.md`)에는 "기준선 없이 형성된 FVG는 무의미", "FVG 위치: ORB 레벨과 밀접하게 겹침"이 명확히 적혀 있는데, 실제 구현(`src/core/fvg.py::check_breakout_with_fvg`)은 `Close > orb_high` 조건만 검증. 즉 (S1) displacement 캔들 몸통이 ORB 가로지르기, (S2) FVG zone이 ORB 라인 포함 — 두 조건 모두 코드에 누락. 이미 ORB 위에서 횡보 중에 큰 양봉만 나와도 시그널 발생.
+- **해결**: `check_breakout_with_fvg(..., strict=False)` 파라미터 추가. strict=True일 때 (S1)+(S2) 검증. config에서 `entry.strict_fvg=true`로 default ON.
+- **복구 절차**:
+  1. fvg.py에 strict 파라미터 추가
+  2. strategy.py에서 strict 패스스루
+  3. config에 `entry.strict_fvg=true` 추가
+  4. 백테스트로 가짜 시그널 제거율 측정 (~70%) + 수익 전환 확인
+  5. 봇 재기동
+- **관련 사고**: 2026-05-06 (사용자가 캐스퍼 유튜브 원본 영상의 의도와 실제 코드 동작 사이 괴리를 지적)
+- **재발 감지**: `docs/strategy/*.md`의 핵심 트리거 조건과 `src/core/*.py` 검증 로직을 줄 단위로 매핑하는 회귀 테스트. 또는 백테스트 PF가 0.5~1.5 사이에서 헤매면 "조건 누락" 의심.
+
+### Claude 진단 미스 (이번 사고)
+- **Claude 처음 가정 (이전 세션, 코드 작성 시점)**: STRATEGY_REVIEW.md의 "기준선 돌파 + FVG 동시 형성"을 `Close > orb_high && bullish candle && FVG exists`로만 해석. "ORB 라인을 가로지른다"는 기하학적 조건을 코드로 옮기지 않음. FVG 검출 윈도우만 잘 잡으면 자연스럽게 만족할 것이라고 암묵적 가정 — 실제로는 자주 어긋남.
+- **실제 원인**: 영상의 의도는 displacement 캔들이 ORB 라인 자체를 몸통으로 가로지르고, 그 결과 형성되는 FVG zone이 ORB 라인을 포함하는 기하학적 패턴. STRATEGY_REVIEW.md L19/L33/L174/L284에 사실상 동일 표현이 4번 등장 — 단순 문구가 아니라 명세였음.
+- **방향 전환 지점**: 사용자 메시지 "캐스퍼의 유투브를 잘 살펴보면 orb 기준선을 돌파하는 fvg를 의미 있는 것을 보는 것 같아. orb를 돌파한 이후에 발생하는 fvg가 아닌것 같아. 원본 영상을 다시 검토해봐" — 사용자가 영상과 코드 사이 괴리를 지적. 이후 FMZ Quant 공식 정의(`open[1] <= orb_high AND close[1] >= orb_high`)로 외부 검증.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: **전략 명세 문서의 핵심 조건들이 실제로 코드의 검증 분기에 1:1 매핑돼 있는가**. 명세 문구를 grep으로 추적해서 코드의 if/assert로 환원되는지 확인
+  - 빨리 배제할 가설: "구현이 명세보다 보수적이다" — 백테스트가 적자면 보통 반대(누락이 많아 가짜 시그널이 통과). PF<1.0이면 명세 누락 의심
+  - 명세-구현 일관성 룰: `docs/strategy/*.md`의 "필수 조건" / "핵심 트리거" / "무효" 키워드 인근 문장은 모두 코드의 early-return 또는 assertion에 대응돼야 한다
+  - 외부 검증 자원: 한국어 인플루언서 전략은 보통 영어 원본 출처(ICT, Casper SMC, FMZ Quant 등)가 있고, 그쪽이 더 명시적. 명세가 모호하면 영어 1차 출처(논문/공식 전략)를 검색해 정의를 못박는다
+  - 핵심 진단 명령: 백테스트로 baseline vs strict 동시 비교 — 시그널 수가 70% 줄면서 PF가 2배 이상 뛰면 누락된 조건이 있었던 것

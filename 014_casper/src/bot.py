@@ -61,8 +61,13 @@ class CasperBot:
         # State
         self.state = BotState.WAITING
         self.today_date: Optional[str] = None
-        self.trend: Optional[TrendState] = None
-        self.orb: Optional[OpeningRange] = None
+        self.trend: Optional[TrendState] = None  # informational only in dual_scan
+        # Multi-symbol ORB / signal tracking. In dual_scan mode both BULL and
+        # BEAR are scanned in parallel; in single-trend mode only one symbol
+        # is keyed.
+        self.orbs: dict = {}
+        self.signals: dict = {}
+        self.orb: Optional[OpeningRange] = None  # winning leg (set on entry)
         self.signal: Optional[TradeSignal] = None
         self.position: Optional[Position] = None
         self.capital = 0.0
@@ -275,6 +280,12 @@ class CasperBot:
         if self.test_mode:
             mode_str += " (TEST: 1 share)"
         logger.info(f"Mode: {mode_str}")
+        scan_mode = "DUAL_SCAN (TQQQ+SQQQ)" if self.params.get("mode", {}).get("dual_scan", False) else "TREND (QQQ MA20)"
+        fvg_mode = "STRICT (body straddles ORB + FVG-ORB intersect)" if self.params.get("entry", {}).get("strict_fvg", False) else "baseline"
+        rr = self.params.get("entry", {}).get("rr_ratio", 2.0)
+        logger.info(f"Scan: {scan_mode}")
+        logger.info(f"FVG : {fvg_mode}")
+        logger.info(f"R:R : 1:{rr}")
         logger.info("=" * 50)
         # Sync capital from KIS BEFORE the start banner so the Telegram
         # message reflects the actual orderable USD instead of the
@@ -292,7 +303,14 @@ class CasperBot:
             }
         except Exception:
             history = {"count": 0, "win_rate": 0, "pnl": 0}
-        self.notifier.notify_bot_started(self.env["trading_mode"], self.capital, history)
+        strategy_info = {
+            "dual_scan": self.params.get("mode", {}).get("dual_scan", False),
+            "strict_fvg": self.params.get("entry", {}).get("strict_fvg", False),
+            "rr_ratio": self.params.get("entry", {}).get("rr_ratio", 2.0),
+        }
+        self.notifier.notify_bot_started(
+            self.env["trading_mode"], self.capital, history, strategy_info,
+        )
 
         # Handle SIGTERM for graceful daemon shutdown
         def _sigterm_handler(signum, frame):
@@ -370,6 +388,8 @@ class CasperBot:
         self.trend = None
         self.orb = None
         self.signal = None
+        self.orbs = {}
+        self.signals = {}
         self.position = None
         self.trades_today = 0
         self.state = BotState.WAITING
@@ -471,92 +491,113 @@ class CasperBot:
                 time.sleep(min(secs, 60))
 
     def _handle_orb_forming(self):
-        """Collect ORB data during 9:30-9:45."""
+        """Collect ORB data during 9:30-9:45.
+
+        In dual_scan mode, ORB is computed for both BULL and BEAR symbols.
+        In single-trend mode, only the trend-selected symbol is computed.
+        """
         if self.trend is None:
             # Missed pre-market, do quick check
             self._handle_pre_market()
             return
 
-        if not time_utils.is_orb_forming():
-            # ORB period ended, calculate ORB
-            symbol = self.trend.symbol
+        if time_utils.is_orb_forming():
+            time.sleep(30)
+            return
+
+        syms = self.params["symbols"]
+        dual = self.params.get("mode", {}).get("dual_scan", False)
+        candidates = [syms["bull"], syms["bear"]] if dual else [self.trend.symbol]
+        atr_ratio = self.params["filters"]["orb_atr_max_ratio"]
+
+        self.orbs = {}
+        for symbol in candidates:
             bars = get_intraday_bars(symbol, period="1d", interval="5m")
             if bars is None:
-                # Retry once after 60 seconds
                 logger.warning(f"ORB: No intraday data for {symbol}, retrying in 60s")
                 time.sleep(60)
                 bars = get_intraday_bars(symbol, period="1d", interval="5m")
             if bars is None:
-                self._transition(BotState.DONE_TODAY, "No intraday data after retry")
-                return
+                logger.warning(f"ORB: {symbol} unavailable after retry, skipping leg")
+                continue
 
-            self.orb = calculate_orb(bars)
-            if self.orb is None:
-                self._transition(BotState.DONE_TODAY, "ORB calculation failed")
-                return
+            orb = calculate_orb(bars)
+            if orb is None:
+                logger.warning(f"ORB: calculation failed for {symbol}")
+                continue
 
-            # ORB too wide check
             adr = get_avg_daily_range(symbol)
-            if adr and is_orb_too_wide(self.orb, adr, self.params["filters"]["orb_atr_max_ratio"]):
-                self._transition(BotState.DONE_TODAY, "ORB too wide")
-                self.notifier.notify_skip(f"ORB too wide ({self.orb.range_size:.2f})")
-                return
+            if adr and is_orb_too_wide(orb, adr, atr_ratio):
+                logger.info(f"ORB: {symbol} too wide ({orb.range_size:.2f}), skipping leg")
+                continue
 
-            if not self._notified_orb:
-                self.notifier.notify_orb(
-                    symbol, self.orb.high, self.orb.low, self.orb.range_size,
-                )
-                self._notified_orb = True
+            self.orbs[symbol] = orb
 
-            self._transition(BotState.SCANNING)
+        if not self.orbs:
+            self._transition(BotState.DONE_TODAY, "No valid ORB on either leg")
+            self.notifier.notify_skip("ORB unavailable / too wide on all legs")
             return
 
-        time.sleep(30)  # Check every 30s during ORB formation
+        # Keep self.orb pointing at the trend-preferred leg for legacy
+        # consumers; signals are scanned per-leg from self.orbs.
+        self.orb = self.orbs.get(self.trend.symbol) or next(iter(self.orbs.values()))
+
+        if not self._notified_orb:
+            for symbol, orb in self.orbs.items():
+                self.notifier.notify_orb(symbol, orb.high, orb.low, orb.range_size)
+            self._notified_orb = True
+
+        self._transition(BotState.SCANNING)
 
     def _handle_scanning(self):
-        """Scan for entry signals in 9:45-10:55 window."""
+        """Scan for entry signals in 9:45-10:55 window.
+
+        In dual_scan mode each leg in self.orbs is scanned. The first leg
+        whose latest bar pulls back into its FVG wins the day's single trade.
+        """
         if not time_utils.is_scan_window():
             self._transition(BotState.DONE_TODAY, "Scan window closed, no signal")
             self.notifier.notify_skip("No signal today")
             return
 
-        if self.trend is None:
-            self._transition(BotState.DONE_TODAY, "No trend data available")
+        if not self.orbs:
+            self._transition(BotState.DONE_TODAY, "No ORB data available")
             return
 
-        symbol = self.trend.symbol
-        bars = get_intraday_bars(symbol, period="1d", interval="5m")
-        if bars is None:
-            time.sleep(60)
-            return
-
-        # Filter to scan window only
-        scan_bars = bars.between_time("09:45", "10:55")
         entry_params = self.params["entry"]
+        strict = entry_params.get("strict_fvg", False)
 
-        self.signal = scan_for_signal(
-            scan_bars, self.orb, symbol,
-            rr_ratio=entry_params["rr_ratio"],
-            min_risk=entry_params["min_risk_dollar"],
-        )
+        for symbol, orb in self.orbs.items():
+            bars = get_intraday_bars(symbol, period="1d", interval="5m")
+            if bars is None:
+                continue
 
-        if self.signal is None:
-            time.sleep(30)  # Check again in 30s
-            return
+            scan_bars = bars.between_time("09:45", "10:55")
+            if len(scan_bars) < 4:
+                continue
 
-        # Notify on first signal of the day (pre-pullback)
-        if not self._notified_signal:
-            self.notifier.notify_signal(
-                self.signal.symbol, self.signal.entry_price,
-                self.signal.stop_loss, self.signal.take_profit,
-                self.signal.rr_ratio,
-            )
-            self._notified_signal = True
+            sig = self.signals.get(symbol)
+            if sig is None:
+                sig = scan_for_signal(
+                    scan_bars, orb, symbol,
+                    rr_ratio=entry_params["rr_ratio"],
+                    min_risk=entry_params["min_risk_dollar"],
+                    strict=strict,
+                )
+                if sig is None:
+                    continue
+                self.signals[symbol] = sig
+                if not self._notified_signal:
+                    self.notifier.notify_signal(
+                        sig.symbol, sig.entry_price,
+                        sig.stop_loss, sig.take_profit, sig.rr_ratio,
+                    )
+                    self._notified_signal = True
 
-        # Check pullback on latest bar
-        if len(scan_bars) > 0:
             latest_bar = scan_bars.iloc[-1]
-            if check_pullback(latest_bar, self.signal.fvg):
+            if check_pullback(latest_bar, sig.fvg):
+                self.signal = sig
+                self.orb = orb
                 self._execute_entry()
                 return
 
