@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-05-06 (2): trend label as info-only in dual scan
+
+dual scan 모드에서 QQQ MA20 trend는 거래 결정에 0% 기여하지만 알림·로그에서는 단일 모드와 동일하게 "Trend: BULL → TQQQ"로 표시되어 의도가 모호. 사용자 지적으로 라벨 명시화.
+
+- `src/telegram/notifier.py::notify_pre_market(... dual_scan: bool = False)` — dual_scan=True에서 "Trend (info only): BULL — dual scan ignores this for entry"로 표시
+- `src/bot.py::_handle_pre_market` — 로그도 동일 분기. dual=true 시 "trend=BULL (info only — dual scan ignores trend for entry)"
+- trend 계산 자체는 유지: `mode.dual_scan=false` fallback 시 거래 방향 결정자로 자동 복귀
+- 67건 단위 테스트 통과 (notifier/bot_states/bot_advanced)
+- 옵션 검토: A(현재, 라벨만 명시) vs B(dual에서 trend 계산 skip). A 채택 — fallback 안전성 + KIS API 1회 호출은 운영 부담 미미
+
 ## 2026-05-06: ORB-FVG strict + dual scan default
 
 원본 영상(Casper SMC / Jesse Rogers, "6 Figure ICT Trading Strategy")의 핵심 트리거 — **FVG가 ORB 라인을 가로지를(intersect) 때만 유효** — 가 코드에 누락돼 있었음. 사용자 지적으로 발견 → 외부 검증(FMZ Quant 공식 정의) → 강화 조건 도입.

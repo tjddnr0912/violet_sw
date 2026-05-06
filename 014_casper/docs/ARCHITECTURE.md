@@ -13,7 +13,7 @@ WAITING → PRE_MARKET → ORB_FORMING → SCANNING → POSITION_OPEN → DONE_T
 | 상태 | 진입 조건 | 핵심 동작 |
 |------|---------|---------|
 | `WAITING` | 봇 기동 | KIS warm-up, 자본 동기화, 트레이드 히스토리 로드 |
-| `PRE_MARKET` | ET 09:30 직전 | VIX 필터, 트렌드 점검 (정보용 — dual scan에서 진입 결정 무관), 공휴일 체크 |
+| `PRE_MARKET` | ET 09:30 직전 | VIX 필터, 트렌드 점검 (dual scan 모드에서는 정보용 — 알림에 "Trend (info only)" 라벨 + 진입 결정에 무관, fallback 시 결정자), 공휴일 체크 |
 | `ORB_FORMING` | ET 09:30~09:45 | 15분 ORB 계산 (dual scan: TQQQ+SQQQ 양쪽, single: trend leg만) |
 | `SCANNING` | ET 09:45~10:55 | FVG 감지(strict: 몸통 가로지르기 + FVG-ORB intersect), Pullback 진입 시그널. dual scan: 첫 풀백 측 진입 |
 | `POSITION_OPEN` | 시그널 + 진입 성공 | SL/TP 모니터링, BE move (11:00) |

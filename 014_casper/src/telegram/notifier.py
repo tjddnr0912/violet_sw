@@ -124,13 +124,18 @@ class TelegramNotifier:
         self.send(f"🛑 <b>BOT STOPPED</b>\n{reason}")
 
     def notify_pre_market(self, vix: float, qqq_close: float, qqq_ma20: float,
-                          trend: str, symbol: str) -> None:
+                          trend: str, symbol: str,
+                          dual_scan: bool = False) -> None:
         emoji = "📈" if trend == "BULL" else "📉"
+        if dual_scan:
+            trend_line = f"Trend (info only): {trend} — dual scan ignores this for entry"
+        else:
+            trend_line = f"Trend: {trend} → {symbol}"
         msg = (
             f"{emoji} <b>PRE-MARKET</b>\n"
             f"VIX: {vix:.1f}\n"
             f"QQQ: {qqq_close:.2f} vs MA20 {qqq_ma20:.2f}\n"
-            f"Trend: {trend} → {symbol}"
+            f"{trend_line}"
         )
         self.send(msg)
 

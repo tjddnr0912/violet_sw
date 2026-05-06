@@ -472,12 +472,20 @@ class CasperBot:
 
         syms = self.params["symbols"]
         self.trend = determine_trend(qqq_close, qqq_ma20, syms["bull"], syms["bear"])
+        dual = self.params.get("mode", {}).get("dual_scan", False)
 
-        logger.info(f"Pre-market complete: {self.trend.direction.upper()} → {self.trend.symbol}")
+        if dual:
+            logger.info(
+                f"Pre-market complete: trend={self.trend.direction.upper()} "
+                f"(info only — dual scan ignores trend for entry)"
+            )
+        else:
+            logger.info(f"Pre-market complete: {self.trend.direction.upper()} → {self.trend.symbol}")
         if not self._notified_pre_market:
             self.notifier.notify_pre_market(
                 vix, qqq_close, qqq_ma20,
                 self.trend.direction.upper(), self.trend.symbol,
+                dual_scan=dual,
             )
             self._notified_pre_market = True
 
