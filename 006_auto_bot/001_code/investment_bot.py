@@ -122,17 +122,17 @@ def main():
         )
         logger.info(f"Scheduled: {sector.name} at Sunday {sector.scheduled_time}")
 
-    # 섹터봇: 일요일 18:30 주간 요약 알림
-    schedule.every().sunday.at("18:30").do(
+    # 섹터봇: 일요일 19:20 주간 요약 알림 (마지막 섹터 18:40 + 40분 여유)
+    schedule.every().sunday.at("19:20").do(
         _safe_run, "WeeklySummary", sector_bot._send_weekly_summary
     )
-    logger.info("Scheduled: Weekly Summary at Sunday 18:30")
+    logger.info("Scheduled: Weekly Summary at Sunday 19:20")
 
-    # 종합 보고서: 일요일 19:00
-    schedule.every().sunday.at("19:00").do(
+    # 종합 보고서: 일요일 19:40 (텔레그램 알림 후 20분 여유)
+    schedule.every().sunday.at("19:40").do(
         _safe_run, "ComprehensiveReport", sector_bot.generate_comprehensive_report
     )
-    logger.info("Scheduled: Comprehensive Report at Sunday 19:00")
+    logger.info("Scheduled: Comprehensive Report at Sunday 19:40")
 
     total_jobs = len(schedule.get_jobs())
     logger.info("=" * 60)

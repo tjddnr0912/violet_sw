@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-05-10: 통합 봇 일요일 스케줄 정정 + Blogger 업로드 idle 재시도
+
+- `investment_bot.py`: Weekly Summary `18:30 → 19:20`, Comprehensive Report `19:00 → 19:40`. 마지막 섹터 11(필수 소비재) `scheduled_time="18:40"`보다 앞서 트리거되던 문제 수정. `weekly_sector_bot.py`/CLAUDE.md 문서와 일치.
+- `shared/blogger_uploader.py`: `_insert_with_retry()` 신설. `BrokenPipeError`/`ConnectionResetError`/`SSLError`/`RemoteDisconnected` 등 idle connection drop 발생 시 service 재생성 후 1회 재시도. 종합 보고서(~118KB HTML)처럼 마지막 정상 업로드 이후 30분+ 간격 호출에서 발생하던 broken pipe 자동 복구.
+- 사고 기록: 2026-05-10 일요일 런 — Weekly Summary 10/11 (sector 11 미시작), 종합 보고서 broken pipe → 텔레그램 ❌ 도착.
+- 상세 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md) ("Sector Weekly Summary가 N-1/N 으로 나감", "Comprehensive Report 업로드 Broken pipe")
+
 ## 2026-05-04: 뉴스봇 5차원 검증 게이트 + Gemini CLI 갭필
 
 - `news_bot/orchestrator.py` 도입: RSS 수집 → 5차원 게이트 → Gemini CLI 갭필 → 요약 시퀀스

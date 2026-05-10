@@ -182,23 +182,9 @@ class BloggerUploader:
             if labels:
                 post_body['labels'] = labels
 
-            # 게시글 생성
-            if is_draft:
-                # 임시저장
-                result = self.service.posts().insert(
-                    blogId=self.blog_id,
-                    body=post_body,
-                    isDraft=True
-                ).execute()
-                logger.info(f"Draft saved: {result.get('url', 'N/A')}")
-            else:
-                # 즉시 발행
-                result = self.service.posts().insert(
-                    blogId=self.blog_id,
-                    body=post_body,
-                    isDraft=False
-                ).execute()
-                logger.info(f"Post published: {result.get('url', 'N/A')}")
+            # 게시글 생성 (idle connection broken pipe 시 1회 재인증 후 재시도)
+            result = self._insert_with_retry(post_body, is_draft)
+            logger.info(f"{'Draft saved' if is_draft else 'Post published'}: {result.get('url', 'N/A')}")
 
             return {
                 'success': True,
@@ -213,6 +199,29 @@ class BloggerUploader:
                 'success': False,
                 'message': str(e)
             }
+
+    def _insert_with_retry(self, post_body: Dict, is_draft: bool) -> Dict:
+        """posts().insert()를 broken pipe 시 1회 service 재생성 후 재시도"""
+        import socket
+        import ssl
+        from http.client import RemoteDisconnected
+        try:
+            return self.service.posts().insert(
+                blogId=self.blog_id,
+                body=post_body,
+                isDraft=is_draft,
+            ).execute()
+        except (BrokenPipeError, ConnectionResetError, ConnectionError,
+                RemoteDisconnected, ssl.SSLError, socket.error) as e:
+            logger.warning(f"Connection lost ({type(e).__name__}: {e}); rebuilding service and retrying once")
+            self.service = None
+            if not self.authenticate():
+                raise
+            return self.service.posts().insert(
+                blogId=self.blog_id,
+                body=post_body,
+                isDraft=is_draft,
+            ).execute()
 
     def update_post(
         self,
