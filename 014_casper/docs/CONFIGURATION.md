@@ -12,6 +12,28 @@
 | `TELEGRAM_BOT_TOKEN` | ❌ | — | string | 008과 동일 토큰 (모든 프로젝트 알림 통합) |
 | `TELEGRAM_CHAT_ID` | ❌ | — | string | 008과 동일 chat_id |
 
+### ICT phase env overrides (`.env`)
+
+모든 default OFF. 켜진 채로 JSON에 기록되어도 env가 `off`/`false`/`0`이면 그것이 우선한다.
+
+| 이름 | 기본 | 의미 |
+|------|:---:|------|
+| `ICT_KILLZONE_ENABLED` | off | Killzone 시간 필터 |
+| `ICT_ALLOWED_KILLZONES` | `AM_MACRO` | CSV — 허용 Killzone 목록 |
+| `ICT_REQUIRE_DISPLACEMENT` | off | 5분봉 displacement 필수화 |
+| `ICT_DISP_ATR_MULT` / `ICT_DISP_MAX_WICK` / `ICT_DISP_PREV_MULT` | 1.0 / 0.50 / 1.5 | displacement 임계값 |
+| `ICT_REQUIRE_SWEEP_CHOCH` | off | Sweep + CHoCH 게이트 |
+| `ICT_SWEEP_LOOKBACK` / `ICT_CHOCH_LOOKBACK` | 6 / 6 | lookback |
+| `ICT_SWEEP_MIN_BREACH_PCT` / `ICT_SWEEP_MIN_WICK_RATIO` | 0.0005 / 0.60 | sweep 임계값 |
+| `ICT_BEAR_FVG_FOR_SQQQ` | off | QQQ bear FVG → SQQQ Long 매핑 |
+| `ICT_BULL_FVG_FOR_TQQQ` | off | QQQ bull FVG → TQQQ Long 매핑 |
+| `ICT_DAILY_BIAS_SKIP_NEUTRAL` | off | Daily bias가 neutral인 날 매매 skip |
+| `ICT_USE_MULTI_TF_SL` / `ICT_MTF_LOOKBACK_MIN` | off / 15 | 1분봉 swing으로 SL 단축 |
+| `ICT_USE_OTE` / `ICT_FIB_LEVEL` | off / 0.705 | OTE 진입 사용 + 피보 레벨 |
+| `ICT_REQUIRE_UNICORN` | off | Breaker ∩ FVG 검증 |
+| `ICT_USE_POWER_OF_3` | off | NQ futures Judas Swing 가산 |
+| `ICT_QQQ_PRIMARY` | off | **P2 (2026-05-12)** — QQQ를 single signal source로, dual_scan 무시 |
+
 ### 시크릿 마스킹 정책
 
 - 로그·스택트레이스에 `KIS_APP_SECRET` 직접 노출 금지
@@ -43,6 +65,7 @@
     },
     "mode": {
         "dual_scan": True,                   # 2026-05-06: TQQQ+SQQQ 양쪽 동시 스캔 default
+        "qqq_primary": False,                # 2026-05-12 P2: QQQ만 signal source로 일원화 (default off)
     },
     "risk": {
         "max_position_pct": 0.99,            # FX/정산 lag 안전 floor 1%

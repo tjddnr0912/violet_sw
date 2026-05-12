@@ -114,6 +114,8 @@ class TelegramNotifier:
             lines.append(f"Scan: {scan}  FVG: {fvg}  R:R: 1:{rr:g}")
             # ICT phase flags (compact)
             ict_flags = []
+            if strategy_info.get("qqq_primary"):
+                ict_flags.append("QQQ-PRIMARY")
             if strategy_info.get("ict_killzone"):
                 kz_list = strategy_info.get("ict_allowed_killzones") or []
                 ict_flags.append("KZ(" + ",".join(kz_list) + ")" if kz_list else "KZ")

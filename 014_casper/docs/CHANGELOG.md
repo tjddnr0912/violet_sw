@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-05-12 (2): P2 / P0 / P1 priority follow-ups
+
+미구현 점검 결과(`현재 구현 안된 기능들`)를 받아 우선순위 P2 → P0 → P1을 일괄 도입. 모두 default OFF 또는 신규 옵션으로 안전 배포.
+
+### P2 — QQQ primary signal source 일원화
+- `config/strategy_params.json`: `mode.qqq_primary` (default `false`) 추가
+- `src/bot.py::_handle_orb_forming` — qqq_primary 시 candidates=[QQQ만], dual_scan 무시
+- `src/bot.py::_handle_scanning` — qqq_primary 시 `bear_fvg_for_sqqq` / `bull_fvg_for_tqqq`를 effective True로 강제 (TQQQ/SQQQ self-scan skip은 기존 로직 그대로)
+- `src/bot.py::run()` 배너 + `strategy_info` dict — `QQQ-PRIMARY` 라벨/플래그
+- `src/telegram/notifier.py::notify_bot_started` — `QQQ-PRIMARY` 표시
+- `run_bot.py::_ict_status_line` — mode 인자 받아 `--status`에 표시
+- `src/utils/config.py` — `ICT_QQQ_PRIMARY` env override
+- 의미: bear/bull FVG mapping 둘 다 ON일 때 실질적으로 이미 QQQ-primary로 동작 중이었음. 본 플래그는 (a) TQQQ/SQQQ ORB 계산을 1회로 축소 (b) 흐름 명료화.
+
+### P0 — 백테스트 simulate에 daily_bias 분기 통합
+- `scripts/intraday_backtest_compare.py`: `compute_daily_bias` import, `strat_casper(daily_bias_skip_neutral=False)` 인자, `run_strategy`에서 일별 ctx['daily_bias'] 계산
+- 신규 strategy variants:
+  - `25_Casper_Full_Bias` — Full ICT + Daily Bias skip-neutral
+  - `26_QQQ_Bear_Full_Bias` — Bear + Full ICT + Daily Bias skip-neutral
+- 60일 표본에서는 25/26 모두 0건 (full ICT가 strict — `BACKTEST_AFTER_ICT.md` 기존 결과와 일치). 1년 데이터 누적 후 PF/MDD 차이 측정 가능.
+
+### P1 — 상시 1분봉 수집 (5m 옆 별도 partition)
+- `src/data/store.py`: `save_minute_bars` / `load_minute_bars` / `has_minute_data` — 경로 `<base>/<sym>/1m/<year>/<date>.parquet` (5m와 완전 격리)
+- `src/data/collector.py`: `_Job.interval`, `submit(..., interval="5m"|"1m")`, `_run()` 분기
+- `src/bot.py::_record_bars_1m` 헬퍼 + cold-start 1m warm-up과 scanning 시점 1m fetch 모두 collector에 제출
+- `DATA_COLLECTION=on` 환경에서 5m와 1m 동시 누적
+- Multi-TF SL 효과 누적 검증 + 향후 1분봉 백테스트의 기반
+
+### 테스트
+- `tests/test_ict_env_override.py` +3 — `ICT_QQQ_PRIMARY` on/off/unset
+- `tests/test_data_collector.py` +2 — 1m partition isolation, 5m+1m coexist
+- 회귀 73/73 통과 (bot_collector_integration, bot_states, data_collector, data_store, data_store_daily, ict_env_override)
+
+### 운영 영향
+- 봇 재시작 시 동작 변화 없음 (모든 신규 플래그 default OFF)
+- 활성화 방법:
+  - `ICT_QQQ_PRIMARY=on` 또는 `config/strategy_params.json::mode.qqq_primary=true`
+  - `DATA_COLLECTION=on` (기존 env) — 자동으로 1m도 누적
+  - 백테스트 25/26은 1년 데이터 누적 후 의미 있음
+
 ## 2026-05-06 (2): trend label as info-only in dual scan
 
 dual scan 모드에서 QQQ MA20 trend는 거래 결정에 0% 기여하지만 알림·로그에서는 단일 모드와 동일하게 "Trend: BULL → TQQQ"로 표시되어 의도가 모호. 사용자 지적으로 라벨 명시화.

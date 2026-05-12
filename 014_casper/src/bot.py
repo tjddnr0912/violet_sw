@@ -153,14 +153,28 @@ class CasperBot:
             self.collector = None
 
     def _record_bars(self, symbol, bars):
-        """Submit bars to collector. NEVER raises."""
+        """Submit 5m bars to collector. NEVER raises."""
         if self.collector is None or bars is None or bars.empty:
             return
         try:
             date_str = bars.index[0].strftime("%Y-%m-%d")
-            self.collector.submit(symbol, date_str, bars, source="kis")
+            self.collector.submit(symbol, date_str, bars, source="kis", interval="5m")
         except Exception as e:
             logger.warning(f"DataCollection: submit failed silently: {e}")
+
+    def _record_bars_1m(self, symbol, bars):
+        """Submit 1m bars to collector under separate `1m/` partition. NEVER raises.
+
+        Source is 'kis' when available (interval=1m via KIS), 'yfinance' for
+        warm-up. Distinct path keeps the 5m store untouched.
+        """
+        if self.collector is None or bars is None or bars.empty:
+            return
+        try:
+            date_str = bars.index[0].strftime("%Y-%m-%d")
+            self.collector.submit(symbol, date_str, bars, source="kis", interval="1m")
+        except Exception as e:
+            logger.warning(f"DataCollection: 1m submit failed silently: {e}")
 
     def _cold_start_backfill(self, base_dir, symbols):
         """Fill missing days via yfinance on bot startup. Silent on failure.
@@ -219,13 +233,15 @@ class CasperBot:
             except Exception as e:
                 logger.debug(f"Backfill: NQ=F skipped silently: {e}")
 
-            # 1-min bar warm-up (used by Multi-TF SL refinement)
+            # 1-min bar warm-up (used by Multi-TF SL refinement).
+            # When DATA_COLLECTION=on, persist to base_dir/<sym>/1m/<year>/.
             try:
                 from src.data.market_data import get_intraday_bars
                 for sym in ["TQQQ", "QQQ", "SQQQ"]:
                     bars1 = get_intraday_bars(sym, period="1d", interval="1m")
                     if bars1 is not None and not bars1.empty:
                         logger.info(f"Backfill: {sym} 1m fetched ({len(bars1)} bars)")
+                        self._record_bars_1m(sym, bars1)
             except Exception as e:
                 logger.debug(f"Backfill: 1m fetch failed silently: {e}")
         except Exception as e:
@@ -399,7 +415,12 @@ class CasperBot:
         if self.test_mode:
             mode_str += " (TEST: 1 share)"
         logger.info(f"Mode: {mode_str}")
-        scan_mode = "DUAL_SCAN (TQQQ+SQQQ)" if self.params.get("mode", {}).get("dual_scan", False) else "TREND (QQQ MA20)"
+        if self.params.get("mode", {}).get("qqq_primary", False):
+            scan_mode = "QQQ_PRIMARY (signal=QQQ → exec=TQQQ/SQQQ)"
+        elif self.params.get("mode", {}).get("dual_scan", False):
+            scan_mode = "DUAL_SCAN (TQQQ+SQQQ)"
+        else:
+            scan_mode = "TREND (QQQ MA20)"
         fvg_mode = "STRICT (body straddles ORB + FVG-ORB intersect)" if self.params.get("entry", {}).get("strict_fvg", False) else "baseline"
         rr = self.params.get("entry", {}).get("rr_ratio", 2.0)
         logger.info(f"Scan: {scan_mode}")
@@ -408,6 +429,8 @@ class CasperBot:
         # ICT phase summary (compact). Reads effective config (env overrides applied).
         ep = self.params.get("entry", {})
         ict_flags = []
+        if self.params.get("mode", {}).get("qqq_primary", False):
+            ict_flags.append("QQQ-PRIMARY")
         if ep.get("killzone_filter_enabled"):
             kz = ep.get("allowed_killzones") or []
             ict_flags.append("KZ(" + ",".join(kz) + ")" if kz else "KZ")
@@ -495,6 +518,7 @@ class CasperBot:
         ep = self.params.get("entry", {})
         strategy_info = {
             "dual_scan": self.params.get("mode", {}).get("dual_scan", False),
+            "qqq_primary": self.params.get("mode", {}).get("qqq_primary", False),
             "strict_fvg": ep.get("strict_fvg", False),
             "rr_ratio": ep.get("rr_ratio", 2.0),
             # ICT phase status — telegram displays a compact summary
@@ -789,14 +813,18 @@ class CasperBot:
             return
 
         syms = self.params["symbols"]
-        dual = self.params.get("mode", {}).get("dual_scan", False)
-        candidates = [syms["bull"], syms["bear"]] if dual else [self.trend.symbol]
-        # ICT Phase-3/4 QQQ-signal-mapping: when bear→SQQQ or bull→TQQQ is on,
-        # we also need QQQ's ORB so we can scan QQQ for setups and remap.
-        bear_for_sqqq = self.params["entry"].get("bear_fvg_for_sqqq", False)
-        bull_for_tqqq = self.params["entry"].get("bull_fvg_for_tqqq", False)
-        if (bear_for_sqqq or bull_for_tqqq) and syms["trend_filter"] not in candidates:
-            candidates = candidates + [syms["trend_filter"]]
+        qqq_primary = self.params.get("mode", {}).get("qqq_primary", False)
+        if qqq_primary:
+            candidates = [syms["trend_filter"]]
+        else:
+            dual = self.params.get("mode", {}).get("dual_scan", False)
+            candidates = [syms["bull"], syms["bear"]] if dual else [self.trend.symbol]
+            # ICT Phase-3/4 QQQ-signal-mapping: when bear→SQQQ or bull→TQQQ is on,
+            # we also need QQQ's ORB so we can scan QQQ for setups and remap.
+            bear_for_sqqq = self.params["entry"].get("bear_fvg_for_sqqq", False)
+            bull_for_tqqq = self.params["entry"].get("bull_fvg_for_tqqq", False)
+            if (bear_for_sqqq or bull_for_tqqq) and syms["trend_filter"] not in candidates:
+                candidates = candidates + [syms["trend_filter"]]
         atr_ratio = self.params["filters"]["orb_atr_max_ratio"]
 
         self.orbs = {}
@@ -924,6 +952,11 @@ class CasperBot:
         bear_for_sqqq = entry_params.get("bear_fvg_for_sqqq", False)
         # ICT Phase 4 N6: scan QQQ for bull setup → TQQQ Long (symmetric)
         bull_for_tqqq = entry_params.get("bull_fvg_for_tqqq", False)
+        # P2: qqq_primary forces both mappings ON so QQQ is the only signal source
+        qqq_primary = self.params.get("mode", {}).get("qqq_primary", False)
+        if qqq_primary:
+            bear_for_sqqq = True
+            bull_for_tqqq = True
         # ICT Phase 4: Multi-TF SL refinement (1-min swing)
         use_multi_tf_sl = entry_params.get("use_multi_tf_sl", False)
         mtf_lookback_min = entry_params.get("mtf_lookback_min", 15)
@@ -965,11 +998,14 @@ class CasperBot:
             if len(scan_bars) < 4:
                 continue
 
-            # Optional 1-min bars for Multi-TF SL refinement (best effort)
+            # Optional 1-min bars for Multi-TF SL refinement (best effort).
+            # When fetched, persist to collector under 1m/ partition.
             bars_1m = None
             if use_multi_tf_sl:
                 try:
                     bars_1m = get_intraday_bars(symbol, period="1d", interval="1m")
+                    if bars_1m is not None and not bars_1m.empty:
+                        self._record_bars_1m(symbol, bars_1m)
                 except Exception as e:
                     logger.debug(f"{symbol}: 1m fetch failed (non-fatal): {e}")
 

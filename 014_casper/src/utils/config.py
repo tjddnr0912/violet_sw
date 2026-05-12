@@ -132,6 +132,11 @@ def _apply_ict_env_overrides(params: dict) -> dict:
     if os.getenv("ICT_BULL_FVG_FOR_TQQQ") is not None:
         entry["bull_fvg_for_tqqq"] = _bool_env("ICT_BULL_FVG_FOR_TQQQ", False)
 
+    # P2: QQQ primary signal source (mode-level toggle)
+    if os.getenv("ICT_QQQ_PRIMARY") is not None:
+        mode = params.setdefault("mode", {})
+        mode["qqq_primary"] = _bool_env("ICT_QQQ_PRIMARY", False)
+
     return params
 
 

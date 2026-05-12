@@ -19,7 +19,7 @@ from typing import Optional
 
 import pandas as pd
 
-from src.data.store import save_bars
+from src.data.store import save_bars, save_minute_bars
 
 logger = logging.getLogger("casper")
 
@@ -30,6 +30,7 @@ class _Job:
     date_str: str
     bars: pd.DataFrame
     source: str
+    interval: str = "5m"
 
 
 class BarCollector:
@@ -56,14 +57,15 @@ class BarCollector:
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def submit(self, symbol: str, date_str: str, bars: pd.DataFrame, source: str) -> None:
+    def submit(self, symbol: str, date_str: str, bars: pd.DataFrame, source: str,
+               interval: str = "5m") -> None:
         if bars is None or bars.empty:
             return
         try:
-            self._q.put_nowait(_Job(symbol, date_str, bars, source))
+            self._q.put_nowait(_Job(symbol, date_str, bars, source, interval))
         except queue.Full:
             self.dropped_count += 1
-            logger.warning(f"BarCollector: queue full, dropped {symbol} {date_str}")
+            logger.warning(f"BarCollector: queue full, dropped {symbol} {date_str} ({interval})")
         except Exception as e:  # last-resort guard
             self.dropped_count += 1
             logger.warning(f"BarCollector: submit failed silently: {e}")
@@ -75,11 +77,17 @@ class BarCollector:
             except queue.Empty:
                 continue
             try:
-                save_bars(self.base_dir, job.symbol, job.date_str, job.bars, job.source)
+                if job.interval == "1m":
+                    save_minute_bars(self.base_dir, job.symbol, job.date_str,
+                                     job.bars, job.source)
+                else:
+                    save_bars(self.base_dir, job.symbol, job.date_str,
+                              job.bars, job.source)
                 self.saved_count += 1
             except Exception as e:
                 logger.warning(
-                    f"BarCollector: save failed for {job.symbol} {job.date_str}: {e}"
+                    f"BarCollector: save failed for {job.symbol} {job.date_str} "
+                    f"({job.interval}): {e}"
                 )
 
     def stop(self, timeout: float = 5.0) -> None:

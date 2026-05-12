@@ -83,6 +83,61 @@ def has_data(base, symbol: str, date_str: str) -> bool:
     return _path_for(base, symbol, date_str).exists()
 
 
+# ────────────── 1-minute bar persistence (sibling of 5m, isolated path) ──────────────
+
+def _minute_path_for(base, symbol: str, date_str: str) -> Path:
+    """`base/<sym>/1m/<year>/<date>.parquet` — kept separate from 5m to avoid clobber."""
+    sym = _safe_symbol(symbol)
+    year = date_str[:4]
+    return Path(base) / sym / "1m" / year / f"{date_str}.parquet"
+
+
+def save_minute_bars(base, symbol: str, date_str: str, bars: pd.DataFrame, source: str):
+    """Atomically persist 1-minute bars for one symbol-day.
+
+    Same schema as save_bars (5m); separate path so 5m and 1m can be
+    queried independently. Existing same-day file is overwritten (caller
+    is expected to pass the freshest snapshot — partial-day refreshes
+    just replace the prior write).
+    """
+    if bars is None or bars.empty:
+        return None
+    final_path = _minute_path_for(base, symbol, date_str)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = final_path.with_suffix(".tmp")
+
+    idx = bars.index
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    else:
+        idx = idx.tz_convert("UTC")
+
+    out = pd.DataFrame({
+        "timestamp": (idx.view("int64") // 1_000_000).astype("int64"),
+        "open":   bars["Open"].astype("float32").values,
+        "high":   bars["High"].astype("float32").values,
+        "low":    bars["Low"].astype("float32").values,
+        "close":  bars["Close"].astype("float32").values,
+        "volume": bars["Volume"].astype("int64").values,
+        "source": [source] * len(bars),
+    })
+
+    out.to_parquet(tmp_path, engine="pyarrow", compression="snappy", index=False)
+    os.replace(tmp_path, final_path)
+    return final_path
+
+
+def load_minute_bars(base, symbol: str, date_str: str) -> Optional[pd.DataFrame]:
+    p = _minute_path_for(base, symbol, date_str)
+    if not p.exists():
+        return None
+    return pd.read_parquet(p)
+
+
+def has_minute_data(base, symbol: str, date_str: str) -> bool:
+    return _minute_path_for(base, symbol, date_str).exists()
+
+
 # ────────────── Daily bar persistence (one parquet per year) ──────────────
 
 def _daily_path_for(base, symbol: str, year: int) -> Path:

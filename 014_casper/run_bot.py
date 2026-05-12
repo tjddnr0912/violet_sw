@@ -24,9 +24,11 @@ from src.data.trade_store import load_trades, get_cumulative_stats
 from src.utils.config import load_strategy_params, load_env
 
 
-def _ict_status_line(entry: dict) -> str:
+def _ict_status_line(entry: dict, mode: dict | None = None) -> str:
     """Compact ICT flag summary, matching telegram/bash output style."""
     flags = []
+    if mode and mode.get("qqq_primary"):
+        flags.append("QQQ-PRIMARY")
     if entry.get("killzone_filter_enabled"):
         kz = entry.get("allowed_killzones") or []
         flags.append("KZ(" + ",".join(kz) + ")" if kz else "KZ")
@@ -58,8 +60,10 @@ def show_status():
     try:
         params = load_strategy_params()
         entry = params.get("entry", {})
+        mode = params.get("mode", {})
     except Exception:
         entry = {}
+        mode = {}
 
     trades = load_trades()
     stats = get_cumulative_stats(trades)
@@ -75,7 +79,7 @@ def show_status():
     print("-" * 60)
     print(f"  R:R: 1:{entry.get('rr_ratio', '?')}")
     print(f"  Strict FVG: {entry.get('strict_fvg', '?')}")
-    print(f"  ICT: {_ict_status_line(entry)}")
+    print(f"  ICT: {_ict_status_line(entry, mode)}")
     # KST window (DST-aware)
     try:
         from datetime import datetime, time as dtime

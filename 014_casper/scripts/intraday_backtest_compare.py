@@ -60,6 +60,8 @@ import yfinance as yf
 import warnings
 warnings.filterwarnings('ignore')
 
+from src.core.bias import compute_daily_bias
+
 
 # ─────────────────────────── CONFIG ────────────────────────────
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -353,8 +355,25 @@ def strat_casper(day_df, ctx, rr_ratio=3.0, strict=True,
                  allowed_killzones=None, require_displacement=False,
                  disp_atr_mult=1.0, disp_max_wick=0.50, disp_prev_mult=1.5,
                  require_sweep_choch=False,
-                 direction="bull"):
-    """Casper production rule + optional ICT phase 1/2/3 filters."""
+                 direction="bull",
+                 daily_bias_skip_neutral=False):
+    """Casper production rule + optional ICT phase 1/2/3 filters.
+
+    daily_bias_skip_neutral=True activates the live `daily_bias_skip_neutral`
+    config in backtest: a direction must agree with the bias of the prior
+    daily session; `neutral` days are skipped entirely. ctx['daily_bias']
+    is supplied by run_strategy (DailyBias object or None when history < 21d).
+    """
+    if daily_bias_skip_neutral:
+        bias = ctx.get("daily_bias")
+        if bias is None:
+            return None  # insufficient daily history → treat as skip
+        if bias.direction == "neutral":
+            return None
+        if direction == "bull" and bias.direction != "bull":
+            return None
+        if direction == "bear" and bias.direction != "bear":
+            return None
     o = _orb_15m(day_df)
     if o is None:
         return None
@@ -543,6 +562,36 @@ def strat_qqq_bear_short_full_ict(day_df, ctx):
                        disp_prev_mult=1.5,
                        require_sweep_choch=True,
                        direction="bear")
+    if sig is None:
+        return None
+    if getattr(sig, "side", "long") != "short":
+        sig = Sig(sig.entry_time, sig.entry_price, sig.stop, sig.target,
+                  side="short", note=f"{sig.note}_short", rr_ratio=sig.rr_ratio)
+    return sig
+
+
+# ────── 25. Casper full ICT + Daily Bias skip-neutral ──────
+def strat_casper_full_ict_bias(day_df, ctx):
+    """Phase 1+2 full ICT stack + bias agreement (skip when neutral or wrong-side)."""
+    return strat_casper(day_df, ctx, rr_ratio=3.0, strict=True,
+                        allowed_killzones={"AM_MACRO"},
+                        require_displacement=True,
+                        disp_atr_mult=1.0, disp_max_wick=0.50,
+                        disp_prev_mult=1.5,
+                        require_sweep_choch=True,
+                        daily_bias_skip_neutral=True)
+
+
+# ────── 26. QQQ bear short + full ICT + Daily Bias ──────
+def strat_qqq_bear_short_full_ict_bias(day_df, ctx):
+    sig = strat_casper(day_df, ctx, rr_ratio=3.0, strict=True,
+                       allowed_killzones={"AM_MACRO"},
+                       require_displacement=True,
+                       disp_atr_mult=1.0, disp_max_wick=0.50,
+                       disp_prev_mult=1.5,
+                       require_sweep_choch=True,
+                       direction="bear",
+                       daily_bias_skip_neutral=True)
     if sig is None:
         return None
     if getattr(sig, "side", "long") != "short":
@@ -903,6 +952,10 @@ STRATEGIES: List[tuple] = [
     # ── ICT Phase 4 variants (short side) ──
     ("23_QQQ_Bear_Short",  strat_qqq_bear_short,      "Bear ORB+FVG strict, short trade"),
     ("24_QQQ_Bear_FullICT",strat_qqq_bear_short_full_ict, "Bear + KZ + Disp + Sweep, short"),
+    # ── Daily Bias variants (P0 — measure live-only effect in backtest) ──
+    ("25_Casper_Full_Bias",strat_casper_full_ict_bias, "Casper Full ICT + Daily Bias skip-neutral"),
+    ("26_QQQ_Bear_Full_Bias", strat_qqq_bear_short_full_ict_bias,
+                                                       "Bear + Full ICT + Daily Bias skip-neutral"),
 ]
 
 
@@ -1105,6 +1158,13 @@ def run_strategy(name, sig_fn, days, data, vix_filter=True, trend_filter=True):
             skipped["no_data"] += 1
             continue
         ctx["today_open"] = float(today_data.iloc[0]["Open"])
+
+        # Daily bias on QQQ daily history (strictly before today).
+        # Used when a strategy passes daily_bias_skip_neutral=True.
+        try:
+            ctx["daily_bias"] = compute_daily_bias(qqq_d, as_of=d)
+        except Exception:
+            ctx["daily_bias"] = None
 
         # signal
         sig = sig_fn(today_data, ctx)

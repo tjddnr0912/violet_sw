@@ -37,7 +37,8 @@
         "use_power_of_3": true
     },
     "mode": {
-        "dual_scan": true
+        "dual_scan": true,
+        "qqq_primary": false
     },
     "exit": {
         "be_move_time": "11:00",

@@ -107,6 +107,29 @@ def test_env_phase3_toggles(monkeypatch):
     assert p["entry"]["daily_bias_skip_neutral"] is True
 
 
+# ───────────── P2: qqq_primary mode-level toggle ─────────────
+def test_env_qqq_primary_on(monkeypatch):
+    monkeypatch.setenv("ICT_QQQ_PRIMARY", "on")
+    p = _apply_ict_env_overrides(_baseline_params())
+    assert p["mode"]["qqq_primary"] is True
+
+
+def test_env_qqq_primary_off_explicit(monkeypatch):
+    monkeypatch.setenv("ICT_QQQ_PRIMARY", "off")
+    p = _baseline_params()
+    p["mode"] = {"qqq_primary": True}    # JSON enables it
+    p = _apply_ict_env_overrides(p)
+    assert p["mode"]["qqq_primary"] is False
+
+
+def test_env_qqq_primary_unset_keeps_json(monkeypatch):
+    monkeypatch.delenv("ICT_QQQ_PRIMARY", raising=False)
+    p = _baseline_params()
+    p["mode"] = {"qqq_primary": True}
+    p = _apply_ict_env_overrides(p)
+    assert p["mode"]["qqq_primary"] is True
+
+
 # ───────────── integration: load_strategy_params end-to-end ─────────────
 def test_load_strategy_params_respects_env(monkeypatch):
     reset_config_cache()
