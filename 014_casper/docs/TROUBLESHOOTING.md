@@ -291,3 +291,82 @@
   - 빨리 배제할 가설: "사용자가 시간대 변환을 직접 할 것이다" — 매번 변환은 인지 부하. 봇이 변환해서 보여줘야 함
   - DST 처리: 정적 offset(+13/+14) 하드코딩 금지. pytz/zoneinfo로 동적 변환 (서머타임 전환 자동)
   - 핵심 진단 명령: `grep -n "ET\|UTC\|GMT" src/ run_*.sh` 으로 시간대만 표기된 라인 검출
+
+---
+
+## ICT 신규 모듈 cold-start backfill이 DATA_COLLECTION 토글에 silent-skip
+
+- **증상**: 봇 재시작 후 `data/marketdata/NQ=F/` 디렉토리가 생성되지 않음. 일봉 store 워밍업과 1분봉 warm-up도 누락. 사용자 "적용 확인" 요청에서 발견.
+- **원인**: `_cold_start_backfill()` 함수 시작부의 `if self.collector is None: return` 가드가 *5m 백필*만이 아니라 *daily/NQ/1m warm-up까지 통째로* 차단. DataCollector(5m 실시간 스트리밍)는 별도 토글 `DATA_COLLECTION=on`이 필요하지만, 일봉/NQ/1m은 ICT 모듈이 *항상* 필요로 함.
+- **해결**: `_cold_start_backfill()`을 2-tier 구조로 분리. 5m 백필은 `if self.collector is not None:` 안에 두고, 일봉/NQ=F/1m warm-up은 `DATA_COLLECTION_BACKFILL=on`만으로 *항상* 실행되게 함.
+- **복구 절차**:
+  1. `bot.py:_cold_start_backfill` 의 가드 분리
+  2. 봇 재시작
+  3. `logs/app/casper_*.log` 에서 `Backfill: NQ=F N 5m bars persisted` 확인
+  4. `ls data/marketdata/NQ=F/` 로 디스크 확인
+- **관련 사고**: 2026-05-12 (ICT Phase 4 통합 직후)
+- **재발 감지**: 새 ICT 의존 데이터 소스를 추가할 때 즉시 *어떤 토글 분기 아래*에 들어가는지 점검. `grep -n "if self.collector is None" src/bot.py` 로 silent-skip 영역 한눈에 확인.
+
+### Claude 진단 미스 (이번 사고)
+- **Claude 처음 가설**: NQ=F 백필 코드를 `_cold_start_backfill` 안에 추가한 뒤, 함수 시작부의 collector 가드가 그것까지 stop시킨다는 인식을 못 함. "코드 추가 완료" 시점에 "통합 완료" 보고했지만 실제로는 DATA_COLLECTION=off 환경에서 *전혀 실행되지 않는 코드*였음.
+- **실제 원인**: 가드의 의미(5m 스트리밍 의존성)와 새 코드 라인의 의미(일봉/NQ/1m은 의존성 X)가 **다름**. 한 함수 내에서 두 종류의 backfill이 같은 가드를 공유하면 안 됨.
+- **방향 전환 지점**: 사용자 메시지 "적용 확인하고 텔레그램 메시지도 점검해" → Claude가 `ls data/marketdata/`로 NQ=F 부재 확인 후 가드 분리 수정.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: **함수 시작부의 early-return / 가드가 새로 추가된 코드 라인까지 의도 외로 stop시키지 않는가**. 가드는 *원래 의도된 영역*과 *그것에 의존하지 않는 새 코드*를 명확히 구분.
+  - 빨리 배제할 가설: "코드를 추가하면 자동으로 실행될 것" — 함수 흐름(가드/예외/조건분기) 안에서 *반드시 도달하는 라인인지* 확인 필수.
+  - 점검 패턴: 새 기능 추가 후 사용자에게 "적용 확인" 요청을 받기 *전에*, 직접 disk/log/process를 점검해 `data/`나 `logs/`에 흔적이 남았는지 확인. 보고 전에 *실제 실행 흔적*을 검증.
+  - 핵심 진단 명령: `ls -la data/marketdata/<new_dir>/` + `grep "<new_log_line>" logs/app/*.log`
+
+---
+
+## venv 환경에 새 dependencies 미설치 (시스템 python에만 설치)
+
+- **증상**: 봇 재시작 후 로그에 `Backfill: cold start failed silently: No module named 'pandas_market_calendars'` 경고. 단위 테스트는 모두 통과하는데 봇에서만 실패.
+- **원인**: 새 의존성을 `pip install --break-system-packages`로 *시스템 python*에 설치했지만, 봇 runtime은 `.venv/bin/python3` (venv) 사용. `requirements.txt`만 갱신하고 venv에 실제 `pip install`을 안 함.
+- **해결**: `.venv/bin/python3 -m pip install -r requirements.txt` (또는 명시 패키지).
+- **복구 절차**:
+  1. venv 위치 확인: `which python3` (봇 환경에서)
+  2. `.venv/bin/python3 -m pip install 'pyarrow>=14.0.0' 'pandas_market_calendars>=4.0.0'`
+  3. 봇 재시작
+  4. `logs/app/casper_*.log` 에서 `No module named` 사라졌는지 확인
+- **관련 사고**: 2026-05-12 (ICT Phase 4 통합 후)
+- **재발 감지**: `requirements.txt` 변경 후 *항상* `.venv/bin/python3 -m pip install -r requirements.txt` 실행. pytest는 시스템 python으로 돌리면 통과해도 봇은 venv라 실패.
+
+### Claude 진단 미스 (이번 사고)
+- **Claude 처음 가설**: `pip install --break-system-packages` 명령으로 시스템 python에 모듈이 들어갔으니 봇도 인식할 것이라 추정. venv 분리를 잊음. 단위 테스트는 시스템 python으로 실행해 통과 → 봇도 통과할 것이라 가정.
+- **실제 원인**: pytest와 봇 runtime이 **다른 python**. pytest는 `python -m pytest`(시스템), 봇은 `run_casper.sh`의 `activate_venv()`로 `.venv/bin/python3`. 두 환경의 site-packages가 분리.
+- **방향 전환 지점**: 사용자 "적용 확인" → 로그에 `ModuleNotFoundError` 발견 → venv 점검 후 설치.
+- **교훈**:
+  - 첫 의심 영역: **테스트 환경과 봇 runtime이 같은 python인지**. Python 프로젝트는 venv 분리가 보통.
+  - 빨리 배제할 가설: "pip install 성공이면 모든 곳에서 import 가능" — Python에서 가장 자주 깨지는 직관.
+  - 점검 패턴: `requirements.txt` 수정 → *반드시* venv에서도 install. `which python3` 와 `head -1 .venv/bin/python3.14`로 어느 python인지 확인.
+  - 핵심 진단 명령: `.venv/bin/python3 -c "import <module>"` — 봇이 사용할 python으로 직접 import 테스트.
+
+---
+
+## 텔레그램 시작 메시지가 새 ICT 옵션을 표시하지 않음 (UI 동기화 누락)
+
+- **증상**: `notify_bot_started`에서 KZ/Disp/Sweep/Bias/QQQ→SQQQ 5개만 표시. Phase 4 신규 5개(QQQ→TQQQ, OTE, Unicorn, MTF-SL, P3)는 모두 누락. bash stdout / app log / status CLI 에서는 정상 표시.
+- **원인**: 새 옵션을 추가할 때 4-channel 라벨 sync 중 *Telegram notifier* 만 누락. `strategy_info` dict에 새 키 5개를 추가하지 않았고, `notify_bot_started`의 ict_flags 빌더도 5개만 인식.
+- **해결**: `bot.py:strategy_info` dict에 ict_bull_for_tqqq/ict_ote/ict_unicorn/ict_mtf_sl/ict_power_of_3 키 추가. `notifier.py:notify_bot_started`의 ict_flags 빌더에 5개 처리 분기 추가.
+- **복구 절차**:
+  1. `src/bot.py`의 `strategy_info` dict 갱신
+  2. `src/telegram/notifier.py`의 `notify_bot_started` ict_flags 갱신
+  3. 봇 재시작
+  4. Telegram 시작 알림에 10개 옵션 모두 표시되는지 확인
+- **관련 사고**: 2026-05-12 (ICT Phase 4 N1~N6 통합 직후)
+- **재발 감지**: 새 ICT 옵션 추가 시 *동시에* 4개 채널 모두 grep으로 점검. 추가 헬퍼: `grep -n "ict_killzone\|ict_displacement\|ict_sweep\|ict_bias\|ict_bear\|ict_bull\|ict_ote\|ict_unicorn\|ict_mtf\|ict_power" src/`
+
+### Claude 진단 미스 (이번 사고)
+- **Claude 처음 가설**: bash stdout과 status CLI에 옵션을 추가했으니 telegram도 같은 데이터를 표시할 것이라 추정. 4-channel sync 점검을 생략.
+- **실제 원인**: 4채널은 *독립적* 코드 경로 (bash python inline / logger.info / `run_bot.py` _ict_status_line / telegram notifier). 한 곳을 고치면 다른 곳도 자동 동기화되지 않음.
+- **방향 전환 지점**: 사용자 "텔레그램 메시지도 점검해" → unit-test로 시뮬레이션 → 5개 누락 확인 → notifier + bot.py 동시 수정.
+- **교훈**:
+  - 첫 의심 영역: **UI 라벨이 N개의 코드 경로에서 따로 생성되는가**. 라벨 변경은 *모든* 경로에 동시 적용 필요.
+  - 4-channel sync 표 (캐스퍼봇):
+    1. bash `run_casper.sh` start_bot/start_daemon stdout
+    2. `bot.py:run()` logger.info startup banner
+    3. `run_bot.py:_ict_status_line()` (status CLI)
+    4. `notifier.py:notify_bot_started()` (telegram)
+  - 빨리 배제할 가설: "한 곳을 고치면 다른 곳도 자동" — UI 라벨은 보통 그렇지 않음.
+  - 핵심 진단 명령: 봇 시작 후 직접 시뮬레이션: `python3 -c "from src.telegram.notifier import TelegramNotifier; ..."`로 텔레그램 메시지 형태를 코드로 캡처. 또는 4채널 grep 동시 확인.
