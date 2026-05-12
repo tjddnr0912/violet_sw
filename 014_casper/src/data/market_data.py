@@ -227,22 +227,113 @@ def _get_qqq_daily_df_yf(lookback: int) -> Optional[pd.DataFrame]:
 def get_qqq_daily_df(lookback: int = 60) -> Optional[pd.DataFrame]:
     """Return the most recent `lookback` QQQ daily bars.
 
-    Used by daily-bias scoring (ICT Phase 3). KIS primary → yfinance fallback.
-    Returns DataFrame with columns Open/High/Low/Close/Volume, indexed by
-    date (tz-naive), or None on failure.
+    Used by daily-bias scoring (ICT Phase 3). Tries the on-disk store first,
+    then KIS, then yfinance. Always writes fresh fetches back to the store.
     """
+    return get_daily_df("QQQ", lookback=lookback)
+
+
+def get_daily_df(symbol: str, lookback: int = 60) -> Optional[pd.DataFrame]:
+    """Generic daily-bar accessor for ICT/strategy use.
+
+    Order of preference:
+      1. On-disk Parquet (data/marketdata/<sym>/daily/) — instant
+      2. KIS daily chart (live fetch + write-back to store)
+      3. yfinance (live fetch + write-back)
+
+    Returns DataFrame with columns Open/High/Low/Close/Volume indexed by
+    pandas DatetimeIndex (tz-naive), or None on failure.
+    """
+    import os
+    from src.data.store import load_daily_range, save_daily_bars
+
+    base = os.path.join(
+        os.path.dirname(__file__), "..", "..", "data", "marketdata"
+    )
+    base = os.path.abspath(base)
+
+    # 1. Try the store first
+    try:
+        stored = load_daily_range(base, symbol, lookback=lookback)
+        if stored is not None and len(stored) >= max(20, int(lookback * 0.8)):
+            # Translate to OHLCV column case
+            df = pd.DataFrame({
+                "Open":   stored["open"].values,
+                "High":   stored["high"].values,
+                "Low":    stored["low"].values,
+                "Close":  stored["close"].values,
+                "Volume": stored["volume"].values if "volume" in stored.columns else 0,
+            }, index=stored.index)
+            logger.debug(f"{symbol} daily: served from store ({len(df)} rows)")
+            return df
+    except Exception as e:
+        logger.warning(f"{symbol} daily store read failed (non-fatal): {e}")
+
+    # 2/3. Live fetch (KIS → yfinance), then persist
     try:
         if _kis_client:
-            df = _get_qqq_daily_df_kis(lookback)
+            df = _get_daily_df_kis(symbol, lookback)
             if df is not None and not df.empty:
+                _persist_daily(base, symbol, df, source="kis")
                 return df
-            logger.warning("QQQ daily: KIS failed, falling back to yfinance")
-        return _yf_fetch_with_cache_recovery(
-            lambda: _get_qqq_daily_df_yf(lookback), "QQQ-daily-df"
+            logger.warning(f"{symbol} daily: KIS failed, falling back to yfinance")
+
+        df = _yf_fetch_with_cache_recovery(
+            lambda: _get_daily_df_yf(symbol, lookback), f"{symbol}-daily-df"
         )
+        if df is not None and not df.empty:
+            _persist_daily(base, symbol, df, source="yfinance")
+        return df
     except (FuturesTimeout, Exception) as e:
-        logger.error(f"QQQ daily df error: {type(e).__name__}: {e}")
+        logger.error(f"{symbol} daily df error: {type(e).__name__}: {e}")
         return None
+
+
+def _persist_daily(base: str, symbol: str, df: pd.DataFrame, source: str) -> None:
+    """Best-effort write-back to the daily store. Failures are silent."""
+    try:
+        from src.data.store import save_daily_bars
+        save_daily_bars(base, symbol, df, source=source)
+    except Exception as e:
+        logger.debug(f"{symbol} daily persist failed (non-fatal): {e}")
+
+
+def _get_daily_df_kis(symbol: str, lookback: int) -> Optional[pd.DataFrame]:
+    """Generic version of _get_qqq_daily_df_kis for any US stock symbol."""
+    bars = _kis_client.get_us_daily_chart(symbol, count=lookback)
+    if not bars or len(bars) < 1:
+        return None
+    rows = []
+    for b in bars:
+        try:
+            d = datetime.strptime(b["date"], "%Y%m%d").date()
+            rows.append({
+                "date": d,
+                "Open":  float(b.get("open", b.get("close", 0))),
+                "High":  float(b["high"]),
+                "Low":   float(b["low"]),
+                "Close": float(b["close"]),
+                "Volume": int(b.get("volume", 0)),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).set_index("date").sort_index()
+    df.index = pd.to_datetime(df.index)
+    return df
+
+
+def _get_daily_df_yf(symbol: str, lookback: int) -> Optional[pd.DataFrame]:
+    """Generic version of _get_qqq_daily_df_yf for any symbol."""
+    ticker = yf.Ticker(symbol)
+    period = f"{max(lookback + 10, 90)}d"
+    hist = _yf_with_timeout(ticker.history, period=period, interval="1d")
+    if hist is None or hist.empty:
+        return None
+    df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df.tail(lookback)
 
 
 # ─── Intraday Bars (KIS primary → yfinance fallback) ───

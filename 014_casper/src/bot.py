@@ -163,7 +163,11 @@ class CasperBot:
             logger.warning(f"DataCollection: submit failed silently: {e}")
 
     def _cold_start_backfill(self, base_dir, symbols):
-        """Fill missing days via yfinance on bot startup. Silent on failure."""
+        """Fill missing days via yfinance on bot startup. Silent on failure.
+
+        Backfills both 5-min Parquet (60 day yfinance window) and daily
+        Parquet store. Daily store reuses get_daily_df() which writes back.
+        """
         if self.collector is None:
             return
         if os.environ.get("DATA_COLLECTION_BACKFILL", "on").lower() != "on":
@@ -172,17 +176,30 @@ class CasperBot:
             from datetime import datetime, timedelta, timezone
             from src.data.gap_finder import find_gaps
             from src.data.backfill import fill_gaps_from_yfinance
+            from src.data.market_data import get_daily_df
 
             end = datetime.now(timezone.utc).date()
             start = end - timedelta(days=60)
-            total = 0
+            total_5m = 0
             for sym in symbols:
                 gaps = find_gaps(base_dir, sym, start, end)
                 if gaps:
                     n = fill_gaps_from_yfinance(base_dir, sym, gaps)
-                    total += n
-                    logger.info(f"Backfill: {sym} {n}/{len(gaps)} days written")
-            logger.info(f"Backfill: cold start done (total={total} days)")
+                    total_5m += n
+                    logger.info(f"Backfill: {sym} 5m {n}/{len(gaps)} days written")
+            logger.info(f"Backfill: 5m cold start done (total={total_5m} days)")
+
+            # Daily store warm-up (skip ^VIX — daily VIX is on yfinance only,
+            # treated separately by other code paths).
+            for sym in symbols:
+                if sym.startswith("^"):
+                    continue
+                try:
+                    df = get_daily_df(sym, lookback=120)
+                    if df is not None and not df.empty:
+                        logger.info(f"Backfill: {sym} daily store has {len(df)} rows")
+                except Exception as e:
+                    logger.warning(f"Backfill: {sym} daily fetch failed: {e}")
         except Exception as e:
             logger.warning(f"Backfill: cold start failed silently: {e}")
 

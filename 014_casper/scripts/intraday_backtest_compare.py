@@ -896,19 +896,28 @@ def simulate_trade(strategy_name, day_df, sig, capital, rr_be_move=True):
     if len(after) == 0:
         return None
 
-    eff_entry = sig.entry_price * (1 + SLIP_BUY)
+    side = getattr(sig, "side", "long")  # default backward compatible
+    is_short = side == "short"
+
+    # Effective entry — buy side for long, sell side for short
+    eff_entry = sig.entry_price * (1 - SLIP_BUY) if is_short else sig.entry_price * (1 + SLIP_BUY)
     shares = int(capital / eff_entry)
     if shares < 1:
         return None
-    risk_ps = eff_entry - sig.stop
+
+    if is_short:
+        risk_ps = sig.stop - eff_entry      # stop is ABOVE entry
+        be_price = eff_entry * (1 - BROKERAGE * 2 - SLIP_BUY - SLIP_TP)
+    else:
+        risk_ps = eff_entry - sig.stop
+        be_price = eff_entry * (1 + BROKERAGE * 2 + SLIP_BUY + SLIP_TP)
+
     if risk_ps <= 0:
         return None
 
     stop = sig.stop
     target = sig.target
     sl_moved = False
-    # BE = eff_entry × (1 + brokerage_round_trip + slip_buy + slip_sell)
-    be_price = eff_entry * (1 + BROKERAGE * 2 + SLIP_BUY + SLIP_TP)
 
     exit_price = None
     exit_time = None
@@ -921,7 +930,7 @@ def simulate_trade(strategy_name, day_df, sig, capital, rr_be_move=True):
 
         if rr_be_move and ct >= BE_MOVE_TIME and not sl_moved:
             sl_moved = True
-            stop = max(stop, be_price)
+            stop = min(stop, be_price) if is_short else max(stop, be_price)
 
         if ct >= FORCE_CLOSE_TIME:
             exit_price = float(bar["Close"])
@@ -929,16 +938,29 @@ def simulate_trade(strategy_name, day_df, sig, capital, rr_be_move=True):
             exit_reason = "time_force"
             break
 
-        if bar["Low"] <= stop:
-            exit_price = stop
-            exit_time = bt
-            exit_reason = "be_stop" if sl_moved else "stop_loss"
-            break
-        if bar["High"] >= target:
-            exit_price = target
-            exit_time = bt
-            exit_reason = "take_profit"
-            break
+        if is_short:
+            # Short: stop hit when price rises above stop, target hit when price falls below target
+            if bar["High"] >= stop:
+                exit_price = stop
+                exit_time = bt
+                exit_reason = "be_stop" if sl_moved else "stop_loss"
+                break
+            if bar["Low"] <= target:
+                exit_price = target
+                exit_time = bt
+                exit_reason = "take_profit"
+                break
+        else:
+            if bar["Low"] <= stop:
+                exit_price = stop
+                exit_time = bt
+                exit_reason = "be_stop" if sl_moved else "stop_loss"
+                break
+            if bar["High"] >= target:
+                exit_price = target
+                exit_time = bt
+                exit_reason = "take_profit"
+                break
 
     if exit_price is None:
         exit_price = float(after.iloc[-1]["Close"])
@@ -953,13 +975,19 @@ def simulate_trade(strategy_name, day_df, sig, capital, rr_be_move=True):
     else:
         slip_exit = SLIP_TIME
 
-    eff_exit = exit_price * (1 - slip_exit)
+    # Short: buying-back has slippage *up* (cost ↑), Long: selling has slip *down*
+    eff_exit = exit_price * (1 + slip_exit) if is_short else exit_price * (1 - slip_exit)
 
-    gross = (eff_exit - eff_entry) * shares
-    # 거래수수료: 양 사이드 0.25%
+    # P&L mirror for short
+    if is_short:
+        gross = (eff_entry - eff_exit) * shares
+    else:
+        gross = (eff_exit - eff_entry) * shares
     brokerage = (eff_entry + eff_exit) * shares * BROKERAGE
-    # SEC + FINRA TAF (매도 시만)
-    sec_taf = (eff_exit * shares * SEC_RATE_SELL) + (shares * TAF_PER_SHARE_SELL)
+    sec_taf = (eff_entry * shares * SEC_RATE_SELL) + (shares * TAF_PER_SHARE_SELL)  # short sells first
+    if not is_short:
+        # Long: tax only on sell side
+        sec_taf = (eff_exit * shares * SEC_RATE_SELL) + (shares * TAF_PER_SHARE_SELL)
     comm = brokerage + sec_taf
     slip = (sig.entry_price * SLIP_BUY + exit_price * slip_exit) * shares
     net = gross - comm

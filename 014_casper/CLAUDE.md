@@ -93,5 +93,6 @@ KIS 토큰 lockout (EGW00103) / cold-start HTTP 500 / .env IFS trailing-byte / �
 | ICT Phase 2 (Sweep+CHoCH) 구현 | [docs/strategy/PHASE2_IMPLEMENTATION.md](docs/strategy/PHASE2_IMPLEMENTATION.md) |
 | ICT Phase 3 (Bearish FVG + Daily Bias) | [docs/strategy/PHASE3_IMPLEMENTATION.md](docs/strategy/PHASE3_IMPLEMENTATION.md) |
 | ICT Phase 3 — QQQ→SQQQ 매핑 | [docs/strategy/PHASE3_QQQ_MAPPING.md](docs/strategy/PHASE3_QQQ_MAPPING.md) |
+| ICT Phase 4 — OTE/Breaker/NQ + Multi-TF + Daily Store | [docs/strategy/PHASE4_IMPLEMENTATION.md](docs/strategy/PHASE4_IMPLEMENTATION.md) |
 | ICT 통합 후 백테스트 비교 | [docs/strategy/BACKTEST_AFTER_ICT.md](docs/strategy/BACKTEST_AFTER_ICT.md) |
 | 데이터 수집 plan | [docs/strategy/DATA_COLLECTOR_PLAN.md](docs/strategy/DATA_COLLECTOR_PLAN.md) |

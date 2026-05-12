@@ -62,6 +62,9 @@ def scan_for_signal(
     sweep_min_breach_pct: float = 0.0005,
     sweep_min_wick_ratio: float = 0.60,
     direction: str = "bull",
+    bars_1m: Optional[pd.DataFrame] = None,
+    use_multi_tf_sl: bool = False,
+    mtf_lookback_min: int = 15,
 ) -> Optional[TradeSignal]:
     """
     Scan post-ORB 5-minute bars for a trade signal.
@@ -173,10 +176,30 @@ def scan_for_signal(
 
         if direction == "bear":
             stop_loss = float(prev_candle["High"])
+        else:
+            stop_loss = float(prev_candle["Low"])
+
+        # Multi-TF refinement: zoom into 1-min bars before signal_time
+        # to derive a tighter, swing-based SL. Falls back to 5-min on any miss.
+        if use_multi_tf_sl and bars_1m is not None:
+            try:
+                from src.core.multi_tf import best_stop
+                refined_stop, src = best_stop(
+                    bars_1m, bars_5m.index[i], direction,
+                    fallback_stop=stop_loss,
+                    entry_price=entry_price,
+                    min_risk=min_risk,
+                )
+                if src == "1m":
+                    logger.debug(f"Strategy: MTF SL refined {stop_loss:.2f} → {refined_stop:.2f}")
+                stop_loss = refined_stop
+            except Exception as e:
+                logger.debug(f"Strategy: MTF refinement skipped ({e})")
+
+        if direction == "bear":
             risk = stop_loss - entry_price
             tp_direction = -1
         else:
-            stop_loss = float(prev_candle["Low"])
             risk = entry_price - stop_loss
             tp_direction = +1
 

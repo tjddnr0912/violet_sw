@@ -27,7 +27,9 @@
         "sweep_min_breach_pct": 0.0005,
         "sweep_min_wick_ratio": 0.60,
         "bear_fvg_for_sqqq": true,
-        "daily_bias_skip_neutral": true
+        "daily_bias_skip_neutral": true,
+        "use_multi_tf_sl": false,
+        "mtf_lookback_min": 15
     },
     "mode": {
         "dual_scan": true
