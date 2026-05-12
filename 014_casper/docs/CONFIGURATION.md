@@ -33,6 +33,9 @@
 | `ICT_REQUIRE_UNICORN` | off | Breaker ∩ FVG 검증 |
 | `ICT_USE_POWER_OF_3` | off | NQ futures Judas Swing 가산 |
 | `ICT_QQQ_PRIMARY` | off | **P2 (2026-05-12)** — QQQ를 single signal source로, dual_scan 무시 |
+| `ICT_USE_EQH_EQL_POOLS` | **on** | **M3 (2026-05-12)** — EQH/EQL pool을 sweep 후보 우선순위에 prepend |
+| `ICT_EQH_EQL_PCT` | 0.0005 | 두 swing이 동일 가격으로 간주되는 % 임계 (0.05%) |
+| `ICT_USE_SESSION_POOLS` | **on** | **M4 (2026-05-12)** — Asia/London/Premkt 세션 high·low를 NQ futures에서 가져와 풀에 추가 |
 
 ### 시크릿 마스킹 정책
 
@@ -67,6 +70,10 @@
         "dual_scan": True,                   # 2026-05-06: TQQQ+SQQQ 양쪽 동시 스캔 default
         "qqq_primary": False,                # 2026-05-12 P2: QQQ만 signal source로 일원화 (default off)
     },
+    # 2026-05-12 M3/M4 — pool augmentation (default ON, 실거래 활성화)
+    "entry.use_eqh_eql_pools": True,         # EQH/EQL을 sweep 후보 우선순위에 prepend
+    "entry.eqh_eql_pct": 0.0005,             # 두 swing이 동등 가격으로 간주될 % 임계
+    "entry.use_session_pools": True,         # Asia/London/Premkt high·low → pool 앞에 prepend
     "risk": {
         "max_position_pct": 0.99,            # FX/정산 lag 안전 floor 1%
         "vix_min": 12.0,

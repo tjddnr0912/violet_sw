@@ -134,46 +134,79 @@ start_bot() {
 import json, os
 c = json.load(open('config/strategy_params.json'))
 e = c.get('entry', {})
+m = c.get('mode', {})
 rr = e.get('rr_ratio', 2.0)
 strict = e.get('strict_fvg', False)
-dual = c.get('mode', {}).get('dual_scan', False)
+dual = m.get('dual_scan', False)
+qqq_primary = m.get('qqq_primary', False)
 # ICT effective flags = env overrides config (mirrors src/utils/config.py logic)
 def _on(env, fallback):
     raw = os.getenv(env)
     if raw is None: return bool(fallback)
     return raw.strip().lower() in ('on','true','1','yes')
-kz = _on('ICT_KILLZONE_ENABLED', e.get('killzone_filter_enabled', False))
-disp = _on('ICT_REQUIRE_DISPLACEMENT', e.get('require_displacement', False))
-sweep = _on('ICT_REQUIRE_SWEEP_CHOCH', e.get('require_sweep_choch', False))
-bear = _on('ICT_BEAR_FVG_FOR_SQQQ', e.get('bear_fvg_for_sqqq', False))
-bias = _on('ICT_DAILY_BIAS_SKIP_NEUTRAL', e.get('daily_bias_skip_neutral', False))
-print(f'{rr}|{strict}|{dual}|{kz}|{disp}|{sweep}|{bear}|{bias}')
-" 2>/dev/null || echo "?|?|?|?|?|?|?|?")
+# qqq_primary env override
+qqq_primary_eff = _on('ICT_QQQ_PRIMARY', qqq_primary)
+print(f'{rr}|{strict}|{dual}|{qqq_primary_eff}')
+" 2>/dev/null || echo "?|?|?|?")
     RR=$(echo "$CONFIG_INFO" | cut -d'|' -f1)
     STRICT_FVG=$(echo "$CONFIG_INFO" | cut -d'|' -f2)
     DUAL_SCAN=$(echo "$CONFIG_INFO" | cut -d'|' -f3)
-    ICT_KZ=$(echo "$CONFIG_INFO" | cut -d'|' -f4)
-    ICT_DISP=$(echo "$CONFIG_INFO" | cut -d'|' -f5)
-    ICT_SWEEP=$(echo "$CONFIG_INFO" | cut -d'|' -f6)
-    ICT_BEAR=$(echo "$CONFIG_INFO" | cut -d'|' -f7)
-    ICT_BIAS=$(echo "$CONFIG_INFO" | cut -d'|' -f8)
-    SCAN_MODE="단일 (QQQ MA20 추세)"
-    [ "$DUAL_SCAN" = "True" ] && SCAN_MODE="${CYAN}DUAL SCAN${NC} (TQQQ+SQQQ 동시)"
+    QQQ_PRIMARY=$(echo "$CONFIG_INFO" | cut -d'|' -f4)
+    if [ "$QQQ_PRIMARY" = "True" ]; then
+        SCAN_MODE="${CYAN}QQQ-PRIMARY${NC} (signal=QQQ → exec=TQQQ/SQQQ)"
+    elif [ "$DUAL_SCAN" = "True" ]; then
+        SCAN_MODE="${CYAN}DUAL SCAN${NC} (TQQQ+SQQQ 동시)"
+    else
+        SCAN_MODE="단일 (QQQ MA20 추세)"
+    fi
     FVG_MODE="baseline (Close>ORB)"
     [ "$STRICT_FVG" = "True" ] && FVG_MODE="${CYAN}STRICT${NC} (몸통 가로지르기 + FVG-ORB intersect)"
     echo -e "${GREEN}[INFO]${NC} 전략: ORB + FVG + Pullback (R:R 1:${RR%.*})"
     echo -e "${GREEN}[INFO]${NC} 스캔: ${SCAN_MODE}"
     echo -e "${GREEN}[INFO]${NC} FVG : ${FVG_MODE}"
     echo -e "${GREEN}[INFO]${NC} 종목: TQQQ (강세) / SQQQ (약세)"
-    # ICT phase status
-    ict_line=""
-    [ "$ICT_KZ"    = "True" ] && ict_line="${ict_line}KZ "
-    [ "$ICT_DISP"  = "True" ] && ict_line="${ict_line}Disp "
-    [ "$ICT_SWEEP" = "True" ] && ict_line="${ict_line}Sweep "
-    [ "$ICT_BIAS"  = "True" ] && ict_line="${ict_line}Bias "
-    [ "$ICT_BEAR"  = "True" ] && ict_line="${ict_line}QQQ→SQQQ "
-    if [ -n "$ict_line" ]; then
-        echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ict_line}${NC} (전체 bot 통합 완료)"
+    # ICT phase status — single source of truth shared with daemon path
+    ICT_LINE=$(python3 -c "
+import json, os
+c = json.load(open('config/strategy_params.json'))
+e = c.get('entry', {})
+m = c.get('mode', {})
+def _on(env, fallback):
+    raw = os.getenv(env)
+    if raw is None: return bool(fallback)
+    return raw.strip().lower() in ('on','true','1','yes')
+flags = []
+if _on('ICT_QQQ_PRIMARY', m.get('qqq_primary', False)):
+    flags.append('QQQ-PRIMARY')
+if _on('ICT_KILLZONE_ENABLED', e.get('killzone_filter_enabled', False)):
+    kz = e.get('allowed_killzones', []) or []
+    flags.append('KZ(' + ','.join(kz) + ')' if kz else 'KZ')
+if _on('ICT_REQUIRE_DISPLACEMENT', e.get('require_displacement', False)):
+    flags.append('Disp')
+if _on('ICT_REQUIRE_SWEEP_CHOCH', e.get('require_sweep_choch', False)):
+    flags.append('Sweep')
+if _on('ICT_DAILY_BIAS_SKIP_NEUTRAL', e.get('daily_bias_skip_neutral', False)):
+    flags.append('Bias')
+if _on('ICT_BEAR_FVG_FOR_SQQQ', e.get('bear_fvg_for_sqqq', False)):
+    flags.append('QQQ->SQQQ')
+if _on('ICT_BULL_FVG_FOR_TQQQ', e.get('bull_fvg_for_tqqq', False)):
+    flags.append('QQQ->TQQQ')
+if _on('ICT_USE_OTE', e.get('use_ote', False)):
+    flags.append('OTE(' + str(e.get('ote_fib_level', 0.705)) + ')')
+if _on('ICT_REQUIRE_UNICORN', e.get('require_unicorn', False)):
+    flags.append('Unicorn')
+if _on('ICT_USE_MULTI_TF_SL', e.get('use_multi_tf_sl', False)):
+    flags.append('MTF-SL')
+if _on('ICT_USE_POWER_OF_3', e.get('use_power_of_3', False)):
+    flags.append('P3')
+if _on('ICT_USE_EQH_EQL_POOLS', e.get('use_eqh_eql_pools', False)):
+    flags.append('EQH/EQL')
+if _on('ICT_USE_SESSION_POOLS', e.get('use_session_pools', False)):
+    flags.append('SessionPools')
+print(' + '.join(flags) if flags else 'off')
+" 2>/dev/null || echo "?")
+    if [ "$ICT_LINE" != "off" ] && [ "$ICT_LINE" != "?" ]; then
+        echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ICT_LINE}${NC}"
         KST_WINDOW=$(python3 -c "
 from datetime import datetime, time as dtime
 import pytz
@@ -254,11 +287,14 @@ start_daemon() {
 import json, os
 c = json.load(open('config/strategy_params.json'))
 e = c.get('entry', {})
+m = c.get('mode', {})
 def _on(env, fallback):
     raw = os.getenv(env)
     if raw is None: return bool(fallback)
     return raw.strip().lower() in ('on','true','1','yes')
 flags = []
+if _on('ICT_QQQ_PRIMARY', m.get('qqq_primary', False)):
+    flags.append('QQQ-PRIMARY')
 if _on('ICT_KILLZONE_ENABLED', e.get('killzone_filter_enabled', False)):
     kz = e.get('allowed_killzones', []) or []
     flags.append('KZ(' + ','.join(kz) + ')' if kz else 'KZ')
@@ -280,6 +316,10 @@ if _on('ICT_USE_MULTI_TF_SL', e.get('use_multi_tf_sl', False)):
     flags.append('MTF-SL')
 if _on('ICT_USE_POWER_OF_3', e.get('use_power_of_3', False)):
     flags.append('P3')
+if _on('ICT_USE_EQH_EQL_POOLS', e.get('use_eqh_eql_pools', False)):
+    flags.append('EQH/EQL')
+if _on('ICT_USE_SESSION_POOLS', e.get('use_session_pools', False)):
+    flags.append('SessionPools')
 print(' + '.join(flags) if flags else 'off')
 " 2>/dev/null || echo "?")
     echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ICT_LINE}${NC}"

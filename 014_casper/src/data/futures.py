@@ -74,6 +74,22 @@ def london_session_range(bars: pd.DataFrame, day) -> Optional[tuple[float, float
     return float(win["High"].max()), float(win["Low"].min())
 
 
+def premarket_session_range(bars: pd.DataFrame, day) -> Optional[tuple[float, float]]:
+    """Pre-market session 06:00 ~ 09:30 ET (just before RTH open).
+
+    Strong liquidity reference because NY trader stops cluster here.
+    """
+    if bars is None or bars.empty:
+        return None
+    day = pd.Timestamp(day).date()
+    start = pd.Timestamp(day).tz_localize("US/Eastern") + pd.Timedelta(hours=6)
+    end = pd.Timestamp(day).tz_localize("US/Eastern") + pd.Timedelta(hours=9, minutes=30)
+    win = bars[(bars.index >= start) & (bars.index < end)]
+    if win.empty:
+        return None
+    return float(win["High"].max()), float(win["Low"].min())
+
+
 def midnight_open_price(bars: pd.DataFrame, day) -> Optional[float]:
     """Return the Open of the 00:00 ET 5-min bar for the given day (ICT True Open)."""
     if bars is None or bars.empty:

@@ -137,6 +137,16 @@ def _apply_ict_env_overrides(params: dict) -> dict:
         mode = params.setdefault("mode", {})
         mode["qqq_primary"] = _bool_env("ICT_QQQ_PRIMARY", False)
 
+    # M3 — EQH/EQL pools
+    if os.getenv("ICT_USE_EQH_EQL_POOLS") is not None:
+        entry["use_eqh_eql_pools"] = _bool_env("ICT_USE_EQH_EQL_POOLS", False)
+    if os.getenv("ICT_EQH_EQL_PCT"):
+        entry["eqh_eql_pct"] = float(os.getenv("ICT_EQH_EQL_PCT"))
+
+    # M4 — Session pools (Asia/London/Premarket)
+    if os.getenv("ICT_USE_SESSION_POOLS") is not None:
+        entry["use_session_pools"] = _bool_env("ICT_USE_SESSION_POOLS", False)
+
     return params
 
 

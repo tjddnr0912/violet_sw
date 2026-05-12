@@ -197,6 +197,12 @@ class Sig:
     side: str = "long"
     note: str = ""
     rr_ratio: float = 0.0
+    # H1 — Effective leverage multiplier for inverse-long simulation
+    # (e.g. SQQQ Long re-creation from QQQ short signals). Net P&L is
+    # multiplied by this factor after commissions to approximate the
+    # leveraged ETF's % return at the same intraday window. r_multiple
+    # is unchanged (it's a ratio).
+    leverage_multiplier: float = 1.0
 
 
 # ──────────────────── STRATEGY IMPLEMENTATIONS ─────────────────────────
@@ -568,6 +574,32 @@ def strat_qqq_bear_short_full_ict(day_df, ctx):
         sig = Sig(sig.entry_time, sig.entry_price, sig.stop, sig.target,
                   side="short", note=f"{sig.note}_short", rr_ratio=sig.rr_ratio)
     return sig
+
+
+# ────── H1 — SQQQ leverage approximation (effective 2.85x) ──────
+# Matches src/core/exec_mapper.py: LEVERAGE_FACTOR * (1 - LEVERAGE_SLIPPAGE)
+# = 3.0 * 0.95 = 2.85. Same constant used by the live QQQ→SQQQ remap.
+LEV_FACTOR_SQQQ = 2.85
+
+
+def _with_leverage(sig: Optional["Sig"], factor: float) -> Optional["Sig"]:
+    """Attach leverage_multiplier to a Sig (mutates and returns)."""
+    if sig is None:
+        return None
+    sig.leverage_multiplier = factor
+    return sig
+
+
+def strat_qqq_bear_sqqq_lev(day_df, ctx):
+    """Bear ORB+FVG strict, simulated as SQQQ Long via 2.85x leverage."""
+    sig = strat_qqq_bear_short(day_df, ctx)
+    return _with_leverage(sig, LEV_FACTOR_SQQQ)
+
+
+def strat_qqq_bear_sqqq_full_lev(day_df, ctx):
+    """Bear + full ICT, simulated as SQQQ Long via 2.85x leverage."""
+    sig = strat_qqq_bear_short_full_ict(day_df, ctx)
+    return _with_leverage(sig, LEV_FACTOR_SQQQ)
 
 
 # ────── 25. Casper full ICT + Daily Bias skip-neutral ──────
@@ -956,6 +988,11 @@ STRATEGIES: List[tuple] = [
     ("25_Casper_Full_Bias",strat_casper_full_ict_bias, "Casper Full ICT + Daily Bias skip-neutral"),
     ("26_QQQ_Bear_Full_Bias", strat_qqq_bear_short_full_ict_bias,
                                                        "Bear + Full ICT + Daily Bias skip-neutral"),
+    # ── H1 — SQQQ leverage approximation (effective 2.85x) ──
+    ("27_QQQ_Bear_SQQQ_Lev",   strat_qqq_bear_sqqq_lev,
+                                                       "Bear setup → SQQQ Long approx (2.85x)"),
+    ("28_QQQ_Bear_FullICT_Lev", strat_qqq_bear_sqqq_full_lev,
+                                                       "Bear + Full ICT → SQQQ Long approx (2.85x)"),
 ]
 
 
@@ -1082,7 +1119,18 @@ def simulate_trade(strategy_name, day_df, sig, capital, rr_be_move=True):
     comm = brokerage + sec_taf
     slip = (sig.entry_price * SLIP_BUY + exit_price * slip_exit) * shares
     net = gross - comm
-    r_mult = net / (risk_ps * shares) if risk_ps * shares > 0 else 0
+    # H1 — apply effective leverage for inverse-long approximations.
+    # The multiplier scales both gross profit and the cost basis (commissions
+    # already proportional to share count), giving the leveraged ETF's
+    # approximate $ return for the same % move.
+    lev_mult = getattr(sig, "leverage_multiplier", 1.0) or 1.0
+    if lev_mult != 1.0:
+        net = net * lev_mult
+        # gross/slip are reported for diagnostics — scale together so they
+        # remain consistent with the leveraged net
+        gross = gross * lev_mult
+        slip = slip * lev_mult
+    r_mult = net / (risk_ps * shares * lev_mult) if risk_ps * shares > 0 else 0
 
     if exit_reason == "take_profit":
         result = "WIN"

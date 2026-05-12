@@ -50,6 +50,10 @@ def _ict_status_line(entry: dict, mode: dict | None = None) -> str:
         flags.append("MTF-SL")
     if entry.get("use_power_of_3"):
         flags.append("P3")
+    if entry.get("use_eqh_eql_pools"):
+        flags.append("EQH/EQL")
+    if entry.get("use_session_pools"):
+        flags.append("SessionPools")
     return " + ".join(flags) if flags else "off"
 
 

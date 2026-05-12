@@ -114,6 +114,9 @@ class CasperBot:
         self._signal_ict_meta: Optional[dict] = None
         # Daily bias (ICT Phase 3), computed once per pre-market.
         self._daily_bias = None
+        # M4 — session pools from NQ futures (asia/london/premkt high·low).
+        # Populated by _handle_pre_market when use_session_pools is on.
+        self._session_pools = None
         # Telegram dedup flags for new ICT-aware notifications
         self._notified_scan_start = False
         self._notified_setup = False
@@ -244,6 +247,27 @@ class CasperBot:
                         self._record_bars_1m(sym, bars1)
             except Exception as e:
                 logger.debug(f"Backfill: 1m fetch failed silently: {e}")
+
+            # M2 — 1m yfinance gap backfill (8-day yfinance retention).
+            # Best-effort: detects missing 1m days in the 1m partition and
+            # fills via yfinance. Independent of DATA_COLLECTION (always on
+            # — yields offline analysis data with zero impact on trading).
+            try:
+                from src.data.gap_finder import find_minute_gaps
+                from src.data.backfill import fill_minute_gaps_from_yfinance, YF_1M_RETENTION_DAYS
+                end_1m = end
+                start_1m = end_1m - timedelta(days=YF_1M_RETENTION_DAYS)
+                total_1m = 0
+                for sym in [s for s in symbols if s in ("TQQQ", "QQQ", "SQQQ")]:
+                    gaps_1m = find_minute_gaps(base_dir, sym, start_1m, end_1m)
+                    if gaps_1m:
+                        n = fill_minute_gaps_from_yfinance(base_dir, sym, gaps_1m)
+                        total_1m += n
+                        logger.info(f"Backfill: {sym} 1m {n}/{len(gaps_1m)} days written")
+                if total_1m:
+                    logger.info(f"Backfill: 1m yfinance cold start done (total={total_1m} days)")
+            except Exception as e:
+                logger.debug(f"Backfill: 1m yfinance gap-fill skipped silently: {e}")
         except Exception as e:
             logger.warning(f"Backfill: cold start failed silently: {e}")
 
@@ -452,6 +476,10 @@ class CasperBot:
             ict_flags.append("MTF-SL")
         if ep.get("use_power_of_3"):
             ict_flags.append("P3")
+        if ep.get("use_eqh_eql_pools"):
+            ict_flags.append("EQH/EQL")
+        if ep.get("use_session_pools"):
+            ict_flags.append("SessionPools")
         logger.info(f"ICT : {' + '.join(ict_flags) if ict_flags else 'off'}")
         # Render trading window in both ET and current KST (DST-aware).
         try:
@@ -534,6 +562,8 @@ class CasperBot:
             "ict_unicorn": ep.get("require_unicorn", False),
             "ict_mtf_sl": ep.get("use_multi_tf_sl", False),
             "ict_power_of_3": ep.get("use_power_of_3", False),
+            "ict_eqh_eql_pools": ep.get("use_eqh_eql_pools", False),
+            "ict_session_pools": ep.get("use_session_pools", False),
         }
         self.notifier.notify_bot_started(
             self.env["trading_mode"], self.capital, history, strategy_info,
@@ -632,6 +662,7 @@ class CasperBot:
         self._notified_signal = False
         self._signal_ict_meta = None
         self._daily_bias = None
+        self._session_pools = None
         self._notified_scan_start = False
         self._notified_setup = False
         self._sync_capital()
@@ -735,16 +766,46 @@ class CasperBot:
                 from src.core.bias import compute_daily_bias
                 daily_df = get_qqq_daily_df(lookback=60)
                 judas = None
-                if self.params.get("entry", {}).get("use_power_of_3", False):
+                use_p3 = self.params.get("entry", {}).get("use_power_of_3", False)
+                use_sp = self.params.get("entry", {}).get("use_session_pools", False)
+                if use_p3 or use_sp:
                     try:
-                        from src.data.futures import fetch_nq_futures_5m, detect_judas_swing
+                        from src.data.futures import (
+                            fetch_nq_futures_5m, detect_judas_swing,
+                            asia_session_range, london_session_range,
+                            premarket_session_range,
+                        )
                         nq = fetch_nq_futures_5m(period="5d")
                         if nq is not None and not nq.empty:
-                            judas = detect_judas_swing(nq, time_utils.now_et().date())
-                            if judas:
-                                logger.info(f"Power of 3: Judas Swing detected — {judas}")
+                            today_et_date = time_utils.now_et().date()
+                            if use_p3:
+                                judas = detect_judas_swing(nq, today_et_date)
+                                if judas:
+                                    logger.info(f"Power of 3: Judas Swing detected — {judas}")
+                            if use_sp:
+                                pools = {
+                                    "asia":   asia_session_range(nq, today_et_date),
+                                    "london": london_session_range(nq, today_et_date),
+                                    "premkt": premarket_session_range(nq, today_et_date),
+                                }
+                                pools = {k: v for k, v in pools.items() if v is not None}
+                                if pools:
+                                    self._session_pools = pools
+                                    logger.info(
+                                        f"Session pools: " + " ".join(
+                                            f"{k}=({h:.2f},{l:.2f})"
+                                            for k, (h, l) in pools.items()
+                                        )
+                                    )
+                                    try:
+                                        from src.data.ict_log import record as _ict_log
+                                        _ict_log(event="session_pools_computed",
+                                                 passed=None,
+                                                 details={k: list(v) for k, v in pools.items()})
+                                    except Exception:
+                                        pass
                     except Exception as e:
-                        logger.debug(f"Power of 3 fetch failed (non-fatal): {e}")
+                        logger.debug(f"NQ futures fetch failed (non-fatal): {e}")
                 if daily_df is not None and not daily_df.empty:
                     bias = compute_daily_bias(daily_df, judas_signal=judas)
                     if bias is not None:
@@ -965,6 +1026,12 @@ class CasperBot:
         ote_fib_level = entry_params.get("ote_fib_level", 0.705)
         # ICT Phase 4: Unicorn (Breaker + FVG overlap)
         require_unicorn = entry_params.get("require_unicorn", False)
+        # M3: EQH/EQL pools (strong sweep candidates from clustered swings)
+        use_eqh_eql_pools = entry_params.get("use_eqh_eql_pools", False)
+        eqh_eql_pct = entry_params.get("eqh_eql_pct", 0.0005)
+        # M4: session pools (Asia/London/Premkt high·low from NQ 24h futures)
+        use_session_pools = entry_params.get("use_session_pools", False)
+        session_pools_arg = self._session_pools if use_session_pools else None
         syms = self.params["symbols"]
 
         for symbol, orb in self.orbs.items():
@@ -1036,6 +1103,10 @@ class CasperBot:
                         use_ote=use_ote,
                         ote_fib_level=ote_fib_level,
                         require_unicorn=require_unicorn,
+                        use_eqh_eql_pools=use_eqh_eql_pools,
+                        eqh_eql_pct=eqh_eql_pct,
+                        use_session_pools=use_session_pools,
+                        session_high_low=session_pools_arg,
                     )
                     if sig is None:
                         continue

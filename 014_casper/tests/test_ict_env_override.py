@@ -130,6 +130,32 @@ def test_env_qqq_primary_unset_keeps_json(monkeypatch):
     assert p["mode"]["qqq_primary"] is True
 
 
+# ───────────── M3 / M4: EQH/EQL + Session pools ─────────────
+def test_env_eqh_eql_pools_on(monkeypatch):
+    monkeypatch.setenv("ICT_USE_EQH_EQL_POOLS", "on")
+    monkeypatch.setenv("ICT_EQH_EQL_PCT", "0.001")
+    p = _apply_ict_env_overrides(_baseline_params())
+    assert p["entry"]["use_eqh_eql_pools"] is True
+    assert p["entry"]["eqh_eql_pct"] == 0.001
+
+
+def test_env_session_pools_on(monkeypatch):
+    monkeypatch.setenv("ICT_USE_SESSION_POOLS", "on")
+    p = _apply_ict_env_overrides(_baseline_params())
+    assert p["entry"]["use_session_pools"] is True
+
+
+def test_env_pools_off_explicit(monkeypatch):
+    monkeypatch.setenv("ICT_USE_EQH_EQL_POOLS", "off")
+    monkeypatch.setenv("ICT_USE_SESSION_POOLS", "off")
+    p = _baseline_params()
+    p["entry"]["use_eqh_eql_pools"] = True
+    p["entry"]["use_session_pools"] = True
+    p = _apply_ict_env_overrides(p)
+    assert p["entry"]["use_eqh_eql_pools"] is False
+    assert p["entry"]["use_session_pools"] is False
+
+
 # ───────────── integration: load_strategy_params end-to-end ─────────────
 def test_load_strategy_params_respects_env(monkeypatch):
     reset_config_cache()

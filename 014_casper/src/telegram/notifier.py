@@ -138,6 +138,10 @@ class TelegramNotifier:
                 ict_flags.append("MTF-SL")
             if strategy_info.get("ict_power_of_3"):
                 ict_flags.append("P3")
+            if strategy_info.get("ict_eqh_eql_pools"):
+                ict_flags.append("EQH/EQL")
+            if strategy_info.get("ict_session_pools"):
+                ict_flags.append("SessionPools")
             if ict_flags:
                 lines.append("ICT: " + " + ".join(ict_flags))
                 # DST-aware KST window line

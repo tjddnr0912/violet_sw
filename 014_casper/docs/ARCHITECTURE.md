@@ -107,6 +107,34 @@ data/
 - 1m partition은 5m와 완전 분리 → 같은 날짜 동시 저장 충돌 없음.
 - `data/marketdata/`는 5m·1m·daily 모두 atomic write (`.tmp → rename`).
 
+## Sweep 후보 풀 우선순위 (2026-05-12 M3/M4)
+
+`require_sweep_choch=true` 상태에서 `levels_up` / `levels_down` 구성 순서 (앞쪽일수록 sweep 검출 우선):
+
+```
+levels_down  =  [session_pools.lows...]   ← M4 (Asia/London/Premkt low from NQ futures)
+            +   [EQL pool means...]       ← M3 (clustered swing lows < 0.05%)
+            +   [orb.low]                 ← 기본 ORB low
+            +   [recent swing lows ×5]    ← Phase 2 base
+```
+
+- 같은 식으로 `levels_up`에 session highs / EQH means / orb.high / recent swing highs.
+- `is_sweep_bar`는 levels 리스트를 순회하며 첫 매치를 사용 → 강한 풀(NQ 세션 + EQH/EQL)이 자연스럽게 우선.
+- 결정 로그에 `eqh_eql_pools`, `session_pools_computed`, `session_pools` 이벤트 적재.
+
+## 1m yfinance backfill (2026-05-12 M2)
+
+`_cold_start_backfill`은 두 단계 backfill 수행:
+
+| 데이터 | 윈도우 | 소스 | 조건 |
+|---|---|---|---|
+| 5m bars | 60일 | yfinance 5m | `DATA_COLLECTION=on`일 때만 |
+| 1m bars (NEW) | 8일 | yfinance 1m | 항상 (`DATA_COLLECTION` 무관) |
+| daily bars | 100~120일 | KIS/yfinance | 항상 |
+| NQ=F 5m | 5~60일 | yfinance | use_power_of_3 또는 use_session_pools 일 때 |
+
+1m partition (`data/marketdata/<sym>/1m/<year>/<date>.parquet`)은 5m partition과 완전 격리 — 한쪽이 비어도 다른 쪽 동작 영향 없음.
+
 ## 텔레그램 알림 컴포넌트
 
 봇 lifecycle의 핵심 지점에서 텔레그램으로 알림 송출. 수신/명령 처리 없음 (send-only).

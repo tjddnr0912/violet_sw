@@ -4,6 +4,31 @@
 
 ---
 
+## Claude의 백그라운드 폴링 셸이 영원히 sleep — 종료 조건 미스
+
+- **증상**: `Bash run_in_background`로 띄운 `until grep -q ... do sleep N done` 폴링 셸이 시스템 통보 후에도 계속 살아있음. `ps -ef`에 sleep 프로세스가 누적.
+- **원인**: 폴링 종료 조건이 실제 출력과 매치하지 않음. 케이스 (a) 파일 경로 오타 (`/tmp/foo.log`인데 실제는 `/private/tmp/claude-501/.../tasks/<id>.output`), (b) grep 키워드가 출력에 등장하지 않는 형태(`=== ` 공백 포함, 대소문자 차이 등).
+- **해결**: 폴링 자체를 지양. `run_in_background:true`로 명령을 띄우면 시스템이 자동 task-notification을 전달하므로 폴링이 불필요. 굳이 폴링한다면:
+  1. 항상 실제 출력 파일 경로(`<task-notification>`의 `<output-file>`) 사용
+  2. grep 패턴은 pytest 종료 표시(`passed\|failed\|error\b`)나 명시 echo(`echo DONE`) 등 출력에 *반드시* 나오는 토큰
+  3. `timeout_ms` 한정 적용 또는 `Monitor` 도구 사용
+- **복구 절차**:
+  1. `ps -ef | grep "until grep\|sleep"` 으로 dangling 셸 PID 식별
+  2. `TaskStop --task_id <bg-id>` 로 graceful 종료 (가능하면)
+  3. 안 되면 `kill -TERM <PID>` (사용자 워크스페이스 ttys에 attach된 셸은 건드리지 말 것)
+- **관련 사고**: 2026-05-12 (P1 회귀 폴링 21분, backtest 폴링 23분 무한 sleep)
+- **재발 감지**: 한 세션에서 `until` 또는 `while true` 루프를 2개 이상 띄우면 plausible warning. ps -ef 주기 점검.
+
+### Claude 운영 실수 (이번 세션 = 2026-05-12)
+- **Claude 실수 패턴**: `Bash run_in_background:true`로 띄운 명령은 시스템이 자동 노티 보내는데, 별도 `until grep ... sleep` 폴링 셸을 추가로 띄움. 종료 조건 grep 패턴/경로를 실수해도 self-detect 불가 → 영원히 sleep.
+- **올바른 패턴**: `run_in_background:true` → 알림 기다림 → 도착 시 `cat`/`tail`로 결과 읽기. 폴링 셸은 생성 자체를 피한다.
+- **교훈 (다음에 같은 작업 시작 시)**:
+  - 백그라운드 명령은 `run_in_background:true` 하나만 띄움
+  - 결과 대기는 사용자에게 짧게 보고 + 시스템 task-notification 신호로 자동 깨어남
+  - 폴링이 정말 필요하면 `Monitor` 도구 (until-loop 내장 지원)
+
+---
+
 ## EGW00103 "유효하지 않은 AppKey" — 사실은 토큰 발급 rate limit lockout
 
 - **증상**: KIS API 호출이 `EGW00103 "유효하지 않은 AppKey"`로 거부. 키를 재발급해도 동일 증상.

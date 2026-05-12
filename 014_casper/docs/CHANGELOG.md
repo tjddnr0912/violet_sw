@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-05-12 (3): M3/M4 활성화 + 헤더 동기화 + 백테스트 측정 도구
+
+거래 영향 없는 측정·검증 인프라 보강 일괄 도입. 모든 사용자 확정에 따라 M3/M4는 default ON으로 활성화 후 봇 재시작.
+
+### M3 — EQH/EQL pools를 sweep 로직에 결합 (활성화됨)
+- `src/core/strategy.py`: `equal_levels` import, `scan_for_signal`에 `use_eqh_eql_pools` / `eqh_eql_pct` 인자. EQH (두 swing high 0.05% 이내) 평균 가격 → `levels_up` 앞쪽, EQL → `levels_down` 앞쪽 prepend. sweep 검출기 first-hit 우선
+- `config/strategy_params.json`: `entry.use_eqh_eql_pools=true` / `entry.eqh_eql_pct=0.0005` (default ON)
+- `ICT_USE_EQH_EQL_POOLS` / `ICT_EQH_EQL_PCT` env override
+- `ict_log` 이벤트: `eqh_eql_pools`
+
+### M4 — 세션 풀 (Asia/London/Premkt) (활성화됨)
+- `src/data/futures.py`: `premarket_session_range()` 신규 (06:00~09:30 ET)
+- `src/bot.py::_handle_pre_market`: `use_power_of_3` 또는 `use_session_pools=true`일 때 NQ futures 1회 fetch, asia/london/premkt high·low 계산 → `self._session_pools`. P3와 NQ 데이터 공유 (재호출 0)
+- `src/core/strategy.py`: `scan_for_signal`에 `use_session_pools` / `session_high_low` 인자. 세션별 high → `levels_up` 앞, low → `levels_down` 앞
+- `config/strategy_params.json`: `entry.use_session_pools=true` (default ON)
+- `ICT_USE_SESSION_POOLS` env override
+- `ict_log` 이벤트: `session_pools_computed`, `session_pools`
+
+### 봇 가동 확인 (22:14:51 KST)
+- `Session pools: asia=(29455.75,29227.00) london=(29292.25,29174.00) premkt=(29250.25,29113.00)`
+- `ICT : KZ(AM_MACRO) + Disp + Sweep + Bias + QQQ→SQQQ + QQQ→TQQQ + OTE(0.705) + Unicorn + MTF-SL + P3 + EQH/EQL + SessionPools`
+
+### run_casper.sh 헤더 4-channel sync
+- start/daemon 두 path 모두 동일한 ICT flag logic으로 통일 — 옛 5개 라벨 → **신규 12개 플래그 모두 표시**
+- scan_mode 표시에 `QQQ-PRIMARY` 우선 분기 추가
+- 이전 사고(`TROUBLESHOOTING.md`의 "Telegram 4-channel UI sync 누락")와 같은 패턴 재발 — bash 헤더가 logger보다 뒤늦게 갱신된 케이스. 4-channel sync는 단발성 cleanup가 아니라 라벨 추가 시 매번 확인 필요.
+
+### H1 — 백테스트 SQQQ leverage 매핑 (거래 미영향)
+- `scripts/intraday_backtest_compare.py::Sig` 에 `leverage_multiplier: float = 1.0` 필드
+- `simulate_trade`: net/gross/slip을 `leverage_multiplier`로 scale, r_multiple은 ratio 보존 (분자/분모 모두 scale)
+- 신규 strategy variants: `27_QQQ_Bear_SQQQ_Lev`, `28_QQQ_Bear_FullICT_Lev` (LEV_FACTOR=2.85, `src/core/exec_mapper.py`와 일치)
+- 검증: 23번 `QQQ_Bear_Short` `Ret -2.89%` → 27번 `QQQ_Bear_SQQQ_Lev` `Ret -8.04%` ≈ **2.78× scale** (≈2.85 leverage)
+
+### M2 — 1m yfinance 부분 backfill (거래 미영향)
+- `src/data/backfill.py`: `_fetch_yf(interval=)` 인자 추가, `fill_minute_gaps_from_yfinance` 신규, `YF_1M_RETENTION_DAYS=8`
+- `src/data/gap_finder.py`: `find_minute_gaps` — 1m 파티션 독립 점검
+- `src/bot.py::_cold_start_backfill`: TQQQ/QQQ/SQQQ 1m 8일 gap 자동 backfill (DATA_COLLECTION 무관, always-on)
+- 1m partition `data/marketdata/<sym>/1m/<year>/<date>.parquet`에 적재 — 5m partition 미영향
+
+### 테스트
+- `tests/test_ict_env_override.py` +3 (eqh_eql, session_pools, both off)
+- `tests/test_futures.py` +2 (premarket_session_range)
+- `tests/test_data_backfill.py` +2 (1m write, 8일 한계)
+- `tests/test_data_gap_finder.py` +2 (1m partition independence)
+- 회귀 86/86 (bot_states, bot_advanced, integration, strategy, strategy_phase2/3, overnight, collector_integration)
+
+### 운영 영향
+- M3/M4 활성화 후 봇 재시작 (LIVE PID 96986 종료 → 신 PID로 22:14:45 시작)
+- H1/M2는 백테스트·데이터 인프라 — live 미영향
+- 헤더 동기화는 다음 봇 재시작부터 신규 라벨 표시
+
 ## 2026-05-12 (2): P2 / P0 / P1 priority follow-ups
 
 미구현 점검 결과(`현재 구현 안된 기능들`)를 받아 우선순위 P2 → P0 → P1을 일괄 도입. 모두 default OFF 또는 신규 옵션으로 안전 배포.

@@ -34,7 +34,10 @@
         "ote_fib_level": 0.705,
         "require_unicorn": true,
         "bull_fvg_for_tqqq": true,
-        "use_power_of_3": true
+        "use_power_of_3": true,
+        "use_eqh_eql_pools": true,
+        "eqh_eql_pct": 0.0005,
+        "use_session_pools": true
     },
     "mode": {
         "dual_scan": true,

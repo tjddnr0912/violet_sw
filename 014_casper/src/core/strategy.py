@@ -22,7 +22,7 @@ from src.core.fvg import (
 )
 from src.core.sessions import in_allowed_killzones
 from src.core.displacement import is_displacement, atr14
-from src.core.swing import find_swing_highs, find_swing_lows
+from src.core.swing import find_swing_highs, find_swing_lows, equal_levels
 from src.core.liquidity import sweep_then_choch
 from src.data.ict_log import record as _log_decision
 
@@ -69,6 +69,10 @@ def scan_for_signal(
     use_ote: bool = False,
     ote_fib_level: float = 0.705,
     require_unicorn: bool = False,
+    use_eqh_eql_pools: bool = False,
+    eqh_eql_pct: float = 0.0005,
+    use_session_pools: bool = False,
+    session_high_low: Optional[dict] = None,
 ) -> Optional[TradeSignal]:
     """
     Scan post-ORB 5-minute bars for a trade signal.
@@ -117,6 +121,53 @@ def scan_for_signal(
         # liquidity levels: ORB high/low + last few swing extremes
         levels_up = [orb.high] + [p.price for p in swing_highs[-5:]]
         levels_down = [orb.low] + [p.price for p in swing_lows[-5:]]
+
+        # M3 — EQH/EQL pools: two swing highs (lows) within `eqh_eql_pct`
+        # mark a stronger sweep candidate (institutional stop cluster).
+        # Insert the mean price at the FRONT of levels so the sweep
+        # detector hits these first.
+        if use_eqh_eql_pools:
+            eqh_pairs = equal_levels(swing_highs, eq_pct=eqh_eql_pct)
+            eql_pairs = equal_levels(swing_lows, eq_pct=eqh_eql_pct)
+            eqh_levels = [(a.price + b.price) / 2.0 for a, b in eqh_pairs[-3:]]
+            eql_levels = [(a.price + b.price) / 2.0 for a, b in eql_pairs[-3:]]
+            if eqh_levels:
+                levels_up = eqh_levels + levels_up
+            if eql_levels:
+                levels_down = eql_levels + levels_down
+            _log_decision(
+                event="eqh_eql_pools", symbol=symbol, passed=None,
+                details={"eqh_count": len(eqh_levels),
+                         "eql_count": len(eql_levels),
+                         "eq_pct": eqh_eql_pct},
+            )
+
+        # M4 — session pools: Asia / London / Pre-market high·low from
+        # NQ 24h futures (passed in by bot as `session_high_low` dict).
+        # Each session contributes one high to levels_up and one low to
+        # levels_down. Inserted at the front for higher priority.
+        if use_session_pools and session_high_low:
+            extra_up = []
+            extra_dn = []
+            for key in ("asia", "london", "premkt"):
+                rng = session_high_low.get(key)
+                if rng is None:
+                    continue
+                hi, lo = rng
+                if hi and hi > 0:
+                    extra_up.append(float(hi))
+                if lo and lo > 0:
+                    extra_dn.append(float(lo))
+            if extra_up:
+                levels_up = extra_up + levels_up
+            if extra_dn:
+                levels_down = extra_dn + levels_down
+            _log_decision(
+                event="session_pools", symbol=symbol, passed=None,
+                details={"session_keys": list(session_high_low.keys()),
+                         "extra_up": len(extra_up),
+                         "extra_dn": len(extra_dn)},
+            )
     else:
         swing_highs = swing_lows = []
         levels_up = levels_down = []

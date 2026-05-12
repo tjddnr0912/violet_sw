@@ -7,7 +7,7 @@ import pytest
 
 from src.data.futures import (
     asia_session_range, london_session_range, midnight_open_price,
-    detect_judas_swing,
+    detect_judas_swing, premarket_session_range,
 )
 
 
@@ -91,3 +91,28 @@ def test_judas_swing_returns_none_when_no_breach():
         3: (100, 101, 100, 100),
     })
     assert detect_judas_swing(bars, "2026-05-12") is None
+
+
+# ───────────── M4: premarket session range ─────────────
+def test_premarket_range_uses_06_to_0930():
+    bars = _synth_bars("2026-05-12", {
+        5: (100, 105, 99, 100),    # 05:00 — NOT included (before window)
+        6: (100, 110, 99, 100),    # 06:00 ← high
+        7: (100, 108, 97, 100),    # 07:00 ← low
+        8: (100, 109, 98, 100),
+        9: (100, 109, 98, 100),    # 09:00 — partial (only 0~30min included)
+        10: (100, 120, 80, 100),   # 10:00 — NOT included (after window)
+    })
+    rng = premarket_session_range(bars, "2026-05-12")
+    assert rng is not None
+    h, l = rng
+    assert h == 110
+    assert l == 97
+    # The 10:00 outlier must be excluded
+    assert h < 120
+    assert l > 80
+
+
+def test_premarket_range_none_when_empty():
+    bars = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    assert premarket_session_range(bars, "2026-05-12") is None
