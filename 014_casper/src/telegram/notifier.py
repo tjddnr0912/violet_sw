@@ -125,6 +125,17 @@ class TelegramNotifier:
                 ict_flags.append("Bias")
             if strategy_info.get("ict_bear_for_sqqq"):
                 ict_flags.append("QQQ→SQQQ")
+            if strategy_info.get("ict_bull_for_tqqq"):
+                ict_flags.append("QQQ→TQQQ")
+            if strategy_info.get("ict_ote"):
+                fib = strategy_info.get("ict_fib_level", 0.705)
+                ict_flags.append(f"OTE({fib})")
+            if strategy_info.get("ict_unicorn"):
+                ict_flags.append("Unicorn")
+            if strategy_info.get("ict_mtf_sl"):
+                ict_flags.append("MTF-SL")
+            if strategy_info.get("ict_power_of_3"):
+                ict_flags.append("P3")
             if ict_flags:
                 lines.append("ICT: " + " + ".join(ict_flags))
                 # DST-aware KST window line

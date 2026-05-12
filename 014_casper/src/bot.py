@@ -165,11 +165,11 @@ class CasperBot:
     def _cold_start_backfill(self, base_dir, symbols):
         """Fill missing days via yfinance on bot startup. Silent on failure.
 
-        Backfills both 5-min Parquet (60 day yfinance window) and daily
-        Parquet store. Daily store reuses get_daily_df() which writes back.
+        Two-tier strategy:
+          - 5-min bars: only when DataCollector (live streaming) is on.
+          - Daily / NQ futures / 1-min warm-up: ALWAYS (low cost, ICT
+            dependencies). Independent of DATA_COLLECTION.
         """
-        if self.collector is None:
-            return
         if os.environ.get("DATA_COLLECTION_BACKFILL", "on").lower() != "on":
             return
         try:
@@ -180,14 +180,16 @@ class CasperBot:
 
             end = datetime.now(timezone.utc).date()
             start = end - timedelta(days=60)
-            total_5m = 0
-            for sym in symbols:
-                gaps = find_gaps(base_dir, sym, start, end)
-                if gaps:
-                    n = fill_gaps_from_yfinance(base_dir, sym, gaps)
-                    total_5m += n
-                    logger.info(f"Backfill: {sym} 5m {n}/{len(gaps)} days written")
-            logger.info(f"Backfill: 5m cold start done (total={total_5m} days)")
+            # 5m backfill — requires live collector to write into store
+            if self.collector is not None:
+                total_5m = 0
+                for sym in symbols:
+                    gaps = find_gaps(base_dir, sym, start, end)
+                    if gaps:
+                        n = fill_gaps_from_yfinance(base_dir, sym, gaps)
+                        total_5m += n
+                        logger.info(f"Backfill: {sym} 5m {n}/{len(gaps)} days written")
+                logger.info(f"Backfill: 5m cold start done (total={total_5m} days)")
 
             # Daily store warm-up (skip ^VIX — daily VIX is on yfinance only,
             # treated separately by other code paths).
@@ -502,6 +504,12 @@ class CasperBot:
             "ict_sweep_choch": ep.get("require_sweep_choch", False),
             "ict_daily_bias": ep.get("daily_bias_skip_neutral", False),
             "ict_bear_for_sqqq": ep.get("bear_fvg_for_sqqq", False),
+            "ict_bull_for_tqqq": ep.get("bull_fvg_for_tqqq", False),
+            "ict_ote": ep.get("use_ote", False),
+            "ict_fib_level": ep.get("ote_fib_level", 0.705),
+            "ict_unicorn": ep.get("require_unicorn", False),
+            "ict_mtf_sl": ep.get("use_multi_tf_sl", False),
+            "ict_power_of_3": ep.get("use_power_of_3", False),
         }
         self.notifier.notify_bot_started(
             self.env["trading_mode"], self.capital, history, strategy_info,
