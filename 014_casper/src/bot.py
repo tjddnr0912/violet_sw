@@ -114,6 +114,9 @@ class CasperBot:
         self._signal_ict_meta: Optional[dict] = None
         # Daily bias (ICT Phase 3), computed once per pre-market.
         self._daily_bias = None
+        # Telegram dedup flags for new ICT-aware notifications
+        self._notified_scan_start = False
+        self._notified_setup = False
 
         # Load trade history
         self._init_from_history()
@@ -544,6 +547,8 @@ class CasperBot:
         self._notified_signal = False
         self._signal_ict_meta = None
         self._daily_bias = None
+        self._notified_scan_start = False
+        self._notified_setup = False
         self._sync_capital()
         self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
         logger.info(f"=== New Day: {today} ===")
@@ -652,6 +657,11 @@ class CasperBot:
                             f"score={bias.score:+d} components={bias.components}"
                         )
                         self._daily_bias = bias  # exposed for telegram / status
+                        # Telegram notification (always, even if not neutral)
+                        try:
+                            self.notifier.notify_daily_bias(bias)
+                        except Exception as e:
+                            logger.debug(f"notify_daily_bias failed: {e}")
                         if bias.direction == "neutral":
                             self._transition(
                                 BotState.DONE_TODAY,
@@ -737,8 +747,13 @@ class CasperBot:
         self.orb = self.orbs.get(self.trend.symbol) or next(iter(self.orbs.values()))
 
         if not self._notified_orb:
-            for symbol, orb in self.orbs.items():
-                self.notifier.notify_orb(symbol, orb.high, orb.low, orb.range_size)
+            # Single consolidated ORB summary covering all legs (replaces N pings).
+            try:
+                self.notifier.notify_orb_summary(self.orbs)
+            except Exception:
+                # Fall back to per-symbol legacy notifications if summary fails
+                for symbol, orb in self.orbs.items():
+                    self.notifier.notify_orb(symbol, orb.high, orb.low, orb.range_size)
             self._notified_orb = True
 
         self._transition(BotState.SCANNING)
@@ -751,12 +766,47 @@ class CasperBot:
         """
         if not time_utils.is_scan_window():
             self._transition(BotState.DONE_TODAY, "Scan window closed, no signal")
-            self.notifier.notify_skip("No signal today")
+            # Distinguish Killzone-end vs full scan-window-end for clarity
+            ep = self.params.get("entry", {})
+            if ep.get("killzone_filter_enabled"):
+                try:
+                    self.notifier.notify_killzone_end_no_signal(
+                        killzone_label=",".join(ep.get("allowed_killzones", ["AM_MACRO"]))
+                    )
+                except Exception:
+                    self.notifier.notify_skip("No signal today")
+            else:
+                self.notifier.notify_skip("No signal today")
             return
 
         if not self.orbs:
             self._transition(BotState.DONE_TODAY, "No ORB data available")
             return
+
+        # Scan-start announcement (once per day)
+        if not getattr(self, "_notified_scan_start", False):
+            try:
+                from datetime import datetime, time as dtime
+                import pytz
+                et = pytz.timezone("US/Eastern")
+                kst = pytz.timezone("Asia/Seoul")
+                today_et = datetime.now(et)
+                s = et.localize(datetime.combine(today_et.date(), dtime(9, 45))).astimezone(kst)
+                # End of allowed scan: use last killzone end or 10:55
+                ep_ = self.params.get("entry", {})
+                if ep_.get("killzone_filter_enabled"):
+                    kz_label = ",".join(ep_.get("allowed_killzones", ["AM_MACRO"]))
+                    # AM_MACRO ends 10:10
+                    e_et = et.localize(datetime.combine(today_et.date(), dtime(10, 10)))
+                else:
+                    kz_label = None
+                    e_et = et.localize(datetime.combine(today_et.date(), dtime(10, 55)))
+                e_kst = e_et.astimezone(kst)
+                kst_win = f"KST {s.strftime('%H:%M')}~{e_kst.strftime('%H:%M')}"
+                self.notifier.notify_scan_start(killzone_label=kz_label, kst_window=kst_win)
+            except Exception as e:
+                logger.debug(f"notify_scan_start failed: {e}")
+            self._notified_scan_start = True
 
         entry_params = self.params["entry"]
         strict = entry_params.get("strict_fvg", False)
@@ -825,6 +875,27 @@ class CasperBot:
                     if sig is None:
                         continue
                     self.signals[cache_key] = sig
+                    # Setup-detected announcement (BEFORE pullback)
+                    if not self._notified_setup:
+                        try:
+                            self.notifier.notify_setup_detected(
+                                symbol=sig.symbol,
+                                direction=sig.direction,
+                                fvg_top=sig.fvg.top,
+                                fvg_bot=sig.fvg.bottom,
+                                filters_active=(
+                                    ["killzone"] if allowed_killzones else []
+                                ) + (
+                                    ["displacement"] if require_disp else []
+                                ) + (
+                                    ["sweep_choch"] if require_sweep_choch else []
+                                ) + (
+                                    ["qqq_mapping"] if bear_for_sqqq and direction == "bear" else []
+                                ),
+                            )
+                            self._notified_setup = True
+                        except Exception as e:
+                            logger.debug(f"notify_setup_detected failed: {e}")
                     # Capture ICT metadata for trade record.
                     try:
                         from src.core.sessions import killzone_for

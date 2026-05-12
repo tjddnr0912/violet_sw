@@ -180,6 +180,84 @@ class TelegramNotifier:
         )
         self.send(msg)
 
+    # ── ICT phase-aware decision notifications (added 2026-05-12) ─────
+
+    def notify_daily_bias(self, bias) -> None:
+        """Send Daily Bias (PDH/PDL/PWH/PWL + MA20/50 score) after pre-market."""
+        if bias is None:
+            return
+        emoji = {"bull": "📈", "bear": "📉", "neutral": "⚖️"}.get(bias.direction, "📊")
+        comps = ", ".join(f"{k}{v:+d}" if isinstance(v, int) else f"{k}={v}"
+                          for k, v in bias.components.items())
+        msg = (
+            f"{emoji} <b>DAILY BIAS</b>\n"
+            f"방향: {bias.direction.upper()}  score={bias.score:+d}\n"
+            f"PDH ${bias.pdh:.2f}  PDL ${bias.pdl:.2f}\n"
+            f"PWH ${bias.pwh:.2f}  PWL ${bias.pwl:.2f}\n"
+            f"comp: {comps}"
+        )
+        self.send(msg)
+
+    def notify_orb_summary(self, orbs: dict) -> None:
+        """Multi-symbol ORB summary (sent once when all legs finalised)."""
+        if not orbs:
+            return
+        lines = ["📊 <b>ORB SUMMARY</b>"]
+        for symbol, orb in orbs.items():
+            lines.append(
+                f"  {symbol:5s}: H ${orb.high:.2f}  L ${orb.low:.2f}  "
+                f"R ${orb.range_size:.2f}"
+            )
+        self.send("\n".join(lines))
+
+    def notify_scan_start(self, killzone_label: Optional[str] = None,
+                          kst_window: Optional[str] = None) -> None:
+        """Notify that scan window is now open (Killzone, candidate setups)."""
+        msg = "🔍 <b>SCAN START</b>"
+        if killzone_label:
+            msg += f"\nKillzone: {killzone_label}"
+        if kst_window:
+            msg += f"\nWindow: {kst_window}"
+        msg += "\n(이 시간 안에서만 진입 가능)"
+        self.send(msg)
+
+    def notify_setup_detected(self, symbol: str, direction: str,
+                               fvg_top: float, fvg_bot: float,
+                               filters_active: Optional[list] = None) -> None:
+        """A valid ICT setup formed; bot now waiting for pullback to FVG.
+
+        Distinct from notify_signal — this fires BEFORE pullback (i.e.
+        the signal is recognised but entry hasn't triggered yet).
+        """
+        dir_emoji = "📈" if direction == "long" else "📉"
+        zone = f"${min(fvg_bot, fvg_top):.2f}~${max(fvg_bot, fvg_top):.2f}"
+        msg = (
+            f"{dir_emoji} <b>SETUP</b> {symbol} ({direction})\n"
+            f"FVG zone: {zone}\n"
+            f"→ 가격이 FVG로 돌아오면 진입"
+        )
+        if filters_active:
+            msg += f"\nfilters: {','.join(filters_active)}"
+        self.send(msg)
+
+    def notify_killzone_end_no_signal(self, killzone_label: str = "AM_MACRO") -> None:
+        """End of Killzone with no entry. Bot waits or transitions to DONE_TODAY."""
+        msg = (
+            f"⏰ <b>KILLZONE END</b>\n"
+            f"{killzone_label} 종료 — 유효 setup 없음\n"
+            f"오늘 매매 없이 종료"
+        )
+        self.send(msg)
+
+    def notify_filter_reject(self, symbol: str, filter_name: str,
+                              reason: str) -> None:
+        """Verbose filter rejection (env-gated to avoid spam)."""
+        msg = (
+            f"⏭ <b>FILTER</b> {symbol}\n"
+            f"{filter_name}: {reason}"
+        )
+        self.send(msg)
+
     def notify_signal(self, symbol: str, entry: float, stop: float,
                       target: float, rr_ratio: float,
                       ict_meta: Optional[dict] = None) -> None:
