@@ -252,18 +252,39 @@ ICT_FIB_LEVEL=0.705
 
 ---
 
-## 10. 남은 통합 작업 (별도 plan)
+## 10. 남은 통합 작업 — **완료 (2026-05-12 N1~N6)**
 
-| 작업 | 가치 | 코드량 |
-|---|:---:|---:|
-| OTE entry를 `scan_for_signal()`에 wire | ★ | ~30줄 |
-| Breaker Block 검출을 `scan_for_signal()`에 wire (Unicorn) | ★★ | ~80줄 |
-| Power of 3 Judas Swing을 Daily Bias score에 가산 | ★★ | ~40줄 |
-| TQQQ도 QQQ-mapping (대칭) | ★ | ~60줄 |
-| QQQ→SQQQ 백테스트 변형 (#23) — short 시뮬레이션 활용 | ★★ | ~50줄 |
-| 동적 leverage factor (SQQQ/QQQ 실측 ratio) | ★ | ~80줄 |
+| 작업 | 상태 | 통합 위치 |
+|---|:---:|---|
+| ✅ OTE entry → `scan_for_signal()` | 완료 | `entry.use_ote / ote_fib_level` |
+| ✅ Breaker Block + Unicorn → strategy | 완료 | `entry.require_unicorn` |
+| ✅ Power of 3 Judas Swing → Daily Bias score | 완료 | `entry.use_power_of_3` + bias.judas_signal 인자 |
+| ✅ TQQQ도 QQQ-mapping (대칭) | 완료 | `entry.bull_fvg_for_tqqq` + `remap_qqq_bull_to_tqqq_long()` |
+| ✅ QQQ→SQQQ 백테스트 변형 (#23/#24) | 완료 | `strat_qqq_bear_short[_full_ict]` — short simulate_trade 활용 |
+| 1분봉 KIS fetch + bot 전달 | 완료 | `bot.py` use_multi_tf_sl 시 `interval="1m"` fetch |
+| 동적 leverage factor (SQQQ/QQQ 실측) | 보류 | 별도 plan (운용 데이터 누적 후) |
 
-이들은 다음 sprint에서 진행. 본 phase는 *모듈 + 핵심 통합* 완료가 목표.
+### 신규 config / env (모두 default OFF)
+
+| 키 | env override | 의미 |
+|---|---|---|
+| `entry.use_multi_tf_sl` | `ICT_USE_MULTI_TF_SL` | 1분봉 swing으로 SL 단축 |
+| `entry.mtf_lookback_min` | `ICT_MTF_LOOKBACK_MIN` | 1분봉 swing 검색 윈도우 (default 15) |
+| `entry.use_ote` | `ICT_USE_OTE` | FVG 중간점 대신 OTE 0.705 진입 |
+| `entry.ote_fib_level` | `ICT_FIB_LEVEL` | OTE 피보 레벨 (default 0.705) |
+| `entry.require_unicorn` | `ICT_REQUIRE_UNICORN` | Breaker ∩ FVG 검증 강제 |
+| `entry.use_power_of_3` | `ICT_USE_POWER_OF_3` | Daily Bias에 Judas Swing 가산 (±1) |
+| `entry.bull_fvg_for_tqqq` | `ICT_BULL_FVG_FOR_TQQQ` | QQQ Bull setup → TQQQ Long 매핑 |
+
+### 봇 동작 영향 (재시작 시)
+
+- 모든 새 옵션 default OFF → 현재 동작과 100% 동일
+- 활성화 시:
+  - `use_multi_tf_sl=on` → 1분봉 자동 fetch (KIS `nmin=1`, NREC 120) + tighter SL
+  - `use_ote=on` → entry_price = FVG mid 대신 fib 0.705 (FVG 영역과 overlap할 때만)
+  - `require_unicorn=on` → Breaker ∩ FVG 검증 추가 (매매 빈도 더 감소 가능)
+  - `use_power_of_3=on` → NQ futures 5분봉 fetch + Judas Swing 감지 + bias ±1
+  - `bull_fvg_for_tqqq=on` → QQQ bull setup → TQQQ Long (대칭 매핑)
 
 ---
 

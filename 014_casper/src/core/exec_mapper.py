@@ -25,6 +25,17 @@ def _effective_leverage() -> float:
     return LEVERAGE_FACTOR * (1.0 - LEVERAGE_SLIPPAGE)
 
 
+def remap_qqq_bull_to_tqqq_long(
+    qqq_signal: TradeSignal,
+    tqqq_current_price: float,
+    exec_symbol: str = "TQQQ",
+) -> Optional[TradeSignal]:
+    """Alias used by bot.py when bull_fvg_for_tqqq is enabled (symmetric to
+    remap_qqq_bear_to_sqqq_long).
+    """
+    return remap_qqq_to_tqqq_long(qqq_signal, tqqq_current_price, exec_symbol)
+
+
 def remap_qqq_to_tqqq_long(
     qqq_signal: TradeSignal,
     tqqq_current_price: float,

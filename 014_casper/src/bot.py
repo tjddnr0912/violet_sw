@@ -666,8 +666,19 @@ class CasperBot:
                 from src.data.market_data import get_qqq_daily_df
                 from src.core.bias import compute_daily_bias
                 daily_df = get_qqq_daily_df(lookback=60)
+                judas = None
+                if self.params.get("entry", {}).get("use_power_of_3", False):
+                    try:
+                        from src.data.futures import fetch_nq_futures_5m, detect_judas_swing
+                        nq = fetch_nq_futures_5m(period="5d")
+                        if nq is not None and not nq.empty:
+                            judas = detect_judas_swing(nq, time_utils.now_et().date())
+                            if judas:
+                                logger.info(f"Power of 3: Judas Swing detected — {judas}")
+                    except Exception as e:
+                        logger.debug(f"Power of 3 fetch failed (non-fatal): {e}")
                 if daily_df is not None and not daily_df.empty:
-                    bias = compute_daily_bias(daily_df)
+                    bias = compute_daily_bias(daily_df, judas_signal=judas)
                     if bias is not None:
                         logger.info(
                             f"Daily Bias: direction={bias.direction} "
@@ -722,10 +733,11 @@ class CasperBot:
         syms = self.params["symbols"]
         dual = self.params.get("mode", {}).get("dual_scan", False)
         candidates = [syms["bull"], syms["bear"]] if dual else [self.trend.symbol]
-        # ICT Phase-3 QQQ-signal-mapping: when enabled, we also need QQQ's
-        # ORB so we can scan QQQ for bearish setups and remap to SQQQ Long.
+        # ICT Phase-3/4 QQQ-signal-mapping: when bear→SQQQ or bull→TQQQ is on,
+        # we also need QQQ's ORB so we can scan QQQ for setups and remap.
         bear_for_sqqq = self.params["entry"].get("bear_fvg_for_sqqq", False)
-        if bear_for_sqqq and syms["trend_filter"] not in candidates:
+        bull_for_tqqq = self.params["entry"].get("bull_fvg_for_tqqq", False)
+        if (bear_for_sqqq or bull_for_tqqq) and syms["trend_filter"] not in candidates:
             candidates = candidates + [syms["trend_filter"]]
         atr_ratio = self.params["filters"]["orb_atr_max_ratio"]
 
@@ -843,17 +855,36 @@ class CasperBot:
         sweep_min_wick_ratio = entry_params.get("sweep_min_wick_ratio", 0.60)
         # ICT Phase 3 QQQ-mapping: scan QQQ for bear setup → SQQQ Long
         bear_for_sqqq = entry_params.get("bear_fvg_for_sqqq", False)
+        # ICT Phase 4 N6: scan QQQ for bull setup → TQQQ Long (symmetric)
+        bull_for_tqqq = entry_params.get("bull_fvg_for_tqqq", False)
+        # ICT Phase 4: Multi-TF SL refinement (1-min swing)
+        use_multi_tf_sl = entry_params.get("use_multi_tf_sl", False)
+        mtf_lookback_min = entry_params.get("mtf_lookback_min", 15)
+        # ICT Phase 4: OTE entry
+        use_ote = entry_params.get("use_ote", False)
+        ote_fib_level = entry_params.get("ote_fib_level", 0.705)
+        # ICT Phase 4: Unicorn (Breaker + FVG overlap)
+        require_unicorn = entry_params.get("require_unicorn", False)
         syms = self.params["symbols"]
 
         for symbol, orb in self.orbs.items():
-            # Skip SQQQ self-scan when QQQ-mapping is on (we'll handle SQQQ
-            # via the QQQ leg's bearish branch below).
+            # Skip SQQQ self-scan when bear-QQQ-mapping is on
             if bear_for_sqqq and symbol == syms["bear"]:
+                continue
+            # Skip TQQQ self-scan when bull-QQQ-mapping is on
+            if bull_for_tqqq and symbol == syms["bull"]:
                 continue
 
             # Decide direction for this leg.
-            if symbol == syms["trend_filter"] and bear_for_sqqq:
-                directions = ["bear"]   # QQQ bearish → SQQQ Long
+            if symbol == syms["trend_filter"]:
+                directions = []
+                if bull_for_tqqq:
+                    directions.append("bull")    # QQQ bull → TQQQ Long
+                if bear_for_sqqq:
+                    directions.append("bear")    # QQQ bear → SQQQ Long
+                if not directions:
+                    # QQQ leg only used when at least one mapping is enabled
+                    continue
             else:
                 directions = ["bull"]   # default — TQQQ/SQQQ self-chart bullish
 
@@ -866,6 +897,14 @@ class CasperBot:
             scan_bars = bars.between_time("09:45", "10:55")
             if len(scan_bars) < 4:
                 continue
+
+            # Optional 1-min bars for Multi-TF SL refinement (best effort)
+            bars_1m = None
+            if use_multi_tf_sl:
+                try:
+                    bars_1m = get_intraday_bars(symbol, period="1d", interval="1m")
+                except Exception as e:
+                    logger.debug(f"{symbol}: 1m fetch failed (non-fatal): {e}")
 
             for direction in directions:
                 cache_key = f"{symbol}:{direction}"
@@ -888,6 +927,12 @@ class CasperBot:
                         sweep_min_breach_pct=sweep_min_breach_pct,
                         sweep_min_wick_ratio=sweep_min_wick_ratio,
                         direction=direction,
+                        bars_1m=bars_1m,
+                        use_multi_tf_sl=use_multi_tf_sl,
+                        mtf_lookback_min=mtf_lookback_min,
+                        use_ote=use_ote,
+                        ote_fib_level=ote_fib_level,
+                        require_unicorn=require_unicorn,
                     )
                     if sig is None:
                         continue
@@ -949,8 +994,8 @@ class CasperBot:
                 # leg, exec ETF for bull leg).
                 latest_bar = scan_bars.iloc[-1]
                 if check_pullback(latest_bar, sig.fvg, direction=direction):
-                    if direction == "bear" and symbol == syms["trend_filter"]:
-                        # Remap QQQ short signal → SQQQ Long with price translation.
+                    if symbol == syms["trend_filter"] and direction == "bear":
+                        # QQQ bearish → SQQQ Long mapping (Phase 3)
                         from src.core.exec_mapper import remap_qqq_bear_to_sqqq_long
                         sqqq_price = get_current_price(syms["bear"])
                         if sqqq_price is None or sqqq_price <= 0:
@@ -959,6 +1004,28 @@ class CasperBot:
                         remapped = remap_qqq_bear_to_sqqq_long(sig, sqqq_price, exec_symbol=syms["bear"])
                         if remapped is None:
                             logger.warning("SQQQ remap failed, skipping")
+                            return
+                        self.signal = remapped
+                        self.orb = orb
+                        if not self._notified_signal:
+                            self.notifier.notify_signal(
+                                remapped.symbol, remapped.entry_price,
+                                remapped.stop_loss, remapped.take_profit, remapped.rr_ratio,
+                                ict_meta=self._signal_ict_meta,
+                            )
+                            self._notified_signal = True
+                        self._execute_entry()
+                        return
+                    elif symbol == syms["trend_filter"] and direction == "bull":
+                        # QQQ bullish → TQQQ Long mapping (Phase 4 N6)
+                        from src.core.exec_mapper import remap_qqq_bull_to_tqqq_long
+                        tqqq_price = get_current_price(syms["bull"])
+                        if tqqq_price is None or tqqq_price <= 0:
+                            logger.warning("TQQQ price unavailable, skipping bull-mapped trade")
+                            return
+                        remapped = remap_qqq_bull_to_tqqq_long(sig, tqqq_price, exec_symbol=syms["bull"])
+                        if remapped is None:
+                            logger.warning("TQQQ remap failed, skipping")
                             return
                         self.signal = remapped
                         self.orb = orb

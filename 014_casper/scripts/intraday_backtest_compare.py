@@ -516,6 +516,41 @@ def strat_casper_rr2_full_ict(day_df, ctx):
                         require_sweep_choch=True)
 
 
+# ────── 23. QQQ bear → short backtest (Phase 4 N5) ──────
+def strat_qqq_bear_short(day_df, ctx, rr_ratio=3.0):
+    """Bearish ORB+FVG strict setup on the underlying (treated here as TQQQ
+    data — proxy for QQQ in the backtest engine that only has one symbol).
+    Emits a Sig with side='short' which simulate_trade handles via its
+    short-trade branch. Useful for measuring the geometry alone.
+    """
+    sig = strat_casper(day_df, ctx, rr_ratio=rr_ratio, strict=True,
+                       direction="bear")
+    if sig is None:
+        return None
+    # Ensure side flag is set for simulate_trade
+    if getattr(sig, "side", "long") != "short":
+        sig = Sig(sig.entry_time, sig.entry_price, sig.stop, sig.target,
+                  side="short", note=f"{sig.note}_short", rr_ratio=sig.rr_ratio)
+    return sig
+
+
+def strat_qqq_bear_short_full_ict(day_df, ctx):
+    """Bear short setup with Phase 1/2 filters."""
+    sig = strat_casper(day_df, ctx, rr_ratio=3.0, strict=True,
+                       allowed_killzones={"AM_MACRO"},
+                       require_displacement=True,
+                       disp_atr_mult=1.0, disp_max_wick=0.50,
+                       disp_prev_mult=1.5,
+                       require_sweep_choch=True,
+                       direction="bear")
+    if sig is None:
+        return None
+    if getattr(sig, "side", "long") != "short":
+        sig = Sig(sig.entry_time, sig.entry_price, sig.stop, sig.target,
+                  side="short", note=f"{sig.note}_short", rr_ratio=sig.rr_ratio)
+    return sig
+
+
 # ────── 03. VWAP Pullback Long ──────
 def strat_vwap_pullback(day_df, ctx):
     """First VWAP pullback after a bullish breakout above 09:30-09:45 high."""
@@ -865,6 +900,9 @@ STRATEGIES: List[tuple] = [
     ("20_Casper_Swp_KZ",   strat_casper_sweep_kz,     "Casper + KZ + sweep+CHoCH"),
     ("21_Casper_FullICT",  strat_casper_full_ict,     "Casper + KZ + Disp + Sweep (full)"),
     ("22_Casper_RR2_Full", strat_casper_rr2_full_ict, "Casper RR2 + full ICT stack"),
+    # ── ICT Phase 4 variants (short side) ──
+    ("23_QQQ_Bear_Short",  strat_qqq_bear_short,      "Bear ORB+FVG strict, short trade"),
+    ("24_QQQ_Bear_FullICT",strat_qqq_bear_short_full_ict, "Bear + KZ + Disp + Sweep, short"),
 ]
 
 

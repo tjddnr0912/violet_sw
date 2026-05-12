@@ -116,6 +116,22 @@ def _apply_ict_env_overrides(params: dict) -> dict:
             "ICT_DAILY_BIAS_SKIP_NEUTRAL", False
         )
 
+    # Phase 4
+    if os.getenv("ICT_USE_MULTI_TF_SL") is not None:
+        entry["use_multi_tf_sl"] = _bool_env("ICT_USE_MULTI_TF_SL", False)
+    if os.getenv("ICT_MTF_LOOKBACK_MIN"):
+        entry["mtf_lookback_min"] = int(os.getenv("ICT_MTF_LOOKBACK_MIN"))
+    if os.getenv("ICT_USE_OTE") is not None:
+        entry["use_ote"] = _bool_env("ICT_USE_OTE", False)
+    if os.getenv("ICT_FIB_LEVEL"):
+        entry["ote_fib_level"] = float(os.getenv("ICT_FIB_LEVEL"))
+    if os.getenv("ICT_REQUIRE_UNICORN") is not None:
+        entry["require_unicorn"] = _bool_env("ICT_REQUIRE_UNICORN", False)
+    if os.getenv("ICT_USE_POWER_OF_3") is not None:
+        entry["use_power_of_3"] = _bool_env("ICT_USE_POWER_OF_3", False)
+    if os.getenv("ICT_BULL_FVG_FOR_TQQQ") is not None:
+        entry["bull_fvg_for_tqqq"] = _bool_env("ICT_BULL_FVG_FOR_TQQQ", False)
+
     return params
 
 

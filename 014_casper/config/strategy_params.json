@@ -29,7 +29,12 @@
         "bear_fvg_for_sqqq": true,
         "daily_bias_skip_neutral": true,
         "use_multi_tf_sl": false,
-        "mtf_lookback_min": 15
+        "mtf_lookback_min": 15,
+        "use_ote": false,
+        "ote_fib_level": 0.705,
+        "require_unicorn": false,
+        "bull_fvg_for_tqqq": false,
+        "use_power_of_3": false
     },
     "mode": {
         "dual_scan": true

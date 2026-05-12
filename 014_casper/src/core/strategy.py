@@ -65,6 +65,9 @@ def scan_for_signal(
     bars_1m: Optional[pd.DataFrame] = None,
     use_multi_tf_sl: bool = False,
     mtf_lookback_min: int = 15,
+    use_ote: bool = False,
+    ote_fib_level: float = 0.705,
+    require_unicorn: bool = False,
 ) -> Optional[TradeSignal]:
     """
     Scan post-ORB 5-minute bars for a trade signal.
@@ -172,7 +175,56 @@ def scan_for_signal(
                 continue
 
         prev_candle = bars_5m.iloc[i - 1]
+        breakout_candle = bars_5m.iloc[i]
         entry_price = fvg.mid
+
+        # ── ICT Phase 4: Unicorn pattern (Breaker + FVG overlap) ──
+        if require_unicorn:
+            try:
+                from src.core.breaker_block import (
+                    find_order_block, to_breaker_block, is_unicorn,
+                )
+                ob = find_order_block(
+                    bars_5m, impulse_end_index=i,
+                    direction=direction, max_lookback=10,
+                )
+                if ob is None:
+                    logger.debug(f"Strategy: bar {i} no OB → no Unicorn, skip")
+                    continue
+                bb = to_breaker_block(ob, bars_5m.iloc[i:])
+                if bb is None:
+                    logger.debug(f"Strategy: bar {i} OB not broken → no Unicorn, skip")
+                    continue
+                if not is_unicorn(bb, fvg.top, fvg.bottom):
+                    logger.debug(f"Strategy: bar {i} no Breaker-FVG overlap, skip")
+                    continue
+            except Exception as e:
+                logger.debug(f"Strategy: Unicorn check skipped ({e})")
+
+        # ── ICT Phase 4: OTE entry refinement ──
+        # Replace FVG-mid entry with Fibonacci 0.705 of the impulse swing,
+        # but only when OTE price *overlaps* the FVG zone.
+        if use_ote:
+            try:
+                from src.core.ote import ote_entry_price, fvg_overlaps_ote
+                # Impulse swing for bullish setup: prev_low → breakout_high
+                if direction == "bear":
+                    impulse_low = float(breakout_candle["Low"])
+                    impulse_high = float(prev_candle["High"])
+                else:
+                    impulse_low = float(prev_candle["Low"])
+                    impulse_high = float(breakout_candle["High"])
+                ote_price = ote_entry_price(
+                    impulse_low, impulse_high,
+                    direction=direction, fib_level=ote_fib_level,
+                )
+                if ote_price and fvg_overlaps_ote(fvg.top, fvg.bottom, ote_price):
+                    logger.debug(
+                        f"Strategy: bar {i} OTE entry {entry_price:.2f} → {ote_price:.2f}"
+                    )
+                    entry_price = ote_price
+            except Exception as e:
+                logger.debug(f"Strategy: OTE refinement skipped ({e})")
 
         if direction == "bear":
             stop_loss = float(prev_candle["High"])

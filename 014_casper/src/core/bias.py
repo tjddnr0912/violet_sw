@@ -36,6 +36,7 @@ def compute_daily_bias(
     use_ma50: bool = True,
     use_pdh_pdl: bool = True,
     use_pwh_pwl: bool = True,
+    judas_signal: Optional[str] = None,
 ) -> Optional[DailyBias]:
     """Compute the bias based on daily OHLC.
 
@@ -97,6 +98,14 @@ def compute_daily_bias(
             score -= 1; fired["pwl"] = -1
         else:
             fired["pwh_pwl"] = 0
+
+    # ICT Phase 4: Power of 3 — Judas Swing reinforces directional bias
+    if judas_signal == "bullish_judas":
+        score += 1
+        fired["judas"] = 1
+    elif judas_signal == "bearish_judas":
+        score -= 1
+        fired["judas"] = -1
 
     if score > 0:
         direction = "bull"
