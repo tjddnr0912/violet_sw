@@ -38,6 +38,16 @@ def _ict_status_line(entry: dict) -> str:
         flags.append("Bias")
     if entry.get("bear_fvg_for_sqqq"):
         flags.append("QQQ→SQQQ")
+    if entry.get("bull_fvg_for_tqqq"):
+        flags.append("QQQ→TQQQ")
+    if entry.get("use_ote"):
+        flags.append(f"OTE({entry.get('ote_fib_level', 0.705)})")
+    if entry.get("require_unicorn"):
+        flags.append("Unicorn")
+    if entry.get("use_multi_tf_sl"):
+        flags.append("MTF-SL")
+    if entry.get("use_power_of_3"):
+        flags.append("P3")
     return " + ".join(flags) if flags else "off"
 
 

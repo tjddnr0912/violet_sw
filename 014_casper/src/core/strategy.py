@@ -24,6 +24,7 @@ from src.core.sessions import in_allowed_killzones
 from src.core.displacement import is_displacement, atr14
 from src.core.swing import find_swing_highs, find_swing_lows
 from src.core.liquidity import sweep_then_choch
+from src.data.ict_log import record as _log_decision
 
 logger = logging.getLogger("casper")
 
@@ -136,30 +137,63 @@ def scan_for_signal(
                     f"Strategy: bar {i} ({bars_5m.index[i]}) outside allowed "
                     f"killzones {allowed_killzones}, skip"
                 )
+                _log_decision(
+                    event="killzone_check", symbol=symbol,
+                    bar_time=bars_5m.index[i], passed=False,
+                    reason=f"outside {allowed_killzones}",
+                    details={"direction": direction},
+                )
                 continue
+            _log_decision(
+                event="killzone_check", symbol=symbol,
+                bar_time=bars_5m.index[i], passed=True,
+                details={"allowed": list(allowed_killzones), "direction": direction},
+            )
 
         # ── Displacement filter (applied to breakout candle = FVG creator) ──
         if require_displacement:
             breakout = bars_5m.iloc[i]
             prev_window = bars_5m.iloc[max(0, i - 5):i]
-            if not is_displacement(
+            disp_ok = is_displacement(
                 breakout, prev_window,
                 atr_value=atr_value,
                 atr_mult=disp_atr_mult,
                 prev_mult=disp_prev_mult,
                 max_wick=disp_max_wick,
-                direction=direction,  # 'bear' requires close<open for breakdown
-            ):
+                direction=direction,
+            )
+            # Compute diagnostics regardless of pass/fail for the log
+            body = abs(float(breakout["Close"]) - float(breakout["Open"]))
+            total = float(breakout["High"]) - float(breakout["Low"])
+            wick_ratio = (total - body) / total if total > 0 else None
+            disp_details = {
+                "body": round(body, 4),
+                "atr14": round(atr_value, 4) if atr_value else None,
+                "body_atr_ratio": round(body / atr_value, 3) if atr_value else None,
+                "wick_ratio": round(wick_ratio, 3) if wick_ratio is not None else None,
+                "direction": direction,
+            }
+            if not disp_ok:
                 logger.debug(
                     f"Strategy: bar {i} fails displacement check "
                     f"(atr_mult={disp_atr_mult}, wick<{disp_max_wick}), skip"
                 )
+                _log_decision(
+                    event="displacement_check", symbol=symbol,
+                    bar_time=bars_5m.index[i], passed=False,
+                    reason="threshold", details=disp_details,
+                )
                 continue
+            _log_decision(
+                event="displacement_check", symbol=symbol,
+                bar_time=bars_5m.index[i], passed=True,
+                details=disp_details,
+            )
 
         # ── Liquidity Sweep + CHoCH gate (Phase 2) ──
         if require_sweep_choch:
             window_until_breakout = swing_source.loc[:bars_5m.index[i]]
-            if not sweep_then_choch(
+            sweep_ok = sweep_then_choch(
                 window_until_breakout,
                 levels_up=levels_up, levels_down=levels_down,
                 swing_highs=swing_highs, swing_lows=swing_lows,
@@ -168,11 +202,25 @@ def scan_for_signal(
                 choch_lookback=choch_lookback,
                 min_breach_pct=sweep_min_breach_pct,
                 min_wick_ratio=sweep_min_wick_ratio,
-            ):
+            )
+            if not sweep_ok:
                 logger.debug(
                     f"Strategy: bar {i} no sweep+CHoCH precursor, skip"
                 )
+                _log_decision(
+                    event="sweep_choch_check", symbol=symbol,
+                    bar_time=bars_5m.index[i], passed=False,
+                    reason="no sweep then CHoCH precursor",
+                    details={"direction": direction,
+                              "sweep_lookback": sweep_lookback,
+                              "choch_lookback": choch_lookback},
+                )
                 continue
+            _log_decision(
+                event="sweep_choch_check", symbol=symbol,
+                bar_time=bars_5m.index[i], passed=True,
+                details={"direction": direction},
+            )
 
         prev_candle = bars_5m.iloc[i - 1]
         breakout_candle = bars_5m.iloc[i]
@@ -189,17 +237,35 @@ def scan_for_signal(
                     direction=direction, max_lookback=10,
                 )
                 if ob is None:
-                    logger.debug(f"Strategy: bar {i} no OB → no Unicorn, skip")
+                    _log_decision(event="unicorn_check", symbol=symbol,
+                                   bar_time=bars_5m.index[i], passed=False,
+                                   reason="no order block",
+                                   details={"direction": direction})
                     continue
                 bb = to_breaker_block(ob, bars_5m.iloc[i:])
                 if bb is None:
-                    logger.debug(f"Strategy: bar {i} OB not broken → no Unicorn, skip")
+                    _log_decision(event="unicorn_check", symbol=symbol,
+                                   bar_time=bars_5m.index[i], passed=False,
+                                   reason="OB not broken (not a breaker)",
+                                   details={"direction": direction,
+                                             "ob_top": ob.top, "ob_bot": ob.bottom})
                     continue
                 if not is_unicorn(bb, fvg.top, fvg.bottom):
-                    logger.debug(f"Strategy: bar {i} no Breaker-FVG overlap, skip")
+                    _log_decision(event="unicorn_check", symbol=symbol,
+                                   bar_time=bars_5m.index[i], passed=False,
+                                   reason="no Breaker-FVG overlap",
+                                   details={"bb_top": bb.top, "bb_bot": bb.bottom,
+                                             "fvg_top": fvg.top, "fvg_bot": fvg.bottom})
                     continue
+                _log_decision(event="unicorn_check", symbol=symbol,
+                               bar_time=bars_5m.index[i], passed=True,
+                               details={"bb_top": bb.top, "bb_bot": bb.bottom,
+                                         "fvg_top": fvg.top, "fvg_bot": fvg.bottom})
             except Exception as e:
                 logger.debug(f"Strategy: Unicorn check skipped ({e})")
+                _log_decision(event="unicorn_check", symbol=symbol,
+                               bar_time=bars_5m.index[i], passed=None,
+                               reason=f"exception: {e}")
 
         # ── ICT Phase 4: OTE entry refinement ──
         # Replace FVG-mid entry with Fibonacci 0.705 of the impulse swing,
@@ -219,12 +285,23 @@ def scan_for_signal(
                     direction=direction, fib_level=ote_fib_level,
                 )
                 if ote_price and fvg_overlaps_ote(fvg.top, fvg.bottom, ote_price):
-                    logger.debug(
-                        f"Strategy: bar {i} OTE entry {entry_price:.2f} → {ote_price:.2f}"
-                    )
+                    _log_decision(event="ote_apply", symbol=symbol,
+                                   bar_time=bars_5m.index[i], passed=True,
+                                   details={"from": round(entry_price, 4),
+                                             "to": round(ote_price, 4),
+                                             "fib": ote_fib_level})
                     entry_price = ote_price
+                else:
+                    _log_decision(event="ote_apply", symbol=symbol,
+                                   bar_time=bars_5m.index[i], passed=False,
+                                   reason="OTE outside FVG zone",
+                                   details={"ote_price": round(ote_price or 0, 4),
+                                             "fvg_top": fvg.top, "fvg_bot": fvg.bottom})
             except Exception as e:
                 logger.debug(f"Strategy: OTE refinement skipped ({e})")
+                _log_decision(event="ote_apply", symbol=symbol,
+                               bar_time=bars_5m.index[i], passed=None,
+                               reason=f"exception: {e}")
 
         if direction == "bear":
             stop_loss = float(prev_candle["High"])
@@ -243,10 +320,22 @@ def scan_for_signal(
                     min_risk=min_risk,
                 )
                 if src == "1m":
-                    logger.debug(f"Strategy: MTF SL refined {stop_loss:.2f} → {refined_stop:.2f}")
+                    _log_decision(event="mtf_sl_apply", symbol=symbol,
+                                   bar_time=bars_5m.index[i], passed=True,
+                                   details={"from_5m": round(stop_loss, 4),
+                                             "to_1m": round(refined_stop, 4),
+                                             "direction": direction})
+                else:
+                    _log_decision(event="mtf_sl_apply", symbol=symbol,
+                                   bar_time=bars_5m.index[i], passed=False,
+                                   reason="1m refinement below min_risk",
+                                   details={"fallback": round(stop_loss, 4)})
                 stop_loss = refined_stop
             except Exception as e:
                 logger.debug(f"Strategy: MTF refinement skipped ({e})")
+                _log_decision(event="mtf_sl_apply", symbol=symbol,
+                               bar_time=bars_5m.index[i], passed=None,
+                               reason=f"exception: {e}")
 
         if direction == "bear":
             risk = stop_loss - entry_price
@@ -283,6 +372,22 @@ def scan_for_signal(
             f"SL={stop_loss:.2f} TP={take_profit:.2f} "
             f"Risk=${risk:.2f} R:R=1:{rr_ratio}"
         )
+        _log_decision(event="signal_emit", symbol=symbol,
+                       bar_time=bars_5m.index[i], passed=True,
+                       details={"direction": signal.direction,
+                                 "entry": round(entry_price, 4),
+                                 "stop": round(stop_loss, 4),
+                                 "target": round(take_profit, 4),
+                                 "risk": round(risk, 4),
+                                 "rr": rr_ratio,
+                                 "filters": {
+                                     "killzone": bool(allowed_killzones),
+                                     "displacement": require_displacement,
+                                     "sweep_choch": require_sweep_choch,
+                                     "unicorn": require_unicorn,
+                                     "ote": use_ote,
+                                     "mtf_sl": use_multi_tf_sl,
+                                 }})
         return signal
 
     logger.debug("Strategy: No signal found in scan window")

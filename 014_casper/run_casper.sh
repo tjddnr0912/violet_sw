@@ -270,6 +270,16 @@ if _on('ICT_DAILY_BIAS_SKIP_NEUTRAL', e.get('daily_bias_skip_neutral', False)):
     flags.append('Bias')
 if _on('ICT_BEAR_FVG_FOR_SQQQ', e.get('bear_fvg_for_sqqq', False)):
     flags.append('QQQ->SQQQ')
+if _on('ICT_BULL_FVG_FOR_TQQQ', e.get('bull_fvg_for_tqqq', False)):
+    flags.append('QQQ->TQQQ')
+if _on('ICT_USE_OTE', e.get('use_ote', False)):
+    flags.append('OTE(' + str(e.get('ote_fib_level', 0.705)) + ')')
+if _on('ICT_REQUIRE_UNICORN', e.get('require_unicorn', False)):
+    flags.append('Unicorn')
+if _on('ICT_USE_MULTI_TF_SL', e.get('use_multi_tf_sl', False)):
+    flags.append('MTF-SL')
+if _on('ICT_USE_POWER_OF_3', e.get('use_power_of_3', False)):
+    flags.append('P3')
 print(' + '.join(flags) if flags else 'off')
 " 2>/dev/null || echo "?")
     echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ICT_LINE}${NC}"

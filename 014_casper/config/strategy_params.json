@@ -28,13 +28,13 @@
         "sweep_min_wick_ratio": 0.60,
         "bear_fvg_for_sqqq": true,
         "daily_bias_skip_neutral": true,
-        "use_multi_tf_sl": false,
+        "use_multi_tf_sl": true,
         "mtf_lookback_min": 15,
-        "use_ote": false,
+        "use_ote": true,
         "ote_fib_level": 0.705,
-        "require_unicorn": false,
-        "bull_fvg_for_tqqq": false,
-        "use_power_of_3": false
+        "require_unicorn": true,
+        "bull_fvg_for_tqqq": true,
+        "use_power_of_3": true
     },
     "mode": {
         "dual_scan": true

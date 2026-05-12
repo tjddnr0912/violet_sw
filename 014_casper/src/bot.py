@@ -200,6 +200,32 @@ class CasperBot:
                         logger.info(f"Backfill: {sym} daily store has {len(df)} rows")
                 except Exception as e:
                     logger.warning(f"Backfill: {sym} daily fetch failed: {e}")
+
+            # Phase 4: NQ futures 5-min for Power of 3 (best effort)
+            try:
+                from src.data.futures import fetch_nq_futures_5m
+                from src.data.store import save_bars
+                nq = fetch_nq_futures_5m(period="5d")
+                if nq is not None and not nq.empty:
+                    # Persist per-day
+                    nq = nq.copy()
+                    nq["date"] = nq.index.date
+                    for d in sorted(set(nq["date"].tolist())):
+                        sub = nq[nq["date"] == d].drop(columns=["date"])
+                        save_bars(base_dir, "NQ=F", d.isoformat(), sub, source="yfinance")
+                    logger.info(f"Backfill: NQ=F {len(nq)} 5m bars persisted")
+            except Exception as e:
+                logger.debug(f"Backfill: NQ=F skipped silently: {e}")
+
+            # 1-min bar warm-up (used by Multi-TF SL refinement)
+            try:
+                from src.data.market_data import get_intraday_bars
+                for sym in ["TQQQ", "QQQ", "SQQQ"]:
+                    bars1 = get_intraday_bars(sym, period="1d", interval="1m")
+                    if bars1 is not None and not bars1.empty:
+                        logger.info(f"Backfill: {sym} 1m fetched ({len(bars1)} bars)")
+            except Exception as e:
+                logger.debug(f"Backfill: 1m fetch failed silently: {e}")
         except Exception as e:
             logger.warning(f"Backfill: cold start failed silently: {e}")
 
@@ -391,6 +417,16 @@ class CasperBot:
             ict_flags.append("Bias")
         if ep.get("bear_fvg_for_sqqq"):
             ict_flags.append("QQQ→SQQQ")
+        if ep.get("bull_fvg_for_tqqq"):
+            ict_flags.append("QQQ→TQQQ")
+        if ep.get("use_ote"):
+            ict_flags.append(f"OTE({ep.get('ote_fib_level', 0.705)})")
+        if ep.get("require_unicorn"):
+            ict_flags.append("Unicorn")
+        if ep.get("use_multi_tf_sl"):
+            ict_flags.append("MTF-SL")
+        if ep.get("use_power_of_3"):
+            ict_flags.append("P3")
         logger.info(f"ICT : {' + '.join(ict_flags) if ict_flags else 'off'}")
         # Render trading window in both ET and current KST (DST-aware).
         try:
@@ -685,6 +721,20 @@ class CasperBot:
                             f"score={bias.score:+d} components={bias.components}"
                         )
                         self._daily_bias = bias  # exposed for telegram / status
+                        # ICT log: persist the bias decision
+                        try:
+                            from src.data.ict_log import record as _ict_log
+                            _ict_log(event="daily_bias", passed=None,
+                                     details={
+                                         "direction": bias.direction,
+                                         "score": bias.score,
+                                         "components": bias.components,
+                                         "pdh": bias.pdh, "pdl": bias.pdl,
+                                         "pwh": bias.pwh, "pwl": bias.pwl,
+                                         "judas": judas,
+                                     })
+                        except Exception as e:
+                            logger.debug(f"ict_log daily_bias failed: {e}")
                         # Telegram notification (always, even if not neutral)
                         try:
                             self.notifier.notify_daily_bias(bias)
@@ -776,6 +826,15 @@ class CasperBot:
         self.orb = self.orbs.get(self.trend.symbol) or next(iter(self.orbs.values()))
 
         if not self._notified_orb:
+            # Persist ORB to the audit log (one entry per symbol)
+            try:
+                from src.data.ict_log import record as _ict_log
+                for symbol, orb in self.orbs.items():
+                    _ict_log(event="orb_formed", symbol=symbol, passed=None,
+                             details={"high": orb.high, "low": orb.low,
+                                       "range": orb.range_size, "date": orb.date})
+            except Exception as e:
+                logger.debug(f"ict_log orb_formed failed: {e}")
             # Single consolidated ORB summary covering all legs (replaces N pings).
             try:
                 self.notifier.notify_orb_summary(self.orbs)
