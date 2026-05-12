@@ -131,16 +131,32 @@ start_bot() {
     fi
     echo -e "${GREEN}[INFO]${NC} 계좌: ${KIS_ACCOUNT_NO}"
     CONFIG_INFO=$(python3 -c "
-import json
+import json, os
 c = json.load(open('config/strategy_params.json'))
-rr = c['entry'].get('rr_ratio', 2.0)
-strict = c['entry'].get('strict_fvg', False)
+e = c.get('entry', {})
+rr = e.get('rr_ratio', 2.0)
+strict = e.get('strict_fvg', False)
 dual = c.get('mode', {}).get('dual_scan', False)
-print(f'{rr}|{strict}|{dual}')
-" 2>/dev/null || echo "?|?|?")
+# ICT effective flags = env overrides config (mirrors src/utils/config.py logic)
+def _on(env, fallback):
+    raw = os.getenv(env)
+    if raw is None: return bool(fallback)
+    return raw.strip().lower() in ('on','true','1','yes')
+kz = _on('ICT_KILLZONE_ENABLED', e.get('killzone_filter_enabled', False))
+disp = _on('ICT_REQUIRE_DISPLACEMENT', e.get('require_displacement', False))
+sweep = _on('ICT_REQUIRE_SWEEP_CHOCH', e.get('require_sweep_choch', False))
+bear = _on('ICT_BEAR_FVG_FOR_SQQQ', e.get('bear_fvg_for_sqqq', False))
+bias = _on('ICT_DAILY_BIAS_SKIP_NEUTRAL', e.get('daily_bias_skip_neutral', False))
+print(f'{rr}|{strict}|{dual}|{kz}|{disp}|{sweep}|{bear}|{bias}')
+" 2>/dev/null || echo "?|?|?|?|?|?|?|?")
     RR=$(echo "$CONFIG_INFO" | cut -d'|' -f1)
     STRICT_FVG=$(echo "$CONFIG_INFO" | cut -d'|' -f2)
     DUAL_SCAN=$(echo "$CONFIG_INFO" | cut -d'|' -f3)
+    ICT_KZ=$(echo "$CONFIG_INFO" | cut -d'|' -f4)
+    ICT_DISP=$(echo "$CONFIG_INFO" | cut -d'|' -f5)
+    ICT_SWEEP=$(echo "$CONFIG_INFO" | cut -d'|' -f6)
+    ICT_BEAR=$(echo "$CONFIG_INFO" | cut -d'|' -f7)
+    ICT_BIAS=$(echo "$CONFIG_INFO" | cut -d'|' -f8)
     SCAN_MODE="단일 (QQQ MA20 추세)"
     [ "$DUAL_SCAN" = "True" ] && SCAN_MODE="${CYAN}DUAL SCAN${NC} (TQQQ+SQQQ 동시)"
     FVG_MODE="baseline (Close>ORB)"
@@ -149,6 +165,60 @@ print(f'{rr}|{strict}|{dual}')
     echo -e "${GREEN}[INFO]${NC} 스캔: ${SCAN_MODE}"
     echo -e "${GREEN}[INFO]${NC} FVG : ${FVG_MODE}"
     echo -e "${GREEN}[INFO]${NC} 종목: TQQQ (강세) / SQQQ (약세)"
+    # ICT phase status
+    ict_line=""
+    [ "$ICT_KZ"    = "True" ] && ict_line="${ict_line}KZ "
+    [ "$ICT_DISP"  = "True" ] && ict_line="${ict_line}Disp "
+    [ "$ICT_SWEEP" = "True" ] && ict_line="${ict_line}Sweep "
+    [ "$ICT_BIAS"  = "True" ] && ict_line="${ict_line}Bias "
+    [ "$ICT_BEAR"  = "True" ] && ict_line="${ict_line}QQQ→SQQQ "
+    if [ -n "$ict_line" ]; then
+        echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ict_line}${NC} (전체 bot 통합 완료)"
+        KST_WINDOW=$(python3 -c "
+from datetime import datetime, time as dtime
+import pytz
+et = pytz.timezone('US/Eastern')
+kst = pytz.timezone('Asia/Seoul')
+today_et = datetime.now(et)
+s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
+e = et.localize(datetime.combine(today_et.date(), dtime(10, 55))).astimezone(kst)
+is_dst = today_et.dst().total_seconds() != 0
+print(f\"{s.strftime('%H:%M')}~{e.strftime('%H:%M')}|{'서머타임' if is_dst else '표준시'}\")
+" 2>/dev/null || echo "?~?|?")
+        KST_TIME=$(echo "$KST_WINDOW" | cut -d'|' -f1)
+        DST_TAG=$(echo "$KST_WINDOW" | cut -d'|' -f2)
+        echo -e "${YELLOW}[NOTE]${NC} 매매 윈도우: ET 09:30~10:55  (KST ${KST_TIME}, ${DST_TAG})"
+    else
+        echo -e "${GREEN}[INFO]${NC} ICT : ${YELLOW}off${NC} (기본 ORB+FVG strict만 작동)"
+    fi
+
+    # Fine-tune reminder
+    FT_INFO=$(python3 -c "
+import json, os
+try:
+    p = 'data/trades/trades_2026.json'
+    if not os.path.exists(p):
+        print('0|5'); raise SystemExit
+    trades = json.load(open(p))
+    n_ict = sum(1 for t in trades if isinstance(t, dict) and t.get('ict'))
+    print(f'{n_ict}|5')
+except Exception:
+    print('?|5')
+" 2>/dev/null || echo "?|5")
+    FT_N=$(echo "$FT_INFO" | cut -d'|' -f1)
+    FT_T=$(echo "$FT_INFO" | cut -d'|' -f2)
+    if [ "$FT_N" != "?" ]; then
+        if [ "$FT_N" -lt "$FT_T" ] 2>/dev/null; then
+            REMAINING=$((FT_T - FT_N))
+            echo -e "${YELLOW}[📌 FINE-TUNE]${NC} ICT 매매 ${FT_N}/${FT_T}건 누적. ${REMAINING}건 더 후 검증 권장:"
+            echo -e "${YELLOW}             ${NC} python scripts/phase1_precheck.py"
+        elif [ $((FT_N % FT_T)) -eq 0 ] 2>/dev/null; then
+            echo -e "${RED}[📌 FINE-TUNE NOW]${NC} ICT 매매 ${FT_N}건 — phase1_precheck.py 재실행하세요!"
+        else
+            NEXT=$(((FT_N / FT_T + 1) * FT_T))
+            echo -e "${YELLOW}[📌 FINE-TUNE]${NC} ICT 매매 ${FT_N}건 누적 (다음 검증: ${NEXT}건)"
+        fi
+    fi
     echo ""
 
     if [ "$MODE" = "live" ] && [ "$AUTO_CONFIRM" != "1" ]; then
@@ -178,6 +248,74 @@ start_daemon() {
 
     MODE="${TRADING_MODE:-paper}"
     echo -e "${GREEN}[INFO]${NC} 데몬 모드로 시작 (모드: ${BLUE}${MODE}${NC})"
+
+    # ICT phase summary (same logic as start_bot)
+    ICT_LINE=$(python3 -c "
+import json, os
+c = json.load(open('config/strategy_params.json'))
+e = c.get('entry', {})
+def _on(env, fallback):
+    raw = os.getenv(env)
+    if raw is None: return bool(fallback)
+    return raw.strip().lower() in ('on','true','1','yes')
+flags = []
+if _on('ICT_KILLZONE_ENABLED', e.get('killzone_filter_enabled', False)):
+    kz = e.get('allowed_killzones', []) or []
+    flags.append('KZ(' + ','.join(kz) + ')' if kz else 'KZ')
+if _on('ICT_REQUIRE_DISPLACEMENT', e.get('require_displacement', False)):
+    flags.append('Disp')
+if _on('ICT_REQUIRE_SWEEP_CHOCH', e.get('require_sweep_choch', False)):
+    flags.append('Sweep')
+if _on('ICT_DAILY_BIAS_SKIP_NEUTRAL', e.get('daily_bias_skip_neutral', False)):
+    flags.append('Bias')
+if _on('ICT_BEAR_FVG_FOR_SQQQ', e.get('bear_fvg_for_sqqq', False)):
+    flags.append('QQQ->SQQQ')
+print(' + '.join(flags) if flags else 'off')
+" 2>/dev/null || echo "?")
+    echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ICT_LINE}${NC}"
+    # Compute KST window (DST-aware)
+    KST_WINDOW=$(python3 -c "
+from datetime import datetime, time as dtime
+import pytz
+et = pytz.timezone('US/Eastern')
+kst = pytz.timezone('Asia/Seoul')
+today_et = datetime.now(et)
+s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
+e = et.localize(datetime.combine(today_et.date(), dtime(10, 55))).astimezone(kst)
+is_dst = today_et.dst().total_seconds() != 0
+print(f\"{s.strftime('%H:%M')}~{e.strftime('%H:%M')}|{'서머타임' if is_dst else '표준시'}\")
+" 2>/dev/null || echo "?~?|?")
+    KST_TIME=$(echo "$KST_WINDOW" | cut -d'|' -f1)
+    DST_TAG=$(echo "$KST_WINDOW" | cut -d'|' -f2)
+    echo -e "${YELLOW}[NOTE]${NC} 매매 윈도우: ET 09:30~10:55  (KST ${KST_TIME}, ${DST_TAG})"
+
+    # Fine-tune reminder — count ICT-tagged trades and remind
+    FT_INFO=$(python3 -c "
+import json, os
+try:
+    p = 'data/trades/trades_2026.json'
+    if not os.path.exists(p):
+        print('0|5'); raise SystemExit
+    trades = json.load(open(p))
+    n_ict = sum(1 for t in trades if isinstance(t, dict) and t.get('ict'))
+    print(f'{n_ict}|5')
+except Exception:
+    print('?|5')
+" 2>/dev/null || echo "?|5")
+    FT_N=$(echo "$FT_INFO" | cut -d'|' -f1)
+    FT_T=$(echo "$FT_INFO" | cut -d'|' -f2)
+    if [ "$FT_N" != "?" ]; then
+        if [ "$FT_N" -lt "$FT_T" ] 2>/dev/null; then
+            REMAINING=$((FT_T - FT_N))
+            echo -e "${YELLOW}[📌 FINE-TUNE]${NC} ICT 매매 ${FT_N}/${FT_T}건 누적. ${REMAINING}건 더 누적 후 검증 권장:"
+            echo -e "${YELLOW}             ${NC} python scripts/phase1_precheck.py"
+        elif [ $((FT_N % FT_T)) -eq 0 ] 2>/dev/null; then
+            echo -e "${RED}[📌 FINE-TUNE NOW]${NC} ICT 매매 ${FT_N}건 — phase1_precheck.py 재실행하세요!"
+        else
+            NEXT=$(((FT_N / FT_T + 1) * FT_T))
+            echo -e "${YELLOW}[📌 FINE-TUNE]${NC} ICT 매매 ${FT_N}건 누적 (다음 검증 시점: ${NEXT}건)"
+        fi
+    fi
 
     nohup python3 run_bot.py >> logs/casper.log 2>&1 &
     DAEMON_PID=$!

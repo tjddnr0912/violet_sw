@@ -112,6 +112,39 @@ class TelegramNotifier:
             fvg = "STRICT" if strategy_info.get("strict_fvg") else "baseline"
             rr = strategy_info.get("rr_ratio", 2.0)
             lines.append(f"Scan: {scan}  FVG: {fvg}  R:R: 1:{rr:g}")
+            # ICT phase flags (compact)
+            ict_flags = []
+            if strategy_info.get("ict_killzone"):
+                kz_list = strategy_info.get("ict_allowed_killzones") or []
+                ict_flags.append("KZ(" + ",".join(kz_list) + ")" if kz_list else "KZ")
+            if strategy_info.get("ict_displacement"):
+                ict_flags.append("Disp")
+            if strategy_info.get("ict_sweep_choch"):
+                ict_flags.append("Sweep")
+            if strategy_info.get("ict_daily_bias"):
+                ict_flags.append("Bias")
+            if strategy_info.get("ict_bear_for_sqqq"):
+                ict_flags.append("QQQ→SQQQ")
+            if ict_flags:
+                lines.append("ICT: " + " + ".join(ict_flags))
+                # DST-aware KST window line
+                try:
+                    from datetime import datetime, time as dtime
+                    import pytz
+                    et = pytz.timezone("US/Eastern")
+                    kst = pytz.timezone("Asia/Seoul")
+                    today_et = datetime.now(et)
+                    s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
+                    e = et.localize(datetime.combine(today_et.date(), dtime(10, 55))).astimezone(kst)
+                    is_dst = today_et.dst().total_seconds() != 0
+                    lines.append(
+                        f"Window: ET 09:30-10:55 (KST {s.strftime('%H:%M')}-{e.strftime('%H:%M')}, "
+                        f"{'DST' if is_dst else 'STD'})"
+                    )
+                except Exception:
+                    pass
+            else:
+                lines.append("ICT: off")
         lines.append(f"Capital: ${capital:.2f}")
         lines.append(
             f"History: {history.get('count', 0)}T  "
@@ -148,13 +181,29 @@ class TelegramNotifier:
         self.send(msg)
 
     def notify_signal(self, symbol: str, entry: float, stop: float,
-                      target: float, rr_ratio: float) -> None:
-        msg = (
-            f"🎯 <b>SIGNAL</b> {symbol}\n"
-            f"Entry ${entry:.2f}  SL ${stop:.2f}  TP ${target:.2f}\n"
-            f"R:R 1:{rr_ratio:.0f}"
-        )
-        self.send(msg)
+                      target: float, rr_ratio: float,
+                      ict_meta: Optional[dict] = None) -> None:
+        lines = [
+            f"🎯 <b>SIGNAL</b> {symbol}",
+            f"Entry ${entry:.2f}  SL ${stop:.2f}  TP ${target:.2f}",
+            f"R:R 1:{rr_ratio:.0f}",
+        ]
+        if ict_meta:
+            kz = ict_meta.get("killzone")
+            filters = ict_meta.get("filters_active") or []
+            bias = ict_meta.get("daily_bias_direction")
+            bias_score = ict_meta.get("daily_bias_score")
+            extras = []
+            if kz:
+                extras.append(f"KZ:{kz}")
+            if filters:
+                extras.append("filters:" + ",".join(filters))
+            if bias is not None:
+                extras.append(f"bias:{bias}({bias_score:+d})"
+                              if bias_score is not None else f"bias:{bias}")
+            if extras:
+                lines.append("ICT  " + "  ".join(extras))
+        self.send("\n".join(lines))
 
     def notify_entry(self, symbol: str, price: float, shares: int,
                      stop: float, target: float, risk: float,

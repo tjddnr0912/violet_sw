@@ -57,10 +57,26 @@ def save_trade(trade: dict, year: Optional[int] = None) -> None:
         logger.error(f"TradeStore: Error saving to {filepath}: {e}")
 
 
-def trade_from_position(position) -> dict:
-    """Convert a closed Position object to a trade dict for storage."""
+def trade_from_position(position, ict_meta: Optional[dict] = None) -> dict:
+    """Convert a closed Position object to a trade dict for storage.
+
+    Args:
+        position: closed Position object.
+        ict_meta: optional dict with ICT-phase computed indicators captured
+                  at signal time. Keys recognised (all optional):
+                    killzone               : 'AM_MACRO' | 'AM_LATE' | ...
+                    displacement_passed    : bool
+                    disp_body_atr_ratio    : float
+                    disp_wick_ratio        : float
+                    sweep_choch_passed     : bool
+                    sweep_level            : float
+                    sweep_breach_pct       : float
+                    daily_bias_direction   : 'bull' | 'bear' | 'neutral'
+                    daily_bias_score       : int
+                    filters_active         : list[str]   # which gates were ON
+    """
     from src.utils.time_utils import get_week_number
-    return {
+    base = {
         "date": position.signal.orb.date,
         "week": get_week_number(),
         "symbol": position.symbol,
@@ -84,8 +100,12 @@ def trade_from_position(position) -> dict:
         "fvg_top": position.signal.fvg.top,
         "fvg_bottom": position.signal.fvg.bottom,
         "trend": position.direction,
-        "capital_after": None,  # Set by bot after updating capital
+        "capital_after": None,
     }
+    if ict_meta:
+        # nest under "ict" to keep top-level schema stable; old readers ignore it
+        base["ict"] = {k: v for k, v in ict_meta.items() if v is not None}
+    return base
 
 
 def update_last_trade(updates: dict, year: Optional[int] = None) -> None:

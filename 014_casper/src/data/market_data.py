@@ -185,6 +185,66 @@ def get_qqq_trend_data(ma_period: int = 20) -> Tuple[Optional[float], Optional[f
         return None, None
 
 
+def _get_qqq_daily_df_kis(lookback: int) -> Optional[pd.DataFrame]:
+    """Fetch QQQ daily OHLC DataFrame via KIS."""
+    bars = _kis_client.get_us_daily_chart("QQQ", count=lookback)
+    if not bars or len(bars) < 1:
+        return None
+    rows = []
+    for b in bars:
+        try:
+            d = datetime.strptime(b["date"], "%Y%m%d").date()
+            rows.append({
+                "date": d,
+                "Open":  float(b.get("open", b.get("close", 0))),
+                "High":  float(b["high"]),
+                "Low":   float(b["low"]),
+                "Close": float(b["close"]),
+                "Volume": int(b.get("volume", 0)),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).set_index("date").sort_index()
+    df.index = pd.to_datetime(df.index)
+    return df
+
+
+def _get_qqq_daily_df_yf(lookback: int) -> Optional[pd.DataFrame]:
+    """Fetch QQQ daily OHLC DataFrame via yfinance."""
+    qqq = yf.Ticker("QQQ")
+    # request enough days; yfinance gives more than 'period' worth
+    period = f"{max(lookback + 10, 90)}d"
+    hist = _yf_with_timeout(qqq.history, period=period, interval="1d")
+    if hist is None or hist.empty:
+        return None
+    df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df.tail(lookback)
+
+
+def get_qqq_daily_df(lookback: int = 60) -> Optional[pd.DataFrame]:
+    """Return the most recent `lookback` QQQ daily bars.
+
+    Used by daily-bias scoring (ICT Phase 3). KIS primary → yfinance fallback.
+    Returns DataFrame with columns Open/High/Low/Close/Volume, indexed by
+    date (tz-naive), or None on failure.
+    """
+    try:
+        if _kis_client:
+            df = _get_qqq_daily_df_kis(lookback)
+            if df is not None and not df.empty:
+                return df
+            logger.warning("QQQ daily: KIS failed, falling back to yfinance")
+        return _yf_fetch_with_cache_recovery(
+            lambda: _get_qqq_daily_df_yf(lookback), "QQQ-daily-df"
+        )
+    except (FuturesTimeout, Exception) as e:
+        logger.error(f"QQQ daily df error: {type(e).__name__}: {e}")
+        return None
+
+
 # ─── Intraday Bars (KIS primary → yfinance fallback) ───
 
 def _kis_bars_to_dataframe(bars: list) -> Optional[pd.DataFrame]:

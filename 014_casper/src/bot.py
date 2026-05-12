@@ -13,6 +13,8 @@ import time
 from enum import Enum
 from typing import Optional
 
+import pandas as pd
+
 from src.utils.config import load_env, load_strategy_params, get_kis_urls
 from src.api.kis_auth import KISAuth
 from src.api.kis_client import KISClient
@@ -108,9 +110,78 @@ class CasperBot:
         self._notified_pre_market = False
         self._notified_orb = False
         self._notified_signal = False
+        # ICT meta captured at signal time, stored alongside the trade.
+        self._signal_ict_meta: Optional[dict] = None
+        # Daily bias (ICT Phase 3), computed once per pre-market.
+        self._daily_bias = None
 
         # Load trade history
         self._init_from_history()
+
+        # Data collector (env-toggled, isolated). MUST come last so that
+        # any failure here cannot abort the trading bot construction.
+        self.collector = None
+        self._marketdata_base = os.path.join(
+            os.path.dirname(__file__), "..", "data", "marketdata"
+        )
+        self._init_collector(self._marketdata_base)
+        self._cold_start_backfill(
+            self._marketdata_base,
+            symbols=[
+                self.params["symbols"]["bull"],
+                self.params["symbols"]["bear"],
+                self.params["symbols"]["trend_filter"],
+                "^VIX",
+            ],
+        )
+
+    def _init_collector(self, base_dir):
+        """Start BarCollector iff DATA_COLLECTION=on. Safe on failure."""
+        if os.environ.get("DATA_COLLECTION", "off").lower() != "on":
+            self.collector = None
+            return
+        try:
+            from src.data.collector import BarCollector
+            self.collector = BarCollector(base_dir=base_dir)
+            self.collector.start()
+            logger.info("DataCollection: enabled (DATA_COLLECTION=on)")
+        except Exception as e:
+            logger.warning(f"DataCollection: init failed, disabled: {e}")
+            self.collector = None
+
+    def _record_bars(self, symbol, bars):
+        """Submit bars to collector. NEVER raises."""
+        if self.collector is None or bars is None or bars.empty:
+            return
+        try:
+            date_str = bars.index[0].strftime("%Y-%m-%d")
+            self.collector.submit(symbol, date_str, bars, source="kis")
+        except Exception as e:
+            logger.warning(f"DataCollection: submit failed silently: {e}")
+
+    def _cold_start_backfill(self, base_dir, symbols):
+        """Fill missing days via yfinance on bot startup. Silent on failure."""
+        if self.collector is None:
+            return
+        if os.environ.get("DATA_COLLECTION_BACKFILL", "on").lower() != "on":
+            return
+        try:
+            from datetime import datetime, timedelta, timezone
+            from src.data.gap_finder import find_gaps
+            from src.data.backfill import fill_gaps_from_yfinance
+
+            end = datetime.now(timezone.utc).date()
+            start = end - timedelta(days=60)
+            total = 0
+            for sym in symbols:
+                gaps = find_gaps(base_dir, sym, start, end)
+                if gaps:
+                    n = fill_gaps_from_yfinance(base_dir, sym, gaps)
+                    total += n
+                    logger.info(f"Backfill: {sym} {n}/{len(gaps)} days written")
+            logger.info(f"Backfill: cold start done (total={total} days)")
+        except Exception as e:
+            logger.warning(f"Backfill: cold start failed silently: {e}")
 
     def _init_kis(self):
         """Initialize KIS API clients for order execution."""
@@ -286,6 +357,66 @@ class CasperBot:
         logger.info(f"Scan: {scan_mode}")
         logger.info(f"FVG : {fvg_mode}")
         logger.info(f"R:R : 1:{rr}")
+        # ICT phase summary (compact). Reads effective config (env overrides applied).
+        ep = self.params.get("entry", {})
+        ict_flags = []
+        if ep.get("killzone_filter_enabled"):
+            kz = ep.get("allowed_killzones") or []
+            ict_flags.append("KZ(" + ",".join(kz) + ")" if kz else "KZ")
+        if ep.get("require_displacement"):
+            ict_flags.append("Disp")
+        if ep.get("require_sweep_choch"):
+            ict_flags.append("Sweep")
+        if ep.get("daily_bias_skip_neutral"):
+            ict_flags.append("Bias")
+        if ep.get("bear_fvg_for_sqqq"):
+            ict_flags.append("QQQ→SQQQ")
+        logger.info(f"ICT : {' + '.join(ict_flags) if ict_flags else 'off'}")
+        # Render trading window in both ET and current KST (DST-aware).
+        try:
+            from datetime import datetime, time as dtime
+            import pytz
+            et = pytz.timezone("US/Eastern")
+            kst = pytz.timezone("Asia/Seoul")
+            today_et = datetime.now(et)
+            t_start_et = et.localize(datetime.combine(today_et.date(), dtime(9, 30)))
+            t_end_et = et.localize(datetime.combine(today_et.date(), dtime(10, 55)))
+            kst_start = t_start_et.astimezone(kst).strftime("%H:%M")
+            kst_end = t_end_et.astimezone(kst).strftime("%H:%M")
+            dst_tag = "서머타임" if today_et.dst() != datetime.now(et).utcoffset() * 0 else ""
+            is_dst = today_et.dst().total_seconds() != 0
+            dst_tag = "서머타임" if is_dst else "표준시"
+            logger.info(
+                f"      ※ 매매 윈도우: ET 09:30~10:55  (KST {kst_start}~{kst_end}, {dst_tag})"
+            )
+        except Exception as e:
+            logger.debug(f"KST window render failed: {e}")
+            logger.info("      ※ 매매 윈도우: ET 09:30~10:55 (KST 변환 실패)")
+
+        # ── Fine-tune reminder (ICT trades 누적 추적) ──
+        try:
+            from src.data.trade_store import load_trades as _lt
+            _all_trades = _lt()
+            n_ict = sum(1 for t in _all_trades if isinstance(t, dict) and t.get("ict"))
+            target = 5  # 통계적 의미 최소 표본
+            if n_ict < target:
+                logger.info(
+                    f"📌 Fine-tune: ICT 매매 {n_ict}/{target}건 누적 "
+                    f"(목표 도달 시 'python scripts/phase1_precheck.py' 재실행 권장)"
+                )
+            elif n_ict % target == 0:
+                logger.info(
+                    f"📌 Fine-tune NOW: ICT 매매 {n_ict}건 — "
+                    f"phase1_precheck.py 재실행해서 임계값 검증 권장"
+                )
+            else:
+                next_check = ((n_ict // target) + 1) * target
+                logger.info(
+                    f"📌 Fine-tune: ICT 매매 {n_ict}건 누적 (다음 검증: {next_check}건)"
+                )
+        except Exception as e:
+            logger.debug(f"Fine-tune reminder skipped: {e}")
+
         logger.info("=" * 50)
         # Sync capital from KIS BEFORE the start banner so the Telegram
         # message reflects the actual orderable USD instead of the
@@ -303,10 +434,18 @@ class CasperBot:
             }
         except Exception:
             history = {"count": 0, "win_rate": 0, "pnl": 0}
+        ep = self.params.get("entry", {})
         strategy_info = {
             "dual_scan": self.params.get("mode", {}).get("dual_scan", False),
-            "strict_fvg": self.params.get("entry", {}).get("strict_fvg", False),
-            "rr_ratio": self.params.get("entry", {}).get("rr_ratio", 2.0),
+            "strict_fvg": ep.get("strict_fvg", False),
+            "rr_ratio": ep.get("rr_ratio", 2.0),
+            # ICT phase status — telegram displays a compact summary
+            "ict_killzone": ep.get("killzone_filter_enabled", False),
+            "ict_allowed_killzones": ep.get("allowed_killzones", []),
+            "ict_displacement": ep.get("require_displacement", False),
+            "ict_sweep_choch": ep.get("require_sweep_choch", False),
+            "ict_daily_bias": ep.get("daily_bias_skip_neutral", False),
+            "ict_bear_for_sqqq": ep.get("bear_fvg_for_sqqq", False),
         }
         self.notifier.notify_bot_started(
             self.env["trading_mode"], self.capital, history, strategy_info,
@@ -334,6 +473,11 @@ class CasperBot:
             logger.info("Bot stopped")
             self._save_position_state()
             self.notifier.notify_bot_stopped("Graceful shutdown")
+            if getattr(self, "collector", None) is not None:
+                try:
+                    self.collector.stop(timeout=5.0)
+                except Exception:
+                    pass
 
     def _tick(self):
         """Single iteration of the event loop."""
@@ -398,6 +542,8 @@ class CasperBot:
         self._notified_pre_market = False
         self._notified_orb = False
         self._notified_signal = False
+        self._signal_ict_meta = None
+        self._daily_bias = None
         self._sync_capital()
         self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
         logger.info(f"=== New Day: {today} ===")
@@ -489,6 +635,39 @@ class CasperBot:
             )
             self._notified_pre_market = True
 
+        # ICT Phase 3: Daily Bias hook. If enabled and bias == 'neutral',
+        # skip the day. Failure of bias computation is non-fatal — we keep
+        # trading on the default (MA20-only) decision in that case.
+        skip_neutral = self.params.get("entry", {}).get("daily_bias_skip_neutral", False)
+        if skip_neutral:
+            try:
+                from src.data.market_data import get_qqq_daily_df
+                from src.core.bias import compute_daily_bias
+                daily_df = get_qqq_daily_df(lookback=60)
+                if daily_df is not None and not daily_df.empty:
+                    bias = compute_daily_bias(daily_df)
+                    if bias is not None:
+                        logger.info(
+                            f"Daily Bias: direction={bias.direction} "
+                            f"score={bias.score:+d} components={bias.components}"
+                        )
+                        self._daily_bias = bias  # exposed for telegram / status
+                        if bias.direction == "neutral":
+                            self._transition(
+                                BotState.DONE_TODAY,
+                                f"Daily Bias neutral (score=0) — skip per ICT Phase 3",
+                            )
+                            self.notifier.notify_skip(
+                                "Daily Bias neutral (ICT Phase 3 skip-neutral)"
+                            )
+                            return
+                else:
+                    logger.warning(
+                        "Daily Bias: QQQ daily df unavailable — continuing without bias gate"
+                    )
+            except Exception as e:
+                logger.warning(f"Daily Bias hook failed (non-fatal): {e}")
+
         # Wait for ORB or transition immediately
         if time_utils.is_orb_forming():
             self._transition(BotState.ORB_FORMING)
@@ -516,6 +695,11 @@ class CasperBot:
         syms = self.params["symbols"]
         dual = self.params.get("mode", {}).get("dual_scan", False)
         candidates = [syms["bull"], syms["bear"]] if dual else [self.trend.symbol]
+        # ICT Phase-3 QQQ-signal-mapping: when enabled, we also need QQQ's
+        # ORB so we can scan QQQ for bearish setups and remap to SQQQ Long.
+        bear_for_sqqq = self.params["entry"].get("bear_fvg_for_sqqq", False)
+        if bear_for_sqqq and syms["trend_filter"] not in candidates:
+            candidates = candidates + [syms["trend_filter"]]
         atr_ratio = self.params["filters"]["orb_atr_max_ratio"]
 
         self.orbs = {}
@@ -528,6 +712,8 @@ class CasperBot:
             if bars is None:
                 logger.warning(f"ORB: {symbol} unavailable after retry, skipping leg")
                 continue
+
+            self._record_bars(symbol, bars)
 
             orb = calculate_orb(bars)
             if orb is None:
@@ -575,39 +761,140 @@ class CasperBot:
         entry_params = self.params["entry"]
         strict = entry_params.get("strict_fvg", False)
 
+        # ICT Phase 1 filters (config-toggled, default OFF for safe rollout)
+        kz_enabled = entry_params.get("killzone_filter_enabled", False)
+        allowed_killzones = entry_params.get("allowed_killzones", []) if kz_enabled else None
+        require_disp = entry_params.get("require_displacement", False)
+        disp_atr_mult = entry_params.get("disp_atr_mult", 1.0)
+        disp_max_wick = entry_params.get("disp_max_wick", 0.50)
+        disp_prev_mult = entry_params.get("disp_prev_mult", 1.5)
+        # ICT Phase 2 filter (sweep + CHoCH)
+        require_sweep_choch = entry_params.get("require_sweep_choch", False)
+        sweep_lookback = entry_params.get("sweep_lookback", 6)
+        choch_lookback = entry_params.get("choch_lookback", 6)
+        sweep_min_breach_pct = entry_params.get("sweep_min_breach_pct", 0.0005)
+        sweep_min_wick_ratio = entry_params.get("sweep_min_wick_ratio", 0.60)
+        # ICT Phase 3 QQQ-mapping: scan QQQ for bear setup → SQQQ Long
+        bear_for_sqqq = entry_params.get("bear_fvg_for_sqqq", False)
+        syms = self.params["symbols"]
+
         for symbol, orb in self.orbs.items():
+            # Skip SQQQ self-scan when QQQ-mapping is on (we'll handle SQQQ
+            # via the QQQ leg's bearish branch below).
+            if bear_for_sqqq and symbol == syms["bear"]:
+                continue
+
+            # Decide direction for this leg.
+            if symbol == syms["trend_filter"] and bear_for_sqqq:
+                directions = ["bear"]   # QQQ bearish → SQQQ Long
+            else:
+                directions = ["bull"]   # default — TQQQ/SQQQ self-chart bullish
+
             bars = get_intraday_bars(symbol, period="1d", interval="5m")
             if bars is None:
                 continue
+
+            self._record_bars(symbol, bars)
 
             scan_bars = bars.between_time("09:45", "10:55")
             if len(scan_bars) < 4:
                 continue
 
-            sig = self.signals.get(symbol)
-            if sig is None:
-                sig = scan_for_signal(
-                    scan_bars, orb, symbol,
-                    rr_ratio=entry_params["rr_ratio"],
-                    min_risk=entry_params["min_risk_dollar"],
-                    strict=strict,
-                )
+            for direction in directions:
+                cache_key = f"{symbol}:{direction}"
+                sig = self.signals.get(cache_key)
                 if sig is None:
-                    continue
-                self.signals[symbol] = sig
-                if not self._notified_signal:
-                    self.notifier.notify_signal(
-                        sig.symbol, sig.entry_price,
-                        sig.stop_loss, sig.take_profit, sig.rr_ratio,
+                    sig = scan_for_signal(
+                        scan_bars, orb, symbol,
+                        rr_ratio=entry_params["rr_ratio"],
+                        min_risk=entry_params["min_risk_dollar"],
+                        strict=strict,
+                        allowed_killzones=allowed_killzones,
+                        require_displacement=require_disp,
+                        disp_atr_mult=disp_atr_mult,
+                        disp_max_wick=disp_max_wick,
+                        disp_prev_mult=disp_prev_mult,
+                        history_bars=bars,
+                        require_sweep_choch=require_sweep_choch,
+                        sweep_lookback=sweep_lookback,
+                        choch_lookback=choch_lookback,
+                        sweep_min_breach_pct=sweep_min_breach_pct,
+                        sweep_min_wick_ratio=sweep_min_wick_ratio,
+                        direction=direction,
                     )
-                    self._notified_signal = True
+                    if sig is None:
+                        continue
+                    self.signals[cache_key] = sig
+                    # Capture ICT metadata for trade record.
+                    try:
+                        from src.core.sessions import killzone_for
+                        filters_active = []
+                        if allowed_killzones:
+                            filters_active.append("killzone")
+                        if require_disp:
+                            filters_active.append("displacement")
+                        if require_sweep_choch:
+                            filters_active.append("sweep_choch")
+                        if bear_for_sqqq and direction == "bear":
+                            filters_active.append("qqq_mapping")
+                        try:
+                            sig_ts = pd.Timestamp(sig.signal_time).tz_localize("US/Eastern")
+                            kz = killzone_for(sig_ts)
+                        except Exception:
+                            kz = None
+                        self._signal_ict_meta = {
+                            "killzone": kz,
+                            "filters_active": filters_active,
+                            "signal_direction": sig.direction,
+                            "rr_ratio": sig.rr_ratio,
+                            "daily_bias_direction":
+                                getattr(self._daily_bias, "direction", None),
+                            "daily_bias_score":
+                                getattr(self._daily_bias, "score", None),
+                            "signal_source": symbol,
+                        }
+                    except Exception as e:
+                        logger.debug(f"ICT meta capture failed (non-fatal): {e}")
+                        self._signal_ict_meta = None
 
-            latest_bar = scan_bars.iloc[-1]
-            if check_pullback(latest_bar, sig.fvg):
-                self.signal = sig
-                self.orb = orb
-                self._execute_entry()
-                return
+                # Pullback detection on the ORIGINATING chart (QQQ for bear
+                # leg, exec ETF for bull leg).
+                latest_bar = scan_bars.iloc[-1]
+                if check_pullback(latest_bar, sig.fvg, direction=direction):
+                    if direction == "bear" and symbol == syms["trend_filter"]:
+                        # Remap QQQ short signal → SQQQ Long with price translation.
+                        from src.core.exec_mapper import remap_qqq_bear_to_sqqq_long
+                        sqqq_price = get_current_price(syms["bear"])
+                        if sqqq_price is None or sqqq_price <= 0:
+                            logger.warning("SQQQ price unavailable, skipping bear-mapped trade")
+                            return
+                        remapped = remap_qqq_bear_to_sqqq_long(sig, sqqq_price, exec_symbol=syms["bear"])
+                        if remapped is None:
+                            logger.warning("SQQQ remap failed, skipping")
+                            return
+                        self.signal = remapped
+                        self.orb = orb
+                        if not self._notified_signal:
+                            self.notifier.notify_signal(
+                                remapped.symbol, remapped.entry_price,
+                                remapped.stop_loss, remapped.take_profit, remapped.rr_ratio,
+                                ict_meta=self._signal_ict_meta,
+                            )
+                            self._notified_signal = True
+                        self._execute_entry()
+                        return
+                    else:
+                        if not self._notified_signal:
+                            self.notifier.notify_signal(
+                                sig.symbol, sig.entry_price,
+                                sig.stop_loss, sig.take_profit, sig.rr_ratio,
+                                ict_meta=self._signal_ict_meta,
+                            )
+                            self._notified_signal = True
+                        self.signal = sig
+                        self.orb = orb
+                        self._execute_entry()
+                        return
 
         time.sleep(15)
 
@@ -857,8 +1144,8 @@ class CasperBot:
         self.capital += self.position.net_pnl
         self.trades_today += 1
 
-        # Save trade
-        trade = trade_from_position(self.position)
+        # Save trade (with ICT metadata captured at signal time, if any)
+        trade = trade_from_position(self.position, ict_meta=self._signal_ict_meta)
         trade["capital_after"] = round(self.capital, 2)
         save_trade(trade)
 

@@ -60,8 +60,67 @@ def _validate_params(params: dict) -> None:
         raise ValueError(f"max_trades_per_day must be positive")
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    """Read a bool env var. 'on'/'true'/'1' → True, 'off'/'false'/'0' → False."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("on", "true", "1", "yes")
+
+
+def _apply_ict_env_overrides(params: dict) -> dict:
+    """Allow .env (ICT_*) to override config/strategy_params.json entry flags.
+
+    Order of precedence (highest → lowest):
+      1. ICT_* env variable
+      2. config/strategy_params.json entry.*
+      3. hard-coded default (false)
+
+    Listed here so a deployer can flip ICT phases without editing JSON.
+    """
+    entry = params.setdefault("entry", {})
+
+    # Phase 1
+    if os.getenv("ICT_KILLZONE_ENABLED") is not None:
+        entry["killzone_filter_enabled"] = _bool_env("ICT_KILLZONE_ENABLED", False)
+    if os.getenv("ICT_ALLOWED_KILLZONES"):
+        entry["allowed_killzones"] = [
+            s.strip() for s in os.getenv("ICT_ALLOWED_KILLZONES").split(",") if s.strip()
+        ]
+    if os.getenv("ICT_REQUIRE_DISPLACEMENT") is not None:
+        entry["require_displacement"] = _bool_env("ICT_REQUIRE_DISPLACEMENT", False)
+    if os.getenv("ICT_DISP_ATR_MULT"):
+        entry["disp_atr_mult"] = float(os.getenv("ICT_DISP_ATR_MULT"))
+    if os.getenv("ICT_DISP_MAX_WICK"):
+        entry["disp_max_wick"] = float(os.getenv("ICT_DISP_MAX_WICK"))
+    if os.getenv("ICT_DISP_PREV_MULT"):
+        entry["disp_prev_mult"] = float(os.getenv("ICT_DISP_PREV_MULT"))
+
+    # Phase 2
+    if os.getenv("ICT_REQUIRE_SWEEP_CHOCH") is not None:
+        entry["require_sweep_choch"] = _bool_env("ICT_REQUIRE_SWEEP_CHOCH", False)
+    if os.getenv("ICT_SWEEP_LOOKBACK"):
+        entry["sweep_lookback"] = int(os.getenv("ICT_SWEEP_LOOKBACK"))
+    if os.getenv("ICT_CHOCH_LOOKBACK"):
+        entry["choch_lookback"] = int(os.getenv("ICT_CHOCH_LOOKBACK"))
+    if os.getenv("ICT_SWEEP_MIN_BREACH_PCT"):
+        entry["sweep_min_breach_pct"] = float(os.getenv("ICT_SWEEP_MIN_BREACH_PCT"))
+    if os.getenv("ICT_SWEEP_MIN_WICK_RATIO"):
+        entry["sweep_min_wick_ratio"] = float(os.getenv("ICT_SWEEP_MIN_WICK_RATIO"))
+
+    # Phase 3 (module-only — bot integration deferred to separate plan)
+    if os.getenv("ICT_BEAR_FVG_FOR_SQQQ") is not None:
+        entry["bear_fvg_for_sqqq"] = _bool_env("ICT_BEAR_FVG_FOR_SQQQ", False)
+    if os.getenv("ICT_DAILY_BIAS_SKIP_NEUTRAL") is not None:
+        entry["daily_bias_skip_neutral"] = _bool_env(
+            "ICT_DAILY_BIAS_SKIP_NEUTRAL", False
+        )
+
+    return params
+
+
 def load_strategy_params() -> dict:
-    """Load strategy parameters from JSON config."""
+    """Load strategy parameters from JSON config + .env ICT_* overrides."""
     global _config_cache
     if _config_cache:
         return _config_cache
@@ -76,6 +135,10 @@ def load_strategy_params() -> dict:
         raise SystemExit(f"Config file not found: {config_path}")
     except json.JSONDecodeError as e:
         raise SystemExit(f"Invalid JSON in config: {config_path}: {e}")
+
+    # Allow .env to override entry flags (ICT phases etc.)
+    _config_cache = _apply_ict_env_overrides(_config_cache)
+
     _validate_params(_config_cache)
     return _config_cache
 

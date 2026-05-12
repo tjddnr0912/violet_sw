@@ -14,7 +14,20 @@
         "scan_end": "10:55",
         "rr_ratio": 3.0,
         "min_risk_dollar": 0.10,
-        "strict_fvg": true
+        "strict_fvg": true,
+        "killzone_filter_enabled": true,
+        "allowed_killzones": ["AM_MACRO"],
+        "require_displacement": true,
+        "disp_atr_mult": 1.0,
+        "disp_max_wick": 0.50,
+        "disp_prev_mult": 1.5,
+        "require_sweep_choch": true,
+        "sweep_lookback": 6,
+        "choch_lookback": 6,
+        "sweep_min_breach_pct": 0.0005,
+        "sweep_min_wick_ratio": 0.60,
+        "bear_fvg_for_sqqq": true,
+        "daily_bias_skip_neutral": true
     },
     "mode": {
         "dual_scan": true

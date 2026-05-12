@@ -239,3 +239,55 @@
   - 명세-구현 일관성 룰: `docs/strategy/*.md`의 "필수 조건" / "핵심 트리거" / "무효" 키워드 인근 문장은 모두 코드의 early-return 또는 assertion에 대응돼야 한다
   - 외부 검증 자원: 한국어 인플루언서 전략은 보통 영어 원본 출처(ICT, Casper SMC, FMZ Quant 등)가 있고, 그쪽이 더 명시적. 명세가 모호하면 영어 1차 출처(논문/공식 전략)를 검색해 정의를 못박는다
   - 핵심 진단 명령: 백테스트로 baseline vs strict 동시 비교 — 시그널 수가 70% 줄면서 PF가 2배 이상 뛰면 누락된 조건이 있었던 것
+
+---
+
+## ICT phase 라벨에 `*` 잘못 표기 (Bias 통합 완료인데 미통합처럼 표시)
+
+- **증상**: `./run_casper.sh start` stdout에 `ICT : KZ Disp Sweep Bear* Bias*  (* = config 로딩만, bot 통합 보류)` 표시. 사용자가 "ICT 통합 전이라고 나오는데?"라고 지적.
+- **원인**: 라벨 코드(`run_casper.sh`의 ICT label 블록)가 Phase 3 작업 시작 시점의 상태(bias/bear 모두 모듈만 있고 bot 미통합)를 그대로 두고 있었음. Phase 3 `daily_bias` hook을 `bot.py:_handle_pre_market`에 추가한 뒤에도 라벨 코드는 업데이트 안 함.
+- **해결**: 라벨을 두 부류로 분리 — Bias는 통합 완료(`Bias`, 별표 없음), Bear는 QQQ-mapping plan 미구현(`Bear*` 별표). 추후 Bear까지 통합한 뒤엔 `QQQ→SQQQ` 라벨로 변경.
+- **복구 절차**:
+  1. `run_casper.sh` start_bot의 ICT 라벨 블록 수정 (Bias `*` 제거)
+  2. `run_bot.py --status`의 `_ict_status_line()` 동기화
+  3. 텔레그램 `notify_bot_started`의 ICT flags 동기화
+  4. 봇 재기동해 stdout/log/telegram 3채널 모두 일치 확인
+- **관련 사고**: 2026-05-12 (Phase 3 통합 후 라벨 미동기)
+- **재발 감지**: 새 ICT 옵션 도입 시 *동시에* 4채널(bash stdout / app log banner / `run_bot.py --status` / telegram `notify_bot_started`) 라벨 grep으로 일관성 확인. 누락 시 사용자 인지 즉시.
+
+### Claude 진단 미스 (이번 사고)
+- **Claude 처음 가정**: ICT 라벨에서 별표 의미를 "config 로딩만, bot 통합 보류"로 통일 처리. Phase 3 작업 단계별로 *어떤 옵션이 실제로 bot에 hook됐는지*를 라벨에 따로 반영해야 한다는 인식이 없었음.
+- **실제 원인**: Phase 3 안에서도 `daily_bias`는 bot 통합 완료, `bear_fvg`는 미통합 — 라벨이 두 상태를 *섞어서* 표시하면 사용자에게 잘못된 정보. 라벨이 **"현재 실제 효과를 주는 옵션이 무엇인가"** 를 정확히 반영해야 한다는 핵심 원칙 누락.
+- **방향 전환 지점**: 사용자 메시지 "지금 캐스퍼봇 재시행하니까 터미널 출력에 ict 통합전이라고 나오는데?" — Claude가 즉시 라벨 코드 위치 파악 후 `Bias*` → `Bias` 분리. 같은 세션에서 사용자 명령 "통합 진행해"로 Bear도 통합 후 라벨을 `QQQ→SQQQ`로 변경.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: **UI 라벨의 의미(`*`, 색상, 약어)는 실제 bot 동작과 1:1 매핑이어야 한다**. 라벨 변경은 코드 hook 변경과 *동시* 작업
+  - 라벨 동기화 4채널 점검: bash stdout / app log banner / status CLI / telegram bot_started — grep으로 한 번에 일관성 확인
+  - 빨리 배제할 가설: "사용자가 이전 버전 캐시를 보고 있다" — 사용자는 재시작 직후 신뢰 가능. 라벨 코드 자체 점검 우선
+  - 핵심 진단 명령: `grep -n "ICT\|Bias\|Bear\|Sweep" run_casper.sh run_bot.py src/telegram/notifier.py src/bot.py`
+
+---
+
+## ICT 매매 윈도우 ET만 표기 (한국 운용자 혼란)
+
+- **증상**: `[NOTE] 위는 필터 상태일 뿐. 실제 매매는 09:30~10:55 ET 시점에 결정.` — ET 시간만 출력. 사용자가 "KZ의 의미 설명에 섬머타임을 감안해서 메세지가 나와야 할것 같아. 현재는 한국시간으로 22:30분부터 시작이야"로 지적.
+- **원인**: NOTE 라벨에 KST 변환 누락. 한국 운용자가 매번 머릿속에서 ET+13(서머타임)/+14(표준시) 계산해야 함. 운용 윈도우 시작 시각을 잘못 인지하면 KST 미국장 직전인데 봇이 멈춰있다고 오해.
+- **해결**: pytz로 ET→KST 변환 + DST 자동 인식. 출력 형식 `매매 윈도우: ET 09:30~10:55  (KST 22:30~23:55, 서머타임)`. 4채널 모두 적용.
+- **복구 절차**:
+  1. `pytz` 의존성 확인 (이미 `requirements.txt`에 있음)
+  2. `bot.py:run()` startup banner에 ET→KST 변환 라인 추가
+  3. `run_casper.sh` start_bot / start_daemon 모두에 같은 라인
+  4. `run_bot.py --status`에 추가
+  5. `src/telegram/notifier.py:notify_bot_started`에 추가
+  6. 봇 재기동
+- **관련 사고**: 2026-05-12 (ICT 통합 후 KST 미표기 지적)
+- **재발 감지**: 새 시간 윈도우 옵션 추가 시 항상 KST 변환 함께. `grep -n "09:30\|10:55\|ET" run_casper.sh run_bot.py src/bot.py src/telegram/notifier.py` 으로 ET-only 라인 식별.
+
+### Claude 진단 미스 (이번 사고)
+- **Claude 처음 가정**: ICT 영상이 ET 기준이라 봇 메시지도 ET로 충분할 것이라 추정. 운용자 입장(한국)에 대한 시간대 변환을 *암묵적 지식*으로 처리.
+- **실제 원인**: 한국 운용자는 KST 기준으로 일과 관리. ICT 영상은 미국 트레이더 대상이라 ET 기본이지만, **운용 환경이 한국**이면 KST가 1차 시간대. 봇 메시지를 사용자가 *즉시 행동*으로 옮기려면 운용자 시간대 기준이어야 함.
+- **방향 전환 지점**: 사용자 메시지 "현재는 한국시간으로 22:30분부터 시작이야" — Claude가 즉시 pytz DST 변환으로 동적 KST 라인 추가. 봇 재시작으로 확인.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: **사용자 운용 시간대에 맞춰 표시되는가**. ET / UTC / KST 등 표시 시간대는 *문서 출처*가 아니라 *운용자 위치* 기준
+  - 빨리 배제할 가설: "사용자가 시간대 변환을 직접 할 것이다" — 매번 변환은 인지 부하. 봇이 변환해서 보여줘야 함
+  - DST 처리: 정적 offset(+13/+14) 하드코딩 금지. pytz/zoneinfo로 동적 변환 (서머타임 전환 자동)
+  - 핵심 진단 명령: `grep -n "ET\|UTC\|GMT" src/ run_*.sh` 으로 시간대만 표기된 라인 검출

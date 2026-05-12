@@ -199,7 +199,11 @@ class TestOrbRetry:
     @patch("src.bot.get_intraday_bars")
     @patch("src.bot.time_utils")
     def test_retries_once_on_failure(self, mock_time, mock_bars, mock_adr, mock_sleep):
-        """Each ORB leg retries once on failure (dual_scan: TQQQ + SQQQ → 4 calls)."""
+        """Each ORB leg retries once on failure.
+
+        With bear_fvg_for_sqqq=True (default), candidates are
+        [TQQQ, SQQQ, QQQ] → 3 legs × 2 attempts = 6 calls.
+        """
         import pandas as pd
         mock_time.is_orb_forming.return_value = False
 
@@ -208,8 +212,8 @@ class TestOrbRetry:
             "Open": [50]*6, "High": [54]*6, "Low": [49]*6,
             "Close": [52]*6, "Volume": [1000]*6,
         }, index=idx)
-        # TQQQ: fail → retry → good. SQQQ: fail → retry → good.
-        mock_bars.side_effect = [None, good_bars, None, good_bars]
+        # 3 legs each fail-then-recover
+        mock_bars.side_effect = [None, good_bars, None, good_bars, None, good_bars]
 
         from src.core.risk import TrendState
         bot = _make_bot()
@@ -218,16 +222,19 @@ class TestOrbRetry:
 
         bot._handle_orb_forming()
 
-        assert mock_bars.call_count == 4  # 2 legs × 2 attempts each
+        assert mock_bars.call_count == 6  # 3 legs × 2 attempts each
         assert bot.orb is not None
-        assert len(bot.orbs) == 2
+        assert len(bot.orbs) == 3  # TQQQ + SQQQ + QQQ
         assert bot.state == BotState.SCANNING
 
     @patch("src.bot.time.sleep")
     @patch("src.bot.get_intraday_bars", return_value=None)
     @patch("src.bot.time_utils")
     def test_done_after_both_fail(self, mock_time, mock_bars, mock_sleep):
-        """When all legs fail twice → DONE_TODAY (dual_scan: 4 total calls)."""
+        """When all legs fail twice → DONE_TODAY.
+
+        With bear_fvg_for_sqqq=True: 3 legs × 2 attempts = 6 calls.
+        """
         mock_time.is_orb_forming.return_value = False
 
         from src.core.risk import TrendState
@@ -237,7 +244,7 @@ class TestOrbRetry:
 
         bot._handle_orb_forming()
 
-        assert mock_bars.call_count == 4  # 2 legs × 2 attempts each
+        assert mock_bars.call_count == 6  # 3 legs × 2 attempts each
         assert bot.state == BotState.DONE_TODAY
 
 
