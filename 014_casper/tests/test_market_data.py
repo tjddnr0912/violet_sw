@@ -181,6 +181,50 @@ class TestGetIntradayBars:
         result = get_intraday_bars("TQQQ")
         assert result is not None
 
+    @patch("src.data.market_data.yf.Ticker")
+    def test_prepost_bypasses_kis_and_passes_flag(self, mock_cls):
+        """Day 1: prepost=True must skip KIS (RTH-only) and forward
+        prepost=True to yfinance .history."""
+        # set a KIS client so the default RTH path would use it
+        mock_kis = MagicMock()
+        mock_kis.get_us_minute_chart.return_value = [
+            {"date": "20260406", "time": "093000",
+             "open": 50, "high": 51, "low": 49, "close": 50.5, "volume": 1000}
+        ]
+        set_kis_client(mock_kis)
+
+        # yfinance mock — premkt-extended range
+        idx = pd.date_range("2026-04-06 06:00", periods=20, freq="5min", tz=ET)
+        mock_t = MagicMock()
+        mock_t.history.return_value = pd.DataFrame({
+            "Open": [50]*20, "High": [51]*20, "Low": [49]*20,
+            "Close": [50.5]*20, "Volume": [100]*20,
+        }, index=idx)
+        mock_cls.return_value = mock_t
+
+        result = get_intraday_bars("TQQQ", prepost=True)
+        assert result is not None
+        # KIS must NOT have been called
+        mock_kis.get_us_minute_chart.assert_not_called()
+        # yfinance .history must have prepost=True
+        history_kwargs = mock_t.history.call_args.kwargs
+        assert history_kwargs.get("prepost") is True
+
+    @patch("src.data.market_data.yf.Ticker")
+    def test_default_prepost_false_keeps_rth(self, mock_cls):
+        """Backwards compat: default get_intraday_bars(symbol) → prepost=False."""
+        set_kis_client(None)  # force yfinance path
+        idx = pd.date_range("2026-04-06 09:30", periods=5, freq="5min", tz=ET)
+        mock_t = MagicMock()
+        mock_t.history.return_value = pd.DataFrame({
+            "Open": [50]*5, "High": [51]*5, "Low": [49]*5,
+            "Close": [50.5]*5, "Volume": [1000]*5,
+        }, index=idx)
+        mock_cls.return_value = mock_t
+        get_intraday_bars("TQQQ")
+        history_kwargs = mock_t.history.call_args.kwargs
+        assert history_kwargs.get("prepost") is False
+
 
 # ─── KIS Bars → DataFrame Conversion ───
 

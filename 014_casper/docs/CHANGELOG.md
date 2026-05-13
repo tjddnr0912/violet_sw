@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-05-13: 장 초반 데이터-부족 reject 해결 워크플로 (Day 1~3) + 1m backfill today-guard
+
+전날 09:55 KST 22:55 QQQ bear setup이 Sweep+CHoCH 단계에서 reject된 사고 분석 결과 — 당일 09:30 이후 5분봉 5개로는 fractal swing 0~1개라 CHoCH 게이트 자체가 동작 불가. 보강 4단계 진행.
+
+### Day 1 — yfinance prepost=True + premkt swing fractal (default ON)
+- `src/data/market_data.py::get_intraday_bars(..., prepost=False)` 인자 추가. `_get_intraday_yf`로 propagate (prepost=True 시 KIS 우회, yfinance 04:00~20:00 ET 커버리지)
+- `src/bot.py::_handle_scanning`에서 `entry.use_premkt_history=true`면 별도 `get_intraday_bars(prepost=True)` 호출 후 06:00 cutoff로 ghost wick 차단 → `history_bars`로 전달
+- 효과: 09:55 시점 swing source가 5바 → ~60바로 확장. CHoCH 게이트가 의미 있게 동작 (premkt swing low를 break하는 본격 ICT bear reversal 검출 가능)
+- `ICT_USE_PREMKT_HISTORY` env override + 4-channel sync (logger / status / telegram / bash header에 `PremktHist` flag)
+
+### Day 2 — NQ session pools 단위 fix (잠재 버그 해결)
+- 이전 M4 활성화에서 NQ futures 가격(30,000pt scale)을 QQQ 차트(700pt scale) `levels_up/down`에 그대로 prepend → `is_sweep_bar` 검증에서 single 조건(`c <= level`)으로 자동 reject. 실질 효과 0
+- Fix: `_handle_pre_market`에서 `ratio = qqq_close / nq_last` 계산, asia/london/premkt 모두 변환 후 `self._session_pools` 저장
+- 결정 로그(`session_pools_computed`)에 ratio/nq_last/qqq_close 포함 → 사후 감사 가능
+
+### Day 3 — PDH/PDL을 sweep pool에 추가 (default ON)
+- `scan_for_signal(..., use_pdh_pdl_pool, pdh_pdl)` 신규 인자
+- `levels_up.insert(0, pdh)`, `levels_down.insert(0, pdl)` — sweep 검출기 first-hit 최우선순위
+- `pdh_pdl_pool` 결정 로그 이벤트
+- `self._daily_bias.pdh/.pdl` 자동 재사용 (Daily Bias 계산 시 추출된 값)
+- ICT 정통 흐름의 가장 핵심 풀(yesterday's RTH high/low). Phase 1 사전 검증의 약한 상관은 11건 표본 한계로 추정 — 30~50건 누적 후 재검증
+- `ICT_USE_PDH_PDL_POOL` env override
+
+### premkt 5분봉 누적 저장 (분석/백테스트 인프라)
+- `src/data/store.py::save_premkt_bars/load_premkt_bars/has_premkt_data` — 5m partition과 격리된 `data/marketdata/<sym>/5m_premkt/<year>/<date>.parquet` 신규 partition
+- BarCollector `interval="5m_premkt"` 분기 추가 (`save_premkt_bars` 라우팅)
+- `_record_bars_premkt` 헬퍼 + scan loop에서 06:00~09:29 슬라이스만 submit
+- 매 매매 사이클마다 자동 누적 → 향후 backtest engine에 premkt history 통합 시 활용 가능
+
+### Minor — 1m yfinance backfill `today` skip 가드
+- 봇 cold start 시 `possibly delisted; no price data found (1m 2026-05-13 -> 2026-05-14)` 경고 발생
+- 원인: yfinance는 미국장 RTH 시작 전 오늘 1m 데이터를 빈 응답 + 잘못된 "delisted" 경고로 반환
+- 두 단계 가드:
+  - `fill_minute_gaps_from_yfinance` 내부: `day >= today` skip (호출자 보호)
+  - `_cold_start_backfill`: `end_1m = end - 1` (오늘 제외, 8일 retention 유지)
+- 오늘 1m 데이터는 live streaming 경로(scan-window fetch + `_record_bars_1m`)가 자동 누적
+- 신규 단위 test: `_fetch_yf` mock이 today에 대해 호출되지 않음 검증
+
+### 4-channel sync (logger / strategy_info / telegram / bash header)
+모든 신규 flag (`PremktHist`, `PDH/PDL`)가 4채널 모두 동일 라벨로 표시. 봇 재시작 시 BOT_STARTED에서 14개 ICT 플래그 모두 가시화.
+
+### 활성화
+- `config/strategy_params.json`: `use_premkt_history=true`, `use_pdh_pdl_pool=true` 설정
+- `use_session_pools=true`는 이미 ON이라 Day 2 fix는 봇 재시작 시 자동 적용
+- 봇 재시작 후 검증 완료 (2026-05-13 15:36:58 KST): 14개 ICT 라벨 4채널 일치, 1m delisted 경고 사라짐
+
+### 테스트
+- env override +4 (premkt_history on/off, pdh_pdl_pool on/off)
+- market_data prepost +2 (KIS bypass when prepost=True, default RTH preserved)
+- 1m today-skip 가드 +1
+- collector premkt partition +2 (격리, 3종 partition 공존)
+- 통합 회귀 118/118 (영향 모듈)
+
 ## 2026-05-12 (3): M3/M4 활성화 + 헤더 동기화 + 백테스트 측정 도구
 
 거래 영향 없는 측정·검증 인프라 보강 일괄 도입. 모든 사용자 확정에 따라 M3/M4는 default ON으로 활성화 후 봇 재시작.

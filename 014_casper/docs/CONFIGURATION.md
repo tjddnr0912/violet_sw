@@ -35,7 +35,9 @@
 | `ICT_QQQ_PRIMARY` | off | **P2 (2026-05-12)** — QQQ를 single signal source로, dual_scan 무시 |
 | `ICT_USE_EQH_EQL_POOLS` | **on** | **M3 (2026-05-12)** — EQH/EQL pool을 sweep 후보 우선순위에 prepend |
 | `ICT_EQH_EQL_PCT` | 0.0005 | 두 swing이 동일 가격으로 간주되는 % 임계 (0.05%) |
-| `ICT_USE_SESSION_POOLS` | **on** | **M4 (2026-05-12)** — Asia/London/Premkt 세션 high·low를 NQ futures에서 가져와 풀에 추가 |
+| `ICT_USE_SESSION_POOLS` | **on** | **M4 (2026-05-12)** — Asia/London/Premkt 세션 high·low를 NQ futures에서 가져와 풀에 추가 (2026-05-13 NQ→QQQ ratio 자동 변환) |
+| `ICT_USE_PREMKT_HISTORY` | **on** | **Day 1 (2026-05-13)** — yfinance prepost=True로 06:00~09:30 5분봉을 history_bars에 prepend → swing fractal/CHoCH 정상화 |
+| `ICT_USE_PDH_PDL_POOL` | **on** | **Day 3 (2026-05-13)** — 어제 RTH high/low를 sweep candidate 최우선순위에 prepend |
 
 ### 시크릿 마스킹 정책
 
@@ -74,6 +76,9 @@
     "entry.use_eqh_eql_pools": True,         # EQH/EQL을 sweep 후보 우선순위에 prepend
     "entry.eqh_eql_pct": 0.0005,             # 두 swing이 동등 가격으로 간주될 % 임계
     "entry.use_session_pools": True,         # Asia/London/Premkt high·low → pool 앞에 prepend
+    # 2026-05-13 — premkt fetch + PDH/PDL pool (장 초반 데이터 부족 해결)
+    "entry.use_premkt_history": True,        # yfinance prepost=True로 06:00~ 5분봉 fetch
+    "entry.use_pdh_pdl_pool": True,          # 어제 RTH high/low를 sweep pool 최앞에 prepend
     "risk": {
         "max_position_pct": 0.99,            # FX/정산 lag 안전 floor 1%
         "vix_min": 12.0,

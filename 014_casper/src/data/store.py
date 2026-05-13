@@ -138,6 +138,61 @@ def has_minute_data(base, symbol: str, date_str: str) -> bool:
     return _minute_path_for(base, symbol, date_str).exists()
 
 
+# ────────────── 5m pre-market partition (Day 1 — yfinance prepost=True) ──────────────
+
+def _premkt_path_for(base, symbol: str, date_str: str) -> Path:
+    """`base/<sym>/5m_premkt/<year>/<date>.parquet` — isolated from RTH 5m."""
+    sym = _safe_symbol(symbol)
+    year = date_str[:4]
+    return Path(base) / sym / "5m_premkt" / year / f"{date_str}.parquet"
+
+
+def save_premkt_bars(base, symbol: str, date_str: str, bars: pd.DataFrame, source: str):
+    """Atomically persist pre-market 5-minute bars (06:00~09:29 ET).
+
+    Same schema as save_bars/save_minute_bars. Separate partition because
+    pre-market RTH bars share neither liquidity profile nor time index, so
+    consumers usually want them queried independently (e.g. swing-fractal
+    extension, premkt high/low extraction).
+    """
+    if bars is None or bars.empty:
+        return None
+    final_path = _premkt_path_for(base, symbol, date_str)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = final_path.with_suffix(".tmp")
+
+    idx = bars.index
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    else:
+        idx = idx.tz_convert("UTC")
+
+    out = pd.DataFrame({
+        "timestamp": (idx.view("int64") // 1_000_000).astype("int64"),
+        "open":   bars["Open"].astype("float32").values,
+        "high":   bars["High"].astype("float32").values,
+        "low":    bars["Low"].astype("float32").values,
+        "close":  bars["Close"].astype("float32").values,
+        "volume": bars["Volume"].astype("int64").values,
+        "source": [source] * len(bars),
+    })
+
+    out.to_parquet(tmp_path, engine="pyarrow", compression="snappy", index=False)
+    os.replace(tmp_path, final_path)
+    return final_path
+
+
+def load_premkt_bars(base, symbol: str, date_str: str) -> Optional[pd.DataFrame]:
+    p = _premkt_path_for(base, symbol, date_str)
+    if not p.exists():
+        return None
+    return pd.read_parquet(p)
+
+
+def has_premkt_data(base, symbol: str, date_str: str) -> bool:
+    return _premkt_path_for(base, symbol, date_str).exists()
+
+
 # ────────────── Daily bar persistence (one parquet per year) ──────────────
 
 def _daily_path_for(base, symbol: str, year: int) -> Path:

@@ -390,28 +390,41 @@ def _get_intraday_kis(symbol: str, interval: str) -> Optional[pd.DataFrame]:
     return df
 
 
-def _get_intraday_yf(symbol: str, period: str, interval: str) -> Optional[pd.DataFrame]:
-    """Fetch intraday bars from yfinance (fallback)."""
+def _get_intraday_yf(symbol: str, period: str, interval: str,
+                     prepost: bool = False) -> Optional[pd.DataFrame]:
+    """Fetch intraday bars from yfinance (fallback).
+
+    prepost=True extends the window to include premarket (04:00 ET) and
+    afterhours (16:00~20:00 ET). Default False keeps RTH-only behavior.
+    """
     ticker = yf.Ticker(symbol)
-    df = _yf_with_timeout(ticker.history, period=period, interval=interval)
+    df = _yf_with_timeout(ticker.history,
+                          period=period, interval=interval, prepost=prepost)
     if df.empty:
         return None
     df.index = df.index.tz_convert(ET)
-    logger.debug(f"{symbol} (yf): {len(df)} bars ({df.index[0]} ~ {df.index[-1]})")
+    logger.debug(f"{symbol} (yf, prepost={prepost}): {len(df)} bars ({df.index[0]} ~ {df.index[-1]})")
     return df
 
 
 def get_intraday_bars(symbol: str, period: str = "1d",
-                      interval: str = "5m") -> Optional[pd.DataFrame]:
-    """Fetch intraday bars. KIS → yfinance."""
+                      interval: str = "5m",
+                      prepost: bool = False) -> Optional[pd.DataFrame]:
+    """Fetch intraday bars. KIS → yfinance.
+
+    When prepost=True, KIS is bypassed (KIS API only exposes RTH for US
+    stocks) and yfinance with extended-hours coverage is used. This is
+    the path used to backfill premarket swing-fractal history.
+    """
     try:
-        if _kis_client:
+        if _kis_client and not prepost:
             result = _get_intraday_kis(symbol, interval)
             if result is not None:
                 return result
             logger.warning(f"{symbol}: KIS intraday failed, falling back to yfinance")
         return _yf_fetch_with_cache_recovery(
-            lambda: _get_intraday_yf(symbol, period, interval), symbol
+            lambda: _get_intraday_yf(symbol, period, interval, prepost=prepost),
+            symbol,
         )
     except (FuturesTimeout, Exception) as e:
         logger.error(f"{symbol} intraday fetch error: {type(e).__name__}: {e}")

@@ -179,6 +179,22 @@ class CasperBot:
         except Exception as e:
             logger.warning(f"DataCollection: 1m submit failed silently: {e}")
 
+    def _record_bars_premkt(self, symbol, bars):
+        """Submit premkt-only 5m bars to `5m_premkt/` partition. NEVER raises.
+
+        Caller should pass the bars filtered to 06:00~09:29 ET (RTH bars
+        belong in the regular 5m partition, KIS or yfinance-RTH). source is
+        always 'yfinance' since this comes from yfinance prepost=True.
+        """
+        if self.collector is None or bars is None or bars.empty:
+            return
+        try:
+            date_str = bars.index[0].strftime("%Y-%m-%d")
+            self.collector.submit(symbol, date_str, bars,
+                                  source="yfinance", interval="5m_premkt")
+        except Exception as e:
+            logger.warning(f"DataCollection: 5m_premkt submit failed silently: {e}")
+
     def _cold_start_backfill(self, base_dir, symbols):
         """Fill missing days via yfinance on bot startup. Silent on failure.
 
@@ -252,11 +268,14 @@ class CasperBot:
             # Best-effort: detects missing 1m days in the 1m partition and
             # fills via yfinance. Independent of DATA_COLLECTION (always on
             # — yields offline analysis data with zero impact on trading).
+            # End at yesterday — today's 1m has no data pre-RTH and would
+            # log a confusing "possibly delisted" warning. Live streaming
+            # path (scan-window fetch + _record_bars_1m) accumulates today.
             try:
                 from src.data.gap_finder import find_minute_gaps
                 from src.data.backfill import fill_minute_gaps_from_yfinance, YF_1M_RETENTION_DAYS
-                end_1m = end
-                start_1m = end_1m - timedelta(days=YF_1M_RETENTION_DAYS)
+                end_1m = end - timedelta(days=1)
+                start_1m = end_1m - timedelta(days=YF_1M_RETENTION_DAYS - 1)
                 total_1m = 0
                 for sym in [s for s in symbols if s in ("TQQQ", "QQQ", "SQQQ")]:
                     gaps_1m = find_minute_gaps(base_dir, sym, start_1m, end_1m)
@@ -480,6 +499,10 @@ class CasperBot:
             ict_flags.append("EQH/EQL")
         if ep.get("use_session_pools"):
             ict_flags.append("SessionPools")
+        if ep.get("use_premkt_history"):
+            ict_flags.append("PremktHist")
+        if ep.get("use_pdh_pdl_pool"):
+            ict_flags.append("PDH/PDL")
         logger.info(f"ICT : {' + '.join(ict_flags) if ict_flags else 'off'}")
         # Render trading window in both ET and current KST (DST-aware).
         try:
@@ -564,6 +587,8 @@ class CasperBot:
             "ict_power_of_3": ep.get("use_power_of_3", False),
             "ict_eqh_eql_pools": ep.get("use_eqh_eql_pools", False),
             "ict_session_pools": ep.get("use_session_pools", False),
+            "ict_premkt_history": ep.get("use_premkt_history", False),
+            "ict_pdh_pdl_pool": ep.get("use_pdh_pdl_pool", False),
         }
         self.notifier.notify_bot_started(
             self.env["trading_mode"], self.capital, history, strategy_info,
@@ -783,27 +808,60 @@ class CasperBot:
                                 if judas:
                                     logger.info(f"Power of 3: Judas Swing detected — {judas}")
                             if use_sp:
-                                pools = {
+                                # Day 2 — NQ futures use a 30,000pt scale.
+                                # Without conversion the pools are unusable for
+                                # QQQ (~700pt) sweep detection. Compute ratio
+                                # from the most recent simultaneous closes and
+                                # remap NQ session ranges to QQQ scale.
+                                # Premkt: prefer QQQ-native source when
+                                # use_premkt_history is on (Day 1) — done
+                                # implicitly in the scan loop via prepost=True.
+                                nq_pools_raw = {
                                     "asia":   asia_session_range(nq, today_et_date),
                                     "london": london_session_range(nq, today_et_date),
                                     "premkt": premarket_session_range(nq, today_et_date),
                                 }
-                                pools = {k: v for k, v in pools.items() if v is not None}
-                                if pools:
-                                    self._session_pools = pools
+                                nq_pools_raw = {k: v for k, v in nq_pools_raw.items() if v is not None}
+
+                                ratio = None
+                                try:
+                                    nq_last = float(nq["Close"].iloc[-1])
+                                    if nq_last > 0 and qqq_close and qqq_close > 0:
+                                        ratio = float(qqq_close) / nq_last
+                                except Exception:
+                                    ratio = None
+
+                                if ratio is not None and ratio > 0:
+                                    pools_qqq = {
+                                        k: (hi * ratio, lo * ratio)
+                                        for k, (hi, lo) in nq_pools_raw.items()
+                                    }
+                                    self._session_pools = pools_qqq
                                     logger.info(
-                                        f"Session pools: " + " ".join(
+                                        f"Session pools (NQ→QQQ ratio={ratio:.5f}): " +
+                                        " ".join(
                                             f"{k}=({h:.2f},{l:.2f})"
-                                            for k, (h, l) in pools.items()
+                                            for k, (h, l) in pools_qqq.items()
                                         )
                                     )
                                     try:
                                         from src.data.ict_log import record as _ict_log
                                         _ict_log(event="session_pools_computed",
                                                  passed=None,
-                                                 details={k: list(v) for k, v in pools.items()})
+                                                 details={
+                                                     "ratio": ratio,
+                                                     "nq_last": nq_last,
+                                                     "qqq_close": float(qqq_close),
+                                                     **{k: list(v) for k, v in pools_qqq.items()},
+                                                 })
                                     except Exception:
                                         pass
+                                else:
+                                    logger.warning(
+                                        f"Session pools: NQ→QQQ ratio unavailable "
+                                        f"(qqq_close={qqq_close}, nq_last={'NaN' if 'nq_last' not in dir() else nq_last}) "
+                                        f"— skip session pools for safety"
+                                    )
                     except Exception as e:
                         logger.debug(f"NQ futures fetch failed (non-fatal): {e}")
                 if daily_df is not None and not daily_df.empty:
@@ -1032,6 +1090,17 @@ class CasperBot:
         # M4: session pools (Asia/London/Premkt high·low from NQ 24h futures)
         use_session_pools = entry_params.get("use_session_pools", False)
         session_pools_arg = self._session_pools if use_session_pools else None
+        # Day 1: premarket history (yfinance prepost=True) for swing fractal
+        # extension. CHoCH gate becomes meaningful when swing source covers
+        # 06:00~latest instead of only 09:30~latest (~5 bars at 09:55).
+        use_premkt_history = entry_params.get("use_premkt_history", False)
+        # Day 3: PDH/PDL into sweep pool (highest-priority liquidity ref).
+        # Reads from self._daily_bias (already computed in pre-market if
+        # daily_bias_skip_neutral is on). Default OFF (Phase 1 precheck).
+        use_pdh_pdl_pool = entry_params.get("use_pdh_pdl_pool", False)
+        pdh_pdl_arg = None
+        if use_pdh_pdl_pool and self._daily_bias is not None:
+            pdh_pdl_arg = (self._daily_bias.pdh, self._daily_bias.pdl)
         syms = self.params["symbols"]
 
         for symbol, orb in self.orbs.items():
@@ -1065,6 +1134,33 @@ class CasperBot:
             if len(scan_bars) < 4:
                 continue
 
+            # Day 1 — premarket-extended history for swing/sweep/CHoCH source.
+            # Default OFF; ON when entry.use_premkt_history=true. yfinance
+            # prepost=True returns 04:00~20:00 ET; filter 06:00+ to drop
+            # low-volume ghost wicks. RTH 09:30~ is naturally included.
+            # Persist premkt 5m bars to `5m_premkt/` partition for offline
+            # analysis + future backtest.
+            history_bars = bars
+            if use_premkt_history:
+                try:
+                    hb = get_intraday_bars(
+                        symbol, period="1d", interval="5m", prepost=True
+                    )
+                    if hb is not None and not hb.empty:
+                        hb = hb.between_time("06:00", "15:59")
+                        if len(hb) > len(bars):
+                            history_bars = hb
+                            logger.debug(
+                                f"{symbol}: history_bars extended via prepost "
+                                f"({len(bars)} → {len(hb)} bars)"
+                            )
+                            # Persist premkt slice (06:00~09:29) for accumulation
+                            premkt_slice = hb.between_time("06:00", "09:29")
+                            if not premkt_slice.empty:
+                                self._record_bars_premkt(symbol, premkt_slice)
+                except Exception as e:
+                    logger.debug(f"{symbol}: premkt history fetch failed (non-fatal): {e}")
+
             # Optional 1-min bars for Multi-TF SL refinement (best effort).
             # When fetched, persist to collector under 1m/ partition.
             bars_1m = None
@@ -1090,7 +1186,7 @@ class CasperBot:
                         disp_atr_mult=disp_atr_mult,
                         disp_max_wick=disp_max_wick,
                         disp_prev_mult=disp_prev_mult,
-                        history_bars=bars,
+                        history_bars=history_bars,
                         require_sweep_choch=require_sweep_choch,
                         sweep_lookback=sweep_lookback,
                         choch_lookback=choch_lookback,
@@ -1107,6 +1203,8 @@ class CasperBot:
                         eqh_eql_pct=eqh_eql_pct,
                         use_session_pools=use_session_pools,
                         session_high_low=session_pools_arg,
+                        use_pdh_pdl_pool=use_pdh_pdl_pool,
+                        pdh_pdl=pdh_pdl_arg,
                     )
                     if sig is None:
                         continue

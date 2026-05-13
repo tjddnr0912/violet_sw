@@ -94,8 +94,9 @@ KISClient(시세,잔고,체결)      market_data fallback
 data/
 ├── marketdata/
 │   ├── <SYM>/                  # TQQQ, SQQQ, QQQ, NQ=F (→ NQ_F), _VIX
-│   │   ├── <year>/             # 5분봉: YYYY/<date>.parquet  (Snappy)
-│   │   ├── 1m/<year>/          # 1분봉: 별도 partition (2026-05-12 P1 추가)
+│   │   ├── <year>/             # 5분봉 RTH: YYYY/<date>.parquet  (Snappy)
+│   │   ├── 1m/<year>/          # 1분봉: 별도 partition (2026-05-12 P1)
+│   │   ├── 5m_premkt/<year>/   # 5분봉 06:00~09:29: (2026-05-13 Day 1)
 │   │   └── daily/              # 일봉: yearly merge parquet
 ├── ict_decisions/              # 매 필터 결정 JSONL (오디트, append-only)
 │   └── <YYYY-MM-DD>.jsonl
@@ -103,9 +104,21 @@ data/
 └── position_state.json         # 크래시 복구용 진행 중 포지션
 ```
 
-- `BarCollector`는 백그라운드 스레드. `submit(interval="5m"|"1m")`로 비동기 큐잉.
-- 1m partition은 5m와 완전 분리 → 같은 날짜 동시 저장 충돌 없음.
-- `data/marketdata/`는 5m·1m·daily 모두 atomic write (`.tmp → rename`).
+- `BarCollector`는 백그라운드 스레드. `submit(interval="5m"|"1m"|"5m_premkt")`로 비동기 큐잉.
+- 3종 partition은 완전 분리 → 같은 symbol/date에 5m·1m·premkt 동시 저장 충돌 없음.
+- `data/marketdata/`는 5m·1m·5m_premkt·daily 모두 atomic write (`.tmp → rename`).
+
+## NQ→QQQ session pool ratio remap (2026-05-13 Day 2)
+
+NQ futures(30,000pt scale)에서 가져온 session high/low를 QQQ 차트(700pt scale) sweep candidate에 그대로 prepend하면 `is_sweep_bar`의 close-back-inside 조건에서 자동 reject. `_handle_pre_market`에서 ratio 변환 후 저장:
+
+```python
+ratio = qqq_close / nq_last      # ≈ 0.024 (지수/현물 비율)
+pools_qqq = {key: (hi * ratio, lo * ratio) for key, (hi, lo) in nq_pools.items()}
+self._session_pools = pools_qqq
+```
+
+결정 로그(`session_pools_computed`)에 ratio·nq_last·qqq_close 포함.
 
 ## Sweep 후보 풀 우선순위 (2026-05-12 M3/M4)
 

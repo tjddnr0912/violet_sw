@@ -142,6 +142,10 @@ class TelegramNotifier:
                 ict_flags.append("EQH/EQL")
             if strategy_info.get("ict_session_pools"):
                 ict_flags.append("SessionPools")
+            if strategy_info.get("ict_premkt_history"):
+                ict_flags.append("PremktHist")
+            if strategy_info.get("ict_pdh_pdl_pool"):
+                ict_flags.append("PDH/PDL")
             if ict_flags:
                 lines.append("ICT: " + " + ".join(ict_flags))
                 # DST-aware KST window line

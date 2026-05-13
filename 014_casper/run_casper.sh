@@ -203,6 +203,10 @@ if _on('ICT_USE_EQH_EQL_POOLS', e.get('use_eqh_eql_pools', False)):
     flags.append('EQH/EQL')
 if _on('ICT_USE_SESSION_POOLS', e.get('use_session_pools', False)):
     flags.append('SessionPools')
+if _on('ICT_USE_PREMKT_HISTORY', e.get('use_premkt_history', False)):
+    flags.append('PremktHist')
+if _on('ICT_USE_PDH_PDL_POOL', e.get('use_pdh_pdl_pool', False)):
+    flags.append('PDH/PDL')
 print(' + '.join(flags) if flags else 'off')
 " 2>/dev/null || echo "?")
     if [ "$ICT_LINE" != "off" ] && [ "$ICT_LINE" != "?" ]; then
@@ -320,6 +324,10 @@ if _on('ICT_USE_EQH_EQL_POOLS', e.get('use_eqh_eql_pools', False)):
     flags.append('EQH/EQL')
 if _on('ICT_USE_SESSION_POOLS', e.get('use_session_pools', False)):
     flags.append('SessionPools')
+if _on('ICT_USE_PREMKT_HISTORY', e.get('use_premkt_history', False)):
+    flags.append('PremktHist')
+if _on('ICT_USE_PDH_PDL_POOL', e.get('use_pdh_pdl_pool', False)):
+    flags.append('PDH/PDL')
 print(' + '.join(flags) if flags else 'off')
 " 2>/dev/null || echo "?")
     echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ICT_LINE}${NC}"

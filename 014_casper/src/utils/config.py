@@ -147,6 +147,14 @@ def _apply_ict_env_overrides(params: dict) -> dict:
     if os.getenv("ICT_USE_SESSION_POOLS") is not None:
         entry["use_session_pools"] = _bool_env("ICT_USE_SESSION_POOLS", False)
 
+    # Day 1 — premarket history (yfinance prepost=True for swing fractal)
+    if os.getenv("ICT_USE_PREMKT_HISTORY") is not None:
+        entry["use_premkt_history"] = _bool_env("ICT_USE_PREMKT_HISTORY", False)
+
+    # Day 3 — PDH/PDL injection into sweep pool
+    if os.getenv("ICT_USE_PDH_PDL_POOL") is not None:
+        entry["use_pdh_pdl_pool"] = _bool_env("ICT_USE_PDH_PDL_POOL", False)
+
     return params
 
 

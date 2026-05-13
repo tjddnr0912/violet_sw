@@ -156,6 +156,36 @@ def test_env_pools_off_explicit(monkeypatch):
     assert p["entry"]["use_session_pools"] is False
 
 
+# ───────── Day 1: premarket history (yfinance prepost) ─────────
+def test_env_premkt_history_on(monkeypatch):
+    monkeypatch.setenv("ICT_USE_PREMKT_HISTORY", "on")
+    p = _apply_ict_env_overrides(_baseline_params())
+    assert p["entry"]["use_premkt_history"] is True
+
+
+def test_env_premkt_history_off_explicit(monkeypatch):
+    monkeypatch.setenv("ICT_USE_PREMKT_HISTORY", "off")
+    p = _baseline_params()
+    p["entry"]["use_premkt_history"] = True
+    p = _apply_ict_env_overrides(p)
+    assert p["entry"]["use_premkt_history"] is False
+
+
+# ───────── Day 3: PDH/PDL sweep pool ─────────
+def test_env_pdh_pdl_pool_on(monkeypatch):
+    monkeypatch.setenv("ICT_USE_PDH_PDL_POOL", "on")
+    p = _apply_ict_env_overrides(_baseline_params())
+    assert p["entry"]["use_pdh_pdl_pool"] is True
+
+
+def test_env_pdh_pdl_pool_off_explicit(monkeypatch):
+    monkeypatch.setenv("ICT_USE_PDH_PDL_POOL", "off")
+    p = _baseline_params()
+    p["entry"]["use_pdh_pdl_pool"] = True
+    p = _apply_ict_env_overrides(p)
+    assert p["entry"]["use_pdh_pdl_pool"] is False
+
+
 # ───────────── integration: load_strategy_params end-to-end ─────────────
 def test_load_strategy_params_respects_env(monkeypatch):
     reset_config_cache()

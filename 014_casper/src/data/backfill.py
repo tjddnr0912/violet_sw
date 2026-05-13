@@ -80,11 +80,22 @@ def fill_minute_gaps_from_yfinance(base, symbol: str, gaps: List[date]) -> int:
     Written to the 1m partition (base/<sym>/1m/<year>/<date>.parquet) so 5m
     data is untouched. Days older than YF_1M_RETENTION_DAYS are skipped.
 
+    `today` itself is skipped because yfinance returns an empty frame +
+    a confusing "possibly delisted" warning whenever called before that
+    day's RTH has accumulated. Today's data gets backfilled by the live
+    streaming path (scan-window fetch + _record_bars_1m) instead.
+
     Returns count of days actually written.
     """
     today = datetime.now(timezone.utc).date()
     filled = 0
     for day in gaps:
+        if day >= today:
+            logger.debug(
+                f"1m backfill: {symbol} {day} skipped (today/future — "
+                f"yfinance returns empty pre-RTH; live streaming handles it)"
+            )
+            continue
         if (today - day).days > YF_1M_RETENTION_DAYS:
             logger.debug(
                 f"1m backfill: {symbol} {day} unrecoverable "

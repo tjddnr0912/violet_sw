@@ -4,6 +4,33 @@
 
 ---
 
+## Claude의 옵션 분석 — "선택" vs "보완" 관계 혼동 (NQ vs QQQ premkt)
+
+- **증상**: 사용자에게 두 데이터 보강 옵션(A: NQ futures session pools, B: yfinance prepost로 QQQ premkt fetch)을 제시할 때 *"하나를 선택"*하라는 식으로 제시. 그러나 권장 워크플로에는 "프리마켓 fetch를 추가"한다고 적어 일관성 결여.
+- **원인**: Claude가 두 옵션의 *목적*을 분리해서 보지 않음. 둘 다 같은 목적(sweep pool 보강)으로 비교했으나 실제로는:
+  - 목적 A — *sweep candidate 풀에 가격값 추가*: NQ도 OK, QQQ premkt도 OK (NQ가 풍부)
+  - 목적 B — *swing fractal 시계열 확장 → CHoCH 정상화*: **QQQ 자체 premkt만 가능**. NQ는 다른 종목 차트라 fractal 의미 없음
+- **해결**: 결정 → 두 옵션 동시 도입.
+  - QQQ premkt fetch (`use_premkt_history=true`) → swing fractal 확장 + premkt 1쌍 sweep pool 부산물
+  - NQ session pools (이미 ON) + NQ→QQQ ratio 단위 fix → Asia/London 시간대 풀 보존
+  - PDH/PDL 추가 보강 (`use_pdh_pdl_pool=true`)
+- **복구 절차**: (a) 두 옵션의 *목적 분리* 명시적 비교 (b) "선택 vs 보완" 결정 (c) 단위 일치/불일치 확인
+- **관련 사고**: 2026-05-13 워크플로 설계 시점
+- **재발 감지**: 사용자가 "이전 설명에 따르면 X가 더 나은 것처럼 ... 그런데 워크플로에는 Y" 같은 일관성 지적
+
+### Claude 진단/설계 미스 (이번 세션 = 2026-05-13)
+
+- **Claude 처음 가설**: "옵션 C (NQ + QQQ premkt 혼합)이 우월, *하지만 우선순위는 NQ가 ICT 정통 흐름 보존*" — 두 옵션을 sweep pool 보강 한 가지 목적으로 비교
+- **실제 원인 (사용자 지적)**: "프리마켓 fetch랑 NQ future 중 하나를 선택하는 게 좋아? ... 워크플로우에는 프리마켓 fetch를 추가하는 것처럼 보여서 동작을 어떻게 구현하려는지 자세히 설명해" → Claude가 두 옵션의 진짜 목적(sweep pool 가격 vs swing fractal 시계열)을 분리하지 않은 채 비교한 게 드러남
+- **방향 전환 지점**: 사용자의 정정 요청 후 — "둘 다 가져갑니다. 역할이 다릅니다" 명시. swing fractal 시계열 (CHoCH 정상화)이 어제 09:55 reject의 *진짜 병목*이라는 점도 동시 노출됨
+- **교훈 (다음에 비슷한 옵션 분석할 때)**:
+  - 옵션 비교 전에 *각 옵션이 해결하는 진짜 목적*을 분리해서 정의
+  - "선택 vs 보완"을 명시적으로 결정 (목적이 다르면 보완, 같으면 선택)
+  - 워크플로/구현 계획이 옵션 비교 결론과 *일관*되는지 self-check
+  - 우선순위 만들 때 "어느 게 더 좋은가"보다 "어느 게 진짜 병목을 해결하는가"
+
+---
+
 ## Claude의 백그라운드 폴링 셸이 영원히 sleep — 종료 조건 미스
 
 - **증상**: `Bash run_in_background`로 띄운 `until grep -q ... do sleep N done` 폴링 셸이 시스템 통보 후에도 계속 살아있음. `ps -ef`에 sleep 프로세스가 누적.

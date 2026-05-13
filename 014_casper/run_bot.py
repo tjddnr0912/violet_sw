@@ -54,6 +54,10 @@ def _ict_status_line(entry: dict, mode: dict | None = None) -> str:
         flags.append("EQH/EQL")
     if entry.get("use_session_pools"):
         flags.append("SessionPools")
+    if entry.get("use_premkt_history"):
+        flags.append("PremktHist")
+    if entry.get("use_pdh_pdl_pool"):
+        flags.append("PDH/PDL")
     return " + ".join(flags) if flags else "off"
 
 

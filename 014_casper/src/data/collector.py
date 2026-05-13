@@ -19,7 +19,7 @@ from typing import Optional
 
 import pandas as pd
 
-from src.data.store import save_bars, save_minute_bars
+from src.data.store import save_bars, save_minute_bars, save_premkt_bars
 
 logger = logging.getLogger("casper")
 
@@ -79,6 +79,9 @@ class BarCollector:
             try:
                 if job.interval == "1m":
                     save_minute_bars(self.base_dir, job.symbol, job.date_str,
+                                     job.bars, job.source)
+                elif job.interval == "5m_premkt":
+                    save_premkt_bars(self.base_dir, job.symbol, job.date_str,
                                      job.bars, job.source)
                 else:
                     save_bars(self.base_dir, job.symbol, job.date_str,

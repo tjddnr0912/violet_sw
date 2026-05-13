@@ -86,6 +86,20 @@ def test_fill_minute_gaps_skips_beyond_8_days(tmp_path):
     assert not has_minute_data(tmp_path, "TQQQ", old_day.isoformat())
 
 
+def test_fill_minute_gaps_skips_today_without_yf_call(tmp_path):
+    """today is skipped — yfinance returns empty pre-RTH + emits a
+    confusing 'possibly delisted' warning. Live streaming handles today."""
+    today = datetime.now(timezone.utc).date()
+
+    def fake_should_not_be_called(symbol, day, interval="1m"):
+        raise AssertionError("_fetch_yf must not be called for today")
+
+    with patch("src.data.backfill._fetch_yf", side_effect=fake_should_not_be_called):
+        filled = fill_minute_gaps_from_yfinance(tmp_path, "TQQQ", [today])
+    assert filled == 0
+    assert not has_minute_data(tmp_path, "TQQQ", today.isoformat())
+
+
 def test_fill_gaps_handles_empty_response_silently(tmp_path):
     today = datetime.now(timezone.utc).date()
     g = today - timedelta(days=3)

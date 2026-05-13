@@ -6,7 +6,10 @@ import pandas as pd
 import pytest
 
 from src.data.collector import BarCollector
-from src.data.store import has_data, has_minute_data, load_minute_bars
+from src.data.store import (
+    has_data, has_minute_data, load_minute_bars,
+    has_premkt_data, load_premkt_bars,
+)
 
 
 def _bars():
@@ -121,5 +124,56 @@ def test_collector_5m_and_1m_coexist(tmp_path):
             time.sleep(0.1)
         assert has_data(tmp_path, "TQQQ", "2026-05-08")
         assert has_minute_data(tmp_path, "TQQQ", "2026-05-08")
+    finally:
+        c.stop(timeout=2)
+
+
+# ────────── Day 1: 5m_premkt partition isolation ──────────
+
+def _bars_premkt():
+    """Pre-market window: 06:00~09:25 (42 bars, 5min cadence)."""
+    idx = pd.date_range("2026-05-08 06:00", periods=42, freq="5min", tz="US/Eastern")
+    return pd.DataFrame(
+        {"Open":[80]*42,"High":[80.5]*42,"Low":[79.5]*42,"Close":[80]*42,"Volume":[20]*42},
+        index=idx,
+    )
+
+
+def test_collector_writes_premkt_to_5m_premkt_partition(tmp_path):
+    c = BarCollector(base_dir=tmp_path)
+    c.start()
+    try:
+        c.submit("TQQQ", "2026-05-08", _bars_premkt(),
+                 source="yfinance", interval="5m_premkt")
+        for _ in range(20):
+            if has_premkt_data(tmp_path, "TQQQ", "2026-05-08"):
+                break
+            time.sleep(0.1)
+        assert has_premkt_data(tmp_path, "TQQQ", "2026-05-08")
+        # 5m RTH and 1m partitions must NOT be touched
+        assert not has_data(tmp_path, "TQQQ", "2026-05-08")
+        assert not has_minute_data(tmp_path, "TQQQ", "2026-05-08")
+        df = load_premkt_bars(tmp_path, "TQQQ", "2026-05-08")
+        assert df is not None and len(df) == 42
+    finally:
+        c.stop(timeout=2)
+
+
+def test_collector_5m_1m_premkt_all_coexist(tmp_path):
+    c = BarCollector(base_dir=tmp_path)
+    c.start()
+    try:
+        c.submit("TQQQ", "2026-05-08", _bars(),        source="kis",      interval="5m")
+        c.submit("TQQQ", "2026-05-08", _bars_1m(),     source="kis",      interval="1m")
+        c.submit("TQQQ", "2026-05-08", _bars_premkt(), source="yfinance", interval="5m_premkt")
+        for _ in range(20):
+            if has_data(tmp_path, "TQQQ", "2026-05-08") and \
+               has_minute_data(tmp_path, "TQQQ", "2026-05-08") and \
+               has_premkt_data(tmp_path, "TQQQ", "2026-05-08"):
+                break
+            time.sleep(0.1)
+        assert has_data(tmp_path, "TQQQ", "2026-05-08")
+        assert has_minute_data(tmp_path, "TQQQ", "2026-05-08")
+        assert has_premkt_data(tmp_path, "TQQQ", "2026-05-08")
     finally:
         c.stop(timeout=2)

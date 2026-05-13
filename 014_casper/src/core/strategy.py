@@ -73,6 +73,8 @@ def scan_for_signal(
     eqh_eql_pct: float = 0.0005,
     use_session_pools: bool = False,
     session_high_low: Optional[dict] = None,
+    use_pdh_pdl_pool: bool = False,
+    pdh_pdl: Optional[tuple] = None,
 ) -> Optional[TradeSignal]:
     """
     Scan post-ORB 5-minute bars for a trade signal.
@@ -140,6 +142,22 @@ def scan_for_signal(
                 details={"eqh_count": len(eqh_levels),
                          "eql_count": len(eql_levels),
                          "eq_pct": eqh_eql_pct},
+            )
+
+        # Day 3 — PDH/PDL (prior daily high/low) injection. ICT's most
+        # canonical liquidity pool: yesterday's RTH high/low. Prepended
+        # with HIGHEST priority (before everything else) so sweep
+        # detection considers it first. Default OFF (Phase 1 precheck
+        # showed weak correlation on small samples — needs revalidation).
+        if use_pdh_pdl_pool and pdh_pdl:
+            pdh, pdl = pdh_pdl
+            if pdh and pdh > 0:
+                levels_up = [float(pdh)] + levels_up
+            if pdl and pdl > 0:
+                levels_down = [float(pdl)] + levels_down
+            _log_decision(
+                event="pdh_pdl_pool", symbol=symbol, passed=None,
+                details={"pdh": pdh, "pdl": pdl},
             )
 
         # M4 — session pools: Asia / London / Pre-market high·low from
