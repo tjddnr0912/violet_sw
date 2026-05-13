@@ -4,6 +4,32 @@
 
 ---
 
+## Casper 프로세스 찾기 — 진입점이 `python -m src.bot`이 아니라 `run_bot.py`
+
+- **증상**: `ps aux | grep "python -m src.bot"` 또는 `pgrep -f "src.bot"` 같은 패턴 검색이 빈 결과를 반환 → "봇이 죽었다"라고 잘못 판단.
+- **원인**: Casper의 실행 entry는 프로젝트 루트의 `run_bot.py` 한 줄짜리 wrapper. `run_casper.sh`의 `start`/`daemon` 경로 둘 다 `python3 run_bot.py`를 호출하지 `python -m src.bot`을 호출하지 않음. 005/006/008 등 다른 봇은 모듈 실행 스타일을 쓰기도 해서 패턴이 다름.
+- **해결**: 봇 alive 확인은 다음 중 하나로:
+  - `pgrep -af "run_bot.py"`
+  - `lsof -p $(pgrep -f run_bot.py) | grep casper_$(date +%F).log` (로그 파일 핸들 검증)
+  - `ps -ef | grep -E "src\.bot|run_casper|run_bot\.py" | grep 014_casper` (cwd 확인 곁들이기)
+  - **가장 확실**: 최신 로그 파일 mtime + lsof 핸들 보유 확인
+- **복구 절차**: (a) `run_bot.py`로 재검색 (b) 안 보이면 `data/casper.pid` 확인 (daemon 모드만 생성) (c) 그래도 부재면 진짜 죽은 것 — `./run_casper.sh start --yes` 또는 cmux `restart` 스킬 사용
+- **관련 사고**: 2026-05-14 라이브 봇 점검 세션
+- **재발 감지**: 점검 스크립트에 `python -m src.bot` 단일 패턴 grep이 있으면 false negative 위험. `run_bot.py`도 함께 매치하도록 union 패턴 사용.
+
+### Claude 진단 미스 (2026-05-14)
+
+- **Claude 처음 가설**: `ps aux | grep -E "python.*src.bot|run_casper"`가 빈 결과 → "**Issue found**: There's NO casper bot process running. The process list shows ... but no `python -m src.bot` for Casper. The screen scrollback ended at 07:20:58 with 'New Day' but the process is not running anymore. ... It may have crashed silently or exited cleanly."
+- **실제 원인**: 봇은 정상 동작 중. PID 96955 (`python3 run_bot.py`), cwd=014_casper, 로그 파일 핸들 보유. silent polling이 정상 (off-hours WAITING 상태에서 60초 sleep). grep 패턴이 너무 좁았던 것뿐.
+- **방향 전환 지점**: `lsof | grep casper_2026-05-14.log` 로 로그 파일을 잡고 있는 프로세스를 역추적했더니 PID 96955 → `ps -p 96955 -o args` 결과가 `python3 run_bot.py` 였고, `head run_bot.py`로 "Casper Trading Bot - Entry Point" 헤더 확인.
+- **교훈 (다음에 봇 alive 점검할 때)**:
+  - 첫 의심 영역: **각 봇의 실제 entry script 이름** (014_casper=`run_bot.py`, 005=`auto_v3.py`, 007=각자 다름). `python -m <pkg>`를 가정하지 말 것
+  - 빨리 배제할 가설: "프로세스 없음 = 봇 죽음" (먼저 lsof로 로그 핸들 확인)
+  - 핵심 진단 명령: `lsof | grep casper_$(date +%F).log` → 핸들 보유 PID 확보 → `ps -p $PID -o args` → entry 정체 확인
+  - 화면 무출력 ≠ 봇 죽음. WAITING/DONE_TODAY 상태는 60~300초 sleep 폴링이라 long quiet가 정상
+
+---
+
 ## Claude의 옵션 분석 — "선택" vs "보완" 관계 혼동 (NQ vs QQQ premkt)
 
 - **증상**: 사용자에게 두 데이터 보강 옵션(A: NQ futures session pools, B: yfinance prepost로 QQQ premkt fetch)을 제시할 때 *"하나를 선택"*하라는 식으로 제시. 그러나 권장 워크플로에는 "프리마켓 fetch를 추가"한다고 적어 일관성 결여.

@@ -20,7 +20,7 @@ from src.core.orb import OpeningRange
 from src.core.fvg import (
     FairValueGap, check_breakout_with_fvg, check_breakdown_with_fvg,
 )
-from src.core.sessions import in_allowed_killzones
+from src.core.sessions import in_allowed_killzones, killzone_for
 from src.core.displacement import is_displacement, atr14
 from src.core.swing import find_swing_highs, find_swing_lows, equal_levels
 from src.core.liquidity import sweep_then_choch
@@ -75,6 +75,7 @@ def scan_for_signal(
     session_high_low: Optional[dict] = None,
     use_pdh_pdl_pool: bool = False,
     pdh_pdl: Optional[tuple] = None,
+    rr_by_killzone: Optional[dict] = None,
 ) -> Optional[TradeSignal]:
     """
     Scan post-ORB 5-minute bars for a trade signal.
@@ -200,6 +201,7 @@ def scan_for_signal(
             continue
 
         # ── Killzone filter (applied to breakout candle time) ──
+        bar_killzone = killzone_for(bars_5m.index[i])
         if allowed_killzones:
             if not in_allowed_killzones(bars_5m.index[i], allowed_killzones):
                 logger.debug(
@@ -210,14 +212,26 @@ def scan_for_signal(
                     event="killzone_check", symbol=symbol,
                     bar_time=bars_5m.index[i], passed=False,
                     reason=f"outside {allowed_killzones}",
-                    details={"direction": direction},
+                    details={"direction": direction, "bar_zone": bar_killzone},
                 )
                 continue
             _log_decision(
                 event="killzone_check", symbol=symbol,
                 bar_time=bars_5m.index[i], passed=True,
-                details={"allowed": list(allowed_killzones), "direction": direction},
+                details={"allowed": list(allowed_killzones),
+                         "direction": direction,
+                         "bar_zone": bar_killzone},
             )
+
+        # Per-killzone RR resolution (Scenario B). When `rr_by_killzone`
+        # is provided and the breakout falls in a mapped zone, override
+        # the default rr_ratio for this signal only.
+        effective_rr = rr_ratio
+        if rr_by_killzone and bar_killzone and bar_killzone in rr_by_killzone:
+            try:
+                effective_rr = float(rr_by_killzone[bar_killzone])
+            except (TypeError, ValueError):
+                effective_rr = rr_ratio
 
         # ── Displacement filter (applied to breakout candle = FVG creator) ──
         if require_displacement:
@@ -421,7 +435,7 @@ def scan_for_signal(
             logger.debug(f"Strategy: Risk ${risk:.2f} < min ${min_risk:.2f}, skip")
             continue
 
-        take_profit = entry_price + tp_direction * (risk * rr_ratio)
+        take_profit = entry_price + tp_direction * (risk * effective_rr)
         signal_time = bars_5m.index[i].strftime("%Y-%m-%d %H:%M")
 
         signal = TradeSignal(
@@ -431,7 +445,7 @@ def scan_for_signal(
             stop_loss=round(stop_loss, 2),
             take_profit=round(take_profit, 2),
             risk_per_share=round(risk, 2),
-            rr_ratio=rr_ratio,
+            rr_ratio=effective_rr,
             fvg=fvg,
             orb=orb,
             signal_time=signal_time,
@@ -439,7 +453,8 @@ def scan_for_signal(
         logger.info(
             f"SIGNAL: {symbol} {signal.direction} @ {entry_price:.2f} "
             f"SL={stop_loss:.2f} TP={take_profit:.2f} "
-            f"Risk=${risk:.2f} R:R=1:{rr_ratio}"
+            f"Risk=${risk:.2f} R:R=1:{effective_rr} "
+            f"(zone={bar_killzone or 'n/a'})"
         )
         _log_decision(event="signal_emit", symbol=symbol,
                        bar_time=bars_5m.index[i], passed=True,
@@ -448,7 +463,9 @@ def scan_for_signal(
                                  "stop": round(stop_loss, 4),
                                  "target": round(take_profit, 4),
                                  "risk": round(risk, 4),
-                                 "rr": rr_ratio,
+                                 "rr": effective_rr,
+                                 "rr_default": rr_ratio,
+                                 "killzone": bar_killzone,
                                  "filters": {
                                      "killzone": bool(allowed_killzones),
                                      "displacement": require_displacement,

@@ -111,7 +111,13 @@ class TelegramNotifier:
             scan = "DUAL (TQQQ+SQQQ)" if strategy_info.get("dual_scan") else "TREND (QQQ MA20)"
             fvg = "STRICT" if strategy_info.get("strict_fvg") else "baseline"
             rr = strategy_info.get("rr_ratio", 2.0)
-            lines.append(f"Scan: {scan}  FVG: {fvg}  R:R: 1:{rr:g}")
+            rr_map = strategy_info.get("rr_ratio_by_killzone") or {}
+            if rr_map:
+                rr_summary = " / ".join(f"{k}=1:{v:g}" for k, v in rr_map.items())
+                lines.append(f"Scan: {scan}  FVG: {fvg}")
+                lines.append(f"R:R: default 1:{rr:g}  ({rr_summary})")
+            else:
+                lines.append(f"Scan: {scan}  FVG: {fvg}  R:R: 1:{rr:g}")
             # ICT phase flags (compact)
             ict_flags = []
             if strategy_info.get("qqq_primary"):
@@ -148,20 +154,40 @@ class TelegramNotifier:
                 ict_flags.append("PDH/PDL")
             if ict_flags:
                 lines.append("ICT: " + " + ".join(ict_flags))
-                # DST-aware KST window line
+                # DST-aware KST window line — honours allowed killzones
                 try:
                     from datetime import datetime, time as dtime
                     import pytz
+                    from src.core.sessions import KILLZONES
                     et = pytz.timezone("US/Eastern")
                     kst = pytz.timezone("Asia/Seoul")
                     today_et = datetime.now(et)
+                    allowed = strategy_info.get("ict_allowed_killzones") or []
+                    if strategy_info.get("ict_killzone") and allowed:
+                        ends = [KILLZONES[k][1] for k in allowed if k in KILLZONES]
+                        end_t = max(ends) if ends else dtime(10, 55)
+                    else:
+                        end_t = dtime(10, 55)
                     s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
-                    e = et.localize(datetime.combine(today_et.date(), dtime(10, 55))).astimezone(kst)
+                    e = et.localize(datetime.combine(today_et.date(), end_t)).astimezone(kst)
                     is_dst = today_et.dst().total_seconds() != 0
+                    et_end_s = end_t.strftime("%H:%M")
                     lines.append(
-                        f"Window: ET 09:30-10:55 (KST {s.strftime('%H:%M')}-{e.strftime('%H:%M')}, "
+                        f"Window: ET 09:30-{et_end_s} (KST {s.strftime('%H:%M')}-{e.strftime('%H:%M')}, "
                         f"{'DST' if is_dst else 'STD'})"
                     )
+                    # Per-killzone breakdown when allowed_killzones has 2+ entries
+                    if strategy_info.get("ict_killzone") and len(allowed) >= 2:
+                        for k in allowed:
+                            if k not in KILLZONES:
+                                continue
+                            zs, ze = KILLZONES[k]
+                            zs_kst = et.localize(datetime.combine(today_et.date(), zs)).astimezone(kst).strftime("%H:%M")
+                            ze_kst = et.localize(datetime.combine(today_et.date(), ze)).astimezone(kst).strftime("%H:%M")
+                            rr_for_k = rr_map.get(k, rr) if rr_map else rr
+                            lines.append(
+                                f"  • {k}: KST {zs_kst}-{ze_kst}  RR=1:{rr_for_k:g}"
+                            )
                 except Exception:
                     pass
             else:
@@ -232,15 +258,37 @@ class TelegramNotifier:
         self.send("\n".join(lines))
 
     def notify_scan_start(self, killzone_label: Optional[str] = None,
-                          kst_window: Optional[str] = None) -> None:
-        """Notify that scan window is now open (Killzone, candidate setups)."""
-        msg = "🔍 <b>SCAN START</b>"
+                          kst_window: Optional[str] = None,
+                          rr_default: float = 3.0,
+                          kz_segments: Optional[list] = None) -> None:
+        """Notify that scan window is now open.
+
+        kz_segments: optional list of dicts with keys
+          name, kst_start, kst_end, rr — one entry per allowed killzone.
+          When supplied, the message renders each zone on its own line
+          with the RR that will apply to setups originating in that zone.
+        """
+        lines = ["🔍 <b>SCAN START</b>"]
         if killzone_label:
-            msg += f"\nKillzone: {killzone_label}"
+            lines.append(f"Killzone: {killzone_label}")
         if kst_window:
-            msg += f"\nWindow: {kst_window}"
-        msg += "\n(이 시간 안에서만 진입 가능)"
-        self.send(msg)
+            lines.append(f"Window: {kst_window}")
+        if kz_segments:
+            lines.append("─" * 18)
+            lines.append("진입 구간별 RR (breakout 캔들 시각 기준):")
+            for seg in kz_segments:
+                name = seg.get("name", "?")
+                ks = seg.get("kst_start", "??:??")
+                ke = seg.get("kst_end", "??:??")
+                rr = seg.get("rr", rr_default)
+                lines.append(f"  • {name}: KST {ks}~{ke}  →  RR 1:{rr:g}")
+            lines.append("─" * 18)
+            lines.append(
+                "ℹ️ 같은 setup이라도 breakout이 어느 zone에서 나오는지에 따라 TP 거리가 달라짐."
+            )
+        else:
+            lines.append("(이 시간 안에서만 진입 가능)")
+        self.send("\n".join(lines))
 
     def notify_setup_detected(self, symbol: str, direction: str,
                                fvg_top: float, fvg_bot: float,
@@ -261,14 +309,24 @@ class TelegramNotifier:
             msg += f"\nfilters: {','.join(filters_active)}"
         self.send(msg)
 
-    def notify_killzone_end_no_signal(self, killzone_label: str = "AM_MACRO") -> None:
-        """End of Killzone with no entry. Bot waits or transitions to DONE_TODAY."""
-        msg = (
-            f"⏰ <b>KILLZONE END</b>\n"
-            f"{killzone_label} 종료 — 유효 setup 없음\n"
-            f"오늘 매매 없이 종료"
-        )
-        self.send(msg)
+    def notify_killzone_end_no_signal(self, killzone_label: str = "AM_MACRO",
+                                       kst_window: Optional[str] = None,
+                                       reasons: Optional[dict] = None) -> None:
+        """End of allowed Killzone(s) with no entry.
+
+        reasons: optional dict like {"killzone_reject": 3, "displacement_fail": 1, ...}
+                 to give the operator a hint of WHY today produced no trade.
+        """
+        lines = [f"⏰ <b>KILLZONE END</b>", f"종료된 zone: {killzone_label}"]
+        if kst_window:
+            lines.append(f"Window: {kst_window}")
+        lines.append("유효 setup 없음 — 오늘 매매 없이 종료")
+        if reasons:
+            lines.append("─" * 18)
+            lines.append("탈락 사유 분포:")
+            for k, v in reasons.items():
+                lines.append(f"  • {k}: {v}건")
+        self.send("\n".join(lines))
 
     def notify_filter_reject(self, symbol: str, filter_name: str,
                               reason: str) -> None:
@@ -282,10 +340,12 @@ class TelegramNotifier:
     def notify_signal(self, symbol: str, entry: float, stop: float,
                       target: float, rr_ratio: float,
                       ict_meta: Optional[dict] = None) -> None:
+        risk_ps = abs(entry - stop)
+        reward_ps = abs(target - entry)
         lines = [
             f"🎯 <b>SIGNAL</b> {symbol}",
             f"Entry ${entry:.2f}  SL ${stop:.2f}  TP ${target:.2f}",
-            f"R:R 1:{rr_ratio:.0f}",
+            f"Risk ${risk_ps:.2f}/sh  Reward ${reward_ps:.2f}/sh  R:R 1:{rr_ratio:g}",
         ]
         if ict_meta:
             kz = ict_meta.get("killzone")
@@ -294,7 +354,8 @@ class TelegramNotifier:
             bias_score = ict_meta.get("daily_bias_score")
             extras = []
             if kz:
-                extras.append(f"KZ:{kz}")
+                # Annotate WHY this RR was chosen (Scenario B)
+                extras.append(f"KZ:{kz}→RR=1:{rr_ratio:g}")
             if filters:
                 extras.append("filters:" + ",".join(filters))
             if bias is not None:
@@ -306,13 +367,19 @@ class TelegramNotifier:
 
     def notify_entry(self, symbol: str, price: float, shares: int,
                      stop: float, target: float, risk: float,
-                     rr_ratio: float = 3.0) -> None:
+                     rr_ratio: float = 3.0,
+                     killzone: Optional[str] = None) -> None:
         """Trade entry — critical (queued on network failure during trade)."""
+        risk_total = risk * shares
+        reward_total = abs(target - price) * shares
+        kz_line = f"\nKZ: {killzone}  →  R:R 1:{rr_ratio:g}" if killzone else f"\nR:R 1:{rr_ratio:g}"
         msg = (
             f"🟢 <b>ENTRY</b> {symbol}\n"
             f"${price:.2f} × {shares}sh = ${price * shares:.2f}\n"
             f"SL ${stop:.2f}  TP ${target:.2f}\n"
-            f"Risk ${risk:.2f}/sh  R:R 1:{rr_ratio:.0f}"
+            f"Risk ${risk:.2f}/sh (${risk_total:.2f} total)\n"
+            f"Reward ${abs(target - price):.2f}/sh (${reward_total:.2f} total)"
+            f"{kz_line}"
         )
         self.send(msg, critical=True)
 

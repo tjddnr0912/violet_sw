@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-05-14: Scenario B 적용 — 킬존 확장 + 시간대별 RR
+
+PHASE1_PRECHECK의 AM_MACRO-only 결정이 n=11 표본에 기반해 통계적으로 약했고, "AM_LATE 진입 차단으로 23:10~23:55 = 45분간 빈 스캔"이 발생하던 비효율을 해소.
+
+### 변경
+- `config/strategy_params.json`:
+  - `allowed_killzones`: `["AM_MACRO"]` → `["AM_MACRO", "AM_LATE"]`
+  - 신규 `rr_ratio_by_killzone`: `{"AM_MACRO": 3.0, "AM_LATE": 2.0}`
+  - 기존 `rr_ratio: 3.0`은 기본값/fallback 으로 유지
+- `src/core/strategy.py::scan_for_signal`:
+  - 신규 인자 `rr_by_killzone: Optional[dict]`
+  - breakout 캔들의 killzone에 따라 effective RR 결정 → `take_profit = entry ± risk × effective_rr`
+  - `signal_emit` 로그에 `killzone`/`rr_default`/`rr` 동시 기록 (사후 분석용)
+- `src/bot.py`:
+  - `scan_for_signal` 호출부에 `rr_by_killzone=entry_params.get("rr_ratio_by_killzone")` 전달
+  - 시작 배너 윈도우 종료시각 = `max(KILLZONES[k][1] for k in allowed_killzones)` (이전엔 항상 10:55로 하드코딩)
+  - `notify_scan_start`에 `rr_default`/`kz_segments` 전달 → 텔레그램에 zone별 RR 분리 출력
+  - `notify_killzone_end_no_signal`에 `kst_window` 동봉
+  - `notify_entry`에 `killzone` 인자 추가
+- `src/telegram/notifier.py`:
+  - `notify_scan_start(kz_segments)`: zone별 KST 윈도우 + RR 라인 추가 출력
+  - `notify_bot_started`: `rr_ratio_by_killzone` 노출, allowed_killzones 기준으로 윈도우 끝 시각 정정, zone≥2일 때 zone별 KST/RR breakdown 추가
+  - `notify_signal`: `KZ:{name}→RR=1:{rr}` 라벨, reward $/sh 명시
+  - `notify_entry`: total risk·reward 금액 + killzone 라벨
+  - `notify_killzone_end_no_signal`: kst_window + 탈락 사유 분포(`reasons` dict) 옵션
+- `run_casper.sh`:
+  - RR_SUMMARY 라인 추가 (`R:R default 1:3 (AM_MACRO=1:3, AM_LATE=1:2)`)
+  - WINDOW_INFO 헬퍼가 `allowed_killzones` 기준으로 윈도우 끝 계산 + zone별 KST/RR을 들여쓰기 줄로 출력 (foreground + daemon 양 경로)
+
+### 신규 산출물
+- `scripts/killzone_scenarios.py` — 7개 시나리오 백테스트 (BASE/A/B/C1/C2/D1/D2)
+- `scripts/check_killzone_rr.py` — Scenario B smoke 검증 helper (macro=3.0, late=2.0, fallback=3.0)
+- `docs/CHECKLIST.md` — 16개 항목 검증 체크리스트 (function/scenario/system 3계층)
+
+### 검증
+- 542/542 unit tests pass (5분 43초)
+- 체크리스트 16/16 pass (1회 fail → helper sys.path 누락 수정 후 2회차 통과)
+- 라이브 봇 재기동 확인: PID 96955, KIS warm-up 1회 성공, 배너에 `R:R default 1:3.0 (AM_MACRO=1:3.0, AM_LATE=1:2.0)` 및 zone별 윈도우 정상 출력
+
+### 백테스트 결과 (60일 TQQQ, 참고용)
+- BASE(MACRO만, RR=3): 2건, 0% WR, -0.01% — 모두 BE 청산
+- A(KZ 확장, RR=3): 4건, 0% WR, -0.02% — AM_LATE 추가분도 BE
+- **B(KZ 확장 + split RR)**: 4건, 0% WR, -0.02% — 이 60일 표본에선 RR=2 TP도 도달 X
+- BE OFF (D1/D2): 50% WR 나오지만 손실폭 더 큼 → BE shift는 유지 필수
+
+→ 60일 백테스트로는 셋 다 통계 무의미. **선택 근거는 "23:10~23:55 빈 스캔 제거 + RR=2로 TP 도달 가능성 부여"라는 정성적 개선**. 1년 데이터 누적 후 재평가 권장.
+
+### 비고
+- `rr_by_killzone=None` (이전 호출 경로, 외부 코드)에서 기존 동작 (`rr_ratio` 단일값) 완전 호환 — fallback 검증됨
+- breakout 캔들 시각 기준 zone 분류 (pullback/entry 시각이 다음 zone에 떨어져도 영향 없음)
+- 기존 11건 trade history는 Scenario B 적용 전이라 `ict.rr_ratio` 필드 없음 — 다음 시그널부터 적용
+
+---
+
 ## 2026-05-13: 장 초반 데이터-부족 reject 해결 워크플로 (Day 1~3) + 1m backfill today-guard
 
 전날 09:55 KST 22:55 QQQ bear setup이 Sweep+CHoCH 단계에서 reject된 사고 분석 결과 — 당일 09:30 이후 5분봉 5개로는 fractal swing 0~1개라 CHoCH 게이트 자체가 동작 불가. 보강 4단계 진행.

@@ -161,7 +161,22 @@ print(f'{rr}|{strict}|{dual}|{qqq_primary_eff}')
     fi
     FVG_MODE="baseline (Close>ORB)"
     [ "$STRICT_FVG" = "True" ] && FVG_MODE="${CYAN}STRICT${NC} (몸통 가로지르기 + FVG-ORB intersect)"
-    echo -e "${GREEN}[INFO]${NC} 전략: ORB + FVG + Pullback (R:R 1:${RR%.*})"
+    # Per-killzone RR summary (Scenario B). When config defines
+    # `rr_ratio_by_killzone`, surface it on the banner so the operator
+    # can verify each zone's TP distance at a glance.
+    RR_SUMMARY=$(python3 -c "
+import json
+c = json.load(open('config/strategy_params.json'))
+e = c.get('entry', {})
+rr = e.get('rr_ratio', 2.0)
+m = e.get('rr_ratio_by_killzone') or {}
+if m:
+    parts = [f'{k}=1:{v:g}' for k, v in m.items()]
+    print(f'default 1:{rr:g} ({\", \".join(parts)})')
+else:
+    print(f'1:{rr:g}')
+" 2>/dev/null || echo "1:?")
+    echo -e "${GREEN}[INFO]${NC} 전략: ORB + FVG + Pullback (R:R ${RR_SUMMARY})"
     echo -e "${GREEN}[INFO]${NC} 스캔: ${SCAN_MODE}"
     echo -e "${GREEN}[INFO]${NC} FVG : ${FVG_MODE}"
     echo -e "${GREEN}[INFO]${NC} 종목: TQQQ (강세) / SQQQ (약세)"
@@ -211,20 +226,48 @@ print(' + '.join(flags) if flags else 'off')
 " 2>/dev/null || echo "?")
     if [ "$ICT_LINE" != "off" ] && [ "$ICT_LINE" != "?" ]; then
         echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ICT_LINE}${NC}"
-        KST_WINDOW=$(python3 -c "
+        # Window honours allowed_killzones (Scenario B can extend the end
+        # past 10:55 if AM_LATE is also allowed). Each line printed is
+        # consumed by the shell loop below.
+        WINDOW_INFO=$(python3 -c "
 from datetime import datetime, time as dtime
+import json
 import pytz
+from src.core.sessions import KILLZONES
 et = pytz.timezone('US/Eastern')
 kst = pytz.timezone('Asia/Seoul')
 today_et = datetime.now(et)
+c = json.load(open('config/strategy_params.json'))
+e = c.get('entry', {})
+allowed = e.get('allowed_killzones', []) if e.get('killzone_filter_enabled') else []
+rr_map = e.get('rr_ratio_by_killzone') or {}
+rr_default = e.get('rr_ratio', 2.0)
+if allowed:
+    ends = [KILLZONES[k][1] for k in allowed if k in KILLZONES]
+    end_t = max(ends) if ends else dtime(10, 55)
+else:
+    end_t = dtime(10, 55)
 s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
-e = et.localize(datetime.combine(today_et.date(), dtime(10, 55))).astimezone(kst)
+end_dt = et.localize(datetime.combine(today_et.date(), end_t)).astimezone(kst)
 is_dst = today_et.dst().total_seconds() != 0
-print(f\"{s.strftime('%H:%M')}~{e.strftime('%H:%M')}|{'서머타임' if is_dst else '표준시'}\")
-" 2>/dev/null || echo "?~?|?")
-        KST_TIME=$(echo "$KST_WINDOW" | cut -d'|' -f1)
-        DST_TAG=$(echo "$KST_WINDOW" | cut -d'|' -f2)
-        echo -e "${YELLOW}[NOTE]${NC} 매매 윈도우: ET 09:30~10:55  (KST ${KST_TIME}, ${DST_TAG})"
+print(f\"HEADER|{end_t.strftime('%H:%M')}|{s.strftime('%H:%M')}~{end_dt.strftime('%H:%M')}|{'서머타임' if is_dst else '표준시'}\")
+for k in allowed:
+    if k not in KILLZONES:
+        continue
+    zs, ze = KILLZONES[k]
+    zs_kst = et.localize(datetime.combine(today_et.date(), zs)).astimezone(kst).strftime('%H:%M')
+    ze_kst = et.localize(datetime.combine(today_et.date(), ze)).astimezone(kst).strftime('%H:%M')
+    rr = rr_map.get(k, rr_default)
+    print(f\"ZONE|{k}|{zs.strftime('%H:%M')}~{ze.strftime('%H:%M')}|{zs_kst}~{ze_kst}|1:{rr:g}\")
+" 2>/dev/null || echo "HEADER|10:55|?~?|?")
+        HEADER_LINE=$(echo "$WINDOW_INFO" | grep '^HEADER|' | head -1)
+        ET_END=$(echo "$HEADER_LINE" | cut -d'|' -f2)
+        KST_TIME=$(echo "$HEADER_LINE" | cut -d'|' -f3)
+        DST_TAG=$(echo "$HEADER_LINE" | cut -d'|' -f4)
+        echo -e "${YELLOW}[NOTE]${NC} 매매 윈도우: ET 09:30~${ET_END}  (KST ${KST_TIME}, ${DST_TAG})"
+        echo "$WINDOW_INFO" | grep '^ZONE|' | while IFS='|' read -r _ ZNAME ETW KSTW RR; do
+            echo -e "${YELLOW}      └${NC} ${ZNAME}: ET ${ETW}  → KST ${KSTW}  R:R ${RR}"
+        done
     else
         echo -e "${GREEN}[INFO]${NC} ICT : ${YELLOW}off${NC} (기본 ORB+FVG strict만 작동)"
     fi
@@ -331,21 +374,46 @@ if _on('ICT_USE_PDH_PDL_POOL', e.get('use_pdh_pdl_pool', False)):
 print(' + '.join(flags) if flags else 'off')
 " 2>/dev/null || echo "?")
     echo -e "${GREEN}[INFO]${NC} ICT : ${CYAN}${ICT_LINE}${NC}"
-    # Compute KST window (DST-aware)
-    KST_WINDOW=$(python3 -c "
+    # Window honours allowed_killzones — same helper as foreground path.
+    WINDOW_INFO=$(python3 -c "
 from datetime import datetime, time as dtime
+import json
 import pytz
+from src.core.sessions import KILLZONES
 et = pytz.timezone('US/Eastern')
 kst = pytz.timezone('Asia/Seoul')
 today_et = datetime.now(et)
+c = json.load(open('config/strategy_params.json'))
+e = c.get('entry', {})
+allowed = e.get('allowed_killzones', []) if e.get('killzone_filter_enabled') else []
+rr_map = e.get('rr_ratio_by_killzone') or {}
+rr_default = e.get('rr_ratio', 2.0)
+if allowed:
+    ends = [KILLZONES[k][1] for k in allowed if k in KILLZONES]
+    end_t = max(ends) if ends else dtime(10, 55)
+else:
+    end_t = dtime(10, 55)
 s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
-e = et.localize(datetime.combine(today_et.date(), dtime(10, 55))).astimezone(kst)
+end_dt = et.localize(datetime.combine(today_et.date(), end_t)).astimezone(kst)
 is_dst = today_et.dst().total_seconds() != 0
-print(f\"{s.strftime('%H:%M')}~{e.strftime('%H:%M')}|{'서머타임' if is_dst else '표준시'}\")
-" 2>/dev/null || echo "?~?|?")
-    KST_TIME=$(echo "$KST_WINDOW" | cut -d'|' -f1)
-    DST_TAG=$(echo "$KST_WINDOW" | cut -d'|' -f2)
-    echo -e "${YELLOW}[NOTE]${NC} 매매 윈도우: ET 09:30~10:55  (KST ${KST_TIME}, ${DST_TAG})"
+print(f\"HEADER|{end_t.strftime('%H:%M')}|{s.strftime('%H:%M')}~{end_dt.strftime('%H:%M')}|{'서머타임' if is_dst else '표준시'}\")
+for k in allowed:
+    if k not in KILLZONES:
+        continue
+    zs, ze = KILLZONES[k]
+    zs_kst = et.localize(datetime.combine(today_et.date(), zs)).astimezone(kst).strftime('%H:%M')
+    ze_kst = et.localize(datetime.combine(today_et.date(), ze)).astimezone(kst).strftime('%H:%M')
+    rr = rr_map.get(k, rr_default)
+    print(f\"ZONE|{k}|{zs.strftime('%H:%M')}~{ze.strftime('%H:%M')}|{zs_kst}~{ze_kst}|1:{rr:g}\")
+" 2>/dev/null || echo "HEADER|10:55|?~?|?")
+    HEADER_LINE=$(echo "$WINDOW_INFO" | grep '^HEADER|' | head -1)
+    ET_END=$(echo "$HEADER_LINE" | cut -d'|' -f2)
+    KST_TIME=$(echo "$HEADER_LINE" | cut -d'|' -f3)
+    DST_TAG=$(echo "$HEADER_LINE" | cut -d'|' -f4)
+    echo -e "${YELLOW}[NOTE]${NC} 매매 윈도우: ET 09:30~${ET_END}  (KST ${KST_TIME}, ${DST_TAG})"
+    echo "$WINDOW_INFO" | grep '^ZONE|' | while IFS='|' read -r _ ZNAME ETW KSTW RR; do
+        echo -e "${YELLOW}      └${NC} ${ZNAME}: ET ${ETW}  → KST ${KSTW}  R:R ${RR}"
+    done
 
     # Fine-tune reminder — count ICT-tagged trades and remind
     FT_INFO=$(python3 -c "

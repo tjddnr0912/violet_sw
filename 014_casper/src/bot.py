@@ -468,7 +468,12 @@ class CasperBot:
         rr = self.params.get("entry", {}).get("rr_ratio", 2.0)
         logger.info(f"Scan: {scan_mode}")
         logger.info(f"FVG : {fvg_mode}")
-        logger.info(f"R:R : 1:{rr}")
+        rr_map = self.params.get("entry", {}).get("rr_ratio_by_killzone") or {}
+        if rr_map:
+            rr_summary = ", ".join(f"{k}=1:{v}" for k, v in rr_map.items())
+            logger.info(f"R:R : default 1:{rr}  ({rr_summary})")
+        else:
+            logger.info(f"R:R : 1:{rr}")
         # ICT phase summary (compact). Reads effective config (env overrides applied).
         ep = self.params.get("entry", {})
         ict_flags = []
@@ -508,22 +513,42 @@ class CasperBot:
         try:
             from datetime import datetime, time as dtime
             import pytz
+            from src.core.sessions import KILLZONES
             et = pytz.timezone("US/Eastern")
             kst = pytz.timezone("Asia/Seoul")
             today_et = datetime.now(et)
+            # Effective entry-window end = latest end among allowed killzones.
+            ep_banner = self.params.get("entry", {})
+            if ep_banner.get("killzone_filter_enabled"):
+                allowed_b = ep_banner.get("allowed_killzones", ["AM_MACRO"])
+                end_times_b = [KILLZONES[k][1] for k in allowed_b if k in KILLZONES]
+                end_t_b = max(end_times_b) if end_times_b else dtime(10, 55)
+            else:
+                end_t_b = dtime(10, 55)
             t_start_et = et.localize(datetime.combine(today_et.date(), dtime(9, 30)))
-            t_end_et = et.localize(datetime.combine(today_et.date(), dtime(10, 55)))
+            t_end_et = et.localize(datetime.combine(today_et.date(), end_t_b))
             kst_start = t_start_et.astimezone(kst).strftime("%H:%M")
             kst_end = t_end_et.astimezone(kst).strftime("%H:%M")
-            dst_tag = "서머타임" if today_et.dst() != datetime.now(et).utcoffset() * 0 else ""
             is_dst = today_et.dst().total_seconds() != 0
             dst_tag = "서머타임" if is_dst else "표준시"
+            et_end_s = end_t_b.strftime("%H:%M")
             logger.info(
-                f"      ※ 매매 윈도우: ET 09:30~10:55  (KST {kst_start}~{kst_end}, {dst_tag})"
+                f"      ※ 매매 윈도우: ET 09:30~{et_end_s}  (KST {kst_start}~{kst_end}, {dst_tag})"
             )
+            if rr_map:
+                for k, v in rr_map.items():
+                    if k not in KILLZONES:
+                        continue
+                    zs, ze = KILLZONES[k]
+                    zs_kst = et.localize(datetime.combine(today_et.date(), zs)).astimezone(kst).strftime("%H:%M")
+                    ze_kst = et.localize(datetime.combine(today_et.date(), ze)).astimezone(kst).strftime("%H:%M")
+                    logger.info(
+                        f"          • {k}: ET {zs.strftime('%H:%M')}~{ze.strftime('%H:%M')} "
+                        f"→ KST {zs_kst}~{ze_kst}  RR=1:{v}"
+                    )
         except Exception as e:
             logger.debug(f"KST window render failed: {e}")
-            logger.info("      ※ 매매 윈도우: ET 09:30~10:55 (KST 변환 실패)")
+            logger.info("      ※ 매매 윈도우 렌더링 실패")
 
         # ── Fine-tune reminder (ICT trades 누적 추적) ──
         try:
@@ -572,6 +597,7 @@ class CasperBot:
             "qqq_primary": self.params.get("mode", {}).get("qqq_primary", False),
             "strict_fvg": ep.get("strict_fvg", False),
             "rr_ratio": ep.get("rr_ratio", 2.0),
+            "rr_ratio_by_killzone": ep.get("rr_ratio_by_killzone") or {},
             # ICT phase status — telegram displays a compact summary
             "ict_killzone": ep.get("killzone_filter_enabled", False),
             "ict_allowed_killzones": ep.get("allowed_killzones", []),
@@ -1013,8 +1039,21 @@ class CasperBot:
             ep = self.params.get("entry", {})
             if ep.get("killzone_filter_enabled"):
                 try:
+                    from datetime import datetime, time as dtime
+                    import pytz
+                    from src.core.sessions import KILLZONES
+                    et = pytz.timezone("US/Eastern")
+                    kst = pytz.timezone("Asia/Seoul")
+                    today_et = datetime.now(et)
+                    allowed_end = ep.get("allowed_killzones", ["AM_MACRO"])
+                    ends = [KILLZONES[k][1] for k in allowed_end if k in KILLZONES]
+                    end_t = max(ends) if ends else dtime(10, 55)
+                    s = et.localize(datetime.combine(today_et.date(), dtime(9, 45))).astimezone(kst)
+                    e = et.localize(datetime.combine(today_et.date(), end_t)).astimezone(kst)
+                    kst_win = f"KST {s.strftime('%H:%M')}~{e.strftime('%H:%M')}"
                     self.notifier.notify_killzone_end_no_signal(
-                        killzone_label=",".join(ep.get("allowed_killzones", ["AM_MACRO"]))
+                        killzone_label=",".join(allowed_end),
+                        kst_window=kst_win,
                     )
                 except Exception:
                     self.notifier.notify_skip("No signal today")
@@ -1031,22 +1070,48 @@ class CasperBot:
             try:
                 from datetime import datetime, time as dtime
                 import pytz
+                from src.core.sessions import KILLZONES
                 et = pytz.timezone("US/Eastern")
                 kst = pytz.timezone("Asia/Seoul")
                 today_et = datetime.now(et)
                 s = et.localize(datetime.combine(today_et.date(), dtime(9, 45))).astimezone(kst)
-                # End of allowed scan: use last killzone end or 10:55
                 ep_ = self.params.get("entry", {})
+                rr_default = ep_.get("rr_ratio", 2.0)
+                rr_map = ep_.get("rr_ratio_by_killzone") or {}
                 if ep_.get("killzone_filter_enabled"):
-                    kz_label = ",".join(ep_.get("allowed_killzones", ["AM_MACRO"]))
-                    # AM_MACRO ends 10:10
-                    e_et = et.localize(datetime.combine(today_et.date(), dtime(10, 10)))
+                    allowed = ep_.get("allowed_killzones", ["AM_MACRO"])
+                    kz_label = ",".join(allowed)
+                    # End-of-scan = latest end of any allowed killzone
+                    end_times = [KILLZONES[k][1] for k in allowed if k in KILLZONES]
+                    end_t = max(end_times) if end_times else dtime(10, 55)
+                    e_et = et.localize(datetime.combine(today_et.date(), end_t))
+                    # Per-zone KST sub-windows for the telegram message
+                    kz_segments = []
+                    for k in allowed:
+                        if k not in KILLZONES:
+                            continue
+                        zs, ze = KILLZONES[k]
+                        zs_kst = et.localize(datetime.combine(today_et.date(), zs)).astimezone(kst)
+                        ze_kst = et.localize(datetime.combine(today_et.date(), ze)).astimezone(kst)
+                        rr_for_zone = rr_map.get(k, rr_default)
+                        kz_segments.append({
+                            "name": k,
+                            "kst_start": zs_kst.strftime("%H:%M"),
+                            "kst_end": ze_kst.strftime("%H:%M"),
+                            "rr": rr_for_zone,
+                        })
                 else:
                     kz_label = None
                     e_et = et.localize(datetime.combine(today_et.date(), dtime(10, 55)))
+                    kz_segments = []
                 e_kst = e_et.astimezone(kst)
                 kst_win = f"KST {s.strftime('%H:%M')}~{e_kst.strftime('%H:%M')}"
-                self.notifier.notify_scan_start(killzone_label=kz_label, kst_window=kst_win)
+                self.notifier.notify_scan_start(
+                    killzone_label=kz_label,
+                    kst_window=kst_win,
+                    rr_default=rr_default,
+                    kz_segments=kz_segments,
+                )
             except Exception as e:
                 logger.debug(f"notify_scan_start failed: {e}")
             self._notified_scan_start = True
@@ -1205,6 +1270,7 @@ class CasperBot:
                         session_high_low=session_pools_arg,
                         use_pdh_pdl_pool=use_pdh_pdl_pool,
                         pdh_pdl=pdh_pdl_arg,
+                        rr_by_killzone=entry_params.get("rr_ratio_by_killzone"),
                     )
                     if sig is None:
                         continue
@@ -1411,11 +1477,18 @@ class CasperBot:
         # with a network error gets queued for end_trade() flush instead of
         # competing with KIS calls during the live trade window.
         self.notifier.begin_trade()
+        kz_for_entry = None
+        try:
+            if isinstance(self._signal_ict_meta, dict):
+                kz_for_entry = self._signal_ict_meta.get("killzone")
+        except Exception:
+            kz_for_entry = None
         self.notifier.notify_entry(
             self.position.symbol, self.position.entry_price,
             self.position.shares, self.position.stop_loss,
             self.position.take_profit, self.position.risk_per_share,
             rr_ratio=self.position.signal.rr_ratio,
+            killzone=kz_for_entry,
         )
         self._save_position_state()
         self._transition(BotState.POSITION_OPEN)

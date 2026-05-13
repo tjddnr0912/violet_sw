@@ -19,7 +19,8 @@
 | 이름 | 기본 | 의미 |
 |------|:---:|------|
 | `ICT_KILLZONE_ENABLED` | off | Killzone 시간 필터 |
-| `ICT_ALLOWED_KILLZONES` | `AM_MACRO` | CSV — 허용 Killzone 목록 |
+| `ICT_ALLOWED_KILLZONES` | `AM_MACRO,AM_LATE` | CSV — 허용 Killzone 목록 (Scenario B: 두 zone 모두 허용) |
+| `entry.rr_ratio_by_killzone` (JSON only) | `{AM_MACRO:3.0, AM_LATE:2.0}` | Per-zone RR. breakout 캔들의 killzone에 따라 effective RR이 결정됨 (없으면 `entry.rr_ratio` fallback) |
 | `ICT_REQUIRE_DISPLACEMENT` | off | 5분봉 displacement 필수화 |
 | `ICT_DISP_ATR_MULT` / `ICT_DISP_MAX_WICK` / `ICT_DISP_PREV_MULT` | 1.0 / 0.50 / 1.5 | displacement 임계값 |
 | `ICT_REQUIRE_SWEEP_CHOCH` | off | Sweep + CHoCH 게이트 |
@@ -64,7 +65,11 @@
         "ma_period": 20,                     # QQQ MA20 트렌드 기준
     },
     "entry": {
-        "rr_ratio": 3.0,                     # R:R (2026-05-01 1:2 → 1:3)
+        "rr_ratio": 3.0,                     # Default fallback (Scenario B 도입 후에도 유지)
+        "rr_ratio_by_killzone": {            # 2026-05-14 Scenario B
+            "AM_MACRO": 3.0,                 #   breakout in 09:30~10:10 → TP = 3R
+            "AM_LATE":  2.0,                 #   breakout in 10:10~10:55 → TP = 2R (BE shift 11:00에 닿기 전 TP 도달 가능)
+        },
         "fvg_min_size": 0.0015,
         "strict_fvg": True,                  # 2026-05-06: FVG가 ORB 라인 가로지를 때만 유효
     },
