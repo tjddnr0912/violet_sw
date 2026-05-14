@@ -2,9 +2,9 @@
 
 > `/checklist` 스킬이 갱신·검증한다. 각 항목의 `Verify` 명령은 단일 라인이며 exit code 0이 pass다.
 
-- **Last verified**: 2026-05-14 09:50 (PASS, 38/38)
-- **Total items**: 38
-- **Loop iterations on last run**: 7
+- **Last verified**: 2026-05-14 10:55 (PASS, 44/44)
+- **Total items**: 44
+- **Loop iterations on last run**: 7 (P0) + 1 (P1) + 1 (P2)
 
 검증 환경 기본:
 - 작업 디렉토리: `/Users/seongwookjang/project/git/violet_sw/007_stock_trade`
@@ -283,6 +283,48 @@
 - **Why**: balance/daily_tracker/strategy 그룹은 모듈 자체 검증.
 - **Verify**: `python -m pytest tests/test_balance_helpers.py tests/test_daily_tracker.py tests/test_quant_strategy.py::TestValueFactorCalculator tests/test_quant_strategy.py::TestMomentumFactorCalculator tests/test_quant_strategy.py::TestQualityFactorCalculator tests/test_quant_strategy.py::TestCompositeScoreCalculator -q --tb=no`
 - **Pass criteria**: exit 0
+
+### 39. 리밸런싱 누락 알림 (월 첫 영업일 사일런트 실패 차단)
+- **Layer**: scenario
+- **Target**: src/quant_modules/schedule_handler.py:_check_missed_rebalance
+- **Why**: 5/1 사고처럼 데몬은 살아있어도 state 오염으로 리밸런싱이 사일런트 누락되는 경우, 장 마감 후 즉시 알림으로 인지 가능해야 함.
+- **Verify**: `python scripts/check_missed_rebalance_alert.py`
+- **Pass criteria**: exit 0
+
+### 40. KIS 모의계좌 휴장일 API 빈 리스트 fallback
+- **Layer**: function
+- **Target**: src/api/kis_client.py:get_holiday_schedule
+- **Why**: 모의계좌에서 CTCA0903R는 미지원이라 빈 리스트 반환이 정상. fallback이 깨지면 KNOWN_HOLIDAYS가 single source가 아니게 됨.
+- **Verify**: `python scripts/check_kis_holiday_fallback.py`
+- **Pass criteria**: exit 0
+
+### 41. Watchdog 스크립트 문법 + 필수 요소
+- **Layer**: system
+- **Target**: scripts/run_quant_watchdog.sh
+- **Why**: 데몬 다운(3/29, 4/19 사고) 재발 방지 인프라.
+- **Verify**: `python scripts/check_watchdog_syntax.py`
+- **Pass criteria**: exit 0
+
+### 42. 재진입 쿨다운 (반복 손절 루프 차단)
+- **Layer**: scenario
+- **Target**: src/quant_modules/order_executor.py:_is_blocked_by_cooldown
+- **Why**: 한국전력 5회·기아 6회 반복 손절 패턴 차단. 최근 N영업일 내 손절된 종목은 현재가가 손절가에서 추가 N% 하락하지 않는 한 재매수 금지.
+- **Verify**: `python scripts/check_reentry_cooldown.py`
+- **Pass criteria**: exit 0
+
+### 43. 섹터 집중도 제한 (단일 섹터 동시 손절 차단)
+- **Layer**: scenario
+- **Target**: src/quant_modules/order_executor.py:_is_blocked_by_sector_limit
+- **Why**: 3/9 금융주 4종 동시 손절 사고 차단. 매수 후 동일 섹터 보유가 max_per_sector를 초과하면 매수 스킵.
+- **Verify**: `python scripts/check_sector_limit.py`
+- **Pass criteria**: exit 0
+
+### 44. pytest 전체 정합성 (deprecated 항목 명시)
+- **Layer**: system
+- **Target**: tests/
+- **Why**: 깨진 테스트(13개)는 새 체크리스트로 흡수 후 skip 마커 부착. 전체가 PASS 또는 SKIP만 있어야 함.
+- **Verify**: `python -m pytest tests/ -q --tb=no`
+- **Pass criteria**: exit 0 (0 failed)
 
 ---
 

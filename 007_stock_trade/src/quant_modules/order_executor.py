@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 API_DELAY_VIRTUAL = 1.0    # 모의투자: 1000ms (초당 1건 제한 대응)
 API_DELAY_REAL = 0.15      # 실전투자: 150ms
 
+# P2-6: 재진입 쿨다운 (반복 손절 루프 차단)
+COOLDOWN_DAYS = 20         # 손절 후 N영업일 재매수 금지
+COOLDOWN_OVERRIDE_DROP_PCT = 0.05  # 손절가에서 추가 5% 하락 시 재매수 허용
+
+# P2-7: 섹터 집중도 제한 (단일 섹터 동시 손절 차단)
+DEFAULT_MAX_PER_SECTOR = 3  # 한 섹터 최대 종목 수 (target 15 기준 20%)
+
 
 class OrderExecutor:
     """
@@ -113,6 +120,12 @@ class OrderExecutor:
         # P10: Score Gap Threshold — 점수 차이가 미미한 교체 방지
         min_score_gap = 5.0  # 최소 5점 차이 필요
         to_buy = set()
+
+        # P2-6 재진입 쿨다운: 최근 손절 종목의 재매수 차단 데이터 사전 수집
+        cooldown_codes = self._build_cooldown_codes()
+        # P2-7 섹터 한도: 매수 후 동일 섹터 보유 카운트가 한도 초과 시 스킵
+        sector_counts = self._count_sectors_in_positions(current_holdings)
+
         for code in target_holdings - current_holdings:
             stock = target_stocks[code]
             # 교체할 가치가 있는지: 매수 후보의 점수가 buffer 경계 종목보다 충분히 높은가
@@ -124,7 +137,25 @@ class OrderExecutor:
                         f"{stock.composite_score - buffer_boundary_score:.1f} < {min_score_gap}"
                     )
                     continue
+
+            # P2-6: 재진입 쿨다운
+            if self._is_blocked_by_cooldown(code, cooldown_codes):
+                logger.info(
+                    f"재진입 쿨다운 스킵: {stock.name}({code}) - "
+                    f"최근 {COOLDOWN_DAYS}일 내 손절 이력 + 추가 하락 미달"
+                )
+                continue
+
+            # P2-7: 섹터 한도
+            if self._is_blocked_by_sector_limit(code, sector_counts):
+                logger.info(
+                    f"섹터 한도 스킵: {stock.name}({code}) - 동일 섹터 {DEFAULT_MAX_PER_SECTOR}개 초과 방지"
+                )
+                continue
+
             to_buy.add(code)
+            # 매수 가산: 다음 후보 평가 시 반영
+            self._increment_sector(code, sector_counts)
 
         # 버퍼로 유지되는 종목 로깅
         buffer_kept = current_holdings - target_holdings - to_sell
@@ -279,6 +310,107 @@ class OrderExecutor:
         pending_orders.clear()
         pending_orders.extend(orders)
         return orders
+
+    # ========== P2-6/P2-7 헬퍼 ==========
+
+    def _build_cooldown_codes(self) -> Dict[str, Dict[str, Any]]:
+        """
+        최근 COOLDOWN_DAYS 영업일 내 손절(SELL with negative pnl)된 종목 코드 맵.
+
+        Returns:
+            {code: {"date": "YYYY-MM-DD", "price": float}}
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        if not self.daily_tracker:
+            return result
+
+        try:
+            recent = self.daily_tracker.get_recent_transactions(days=COOLDOWN_DAYS)
+        except Exception as e:
+            logger.warning(f"쿨다운 거래 조회 실패: {e}")
+            return result
+
+        for t in recent:
+            # TransactionRecord 또는 dict 모두 지원
+            t_type = getattr(t, "type", None) or (t.get("type") if isinstance(t, dict) else None)
+            t_pnl = getattr(t, "pnl", None) or (t.get("pnl") if isinstance(t, dict) else 0)
+            t_code = getattr(t, "code", None) or (t.get("code") if isinstance(t, dict) else None)
+            t_date = getattr(t, "date", None) or (t.get("date") if isinstance(t, dict) else None)
+            t_price = getattr(t, "price", None) or (t.get("price") if isinstance(t, dict) else 0)
+            if t_type != "SELL" or (t_pnl or 0) >= 0:
+                continue
+            if not t_code:
+                continue
+            # 가장 최근 손절만 보관
+            existing = result.get(t_code)
+            if not existing or (t_date and existing.get("date", "") < t_date):
+                result[t_code] = {"date": t_date or "", "price": float(t_price or 0)}
+        return result
+
+    def _is_blocked_by_cooldown(self, code: str, cooldown_codes: Dict[str, Dict[str, Any]]) -> bool:
+        """
+        해당 종목이 재진입 쿨다운 적용 대상인지.
+
+        쿨다운 해제 조건: 손절가 대비 추가 COOLDOWN_OVERRIDE_DROP_PCT 이상 하락 (재매력 회복)
+        """
+        info = cooldown_codes.get(code)
+        if not info:
+            return False
+
+        sell_price = info.get("price", 0)
+        if sell_price <= 0:
+            return True  # 가격 정보 없으면 보수적으로 차단
+
+        try:
+            cur = self._get_price_with_retry(code)
+        except Exception:
+            cur = None
+
+        if cur is None:
+            # 가격 조회 실패 시 보수적으로 차단
+            return True
+
+        drop_ratio = (sell_price - cur) / sell_price
+        if drop_ratio >= COOLDOWN_OVERRIDE_DROP_PCT:
+            logger.info(
+                f"쿨다운 해제 ({code}): 손절가 {sell_price:,.0f} → 현재가 {cur:,.0f} "
+                f"({drop_ratio*100:.1f}% 하락)"
+            )
+            return False
+        return True
+
+    def _count_sectors_in_positions(self, codes) -> Dict[str, int]:
+        """현재 보유 종목들의 섹터별 카운트"""
+        try:
+            from ..strategy.quant.sector import STOCK_SECTOR_MAP, Sector
+        except Exception:
+            return {}
+        counts: Dict[str, int] = {}
+        for code in codes:
+            sec = STOCK_SECTOR_MAP.get(code, Sector.OTHER)
+            key = sec.value if hasattr(sec, "value") else str(sec)
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _is_blocked_by_sector_limit(self, code: str, sector_counts: Dict[str, int]) -> bool:
+        """매수 후 동일 섹터 보유가 한도 초과면 차단"""
+        try:
+            from ..strategy.quant.sector import STOCK_SECTOR_MAP, Sector
+        except Exception:
+            return False
+        sec = STOCK_SECTOR_MAP.get(code, Sector.OTHER)
+        key = sec.value if hasattr(sec, "value") else str(sec)
+        return sector_counts.get(key, 0) >= DEFAULT_MAX_PER_SECTOR
+
+    def _increment_sector(self, code: str, sector_counts: Dict[str, int]) -> None:
+        """매수 확정된 종목의 섹터 카운트 증가"""
+        try:
+            from ..strategy.quant.sector import STOCK_SECTOR_MAP, Sector
+        except Exception:
+            return
+        sec = STOCK_SECTOR_MAP.get(code, Sector.OTHER)
+        key = sec.value if hasattr(sec, "value") else str(sec)
+        sector_counts[key] = sector_counts.get(key, 0) + 1
 
     def generate_partial_rebalance_orders(
         self,

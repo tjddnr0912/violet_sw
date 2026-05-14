@@ -360,7 +360,50 @@ class ScheduleHandler:
             logger.info("리밸런싱 일 - 월간 리포트 생성")
             e.generate_monthly_report(save_snapshot=True)
 
+        # 리밸런싱 누락 감지: 오늘이 월 첫 영업일이었는데 이번 달 리밸런싱이 안 됐다면 경고
+        # (5/1 휴장일 사고 같은 사일런트 실패 재발 방지)
+        self._check_missed_rebalance()
+
         # 상태 저장
         e._save_state()
 
         e.current_phase = SchedulePhase.AFTER_MARKET
+
+    def _check_missed_rebalance(self):
+        """월 첫 영업일에 리밸런싱이 실행되지 않았는지 점검"""
+        e = self.engine
+        now = datetime.now()
+        current_month = now.strftime("%Y-%m")
+
+        # 1) 오늘이 월 첫 영업일인지 확인
+        first_trading_day = now.replace(day=1)
+        while not is_trading_day(first_trading_day):
+            first_trading_day += timedelta(days=1)
+        if now.date() != first_trading_day.date():
+            return
+
+        # 2) 이번 달 리밸런싱 완료 여부
+        rebalanced = (
+            e.last_rebalance_month == current_month
+            or (
+                e.state_manager.last_urgent_rebalance_month == current_month
+                if hasattr(e, "state_manager") else False
+            )
+        )
+        if rebalanced:
+            return
+
+        # 누락 → 알림
+        logger.warning(
+            f"리밸런싱 누락 감지: 오늘({now.date()})은 {current_month} 첫 영업일이나 리밸런싱 미실행"
+        )
+        try:
+            e.notifier.send_message(
+                "🚨 <b>리밸런싱 누락 감지</b>\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"오늘({now.strftime('%Y-%m-%d')})은 {current_month} 첫 영업일이지만\n"
+                f"이번 달 리밸런싱이 아직 실행되지 않았습니다.\n\n"
+                f"수동 점검: <code>/run_screening</code> 또는 <code>/run_rebalance</code>"
+            )
+        except Exception as ex:
+            logger.error(f"누락 알림 전송 실패: {ex}")

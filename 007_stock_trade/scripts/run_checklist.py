@@ -50,6 +50,7 @@ PYTEST_CHECKS = [
     (14, "screener factors", "tests/test_quant_strategy.py::TestValueFactorCalculator tests/test_quant_strategy.py::TestMomentumFactorCalculator tests/test_quant_strategy.py::TestQualityFactorCalculator tests/test_quant_strategy.py::TestCompositeScoreCalculator"),
     (18, "daily_tracker tx atomic", "tests/test_daily_tracker.py::TestDailyTracker::test_log_transaction tests/test_daily_tracker.py::TestDailyTracker::test_atomic_write_transactions"),
     (38, "pytest core regression", "tests/test_balance_helpers.py tests/test_daily_tracker.py tests/test_quant_strategy.py::TestValueFactorCalculator tests/test_quant_strategy.py::TestMomentumFactorCalculator tests/test_quant_strategy.py::TestQualityFactorCalculator tests/test_quant_strategy.py::TestCompositeScoreCalculator"),
+    (44, "pytest 전체 정합성", "tests/"),
 ]
 
 SCRIPT_CHECKS = [
@@ -67,6 +68,11 @@ SCRIPT_CHECKS = [
     (29, "state roundtrip", "scripts/check_state_roundtrip.py"),
     (30, "schedule initial holiday", "scripts/check_schedule_initial_holiday.py"),
     (34, "factor weights normalized", "scripts/check_factor_weights_normalized.py"),
+    (39, "missed rebalance alert", "scripts/check_missed_rebalance_alert.py"),
+    (40, "kis holiday fallback", "scripts/check_kis_holiday_fallback.py"),
+    (41, "watchdog syntax", "scripts/check_watchdog_syntax.py"),
+    (42, "reentry cooldown", "scripts/check_reentry_cooldown.py"),
+    (43, "sector limit", "scripts/check_sector_limit.py"),
 ]
 
 ENTRY_COMPILE = (32, "main.py compile", "python -m py_compile main.py")

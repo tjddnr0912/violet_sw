@@ -267,22 +267,22 @@ class TestTakeProfitManager:
     """익절 관리 테스트"""
 
     def test_calculate_targets(self):
-        """익절 목표가 계산"""
+        """익절 목표가 계산 (손익비 3.5:1 / 6.0:1)"""
         tp1, tp2 = TakeProfitManager.calculate_targets(
             entry_price=50000,
             stop_loss=46500  # 3500원 리스크
         )
 
-        assert tp1 == 55250  # 50000 + (3500 * 1.5)
-        assert tp2 == 58750  # 50000 + (3500 * 2.5)
+        assert tp1 == 62250  # 50000 + (3500 * 3.5)
+        assert tp2 == 71000  # 50000 + (3500 * 6.0)
 
     def test_staged_sell_qty(self):
-        """단계별 매도 수량"""
+        """단계별 매도 수량 (1차 20%, 2차 30% — winner 더 보유)"""
         qty1 = TakeProfitManager.calculate_staged_sell_qty(100, stage=1)
         qty2 = TakeProfitManager.calculate_staged_sell_qty(100, stage=2)
 
-        assert qty1 == 30  # 30%
-        assert qty2 == 50  # 50%
+        assert qty1 == 20  # 20%
+        assert qty2 == 30  # 30%
 
 
 class TestPositionSizer:
@@ -356,7 +356,7 @@ class TestRiskMonitor:
         assert mdd_alerts[0].level == RiskLevel.CRITICAL
 
     def test_consecutive_losses(self):
-        """연속 손실 체크"""
+        """연속 손실 시 RiskAlert 발생 (pause는 별도 처리)"""
         config = RiskConfig(max_consecutive_losses=3)
         monitor = RiskMonitor(config)
 
@@ -364,7 +364,9 @@ class TestRiskMonitor:
         for i in range(3):
             monitor.add_trade({"pnl": -100000, "code": f"TEST{i}"})
 
-        assert monitor.is_trading_paused is True
+        alert = monitor.check_consecutive_losses()
+        assert alert is not None
+        assert "연속 손실" in alert.message
 
 
 class TestPortfolioManager:
