@@ -351,6 +351,12 @@ class QuantTradingEngine:
         now = datetime.now()
         current_month = now.strftime("%Y-%m")
 
+        # 휴장일에는 어떤 리밸런싱도 금지 (긴급 포함)
+        # 2026-05 사고 원인: 휴장일(근로자의 날)에 긴급 리밸런싱이 트리거되어
+        # last_rebalance_month가 오염되고 이후 정상 영업일 리밸런싱이 모두 스킵됨
+        if not is_trading_day(now):
+            return False
+
         # 1. 긴급 리밸런싱: 보유 종목이 목표의 70% 미만이면 허용 (월 1회 제한)
         current_count = len(self.portfolio.positions)
         target_count = self.config.target_stock_count
