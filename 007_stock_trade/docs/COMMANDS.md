@@ -5,9 +5,12 @@
 | 명령 | 동작 |
 |------|------|
 | `./run_quant.sh daemon` | 통합 데몬 (스케줄러 + 텔레그램 봇) — **권장** |
+| `./run_quant.sh watchdog` | 데몬 수명 감시(P1) — 다운/30분 무로그 hang 시 자동 재시작 + 텔레그램 알림. **별도 surface**에서 실행 권장 |
+| `./run_quant.sh watchdog --hang-timeout 1800 --max-restarts 10` | 옵션 지정. `--restart-delay`, `--max-restarts`, `--hang-timeout` 지원. 추가 인자는 그대로 `scripts/run_quant_watchdog.sh`로 위임 |
 | `./run_quant.sh screen` | 스크리닝만 1회 실행 (유니버스 + 팩터 점수) |
 | `./run_quant.sh backtest` | 백테스트 |
 | `./run_quant.sh stop` | daemon 종료 (PID 기반) |
+| `./scripts/run_quant_watchdog.sh` | 워치독 직접 호출 (위 `watchdog` 서브커맨드와 동일) |
 
 ## 텔레그램 명령어
 
@@ -54,6 +57,17 @@
 | 5분마다 | 포지션 모니터링 (손절/익절) |
 | 15:20 | 일일 리포트 + daily snapshot 저장 |
 | 토요일 10:00 | 주간 장부 점검 (engine_state ↔ KIS 동기화) |
+
+## 회귀 체크 (P1+P2)
+
+```bash
+python scripts/run_checklist.py                    # docs/CHECKLIST.md 전체 항목 일괄 실행 (#1~#44)
+python scripts/check_missed_rebalance_alert.py     # P1: 월 첫 영업일 누락 감지 동작
+python scripts/check_reentry_cooldown.py           # P2-6: 재진입 쿨다운 (20영업일 / 5% override)
+python scripts/check_sector_limit.py               # P2-7: 섹터 한도 (default 3)
+python scripts/check_watchdog_syntax.py            # P1: run_quant_watchdog.sh 문법
+python scripts/check_kis_holiday_fallback.py       # 휴장일 fallback
+```
 
 ## 디버깅 명령
 

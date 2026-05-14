@@ -81,6 +81,7 @@ print_help() {
     echo ""
     echo "명령어:"
     echo "  daemon        통합 데몬 실행 (자동매매 + 자동관리 + 텔레그램)"
+    echo "  watchdog      데몬 수명 감시 (다운/30분 무로그 hang 시 자동 재시작 + 텔레그램 알림)"
     echo "  start         자동매매 엔진만 시작"
     echo "  screen        수동 스크리닝 실행 (1회)"
     echo "  screen-full   200종목 전체 스크리닝 + 엑셀 저장"
@@ -104,7 +105,23 @@ print_help() {
     echo "  $0 start --dry-run          # 모의 실행으로 엔진 시작"
     echo "  $0 screen --universe 100    # 100종목 스크리닝"
     echo "  $0 screen-full              # 200종목 전체 스크리닝"
+    echo "  $0 watchdog                 # 별도 surface에서 데몬 감시 (P1 재발 방지)"
+    echo "  $0 watchdog --hang-timeout 1800 --max-restarts 10  # 옵션 지정"
     echo ""
+}
+
+# 워치독 실행 (scripts/run_quant_watchdog.sh wrapper)
+cmd_watchdog() {
+    local watchdog_script="$SCRIPT_DIR/scripts/run_quant_watchdog.sh"
+    if [ ! -f "$watchdog_script" ]; then
+        echo -e "${RED}[ERROR]${NC} 워치독 스크립트를 찾을 수 없습니다: $watchdog_script"
+        exit 1
+    fi
+    if [ ! -x "$watchdog_script" ]; then
+        chmod +x "$watchdog_script"
+    fi
+    echo -e "${GREEN}[INFO]${NC} 워치독 시작: $watchdog_script $*"
+    exec "$watchdog_script" "$@"
 }
 
 # 엔진 시작
@@ -310,6 +327,14 @@ while [[ $# -gt 0 ]]; do
         daemon|start|screen|screen-full|backtest|optimize|monitor|rebalance|status|test|telegram|install|help)
             COMMAND=$1
             shift
+            ;;
+        watchdog)
+            # watchdog는 나머지 인자를 그대로 워치독 스크립트에 전달
+            COMMAND=$1
+            shift
+            load_env 2>/dev/null || true
+            cmd_watchdog "$@"
+            exit $?
             ;;
         --dry-run)
             DRY_RUN=True
