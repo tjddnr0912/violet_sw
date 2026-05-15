@@ -34,8 +34,27 @@ class Position:
     exit_time: Optional[str] = None
     exit_reason: Optional[str] = None
 
+    # ── Partial TP support ──────────────────────────────────────────
+    # Filled by bot._enter_position when entry.partial_tp_enabled=True.
+    # `tp1_price` is the first take-profit level (e.g. entry + risk*1.5).
+    # When the bot detects the bar reaching tp1_price, it sells
+    # `partial_shares_initial * tp1_close_pct` shares (computed once at
+    # entry), records the partial fill on this position, moves SL to
+    # `orb_high` (or BE if higher), and continues monitoring the rest
+    # until take_profit / stop_loss / force_close.
+    tp1_price: Optional[float] = None
+    tp1_close_pct: float = 0.50
+    tp1_filled: bool = False
+    partial_shares_initial: int = 0  # snapshot of shares at entry
+    partial_shares_closed: int = 0   # shares closed at TP1
+    partial_exit_price: Optional[float] = None
+    partial_exit_time: Optional[str] = None
+    orb_high: Optional[float] = None  # used to move SL after TP1
+
     def __post_init__(self):
         self.original_stop = self.stop_loss
+        if self.partial_shares_initial == 0:
+            self.partial_shares_initial = self.shares
 
     @property
     def breakeven_price(self) -> float:
@@ -55,15 +74,47 @@ class Position:
 
     @property
     def gross_pnl(self) -> float:
+        """Total gross PnL = (partial leg, if any) + (final leg).
+
+        - partial leg: `partial_shares_closed × (partial_exit_price - entry_price)`
+        - final leg : `shares × (exit_price - entry_price)` (when closed)
+        `shares` already represents the *remaining* size after TP1 fill,
+        so summing both is correct without double counting.
+        """
+        partial_gross = 0.0
+        if self.partial_exit_price is not None and self.partial_shares_closed > 0:
+            partial_gross = (
+                (self.partial_exit_price - self.entry_price)
+                * self.partial_shares_closed
+            )
         if self.exit_price is None:
-            return 0.0
-        return (self.exit_price - self.entry_price) * self.shares
+            return partial_gross
+        final_gross = (self.exit_price - self.entry_price) * self.shares
+        return partial_gross + final_gross
 
     @property
     def commission(self) -> float:
-        if self.exit_price is None:
+        """Round-trip commission across BOTH legs (entry split between legs).
+
+        Approximation: charge entry commission on each share once (buy side),
+        and sell commission on the appropriate exit price for each leg.
+        """
+        r = self.commission_rate
+        total_initial = self.partial_shares_initial or self.shares
+        if total_initial <= 0:
             return 0.0
-        return (self.entry_price + self.exit_price) * self.shares * self.commission_rate
+        # Buy-side commission charged on the entire initial position once.
+        buy_comm = self.entry_price * total_initial * r
+        # Sell-side: partial leg + final leg
+        partial_sell_comm = 0.0
+        if self.partial_exit_price is not None and self.partial_shares_closed > 0:
+            partial_sell_comm = (
+                self.partial_exit_price * self.partial_shares_closed * r
+            )
+        if self.exit_price is None:
+            return buy_comm + partial_sell_comm
+        final_sell_comm = self.exit_price * self.shares * r
+        return buy_comm + partial_sell_comm + final_sell_comm
 
     @property
     def net_pnl(self) -> float:
@@ -71,7 +122,11 @@ class Position:
 
     @property
     def r_multiple(self) -> float:
-        total_risk = self.risk_per_share * self.shares
+        # Risk denominator = original (full) shares × risk_per_share, not the
+        # post-partial remaining size. This keeps R-multiple comparable to
+        # legacy single-TP trades regardless of partial fill.
+        total_initial = self.partial_shares_initial or self.shares
+        total_risk = self.risk_per_share * total_initial
         if total_risk <= 0:
             return 0.0
         return self.net_pnl / total_risk
@@ -92,8 +147,14 @@ def create_position(
     shares: int,
     commission_rate: float,
     entry_time: str,
+    tp1_close_pct: float = 0.50,
+    orb_high: Optional[float] = None,
 ) -> Position:
-    """Create a new position from a trade signal."""
+    """Create a new position from a trade signal.
+
+    `signal.tp1_price` (when non-None) and `orb_high` enable the partial
+    TP path. Leaving either at default disables partial TP for this trade.
+    """
     pos = Position(
         symbol=signal.symbol,
         direction=signal.direction,
@@ -105,10 +166,17 @@ def create_position(
         commission_rate=commission_rate,
         entry_time=entry_time,
         signal=signal,
+        tp1_price=getattr(signal, "tp1_price", None),
+        tp1_close_pct=tp1_close_pct,
+        partial_shares_initial=shares,
+        orb_high=orb_high,
     )
+    tp1_info = ""
+    if pos.tp1_price is not None:
+        tp1_info = f" TP1=${pos.tp1_price:.2f} ({int(pos.tp1_close_pct*100)}%)"
     logger.info(
         f"POSITION OPENED: {pos.symbol} {pos.shares}shares @ ${pos.entry_price:.2f} "
-        f"SL=${pos.stop_loss:.2f} TP=${pos.take_profit:.2f}"
+        f"SL=${pos.stop_loss:.2f}{tp1_info} TP=${pos.take_profit:.2f}"
     )
     return pos
 
@@ -140,6 +208,50 @@ def check_exit(position: Position, current_high: float, current_low: float, curr
         return "take_profit"
 
     return None
+
+
+def check_tp1_fill(position: Position, current_high: float) -> bool:
+    """True when partial-TP1 should fire (long: bar.High ≥ tp1_price)."""
+    if position.tp1_price is None or position.tp1_filled:
+        return False
+    if not position.is_open:
+        return False
+    return current_high >= position.tp1_price
+
+
+def apply_partial_fill(position: Position, fill_price: float, fill_time: str) -> int:
+    """Mark TP1 as filled, record partial sale, return shares sold.
+
+    Mutates the position: records partial_exit_price/time/shares, reduces
+    `shares` to the remainder, and (when orb_high known) moves SL to
+    max(current_sl, orb_high). Does NOT execute any broker order — caller
+    must place the sell order first and pass the actual fill price here.
+    """
+    if position.tp1_filled or position.tp1_price is None:
+        return 0
+    sold = int(round(position.partial_shares_initial * position.tp1_close_pct))
+    if sold <= 0:
+        return 0
+    sold = min(sold, position.shares)
+    position.partial_shares_closed = sold
+    position.partial_exit_price = round(fill_price, 2)
+    position.partial_exit_time = fill_time
+    position.shares -= sold
+    position.tp1_filled = True
+
+    # Move SL to ORB.high (free trade) if higher than current SL.
+    if position.orb_high is not None and position.orb_high > position.stop_loss:
+        old_sl = position.stop_loss
+        position.stop_loss = round(position.orb_high, 2)
+        logger.info(
+            f"TP1 FILL: SL ${old_sl:.2f} → ${position.stop_loss:.2f} (ORB.high)"
+        )
+
+    logger.info(
+        f"PARTIAL CLOSE: {position.symbol} {sold}sh @ ${fill_price:.2f} "
+        f"(TP1, remaining {position.shares}sh)"
+    )
+    return sold
 
 
 def move_stop_to_breakeven(position: Position) -> None:

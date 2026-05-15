@@ -21,6 +21,10 @@
 | `ICT_KILLZONE_ENABLED` | off | Killzone 시간 필터 |
 | `ICT_ALLOWED_KILLZONES` | `AM_MACRO,AM_LATE` | CSV — 허용 Killzone 목록 (Scenario B: 두 zone 모두 허용) |
 | `entry.rr_ratio_by_killzone` (JSON only) | `{AM_MACRO:3.0, AM_LATE:2.0}` | Per-zone RR. breakout 캔들의 killzone에 따라 effective RR이 결정됨 (없으면 `entry.rr_ratio` fallback) |
+| `entry.partial_tp_enabled` (JSON only) | `true` | Partial TP 활성 — TP1=1.5R 도달 시 50% 청산 + SL→ORB.high. 잔여 50%는 TP2 또는 SL=ORB.high |
+| `entry.tp1_rr` (JSON only) | `1.5` | TP1의 risk-multiple (Partial TP 활성 시) |
+| `entry.tp1_close_pct` (JSON only) | `0.50` | TP1에서 청산할 포지션 비율 (0.0~1.0) |
+| `entry.move_sl_to_orb_high_after_tp1` (JSON only) | `true` | TP1 hit 후 SL을 max(현재 SL, ORB.high)로 이동 ("free trade" 모드) |
 | `ICT_REQUIRE_DISPLACEMENT` | off | 5분봉 displacement 필수화 |
 | `ICT_DISP_ATR_MULT` / `ICT_DISP_MAX_WICK` / `ICT_DISP_PREV_MULT` | 1.0 / 0.50 / 1.5 | displacement 임계값 |
 | `ICT_REQUIRE_SWEEP_CHOCH` | off | Sweep + CHoCH 게이트 |
@@ -70,6 +74,10 @@
             "AM_MACRO": 3.0,                 #   breakout in 09:30~10:10 → TP = 3R
             "AM_LATE":  2.0,                 #   breakout in 10:10~10:55 → TP = 2R (BE shift 11:00에 닿기 전 TP 도달 가능)
         },
+        "partial_tp_enabled": True,          # 2026-05-15 Partial TP — Casper community script 표준
+        "tp1_rr": 1.5,                       #   TP1 = entry + risk × 1.5 (TP2 = entry + risk × rr_ratio)
+        "tp1_close_pct": 0.50,               #   50% 청산
+        "move_sl_to_orb_high_after_tp1": True, # SL을 ORB.high로 이동 → free trade
         "fvg_min_size": 0.0015,
         "strict_fvg": True,                  # 2026-05-06: FVG가 ORB 라인 가로지를 때만 유효
     },

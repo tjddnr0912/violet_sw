@@ -26,6 +26,7 @@ from src.core.strategy import scan_for_signal, check_pullback, TradeSignal
 from src.core.position import (
     Position, create_position, check_exit,
     move_stop_to_breakeven, close_position,
+    check_tp1_fill, apply_partial_fill,
 )
 from src.core.risk import (
     check_vix_filter, determine_trend, CircuitBreaker, TrendState,
@@ -1271,6 +1272,11 @@ class CasperBot:
                         use_pdh_pdl_pool=use_pdh_pdl_pool,
                         pdh_pdl=pdh_pdl_arg,
                         rr_by_killzone=entry_params.get("rr_ratio_by_killzone"),
+                        tp1_rr=(
+                            float(entry_params.get("tp1_rr", 1.5))
+                            if entry_params.get("partial_tp_enabled", False)
+                            else None
+                        ),
                     )
                     if sig is None:
                         continue
@@ -1439,7 +1445,21 @@ class CasperBot:
                 return
 
         entry_time = time_utils.now_et().strftime("%H:%M")
-        self.position = create_position(self.signal, shares, comm_rate, entry_time)
+        # Partial TP context. tp1_close_pct from config, orb_high from
+        # the matched ORB so the bot can free-trade after TP1 hit.
+        ep_partial = self.params.get("entry", {})
+        tp1_pct = float(ep_partial.get("tp1_close_pct", 0.50))
+        orb_for_tp1 = None
+        try:
+            sig_orb = getattr(self.signal, "orb", None)
+            orb_for_tp1 = float(sig_orb.high) if sig_orb is not None else None
+        except Exception:
+            orb_for_tp1 = None
+        self.position = create_position(
+            self.signal, shares, comm_rate, entry_time,
+            tp1_close_pct=tp1_pct,
+            orb_high=orb_for_tp1,
+        )
 
         # Execute buy order via KIS API
         if self.kis_order:
@@ -1570,6 +1590,59 @@ class CasperBot:
         if current is None:
             time.sleep(15)
             return
+
+        # ── Partial TP1 fill check (must come BEFORE check_exit so SL/TP
+        # ── monitor uses post-fill remaining shares + new SL) ─────────
+        if check_tp1_fill(self.position, current):
+            tp1_price = self.position.tp1_price
+            sold_shares = int(round(
+                self.position.partial_shares_initial * self.position.tp1_close_pct
+            ))
+            sold_shares = min(sold_shares, self.position.shares)
+            if sold_shares >= 1:
+                # Execute partial sell via KIS (market order on the remaining sub-lot)
+                if self.kis_order:
+                    sell_res = self.kis_order.sell_market(
+                        self.position.symbol, sold_shares
+                    )
+                    if sell_res is None:
+                        logger.error(
+                            f"PARTIAL SELL FAILED — will retry next tick "
+                            f"({self.position.symbol} x{sold_shares} @ TP1 ${tp1_price:.2f})"
+                        )
+                        time.sleep(15)
+                        return
+                # Resolve actual fill price (best-effort, fall back to TP1)
+                fill_price = tp1_price
+                try:
+                    order_no = (sell_res or {}).get("order_no", "")
+                    if self.kis_client and order_no:
+                        actual = self.kis_client.get_us_filled_price(
+                            order_no, self.position.symbol, max_attempts=2,
+                        )
+                        if actual:
+                            fill_price = actual
+                except Exception as e:
+                    logger.debug(f"TP1 fill price query failed (using TP1): {e}")
+                old_sl = self.position.stop_loss
+                apply_partial_fill(
+                    self.position, fill_price,
+                    time_utils.now_et().strftime("%H:%M"),
+                )
+                self._save_position_state()
+                try:
+                    self.notifier.notify_partial_close(
+                        symbol=self.position.symbol,
+                        tp1_price=fill_price,
+                        shares_sold=sold_shares,
+                        shares_remaining=self.position.shares,
+                        partial_pnl=(fill_price - self.position.entry_price) * sold_shares,
+                        old_sl=old_sl,
+                        new_sl=self.position.stop_loss,
+                        tp2_price=self.position.take_profit,
+                    )
+                except Exception as e:
+                    logger.debug(f"notify_partial_close failed: {e}")
 
         # Simulate bar with current price as high/low/close approximation
         exit_reason = check_exit(self.position, current, current, current)

@@ -36,12 +36,15 @@ class TradeSignal:
     direction: str        # Always "long"
     entry_price: float    # FVG midpoint
     stop_loss: float      # Prior candle low
-    take_profit: float    # Entry + risk * RR
+    take_profit: float    # Entry + risk * RR (TP2 when partial TP active)
     risk_per_share: float # Entry - Stop
     rr_ratio: float
     fvg: FairValueGap
     orb: OpeningRange
     signal_time: str
+    # Partial TP support — TP1 price (e.g. entry + risk × 1.5). Computed
+    # in scan_for_signal. Bot uses this when entry.partial_tp_enabled is True.
+    tp1_price: Optional[float] = None
 
 
 def scan_for_signal(
@@ -76,6 +79,7 @@ def scan_for_signal(
     use_pdh_pdl_pool: bool = False,
     pdh_pdl: Optional[tuple] = None,
     rr_by_killzone: Optional[dict] = None,
+    tp1_rr: Optional[float] = None,
 ) -> Optional[TradeSignal]:
     """
     Scan post-ORB 5-minute bars for a trade signal.
@@ -436,6 +440,12 @@ def scan_for_signal(
             continue
 
         take_profit = entry_price + tp_direction * (risk * effective_rr)
+        # Optional partial-TP first target (e.g. 1.5R). When provided and
+        # strictly between entry and the final TP, the bot will partial-
+        # close at this level. Honours direction (bull/bear) via tp_direction.
+        tp1_price = None
+        if tp1_rr is not None and float(tp1_rr) > 0 and float(tp1_rr) < float(effective_rr):
+            tp1_price = round(entry_price + tp_direction * (risk * float(tp1_rr)), 2)
         signal_time = bars_5m.index[i].strftime("%Y-%m-%d %H:%M")
 
         signal = TradeSignal(
@@ -449,6 +459,7 @@ def scan_for_signal(
             fvg=fvg,
             orb=orb,
             signal_time=signal_time,
+            tp1_price=tp1_price,
         )
         logger.info(
             f"SIGNAL: {symbol} {signal.direction} @ {entry_price:.2f} "

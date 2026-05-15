@@ -4,6 +4,51 @@
 
 ---
 
+## 2026-05-15: Partial TP 도입 + Casper SMC 출처 분석 + Phase 5.0 데이터 분석
+
+캐스퍼 SMC 원본(YouTube `@caspersmc`, 본명 Jesse Rogers — Trading Nut 팟캐스트 EP 302 확인)의 community script `hoosn1ck/Casper SMC: 5m ORB + Retest` 룰을 재구성. 7개 변형 비교 백테스트 후 **Partial TP만 즉시 도입**, 5m ORB는 백로그에 보류, Phase 5는 데이터 부족으로 보류.
+
+### Partial TP 구현 (코드)
+- `config/strategy_params.json`: `partial_tp_enabled=true`, `tp1_rr=1.5`, `tp1_close_pct=0.50`, `move_sl_to_orb_high_after_tp1=true`
+- `src/core/strategy.py::TradeSignal.tp1_price` 필드 신규 + `scan_for_signal(tp1_rr=...)` 파라미터
+- `src/core/position.py::Position` 7개 필드 추가 (tp1_price, tp1_close_pct, tp1_filled, partial_shares_initial, partial_shares_closed, partial_exit_price/time, orb_high). gross_pnl/commission/r_multiple을 2-leg 합산 정확화. 신규 helper `check_tp1_fill()`, `apply_partial_fill()`
+- `src/bot.py::_handle_position_open`: TP1 모니터링 + KIS 부분 매도 + 실제 fill price 조회 + state save + ORB.high SL 이동
+- `src/telegram/notifier.py::notify_partial_close()` critical 큐 메시지 신규
+- `tests/test_position.py::TestPartialTP` 9개 신규 (필드 초기화, TP1 fill 트리거, SL 이동, idempotent, 2-leg PnL, R-multiple)
+
+### 백테스트 결과 (60일 TQQQ, 7개 변형 비교)
+- **partial_TP만 양수 수익** (+0.14%, AvgR +0.08)
+- 5m ORB: 매매 2배 빈도(3→6), WR 16.7%, Net -0.35% — 백로그 보류
+- SL_midpoint / 30m ORB: BASE와 무차이
+- ADX(>25) / 4H VWAP 필터: 매매 0~1건, 너무 빡빡
+
+### Casper SMC 출처 분석
+- 본명 Jesse Rogers (Trading Nut EP 302 확인)
+- Primary 매매: NQ futures, TQQQ/SQQQ는 retail용 변형 — 사용자(선물 미운용)에게 현재 봇 구성이 정확히 부합
+- ICT Mastery Course 3대 모듈: Unicorn Model (✓ 봇 구현), STBP Daily Bias (✓ 봇 구현), Range Expansion (☆ Phase 5 후보)
+- 외부 정량 검증 자료 없음 + ImanTrading SIM 위장 폭로 → **알고리즘 룰은 참고, 본인 수익률은 신뢰 불가**
+
+### Phase 5.0 데이터 분석 (Range Expansion)
+- 18건 매매(라이브 11 + 백테스트 7) × 1H/4H expansion 정렬 검증
+- 4H expansion = 0건, 1H expansion = 4건 (모두 misaligned)
+- 4건의 1H bear expansion + bull setup 매매는 *모두 LOSS/BE* — 표본 부족이라 결정 불가
+- **Phase 5 보류**, 6개월+ 데이터 누적 + 임계값 ablation 후 재검토
+
+### 신규 산출물
+- `docs/strategy/CASPER_SMC_SOURCE_REPORT.md` — 캐스퍼 출처·알고리즘·종목·검증 종합 (530줄)
+- `docs/strategy/UPGRADE_REVIEW.md` — Partial TP / 5m ORB / Phase 5 상세 검토 + 트레이드오프
+- `docs/strategy/BACKLOG.md` — 5m ORB 보류 + 재검토 트리거
+- `docs/strategy/PHASE5_DATA_ANALYSIS.md` — Phase 5.0 데이터 분석 결과
+- `scripts/casper_variants_backtest.py` — 7개 변형 비교
+- `scripts/displacement_distribution.py` — displacement reject 분포 누적 분석 (backtest+live)
+- `scripts/range_expansion_data_analysis.py` — Phase 5.0 재실행 가능
+
+### 검증
+- 551/551 unit test pass (5분 59초). 기존 542 + 신규 9 partial TP
+- Casper community script `hoosn1ck/Casper SMC: 5m ORB + Retest` 룰과 정합성 검증
+
+---
+
 ## 2026-05-14: Scenario B 적용 — 킬존 확장 + 시간대별 RR
 
 PHASE1_PRECHECK의 AM_MACRO-only 결정이 n=11 표본에 기반해 통계적으로 약했고, "AM_LATE 진입 차단으로 23:10~23:55 = 45분간 빈 스캔"이 발생하던 비효율을 해소.

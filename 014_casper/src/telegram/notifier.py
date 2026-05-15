@@ -383,6 +383,24 @@ class TelegramNotifier:
         )
         self.send(msg, critical=True)
 
+    def notify_partial_close(self, symbol: str, tp1_price: float,
+                              shares_sold: int, shares_remaining: int,
+                              partial_pnl: float, old_sl: float,
+                              new_sl: float, tp2_price: float) -> None:
+        """Partial TP1 fill — 50% close + SL moved to ORB.high (free trade).
+
+        Sent on TP1 hit. Critical: queue on network failure during trade.
+        """
+        sl_delta = new_sl - old_sl
+        msg = (
+            f"🟡 <b>PARTIAL CLOSE</b> {symbol}\n"
+            f"TP1 ${tp1_price:.2f} × {shares_sold}sh = +${partial_pnl:+.2f}\n"
+            f"Remaining: {shares_remaining}sh @ entry\n"
+            f"SL ${old_sl:.2f} → ${new_sl:.2f} (Δ {sl_delta:+.2f}, free trade)\n"
+            f"TP2 still ${tp2_price:.2f}"
+        )
+        self.send(msg, critical=True)
+
     def notify_be_move(self, symbol: str, old_sl: float, new_sl: float) -> None:
         msg = (
             f"🟡 <b>BE MOVE</b> {symbol}\n"

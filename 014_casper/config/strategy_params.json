@@ -17,6 +17,10 @@
             "AM_MACRO": 3.0,
             "AM_LATE": 2.0
         },
+        "partial_tp_enabled": true,
+        "tp1_rr": 1.5,
+        "tp1_close_pct": 0.50,
+        "move_sl_to_orb_high_after_tp1": true,
         "min_risk_dollar": 0.10,
         "strict_fvg": true,
         "killzone_filter_enabled": true,
