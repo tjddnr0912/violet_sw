@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ================================================================
-# Casper Trading Bot - TQQQ/SQQQ ORB+FVG Strategy
+# 미장봇 (US Stock Bot) — 멀티 bucket 퀀트 + Casper 전략 (ORB+FVG TQQQ/SQQQ)
 # ================================================================
 
 set -e
@@ -20,7 +20,7 @@ NC='\033[0m'
 print_logo() {
     echo -e "${CYAN}"
     echo "╔══════════════════════════════════════════════════════════╗"
-    echo "║      👻 Casper Bot - TQQQ/SQQQ ORB+FVG Strategy        ║"
+    echo "║      🇺🇸 미장봇 — US Quant + Casper 전략                 ║"
     echo "╚═══════════════════════════════════════════════════════���══╝"
     echo -e "${NC}"
 }
@@ -99,7 +99,7 @@ check_running() {
     if [ -f "$PID_FILE" ]; then
         OLD_PID=$(cat "$PID_FILE")
         if kill -0 "$OLD_PID" 2>/dev/null; then
-            echo -e "${YELLOW}[WARN]${NC} Casper Bot이 이미 실행 중입니다 (PID: $OLD_PID)"
+            echo -e "${YELLOW}[WARN]${NC} 미장봇이 이미 실행 중입니다 (PID: $OLD_PID)"
             echo "       종료하려면: $0 stop"
             exit 1
         else
@@ -312,7 +312,7 @@ except Exception:
         echo ""
     fi
 
-    echo -e "${GREEN}[START]${NC} Casper Bot 시작..."
+    echo -e "${GREEN}[START]${NC} 미장봇 시작..."
     echo $$ > "$PID_FILE"
     exec python3 run_bot.py
 }
@@ -446,7 +446,7 @@ except Exception:
     nohup python3 run_bot.py >> logs/casper.log 2>&1 &
     DAEMON_PID=$!
     echo "$DAEMON_PID" > "$PID_FILE"
-    echo -e "${GREEN}[START]${NC} Casper Bot 데몬 시작 (PID: $DAEMON_PID)"
+    echo -e "${GREEN}[START]${NC} 미장봇 데몬 시작 (PID: $DAEMON_PID)"
     echo -e "${GREEN}[INFO]${NC} 로그: tail -f logs/casper.log"
 }
 
@@ -457,7 +457,7 @@ stop_bot() {
         if kill -0 "$PID" 2>/dev/null; then
             kill "$PID"
             rm -f "$PID_FILE"
-            echo -e "${GREEN}[STOP]${NC} Casper Bot 종료됨 (PID: $PID)"
+            echo -e "${GREEN}[STOP]${NC} 미장봇 종료됨 (PID: $PID)"
         else
             rm -f "$PID_FILE"
             echo -e "${YELLOW}[INFO]${NC} 프로세스가 이미 종료됨"

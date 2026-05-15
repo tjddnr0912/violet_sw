@@ -127,6 +127,82 @@
 - **Verify**: `python -c "import src.bot; import src.core.strategy; import src.telegram.notifier; import src.core.sessions"`
 - **Pass criteria**: exit 0
 
+## Layer 1 — Function (Multi-Bucket P0~P4)
+
+### 17. time_utils — 월말/분기말 거래일 헬퍼 5종 노출
+- **Layer**: function
+- **Target**: src/utils/time_utils.py
+- **Why**: GEM/portfolio 스케줄러가 휴장일을 정확히 처리하려면 helper들이 모두 export돼야 함
+- **Verify**: `python -c "from src.utils.time_utils import get_last_trading_day_of_month, get_first_trading_day_of_month, is_last_trading_day_of_month, was_last_trading_day_of_month_within, is_last_trading_day_of_quarter"`
+- **Pass criteria**: exit 0
+
+### 18. GEM 모듈 — public API
+- **Layer**: function
+- **Target**: src/core/gem.py
+- **Why**: bot.py가 import하는 4개 심볼 (GemSignal, GemState, compute_gem_signal, should_run_gem)이 모두 노출
+- **Verify**: `python -c "from src.core.gem import GemSignal, GemState, compute_gem_signal, should_run_gem, GEM_STATE_FILE"`
+- **Pass criteria**: exit 0
+
+### 19. portfolio 모듈 — tier_for_capital 경계
+- **Layer**: function
+- **Target**: src/core/portfolio.py::tier_for_capital
+- **Why**: $3k/$5k/$10k 경계에서 새 bucket이 자동 활성화돼야 P4 시스템 동작
+- **Verify**: `python -c "from src.core.portfolio import tier_for_capital as t; assert t(2999) == {'gem': 1.0}; assert 'mtum' not in t(4999); assert 'mtum' in t(5000); assert 'clenow' not in t(9999); assert 'clenow' in t(10000)"`
+- **Pass criteria**: exit 0
+
+### 20. config — 신규 env 변수 5종
+- **Layer**: function
+- **Target**: src/utils/config.py::load_env
+- **Why**: CASPER_MAX_POSITION_USD, GEM_MODE, PORTFOLIO_CONFIG가 누락되면 P0/P1/P2가 동작 안 함
+- **Verify**: `python -c "from src.utils.config import load_env; e = load_env(); assert 'casper_max_position_usd' in e and 'gem_mode' in e and 'portfolio_config_path' in e"`
+- **Pass criteria**: exit 0
+
+## Layer 2 — Scenario (Multi-Bucket)
+
+### 21. GEM 스케줄러 — 마지막 거래일 + 3일 grace
+- **Layer**: scenario
+- **Target**: src/core/gem.py::should_run_gem
+- **Why**: 봇이 월말에 크래시해도 다음 3 거래일 안에 GEM 신호를 따라잡아야 함. 동시에 중복 실행은 막아야
+- **Verify**: `python -c "from datetime import date; from src.core.gem import should_run_gem, GemState; s = GemState(); r1, d1 = should_run_gem(date(2026, 5, 29), s); r2, d2 = should_run_gem(date(2026, 6, 1), s); s2 = GemState(last_signal_date='2026-05-29'); r3, _ = should_run_gem(date(2026, 6, 1), s2); assert r1 and d1 == date(2026, 5, 29); assert r2 and d2 == date(2026, 5, 29); assert not r3"`
+- **Pass criteria**: exit 0
+
+### 22. bot.py — daily portfolio tick 함수
+- **Layer**: scenario
+- **Target**: src/bot.py::_daily_portfolio_tick
+- **Why**: _reset_day가 매일 1회 호출하는 hook이 있어야 GEM/portfolio가 동작
+- **Verify**: `grep -n "_daily_portfolio_tick\|_maybe_run_gem\|_execute_gem_rotation\|_execute_bucket_drift_rebalance" src/bot.py | wc -l | awk '{ exit ($1 < 4) }'`
+- **Pass criteria**: exit 0 (4개 메서드 모두 정의 + 호출 합쳐 ≥4 매치)
+
+## Layer 3 — System (Multi-Bucket)
+
+### 23. multi-bucket unit tests 통과
+- **Layer**: system
+- **Target**: tests/test_multi_bucket.py
+- **Why**: 27개 항목이 P0~P4 + 공휴일 회복을 모두 검증
+- **Verify**: `cd "$(pwd)" && python -m pytest tests/test_multi_bucket.py -q --tb=no`
+- **Pass criteria**: exit 0 (27 passed)
+
+### 24. multi-bucket 안전 off — 기존 Casper 동작 보존
+- **Layer**: system
+- **Target**: src/bot.py (GEM_MODE=off 기본)
+- **Why**: GEM_MODE 미설정 시 봇은 기존 Casper 데이트레이딩만 해야 함 (역호환)
+- **Verify**: `python -c "import os; os.environ.pop('GEM_MODE', None); os.environ.pop('CASPER_MAX_POSITION_USD', None); from src.utils.config import reset_config_cache, load_env; reset_config_cache(); e = load_env(); assert e['gem_mode'] == 'off'; assert e['casper_max_position_usd'] == 0.0"`
+- **Pass criteria**: exit 0
+
+### 25. initial seed — needs_initial_seed 의사결정 매트릭스
+- **Layer**: function
+- **Target**: src/core/portfolio.py::needs_initial_seed
+- **Why**: 봇 첫 실행 시 100% 현금이면 자동 매수, 이미 투자된 계좌면 건드리지 말 것, 한 번 seed 한 후엔 절대 재실행 X
+- **Verify**: `python -c "from src.core.portfolio import needs_initial_seed, PortfolioState; s = PortfolioState(); assert needs_initial_seed(3000.0, {}, s) is True; assert needs_initial_seed(3000.0, {'SPY': {'qty': 3, 'value_usd': 1500.0}}, s) is False; assert needs_initial_seed(50.0, {}, s) is False; s.seeded_at = '2026-05-15'; assert needs_initial_seed(3000.0, {}, s) is False"`
+- **Pass criteria**: exit 0
+
+### 26. initial seed — bot.py 통합 hook
+- **Layer**: scenario
+- **Target**: src/bot.py::_execute_initial_seed
+- **Why**: needs_initial_seed가 True일 때 _daily_portfolio_tick에서 _execute_initial_seed가 호출돼야 함
+- **Verify**: `grep -n "_execute_initial_seed\|needs_initial_seed" src/bot.py | wc -l | awk '{ exit ($1 < 3) }'`
+- **Pass criteria**: exit 0 (정의 1 + 조건 호출 1 + import 1 = 3개 이상)
+
 ---
 
 ## 히스토리 (append-only, 재읽기 안 함 — 기록용)

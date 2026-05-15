@@ -1,13 +1,13 @@
-# Gemini Code Review Report (Casper Trading Bot)
+# Gemini Code Review Report (미장봇)
 
 > **작성일:** 2026-04-04
-> **대상:** Casper Trading Bot v1.0 (014_casper)
+> **대상:** 미장봇 v1.0 (014_casper)
 > **우선순위:** 1. 안전성 및 에러 대응, 2. 보안 및 논리적 무결성
 
 ---
 
 ## 1. 프로젝트 개요 및 의도
-Casper Bot은 TQQQ/SQQQ를 대상으로 하는 인트라데이 자동매매 시스템입니다. ORB(Opening Range Breakout)와 FVG(Fair Value Gap) 전략을 결합하여 정교한 진입 시점을 포착하며, 엄격한 리스크 관리(VIX 필터, 주간 손실 제한, 서킷 브레이커)를 통해 자산을 보호하도록 설계되었습니다.
+미장봇은 TQQQ/SQQQ를 대상으로 하는 인트라데이 자동매매 시스템입니다. ORB(Opening Range Breakout)와 FVG(Fair Value Gap) 전략을 결합하여 정교한 진입 시점을 포착하며, 엄격한 리스크 관리(VIX 필터, 주간 손실 제한, 서킷 브레이커)를 통해 자산을 보호하도록 설계되었습니다.
 
 ---
 

@@ -7,7 +7,7 @@
 #   Tab 2: Telegram Gemini Bot
 #   Tab 3: Quant Trading Daemon (주식 자동매매)
 #   Tab 4: Investment Bot (뉴스봇 + 버핏봇 + 섹터봇 통합)
-#   Tab 5: Casper Bot (TQQQ/SQQQ ORB+FVG, R:R 1:3, Telegram alerts via .env)
+#   Tab 5: 미장봇 (TQQQ/SQQQ ORB+FVG, R:R 1:3, Telegram alerts via .env)
 #   (Disabled) Tab 6: Dashboard Server (Flask, port 5001)
 #   (Disabled) Tab 7: Stock Dashboard (FastAPI, port 5002)
 #
@@ -75,11 +75,11 @@ tell application "iTerm2"
         end tell
     end tell
 
-    -- Create fifth tab (Casper Bot: TQQQ/SQQQ ORB+FVG, --yes skips live confirmation)
+    -- Create fifth tab (미장봇: TQQQ/SQQQ ORB+FVG, --yes skips live confirmation)
     tell current window
         create tab with default profile
         tell current session
-            write text "echo -ne '\\\\e]0;Casper Bot\\\\a' && cd '$SCRIPT_DIR/014_casper' && '$CASPER_BOT' start --yes"
+            write text "echo -ne '\\\\e]0;미장봇\\\\a' && cd '$SCRIPT_DIR/014_casper' && '$CASPER_BOT' start --yes"
         end tell
     end tell
 
@@ -113,4 +113,4 @@ echo "  Tab 1: Trading Bot (005_money)"
 echo "  Tab 2: Telegram Bot (006_auto_bot)"
 echo "  Tab 3: Quant Daemon (007_stock_trade)"
 echo "  Tab 4: Investment Bot (006_auto_bot — News+Buffett+Sector)"
-echo "  Tab 5: Casper Bot (014_casper — TQQQ/SQQQ, Telegram via .env)"
+echo "  Tab 5: 미장봇 (014_casper — TQQQ/SQQQ, Telegram via .env)"

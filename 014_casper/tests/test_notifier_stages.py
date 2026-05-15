@@ -37,7 +37,7 @@ def test_daily_bias_bull(mock_send):
     text = _captured(mock_send)
     assert "DAILY BIAS" in text
     assert "BULL" in text
-    assert "score=+3" in text
+    assert "+3" in text   # score rendered as "BULL   score +3"
 
 
 @patch.object(TelegramNotifier, "send", return_value=True)
@@ -47,7 +47,7 @@ def test_daily_bias_neutral(mock_send):
     n.notify_daily_bias(bias)
     text = _captured(mock_send)
     assert "NEUTRAL" in text
-    assert "score=+0" in text
+    assert "+0" in text   # neutral score
 
 
 def test_daily_bias_none_does_not_send():
@@ -67,7 +67,7 @@ def test_orb_summary_multi_symbol(mock_send):
     }
     n.notify_orb_summary(orbs)
     text = _captured(mock_send)
-    assert "ORB SUMMARY" in text
+    assert "ORB Summary" in text   # new layout uses Title Case
     assert "TQQQ" in text and "SQQQ" in text and "QQQ" in text
 
 
@@ -98,7 +98,8 @@ def test_setup_detected_bull(mock_send):
     text = _captured(mock_send)
     assert "SETUP" in text and "TQQQ" in text
     assert "50.50" in text and "51.00" in text
-    assert "killzone,displacement" in text
+    # New layout: ("Filters", "killzone, displacement") — comma-space joined
+    assert "killzone, displacement" in text
 
 
 @patch.object(TelegramNotifier, "send", return_value=True)
@@ -108,7 +109,8 @@ def test_setup_detected_short(mock_send):
         "QQQ", "short", fvg_top=500.0, fvg_bot=498.5,
     )
     text = _captured(mock_send)
-    assert "short" in text
+    # New layout renders Direction in upper-case
+    assert "SHORT" in text
 
 
 @patch.object(TelegramNotifier, "send", return_value=True)

@@ -1,4 +1,4 @@
-# Casper Trading Bot - Design Spec
+# 미장봇 - Design Spec
 
 > Date: 2026-04-02
 > Status: Approved

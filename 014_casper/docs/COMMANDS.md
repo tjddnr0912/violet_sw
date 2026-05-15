@@ -81,5 +81,5 @@ tail -f logs/app/casper_$(date +%F).log   # 실시간 로그
 
 ## cmux 통합
 
-- cmux running_machine 워크스페이스의 `Casper Bot` surface에서 `daemon --yes` 자동 실행
+- cmux running_machine 워크스페이스의 `미장봇` surface에서 `daemon --yes` 자동 실행
 - 재시작: `/restart` 스킬 또는 사용자가 `./start_all_bots_cmux.sh` 호출

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from datetime import datetime, time as dtime, date, timedelta
+from typing import Optional
 import pytz
 
 logger = logging.getLogger("casper")
@@ -130,3 +131,153 @@ def seconds_until(target: dtime) -> float:
 def format_et(dt: datetime) -> str:
     """Format datetime for display."""
     return dt.strftime("%Y-%m-%d %H:%M:%S ET")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Trading-day helpers for monthly / quarterly schedulers (GEM, SPMO drift)
+# ─────────────────────────────────────────────────────────────────────
+# Why these live here:
+#   GEM (Antonacci dual momentum) needs to rebalance on the LAST trading
+#   day of every month — but "last day" is rarely the calendar last day
+#   because of weekends and NYSE holidays (e.g. Memorial Day, Good Friday,
+#   Thanksgiving, Christmas, …). A 1-day miss can change SPY vs VEU
+#   ranking. So we resolve trading days from the same holiday file the
+#   Casper bot already trusts.
+#
+# Late-execution grace:
+#   If the bot crashes on the last trading day, it must still rebalance
+#   the *next* trading day (which is the first trading day of the next
+#   month). We expose `was_last_trading_day_within(N)` helper for that.
+
+def _is_trading_date(d: date) -> bool:
+    """Pure helper — True if d is a weekday and not a US holiday."""
+    if d.weekday() >= 5:
+        return False
+    holidays = _load_holidays()
+    return d.strftime("%Y-%m-%d") not in holidays
+
+
+def previous_trading_day(d: date) -> date:
+    """Closest trading day strictly before d."""
+    cur = d - timedelta(days=1)
+    while not _is_trading_date(cur):
+        cur -= timedelta(days=1)
+    return cur
+
+
+def next_trading_day(d: date) -> date:
+    """Closest trading day strictly after d."""
+    cur = d + timedelta(days=1)
+    while not _is_trading_date(cur):
+        cur += timedelta(days=1)
+    return cur
+
+
+def get_last_trading_day_of_month(year: int, month: int) -> date:
+    """Last NYSE trading day in the given (year, month).
+
+    Walks backwards from the calendar last day until a trading day is
+    found. Always returns *some* date — if no holiday data is loaded,
+    falls back to last weekday.
+    """
+    # Calendar last day of month
+    if month == 12:
+        first_next = date(year + 1, 1, 1)
+    else:
+        first_next = date(year, month + 1, 1)
+    d = first_next - timedelta(days=1)
+    while not _is_trading_date(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def get_first_trading_day_of_month(year: int, month: int) -> date:
+    """First NYSE trading day in the given (year, month)."""
+    d = date(year, month, 1)
+    while not _is_trading_date(d):
+        d += timedelta(days=1)
+    return d
+
+
+def is_last_trading_day_of_month(d: Optional[date] = None) -> bool:
+    """True if d (default = today ET) is the last trading day of its month."""
+    if d is None:
+        d = today_et()
+    if not _is_trading_date(d):
+        return False
+    return d == get_last_trading_day_of_month(d.year, d.month)
+
+
+def is_first_trading_day_of_month(d: Optional[date] = None) -> bool:
+    """True if d (default = today ET) is the first trading day of its month."""
+    if d is None:
+        d = today_et()
+    if not _is_trading_date(d):
+        return False
+    return d == get_first_trading_day_of_month(d.year, d.month)
+
+
+def was_last_trading_day_of_month_within(days_back: int = 3,
+                                         today: Optional[date] = None) -> Optional[date]:
+    """Late-execution helper.
+
+    Look back up to `days_back` trading days from `today` (ET). If any of
+    those was the last trading day of its month, return that date. Used by
+    the GEM scheduler so a missed rebalance (bot crash, network outage)
+    is still executed within a short grace window instead of waiting a
+    full month.
+
+    Returns None if no recent date qualifies.
+    """
+    if today is None:
+        today = today_et()
+    cur = today
+    for _ in range(days_back + 1):  # include today
+        if _is_trading_date(cur) and is_last_trading_day_of_month(cur):
+            return cur
+        cur = previous_trading_day(cur)
+    return None
+
+
+def is_last_trading_day_of_quarter(d: Optional[date] = None) -> bool:
+    """True if d (default = today ET) is the last trading day of a quarter
+    (Mar/Jun/Sep/Dec)."""
+    if d is None:
+        d = today_et()
+    if d.month not in (3, 6, 9, 12):
+        return False
+    return is_last_trading_day_of_month(d)
+
+
+def trading_days_between(start: date, end: date) -> int:
+    """Count NYSE trading days in (start, end] — exclusive of start.
+
+    Used for GEM 12-month-return lookback validation and for measuring
+    how stale a cached signal is.
+    """
+    if end <= start:
+        return 0
+    cur = start
+    count = 0
+    while cur < end:
+        cur = cur + timedelta(days=1)
+        if _is_trading_date(cur):
+            count += 1
+    return count
+
+
+# Import-time sanity: surface a clear warning if no holidays loaded so
+# downstream schedulers don't silently miss key cutoff dates (e.g. trying
+# to rebalance on Good Friday).
+def _check_holiday_data_loaded() -> bool:
+    hs = _load_holidays()
+    if not hs:
+        logger.warning(
+            "time_utils: NO holiday data loaded — monthly/quarterly schedulers "
+            "will only respect weekends. Update config/us_holidays.json."
+        )
+        return False
+    return True
+
+
+_check_holiday_data_loaded()

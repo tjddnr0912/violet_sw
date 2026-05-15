@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 캐스퍼봇이 매매 중에 이미 fetch하는 5분봉 OHLCV를 영구 저장(Parquet)하고, 봇이 꺼져있던 기간은 yfinance로 백필하며, 갭을 자동 탐지·보강하는 데이터 수집 서브시스템을 추가한다. 매매 로직과 완전 격리(try/except + 별도 thread)되어 캐스퍼 안정성에 영향을 주지 않는다.
+**Goal:** 미장봇이 매매 중에 이미 fetch하는 5분봉 OHLCV를 영구 저장(Parquet)하고, 봇이 꺼져있던 기간은 yfinance로 백필하며, 갭을 자동 탐지·보강하는 데이터 수집 서브시스템을 추가한다. 매매 로직과 완전 격리(try/except + 별도 thread)되어 캐스퍼 안정성에 영향을 주지 않는다.
 
 **Architecture:** In-process 통합(별도 봇 아님). `src/data/store.py`(atomic Parquet I/O), `src/data/calendar.py`(NYSE 영업일), `src/data/gap_finder.py`(빈 일자 탐지), `src/data/backfill.py`(yfinance 60일 백필), `src/data/collector.py`(실시간 수집 thread)로 모듈 분리. `bot.py`에는 단 두 줄(env-toggle + thread start)만 추가. 데이터 저장 실패가 매매 main loop에 절대 전염되지 않도록 try/except로 완전 격리한다.
 

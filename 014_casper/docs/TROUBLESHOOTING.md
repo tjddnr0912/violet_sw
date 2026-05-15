@@ -19,9 +19,9 @@
 
 ### Claude 진단 미스 (2026-05-14)
 
-- **Claude 처음 가설**: `ps aux | grep -E "python.*src.bot|run_casper"`가 빈 결과 → "**Issue found**: There's NO casper bot process running. The process list shows ... but no `python -m src.bot` for Casper. The screen scrollback ended at 07:20:58 with 'New Day' but the process is not running anymore. ... It may have crashed silently or exited cleanly."
+- **Claude 처음 가설**: `ps aux | grep -E "python.*src.bot|run_casper"`가 빈 결과 → "**Issue found**: There's NO 미장봇 process running. The process list shows ... but no `python -m src.bot` for Casper. The screen scrollback ended at 07:20:58 with 'New Day' but the process is not running anymore. ... It may have crashed silently or exited cleanly."
 - **실제 원인**: 봇은 정상 동작 중. PID 96955 (`python3 run_bot.py`), cwd=014_casper, 로그 파일 핸들 보유. silent polling이 정상 (off-hours WAITING 상태에서 60초 sleep). grep 패턴이 너무 좁았던 것뿐.
-- **방향 전환 지점**: `lsof | grep casper_2026-05-14.log` 로 로그 파일을 잡고 있는 프로세스를 역추적했더니 PID 96955 → `ps -p 96955 -o args` 결과가 `python3 run_bot.py` 였고, `head run_bot.py`로 "Casper Trading Bot - Entry Point" 헤더 확인.
+- **방향 전환 지점**: `lsof | grep casper_2026-05-14.log` 로 로그 파일을 잡고 있는 프로세스를 역추적했더니 PID 96955 → `ps -p 96955 -o args` 결과가 `python3 run_bot.py` 였고, `head run_bot.py`로 "미장봇 - Entry Point" 헤더 확인.
 - **교훈 (다음에 봇 alive 점검할 때)**:
   - 첫 의심 영역: **각 봇의 실제 entry script 이름** (014_casper=`run_bot.py`, 005=`auto_v3.py`, 007=각자 다름). `python -m <pkg>`를 가정하지 말 것
   - 빨리 배제할 가설: "프로세스 없음 = 봇 죽음" (먼저 lsof로 로그 핸들 확인)
@@ -336,7 +336,7 @@
 ### Claude 진단 미스 (이번 사고)
 - **Claude 처음 가정**: ICT 라벨에서 별표 의미를 "config 로딩만, bot 통합 보류"로 통일 처리. Phase 3 작업 단계별로 *어떤 옵션이 실제로 bot에 hook됐는지*를 라벨에 따로 반영해야 한다는 인식이 없었음.
 - **실제 원인**: Phase 3 안에서도 `daily_bias`는 bot 통합 완료, `bear_fvg`는 미통합 — 라벨이 두 상태를 *섞어서* 표시하면 사용자에게 잘못된 정보. 라벨이 **"현재 실제 효과를 주는 옵션이 무엇인가"** 를 정확히 반영해야 한다는 핵심 원칙 누락.
-- **방향 전환 지점**: 사용자 메시지 "지금 캐스퍼봇 재시행하니까 터미널 출력에 ict 통합전이라고 나오는데?" — Claude가 즉시 라벨 코드 위치 파악 후 `Bias*` → `Bias` 분리. 같은 세션에서 사용자 명령 "통합 진행해"로 Bear도 통합 후 라벨을 `QQQ→SQQQ`로 변경.
+- **방향 전환 지점**: 사용자 메시지 "지금 미장봇 재시행하니까 터미널 출력에 ict 통합전이라고 나오는데?" — Claude가 즉시 라벨 코드 위치 파악 후 `Bias*` → `Bias` 분리. 같은 세션에서 사용자 명령 "통합 진행해"로 Bear도 통합 후 라벨을 `QQQ→SQQQ`로 변경.
 - **교훈 (다음에 같은 패턴이 보이면)**:
   - 첫 의심 영역: **UI 라벨의 의미(`*`, 색상, 약어)는 실제 bot 동작과 1:1 매핑이어야 한다**. 라벨 변경은 코드 hook 변경과 *동시* 작업
   - 라벨 동기화 4채널 점검: bash stdout / app log banner / status CLI / telegram bot_started — grep으로 한 번에 일관성 확인
@@ -441,10 +441,62 @@
 - **방향 전환 지점**: 사용자 "텔레그램 메시지도 점검해" → unit-test로 시뮬레이션 → 5개 누락 확인 → notifier + bot.py 동시 수정.
 - **교훈**:
   - 첫 의심 영역: **UI 라벨이 N개의 코드 경로에서 따로 생성되는가**. 라벨 변경은 *모든* 경로에 동시 적용 필요.
-  - 4-channel sync 표 (캐스퍼봇):
+  - 4-channel sync 표 (미장봇):
     1. bash `run_casper.sh` start_bot/start_daemon stdout
     2. `bot.py:run()` logger.info startup banner
     3. `run_bot.py:_ict_status_line()` (status CLI)
     4. `notifier.py:notify_bot_started()` (telegram)
   - 빨리 배제할 가설: "한 곳을 고치면 다른 곳도 자동" — UI 라벨은 보통 그렇지 않음.
   - 핵심 진단 명령: 봇 시작 후 직접 시뮬레이션: `python3 -c "from src.telegram.notifier import TelegramNotifier; ..."`로 텔레그램 메시지 형태를 코드로 캡처. 또는 4채널 grep 동시 확인.
+
+---
+
+## Multi-bucket 봇 초기 자본 시드를 ‘수동 매수 권고’로 잘못 설계
+
+- **증상**: `$3,000` 100% 현금 상태에서 봇이 시작해도 SPMO·GEM 자산을 자동 매수하지 않음. 첫 분기말까지 자본 80%가 cash로 놀음. 사용자가 KIS 앱에서 수동으로 SPMO 12주 + GEM 자산을 매수해야 작동.
+- **원인**: P3 (portfolio bucket) 초기 설계에서 ‘리밸런스는 분기말 drift 5%+ 시에만’ 규칙만 두고, **첫 1회 ‘seed 매수’ 트리거가 없음**. 봇이 cash 상태를 drift로 인식해도 분기말까지 기다림.
+- **해결**: `portfolio.py`에 `needs_initial_seed(total, holdings, state)` + `PortfolioState.seeded_at` 필드 추가. cash 비율 ≥ 90% AND seeded_at=None 이면 ‘일회성 자동 매수’ fire. 매수 후 `seeded_at`=today 영속화 → 재시작 후에도 중복 매수 0.
+- **복구 절차**:
+  1. `src/core/portfolio.py::needs_initial_seed` 추가 (cash ratio 90% threshold)
+  2. `PortfolioState.seeded_at` 필드 + JSON 직렬화 추가
+  3. `src/bot.py::_execute_initial_seed` 메서드 + `_daily_portfolio_tick`에서 호출
+  4. 봇 재시작 후 다음 RTH에 자동 fire 확인
+- **관련 사고**: 2026-05-15 (P3 첫 운영 직전)
+- **재발 감지**: 새 bucket 추가 시 ‘처음 0%에서 어떻게 채워지나’ 시나리오 unit-test 1건 필수.
+
+### Claude 진단 미스
+- **Claude 처음 가설**: "$3,000 자본 분배 권고 = (a) SPMO 12주 수동 매수 (b) GEM 자산 수동 매수 (c) 그 후 봇이 분기/월 리밸런스만 자동 처리". ‘초기 시드’를 사용자 수동 작업으로 떠넘김.
+- **실제 원인**: KIS API의 ETF 매수는 이미 미장봇이 매일 사용하는 **동일 인프라**. 초기 시드도 `kis_order.buy_market(symbol, qty)` 한 줄로 자동화 가능. ‘일회성 트리거 + state flag 1개’로 해결되는 것을 ‘사용자 노력’으로 잘못 위임.
+- **방향 전환 지점**: 사용자 "처음 수동매수를 해야해? 왜 이것조차 자동으로 하게 할 수 없나? 현재 전액 현금 보유중이야" → Claude가 즉시 `_execute_initial_seed` + `needs_initial_seed` + `seeded_at` 구현.
+- **교훈**:
+  - 첫 의심 영역: **‘무엇이 자동인가’ 설계 시 기존 인프라의 재사용 가능성**부터 점검. ‘봇이 매매 인프라를 이미 갖고 있는데 일회성 트리거만 빠졌는가?’를 묻는다.
+  - 빨리 배제할 가설: "사용자가 일회성 작업은 직접 하는 게 편리하다" — 자동화 봇 사용자는 정확히 그 반대를 원함.
+  - 핵심 진단 명령: 새 기능 권고할 때 “이 단계는 자동 가능한가”를 매 단계마다 명시. 예: "Phase A (수동) → Phase B (자동)"이면 "Phase A를 자동으로 만들 수 있는 트리거가 있는가?"부터 점검.
+
+---
+
+## 코드/.env 변경 후 ‘적용 완료’ 보고 직전에 실행 중인 프로세스 재시작을 빠뜨림
+
+- **증상**: 사용자가 “env랑 shell 재시작에 해당 옵션들 적용은 다 됐나?”라고 물음. Claude는 직전에 `.env`에 새 옵션을 추가하고 “적용 완료”라고 보고했지만, **봇은 이미 옛 코드로 실행 중이라 새 코드·새 env가 메모리에 반영 안 됨**. 사용자가 알아채지 못했다면 봇은 그 채로 계속 옛 동작.
+- **원인**: Python `load_dotenv()`는 import 시점에 한 번만 실행됨. 봇이 이미 실행 중이면 `.env` 수정해도 그 프로세스는 옛 값 사용. 코드도 마찬가지 — `import` 시점에 모듈이 메모리에 박힘. **‘파일 수정 = 적용’이 아니라 ‘프로세스 재시작 = 적용’**.
+- **해결**: 코드/.env 변경 후 ‘적용 완료’ 보고 *전에* 반드시:
+  1. `ps aux | grep <bot>` 또는 cmux read-screen으로 실행 중인 프로세스 확인
+  2. 실행 중이면 Ctrl+C(또는 SIGTERM) 후 동일 명령 재실행
+  3. 새 코드의 startup banner / 새 옵션 활성화 로그(예: `GEM scheduler active`) 를 cmux read-screen으로 확인
+  4. 그제야 “적용 완료” 보고
+- **복구 절차**:
+  1. 사용자에게 “봇 재시작 필요” 알림
+  2. cmux send `\x03` (Ctrl+C) → 1~2초 대기 → cmux read-screen으로 shell prompt 확인
+  3. cmux send `./run_casper.sh start --yes\n` → 8~10초 대기 → 새 startup banner 확인
+  4. 새 코드 시그널 (예: `GEM scheduler active`, `Initial seed needed but US market is closed — deferring to RTH`) 출력 검증
+- **관련 사고**: 2026-05-15 (Multi-bucket P0~P3 통합 후 봇 재시작 누락)
+- **재발 감지**: 코드 변경 + ‘적용 완료’ 보고 사이에 반드시 `ps aux` 또는 cmux read-screen 점검 단계를 끼워 넣음.
+
+### Claude 진단 미스
+- **Claude 처음 가설**: "`.env`에 옵션 추가 = 다음 봇 시작 시 자동 적용". 봇 재시작 여부 확인 없이 ‘적용 완료’ 보고.
+- **실제 원인**: 봇이 이미 cmux surface:54에서 옛 코드로 실행 중. `_daily_portfolio_tick`도, `needs_initial_seed`도, 새 `.env` 옵션도 메모리에 없음.
+- **방향 전환 지점**: 사용자 "env랑 shell 재시작에 해당 옵션들 적용은 다 됐나?" → Claude가 `ps aux` + cmux read-screen으로 봇 상태 점검 → 옛 코드 실행 중 확인 → 재시작 자동화.
+- **교훈**:
+  - 첫 의심 영역: **“코드 변경 → 자동 적용” 가정 금지**. Python·daemon·서비스는 명시적 재시작이 필수.
+  - 빨리 배제할 가설: "다음 tick에서 자동 reload되겠지" — `load_dotenv()`, `import`는 startup 시점에만 호출됨.
+  - 핵심 진단 명령: 변경 후 보고 직전에 `ps aux | grep <bot_proc>` + cmux/iTerm 화면에서 새 startup banner 확인. cmux 환경: `cmux read-screen --surface surface:N --lines 30`.

@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-05-15 (PM): Multi-Bucket Portfolio (P0~P4) 통합 — Casper 데이트레이딩 + 저빈도 퀀트 자동 운용
+
+자본 $3,000 환경에서 Casper만으로는 자본 효율이 20% (60일에 3건 매매 = 95% 일자 유휴)인 문제를 해결. Casper의 KIS/상태머신/Telegram 인프라를 그대로 재사용해서 단일 봇 안에 **GEM (Antonacci Dual Momentum) + SPMO 매수보유 + 분기 SPMO drift + 자본 tier 자동 활성화**를 추가. `GEM_MODE=off`이면 기존 Casper 동작 100% 그대로 유지 (역호환 안전).
+
+### 신규 모듈
+- `src/core/gem.py` — Antonacci GEM 신호 계산 (SPY/VEU/AGG/BIL 12개월 수익률 비교) + state 파일 + 3-거래일 grace 스케줄러
+- `src/core/portfolio.py` — Bucket dataclass + `tier_for_capital(usd)` (P4 자동 활성화: <$3k=GEM only, $3k=SPMO/GEM/Casper, $5k=+MTUM/QUAL, $10k=+Clenow/TQQQ_SMA) + 분기말 drift 감지
+- `src/utils/time_utils.py` — 공휴일 안전망: `get_last_trading_day_of_month`, `was_last_trading_day_of_month_within(N)` (크래시·휴장일 회복용 grace window), `is_last_trading_day_of_quarter`
+
+### 변경된 모듈
+- `src/utils/config.py` — env 변수 3종 추가 (`CASPER_MAX_POSITION_USD`, `GEM_MODE`, `PORTFOLIO_CONFIG`)
+- `src/bot.py`
+  - `_execute_entry`: `CASPER_MAX_POSITION_USD` cap 적용 (P0). 자본 $3k 중 $600만 Casper에 할당 가능
+  - `__init__`: GemState + PortfolioState load (graceful default)
+  - `_reset_day`: `_daily_portfolio_tick(today)` 1회 호출 (idempotent guard)
+  - 신규: `_fetch_full_portfolio_snapshot()`, `_daily_portfolio_tick()`, `_maybe_run_gem()`, `_execute_gem_rotation()`, `_execute_bucket_drift_rebalance()`
+- `src/telegram/notifier.py` — 6개 신규 메서드: `notify_gem_signal`, `notify_gem_executed`, `notify_portfolio_summary`, `notify_tier_change`, `notify_bucket_drift`, `notify_etf_rebalance`
+
+### 운영 모드 (GEM_MODE env)
+- `off`  (default) — 기존 Casper 단독 동작. 추가 로직 0
+- `alert` — GEM 신호 + portfolio drift를 매일 텔레그램으로만 알림. 매매는 사람이 수동 (P1)
+- `auto` — GEM 자동 매매 + 분기말 SPMO/MTUM/QUAL drift 자동 리밸런스 (P2 + P3)
+
+### 공휴일 안전망 (사용자 요구)
+- `is_last_trading_day_of_month(d)`: NYSE 공휴일 + 주말 제외해서 월의 진짜 마지막 거래일 판단 (예: 2026-05 → 5/29 Fri, Memorial Day 5/25 자동 제외)
+- `was_last_trading_day_of_month_within(N=3)`: 봇 크래시·재시작·휴가 등으로 마지막 거래일을 놓쳐도 다음 3 거래일 내 자동 회복
+- `GemState.last_signal_date` 영속화: grace window 안에서도 한 번 실행하면 다음에 안 함 (중복 방지)
+- `_check_holiday_data_loaded()` 모듈 로드 시 경고: `config/us_holidays.json` 누락 시 명시적 warning
+
+### 테스트
+- `tests/test_multi_bucket.py` 신규 27개 (TradingDayHelpers 8 + GemScheduler 5 + PortfolioTier 5 + PortfolioEvaluation 6 + StatePersistence 3) — **27/27 pass**
+- 기존 회귀: 551/551 pass (Casper RR3 production 영향 없음)
+
+### CHECKLIST 항목 추가 (#17~#24)
+- function: time_utils helpers (#17), GEM API (#18), tier_for_capital (#19), env vars (#20)
+- scenario: GEM 스케줄러 grace+dedup (#21), bot.py hooks (#22)
+- system: multi-bucket pytest (#23), GEM_MODE=off 역호환 (#24)
+
+### 백테스트 가정 (US_QUANT_STRATEGIES.md §9 참조)
+- 자본 $3,000, KIS 0.25% × 2, 세금 외부화, 환전 무시
+- 시나리오 D (SPMO 50% + GEM 30% + Casper 20%): 기대 CAGR 14~16%, MaxDD −18% (Casper 단독 ~5%, MaxDD −2% 대비 자본 효율 5배)
+- 자본 $5k 도달 시 자동 MTUM/QUAL 활성화, $10k 도달 시 자동 Clenow/TQQQ_SMA 활성화
+
+### 출처 / 알고리즘
+- Antonacci, G. (2014) *Dual Momentum Investing*. 1974-2023 백테스트 CAGR +14.8% / MaxDD −20.5%
+- 자세한 알고리즘·시나리오·비교: [docs/strategy/US_QUANT_STRATEGIES.md](strategy/US_QUANT_STRATEGIES.md) §3~§11 + §12 (운영 매뉴얼)
+
+---
+
 ## 2026-05-15: Partial TP 도입 + Casper SMC 출처 분석 + Phase 5.0 데이터 분석
 
 캐스퍼 SMC 원본(YouTube `@caspersmc`, 본명 Jesse Rogers — Trading Nut 팟캐스트 EP 302 확인)의 community script `hoosn1ck/Casper SMC: 5m ORB + Retest` 룰을 재구성. 7개 변형 비교 백테스트 후 **Partial TP만 즉시 도입**, 5m ORB는 백로그에 보류, Phase 5는 데이터 부족으로 보류.

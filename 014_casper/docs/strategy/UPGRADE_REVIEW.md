@@ -27,7 +27,7 @@ expectancy = 0.3×3 - 0.7×1 =       expectancy =
                                    = 0.45 + 0.075 - 0.50 = +0.025R
 ```
 
-위 표의 확률은 가설 — 진짜 의미는 **TP1=1.5R이 TP=3R보다 *훨씬* 자주 도달한다**는 점. 캐스퍼 봇이 60일 백테스트에서 **TP=3R 도달 0건**이었던 환경에서 *1.5R 부분 청산*은 작은 양수를 누적할 수 있다.
+위 표의 확률은 가설 — 진짜 의미는 **TP1=1.5R이 TP=3R보다 *훨씬* 자주 도달한다**는 점. 미장봇이 60일 백테스트에서 **TP=3R 도달 0건**이었던 환경에서 *1.5R 부분 청산*은 작은 양수를 누적할 수 있다.
 
 ### 1.2 캐스퍼 community script의 정확한 룰
 
@@ -209,7 +209,7 @@ ORB(Opening Range Breakout)는 *개장 직후 N분간의 high/low* 를 reference
 
 #### (b) 진입 윈도우
 
-캐스퍼 봇 scan_window = ORB 종료 ~ 10:55. ORB 길이에 따라:
+미장봇 scan_window = ORB 종료 ~ 10:55. ORB 길이에 따라:
 
 ```
 5분 ORB:   09:35 ~ 10:55 = 80분 진입 가능
@@ -359,7 +359,7 @@ ICT 본가(Michael Huddleston)의 multi-timeframe 분석에서 출발:
 
 **Range Expansion = HTF의 임펄스 캔들이 직전 range를 *확장* 하는 사건**. 일반적 통합(consolidation) 구간을 break하며 큰 body로 close하는 캔들. 그 *방향*이 institutional flow의 signal이라는 가설.
 
-| 시간대 | 의미 | 캐스퍼 봇 현재 사용 |
+| 시간대 | 의미 | 미장봇 현재 사용 |
 |---|---|---|
 | Monthly | 거시 추세 | ✗ |
 | Weekly | 중기 추세 | ✗ |
@@ -578,7 +578,7 @@ def _handle_pre_market(self):
 
 #### Phase 5.0 — 데이터 분석 (1주)
 - yfinance 1H/4H 1년 fetch
-- 캐스퍼 봇이 60일 백테스트에서 발견했던 모든 매매(현재 3건 + 추가)에 대해 *그 시점의 expansion이 같은 방향이었는가* 검증
+- 미장봇이 60일 백테스트에서 발견했던 모든 매매(현재 3건 + 추가)에 대해 *그 시점의 expansion이 같은 방향이었는가* 검증
 - 만약 *모두 정렬* 또는 *완전 미스* 같은 극단이면 Phase 5 가치 자동 판정
 
 #### Phase 5.1 — 단독 백테스트 (1주)

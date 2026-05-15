@@ -102,130 +102,155 @@ class TelegramNotifier:
             logger.warning(f"Telegram: send failed: {e}")
             return False, False
 
+    # ── Layout helpers ──────────────────────────────────────────────────
+    # All operator-facing messages flow through `_box()` so we get the
+    # same visual rhythm everywhere: emoji+title on top, monospace key/value
+    # rows in the middle, optional footer. Putting the body inside a <pre>
+    # tag preserves column alignment in Telegram clients.
+
+    _DIVIDER = "━" * 28
+    _SUBDIV = "─" * 28
+
+    @staticmethod
+    def _box(title: str, rows: list, footer: str = "",
+             label_width: int = None) -> str:
+        """Render a header + aligned key/value rows + optional footer.
+
+        Args:
+          title:  HTML-allowed header line (e.g. "🇺🇸 <b>미장봇 시작</b>")
+          rows:   list of (label, value) tuples OR plain strings (rendered
+                  as full-width lines inside the box)
+          footer: trailing HTML-allowed text outside <pre>
+          label_width: override auto-computed label column width
+
+        Korean characters render as 2 columns in most monospace fonts;
+        we still .ljust() on character count which is "good enough" for
+        Telegram's mobile/desktop clients. Pure ASCII labels are cleaner
+        — prefer them where possible.
+        """
+        body_lines = [TelegramNotifier._DIVIDER]
+        if rows:
+            tuple_rows = [r for r in rows if isinstance(r, tuple)]
+            if label_width is None and tuple_rows:
+                label_width = max(len(r[0]) for r in tuple_rows)
+            for r in rows:
+                if isinstance(r, tuple):
+                    lbl, val = r
+                    body_lines.append(f"  {lbl.ljust(label_width)}  {val}")
+                elif isinstance(r, str) and r == "---":
+                    body_lines.append(TelegramNotifier._SUBDIV)
+                else:
+                    body_lines.append(f"  {r}")
+            body_lines.append(TelegramNotifier._DIVIDER)
+        msg = f"{title}\n<pre>" + "\n".join(body_lines) + "</pre>"
+        if footer:
+            msg += f"\n{footer}"
+        return msg
+
     # ── High-level notifications ────────────────────────────────────────
 
     def notify_bot_started(self, mode: str, capital: float, history: dict,
                            strategy_info: dict = None) -> None:
-        lines = [f"🤖 <b>BOT STARTED</b>", f"Mode: {mode.upper()}"]
+        rows: list = []
+        rows.append(("Mode", mode.upper()))
+        rows.append(("Capital", f"${capital:,.2f}"))
+        hist_count = history.get('count', 0)
+        hist_wr = history.get('win_rate', 0)
+        hist_pnl = history.get('pnl', 0)
+        rows.append(("History", f"{hist_count}T  WR {hist_wr:.1f}%  PnL ${hist_pnl:+,.2f}"))
+
         if strategy_info:
+            rows.append("---")
             scan = "DUAL (TQQQ+SQQQ)" if strategy_info.get("dual_scan") else "TREND (QQQ MA20)"
             fvg = "STRICT" if strategy_info.get("strict_fvg") else "baseline"
-            rr = strategy_info.get("rr_ratio", 2.0)
             rr_map = strategy_info.get("rr_ratio_by_killzone") or {}
+            rr_default = strategy_info.get("rr_ratio", 2.0)
+            rows.append(("Scan", scan))
+            rows.append(("FVG", fvg))
             if rr_map:
-                rr_summary = " / ".join(f"{k}=1:{v:g}" for k, v in rr_map.items())
-                lines.append(f"Scan: {scan}  FVG: {fvg}")
-                lines.append(f"R:R: default 1:{rr:g}  ({rr_summary})")
+                rr_summary = " / ".join(f"{k} 1:{v:g}" for k, v in rr_map.items())
+                rows.append(("R:R", rr_summary))
             else:
-                lines.append(f"Scan: {scan}  FVG: {fvg}  R:R: 1:{rr:g}")
-            # ICT phase flags (compact)
+                rows.append(("R:R", f"1:{rr_default:g}"))
+
+            # KST window line — DST aware, derived from allowed killzones
+            try:
+                from datetime import datetime, time as dtime
+                import pytz
+                from src.core.sessions import KILLZONES
+                et = pytz.timezone("US/Eastern")
+                kst = pytz.timezone("Asia/Seoul")
+                today_et = datetime.now(et)
+                allowed = strategy_info.get("ict_allowed_killzones") or []
+                if strategy_info.get("ict_killzone") and allowed:
+                    ends = [KILLZONES[k][1] for k in allowed if k in KILLZONES]
+                    end_t = max(ends) if ends else dtime(10, 55)
+                else:
+                    end_t = dtime(10, 55)
+                s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
+                e = et.localize(datetime.combine(today_et.date(), end_t)).astimezone(kst)
+                is_dst = today_et.dst().total_seconds() != 0
+                et_end_s = end_t.strftime("%H:%M")
+                rows.append(("Window",
+                    f"ET 09:30~{et_end_s}  KST {s.strftime('%H:%M')}~{e.strftime('%H:%M')}  ({'DST' if is_dst else 'STD'})"))
+            except Exception:
+                pass
+
+            # ICT phase flags
             ict_flags = []
             if strategy_info.get("qqq_primary"):
                 ict_flags.append("QQQ-PRIMARY")
             if strategy_info.get("ict_killzone"):
                 kz_list = strategy_info.get("ict_allowed_killzones") or []
                 ict_flags.append("KZ(" + ",".join(kz_list) + ")" if kz_list else "KZ")
-            if strategy_info.get("ict_displacement"):
-                ict_flags.append("Disp")
-            if strategy_info.get("ict_sweep_choch"):
-                ict_flags.append("Sweep")
-            if strategy_info.get("ict_daily_bias"):
-                ict_flags.append("Bias")
-            if strategy_info.get("ict_bear_for_sqqq"):
-                ict_flags.append("QQQ→SQQQ")
-            if strategy_info.get("ict_bull_for_tqqq"):
-                ict_flags.append("QQQ→TQQQ")
+            for key, label in [
+                ("ict_displacement", "Disp"),
+                ("ict_sweep_choch", "Sweep"),
+                ("ict_daily_bias", "Bias"),
+                ("ict_bear_for_sqqq", "QQQ→SQQQ"),
+                ("ict_bull_for_tqqq", "QQQ→TQQQ"),
+                ("ict_unicorn", "Unicorn"),
+                ("ict_mtf_sl", "MTF-SL"),
+                ("ict_power_of_3", "P3"),
+                ("ict_eqh_eql_pools", "EQH/EQL"),
+                ("ict_session_pools", "SessionPools"),
+                ("ict_premkt_history", "PremktHist"),
+                ("ict_pdh_pdl_pool", "PDH/PDL"),
+            ]:
+                if strategy_info.get(key):
+                    ict_flags.append(label)
             if strategy_info.get("ict_ote"):
                 fib = strategy_info.get("ict_fib_level", 0.705)
                 ict_flags.append(f"OTE({fib})")
-            if strategy_info.get("ict_unicorn"):
-                ict_flags.append("Unicorn")
-            if strategy_info.get("ict_mtf_sl"):
-                ict_flags.append("MTF-SL")
-            if strategy_info.get("ict_power_of_3"):
-                ict_flags.append("P3")
-            if strategy_info.get("ict_eqh_eql_pools"):
-                ict_flags.append("EQH/EQL")
-            if strategy_info.get("ict_session_pools"):
-                ict_flags.append("SessionPools")
-            if strategy_info.get("ict_premkt_history"):
-                ict_flags.append("PremktHist")
-            if strategy_info.get("ict_pdh_pdl_pool"):
-                ict_flags.append("PDH/PDL")
-            if ict_flags:
-                lines.append("ICT: " + " + ".join(ict_flags))
-                # DST-aware KST window line — honours allowed killzones
-                try:
-                    from datetime import datetime, time as dtime
-                    import pytz
-                    from src.core.sessions import KILLZONES
-                    et = pytz.timezone("US/Eastern")
-                    kst = pytz.timezone("Asia/Seoul")
-                    today_et = datetime.now(et)
-                    allowed = strategy_info.get("ict_allowed_killzones") or []
-                    if strategy_info.get("ict_killzone") and allowed:
-                        ends = [KILLZONES[k][1] for k in allowed if k in KILLZONES]
-                        end_t = max(ends) if ends else dtime(10, 55)
-                    else:
-                        end_t = dtime(10, 55)
-                    s = et.localize(datetime.combine(today_et.date(), dtime(9, 30))).astimezone(kst)
-                    e = et.localize(datetime.combine(today_et.date(), end_t)).astimezone(kst)
-                    is_dst = today_et.dst().total_seconds() != 0
-                    et_end_s = end_t.strftime("%H:%M")
-                    lines.append(
-                        f"Window: ET 09:30-{et_end_s} (KST {s.strftime('%H:%M')}-{e.strftime('%H:%M')}, "
-                        f"{'DST' if is_dst else 'STD'})"
-                    )
-                    # Per-killzone breakdown when allowed_killzones has 2+ entries
-                    if strategy_info.get("ict_killzone") and len(allowed) >= 2:
-                        for k in allowed:
-                            if k not in KILLZONES:
-                                continue
-                            zs, ze = KILLZONES[k]
-                            zs_kst = et.localize(datetime.combine(today_et.date(), zs)).astimezone(kst).strftime("%H:%M")
-                            ze_kst = et.localize(datetime.combine(today_et.date(), ze)).astimezone(kst).strftime("%H:%M")
-                            rr_for_k = rr_map.get(k, rr) if rr_map else rr
-                            lines.append(
-                                f"  • {k}: KST {zs_kst}-{ze_kst}  RR=1:{rr_for_k:g}"
-                            )
-                except Exception:
-                    pass
-            else:
-                lines.append("ICT: off")
-        lines.append(f"Capital: ${capital:.2f}")
-        lines.append(
-            f"History: {history.get('count', 0)}T  "
-            f"WR {history.get('win_rate', 0):.1f}%  "
-            f"PnL ${history.get('pnl', 0):+.2f}"
-        )
-        self.send("\n".join(lines))
+            rows.append(("ICT", " + ".join(ict_flags) if ict_flags else "off"))
+
+        self.send(self._box("🇺🇸 <b>미장봇 시작</b>", rows))
 
     def notify_bot_stopped(self, reason: str = "Graceful shutdown") -> None:
-        self.send(f"🛑 <b>BOT STOPPED</b>\n{reason}")
+        self.send(self._box("🛑 <b>미장봇 종료</b>", [("Reason", reason)]))
 
     def notify_pre_market(self, vix: float, qqq_close: float, qqq_ma20: float,
                           trend: str, symbol: str,
                           dual_scan: bool = False) -> None:
         emoji = "📈" if trend == "BULL" else "📉"
+        rows = [
+            ("VIX", f"{vix:.1f}"),
+            ("QQQ", f"${qqq_close:.2f}  vs MA20 ${qqq_ma20:.2f}"),
+        ]
         if dual_scan:
-            trend_line = f"Trend (info only): {trend} — dual scan ignores this for entry"
+            rows.append(("Trend", f"{trend}  (info only, dual scan)"))
         else:
-            trend_line = f"Trend: {trend} → {symbol}"
-        msg = (
-            f"{emoji} <b>PRE-MARKET</b>\n"
-            f"VIX: {vix:.1f}\n"
-            f"QQQ: {qqq_close:.2f} vs MA20 {qqq_ma20:.2f}\n"
-            f"{trend_line}"
-        )
-        self.send(msg)
+            rows.append(("Trend", f"{trend} → {symbol}"))
+        self.send(self._box(f"{emoji} <b>PRE-MARKET</b>", rows))
 
     def notify_orb(self, symbol: str, orb_high: float, orb_low: float,
                    orb_range: float) -> None:
-        msg = (
-            f"📊 <b>ORB</b> {symbol}\n"
-            f"H ${orb_high:.2f}  L ${orb_low:.2f}  Range ${orb_range:.2f}"
-        )
-        self.send(msg)
+        rows = [
+            ("High", f"${orb_high:.2f}"),
+            ("Low", f"${orb_low:.2f}"),
+            ("Range", f"${orb_range:.2f}"),
+        ]
+        self.send(self._box(f"📊 <b>ORB</b>  {symbol}", rows))
 
     # ── ICT phase-aware decision notifications (added 2026-05-12) ─────
 
@@ -234,136 +259,124 @@ class TelegramNotifier:
         if bias is None:
             return
         emoji = {"bull": "📈", "bear": "📉", "neutral": "⚖️"}.get(bias.direction, "📊")
-        comps = ", ".join(f"{k}{v:+d}" if isinstance(v, int) else f"{k}={v}"
+        comps = "  ".join(f"{k}{v:+d}" if isinstance(v, int) else f"{k}={v}"
                           for k, v in bias.components.items())
-        msg = (
-            f"{emoji} <b>DAILY BIAS</b>\n"
-            f"방향: {bias.direction.upper()}  score={bias.score:+d}\n"
-            f"PDH ${bias.pdh:.2f}  PDL ${bias.pdl:.2f}\n"
-            f"PWH ${bias.pwh:.2f}  PWL ${bias.pwl:.2f}\n"
-            f"comp: {comps}"
-        )
-        self.send(msg)
+        rows = [
+            ("방향", f"{bias.direction.upper()}   score {bias.score:+d}"),
+            ("PDH/PDL", f"${bias.pdh:.2f}  /  ${bias.pdl:.2f}"),
+            ("PWH/PWL", f"${bias.pwh:.2f}  /  ${bias.pwl:.2f}"),
+            ("Comps", comps),
+        ]
+        self.send(self._box(f"{emoji} <b>DAILY BIAS</b>", rows))
 
     def notify_orb_summary(self, orbs: dict) -> None:
         """Multi-symbol ORB summary (sent once when all legs finalised)."""
         if not orbs:
             return
-        lines = ["📊 <b>ORB SUMMARY</b>"]
+        table_lines = [
+            f"  {'Symbol':<6} {'High':>10} {'Low':>10} {'Range':>9}",
+            "  " + "─" * 38,
+        ]
         for symbol, orb in orbs.items():
-            lines.append(
-                f"  {symbol:5s}: H ${orb.high:.2f}  L ${orb.low:.2f}  "
-                f"R ${orb.range_size:.2f}"
+            table_lines.append(
+                f"  {symbol:<6} ${orb.high:>8.2f} ${orb.low:>8.2f} ${orb.range_size:>7.2f}"
             )
-        self.send("\n".join(lines))
+        header = "📊 <b>ORB Summary</b>  (15분)"
+        body = "<pre>" + "\n".join([self._DIVIDER, *table_lines, self._DIVIDER]) + "</pre>"
+        self.send(f"{header}\n{body}")
 
     def notify_scan_start(self, killzone_label: Optional[str] = None,
                           kst_window: Optional[str] = None,
                           rr_default: float = 3.0,
                           kz_segments: Optional[list] = None) -> None:
-        """Notify that scan window is now open.
-
-        kz_segments: optional list of dicts with keys
-          name, kst_start, kst_end, rr — one entry per allowed killzone.
-          When supplied, the message renders each zone on its own line
-          with the RR that will apply to setups originating in that zone.
-        """
-        lines = ["🔍 <b>SCAN START</b>"]
+        """Notify that scan window is now open."""
+        rows = []
         if killzone_label:
-            lines.append(f"Killzone: {killzone_label}")
+            rows.append(("Killzone", killzone_label))
         if kst_window:
-            lines.append(f"Window: {kst_window}")
+            rows.append(("Window", kst_window))
         if kz_segments:
-            lines.append("─" * 18)
-            lines.append("진입 구간별 RR (breakout 캔들 시각 기준):")
+            rows.append("---")
             for seg in kz_segments:
                 name = seg.get("name", "?")
                 ks = seg.get("kst_start", "??:??")
                 ke = seg.get("kst_end", "??:??")
                 rr = seg.get("rr", rr_default)
-                lines.append(f"  • {name}: KST {ks}~{ke}  →  RR 1:{rr:g}")
-            lines.append("─" * 18)
-            lines.append(
-                "ℹ️ 같은 setup이라도 breakout이 어느 zone에서 나오는지에 따라 TP 거리가 달라짐."
-            )
-        else:
-            lines.append("(이 시간 안에서만 진입 가능)")
-        self.send("\n".join(lines))
+                rows.append((name, f"KST {ks}~{ke}   R:R 1:{rr:g}"))
+        footer = (
+            "<i>ℹ 같은 setup이라도 breakout이 어느 zone에서 나오는지에 따라 TP 거리가 달라짐</i>"
+            if kz_segments
+            else "<i>이 시간 안에서만 진입 가능</i>"
+        )
+        self.send(self._box("🔍 <b>SCAN START</b>", rows, footer=footer))
 
     def notify_setup_detected(self, symbol: str, direction: str,
                                fvg_top: float, fvg_bot: float,
                                filters_active: Optional[list] = None) -> None:
-        """A valid ICT setup formed; bot now waiting for pullback to FVG.
-
-        Distinct from notify_signal — this fires BEFORE pullback (i.e.
-        the signal is recognised but entry hasn't triggered yet).
-        """
+        """A valid ICT setup formed; bot now waiting for pullback to FVG."""
         dir_emoji = "📈" if direction == "long" else "📉"
-        zone = f"${min(fvg_bot, fvg_top):.2f}~${max(fvg_bot, fvg_top):.2f}"
-        msg = (
-            f"{dir_emoji} <b>SETUP</b> {symbol} ({direction})\n"
-            f"FVG zone: {zone}\n"
-            f"→ 가격이 FVG로 돌아오면 진입"
-        )
+        rows = [
+            ("Symbol", symbol),
+            ("Direction", direction.upper()),
+            ("FVG zone", f"${min(fvg_bot, fvg_top):.2f} ~ ${max(fvg_bot, fvg_top):.2f}"),
+        ]
         if filters_active:
-            msg += f"\nfilters: {','.join(filters_active)}"
-        self.send(msg)
+            rows.append(("Filters", ", ".join(filters_active)))
+        footer = "<i>→ 가격이 FVG로 돌아오면 진입</i>"
+        self.send(self._box(f"{dir_emoji} <b>SETUP</b>", rows, footer=footer))
 
     def notify_killzone_end_no_signal(self, killzone_label: str = "AM_MACRO",
                                        kst_window: Optional[str] = None,
                                        reasons: Optional[dict] = None) -> None:
-        """End of allowed Killzone(s) with no entry.
-
-        reasons: optional dict like {"killzone_reject": 3, "displacement_fail": 1, ...}
-                 to give the operator a hint of WHY today produced no trade.
-        """
-        lines = [f"⏰ <b>KILLZONE END</b>", f"종료된 zone: {killzone_label}"]
+        """End of allowed Killzone(s) with no entry."""
+        rows = [("Zone", killzone_label)]
         if kst_window:
-            lines.append(f"Window: {kst_window}")
-        lines.append("유효 setup 없음 — 오늘 매매 없이 종료")
+            rows.append(("Window", kst_window))
         if reasons:
-            lines.append("─" * 18)
-            lines.append("탈락 사유 분포:")
+            rows.append("---")
             for k, v in reasons.items():
-                lines.append(f"  • {k}: {v}건")
-        self.send("\n".join(lines))
+                rows.append((k, f"{v}건"))
+        footer = "<i>유효 setup 없음 — 오늘 매매 없이 종료</i>"
+        self.send(self._box("⏰ <b>KILLZONE END</b>", rows, footer=footer))
 
     def notify_filter_reject(self, symbol: str, filter_name: str,
                               reason: str) -> None:
         """Verbose filter rejection (env-gated to avoid spam)."""
-        msg = (
-            f"⏭ <b>FILTER</b> {symbol}\n"
-            f"{filter_name}: {reason}"
-        )
-        self.send(msg)
+        rows = [
+            ("Symbol", symbol),
+            ("Filter", filter_name),
+            ("Reason", reason),
+        ]
+        self.send(self._box("⏭ <b>FILTER</b>", rows))
 
     def notify_signal(self, symbol: str, entry: float, stop: float,
                       target: float, rr_ratio: float,
                       ict_meta: Optional[dict] = None) -> None:
         risk_ps = abs(entry - stop)
         reward_ps = abs(target - entry)
-        lines = [
-            f"🎯 <b>SIGNAL</b> {symbol}",
-            f"Entry ${entry:.2f}  SL ${stop:.2f}  TP ${target:.2f}",
-            f"Risk ${risk_ps:.2f}/sh  Reward ${reward_ps:.2f}/sh  R:R 1:{rr_ratio:g}",
+        rows = [
+            ("Symbol", symbol),
+            ("Entry", f"${entry:.2f}"),
+            ("SL", f"${stop:.2f}    (-${risk_ps:.2f}/sh)"),
+            ("TP", f"${target:.2f}   (+${reward_ps:.2f}/sh)"),
+            ("R:R", f"1:{rr_ratio:g}"),
         ]
         if ict_meta:
             kz = ict_meta.get("killzone")
             filters = ict_meta.get("filters_active") or []
             bias = ict_meta.get("daily_bias_direction")
             bias_score = ict_meta.get("daily_bias_score")
-            extras = []
+            if kz or filters or bias is not None:
+                rows.append("---")
             if kz:
-                # Annotate WHY this RR was chosen (Scenario B)
-                extras.append(f"KZ:{kz}→RR=1:{rr_ratio:g}")
-            if filters:
-                extras.append("filters:" + ",".join(filters))
+                rows.append(("KZ", f"{kz}  →  R:R 1:{rr_ratio:g}"))
             if bias is not None:
-                extras.append(f"bias:{bias}({bias_score:+d})"
-                              if bias_score is not None else f"bias:{bias}")
-            if extras:
-                lines.append("ICT  " + "  ".join(extras))
-        self.send("\n".join(lines))
+                bias_str = (f"{bias} ({bias_score:+d})"
+                            if bias_score is not None else str(bias))
+                rows.append(("Bias", bias_str))
+            if filters:
+                rows.append(("Filters", ", ".join(filters)))
+        self.send(self._box("🎯 <b>SIGNAL</b>", rows))
 
     def notify_entry(self, symbol: str, price: float, shares: int,
                      stop: float, target: float, risk: float,
@@ -371,88 +384,217 @@ class TelegramNotifier:
                      killzone: Optional[str] = None) -> None:
         """Trade entry — critical (queued on network failure during trade)."""
         risk_total = risk * shares
-        reward_total = abs(target - price) * shares
-        kz_line = f"\nKZ: {killzone}  →  R:R 1:{rr_ratio:g}" if killzone else f"\nR:R 1:{rr_ratio:g}"
-        msg = (
-            f"🟢 <b>ENTRY</b> {symbol}\n"
-            f"${price:.2f} × {shares}sh = ${price * shares:.2f}\n"
-            f"SL ${stop:.2f}  TP ${target:.2f}\n"
-            f"Risk ${risk:.2f}/sh (${risk_total:.2f} total)\n"
-            f"Reward ${abs(target - price):.2f}/sh (${reward_total:.2f} total)"
-            f"{kz_line}"
-        )
-        self.send(msg, critical=True)
+        reward_ps = abs(target - price)
+        reward_total = reward_ps * shares
+        total_cost = price * shares
+        rows = [
+            ("Symbol", symbol),
+            ("Position", f"{shares}주 × ${price:.2f} = ${total_cost:,.2f}"),
+            ("SL", f"${stop:.2f}   risk ${risk:.2f}/sh  (-${risk_total:.2f})"),
+            ("TP", f"${target:.2f}  reward ${reward_ps:.2f}/sh  (+${reward_total:.2f})"),
+            ("R:R", f"1:{rr_ratio:g}" + (f"   KZ: {killzone}" if killzone else "")),
+        ]
+        self.send(self._box("🟢 <b>ENTRY</b>", rows), critical=True)
 
     def notify_partial_close(self, symbol: str, tp1_price: float,
                               shares_sold: int, shares_remaining: int,
                               partial_pnl: float, old_sl: float,
                               new_sl: float, tp2_price: float) -> None:
-        """Partial TP1 fill — 50% close + SL moved to ORB.high (free trade).
-
-        Sent on TP1 hit. Critical: queue on network failure during trade.
-        """
+        """Partial TP1 fill — 50% close + SL moved to ORB.high (free trade)."""
         sl_delta = new_sl - old_sl
-        msg = (
-            f"🟡 <b>PARTIAL CLOSE</b> {symbol}\n"
-            f"TP1 ${tp1_price:.2f} × {shares_sold}sh = +${partial_pnl:+.2f}\n"
-            f"Remaining: {shares_remaining}sh @ entry\n"
-            f"SL ${old_sl:.2f} → ${new_sl:.2f} (Δ {sl_delta:+.2f}, free trade)\n"
-            f"TP2 still ${tp2_price:.2f}"
-        )
-        self.send(msg, critical=True)
+        rows = [
+            ("Symbol", symbol),
+            ("TP1 fill", f"{shares_sold}주 @ ${tp1_price:.2f}  →  +${partial_pnl:+.2f}"),
+            ("Remaining", f"{shares_remaining}주 보유"),
+            ("SL move", f"${old_sl:.2f} → ${new_sl:.2f}  (Δ {sl_delta:+.2f}, free trade)"),
+            ("TP2", f"${tp2_price:.2f}"),
+        ]
+        self.send(self._box("🟡 <b>PARTIAL CLOSE</b>", rows), critical=True)
 
     def notify_be_move(self, symbol: str, old_sl: float, new_sl: float) -> None:
-        msg = (
-            f"🟡 <b>BE MOVE</b> {symbol}\n"
-            f"SL ${old_sl:.2f} → ${new_sl:.2f}"
-        )
-        self.send(msg)
+        rows = [
+            ("Symbol", symbol),
+            ("SL move", f"${old_sl:.2f} → ${new_sl:.2f}"),
+        ]
+        self.send(self._box("🟡 <b>BE MOVE</b>", rows))
 
     def notify_exit(self, symbol: str, entry: float, exit_price: float,
                     reason: str, net_pnl: float, result: str) -> None:
         """Trade exit — critical (queued on network failure during trade)."""
         emoji = {"WIN": "✅", "LOSS": "❌", "BE": "➖"}.get(result, "❓")
-        msg = (
-            f"{emoji} <b>EXIT</b> {symbol} ({reason})\n"
-            f"${entry:.2f} → ${exit_price:.2f}\n"
-            f"Net P&L ${net_pnl:+.2f}  ({result})"
-        )
-        self.send(msg, critical=True)
+        pct = (exit_price - entry) / entry * 100 if entry else 0
+        rows = [
+            ("Symbol", symbol),
+            ("Reason", reason),
+            ("Price", f"${entry:.2f} → ${exit_price:.2f}  ({pct:+.2f}%)"),
+            ("Net P&L", f"${net_pnl:+.2f}   ({result})"),
+        ]
+        self.send(self._box(f"{emoji} <b>EXIT</b>", rows), critical=True)
 
     def notify_order_failed(self, symbol: str, side: str, qty: int, reason: str) -> None:
         """Order failure — critical."""
-        msg = (
-            f"🚨 <b>ORDER FAILED</b>\n"
-            f"{side.upper()} {symbol} × {qty}\n"
-            f"{reason}"
-        )
-        self.send(msg, critical=True)
+        rows = [
+            ("Side", side.upper()),
+            ("Symbol", symbol),
+            ("Qty", f"{qty}주"),
+            ("Reason", reason),
+        ]
+        self.send(self._box("🚨 <b>ORDER FAILED</b>", rows), critical=True)
 
     def notify_skip(self, reason: str) -> None:
-        self.send(f"⏭ <b>SKIP</b> {reason}")
+        self.send(self._box("⏭ <b>SKIP</b>", [("Reason", reason)]))
 
     def notify_daily_summary(self, today_trade: Optional[dict],
                              cumulative: dict, capital: float) -> None:
         """End-of-day comprehensive summary."""
-        lines = ["📋 <b>DAILY SUMMARY</b>"]
+        rows = []
         if today_trade:
             r = today_trade.get("result", "?")
             emoji = {"WIN": "✅", "LOSS": "❌", "BE": "➖"}.get(r, "❓")
-            lines.append(
-                f"{emoji} Today: {today_trade.get('symbol', '?')} "
-                f"{today_trade.get('reason', '?')}  "
-                f"P&L ${today_trade.get('net', 0):+.2f}  R={today_trade.get('r', 0):+.2f}"
-            )
+            rows.append(("Today", f"{emoji} {today_trade.get('symbol', '?')}  "
+                                  f"{today_trade.get('reason', '?')}"))
+            rows.append(("P&L", f"${today_trade.get('net', 0):+.2f}   "
+                                f"R {today_trade.get('r', 0):+.2f}"))
         else:
-            lines.append("No trade today")
-        lines.append(
-            f"Capital: ${capital:.2f}\n"
-            f"Cum: {cumulative.get('total', 0)}T  "
-            f"WR {cumulative.get('wr', 0):.1f}%  "
-            f"PF {cumulative.get('pf', 0):.2f}  "
-            f"PnL ${cumulative.get('pnl', 0):+.2f}"
-        )
-        self.send("\n".join(lines))
+            rows.append(("Today", "No trade"))
+        rows.append("---")
+        rows.append(("Capital", f"${capital:,.2f}"))
+        rows.append(("Cum trades", f"{cumulative.get('total', 0)} (WR {cumulative.get('wr', 0):.1f}%)"))
+        rows.append(("Cum PF", f"{cumulative.get('pf', 0):.2f}"))
+        rows.append(("Cum PnL", f"${cumulative.get('pnl', 0):+,.2f}"))
+        self.send(self._box("📋 <b>DAILY SUMMARY</b>", rows))
+
+    # ── Portfolio / GEM / Bucket lifecycle ──────────────────────────────
+    # These messages are NOT critical (no in-trade queueing). Sent on a
+    # best-effort basis at scheduled tick points (daily new-day reset,
+    # month-end signal, quarter-end drift check).
+
+    def notify_gem_signal(self, signal_date: str, target: str,
+                          us_ret: float, exus_ret: float, bill_ret: float,
+                          reason: str, mode: str = "alert") -> None:
+        """GEM (Antonacci) monthly signal.
+
+        mode='alert' → P1 behavior: signal detected, NO order placed.
+        mode='auto'  → P2 behavior: signal detected, order on next open.
+        """
+        target_label = {
+            "SPY": "SPY  (S&P 500)",
+            "VEU": "VEU  (ex-US 전세계)",
+            "AGG": "AGG  (미국 종합채권)",
+        }.get(target, target)
+
+        # Mark the winning leg with an arrow
+        winner = "US" if us_ret > exus_ret and max(us_ret, exus_ret) > bill_ret else \
+                 "ExUS" if exus_ret > us_ret and max(us_ret, exus_ret) > bill_ret else "Bond"
+        spy_mark = "  ← 선택" if winner == "US" else ""
+        veu_mark = "  ← 선택" if winner == "ExUS" else ""
+        bond_mark = "  ← 선택" if winner == "Bond" else ""
+
+        rows = [
+            ("선택", target_label),
+            ("SPY 12m", f"{us_ret*100:+6.2f}%{spy_mark}"),
+            ("VEU 12m", f"{exus_ret*100:+6.2f}%{veu_mark}"),
+            ("BIL 12m", f"{bill_ret*100:+6.2f}%{bond_mark}"),
+            "---",
+            ("판정", reason),
+            ("실행", "🤖 다음 시가 자동 매매" if mode == "auto" else "📋 수동 매매 필요 (alert)"),
+        ]
+        self.send(self._box(f"🌐 <b>GEM 신호</b>  {signal_date}", rows))
+
+    def notify_gem_executed(self, action: str, symbol: str, qty: int,
+                            price: float, prev_symbol: Optional[str] = None) -> None:
+        """GEM auto-execution result. action ∈ {SELL, BUY, HOLD, SKIP}."""
+        emoji = {"SELL": "🔴", "BUY": "🟢", "HOLD": "⚪️", "SKIP": "⏭"}.get(action, "ℹ️")
+        title = f"{emoji} <b>GEM {action}</b>"
+        rows = [
+            ("종목", symbol),
+            ("수량", f"{qty}주"),
+            ("단가", f"${price:.2f}"),
+            ("총액", f"${price * qty:,.2f}"),
+        ]
+        if prev_symbol and prev_symbol != symbol:
+            rows.append(("회전", f"{prev_symbol} → {symbol}"))
+        self.send(self._box(title, rows))
+
+    def notify_portfolio_summary(self, total_usd: float, buckets: list,
+                                 tier_key: str) -> None:
+        """Daily portfolio snapshot — total value + per-bucket allocation.
+
+        Renders a compact aligned table inside a <pre> block so columns
+        line up on both mobile and desktop Telegram clients.
+        """
+        # Build the bucket table as a single multi-line "row" so column
+        # alignment is exact (we control the widths ourselves).
+        table_lines = [
+            f"  {'Bucket':<8} {'Symbol':<6} {'Current':>11} {'Target':>11}  Drift",
+            "  " + "─" * 47,
+        ]
+        for b in buckets:
+            arrow = "↑" if b.drift_pct > 0.001 else ("↓" if b.drift_pct < -0.001 else "•")
+            sym = b.current_symbol or "—"
+            table_lines.append(
+                f"  {b.name:<8} {sym:<6} "
+                f"${b.current_value_usd:>9,.2f} ${b.target_usd:>9,.2f}  "
+                f"{arrow} {b.drift_pct*100:+5.1f}%"
+            )
+
+        # Header (outside <pre>) then the table (inside <pre>) for alignment
+        header = f"💼 <b>포트폴리오</b>  ${total_usd:,.2f}"
+        body = "<pre>" + "\n".join([
+            self._DIVIDER,
+            *table_lines,
+            self._DIVIDER,
+        ]) + "</pre>"
+        footer = f"<i>Tier: {tier_key}</i>"
+        self.send(f"{header}\n{body}\n{footer}")
+
+    def notify_tier_change(self, prev_tier: Optional[str], new_tier: str,
+                           total_usd: float) -> None:
+        """Capital tier transition (e.g., $4,950 → $5,100 enables MTUM/QUAL)."""
+        rows = [
+            ("Total", f"${total_usd:,.2f}"),
+            "---",
+            ("Prev", prev_tier or "(none)"),
+            ("New", new_tier),
+        ]
+        footer = "<i>다음 분기말 리밸런스에 새 비중 적용</i>"
+        self.send(self._box("🎯 <b>Tier 변경</b>", rows, footer=footer))
+
+    def notify_bucket_drift(self, buckets_drifted: list, today: str) -> None:
+        """Quarter-end drift candidates — sent BEFORE rebalance executes."""
+        if not buckets_drifted:
+            return
+        # Use a hand-rolled table so columns line up
+        table_lines = [
+            f"  {'Bucket':<8} {'Current':>11} {'Target':>11}  Drift",
+            "  " + "─" * 42,
+        ]
+        for b in buckets_drifted:
+            table_lines.append(
+                f"  {b.name:<8} "
+                f"${b.current_value_usd:>9,.2f} ${b.target_usd:>9,.2f}  "
+                f"{b.drift_pct*100:+5.1f}%"
+            )
+        header = f"⚖️ <b>Bucket Drift</b>  {today}"
+        body = "<pre>" + "\n".join([
+            self._DIVIDER, *table_lines, self._DIVIDER,
+        ]) + "</pre>"
+        self.send(f"{header}\n{body}")
+
+    def notify_etf_rebalance(self, side: str, symbol: str, qty: int,
+                             price: float, bucket: str, reason: str) -> None:
+        """ETF buy/sell executed for a non-Casper bucket (SPMO/GEM/etc.)."""
+        emoji = "🟢" if side.lower() == "buy" else "🔴"
+        side_kr = "매수" if side.lower() == "buy" else "매도"
+        title = f"{emoji} <b>{side_kr}</b>  {bucket.upper()} bucket"
+        rows = [
+            ("종목", symbol),
+            ("수량", f"{qty}주"),
+            ("단가", f"${price:.2f}"),
+            ("총액", f"${price * qty:,.2f}"),
+            ("사유", reason),
+        ]
+        self.send(self._box(title, rows))
 
     # ── Errors ──────────────────────────────────────────────────────────
 
@@ -465,7 +607,45 @@ class TelegramNotifier:
         """
         if _is_network_error_text(error):
             return  # Per spec: never alert on network errors
-        self.send(f"🚨 <b>ERROR</b>\n{error}")
+        self.send(self._box("🚨 <b>ERROR</b>", [("Detail", error)]))
+
+    # ── Initial seed lifecycle (P0 multi-bucket bootstrap) ───────────
+
+    def notify_seed_start(self, total_usd: float) -> None:
+        """Initial seed begins — sent before any buy orders fire."""
+        self.send(self._box(
+            "🎬 <b>Initial Seed</b>",
+            [
+                ("Total", f"${total_usd:,.2f}"),
+                ("Status", "다중 bucket 자동 매수 시작"),
+            ],
+        ))
+
+    def notify_seed_complete(self, bought: list) -> None:
+        """Initial seed finished.
+
+        bought: list of (bucket_name, symbol, qty, price) tuples.
+        """
+        if not bought:
+            rows = [("결과", "매수된 bucket 없음 (로그 확인 권장)")]
+            self.send(self._box("⚠️ <b>Seed 미완료</b>", rows))
+            return
+        table_lines = [
+            f"  {'Bucket':<8} {'Symbol':<6} {'Qty':>4}   {'Price':>9}   {'Total':>11}",
+            "  " + "─" * 49,
+        ]
+        grand_total = 0.0
+        for bucket, sym, qty, px in bought:
+            line_total = qty * px
+            grand_total += line_total
+            table_lines.append(
+                f"  {bucket:<8} {sym:<6} {qty:>4}주  ${px:>7.2f}   ${line_total:>9,.2f}"
+            )
+        table_lines.append("  " + "─" * 49)
+        table_lines.append(f"  {'Total':<8} {'':<6} {'':>4}    {'':>7}    ${grand_total:>9,.2f}")
+        header = "✅ <b>Seed 완료</b>"
+        body = "<pre>" + "\n".join([self._DIVIDER, *table_lines, self._DIVIDER]) + "</pre>"
+        self.send(f"{header}\n{body}")
 
 
 def _is_network_error_text(text: str) -> bool:

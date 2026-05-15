@@ -26,7 +26,8 @@ def test_bot_started_ict_off_renders_off(mock_send):
         strategy_info={"dual_scan": True, "strict_fvg": True, "rr_ratio": 3.0},
     )
     text = _captured_send_text(mock_send)
-    assert "ICT: off" in text
+    # New layout: row ("ICT", "off") → "ICT" and "off" both present
+    assert "ICT" in text and "off" in text
 
 
 @patch.object(TelegramNotifier, "send", return_value=True)
@@ -46,7 +47,7 @@ def test_bot_started_ict_flags_render(mock_send):
         },
     )
     text = _captured_send_text(mock_send)
-    assert "ICT:" in text
+    assert "ICT" in text
     assert "KZ(AM_MACRO)" in text
     assert "Disp" in text
     assert "Sweep" in text
@@ -62,7 +63,8 @@ def test_bot_started_no_strategy_info_still_works(mock_send):
         {"count": 0, "win_rate": 0, "pnl": 0},
     )
     text = _captured_send_text(mock_send)
-    assert "BOT STARTED" in text
+    # Korean product name in the header
+    assert "미장봇 시작" in text
     # No ICT line at all when strategy_info absent
     assert "ICT" not in text
 
@@ -90,9 +92,11 @@ def test_signal_with_ict_meta_renders_killzone_filters_bias(mock_send):
         },
     )
     text = _captured_send_text(mock_send)
-    assert "KZ:AM_MACRO" in text
-    assert "filters:killzone,displacement,sweep_choch" in text
-    assert "bias:bull(+3)" in text
+    # New layout: rows ("KZ", "AM_MACRO →..."), ("Filters", "k, d, s"),
+    # ("Bias", "bull (+3)") — assert semantic content only.
+    assert "AM_MACRO" in text
+    assert "killzone, displacement, sweep_choch" in text
+    assert "bull" in text and "+3" in text
 
 
 @patch.object(TelegramNotifier, "send", return_value=True)
@@ -103,6 +107,9 @@ def test_signal_with_partial_ict_meta(mock_send):
         ict_meta={"killzone": None, "filters_active": ["killzone"]},
     )
     text = _captured_send_text(mock_send)
-    # No KZ line when killzone is None, but filters present
-    assert "KZ:" not in text
-    assert "filters:killzone" in text
+    # No KZ row when killzone is None, but filters row present.
+    # Distinguish by checking that the "KZ" label is NOT followed by
+    # "AM_" — i.e. there's no killzone payload, even though the literal
+    # token "KZ" may legitimately appear elsewhere in unrelated rows.
+    assert "AM_MACRO" not in text and "AM_LATE" not in text
+    assert "killzone" in text

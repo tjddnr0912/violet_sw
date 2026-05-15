@@ -1,4 +1,13 @@
-"""Casper Trading Bot - Main state machine and event loop.
+"""미장봇 (US Stock Bot) — main state machine and event loop.
+
+Bot product name: "미장봇" (US Stock Bot).
+Internal class name remains `CasperBot` for backward compatibility with
+state files, logger handle, and module imports.
+
+The "Casper" identifier survives in two specific places, both as a
+*strategy category name*, not as the bot's product name:
+  • `Casper bucket` — the 20% sleeve that runs the ORB+FVG intraday play
+  • `Casper 전략` — the original Jesse Rogers SMC ORB+FVG strategy
 
 Runs 24/7 in terminal. Cycles through states:
 WAITING → PRE_MARKET → ORB_FORMING → SCANNING → POSITION_OPEN → DONE_TODAY
@@ -40,6 +49,17 @@ from src.data.trade_store import (
     get_cumulative_stats,
 )
 from src.telegram.notifier import TelegramNotifier
+# Multi-bucket portfolio (P1~P4) — imported lazily-friendly; modules are
+# pure logic and have no side effects at import time.
+from src.core.gem import (
+    GemSignal, GemState, compute_gem_signal, should_run_gem,
+    GEM_STATE_FILE,
+)
+from src.core.portfolio import (
+    Bucket, PortfolioState, evaluate_portfolio, needs_rebalance,
+    save_evaluation, tier_for_capital, BUCKET_DEFAULT_SYMBOL,
+    PORTFOLIO_STATE_FILE, needs_initial_seed,
+)
 
 logger = logging.getLogger("casper")
 
@@ -124,6 +144,31 @@ class CasperBot:
 
         # Load trade history
         self._init_from_history()
+
+        # P1~P4 — Multi-bucket portfolio state.
+        # GEM/portfolio modules degrade gracefully when GEM_MODE=off:
+        # state objects load to defaults, no calls are made on the tick.
+        # Loading them in __init__ keeps disk I/O off the trading hot path.
+        self._gem_state = GemState.load()
+        self._portfolio_state = PortfolioState.load()
+        # Idempotency flag — guards against running the daily portfolio
+        # tick multiple times if _reset_day fires twice on a single date
+        # (it normally fires once, but a bot restart on the same day
+        # would otherwise re-run signals).
+        self._portfolio_tick_done_for: Optional[str] = self._portfolio_state.last_eval_date
+        # Initial-seed deferral flag. Day-change tick fires at ET 00:00
+        # (KST 13:00) when the US market is closed, so KIS limit orders
+        # would reject. We set this flag when seed is needed but market
+        # is closed; _tick() then re-checks each minute and fires the
+        # seed the moment RTH (09:30–16:00 ET) begins.
+        self._seed_pending: bool = False
+        gem_mode = self.env.get("gem_mode", "off")
+        if gem_mode != "off":
+            logger.info(
+                f"GEM scheduler active (mode={gem_mode}, "
+                f"last={self._gem_state.last_signal_date or 'never'}, "
+                f"holding={self._gem_state.current_holding or '-'})"
+            )
 
         # Data collector (env-toggled, isolated). MUST come last so that
         # any failure here cannot abort the trading bot construction.
@@ -454,7 +499,7 @@ class CasperBot:
     def run(self):
         """Main event loop. Runs until interrupted."""
         logger.info("=" * 50)
-        logger.info("Casper Trading Bot Started")
+        logger.info("미장봇 (US Stock Bot) Started")
         mode_str = self.env['trading_mode'].upper()
         if self.test_mode:
             mode_str += " (TEST: 1 share)"
@@ -658,6 +703,25 @@ class CasperBot:
         if today != self.today_date:
             self._reset_day(today)
 
+        # Deferred initial seed — runs once when RTH first opens.
+        # Costs ~1 KIS balance call when flag is set (rare); zero when
+        # not. This keeps "boot the bot any time of day" usable: morning
+        # in Korea = US closed, but the seed fires automatically when
+        # the US market opens that night.
+        if self._seed_pending and time_utils.is_market_open():
+            try:
+                total, holdings = self._fetch_full_portfolio_snapshot()
+                if needs_initial_seed(total, holdings, self._portfolio_state):
+                    buckets, _ = evaluate_portfolio(
+                        total, holdings, state=self._portfolio_state
+                    )
+                    self._execute_initial_seed(total, holdings, buckets)
+                # seeded_at flips to a date on completion → clear flag.
+                if self._portfolio_state.seeded_at is not None:
+                    self._seed_pending = False
+            except Exception as e:
+                logger.error(f"Deferred seed retry failed: {e}", exc_info=True)
+
         # State machine dispatch
         if self.state == BotState.WAITING:
             self._handle_waiting()
@@ -720,6 +784,13 @@ class CasperBot:
         self._sync_capital()
         self.circuit_breaker.reset_if_new_week(time_utils.get_week_number(), self.capital)
         logger.info(f"=== New Day: {today} ===")
+        # Daily multi-bucket tick (GEM signal + portfolio drift). Runs at
+        # most once per day; guarded by _portfolio_tick_done_for.
+        try:
+            self._daily_portfolio_tick(today)
+        except Exception as e:
+            # Never let the portfolio tick crash the trading bot.
+            logger.error(f"Daily portfolio tick failed: {e}", exc_info=True)
 
     # ─── State Handlers ───
 
@@ -1433,12 +1504,25 @@ class CasperBot:
             buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.005)
             comm_rate = self.params.get("commission", {}).get("rate_per_side", 0.0009)
             eff_price = price * (1 + buy_slip + comm_rate)
-            shares = int(self.capital / eff_price) if eff_price > 0 else 0
-            # Apply position size cap
+            # Effective capital for sizing: min(full_capital, casper_bucket_cap).
+            # CASPER_MAX_POSITION_USD = 0 → no cap (legacy single-bucket mode).
+            # CASPER_MAX_POSITION_USD > 0 → multi-bucket mode where Casper is
+            # one slice of a larger portfolio (e.g. $600 of a $3k account
+            # with SPMO and GEM buckets sharing the rest). The remaining
+            # USD sits idle in the KIS USD balance for the other buckets.
+            cap_usd = float(self.env.get("casper_max_position_usd", 0) or 0)
+            sizing_capital = min(self.capital, cap_usd) if cap_usd > 0 else self.capital
+            if cap_usd > 0 and self.capital > cap_usd:
+                logger.info(
+                    f"Casper bucket cap: capital ${self.capital:.2f} → "
+                    f"sizing on ${sizing_capital:.2f} (cap=${cap_usd:.2f})"
+                )
+            shares = int(sizing_capital / eff_price) if eff_price > 0 else 0
+            # Apply position size cap (legacy: max_shares + max_position_pct)
             risk_params = self.params.get("risk", {})
             max_shares = risk_params.get("max_shares", 200)
             max_pct = risk_params.get("max_position_pct", 1.0)
-            max_by_pct = int(self.capital * max_pct / eff_price) if eff_price > 0 else 0
+            max_by_pct = int(sizing_capital * max_pct / eff_price) if eff_price > 0 else 0
             shares = min(shares, max_shares, max_by_pct)
             if shares < 1:
                 self._transition(BotState.DONE_TODAY, "Insufficient capital for 1 share")
@@ -1790,6 +1874,456 @@ class CasperBot:
             )
         except Exception as e:
             logger.error(f"RECONCILE failed: {e}")
+
+    # ─── Multi-bucket portfolio (GEM + SPMO + bucket drift) ────────────
+
+    def _fetch_full_portfolio_snapshot(self) -> tuple[float, dict]:
+        """Total USD value + per-symbol holdings dict.
+
+        Returns:
+            (total_usd, holdings)
+            holdings shape: {"SPMO": {"qty": int, "value_usd": float}, ...}
+            Cash IS included in total_usd via available_cash.
+        """
+        if not self.kis_client:
+            return 0.0, {}
+        # 1) cash
+        bal = self.kis_client.get_us_balance() or {}
+        cash = float(bal.get("available_cash", 0) or 0)
+        # 2) per-symbol holdings (qty + avg_price). Current value uses
+        # current market price, not avg_price, so drift reflects market
+        # moves not just cost basis.
+        holdings_raw = self.kis_client.get_us_holdings() or []
+        holdings: dict[str, dict] = {}
+        position_value = 0.0
+        for h in holdings_raw:
+            sym = h.get("symbol", "")
+            qty = int(h.get("qty", 0))
+            if not sym or qty <= 0:
+                continue
+            px_data = self.kis_client.get_us_price(sym) or {}
+            price = float(px_data.get("price", 0) or 0)
+            if price <= 0:
+                # Fall back to avg_price to avoid silently dropping a
+                # holding from the portfolio total.
+                price = float(h.get("avg_price", 0) or 0)
+            val = round(price * qty, 2)
+            holdings[sym] = {"qty": qty, "value_usd": val, "price": price}
+            position_value += val
+        total = round(cash + position_value, 2)
+        return total, holdings
+
+    def _daily_portfolio_tick(self, today: str) -> None:
+        """Run once-per-day: GEM signal check + portfolio drift + tier update.
+
+        Guard: `_portfolio_tick_done_for` ensures idempotency if _reset_day
+        is somehow called twice on the same date (e.g. bot restart). The
+        GEM signal's own state file (`gem_state.json`) provides a second
+        layer of de-duplication across restarts.
+        """
+        if self._portfolio_tick_done_for == today:
+            return
+        gem_mode = self.env.get("gem_mode", "off")
+        if gem_mode == "off" and float(self.env.get("casper_max_position_usd", 0) or 0) == 0:
+            # Pure Casper mode — no multi-bucket logic at all.
+            self._portfolio_tick_done_for = today
+            return
+        # Skip on weekends/holidays — GEM lookbacks need live data anyway.
+        if not time_utils.is_trading_day():
+            self._portfolio_tick_done_for = today
+            return
+
+        logger.info(f"📊 Daily portfolio tick: {today}")
+        try:
+            total, holdings = self._fetch_full_portfolio_snapshot()
+        except Exception as e:
+            logger.error(f"Portfolio snapshot failed: {e}")
+            return
+        if total <= 0:
+            logger.warning("Portfolio total=0 — skipping daily tick")
+            return
+
+        # 1) Evaluate bucket allocation + tier
+        buckets, info = evaluate_portfolio(
+            total, holdings, state=self._portfolio_state
+        )
+        if info["tier_changed"]:
+            self.notifier.notify_tier_change(
+                info["prev_tier"], info["new_tier"], total
+            )
+
+        # 2) Initial seed (one-shot first-run auto-buy from 100% cash).
+        # Runs at most once over the bot's lifetime; PortfolioState.seeded_at
+        # is the persistent guard. Skipped silently in alert mode.
+        # RTH guard: KIS overseas-stock limit orders may reject outside
+        # 09:30–16:00 ET. If the daily tick fires at ET 00:00 (KST 13:00)
+        # while the market is closed, we defer via `_seed_pending` and
+        # `_tick()` will retry the moment RTH opens.
+        if gem_mode == "auto" and needs_initial_seed(total, holdings, self._portfolio_state):
+            if not time_utils.is_market_open():
+                logger.info(
+                    "Initial seed needed but US market is closed — "
+                    "deferring to RTH (will fire at next 09:30 ET)"
+                )
+                self._seed_pending = True
+            else:
+                try:
+                    self._execute_initial_seed(total, holdings, buckets)
+                    # Refresh snapshot after seed orders fill — subsequent GEM
+                    # logic in this same tick should see the new positions.
+                    total, holdings = self._fetch_full_portfolio_snapshot()
+                    buckets, _ = evaluate_portfolio(
+                        total, holdings, state=self._portfolio_state
+                    )
+                    self._seed_pending = False
+                except Exception as e:
+                    logger.error(f"Initial seed failed: {e}", exc_info=True)
+
+        # 3) GEM signal (does NOT trade in alert mode)
+        if gem_mode in ("alert", "auto"):
+            self._maybe_run_gem(buckets, total, holdings, gem_mode)
+
+        # 4) Quarter-end SPMO / MTUM / QUAL drift rebalance
+        if gem_mode == "auto":
+            drifted = needs_rebalance(buckets, drift_threshold=0.10)
+            if drifted:
+                self.notifier.notify_bucket_drift(drifted, today)
+                self._execute_bucket_drift_rebalance(
+                    drifted, total, holdings, buckets
+                )
+
+        # 4) Persist & summarize
+        save_evaluation(buckets, total, self._portfolio_state, info)
+        try:
+            self.notifier.notify_portfolio_summary(total, buckets, info["new_tier"])
+        except Exception as e:
+            logger.debug(f"Portfolio summary telegram skipped: {e}")
+        self._portfolio_tick_done_for = today
+
+    def _execute_initial_seed(self, total: float, holdings: dict,
+                              buckets: list) -> None:
+        """One-shot first-run allocation from 100% cash.
+
+        Called only when:
+          • GEM_MODE=auto
+          • portfolio_state.seeded_at is None
+          • account is ≥90% cash (i.e. user just funded the account
+            and has not yet placed any positions)
+
+        Per-bucket behavior:
+          • SPMO / MTUM / QUAL — buy with target_usd budget at market.
+          • GEM   — compute today's signal (ignoring the month-end gate
+                    because for a brand-new account waiting up to 30 days
+                    in cash is silly), then buy that target.
+          • CASPER — DO NOT pre-buy. Casper's positions only open via
+                    the intraday ORB+FVG signal. The bucket's USD sits
+                    in cash until a trading signal fires.
+          • CLENOW / TQQQ_SMA — at tier $10k+; these need separate
+                    screening logic, left for the next phase. For now
+                    they sit in cash same as Casper.
+
+        Records portfolio_state.seeded_at = today regardless of partial
+        failures, so a retry doesn't double-buy. Failed buys are logged
+        and telegrammed but DO NOT block the rest of the seed.
+        """
+        if not self.kis_order or not self.kis_client:
+            logger.warning("Initial seed: KIS not configured — skipping")
+            return
+
+        today = time_utils.today_et()
+        logger.info(
+            f"🎬 Initial seed starting: total=${total:.2f} "
+            f"cash-mostly, no prior positions"
+        )
+        self.notifier.notify_seed_start(total)
+
+        # Pre-compute GEM signal once for the gem bucket.
+        gem_target_sym: Optional[str] = None
+        gem_sig: Optional[GemSignal] = None
+        try:
+            gem_sig = compute_gem_signal(today=today)
+            gem_target_sym = gem_sig.target
+            logger.info(
+                f"Initial seed: GEM signal computed off-cycle → "
+                f"{gem_target_sym} ({gem_sig.reason})"
+            )
+        except Exception as e:
+            logger.error(f"Initial seed: GEM signal failed: {e}")
+
+        bought: list[tuple[str, str, int, float]] = []   # (bucket, symbol, qty, price)
+        buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.01)
+        comm = self.params.get("commission", {}).get("rate_per_side", 0.0025)
+
+        for b in buckets:
+            if b.target_usd <= 0:
+                continue
+            # Skip buckets that have their own signal-driven entry.
+            if b.name == "casper":
+                logger.info(
+                    f"Initial seed: skipping Casper (entry only on intraday signal); "
+                    f"${b.target_usd:.2f} held as cash"
+                )
+                continue
+            # Resolve the symbol per bucket.
+            if b.name == "gem":
+                if gem_target_sym is None:
+                    logger.warning(
+                        "Initial seed: GEM target unknown — leaving as cash"
+                    )
+                    continue
+                symbol = gem_target_sym
+            elif b.name == "clenow":
+                # Stock-screen module not yet implemented — leave as cash
+                # and let the next phase fill this bucket.
+                logger.info(
+                    f"Initial seed: Clenow stock screen not yet implemented; "
+                    f"${b.target_usd:.2f} held as cash for now"
+                )
+                continue
+            else:
+                symbol = BUCKET_DEFAULT_SYMBOL.get(b.name)
+                if symbol is None:
+                    continue
+
+            # Price + sizing
+            px_data = self.kis_client.get_us_price(symbol) or {}
+            price = float(px_data.get("price", 0) or 0)
+            if price <= 0:
+                logger.error(
+                    f"Initial seed: cannot fetch price for {symbol} — skip"
+                )
+                continue
+            eff = price * (1 + buy_slip + comm)
+            qty = int(b.target_usd / eff) if eff > 0 else 0
+            if qty < 1:
+                logger.warning(
+                    f"Initial seed: budget ${b.target_usd:.2f} below "
+                    f"effective price ${eff:.2f} for {symbol} — skip"
+                )
+                continue
+            result = self.kis_order.buy_market(symbol, qty)
+            if result is None:
+                self.notifier.notify_order_failed(
+                    symbol, "buy", qty,
+                    f"Initial seed for {b.name}",
+                )
+                continue
+            self.notifier.notify_etf_rebalance(
+                "buy", symbol, qty, price, b.name,
+                f"Initial seed ({b.target_weight*100:.0f}% of ${total:,.0f})",
+            )
+            bought.append((b.name, symbol, qty, price))
+            b.last_rebalance_date = today.isoformat()
+            # Pace successive orders so KIS doesn't see them as one burst.
+            time.sleep(1.5)
+
+        # Persist GEM state if we bought a GEM asset, otherwise leave
+        # last_signal_date untouched so the next month-end signal still fires.
+        if gem_sig is not None and any(n == "gem" for n, *_ in bought):
+            self._gem_state.last_signal_date = gem_sig.signal_date
+            self._gem_state.last_target = gem_sig.target
+            self._gem_state.current_holding = gem_sig.target
+            self._gem_state.save()
+
+        # ALWAYS mark seeded — even if some buys failed — so we don't
+        # double-execute on the next tick. Failures are surfaced in
+        # Telegram already; the user can manually buy the missing slice.
+        self._portfolio_state.seeded_at = today.isoformat()
+        self._portfolio_state.save()
+
+        self.notifier.notify_seed_complete(bought)
+        if bought:
+            logger.info(f"Initial seed complete: {len(bought)} buckets funded")
+        else:
+            logger.warning("Initial seed completed but no positions opened")
+
+    def _maybe_run_gem(self, buckets: list, total: float,
+                       holdings: dict, mode: str) -> None:
+        """Check GEM scheduler. In alert mode just notify; in auto mode trade.
+
+        IMPORTANT: GEM must NOT trade outside US RTH (regular trading
+        hours) because KIS overseas-stock orders only accept ORD_DVSN="00"
+        limit orders on a live exchange. If we're before 09:30 ET we
+        defer execution to the next tick which will retry within the
+        same calendar day (idempotency-safe via `last_signal_date`).
+        """
+        run, signal_date = should_run_gem(state=self._gem_state)
+        if not run or signal_date is None:
+            return
+
+        sig = compute_gem_signal()  # uses today's prices
+        # Override signal_date with the date the scheduler resolved to
+        # (could be earlier than today during grace window).
+        sig.signal_date = signal_date.isoformat()
+        logger.info(
+            f"GEM signal {sig.signal_date}: target={sig.target} "
+            f"US={sig.us_ret*100:+.2f}% ExUS={sig.exus_ret*100:+.2f}% "
+            f"BILL={sig.bill_ret*100:+.2f}% — {sig.reason}"
+        )
+        self.notifier.notify_gem_signal(
+            sig.signal_date, sig.target,
+            sig.us_ret, sig.exus_ret, sig.bill_ret, sig.reason,
+            mode=mode,
+        )
+
+        if mode == "alert":
+            # Mark as "computed" but NOT executed so auto mode would
+            # still trade next month — i.e. alert mode does not pollute
+            # state. (Antonacci's signal date is the same regardless.)
+            return
+
+        # auto mode → execute
+        if not time_utils.is_market_open():
+            logger.info(
+                "GEM auto: market closed — deferring execution to next tick "
+                "during RTH (signal date already locked)"
+            )
+            return
+        self._execute_gem_rotation(sig, holdings, total)
+
+    def _execute_gem_rotation(self, sig: GemSignal, holdings: dict,
+                              total: float) -> None:
+        """Sell current GEM holding (if different) and buy `sig.target`.
+
+        GEM bucket size = total × weights["gem"]. If the bucket weight is
+        0 in the current tier (i.e. account below $3k uses GEM=100%),
+        the full available USD is used.
+        """
+        weights = tier_for_capital(total)
+        gem_weight = weights.get("gem", 0.0)
+        if gem_weight <= 0:
+            logger.info("GEM: weight=0 in current tier — skipping")
+            return
+        gem_budget = total * gem_weight
+
+        # Determine current GEM holding (any of SPY/VEU/AGG/BIL)
+        current_sym: Optional[str] = self._gem_state.current_holding
+        for sym in ("SPY", "VEU", "AGG", "BIL"):
+            if holdings.get(sym, {}).get("qty", 0) > 0:
+                current_sym = sym
+                break
+
+        # Already holding target → just update state, no trade.
+        if current_sym == sig.target:
+            logger.info(f"GEM: already holding {sig.target} — no rotation")
+            self.notifier.notify_gem_executed(
+                "HOLD", sig.target,
+                holdings.get(sig.target, {}).get("qty", 0),
+                holdings.get(sig.target, {}).get("price", 0.0),
+            )
+            self._gem_state.last_signal_date = sig.signal_date
+            self._gem_state.last_target = sig.target
+            self._gem_state.current_holding = sig.target
+            self._gem_state.save()
+            return
+
+        if not self.kis_order:
+            logger.warning("GEM auto: kis_order not available — skipping")
+            return
+
+        # 1) Sell current holding
+        if current_sym and holdings.get(current_sym, {}).get("qty", 0) > 0:
+            qty = holdings[current_sym]["qty"]
+            sell_result = self.kis_order.sell_market(current_sym, qty)
+            if sell_result:
+                px = holdings[current_sym].get("price", 0.0)
+                self.notifier.notify_etf_rebalance(
+                    "sell", current_sym, qty, px, "gem",
+                    f"GEM rotation → buying {sig.target}",
+                )
+            else:
+                logger.error(f"GEM: sell {current_sym} failed — aborting rotation")
+                return
+
+        # 2) Buy new target. Wait briefly for sell settlement then re-fetch cash.
+        time.sleep(2.0)
+        bal2 = self.kis_client.get_us_balance() or {}
+        cash_avail = float(bal2.get("available_cash", 0) or 0)
+        budget = min(gem_budget, cash_avail)
+        price_data = self.kis_client.get_us_price(sig.target) or {}
+        price = float(price_data.get("price", 0) or 0)
+        if price <= 0:
+            logger.error(f"GEM: cannot fetch price for {sig.target}")
+            return
+        buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.01)
+        comm = self.params.get("commission", {}).get("rate_per_side", 0.0025)
+        eff = price * (1 + buy_slip + comm)
+        qty_to_buy = int(budget / eff) if eff > 0 else 0
+        if qty_to_buy < 1:
+            logger.error(
+                f"GEM: insufficient cash for 1 share of {sig.target} "
+                f"(budget=${budget:.2f}, price=${price:.2f})"
+            )
+            return
+        buy_result = self.kis_order.buy_market(sig.target, qty_to_buy)
+        if not buy_result:
+            logger.error(f"GEM: buy {sig.target} failed")
+            return
+        self.notifier.notify_etf_rebalance(
+            "buy", sig.target, qty_to_buy, price, "gem",
+            f"GEM signal {sig.signal_date} → {sig.reason}",
+        )
+
+        # 3) Persist new state (idempotency guard for next ticks)
+        self._gem_state.last_signal_date = sig.signal_date
+        self._gem_state.last_target = sig.target
+        self._gem_state.current_holding = sig.target
+        self._gem_state.save()
+        logger.info(f"GEM rotation complete: → {sig.target} x{qty_to_buy}")
+
+    def _execute_bucket_drift_rebalance(self, drifted: list,
+                                        total: float, holdings: dict,
+                                        all_buckets: list) -> None:
+        """Sell over-allocated, buy under-allocated for static-symbol buckets.
+
+        Static buckets = SPMO, MTUM, QUAL, TQQQ_SMA. Each has a single
+        canonical symbol (BUCKET_DEFAULT_SYMBOL). GEM and CASPER drift
+        rebalance happens elsewhere.
+        """
+        if not self.kis_order:
+            return
+        for b in drifted:
+            sym = BUCKET_DEFAULT_SYMBOL.get(b.name)
+            if not sym:
+                continue
+            if b.drift_pct > 0:
+                # Over-allocated → sell down. Compute shares to bring back
+                # to target_usd at current price.
+                price = holdings.get(sym, {}).get("price", 0.0)
+                if price <= 0:
+                    continue
+                excess_usd = b.current_value_usd - b.target_usd
+                qty = int(excess_usd / price)
+                if qty < 1:
+                    continue
+                if self.kis_order.sell_market(sym, qty):
+                    self.notifier.notify_etf_rebalance(
+                        "sell", sym, qty, price, b.name,
+                        f"Q-end drift {b.drift_pct*100:+.1f}% → trim",
+                    )
+            else:
+                # Under-allocated → buy up. Use available cash (not GEM/casper budget).
+                bal = self.kis_client.get_us_balance() or {}
+                cash = float(bal.get("available_cash", 0) or 0)
+                short_usd = b.target_usd - b.current_value_usd
+                budget = min(short_usd, cash)
+                if budget < 10:  # too small to matter
+                    continue
+                price_data = self.kis_client.get_us_price(sym) or {}
+                price = float(price_data.get("price", 0) or 0)
+                if price <= 0:
+                    continue
+                buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.01)
+                comm = self.params.get("commission", {}).get("rate_per_side", 0.0025)
+                eff = price * (1 + buy_slip + comm)
+                qty = int(budget / eff) if eff > 0 else 0
+                if qty < 1:
+                    continue
+                if self.kis_order.buy_market(sym, qty):
+                    self.notifier.notify_etf_rebalance(
+                        "buy", sym, qty, price, b.name,
+                        f"Q-end drift {b.drift_pct*100:+.1f}% → add",
+                    )
 
     def _sync_capital(self):
         """Sync capital with actual KIS account balance."""

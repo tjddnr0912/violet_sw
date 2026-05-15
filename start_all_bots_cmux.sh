@@ -9,7 +9,7 @@
 #   +-------------------+-------------------+
 #   | Quant Daemon      | Investment Bot    |
 #   +-------------------+-------------------+
-#   |     Casper Bot (TQQQ/SQQQ + TG)       |
+#   |     미장봇 (TQQQ/SQQQ + TG)       |
 #   +---------------------------------------+
 #
 # (Disabled) Dashboard (5001), Stock Dashboard (5002)
@@ -146,7 +146,7 @@ run_in_pane "$S_BL" "Quant Daemon"    "cd '$SCRIPT_DIR/007_stock_trade' && '$QUA
 run_in_pane "$S_BR" "Investment Bot"  "cd '$SCRIPT_DIR' && '$INVESTMENT_BOT'"
 
 # Bottom row
-run_in_pane "$S_BOTTOM" "Casper Bot"  "cd '$SCRIPT_DIR/014_casper' && '$CASPER_BOT' start --yes"
+run_in_pane "$S_BOTTOM" "미장봇"  "cd '$SCRIPT_DIR/014_casper' && '$CASPER_BOT' start --yes"
 
 # (Disabled) Dashboard panes - Uncomment to re-enable:
 # run_in_pane "$S_??" "Dashboard"       "cd '$DASHBOARD' && source venv/bin/activate && python app.py"
@@ -156,9 +156,9 @@ echo ""
 echo "4 bots running in workspace 'running_machine' (2+2+1 grid)"
 echo "  Top:    (disabled) | Telegram Bot"
 echo "  Mid:    Quant Daemon | Investment Bot"
-echo "  Bottom: Casper Bot"
+echo "  Bottom: 미장봇"
 echo ""
 echo ""
-echo "  (Casper Bot uses --yes flag to skip live mode confirmation)"
+echo "  (미장봇 uses --yes flag to skip live mode confirmation)"
 echo ""
 echo "Use 'cmux tree --workspace $ws_ref' to see the pane layout."

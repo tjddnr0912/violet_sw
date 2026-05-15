@@ -39,6 +39,21 @@ def load_env() -> dict:
         "test_mode": os.getenv("TEST_MODE", "off").lower() == "on",
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "timezone": os.getenv("TIMEZONE", "US/Eastern"),
+        # P0 — Casper bucket cap. 0 = unlimited (legacy behavior).
+        # When > 0, _execute_entry caps `shares` so the dollar value of the
+        # position does not exceed this number. Used to carve out the
+        # Casper portion of a multi-bucket portfolio (default $600 of $3k).
+        "casper_max_position_usd": float(os.getenv("CASPER_MAX_POSITION_USD", "0") or 0),
+        # P3 — bucket portfolio weights file. None = single-bucket Casper-only mode.
+        "portfolio_config_path": os.getenv(
+            "PORTFOLIO_CONFIG",
+            os.path.join(os.path.dirname(__file__), "..", "..", "config", "portfolio.json"),
+        ),
+        # P1/P2 — GEM scheduler kill-switch.
+        # "alert" → P1: compute & telegram only, no orders.
+        # "auto"  → P2: compute + execute via KIS.
+        # "off"   → disabled.
+        "gem_mode": os.getenv("GEM_MODE", "off").lower(),
     }
 
 

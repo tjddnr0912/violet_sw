@@ -2,7 +2,7 @@
 
 > **목적**: 사용자가 정리한 "캐스퍼 ICT 매매법" 종합 자료 + Gemini로 깊이 분석한
 > Casper SMC ICT Mastery Course 002 / 005 / 015 / Intra Day Strategy 영상 핵심을
-> 기존 캐스퍼봇 코드(`src/`)에 통합 가능한 형태로 누적 정리한다.
+> 기존 미장봇 코드(`src/`)에 통합 가능한 형태로 누적 정리한다.
 >
 > **작성일**: 2026-05-12  •  **베이스 문서**: `STRATEGY_REVIEW.md`(2026-03), `EXECUTION_PLAN.md`(2026-03), `INTRADAY_COMPARISON.md`(2026-05)
 >
@@ -13,7 +13,7 @@
 
 ## 0. 한 줄 요약
 
-현재 캐스퍼봇은 ICT 매매법의 **첫 1/3만 구현**된 상태다.
+현재 미장봇은 ICT 매매법의 **첫 1/3만 구현**된 상태다.
 ORB(15분 기준선) + Bullish FVG strict 까지는 ICT의 "External Liquidity Sweep + Displacement + FVG" 흐름의 부분 집합이지만,
 **Liquidity 풀 정의, Displacement 검증, CHoCH 확인, OTE 진입, 양방향 매매, Killzone 시간 분리**가 모두 빠져있다.
 이 문서는 그 갭을 채우는 4단계 통합 로드맵을 제시한다.
@@ -115,11 +115,11 @@ Distribution (분배/추세) → CHoCH + Displacement 발생
    ↓ 진짜 방향으로 강한 추세
 ```
 
-→ 캐스퍼봇이 NY RTH만 운용 중이라 **아시아 박스권은 기록만 가능 (KIS 미국주식 시간 외 시세 제약)**. 5.2절에서 상세.
+→ 미장봇이 NY RTH만 운용 중이라 **아시아 박스권은 기록만 가능 (KIS 미국주식 시간 외 시세 제약)**. 5.2절에서 상세.
 
 ---
 
-## 2. 현재 캐스퍼봇 vs ICT 매칭 갭
+## 2. 현재 미장봇 vs ICT 매칭 갭
 
 ### 2.1 매칭표 (코드 위치 + 갭 분석)
 
@@ -201,7 +201,7 @@ Distribution (분배/추세) → CHoCH + Displacement 발생
 
 ### 4.1 ICT 영상 권장 vs 현재 운용
 
-| 차원 | ICT/Casper SMC 권장 | 캐스퍼봇 현재 |
+| 차원 | ICT/Casper SMC 권장 | 미장봇 현재 |
 |---|---|---|
 | Primary 자산 | NQ / ES futures, EUR/USD, BTC | **TQQQ / SQQQ** |
 | 데이터/신호 추출 | NQ 차트 (24h, 정확) | TQQQ/SQQQ 5분봉 (RTH만) |
@@ -312,7 +312,7 @@ Distribution (분배/추세) → CHoCH + Displacement 발생
 
 ### 6.1 의존성 원칙
 
-기존 캐스퍼봇 안정성을 잃지 않기 위해:
+기존 미장봇 안정성을 잃지 않기 위해:
 
 1. **신규 모듈은 모두 옵션** — `config/strategy_params.json`에 명시적 토글
 2. **기존 `strat_casper` 동작은 보존** — phase 1에서 default OFF 유지, A/B 비교 후 ON

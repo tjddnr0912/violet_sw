@@ -1,6 +1,9 @@
-# CLAUDE.md - Casper Trading Bot
+# CLAUDE.md — 미장봇 (US Stock Bot)
 
-TQQQ/SQQQ Long-Only 자동매매 봇. ORB + FVG + Pullback 전략, **Scenario B**: AM_MACRO=1:3 / AM_LATE=1:2.
+**제품명**: 미장봇 (US Stock Bot). 멀티 bucket 자동매매 봇.
+**구성 ($3k 기준)**: SPMO 매수보유 50% + GEM (Antonacci Dual Momentum) 30% + **Casper 전략** (ORB+FVG TQQQ/SQQQ 데이트레이딩) 20%. 자본 $5k 도달 시 MTUM/QUAL, $10k 도달 시 Clenow/TQQQ_SMA 자동 활성화.
+**전략 카테고리 명칭**: ‘Casper’ = Jesse Rogers SMC 기반 ORB+FVG 데이트레이딩 전략 이름. **봇 제품명이 아니라 한 전략의 카테고리명으로만 사용된다.** 클래스명·logger·파일명·script 이름에는 호환성을 위해 `casper` 식별자가 남아 있다.
+**Casper 전략 R:R**: Scenario B — AM_MACRO=1:3 / AM_LATE=1:2.
 
 ## 실행
 

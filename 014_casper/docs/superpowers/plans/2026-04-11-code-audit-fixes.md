@@ -741,7 +741,7 @@ LOCK_FILE="$SCRIPT_DIR/.casper.lock"
 lock_instance() {
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then
-        echo -e "${YELLOW}[WARN]${NC} Casper Bot이 이미 실행 중입니다"
+        echo -e "${YELLOW}[WARN]${NC} 미장봇이 이미 실행 중입니다"
         echo "       종료하려면: $0 stop"
         exit 1
     fi

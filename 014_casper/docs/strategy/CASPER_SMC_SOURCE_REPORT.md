@@ -66,7 +66,7 @@
 
 ### 2.3 ICT Mastery Course — 3개 핵심 모듈
 
-| 모듈 | 내용 | 캐스퍼 봇 매핑 |
+| 모듈 | 내용 | 미장봇 매핑 |
 |---|---|---|
 | **Unicorn Model** | Order Block → Breaker → FVG overlap 3-confluence | [[knowledge/trading-strategies/orb-fvg/unicorn-breaker-fvg-overlap]] (구현 완료) |
 | **STBP Daily Bias** | PDH/PDL + PWH/PWL + MA20/50 합산 점수로 일별 방향성 | `src/core/bias.py::compute_daily_bias` (구현 완료) |
@@ -86,11 +86,11 @@
 #### 2.4.1 hoosn1ck 스크립트의 정확한 룰
 
 ```
-세션: 09:30~09:35 ET 5분봉 = Opening Range (★ 캐스퍼 봇은 15분 = 다름)
+세션: 09:30~09:35 ET 5분봉 = Opening Range (★ 미장봇은 15분 = 다름)
 진입:
   Long  → 5분봉 close > ORB.high AND 다음 봉이 ORB.high 아래로 wick 후 body는 위
   Short → mirror
-SL    = ORB midpoint (★ 캐스퍼 봇은 prev_candle.low — 다름)
+SL    = ORB midpoint (★ 미장봇은 prev_candle.low — 다름)
 TP    = Risk × R:R ratio (configurable)
 필터  (default OFF):
   - ADX < 25 → skip
@@ -256,7 +256,7 @@ community script 옵션. 트렌드 강도 약한 날 setup 제외.
 
 community script 옵션. long은 4H VWAP 위에서만, short은 아래에서만.
 
-캐스퍼 봇은 이미 Daily Bias (PDH/PDL+MA20/50)로 일별 방향 결정 — 4H VWAP은 *더 단기*. 중복 가능성 있지만 보완적일 수도.
+미장봇은 이미 Daily Bias (PDH/PDL+MA20/50)로 일별 방향 결정 — 4H VWAP은 *더 단기*. 중복 가능성 있지만 보완적일 수도.
 
 **제안**: Daily Bias가 neutral인 날만 4H VWAP fallback으로 사용. 별도 백테스트 필요.
 

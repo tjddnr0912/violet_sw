@@ -160,7 +160,7 @@ backtest   2026-05-13   TQQQ  bull  10:50                   —            —  
 
 ## 5. 보조 발견 — Counter-Direction 패턴
 
-데이터에서 가장 흥미로운 결과: **2026-05-01 ~ 05-06 4영업일 연속 1H bear expansion 발생 + 캐스퍼 봇이 모두 bull 매매**.
+데이터에서 가장 흥미로운 결과: **2026-05-01 ~ 05-06 4영업일 연속 1H bear expansion 발생 + 미장봇이 모두 bull 매매**.
 
 이 기간 봇의 매매 결과:
 | 날짜 | result | r_mult |
