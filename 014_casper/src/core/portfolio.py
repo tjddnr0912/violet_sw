@@ -89,6 +89,28 @@ BUCKET_DEFAULT_SYMBOL = {
 }
 
 
+# Ticker → KIS exchange code. KIS rejects price + order requests when
+# the exchange doesn't match the ticker's listing venue:
+#   * NASD = NASDAQ-listed (TQQQ family, QQQ)
+#   * AMEX = NYSE Arca-listed (factor ETFs, GEM rotation universe).
+# The bot's original code defaulted everything to NASD because that
+# was correct for the original TQQQ/SQQQ-only universe. Multi-bucket
+# adds Arca-listed names, so each call site must pass the right venue.
+TICKER_EXCHANGE = {
+    "TQQQ": "NASD", "SQQQ": "NASD", "QQQ": "NASD",
+    "SPMO": "AMEX", "MTUM": "AMEX", "QUAL": "AMEX",
+    "SPY":  "AMEX", "VEU":  "AMEX", "AGG":  "AMEX", "BIL": "AMEX",
+}
+
+
+def exchange_for(symbol: str) -> str:
+    """KIS exchange code for a given ticker. Defaults to NASD so unknown
+    symbols don't silently swap venues — calling code can detect a wrong
+    default via a failed price fetch and add the symbol to TICKER_EXCHANGE.
+    """
+    return TICKER_EXCHANGE.get((symbol or "").upper(), "NASD")
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Data classes
 # ─────────────────────────────────────────────────────────────────────

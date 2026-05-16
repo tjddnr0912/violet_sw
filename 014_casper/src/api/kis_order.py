@@ -44,9 +44,9 @@ class KISOrder:
         Returns:
             Order result dict or None on failure.
         """
-        price = self._get_market_price(symbol)
+        price = self._get_market_price(symbol, exchange)
         if price is None:
-            logger.error(f"BUY: Cannot get price for {symbol}")
+            logger.error(f"BUY: Cannot get price for {symbol}@{exchange}")
             return None
         # Bid slightly above current price for immediate fill
         limit_price = round(price * (1 + self.buy_slippage), 2)
@@ -69,9 +69,9 @@ class KISOrder:
         Returns:
             Order result dict or None on failure.
         """
-        price = self._get_market_price(symbol)
+        price = self._get_market_price(symbol, exchange)
         if price is None:
-            logger.error(f"SELL: Cannot get price for {symbol}")
+            logger.error(f"SELL: Cannot get price for {symbol}@{exchange}")
             return None
         # Ask slightly below current price for immediate fill
         limit_price = round(price * (1 - self.sell_slippage), 2)
@@ -80,9 +80,9 @@ class KISOrder:
             exchange=exchange, price=limit_price, order_type="00"
         )
 
-    def _get_market_price(self, symbol: str) -> Optional[float]:
+    def _get_market_price(self, symbol: str, exchange: str = "NASD") -> Optional[float]:
         """Get current price for market-like order execution."""
-        data = self.client.get_us_price(symbol)
+        data = self.client.get_us_price(symbol, exchange=exchange)
         if data and data.get("price", 0) > 0:
             return data["price"]
         return None

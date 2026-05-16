@@ -159,6 +159,19 @@ class TelegramNotifier:
         hist_pnl = history.get('pnl', 0)
         rows.append(("History", f"{hist_count}T  WR {hist_wr:.1f}%  PnL ${hist_pnl:+,.2f}"))
 
+        # Multi-bucket runtime info (cap + GEM mode) — pulled from .env.
+        # Skipped when both are at defaults (legacy single-bucket Casper).
+        if strategy_info:
+            cap_usd = float(strategy_info.get("casper_max_position_usd", 0) or 0)
+            gem_mode = strategy_info.get("gem_mode", "off")
+            if cap_usd > 0 or gem_mode != "off":
+                rows.append("---")
+                if cap_usd > 0:
+                    pct = (cap_usd / capital * 100) if capital > 0 else 0
+                    rows.append(("Casper Cap", f"${cap_usd:,.0f}  ({pct:.1f}% of capital)"))
+                if gem_mode != "off":
+                    rows.append(("GEM Mode", gem_mode))
+
         if strategy_info:
             rows.append("---")
             scan = "DUAL (TQQQ+SQQQ)" if strategy_info.get("dual_scan") else "TREND (QQQ MA20)"
@@ -381,15 +394,29 @@ class TelegramNotifier:
     def notify_entry(self, symbol: str, price: float, shares: int,
                      stop: float, target: float, risk: float,
                      rr_ratio: float = 3.0,
-                     killzone: Optional[str] = None) -> None:
-        """Trade entry — critical (queued on network failure during trade)."""
+                     killzone: Optional[str] = None,
+                     bucket_cap_usd: float = 0.0) -> None:
+        """Trade entry — critical (queued on network failure during trade).
+
+        bucket_cap_usd: when > 0, render ‘Position $X of $cap’ so the
+        operator immediately sees how much of the Casper bucket cap was
+        consumed. Pulled from CASPER_MAX_POSITION_USD env upstream.
+        """
         risk_total = risk * shares
         reward_ps = abs(target - price)
         reward_total = reward_ps * shares
         total_cost = price * shares
+        if bucket_cap_usd > 0:
+            usage_pct = (total_cost / bucket_cap_usd * 100)
+            position_str = (
+                f"{shares}주 × ${price:.2f} = ${total_cost:,.2f}  "
+                f"/ cap ${bucket_cap_usd:,.0f}  ({usage_pct:.1f}%)"
+            )
+        else:
+            position_str = f"{shares}주 × ${price:.2f} = ${total_cost:,.2f}"
         rows = [
             ("Symbol", symbol),
-            ("Position", f"{shares}주 × ${price:.2f} = ${total_cost:,.2f}"),
+            ("Position", position_str),
             ("SL", f"${stop:.2f}   risk ${risk:.2f}/sh  (-${risk_total:.2f})"),
             ("TP", f"${target:.2f}  reward ${reward_ps:.2f}/sh  (+${reward_total:.2f})"),
             ("R:R", f"1:{rr_ratio:g}" + (f"   KZ: {killzone}" if killzone else "")),
@@ -517,11 +544,16 @@ class TelegramNotifier:
         self.send(self._box(title, rows))
 
     def notify_portfolio_summary(self, total_usd: float, buckets: list,
-                                 tier_key: str) -> None:
+                                 tier_key: str,
+                                 casper_cap_usd: float = 0.0) -> None:
         """Daily portfolio snapshot — total value + per-bucket allocation.
 
         Renders a compact aligned table inside a <pre> block so columns
         line up on both mobile and desktop Telegram clients.
+
+        casper_cap_usd: env-driven CASPER_MAX_POSITION_USD. When > 0 the
+        Casper row gets a ‘cap $N’ annotation so the operator can see
+        the per-trade limit alongside the bucket value.
         """
         # Build the bucket table as a single multi-line "row" so column
         # alignment is exact (we control the widths ourselves).
@@ -532,11 +564,15 @@ class TelegramNotifier:
         for b in buckets:
             arrow = "↑" if b.drift_pct > 0.001 else ("↓" if b.drift_pct < -0.001 else "•")
             sym = b.current_symbol or "—"
-            table_lines.append(
+            line = (
                 f"  {b.name:<8} {sym:<6} "
                 f"${b.current_value_usd:>9,.2f} ${b.target_usd:>9,.2f}  "
                 f"{arrow} {b.drift_pct*100:+5.1f}%"
             )
+            # Casper row annotation: per-trade cap from CASPER_MAX_POSITION_USD env
+            if b.name == "casper" and casper_cap_usd > 0:
+                line += f"   cap ${casper_cap_usd:,.0f}"
+            table_lines.append(line)
 
         # Header (outside <pre>) then the table (inside <pre>) for alignment
         header = f"💼 <b>포트폴리오</b>  ${total_usd:,.2f}"

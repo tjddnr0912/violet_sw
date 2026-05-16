@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-05-16: 멀티버킷 운영 안정성 보강 (P0 / P1 / P2)
+
+전날 멀티버킷 시드 디버깅 + 시드 후 정밀 검토에서 발견한 3개 결함을 한 번에 보강. 봇은 어제 시드 매수까지 정상 완료(SPMO 10주 + VEU 11주), 그러나 시드 후 SCANNING 진입 자체를 못해 그날 캐스퍼 거래 0건 — 그 원인 + 재발 방지 + persistence 추가.
+
+### P0 — Scan window late entry (src/bot.py:885~890)
+
+`_handle_waiting`이 `is_pre_market` / `is_orb_forming` 두 시간대만 분기. `is_scan_window` (ET 09:45~10:55) 분기 부재 → SCANNING 시간에 봇 시작 시 `sleep 60`만 무한 반복하며 그 날 캐스퍼 매매 자동 포기. 분기 추가 → PRE_MARKET으로 보내 trend 계산 + `_handle_pre_market`의 "Late join" 경로로 ORB_FORMING → 5분봉 backfill로 ORB 재계산 → SCANNING.
+
+### P1 — Intraday state persistence (src/bot.py:67~73, 810~876, 1009~1010, 1138~1145, 1207~1210)
+
+같은 거래일 내 봇 재시작 시 `self.trend` / `self.orbs` / `self.orb`가 메모리 only라 lost → SCANNING으로 도달해도 시그널 평가 불가. 새 파일 `data/intraday_state.json`에 trend + ORBs 영구 저장.
+
+- `_save_intraday_state()`: PRE_MARKET trend 결정 직후 + ORB_FORMING→SCANNING 전이 직전에 호출
+- `_load_intraday_state()`: `_reset_day` 끝에서 호출. `date != today_et()`면 stale로 무시
+- `_handle_orb_forming` 시작에 "self.orbs 이미 있으면 SCANNING 직행" 분기 → 재계산 회피
+
+### P2 — Initial seed full-fail lock-out 차단 (src/bot.py:1980~2003, 2156~2179)
+
+`_execute_initial_seed`가 매수 0건이어도 `seeded_at`을 박는 "ALWAYS mark seeded" 정책 + `_daily_portfolio_tick`의 `save_evaluation`이 `last_eval_date=today`까지 박음 → 한 번 fail하면 다음 봇 재시작에서 시드 진입 영구 차단. 어제 KIS exchange mismatch로 시드 0건이 두 번 누적되며 표면화.
+
+- `_execute_initial_seed` → `bool` 반환. 매수 ≥ 1건일 때만 `seeded_at` 박음
+- `_daily_portfolio_tick`이 False 받으면 `save_evaluation` + `_portfolio_tick_done_for=today` 둘 다 건너뛰고 일찍 return
+- 결과: KIS API 일시 outage가 영구 lock으로 번지지 않음. 다음 `_tick`/`_reset_day`에서 자동 재시도.
+
+---
+
+## 2026-05-15 (PM, 두 번째 패치): KIS exchange code mismatch fix + 시드 retry 안정화
+
+같은 날 멀티버킷 첫 가동 후 시드가 SPMO/VEU 가격 조회 자체에서 silent fail. 원인: KIS overseas API는 거래소 코드를 정확히 받아야 하는데 `get_us_price`/`buy_market`/`sell_market` 모두 default `exchange="NASD"`. SPMO/VEU/MTUM/QUAL/SPY/AGG/BIL은 NYSE Arca-listed라 `"AMEX"` 필요.
+
+### 코드 변경
+
+- **`src/core/portfolio.py`** — `TICKER_EXCHANGE` 매핑 (TQQQ/SQQQ/QQQ→NASD, 그 외 7 ETF→AMEX) + `exchange_for(symbol)` 헬퍼 추가
+- **`src/api/kis_order.py`** — `_get_market_price`/`buy_market`/`sell_market` 모두 exchange 인자 전파 (내부 helper의 hidden default 함정 layer 제거)
+- **`src/bot.py`** — multi-bucket KIS 호출 9곳 (snapshot 1, 시드 2, GEM rotation 2, drift rebalance 4)에 `exchange=exchange_for(symbol)` 명시. Casper의 TQQQ/SQQQ 호출 4곳은 NASD default 그대로 유지 (의도된 동작)
+- **`src/telegram/notifier.py`** — `bucket_cap_usd`/`casper_cap_usd` 파라미터 추가, GEM mode/cap을 startup banner에 노출
+- **`src/bot.py`** `_daily_portfolio_tick` deferred seed 분기에 `return` 추가 — in-memory `_seed_pending`이 restart로 lost되어 retry 영구 차단되는 잠재 버그 제거
+
+### 실측 검증
+
+23:27 KST 봇 재기동 → 23:27:41 시드 완료: SPMO 10주 @ $145.72 (#0032012408), VEU 11주 @ $81.99 (#0032012464). Casper sleeve $609.94는 cash로 보관 (intraday signal 대기). `portfolio_state.json::seeded_at=2026-05-15`, `gem_state.json::current_holding=VEU` 모두 정상 저장.
+
+---
+
 ## 2026-05-15 (PM): Multi-Bucket Portfolio (P0~P4) 통합 — Casper 데이트레이딩 + 저빈도 퀀트 자동 운용
 
 자본 $3,000 환경에서 Casper만으로는 자본 효율이 20% (60일에 3건 매매 = 95% 일자 유휴)인 문제를 해결. Casper의 KIS/상태머신/Telegram 인프라를 그대로 재사용해서 단일 봇 안에 **GEM (Antonacci Dual Momentum) + SPMO 매수보유 + 분기 SPMO drift + 자본 tier 자동 활성화**를 추가. `GEM_MODE=off`이면 기존 Casper 동작 100% 그대로 유지 (역호환 안전).

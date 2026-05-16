@@ -58,10 +58,18 @@ from src.core.gem import (
 from src.core.portfolio import (
     Bucket, PortfolioState, evaluate_portfolio, needs_rebalance,
     save_evaluation, tier_for_capital, BUCKET_DEFAULT_SYMBOL,
-    PORTFOLIO_STATE_FILE, needs_initial_seed,
+    PORTFOLIO_STATE_FILE, needs_initial_seed, exchange_for,
 )
 
 logger = logging.getLogger("casper")
+
+
+# Intraday work (trend + ORBs) snapshot — lets a same-day bot restart
+# resume without re-running pre-market checks or losing already-computed
+# ORBs. Stale entries (date != today ET) are ignored on load.
+INTRADAY_STATE_FILE = os.path.join(
+    os.path.dirname(__file__), "..", "data", "intraday_state.json"
+)
 
 
 class BotState(Enum):
@@ -661,6 +669,12 @@ class CasperBot:
             "ict_session_pools": ep.get("use_session_pools", False),
             "ict_premkt_history": ep.get("use_premkt_history", False),
             "ict_pdh_pdl_pool": ep.get("use_pdh_pdl_pool", False),
+            # Multi-bucket P0~P4 — pulled live from env so the banner
+            # reflects whatever's in .env at startup (no hard-coding).
+            "casper_max_position_usd": float(
+                self.env.get("casper_max_position_usd", 0) or 0
+            ),
+            "gem_mode": self.env.get("gem_mode", "off"),
         }
         self.notifier.notify_bot_started(
             self.env["trading_mode"], self.capital, history, strategy_info,
@@ -792,6 +806,66 @@ class CasperBot:
             # Never let the portfolio tick crash the trading bot.
             logger.error(f"Daily portfolio tick failed: {e}", exc_info=True)
 
+        # Restore today's pre-market work (trend + ORBs) from disk so a
+        # same-day bot restart resumes mid-day instead of stalling in
+        # WAITING. Stale (date != today) snapshots are ignored.
+        self._load_intraday_state()
+
+    def _save_intraday_state(self):
+        """Persist trend + ORBs so a same-day restart can resume."""
+        try:
+            if not self.today_date:
+                return
+            state = {"date": self.today_date}
+            if self.trend is not None:
+                state["trend"] = {
+                    "direction": self.trend.direction,
+                    "qqq_close": self.trend.qqq_close,
+                    "qqq_ma20": self.trend.qqq_ma20,
+                    "symbol": self.trend.symbol,
+                }
+            if self.orbs:
+                state["orbs"] = {
+                    sym: {
+                        "high": orb.high, "low": orb.low,
+                        "range_size": orb.range_size, "date": orb.date,
+                    }
+                    for sym, orb in self.orbs.items()
+                }
+            os.makedirs(os.path.dirname(INTRADAY_STATE_FILE), exist_ok=True)
+            with open(INTRADAY_STATE_FILE, "w") as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Intraday state save failed: {e}")
+
+    def _load_intraday_state(self):
+        """Hydrate trend + ORBs from disk when the file matches today."""
+        try:
+            if not os.path.exists(INTRADAY_STATE_FILE):
+                return
+            with open(INTRADAY_STATE_FILE, "r") as f:
+                state = json.load(f)
+            if state.get("date") != self.today_date:
+                return
+            trend_d = state.get("trend")
+            if trend_d and self.trend is None:
+                self.trend = TrendState(**trend_d)
+                logger.info(
+                    f"Restored trend: {self.trend.direction.upper()} "
+                    f"→ {self.trend.symbol} "
+                    f"(QQQ {self.trend.qqq_close:.2f} / MA20 {self.trend.qqq_ma20:.2f})"
+                )
+            orbs_d = state.get("orbs") or {}
+            if orbs_d and not self.orbs:
+                self.orbs = {sym: OpeningRange(**o) for sym, o in orbs_d.items()}
+                if self.trend and self.trend.symbol in self.orbs:
+                    self.orb = self.orbs[self.trend.symbol]
+                else:
+                    self.orb = next(iter(self.orbs.values()))
+                logger.info(f"Restored ORBs: {list(self.orbs.keys())}")
+        except Exception as e:
+            logger.debug(f"Intraday state load failed: {e}")
+
     # ─── State Handlers ───
 
     def _handle_waiting(self):
@@ -806,6 +880,14 @@ class CasperBot:
 
         if time_utils.is_orb_forming():
             self._transition(BotState.ORB_FORMING, "Joined during ORB")
+            return
+
+        # Late entry during the scan window (09:45~10:55 ET): route
+        # through PRE_MARKET so VIX/QQQ/trend get computed, then
+        # _handle_pre_market's Late join path drops into ORB_FORMING
+        # which can backfill the missed ORB from 5m bars.
+        if time_utils.is_scan_window():
+            self._transition(BotState.PRE_MARKET, "Late entry — scan window")
             return
 
         time.sleep(60)
@@ -878,6 +960,9 @@ class CasperBot:
                 dual_scan=dual,
             )
             self._notified_pre_market = True
+
+        # Persist trend so a same-day restart skips re-running VIX/QQQ.
+        self._save_intraday_state()
 
         # ICT Phase 3: Daily Bias hook. If enabled and bias == 'neutral',
         # skip the day. Failure of bias computation is non-fatal — we keep
@@ -1029,6 +1114,14 @@ class CasperBot:
             time.sleep(30)
             return
 
+        # ORBs already in memory (restored from disk or computed earlier
+        # in this same process) — skip recompute and go straight to SCANNING.
+        # This is what makes a same-day bot restart land on its feet.
+        if self.orbs:
+            self.orb = self.orbs.get(self.trend.symbol) or next(iter(self.orbs.values()))
+            self._transition(BotState.SCANNING, "ORBs already available")
+            return
+
         syms = self.params["symbols"]
         qqq_primary = self.params.get("mode", {}).get("qqq_primary", False)
         if qqq_primary:
@@ -1096,6 +1189,9 @@ class CasperBot:
                 for symbol, orb in self.orbs.items():
                     self.notifier.notify_orb(symbol, orb.high, orb.low, orb.range_size)
             self._notified_orb = True
+
+        # Persist ORBs so a same-day restart can resume in SCANNING.
+        self._save_intraday_state()
 
         self._transition(BotState.SCANNING)
 
@@ -1587,12 +1683,16 @@ class CasperBot:
                 kz_for_entry = self._signal_ict_meta.get("killzone")
         except Exception:
             kz_for_entry = None
+        # Pass Casper bucket cap from env (dynamic — read at startup,
+        # reflects whatever .env had when bot was launched).
+        cap_for_telegram = float(self.env.get("casper_max_position_usd", 0) or 0)
         self.notifier.notify_entry(
             self.position.symbol, self.position.entry_price,
             self.position.shares, self.position.stop_loss,
             self.position.take_profit, self.position.risk_per_share,
             rr_ratio=self.position.signal.rr_ratio,
             killzone=kz_for_entry,
+            bucket_cap_usd=cap_for_telegram,
         )
         self._save_position_state()
         self._transition(BotState.POSITION_OPEN)
@@ -1901,7 +2001,7 @@ class CasperBot:
             qty = int(h.get("qty", 0))
             if not sym or qty <= 0:
                 continue
-            px_data = self.kis_client.get_us_price(sym) or {}
+            px_data = self.kis_client.get_us_price(sym, exchange=exchange_for(sym)) or {}
             price = float(px_data.get("price", 0) or 0)
             if price <= 0:
                 # Fall back to avg_price to avoid silently dropping a
@@ -1966,9 +2066,25 @@ class CasperBot:
                     "deferring to RTH (will fire at next 09:30 ET)"
                 )
                 self._seed_pending = True
+                # Skip save_evaluation/_portfolio_tick_done_for below: _seed_pending
+                # lives in memory only, so a restart before RTH would otherwise lose
+                # the retry. Returning here keeps last_eval_date stale so the next
+                # _reset_day re-enters this tick instead of early-exiting.
+                return
             else:
                 try:
-                    self._execute_initial_seed(total, holdings, buckets)
+                    seed_ok = self._execute_initial_seed(total, holdings, buckets)
+                    if not seed_ok:
+                        # 0 positions opened — e.g. KIS price API outage on
+                        # every bucket. Bail before save_evaluation so neither
+                        # _portfolio_tick_done_for nor last_eval_date locks
+                        # today. Next _tick / next _reset_day re-enters this
+                        # branch and retries cleanly.
+                        logger.warning(
+                            "Initial seed: 0 positions opened — skipping "
+                            "evaluation snapshot so next tick retries"
+                        )
+                        return
                     # Refresh snapshot after seed orders fill — subsequent GEM
                     # logic in this same tick should see the new positions.
                     total, holdings = self._fetch_full_portfolio_snapshot()
@@ -1978,6 +2094,7 @@ class CasperBot:
                     self._seed_pending = False
                 except Exception as e:
                     logger.error(f"Initial seed failed: {e}", exc_info=True)
+                    return
 
         # 3) GEM signal (does NOT trade in alert mode)
         if gem_mode in ("alert", "auto"):
@@ -1995,13 +2112,17 @@ class CasperBot:
         # 4) Persist & summarize
         save_evaluation(buckets, total, self._portfolio_state, info)
         try:
-            self.notifier.notify_portfolio_summary(total, buckets, info["new_tier"])
+            cap_usd = float(self.env.get("casper_max_position_usd", 0) or 0)
+            self.notifier.notify_portfolio_summary(
+                total, buckets, info["new_tier"],
+                casper_cap_usd=cap_usd,
+            )
         except Exception as e:
             logger.debug(f"Portfolio summary telegram skipped: {e}")
         self._portfolio_tick_done_for = today
 
     def _execute_initial_seed(self, total: float, holdings: dict,
-                              buckets: list) -> None:
+                              buckets: list) -> bool:
         """One-shot first-run allocation from 100% cash.
 
         Called only when:
@@ -2028,7 +2149,7 @@ class CasperBot:
         """
         if not self.kis_order or not self.kis_client:
             logger.warning("Initial seed: KIS not configured — skipping")
-            return
+            return False
 
         today = time_utils.today_et()
         logger.info(
@@ -2085,12 +2206,15 @@ class CasperBot:
                 if symbol is None:
                     continue
 
-            # Price + sizing
-            px_data = self.kis_client.get_us_price(symbol) or {}
+            # Price + sizing. Factor ETFs and GEM rotation universe are
+            # NYSE Arca-listed, so KIS rejects them on default NASD —
+            # exchange_for() maps each ticker to its correct venue.
+            ex = exchange_for(symbol)
+            px_data = self.kis_client.get_us_price(symbol, exchange=ex) or {}
             price = float(px_data.get("price", 0) or 0)
             if price <= 0:
                 logger.error(
-                    f"Initial seed: cannot fetch price for {symbol} — skip"
+                    f"Initial seed: cannot fetch price for {symbol}@{ex} — skip"
                 )
                 continue
             eff = price * (1 + buy_slip + comm)
@@ -2101,7 +2225,7 @@ class CasperBot:
                     f"effective price ${eff:.2f} for {symbol} — skip"
                 )
                 continue
-            result = self.kis_order.buy_market(symbol, qty)
+            result = self.kis_order.buy_market(symbol, qty, exchange=ex)
             if result is None:
                 self.notifier.notify_order_failed(
                     symbol, "buy", qty,
@@ -2125,17 +2249,24 @@ class CasperBot:
             self._gem_state.current_holding = gem_sig.target
             self._gem_state.save()
 
-        # ALWAYS mark seeded — even if some buys failed — so we don't
-        # double-execute on the next tick. Failures are surfaced in
-        # Telegram already; the user can manually buy the missing slice.
-        self._portfolio_state.seeded_at = today.isoformat()
-        self._portfolio_state.save()
+        # Mark seeded only when at least one bucket succeeded. Partial
+        # failure still locks in (user can fill the gap manually), but a
+        # full-fail seed must NOT mark seeded — otherwise a transient KIS
+        # outage during the very first seed permanently blocks multi-bucket
+        # until a manual portfolio_state.json edit.
+        if bought:
+            self._portfolio_state.seeded_at = today.isoformat()
+            self._portfolio_state.save()
 
         self.notifier.notify_seed_complete(bought)
         if bought:
             logger.info(f"Initial seed complete: {len(bought)} buckets funded")
         else:
-            logger.warning("Initial seed completed but no positions opened")
+            logger.warning(
+                "Initial seed: 0 positions opened — seeded_at NOT marked; "
+                "next tick will retry"
+            )
+        return bool(bought)
 
     def _maybe_run_gem(self, buckets: list, total: float,
                        holdings: dict, mode: str) -> None:
@@ -2224,7 +2355,9 @@ class CasperBot:
         # 1) Sell current holding
         if current_sym and holdings.get(current_sym, {}).get("qty", 0) > 0:
             qty = holdings[current_sym]["qty"]
-            sell_result = self.kis_order.sell_market(current_sym, qty)
+            sell_result = self.kis_order.sell_market(
+                current_sym, qty, exchange=exchange_for(current_sym)
+            )
             if sell_result:
                 px = holdings[current_sym].get("price", 0.0)
                 self.notifier.notify_etf_rebalance(
@@ -2240,10 +2373,11 @@ class CasperBot:
         bal2 = self.kis_client.get_us_balance() or {}
         cash_avail = float(bal2.get("available_cash", 0) or 0)
         budget = min(gem_budget, cash_avail)
-        price_data = self.kis_client.get_us_price(sig.target) or {}
+        ex_target = exchange_for(sig.target)
+        price_data = self.kis_client.get_us_price(sig.target, exchange=ex_target) or {}
         price = float(price_data.get("price", 0) or 0)
         if price <= 0:
-            logger.error(f"GEM: cannot fetch price for {sig.target}")
+            logger.error(f"GEM: cannot fetch price for {sig.target}@{ex_target}")
             return
         buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.01)
         comm = self.params.get("commission", {}).get("rate_per_side", 0.0025)
@@ -2255,7 +2389,7 @@ class CasperBot:
                 f"(budget=${budget:.2f}, price=${price:.2f})"
             )
             return
-        buy_result = self.kis_order.buy_market(sig.target, qty_to_buy)
+        buy_result = self.kis_order.buy_market(sig.target, qty_to_buy, exchange=ex_target)
         if not buy_result:
             logger.error(f"GEM: buy {sig.target} failed")
             return
@@ -2286,6 +2420,7 @@ class CasperBot:
             sym = BUCKET_DEFAULT_SYMBOL.get(b.name)
             if not sym:
                 continue
+            ex = exchange_for(sym)
             if b.drift_pct > 0:
                 # Over-allocated → sell down. Compute shares to bring back
                 # to target_usd at current price.
@@ -2296,7 +2431,7 @@ class CasperBot:
                 qty = int(excess_usd / price)
                 if qty < 1:
                     continue
-                if self.kis_order.sell_market(sym, qty):
+                if self.kis_order.sell_market(sym, qty, exchange=ex):
                     self.notifier.notify_etf_rebalance(
                         "sell", sym, qty, price, b.name,
                         f"Q-end drift {b.drift_pct*100:+.1f}% → trim",
@@ -2309,7 +2444,7 @@ class CasperBot:
                 budget = min(short_usd, cash)
                 if budget < 10:  # too small to matter
                     continue
-                price_data = self.kis_client.get_us_price(sym) or {}
+                price_data = self.kis_client.get_us_price(sym, exchange=ex) or {}
                 price = float(price_data.get("price", 0) or 0)
                 if price <= 0:
                     continue
@@ -2319,7 +2454,7 @@ class CasperBot:
                 qty = int(budget / eff) if eff > 0 else 0
                 if qty < 1:
                     continue
-                if self.kis_order.buy_market(sym, qty):
+                if self.kis_order.buy_market(sym, qty, exchange=ex):
                     self.notifier.notify_etf_rebalance(
                         "buy", sym, qty, price, b.name,
                         f"Q-end drift {b.drift_pct*100:+.1f}% → add",

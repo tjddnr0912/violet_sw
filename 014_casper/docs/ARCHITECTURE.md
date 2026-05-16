@@ -101,7 +101,10 @@ data/
 ├── ict_decisions/              # 매 필터 결정 JSONL (오디트, append-only)
 │   └── <YYYY-MM-DD>.jsonl
 ├── trades/trades_<YYYY>.json   # 영구 매매 기록
-└── position_state.json         # 크래시 복구용 진행 중 포지션
+├── position_state.json         # 크래시 복구용 진행 중 포지션
+├── portfolio_state.json        # 멀티버킷 evaluation 캐시 + seeded_at 가드 (2026-05-15)
+├── gem_state.json              # GEM 월말 스케줄러 상태 (2026-05-15)
+└── intraday_state.json         # 같은 거래일 재시작용 trend+ORB 스냅샷 (2026-05-16)
 ```
 
 - `BarCollector`는 백그라운드 스레드. `submit(interval="5m"|"1m"|"5m_premkt")`로 비동기 큐잉.

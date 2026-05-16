@@ -500,3 +500,59 @@
   - 첫 의심 영역: **“코드 변경 → 자동 적용” 가정 금지**. Python·daemon·서비스는 명시적 재시작이 필수.
   - 빨리 배제할 가설: "다음 tick에서 자동 reload되겠지" — `load_dotenv()`, `import`는 startup 시점에만 호출됨.
   - 핵심 진단 명령: 변경 후 보고 직전에 `ps aux | grep <bot_proc>` + cmux/iTerm 화면에서 새 startup banner 확인. cmux 환경: `cmux read-screen --surface surface:N --lines 30`.
+
+---
+
+## 멀티버킷 ETF가 KIS에서 매수/가격조회 silently 실패 (NASD/AMEX 거래소 코드 미스매치)
+
+- **증상**: 시드 실행 시 SPMO·VEU·MTUM·QUAL·SPY·AGG·BIL 등 NYSE Arca-listed ETF에 대해 `Initial seed: cannot fetch price for <SYM>` 또는 `BUY: Cannot get price for <SYM>` 에러. TQQQ/SQQQ/QQQ는 정상.
+- **원인**: KIS overseas API는 거래소 코드를 정확히 받아야 한다. `get_us_price`/`buy_market`/`sell_market`의 default가 `exchange="NASD"`인데 NYSE Arca 종목은 `"AMEX"` 코드로 조회해야 한다. 원래 봇은 TQQQ/SQQQ만 다뤄서 NASD default가 정확했지만 멀티버킷 도입 후 Arca-listed 종목에선 silent fail.
+- **해결**: `src/core/portfolio.py`에 `TICKER_EXCHANGE` 매핑 + `exchange_for(symbol)` 헬퍼. 모든 multi-bucket KIS 호출 사이트(시드 / 잔고 snapshot / GEM rotation / drift rebalance — 총 9곳)에 `exchange=exchange_for(symbol)` 명시. `src/api/kis_order.py::_get_market_price` 내부 호출도 exchange 인자 전파.
+- **복구 절차**: (a) `./run_casper.sh stop` (b) `data/portfolio_state.json` 백업 후 `seeded_at`·`last_eval_date`를 `null`로 (c) `./run_casper.sh daemon --yes` (d) 다음 RTH 안에서 `Initial seed complete: N buckets funded` + `ORDER OK` 로그 확인.
+- **관련 사고**: 2026-05-15 (멀티버킷 시드 첫 가동, KIS exchange mismatch로 2회 연속 0건 매수)
+- **재발 감지**: 신규 ETF는 `TICKER_EXCHANGE`에 등록해야 함. 누락 시 default NASD로 fallback → 첫 시드/rotation에서 즉시 fail. 등록 검증: `python -c "from src.core.portfolio import exchange_for; print(exchange_for('NEW_SYM'))"`.
+
+### Claude 진단 미스 (2026-05-15)
+
+- **Claude 처음 가설**: `_execute_initial_seed`의 `get_us_price(symbol)`만 NASD default라 매수 실패. 그 한 호출에 `exchange=ex` 추가하면 해결될 거라 판단.
+- **실제 원인**: `kis_order.buy_market`이 내부에서 `_get_market_price(symbol)`을 또 호출하는데 그 helper가 다시 `client.get_us_price(symbol)`을 exchange 없이 호출. 즉 같은 default 함정이 한 layer 더 안쪽에 있었음.
+- **방향 전환 지점**: 1차 fix 후 봇 재기동 → 시드 재시도 → 동일 에러 `BUY: Cannot get price for SPMO`. grep로 발생 위치 추적해서 `kis_order.py:49` 발견.
+- **교훈 (다음에 횡단 default 인자 fix할 때)**:
+  - 첫 의심 영역: **공통 인자(exchange/region/account)는 모든 layer를 한 번에 grep**. `grep -rn "get_us_price\|buy_market\|sell_market" src/`로 전수 조사 후 fix 범위 결정.
+  - 빨리 배제할 가설: "한 호출 사이트만 고치면 끝난다" — 같은 default가 내부 helper에도 있을 확률 높음.
+  - 핵심 진단 명령: `grep -nE "def _get_market_price|def get_us_price|def buy_market|def sell_market" src/api/` + 각 함수의 default 인자 점검.
+
+---
+
+## Initial seed full-fail 시 영구 lock-out — `seeded_at`이 0건에도 박힘
+
+- **증상**: 시드 매수가 0건이어도 `data/portfolio_state.json::seeded_at = "<today>"`이 박혀 다음 봇 재시작에서 `needs_initial_seed=False`로 시드 진입 영구 차단.
+- **원인**: `_execute_initial_seed`는 본래 "ALWAYS mark seeded" 정책 (재시도 폭주 방지 의도). 하지만 매수 0건은 부분 실패가 아니라 **완전 실패** — 그 정책이 retry를 영구로 차단하는 사이드이펙트가 있다. 추가로 `_daily_portfolio_tick`이 `save_evaluation`으로 `last_eval_date=today`까지 박아 `_portfolio_tick_done_for` guard도 활성화.
+- **해결**: `_execute_initial_seed` → `bool` 반환 (매수 ≥ 1건이면 True + `seeded_at` 박음, 0건이면 False + 박지 않음). `_daily_portfolio_tick`이 False 받으면 `save_evaluation`/`_portfolio_tick_done_for=today` 둘 다 건너뛰고 일찍 return → 다음 `_tick`/`_reset_day`에서 자연 재시도.
+- **복구 절차**: (a) `./run_casper.sh stop` (b) `data/portfolio_state.json::seeded_at` + `last_eval_date`를 `null` (c) 재기동 → 자동 재시도.
+- **관련 사고**: 2026-05-15 (KIS exchange mismatch 사고와 동시 발생 — 시드 0건이 두 번 누적)
+- **재발 감지**: `Initial seed: 0 positions opened — seeded_at NOT marked; next tick will retry` warning 로그가 뜨면 자동 재시도 중. 같은 warning이 5회 이상 반복되면 KIS API/거래소 문제 의심.
+
+---
+
+## Scan window 시간에 봇 시작/재시작 시 SCANNING 합류 불가 — Late entry 분기 부재
+
+- **증상**: ET 09:45~10:55 (KST 22:45~23:55) 매수 윈도우 진행 중에 봇을 새로 시작하거나 재시작하면, `STATE: ... → SCANNING` 로그가 끝까지 안 나오고 그 날 캐스퍼 거래 0건. WAITING 상태로 `sleep 60`만 반복.
+- **원인**: `_handle_waiting`이 `is_pre_market` / `is_orb_forming` 두 시간대만 분기 처리. `is_scan_window` 시간대 분기 부재. 추가로 ORB는 메모리(`self.orbs`)에만 있어 같은 거래일 재시작 시 lost되어, 우연히 SCANNING으로 도달해도 시그널 평가 불가.
+- **해결**:
+  - `_handle_waiting`에 `is_scan_window` 분기 추가 → PRE_MARKET 으로 전이. 거기서 trend 계산 후 `_handle_pre_market`의 "Late join" 경로로 ORB_FORMING. 그 안에서 5분봉 backfill로 ORB 재계산 → SCANNING.
+  - `data/intraday_state.json`에 trend + ORBs 영구 저장 (`_save_intraday_state` in PRE_MARKET 끝 + ORB_FORMING → SCANNING 전이 직전). `_reset_day` 끝에서 `_load_intraday_state`로 today 매칭 시 복원.
+  - `_handle_orb_forming` 시작에 "이미 `self.orbs` 있으면 SCANNING 직행" 분기 → 재계산 회피 + 즉시 시그널 탐색 재개.
+- **복구 절차**: 자가 복구. 봇 재기동 시 자동 합류.
+- **관련 사고**: 2026-05-15 (23:27 KST 시드 직후 봇이 SCANNING으로 못 들어가 23:55까지 침묵, 그날 캐스퍼 매매 0건)
+- **재발 감지**: 봇 시작 후 5분 안에 `STATE: WAITING → PRE_MARKET` 또는 `Late entry — scan window` 로그가 안 보이면 의심. SCANNING 시간에 startup banner만 찍히고 state 전이 없으면 즉시 lookup.
+
+### Claude 진단 미스 (2026-05-16)
+
+- **Claude 처음 가설**: 시드 매수 성공 = 미장봇 정상 동작 완료. 사용자에게 "캐스퍼는 시그널 발생 시 자동 매수, 미발생이면 23:55 종료"라고 보고하고 봇 종료 안내.
+- **실제 원인**: 시드 후 SCANNING 윈도우 안에 있었는데 `_handle_waiting`이 그 시간을 처리 못해 sleep만 반복. "시그널 미발생"이 아니라 "시그널 평가 자체를 시작 못함" 상태.
+- **방향 전환 지점**: 사용자 "11시 37분 이후 특별한 로그가 없는데 제대로 된 거 맞아? 정밀하게 검토" → Claude가 `_handle_waiting` 코드를 다시 읽고 scan_window 분기 부재 발견.
+- **교훈 (다음에 멀티스테이지 봇 fix를 보고할 때)**:
+  - 첫 의심 영역: **"임무 성공" 보고 전에 후속 상태머신이 의도대로 흐르는지 검증**. 한 단계 성공만 보고 "다음 상태에서 머무는가"는 별도 확인 필요.
+  - 빨리 배제할 가설: "로그가 조용 = 정상 idle". 정상 idle은 폴링 로그가 한 번이라도 나옴 (예: `STATE: ... → SCANNING`). 봇 시작 후 N분 동안 STATE 전이 로그 0회면 abnormal.
+  - 핵심 진단 명령: `grep -E "STATE:|=== New Day" logs/app/casper_$(date +%F).log | tail -20` — 상태 전이 시퀀스가 시작~ORB_FORMING~SCANNING 라인을 그리는지.

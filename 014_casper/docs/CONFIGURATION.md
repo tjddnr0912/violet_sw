@@ -11,6 +11,8 @@
 | `TEST_MODE` | ❌ | `off` | `on` \| `off` | live지만 1주 고정 (실거래 최소화 검증용) |
 | `TELEGRAM_BOT_TOKEN` | ❌ | — | string | 008과 동일 토큰 (모든 프로젝트 알림 통합) |
 | `TELEGRAM_CHAT_ID` | ❌ | — | string | 008과 동일 chat_id |
+| `CASPER_MAX_POSITION_USD` | ❌ | `0` | USD float | Casper 매수당 cap. `0`=레거시 단일 bucket (자본 100% 사용). `>0`=멀티버킷 모드의 Casper sleeve 한도 (예: $3,000 계좌·20% sleeve → `600`). 남은 USD는 SPMO/GEM 등 다른 bucket이 차지. |
+| `GEM_MODE` | ❌ | `off` | `off`\|`alert`\|`auto` | Antonacci GEM 스케줄러. `off`=비활성 (캐스퍼 전용 모드). `alert`=월말 신호 텔레그램만, 주문 없음. `auto`=시드(`needs_initial_seed` 발동 시) + 월말 GEM 로테이션 + 분기말 SPMO/MTUM/QUAL drift 자동 실행. |
 
 ### ICT phase env overrides (`.env`)
 
@@ -162,6 +164,9 @@ BT_BUY_RATE=0.0025 BT_SELL_RATE=0.0025 BT_RR_RATIO=3.0 \
 | `data/position_state.json` | 진행 중 포지션 상태 (크래시 복구용) |
 | `data/trades/trades_YYYY.json` | 연도별 누적 거래 기록 |
 | `data/casper.pid` | daemon 모드 PID 파일 |
+| `data/portfolio_state.json` | 멀티버킷 evaluation 캐시 + `seeded_at`/`last_eval_date` idempotency 가드 (2026-05-15) |
+| `data/gem_state.json` | GEM 월말 스케줄러 상태 — `last_signal_date`/`current_holding` (2026-05-15) |
+| `data/intraday_state.json` | 같은 거래일 봇 재시작용 trend+ORB 스냅샷. `date != today_et()` 면 stale로 무시 (2026-05-16) |
 
 ## 변경 이력
 
