@@ -50,7 +50,7 @@ BLOG_LIST='[{"key":"...","id":"...","name":"..."}, ...]'
 DEFAULT_BLOG=brave_ogu
 BLOG_SELECTION_TIMEOUT=180
 SECTOR_BLOGGER_BLOG_ID=9115231004981625966
-SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite-preview
+SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite
 RESEARCH_QUICK_COMMAND=/quick    # Telegram Q&A 단발 모드 트리거 (default `/quick`)
 RESEARCH_MAX_ROUNDS=3            # Deep research 라운드 상한 (1~4, default 3)
 ```

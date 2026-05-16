@@ -26,7 +26,7 @@ BLOG_SELECTION_TIMEOUT=180
 
 # Weekly Sector Bot
 SECTOR_BLOGGER_BLOG_ID=9115231004981625966  # OgusInvest
-SECTOR_GEMINI_MODEL=gemini-3-flash-preview
+SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite
 ```
 
 ## 007_stock_trade/.env & 008_stock_trade_us/.env

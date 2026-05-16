@@ -12,7 +12,7 @@
 | `DEFAULT_BLOG` | ❌ | `brave_ogu` | timeout 시 사용할 default blog key |
 | `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 블로그 선택 prompt timeout (초) |
 | `SECTOR_BLOGGER_BLOG_ID` | ❌ | `9115231004981625966` | 섹터봇 전용 블로그 |
-| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite-preview` | 섹터봇 Gemini 모델 (검색 grounding 지원) |
+| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | 섹터봇 Gemini 모델 (검색 grounding 지원) |
 | `RESEARCH_QUICK_COMMAND` | ❌ | `/quick` | Telegram Q&A 단발 모드 트리거 prefix |
 | `RESEARCH_MAX_ROUNDS` | ❌ | 3 | Deep research 라운드 상한 (1~4 clamp) |
 | `RUN_LIVE_RESEARCH_TEST` | ❌ | (unset) | 라이브 통합 테스트 활성화 (`1`) |

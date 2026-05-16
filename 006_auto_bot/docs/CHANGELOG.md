@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-05-16: Gemini 모델 preview → GA 전환
+
+- 구글 공식 정책에 따라 `gemini-3.1-flash-lite-preview` (그리고 `.env`에서 임시로 사용 중이던 `gemini-3-flash-preview`) 폐기. GA 버전 `gemini-3.1-flash-lite`로 통일.
+- 변경 지점:
+  - `001_code/.env` / `.env.example`: `GEMINI_MODEL=gemini-3.1-flash-lite`
+  - `001_code/news_bot/config.py:14`, `001_code/news_bot/summarizer.py:32`: default `gemini-3.1-flash-lite`
+  - `001_code/sector_bot/config.py:269`: default `gemini-3.1-flash-lite`
+  - 문서: `CLAUDE.md`, `docs/CONFIGURATION.md`, `docs/SECTOR_BOT.md`
+- 영향: 뉴스봇 요약, 섹터봇 검색 grounding 모두 GA 모델로 전환. 응답 형식·쿼타 영향 없음 (free-tier 동일).
+
 ## 2026-05-10: 통합 봇 일요일 스케줄 정정 + Blogger 업로드 idle 재시도
 
 - `investment_bot.py`: Weekly Summary `18:30 → 19:20`, Comprehensive Report `19:00 → 19:40`. 마지막 섹터 11(필수 소비재) `scheduled_time="18:40"`보다 앞서 트리거되던 문제 수정. `weekly_sector_bot.py`/CLAUDE.md 문서와 일치.

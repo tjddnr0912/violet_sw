@@ -11,7 +11,7 @@ class Config:
 
     # Google Gemini API Configuration
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite-preview')
+    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite')
 
     # News API Configuration (optional - if you want to use NewsAPI)
     NEWS_API_KEY = os.getenv('NEWS_API_KEY', '')

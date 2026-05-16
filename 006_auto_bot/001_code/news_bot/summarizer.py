@@ -29,7 +29,7 @@ def load_news_skill() -> str:
 class AISummarizer:
     """AI-powered blog-style summarizer using Google Gemini API"""
 
-    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite-preview"):
+    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite"):
         """
         Initialize AISummarizer
 
