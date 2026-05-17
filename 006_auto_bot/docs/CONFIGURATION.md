@@ -66,6 +66,62 @@ Telegram에서 발행 시 사용자에게 블로그 key 선택 prompt 전송. ti
 - 로그·스택트레이스에 `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN` 직접 노출 금지
 - `.env`, `credentials/*.pkl`, `credentials/client_secret.json` 모두 git commit 금지 (`.gitignore` 등재됨)
 
+## Mermaid.js 글로벌 등록 (Blogger / Tistory)
+
+봇이 만든 `<pre><code class="language-mermaid">` 코드블록을 다이어그램으로 자동 렌더링하려면 발행 플랫폼의 **테마/스킨에 Mermaid.js v11을 1회 등록**해야 한다. 등록 후에는 봇 출력 무변경으로 모든 글에서 작동.
+
+### Blogger 등록
+
+1. `blogger.com` → 좌측 메뉴 **테마** → 적용된 테마 박스 우측 `▼` → **HTML 편집** (`맞춤설정`이 아니라 *그 옆* ▼)
+2. `</body>` 바로 위에 아래 스크립트 추가 → 저장 (위젯 보존 경고 시 *유지* 선택)
+
+Blogger는 XML 파서를 사용하므로 인라인 스크립트 내 `<`/`>`/`&`는 `//<![CDATA[ … //]]>` 로 감싸야 한다.
+
+### Tistory 등록
+
+1. `관리` → `꾸미기` → **스킨 편집** → 우측 상단 **html 편집** 탭 → `HTML` 탭
+2. `</body>` 바로 위에 동일 스크립트 추가 → **[적용]**
+3. 본문 단의 `<script>`는 Tistory가 sanitize함 → 스킨 단에만 박을 것
+
+Tistory는 일반 HTML 파서라 CDATA 불필요. 외부 `https://` CDN 호출 허용 (무료 도메인 포함).
+
+### 등록 스크립트 (양쪽 호환, v1)
+
+```html
+<script type='module'>
+//<![CDATA[
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+document.addEventListener('DOMContentLoaded', async () => {
+  document.querySelectorAll('pre > code.language-mermaid, pre.mermaid-code').forEach(block => {
+    const pre = block.parentElement;
+    const div = document.createElement('div');
+    div.className = 'mermaid';
+    div.textContent = block.textContent;
+    pre.parentNode.replaceChild(div, pre);
+  });
+  await mermaid.run({ querySelector: '.mermaid' });
+});
+//]]>
+</script>
+<style>.mermaid { overflow-x: auto; max-width: 100%; text-align: center; margin: 16px 0; }</style>
+```
+
+### v2 옵션 (사용자 결정에 따라 보류 — 필요 시 추가)
+
+큰 다이어그램에서 글자가 작아지는 문제를 *완전히* 제거하려면 v1 대신 UMD 빌드 + `useMaxWidth: false` + `fontSize: '17px'` + 모바일 가로 스크롤을 적용한 v2 스크립트로 교체한다. SKILL.md의 노드 6개 제한만으로 가독성이 충분하면 v1 유지가 권장. v2 전체 코드는 git 히스토리의 PR 또는 별도 메모로 보관.
+
+### 검증
+
+발행물 raw HTML을 다음 명령으로 확인:
+
+```bash
+curl -sL -A "Mozilla/5.0" "$URL" | grep -ciE "language-mermaid|import mermaid|mermaid\.run"
+```
+
+- 봇이 만든 코드블록 카운트 + 스킨 스크립트 시그니처가 양수면 정상.
+- WebFetch 도구는 inline `<svg>`/`<script>`/style을 markdown 변환에서 소실시키므로 사용 금지 (→ TROUBLESHOOTING의 "인라인 SVG 플로우차트" Claude 진단 미스 참조).
+
 ## Deep research 동작
 
 - Gemini × Claude 다라운드 5차원 검증 — Round 1 broad sweep + Round 2~N targeted gap-fill

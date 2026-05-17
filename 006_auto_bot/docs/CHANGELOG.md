@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-05-18: 봇 다이어그램 출력 Mermaid 전환 (SKILL.md만 변경, 코드 무변경)
+
+- `~/.claude/skills/blogger-html/SKILL.md` 3차 패치 (483줄 → 574줄)
+  - 시각화 8번 (의사결정 플로우차트) · 9번 (시스템 도식) → **Mermaid 코드블록 우선**, 인라인 SVG는 fallback으로 강등
+  - 노드 수 ≤6, 분기점 ≤2, 한 줄 라벨 ≤12자 강제 (모바일 글자 가독성)
+  - RSS·이메일 fallback 의무화: 다이어그램 직후 `📊 다이어그램 요약: …` 1~2문장 자연어 압축. JS 비활성 환경에서도 결론 전달
+  - Blogger/Tistory 호환성 체크리스트 신설 (스킨 등록된 Mermaid는 OK 명시, 본문 `<script>` 금지)
+- 운영자 직접 작업:
+  - Blogger 테마 / Tistory 스킨 `</body>` 위에 Mermaid.js v11 글로벌 등록 (`mermaid.esm.min.mjs`)
+  - `<pre><code class="language-mermaid">` 본문 코드블록을 `.mermaid` div로 DOM 치환하는 스킨 스크립트 추가
+- 라이브 검증 (buffett_bot --once 4회 발행 in 2026-05-17~18):
+  - 5/17 글: Mermaid 코드블록 2개 자동 생성 ✓ (회귀 0건)
+  - 5/18 #2 · #3 글: 노드 6·분기 2 룰 정확 작동, RSS fallback 문구 자동 출현 ✓
+- 결정 보류: 스킨 스크립트 v2 (fontSize 17px + `useMaxWidth: false` + 모바일 가로 스크롤). 노드 6개 제한만으로 사용자 가독성 만족 → v1 유지
+- 효과: 봇 다이어그램 깨짐 해소 (이전 SVG 좌표 수동 계산 → Claude 매번 박스/화살표 어긋남 발생). 코드/봇 재시작 무변경 — SKILL.md는 `shared/claude_html_converter.py`가 *매 호출*마다 새로 로드함
+- 상세 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md) ("인라인 SVG 플로우차트 화살표가 박스에 안 닿음"), [CONFIGURATION.md](CONFIGURATION.md) ("Mermaid.js 글로벌 등록")
+
 ## 2026-05-16: Gemini 모델 preview → GA 전환
 
 - 구글 공식 정책에 따라 `gemini-3.1-flash-lite-preview` (그리고 `.env`에서 임시로 사용 중이던 `gemini-3-flash-preview`) 폐기. GA 버전 `gemini-3.1-flash-lite`로 통일.

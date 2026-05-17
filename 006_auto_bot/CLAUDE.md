@@ -85,3 +85,4 @@ Gemini 429/503 / Claude CLI empty / Blogger OAuth / Telegram HTML parse / Sector
 | 섹터봇 상세 (보존) | [docs/SECTOR_BOT.md](docs/SECTOR_BOT.md) |
 | 뉴스봇 상세 (orchestrator + 5차원 게이트) | [docs/NEWS_BOT.md](docs/NEWS_BOT.md) |
 | 텔레그램 봇 상세 (보존) | [docs/TELEGRAM_BOT.md](docs/TELEGRAM_BOT.md) |
+| 텔레그램 봇 상세 (보존) | [docs/TELEGRAM_BOT.md](docs/TELEGRAM_BOT.md) |
