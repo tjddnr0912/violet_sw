@@ -1,8 +1,12 @@
 """
 Sector Searcher - Gemini Google Search Grounding
 -------------------------------------------------
-Gemini API의 Google Search 도구를 사용하여 섹터별 최신 뉴스 검색
-API 할당량 초과 시 Gemini CLI (gemini -p)로 자동 전환
+Gemini API의 Google Search 도구를 사용하여 섹터별 최신 뉴스 검색.
+
+Quota handling (May 2026 ~): 429/503 발생 시 모델 fallback chain
+(gemini-3.1-flash-lite → gemini-3.5-flash → gemini-3-flash-preview →
+gemini-2.5-flash)으로 자동 전환된다. 기존 `gemini -p` CLI fallback은
+2026-06 CLI 종료에 맞춰 제거됨.
 """
 
 import logging
@@ -12,11 +16,15 @@ import time
 import ssl
 from typing import List, Dict, Optional
 
-from google import genai
 from google.genai import types
 
 from .config import SectorConfig, Sector
-from shared.gemini_cli import is_quota_error, call_gemini_cli, extract_urls
+from shared.gemini_cli import (
+    GeminiResponse,
+    call_gemini_with_fallback,
+    is_quota_error,
+    extract_urls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +51,43 @@ class SectorSearcher:
     """Gemini Google Search Grounding을 사용한 섹터 정보 검색"""
 
     def __init__(self):
-        """Initialize Gemini client with Google Search tool"""
+        """Initialize the searcher.
+
+        API key/client are managed by shared.gemini_cli; we just hold the
+        model preference here. Fallback chain is read from
+        GEMINI_FALLBACK_MODELS env (see shared.gemini_cli for defaults).
+        """
         if not SectorConfig.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is required")
 
-        # 새로운 google-genai SDK 클라이언트
-        self.client = genai.Client(api_key=SectorConfig.GEMINI_API_KEY)
-        self.model_name = SectorConfig.GEMINI_MODEL
-        self._use_cli_fallback = False  # API 할당량 초과 시 True로 전환
+        # 환경변수가 비어있을 경우 SectorConfig 값을 백업으로 export
+        if not os.getenv("GEMINI_API_KEY"):
+            os.environ["GEMINI_API_KEY"] = SectorConfig.GEMINI_API_KEY
 
-        logger.info(f"SectorSearcher initialized with model: {self.model_name}")
+        self.model_name = SectorConfig.GEMINI_MODEL
+        # `_use_cli_fallback` was removed in May 2026 — kept as False for any
+        # external code that still inspects it via is_cli_mode_active().
+        self._use_cli_fallback = False
+
+        self.safety_settings = [
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
+        ]
+
+        logger.info(f"SectorSearcher initialized (primary model: {self.model_name})")
+
+    def _models_chain(self) -> List[str]:
+        """Build [primary, *fallbacks] for this searcher. Same logic as the
+        summarizer — primary comes from SectorConfig.GEMINI_MODEL, fallbacks
+        from GEMINI_FALLBACK_MODELS env."""
+        raw = os.getenv(
+            "GEMINI_FALLBACK_MODELS",
+            "gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash",
+        )
+        fallbacks = [m.strip() for m in raw.split(",") if m.strip()]
+        return [self.model_name] + [m for m in fallbacks if m != self.model_name]
 
     def search_sector(
         self,
@@ -64,143 +99,89 @@ class SectorSearcher:
 
         Args:
             sector: 검색할 섹터
-            retry_count: 현재 재시도 횟수
+            retry_count: 현재 재시도 횟수 (네트워크/일시 오류용)
 
         Returns:
-            검색 결과 딕셔너리 {
-                'content': str,  # 검색된 정보 텍스트
-                'sources': List[str],  # 출처 URL 목록
-                'success': bool
-            }
+            {'content': str, 'sources': List[str], 'success': bool}
         """
-        # API 할당량 초과 후에는 CLI fallback 직접 사용
-        if self._use_cli_fallback:
-            return self._search_via_cli(sector)
-
         try:
             logger.info(f"Searching sector: {sector.name} ({sector.name_en})")
 
-            # 검색 프롬프트 생성
             search_prompt = self._build_search_prompt(sector)
 
-            # Google Search 도구를 사용하여 검색 실행
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=search_prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    safety_settings=[
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_HARASSMENT",
-                            threshold="OFF"
-                        ),
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_HATE_SPEECH",
-                            threshold="OFF"
-                        ),
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                            threshold="OFF"
-                        ),
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                            threshold="OFF"
-                        ),
-                    ]
-                )
+            response: GeminiResponse = call_gemini_with_fallback(
+                search_prompt,
+                use_grounding=True,
+                safety_settings=self.safety_settings,
+                models=self._models_chain(),
             )
 
-            # 응답 파싱
-            content = response.text if response.text else ""
-            sources = []
+            if response.safety_blocked:
+                logger.warning(f"Search safety-blocked for {sector.name}")
+                return {
+                    'content': '',
+                    'sources': [],
+                    'success': False,
+                    'error': 'Safety filter blocked response',
+                }
 
-            # grounding_metadata에서 출처 추출
-            if response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
-                    gm = candidate.grounding_metadata
-                    if hasattr(gm, 'grounding_chunks') and gm.grounding_chunks:
-                        for chunk in gm.grounding_chunks:
-                            if hasattr(chunk, 'web') and chunk.web:
-                                if hasattr(chunk.web, 'uri') and chunk.web.uri:
-                                    sources.append(chunk.web.uri)
+            content = (response.text or "").strip()
+            sources = list(response.sources)
+
+            # Grounding이 출처를 안 돌려준 케이스(예: 3-flash-preview 모델로
+            # fallback된 경우)에는 본문에서 URL을 긁어 폴백.
+            if not sources and content:
+                sources = extract_urls(content)
 
             if not content:
-                raise ValueError("Empty response from Gemini")
+                raise ValueError(
+                    f"Empty response from {response.model_used} "
+                    f"(finish={response.finish_reason})"
+                )
 
-            # 중복 출처 제거
-            sources = list(dict.fromkeys(sources))
-
-            logger.info(f"Search completed: {len(content)} chars, {len(sources)} sources")
-
-            return {
-                'content': content,
-                'sources': sources,
-                'success': True
-            }
-
-        except Exception as e:
-            logger.error(f"Search error for {sector.name}: {e}")
-
-            # 429 할당량 초과 → CLI fallback (재시도 불필요)
-            if is_quota_error(e):
-                logger.warning(f"API quota exhausted, switching to Gemini CLI for all remaining sectors")
-                self._use_cli_fallback = True
-                return self._search_via_cli(sector)
-
-            # 기타 에러 → 기존 재시도 로직
-            if retry_count < SectorConfig.MAX_RETRIES:
-                delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)
-                logger.info(f"Retrying in {delay} seconds... (attempt {retry_count + 1}/{SectorConfig.MAX_RETRIES})")
-                time.sleep(delay)
-                return self.search_sector(sector, retry_count + 1)
-
-            # 재시도 모두 소진 후 마지막 수단: CLI fallback
-            logger.warning(
-                f"All {SectorConfig.MAX_RETRIES} retries exhausted for {sector.name}; "
-                f"attempting CLI fallback as last resort (last error: {e})"
+            logger.info(
+                f"Search completed: model={response.model_used} "
+                f"chars={len(content)} sources={len(sources)}"
             )
-            cli_result = self._search_via_cli(sector)
-            if cli_result.get('success'):
-                return cli_result
-
-            return {
-                'content': '',
-                'sources': [],
-                'success': False,
-                'error': f"API retries exhausted and CLI fallback failed. "
-                         f"API: {e}. CLI: {cli_result.get('error')}"
-            }
-
-    def _search_via_cli(self, sector: Sector) -> Dict[str, any]:
-        """Gemini CLI를 사용한 검색 (API 할당량 초과 시 fallback)"""
-        logger.info(f"[CLI Fallback] Searching sector: {sector.name}")
-
-        search_prompt = self._build_search_prompt(sector)
-
-        try:
-            content = call_gemini_cli(search_prompt)
-            sources = extract_urls(content)
-
-            if not content or len(content) < 100:
-                raise ValueError(f"Insufficient CLI response: {len(content)} chars")
-
-            logger.info(f"[CLI Fallback] Search completed: {len(content)} chars, {len(sources)} sources")
 
             return {
                 'content': content,
                 'sources': sources,
                 'success': True,
-                'via_cli': True,
+                'model_used': response.model_used,
             }
 
         except Exception as e:
-            logger.error(f"[CLI Fallback] Search failed for {sector.name}: {e}")
+            logger.error(f"Search error for {sector.name}: {e}")
+
+            # 429/503 등은 wrapper가 이미 모든 모델을 소진한 후에만 여기로 올라옴.
+            # 일시적 네트워크/타임아웃 오류는 retry로 회복 가능.
+            if is_quota_error(e):
+                logger.warning(
+                    f"All models in chain exhausted for {sector.name}; "
+                    f"no further fallback available"
+                )
+                return {
+                    'content': '',
+                    'sources': [],
+                    'success': False,
+                    'error': f"All Gemini models quota-exhausted: {e}",
+                }
+
+            if retry_count < SectorConfig.MAX_RETRIES:
+                delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)
+                logger.info(
+                    f"Retrying in {delay} seconds... "
+                    f"(attempt {retry_count + 1}/{SectorConfig.MAX_RETRIES})"
+                )
+                time.sleep(delay)
+                return self.search_sector(sector, retry_count + 1)
+
             return {
                 'content': '',
                 'sources': [],
                 'success': False,
-                'error': f"CLI fallback failed: {e}",
+                'error': f"Search failed after {SectorConfig.MAX_RETRIES} retries: {e}",
             }
 
     def _build_search_prompt(self, sector: Sector) -> str:

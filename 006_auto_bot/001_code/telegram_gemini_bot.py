@@ -30,6 +30,7 @@ load_dotenv(override=True)
 # Import shared modules
 from shared.telegram_api import TelegramClient
 from shared.html_utils import HtmlUtils
+from shared.gemini_cli import call_gemini_with_fallback, GeminiResponse
 
 # 스킬 파일 경로
 QA_SKILL_FILE = os.path.expanduser('~/.claude/skills/telegram-qa/SKILL.md')
@@ -134,7 +135,11 @@ class TelegramGeminiBot(TelegramClient):
 
     def run_gemini(self, question: str) -> Tuple[bool, str, str, list, list]:
         """
-        Run Gemini CLI
+        Run Gemini (quick mode) via the API with model fallback chain.
+
+        Migrated from `gemini -p` CLI subprocess to google-genai API in May
+        2026 ahead of the CLI's June 2026 shutdown. The fallback chain inside
+        shared.gemini_cli takes over the role that CLI retry used to play.
 
         Returns:
             Tuple[bool, str, str, list, list]: (success, content, title, labels, sources)
@@ -157,41 +162,46 @@ LABELS: (키워드 2-3개)
 SOURCES: (출처)
 """
 
-            # Run gemini CLI (-p forces non-interactive mode, consistent with deep-mode wrapper)
-            result = subprocess.run(
-                ["gemini", "-p", prompt],
-                capture_output=True,
-                text=True,
-                timeout=900  # 15 minute timeout
+            response: GeminiResponse = call_gemini_with_fallback(
+                prompt,
+                use_grounding=True,
             )
 
-            if result.returncode == 0:
-                output = result.stdout.strip()
-                if output:
-                    logger.info(f"Gemini response success (length: {len(output)})")
-                    logger.info(f"Gemini response tail:\n{output[-500:]}")
-                    content, title, labels, sources = self._parse_response(output)
-                    logger.info(f"Parsed - title: {title}, labels: {labels}, sources: {len(sources)}, content: {len(content)}")
-                    return True, content, title, labels, sources
-                else:
-                    stderr_msg = result.stderr.strip() if result.stderr else ""
-                    logger.warning(f"Gemini response is empty (stderr: {stderr_msg[:500] if stderr_msg else 'none'})")
-                    return False, "⚠️ Gemini 응답이 비어있습니다. 잠시 후 다시 시도해주세요.", "", [], []
-            else:
-                error = result.stderr.strip() or "Unknown error"
-                logger.error(f"Gemini execution failed (returncode={result.returncode}): {error}")
-                user_msg = self._summarize_gemini_error(error)
-                return False, user_msg, "", [], []
+            if response.safety_blocked:
+                logger.warning("Gemini quick-mode response safety-blocked")
+                return False, "⚠️ Gemini가 안전 필터로 응답을 차단했습니다. 질문을 바꿔 다시 시도해주세요.", "", [], []
 
-        except subprocess.TimeoutExpired:
-            logger.error("Gemini response timeout (15 min)")
-            return False, "⚠️ Gemini 응답 시간 초과 (15분). 잠시 후 다시 시도해주세요.", "", [], []
-        except FileNotFoundError:
-            logger.error("gemini CLI not found")
-            return False, "⚠️ Gemini CLI를 찾을 수 없습니다. 설치를 확인해주세요.", "", [], []
+            output = (response.text or "").strip()
+            if not output:
+                logger.warning(
+                    f"Gemini response empty (model={response.model_used}, "
+                    f"finish={response.finish_reason})"
+                )
+                return False, "⚠️ Gemini 응답이 비어있습니다. 잠시 후 다시 시도해주세요.", "", [], []
+
+            logger.info(
+                f"Gemini response success (model={response.model_used}, "
+                f"length={len(output)}, grounded_sources={len(response.sources)})"
+            )
+            logger.info(f"Gemini response tail:\n{output[-500:]}")
+            content, title, labels, sources = self._parse_response(output)
+
+            # If the model didn't emit a SOURCES: footer but grounding returned
+            # URIs, surface those so the downstream blog post still has links.
+            if not sources and response.sources:
+                sources = [{"title": uri, "url": uri} for uri in response.sources[:8]]
+
+            logger.info(
+                f"Parsed - title: {title}, labels: {labels}, "
+                f"sources: {len(sources)}, content: {len(content)}"
+            )
+            return True, content, title, labels, sources
+
         except Exception as e:
-            logger.error(f"Gemini execution error: {str(e)}", exc_info=True)
-            return False, f"⚠️ Gemini 실행 오류: {str(e)[:200]}", "", [], []
+            err = str(e)
+            logger.error(f"Gemini execution error: {err}", exc_info=True)
+            user_msg = self._summarize_gemini_error(err)
+            return False, user_msg, "", [], []
 
     def _run_research_stage(
         self,

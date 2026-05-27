@@ -51,6 +51,8 @@ DEFAULT_BLOG=brave_ogu
 BLOG_SELECTION_TIMEOUT=180
 SECTOR_BLOGGER_BLOG_ID=9115231004981625966
 SECTOR_GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_MODEL=gemini-3.1-flash-lite               # default primary model (override per-caller via env)
+GEMINI_FALLBACK_MODELS=gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash   # 429/503 시 순차 fallback
 RESEARCH_QUICK_COMMAND=/quick    # Telegram Q&A 단발 모드 트리거 (default `/quick`)
 RESEARCH_MAX_ROUNDS=3            # Deep research 라운드 상한 (1~4, default 3)
 ```
@@ -84,5 +86,4 @@ Gemini 429/503 / Claude CLI empty / Blogger OAuth / Telegram HTML parse / Sector
 | 변경 이력 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
 | 섹터봇 상세 (보존) | [docs/SECTOR_BOT.md](docs/SECTOR_BOT.md) |
 | 뉴스봇 상세 (orchestrator + 5차원 게이트) | [docs/NEWS_BOT.md](docs/NEWS_BOT.md) |
-| 텔레그램 봇 상세 (보존) | [docs/TELEGRAM_BOT.md](docs/TELEGRAM_BOT.md) |
 | 텔레그램 봇 상세 (보존) | [docs/TELEGRAM_BOT.md](docs/TELEGRAM_BOT.md) |

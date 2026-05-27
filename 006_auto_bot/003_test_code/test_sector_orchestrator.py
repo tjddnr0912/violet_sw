@@ -107,18 +107,41 @@ def test_round1_only_when_max_rounds_one(monkeypatch):
     analyzer.analyze_sector.assert_called_once()
 
 
-def test_clamps_to_one_round_when_cli_fallback_active():
+def test_no_clamping_after_cli_fallback_removal():
+    """The orchestrator used to clamp max_rounds=1 when searcher/analyzer were
+    in CLI fallback mode (to avoid burning the slow CLI budget on gap-fills).
+    The CLI fallback path was removed in May 2026; even if the legacy
+    `_use_cli_fallback=True` flag is set on a mock, gap-fills now proceed
+    normally up to max_rounds because quota handling is in-process via the
+    model fallback chain."""
     sector = _make_sector()
 
+    failing_first = {
+        "success": True,
+        "content": "vague intro text without numbers or dates",
+        "sources": [],
+    }
+    rich_second = {
+        "success": True,
+        "content": (
+            "S&P 500 rose 1.2% on 2026-04-28. NVIDIA gained $5.20 on April 29, 2026. "
+            "Korea KOSPI fell 0.8% on 2026-04-30."
+        ),
+        "sources": [
+            {"url": "https://www.bloomberg.com/x"},
+            {"url": "https://www.reuters.com/y"},
+        ],
+    }
+
     searcher = MagicMock()
-    searcher.search_sector.return_value = _passing_search_result()
-    searcher._use_cli_fallback = True  # fallback active
+    searcher.search_sector.side_effect = [failing_first, rich_second]
+    searcher._use_cli_fallback = True  # legacy flag set — must NOT cause clamping
 
     analyzer = MagicMock()
     analyzer.analyze_sector.return_value = {
         "success": True,
         "analysis": "x" * 600,
-        "sources": [],
+        "sources": rich_second["sources"],
     }
     analyzer._use_cli_fallback = False
 
@@ -128,13 +151,13 @@ def test_clamps_to_one_round_when_cli_fallback_active():
         sector=sector,
         searcher=searcher,
         analyzer=analyzer,
-        max_rounds=3,  # would normally do gap-fill
+        max_rounds=2,
         claude_caller=fake_claude,
     )
 
-    assert result.clamped_to_cli is True
-    assert result.rounds_completed == 1  # clamped despite max_rounds=3
-    assert searcher.search_sector.call_count == 1  # no gap-fill
+    assert result.clamped_to_cli is False  # CLI fallback no longer triggers clamping
+    assert searcher.search_sector.call_count == 2  # round1 + 1 gap-fill (not clamped)
+    assert result.rounds_completed == 2
 
 
 def test_round1_failure_returns_early_with_zero_rounds():

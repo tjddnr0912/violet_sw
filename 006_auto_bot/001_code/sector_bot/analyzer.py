@@ -1,8 +1,13 @@
 """
 Sector Analyzer - 섹터별 맞춤 분석 프롬프트
 -------------------------------------------
-검색된 정보를 섹터별 맞춤 프롬프트로 분석하여 투자 인사이트 생성
-API 할당량 초과 시 Gemini CLI (gemini -p)로 자동 전환
+검색된 정보를 섹터별 맞춤 프롬프트로 분석하여 투자 인사이트 생성.
+
+Quota handling (May 2026 ~): 429/503 발생 시 모델 fallback chain
+(gemini-3.1-flash-lite → gemini-3.5-flash → gemini-3-flash-preview →
+gemini-2.5-flash) 으로 자동 전환. 분석은 이미 수집된 검색 결과를 기반으로
+하므로 google_search grounding은 비활성화한다.
+
 스킬 파일: ~/.claude/skills/sector-analysis/SKILL.md
 """
 
@@ -13,11 +18,14 @@ import time
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from google import genai
 from google.genai import types
 
 from .config import SectorConfig, Sector, SECTORS
-from shared.gemini_cli import is_quota_error, call_gemini_cli
+from shared.gemini_cli import (
+    GeminiResponse,
+    call_gemini_with_fallback,
+    is_quota_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,13 +251,21 @@ class SectorAnalyzer:
     """섹터별 맞춤 분석 생성"""
 
     def __init__(self):
-        """Initialize Gemini client for analysis"""
+        """Initialize the analyzer.
+
+        Like SectorSearcher, API key/client are handled by shared.gemini_cli.
+        We only keep the safety settings and model preferences here.
+        """
         if not SectorConfig.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is required")
 
-        self.client = genai.Client(api_key=SectorConfig.GEMINI_API_KEY)
+        if not os.getenv("GEMINI_API_KEY"):
+            os.environ["GEMINI_API_KEY"] = SectorConfig.GEMINI_API_KEY
+
         self.model_name = SectorConfig.GEMINI_MODEL
-        self._use_cli_fallback = False  # API 할당량 초과 시 True로 전환
+        # Kept as False — `is_cli_mode_active()` no longer affects behavior
+        # after the May 2026 CLI removal, but external code may still read it.
+        self._use_cli_fallback = False
 
         self.safety_settings = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
@@ -258,7 +274,16 @@ class SectorAnalyzer:
             types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
         ]
 
-        logger.info("SectorAnalyzer initialized")
+        logger.info(f"SectorAnalyzer initialized (primary model: {self.model_name})")
+
+    def _models_chain(self) -> List[str]:
+        """[primary, *fallbacks] for this analyzer."""
+        raw = os.getenv(
+            "GEMINI_FALLBACK_MODELS",
+            "gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash",
+        )
+        fallbacks = [m.strip() for m in raw.split(",") if m.strip()]
+        return [self.model_name] + [m for m in fallbacks if m != self.model_name]
 
     def _build_analysis_prompt(self, sector: Sector, search_result: Dict) -> str:
         """분석 프롬프트 구성 — SKILL.md 파일 참조"""
@@ -288,15 +313,9 @@ class SectorAnalyzer:
         retry_count: int = 0
     ) -> Dict:
         """
-        섹터 검색 결과를 분석하여 투자 인사이트 생성
-
-        Args:
-            sector: 분석할 섹터
-            search_result: searcher의 검색 결과
-            retry_count: 재시도 횟수
-
-        Returns:
-            분석 결과 딕셔너리
+        섹터 검색 결과를 분석하여 투자 인사이트 생성. 모델 fallback chain은
+        shared.gemini_cli 내부에서 처리되므로 여기서는 일시적 네트워크 오류용
+        재시도만 유지한다.
         """
         if not search_result.get('success') or not search_result.get('content'):
             return {
@@ -304,101 +323,62 @@ class SectorAnalyzer:
                 'error': 'No search content to analyze'
             }
 
-        # API 할당량 초과 후에는 CLI fallback 직접 사용
-        if self._use_cli_fallback:
-            return self._analyze_via_cli(sector, search_result)
-
         try:
             logger.info(f"Analyzing sector: {sector.name}")
 
             full_prompt = self._build_analysis_prompt(sector, search_result)
 
-            # 분석 생성
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    safety_settings=self.safety_settings,
-                ),
+            response: GeminiResponse = call_gemini_with_fallback(
+                full_prompt,
+                use_grounding=False,  # 분석은 이미 수집된 데이터 기반
+                safety_settings=self.safety_settings,
+                models=self._models_chain(),
             )
 
-            if not response.candidates:
-                raise ValueError("Empty response from Gemini")
+            if response.safety_blocked:
+                return {
+                    'success': False,
+                    'error': 'Safety filter blocked analysis',
+                }
 
-            analysis_text = ""
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'text') and part.text:
-                    analysis_text += part.text
-
+            analysis_text = (response.text or "").strip()
             if not analysis_text:
-                raise ValueError("No analysis text generated")
+                raise ValueError(
+                    f"Empty analysis from {response.model_used} "
+                    f"(finish={response.finish_reason})"
+                )
 
-            logger.info(f"Analysis completed: {len(analysis_text)} chars")
+            logger.info(
+                f"Analysis completed: model={response.model_used} chars={len(analysis_text)}"
+            )
 
             return {
                 'success': True,
                 'analysis': analysis_text,
                 'sources': search_result.get('sources', []),
+                'model_used': response.model_used,
             }
 
         except Exception as e:
             logger.error(f"Analysis error for {sector.name}: {e}")
 
-            # 429 할당량 초과 → CLI fallback (재시도 불필요)
+            # All-models-exhausted error → 즉시 실패 (재시도 의미 없음)
             if is_quota_error(e):
-                logger.warning(f"API quota exhausted, switching to Gemini CLI for analysis")
-                self._use_cli_fallback = True
-                return self._analyze_via_cli(sector, search_result)
+                return {
+                    'success': False,
+                    'error': f"All Gemini models quota-exhausted: {e}",
+                }
 
-            # 기타 에러 → 기존 재시도 로직
+            # 일시적 네트워크 오류 등 → 기존 재시도 로직
             if retry_count < SectorConfig.MAX_RETRIES:
                 delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)
                 logger.info(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
                 return self.analyze_sector(sector, search_result, retry_count + 1)
 
-            # 재시도 모두 소진 후 마지막 수단: CLI fallback
-            # Why: 503 UNAVAILABLE 같은 일시 장애에서 재시도 전부 실패해도 CLI 경로는 성공할 수 있음
-            logger.warning(
-                f"All {SectorConfig.MAX_RETRIES} retries exhausted for {sector.name}; "
-                f"attempting CLI fallback as last resort (last error: {e})"
-            )
-            cli_result = self._analyze_via_cli(sector, search_result)
-            if cli_result.get('success'):
-                return cli_result
-
             return {
                 'success': False,
-                'error': f"API retries exhausted and CLI fallback failed. "
-                         f"API: {e}. CLI: {cli_result.get('error')}"
-            }
-
-    def _analyze_via_cli(self, sector: Sector, search_result: Dict) -> Dict:
-        """Gemini CLI를 사용한 분석 (API 할당량 초과 시 fallback)"""
-        logger.info(f"[CLI Fallback] Analyzing sector: {sector.name}")
-
-        full_prompt = self._build_analysis_prompt(sector, search_result)
-
-        try:
-            analysis_text = call_gemini_cli(full_prompt)
-
-            if not analysis_text or len(analysis_text) < 500:
-                raise ValueError(f"Insufficient CLI response: {len(analysis_text)} chars")
-
-            logger.info(f"[CLI Fallback] Analysis completed: {len(analysis_text)} chars")
-
-            return {
-                'success': True,
-                'analysis': analysis_text,
-                'sources': search_result.get('sources', []),
-                'via_cli': True,
-            }
-
-        except Exception as e:
-            logger.error(f"[CLI Fallback] Analysis failed for {sector.name}: {e}")
-            return {
-                'success': False,
-                'error': f"CLI fallback failed: {e}",
+                'error': f"Analysis failed after {SectorConfig.MAX_RETRIES} retries: {e}",
             }
 
     def generate_title(self, sector: Sector, date: datetime = None) -> str:

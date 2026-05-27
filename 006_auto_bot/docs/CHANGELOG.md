@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-05-27: Gemini `-p` CLI 제거 → API + 모델 fallback chain
+
+- **배경**: Google이 2026-06에 `gemini -p` CLI 종료 예고. 코드 6곳(텔레그램 quick/deep, 뉴스봇 daily/weekly/monthly, 뉴스봇 gap-fill, 섹터봇 search/analyze)이 CLI subprocess를 직간접 호출 중이라 전수 마이그레이션.
+- **새 wrapper**: `shared/gemini_cli.py` 완전 재작성. 신규 `call_gemini_with_fallback()` + 기존 `call_gemini_cli`/`is_quota_error`/`extract_urls`/`is_cli_mode_active` backward-compat alias 유지.
+- **모델 fallback chain (env-configurable)**:
+  - `GEMINI_MODEL` (기본 `gemini-3.1-flash-lite`) → primary
+  - `GEMINI_FALLBACK_MODELS` (기본 `gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash`) → 429/503/overloaded 시 좌→우 순서로 fallthrough
+  - 모든 단계에서 `google_search` grounding 설정 보존 (검색 필요 호출)
+- **갱신 파일**:
+  - `shared/gemini_cli.py` (재작성, +305줄)
+  - `shared/research_orchestrator.py` (deep mode round 호출 → API)
+  - `telegram_gemini_bot.py` (`run_gemini` quick mode → API)
+  - `news_bot/summarizer.py` (`_use_cli_fallback` 플래그·`_summarize_via_cli` 메서드 제거, `_summarize()` 단일 경로)
+  - `sector_bot/searcher.py` (검색 grounding 호출 wrapper로 일원화, fallback 메서드 제거)
+  - `sector_bot/analyzer.py` (분석 호출 wrapper로 일원화)
+  - `news_bot/orchestrator.py` (`_gap_fill_via_cli`는 함수명만 보존, 내부적으로 alias 경유로 API 호출)
+- **테스트**: 4개 `test_research_orchestrator` 테스트 wrapper monkeypatch로 갱신, `test_shared_gemini_cli` `is_cli_mode_active` 영구 False 검증으로 전환, `test_sector_orchestrator` clamping 제거 검증으로 전환. 신규 2개(safety_blocked, grounding sources append) 추가. **73개 테스트 전부 pass.**
+- **연계 작업**: `~/.claude/skills/research/` skill도 동일 패턴으로 마이그레이션 (`scripts/ask_gemini.sh`는 wrapper로 변환, `scripts/ask_gemini.py` 신규, `.venv` + `google-genai` 설치, `~/.zshenv`에 `GEMINI_API_KEY` 영구 export).
+- **라이브 검증**: `gemini-3.1-flash-lite → 3.5-flash → 3-flash-preview → 2.5-flash` 순차 fallthrough 실측 확인 (앞 3개 quota 소진 상태에서 마지막 모델로 응답 도달).
+
+---
+
 ## 2026-05-18: 봇 다이어그램 출력 Mermaid 전환 (SKILL.md만 변경, 코드 무변경)
 
 - `~/.claude/skills/blogger-html/SKILL.md` 3차 패치 (483줄 → 574줄)

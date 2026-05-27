@@ -12,7 +12,9 @@
 | `DEFAULT_BLOG` | ❌ | `brave_ogu` | timeout 시 사용할 default blog key |
 | `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 블로그 선택 prompt timeout (초) |
 | `SECTOR_BLOGGER_BLOG_ID` | ❌ | `9115231004981625966` | 섹터봇 전용 블로그 |
-| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | 섹터봇 Gemini 모델 (검색 grounding 지원) |
+| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | 섹터봇 전용 primary 모델 (`shared.gemini_cli` chain의 첫 단계로 들어감, grounding 지원) |
+| `GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | `shared.gemini_cli.call_gemini_with_fallback`의 기본 primary 모델 (뉴스봇 summarizer + research orchestrator + telegram quick mode에서 사용). 섹터봇은 `SECTOR_GEMINI_MODEL`을 별도 보유. |
+| `GEMINI_FALLBACK_MODELS` | ❌ | `gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash` | 쉼표 구분 fallback chain. primary가 429 `RESOURCE_EXHAUSTED` / 503 `UNAVAILABLE` / `overloaded` 반환 시 왼→오 순으로 시도. 모든 모델 소진 시 `RuntimeError`. 2026-06 `gemini -p` CLI 종료 대응으로 도입(2026-05-27). |
 | `RESEARCH_QUICK_COMMAND` | ❌ | `/quick` | Telegram Q&A 단발 모드 트리거 prefix |
 | `RESEARCH_MAX_ROUNDS` | ❌ | 3 | Deep research 라운드 상한 (1~4 clamp) |
 | `RUN_LIVE_RESEARCH_TEST` | ❌ | (unset) | 라이브 통합 테스트 활성화 (`1`) |

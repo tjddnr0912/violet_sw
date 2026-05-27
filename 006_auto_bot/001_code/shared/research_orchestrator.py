@@ -1,10 +1,16 @@
 """
 Multi-round research orchestrator.
 
-Drives Gemini CLI for searching + Claude CLI for evaluation/synthesis
-with a 5-dimension gap-check between rounds. Used as the Telegram bot's
-default research path; users can opt out of the multi-round flow with
-the `/quick` command.
+Drives Gemini API (with model fallback chain) for searching + Claude CLI
+for evaluation/synthesis with a 5-dimension gap-check between rounds.
+Used as the Telegram bot's default research path; users can opt out of
+the multi-round flow with the `/quick` command.
+
+Migrated from `gemini -p` CLI to the google-genai SDK in May 2026 ahead
+of the CLI's June 2026 shutdown. Each round now goes through
+shared.gemini_cli.call_gemini_with_fallback() which transparently falls
+back across gemini-3.1-flash-lite → gemini-3.5-flash → gemini-3-flash-preview
+→ gemini-2.5-flash on 429/503.
 """
 
 from __future__ import annotations
@@ -16,6 +22,12 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from shared.gemini_cli import (
+    GeminiResponse,
+    call_gemini_with_fallback,
+    is_quota_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,29 +44,42 @@ class ResearchResult:
     contradictions_noted: list[str] = field(default_factory=list)
 
 
-DEFAULT_GEMINI_TIMEOUT = 600  # 10 min per round
+DEFAULT_GEMINI_TIMEOUT = 600  # kept for signature compat; the SDK manages its own timeouts
 
 
 class GeminiRoundError(RuntimeError):
-    """Raised when a Gemini CLI round fails (non-zero exit or empty)."""
+    """Raised when a Gemini round fails (every model in the fallback chain failed
+    or the response was empty / safety-blocked)."""
 
 
 def _run_gemini_round(prompt: str, timeout: int = DEFAULT_GEMINI_TIMEOUT) -> str:
-    """Invoke `gemini -p <prompt>` and return stdout. Raises GeminiRoundError on failure."""
-    result = subprocess.run(
-        ["gemini", "-p", prompt],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise GeminiRoundError(
-            f"gemini exit={result.returncode} stderr={result.stderr.strip()[:300]}"
+    """Run one research round via the Gemini API with model fallback + Google
+    Search grounding. Returns the response text. Raises GeminiRoundError if
+    every model in the chain failed."""
+    _ = timeout  # accepted for backward-compat call sites; SDK handles timeouts
+    try:
+        response: GeminiResponse = call_gemini_with_fallback(
+            prompt,
+            use_grounding=True,
         )
-    out = (result.stdout or "").strip()
-    if not out:
-        raise GeminiRoundError(f"gemini returned empty stdout (stderr={result.stderr.strip()[:200]})")
-    return out
+    except Exception as e:
+        raise GeminiRoundError(f"gemini API failed: {e}") from e
+
+    if response.safety_blocked:
+        raise GeminiRoundError("gemini response safety-blocked")
+    text = (response.text or "").strip()
+    if not text:
+        raise GeminiRoundError(
+            f"gemini returned empty text (model={response.model_used}, "
+            f"finish={response.finish_reason})"
+        )
+
+    # If grounding produced URIs that the prompt didn't already echo, append a
+    # short SOURCES_HINT block so the downstream parser can pick them up.
+    if response.sources and not re.search(r"\bSOURCES?:", text):
+        sources_line = ", ".join(response.sources[:8])
+        text = f"{text}\n\nSOURCES: {sources_line}"
+    return text
 
 
 QA_SKILL_FILE = os.path.expanduser('~/.claude/skills/telegram-qa/SKILL.md')
@@ -258,7 +283,10 @@ def run_research(
         round1 = _run_gemini_round(_build_round1_prompt(question))
         accumulated.append(("Round 1", round1))
         rounds_done = 1
-    except (GeminiRoundError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except GeminiRoundError as e:
+        # subprocess.TimeoutExpired/FileNotFoundError used to be possible when
+        # this called the `gemini` CLI binary; post-May-2026 the wrapper raises
+        # only GeminiRoundError, which already wraps API failures and timeouts.
         logger.error(f"Round 1 failed: {e}")
         report(f"Round 1 실패: {str(e)[:120]}")
         return _empty_result_with_error(question, str(e))
@@ -297,7 +325,9 @@ def run_research(
             )
             accumulated.append((f"Round {next_round}", body))
             rounds_done = next_round
-        except (GeminiRoundError, subprocess.TimeoutExpired) as e:
+        except GeminiRoundError as e:
+            # See Round 1 comment — subprocess exceptions can no longer occur
+            # on the Gemini path.
             logger.warning(f"Round {next_round} failed: {e}")
             report(f"Round {next_round} 실패 — 누적 결과로 종합 진행")
             break

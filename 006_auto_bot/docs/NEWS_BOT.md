@@ -16,17 +16,19 @@ python main.py --mode monthly     # 월간 (게이트 적용 안 함)
 
 ## 오케스트레이터 (5차원 검증)
 
-`news_bot/orchestrator.py`가 RSS 수집 → 5차원 게이트 → Gemini CLI 갭필 → 요약을 시퀀싱한다.
+`news_bot/orchestrator.py`가 RSS 수집 → 5차원 게이트 → Gemini API 갭필(google_search grounding 활성) → 요약을 시퀀싱한다.
+
+> 2026-05 migration: 옛 `gemini -p` CLI 호출은 모두 `shared.gemini_cli.call_gemini_with_fallback`로 교체됨. 갭필 채널 컬럼의 "gemini -p"는 이제 API + 모델 fallback chain(3.1-flash-lite → 3.5-flash → 3-flash-preview → 2.5-flash) + `google_search` grounding을 의미한다.
 
 ### 5차원 체크리스트 (collection-level)
 
 | 차원 | 통과 기준 (정량) | Claude 2차 | 갭필 채널 |
 |------|---------------|-----------|----------|
-| 균형 | 8개 카테고리 모두 ≥3개 항목 | 항상 (quant fail 시) | gemini -p (missing 카테고리 검색) |
-| 신선도 | ≥80% 항목이 카테고리별 한도 내 | ↑ | gemini -p (6시간 내 breaking news) |
+| 균형 | 8개 카테고리 모두 ≥3개 항목 | 항상 (quant fail 시) | Gemini API + grounding (missing 카테고리 검색) |
+| 신선도 | ≥80% 항목이 카테고리별 한도 내 | ↑ | Gemini API + grounding (6시간 내 breaking news) |
 | 다양성 | 같은 주제 매체 중복 ≤2개 | ↑ | (갭필 없음 — aggregator dedup) |
-| 출처신뢰 | Tier-1 출처(Bloomberg/Reuters/FT/WSJ/연합뉴스/SBS/YTN) ≥40% | ↑ | gemini -p (Tier-1 source coverage) |
-| 글로벌균형 | 한국 매체 비율 40~60% | ↑ | gemini -p (국제 시각) |
+| 출처신뢰 | Tier-1 출처(Bloomberg/Reuters/FT/WSJ/연합뉴스/SBS/YTN) ≥40% | ↑ | Gemini API + grounding (Tier-1 source coverage) |
+| 글로벌균형 | 한국 매체 비율 40~60% | ↑ | Gemini API + grounding (국제 시각) |
 
 OR-semantics: 한 차원이 정량 OR Claude 중 하나라도 통과하면 그 차원은 통과 처리.
 

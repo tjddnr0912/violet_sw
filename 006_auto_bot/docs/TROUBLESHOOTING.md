@@ -4,6 +4,67 @@
 
 ---
 
+## Gemini `-p` CLI 종료 대응 — API + 모델 fallback chain 마이그레이션
+
+- **증상**: 2026-06에 Google이 `gemini` CLI binary를 종료 예고. 그 전까지 봇 6개 경로가 `subprocess.run(["gemini", "-p", ...])` 또는 `shared.gemini_cli.call_gemini_cli`(내부적으로 subprocess)에 의존 중이라 종료 직후 다음 호출이 다음과 같이 깨짐:
+  - 텔레그램 deep mode round 1부터 `FileNotFoundError` 또는 exit 127
+  - 텔레그램 `/quick` 동일
+  - 뉴스봇 `_gap_fill_via_cli` → 5차원 게이트가 영구 fail
+  - 섹터봇 quota 초과 시 fallback이 사라져 그냥 API 실패로 종료
+- **원인**: CLI는 단순 subprocess wrapper일 뿐, Google API의 직접 호출 가능 경로(`google-genai` SDK)가 이미 더 안정적. CLI를 1차 정보원으로 둔 설계가 시한부였음.
+- **해결**:
+  - `shared/gemini_cli.py` 완전 재작성: `call_gemini_with_fallback()` 신규 + 기존 함수명들은 backward-compat alias로 보존. 내부는 `google-genai` SDK + `types.Tool(google_search=types.GoogleSearch())` grounding + 모델 fallback chain (`gemini-3.1-flash-lite` → `gemini-3.5-flash` → `gemini-3-flash-preview` → `gemini-2.5-flash`).
+  - `shared/research_orchestrator._run_gemini_round` + `telegram_gemini_bot.run_gemini` subprocess 호출 제거.
+  - `news_bot/summarizer.py`, `sector_bot/searcher.py`, `sector_bot/analyzer.py`의 `_use_cli_fallback` 플래그·`_*_via_cli` 메서드 제거 → wrapper로 일원화.
+  - `~/.claude/skills/research/scripts/ask_gemini.sh`도 동일 패턴으로 변환 (내부적으로 isolated venv의 `ask_gemini.py` 호출).
+- **복구 절차**:
+  - (a) `GEMINI_API_KEY`가 ENV 또는 `~/.gemini/api_key` 파일에 있는지 확인 (`zsh -c 'echo ${GEMINI_API_KEY:0:6}...${GEMINI_API_KEY: -4}'`)
+  - (b) 운영 코드에서 subprocess 잔존 0건 검증: `grep -rnE 'subprocess\.(run|Popen)\s*\(\s*\[\s*["'\'']gemini["'\'']' 001_code/ --include="*.py"`
+  - (c) `pytest 003_test_code/ --ignore=003_test_code/test_news_fetch.py` → 73 pass 확인
+  - (d) 라이브 smoke: `printf '한 줄로만 답하라. 1+1?' | python -c "from shared.gemini_cli import call_gemini_with_fallback; print(call_gemini_with_fallback('1+1?', use_grounding=False).text)"`
+- **관련 사고**: 2026-05-27 (예방적 마이그레이션, 6월 CLI 종료 D-30+ 시점)
+- **재발 감지**: `import subprocess` + `gemini` 같은 줄에 등장하면 grep으로 즉시 검출. CI에 `! grep -rqE 'subprocess.*\bgemini\b' 001_code/ --include="*.py"` 추가 권장.
+
+### Claude 진단 미스 (2026-05-27 세션)
+
+**미스 #1 — 잔여 점검 범위 누락**
+
+- **Claude 처음 가설**: 1차 grep으로 운영 코드(`001_code/`)의 `subprocess + gemini` 호출 0건을 확인하고 "마이그레이션 완료, 잔존 없음"으로 보고.
+- **실제 원인**: 사용자가 "다시 한번 전체 점검 해봐"라고 요청한 뒤 광범위 grep을 돌렸을 때 (a) 테스트 코드 4개(`test_research_orchestrator.py`)가 옛 subprocess monkeypatch에 의존해 fail, (b) `test_shared_gemini_cli.py` + `test_sector_orchestrator.py`의 `_use_cli_fallback` sentinel 테스트 2개도 의미 상실, (c) `docs/ARCHITECTURE.md`·`SECTOR_BOT.md`·`NEWS_BOT.md`에 옛 CLI fallback 설명 잔존, (d) `research_orchestrator.py` 2곳의 `except (GeminiRoundError, subprocess.TimeoutExpired, FileNotFoundError)`에서 subprocess 예외가 dead 분기로 남아있음을 발견. 6 failed / 65 passed.
+- **방향 전환 지점**: 사용자가 "다시한번 전체 점검 해봐"라고 명시한 시점. 1차 grep이 너무 좁았음(`001_code/` + `--include="*.py"`만 봄).
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: 마이그레이션 후 "잔존 없음" 선언 전에 **테스트 코드 + docs/ + dead except 분기**까지 grep 필수
+  - 빨리 배제할 가설: "운영 코드만 깨끗하면 완료" — 회귀 테스트가 옛 가정에 묶여 있으면 CI 깨짐. 문서가 옛 동작 설명하면 신규 합류자 헷갈림
+  - 핵심 진단 명령:
+    ```bash
+    # 운영 + 테스트 + docs 모두
+    grep -rnE 'subprocess\.(run|Popen).*<old-cmd>|<old-cmd>\s+-<flag>' \
+      001_code/ 003_test_code/ docs/ --include='*.py' --include='*.md' --include='*.sh'
+    # 죽은 except 분기
+    grep -rnE 'except\s*\([^)]*subprocess\.[A-Z]' 001_code/ --include='*.py'
+    # 실제 회귀 테스트
+    pytest 003_test_code/ --tb=line -q
+    ```
+
+**미스 #2 — `.zshenv` 자동 로드 사실을 설명에서 누락**
+
+- **Claude 처음 가설**: `~/.zshenv`에 `GEMINI_API_KEY` export 추가 안내 후 "새 shell 띄우거나 `source ~/.zshenv`" 라고 단순 안내. 결과: 사용자가 ".zshenv는 내가 항상 source 해줘야해? 그렇다면 .zshrc에서 자동으로 source 해주는 것을 추가해" 라고 잘못된 가정에 도달.
+- **실제 원인**: `~/.zshenv`는 zsh가 모든 invocation(interactive/non-interactive/login)에서 **자동 로드**하는 startup file. `~/.zshrc`(interactive 전용)와 명확히 구분되는데 Claude 첫 안내에 그 차이를 적지 않아 사용자가 수동 source 또는 .zshrc 추가가 필요하다고 오해.
+- **방향 전환 지점**: 사용자가 .zshrc 추가 요청. Claude가 `zsh -c '...'` / `zsh -lc` / `zsh -ic` 세 모드 전부에서 auto-load 검증 후 "추가 불필요" 정정.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: shell startup file을 추천할 때 **자동 로드 메커니즘을 한 줄로 명시**. "추가만 하면 됨, source 불필요, 모든 새 zsh가 자동 로드" 식으로
+  - 빨리 배제할 가설: "사용자가 dotfile 동작을 알 것이다" — `.zshenv`는 macOS default 환경에서도 자주 모름
+  - 핵심 진단 명령:
+    ```bash
+    # 자동 로드 검증 (3 mode)
+    zsh -c  'echo ${VAR:-NOT_LOADED}'   # non-interactive
+    zsh -lc 'echo ${VAR:-NOT_LOADED}'   # login
+    zsh -ic 'echo ${VAR:-NOT_LOADED}'   # interactive
+    ```
+  - 안티패턴: `.zshrc`에 `source ~/.zshenv` 추가 권유 → 중복 실행이고 zshenv가 zshrc보다 먼저 실행되므로 의미 없음
+
+---
+
 ## 인라인 SVG 플로우차트 화살표가 박스에 안 닿음 / 다이어그램 깨짐
 
 - **증상**: 봇이 만든 글의 의사결정 흐름 다이어그램에서 다이아몬드 옆구리에서 출발한 YES/NO 화살표가 결과 박스에 *연결되지 않고 허공에서 끝남*. 결과 박스가 SVG 영역 밖 별도 div로 빠지면서 시각적으로 어긋남.

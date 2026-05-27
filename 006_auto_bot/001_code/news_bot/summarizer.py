@@ -1,4 +1,3 @@
-from google import genai
 from google.genai import types
 from typing import List, Dict
 import logging
@@ -6,7 +5,11 @@ import os
 import re
 import time
 
-from shared.gemini_cli import is_quota_error, call_gemini_cli
+from shared.gemini_cli import (
+    GeminiResponse,
+    call_gemini_with_fallback,
+    is_quota_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,19 +30,34 @@ def load_news_skill() -> str:
 
 
 class AISummarizer:
-    """AI-powered blog-style summarizer using Google Gemini API"""
+    """AI-powered blog-style summarizer using Google Gemini API.
+
+    Quota handling: when the primary model returns 429/503, the call falls
+    through a model chain (gemini-3.1-flash-lite → gemini-3.5-flash →
+    gemini-3-flash-preview → gemini-2.5-flash) inside
+    shared.gemini_cli.call_gemini_with_fallback. The old CLI fallback path
+    was removed in May 2026 ahead of the `gemini -p` CLI's June shutdown.
+    """
 
     def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite"):
         """
-        Initialize AISummarizer
+        Initialize AISummarizer.
+
+        `api_key` and `model` are accepted for backward compatibility with
+        existing callers; the actual API key is read from the GEMINI_API_KEY
+        env var inside the shared wrapper, and `model` overrides the primary
+        model (fallbacks still kick in via GEMINI_FALLBACK_MODELS env).
 
         Args:
-            api_key: Google Gemini API key
-            model: Google Gemini model to use
+            api_key: Google Gemini API key (must also be exported as
+                GEMINI_API_KEY env var for the shared wrapper).
+            model: Primary Gemini model. Defaults to gemini-3.1-flash-lite.
         """
-        self.client = genai.Client(api_key=api_key)
+        # The shared wrapper reads GEMINI_API_KEY from env directly; we set it
+        # here in case a caller passed it programmatically but didn't export it.
+        if api_key and not os.getenv("GEMINI_API_KEY"):
+            os.environ["GEMINI_API_KEY"] = api_key
         self.model_name = model
-        self._use_cli_fallback = False  # flips to True after first quota error
 
         self.system_instruction = """You are a professional news journalist and summarizer.
 Your role is to provide objective summaries of news articles from verified sources.
@@ -54,6 +72,66 @@ This is journalistic work, not content generation."""
             types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
             types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
         ]
+
+    def _models_chain(self) -> List[str]:
+        """Build the model chain for this summarizer. Primary = constructor
+        arg, fallbacks come from GEMINI_FALLBACK_MODELS env. The primary is
+        deduped from the fallback list if duplicated."""
+        raw = os.getenv(
+            "GEMINI_FALLBACK_MODELS",
+            "gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash",
+        )
+        fallbacks = [m.strip() for m in raw.split(",") if m.strip()]
+        chain = [self.model_name] + [m for m in fallbacks if m != self.model_name]
+        return chain
+
+    def _summarize(
+        self,
+        prompt: str,
+        raw_markdown: str,
+        *,
+        max_output_tokens: int,
+    ) -> str:
+        """Common summarization path used by daily/weekly/monthly creators.
+
+        Returns the cleaned summary text. On safety block or hard failure,
+        returns the pre-built fallback summary so the daily run never aborts.
+        """
+        try:
+            response: GeminiResponse = call_gemini_with_fallback(
+                prompt,
+                use_grounding=False,  # summarizing already-collected RSS, no web search needed
+                system_instruction=self.system_instruction,
+                safety_settings=self.safety_settings,
+                temperature=0.7,
+                max_output_tokens=max_output_tokens,
+                models=self._models_chain(),
+            )
+        except Exception as e:
+            logger.error(f"All summarizer models failed: {e}")
+            return self._create_fallback_summary(raw_markdown)
+
+        if response.safety_blocked:
+            logger.warning(
+                f"Summary blocked by safety filter on {response.model_used}; "
+                f"using mechanical fallback"
+            )
+            return self._create_fallback_summary(raw_markdown)
+
+        text = (response.text or "").strip()
+        if not text:
+            logger.warning(
+                f"Empty summary from {response.model_used} "
+                f"(finish={response.finish_reason})"
+            )
+            return self._create_fallback_summary(raw_markdown)
+
+        cleaned = self._remove_footer(text)
+        logger.info(
+            f"Summary OK model={response.model_used} chars={len(cleaned)} "
+            f"finish={response.finish_reason}"
+        )
+        return cleaned
 
     def create_blog_summary(self, raw_markdown: str) -> str:
         """
@@ -80,72 +158,7 @@ This is journalistic work, not content generation."""
         logger.info(f"Input prompt size: {len(prompt)} characters")
         logger.info(f"Raw markdown size: {len(raw_markdown)} characters")
 
-        # CLI fallback path: skip API entirely once quota was hit
-        if self._use_cli_fallback:
-            return self._summarize_via_cli(prompt, raw_markdown)
-
-        try:
-            logger.info("Calling Gemini API with safety OFF for verified news journalism...")
-
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_instruction,
-                    temperature=0.7,
-                    max_output_tokens=8000,
-                    safety_settings=self.safety_settings,
-                ),
-            )
-
-            # Check if response has valid content
-            if response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-
-                # Log detailed response info for debugging
-                logger.info(f"Gemini finish_reason: {candidate.finish_reason}")
-                logger.info(f"Safety ratings: {candidate.safety_ratings}")
-
-                if candidate.finish_reason == types.FinishReason.STOP:
-                    blog_summary = response.text.strip()
-                    blog_summary = self._remove_footer(blog_summary)
-                    logger.info(f"Successfully created blog summary ({len(blog_summary)} chars)")
-                    return blog_summary
-                elif candidate.finish_reason == types.FinishReason.SAFETY:
-                    logger.warning("Blog summary blocked by safety filter")
-                    logger.warning(f"Safety ratings: {candidate.safety_ratings}")
-                    return self._create_fallback_summary(raw_markdown)
-                else:
-                    logger.warning(f"Unexpected finish reason: {candidate.finish_reason}")
-                    logger.warning(f"Candidate content: {candidate}")
-                    return self._create_fallback_summary(raw_markdown)
-            else:
-                logger.warning("No valid response candidates")
-                logger.warning(f"Response: {response}")
-                return self._create_fallback_summary(raw_markdown)
-
-        except Exception as e:
-            if is_quota_error(e):
-                logger.warning(f"API quota exhausted, switching to Gemini CLI: {e}")
-                self._use_cli_fallback = True
-                return self._summarize_via_cli(prompt, raw_markdown)
-            logger.error(f"Error creating blog summary: {str(e)}")
-            return self._create_fallback_summary(raw_markdown)
-
-    def _summarize_via_cli(self, prompt: str, raw_markdown: str) -> str:
-        """Run Gemini summarization via CLI fallback. Returns markdown summary or fallback text."""
-        logger.info("[CLI Fallback] Summarizing via gemini -p...")
-        try:
-            text = call_gemini_cli(prompt)
-            if not text or len(text) < 200:
-                logger.warning(f"[CLI Fallback] Insufficient response: {len(text)} chars")
-                return self._create_fallback_summary(raw_markdown)
-            cleaned = self._remove_footer(text.strip())
-            logger.info(f"[CLI Fallback] Summary completed ({len(cleaned)} chars)")
-            return cleaned
-        except Exception as e:
-            logger.error(f"[CLI Fallback] Failed: {e}")
-            return self._create_fallback_summary(raw_markdown)
+        return self._summarize(prompt, raw_markdown, max_output_tokens=8000)
 
     def _create_fallback_summary(self, raw_markdown: str) -> str:
         """
@@ -212,11 +225,10 @@ This is journalistic work, not content generation."""
         Returns:
             Weekly summary in markdown format
         """
-        try:
-            logger.info("Creating weekly summary with Gemini API...")
+        logger.info("Creating weekly summary with Gemini API...")
 
-            skill_content = load_news_skill()
-            prompt = f"""{skill_content}
+        skill_content = load_news_skill()
+        prompt = f"""{skill_content}
 
 # 요약 모드: Weekly (주간 요약)
 
@@ -229,43 +241,20 @@ This is journalistic work, not content generation."""
 {daily_summaries}
 """
 
-            logger.info(f"Weekly summary input size: {len(prompt)} characters")
+        logger.info(f"Weekly summary input size: {len(prompt)} characters")
 
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_instruction,
-                    temperature=0.7,
-                    max_output_tokens=8000,
-                    safety_settings=self.safety_settings,
-                ),
-            )
-
-            if response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if candidate.finish_reason == types.FinishReason.STOP:
-                    weekly_summary = response.text.strip()
-                    weekly_summary = self._remove_footer(weekly_summary)
-                    logger.info(f"Successfully created weekly summary ({len(weekly_summary)} chars)")
-                    return weekly_summary
-
-            logger.warning("Failed to create weekly summary, returning fallback")
+        text = self._summarize(prompt, daily_summaries, max_output_tokens=8000)
+        # If summarizer returned its mechanical fallback (starts with the
+        # generic emoji header), pivot to the weekly-style fallback so the
+        # post still carries the correct date range.
+        if text.startswith("# 📰") and "AI 요약 생성 중 오류" in text:
             return f"""# 📅 주간 뉴스 요약 ({start_date} ~ {end_date})
 
 > AI 요약 생성 중 오류가 발생했습니다.
 
 {daily_summaries}
 """
-
-        except Exception as e:
-            logger.error(f"Error creating weekly summary: {str(e)}")
-            return f"""# 📅 주간 뉴스 요약 ({start_date} ~ {end_date})
-
-> 오류: {str(e)}
-
-{daily_summaries}
-"""
+        return text
 
     def create_monthly_summary(self, daily_summaries: str, year: int, month: int) -> str:
         """
@@ -279,11 +268,10 @@ This is journalistic work, not content generation."""
         Returns:
             Monthly summary in markdown format
         """
-        try:
-            logger.info("Creating monthly summary with Gemini API...")
+        logger.info("Creating monthly summary with Gemini API...")
 
-            skill_content = load_news_skill()
-            prompt = f"""{skill_content}
+        skill_content = load_news_skill()
+        prompt = f"""{skill_content}
 
 # 요약 모드: Monthly (월간 요약)
 
@@ -296,40 +284,14 @@ This is journalistic work, not content generation."""
 {daily_summaries}
 """
 
-            logger.info(f"Monthly summary input size: {len(prompt)} characters")
+        logger.info(f"Monthly summary input size: {len(prompt)} characters")
 
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_instruction,
-                    temperature=0.7,
-                    max_output_tokens=10000,
-                    safety_settings=self.safety_settings,
-                ),
-            )
-
-            if response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if candidate.finish_reason == types.FinishReason.STOP:
-                    monthly_summary = response.text.strip()
-                    monthly_summary = self._remove_footer(monthly_summary)
-                    logger.info(f"Successfully created monthly summary ({len(monthly_summary)} chars)")
-                    return monthly_summary
-
-            logger.warning("Failed to create monthly summary, returning fallback")
+        text = self._summarize(prompt, daily_summaries, max_output_tokens=10000)
+        if text.startswith("# 📰") and "AI 요약 생성 중 오류" in text:
             return f"""# 📆 {year}년 {month}월 월간 뉴스 요약
 
 > AI 요약 생성 중 오류가 발생했습니다.
 
 {daily_summaries}
 """
-
-        except Exception as e:
-            logger.error(f"Error creating monthly summary: {str(e)}")
-            return f"""# 📆 {year}년 {month}월 월간 뉴스 요약
-
-> 오류: {str(e)}
-
-{daily_summaries}
-"""
+        return text

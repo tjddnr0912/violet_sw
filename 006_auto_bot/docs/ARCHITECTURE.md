@@ -12,9 +12,9 @@
 ├── news_bot/                    # 뉴스봇 전용 모듈
 │   ├── config.py                # RSS sources, schedule, HOURS_LIMIT_BY_CATEGORY
 │   ├── aggregator.py            # RSS 파싱 (per-category freshness 지원)
-│   ├── summarizer.py            # Gemini AI 요약 (CLI fallback)
+│   ├── summarizer.py            # Gemini AI 요약 (모델 fallback chain)
 │   ├── dimensions.py            # 5차원 (균형/신선도/다양성/출처신뢰/글로벌균형) + claude_judge_news
-│   ├── orchestrator.py          # run_news_research: RSS → 게이트 → CLI 갭필 → 풀 enrich
+│   ├── orchestrator.py          # run_news_research: RSS → 게이트 → API 갭필 → 풀 enrich
 │   └── writer.py                # 마크다운 I/O, cleanup
 ├── sector_bot/                  # 섹터봇 전용 모듈
 │   ├── config.py                # 11개 섹터 정의, 스케줄 (12:00 시작 40분 간격)
@@ -26,7 +26,7 @@
 │   ├── writer.py                # 마크다운 I/O
 │   └── state_manager.py         # 상태 저장/복구
 ├── shared/                      # 공유 모듈
-│   ├── gemini_cli.py            # Gemini CLI fallback (sector + news 공용, API 429 시 gemini -p)
+│   ├── gemini_cli.py            # Gemini API wrapper + 모델 fallback chain (3.1-flash-lite → 3.5-flash → 3-flash-preview → 2.5-flash). 옛 `gemini -p` CLI는 2026-06 종료 대응으로 제거됨. 함수명은 backward-compat 유지.
 │   ├── html_utils.py            # HTML 태그 처리, 마크다운 변환
 │   ├── telegram_api.py          # Telegram Bot API (Inline Keyboard)
 │   ├── telegram_notifier.py     # 알림 발송
