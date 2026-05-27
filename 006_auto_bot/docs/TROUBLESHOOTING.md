@@ -4,6 +4,31 @@
 
 ---
 
+## 마이그레이션 옵션 비교 시 원본 설계의 implicit value 무시
+
+- **증상**: Gemini grounding hidden quota 발견 후 backend 마이그레이션 옵션을 비교할 때, Claude가 "Native WebSearch 단순 재작성"(옵션 B)을 운영 단순성·인프라 일관성 근거로 강하게 추천. 사용자가 직접 "여기서 chain 구조가 없어지는건 아쉬워. 이게 포함됐던 이유는 할루시네이션을 없애고, 여러 각도에서의 의견을 더 담아보려고 했던 목적이 있었어"라고 corrective 지적할 때까지 chain의 본래 설계 가치(다관점 검증 + hallucination 방지)를 옵션 비교에 명시적으로 반영하지 않음.
+- **원인**: 마이그레이션 옵션 분석 시 "기능적 동등성"(quota 회피, 같은 결과)에 집중하고 **원본 설계가 가졌던 implicit value**(왜 이 chain/wrapper/패턴이 만들어졌나? 단순 fallback 외에 다른 의도는?)를 옵션 표 trade-off에 명시 안 함. Chain은 단순 quota fallback이 아니라 모델·각도 다양화로 hallucination을 감소시키는 도구였는데, 이를 옵션 B 단순 적용에서 잃음.
+- **해결**: 옵션 B+로 확장 — Native WebSearch + WebFetch + **Phase 1.5(1차 source 검증)** + Phase 3 query 다양화로 원본 chain의 가치를 다른 방식으로 보존. `~/.claude/skills/research/SKILL.md` 재작성에 NEW Phase 1.5 추가 (WebFetch로 핵심 출처 원문 직접 fetch → snippet vs 원문 대조 → hallucination 검출), Phase 3 다양화 축(키워드/언어/시각/도구) 명시. 라이브 테스트로 검증.
+- **복구 절차**:
+  - (a) 마이그레이션 또는 큰 리팩토링 옵션 비교 시, 원본 설계가 가졌던 **명시되지 않은 implicit value**를 먼저 식별: "왜 이 chain/wrapper/패턴이 만들어졌나? 단순 quota fallback 외에 다른 의도는?"
+  - (b) 사용자에게 옵션 제시할 때 그 가치 보존 여부를 명시적 trade-off 컬럼에 추가 ("Pros/Cons" 외에 "원본 설계의 implicit value 보존 여부" 컬럼)
+  - (c) 만약 옵션 채택 후 사용자가 "아쉬워" / "원래 의도는 X였는데" 류 corrective 발화하면 즉시 옵션 확장(예: B+) 또는 재설계
+- **관련 사고**: 2026-05-27 PM (research skill backend 마이그레이션, [[research-skill-websearch]])
+- **재발 감지**: 마이그레이션 plan에서 옵션 표가 "기능적 동등성"에만 만족할 때 — Pros/Cons 컬럼에 "원본 설계의 implicit 가치 보존 여부"가 없으면 의심. 사용자 corrective 발화 후에 옵션을 재구성하지 말고, 옵션 제시 전에 implicit value 자문할 것.
+
+### Claude 진단 미스 (2026-05-27 PM 세션, research skill 옵션 비교)
+
+- **Claude 처음 가설**: research skill 마이그레이션 옵션 B(Native WebSearch 단순 재작성)가 (i) self-call 어색함 없음, (ii) 봇과 인프라 일관, (iii) ask_gemini.sh 외부 wrapper 불필요 — 따라서 "옵션 B (추천)"으로 강하게 push. 사용자에게 비교 옵션 4개(A/B/C/D) 제시했지만 그 표의 어느 컬럼도 "chain의 본래 가치 보존 여부"를 명시하지 않음. Trade-off는 "운영 단순성", "subprocess overhead", "self-call 어색함" 같은 inrastructure 차원에 머무름.
+- **실제 원인 (사용자 지적)**: chain의 본래 목적은 (a) 다관점 cross-check, (b) hallucination 방지였는데, 옵션 B 단순 적용 시 단발 WebSearch 호출 1회로 끝나서 두 효과 모두 잃음. 사용자가 "여기서 chain 구조가 없어지는건 아쉬워. 이게 포함됐던 이유는 할루시네이션을 없애고, 여러 각도에서의 의견을 더 담아보려고 했던 목적이 있었어"라고 명시한 후 Claude가 우려 정당성 인정하고 옵션 B+(WebFetch 1차 source 검증 + query 다양화)로 재설계.
+- **방향 전환 지점**: 사용자 메시지 "추천 B가 마음에 들긴 하는데, 여기서 chain 구조가 없어지는건 아쉬워. 이게 포함됐던 이유는 할루시네이션을 없애고, 여러 각도에서의 의견을 더 담아보려고 했던 목적이 있었어". 이 발화 이후 Claude가 옵션 표를 재구성(B+/E/F/G) + "Chain의 진짜 가치 재정리" 섹션 신설.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: 마이그레이션 옵션 표 작성 시 "**원본 설계의 implicit value**" 컬럼 의무. quota/성능/비용/인프라 차원 외에 "이 wrapper/chain/패턴이 가졌던 다른 가치는?"을 자문하고 답을 trade-off에 명시
+  - 빨리 배제할 가설: "기능적으로 같은 결과를 내면 OK" — implicit value(예: hallucination 방지, 다관점 cross-check, 재현성, 학습 효과)가 사라지는 옵션은 그것만으로 정당화 불가. 보존 여부를 별도 검토해야 함
+  - 핵심 진단 명령: 옵션 제시 **전**에 사용자에게 "이 [chain/wrapper/패턴]을 처음 만든 의도가 뭐였어요? 단순 [quota fallback / 비용 절감 / X] 외에 다른 목적이 있었나요?"를 한 번 물어볼 것. 사용자 의도와 implicit value를 명시화하면 옵션 비교가 정확해짐
+  - 안티패턴: 옵션 제시 후에야 사용자 corrective 받고 재구성. 사전에 묻는 게 훨씬 효율적이고 신뢰도 높음
+
+---
+
 ## Gemini 3.x `google_search` grounding 별도 quota 발견 → Claude WebSearch 전환
 
 - **증상**: 2026-05-27 PM, Telegram deep research 호출이 4개 모델(`gemini-3.1-flash-lite` → `gemini-3.5-flash` → `gemini-3-flash-preview` → `gemini-2.5-flash`)에서 순차로 429 반환. fallback chain 마지막 모델만 성공. AI Studio dashboard의 RPM/TPM/RPD는 거의 0%인데도 거부.
