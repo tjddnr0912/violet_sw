@@ -581,7 +581,14 @@ class TelegramNotifier:
             *table_lines,
             self._DIVIDER,
         ]) + "</pre>"
-        footer = f"<i>Tier: {tier_key}</i>"
+        # `Target` 의 의미를 footer 에 명시: 매도 트리거가 아니라 자본 규모 기반
+        # 목표 배분액. Drift 는 그 배분 대비 편차 (분기말 ±10% 초과 시 리밸런스).
+        legend = (
+            "<i>Current=평가금액(현재가×수량) · "
+            "Target=목표배분(자본×weight, 매도가 아님) · "
+            "Drift=배분편차(분기말 ±10%↑ 리밸런스)</i>"
+        )
+        footer = f"{legend}\n<i>Tier: {tier_key}</i>"
         self.send(f"{header}\n{body}\n{footer}")
 
     def notify_tier_change(self, prev_tier: Optional[str], new_tier: str,

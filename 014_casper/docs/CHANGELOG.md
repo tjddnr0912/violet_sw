@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-05-27: 포트폴리오 메시지 'Target/Drift' 용어 명확화
+
+사용자가 일일 portfolio 텔레그램 메시지의 Drift 음수 표시를 손실/매도 트리거로 오해. 계산 버그가 아니라 컬럼 헤더(Current/Target/Drift)의 도메인 용어가 footer 설명 없이 노출돼 발생한 의미 mismatch.
+
+### notify_portfolio_summary footer legend (src/telegram/notifier.py:584~591)
+
+기존: `<i>Tier: {tier_key}</i>` 한 줄만.
+변경: 그 위에 1줄 legend 추가 — `Current=평가금액(현재가×수량) · Target=목표배분(자본×weight, 매도가 아님) · Drift=배분편차(분기말 ±10%↑ 리밸런스)`. 컬럼 폭/구조/계산은 모두 그대로 유지(정렬 보존, 기존 notifier 테스트 37/37 통과). 다음 일일 tick부터 자동 적용 — 봇 재기동 불필요.
+
+### 검증
+
+- portfolio_state.json (2026-05-27) 산수 정합: 총액 $3,134.69 = cash $711.70 + SPMO $1,498.00 + VEU $924.99, sum(diff) = -$711.71 ≈ -cash. **계산 정확.**
+- 사용자 KIS HTS 평가금액 vs 봇 current: SPMO $1,502 vs $1,498 (-$4), VEU $927 vs $924.99 (-$2). 차이는 가격 호출 timing.
+- TROUBLESHOOTING.md에 사고 항목 + Claude 진단 미스 기록 추가 — 다음 세션이 같은 패턴을 만나면 KIS API 필드부터 의심하지 않고 도메인 용어 해석 차이를 먼저 점검하도록.
+
+---
+
 ## 2026-05-16: 멀티버킷 운영 안정성 보강 (P0 / P1 / P2)
 
 전날 멀티버킷 시드 디버깅 + 시드 후 정밀 검토에서 발견한 3개 결함을 한 번에 보강. 봇은 어제 시드 매수까지 정상 완료(SPMO 10주 + VEU 11주), 그러나 시드 후 SCANNING 진입 자체를 못해 그날 캐스퍼 거래 0건 — 그 원인 + 재발 방지 + persistence 추가.

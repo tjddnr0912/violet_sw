@@ -556,3 +556,29 @@
   - 첫 의심 영역: **"임무 성공" 보고 전에 후속 상태머신이 의도대로 흐르는지 검증**. 한 단계 성공만 보고 "다음 상태에서 머무는가"는 별도 확인 필요.
   - 빨리 배제할 가설: "로그가 조용 = 정상 idle". 정상 idle은 폴링 로그가 한 번이라도 나옴 (예: `STATE: ... → SCANNING`). 봇 시작 후 N분 동안 STATE 전이 로그 0회면 abnormal.
   - 핵심 진단 명령: `grep -E "STATE:|=== New Day" logs/app/casper_$(date +%F).log | tail -20` — 상태 전이 시퀀스가 시작~ORB_FORMING~SCANNING 라인을 그리는지.
+
+---
+
+## Portfolio 메시지 'Target/Drift'를 사용자가 매도 트리거로 오해
+
+- **증상**: 텔레그램 일일 포트폴리오 메시지에서 모든 bucket의 Drift가 음수(SPMO -4.4%, GEM -1.6%, CASPER -100%)로 표시됨. 사용자가 "내 계좌는 실제로 수익 + 상태인데 왜 봇은 마이너스?"로 오해. CASPER -100%는 "전손"처럼 보임.
+- **원인**: 두 가지가 결합한 표시(meaning) 문제 — (a) `Bucket.drift_pct = (current_value_usd - target_usd) / target_usd`는 "목표 배분 대비 부족"이지 P&L이 아닌데, 메시지에 그 정의가 적혀있지 않음. 컬럼명 'Target'을 사용자는 "매도 트리거 가격" 또는 "익절 목표"로 해석. (b) CASPER bucket은 intraday 전용이라 일과 종료 시 항상 cash holding이 정상인데, 같은 공식으로 계산하면 `(0 - 626.94)/626.94 = -100%`로 떠 "거대한 손실"로 오인. 산수 자체는 모두 정확 — 총액 $3,134.69 = cash $711.70 + SPMO $1,498 + VEU $924.99, 그리고 모든 bucket diff 합계 = -cash. **계산 버그 아님, 용어 정의 부재.**
+- **해결**: `src/telegram/notifier.py::notify_portfolio_summary`의 footer에 legend 1줄 추가 — `Current=평가금액(현재가×수량) · Target=목표배분(자본×weight, 매도가 아님) · Drift=배분편차(분기말 ±10%↑ 리밸런스)`. 컬럼 폭/구조는 그대로 유지(정렬 보존). KIS API/계산 로직은 손대지 않음.
+- **복구 절차**: 봇 재기동 불필요. 다음 일일 portfolio tick (KST 13:00 또는 ET RTH 진입 시점)부터 새 메시지에 legend가 함께 발송.
+- **관련 사고**: 2026-05-27 (사용자가 분기 리밸런스용 'Target' 컬럼을 매도 트리거로 오해, 모든 bucket drift 음수를 손실로 인식)
+- **재발 감지**: 신규 알림 도입 시 도메인 용어(P&L, drift, allocation, exposure 등)를 컬럼 헤더로 쓰면 반드시 footer에 1줄 정의 추가. 사용자가 "메시지의 X가 이상하다"고 신고하면 먼저 X의 도메인 의미 ↔ 사용자 해석 차이부터 점검.
+
+### Claude 진단 미스 (2026-05-27)
+
+- **Claude 처음 가설**: KIS 잔고 API의 `frcr_drwg_psbl_amt_1`(외화 출금가능금액)이 미체결 매수/T+3 미결제 매도 자금을 제외하기 때문에 cash가 underestimate, 결과적으로 total/target이 어긋난다 — 또는 `_fetch_full_portfolio_snapshot`이 `get_us_price` 호출 실패 시 `avg_price`로 fallback해 cost basis로 표시될 가능성. 즉 **데이터 소스 mismatch가 root cause**라고 가정.
+- **실제 원인**: 계산은 모두 정확 (산수: 총액 - 보유합 = cash, drift sum = -cash로 정합). 사용자가 'Target' 단어를 "매도 트리거"로 오해. 메시지 자체에 의미 설명이 없는 게 root cause — 데이터 흐름 / API 필드는 무관.
+- **방향 전환 지점**: 사용자가 두 번째 메시지에서 "총자산은 비슷해. SPMO 1442→1502, VEU 893→927 평가금액이 더 높아 마이너스 상황 아니야. **아니면 target이란 목표를 말하는건가? 내 순 수익 상관없이 목표수치에 도달하면 매도되는 기준을 이야기하는거야?**" 라고 직접 용어 정의를 물어본 시점. 그 전까지 Claude는 KIS API 필드/가격 소스만 의심.
+- **교훈 (다음에 사용자가 "텔레그램 메시지의 X가 이상하다"고 신고하면)**:
+  - 첫 의심 영역: **메시지 컬럼 헤더의 도메인 용어 ↔ 사용자 직관 차이**. 'Target', 'Drift', 'Exposure', 'Allocation' 등은 트레이딩 용어로는 명확하지만 일반 사용자에게 다른 의미로 읽힐 수 있음. 사용자에게 "이 컬럼을 어떻게 해석했는지" 먼저 물어보면 30초 만에 root cause 확인 가능.
+  - 빨리 배제할 가설: 사용자가 "KIS HTS 값과 봇 메시지가 비슷하다"고 했으면 → API 필드 mismatch는 거의 원인 아님. 산수 검증으로 "총액 - 보유합 = cash, drift합 = -cash" 정합이 확인되면 → 계산 버그 아님 100% 확정.
+  - 핵심 진단 명령:
+    ```bash
+    # 메시지 시뮬레이션 — 사용자가 실제 본 화면 재구성
+    python3 -c "import json; print(json.dumps(json.load(open('data/portfolio_state.json')), indent=2))"
+    # 산수 정합 1줄: 총액 - 보유합 = cash, sum(diff) = -cash 여야 정상
+    ```
