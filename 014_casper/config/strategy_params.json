@@ -29,7 +29,7 @@
         "disp_atr_mult": 1.0,
         "disp_max_wick": 0.50,
         "disp_prev_mult": 1.5,
-        "require_sweep_choch": true,
+        "require_sweep_choch": false,
         "sweep_lookback": 6,
         "choch_lookback": 6,
         "sweep_min_breach_pct": 0.0005,

@@ -4,6 +4,80 @@
 
 ---
 
+## 2026-05-28: ICT sweep+CHoCH 게이트 default OFF (옵션 B 단계적 완화)
+
+### 결정 한 줄
+`config/strategy_params.json::entry.require_sweep_choch`를 **`true → false`**. env로 즉시 토글 가능(`ICT_REQUIRE_SWEEP_CHOCH=true`로 복구).
+
+### 동기
+
+5/6 마지막 매매 이후 **15거래일 연속 매매 0건** (5/7, 5/10~14, 5/15~16, 5/18~22, 5/26~27). 봇은 6거래일 모두 정상 가동(상태머신·필터·KIS 모두 OK), 차단은 100% ICT 풀스택 시그널 게이트 안.
+
+`data/ict_decisions/*.jsonl` 분석:
+
+| 거래일 | 평가 ~214회 | FVG-with-breakout | sweep_choch | signal_emit |
+|---|---:|---:|---:|---:|
+| 5/18 | ✓ | 0 | – | 0 |
+| 5/19 | ✓ | 525 → 175 disp pass | 175 attempts / **175 fail (100%)** | **0** |
+| 5/20 | ✓ | 54 → 18 disp pass | 18 attempts / **18 fail (100%)** | **0** |
+| 5/21 | ✓ | 0 | – | 0 |
+| 5/22 | ✓ | 0 | – | 0 |
+| 5/26 | ✓ | 0 | – | 0 |
+| 5/27 | ✓ | 0 | – | 0 |
+
+이전 활성 기간(5/12~5/15) 같은 풀스택 ON 상태에서 sweep_choch 통과는 day당 3건 → signal_emit 36~52건 발생했던 점과 비교하면 sweep+CHoCH가 5월 후반 저변동성 시장에서 가장 큰 보틀넥. 5/19 175회 / 5/20 18회 모두 `reason="no sweep then CHoCH precursor"` — 단일 사유 100%.
+
+### 적용 범위
+
+- `config/strategy_params.json`: `require_sweep_choch: true → false`
+- 코드 수정 없음. `src/core/strategy.py::scan_for_signal`은 이미 이 flag를 읽어 `require_sweep_choch=False`일 때 sweep+CHoCH 게이트를 우회.
+- `src/utils/config.py::_apply_ict_env_overrides`의 `ICT_REQUIRE_SWEEP_CHOCH` env override 그대로 — 사용자가 임시 ON 복구 가능.
+- `run_casper.sh` 시동 banner는 그대로(`_on('ICT_REQUIRE_SWEEP_CHOCH', ...)` 패턴). config flip만으로 banner의 `+ Sweep` 토큰이 자동 제거.
+
+### 효과 추정 (가설, 다음 거래일에 검증)
+
+5/19/5/20에 `displacement_check` 까지 통과했던 175 + 18 = 193 bar-evaluation이 sweep off 시 후속 게이트(`unicorn / OTE / multi-tf-SL / power_of_3`)로 진입. 이 후속 게이트의 통과율은 미측정이지만 5/12~5/15 비교 데이터로 보면 풀스택 전체 통과 ≈ 5~6%이 정상.
+
+**한계**: 4일(5/18, 5/21, 5/22, 5/26)은 FVG-with-breakout 자체가 0회 → sweep off만으로 해결 X. 이 4일은 시장 변동성 회복(VIX > 20) 또는 `strict_fvg=false` 같은 추가 완화가 필요.
+
+### 회귀 검증
+
+`pytest tests/test_config.py tests/test_ict_env_override.py tests/test_strategy.py tests/test_strategy_phase2.py tests/test_strategy_review.py tests/test_notifier.py tests/test_notifier_stages.py` — 78/78 통과.
+
+Banner 시뮬레이션:
+```
+AFTER:  ICT : KZ(AM_MACRO,AM_LATE) + Disp + Bias + QQQ->SQQQ + QQQ->TQQQ
+              + OTE(0.705) + Unicorn + MTF-SL + P3 + EQH/EQL + SessionPools + PremktHist + PDH/PDL
+              (Sweep 자동 제거)
+```
+
+### 재활성 가이드 (임시/실험용)
+
+```bash
+# 임시 sweep 복구
+echo 'ICT_REQUIRE_SWEEP_CHOCH=true' >> .env
+./run_casper.sh stop && ./run_casper.sh daemon --yes
+# banner 의 ICT 라인에 다시 + Sweep 토큰이 나오는지 확인
+
+# 영구 복구
+# config/strategy_params.json::entry.require_sweep_choch 를 true 로 되돌리고 .env 라인 삭제
+```
+
+### 모니터링 (다음 7거래일)
+
+- KST 22:30 banner의 `ICT :` 라인에서 `Sweep` 토큰 부재 확인
+- KST 23:55 직후 `data/ict_decisions/<date>.jsonl`의 `signal_emit` event count 확인
+  - `count > 0` → setup 감지 → telegram `🎯 Setup detected` 알림 발생 예상
+  - `count == 0` 가 다시 7일 연속이면 strict_fvg 또는 require_displacement도 검토 대상
+- 5건 매매 누적 시 `python scripts/phase1_precheck.py` 재실행으로 ICT phase 보정
+
+### 평가 시점
+
+- **단기**: 다음 5거래일 (5/28 ~ 6/3) 시그널 감지 빈도 vs 직전 7일
+- **중기**: 2026-06-30 분기말 — sweep ON vs OFF 라이브 결과 비교 후 영구 결정
+
+---
+
 ## 2026-05-27: 포트폴리오 메시지 'Target/Drift' 용어 명확화
 
 사용자가 일일 portfolio 텔레그램 메시지의 Drift 음수 표시를 손실/매도 트리거로 오해. 계산 버그가 아니라 컬럼 헤더(Current/Target/Drift)의 도메인 용어가 footer 설명 없이 노출돼 발생한 의미 mismatch.
