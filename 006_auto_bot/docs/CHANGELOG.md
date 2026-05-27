@@ -4,7 +4,26 @@
 
 ---
 
-## 2026-05-27: Gemini `-p` CLI 제거 → API + 모델 fallback chain
+## 2026-05-27 PM: Grounded 호출 4곳 → Claude CLI + WebSearch 재이전
+
+- **배경**: 오전에 끝낸 "Gemini API + 모델 fallback chain" 마이그레이션 직후 라이브 운영에서 모든 4개 모델이 429를 반환하는 현상 발생. AI Studio dashboard에서는 RPM/TPM/RPD가 거의 0%인데도 grounded call이 거부됨. **원인 진단 결과: Gemini 3.x의 `google_search` grounding은 모델 API quota와 별개의 quota bucket을 사용**하고 dashboard에 노출되지 않음. 무료 티어 한도가 매우 빡빡해 일상 사용으로 즉시 소진됨. (참고: Gemini 2.5-flash만 grounding이 살아남는데 그건 prompt당 과금 모델이라 grounding이 prompt charge에 포함되기 때문.)
+- **결정**: 단일 모델(2.5-flash)에 의존하는 구조 대신, grounding이 필요한 4개 호출지점을 **Claude CLI + WebSearch**로 전면 이전. Anthropic의 web_search tool은 별도 quota bucket에서 동작하며 `claude -p` 모드에서 자동 활성화됨. 모델은 `--model haiku/sonnet/opus` + `--fallback-model`로 호출 시점에 선택 가능.
+- **신규 모듈**: `shared/claude_search.py` — `claude_websearch(prompt, model, fallback_model, timeout)` wrapper. `ClaudeSearchResponse(text, sources, model_used, elapsed_seconds)` 반환. `Sources:` 푸터에서 URL 자동 추출.
+- **갱신 파일 (grounding 호출 4곳)**:
+  - `telegram_gemini_bot.py` (quick mode) — Sonnet + Haiku fallback
+  - `shared/research_orchestrator.py` (deep mode rounds) — Sonnet + Haiku fallback. 함수명 `_run_gemini_round` + `GeminiRoundError`는 외부 호환 유지
+  - `news_bot/orchestrator.py` (gap-fill) — Haiku + Sonnet fallback. JSON 출력 단순
+  - `sector_bot/searcher.py` (11개 섹터 검색) — Sonnet + Opus fallback. 섹터별 깊이 요구
+- **유지 (Gemini API 잔존, grounding 불필요)**:
+  - `news_bot/summarizer.py` — daily/weekly/monthly 요약은 이미 수집된 RSS 처리
+  - `sector_bot/analyzer.py` — searcher가 이미 grounding 수행, analyzer는 분석만
+- **모델별 환경변수 외부화**: `CLAUDE_SEARCH_MODEL`, `CLAUDE_SEARCH_FALLBACK_MODEL`, `CLAUDE_SEARCH_TIMEOUT`, `CLAUDE_MODEL_SECTOR_SEARCH`, `CLAUDE_MODEL_SECTOR_SEARCH_FALLBACK`
+- **테스트**: 5개 갱신 (`test_research_orchestrator` 4개 + `test_news_orchestrator` 1개), safety_blocked 테스트 1개 삭제(Claude는 해당 개념 없음). **72개 전부 pass.**
+- **라이브 검증**: Haiku로 grounded 호출 → 36.4s, sources 1개, 정확한 응답("Micron Technology stock surged 19.29% ...") 확인.
+
+---
+
+## 2026-05-27 AM: Gemini `-p` CLI 제거 → API + 모델 fallback chain
 
 - **배경**: Google이 2026-06에 `gemini -p` CLI 종료 예고. 코드 6곳(텔레그램 quick/deep, 뉴스봇 daily/weekly/monthly, 뉴스봇 gap-fill, 섹터봇 search/analyze)이 CLI subprocess를 직간접 호출 중이라 전수 마이그레이션.
 - **새 wrapper**: `shared/gemini_cli.py` 완전 재작성. 신규 `call_gemini_with_fallback()` + 기존 `call_gemini_cli`/`is_quota_error`/`extract_urls`/`is_cli_mode_active` backward-compat alias 유지.

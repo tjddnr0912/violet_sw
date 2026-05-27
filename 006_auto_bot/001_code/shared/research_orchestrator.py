@@ -1,16 +1,23 @@
 """
 Multi-round research orchestrator.
 
-Drives Gemini API (with model fallback chain) for searching + Claude CLI
-for evaluation/synthesis with a 5-dimension gap-check between rounds.
+Drives Claude CLI + WebSearch for each search round + Claude CLI for
+evaluation/synthesis between rounds, with a 5-dimension gap-check.
 Used as the Telegram bot's default research path; users can opt out of
 the multi-round flow with the `/quick` command.
 
-Migrated from `gemini -p` CLI to the google-genai SDK in May 2026 ahead
-of the CLI's June 2026 shutdown. Each round now goes through
-shared.gemini_cli.call_gemini_with_fallback() which transparently falls
-back across gemini-3.1-flash-lite → gemini-3.5-flash → gemini-3-flash-preview
-→ gemini-2.5-flash on 429/503.
+Migration history:
+  - Pre 2026-05-27: each round shelled out to `gemini -p` (deprecated)
+  - 2026-05-27 AM: switched to google-genai SDK with model fallback chain
+  - 2026-05-27 PM: switched again to Claude CLI + WebSearch — Gemini 3.x
+    grounding hit 429 across the entire family even with model RPD usage
+    at 10/500, because google_search grounding has a separate quota
+    bucket invisible to the AI Studio dashboard. Claude WebSearch lives
+    in a different bucket.
+
+The legacy symbol names `_run_gemini_round` and `GeminiRoundError` are
+kept verbatim so existing exception handlers and call sites don't need
+to change — only the implementation moved.
 """
 
 from __future__ import annotations
@@ -23,10 +30,10 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from shared.gemini_cli import (
-    GeminiResponse,
-    call_gemini_with_fallback,
-    is_quota_error,
+from shared.claude_search import (
+    ClaudeSearchError,
+    ClaudeSearchResponse,
+    claude_websearch,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,38 +51,45 @@ class ResearchResult:
     contradictions_noted: list[str] = field(default_factory=list)
 
 
-DEFAULT_GEMINI_TIMEOUT = 600  # kept for signature compat; the SDK manages its own timeouts
+DEFAULT_GEMINI_TIMEOUT = 900  # 15 min — Claude WebSearch with grounding can take a while
 
 
 class GeminiRoundError(RuntimeError):
-    """Raised when a Gemini round fails (every model in the fallback chain failed
-    or the response was empty / safety-blocked)."""
+    """Raised when a research round fails. Name kept for backward compat;
+    actual backend has moved from Gemini API → Claude CLI + WebSearch."""
 
 
 def _run_gemini_round(prompt: str, timeout: int = DEFAULT_GEMINI_TIMEOUT) -> str:
-    """Run one research round via the Gemini API with model fallback + Google
-    Search grounding. Returns the response text. Raises GeminiRoundError if
-    every model in the chain failed."""
-    _ = timeout  # accepted for backward-compat call sites; SDK handles timeouts
-    try:
-        response: GeminiResponse = call_gemini_with_fallback(
-            prompt,
-            use_grounding=True,
-        )
-    except Exception as e:
-        raise GeminiRoundError(f"gemini API failed: {e}") from e
+    """Run one research round via Claude CLI + WebSearch.
 
-    if response.safety_blocked:
-        raise GeminiRoundError("gemini response safety-blocked")
+    Sonnet primary, Haiku fallback — multi-round deep research benefits from
+    Sonnet's analysis depth, and Haiku catches CLI overload retries cheaply.
+
+    Returns the response text (may include an inline `Sources:` footer
+    that Claude appends automatically). Raises GeminiRoundError on any
+    failure so existing except clauses upstream keep working.
+    """
+    try:
+        response: ClaudeSearchResponse = claude_websearch(
+            prompt,
+            model="sonnet",
+            fallback_model="haiku",
+            timeout=timeout,
+        )
+    except ClaudeSearchError as e:
+        raise GeminiRoundError(f"claude_websearch failed: {e}") from e
+    except Exception as e:
+        raise GeminiRoundError(f"research round failed: {e}") from e
+
     text = (response.text or "").strip()
     if not text:
         raise GeminiRoundError(
-            f"gemini returned empty text (model={response.model_used}, "
-            f"finish={response.finish_reason})"
+            f"claude returned empty text (model={response.model_used})"
         )
 
-    # If grounding produced URIs that the prompt didn't already echo, append a
-    # short SOURCES_HINT block so the downstream parser can pick them up.
+    # If WebSearch produced URIs that the prompt didn't already echo back as a
+    # SOURCES: trailer, append one so the downstream metadata parser
+    # (_parse_metadata_trailer) can pick them up.
     if response.sources and not re.search(r"\bSOURCES?:", text):
         sources_line = ", ".join(response.sources[:8])
         text = f"{text}\n\nSOURCES: {sources_line}"

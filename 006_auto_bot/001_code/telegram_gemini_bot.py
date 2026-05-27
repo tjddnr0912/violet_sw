@@ -30,7 +30,11 @@ load_dotenv(override=True)
 # Import shared modules
 from shared.telegram_api import TelegramClient
 from shared.html_utils import HtmlUtils
-from shared.gemini_cli import call_gemini_with_fallback, GeminiResponse
+from shared.claude_search import (
+    ClaudeSearchError,
+    ClaudeSearchResponse,
+    claude_websearch,
+)
 
 # 스킬 파일 경로
 QA_SKILL_FILE = os.path.expanduser('~/.claude/skills/telegram-qa/SKILL.md')
@@ -135,17 +139,24 @@ class TelegramGeminiBot(TelegramClient):
 
     def run_gemini(self, question: str) -> Tuple[bool, str, str, list, list]:
         """
-        Run Gemini (quick mode) via the API with model fallback chain.
+        Run quick-mode research via Claude CLI + WebSearch.
 
-        Migrated from `gemini -p` CLI subprocess to google-genai API in May
-        2026 ahead of the CLI's June 2026 shutdown. The fallback chain inside
-        shared.gemini_cli takes over the role that CLI retry used to play.
+        Migration history:
+          - Pre 2026-05-27: subprocess `gemini -p` (deprecated by Google)
+          - 2026-05-27 morning: google-genai API + grounding (3.x family)
+          - 2026-05-27 evening: Claude CLI + WebSearch — Gemini 3.x grounding
+            has a separate, tight quota bucket that hit 429 across all 3.x
+            models even when API RPD usage was near zero. Claude WebSearch
+            lives in a different quota bucket entirely.
+
+        Method name is kept (`run_gemini`) for caller backward-compat — the
+        outer Telegram flow doesn't care about the backend.
 
         Returns:
             Tuple[bool, str, str, list, list]: (success, content, title, labels, sources)
         """
         try:
-            logger.info(f"Running Gemini: {question[:50]}...")
+            logger.info(f"Running Claude WebSearch (quick): {question[:50]}...")
 
             # Build prompt with skill + question
             skill_content = load_qa_skill()
@@ -162,32 +173,32 @@ LABELS: (키워드 2-3개)
 SOURCES: (출처)
 """
 
-            response: GeminiResponse = call_gemini_with_fallback(
+            # Sonnet primary, Haiku fallback — quick mode is single-shot Q&A so
+            # Sonnet's analysis depth is justified, but Haiku catches overload.
+            response: ClaudeSearchResponse = claude_websearch(
                 prompt,
-                use_grounding=True,
+                model="sonnet",
+                fallback_model="haiku",
+                timeout=900,
             )
-
-            if response.safety_blocked:
-                logger.warning("Gemini quick-mode response safety-blocked")
-                return False, "⚠️ Gemini가 안전 필터로 응답을 차단했습니다. 질문을 바꿔 다시 시도해주세요.", "", [], []
 
             output = (response.text or "").strip()
             if not output:
                 logger.warning(
-                    f"Gemini response empty (model={response.model_used}, "
-                    f"finish={response.finish_reason})"
+                    f"Claude WebSearch returned empty text (model={response.model_used})"
                 )
-                return False, "⚠️ Gemini 응답이 비어있습니다. 잠시 후 다시 시도해주세요.", "", [], []
+                return False, "⚠️ Claude 응답이 비어있습니다. 잠시 후 다시 시도해주세요.", "", [], []
 
             logger.info(
-                f"Gemini response success (model={response.model_used}, "
-                f"length={len(output)}, grounded_sources={len(response.sources)})"
+                f"Claude WebSearch success (model={response.model_used}, "
+                f"length={len(output)}, elapsed={response.elapsed_seconds:.1f}s, "
+                f"auto_sources={len(response.sources)})"
             )
-            logger.info(f"Gemini response tail:\n{output[-500:]}")
+            logger.info(f"Claude response tail:\n{output[-500:]}")
             content, title, labels, sources = self._parse_response(output)
 
-            # If the model didn't emit a SOURCES: footer but grounding returned
-            # URIs, surface those so the downstream blog post still has links.
+            # If the model didn't emit a SOURCES: trailer but Claude's
+            # auto-extracted Sources footer carried URLs, surface those.
             if not sources and response.sources:
                 sources = [{"title": uri, "url": uri} for uri in response.sources[:8]]
 
@@ -197,11 +208,14 @@ SOURCES: (출처)
             )
             return True, content, title, labels, sources
 
+        except ClaudeSearchError as e:
+            err = str(e)
+            logger.error(f"Claude WebSearch error: {err}")
+            return False, self._summarize_gemini_error(err), "", [], []
         except Exception as e:
             err = str(e)
-            logger.error(f"Gemini execution error: {err}", exc_info=True)
-            user_msg = self._summarize_gemini_error(err)
-            return False, user_msg, "", [], []
+            logger.error(f"Quick-mode execution error: {err}", exc_info=True)
+            return False, self._summarize_gemini_error(err), "", [], []
 
     def _run_research_stage(
         self,

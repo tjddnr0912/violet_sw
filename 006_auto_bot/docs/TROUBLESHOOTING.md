@@ -4,6 +4,52 @@
 
 ---
 
+## Gemini 3.x `google_search` grounding 별도 quota 발견 → Claude WebSearch 전환
+
+- **증상**: 2026-05-27 PM, Telegram deep research 호출이 4개 모델(`gemini-3.1-flash-lite` → `gemini-3.5-flash` → `gemini-3-flash-preview` → `gemini-2.5-flash`)에서 순차로 429 반환. fallback chain 마지막 모델만 성공. AI Studio dashboard의 RPM/TPM/RPD는 거의 0%인데도 거부.
+- **원인**: **Gemini 3.x의 `google_search` grounding tool은 모델 generate_content API와 별개의 quota bucket을 사용한다.** 무료 티어 한도가 매우 빡빡해 일상 사용으로 즉시 소진. Dashboard에는 모델 API quota만 노출되고 grounding quota는 표시 안 됨. 2.5-flash만 살아남는 이유는 per-prompt pricing이라 grounding이 prompt charge에 포함되기 때문 ([공식 docs](https://ai.google.dev/gemini-api/docs/google-search)).
+- **해결**: grounding 호출 4곳(telegram quick/deep, news gap-fill, sector search) 모두 **Claude CLI + WebSearch**로 이전. `claude -p` 모드에서 web_search 도구 자동 활성화. 모델은 호출 시점 `--model` flag로 선택 + `--fallback-model`로 overload 자동 대비. 신규 wrapper `shared/claude_search.py`.
+- **복구 절차**:
+  - (a) Anthropic API key가 Claude CLI 인증으로 설정되어 있는지 확인 (`claude --version` 후 `claude -p "test"` 성공 여부)
+  - (b) `printf 'tiny prompt' | python -c "from shared.claude_search import claude_websearch; r=claude_websearch('Use web search. What day is today?', model='haiku'); print(r.text[:100], len(r.sources))"`로 라이브 검증
+  - (c) `pytest 003_test_code/` 72 pass 확인
+  - (d) 봇 재시작 후 텔레그램 deep research로 실호출 검증
+- **관련 사고**: 2026-05-27 PM (사용자 텔레그램 deep research에서 4개 모델 동시 429 보고 → dashboard 검토 → 모든 quota 여유 확인 → grounding 별도 quota 가설 → grounding ON/OFF 분리 실측으로 확정)
+- **재발 감지**: `tail -f logs/telegram_bot_*.log | grep -E "quota/unavailable|429"` 로 모니터링. grounding 호출이 다시 다수 429 누적되면 quota 정책 변경 가능성.
+
+### Claude 진단 미스 (2026-05-27 PM 세션)
+
+**미스 #3 — Dashboard 신호 과신, grounding 별도 quota 가능성 무시**
+
+- **Claude 처음 가설**: 오전에 만든 모델 fallback chain의 첫 모델(`gemini-3.1-flash-lite`)이 429라 "무료 티어 quota 소진" → "PST midnight reset 또는 billing 활성화" 권장. Dashboard 보고도 "각 모델별 quota bucket 별개라 4개 다 동시에 소진 가능"으로만 설명.
+- **실제 원인**: 사용자가 dashboard 스크린샷을 직접 보여줌 — `gemini-3.1-flash-lite` 10/500 RPD, `gemini-3.5-flash` 0/20 RPD, `gemini-2.5-flash` 6/20 RPD로 모두 여유. 즉 quota가 비어있는데도 429. **원인은 grounding tool 자체의 별도 quota bucket이었고, 이건 dashboard에 노출 안 됨.** 사용자 지적 후 grounding ON/OFF로 분리해 단발 호출 → grounding OFF 시 4개 모두 정상, grounding ON 시 3.x 계열 전부 429 → 확정.
+- **방향 전환 지점**: 사용자가 "이거 이상한데 한번 검토해봐"라며 dashboard 이미지 첨부한 시점. 그 전엔 "free tier quota 소진"이라는 일반 설명에 머물러 있었음.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: 429가 났는데 dashboard quota가 비어있으면 **도구별 hidden quota** 또는 **feature-specific quota** 의심. 모델 API quota 외에 grounding/code execution/file API 등이 별개 bucket인 경우 흔함
+  - 빨리 배제할 가설: "각 모델 quota가 동시에 우연히 소진" — 4개가 0.5초 안에 다 429라는 건 모델 API quota가 아니라 **공통 의존성**(여기선 google_search grounding) 거부 신호
+  - 핵심 진단 명령:
+    ```python
+    # 가설 검증: tool ON/OFF 분리해서 단발 호출
+    for tid in CHAIN:
+        for grounding in (False, True):
+            try:
+                r = client.models.generate_content(
+                    model=tid, contents="Reply '1'.",
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=8,
+                        **({"tools":[types.Tool(google_search=types.GoogleSearch())]}
+                           if grounding else {})
+                    ),
+                )
+                print(f"{tid} grounding={grounding}: OK")
+            except Exception as e:
+                code = "429" if "429" in str(e) else "other"
+                print(f"{tid} grounding={grounding}: {code}")
+    ```
+    이렇게 grid로 돌리면 hidden quota를 즉시 isolate. dashboard만 보면 안 보이는 패턴.
+
+---
+
 ## Gemini `-p` CLI 종료 대응 — API + 모델 fallback chain 마이그레이션
 
 - **증상**: 2026-06에 Google이 `gemini` CLI binary를 종료 예고. 그 전까지 봇 6개 경로가 `subprocess.run(["gemini", "-p", ...])` 또는 `shared.gemini_cli.call_gemini_cli`(내부적으로 subprocess)에 의존 중이라 종료 직후 다음 호출이 다음과 같이 깨짐:

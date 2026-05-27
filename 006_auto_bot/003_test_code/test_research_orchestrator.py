@@ -40,105 +40,83 @@ def test_run_research_signature():
 
 
 def test_gemini_round_returns_text_on_success():
-    """_run_gemini_round now delegates to shared.gemini_cli.call_gemini_with_fallback
-    (May 2026 migration from `gemini -p` subprocess). The test patches the wrapper
-    directly and asserts that grounding is requested + prompt is passed through."""
+    """_run_gemini_round now delegates to shared.claude_search.claude_websearch
+    (May 2026 evening migration from Gemini API → Claude CLI + WebSearch).
+    The legacy function name `_run_gemini_round` is retained for backward compat;
+    this test patches the wrapper directly and asserts the prompt is passed through."""
     from shared import research_orchestrator as ro
-    from shared.gemini_cli import GeminiResponse
+    from shared.claude_search import ClaudeSearchResponse
 
     captured = {}
 
-    def fake_call(prompt, *, use_grounding=True, **kw):
+    def fake_call(prompt, *, model="sonnet", fallback_model="haiku", timeout=900, **kw):
         captured["prompt"] = prompt
-        captured["use_grounding"] = use_grounding
-        captured["kw"] = kw
-        return GeminiResponse(
+        captured["model"] = model
+        captured["fallback_model"] = fallback_model
+        captured["timeout"] = timeout
+        return ClaudeSearchResponse(
             text="round 1 output",
-            model_used="gemini-3.1-flash-lite",
             sources=[],
-            finish_reason="STOP",
+            model_used=model,
         )
 
-    original = ro.call_gemini_with_fallback
-    ro.call_gemini_with_fallback = fake_call
+    original = ro.claude_websearch
+    ro.claude_websearch = fake_call
     try:
         text = ro._run_gemini_round("hello world prompt", timeout=42)
     finally:
-        ro.call_gemini_with_fallback = original
+        ro.claude_websearch = original
 
     assert text == "round 1 output"
     assert captured["prompt"] == "hello world prompt"
-    assert captured["use_grounding"] is True  # research rounds must enable web search
+    assert captured["model"] == "sonnet"
+    assert captured["fallback_model"] == "haiku"
+    assert captured["timeout"] == 42
 
 
 def test_gemini_round_raises_on_failure():
-    """If every model in the fallback chain fails, the wrapper raises a
-    RuntimeError; _run_gemini_round must re-raise it as GeminiRoundError so
-    the orchestrator's existing except clauses still catch it."""
+    """If claude_websearch raises ClaudeSearchError (subprocess fail), _run_gemini_round
+    must re-raise it as GeminiRoundError so the orchestrator's existing except
+    clauses still catch it."""
     from shared import research_orchestrator as ro
+    from shared.claude_search import ClaudeSearchError
 
     def boom(*a, **kw):
-        raise RuntimeError("All 4 Gemini models failed; last error: 429 quota")
+        raise ClaudeSearchError("claude exit=1 stderr=auth failed")
 
-    original = ro.call_gemini_with_fallback
-    ro.call_gemini_with_fallback = boom
+    original = ro.claude_websearch
+    ro.claude_websearch = boom
     try:
         try:
             ro._run_gemini_round("p", timeout=10)
             assert False, "should have raised"
         except ro.GeminiRoundError as e:
-            assert "429" in str(e)
+            assert "auth failed" in str(e) or "claude" in str(e).lower()
     finally:
-        ro.call_gemini_with_fallback = original
-
-
-def test_gemini_round_raises_on_safety_block():
-    """Safety-blocked responses are non-recoverable (trying another model
-    won't change the verdict); _run_gemini_round surfaces that as GeminiRoundError."""
-    from shared import research_orchestrator as ro
-    from shared.gemini_cli import GeminiResponse
-
-    def fake_call(prompt, **kw):
-        return GeminiResponse(
-            text="",
-            model_used="gemini-3.1-flash-lite",
-            sources=[],
-            finish_reason="SAFETY",
-            safety_blocked=True,
-        )
-
-    original = ro.call_gemini_with_fallback
-    ro.call_gemini_with_fallback = fake_call
-    try:
-        try:
-            ro._run_gemini_round("p", timeout=10)
-            assert False, "should have raised"
-        except ro.GeminiRoundError as e:
-            assert "safety" in str(e).lower()
-    finally:
-        ro.call_gemini_with_fallback = original
+        ro.claude_websearch = original
 
 
 def test_gemini_round_appends_grounding_sources_when_missing():
-    """If the model didn't emit a SOURCES: trailer but grounding returned URIs,
-    _run_gemini_round appends them so the downstream metadata parser picks them up."""
+    """If Claude WebSearch returned sources via its auto-extracted Sources footer
+    but the response body itself doesn't include a SOURCES: trailer that the
+    metadata parser expects, _run_gemini_round appends one so downstream parsing
+    still picks them up."""
     from shared import research_orchestrator as ro
-    from shared.gemini_cli import GeminiResponse
+    from shared.claude_search import ClaudeSearchResponse
 
     def fake_call(prompt, **kw):
-        return GeminiResponse(
+        return ClaudeSearchResponse(
             text="본문만 있고 SOURCES 트레일러는 없음",
-            model_used="gemini-2.5-flash",
             sources=["https://a.com", "https://b.com"],
-            finish_reason="STOP",
+            model_used="sonnet",
         )
 
-    original = ro.call_gemini_with_fallback
-    ro.call_gemini_with_fallback = fake_call
+    original = ro.claude_websearch
+    ro.claude_websearch = fake_call
     try:
         text = ro._run_gemini_round("p")
     finally:
-        ro.call_gemini_with_fallback = original
+        ro.claude_websearch = original
 
     assert "SOURCES:" in text
     assert "https://a.com" in text
@@ -319,31 +297,33 @@ SOURCES: 공식 공지|https://notice.tistory.com/2664
 
 
 def test_run_research_pass_after_round1():
-    """End-to-end: Gemini goes through call_gemini_with_fallback (patched),
-    Claude eval/synth still go through subprocess (patched). Verifies that a
-    pass verdict after Round 1 stops the loop and proceeds to synthesis."""
+    """End-to-end: search rounds go through claude_websearch (patched),
+    Claude eval/synth still go through subprocess (patched, separate path).
+    Verifies that a pass verdict after Round 1 stops the loop and proceeds
+    to synthesis. (Both search and eval/synth use Claude, but only the
+    search path is patched via claude_websearch; eval/synth go through
+    subprocess.run separately.)"""
     from shared import research_orchestrator as ro
-    from shared.gemini_cli import GeminiResponse
+    from shared.claude_search import ClaudeSearchResponse
 
     call_log = []
 
-    # Gemini path: wrapper instead of subprocess
-    def fake_gemini(prompt, *, use_grounding=True, **kw):
-        call_log.append(("gemini", prompt[:30]))
-        return GeminiResponse(
+    # Search round path: claude_websearch wrapper
+    def fake_search(prompt, *, model="sonnet", fallback_model="haiku", timeout=900, **kw):
+        call_log.append(("search", prompt[:30]))
+        return ClaudeSearchResponse(
             text="Round 1 broad output\nTITLE: t\nLABELS: a,b\nSOURCES: s|https://x",
-            model_used="gemini-3.1-flash-lite",
             sources=[],
-            finish_reason="STOP",
+            model_used=model,
         )
 
-    # Claude path: still subprocess
+    # Eval/synth path: subprocess (claude -p with prompt argv)
     def fake_run(cmd, capture_output, text, timeout):
         class C:
             returncode = 0
             stderr = ""
         if cmd[0] == "claude":
-            call_log.append(("claude", "eval-or-synth"))
+            call_log.append(("claude_eval_or_synth", "eval-or-synth"))
             if "verdict" in cmd[2]:
                 C.stdout = '```json\n{"verdict":"pass","missing_dimensions":[],"next_query":null,"contradictions":[]}\n```'
             else:
@@ -353,9 +333,9 @@ def test_run_research_pass_after_round1():
         return C()
 
     progress = []
-    orig_gemini = ro.call_gemini_with_fallback
+    orig_search = ro.claude_websearch
     orig_run = ro.subprocess.run
-    ro.call_gemini_with_fallback = fake_gemini
+    ro.claude_websearch = fake_search
     ro.subprocess.run = fake_run
     try:
         result = ro.run_research(
@@ -364,11 +344,11 @@ def test_run_research_pass_after_round1():
             progress_callback=lambda msg: progress.append(msg),
         )
     finally:
-        ro.call_gemini_with_fallback = orig_gemini
+        ro.claude_websearch = orig_search
         ro.subprocess.run = orig_run
 
-    gemini_calls = [c for c in call_log if c[0] == "gemini"]
-    assert len(gemini_calls) == 1, f"early-stop expected, got {len(gemini_calls)} gemini calls"
+    search_calls = [c for c in call_log if c[0] == "search"]
+    assert len(search_calls) == 1, f"early-stop expected, got {len(search_calls)} search calls"
     assert result.rounds_completed == 1
     assert result.title == "최종"
     assert "x" in result.labels
@@ -376,21 +356,20 @@ def test_run_research_pass_after_round1():
 
 
 def test_run_research_runs_two_rounds_then_synthesizes():
-    """Gemini wrapper called twice (Round 1 + 1 gap-fill), Claude eval twice
+    """Search wrapper called twice (Round 1 + 1 gap-fill), Claude eval twice
     (continue then pass) + synth once. Contradictions surface from the
     continue-verdict eval into the final ResearchResult."""
     from shared import research_orchestrator as ro
-    from shared.gemini_cli import GeminiResponse
+    from shared.claude_search import ClaudeSearchResponse
 
-    state = {"claude_eval_calls": 0, "gemini_calls": 0}
+    state = {"claude_eval_calls": 0, "search_calls": 0}
 
-    def fake_gemini(prompt, *, use_grounding=True, **kw):
-        state["gemini_calls"] += 1
-        return GeminiResponse(
-            text="gemini output",
-            model_used="gemini-3.1-flash-lite",
+    def fake_search(prompt, *, model="sonnet", fallback_model="haiku", timeout=900, **kw):
+        state["search_calls"] += 1
+        return ClaudeSearchResponse(
+            text="search output",
             sources=[],
-            finish_reason="STOP",
+            model_used=model,
         )
 
     def fake_run(cmd, capture_output, text, timeout):
@@ -410,17 +389,17 @@ def test_run_research_runs_two_rounds_then_synthesizes():
             C.stdout = ""
         return C()
 
-    orig_gemini = ro.call_gemini_with_fallback
+    orig_search = ro.claude_websearch
     orig_run = ro.subprocess.run
-    ro.call_gemini_with_fallback = fake_gemini
+    ro.claude_websearch = fake_search
     ro.subprocess.run = fake_run
     try:
         result = ro.run_research("q", max_rounds=3)
     finally:
-        ro.call_gemini_with_fallback = orig_gemini
+        ro.claude_websearch = orig_search
         ro.subprocess.run = orig_run
 
-    assert state["gemini_calls"] == 2  # Round 1 + 1 gap-fill round
+    assert state["search_calls"] == 2  # Round 1 + 1 gap-fill round
     assert result.rounds_completed == 2
     assert "A vs B" in result.contradictions_noted
 
@@ -448,7 +427,6 @@ if __name__ == "__main__":
     test_run_research_signature()
     test_gemini_round_returns_text_on_success()
     test_gemini_round_raises_on_failure()
-    test_gemini_round_raises_on_safety_block()
     test_gemini_round_appends_grounding_sources_when_missing()
     test_round1_prompt_includes_question_and_skill()
     test_evaluate_round_parses_pass_decision()

@@ -1,12 +1,24 @@
 """
-Sector Searcher - Gemini Google Search Grounding
--------------------------------------------------
-Gemini API의 Google Search 도구를 사용하여 섹터별 최신 뉴스 검색.
+Sector Searcher — Claude CLI + WebSearch
+----------------------------------------
+섹터별 최신 투자 정보 검색.
 
-Quota handling (May 2026 ~): 429/503 발생 시 모델 fallback chain
-(gemini-3.1-flash-lite → gemini-3.5-flash → gemini-3-flash-preview →
-gemini-2.5-flash)으로 자동 전환된다. 기존 `gemini -p` CLI fallback은
-2026-06 CLI 종료에 맞춰 제거됨.
+Migration timeline:
+  - Pre 2026-05-27: `gemini -p` CLI (deprecated by Google, June 2026 shutdown)
+  - 2026-05-27 AM: google-genai SDK + `google_search` grounding tool
+  - 2026-05-27 PM: Claude CLI + WebSearch
+      Gemini 3.x grounding has a separate, tight quota bucket that the AI
+      Studio dashboard doesn't expose. Even with model RPD usage at
+      10/500, every 3.x grounded call returned 429 — only 2.5-flash
+      survived because its per-prompt pricing absorbs grounding charges.
+      Rather than scrape by on one surviving model, sector search routes
+      through Claude WebSearch where the quota lives in a different
+      bucket. Sonnet primary, Opus fallback (섹터별 깊이가 요구되어
+      Opus까지 한 단계 더 양보).
+
+The companion `sector_bot/analyzer.py` still uses the Gemini API
+(non-grounding, gemini-3.1-flash-lite chain) because analysis doesn't
+need fresh web data — searcher already gathered it.
 """
 
 import logging
@@ -16,15 +28,13 @@ import time
 import ssl
 from typing import List, Dict, Optional
 
-from google.genai import types
-
 from .config import SectorConfig, Sector
-from shared.gemini_cli import (
-    GeminiResponse,
-    call_gemini_with_fallback,
-    is_quota_error,
-    extract_urls,
+from shared.claude_search import (
+    ClaudeSearchError,
+    ClaudeSearchResponse,
+    claude_websearch,
 )
+from shared.gemini_cli import extract_urls  # URL regex utility, no API call
 
 logger = logging.getLogger(__name__)
 
@@ -48,46 +58,35 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 class SectorSearcher:
-    """Gemini Google Search Grounding을 사용한 섹터 정보 검색"""
+    """Claude CLI + WebSearch 기반 섹터 정보 검색."""
 
     def __init__(self):
         """Initialize the searcher.
 
-        API key/client are managed by shared.gemini_cli; we just hold the
-        model preference here. Fallback chain is read from
-        GEMINI_FALLBACK_MODELS env (see shared.gemini_cli for defaults).
+        Claude CLI uses its own auth (ANTHROPIC_API_KEY env or stored
+        credentials) — no client object held here. GEMINI_API_KEY is still
+        validated for downstream `sector_bot/analyzer` which uses Gemini API
+        on non-grounding (analysis-only) calls.
         """
         if not SectorConfig.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is required")
+            raise ValueError("GEMINI_API_KEY is required (used by sector_bot.analyzer)")
 
-        # 환경변수가 비어있을 경우 SectorConfig 값을 백업으로 export
+        # Keep GEMINI_API_KEY exported in case analyzer reads it directly later.
         if not os.getenv("GEMINI_API_KEY"):
             os.environ["GEMINI_API_KEY"] = SectorConfig.GEMINI_API_KEY
 
-        self.model_name = SectorConfig.GEMINI_MODEL
-        # `_use_cli_fallback` was removed in May 2026 — kept as False for any
-        # external code that still inspects it via is_cli_mode_active().
+        # Model preferences for Claude WebSearch (configurable via env).
+        self.primary_model = os.getenv("CLAUDE_MODEL_SECTOR_SEARCH", "sonnet")
+        self.fallback_model = os.getenv("CLAUDE_MODEL_SECTOR_SEARCH_FALLBACK", "opus")
+
+        # Kept for sector_bot/orchestrator's is_cli_mode_active() check.
+        # Always False after May 2026 (CLI fallback path removed entirely).
         self._use_cli_fallback = False
 
-        self.safety_settings = [
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
-            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
-            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
-        ]
-
-        logger.info(f"SectorSearcher initialized (primary model: {self.model_name})")
-
-    def _models_chain(self) -> List[str]:
-        """Build [primary, *fallbacks] for this searcher. Same logic as the
-        summarizer — primary comes from SectorConfig.GEMINI_MODEL, fallbacks
-        from GEMINI_FALLBACK_MODELS env."""
-        raw = os.getenv(
-            "GEMINI_FALLBACK_MODELS",
-            "gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash",
+        logger.info(
+            f"SectorSearcher initialized (Claude WebSearch, "
+            f"primary={self.primary_model}, fallback={self.fallback_model})"
         )
-        fallbacks = [m.strip() for m in raw.split(",") if m.strip()]
-        return [self.model_name] + [m for m in fallbacks if m != self.model_name]
 
     def search_sector(
         self,
@@ -95,53 +94,44 @@ class SectorSearcher:
         retry_count: int = 0
     ) -> Dict[str, any]:
         """
-        섹터별 최신 투자 정보 검색
+        섹터별 최신 투자 정보 검색 via Claude CLI + WebSearch.
 
         Args:
             sector: 검색할 섹터
             retry_count: 현재 재시도 횟수 (네트워크/일시 오류용)
 
         Returns:
-            {'content': str, 'sources': List[str], 'success': bool}
+            {'content': str, 'sources': List[str], 'success': bool, 'model_used': str}
         """
         try:
             logger.info(f"Searching sector: {sector.name} ({sector.name_en})")
 
             search_prompt = self._build_search_prompt(sector)
 
-            response: GeminiResponse = call_gemini_with_fallback(
+            response: ClaudeSearchResponse = claude_websearch(
                 search_prompt,
-                use_grounding=True,
-                safety_settings=self.safety_settings,
-                models=self._models_chain(),
+                model=self.primary_model,
+                fallback_model=self.fallback_model,
+                timeout=900,
             )
-
-            if response.safety_blocked:
-                logger.warning(f"Search safety-blocked for {sector.name}")
-                return {
-                    'content': '',
-                    'sources': [],
-                    'success': False,
-                    'error': 'Safety filter blocked response',
-                }
 
             content = (response.text or "").strip()
             sources = list(response.sources)
 
-            # Grounding이 출처를 안 돌려준 케이스(예: 3-flash-preview 모델로
-            # fallback된 경우)에는 본문에서 URL을 긁어 폴백.
+            # WebSearch가 출처를 footer로 안 돌려준 경우에는 본문 URL을 폴백 추출.
             if not sources and content:
                 sources = extract_urls(content)
 
             if not content:
                 raise ValueError(
-                    f"Empty response from {response.model_used} "
-                    f"(finish={response.finish_reason})"
+                    f"Empty response from claude WebSearch "
+                    f"(model={response.model_used})"
                 )
 
             logger.info(
                 f"Search completed: model={response.model_used} "
-                f"chars={len(content)} sources={len(sources)}"
+                f"chars={len(content)} sources={len(sources)} "
+                f"elapsed={response.elapsed_seconds:.1f}s"
             )
 
             return {
@@ -151,27 +141,31 @@ class SectorSearcher:
                 'model_used': response.model_used,
             }
 
-        except Exception as e:
-            logger.error(f"Search error for {sector.name}: {e}")
-
-            # 429/503 등은 wrapper가 이미 모든 모델을 소진한 후에만 여기로 올라옴.
-            # 일시적 네트워크/타임아웃 오류는 retry로 회복 가능.
-            if is_quota_error(e):
-                logger.warning(
-                    f"All models in chain exhausted for {sector.name}; "
-                    f"no further fallback available"
-                )
-                return {
-                    'content': '',
-                    'sources': [],
-                    'success': False,
-                    'error': f"All Gemini models quota-exhausted: {e}",
-                }
-
+        except ClaudeSearchError as e:
+            logger.error(f"Claude WebSearch error for {sector.name}: {e}")
+            # Retry on transient subprocess failures (timeout, non-zero exit).
             if retry_count < SectorConfig.MAX_RETRIES:
                 delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)
                 logger.info(
-                    f"Retrying in {delay} seconds... "
+                    f"Retrying in {delay}s "
+                    f"(attempt {retry_count + 1}/{SectorConfig.MAX_RETRIES})"
+                )
+                time.sleep(delay)
+                return self.search_sector(sector, retry_count + 1)
+
+            return {
+                'content': '',
+                'sources': [],
+                'success': False,
+                'error': f"Claude WebSearch failed after {SectorConfig.MAX_RETRIES} retries: {e}",
+            }
+
+        except Exception as e:
+            logger.error(f"Search error for {sector.name}: {e}")
+            if retry_count < SectorConfig.MAX_RETRIES:
+                delay = SectorConfig.RETRY_DELAY * (2 ** retry_count)
+                logger.info(
+                    f"Retrying in {delay}s "
                     f"(attempt {retry_count + 1}/{SectorConfig.MAX_RETRIES})"
                 )
                 time.sleep(delay)

@@ -108,13 +108,20 @@ def test_failed_dim_triggers_gap_fill_via_cli(monkeypatch):
     # Force claude to confirm failure on 균형 dim
     fake_claude = MagicMock(return_value='{"균형": false, "신선도": true, "다양성": true, "출처신뢰": true, "글로벌균형": true}')
 
-    # Monkeypatch the CLI call to return a JSON gap-fill result
+    # Monkeypatch claude_websearch (gap-fill backend post-2026-05-27 PM) to
+    # return a JSON gap-fill result. Function name `_gap_fill_via_cli` retained
+    # for backward compat but internally calls claude_websearch now.
+    from shared.claude_search import ClaudeSearchResponse
     cli_response = json.dumps([
         {"title": "Crypto big news 1", "summary": "x", "url": "https://reuters.com/c1", "date": "2026-05-04", "source": "Reuters"},
         {"title": "Crypto big news 2", "summary": "y", "url": "https://bloomberg.com/c2", "date": "2026-05-04", "source": "Bloomberg"},
         {"title": "Crypto big news 3", "summary": "z", "url": "https://coindesk.com/c3", "date": "2026-05-04", "source": "CoinDesk"},
     ])
-    monkeypatch.setattr(orch_mod, "call_gemini_cli", lambda prompt, timeout=600: cli_response)
+    monkeypatch.setattr(
+        orch_mod,
+        "claude_websearch",
+        lambda prompt, **kw: ClaudeSearchResponse(text=cli_response, sources=[], model_used="haiku"),
+    )
 
     result = run_news_research(
         aggregator=aggregator,

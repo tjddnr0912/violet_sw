@@ -12,7 +12,12 @@
 | `DEFAULT_BLOG` | ❌ | `brave_ogu` | timeout 시 사용할 default blog key |
 | `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 블로그 선택 prompt timeout (초) |
 | `SECTOR_BLOGGER_BLOG_ID` | ❌ | `9115231004981625966` | 섹터봇 전용 블로그 |
-| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | 섹터봇 전용 primary 모델 (`shared.gemini_cli` chain의 첫 단계로 들어감, grounding 지원) |
+| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | (주: 2026-05-27 PM 이후 grounding 호출은 Claude WebSearch로 이전됨. 이 변수는 `sector_bot/analyzer.py`의 non-grounding 분석 호출에만 영향 — searcher는 별도 `CLAUDE_MODEL_SECTOR_SEARCH` 사용.) |
+| `CLAUDE_SEARCH_MODEL` | ❌ | `sonnet` | `shared.claude_search.claude_websearch`의 default 모델. alias(`haiku`/`sonnet`/`opus`) 또는 full ID. |
+| `CLAUDE_SEARCH_FALLBACK_MODEL` | ❌ | `haiku` | Primary가 overloaded 시 Claude CLI가 자동 retry 모델. `None` 효과를 원하면 빈 문자열. |
+| `CLAUDE_SEARCH_TIMEOUT` | ❌ | `900` | claude subprocess timeout (초). |
+| `CLAUDE_MODEL_SECTOR_SEARCH` | ❌ | `sonnet` | 섹터봇 searcher 전용 primary 모델 (섹터별 깊이 필요). |
+| `CLAUDE_MODEL_SECTOR_SEARCH_FALLBACK` | ❌ | `opus` | 섹터봇 searcher fallback 모델. |
 | `GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | `shared.gemini_cli.call_gemini_with_fallback`의 기본 primary 모델 (뉴스봇 summarizer + research orchestrator + telegram quick mode에서 사용). 섹터봇은 `SECTOR_GEMINI_MODEL`을 별도 보유. |
 | `GEMINI_FALLBACK_MODELS` | ❌ | `gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash` | 쉼표 구분 fallback chain. primary가 429 `RESOURCE_EXHAUSTED` / 503 `UNAVAILABLE` / `overloaded` 반환 시 왼→오 순으로 시도. 모든 모델 소진 시 `RuntimeError`. 2026-06 `gemini -p` CLI 종료 대응으로 도입(2026-05-27). |
 | `RESEARCH_QUICK_COMMAND` | ❌ | `/quick` | Telegram Q&A 단발 모드 트리거 prefix |

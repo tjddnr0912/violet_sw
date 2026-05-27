@@ -25,7 +25,7 @@ from .dimensions import (
     NEWS_DIMENSIONS, claude_judge_news,
     TIER1_SOURCES, KOREAN_SOURCES, EXPECTED_CATEGORIES,
 )
-from shared.gemini_cli import call_gemini_cli
+from shared.claude_search import claude_websearch, ClaudeSearchError
 
 logger = logging.getLogger(__name__)
 
@@ -233,14 +233,28 @@ def _pick_gap_target(dim_name: str, news_items: list) -> dict:
 
 def _gap_fill_via_cli(followup_query: str, category: Optional[str]) -> list:
     """
-    Invoke `gemini -p` via shared.gemini_cli, parse JSON array of news items,
-    convert to the news_item dict shape expected by the rest of the pipeline.
-    Returns [] on any failure (gap-fill is best-effort).
+    Run a gap-fill round via Claude CLI + WebSearch, parse a JSON array of
+    news items, and convert to the news_item dict shape the rest of the
+    pipeline expects. Returns [] on any failure (gap-fill is best-effort).
+
+    Name kept (`_via_cli`) for backward compat — backend has been Gemini API
+    in May 2026 morning, and is now Claude CLI + WebSearch (May 2026 evening,
+    after discovering Gemini 3.x grounding has a tight separate quota).
+    Haiku primary (JSON output is simple); Sonnet fallback for overload.
     """
     try:
-        raw = call_gemini_cli(followup_query, timeout=600)
+        response = claude_websearch(
+            followup_query,
+            model="haiku",
+            fallback_model="sonnet",
+            timeout=600,
+        )
+        raw = response.text
+    except ClaudeSearchError as e:
+        logger.warning(f"Gap-fill Claude WebSearch failed: {e}")
+        return []
     except Exception as e:
-        logger.warning(f"Gap-fill CLI call failed: {e}")
+        logger.warning(f"Gap-fill unexpected error: {e}")
         return []
 
     # Find a JSON array in the response (Gemini sometimes wraps in prose)
