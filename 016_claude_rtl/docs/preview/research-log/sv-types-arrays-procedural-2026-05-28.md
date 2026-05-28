@@ -316,7 +316,7 @@ endfunction
 
 ---
 
-## 주요 Sources
+## Sources
 
 - IEEE 1800-2017 §6 (Data types), §7 (Aggregate types), §9 (Processes), §12/§13 (Functions/tasks)
 - https://chipverify.com/systemverilog/systemverilog-enumeration

@@ -109,5 +109,5 @@ VHDL(IEEE 1076)은 다른 언어이므로 별도 프론트엔드(lexer/parser/el
 
 ## Sources
 
-- 본 spec §9 (로드맵) — `/Users/seongwookjang/project/git/violet_sw/016_claude_rtl/docs/superpowers/specs/2026-05-26-vitamin-rtl-simulator-design.md`
+- 본 spec §9 (로드맵) — `docs/superpowers/specs/2026-05-26-vitamin-rtl-simulator-design.md`
 - 본 spec §2 (목표/비목표), §5 (아키텍처), §8 (검증 전략), §14 (리스크) — 상동

@@ -1,13 +1,13 @@
 # Research Log — VHDL Subprograms · Packages · Synthesizability
-**Date:** 2026-05-28  
-**Standard:** IEEE 1076-2008  
+**Date:** 2026-05-28
+**Standard:** IEEE 1076-2008
 **Coverage:** (A) Subprograms, (B) Standard Packages, (C) Synthesizable Subset
 
 ---
 
 ## 조사 방법
 
-WebSearch 4라운드 + WebFetch 5회 1차 source 검증.  
+WebSearch 4라운드 + WebFetch 5회 1차 source 검증.
 주요 참조: IEEE 1076-2008 LRM §4/§15/§16, Doulos VHDL-2008 guide, AMD Vivado UG901, Sigasi deprecated libraries, HDL Factory VHDL IEEE reference, VHDL-Online tutorial.
 
 ---
@@ -131,7 +131,7 @@ use ieee.std_logic_1164.all;
 | `to_stdulogic(b)` | bit → std_ulogic |
 | `to_stdlogicvector(bv)` | bit_vector → std_logic_vector |
 
-VHDL-2008: `std_logic_textio` 기능 흡수 (std_logic에 대한 read/write 절차 내장).  
+VHDL-2008: `std_logic_textio` 기능 흡수 (std_logic에 대한 read/write 절차 내장).
 **합성 가능: YES.**
 
 [출처: HDL Factory 2025; HDLworks Std_Logic_1164 ref]
@@ -258,7 +258,7 @@ use ieee.float_pkg.all;
 
 ---
 
-## 주요 참고 문헌
+## Sources
 
 | 출처 | URL | 검증 |
 |------|-----|------|

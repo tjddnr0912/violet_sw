@@ -239,7 +239,7 @@ type signed   is array (natural range <>) of std_logic;
 
 ---
 
-## 검증된 출처 목록
+## Sources
 
 | URL | 검증 방법 | 신뢰도 |
 |-----|----------|--------|
