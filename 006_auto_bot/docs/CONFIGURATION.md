@@ -18,6 +18,22 @@
 | `CLAUDE_SEARCH_TIMEOUT` | ❌ | `900` | claude subprocess timeout (초). |
 | `CLAUDE_MODEL_SECTOR_SEARCH` | ❌ | `sonnet` | 섹터봇 searcher 전용 primary 모델 (섹터별 깊이 필요). |
 | `CLAUDE_MODEL_SECTOR_SEARCH_FALLBACK` | ❌ | `opus` | 섹터봇 searcher fallback 모델. |
+| `BLOGGER_IMAGES_ENABLED` | ❌ | `false` | 블로그 HTML 본문의 `[[IMAGE:...]]` 마커 처리 활성화. `false`(default)이면 마커를 HTML 주석으로 strip. `true`이면 Imagen/Pollinations 호출 → Cloudinary 업로드 → `<img>` 교체. (2026-05-28~) |
+| `BLOGGER_MAX_IMAGES_PER_POST` | ❌ | `3` | 한 글당 생성할 이미지 최대 개수 (cap). Imagen 일일 한도 + Cloudinary 무료 대역 보호. |
+| `BLOGGER_IMAGE_RUN_ID` | ❌ | (auto) | Cloudinary 폴더 그룹용 run-id. 미설정 시 timestamp 자동 생성. |
+| `IMAGE_GEN_BACKEND` | ❌ | `pollinations` | 이미지 생성 backend. `pollinations`(권장, 진짜 무료) 또는 `imagen`(paid only, ai.dev/projects billing 필요). |
+| `POLLINATIONS_API_KEY` | ❌ (활성화 시 권장) | — | Pollinations.ai 무료 API key (https://enter.pollinations.ai 발급). 없어도 anonymous URL 호출 가능하지만 rate limit 매우 빡빡. |
+| `POLLINATIONS_MODEL` | ❌ | `flux` | Pollinations 모델. 선택지: `flux`, `gptimage`, `kontext`, `seedream5`, `nanobanana-pro`, `klein` 등. |
+| `POLLINATIONS_BASE_URL` | ❌ | `https://gen.pollinations.ai` | Pollinations REST endpoint base. 셀프 호스트 시 override. |
+| `POLLINATIONS_TIMEOUT` | ❌ | `120` | Pollinations HTTP 요청 timeout (초). |
+| `IMAGEN_MODEL` | ❌ | `imagen-4.0-fast-generate-001` | Imagen 4 primary 모델 (`IMAGE_GEN_BACKEND=imagen`일 때만 유효). |
+| `IMAGEN_FALLBACK_MODELS` | ❌ | `imagen-4.0-generate-001,imagen-4.0-ultra-generate-001` | Imagen 4 fallback chain. |
+| `CLOUDINARY_CLOUD_NAME` | ❌ (이미지 활성화 시 필수) | — | Cloudinary cloud name (https://cloudinary.com/console). |
+| `CLOUDINARY_API_KEY` | ❌ (동일) | — | Cloudinary API Key. |
+| `CLOUDINARY_API_SECRET` | ❌ (동일) | — | Cloudinary API Secret (`~/.zshenv` chmod 600 권장). |
+| `CLOUDINARY_FOLDER` | ❌ | `006_auto_bot` | Cloudinary 업로드 기본 폴더 (자동 sub-folder는 `<folder>/<run_id>/`). |
+| `CLOUDINARY_FORMAT` | ❌ | `webp` | Cloudinary 자동 변환 포맷. webp가 ~30% 더 작음. |
+| `CLOUDINARY_QUALITY` | ❌ | `auto:good` | Cloudinary 품질 설정. |
 | `GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | `shared.gemini_cli.call_gemini_with_fallback`의 기본 primary 모델 (뉴스봇 summarizer + research orchestrator + telegram quick mode에서 사용). 섹터봇은 `SECTOR_GEMINI_MODEL`을 별도 보유. |
 | `GEMINI_FALLBACK_MODELS` | ❌ | `gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash` | 쉼표 구분 fallback chain. primary가 429 `RESOURCE_EXHAUSTED` / 503 `UNAVAILABLE` / `overloaded` 반환 시 왼→오 순으로 시도. 모든 모델 소진 시 `RuntimeError`. 2026-06 `gemini -p` CLI 종료 대응으로 도입(2026-05-27). |
 | `RESEARCH_QUICK_COMMAND` | ❌ | `/quick` | Telegram Q&A 단발 모드 트리거 prefix |

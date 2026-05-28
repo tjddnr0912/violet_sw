@@ -192,3 +192,7 @@ worktrees/
 006_auto_bot/004_News_paper/
 006_auto_bot/001_code/cookies/
 006_auto_bot/001_code/logs/
+006_auto_bot/005_Buffett_Daily/
+
+# Obsidian vault symlink (points to iCloud Mobile Documents)
+obsidian

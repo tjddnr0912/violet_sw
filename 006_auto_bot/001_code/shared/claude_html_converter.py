@@ -167,6 +167,12 @@ def convert_md_to_html_via_claude(
 
     logger.info(f"Claude CLI conversion complete ({len(html_content)} chars)")
 
+    # 이미지 마커 처리 (2026-05-28~)
+    # SKILL.md가 본문에 [[IMAGE: <prompt>]] 마커를 1~3개 삽입할 수 있다.
+    # 기능 활성화: env BLOGGER_IMAGES_ENABLED=true (default off, 호환성 보존)
+    # 비활성화 모드에서도 마커는 반드시 제거 — 그렇지 않으면 원본 텍스트로 발행됨.
+    html_content = _maybe_inject_images(html_content)
+
     # HTML 파일로 저장 (선택)
     if output_path:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -175,6 +181,60 @@ def convert_md_to_html_via_claude(
         logger.info(f"HTML saved to: {output_path}")
 
     return html_content, blog_title
+
+
+def _maybe_inject_images(html: str) -> str:
+    """Conditionally process `[[IMAGE: prompt]]` markers in Claude HTML output.
+
+    Modes (env BLOGGER_IMAGES_ENABLED, default 'false'):
+        - 'true' / 'on' / '1' / 'yes': call shared.blogger_html_inject.inject_images
+              which generates via Imagen + uploads to Cloudinary + replaces with <img>.
+        - anything else: strip markers (replace with HTML comment) so they don't
+              leak into published posts. Bots can write SKILL-conformant output
+              without worrying whether the image pipeline is configured.
+
+    If activation fails (missing credentials, import error), gracefully falls
+    back to strip mode and logs a warning. Never blocks the upload pipeline.
+    """
+    import re
+    import time
+
+    enabled = os.getenv("BLOGGER_IMAGES_ENABLED", "false").lower() in ("true", "on", "1", "yes")
+    marker_re = re.compile(r"\[\[IMAGE\s*:\s*(.+?)\s*\]\]", re.DOTALL)
+
+    # Quick exit if no markers.
+    if not marker_re.search(html):
+        return html
+
+    if not enabled:
+        # Strip mode: replace each marker with a brief HTML comment.
+        marker_count = len(marker_re.findall(html))
+        logger.info(
+            f"Image markers found ({marker_count}) but BLOGGER_IMAGES_ENABLED=false; stripping"
+        )
+        return marker_re.sub(
+            lambda _: "<!-- image marker stripped (BLOGGER_IMAGES_ENABLED=false) -->",
+            html,
+        )
+
+    # Active mode: delegate to the inject module.
+    try:
+        from shared.blogger_html_inject import inject_images
+        run_id = os.getenv("BLOGGER_IMAGE_RUN_ID") or f"auto_{int(time.time())}"
+        injected, stats = inject_images(html, run_id=run_id)
+        logger.info(
+            f"Image inject done: markers={stats.markers_found} "
+            f"uploaded={stats.images_uploaded} failed={stats.failed} "
+            f"run_id={run_id}"
+        )
+        return injected
+    except Exception as e:
+        # Never block publishing on image failure.
+        logger.warning(f"Image inject pipeline failed ({e}); stripping markers")
+        return marker_re.sub(
+            lambda _: f"<!-- image inject failed: {str(e)[:80]} -->",
+            html,
+        )
 
 
 if __name__ == "__main__":

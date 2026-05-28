@@ -27,6 +27,9 @@
 │   └── state_manager.py         # 상태 저장/복구
 ├── shared/                      # 공유 모듈
 │   ├── gemini_cli.py            # Gemini API wrapper + 모델 fallback chain (3.1-flash-lite → 3.5-flash → 3-flash-preview → 2.5-flash). 옛 `gemini -p` CLI는 2026-06 종료 대응으로 제거됨. 함수명은 backward-compat 유지.
+│   ├── image_generator.py       # 이미지 생성 backend dispatcher (Pollinations default / Imagen). 2026-05-28~. `IMAGE_GEN_BACKEND` env로 선택.
+│   ├── image_uploader.py        # Cloudinary CDN 업로드 wrapper (webp 자동 변환). 2026-05-28~.
+│   ├── blogger_html_inject.py   # `[[IMAGE: prompt]]` 마커 post-processing → 생성→업로드→`<img>` 교체. 2026-05-28~. graceful fail.
 │   ├── html_utils.py            # HTML 태그 처리, 마크다운 변환
 │   ├── telegram_api.py          # Telegram Bot API (Inline Keyboard)
 │   ├── telegram_notifier.py     # 알림 발송

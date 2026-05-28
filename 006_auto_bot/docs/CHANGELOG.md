@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-05-28: 블로그 일러스트 이미지 인프라 추가 (활성화는 사용자 결정 시점)
+
+- **배경**: 봇이 Blogger HTML 글을 발행할 때 본문에 일러스트를 embed하고 싶지만 (a) HTML은 `<img src=URL>` 형태로 외부 URL 필요, (b) 로컬 이미지 파일은 URL이 없어 그대로 못 넣음. 두 가지 단계 (이미지 생성 + 호스팅)가 필요.
+- **호스팅 backend 결정**: **Cloudinary** (무료 25GB 저장 + 25GB/월 대역, CDN 전용 안정성, 자동 webp 변환). 자격증명 `~/.zshenv`에 영구 export, 1×1 PNG 업로드/삭제 라이브 검증 완료. 호스팅은 어떤 이미지 생성 backend를 쓰든 동일하게 작동.
+- **생성 backend 옵션 조사** (research skill 4-round):
+  - **Imagen 4 (Google)**: AI Studio dashboard에 무료 RPD 표시되지만 실제 호출은 `400 INVALID_ARGUMENT: Imagen is only available on paid plans`. ai.dev/projects에서 billing 활성화 시 ~$0.02/장.
+  - **Pollinations.ai**: open-source, 진짜 무료. REST + URL endpoint, PNG/JPG bytes 직접 반환, Flux/GPT/Claude/Gemini 모델 라우팅. SLA 없음.
+  - OpenAI 무료: $5 일회성 credit + ChatGPT 무료 일 2-3장 web UI. 봇 자동화 부적합.
+  - Claude native raster: 2026-05 미지원 (SVG/Artifacts만).
+  - Gemini web Chrome 자동화: 가능하지만 anti-bot CDP 감지 + Google ToS 위반 위험 + 6-12배 느림 → 비추천.
+- **결정**: 코드는 Pollinations.ai 기준으로 작성·완비, Imagen 옵션도 보존. **활성화는 사용자 결정 시점에 환경변수 두 줄로**.
+- **신규 모듈** (`001_code/shared/`):
+  - `image_generator.py` (302줄) — backend dispatcher (`IMAGE_GEN_BACKEND` env로 `pollinations`/`imagen` 선택). Pollinations: REST GET `/image/{prompt}` 호출 → PNG bytes. Imagen: google-genai SDK + 모델 fallback chain.
+  - `image_uploader.py` (167줄) — Cloudinary wrapper. `upload_to_cdn(bytes, public_id, folder)` → `secure_url`. webp 자동 변환.
+  - `blogger_html_inject.py` (187줄) — `[[IMAGE: <english prompt>]]` 마커 post-processing. cap=3장/글. 생성·업로드 실패 시 graceful HTML 주석 대체 (발행 차질 0).
+- **claude_html_converter.py 수정** (+60줄): `_maybe_inject_images()` 자동 호출 추가. `BLOGGER_IMAGES_ENABLED=false` (default) 모드에서는 마커를 단순 strip + HTML 주석. 활성화 모드에서만 실제 생성/업로드.
+- **SKILL 갱신**: `~/.claude/skills/blogger-html/SKILL.md` (+67줄)에 `[[IMAGE:...]]` 마커 작성 지시 + 카테고리별 스타일 키워드 + 안티패턴.
+- **활성화 절차**: `~/.zshenv`에 `POLLINATIONS_API_KEY` (https://enter.pollinations.ai 무료 발급) + `BLOGGER_IMAGES_ENABLED=true` 두 줄 추가 → 봇 재시작.
+- **검증**: import smoke + Pollinations URL 형식 검증 + 마커 regex (3건 정확 매칭) + Cloudinary 1×1 PNG 업로드/삭제 라이브 OK. 실제 이미지 생성은 라이브 테스트 단계에 reserve.
+
+---
+
 ## 2026-05-27 PM: Grounded 호출 4곳 → Claude CLI + WebSearch 재이전
 
 - **배경**: 오전에 끝낸 "Gemini API + 모델 fallback chain" 마이그레이션 직후 라이브 운영에서 모든 4개 모델이 429를 반환하는 현상 발생. AI Studio dashboard에서는 RPM/TPM/RPD가 거의 0%인데도 grounded call이 거부됨. **원인 진단 결과: Gemini 3.x의 `google_search` grounding은 모델 API quota와 별개의 quota bucket을 사용**하고 dashboard에 노출되지 않음. 무료 티어 한도가 매우 빡빡해 일상 사용으로 즉시 소진됨. (참고: Gemini 2.5-flash만 grounding이 살아남는데 그건 prompt당 과금 모델이라 grounding이 prompt charge에 포함되기 때문.)
