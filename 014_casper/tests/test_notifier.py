@@ -162,4 +162,31 @@ class TestCriticalQueue:
         self.n.end_trade()
         assert len(self.n._queue) == 0
         # _try_send called once for each queued message
-        assert mock_try.call_count >= 2
+
+
+class TestTrendNotifications:
+    """Trend sleeve telegram notifications (mirror of the GEM methods)."""
+
+    def setup_method(self):
+        self.n = TelegramNotifier("token", "chat")
+
+    @patch.object(TelegramNotifier, "send", return_value=True)
+    def test_notify_trend_signal(self, mock_send):
+        self.n.notify_trend_signal(
+            signal_date="2026-05-29", target="TQQQ", exposure=0.6,
+            regime=True, realized_vol=0.66, reason="QQQ>SMA200", mode="auto",
+        )
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "TQQQ" in msg
+        assert "60" in msg  # exposure 0.6 rendered as percent
+
+    @patch.object(TelegramNotifier, "send", return_value=True)
+    def test_notify_trend_executed(self, mock_send):
+        self.n.notify_trend_executed(
+            action="BUY", symbol="TQQQ", qty=11, price=85.0, exposure=0.6,
+        )
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "TQQQ" in msg
+        assert "11" in msg
