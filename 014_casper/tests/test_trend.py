@@ -62,3 +62,69 @@ def test_missing_data_falls_back_to_safe_asset():
                                      data={"QQQ": _mk([1, 2, 3]), "TQQQ": _mk([1, 2])})
     assert sig.target_symbol == "BIL"
     assert sig.exposure == 0.0
+
+
+from datetime import date as _date
+import src.utils.time_utils as tu
+
+
+def test_state_roundtrip(tmp_path):
+    p = tmp_path / "trend_state.json"
+    st = trend.TrendState(last_signal_date="2026-05-29",
+                          current_holding="TQQQ", last_exposure=0.6,
+                          last_target="TQQQ")
+    st.save(str(p))
+    st2 = trend.TrendState.load(str(p))
+    assert st2.current_holding == "TQQQ"
+    assert st2.last_exposure == 0.6
+    assert st2.last_target == "TQQQ"
+
+
+def test_should_run_on_last_trading_day_of_month(monkeypatch):
+    d = _date(2026, 5, 29)  # a month-end trading day
+    monkeypatch.setattr(tu, "is_last_trading_day_of_month", lambda x: x == d)
+    monkeypatch.setattr(tu, "was_last_trading_day_of_month_within",
+                        lambda days_back, today: None)
+    run, sd = trend.should_run_trend(today=d, state=trend.TrendState())
+    assert run is True and sd == d
+
+
+def test_should_not_run_when_already_done(monkeypatch):
+    d = _date(2026, 5, 29)
+    monkeypatch.setattr(tu, "is_last_trading_day_of_month", lambda x: x == d)
+    st = trend.TrendState(last_signal_date=d.isoformat())
+    run, sd = trend.should_run_trend(today=d, state=st)
+    assert run is False
+
+
+def test_should_run_in_grace_window(monkeypatch):
+    # Not a month-end day, but a recent month-end was missed within the grace
+    # window -> the scheduler should fire for that missed date.
+    d = _date(2026, 6, 2)
+    missed = _date(2026, 5, 29)
+    monkeypatch.setattr(tu, "is_last_trading_day_of_month", lambda x: False)
+    monkeypatch.setattr(tu, "was_last_trading_day_of_month_within",
+                        lambda days_back, today: missed)
+    run, sd = trend.should_run_trend(today=d, state=trend.TrendState())
+    assert run is True and sd == missed
+
+
+def test_grace_window_respects_already_done(monkeypatch):
+    # Same missed month-end, but we already executed it -> no re-run.
+    d = _date(2026, 6, 2)
+    missed = _date(2026, 5, 29)
+    monkeypatch.setattr(tu, "is_last_trading_day_of_month", lambda x: False)
+    monkeypatch.setattr(tu, "was_last_trading_day_of_month_within",
+                        lambda days_back, today: missed)
+    st = trend.TrendState(last_signal_date=missed.isoformat())
+    run, sd = trend.should_run_trend(today=d, state=st)
+    assert run is False
+
+
+def test_state_load_corrupt_json_returns_fresh(tmp_path):
+    p = tmp_path / "trend_state.json"
+    p.write_text("{not valid json")
+    st = trend.TrendState.load(str(p))
+    assert st.last_signal_date is None
+    assert st.current_holding is None
+    assert st.last_exposure == 0.0
