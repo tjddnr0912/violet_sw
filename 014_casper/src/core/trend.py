@@ -125,3 +125,51 @@ def compute_trend_signal(today: Optional[date] = None,
         today.isoformat(), asset, round(exposure, 4), True, round(rv, 4),
         f"{sig_sym} > SMA{sma_n}; {asset} vol {rv:.2f} → exposure {exposure:.2f}", p,
     )
+
+
+@dataclass
+class TrendState:
+    last_signal_date: Optional[str] = None
+    last_target: Optional[str] = None
+    current_holding: Optional[str] = None
+    last_exposure: float = 0.0
+
+    @classmethod
+    def load(cls, path: str = TREND_STATE_FILE) -> "TrendState":
+        if not os.path.exists(path):
+            return cls()
+        try:
+            with open(path, "r") as f:
+                d = json.load(f)
+            return cls(last_signal_date=d.get("last_signal_date"),
+                       last_target=d.get("last_target"),
+                       current_holding=d.get("current_holding"),
+                       last_exposure=float(d.get("last_exposure", 0.0)))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"trend state load failed ({e}) — fresh")
+            return cls()
+
+    def save(self, path: str = TREND_STATE_FILE) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(asdict(self), f, indent=2)
+
+
+def should_run_trend(today: Optional[date] = None,
+                     state: Optional[TrendState] = None) -> tuple[bool, Optional[date]]:
+    """Month-end (+grace) rebalance schedule. Mirrors gem.should_run_gem."""
+    if today is None:
+        today = time_utils.today_et()
+    if state is None:
+        state = TrendState.load()
+    if time_utils.is_last_trading_day_of_month(today):
+        if state.last_signal_date == today.isoformat():
+            return False, None
+        return True, today
+    missed = time_utils.was_last_trading_day_of_month_within(
+        days_back=GRACE_TRADING_DAYS, today=today)
+    if missed is None:
+        return False, None
+    if state.last_signal_date == missed.isoformat():
+        return False, None
+    return True, missed
