@@ -28,22 +28,28 @@ def test_signal_matches_harness_on_month_ends():
     qqq, tqqq = _load("QQQ"), _load("TQQQ")
     PARAMS = {"signal_symbol": "QQQ", "sma_period": 200, "asset": "TQQQ",
               "safe_asset": "BIL", "target_vol": 0.40, "vol_lookback": 20}
-    # pick ~6 month-end dates across 2018-2024
     idx = qqq.index
     me = idx.to_series().groupby([idx.year, idx.month]).max()
-    sample = [d for d in me if 2018 <= d.year <= 2024][::12][:6]
+    sample = [d for d in me if 2018 <= d.year <= 2024][::6][:10]
     assert sample, "no month-end sample dates found"
+    n_on = n_off = 0
     for d in sample:
         # feed only history up to and including d (no look-ahead)
         sub = {"QQQ": qqq.loc[:d, ["Close"]], "TQQQ": tqqq.loc[:d, ["Close"]]}
         sig = trend.compute_trend_signal(today=d.date(), params=PARAMS, data=sub)
         # harness logic, recomputed inline:
         sma = qqq["Close"].loc[:d].rolling(200).mean().iloc[-1]
-        regime = qqq["Close"].loc[:d].iloc[-1] > sma
-        assert sig.regime == bool(regime), f"{d}: regime mismatch"
+        regime = bool(qqq["Close"].loc[:d].iloc[-1] > sma)
+        assert sig.regime == regime, f"{d}: regime mismatch"
         if regime:
+            n_on += 1
             rv = tqqq["Close"].loc[:d].pct_change().rolling(20).std().iloc[-1] * (252 ** 0.5)
             # trend.py stores exposure as round(exposure, 4); allow that quantization.
             assert abs(sig.exposure - min(1.0, 0.40 / rv)) < 1e-4, f"{d}: exposure mismatch"
         else:
-            assert sig.target_symbol == "BIL"
+            n_off += 1
+            assert sig.target_symbol == "BIL", f"{d}: regime-off should be BIL"
+            assert sig.exposure == 0.0, f"{d}: regime-off exposure must be 0"
+    # Guard against the sample silently collapsing to a single regime again:
+    assert n_on > 0, "sample covers no regime-ON month-ends"
+    assert n_off > 0, "sample covers no regime-OFF month-ends"
