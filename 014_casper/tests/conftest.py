@@ -44,7 +44,13 @@ def _isolate_trades_and_state(tmp_path, monkeypatch):
 
         def patched_init(self, *args, **kwargs):
             _real_init(self, *args, **kwargs)
-            self._position_state_file = fake_state
+            # NOTE: the bot's attribute is `position_state_file` (no leading
+            # underscore). A prior version patched `_position_state_file`,
+            # which created an unused attribute and left the real
+            # data/position_state.json exposed — every test that saved a
+            # position then wrote a phantom into the LIVE data dir, which a
+            # later bot restart would read as a real open position.
+            self.position_state_file = fake_state
 
         monkeypatch.setattr(CasperBot, "__init__", patched_init)
     except ImportError:
