@@ -519,6 +519,25 @@ class CasperBot:
         if self.test_mode:
             mode_str += " (TEST: 1 share)"
         logger.info(f"Mode: {mode_str}")
+        # 20% sleeve engine. In the default "trend" mode the intraday ORB+FVG
+        # state machine is gated OFF (see _intraday_enabled / _tick), so the
+        # Scan/FVG/R:R/ICT lines below describe a DORMANT engine. Make that
+        # explicit in the operator log to avoid "why is it still showing
+        # DUAL_SCAN?" confusion.
+        sleeve_engine = self.params.get("sleeve_engine", "trend")
+        if sleeve_engine != "intraday":
+            trend_mode = (self.env.get("trend_mode", "off")
+                          or self.params.get("trend", {}).get("mode", "off"))
+            tcfg = self.params.get("trend", {})
+            logger.info(
+                f"Sleeve: TREND (TQQQ Vol-Target, mode={trend_mode}) — "
+                f"{tcfg.get('signal_symbol', 'QQQ')}>{tcfg.get('sma_period', 200)}d SMA gate, "
+                f"target_vol={tcfg.get('target_vol', 0.40)}, monthly rebalance"
+            )
+            logger.info("Intraday ORB+FVG engine: GATED OFF "
+                        "(set sleeve_engine='intraday' to re-enable the lines below)")
+        else:
+            logger.info("Sleeve: INTRADAY (ORB+FVG day-trading)")
         if self.params.get("mode", {}).get("qqq_primary", False):
             scan_mode = "QQQ_PRIMARY (signal=QQQ → exec=TQQQ/SQQQ)"
         elif self.params.get("mode", {}).get("dual_scan", False):
