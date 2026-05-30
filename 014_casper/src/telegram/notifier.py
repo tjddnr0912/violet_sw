@@ -612,7 +612,7 @@ class TelegramNotifier:
                 f"{arrow} {b.drift_pct*100:+5.1f}%"
             )
             # Casper row annotation: per-trade cap from CASPER_MAX_POSITION_USD env
-            if b.name == "casper" and casper_cap_usd > 0:
+            if b.name == "trend" and casper_cap_usd > 0:
                 line += f"   cap ${casper_cap_usd:,.0f}"
             table_lines.append(line)
 
