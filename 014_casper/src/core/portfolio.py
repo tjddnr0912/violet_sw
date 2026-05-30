@@ -4,7 +4,7 @@ Splits a single KIS USD account into independently-managed buckets:
 
   • SPMO   — long-only momentum ETF (buy-and-hold, quarterly drift check)
   • GEM    — Antonacci dual momentum (SPY / VEU / AGG, monthly rotation)
-  • CASPER — ORB+FVG intraday TQQQ/SQQQ (the existing bot logic)
+  • TREND  — low-frequency TQQQ/BIL vol-target sleeve (monthly scheduler)
   • MTUM / QUAL — extra factor ETFs unlocked at higher capital tiers
   • CLENOW — momentum stock screen (top-N S&P 500)  ($10k+ tier)
   • TQQQ_SMA — single-asset 200-day SMA trend  ($10k+ tier)
@@ -65,14 +65,14 @@ def tier_for_capital(total_usd: float) -> dict:
         # Pre-seed tier: just GEM (lowest cost, simplest, lowest MaxDD).
         return {"gem": 1.00}
     if total_usd < 5000:
-        return {"spmo": 0.50, "gem": 0.30, "casper": 0.20}
+        return {"spmo": 0.50, "gem": 0.30, "trend": 0.20}
     if total_usd < 10000:
         return {"spmo": 0.40, "mtum": 0.10, "qual": 0.10,
-                "gem": 0.20, "casper": 0.20}
+                "gem": 0.20, "trend": 0.20}
     # $10,000+: 6 buckets, max diversification.
     return {"spmo": 0.30, "mtum": 0.10, "qual": 0.10,
             "clenow": 0.20, "tqqq_sma": 0.10,
-            "gem": 0.15, "casper": 0.05}
+            "gem": 0.15, "trend": 0.05}
 
 
 # Symbol mapping per bucket — used by the rebalancer when it must pick
@@ -85,7 +85,7 @@ BUCKET_DEFAULT_SYMBOL = {
     "clenow":   None,        # multi-stock screen — handled separately
     "tqqq_sma": "TQQQ",      # actual holding alternates with BIL
     "gem":      None,        # rotates SPY/VEU/AGG
-    "casper":   None,        # rotates TQQQ/SQQQ intraday
+    "trend":    "TQQQ",      # alternates TQQQ / BIL (vol-target sleeve)
 }
 
 
@@ -264,7 +264,7 @@ def evaluate_portfolio(total_usd: float,
     # Build buckets list with current values.
     # SPMO/MTUM/QUAL/TQQQ_SMA — single-symbol value lookup.
     # GEM — value held in whichever of SPY/VEU/AGG is currently in this account.
-    # CASPER — value held in TQQQ or SQQQ (the bot's working asset).
+    # TREND — value held in TQQQ or BIL (the vol-target sleeve's working asset).
     # CLENOW — sum of holdings outside of the symbols claimed by other buckets.
 
     buckets: list[Bucket] = []
@@ -279,8 +279,8 @@ def evaluate_portfolio(total_usd: float,
                     claimed_symbols.add(sym)
                     return float(h.get("value_usd", 0)), sym
             return 0.0, None
-        if name == "casper":
-            for sym in ("TQQQ", "SQQQ"):
+        if name == "trend":
+            for sym in ("TQQQ", "BIL"):
                 h = holdings.get(sym, {})
                 if h.get("qty", 0) > 0:
                     claimed_symbols.add(sym)
@@ -350,7 +350,7 @@ def needs_rebalance(buckets: list[Bucket],
       * CLENOW — same as above (quarter-end). Weekly bucket-internal
         rebalance is handled inside the Clenow module, not here.
       * GEM    — never via this path (its own monthly scheduler handles it).
-      * CASPER — never via this path (its own daily bot loop handles it).
+      * TREND  — never via this path (its own monthly scheduler handles it).
     """
     if today is None:
         today = time_utils.today_et()
@@ -359,7 +359,7 @@ def needs_rebalance(buckets: list[Bucket],
 
     drifted = []
     for b in buckets:
-        if b.name in ("gem", "casper"):
+        if b.name in ("gem", "trend"):
             continue   # owned by their own scheduler
         if b.target_usd <= 0:
             continue
