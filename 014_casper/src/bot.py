@@ -2195,9 +2195,9 @@ class CasperBot:
             if b.target_usd <= 0:
                 continue
             # Skip buckets that have their own signal-driven entry.
-            if b.name == "casper":
+            if b.name == "trend":
                 logger.info(
-                    f"Initial seed: skipping Casper (entry only on intraday signal); "
+                    f"Initial seed: skipping trend sleeve (established on monthly signal); "
                     f"${b.target_usd:.2f} held as cash"
                 )
                 continue
