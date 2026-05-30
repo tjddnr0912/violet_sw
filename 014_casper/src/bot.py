@@ -60,6 +60,12 @@ from src.core.portfolio import (
     save_evaluation, tier_for_capital, BUCKET_DEFAULT_SYMBOL,
     PORTFOLIO_STATE_FILE, needs_initial_seed, exchange_for,
 )
+# Low-frequency TQQQ Vol-Target trend sleeve. Imported under the `trend`
+# namespace so tests can monkeypatch `botmod.trend.should_run_trend` /
+# `botmod.trend.compute_trend_signal`. The trend-sleeve TrendState is aliased
+# to avoid colliding with the intraday risk.TrendState imported above.
+from src.core import trend
+from src.core.trend import TrendState as TrendSleeveState
 
 logger = logging.getLogger("casper")
 
@@ -158,6 +164,7 @@ class CasperBot:
         # state objects load to defaults, no calls are made on the tick.
         # Loading them in __init__ keeps disk I/O off the trading hot path.
         self._gem_state = GemState.load()
+        self._trend_state = TrendSleeveState.load()
         self._portfolio_state = PortfolioState.load()
         # Idempotency flag — guards against running the daily portfolio
         # tick multiple times if _reset_day fires twice on a single date
@@ -2100,6 +2107,15 @@ class CasperBot:
         if gem_mode in ("alert", "auto"):
             self._maybe_run_gem(buckets, total, holdings, gem_mode)
 
+        # 3b) Trend sleeve (low-freq TQQQ Vol-Target). Independent of GEM;
+        # gated by TREND_MODE env, falling back to strategy_params trend.mode.
+        # Does NOT trade in alert mode — just notifies.
+        trend_mode = self.env.get("trend_mode", "off")
+        if not trend_mode or trend_mode == "off":
+            trend_mode = self.params.get("trend", {}).get("mode", "off")
+        if trend_mode in ("alert", "auto"):
+            self._maybe_run_trend(buckets, total, holdings, trend_mode)
+
         # 4) Quarter-end SPMO / MTUM / QUAL drift rebalance
         if gem_mode == "auto":
             drifted = needs_rebalance(buckets, drift_threshold=0.10)
@@ -2404,6 +2420,185 @@ class CasperBot:
         self._gem_state.current_holding = sig.target
         self._gem_state.save()
         logger.info(f"GEM rotation complete: → {sig.target} x{qty_to_buy}")
+
+    # ─────────────────────── Trend sleeve ───────────────────────
+
+    def _maybe_run_trend(self, buckets: list, total: float,
+                         holdings: dict, mode: str) -> None:
+        """Check the trend-sleeve scheduler. In alert mode just notify; in
+        auto mode rebalance. Mirrors `_maybe_run_gem`.
+
+        IMPORTANT: like GEM, the trend sleeve must NOT trade outside US RTH
+        because KIS overseas-stock orders only accept limit orders on a live
+        exchange. Outside RTH we defer to the next tick, which retries within
+        the same calendar day (idempotency-safe via `last_signal_date`).
+        """
+        run, signal_date = trend.should_run_trend(state=self._trend_state)
+        if not run or signal_date is None:
+            return
+
+        params = self.params.get("trend", {})
+        sig = trend.compute_trend_signal(params=params)
+        # Override signal_date with the date the scheduler resolved to
+        # (could be earlier than today during the grace window).
+        sig.signal_date = signal_date.isoformat()
+        logger.info(
+            f"Trend signal {sig.signal_date}: target={sig.target_symbol} "
+            f"exposure={sig.exposure:.2f} "
+            f"regime={'ON' if sig.regime else 'OFF'} "
+            f"rv={sig.realized_vol:.4f} — {sig.reason}"
+        )
+        self.notifier.notify_trend_signal(
+            sig.signal_date, sig.target_symbol, sig.exposure,
+            sig.regime, sig.realized_vol, sig.reason, mode=mode,
+        )
+
+        if mode == "alert":
+            # Notify only — do NOT pollute state so auto mode would still
+            # trade next month. (Matches GEM's alert-mode contract.)
+            return
+
+        # auto mode → execute
+        if not time_utils.is_market_open():
+            logger.info(
+                "Trend auto: market closed — deferring execution to next "
+                "tick during RTH (signal date already locked)"
+            )
+            return
+        self._execute_trend_rebalance(sig, holdings, total)
+
+    def _execute_trend_rebalance(self, sig, holdings: dict,
+                                 total: float) -> None:
+        """Reconcile the trend bucket to {asset: exposure*sleeve, safe: rest}
+        via whole-share sell-then-buy KIS orders.
+
+        Abort-safe (mirrors `_execute_gem_rotation`): every INTENDED order is
+        checked. The month is marked done (state.save) ONLY if ALL intended
+        orders succeed. If any leg fails we log a warning and SKIP the save,
+        so the next RTH tick re-fires `should_run_trend` and retries — never
+        leaving the sleeve mis-allocated with the month silently marked done.
+        """
+        weights = tier_for_capital(total)
+        trend_weight = weights.get("trend", weights.get("casper", 0.0))
+        if trend_weight <= 0:
+            logger.info("Trend: weight=0 in current tier — skipping")
+            return
+        sleeve_budget = total * trend_weight
+
+        if not self.kis_order or not self.kis_client:
+            logger.warning("Trend auto: kis_order not available — skipping")
+            return
+
+        p = self.params.get("trend", {})
+        asset = p.get("asset", "TQQQ")
+        safe = p.get("safe_asset", "BIL")
+
+        # Target USD per symbol: `exposure` of the sleeve in the asset, the
+        # remainder in the safe asset. RISK-OFF → exposure 0 → all safe.
+        targets = {
+            asset: sleeve_budget * sig.exposure,
+            safe: sleeve_budget * (1.0 - sig.exposure),
+        }
+
+        buy_slip = self.params.get("order", {}).get("buy_slippage_pct", 0.01)
+        comm = self.params.get("commission", {}).get("rate_per_side", 0.0025)
+
+        # Track success of every INTENDED order. Only persist "done" if all OK.
+        all_ok = True
+
+        # ── 1) Sell down any symbol held above its target ──────────────
+        for sym in (asset, safe):
+            held_qty = holdings.get(sym, {}).get("qty", 0)
+            if held_qty <= 0:
+                continue
+            ex = exchange_for(sym)
+            price_data = self.kis_client.get_us_price(sym, exchange=ex) or {}
+            price = float(price_data.get("price", 0) or 0)
+            if price <= 0:
+                logger.error(
+                    f"Trend: cannot fetch price for {sym}@{ex} — "
+                    "skipping sell leg"
+                )
+                all_ok = False
+                continue
+            # FIX 2 — keep-quantity uses the RAW price. Using the buy effective
+            # price here would understate how many shares to KEEP.
+            target_qty = int(targets[sym] / price)
+            sell_qty = held_qty - target_qty
+            if sell_qty < 1:
+                continue
+            result = self.kis_order.sell_market(sym, sell_qty, exchange=ex)
+            if not result:
+                logger.error(f"Trend: sell {sym} x{sell_qty} failed")
+                all_ok = False
+                continue
+            self.notifier.notify_etf_rebalance(
+                "sell", sym, sell_qty, price, "trend",
+                f"Trend rebalance {sig.signal_date} → {sig.target_symbol}",
+            )
+            self.notifier.notify_trend_executed(
+                "SELL", sym, sell_qty, price, sig.exposure)
+
+        # ── 2) Buy up any symbol held below its target ─────────────────
+        # Wait briefly for sell settlement, then re-fetch available cash.
+        time.sleep(2.0)
+        bal2 = self.kis_client.get_us_balance() or {}
+        cash_avail = float(bal2.get("available_cash", 0) or 0)
+
+        for sym in (asset, safe):
+            tgt_usd = targets[sym]
+            if tgt_usd <= 0:
+                continue
+            ex = exchange_for(sym)
+            price_data = self.kis_client.get_us_price(sym, exchange=ex) or {}
+            price = float(price_data.get("price", 0) or 0)
+            if price <= 0:
+                logger.error(
+                    f"Trend: cannot fetch price for {sym}@{ex} — "
+                    "skipping buy leg"
+                )
+                all_ok = False
+                continue
+            held_qty = holdings.get(sym, {}).get("qty", 0)
+            held_usd = held_qty * price
+            need_usd = tgt_usd - held_usd
+            if need_usd <= 0:
+                continue
+            # FIX 2 — the BUY leg correctly inflates by slippage + commission.
+            eff = price * (1 + buy_slip + comm)
+            budget = min(need_usd, cash_avail)
+            buy_qty = int(budget / eff) if eff > 0 else 0
+            if buy_qty < 1:
+                continue
+            result = self.kis_order.buy_market(sym, buy_qty, exchange=ex)
+            if not result:
+                logger.error(f"Trend: buy {sym} x{buy_qty} failed")
+                all_ok = False
+                continue
+            cash_avail -= buy_qty * eff
+            self.notifier.notify_etf_rebalance(
+                "buy", sym, buy_qty, price, "trend",
+                f"Trend signal {sig.signal_date} → {sig.reason}",
+            )
+            self.notifier.notify_trend_executed(
+                "BUY", sym, buy_qty, price, sig.exposure)
+
+        # ── 3) FIX 1 — persist "done" ONLY if every intended order OK ──
+        if all_ok:
+            self._trend_state.last_signal_date = sig.signal_date
+            self._trend_state.last_target = sig.target_symbol
+            self._trend_state.current_holding = sig.target_symbol
+            self._trend_state.last_exposure = sig.exposure
+            self._trend_state.save()
+            logger.info(
+                f"Trend rebalance complete: → {sig.target_symbol} "
+                f"(exposure {sig.exposure:.2f})"
+            )
+        else:
+            logger.warning(
+                "Trend rebalance had order failures — NOT marking month done; "
+                "next RTH tick will retry"
+            )
 
     def _execute_bucket_drift_rebalance(self, drifted: list,
                                         total: float, holdings: dict,

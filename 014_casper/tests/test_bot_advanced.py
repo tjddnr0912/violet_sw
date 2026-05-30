@@ -338,4 +338,51 @@ class TestSetupLogger:
         l1.handlers.clear()
 
 
+def test_execute_trend_rebalance_buys_tqqq(monkeypatch):
+    """auto mode, RISK-ON exposure=1.0, all cash -> buys whole-share TQQQ sized to sleeve."""
+    import src.bot as botmod
+    from src.core.trend import TrendSignal, TrendState
+    bot = botmod.CasperBot.__new__(botmod.CasperBot)
+    bot.params = {"order": {"buy_slippage_pct": 0.01},
+                  "commission": {"rate_per_side": 0.0025},
+                  "trend": {"mode": "auto"}}
+    bot._trend_state = TrendState()
+
+    class FakeOrder:
+        def __init__(s):
+            s.calls = []
+
+        def buy_market(s, sym, qty, exchange):
+            s.calls.append(("buy", sym, qty))
+            return {"ok": True}
+
+        def sell_market(s, sym, qty, exchange):
+            s.calls.append(("sell", sym, qty))
+            return {"ok": True}
+
+    class FakeClient:
+        def get_us_price(s, sym, exchange):
+            return {"price": 80.0}
+
+        def get_us_balance(s):
+            return {"available_cash": 800.0}
+
+    class FakeNotifier:
+        def notify_trend_executed(s, *a, **k):
+            pass
+
+        def notify_etf_rebalance(s, *a, **k):
+            pass
+
+    bot.kis_order, bot.kis_client, bot.notifier = FakeOrder(), FakeClient(), FakeNotifier()
+
+    # TrendSignal fields: signal_date, target_symbol, exposure, regime, realized_vol, reason, params
+    sig = TrendSignal("2026-05-29", "TQQQ", 1.0, True, 0.40, "t", {})
+    monkeypatch.setattr(botmod.time_utils, "is_market_open", lambda: True)
+
+    # total=4000, tier weight for 'trend' at 4000 = 0.20 -> sleeve=800 ; price 80 -> ~9 shares
+    bot._execute_trend_rebalance(sig, holdings={}, total=4000.0)
+    assert any(c[0] == "buy" and c[1] == "TQQQ" for c in bot.kis_order.calls)
+
+
 import os

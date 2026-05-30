@@ -54,6 +54,10 @@ def load_env() -> dict:
         # "auto"  → P2: compute + execute via KIS.
         # "off"   → disabled.
         "gem_mode": os.getenv("GEM_MODE", "off").lower(),
+        # Trend sleeve (low-freq TQQQ Vol-Target). off|alert|auto.
+        # When unset/"off" the bot falls back to strategy_params.json
+        # `trend.mode`. "alert" → notify only; "auto" → execute via KIS.
+        "trend_mode": os.getenv("TREND_MODE", "off").lower(),
     }
 
 
