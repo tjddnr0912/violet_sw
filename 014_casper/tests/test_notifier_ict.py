@@ -23,7 +23,10 @@ def test_bot_started_ict_off_renders_off(mock_send):
     n.notify_bot_started(
         "live", 1500.0,
         {"count": 0, "win_rate": 0, "pnl": 0},
-        strategy_info={"dual_scan": True, "strict_fvg": True, "rr_ratio": 3.0},
+        # ICT rows are an intraday-engine feature; declare intraday mode so the
+        # banner renders the Scan/FVG/R:R/ICT section (hidden in trend mode).
+        strategy_info={"sleeve_engine": "intraday",
+                       "dual_scan": True, "strict_fvg": True, "rr_ratio": 3.0},
     )
     text = _captured_send_text(mock_send)
     # New layout: row ("ICT", "off") → "ICT" and "off" both present
@@ -37,6 +40,7 @@ def test_bot_started_ict_flags_render(mock_send):
         "live", 1500.0,
         {"count": 0, "win_rate": 0, "pnl": 0},
         strategy_info={
+            "sleeve_engine": "intraday",
             "dual_scan": True, "strict_fvg": True, "rr_ratio": 3.0,
             "ict_killzone": True,
             "ict_allowed_killzones": ["AM_MACRO"],
