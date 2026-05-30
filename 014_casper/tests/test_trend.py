@@ -42,14 +42,18 @@ def test_regime_on_returns_tqqq_with_capped_exposure():
 
 
 def test_high_vol_reduces_exposure_below_cap():
-    qqq = list(np.linspace(300, 600, 260))
+    # Strong uptrend (regime stays ON) but very choppy TQQQ -> high realized vol
+    # -> exposure must be capped BELOW 1.0. Steep ramp dominates the noise so
+    # the regime is deterministically on, making the cap assertion non-vacuous.
+    qqq = list(np.linspace(300, 900, 260))
     rng = np.random.default_rng(0)
-    tqqq = list(100 + np.cumsum(rng.normal(0, 6, 260)))  # high-vol path
+    noise = np.cumsum(rng.normal(0, 7, 260))
+    tqqq = list(np.linspace(40, 200, 260) + noise)  # steep ramp + chop
     sig = trend.compute_trend_signal(today=date(2024, 12, 31),
                                      params=PARAMS,
                                      data=_trend_data(qqq, tqqq))
-    if sig.regime:               # uptrend may or may not hold given noise
-        assert sig.exposure < 1.0
+    assert sig.regime is True      # fixture constructed to stay in uptrend
+    assert 0.0 < sig.exposure < 1.0
 
 
 def test_missing_data_falls_back_to_safe_asset():
