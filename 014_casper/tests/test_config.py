@@ -124,3 +124,17 @@ class TestParamsValidation:
                   "commission": {"rate_per_side": 0.0009}}
         with pytest.raises(ValueError, match="max_shares"):
             _validate_params(params)
+
+
+def test_sleeve_engine_and_trend_params():
+    import src.utils.config as _cfg
+    _cfg._config_cache = None  # bypass module-level cache if present
+    p = load_strategy_params()
+    assert p.get("sleeve_engine") in ("trend", "intraday")
+    t = p.get("trend", {})
+    assert t.get("asset") == "TQQQ"
+    assert t.get("safe_asset") == "BIL"
+    assert t.get("signal_symbol") == "QQQ"
+    assert abs(float(t.get("target_vol")) - 0.40) < 1e-9
+    assert int(t.get("sma_period")) == 200
+    assert int(t.get("vol_lookback")) == 20

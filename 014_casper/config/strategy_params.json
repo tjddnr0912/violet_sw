@@ -53,6 +53,17 @@
         "dual_scan": true,
         "qqq_primary": false
     },
+    "sleeve_engine": "trend",
+    "trend": {
+        "signal_symbol": "QQQ",
+        "sma_period": 200,
+        "asset": "TQQQ",
+        "safe_asset": "BIL",
+        "target_vol": 0.40,
+        "vol_lookback": 20,
+        "rebalance": "monthly",
+        "mode": "auto"
+    },
     "exit": {
         "be_move_time": "11:00",
         "force_close_time": "15:50"
