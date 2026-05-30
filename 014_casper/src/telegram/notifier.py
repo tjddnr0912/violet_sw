@@ -159,20 +159,30 @@ class TelegramNotifier:
         hist_pnl = history.get('pnl', 0)
         rows.append(("History", f"{hist_count}T  WR {hist_wr:.1f}%  PnL ${hist_pnl:+,.2f}"))
 
-        # Multi-bucket runtime info (cap + GEM mode) — pulled from .env.
-        # Skipped when both are at defaults (legacy single-bucket Casper).
+        # Multi-bucket runtime info — pulled from .env / config at startup.
+        # Skipped when everything is at defaults (legacy single-bucket Casper).
         if strategy_info:
             cap_usd = float(strategy_info.get("casper_max_position_usd", 0) or 0)
             gem_mode = strategy_info.get("gem_mode", "off")
-            if cap_usd > 0 or gem_mode != "off":
+            sleeve_engine = strategy_info.get("sleeve_engine", "trend")
+            trend_mode = strategy_info.get("trend_mode", "off")
+            if cap_usd > 0 or gem_mode != "off" or sleeve_engine == "trend":
                 rows.append("---")
-                if cap_usd > 0:
-                    pct = (cap_usd / capital * 100) if capital > 0 else 0
-                    rows.append(("Casper Cap", f"${cap_usd:,.0f}  ({pct:.1f}% of capital)"))
+                if sleeve_engine == "intraday":
+                    rows.append(("Sleeve", "INTRADAY (ORB+FVG)"))
+                    if cap_usd > 0:
+                        pct = (cap_usd / capital * 100) if capital > 0 else 0
+                        rows.append(("Casper Cap", f"${cap_usd:,.0f}  ({pct:.1f}% of capital)"))
+                else:
+                    rows.append(("Sleeve", "TREND (TQQQ Vol-Target)"))
+                    rows.append(("Trend Mode", str(trend_mode).upper()))
                 if gem_mode != "off":
                     rows.append(("GEM Mode", gem_mode))
 
-        if strategy_info:
+        # Intraday-only details (Scan / FVG / R:R / Window / ICT). These are
+        # meaningless for the low-freq trend sleeve, so show them ONLY when the
+        # legacy intraday engine is active.
+        if strategy_info and strategy_info.get("sleeve_engine", "trend") == "intraday":
             rows.append("---")
             scan = "DUAL (TQQQ+SQQQ)" if strategy_info.get("dual_scan") else "TREND (QQQ MA20)"
             fvg = "STRICT" if strategy_info.get("strict_fvg") else "baseline"
@@ -587,15 +597,17 @@ class TelegramNotifier:
 
     def notify_portfolio_summary(self, total_usd: float, buckets: list,
                                  tier_key: str,
-                                 casper_cap_usd: float = 0.0) -> None:
+                                 casper_cap_usd: float = 0.0,
+                                 sleeve_engine: str = "trend") -> None:
         """Daily portfolio snapshot — total value + per-bucket allocation.
 
         Renders a compact aligned table inside a <pre> block so columns
         line up on both mobile and desktop Telegram clients.
 
-        casper_cap_usd: env-driven CASPER_MAX_POSITION_USD. When > 0 the
-        Casper row gets a ‘cap $N’ annotation so the operator can see
-        the per-trade limit alongside the bucket value.
+        casper_cap_usd: env-driven CASPER_MAX_POSITION_USD per-trade cap.
+        Only meaningful for the legacy intraday engine; the low-freq trend
+        sleeve sizes itself from the tier weight, so the cap annotation is
+        shown ONLY when sleeve_engine == "intraday".
         """
         # Build the bucket table as a single multi-line "row" so column
         # alignment is exact (we control the widths ourselves).
@@ -611,8 +623,9 @@ class TelegramNotifier:
                 f"${b.current_value_usd:>9,.2f} ${b.target_usd:>9,.2f}  "
                 f"{arrow} {b.drift_pct*100:+5.1f}%"
             )
-            # Casper row annotation: per-trade cap from CASPER_MAX_POSITION_USD env
-            if b.name == "trend" and casper_cap_usd > 0:
+            # Per-trade cap annotation applies ONLY to the legacy intraday
+            # engine; the low-freq trend sleeve has no per-trade cap.
+            if b.name == "trend" and sleeve_engine == "intraday" and casper_cap_usd > 0:
                 line += f"   cap ${casper_cap_usd:,.0f}"
             table_lines.append(line)
 

@@ -190,3 +190,48 @@ class TestTrendNotifications:
         msg = mock_send.call_args[0][0]
         assert "TQQQ" in msg
         assert "11" in msg
+
+    @patch.object(TelegramNotifier, "send", return_value=True)
+    def test_startup_banner_trend_mode_hides_intraday_rows(self, mock_send):
+        # Trend mode: banner advertises the trend sleeve and DROPS the inert
+        # intraday rows (Casper Cap / Scan / FVG / R:R / ICT).
+        self.n.notify_bot_started(
+            "live", 3136.12, {},
+            strategy_info={"casper_max_position_usd": 600.0, "gem_mode": "auto",
+                           "sleeve_engine": "trend", "trend_mode": "auto",
+                           "dual_scan": True, "strict_fvg": True,
+                           "rr_ratio_by_killzone": {"AM_MACRO": 3.0}})
+        banner = mock_send.call_args[0][0]
+        assert "TREND (TQQQ Vol-Target)" in banner
+        assert "Trend Mode" in banner
+        assert "Casper Cap" not in banner
+        assert "Scan" not in banner
+        assert "R:R" not in banner
+
+    @patch.object(TelegramNotifier, "send", return_value=True)
+    def test_startup_banner_intraday_mode_shows_intraday_rows(self, mock_send):
+        # Reversibility: intraday engine still surfaces RR + Casper Cap + Scan.
+        self.n.notify_bot_started(
+            "live", 3136.12, {},
+            strategy_info={"casper_max_position_usd": 600.0, "gem_mode": "auto",
+                           "sleeve_engine": "intraday", "trend_mode": "off",
+                           "dual_scan": True, "strict_fvg": True,
+                           "rr_ratio_by_killzone": {"AM_MACRO": 3.0, "AM_LATE": 2.0}})
+        banner = mock_send.call_args[0][0]
+        assert "INTRADAY (ORB+FVG)" in banner
+        assert "Casper Cap" in banner
+        assert "R:R" in banner
+
+    @patch.object(TelegramNotifier, "send", return_value=True)
+    def test_portfolio_summary_cap_annotation_gated_by_sleeve_engine(self, mock_send):
+        from src.core.portfolio import Bucket
+        buckets = [Bucket("spmo", 0.5, 1568.06, 1501.3, "SPMO"),
+                   Bucket("trend", 0.2, 627.22, 0.0, None)]
+        # trend mode: NO per-trade cap annotation even when cap env > 0
+        self.n.notify_portfolio_summary(3136.12, buckets, "t",
+                                        casper_cap_usd=600.0, sleeve_engine="trend")
+        assert "cap $600" not in mock_send.call_args[0][0]
+        # intraday mode: cap annotation IS shown
+        self.n.notify_portfolio_summary(3136.12, buckets, "t",
+                                        casper_cap_usd=600.0, sleeve_engine="intraday")
+        assert "cap $600" in mock_send.call_args[0][0]

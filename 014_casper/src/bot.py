@@ -682,6 +682,11 @@ class CasperBot:
                 self.env.get("casper_max_position_usd", 0) or 0
             ),
             "gem_mode": self.env.get("gem_mode", "off"),
+            # 20% sleeve engine: "trend" (low-freq TQQQ Vol-Target, default)
+            # or "intraday" (legacy ORB+FVG). Drives which banner rows show.
+            "sleeve_engine": self.params.get("sleeve_engine", "trend"),
+            "trend_mode": (self.env.get("trend_mode", "off")
+                           or self.params.get("trend", {}).get("mode", "off")),
         }
         self.notifier.notify_bot_started(
             self.env["trading_mode"], self.capital, history, strategy_info,
@@ -2147,6 +2152,7 @@ class CasperBot:
             self.notifier.notify_portfolio_summary(
                 total, buckets, info["new_tier"],
                 casper_cap_usd=cap_usd,
+                sleeve_engine=self.params.get("sleeve_engine", "trend"),
             )
         except Exception as e:
             logger.debug(f"Portfolio summary telegram skipped: {e}")
