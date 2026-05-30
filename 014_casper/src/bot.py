@@ -715,6 +715,11 @@ class CasperBot:
                 except Exception:
                     pass
 
+    def _intraday_enabled(self) -> bool:
+        """The ORB+FVG intraday Casper engine runs only when explicitly selected.
+        Default sleeve_engine='trend' runs the low-freq sleeve via the daily tick."""
+        return self.params.get("sleeve_engine", "trend") == "intraday"
+
     def _tick(self):
         """Single iteration of the event loop."""
         now = time_utils.now_et()
@@ -742,6 +747,16 @@ class CasperBot:
                     self._seed_pending = False
             except Exception as e:
                 logger.error(f"Deferred seed retry failed: {e}", exc_info=True)
+
+        # ── Intraday Casper state machine (sleeve_engine == "intraday" only) ──
+        # Default sleeve_engine="trend": the low-freq trend sleeve runs via the
+        # daily multi-bucket tick (invoked from _reset_day above, which calls
+        # _daily_portfolio_tick); skip all intraday ORB scanning. The daily
+        # GEM + trend portfolio work has already run before this point, so an
+        # early return here only skips the intraday handlers — _tick has no
+        # post-state-machine cleanup, making the early return safe.
+        if not self._intraday_enabled():
+            return
 
         # State machine dispatch
         if self.state == BotState.WAITING:

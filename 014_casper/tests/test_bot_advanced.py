@@ -35,6 +35,10 @@ class TestTick:
     def test_tick_dispatches_waiting(self, mock_time):
         mock_time.now_et.return_value = ET.localize(datetime(2026, 4, 6, 7, 0))
         bot = _make_bot()
+        # Intraday ORB dispatch is gated behind sleeve_engine="intraday";
+        # default "trend" runs only the daily multi-bucket tick, so these
+        # dispatch tests must opt into the legacy intraday engine.
+        bot.params["sleeve_engine"] = "intraday"
         bot.today_date = "2026-04-06"
         bot.state = BotState.WAITING
 
@@ -46,6 +50,7 @@ class TestTick:
     def test_tick_dispatches_pre_market(self, mock_time):
         mock_time.now_et.return_value = ET.localize(datetime(2026, 4, 6, 8, 30))
         bot = _make_bot()
+        bot.params["sleeve_engine"] = "intraday"  # opt into legacy intraday dispatch
         bot.today_date = "2026-04-06"
         bot.state = BotState.PRE_MARKET
 
@@ -57,6 +62,7 @@ class TestTick:
     def test_tick_dispatches_scanning(self, mock_time):
         mock_time.now_et.return_value = ET.localize(datetime(2026, 4, 6, 9, 50))
         bot = _make_bot()
+        bot.params["sleeve_engine"] = "intraday"  # opt into legacy intraday dispatch
         bot.today_date = "2026-04-06"
         bot.state = BotState.SCANNING
 
