@@ -434,3 +434,15 @@ class TestCapitalFallback:
 
         assert bot.position is not None
         assert bot.state == BotState.POSITION_OPEN
+
+
+def test_intraday_enabled_flag():
+    """sleeve_engine controls whether the intraday ORB state machine runs."""
+    import src.bot as botmod
+    bot = botmod.CasperBot.__new__(botmod.CasperBot)
+    bot.params = {"sleeve_engine": "trend"}
+    assert bot._intraday_enabled() is False
+    bot.params = {"sleeve_engine": "intraday"}
+    assert bot._intraday_enabled() is True
+    bot.params = {}  # default must be safe (trend), so intraday OFF
+    assert bot._intraday_enabled() is False

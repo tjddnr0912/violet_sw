@@ -150,7 +150,7 @@ class TestPortfolioTier:
     def test_tier_at_3k_boundary(self):
         # exactly $3,000 → 3-bucket tier
         w = tier_for_capital(3000)
-        assert set(w.keys()) == {"spmo", "gem", "casper"}
+        assert set(w.keys()) == {"spmo", "gem", "trend"}
         assert abs(sum(w.values()) - 1.0) < 1e-9
 
     def test_tier_at_5k_unlocks_mtum_qual(self):
@@ -194,9 +194,9 @@ class TestPortfolioEvaluation:
         # GEM holds SPY in this snapshot
         assert names["gem"].current_value_usd == 580.0
         assert names["gem"].current_symbol == "SPY"
-        # Casper holds TQQQ
-        assert names["casper"].current_value_usd == 560.0
-        assert names["casper"].current_symbol == "TQQQ"
+        # Trend bucket holds TQQQ
+        assert names["trend"].current_value_usd == 560.0
+        assert names["trend"].current_symbol == "TQQQ"
 
     def test_drift_pct_calculation(self):
         b = Bucket(name="spmo", target_weight=0.5, target_usd=1500,
@@ -219,8 +219,8 @@ class TestPortfolioEvaluation:
                                    today=date(2026, 5, 15))
         assert drifted2 == []
 
-    def test_needs_rebalance_excludes_gem_and_casper(self):
-        # GEM/casper drift must be handled by their own schedulers,
+    def test_needs_rebalance_excludes_gem_and_trend(self):
+        # GEM/trend drift must be handled by their own schedulers,
         # not by the quarterly bucket-drift rebalancer.
         holdings = {"SPY": {"qty": 10, "value_usd": 5800.0, "price": 580.0}}
         buckets, _ = evaluate_portfolio(
@@ -230,7 +230,7 @@ class TestPortfolioEvaluation:
                                   today=date(2026, 6, 30))
         names = [b.name for b in drifted]
         assert "gem" not in names
-        assert "casper" not in names
+        assert "trend" not in names
 
     def test_tier_change_detected(self):
         state = PortfolioState(last_tier_key=tier_key(tier_for_capital(3000)))
@@ -283,14 +283,14 @@ class TestStatePersistence:
             s = PortfolioState(
                 last_eval_date="2026-05-15",
                 last_total_usd=3000.0,
-                last_tier_key="casper=0.20,gem=0.30,spmo=0.50",
+                last_tier_key="gem=0.30,spmo=0.50,trend=0.20",
                 buckets={"spmo": {"target_usd": 1500}},
                 seeded_at="2026-05-15",
             )
             s.save(path)
             loaded = PortfolioState.load(path)
             assert loaded.last_total_usd == 3000.0
-            assert loaded.last_tier_key == "casper=0.20,gem=0.30,spmo=0.50"
+            assert loaded.last_tier_key == "gem=0.30,spmo=0.50,trend=0.20"
             assert loaded.seeded_at == "2026-05-15"
 
 
@@ -331,3 +331,35 @@ class TestInitialSeed:
     def test_seed_skipped_when_total_zero(self):
         state = PortfolioState()
         assert needs_initial_seed(0.0, holdings={}, state=state) is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Trend bucket rename (was "casper") — TQQQ/BIL vol-target sleeve
+# ──────────────────────────────────────────────────────────────────────
+
+from src.core import portfolio as pf
+
+
+def test_tier_uses_trend_not_casper():
+    w = pf.tier_for_capital(4000)
+    assert "trend" in w and "casper" not in w
+    assert abs(w["trend"] - 0.20) < 1e-9
+    w2 = pf.tier_for_capital(7000)
+    assert "trend" in w2 and "casper" not in w2
+
+
+def test_bucket_value_resolves_tqqq_or_bil():
+    holdings = {"TQQQ": {"qty": 5, "value_usd": 400.0}}
+    buckets, _ = pf.evaluate_portfolio(4000.0, holdings,
+                                       state=pf.PortfolioState())
+    trend_b = next(b for b in buckets if b.name == "trend")
+    assert trend_b.current_symbol == "TQQQ"
+    assert trend_b.current_value_usd == 400.0
+
+
+def test_needs_rebalance_excludes_trend(monkeypatch):
+    import src.utils.time_utils as tu
+    monkeypatch.setattr(tu, "is_last_trading_day_of_quarter", lambda d: True)
+    b = pf.Bucket(name="trend", target_weight=0.2, target_usd=800,
+                  current_value_usd=1200)   # 50% drift
+    assert pf.needs_rebalance([b], drift_threshold=0.10) == []

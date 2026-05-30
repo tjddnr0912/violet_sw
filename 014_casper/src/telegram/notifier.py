@@ -543,6 +543,48 @@ class TelegramNotifier:
             rows.append(("회전", f"{prev_symbol} → {symbol}"))
         self.send(self._box(title, rows))
 
+    def notify_trend_signal(self, signal_date: str, target: str,
+                            exposure: float, regime: bool,
+                            realized_vol: float, reason: str,
+                            mode: str = "auto") -> None:
+        """Trend sleeve monthly signal (low-frequency QQQ>SMA200 regime).
+
+        mode='alert' → signal detected, NO order placed (manual).
+        mode='auto'  → signal detected, order on next rebalance.
+
+        realized_vol may be NaN in RISK-OFF signals — renders as "nan%",
+        which is acceptable (matches the gem notifier's keep-it-simple style).
+        """
+        tag = "🔔 ALERT" if mode == "alert" else "🤖 AUTO"
+        emoji = "📈" if target == "TQQQ" else "🛡️"
+        regime_label = "RISK-ON (QQQ>200d)" if regime else "RISK-OFF"
+        rows = [
+            ("레짐", regime_label),
+            ("타깃", f"{target}   노출 {exposure*100:.0f}%"),
+            ("실현변동성", f"{realized_vol*100:.0f}%"),
+            "---",
+            ("사유", reason),
+            ("실행", "🤖 다음 리밸런스 자동 매매" if mode != "alert"
+                     else "📋 수동 매매 필요 (alert)"),
+        ]
+        self.send(self._box(
+            f"{emoji} <b>Trend 신호</b>  {signal_date}  ({tag})", rows))
+
+    def notify_trend_executed(self, action: str, symbol: str,
+                              qty: int, price: float,
+                              exposure: float) -> None:
+        """Trend sleeve rebalance fill confirmation."""
+        emoji = {"SELL": "🔴", "BUY": "🟢", "HOLD": "⚪️", "SKIP": "⏭"}.get(action, "ℹ️")
+        title = f"{emoji} <b>Trend 리밸런스</b>  {action}"
+        rows = [
+            ("종목", symbol),
+            ("수량", f"{qty}주"),
+            ("단가", f"${price:.2f}"),
+            ("총액", f"${price * qty:,.2f}"),
+            ("sleeve 노출", f"{exposure*100:.0f}%"),
+        ]
+        self.send(self._box(title, rows))
+
     def notify_portfolio_summary(self, total_usd: float, buckets: list,
                                  tier_key: str,
                                  casper_cap_usd: float = 0.0) -> None:
@@ -570,7 +612,7 @@ class TelegramNotifier:
                 f"{arrow} {b.drift_pct*100:+5.1f}%"
             )
             # Casper row annotation: per-trade cap from CASPER_MAX_POSITION_USD env
-            if b.name == "casper" and casper_cap_usd > 0:
+            if b.name == "trend" and casper_cap_usd > 0:
                 line += f"   cap ${casper_cap_usd:,.0f}"
             table_lines.append(line)
 
