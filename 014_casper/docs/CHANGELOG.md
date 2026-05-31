@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-05-31: 시작/상태 배너 sleeve_engine 인식 (배너 3곳 통일)
+
+### 결정 한 줄
+`sleeve_engine=trend`인데도 시작 로그·`status` 출력이 레거시 인트라데이 전략(ORB+FVG/ICT/Fine-tune)을 설명하던 문제를, 배너가 존재하는 3개 파일 전부에서 모드 분기하도록 수정.
+
+### 변경
+- `src/bot.py` `run()`: 인트라데이 상세를 `_log_intraday_startup_detail()`로 추출, trend용 `_log_trend_startup_detail()` 추가 → `sleeve_engine`으로 분기 (7535979, c0aeb58).
+- `run_casper.sh`: `show_trend_banner()` 헬퍼 추가, `start_bot`·`start_daemon`이 `sleeve_engine!=intraday`면 호출·레거시는 else (e4a7bc2, 권한복구 25af01f).
+- `run_bot.py` `show_status()`: `_print_trend_status()` 추가 → 분기 (ba38900).
+- 신규 `tests/test_bot_banner_sleeve.py` (trend=인트라데이 상세 없음+trend 설명 / intraday=레거시 복원). 전략무관 누적통계 라인 유지.
+
+### 근거
+trend 전환(2026-05-30) 후 비활성 엔진 설명이 잔존 → 운용자 오인. 상세·진단 미스 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md) "시작/상태 배너가 sleeve_engine=trend인데 레거시 인트라데이 전략을 설명".
+
+---
+
 ## 2026-05-28: ICT sweep+CHoCH 게이트 default OFF (옵션 B 단계적 완화)
 
 ### 결정 한 줄

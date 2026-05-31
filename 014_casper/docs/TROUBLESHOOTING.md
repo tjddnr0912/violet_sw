@@ -524,6 +524,35 @@
 
 ---
 
+## 시작/상태 배너가 sleeve_engine=trend인데 레거시 인트라데이 전략을 설명 (배너 3곳 분산)
+
+- **증상**: 20% sleeve를 인트라데이 ORB+FVG → 저빈도 TQQQ Vol-Target(`sleeve_engine=trend`)로 교체했는데도, 봇 시작 로그와 `./run_casper.sh status` 출력에 여전히 `전략: ORB + FVG + Pullback (R:R 1:3)`, `스캔: DUAL SCAN (TQQQ+SQQQ)`, `FVG: STRICT`, `ICT: KZ(AM_MACRO,AM_LATE) + Disp + ...`, `📌 Fine-tune: ICT 매매 N건 누적`이 표시됨. 비활성 엔진을 설명하므로 운용자에게 거짓 정보.
+- **원인**: 봇의 "전략 설명" 배너가 **3개 파일에 독립적으로** 존재하고, 전부 `sleeve_engine` 분기 없이 인트라데이 텍스트를 무조건 출력했음.
+  1. `src/bot.py` `run()` — Python 로거 배너(`INFO casper |` 접두사, 봇 실행 중). "Intraday engine GATED OFF"라고 선언만 하고 그 아래 상세 블록(Scan/FVG/R:R/ICT/매매 윈도우/Fine-tune)을 무조건 print.
+  2. `run_casper.sh` `start_bot()` / `start_daemon()` — 셸이 봇 실행 *전* 출력(`[INFO]`/`[OK]` 접두사). `전략: ORB+FVG+Pullback` 등 하드코딩.
+  3. `run_bot.py` `show_status()` — `./run_casper.sh status` → `python3 run_bot.py --status` 경로(`=== Cumulative Stats ===` 블록). R:R/Strict FVG/ICT/Fine-tune 무조건 print.
+  `ICT 매매 N건 누적`은 과거 인트라데이 시절 거래가 `trades_*.json`에 남아 카운트된 것 — 데이터는 정상, 표시 분기가 빠진 게 root cause.
+- **해결**:
+  - ① `_log_intraday_startup_detail()` / `_log_trend_startup_detail()` 메서드로 추출, `run()`에서 `sleeve_engine`으로 분기 (커밋 7535979, c0aeb58).
+  - ② `run_casper.sh`에 `show_trend_banner()` 헬퍼 추가, `start_bot`·`start_daemon` 둘 다 `sleeve_engine!=intraday`면 호출·레거시는 else 브랜치 (커밋 e4a7bc2, 실행권한 복구 25af01f).
+  - ③ `run_bot.py`에 `_print_trend_status()` 추가, `show_status()`에서 분기 (커밋 ba38900).
+  - 세 배너 모두 동일 문구(슬리브/전략/노출/리밸런스/상태/비활성)로 통일. 전략 무관 라인(Cumulative Stats/Win Rate/History)은 유지. 전부 `sleeve_engine=intraday`로 되돌리면 레거시 배너 복원(가역).
+- **복구 절차**: 코드 수정 후 봇 재시작해야 반영(실행 중 프로세스는 옛 코드). (a) `./run_casper.sh stop` (b) `./run_casper.sh daemon --yes` (c) 시작 배너에 `슬리브: TREND` / `전략: QQQ>200d SMA ...` 확인, `./run_casper.sh status`도 동일 확인.
+- **관련 사고**: 2026-05-31 (sleeve_engine 교체 후 배너 3곳 잔존)
+- **재발 감지**: 전략 표시 문구를 새로 추가할 땐 3곳(`src/bot.py` run, `run_casper.sh`, `run_bot.py` show_status)을 모두 점검. `grep -rn "ORB + FVG + Pullback\|DUAL SCAN\|전략: ORB" src/ run_bot.py run_casper.sh`로 ungated 라인 전수 조사. 테스트: `tests/test_bot_banner_sleeve.py` (trend=인트라데이 상세 없음+Trend 설명 있음 / intraday=레거시 복원).
+
+### Claude 진단 미스 (2026-05-31)
+
+- **Claude 처음 가설**: 시작 로그의 "ICT 거래 누적" 설명은 `src/bot.py`의 Python 로거 배너 한 곳 문제. 그 한 파일만 `sleeve_engine` 분기 처리하면 끝이라고 보고 "수정 완료, 재시작하면 반영"이라 보고.
+- **실제 원인**: 같은 "전략 설명" 배너가 **3개 파일에 분산**(Python 로거 / 셸 스크립트 / `--status` CLI). `src/bot.py`만 고치자 사용자가 셸 배너(`[INFO] 전략: ORB + FVG + Pullback ...`)를 보고 "이 부분은 하나도 안 고쳐졌잖아"라고 지적. 그걸 고친 뒤 `status` 검증 중 3번째(run_bot.py)까지 발견.
+- **방향 전환 지점**: 사용자가 봇 터미널 출력 raw 텍스트(`[OK] KIS API 키 확인됨 / [INFO] 전략: ORB + FVG + Pullback ...`)를 붙여넣고 "이 부분은 하나도 안 고쳐졌잖아" → 로그 접두사(`[INFO]` = 셸, `INFO casper |` = Python)로 출처가 다름을 인지하고 셸 스크립트 발견. 이후 `./run_casper.sh status` 렌더 확인 중 3번째 발견.
+- **교훈 (다음에 "배너/시작 로그에 옛 설명이 남아있다" 신고를 받으면)**:
+  - 첫 의심 영역: **같은 문구가 여러 출력 경로에 중복 존재한다고 가정하고 전수 grep**. 봇 류는 보통 (a) Python 로거 시작 배너 (b) 셸 런처(`run_*.sh`) 배너 (c) `--status`/`--help` CLI 출력에 같은 설명이 따로 하드코딩됨. 한 곳 고치고 "완료" 보고 금지.
+  - 빨리 배제할 가설: "로거에서 한 번만 print하니 한 곳일 것"이다 — 셸 런처가 봇 실행 *전에* 자체 배너를 찍는 경우가 흔함. **로그 접두사로 출처 판별**: `INFO casper |`=Python 로거, `[INFO]`/`[OK]`(타임스탬프 없음)=셸 echo, `=== ... Stats ===` 박스=`run_bot.py --status`.
+  - 핵심 진단 명령: `grep -rn "ORB + FVG + Pullback\|DUAL SCAN\|전략:\|R:R:\|ICT :" src/ run_bot.py run_casper.sh` — 전략 설명 문자열의 모든 출처를 한 번에 나열한 뒤 각각 `sleeve_engine` 게이트 여부 확인.
+
+---
+
 ## Initial seed full-fail 시 영구 lock-out — `seeded_at`이 0건에도 박힘
 
 - **증상**: 시드 매수가 0건이어도 `data/portfolio_state.json::seeded_at = "<today>"`이 박혀 다음 봇 재시작에서 `needs_initial_seed=False`로 시드 진입 영구 차단.
