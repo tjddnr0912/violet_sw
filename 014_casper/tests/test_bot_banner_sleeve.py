@@ -77,8 +77,28 @@ def test_trend_mode_hides_intraday_detail():
     assert "Fine-tune" not in text
     assert "매매 윈도우" not in text
     assert "Scan:" not in text
-    # Trend status / sleeve label must be present.
-    assert ("Trend 상태" in text) or ("Sleeve: TREND" in text)
+    # Sleeve label must be present.
+    assert "Sleeve: TREND" in text
+
+
+def test_trend_mode_describes_active_strategy():
+    """Trend mode must describe the ENGINE THAT IS RUNNING, not just a header.
+
+    Regression: the banner used to lead with the legacy 'Intraday ORB+FVG
+    engine: GATED OFF' line and gave the active TQQQ Vol-Target sleeve only
+    a one-line header. The active strategy now gets a real description and
+    the legacy engine is a demoted footnote.
+    """
+    text = _run_banner("trend")
+    # Active-strategy description lines (regime gate, exposure, rebalance).
+    assert "전략:" in text
+    assert "SMA" in text          # regime gate described
+    assert "노출" in text          # vol-target exposure described
+    assert "리밸런스" in text       # low-freq rebalance described
+    # Live status line.
+    assert "상태:" in text
+    # Legacy engine demoted to a footnote (not the headline).
+    assert "비활성" in text
 
 
 def test_intraday_mode_keeps_legacy_detail():

@@ -526,32 +526,9 @@ class CasperBot:
         # DUAL_SCAN?" confusion.
         sleeve_engine = self.params.get("sleeve_engine", "trend")
         if sleeve_engine != "intraday":
-            trend_mode = (self.env.get("trend_mode", "off")
-                          or self.params.get("trend", {}).get("mode", "off"))
-            tcfg = self.params.get("trend", {})
-            logger.info(
-                f"Sleeve: TREND (TQQQ Vol-Target, mode={trend_mode}) — "
-                f"{tcfg.get('signal_symbol', 'QQQ')}>{tcfg.get('sma_period', 200)}d SMA gate, "
-                f"target_vol={tcfg.get('target_vol', 0.40)}, monthly rebalance"
-            )
-            logger.info("Intraday ORB+FVG engine: GATED OFF "
-                        "(set sleeve_engine='intraday' to re-enable the lines below)")
-            # Live low-freq sleeve status (non-raising; field names defensive).
-            try:
-                from src.core.trend import TrendState
-                ts = TrendState.load()
-                hold = getattr(ts, "current_holding", None) or "대기"
-                last = getattr(ts, "last_signal_date", None) or "없음"
-                expo = getattr(ts, "last_exposure", None)
-                expo_s = f"{expo:.0%}" if isinstance(expo, (int, float)) else "—"
-                logger.info(
-                    f"  └ Trend 상태: 보유 {hold} | 마지막 리밸런스 {last} | 노출 {expo_s}"
-                )
-            except Exception as e:
-                logger.debug(f"Trend status line skipped: {e}")
+            self._log_trend_startup_detail()
         else:
             logger.info("Sleeve: INTRADAY (ORB+FVG day-trading)")
-        if sleeve_engine == "intraday":
             self._log_intraday_startup_detail()
         logger.info("=" * 50)
         # Sync capital from KIS BEFORE the start banner so the Telegram
@@ -638,6 +615,58 @@ class CasperBot:
                 except Exception:
                     pass
 
+
+    def _log_trend_startup_detail(self):
+        """Active low-freq trend-sleeve startup detail.
+
+        Emitted in the default trend mode. Describes the ENGINE THAT IS
+        ACTUALLY RUNNING (TQQQ Vol-Target) — not the dormant legacy ORB+FVG
+        intraday engine. The intraday detail is demoted to a one-line
+        footnote so the operator log no longer leads with a strategy
+        description that doesn't apply.
+        """
+        tcfg = self.params.get("trend", {})
+        trend_mode = (self.env.get("trend_mode", "off")
+                      or tcfg.get("mode", "off"))
+        sig = tcfg.get("signal_symbol", "QQQ")
+        sma = tcfg.get("sma_period", 200)
+        asset = tcfg.get("asset", "TQQQ")
+        safe = tcfg.get("safe_asset", "BIL")
+        tvol = tcfg.get("target_vol", 0.40)
+        vlb = tcfg.get("vol_lookback", 20)
+        rebal = tcfg.get("rebalance", "monthly")
+        logger.info(f"Sleeve: TREND (TQQQ Vol-Target, mode={trend_mode})")
+        # Active-strategy description (what this engine does, every line true
+        # in trend mode).
+        logger.info(
+            f"전략: {sig}>{sma}d SMA 이면 {asset}, 아니면 {safe} "
+            f"(레짐 게이트)"
+        )
+        logger.info(
+            f"   • 노출 = min(1, target_vol {tvol:.2f} / 실현변동성({asset},{vlb}d))"
+        )
+        logger.info(
+            f"   • 리밸런스 {rebal} (저빈도) — 인트라데이 스캔 없음, "
+            f"데일리 멀티버킷 틱에서 처리"
+        )
+        # Live low-freq sleeve status (non-raising; field names defensive).
+        try:
+            from src.core.trend import TrendState
+            ts = TrendState.load()
+            hold = getattr(ts, "current_holding", None) or "대기"
+            last = getattr(ts, "last_signal_date", None) or "없음"
+            expo = getattr(ts, "last_exposure", None)
+            expo_s = f"{expo:.0%}" if isinstance(expo, (int, float)) else "—"
+            logger.info(
+                f"   └ 상태: 보유 {hold} | 마지막 리밸런스 {last} | 노출 {expo_s}"
+            )
+        except Exception as e:
+            logger.debug(f"Trend status line skipped: {e}")
+        # Legacy engine demoted to a footnote (no longer the headline).
+        logger.info(
+            "비활성: 레거시 ORB+FVG 인트라데이 엔진 "
+            "(sleeve_engine='intraday' 로 전환 시 활성)"
+        )
 
     def _log_intraday_startup_detail(self):
         """Legacy ORB+FVG intraday startup detail.
