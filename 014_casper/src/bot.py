@@ -536,8 +536,117 @@ class CasperBot:
             )
             logger.info("Intraday ORB+FVG engine: GATED OFF "
                         "(set sleeve_engine='intraday' to re-enable the lines below)")
+            # Live low-freq sleeve status (non-raising; field names defensive).
+            try:
+                from src.core.trend import TrendState
+                ts = TrendState.load()
+                hold = getattr(ts, "current_holding", None) or "대기"
+                last = getattr(ts, "last_signal_date", None) or "없음"
+                expo = getattr(ts, "last_exposure", None)
+                expo_s = f"{expo:.0%}" if isinstance(expo, (int, float)) else "—"
+                logger.info(
+                    f"  └ Trend 상태: 보유 {hold} | 마지막 리밸런스 {last} | 노출 {expo_s}"
+                )
+            except Exception as e:
+                logger.debug(f"Trend status line skipped: {e}")
         else:
             logger.info("Sleeve: INTRADAY (ORB+FVG day-trading)")
+        if sleeve_engine == "intraday":
+            self._log_intraday_startup_detail()
+        logger.info("=" * 50)
+        # Sync capital from KIS BEFORE the start banner so the Telegram
+        # message reflects the actual orderable USD instead of the
+        # __init__ default ($0.00). _check_new_day will sync again on the
+        # first tick — that second sync is a no-op when nothing changed.
+        self._sync_capital()
+        # Build history snapshot for the start banner
+        from src.data.trade_store import get_cumulative_stats, load_trades
+        try:
+            stats = get_cumulative_stats(load_trades())
+            history = {
+                "count": stats.get("total_trades", 0),
+                "win_rate": stats.get("win_rate", 0),
+                "pnl": stats.get("total_pnl", 0),
+            }
+        except Exception:
+            history = {"count": 0, "win_rate": 0, "pnl": 0}
+        ep = self.params.get("entry", {})
+        strategy_info = {
+            "dual_scan": self.params.get("mode", {}).get("dual_scan", False),
+            "qqq_primary": self.params.get("mode", {}).get("qqq_primary", False),
+            "strict_fvg": ep.get("strict_fvg", False),
+            "rr_ratio": ep.get("rr_ratio", 2.0),
+            "rr_ratio_by_killzone": ep.get("rr_ratio_by_killzone") or {},
+            # ICT phase status — telegram displays a compact summary
+            "ict_killzone": ep.get("killzone_filter_enabled", False),
+            "ict_allowed_killzones": ep.get("allowed_killzones", []),
+            "ict_displacement": ep.get("require_displacement", False),
+            "ict_sweep_choch": ep.get("require_sweep_choch", False),
+            "ict_daily_bias": ep.get("daily_bias_skip_neutral", False),
+            "ict_bear_for_sqqq": ep.get("bear_fvg_for_sqqq", False),
+            "ict_bull_for_tqqq": ep.get("bull_fvg_for_tqqq", False),
+            "ict_ote": ep.get("use_ote", False),
+            "ict_fib_level": ep.get("ote_fib_level", 0.705),
+            "ict_unicorn": ep.get("require_unicorn", False),
+            "ict_mtf_sl": ep.get("use_multi_tf_sl", False),
+            "ict_power_of_3": ep.get("use_power_of_3", False),
+            "ict_eqh_eql_pools": ep.get("use_eqh_eql_pools", False),
+            "ict_session_pools": ep.get("use_session_pools", False),
+            "ict_premkt_history": ep.get("use_premkt_history", False),
+            "ict_pdh_pdl_pool": ep.get("use_pdh_pdl_pool", False),
+            # Multi-bucket P0~P4 — pulled live from env so the banner
+            # reflects whatever's in .env at startup (no hard-coding).
+            "casper_max_position_usd": float(
+                self.env.get("casper_max_position_usd", 0) or 0
+            ),
+            "gem_mode": self.env.get("gem_mode", "off"),
+            # 20% sleeve engine: "trend" (low-freq TQQQ Vol-Target, default)
+            # or "intraday" (legacy ORB+FVG). Drives which banner rows show.
+            "sleeve_engine": self.params.get("sleeve_engine", "trend"),
+            "trend_mode": (self.env.get("trend_mode", "off")
+                           or self.params.get("trend", {}).get("mode", "off")),
+        }
+        self.notifier.notify_bot_started(
+            self.env["trading_mode"], self.capital, history, strategy_info,
+        )
+
+        # Handle SIGTERM for graceful daemon shutdown
+        def _sigterm_handler(signum, frame):
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
+        try:
+            while True:
+                try:
+                    self._tick()
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except Exception as e:
+                    logger.exception(f"Unhandled error in tick: {e}")
+                    # notify_error filters network-class errors per spec
+                    self.notifier.notify_error(f"Tick error: {e}")
+                    # Shorter sleep during position monitoring to not miss exits
+                    sleep_time = 5 if self.state == BotState.POSITION_OPEN else 30
+                    time.sleep(sleep_time)
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Bot stopped")
+            self._save_position_state()
+            self.notifier.notify_bot_stopped("Graceful shutdown")
+            if getattr(self, "collector", None) is not None:
+                try:
+                    self.collector.stop(timeout=5.0)
+                except Exception:
+                    pass
+
+
+    def _log_intraday_startup_detail(self):
+        """Legacy ORB+FVG intraday startup detail.
+
+        Only emitted when sleeve_engine == "intraday"; in the default
+        low-freq trend mode this engine is gated OFF, so these lines
+        (Scan/FVG/R:R, ICT flags, KST window, Fine-tune reminder) would
+        otherwise describe a dormant engine.
+        """
         if self.params.get("mode", {}).get("qqq_primary", False):
             scan_mode = "QQQ_PRIMARY (signal=QQQ → exec=TQQQ/SQQQ)"
         elif self.params.get("mode", {}).get("dual_scan", False):
@@ -653,91 +762,6 @@ class CasperBot:
                 )
         except Exception as e:
             logger.debug(f"Fine-tune reminder skipped: {e}")
-
-        logger.info("=" * 50)
-        # Sync capital from KIS BEFORE the start banner so the Telegram
-        # message reflects the actual orderable USD instead of the
-        # __init__ default ($0.00). _check_new_day will sync again on the
-        # first tick — that second sync is a no-op when nothing changed.
-        self._sync_capital()
-        # Build history snapshot for the start banner
-        from src.data.trade_store import get_cumulative_stats, load_trades
-        try:
-            stats = get_cumulative_stats(load_trades())
-            history = {
-                "count": stats.get("total_trades", 0),
-                "win_rate": stats.get("win_rate", 0),
-                "pnl": stats.get("total_pnl", 0),
-            }
-        except Exception:
-            history = {"count": 0, "win_rate": 0, "pnl": 0}
-        ep = self.params.get("entry", {})
-        strategy_info = {
-            "dual_scan": self.params.get("mode", {}).get("dual_scan", False),
-            "qqq_primary": self.params.get("mode", {}).get("qqq_primary", False),
-            "strict_fvg": ep.get("strict_fvg", False),
-            "rr_ratio": ep.get("rr_ratio", 2.0),
-            "rr_ratio_by_killzone": ep.get("rr_ratio_by_killzone") or {},
-            # ICT phase status — telegram displays a compact summary
-            "ict_killzone": ep.get("killzone_filter_enabled", False),
-            "ict_allowed_killzones": ep.get("allowed_killzones", []),
-            "ict_displacement": ep.get("require_displacement", False),
-            "ict_sweep_choch": ep.get("require_sweep_choch", False),
-            "ict_daily_bias": ep.get("daily_bias_skip_neutral", False),
-            "ict_bear_for_sqqq": ep.get("bear_fvg_for_sqqq", False),
-            "ict_bull_for_tqqq": ep.get("bull_fvg_for_tqqq", False),
-            "ict_ote": ep.get("use_ote", False),
-            "ict_fib_level": ep.get("ote_fib_level", 0.705),
-            "ict_unicorn": ep.get("require_unicorn", False),
-            "ict_mtf_sl": ep.get("use_multi_tf_sl", False),
-            "ict_power_of_3": ep.get("use_power_of_3", False),
-            "ict_eqh_eql_pools": ep.get("use_eqh_eql_pools", False),
-            "ict_session_pools": ep.get("use_session_pools", False),
-            "ict_premkt_history": ep.get("use_premkt_history", False),
-            "ict_pdh_pdl_pool": ep.get("use_pdh_pdl_pool", False),
-            # Multi-bucket P0~P4 — pulled live from env so the banner
-            # reflects whatever's in .env at startup (no hard-coding).
-            "casper_max_position_usd": float(
-                self.env.get("casper_max_position_usd", 0) or 0
-            ),
-            "gem_mode": self.env.get("gem_mode", "off"),
-            # 20% sleeve engine: "trend" (low-freq TQQQ Vol-Target, default)
-            # or "intraday" (legacy ORB+FVG). Drives which banner rows show.
-            "sleeve_engine": self.params.get("sleeve_engine", "trend"),
-            "trend_mode": (self.env.get("trend_mode", "off")
-                           or self.params.get("trend", {}).get("mode", "off")),
-        }
-        self.notifier.notify_bot_started(
-            self.env["trading_mode"], self.capital, history, strategy_info,
-        )
-
-        # Handle SIGTERM for graceful daemon shutdown
-        def _sigterm_handler(signum, frame):
-            raise SystemExit(0)
-        signal.signal(signal.SIGTERM, _sigterm_handler)
-
-        try:
-            while True:
-                try:
-                    self._tick()
-                except (KeyboardInterrupt, SystemExit):
-                    raise
-                except Exception as e:
-                    logger.exception(f"Unhandled error in tick: {e}")
-                    # notify_error filters network-class errors per spec
-                    self.notifier.notify_error(f"Tick error: {e}")
-                    # Shorter sleep during position monitoring to not miss exits
-                    sleep_time = 5 if self.state == BotState.POSITION_OPEN else 30
-                    time.sleep(sleep_time)
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Bot stopped")
-            self._save_position_state()
-            self.notifier.notify_bot_stopped("Graceful shutdown")
-            if getattr(self, "collector", None) is not None:
-                try:
-                    self.collector.stop(timeout=5.0)
-                except Exception:
-                    pass
 
     def _intraday_enabled(self) -> bool:
         """The ORB+FVG intraday Casper engine runs only when explicitly selected.
