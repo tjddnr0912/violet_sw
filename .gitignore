@@ -196,3 +196,55 @@ worktrees/
 
 # Obsidian vault symlink (points to iCloud Mobile Documents)
 obsidian
+
+# ===================================================================
+# Merged from sub-project .gitignore files (consolidated 2026-06-01)
+# 하위 프로젝트 .gitignore 패턴을 루트로 통합 → 동일 ignore가 repo 전역 적용.
+# 각 하위 .gitignore 는 그대로 유지(중복 무해). 전역 적용이 안전한 패턴만 승격.
+# 주의: 이미 tracked 된 파일은 gitignore 영향 없음 (신규 untracked 만 숨김).
+# ===================================================================
+
+# --- 런타임 생성 디렉토리 (006/012/014) — 전역 적용 ---
+# data/ → 008_stock_trade_us/data/ 등, logs/ → 012_stock_dashboard/logs/ 등 포함
+logs/
+data/
+output/
+
+# --- Swift / Xcode 빌드 산출물 (011/013, xcodegen 생성물) ---
+*.xcodeproj/
+.build/
+
+# --- 브라우저 / 테스트 세션 아티팩트 (006/012) ---
+chrome_profile/
+.playwright-mcp/
+
+# --- 백업 파일 (006/014) ---
+*.bak
+
+# --- 시크릿 / 인증정보 / 키 (006/014) — 전역 적용 ---
+*.pkl
+*_token.pkl
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials/
+credentials.json
+service_account*.json
+*_credentials*.json
+*_secret*.json
+auth_token*
+api_key*
+**/secrets/
+**/private/
+
+# --- 014_casper 브로커 설정 (계정/포트폴리오 스냅샷) ---
+config/accounts*.json
+config/portfolio*.json
+config/broker_*.json
+
+# --- 의도적 제외: 012의 *.png (playwright 스크린샷) 는 전역 승격하지 않음 ---
+# 다른 프로젝트의 정상 이미지까지 숨겨지므로, 012 자체 .gitignore 가 계속 처리.
