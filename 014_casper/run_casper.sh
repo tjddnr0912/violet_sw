@@ -114,6 +114,56 @@ show_status() {
     python3 run_bot.py --status
 }
 
+# Trend-sleeve startup banner (mirrors src/bot.py _log_trend_startup_detail).
+# Printed instead of the legacy intraday ORB+FVG block whenever
+# sleeve_engine != "intraday", so the operator banner describes the engine
+# that is actually running (TQQQ Vol-Target) - not the dormant one.
+show_trend_banner() {
+    TREND_INFO=$(python3 -c "
+import json, os
+c = json.load(open('config/strategy_params.json'))
+t = c.get('trend', {})
+mode = os.getenv('TREND_MODE') or t.get('mode', 'off')
+print('|'.join(str(x) for x in [
+    mode, t.get('signal_symbol', 'QQQ'), t.get('sma_period', 200),
+    t.get('asset', 'TQQQ'), t.get('safe_asset', 'BIL'),
+    t.get('target_vol', 0.40), t.get('vol_lookback', 20),
+    t.get('rebalance', 'monthly'),
+]))
+" 2>/dev/null || echo "off|QQQ|200|TQQQ|BIL|0.4|20|monthly")
+    T_MODE=$(echo "$TREND_INFO" | cut -d'|' -f1)
+    T_SIG=$(echo "$TREND_INFO" | cut -d'|' -f2)
+    T_SMA=$(echo "$TREND_INFO" | cut -d'|' -f3)
+    T_ASSET=$(echo "$TREND_INFO" | cut -d'|' -f4)
+    T_SAFE=$(echo "$TREND_INFO" | cut -d'|' -f5)
+    T_TVOL=$(echo "$TREND_INFO" | cut -d'|' -f6)
+    T_VLB=$(echo "$TREND_INFO" | cut -d'|' -f7)
+    T_REBAL=$(echo "$TREND_INFO" | cut -d'|' -f8)
+    TREND_STATUS=$(python3 -c "
+import json
+try:
+    s = json.load(open('data/trend_state.json'))
+    if not isinstance(s, dict):
+        raise ValueError
+    hold = s.get('current_holding') or '대기'
+    last = s.get('last_signal_date') or '없음'
+    expo = s.get('last_exposure')
+    expo_s = f'{expo:.0%}' if isinstance(expo, (int, float)) else '-'
+    print(f'{hold}|{last}|{expo_s}')
+except Exception:
+    print('대기|없음|-')
+" 2>/dev/null || echo "대기|없음|-")
+    TS_HOLD=$(echo "$TREND_STATUS" | cut -d'|' -f1)
+    TS_LAST=$(echo "$TREND_STATUS" | cut -d'|' -f2)
+    TS_EXPO=$(echo "$TREND_STATUS" | cut -d'|' -f3)
+    echo -e "${GREEN}[INFO]${NC} 슬리브: ${CYAN}TREND${NC} (TQQQ Vol-Target, mode=${T_MODE})"
+    echo -e "${GREEN}[INFO]${NC} 전략: ${T_SIG}>${T_SMA}d SMA 이면 ${T_ASSET}, 아니면 ${T_SAFE} (레짐 게이트)"
+    echo -e "${GREEN}[INFO]${NC}    • 노출 = min(1, target_vol ${T_TVOL} / 실현변동성(${T_ASSET},${T_VLB}d))"
+    echo -e "${GREEN}[INFO]${NC}    • 리밸런스 ${T_REBAL} (저빈도) - 인트라데이 스캔 없음, 데일리 멀티버킷 틱에서 처리"
+    echo -e "${GREEN}[INFO]${NC}    └ 상태: 보유 ${TS_HOLD} | 마지막 리밸런스 ${TS_LAST} | 노출 ${TS_EXPO}"
+    echo -e "${YELLOW}[NOTE]${NC} 비활성: 레거시 ORB+FVG 인트라데이 엔진 (sleeve_engine='intraday' 로 전환 시 활성)"
+}
+
 # 봇 시작
 start_bot() {
     print_logo
@@ -130,6 +180,10 @@ start_bot() {
         echo -e "${GREEN}[INFO]${NC} 테스트: ${YELLOW}ON (1주 고정)${NC}"
     fi
     echo -e "${GREEN}[INFO]${NC} 계좌: ${KIS_ACCOUNT_NO}"
+    SLEEVE_ENGINE=$(python3 -c "import json; print(json.load(open('config/strategy_params.json')).get('sleeve_engine','trend'))" 2>/dev/null || echo "trend")
+    if [ "$SLEEVE_ENGINE" != "intraday" ]; then
+        show_trend_banner
+    else
     CONFIG_INFO=$(python3 -c "
 import json, os
 c = json.load(open('config/strategy_params.json'))
@@ -299,6 +353,7 @@ except Exception:
             echo -e "${YELLOW}[📌 FINE-TUNE]${NC} ICT 매매 ${FT_N}건 누적 (다음 검증: ${NEXT}건)"
         fi
     fi
+    fi
     echo ""
 
     if [ "$MODE" = "live" ] && [ "$AUTO_CONFIRM" != "1" ]; then
@@ -329,6 +384,10 @@ start_daemon() {
     MODE="${TRADING_MODE:-paper}"
     echo -e "${GREEN}[INFO]${NC} 데몬 모드로 시작 (모드: ${BLUE}${MODE}${NC})"
 
+    SLEEVE_ENGINE=$(python3 -c "import json; print(json.load(open('config/strategy_params.json')).get('sleeve_engine','trend'))" 2>/dev/null || echo "trend")
+    if [ "$SLEEVE_ENGINE" != "intraday" ]; then
+        show_trend_banner
+    else
     # ICT phase summary (same logic as start_bot)
     ICT_LINE=$(python3 -c "
 import json, os
@@ -443,6 +502,7 @@ except Exception:
         fi
     fi
 
+    fi
     nohup python3 run_bot.py >> logs/casper.log 2>&1 &
     DAEMON_PID=$!
     echo "$DAEMON_PID" > "$PID_FILE"
