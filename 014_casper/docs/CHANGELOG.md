@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-02: 메인 루프 busy-loop 수정 (CPU 100% → idle)
+
+### 결정 한 줄
+`run()` 메인 루프의 `time.sleep(sleep_time)`이 `except Exception` 블록 안에만 있어, 정상 틱마다 sleep 없이 무한 질주(한 코어 ~100% 상시 점유)하던 것을 — 루프 바디를 `_loop_iteration()`로 추출하며 sleep을 매 반복 무조건 실행하도록 수정.
+
+### 변경
+- `src/bot.py`: `while True: try/except` 인라인 루프 → `while True: self._loop_iteration()`. 신규 `_loop_iteration()`은 tick 후 **항상** sleep(POSITION_OPEN 5초 / 그 외 30초), KeyboardInterrupt·SystemExit는 전파(graceful shutdown), 그 외 예외는 로그+알림 후 sleep.
+- 신규 `tests/test_main_loop_sleep.py` (4): 정상 틱 sleep / POSITION_OPEN 5초 / 예외 후 sleep+알림 / SystemExit 전파. 전체 622 passed.
+
+### 근거
+2026-06-02 라이브 점검에서 봇 PID가 CPU 생애평균 99%(CPU시간≈경과시간)로 확인됨 — trend 모드는 틱 사이 30초 sleep이라 idle이어야 정상. 재시작 후 검증: CPU시간 0.95초/2분(≈0%), 순간 0%. 상세·진단 미스 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md) "메인 루프가 CPU 한 코어를 100% 상시 점유".
+
+---
+
 ## 2026-06-01: GEM/trend 월말 리밸런스 RTH 재시도 (보류분 자동 실행)
 
 ### 결정 한 줄

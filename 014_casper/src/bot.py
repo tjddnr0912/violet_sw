@@ -611,17 +611,7 @@ class CasperBot:
 
         try:
             while True:
-                try:
-                    self._tick()
-                except (KeyboardInterrupt, SystemExit):
-                    raise
-                except Exception as e:
-                    logger.exception(f"Unhandled error in tick: {e}")
-                    # notify_error filters network-class errors per spec
-                    self.notifier.notify_error(f"Tick error: {e}")
-                    # Shorter sleep during position monitoring to not miss exits
-                    sleep_time = 5 if self.state == BotState.POSITION_OPEN else 30
-                    time.sleep(sleep_time)
+                self._loop_iteration()
         except (KeyboardInterrupt, SystemExit):
             logger.info("Bot stopped")
             self._save_position_state()
@@ -631,6 +621,27 @@ class CasperBot:
                     self.collector.stop(timeout=5.0)
                 except Exception:
                     pass
+
+    def _loop_iteration(self) -> None:
+        """One main-loop step: run a tick, then sleep before the next.
+
+        The sleep runs on EVERY iteration (not only the error path) — that is
+        what keeps the bot idle between ticks instead of busy-spinning a CPU
+        core. KeyboardInterrupt/SystemExit propagate so run() shuts down
+        gracefully; any other tick error is logged + notified, then we still
+        sleep before retrying.
+        """
+        try:
+            self._tick()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as e:
+            logger.exception(f"Unhandled error in tick: {e}")
+            # notify_error filters network-class errors per spec
+            self.notifier.notify_error(f"Tick error: {e}")
+        # Shorter sleep during position monitoring so we don't miss exits.
+        sleep_time = 5 if self.state == BotState.POSITION_OPEN else 30
+        time.sleep(sleep_time)
 
 
     def _log_trend_startup_detail(self):

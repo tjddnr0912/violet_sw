@@ -4,6 +4,27 @@
 
 ---
 
+## 메인 루프가 CPU 한 코어를 100% 상시 점유 (sleep이 예외 경로에만 있던 버그)
+
+- **증상**: 봇 프로세스(`run_bot.py`)가 CPU ~100% 상시 점유. `ps -o %cpu` 생애평균 99%+, `ps -o time`의 CPU시간 ≈ 경과시간(elapsed). 기능은 정상(거래 OK)이나 전력·발열·팬·배터리 낭비. trend 모드인데도(틱 사이 30초 sleep이라 idle이어야 함) 발생.
+- **원인**: `src/bot.py` `run()`의 `while True` 루프에서 `time.sleep(sleep_time)`이 **`except Exception` 블록 안에만** 있었음. 즉 `_tick()`이 정상 반환하는 평상시(예외 없음)엔 sleep을 건너뛰고 루프가 즉시 재진입 → busy-spin. 예외가 날 때만 30초 쉬는 역설적 구조. trend 모드에선 `_tick`이 곧장 return하므로 "아무 일도 안 하며 코어만 태우는" 상태.
+- **해결**: 루프 바디를 `_loop_iteration()`로 추출하고 sleep을 **매 반복 무조건** 실행하도록 이동(POSITION_OPEN 5초 / 그 외 30초). KeyboardInterrupt·SystemExit는 전파(graceful shutdown), 그 외 예외는 로그+알림 후 sleep. 신규 `tests/test_main_loop_sleep.py` 4건. (2026-06-02)
+- **복구 절차**: (a) 봇 재시작으로 fix 로드 (장 마감·`should_run_*` False면 거래 트리거 없이 안전). (b) 확인: `top -l 2 -pid <PID> -stats pid,cpu,time` 둘째 샘플의 순간 CPU + CPU시간이 경과시간보다 훨씬 작은지. 정상이면 CPU시간이 분당 ~0.1초 수준(기동 직후 backfill 제외).
+- **관련 사고**: 2026-06-02 (현황 분석 중 PID CPU 99% 발견 → 재시작 전후 PID 모두 동일 → 기존 버그로 확정·수정. 재시작 후 CPU시간 0.95초/2분으로 검증)
+- **재발 감지**: 봇 기동 후 몇 분 뒤 `ps -o pid,etime,time,%cpu -p <PID>`에서 CPU시간이 경과시간에 비례해 누적되면 재발. `while`/루프에 sleep 추가·이동 시 **정상 경로에도 sleep이 있는지** 반드시 확인.
+
+### Claude 진단 미스 (2026-06-02)
+
+- **Claude 처음 가설**: 99% CPU 원인을 (a) "예외 경로가 sleep을 건너뛰어 busy-loop" 또는 (b) "`BarCollector` 데몬 스레드(`collector.py`)의 폴링 루프"로 추정. `/usr/bin/sample`에 잡힌 `select.cpython…so`를 폴링 단서로 해석.
+- **실제 원인**: 정반대 — sleep이 **예외 경로에만** 있고 **정상 경로가** sleep을 건너뜀(메인 루프 `run()`). collector·`select.so`와 무관(`select`는 import만 돼 있을 뿐 hot 아님 = red herring).
+- **방향 전환 지점**: `src/bot.py` `run()` 루프(613~624)를 Read로 직접 읽은 직후. 그 전까지는 sample의 `select.so`와 스레드 가설에 무게를 뒀음.
+- **교훈 (다음에 이 봇 high-CPU 보면)**:
+  - 첫 의심 영역: **메인 루프 `run()`의 sleep 위치** — 정상 경로에 sleep이 있는지부터 확인 (`grep -n "time.sleep" src/bot.py` → `except` 안에만 있으면 범인)
+  - 빨리 배제할 가설: collector 스레드 / `select.so` (보통 import 흔적일 뿐 폴링 핫루프 아님). Python 레벨 핫스팟은 `sample`(C 프레임만 보임)보다 **코드 독해가 빠름**
+  - 핵심 진단 명령: `ps -o pid,etime,time,%cpu -p <PID>` (CPU시간 vs 경과시간 비교) → 의심되면 루프 코드 직독
+
+---
+
 ## trend·GEM 월말 리밸런스가 봇을 계속 켜두면 영영 실행 안 됨 (RTH 재시도 누락)
 
 - **증상**: `sleeve_engine=trend` + `TREND_MODE=auto`(또는 `GEM_MODE=auto`)인데 월말이 지나도 trend 버킷이 `$0`(`data/portfolio_state.json` trend `current_value_usd: 0.0`, `current_symbol: null`)이고 `data/trend_state.json`의 `last_signal_date`가 `null`. 텔레그램으로 "trend signal" 알림은 왔는데 실제 매수 주문이 안 나감. GEM도 정규 월말 로테이션이 한 번도 자동 실행 안 됨(`gem_state`가 seed일에 멈춤).
