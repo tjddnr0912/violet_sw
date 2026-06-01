@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-01: GEM/trend 월말 리밸런스 RTH 재시도 (보류분 자동 실행)
+
+### 결정 한 줄
+데일리 멀티버킷 틱이 ET 00:00(KST 13:00, 미국장 마감)에 발화해 GEM/trend auto 실행이 보류된 뒤 재시도되지 않던 갭을, `_seed_pending`을 미러한 `_gem_pending`/`_trend_pending` + `_tick` RTH 재시도로 해소.
+
+### 변경
+- `src/bot.py`: `_gem_pending`/`_trend_pending` 플래그 추가 — `__init__`에서 `should_run_*`로 arming(재시작·유예창 대응) + 장 마감 defer 시 arming, 실행으로 due 해소 시 disarm(부분 실패면 유지). `_tick`이 `is_market_open()`이면 `_retry_deferred_rebalance()` 호출. `_resolved_trend_mode()` 헬퍼로 TREND_MODE 해석 중복 제거 (e7fd22c).
+- 신규 `tests/test_deferred_rebalance.py` (10): defer arms / execute disarms / 부분실패 유지 / alert·not-due disarm / 재시도 선택성 / `_tick` 게이팅. 전체 618 passed.
+
+### 근거
+seed만 RTH 재시도(`_seed_pending`)가 있고 GEM/trend엔 없어서, 봇을 계속 켜두면 월말 리밸런스가 영영 미실행(RTH 중 재시작 시에만 우연히 실행). 2026-06-01 실거래에서 5/29 trend 리밸런스가 KST 13:00 틱에서 보류된 채 미실행됨이 드러나 수정. 상세·복구 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md) "trend·GEM 월말 리밸런스가 봇을 계속 켜두면 영영 실행 안 됨".
+
+---
+
 ## 2026-05-31: 시작/상태 배너 sleeve_engine 인식 (배너 3곳 통일)
 
 ### 결정 한 줄

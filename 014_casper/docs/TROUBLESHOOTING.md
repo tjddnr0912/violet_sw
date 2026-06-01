@@ -4,6 +4,17 @@
 
 ---
 
+## trend·GEM 월말 리밸런스가 봇을 계속 켜두면 영영 실행 안 됨 (RTH 재시도 누락)
+
+- **증상**: `sleeve_engine=trend` + `TREND_MODE=auto`(또는 `GEM_MODE=auto`)인데 월말이 지나도 trend 버킷이 `$0`(`data/portfolio_state.json` trend `current_value_usd: 0.0`, `current_symbol: null`)이고 `data/trend_state.json`의 `last_signal_date`가 `null`. 텔레그램으로 "trend signal" 알림은 왔는데 실제 매수 주문이 안 나감. GEM도 정규 월말 로테이션이 한 번도 자동 실행 안 됨(`gem_state`가 seed일에 멈춤).
+- **원인**: 일일 멀티버킷 틱(`_daily_portfolio_tick`)은 **신규일 감지(`_reset_day`)에서만** 호출되고, 신규일은 ET 00:00 = **KST 13:00에 바뀌는데 그 시각 미국장은 마감**. `_maybe_run_gem`/`_maybe_run_trend`는 auto 모드라도 `is_market_open()`이 False면 실행을 보류(defer)한다. 그런데 seed(`_seed_pending`)와 달리 **GEM/trend엔 RTH 재시도 경로가 없었고**, 틱 끝의 `save_evaluation`이 `last_eval_date=today`로 그날을 잠가(`_portfolio_tick_done_for` 가드) 장이 열려도 틱이 다시 안 돈다. 결과적으로 봇이 계속 켜져 있으면 월말 주문이 영영 안 나가고, RTH(KST 22:30~05:00) 중 봇이 새로 시작될 때만 우연히 실행됨(초기 seed가 5/15에 성공한 이유 — seed는 `_seed_pending` RTH 재시도가 있었음).
+- **해결**: `_gem_pending`/`_trend_pending` 플래그 추가(`_seed_pending` 미러). ① `__init__`에서 `should_run_*`로 arming(재시작·유예창 대응), ② 장 마감 defer 시 arming. `_tick`이 `is_market_open()` True가 되는 즉시 `_retry_deferred_rebalance()`로 보류분 실행. `gem_state`/`trend_state`로 멱등, 부분 실패 시 플래그 유지 → 다음 틱 재시도. (commit e7fd22c, 2026-06-01)
+- **복구 절차**: (a) fix 이전 상태라면 — 봇을 정지하고 **RTH(KST 22:30~05:00) 중에** 새로 시작하면, 그날 KST 13:00 틱이 안 돈 상태라 `_reset_day`가 장중에 틱을 돌려 즉시 실행됨. (b) fix 적용 후엔 재시작만 하면 `__init__` arming + `_tick` 재시도가 자동 처리 (유예창=월말 마지막 거래일+3거래일 내, 그 외엔 다음 월말). (c) 확인: `cat data/trend_state.json` → `last_signal_date`가 해당 월말 날짜, `current_holding`/`last_exposure` 채워짐.
+- **관련 사고**: 2026-06-01 (5/29 월말 trend 리밸런스가 KST 13:00 틱에서 보류된 채 미실행 → 사용자가 "장 열렸는데 trend 매매 안 한다" 지적 → RTH 재시도 갭 발견·수정. trend 첫 실행 결과: exposure 0.8331 → TQQQ 83.3% + BIL 16.7% vol-target 분할)
+- **재발 감지**: 월말 다음 거래일 RTH에 `trend_state.json`/`gem_state.json`의 `last_signal_date`가 해당 월말로 갱신됐는지 점검. 안 됐는데 trend 버킷이 $0면 재발. **신규 sleeve를 auto 스케줄러로 붙일 때 반드시 RTH 재시도 경로(`_*_pending` + `_tick` 재시도)를 함께 달 것** — daily 틱은 항상 미국장 마감 시각(KST 13:00)에 발화하므로 "다음 틱에 재시도"는 RTH 재진입이 없으면 거짓이다. (참고: `_retry_deferred_rebalance`는 `save_evaluation`을 다시 부르지 않아 `portfolio_state.json` 버킷 값은 다음 데일리 틱까지 stale — 실보유는 broker 기준, cosmetic)
+
+---
+
 ## Casper 프로세스 찾기 — 진입점이 `python -m src.bot`이 아니라 `run_bot.py`
 
 - **증상**: `ps aux | grep "python -m src.bot"` 또는 `pgrep -f "src.bot"` 같은 패턴 검색이 빈 결과를 반환 → "봇이 죽었다"라고 잘못 판단.
