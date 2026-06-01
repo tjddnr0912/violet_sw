@@ -48,6 +48,8 @@
           → 컴파일 순서 바뀌면 결과가 달라지는 고전 버그
 ```
 
+**vitamin 기저값 (no-timescale base — 잠금).** 어떤 모듈도 `` `timescale ``/`timeunit`을 선언하지 않고 `--timescale` 플래그도 없으면, 전역 시간 단위/정밀도의 기저값을 **`1ns/1ns`** 로 적용하도록 잠그고(동작 규칙 확정), 구현은 **`W-PP-TIMESCALE-DEFAULT`**(W1017, §15 부록 A 인벤토리 — 구현 시 본문+enum 승격) 경고를 발화한다. 이 기저값이 §14의 `global_time_precision = min(소비단위 유효 precision)` 계산에서 **공집합 min()을 정의**한다(빈 집합 → 기저 정밀도 `1ns`). 기저값은 OS/컴파일 순서와 무관한 상수이므로 "3-OS 동일 결과"·velab 합성 해시(RULE T)의 결정성을 깨지 않는다. 일부 모듈만 `` `timescale ``을 가진 **부분 지정**은 별개 조건으로, 기본 정책 lenient(`W-PARSE-TIMESCALE-PARTIAL`)·strict 선택(`E-PP-TIMESCALE-PARTIAL`)으로 처리한다(§15, `--timescale-policy`).
+
 SystemVerilog는 이를 해결하는 **모듈 내 선언** 방식을 IEEE 1800에 추가했다:
 
 ```systemverilog

@@ -25,10 +25,18 @@ VHDL(IEEE 1076)은 다른 언어이므로 별도 프론트엔드(lexer/parser/el
 
 **Phase 1 마일스톤:**
 
-1. 단일 모듈 + `always` 블록 / clock 토글 + `$display` 정상 동작
+1. 단일 모듈 + `always`/`always_ff`/`always_comb`/`always_latch` 블록 / clock 토글 + `$display` 정상 동작
 2. 다계층 모듈 + parameter resolution
 3. `$dumpvars` 호출로 VCD 파일 생성
 4. Icarus Verilog와 차등검증 PASS (신호값·천이 시각 일치)
+
+**Phase 1 인프라 트랙 (코어와 병행 — Phase 1 완료 게이트):**
+
+- **단계 산출물 직렬화** — `vita-artifact`(+`vita-artifact-derive` proc-macro): `work/` 라이브러리 + `.velab` 스냅샷 + 구조적 schema 해시(D2). (→ §14)
+- **filelist 전개기** — `-f`/`-F` 재귀 중첩, `+incdir+`/`+define+` 집계. (→ §14 §3.1)
+- **진단/로깅** — `diag`(단일 진단 렌더) + `vita-log`(transcript·로그파일 tee·severity·exit-code). (→ §13)
+- **에러 코드 카탈로그** — 안정 `MsgCode` + §15 레퍼런스 + CI 1:1 동기 게이트.
+- **건전성 게이트 (Phase 1 PASS 조건):** RULE V(stale 스냅샷 `vrun` 거부), RULE S(디렉티브 carryover 해시), API(typed PreprocInputs/ElabInputs)가 동작·테스트돼야 한다.
 
 ---
 
@@ -36,7 +44,9 @@ VHDL(IEEE 1076)은 다른 언어이므로 별도 프론트엔드(lexer/parser/el
 
 **범위:** Phase 1 RTL 서브셋에서 SV 고유 구문으로 확장.
 
-**주요 언어 기능:** `interface` / `modport`, `package`, `struct` / `enum` / `typedef`, `always_comb` / `always_ff` / `always_latch`, `foreach`, `unique` / `priority`
+**주요 언어 기능:** `interface` / `modport`, `package`, `struct` / `enum` / `typedef`, `foreach`, `unique` / `priority` (구조적 SV)
+
+> `always_comb`/`always_ff`/`always_latch`는 합성가능 RTL이므로 **Phase 1로 이동**한다. 1차 근거는 06 엔진 스펙의 Phase-1 예제·auto-sensitivity 동작이며, `W-ELAB-ALWCOMBORDER`(W3046, §15 부록 A의 MVP-SIM 인벤토리 코드)도 이를 전제한다. Phase 2에는 구조적 SV만 남는다.
 
 **system tasks 확장 셋 (Phase 2):**
 

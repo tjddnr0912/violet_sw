@@ -43,21 +43,26 @@ spec §4에서 합의된 근거 다섯 가지:
 - **특징:** `#[derive(Logos)]` 매크로로 토큰 정의를 작성하면 단일 DFA로 컴파일해 수작업 렉서보다 빠른 처리량을 제공한다. 다운로드 5,389만 회 이상으로 Rust 컴파일러 툴 분야의 사실상 표준 렉서 크레이트다.
 - **vitamin 적용:** `hdl-lexer` 크레이트에서 언어별(SV/Verilog/VHDL) 토큰 집합을 `logos` 기반으로 구현한다.
 
-### 파서: `chumsky` (권장) vs. `lalrpop` vs. 수작업 RD
+### 파서: `winnow` 부트스트랩 → `수작업 RD` 이관 (결정)
 
-| 후보 | 방식 | 오류 복구 | SV 대형 문법 적합성 |
-|---|---|---|---|
-| **chumsky** (0.13.0) | 파서 콤비네이터 | 내장 — 여러 오류 동시 보고 | 콤비네이터로 규칙을 점진 조합; 재귀·Pratt 지원; API 진화 중 |
-| lalrpop (0.23.1) | LR(1) 생성기 | 없음 — 첫 오류에서 중단 | 대형 `.lalrpop` 파일의 빌드 타임 코드 생성 비용이 큼; LR 충돌 가능 |
-| 수작업 RD | recursive descent | 전적으로 직접 구현 | 최고 유연성; 유지보수 비용 높음 |
+> **결정(2026-06-01):** **`winnow` 1.0.3으로 부트스트랩**한 뒤, hot·복구-임계 규칙을 점진적으로
+> **수작업 재귀하강(hand-RD)**으로 이관한다. 진단 렌더러는 `miette`(아래 절). 이 결정은 02의 과거
+> "chumsky 권장"을 폐기한다.
 
-**권장: `chumsky`.** SV 문법은 Annex A 기준 약 1,800개 이상의 규칙을 갖는 대형 BNF다. lalrpop은 오류 복구 부재와 대형 문법에서의 빌드 타임 코드 생성 비용이 단점이다. chumsky는 오류 복구를 1급으로 지원하고, 재귀적 계층 구조·Pratt 표현식 파서를 콤비네이터로 표현할 수 있어 진단 품질 목표에 부합한다. v0.13은 API 안정화 진행 중이므로 고정 버전 핀닝과 API 변경 추적을 병행한다.
+| 후보 | 방식 | 오류 복구 | SV 대형 문법 적합성 | 판정 |
+|---|---|---|---|---|
+| ~~chumsky~~ (0.13.0) | 파서 콤비네이터 | 내장 — 여러 오류 동시 보고 | API 진화 중 | **배제** — GitHub **archived 2026-04-02**, 1.0 미출시(1.0.0-alpha.8에서 동결). 최장수·최대 컴포넌트를 upstream-없는 크레이트에 하드의존 불가 |
+| **winnow** (1.0.3, 2026-05-14) | 파서 콤비네이터 | `unstable-recover` 피처 게이트 | 1.0 안정 API(nom 후속); 규칙 점진 조합 | **부트스트랩 채택** (복구가 unstable 피처임을 인지) |
+| **수작업 RD + Pratt** | recursive descent | per-rule 패닉모드·복구힌트 1급 (직접 구현) | 최고 유연성; SV context-sensitivity 직접 처리; 유지보수 비용 높음 | **점진 이관 목표** (slang·Verible·veryl 선례) |
+| lalrpop (0.23.1) | LR(1) 생성기 | coarse — `!`-토큰 메커니즘(hand-RD보다 약함) | SV context-sensitivity 처리 불가; 1,800규칙 codegen bloat | 부적합 |
 
-### 진단: `ariadne` / `codespan-reporting`
+**근거.** SV 문법은 Annex A 기준 약 1,800개 이상의 규칙을 갖는 대형 BNF이며, type-vs-identifier·net-vs-variable 같은 **context-sensitive 모호성**에 lexer/symbol-table 피드백이 필요해 LR/PEG 생성기로 깨끗이 잡히지 않는다 — **모든 프로덕션 SV 프론트엔드(slang, Verible)가 수작업 재귀하강을 채택**한 이유다. 따라서 최종 지향은 hand-RD다. 다만 1,800규칙 전부를 처음부터 손으로 쓰는 부담을 줄이기 위해, 안정 1.0 콤비네이터인 **winnow로 골격을 부트스트랩**하고 복구 품질이 중요한 규칙(`;`/`end`/`endmodule` 동기화셋 기반 패닉모드)부터 hand-RD로 옮긴다. **chumsky 부활은 금지**(archived). winnow의 오류 복구는 `unstable-recover` 피처 게이트이므로(파싱 API만 1.0 안정), 복구-임계 경로를 hand-RD로 이관하는 것이 이 게이트 의존을 제거하는 경로이기도 하다. 13(진단)의 `--error-limit`(기본 50)·09 corpus의 "한 런에서 다수 MsgCode assert"는 파서가 첫 오류에서 중단하지 않고 복구·계속해야만 성립한다.
 
-- **ariadne** 0.6.0 (2025-10-28, MIT): 인라인·멀티라인 레이블, 팬시 터미널 출력. chumsky와 같은 저자(zesterer)라 두 크레이트의 오류 타입 연동이 자연스럽다. MSRV 1.85.
-- **codespan-reporting** 0.13.1 (2025-10-22, Apache-2.0): 성숙도 높고(1억+ 다운로드) note 복수 첨부 가능.
-- **vitamin 방침:** `diag` 크레이트 설계 단계에서 최종 선택. chumsky를 파서로 쓸 경우 ariadne 연동이 더 매끄럽다.
+### 진단: `miette` (결정) — `codespan-reporting` fallback
+
+- **miette** 7.6.0 (2025-04-27, Apache-2.0) — **채택.** `code()`/`url()`/`related()`를 네이티브로 제공해 143-코드 에러 카탈로그(15: 본문 36 + 부록 A 107)·multi-span Frame(13)에 1:1 매핑된다. 13의 진단 데이터 모델이 이미 miette 어휘(`code()`/`url()`/`related()`)로 설계돼 있다. **MSRV 1.82**(manifest 실측 `rust-version = "1.82.0"`; crates.io에 노출된 1.70은 stale). leaf `diag` 크레이트는 IO/터미널 순수성(04: "IO 없음 → leaf")을 위해 **`default-features = false` 필수** — 기본 `fancy` 피처가 `owo-colors`/`supports-color`/`terminal_size`를 끌어들이기 때문이다. 터미널 렌더링(`fancy`)은 `vita-log` 크레이트에서만 활성화한다.
+- **codespan-reporting** 0.13.1 (2025-10-22, Apache-2.0) — **fallback.** 성숙도 높고(1억+ 다운로드, MSRV 1.67) multi-span label+note 지원. miette의 dep-tree/바이너리 footprint가 installed-binary 크기 기준으로 블로킹이면 `code()`/`url()`/`explain` glue만 재구현해 스왑한다. `MsgCode`/`Diagnostic`/`Frame` 모델은 owner 소유 leaf `diag`에 있어 렌더 백엔드는 교체 가능하다.
+- **ariadne** 0.6.0 (2025-10-28, MIT) — **미채택.** 유일 강점이던 "chumsky 동저자 시너지"가 chumsky archived로 소멸했고, `related()` 부재로 multi-span 카탈로그에 덜 맞는다. (참고: 02 이전 판의 "ariadne MSRV 1.85"는 manifest에 `rust-version` 필드 미선언 — "검증됨" 표기를 철회한다.)
 
 ### SystemVerilog 파싱 선례: `sv-parser`
 
@@ -82,9 +87,9 @@ spec §4에서 합의된 근거 다섯 가지:
 
 ## MSRV / Toolchain
 
-- **계획 MSRV:** Rust **1.80** (stable, 2024-07-25 릴리스). `std::sync::LazyLock` 안정화를 포함하는 세대다 (참고: `OnceLock`은 1.70, `let-else`는 1.65에 각각 안정화됐다). 실제 기능 사용 패턴에 따라 상향 조정할 수 있으며, `rust-toolchain.toml`에 명시한다.
+- **계획 MSRV:** Rust **1.82** (채택한 miette 7.6.0의 manifest MSRV가 `1.82.0`이라 이 상한으로 결정). Rust 1.80이 안정화한 `std::sync::LazyLock`을 포함한다(참고: `OnceLock`은 1.70, `let-else`는 1.65). 실제 기능 사용 패턴에 따라 추가 상향 가능하며, `rust-toolchain.toml`에 명시한다.
 - **`rust-toolchain.toml` 사용:** 저장소 루트에 고정해 `cargo build`/`cargo test` 실행 시 자동으로 toolchain을 맞춘다. CI 및 로컬 개발 환경이 동일한 Rust 버전을 사용하도록 보장한다.
-- **ariadne MSRV 참고:** ariadne v0.6.0의 MSRV가 1.85이므로, ariadne를 채택할 경우 MSRV를 1.85 이상으로 올려야 한다. 최종 MSRV는 채택 크레이트 MSRV 집합의 상한으로 결정한다.
+- **MSRV 상한 근거:** 채택 크레이트 MSRV 집합의 상한 = miette 7.6.0(1.82). winnow 1.0.3·logos 0.16.1(1.80)·codespan 0.13.1(1.67)은 모두 1.82 이하라 제약이 되지 않는다. 렌더 백엔드를 codespan으로 스왑하면 1.67까지 내려갈 수 있다. (이전 판의 "ariadne 1.85"는 manifest 미선언이며 ariadne 미채택으로 무관.)
 
 ---
 
@@ -92,9 +97,9 @@ spec §4에서 합의된 근거 다섯 가지:
 
 - 본 spec §4 — `/docs/superpowers/specs/2026-05-26-vitamin-rtl-simulator-design.md`
 - research-log: `research-log/rust-hdl-ecosystem-2026-05-28.md`
-- crates.io API: https://crates.io/api/v1/crates/{sv-parser,logos,chumsky,lalrpop,ariadne,codespan-reporting,vcd,veryl}
+- crates.io API: https://crates.io/api/v1/crates/{sv-parser,logos,winnow,miette,codespan-reporting,lalrpop,vcd,veryl} (2026-06-01 재검증)
 - GitHub: https://github.com/dalance/sv-parser, https://github.com/maciejhirsz/logos
-- Codeberg: https://codeberg.org/zesterer/chumsky
-- GitHub: https://github.com/lalrpop/lalrpop, https://github.com/zesterer/ariadne
-- GitHub: https://github.com/brendanzab/codespan, https://github.com/kevinmehall/rust-vcd
+- GitHub: https://github.com/winnow-rs/winnow, https://github.com/zkat/miette
+- GitHub: https://github.com/brendanzab/codespan, https://github.com/kevinmehall/rust-vcd, https://github.com/lalrpop/lalrpop
+- 배제 참고: chumsky(https://github.com/zesterer/chumsky — GitHub archived 2026-04-02), ariadne(https://github.com/zesterer/ariadne — 미채택)
 - GitHub: https://github.com/veryl-lang/veryl, https://gitlab.com/spade-lang/spade

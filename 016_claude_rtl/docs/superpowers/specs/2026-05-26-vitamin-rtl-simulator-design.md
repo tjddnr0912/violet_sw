@@ -64,6 +64,8 @@ Ubuntu · RHEL · macOS에서 **소스 빌드로 동작**하는 RTL 시뮬레이
 
 **생태계 후보(조사·검증 대상, §11 방법론으로 확정):** lexer `logos`, parser `chumsky`/`lalrpop`/수작업 recursive-descent, 진단 `ariadne`/`codespan-reporting`, VCD 참고 `vcd` crate, SystemVerilog 파싱 선례 `sv-parser`.
 
+> **확정 결과(2026-06-01, → `preview/02-implementation-language.md`):** parser = **`winnow` 부트스트랩 → 수작업 RD 이관**(chumsky는 GitHub archived 2026-04-02로 배제), 진단 = **`miette`**(`codespan-reporting` fallback; ariadne 미채택). MSRV = **1.82**(miette). 위 후보 목록은 조사 시점 스냅샷이다.
+
 ## 5. 시스템 아키텍처
 
 ### 5.1 파이프라인
@@ -82,6 +84,8 @@ source files
 언어 의존부는 **parse까지**, 그 이후 elaborate→IR→engine→VCD는 **언어 중립**으로 설계한다. 그래야 VHDL 프론트엔드를 공유 IR 위에 얹을 수 있다(§9).
 
 ### 5.2 Cargo 워크스페이스 / 크레이트
+
+> **STALE(2026-06-01).** 아래 11-크레이트 표는 초안 스냅샷이다. 권위 목록은 **`preview/04-architecture.md`(14 크레이트)** 와 `preview/03-build-and-portability.md`의 `members` 배열이다 — 이후 `hdl-ast`/`sim-ir`이 `vita-artifact-derive`에 의존하도록 바뀌었고, `vita-artifact`·`vita-artifact-derive`·`vita-log` 3개가 추가됐다. 단계 산출물·해시 결합·진단/로깅 상세는 `preview/14`·`preview/13` 참조.
 
 각 크레이트는 단일 책임 + 명확한 인터페이스로 분리해 독립 테스트 가능하게 둔다.
 

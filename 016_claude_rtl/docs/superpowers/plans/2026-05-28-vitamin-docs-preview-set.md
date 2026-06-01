@@ -230,6 +230,8 @@ Rust 채택.
 (spec §4의 a~e 5개)
 
 ## Rust HDL/EDA 생태계 (research 반영)
+<!-- SUPERSEDED 2026-06-01: 아래는 작성 시점 템플릿. 확정 결정은 preview/02 참조 —
+     parser = winnow 부트스트랩→hand-RD(chumsky archived 배제), 진단 = miette(ariadne 미채택), MSRV = 1.82 -->
 - lexer: `logos` (버전: research에서 가져옴)
 - parser 후보: `chumsky` vs `lalrpop` vs 수작업 RD — 본 프로젝트 권장 (선정 근거 1~2줄)
 - 진단: `ariadne` · `codespan-reporting`

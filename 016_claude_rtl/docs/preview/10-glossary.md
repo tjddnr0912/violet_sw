@@ -128,7 +128,7 @@ RTL의 `$dumpfile`/`$dumpvars` 호출 시에만 활성화되며,
 자동 전체 덤프는 지원하지 않는다.
 
 **diag** — 진단 *하나*를 렌더링하는 크레이트(파일:줄:열 + 시각적 언더라인, Rust 컴파일러
-스타일). `Severity`/`MsgCode`/`Frame`/`Diagnostic` 데이터 모델과 `LogSink` trait도 보유하되
+스타일). `Severity`/`MsgCode`/`Frame`/`Diagnostic`/`LogEvent` 데이터 모델과 `LogSink` trait도 보유하되
 IO·tracing 의존이 없어 leaf로 남는다. 운영 sink는 [[vita-log]]가 담당.
 
 **vita-log** — 운영 로깅/transcript 서브시스템 크레이트. 단일 `LogEvent` 스트림을 터미널 +

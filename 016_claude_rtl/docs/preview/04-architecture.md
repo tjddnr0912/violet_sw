@@ -93,7 +93,7 @@ preprocess → lex → parse → elaborate → sim → VCD 전 과정을 한 명
 | `sim-engine` | 이벤트 구동 커널, 스케줄러, 시간 모델 | sim-ir |
 | `hdl-builtins` | 표준 `$`-system tasks/functions 라이브러리 — 디스패치 테이블 + 카테고리별 핸들러 | sim-ir, sim-engine, vcd-writer |
 | `vcd-writer` | IEEE 1364 VCD 직렬화 (dump 태스크가 호출될 때만 활성) | sim-ir |
-| `diag` | 진단 *렌더링* (file:line:col + caret) + `Severity`/`MsgCode`/`Frame`/`Diagnostic`/`LogSink` 데이터 모델 (IO 없음 → leaf) | — |
+| `diag` | 진단 *렌더링* (file:line:col + caret) + `Severity`/`MsgCode`/`Frame`/`Diagnostic`/`LogSink`/`LogEvent` 데이터 모델 (IO 없음 → leaf) | — |
 | `vita-artifact` | 단계 산출물 (역)직렬화 + 헤더(magic/format_version/schema_hash/빌드지문) + staleness 검사(D3 트리플 대조) + `--dump` RON 뷰 | hdl-ast, sim-ir, hdl-preprocess, diag, vita-artifact-derive |
 | `vita-artifact-derive` | `#[derive(SchemaHash)]` proc-macro — 직렬화 타입 형상의 구조적 해시를 컴파일 타임 산출 (leaf, syn/quote) | — |
 | `vita-log` | 운영 로깅 — transcript·로그파일 tee·severity 라우팅·메시지 코드·exit-code·`$error`/`$fatal` 연동; diag 위에 적층 | diag, vita-artifact, sim-ir, tracing |
@@ -117,7 +117,7 @@ preprocess → lex → parse → elaborate → sim → VCD 전 과정을 한 명
 
 **`vcd-writer`** 는 직렬화 책임만 갖는다. VCD 헤더·$scope 계층·$var 선언·값 변화 기록이 모두 이 크레이트다. sim-engine이나 hdl-builtins의 실행 로직과 섞이지 않는다.
 
-**`diag`** 는 소스 위치 정보와 오류/경고 메시지를 일관된 형식으로 생성하는 공유 라이브러리다. `ariadne`/`codespan-reporting`이 후보 구현이다. 어느 단계에서든 같은 방식으로 진단을 보고할 수 있게 한다.
+**`diag`** 는 소스 위치 정보와 오류/경고 메시지를 일관된 형식으로 생성하는 공유 라이브러리다. 렌더러는 `miette`(`default-features = false`로 leaf 순수성 유지; `codespan-reporting`을 fallback로 교체 가능)다. 어느 단계에서든 같은 방식으로 진단을 보고할 수 있게 한다. (크레이트 결정 근거는 [02-implementation-language.md](02-implementation-language.md))
 
 **`vita-artifact`** 는 단계 간 디스크 산출물의 (역)직렬화·헤더·버전·staleness를 한곳에 격리하는 크레이트다(D1). work 라이브러리 매니페스트와 `<unit>.vu`/`<top>.velab` 헤더 프레이밍, 전처리-소스 해시 대조, `--dump` RON 뷰가 모두 여기에 있다. 직렬화는 이 크레이트의 선택적 경계로만 일어나므로 원샷 `vita` 경로는 이 코드를 호출하지 않는다. `hdl-ast`·`sim-ir`의 루트 타입을 알아야 그 형상 해시를 stamp할 수 있어 둘에 의존하고, 라이브 재해시를 위해 `hdl-preprocess`에, 디코드/staleness 오류 보고를 위해 `diag`에 의존한다. 상세는 [14-staged-artifacts.md](14-staged-artifacts.md).
 

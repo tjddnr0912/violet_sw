@@ -19,6 +19,11 @@
   구체 목록과 Phase별 커버리지는 `hdl-reference/system-tasks/00-index.md` 참조.
 - **3개 HDL 지원** (로드맵 단계별): SystemVerilog(IEEE 1800) → 그 부분집합인 Verilog(IEEE 1364) → VHDL(IEEE 1076). 단계별 상세는 [로드맵 섹션](#phase-1-mvp-정의) 참조.
 - **3-OS 소스 빌드** (cargo) + CI 매트릭스.
+- **멀티 라이브러리** — 단위를 `library:unit` 논리 키로 주소화하고 논리명→디렉터리 매핑(`cds.lib`/`synopsys_sim.setup` 계열)을 지원 (D3, §14).
+- **단계 산출물 온디스크 포맷 + staleness 재검증** — `vcmp`의 `work/` 라이브러리 + `velab`의 `.velab` 스냅샷을 해시 결합으로 묶어, 상류가 바뀐 stale 산출물에 대한 `vrun`을 거부한다 (RULE V, §14).
+- **filelist** — `-f`/`-F` 재귀 중첩 + `+incdir+`/`+define+` 집계 (§14 §3.1).
+- **진단/로깅 서브시스템** — transcript + 로그파일 tee, severity 라우팅, 소스 위치 추적 (§13).
+- **에러 코드 카탈로그** — 안정 `MsgCode`(mnemonic + `VITA-####`) + `vita explain`, CI 1:1 동기 (§15).
 
 ## 비목표 (out-of-scope, 현 단계)
 
@@ -34,11 +39,13 @@
 
 아래 항목을 모두 통과하는 것이 Phase 1 완료 조건이다.
 
-- 대표 RTL 테스트벤치를 **Icarus Verilog(`iverilog` + `vvp`) · Verilator와 차등검증**했을 때 신호값과 천이 시각이 일치한다.
+- 대표 RTL 테스트벤치를 **Icarus Verilog(`iverilog` + `vvp`)를 golden으로 차등검증**했을 때 신호값과 천이 시각이 일치한다. Verilator는 **보정된(calibrated) 부분집합**에서 비교한다 — 2-state·X-init·조합 `$display` 등 비-IEEE 차이는 `known_quirks`로 carve-out (§9). 도구 충돌 시 IEEE LRM이 최종 권위.
 - 생성 VCD가 표준 뷰어(GTKWave 등)에서 오류 없이 로드되고, **golden VCD와 정규화 diff가 일치**한다. (식별자 코드 차이를 흡수하는 정규화기 포함)
 - 동일 소스가 **Ubuntu · RHEL · macOS에서 동일 결과**로 빌드·실행된다.
 - `timescale`이 다른 모듈이 혼재해도 전역 시간축이 어긋나지 않는다 — 64-bit 정수 시간 + precision 환산 정밀도 테스트 통과 (§6.3).
 - **표준 system tasks/functions 컴플라이언스 코퍼스** (범주별 최소 1개 케이스) 전수 통과.
+- **staleness 재검증이 동작한다** — 상류 소스가 바뀐 stale `.velab` 스냅샷에 대한 `vrun`은 거부된다(`E-ART-STALE-UPSTREAM`, exit class 2 — RULE V). 이 동작을 최소 1회 테스트한다(mtime이 아닌 해시 기반).
+- **진단 코퍼스는 메시지 텍스트가 아니라 `MsgCode`로 assert**하며(`expect_codes`, §9), 모든 코드가 §15 카탈로그와 1:1 동기(CI 게이트)다.
 
 ## 타깃 환경
 
@@ -61,6 +68,20 @@ Phase 1의 범위는 **SystemVerilog 합성가능 RTL 서브셋** — Verilog-20
 **파이프라인:** preprocess → lex → parse → elaborate → event-driven sim → VCD
 
 **백엔드:** 인터프리터 방식 (IR-walking). 정확성 · VCD · timescale 정밀도를 먼저 확보한 뒤, 후속 단계에서 컴파일드 백엔드를 `sim-ir` 경계 너머에 추가한다.
+
+**Phase 1 구문 동결 (IN-MVP / deferred):** Phase 1 경계는 합성가능성 범례가 아니라 아래 표가 단일 기준으로 정의한다.
+
+| 분류 | IN-MVP (Phase 1) | deferred (Phase 2+) |
+|---|---|---|
+| 설계 단위 | `module`/`endmodule`, 포트, `parameter`/`localparam`, `generate`/`genvar` | `interface`/`modport`, `package`, `program`, `class` |
+| 자료형 | `wire`/`reg`/`logic`/`integer`, 벡터·packed array | `struct`/`union`/`enum`/`typedef`, `string`, 동적/연관 배열 |
+| 절차 블록 | `initial`, `always`, `always_ff`/`always_comb`/`always_latch` | `final`, fork-join 고급 |
+| 문장 | blocking `=` / nonblocking `<=`, `if`/`case`/`casez`/`casex`, `for`/`while`/`repeat`/`forever`, `begin`/`end` | `foreach`, `unique`/`priority`, `do-while` |
+| 타이밍 | `#delay`, `@(event)`, `wait`(테스트벤치) | clocking block, intra-assignment delay 고급 |
+| 연속 대입 | `assign`(+지연) | — |
+| system tasks | 아래 핵심 셋 | 파일 I/O·메모리 로드·변환·random·assertion 샘플링 등 (Phase 2) |
+
+> **합성가능성 마커는 구현 경계가 아니다.** `hdl-reference/`의 합성가능성 범례는 RTL→게이트 *합성* 가능 여부를 표기할 뿐이다. `initial`·`#delay`·`$display`·`$finish`는 합성 불가로 표기되지만 **시뮬레이터에 필수**이므로 Phase 1 IN이다. MVP의 IN/OUT 경계는 위 동결 표가 단일 기준이다.
 
 **system tasks 핵심 셋 (Phase 1에서 반드시 지원):**
 

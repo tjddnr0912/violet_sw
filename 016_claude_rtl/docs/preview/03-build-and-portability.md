@@ -46,20 +46,23 @@ members = [
     "crates/vita-artifact-derive", # #[derive(SchemaHash)] proc-macro (구조적 형상 해시)
     "crates/vita-log",             # 운영 로깅/transcript/severity 라우팅/로그 sink/exit-code
     "crates/cli",             # 드라이버 바이너리: vita(원샷) + vcmp/velab/vrun(단계별)
+    # ── dev/test 전용 (publish=false, 배포 multicall·설치 대상 아님 — 위 14개 프로덕션 그래프와 별개) ──
+    "crates/vcd-diff",        # 정규화 VCD diff (차등검증 — 09)
+    "crates/corpus-runner",   # 컴플라이언스 코퍼스 러너 (09)
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.80"     # 계획 MSRV — 채택 크레이트 MSRV에 따라 상향 조정
+rust-version = "1.82"     # MSRV — 채택 miette 7.6.0 manifest(1.82.0)가 상한
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/your-org/vitamin"  # placeholder
 
 [workspace.dependencies]
 # 공통 의존성을 여기서 버전 고정 (각 크레이트는 workspace = true 로 참조)
-logos = { version = "0.16", default-features = false }   # semver range: >=0.16.0, <0.17.0 (패치 업데이트 허용)
-chumsky = { version = "0.13", default-features = false }
-ariadne = "0.6"
+logos  = { version = "0.16", default-features = false }   # semver range: >=0.16.0, <0.17.0 (패치 업데이트 허용)
+winnow = "1"                                              # 파서 부트스트랩(1.0.3+); hot·복구-임계 규칙은 hand-RD로 이관. 복구는 unstable-recover 피처
+# (chumsky/ariadne 제거 — chumsky GitHub archived 2026-04-02, ariadne 미채택. 근거 02 참조)
 # ── 단계별 산출물 / CLI (모두 순수 Rust — C 의존 없음) ────────────────────
 serde   = { version = "1", features = ["derive"] }       # 직렬화 경계 trait (additive derive)
 postcard = { version = "1", features = ["use-std"] }     # 단일 바이너리 인코더 (bincode 폴백 없음)
@@ -74,10 +77,12 @@ proc-macro2 = "1"
 # ── 운영 로깅 (vita-log; 모두 순수 Rust, C 의존 없음) ──────────────────────
 tracing            = "0.1"                              # 구조화 이벤트 스트림
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }  # terminal/file 레이어
-miette             = { version = "7", features = ["fancy"] }  # 코드/url 진단 (diag 렌더러 계열)
+miette             = { version = "7", default-features = false }  # 코드/url 진단 (leaf diag는 IO-free; fancy는 vita-log에서만 활성화)
 # CI 골든-포맷 가드 전용 (런타임 의존 아님 — dev-dependencies)
 # serde-reflection = "0.4"   # cargo test에서 wire 포맷 표류 검출
 ```
+
+> **miette 피처 계층화.** 워크스페이스 기본은 `default-features = false`로 두어 leaf `diag`를 IO-free로 유지한다(`diag/Cargo.toml`: `miette = { workspace = true }` — 순수 데이터 모델만). 터미널 렌더링이 필요한 `vita-log`만 자기 `Cargo.toml`에서 `miette = { workspace = true, features = ["fancy"] }`로 `fancy`를 가산한다(Cargo 피처는 additive라 한 크레이트의 가산이 다른 크레이트의 leaf 순수성을 깨지 않는다).
 
 ### 크레이트 의존 방향
 
@@ -146,7 +151,7 @@ required-features = ["separate-bins"]
 # Cargo.toml (워크스페이스 루트)
 [profile.release]
 opt-level     = 3         # IR-walking 이벤트 루프가 throughput-critical — size 's'/'z' 금지
-lto           = "thin"    # 13-크레이트 파이프라인 교차 인라인; fat-LTO 속도를 낮은 링크 비용으로 회수
+lto           = "thin"    # 14-크레이트 파이프라인 교차 인라인; fat-LTO 속도를 낮은 링크 비용으로 회수
 codegen-units = 1         # hot 인터프리터 루프 최대 최적화 (LTO와 짝)
 strip         = "symbols" # 작은 배포 바이너리 + 깔끔한 macOS 공증; multicall이라 strip 대상 1개
 # panic = "abort" 를 설정하지 않는다 — 기본 unwind 유지.
@@ -188,7 +193,7 @@ velab -s top -o top.velab                     #       elaborate
 vrun  top.velab +SEED=1                        #       simulation (상류 체인 라이브 재검증)
 ```
 
-`-p cli` 패키지 셀렉터를 쓴다(오직 cli만 바이너리를 가지므로 항상 비모호). `--bin vita`는
+`-p cli` 패키지 셀렉터를 쓴다(오직 cli만 *배포/설치* 바이너리를 가지므로 항상 비모호; `vcd-diff`/`corpus-runner`는 dev/test 전용으로 `publish = false`라 설치·multicall 대상이 아니다). `--bin vita`는
 `separate-bins` 피처로 설치할 때만 추가로 필요하다. rustup 설치 시 `~/.cargo/bin`이 PATH에
 들어간다(다른 방식 설치 시 `export PATH="$HOME/.cargo/bin:$PATH"`). MVP는 system-wide
 `/usr/local/bin` 설치가 불필요하다.
@@ -239,7 +244,7 @@ vrun  top.velab +SEED=1                        #       simulation (상류 체인
 ```toml
 # rust-toolchain.toml (저장소 루트)
 [toolchain]
-channel = "1.80.0"          # 계획 MSRV; stable 릴리스 고정
+channel = "1.82.0"          # MSRV (miette 7.6.0 → 1.82); stable 릴리스 고정
 components = [
     "rustfmt",              # 코드 포맷
     "clippy",               # 린트
@@ -255,10 +260,10 @@ targets = [
 
 ### MSRV 정책
 
-- **현재 계획 MSRV: 1.80.** Rust 1.80은 `std::sync::LazyLock` 안정화를 포함한다 (참고: `let-else`는 1.65, `OnceLock`은 1.70에 각각 안정화됐다).
-- **채택 크레이트가 높은 MSRV를 요구할 경우 상향.** 예: ariadne 0.6.0의 MSRV가 1.85이므로 ariadne를 채택하면 1.85로 조정.
+- **현재 MSRV: 1.82.** 채택한 miette 7.6.0의 manifest MSRV가 `1.82.0`이라 이 값으로 고정한다. Rust 1.80이 안정화한 `std::sync::LazyLock`을 포함한다(참고: `let-else`는 1.65, `OnceLock`은 1.70).
+- **채택 크레이트 MSRV 집합의 상한으로 결정.** 현재 상한 = miette(1.82). winnow 1.x·logos 0.16(1.80)·codespan 0.13(1.67)은 모두 1.82 이하. 렌더 백엔드를 codespan으로 스왑하면 1.67까지 내려갈 수 있다.
 - **MSRV 변경은 semver minor bump로 처리.** 패치 릴리스에서 MSRV를 올리지 않는다.
-- **CI에서 MSRV 최소 버전으로 `cargo check` 실행** — `rust-toolchain.toml` 외에 별도 `toolchain: "1.80.0"` 잡을 매트릭스에 포함해 MSRV 회귀를 방지한다.
+- **CI에서 MSRV 최소 버전으로 `cargo check` 실행** — `rust-toolchain.toml` 외에 별도 `toolchain: "1.82.0"` 잡을 매트릭스에 포함해 MSRV 회귀를 방지한다.
 
 ---
 
@@ -316,7 +321,7 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           # rust-toolchain.toml의 channel을 그대로 읽음
-          toolchain: "1.80.0"
+          toolchain: "1.82.0"
           components: rustfmt, clippy
 
       - name: Cache cargo registry
@@ -355,7 +360,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: "1.80.0"
+          toolchain: "1.82.0"
           components: rustfmt, clippy
 
       - name: Cache cargo registry
@@ -375,13 +380,13 @@ jobs:
 
   # ── MSRV 회귀 방지 잡 (Ubuntu만으로 충분) ───────────────────────────────
   msrv:
-    name: MSRV check (Rust 1.80)
+    name: MSRV check (Rust 1.82)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: "1.80.0"
+          toolchain: "1.82.0"
       - run: cargo check --workspace --locked
       # (cargo audit 단계는 별도 job으로 추후 추가)
 ```
