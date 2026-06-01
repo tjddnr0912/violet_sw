@@ -185,6 +185,23 @@ class CasperBot:
                 f"holding={self._gem_state.current_holding or '-'})"
             )
 
+        # Deferred-rebalance RTH retry flags (mirror _seed_pending). The daily
+        # multi-bucket tick fires at ET 00:00 (KST 13:00) while the US market
+        # is closed, so GEM/trend auto execution defers; _tick() then retries
+        # the moment RTH opens. Arm here too so a restart *after* the tick
+        # locked the day — or a boot during the month-end grace window — still
+        # fires. Pure date/state math (no network), safe in __init__.
+        self._gem_pending: bool = False
+        self._trend_pending: bool = False
+        try:
+            if gem_mode == "auto":
+                self._gem_pending = should_run_gem(state=self._gem_state)[0]
+            if self._resolved_trend_mode() == "auto":
+                self._trend_pending = trend.should_run_trend(
+                    state=self._trend_state)[0]
+        except Exception as e:
+            logger.debug(f"pending-arm check skipped: {e}")
+
         # Data collector (env-toggled, isolated). MUST come last so that
         # any failure here cannot abort the trading bot construction.
         self.collector = None
@@ -797,6 +814,13 @@ class CasperBot:
         Default sleeve_engine='trend' runs the low-freq sleeve via the daily tick."""
         return self.params.get("sleeve_engine", "trend") == "intraday"
 
+    def _resolved_trend_mode(self) -> str:
+        """Trend-sleeve mode: TREND_MODE env wins, else strategy_params trend.mode."""
+        m = self.env.get("trend_mode", "off") or "off"
+        if m == "off":
+            m = self.params.get("trend", {}).get("mode", "off")
+        return m
+
     def _tick(self):
         """Single iteration of the event loop."""
         now = time_utils.now_et()
@@ -824,6 +848,14 @@ class CasperBot:
                     self._seed_pending = False
             except Exception as e:
                 logger.error(f"Deferred seed retry failed: {e}", exc_info=True)
+
+        # Deferred GEM/trend rebalance retry. The daily tick fires at ET 00:00
+        # (KST 13:00, US market closed) and defers auto execution; unlike the
+        # day-change there is no RTH re-entry, so retry here the moment the
+        # market opens. Idempotent — gem_state/trend_state guard against any
+        # double execution.
+        if (self._gem_pending or self._trend_pending) and time_utils.is_market_open():
+            self._retry_deferred_rebalance()
 
         # ── Intraday Casper state machine (sleeve_engine == "intraday" only) ──
         # Default sleeve_engine="trend": the low-freq trend sleeve runs via the
@@ -2202,9 +2234,7 @@ class CasperBot:
         # 3b) Trend sleeve (low-freq TQQQ Vol-Target). Independent of GEM;
         # gated by TREND_MODE env, falling back to strategy_params trend.mode.
         # Does NOT trade in alert mode — just notifies.
-        trend_mode = self.env.get("trend_mode", "off")
-        if not trend_mode or trend_mode == "off":
-            trend_mode = self.params.get("trend", {}).get("mode", "off")
+        trend_mode = self._resolved_trend_mode()
         if trend_mode in ("alert", "auto"):
             self._maybe_run_trend(buckets, total, holdings, trend_mode)
 
@@ -2229,6 +2259,27 @@ class CasperBot:
         except Exception as e:
             logger.debug(f"Portfolio summary telegram skipped: {e}")
         self._portfolio_tick_done_for = today
+
+    def _retry_deferred_rebalance(self) -> None:
+        """RTH retry for GEM/trend auto rebalances deferred by the ET-00:00
+        daily tick. Mirrors the _seed_pending path: re-run each pending sleeve
+        via its idempotent _maybe_run_* helper, which now executes (market is
+        open) and clears its own pending flag on success."""
+        try:
+            total, holdings = self._fetch_full_portfolio_snapshot()
+        except Exception as e:
+            logger.error(f"Deferred rebalance snapshot failed: {e}")
+            return
+        if total <= 0:
+            logger.warning("Deferred rebalance: portfolio total=0 — skipping")
+            return
+        buckets, _ = evaluate_portfolio(total, holdings, state=self._portfolio_state)
+        if self._gem_pending:
+            self._maybe_run_gem(buckets, total, holdings,
+                                self.env.get("gem_mode", "off"))
+        if self._trend_pending:
+            self._maybe_run_trend(buckets, total, holdings,
+                                  self._resolved_trend_mode())
 
     def _execute_initial_seed(self, total: float, holdings: dict,
                               buckets: list) -> bool:
@@ -2389,6 +2440,7 @@ class CasperBot:
         """
         run, signal_date = should_run_gem(state=self._gem_state)
         if not run or signal_date is None:
+            self._gem_pending = False
             return
 
         sig = compute_gem_signal()  # uses today's prices
@@ -2410,6 +2462,7 @@ class CasperBot:
             # Mark as "computed" but NOT executed so auto mode would
             # still trade next month — i.e. alert mode does not pollute
             # state. (Antonacci's signal date is the same regardless.)
+            self._gem_pending = False
             return
 
         # auto mode → execute
@@ -2418,8 +2471,12 @@ class CasperBot:
                 "GEM auto: market closed — deferring execution to next tick "
                 "during RTH (signal date already locked)"
             )
+            self._gem_pending = True   # arm RTH retry (see _tick)
             return
         self._execute_gem_rotation(sig, holdings, total)
+        # Disarm only if execution cleared the schedule (state saved on full
+        # success). A partial failure keeps should_run True → stay pending.
+        self._gem_pending = should_run_gem(state=self._gem_state)[0]
 
     def _execute_gem_rotation(self, sig: GemSignal, holdings: dict,
                               total: float) -> None:
@@ -2528,6 +2585,7 @@ class CasperBot:
         """
         run, signal_date = trend.should_run_trend(state=self._trend_state)
         if not run or signal_date is None:
+            self._trend_pending = False
             return
 
         params = self.params.get("trend", {})
@@ -2549,6 +2607,7 @@ class CasperBot:
         if mode == "alert":
             # Notify only — do NOT pollute state so auto mode would still
             # trade next month. (Matches GEM's alert-mode contract.)
+            self._trend_pending = False
             return
 
         # auto mode → execute
@@ -2557,8 +2616,13 @@ class CasperBot:
                 "Trend auto: market closed — deferring execution to next "
                 "tick during RTH (signal date already locked)"
             )
+            self._trend_pending = True   # arm RTH retry (see _tick)
             return
         self._execute_trend_rebalance(sig, holdings, total)
+        # Disarm only if execution made the rebalance no longer due (state
+        # saved on full success). A partial failure leaves should_run True
+        # → stay pending so the next RTH tick retries.
+        self._trend_pending = trend.should_run_trend(state=self._trend_state)[0]
 
     def _execute_trend_rebalance(self, sig, holdings: dict,
                                  total: float) -> None:
