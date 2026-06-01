@@ -17,7 +17,9 @@
   CLI(`-Wno-`/`-Werror=`)·corpus(`expect_codes`)·문서는 **숫자가 아닌 mnemonic으로 참조**한다.
 - **`VITA-<S>####` 숫자는 보조**(빠른 grep용). 한 번 부여하면 **영구**(빈 번호는 빈 채로,
   재사용·renumber 금지 — rustc `E0001` 방식). severity 접두 `S` ∈ {E=Error, W=Warning,
-  I=Info, F=Fatal}. 한 카테고리 내 번호는 mnemonic 알파벳순으로 부여.
+  I=Info, F=Fatal}. **초기 36개**는 카테고리 내 mnemonic 알파벳순으로 부여했고, **이후 추가는
+  해당 밴드의 다음 빈 번호를 단조 부여**한다(알파벳 재정렬 금지). 공식 출처 기반 추가 케이스
+  인벤토리는 **부록 A** 참조(미구현 예약 코드 106개 + 밴드 5/6/7).
 - severity·게이트·exit 의미는 [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md).
 
 ### 번호대 예약
@@ -29,7 +31,9 @@
 | `2xxx` | PARSE | 어휘·구문·설계단위 |
 | `3xxx` | ELABORATE | 파라미터 해소·계층·연결성·elaboration severity |
 | `4xxx` | RUNTIME | 시뮬레이션·RTL severity 태스크·assert |
-| `5xxx`–`7xxx` | **예약** | 향후: SVA / 타입 검사 / VHDL(Phase 3) |
+| `5xxx` | ASSERTION / SVA | 동시 assert·assume·cover·unique 위반 (예약, Phase 2 — 부록 A 인벤토리 보유) |
+| `6xxx` | SV-TYPE | enum·const·$cast·class 등 SV 데이터타입 (예약 — 부록 A) |
+| `7xxx` | VHDL | VHDL 진단 (예약, Phase 3 — 부록 A) |
 | `8xxx` | FILELIST | `.f` 전개(`-f`/`-F`) |
 | `9xxx` | ARTIFACT | 산출물 staleness·버전 게이트 |
 
@@ -493,6 +497,183 @@ error[VITA-E9004] E-ART-VERSION-GATE: top.velab produced by vitamin 2.x, this to
 
 ---
 
+## 부록 A · 조사 기반 에러/경고 케이스 인벤토리 (공식 출처)
+
+> 본문(§0~9)의 36개는 **MVP 설계·구현 대상** 코드다. 본 부록은 실제 시뮬레이터
+> (Verilator · Icarus iverilog · VCS · Xcelium · GHDL) 공식 문서 + IEEE 1800/1364가 정의하는
+> **추가 오류/경고 조건 106개를 미리 수집한 인벤토리**다 — 추후 구현 시 어떤 케이스를 처리해야
+> 하는지 미리 드러내 구현을 용이하게 하려는 목적이다. **이 코드들은 아직 미구현(예약)** 이며,
+> 구현될 때 본문 형식의 전체 항목(원인·예시·해결)으로 승격된다.
+
+**scope 태그:** `MVP-SIM` = Verilog-2005/SV-subset 시뮬레이터가 반드시 다뤄야 함(구현 대상) ·
+`LINT` = 스타일/린트(선택; Verilator 기본 off 다수) · `SVA`/`SV-TYPE`/`VHDL` = 예약 밴드(향후 기능).
+*sev* 약어 Erro=Error.
+
+**번호 부여 (거버넌스 보강):** 초기 36개는 알파벳순으로 부여했고, **이후 추가는 해당 밴드의
+다음 빈 번호를 영구 부여한다(재정렬·renumber 금지)** — 그래서 본 부록 번호는 알파벳순이 아니다.
+mnemonic이 1차 안정 키임은 동일. 구현 전이므로 일부 번호는 향후 통합·재배치될 수 있다(미구현
+인벤토리 한정).
+
+**기존 코드로 흡수/중복 정리:** Verilator 세분 코드 일부는 기존 코드의 하위 케이스로 흡수 —
+포트 폭 불일치(Verilator WIDTHCONNECT)는 `W-ELAB-WIDTH-TRUNC`(W3008)에, 다중 클럭 구동(CDC)
+린트(Verilator MULTIDRIVEN)는 `E-ELAB-MULTIDRIVER`(E3001)에 교차참조. `` `timescale `` 부분
+지정은 strict `E-PP-TIMESCALE-PARTIAL`(E1011)와 lenient `W-PARSE-TIMESCALE-PARTIAL`(W2016) 두
+정책 코드로 제공한다(한 조건, 정책 선택).
+
+### 1xxx · PREPROCESS  (13)
+
+| 번호 | mnemonic | sev | scope | 조건 | 출처 / 매핑 |
+|---|---|---|---|---|---|
+| E1004 | `E-PP-RECURSIVE-MACRO` | Erro | MVP-SIM | Recursive text-macro expansion | IEEE 1364-2005 §19.3.1(c) |
+| E1005 | `E-PP-RECURSIVE-INCLUDE` | Erro | MVP-SIM | Cyclic `` `include `` (file includes itself) | IEEE 1364-2005 §19.5 |
+| E1006 | `E-PP-REDEFINE-DIRECTIVE` | Erro | MVP-SIM | Redefining a reserved compiler directive as a macro | IEEE 1364-2005 §19.3.1 |
+| E1009 | `E-PP-UNDEF-MACRO-USE` | Erro | MVP-SIM | Use of an undefined text macro | IEEE 1364-2005 §19.3.1 |
+| E1010 | `E-PP-UNBALANCED-CONDITIONAL` | Erro | MVP-SIM | Unbalanced `` `ifdef/`else/`endif `` | IEEE 1364-2005 §19.4 |
+| E1011 | `E-PP-TIMESCALE-PARTIAL` | Erro | MVP-SIM | Some modules have `` `timescale `` and others do not (strict) | IEEE 1364-2005 §19.8 |
+| E1012 | `E-PP-RESETALL-IN-MODULE` | Erro | MVP-SIM | `` `resetall `` inside a module/UDP declaration | IEEE 1364-2005 §19.6 |
+| E1013 | `E-PP-BAD-DIRECTIVE` | Erro | MVP-SIM | Unknown compiler directive | IEEE 1364-2005 §19 |
+| W1007 | `W-PP-MACRO-REDEFINED` | Warn | MVP-SIM | `` `define `` redefines a macro with different text | Verilator REDEFMACRO; iverilog -Wmacro-redefinition |
+| W1008 | `W-PP-UNDEF-UNDEFINED` | Warn | LINT | `` `undef `` of a macro that was never defined | IEEE 1364-2005 §19.3.2 |
+| W1014 | `W-PP-IFDEF-VALUE-ZERO` | Warn | MVP-SIM | `` `ifdef `` tests a macro defined as 0 (definedness ≠ value) | Verilator PREPROCZERO |
+| W1015 | `W-PP-BACKSLASH-SPACE` | Warn | MVP-SIM | Backslash followed by whitespace before newline | Verilator BSSPACE |
+| W1016 | `W-PP-DEF-OVERRIDE` | Warn | MVP-SIM | Command-line `+define` overrides an in-source `` `define `` | Verilator DEFOVERRIDE |
+
+### 2xxx · PARSE  (17)
+
+| 번호 | mnemonic | sev | scope | 조건 | 출처 / 매핑 |
+|---|---|---|---|---|---|
+| E2004 | `E-PARSE-UNSIZED-CONCAT` | Erro | MVP-SIM | Unsized operand inside concatenation/replication | Verilator WIDTHCONCAT; IEEE 1364-2005 §5.1.14 |
+| E2005 | `E-PARSE-ZERO-REPL` | Erro | MVP-SIM | Zero replication count outside an enclosing concat | Verilator ZEROREPL; IEEE 1800 §11.4.12.1 |
+| E2006 | `E-PARSE-RESERVED-KEYWORD` | Erro | MVP-SIM | Reserved keyword used as an identifier | IEEE 1364-2005 §3.7.2 / Annex B |
+| E2007 | `E-PARSE-ILLEGAL-NUMBER` | Erro | MVP-SIM | Malformed number literal | IEEE 1364-2005 §3.5.1 |
+| E2008 | `E-PARSE-UNTERMINATED-TOKEN` | Erro | MVP-SIM | EOF inside block comment or string literal | IEEE 1364-2005 §3.3/§3.6 |
+| E2009 | `E-PARSE-END-LABEL` | Erro | MVP-SIM | Mismatched end/endmodule block label | Verilator ENDLABEL; IEEE 1800 §9.3.4 |
+| E2010 | `E-PARSE-NOT-REDOP` | Erro | MVP-SIM | Logical-NOT before an unparenthesized reduction op | Verilator NOTREDOP |
+| E2011 | `E-PARSE-NULL-PORTLIST` | Erro | MVP-SIM | Empty/null element in module port list | Xcelium *E,NULLLP; IEEE 1364-2005 §12.3 |
+| E2012 | `E-PARSE-DECL-AFTER-STMT` | Erro | MVP-SIM | Declaration after a statement (Verilog-2005) | Xcelium *E,BADDCL; iverilog |
+| W2013 | `W-PARSE-IMPLICIT-DIMENSIONS` | Warn | MVP-SIM | Port/net redeclaration missing dimensions | iverilog -Wimplicit-dimensions |
+| W2014 | `W-PARSE-ANACHRONISM` | Warn | MVP-SIM | Deprecated/removed feature for the selected standard | iverilog -Wanachronisms |
+| W2015 | `W-PARSE-NEWER-STD` | Warn | MVP-SIM | Construct requires a newer language standard | Verilator NEWERSTD; iverilog -g<year> |
+| W2016 | `W-PARSE-TIMESCALE-PARTIAL` | Warn | MVP-SIM | Some modules set `` `timescale ``, others inherit (lenient) | Verilator TIMESCALEMOD; iverilog -Wtimescale |
+| W2017 | `W-PARSE-DECL-AFTER-USE` | Warn | MVP-SIM | Identifier declared after first use (tolerated) | iverilog -Wdeclaration-after-use |
+| W2018 | `W-LINT-ASCENDING-RANGE` | Warn | LINT | Ascending `[0:N]` packed range instead of `[N:0]` | Verilator ASCRANGE/LITENDIAN |
+| W2019 | `W-LINT-DECL-FILENAME` | Warn | LINT | Module name ≠ file basename | Verilator DECLFILENAME |
+| W2020 | `W-LINT-MISINDENT` | Warn | LINT | Misleading indentation suggests wrong grouping | Verilator MISINDENT |
+
+### 3xxx · ELABORATE  (47)
+
+| 번호 | mnemonic | sev | scope | 조건 | 출처 / 매핑 |
+|---|---|---|---|---|---|
+| E3009 | `E-ELAB-DUP-DECL` | Erro | MVP-SIM | Name declared twice in the same scope | IEEE 1364-2005 §4.11/§12.3.3 |
+| E3010 | `E-ELAB-IMPLICIT-NET-NONE` | Erro | MVP-SIM | Undeclared net under `` `default_nettype none `` | IEEE 1364-2005 §19.2 |
+| E3011 | `E-ELAB-MIXED-PARAM-OVERRIDE` | Erro | MVP-SIM | Mixed ordered and named parameter overrides | IEEE 1364-2005 §12.2.1 |
+| E3012 | `E-ELAB-OVERRIDE-LOCALPARAM` | Erro | MVP-SIM | Override targets a localparam | IEEE 1364-2005 §4.10.2 |
+| E3013 | `E-ELAB-GENLOOP-NONTERMINATING` | Erro | MVP-SIM | Generate-for loop non-terminating / genvar reuse | IEEE 1364-2005 §12.4 |
+| E3014 | `E-ELAB-GENBLOCK-NAME-CONFLICT` | Erro | MVP-SIM | Generate-block name conflicts with another decl | IEEE 1364-2005 §12.4 |
+| E3015 | `E-ELAB-UWIRE-MULTIDRIVER` | Erro | MVP-SIM | `uwire` net driven by more than one source | IEEE 1364-2005 §4.6.5; IEEE 1800 §6.6 |
+| E3016 | `E-ELAB-HIER-NAME-UNRESOLVED` | Erro | MVP-SIM | Hierarchical name resolves to no object | IEEE 1364-2005 §12.4/§3.13 |
+| E3017 | `E-ELAB-ASSIGN-INPUT` | Erro | MVP-SIM | Assignment to a module input port | Verilator ASSIGNIN; IEEE 1800 §23.3.3 |
+| E3018 | `E-ELAB-LVALUE-KIND` | Erro | MVP-SIM | Continuous-assign to reg / procedural-assign to wire | Verilator CONTASSREG/PROCASSWIRE |
+| E3019 | `E-ELAB-CONTASS-INIT` | Erro | MVP-SIM | Variable both initialized and continuously assigned | Verilator CONTASSINIT |
+| E3020 | `E-ELAB-PARAM-NO-DEFAULT` | Erro | MVP-SIM | Parameter without a required default | Verilator PARAMNODEFAULT |
+| E3021 | `E-ELAB-FUNC-TIMING` | Erro | MVP-SIM | Time control or task call inside a function | Verilator FUNCTIMECTL; IEEE 1800 §13.4 |
+| E3022 | `E-ELAB-PROTOTYPE-MISMATCH` | Erro | MVP-SIM | Out-of-block method def disagrees with prototype | Verilator PROTOTYPEMIS |
+| E3023 | `E-ELAB-UNSUPPORTED` | Erro | MVP-SIM | Legal per IEEE but not implemented by this sim | Verilator UNSUPPORTED; iverilog 'sorry:'; Xcelium SVNIMP |
+| E3057 | `E-ELAB-UNDEF-SYSTASK` | Erro | MVP-SIM | Call to an unrecognized system task/function | Xcelium *E,MSSYSTF; IEEE 1800 §20 |
+| W3024 | `W-ELAB-WIDTH-EXPAND` | Warn | MVP-SIM | Rvalue narrower than lvalue, silently zero-extended | Verilator WIDTHEXPAND |
+| W3025 | `W-ELAB-WIDTH-XZEXPAND` | Warn | MVP-SIM | X/Z value expanded to a wider target | Verilator WIDTHXZEXPAND |
+| W3026 | `W-ELAB-BLOCKING-MIX` | Warn | MVP-SIM | Same var driven by both blocking and non-blocking | Verilator BLKANDNBLK (Error); IEEE 1800 §4 |
+| W3027 | `W-ELAB-NBA-IN-COMB` | Warn | MVP-SIM | Non-blocking assignment in a combinational block | Verilator COMBDLY; IEEE 1800 §10.4.2 |
+| W3028 | `W-ELAB-NBA-IN-INITIAL` | Warn | MVP-SIM | Non-blocking assignment in an initial/final block | Verilator INITIALDLY |
+| W3029 | `W-ELAB-CASE-INCOMPLETE` | Warn | MVP-SIM | `case` no default and not all selector values covered | Verilator CASEINCOMPLETE |
+| W3030 | `W-ELAB-CASE-OVERLAP` | Warn | MVP-SIM | Overlapping case items (later unreachable) | Verilator CASEOVERLAP |
+| W3031 | `W-ELAB-CASE-WITH-X` | Warn | MVP-SIM | Plain `case` item contains a literal x/z bit | Verilator CASEWITHX |
+| W3032 | `W-ELAB-LATCH` | Warn | MVP-SIM | Latch inferred in a combinational block | Verilator LATCH/NOLATCH |
+| W3033 | `W-ELAB-IMPLICIT-STATIC` | Warn | MVP-SIM | Implicit static lifetime on a task/function var | Verilator IMPLICITSTATIC |
+| W3034 | `W-ELAB-SELRANGE` | Warn | MVP-SIM | Constant bit/part-select provably out of range | Verilator SELRANGE; iverilog -Wselect-range |
+| W3035 | `W-ELAB-CMP-CONST` | Warn | MVP-SIM | Comparison provably always true/false | Verilator CMPCONST |
+| W3036 | `W-ELAB-UNSIGNED-CMP` | Warn | MVP-SIM | Unsigned comparison with constant result | Verilator UNSIGNED |
+| W3037 | `W-ELAB-REAL-CONVERT` | Warn | MVP-SIM | Implicit real-to-integer conversion (precision loss) | Verilator REALCVT; IEEE 1800 §6.12.2 |
+| W3038 | `W-ELAB-INFINITE-LOOP` | Warn | MVP-SIM | Statically-always-true loop with no exit | Verilator INFINITELOOP; iverilog -Winfloop (opt-in) |
+| W3039 | `W-ELAB-PIN-MISSING` | Warn | MVP-SIM | Instance leaves a declared port unconnected | Verilator PINMISSING; iverilog -Wportbind; VCS TFIPC-L |
+| W3041 | `W-ELAB-PORT-SHORT` | Warn | MVP-SIM | Module output port tied to a constant | Verilator PORTSHORT |
+| W3042 | `W-ELAB-MULTITOP` | Warn | MVP-SIM | Multiple uninstantiated top modules | Verilator MULTITOP; IEEE 1800 §3.12 |
+| W3043 | `W-ELAB-IGNORED-RETURN` | Warn | MVP-SIM | Non-void function called as a statement | Verilator IGNOREDRETURN |
+| W3044 | `W-ELAB-NO-RETURN` | Warn | MVP-SIM | Non-void function never sets its return value | Verilator NORETURN |
+| W3045 | `W-ELAB-NO-EFFECT` | Warn | MVP-SIM | Statement/expression has no observable effect | Verilator NOEFFECT |
+| W3046 | `W-ELAB-ALWCOMBORDER` | Warn | MVP-SIM | `always_comb` reads a var before assigning it | Verilator ALWCOMBORDER |
+| W3047 | `W-ELAB-ALWAYS-NEVER` | Warn | MVP-SIM | `always @*` with empty sensitivity never triggers | Verilator ALWNEVER |
+| W3048 | `W-ELAB-SENS-ENTIRE-ARRAY` | Warn | MVP-SIM | `always @*` word-select pulls whole array into sens | iverilog -Wsensitivity-entire-array |
+| W3049 | `W-ELAB-SENS-ENTIRE-VECTOR` | Warn | LINT | `always @*` part-select pulls whole vector into sens | iverilog -Wsensitivity-entire-vector (opt-in) |
+| W3050 | `W-ELAB-FLOATING-NET` | Warn | LINT | Net present in design but has no drivers | iverilog -Wfloating-nets (opt-in) |
+| W3052 | `W-LINT-DEFPARAM` | Warn | MVP-SIM | Deprecated `defparam` parameter override | Verilator DEFPARAM; IEEE 1364-2005 §12.2.1 |
+| W3053 | `W-LINT-VAR-HIDDEN` | Warn | LINT | Variable shadows one in an enclosing scope | Verilator VARHIDDEN |
+| W3054 | `W-LINT-UNUSED` | Warn | LINT | Signal/parameter/genvar unused or undriven | Verilator UNUSEDSIGNAL/UNDRIVEN/UNUSEDPARAM |
+| W3055 | `W-LINT-STYLE-MISC` | Warn | LINT | Assorted off-by-default style issues (catch-all) | Verilator BLKSEQ/EOFNEWLINE/IMPORTSTAR/… |
+| W3056 | `W-ELAB-FEATURE-LIMIT` | Warn | MVP-SIM | Legal construct accepted but simplified (catch-all) | Verilator MINTYPMAXDLY/RISEFALLDLY/SHORTREAL/… |
+
+### 4xxx · RUNTIME  (10)
+
+| 번호 | mnemonic | sev | scope | 조건 | 출처 / 매핑 |
+|---|---|---|---|---|---|
+| E4008 | `E-RUN-DIV-ZERO` | Erro | MVP-SIM | Integer division or modulo by zero (result x) | IEEE 1364-2005 §5.1.5 |
+| E4009 | `E-RUN-ILLEGAL-SCALAR-SELECT` | Erro | MVP-SIM | Bit/part-select of a scalar or real value | IEEE 1364-2005 §4.2.1 |
+| F4016 | `F-RUN-NO-CONVERGE` | Fata | MVP-SIM | Model fails to settle within the iteration limit | Verilator DIDNOTCONVERGE; IEEE 1800 §4 (zero-delay loop) |
+| I4015 | `I-RUN-STOP` | Info | MVP-SIM | `$stop` executed (simulation suspended) | IEEE 1800 §20.2; iverilog/vvp -n/-N |
+| W4010 | `W-RUN-FORMAT-MISMATCH` | Warn | MVP-SIM | Format-specifier / argument count or type mismatch | IEEE 1364-2005 §17.1.1.2 |
+| W4011 | `W-RUN-WAIT-CONST` | Warn | MVP-SIM | `wait` on a compile-time constant condition | Verilator WAITCONST |
+| W4012 | `W-RUN-STMT-DELAY` | Warn | MVP-SIM | Procedural statement delay under limited delay model | Verilator STMTDLY |
+| W4013 | `W-RUN-ZERO-DELAY` | Warn | MVP-SIM | `#0` zero delay (inactive-region scheduling) | Verilator ZERODLY; IEEE 1800 §15.4 |
+| W4014 | `W-LINT-ASSIGN-DELAY` | Warn | LINT | Intra-assignment delay on a non-blocking assign | Verilator ASSIGNDLY (off-by-default) |
+| W4017 | `W-RUN-UNIQUE-VIOLATION` | Warn | MVP-SIM | `unique`/`priority` case or if violation at runtime | IEEE 1800-2017 §12.5.3 (mandatory report) |
+
+### 5xxx · ASSERTION / SVA (예약, Phase 2)  (3)
+
+| 번호 | mnemonic | sev | scope | 조건 | 출처 / 매핑 |
+|---|---|---|---|---|---|
+| E5001 | `E-SVA-CONCURRENT-ASSERT-FAIL` | Erro | SVA | Concurrent assertion property fails (default $error) | IEEE 1800-2017 §16.5/§16.3 |
+| W5002 | `W-SVA-ASSUME-COVER` | Warn | SVA | `assume` fails or `cover` property never hit | IEEE 1800-2017 §16.12/§16.13 |
+| W5004 | `W-SVA-PAST-DEPTH` | Warn | SVA | `$past` delay exceeds practical depth | Verilator TICKCOUNT; IEEE 1800 §16.9 |
+
+### 6xxx · SV-TYPE (예약)  (7)
+
+| 번호 | mnemonic | sev | scope | 조건 | 출처 / 매핑 |
+|---|---|---|---|---|---|
+| E6001 | `E-TYPE-ENUM-VALUE` | Erro | SV-TYPE | Enum assigned a non-member value without a cast | Verilator ENUMVALUE; IEEE 1800 §6.19 |
+| E6002 | `E-TYPE-ENUM-ITEM-WIDTH` | Erro | SV-TYPE | Enum item value does not fit the enum base width | Verilator ENUMITEMWIDTH |
+| E6003 | `E-TYPE-CONST-WRITTEN` | Erro | SV-TYPE | Assignment to a `const` after initialization | Verilator CONSTWRITTEN |
+| E6004 | `E-TYPE-CAST-FAILURE` | Erro | SV-TYPE | Dynamic `$cast` failure | IEEE 1800-2017 §6.24.2; Verilator CASTCONST |
+| E6006 | `E-TYPE-CLASS-RULE` | Erro | SV-TYPE | SystemVerilog class/OOP rule violation | Verilator ENCAPSULATED/LIFETIME/… |
+| W6005 | `W-TYPE-RANDOM-LIMIT` | Warn | SV-TYPE | Constrained-random/coverage unsupported or unsat | Verilator CONSTRAINTIGN/COVERIGN/RANDC |
+| W6007 | `W-TYPE-REAL-CONVERT` | Warn | SV-TYPE | Real-to-integer conversion in typed context (dup of W3037) | Verilator REALCVT; IEEE 1800 §6.12.2 |
+
+### 7xxx · VHDL (예약, Phase 3)  (9)
+
+> Phase-3 설계 주의: VHDL의 bound-check/overflow는 **중단(Fatal)** 이지만 Verilog 범위 초과는
+> x를 읽고 **계속**한다 — `E-RUN-RANGE` 의미를 VHDL에 재사용하지 말 것.
+
+| 번호 | mnemonic | sev | scope | 조건 | 출처 / 매핑 |
+|---|---|---|---|---|---|
+| E7001 | `E-VHDL-NOT-DECLARED` | Erro | VHDL | VHDL name has no visible declaration | GHDL 'no declaration for'; IEEE 1076 |
+| E7002 | `E-VHDL-UNIT-NOT-FOUND` | Erro | VHDL | VHDL design unit not found in library | GHDL 'unit not found in library' |
+| E7003 | `E-VHDL-DUP-DECLARATION` | Erro | VHDL | Identifier already used in the declarative region | GHDL 'identifier already used' |
+| E7004 | `E-VHDL-TYPE-MISMATCH` | Erro | VHDL | Type incompatibility / association failure | GHDL type/association errors |
+| E7009 | `E-VHDL-UNRESOLVED-MULTIDRIVER` | Erro | VHDL | Multiple drivers on an unresolved-type signal | GHDL resolution-function enforcement |
+| F7005 | `F-VHDL-ASSERTION-FAILURE` | Fata | VHDL | `assert`/`report` at/above the stopping severity | GHDL --assert-level; IEEE 1076 §8.2 |
+| F7006 | `F-VHDL-BOUND-CHECK` | Fata | VHDL | Runtime constraint (bound-check) failure | GHDL 'bound check failure' |
+| F7007 | `F-VHDL-OVERFLOW` | Fata | VHDL | Arithmetic overflow (CONSTRAINT_ERROR) | GHDL 'overflow' |
+| W7008 | `W-VHDL-METAVALUE` | Warn | VHDL | NUMERIC_STD metavalue detected in conversion | GHDL --ieee-asserts |
+
+### 제외 (구현 범위 밖)
+
+순수 synthesis-only / 컴파일드-모델 아티팩트는 코드를 부여하지 않았다: Verilator
+GENCLK(5.000 이후 미발생) · SYMRSVDWORD(C++ 키워드 충돌 — vitamin은 C++ codegen 없음) ·
+NEEDTIMINGOPT/NOTIMING(`--timing` opt-in) · UNOPTFLAT(컴파일드 정적 스케줄 성능 — 실제 조합
+루프는 `F-RUN-NO-CONVERGE`가 커버) · BLKLOOPINIT/UNOPTTHREADS/HIERBLOCK 등 멀티스레드-빌드
+진단(인터프리터에 해당 없음).
+
+---
+
 ## Sources
 
 - [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md) — severity lattice · MsgCode 체계 ·
@@ -504,3 +685,8 @@ error[VITA-E9004] E-ART-VERSION-GATE: top.velab produced by vitamin 2.x, this to
   systemverilog/07-assertions-sva.md — `$info`/`$warning`/`$error`/`$fatal`/assert severity
 - IEEE 1800-2017 §16(assertions) §20.10–20.12(severity/elaboration tasks) §22(preprocess) ·
   IEEE 1364-2005 §19
+- **부록 A 공식 출처:** Verilator 경고 목록 https://verilator.org/guide/latest/warnings.html ·
+  Icarus Verilog `-W` 플래그(https://steveicarus.github.io/iverilog/usage/command_line_flags.html) ·
+  Synopsys VCS / Cadence Xcelium 메시지 클래스 · GHDL 진단(VHDL Phase 3 예약,
+  https://ghdl.github.io/ghdl/) · IEEE 1800-2017 §11(연산자/폭)·§12(case/generate)·§13(tasks/functions)·
+  §6(types) · IEEE 1364-2005 §5·§12 · IEEE 1076-2008(VHDL)
