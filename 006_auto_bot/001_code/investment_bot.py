@@ -86,6 +86,10 @@ def main():
     from buffett_bot import BuffettBot
     buffett_bot = BuffettBot(test_mode=args.test)
 
+    # === 부동산봇 초기화 ===
+    from weekly_realestate_bot import RealEstateBot
+    realestate_digest_bot = RealEstateBot(test_mode=args.test)
+
     # === 스케줄 등록 ===
 
     # 뉴스봇: 매일 06:00 일간 뉴스
@@ -133,6 +137,12 @@ def main():
         _safe_run, "ComprehensiveReport", sector_bot.generate_comprehensive_report
     )
     logger.info("Scheduled: Comprehensive Report at Sunday 19:40")
+
+    # 부동산봇: 토요일 08:00 주간 다이제스트
+    schedule.every().saturday.at("08:00").do(
+        _safe_run, "RealEstate", realestate_digest_bot.run
+    )
+    logger.info("Scheduled: RealEstate digest at Saturday 08:00")
 
     total_jobs = len(schedule.get_jobs())
     logger.info("=" * 60)
