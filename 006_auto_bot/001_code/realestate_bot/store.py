@@ -19,15 +19,10 @@ def _area_band(area_sqm) -> int:
     return int(round(float(area_sqm)))
 
 
-def _ym(trade_date: str) -> str:
-    # 'YYYY-MM-DD' -> 'YYYYMM'
-    return trade_date[:7].replace("-", "")
-
-
 class RealEstateStore:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or config.DB_PATH
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
