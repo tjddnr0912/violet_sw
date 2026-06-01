@@ -97,7 +97,9 @@ source files
 | `hdl-builtins` | **표준 `$`-system tasks/functions 라이브러리** (display·I/O·file·sim ctrl·time·conv·bit·math·random·dump·assertion·introspection 전 범주) — 디스패치 테이블 + 카테고리별 핸들러 | sim-ir, sim-engine, vcd-writer |
 | `vcd-writer` | IEEE 1364 VCD 직렬화 (dump 태스크가 호출될 때만 활성) | sim-ir |
 | `diag` | 진단/오류 리포팅 (소스 위치, 메시지) | — |
-| `cli` | `vita` 드라이버 (compile/elab/sim 서브커맨드) | 전부 |
+| `cli` | 드라이버 바이너리 — `vita`(원샷) + `vcmp`/`velab`/`vrun`(단계별 compile/elab/sim) | 전부 |
+
+**실행 모델:** `vita`는 compile→elaborate→simulation을 한 번에 도는 원샷 드라이버다. 추가로 단계별 드라이버 `vcmp`(compile) → `velab`(elaborate, `vcmp` 산출물 소비) → `vrun`(simulation, `velab` 산출물 소비)을 제공해 단계를 분리 실행한다. 이 3단계는 Cadence(`xmvlog`/`xmelab`/`xmsim`)·Synopsys(`vlogan`/`vcs`/`simv`) 흐름에 대응하며, 단계별 독립 빌드·디버깅과 변경 없는 단계 스킵(산출물 재사용)을 가능하게 한다.
 
 ### 5.3 시뮬레이션 전략 — 하이브리드 (인터프리터 우선)
 
@@ -142,7 +144,7 @@ Verilog/SV 표준 스케줄링의 **계층화 이벤트 영역**을 구현한다
 - `$dumpflush` — 버퍼 플러시.
 - `$dumplimit(size)` — 파일 크기 제한.
 
-CLI 편의 플래그(예: `vita sim --force-dump`)는 선택적 후속 기능으로만 검토 — **기본은 RTL이 주도**한다.
+CLI 편의 플래그(예: `vrun --force-dump`)는 선택적 후속 기능으로만 검토 — **기본은 RTL이 주도**한다.
 
 **파일 포맷 — IEEE 1364:**
 - 헤더: `$date` · `$version` · `$timescale` · `$scope`/`$upscope`(계층) · `$var`(신호 선언·식별자 코드) · `$enddefinitions`.
@@ -288,7 +290,7 @@ docs/preview/
 - **차등검증 도구 차이:** Icarus와 Verilator의 의미가 미묘히 다를 수 있음 → 표준을 최종 권위로.
 - **system tasks 의미 일치:** `$urandom` seed/스트림, `$random` 분포, `$readmemh` 주소 해석 등 도구별 비결정 영역 — **표준 + Icarus 의미**를 기준으로 명시.
 - **문서 언어:** 본 spec/가이드는 한국어 + 영문 기술용어. 영문 전환 원하면 spec 리뷰에서 지정.
-- **CLI 이름 `vita`:** placeholder. 코드네임 `vitamin`과 함께 추후 확정.
+- **CLI 이름 `vita`·`vcmp`·`velab`·`vrun`:** placeholder. 코드네임 `vitamin`과 함께 추후 확정.
 
 ## Sources (본 spec의 근거)
 

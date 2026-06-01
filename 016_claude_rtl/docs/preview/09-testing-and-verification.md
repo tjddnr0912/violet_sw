@@ -73,7 +73,7 @@ crates/
 1. 준비: RTL 소스 + 테스트벤치 작성 (tools/corpus/ 또는 tests/corpus/)
 
 2. 세 도구 동시 실행
-   vita sim top.sv tb.sv -o out/vita.vcd
+   vita top.sv tb.sv -o out/vita.vcd          # 원샷: compile→elab→sim 일괄
    iverilog -g2012 -o /tmp/sim.vvp top.sv tb.sv && vvp -N /tmp/sim.vvp
    verilator --binary --trace-vcd --build top.sv tb.sv -o /tmp/sim_vlt && /tmp/sim_vlt
 
@@ -221,7 +221,27 @@ name = "nba-swap"
 tags = ["nba", "posedge", "flip-flop"]
 golden_tool = "iverilog"
 known_quirks = ["verilator-x-propagation"]  # 이 테스트는 Verilator와 Z/X 차이 허용
+expect_codes = ["E-ELAB-MULTIDRIVER"]        # (선택) 발화할 진단 메시지 코드 — 텍스트가 아닌 코드로 assert
 ```
+
+### 메시지 코드 · exit 코드 기반 판정
+
+깨지기 쉬운 메시지 *텍스트* 대신 **안정 메시지 코드**로 assert한다. corpus 케이스는
+`expect_codes`로 특정 진단(예: `E-ELAB-MULTIDRIVER`)이 발화했는지 검증한다 — 메시지 문구가
+바뀌어도 테스트가 깨지지 않는다(코드 체계는 [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md),
+각 코드의 원인·예시·해결은 [15-error-code-reference.md](15-error-code-reference.md)).
+
+corpus-runner는 **exit 코드로 결과를 분류**한다: `0`=PASS, `1`=RTL/설계 FAIL, `2`=staleness/
+artifact 게이트(STALE — vcmp/velab 재실행 필요), `3`=CLI/usage, `101`=내부 panic(CRASH).
+**`101`(vitamin 자체 crash)은 절대 RTL FAIL로 점수 매기지 않는다.** exit `1` 안에서 compile
+실패 vs runtime 실패 구분이 필요하면 always-logged 요약의 메시지 코드를 본다(exit code 단독
+grep 금지).
+
+**`$error` 처리(도구 기본 = IEEE-strict, corpus = strict).** 도구 기본은 IEEE를 따라 `$error`만
+으로는 종료·exit에 영향을 주지 않는다(iverilog/historical-VCS와 동일 → 차등검증 calibration
+보존). 그러나 **corpus-runner는 `--error-exit`를 기본 ON**으로 실행해, self-checking이 `$error`만
+쓰는 케이스도 "에러 1개 = FAIL"로 엄격히 게이트한다. 즉 도구 동작은 표준 준수, CI 정책만
+strict — 두 요구를 분리해 만족한다(13-diagnostics-and-logging.md `--error-exit`).
 
 ---
 

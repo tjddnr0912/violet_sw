@@ -9,7 +9,7 @@
 2. **이식성(portability)** — OS가 교체되어도 동일한 원문 소스를 빌드해 동일한 결과를 낸다.
 3. **성능(performance)** — GC 없는 저수준 언어(Rust)로 시뮬레이션 처리 속도를 끌어올린다.
 
-코드네임 `vitamin`, CLI 작업명 `vita`는 현재 임시 placeholder다.
+코드네임 `vitamin`, CLI 작업명 `vita`(및 단계별 `vcmp`/`velab`/`vrun`)는 현재 임시 placeholder다.
 
 ## 무엇을 만드나
 
@@ -29,6 +29,11 @@ HDL 소스
 문법 오류는 parse에서, 연결성·타입·다중구동 등 정합성 오류는 elaboration에서 잡는다.
 VCD 파형은 자동 항상-덤프가 아니며, RTL 코드가 dump 시스템 태스크(`$dumpfile`, `$dumpvars` 등)를
 명시적으로 호출할 때에만 생성된다.
+
+실행은 두 방식이다. `vita` 하나로 compile→elaborate→simulation을 한 번에 돌리거나,
+단계별 명령 `vcmp`(compile)·`velab`(elaborate)·`vrun`(simulation)으로 나눠 돌릴 수 있다.
+단계별 방식은 상용 EDA(Cadence `xmvlog`/`xmelab`/`xmsim`, Synopsys `vlogan`/`vcs`/`simv`)의
+단계 분리에 대응하며, 단계별 독립 빌드·디버깅과 변경 없는 단계 스킵을 가능하게 한다 (상세는 §4 아키텍처).
 
 ## 레퍼런스 도구 비교
 

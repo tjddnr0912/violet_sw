@@ -6,11 +6,15 @@
 
 - **HDL 소스 전체 파이프라인**: preprocess → lex → parse → elaboration → simulation.
   각 단계는 독립 크레이트로 분리해 단위 테스트가 가능하다.
+- **단계별 실행 모델**: `vita` 원샷(compile→elaborate→simulation 일괄) 외에, 단계별 명령
+  `vcmp`(compile)·`velab`(elaborate, vcmp 산출물 소비)·`vrun`(simulation, velab 산출물 소비)으로
+  나눠 실행할 수 있다. 단계별 독립 빌드·디버깅, 변경 없는 단계 스킵(산출물 재사용)을 지원하며,
+  상용 EDA(Cadence·Synopsys)의 compile/elaborate/simulate 분리에 대응한다 (§4 아키텍처).
 - **문법 검사** — parse 단계에서 수행. 오류는 소스 위치와 함께 진단 출력.
 - **elaboration 단계 점검 항목** — 파라미터 해소, 계층 연결성, 타입/포트 정합, 미연결 신호, 다중구동(multiple driver) 등.
 - **이벤트 구동(event-driven) 시뮬레이션 커널** + `timescale` 기반 정밀 시간 모델 (§6).
 - **VCD 파형 생성 (IEEE 1364)** — RTL 내 dump 시스템 태스크 호출 시에만 활성; 자동 항상-덤프 아님.
-  CLI 편의 플래그(`vita sim --force-dump`)는 후속 옵션으로만 검토하며, 기본은 RTL이 주도한다.
+  CLI 편의 플래그(`vrun --force-dump`)는 후속 옵션으로만 검토하며, 기본은 RTL이 주도한다.
 - **표준 Verilog/SystemVerilog system tasks/functions (`$`로 시작) 전수 지원** — display · I/O · 파일 I/O · 메모리 로드 · 시뮬레이션 제어 · 시간 · 변환 · 비트벡터 · 수학 · random · VCD dump · assertion 샘플링 · introspection 등 전 범주.
   구체 목록과 Phase별 커버리지는 `hdl-reference/system-tasks/00-index.md` 참조.
 - **3개 HDL 지원** (로드맵 단계별): SystemVerilog(IEEE 1800) → 그 부분집합인 Verilog(IEEE 1364) → VHDL(IEEE 1076). 단계별 상세는 [로드맵 섹션](#phase-1-mvp-정의) 참조.

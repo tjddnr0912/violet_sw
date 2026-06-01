@@ -1,0 +1,506 @@
+# 15 · 에러 코드 레퍼런스
+
+> vitamin이 내는 **모든 진단 메시지 코드의 원인·예시·해결을 정의하는 단일 권위 레퍼런스**다.
+> `vita explain <CODE>`의 소스이며, **vitamin 구현의 산출물(deliverable)** 로서 코드가
+> 추가·변경될 때마다 본 문서도 함께 갱신된다(아래 거버넌스).
+
+---
+
+## 거버넌스 (이 문서의 규칙)
+
+- **이 문서는 코드에서 자동 생성되지 않는다.** 사람이 작성하는 원인 설명 산출물이며, `diag`
+  크레이트의 `MsgCode` exhaustive enum과 **1:1 동기**를 유지한다.
+- **CI 동기 게이트:** CI는 `MsgCode` enum의 모든 variant가 본 문서에 항목을 가지며, 본 문서의
+  모든 코드가 enum에 존재함을 검증한다 — **새 에러를 추가하면 본 문서 항목 추가 없이는 빌드가
+  통과하지 못한다.** 이것이 "에러 추가 시 문서 동기 갱신"을 강제하는 메커니즘이다.
+- **mnemonic이 1차 안정 식별자다**(예 `E-ELAB-MULTIDRIVER`) — 의미로 고정, **renumber 불가**.
+  CLI(`-Wno-`/`-Werror=`)·corpus(`expect_codes`)·문서는 **숫자가 아닌 mnemonic으로 참조**한다.
+- **`VITA-<S>####` 숫자는 보조**(빠른 grep용). 한 번 부여하면 **영구**(빈 번호는 빈 채로,
+  재사용·renumber 금지 — rustc `E0001` 방식). severity 접두 `S` ∈ {E=Error, W=Warning,
+  I=Info, F=Fatal}. 한 카테고리 내 번호는 mnemonic 알파벳순으로 부여.
+- severity·게이트·exit 의미는 [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md).
+
+### 번호대 예약
+
+| 번호대 | 카테고리 | 단계 |
+|---|---|---|
+| `0xxx` | GENERAL / SYSTEM | CLI·usage·error-limit |
+| `1xxx` | PREPROCESS | 전처리(`include`/매크로/lint 프라그마) |
+| `2xxx` | PARSE | 어휘·구문·설계단위 |
+| `3xxx` | ELABORATE | 파라미터 해소·계층·연결성·elaboration severity |
+| `4xxx` | RUNTIME | 시뮬레이션·RTL severity 태스크·assert |
+| `5xxx`–`7xxx` | **예약** | 향후: SVA / 타입 검사 / VHDL(Phase 3) |
+| `8xxx` | FILELIST | `.f` 전개(`-f`/`-F`) |
+| `9xxx` | ARTIFACT | 산출물 staleness·버전 게이트 |
+
+---
+
+## 0xxx · GENERAL / SYSTEM
+
+### VITA-E0001 · `E-CLI-BAD-FLAG` (Error)
+**알 수 없거나 잘못된 명령줄 플래그/값.** 인자 파서가 모르는 플래그, 형식·범위가 틀린 값,
+또는 해당 단계가 받지 않는 플래그를 만났을 때. 오타 플래그(`--timescal`)가 silently 무효가 되어
+미묘하게 틀린 시뮬을 내는 것을 막기 위해 컴파일 전에 큰 소리로 실패한다.
+```
+$ vcmp --timescal 1ns/1ps rtl/top.sv
+error[VITA-E0001] E-CLI-BAD-FLAG: unknown flag '--timescal' (did you mean '--timescale'?)
+```
+**해결:** §6 CLI 표면대로 철자·값을 고치거나 받는 단계로 옮긴다. 억제 불가(exit class 3).
+
+### VITA-F0002 · `F-LIMIT-ERRORS` (Fatal)
+**에러 한도(`--error-limit N`) 도달 — 단계 중단.** Error 누적이 임계(Verilator 기본 50;
+warning 미포함)에 도달하면, 깨진 파일이 수천 줄 cascade를 뱉지 않게 단계를 즉시 중단한다.
+개별 Error는 기록-후-계속이지만 한도 도달은 그 자체가 Fatal이다.
+```
+$ vcmp broken.sv
+error[VITA-E2002] E-PARSE-UNEXPECTED-TOKEN: ...   (×50)
+fatal[VITA-F0002] F-LIMIT-ERRORS: error limit reached (50); aborting compile
+  errors=50 warnings=3 notes=0
+```
+**해결:** 가장 앞 에러부터 고친다(뒤는 cascade인 경우 많음). `--error-limit <N>`으로 조정.
+억제 불가(exit class 1).
+
+---
+
+## 1xxx · PREPROCESS
+
+### VITA-E1001 · `E-PP-INCLUDE-NOT-FOUND` (Error)
+**`` `include `` 대상 파일을 검색 경로에서 못 찾음.** 현재 파일 디렉터리 + 모든
+`+incdir+`/`-I`(RULE A 입력)를 뒤져도 없을 때. 텍스트 치환은 전처리 시점 동작이라 대상이
+없으면 붙일 바이트가 없다(IEEE 1364 §19.5 / 1800 §22.4). include 스택 Frame으로 출처 표기.
+```
+`include "defs/config.svh"        // 어느 +incdir+ 아래에도 없음
+$ vcmp top.sv +incdir+./rtl
+error[VITA-E1001]: `include "defs/config.svh" not found on search path
+```
+**해결:** `+incdir+<dir>`로 헤더 디렉터리를 추가하거나 경로/파일명(대소문자 포함 — 경로는 모든
+OS에서 대소문자 구분)을 고친다. `.f` 트리 안이면 `--dump-filelist`로 확인. 억제 불가.
+
+### VITA-E1002 · `E-PP-MACRO-ARITY` (Error)
+**함수형 매크로를 잘못된 인자 개수로 호출.** `` `define NAME(a,b,…) `` 매크로를 형식 인자
+개수와 다른 실인자로 전개할 때(IEEE 1364 §19.3.1 / 1800 §22.5.1). 호출 위치와 정의 위치를
+둘 다 Frame으로 첨부.
+```
+`define MAX(a, b) ((a) > (b) ? (a) : (b))
+assign y = `MAX(x);               // arity 1, 2 기대
+error[VITA-E1002]: macro `MAX expects 2 arguments, got 1
+```
+**해결:** 형식 인자 수에 맞춰 호출하거나 `` `define `` 을 고친다. (객체형 매크로 뒤의 `(`는
+호출이 아니라 리터럴 텍스트 — arity 검사 대상 아님.) 억제 불가.
+
+### VITA-W1003 · `W-LINT-UNCLOSED` (Warning)
+**inline `// vitamin lint_off` 프라그마가 닫히지 않고 EOF 도달.** `lint_off <CODE>` 구간이
+짝 `lint_on` 없이 파일 끝(또는 textually-inlined `` `include `` 범위 끝)에 도달하면, 나머지
+전체의 진단이 silently 억제되는 편집 실수일 가능성이 크므로 표면화한다.
+```
+// vitamin lint_off W-PARSE-IMPLICIT-NET
+assign w = a & b;
+// ... EOF, 짝 lint_on 없음 ...
+warning[VITA-W1003]: 'lint_off W-PARSE-IMPLICIT-NET' at alu.sv:2 never closed before EOF
+```
+**해결:** 의도한 끝에 `// vitamin lint_on <CODE>`를 추가. 전파는 textually-inlined
+`` `include ``만, `-y`/`-v` 라이브러리 단위로는 안 넘어감. `-Wno-W-LINT-UNCLOSED`로 억제.
+
+---
+
+## 2xxx · PARSE
+
+### VITA-E2001 · `E-DUP-UNIT` (Error)
+**설계 단위(module/package) 재정의.** 같은 단위 이름이 분석 소스에 두 번 이상 정의될 때(예
+filelist에 소스 파일 중복, 또는 두 파일이 같은 `module m` 선언). 논리 라이브러리는 한
+`library:unit` 키에 두 단위를 못 담는다. **소스는 기본 dedup하지 않는다**(§3.1 BLOCKER) — sticky
+디렉티브 상속(RULE S) 때문에 두 occurrence는 다른 컨텍스트라 같은 입력이 아니므로 silent dedup이
+위험하다.
+```
+# build.f 가 adder.sv 를 두 번 나열 (또는 두 파일이 module adder 선언)
+error[VITA-E2001]: design unit 'adder' redefined
+  note: first defined at adder.sv:1   note: redefined (second occurrence)
+```
+**해결:** 중복 소스 항목 제거 또는 한쪽 단위 개명. `--dump-filelist`로 평탄화 순서 확인.
+(같은 canonical 경로가 *다른* 상속 컨텍스트로 두 번이면 `E-FLIST-DUP-CTX-CONFLICT`.) 억제 불가.
+
+### VITA-E2002 · `E-PARSE-UNEXPECTED-TOKEN` (Error)
+**문법에 맞지 않는 예기치 못한 토큰.** 어느 valid production도 이어갈 수 없는 토큰(누락 `;`,
+잘못된 키워드, 불균형 `begin`/`end`, 잘못된 식). parse는 마지막 언어 의존 단계이며 토큰에
+file/line/col이 붙어 diag가 caret로 밑줄. `--error-limit` 도달 시 `F-LIMIT-ERRORS`로 중단.
+```
+module m;
+  assign y = a &        // 우변 누락 + ';' 누락
+endmodule
+error[VITA-E2002]: unexpected token 'endmodule', expected expression  --> m.sv:3:1
+```
+**해결:** 해당 위치 문법을 고친다. `--std`/`-g<year>`/`-sv` dialect가 파일과 맞는지 확인(2005↔SV
+불일치가 valid SV 토큰을 예기치 못하게 만들 수 있음). 억제 불가.
+
+### VITA-W2003 · `W-PARSE-IMPLICIT-NET` (Warning)
+**`default_nettype wire` 하에서 암시적 net 추론.** 미선언 식별자를 net 문맥에 써서 1-bit net으로
+암시 선언될 때(IEEE 1364 §19.2 / 1800 §22.8). `default_nettype none`이면 같은 코드가 hard error.
+오타(`enabel`)가 silently 새 wire가 되는 고전 버그라 경고. 유효 `default_nettype`은 sticky·파일 간
+상속(RULE S)이라 이 경고 유무는 컴파일 순서에 의존.
+```
+assign y = a & enabel;            // 'enabel' 오타 -> 암시 1-bit wire
+warning[VITA-W2003]: implicit net 'enabel' inferred (default_nettype wire)  --> m.sv:3:18
+```
+**해결:** net 명시 선언 또는 오타 수정. 프로덕션 RTL은 `` `default_nettype none `` 권장.
+`-Wno-W-PARSE-IMPLICIT-NET`(또는 인라인 `lint_off`)로 억제, `-Werror=`로 승격.
+
+---
+
+## 3xxx · ELABORATE
+
+### VITA-E3001 · `E-ELAB-MULTIDRIVER` (Error)
+**한 net이 복수 구조적 드라이버로 충돌 구동.** 평탄화 sim-ir에서 한 net(또는 비트범위)이 둘
+이상의 구조적 드라이버(복수 `assign`, output 포트, gate)로 구동되고 `--multi-driver` 정책이
+`error`(기본, bucket B 입력)일 때. 값은 IEEE §6.6 4-state wired-logic으로 항상 *해소*되며, 이
+코드는 그 충돌을 hard fail로 볼지를 게이트한다. `%m` 계층 경로와 함께 보고.
+```
+wire w;  assign w = a;  assign w = b;     // w에 두 번째 구조적 드라이버
+$ velab -s top --multi-driver error   ->  VITA-E3001 at top.w
+```
+**해결:** 단일 드라이버로 줄이거나 의도된 wired-logic을 명시(`tri`/open-drain). 복수 드라이버가
+의도면 `velab --multi-driver warn`으로 정책을 낮춘다 — 같은 `E-ELAB-MULTIDRIVER` 코드가 Warning
+severity로 바뀌고 elaboration이 계속된다(`--multi-driver`는 bucket B 해시 입력이라 스냅샷 재생성).
+
+### VITA-E3002 · `E-ELAB-PORT-MISMATCH` (Error)
+**인스턴스 포트 연결이 모듈 포트 선언과 비호환.** 모듈에 없는 named 포트 `.foo()`, 포트 수를
+넘는 positional 연결, 방향/종류 비호환 등 바인딩 자체가 무의미할 때(IEEE 1800 §23.3.2). 폭
+불일치(복구 가능 `W-ELAB-WIDTH-TRUNC`)와 구별 — 인스턴스를 형성할 수 없다. `%m` + AST span 첨부.
+```
+module child(input a, output y); endmodule
+child u0(.a(1'b0), .z(y));         // .z 는 child 의 포트가 아님
+->  VITA-E3002 at top.u0 (no port `z` on module `child`)
+```
+**해결:** 선언된 포트로 연결 수정(이름/positional 수·방향). 미연결 포트는 `.z()`로 비운다.
+억제 불가.
+
+### VITA-E3003 · `E-ELAB-UNRESOLVED-INSTANCE` (Error)
+**인스턴스화한 모듈을 컴파일된 설계 단위로 해소 불가.** 계층 평탄화 중 인스턴스 타깃 모듈이 work
+라이브러리·`-L` compose·`-y`/`-v` 검색 어디에도 없을 때. vcmp는 단위를 고립 컴파일하므로(parse가
+마지막 언어 의존 단계) 누락 참조는 elaborate 시점에야 드러난다.
+```
+alu u_alu(.a(x), .b(y));          // 모듈 alu 가 work 에 컴파일된 적 없음
+$ vcmp top.sv && velab -s top   ->  VITA-E3003: cannot resolve instance `u_alu` of module `alu`
+```
+**해결:** 누락 단위 소스를 vcmp filelist에 추가, 또는 `-L <lib>`/`-y <libdir>`로 발견 가능하게,
+또는 모듈명 오타 수정. (`-L`/`-y` 해소 내용은 bucket B 해시 입력.) 억제 불가.
+
+### VITA-E3004 · `E-ELAB-USER-ERROR` (Error)
+**elaboration 시점 `$error` 발화.** 절차 블록 밖(모듈 레벨·generate)에서 elaboration 평가된
+`$error`가 design-time 검사 실패로 발화(IEEE §20.11). `elaborate` 크레이트가 runtime과 같은
+LogEvent 경로로 내되 **sim_time 없음**, span은 AST 직접. IEEE상 기록 후 **계속**(중단 아님).
+```
+if (DEPTH <= 0) $error("DEPTH=%0d must be positive", DEPTH);   // elaboration-time
+$ velab -s fifo   ->  VITA-E3004: DEPTH=0 must be positive (elaboration continues)
+```
+**해결:** 파라미터/오버라이드를 고친다(`-G DEPTH=16`). `$error`만으로는 중단 안 함(중단 원하면
+RTL에서 `$fatal`). `-Wno-E-ELAB-USER-ERROR`로 억제.
+
+### VITA-F3005 · `F-ELAB-USER-FATAL` (Fatal)
+**elaboration 시점 `$fatal` 발화.** 모듈 레벨·generate에서 평가된 `$fatal(n,…)`이 design-time
+검사 실패로 발화(IEEE §20.11). elaboration을 **즉시 중단**하고 스냅샷을 만들지 않는다("no simv"
+analogue). `n`은 exit-stats verbosity만 제어. velab/vita는 **exit class 1**(staleness class 2와
+구별).
+```
+if (IN_W < 1 || IN_W > 64) $fatal(1, "IN_W=%0d out of range", IN_W);
+$ velab -s mac -G IN_W=128   ->  VITA-F3005, elaboration aborts, exit 1, no snapshot
+```
+**해결:** 유효 파라미터 공급(`-G IN_W=32`) 또는 guard 수정. Fatal은 억제 불가(중단을 un-abort
+못함). class-1 + 이 코드 = RTL/파라미터 실패(재빌드 필요한 staleness 아님).
+
+### VITA-I3006 · `I-ELAB-USER-INFO` (Info)
+**elaboration 시점 `$info` 발화.** 모듈 레벨·generate에서 평가된 `$info`가 정보 출력(해소된
+파라미터·선택된 generate 구성 보고). Info severity, sim_time 없음, exit 무관.
+```
+$info("elaborating dcache with WAYS=%0d", WAYS);
+->  info[VITA-I3006]: elaborating dcache with WAYS=4
+```
+**해결:** 조치 불요. `-q`/`-Wno-I-ELAB-USER-INFO`로 조용히.
+
+### VITA-W3007 · `W-ELAB-USER-WARNING` (Warning)
+**elaboration 시점 `$warning` 발화.** 모듈 레벨·generate에서 평가된 `$warning`이 합법이지만
+의심스러운 design-time 조건을 표시(IEEE §20.11). 계속 진행, `-Werror` 승격 시에만 nonzero.
+```
+if (LATENCY < 1) $warning("LATENCY=%0d is unusually small", LATENCY);
+$ velab -s pipe -G LATENCY=0   ->  warning[VITA-W3007]: LATENCY=0 is unusually small
+```
+**해결:** 파라미터 조정 또는 의도면 수용. `-Wno-`로 억제, `-Werror=W-ELAB-USER-WARNING`로 RTL
+수정 없이 CI 실패(통합 게이트).
+
+### VITA-W3008 · `W-ELAB-WIDTH-TRUNC` (Warning)
+**폭 불일치가 묵시적 truncation/extension으로 해소.** 포트 연결·`assign`·파라미터 식에서 소스
+폭이 타깃보다 크거나(상위 비트 손실) 작을 때. IEEE §11.6.1상 묵시 size cast는 합법이라 진행하되,
+silent truncation은 고전 오류 원인이라 표면화. 두 폭 + `%m` + span 보고.
+```
+wire [7:0] wide = 8'hAB;  wire [3:0] narrow;
+assign narrow = wide;             // 8 -> 4 비트, 상위 nibble 손실
+->  warning[VITA-W3008]: width 8 truncated to 4 (top, assign narrow)
+```
+**해결:** cast를 명시(`wide[3:0]`)하거나 폭을 맞춘다. `-Wno-W-ELAB-WIDTH-TRUNC`(또는 인라인
+`lint_off`, RULE S로 소스 해시 반영)로 억제, `-Werror=`로 승격.
+
+---
+
+## 4xxx · RUNTIME
+
+### VITA-E4001 · `E-RUN-ASSERT-FAIL` (Error)
+**action block 없는 assert 실패 — 묵시 `$error` severity.** immediate `assert(...)` 또는
+concurrent `assert property(...)`가 거짓이고 `else`(fail) 블록이 없을 때, IEEE §16.3상 묵시
+`$error` severity를 갖는다. RTL `$error`와 **같은 게이트**로 라우팅, 실패 플래그 기록 후 계속.
+(SVA Phase 2 — 코드 예약.)
+```
+always @(posedge clk) assert (state != ERR_STATE);   // state==ERR_STATE 시 실패
+->  error[VITA-E4001] E-RUN-ASSERT-FAIL: assertion failed at tb.dut.fsm (state.sv:42) time=1750ns
+```
+**해결:** 설계/벤치를 고치거나 명시 action block(`assert(...) else $warning(...)`). `-Wno-`/
+`-Werror=`로 억제·승격. corpus(`--error-exit` 기본 ON)에선 1회 발화가 FAIL — `expect_codes`로
+코드 assert.
+
+### VITA-E4002 · `E-RUN-RANGE` (Error)
+**런타임 배열 인덱스/비트·파트 셀렉트 범위 초과.** 동적 인덱스가 선언 범위를 벗어날 때. IEEE
+§11.5.1상 범위 밖 셀렉트는 `x`를 읽고(쓰기는 무시) crash하지 않으므로, 표준 read-x/ignore-write
+값 의미를 지키며 동시에 이 진단으로 silent corruption을 보이게 한다. sim-ir는 span-free라
+**§7 side-table**로 file:line 복원 + sim_time.
+```
+logic [7:0] mem [0:15];  int idx = 20;  $display("%0h", mem[idx]);  // 20 > 15
+->  error[VITA-E4002] E-RUN-RANGE: index 20 out of range [0:15] at tb.mem (mem.sv:9)
+```
+**해결:** 셀렉트 전에 인덱스 검증/clamp 또는 배열 크기 확대. 값 의미는 표준(read x), 기록 후 계속.
+`-Wno-E-RUN-RANGE`로 억제, `-Werror=`로 CI 중단. `(source location unavailable)`이면 위치 없는
+스냅샷 — `W-RUN-NO-LOCATIONS` 참조.
+
+### VITA-E4003 · `E-RUN-USER-ERROR` (Error)
+**시뮬레이션 시점 RTL `$error` 발화.** 절차/시뮬 문맥(initial/always/task, 또는 SVA `else
+$error`)에서 실행. IEEE §20.11상 메시지 출력 후 **계속**(`$finish` 안 부름, exit 클래스 자체로는
+무변). hdl-builtins가 LogEvent로 방출 → `$display`와 sim-time 순 인터리브. severity+file:line(§7)+
+`%m`+sim_time 조립.
+```
+if (dut_result !== expected) $error("MISMATCH got=%0h exp=%0h", dut_result, expected);
+->  error[VITA-E4003] E-RUN-USER-ERROR: MISMATCH got=ab exp=cd at tb (tb.sv:31) time=1200ns
+```
+**해결:** 의도된 벤치 출력 — 벤치가 표시한 조건을 고친다. 기본은 IEEE(계속, exit 무관);
+`--error-exit`로 `$error` 발화 시 nonzero(corpus가 이걸로 게이트). `-Wno-`/`-Werror=`(통합 게이트).
+
+### VITA-F4004 · `F-RUN-FATAL` (Fatal)
+**시뮬레이션 시점 RTL `$fatal` 발화 — 묵시 `$finish`로 중단.** IEEE §20.11상 `$fatal`은 묵시
+`$finish`로 즉시 종료. Fatal 진단 후 시뮬 단계 중단, **exit class 1**(staleness class 2와 구별).
+앞 `n`(0/1/2)은 shell code가 아니라 exit-stats verbosity(0=silent,1=time+loc,2=+stats).
+```
+if (cfg_invalid) $fatal(1, "bad config word %0h", cfg);
+->  fatal[VITA-F4004] F-RUN-FATAL: bad config word deadbeef at tb.dut (dut.sv:88) time=500ns (exit 1)
+```
+**해결:** 치명 조건 해소 — `$fatal`은 작성자의 명시적 "계속 불가". Fatal은 continue로 억제 불가.
+corpus는 class-1 내 compile-fail vs runtime-fail을 요약 MsgCode로 구분(`F-RUN-FATAL`=돌다 중단).
+(elaboration 시점 `$fatal`은 `F-ELAB-USER-FATAL`.)
+
+### VITA-I4005 · `I-RUN-USER-INFO` (Info)
+**시뮬레이션 시점 RTL `$info` 발화.** 절차/시뮬 문맥에서 정보 출력(예 "test PASSED"). IEEE
+§20.11상 순수 정보, 계속, exit 무관. severity+file:line+`%m`+sim_time을 붙여 plain `$display`
+(severity 없는 RtlOutput)과 구별.
+```
+if (pass) $info("test PASSED (%0d vectors)", n);
+->  info[VITA-I4005] I-RUN-USER-INFO: test PASSED (256 vectors) at tb (tb.sv:54) time=9000ns
+```
+**해결:** 조치 불요(exit 무관). `-q`/`-Wno-I-RUN-USER-INFO`로 조용히(단 `-q`는 stdout 복사만,
+자동 로그파일엔 기록됨).
+
+### VITA-W4006 · `W-RUN-NO-LOCATIONS` (Warning)
+**로드한 `.velab`의 위치 side-table이 제거됨 — 런타임 진단이 file:line 불가.** §7 위치
+side-table은 선택적이며 release 스냅샷은 없이 배포될 수 있다(D4). 없으면 런타임 진단이 caret
+대신 `(source location unavailable)`로 degrade — 시뮬레이터는 절대 crash 안 하고 code/severity/
+sim_time/`%m`은 출력. 로드 시점 **1회** 경고.
+```
+$ vrun build/cpu.velab
+warning[VITA-W4006] W-RUN-NO-LOCATIONS: snapshot has no location side-table;
+  runtime diagnostics will omit file:line (rebuild without --strip-locations, or vrun --rebuild)
+```
+**해결:** 위치 포함으로 재-elaborate(side-table은 **기본 포함**이며 `velab --strip-locations`로만
+빠진다 — strip을 안 하면 됨), 또는 `vrun --rebuild`. 권고성이라 시뮬은 정상 진행.
+`-Wno-W-RUN-NO-LOCATIONS`로 억제(의도적 strip 스냅샷), `-Werror=`로 CI 실패.
+
+### VITA-W4007 · `W-RUN-USER-WARNING` (Warning)
+**시뮬레이션 시점 RTL `$warning` 발화.** IEEE §20.11상 경고 출력 후 계속, 도구 억제 가능.
+compile-time warning과 **같은 게이트**를 지나므로 `-Werror=W-RUN-USER-WARNING`이 RTL `$warning`을
+소스 수정 없이 CI 실패로(GHDL `--warn-error` 선례). 승격 시에만 nonzero.
+```
+if (fifo_almost_full) $warning("fifo near full: depth=%0d", depth);
+->  warning[VITA-W4007] W-RUN-USER-WARNING: fifo near full: depth=14 at tb.dut.u_fifo time=620ns
+```
+**해결:** 경고 조건 처리 또는 수용. `-Wno-`/`--suppress=`로 억제, `-Werror=`로 승격.
+always-logged spine이 아니라 `-q`는 stdout 복사만 영향(자동 로그엔 기록). `--error-limit`은
+warning 미계수.
+
+---
+
+## 8xxx · FILELIST
+
+### VITA-E8001 · `E-FLIST-CYCLE` (Error)
+**filelist 사이클 — 활성 스택에 이미 있는 `.f`를 재포함.** 중첩 `-f`/`-F`가 (베이스 해소+lexical
+canonical 후) 현재 열린 `.f` active-stack의 경로로 해소될 때. 평탄화는 트리여야 하므로 back-edge는
+silent 스킵 금지 — 전체 체인을 보고. diamond(다른 가지서 도달, 이미 pop)는 사이클 아님.
+```
+# build.f: -f sub.f      # sub.f: -f build.f
+error[VITA-E8001] E-FLIST-CYCLE: filelist cycle: build.f -> sub.f -> build.f
+```
+**해결:** 사이클을 끊는다(자기/조상 참조 제거, 공유 내용은 leaf `.f`로 분리 = diamond 합법).
+억제 불가(exit class 3).
+
+### VITA-E8002 · `E-FLIST-DEPTH` (Error)
+**중첩 깊이가 backstop cap(256) 초과.** 중첩은 사실상 무제한(사이클 가드)이나, 비순환 폭주
+체인이 OS 스택을 소진하기 전에 256 프레임에서 중단한다.
+```
+# 생성된 체인 f0.f -> f1.f -> ... (사이클 아님, 그냥 깊음)
+error[VITA-E8002] E-FLIST-DEPTH: filelist nesting exceeded depth cap 256 at f256.f
+```
+**해결:** 생성을 평탄화(대개 생성기가 한두 단계로) 또는 독립 top-level 호출로 분리. 억제 불가
+(exit class 3).
+
+### VITA-E8003 · `E-FLIST-DUP-CTX-CONFLICT` (Error)
+**같은 canonical 소스가 다른 상속 sticky 컨텍스트로 두 번.** 소스는 기본 dedup 안 함(중복 모듈은
+`E-DUP-UNIT`). 같은 canonical 경로가 두 번인 경우만 dedup하되, 두 occurrence가 다른 상속 sticky
+디렉티브(`timescale`/`default_nettype`, RULE S) 컨텍스트면 같은 입력이 아니므로 silent dedup이
+한쪽을 떨군다 → hard error로 양쪽 컨텍스트 제시.
+```
+# a.f: `timescale 1ns/1ps  then shared.sv
+# b.f: `timescale 1ps/1ps  then shared.sv   (같은 경로, 다른 상속 timescale)
+error[VITA-E8003] E-FLIST-DUP-CTX-CONFLICT: rtl/shared.sv included twice under differing sticky context
+```
+**해결:** 두 occurrence를 일치시키거나(동일 sticky 디렉티브 선행, 또는 한 번만 포함), 파일이
+자기 `timescale`/`default_nettype`를 self-contained하게. 억제 불가(silent dedup은 RULE S 매니페스트
+해시를 오염; exit class 3).
+
+### VITA-E8004 · `E-FLIST-GLOB` (Error)
+**filelist의 glob/wildcard 거부.** 소스/디렉터리 토큰의 `*`/`?`/`[...]`는 거부 — readdir 순서가
+플랫폼 불안정이라 RULE S 정렬을 비결정으로 만들고 §5 "3-OS 바이트 동일"을 깬다. silent 전개 안 함.
+```
+rtl/*.sv                          # 플랫폼마다 비결정
+error[VITA-E8004] E-FLIST-GLOB: wildcard 'rtl/*.sv' not allowed; emit an explicitly sorted file list
+```
+**해결:** 명시적 정렬 경로로 대체. 생성 필요 시 생성기가 정렬해 명시 `.f`를 낸다. 억제 불가
+(exit class 3).
+
+### VITA-E8005 · `E-FLIST-NOT-FOUND` (Error)
+**filelist 또는 참조 경로가 프레임 베이스 해소 후 없음.** `-f`/`-F` 타깃·소스·검색 디렉터리가
+프레임 베이스(`-f`=invocation CWD, `-F`=`.f` 자기 디렉터리) 기준으로 존재하지 않을 때.
+canonicalization이 case-fold를 안 하므로 대소문자만 다른 경로는 여기서 표면화(macOS
+case-insensitive FS 충돌을 silent alias 대신 가시화).
+```
+-F ./ip/Core.f                    # 실제 파일은 ip/core.f (대소문자 차이)
+error[VITA-E8005] E-FLIST-NOT-FOUND: cannot open './ip/Core.f' (base=file-dir)
+```
+**해결:** 경로(대소문자 포함)/베이스를 고친다. `-f`=CWD 상대, `-F`=파일 디렉터리 상대를 혼동하기
+쉬움. `--dump-filelist`로 (origin, base, canonical-path) 확인. 억제 불가(exit class 3).
+
+### VITA-E8006 · `E-FLIST-UNDEF-ENV` (Error)
+**filelist의 미정의 환경변수 참조.** `$VAR`/`${VAR}`/`$(VAR)`가 환경에 없을 때. silent 빈
+문자열 치환은 잘못된 경로(FS 루트로 붕괴 등) + 환경마다 다른 해시를 내어 재현성을 해치므로
+hard-error.
+```
+$RTL_ROOT/cpu/alu.sv              # RTL_ROOT 미export
+error[VITA-E8006] E-FLIST-UNDEF-ENV: undefined environment variable 'RTL_ROOT' in build.f:1
+```
+**해결:** 변수 export 또는 구체/상대 경로로 대체. CI는 필요한 변수를 명시 설정. 억제 불가
+(exit class 3).
+
+### VITA-E8007 · `E-FLIST-WRONG-STAGE` (Error)
+**filelist 디렉티브가 호출 단계의 버킷에 안 맞음.** 각 단계 전개기는 전체 `.f` 문법을 파싱하되,
+호출 단계가 소유하지 않는 버킷의 디렉티브는 silent no-op이 아니라 hard error. 예: `velab -f x.f`에
+`+define+`(전처리/bucket A) — velab엔 전처리 패스가 없어 무시하면 의도 위반.
+```
+# elab.f: -s top  /  +define+WIDTH=8     # 전처리 디렉티브 — elaborate에 무효
+error[VITA-E8007] E-FLIST-WRONG-STAGE: '+define+WIDTH=8' is a vcmp-stage flag, invalid during elaborate
+```
+**해결:** 소유 단계로 옮긴다(`+define+`/`+incdir+`/`-y`는 vcmp, `-s`/`-G`/`-L`은 velab), 또는
+union을 받는 원샷 `vita` 사용. 억제 불가(exit class 3).
+
+### VITA-W8008 · `W-FLIST-MIXED-BASE` (Warning)
+**`-F` 프레임 안의 `-f` 줄이 재배치 가능 서브트리를 CWD에 re-anchor.** `-F`는 자기 디렉터리 기준
+해소라 재배치 가능(벤더 IP)인데, 내부 `-f` 줄은 그 서브트리를 invocation CWD에 re-anchor해
+재배치성을 깬다 — 거의 항상 벤더 패키징 버그. 의미는 유효해 경고.
+```
+# vendor.F: -F ./rtl/core.F  /  -f ./rtl/extra.f   # extra.f 를 CWD에 re-anchor
+warning[VITA-W8008] W-FLIST-MIXED-BASE: -f inside -F frame re-anchors to CWD (relocatability lost)
+```
+**해결:** `-F` 트리 안에선 중첩 포함도 `-F` 사용. CWD anchor가 의도면 `-Wno-W-FLIST-MIXED-BASE`로
+억제, `-Werror=`로 승격.
+
+### VITA-W8009 · `W-FLIST-OVERRIDE` (Warning)
+**단일값 knob이 두 곳에서 지정 — last-wins override 적용(항상 로깅).** 단일값 elaborate knob
+(`--top-module`/`-s`, `--std`, `--timescale`, `--multi-driver`)이 평탄 `-f`/`-F`+명령줄 스트림의
+두 곳 이상에 있을 때. 명령줄 토큰이 전개 뒤에 append되어 명령줄이 `.f`를 override. silent override를
+막기 위해 **always-logged spine**(`-q`로도 억제 안 됨)으로 두 값·출처·승자를 보인다.
+```
+# build.f: --top-module dut_b
+$ velab -s dut_a -f build.f
+warning[VITA-W8009] W-FLIST-OVERRIDE: --top-module 'dut_b' (build.f:1) overridden by 'dut_a' (command line)
+```
+**해결:** 의도된 override(`velab -s top2 -f build.f`)는 지원 워크플로 — 경고는 정보성, 진행됨.
+노이즈를 없애려면 knob을 한 곳에만(빌드 의도는 명령줄 권장). `-Werror=W-FLIST-OVERRIDE`로 strict
+CI에서 실패.
+
+---
+
+## 9xxx · ARTIFACT / STALENESS
+
+### VITA-E9001 · `E-ART-FORMAT-MISMATCH` (Error)
+**산출물 magic 또는 format_version 불일치.** 헤더 전용 디코드(본문 역직렬화 전)에서 magic
+(`VITWORKU`/`VELAB\0`) 또는 `format_version`이 이 빌드 기대와 다를 때 — foreign/손상 파일 또는
+비호환 컨테이너 레이아웃. 본문을 안 읽으므로 misparse 불가, 재빌드 힌트와 함께 거부. (타입 형상의
+`E-ART-SCHEMA-MISMATCH`보다 하위 게이트.)
+```
+error[VITA-E9001] E-ART-FORMAT-MISMATCH: top.velab has format_version=2, this vitamin expects 1
+  hint: regenerate with `velab` (or `vcmp --clean`)
+```
+**해결:** 현재 도구로 재생성(`vcmp`/`velab`, 또는 `vcmp --clean`). 산출물은 항상 재생성 가능하므로
+refuse-and-rebuild(version-GATE), silent 마이그레이션 없음. exit class 2. 억제 불가.
+
+### VITA-E9002 · `E-ART-SCHEMA-MISMATCH` (Error)
+**산출물 schema_hash가 도구의 구조적 타입-형상 해시와 다름.** 헤더의 `schema_hash`(D2/§5의
+`#[derive(SchemaHash)]` 구조적 다이제스트)가 실행 도구에 컴파일된 값과 다를 때. 필드/variant
+추가·삭제·재정렬·타입변경 — 또는 wire 영향 serde 속성(`rename`/`skip`/…) — 이 해시를 뒤집어,
+비호환 형상 빌드의 산출물이 silent misparse되는 것을 헤더 단계에서 거부.
+```
+error[VITA-E9002] E-ART-SCHEMA-MISMATCH: top.velab schema 9f3c.., current tool schema 7a10..
+  hint: rerun `velab`; the sim-ir type shape changed between builds
+```
+**해결:** 현재 도구로 재빌드(`velab`, 또는 `vcmp` 후 `velab`). version-GATE(refuse-and-rebuild),
+마이그레이션 기계 없음. exit class 2. 억제 불가.
+
+### VITA-E9003 · `E-ART-STALE-UPSTREAM` (Error)
+**vrun이 라이브 소스 재해시 후 stale 스냅샷 거부(RULE V).** 매 실행 vrun이 상류 체인 전체를
+라이브 소스에 재검증 — 소비 (lib:unit, src_sha256) 트리플마다 라이브 파일을 재전처리(상속 적용)해
+다이제스트 재계산, 매니페스트 내용 해시·두 schema 해시 재확인. 라이브 해시가 스냅샷에 박힌 값과
+다르면 stale이므로 틀린 결과를 내느니 거부. **mtime 안 씀** — 내용 해시만 건전.
+```
+$ velab -s top && vrun top.velab           # ok
+$ echo '// edit' >> rtl/alu.sv ; vrun top.velab
+error[VITA-E9003] E-ART-STALE-UPSTREAM: rtl/alu.sv digest changed since snapshot
+  hint: rerun vcmp/velab, or vrun --rebuild
+```
+**해결:** stale 단계 재실행(`vcmp`/`velab`) 후 `vrun`, 또는 `vrun --rebuild`. exit class 2(RTL
+버그 아닌 재빌드임을 CI가 앎; silent 재사용 없음). 억제 불가.
+
+### VITA-E9004 · `E-ART-VERSION-GATE` (Error)
+**생산 도구의 semver-major가 소비 도구와 비호환.** provenance/도구 지문에 기록된 생산 도구
+semver-major가 비호환일 때(컨테이너 포맷·schema 해시 일치 여부와 무관). §5상 format_version/
+schema_hash/tool-semver-major 불일치는 hard error + 재빌드 힌트, silent 재사용 없음. 빌드 지문
+(git sha/dirty/profile)은 provenance 전용·staleness 키 아님(dirty 트리만으론 안 걸림).
+```
+error[VITA-E9004] E-ART-VERSION-GATE: top.velab produced by vitamin 2.x, this tool is 1.x
+  hint: regenerate with this tool's `velab`, or install a matching vitamin
+```
+**해결:** 소비 도구와 major가 맞는 도구로 재생성하거나 맞는 버전 설치. refuse-and-rebuild;
+마이그레이션은 산출물이 배포 포맷이 될 때까지 연기. exit class 2. 억제 불가.
+
+---
+
+## Sources
+
+- [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md) — severity lattice · MsgCode 체계 ·
+  게이트 · exit 코드 · RTL severity 통합 (본 카탈로그의 상위 설계)
+- [14-staged-artifacts.md](14-staged-artifacts.md) — FLIST/ART 코드의 hash·staleness·filelist 의미
+- [09-testing-and-verification.md](09-testing-and-verification.md) — corpus가 코드로 assert,
+  exit 분류
+- hdl-reference/system-tasks/04-simulation-control.md · 13-misc.md · 01-display-io.md;
+  systemverilog/07-assertions-sva.md — `$info`/`$warning`/`$error`/`$fatal`/assert severity
+- IEEE 1800-2017 §16(assertions) §20.10–20.12(severity/elaboration tasks) §22(preprocess) ·
+  IEEE 1364-2005 §19

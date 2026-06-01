@@ -35,25 +35,69 @@ source files
 
 **VCD writer:** IEEE 1364 VCD 포맷으로 신호 변화를 직렬화한다. **RTL 코드에서 dump 시스템 태스크(`$dumpfile`, `$dumpvars` 등)가 호출될 때만 활성화된다.** dump 태스크가 한 번도 불리지 않으면 VCD 파일은 생성되지 않는다(no-op). 자동 항상-덤프가 아니다.
 
+**진단·로깅(횡단):** 모든 단계의 운영 출력 — 읽는 파일·라이브러리 해소·elaborate 진행·런 요약, 그리고 error/warning/fatal — 은 단일 이벤트 스트림으로 흐른다. 진단 *렌더링*(file:line:col + caret)은 `diag`, 운영 *transcript·로그파일(tee)·severity·메시지 코드·exit-code·`$error`/`$fatal` 연동*은 `vita-log`가 담당한다. 권위 문서는 [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md).
+
+---
+
+## 실행 모델 — 원샷과 단계별 실행
+
+파이프라인은 두 가지 방식으로 구동된다.
+
+**원샷 — `vita`**
+preprocess → lex → parse → elaborate → sim → VCD 전 과정을 한 명령으로 실행한다. 중간 산출물을 디스크에 남기지 않고 메모리에서 곧장 다음 단계로 흘려보낸다. 일상적인 시뮬레이션의 기본 진입점이다.
+
+**단계별 — `vcmp` / `velab` / `vrun`**
+같은 파이프라인을 세 개의 독립 실행 단계로 쪼갠다. 각 단계는 앞 단계가 디스크에 남긴 산출물(artifact)을 읽어 이어받는다.
+
+| 명령 | 단계 | 담당 크레이트 | 입력 | 출력(artifact) |
+|---|---|---|---|---|
+| `vcmp` | compile | hdl-preprocess · hdl-lexer · hdl-parser | HDL 소스 | 분석된 설계 단위 (work 라이브러리) |
+| `velab` | elaborate | elaborate | `vcmp` 산출물 | elaborated sim-ir 스냅샷 |
+| `vrun` | simulation | sim-engine · vcd-writer · hdl-builtins | `velab` 산출물 | 시뮬레이션 실행 + VCD (dump 호출 시) |
+
+`vita`(원샷)는 이 세 단계를 디스크 왕복 없이 연결한 것과 의미상 동일하다.
+
+**상용 EDA 흐름과의 매핑**
+이 3단계 분리는 상용 시뮬레이터의 표준 흐름과 1:1 대응한다.
+
+| vitamin | Cadence Xcelium | Synopsys VCS |
+|---|---|---|
+| `vcmp` (compile) | `xmvlog` / `xmvhdl` | `vlogan` / `vhdlan` |
+| `velab` (elaborate) | `xmelab` | `vcs` (elab → `simv` 빌드) |
+| `vrun` (simulation) | `xmsim` | `simv` |
+| `vita` (원샷) | `xrun` | — |
+
+**단계 분리의 이점**
+- **독립 빌드** — 네 명령은 프로덕션에서 단일 multicall 바이너리(argv[0] 베이스네임 디스패치)로 배포되지만, 단계별 디버깅용 실제 `[[bin]]` 타깃을 dev 전용 `separate-bins` 피처 뒤에 둬 `vcmp`/`velab`/`vrun`을 독립적으로 빌드·호출·디버깅할 수 있다.
+- **단계별 디버깅** — compile·elaborate·simulation 중 어디서 문제가 났는지 단계 경계의 산출물을 `--dump`(RON 뷰)로 직접 들여다보며 좁힐 수 있다.
+- **불필요한 단계 스킵 (건전성 보장)** — 소스가 그대로면 `vcmp`/`velab` 산출물을 재사용해 `vrun`만 반복 실행한다. 단, 이 스킵이 *건전*하려면 `vrun`이 상류 체인 전체를 **라이브 소스에 대해 재검증**해야 한다(내용 해시 대조, mtime 금지). Xcelium `-R`/`-r`의 검사-생략 패스트패스와 의도적으로 다르다.
+
+**산출물 포맷 · 해시 결합 · CLI 표면.** 단계 간 산출물의 온디스크 포맷(vcmp work 라이브러리 디렉터리 / velab `<top>.velab` 스냅샷), staleness 해시 결합 규칙, 멀티 라이브러리 주소화, 전체 CLI 플래그 표면은 **[14-staged-artifacts.md](14-staged-artifacts.md)** 에 권위 있게 정의한다. 핵심 법칙: 플래그는 *어느 바이너리가 파싱하느냐*가 아니라 *어느 단계의 출력을 교란하느냐*로 분류되어 staleness 해시에 결합된다 — 전처리 교란(`+define`/`+incdir`/`-y`/`--std`)→vcmp 소스 해시, elaborate 교란(top/파라미터/`--multi-driver`/라이브러리 바인딩)→velab 합성 해시, 런타임 전용(`+plusargs`/`--log`/seed)→해시 무관. `` `timescale ``·`` `default_nettype `` 같은 sticky 디렉티브의 파일 간 캐리오버 때문에, vcmp 단위 해시는 *상속 반영 후* 전처리 바이트 + 정렬된 파일 목록 위에서 계산한다.
+
+(`vita`·`vcmp`·`velab`·`vrun` 이름은 코드네임 `vitamin`과 함께 현재 placeholder다.)
+
 ---
 
 ## Cargo 워크스페이스 / 크레이트
 
-11개 크레이트가 단일 cargo workspace를 구성한다. 각 크레이트는 단일 책임 + 명확한 인터페이스를 가져 독립적으로 테스트 가능하다.
+14개 크레이트가 단일 cargo workspace를 구성한다. 각 크레이트는 단일 책임 + 명확한 인터페이스를 가져 독립적으로 테스트 가능하다.
 
 | 크레이트 | 책임 | 의존 |
 |---|---|---|
 | `hdl-preprocess` | 컴파일러 지시어 처리, 매크로 전개, include | — |
 | `hdl-lexer` | 토큰화 (언어별 토큰 집합) | preprocess |
 | `hdl-parser` | 토큰 → AST (언어별) | lexer, ast |
-| `hdl-ast` | 언어별 AST 타입 정의 | — |
+| `hdl-ast` | 언어별 AST 타입 정의 | vita-artifact-derive (serde·SchemaHash derive) |
 | `elaborate` | 파라미터 해소·계층 평탄화·타입/연결성 검사 → IR 생성 | ast, sim-ir, diag |
-| `sim-ir` | 언어 중립 시뮬레이션 IR (net/process/sensitivity/builtin-call) | — |
+| `sim-ir` | 언어 중립 시뮬레이션 IR (net/process/sensitivity/builtin-call) | vita-artifact-derive (serde·SchemaHash derive) |
 | `sim-engine` | 이벤트 구동 커널, 스케줄러, 시간 모델 | sim-ir |
 | `hdl-builtins` | 표준 `$`-system tasks/functions 라이브러리 — 디스패치 테이블 + 카테고리별 핸들러 | sim-ir, sim-engine, vcd-writer |
 | `vcd-writer` | IEEE 1364 VCD 직렬화 (dump 태스크가 호출될 때만 활성) | sim-ir |
-| `diag` | 진단/오류 리포팅 (소스 위치, 메시지) | — |
-| `cli` | `vita` 드라이버 (compile/elab/sim 서브커맨드) | 전부 |
+| `diag` | 진단 *렌더링* (file:line:col + caret) + `Severity`/`MsgCode`/`Frame`/`Diagnostic`/`LogSink` 데이터 모델 (IO 없음 → leaf) | — |
+| `vita-artifact` | 단계 산출물 (역)직렬화 + 헤더(magic/format_version/schema_hash/빌드지문) + staleness 검사(D3 트리플 대조) + `--dump` RON 뷰 | hdl-ast, sim-ir, hdl-preprocess, diag, vita-artifact-derive |
+| `vita-artifact-derive` | `#[derive(SchemaHash)]` proc-macro — 직렬화 타입 형상의 구조적 해시를 컴파일 타임 산출 (leaf, syn/quote) | — |
+| `vita-log` | 운영 로깅 — transcript·로그파일 tee·severity 라우팅·메시지 코드·exit-code·`$error`/`$fatal` 연동; diag 위에 적층 | diag, vita-artifact, sim-ir, tracing |
+| `cli` | 드라이버 바이너리 — `vita`(원샷) + `vcmp`/`velab`/`vrun`(단계별); 프로덕션은 단일 multicall 바이너리 | 전부 + vita-artifact + vita-log |
 
 크레이트별 책임과 분리 이유:
 
@@ -75,7 +119,11 @@ source files
 
 **`diag`** 는 소스 위치 정보와 오류/경고 메시지를 일관된 형식으로 생성하는 공유 라이브러리다. `ariadne`/`codespan-reporting`이 후보 구현이다. 어느 단계에서든 같은 방식으로 진단을 보고할 수 있게 한다.
 
-**`cli`** 는 `vita` 바이너리의 진입점이다. `vita compile`, `vita elab`, `vita sim` 서브커맨드로 파이프라인을 단계별로 또는 전체로 실행한다. 다른 모든 크레이트를 조합하는 글루 코드다.
+**`vita-artifact`** 는 단계 간 디스크 산출물의 (역)직렬화·헤더·버전·staleness를 한곳에 격리하는 크레이트다(D1). work 라이브러리 매니페스트와 `<unit>.vu`/`<top>.velab` 헤더 프레이밍, 전처리-소스 해시 대조, `--dump` RON 뷰가 모두 여기에 있다. 직렬화는 이 크레이트의 선택적 경계로만 일어나므로 원샷 `vita` 경로는 이 코드를 호출하지 않는다. `hdl-ast`·`sim-ir`의 루트 타입을 알아야 그 형상 해시를 stamp할 수 있어 둘에 의존하고, 라이브 재해시를 위해 `hdl-preprocess`에, 디코드/staleness 오류 보고를 위해 `diag`에 의존한다. 상세는 [14-staged-artifacts.md](14-staged-artifacts.md).
+
+**`vita-artifact-derive`** 는 `#[derive(SchemaHash)]` proc-macro만 제공하는 빌드그래프 leaf 크레이트다(syn/quote 의존). 직렬화 타입 형상(필드·variant + serde 속성)의 구조적 해시를 컴파일 타임에 산출해, 타입 레이아웃이 바뀌면 이전 산출물이 silent misparse 대신 깨끗한 버전 오류로 거부되게 한다(D2). proc-macro는 rustc 안에서 돌아 cargo-native이므로 03의 "별도 빌드 스크립트/codegen 없음" 원칙을 지킨다. `hdl-ast`·`sim-ir`가 이 derive를 적용하므로 두 크레이트는 더 이상 순수 leaf가 아니다.
+
+**`cli`** 는 드라이버 바이너리의 진입점이다. 원샷 `vita`와 단계별 `vcmp`(compile)·`velab`(elaborate)·`vrun`(simulation)을 제공하되, **프로덕션은 단일 multicall 바이너리**(argv[0] 베이스네임 디스패치; clap `multicall`이 아니라 손수 구현 — positional 기본 applet과 양립 위해)로 빌드하고 dev 전용 `separate-bins` 피처에서만 4개 `[[bin]]`을 따로 낸다. `vita-artifact`를 통해 산출물을 읽고 쓰며, 나머지 크레이트를 조합하는 글루다. 단계별 실행·산출물 흐름·CLI 표면은 위 "실행 모델" 절과 [14-staged-artifacts.md](14-staged-artifacts.md)를 참조한다.
 
 ---
 
@@ -100,6 +148,8 @@ source files
 **dump 태스크는 별도 표식으로 vcd-writer에 라우팅한다.** `$dumpfile`, `$dumpvars`, `$dumpon`/`$dumpoff`, `$dumpall`, `$dumpflush`, `$dumplimit` 는 IR에서 dump-family 표식을 갖는 builtin-call 노드로 표현된다. hdl-builtins의 디스패치 경로가 이 표식을 감지해 vcd-writer로 라우팅한다. 이 연결이 없으면 VCD는 생성되지 않는다.
 
 **표면적을 좁게 유지한다.** sim-ir가 노출하는 타입과 trait을 최소화해 인터프리터와 컴파일드 백엔드 양쪽이 동일 IR을 소비할 수 있도록 계약을 단순하게 유지한다. Yosys RTLIL이 "all frontends must transform to RTLIL-compatible representation"을 강제하는 것과 같은 원칙이다.
+
+**sim-ir는 span-free다(D4).** 소스 위치(파일 경로·바이트 범위)는 프론트엔드 잔재이므로 언어 중립 IR 노드에 넣지 않는다. 런타임 진단이 소스를 가리켜야 할 때는, IR 노드 인덱스로 키잉된 **선택적·독립 버전 사이드테이블**(`node_index → {file_id, byte_range}`)로 위치를 운반하고 `file_id→path` 맵은 work 매니페스트에 둔다(Yosys RTLIL이 `src`를 어트리뷰트로 오버레이하는 선례). 이로써 `SchemaHash` derive가 sim-ir의 중립 코어만 해시하고, 진단 위치가 백엔드 교체 경계를 넓히지 않는다. 상세는 [14-staged-artifacts.md](14-staged-artifacts.md) §7.
 
 ---
 
