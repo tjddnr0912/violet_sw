@@ -1,5 +1,11 @@
 """주간 다이제스트 markdown 빌드 — 요약→하이라이트→상세 깔때기."""
-from realestate_bot import indicators
+from realestate_bot import config, indicators
+
+
+def _baseline_label() -> str:
+    """신고가 기준 윈도우 라벨을 config.BASELINE_MONTHS에서 동적 도출 (과장 방지)."""
+    m = config.BASELINE_MONTHS
+    return f"최근 {m // 12}년" if m % 12 == 0 else f"최근 {m}개월"
 
 
 def _fmt_won(man: int) -> str:
@@ -58,7 +64,7 @@ def build_digest(d: dict) -> str:
             lines.append(
                 f"- {badge} **{h['gu']} {h['apt_name']} {h['area_band']}㎡대** — "
                 f"{_fmt_won(h['price_10k'])} ({_fmt_pct(h['pct'])}, "
-                f"직전 {_fmt_won(h['ref_price'])} {h['ref_date']}) · 최근 3년 기준"
+                f"직전 {_fmt_won(h['ref_price'])} {h['ref_date']}) · {_baseline_label()} 기준"
             )
         lines.append("")
 

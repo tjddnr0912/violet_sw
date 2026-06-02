@@ -24,7 +24,7 @@ def test_markdown_has_sections_and_ranking_order():
     # 강남구가 도봉구보다 순위표에서 먼저
     assert md.index("강남구") < md.index("도봉구")
     # 신고가 하이라이트 단지명·라벨
-    assert "은마" in md and "최근 3년" in md
+    assert "은마" in md and digest._baseline_label() in md
     # 미확정 caveat
     assert "확정" in md
 
