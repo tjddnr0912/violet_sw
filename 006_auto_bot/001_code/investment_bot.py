@@ -138,11 +138,11 @@ def main():
     )
     logger.info("Scheduled: Comprehensive Report at Sunday 19:40")
 
-    # 부동산봇: 토요일 08:00 주간 다이제스트
-    schedule.every().saturday.at("08:00").do(
+    # 부동산봇: 토요일 새벽 01:00 주간 다이제스트
+    schedule.every().saturday.at("01:00").do(
         _safe_run, "RealEstate", realestate_digest_bot.run
     )
-    logger.info("Scheduled: RealEstate digest at Saturday 08:00")
+    logger.info("Scheduled: RealEstate digest at Saturday 01:00")
 
     total_jobs = len(schedule.get_jobs())
     logger.info("=" * 60)
