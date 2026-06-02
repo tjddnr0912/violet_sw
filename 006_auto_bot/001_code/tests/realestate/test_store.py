@@ -73,3 +73,10 @@ def test_band_medians(store):
     bm = store.band_medians("11440", "202605")
     assert bm[85]["median"] == 110000 and bm[85]["count"] == 2
     assert bm[60]["median"] == 80000
+
+
+def test_has_records_for_month(store):
+    store.insert_new([_rec(date="2026-05-10")])
+    assert store.has_records_for_month("11440", "202605") is True
+    assert store.has_records_for_month("11440", "202604") is False   # 다른 월
+    assert store.has_records_for_month("11680", "202605") is False   # 다른 구

@@ -190,10 +190,13 @@ class RealEstateBot:
                     pass
         return result
 
-    def backfill(self, months: int):
+    def backfill(self, months: int, skip_existing: bool = True):
         all_months = _recent_months(months)
         for gu, code in config.SEOUL_GU.items():
             for ym in all_months:
+                if skip_existing and self.store.has_records_for_month(code, ym):
+                    logger.info("backfill cached %s %s (already loaded, skip fetch)", gu, ym)
+                    continue
                 try:
                     recs = fetcher.fetch_region(code, ym)
                     n = len(self.store.insert_new(recs))

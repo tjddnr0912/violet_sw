@@ -132,3 +132,12 @@ class RealEstateStore:
             by_band.setdefault(row["area_band"], []).append(row["price_10k"])
         return {b: {"median": int(statistics.median(p)), "count": len(p)}
                 for b, p in by_band.items()}
+
+    def has_records_for_month(self, region_code: str, year_month: str) -> bool:
+        """해당 (구, 월)에 적재된 레코드가 1건이라도 있으면 True (백필 재개 시 skip 판정)."""
+        like = f"{year_month[:4]}-{year_month[4:6]}-%"
+        row = self.conn.execute(
+            "SELECT 1 FROM transactions WHERE region_code=? AND trade_date LIKE ? LIMIT 1",
+            (region_code, like),
+        ).fetchone()
+        return row is not None
