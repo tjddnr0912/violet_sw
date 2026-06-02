@@ -18,6 +18,7 @@ NUM_OF_ROWS = 1000            # 월 거래 누락 방지
 NEW_BUILD_MAX_AGE = 5         # build_year 기준 신축 (현재연도 - build_year <= 5)
 DIRECT_DEAL_SPIKE_PCT = 30.0  # 직거래 비중 이 이상이면 왜곡 주의 플래그
 VOLUME_TREND_MONTHS = 12      # 월별 거래량 시계열 길이
+BACKFILL_MAX_CONSECUTIVE_FAILS = 5  # 연속 실패 이 횟수 도달 시 백필 중단(Claude 한도 막힘 추정, 헛돌이 방지)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "realestate", "molit.db")
 

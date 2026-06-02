@@ -190,8 +190,12 @@ class RealEstateBot:
                     pass
         return result
 
-    def backfill(self, months: int, skip_existing: bool = True):
+    def backfill(self, months: int, skip_existing: bool = True,
+                 max_consecutive_fails: int = None):
+        max_fails = (max_consecutive_fails if max_consecutive_fails is not None
+                     else config.BACKFILL_MAX_CONSECUTIVE_FAILS)
         all_months = _recent_months(months)
+        consecutive_fails = 0
         for gu, code in config.SEOUL_GU.items():
             for ym in all_months:
                 if skip_existing and self.store.has_records_for_month(code, ym):
@@ -201,8 +205,16 @@ class RealEstateBot:
                     recs = fetcher.fetch_region(code, ym)
                     n = len(self.store.insert_new(recs))
                     logger.info("backfill %s %s: +%s", gu, ym, n)
+                    consecutive_fails = 0
                 except Exception as e:  # noqa: BLE001
+                    consecutive_fails += 1
                     logger.warning("backfill skip %s %s: %s", gu, ym, e)
+                    if consecutive_fails >= max_fails:
+                        logger.error(
+                            "backfill ABORTED: %s consecutive failures (likely Claude "
+                            "usage limit). 적재분은 보존됨 — 한도 회복 후 같은 명령으로 재개.",
+                            consecutive_fails)
+                        return
 
     def run_scheduled(self):
         getattr(schedule.every(), config.SCHEDULE_DAY).at(config.SCHEDULE_TIME).do(self.run)

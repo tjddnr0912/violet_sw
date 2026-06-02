@@ -54,3 +54,49 @@ def test_backfill_skips_already_loaded(tmp_path, monkeypatch):
     assert ("11680", months[0]) not in calls   # 이미 적재 → skip
     assert ("11680", months[1]) in calls         # 미적재 → fetch
     assert ("11440", months[0]) in calls and ("11440", months[1]) in calls
+
+
+def test_backfill_aborts_on_consecutive_failures(tmp_path, monkeypatch):
+    # 한도 막힘처럼 연속 실패가 임계치에 도달하면 백필 전체를 즉시 중단(헛돌지 않음)
+    from realestate_bot import config as rconfig
+    monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "ab.db"))
+    monkeypatch.setattr(rconfig, "SEOUL_GU",
+                        {f"구{i}": f"110{i:02d}" for i in range(10)})  # 10구
+    monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
+    b = bot.RealEstateBot(test_mode=True)
+    calls = []
+
+    def boom(code, ym, **kw):
+        calls.append((code, ym))
+        raise RuntimeError("claude -p failed: ")
+
+    monkeypatch.setattr(bot.fetcher, "fetch_region", boom)
+    b.backfill(1, max_consecutive_fails=3)
+    # 3회 연속 실패 후 중단 → 정확히 3회에서 멈춤 (10구 전부 시도하지 않음)
+    assert len(calls) == 3
+
+
+def test_backfill_success_resets_failure_counter(tmp_path, monkeypatch):
+    # 중간에 성공하면 연속 실패 카운터가 리셋 → 흩어진 실패로는 중단하지 않는다
+    from realestate_bot import config as rconfig
+    monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "rs.db"))
+    monkeypatch.setattr(rconfig, "SEOUL_GU",
+                        {"A": "11001", "B": "11002", "C": "11003", "D": "11004", "E": "11005"})
+    monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
+    b = bot.RealEstateBot(test_mode=True)
+    outcomes = {"11001": "fail", "11002": "fail", "11003": "ok",
+                "11004": "fail", "11005": "fail"}  # 실패2 → 성공(리셋) → 실패2
+    calls = []
+
+    def fetch(code, ym, **kw):
+        calls.append(code)
+        if outcomes[code] == "fail":
+            raise RuntimeError("boom")
+        return [{"apt_name": "X", "dong": "d", "area_sqm": 84.0, "floor": 1,
+                 "price_10k": 100000, "trade_date": f"{ym[:4]}-{ym[4:6]}-05",
+                 "build_year": 2015, "deal_type": "중개거래", "region_code": code}]
+
+    monkeypatch.setattr(bot.fetcher, "fetch_region", fetch)
+    b.backfill(1, max_consecutive_fails=3)
+    # 연속 실패가 2회를 넘지 않으므로 5개 구 모두 시도(중단 안 됨)
+    assert calls == ["11001", "11002", "11003", "11004", "11005"]
