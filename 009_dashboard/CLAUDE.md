@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - 009_dashboard + 010_ios_dashboard
 
 Trading Dashboard 웹 서버(Flask) + iOS 앱(SwiftUI).

@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - ShortcutCraft (013_shortcut)
 
 비주얼 블록 기반 Apple Shortcuts 빌더. 블록을 끌어다 이어붙이는 방식으로 .shortcut 파일 생성.

@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - 011_macos_cc_usage
 
 macOS 메뉴바 상주 앱. Claude Code 사용량을 실시간 모니터링.

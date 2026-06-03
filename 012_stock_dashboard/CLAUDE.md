@@ -1,3 +1,5 @@
+be brief
+
 # 012_stock_dashboard - Global Market Dashboard
 
 Bloomberg-style 실시간 글로벌 시장 대시보드. 6x4 타일 그리드에 지수, 원자재, 환율, 뉴스를 표시.

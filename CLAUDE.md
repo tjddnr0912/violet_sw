@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - violet_sw
 
 멀티 프로젝트 개발 및 운영 저장소.

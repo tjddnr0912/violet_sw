@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - News Bot + Buffett Bot + Sector Bot + Telegram Gemini Bot
 
 뉴스 수집 → AI 분석 → Blogger 업로드 → Telegram 알림 자동화 봇.

@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - 010_ios_dashboard
 
 009_dashboard Flask 서버의 v2 API를 소비하는 SwiftUI iOS 앱.

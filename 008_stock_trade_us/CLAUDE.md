@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - 미국 주식 퀀트 자동매매
 
 007_stock_trade 기반의 미국 주식 버전. KIS Open API로 S&P500 멀티팩터 자동매매.

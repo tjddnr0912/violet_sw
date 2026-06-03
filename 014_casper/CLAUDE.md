@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md — 미장봇 (US Stock Bot)
 
 **제품명**: 미장봇 (US Stock Bot). 멀티 bucket 자동매매 봇.

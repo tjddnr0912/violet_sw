@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - Bithumb Trading Bot
 
 빗썸 거래소 자동매매 봇. 포트폴리오 멀티코인 전략 (Ver3).

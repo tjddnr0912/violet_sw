@@ -1,3 +1,5 @@
+be brief
+
 # CLAUDE.md - 퀀트 자동매매 시스템
 
 KIS Open API 기반 한국 주식 멀티팩터 퀀트 자동매매.
