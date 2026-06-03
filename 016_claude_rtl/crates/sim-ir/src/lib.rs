@@ -89,3 +89,358 @@ pub struct SuspendState {
     pub call_stack: Vec<sim_ir::Frame>,
     pub frame_arena: Vec<sim_ir::FourState>,
 }
+
+// ── M3 backbone ──────────────────────────────────────────────────────────────
+
+/// Unary operator (§1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum UnOp {
+    Plus,
+    Minus,
+    LogNot,
+    BitNot,
+    RedAnd,
+    RedNand,
+    RedOr,
+    RedNor,
+    RedXor,
+    RedXnor,
+}
+
+/// Binary operator (§1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitXnor,
+    LogAnd,
+    LogOr,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+    CaseEq,
+    CaseNe,
+    Shl,
+    Shr,
+    AShl,
+    AShr,
+}
+
+/// Bit/part-select kind (§1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum SelKind {
+    Bit,
+    PartConst,
+    PartIdxUp,
+    PartIdxDown,
+}
+
+/// System-function id (§1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum SysFuncId {
+    Time,
+    Realtime,
+    Signed,
+    Unsigned,
+    Clog2,
+}
+
+/// Expression arena node (§1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum Expr {
+    Const {
+        val: u32,
+    },
+    Signal {
+        net: u32,
+        word: Option<u32>,
+    },
+    Select {
+        base: u32,
+        offset: u32,
+        width: u32,
+        kind: sim_ir::SelKind,
+    },
+    Concat {
+        parts: Vec<u32>,
+    },
+    Replicate {
+        count: u32,
+        value: u32,
+    },
+    Unary {
+        op: sim_ir::UnOp,
+        operand: u32,
+    },
+    Binary {
+        op: sim_ir::BinOp,
+        lhs: u32,
+        rhs: u32,
+    },
+    Ternary {
+        cond: u32,
+        then_e: u32,
+        else_e: u32,
+    },
+    SysFunc {
+        which: sim_ir::SysFuncId,
+        args: Vec<u32>,
+    },
+    Call {
+        func: u32,
+        args: Vec<u32>,
+    },
+}
+
+/// System-task id (§2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum SysTaskId {
+    Display,
+    Write,
+    Monitor,
+    Strobe,
+    Finish,
+    Stop,
+    DumpFile,
+    DumpVars,
+    DumpOn,
+    DumpOff,
+    DumpAll,
+}
+
+/// Disable kind (§2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum DisableKind {
+    Fork,
+    Scope,
+}
+
+/// Statement arena node (§2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum Stmt {
+    BlockingAssign {
+        lhs: sim_ir::Lvalue,
+        rhs: u32,
+    },
+    NonblockingAssign {
+        lhs: sim_ir::Lvalue,
+        rhs: u32,
+    },
+    SysTask {
+        which: sim_ir::SysTaskId,
+        fmt: Option<u32>,
+        args: Vec<u32>,
+    },
+    Disable {
+        scope_kind: sim_ir::DisableKind,
+        target: u32,
+    },
+}
+
+/// Assignment target (§3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct Lvalue {
+    pub chunks: Vec<sim_ir::LvalChunk>,
+}
+
+/// One chunk of an lvalue (§3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct LvalChunk {
+    pub net: u32,
+    pub word: Option<u32>,
+    pub offset: Option<u32>,
+    pub width: Option<u32>,
+    pub kind: sim_ir::SelKind,
+}
+
+/// Delay scheduling region (§4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum DelayRegion {
+    Active,
+    Inactive,
+}
+
+/// In-body wait cause (§4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum WaitCause {
+    Edge { net: u32, kind: sim_ir::EdgeKind },
+    Level { nets: Vec<u32> },
+    Expr { expr: u32 },
+    Named { ev: u32 },
+}
+
+/// Basic-block terminator (§4, RULE-D2 Fork/Call verbatim).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum Terminator {
+    Goto {
+        target: u32,
+    },
+    Branch {
+        cond: u32,
+        then_bb: u32,
+        else_bb: u32,
+    },
+    Delay {
+        amount: u32,
+        region: sim_ir::DelayRegion,
+        resume: u32,
+    },
+    Wait {
+        cond: sim_ir::WaitCause,
+        resume: u32,
+    },
+    Fork {
+        children: Vec<u32>,
+        join: u32,
+        resume_bb: u32,
+    },
+    Call {
+        target: u32,
+        ret_bb: u32,
+    },
+    Return,
+}
+
+/// Sensitivity kind (§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum SensKind {
+    Initial,
+    Comb,
+    Latch,
+    Edge,
+    Level,
+}
+
+/// One edge entry in a sensitivity list (§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct EdgeTerm {
+    pub net: u32,
+    pub kind: sim_ir::EdgeKind,
+}
+
+/// Process sensitivity (§6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct Sensitivity {
+    pub kind: sim_ir::SensKind,
+    pub edges: Vec<sim_ir::EdgeTerm>,
+}
+
+/// Net/variable kind (§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum NetKind {
+    Wire,
+    Reg,
+    Logic,
+    Integer,
+}
+
+/// Port direction (§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum PortDir {
+    Input,
+    Output,
+    Inout,
+    Internal,
+}
+
+/// 2-plane 4-state bit vector (§6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct BitPacked {
+    pub val: Vec<u64>,
+    pub unk: Vec<u64>,
+}
+
+/// Net/variable arena entry (§6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct NetVar {
+    pub kind: sim_ir::NetKind,
+    pub width: u32,
+    pub msb: u32,
+    pub lsb: u32,
+    pub signed: bool,
+    pub array_len: u32,
+    pub dir: sim_ir::PortDir,
+    pub init: sim_ir::BitPacked,
+}
+
+/// Constant representation tag (§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum ConstRepr {
+    Numeric,
+    StrUtf8,
+}
+
+/// Constant pool entry (§6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ConstVal {
+    pub width: u32,
+    pub signed: bool,
+    pub repr: sim_ir::ConstRepr,
+    pub bits: sim_ir::BitPacked,
+}
+
+/// Control-flow basic block (§7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct BasicBlock {
+    pub stmts: Vec<u32>,
+    pub term: sim_ir::Terminator,
+}
+
+/// Process (§7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct Process {
+    pub sensitivity: sim_ir::Sensitivity,
+    pub body: Vec<sim_ir::BasicBlock>,
+    pub entry: u32,
+    pub suspend: sim_ir::SuspendState,
+}
+
+/// Continuous assignment (§7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ContAssign {
+    pub lhs: sim_ir::Lvalue,
+    pub rhs: u32,
+    pub delay: Option<u32>,
+}
+
+/// Module instance (§7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct Instance {
+    pub parent: Option<u32>,
+    pub module: u32,
+    pub first_net: u32,
+    pub net_count: u32,
+}
+
+/// Function/task definition (§7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct FuncDef {
+    pub entry: u32,
+    pub n_params: u32,
+    pub locals_len: u32,
+    pub is_task: bool,
+}
+
+/// Golden root — `schema_hash::<sim_ir::SimIr>()` is the pinned gate (§7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct SimIr {
+    pub instances: Vec<sim_ir::Instance>,
+    pub nets: Vec<sim_ir::NetVar>,
+    pub processes: Vec<sim_ir::Process>,
+    pub cont_assigns: Vec<sim_ir::ContAssign>,
+    pub funcs: Vec<sim_ir::FuncDef>,
+    pub exprs: Vec<sim_ir::Expr>,
+    pub stmts: Vec<sim_ir::Stmt>,
+    pub blocks: Vec<sim_ir::BasicBlock>,
+    pub consts: Vec<sim_ir::ConstVal>,
+}
