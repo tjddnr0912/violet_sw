@@ -73,6 +73,15 @@ fn no_bare_user_type_refs_in_bodies() {
                 if before_word || after_word {
                     continue; // substring of a larger identifier, not a standalone ref
                 }
+                // Type-position only. A user-type reference always immediately follows
+                // ':' (named field / the second ':' of `sim_ir::`), '<' (generic arg),
+                // or ',' (tuple/multi-generic arg). An enum VARIANT NAME follows ']'
+                // (the closing of its `#[]` attr slot) — e.g. WaitCause::Expr renders
+                // `#[]Expr{..}`, where `Expr` equals the type short-name but is a variant,
+                // not a reference. Skip non-type positions so variant names never trip.
+                if pos == 0 || !matches!(bytes[pos - 1], b':' | b'<' | b',') {
+                    continue;
+                }
                 let fq = pos >= 8 && &body[pos - 8..pos] == "sim_ir::";
                 assert!(
                     fq,
