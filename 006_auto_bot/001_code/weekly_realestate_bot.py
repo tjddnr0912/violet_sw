@@ -53,8 +53,14 @@ def _recent_months(n: int, ref: date = None) -> list:
     return out
 
 
-def build_report(store: RealEstateStore, regions: dict, months: list, as_of: str) -> dict:
-    """fetch → diff → 지표 → report dict. (fetch_region은 외부에서 mock 가능)"""
+def build_report(store: RealEstateStore, regions: dict, months: list, as_of: str,
+                 fetch_region=None) -> dict:
+    """fetch → diff → 지표 → report dict.
+
+    fetch_region 미지정 시 claude-p 운반책(fetcher.fetch_region)을 쓰지만,
+    프로덕션 주간 런은 MCPClient.fetch_region(직접 경로, 한도 無)을 주입한다.
+    """
+    fetch = fetch_region or fetcher.fetch_region
     cur_year = int(as_of[:4])
     per_gu = {}
     highlights = []
@@ -67,7 +73,7 @@ def build_report(store: RealEstateStore, regions: dict, months: list, as_of: str
         fetched = []
         for ym in months:
             try:
-                fetched.extend(fetcher.fetch_region(code, ym))
+                fetched.extend(fetch(code, ym))
             except Exception as e:  # noqa: BLE001
                 logger.warning("skip %s %s: %s", gu, ym, e)
         new_records = store.insert_new(fetched)
@@ -148,8 +154,12 @@ class RealEstateBot:
         result = {"success": False, "blog_url": None, "error": None}
         try:
             months = _recent_months(2)
-            report = build_report(self.store, config.SEOUL_GU, months,
-                                  as_of=date.today().isoformat())
+            # 데이터 수집은 직접 MCP 경로(Claude 한도 無). 세션 1개로 25구×2개월.
+            # 시황 해석(Gemini)·HTML 변환(Claude)만 AI를 쓴다.
+            with mcp_client.MCPClient() as client:
+                report = build_report(self.store, config.SEOUL_GU, months,
+                                      as_of=date.today().isoformat(),
+                                      fetch_region=client.fetch_region)
             comment = commentary.make_commentary(
                 {"seoul": report["seoul"],
                  "top": dict(list(indicators.rank_regions(report["per_gu"]))[:5])})

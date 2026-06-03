@@ -34,6 +34,24 @@ def test_build_report_flags_new_high(tmp_path):
                for h in report["highlights"])
 
 
+def test_build_report_uses_injected_fetch_region(tmp_path, monkeypatch):
+    # 주간 런은 직접 MCP 경로를 주입한다 — claude-p(fetcher.fetch_region)는 호출되면 안 됨
+    from realestate_bot.store import RealEstateStore
+    store = RealEstateStore(str(tmp_path / "t.db"))
+    calls = []
+
+    def fake(code, ym, **kw):
+        calls.append((code, ym))
+        return []
+
+    monkeypatch.setattr(bot.fetcher, "fetch_region",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("claude-p 호출됨")))
+    report = bot.build_report(store, {"강남구": "11680"}, ["202605"],
+                              as_of="2026-06-01", fetch_region=fake)
+    assert ("11680", "202605") in calls
+    assert report["seoul"]["new_total"] == 0
+
+
 def test_backfill_skips_already_loaded(tmp_path, monkeypatch):
     # 백필 재개 시 이미 적재된 (구,월)은 fetch를 건너뛴다 (사용량 절약)
     from realestate_bot import config as rconfig
