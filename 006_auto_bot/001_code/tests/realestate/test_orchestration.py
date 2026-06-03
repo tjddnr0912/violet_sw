@@ -109,6 +109,52 @@ def test_backfill_rents_writes_rent_table_only(tmp_path, monkeypatch):
     assert not b.store.has_records_for_month("11680", months[1])       # transactions엔 없음
 
 
+class _FakeClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def fetch_region(self, code, ym, **kw):
+        return [{"region_code": code, "apt_name": "APT", "dong": "d", "area_sqm": 84.0,
+                 "floor": 1, "price_10k": 100000, "trade_date": f"{ym[:4]}-{ym[4:6]}-05",
+                 "build_year": 2015, "deal_type": "중개거래"}]
+
+    def fetch_rent(self, code, ym, **kw):
+        return [{"region_code": code, "apt_name": "APT", "dong": "d", "area_sqm": 84.0,
+                 "floor": 1, "deposit_10k": 50000, "monthly_rent_10k": 0,
+                 "contract_type": "전세", "trade_date": f"{ym[:4]}-{ym[4:6]}-05",
+                 "build_year": 2015}]
+
+    def fetch_officetel_trades(self, code, ym, **kw):
+        return [{"region_code": code, "apt_name": "OFTL", "dong": "d", "area_sqm": 30.0,
+                 "floor": 2, "price_10k": 20000, "trade_date": f"{ym[:4]}-{ym[4:6]}-06",
+                 "build_year": 2018, "deal_type": "중개거래"}]
+
+    def fetch_officetel_rent(self, code, ym, **kw):
+        return [{"region_code": code, "apt_name": "OFTL", "dong": "d", "area_sqm": 30.0,
+                 "floor": 2, "deposit_10k": 8000, "monthly_rent_10k": 0,
+                 "contract_type": "전세", "trade_date": f"{ym[:4]}-{ym[4:6]}-06",
+                 "build_year": 2018}]
+
+
+def test_backfill_all_separates_4_types(tmp_path, monkeypatch):
+    # 아파트·오피스텔 매매+전월세 4종이 각자 property_type/테이블로 분리 적재된다
+    from realestate_bot import config as rconfig
+    monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "all.db"))
+    monkeypatch.setattr(rconfig, "ALL_REGIONS", {"강남구": "11680"})
+    monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
+    monkeypatch.setattr(bot.mcp_client, "MCPClient", lambda *a, **k: _FakeClient())
+    b = bot.RealEstateBot(test_mode=True)
+    b.backfill_all(2)
+    m = bot._recent_months(3)[1]   # 완료월 하나
+    assert b.store.has_records_for_month("11680", m, "apartment")
+    assert b.store.has_records_for_month("11680", m, "officetel")
+    assert b.store.has_rent_records_for_month("11680", m, "apartment")
+    assert b.store.has_rent_records_for_month("11680", m, "officetel")
+
+
 def test_backfill_aborts_on_consecutive_failures(tmp_path, monkeypatch):
     # 한도 막힘처럼 연속 실패가 임계치에 도달하면 백필 전체를 즉시 중단(헛돌지 않음)
     from realestate_bot import config as rconfig

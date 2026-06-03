@@ -113,6 +113,23 @@ def test_fetch_rent_parses_and_maps_unit_name(tmp_path, monkeypatch):
     assert recs[0]["deposit_10k"] == 50000
 
 
+def test_fetch_officetel_trades_normalizes_unit_name(tmp_path, monkeypatch):
+    payload = {"total_count": 1, "items": [
+        {"unit_name": "오피스텔A", "dong": "동", "area_sqm": 30.0, "floor": 5,
+         "price_10k": 25000, "trade_date": "2026-05-10",
+         "build_year": 2018, "deal_type": "중개거래"}]}
+    lines = [
+        json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+        json.dumps({"jsonrpc": "2.0", "id": 2, "result": {
+            "content": [{"type": "text", "text": json.dumps(payload)}]}}) + "\n",
+    ]
+    monkeypatch.setattr(mc.subprocess, "Popen", lambda *a, **k: _FakeProc(lines))
+    with mc.MCPClient(config_path=_config(tmp_path)) as c:
+        recs = c.fetch_officetel_trades("11680", "202505")
+    assert recs[0]["apt_name"] == "오피스텔A"     # unit_name→apt_name
+    assert recs[0]["price_10k"] == 25000
+
+
 def test_tool_error_raises(tmp_path, monkeypatch):
     lines = [
         json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",

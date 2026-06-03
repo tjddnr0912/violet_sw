@@ -112,3 +112,27 @@ def test_rent_band_medians_jeonse_only(store):
     ])
     bm = store.rent_band_medians("11440", "202605")
     assert bm[85]["median_deposit_10k"] == 60000 and bm[85]["count"] == 2
+
+
+def test_property_type_separation(store):
+    # 오피스텔이 아파트 집계/baseline에 섞이지 않는다
+    store.insert_new([_rec(price=100000)], property_type="apartment")
+    store.insert_new([_rec(apt="오피스텔A", price=20000)], property_type="officetel")
+    assert store.has_records_for_month("11440", "202605", "apartment") is True
+    assert store.has_records_for_month("11440", "202605", "officetel") is True
+    snap_apt = store.baseline_snapshot("11440", property_type="apartment")
+    snap_oftl = store.baseline_snapshot("11440", property_type="officetel")
+    assert ("A아파트", 85) in snap_apt and ("오피스텔A", 85) not in snap_apt
+    assert ("오피스텔A", 85) in snap_oftl and ("A아파트", 85) not in snap_oftl
+    # 같은 record_key라도 유형이 다르면 별도 적재(네임스페이스 분리)
+    assert store.band_medians("11440", "202605", "apartment")[85]["median"] == 100000
+    assert store.band_medians("11440", "202605", "officetel")[85]["median"] == 20000
+
+
+def test_rent_property_type_separation(store):
+    store.insert_new_rents([_rent(deposit=50000)], property_type="apartment")
+    store.insert_new_rents([_rent(deposit=8000)], property_type="officetel")
+    assert store.has_rent_records_for_month("11440", "202605", "apartment") is True
+    assert store.has_rent_records_for_month("11440", "202605", "officetel") is True
+    assert store.rent_band_medians("11440", "202605", "apartment")[85]["median_deposit_10k"] == 50000
+    assert store.rent_band_medians("11440", "202605", "officetel")[85]["median_deposit_10k"] == 8000

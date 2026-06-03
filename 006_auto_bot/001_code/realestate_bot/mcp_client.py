@@ -118,3 +118,13 @@ class MCPClient:
                    num_of_rows: int = None) -> list:
         return self._fetch("get_apartment_rent", fetcher.extract_rent_records,
                            region_code, year_month, num_of_rows)
+
+    def fetch_officetel_trades(self, region_code: str, year_month: str,
+                               num_of_rows: int = None) -> list:
+        return self._fetch("get_officetel_trades", fetcher.extract_records,
+                           region_code, year_month, num_of_rows)
+
+    def fetch_officetel_rent(self, region_code: str, year_month: str,
+                             num_of_rows: int = None) -> list:
+        return self._fetch("get_officetel_rent", fetcher.extract_rent_records,
+                           region_code, year_month, num_of_rows)

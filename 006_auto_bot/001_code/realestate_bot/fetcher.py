@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 CLAUDE_TIMEOUT = 300
 RETRY_DELAY = 15
-REQUIRED_FIELDS = ("apt_name", "area_sqm", "floor", "price_10k", "trade_date")
+# 단지명(apt_name/unit_name)은 정규화로 처리 — 아파트/오피스텔 매매가 추출기를 공유한다.
+REQUIRED_FIELDS = ("area_sqm", "floor", "price_10k", "trade_date")
 _SENTINEL = re.compile(r"<<<JSON>>>\s*(.*?)\s*<<<END>>>", re.DOTALL)
 
 
@@ -54,6 +55,7 @@ def extract_records(payload: dict, region_code: str) -> list:
                 raise ValueError(f"missing field {f}")
         rec = dict(it)
         rec["region_code"] = region_code
+        rec["apt_name"] = it.get("apt_name") or it.get("unit_name") or ""  # 오피스텔=unit_name
         out.append(rec)
     return out
 

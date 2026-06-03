@@ -231,6 +231,33 @@ class RealEstateBot:
                                 self.store.insert_new_rents,
                                 self.store.has_rent_records_for_month, tag="[rent]")
 
+    def backfill_all(self, months: int, skip_existing: bool = True,
+                     max_consecutive_fails: int = None):
+        """아파트·오피스텔 × 매매·전월세 4종을 한 MCP 세션에서 전부 적재.
+        각 종류는 독립 fail-fast 카운터 — 한 종류가 한도/미승인(403)으로 막혀도
+        나머지는 진행되고 적재분은 보존된다(멱등 재개 가능)."""
+        max_fails = (max_consecutive_fails if max_consecutive_fails is not None
+                     else config.BACKFILL_MAX_CONSECUTIVE_FAILS)
+        all_months = _recent_months(months + 1)[1:]
+        s = self.store
+        with mcp_client.MCPClient() as client:
+            specs = [
+                ("apartment", "[apt]", client.fetch_region,
+                 s.insert_new, s.has_records_for_month),
+                ("apartment", "[apt-rent]", client.fetch_rent,
+                 s.insert_new_rents, s.has_rent_records_for_month),
+                ("officetel", "[oftl]", client.fetch_officetel_trades,
+                 s.insert_new, s.has_records_for_month),
+                ("officetel", "[oftl-rent]", client.fetch_officetel_rent,
+                 s.insert_new_rents, s.has_rent_records_for_month),
+            ]
+            for ptype, tag, fetch_fn, insert_m, has_m in specs:
+                logger.info("=== backfill%s 시작 (property_type=%s) ===", tag, ptype)
+                insert_fn = (lambda recs, m=insert_m, p=ptype: m(recs, p))
+                has_fn = (lambda code, ym, m=has_m, p=ptype: m(code, ym, p))
+                self._backfill_loop(all_months, skip_existing, max_fails,
+                                    fetch_fn, insert_fn, has_fn, tag)
+
     def _backfill_loop(self, all_months, skip_existing, max_fails, fetch_fn,
                        insert_fn, has_fn, tag=""):
         consecutive_fails = 0
@@ -266,12 +293,17 @@ def main():
     p = argparse.ArgumentParser(description="Seoul weekly apartment market digest bot")
     p.add_argument("--once", action="store_true")
     p.add_argument("--test", action="store_true")
-    p.add_argument("--backfill", type=int, metavar="MONTHS")
-    p.add_argument("--backfill-rents", type=int, metavar="MONTHS", dest="backfill_rents")
+    p.add_argument("--backfill", type=int, metavar="MONTHS", help="아파트 매매")
+    p.add_argument("--backfill-rents", type=int, metavar="MONTHS", dest="backfill_rents",
+                   help="아파트 전월세")
+    p.add_argument("--backfill-all", type=int, metavar="MONTHS", dest="backfill_all",
+                   help="아파트·오피스텔 매매+전월세 4종 일괄")
     args = p.parse_args()
 
     boot = RealEstateBot(test_mode=args.test)
-    if args.backfill:
+    if args.backfill_all:
+        boot.backfill_all(args.backfill_all)
+    elif args.backfill:
         boot.backfill(args.backfill)
     elif args.backfill_rents:
         boot.backfill_rents(args.backfill_rents)
