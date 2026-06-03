@@ -37,11 +37,9 @@ def _invoke_claude(prompt: str) -> str:
     return result.stdout or ""
 
 
-def _parse(output: str, region_code: str) -> list:
-    m = _SENTINEL.search(output)
-    if not m:
-        raise ValueError("sentinel not found")
-    payload = json.loads(m.group(1))
+def extract_records(payload: dict, region_code: str) -> list:
+    """get_apartment_trades 페이로드 → 검증된 레코드 리스트(region_code 주입).
+    claude-p 운반책(_parse)과 직접 MCP 클라이언트(mcp_client)가 공유한다."""
     items = payload.get("items")
     if not isinstance(items, list):
         raise ValueError("items missing")
@@ -58,6 +56,13 @@ def _parse(output: str, region_code: str) -> list:
         rec["region_code"] = region_code
         out.append(rec)
     return out
+
+
+def _parse(output: str, region_code: str) -> list:
+    m = _SENTINEL.search(output)
+    if not m:
+        raise ValueError("sentinel not found")
+    return extract_records(json.loads(m.group(1)), region_code)
 
 
 def fetch_region(region_code: str, year_month: str, max_retries: int = 3) -> list:

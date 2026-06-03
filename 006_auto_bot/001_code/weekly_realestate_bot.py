@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from realestate_bot import config, fetcher, indicators, commentary, digest
+from realestate_bot import config, fetcher, indicators, commentary, digest, mcp_client
 from realestate_bot.store import RealEstateStore
 from realestate_bot.detector import classify
 from shared.blogger_uploader import BloggerUploader
@@ -191,13 +191,21 @@ class RealEstateBot:
         return result
 
     def backfill(self, months: int, skip_existing: bool = True,
-                 max_consecutive_fails: int = None):
+                 max_consecutive_fails: int = None, fetch_region=None):
         max_fails = (max_consecutive_fails if max_consecutive_fails is not None
                      else config.BACKFILL_MAX_CONSECUTIVE_FAILS)
         # 현재월은 신고지연으로 미확정 + 데이터 거의 없음 → 백필 제외(주간 라이브 런이 담당).
         # 게다가 0건이라 has_records_for_month로 캐시되지 않아 재개 때마다 헛호출됨.
         # 가장 최근 '완료된' months개월만 적재한다.
         all_months = _recent_months(months + 1)[1:]
+        if fetch_region is not None:  # 테스트 주입
+            self._backfill_loop(all_months, skip_existing, max_fails, fetch_region)
+            return
+        # 기본: MCP 서버 직접 호출(Claude 우회 → 한도 0). 세션 1개로 전체 백필.
+        with mcp_client.MCPClient() as client:
+            self._backfill_loop(all_months, skip_existing, max_fails, client.fetch_region)
+
+    def _backfill_loop(self, all_months, skip_existing, max_fails, fetch_region):
         consecutive_fails = 0
         for gu, code in config.SEOUL_GU.items():
             for ym in all_months:
@@ -205,7 +213,7 @@ class RealEstateBot:
                     logger.info("backfill cached %s %s (already loaded, skip fetch)", gu, ym)
                     continue
                 try:
-                    recs = fetcher.fetch_region(code, ym)
+                    recs = fetch_region(code, ym)
                     n = len(self.store.insert_new(recs))
                     logger.info("backfill %s %s: +%s", gu, ym, n)
                     consecutive_fails = 0
@@ -214,8 +222,8 @@ class RealEstateBot:
                     logger.warning("backfill skip %s %s: %s", gu, ym, e)
                     if consecutive_fails >= max_fails:
                         logger.error(
-                            "backfill ABORTED: %s consecutive failures (likely Claude "
-                            "usage limit). 적재분은 보존됨 — 한도 회복 후 같은 명령으로 재개.",
+                            "backfill ABORTED: %s consecutive failures (한도/API 오류 추정). "
+                            "적재분은 보존됨 — 회복 후 같은 명령으로 재개.",
                             consecutive_fails)
                         return
 
