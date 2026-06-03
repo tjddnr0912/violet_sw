@@ -1,6 +1,8 @@
 """주간 서울 아파트 시장 흐름 다이제스트 봇 설정."""
 import os
 
+from realestate_bot.regions_extra import GYEONGGI, METRO, SEJONG
+
 # 서울 25개 자치구 — 법정동 시군구 5자리 코드 (MOLIT region_code)
 # 마포(11440)는 get_region_code로 검증됨. 나머지는 표준 자치구 코드.
 SEOUL_GU = {
@@ -12,6 +14,10 @@ SEOUL_GU = {
     "관악구": "11620", "서초구": "11650", "강남구": "11680", "송파구": "11710",
     "강동구": "11740",
 }
+
+# 광역 수집 대상(매매/전월세 백필용): 서울 25 + 경기 시(군 제외) + 6대 광역시 + 세종.
+# 주간 디제스트(run)는 SEOUL_GU만 사용; 백필은 ALL_REGIONS 전체를 적재한다.
+ALL_REGIONS = {**SEOUL_GU, **GYEONGGI, **METRO, **SEJONG}
 
 BASELINE_MONTHS = 36          # 신고가 baseline 윈도우 → "최근 3년" (백필 36개월에 맞춤, 직접 MCP 경로라 비용無)
 NUM_OF_ROWS = 1000            # 월 거래 누락 방지

@@ -217,7 +217,7 @@ class RealEstateBot:
 
     def _backfill_loop(self, all_months, skip_existing, max_fails, fetch_region):
         consecutive_fails = 0
-        for gu, code in config.SEOUL_GU.items():
+        for gu, code in config.ALL_REGIONS.items():  # 서울+경기+광역시+세종 전체
             for ym in all_months:
                 if skip_existing and self.store.has_records_for_month(code, ym):
                     logger.info("backfill cached %s %s (already loaded, skip fetch)", gu, ym)

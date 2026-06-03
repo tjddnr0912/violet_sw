@@ -56,7 +56,7 @@ def test_backfill_skips_already_loaded(tmp_path, monkeypatch):
     # 백필 재개 시 이미 적재된 (구,월)은 fetch를 건너뛴다 (사용량 절약)
     from realestate_bot import config as rconfig
     monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "bf.db"))
-    monkeypatch.setattr(rconfig, "SEOUL_GU", {"강남구": "11680", "마포구": "11440"})
+    monkeypatch.setattr(rconfig, "ALL_REGIONS", {"강남구": "11680", "마포구": "11440"})
     monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
     b = bot.RealEstateBot(test_mode=True)
     months = bot._recent_months(3)        # [현재월, 직전월, 전전월]
@@ -79,7 +79,7 @@ def test_backfill_skips_current_incomplete_month(tmp_path, monkeypatch):
     # 현재월(신고지연·미확정)은 백필하지 않는다 — 완료된 월만 적재(헛호출 방지)
     from realestate_bot import config as rconfig
     monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "cm.db"))
-    monkeypatch.setattr(rconfig, "SEOUL_GU", {"마포구": "11440"})
+    monkeypatch.setattr(rconfig, "ALL_REGIONS", {"마포구": "11440"})
     monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
     b = bot.RealEstateBot(test_mode=True)
     months = bot._recent_months(3)        # [현재월, 직전월, 전전월]
@@ -93,7 +93,7 @@ def test_backfill_aborts_on_consecutive_failures(tmp_path, monkeypatch):
     # 한도 막힘처럼 연속 실패가 임계치에 도달하면 백필 전체를 즉시 중단(헛돌지 않음)
     from realestate_bot import config as rconfig
     monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "ab.db"))
-    monkeypatch.setattr(rconfig, "SEOUL_GU",
+    monkeypatch.setattr(rconfig, "ALL_REGIONS",
                         {f"구{i}": f"110{i:02d}" for i in range(10)})  # 10구
     monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
     b = bot.RealEstateBot(test_mode=True)
@@ -112,7 +112,7 @@ def test_backfill_success_resets_failure_counter(tmp_path, monkeypatch):
     # 중간에 성공하면 연속 실패 카운터가 리셋 → 흩어진 실패로는 중단하지 않는다
     from realestate_bot import config as rconfig
     monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "rs.db"))
-    monkeypatch.setattr(rconfig, "SEOUL_GU",
+    monkeypatch.setattr(rconfig, "ALL_REGIONS",
                         {"A": "11001", "B": "11002", "C": "11003", "D": "11004", "E": "11005"})
     monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
     b = bot.RealEstateBot(test_mode=True)
