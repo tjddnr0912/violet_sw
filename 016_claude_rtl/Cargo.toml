@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hdl-preprocess",
+    "crates/hdl-lexer",
+    "crates/hdl-parser",
+    "crates/hdl-ast",
+    "crates/elaborate",
+    "crates/sim-ir",
+    "crates/sim-engine",
+    "crates/hdl-builtins",
+    "crates/vcd-writer",
+    "crates/diag",
+    "crates/vita-artifact",
+    "crates/vita-artifact-derive",
+    "crates/vita-schema",
+    "crates/vita-log",
+    "crates/cli",
+    "crates/vcd-diff",
+    "crates/corpus-runner",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/vitamin"
+
+[workspace.dependencies]
+serde            = { version = "1.0", features = ["derive"] }
+postcard         = { version = "1.1", features = ["use-std"] }
+blake3           = "=1.8.2"
+syn              = { version = "2.0", features = ["full", "extra-traits"] }
+quote            = "1.0"
+proc-macro2      = "1.0"
+hex              = "0.4"
+serde-reflection = "0.6"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+
+[profile.dev.package."sim-engine"]
+opt-level = 2
