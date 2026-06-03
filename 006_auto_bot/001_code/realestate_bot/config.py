@@ -13,7 +13,7 @@ SEOUL_GU = {
     "강동구": "11740",
 }
 
-BASELINE_MONTHS = 12          # 신고가 baseline 윈도우 → "최근 1년" (백필 12개월에 맞춤)
+BASELINE_MONTHS = 36          # 신고가 baseline 윈도우 → "최근 3년" (백필 36개월에 맞춤, 직접 MCP 경로라 비용無)
 NUM_OF_ROWS = 1000            # 월 거래 누락 방지
 NEW_BUILD_MAX_AGE = 5         # build_year 기준 신축 (현재연도 - build_year <= 5)
 DIRECT_DEAL_SPIKE_PCT = 30.0  # 직거래 비중 이 이상이면 왜곡 주의 플래그
