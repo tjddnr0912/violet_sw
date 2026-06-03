@@ -11,7 +11,7 @@
 
 | # | 결정 | 내용 |
 |---|---|---|
-| D1 | 전용 크레이트 | (역)직렬화 · 헤더 · 버전 · staleness · `--dump` 로직은 전용 크레이트 `vita-artifact`가 보유. 형상 해시는 proc-macro 크레이트 `vita-artifact-derive`가 산출. 워크스페이스 11→14(+`vita-artifact`·`vita-artifact-derive`·`vita-log`). `cli`는 얇은 글루로 유지. |
+| D1 | 전용 크레이트 | (역)직렬화 · 헤더 · 버전 · staleness · `--dump` 로직은 전용 크레이트 `vita-artifact`가 보유. 형상 해시는 proc-macro 크레이트 `vita-artifact-derive`가 산출하고 런타임 합성은 leaf 크레이트 `vita-schema`가 담당(16). 워크스페이스 11→15(+`vita-artifact`·`vita-artifact-derive`·`vita-schema`·`vita-log`). `cli`는 얇은 글루로 유지. |
 | D2 | 구조적 schema 해시 | schema 버전은 직렬화 타입 **형상의 구조적 파생 해시**(`#[derive(SchemaHash)]`). 손으로 올리는 const가 아니다. 빌드 지문(git sha/dirty/profile)은 provenance 전용으로 별도 stamp(해시 키 아님). |
 | D3 | 멀티 라이브러리 | 설계 단계부터 도입. 단위는 `library:unit` 논리 키로 주소화하며, 논리명→디렉터리 매핑(`cds.lib`/`synopsys_sim.setup` 계열)을 처음부터 지원. |
 | D4 | span-free IR | `sim-ir`는 언어 중립·소스 span 비보유. 런타임 진단 위치는 IR 노드 인덱스로 키잉된 **선택적·독립 버전 사이드테이블**에 둔다. `file_id→path` 맵은 work 매니페스트에. |

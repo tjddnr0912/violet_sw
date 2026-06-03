@@ -80,7 +80,7 @@ preprocess → lex → parse → elaborate → sim → VCD 전 과정을 한 명
 
 ## Cargo 워크스페이스 / 크레이트
 
-14개 크레이트가 단일 cargo workspace를 구성한다. 각 크레이트는 단일 책임 + 명확한 인터페이스를 가져 독립적으로 테스트 가능하다.
+15개 크레이트가 단일 cargo workspace를 구성한다. 각 크레이트는 단일 책임 + 명확한 인터페이스를 가져 독립적으로 테스트 가능하다.
 
 | 크레이트 | 책임 | 의존 |
 |---|---|---|
@@ -95,7 +95,8 @@ preprocess → lex → parse → elaborate → sim → VCD 전 과정을 한 명
 | `vcd-writer` | IEEE 1364 VCD 직렬화 (dump 태스크가 호출될 때만 활성) | sim-ir |
 | `diag` | 진단 *렌더링* (file:line:col + caret) + `Severity`/`MsgCode`/`Frame`/`Diagnostic`/`LogSink`/`LogEvent` 데이터 모델 (IO 없음 → leaf) | — |
 | `vita-artifact` | 단계 산출물 (역)직렬화 + 헤더(magic/format_version/schema_hash/빌드지문) + staleness 검사(D3 트리플 대조) + `--dump` RON 뷰 | hdl-ast, sim-ir, hdl-preprocess, diag, vita-artifact-derive |
-| `vita-artifact-derive` | `#[derive(SchemaHash)]` proc-macro — 직렬화 타입 형상의 구조적 해시를 컴파일 타임 산출 (leaf, syn/quote) | — |
+| `vita-artifact-derive` | `#[derive(SchemaHash)]` proc-macro — 타입별 local shape 문자열을 컴파일 타임 방출 (leaf, syn/quote) | — |
+| `vita-schema` | `SchemaShape` trait + `ShapeRegistry` — 참여 타입 폐포를 정렬 합성해 blake3 `SCHEMA_HASH` 런타임 산출 (leaf; trait를 `vita-artifact`에 두면 순환이라 분리 — 16) | blake3 |
 | `vita-log` | 운영 로깅 — transcript·로그파일 tee·severity 라우팅·메시지 코드·exit-code·`$error`/`$fatal` 연동; diag 위에 적층 | diag, vita-artifact, sim-ir, tracing |
 | `cli` | 드라이버 바이너리 — `vita`(원샷) + `vcmp`/`velab`/`vrun`(단계별); 프로덕션은 단일 multicall 바이너리 | 전부 + vita-artifact + vita-log |
 
