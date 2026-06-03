@@ -4,18 +4,26 @@
 //! see crate docs. So body references use the spelling (bare `ProcFlags`), while
 //! schema_name() is the module_path-based FQ key.
 use vita_artifact_derive::SchemaHash;
-use vita_schema::{ShapeRegistry, SchemaShape};
+use vita_schema::{SchemaShape, ShapeRegistry};
 
 mod sim_ir {
     use super::*;
 
     #[derive(SchemaHash)]
+    #[allow(dead_code)]
     pub struct ProcFlags(pub u8);
 
     #[derive(SchemaHash)]
-    pub enum RegionTag { Active, Inactive, Nba, Monitor }
+    #[allow(dead_code)]
+    pub enum RegionTag {
+        Active,
+        Inactive,
+        Nba,
+        Monitor,
+    }
 
     #[derive(SchemaHash)]
+    #[allow(dead_code)]
     pub struct JoinState {
         pub parent: Option<u32>,
         pub children: Vec<u32>,
@@ -26,7 +34,10 @@ mod sim_ir {
 
 #[test]
 fn procflags_newtype_shape() {
-    assert_eq!(sim_ir::ProcFlags::schema_name(), "render::sim_ir::ProcFlags");
+    assert_eq!(
+        sim_ir::ProcFlags::schema_name(),
+        "render::sim_ir::ProcFlags"
+    );
     assert_eq!(sim_ir::ProcFlags::local_shape(), "repr=@#[]newtype(#[]u8)");
 }
 

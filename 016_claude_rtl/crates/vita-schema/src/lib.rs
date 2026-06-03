@@ -26,7 +26,10 @@ pub struct ShapeRegistry {
 
 impl ShapeRegistry {
     pub fn new() -> Self {
-        ShapeRegistry { entries: BTreeMap::new(), visited: BTreeSet::new() }
+        ShapeRegistry {
+            entries: BTreeMap::new(),
+            visited: BTreeSet::new(),
+        }
     }
 
     /// Insert this type once. Returns false if already present (short-circuits DFS).

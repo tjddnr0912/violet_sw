@@ -74,7 +74,10 @@ fn render_local_shape(ast: &DeriveInput, children: &mut Vec<String>) -> Result<S
     match &ast.data {
         Data::Struct(s) => render_struct(s, children),
         Data::Enum(e) => render_enum(e, children),
-        Data::Union(u) => Err(Error::new_spanned(u.union_token, "SchemaHash does not support unions")),
+        Data::Union(u) => Err(Error::new_spanned(
+            u.union_token,
+            "SchemaHash does not support unions",
+        )),
     }
 }
 
@@ -152,8 +155,8 @@ fn render_disc_expr(expr: &Expr) -> String {
 }
 
 const PRIMITIVES: &[&str] = &[
-    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
-    "bool", "char", "str", "String", "f32", "f64",
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "bool",
+    "char", "str", "String", "f32", "f64",
 ];
 
 fn render_type_expr(ty: &Type, children: &mut Vec<String>) -> Result<String, Error> {
@@ -174,7 +177,10 @@ fn render_type_expr(ty: &Type, children: &mut Vec<String>) -> Result<String, Err
         Type::Path(tp) => render_path_type(tp, children),
         Type::Paren(p) => render_type_expr(&p.elem, children),
         Type::Group(g) => render_type_expr(&g.elem, children),
-        other => Err(Error::new_spanned(other, "SchemaHash: unsupported field type construct")),
+        other => Err(Error::new_spanned(
+            other,
+            "SchemaHash: unsupported field type construct",
+        )),
     }
 }
 
@@ -194,7 +200,9 @@ fn render_path_type(tp: &TypePath, children: &mut Vec<String>) -> Result<String,
     if head == "HashMap" || head == "HashSet" {
         return Err(Error::new_spanned(
             tp,
-            format!("SchemaHash: `{head}` is forbidden (nondeterministic order); use BTreeMap/BTreeSet"),
+            format!(
+                "SchemaHash: `{head}` is forbidden (nondeterministic order); use BTreeMap/BTreeSet"
+            ),
         ));
     }
     let args: Vec<&Type> = match &last.arguments {
@@ -208,13 +216,19 @@ fn render_path_type(tp: &TypePath, children: &mut Vec<String>) -> Result<String,
             .collect(),
         PathArguments::None => Vec::new(),
         PathArguments::Parenthesized(p) => {
-            return Err(Error::new_spanned(p, "SchemaHash: Fn-style type args not supported"))
+            return Err(Error::new_spanned(
+                p,
+                "SchemaHash: Fn-style type args not supported",
+            ))
         }
     };
     match (head.as_str(), args.len()) {
         ("Option", 1) => Ok(format!("Option<{}>", render_type_expr(args[0], children)?)),
         ("Vec", 1) => Ok(format!("Vec<{}>", render_type_expr(args[0], children)?)),
-        ("BTreeSet", 1) => Ok(format!("BTreeSet<{}>", render_type_expr(args[0], children)?)),
+        ("BTreeSet", 1) => Ok(format!(
+            "BTreeSet<{}>",
+            render_type_expr(args[0], children)?
+        )),
         ("BTreeMap", 2) => Ok(format!(
             "BTreeMap<{},{}>",
             render_type_expr(args[0], children)?,
@@ -244,10 +258,21 @@ fn render_serde_attrs(attrs: &[syn::Attribute]) -> Result<String, Error> {
     let mut slots: Vec<(usize, String)> = Vec::new();
     let order = |k: &str| -> usize {
         match k {
-            "rename" => 0, "rename_all" => 1, "skip" => 2, "skip_serializing_if" => 3,
-            "with" => 4, "default" => 5, "flatten" => 6, "tag" => 7, "content" => 8,
-            "untagged" => 9, "transparent" => 10, "deny_unknown_fields" => 11,
-            "alias" => 12, "other" => 13, _ => usize::MAX,
+            "rename" => 0,
+            "rename_all" => 1,
+            "skip" => 2,
+            "skip_serializing_if" => 3,
+            "with" => 4,
+            "default" => 5,
+            "flatten" => 6,
+            "tag" => 7,
+            "content" => 8,
+            "untagged" => 9,
+            "transparent" => 10,
+            "deny_unknown_fields" => 11,
+            "alias" => 12,
+            "other" => 13,
+            _ => usize::MAX,
         }
     };
     for attr in attrs {
@@ -258,10 +283,19 @@ fn render_serde_attrs(attrs: &[syn::Attribute]) -> Result<String, Error> {
             continue;
         }
         attr.parse_nested_meta(|meta| {
-            let key = meta.path.get_ident().map(|i| i.to_string()).unwrap_or_default();
+            let key = meta
+                .path
+                .get_ident()
+                .map(|i| i.to_string())
+                .unwrap_or_default();
             let o = order(&key);
             match key.as_str() {
-                "rename" | "rename_all" | "skip_serializing_if" | "with" | "tag" | "content"
+                "rename"
+                | "rename_all"
+                | "skip_serializing_if"
+                | "with"
+                | "tag"
+                | "content"
                 | "alias" => {
                     let lit: LitStr = meta.value()?.parse()?;
                     slots.push((o, format!("{key}={:?}", lit.value())));
@@ -276,7 +310,11 @@ fn render_serde_attrs(attrs: &[syn::Attribute]) -> Result<String, Error> {
                     }
                     Ok(())
                 }
-                "skip" | "flatten" | "untagged" | "transparent" | "deny_unknown_fields"
+                "skip"
+                | "flatten"
+                | "untagged"
+                | "transparent"
+                | "deny_unknown_fields"
                 | "other" => {
                     slots.push((o, key));
                     Ok(())
@@ -294,5 +332,9 @@ fn render_serde_attrs(attrs: &[syn::Attribute]) -> Result<String, Error> {
         .map_err(|e| Error::new_spanned(attr, format!("SchemaHash: bad #[serde(..)]: {e}")))?;
     }
     slots.sort();
-    Ok(slots.into_iter().map(|(_, s)| s).collect::<Vec<_>>().join(","))
+    Ok(slots
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect::<Vec<_>>()
+        .join(","))
 }

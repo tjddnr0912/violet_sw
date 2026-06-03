@@ -4,5 +4,7 @@ mod event;
 mod severity;
 
 pub use code::MsgCode;
-pub use event::{Diagnostic, Frame, LogEvent, LogSink, ProgressEvent, RtlText, SourceLoc, TimeStamp};
+pub use event::{
+    Diagnostic, Frame, LogEvent, LogSink, ProgressEvent, RtlText, SourceLoc, TimeStamp,
+};
 pub use severity::Severity;

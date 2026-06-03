@@ -1,26 +1,35 @@
 //! Determinism / dedup / collision behaviour, exercised with hand-written impls
 //! (no derive dependency — this crate is pure runtime).
-use vita_schema::{schema_hash, ShapeRegistry, SchemaShape};
+use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 // Leaf type: `demo::Flags` newtype(u8).
 struct Flags;
 impl SchemaShape for Flags {
-    fn schema_name() -> &'static str { "demo::Flags" }
-    fn local_shape() -> &'static str { "repr=@#[]newtype(#[]u8)" }
+    fn schema_name() -> &'static str {
+        "demo::Flags"
+    }
+    fn local_shape() -> &'static str {
+        "repr=@#[]newtype(#[]u8)"
+    }
     fn register(reg: &mut ShapeRegistry) {
-        if !reg.insert_once(Self::schema_name(), Self::local_shape()) { return; }
+        reg.insert_once(Self::schema_name(), Self::local_shape());
     }
 }
 
 // Parent type referencing Flags by name, twice (dedup must intern once).
 struct Pair;
 impl SchemaShape for Pair {
-    fn schema_name() -> &'static str { "demo::Pair" }
-    fn local_shape() -> &'static str { "repr=@#[]struct{#[]a:demo::Flags,#[]b:demo::Flags}" }
+    fn schema_name() -> &'static str {
+        "demo::Pair"
+    }
+    fn local_shape() -> &'static str {
+        "repr=@#[]struct{#[]a:demo::Flags,#[]b:demo::Flags}"
+    }
     fn register(reg: &mut ShapeRegistry) {
-        if !reg.insert_once(Self::schema_name(), Self::local_shape()) { return; }
-        <Flags as SchemaShape>::register(reg);
-        <Flags as SchemaShape>::register(reg); // second call is a no-op (dedup)
+        if reg.insert_once(Self::schema_name(), Self::local_shape()) {
+            <Flags as SchemaShape>::register(reg);
+            <Flags as SchemaShape>::register(reg); // second call is a no-op (dedup)
+        }
     }
 }
 

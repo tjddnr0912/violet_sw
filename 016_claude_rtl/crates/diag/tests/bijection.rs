@@ -25,13 +25,19 @@ fn doc_mnemonics() -> Vec<String> {
 #[test]
 fn msgcode_matches_doc15_body_one_to_one() {
     let mut doc: Vec<String> = doc_mnemonics();
-    let mut enum_codes: Vec<String> =
-        MsgCode::ALL.iter().map(|c| c.mnemonic().to_string()).collect();
+    let mut enum_codes: Vec<String> = MsgCode::ALL
+        .iter()
+        .map(|c| c.mnemonic().to_string())
+        .collect();
     doc.sort();
     doc.dedup();
     enum_codes.sort();
 
-    assert_eq!(enum_codes.len(), 36, "MsgCode must have exactly 36 body variants");
+    assert_eq!(
+        enum_codes.len(),
+        36,
+        "MsgCode must have exactly 36 body variants"
+    );
     assert_eq!(
         enum_codes, doc,
         "MsgCode enum and docs/preview/15 §0–9 diverged.\n\
@@ -44,8 +50,10 @@ fn mnemonics_and_numbers_are_unique() {
     let mut m: Vec<&str> = MsgCode::ALL.iter().map(|c| c.mnemonic()).collect();
     let mut n: Vec<&str> = MsgCode::ALL.iter().map(|c| c.code_num()).collect();
     let (lm, ln) = (m.len(), n.len());
-    m.sort(); m.dedup();
-    n.sort(); n.dedup();
+    m.sort();
+    m.dedup();
+    n.sort();
+    n.dedup();
     assert_eq!(m.len(), lm, "duplicate mnemonic");
     assert_eq!(n.len(), ln, "duplicate VITA-#### number");
 }
