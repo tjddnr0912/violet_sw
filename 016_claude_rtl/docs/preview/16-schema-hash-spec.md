@@ -385,7 +385,7 @@ fn schema_hash_is_pinned() {
 
 **골든 #2 — 정규-*문자열* 골든 (더 강한 diff).** full `canonical_string()`을 골든 텍스트 파일로 커밋, `cargo test`에서 diff. frozen 필드 이동 시 개발자가 정확히 바뀐 레지스트리 엔트리의 **라인 diff**를 봄(예: `sim_ir::JoinState=…flags:sim_ir::ProcFlags` → `…flags:sim_ir::ProcFlags2`), 두 32-byte blob이 아님. leaf-up Merkle 대신 materialized 문자열을 택한 이유.
 
-**Layer 3 — `serde-reflection` RON 골든 (§5 line 521–525, 교차검증).** `dev-dependencies` 전용(`serde-reflection=0.4`, `03` line 82) `cargo test` — 런타임 tracer를 sim-ir 타입에 돌려 산출 `Registry`(RON)를 커밋 골든과 diff. Layer 1이 *못 잡는* 클래스를 잡음: syn-속성 캡처가 놓친 wire 변경(§serde 체크리스트 밖 serde 동작, 또는 *`with=` 모듈 내부* 인코딩이 경로 변경 없이 바뀐 경우). serde-reflection은 *실제 serde derive*를 돌려 `rename`/`skip`/`with`/`default`/`flatten`/`tag`를 자동 반영 → human review의 authoritative wire 오라클. Layer 1 될 수 없음(샘플 값 필요, const stamp 불가, codegen 필요 → "no codegen" 위반). 역할 분담(§5 line 525): Layer 1 = 런타임 staleness 게이트, Layer 3 = 의도적-포맷 human review. 함께 shape 편집 + wire 편집 커버.
+**Layer 3 — `serde-reflection` RON 골든 (§5 line 521–525, 교차검증).** `dev-dependencies` 전용(`serde-reflection=0.6` — 0.4는 stale, `03` 참조) `cargo test` — 런타임 tracer를 sim-ir 타입에 돌려 산출 `Registry`(RON)를 커밋 골든과 diff. Layer 1이 *못 잡는* 클래스를 잡음: syn-속성 캡처가 놓친 wire 변경(§serde 체크리스트 밖 serde 동작, 또는 *`with=` 모듈 내부* 인코딩이 경로 변경 없이 바뀐 경우). serde-reflection은 *실제 serde derive*를 돌려 `rename`/`skip`/`with`/`default`/`flatten`/`tag`를 자동 반영 → human review의 authoritative wire 오라클. Layer 1 될 수 없음(샘플 값 필요, const stamp 불가, codegen 필요 → "no codegen" 위반). 역할 분담(§5 line 525): Layer 1 = 런타임 staleness 게이트, Layer 3 = 의도적-포맷 human review. 함께 shape 편집 + wire 편집 커버.
 
 **개발자가 frozen 필드를 바꿨을 때 보는 것** (`Frame.return_pc: u32`→`u64`):
 1. `cargo test schema_hash_is_pinned` **실패**(해시 flip).
@@ -434,4 +434,4 @@ fn schema_hash_is_pinned() {
 - 14-staged-artifacts.md §1(117–164, 동결 노드), §5(472–532, schema 해시 메커니즘)
 - 03-build-and-portability.md (deps 61–82, dep graph 87–108 — vita-schema leaf 추가 필요)
 - 13-diagnostics-and-logging.md (line 102, 182–184 — diag는 hash 밖)
-- 생태계(2026-06-02 검증): borsh `BorshSchema`(rust #92), postcard-schema(#276), scale-info(`TypeId` 비안정), serde-reflection 0.4, typeshare, facet/abi_stable
+- 생태계(2026-06-02 검증): borsh `BorshSchema`(rust #92), postcard-schema(#276), scale-info(`TypeId` 비안정), serde-reflection 0.6(0.4는 stale), typeshare, facet/abi_stable
