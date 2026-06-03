@@ -46,3 +46,45 @@ def test_rank_regions_hottest_first():
     }
     ranked = indicators.rank_regions(per_gu)
     assert [g for g, _ in ranked] == ["강남구", "마포구", "도봉구"]
+
+
+from realestate_bot.indicators import rollup_groups
+
+
+def _gu(new_count, high, low=0, high_pct=0.0):
+    return {"new_count": new_count,
+            "breadth": {"high": high, "low": low, "high_pct": high_pct},
+            "mix_change": None, "segment": {"direct_deal_spike": False}}
+
+
+def test_rollup_groups_aggregates_by_group():
+    per_gu = {
+        "강남구": _gu(10, 5, 0, 50.0),
+        "송파구": _gu(6, 1, 1, 16.7),
+        "경기도 수원시 영통구": _gu(8, 2, 0, 25.0),
+        "경기도 성남시 분당구": _gu(4, 0, 1, 0.0),
+    }
+    jeonse = {"강남구": 55.0, "송파구": 60.0,
+              "경기도 수원시 영통구": 70.0, "경기도 성남시 분당구": None}
+    officetel = {"강남구": 3, "경기도 수원시 영통구": 2}
+    officetel_rent = {"강남구": 30, "경기도 수원시 영통구": 12}
+    gu_to_group = {"강남구": "서울", "송파구": "서울",
+                   "경기도 수원시 영통구": "경기", "경기도 성남시 분당구": "경기"}
+
+    out = rollup_groups(per_gu, jeonse, officetel, officetel_rent, gu_to_group)
+
+    assert out["서울"]["new_total"] == 16
+    assert out["서울"]["high_total"] == 6
+    assert round(out["서울"]["high_pct"], 1) == 37.5     # 6/16
+    assert out["서울"]["avg_jeonse"] == 57.5             # (55+60)/2
+    assert out["서울"]["officetel_total"] == 3
+    assert out["서울"]["officetel_rent_total"] == 30
+    # top_movers: 신고가 비중 내림차순, 신규>0만
+    assert out["서울"]["top_movers"][0][0] == "강남구"
+    assert out["경기"]["new_total"] == 12
+    assert out["경기"]["avg_jeonse"] == 70.0             # None은 제외
+
+
+def test_rollup_groups_empty_group_absent():
+    out = rollup_groups({}, {}, {}, {}, {})
+    assert out == {}

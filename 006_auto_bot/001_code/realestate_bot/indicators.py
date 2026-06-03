@@ -70,3 +70,50 @@ def rank_regions(per_gu: dict) -> list:
         key=lambda kv: (kv[1]["breadth"]["high_pct"], kv[1]["new_count"]),
         reverse=True,
     )
+
+
+def rollup_groups(per_gu: dict, jeonse: dict, officetel: dict,
+                  officetel_rent: dict, gu_to_group: dict) -> dict:
+    """구별 지표를 권역별로 집계.
+
+    gu_to_group: {gu_name: 권역명} (regions_extra.group_of로 사전 산출)
+    반환 {권역명: {new_total, high_total, low_total, high_pct, avg_jeonse,
+                  officetel_total, officetel_rent_total, top_movers, count}}.
+    top_movers = (신고가 비중, 신규) 내림차순 상위 5 (신규>0만), [(gu, {new_count, high_pct})].
+    """
+    acc = {}
+    for gu, g in per_gu.items():
+        grp = gu_to_group.get(gu, "기타")
+        d = acc.setdefault(grp, {"new_total": 0, "high_total": 0, "low_total": 0,
+                                 "officetel_total": 0, "officetel_rent_total": 0,
+                                 "jeonse_vals": [], "members": []})
+        d["new_total"] += g["new_count"]
+        d["high_total"] += g["breadth"]["high"]
+        d["low_total"] += g["breadth"]["low"]
+        d["officetel_total"] += officetel.get(gu, 0)
+        d["officetel_rent_total"] += officetel_rent.get(gu, 0)
+        j = jeonse.get(gu)
+        if j is not None:
+            d["jeonse_vals"].append(j)
+        d["members"].append((gu, g))
+
+    out = {}
+    for grp, d in acc.items():
+        nt = d["new_total"]
+        jv = d["jeonse_vals"]
+        movers = sorted((m for m in d["members"] if m[1]["new_count"] > 0),
+                        key=lambda kv: (kv[1]["breadth"]["high_pct"], kv[1]["new_count"]),
+                        reverse=True)[:5]
+        out[grp] = {
+            "new_total": nt,
+            "high_total": d["high_total"],
+            "low_total": d["low_total"],
+            "high_pct": (d["high_total"] / nt * 100) if nt else 0.0,
+            "avg_jeonse": round(sum(jv) / len(jv), 1) if jv else None,
+            "officetel_total": d["officetel_total"],
+            "officetel_rent_total": d["officetel_rent_total"],
+            "top_movers": [(gu, {"new_count": g["new_count"],
+                                 "high_pct": g["breadth"]["high_pct"]}) for gu, g in movers],
+            "count": len(d["members"]),
+        }
+    return out
