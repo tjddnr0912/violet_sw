@@ -18,6 +18,7 @@ violet_sw/
 ├── 012_stock_dashboard/ # 글로벌 시장 대시보드 (Bloomberg-style, FastAPI)
 ├── 013_shortcut/       # 비주얼 블록 Apple Shortcuts 빌더 (SwiftUI)
 ├── 014_casper/         # 미장봇 (US Stock Bot) — SPMO/GEM + Casper(ORB+FVG) 멀티 bucket, KIS API
+├── 016_claude_rtl/     # vitamin — 오픈소스 Rust RTL 시뮬레이터 (vita/vcmp/velab/vrun)
 ├── 000~004_*/          # Lab & Study (Archive)
 ├── start_all_bots.sh        # 전체 봇 일괄 실행 (iTerm2 6탭)
 └── start_all_bots_cmux.sh   # 전체 봇 일괄 실행 (cmux 단일 워크스페이스 3×2 pane)
@@ -44,6 +45,7 @@ violet_sw/
 | 012_stock_dashboard | 글로벌 시장 대시보드 (Bloomberg-style, port 5002) | `./run_dashboard.sh` | [CLAUDE.md](012_stock_dashboard/CLAUDE.md) |
 | 013_shortcut | 비주얼 블록 Apple Shortcuts 빌더 (iOS/macOS) | `xcodegen generate` | [CLAUDE.md](013_shortcut/CLAUDE.md) |
 | 014_casper | **미장봇 (US Stock Bot)** — SPMO 50%/GEM 30%/Casper(ORB+FVG) 20% 멀티 bucket, 자본 $5k/$10k에서 MTUM·QUAL·Clenow 자동 활성화 | `./run_casper.sh start` | [CLAUDE.md](014_casper/CLAUDE.md) |
+| 016_claude_rtl | **vitamin** — 오픈소스 Rust RTL 시뮬레이터 (SystemVerilog/Verilog, cargo 워크스페이스). SPEC 완비 + 구현 진행 중(PR1-B·PR2·M3) | `cargo test --workspace --locked` | [CLAUDE.md](016_claude_rtl/CLAUDE.md) |
 
 ## Development Guidelines
 
