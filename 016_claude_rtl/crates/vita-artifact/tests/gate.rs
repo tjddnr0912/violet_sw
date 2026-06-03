@@ -58,8 +58,7 @@ fn semver_major_mismatch() {
 
 #[test]
 fn stamped_schema_hash_is_the_sim_ir_root() {
-    // The stamp equals vita_schema::schema_hash over the PR1-B golden root.
     let tool = ToolContext::current();
-    let expected = vita_schema::schema_hash::<sim_ir::SuspendState>();
+    let expected = vita_schema::schema_hash::<sim_ir::SimIr>(); // M3 root (was SuspendState)
     assert_eq!(tool.schema_hash, expected);
 }

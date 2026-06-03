@@ -41,11 +41,11 @@ pub struct ToolContext {
 
 impl ToolContext {
     /// The running tool's expected values. `schema_hash` is the structural hash of
-    /// the frozen sim-ir root (PR1-B: `SuspendState`; M3 swaps to `Process`).
+    /// the frozen sim-ir root (M3: `SimIr`).
     pub fn current() -> Self {
         ToolContext {
             format_version: CURRENT_FORMAT_VERSION,
-            schema_hash: vita_schema::schema_hash::<sim_ir::SuspendState>(),
+            schema_hash: vita_schema::schema_hash::<sim_ir::SimIr>(),
             semver_major: env!("CARGO_PKG_VERSION_MAJOR")
                 .parse()
                 .expect("CARGO_PKG_VERSION_MAJOR is a valid u32"),

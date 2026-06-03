@@ -7,7 +7,7 @@ use crate::gate::ArtifactError;
 pub const MAGIC_VELAB: [u8; 8] = *b"VELAB\0\0\0";
 
 /// Container format version. Bumped whenever the header layout changes.
-pub const CURRENT_FORMAT_VERSION: u32 = 1;
+pub const CURRENT_FORMAT_VERSION: u32 = 2; // bumped for the M3 SimIr freeze
 
 /// Build provenance (Layer 2). Stamped for traceability, NEVER a staleness key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
