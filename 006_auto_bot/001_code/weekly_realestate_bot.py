@@ -194,7 +194,10 @@ class RealEstateBot:
                  max_consecutive_fails: int = None):
         max_fails = (max_consecutive_fails if max_consecutive_fails is not None
                      else config.BACKFILL_MAX_CONSECUTIVE_FAILS)
-        all_months = _recent_months(months)
+        # 현재월은 신고지연으로 미확정 + 데이터 거의 없음 → 백필 제외(주간 라이브 런이 담당).
+        # 게다가 0건이라 has_records_for_month로 캐시되지 않아 재개 때마다 헛호출됨.
+        # 가장 최근 '완료된' months개월만 적재한다.
+        all_months = _recent_months(months + 1)[1:]
         consecutive_fails = 0
         for gu, code in config.SEOUL_GU.items():
             for ym in all_months:

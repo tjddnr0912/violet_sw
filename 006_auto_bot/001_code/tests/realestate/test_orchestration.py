@@ -41,19 +41,38 @@ def test_backfill_skips_already_loaded(tmp_path, monkeypatch):
     monkeypatch.setattr(rconfig, "SEOUL_GU", {"강남구": "11680", "마포구": "11440"})
     monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
     b = bot.RealEstateBot(test_mode=True)
-    months = bot._recent_months(2)
-    # 강남 최근달 1건 사전 적재
+    months = bot._recent_months(3)        # [현재월, 직전월, 전전월]
+    loaded, other = months[1], months[2]  # backfill(2)가 적재하는 '완료월' 2개
+    # 강남 'loaded'월 1건 사전 적재
     b.store.insert_new([{"region_code": "11680", "apt_name": "X", "dong": "d",
                          "area_sqm": 84.0, "floor": 1, "price_10k": 100000,
-                         "trade_date": f"{months[0][:4]}-{months[0][4:6]}-05",
+                         "trade_date": f"{loaded[:4]}-{loaded[4:6]}-05",
                          "build_year": 2015, "deal_type": "중개거래"}])
     calls = []
     monkeypatch.setattr(bot.fetcher, "fetch_region",
                         lambda code, ym, **kw: (calls.append((code, ym)), [])[1])
     b.backfill(2)
-    assert ("11680", months[0]) not in calls   # 이미 적재 → skip
-    assert ("11680", months[1]) in calls         # 미적재 → fetch
-    assert ("11440", months[0]) in calls and ("11440", months[1]) in calls
+    assert ("11680", loaded) not in calls          # 이미 적재 → skip
+    assert ("11680", other) in calls                # 미적재 → fetch
+    assert ("11440", loaded) in calls and ("11440", other) in calls
+    assert ("11680", months[0]) not in calls        # 현재월(미확정)은 백필 제외
+    assert ("11440", months[0]) not in calls
+
+
+def test_backfill_skips_current_incomplete_month(tmp_path, monkeypatch):
+    # 현재월(신고지연·미확정)은 백필하지 않는다 — 완료된 월만 적재(헛호출 방지)
+    from realestate_bot import config as rconfig
+    monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "cm.db"))
+    monkeypatch.setattr(rconfig, "SEOUL_GU", {"마포구": "11440"})
+    monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
+    b = bot.RealEstateBot(test_mode=True)
+    months = bot._recent_months(3)        # [현재월, 직전월, 전전월]
+    calls = []
+    monkeypatch.setattr(bot.fetcher, "fetch_region",
+                        lambda code, ym, **kw: (calls.append(ym), [])[1])
+    b.backfill(2)
+    assert months[0] not in calls                       # 현재월 제외
+    assert months[1] in calls and months[2] in calls    # 완료월 2개는 적재
 
 
 def test_backfill_aborts_on_consecutive_failures(tmp_path, monkeypatch):
