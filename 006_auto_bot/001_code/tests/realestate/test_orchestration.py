@@ -242,3 +242,36 @@ def test_backfill_success_resets_failure_counter(tmp_path, monkeypatch):
     b.backfill(1, max_consecutive_fails=3, fetch_region=fetch)
     # 연속 실패가 2회를 넘지 않으므로 5개 구 모두 시도(중단 안 됨)
     assert calls == ["11001", "11002", "11003", "11004", "11005"]
+
+
+def test_run_national_scope_publishes(tmp_path, monkeypatch):
+    from realestate_bot import config as rconfig
+    monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "nat.db"))
+    # 전국 범위를 작게 축소: 서울 1 + 경기 1 + 부산 1
+    monkeypatch.setattr(rconfig, "SEOUL_GU", {"강남구": "11680"})
+    monkeypatch.setattr(rconfig, "ALL_REGIONS",
+                        {"강남구": "11680", "경기도 수원시 영통구": "41117", "부산진구": "26230"})
+    monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
+    monkeypatch.setattr(bot.mcp_client, "MCPClient", lambda *a, **k: _FakeClient())
+    captured = {}
+
+    def fake_upload(title, content, labels, **kw):
+        captured["title"] = title
+        captured["labels"] = labels
+        return {"success": True, "url": "http://blog/x"}
+
+    monkeypatch.setattr(bot, "convert_md_to_html_via_claude",
+                        lambda c: ("<p>html</p>", "전국 신고가 테스트 헤드라인"))
+    monkeypatch.setattr(bot.commentary, "make_commentary", lambda s: "")
+
+    b = bot.RealEstateBot(test_mode=False)
+    b.blogger = type("B", (), {"upload_post": staticmethod(fake_upload)})()
+    r = b.run()
+
+    assert r["success"] is True
+    assert r["blog_url"] == "http://blog/x"
+    # 제목: 날짜, 주차 + AI 헤드라인
+    assert "주차" in captured["title"] and "전국 신고가 테스트 헤드라인" in captured["title"]
+    # 라벨 7~9개
+    assert 7 <= len(captured["labels"]) <= 9
+    assert "전국" in captured["labels"]
