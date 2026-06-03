@@ -40,10 +40,25 @@ def test_empty_week_message():
 def test_digest_renders_jeonse_and_officetel_when_present():
     d = _input()
     d.update({"jeonse": {"강남구": 72.5, "노원구": None}, "jeonse_seoul": 72.5,
-              "officetel": {"강남구": 10}, "officetel_total": 10})
+              "officetel": {"강남구": 10}, "officetel_total": 10,
+              "officetel_rent": {"강남구": 25}, "officetel_rent_total": 25,
+              "officetel_rent_jeonse": 8, "officetel_rent_wolse": 17})
     md = digest.build_digest(d)
     assert "전세가율" in md and "72.5%" in md and "⚠️" in md   # 70%↑ 경고
     assert "오피스텔" in md and "10건" in md
+    # 오피스텔 전월세: 총건수 + 전세/월세 구성
+    assert "전월세" in md and "25건" in md and "전세 8건" in md and "월세 17건" in md
+
+
+def test_digest_officetel_section_renders_with_rent_only():
+    # 매매 0이어도 전월세만 있으면 오피스텔 섹션이 나온다 (오피스텔은 임대 위주)
+    d = _input()
+    d.update({"officetel_total": 0, "officetel": {},
+              "officetel_rent": {"강남구": 12}, "officetel_rent_total": 12,
+              "officetel_rent_jeonse": 3, "officetel_rent_wolse": 9})
+    md = digest.build_digest(d)
+    assert "## 오피스텔 시장" in md and "전월세" in md and "12건" in md
+    assert "매매" not in md.split("## 오피스텔 시장")[1]   # 매매 0이면 매매 줄 생략
 
 
 def test_digest_omits_synthesis_when_absent():

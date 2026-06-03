@@ -136,3 +136,16 @@ def test_rent_property_type_separation(store):
     assert store.has_rent_records_for_month("11440", "202605", "officetel") is True
     assert store.rent_band_medians("11440", "202605", "apartment")[85]["median_deposit_10k"] == 50000
     assert store.rent_band_medians("11440", "202605", "officetel")[85]["median_deposit_10k"] == 8000
+
+
+def test_rent_volume_splits_jeonse_wolse(store):
+    store.insert_new_rents([
+        _rent(deposit=50000, monthly=0, floor=1, date="2026-05-01"),    # 전세
+        _rent(deposit=10000, monthly=50, floor=2, date="2026-05-02"),   # 월세
+        _rent(deposit=20000, monthly=70, floor=3, date="2026-05-03"),   # 월세
+    ], "officetel")
+    v = store.rent_volume("11440", "202605", "officetel")
+    assert v == {"total": 3, "jeonse": 1, "wolse": 2}
+    # 다른 월·유형엔 안 잡힘
+    assert store.rent_volume("11440", "202604", "officetel") == {"total": 0, "jeonse": 0, "wolse": 0}
+    assert store.rent_volume("11440", "202605", "apartment") == {"total": 0, "jeonse": 0, "wolse": 0}

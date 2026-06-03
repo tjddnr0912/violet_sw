@@ -136,6 +136,24 @@ def test_synthesize_jeonse_and_officetel(tmp_path):
     assert syn["officetel"]["강남구"] == 1 and syn["officetel_total"] == 1
 
 
+def test_synthesize_includes_officetel_rent(tmp_path):
+    from realestate_bot.store import RealEstateStore
+    store = RealEstateStore(str(tmp_path / "syn_oftl_rent.db"))
+    store.insert_new_rents([
+        {"region_code": "11680", "apt_name": "O", "dong": "d", "area_sqm": 30.0,
+         "floor": 1, "deposit_10k": 8000, "monthly_rent_10k": 0,
+         "contract_type": "전세", "trade_date": "2026-05-10", "build_year": 2018},
+        {"region_code": "11680", "apt_name": "O", "dong": "d", "area_sqm": 30.0,
+         "floor": 2, "deposit_10k": 1000, "monthly_rent_10k": 60,
+         "contract_type": "월세", "trade_date": "2026-05-11", "build_year": 2018},
+    ], "officetel")
+    syn = bot.synthesize(store, {"강남구": "11680"}, "202605")
+    assert syn["officetel_rent_total"] == 2
+    assert syn["officetel_rent_jeonse"] == 1
+    assert syn["officetel_rent_wolse"] == 1
+    assert syn["officetel_rent"]["강남구"] == 2
+
+
 class _FakeClient:
     def __enter__(self):
         return self

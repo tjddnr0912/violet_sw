@@ -250,3 +250,17 @@ class RealEstateStore:
             by_band.setdefault(row["area_band"], []).append(row["deposit_10k"])
         return {b: {"median_deposit_10k": int(statistics.median(d)), "count": len(d)}
                 for b, d in by_band.items()}
+
+    def rent_volume(self, region_code: str, year_month: str,
+                    property_type: str = "apartment") -> dict:
+        """해당 (구, 월, 유형) 전월세 거래 건수 — 전세(월세=0)/월세 구성.
+        반환 {total, jeonse, wolse}. (오피스텔 임대시장은 매매보다 활발해 별도 노출)."""
+        like = f"{year_month[:4]}-{year_month[4:6]}-%"
+        rows = self.conn.execute(
+            """SELECT monthly_rent_10k FROM rents
+               WHERE region_code=? AND property_type=? AND trade_date LIKE ?""",
+            (region_code, property_type, like),
+        ).fetchall()
+        total = len(rows)
+        jeonse = sum(1 for r in rows if (r["monthly_rent_10k"] or 0) == 0)
+        return {"total": total, "jeonse": jeonse, "wolse": total - jeonse}

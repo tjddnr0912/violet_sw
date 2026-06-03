@@ -87,16 +87,26 @@ def build_digest(d: dict) -> str:
             lines.append(f"| {gu} | {r:.1f}%{warn} |")
         lines.append("")
 
-    # 오피스텔 시장 — 데이터 있을 때만
-    if d.get("officetel_total"):
-        oftl = d.get("officetel") or {}
-        active = sorted(((g, c) for g, c in oftl.items() if c), key=lambda x: -x[1])[:5]
-        top_str = ", ".join(f"{g} {c}건" for g, c in active)
+    # 오피스텔 시장 (매매·전월세) — 데이터 있을 때만. 임대 위주라 둘 중 하나만 있어도 노출.
+    if d.get("officetel_total") or d.get("officetel_rent_total"):
         lines.append("## 오피스텔 시장")
         lines.append("")
-        lines.append(f"이번 집계 서울 오피스텔 매매 **{d['officetel_total']}건**"
-                     + (f" — 활발: {top_str}" if top_str else "") + ".")
-        lines.append("")
+        if d.get("officetel_total"):
+            oftl = d.get("officetel") or {}
+            active = sorted(((g, c) for g, c in oftl.items() if c), key=lambda x: -x[1])[:5]
+            top_str = ", ".join(f"{g} {c}건" for g, c in active)
+            lines.append(f"매매 **{d['officetel_total']}건**"
+                         + (f" — 활발: {top_str}" if top_str else "") + ".")
+            lines.append("")
+        if d.get("officetel_rent_total"):
+            orent = d.get("officetel_rent") or {}
+            active_r = sorted(((g, c) for g, c in orent.items() if c), key=lambda x: -x[1])[:5]
+            top_r = ", ".join(f"{g} {c}건" for g, c in active_r)
+            lines.append(
+                f"전월세 **{d['officetel_rent_total']}건** "
+                f"(전세 {d.get('officetel_rent_jeonse', 0)}건 · 월세 {d.get('officetel_rent_wolse', 0)}건)"
+                + (f" — 활발: {top_r}" if top_r else "") + ".")
+            lines.append("")
 
     lines.append("> 데이터: 국토교통부 실거래가. 최근 월은 신고 지연으로 미확정이며, "
                  "중앙가 변화는 동일 평형밴드 매칭(믹스보정) 기준.")

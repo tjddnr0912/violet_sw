@@ -118,9 +118,12 @@ def synthesize(store: RealEstateStore, regions: dict, year_month: str) -> dict:
     - jeonse_seoul: 비어있지 않은 구들의 평균 전세가율
     - officetel: 구별 오피스텔 매매 건수
     - officetel_total: 서울 오피스텔 매매 총건수
+    - officetel_rent: 구별 오피스텔 전월세 건수
+    - officetel_rent_total/_jeonse/_wolse: 서울 오피스텔 전월세 총건수·전세·월세
     데이터(전세/오피스텔)가 아직 없으면 값은 None/0으로 degrade.
     """
-    jeonse, officetel = {}, {}
+    jeonse, officetel, officetel_rent = {}, {}, {}
+    o_rent_jeonse = o_rent_wolse = 0
     for gu, code in regions.items():
         tb = store.band_medians(code, year_month, "apartment")
         rb = store.rent_band_medians(code, year_month, "apartment")
@@ -130,12 +133,20 @@ def synthesize(store: RealEstateStore, regions: dict, year_month: str) -> dict:
             {b: v["count"] for b, v in rb.items()})
         ob = store.band_medians(code, year_month, "officetel")
         officetel[gu] = sum(v["count"] for v in ob.values())
+        rv = store.rent_volume(code, year_month, "officetel")
+        officetel_rent[gu] = rv["total"]
+        o_rent_jeonse += rv["jeonse"]
+        o_rent_wolse += rv["wolse"]
     ratios = [r for r in jeonse.values() if r is not None]
     return {
         "jeonse": jeonse,
         "jeonse_seoul": round(sum(ratios) / len(ratios), 1) if ratios else None,
         "officetel": officetel,
         "officetel_total": sum(officetel.values()),
+        "officetel_rent": officetel_rent,
+        "officetel_rent_total": o_rent_jeonse + o_rent_wolse,
+        "officetel_rent_jeonse": o_rent_jeonse,
+        "officetel_rent_wolse": o_rent_wolse,
     }
 
 
