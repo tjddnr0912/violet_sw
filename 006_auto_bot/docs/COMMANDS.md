@@ -9,7 +9,7 @@ source .venv/bin/activate
 
 | 명령 | 동작 |
 |------|------|
-| `python investment_bot.py` | 통합 스케줄러 (뉴스+버핏+섹터 자동) — **권장** |
+| `python investment_bot.py` | 통합 스케줄러 (뉴스+버핏+섹터+부동산 자동) — **권장** |
 | `python telegram_gemini_bot.py` | Telegram Gemini Q&A 봇 (별도 프로세스) |
 
 ## 개별 봇 즉시 실행
@@ -23,6 +23,8 @@ source .venv/bin/activate
 | `python weekly_sector_bot.py --once` | 섹터봇 11개 섹터 즉시 |
 | `python weekly_sector_bot.py --comprehensive` | 섹터 종합 투자 평가 보고서 |
 | `python weekly_sector_bot.py --reset` | 섹터봇 state 초기화 (resume 실패 복구용) |
+| `python weekly_realestate_bot.py --once [--test]` | 부동산봇 전국 디제스트 즉시 (test=Blogger/HTML 스킵) |
+| `python weekly_realestate_bot.py --backfill-all 36` | 4종(아파트·오피스텔 × 매매·전월세) 119시군구 백필 |
 
 ## 자동 스케줄
 
@@ -34,6 +36,7 @@ source .venv/bin/activate
 | 버핏봇 | 월~금 06:30 |
 | 섹터봇 | 일요일 13:00~18:00 (11개 섹터) |
 | 섹터 종합 | 일요일 19:00 |
+| 부동산봇 | 토 01:00 (전국 119시군구 주간 디제스트) |
 
 ## Telegram Gemini Q&A 봇
 

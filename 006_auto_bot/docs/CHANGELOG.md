@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-06-04: 부동산봇 전국 확장(v2) + 오피스텔 전월세 노출 + 명명 정리
+
+- **전국 확장(v2)**: 주간 디제스트 발행 범위 서울 25구 → **전국 119시군구**(`ALL_REGIONS`). 전국 단일 글(전국 헤더 → 서울 상세 → 경기·6대광역시·세종 권역 요약). 신규 모듈 `regions_extra.group_of`(코드 prefix→권역) / `indicators.rollup_groups`(권역 집계+top movers) / `publish_meta`(제목 "날짜, N월 M주차 {AI헤드라인}" + 7~9 동적 라벨). `commentary` 전국 다문단. `_convert_html`이 버리던 Claude blog_title 보존. 비서울 오피스텔=경기·광역시 건수(세종 제외). 하이브리드(숫자=코드·해석=Gemini·HTML=Claude) 불변. (브랜치 `realestate-national` → main FF, 69 tests, 라이브 전국 스모크 OK) 스펙/계획 `docs/superpowers/*/2026-06-04-realestate-national-digest-expansion*`.
+- **오피스텔 전월세 노출**: `store.rent_volume`(전세/월세 건수 분리) → `synthesize` → digest "오피스텔 시장" 섹션이 매매+전월세 2줄.
+- **4종 백필 완료**: 아파트·오피스텔 × 매매·전월세, 119시군구·36개월, **392만 행·DB 1.5GB**(직접 MCP, Claude 0콜).
+- **명명 정리**: `investment_bot.py` 스케줄 태그 "RealEstate"→"부동산봇" + docstring/argparse/epilog, `run_investment_bot.sh` 헤더에 부동산봇 추가.
+- **첫 발행 완료**: ogusinvest.blogspot.com (0신규라 "최근 완료월 델타 리셋"으로 검증발행, Claude HTML+Blogger OAuth refresh 전구간 확인).
+
+---
+
 ## 2026-05-28: 블로그 일러스트 이미지 인프라 추가 (활성화는 사용자 결정 시점)
 
 - **배경**: 봇이 Blogger HTML 글을 발행할 때 본문에 일러스트를 embed하고 싶지만 (a) HTML은 `<img src=URL>` 형태로 외부 URL 필요, (b) 로컬 이미지 파일은 URL이 없어 그대로 못 넣음. 두 가지 단계 (이미지 생성 + 호스팅)가 필요.
