@@ -44,6 +44,25 @@ def segment_flags(records: list, current_year: int) -> dict:
     }
 
 
+def jeonse_ratio(trade_medians: dict, rent_deposit_medians: dict,
+                 rent_counts: dict = None) -> float | None:
+    """전세가율(%) = 공통 평형밴드의 (전세 보증금중앙값 / 매매 중앙값), 전세 거래수 가중.
+
+    trade_medians: {band: 매매 중앙가}  (store.band_medians의 median)
+    rent_deposit_medians: {band: 전세 보증금중앙값}  (store.rent_band_medians)
+    공통 밴드 없으면 None. 70%↑면 갭투자 위험 신호.
+    """
+    common = [b for b in rent_deposit_medians if trade_medians.get(b)]
+    if not common:
+        return None
+    num = den = 0.0
+    for b in common:
+        w = (rent_counts or {}).get(b, 1)
+        num += (rent_deposit_medians[b] / trade_medians[b] * 100) * w
+        den += w
+    return round(num / den, 1) if den else None
+
+
 def rank_regions(per_gu: dict) -> list:
     """뜨거운 순: (신고가 비중, 신규건수) 내림차순."""
     return sorted(

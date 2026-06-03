@@ -35,3 +35,18 @@ def test_empty_week_message():
                                      "low_total": 0, "high_pct": 0.0},
         "per_gu": {}, "highlights": []})
     assert "신규 신고" in md
+
+
+def test_digest_renders_jeonse_and_officetel_when_present():
+    d = _input()
+    d.update({"jeonse": {"강남구": 72.5, "노원구": None}, "jeonse_seoul": 72.5,
+              "officetel": {"강남구": 10}, "officetel_total": 10})
+    md = digest.build_digest(d)
+    assert "전세가율" in md and "72.5%" in md and "⚠️" in md   # 70%↑ 경고
+    assert "오피스텔" in md and "10건" in md
+
+
+def test_digest_omits_synthesis_when_absent():
+    # 전세/오피스텔 데이터 없으면 해당 섹션 미출력 (degrade)
+    md = digest.build_digest(_input())
+    assert "전세가율" not in md and "오피스텔 시장" not in md

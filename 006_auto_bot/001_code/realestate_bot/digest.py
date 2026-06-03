@@ -68,6 +68,36 @@ def build_digest(d: dict) -> str:
             )
         lines.append("")
 
+    # 전세가율 (매매+전세 종합) — 데이터 있을 때만
+    jeonse = d.get("jeonse") or {}
+    rated = {gu: r for gu, r in jeonse.items() if r is not None}
+    if rated:
+        js = d.get("jeonse_seoul")
+        lines.append("## 전세가율 (갭투자 위험 지표)")
+        lines.append("")
+        if js is not None:
+            lines.append(f"서울 평균 전세가율 **{js:.1f}%** "
+                         f"(70%↑면 갭투자 위험 신호). 높은 구 순:")
+        lines.append("")
+        top = sorted(rated.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        lines.append("| 구 | 전세가율 |")
+        lines.append("|----|----|")
+        for gu, r in top:
+            warn = " ⚠️" if r >= 70 else ""
+            lines.append(f"| {gu} | {r:.1f}%{warn} |")
+        lines.append("")
+
+    # 오피스텔 시장 — 데이터 있을 때만
+    if d.get("officetel_total"):
+        oftl = d.get("officetel") or {}
+        active = sorted(((g, c) for g, c in oftl.items() if c), key=lambda x: -x[1])[:5]
+        top_str = ", ".join(f"{g} {c}건" for g, c in active)
+        lines.append("## 오피스텔 시장")
+        lines.append("")
+        lines.append(f"이번 집계 서울 오피스텔 매매 **{d['officetel_total']}건**"
+                     + (f" — 활발: {top_str}" if top_str else "") + ".")
+        lines.append("")
+
     lines.append("> 데이터: 국토교통부 실거래가. 최근 월은 신고 지연으로 미확정이며, "
                  "중앙가 변화는 동일 평형밴드 매칭(믹스보정) 기준.")
     return "\n".join(lines)

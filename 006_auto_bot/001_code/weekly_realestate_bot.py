@@ -111,6 +111,34 @@ def build_report(store: RealEstateStore, regions: dict, months: list, as_of: str
             "per_gu": per_gu, "highlights": highlights[:15]}
 
 
+def synthesize(store: RealEstateStore, regions: dict, year_month: str) -> dict:
+    """매매·전세·오피스텔을 종합한 부가 지표(DB 기준, 해당 월).
+
+    - jeonse: 구별 아파트 전세가율(%) (전세 보증금중앙 / 매매 중앙)
+    - jeonse_seoul: 비어있지 않은 구들의 평균 전세가율
+    - officetel: 구별 오피스텔 매매 건수
+    - officetel_total: 서울 오피스텔 매매 총건수
+    데이터(전세/오피스텔)가 아직 없으면 값은 None/0으로 degrade.
+    """
+    jeonse, officetel = {}, {}
+    for gu, code in regions.items():
+        tb = store.band_medians(code, year_month, "apartment")
+        rb = store.rent_band_medians(code, year_month, "apartment")
+        jeonse[gu] = indicators.jeonse_ratio(
+            {b: v["median"] for b, v in tb.items()},
+            {b: v["median_deposit_10k"] for b, v in rb.items()},
+            {b: v["count"] for b, v in rb.items()})
+        ob = store.band_medians(code, year_month, "officetel")
+        officetel[gu] = sum(v["count"] for v in ob.values())
+    ratios = [r for r in jeonse.values() if r is not None]
+    return {
+        "jeonse": jeonse,
+        "jeonse_seoul": round(sum(ratios) / len(ratios), 1) if ratios else None,
+        "officetel": officetel,
+        "officetel_total": sum(officetel.values()),
+    }
+
+
 def _convert_html(md: str) -> str:
     """h2 청크 분할 후 Claude HTML 변환 (buffett 패턴)."""
     sections = re.split(r"(?=^## )", md, flags=re.MULTILINE)
@@ -160,6 +188,10 @@ class RealEstateBot:
                 report = build_report(self.store, config.SEOUL_GU, months,
                                       as_of=date.today().isoformat(),
                                       fetch_region=client.fetch_region)
+                # 전세가율·오피스텔 종합용 데이터도 최근월 적재(실패해도 본 디제스트는 진행)
+                self._collect_extra(client, config.SEOUL_GU, months)
+            # 매매+전세+오피스텔 종합 지표 병합 (직전 완료월 기준)
+            report.update(synthesize(self.store, config.SEOUL_GU, months[1]))
             comment = commentary.make_commentary(
                 {"seoul": report["seoul"],
                  "top": dict(list(indicators.rank_regions(report["per_gu"]))[:5])})
@@ -199,6 +231,21 @@ class RealEstateBot:
                 except Exception:
                     pass
         return result
+
+    def _collect_extra(self, client, regions: dict, months: list):
+        """전세가율·오피스텔 종합용 데이터(아파트 전월세 + 오피스텔 매매/전월세)를
+        최근월에 한해 적재. 한 종류가 실패해도 나머지·본 디제스트는 진행(degrade)."""
+        for gu, code in regions.items():
+            for ym in months:
+                for fetch, insert, ptype in (
+                    (client.fetch_rent, self.store.insert_new_rents, "apartment"),
+                    (client.fetch_officetel_trades, self.store.insert_new, "officetel"),
+                    (client.fetch_officetel_rent, self.store.insert_new_rents, "officetel"),
+                ):
+                    try:
+                        insert(fetch(code, ym), ptype)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("extra collect skip %s %s %s: %s", ptype, gu, ym, e)
 
     def backfill(self, months: int, skip_existing: bool = True,
                  max_consecutive_fails: int = None, fetch_region=None):

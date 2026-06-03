@@ -109,6 +109,33 @@ def test_backfill_rents_writes_rent_table_only(tmp_path, monkeypatch):
     assert not b.store.has_records_for_month("11680", months[1])       # transactions엔 없음
 
 
+def test_synthesize_jeonse_and_officetel(tmp_path):
+    from realestate_bot.store import RealEstateStore
+    store = RealEstateStore(str(tmp_path / "syn.db"))
+    store.insert_new([
+        {"region_code": "11680", "apt_name": "A", "dong": "d", "area_sqm": 84.9,
+         "floor": 1, "price_10k": 100000, "trade_date": "2026-05-10",
+         "build_year": 2015, "deal_type": "중개거래"},
+        {"region_code": "11680", "apt_name": "A", "dong": "d", "area_sqm": 84.9,
+         "floor": 2, "price_10k": 100000, "trade_date": "2026-05-11",
+         "build_year": 2015, "deal_type": "중개거래"},
+    ], "apartment")
+    store.insert_new_rents([
+        {"region_code": "11680", "apt_name": "A", "dong": "d", "area_sqm": 84.9,
+         "floor": 1, "deposit_10k": 70000, "monthly_rent_10k": 0,
+         "contract_type": "전세", "trade_date": "2026-05-12", "build_year": 2015},
+    ], "apartment")
+    store.insert_new([
+        {"region_code": "11680", "apt_name": "OFTL", "dong": "d", "area_sqm": 30.0,
+         "floor": 3, "price_10k": 20000, "trade_date": "2026-05-13",
+         "build_year": 2018, "deal_type": "중개거래"},
+    ], "officetel")
+    syn = bot.synthesize(store, {"강남구": "11680"}, "202605")
+    assert syn["jeonse"]["강남구"] == 70.0          # 전세 70000 / 매매 100000
+    assert syn["jeonse_seoul"] == 70.0
+    assert syn["officetel"]["강남구"] == 1 and syn["officetel_total"] == 1
+
+
 class _FakeClient:
     def __enter__(self):
         return self
