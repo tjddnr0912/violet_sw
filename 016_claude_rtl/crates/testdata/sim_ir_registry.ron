@@ -1,0 +1,151 @@
+{
+    "EdgeKind": ENUM({
+        0: {
+            "Posedge": UNIT,
+        },
+        1: {
+            "Negedge": UNIT,
+        },
+        2: {
+            "AnyEdge": UNIT,
+        },
+    }),
+    "FourState": ENUM({
+        0: {
+            "Zero": UNIT,
+        },
+        1: {
+            "One": UNIT,
+        },
+        2: {
+            "X": UNIT,
+        },
+        3: {
+            "Z": UNIT,
+        },
+    }),
+    "Frame": STRUCT([
+        {
+            "return_pc": U32,
+        },
+        {
+            "callee_entry": U32,
+        },
+        {
+            "locals_base": U32,
+        },
+        {
+            "locals_len": U32,
+        },
+        {
+            "is_automatic": BOOL,
+        },
+    ]),
+    "JoinState": STRUCT([
+        {
+            "parent": OPTION(U32),
+        },
+        {
+            "children": SEQ(U32),
+        },
+        {
+            "detached": SEQ(U32),
+        },
+        {
+            "flags": TYPENAME("ProcFlags"),
+        },
+    ]),
+    "ProcFlags": NEWTYPESTRUCT(U8),
+    "RegionTag": ENUM({
+        0: {
+            "Active": UNIT,
+        },
+        1: {
+            "Inactive": UNIT,
+        },
+        2: {
+            "Nba": UNIT,
+        },
+        3: {
+            "Monitor": UNIT,
+        },
+    }),
+    "SuspendState": STRUCT([
+        {
+            "resume_pc": U32,
+        },
+        {
+            "locals": SEQ(TYPENAME("FourState")),
+        },
+        {
+            "join_state": TYPENAME("JoinState"),
+        },
+        {
+            "wake_key": TYPENAME("WakeKey"),
+        },
+        {
+            "call_stack": SEQ(TYPENAME("Frame")),
+        },
+        {
+            "frame_arena": SEQ(TYPENAME("FourState")),
+        },
+    ]),
+    "WakeCond": ENUM({
+        0: {
+            "Edge": STRUCT([
+                {
+                    "net": U32,
+                },
+                {
+                    "kind": TYPENAME("EdgeKind"),
+                },
+            ]),
+        },
+        1: {
+            "Level": STRUCT([
+                {
+                    "nets": SEQ(U32),
+                },
+            ]),
+        },
+        2: {
+            "WaitTrue": STRUCT([
+                {
+                    "expr": U32,
+                },
+            ]),
+        },
+        3: {
+            "TimeAbs": STRUCT([
+                {
+                    "tick": U64,
+                },
+            ]),
+        },
+        4: {
+            "NamedEvent": STRUCT([
+                {
+                    "ev": U32,
+                },
+            ]),
+        },
+        5: {
+            "Join": STRUCT([
+                {
+                    "join_ref": U32,
+                },
+            ]),
+        },
+    }),
+    "WakeKey": STRUCT([
+        {
+            "cond": TYPENAME("WakeCond"),
+        },
+        {
+            "region": TYPENAME("RegionTag"),
+        },
+        {
+            "tie_break": U32,
+        },
+    ]),
+}

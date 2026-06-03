@@ -10,11 +10,17 @@ fn schema_names_are_crate_root_fq() {
 
 #[test]
 fn four_state() {
-    assert_eq!(FourState::local_shape(), "repr=@#[]enum{#[]Zero,#[]One,#[]X,#[]Z}");
+    assert_eq!(
+        FourState::local_shape(),
+        "repr=@#[]enum{#[]Zero,#[]One,#[]X,#[]Z}"
+    );
 }
 #[test]
 fn edge_kind() {
-    assert_eq!(EdgeKind::local_shape(), "repr=@#[]enum{#[]Posedge,#[]Negedge,#[]AnyEdge}");
+    assert_eq!(
+        EdgeKind::local_shape(),
+        "repr=@#[]enum{#[]Posedge,#[]Negedge,#[]AnyEdge}"
+    );
 }
 #[test]
 fn proc_flags() {
@@ -22,7 +28,10 @@ fn proc_flags() {
 }
 #[test]
 fn region_tag() {
-    assert_eq!(RegionTag::local_shape(), "repr=@#[]enum{#[]Active,#[]Inactive,#[]Nba,#[]Monitor}");
+    assert_eq!(
+        RegionTag::local_shape(),
+        "repr=@#[]enum{#[]Active,#[]Inactive,#[]Nba,#[]Monitor}"
+    );
 }
 #[test]
 fn frame() {

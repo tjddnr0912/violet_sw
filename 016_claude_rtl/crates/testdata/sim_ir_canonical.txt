@@ -1,0 +1,10 @@
+vita-schema-v1
+sim_ir::EdgeKind=repr=@#[]enum{#[]Posedge,#[]Negedge,#[]AnyEdge}
+sim_ir::FourState=repr=@#[]enum{#[]Zero,#[]One,#[]X,#[]Z}
+sim_ir::Frame=repr=@#[]struct{#[]return_pc:u32,#[]callee_entry:u32,#[]locals_base:u32,#[]locals_len:u32,#[]is_automatic:bool}
+sim_ir::JoinState=repr=@#[]struct{#[]parent:Option<u32>,#[]children:Vec<u32>,#[]detached:Vec<u32>,#[]flags:sim_ir::ProcFlags}
+sim_ir::ProcFlags=repr=@#[]newtype(#[]u8)
+sim_ir::RegionTag=repr=@#[]enum{#[]Active,#[]Inactive,#[]Nba,#[]Monitor}
+sim_ir::SuspendState=repr=@#[]struct{#[]resume_pc:u32,#[]locals:Vec<sim_ir::FourState>,#[]join_state:sim_ir::JoinState,#[]wake_key:sim_ir::WakeKey,#[]call_stack:Vec<sim_ir::Frame>,#[]frame_arena:Vec<sim_ir::FourState>}
+sim_ir::WakeCond=repr=@#[]enum{#[]Edge{#[]net:u32,#[]kind:sim_ir::EdgeKind},#[]Level{#[]nets:Vec<u32>},#[]WaitTrue{#[]expr:u32},#[]TimeAbs{#[]tick:u64},#[]NamedEvent{#[]ev:u32},#[]Join{#[]join_ref:u32}}
+sim_ir::WakeKey=repr=@#[]struct{#[]cond:sim_ir::WakeCond,#[]region:sim_ir::RegionTag,#[]tie_break:u32}
