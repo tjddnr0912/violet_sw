@@ -94,6 +94,25 @@ def test_handshake_sends_initialize_then_tool_call(tmp_path, monkeypatch):
                                  "num_of_rows": 50}
 
 
+def test_fetch_rent_parses_and_maps_unit_name(tmp_path, monkeypatch):
+    payload = {"total_count": 1, "items": [
+        {"unit_name": "A아파트", "dong": "동", "area_sqm": 84.9, "floor": 3,
+         "deposit_10k": 50000, "monthly_rent_10k": 0, "contract_type": "전세",
+         "trade_date": "2026-05-10", "build_year": 2015}]}
+    lines = [
+        json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+        json.dumps({"jsonrpc": "2.0", "id": 2, "result": {
+            "content": [{"type": "text", "text": json.dumps(payload)}]}}) + "\n",
+    ]
+    monkeypatch.setattr(mc.subprocess, "Popen", lambda *a, **k: _FakeProc(lines))
+    with mc.MCPClient(config_path=_config(tmp_path)) as c:
+        recs = c.fetch_rent("11680", "202505")
+    assert len(recs) == 1
+    assert recs[0]["apt_name"] == "A아파트"      # unit_name→apt_name 정규화
+    assert recs[0]["region_code"] == "11680"
+    assert recs[0]["deposit_10k"] == 50000
+
+
 def test_tool_error_raises(tmp_path, monkeypatch):
     lines = [
         json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",

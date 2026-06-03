@@ -65,6 +65,32 @@ def _parse(output: str, region_code: str) -> list:
     return extract_records(json.loads(m.group(1)), region_code)
 
 
+RENT_REQUIRED_FIELDS = ("area_sqm", "floor", "deposit_10k", "trade_date")
+
+
+def extract_rent_records(payload: dict, region_code: str) -> list:
+    """get_apartment_rent 페이로드 → 검증된 전월세 레코드(region_code 주입).
+    unit_name→apt_name 정규화, monthly_rent_10k 없으면 0(전세)."""
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise ValueError("items missing")
+    total = payload.get("total_count")
+    if isinstance(total, int) and total > len(items):
+        logger.warning("rent incomplete: %s items < total_count %s (region %s)",
+                       len(items), total, region_code)
+    out = []
+    for it in items:
+        for f in RENT_REQUIRED_FIELDS:
+            if f not in it:
+                raise ValueError(f"missing rent field {f}")
+        rec = dict(it)
+        rec["region_code"] = region_code
+        rec["apt_name"] = it.get("unit_name") or it.get("apt_name") or ""
+        rec.setdefault("monthly_rent_10k", 0)
+        out.append(rec)
+    return out
+
+
 def fetch_region(region_code: str, year_month: str, max_retries: int = 3) -> list:
     prompt = _build_prompt(region_code, year_month)
     last_err = None

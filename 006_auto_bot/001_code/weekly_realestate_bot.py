@@ -202,39 +202,56 @@ class RealEstateBot:
 
     def backfill(self, months: int, skip_existing: bool = True,
                  max_consecutive_fails: int = None, fetch_region=None):
+        """매매(transactions) 백필. 현재월은 미확정이라 제외하고 완료월만 적재."""
         max_fails = (max_consecutive_fails if max_consecutive_fails is not None
                      else config.BACKFILL_MAX_CONSECUTIVE_FAILS)
-        # 현재월은 신고지연으로 미확정 + 데이터 거의 없음 → 백필 제외(주간 라이브 런이 담당).
-        # 게다가 0건이라 has_records_for_month로 캐시되지 않아 재개 때마다 헛호출됨.
-        # 가장 최근 '완료된' months개월만 적재한다.
         all_months = _recent_months(months + 1)[1:]
-        if fetch_region is not None:  # 테스트 주입
-            self._backfill_loop(all_months, skip_existing, max_fails, fetch_region)
+        fetch = fetch_region                                  # 테스트 주입
+        if fetch is not None:
+            self._backfill_loop(all_months, skip_existing, max_fails, fetch,
+                                self.store.insert_new, self.store.has_records_for_month)
             return
-        # 기본: MCP 서버 직접 호출(Claude 우회 → 한도 0). 세션 1개로 전체 백필.
-        with mcp_client.MCPClient() as client:
-            self._backfill_loop(all_months, skip_existing, max_fails, client.fetch_region)
+        with mcp_client.MCPClient() as client:                # 기본: 직접 MCP(한도 0)
+            self._backfill_loop(all_months, skip_existing, max_fails, client.fetch_region,
+                                self.store.insert_new, self.store.has_records_for_month)
 
-    def _backfill_loop(self, all_months, skip_existing, max_fails, fetch_region):
+    def backfill_rents(self, months: int, skip_existing: bool = True,
+                       max_consecutive_fails: int = None, fetch_rent=None):
+        """전월세(rents) 백필. 매매와 동일 구조, store 작업만 전월세용."""
+        max_fails = (max_consecutive_fails if max_consecutive_fails is not None
+                     else config.BACKFILL_MAX_CONSECUTIVE_FAILS)
+        all_months = _recent_months(months + 1)[1:]
+        if fetch_rent is not None:                            # 테스트 주입
+            self._backfill_loop(all_months, skip_existing, max_fails, fetch_rent,
+                                self.store.insert_new_rents,
+                                self.store.has_rent_records_for_month, tag="[rent]")
+            return
+        with mcp_client.MCPClient() as client:
+            self._backfill_loop(all_months, skip_existing, max_fails, client.fetch_rent,
+                                self.store.insert_new_rents,
+                                self.store.has_rent_records_for_month, tag="[rent]")
+
+    def _backfill_loop(self, all_months, skip_existing, max_fails, fetch_fn,
+                       insert_fn, has_fn, tag=""):
         consecutive_fails = 0
         for gu, code in config.ALL_REGIONS.items():  # 서울+경기+광역시+세종 전체
             for ym in all_months:
-                if skip_existing and self.store.has_records_for_month(code, ym):
-                    logger.info("backfill cached %s %s (already loaded, skip fetch)", gu, ym)
+                if skip_existing and has_fn(code, ym):
+                    logger.info("backfill%s cached %s %s (already loaded, skip fetch)", tag, gu, ym)
                     continue
                 try:
-                    recs = fetch_region(code, ym)
-                    n = len(self.store.insert_new(recs))
-                    logger.info("backfill %s %s: +%s", gu, ym, n)
+                    recs = fetch_fn(code, ym)
+                    n = len(insert_fn(recs))
+                    logger.info("backfill%s %s %s: +%s", tag, gu, ym, n)
                     consecutive_fails = 0
                 except Exception as e:  # noqa: BLE001
                     consecutive_fails += 1
-                    logger.warning("backfill skip %s %s: %s", gu, ym, e)
+                    logger.warning("backfill%s skip %s %s: %s", tag, gu, ym, e)
                     if consecutive_fails >= max_fails:
                         logger.error(
-                            "backfill ABORTED: %s consecutive failures (한도/API 오류 추정). "
+                            "backfill%s ABORTED: %s consecutive failures (한도/API 오류 추정). "
                             "적재분은 보존됨 — 회복 후 같은 명령으로 재개.",
-                            consecutive_fails)
+                            tag, consecutive_fails)
                         return
 
     def run_scheduled(self):
@@ -250,11 +267,14 @@ def main():
     p.add_argument("--once", action="store_true")
     p.add_argument("--test", action="store_true")
     p.add_argument("--backfill", type=int, metavar="MONTHS")
+    p.add_argument("--backfill-rents", type=int, metavar="MONTHS", dest="backfill_rents")
     args = p.parse_args()
 
     boot = RealEstateBot(test_mode=args.test)
     if args.backfill:
         boot.backfill(args.backfill)
+    elif args.backfill_rents:
+        boot.backfill_rents(args.backfill_rents)
     elif args.once:
         r = boot.run()
         print(f"Result: {'OK' if r['success'] else 'FAIL'} {r.get('blog_url') or r.get('error') or ''}")

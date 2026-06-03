@@ -89,6 +89,26 @@ def test_backfill_skips_current_incomplete_month(tmp_path, monkeypatch):
     assert months[1] in calls and months[2] in calls    # 완료월 2개는 적재
 
 
+def test_backfill_rents_writes_rent_table_only(tmp_path, monkeypatch):
+    # 전월세 백필은 rents 테이블에만 적재(transactions와 분리)
+    from realestate_bot import config as rconfig
+    monkeypatch.setattr(rconfig, "DB_PATH", str(tmp_path / "r.db"))
+    monkeypatch.setattr(rconfig, "ALL_REGIONS", {"강남구": "11680"})
+    monkeypatch.setattr(bot, "TELEGRAM_ENABLED", False)
+    b = bot.RealEstateBot(test_mode=True)
+    months = bot._recent_months(3)
+
+    def fake_rent(code, ym, **kw):
+        return [{"region_code": code, "apt_name": "X", "dong": "d", "area_sqm": 84.0,
+                 "floor": 1, "deposit_10k": 50000, "monthly_rent_10k": 0,
+                 "contract_type": "전세", "trade_date": f"{ym[:4]}-{ym[4:6]}-05",
+                 "build_year": 2015}]
+
+    b.backfill_rents(2, fetch_rent=fake_rent)
+    assert b.store.has_rent_records_for_month("11680", months[1])      # rents에 적재
+    assert not b.store.has_records_for_month("11680", months[1])       # transactions엔 없음
+
+
 def test_backfill_aborts_on_consecutive_failures(tmp_path, monkeypatch):
     # 한도 막힘처럼 연속 실패가 임계치에 도달하면 백필 전체를 즉시 중단(헛돌지 않음)
     from realestate_bot import config as rconfig

@@ -15,6 +15,14 @@ def _record_key(r: dict) -> str:
     ])
 
 
+def _rent_record_key(r: dict) -> str:
+    return "|".join([
+        str(r["region_code"]), str(r.get("apt_name", "")), str(r.get("dong", "")),
+        f'{float(r["area_sqm"]):.4f}', str(r["floor"]), str(r["trade_date"]),
+        str(r["deposit_10k"]), str(r.get("monthly_rent_10k", 0)),
+    ])
+
+
 def _area_band(area_sqm) -> int:
     return int(round(float(area_sqm)))
 
@@ -42,6 +50,18 @@ class RealEstateStore:
               ON transactions(region_code, apt_name, area_band, trade_date);
             CREATE INDEX IF NOT EXISTS idx_vol
               ON transactions(region_code, trade_date);
+
+            CREATE TABLE IF NOT EXISTS rents (
+              record_key TEXT PRIMARY KEY,
+              region_code TEXT, apt_name TEXT, dong TEXT,
+              area_sqm REAL, area_band INTEGER, floor INTEGER,
+              deposit_10k INTEGER, monthly_rent_10k INTEGER, contract_type TEXT,
+              trade_date TEXT, build_year INTEGER, first_seen_date TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rent_vol
+              ON rents(region_code, trade_date);
+            CREATE INDEX IF NOT EXISTS idx_rent_group
+              ON rents(region_code, area_band, monthly_rent_10k, trade_date);
             """
         )
         self.conn.commit()
@@ -141,3 +161,53 @@ class RealEstateStore:
             (region_code, like),
         ).fetchone()
         return row is not None
+
+    # ── 전월세(rents) ──────────────────────────────────────────────
+    def insert_new_rents(self, records: list) -> list:
+        """전월세 INSERT OR IGNORE 후 실제 삽입된(신규) 레코드만 반환."""
+        today = _date.today().isoformat()
+        new_records = []
+        cur = self.conn.cursor()
+        for r in records:
+            key = _rent_record_key(r)
+            band = _area_band(r["area_sqm"])
+            cur.execute(
+                """INSERT OR IGNORE INTO rents
+                   (record_key, region_code, apt_name, dong, area_sqm, area_band,
+                    floor, deposit_10k, monthly_rent_10k, contract_type,
+                    trade_date, build_year, first_seen_date)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (key, r["region_code"], r.get("apt_name", ""), r.get("dong", ""),
+                 float(r["area_sqm"]), band, int(r["floor"]),
+                 int(r["deposit_10k"]), int(r.get("monthly_rent_10k", 0)),
+                 r.get("contract_type"), r["trade_date"], r.get("build_year"), today),
+            )
+            if cur.rowcount == 1:
+                out = dict(r)
+                out["area_band"] = band
+                new_records.append(out)
+        self.conn.commit()
+        return new_records
+
+    def has_rent_records_for_month(self, region_code: str, year_month: str) -> bool:
+        like = f"{year_month[:4]}-{year_month[4:6]}-%"
+        row = self.conn.execute(
+            "SELECT 1 FROM rents WHERE region_code=? AND trade_date LIKE ? LIMIT 1",
+            (region_code, like),
+        ).fetchone()
+        return row is not None
+
+    def rent_band_medians(self, region_code: str, year_month: str) -> dict:
+        """평형 밴드별 전세(월세=0) 보증금 중앙값 → 전세가율 산출용.
+        반환 {band: {median_deposit_10k, count}}."""
+        like = f"{year_month[:4]}-{year_month[4:6]}-%"
+        rows = self.conn.execute(
+            """SELECT area_band, deposit_10k FROM rents
+               WHERE region_code=? AND trade_date LIKE ? AND monthly_rent_10k=0""",
+            (region_code, like),
+        ).fetchall()
+        by_band = {}
+        for row in rows:
+            by_band.setdefault(row["area_band"], []).append(row["deposit_10k"])
+        return {b: {"median_deposit_10k": int(statistics.median(d)), "count": len(d)}
+                for b, d in by_band.items()}

@@ -99,12 +99,22 @@ class MCPClient:
         content = resp["result"]["content"]
         return json.loads(content[0]["text"])
 
-    def fetch_region(self, region_code: str, year_month: str,
-                     num_of_rows: int = None) -> list:
-        payload = self.call_tool("get_apartment_trades", {
+    def _fetch(self, tool: str, extract, region_code: str, year_month: str,
+               num_of_rows: int = None) -> list:
+        payload = self.call_tool(tool, {
             "region_code": region_code, "year_month": year_month,
             "num_of_rows": num_of_rows or config.NUM_OF_ROWS})
         if isinstance(payload, dict) and payload.get("error"):
             raise RuntimeError(f"MCP API error {region_code} {year_month}: "
                                f"{payload.get('message') or payload.get('error')}")
-        return fetcher.extract_records(payload, region_code)
+        return extract(payload, region_code)
+
+    def fetch_region(self, region_code: str, year_month: str,
+                     num_of_rows: int = None) -> list:
+        return self._fetch("get_apartment_trades", fetcher.extract_records,
+                           region_code, year_month, num_of_rows)
+
+    def fetch_rent(self, region_code: str, year_month: str,
+                   num_of_rows: int = None) -> list:
+        return self._fetch("get_apartment_rent", fetcher.extract_rent_records,
+                           region_code, year_month, num_of_rows)
