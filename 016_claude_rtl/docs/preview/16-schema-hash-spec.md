@@ -10,7 +10,9 @@
 
 `SCHEMA_HASH`는 sim-ir/hdl-ast serde 타입들의 **구조적 형상(structural shape)** 전체를 하나의 blake3 32-byte 값으로 응축한다. 보장하는 단 하나의 명제:
 
-> **루트(`sim_ir::Process`)에서 타입-도달 가능한 형상이 한 군데라도 바뀌면 — 필드 추가/삭제/재배열/타입변경, enum variant 추가/삭제/재배열, serde 속성 추가/변경 — 루트 해시가 반드시 flip 하고, 그 결과 기존 모든 `.velab`/`.vu`가 즉시 무효(incompatible-tool 하드 에러)가 된다.**
+> **루트(`sim_ir::SimIr`)에서 타입-도달 가능한 형상이 한 군데라도 바뀌면 — 필드 추가/삭제/재배열/타입변경, enum variant 추가/삭제/재배열, serde 속성 추가/변경 — 루트 해시가 반드시 flip 하고, 그 결과 기존 모든 `.velab`/`.vu`가 즉시 무효(incompatible-tool 하드 에러)가 된다.**
+
+> **루트 = `sim_ir::SimIr` (M3 재루트, doc 17).** G2 설계 시점엔 `Process`를 예시 루트로 썼으나, `Process`의 타입-도달 폐포는 cross-arena 엣지가 전부 `u32` 인덱스라 `Expr`/`Stmt`/`NetVar`/`ConstVal` arena에 **도달하지 못한다**. arena를 `Vec`로 by-value 보유하는 `SimIr`만이 전 백본을 동결한다. 아래 본문의 `<Process>` 예시는 SuspendState-클러스터 전파 트레이스(여전히 유효한 sub-pin)이며, **호환성 게이트 루트는 `SimIr`**다. `SimIrRoot`는 곧 `sim_ir::SimIr`.
 
 범위 안:
 - **형상**: 필드명 + 필드 타입 + enum variant 형태 + 명시 discriminant + array 길이 `N`.
@@ -375,7 +377,7 @@ fn canonical_string(&self) -> String {
 #[test]
 fn schema_hash_is_pinned() {
     const EXPECTED: &str = "…64 hex…";  // frozen sim-ir 루트의 커밋된 기대 해시
-    let got = vita_schema::ShapeRegistry::schema_hash::<sim_ir::Process>();
+    let got = vita_schema::ShapeRegistry::schema_hash::<sim_ir::SimIr>();   // M3 루트 (doc 17); Process는 sub-pin
     assert_eq!(hex::encode(got), EXPECTED,
         "SCHEMA_HASH 변경 — frozen sim-ir 타입의 형상/serde 속성이 이동.\n\
          의도적이면: 모든 .velab 무효 → format_version bump + 골든 갱신.");

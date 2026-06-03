@@ -109,6 +109,8 @@ SimIr 루트 1개:
   - arena/interner 평탄 벡터 (u32 인덱스 엣지 — 재로드 시 포인터 fixup 0)
 ```
 
+> **SCHEMA_HASH 루트 = `sim_ir::SimIr` (M3 동결, doc 17).** §5의 구조적 해시는 위 `SimIr` 루트(arena 전체를 `Vec`로 by-value 보유 → `Expr`/`Stmt`/`NetVar`/`ConstVal`까지 도달)에서 산출한다. `Process`만으로는 cross-arena u32 엣지라 arena에 미도달 → `Process`는 런타임 클러스터 sub-pin 골든. `Expr`/`Stmt`/`Lvalue`/`Terminator`/`Sensitivity`/`NetVar`/arena 형상은 doc 17이 동결.
+
 > **백엔드 능력은 헤더에 넣지 않는다.** velab 스냅샷은 *해소된 IR 사실*만 담는다.
 > "이 엔진이 어떤 builtin을 실행할 수 있는가/dump를 지원하는가"는 스냅샷을 로드하는
 > 백엔드(vrun 인터프리터 또는 향후 컴파일드 엔진)의 런타임 능력이므로, elaborate
