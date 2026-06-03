@@ -276,10 +276,11 @@ def test_build_labels_7_to_9_and_dynamic():
     assert 7 <= len(labels) <= 9
     assert labels[:6] == ["부동산", "아파트", "실거래가", "주간시황", "전국", "전세가율"]
     assert "서울" in labels          # 신규 최다 권역
-    assert "영등포구" in labels       # 핫스팟
+    assert "영등포구" in labels       # 핫스팟 (토픽 라벨보다 우선)
     assert "신고가" in labels         # 15/80 = 18.75% ≥ 15%
-    assert "오피스텔" in labels
     assert len(labels) == len(set(labels))   # 중복 없음
+    # base6 + 서울(권역) + 영등포구(핫스팟) + 신고가 = 9; 오피스텔은 9 cap으로 탈락
+    assert len(labels) == 9 and "오피스텔" not in labels
 
 
 def test_build_labels_floor_7_without_optional():
@@ -329,6 +330,9 @@ def build_labels(groups: dict, hottest_gu: str = None) -> list:
     if groups:
         hot_group = max(groups.items(), key=lambda kv: kv[1]["new_total"])[0]
         labels.append(hot_group)
+    if hottest_gu:                      # 핫스팟 구는 토픽 라벨보다 우선(9 cap에서 안 잘리게)
+        labels.append(hottest_gu)
+    if groups:
         nat_new = sum(g["new_total"] for g in groups.values())
         nat_high = sum(g["high_total"] for g in groups.values())
         if nat_new and nat_high / nat_new * 100 >= _HIGH_PCT_LABEL_THRESHOLD:
@@ -337,8 +341,6 @@ def build_labels(groups: dict, hottest_gu: str = None) -> list:
                    for g in groups.values())
         if oftl > 0:
             labels.append("오피스텔")
-    if hottest_gu:
-        labels.append(hottest_gu)
     out = []
     for label in labels:
         if label not in out:
@@ -728,7 +730,7 @@ def build_digest(d: dict) -> str:
 - [ ] **Step 4: 통과 확인**
 
 Run: `.venv/bin/python -m pytest tests/realestate/test_digest.py -q`
-Expected: PASS (6 passed)
+Expected: PASS (5 passed)
 
 - [ ] **Step 5: 커밋**
 
