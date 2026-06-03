@@ -5,17 +5,45 @@ use serde_reflection::{Tracer, TracerConfig};
 
 fn traced_registry_ron() -> String {
     let mut tracer = Tracer::new(TracerConfig::default());
-    // Trace each enum type explicitly so all variants are discovered.
+    // Scalar leaf enums.
     tracer.trace_simple_type::<sim_ir::FourState>().unwrap();
     tracer.trace_simple_type::<sim_ir::EdgeKind>().unwrap();
     tracer.trace_simple_type::<sim_ir::RegionTag>().unwrap();
     tracer.trace_simple_type::<sim_ir::WakeCond>().unwrap();
-    // Trace struct types.
+    tracer.trace_simple_type::<sim_ir::UnOp>().unwrap();
+    tracer.trace_simple_type::<sim_ir::BinOp>().unwrap();
+    tracer.trace_simple_type::<sim_ir::SelKind>().unwrap();
+    tracer.trace_simple_type::<sim_ir::SysFuncId>().unwrap();
+    tracer.trace_simple_type::<sim_ir::SysTaskId>().unwrap();
+    tracer.trace_simple_type::<sim_ir::DisableKind>().unwrap();
+    tracer.trace_simple_type::<sim_ir::DelayRegion>().unwrap();
+    tracer.trace_simple_type::<sim_ir::WaitCause>().unwrap();
+    tracer.trace_simple_type::<sim_ir::Terminator>().unwrap();
+    tracer.trace_simple_type::<sim_ir::SensKind>().unwrap();
+    tracer.trace_simple_type::<sim_ir::NetKind>().unwrap();
+    tracer.trace_simple_type::<sim_ir::PortDir>().unwrap();
+    tracer.trace_simple_type::<sim_ir::ConstRepr>().unwrap();
+    tracer.trace_simple_type::<sim_ir::Expr>().unwrap();
+    tracer.trace_simple_type::<sim_ir::Stmt>().unwrap();
+    // Struct types.
     tracer.trace_simple_type::<sim_ir::ProcFlags>().unwrap();
     tracer.trace_simple_type::<sim_ir::Frame>().unwrap();
     tracer.trace_simple_type::<sim_ir::JoinState>().unwrap();
     tracer.trace_simple_type::<sim_ir::WakeKey>().unwrap();
     tracer.trace_simple_type::<sim_ir::SuspendState>().unwrap();
+    tracer.trace_simple_type::<sim_ir::LvalChunk>().unwrap();
+    tracer.trace_simple_type::<sim_ir::Lvalue>().unwrap();
+    tracer.trace_simple_type::<sim_ir::EdgeTerm>().unwrap();
+    tracer.trace_simple_type::<sim_ir::Sensitivity>().unwrap();
+    tracer.trace_simple_type::<sim_ir::BitPacked>().unwrap();
+    tracer.trace_simple_type::<sim_ir::NetVar>().unwrap();
+    tracer.trace_simple_type::<sim_ir::ConstVal>().unwrap();
+    tracer.trace_simple_type::<sim_ir::BasicBlock>().unwrap();
+    tracer.trace_simple_type::<sim_ir::Process>().unwrap();
+    tracer.trace_simple_type::<sim_ir::ContAssign>().unwrap();
+    tracer.trace_simple_type::<sim_ir::Instance>().unwrap();
+    tracer.trace_simple_type::<sim_ir::FuncDef>().unwrap();
+    tracer.trace_simple_type::<sim_ir::SimIr>().unwrap();
     let registry = tracer.registry().unwrap();
     ron::ser::to_string_pretty(&registry, ron::ser::PrettyConfig::default()).unwrap()
 }

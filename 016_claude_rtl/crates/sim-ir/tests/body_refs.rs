@@ -12,7 +12,7 @@ use vita_schema::{SchemaShape, ShapeRegistry};
 /// (key, body) for every registry entry, from the canonical string.
 fn entries() -> Vec<(String, String)> {
     let mut reg = ShapeRegistry::new();
-    sim_ir::SuspendState::register(&mut reg);
+    sim_ir::SimIr::register(&mut reg);
     reg.canonical_string()
         .lines()
         .skip(1) // drop the "vita-schema-v1" sentinel
