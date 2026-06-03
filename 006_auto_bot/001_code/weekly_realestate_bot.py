@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""주간 서울 아파트 시장 흐름 다이제스트 봇.
+"""주간 전국 아파트 시장 흐름 다이제스트 봇 (서울 상세 + 경기·광역시·세종 권역 요약).
 
   python weekly_realestate_bot.py --once [--test]   # 즉시 1회 (test=업로드 스킵)
-  python weekly_realestate_bot.py --backfill 36     # 25구 × N개월 초기 적재
-  python weekly_realestate_bot.py                   # 스케줄 (토 08:00)
+  python weekly_realestate_bot.py --backfill 36     # 119시군구 × N개월 초기 적재
+  python weekly_realestate_bot.py                   # 스케줄 (토 01:00)
 """
 import os
 import re
