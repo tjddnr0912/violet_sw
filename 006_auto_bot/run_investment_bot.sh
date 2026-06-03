@@ -2,7 +2,8 @@
 #
 # Investment Bot Runner (Orchestrator)
 # -------------------------------------
-# 섹터봇(일요일) + 버핏봇(월~금)을 하나의 프로세스로 관리
+# 뉴스봇(매일) + 버핏봇(월~금) + 섹터봇(일요일) + 부동산봇(토 01:00)을
+# 하나의 프로세스로 관리
 #
 # 사용법:
 #   ./run_investment_bot.sh           # 스케줄 모드
@@ -21,7 +22,7 @@ fi
 mkdir -p logs
 
 echo "========================================"
-echo "Investment Bot (Sector + Buffett)"
+echo "Investment Bot (News + Buffett + Sector + 부동산봇)"
 echo "========================================"
 echo "Start time: $(date)"
 echo "Working dir: $(pwd)"

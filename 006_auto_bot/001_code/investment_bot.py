@@ -2,7 +2,8 @@
 """
 Investment Bot - 뉴스·투자 분석 통합 오케스트레이터
 ----------------------------------------------------
-뉴스봇(매일) + 버핏봇(월~금) + 섹터봇(일요일)을 하나의 프로세스에서 관리
+뉴스봇(매일) + 버핏봇(월~금) + 섹터봇(일요일) + 부동산봇(토 01:00)을
+하나의 프로세스에서 관리
 
 실행 방법:
   python investment_bot.py              # 스케줄 모드 (전체 통합)
@@ -46,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Investment Bot - News + Buffett + Sector Orchestrator',
+        description='Investment Bot - News + Buffett + Sector + Realestate Orchestrator',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 스케줄:
@@ -54,9 +55,10 @@ def main():
   월~금 06:30  버핏의 투자 노트
   일    07:00  주간 뉴스 요약
   매월1일 07:30  월간 뉴스 요약
-  일    13:00~18:00  11개 섹터별 투자 분석
-  일    18:30  주간 섹터 요약 알림
-  일    19:00  종합 투자 평가 보고서
+  일    13:00~18:40  11개 섹터별 투자 분석
+  일    19:20  주간 섹터 요약 알림
+  일    19:40  종합 투자 평가 보고서
+  토    01:00  부동산봇 주간 다이제스트
 
 개별 실행은 각 봇 직접 호출:
   python main.py --mode once [--test]
@@ -64,6 +66,7 @@ def main():
   python weekly_sector_bot.py --once [--test]
   python weekly_sector_bot.py --comprehensive [--test]
   python weekly_sector_bot.py --sector 1 [--test]
+  python weekly_realestate_bot.py --once [--test]
         """
     )
     parser.add_argument('--test', action='store_true', help='Test mode (skip upload)')
@@ -140,9 +143,9 @@ def main():
 
     # 부동산봇: 토요일 새벽 01:00 주간 다이제스트
     schedule.every().saturday.at("01:00").do(
-        _safe_run, "RealEstate", realestate_digest_bot.run
+        _safe_run, "부동산봇", realestate_digest_bot.run
     )
-    logger.info("Scheduled: RealEstate digest at Saturday 01:00")
+    logger.info("Scheduled: 부동산봇 digest at Saturday 01:00")
 
     total_jobs = len(schedule.get_jobs())
     logger.info("=" * 60)
