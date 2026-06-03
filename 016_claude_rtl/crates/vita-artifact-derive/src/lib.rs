@@ -157,8 +157,8 @@ fn render_disc_expr(expr: &Expr) -> String {
 }
 
 const PRIMITIVES: &[&str] = &[
-    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "bool",
-    "char", "str", "String", "f32", "f64",
+    "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "bool", "char", "str",
+    "String",
 ];
 
 fn render_type_expr(ty: &Type, children: &mut Vec<String>) -> Result<String, Error> {
@@ -204,6 +204,16 @@ fn render_path_type(tp: &TypePath, children: &mut Vec<String>) -> Result<String,
             tp,
             format!(
                 "SchemaHash: `{head}` is forbidden (nondeterministic order); use BTreeMap/BTreeSet"
+            ),
+        ));
+    }
+    if matches!(head.as_str(), "usize" | "isize" | "f32" | "f64") {
+        return Err(Error::new_spanned(
+            tp,
+            format!(
+                "SchemaHash: `{head}` is forbidden in schema types \
+                 (platform-variant width / float breaks 3-OS byte-identity); \
+                 use a fixed-width integer (u32/u64) instead"
             ),
         ));
     }
