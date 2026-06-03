@@ -53,7 +53,9 @@ fn expand(ast: &DeriveInput) -> Result<proc_macro2::TokenStream, Error> {
     Ok(quote! {
         impl vita_schema::SchemaShape for #ident {
             fn schema_name() -> &'static str {
-                // module_path! emitted as a TOKEN — evaluated at the consumer's call site.
+                // module_path! emitted as a TOKEN — expanded by the compiler in the
+                // crate/module where #[derive] is written (the type's defining module),
+                // NOT inside this macro body. So schema_name() is the type's own FQ path.
                 ::core::concat!(::core::module_path!(), "::", #ident_str)
             }
             fn local_shape() -> &'static str { #local_shape_str }
