@@ -33,7 +33,10 @@ fn header_roundtrips_and_body_is_preserved() {
     let bytes = write_velab(&h, b"BODYBYTES");
     let (got, body) = read_velab(&bytes).expect("decode");
     assert_eq!(got, h);
-    assert_eq!(body, b"BODYBYTES", "header-only decode must leave the body untouched");
+    assert_eq!(
+        body, b"BODYBYTES",
+        "header-only decode must leave the body untouched"
+    );
 }
 
 #[test]

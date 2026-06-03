@@ -13,13 +13,22 @@ pub struct ArtifactError {
 
 impl ArtifactError {
     pub fn format(msg: &str) -> Self {
-        ArtifactError { code: MsgCode::ArtFormatMismatch, message: msg.to_string() }
+        ArtifactError {
+            code: MsgCode::ArtFormatMismatch,
+            message: msg.to_string(),
+        }
     }
     pub fn schema(msg: &str) -> Self {
-        ArtifactError { code: MsgCode::ArtSchemaMismatch, message: msg.to_string() }
+        ArtifactError {
+            code: MsgCode::ArtSchemaMismatch,
+            message: msg.to_string(),
+        }
     }
     pub fn version(msg: &str) -> Self {
-        ArtifactError { code: MsgCode::ArtVersionGate, message: msg.to_string() }
+        ArtifactError {
+            code: MsgCode::ArtVersionGate,
+            message: msg.to_string(),
+        }
     }
 }
 

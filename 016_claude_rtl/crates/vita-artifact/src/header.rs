@@ -25,7 +25,12 @@ impl Provenance {
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             git_sha: option_env!("VITA_GIT_SHA").map(str::to_string),
             dirty: option_env!("VITA_GIT_DIRTY").is_some_and(|v| v == "1" || v == "true"),
-            profile: if cfg!(debug_assertions) { "debug" } else { "release" }.to_string(),
+            profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+            .to_string(),
         }
     }
 }

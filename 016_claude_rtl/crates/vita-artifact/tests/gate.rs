@@ -28,7 +28,10 @@ fn format_version_mismatch() {
     let tool = ToolContext::current();
     let mut h = header_for(&tool);
     h.format_version = CURRENT_FORMAT_VERSION + 1;
-    assert_eq!(verify_header(&h, &tool).unwrap_err().code, MsgCode::ArtFormatMismatch);
+    assert_eq!(
+        verify_header(&h, &tool).unwrap_err().code,
+        MsgCode::ArtFormatMismatch
+    );
 }
 
 #[test]
@@ -36,7 +39,10 @@ fn schema_hash_mismatch() {
     let tool = ToolContext::current();
     let mut h = header_for(&tool);
     h.schema_hash[0] ^= 0xFF; // tamper one byte
-    assert_eq!(verify_header(&h, &tool).unwrap_err().code, MsgCode::ArtSchemaMismatch);
+    assert_eq!(
+        verify_header(&h, &tool).unwrap_err().code,
+        MsgCode::ArtSchemaMismatch
+    );
 }
 
 #[test]
@@ -44,7 +50,10 @@ fn semver_major_mismatch() {
     let tool = ToolContext::current();
     let mut h = header_for(&tool);
     h.tool_semver_major = tool.semver_major + 1;
-    assert_eq!(verify_header(&h, &tool).unwrap_err().code, MsgCode::ArtVersionGate);
+    assert_eq!(
+        verify_header(&h, &tool).unwrap_err().code,
+        MsgCode::ArtVersionGate
+    );
 }
 
 #[test]
