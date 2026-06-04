@@ -657,16 +657,25 @@ fn t14_rhs_memory_word_select_is_signal_word() {
     // mem is net 0 with array_len 4.
     assert_eq!(s.nets[0].array_len, 4);
     let root = &s.exprs[s.cont_assigns[0].rhs as usize];
-    assert!(
-        matches!(
-            root,
-            ir::Expr::Signal {
-                net: 0,
-                word: Some(2)
-            }
-        ),
-        "RHS mem[2] must be Signal{{net:0, word:Some(2)}}, got {root:?}"
-    );
+    // `word` is now an ExprId (the index expression), so `mem[k]` with runtime `k`
+    // works. For the const `mem[2]` it points at a Const whose value is 2.
+    let word_eid = match root {
+        ir::Expr::Signal {
+            net: 0,
+            word: Some(w),
+        } => *w,
+        _ => panic!("RHS mem[2] must be Signal{{net:0, word:Some(exprid)}}, got {root:?}"),
+    };
+    let word_const = match &s.exprs[word_eid as usize] {
+        ir::Expr::Const { val } => s.consts[*val as usize]
+            .bits
+            .val
+            .first()
+            .copied()
+            .unwrap_or(0),
+        other => panic!("word index must be a Const, got {other:?}"),
+    };
+    assert_eq!(word_const, 2, "mem[2] word index must evaluate to 2");
     // and there is NO Select{kind:Bit} in the arena for this read.
     assert!(
         !s.exprs.iter().any(|e| matches!(
@@ -698,7 +707,20 @@ fn t14_rhs_memory_word_select_is_signal_word() {
     let s2 = elab_ok(&unit2);
     let chunk = &s2.cont_assigns[0].lhs.chunks[0];
     assert_eq!(chunk.net, 0);
-    assert_eq!(chunk.word, Some(1));
+    // `word` is an ExprId (the index expr) — for `mem[1]` it points at a Const 1.
+    let w_eid = chunk
+        .word
+        .expect("mem[1] LHS must carry a word index ExprId");
+    let w_const = match &s2.exprs[w_eid as usize] {
+        ir::Expr::Const { val } => s2.consts[*val as usize]
+            .bits
+            .val
+            .first()
+            .copied()
+            .unwrap_or(0),
+        other => panic!("LHS word index must be a Const, got {other:?}"),
+    };
+    assert_eq!(w_const, 1, "mem[1] LHS word index must evaluate to 1");
     assert!(chunk.offset.is_none() && chunk.width.is_none());
 }
 

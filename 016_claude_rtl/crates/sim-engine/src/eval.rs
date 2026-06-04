@@ -64,7 +64,10 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 base.resize_keep_sign(w, eff_signed)
             }
             Expr::Signal { net, word } => {
-                let base = self.nets.read_net(*net, *word);
+                // `word` is an ExprId (the array index expr), evaluated NOW so a
+                // runtime `mem[k]` selects the right element. None ⇒ scalar/whole.
+                let widx = word.and_then(|weid| self.eval(weid).to_u64().map(|v| v as u32));
+                let base = self.nets.read_net(*net, widx);
                 base.resize_keep_sign(w, eff_signed)
             }
 

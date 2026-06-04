@@ -168,8 +168,12 @@ impl<'a> SimState<'a> {
     /// sampling moment (statement time for blocking, SAMPLE time for NBA so
     /// `a[i] <= x; i = i+1;` uses the OLD `i`, settle time for cont-assign),
     /// because this `&mut self` path has no read-only `EvalCtx`.
-    pub fn write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[u32]) -> bool {
-        debug_assert_eq!(offsets.len(), lhs.chunks.len(), "one offset per chunk");
+    pub fn write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) -> bool {
+        debug_assert_eq!(
+            offsets.len(),
+            lhs.chunks.len(),
+            "one (offset,word) per chunk"
+        );
         // ── real↔int assignment coercion (IEEE 1364 §6.2) ──
         // Only a WHOLE-NET lvalue (single Bit chunk, no offset/width) can be a
         // real destination: a real is dimensionless and never bit/part-selected
@@ -219,8 +223,8 @@ impl<'a> SimState<'a> {
                 piece.set_vu(i, v, u);
             }
             src_hi = take_lo;
-            let raw_off = offsets.get(idx).copied().unwrap_or(0);
-            changed |= self.write_chunk(chunk, raw_off, &piece);
+            let (raw_off, raw_word) = offsets.get(idx).copied().unwrap_or((0, 0));
+            changed |= self.write_chunk(chunk, raw_off, raw_word, &piece);
         }
         changed
     }
@@ -260,12 +264,21 @@ impl<'a> SimState<'a> {
     /// Write a low-aligned `piece` into the destination chunk. `raw_off` is the
     /// already-EVALUATED `c.offset` (the runtime index for `a[i]`, the const for
     /// `a[3]`; ignored for a whole-net chunk). Returns changed.
-    fn write_chunk(&mut self, c: &sim_ir::LvalChunk, raw_off: u32, piece: &Value) -> bool {
+    fn write_chunk(
+        &mut self,
+        c: &sim_ir::LvalChunk,
+        raw_off: u32,
+        raw_word: u32,
+        piece: &Value,
+    ) -> bool {
         let net = c.net as usize;
-        let word = c
-            .word
-            .unwrap_or(0)
-            .min(self.nets[net].array_len.saturating_sub(1));
+        // `c.word` is an ExprId; `raw_word` is the caller-evaluated array index
+        // (the runtime `k` of `mem[k] = …`). None ⇒ index 0.
+        let word = if c.word.is_some() {
+            raw_word.min(self.nets[net].array_len.saturating_sub(1))
+        } else {
+            0
+        };
         let net_w = self.nets[net].width;
         let base = word * net_w; // bit offset of this array element
 

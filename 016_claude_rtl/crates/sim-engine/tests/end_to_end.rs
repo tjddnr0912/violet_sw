@@ -1540,7 +1540,8 @@ fn generate_if_else_scoping() {
 fn non_ansi_ports_and_bound_clock_edge() {
     // `addr` has non-ANSI ports (body input/output decls); `dff` is a clocked
     // submodule whose clk arrives via the parent's port binding (a cont-assign).
-    let src = "module addr(a, b, y); input [7:0] a, b; output [7:0] y; assign y = a + b; endmodule \
+    let src =
+        "module addr(a, b, y); input [7:0] a, b; output [7:0] y; assign y = a + b; endmodule \
                module dff(clk, d, q); input clk, d; output q; reg q; \
                  always @(posedge clk) q <= d; initial q = 0; endmodule \
                module t; reg [7:0] x, z; wire [7:0] o; reg c, di; wire q; \
@@ -1552,4 +1553,21 @@ fn non_ansi_ports_and_bound_clock_edge() {
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
     // o = 10+5 = 15 (non-ANSI comb). q = 1 (bound-clock posedge sampled d=1).
     assert_eq!(out, "o=15 q=1\n");
+}
+
+// ── runtime (variable) memory word index: mem[k] read AND write where k is a
+//    runtime value (sweep gaps 8,9). Word is now an evaluated ExprId. ──────────
+
+#[test]
+fn memory_runtime_word_index() {
+    let src = "module t; reg [7:0] m[0:3]; reg [7:0] o; integer k; reg [1:0] idx; \
+               initial begin \
+                 for (k = 0; k < 4; k = k + 1) m[k] = k + 5;   /* write by runtime k */ \
+                 idx = 2; o = m[idx];                          /* read by runtime idx */ \
+                 $display(\"%0d %0d %0d %0d r=%0d\", m[0], m[1], m[2], m[3], o); $finish; \
+               end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // m[k]=k+5 → 5 6 7 8; m[idx=2] = 7.
+    assert_eq!(out, "5 6 7 8 r=7\n");
 }

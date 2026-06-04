@@ -73,9 +73,10 @@ pub(crate) struct NbaUpdate {
     pub seq: u64,
     pub lhs: Lvalue,
     pub sampled: Value,
-    /// LHS chunk bit-offsets sampled in the ACTIVE region when the `<=` executed
-    /// (so `a[i] <= x; i = i+1;` lands on the OLD `i`), one per `lhs.chunks`.
-    pub offsets: Vec<u32>,
+    /// Per-chunk `(bit-offset, array-word)` sampled in the ACTIVE region when the
+    /// `<=` executed (so `a[i] <= x; i = i+1;` / `m[k] <= x;` use the OLD `i`/`k`),
+    /// one per `lhs.chunks`.
+    pub offsets: Vec<(u32, u32)>,
 }
 
 /// One simulation time's three region buckets. Active/Inactive hold process
@@ -623,16 +624,20 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// resolved here at the correct sampling moment. An X/Z or unresolvable index
     /// yields the `u32::MAX` sentinel → `write_chunk` drops the bit (out-of-range
     /// no-op), matching the READ side where `eval_select` returns X for `a[x]`.
-    pub(crate) fn resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<u32> {
+    pub(crate) fn resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)> {
+        let ev = |eid: u32| {
+            self.eval(eid)
+                .to_u64()
+                .map(|v| v as u32)
+                .unwrap_or(u32::MAX)
+        };
         lhs.chunks
             .iter()
-            .map(|c| match c.offset {
-                None => 0,
-                Some(eid) => self
-                    .eval(eid)
-                    .to_u64()
-                    .map(|v| v as u32)
-                    .unwrap_or(u32::MAX),
+            .map(|c| {
+                let off = c.offset.map(ev).unwrap_or(0);
+                // `word` is an ExprId array index (`mem[k] = …`); resolve NOW.
+                let word = c.word.map(ev).unwrap_or(0);
+                (off, word)
             })
             .collect()
     }

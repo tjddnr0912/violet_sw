@@ -1497,7 +1497,9 @@ impl<'s> Elaborator<'s> {
                 // verdict MAJOR). Only a direct `Ident` base can be a memory word
                 // in v1; a select-of-a-select base falls through to bit-select.
                 if let Some(net) = self.array_word_base(base) {
-                    let word = self.const_word_index(index);
+                    // `word` is an ExprId (the index expression), evaluated at read
+                    // time — so `mem[k]` with a runtime `k` works, not just `mem[2]`.
+                    let word = self.lower_expr(index);
                     return self.push_expr(ir::Expr::Signal {
                         net,
                         word: Some(word),
@@ -1665,16 +1667,17 @@ impl<'s> Elaborator<'s> {
             ast::Lvalue::BitSelect { base, index, .. } => {
                 let net = self.lval_base_net(base);
                 // Array word-select vs bit-select disambiguated by array_len.
-                // `LvalChunk.word` is a CONST word INDEX immediate (not an
-                // ExprId), symmetric with the RHS `Signal.word`; `offset`/`width`
-                // remain ExprId edges into the arena. (LOWERING verdict MAJOR.)
+                // `LvalChunk.word` is an ExprId (the index expression), evaluated
+                // at write time — symmetric with the RHS `Signal.word` — so a
+                // runtime word index `mem[k] = …` works. `offset`/`width` are also
+                // ExprId edges.
                 let is_word = self
                     .nets
                     .get(net as usize)
                     .map(|n| n.array_len > 1)
                     .unwrap_or(false);
                 if is_word {
-                    let word = self.const_word_index(index);
+                    let word = self.lower_expr(index);
                     out.push(ir::LvalChunk {
                         net,
                         word: Some(word),
@@ -2268,26 +2271,6 @@ impl<'s> Elaborator<'s> {
             }
         }
         None
-    }
-
-    /// Const-evaluate an array word index to a `u32` immediate (for
-    /// `Signal.word` / `LvalChunk.word`). A non-const index is not representable
-    /// as a static word in v1 → emit `ElabUnsupported` and fall back to word 0.
-    fn const_word_index(&mut self, index: &ast::Expr) -> u32 {
-        // `const_eval_in_scope` (NOT the scope-free `const_eval_u32`) so a genvar
-        // or parameter word index — `mem[g]` in a generate, `mem[P]` — folds to
-        // its scope value. A genuinely runtime index (`mem[k]`, k a reg) still
-        // fails here; dynamic word addressing is handled separately.
-        match self.const_eval_in_scope(index) {
-            Some(w) => w,
-            None => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "non-constant memory word index (v1: constant index only)",
-                );
-                0
-            }
-        }
     }
 }
 
