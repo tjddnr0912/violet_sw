@@ -225,6 +225,34 @@ struct Elaborator<'s> {
     // → `lower_gen_module_item`) can record the correct `Instance.parent` without
     // threading the id through every generate-walk call.
     cur_inst: u32,
+
+    // ── user function/task inlining (SD2 inline path) ──
+    // name → def (OWNED clone), populated per-module from ModuleItem::Func/Task in
+    // `elaborate_instance` BEFORE lowering that module's logic. Cleared/restored
+    // per instance scope so a child module never sees a parent's functions by bare
+    // name (matches the per-instance net isolation of `walk_scopes`). Cloning the
+    // small defs sidesteps threading an AST lifetime through the whole driver; the
+    // tables are point-queried only (BTreeMap), never iterated into arena order.
+    func_table: BTreeMap<String, ast::FunctionDef>,
+    task_table: BTreeMap<String, ast::TaskDef>,
+
+    // Substitution scope: a formal-param NAME currently bound to an actual ExprId
+    // (a function/task INPUT formal during inlining). `lower_expr`'s Ident arm
+    // consults this FIRST: a bare single-segment Ident matching a key lowers to the
+    // bound ExprId, not a net — exactly like `Paren` unwrapping (no new IR node). A
+    // Vec used as a stack so nested inlining + shadowing resolve innermost-wins via
+    // reverse linear scan. Empty in steady state (one `is_empty`/scan on the hot
+    // path costs nothing).
+    subst: Vec<(String, u32)>,
+    // Output/inout task formal NAME → caller NetId. Consulted in BOTH `lower_expr`
+    // (read) and `collect_lval_chunks` (write) so a formal resolves to the caller's
+    // net in either position. Symmetric Vec stack with `subst`.
+    out_subst: Vec<(String, u32)>,
+    // Recursion guard: function/task names on the active inline-expansion stack. A
+    // name found here when we try to inline it = direct or mutual recursion =
+    // E-ELAB-UNSUPPORTED (SD2: recursive ⇒ frame-call, deferred). Mirrors
+    // `inst_stack`.
+    inline_stack: Vec<String>,
 }
 
 impl<'s> Elaborator<'s> {
@@ -245,6 +273,11 @@ impl<'s> Elaborator<'s> {
             params: BTreeMap::new(),
             inst_stack: Vec::new(),
             cur_inst: 0,
+            func_table: BTreeMap::new(),
+            task_table: BTreeMap::new(),
+            subst: Vec::new(),
+            out_subst: Vec::new(),
+            inline_stack: Vec::new(),
         }
     }
 
@@ -403,6 +436,42 @@ impl<'s> Elaborator<'s> {
         // (3) bind params (defaults, then overrides) — BEFORE nets so [W-1:0] folds.
         let saved_params = self.bind_params(module, param_overrides);
 
+        // (3.5) collect THIS module's functions/tasks (bare name → def) for inline
+        //       expansion at call sites (pass 7). Saved/restored so a sibling/parent
+        //       instance of another module does not inherit them. Functions are not
+        //       hierarchical in v1, so the bare name is the key.
+        let saved_funcs = std::mem::take(&mut self.func_table);
+        let saved_tasks = std::mem::take(&mut self.task_table);
+        for item in &module.body {
+            match item {
+                ast::ModuleItem::Func(f) => {
+                    if self
+                        .func_table
+                        .insert(f.name.name.clone(), f.clone())
+                        .is_some()
+                    {
+                        self.warn(&format!(
+                            "function `{}` redeclared; first declaration used",
+                            f.name.name
+                        ));
+                    }
+                }
+                ast::ModuleItem::Task(t) => {
+                    if self
+                        .task_table
+                        .insert(t.name.name.clone(), t.clone())
+                        .is_some()
+                    {
+                        self.warn(&format!(
+                            "task `{}` redeclared; first declaration used",
+                            t.name.name
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // (4) this instance's nets: ANSI ports, then body NetVarDecls (decl order).
         //     add_net now keys through `fq`, so names become inst_path-prefixed.
         self.elaborate_ports(&module.ports);
@@ -444,13 +513,11 @@ impl<'s> Elaborator<'s> {
                 ast::ModuleItem::Generate(g) => {
                     self.elaborate_generate(&g.items, GenPhase::Logic, 0, map);
                 }
-                ast::ModuleItem::Func(_)
-                | ast::ModuleItem::Task(_)
-                | ast::ModuleItem::Defparam(_) => {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "construct deferred (func/task/defparam)",
-                    );
+                // Func/Task are DEFINITIONS, not logic: collected in step (3.5)
+                // and expanded at their call sites (inline). No-op here.
+                ast::ModuleItem::Func(_) | ast::ModuleItem::Task(_) => {}
+                ast::ModuleItem::Defparam(_) => {
+                    self.error(MsgCode::ElabUnsupported, "construct deferred (defparam)");
                 }
                 // NetVar/Param/PortDecl/Genvar/Error: no-op here.
                 _ => {}
@@ -473,6 +540,8 @@ impl<'s> Elaborator<'s> {
 
         // restore scope/params so siblings + ancestors resolve correctly.
         self.restore_params(saved_params);
+        self.func_table = saved_funcs;
+        self.task_table = saved_tasks;
         self.cur_prefix = saved_prefix;
         self.cur_inst = saved_inst;
         self.inst_stack.pop();
@@ -1207,6 +1276,19 @@ impl<'s> Elaborator<'s> {
                 self.push_expr(ir::Expr::Const { val: cid })
             }
             ast::ExprKind::Ident(path) => {
+                // INLINE substitution (function/task formals). A single-segment name
+                // bound to an actual-arg ExprId lowers to that ExprId directly — no
+                // new IR node, exactly like `Paren` unwrapping. Innermost wins.
+                if path.segments.len() == 1 {
+                    let seg = &path.segments[0].name;
+                    if let Some(eid) = self.subst_lookup(seg) {
+                        return eid;
+                    }
+                    // output/inout task formal: resolves to the caller's net.
+                    if let Some(net) = self.out_subst_lookup(seg) {
+                        return self.push_expr(ir::Expr::Signal { net, word: None });
+                    }
+                }
                 let net = self.resolve_net(path);
                 self.push_expr(ir::Expr::Signal { net, word: None })
             }
@@ -1334,14 +1416,7 @@ impl<'s> Elaborator<'s> {
                     }
                 }
             }
-            ast::ExprKind::Call { .. } => {
-                // User-function calls need `funcs` lowering → DEFERRED past v1.
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "user function calls not supported (v1)",
-                );
-                self.placeholder_expr()
-            }
+            ast::ExprKind::Call { name, args } => self.inline_function(name, args),
 
             // ── transparent / placeholder ──────────────────────────
             ast::ExprKind::Paren { inner } => self.lower_expr(inner), // unwrap, no IR node
@@ -1378,7 +1453,14 @@ impl<'s> Elaborator<'s> {
     fn collect_lval_chunks(&mut self, lv: &ast::Lvalue, out: &mut Vec<ir::LvalChunk>) {
         match lv {
             ast::Lvalue::Ident(path) => {
-                let net = self.resolve_net(path);
+                // An output/inout task formal written by an inlined body targets the
+                // caller's net directly (symmetric with the read side in lower_expr).
+                let net = if path.segments.len() == 1 {
+                    self.out_subst_lookup(&path.segments[0].name)
+                        .unwrap_or_else(|| self.resolve_net(path))
+                } else {
+                    self.resolve_net(path)
+                };
                 out.push(ir::LvalChunk {
                     net,
                     word: None,
@@ -1524,6 +1606,284 @@ impl<'s> Elaborator<'s> {
     /// isolation). Returns the innermost (most specific) binding.
     fn lookup_net_scoped(&self, name: &str) -> Option<u32> {
         self.walk_scopes(name, &self.symbols)
+    }
+
+    // ── user function/task inlining (SD2 inline path) ──────────────
+    /// Innermost-wins lookup in the input-formal substitution stack. Empty in
+    /// steady state.
+    fn subst_lookup(&self, name: &str) -> Option<u32> {
+        self.subst
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, e)| *e)
+    }
+    /// Innermost-wins lookup in the output/inout-formal → caller-net stack.
+    fn out_subst_lookup(&self, name: &str) -> Option<u32> {
+        self.out_subst
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, e)| *e)
+    }
+
+    /// Inline a user-function call at an expression site → the ExprId of its return
+    /// value (SD2 inline path; a 0-time function = zero schema cost). The common
+    /// case is a combinational function whose body reduces to the return expression
+    /// once the formals are substituted by the actual-arg ExprIds. Returns a
+    /// placeholder ExprId on any unsupported shape (after emitting the diagnostic)
+    /// so arena edges stay valid.
+    fn inline_function(&mut self, name: &ast::HierPath, args: &[ast::Expr]) -> u32 {
+        if name.segments.len() != 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "hierarchical function call (deferred)",
+            );
+            return self.placeholder_expr();
+        }
+        let fname = name.segments[0].name.clone();
+
+        // Clone the def out of the table so we can mutate `self` while lowering.
+        let func = match self.func_table.get(fname.as_str()) {
+            Some(f) => f.clone(),
+            None => {
+                self.error(
+                    MsgCode::ElabUnresolvedName,
+                    &format!("call to undeclared function `{fname}`"),
+                );
+                return self.placeholder_expr();
+            }
+        };
+
+        // SD2: automatic ⇒ frame-call, deferred. Direct/mutual recursion is caught
+        // by the inline_stack guard.
+        if func.automatic {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("automatic function `{fname}` (frame-call deferred)"),
+            );
+            return self.placeholder_expr();
+        }
+        if self.inline_stack.iter().any(|n| n == &fname) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "recursive function `{fname}` (frame-call deferred; cycle: {} -> {fname})",
+                    self.inline_stack.join(" -> ")
+                ),
+            );
+            return self.placeholder_expr();
+        }
+
+        // Functions take INPUT formals only; an output/inout formal is illegal.
+        if func
+            .ports
+            .iter()
+            .any(|p| !matches!(p.dir, ast::PortDir::Input))
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("function `{fname}` has output/inout formal (illegal)"),
+            );
+            return self.placeholder_expr();
+        }
+        let inputs: Vec<ast::TfPort> = func.ports.clone();
+        if args.len() != inputs.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "function `{fname}`: {} args for {} formals",
+                    args.len(),
+                    inputs.len()
+                ),
+            );
+            return self.placeholder_expr();
+        }
+
+        // (1) Lower each ACTUAL arg in the CALLER scope FIRST (before pushing the
+        //     substitution frame) so args see the caller's nets and any OUTER
+        //     substitution (nested inlining), never the function's own formals.
+        let actual_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+
+        // (2) Reduce the straight-line body → an ExprId, formals bound to actuals.
+        self.inline_stack.push(fname.clone());
+        let result = self.reduce_function_body(&func, &inputs, &actual_ids);
+        self.inline_stack.pop();
+        result
+    }
+
+    /// Fold a straight-line combinational function body to one return ExprId.
+    /// Supported shapes: a single `f = <expr>;`, or a `begin … end` of blocking
+    /// assigns to locals (SSA-by-substitution) ending in the return-var assign.
+    /// Anything with control flow / nonblocking / task call ⇒ E-ELAB-UNSUPPORTED.
+    fn reduce_function_body(
+        &mut self,
+        func: &ast::FunctionDef,
+        inputs: &[ast::TfPort],
+        actual_ids: &[u32],
+    ) -> u32 {
+        let frame_base = self.subst.len();
+        // (a) bind each input formal NAME → actual ExprId.
+        for (p, &eid) in inputs.iter().zip(actual_ids) {
+            self.subst.push((p.name.name.clone(), eid));
+        }
+        // (b) walk the straight-line body, recording the return-var assignment.
+        let fname = func.name.name.clone();
+        let mut ret: Option<u32> = None;
+        let ok = self.fold_straight_line(&func.body, &fname, &mut ret);
+        // restore the substitution stack to its pre-call depth.
+        self.subst.truncate(frame_base);
+
+        if !ok {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "function `{fname}` body is not reducible to an expression (control flow)"
+                ),
+            );
+            return self.placeholder_expr();
+        }
+        match ret {
+            Some(eid) => eid,
+            None => {
+                // body never assigned the return var → X (the function's default).
+                self.warn(&format!(
+                    "function `{fname}` never assigns its return value; X approximated"
+                ));
+                self.placeholder_expr()
+            }
+        }
+    }
+
+    /// Fold a straight-line function body. Returns false (caller emits the error)
+    /// on the first non-foldable construct. Each `local = expr;` pushes a
+    /// substitution binding (SSA-by-substitution); `fname = expr;` records the
+    /// return ExprId. Lowering happens with the CURRENT substitution scope active.
+    fn fold_straight_line(&mut self, s: &ast::Stmt, fname: &str, ret: &mut Option<u32>) -> bool {
+        match s {
+            ast::Stmt::Null(_) => true,
+            ast::Stmt::Block { stmts, .. } => {
+                // begin-end local decls need NO nets: each local lives only as a
+                // substitution binding (combinational). Fold each stmt in order.
+                stmts
+                    .iter()
+                    .all(|st| self.fold_straight_line(st, fname, ret))
+            }
+            ast::Stmt::Blocking {
+                lhs, delay, rhs, ..
+            } => {
+                if delay.is_some() {
+                    self.warn("intra-assignment delay in inlined function dropped");
+                }
+                // LHS must be a bare single-segment Ident (a local var or func name).
+                let ast::Lvalue::Ident(p) = lhs else {
+                    return false;
+                };
+                if p.segments.len() != 1 {
+                    return false;
+                }
+                let target = p.segments[0].name.clone();
+                // lower the RHS with the CURRENT substitution scope in effect.
+                let rhs_id = self.lower_expr(rhs);
+                if target == fname {
+                    *ret = Some(rhs_id); // return assignment
+                } else {
+                    self.subst.push((target, rhs_id)); // local: innermost-wins binding
+                }
+                true
+            }
+            // if/case/loop/nonblocking/task-call/etc. ⇒ not reducible to one expr.
+            _ => false,
+        }
+    }
+
+    /// Inline a user-task call into the current process: the body statements join
+    /// the caller's CFG via the normal `lower_stmt` machinery (so a task with
+    /// if/case/delay just works). INPUT formals substitute a read ExprId; OUTPUT/
+    /// INOUT formals bind to the caller's net (reads + writes hit it directly).
+    fn inline_task(&mut self, b: &mut ProcessBuilder, name: &ast::HierPath, args: &[ast::Expr]) {
+        if name.segments.len() != 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "hierarchical task call (deferred)",
+            );
+            return;
+        }
+        let tname = name.segments[0].name.clone();
+        let task = match self.task_table.get(tname.as_str()) {
+            Some(t) => t.clone(),
+            None => {
+                self.error(
+                    MsgCode::ElabUnresolvedName,
+                    &format!("call to undeclared task `{tname}`"),
+                );
+                return;
+            }
+        };
+        if task.automatic {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("automatic task `{tname}` (frame-call deferred)"),
+            );
+            return;
+        }
+        if self.inline_stack.iter().any(|n| n == &tname) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("recursive task `{tname}` (frame-call deferred)"),
+            );
+            return;
+        }
+        if args.len() != task.ports.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "task `{tname}`: {} args for {} formals",
+                    args.len(),
+                    task.ports.len()
+                ),
+            );
+            return;
+        }
+
+        // Bind formals, lowering actuals in the CALLER scope, BEFORE inlining.
+        let subst_base = self.subst.len();
+        let out_base = self.out_subst.len();
+        for (p, a) in task.ports.iter().zip(args) {
+            match p.dir {
+                ast::PortDir::Input => {
+                    let eid = self.lower_expr(a); // caller-scope read
+                    self.subst.push((p.name.name.clone(), eid));
+                }
+                ast::PortDir::Output | ast::PortDir::Inout => {
+                    // v1: actual must be a bare net Ident → bind formal name → its
+                    // NetId so body reads/writes of the formal hit the caller net.
+                    match &a.kind {
+                        ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
+                            let net = self.resolve_net(path);
+                            self.out_subst.push((p.name.name.clone(), net));
+                        }
+                        _ => {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!(
+                                    "task `{tname}` output/inout arg must be a simple net (v1)"
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // INLINE the body into the current process via normal stmt lowering.
+        self.inline_stack.push(tname.clone());
+        self.lower_stmt(b, &task.body);
+        self.inline_stack.pop();
+
+        // pop our frames so sibling/outer code is unaffected.
+        self.subst.truncate(subst_base);
+        self.out_subst.truncate(out_base);
     }
 
     // ── const + expr helpers (single arena append points) ──────────
@@ -2403,9 +2763,7 @@ impl<'s> Elaborator<'s> {
                     self.lower_stmt(b, st);
                 }
             }
-            ast::Stmt::UserTaskCall { .. } => {
-                self.warn("user task call skipped (v2); no-op");
-            }
+            ast::Stmt::UserTaskCall { name, args, .. } => self.inline_task(b, name, args),
             ast::Stmt::EventTrigger { .. }
             | ast::Stmt::Assign { .. }
             | ast::Stmt::Deassign { .. }

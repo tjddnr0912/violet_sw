@@ -2338,3 +2338,359 @@ fn ge7_stuck_genvar_one_error() {
     );
     assert!(err_codes(&sink).contains(&MsgCode::ElabUnsupported));
 }
+
+// ════════════════════════ user function / task inlining ════════════════════════
+// builders
+fn tf_port(dir: ast::PortDir, range: Option<(u32, u32)>, name: &str) -> ast::TfPort {
+    ast::TfPort {
+        dir,
+        net_or_var: None,
+        signed: false,
+        range: range.map(|(m, l)| ast::Range {
+            msb: dec(&m.to_string()),
+            lsb: dec(&l.to_string()),
+            span: SP,
+        }),
+        name: ident(name),
+        span: SP,
+    }
+}
+fn func_def(
+    name: &str,
+    range: Option<(u32, u32)>,
+    ports: Vec<ast::TfPort>,
+    body_decls: Vec<ast::NetVarDecl>,
+    body: ast::Stmt,
+) -> ast::ModuleItem {
+    ast::ModuleItem::Func(ast::FunctionDef {
+        automatic: false,
+        signed: false,
+        range: range.map(|(m, l)| ast::Range {
+            msb: dec(&m.to_string()),
+            lsb: dec(&l.to_string()),
+            span: SP,
+        }),
+        ret_type: ast::ParamType::Implicit,
+        name: ident(name),
+        ports,
+        body_decls,
+        body: Box::new(body),
+        span: SP,
+    })
+}
+fn task_def(
+    name: &str,
+    ports: Vec<ast::TfPort>,
+    body_decls: Vec<ast::NetVarDecl>,
+    body: ast::Stmt,
+) -> ast::ModuleItem {
+    ast::ModuleItem::Task(ast::TaskDef {
+        automatic: false,
+        name: ident(name),
+        ports,
+        body_decls,
+        body: Box::new(body),
+        span: SP,
+    })
+}
+/// `reg [7:0] name;` as a bare NetVarDecl (for function/task body_decls).
+fn netvar_decl_reg(name: &str) -> ast::NetVarDecl {
+    ast::NetVarDecl {
+        kind: ast::NetVarKind::Reg,
+        signed: false,
+        range: Some(ast::Range {
+            msb: dec("7"),
+            lsb: dec("0"),
+            span: SP,
+        }),
+        names: vec![ast::DeclName {
+            name: ident(name),
+            unpacked: Vec::new(),
+            init: None,
+            span: SP,
+        }],
+        span: SP,
+    }
+}
+fn call(name: &str, args: Vec<ast::Expr>) -> ast::Expr {
+    ex(ast::ExprKind::Call {
+        name: hpath(name),
+        args,
+    })
+}
+fn task_call(name: &str, args: Vec<ast::Expr>) -> ast::Stmt {
+    ast::Stmt::UserTaskCall {
+        name: hpath(name),
+        args,
+        span: SP,
+    }
+}
+
+// ft-e1. combinational function `function [7:0] add1(input [7:0] x); add1=x+1;
+//        endfunction` called as `assign y = add1(a);` → the Call inlines to
+//        Binary(Add, Signal a, Const 1) and y's cont-assign points at it.
+#[test]
+fn ft_e1_function_inlines_to_return_expr() {
+    let unit = module(
+        "m",
+        vec![
+            wire_vec(7, 0, &["a", "y"]),
+            func_def(
+                "add1",
+                Some((7, 0)),
+                vec![tf_port(ast::PortDir::Input, Some((7, 0)), "x")],
+                vec![],
+                bassign("add1", binop(ast::BinOp::Add, id_expr("x"), dec("1"))),
+            ),
+            cont_assign(lv_id("y"), call("add1", vec![id_expr("a")])),
+        ],
+    );
+    let s = elab_ok(&unit);
+    // funcs arena stays empty (inline path, no call-frame schema).
+    assert!(s.funcs.is_empty());
+    assert!(s.blocks.is_empty());
+    // one cont-assign onto y (net 1); rhs = Binary(Add, Signal a (net 0), Const 1)
+    assert_eq!(s.cont_assigns.len(), 1);
+    let ca = &s.cont_assigns[0];
+    assert_eq!(ca.lhs.chunks[0].net, 1); // y is 2nd net
+    match &s.exprs[ca.rhs as usize] {
+        ir::Expr::Binary {
+            op: ir::BinOp::Add,
+            lhs,
+            rhs,
+        } => {
+            assert!(matches!(
+                s.exprs[*lhs as usize],
+                ir::Expr::Signal { net: 0, word: None } // the actual arg `a`
+            ));
+            match &s.exprs[*rhs as usize] {
+                ir::Expr::Const { val } => assert_eq!(s.consts[*val as usize].bits.val[0], 1),
+                other => panic!("expected Const 1, got {other:?}"),
+            }
+        }
+        other => panic!("expected Binary(Add, …), got {other:?}"),
+    }
+}
+
+// ft-e2. straight-line function with a LOCAL var (SSA-by-substitution):
+//        function [7:0] f(input [7:0] x); reg [7:0] t; begin t=x+1; f=t+1; end
+//        → assign y=f(a)  ==  ((a+1)+1). The local `t` becomes NO net (no extra
+//        nets beyond a,y); it is folded into the substitution scope.
+#[test]
+fn ft_e2_function_local_var_folds() {
+    let body = blk(vec![
+        bassign("t", binop(ast::BinOp::Add, id_expr("x"), dec("1"))),
+        bassign("f", binop(ast::BinOp::Add, id_expr("t"), dec("1"))),
+    ]);
+    let unit = module(
+        "m",
+        vec![
+            wire_vec(7, 0, &["a", "y"]),
+            func_def(
+                "f",
+                Some((7, 0)),
+                vec![tf_port(ast::PortDir::Input, Some((7, 0)), "x")],
+                vec![netvar_decl_reg("t")],
+                body,
+            ),
+            cont_assign(lv_id("y"), call("f", vec![id_expr("a")])),
+        ],
+    );
+    let s = elab_ok(&unit);
+    // exactly 2 nets (a, y) — the local `t` created NONE.
+    assert_eq!(s.nets.len(), 2);
+    // rhs root = Add( Add(Signal a, 1), 1 )
+    let root = &s.exprs[s.cont_assigns[0].rhs as usize];
+    let ir::Expr::Binary {
+        op: ir::BinOp::Add,
+        lhs,
+        rhs,
+    } = root
+    else {
+        panic!("expected outer Add, got {root:?}");
+    };
+    // outer rhs is Const 1
+    assert!(matches!(&s.exprs[*rhs as usize], ir::Expr::Const { .. }));
+    // outer lhs is Add(Signal a, Const 1)
+    match &s.exprs[*lhs as usize] {
+        ir::Expr::Binary {
+            op: ir::BinOp::Add,
+            lhs: l2,
+            ..
+        } => assert!(matches!(
+            s.exprs[*l2 as usize],
+            ir::Expr::Signal { net: 0, .. }
+        )),
+        other => panic!("expected inner Add, got {other:?}"),
+    }
+}
+
+// ft-e3. nested non-recursive function call (f calls g) folds fully.
+//        function g(input x); g = x + 1; endfunction
+//        function f(input x); f = g(x) + 1; endfunction  → y=f(a) == ((a+1)+1)
+#[test]
+fn ft_e3_nested_function_calls() {
+    let unit = module(
+        "m",
+        vec![
+            wire_vec(7, 0, &["a", "y"]),
+            func_def(
+                "g",
+                Some((7, 0)),
+                vec![tf_port(ast::PortDir::Input, Some((7, 0)), "x")],
+                vec![],
+                bassign("g", binop(ast::BinOp::Add, id_expr("x"), dec("1"))),
+            ),
+            func_def(
+                "f",
+                Some((7, 0)),
+                vec![tf_port(ast::PortDir::Input, Some((7, 0)), "x")],
+                vec![],
+                bassign(
+                    "f",
+                    binop(ast::BinOp::Add, call("g", vec![id_expr("x")]), dec("1")),
+                ),
+            ),
+            cont_assign(lv_id("y"), call("f", vec![id_expr("a")])),
+        ],
+    );
+    let s = elab_ok(&unit);
+    let ir::Expr::Binary {
+        op: ir::BinOp::Add,
+        lhs,
+        ..
+    } = &s.exprs[s.cont_assigns[0].rhs as usize]
+    else {
+        panic!("expected outer Add");
+    };
+    // inner is g(a) = Add(Signal a, 1)
+    match &s.exprs[*lhs as usize] {
+        ir::Expr::Binary {
+            op: ir::BinOp::Add,
+            lhs: l2,
+            ..
+        } => assert!(matches!(
+            s.exprs[*l2 as usize],
+            ir::Expr::Signal { net: 0, .. }
+        )),
+        other => panic!("expected inner g() Add, got {other:?}"),
+    }
+}
+
+// ft-e4. simple task writing an OUTPUT formal, called in an initial block:
+//        task setq(input [7:0] d, output [7:0] q); q = d; endtask
+//        initial setq(a, y);  → the body's `q = d` lowers to BlockingAssign onto
+//        the caller's net y, rhs = the caller's net a.
+#[test]
+fn ft_e4_task_output_writeback_inline() {
+    let unit = module(
+        "m",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((7, 0)), false, &["a", "y"]),
+            task_def(
+                "setq",
+                vec![
+                    tf_port(ast::PortDir::Input, Some((7, 0)), "d"),
+                    tf_port(ast::PortDir::Output, Some((7, 0)), "q"),
+                ],
+                vec![],
+                bassign("q", id_expr("d")),
+            ),
+            proc_item(
+                ast::ProcKind::Initial,
+                None,
+                blk(vec![task_call("setq", vec![id_expr("a"), id_expr("y")])]),
+            ),
+        ],
+    );
+    let s = elab_ok(&unit);
+    // one process; its entry block holds one BlockingAssign onto net y (=1), rhs a.
+    assert_eq!(s.processes.len(), 1);
+    let p = &s.processes[0];
+    let entry = &p.body[p.entry as usize];
+    assert_eq!(entry.stmts.len(), 1);
+    match &s.stmts[entry.stmts[0] as usize] {
+        ir::Stmt::BlockingAssign { lhs, rhs } => {
+            assert_eq!(lhs.chunks[0].net, 1); // caller net y
+            assert!(matches!(
+                s.exprs[*rhs as usize],
+                ir::Expr::Signal { net: 0, .. } // caller net a
+            ));
+        }
+        other => panic!("expected BlockingAssign, got {other:?}"),
+    }
+}
+
+// ft-e5. unknown function call → E-ELAB-UNRESOLVED-NAME (IR discarded).
+#[test]
+fn ft_e5_unknown_function_errors() {
+    let unit = module(
+        "m",
+        vec![
+            wire_vec(7, 0, &["a", "y"]),
+            cont_assign(lv_id("y"), call("nope", vec![id_expr("a")])),
+        ],
+    );
+    let sink = CollectSink::default();
+    let out = elaborate(&unit, &sink);
+    assert!(out.is_none(), "unknown function must fail elaboration");
+    assert!(err_codes(&sink).contains(&MsgCode::ElabUnresolvedName));
+}
+
+// ft-e6. recursive function → E-ELAB-UNSUPPORTED (frame-call deferred), no
+//        infinite expansion.
+#[test]
+fn ft_e6_recursive_function_unsupported() {
+    let unit = module(
+        "m",
+        vec![
+            wire_vec(7, 0, &["a", "y"]),
+            func_def(
+                "rec",
+                Some((7, 0)),
+                vec![tf_port(ast::PortDir::Input, Some((7, 0)), "x")],
+                vec![],
+                // rec = rec(x) + 1  → self-call inside its own body
+                bassign(
+                    "rec",
+                    binop(ast::BinOp::Add, call("rec", vec![id_expr("x")]), dec("1")),
+                ),
+            ),
+            cont_assign(lv_id("y"), call("rec", vec![id_expr("a")])),
+        ],
+    );
+    let sink = CollectSink::default();
+    let out = elaborate(&unit, &sink);
+    assert!(out.is_none(), "recursive function must fail elaboration");
+    assert!(err_codes(&sink).contains(&MsgCode::ElabUnsupported));
+}
+
+// ft-e7. function whose body has CONTROL FLOW (if) → not reducible to an
+//        expression → E-ELAB-UNSUPPORTED.
+#[test]
+fn ft_e7_control_flow_function_unsupported() {
+    let if_body = ast::Stmt::If {
+        cond: id_expr("x"),
+        then_s: Box::new(bassign("f", dec("1"))),
+        else_s: Some(Box::new(bassign("f", dec("0")))),
+        span: SP,
+    };
+    let unit = module(
+        "m",
+        vec![
+            wire_vec(7, 0, &["a", "y"]),
+            func_def(
+                "f",
+                Some((7, 0)),
+                vec![tf_port(ast::PortDir::Input, Some((7, 0)), "x")],
+                vec![],
+                if_body,
+            ),
+            cont_assign(lv_id("y"), call("f", vec![id_expr("a")])),
+        ],
+    );
+    let sink = CollectSink::default();
+    let out = elaborate(&unit, &sink);
+    assert!(out.is_none(), "control-flow function must fail elaboration");
+    assert!(err_codes(&sink).contains(&MsgCode::ElabUnsupported));
+}

@@ -970,6 +970,13 @@ impl<'t, 's> Parser<'t, 's> {
         ) {
             return Some(ModuleItem::Proc(self.parse_procedural_block()));
         }
+        // function/endfunction and task/endtask definitions.
+        if self.at_kw(Kw::Function) {
+            return Some(ModuleItem::Func(self.parse_function_def()));
+        }
+        if self.at_kw(Kw::Task) {
+            return Some(ModuleItem::Task(self.parse_task_def()));
+        }
         // genvar declaration:  genvar i, j;
         if self.at_kw(Kw::Genvar) {
             return Some(self.parse_genvar_decl());
@@ -1720,6 +1727,259 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    // ─────────────────────── 1b. function / task definitions ───────────────────────
+    /// `function [automatic] [signed] [range] [ret_type] name [(tf_ports)] ;
+    ///    {body_decl} body_stmt endfunction`
+    /// V2005: return width = `signed` + `range`; `ret_type` is one of
+    /// ParamType::{Implicit,Integer,Real,Realtime,Time} (a `reg [N]` return maps to
+    /// Implicit + range — ParamType has no Reg/Logic). Ports may be ANSI (in the
+    /// paren list) or non-ANSI (input/output decls in the body prefix, hoisted).
+    fn parse_function_def(&mut self) -> FunctionDef {
+        let start = self.cur_span();
+        self.bump(); // 'function'
+        let automatic = self.eat_kw(Kw::Automatic);
+        // return-type signedness/range/type, in V2005 order: [signed] [range] [type]
+        let mut signed = self.opt_signed();
+        let range = self.opt_range();
+        let ret_type = self.opt_param_type();
+        // a second `signed` after an integer-ish return is tolerated.
+        signed = signed || self.opt_signed();
+        let name = self.ident().unwrap_or_else(|| Ident {
+            name: String::new(),
+            span: self.cur_span(),
+        });
+        let mut ports = self.opt_tf_port_paren_list();
+        self.expect(TokenKind::Semi, "';' after function header");
+        let (body_decls, body) = self.tf_body(BlockEnd2::Endfunction, &mut ports);
+        self.expect(
+            TokenKind::Word(WordKind::Keyword(Kw::Endfunction)),
+            "'endfunction'",
+        );
+        self.opt_block_label(); // optional `: name` after endfunction → discard
+        FunctionDef {
+            automatic,
+            signed,
+            range,
+            ret_type,
+            name,
+            ports,
+            body_decls,
+            body: Box::new(body),
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `task [automatic] name [(tf_ports)] ; {body_decl} body_stmt endtask`
+    fn parse_task_def(&mut self) -> TaskDef {
+        let start = self.cur_span();
+        self.bump(); // 'task'
+        let automatic = self.eat_kw(Kw::Automatic);
+        let name = self.ident().unwrap_or_else(|| Ident {
+            name: String::new(),
+            span: self.cur_span(),
+        });
+        let mut ports = self.opt_tf_port_paren_list();
+        self.expect(TokenKind::Semi, "';' after task header");
+        let (body_decls, body) = self.tf_body(BlockEnd2::Endtask, &mut ports);
+        self.expect(TokenKind::Word(WordKind::Keyword(Kw::Endtask)), "'endtask'");
+        self.opt_block_label();
+        TaskDef {
+            automatic,
+            name,
+            ports,
+            body_decls,
+            body: Box::new(body),
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// Map an optional return/var type keyword to ParamType (V2005 set only).
+    /// `reg`/`logic`/bit-vector returns are NOT a ParamType — they surface via
+    /// signed+range with ret_type = Implicit, so those keywords are NOT consumed.
+    fn opt_param_type(&mut self) -> ParamType {
+        match self.peek() {
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Integer))) => {
+                self.bump();
+                ParamType::Integer
+            }
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Real))) => {
+                self.bump();
+                ParamType::Real
+            }
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Realtime))) => {
+                self.bump();
+                ParamType::Realtime
+            }
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Time))) => {
+                self.bump();
+                ParamType::Time
+            }
+            _ => ParamType::Implicit,
+        }
+    }
+
+    /// Optional ANSI tf-port list `( tf_port {, tf_port} )`. Returns `[]` if there
+    /// is no `(` (non-ANSI form — ports come from body input/output decls instead).
+    /// Empty `()` ⇒ `[]`. Direction is sticky across comma-grouped names.
+    fn opt_tf_port_paren_list(&mut self) -> Vec<TfPort> {
+        let mut ports = Vec::new();
+        if self.peek() != Some(TokenKind::LParen) {
+            return ports;
+        }
+        self.bump(); // '('
+        if self.peek() == Some(TokenKind::RParen) {
+            self.bump();
+            return ports;
+        }
+        let mut inherited = PortDir::Input;
+        loop {
+            let before = self.pos;
+            let (port, dir) = self.parse_tf_port(inherited);
+            inherited = dir;
+            ports.push(port);
+            if self.pos == before {
+                self.bump(); // forward-progress guard
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')' closing tf-port list");
+        ports
+    }
+
+    /// One ANSI tf-port: `[input|output|inout] [net_or_var] [signed] [range] name`.
+    /// Returns the port plus the (possibly-inherited) direction so a following
+    /// bare `, name` keeps the same dir.
+    fn parse_tf_port(&mut self, inherited: PortDir) -> (TfPort, PortDir) {
+        let start = self.cur_span();
+        let dir = match self.peek() {
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Input))) => {
+                self.bump();
+                PortDir::Input
+            }
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Output))) => {
+                self.bump();
+                PortDir::Output
+            }
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Inout))) => {
+                self.bump();
+                PortDir::Inout
+            }
+            _ => inherited, // bare `, b` continues the previous direction
+        };
+        let net_or_var = self.net_var_kind();
+        if net_or_var.is_some() {
+            self.bump();
+        }
+        let signed = self.opt_signed();
+        let range = self.opt_range();
+        let name = self.ident().unwrap_or_else(|| Ident {
+            name: String::new(),
+            span: self.cur_span(),
+        });
+        (
+            TfPort {
+                dir,
+                net_or_var,
+                signed,
+                range,
+                name,
+                span: start.to(self.prev_span()),
+            },
+            dir,
+        )
+    }
+
+    /// Body of a function/task: a decl prefix (net/var decls AND — for the non-ANSI
+    /// form — input/output/inout formal decls, hoisted into `ports`), then exactly
+    /// ONE body statement (usually a `begin … end`), up to the endfunction/endtask
+    /// closer. `ports` is appended to for non-ANSI formals.
+    fn tf_body(&mut self, end: BlockEnd2, ports: &mut Vec<TfPort>) -> (Vec<NetVarDecl>, Stmt) {
+        let mut body_decls = Vec::new();
+        while !self.at_eof() && !self.at_tf_end(end) {
+            if matches!(
+                self.peek(),
+                Some(TokenKind::Word(WordKind::Keyword(
+                    Kw::Input | Kw::Output | Kw::Inout
+                )))
+            ) {
+                // non-ANSI formal: `input [7:0] a, b;` → one TfPort per name.
+                let before = self.pos;
+                self.parse_tf_port_decl_into(ports);
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
+            }
+            if self.net_var_kind().is_some() {
+                let before = self.pos;
+                if let Some(d) = self.parse_net_var() {
+                    body_decls.push(d);
+                }
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
+            }
+            break; // first non-decl token starts the body statement
+        }
+        let body = if self.at_tf_end(end) {
+            Stmt::Null(self.cur_span()) // empty body: `function f; endfunction`
+        } else {
+            self.parse_statement()
+        };
+        (body_decls, body)
+    }
+
+    /// True at the `endfunction`/`endtask` closer.
+    fn at_tf_end(&self, end: BlockEnd2) -> bool {
+        match end {
+            BlockEnd2::Endfunction => self.at_kw(Kw::Endfunction),
+            BlockEnd2::Endtask => self.at_kw(Kw::Endtask),
+        }
+    }
+
+    /// Non-ANSI formal decl `input [r] a, b;` → one TfPort per name, appended.
+    fn parse_tf_port_decl_into(&mut self, ports: &mut Vec<TfPort>) {
+        let dir = match self.peek() {
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Output))) => {
+                self.bump();
+                PortDir::Output
+            }
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Inout))) => {
+                self.bump();
+                PortDir::Inout
+            }
+            _ => {
+                self.bump();
+                PortDir::Input
+            }
+        };
+        let net_or_var = self.net_var_kind();
+        if net_or_var.is_some() {
+            self.bump();
+        }
+        let signed = self.opt_signed();
+        let range = self.opt_range();
+        loop {
+            let n_start = self.cur_span();
+            let Some(name) = self.ident() else { break };
+            ports.push(TfPort {
+                dir,
+                net_or_var,
+                signed,
+                range: range.clone(),
+                name,
+                span: n_start.to(self.prev_span()),
+            });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::Semi, "';' after tf-port declaration");
+    }
+
     /// `@*` | `@(*)` → Star ;  `@(ev or ev , …)` → List.  Consumes the leading `@`.
     fn parse_sensitivity(&mut self) -> Sensitivity {
         self.bump(); // '@'
@@ -2314,6 +2574,13 @@ impl<'t, 's> Parser<'t, 's> {
 enum BlockEnd {
     End,
     Join,
+}
+
+/// Closer selector for function/task bodies (mirrors `BlockEnd` for begin/fork).
+#[derive(Clone, Copy)]
+enum BlockEnd2 {
+    Endfunction,
+    Endtask,
 }
 
 /// Public API — mirrors `hdl_lexer::lex`'s two-channel shape. Never panics; returns
@@ -3108,5 +3375,104 @@ mod tests {
             let (_su, errs) = parse(&toks, src);
             assert!(!errs.is_empty(), "expected parse errors for `{src}`");
         }
+    }
+
+    // ─────────────────────── function / task definitions ───────────────────────
+    fn item_of(body: &str) -> ModuleItem {
+        let src = format!("module m;\n{body}\nendmodule");
+        let (su, errs) = p(&src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        m.body[0].clone()
+    }
+
+    // ft1. ANSI combinational function: width range, one input formal, single
+    //      `f = <expr>` body reachable as a Block with one Blocking to the func name.
+    #[test]
+    fn ft1_parse_ansi_function_def() {
+        let it = item_of("function [7:0] add1(input [7:0] x); add1 = x + 1; endfunction");
+        let ModuleItem::Func(f) = it else {
+            panic!("not a function: {it:?}");
+        };
+        assert_eq!(f.name.name, "add1");
+        assert!(!f.automatic);
+        assert!(f.range.is_some(), "expected [7:0] return range");
+        assert_eq!(f.ret_type, ParamType::Implicit);
+        assert_eq!(f.ports.len(), 1);
+        assert_eq!(f.ports[0].dir, PortDir::Input);
+        assert_eq!(f.ports[0].name.name, "x");
+        assert!(f.ports[0].range.is_some());
+        // body: a single blocking assign `add1 = x + 1`
+        let Stmt::Blocking { lhs, rhs, .. } = &*f.body else {
+            panic!("expected single Blocking body, got {:?}", f.body);
+        };
+        assert!(matches!(lhs, Lvalue::Ident(p) if p.segments[0].name == "add1"));
+        assert!(matches!(&rhs.kind, ExprKind::Binary { op: BinOp::Add, .. }));
+    }
+
+    // ft2. Non-ANSI function: formal declared in the body prefix, hoisted into ports.
+    #[test]
+    fn ft2_parse_non_ansi_function_def() {
+        let it = item_of(
+            "function [3:0] f; input [3:0] a; reg [3:0] t; begin t = a; f = t; end endfunction",
+        );
+        let ModuleItem::Func(f) = it else {
+            panic!("not a function: {it:?}");
+        };
+        assert_eq!(f.name.name, "f");
+        // non-ANSI input `a` hoisted into ports
+        assert_eq!(f.ports.len(), 1);
+        assert_eq!(f.ports[0].dir, PortDir::Input);
+        assert_eq!(f.ports[0].name.name, "a");
+        // local `reg t` lands in body_decls
+        assert_eq!(f.body_decls.len(), 1);
+        assert_eq!(f.body_decls[0].names[0].name.name, "t");
+        // body is a begin..end with two blocking assigns
+        let Stmt::Block { stmts, .. } = &*f.body else {
+            panic!("expected begin-end body, got {:?}", f.body);
+        };
+        assert_eq!(stmts.len(), 2);
+    }
+
+    // ft3. Task with input + output formals (ANSI), begin-end body.
+    #[test]
+    fn ft3_parse_task_def() {
+        let it = item_of("task drive(input [7:0] d, output [7:0] q); begin q = d; end endtask");
+        let ModuleItem::Task(t) = it else {
+            panic!("not a task: {it:?}");
+        };
+        assert_eq!(t.name.name, "drive");
+        assert!(!t.automatic);
+        assert_eq!(t.ports.len(), 2);
+        assert_eq!(t.ports[0].dir, PortDir::Input);
+        assert_eq!(t.ports[0].name.name, "d");
+        assert_eq!(t.ports[1].dir, PortDir::Output);
+        assert_eq!(t.ports[1].name.name, "q");
+        let Stmt::Block { stmts, .. } = &*t.body else {
+            panic!("expected begin-end body, got {:?}", t.body);
+        };
+        assert_eq!(stmts.len(), 1);
+    }
+
+    // ft4. Sticky direction across comma-grouped formals: `input a, b` → both Input.
+    #[test]
+    fn ft4_sticky_direction_and_empty_task() {
+        let it = item_of("function f(input a, b); f = a & b; endfunction");
+        let ModuleItem::Func(f) = it else {
+            panic!("not a function");
+        };
+        assert_eq!(f.ports.len(), 2);
+        assert_eq!(f.ports[0].dir, PortDir::Input);
+        assert_eq!(f.ports[1].dir, PortDir::Input);
+        assert_eq!(f.ports[1].name.name, "b");
+
+        // empty-bodied task with no port list: `task t; endtask`
+        let it2 = item_of("task t; endtask");
+        let ModuleItem::Task(t) = it2 else {
+            panic!("not a task");
+        };
+        assert!(t.ports.is_empty());
+        assert!(matches!(&*t.body, Stmt::Null(_)));
     }
 }
