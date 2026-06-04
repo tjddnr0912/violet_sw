@@ -970,17 +970,13 @@ impl<'t, 's> Parser<'t, 's> {
         ) {
             return Some(ModuleItem::Proc(self.parse_procedural_block()));
         }
-        // generate / genvar → recovering STUB (unchanged): skip_balanced_block stays.
-        if matches!(
-            self.peek(),
-            Some(TokenKind::Word(WordKind::Keyword(
-                Kw::Generate | Kw::Genvar
-            )))
-        ) {
-            let s = self.cur_span();
-            self.error("(generate parsing not yet implemented)");
-            self.skip_balanced_block();
-            return Some(ModuleItem::Error(s));
+        // genvar declaration:  genvar i, j;
+        if self.at_kw(Kw::Genvar) {
+            return Some(self.parse_genvar_decl());
+        }
+        // generate construct:  generate … endgenerate  (PR3 — real parsing).
+        if self.at_kw(Kw::Generate) {
+            return Some(ModuleItem::Generate(self.parse_generate_construct()));
         }
         // bare ident at module-item position ⇒ module instantiation.
         // (No keyword-led item matched above; in V2005 module scope a leading
@@ -1441,51 +1437,248 @@ impl<'t, 's> Parser<'t, 's> {
         }
         lv
     }
+}
 
-    /// STUB (PR1): consume an `@(…) begin … end` / single stmt / `generate …
-    /// endgenerate` body without parsing it, balancing depth so we land cleanly
-    /// past it. Has its own forward-progress safety via `at_eof` checks.
-    fn skip_balanced_block(&mut self) {
-        // skip leading `@(...)` sensitivity if present
-        if self.peek() == Some(TokenKind::At) {
-            self.bump();
-            if self.eat(TokenKind::LParen) {
-                let mut depth = 1;
-                while depth > 0 {
-                    match self.bump().map(|t| t.kind) {
-                        Some(TokenKind::LParen) => depth += 1,
-                        Some(TokenKind::RParen) => depth -= 1,
-                        None => return,
-                        _ => {}
-                    }
+// ════════════════════════ PR3: generate / genvar ════════════════════════
+//
+// Parse-only: build the hdl-ast `GenerateConstruct`/`GenItem` tree; elaborate
+// unrolls it. Mirrors the procedural for/if/case shapes (PR2) but produces
+// `GenItem`s, not `Stmt`s. Every loop over a sub-item list carries a
+// forward-progress guard (`pos == before → bump`) so malformed input can never
+// spin, matching the rest of the parser's recovery discipline.
+impl<'t, 's> Parser<'t, 's> {
+    /// `genvar i, j;` → `ModuleItem::Genvar{names, span}`. The `genvar` keyword is
+    /// already at `peek()`. An empty/garbled name list still terminates at `;`.
+    fn parse_genvar_decl(&mut self) -> ModuleItem {
+        let start = self.cur_span();
+        self.bump(); // `genvar`
+        let mut names = Vec::new();
+        if let Some(id) = self.ident() {
+            names.push(id);
+            while self.eat(TokenKind::Comma) {
+                match self.ident() {
+                    Some(id) => names.push(id),
+                    None => break, // diagnosed by ident(); stop the list
                 }
-            } else if self.eat(TokenKind::Star) { /* @* */
             }
         }
-        // begin/end OR generate/endgenerate block, else a single procedural stmt
-        let opener_closer = if self.at_kw(Kw::Begin) {
-            Some((Kw::Begin, Kw::End))
-        } else if self.at_kw(Kw::Generate) {
-            Some((Kw::Generate, Kw::Endgenerate))
+        self.expect(TokenKind::Semi, "';' after genvar declaration");
+        ModuleItem::Genvar {
+            names,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `generate <gen_items> endgenerate`. Dispatch only calls this on the
+    /// `generate` keyword; the SV bare-`if`/`for`/`case`-at-module-scope form is a
+    /// DEFERRED variant.
+    fn parse_generate_construct(&mut self) -> GenerateConstruct {
+        let start = self.cur_span();
+        self.bump(); // `generate`
+        let items = self.parse_gen_items_until(&|p| p.at_kw(Kw::Endgenerate) || p.at_eof());
+        self.expect(
+            TokenKind::Word(WordKind::Keyword(Kw::Endgenerate)),
+            "'endgenerate'",
+        );
+        GenerateConstruct {
+            items,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// Parse `GenItem`s until `stop` is true (or EOF). Shared by the construct
+    /// body, gen-blocks (`begin … end`), and case-item bodies. Forward-progress
+    /// guarded.
+    fn parse_gen_items_until(&mut self, stop: &dyn Fn(&Self) -> bool) -> Vec<GenItem> {
+        let mut items = Vec::new();
+        while !self.at_eof() && !stop(self) {
+            let before = self.pos;
+            if let Some(it) = self.parse_gen_item() {
+                items.push(it);
+            }
+            if self.pos == before {
+                self.bump(); // never spin on a stuck gen-item
+            }
+        }
+        items
+    }
+
+    /// One generate item: `for` / `if` / `case` / `begin…end` block / genvar decl
+    /// / a plain module-item (instance, cont-assign, net, procedural block). A
+    /// stray `;` (empty item) is consumed and yields nothing.
+    fn parse_gen_item(&mut self) -> Option<GenItem> {
+        if self.eat(TokenKind::Semi) {
+            return None; // empty generate item
+        }
+        if self.at_kw(Kw::For) {
+            return Some(self.parse_gen_for());
+        }
+        if self.at_kw(Kw::If) {
+            return Some(self.parse_gen_if());
+        }
+        if self.at_kw(Kw::Case) {
+            return Some(self.parse_gen_case());
+        }
+        if self.at_kw(Kw::Begin) {
+            return Some(self.parse_gen_block());
+        }
+        // genvar decls inside generate are legal — keep them wrapped so elaborate's
+        // no-op handler ignores them (they never become nets).
+        if self.at_kw(Kw::Genvar) {
+            return Some(GenItem::Item(Box::new(self.parse_genvar_decl())));
+        }
+        // anything else → a plain module-item (instance / assign / net / proc / …).
+        // `parse_module_item` returns None only after recording an error; wrap a
+        // real item, else propagate None (the caller's progress guard syncs).
+        self.parse_module_item()
+            .map(|mi| GenItem::Item(Box::new(mi)))
+    }
+
+    /// `for ( genvar_id = e ; cond ; genvar_id = e ) gen_block`. A `begin : label`
+    /// hoists its label onto the For node (see `parse_gen_branch`).
+    fn parse_gen_for(&mut self) -> GenItem {
+        let start = self.cur_span();
+        self.bump(); // `for`
+        self.expect(TokenKind::LParen, "'(' after generate 'for'");
+        let init = self.parse_gen_assign();
+        self.expect(TokenKind::Semi, "';' after generate-for init");
+        let cond = self.expr(0);
+        self.expect(TokenKind::Semi, "';' after generate-for cond");
+        let step = self.parse_gen_assign();
+        self.expect(TokenKind::RParen, "')' after generate-for header");
+        let (label, body) = self.parse_gen_branch();
+        GenItem::For {
+            init,
+            cond,
+            step,
+            label,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `genvar_id = expr` (no trailing `;`) for a generate-for init/step. LHS is a
+    /// single genvar identifier (the LRM restricts it — not a general lvalue).
+    fn parse_gen_assign(&mut self) -> GenAssign {
+        let start = self.cur_span();
+        let lvalue = self.ident().unwrap_or(Ident {
+            name: String::new(),
+            span: start,
+        });
+        self.expect(TokenKind::Eq, "'=' in generate-for assignment");
+        let value = self.expr(0);
+        GenAssign {
+            lvalue,
+            value,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `if ( cond ) gen_item [ else gen_item ]`. Dangling-else binds EAGERLY to the
+    /// nearest `if` (same rule as the procedural parser).
+    fn parse_gen_if(&mut self) -> GenItem {
+        let start = self.cur_span();
+        self.bump(); // `if`
+        self.expect(TokenKind::LParen, "'(' after generate 'if'");
+        let cond = self.expr(0);
+        self.expect(TokenKind::RParen, "')' after generate-if condition");
+        let (label, then_b) = self.parse_gen_branch();
+        let else_b = if self.eat_kw(Kw::Else) {
+            self.parse_gen_branch().1
         } else {
-            None
+            Vec::new()
         };
-        if let Some((opener, closer)) = opener_closer {
-            self.bump();
-            let mut depth = 1;
-            while depth > 0 && !self.at_eof() {
-                if self.at_kw(opener) {
-                    depth += 1;
-                    self.bump();
-                } else if self.at_kw(closer) {
-                    depth -= 1;
-                    self.bump();
-                } else {
-                    self.bump();
-                }
+        GenItem::If {
+            cond,
+            then_b,
+            else_b,
+            label,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `case ( e ) { label{,label}: gen_item | default[:] gen_item } endcase`.
+    fn parse_gen_case(&mut self) -> GenItem {
+        let start = self.cur_span();
+        self.bump(); // `case`
+        self.expect(TokenKind::LParen, "'(' after generate 'case'");
+        let scrutinee = self.expr(0);
+        self.expect(TokenKind::RParen, "')' after generate-case scrutinee");
+        let mut items = Vec::new();
+        while !self.at_eof() && !self.at_kw(Kw::Endcase) {
+            let before = self.pos;
+            items.push(self.parse_gen_case_item());
+            if self.pos == before {
+                self.bump(); // never spin on a stuck case item
+            }
+        }
+        self.expect(
+            TokenKind::Word(WordKind::Keyword(Kw::Endcase)),
+            "'endcase' for generate-case",
+        );
+        GenItem::Case {
+            scrutinee,
+            items,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// One generate-case item: `default [:] gen_item` | `label {, label} : gen_item`.
+    fn parse_gen_case_item(&mut self) -> GenCaseItem {
+        let start = self.cur_span();
+        if self.eat_kw(Kw::Default) {
+            self.eat(TokenKind::Colon); // ':' OPTIONAL after default
+            let body = self.parse_gen_branch().1;
+            return GenCaseItem::Default {
+                body,
+                span: start.to(self.prev_span()),
+            };
+        }
+        let mut labels = vec![self.expr(0)];
+        while self.eat(TokenKind::Comma) {
+            labels.push(self.expr(0));
+        }
+        self.expect(TokenKind::Colon, "':' in generate-case item");
+        let body = self.parse_gen_branch().1;
+        GenCaseItem::Match {
+            labels,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `begin [: label] gen_items end [: label]` → a `GenItem::Block`.
+    fn parse_gen_block(&mut self) -> GenItem {
+        let start = self.cur_span();
+        self.bump(); // `begin`
+        let label = self.opt_block_label(); // reuse PR2 helper (`: name` or None)
+        let items = self.parse_gen_items_until(&|p| p.at_kw(Kw::End) || p.at_eof());
+        self.expect(TokenKind::Word(WordKind::Keyword(Kw::End)), "'end'");
+        self.opt_block_label(); // optional `: end_label` (no AST slot → discard)
+        GenItem::Block {
+            label,
+            items,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// Parse a control-structure BRANCH body and HOIST a `begin:label` label out of
+    /// it. Returns `(label, items)`:
+    /// - `begin [: lbl] … end` → `(lbl, inner_items)` (the begin/end is unwrapped so
+    ///   the For/If node carries the label directly — elaborate's `label[idx]`
+    ///   prefixing expects the loop/if to OWN the label).
+    /// - any other single gen-item → `(None, vec![item])`.
+    fn parse_gen_branch(&mut self) -> (Option<Ident>, Vec<GenItem>) {
+        if self.at_kw(Kw::Begin) {
+            match self.parse_gen_block() {
+                GenItem::Block { label, items, .. } => (label, items),
+                other => (None, vec![other]), // unreachable; defensive
             }
         } else {
-            self.synchronize(); // single procedural stmt → sync to ';'
+            match self.parse_gen_item() {
+                Some(it) => (None, vec![it]),
+                None => (None, Vec::new()),
+            }
         }
     }
 }
@@ -2786,5 +2979,134 @@ mod tests {
             .body
             .iter()
             .any(|i| matches!(i, ModuleItem::ContAssign(_))));
+    }
+
+    // ───────────────────────── PR3: generate / genvar ─────────────────────────
+
+    /// Parse a single generate construct wrapped in a module; return its items.
+    fn gen_of(body: &str) -> Vec<GenItem> {
+        let src = format!("module m;\n{body}\nendmodule");
+        let (su, errs) = p(&src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        match m.body.iter().find_map(|i| match i {
+            ModuleItem::Generate(g) => Some(g),
+            _ => None,
+        }) {
+            Some(g) => g.items.clone(),
+            None => panic!("no generate construct in: {src}"),
+        }
+    }
+
+    // g1. genvar multi-declaration → Genvar{names==["i","j"]}.
+    #[test]
+    fn g1_genvar_decl() {
+        let (su, errs) = p("module m; genvar i, j;\nendmodule");
+        assert!(errs.is_empty(), "{errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let ModuleItem::Genvar { names, .. } = &m.body[0] else {
+            panic!("not a genvar decl: {:?}", m.body[0]);
+        };
+        assert_eq!(
+            names.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+            ["i", "j"]
+        );
+    }
+
+    // g2. labeled generate-for with an instance body → For{label hoisted to "g"},
+    //     init/step lvalue "i", body one Item(Instance).
+    #[test]
+    fn g2_gen_for_labeled_instance() {
+        let items = gen_of(
+            "generate for (i = 0; i < 3; i = i + 1) begin : g\n  leaf u (.a(x[i]));\nend\nendgenerate",
+        );
+        assert_eq!(items.len(), 1);
+        let GenItem::For {
+            init,
+            step,
+            label,
+            body,
+            ..
+        } = &items[0]
+        else {
+            panic!("not a For: {:?}", items[0]);
+        };
+        assert_eq!(init.lvalue.name, "i");
+        assert_eq!(step.lvalue.name, "i");
+        assert_eq!(label.as_ref().map(|l| l.name.as_str()), Some("g"));
+        assert_eq!(body.len(), 1);
+        assert!(matches!(
+            &body[0],
+            GenItem::Item(mi) if matches!(**mi, ModuleItem::Instance(_))
+        ));
+    }
+
+    // g3. bare-body generate-for (no begin/end) → For{label none}, body one
+    //     Item(ContAssign).
+    #[test]
+    fn g3_gen_for_bare_body() {
+        let items =
+            gen_of("generate for (i = 0; i < 2; i = i + 1) assign y[i] = a[i];\nendgenerate");
+        assert_eq!(items.len(), 1);
+        let GenItem::For { label, body, .. } = &items[0] else {
+            panic!("not a For: {:?}", items[0]);
+        };
+        assert!(label.is_none());
+        assert_eq!(body.len(), 1);
+        assert!(matches!(
+            &body[0],
+            GenItem::Item(mi) if matches!(**mi, ModuleItem::ContAssign(_))
+        ));
+    }
+
+    // g4. generate-if with and without else.
+    #[test]
+    fn g4_gen_if_else() {
+        let items = gen_of("generate if (W) assign y = a; else assign y = b;\nendgenerate");
+        let GenItem::If { then_b, else_b, .. } = &items[0] else {
+            panic!("not an If: {:?}", items[0]);
+        };
+        assert_eq!(then_b.len(), 1);
+        assert_eq!(else_b.len(), 1);
+
+        let items = gen_of("generate if (W) assign y = a;\nendgenerate");
+        let GenItem::If { then_b, else_b, .. } = &items[0] else {
+            panic!("not an If: {:?}", items[0]);
+        };
+        assert_eq!(then_b.len(), 1);
+        assert!(else_b.is_empty());
+    }
+
+    // g5. generate-case: 0:…  1,2:…  default:… → Match{1}, Match{2}, Default.
+    #[test]
+    fn g5_gen_case() {
+        let items = gen_of(
+            "generate case (W)\n  0: assign y = a;\n  1, 2: assign y = b;\n  default: assign y = c;\nendcase\nendgenerate",
+        );
+        let GenItem::Case { items: cis, .. } = &items[0] else {
+            panic!("not a Case: {:?}", items[0]);
+        };
+        assert_eq!(cis.len(), 3);
+        assert!(matches!(&cis[0], GenCaseItem::Match { labels, .. } if labels.len() == 1));
+        assert!(matches!(&cis[1], GenCaseItem::Match { labels, .. } if labels.len() == 2));
+        assert!(matches!(&cis[2], GenCaseItem::Default { .. }));
+    }
+
+    // g6. (M2 clamp) truncated generate headers recover with errors and DO NOT
+    //     panic on the inverted Span::to union.
+    #[test]
+    fn g6_truncated_headers_no_panic() {
+        for src in [
+            "module m; generate for endgenerate\nendmodule",
+            "module m; generate if (\nendmodule",
+            "module m; generate case (\nendmodule",
+            "module m; generate for (\nendmodule",
+        ] {
+            let (toks, _lex) = hdl_lexer::lex(src);
+            let (_su, errs) = parse(&toks, src);
+            assert!(!errs.is_empty(), "expected parse errors for `{src}`");
+        }
     }
 }

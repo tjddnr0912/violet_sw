@@ -39,19 +39,23 @@ impl Span {
     pub fn new(lo: u32, hi: u32) -> Self {
         Self { lo, hi }
     }
-    /// Span union: `self.lo .. other.hi`. Caller must ensure `other` ends at or
-    /// after `self` (the parser's cursor is strictly monotonic, so this always
-    /// holds for `start.to(prev_span())`-style unions). The debug_assert catches
-    /// any future recovery path that composes spans out of order (verdict M4).
+    /// Span union: `self.lo .. max(other.hi, self.lo)`. The normal case is a
+    /// strictly-monotonic cursor (`start.to(prev_span())`), where `other.hi >=
+    /// self.lo` already holds and the union is `self.lo .. other.hi` byte for byte.
     #[inline]
     pub fn to(self, other: Span) -> Span {
-        debug_assert!(
-            other.hi >= self.lo,
-            "Span::to: inverted union {self:?}..{other:?}"
-        );
+        // CLAMP (verdict M2): a recovery path that composes spans out of order —
+        // a parser header whose tokens never advanced past `start` (e.g.
+        // `generate for endgenerate`, or PR2's `initial for end`) — would otherwise
+        // yield an inverted `[lo, hi)` with `hi < lo`. The old `debug_assert!`
+        // PANICKED there (a debug/test-only DoS on truncated input); release
+        // silently produced a wrong span. Flooring `hi` at `lo` makes the union
+        // total and non-panicking on EVERY input while preserving the normal
+        // monotonic-cursor case byte for byte (where `other.hi >= self.lo` already
+        // holds), so the determinism / golden-hash contract is unchanged.
         Span {
             lo: self.lo,
-            hi: other.hi,
+            hi: other.hi.max(self.lo),
         }
     }
 }

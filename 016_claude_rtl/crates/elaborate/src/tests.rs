@@ -2059,3 +2059,282 @@ fn v3_16_happy_path_unaffected_by_new_checks() {
     assert_eq!(s.cont_assigns.len(), 3);
     assert_eq!(sink.n_errors(), 0);
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  PR3 — generate / genvar end-to-end unrolling
+// ════════════════════════════════════════════════════════════════════
+
+// ── gen builders ──
+fn gen_assign(name: &str, value: ast::Expr) -> ast::GenAssign {
+    ast::GenAssign {
+        lvalue: ident(name),
+        value,
+        span: SP,
+    }
+}
+/// `for (gv = init; cond; gv = step) [begin:label] body end`.
+fn gen_for(
+    gv: &str,
+    init: ast::Expr,
+    cond: ast::Expr,
+    step: ast::Expr,
+    label: Option<&str>,
+    body: Vec<ast::GenItem>,
+) -> ast::GenItem {
+    ast::GenItem::For {
+        init: gen_assign(gv, init),
+        cond,
+        step: gen_assign(gv, step),
+        label: label.map(ident),
+        body,
+        span: SP,
+    }
+}
+/// `generate <items> endgenerate` as a module item.
+fn generate(items: Vec<ast::GenItem>) -> ast::ModuleItem {
+    ast::ModuleItem::Generate(ast::GenerateConstruct { items, span: SP })
+}
+/// Wrap a ModuleItem as a generate item.
+fn gitem(mi: ast::ModuleItem) -> ast::GenItem {
+    ast::GenItem::Item(Box::new(mi))
+}
+/// `wire [<msb_expr>:0] names...;` where the msb is an arbitrary expr (so a genvar
+/// can appear in the width bound).
+fn wire_range_expr(msb: ast::Expr, names: &[&str]) -> ast::ModuleItem {
+    ast::ModuleItem::NetVar(ast::NetVarDecl {
+        kind: ast::NetVarKind::Wire,
+        signed: false,
+        range: Some(ast::Range {
+            msb,
+            lsb: dec("0"),
+            span: SP,
+        }),
+        names: names
+            .iter()
+            .map(|n| ast::DeclName {
+                name: ident(n),
+                unpacked: Vec::new(),
+                init: None,
+                span: SP,
+            })
+            .collect(),
+        span: SP,
+    })
+}
+/// Collect ERROR-severity diag codes.
+fn err_codes(sink: &CollectSink) -> Vec<MsgCode> {
+    sink.events
+        .borrow()
+        .iter()
+        .filter_map(|e| match e {
+            LogEvent::Diagnostic(d) if d.severity == diag::Severity::Error => Some(d.code),
+            _ => None,
+        })
+        .collect()
+}
+
+// ge1. generate-for instantiating a `leaf` (input port `a` ← top's `w`) 3× →
+//      4 instances (1 top + 3 leaf), top parent None, every leaf parent Some(0).
+#[test]
+fn ge1_gen_for_instances() {
+    let leaf = module_p(
+        "leaf",
+        vec![],
+        vec![ansi_port(ast::PortDir::Input, None, "a")],
+        vec![],
+    );
+    let top = module_p(
+        "top",
+        vec![],
+        vec![],
+        vec![
+            netvar(ast::NetVarKind::Wire, None, false, &["w"]),
+            generate(vec![gen_for(
+                "i",
+                dec("0"),
+                binop(ast::BinOp::Lt, id_expr("i"), dec("3")),
+                binop(ast::BinOp::Add, id_expr("i"), dec("1")),
+                Some("g"),
+                vec![gitem(inst_named("leaf", "u", vec![("a", id_expr("w"))]))],
+            )]),
+        ],
+    );
+    let unit = unit_of(vec![leaf, top]);
+    let sink = CollectSink::default();
+    let s = elaborate(&unit, &sink).expect("clean generate-for");
+    assert_eq!(sink.n_errors(), 0);
+    assert_eq!(s.instances.len(), 4); // top + 3 leaf
+    assert!(s.instances[0].parent.is_none());
+    for inst in &s.instances[1..] {
+        assert_eq!(inst.parent, Some(0));
+    }
+}
+
+// ge2. loop body `wire t; assign t = 1'b0;` ×3 → 3 nets, 3 cont-assigns, the three
+//      target nets are DISTINCT (per-iteration g[0].t / g[1].t / g[2].t).
+#[test]
+fn ge2_gen_for_nets_distinct() {
+    let top = module_p(
+        "top",
+        vec![],
+        vec![],
+        vec![generate(vec![gen_for(
+            "i",
+            dec("0"),
+            binop(ast::BinOp::Lt, id_expr("i"), dec("3")),
+            binop(ast::BinOp::Add, id_expr("i"), dec("1")),
+            Some("g"),
+            vec![
+                gitem(netvar(ast::NetVarKind::Wire, None, false, &["t"])),
+                gitem(cont_assign(lv_id("t"), lit("1'b0", ast::IntLitKind::Sized))),
+            ],
+        )])],
+    );
+    let unit = unit_of(vec![top]);
+    let sink = CollectSink::default();
+    let s = elaborate(&unit, &sink).expect("clean generate-for");
+    assert_eq!(sink.n_errors(), 0);
+    assert_eq!(s.nets.len(), 3);
+    assert_eq!(s.cont_assigns.len(), 3);
+    let targets: Vec<u32> = s
+        .cont_assigns
+        .iter()
+        .map(|ca| ca.lhs.chunks[0].net)
+        .collect();
+    let mut uniq = targets.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(
+        uniq.len(),
+        3,
+        "per-iteration nets must not collide: {targets:?}"
+    );
+}
+
+// ge3/ge4. generate-if branch selection. `if (COND) assign y = a; else assign y =
+//      b;` → exactly one cont-assign; COND=1 reads net 0 (`a`), COND=0 reads net 1.
+fn build_gen_if(cond: u32) -> ast::SourceUnit {
+    let top = module_p(
+        "top",
+        vec![],
+        vec![],
+        vec![
+            netvar(ast::NetVarKind::Wire, None, false, &["a", "b", "y"]),
+            generate(vec![ast::GenItem::If {
+                cond: dec(&cond.to_string()),
+                then_b: vec![gitem(cont_assign(lv_id("y"), id_expr("a")))],
+                else_b: vec![gitem(cont_assign(lv_id("y"), id_expr("b")))],
+                label: None,
+                span: SP,
+            }]),
+        ],
+    );
+    unit_of(vec![top])
+}
+#[test]
+fn ge3_gen_if_true_branch() {
+    let unit = build_gen_if(1);
+    let sink = CollectSink::default();
+    let s = elaborate(&unit, &sink).expect("clean generate-if");
+    assert_eq!(sink.n_errors(), 0);
+    assert_eq!(s.cont_assigns.len(), 1);
+    let rhs = &s.exprs[s.cont_assigns[0].rhs as usize];
+    assert!(
+        matches!(rhs, ir::Expr::Signal { net: 0, .. }),
+        "then = a (net 0)"
+    );
+}
+#[test]
+fn ge4_gen_if_false_branch() {
+    let unit = build_gen_if(0);
+    let sink = CollectSink::default();
+    let s = elaborate(&unit, &sink).expect("clean generate-if");
+    assert_eq!(sink.n_errors(), 0);
+    assert_eq!(s.cont_assigns.len(), 1);
+    let rhs = &s.exprs[s.cont_assigns[0].rhs as usize];
+    assert!(
+        matches!(rhs, ir::Expr::Signal { net: 1, .. }),
+        "else = b (net 1)"
+    );
+}
+
+// ge5. genvar in a net width bound: `wire [i:0] t;` for i in 0..3 → widths [1,2,3].
+#[test]
+fn ge5_genvar_in_net_width() {
+    let top = module_p(
+        "top",
+        vec![],
+        vec![],
+        vec![generate(vec![gen_for(
+            "i",
+            dec("0"),
+            binop(ast::BinOp::Lt, id_expr("i"), dec("3")),
+            binop(ast::BinOp::Add, id_expr("i"), dec("1")),
+            Some("g"),
+            vec![gitem(wire_range_expr(id_expr("i"), &["t"]))],
+        )])],
+    );
+    let unit = unit_of(vec![top]);
+    let sink = CollectSink::default();
+    let s = elaborate(&unit, &sink).expect("clean generate-for");
+    assert_eq!(sink.n_errors(), 0);
+    let widths: Vec<u32> = s.nets.iter().map(|n| n.width).collect();
+    assert_eq!(widths, vec![1, 2, 3]);
+}
+
+// ge6. determinism: elaborate the same unit twice → byte-identical arenas.
+#[test]
+fn ge6_gen_determinism() {
+    let mk = || {
+        let top = module_p(
+            "top",
+            vec![],
+            vec![],
+            vec![generate(vec![gen_for(
+                "i",
+                dec("0"),
+                binop(ast::BinOp::Lt, id_expr("i"), dec("4")),
+                binop(ast::BinOp::Add, id_expr("i"), dec("1")),
+                Some("g"),
+                vec![
+                    gitem(netvar(ast::NetVarKind::Wire, None, false, &["t"])),
+                    gitem(cont_assign(lv_id("t"), lit("1'b0", ast::IntLitKind::Sized))),
+                ],
+            )])],
+        );
+        unit_of(vec![top])
+    };
+    let a = elaborate(&mk(), &CollectSink::default()).expect("clean");
+    let b = elaborate(&mk(), &CollectSink::default()).expect("clean");
+    assert_eq!(a.nets, b.nets);
+    assert_eq!(a.instances, b.instances);
+    assert_eq!(a.cont_assigns, b.cont_assigns);
+}
+
+// ge7. (M1 guard) a stuck genvar step `i = i` → exactly ONE ElabUnsupported, NOT
+//      ~4096 duplicate-decl errors.
+#[test]
+fn ge7_stuck_genvar_one_error() {
+    let top = module_p(
+        "top",
+        vec![],
+        vec![],
+        vec![generate(vec![gen_for(
+            "i",
+            dec("0"),
+            binop(ast::BinOp::Lt, id_expr("i"), dec("5")),
+            id_expr("i"), // step = i (no advance) → stall
+            Some("g"),
+            vec![gitem(netvar(ast::NetVarKind::Wire, None, false, &["t"]))],
+        )])],
+    );
+    let unit = unit_of(vec![top]);
+    let sink = CollectSink::default();
+    let _ = elaborate(&unit, &sink); // returns None (had_error); must not flood
+    assert_eq!(
+        sink.n_errors(),
+        1,
+        "stuck genvar must emit exactly one error"
+    );
+    assert!(err_codes(&sink).contains(&MsgCode::ElabUnsupported));
+}

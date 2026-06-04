@@ -42,6 +42,16 @@ use sim_ir as ir;
 /// in hostile input cannot explode the block arena. Above the cap → `ElabUnsupported`.
 const REPEAT_UNROLL_CAP: u32 = 1024;
 
+/// Hard cap on generate-for unroll iterations. A malformed/hostile
+/// `for(i=0;i<HUGE;i=i+1)` cannot explode the arena: above this we emit
+/// `ElabUnsupported` and stop unrolling. Mirrors `REPEAT_UNROLL_CAP`'s intent
+/// (generate bodies can each contribute many nets, so the cap is conservative).
+const GENERATE_UNROLL_CAP: u32 = 4096;
+
+/// Hard cap on generate nesting depth (nested for/if/case/block). Guards against
+/// pathological recursion; deep-nesting beyond this is deferred per PR scope.
+const GENERATE_DEPTH_CAP: u32 = 32;
+
 /// Hard cap on a single net's declared bit width. Above this we reject the decl
 /// with `ElabUnsupported` rather than `vec![0u64; huge]` (which would OOM) or
 /// overflow the `+1` width arithmetic. 2^20 bits = 16 KiB of planes per net —
@@ -209,6 +219,12 @@ struct Elaborator<'s> {
     params: BTreeMap<String, u32>,
     // module names on the active instantiation path — the recursion cycle guard.
     inst_stack: Vec<String>,
+    // Instance id of the instance whose body is currently being lowered. Set in
+    // `elaborate_instance` step (2) (saved/restored like `cur_prefix`), so a
+    // child instance created from *inside* a generate block (`elaborate_generate`
+    // → `lower_gen_module_item`) can record the correct `Instance.parent` without
+    // threading the id through every generate-walk call.
+    cur_inst: u32,
 }
 
 impl<'s> Elaborator<'s> {
@@ -228,6 +244,7 @@ impl<'s> Elaborator<'s> {
             cur_prefix: String::new(),
             params: BTreeMap::new(),
             inst_stack: Vec::new(),
+            cur_inst: 0,
         }
     }
 
@@ -379,6 +396,9 @@ impl<'s> Elaborator<'s> {
 
         // Enter this instance's scope (restored before returning).
         let saved_prefix = std::mem::replace(&mut self.cur_prefix, inst_path.to_string());
+        // Record this as the instance currently being lowered, so a child created
+        // inside a generate block can set its `Instance.parent` to `inst_id`.
+        let saved_inst = std::mem::replace(&mut self.cur_inst, inst_id);
 
         // (3) bind params (defaults, then overrides) — BEFORE nets so [W-1:0] folds.
         let saved_params = self.bind_params(module, param_overrides);
@@ -389,6 +409,15 @@ impl<'s> Elaborator<'s> {
         for item in &module.body {
             if let ast::ModuleItem::NetVar(d) = item {
                 self.elaborate_netvar_decl(d, &module.ports, &module.body);
+            }
+        }
+        // Generate-block nets belong in THIS instance's contiguous net slice too:
+        // unroll the generate, in the Nets phase only, right after the plain
+        // body nets so they precede every cont-assign/process (pass 7) that may
+        // reference them, and precede child-instance recursion (pass 8).
+        for item in &module.body {
+            if let ast::ModuleItem::Generate(g) = item {
+                self.elaborate_generate(&g.items, GenPhase::Nets, 0, map);
             }
         }
 
@@ -409,13 +438,18 @@ impl<'s> Elaborator<'s> {
                 }
                 // (8) handled in the second loop below.
                 ast::ModuleItem::Instance(_) => {}
-                ast::ModuleItem::Generate(_)
-                | ast::ModuleItem::Func(_)
+                // Generate: nets already created (pass 4 net-walk); here lower its
+                // cont-assigns + processes (Logic phase). Child instances inside it
+                // recurse in pass (8) below.
+                ast::ModuleItem::Generate(g) => {
+                    self.elaborate_generate(&g.items, GenPhase::Logic, 0, map);
+                }
+                ast::ModuleItem::Func(_)
                 | ast::ModuleItem::Task(_)
                 | ast::ModuleItem::Defparam(_) => {
                     self.error(
                         MsgCode::ElabUnsupported,
-                        "construct deferred (generate/func/task/defparam)",
+                        "construct deferred (func/task/defparam)",
                     );
                 }
                 // NetVar/Param/PortDecl/Genvar/Error: no-op here.
@@ -423,16 +457,24 @@ impl<'s> Elaborator<'s> {
             }
         }
 
-        // (8) recurse into child instances, in body declaration order.
+        // (8) recurse into child instances, in body declaration order — including
+        //     those nested inside a generate construct (Instances phase).
         for item in &module.body {
-            if let ast::ModuleItem::Instance(mi) = item {
-                self.elaborate_child_instances(mi, inst_id, map);
+            match item {
+                ast::ModuleItem::Instance(mi) => {
+                    self.elaborate_child_instances(mi, inst_id, map);
+                }
+                ast::ModuleItem::Generate(g) => {
+                    self.elaborate_generate(&g.items, GenPhase::Instances, 0, map);
+                }
+                _ => {}
             }
         }
 
         // restore scope/params so siblings + ancestors resolve correctly.
         self.restore_params(saved_params);
         self.cur_prefix = saved_prefix;
+        self.cur_inst = saved_inst;
         self.inst_stack.pop();
     }
 
@@ -771,6 +813,59 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// Resolve a bare param/genvar `name` to its value, searching the current
+    /// scope then each enclosing GENERATE-block scope (strip one trailing
+    /// `.segment` at a time). A genvar bound at the generate-for's scope (`top.i`)
+    /// is visible inside the loop body's nested prefix (`top.g[0]`, `top.g[0].h`,
+    /// …) — exactly Verilog's generate-scope visibility. The walk STOPS at an
+    /// INSTANCE boundary (a plain-identifier segment) so a child instance never
+    /// sees a parent module's param by bare name. Innermost binding wins.
+    fn lookup_scoped(&self, name: &str) -> Option<u32> {
+        self.walk_scopes(name, &self.params)
+    }
+
+    /// True iff `seg` is a GENERATE-block scope segment (`label[idx]`), as opposed
+    /// to an instance-boundary segment (a plain identifier). Generate prefixes
+    /// always carry the `[idx]` suffix, so a `[` unambiguously marks them.
+    fn is_gen_scope_segment(seg: &str) -> bool {
+        seg.contains('[')
+    }
+
+    /// Shared outward scope walk over a FQ-keyed `BTreeMap`. Looks up `name` in
+    /// the current scope, then each enclosing generate-block scope, stopping at
+    /// the first instance boundary. Used for both params/genvars and the symbol
+    /// (net) table so the visibility rule is identical for each.
+    fn walk_scopes(&self, name: &str, table: &BTreeMap<String, u32>) -> Option<u32> {
+        let mut prefix = self.cur_prefix.as_str();
+        loop {
+            let key = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            if let Some(&v) = table.get(&key) {
+                return Some(v);
+            }
+            if prefix.is_empty() {
+                return None;
+            }
+            // The innermost segment about to be stripped: only continue walking
+            // outward if it is a generate-block scope (`label[idx]`). Stopping at
+            // an instance-boundary segment preserves per-instance name isolation.
+            let last_seg = match prefix.rfind('.') {
+                Some(i) => &prefix[i + 1..],
+                None => prefix,
+            };
+            if !Self::is_gen_scope_segment(last_seg) {
+                return None;
+            }
+            prefix = match prefix.rfind('.') {
+                Some(i) => &prefix[..i],
+                None => "",
+            };
+        }
+    }
+
     /// Param-aware const-eval (the v1 free `const_eval_u32` SLOT). Extends the
     /// literal evaluator with: an `Ident` naming a param bound in the current
     /// scope, and Add/Sub/Mul/Div/Mod/Shl/Shr binary folding (so `WIDTH-1` /
@@ -790,9 +885,12 @@ impl<'s> Elaborator<'s> {
                     _ => None,
                 }
             }
-            // param reference: single-segment name bound in this instance scope.
+            // param/genvar reference: single-segment name bound in this scope OR
+            // an ENCLOSING one. Walking outward lets a genvar bound at the
+            // generate-for's scope (`top.i`) resolve inside the loop body's
+            // nested prefix (`top.g[0]`), matching Verilog generate scoping.
             ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
-                self.params.get(&self.fq(&path.segments[0].name)).copied()
+                self.lookup_scoped(&path.segments[0].name)
             }
             ast::ExprKind::Binary { op, lhs, rhs } => {
                 let a = self.const_eval_in_scope(lhs)?;
@@ -805,7 +903,25 @@ impl<'s> Elaborator<'s> {
                     ast::BinOp::Mod if b != 0 => Some(a % b),
                     ast::BinOp::Shl => Some(a.wrapping_shl(b)),
                     ast::BinOp::Shr => Some(a.wrapping_shr(b)),
-                    _ => None, // Pow / compare / etc. deferred
+                    // Comparison / equality / logical / bitwise folding — required
+                    // so a generate-for CONDITION (`i < N`, `i != 0`, …) const-folds
+                    // to 1/0 during unroll. Unsigned u32 semantics (genvars are
+                    // elaboration integers); `===`/`!==` collapse to `==`/`!=` since
+                    // a folded const has no x/z. (Width/sign-correct evaluation is a
+                    // later refinement; this is exact for the genvar-loop domain.)
+                    ast::BinOp::Lt => Some((a < b) as u32),
+                    ast::BinOp::Le => Some((a <= b) as u32),
+                    ast::BinOp::Gt => Some((a > b) as u32),
+                    ast::BinOp::Ge => Some((a >= b) as u32),
+                    ast::BinOp::Eq | ast::BinOp::CaseEq => Some((a == b) as u32),
+                    ast::BinOp::Ne | ast::BinOp::CaseNe => Some((a != b) as u32),
+                    ast::BinOp::BitAnd => Some(a & b),
+                    ast::BinOp::BitOr => Some(a | b),
+                    ast::BinOp::BitXor => Some(a ^ b),
+                    ast::BinOp::BitXnor => Some(!(a ^ b)),
+                    ast::BinOp::LogAnd => Some(((a != 0) && (b != 0)) as u32),
+                    ast::BinOp::LogOr => Some(((a != 0) || (b != 0)) as u32),
+                    _ => None, // Pow / AShl / AShr deferred
                 }
             }
             _ => None,
@@ -1386,18 +1502,28 @@ impl<'s> Elaborator<'s> {
             );
             return POISON_NET;
         }
-        // prepend the current scope prefix → fully-qualified key.
-        let key = self.fq(&path.segments[0].name);
-        match self.symbols.get(&key) {
-            Some(&id) => id,
+        // Resolve in the current scope, then each ENCLOSING scope. A net declared
+        // in the module body (`top.d`) is visible from inside a generate block
+        // (`top.g[0]`); a net declared inside the block (`top.g[0].t`) shadows it.
+        let name = &path.segments[0].name;
+        match self.lookup_net_scoped(name) {
+            Some(id) => id,
             None => {
                 self.error(
                     MsgCode::ElabUnresolvedName,
-                    &format!("undeclared net/variable `{key}`"),
+                    &format!("undeclared net/variable `{}`", self.fq(name)),
                 );
                 POISON_NET
             }
         }
+    }
+
+    /// Resolve a bare net `name` to its NetId, searching the current scope then
+    /// each enclosing GENERATE-block scope. Symmetric with [`Self::lookup_scoped`]
+    /// for params/genvars; STOPS at an instance boundary (per-instance net
+    /// isolation). Returns the innermost (most specific) binding.
+    fn lookup_net_scoped(&self, name: &str) -> Option<u32> {
+        self.walk_scopes(name, &self.symbols)
     }
 
     // ── const + expr helpers (single arena append points) ──────────
@@ -1501,8 +1627,7 @@ impl<'s> Elaborator<'s> {
     fn array_word_base(&mut self, base: &ast::Expr) -> Option<u32> {
         if let ast::ExprKind::Ident(path) = &base.kind {
             if path.segments.len() == 1 {
-                let key = self.fq(&path.segments[0].name);
-                if let Some(&net) = self.symbols.get(&key) {
+                if let Some(net) = self.lookup_net_scoped(&path.segments[0].name) {
                     if self.nets.get(net as usize).is_some_and(|n| n.array_len > 1) {
                         return Some(net);
                     }
@@ -1525,6 +1650,342 @@ impl<'s> Elaborator<'s> {
                 );
                 0
             }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  v4 — GENERATE unrolling (GenerateConstruct → flat SimIr at elab time)
+// ════════════════════════════════════════════════════════════════════
+//
+// A generate construct is expanded at ELABORATION time: a generate-for with N
+// iterations becomes N copies of its body in the flat SimIr (genvar bound to
+// each iteration value); a generate-if/case selects exactly one branch. Nothing
+// generate-related survives into sim-ir — the genvar is an elaboration-only
+// integer (it lives in `self.params`, never `self.nets`).
+//
+// PHASE SPLIT (the determinism contract): the existing flat-module lowering
+// relies on net-decl order (pass 4) < cont-assign/proc order (pass 7) < child
+// instance recursion (pass 8). A generate block mixes all three. So we re-walk
+// the gen-item tree once per phase, doing only the matching kind of work. The
+// unroll arithmetic (const-eval of init/cond/step) is pure and side-effect-free,
+// so every phase reproduces the SAME genvar sequence and the SAME `label[idx]`
+// prefixes — nets land entirely in the Nets walk (before any Logic), Logic
+// before Instances, exactly mirroring the flat-module pass order.
+
+/// Which slice of work a generate walk performs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GenPhase {
+    /// Create NetVar nets only (so they sit in the parent's contiguous slice).
+    Nets,
+    /// Lower cont-assigns + processes only (nets already created in the Nets walk).
+    Logic,
+    /// Recurse into child module instances only (after the parent net slice is final).
+    Instances,
+}
+
+impl<'s> Elaborator<'s> {
+    /// Run `f` with `cur_prefix` temporarily extended by `seg` (a gen-block
+    /// `label[idx]` segment). Restores the prefix on return. Genvar bindings in
+    /// `self.params` are NOT touched here (the caller manages those).
+    fn with_scope<R>(&mut self, seg: &str, f: impl FnOnce(&mut Self) -> R) -> R {
+        let new_prefix = if self.cur_prefix.is_empty() {
+            seg.to_string()
+        } else {
+            format!("{}.{}", self.cur_prefix, seg)
+        };
+        let saved = std::mem::replace(&mut self.cur_prefix, new_prefix);
+        let r = f(self);
+        self.cur_prefix = saved;
+        r
+    }
+
+    /// Unroll/select a list of GenItems at elaboration time, in deterministic
+    /// order. `phase` selects which lowering work to do (see [`GenPhase`]).
+    /// `depth` is the nesting guard. Genvars bind into `self.params` (like a
+    /// param) so `const_eval_in_scope` resolves them; `with_scope` gives each
+    /// loop iteration its `label[idx].` namespace.
+    fn elaborate_generate(
+        &mut self,
+        items: &[ast::GenItem],
+        phase: GenPhase,
+        depth: u32,
+        map: &ModuleMap<'_>,
+    ) {
+        if depth > GENERATE_DEPTH_CAP {
+            // depth guard reported ONCE (in the Nets phase) to avoid 3× dup.
+            if phase == GenPhase::Nets {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "generate nesting too deep (deferred)",
+                );
+            }
+            return;
+        }
+        for item in items {
+            self.elaborate_gen_item(item, phase, depth, map);
+        }
+    }
+
+    fn elaborate_gen_item(
+        &mut self,
+        item: &ast::GenItem,
+        phase: GenPhase,
+        depth: u32,
+        map: &ModuleMap<'_>,
+    ) {
+        match item {
+            // ── generate-for: bind genvar, unroll ascending ──────────
+            ast::GenItem::For {
+                init,
+                cond,
+                step,
+                label,
+                body,
+                ..
+            } => {
+                let gv_key = self.fq(&init.lvalue.name);
+
+                // INIT value, const-eval'd in the current scope.
+                let Some(start) = self.const_eval_in_scope(&init.value) else {
+                    if phase == GenPhase::Nets {
+                        self.error(
+                            MsgCode::ElabUnresolvedName,
+                            "generate-for init is not a constant",
+                        );
+                    }
+                    return;
+                };
+
+                // Save any prior binding of this name (an outer param/genvar of the
+                // same identifier) and seed the genvar.
+                let saved = self.params.insert(gv_key.clone(), start);
+
+                let mut idx_count: u32 = 0;
+                loop {
+                    // cond folded WITH the genvar bound (so `i < N` resolves).
+                    let keep = match self.const_eval_in_scope(cond) {
+                        Some(c) => c != 0,
+                        None => {
+                            if phase == GenPhase::Nets {
+                                self.error(
+                                    MsgCode::ElabUnresolvedName,
+                                    "generate-for condition is not a constant",
+                                );
+                            }
+                            break;
+                        }
+                    };
+                    if !keep {
+                        break;
+                    }
+                    if idx_count >= GENERATE_UNROLL_CAP {
+                        if phase == GenPhase::Nets {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "generate-for exceeds the unroll cap (possible infinite loop)",
+                            );
+                        }
+                        break;
+                    }
+
+                    // The genvar VALUE (not a 0-based counter) indexes the block
+                    // name, so `for(i=2;i<5;…)` yields `[2],[3],[4]` per Verilog.
+                    let iter_val = *self.params.get(&gv_key).unwrap_or(&0);
+                    let lbl = label.as_ref().map(|l| l.name.as_str()).unwrap_or("genblk");
+                    let block_prefix = format!("{lbl}[{iter_val}]");
+
+                    self.with_scope(&block_prefix, |me| {
+                        me.elaborate_generate(body, phase, depth + 1, map);
+                    });
+
+                    // step: fold (with genvar bound) → rebind the genvar.
+                    let Some(next) = self.const_eval_in_scope(&step.value) else {
+                        if phase == GenPhase::Nets {
+                            self.error(
+                                MsgCode::ElabUnresolvedName,
+                                "generate-for step is not a constant",
+                            );
+                        }
+                        break;
+                    };
+                    // STALL GUARD (verdict M1): the genvar VALUE namespaces each
+                    // iteration's block (`label[iter_val]`). If the step does NOT
+                    // advance it (`next == iter_val`, e.g. `i = i`), every iteration
+                    // reuses the SAME prefix and collides at `add_net`, emitting one
+                    // duplicate-decl error PER iteration up to the unroll cap (~4k
+                    // spurious diagnostics). Detect the non-progressing step and stop
+                    // with ONE diagnostic. (A value that merely repeats LATER — a
+                    // non-monotonic cycle — is still bounded by the unroll cap;
+                    // correctness intact, diagnostics less clean. Residual risk R3.)
+                    if next == iter_val {
+                        if phase == GenPhase::Nets {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "generate-for genvar does not advance (step leaves it unchanged)",
+                            );
+                        }
+                        break;
+                    }
+                    self.params.insert(gv_key.clone(), next);
+                    idx_count += 1;
+                }
+
+                // restore the prior binding (siblings/ancestors unaffected).
+                match saved {
+                    Some(v) => {
+                        self.params.insert(gv_key, v);
+                    }
+                    None => {
+                        self.params.remove(&gv_key);
+                    }
+                }
+            }
+
+            // ── generate-if: const-eval cond, take ONE branch ────────
+            ast::GenItem::If {
+                cond,
+                then_b,
+                else_b,
+                label,
+                ..
+            } => {
+                let taken = match self.const_eval_in_scope(cond) {
+                    Some(c) => c != 0,
+                    None => {
+                        if phase == GenPhase::Nets {
+                            self.error(
+                                MsgCode::ElabUnresolvedName,
+                                "generate-if condition is not a constant",
+                            );
+                        }
+                        return;
+                    }
+                };
+                let body = if taken { then_b } else { else_b };
+                self.elaborate_gen_scoped(label, body, phase, depth, map);
+            }
+
+            // ── generate-case: const-eval scrutinee, match ONE item ──
+            ast::GenItem::Case {
+                scrutinee, items, ..
+            } => {
+                let Some(scrut) = self.const_eval_in_scope(scrutinee) else {
+                    if phase == GenPhase::Nets {
+                        self.error(
+                            MsgCode::ElabUnresolvedName,
+                            "generate-case scrutinee is not a constant",
+                        );
+                    }
+                    return;
+                };
+                // first Match whose label const-equals scrut wins; else Default.
+                let mut chosen: Option<&[ast::GenItem]> = None;
+                let mut default: Option<&[ast::GenItem]> = None;
+                'scan: for ci in items {
+                    match ci {
+                        ast::GenCaseItem::Match { labels, body, .. } => {
+                            for lab in labels {
+                                if self.const_eval_in_scope(lab) == Some(scrut) {
+                                    chosen = Some(body);
+                                    break 'scan;
+                                }
+                            }
+                        }
+                        ast::GenCaseItem::Default { body, .. } => {
+                            default = Some(body);
+                        }
+                    }
+                }
+                if let Some(body) = chosen.or(default) {
+                    self.elaborate_generate(body, phase, depth + 1, map);
+                }
+            }
+
+            // ── named/unnamed begin…end block inside generate ────────
+            ast::GenItem::Block { label, items, .. } => {
+                self.elaborate_gen_scoped(label, items, phase, depth, map);
+            }
+
+            // ── a plain module-item directly inside generate ─────────
+            ast::GenItem::Item(mi) => self.lower_gen_module_item(mi, phase, depth, map),
+        }
+    }
+
+    /// Elaborate a gen-block body under an OPTIONAL label scope. A `Some(label)`
+    /// adds a `label.` prefix segment; an unlabeled body contributes directly to
+    /// the current scope (the common LRM behavior when no `begin:label` is given).
+    fn elaborate_gen_scoped(
+        &mut self,
+        label: &Option<ast::Ident>,
+        items: &[ast::GenItem],
+        phase: GenPhase,
+        depth: u32,
+        map: &ModuleMap<'_>,
+    ) {
+        match label {
+            Some(l) => {
+                let seg = l.name.clone();
+                self.with_scope(&seg, |me| {
+                    me.elaborate_generate(items, phase, depth + 1, map);
+                });
+            }
+            None => self.elaborate_generate(items, phase, depth + 1, map),
+        }
+    }
+
+    /// Lower ONE plain `ModuleItem` found inside a generate, honoring the current
+    /// phase. MIRRORS the per-item dispatch in `elaborate_instance` steps
+    /// (4)/(7)/(8) — the deliberate reuse the PR calls for.
+    fn lower_gen_module_item(
+        &mut self,
+        mi: &ast::ModuleItem,
+        phase: GenPhase,
+        depth: u32,
+        map: &ModuleMap<'_>,
+    ) {
+        match (phase, mi) {
+            // NETS phase: only net declarations. No ports inside a generate
+            // (LRM forbids port decls) → empty port list/body, dir = Internal.
+            (GenPhase::Nets, ast::ModuleItem::NetVar(d)) => {
+                self.elaborate_netvar_decl(d, &ast::PortList::None, &[]);
+            }
+            // LOGIC phase: cont-assigns + processes.
+            (GenPhase::Logic, ast::ModuleItem::ContAssign(ca)) => {
+                self.elaborate_cont_assign(ca);
+            }
+            (GenPhase::Logic, ast::ModuleItem::Proc(p)) => {
+                let proc = self.lower_proc_block(p);
+                self.processes.push(proc);
+            }
+            // INSTANCES phase: recurse into child module instances. The parent
+            // instance id is `self.cur_inst` (the instance whose body we are in).
+            (GenPhase::Instances, ast::ModuleItem::Instance(inst)) => {
+                self.elaborate_child_instances(inst, self.cur_inst, map);
+            }
+            // generate-inside-generate: recurse in the SAME phase, +1 depth.
+            (_, ast::ModuleItem::Generate(g)) => {
+                self.elaborate_generate(&g.items, phase, depth + 1, map);
+            }
+            // forbidden-in-generate (reported once, in the Nets phase).
+            (GenPhase::Nets, ast::ModuleItem::Param(_) | ast::ModuleItem::PortDecl(_)) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "parameter/port declaration not allowed inside generate",
+                );
+            }
+            (
+                GenPhase::Nets,
+                ast::ModuleItem::Func(_) | ast::ModuleItem::Task(_) | ast::ModuleItem::Defparam(_),
+            ) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "construct deferred inside generate (func/task/defparam)",
+                );
+            }
+            // Genvar decl inside generate: elaboration-only, no net → no-op.
+            // Any item not matching the active phase: no-op (handled elsewhere).
+            _ => {}
         }
     }
 }
