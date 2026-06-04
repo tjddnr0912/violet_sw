@@ -1634,3 +1634,23 @@ fn unsigned_keyword_and_min_width_radix() {
     // %0* strip leading zeros (5/101/5); plain %h/%b keep full width (05/00000101).
     assert_eq!(out, "5 101 5 | 05 00000101\n");
 }
+
+// ── net-declaration initializer is an implicit continuous assign (a driver):
+//    `wire x = a & b;` continuously tracks a & b, like `assign x = a & b`. A reg
+//    initializer stays a one-time value (sweep gap: decl-init cont-assign). ─────
+
+#[test]
+fn net_decl_initializer_is_continuous_assign() {
+    let src = "module t; reg [3:0] a, b; \
+               wire [3:0] g = a & b; wire [3:0] o = a | b; \
+               reg [3:0] r = 4'd9; \
+               initial begin a = 4'b1100; b = 4'b1010; \
+                 #1 $display(\"g=%b o=%b r=%0d\", g, o, r); \
+                 a = 4'b1111; \
+                 #1 $display(\"g=%b o=%b\", g, o); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // g=a&b, o=a|b track continuously; r keeps its one-time init 9. After a=1111:
+    // g = 1111 & 1010 = 1010, o = 1111 | 1010 = 1111.
+    assert_eq!(out, "g=1000 o=1110 r=9\ng=1010 o=1111\n");
+}

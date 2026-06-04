@@ -647,7 +647,11 @@ impl<'s> Elaborator<'s> {
                 ast::ModuleItem::Defparam(_) => {
                     self.error(MsgCode::ElabUnsupported, "construct deferred (defparam)");
                 }
-                // NetVar/Param/PortDecl/Genvar/Error: no-op here.
+                // A NET declaration initializer (`wire x = expr;`) is an implicit
+                // continuous assign — lower it as a driver here (the net itself was
+                // created in pass 4). A variable initializer is a one-time value.
+                ast::ModuleItem::NetVar(d) => self.elaborate_net_init_drivers(d),
+                // Param/PortDecl/Genvar/Error: no-op here.
                 _ => {}
             }
         }
@@ -1431,6 +1435,41 @@ impl<'s> Elaborator<'s> {
     }
 
     // ── PASS 2: continuous assigns ─────────────────────────────────
+    /// A NET-type declaration initializer (`wire [3:0] x = a & b;`) is an IMPLICIT
+    /// continuous assign — a driver, equivalent to a separate `assign x = a & b;`.
+    /// A variable (reg/logic/integer/real/…) initializer is instead a one-time
+    /// value applied at net creation, so it is skipped here.
+    fn elaborate_net_init_drivers(&mut self, d: &ast::NetVarDecl) {
+        let is_var = matches!(
+            d.kind,
+            ast::NetVarKind::Reg
+                | ast::NetVarKind::Logic
+                | ast::NetVarKind::Integer
+                | ast::NetVarKind::Real
+                | ast::NetVarKind::Realtime
+                | ast::NetVarKind::Time
+        );
+        if is_var {
+            return;
+        }
+        for name in &d.names {
+            let Some(init) = &name.init else {
+                continue;
+            };
+            let path = ast::HierPath {
+                segments: vec![name.name.clone()],
+                span: name.name.span,
+            };
+            let lhs = self.lower_lvalue(&ast::Lvalue::Ident(path));
+            let rhs_id = self.lower_expr(init);
+            self.cont_assigns.push(ir::ContAssign {
+                lhs,
+                rhs: rhs_id,
+                delay: None,
+            });
+        }
+    }
+
     fn elaborate_cont_assign(&mut self, ca: &ast::ContinuousAssign) {
         // Delay: hdl-ast Delay values are exprs; sim-ir delay is Option<u32>.
         // v1 const-folds a literal rise delay; non-const → None (note slot).
