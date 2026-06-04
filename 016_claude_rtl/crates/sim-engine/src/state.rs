@@ -24,6 +24,52 @@ pub(crate) struct NetSlot {
     pub vcd_id: Option<IdCode>,
 }
 
+/// One captured `$strobe`/`$monitor` argument list. Stores ExprIds (not values)
+/// so the args are RE-EVALUATED at postponed-flush time, sampling settled
+/// end-of-timestep net values. ExprIds index the immutable `ir.exprs` and remain
+/// valid for the whole run, so no value snapshot or scope context is needed:
+/// `EvalCtx` is rebuilt from `Scheduler::st` (ir / nets / now / wt) at flush.
+#[derive(Clone)]
+pub(crate) struct FmtCapture {
+    /// `SysTask.fmt`: Option<ExprId> → a `Const{val}` whose `val` is the
+    /// format-string ConstId. `None` ⇒ bare-args (space-joined decimals).
+    pub fmt: Option<u32>,
+    /// `SysTask.args`: the argument ExprIds, evaluated lazily in `format_args_str`.
+    pub args: Vec<u32>,
+}
+
+/// The single global `$monitor` record (IEEE 1364-2005: at most one active
+/// monitor list in the entire simulation). A later `$monitor` REPLACES this.
+pub(crate) struct MonitorState {
+    pub cap: FmtCapture,
+    /// Last evaluated 4-state VALUE list of `cap.args` (one `Value` per arg).
+    /// `None` ⇒ never printed yet, so the next postponed flush prints
+    /// unconditionally (establishment print). IEEE 1364-2005 §17.1 keys $monitor
+    /// reprints off the *monitored expression VALUE* changing, NOT off the
+    /// rendered string. `Value` derives `PartialEq`/`Eq` over the `(val, unk)`
+    /// bit-planes, so equality is exactly 4-state-aware: an X/Z-collapsing format
+    /// spec (`%d` rendering any-unknown to "x", `%h`/`%b` collapsing a
+    /// partial-unknown group) can NEVER mask a genuine value transition the way a
+    /// rendered-string diff would (e.g. `4'b00xx → 4'b0x00` under `%d`, both
+    /// printing "x", is correctly detected as a change here).
+    pub last_vals: Option<Vec<Value>>,
+    /// `$monitoroff` clears this; `$monitoron` re-sets + resets `last_vals` to
+    /// force a print. DEFERRED for the MVP (no SysTaskId bound) — field present,
+    /// always `true`, so the flush logic is already on/off-aware when the tasks
+    /// land.
+    pub enabled: bool,
+}
+
+/// Per-timestep postponed-region queue + the global monitor singleton.
+#[derive(Default)]
+pub(crate) struct Postponed {
+    /// FIFO of pending strobes for the CURRENT timestep. Drained-and-CLEARED at
+    /// every postponed flush (one-shot-per-call semantics).
+    pub strobes: Vec<FmtCapture>,
+    /// The global monitor (replace-on-redefine). `None` until first `$monitor`.
+    pub monitor: Option<MonitorState>,
+}
+
 pub(crate) struct SimState<'a> {
     pub ir: &'a SimIr,
     pub now: u64,
@@ -47,6 +93,9 @@ pub(crate) struct SimState<'a> {
     pub finished: bool,
     pub had_error: bool,
     pub had_fatal: bool,
+
+    // ── postponed region ($strobe FIFO + global $monitor singleton) ──
+    pub postponed: Postponed,
 }
 
 impl<'a> SimState<'a> {
@@ -91,6 +140,7 @@ impl<'a> SimState<'a> {
             finished: false,
             had_error: false,
             had_fatal: false,
+            postponed: Postponed::default(),
         }
     }
 

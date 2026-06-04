@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use sim_ir::{EdgeKind, EdgeTerm, FourState, Lvalue, RegionTag, SensKind, WaitCause};
 
+use crate::builtins::{format_args_str, write_out};
 use crate::eval::EvalCtx;
 use crate::exec::{run_process, Step};
 use crate::state::{scalar_bit0, SimState};
@@ -235,6 +236,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 break; // time-step stable
             }
 
+            // POSTPONED REGION (IEEE 1364-2005 §5.4): now == settled time, all
+            // region buckets (Active/Inactive/NBA) empty, cont-assigns at
+            // fixpoint, time NOT yet advanced. Reads settled `cur` net values.
+            // Drain strobes (call order) then the monitor (print-on-change).
+            self.flush_postponed();
+
             // Advance time to the next scheduled tick.
             let next = match self.wheel.keys().next().copied() {
                 None => return FinishReason::Quiescent,
@@ -263,6 +270,97 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             FinishReason::Error
         } else {
             FinishReason::Finish
+        }
+    }
+
+    // ── postponed region ($strobe FIFO drain + $monitor change-detect) ─────
+
+    /// IEEE 1364-2005 §5.4 postponed region. Called at the settled point of each
+    /// timestep (Active/Inactive/NBA empty, cont-assigns at fixpoint, `now` =
+    /// settled time, time NOT yet advanced). Read-only w.r.t. net state: it only
+    /// EVALUATES ExprIds (reading settled `cur` net values via `NetReader`) and
+    /// writes to `self.st.out`. NOTE: this flush has nothing to do with
+    /// `prev`/`snapshot_prev` — those are edge-detection state that `run()` rolls
+    /// at the *start of the next* timestep (after time advance); the postponed
+    /// render reads only the settled `cur` values and is independent of edge state.
+    ///
+    /// ORDER (frozen, documented for the golden gate): all strobes first in call
+    /// order, then the single monitor line. IEEE leaves this tie-break
+    /// implementation-defined; vita freezes strobes-then-monitor for byte-stable
+    /// 3-OS golden output.
+    fn flush_postponed(&mut self) {
+        // (a) STROBES — drain the FIFO in call order, render NOW (settled values),
+        //     print, then CLEAR (one-shot per call: a strobe never repeats next
+        //     step unless its statement re-executes and re-registers).
+        if !self.st.postponed.strobes.is_empty() {
+            // `mem::take` first to end the immutable borrow that `format_args_str`
+            // needs against `&self` (mirrors `apply_nba`'s `mem::take(&mut nba)`).
+            let batch = std::mem::take(&mut self.st.postponed.strobes);
+            for cap in &batch {
+                let mut line = format_args_str(self, cap.fmt, &cap.args);
+                line.push('\n');
+                write_out(self.st, &line);
+            }
+            // `batch` dropped here; `self.st.postponed.strobes` is now empty.
+        }
+
+        // (b) MONITOR — IEEE 1364-2005 §17.1: reprint whenever any monitored
+        //     expression VALUE changes (4-state-aware), NOT when the rendered
+        //     string changes. We therefore evaluate the arg ExprIds to a
+        //     `Vec<Value>` and compare against the stored baseline with
+        //     `Value`'s derived `PartialEq` (exact `(val, unk)` bit-plane
+        //     equality). Only when the value list differs (or was never seeded:
+        //     establishment / replace) do we render + print and re-seed.
+        //
+        //     Borrow shape: hoist EVERYTHING out of the `&self.st.postponed`
+        //     borrow into locals (copy `enabled`, copy `fmt`, clone `args`,
+        //     `take` the previous `last_vals`) and DROP that borrow before any
+        //     `&self`-eval / `&mut self.st`-write. No NLL dependence on a binding
+        //     surviving across the render — render-then-record, zero overlap.
+        //     `Option::take` is used so the old baseline is moved out (not
+        //     cloned) and the slot is rewritten unconditionally below.
+        let mon = match self.st.postponed.monitor.as_mut() {
+            Some(m) if m.enabled => {
+                let fmt = m.cap.fmt;
+                let args = m.cap.args.clone();
+                let prev = m.last_vals.take(); // moves baseline out; slot now None
+                Some((fmt, args, prev))
+            }
+            // disabled (`$monitoroff`) or no monitor established → nothing to do.
+            _ => None,
+        };
+        if let Some((fmt, args, prev)) = mon {
+            // No-arg monitor (`$monitor;` → fmt=None, args=[]) prints nothing —
+            // not even a bare newline. Guarded so a future bare-`$monitor` lowering
+            // cannot silently inject a lone "\n" into golden RTL output (see §7.4).
+            if fmt.is_none() && args.is_empty() {
+                // Seed an empty baseline (`[]` == `[]` keeps it silent forever)
+                // and emit NO line; a zero-expression monitor has no value to
+                // track. Early-return is safe: strobes (a) already drained and the
+                // monitor block is the final action of `flush_postponed`.
+                if let Some(m) = self.st.postponed.monitor.as_mut() {
+                    m.last_vals = Some(Vec::new());
+                }
+                return;
+            }
+            // Evaluate every monitored expression to a settled 4-state Value.
+            // `self.eval` builds `EvalCtx` from `self.st`, reading settled `cur`.
+            let cur_vals: Vec<Value> = args.iter().map(|&eid| self.eval(eid)).collect();
+            let changed = match &prev {
+                None => true,                  // establishment / replace → print
+                Some(old) => *old != cur_vals, // 4-state value-level change
+            };
+            if changed {
+                let mut line = format_args_str(self, fmt, &args);
+                line.push('\n');
+                write_out(self.st, &line);
+            }
+            // Re-seed the baseline with the freshly-evaluated values regardless of
+            // whether we printed: an unchanged step must keep the same baseline,
+            // and a printed step adopts the new one.
+            if let Some(m) = self.st.postponed.monitor.as_mut() {
+                m.last_vals = Some(cur_vals);
+            }
         }
     }
 

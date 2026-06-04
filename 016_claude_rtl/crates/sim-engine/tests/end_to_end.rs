@@ -485,7 +485,10 @@ fn part_select_write_folds_offset_and_width() {
                endmodule";
     let ir = build(src);
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
-    assert_eq!(out, "fa\n", "two part-select writes land in the right nibbles");
+    assert_eq!(
+        out, "fa\n",
+        "two part-select writes land in the right nibbles"
+    );
 }
 
 #[test]
@@ -497,4 +500,267 @@ fn bit_select_write_folds_offset() {
     let ir = build(src);
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(out, "08\n", "bit-select write targets the indexed bit");
+}
+
+// ── $strobe / $monitor postponed-region semantics (§5.1–5.14) ───────────────
+
+#[test]
+fn strobe_shows_post_nba_value_vs_display_pre() {
+    // q starts 0, d=1. On the posedge: $display(q) prints pre-update 0; the NBA
+    // q<=d schedules q→1 (applied in NBA region); $strobe(q) defers to the
+    // postponed region and samples the settled post-NBA value 1.
+    let src = "module m; reg clk; reg d; reg q; \
+               always @(posedge clk) begin \
+                 $display(\"disp %b\", q); q <= d; $strobe(\"strb %b\", q); \
+               end \
+               initial begin clk=0; d=1; q=0; \
+                 #5 clk=1; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // $display fires in the active region (q still 0). $strobe fires in the
+    // postponed region of the SAME timestep, after NBA set q=1.
+    assert_eq!(out, "disp 0\nstrb 1\n");
+}
+
+#[test]
+fn two_strobes_print_in_call_order() {
+    // In one posedge step: register $strobe(a) then $strobe(b). a is NBA-updated
+    // to 9 this step. Postponed FIFO drains in call order: a-line (settled 9)
+    // before b-line (2).
+    let src = "module m; reg clk; reg [3:0] a; reg [3:0] b; \
+               always @(posedge clk) begin \
+                 $strobe(\"a=%0d\", a); $strobe(\"b=%0d\", b); a <= 4'd9; \
+               end \
+               initial begin clk=0; a=4'd1; b=4'd2; \
+                 #5 clk=1; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // Both strobes sample at end-of-timestep regardless of enqueue position:
+    // a shows its settled post-NBA value 9; order is call order (a then b).
+    assert_eq!(out, "a=9\nb=2\n");
+}
+
+#[test]
+fn strobe_is_one_shot_per_call() {
+    // $strobe runs once inside the posedge body. The next timestep (a later #5
+    // with NO posedge) must NOT reprint it: the FIFO was cleared at flush.
+    let src = "module m; reg clk; reg [3:0] a; \
+               always @(posedge clk) $strobe(\"s=%0d\", a); \
+               initial begin clk=0; a=4'd4; \
+                 #5 clk=1; \
+                 #5 a=4'd7; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // Exactly one strobe line (from the single posedge); the later a=7 step does
+    // not reprint because the strobe FIFO is cleared every flush.
+    assert_eq!(out, "s=4\n");
+}
+
+#[test]
+fn monitor_prints_once_on_establish() {
+    // Establish $monitor on flag (=0). It prints once in the postponed region of
+    // the establishing timestep (establishment-prints-immediately rule).
+    let src = "module m; reg flag; \
+               initial begin flag=0; \
+                 $monitor(\"flag=%b\", flag); \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "flag=0\n");
+}
+
+#[test]
+fn monitor_prints_only_on_change() {
+    // Establish at t=0 (flag=0 → print). t=10 flag→1 (print). t=20 flag unchanged
+    // (NO print). t=30 flag→0 (print). Three lines, the unchanged step is silent.
+    let src = "module m; reg flag; \
+               initial begin flag=0; \
+                 $monitor(\"flag=%b\", flag); \
+                 #10 flag=1; \
+                 #10 flag=1; \
+                 #10 flag=0; \
+                 #10 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // establish(0) → 1 → [unchanged, silent] → 0
+    assert_eq!(out, "flag=0\nflag=1\nflag=0\n");
+}
+
+#[test]
+fn monitor_detects_x_transition() {
+    // flag starts X (uninitialized 1-bit reg). Establish prints "flag=x". Then
+    // flag→0 is a value change (X→0) and prints "flag=0". 4-state-aware equality:
+    // a defined↔X transition counts as a change.
+    let src = "module m; reg flag; \
+               initial begin \
+                 $monitor(\"flag=%b\", flag); \
+                 #5 flag=0; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // %b of an X 1-bit reg renders 'x' (see fmt_radix X handling).
+    assert_eq!(out, "flag=x\nflag=0\n");
+}
+
+#[test]
+fn second_monitor_replaces_first() {
+    // Monitor a (=0) at t=0; a→1 at t=10. At t=20 a SECOND $monitor on b (=7)
+    // replaces the first. a→2 at t=30 is now invisible. b→8 at t=40 prints.
+    let src = "module m; reg [3:0] a; reg [3:0] b; \
+               initial begin a=4'd0; b=4'd7; \
+                 $monitor(\"a=%0d\", a); \
+                 #10 a=4'd1; \
+                 #10 $monitor(\"b=%0d\", b); \
+                 #10 a=4'd2; \
+                 #10 b=4'd8; \
+                 #10 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // a establish(0) → a(1) → b establish(7) → [a→2 invisible] → b(8)
+    assert_eq!(out, "a=0\na=1\nb=7\nb=8\n");
+}
+
+#[test]
+fn strobe_then_monitor_ordering_in_one_step() {
+    // In a single timestep both a $strobe fires and the monitor changes. Frozen
+    // tie-break: strobe line FIRST, then the monitor line.
+    let src = "module m; reg clk; reg [3:0] a; \
+               always @(posedge clk) $strobe(\"S=%0d\", a); \
+               initial begin clk=0; a=4'd0; \
+                 $monitor(\"M=%0d\", a); \
+                 #5 a=4'd5; clk=1; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // t=0 postponed: monitor establish prints M=0 (no strobe yet).
+    // t=5 postponed: a changed 0→5 AND a strobe fired this step → strobe first
+    // (S=5), then monitor (M=5).
+    assert_eq!(out, "M=0\nS=5\nM=5\n");
+}
+
+#[test]
+fn strobe_then_finish_same_step_is_skipped() {
+    // $strobe then $finish in the SAME active region with no intervening delay:
+    // the engine returns on $finish before the settle break, so the postponed
+    // flush never runs for this step → the strobe prints nothing.
+    //
+    // PORTABILITY NOTE: this DIVERGES from reference simulators. IEEE 1364-2005
+    // §5.4/§17 drain the CURRENT timestep's postponed region before terminating
+    // on $finish, so Icarus/VCS would print "s=3\n" here. vita's MVP skips it for
+    // implementation simplicity/determinism (documented §3.4 + §7.3). The expected
+    // target for a future IEEE-strict revision is therefore `"s=3\n"`; this test
+    // pins the deliberate MVP behavior (empty output) so the divergence is golden,
+    // not accidental.
+    let src = "module m; reg [3:0] a; \
+               initial begin a=4'd3; $strobe(\"s=%0d\", a); $finish; end endmodule";
+    let ir = build(src);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // MVP: "" (skip). IEEE-strict / Icarus / VCS reference target: "s=3\n".
+    assert_eq!(
+        out, "",
+        "no postponed flush after same-step $finish (MVP divergence)"
+    );
+}
+
+#[test]
+fn strobe_defers_past_later_blocking_writes() {
+    // Within one initial block: $strobe(a) is registered while a=1, then a
+    // blocking a=2 runs, then $display(a) prints 2. The strobe, deferred to the
+    // postponed region, samples the FINAL settled a=2 — proving the strobe reads
+    // end-of-timestep state, not the call-site value, even with blocking writes.
+    let src = "module m; reg [3:0] a; \
+               initial begin a=4'd1; $strobe(\"s=%0d\", a); a=4'd2; \
+                 $display(\"d=%0d\", a); #1 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // $display prints d=2 immediately (active region). The strobe flushes at the
+    // settle of t=0 (before the #1 advances time) sampling a=2.
+    assert_eq!(out, "d=2\ns=2\n");
+}
+
+#[test]
+fn strobe_monitor_deterministic_repeat() {
+    let src = "module m; reg clk; reg [3:0] a; \
+               always @(posedge clk) $strobe(\"s=%0d\", a); \
+               initial begin clk=0; a=4'd0; \
+                 $monitor(\"m=%0d\", a); \
+                 #5 a=4'd1; clk=1; \
+                 #5 clk=0; #5 a=4'd2; clk=1; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_r1, o1) = simulate_capture(&ir, SimOpts::default());
+    let (_r2, o2) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(o1, o2, "same SimIr → byte-identical strobe+monitor output");
+}
+
+#[test]
+fn monitor_reestablish_same_signal_reprints() {
+    // Monitor a (=5) → establish prints. a unchanged. Re-issue $monitor on the
+    // SAME a: replace semantics reset `last`, so it prints again at that step
+    // even though a's value did not change.
+    let src = "module m; reg [3:0] a; \
+               initial begin a=4'd5; \
+                 $monitor(\"a=%0d\", a); \
+                 #5 $monitor(\"a=%0d\", a); \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // First establish prints a=5; re-establish resets last_vals=None → prints
+    // a=5 again.
+    assert_eq!(out, "a=5\na=5\n");
+}
+
+#[test]
+fn no_arg_monitor_emits_nothing() {
+    // A bare `$monitor;` (fmt=None, args=[]) has zero monitored expressions. The
+    // flush guard skips it entirely — it must NOT inject a lone "\n" into RTL
+    // output at the establishing timestep (or any later step). This pins the
+    // deliberate decision from §7.4 / the flush no-arg guard so the output is
+    // golden-checked, not emergent.
+    //
+    // NOTE: depends on elaborate lowering a bare `$monitor;` to a Monitor node
+    // with no args. If the front end does not yet emit such a node, gate this test
+    // behind the same support; the assertion (empty output) is the contract.
+    let src = "module m; reg flag; \
+               initial begin flag=0; \
+                 $monitor; \
+                 #5 flag=1; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // Zero-expression monitor: no establishment line, no per-step line.
+    assert_eq!(
+        out, "",
+        "no-arg $monitor emits no bytes, not even a newline"
+    );
+}
+
+#[test]
+fn monitor_reprints_on_unknown_to_unknown_value_change() {
+    // IEEE-correctness regression for value-level (not rendered-string) change
+    // detection. q is a 4-bit reg. Under `%d`, EVERY value containing any X
+    // renders to literal "x" (builtins fmt_dec returns "x" on any_unknown). So a
+    // rendered-string diff would suppress the second print. Value-level 4-state
+    // equality detects 4'b00xx → 4'b0x00 as a genuine change → reprint.
+    //
+    //   t=0  establish: q = 4'b00xx → "x"   (print)
+    //   t=5  q = 4'b0x00           → "x"   (DIFFERENT value, same string → MUST print)
+    //   t=10 q = 4'b0x00           → "x"   (unchanged value+string → silent)
+    let src = "module m; reg [3:0] q; \
+               initial begin q=4'b00xx; \
+                 $monitor(\"q=%d\", q); \
+                 #5 q=4'b0x00; \
+                 #5 q=4'b0x00; \
+                 #5 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // Three lines? No — two: establish + the X→X value change. The third step is
+    // a true no-op (identical (val,unk) planes) and stays silent. All three
+    // render to "q=x"; only value-level equality distinguishes them.
+    assert_eq!(out, "q=x\nq=x\n");
 }

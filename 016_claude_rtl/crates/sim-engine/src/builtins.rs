@@ -8,7 +8,7 @@ use sim_ir::SysTaskId;
 use vcd_writer::{IdCode, ScopeType};
 
 use crate::sched::Scheduler;
-use crate::state::{vcd_var_type, SimState};
+use crate::state::{vcd_var_type, FmtCapture, MonitorState, SimState};
 use crate::value::Value;
 
 /// Control-flow signal back to the executor.
@@ -40,12 +40,30 @@ pub(crate) fn dispatch(
             write_out(sched.st, &s);
             Ctl::Continue
         }
-        // v1: $monitor/$strobe render immediately like $display (Monitor-region
-        // scheduling deferred).
-        SysTaskId::Monitor | SysTaskId::Strobe => {
-            let mut s = format_args_str(sched, fmt, args);
-            s.push('\n');
-            write_out(sched.st, &s);
+        // $strobe: REGISTER a postponed capture (does NOT print now). It is
+        // rendered with settled end-of-timestep values at `flush_postponed`,
+        // then cleared (one-shot per call). Multiple strobes in one step print
+        // in call order (FIFO push).
+        SysTaskId::Strobe => {
+            sched.st.postponed.strobes.push(FmtCapture {
+                fmt,
+                args: args.to_vec(),
+            });
+            Ctl::Continue
+        }
+        // $monitor: REPLACE the global singleton (IEEE: at most one active
+        // monitor in the whole sim). `last_vals = None` forces an establishment
+        // print at the next postponed flush of THIS timestep, seeding the
+        // baseline value list.
+        SysTaskId::Monitor => {
+            sched.st.postponed.monitor = Some(MonitorState {
+                cap: FmtCapture {
+                    fmt,
+                    args: args.to_vec(),
+                },
+                last_vals: None,
+                enabled: true,
+            });
             Ctl::Continue
         }
         SysTaskId::Finish => Ctl::Finish,
@@ -78,7 +96,7 @@ pub(crate) fn dispatch(
     }
 }
 
-fn write_out(st: &mut SimState, text: &str) {
+pub(crate) fn write_out(st: &mut SimState, text: &str) {
     let _ = st.out.write_all(text.as_bytes());
 }
 
@@ -231,7 +249,7 @@ fn const_string(st: &SimState, cid: u32) -> String {
 
 // ── $display format engine (4-state aware) ─────────────────────────────────
 
-fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32]) -> String {
+pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32]) -> String {
     let Some(fmt_eid) = fmt else {
         // bare args → space-joined decimals
         return args
