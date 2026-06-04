@@ -243,13 +243,20 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
 
     // ── elaborate ──────────────────────────────────────────────────────────
     // The elaborator emits its own diagnostics through `sink`; `None` ⇒ a hard
-    // elaboration error was reported.
-    let Some(ir) = elaborate::elaborate(&unit, &sink) else {
+    // elaboration error was reported. `elaborate_with_modes` also yields the
+    // join-mode side table the engine needs to run forks concurrently (threaded
+    // into `SimOpts.fork_modes`); for fork-free designs it is simply empty.
+    let (ir, fork_modes) = elaborate::elaborate_with_modes(&unit, &sink);
+    let Some(ir) = ir else {
         return EXIT_USER_ERROR;
     };
 
     // ── simulate ────────────────────────────────────────────────────────────
-    let result = sim_engine::simulate(&ir, &sink, opts.sim_opts());
+    let sim_opts = SimOpts {
+        fork_modes,
+        ..opts.sim_opts()
+    };
+    let result = sim_engine::simulate(&ir, &sink, sim_opts);
     sim_exit_code(&result)
 }
 

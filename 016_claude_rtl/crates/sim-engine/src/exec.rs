@@ -20,13 +20,35 @@ pub(crate) enum Step {
     Fatal,
 }
 
-/// Execute process `pi` starting at body block `start`.
+/// Execute activity `pi` starting at body block `start`. `pi` is a runtime
+/// ACTIVITY id (index into `Scheduler::activities`), NOT a declaration index —
+/// the body/sensitivity are resolved through `activities[pi].template`.
 pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
     let mut guard: u64 = 0;
     loop {
-        // Snapshot the block's stmt ids + terminator (process-local indexing).
+        // ── CENTRALIZED CHILD-COMPLETION INTERCEPT (terminator-agnostic) ──
+        // If this activity is a fork child and the NEXT bb to fetch is its barrier's
+        // join_bb, the child has completed. Report + die BEFORE the join_bb block is
+        // ever fetched (join_bb is a never-executed sentinel). This catches the child
+        // whether it arrives via Goto, Branch, or a resumed Delay/Wait, so a child
+        // whose last statement is an if/case/delay/wait into join_bb is handled.
+        if sched.activity_is_child(pi) {
+            if let Some(jr) = sched.activity_join_ref(pi) {
+                if bb == sched.barrier_join_bb(jr) {
+                    sched.on_child_complete(jr, pi);
+                    return Step::Done; // child dead; rearm skips it (is_child)
+                }
+            }
+        }
+        // Defense-in-depth: a non-child must NEVER fetch a live barrier's join_bb.
+        #[cfg(debug_assertions)]
+        sched.assert_not_parent_at_join(pi, bb);
+
+        // Snapshot the block's stmt ids + terminator (process-local indexing,
+        // resolved through this activity's template).
+        let tmpl = sched.activity_template(pi) as usize;
         let (stmt_ids, term) = {
-            let body = &sched.st.ir.processes[pi as usize].body;
+            let body = &sched.st.ir.processes[tmpl].body;
             let block = &body[bb as usize];
             (block.stmts.clone(), block.term.clone())
         };
@@ -99,11 +121,23 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                 sched.rearm(pi);
                 return Step::Done;
             }
-            // Deferred v1: fork/join + task call. elaborate lowers fork→sequential,
-            // so these should not appear from v1 elaborate; advance to keep liveness.
-            Terminator::Fork { resume_bb, .. } => {
-                bb = resume_bb;
-            }
+            // fork/join/join_any/join_none: register the barrier, spawn each child as
+            // a new activity (runnable THIS instant), then either continue at
+            // resume_bb (join_none, or zero children) or suspend on the barrier
+            // (join/join_any with ≥1 child). The parent is re-enqueued by
+            // on_child_complete when the join condition fires.
+            Terminator::Fork {
+                children,
+                join,
+                resume_bb,
+            } => match sched.exec_fork(pi, &children, join, resume_bb) {
+                Some(cont) => {
+                    bb = cont;
+                }
+                None => return Step::Suspended,
+            },
+            // Deferred v1: user task/func `Call`. elaborate inlines tasks, so this
+            // should not appear from v1 elaborate; advance to keep liveness.
             Terminator::Call { ret_bb, .. } => {
                 bb = ret_bb;
             }

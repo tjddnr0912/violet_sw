@@ -38,6 +38,33 @@ fn build(src: &str) -> sim_ir::SimIr {
     ir.expect("elaborate returned None")
 }
 
+/// Elaborate `src` WITH the fork-mode side table and return `(ir, opts)` where
+/// `opts` carries `fork_modes`. Existing non-fork tests keep using
+/// `build()`/`SimOpts::default()` unchanged. Fork tests do:
+///   `let (ir, opts) = build_fork(src); simulate_capture(&ir, opts);`
+fn build_fork(src: &str) -> (sim_ir::SimIr, SimOpts) {
+    let (toks, le) = hdl_lexer::lex(src);
+    assert!(le.is_empty(), "lex errors: {le:?}");
+    let (su, pe) = hdl_parser::parse(&toks, src);
+    assert!(pe.is_empty(), "parse errors: {pe:?}");
+    let sink = DiagSink::default();
+    let (ir, fork_modes) = elaborate::elaborate_with_modes(&su.expect("source unit"), &sink);
+    let diags = sink.0.borrow();
+    let hard: Vec<&String> = diags
+        .iter()
+        .filter(|d| d.starts_with("Error") || d.starts_with("Fatal"))
+        .collect();
+    assert!(hard.is_empty(), "elaborate errors: {hard:?}");
+    let ir = ir.expect("elaborate returned None");
+    (
+        ir,
+        SimOpts {
+            fork_modes,
+            ..SimOpts::default()
+        },
+    )
+}
+
 /// A unique temp VCD path per test.
 fn tmp_vcd(tag: &str) -> String {
     let mut p = std::env::temp_dir();
@@ -763,4 +790,311 @@ fn monitor_reprints_on_unknown_to_unknown_value_change() {
     // a true no-op (identical (val,unk) planes) and stays silent. All three
     // render to "q=x"; only value-level equality distinguishes them.
     assert_eq!(out, "q=x\nq=x\n");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//   FORK / JOIN / JOIN_ANY / JOIN_NONE — concurrent execution
+//
+// Every behavioral assertion below is chosen to FAIL under the OLD sequential
+// fork lowering (noted per test). Output ordering uses the declaration-order
+// determinism rule (composed child tie). FORK 13 (.velab sidecar round-trip) is
+// DEFERRED: staged .velab trailer lands with vcmp/velab/vrun.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── FORK 1. concurrent delays interleave: b at 3, a at 5 (NOT a@5 then b@8) ──
+#[test]
+fn fork_join_concurrent_delays_interleave() {
+    let src = "module m; reg a; reg b; \
+               initial begin a=0; b=0; \
+                 fork #5 a=1; #3 b=1; join \
+                 $display(\"%0d %b %b\", $time, a, b); \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Quiescent);
+    // join waits for ALL → parent prints at t=5 with both set. Sequential would
+    // give a@5 then b@8 → print at t=8. The time token 5 FAILS the old path.
+    assert_eq!(out, "5 1 1\n");
+    assert_eq!(res.sim_time, 5);
+}
+
+// ── FORK 2. join waits for the LATER child (monitor each child) ──────────────
+#[test]
+fn fork_join_waits_for_all_children() {
+    let src = "module m; reg a; reg b; \
+               initial begin a=0; b=0; \
+                 fork #3 begin b=1; $display(\"b@%0d\", $time); end \
+                      #5 begin a=1; $display(\"a@%0d\", $time); end join \
+                 $display(\"done@%0d\", $time); \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Quiescent);
+    // Concurrent: b@3 first, a@5, then parent done@5. Sequential would give
+    // b@3,a@8,done@8. "done@5" FAILS the old path.
+    assert_eq!(out, "b@3\na@5\ndone@5\n");
+}
+
+// ── FORK 3. join_any unblocks at the FIRST completer, surplus runs on ────────
+#[test]
+fn fork_join_any_unblocks_at_first() {
+    let src = "module m; reg slow; reg fast; \
+               initial begin slow=0; fast=0; \
+                 fork #5 slow=1; #3 fast=1; join_any \
+                 $display(\"resume@%0d fast=%b slow=%b\", $time, fast, slow); \
+                 #10 $display(\"late@%0d slow=%b\", $time, slow); \
+                 $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // join_any resumes at t=3 (fast done), slow still 0 then. Background #5 sets
+    // slow=1 at t=5, observed by the late print at t=13. Sequential lowering has
+    // no join_any concept → "resume@3" FAILS the old path.
+    assert_eq!(out, "resume@3 fast=1 slow=0\nlate@13 slow=1\n");
+}
+
+// ── FORK 4. join_none continues IMMEDIATELY (zero blocking) ──────────────────
+#[test]
+fn fork_join_none_continues_immediately() {
+    // `c` is a vector so the literal 9 is representable (the spec's `reg c` would
+    // truncate 9→1 in a 1-bit reg; widen to keep the c=9 observation meaningful).
+    let src = "module m; reg a; reg [7:0] c; \
+               initial begin a=0; c=0; \
+                 fork #5 a=1; join_none \
+                 c=9; $display(\"cont@%0d c=%0d a=%b\", $time, c, a); \
+                 #6 $display(\"after@%0d a=%b\", $time, a); \
+                 $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // join_none → c=9 runs at t=0 (no delay), a still 0. Background child sets
+    // a=1 at t=5, observed at t=6. Sequential lowering executes #5 a=1 BEFORE
+    // c=9 → "cont@5"/a=1. "cont@0 c=9 a=0" FAILS the old path.
+    assert_eq!(out, "cont@0 c=9 a=0\nafter@6 a=1\n");
+}
+
+// ── FORK 5. two children write DIFFERENT nets, both visible after join ───────
+#[test]
+fn fork_join_two_children_different_nets() {
+    let src = "module m; reg x; reg y; \
+               initial begin x=0; y=0; \
+                 fork x=1; y=1; join \
+                 $display(\"%b %b\", x, y); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // Both children zero-delay → complete at t=0; join releases parent at t=0.
+    assert_eq!(out, "1 1\n");
+    assert_eq!(res.sim_time, 0);
+}
+
+// ── FORK 6. nested begin…end inside a fork child (multi-block child chain) ───
+#[test]
+fn fork_child_with_nested_begin() {
+    let src = "module m; reg p; reg q; \
+               initial begin p=0; q=0; \
+                 fork \
+                   begin #2 p=1; #2 p=0; end \
+                   #3 q=1; \
+                 join \
+                 $display(\"%0d %b %b\", $time, p, q); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // Child-0 chain: p=1@2, p=0@4 (own delays). Child-1: q=1@3. join waits for the
+    // later (p=0@4). Parent prints at t=4: p=0,q=1. "4 0 1" FAILS the old path.
+    assert_eq!(out, "4 0 1\n");
+}
+
+// ── FORK 7. deterministic same-instant ordering: child-0 before child-1 ──────
+#[test]
+fn fork_same_instant_declaration_order() {
+    let src = "module m; integer z; \
+               initial begin z=0; \
+                 fork $display(\"c0\"); $display(\"c1\"); $display(\"c2\"); join \
+                 $display(\"parent\"); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // All zero-delay, same instant → declaration order c0,c1,c2, then parent.
+    assert_eq!(out, "c0\nc1\nc2\nparent\n");
+}
+
+// ── FORK 8. same-net last-writer-in-declaration-order wins (documented race) ─
+#[test]
+fn fork_same_net_last_writer_wins() {
+    let src = "module m; reg w; \
+               initial begin w=0; \
+                 fork w=0; w=1; join \
+                 $display(\"%b\", w); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // Declaration order: child-0 w=0 then child-1 w=1, both at t=0 → w==1.
+    assert_eq!(out, "1\n");
+}
+
+// ── FORK 9. a child blocks on @event, parent join waits for it ───────────────
+#[test]
+fn fork_child_waits_on_event() {
+    let src = "module m; reg clk; reg got; \
+               initial begin clk=0; got=0; \
+                 fork \
+                   begin @(posedge clk) got=1; $display(\"woke@%0d\", $time); end \
+                   #4 clk=1; \
+                 join \
+                 $display(\"join@%0d got=%b\", $time, got); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // Child-0 suspends on posedge clk; child-1 drives clk=1 at t=4 → child-0 wakes
+    // at t=4, got=1, then join releases parent at t=4. Exercises suspend_on with a
+    // CHILD activity id (the collision the scheme fixes).
+    assert_eq!(out, "woke@4\njoin@4 got=1\n");
+}
+
+// ── FORK 10. parent continuation after join SEES children's net effects ──────
+#[test]
+fn fork_parent_sees_children_effects() {
+    let src = "module m; integer sum; reg d1; reg d2; \
+               initial begin sum=0; d1=0; d2=0; \
+                 fork #1 d1=1; #2 d2=1; join \
+                 if (d1 && d2) sum=42; \
+                 $display(\"%0d\", sum); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // After join (t=2) both d1,d2 are 1 (shared scope) → sum=42. "42" FAILS any
+    // path where join releases before all children (would print 0).
+    assert_eq!(out, "42\n");
+}
+
+// ── FORK 11. empty fork…join resumes immediately (zero children) ─────────────
+#[test]
+fn fork_join_empty_resumes_immediately() {
+    let src = "module m; reg r; \
+               initial begin r=0; \
+                 fork join \
+                 r=1; $display(\"%0d %b\", $time, r); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // Zero children → barrier (count 0, ALL) fires same instant → r=1 at t=0.
+    assert_eq!(out, "0 1\n");
+}
+
+// ── FORK 12. join_any leaves the parent runnable while a slow child survives ──
+#[test]
+fn fork_join_any_surplus_child_survives_to_finish() {
+    let src = "module m; reg first; reg second; \
+               initial begin first=0; second=0; \
+                 fork #2 first=1; #7 second=1; join_any \
+                 $display(\"unblock@%0d\", $time); \
+                 #10 $display(\"final@%0d first=%b second=%b\", $time, first, second); \
+                 $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // join_any unblocks at t=2 (first child). Surplus #7 child survives, sets
+    // second=1 at t=7. Final print at t=12 sees both. "unblock@2" FAILS the old.
+    assert_eq!(out, "unblock@2\nfinal@12 first=1 second=1\n");
+}
+
+// ── FORK 14. monotonic-append identity stability: a top-level edge process keeps
+//    firing AFTER a fork appends activities. ──────────────────────────────────
+#[test]
+fn fork_does_not_disturb_toplevel_edge_process() {
+    let src = "module m; reg clk; integer ticks; \
+               always @(posedge clk) ticks = ticks + 1; \
+               initial begin clk=0; ticks=0; \
+                 fork #1 clk=1; #2 clk=0; #3 clk=1; join \
+                 $display(\"ticks=%0d\", ticks); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // The always-block (a top-level EDGE activity armed at t0 into net_to_edge)
+    // still fires on each posedge driven by the fork CHILDREN (clk 0→1 at t=1, 0→1
+    // at t=3) AFTER the fork appended child activities. Two posedges → ticks=2.
+    assert_eq!(out, "ticks=2\n");
+}
+
+// ── FORK 15. background join_none child loops forever; parent $finish halts. ──
+#[test]
+fn fork_join_none_background_child_does_not_block_finish() {
+    let src = "module m; reg t; \
+               initial begin t=0; \
+                 fork begin forever #1 t = ~t; end join_none \
+                 #5 $display(\"fin@%0d\", $time); $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (res, out) = simulate_capture(&ir, opts);
+    // The forever-looping monitor child keeps the wheel live forever → Quiescent is
+    // NEVER reached. The parent's `#5 $finish` is what halts the run. Asserting
+    // Finish at t=5 proves: (a) join_none did not block the parent, (b) the
+    // background child does not prevent $finish, (c) termination is via $finish.
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(res.sim_time, 5);
+    assert_eq!(out, "fin@5\n");
+}
+
+// ── determinism regression: FORK 7's source re-run is byte-equal run-to-run. ──
+#[test]
+fn fork_determinism_regression() {
+    let src = "module m; integer z; \
+               initial begin z=0; \
+                 fork $display(\"c0\"); $display(\"c1\"); $display(\"c2\"); join \
+                 $display(\"parent\"); $finish; \
+               end endmodule";
+    let (ir1, opts1) = build_fork(src);
+    let (_r1, o1) = simulate_capture(&ir1, opts1);
+    let (ir2, opts2) = build_fork(src);
+    let (_r2, o2) = simulate_capture(&ir2, opts2);
+    assert_eq!(o1, o2);
+    assert_eq!(o1, "c0\nc1\nc2\nparent\n");
+}
+
+// ── FORK 17. join_any with TWO children completing at the SAME instant: the
+//    parent continuation runs EXACTLY ONCE (the `fired` double-fire guard).
+//    (Adversarial-review NIT: previously traced sound but untested.) ──────────
+#[test]
+fn fork_join_any_same_instant_fires_once() {
+    let src = "module m; reg [7:0] a; reg [7:0] b; \
+               initial begin a=0; b=0; \
+                 fork #3 a=1; #3 b=1; join_any \
+                 $display(\"resumed t=%0d\", $time); \
+                 #5 $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (_r, out) = simulate_capture(&ir, opts);
+    // Both children fire at t=3; a double-fire would print "resumed t=3" twice.
+    assert_eq!(out, "resumed t=3\n");
+}
+
+// ── FORK 18. two SEQUENTIAL forks in one process use DISTINCT join barriers /
+//    join_bb sentinels — the second fork must not satisfy the first's barrier.
+//    (Adversarial-review NIT: barrier/sentinel disambiguation, untested.) ─────
+#[test]
+fn fork_two_sequential_forks_distinct_barriers() {
+    let src = "module m; reg [7:0] a; reg [7:0] b; reg [7:0] c; reg [7:0] d; \
+               initial begin a=0; b=0; c=0; d=0; \
+                 fork #2 a=1; #4 b=1; join \
+                 fork #2 c=1; #4 d=1; join \
+                 $display(\"a=%0d b=%0d c=%0d d=%0d t=%0d\", a, b, c, d, $time); \
+                 $finish; \
+               end endmodule";
+    let (ir, opts) = build_fork(src);
+    let (_r, out) = simulate_capture(&ir, opts);
+    // First fork joins at t=4 (a,b set); second runs t=4..8 and joins at t=8.
+    assert_eq!(out, "a=1 b=1 c=1 d=1 t=8\n");
 }

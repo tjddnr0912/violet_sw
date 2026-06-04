@@ -155,7 +155,7 @@ fn whole(net: u32) -> Lvalue {
 fn with_sched<R>(ir: &SimIr, f: impl FnOnce(&Scheduler) -> R) -> R {
     let out: Box<dyn std::io::Write> = Box::new(std::io::sink());
     let mut st = SimState::new(ir, out, "1ns".to_string(), "test".to_string(), None);
-    let sched = Scheduler::new(&mut st, 1_000_000, None);
+    let sched = Scheduler::new(&mut st, 1_000_000, None, Default::default());
     f(&sched)
 }
 

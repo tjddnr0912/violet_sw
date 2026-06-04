@@ -69,12 +69,44 @@ const POISON_NET: u32 = u32::MAX;
 /// every error path still produces valid placeholder arena edges so the partial
 /// IR is never structurally broken (the result is simply discarded on error).
 pub fn elaborate(unit: &ast::SourceUnit, sink: &dyn LogSink) -> Option<ir::SimIr> {
+    let (ir, _modes) = elaborate_with_modes(unit, sink);
+    ir
+}
+
+/// Join mode for a `fork … join`/`join_any`/`join_none`. NOT part of `SimIr`
+/// (the frozen `Terminator::Fork` carries no mode field): it rides out-of-band in
+/// the [`ForkModeTable`] so the golden root stays byte-identical. The engine
+/// consults it when executing the `Fork` terminator (total-or-fatal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum JoinMode {
+    /// `join` — parent blocks until ALL children reach the join.
+    All,
+    /// `join_any` — parent unblocks at the FIRST child; surplus run on.
+    Any,
+    /// `join_none` — parent never blocks; children run as background activities.
+    None,
+}
+
+/// Join-mode side table: `(template ProcId, join_bb)` → [`JoinMode`]. A
+/// deterministic `BTreeMap` so it is 3-OS byte-stable when serialized; it NEVER
+/// enters the golden `SimIr` root. The key is globally unique because each
+/// process body is a private BB arena and `join_bb` is unique within it.
+pub type ForkModeTable = std::collections::BTreeMap<(u32, u32), JoinMode>;
+
+/// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
+/// threads into `SimOpts.fork_modes`. `elaborate` is a thin forwarder onto this
+/// so the ~25 existing `elaborate(...)` callers keep compiling verbatim.
+pub fn elaborate_with_modes(
+    unit: &ast::SourceUnit,
+    sink: &dyn LogSink,
+) -> (Option<ir::SimIr>, ForkModeTable) {
     let mut el = Elaborator::new(sink);
     el.run(unit);
+    let modes = std::mem::take(&mut el.fork_modes);
     if el.had_error {
-        None
+        (None, modes)
     } else {
-        Some(el.finish())
+        (Some(el.finish()), modes)
     }
 }
 
@@ -253,6 +285,19 @@ struct Elaborator<'s> {
     // E-ELAB-UNSUPPORTED (SD2: recursive ⇒ frame-call, deferred). Mirrors
     // `inst_stack`.
     inline_stack: Vec<String>,
+
+    // ── fork/join concurrency state (engine-facing side channel, NOT in SimIr) ──
+    // `fork_modes` maps (cur_proc, join_bb) → JoinMode for every fork lowered; it
+    // is threaded into the engine via SimOpts.fork_modes (never the golden root).
+    fork_modes: ForkModeTable,
+    // `cur_proc` is the ProcId the process currently being lowered WILL occupy when
+    // the caller pushes it (== self.processes.len() at lower_proc_block entry). Any
+    // record_fork_mode during that body is keyed by exactly this id, so the engine's
+    // (template, join_bb) lookup is guaranteed to hit.
+    cur_proc: u32,
+    // Nesting guard: true while lowering a fork CHILD body. A `Stmt::Fork` seen with
+    // `in_fork == true` is the nested case → hard ElabUnsupported error (v1 MVP cut).
+    in_fork: bool,
 }
 
 impl<'s> Elaborator<'s> {
@@ -278,6 +323,9 @@ impl<'s> Elaborator<'s> {
             subst: Vec::new(),
             out_subst: Vec::new(),
             inline_stack: Vec::new(),
+            fork_modes: ForkModeTable::new(),
+            cur_proc: 0,
+            in_fork: false,
         }
     }
 
@@ -335,6 +383,25 @@ impl<'s> Elaborator<'s> {
             context: Vec::new(),
             sim_time: None,
         }));
+    }
+
+    /// Emit a hard "construct not supported in this subset" error, reusing the
+    /// EXISTING `ElabUnsupported` code (no new MsgCode minted → doc-15 bijection
+    /// untouched). The `_span` is accepted for a future side-table; v1 has no line
+    /// table so it carries no location (consistent with `error`).
+    fn error_unsupported(&mut self, _span: ast::Span, msg: &str) {
+        self.error(MsgCode::ElabUnsupported, msg);
+    }
+
+    /// Record a fork's join MODE into the side table, keyed by `(cur_proc,
+    /// join_bb)`. The engine's lookup is total-or-fatal, so every fork MUST record.
+    fn record_fork_mode(&mut self, join: ast::JoinKind, join_bb: u32) {
+        let mode = match join {
+            ast::JoinKind::Join => JoinMode::All,
+            ast::JoinKind::JoinAny => JoinMode::Any,
+            ast::JoinKind::JoinNone => JoinMode::None,
+        };
+        self.fork_modes.insert((self.cur_proc, join_bb), mode);
     }
 
     // ── v3 multi-module driver ─────────────────────────────────────
@@ -503,6 +570,11 @@ impl<'s> Elaborator<'s> {
                 ast::ModuleItem::ContAssign(ca) => self.elaborate_cont_assign(ca),
                 ast::ModuleItem::Proc(p) => {
                     let proc = self.lower_proc_block(p);
+                    debug_assert_eq!(
+                        self.processes.len() as u32,
+                        self.cur_proc,
+                        "ProcId mismatch: fork_modes keyed by cur_proc would miss"
+                    );
                     self.processes.push(proc);
                 }
                 // (8) handled in the second loop below.
@@ -2316,6 +2388,11 @@ impl<'s> Elaborator<'s> {
             }
             (GenPhase::Logic, ast::ModuleItem::Proc(p)) => {
                 let proc = self.lower_proc_block(p);
+                debug_assert_eq!(
+                    self.processes.len() as u32,
+                    self.cur_proc,
+                    "ProcId mismatch (generate): fork_modes keyed by cur_proc would miss"
+                );
                 self.processes.push(proc);
             }
             // INSTANCES phase: recurse into child module instances. The parent
@@ -2461,6 +2538,15 @@ impl ProcessBuilder {
 impl<'s> Elaborator<'s> {
     // ── one ProceduralBlock → one Process ──────────────────────────
     fn lower_proc_block(&mut self, p: &ast::ProceduralBlock) -> ir::Process {
+        // The ProcId this process WILL occupy when the caller pushes it. Stable for
+        // the whole body lowering (lower_proc_block is non-reentrant: it fully
+        // builds one Process and returns BEFORE processes.push). Any fork mode
+        // recorded below is keyed by this id; the caller debug_asserts the match.
+        self.cur_proc = self.processes.len() as u32;
+        // Reset the nesting guard at every top-level body entry (a process body is
+        // never lowered while already inside a fork child of another process).
+        self.in_fork = false;
+
         // M-C: a bare `always` with NO header @(...) re-arms via its own in-body
         // timing (`always #5 clk=~clk;`). Detect that and wrap the body in an
         // implicit forever so control loops back to the in-body delay/event.
@@ -2754,14 +2840,86 @@ impl<'s> Elaborator<'s> {
                 });
                 b.push_stmt_id(sid);
             }
-            ast::Stmt::Fork { stmts, .. } => {
-                // No Fork terminator lowering yet (join-state deferred). Degrade to
-                // SEQUENTIAL execution of the children + warn — sound CFG, wrong
-                // concurrency, but the IR survives the demo. (Was IR-killing.)
-                self.warn("fork/join lowered as sequential (v2); concurrency not modeled");
-                for st in stmts {
-                    self.lower_stmt(b, st);
+            ast::Stmt::Fork {
+                stmts,
+                join,
+                decls,
+                span,
+                label: _,
+            } => {
+                // ── HARD MVP BOUNDARY: no nested fork (§6.2). A fork inside a fork
+                //    child is a fatal elaborate error — NOT "warn and proceed". This
+                //    keeps child identity flat (a single, non-chained tie shift) and
+                //    forbids tie aliasing/overflow.
+                if self.in_fork {
+                    self.error_unsupported(
+                        *span,
+                        "nested fork is unsupported in v1 \
+                         (a fork child may not itself contain a fork)",
+                    );
+                    // Emit a well-formed but inert block so INV-1/INV-2 still hold:
+                    // seal the cursor straight to the continuation. No children, no
+                    // barrier, no mode entry.
+                    let cont = b.new_block();
+                    b.goto(cont);
+                    b.start_block(cont);
+                    return;
                 }
+
+                // fork-local decls share the enclosing scope in v1 (like begin-block
+                // decls); WARN-ignore them, matching Stmt::Block decl handling.
+                if !decls.is_empty() {
+                    self.warn(
+                        "fork-local decls ignored (v1 shared-scope); \
+                         declared in enclosing scope",
+                    );
+                }
+
+                // INV-2: allocate EVERY named block BEFORE building the Fork
+                // terminator. Allocation order is deterministic (3-OS golden
+                // stability): join, resume, then each child entry in source order.
+                let join_bb = b.new_block();
+                let resume_bb = b.new_block();
+                let child_entries: Vec<BlockId> = (0..stmts.len()).map(|_| b.new_block()).collect();
+
+                // Record the join MODE into the side table (NOT IR), keyed by
+                // (cur_proc, join_bb). The engine's lookup is total-or-fatal.
+                self.record_fork_mode(*join, join_bb.raw());
+
+                // INV-1: seal the parent block with Fork — this CLOSES the cursor.
+                b.end_block_with(ir::Terminator::Fork {
+                    children: child_entries.iter().map(|e| e.raw()).collect(),
+                    join: join_bb.raw(),
+                    resume_bb: resume_bb.raw(),
+                });
+
+                // Lower each child chain. `lower_stmt` returns with the cursor open
+                // at the child's single continuation; `goto(join_bb)` seals that tail
+                // so the child's LAST block hands control to the join. Empty `stmts`
+                // ⇒ this loop is skipped (valid: Fork{children:[]}). `in_fork` is set
+                // so any Fork lowered INSIDE a child hits the hard error above.
+                let prev_in_fork = self.in_fork;
+                self.in_fork = true;
+                for (child_entry, st) in child_entries.iter().zip(stmts.iter()) {
+                    b.start_block(*child_entry);
+                    self.lower_stmt(b, st);
+                    b.goto(join_bb);
+                }
+                self.in_fork = prev_in_fork;
+
+                // Seal the join block: join_bb → resume_bb. IMPORTANT: this Goto is a
+                // NEVER-EXECUTED sentinel. The engine intercepts a child the instant
+                // its next bb equals join_bb (centralized loop-top check) and routes
+                // it to on_child_complete + Step::Done BEFORE this block is fetched.
+                // The parent is resumed DIRECTLY at resume_bb by the barrier. The
+                // block exists only to keep the CFG well-formed (INV-2) and to give
+                // join_bb a concrete, unique BlockId used as the completion sentinel.
+                b.start_block(join_bb);
+                b.goto(resume_bb);
+
+                // Open resume_bb as the single continuation. Post-condition for the
+                // caller: exactly one open block, at the parent's continuation point.
+                b.start_block(resume_bb);
             }
             ast::Stmt::UserTaskCall { name, args, .. } => self.inline_task(b, name, args),
             ast::Stmt::EventTrigger { .. }

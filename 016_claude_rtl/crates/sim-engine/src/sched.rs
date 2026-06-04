@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use sim_ir::{EdgeKind, EdgeTerm, FourState, Lvalue, RegionTag, SensKind, WaitCause};
+use sim_ir::{EdgeKind, EdgeTerm, FourState, Lvalue, RegionTag, SensKind, Terminator, WaitCause};
+
+use elaborate::{ForkModeTable, JoinMode};
 
 use crate::builtins::{format_args_str, write_out};
 use crate::eval::EvalCtx;
@@ -13,13 +15,57 @@ use crate::exec::{run_process, Step};
 use crate::state::{scalar_bit0, SimState};
 use crate::value::Value;
 
-/// A schedulable process resume. `tie` = process declaration index → the
-/// deterministic intra-region order (doc-06 chosen tie-break).
+/// A schedulable process resume. `proc` is a runtime ACTIVITY id (index into
+/// `Scheduler::activities`), NOT a declaration index: top-level processes seed
+/// activities `0..nproc` 1:1, and `fork` APPENDS child activities (id ≥ nproc).
+/// `tie` is the deterministic intra-region order key (doc-06 tie-break); for a
+/// top-level activity it equals the declaration index, for a fork child it is the
+/// composite of `(parent_tie, child_idx)` from [`compose_child_tie`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ready {
     pub tie: u32,
     pub proc: u32,
     pub block: u32,
+}
+
+/// Per-activity private state. Top-level processes are pre-seeded 1:1 with
+/// `ir.processes`; fork children are appended (id ≥ `ir.processes.len()`). The
+/// arena only ever GROWS — ids are never reused or reindexed — so any `Ready`
+/// stored by value in `wheel`/`waiters`/`net_to_edge` stays valid after a later
+/// fork appends.
+pub(crate) struct Activity {
+    /// Index into `ir.processes` for the body/sensitivity TEMPLATE this activity
+    /// runs. Multiple activities may share a template (a child runs a different BB
+    /// sub-chain of the SAME `body` Vec as its parent).
+    pub template: u32,
+    /// Deterministic ordering key (top-level: == template; child: composite).
+    pub tie: u32,
+    /// If this activity is a fork child, the barrier id it reports completion to.
+    /// `None` for top-level processes.
+    pub join_ref: Option<u32>,
+    /// Role bit: is this a spawned fork child? Children never re-arm.
+    pub is_child: bool,
+    /// Completion-report guard: set true the FIRST time this child reaches its
+    /// barrier's join_bb. A second report is an internal error (double-decrement).
+    /// Always `false` for top-level activities.
+    pub reported: bool,
+}
+
+/// One live fork's join barrier.
+pub(crate) struct JoinBarrier {
+    /// Activity id of the parent that is (or will be) blocked here.
+    pub parent: u32,
+    /// The join convergence BB (Fork.join), in the parent's template body. Used as
+    /// the child-completion sentinel; NEVER fetched as a real block.
+    pub join_bb: u32,
+    /// Parent's continuation BB (Fork.resume_bb), in the parent's template body.
+    pub resume_bb: u32,
+    /// Join mode recovered from the elaborate side table.
+    pub mode: JoinMode,
+    /// Count of children that have NOT yet reached the join.
+    pub outstanding: u32,
+    /// Has the parent already been resumed past this barrier? (fire-once guard.)
+    pub fired: bool,
 }
 
 /// A pending nonblocking LHS update: RHS sampled in Active, applied in NBA.
@@ -56,6 +102,14 @@ pub(crate) struct Scheduler<'a, 'ir> {
     waiters: Vec<Waiter>,
     /// net → edge-sensitive process resumes.
     net_to_edge: Vec<Vec<(EdgeKind, Ready)>>,
+    /// Per-activity private state. `index == Ready.proc` (activity id). Seeded 1:1
+    /// with `ir.processes` at t0; fork appends children (append-only, never reused).
+    activities: Vec<Activity>,
+    /// Live fork join barriers. `index == JoinBarrier id` (a child's `join_ref`);
+    /// append-only, never reused (so no ABA on the barrier id space).
+    barriers: Vec<JoinBarrier>,
+    /// Join-mode side table from elaborate, keyed `(template, join_bb)`.
+    fork_modes: ForkModeTable,
     delta_count: u64,
     max_deltas: u64,
     time_limit: Option<u64>,
@@ -72,7 +126,12 @@ pub enum FinishReason {
 }
 
 impl<'a, 'ir> Scheduler<'a, 'ir> {
-    pub fn new(st: &'a mut SimState<'ir>, max_deltas: u64, time_limit: Option<u64>) -> Self {
+    pub fn new(
+        st: &'a mut SimState<'ir>,
+        max_deltas: u64,
+        time_limit: Option<u64>,
+        fork_modes: ForkModeTable,
+    ) -> Self {
         let nnets = st.nets.len();
         Scheduler {
             st,
@@ -82,6 +141,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             wheel: BTreeMap::new(),
             waiters: Vec::new(),
             net_to_edge: vec![Vec::new(); nnets],
+            activities: Vec::new(),
+            barriers: Vec::new(),
+            fork_modes,
             delta_count: 0,
             max_deltas,
             time_limit,
@@ -121,31 +183,66 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 
     /// Arm processes at t0 per Verilog initial/always semantics.
     pub fn arm_processes(&mut self) {
-        for pi in 0..self.st.ir.processes.len() {
-            let p = &self.st.ir.processes[pi];
-            let entry = p.entry;
+        // Pre-seed top-level activities 1:1 with process declarations. `tie ==
+        // template == declaration index` so existing single-process ordering is
+        // byte-identical to before the activity-id refactor.
+        self.activities = (0..self.st.ir.processes.len() as u32)
+            .map(|pi| Activity {
+                template: pi,
+                tie: pi,
+                join_ref: None,
+                is_child: false,
+                reported: false,
+            })
+            .collect();
+
+        // TOTAL-OR-FATAL mode gate: every `Terminator::Fork` in every body MUST
+        // have a matching `(template, join_bb)` entry in `fork_modes`. A miss means
+        // a keying mismatch / lost sidecar — abort loudly at t0, never run with a
+        // fabricated default that would silently miscompile join_any/join_none.
+        for (proc_id, p) in self.st.ir.processes.iter().enumerate() {
+            for blk in &p.body {
+                if let Terminator::Fork { join, .. } = &blk.term {
+                    assert!(
+                        self.fork_modes.contains_key(&(proc_id as u32, *join)),
+                        "internal error: Fork in process {proc_id} join_bb {join} has \
+                         no ForkModeTable entry (lost/stale mode sidecar?)"
+                    );
+                }
+            }
+        }
+
+        for aid in 0..self.activities.len() as u32 {
+            let tmpl = self.activities[aid as usize].template as usize;
+            let tie = self.activities[aid as usize].tie;
+            let entry = self.st.ir.processes[tmpl].entry;
             let ready = Ready {
-                tie: pi as u32,
-                proc: pi as u32,
+                tie,
+                proc: aid,
                 block: entry,
             };
-            match p.sensitivity.kind {
+            match self.st.ir.processes[tmpl].sensitivity.kind {
                 // initial + combinational/latch blocks run at t0.
                 SensKind::Initial | SensKind::Comb | SensKind::Latch => {
                     push_sorted(&mut self.cur.active, ready);
                 }
                 // edge / level blocks wait for the first event (no t0 run).
-                SensKind::Edge | SensKind::Level => self.arm_sensitivity(pi as u32),
+                SensKind::Edge | SensKind::Level => self.arm_sensitivity(aid),
             }
         }
     }
 
-    /// Register an always block's static sensitivity as waiters / edge map.
+    /// Register an always block's static sensitivity as waiters / edge map. `pi`
+    /// is an ACTIVITY id; the body/sensitivity is resolved through its template.
+    /// Only ever called for TOP-LEVEL activities (children have no static
+    /// sensitivity — they run a sub-chain of their template body).
     fn arm_sensitivity(&mut self, pi: u32) {
-        let p = &self.st.ir.processes[pi as usize];
+        let tmpl = self.activities[pi as usize].template as usize;
+        let tie = self.activities[pi as usize].tie;
+        let p = &self.st.ir.processes[tmpl];
         let entry = p.entry;
         let ready = Ready {
-            tie: pi,
+            tie,
             proc: pi,
             block: entry,
         };
@@ -515,7 +612,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     }
 
     pub(crate) fn schedule_resume(&mut self, proc: u32, block: u32, tick: u64, inactive: bool) {
-        let tie = proc;
+        // `proc` is an activity id; read its deterministic tie (NOT the id) so two
+        // sibling children land in distinct-tie wheel slots in declaration order.
+        let tie = self.activities[proc as usize].tie;
         let ready = Ready { tie, proc, block };
         if tick == self.st.now {
             if inactive {
@@ -545,11 +644,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// correctness bug for any process that loops back through the same wait. The
     /// `waiters` Edge arm in `propagate_changes` performs the exact same edge test.
     pub(crate) fn suspend_on(&mut self, proc: u32, block: u32, cause: WaitCause) {
-        let ready = Ready {
-            tie: proc,
-            proc,
-            block,
-        };
+        // `proc` is an activity id; carry its distinct tie so two siblings waiting
+        // on the same event are distinguishable (neither lost nor double-counted).
+        let tie = self.activities[proc as usize].tie;
+        let ready = Ready { tie, proc, block };
         self.waiters.push(Waiter { cause, ready });
     }
 
@@ -571,12 +669,190 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     ///   `infinite_delta_guard_trips` test depends on this re-registration.
     /// - `Initial` is one-shot (dead after its single run).
     pub(crate) fn rearm(&mut self, proc: u32) {
-        let kind = self.st.ir.processes[proc as usize].sensitivity.kind;
+        // Fork children NEVER re-arm: a child's reaching its join is a one-shot
+        // completion, routed by the run_process loop-top intercept to
+        // on_child_complete. (A child has no static sensitivity of its own anyway.)
+        if self.activities[proc as usize].is_child {
+            return;
+        }
+        let tmpl = self.activities[proc as usize].template as usize;
+        let kind = self.st.ir.processes[tmpl].sensitivity.kind;
         match kind {
             // permanent net_to_edge entry / one-shot: do NOT re-register.
             SensKind::Edge | SensKind::Initial => {}
             // consumed waiter: must re-register to wake on the next change.
             SensKind::Comb | SensKind::Latch | SensKind::Level => self.arm_sensitivity(proc),
+        }
+    }
+
+    // ── fork/join support (activity arena + join barriers) ────────────────
+
+    /// Recover a fork's join mode from the elaborate side table. TOTAL-OR-FATAL:
+    /// a miss is impossible after the `arm_processes` gate, but we never default to
+    /// a blocking join — a fabricated `All` would silently turn a lost-side-channel
+    /// `join_none`/`join_any` into a deadlock with no diagnostic. Panic instead.
+    pub(crate) fn fork_mode(&self, template: u32, join_bb: u32) -> JoinMode {
+        *self
+            .fork_modes
+            .get(&(template, join_bb))
+            .unwrap_or_else(|| {
+                panic!(
+                    "internal error: no ForkModeTable entry for (template={template}, \
+                 join_bb={join_bb}) — mode sidecar lost/stale?"
+                )
+            })
+    }
+
+    /// Accessors the executor's loop-top intercept + body fetch use (the
+    /// `activities`/`barriers` fields are private to sched.rs).
+    pub(crate) fn activity_template(&self, aid: u32) -> u32 {
+        self.activities[aid as usize].template
+    }
+    pub(crate) fn activity_is_child(&self, aid: u32) -> bool {
+        self.activities[aid as usize].is_child
+    }
+    /// The barrier's completion-sentinel join_bb (for the loop-top intercept).
+    pub(crate) fn barrier_join_bb(&self, jr: u32) -> u32 {
+        self.barriers[jr as usize].join_bb
+    }
+    pub(crate) fn activity_join_ref(&self, aid: u32) -> Option<u32> {
+        self.activities[aid as usize].join_ref
+    }
+
+    /// Debug-only: assert no LIVE barrier (same template) has its join_bb equal to
+    /// `bb` for a non-child activity. A non-child fetching a live join_bb would mean
+    /// the parent walked the never-executed sentinel — a builder/engine bug.
+    #[cfg(debug_assertions)]
+    pub(crate) fn assert_not_parent_at_join(&self, aid: u32, bb: u32) {
+        if self.activities[aid as usize].is_child {
+            return;
+        }
+        let tmpl = self.activities[aid as usize].template;
+        let bad = self.barriers.iter().any(|b| {
+            !b.fired && b.join_bb == bb && self.activities[b.parent as usize].template == tmpl
+        });
+        debug_assert!(
+            !bad,
+            "parent/top-level activity {aid} fetched a live barrier join_bb sentinel {bb}"
+        );
+    }
+
+    /// Execute a `Terminator::Fork`: register the barrier, spawn each child as a new
+    /// activity (sharing the parent's template, entering at its own child-entry BB),
+    /// and either suspend the parent (All/Any with ≥1 child) or fall through to
+    /// `resume_bb` (None, or zero children). Returns `Some(resume_bb)` when the
+    /// parent continues THIS activation (the executor sets `bb = resume_bb`), or
+    /// `None` when the parent suspends on the barrier.
+    pub(crate) fn exec_fork(
+        &mut self,
+        parent_aid: u32,
+        children: &[u32],
+        join: u32,
+        resume_bb: u32,
+    ) -> Option<u32> {
+        let parent_tmpl = self.activities[parent_aid as usize].template;
+        let mode = self.fork_mode(parent_tmpl, join); // total-or-fatal; never defaults
+
+        // Register the barrier (append-only id space → no ABA).
+        let join_ref = self.barriers.len() as u32;
+        self.barriers.push(JoinBarrier {
+            parent: parent_aid,
+            join_bb: join,
+            resume_bb,
+            mode,
+            outstanding: children.len() as u32,
+            fired: false,
+        });
+
+        // Spawn each child as a NEW activity. Deterministic: declaration order ==
+        // the order of `children`; each child's tie composes parent.tie + child idx.
+        // NOTE: nested fork is an elaborate ERROR, so `parent_tmpl` here is always a
+        // TOP-LEVEL process and `parent.tie` a small dense top-level index —
+        // compose_child_tie can never overflow or alias (one shift, never chained).
+        let parent_tie = self.activities[parent_aid as usize].tie;
+        for (child_idx, &child_entry) in children.iter().enumerate() {
+            let child_tie = compose_child_tie(parent_tie, child_idx as u32);
+            let child_aid = self.activities.len() as u32;
+            self.activities.push(Activity {
+                template: parent_tmpl,
+                tie: child_tie,
+                join_ref: Some(join_ref),
+                is_child: true,
+                reported: false,
+            });
+            // Make the child runnable NOW (same instant, Active region); push_sorted
+            // by the composed tie keeps siblings in declaration order.
+            push_sorted(
+                &mut self.cur.active,
+                Ready {
+                    tie: child_tie,
+                    proc: child_aid,
+                    block: child_entry,
+                },
+            );
+        }
+
+        match mode {
+            JoinMode::None => {
+                // join_none: parent does NOT block. Mark fired (never resumes via the
+                // barrier) and continue at resume_bb THIS instant; children run on as
+                // background activities concurrently with the continuation.
+                self.barriers[join_ref as usize].fired = true;
+                Some(resume_bb)
+            }
+            JoinMode::All | JoinMode::Any => {
+                if children.is_empty() {
+                    // fork join / fork join_any with zero children: resume now.
+                    self.barriers[join_ref as usize].fired = true;
+                    Some(resume_bb)
+                } else {
+                    // Parent blocks on the join. It holds NO cur/wheel/waiter entry —
+                    // it is parked solely by the barrier and re-enqueued by
+                    // on_child_complete when the join condition fires.
+                    None
+                }
+            }
+        }
+    }
+
+    /// A fork child has reached its barrier's join_bb. Decrement and, on the firing
+    /// condition for the mode, re-enqueue the parent at `resume_bb` exactly once.
+    pub(crate) fn on_child_complete(&mut self, join_ref: u32, child_aid: u32) {
+        // Per-child fire-once: a child may reach its join at most once. A second
+        // report would under-decrement `outstanding` and fire an All-barrier EARLY.
+        debug_assert!(
+            !self.activities[child_aid as usize].reported,
+            "internal error: child {child_aid} reported completion twice"
+        );
+        self.activities[child_aid as usize].reported = true;
+
+        let b = &mut self.barriers[join_ref as usize];
+        debug_assert!(
+            b.outstanding > 0,
+            "internal error: barrier {join_ref} outstanding underflow"
+        );
+        b.outstanding -= 1;
+        let fire = match b.mode {
+            JoinMode::All => b.outstanding == 0, // last child
+            JoinMode::Any => true,               // first child (later guarded by `fired`)
+            JoinMode::None => false,             // never (parent already continued)
+        };
+        if fire && !b.fired {
+            b.fired = true;
+            let parent = b.parent;
+            let resume_bb = b.resume_bb;
+            let tie = self.activities[parent as usize].tie;
+            // Re-enqueue the parent at resume_bb THIS instant (Active region).
+            // Surplus children (join_any) stay live and run to completion; their
+            // later on_child_complete sees `fired == true` → no-op.
+            push_sorted(
+                &mut self.cur.active,
+                Ready {
+                    tie,
+                    proc: parent,
+                    block: resume_bb,
+                },
+            );
         }
     }
 }
@@ -587,6 +863,18 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 fn push_sorted(q: &mut Vec<Ready>, r: Ready) {
     let pos = q.partition_point(|x| x.tie <= r.tie);
     q.insert(pos, r);
+}
+
+/// Child tie = `(parent_tie+1)` in the high 16 bits, child declaration index in
+/// the low 16. `parent` is ALWAYS a top-level process (nested fork is an
+/// elaborate ERROR), so `parent_tie ∈ [0, nproc)` is a small dense int and the
+/// shift is applied EXACTLY ONCE — never chained — so it can never overflow or
+/// alias. The `+1` offset makes children sort STRICTLY AFTER their parent for all
+/// `parent_tie` (including 0), while preserving relative parent ordering and
+/// declaration order among siblings. v1 limits: ≤ 65534 top-level processes,
+/// ≤ 65535 children per fork (far above any MVP testbench).
+fn compose_child_tie(parent_tie: u32, child_idx: u32) -> u32 {
+    ((parent_tie + 1) << 16) | (child_idx & 0xFFFF)
 }
 
 fn is_posedge(prev: FourState, new: FourState) -> bool {

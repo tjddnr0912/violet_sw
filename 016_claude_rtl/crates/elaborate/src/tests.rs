@@ -2694,3 +2694,39 @@ fn ft_e7_control_flow_function_unsupported() {
     assert!(out.is_none(), "control-flow function must fail elaboration");
     assert!(err_codes(&sink).contains(&MsgCode::ElabUnsupported));
 }
+
+// ── FORK 16. nested fork is a hard ElabUnsupported error (v1 MVP boundary) ────
+fn fork_stmt(stmts: Vec<ast::Stmt>, join: ast::JoinKind) -> ast::Stmt {
+    ast::Stmt::Fork {
+        label: None,
+        decls: Vec::new(),
+        stmts,
+        join,
+        span: SP,
+    }
+}
+
+#[test]
+fn nested_fork_is_unsupported_error() {
+    // initial fork begin fork a=1; join end join
+    // The INNER fork (inside the OUTER fork's child) is the nested case → error.
+    let inner = fork_stmt(vec![bassign("a", dec("1"))], ast::JoinKind::Join);
+    let child = blk(vec![inner]);
+    let outer = fork_stmt(vec![child], ast::JoinKind::Join);
+    let unit = module(
+        "m",
+        vec![
+            netvar(ast::NetVarKind::Reg, None, false, &["a"]),
+            proc_item(ast::ProcKind::Initial, None, outer),
+        ],
+    );
+    let sink = CollectSink::default();
+    let (ir, modes) = elaborate_with_modes(&unit, &sink);
+    // Inner fork (inside a fork child) → ElabUnsupported error. Elaborate still
+    // produces no SimIr (had_error set), but the OUTER fork's mode WAS recorded and
+    // the inner fork recorded NO mode entry.
+    assert!(diag_codes(&sink).contains(&MsgCode::ElabUnsupported));
+    // Only the OUTER fork's mode is recorded; the inner one is rejected.
+    assert_eq!(modes.len(), 1);
+    assert!(ir.is_none(), "design is rejected by the nested-fork error");
+}

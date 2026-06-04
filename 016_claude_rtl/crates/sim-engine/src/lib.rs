@@ -36,6 +36,9 @@ use std::rc::Rc;
 use diag::{LogEvent, LogSink, ProgressEvent, RtlText};
 use sim_ir::SimIr;
 
+/// Re-exported from `elaborate` so callers thread the join-mode side table into
+/// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
+pub use elaborate::{ForkModeTable, JoinMode};
 pub use sched::FinishReason;
 
 use sched::Scheduler;
@@ -66,6 +69,12 @@ pub struct SimOpts {
     pub max_deltas: u64,
     /// Hard cap on advanced simulation time (ticks). `None` ⇒ unbounded.
     pub time_limit: Option<u64>,
+    /// Join-mode side table from `elaborate::elaborate_with_modes`, keyed
+    /// `(template ProcId, join_bb)`. EMPTY for fork-free designs (the default), so
+    /// every existing `SimOpts::default()` caller is unaffected. The engine's
+    /// fork-mode lookup is total-or-fatal: a `Terminator::Fork` with no matching
+    /// entry aborts the run at t0 rather than fabricating a (wrong) mode.
+    pub fork_modes: ForkModeTable,
 }
 
 impl Default for SimOpts {
@@ -76,6 +85,7 @@ impl Default for SimOpts {
             vcd_date: "vitamin-sim".to_string(),
             max_deltas: 1_000_000,
             time_limit: None,
+            fork_modes: ForkModeTable::new(),
         }
     }
 }
@@ -126,7 +136,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     );
 
     let reason = {
-        let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit);
+        let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);
         // t0 structural settle. If it can't converge (cont-assign oscillator),
         // stop immediately with DeltaLimit rather than running on a divergent t0.
         if sched.settle_cont_assigns() {

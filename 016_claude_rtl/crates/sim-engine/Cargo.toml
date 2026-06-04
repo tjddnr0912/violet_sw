@@ -9,6 +9,10 @@ license.workspace = true
 sim-ir     = { path = "../sim-ir" }
 diag       = { path = "../diag" }
 vcd-writer = { path = "../vcd-writer" }
+# `elaborate` is a prod dep ONLY for the engine-facing `ForkModeTable`/`JoinMode`
+# join-mode side channel (SimOpts.fork_modes). No dependency cycle: elaborate does
+# NOT depend on sim-engine. The IR contract (SimIr) is unchanged.
+elaborate  = { path = "../elaborate" }
 # NOTE: hdl-builtins intentionally NOT a dep in v1 — $task handlers are inlined
 # in the private `builtins` module (HOOK: extract to hdl-builtins post-v1).
 
@@ -17,4 +21,3 @@ vcd-writer = { path = "../vcd-writer" }
 # then simulate it and assert on the VCD buffer + captured $display output.
 hdl-lexer  = { path = "../hdl-lexer" }
 hdl-parser = { path = "../hdl-parser" }
-elaborate  = { path = "../elaborate" }
