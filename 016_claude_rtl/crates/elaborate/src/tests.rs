@@ -1151,7 +1151,7 @@ fn v2_6_if_else_merge() {
 
 // v2-7 (M-B): casez lowers (NON-FATAL, warning) into a CaseEq Branch chain.
 #[test]
-fn v2_7_casez_lowers_with_warning() {
+fn v2_7_casez_wildcard_free_lowers_cleanly() {
     let items = vec![
         ast::CaseItem::Match {
             labels: vec![lit("2'b10", ast::IntLitKind::Sized)],
@@ -1177,9 +1177,11 @@ fn v2_7_casez_lowers_with_warning() {
         ],
     );
     let (ir, warns) = elab_with_warnings(&unit);
+    // A wildcard-FREE casez label (`2'b10`) lowers via the plain exact `===`
+    // path with NO warning (wildcard labels mask their `?`/`z`/`x` bits instead).
     assert_eq!(
-        warns, 1,
-        "casez approximation must warn (non-fatal), not error"
+        warns, 0,
+        "wildcard-free casez label lowers cleanly, no warning"
     );
     let p = &ir.processes[0];
     let has_caseeq = ir.exprs.iter().any(|e| {

@@ -3229,16 +3229,9 @@ impl<'s> Elaborator<'s> {
         scrutinee: &ast::Expr,
         items: &[ast::CaseItem],
     ) {
-        // PRIORITY (COVERAGE M-B): casez/casex MUST lower. Wildcard ?/x/z bit
-        // semantics are approximated by `===` (CaseEq). This is exact for label
-        // sets with no ?/x/z bits (the common FSM/testbench case) and a documented
-        // over-strict match otherwise. WARN (non-fatal) — the IR survives.
-        if !matches!(kind, ast::CaseKind::Case) {
-            self.warn(
-                "casez/casex wildcard bits approximated by === (exact when labels \
-                 have no ?/x/z); IR lowered",
-            );
-        }
+        // casez/casex wildcard semantics are realized per-label by masking the
+        // label's unknown (`?`/`z`/`x`) bits out of the compare (see
+        // `case_label_eq`). Plain `case` is an exact 4-state `===`.
         let scrut_id = self.lower_expr(scrutinee);
         let merge = b.new_block();
 
@@ -3259,15 +3252,10 @@ impl<'s> Elaborator<'s> {
             }
         }
 
-        // Test cascade: for each label, `scrut === label` → arm else next test.
+        // Test cascade: for each label, a wildcard-aware match → arm else next.
         for (labels, arm) in &tests {
             for label in *labels {
-                let lbl_id = self.lower_expr(label);
-                let eq = self.push_expr(ir::Expr::Binary {
-                    op: ir::BinOp::CaseEq,
-                    lhs: scrut_id,
-                    rhs: lbl_id,
-                });
+                let eq = self.case_label_eq(scrut_id, label, kind);
                 let next = b.new_block();
                 b.end_block_with(ir::Terminator::Branch {
                     cond: eq,
@@ -3290,6 +3278,59 @@ impl<'s> Elaborator<'s> {
             b.goto(merge);
         }
         b.start_block(merge);
+    }
+
+    /// Per-label equality test for a case arm. For `casez`/`casex`, a label with
+    /// wildcard (unknown) bits compares only the CARE bits:
+    /// `(scrut & mask) === (label & mask)`, where `mask` is the label's known-bit
+    /// mask (`~unk`). Plain `case`, or a wildcard-free label, is the exact 4-state
+    /// `scrut === label`. (casez nominally wildcards only `z`/`?`, not `x`; masking
+    /// every unknown bit is exact for the ubiquitous `?` form and only over-lenient
+    /// on a rare explicit-`x` casez label — a documented v1 simplification.)
+    fn case_label_eq(&mut self, scrut_id: u32, label: &ast::Expr, kind: ast::CaseKind) -> u32 {
+        let lbl_id = self.lower_expr(label);
+        if !matches!(kind, ast::CaseKind::Case) {
+            if let ir::Expr::Const { val } = self.exprs[lbl_id as usize] {
+                let c = &self.consts[val as usize];
+                if c.bits.unk.iter().any(|&w| w != 0) {
+                    let width = c.width;
+                    // care_mask = ~unk (1 at known bits). High bits beyond `width`
+                    // wash out — scrut/label are 0 there — so no width-masking needed.
+                    let care_val: Vec<u64> = c.bits.unk.iter().map(|&u| !u).collect();
+                    let nwords = care_val.len();
+                    let mask_cid = self.intern_const(ir::ConstVal {
+                        width,
+                        signed: false,
+                        repr: ir::ConstRepr::Numeric,
+                        bits: ir::BitPacked {
+                            val: care_val,
+                            unk: vec![0; nwords],
+                        },
+                    });
+                    let mask_id = self.push_expr(ir::Expr::Const { val: mask_cid });
+                    let ms = self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::BitAnd,
+                        lhs: scrut_id,
+                        rhs: mask_id,
+                    });
+                    let ml = self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::BitAnd,
+                        lhs: lbl_id,
+                        rhs: mask_id,
+                    });
+                    return self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::CaseEq,
+                        lhs: ms,
+                        rhs: ml,
+                    });
+                }
+            }
+        }
+        self.push_expr(ir::Expr::Binary {
+            op: ir::BinOp::CaseEq,
+            lhs: scrut_id,
+            rhs: lbl_id,
+        })
     }
 
     // ── loops (SECONDARY) ──────────────────────────────────────────

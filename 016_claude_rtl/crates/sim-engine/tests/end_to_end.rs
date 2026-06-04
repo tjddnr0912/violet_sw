@@ -1481,3 +1481,20 @@ fn implicit_sensitivity_recomputes_on_change() {
     // t1: sc=3+4=7, cc=3*2=6, q=0 (en=0). t2: sc=10+4=14, cc=10*2=20, q=42 (en=1).
     assert_eq!(out, "7 6 0\n14 20 42\n");
 }
+
+// ── casez / casex wildcard matching: `?`/`z`/`x` label bits are don't-care
+//    (sweep gaps 14,15). Before the fix every wildcard label fell to default. ──
+
+#[test]
+fn casez_casex_wildcards_match() {
+    let src = "module t; reg [3:0] v; reg [7:0] z, x; \
+               initial begin \
+                 v = 4'b1010; \
+                 casez (v) 4'b1???: z = 8'd3; 4'b01??: z = 8'd2; default: z = 8'd9; endcase \
+                 casex (v) 4'b10xx: x = 8'd1; default: x = 8'd9; endcase \
+                 $display(\"z=%0d x=%0d\", z, x); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // casez: 1010 matches 1??? → z=3. casex: 1010 matches 10xx → x=1.
+    assert_eq!(out, "z=3 x=1\n");
+}
