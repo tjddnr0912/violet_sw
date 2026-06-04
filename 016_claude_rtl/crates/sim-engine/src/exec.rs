@@ -36,11 +36,11 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
             let stmt = sched.st.ir.stmts[sid as usize].clone();
             match stmt {
                 Stmt::BlockingAssign { lhs, rhs } => {
-                    let v = sched.eval(rhs);
+                    let v = sched.eval_for_lvalue(&lhs, rhs); // CONTEXT-SIZED to lhs width
                     sched.st.write_lvalue(&lhs, v);
                 }
                 Stmt::NonblockingAssign { lhs, rhs } => {
-                    let sampled = sched.eval(rhs); // sample RHS now (Active)
+                    let sampled = sched.eval_for_lvalue(&lhs, rhs); // CONTEXT-SIZED, sampled now
                     sched.schedule_nba(lhs, sampled);
                 }
                 Stmt::SysTask { which, fmt, args } => {

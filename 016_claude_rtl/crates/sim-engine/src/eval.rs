@@ -21,36 +21,130 @@ pub trait NetReader {
     fn read_net(&self, net: u32, word: Option<u32>) -> Value;
 }
 
-/// Evaluation context: the IR (consts/exprs), the net table, and current time.
+/// Evaluation context: the IR (consts/exprs), the net table, current time, and
+/// the self-width side table that drives context-determined sizing.
 pub struct EvalCtx<'a, N: NetReader> {
     pub ir: &'a SimIr,
     pub nets: &'a N,
     pub now: u64,
+    pub wt: &'a crate::width::WidthTable,
 }
 
 impl<'a, N: NetReader> EvalCtx<'a, N> {
+    /// Self-determined eval: size the node to its own self-width. Unchanged
+    /// public surface; used by control-flow truthiness and systask args.
     pub fn eval(&self, eid: u32) -> Value {
+        let sw = self.wt.get(eid);
+        self.eval_ctx(eid, sw.width, sw.signed)
+    }
+
+    /// Evaluate `eid` in a context of at least `ctx_width` bits with context
+    /// signedness `ctx_signed`. Returns a Value of width
+    /// `max(self_width, ctx_width)`.
+    ///
+    /// CONTRACT:
+    /// - context-determined nodes propagate `(max_width, AND-reduced signed)`
+    ///   DOWN into their context-determined children (IEEE §5.4.1, §5.5.1);
+    /// - self-determined nodes evaluate their children at the children's OWN
+    ///   self-widths, produce the node's natural result, then resize the RESULT
+    ///   to `ctx_width` using `ctx_signed` for the extension choice.
+    pub fn eval_ctx(&self, eid: u32, ctx_width: u32, ctx_signed: bool) -> Value {
+        let self_sw = self.wt.get(eid);
+        // The evaluation width for THIS node and its context-determined children.
+        let w = self_sw.width.max(ctx_width);
+        // The global-unsigned rule (§5.5.1): once ANY operand in the
+        // context-determined region is unsigned, the whole region is unsigned.
+        // `eff_signed` = node self-signedness AND the context signedness.
+        let eff_signed = self_sw.signed && ctx_signed;
+
         match &self.ir.exprs[eid as usize] {
-            Expr::Const { val } => self.eval_const(*val),
-            Expr::Signal { net, word } => self.nets.read_net(*net, *word),
+            // ── leaves: read, then resize to `w` with eff_signed ───────────
+            Expr::Const { val } => {
+                let base = self.eval_const(*val);
+                base.resize_keep_sign(w, eff_signed)
+            }
+            Expr::Signal { net, word } => {
+                let base = self.nets.read_net(*net, *word);
+                base.resize_keep_sign(w, eff_signed)
+            }
+
+            // ── unary ──────────────────────────────────────────────────────
+            Expr::Unary { op, operand } => match op {
+                // context-determined unary: propagate (w, eff_signed) into operand,
+                // operate at w, result already w-wide.
+                UnOp::Plus => self.eval_ctx(*operand, w, eff_signed),
+                UnOp::Minus => {
+                    let a = self.eval_ctx(*operand, w, eff_signed);
+                    self.negate(&a) // width-preserving, stays `w`
+                }
+                UnOp::BitNot => {
+                    let a = self.eval_ctx(*operand, w, eff_signed);
+                    let mut r = Value::zeros(a.width, eff_signed);
+                    for k in 0..a.width {
+                        let (v, u) = not1(a.get_vu(k));
+                        r.set_vu(k, v, u);
+                    }
+                    r
+                }
+                // reductions + lognot: SELF-DETERMINED operand, 1-bit result,
+                // then zero-extend to `w` (= self_width(1).max(ctx_width), always
+                // unsigned).
+                UnOp::LogNot
+                | UnOp::RedAnd
+                | UnOp::RedNand
+                | UnOp::RedOr
+                | UnOp::RedNor
+                | UnOp::RedXor
+                | UnOp::RedXnor => {
+                    let bit = self.eval_unary_self(*op, *operand); // 1-bit
+                    bit.resize_keep_sign(w, false) // zero-extend
+                }
+            },
+
+            // ── binary ─────────────────────────────────────────────────────
+            Expr::Binary { op, lhs, rhs } => self.eval_binary_ctx(*op, *lhs, *rhs, w, eff_signed),
+
+            // ── ternary: cond self-determined; branches context-determined ──
+            Expr::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => match self.truthiness(&self.eval(*cond)) {
+                Tri::True => self.eval_ctx(*then_e, w, eff_signed),
+                Tri::False => self.eval_ctx(*else_e, w, eff_signed),
+                Tri::Unknown => {
+                    // both branches at (w, eff_signed); merge differing→X.
+                    let t = self.eval_ctx(*then_e, w, eff_signed);
+                    let e = self.eval_ctx(*else_e, w, eff_signed);
+                    self.merge_x(&t, &e, w, eff_signed)
+                }
+            },
+
+            // ── SELF-DETERMINED structural / select: eval natural, resize ──
+            Expr::Concat { parts } => {
+                let nat = self.eval_concat(parts); // sum of self-widths
+                nat.resize_keep_sign(w, false) // concat unsigned
+            }
+            Expr::Replicate { count, value } => {
+                let nat = self.eval_replicate(*count, *value);
+                nat.resize_keep_sign(w, false) // replicate unsigned
+            }
             Expr::Select {
                 base,
                 offset,
                 width,
                 kind,
-            } => self.eval_select(*base, *offset, *width, *kind),
-            Expr::Concat { parts } => self.eval_concat(parts),
-            Expr::Replicate { count, value } => self.eval_replicate(*count, *value),
-            Expr::Unary { op, operand } => self.eval_unary(*op, *operand),
-            Expr::Binary { op, lhs, rhs } => self.eval_binary(*op, *lhs, *rhs),
-            Expr::Ternary {
-                cond,
-                then_e,
-                else_e,
-            } => self.eval_ternary(*cond, *then_e, *else_e),
-            Expr::SysFunc { which, args } => self.eval_sysfunc(*which, args),
-            // User functions deferred to v2; v1 returns 1-bit X.
-            Expr::Call { .. } => Value::x1(),
+            } => {
+                let nat = self.eval_select(*base, *offset, *width, *kind); // unsigned
+                nat.resize_keep_sign(w, false) // select unsigned
+            }
+
+            // ── system functions ───────────────────────────────────────────
+            Expr::SysFunc { which, args } => self.eval_sysfunc_ctx(*which, args, w, eff_signed),
+
+            // ── user call: 1-bit X (v1), extend to `w` (= 1.max(ctx_width)) ──
+            // elaborate v1 NEVER emits `Expr::Call`; defensive/unreachable arm.
+            Expr::Call { .. } => Value::x1().resize_keep_sign(w, false),
         }
     }
 
@@ -70,19 +164,10 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
 
     // ── Unary ──────────────────────────────────────────────────────────────
 
-    fn eval_unary(&self, op: UnOp, operand: u32) -> Value {
-        let a = self.eval(operand);
+    /// 1-bit reduction/lognot result for a self-determined operand.
+    fn eval_unary_self(&self, op: UnOp, operand: u32) -> Value {
+        let a = self.eval(operand); // OWN self width
         match op {
-            UnOp::Plus => a,
-            UnOp::Minus => self.negate(&a),
-            UnOp::BitNot => {
-                let mut r = Value::zeros(a.width, a.signed);
-                for i in 0..a.width {
-                    let (v, u) = not1(a.get_vu(i));
-                    r.set_vu(i, v, u);
-                }
-                r
-            }
             UnOp::LogNot => match self.truthiness(&a) {
                 Tri::True => Value::zeros(1, false),
                 Tri::False => Value::one1(),
@@ -94,6 +179,7 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             UnOp::RedNor => self.reduce_not(&a, or1),
             UnOp::RedXor => self.reduce(&a, xor1),
             UnOp::RedXnor => self.reduce_not(&a, xor1),
+            _ => unreachable!("eval_unary_self only for reductions/lognot"),
         }
     }
 
@@ -132,24 +218,103 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
 
     // ── Binary ─────────────────────────────────────────────────────────────
 
-    fn eval_binary(&self, op: BinOp, lhs: u32, rhs: u32) -> Value {
+    /// Context-routed binary dispatch. `w` is the already-resolved eval width
+    /// (= self_width.max(ctx_width)); the comparison/logical arms zero-extend
+    /// their 1-bit result to `w` (= 1.max(ctx_width)).
+    fn eval_binary_ctx(&self, op: BinOp, lhs: u32, rhs: u32, w: u32, eff_signed: bool) -> Value {
         use BinOp::*;
-        let l = self.eval(lhs);
-        let r = self.eval(rhs);
         match op {
-            BitAnd => self.bitwise(&l, &r, and1),
-            BitOr => self.bitwise(&l, &r, or1),
-            BitXor => self.bitwise(&l, &r, xor1),
-            BitXnor => self.bitwise(&l, &r, xnor1),
-            LogAnd => self.log_and(&l, &r),
-            LogOr => self.log_or(&l, &r),
-            Add | Sub | Mul | Div | Mod | Pow => self.arith(op, &l, &r),
-            Lt | Le | Gt | Ge => self.relational(op, &l, &r),
-            Eq | Ne => self.log_eq(op, &l, &r),
-            CaseEq | CaseNe => self.case_eq(op, &l, &r),
-            Shl | AShl => self.shift_left(&l, &r),
-            Shr => self.shift_right(&l, &r, false),
-            AShr => self.shift_right(&l, &r, l.signed),
+            // ARITHMETIC — context-determined: BOTH operands sized to
+            // (w, eff_signed), op at width w.
+            Add | Sub | Mul | Div | Mod => {
+                let l = self.eval_ctx(lhs, w, eff_signed);
+                let r = self.eval_ctx(rhs, w, eff_signed);
+                self.arith(op, &l, &r) // operates at max(l.w,r.w)=w
+            }
+
+            // POWER — base is context-determined; EXPONENT is SELF-DETERMINED.
+            // `**` is signed iff the BASE is signed. The incoming `eff_signed`
+            // (= base.self_signed AND ctx_signed) is already the base's effective
+            // sign — the exponent never entered it. Evaluate the base in context;
+            // the exponent is self-determined and its sign is restamped to the
+            // base's so `arith`'s both-signed reduction follows the base.
+            Pow => {
+                let base = self.eval_ctx(lhs, w, eff_signed);
+                let mut exp = self.eval(rhs);
+                exp.signed = base.signed;
+                self.arith(op, &base, &exp) // result width = base width = w
+            }
+
+            // BITWISE — context-determined: BOTH operands sized to (w, eff_signed).
+            BitAnd | BitOr | BitXor | BitXnor => {
+                let l = self.eval_ctx(lhs, w, eff_signed);
+                let r = self.eval_ctx(rhs, w, eff_signed);
+                let f: BitOp = match op {
+                    BitAnd => and1,
+                    BitOr => or1,
+                    BitXor => xor1,
+                    BitXnor => xnor1,
+                    _ => unreachable!("bitwise arm only handles BitAnd/Or/Xor/Xnor"),
+                };
+                self.bitwise(&l, &r, f)
+            }
+
+            // COMPARISONS / CASE-EQ — self-determined result (1-bit), but the two
+            // operands are MUTUALLY context-determined: size each to
+            // max(self_width(L), self_width(R)) with their pair-signedness. The
+            // comparison does NOT inherit the enclosing ctx — this correctly stops
+            // upward width/sign propagation.
+            Lt | Le | Gt | Ge | Eq | Ne | CaseEq | CaseNe => {
+                let cmp_w = self.wt.width(lhs).max(self.wt.width(rhs));
+                let pair_signed = self.wt.signed(lhs) && self.wt.signed(rhs);
+                let l = self.eval_ctx(lhs, cmp_w, pair_signed);
+                let r = self.eval_ctx(rhs, cmp_w, pair_signed);
+                let bit = match op {
+                    CaseEq | CaseNe => self.case_eq(op, &l, &r),
+                    Eq | Ne => self.log_eq(op, &l, &r),
+                    _ => self.relational(op, &l, &r),
+                };
+                bit.resize_keep_sign(w, false) // zero-extend 1→w (= max(1,ctx))
+            }
+
+            // LOGICAL — self-determined operands, each reduced independently.
+            LogAnd | LogOr => {
+                let l = self.eval(lhs); // OWN self-width
+                let r = self.eval(rhs);
+                let bit = if matches!(op, LogAnd) {
+                    self.log_and(&l, &r)
+                } else {
+                    self.log_or(&l, &r)
+                };
+                bit.resize_keep_sign(w, false) // = max(1, ctx)
+            }
+
+            // SHIFTS — LEFT operand is context-determined (result width = w);
+            // RIGHT operand (amount) is SELF-DETERMINED (own width).
+            Shl | AShl => {
+                let l = self.eval_ctx(lhs, w, eff_signed); // widen LEFT FIRST
+                let r = self.eval(rhs); // amount, own width
+                let shifted = self.shift_left(&l, &r); // grows then we clamp
+                shifted.resize_keep_sign(w, eff_signed) // back to ctx width
+            }
+            Shr => {
+                let l = self.eval_ctx(lhs, w, eff_signed);
+                let r = self.eval(rhs);
+                self.shift_right(&l, &r, false) // logical, fill 0
+            }
+            // ARITHMETIC RIGHT SHIFT — the sign-fill is governed by the LEFT
+            // operand's OWN self-signedness, NOT the enclosing context. An unsigned
+            // enclosing context MUST NOT demote a genuinely-signed `s >>> n` to a
+            // logical shift. Evaluate the LEFT operand with its OWN self-sign so its
+            // MSB carries the true sign bit, and pass that same own-sign as the fill
+            // flag; only AFTER shifting resize to the surrounding (w, eff_signed).
+            AShr => {
+                let lhs_signed = self.wt.signed(lhs); // OWN self-sign
+                let l = self.eval_ctx(lhs, w, lhs_signed); // keep its OWN sign for fill MSB
+                let r = self.eval(rhs);
+                let shifted = self.shift_right(&l, &r, lhs_signed); // arith iff LEFT signed
+                shifted.resize_keep_sign(w, eff_signed) // re-stamp to ctx sign
+            }
         }
     }
 
@@ -383,30 +548,22 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
 
     // ── Ternary ────────────────────────────────────────────────────────────
 
-    fn eval_ternary(&self, cond: u32, then_e: u32, else_e: u32) -> Value {
-        let c = self.eval(cond);
-        match self.truthiness(&c) {
-            Tri::True => self.eval(then_e),
-            Tri::False => self.eval(else_e),
-            Tri::Unknown => {
-                let t = self.eval(then_e);
-                let e = self.eval(else_e);
-                let w = t.width.max(e.width);
-                let te = t.resize(w);
-                let ee = e.resize(w);
-                let mut out = Value::zeros(w, te.signed && ee.signed);
-                for i in 0..w {
-                    let a = te.get_vu(i);
-                    let b = ee.get_vu(i);
-                    if a == b {
-                        out.set_vu(i, a.0, a.1);
-                    } else {
-                        out.set_vu(i, 0, 1); // differ → X
-                    }
-                }
-                out
+    /// Merge two equal-width branches bit-by-bit: agreeing bits pass through,
+    /// differing bits become X. Both `t`/`e` are already `w`-wide from
+    /// `eval_ctx`, so no inner resize is needed (verbatim former eval_ternary
+    /// unknown-branch body).
+    fn merge_x(&self, t: &Value, e: &Value, w: u32, signed: bool) -> Value {
+        let mut out = Value::zeros(w, signed);
+        for k in 0..w {
+            let a = t.get_vu(k);
+            let b = e.get_vu(k);
+            if a == b {
+                out.set_vu(k, a.0, a.1);
+            } else {
+                out.set_vu(k, 0, 1); // differ → X
             }
         }
+        out
     }
 
     // ── Concat / Replicate ─────────────────────────────────────────────────
@@ -506,6 +663,35 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     }
                 }
             }
+        }
+    }
+
+    /// `$signed`/`$unsigned`/`$time`/`$clog2` in context: cast preserves width
+    /// but flips sign; $time/$clog2 produce a fixed-width value then extend.
+    fn eval_sysfunc_ctx(&self, which: SysFuncId, args: &[u32], w: u32, eff_signed: bool) -> Value {
+        match which {
+            SysFuncId::Signed => {
+                // operand at its OWN self width. `$signed` re-stamps it signed, but
+                // the EXTENSION FILL is governed by `eff_signed` (= self-signed AND
+                // ctx_signed), NOT the unconditional cast: under the global-unsigned
+                // rule (§5.5.1) an unsigned sibling makes the whole region unsigned,
+                // so `$signed(x)` must ZERO-extend there, not sign-extend. Setting
+                // `.signed = eff_signed` BEFORE the resize makes the fill policy
+                // unambiguously flag-driven.
+                let mut a = self.eval(args[0]);
+                a.signed = eff_signed;
+                a.resize_keep_sign(w, eff_signed)
+            }
+            SysFuncId::Unsigned => {
+                let mut a = self.eval(args[0]);
+                a.signed = false;
+                a.resize_keep_sign(w, false) // unsigned cast → zero-extend
+            }
+            // $time/$realtime (64-bit) and $clog2 (32-bit): natural value, then
+            // resize to context (zero/sign per eff_signed).
+            _ => self
+                .eval_sysfunc(which, args)
+                .resize_keep_sign(w, eff_signed),
         }
     }
 

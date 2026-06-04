@@ -28,6 +28,8 @@ pub(crate) struct SimState<'a> {
     pub ir: &'a SimIr,
     pub now: u64,
     pub nets: Vec<NetSlot>,
+    /// IEEE 1364-2005 self-width side table — built once, immutable for the run.
+    pub wt: crate::width::WidthTable,
 
     // ── VCD ──
     pub vcd: Option<VcdWriter<VcdSink>>,
@@ -72,10 +74,12 @@ impl<'a> SimState<'a> {
                 }
             })
             .collect();
+        let wt = crate::width::WidthTable::build(ir); // single forward pass
         SimState {
             ir,
             now: 0,
             nets,
+            wt,
             vcd: None,
             vcd_path: None,
             dump_pending_path: None,
@@ -140,6 +144,17 @@ impl<'a> SimState<'a> {
                 c.width.unwrap_or_else(|| self.nets[c.net as usize].width)
             }
         }
+    }
+
+    /// Total destination bit-width of an lvalue (Σ chunk widths). Used to seed
+    /// the RHS context width. Does NOT compute a sign — lhs sign never
+    /// propagates (IEEE 1364-2005 assignment rule, §5.5).
+    pub(crate) fn lvalue_width(&self, lhs: &Lvalue) -> u32 {
+        lhs.chunks
+            .iter()
+            .map(|c| self.chunk_width(c))
+            .sum::<u32>()
+            .max(1)
     }
 
     /// Write a low-aligned `piece` into the destination chunk. Returns changed.

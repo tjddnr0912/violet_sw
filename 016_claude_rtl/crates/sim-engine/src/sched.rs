@@ -103,8 +103,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             let mut changed = false;
             for ci in 0..self.st.ir.cont_assigns.len() {
                 let ca_rhs = self.st.ir.cont_assigns[ci].rhs;
-                let v = self.eval(ca_rhs);
                 let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
+                let v = self.eval_for_lvalue(&lhs, ca_rhs); // CONTEXT-SIZED to lhs width
                 changed |= self.st.write_lvalue(&lhs, v);
             }
             if !changed {
@@ -368,6 +368,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             ir: self.st.ir,
             nets: self.st,
             now: self.st.now,
+            wt: &self.st.wt,
         };
         ctx.eval(eid)
     }
@@ -377,8 +378,30 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             ir: self.st.ir,
             nets: self.st,
             now: self.st.now,
+            wt: &self.st.wt,
         };
         ctx.truthy(eid)
+    }
+
+    /// Evaluate `rhs` in the context of `lhs`'s width (IEEE assignment rule):
+    /// width = max(lhs_width, self_width(rhs)); sign = rhs self-sign (lhs sign
+    /// does NOT propagate).
+    pub(crate) fn eval_for_lvalue(&self, lhs: &Lvalue, rhs: u32) -> Value {
+        let lw = self.st.lvalue_width(lhs);
+        let sw = self.st.wt.get(rhs);
+        let ctx_w = lw.max(sw.width);
+        self.eval_ctx_top(rhs, ctx_w, sw.signed)
+    }
+
+    /// Build an EvalCtx and run eval_ctx (mirror of the `eval` façade).
+    pub(crate) fn eval_ctx_top(&self, eid: u32, ctx_width: u32, ctx_signed: bool) -> Value {
+        let ctx = EvalCtx {
+            ir: self.st.ir,
+            nets: self.st,
+            now: self.st.now,
+            wt: &self.st.wt,
+        };
+        ctx.eval_ctx(eid, ctx_width, ctx_signed)
     }
 
     pub(crate) fn now(&self) -> u64 {

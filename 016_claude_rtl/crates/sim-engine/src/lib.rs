@@ -24,6 +24,10 @@ mod exec;
 mod sched;
 mod state;
 mod value;
+mod width;
+
+#[cfg(test)]
+mod width_tests;
 
 use std::cell::RefCell;
 use std::io::Write;
