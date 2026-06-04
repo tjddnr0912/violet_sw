@@ -1514,3 +1514,21 @@ fn wait_resumes_on_false_to_true() {
     // cnt reaches 3 at t=30; the wait resumes there (not a hang, not never).
     assert_eq!(out, "hit@30\n");
 }
+
+// ── generate-if/else: a labeled block is a generate scope (outer nets resolve
+//    THROUGH it); both branches + a block-local net work (sweep gap 7). ─────────
+
+#[test]
+fn generate_if_else_scoping() {
+    let src = "module t; parameter MODE = 1; reg [7:0] a, b, y; reg [7:0] a2, y2; \
+               generate if (MODE == 1) begin: ga assign y = a + b; end \
+                        else            begin: gb assign y = a - b; end endgenerate \
+               generate if (MODE == 0) begin: gc assign y2 = 0; end \
+                        else begin: gd reg [7:0] tmp; assign tmp = a2 + 1; assign y2 = tmp * 2; end \
+               endgenerate \
+               initial begin a=20; b=5; a2=5; #1 $display(\"y=%0d y2=%0d\", y, y2); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // MODE=1: y=a+b=25. Second gen takes else (gd): tmp=a2+1=6, y2=tmp*2=12.
+    assert_eq!(out, "y=25 y2=12\n");
+}

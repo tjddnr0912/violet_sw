@@ -2530,7 +2530,12 @@ impl<'s> Elaborator<'s> {
     ) {
         match label {
             Some(l) => {
-                let seg = l.name.clone();
+                // A generate-if/case/block is a SINGLETON scope — tag it `label[0]`
+                // (mirroring generate-for's `label[idx]`) so `is_gen_scope_segment`
+                // recognizes it as a GENERATE scope and `walk_scopes` resolves outer
+                // nets THROUGH it (a plain `label` would be read as an instance
+                // boundary, stopping the outward walk → `t.g.y` undeclared).
+                let seg = format!("{}[0]", l.name);
                 self.with_scope(&seg, |me| {
                     me.elaborate_generate(items, phase, depth + 1, map);
                 });
