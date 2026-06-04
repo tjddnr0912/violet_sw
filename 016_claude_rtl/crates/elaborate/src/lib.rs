@@ -562,6 +562,38 @@ impl<'s> Elaborator<'s> {
                 self.elaborate_netvar_decl(d, &module.ports, &module.body);
             }
         }
+        // Non-ANSI port nets: a body `input/output [w] name;` (a `PortDecl`)
+        // declares the port net. `elaborate_ports` only builds ANSI header ports,
+        // so without this a non-ANSI module's ports are undeclared. Skip a name a
+        // separate `reg`/`wire` NetVarDecl already created (`output y; reg y;` —
+        // that path merges the port direction itself).
+        for item in &module.body {
+            if let ast::ModuleItem::PortDecl(pd) = item {
+                let kind = pd.net_or_var.unwrap_or(ast::NetVarKind::Wire);
+                let (width, msb, lsb, signed) =
+                    self.range_to_dims(kind, pd.range.as_ref(), pd.signed);
+                let dir = map_port_dir(pd.dir);
+                let init = default_init(kind, width);
+                for name in &pd.names {
+                    if self.symbols.contains_key(&self.fq(&name.name)) {
+                        continue; // already created by a NetVarDecl
+                    }
+                    self.add_net(
+                        &name.name,
+                        ir::NetVar {
+                            kind: map_net_kind_or_wire(kind),
+                            width,
+                            msb,
+                            lsb,
+                            signed,
+                            array_len: 1,
+                            dir,
+                            init: init.clone(),
+                        },
+                    );
+                }
+            }
+        }
         // Generate-block nets belong in THIS instance's contiguous net slice too:
         // unroll the generate, in the Nets phase only, right after the plain
         // body nets so they precede every cont-assign/process (pass 7) that may

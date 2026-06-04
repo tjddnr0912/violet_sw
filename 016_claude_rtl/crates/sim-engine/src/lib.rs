@@ -139,7 +139,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);
         // t0 structural settle. If it can't converge (cont-assign oscillator),
         // stop immediately with DeltaLimit rather than running on a divergent t0.
-        if sched.settle_cont_assigns() {
+        if sched.settle_cont_assigns().is_some() {
             sched.arm_processes();
             sched.run()
         } else {

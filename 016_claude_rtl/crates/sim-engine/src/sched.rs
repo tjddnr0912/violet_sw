@@ -155,16 +155,18 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 
     // ── t0 init ──────────────────────────────────────────────────────────
 
-    /// Settle continuous assigns to a fixpoint. Re-evaluates every cont-assign in
-    /// declaration order until no net changes. Returns `false` if it could not
-    /// converge within the delta budget (a cont-assign oscillator) — the caller
-    /// MUST stop the run, otherwise an unbounded `assign`-only loop would spin
-    /// `max_deltas` iters on EVERY outer delta (effectively `max_deltas²` work)
-    /// and the outer `DeltaLimit` would never fire because `cur.active` stays
-    /// empty. Sharing one budget keeps the doc-06 contract: one delta budget per
-    /// time-step.
+    /// Settle continuous assigns to a fixpoint, re-evaluating every cont-assign in
+    /// declaration order until no net changes. `None` ⇒ could not converge within
+    /// the delta budget (a cont-assign oscillator) — the caller MUST stop the run,
+    /// else an unbounded `assign`-only loop would spin `max_deltas` iters on EVERY
+    /// outer delta and the outer `DeltaLimit` would never fire (cur.active stays
+    /// empty). `Some(changed)` ⇒ converged; `changed` is whether ANY net moved, so
+    /// the caller can run edge/level propagation on the cont-assign-driven nets
+    /// (e.g. a port-bound clock `child.clk = parent.c` whose posedge must reach the
+    /// child's `always @(posedge clk)`). One delta budget per time-step (doc-06).
     #[must_use]
-    pub fn settle_cont_assigns(&mut self) -> bool {
+    pub fn settle_cont_assigns(&mut self) -> Option<bool> {
+        let mut any = false;
         loop {
             let mut changed = false;
             for ci in 0..self.st.ir.cont_assigns.len() {
@@ -175,12 +177,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 changed |= self.st.write_lvalue(&lhs, v, &offs);
             }
             if !changed {
-                return true;
+                return Some(any);
             }
+            any = true;
             self.delta_count += 1;
             if self.delta_count > self.max_deltas {
                 self.fatal_delta_limit();
-                return false;
+                return None;
             }
         }
     }
@@ -285,8 +288,14 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             self.delta_count = 0;
             loop {
                 // ACTIVE: continuous assigns settle, then drain processes.
-                if !self.settle_cont_assigns() {
-                    return FinishReason::DeltaLimit; // cont-assign oscillator
+                match self.settle_cont_assigns() {
+                    None => return FinishReason::DeltaLimit, // cont-assign oscillator
+                    // A settle that moved nets may have produced an EDGE on a
+                    // cont-assign-driven net (a port-bound clock). Run change
+                    // propagation so those edges/level-waiters fire before we
+                    // decide the timestep is stable.
+                    Some(true) => self.propagate_changes(),
+                    Some(false) => {}
                 }
                 if !self.cur.active.is_empty() {
                     let batch = std::mem::take(&mut self.cur.active);
@@ -547,9 +556,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             let keep = match &w.cause {
                 // Level + inferred-comb: re-fire on any read-net change.
                 WaitCause::Level { nets } => !nets.iter().any(|n| changed_nets.contains(n)),
-                WaitCause::Edge { net, kind } => {
-                    !edges.iter().any(|&(en, prev, new)| en == *net && edge_fires(*kind, prev, new))
-                }
+                WaitCause::Edge { net, kind } => !edges
+                    .iter()
+                    .any(|&(en, prev, new)| en == *net && edge_fires(*kind, prev, new)),
                 // wait(expr): consume + resume only when the predicate is now true.
                 WaitCause::Expr { .. } => !expr_now[wi],
                 _ => true,

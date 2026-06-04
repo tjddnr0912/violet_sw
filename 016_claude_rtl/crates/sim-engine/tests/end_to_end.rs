@@ -1532,3 +1532,24 @@ fn generate_if_else_scoping() {
     // MODE=1: y=a+b=25. Second gen takes else (gd): tmp=a2+1=6, y2=tmp*2=12.
     assert_eq!(out, "y=25 y2=12\n");
 }
+
+// ── non-ANSI ports (sweep gap 1) + a CLOCKED submodule driven through a port
+//    binding: a cont-assign-driven clock edge must reach the child's always. ──
+
+#[test]
+fn non_ansi_ports_and_bound_clock_edge() {
+    // `addr` has non-ANSI ports (body input/output decls); `dff` is a clocked
+    // submodule whose clk arrives via the parent's port binding (a cont-assign).
+    let src = "module addr(a, b, y); input [7:0] a, b; output [7:0] y; assign y = a + b; endmodule \
+               module dff(clk, d, q); input clk, d; output q; reg q; \
+                 always @(posedge clk) q <= d; initial q = 0; endmodule \
+               module t; reg [7:0] x, z; wire [7:0] o; reg c, di; wire q; \
+                 addr ua(x, z, o); dff ud(c, di, q); \
+                 initial begin x=10; z=5; c=0; di=1; \
+                   #1 c=1;  /* posedge → q<=1 */ \
+                   #1 $display(\"o=%0d q=%b\", o, q); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // o = 10+5 = 15 (non-ANSI comb). q = 1 (bound-clock posedge sampled d=1).
+    assert_eq!(out, "o=15 q=1\n");
+}
