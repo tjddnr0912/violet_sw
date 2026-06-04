@@ -4,3 +4,14 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# vita-schema / vita-artifact-derive: DEFERRED. The derive's catch-all arm
+# (vita-artifact-derive/src/lib.rs:248) renders Box<Expr> -> bare "Box" and emits
+# <Box as SchemaShape>::register() (won't compile). Add both crates + #[derive(
+# SchemaHash)] once the one-arm Box passthrough lands (Residual 1).
+
+[dev-dependencies]
+postcard = { workspace = true }   # round-trip AST in unit tests (workspace-pinned;
+                                  # avoids a new serde_json tree — verdict L4)

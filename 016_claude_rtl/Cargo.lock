@@ -164,6 +164,10 @@ dependencies = [
 [[package]]
 name = "hdl-ast"
 version = "0.0.0"
+dependencies = [
+ "postcard",
+ "serde",
+]
 
 [[package]]
 name = "hdl-builtins"
