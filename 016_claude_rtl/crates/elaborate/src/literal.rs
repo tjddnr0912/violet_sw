@@ -235,6 +235,59 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
     }
 }
 
+/// Parse a raw `StrLit` lexeme (e.g. `"hello\n"`, WITH the surrounding quotes,
+/// escapes unprocessed by the parser) into a `StrUtf8` `ConstVal`.
+///
+/// The surrounding double-quotes are stripped (recovery-safe if one is missing),
+/// C-style escapes (`\n \t \r \\ \" \0`) are processed, and the resulting UTF-8
+/// bytes are packed LSB-byte-first: byte `k` occupies bits `[k*8 .. k*8+8)`.
+/// `width = nbytes*8`. Strings are 2-state, so the `unk` plane is all zero.
+/// (`\ddd` octal / `\xhh` hex are deferred — recovered by literal copy.)
+pub fn parse_str_literal(raw: &str) -> ConstVal {
+    let inner = raw.strip_prefix('"').unwrap_or(raw);
+    let inner = inner.strip_suffix('"').unwrap_or(inner);
+
+    let mut bytes: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut cs = inner.chars();
+    while let Some(c) = cs.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match cs.next() {
+            Some('n') => bytes.push(b'\n'),
+            Some('t') => bytes.push(b'\t'),
+            Some('r') => bytes.push(b'\r'),
+            Some('\\') => bytes.push(b'\\'),
+            Some('"') => bytes.push(b'"'),
+            Some('0') => bytes.push(0),
+            Some(other) => {
+                bytes.push(b'\\');
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => bytes.push(b'\\'),
+        }
+    }
+
+    let width = (bytes.len() as u32).saturating_mul(8);
+    let nwords = (((width as usize) + 63) / 64).max(1);
+    let mut val = vec![0u64; nwords];
+    let unk = vec![0u64; nwords]; // strings are 2-state
+    for (k, &b) in bytes.iter().enumerate() {
+        let bit = k * 8;
+        // bit % 64 ∈ {0,8,..,56} (8 | 64) → a byte never straddles a word.
+        val[bit / 64] |= (b as u64) << (bit % 64);
+    }
+    ConstVal {
+        width,
+        signed: false,
+        repr: ConstRepr::StrUtf8,
+        bits: BitPacked { val, unk },
+    }
+}
+
 /// Synthesize a small unsigned `ConstVal` of `n` in `width` bits (used for
 /// select widths / single-bit selects). Always 2-state (`unk` all zero).
 pub fn make_const_u32(n: u32, width: u32) -> ConstVal {

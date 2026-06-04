@@ -33,8 +33,14 @@ use std::collections::BTreeMap;
 
 use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
 use hdl_ast as ast;
-use literal::{make_const_u32, parse_int_literal};
+use literal::{make_const_u32, parse_int_literal, parse_str_literal};
 use sim_ir as ir;
+
+/// Const-bounded `repeat`/`for` are UNROLLED (the loop counter cannot live in a
+/// `SuspendState.locals` slot — `Stmt`'s `Lvalue` only addresses nets, not
+/// locals, and `Stmt` is frozen). This caps the unroll so a `repeat(1_000_000)`
+/// in hostile input cannot explode the block arena. Above the cap → `ElabUnsupported`.
+const REPEAT_UNROLL_CAP: u32 = 1024;
 
 /// Hard cap on a single net's declared bit width. Above this we reject the decl
 /// with `ElabUnsupported` rather than `vec![0u64; huge]` (which would OOM) or
@@ -78,6 +84,15 @@ struct Elaborator<'s> {
     cont_assigns: Vec<ir::ContAssign>,
     instances: Vec<ir::Instance>,
 
+    // ── v2: procedural lowering arenas ──
+    // `processes` is one Process per ProceduralBlock (module-body order).
+    // `stmts` is the GLOBAL straight-line Stmt arena (SimIr.stmts); a
+    // `BasicBlock.stmts` holds indices into it. The CFG basic blocks themselves
+    // live INLINE in each `Process.body` (process-LOCAL indices; SimIr.blocks
+    // stays empty — it is reserved for funcs, deferred past v2).
+    processes: Vec<ir::Process>,
+    stmts: Vec<ir::Stmt>,
+
     // ── lookup-only maps (NEVER feed arena order) ──
     symbols: BTreeMap<String, u32>, // net/var NAME → NetId
     const_dedup: BTreeMap<ConstKey, u32>,
@@ -93,6 +108,8 @@ impl<'s> Elaborator<'s> {
             consts: Vec::new(),
             cont_assigns: Vec::new(),
             instances: Vec::new(),
+            processes: Vec::new(),
+            stmts: Vec::new(),
             symbols: BTreeMap::new(),
             const_dedup: BTreeMap::new(),
         }
@@ -102,14 +119,22 @@ impl<'s> Elaborator<'s> {
         ir::SimIr {
             instances: self.instances,
             nets: self.nets,
-            processes: Vec::new(), // ← NEXT SLICE (procedural lowering)
+            processes: self.processes, // ← v2: procedural lowering
             cont_assigns: self.cont_assigns,
             funcs: Vec::new(), // ← NEXT SLICE (function/task)
             exprs: self.exprs,
-            stmts: Vec::new(),  // ← NEXT SLICE
-            blocks: Vec::new(), // ← NEXT SLICE
+            stmts: self.stmts,  // ← v2: per-BB straight-line stmt arena
+            blocks: Vec::new(), // funcs body arena — reserved (deferred past v2)
             consts: self.consts,
         }
+    }
+
+    /// THE deterministic stmt append point (mirror of [`Self::push_expr`]).
+    #[inline]
+    fn push_stmt(&mut self, s: ir::Stmt) -> u32 {
+        let id = self.stmts.len() as u32;
+        self.stmts.push(s);
+        id
     }
 
     // ── diagnostics ────────────────────────────────────────────────
@@ -121,6 +146,24 @@ impl<'s> Elaborator<'s> {
         self.sink.emit(LogEvent::Diagnostic(Diagnostic {
             severity: Severity::Error,
             code,
+            message: msg.to_string(),
+            location: None,
+            context: Vec::new(),
+            sim_time: None,
+        }));
+    }
+
+    /// Emit a WARNING-severity diagnostic and KEEP GOING — does NOT set
+    /// `had_error`, so the SimIr survives and is returned. This is the lever that
+    /// makes unsupported *procedural* constructs and unknown `$task`s degrade
+    /// (skip / no-op) instead of discarding the whole module (COVERAGE M-A/M-B/M-D).
+    /// Reuses `ElabWidthTrunc` (W-ELAB-WIDTH-TRUNC / VITA-W3008) as the generic
+    /// "lowered with a documented approximation" warning channel until a dedicated
+    /// W-ELAB-DEGRADED code is minted. The message carries the specifics.
+    fn warn(&mut self, msg: &str) {
+        self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+            severity: Severity::Warning,
+            code: MsgCode::ElabWidthTrunc,
             message: msg.to_string(),
             location: None,
             context: Vec::new(),
@@ -167,12 +210,10 @@ impl<'s> Elaborator<'s> {
         for item in &module.body {
             match item {
                 ast::ModuleItem::ContAssign(ca) => self.elaborate_cont_assign(ca),
-                ast::ModuleItem::Proc(_) => {
-                    // DEFERRED: procedural-block → Process/BB lowering (next slice).
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "procedural blocks are not yet supported (v1)",
-                    );
+                ast::ModuleItem::Proc(p) => {
+                    // v2: procedural-block → Process (one per block, body order).
+                    let proc = self.lower_proc_block(p);
+                    self.processes.push(proc);
                 }
                 ast::ModuleItem::Instance(_)
                 | ast::ModuleItem::Generate(_)
@@ -558,11 +599,16 @@ impl<'s> Elaborator<'s> {
             // ── transparent / placeholder ──────────────────────────
             ast::ExprKind::Paren { inner } => self.lower_expr(inner), // unwrap, no IR node
             ast::ExprKind::MinTypMax { typ, .. } => self.lower_expr(typ), // pick typ branch
-            ast::ExprKind::RealLit { .. } | ast::ExprKind::StrLit { .. } => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "real/string literal not supported (v1)",
-                );
+            // v2: a string literal interns as a `StrUtf8` const. Used by $systask
+            // format/args ($display("...", x), $dumpfile("dump.vcd")). Escapes are
+            // processed by `parse_str_literal`; the const pool dedups StrUtf8 vs
+            // Numeric via the repr tag (intern_const ConstKey).
+            ast::ExprKind::StrLit { raw } => {
+                let cid = self.intern_const(parse_str_literal(raw));
+                self.push_expr(ir::Expr::Const { val: cid })
+            }
+            ast::ExprKind::RealLit { .. } => {
+                self.error(MsgCode::ElabUnsupported, "real literal not supported (v2)");
                 self.placeholder_expr()
             }
             ast::ExprKind::Error => {
@@ -849,7 +895,792 @@ impl<'s> Elaborator<'s> {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════
+//  v2 — procedural-block lowering (ProceduralBlock → ir::Process)
+// ════════════════════════════════════════════════════════════════════
+//
+// BLOCK-INDEX SPACE (the load-bearing decision):
+//   `ir::Process.body: Vec<BasicBlock>` is INLINE per-process. Every Terminator
+//   target (`Goto.target`, `Branch.then_bb`/`else_bb`, `Delay.resume`,
+//   `Wait.resume`, …) and `Process.entry` is an index INTO THAT process's own
+//   `body` Vec — process-LOCAL, 0-based, reset per process. `SimIr.blocks`
+//   (the top-level arena) is NOT referenced by `Process`; v2 leaves it empty
+//   (it is reserved for func/task bodies, deferred). `BlockId` below is a
+//   newtype over that process-local index so it can never be confused with a
+//   StmtId/ExprId/NetId (all bare u32 elsewhere).
+//
+//   `BasicBlock.stmts: Vec<u32>` hold indices into the GLOBAL `self.stmts`
+//   arena (shared across processes), appended via `push_stmt`.
+
+/// Index into a `ProcessBuilder::body` (the process-local CFG), NOT the global
+/// `SimIr.blocks` arena.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct BlockId(u32);
+impl BlockId {
+    fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Builds the CFG (`Vec<BasicBlock>`) for ONE process. Owns the process-local
+/// block list + the single "unsealed block" cursor.
+///
+/// INV-1 (sealing): exactly one block — the one `cur` points at — is unsealed
+/// at any time. `end_block_with` is the only writer of a real terminator and it
+/// CLOSES the cursor (`cur = None`); the caller must `start_block` before the
+/// next emit. A freshly-allocated block is pre-filled with `Return`, so even a
+/// builder bug degrades to a stray early return, NEVER a dangling index.
+///
+/// INV-2 (no dangling): a block is allocated (`new_block`) before its id is
+/// named in any terminator; `finish` seals the trailing open block with
+/// `Return`. Every control-flow form below ends by `start_block`-ing its single
+/// "continue point", so on return from `lower_stmt` the cursor is always open
+/// and is where control flows next — the caller is structurally unable to leave
+/// an arm dangling.
+struct ProcessBuilder {
+    body: Vec<ir::BasicBlock>,
+    cur: Option<BlockId>,
+}
+
+impl ProcessBuilder {
+    /// Start with one empty block (the entry, id 0) as the open cursor.
+    fn new() -> Self {
+        let mut pb = ProcessBuilder {
+            body: Vec::new(),
+            cur: None,
+        };
+        let entry = pb.new_block();
+        pb.cur = Some(entry);
+        pb
+    }
+
+    /// Allocate a fresh block, provisionally terminated `Return` (overwritten by
+    /// `end_block_with` when sealed). Returns its process-local id.
+    fn new_block(&mut self) -> BlockId {
+        let id = BlockId(self.body.len() as u32);
+        self.body.push(ir::BasicBlock {
+            stmts: Vec::new(),
+            term: ir::Terminator::Return,
+        });
+        id
+    }
+
+    /// Make `b` the open cursor (the caller asserts no other block is open).
+    fn start_block(&mut self, b: BlockId) {
+        debug_assert!(self.cur.is_none(), "start_block over an open cursor");
+        self.cur = Some(b);
+    }
+
+    /// Record an already-built `StmtId` (from the global arena) in the current
+    /// block. Stays in the same block (no split).
+    fn push_stmt_id(&mut self, sid: u32) {
+        let b = self.cur.expect("push_stmt_id with no open block (INV-1)");
+        self.body[b.0 as usize].stmts.push(sid);
+    }
+
+    /// Seal the current block with `term` and CLOSE the cursor.
+    fn end_block_with(&mut self, term: ir::Terminator) {
+        let b = self
+            .cur
+            .take()
+            .expect("end_block_with with no open block (double seal?)");
+        self.body[b.0 as usize].term = term;
+    }
+
+    /// Seal current with `Goto(target)`; cursor closed.
+    fn goto(&mut self, target: BlockId) {
+        self.end_block_with(ir::Terminator::Goto {
+            target: target.raw(),
+        });
+    }
+
+    /// Final hand-off: seal the trailing open block with `Return`. entry = 0.
+    fn finish(mut self) -> (Vec<ir::BasicBlock>, u32) {
+        if self.cur.is_some() {
+            self.end_block_with(ir::Terminator::Return);
+        }
+        (self.body, 0)
+    }
+}
+
+impl<'s> Elaborator<'s> {
+    // ── one ProceduralBlock → one Process ──────────────────────────
+    fn lower_proc_block(&mut self, p: &ast::ProceduralBlock) -> ir::Process {
+        // M-C: a bare `always` with NO header @(...) re-arms via its own in-body
+        // timing (`always #5 clk=~clk;`). Detect that and wrap the body in an
+        // implicit forever so control loops back to the in-body delay/event.
+        let bare_always_self_timed =
+            matches!(p.kind, ast::ProcKind::Always) && p.sensitivity.is_none();
+
+        let sensitivity = self.lower_sensitivity(p.kind, p.sensitivity.as_ref(), &p.body);
+        let mut b = ProcessBuilder::new(); // entry block #0 open
+        if bare_always_self_timed && stmt_has_timing(&p.body) {
+            // Implicit `forever { body }` so the process re-arms on its own #/@.
+            self.lower_forever(&mut b, &p.body);
+        } else {
+            self.lower_stmt(&mut b, &p.body); // recursive body lowering
+        }
+        let (body, entry) = b.finish(); // seals trailing block with Return
+        ir::Process {
+            sensitivity,
+            body,
+            entry,
+            suspend: fresh_suspend(entry),
+        }
+    }
+
+    // ── sensitivity mapping ────────────────────────────────────────
+    /// `ProcKind` + AST `Sensitivity` → `ir::Sensitivity`. Classification:
+    /// any explicit edge ⇒ `Edge`; all bare ⇒ `Level`; `always_ff` forces
+    /// `Edge`; `@(*)`/`always_comb` ⇒ `Comb` (read-set inference deferred —
+    /// empty edges, no error); `always_latch` ⇒ `Latch`; `initial` ⇒ `Initial`.
+    fn lower_sensitivity(
+        &mut self,
+        kind: ast::ProcKind,
+        sens: Option<&ast::Sensitivity>,
+        body: &ast::Stmt, // M-C: inspect body for in-body timing on bare `always`
+    ) -> ir::Sensitivity {
+        use ast::ProcKind::*;
+        match kind {
+            Initial => ir::Sensitivity {
+                kind: ir::SensKind::Initial,
+                edges: Vec::new(),
+            },
+            AlwaysComb => ir::Sensitivity {
+                kind: ir::SensKind::Comb,
+                edges: Vec::new(),
+            },
+            AlwaysLatch => ir::Sensitivity {
+                kind: ir::SensKind::Latch,
+                edges: Vec::new(),
+            },
+            AlwaysFf => self.classify_event_list(sens, /* force_edge = */ true),
+            Always => match sens {
+                None => {
+                    if stmt_has_timing(body) {
+                        // Legal self-timed `always` (clock generator). The body's
+                        // own #/@ drives time; the process re-runs (forever-wrapped
+                        // in lower_proc_block). No header edges → Comb-shaped arm.
+                        ir::Sensitivity {
+                            kind: ir::SensKind::Comb,
+                            edges: Vec::new(),
+                        }
+                    } else {
+                        // Truly unschedulable: warn (non-fatal) but still emit a
+                        // valid (inert) process rather than killing the whole IR.
+                        self.warn(
+                            "always with neither @(...) nor in-body timing is \
+                             unschedulable; lowered as an inert process",
+                        );
+                        ir::Sensitivity {
+                            kind: ir::SensKind::Comb,
+                            edges: Vec::new(),
+                        }
+                    }
+                }
+                Some(ast::Sensitivity::Star) => ir::Sensitivity {
+                    kind: ir::SensKind::Comb,
+                    edges: Vec::new(),
+                },
+                Some(s @ ast::Sensitivity::List(_)) => {
+                    self.classify_event_list(Some(s), /* force_edge = */ false)
+                }
+            },
+        }
+    }
+
+    /// Map a `Sensitivity::List` to Edge-or-Level. `force_edge` (always_ff) pins
+    /// the kind to Edge. Determinism: edges appended in source order.
+    fn classify_event_list(
+        &mut self,
+        sens: Option<&ast::Sensitivity>,
+        force_edge: bool,
+    ) -> ir::Sensitivity {
+        let list = match sens {
+            Some(ast::Sensitivity::List(l)) => l.as_slice(),
+            Some(ast::Sensitivity::Star) | None => {
+                if force_edge {
+                    self.warn("always_ff requires an explicit @(edge ...) list");
+                }
+                return ir::Sensitivity {
+                    kind: if force_edge {
+                        ir::SensKind::Edge
+                    } else {
+                        ir::SensKind::Comb
+                    },
+                    edges: Vec::new(),
+                };
+            }
+        };
+        let any_edge = force_edge || list.iter().any(|ev| !matches!(ev.edge, ast::Edge::NoEdge));
+        let edges = list
+            .iter()
+            .map(|ev| ir::EdgeTerm {
+                net: self.sens_event_net(&ev.expr),
+                kind: map_edge(ev.edge),
+            })
+            .collect();
+        ir::Sensitivity {
+            kind: if any_edge {
+                ir::SensKind::Edge
+            } else {
+                ir::SensKind::Level
+            },
+            edges,
+        }
+    }
+
+    /// Resolve an event-control expr to the net it senses. v2: bare signal name
+    /// (or parenthesized one); anything else → POISON_NET + note.
+    fn sens_event_net(&mut self, e: &ast::Expr) -> u32 {
+        match &e.kind {
+            ast::ExprKind::Ident(path) => self.resolve_net(path),
+            ast::ExprKind::Paren { inner } => self.sens_event_net(inner),
+            _ => {
+                self.warn("event control on a non-signal expression (v2: bare signal names)");
+                POISON_NET
+            }
+        }
+    }
+
+    // ── the recursive statement-lowering heart ─────────────────────
+    /// CONTRACT: on entry `b.cur` is open; on exit `b.cur` is open and is the
+    /// "continue point" (where control flows next). Every form upholds this.
+    fn lower_stmt(&mut self, b: &mut ProcessBuilder, s: &ast::Stmt) {
+        match s {
+            // ── STRAIGHT-LINE (stay in the same block) ──────────────
+            ast::Stmt::Blocking {
+                lhs, delay, rhs, ..
+            } => {
+                // intra-assignment delay: WARN + drop the delay, keep the assign (M-D).
+                if delay.is_some() {
+                    self.warn("intra-assignment delay (= #d) dropped (v2); assign kept");
+                }
+                let rhs_id = self.lower_expr(rhs);
+                let lv = self.lower_lvalue(lhs);
+                let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                    lhs: lv,
+                    rhs: rhs_id,
+                });
+                b.push_stmt_id(sid);
+            }
+            ast::Stmt::NonBlocking {
+                lhs, delay, rhs, ..
+            } => {
+                if delay.is_some() {
+                    self.warn("intra-assignment delay (<= #d) dropped (v2); assign kept");
+                }
+                let rhs_id = self.lower_expr(rhs);
+                let lv = self.lower_lvalue(lhs);
+                let sid = self.push_stmt(ir::Stmt::NonblockingAssign {
+                    lhs: lv,
+                    rhs: rhs_id,
+                });
+                b.push_stmt_id(sid);
+            }
+            ast::Stmt::SysTaskCall { name, args, .. } => {
+                if let Some(sid) = self.lower_systask(name, args) {
+                    b.push_stmt_id(sid);
+                }
+            }
+            ast::Stmt::Null(_) => { /* no-op, same block */ }
+
+            // ── SEQUENCING: begin … end ─────────────────────────────
+            // begin..end: block-local decls WARN (ignored) instead of killing IR.
+            ast::Stmt::Block { decls, stmts, .. } => {
+                if !decls.is_empty() {
+                    self.warn("block-local declarations ignored (v2); body lowered");
+                }
+                for st in stmts {
+                    self.lower_stmt(b, st);
+                }
+            }
+
+            // ── IF / ELSE — the canonical merge pattern ─────────────
+            ast::Stmt::If {
+                cond,
+                then_s,
+                else_s,
+                ..
+            } => {
+                let cond_id = self.lower_expr(cond);
+                let then_bb = b.new_block();
+                let else_bb = b.new_block();
+                let merge = b.new_block();
+                b.end_block_with(ir::Terminator::Branch {
+                    cond: cond_id,
+                    then_bb: then_bb.raw(),
+                    else_bb: else_bb.raw(),
+                });
+                b.start_block(then_bb);
+                self.lower_stmt(b, then_s);
+                b.goto(merge);
+                b.start_block(else_bb);
+                if let Some(e) = else_s {
+                    self.lower_stmt(b, e);
+                }
+                b.goto(merge);
+                b.start_block(merge); // continue in merge (post-condition)
+            }
+
+            // ── CASE / CASEZ / CASEX — Branch chain ─────────────────
+            ast::Stmt::Case {
+                kind,
+                scrutinee,
+                items,
+                ..
+            } => self.lower_case(b, *kind, scrutinee, items),
+
+            // ── #delay ──────────────────────────────────────────────
+            ast::Stmt::DelayCtrl { delay, body, .. } => {
+                let (amount, region) = self.lower_delay(delay);
+                let resume = b.new_block();
+                b.end_block_with(ir::Terminator::Delay {
+                    amount,
+                    region,
+                    resume: resume.raw(),
+                });
+                b.start_block(resume);
+                if let Some(body) = body {
+                    self.lower_stmt(b, body);
+                }
+            }
+
+            // ── @(event) ────────────────────────────────────────────
+            ast::Stmt::EventCtrl { ctrl, body, .. } => {
+                let cause = self.lower_event_wait_cause(ctrl);
+                let resume = b.new_block();
+                b.end_block_with(ir::Terminator::Wait {
+                    cond: cause,
+                    resume: resume.raw(),
+                });
+                b.start_block(resume);
+                if let Some(body) = body {
+                    self.lower_stmt(b, body);
+                }
+            }
+
+            // ── wait(expr) — level wait via WaitCause::Expr ─────────
+            ast::Stmt::Wait { cond, body, .. } => {
+                let e = self.lower_expr(cond);
+                let resume = b.new_block();
+                b.end_block_with(ir::Terminator::Wait {
+                    cond: ir::WaitCause::Expr { expr: e },
+                    resume: resume.raw(),
+                });
+                b.start_block(resume);
+                if let Some(body) = body {
+                    self.lower_stmt(b, body);
+                }
+            }
+
+            // ── LOOPS (SECONDARY) ───────────────────────────────────
+            ast::Stmt::Forever { body, .. } => self.lower_forever(b, body),
+            ast::Stmt::While { cond, body, .. } => self.lower_while(b, cond, body),
+            ast::Stmt::Repeat { count, body, .. } => self.lower_repeat(b, count, body),
+            ast::Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+                ..
+            } => self.lower_for(b, init, cond, step, body),
+
+            // ── SECONDARY / DEFERRED → WARN + recover (stay in block) ──
+            // disable: doc-17 lowering table says "Stmt::Disable then Goto", but
+            // scope-id resolution (DisableKind/target) is deferred. Emit the
+            // Stmt::Disable with a Scope/0 placeholder so the *shape* is present,
+            // then continue straight-line. Non-fatal. (CFG MINOR-1 reconciled.)
+            ast::Stmt::Disable { .. } => {
+                self.warn("disable target scope-id unresolved (v2); emitted as Scope/0 no-op");
+                let sid = self.push_stmt(ir::Stmt::Disable {
+                    scope_kind: ir::DisableKind::Scope,
+                    target: 0,
+                });
+                b.push_stmt_id(sid);
+            }
+            ast::Stmt::Fork { stmts, .. } => {
+                // No Fork terminator lowering yet (join-state deferred). Degrade to
+                // SEQUENTIAL execution of the children + warn — sound CFG, wrong
+                // concurrency, but the IR survives the demo. (Was IR-killing.)
+                self.warn("fork/join lowered as sequential (v2); concurrency not modeled");
+                for st in stmts {
+                    self.lower_stmt(b, st);
+                }
+            }
+            ast::Stmt::UserTaskCall { .. } => {
+                self.warn("user task call skipped (v2); no-op");
+            }
+            ast::Stmt::EventTrigger { .. }
+            | ast::Stmt::Assign { .. }
+            | ast::Stmt::Deassign { .. }
+            | ast::Stmt::Force { .. }
+            | ast::Stmt::Release { .. } => {
+                self.warn("procedural-continuous / event-trigger construct skipped (v2); no-op");
+            }
+            // Parse error is the ONE genuinely-fatal stmt: keep self.error.
+            ast::Stmt::Error(_) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "cannot lower parse-error statement",
+                );
+            }
+        }
+    }
+
+    // ── case → Branch chain ────────────────────────────────────────
+    fn lower_case(
+        &mut self,
+        b: &mut ProcessBuilder,
+        kind: ast::CaseKind,
+        scrutinee: &ast::Expr,
+        items: &[ast::CaseItem],
+    ) {
+        // PRIORITY (COVERAGE M-B): casez/casex MUST lower. Wildcard ?/x/z bit
+        // semantics are approximated by `===` (CaseEq). This is exact for label
+        // sets with no ?/x/z bits (the common FSM/testbench case) and a documented
+        // over-strict match otherwise. WARN (non-fatal) — the IR survives.
+        if !matches!(kind, ast::CaseKind::Case) {
+            self.warn(
+                "casez/casex wildcard bits approximated by === (exact when labels \
+                 have no ?/x/z); IR lowered",
+            );
+        }
+        let scrut_id = self.lower_expr(scrutinee);
+        let merge = b.new_block();
+
+        // Pre-allocate each Match arm's entry block; pin the default body.
+        // Allocation order (deterministic): merge, then each Match arm block in
+        // source order, then per-label miss-blocks during the cascade.
+        let mut arm_bodies: Vec<(BlockId, &ast::Stmt)> = Vec::new();
+        let mut default_body: Option<&ast::Stmt> = None;
+        let mut tests: Vec<(&[ast::Expr], BlockId)> = Vec::new();
+        for it in items {
+            match it {
+                ast::CaseItem::Match { labels, body, .. } => {
+                    let arm = b.new_block();
+                    tests.push((labels.as_slice(), arm));
+                    arm_bodies.push((arm, body));
+                }
+                ast::CaseItem::Default { body, .. } => default_body = Some(body),
+            }
+        }
+
+        // Test cascade: for each label, `scrut === label` → arm else next test.
+        for (labels, arm) in &tests {
+            for label in *labels {
+                let lbl_id = self.lower_expr(label);
+                let eq = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::CaseEq,
+                    lhs: scrut_id,
+                    rhs: lbl_id,
+                });
+                let next = b.new_block();
+                b.end_block_with(ir::Terminator::Branch {
+                    cond: eq,
+                    then_bb: arm.raw(),
+                    else_bb: next.raw(),
+                });
+                b.start_block(next);
+            }
+        }
+        // All tests missed → the default (or empty) → merge.
+        if let Some(body) = default_body {
+            self.lower_stmt(b, body);
+        }
+        b.goto(merge);
+
+        // Lower each arm body, each ending Goto(merge).
+        for (arm, body) in arm_bodies {
+            b.start_block(arm);
+            self.lower_stmt(b, body);
+            b.goto(merge);
+        }
+        b.start_block(merge);
+    }
+
+    // ── loops (SECONDARY) ──────────────────────────────────────────
+    fn lower_while(&mut self, b: &mut ProcessBuilder, cond: &ast::Expr, body: &ast::Stmt) {
+        let head = b.new_block();
+        let body_bb = b.new_block();
+        let exit = b.new_block();
+        b.goto(head);
+        b.start_block(head);
+        let c = self.lower_expr(cond);
+        b.end_block_with(ir::Terminator::Branch {
+            cond: c,
+            then_bb: body_bb.raw(),
+            else_bb: exit.raw(),
+        });
+        b.start_block(body_bb);
+        self.lower_stmt(b, body);
+        b.goto(head); // back-edge
+        b.start_block(exit);
+    }
+
+    fn lower_forever(&mut self, b: &mut ProcessBuilder, body: &ast::Stmt) {
+        let head = b.new_block();
+        b.goto(head);
+        b.start_block(head);
+        self.lower_stmt(b, body);
+        b.goto(head); // unconditional back-edge
+                      // No natural continue point; open a fresh (unreachable) block so the
+                      // post-condition (cursor open) holds. It gets Return at finish.
+        let dead = b.new_block();
+        b.start_block(dead);
+    }
+
+    /// `repeat(N)` with a const, small `N` → straight unroll (no runtime counter,
+    /// which `Stmt`'s net-only Lvalue cannot express). Non-const/large → reject.
+    fn lower_repeat(&mut self, b: &mut ProcessBuilder, count: &ast::Expr, body: &ast::Stmt) {
+        match const_eval_u32(count) {
+            Some(n) if n <= REPEAT_UNROLL_CAP => {
+                for _ in 0..n {
+                    self.lower_stmt(b, body);
+                }
+            }
+            _ => self.warn("repeat with non-constant or large count skipped (v2); body omitted"),
+        }
+    }
+
+    /// `for` is SECONDARY and needs a runtime counter that survives a suspend —
+    /// not representable in the frozen net-only `Stmt::*Assign` Lvalue. v2 rejects
+    /// it with a recovering stub (the cursor stays open, an empty Return-block).
+    fn lower_for(
+        &mut self,
+        _b: &mut ProcessBuilder,
+        _init: &ast::Stmt,
+        _cond: &ast::Expr,
+        _step: &ast::Stmt,
+        _body: &ast::Stmt,
+    ) {
+        self.warn("for loop skipped (v2); counter not expressible in frozen net-only Stmt");
+    }
+
+    // ── in-body @(...) / wait → WaitCause; #delay → (amount, region) ─
+    /// In-body `@(...)` → ONE `WaitCause`. Single edge term → `Edge`; all bare →
+    /// `Level`; multi-edge → first edge term + note (no multi-edge variant).
+    fn lower_event_wait_cause(&mut self, ctrl: &ast::Sensitivity) -> ir::WaitCause {
+        match ctrl {
+            ast::Sensitivity::Star => {
+                self.warn("in-body @(*) wait (v2: explicit signal list)");
+                ir::WaitCause::Level { nets: Vec::new() }
+            }
+            ast::Sensitivity::List(list) => {
+                let has_edge = list.iter().any(|ev| !matches!(ev.edge, ast::Edge::NoEdge));
+                if has_edge {
+                    if list.len() > 1 {
+                        self.warn("multi-term in-body edge wait (v2: single edge term)");
+                    }
+                    let ev = list
+                        .iter()
+                        .find(|ev| !matches!(ev.edge, ast::Edge::NoEdge))
+                        .expect("has_edge ⇒ at least one edge term");
+                    ir::WaitCause::Edge {
+                        net: self.sens_event_net(&ev.expr),
+                        kind: map_edge(ev.edge),
+                    }
+                } else {
+                    let nets = list
+                        .iter()
+                        .map(|ev| self.sens_event_net(&ev.expr))
+                        .collect();
+                    ir::WaitCause::Level { nets }
+                }
+            }
+        }
+    }
+
+    /// `#delay` → `(amount, region)`. `amount` is the const-folded tick count
+    /// (matches the frozen `Terminator::Delay.amount: u32`). SD3: `#0` →
+    /// `Inactive`, `#d>0` → `Active`. Non-const → note + degrade to `#0`.
+    fn lower_delay(&mut self, d: &ast::Delay) -> (u32, ir::DelayRegion) {
+        let amount = d
+            .values
+            .first()
+            .and_then(|e| {
+                let pick = match &e.kind {
+                    ast::ExprKind::MinTypMax { typ, .. } => typ.as_ref(),
+                    _ => e,
+                };
+                const_eval_u32(pick)
+            })
+            .unwrap_or_else(|| {
+                self.warn("non-constant #delay not supported (v2); degraded to #0");
+                0
+            });
+        let region = if amount == 0 {
+            ir::DelayRegion::Inactive
+        } else {
+            ir::DelayRegion::Active
+        };
+        (amount, region)
+    }
+
+    // ── $systask lowering (SysTaskId map + fmt/args split) ─────────
+    /// `$display(...)` etc. → `ir::Stmt::SysTask` appended to `self.stmts`;
+    /// returns its StmtId. Unknown `$task` → `ElabUnsupported`, `None` (skip).
+    /// fmt/args split: for the print family the FIRST arg, IF it is a string
+    /// literal, becomes `fmt`; the rest are value args. Non-print tasks
+    /// ($finish/$dumpfile/...) carry `fmt: None`, every arg in `args`.
+    fn lower_systask(&mut self, name: &ast::Ident, args: &[ast::Expr]) -> Option<u32> {
+        let which = match map_systask(&name.name) {
+            Some(w) => w,
+            None => {
+                // M-D: unknown $task ($timeformat/$monitoron/$readmemh/...) is a
+                // WARN + skip (no Stmt emitted), NOT an IR-killing error. The
+                // testbench survives.
+                self.warn(&format!(
+                    "unsupported system task `{}` skipped (v2)",
+                    name.name
+                ));
+                return None;
+            }
+        };
+        let takes_fmt = matches!(
+            which,
+            ir::SysTaskId::Display
+                | ir::SysTaskId::Write
+                | ir::SysTaskId::Monitor
+                | ir::SysTaskId::Strobe
+        );
+        // M-D: $dumpvars(level, scope...) passes a scope/module name, not a net.
+        // Lowering a scope ident through lower_expr would resolve_net → fatal
+        // unresolved-name. For the dump family, drop any non-net/non-const arg
+        // with a warning instead of resolving it.
+        let dump_family = matches!(
+            which,
+            ir::SysTaskId::DumpVars
+                | ir::SysTaskId::DumpFile
+                | ir::SysTaskId::DumpOn
+                | ir::SysTaskId::DumpOff
+                | ir::SysTaskId::DumpAll
+        );
+        let (fmt, value_args): (Option<u32>, &[ast::Expr]) = if takes_fmt {
+            match args.first().map(|e| &e.kind) {
+                Some(ast::ExprKind::StrLit { raw }) => {
+                    let cid = self.intern_const(parse_str_literal(raw));
+                    let fmt_expr = self.push_expr(ir::Expr::Const { val: cid });
+                    (Some(fmt_expr), &args[1..])
+                }
+                _ => (None, args),
+            }
+        } else {
+            (None, args)
+        };
+        let arg_ids: Vec<u32> = value_args
+            .iter()
+            .filter_map(|a| {
+                if dump_family && !self.is_net_or_const_arg(a) {
+                    self.warn("$dump* scope/non-signal argument skipped (v2)");
+                    None
+                } else {
+                    Some(self.lower_expr(a))
+                }
+            })
+            .collect();
+        Some(self.push_stmt(ir::Stmt::SysTask {
+            which,
+            fmt,
+            args: arg_ids,
+        }))
+    }
+
+    /// True if `a` is a bare net Ident or an integer/string literal — i.e. a thing
+    /// `lower_expr` can lower without a fatal unresolved-name. A hierarchical /
+    /// scope name (`top.dut`) or anything else returns false (dump-family skips it).
+    fn is_net_or_const_arg(&self, a: &ast::Expr) -> bool {
+        match &a.kind {
+            ast::ExprKind::Ident(path) => {
+                path.segments.len() == 1 && self.symbols.contains_key(&path.segments[0].name)
+            }
+            ast::ExprKind::IntLit { .. } | ast::ExprKind::StrLit { .. } => true,
+            _ => false,
+        }
+    }
+}
+
+/// A fresh time-0 `SuspendState`. `resume_pc = entry`; everything else default.
+/// `wake_key` is a never-armed placeholder the engine overwrites on first
+/// suspend — `WakeCond` (the suspend-state type) is DISTINCT from `WaitCause`
+/// (the terminator type); a `Level{nets:[]}` (vacuously false) is the minimal
+/// valid seed since `WakeCond` has no none-variant.
+fn fresh_suspend(entry: u32) -> ir::SuspendState {
+    ir::SuspendState {
+        resume_pc: entry,
+        locals: Vec::new(),
+        join_state: ir::JoinState {
+            parent: None,
+            children: Vec::new(),
+            detached: Vec::new(),
+            flags: ir::ProcFlags(0),
+        },
+        wake_key: ir::WakeKey {
+            cond: ir::WakeCond::Level { nets: Vec::new() },
+            region: ir::RegionTag::Active,
+            tie_break: 0,
+        },
+        call_stack: Vec::new(),
+        frame_arena: Vec::new(),
+    }
+}
+
+/// hdl-ast `Edge` → sim-ir `EdgeKind`. A bare signal (`NoEdge`) in an
+/// edge-classified or level list arms on `AnyEdge`.
+fn map_edge(e: ast::Edge) -> ir::EdgeKind {
+    match e {
+        ast::Edge::Posedge => ir::EdgeKind::Posedge,
+        ast::Edge::Negedge => ir::EdgeKind::Negedge,
+        ast::Edge::NoEdge => ir::EdgeKind::AnyEdge,
+    }
+}
+
+/// `$display`→Display … `$dumpall`→DumpAll. `name` retains the leading `$`
+/// (parser keeps it, parallel to `map_sysfunc`). Unknown → None.
+/// `$monitoron`/`$monitoroff`/`$timeformat` etc. are DEFERRED.
+fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
+    match dollar_name {
+        "$display" | "$displayb" | "$displayo" | "$displayh" => Some(ir::SysTaskId::Display),
+        "$write" | "$writeb" | "$writeo" | "$writeh" => Some(ir::SysTaskId::Write),
+        "$monitor" => Some(ir::SysTaskId::Monitor),
+        "$strobe" => Some(ir::SysTaskId::Strobe),
+        "$finish" => Some(ir::SysTaskId::Finish),
+        "$stop" => Some(ir::SysTaskId::Stop),
+        "$dumpfile" => Some(ir::SysTaskId::DumpFile),
+        "$dumpvars" => Some(ir::SysTaskId::DumpVars),
+        "$dumpon" => Some(ir::SysTaskId::DumpOn),
+        "$dumpoff" => Some(ir::SysTaskId::DumpOff),
+        "$dumpall" => Some(ir::SysTaskId::DumpAll),
+        _ => None,
+    }
+}
+
 // ── free helpers (pure, no &self) ──────────────────────────────────
+
+/// Does this statement (recursively) contain its own timing control — `#delay`,
+/// `@(event)`, or `wait` — anywhere on a path? Used to decide whether a bare
+/// `always` (no header @) is a legal self-timed process (clock generator) vs an
+/// unschedulable one. Conservative: any nested timing anywhere counts. (M-C)
+fn stmt_has_timing(s: &ast::Stmt) -> bool {
+    match s {
+        ast::Stmt::DelayCtrl { .. } | ast::Stmt::EventCtrl { .. } | ast::Stmt::Wait { .. } => true,
+        ast::Stmt::Block { stmts, .. } => stmts.iter().any(stmt_has_timing),
+        ast::Stmt::If { then_s, else_s, .. } => {
+            stmt_has_timing(then_s) || else_s.as_deref().is_some_and(stmt_has_timing)
+        }
+        ast::Stmt::Case { items, .. } => items.iter().any(|it| match it {
+            ast::CaseItem::Match { body, .. } | ast::CaseItem::Default { body, .. } => {
+                stmt_has_timing(body)
+            }
+        }),
+        ast::Stmt::For { body, .. }
+        | ast::Stmt::While { body, .. }
+        | ast::Stmt::Repeat { body, .. }
+        | ast::Stmt::Forever { body, .. } => stmt_has_timing(body),
+        ast::Stmt::Fork { stmts, .. } => stmts.iter().any(stmt_has_timing),
+        _ => false,
+    }
+}
 
 /// Tiny const-evaluator (v1: literals + paren + unary +/-). Evaluate a constant
 /// integer expression to `u32`. Anything else (Ident/param, arithmetic) → None

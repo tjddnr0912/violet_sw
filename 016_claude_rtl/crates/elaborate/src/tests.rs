@@ -485,16 +485,12 @@ fn t10_procedural_block_unsupported() {
     let unit = module("m", vec![wire_vec(0, 0, &["a"]), proc]);
     let sink = CollectSink::default();
     let out = elaborate(&unit, &sink);
-    assert!(out.is_none());
-    let events = sink.events.borrow();
-    let codes: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            LogEvent::Diagnostic(d) => Some(d.code),
-            _ => None,
-        })
-        .collect();
-    assert!(codes.contains(&MsgCode::ElabUnsupported));
+    assert!(
+        out.is_some(),
+        "bare always (no timing) is now a non-fatal warning, not fatal"
+    );
+    assert!(sink.events.borrow().iter().any(|e| matches!(
+        e, LogEvent::Diagnostic(d) if d.severity == diag::Severity::Warning)));
 }
 
 // ───────────────────────── 11. literal-parse planes ─────────────────────────
@@ -812,4 +808,505 @@ fn t18_ascending_part_select_unsupported() {
         })
         .collect();
     assert!(codes.contains(&MsgCode::ElabUnsupported));
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  v2 — procedural-block lowering tests
+// ════════════════════════════════════════════════════════════════════
+
+impl CollectSink {
+    /// Count WARNING-severity diagnostics (non-fatal degrade channel).
+    fn n_warnings(&self) -> usize {
+        self.events
+            .borrow()
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e, LogEvent::Diagnostic(d) if d.severity == diag::Severity::Warning
+                )
+            })
+            .count()
+    }
+}
+
+/// Elaborate, allowing warnings but no errors → returns the SimIr.
+fn elab_with_warnings(unit: &ast::SourceUnit) -> (ir::SimIr, usize) {
+    let sink = CollectSink::default();
+    let ir = elaborate(unit, &sink).expect("non-fatal lowering must yield Some(SimIr)");
+    let warns = sink.n_warnings();
+    (ir, warns)
+}
+
+// ── CFG validators (process-LOCAL block space) ──
+fn assert_cfg_valid(p: &ir::Process) {
+    let n = p.body.len() as u32;
+    assert!(p.entry < n, "entry {} out of bounds ({})", p.entry, n);
+    let chk = |t: u32| assert!(t < n, "terminator target {t} out of bounds ({n})");
+    for bb in &p.body {
+        match &bb.term {
+            ir::Terminator::Goto { target } => chk(*target),
+            ir::Terminator::Branch {
+                then_bb, else_bb, ..
+            } => {
+                chk(*then_bb);
+                chk(*else_bb);
+            }
+            ir::Terminator::Delay { resume, .. } | ir::Terminator::Wait { resume, .. } => {
+                chk(*resume)
+            }
+            ir::Terminator::Fork {
+                children,
+                join,
+                resume_bb,
+            } => {
+                for c in children {
+                    chk(*c);
+                }
+                chk(*join);
+                chk(*resume_bb);
+            }
+            ir::Terminator::Call { target, ret_bb } => {
+                chk(*target);
+                chk(*ret_bb);
+            }
+            ir::Terminator::Return => {}
+        }
+    }
+}
+
+/// Every block reachable from entry must reach a Return (no infinite-non-loop
+/// dangling). Loops (back-edges) are allowed; we only require Return-reachability
+/// for ACYCLIC paths, so a `forever` is exempted by the caller.
+fn assert_all_paths_return(p: &ir::Process) {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut reaches_return = false;
+    fn walk(p: &ir::Process, b: u32, seen: &mut std::collections::HashSet<u32>, hit: &mut bool) {
+        if !seen.insert(b) {
+            return;
+        }
+        match &p.body[b as usize].term {
+            ir::Terminator::Return => *hit = true,
+            ir::Terminator::Goto { target } => walk(p, *target, seen, hit),
+            ir::Terminator::Branch {
+                then_bb, else_bb, ..
+            } => {
+                walk(p, *then_bb, seen, hit);
+                walk(p, *else_bb, seen, hit);
+            }
+            ir::Terminator::Delay { resume, .. } | ir::Terminator::Wait { resume, .. } => {
+                walk(p, *resume, seen, hit)
+            }
+            ir::Terminator::Fork { resume_bb, .. } => walk(p, *resume_bb, seen, hit),
+            ir::Terminator::Call { ret_bb, .. } => walk(p, *ret_bb, seen, hit),
+        }
+    }
+    walk(p, p.entry, &mut seen, &mut reaches_return);
+    assert!(reaches_return, "no path from entry reaches Return");
+    let _ = &mut seen;
+}
+
+fn proc_item(
+    kind: ast::ProcKind,
+    sens: Option<ast::Sensitivity>,
+    body: ast::Stmt,
+) -> ast::ModuleItem {
+    ast::ModuleItem::Proc(ast::ProceduralBlock {
+        kind,
+        sensitivity: sens,
+        body: Box::new(body),
+        span: SP,
+    })
+}
+fn blk(stmts: Vec<ast::Stmt>) -> ast::Stmt {
+    ast::Stmt::Block {
+        label: None,
+        decls: Vec::new(),
+        stmts,
+        span: SP,
+    }
+}
+fn nb(lhs: &str, rhs: ast::Expr) -> ast::Stmt {
+    ast::Stmt::NonBlocking {
+        lhs: lv_id(lhs),
+        delay: None,
+        rhs,
+        span: SP,
+    }
+}
+fn bassign(lhs: &str, rhs: ast::Expr) -> ast::Stmt {
+    ast::Stmt::Blocking {
+        lhs: lv_id(lhs),
+        delay: None,
+        rhs,
+        span: SP,
+    }
+}
+fn delay_stmt(n: u32, body: Option<ast::Stmt>) -> ast::Stmt {
+    ast::Stmt::DelayCtrl {
+        delay: ast::Delay {
+            values: vec![dec(&n.to_string())],
+            span: SP,
+        },
+        body: body.map(Box::new),
+        span: SP,
+    }
+}
+fn systask(name: &str, args: Vec<ast::Expr>) -> ast::Stmt {
+    ast::Stmt::SysTaskCall {
+        name: ident(name),
+        args,
+        span: SP,
+    }
+}
+fn str_e(s: &str) -> ast::Expr {
+    ex(ast::ExprKind::StrLit {
+        raw: format!("\"{s}\""),
+    })
+}
+fn ev_list(terms: Vec<(ast::Edge, &str)>) -> ast::Sensitivity {
+    ast::Sensitivity::List(
+        terms
+            .into_iter()
+            .map(|(edge, n)| ast::EventExpr {
+                edge,
+                expr: id_expr(n),
+                span: SP,
+            })
+            .collect(),
+    )
+}
+
+// v2-1: initial testbench — $dumpfile/$dumpvars + a=0 + #5 + a=1 + #5 + $display + $finish.
+#[test]
+fn v2_1_initial_testbench_structure() {
+    let body = blk(vec![
+        systask("$dumpfile", vec![str_e("dump.vcd")]),
+        systask("$dumpvars", vec![dec("0"), id_expr("a")]),
+        bassign("a", dec("0")),
+        delay_stmt(5, None),
+        bassign("a", dec("1")),
+        delay_stmt(5, None),
+        systask("$display", vec![str_e("a=%d"), id_expr("a")]),
+        systask("$finish", vec![]),
+    ]);
+    let unit = module(
+        "tb",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((0, 0)), false, &["a"]),
+            proc_item(ast::ProcKind::Initial, None, body),
+        ],
+    );
+    let (ir, warns) = elab_with_warnings(&unit);
+    assert_eq!(warns, 0, "clean testbench must not warn");
+    assert_eq!(ir.processes.len(), 1);
+    let p = &ir.processes[0];
+    assert_eq!(p.sensitivity.kind, ir::SensKind::Initial);
+    assert!(p.sensitivity.edges.is_empty());
+    assert_cfg_valid(p);
+    assert_all_paths_return(p);
+    // two #5 delays → two Delay terminators with Active region.
+    let delays: Vec<_> = p
+        .body
+        .iter()
+        .filter_map(|bb| match bb.term {
+            ir::Terminator::Delay { amount, region, .. } => Some((amount, region)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        delays,
+        vec![(5, ir::DelayRegion::Active), (5, ir::DelayRegion::Active)]
+    );
+}
+
+// v2-2: always_ff @(posedge clk) q <= d → SensKind::Edge / Posedge.
+#[test]
+fn v2_2_always_ff_edge() {
+    let body = nb("q", id_expr("d"));
+    let unit = module(
+        "ff",
+        vec![
+            netvar(
+                ast::NetVarKind::Reg,
+                Some((0, 0)),
+                false,
+                &["q", "clk", "d"],
+            ),
+            proc_item(
+                ast::ProcKind::AlwaysFf,
+                Some(ev_list(vec![(ast::Edge::Posedge, "clk")])),
+                body,
+            ),
+        ],
+    );
+    let (ir, _) = elab_with_warnings(&unit);
+    let p = &ir.processes[0];
+    assert_eq!(p.sensitivity.kind, ir::SensKind::Edge);
+    assert_eq!(p.sensitivity.edges.len(), 1);
+    assert_eq!(p.sensitivity.edges[0].kind, ir::EdgeKind::Posedge);
+    assert_cfg_valid(p);
+    assert_all_paths_return(p);
+}
+
+// v2-3: bare always @(a or b) → SensKind::Level, both AnyEdge terms.
+#[test]
+fn v2_3_level_sensitivity() {
+    let body = bassign("y", id_expr("a"));
+    let unit = module(
+        "lvl",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((0, 0)), false, &["y", "a", "b"]),
+            proc_item(
+                ast::ProcKind::Always,
+                Some(ev_list(vec![
+                    (ast::Edge::NoEdge, "a"),
+                    (ast::Edge::NoEdge, "b"),
+                ])),
+                body,
+            ),
+        ],
+    );
+    let (ir, _) = elab_with_warnings(&unit);
+    let p = &ir.processes[0];
+    assert_eq!(p.sensitivity.kind, ir::SensKind::Level);
+    assert_eq!(p.sensitivity.edges.len(), 2);
+    assert_cfg_valid(p);
+    assert_all_paths_return(p);
+}
+
+// v2-4 (M-C): bare `always #5 clk = ~clk;` clock generator → NON-FATAL, Comb,
+// forever-wrapped (no Return-reachable continuation; back-edge cycle).
+#[test]
+fn v2_4_clock_generator_self_timed() {
+    let invert = ex(ast::ExprKind::Unary {
+        op: ast::UnOp::BitNot,
+        operand: Box::new(id_expr("clk")),
+    });
+    let body = delay_stmt(5, Some(bassign("clk", invert)));
+    let unit = module(
+        "clkgen",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((0, 0)), false, &["clk"]),
+            proc_item(ast::ProcKind::Always, None, body), // <-- no header @, in-body #5
+        ],
+    );
+    let (ir, warns) = elab_with_warnings(&unit);
+    assert_eq!(
+        warns, 0,
+        "a self-timed clock generator is legal, must not warn"
+    );
+    let p = &ir.processes[0];
+    assert_eq!(p.sensitivity.kind, ir::SensKind::Comb);
+    assert_cfg_valid(p); // forever is exempt from assert_all_paths_return
+                         // there is a Delay terminator and a back-edge Goto (the forever cycle).
+    assert!(p
+        .body
+        .iter()
+        .any(|bb| matches!(bb.term, ir::Terminator::Delay { .. })));
+}
+
+// v2-5 (M-C): truly inert `always` (no @ no timing) → WARN, still Some + valid.
+#[test]
+fn v2_5_bare_always_no_timing_warns_not_fatal() {
+    let unit = module(
+        "m",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((0, 0)), false, &["a"]),
+            proc_item(ast::ProcKind::Always, None, bassign("a", dec("0"))),
+        ],
+    );
+    let sink = CollectSink::default();
+    let out = elaborate(&unit, &sink);
+    assert!(out.is_some(), "bare always is now non-fatal");
+    assert_eq!(sink.n_warnings(), 1);
+    assert_cfg_valid(&out.unwrap().processes[0]);
+}
+
+// v2-6: if/else → Branch + shared merge; every path Returns.
+#[test]
+fn v2_6_if_else_merge() {
+    let body = ast::Stmt::If {
+        cond: id_expr("c"),
+        then_s: Box::new(bassign("y", dec("1"))),
+        else_s: Some(Box::new(bassign("y", dec("0")))),
+        span: SP,
+    };
+    let unit = module(
+        "m",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((0, 0)), false, &["y", "c"]),
+            proc_item(ast::ProcKind::Initial, None, body),
+        ],
+    );
+    let (ir, _) = elab_with_warnings(&unit);
+    let p = &ir.processes[0];
+    assert!(p
+        .body
+        .iter()
+        .any(|bb| matches!(bb.term, ir::Terminator::Branch { .. })));
+    assert_cfg_valid(p);
+    assert_all_paths_return(p);
+}
+
+// v2-7 (M-B): casez lowers (NON-FATAL, warning) into a CaseEq Branch chain.
+#[test]
+fn v2_7_casez_lowers_with_warning() {
+    let items = vec![
+        ast::CaseItem::Match {
+            labels: vec![lit("2'b10", ast::IntLitKind::Sized)],
+            body: Box::new(bassign("y", dec("1"))),
+            span: SP,
+        },
+        ast::CaseItem::Default {
+            body: Box::new(bassign("y", dec("0"))),
+            span: SP,
+        },
+    ];
+    let body = ast::Stmt::Case {
+        kind: ast::CaseKind::Casez,
+        scrutinee: id_expr("s"),
+        items,
+        span: SP,
+    };
+    let unit = module(
+        "m",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((1, 0)), false, &["s", "y"]),
+            proc_item(ast::ProcKind::Initial, None, body),
+        ],
+    );
+    let (ir, warns) = elab_with_warnings(&unit);
+    assert_eq!(
+        warns, 1,
+        "casez approximation must warn (non-fatal), not error"
+    );
+    let p = &ir.processes[0];
+    let has_caseeq = ir.exprs.iter().any(|e| {
+        matches!(
+            e,
+            ir::Expr::Binary {
+                op: ir::BinOp::CaseEq,
+                ..
+            }
+        )
+    });
+    assert!(has_caseeq, "casez must lower via CaseEq");
+    assert!(p
+        .body
+        .iter()
+        .any(|bb| matches!(bb.term, ir::Terminator::Branch { .. })));
+    assert_cfg_valid(p);
+    assert_all_paths_return(p);
+}
+
+// v2-8: in-body @(posedge clk) → Wait{Edge,Posedge}, NOT process sensitivity.
+#[test]
+fn v2_8_in_body_event_wait() {
+    let body = blk(vec![
+        ast::Stmt::EventCtrl {
+            ctrl: ev_list(vec![(ast::Edge::Posedge, "clk")]),
+            body: None,
+            span: SP,
+        },
+        nb("q", id_expr("d")),
+    ]);
+    let unit = module(
+        "m",
+        vec![
+            netvar(
+                ast::NetVarKind::Reg,
+                Some((0, 0)),
+                false,
+                &["q", "d", "clk"],
+            ),
+            proc_item(ast::ProcKind::Initial, None, body),
+        ],
+    );
+    let (ir, _) = elab_with_warnings(&unit);
+    let p = &ir.processes[0];
+    assert_eq!(p.sensitivity.kind, ir::SensKind::Initial); // block-level stays Initial
+    let waits: Vec<_> = p
+        .body
+        .iter()
+        .filter_map(|bb| match &bb.term {
+            ir::Terminator::Wait {
+                cond: ir::WaitCause::Edge { kind, .. },
+                ..
+            } => Some(*kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(waits, vec![ir::EdgeKind::Posedge]);
+    assert_cfg_valid(p);
+    assert_all_paths_return(p);
+}
+
+// v2-9 (M-D): unknown $task ($timeformat) → WARN + skip, IR survives, no Stmt.
+#[test]
+fn v2_9_unknown_systask_nonfatal() {
+    let body = blk(vec![
+        systask("$timeformat", vec![]),
+        bassign("a", dec("0")),
+        systask("$finish", vec![]),
+    ]);
+    let unit = module(
+        "tb",
+        vec![
+            netvar(ast::NetVarKind::Reg, Some((0, 0)), false, &["a"]),
+            proc_item(ast::ProcKind::Initial, None, body),
+        ],
+    );
+    let (ir, warns) = elab_with_warnings(&unit);
+    assert_eq!(warns, 1, "$timeformat must warn-skip, not kill the IR");
+    // exactly one SysTask stmt survives ($finish); $timeformat emitted nothing.
+    let n_systask = ir
+        .stmts
+        .iter()
+        .filter(|s| matches!(s, ir::Stmt::SysTask { .. }))
+        .count();
+    assert_eq!(n_systask, 1);
+    assert_cfg_valid(&ir.processes[0]);
+    assert_all_paths_return(&ir.processes[0]);
+}
+
+// v2-10: full multi-process testbench (initial stimulus + always_ff DUT) +
+//        whole-SimIr determinism (same AST → byte-identical SimIr).
+#[test]
+fn v2_10_multiprocess_and_determinism() {
+    let mk = || {
+        let dut = nb("q", id_expr("d"));
+        let stim = blk(vec![
+            bassign("d", dec("1")),
+            delay_stmt(10, None),
+            systask("$finish", vec![]),
+        ]);
+        module(
+            "tb",
+            vec![
+                netvar(
+                    ast::NetVarKind::Reg,
+                    Some((0, 0)),
+                    false,
+                    &["q", "d", "clk"],
+                ),
+                proc_item(
+                    ast::ProcKind::AlwaysFf,
+                    Some(ev_list(vec![(ast::Edge::Posedge, "clk")])),
+                    dut,
+                ),
+                proc_item(ast::ProcKind::Initial, None, stim),
+            ],
+        )
+    };
+    let (ir1, _) = elab_with_warnings(&mk());
+    let (ir2, _) = elab_with_warnings(&mk());
+    assert_eq!(ir1, ir2, "same AST must produce byte-identical SimIr");
+    assert_eq!(ir1.processes.len(), 2);
+    assert_eq!(ir1.processes[0].sensitivity.kind, ir::SensKind::Edge); // DUT
+    assert_eq!(ir1.processes[1].sensitivity.kind, ir::SensKind::Initial); // stimulus
+    for p in &ir1.processes {
+        assert_cfg_valid(p);
+    }
+    assert_all_paths_return(&ir1.processes[1]); // initial terminates
 }
