@@ -1587,3 +1587,22 @@ fn named_block_local_declarations() {
     // sum 1..5 = 15; nested-block locals x=10,y=5 → r=15.
     assert_eq!(out, "s=15 r=15\n");
 }
+
+// ── continuous assign with a delay `assign #d y = a`: the value propagates
+//    AFTER d ticks, not immediately (certification BLOCKER-1). Transport delay. ─
+
+#[test]
+fn continuous_assign_delay_propagates_after_d() {
+    let src = "module t; reg [3:0] a; wire [3:0] y; \
+               assign #5 y = a; \
+               initial begin a = 7; \
+                 #2 $display(\"t2 y=%0d\", y);   /* not propagated yet */ \
+                 #4 $display(\"t6 y=%0d\", y);   /* propagated at t=5 */ \
+                 a = 3; \
+                 #6 $display(\"t12 y=%0d\", y);  /* new value at t=11 */ \
+                 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // y undriven (x) until t=5 then 7; a=3 at t=6 → y=3 at t=11 (seen at t=12).
+    assert_eq!(out, "t2 y=x\nt6 y=7\nt12 y=3\n");
+}

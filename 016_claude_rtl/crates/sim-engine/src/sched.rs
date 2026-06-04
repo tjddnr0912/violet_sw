@@ -93,6 +93,10 @@ struct Waiter {
     ready: Ready,
 }
 
+/// One transport-delay continuous-assign write: `(lhs, value, per-chunk
+/// (offset, word))`, applied when the simulation reaches the scheduled tick.
+type DelayedWrite = (Lvalue, Value, Vec<(u32, u32)>);
+
 pub(crate) struct Scheduler<'a, 'ir> {
     pub st: &'a mut SimState<'ir>,
     /// Current time's Active/Inactive buckets.
@@ -114,6 +118,11 @@ pub(crate) struct Scheduler<'a, 'ir> {
     barriers: Vec<JoinBarrier>,
     /// Join-mode side table from elaborate, keyed `(template, join_bb)`.
     fork_modes: ForkModeTable,
+    /// Last RHS value seen per cont-assign — only used by DELAYED `assign #d`
+    /// (change detection, so a delayed write schedules once per RHS change).
+    last_ca: Vec<Option<Value>>,
+    /// Pending transport-delay cont-assign writes, keyed by absolute apply tick.
+    delayed_ca: BTreeMap<u64, Vec<DelayedWrite>>,
     delta_count: u64,
     max_deltas: u64,
     time_limit: Option<u64>,
@@ -137,6 +146,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         fork_modes: ForkModeTable,
     ) -> Self {
         let nnets = st.nets.len();
+        let nca = st.ir.cont_assigns.len();
         Scheduler {
             st,
             cur: SlotQueues::default(),
@@ -148,6 +158,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             activities: Vec::new(),
             barriers: Vec::new(),
             fork_modes,
+            last_ca: vec![None; nca],
+            delayed_ca: BTreeMap::new(),
             delta_count: 0,
             max_deltas,
             time_limit,
@@ -171,6 +183,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         loop {
             let mut changed = false;
             for ci in 0..self.st.ir.cont_assigns.len() {
+                if self.st.ir.cont_assigns[ci].delay.is_some() {
+                    continue; // a delayed `assign #d` is scheduled below, not now
+                }
                 let ca_rhs = self.st.ir.cont_assigns[ci].rhs;
                 let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
                 let v = self.eval_for_lvalue(&lhs, ca_rhs); // CONTEXT-SIZED to lhs width
@@ -178,7 +193,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 changed |= self.st.write_lvalue(&lhs, v, &offs);
             }
             if !changed {
-                return Some(any);
+                break;
             }
             any = true;
             self.delta_count += 1;
@@ -187,6 +202,29 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 return None;
             }
         }
+        // Delayed `assign #d y = rhs`: the zero-delay fixpoint has settled, so the
+        // RHS is stable. On each RHS-value CHANGE, schedule a TRANSPORT-delay write
+        // of the new value at `now + d` (inertial pulse-filtering is a v1
+        // simplification; the value at the delayed time is correct).
+        for ci in 0..self.st.ir.cont_assigns.len() {
+            let Some(d) = self.st.ir.cont_assigns[ci].delay else {
+                continue;
+            };
+            let ca_rhs = self.st.ir.cont_assigns[ci].rhs;
+            let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
+            let v = self.eval_for_lvalue(&lhs, ca_rhs);
+            if self.last_ca[ci].as_ref() == Some(&v) {
+                continue; // RHS unchanged → no new scheduled write
+            }
+            self.last_ca[ci] = Some(v.clone());
+            let offs = self.resolve_lvalue_offsets(&lhs);
+            let tick = self.st.now + d as u64;
+            self.delayed_ca
+                .entry(tick)
+                .or_default()
+                .push((lhs, v, offs));
+        }
+        Some(any)
     }
 
     /// Arm processes at t0 per Verilog initial/always semantics.
@@ -359,19 +397,37 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             // Drain strobes (call order) then the monitor (print-on-change).
             self.flush_postponed();
 
-            // Advance time to the next scheduled tick.
-            let next = match self.wheel.keys().next().copied() {
-                None => return FinishReason::Quiescent,
-                Some(t) => t,
+            // Advance time to the next scheduled tick — the earliest of a wheel
+            // event OR a pending transport-delay cont-assign write.
+            let next = match (
+                self.wheel.keys().next().copied(),
+                self.delayed_ca.keys().next().copied(),
+            ) {
+                (None, None) => return FinishReason::Quiescent,
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (Some(a), Some(b)) => a.min(b),
             };
             if let Some(lim) = self.time_limit {
                 if next > lim {
                     return FinishReason::Quiescent;
                 }
             }
-            let events = self.wheel.remove(&next).unwrap();
             self.st.now = next;
             self.st.snapshot_prev();
+            // Apply transport-delay cont-assign writes due at this tick; propagate
+            // so edges/level-waiters on the delayed net fire (these are NET writes,
+            // not process resumes, so the loop-top settle would not see them).
+            if let Some(writes) = self.delayed_ca.remove(&next) {
+                let mut moved = false;
+                for (lhs, v, offs) in writes {
+                    moved |= self.st.write_lvalue(&lhs, v, &offs);
+                }
+                if moved {
+                    self.propagate_changes();
+                }
+            }
+            let events = self.wheel.remove(&next).unwrap_or_default();
             for (region, ready) in events {
                 match region {
                     RegionTag::Inactive => push_sorted(&mut self.cur.inactive, ready),
