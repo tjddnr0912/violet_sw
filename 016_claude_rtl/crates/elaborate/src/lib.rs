@@ -594,6 +594,15 @@ impl<'s> Elaborator<'s> {
                 }
             }
         }
+        // Procedural block-local declarations (`begin: blk integer x; …`). v1 has
+        // no per-process automatic frame, so a block-local flattens to a module-
+        // scope net — created HERE (Nets phase) so it lands in this instance's net
+        // slice and references inside the block resolve instead of erroring E3010.
+        for item in &module.body {
+            if let ast::ModuleItem::Proc(p) = item {
+                self.hoist_block_local_nets(&p.body, &module.ports, &module.body);
+            }
+        }
         // Generate-block nets belong in THIS instance's contiguous net slice too:
         // unroll the generate, in the Nets phase only, right after the plain
         // body nets so they precede every cont-assign/process (pass 7) that may
@@ -1196,6 +1205,49 @@ impl<'s> Elaborator<'s> {
         }
         // NonAnsi/None: dir comes from body PortDecls; v1 leaves ports Internal
         // unless ANSI. (Body PortDecl dir-merge is a small follow-up.)
+    }
+
+    /// Recursively create nets for every `begin…end`/`fork…join` block-local
+    /// declaration reachable from a procedural-block body. v1 flattens these to
+    /// module-scope nets (no per-process frame). Called in the Nets phase.
+    fn hoist_block_local_nets(
+        &mut self,
+        s: &ast::Stmt,
+        ports: &ast::PortList,
+        body: &[ast::ModuleItem],
+    ) {
+        match s {
+            ast::Stmt::Block { decls, stmts, .. } | ast::Stmt::Fork { decls, stmts, .. } => {
+                for d in decls {
+                    self.elaborate_netvar_decl(d, ports, body);
+                }
+                for st in stmts {
+                    self.hoist_block_local_nets(st, ports, body);
+                }
+            }
+            ast::Stmt::If { then_s, else_s, .. } => {
+                self.hoist_block_local_nets(then_s, ports, body);
+                if let Some(e) = else_s {
+                    self.hoist_block_local_nets(e, ports, body);
+                }
+            }
+            ast::Stmt::Case { items, .. } => {
+                for it in items {
+                    let inner = match it {
+                        ast::CaseItem::Match { body: b, .. } => b,
+                        ast::CaseItem::Default { body: b, .. } => b,
+                    };
+                    self.hoist_block_local_nets(inner, ports, body);
+                }
+            }
+            ast::Stmt::For { body: b, .. }
+            | ast::Stmt::While { body: b, .. }
+            | ast::Stmt::Repeat { body: b, .. }
+            | ast::Stmt::Forever { body: b, .. } => {
+                self.hoist_block_local_nets(b, ports, body);
+            }
+            _ => {}
+        }
     }
 
     // ── PASS 1b: body NetVarDecl → nets ────────────────────────────
@@ -3029,11 +3081,9 @@ impl<'s> Elaborator<'s> {
             ast::Stmt::Null(_) => { /* no-op, same block */ }
 
             // ── SEQUENCING: begin … end ─────────────────────────────
-            // begin..end: block-local decls WARN (ignored) instead of killing IR.
-            ast::Stmt::Block { decls, stmts, .. } => {
-                if !decls.is_empty() {
-                    self.warn("block-local declarations ignored (v2); body lowered");
-                }
+            // begin..end: block-local decls were already hoisted to module nets in
+            // the Nets phase (hoist_block_local_nets), so just lower the stmts here.
+            ast::Stmt::Block { stmts, .. } => {
                 for st in stmts {
                     self.lower_stmt(b, st);
                 }

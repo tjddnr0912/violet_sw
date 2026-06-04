@@ -1571,3 +1571,19 @@ fn memory_runtime_word_index() {
     // m[k]=k+5 → 5 6 7 8; m[idx=2] = 7.
     assert_eq!(out, "5 6 7 8 r=7\n");
 }
+
+// ── named block with block-local declarations (sweep gap 16): locals are
+//    hoisted to module nets so references inside the block resolve. ────────────
+
+#[test]
+fn named_block_local_declarations() {
+    let src = "module t; integer s; reg [7:0] r; \
+               initial begin: acc_blk integer i; integer acc; \
+                 acc = 0; for (i = 1; i <= 5; i = i + 1) acc = acc + i; s = acc; \
+                 begin: inner reg [7:0] x; reg [7:0] y; x = 10; y = 5; r = x + y; end \
+                 $display(\"s=%0d r=%0d\", s, r); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // sum 1..5 = 15; nested-block locals x=10,y=5 → r=15.
+    assert_eq!(out, "s=15 r=15\n");
+}
