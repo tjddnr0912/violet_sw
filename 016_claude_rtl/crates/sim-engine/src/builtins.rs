@@ -326,6 +326,11 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
             }
             'd' | 'D' => {
                 let v = next_arg(sched, args, &mut argi);
+                // NOTE: IEEE 1364 %d right-justifies in a default field width (the
+                // decimal digit count of the operand's bit size). v1 prints the
+                // minimal form (like %0d) — values are exact; column-alignment
+                // padding is deliberately omitted (it would also pad an X to "  x"
+                // and most testbenches use %0d). See sweep gap 20 (informational).
                 out.push_str(&fmt_dec(&v));
             }
             'h' | 'H' | 'x' | 'X' => {
