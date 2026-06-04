@@ -257,12 +257,18 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     self.net_to_edge[et.net as usize].push((et.kind, ready));
                 }
             }
-            SensKind::Level => {
+            // Level AND inferred-combinational (`@*`/`always_comb`/`always_latch`,
+            // whose `Comb`/`Latch` edges hold the elaborate-inferred read-set):
+            // re-fire on ANY change of a read net. Empty edges (e.g. a bare
+            // self-timed `always` that re-arms via in-body #/@) register nothing.
+            SensKind::Level | SensKind::Comb | SensKind::Latch => {
                 let nets: Vec<u32> = p.sensitivity.edges.iter().map(|e| e.net).collect();
-                self.waiters.push(Waiter {
-                    cause: WaitCause::Level { nets },
-                    ready,
-                });
+                if !nets.is_empty() {
+                    self.waiters.push(Waiter {
+                        cause: WaitCause::Level { nets },
+                        ready,
+                    });
+                }
             }
             _ => {}
         }

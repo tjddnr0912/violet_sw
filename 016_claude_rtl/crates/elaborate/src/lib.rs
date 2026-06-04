@@ -2735,11 +2735,120 @@ impl<'s> Elaborator<'s> {
             self.lower_stmt(&mut b, &p.body); // recursive body lowering
         }
         let (body, entry) = b.finish(); // seals trailing block with Return
+
+        // Implicit-sensitivity inference for `@*` / `always_comb` / `always_latch`:
+        // lower_sensitivity leaves these `Comb`/`Latch` with EMPTY edges. Infer the
+        // read-set (every net read on a RHS / branch condition in the lowered body)
+        // and record it as level-sensitive edges so the engine re-fires the block
+        // when any input changes. EXCLUDES a bare self-timed `always` (re-arms via
+        // its own in-body #/@, no data read-set).
+        let is_comb_inferred = matches!(
+            p.kind,
+            ast::ProcKind::AlwaysComb | ast::ProcKind::AlwaysLatch
+        ) || matches!(
+            (p.kind, p.sensitivity.as_ref()),
+            (ast::ProcKind::Always, Some(ast::Sensitivity::Star))
+        );
+        let sensitivity = if is_comb_inferred && sensitivity.edges.is_empty() {
+            let nets = self.comb_read_set(&body);
+            ir::Sensitivity {
+                kind: sensitivity.kind,
+                edges: nets
+                    .into_iter()
+                    .map(|net| ir::EdgeTerm {
+                        net,
+                        kind: ir::EdgeKind::AnyEdge,
+                    })
+                    .collect(),
+            }
+        } else {
+            sensitivity
+        };
+
         ir::Process {
             sensitivity,
             body,
             entry,
             suspend: fresh_suspend(entry),
+        }
+    }
+
+    /// Read-set of a lowered process body: every net referenced on a RHS or a
+    /// branch condition (LHS write targets are NOT reads). Drives implicit
+    /// `@*`/`always_comb` sensitivity. Deterministic ascending net order.
+    fn comb_read_set(&self, body: &[ir::BasicBlock]) -> Vec<u32> {
+        let mut reads = std::collections::BTreeSet::new();
+        for bb in body {
+            for &sid in &bb.stmts {
+                match &self.stmts[sid as usize] {
+                    ir::Stmt::BlockingAssign { rhs, .. }
+                    | ir::Stmt::NonblockingAssign { rhs, .. } => {
+                        self.collect_expr_reads(*rhs, &mut reads);
+                    }
+                    ir::Stmt::SysTask { fmt, args, .. } => {
+                        if let Some(f) = fmt {
+                            self.collect_expr_reads(*f, &mut reads);
+                        }
+                        for &a in args {
+                            self.collect_expr_reads(a, &mut reads);
+                        }
+                    }
+                    ir::Stmt::Disable { .. } => {}
+                }
+            }
+            if let ir::Terminator::Branch { cond, .. } = &bb.term {
+                self.collect_expr_reads(*cond, &mut reads);
+            }
+        }
+        reads.into_iter().collect()
+    }
+
+    /// Recursively collect every `Signal` net read by expression `eid`.
+    fn collect_expr_reads(&self, eid: u32, reads: &mut std::collections::BTreeSet<u32>) {
+        match &self.exprs[eid as usize] {
+            ir::Expr::Const { .. } => {}
+            ir::Expr::Signal { net, .. } => {
+                reads.insert(*net);
+            }
+            ir::Expr::Select {
+                base,
+                offset,
+                width,
+                ..
+            } => {
+                self.collect_expr_reads(*base, reads);
+                self.collect_expr_reads(*offset, reads);
+                self.collect_expr_reads(*width, reads);
+            }
+            ir::Expr::Concat { parts } => {
+                for &p in parts {
+                    self.collect_expr_reads(p, reads);
+                }
+            }
+            ir::Expr::Replicate { count, value } => {
+                self.collect_expr_reads(*count, reads);
+                self.collect_expr_reads(*value, reads);
+            }
+            ir::Expr::Unary { operand, .. } => self.collect_expr_reads(*operand, reads),
+            ir::Expr::Binary { lhs, rhs, .. } => {
+                self.collect_expr_reads(*lhs, reads);
+                self.collect_expr_reads(*rhs, reads);
+            }
+            ir::Expr::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => {
+                self.collect_expr_reads(*cond, reads);
+                self.collect_expr_reads(*then_e, reads);
+                self.collect_expr_reads(*else_e, reads);
+            }
+            ir::Expr::SysFunc { args, .. } => {
+                for &a in args {
+                    self.collect_expr_reads(a, reads);
+                }
+            }
+            ir::Expr::Call { .. } => {}
         }
     }
 

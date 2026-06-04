@@ -1460,3 +1460,24 @@ fn parameter_override_and_generate_with_param() {
     // y = 7+10 = 17; v[g] = g*2 → 0 2 4 6.
     assert_eq!(out, "y=17 v=0 2 4 6\n");
 }
+
+// ── implicit sensitivity: @* / always_comb / always_latch infer the read-set
+//    and RE-FIRE on any input change (sweep gaps 10-12). ───────────────────────
+
+#[test]
+fn implicit_sensitivity_recomputes_on_change() {
+    let src = "module t; reg [7:0] a, b, sc, cc; reg en; reg [7:0] din, q; \
+               always @*       sc = a + b; \
+               always_comb     cc = a * 2; \
+               always_latch    if (en) q = din; \
+               initial begin \
+                 a=3; b=4; en=0; din=0; q=0; \
+                 #1 $display(\"%0d %0d %0d\", sc, cc, q); \
+                 a=10; en=1; din=42; \
+                 #1 $display(\"%0d %0d %0d\", sc, cc, q); \
+                 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // t1: sc=3+4=7, cc=3*2=6, q=0 (en=0). t2: sc=10+4=14, cc=10*2=20, q=42 (en=1).
+    assert_eq!(out, "7 6 0\n14 20 42\n");
+}
