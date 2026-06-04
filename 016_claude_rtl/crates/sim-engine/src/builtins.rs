@@ -494,7 +494,7 @@ fn strip_trailing_zeros(s: &str) -> String {
 
 /// %h/%o/%b: group bits per digit (1=bin,3=oct,4=hex), MSB-first; a group with
 /// any X → 'x', any Z (no X) → 'z'.
-fn fmt_radix(v: &Value, bits_per_digit: u32, _min_zero: bool) -> String {
+fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool) -> String {
     if v.width == 0 {
         return "0".to_string();
     }
@@ -529,6 +529,16 @@ fn fmt_radix(v: &Value, bits_per_digit: u32, _min_zero: bool) -> String {
         } else {
             std::char::from_digit(val, 16).unwrap()
         });
+    }
+    // `%0h`/`%0b`/`%0o`: minimum width — strip leading zeros (keep ≥1 digit).
+    // Plain `%h`/etc. keep the full vector width (leading zeros retained).
+    if min_zero {
+        let trimmed = s.trim_start_matches('0');
+        return if trimmed.is_empty() {
+            "0".to_string()
+        } else {
+            trimmed.to_string()
+        };
     }
     s
 }

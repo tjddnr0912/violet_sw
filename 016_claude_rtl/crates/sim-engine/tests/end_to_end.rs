@@ -1606,3 +1606,31 @@ fn continuous_assign_delay_propagates_after_d() {
     // y undriven (x) until t=5 then 7; a=3 at t=6 → y=3 at t=11 (seen at t=12).
     assert_eq!(out, "t2 y=x\nt6 y=7\nt12 y=3\n");
 }
+
+// ── bare @(sig) any-change wait blocks until the NEXT change after it arms
+//    (no spurious t=0 trigger from another initial's X→init settle). ──────────
+
+#[test]
+fn bare_event_control_no_phantom_t0() {
+    let src = "module t; reg sig; \
+               initial begin sig = 0; #3 sig = 1; #3 sig = 0; end \
+               initial begin @(sig); $display(\"c1=%0d\", $time); \
+                             @(sig); $display(\"c2=%0d\", $time); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // sig set to 0 at t0 (before @ arms) is NOT a trigger; first change t=3, then t=6.
+    assert_eq!(out, "c1=3\nc2=6\n");
+}
+
+// ── `reg unsigned` keyword parses + `%0h`/`%0b`/`%0o` suppress leading zeros. ─
+
+#[test]
+fn unsigned_keyword_and_min_width_radix() {
+    let src = "module t; reg unsigned [7:0] v; \
+               initial begin v = 8'd5; \
+                 $display(\"%0h %0b %0o | %h %b\", v, v, v, v, v); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // %0* strip leading zeros (5/101/5); plain %h/%b keep full width (05/00000101).
+    assert_eq!(out, "5 101 5 | 05 00000101\n");
+}

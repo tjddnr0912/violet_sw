@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use sim_ir::{EdgeKind, EdgeTerm, FourState, Lvalue, RegionTag, SensKind, Terminator, WaitCause};
+use sim_ir::{
+    BitPacked, EdgeKind, EdgeTerm, FourState, Lvalue, RegionTag, SensKind, Terminator, WaitCause,
+};
 
 use elaborate::{ForkModeTable, JoinMode};
 
@@ -91,6 +93,13 @@ struct SlotQueues {
 struct Waiter {
     cause: WaitCause,
     ready: Ready,
+    /// For an IN-BODY `@(sig)`/`@(*)` (a `WaitCause::Level` from `suspend_on`):
+    /// the net values snapshot AT ARM TIME, one per `Level.nets`. The waiter fires
+    /// only when a net differs from this snapshot — so a change that completed
+    /// BEFORE the wait armed (e.g. the t0 `X→init` settle done by another initial
+    /// block before `@(sig)` suspended) does NOT spuriously trigger it. `None` for
+    /// a STATIC always/comb sensitivity (those re-fire on any change, by design).
+    arm: Option<Vec<BitPacked>>,
 }
 
 /// One transport-delay continuous-assign write: `(lhs, value, per-chunk
@@ -309,6 +318,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     self.waiters.push(Waiter {
                         cause: WaitCause::Level { nets },
                         ready,
+                        arm: None, // static sensitivity: re-fire on any change
                     });
                 }
             }
@@ -607,12 +617,27 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 _ => false,
             })
             .collect();
+        // Pre-compute Level firing (the retain closure cannot also borrow `&self`):
+        // an in-body `@(sig)` (arm=Some) fires when a net differs from its ARM-TIME
+        // value; a static sensitivity (arm=None) fires on any net change.
+        let level_fire: Vec<bool> = self
+            .waiters
+            .iter()
+            .map(|w| match (&w.cause, &w.arm) {
+                (WaitCause::Level { nets }, Some(arm)) => nets
+                    .iter()
+                    .zip(arm)
+                    .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
+                (WaitCause::Level { nets }, None) => nets.iter().any(|n| changed_nets.contains(n)),
+                _ => false,
+            })
+            .collect();
         let mut woken: Vec<Ready> = Vec::new();
         let mut wi = 0usize;
         self.waiters.retain(|w| {
             let keep = match &w.cause {
-                // Level + inferred-comb: re-fire on any read-net change.
-                WaitCause::Level { nets } => !nets.iter().any(|n| changed_nets.contains(n)),
+                // Level + inferred-comb: fire per the pre-computed arm/any-change test.
+                WaitCause::Level { .. } => !level_fire[wi],
                 WaitCause::Edge { net, kind } => !edges
                     .iter()
                     .any(|&(en, prev, new)| en == *net && edge_fires(*kind, prev, new)),
@@ -758,7 +783,17 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // on the same event are distinguishable (neither lost nor double-counted).
         let tie = self.activities[proc as usize].tie;
         let ready = Ready { tie, proc, block };
-        self.waiters.push(Waiter { cause, ready });
+        // Snapshot the watched nets so an in-body `@(sig)` fires on the next change
+        // AFTER this point, not on one already applied this delta before it armed.
+        let arm = match &cause {
+            WaitCause::Level { nets } => Some(
+                nets.iter()
+                    .map(|&n| self.st.nets[n as usize].cur.clone())
+                    .collect(),
+            ),
+            _ => None,
+        };
+        self.waiters.push(Waiter { cause, ready, arm });
     }
 
     pub(crate) fn schedule_nba(&mut self, lhs: Lvalue, sampled: Value) {

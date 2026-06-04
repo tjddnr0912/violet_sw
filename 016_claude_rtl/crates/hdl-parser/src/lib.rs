@@ -630,6 +630,12 @@ impl<'t, 's> Parser<'t, 's> {
 // ───────────── module / port / param / decl / contassign ─────────────
 impl<'t, 's> Parser<'t, 's> {
     fn opt_signed(&mut self) -> bool {
+        // `unsigned` is the redundant explicit form of the default (reg/wire are
+        // unsigned) — consume it and report signed=false, so `reg unsigned [7:0]`
+        // parses like `reg [7:0]`. `signed` reports true.
+        if self.eat_kw(Kw::Unsigned) {
+            return false;
+        }
         self.eat_kw(Kw::Signed)
     }
     /// `[msb:lsb]` packed range (requires `:`).
