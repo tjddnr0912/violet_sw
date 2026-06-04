@@ -504,7 +504,19 @@ impl<'s> Elaborator<'s> {
         let saved_inst = std::mem::replace(&mut self.cur_inst, inst_id);
 
         // (3) bind params (defaults, then overrides) — BEFORE nets so [W-1:0] folds.
-        let saved_params = self.bind_params(module, param_overrides);
+        let mut saved_params = self.bind_params(module, param_overrides);
+
+        // (3b) BODY-level `parameter`/`localparam` (a `ModuleItem::Param`, NOT in
+        //      the ANSI `#(...)` header that `bind_params` handles). Bind in decl
+        //      order — a `localparam C = A*B+1` may reference an earlier param —
+        //      BEFORE nets so `[W-1:0]` folds and runtime refs (`x = P`) resolve.
+        for item in &module.body {
+            if let ast::ModuleItem::Param(p) = item {
+                let v = self.const_eval_in_scope(&p.value).unwrap_or(0);
+                let key = self.fq(&p.name.name);
+                saved_params.push((key.clone(), self.params.insert(key, v)));
+            }
+        }
 
         // (3.5) collect THIS module's functions/tasks (bare name → def) for inline
         //       expansion at call sites (pass 7). Saved/restored so a sibling/parent
@@ -1360,6 +1372,13 @@ impl<'s> Elaborator<'s> {
                     // output/inout task formal: resolves to the caller's net.
                     if let Some(net) = self.out_subst_lookup(seg) {
                         return self.push_expr(ir::Expr::Signal { net, word: None });
+                    }
+                    // parameter / localparam / genvar: a constant in THIS scope (or
+                    // an enclosing generate scope) folds to a Const, NOT a net read.
+                    // Resolved before `resolve_net` so a param never errors as an
+                    // undeclared net (mirrors `const_eval_in_scope`'s lookup_scoped).
+                    if let Some(v) = self.lookup_scoped(seg) {
+                        return self.const_u32_expr(v, 32);
                     }
                 }
                 let net = self.resolve_net(path);
@@ -2223,7 +2242,11 @@ impl<'s> Elaborator<'s> {
     /// `Signal.word` / `LvalChunk.word`). A non-const index is not representable
     /// as a static word in v1 → emit `ElabUnsupported` and fall back to word 0.
     fn const_word_index(&mut self, index: &ast::Expr) -> u32 {
-        match const_eval_u32(index) {
+        // `const_eval_in_scope` (NOT the scope-free `const_eval_u32`) so a genvar
+        // or parameter word index — `mem[g]` in a generate, `mem[P]` — folds to
+        // its scope value. A genuinely runtime index (`mem[k]`, k a reg) still
+        // fails here; dynamic word addressing is handled separately.
+        match self.const_eval_in_scope(index) {
             Some(w) => w,
             None => {
                 self.error(

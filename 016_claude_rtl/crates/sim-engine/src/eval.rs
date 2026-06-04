@@ -645,6 +645,10 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     }
 
     fn eval_replicate(&self, count: u32, value: u32) -> Value {
+        // `count` is an ExprId (frozen IR: Replicate.count is a const-expr edge),
+        // NOT a literal — fold it to the repeat count, symmetric with the
+        // self-width table (width.rs) and eval_select's width fold.
+        let count = crate::width::const_u32_of_expr(self.ir, count).unwrap_or(0);
         let v = self.eval(value);
         let total = v.width.saturating_mul(count);
         let mut out = Value::zeros(total.max(1), false);

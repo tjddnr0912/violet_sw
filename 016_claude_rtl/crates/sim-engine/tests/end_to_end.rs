@@ -1427,3 +1427,36 @@ fn nba_dynamic_index_samples_old_value() {
     // a[2] set (OLD i=2) → 0x04; i bumped to 3.
     assert_eq!(out, "a=04 i=3\n");
 }
+
+// ── parameters / localparams as resolvable constants (sweep gaps 2-6) ────────
+
+#[test]
+fn parameters_resolve_as_values_and_widths() {
+    // body param as a runtime value; param-sized vector; localparam expr; the
+    // {W{..}} replicate count. Before the fix each errored E3010 or gave a
+    // silent wrong value (vector→1 bit, replicate→0).
+    let src = "module t; \
+               parameter W = 8; parameter A = 4; localparam C = A*3 + 1; \
+               reg [W-1:0] a; integer x; reg [7:0] r; \
+               initial begin a = 200; x = C; r = {A{1'b1}}; \
+                 $display(\"a=%h x=%0d r=%h\", a, x, r); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // a=200=0xc8 (8-bit holds it), C=4*3+1=13, {4{1'b1}}=0x0f.
+    assert_eq!(out, "a=c8 x=13 r=0f\n");
+}
+
+#[test]
+fn parameter_override_and_generate_with_param() {
+    // child param overridden via #(.P()); generate-for bound + body indexed by a
+    // genvar into a memory both fold to the genvar/param scope value.
+    let src = "module sub #(parameter P = 1) (output [7:0] y); assign y = P + 10; endmodule \
+               module t; parameter N = 4; wire [7:0] y; reg [7:0] v[0:3]; genvar g; \
+               sub #(.P(7)) u (y); \
+               generate for (g = 0; g < N; g = g + 1) begin: gen assign v[g] = g*2; end endgenerate \
+               initial begin #1 $display(\"y=%0d v=%0d %0d %0d %0d\", y, v[0], v[1], v[2], v[3]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // y = 7+10 = 17; v[g] = g*2 → 0 2 4 6.
+    assert_eq!(out, "y=17 v=0 2 4 6\n");
+}
