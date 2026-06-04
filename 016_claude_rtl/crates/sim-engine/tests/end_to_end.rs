@@ -1498,3 +1498,19 @@ fn casez_casex_wildcards_match() {
     // casez: 1010 matches 1??? → z=3. casex: 1010 matches 10xx → x=1.
     assert_eq!(out, "z=3 x=1\n");
 }
+
+// ── wait(expr) resumes on a false→true transition (sweep gaps 18,19). Before
+//    the fix WaitCause::Expr never woke, hanging the process. ──────────────────
+
+#[test]
+fn wait_resumes_on_false_to_true() {
+    let src = "module t; integer cnt; \
+               initial begin cnt = 0; forever #10 cnt = cnt + 1; end \
+               initial begin wait(cnt == 3); $display(\"hit@%0d\", $time); $finish; end \
+               endmodule";
+    let ir = build(src);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // cnt reaches 3 at t=30; the wait resumes there (not a hang, not never).
+    assert_eq!(out, "hit@30\n");
+}

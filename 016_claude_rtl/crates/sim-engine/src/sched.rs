@@ -528,27 +528,37 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             }
         }
 
-        // (b) wake in-body waiters (Edge consumed-on-fire; Level consumed-on-fire).
+        // (b) wake in-body waiters. `wait(expr)` (WaitCause::Expr) RE-CHECKS its
+        // predicate against the post-change net values and resumes only when it
+        // becomes true — pre-evaluated here because the `retain` closure cannot
+        // also borrow `&self` for `truthy`. (Previously Expr fell through `_ =>
+        // true` and never woke, so a `false→true` transition hung the process.)
+        let expr_now: Vec<bool> = self
+            .waiters
+            .iter()
+            .map(|w| match &w.cause {
+                WaitCause::Expr { expr } => self.truthy(*expr),
+                _ => false,
+            })
+            .collect();
         let mut woken: Vec<Ready> = Vec::new();
-        self.waiters.retain(|w| match &w.cause {
-            WaitCause::Level { nets } => {
-                if nets.iter().any(|n| changed_nets.contains(n)) {
-                    woken.push(w.ready);
-                    false // remove: re-armed on resume
-                } else {
-                    true
+        let mut wi = 0usize;
+        self.waiters.retain(|w| {
+            let keep = match &w.cause {
+                // Level + inferred-comb: re-fire on any read-net change.
+                WaitCause::Level { nets } => !nets.iter().any(|n| changed_nets.contains(n)),
+                WaitCause::Edge { net, kind } => {
+                    !edges.iter().any(|&(en, prev, new)| en == *net && edge_fires(*kind, prev, new))
                 }
+                // wait(expr): consume + resume only when the predicate is now true.
+                WaitCause::Expr { .. } => !expr_now[wi],
+                _ => true,
+            };
+            if !keep {
+                woken.push(w.ready); // re-armed on resume (Level/Expr) or consumed (Edge)
             }
-            WaitCause::Edge { net, kind } => {
-                if let Some(&(_, prev, new)) = edges.iter().find(|e| e.0 == *net) {
-                    if edge_fires(*kind, prev, new) {
-                        woken.push(w.ready);
-                        return false; // remove: consumed
-                    }
-                }
-                true
-            }
-            _ => true,
+            wi += 1;
+            keep
         });
         for r in woken {
             push_sorted(&mut self.cur.active, r);
