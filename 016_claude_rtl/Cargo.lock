@@ -522,6 +522,9 @@ version = "0.0.0"
 [[package]]
 name = "vcd-writer"
 version = "0.0.0"
+dependencies = [
+ "sim-ir",
+]
 
 [[package]]
 name = "vita-artifact"
