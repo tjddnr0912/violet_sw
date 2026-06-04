@@ -141,7 +141,11 @@ impl<'a> SimState<'a> {
                 }
             }
             SelKind::PartConst | SelKind::PartIdxUp | SelKind::PartIdxDown => {
-                c.width.unwrap_or_else(|| self.nets[c.net as usize].width)
+                // `c.width` is an ExprId (frozen IR: a const-expr edge like
+                // `Add(Sub(msb,lsb),1)`), NOT a literal — fold it to its value.
+                c.width
+                    .and_then(|eid| crate::width::const_u32_of_expr(self.ir, eid))
+                    .unwrap_or_else(|| self.nets[c.net as usize].width)
             }
         }
     }
@@ -167,20 +171,33 @@ impl<'a> SimState<'a> {
         let net_w = self.nets[net].width;
         let base = word * net_w; // bit offset of this array element
 
+        // `c.offset`/`c.width` are ExprIds (const-expr edges), NOT literals.
+        // Fold them to values. A non-const offset (dynamic LHS index like
+        // `a[i] <= x`) does not fold here — that is a deferred v1 feature
+        // (the write path has no runtime EvalCtx); it defaults to offset 0.
+        let ir = self.ir;
+        let fold = |eid: u32| crate::width::const_u32_of_expr(ir, eid);
         let (off, width) = match c.kind {
             SelKind::Bit => {
                 if c.offset.is_none() && c.width.is_none() {
                     (0, net_w) // whole net
                 } else {
-                    (c.offset.unwrap_or(0), 1)
+                    (c.offset.and_then(fold).unwrap_or(0), 1)
                 }
             }
-            SelKind::PartConst | SelKind::PartIdxUp => {
-                (c.offset.unwrap_or(0), c.width.unwrap_or(net_w))
-            }
+            SelKind::PartConst | SelKind::PartIdxUp => (
+                c.offset.and_then(fold).unwrap_or(0),
+                c.width.and_then(fold).unwrap_or(net_w),
+            ),
             SelKind::PartIdxDown => {
-                let w = c.width.unwrap_or(net_w);
-                (c.offset.unwrap_or(0).saturating_sub(w.saturating_sub(1)), w)
+                let w = c.width.and_then(fold).unwrap_or(net_w);
+                (
+                    c.offset
+                        .and_then(fold)
+                        .unwrap_or(0)
+                        .saturating_sub(w.saturating_sub(1)),
+                    w,
+                )
             }
         };
 

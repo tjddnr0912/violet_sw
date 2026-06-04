@@ -461,3 +461,40 @@ fn probe_in_body_edge_wait_fires_once() {
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(out, "2\n", "two in-body posedge waits resume exactly twice");
 }
+
+// ── part-select read/write (regression: Select.width / LvalChunk.offset+width
+//    are ExprId const-expr edges, not literal counts; must be const-folded) ──
+
+#[test]
+fn part_select_read_folds_width() {
+    // c[11:4] of 0xABC = 0xAB. Before the fold fix this read the raw width
+    // ExprId as a bit count and produced garbage (0x0B).
+    let src = "module m; reg [11:0] c; reg [7:0] hi; \
+               initial begin c=12'hABC; #1 hi=c[11:4]; $display(\"%h\", hi); $finish; end \
+               endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "ab\n", "part-select reads the correct byte");
+}
+
+#[test]
+fn part_select_write_folds_offset_and_width() {
+    // q[7:4]=f then q[3:0]=a → q=0xFA. Exercises the LHS chunk offset+width fold.
+    let src = "module m; reg [7:0] q; \
+               initial begin q=8'h00; #1 q[7:4]=4'hf; q[3:0]=4'ha; $display(\"%h\", q); $finish; end \
+               endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "fa\n", "two part-select writes land in the right nibbles");
+}
+
+#[test]
+fn bit_select_write_folds_offset() {
+    // b[3]=1 on a zero reg → 0x08. Exercises the bit-select LHS offset fold.
+    let src = "module m; reg [7:0] b; \
+               initial begin b=8'h00; #1 b[3]=1'b1; $display(\"%h\", b); $finish; end \
+               endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "08\n", "bit-select write targets the indexed bit");
+}

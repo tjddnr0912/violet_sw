@@ -279,7 +279,7 @@ impl WidthTable {
 ///   - `Sub(lhs, rhs)` — the INNER `msb - lsb` node.
 ///
 /// `Mul`/other shapes → None (caller falls back to width 1; eval clamps at run).
-fn const_u32_of_expr(ir: &SimIr, eid: u32) -> Option<u32> {
+pub(crate) fn const_u32_of_expr(ir: &SimIr, eid: u32) -> Option<u32> {
     match &ir.exprs[eid as usize] {
         Expr::Const { val } => {
             let c = &ir.consts[*val as usize];

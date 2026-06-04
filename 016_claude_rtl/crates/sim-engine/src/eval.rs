@@ -605,6 +605,11 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     // ── Select ─────────────────────────────────────────────────────────────
 
     fn eval_select(&self, base: u32, offset: u32, width: u32, kind: SelKind) -> Value {
+        // `width` is an ExprId (frozen IR: `Select.width` is a const-expr edge,
+        // e.g. `Add(Sub(msb,lsb),1)`), NOT a literal bit count — fold it to its
+        // value. `offset` stays an evaluated expr (it is the runtime index for
+        // indexed `[base +: w]`/`[base -: w]` selects).
+        let width = crate::width::const_u32_of_expr(self.ir, width).unwrap_or(1);
         let src = self.eval(base);
         let off_val = self.eval(offset);
         let off = match off_val.to_u64() {
