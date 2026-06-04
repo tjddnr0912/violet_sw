@@ -40,16 +40,24 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    /// The running tool's expected values. `schema_hash` is the structural hash of
-    /// the frozen sim-ir root (M3: `SimIr`).
-    pub fn current() -> Self {
+    /// Generic: build a tool context for ANY artifact body with the caller-supplied
+    /// expected structural hash (e.g. `schema_hash::<SourceUnit>()` for a `.vu`).
+    /// `format_version` + `semver_major` are fixed for this build, so the container
+    /// stays language-neutral — the CLI passes the per-stage expected hash.
+    pub fn new(schema_hash: [u8; 32]) -> Self {
         ToolContext {
             format_version: CURRENT_FORMAT_VERSION,
-            schema_hash: vita_schema::schema_hash::<sim_ir::SimIr>(),
+            schema_hash,
             semver_major: env!("CARGO_PKG_VERSION_MAJOR")
                 .parse()
                 .expect("CARGO_PKG_VERSION_MAJOR is a valid u32"),
         }
+    }
+
+    /// The running tool's expected values. `schema_hash` is the structural hash of
+    /// the frozen sim-ir root (M3: `SimIr`). Convenience for the `.velab` gate.
+    pub fn current() -> Self {
+        Self::new(vita_schema::schema_hash::<sim_ir::SimIr>())
     }
 }
 

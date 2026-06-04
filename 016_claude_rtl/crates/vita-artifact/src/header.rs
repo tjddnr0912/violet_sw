@@ -6,6 +6,11 @@ use crate::gate::ArtifactError;
 /// 8-byte magic prefix (doc-14 §1 "VELAB\0", padded to 8).
 pub const MAGIC_VELAB: [u8; 8] = *b"VELAB\0\0\0";
 
+/// 8-byte magic prefix for the compiled `.vu` artifact (parse output).
+/// Distinct from `MAGIC_VELAB` so a `.vu` fed to `vrun` fails the FORMAT gate,
+/// not the schema gate.
+pub const MAGIC_VU: [u8; 8] = *b"VU\0\0\0\0\0\0";
+
 /// Container format version. Bumped whenever the header layout changes.
 pub const CURRENT_FORMAT_VERSION: u32 = 2; // bumped for the M3 SimIr freeze
 
@@ -53,10 +58,10 @@ pub struct VelabHeader {
     pub provenance: Provenance,
 }
 
-/// Serialize as `MAGIC_VELAB ++ postcard(header) ++ body`.
-pub fn write_velab(header: &VelabHeader, body: &[u8]) -> Vec<u8> {
+/// Internal: serialize as `magic ++ postcard(header) ++ body`. The body is opaque.
+fn write_with_magic(magic: &[u8; 8], header: &VelabHeader, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + 64 + body.len());
-    out.extend_from_slice(&MAGIC_VELAB);
+    out.extend_from_slice(magic);
     let header_bytes =
         postcard::to_stdvec(header).expect("postcard header encode is infallible for owned data");
     out.extend_from_slice(&header_bytes);
@@ -64,15 +69,46 @@ pub fn write_velab(header: &VelabHeader, body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Internal: check `magic`, decode the header ALONE, return the untouched body slice.
+/// A bad magic or undecodable header is a hard `E-ART-FORMAT-MISMATCH` (doc-15) —
+/// the body is never deserialized.
+fn read_with_magic<'a>(
+    magic: &[u8; 8],
+    label: &str,
+    bytes: &'a [u8],
+) -> Result<(VelabHeader, &'a [u8]), ArtifactError> {
+    if bytes.len() < magic.len() || bytes[..magic.len()] != *magic {
+        return Err(ArtifactError::format(&format!(
+            "bad or missing {label} magic"
+        )));
+    }
+    let after_magic = &bytes[magic.len()..];
+    let (header, body) = postcard::take_from_bytes::<VelabHeader>(after_magic)
+        .map_err(|e| ArtifactError::format(&format!("undecodable {label} header: {e}")))?;
+    Ok((header, body))
+}
+
+/// Serialize as `MAGIC_VELAB ++ postcard(header) ++ body`.
+pub fn write_velab(header: &VelabHeader, body: &[u8]) -> Vec<u8> {
+    write_with_magic(&MAGIC_VELAB, header, body)
+}
+
 /// Check magic, then decode the header ALONE (body untouched). Returns the header
 /// and the trailing body slice. A bad magic or undecodable header is a hard
 /// `E-ART-FORMAT-MISMATCH` (doc-15) — the body is never deserialized.
 pub fn read_velab(bytes: &[u8]) -> Result<(VelabHeader, &[u8]), ArtifactError> {
-    if bytes.len() < MAGIC_VELAB.len() || bytes[..MAGIC_VELAB.len()] != MAGIC_VELAB {
-        return Err(ArtifactError::format("bad or missing VELAB magic"));
-    }
-    let after_magic = &bytes[MAGIC_VELAB.len()..];
-    let (header, body) = postcard::take_from_bytes::<VelabHeader>(after_magic)
-        .map_err(|e| ArtifactError::format(&format!("undecodable velab header: {e}")))?;
-    Ok((header, body))
+    read_with_magic(&MAGIC_VELAB, "velab", bytes)
+}
+
+/// Serialize a `.vu` (compiled `SourceUnit`) artifact:
+/// `MAGIC_VU ++ postcard(header) ++ body`. `body` is `postcard(hdl_ast::SourceUnit)`
+/// (the CLI owns that encode — the container stays language-neutral).
+pub fn write_vu(header: &VelabHeader, body: &[u8]) -> Vec<u8> {
+    write_with_magic(&MAGIC_VU, header, body)
+}
+
+/// Header-only decode of a `.vu`. Bad magic / undecodable header →
+/// `E-ART-FORMAT-MISMATCH`; the body slice is returned untouched.
+pub fn read_vu(bytes: &[u8]) -> Result<(VelabHeader, &[u8]), ArtifactError> {
+    read_with_magic(&MAGIC_VU, "VU", bytes)
 }

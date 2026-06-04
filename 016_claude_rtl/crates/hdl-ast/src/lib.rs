@@ -6,22 +6,17 @@
 //! + 소스 스팬"). Spans are `u32` byte offsets → deterministic, `.vu`-safe.
 //!
 //! ## Serialization decision (load-bearing — verified against the derive source)
-//! These types derive `Serialize + Deserialize` NOW so elaborate can write the
-//! `.vu` body. They do **NOT** yet derive `SchemaHash`. Verified at
-//! `vita-artifact-derive/src/lib.rs:248`: the catch-all arm pushes
-//! `render_full_path(tp)` into `children`, and `render_full_path` (lib.rs:260)
-//! joins only segment *idents* — so `Box<Expr>` renders to the bare string
-//! `"Box"`, which is later re-parsed as a `Type` and emitted as
-//! `<Box as SchemaShape>::register(reg)` — a hard compile error (no impl, and the
-//! derive rejects type-args here). `Range<usize>` additionally trips the
-//! `usize`-forbidden guard (lib.rs:210). A `Box`-recursive AST therefore cannot
-//! carry `#[derive(SchemaHash)]` today. UNBLOCK (Residual 1): add one transparent
-//! arm `("Box",1) => render_type_expr(args[0], children)` next to the existing
-//! `Option`/`Vec`/`BTreeSet` arms (lib.rs:240-247). Until then the `.vu`
-//! schema_hash root stays unlocked (doc-14 §5; consistent with sim-ir deferring
-//! its M3 root freeze). All shapes here already obey the determinism rules
-//! (no usize/HashMap/float; `Span` = two `u32`), so enabling the hash later does
-//! NOT change the byte layout.
+//! These types derive `Serialize + Deserialize` so elaborate can write the `.vu`
+//! body, AND `SchemaHash` so the `.vu` container can gate staleness against the
+//! `SourceUnit` shape. The `Box`-recursive AST is hashable because the derive
+//! carries a transparent `("Box", 1)` arm (`vita-artifact-derive`) that renders a
+//! `Box<T>` as its inner `T` — alongside the `Option`/`Vec`/`BTreeSet` arms —
+//! instead of emitting a bare `<Box as SchemaShape>::register`. The shapes obey
+//! the determinism rules (no usize/HashMap/float; `Span` = two `u32`), so the
+//! `schema_hash::<SourceUnit>()` root is pinned by the golden gate in
+//! `tests/schema_hash.rs`. Field add/remove/reorder flips that root, which
+//! invalidates every `.vu` on disk (intentional — a `format_version` bump and a
+//! golden update must accompany any deliberate change).
 
 use serde::{Deserialize, Serialize};
 use vita_artifact_derive::SchemaHash;

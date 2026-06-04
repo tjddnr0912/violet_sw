@@ -25,3 +25,18 @@ elaborate = { path = "../elaborate" }
 sim-ir = { path = "../sim-ir" }
 sim-engine = { path = "../sim-engine" }
 diag = { path = "../diag" }
+vita-artifact = { path = "../vita-artifact" }
+vita-schema = { path = "../vita-schema" }
+postcard = { workspace = true }
+
+[dev-dependencies]
+vita-artifact = { path = "../vita-artifact" }
+vita-schema = { path = "../vita-schema" }
+postcard = { workspace = true }
+hdl-ast = { path = "../hdl-ast" }
+hdl-lexer = { path = "../hdl-lexer" }
+hdl-parser = { path = "../hdl-parser" }
+elaborate = { path = "../elaborate" }
+sim-ir = { path = "../sim-ir" }
+sim-engine = { path = "../sim-engine" }
+diag = { path = "../diag" }

@@ -92,8 +92,11 @@ dependencies = [
  "hdl-lexer",
  "hdl-parser",
  "hdl-preprocess",
+ "postcard",
  "sim-engine",
  "sim-ir",
+ "vita-artifact",
+ "vita-schema",
 ]
 
 [[package]]

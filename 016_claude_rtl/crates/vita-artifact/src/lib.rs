@@ -5,5 +5,6 @@ mod header;
 
 pub use gate::{verify_header, ArtifactError, ToolContext};
 pub use header::{
-    read_velab, write_velab, Provenance, VelabHeader, CURRENT_FORMAT_VERSION, MAGIC_VELAB,
+    read_velab, read_vu, write_velab, write_vu, Provenance, VelabHeader, CURRENT_FORMAT_VERSION,
+    MAGIC_VELAB, MAGIC_VU,
 };

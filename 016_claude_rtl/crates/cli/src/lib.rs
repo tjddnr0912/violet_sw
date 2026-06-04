@@ -12,8 +12,10 @@
 //! | 3    | CLI/usage error: no source files, file not found, unknown applet |
 //!
 //! `main()` is a thin wrapper that parses argv, reads files, and calls
-//! [`run_vita`]; the staged applets (`vcmp`/`velab`/`vrun`) are deferred stubs
-//! (they need vita-artifact body serialization) and return 3.
+//! [`run_vita`]; the staged applets ([`run_vcmp`]/[`run_velab`]/[`run_vrun`])
+//! serialize the front-end `SourceUnit` to a `.vu`, elaborate it to a `.velab`
+//! (golden `SimIr` frame + non-golden `ForkModeTable` trailer), and simulate it,
+//! with a `schema_hash` staleness gate between every stage.
 
 use std::cell::Cell;
 
@@ -171,13 +173,37 @@ fn emit_frontend_error(
     }));
 }
 
-/// Core: run the `vita` one-shot pipeline over already-read source `text`
-/// (`file` is the display name used in diagnostics). Returns the process exit
-/// code. This is the unit-test entry point — it never reads argv or files and
-/// never calls `std::process::exit`.
-pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
-    let sink = StderrSink::new();
+/// Read a single source file, then run the preprocess→lex→parse front-end,
+/// emitting any diagnostics through `sink`. Returns `Some(unit)` on a clean
+/// parse, `None` if read / preprocess / lex / parse failed OR the parse produced
+/// no design units (the caller maps `None` to `EXIT_USER_ERROR`; a single-file
+/// read failure also returns `None` after no emit — callers that need exit-3 on a
+/// missing file read it themselves first).
+///
+/// The full pipeline (incl. the preprocessor) runs even for directive-free input,
+/// so byte offsets / spans match the production one-shot path exactly. The staged
+/// `vcmp` path and the round-trip tests parse through this same function so the
+/// comparison never silently depends on a preprocessor bypass.
+pub fn frontend_to_unit(file: &str, sink: &StderrSink) -> Option<hdl_ast::SourceUnit> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let text = if text.ends_with('\n') {
+        text
+    } else {
+        format!("{text}\n")
+    };
+    frontend_text_to_unit(file, &text, sink)
+}
 
+/// The preprocess→lex→parse core, factored so the one-shot driver, multi-file
+/// `vcmp` (which concatenates first), and single-file [`frontend_to_unit`] all
+/// share one implementation. Returns `None` (after emitting) on any front-end
+/// error or an empty unit. `file` is the display name used in diagnostics; `text`
+/// is the already-read source buffer.
+pub fn frontend_text_to_unit(
+    file: &str,
+    text: &str,
+    sink: &StderrSink,
+) -> Option<hdl_ast::SourceUnit> {
     // ── preprocess ─────────────────────────────────────────────────────────
     // raw source -> expanded text + SourceMap. The expanded text (not `text`) is
     // what the lexer and parser consume; spans they produce index the expanded
@@ -199,7 +225,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
         }));
     }
     if pp.has_errors() {
-        return EXIT_USER_ERROR;
+        return None;
     }
     let expanded: &str = &pp.text;
 
@@ -209,9 +235,9 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
         for e in &lex_errors {
             let (mnemonic, _) = e.kind.msg_code_hint();
             let msg = format!("lex error: {} ({mnemonic})", lex_error_message(e.kind));
-            emit_frontend_error(&sink, &pp.map, e.span.start, e.span.end, msg);
+            emit_frontend_error(sink, &pp.map, e.span.start, e.span.end, msg);
         }
-        return EXIT_USER_ERROR;
+        return None;
     }
 
     // ── parse ─────────────────────────────────────────────────────────────
@@ -223,13 +249,13 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
                 None => "end of file".to_string(),
             };
             let msg = format!("expected {}, found {found}", e.expected);
-            emit_frontend_error(&sink, &pp.map, e.span.lo as usize, e.span.hi as usize, msg);
+            emit_frontend_error(sink, &pp.map, e.span.lo as usize, e.span.hi as usize, msg);
         }
-        return EXIT_USER_ERROR;
+        return None;
     }
     let Some(unit) = unit else {
         // Empty source with no errors: nothing to simulate. Treat as a usage
-        // error — the user pointed `vita` at a file with no design units.
+        // error — the user pointed the tool at a file with no design units.
         sink.emit(LogEvent::Diagnostic(Diagnostic {
             severity: Severity::Error,
             code: MsgCode::ParseUnexpectedToken,
@@ -238,6 +264,20 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
             context: Vec::new(),
             sim_time: None,
         }));
+        return None;
+    };
+    Some(unit)
+}
+
+/// Core: run the `vita` one-shot pipeline over already-read source `text`
+/// (`file` is the display name used in diagnostics). Returns the process exit
+/// code. This is the unit-test entry point — it never reads argv or files and
+/// never calls `std::process::exit`.
+pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
+    let sink = StderrSink::new();
+
+    // ── preprocess → lex → parse (shared front-end) ─────────────────────────
+    let Some(unit) = frontend_text_to_unit(file, text, &sink) else {
         return EXIT_USER_ERROR;
     };
 
@@ -329,7 +369,7 @@ pub fn run_vita(sources: &[String], opts: &VitaOpts) -> i32 {
 pub enum Applet {
     /// The one-shot driver (implemented).
     Vita,
-    /// A staged-flow applet (`vcmp`/`velab`/`vrun`) — deferred stub.
+    /// A staged-flow applet (`vcmp`/`velab`/`vrun`).
     Staged(&'static str),
 }
 
@@ -373,13 +413,388 @@ pub fn run(argv: &[String]) -> i32 {
     let (applet, args) = resolve_applet(argv);
     match applet {
         Applet::Vita => run_vita(&args, &VitaOpts::default()),
-        Applet::Staged(name) => {
+        Applet::Staged("vcmp") => dispatch_vcmp(&args),
+        Applet::Staged("velab") => dispatch_velab(&args),
+        Applet::Staged("vrun") => dispatch_vrun(&args),
+        Applet::Staged(other) => {
             eprintln!(
-                "vitamin: {name}: staged flow not yet implemented (needs artifact serialization)"
+                "error[{}]: unknown staged applet '{other}'",
+                MsgCode::CliBadFlag.code_num()
             );
             EXIT_CLI_ERROR
         }
     }
+}
+
+// ───────────────────────── staged-flow applets ──────────────────────────────
+
+/// Render an artifact-gate rejection through the sink as an Error diagnostic
+/// (no source location — artifact-level), then return `EXIT_USER_ERROR`. Gate
+/// rejections are design/data errors (doc-13: code 1), NOT CLI usage errors.
+fn emit_artifact_error(sink: &StderrSink, e: &vita_artifact::ArtifactError) -> i32 {
+    sink.emit(LogEvent::Diagnostic(Diagnostic {
+        severity: Severity::Error,
+        code: e.code,
+        message: e.message.clone(),
+        location: None,
+        context: Vec::new(),
+        sim_time: None,
+    }));
+    EXIT_USER_ERROR
+}
+
+/// Read a file as bytes; a read failure is a CLI/usage error (exit 3).
+fn read_artifact_bytes(path: &str) -> Result<Vec<u8>, i32> {
+    std::fs::read(path).map_err(|e| {
+        eprintln!(
+            "error[{}]: cannot read '{path}': {e}",
+            MsgCode::FlistNotFound.code_num()
+        );
+        EXIT_CLI_ERROR
+    })
+}
+
+/// Default output path: replace **only the final** extension component on the
+/// input (std `Path::with_extension` semantics — never panics, replaces the last
+/// `.ext` only). e.g. `default_out("a.sv","vu") -> "a.vu"`;
+/// `default_out("a.b.sv","vu") -> "a.b.vu"`. Callers MUST run `out` through
+/// `reject_out_clobbers_input` before writing.
+fn default_out(input: &str, ext: &str) -> String {
+    let p = std::path::Path::new(input);
+    p.with_extension(ext).to_string_lossy().into_owned()
+}
+
+/// True iff two path strings denote the same file. Canonicalizes when BOTH paths
+/// already exist (handles `./a.sv` vs `a.sv`, symlinks, `..`); otherwise falls
+/// back to a raw string compare (the output usually does not exist yet). Never
+/// panics.
+fn same_path(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => false,
+    }
+}
+
+/// Reject when the resolved output path would overwrite any positional input.
+/// Guards both the `default_out` self-clobber (`vcmp foo.vu` -> default `foo.vu`)
+/// and an explicit `-o a.sv` that names an input.
+fn reject_out_clobbers_input(inputs: &[String], out: &str) -> Result<(), i32> {
+    if inputs.iter().any(|p| same_path(p, out)) {
+        eprintln!(
+            "error[{}]: output '{out}' would overwrite an input file",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return Err(EXIT_CLI_ERROR);
+    }
+    Ok(())
+}
+
+/// Build the `.vu` header. RULE-V fields (`composite_input_hash`/`consumed`/
+/// `worklib_manifest_hash`) are stamped zero (deferred gate); `global_time_precision`
+/// is not meaningful pre-elaborate.
+fn vu_header(schema_hash: [u8; 32]) -> vita_artifact::VelabHeader {
+    vita_artifact::VelabHeader {
+        format_version: vita_artifact::CURRENT_FORMAT_VERSION,
+        schema_hash,
+        composite_input_hash: [0u8; 32],
+        global_time_precision: 0,
+        consumed: Vec::new(),
+        worklib_manifest_hash: [0u8; 32],
+        uses_dump: false,
+        tool_semver_major: env!("CARGO_PKG_VERSION_MAJOR")
+            .parse()
+            .expect("CARGO_PKG_VERSION_MAJOR is a valid u32"),
+        provenance: vita_artifact::Provenance::capture(),
+    }
+}
+
+/// Build the `.velab` header. `uses_dump`/`global_time_precision` are stamped
+/// `false`/`0` hints in v1 (not gates). RULE-V fields stay zeroed (deferred).
+fn velab_header(schema_hash: [u8; 32], _ir: &sim_ir::SimIr) -> vita_artifact::VelabHeader {
+    vita_artifact::VelabHeader {
+        format_version: vita_artifact::CURRENT_FORMAT_VERSION,
+        schema_hash,
+        composite_input_hash: [0u8; 32],
+        global_time_precision: 0,
+        consumed: Vec::new(),
+        worklib_manifest_hash: [0u8; 32],
+        uses_dump: false,
+        tool_semver_major: env!("CARGO_PKG_VERSION_MAJOR")
+            .parse()
+            .expect("CARGO_PKG_VERSION_MAJOR is a valid u32"),
+        provenance: vita_artifact::Provenance::capture(),
+    }
+}
+
+/// `vcmp`: read+preprocess+lex+parse the source(s) into a `SourceUnit`, then write
+/// a `.vu` artifact. `out` is the resolved output path.
+/// Exit: 0 ok / 1 lex|parse|empty-unit / 3 missing-file|write-error.
+pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
+    let _ = opts; // vcmp ignores sim knobs; kept for signature symmetry
+    if sources.is_empty() {
+        eprintln!(
+            "error[{}]: no source files given",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    }
+    let sink = StderrSink::new();
+
+    // read+concat (mirrors run_vita): read error → exit 3.
+    let mut text = String::new();
+    for path in sources {
+        match std::fs::read_to_string(path) {
+            Ok(s) => {
+                text.push_str(&s);
+                if !s.ends_with('\n') {
+                    text.push('\n');
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "error[{}]: cannot read '{path}': {e}",
+                    MsgCode::FlistNotFound.code_num()
+                );
+                return EXIT_CLI_ERROR;
+            }
+        }
+    }
+    let file = sources[0].as_str();
+
+    // preprocess → lex → parse through the SAME shared front-end the one-shot uses.
+    let Some(unit) = frontend_text_to_unit(file, &text, &sink) else {
+        return EXIT_USER_ERROR;
+    };
+
+    // ── write `.vu` ──
+    let body = postcard::to_stdvec(&unit).expect("SourceUnit postcard encode infallible");
+    let header = vu_header(vita_schema::schema_hash::<hdl_ast::SourceUnit>());
+    let bytes = vita_artifact::write_vu(&header, &body);
+    if let Err(e) = std::fs::write(out, &bytes) {
+        eprintln!(
+            "error[{}]: cannot write '{out}': {e}",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    }
+    EXIT_OK
+}
+
+/// `velab`: read a `.vu`, gate the hdl-ast hash, decode the `SourceUnit`,
+/// elaborate (with fork modes), then write a `.velab` = header(SimIr hash) +
+/// body(`postcard(SimIr) ++ postcard(ForkModeTable)`).
+/// Exit: 0 ok / 1 gate-reject|elab-fail|corrupt-body / 3 missing-file|write-error.
+pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
+    let _ = opts;
+    let sink = StderrSink::new();
+
+    let bytes = match read_artifact_bytes(vu_path) {
+        Ok(b) => b,
+        Err(code) => return code,
+    };
+
+    // header-only decode (bad magic/header → E-ART-FORMAT-MISMATCH)
+    let (header, body) = match vita_artifact::read_vu(&bytes) {
+        Ok(x) => x,
+        Err(e) => return emit_artifact_error(&sink, &e),
+    };
+    // staleness gate: this `.vu` must match the hdl-ast shape THIS velab was built against.
+    let tool = vita_artifact::ToolContext::new(vita_schema::schema_hash::<hdl_ast::SourceUnit>());
+    if let Err(e) = vita_artifact::verify_header(&header, &tool) {
+        return emit_artifact_error(&sink, &e); // E-ART-SCHEMA-MISMATCH etc.
+    }
+    // decode the SourceUnit body (corrupt body behind a valid header → E-ART-FORMAT-MISMATCH)
+    let unit: hdl_ast::SourceUnit = match postcard::from_bytes(body) {
+        Ok(u) => u,
+        Err(e) => {
+            return emit_artifact_error(
+                &sink,
+                &vita_artifact::ArtifactError::format(&format!("undecodable .vu body: {e}")),
+            )
+        }
+    };
+
+    // ── elaborate ──
+    let (ir, fork_modes) = elaborate::elaborate_with_modes(&unit, &sink);
+    let Some(ir) = ir else {
+        return EXIT_USER_ERROR; // elab error already emitted
+    };
+
+    // ── write `.velab` (body = postcard(SimIr) ++ postcard(ForkModeTable)) ──
+    let mut velab_body = postcard::to_stdvec(&ir).expect("SimIr postcard encode infallible");
+    let trailer =
+        postcard::to_stdvec(&fork_modes).expect("ForkModeTable postcard encode infallible");
+    velab_body.extend_from_slice(&trailer);
+    let vheader = velab_header(vita_schema::schema_hash::<sim_ir::SimIr>(), &ir);
+    let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
+    if let Err(e) = std::fs::write(out, &out_bytes) {
+        eprintln!(
+            "error[{}]: cannot write '{out}': {e}",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    }
+    EXIT_OK
+}
+
+/// `vrun`: read a `.velab`, gate the SimIr hash, decode SimIr+ForkModeTable,
+/// simulate (threading `fork_modes` into `SimOpts`), writing the VCD. Returns the
+/// doc-13 sim exit code.
+/// Exit: 0 clean / 1 gate-reject|corrupt-body|runtime-fatal / 3 missing-file.
+pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
+    let sink = StderrSink::new();
+
+    let bytes = match read_artifact_bytes(velab_path) {
+        Ok(b) => b,
+        Err(code) => return code,
+    };
+
+    let (header, body) = match vita_artifact::read_velab(&bytes) {
+        Ok(x) => x,
+        Err(e) => return emit_artifact_error(&sink, &e), // bad magic → E-ART-FORMAT-MISMATCH
+    };
+    let tool = vita_artifact::ToolContext::current(); // SimIr-flavored
+    if let Err(e) = vita_artifact::verify_header(&header, &tool) {
+        return emit_artifact_error(&sink, &e); // schema/version → E-ART-SCHEMA-MISMATCH / E-ART-VERSION-GATE
+    }
+
+    // split the golden SimIr frame from the fork trailer.
+    let (ir, rest): (sim_ir::SimIr, &[u8]) = match postcard::take_from_bytes(body) {
+        Ok(x) => x,
+        Err(e) => {
+            return emit_artifact_error(
+                &sink,
+                &vita_artifact::ArtifactError::format(&format!(
+                    "undecodable .velab SimIr body: {e}"
+                )),
+            )
+        }
+    };
+    let fork_modes: sim_engine::ForkModeTable = match postcard::from_bytes(rest) {
+        Ok(m) => m,
+        Err(e) => {
+            return emit_artifact_error(
+                &sink,
+                &vita_artifact::ArtifactError::format(&format!(
+                    "undecodable .velab fork trailer: {e}"
+                )),
+            )
+        }
+    };
+
+    // ── simulate ──
+    let sim_opts = SimOpts {
+        fork_modes,
+        ..opts.sim_opts()
+    };
+    let result = sim_engine::simulate(&ir, &sink, sim_opts);
+    sim_exit_code(&result)
+}
+
+/// Parse a flat arg list into (positional paths, `-o` value). `-o`/`--out`
+/// consume the next arg. Unknown flags → `Err(EXIT_CLI_ERROR)`.
+fn parse_io_args(args: &[String]) -> Result<(Vec<String>, Option<String>), i32> {
+    let mut pos = Vec::new();
+    let mut out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--out" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '-o' needs an argument",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                out = Some(v.clone());
+                i += 2;
+            }
+            s if s.starts_with('-') && s.len() > 1 => {
+                eprintln!(
+                    "error[{}]: unknown flag '{s}'",
+                    MsgCode::CliBadFlag.code_num()
+                );
+                return Err(EXIT_CLI_ERROR);
+            }
+            _ => {
+                pos.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    Ok((pos, out))
+}
+
+fn dispatch_vcmp(args: &[String]) -> i32 {
+    let (pos, out) = match parse_io_args(args) {
+        Ok(x) => x,
+        Err(c) => return c,
+    };
+    if pos.is_empty() {
+        eprintln!(
+            "error[{}]: vcmp: no source files",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    }
+    let out = out.unwrap_or_else(|| default_out(&pos[0], "vu"));
+    if let Err(c) = reject_out_clobbers_input(&pos, &out) {
+        return c;
+    }
+    run_vcmp(&pos, &out, &VitaOpts::default())
+}
+
+fn dispatch_velab(args: &[String]) -> i32 {
+    let (pos, out) = match parse_io_args(args) {
+        Ok(x) => x,
+        Err(c) => return c,
+    };
+    if pos.len() != 1 {
+        eprintln!(
+            "error[{}]: velab: expected exactly one .vu input",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    }
+    let out = out.unwrap_or_else(|| default_out(&pos[0], "velab"));
+    if let Err(c) = reject_out_clobbers_input(&pos, &out) {
+        return c;
+    }
+    run_velab(&pos[0], &out, &VitaOpts::default())
+}
+
+fn dispatch_vrun(args: &[String]) -> i32 {
+    let (pos, out) = match parse_io_args(args) {
+        Ok(x) => x,
+        Err(c) => return c,
+    };
+    if pos.len() != 1 {
+        eprintln!(
+            "error[{}]: vrun: expected exactly one .velab input",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    }
+    // vrun accepts `-o` as a VCD path override (parity with one-shot vita -o).
+    // Guard: a `-o` that names the input `.velab` would clobber the file being read.
+    if let Some(ref o) = out {
+        if let Err(c) = reject_out_clobbers_input(&pos, o) {
+            return c;
+        }
+    }
+    // `..Default::default()` is forward-compat: when a bucket-C VitaOpts field
+    // lands (the flag surface is DEFERRED), this stays non-breaking. VitaOpts has
+    // a single field today, so clippy's needless-update fires — allow it here.
+    #[allow(clippy::needless_update)]
+    let opts = VitaOpts {
+        vcd_path_override: out,
+        ..Default::default()
+    };
+    run_vrun(&pos[0], &opts)
 }
 
 #[cfg(test)]
@@ -451,12 +866,27 @@ mod tests {
     }
 
     #[test]
-    fn unknown_applet_via_run_exits_three() {
-        // `vcmp` basename → staged stub → exit 3.
-        let argv = vec!["/usr/local/bin/vcmp".to_string(), "top.sv".to_string()];
+    fn vcmp_missing_source_via_run_exits_three() {
+        // `vcmp` is now real: `vcmp <missing>.sv` routes to dispatch_vcmp, which
+        // fails on the missing-file READ path → exit 3 (CLI/usage error, not a
+        // stub). The path is deliberately one that cannot exist.
+        let missing = "/nonexistent/path/unknown_applet_top.sv".to_string();
+        let argv = vec!["/usr/local/bin/vcmp".to_string(), missing.clone()];
         assert_eq!(run(&argv), EXIT_CLI_ERROR);
-        // explicit `vita vcmp …` form also routes to the stub.
-        let argv = vec!["vita".to_string(), "vcmp".to_string(), "top.sv".to_string()];
+        // explicit `vita vcmp …` form routes the same way.
+        let argv = vec!["vita".to_string(), "vcmp".to_string(), missing];
+        assert_eq!(run(&argv), EXIT_CLI_ERROR);
+    }
+
+    #[test]
+    fn unknown_flag_to_staged_applet_exits_three() {
+        // A genuinely-unknown flag to a staged applet is a CLI/usage error (exit 3)
+        // — proves the arg parser rejects, not the stub.
+        let argv = vec![
+            "/usr/local/bin/vcmp".to_string(),
+            "--bogus-flag".to_string(),
+            "x.sv".to_string(),
+        ];
         assert_eq!(run(&argv), EXIT_CLI_ERROR);
     }
 
