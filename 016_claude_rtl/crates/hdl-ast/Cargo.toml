@@ -7,10 +7,12 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-# vita-schema / vita-artifact-derive: DEFERRED. The derive's catch-all arm
-# (vita-artifact-derive/src/lib.rs:248) renders Box<Expr> -> bare "Box" and emits
-# <Box as SchemaShape>::register() (won't compile). Add both crates + #[derive(
-# SchemaHash)] once the one-arm Box passthrough lands (Residual 1).
+# SchemaHash on the Box-recursive AST is now UNBLOCKED: the derive grew a
+# transparent `Box<T>` arm (vita-artifact-derive/src/lib.rs), so `Box<Expr>`
+# renders as `Expr` and the registry's insert_once guard short-circuits the
+# self-reference. Span is two u32 (no usize/float), so the shape is deterministic.
+vita-schema = { path = "../vita-schema" }
+vita-artifact-derive = { path = "../vita-artifact-derive" }
 
 [dev-dependencies]
 postcard = { workspace = true }   # round-trip AST in unit tests (workspace-pinned;

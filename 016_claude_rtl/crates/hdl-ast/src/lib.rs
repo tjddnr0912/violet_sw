@@ -24,12 +24,13 @@
 //! NOT change the byte layout.
 
 use serde::{Deserialize, Serialize};
+use vita_artifact_derive::SchemaHash;
 
 // ───────────────────────────── Span ─────────────────────────────
 /// Half-open byte range `[lo, hi)` into the preprocessed source. `u32` (not the
 /// lexer's `Range<usize>`) so the serialized shape is deterministic across OSes.
 /// The parser narrows each `Spanned.span: Range<usize>` at node construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct Span {
     pub lo: u32,
     pub hi: u32,
@@ -64,27 +65,27 @@ impl Span {
 /// `EscapedIdent` keeps its raw `\…` form; stripping the leading `\` and the
 /// trailing-whitespace rule is the consumer's job. Interning to a `u32 Symbol` is
 /// a later optimization (Residual 9); `String` keeps PR1 simple, determinism-safe.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct Ident {
     pub name: String,
     pub span: Span,
 }
 
 /// Hierarchical name `a` | `a.b.c`. One-segment is the common case.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct HierPath {
     pub segments: Vec<Ident>,
     pub span: Span,
 }
 
 // ──────────────────────────── SourceUnit ────────────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct SourceUnit {
     pub items: Vec<TopItem>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum TopItem {
     Module(ModuleDecl),
     /// Recovery placeholder for an unparseable top-level construct.
@@ -92,7 +93,7 @@ pub enum TopItem {
 }
 
 // ──────────────────────────── Module ────────────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct ModuleDecl {
     pub is_macromodule: bool, // `module` vs `macromodule`
     pub name: Ident,
@@ -102,7 +103,7 @@ pub struct ModuleDecl {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum PortList {
     /// ANSI: header carries dir + type + range inline.
     Ansi(Vec<AnsiPort>),
@@ -112,7 +113,7 @@ pub enum PortList {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct AnsiPort {
     pub dir: PortDir,
     pub net_or_var: Option<NetVarKind>, // None ⇒ default wire
@@ -123,7 +124,7 @@ pub struct AnsiPort {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum PortDir {
     Input,
     Output,
@@ -131,7 +132,7 @@ pub enum PortDir {
 }
 
 // ──────────────────────────── ModuleItem ────────────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ModuleItem {
     NetVar(NetVarDecl),
     Param(ParamDecl),   // body-level parameter/localparam
@@ -151,14 +152,14 @@ pub enum ModuleItem {
     Error(Span),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct DefparamItem {
     pub assigns: Vec<(HierPath, Expr)>,
     pub span: Span,
 }
 
 // ──────────────────── PortDecl (non-ANSI body dir) ────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct PortDecl {
     pub dir: PortDir,
     pub net_or_var: Option<NetVarKind>, // e.g. `output reg`
@@ -169,7 +170,7 @@ pub struct PortDecl {
 }
 
 // ──────────────────────────── ParamDecl ────────────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct ParamDecl {
     pub kind: ParamKind,
     pub signed: bool,
@@ -179,12 +180,12 @@ pub struct ParamDecl {
     pub value: Expr, // RHS const-expr (required)
     pub span: Span,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ParamKind {
     Parameter,
     Localparam,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ParamType {
     Implicit,
     Integer,
@@ -194,7 +195,7 @@ pub enum ParamType {
 }
 
 // ──────────────────────────── NetVarDecl ────────────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct NetVarDecl {
     pub kind: NetVarKind,
     pub signed: bool,
@@ -202,7 +203,7 @@ pub struct NetVarDecl {
     pub names: Vec<DeclName>, // one decl, possibly many names
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct DeclName {
     pub name: Ident,
     pub unpacked: Vec<Dim>, // memory dims: reg [7:0] mem [0:255] / mem [256]
@@ -211,12 +212,12 @@ pub struct DeclName {
 }
 /// An unpacked array dimension. `[msb:lsb]` (V2005) OR `[size]` (SV size-form).
 /// (verdict M3: the AST must represent both; the parser accepts `[size]` too.)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum Dim {
     Range(Range), // [hi:lo]
     Size(Expr),   // [N]
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum NetVarKind {
     // nets
     Wire,
@@ -241,7 +242,7 @@ pub enum NetVarKind {
 }
 
 /// `[msb:lsb]`. Bounds are exprs (usually const), NOT pre-evaluated.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct Range {
     pub msb: Expr,
     pub lsb: Expr,
@@ -249,7 +250,7 @@ pub struct Range {
 }
 
 // ─────────────────────── ContinuousAssign ───────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct ContinuousAssign {
     pub delay: Option<Delay>,
     pub assigns: Vec<(Lvalue, Expr)>, // assign a=b, c=d;
@@ -258,21 +259,21 @@ pub struct ContinuousAssign {
 /// `#d` | `#(d)` | `#(rise,fall)` | `#(rise,fall,turnoff)`. Each value is a
 /// `MinTypMax`-or-plain expr (verdict M2 — `#(1:2:3)` is legal). The parser stores
 /// each delay value via `Expr` (mintypmax surfaces as `ExprKind::MinTypMax`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct Delay {
     pub values: Vec<Expr>,
     pub span: Span,
 }
 
 // ───────────────── ProceduralBlock + Sensitivity [A] ─────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct ProceduralBlock {
     pub kind: ProcKind,
     pub sensitivity: Option<Sensitivity>, // only general `always @(…)`
     pub body: Box<Stmt>,                  // usually Block; stub-parsed in PR1
     pub span: Span,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ProcKind {
     Initial,
     Always,
@@ -281,18 +282,18 @@ pub enum ProcKind {
     AlwaysLatch,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum Sensitivity {
     Star,                 // @(*) / @* (both map here; M5 note)
     List(Vec<EventExpr>), // @(posedge clk or negedge rst or a)
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct EventExpr {
     pub edge: Edge,
     pub expr: Expr,
     pub span: Span,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum Edge {
     Posedge,
     Negedge,
@@ -304,7 +305,7 @@ pub enum Edge {
 // enum, so adding `Fork`/`Assign`/`Deassign`/`Force`/`Release` later would flip the
 // schema. The grammar §2.7 superset is adopted; parsing of all of these is deferred
 // to PR2 (PR1 only constructs `Block`/`Error`/`Null` via the recovering stub).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum Stmt {
     Blocking {
         lhs: Lvalue,
@@ -420,19 +421,19 @@ pub enum Stmt {
     /// Recovery placeholder for an unparseable / not-yet-implemented statement.
     Error(Span),
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum JoinKind {
     Join,
     JoinAny,
     JoinNone,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum CaseKind {
     Case,
     Casez,
     Casex,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum CaseItem {
     Match {
         labels: Vec<Expr>,
@@ -446,12 +447,12 @@ pub enum CaseItem {
 }
 
 // ──────────────────────────── Expr [P] ────────────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ExprKind {
     // literals: raw lexeme + kind; value parse deferred to elaborate.
     IntLit {
@@ -533,7 +534,7 @@ pub enum ExprKind {
 
 /// Unary / reduction operators — names mirror sim-ir `UnOp` 1:1 (verified
 /// sim-ir/src/lib.rs:97) for a clean lowering name-map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum UnOp {
     Plus,
     Minus,
@@ -548,7 +549,7 @@ pub enum UnOp {
 }
 /// Binary operators — names mirror sim-ir `BinOp` 1:1 (verified sim-ir/src/lib.rs:112):
 /// `AShl`/`AShr` = `<<<`/`>>>`;  `Le`/`Ge`/`Ne`; `CaseEq`/`CaseNe` = `===`/`!==`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -576,26 +577,26 @@ pub enum BinOp {
     LogOr,
 }
 /// Indexed part-select direction. Lowers to sim-ir `SelKind::PartIdxUp/Down`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum PartDir {
     PlusColon,
     MinusColon,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum IntLitKind {
     Decimal,
     Sized,
     UnsizedBased,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum RealLitKind {
     Fixed,
     Exp,
 }
 
 // ──────────────────────────── Lvalue [P] ────────────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum Lvalue {
     Ident(HierPath),
     BitSelect {
@@ -636,21 +637,21 @@ impl Lvalue {
 }
 
 // ──────────────────── ModuleInstance / Generate / TF [A] ────────────────────
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct ModuleInstance {
     pub module_name: Ident,
     pub param_overrides: Vec<ParamConn>, // #(.W(8)) | #(8)
     pub instances: Vec<InstanceItem>,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct InstanceItem {
     pub name: Ident,
     pub unpacked: Vec<Dim>,
     pub conns: PortConnList,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ParamConn {
     Named {
         name: Ident,
@@ -659,24 +660,24 @@ pub enum ParamConn {
     },
     Positional(Expr),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum PortConnList {
     Named(Vec<PortConn>),
     Positional(Vec<Option<Expr>>),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct PortConn {
     pub name: Ident,
     pub value: Option<Expr>,
     pub span: Span,
 } // .a(x) / .a()
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct GenerateConstruct {
     pub items: Vec<GenItem>,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum GenItem {
     For {
         init: GenAssign,
@@ -705,13 +706,13 @@ pub enum GenItem {
     },
     Item(Box<ModuleItem>),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct GenAssign {
     pub lvalue: Ident,
     pub value: Expr,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum GenCaseItem {
     Match {
         labels: Vec<Expr>,
@@ -724,7 +725,7 @@ pub enum GenCaseItem {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct FunctionDef {
     pub automatic: bool,
     pub signed: bool,
@@ -736,7 +737,7 @@ pub struct FunctionDef {
     pub body: Box<Stmt>,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct TaskDef {
     pub automatic: bool,
     pub name: Ident,
@@ -745,7 +746,7 @@ pub struct TaskDef {
     pub body: Box<Stmt>,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct TfPort {
     pub dir: PortDir,
     pub net_or_var: Option<NetVarKind>,

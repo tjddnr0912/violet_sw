@@ -183,6 +183,8 @@ version = "0.0.0"
 dependencies = [
  "postcard",
  "serde",
+ "vita-artifact-derive",
+ "vita-schema",
 ]
 
 [[package]]

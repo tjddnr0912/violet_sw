@@ -246,6 +246,12 @@ fn render_path_type(tp: &TypePath, children: &mut Vec<String>) -> Result<String,
             render_type_expr(args[0], children)?,
             render_type_expr(args[1], children)?
         )),
+        // `Box<T>` is a transparent heap pointer: postcard serializes `Box<T>`
+        // byte-identically to `T`, and the schema shape must match too. Render it
+        // as the inner type (so a field `Box<Expr>` has the SAME shape as `Expr`,
+        // and the recursive `Box<Expr>` inside `Expr` registers `Expr` once —
+        // the registry's `insert_once` guard short-circuits the self-reference).
+        ("Box", 1) => render_type_expr(args[0], children),
         (h, 0) if PRIMITIVES.contains(&h) => Ok(h.to_string()),
         _ => {
             let full = render_full_path(tp);
