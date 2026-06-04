@@ -161,7 +161,15 @@ impl<'a> SimState<'a> {
 
     /// Write `value` (any width) into the LHS chunks of `lhs`, MSB-first source
     /// consumption (Verilog concat-LHS). Returns true if ANY bit changed.
-    pub fn write_lvalue(&mut self, lhs: &Lvalue, value: Value) -> bool {
+    ///
+    /// `offsets[i]` is the already-EVALUATED bit offset of `lhs.chunks[i]` — the
+    /// runtime value of a dynamic index (`a[i]`) or the const for `a[3]`; ignored
+    /// for a whole-net/`None` chunk. The caller resolves these at the correct
+    /// sampling moment (statement time for blocking, SAMPLE time for NBA so
+    /// `a[i] <= x; i = i+1;` uses the OLD `i`, settle time for cont-assign),
+    /// because this `&mut self` path has no read-only `EvalCtx`.
+    pub fn write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[u32]) -> bool {
+        debug_assert_eq!(offsets.len(), lhs.chunks.len(), "one offset per chunk");
         // ── real↔int assignment coercion (IEEE 1364 §6.2) ──
         // Only a WHOLE-NET lvalue (single Bit chunk, no offset/width) can be a
         // real destination: a real is dimensionless and never bit/part-selected
@@ -200,7 +208,7 @@ impl<'a> SimState<'a> {
         let src = value.resize(total.max(1));
         let mut changed = false;
         let mut src_hi = total; // next source bit (exclusive top)
-        for chunk in &lhs.chunks {
+        for (idx, chunk) in lhs.chunks.iter().enumerate() {
             let cw = self.chunk_width(chunk);
             let take_lo = src_hi.saturating_sub(cw);
             // slice src[take_lo .. src_hi) → low-aligned chunk value
@@ -211,7 +219,8 @@ impl<'a> SimState<'a> {
                 piece.set_vu(i, v, u);
             }
             src_hi = take_lo;
-            changed |= self.write_chunk(chunk, &piece);
+            let raw_off = offsets.get(idx).copied().unwrap_or(0);
+            changed |= self.write_chunk(chunk, raw_off, &piece);
         }
         changed
     }
@@ -248,8 +257,10 @@ impl<'a> SimState<'a> {
             .max(1)
     }
 
-    /// Write a low-aligned `piece` into the destination chunk. Returns changed.
-    fn write_chunk(&mut self, c: &sim_ir::LvalChunk, piece: &Value) -> bool {
+    /// Write a low-aligned `piece` into the destination chunk. `raw_off` is the
+    /// already-EVALUATED `c.offset` (the runtime index for `a[i]`, the const for
+    /// `a[3]`; ignored for a whole-net chunk). Returns changed.
+    fn write_chunk(&mut self, c: &sim_ir::LvalChunk, raw_off: u32, piece: &Value) -> bool {
         let net = c.net as usize;
         let word = c
             .word
@@ -258,10 +269,10 @@ impl<'a> SimState<'a> {
         let net_w = self.nets[net].width;
         let base = word * net_w; // bit offset of this array element
 
-        // `c.offset`/`c.width` are ExprIds (const-expr edges), NOT literals.
-        // Fold them to values. A non-const offset (dynamic LHS index like
-        // `a[i] <= x`) does not fold here — that is a deferred v1 feature
-        // (the write path has no runtime EvalCtx); it defaults to offset 0.
+        // `c.width` is a const-expr edge (part-select bounds are constant); fold
+        // it. `c.offset` was evaluated by the caller (dynamic-index capable) and
+        // arrives as `raw_off`, symmetric with the runtime offset eval that
+        // `eval_select` already does on the READ side.
         let ir = self.ir;
         let fold = |eid: u32| crate::width::const_u32_of_expr(ir, eid);
         let (off, width) = match c.kind {
@@ -269,29 +280,24 @@ impl<'a> SimState<'a> {
                 if c.offset.is_none() && c.width.is_none() {
                     (0, net_w) // whole net
                 } else {
-                    (c.offset.and_then(fold).unwrap_or(0), 1)
+                    (raw_off, 1)
                 }
             }
-            SelKind::PartConst | SelKind::PartIdxUp => (
-                c.offset.and_then(fold).unwrap_or(0),
-                c.width.and_then(fold).unwrap_or(net_w),
-            ),
+            SelKind::PartConst | SelKind::PartIdxUp => {
+                (raw_off, c.width.and_then(fold).unwrap_or(net_w))
+            }
             SelKind::PartIdxDown => {
                 let w = c.width.and_then(fold).unwrap_or(net_w);
-                (
-                    c.offset
-                        .and_then(fold)
-                        .unwrap_or(0)
-                        .saturating_sub(w.saturating_sub(1)),
-                    w,
-                )
+                (raw_off.saturating_sub(w.saturating_sub(1)), w)
             }
         };
 
         let mut changed = false;
         let slot = &mut self.nets[net];
         for i in 0..width {
-            let dst = off + i;
+            // saturating: a `u32::MAX` sentinel offset (X/Z dynamic index) or any
+            // out-of-range index drops the bit cleanly instead of overflowing.
+            let dst = off.saturating_add(i);
             if dst >= net_w {
                 continue; // out-of-range bit drop (v1 RunRange simplification)
             }

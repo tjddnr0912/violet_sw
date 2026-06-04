@@ -59,7 +59,8 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
             match stmt {
                 Stmt::BlockingAssign { lhs, rhs } => {
                     let v = sched.eval_for_lvalue(&lhs, rhs); // CONTEXT-SIZED to lhs width
-                    sched.st.write_lvalue(&lhs, v);
+                    let offs = sched.resolve_lvalue_offsets(&lhs); // dynamic index NOW
+                    sched.st.write_lvalue(&lhs, v, &offs);
                 }
                 Stmt::NonblockingAssign { lhs, rhs } => {
                     let sampled = sched.eval_for_lvalue(&lhs, rhs); // CONTEXT-SIZED, sampled now

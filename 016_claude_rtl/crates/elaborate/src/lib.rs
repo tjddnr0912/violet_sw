@@ -3204,18 +3204,38 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// `for` is SECONDARY and needs a runtime counter that survives a suspend —
-    /// not representable in the frozen net-only `Stmt::*Assign` Lvalue. v2 rejects
-    /// it with a recovering stub (the cursor stays open, an empty Return-block).
+    /// `for (init; cond; step) body` desugars to `init; while (cond) { body; step }`.
+    /// The counter is an ordinary declared net (classic Verilog `integer i`), the
+    /// same runtime-counter shape `lower_while` already handles — there is no
+    /// special suspend-surviving state, so the net-only `Stmt` Lvalue suffices.
+    /// (A C99-style `for (int i = 0; …)` block-local counter would need an
+    /// automatic per-process frame, which v1 lacks; the parser produces an
+    /// assignment `init`, not a declaration, so that case does not arise here.)
     fn lower_for(
         &mut self,
-        _b: &mut ProcessBuilder,
-        _init: &ast::Stmt,
-        _cond: &ast::Expr,
-        _step: &ast::Stmt,
-        _body: &ast::Stmt,
+        b: &mut ProcessBuilder,
+        init: &ast::Stmt,
+        cond: &ast::Expr,
+        step: &ast::Stmt,
+        body: &ast::Stmt,
     ) {
-        self.warn("for loop skipped (v2); counter not expressible in frozen net-only Stmt");
+        self.lower_stmt(b, init); // run the initializer once, before the loop head
+        let head = b.new_block();
+        let body_bb = b.new_block();
+        let exit = b.new_block();
+        b.goto(head);
+        b.start_block(head);
+        let c = self.lower_expr(cond);
+        b.end_block_with(ir::Terminator::Branch {
+            cond: c,
+            then_bb: body_bb.raw(),
+            else_bb: exit.raw(),
+        });
+        b.start_block(body_bb);
+        self.lower_stmt(b, body);
+        self.lower_stmt(b, step); // step runs at the END of each iteration
+        b.goto(head); // back-edge to re-test the condition
+        b.start_block(exit);
     }
 
     // ── in-body @(...) / wait → WaitCause; #delay → (amount, region) ─

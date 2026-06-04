@@ -73,6 +73,9 @@ pub(crate) struct NbaUpdate {
     pub seq: u64,
     pub lhs: Lvalue,
     pub sampled: Value,
+    /// LHS chunk bit-offsets sampled in the ACTIVE region when the `<=` executed
+    /// (so `a[i] <= x; i = i+1;` lands on the OLD `i`), one per `lhs.chunks`.
+    pub offsets: Vec<u32>,
 }
 
 /// One simulation time's three region buckets. Active/Inactive hold process
@@ -168,7 +171,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 let ca_rhs = self.st.ir.cont_assigns[ci].rhs;
                 let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
                 let v = self.eval_for_lvalue(&lhs, ca_rhs); // CONTEXT-SIZED to lhs width
-                changed |= self.st.write_lvalue(&lhs, v);
+                let offs = self.resolve_lvalue_offsets(&lhs); // dynamic index NOW (settle time)
+                changed |= self.st.write_lvalue(&lhs, v, &offs);
             }
             if !changed {
                 return true;
@@ -467,7 +471,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         let mut batch = std::mem::take(&mut self.nba);
         batch.sort_by_key(|u| u.seq);
         for u in batch {
-            self.st.write_lvalue(&u.lhs, u.sampled);
+            self.st.write_lvalue(&u.lhs, u.sampled, &u.offsets);
         }
     }
 
@@ -588,6 +592,26 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         self.eval_ctx_top(rhs, ctx_w, sw.signed)
     }
 
+    /// Evaluate each LHS chunk's bit-offset expression NOW (read-only EvalCtx),
+    /// returning one offset per chunk (0 for a whole-net `None` chunk). The
+    /// `&mut self` write path has no EvalCtx, so dynamic indices like `a[i]` are
+    /// resolved here at the correct sampling moment. An X/Z or unresolvable index
+    /// yields the `u32::MAX` sentinel → `write_chunk` drops the bit (out-of-range
+    /// no-op), matching the READ side where `eval_select` returns X for `a[x]`.
+    pub(crate) fn resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<u32> {
+        lhs.chunks
+            .iter()
+            .map(|c| match c.offset {
+                None => 0,
+                Some(eid) => self
+                    .eval(eid)
+                    .to_u64()
+                    .map(|v| v as u32)
+                    .unwrap_or(u32::MAX),
+            })
+            .collect()
+    }
+
     /// Build an EvalCtx and run eval_ctx (mirror of the `eval` façade).
     pub(crate) fn eval_ctx_top(&self, eid: u32, ctx_width: u32, ctx_signed: bool) -> Value {
         let ctx = EvalCtx {
@@ -652,9 +676,17 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     }
 
     pub(crate) fn schedule_nba(&mut self, lhs: Lvalue, sampled: Value) {
+        // Sample the dynamic LHS index NOW (Active region), BEFORE the mutable
+        // push, so a later same-step write to the index net cannot move the target.
+        let offsets = self.resolve_lvalue_offsets(&lhs);
         let seq = self.nba_seq;
         self.nba_seq += 1;
-        self.nba.push(NbaUpdate { seq, lhs, sampled });
+        self.nba.push(NbaUpdate {
+            seq,
+            lhs,
+            sampled,
+            offsets,
+        });
     }
 
     /// Re-arm a process after it Returns. The Edge/Level asymmetry is

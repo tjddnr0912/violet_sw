@@ -1381,3 +1381,49 @@ fn real_negative_zero_is_logically_false() {
     // -0.0 → false (else "B"), !(-0.0)=1, (-0.0 ? 7 : 9)=9, and 2.5 → true ("T").
     assert_eq!(out, "B\n1\n9\nT\n");
 }
+
+// ── procedural `for` loop (desugars to `init; while(cond){body; step}`) ──────
+
+#[test]
+fn procedural_for_accumulates() {
+    // sum 0..4 = 10; nested 5x5 = 25; never-enters keeps the seed.
+    let src = "module t; integer i, j, s, c, z; \
+               initial begin \
+                 s=0; for (i=0;i<5;i=i+1) s=s+i; \
+                 c=0; for (i=0;i<5;i=i+1) for (j=0;j<5;j=j+1) c=c+1; \
+                 z=99; for (i=0;i<0;i=i+1) z=z+1; \
+                 $display(\"s=%0d c=%0d z=%0d\", s, c, z); $finish; \
+               end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "s=10 c=25 z=99\n");
+}
+
+// A `for` loop that writes a DYNAMIC bit index `a[i]` — the runtime LHS index is
+// resolved at statement time, symmetric with the read side. (Before the fix the
+// loop was skipped AND the dynamic write landed on bit 0.)
+#[test]
+fn for_loop_dynamic_bit_write() {
+    let src = "module t; integer i; reg [7:0] a; reg [7:0] b; \
+               initial begin a=8'h00; b=8'h00; \
+                 for (i=0;i<8;i=i+1) a[i]=1; \
+                 for (i=0;i<4;i=i+1) b[i]=a[i*2]; \
+                 $display(\"a=%h b=%h\", a, b); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // a = all 8 bits = ff; b reads a[0],a[2],a[4],a[6] (all 1) → low nibble = 0f.
+    assert_eq!(out, "a=ff b=0f\n");
+}
+
+// NBA with a dynamic LHS index samples the index in the ACTIVE region: in
+// `a[i] <= 1; i = i+1;` the write must target the OLD `i`, not the bumped one.
+#[test]
+fn nba_dynamic_index_samples_old_value() {
+    let src = "module t; integer i; reg [7:0] a; \
+               initial begin a=0; i=2; #1; a[i] <= 1; i = i + 1; \
+                 #1 $display(\"a=%h i=%0d\", a, i); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // a[2] set (OLD i=2) → 0x04; i bumped to 3.
+    assert_eq!(out, "a=04 i=3\n");
+}
