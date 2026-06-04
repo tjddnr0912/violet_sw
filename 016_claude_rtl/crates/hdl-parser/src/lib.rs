@@ -961,22 +961,25 @@ impl<'t, 's> Parser<'t, 's> {
         if self.net_var_kind().is_some() {
             return self.parse_net_var().map(ModuleItem::NetVar);
         }
-        // procedural blocks / generate / genvar → recovering STUB (types exist)
+        // procedural blocks → REAL parsing (PR2).
         if matches!(
             self.peek(),
             Some(TokenKind::Word(WordKind::Keyword(
-                Kw::Initial
-                    | Kw::Always
-                    | Kw::AlwaysFf
-                    | Kw::AlwaysComb
-                    | Kw::AlwaysLatch
-                    | Kw::Generate
-                    | Kw::Genvar
+                Kw::Initial | Kw::Always | Kw::AlwaysFf | Kw::AlwaysComb | Kw::AlwaysLatch
+            )))
+        ) {
+            return Some(ModuleItem::Proc(self.parse_procedural_block()));
+        }
+        // generate / genvar → recovering STUB (unchanged): skip_balanced_block stays.
+        if matches!(
+            self.peek(),
+            Some(TokenKind::Word(WordKind::Keyword(
+                Kw::Generate | Kw::Genvar
             )))
         ) {
             let s = self.cur_span();
-            self.error("(procedural/generate parsing not yet implemented)");
-            self.skip_balanced_block(); // consume @(…) begin…end / generate…endgenerate
+            self.error("(generate parsing not yet implemented)");
+            self.skip_balanced_block();
             return Some(ModuleItem::Error(s));
         }
         // bare ident ⇒ likely a module instance (deferred) → stub
@@ -1269,6 +1272,639 @@ impl<'t, 's> Parser<'t, 's> {
     }
 }
 
+// ════════════════════════ PR2: statements + procedural blocks ════════════════════════
+impl<'t, 's> Parser<'t, 's> {
+    // ─────────────────────── 1. procedural blocks ───────────────────────
+    /// `initial S` | `always [@(…)] S` | `always_ff @(…) S` | `always_comb S`
+    /// | `always_latch S`. For `always`/`always_ff` a leading `@(…)` folds onto
+    /// `ProceduralBlock.sensitivity`.
+    fn parse_procedural_block(&mut self) -> ProceduralBlock {
+        let start = self.cur_span();
+        let kind = match self.peek() {
+            Some(TokenKind::Word(WordKind::Keyword(k))) => match k {
+                Kw::Initial => ProcKind::Initial,
+                Kw::Always => ProcKind::Always,
+                Kw::AlwaysFf => ProcKind::AlwaysFf,
+                Kw::AlwaysComb => ProcKind::AlwaysComb,
+                Kw::AlwaysLatch => ProcKind::AlwaysLatch,
+                _ => unreachable!("parse_procedural_block: caller pre-screens proc kw"),
+            },
+            _ => unreachable!("parse_procedural_block: caller pre-screens proc kw"),
+        };
+        self.bump(); // initial / always*
+
+        let sensitivity = match kind {
+            ProcKind::Always | ProcKind::AlwaysFf if self.peek() == Some(TokenKind::At) => {
+                Some(self.parse_sensitivity())
+            }
+            _ => None,
+        };
+
+        let body = Box::new(self.parse_statement());
+        ProceduralBlock {
+            kind,
+            sensitivity,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `@*` | `@(*)` → Star ;  `@(ev or ev , …)` → List.  Consumes the leading `@`.
+    fn parse_sensitivity(&mut self) -> Sensitivity {
+        self.bump(); // '@'
+        if self.eat(TokenKind::Star) {
+            return Sensitivity::Star; // `@*`
+        }
+        if !self.expect(TokenKind::LParen, "'(' or '*' after '@'") {
+            return Sensitivity::List(Vec::new()); // recover; only `@` consumed
+        }
+        if self.peek() == Some(TokenKind::Star) {
+            self.bump(); // `@(*)`
+            self.expect(TokenKind::RParen, "')'");
+            return Sensitivity::Star;
+        }
+        let mut events = Vec::new();
+        if self.peek() == Some(TokenKind::RParen) {
+            self.error("event expression"); // m2: `@()` is illegal — diagnose
+        } else {
+            loop {
+                let before = self.pos;
+                events.push(self.parse_event_expr());
+                let sep = self.eat_kw(Kw::Or) || self.eat(TokenKind::Comma);
+                // forward-progress guard MUST stay AFTER the separator-eat
+                if self.pos == before {
+                    self.bump();
+                }
+                if !sep || self.peek() == Some(TokenKind::RParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RParen, "')'");
+        Sensitivity::List(events)
+    }
+
+    /// `[posedge|negedge] expr` → EventExpr.
+    fn parse_event_expr(&mut self) -> EventExpr {
+        let start = self.cur_span();
+        let edge = if self.eat_kw(Kw::Posedge) {
+            Edge::Posedge
+        } else if self.eat_kw(Kw::Negedge) {
+            Edge::Negedge
+        } else {
+            Edge::NoEdge
+        };
+        let expr = self.expr(0);
+        let span = start.to(expr.span);
+        EventExpr { edge, expr, span }
+    }
+
+    // ─────────────────────── 2. statement dispatcher ───────────────────────
+    fn parse_statement(&mut self) -> Stmt {
+        use TokenKind as T;
+        if self.at_lex_error() {
+            let s = self.cur_span();
+            self.bump(); // skip the lexer-error sentinel without re-reporting
+            return Stmt::Error(s);
+        }
+        match self.peek() {
+            Some(T::Semi) => {
+                let s = self.cur_span();
+                self.bump();
+                Stmt::Null(s)
+            }
+            Some(T::Hash) => self.parse_delay_stmt(),
+            Some(T::At) => self.parse_event_stmt(),
+            Some(T::Arrow) => self.parse_trigger_stmt(),
+            Some(T::LBrace) => self.parse_assign_or_call(), // {a,b} = … concat lvalue
+            Some(T::Word(WordKind::Keyword(kw))) => match kw {
+                Kw::Begin => self.parse_seq_block(),
+                Kw::Fork => self.parse_par_block(),
+                Kw::If => self.parse_if(),
+                Kw::Case => self.parse_case(CaseKind::Case),
+                Kw::Casez => self.parse_case(CaseKind::Casez),
+                Kw::Casex => self.parse_case(CaseKind::Casex),
+                Kw::For => self.parse_for(),
+                Kw::While => self.parse_while(),
+                Kw::Repeat => self.parse_repeat(),
+                Kw::Forever => self.parse_forever(),
+                Kw::Wait => self.parse_wait(),
+                Kw::Disable => self.parse_disable(),
+                Kw::Assign => self.parse_proc_assign(),
+                Kw::Deassign => self.parse_deassign(),
+                Kw::Force => self.parse_force(),
+                Kw::Release => self.parse_release(),
+                _ => self.stmt_error(),
+            },
+            Some(T::SystemTask) => self.parse_systask_call(),
+            _ if self.is_ident() => self.parse_assign_or_call(),
+            _ => self.stmt_error(),
+        }
+    }
+
+    /// Unparseable statement: record one error, build Error, sync, GUARANTEE ≥1
+    /// token consumed.
+    fn stmt_error(&mut self) -> Stmt {
+        let s = self.cur_span();
+        let before = self.pos;
+        self.error("statement");
+        self.synchronize();
+        if self.pos == before {
+            self.bump(); // forced progress when sync stopped immediately
+        }
+        Stmt::Error(s)
+    }
+
+    /// On a recovery path where `synchronize` may stop immediately: sync then
+    /// force ≥1 token. Returns an `Error` spanning from `start`.
+    fn stmt_error_at(&mut self, start: Span) -> Stmt {
+        let before = self.pos;
+        self.synchronize();
+        if self.pos == before {
+            self.bump();
+        }
+        Stmt::Error(start.to(self.prev_span()))
+    }
+
+    // ─────────────────────── 3. assignments / task calls ───────────────────────
+    /// Leading ident or `{`: blocking `=`, nonblocking `<=`, or a user-task call.
+    fn parse_assign_or_call(&mut self) -> Stmt {
+        let start = self.cur_span();
+        let lhs = self.parse_lvalue();
+        match self.peek() {
+            Some(TokenKind::Eq) => {
+                self.bump();
+                self.skip_intra_assign_delay(); // M4: discard `#d`/`@(ev)`, one advisory
+                let rhs = self.expr(0);
+                self.expect(TokenKind::Semi, "';'");
+                Stmt::Blocking {
+                    lhs,
+                    delay: None,
+                    rhs,
+                    span: start.to(self.prev_span()),
+                }
+            }
+            Some(TokenKind::LtEq) => {
+                self.bump();
+                self.skip_intra_assign_delay(); // M4: `q <= #1 d;` is extremely common
+                let rhs = self.expr(0);
+                self.expect(TokenKind::Semi, "';'");
+                Stmt::NonBlocking {
+                    lhs,
+                    delay: None,
+                    rhs,
+                    span: start.to(self.prev_span()),
+                }
+            }
+            // user-task call: bare HierPath followed by `(` or `;`
+            Some(TokenKind::LParen) | Some(TokenKind::Semi) => {
+                if let Lvalue::Ident(path) = lhs {
+                    let args = if self.peek() == Some(TokenKind::LParen) {
+                        self.call_args()
+                    } else {
+                        Vec::new()
+                    };
+                    self.expect(TokenKind::Semi, "';'");
+                    Stmt::UserTaskCall {
+                        name: path,
+                        args,
+                        span: start.to(self.prev_span()),
+                    }
+                } else {
+                    // e.g. `a[i](…)` — an indexed lvalue cannot be a call.
+                    self.error("'=' or '<=' after lvalue");
+                    self.stmt_error_at(start)
+                }
+            }
+            _ => {
+                self.error("'=' or '<=' after lvalue");
+                self.stmt_error_at(start)
+            }
+        }
+    }
+
+    /// M4: intra-assignment timing control after `=`/`<=`. DEFERRED — parse-and-DISCARD
+    /// with ONE advisory error so the RHS still parses cleanly (no cascade).
+    fn skip_intra_assign_delay(&mut self) {
+        match self.peek() {
+            Some(TokenKind::Hash) => {
+                self.error("intra-assignment delay (not yet supported; ignored)");
+                let _ = self.parse_delay(); // consumes `#d` / `#(…)`
+            }
+            Some(TokenKind::At) => {
+                self.error("intra-assignment event control (not yet supported; ignored)");
+                let _ = self.parse_sensitivity(); // consumes `@(…)`
+            }
+            _ => {}
+        }
+    }
+
+    fn parse_systask_call(&mut self) -> Stmt {
+        let start = self.cur_span();
+        let t = self.bump().unwrap(); // SystemTask; lexeme retains `$`
+        let name = Ident {
+            name: self.src[t.span.clone()].to_string(),
+            span: Self::sp(&t.span),
+        };
+        let args = if self.peek() == Some(TokenKind::LParen) {
+            self.call_args()
+        } else {
+            Vec::new()
+        };
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::SysTaskCall {
+            name,
+            args,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    // procedural-continuous family — all reuse parse_lvalue
+    fn parse_proc_assign(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // assign
+        let lhs = self.parse_lvalue();
+        self.expect(TokenKind::Eq, "'=' in procedural assign");
+        let rhs = self.expr(0);
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::Assign {
+            lhs,
+            rhs,
+            span: start.to(self.prev_span()),
+        }
+    }
+    fn parse_force(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // force
+        let lhs = self.parse_lvalue();
+        self.expect(TokenKind::Eq, "'=' in force");
+        let rhs = self.expr(0);
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::Force {
+            lhs,
+            rhs,
+            span: start.to(self.prev_span()),
+        }
+    }
+    fn parse_deassign(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // deassign
+        let lhs = self.parse_lvalue();
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::Deassign {
+            lhs,
+            span: start.to(self.prev_span()),
+        }
+    }
+    fn parse_release(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // release
+        let lhs = self.parse_lvalue();
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::Release {
+            lhs,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    // ─────────────────────── 4. control flow ───────────────────────
+    fn parse_if(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // if
+        self.expect(TokenKind::LParen, "'(' after 'if'");
+        let cond = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        let then_s = Box::new(self.parse_statement());
+        // dangling-else binds EAGERLY to this (nearest) if
+        let else_s = if self.eat_kw(Kw::Else) {
+            Some(Box::new(self.parse_statement()))
+        } else {
+            None
+        };
+        Stmt::If {
+            cond,
+            then_s,
+            else_s,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_case(&mut self, kind: CaseKind) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // case/casez/casex
+        self.expect(TokenKind::LParen, "'(' after case");
+        let scrutinee = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        let mut items = Vec::new();
+        while !self.at_eof() && !self.at_kw(Kw::Endcase) {
+            let before = self.pos;
+            items.push(self.parse_case_item());
+            if self.pos == before {
+                self.bump(); // never spin on a stuck case item
+            }
+        }
+        self.expect(TokenKind::Word(WordKind::Keyword(Kw::Endcase)), "'endcase'");
+        Stmt::Case {
+            kind,
+            scrutinee,
+            items,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `default [:] stmt` | `label {, label} : stmt`.
+    fn parse_case_item(&mut self) -> CaseItem {
+        let start = self.cur_span();
+        if self.eat_kw(Kw::Default) {
+            self.eat(TokenKind::Colon); // ':' OPTIONAL after default
+            let body = Box::new(self.parse_statement());
+            return CaseItem::Default {
+                body,
+                span: start.to(self.prev_span()),
+            };
+        }
+        let mut labels = vec![self.expr(0)];
+        while self.eat(TokenKind::Comma) {
+            labels.push(self.expr(0));
+        }
+        self.expect(TokenKind::Colon, "':' in case item");
+        let body = Box::new(self.parse_statement());
+        CaseItem::Match {
+            labels,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_for(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // for
+        self.expect(TokenKind::LParen, "'(' after 'for'");
+        let init = Box::new(self.parse_for_assign()); // `i = 0`, no trailing ';'
+        self.expect(TokenKind::Semi, "';' after for-init");
+        let cond = self.expr(0);
+        self.expect(TokenKind::Semi, "';' after for-cond");
+        let step = Box::new(self.parse_for_assign()); // `i = i+1`, no trailing ';'
+        self.expect(TokenKind::RParen, "')'");
+        let body = Box::new(self.parse_statement());
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// A single blocking assignment WITHOUT a trailing `;` (for-init / for-step).
+    fn parse_for_assign(&mut self) -> Stmt {
+        let start = self.cur_span();
+        let lhs = self.parse_lvalue();
+        self.expect(TokenKind::Eq, "'=' in for-clause assignment");
+        let rhs = self.expr(0);
+        Stmt::Blocking {
+            lhs,
+            delay: None,
+            rhs,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_while(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // while
+        self.expect(TokenKind::LParen, "'(' after 'while'");
+        let cond = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        let body = Box::new(self.parse_statement());
+        Stmt::While {
+            cond,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_repeat(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // repeat
+        self.expect(TokenKind::LParen, "'(' after 'repeat'");
+        let count = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        let body = Box::new(self.parse_statement());
+        Stmt::Repeat {
+            count,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_forever(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // forever — NO parens, NO count
+        let body = Box::new(self.parse_statement());
+        Stmt::Forever {
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    // ─────────────────────── 5. blocks ───────────────────────
+    fn parse_seq_block(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // begin
+        let label = self.opt_block_label();
+        let (decls, stmts) = self.block_body(BlockEnd::End);
+        self.expect(TokenKind::Word(WordKind::Keyword(Kw::End)), "'end'");
+        self.opt_block_label(); // optional `: end_label` (no AST slot → discard)
+        Stmt::Block {
+            label,
+            decls,
+            stmts,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_par_block(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // fork
+        let label = self.opt_block_label();
+        let (decls, stmts) = self.block_body(BlockEnd::Join);
+        let join = self.eat_join(); // Join | JoinAny | JoinNone (latter two are Idents)
+        self.opt_block_label(); // optional `: join_label`
+        Stmt::Fork {
+            label,
+            decls,
+            stmts,
+            join,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `: name` after begin/fork (or end/join) → Some(ident), else None.
+    fn opt_block_label(&mut self) -> Option<Ident> {
+        if self.eat(TokenKind::Colon) {
+            self.ident()
+        } else {
+            None
+        }
+    }
+
+    /// Shared block body: decls-prefix THEN statements, until the closer.
+    fn block_body(&mut self, end: BlockEnd) -> (Vec<NetVarDecl>, Vec<Stmt>) {
+        let mut decls = Vec::new();
+        while !self.at_eof() && !self.at_block_end(end) && self.net_var_kind().is_some() {
+            let before = self.pos;
+            if let Some(d) = self.parse_net_var() {
+                decls.push(d);
+            }
+            if self.pos == before {
+                self.bump(); // guard: malformed decl that consumed nothing
+            }
+        }
+        let mut stmts = Vec::new();
+        while !self.at_eof() && !self.at_block_end(end) {
+            let before = self.pos;
+            stmts.push(self.parse_statement());
+            if self.pos == before {
+                self.bump(); // guard: never spin on a stuck statement
+            }
+        }
+        (decls, stmts)
+    }
+
+    /// True at this block's closer. `End` for begin; any join form for fork.
+    fn at_block_end(&self, end: BlockEnd) -> bool {
+        match end {
+            BlockEnd::End => self.at_kw(Kw::End),
+            BlockEnd::Join => {
+                self.at_kw(Kw::Join)
+                    || (self.is_ident() && matches!(self.cur_text(), "join_any" | "join_none"))
+            }
+        }
+    }
+
+    /// Consume the fork terminator → JoinKind.
+    fn eat_join(&mut self) -> JoinKind {
+        if self.eat_kw(Kw::Join) {
+            JoinKind::Join
+        } else if self.is_ident() && self.cur_text() == "join_any" {
+            self.bump();
+            JoinKind::JoinAny
+        } else if self.is_ident() && self.cur_text() == "join_none" {
+            self.bump();
+            JoinKind::JoinNone
+        } else {
+            self.error("'join' / 'join_any' / 'join_none'");
+            JoinKind::Join
+        }
+    }
+
+    // ─────────────────────── 6. timing / event / misc ───────────────────────
+    fn parse_delay_stmt(&mut self) -> Stmt {
+        let start = self.cur_span();
+        let delay = self.parse_delay().unwrap_or(Delay {
+            values: Vec::new(),
+            span: start,
+        });
+        let body = if self.eat(TokenKind::Semi) {
+            None
+        } else {
+            Some(Box::new(self.parse_statement()))
+        };
+        Stmt::DelayCtrl {
+            delay,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_event_stmt(&mut self) -> Stmt {
+        let start = self.cur_span();
+        let ctrl = self.parse_sensitivity(); // consumes the `@`
+        let body = if self.eat(TokenKind::Semi) {
+            None
+        } else {
+            Some(Box::new(self.parse_statement()))
+        };
+        Stmt::EventCtrl {
+            ctrl,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_trigger_stmt(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // '->'
+                     // H1: on a missing name, emit Stmt::Error rather than an empty path.
+        let Some(name) = self.hier_path() else {
+            return self.stmt_error_at(start);
+        };
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::EventTrigger {
+            name,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_wait(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // wait
+        self.expect(TokenKind::LParen, "'(' after 'wait'");
+        let cond = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        let body = if self.eat(TokenKind::Semi) {
+            None
+        } else {
+            Some(Box::new(self.parse_statement()))
+        };
+        Stmt::Wait {
+            cond,
+            body,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_disable(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // disable
+                     // M3: `disable fork;` — `fork` is `Kw::Fork`, not an ident, so special-case it.
+        if self.at_kw(Kw::Fork) {
+            let fspan = self.cur_span();
+            self.bump(); // fork
+            let seg = Ident {
+                name: "fork".to_string(),
+                span: fspan,
+            };
+            let target = HierPath {
+                segments: vec![seg],
+                span: fspan,
+            };
+            self.expect(TokenKind::Semi, "';'");
+            return Stmt::Disable {
+                target,
+                span: start.to(self.prev_span()),
+            };
+        }
+        // H1: on a missing/illegal name, emit Stmt::Error rather than an empty path.
+        let Some(target) = self.hier_path() else {
+            return self.stmt_error_at(start);
+        };
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::Disable {
+            target,
+            span: start.to(self.prev_span()),
+        }
+    }
+}
+
+/// Which keyword terminates a block body (begin→end, fork→join family).
+#[derive(Clone, Copy)]
+enum BlockEnd {
+    End,
+    Join,
+}
+
 /// Public API — mirrors `hdl_lexer::lex`'s two-channel shape. Never panics; returns
 /// a (partial) AST plus all recovered errors. The driver maps errors → diagnostics
 /// (E-PARSE-UNEXPECTED-TOKEN / VITA-E2002) and enforces `--error-limit`.
@@ -1315,6 +1951,29 @@ mod tests {
         match &e.kind {
             ExprKind::Binary { op, lhs, rhs } => (*op, lhs, rhs),
             other => panic!("not binary: {other:?}"),
+        }
+    }
+    /// Parse a module body; return the first ProceduralBlock.
+    fn proc_of(body: &str) -> ProceduralBlock {
+        let src = format!("module m;\n{body}\nendmodule");
+        let (su, errs) = p(&src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        match m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_))) {
+            Some(ModuleItem::Proc(pb)) => pb.clone(),
+            _ => panic!("no procedural block in body"),
+        }
+    }
+    fn as_block(s: &Stmt) -> (&Option<Ident>, &Vec<NetVarDecl>, &Vec<Stmt>) {
+        match s {
+            Stmt::Block {
+                label,
+                decls,
+                stmts,
+                ..
+            } => (label, decls, stmts),
+            other => panic!("not a Block: {other:?}"),
         }
     }
 
@@ -1531,5 +2190,226 @@ mod tests {
                 ..
             }
         )); // left is (-a)
+    }
+
+    // S1. initial begin: blocking + nonblocking mix
+    #[test]
+    fn s1_initial_blocking_nonblocking() {
+        let pb = proc_of("initial begin a = 1; q <= d; end");
+        assert_eq!(pb.kind, ProcKind::Initial);
+        assert!(pb.sensitivity.is_none());
+        let (_l, _d, stmts) = as_block(&pb.body);
+        assert!(matches!(stmts[0], Stmt::Blocking { .. }));
+        assert!(matches!(stmts[1], Stmt::NonBlocking { .. }));
+    }
+
+    // S2. always @(posedge clk) if/else (no begin) — sensitivity on the BLOCK
+    #[test]
+    fn s2_always_posedge_if_else() {
+        let pb = proc_of("always @(posedge clk) if (rst) q <= 0; else q <= d;");
+        assert_eq!(pb.kind, ProcKind::Always);
+        let Some(Sensitivity::List(evs)) = &pb.sensitivity else {
+            panic!()
+        };
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].edge, Edge::Posedge);
+        let Stmt::If { else_s, .. } = &*pb.body else {
+            panic!("body not If")
+        };
+        assert!(else_s.is_some());
+    }
+
+    // S3. posedge/negedge `or`-separated sensitivity list
+    #[test]
+    fn s3_sensitivity_or_list() {
+        let pb = proc_of("always @(posedge clk or negedge rst_n) q <= d;");
+        let Some(Sensitivity::List(evs)) = &pb.sensitivity else {
+            panic!()
+        };
+        assert_eq!(evs.len(), 2);
+        assert_eq!(evs[0].edge, Edge::Posedge);
+        assert_eq!(evs[1].edge, Edge::Negedge);
+    }
+
+    // S4. always_comb + case: sensitivity MUST be None (@ never consumed); multi-label
+    #[test]
+    fn s4_always_comb_case() {
+        let pb = proc_of("always_comb case (sel) 2'b00, 2'b01: y = a; default: y = b; endcase");
+        assert_eq!(pb.kind, ProcKind::AlwaysComb);
+        assert!(pb.sensitivity.is_none());
+        let Stmt::Case { kind, items, .. } = &*pb.body else {
+            panic!()
+        };
+        assert_eq!(*kind, CaseKind::Case);
+        let CaseItem::Match { labels, .. } = &items[0] else {
+            panic!()
+        };
+        assert_eq!(labels.len(), 2); // two labels share one body
+        assert!(matches!(items[1], CaseItem::Default { .. }));
+    }
+
+    // S5. casez kind + `default` WITHOUT a colon
+    #[test]
+    fn s5_casez_default_no_colon() {
+        let pb = proc_of("always_comb casez (req) 4'b1???: g = 1; default g = 0; endcase");
+        let Stmt::Case { kind, items, .. } = &*pb.body else {
+            panic!()
+        };
+        assert_eq!(*kind, CaseKind::Casez);
+        assert!(matches!(items[1], CaseItem::Default { .. }));
+    }
+
+    // S6. for-loop — init/step are Blocking built WITHOUT consuming the ';'
+    #[test]
+    fn s6_for_loop() {
+        let pb = proc_of("initial for (i = 0; i < 8; i = i + 1) sum = sum + i;");
+        let Stmt::For {
+            init, step, body, ..
+        } = &*pb.body
+        else {
+            panic!()
+        };
+        assert!(matches!(**init, Stmt::Blocking { .. }));
+        assert!(matches!(**step, Stmt::Blocking { .. }));
+        assert!(matches!(**body, Stmt::Blocking { .. }));
+    }
+
+    // S7. while + $display systask call (name retains `$`, 2 args)
+    #[test]
+    fn s7_while_and_display() {
+        let pb =
+            proc_of("initial while (cnt < 8) begin $display(\"c=%d\", cnt); cnt = cnt + 1; end");
+        let Stmt::While { body, .. } = &*pb.body else {
+            panic!()
+        };
+        let (_l, _d, stmts) = as_block(body);
+        let Stmt::SysTaskCall { name, args, .. } = &stmts[0] else {
+            panic!()
+        };
+        assert_eq!(name.name, "$display");
+        assert_eq!(args.len(), 2);
+    }
+
+    // S8. #delay statement with body, then $finish with NO parens (empty args)
+    #[test]
+    fn s8_delay_and_finish() {
+        let pb = proc_of("initial begin #20 rst = 0; #200 $finish; end");
+        let (_l, _d, stmts) = as_block(&pb.body);
+        let Stmt::DelayCtrl { body: b0, .. } = &stmts[0] else {
+            panic!()
+        };
+        assert!(matches!(b0.as_deref(), Some(Stmt::Blocking { .. })));
+        let Stmt::DelayCtrl { body: b1, .. } = &stmts[1] else {
+            panic!()
+        };
+        let Some(Stmt::SysTaskCall { name, args, .. }) = b1.as_deref() else {
+            panic!()
+        };
+        assert_eq!(name.name, "$finish");
+        assert!(args.is_empty());
+    }
+
+    // S9. dangling-else binds to the INNER if
+    #[test]
+    fn s9_dangling_else_inner() {
+        let pb = proc_of("initial if (a) if (b) x = 1; else x = 2;");
+        let Stmt::If { then_s, else_s, .. } = &*pb.body else {
+            panic!()
+        };
+        assert!(else_s.is_none(), "outer if must NOT own the else");
+        let Stmt::If {
+            else_s: inner_else, ..
+        } = &**then_s
+        else {
+            panic!("then not If")
+        };
+        assert!(inner_else.is_some(), "inner if owns the else");
+    }
+
+    // S10. named begin-end with a local decl + end-label (label consumed, no hang)
+    #[test]
+    fn s10_named_block_local_decl() {
+        let pb = proc_of("initial begin : blk reg [7:0] tmp; tmp = a; end");
+        let (label, decls, stmts) = as_block(&pb.body);
+        assert_eq!(label.as_ref().unwrap().name, "blk");
+        assert_eq!(decls.len(), 1);
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(stmts[0], Stmt::Blocking { .. }));
+    }
+
+    // S11. always @(*) Star + nested begin
+    #[test]
+    fn s11_nested_block_and_star() {
+        let pb = proc_of("always @(*) begin a = b; begin c = d; end end");
+        assert!(matches!(pb.sensitivity, Some(Sensitivity::Star)));
+        let (_l, _d, stmts) = as_block(&pb.body);
+        assert!(matches!(stmts[0], Stmt::Blocking { .. }));
+        assert!(matches!(stmts[1], Stmt::Block { .. }));
+    }
+
+    // S12. recovery: garbage statement → Error, no infinite loop, following stmt parses
+    #[test]
+    fn s12_recovery_garbage_stmt() {
+        let (su, errs) = p("module m;\ninitial begin & ; x = 1; end\nendmodule");
+        assert!(!errs.is_empty(), "expected a recovered error");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let Some(ModuleItem::Proc(pb)) = m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
+        else {
+            panic!("no proc block")
+        };
+        let (_l, _d, stmts) = as_block(&pb.body);
+        assert!(
+            stmts.iter().any(|s| matches!(s, Stmt::Error(_))),
+            "garbage → Error"
+        );
+        assert!(
+            stmts.iter().any(|s| matches!(s, Stmt::Blocking { .. })),
+            "must recover and parse `x = 1;`"
+        );
+    }
+
+    // S13. fork / join_none — JoinKind from an Ident token (not a keyword)
+    #[test]
+    fn s13_fork_join_none() {
+        let pb = proc_of("initial fork #10 a = 1; #20 b = 1; join_none");
+        let Stmt::Fork { stmts, join, .. } = &*pb.body else {
+            panic!()
+        };
+        assert_eq!(*join, JoinKind::JoinNone);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    // S14. repeat body is a bare EventCtrl (body None); wait body None;
+    //      and intra-assign delay `q <= #1 d;` parses RHS cleanly with an advisory.
+    #[test]
+    fn s14_event_body_none_and_intra_delay() {
+        // M4: intra-assign delay emits ONE advisory error — parse directly (not proc_of).
+        let src = "module m;\ninitial begin repeat (8) @(posedge clk); wait (ready); q <= #1 d; end\nendmodule";
+        let (su, errs) = p(src);
+        assert_eq!(errs.len(), 1, "exactly one advisory for intra-assign delay");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let Some(ModuleItem::Proc(pb)) = m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
+        else {
+            panic!("no proc block")
+        };
+        let (_l, _d, stmts) = as_block(&pb.body);
+        let Stmt::Repeat { body, .. } = &stmts[0] else {
+            panic!()
+        };
+        let Stmt::EventCtrl { body: eb, .. } = &**body else {
+            panic!("repeat body not EventCtrl")
+        };
+        assert!(eb.is_none()); // `@(posedge clk);` → body None
+        let Stmt::Wait { body: wb, .. } = &stmts[1] else {
+            panic!()
+        };
+        assert!(wb.is_none());
+        // M4: intra-assign delay discarded, RHS still parses as a NonBlocking to `d`.
+        let Stmt::NonBlocking { delay, .. } = &stmts[2] else {
+            panic!("not NonBlocking")
+        };
+        assert!(delay.is_none(), "intra-assign delay is dropped (deferred)");
     }
 }
