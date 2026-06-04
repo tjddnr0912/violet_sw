@@ -85,6 +85,15 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "cli"
 version = "0.0.0"
+dependencies = [
+ "diag",
+ "elaborate",
+ "hdl-ast",
+ "hdl-lexer",
+ "hdl-parser",
+ "sim-engine",
+ "sim-ir",
+]
 
 [[package]]
 name = "cobs"

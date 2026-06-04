@@ -5,9 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vita"
 path = "src/main.rs"
 
 [features]
 separate-bins = []
+
+[dependencies]
+hdl-lexer = { path = "../hdl-lexer" }
+hdl-parser = { path = "../hdl-parser" }
+hdl-ast = { path = "../hdl-ast" }
+elaborate = { path = "../elaborate" }
+sim-ir = { path = "../sim-ir" }
+sim-engine = { path = "../sim-engine" }
+diag = { path = "../diag" }
