@@ -153,6 +153,10 @@ pub enum SysFuncId {
     Signed,
     Unsigned,
     Clog2,
+    Rtoi,       // $rtoi  — real → int, TRUNCATE toward zero
+    Itor,       // $itor  — int  → real, exact convert
+    RealToBits, // $realtobits — real → 64-bit vector (raw IEEE bits)
+    BitsToReal, // $bitstoreal — 64-bit vector → real (raw IEEE bits)
 }
 
 /// Expression arena node (§1).
@@ -342,6 +346,11 @@ pub enum NetKind {
     Reg,
     Logic,
     Integer,
+    /// IEEE-754 f64 net (`real`/`realtime`). 64-bit, signed, 2-state. The f64 is
+    /// stored as `f64::to_bits()` in `init.val[0]`, `init.unk` all-zero. No f64
+    /// field is introduced — the V-PRIM derive guard sees only `u64` inside
+    /// `BitPacked`. `realtime` is a synonym and ALSO maps here (no 6th variant).
+    Real,
 }
 
 /// Port direction (§6).
@@ -378,6 +387,9 @@ pub struct NetVar {
 pub enum ConstRepr {
     Numeric,
     StrUtf8,
+    /// IEEE-754 f64 literal. `ConstVal.width = 64`, `signed = true`,
+    /// `bits.val[0] = literal.to_bits()`, `bits.unk = [0]`. No f64 field.
+    Real,
 }
 
 /// Constant pool entry (§6).

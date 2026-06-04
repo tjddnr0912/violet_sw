@@ -12,7 +12,7 @@ pub const MAGIC_VELAB: [u8; 8] = *b"VELAB\0\0\0";
 pub const MAGIC_VU: [u8; 8] = *b"VU\0\0\0\0\0\0";
 
 /// Container format version. Bumped whenever the header layout changes.
-pub const CURRENT_FORMAT_VERSION: u32 = 2; // bumped for the M3 SimIr freeze
+pub const CURRENT_FORMAT_VERSION: u32 = 3; // bumped for the real/realtime IR re-freeze (NetKind::Real, ConstRepr::Real, +4 SysFuncId)
 
 /// Build provenance (Layer 2). Stamped for traceability, NEVER a staleness key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

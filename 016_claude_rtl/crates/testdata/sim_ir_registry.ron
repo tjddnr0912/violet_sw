@@ -96,6 +96,9 @@
         1: {
             "StrUtf8": UNIT,
         },
+        2: {
+            "Real": UNIT,
+        },
     }),
     "ConstVal": STRUCT([
         {
@@ -373,6 +376,9 @@
         3: {
             "Integer": UNIT,
         },
+        4: {
+            "Real": UNIT,
+        },
     }),
     "NetVar": STRUCT([
         {
@@ -591,6 +597,18 @@
         },
         4: {
             "Clog2": UNIT,
+        },
+        5: {
+            "Rtoi": UNIT,
+        },
+        6: {
+            "Itor": UNIT,
+        },
+        7: {
+            "RealToBits": UNIT,
+        },
+        8: {
+            "BitsToReal": UNIT,
         },
     }),
     "SysTaskId": ENUM({

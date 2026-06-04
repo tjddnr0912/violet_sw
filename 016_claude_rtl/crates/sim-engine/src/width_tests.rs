@@ -80,6 +80,20 @@ impl IrBuilder {
         self.push_expr(Expr::Const { val: cid })
     }
 
+    fn const_real(&mut self, x: f64) -> u32 {
+        let cid = self.consts.len() as u32;
+        self.consts.push(ConstVal {
+            width: 64,
+            signed: true,
+            repr: ConstRepr::Real,
+            bits: BitPacked {
+                val: vec![x.to_bits()],
+                unk: vec![0],
+            },
+        });
+        self.push_expr(Expr::Const { val: cid })
+    }
+
     fn bin(&mut self, op: BinOp, lhs: u32, rhs: u32) -> u32 {
         self.push_expr(Expr::Binary { op, lhs, rhs })
     }
@@ -810,4 +824,77 @@ fn t18_part_select_width_fold_feeds_context() {
             "select contributed its full 8 bits (not under-sized to 1)"
         );
     });
+}
+
+// ── REAL self-width (ConstRepr::Real + the four real-domain sysfuncs) ────────
+
+#[test]
+fn real_const_self_width_is_64_signed() {
+    let mut b = IrBuilder::default();
+    let c = b.const_real(3.5);
+    let ir = b.build();
+    let wt = table(&ir);
+    assert_eq!(
+        wt.get(c),
+        SelfWidth {
+            width: 64,
+            signed: true
+        },
+        "a real const is {{64, signed}}"
+    );
+}
+
+#[test]
+fn real_sysfunc_self_widths() {
+    let mut b = IrBuilder::default();
+    let nr = b.net(64, true);
+    let r = b.signal(nr);
+    let ni = b.net(32, true);
+    let i = b.signal(ni);
+    let rtoi = b.sysfunc(SysFuncId::Rtoi, vec![r]);
+    let itor = b.sysfunc(SysFuncId::Itor, vec![i]);
+    let r2b = b.sysfunc(SysFuncId::RealToBits, vec![r]);
+    let b2r = b.sysfunc(SysFuncId::BitsToReal, vec![r]);
+    let rt = b.sysfunc(SysFuncId::Realtime, vec![]);
+    let ir = b.build();
+    let wt = table(&ir);
+    // $rtoi → 32-bit signed integer.
+    assert_eq!(
+        wt.get(rtoi),
+        SelfWidth {
+            width: 32,
+            signed: true
+        }
+    );
+    // $itor / $bitstoreal → 64-bit signed (real domain).
+    assert_eq!(
+        wt.get(itor),
+        SelfWidth {
+            width: 64,
+            signed: true
+        }
+    );
+    assert_eq!(
+        wt.get(b2r),
+        SelfWidth {
+            width: 64,
+            signed: true
+        }
+    );
+    // $realtobits → 64-bit unsigned raw vector.
+    assert_eq!(
+        wt.get(r2b),
+        SelfWidth {
+            width: 64,
+            signed: false
+        }
+    );
+    // $realtime self-width stays {64, false} (the §2.3 resize guard protects bits).
+    assert_eq!(
+        wt.get(rt),
+        SelfWidth {
+            width: 64,
+            signed: false
+        }
+    );
 }

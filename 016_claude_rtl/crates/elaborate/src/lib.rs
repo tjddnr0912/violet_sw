@@ -33,7 +33,10 @@ use std::collections::BTreeMap;
 
 use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
 use hdl_ast as ast;
-use literal::{make_const_u32, parse_int_literal, parse_str_literal};
+use literal::{
+    make_const_u32, parse_int_literal, parse_real_f64, parse_real_literal, parse_str_literal,
+    parse_str_literal_text,
+};
 use sim_ir as ir;
 
 /// Const-bounded `repeat`/`for` are UNROLLED (the loop counter cannot live in a
@@ -1223,6 +1226,10 @@ impl<'s> Elaborator<'s> {
         if matches!(kind, ast::NetVarKind::Integer) {
             return (32, 31, 0, true);
         }
+        // `real`/`realtime` are dimensionless 64-bit signed (no [msb:lsb] range).
+        if matches!(kind, ast::NetVarKind::Real | ast::NetVarKind::Realtime) {
+            return (64, 63, 0, true);
+        }
         match range {
             None => (1, 0, 0, signed),
             Some(r) => {
@@ -1318,16 +1325,10 @@ impl<'s> Elaborator<'s> {
     fn elaborate_cont_assign(&mut self, ca: &ast::ContinuousAssign) {
         // Delay: hdl-ast Delay values are exprs; sim-ir delay is Option<u32>.
         // v1 const-folds a literal rise delay; non-const → None (note slot).
-        let delay = ca.delay.as_ref().and_then(|d| {
-            d.values.first().and_then(|e| {
-                // a #(min:typ:max) delay surfaces as MinTypMax → take typ branch.
-                let pick = match &e.kind {
-                    ast::ExprKind::MinTypMax { typ, .. } => typ.as_ref(),
-                    _ => e,
-                };
-                const_eval_u32(pick)
-            })
-        });
+        let delay = ca
+            .delay
+            .as_ref()
+            .and_then(|d| d.values.first().and_then(const_delay_ticks));
         for (lv, rhs) in &ca.assigns {
             let lhs = self.lower_lvalue(lv);
             let rhs_id = self.lower_expr(rhs);
@@ -1368,19 +1369,58 @@ impl<'s> Elaborator<'s> {
             // ── operators (1:1 name-map; children lowered first) ────
             ast::ExprKind::Unary { op, operand } => {
                 let operand = self.lower_expr(operand);
-                self.push_expr(ir::Expr::Unary {
-                    op: map_unop(*op),
-                    operand,
-                })
+                let irop = map_unop(*op);
+                // §6.2: bitwise `~` / reductions on a real are illegal (`+`/`-`/`!`
+                // are legal: unary +/- are real-preserving, `!` is logical).
+                if self.expr_is_real(operand)
+                    && matches!(
+                        irop,
+                        ir::UnOp::BitNot
+                            | ir::UnOp::RedAnd
+                            | ir::UnOp::RedNand
+                            | ir::UnOp::RedOr
+                            | ir::UnOp::RedNor
+                            | ir::UnOp::RedXor
+                            | ir::UnOp::RedXnor
+                    )
+                {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "bitwise/shift/reduction not defined on real operand",
+                    );
+                }
+                self.push_expr(ir::Expr::Unary { op: irop, operand })
             }
             ast::ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = self.lower_expr(lhs); // POST-ORDER: lhs, then rhs, then self
                 let rhs = self.lower_expr(rhs);
-                self.push_expr(ir::Expr::Binary {
-                    op: map_binop(*op),
-                    lhs,
-                    rhs,
-                })
+                let irop = map_binop(*op);
+                // §6.2 permanent illegalities on a real operand.
+                if self.expr_is_real(lhs) || self.expr_is_real(rhs) {
+                    match irop {
+                        ir::BinOp::Mod => self.error(
+                            MsgCode::ElabUnsupported,
+                            "modulo (%) not defined on real operand",
+                        ),
+                        ir::BinOp::Pow => self.error(
+                            MsgCode::ElabUnsupported,
+                            "power (**) not defined on real operand in MVP",
+                        ),
+                        ir::BinOp::BitAnd
+                        | ir::BinOp::BitOr
+                        | ir::BinOp::BitXor
+                        | ir::BinOp::BitXnor
+                        | ir::BinOp::Shl
+                        | ir::BinOp::Shr
+                        | ir::BinOp::AShl
+                        | ir::BinOp::AShr => self.error(
+                            MsgCode::ElabUnsupported,
+                            "bitwise/shift/reduction not defined on real operand",
+                        ),
+                        _ => {}
+                    }
+                }
+                self.push_expr(ir::Expr::Binary { op: irop, lhs, rhs })
             }
             ast::ExprKind::Ternary {
                 cond,
@@ -1413,6 +1453,12 @@ impl<'s> Elaborator<'s> {
                     });
                 }
                 let base = self.lower_expr(base);
+                if self.expr_is_real(base) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "bit/part-select not defined on real operand",
+                    );
+                }
                 let offset = self.lower_expr(index);
                 let width = self.const_u32_expr(1, 32);
                 self.push_expr(ir::Expr::Select {
@@ -1424,6 +1470,12 @@ impl<'s> Elaborator<'s> {
             }
             ast::ExprKind::PartSelect { base, msb, lsb } => {
                 let base = self.lower_expr(base);
+                if self.expr_is_real(base) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "bit/part-select not defined on real operand",
+                    );
+                }
                 let lsb_id = self.lower_expr(lsb);
                 let msb_id = self.lower_expr(msb);
                 let width = self.width_from_msb_lsb_checked(msb, lsb, msb_id, lsb_id);
@@ -1441,6 +1493,12 @@ impl<'s> Elaborator<'s> {
                 dir,
             } => {
                 let base = self.lower_expr(base);
+                if self.expr_is_real(base) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "bit/part-select not defined on real operand",
+                    );
+                }
                 let offset = self.lower_expr(offset);
                 let width = self.lower_expr(width);
                 let kind = match dir {
@@ -1458,6 +1516,12 @@ impl<'s> Elaborator<'s> {
             // ── structural ─────────────────────────────────────────
             ast::ExprKind::Concat { parts } => {
                 let part_ids: Vec<u32> = parts.iter().map(|p| self.lower_expr(p)).collect();
+                if part_ids.iter().any(|&p| self.expr_is_real(p)) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "real may not appear in concatenation (use $realtobits)",
+                    );
+                }
                 self.push_expr(ir::Expr::Concat { parts: part_ids })
             }
             ast::ExprKind::Replicate { count, value } => {
@@ -1467,6 +1531,12 @@ impl<'s> Elaborator<'s> {
                 // kept for shape-uniformity / determinism.)
                 let count = self.lower_expr(count);
                 let part_ids: Vec<u32> = value.iter().map(|p| self.lower_expr(p)).collect();
+                if part_ids.iter().any(|&p| self.expr_is_real(p)) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "real may not appear in concatenation (use $realtobits)",
+                    );
+                }
                 let value = self.push_expr(ir::Expr::Concat { parts: part_ids });
                 self.push_expr(ir::Expr::Replicate { count, value })
             }
@@ -1501,9 +1571,9 @@ impl<'s> Elaborator<'s> {
                 let cid = self.intern_const(parse_str_literal(raw));
                 self.push_expr(ir::Expr::Const { val: cid })
             }
-            ast::ExprKind::RealLit { .. } => {
-                self.error(MsgCode::ElabUnsupported, "real literal not supported (v2)");
-                self.placeholder_expr()
+            ast::ExprKind::RealLit { raw, .. } => {
+                let cid = self.intern_const(parse_real_literal(raw));
+                self.push_expr(ir::Expr::Const { val: cid })
             }
             ast::ExprKind::Error => {
                 self.error(
@@ -1976,6 +2046,7 @@ impl<'s> Elaborator<'s> {
             match cv.repr {
                 ir::ConstRepr::Numeric => 0,
                 ir::ConstRepr::StrUtf8 => 1,
+                ir::ConstRepr::Real => 2,
             },
             cv.bits.val.clone(),
             cv.bits.unk.clone(),
@@ -1987,6 +2058,85 @@ impl<'s> Elaborator<'s> {
         self.consts.push(cv);
         self.const_dedup.insert(key, id);
         id
+    }
+
+    /// Static real-ness of an already-lowered ExprId (for §6.2 illegality gates
+    /// and the §4.1a format-string check). Real-typed iff it is a real const, a
+    /// real net read, a `+`/`-` of a real, a `+ - * /` with a real operand, a
+    /// ternary with a real branch, or a real-producing system function.
+    fn expr_is_real(&self, eid: u32) -> bool {
+        match self.exprs.get(eid as usize) {
+            Some(ir::Expr::Const { val }) => self
+                .consts
+                .get(*val as usize)
+                .is_some_and(|c| matches!(c.repr, ir::ConstRepr::Real)),
+            Some(ir::Expr::Signal { net, .. }) => self
+                .nets
+                .get(*net as usize)
+                .is_some_and(|n| matches!(n.kind, ir::NetKind::Real)),
+            Some(ir::Expr::Unary { op, operand }) => {
+                matches!(op, ir::UnOp::Plus | ir::UnOp::Minus) && self.expr_is_real(*operand)
+            }
+            Some(ir::Expr::Binary { op, lhs, rhs }) => {
+                matches!(
+                    op,
+                    ir::BinOp::Add | ir::BinOp::Sub | ir::BinOp::Mul | ir::BinOp::Div
+                ) && (self.expr_is_real(*lhs) || self.expr_is_real(*rhs))
+            }
+            Some(ir::Expr::Ternary { then_e, else_e, .. }) => {
+                self.expr_is_real(*then_e) || self.expr_is_real(*else_e)
+            }
+            Some(ir::Expr::SysFunc { which, .. }) => matches!(
+                which,
+                ir::SysFuncId::Realtime | ir::SysFuncId::Itor | ir::SysFuncId::BitsToReal
+            ),
+            _ => false,
+        }
+    }
+
+    /// §4.1a STATIC gate: walk the literal format string, pair each conversion
+    /// specifier with its positional value-arg, and reject a `%b/%h/%o/%x` (radix)
+    /// specifier on a real-typed argument. `%f/%g/%e/%d` on a real are legal.
+    fn check_format_real_radix(&mut self, fmt: &str, arg_ids: &[u32]) {
+        let mut chars = fmt.chars().peekable();
+        let mut argi = 0usize;
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                continue;
+            }
+            // skip width/precision modifiers (digits and a single '.').
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() || d == '.' {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let spec = match chars.next() {
+                Some(s) => s,
+                None => break,
+            };
+            match spec {
+                '%' | 'm' => {} // literal '%' / scope name — consume no arg
+                'b' | 'B' | 'h' | 'H' | 'x' | 'X' | 'o' | 'O' => {
+                    if arg_ids
+                        .get(argi)
+                        .copied()
+                        .is_some_and(|e| self.expr_is_real(e))
+                    {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "binary/hex/octal format not defined on a real argument",
+                        );
+                    }
+                    argi += 1;
+                }
+                // every other conversion consumes one positional argument.
+                _ => {
+                    argi += 1;
+                }
+            }
+        }
     }
 
     fn lower_int_literal(&mut self, kind: ast::IntLitKind, raw: &str) -> u32 {
@@ -3109,13 +3259,7 @@ impl<'s> Elaborator<'s> {
         let amount = d
             .values
             .first()
-            .and_then(|e| {
-                let pick = match &e.kind {
-                    ast::ExprKind::MinTypMax { typ, .. } => typ.as_ref(),
-                    _ => e,
-                };
-                const_eval_u32(pick)
-            })
+            .and_then(const_delay_ticks)
             .unwrap_or_else(|| {
                 self.warn("non-constant #delay not supported (v2); degraded to #0");
                 0
@@ -3167,9 +3311,11 @@ impl<'s> Elaborator<'s> {
                 | ir::SysTaskId::DumpOff
                 | ir::SysTaskId::DumpAll
         );
+        let mut fmt_raw: Option<String> = None;
         let (fmt, value_args): (Option<u32>, &[ast::Expr]) = if takes_fmt {
             match args.first().map(|e| &e.kind) {
                 Some(ast::ExprKind::StrLit { raw }) => {
+                    fmt_raw = Some(parse_str_literal_text(raw));
                     let cid = self.intern_const(parse_str_literal(raw));
                     let fmt_expr = self.push_expr(ir::Expr::Const { val: cid });
                     (Some(fmt_expr), &args[1..])
@@ -3190,6 +3336,11 @@ impl<'s> Elaborator<'s> {
                 }
             })
             .collect();
+        // §4.1a STATIC gate: a `%b/%h/%o/%x` conversion specifier paired with a
+        // real-typed argument is illegal (real has no radix form; use $realtobits).
+        if let Some(fmt_str) = &fmt_raw {
+            self.check_format_real_radix(fmt_str, &arg_ids);
+        }
         Some(self.push_stmt(ir::Stmt::SysTask {
             which,
             fmt,
@@ -3325,6 +3476,29 @@ fn const_eval_u32(e: &ast::Expr) -> Option<u32> {
     }
 }
 
+/// Const-fold a `#delay` value to integer ticks. Like [`const_eval_u32`] but a
+/// real literal `#1.5` is rounded half-away to integer ticks (IEEE 1364 §9). MVP
+/// without per-module unit/precision ratio: ratio = 1, round directly.
+fn const_delay_ticks(e: &ast::Expr) -> Option<u32> {
+    let pick = match &e.kind {
+        ast::ExprKind::MinTypMax { typ, .. } => typ.as_ref(),
+        _ => e,
+    };
+    if let ast::ExprKind::RealLit { raw, .. } = &pick.kind {
+        let x = parse_real_f64(raw);
+        let ticks = (x.round() as i64).clamp(0, u32::MAX as i64) as u32;
+        return Some(ticks);
+    }
+    if let ast::ExprKind::Paren { inner } = &pick.kind {
+        if let ast::ExprKind::RealLit { raw, .. } = &inner.kind {
+            let x = parse_real_f64(raw);
+            let ticks = (x.round() as i64).clamp(0, u32::MAX as i64) as u32;
+            return Some(ticks);
+        }
+    }
+    const_eval_u32(pick)
+}
+
 /// Const-fold a net/var initializer literal into a `BitPacked` of `width`.
 /// Non-literal initializers → None (procedural; deferred), caller defaults.
 fn fold_init(e: &ast::Expr, width: u32) -> Option<ir::BitPacked> {
@@ -3393,6 +3567,10 @@ fn map_sysfunc(dollar_name: &str) -> Option<ir::SysFuncId> {
         "$signed" => Some(ir::SysFuncId::Signed),
         "$unsigned" => Some(ir::SysFuncId::Unsigned),
         "$clog2" => Some(ir::SysFuncId::Clog2),
+        "$rtoi" => Some(ir::SysFuncId::Rtoi),
+        "$itor" => Some(ir::SysFuncId::Itor),
+        "$realtobits" => Some(ir::SysFuncId::RealToBits),
+        "$bitstoreal" => Some(ir::SysFuncId::BitsToReal),
         _ => None,
     }
 }
@@ -3474,6 +3652,8 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
         Reg => ir::NetKind::Reg,
         Logic => ir::NetKind::Logic,
         Integer => ir::NetKind::Integer,
+        // `real`/`realtime` → IEEE-754 f64 net (64-bit, signed, 2-state).
+        Real | Realtime => ir::NetKind::Real,
         // Wire + all net aliases (Tri/Uwire/Wand/...) behave as Wire in v1.
         _ => ir::NetKind::Wire,
     }
@@ -3484,12 +3664,22 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
 /// flagged (still mapped to Wire so the arena stays valid).
 fn net_kind_supported(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
-    matches!(k, Wire | Tri | Uwire | Reg | Logic | Integer)
+    matches!(
+        k,
+        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime
+    )
 }
 
 /// Time-0 default `init`: variables (reg/logic/integer) start all-X; nets start
 /// all-Z. `(v,u)`: X=`01`, Z=`11`.
 fn default_init(kind: ast::NetVarKind, width: u32) -> ir::BitPacked {
+    // A real default = +0.0 = all-zero bits, never X (it is always 2-state).
+    if matches!(kind, ast::NetVarKind::Real | ast::NetVarKind::Realtime) {
+        return ir::BitPacked {
+            val: vec![0],
+            unk: vec![0],
+        };
+    }
     let nwords = (((width as usize) + 63) / 64).max(1);
     let is_var = matches!(
         kind,

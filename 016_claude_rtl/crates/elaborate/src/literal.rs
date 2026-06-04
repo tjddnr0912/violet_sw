@@ -243,7 +243,10 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
 /// bytes are packed LSB-byte-first: byte `k` occupies bits `[k*8 .. k*8+8)`.
 /// `width = nbytes*8`. Strings are 2-state, so the `unk` plane is all zero.
 /// (`\ddd` octal / `\xhh` hex are deferred — recovered by literal copy.)
-pub fn parse_str_literal(raw: &str) -> ConstVal {
+/// Unescape a raw string-literal lexeme (quotes stripped, C escapes processed)
+/// into its byte vector. Shared by `parse_str_literal` and the elaborate-time
+/// format-specifier scan (§4.1a).
+pub fn unescape_str_literal_bytes(raw: &str) -> Vec<u8> {
     let inner = raw.strip_prefix('"').unwrap_or(raw);
     let inner = inner.strip_suffix('"').unwrap_or(inner);
 
@@ -270,6 +273,17 @@ pub fn parse_str_literal(raw: &str) -> ConstVal {
             None => bytes.push(b'\\'),
         }
     }
+    bytes
+}
+
+/// The unescaped UTF-8 text of a string literal (lossy for any non-UTF-8 bytes,
+/// which never occur in a Verilog format string). Used by the §4.1a static gate.
+pub fn parse_str_literal_text(raw: &str) -> String {
+    String::from_utf8_lossy(&unescape_str_literal_bytes(raw)).into_owned()
+}
+
+pub fn parse_str_literal(raw: &str) -> ConstVal {
+    let bytes = unescape_str_literal_bytes(raw);
 
     let width = (bytes.len() as u32).saturating_mul(8);
     let nwords = (((width as usize) + 63) / 64).max(1);
@@ -286,6 +300,34 @@ pub fn parse_str_literal(raw: &str) -> ConstVal {
         repr: ConstRepr::StrUtf8,
         bits: BitPacked { val, unk },
     }
+}
+
+/// IEEE 1364 real literal → `ConstVal { repr: Real }`. Underscores are stripped;
+/// round-to-nearest-even is Rust's f64 parse default. The f64 is stored as
+/// `to_bits()` in `bits.val[0]`, `unk = [0]`, `width = 64`, `signed = true`.
+///
+/// OVERFLOW: an out-of-range literal (e.g. `1e400`) parses to `Ok(±inf)`, NOT
+/// `Err`, so it interns as `±inf` with the canonical IEEE bit pattern
+/// (deterministic, §0). `unwrap_or(0.0)` only covers a truly unparseable string,
+/// which the validated grammar should never deliver.
+pub fn parse_real_literal(raw: &str) -> ConstVal {
+    let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
+    let x = cleaned.parse::<f64>().unwrap_or(0.0);
+    ConstVal {
+        width: 64,
+        signed: true,
+        repr: ConstRepr::Real,
+        bits: BitPacked {
+            val: vec![x.to_bits()],
+            unk: vec![0],
+        },
+    }
+}
+
+/// Parse a raw real literal lexeme to its f64 value (for real delays `#1.5`).
+pub fn parse_real_f64(raw: &str) -> f64 {
+    let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
+    cleaned.parse::<f64>().unwrap_or(0.0)
 }
 
 /// Synthesize a small unsigned `ConstVal` of `n` in `width` bits (used for

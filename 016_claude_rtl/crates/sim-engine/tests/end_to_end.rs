@@ -1098,3 +1098,286 @@ fn fork_two_sequential_forks_distinct_barriers() {
     // First fork joins at t=4 (a,b set); second runs t=4..8 and joins at t=8.
     assert_eq!(out, "a=1 b=1 c=1 d=1 t=8\n");
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// REAL / REALTIME DOMAIN (deliberate sim-ir evolution, format_version 2→3)
+// Strings are blessed against the §4.1 formatter algorithms as written.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Build + simulate `src`, returning the captured $display/$write output.
+fn run_sv(src: &str) -> String {
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    out
+}
+
+// 1. real division is real: 1.0/3.0 prints 0.333333 via %f
+#[test]
+fn real_division_is_real() {
+    let out =
+        run_sv("module t; real r; initial begin r = 1.0 / 3.0; $display(\"%f\", r); end endmodule");
+    assert_eq!(out.trim(), "0.333333");
+}
+
+// 2. int+real promotion: i/2.0 promotes → 3.5 ; i/2 stays integer 3 (then to real)
+#[test]
+fn int_real_promotion() {
+    let out = run_sv(
+        "module t; integer i; real r; \
+         initial begin i = 7; r = i / 2.0; $display(\"%g\", r); r = i / 2; $display(\"%g\", r); end \
+         endmodule",
+    );
+    assert_eq!(out.trim(), "3.5\n3");
+}
+
+// 3. real→int assignment ROUNDS half-away
+#[test]
+fn real_to_int_assignment_rounds_half_away() {
+    let out = run_sv(
+        "module t; real r; integer n; \
+         initial begin r = 2.5; n = r; $display(\"%0d\", n); r = -2.5; n = r; $display(\"%0d\", n); end \
+         endmodule",
+    );
+    assert_eq!(out.trim(), "3\n-3");
+}
+
+// 4. $rtoi TRUNCATES toward zero (contrast with #3)
+#[test]
+fn rtoi_truncates_toward_zero() {
+    let out = run_sv(
+        "module t; real r; integer n; \
+         initial begin r = 2.9; n = $rtoi(r); $display(\"%0d\", n); r = -2.9; n = $rtoi(r); $display(\"%0d\", n); end \
+         endmodule",
+    );
+    assert_eq!(out.trim(), "2\n-2");
+}
+
+// 5. $itor exact int→real
+#[test]
+fn itor_converts() {
+    let out =
+        run_sv("module t; real r; initial begin r = $itor(7); $display(\"%g\", r); end endmodule");
+    assert_eq!(out.trim(), "7");
+}
+
+// 6. $realtobits / $bitstoreal round-trip is identity
+#[test]
+fn realtobits_bitstoreal_roundtrip() {
+    let out = run_sv(
+        "module t; real r; reg [63:0] b; real r2; \
+         initial begin r = 3.14159; b = $realtobits(r); r2 = $bitstoreal(b); $display(\"%g\", r2); end \
+         endmodule",
+    );
+    assert_eq!(out.trim(), "3.14159");
+}
+
+// 7. $realtime returns a real with fractional time (MVP ratio=1)
+#[test]
+fn realtime_returns_real() {
+    let out = run_sv("module t; initial begin #1 $display(\"%g\", $realtime); end endmodule");
+    assert_eq!(out.trim(), "1");
+}
+
+// 8. %g shortest formatting (C/LRM): exp(0.00001) = -5 < -4 → "1e-05".
+#[test]
+fn percent_g_shortest() {
+    let out = run_sv(
+        "module t; real r; \
+         initial begin r = 1500.0; $display(\"%g\", r); r = 0.0001; $display(\"%g\", r); r = 0.00001; $display(\"%g\", r); end \
+         endmodule",
+    );
+    assert_eq!(out.trim(), "1500\n0.0001\n1e-05");
+}
+
+// 9. %f vs %e — %e is LRM/printf form: 6 mantissa digits, signed 2-digit exponent.
+#[test]
+fn percent_f_and_e() {
+    let out = run_sv(
+        "module t; real r; initial begin r = 1500.0; $display(\"%f|%e\", r, r); end endmodule",
+    );
+    assert_eq!(out.trim(), "1500.000000|1.500000e+03");
+}
+
+// 10. %d on a real ROUNDS half-away
+#[test]
+fn percent_d_on_real_rounds() {
+    let out =
+        run_sv("module t; real r; initial begin r = 2.7; $display(\"%0d\", r); end endmodule");
+    assert_eq!(out.trim(), "3");
+}
+
+// 11. real delay #1.5 rounds to integer ticks; $time after = 2
+#[test]
+fn real_delay_rounds_to_ticks() {
+    let out = run_sv("module t; initial begin #1.5 $display(\"%0d\", $time); end endmodule");
+    assert_eq!(out.trim(), "2");
+}
+
+// 12. NetKind::Real net round-trips through write/read
+#[test]
+fn real_net_write_read_roundtrip() {
+    let out =
+        run_sv("module t; real r; initial begin r = 6.022; $display(\"%g\", r); end endmodule");
+    assert_eq!(out.trim(), "6.022");
+}
+
+// 13. real comparison: value compare, +0.0 == -0.0
+#[test]
+fn real_compare_value_semantics() {
+    let out = run_sv(
+        "module t; real a, b; \
+         initial begin a = 0.0; b = -0.0; $display(\"%0d\", (a == b)); a = 1.5; b = 2.5; $display(\"%0d\", (a < b)); end \
+         endmodule",
+    );
+    assert_eq!(out.trim(), "1\n1");
+}
+
+// 14. unary minus on real
+#[test]
+fn real_unary_minus() {
+    let out =
+        run_sv("module t; real r; initial begin r = -(2.5); $display(\"%g\", r); end endmodule");
+    assert_eq!(out.trim(), "-2.5");
+}
+
+// 14b. signed-zero display: %g canonicalizes -0.0→"0"; %f keeps the sign.
+#[test]
+fn real_negative_zero_display() {
+    let out = run_sv(
+        "module t; real r; initial begin r = -(0.0); $display(\"%g|%f\", r, r); end endmodule",
+    );
+    assert_eq!(out.trim(), "0|-0.000000");
+}
+
+// 16. %d of a NaN real → "0"; %d of a huge real saturates to i64::MAX.
+#[test]
+fn percent_d_real_nan_and_huge() {
+    let out = run_sv(
+        "module t; real r; \
+         initial begin r = 0.0/0.0; $display(\"%0d\", r); r = 1.0e30; $display(\"%0d\", r); end \
+         endmodule",
+    );
+    assert_eq!(out.trim(), "0\n9223372036854775807");
+}
+
+// 17. real division by zero is ±inf (NOT X), printed as "inf"/"-inf".
+#[test]
+fn real_div_zero_is_inf() {
+    let out = run_sv(
+        "module t; real r; initial begin r = 1.0/0.0; $display(\"%g\", r); r = -1.0/0.0; $display(\"%g\", r); end endmodule",
+    );
+    assert_eq!(out.trim(), "inf\n-inf");
+}
+
+/// Build `src` through lex→parse→elaborate, returning the collected diagnostic
+/// strings (severity-prefixed). Used to assert real-operand illegality gates.
+fn elaborate_diags(src: &str) -> Vec<String> {
+    let (toks, le) = hdl_lexer::lex(src);
+    assert!(le.is_empty(), "lex errors: {le:?}");
+    let (su, pe) = hdl_parser::parse(&toks, src);
+    assert!(pe.is_empty(), "parse errors: {pe:?}");
+    let sink = DiagSink::default();
+    let _ = elaborate::elaborate(&su.expect("source unit"), &sink);
+    let collected = sink.0.borrow().clone();
+    drop(sink);
+    collected
+}
+
+// E1. %h on a real argument is a STATIC elaborate-time rejection (§4.1a).
+#[test]
+fn real_percent_h_rejected_at_elaborate() {
+    let diags = elaborate_diags(
+        "module t; real r; initial begin r = 2.5; $display(\"%h\", r); end endmodule",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("binary/hex/octal format not defined on a real argument")),
+        "expected %h-on-real rejection, got: {diags:?}"
+    );
+}
+
+// E2. `**` (power) on a real operand is a permanent ElabUnsupported (§6.2).
+#[test]
+fn real_power_rejected_at_elaborate() {
+    let diags = elaborate_diags(
+        "module t; real r; initial begin r = 2.0 ** 3; $display(\"%g\", r); end endmodule",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("power (**) not defined on real operand")),
+        "expected **-on-real rejection, got: {diags:?}"
+    );
+}
+
+// E3. `%` (modulo) on a real operand is rejected (§6.2).
+#[test]
+fn real_modulo_rejected_at_elaborate() {
+    let diags = elaborate_diags(
+        "module t; real r; initial begin r = 2.5 % 1.0; $display(\"%g\", r); end endmodule",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("modulo (%) not defined on real operand")),
+        "expected %-on-real rejection, got: {diags:?}"
+    );
+}
+
+// E4. A `real` net lowers to NetKind::Real (width 64, signed) and default-inits
+//     to 0.0 (all-zero bits, not X) — a clean real decl elaborates with no diags.
+#[test]
+fn real_net_lowers_clean() {
+    let (toks, le) = hdl_lexer::lex("module t; real r; realtime rt; initial r = 1.0; endmodule");
+    assert!(le.is_empty());
+    let (su, pe) = hdl_parser::parse(
+        &toks,
+        "module t; real r; realtime rt; initial r = 1.0; endmodule",
+    );
+    assert!(pe.is_empty());
+    let sink = DiagSink::default();
+    let ir = elaborate::elaborate(&su.expect("su"), &sink).expect("ir");
+    assert!(
+        sink.0.borrow().is_empty(),
+        "unexpected diags: {:?}",
+        sink.0.borrow()
+    );
+    // both `r` and `rt` are NetKind::Real, 64-bit signed, init 0.0 (all-zero).
+    let reals: Vec<_> = ir
+        .nets
+        .iter()
+        .filter(|n| matches!(n.kind, sim_ir::NetKind::Real))
+        .collect();
+    assert_eq!(reals.len(), 2, "expected 2 real nets (real + realtime)");
+    for n in reals {
+        assert_eq!(n.width, 64);
+        assert!(n.signed);
+        assert!(
+            n.init.val.iter().all(|&w| w == 0),
+            "real default must be 0.0 bits"
+        );
+        assert!(
+            n.init.unk.iter().all(|&w| w == 0),
+            "real default must have unk=0 (never X)"
+        );
+    }
+}
+
+// A real in a boolean/logical context is true iff != 0.0 (IEEE: -0.0 == 0.0).
+// Regression for the adversarial-review MAJOR: truthiness must NOT read a real's
+// f64 bits as a 4-state vector (which classified -0.0 — sign bit set — as true).
+#[test]
+fn real_negative_zero_is_logically_false() {
+    let src = "module t; real r; integer n; \
+               initial begin \
+                 r=-0.0; if (r) $display(\"A\"); else $display(\"B\"); \
+                 r=-0.0; n=!r; $display(\"%0d\", n); \
+                 r=-0.0; n=(r ? 7 : 9); $display(\"%0d\", n); \
+                 r=2.5;  if (r) $display(\"T\"); else $display(\"F\"); \
+                 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // -0.0 → false (else "B"), !(-0.0)=1, (-0.0 ? 7 : 9)=9, and 2.5 → true ("T").
+    assert_eq!(out, "B\n1\n9\nT\n");
+}

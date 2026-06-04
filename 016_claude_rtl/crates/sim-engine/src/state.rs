@@ -21,6 +21,9 @@ pub(crate) struct NetSlot {
     pub width: u32,
     pub array_len: u32,
     pub signed: bool,
+    /// True for a `NetKind::Real` net — drives the real↔int assignment coercion
+    /// in `write_lvalue` and the `is_real` flag on reads.
+    pub is_real: bool,
     pub vcd_id: Option<IdCode>,
 }
 
@@ -119,6 +122,7 @@ impl<'a> SimState<'a> {
                     width: nv.width,
                     array_len: alen,
                     signed: nv.signed,
+                    is_real: nv.kind == NetKind::Real,
                     vcd_id: None,
                 }
             })
@@ -158,6 +162,39 @@ impl<'a> SimState<'a> {
     /// Write `value` (any width) into the LHS chunks of `lhs`, MSB-first source
     /// consumption (Verilog concat-LHS). Returns true if ANY bit changed.
     pub fn write_lvalue(&mut self, lhs: &Lvalue, value: Value) -> bool {
+        // ── real↔int assignment coercion (IEEE 1364 §6.2) ──
+        // Only a WHOLE-NET lvalue (single Bit chunk, no offset/width) can be a
+        // real destination: a real is dimensionless and never bit/part-selected
+        // (§6.2 makes r[i]/r[hi:lo] illegal at elaborate). Detect the whole-net
+        // case and consult NetSlot.is_real.
+        let dest_is_real = lhs.chunks.len() == 1
+            && matches!(lhs.chunks[0].kind, SelKind::Bit)
+            && lhs.chunks[0].offset.is_none()
+            && lhs.chunks[0].width.is_none()
+            && self.nets[lhs.chunks[0].net as usize].is_real;
+
+        let value = match (dest_is_real, value.is_real) {
+            // real net ← real value: store verbatim (already 64 IEEE bits).
+            (true, true) => value,
+            // real net ← integer value (int→real CONVERT): exact for ≤53-bit.
+            (true, false) => Value::from_f64(value.to_f64().unwrap_or(0.0)),
+            // integer net ← real value (real→int ASSIGNMENT: ROUND half-away).
+            // A real RHS only legally targets a whole scalar int net (concat-LHS
+            // of a real is illegal §6.2). Round to that net's width; for the rare
+            // multi-chunk case round to the total LHS width.
+            (false, true) => {
+                let w = if lhs.chunks.len() == 1 {
+                    self.nets[lhs.chunks[0].net as usize].width
+                } else {
+                    lhs.chunks.iter().map(|c| self.chunk_width(c)).sum()
+                };
+                let signed = lhs.chunks.len() == 1 && self.nets[lhs.chunks[0].net as usize].signed;
+                crate::value::real_to_int_round(value.to_f64().unwrap_or(0.0), w.max(1), signed)
+            }
+            // integer net ← integer value: unchanged legacy path.
+            (false, false) => value,
+        };
+
         // Total destination bit width = sum of chunk widths.
         let total: u32 = lhs.chunks.iter().map(|c| self.chunk_width(c)).sum();
         let src = value.resize(total.max(1));
@@ -312,7 +349,9 @@ impl<'a> NetReader for SimState<'a> {
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
         let slot = &self.nets[net as usize];
         let packed = self.net_word_packed(net, word);
-        Value::from_packed(&packed, slot.width, slot.signed)
+        let mut v = Value::from_packed(&packed, slot.width, slot.signed);
+        v.is_real = slot.is_real; // flag the read-back as real (val[0] = IEEE bits)
+        v
     }
 }
 
@@ -323,6 +362,7 @@ pub(crate) fn vcd_var_type(kind: NetKind) -> VarType {
     match kind {
         NetKind::Reg => VarType::Reg,
         NetKind::Integer => VarType::Integer,
+        NetKind::Real => VarType::Real, // VCD `$var real`
         NetKind::Wire | NetKind::Logic => VarType::Wire,
     }
 }

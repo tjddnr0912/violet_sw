@@ -270,18 +270,52 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
             out.push(c);
             continue;
         }
-        // optional width/flags: %0d, %5h …  (v1 records `0`, ignores explicit width)
+        // optional width/flags: %0d, %5h, %8.2f …  (v1 records `0` for integer
+        // specs; width/precision are threaded into the real `%f/%e/%g` formatters).
         let mut min_zero = false;
+        let mut width_digits = String::new();
         while let Some(&d) = chars.peek() {
-            if d == '0' {
+            if d == '0' && width_digits.is_empty() {
                 min_zero = true;
+                width_digits.push('0');
                 chars.next();
             } else if d.is_ascii_digit() {
+                width_digits.push(d);
                 chars.next();
             } else {
                 break;
             }
         }
+        let mut prec_digits = String::new();
+        let mut has_prec = false;
+        if chars.peek() == Some(&'.') {
+            has_prec = true;
+            chars.next();
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() {
+                    prec_digits.push(d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+        let field_width: Option<usize> = width_digits
+            .trim_start_matches('0')
+            .parse::<usize>()
+            .ok()
+            .or_else(|| {
+                if width_digits.chars().all(|c| c == '0') && !width_digits.is_empty() {
+                    Some(0)
+                } else {
+                    None
+                }
+            });
+        let precision: Option<usize> = if has_prec {
+            Some(prec_digits.parse::<usize>().unwrap_or(0))
+        } else {
+            None
+        };
         let spec = chars.next().unwrap_or('%');
         match spec {
             '%' => out.push('%'),
@@ -305,6 +339,10 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
             'b' | 'B' => {
                 let v = next_arg(sched, args, &mut argi);
                 out.push_str(&fmt_radix(&v, 1, min_zero));
+            }
+            'f' | 'F' | 'g' | 'G' | 'e' | 'E' => {
+                let v = next_arg(sched, args, &mut argi);
+                out.push_str(&fmt_real(&v, spec, field_width, precision));
             }
             'c' => {
                 let v = next_arg(sched, args, &mut argi);
@@ -334,8 +372,14 @@ fn any_unknown(v: &Value) -> bool {
     v.has_xz()
 }
 
-/// %d: decimal; any X/Z → "x".
+/// %d: decimal; any X/Z → "x". A real ROUNDS half-away (saturating to i64
+/// extremes; NaN → 0).
 fn fmt_dec(v: &Value) -> String {
+    if v.is_real {
+        let x = v.to_f64().unwrap_or(0.0);
+        // round half-away; large |x| SATURATES to i64::MAX/MIN; NaN.round() as i64 == 0.
+        return format!("{}", x.round() as i64);
+    }
     if any_unknown(v) {
         return "x".to_string();
     }
@@ -352,6 +396,95 @@ fn fmt_dec(v: &Value) -> String {
         }
     }
     acc.to_string()
+}
+
+/// `%f`/`%e`/`%g` of a real Value (the arg may be an integer promoted to real).
+/// `width`/`prec` are the optional field-width / precision modifiers (`%8.2f`).
+fn fmt_real(v: &Value, spec: char, width: Option<usize>, prec: Option<usize>) -> String {
+    let x = v.to_f64().unwrap_or(0.0);
+    let body = match spec {
+        'f' | 'F' => format!("{:.*}", prec.unwrap_or(6), x), // default 6 fractional digits
+        'e' | 'E' => fmt_real_e(x, prec),
+        'g' | 'G' => format_g(x, prec),
+        _ => format!("{x}"),
+    };
+    if let Some(w) = width {
+        if body.len() < w {
+            return format!("{}{}", " ".repeat(w - body.len()), body);
+        }
+    }
+    body
+}
+
+/// %e → C/printf/LRM form: `prec` mantissa fraction digits (default 6), signed
+/// exponent zero-padded to AT LEAST 2 digits (`1.500000e+03`). Non-finite passes
+/// through as Rust prints it (`inf`/`-inf`/`NaN`).
+fn fmt_real_e(x: f64, prec: Option<usize>) -> String {
+    if !x.is_finite() {
+        return format!("{x}"); // inf / -inf / NaN
+    }
+    let p = prec.unwrap_or(6);
+    let s = format!("{x:.p$e}"); // e.g. "1.500000e3" or "1.234500e-5"
+    let (mant, exp) = s.split_once('e').expect("rust {:e} always emits 'e'");
+    let (sign, digits) = match exp.strip_prefix('-') {
+        Some(d) => ('-', d),
+        None => ('+', exp),
+    };
+    let padded = if digits.len() < 2 {
+        format!("{digits:0>2}")
+    } else {
+        digits.to_string()
+    };
+    format!("{mant}e{sign}{padded}")
+}
+
+/// %g: shortest of %e/%f with trailing zeros stripped, per C/LRM. `prec` is the
+/// total significant-digit precision P (default 6).
+fn format_g(x: f64, prec: Option<usize>) -> String {
+    if !x.is_finite() {
+        return format!("{x}"); // inf / -inf / NaN
+    }
+    if x == 0.0 {
+        return "0".to_string(); // both +0.0 and -0.0 → "0" under %g zero-strip
+    }
+    let p: i32 = prec.unwrap_or(6).max(1) as i32;
+    // Decimal exponent AFTER rounding to P significant digits, derived from
+    // Rust's deterministic `{:e}` formatter — NOT `log10` (a libm transcendental
+    // not guaranteed 3-OS byte-identical, and which reports the PRE-rounding
+    // exponent: `9.9999e5` at P=6 must select exp 6, not 5).
+    let sci = format!("{:.*e}", (p - 1) as usize, x); // e.g. "1.50000e3"
+    let exp: i32 = sci
+        .split_once('e')
+        .and_then(|(_, e)| e.parse().ok())
+        .unwrap_or(0);
+    if exp < -4 || exp >= p {
+        // exponent form: reuse the already-rounded mantissa, LRM exponent normalize.
+        let (mant, e) = sci.split_once('e').unwrap();
+        let mant = strip_trailing_zeros(mant);
+        let (sgn, dig) = match e.strip_prefix('-') {
+            Some(d) => ('-', d),
+            None => ('+', e),
+        };
+        let dig = if dig.len() < 2 {
+            format!("{dig:0>2}")
+        } else {
+            dig.to_string()
+        };
+        format!("{mant}e{sgn}{dig}")
+    } else {
+        let prec = (p - 1 - exp).max(0) as usize;
+        let body = format!("{x:.prec$}"); // fixed form
+        strip_trailing_zeros(&body)
+    }
+}
+
+/// Strip insignificant trailing zeros after a decimal point, and a bare trailing '.'.
+fn strip_trailing_zeros(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
+    let t = s.trim_end_matches('0');
+    t.trim_end_matches('.').to_string()
 }
 
 /// %h/%o/%b: group bits per digit (1=bin,3=oct,4=hex), MSB-first; a group with

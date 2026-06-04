@@ -158,6 +158,10 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
 
     fn eval_const(&self, cid: u32) -> Value {
         let c = &self.ir.consts[cid as usize];
+        if matches!(c.repr, ConstRepr::Real) {
+            // val[0] already holds f64::to_bits; reinterpret as real.
+            return Value::from_f64(f64::from_bits(c.bits.val.first().copied().unwrap_or(0)));
+        }
         let signed = matches!(c.repr, ConstRepr::Numeric) && c.signed;
         Value::from_packed(&c.bits, c.width, signed)
     }
@@ -205,6 +209,11 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     }
 
     fn negate(&self, a: &Value) -> Value {
+        if a.is_real {
+            // unwrap_or(0.0): on a real, to_f64 always returns Some, but we keep
+            // the same unwrap policy everywhere to avoid a latent panic surface.
+            return Value::from_f64(-a.to_f64().unwrap_or(0.0));
+        }
         if a.has_xz() {
             return Value::xs(a.width, a.signed);
         }
@@ -332,6 +341,26 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     }
 
     fn arith(&self, op: BinOp, l: &Value, r: &Value) -> Value {
+        if l.is_real || r.is_real {
+            // IEEE 1364 §4.3: if either operand is real, the other promotes to real.
+            // An X/Z integer entering a mixed real op decays to 0.0 (documented MVP
+            // policy), never panics, never X-propagates.
+            let a = l.to_f64().unwrap_or(0.0);
+            let b = r.to_f64().unwrap_or(0.0);
+            let res = match op {
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::Mul => a * b,
+                BinOp::Div => a / b, // f64: x/0 → ±inf, 0/0 → NaN; NOT X
+                // `%` and `**` on a real are permanent illegalities gated at
+                // elaborate (§6.2). Defensive NaN poison instead of unreachable!()
+                // so a gate regression can never crash the simulator.
+                BinOp::Mod => f64::NAN,
+                BinOp::Pow => f64::NAN,
+                _ => f64::NAN,
+            };
+            return Value::from_f64(res);
+        }
         let w = l.width.max(r.width).max(1);
         let both_signed = l.signed && r.signed;
         if l.has_xz() || r.has_xz() {
@@ -407,6 +436,20 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     }
 
     fn relational(&self, op: BinOp, l: &Value, r: &Value) -> Value {
+        if l.is_real || r.is_real {
+            let a = l.to_f64().unwrap_or(0.0);
+            let b = r.to_f64().unwrap_or(0.0);
+            let bit = match (op, a.partial_cmp(&b)) {
+                // partial_cmp is None on NaN → all ordered comparisons false (IEEE).
+                (_, None) => false,
+                (BinOp::Lt, Some(o)) => o == std::cmp::Ordering::Less,
+                (BinOp::Le, Some(o)) => o != std::cmp::Ordering::Greater,
+                (BinOp::Gt, Some(o)) => o == std::cmp::Ordering::Greater,
+                (BinOp::Ge, Some(o)) => o != std::cmp::Ordering::Less,
+                _ => unreachable!("relational only handles Lt/Le/Gt/Ge"),
+            };
+            return Value::logic(bit);
+        }
         if l.has_xz() || r.has_xz() {
             return Value::x1();
         }
@@ -441,6 +484,13 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     /// match (e.g. `4'sb1111 == 8'hFF` → wrong `1`). `resize_keep_sign` clears the
     /// sign when the context is unsigned, so we zero-extend correctly.
     fn log_eq(&self, op: BinOp, l: &Value, r: &Value) -> Value {
+        if l.is_real || r.is_real {
+            let a = l.to_f64().unwrap_or(0.0);
+            let b = r.to_f64().unwrap_or(0.0);
+            // VALUE comparison: +0.0 == -0.0 is true; NaN != NaN.
+            let eq = a == b;
+            return Value::logic(if op == BinOp::Eq { eq } else { !eq });
+        }
         let w = l.width.max(r.width);
         let ctx_signed = l.signed && r.signed;
         let le = l.clone().resize_keep_sign(w, ctx_signed);
@@ -464,6 +514,14 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     /// uses the same context-signedness rule as `==` (zero-extend unless BOTH
     /// signed) so a mixed-sign `===` matches IEEE numeric extension.
     fn case_eq(&self, op: BinOp, l: &Value, r: &Value) -> Value {
+        if l.is_real || r.is_real {
+            // MVP: === on real == VALUE equality. A real is 2-state, so === and ==
+            // coincide; +0.0 === -0.0 is TRUE (value equal), NaN !== NaN.
+            let a = l.to_f64().unwrap_or(0.0);
+            let b = r.to_f64().unwrap_or(0.0);
+            let eq = a == b;
+            return Value::logic(if op == BinOp::CaseEq { eq } else { !eq });
+        }
         let w = l.width.max(r.width);
         let ctx_signed = l.signed && r.signed;
         let le = l.clone().resize_keep_sign(w, ctx_signed);
@@ -640,9 +698,46 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
 
     fn eval_sysfunc(&self, which: SysFuncId, args: &[u32]) -> Value {
         match which {
-            SysFuncId::Time | SysFuncId::Realtime => {
+            SysFuncId::Time => {
                 let mut v = Value::zeros(64, false);
-                v.val[0] = self.now;
+                v.val[0] = self.now; // $time: integer ticks
+                v
+            }
+            SysFuncId::Realtime => {
+                // $realtime: current time as a REAL in time-units (fractional kept).
+                // MVP without per-module unit ratio: now-as-f64.
+                Value::from_f64(self.now as f64)
+            }
+            SysFuncId::Rtoi => {
+                // real → int, TRUNCATE toward zero. Result is a plain integer Value.
+                let x = self.eval(args[0]).to_f64().unwrap_or(0.0);
+                Value::from_i128(x.trunc() as i128, 32, true)
+            }
+            SysFuncId::Itor => {
+                // int → real, exact convert.
+                let i = self.eval(args[0]).to_i128_signed().unwrap_or(0);
+                Value::from_f64(i as f64)
+            }
+            SysFuncId::RealToBits => {
+                // real → 64-bit vector (raw IEEE bits). val[0] already holds
+                // to_bits(); clear is_real so it reads as a plain 64-bit vector.
+                let mut v = self.eval(args[0]);
+                v.is_real = false;
+                v.signed = false;
+                v.width = 64;
+                v
+            }
+            SysFuncId::BitsToReal => {
+                // 64-bit vector → real. Same bits, set is_real. X/Z → NaN poison
+                // (§6.2 "cannot convert X/Z to real") rather than a fabricated real.
+                let src = self.eval(args[0]);
+                if src.has_xz() {
+                    return Value::from_f64(f64::NAN);
+                }
+                let mut v = src;
+                v.is_real = true;
+                v.signed = true;
+                v.width = 64;
                 v
             }
             SysFuncId::Signed => {
@@ -703,6 +798,17 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     // ── helpers ────────────────────────────────────────────────────────────
 
     fn truthiness(&self, a: &Value) -> Tri {
+        // A real is logically true iff it is != 0.0 (IEEE 1364: `-0.0 == 0.0`,
+        // so both signed zeros are FALSE; NaN != 0.0 → truthy). Reinterpreting a
+        // real's f64 bits as a 4-state vector would wrongly read `-0.0`
+        // (sign bit set, value zero) as true in `if`/`!`/ternary/`&&`/`||`.
+        if a.is_real {
+            return if a.to_f64().unwrap_or(0.0) != 0.0 {
+                Tri::True
+            } else {
+                Tri::False
+            };
+        }
         let mut any_unknown = false;
         for i in 0..a.width {
             let (v, u) = a.get_vu(i);

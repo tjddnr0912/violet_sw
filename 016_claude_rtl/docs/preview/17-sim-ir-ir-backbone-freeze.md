@@ -343,7 +343,7 @@ node-kind당 append-only `Vec` 1개 = 재로드 시 포인터 fixup 0.
 | 다차원 packed/unpacked array | `NetVar.array_len:u32` → `dims:Vec<u32>` |
 | struct/union/enum/typedef | `NetKind` 확장(packed struct는 `BitPacked` fit); unpacked→`dims` |
 | interface ref | `Instance`-인접 arena + 새 `Expr`/`Lvalue` leaf |
-| `real`/`realtime` 저장 | **sim-ir re-freeze 아님** — no-float 규칙상 별도 비해시 lane(`--dump` RON 뷰) |
+| `real`/`realtime` 저장 | **✅ DONE — 의도적 sim-ir re-freeze (format_version 2→3).** 당초 "re-freeze 아님(별도 비해시 lane)" 결정을 **의도적으로 번복**: `NetKind::Real` + `ConstRepr::Real`(둘 다 fieldless) + `SysFuncId::{Rtoi,Itor,RealToBits,BitsToReal}` 4종 추가. f64는 **f64 필드 없이** `f64::to_bits()→u64`로 기존 `BitPacked.val[0]`에 저장(width=64, unk=[0]) → no-float derive 가드(usize/f32/f64 reject) 그대로 만족 + reals가 골든 IR/결정성에 **참여**(side-lane보다 엄격히 깨끗). 루트 해시 1회 flip → `EXPECTED_SIMIR_HASH` 재pin(`EXPECTED_PROCESS_HASH`는 불변=정상 sanity gate), 전 `.velab`/`.vu`는 FORMAT 게이트에서 stale 거부(의도된 staleness). 엔진의 `is_real` 플래그는 비해시 런타임 `Value`/`NetSlot`에만 존재(IR 불침투). 상세: `docs/superpowers/plans/2026-06-04-real-domain-spec.md`. |
 | `final`, `foreach`, `unique`/`priority`, `do-while`, `join_any`/`join_none` | **lowering-only** — 기존 `Terminator`/`Branch`/`Goto`/`Fork`, 새 이름 0, re-freeze 0 |
 
 ---

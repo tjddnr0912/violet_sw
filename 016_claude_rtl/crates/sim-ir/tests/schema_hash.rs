@@ -4,7 +4,7 @@ use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full M3 SimIr-closure canonical string. Locked M3.
 const EXPECTED_SIMIR_HASH: &str =
-    "7b46c1706bc026725c1812db7045df8770136fa5ac85d0e2c8bb44d41071bcd4";
+    "4b2e4fc5ea142072ba467a1ec159cac738f95ca40e9cf191448a3dd28f98a50d";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "927e19344413644037635cfcebc50c76c08a413356b9463b5819f7979f1f486b";

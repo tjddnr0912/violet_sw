@@ -91,6 +91,14 @@ impl WidthTable {
             // ── leaves ──────────────────────────────────────────────────────
             Expr::Const { val } => {
                 let c = &ir.consts[*val as usize];
+                // A real const is {width:64, signed:true} (its real-ness is
+                // established at eval time via ConstRepr::Real).
+                if matches!(c.repr, ConstRepr::Real) {
+                    return SelfWidth {
+                        width: 64,
+                        signed: true,
+                    };
+                }
                 // A const is signed ONLY when repr==Numeric AND its signed flag set
                 // (string consts never signed) — mirrors eval_const (eval.rs:67).
                 let signed = matches!(c.repr, ConstRepr::Numeric) && c.signed;
@@ -256,6 +264,22 @@ impl WidthTable {
                 SysFuncId::Clog2 => SelfWidth {
                     width: 32,
                     signed: true,
+                },
+                // $rtoi: integer return → 32-bit signed.
+                SysFuncId::Rtoi => SelfWidth {
+                    width: 32,
+                    signed: true,
+                },
+                // $itor / $bitstoreal: real return → 64-bit signed (real-domain;
+                // the is_real flag is established at eval time).
+                SysFuncId::Itor | SysFuncId::BitsToReal => SelfWidth {
+                    width: 64,
+                    signed: true,
+                },
+                // $realtobits: raw 64-bit vector → 64-bit unsigned.
+                SysFuncId::RealToBits => SelfWidth {
+                    width: 64,
+                    signed: false,
                 },
             },
 

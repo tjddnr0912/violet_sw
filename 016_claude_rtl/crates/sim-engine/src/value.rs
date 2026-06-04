@@ -38,6 +38,9 @@ pub struct Value {
     pub width: u32,
     /// Result signedness (drives sign-extension, `>>>`, relational, `$signed`).
     pub signed: bool,
+    /// When true, `val[0]` is `f64::to_bits(x)` and this Value is an IEEE-754
+    /// real (64-bit, 2-state, `unk == [0]`). All 4-state paths keep this false.
+    pub is_real: bool,
 }
 
 impl Value {
@@ -48,6 +51,7 @@ impl Value {
             unk: vec![0; n],
             width,
             signed,
+            is_real: false,
         }
     }
 
@@ -60,6 +64,7 @@ impl Value {
             unk: vec![u64::MAX; n],
             width,
             signed,
+            is_real: false,
         };
         v.mask_top();
         v
@@ -97,6 +102,7 @@ impl Value {
             unk,
             width,
             signed,
+            is_real: false,
         };
         v.mask_top();
         v
@@ -104,6 +110,9 @@ impl Value {
 
     /// Clear bits above `width` in the top word (keep planes canonical).
     pub(crate) fn mask_top(&mut self) {
+        if self.is_real {
+            return; // a real is 64 IEEE bits; never bit-mask (would corrupt it).
+        }
         let n = nwords(self.width).max(1);
         self.val.resize(n, 0);
         self.unk.resize(n, 0);
@@ -187,6 +196,9 @@ impl Value {
     /// Resize to `new_width`: signed → sign-extend the MSB *bit value* (X MSB →
     /// X fill); unsigned → zero-extend; shrink → truncate.
     pub fn resize(mut self, new_width: u32) -> Value {
+        if self.is_real {
+            return self; // a real is dimensionless 64-bit; width context is a no-op.
+        }
         if new_width == self.width {
             self.mask_top();
             return self;
@@ -214,11 +226,68 @@ impl Value {
     /// `resize` but extension policy follows the *combined* signedness (only
     /// sign-extend when context-signed, per IEEE 1364-2001 §4.5).
     pub fn resize_keep_sign(mut self, w: u32, ctx_signed: bool) -> Value {
+        if self.is_real {
+            return self; // FIRST: before any `.signed` mutation — a real is width/sign-free.
+        }
         self.signed = self.signed && ctx_signed;
         let mut out = self.resize(w);
         out.signed = ctx_signed;
         out
     }
+
+    /// Build a real Value from an f64. width=64, signed=true, unk=0, is_real.
+    pub fn from_f64(x: f64) -> Value {
+        Value {
+            val: vec![x.to_bits()],
+            unk: vec![0],
+            width: 64,
+            signed: true,
+            is_real: true,
+        }
+    }
+
+    /// Decode to f64. If already real, reinterpret val[0]. Otherwise coerce the
+    /// 4-state integer value to f64 (IEEE 1364 §4.3 int→real promotion), honoring
+    /// signedness. Returns None only if an integer operand is X/Z (caller decides
+    /// poison vs 0.0).
+    pub fn to_f64(&self) -> Option<f64> {
+        if self.is_real {
+            return Some(f64::from_bits(self.val[0]));
+        }
+        if self.has_xz() {
+            return None;
+        }
+        if self.signed {
+            self.to_i128_signed().map(|i| i as f64)
+        } else {
+            self.to_u64().map(|u| u as f64)
+        }
+    }
+
+    /// Build an INTEGER (is_real=false) Value of `width` bits from an i128,
+    /// masked to width with two's-complement wrap. Constructor the real→int
+    /// coercion and `$rtoi` need. Keeps the low `width` bits of `i`'s two's-
+    /// complement image; `signed` only stamps the result's sign flag.
+    pub fn from_i128(i: i128, width: u32, signed: bool) -> Value {
+        let mut v = Value::zeros(width.max(1), signed);
+        let bits = i as u128; // reinterpret two's-complement bit image
+        let words = (width as usize).div_ceil(64);
+        for w in 0..words.min(v.val.len()) {
+            v.val[w] = (bits >> (w * 64)) as u64;
+        }
+        v.width = width;
+        v.mask_top(); // is_real=false so mask_top applies (clears bits above width)
+        v
+    }
+}
+
+/// real → int assignment coercion: ROUND half-away-from-zero, then build an
+/// integer Value masked to the target width. Saturation/NaN handling: large |x|
+/// saturates to i128 extremes; NaN.round() as i128 == 0.
+pub(crate) fn real_to_int_round(x: f64, width: u32, signed: bool) -> Value {
+    let r = x.round(); // Rust f64::round = round-half-away-from-zero
+    let i = r as i128; // large |x| SATURATES to i128 extremes; NaN → 0
+    Value::from_i128(i, width, signed)
 }
 
 /// Low mask over `width` bits in a single u64 (width ≤ 64 usage).
