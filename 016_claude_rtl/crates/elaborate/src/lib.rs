@@ -73,6 +73,107 @@ pub fn elaborate(unit: &ast::SourceUnit, sink: &dyn LogSink) -> Option<ir::SimIr
 /// arena order — see determinism note).
 type ConstKey = (u32, bool, u8, Vec<u64>, Vec<u64>);
 
+/// module-name → (decl, declaration index). `BTreeMap` so any iteration over the
+/// map is deterministic; the decl index is the tie-break for top selection.
+type ModuleMap<'a> = BTreeMap<&'a str, (&'a ast::ModuleDecl, usize)>;
+
+/// How to find each child-port's connection expr, resolved in the PARENT scope.
+/// Borrows directly from the `ast::ModuleInstance` so no per-port allocation.
+enum PortBinding<'a> {
+    None,                                // the top instance — no incoming bindings
+    Named(&'a [ast::PortConn]),          // .p(expr)
+    Positional(&'a [Option<ast::Expr>]), // (expr, expr, …) with skip slots
+}
+
+/// A parameter override resolved to a value IN THE PARENT SCOPE before it is
+/// pushed into the child. `name` is `Some` for `.W(v)` (named) / `None` for a
+/// positional `#(v)` (bound to the child's i-th param by position). `value` is
+/// `None` when the override expr did not const-fold (caller warns; child keeps
+/// its default). Resolving here — not in `bind_params` — is what lets
+/// `child #(.W(PARENT_W))` see the parent's `PARENT_W` (Fix 1 / Finding M1).
+struct ResolvedOverride {
+    name: Option<String>,
+    value: Option<u32>,
+    is_named: bool,
+}
+
+/// Build the module-name map + the declaration-ordered list. First decl wins on a
+/// duplicate name (caller warns). Deterministic: single pass over `unit.items`.
+fn build_module_map(unit: &ast::SourceUnit) -> (ModuleMap<'_>, Vec<&ast::ModuleDecl>) {
+    let mut map: ModuleMap<'_> = BTreeMap::new();
+    let mut order: Vec<&ast::ModuleDecl> = Vec::new();
+    for it in &unit.items {
+        if let ast::TopItem::Module(m) = it {
+            let idx = order.len();
+            map.entry(m.name.name.as_str()).or_insert((m, idx));
+            order.push(m);
+        }
+    }
+    (map, order)
+}
+
+/// Pick the TOP module: one never instantiated by any other. Tie-break (≥2
+/// candidates, e.g. two independent testbenches): the LAST-declared, matching the
+/// common DUT-then-testbench file order. Degenerate (every module instantiated —
+/// a cycle, or a pure library): fall back to the last-declared so `run` still
+/// produces IR. Deterministic (declaration-order scan; `BTreeSet`).
+fn pick_top<'a>(map: &ModuleMap<'a>, order: &[&'a ast::ModuleDecl]) -> Option<&'a ast::ModuleDecl> {
+    let mut instantiated: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for m in order {
+        for item in &m.body {
+            if let ast::ModuleItem::Instance(inst) = item {
+                // count only names that resolve to a known module (an unknown name
+                // is an instantiation error, surfaced later in the recursion).
+                if map.contains_key(inst.module_name.name.as_str()) {
+                    instantiated.insert(inst.module_name.name.as_str());
+                }
+            }
+        }
+    }
+    order
+        .iter()
+        .copied()
+        .filter(|m| !instantiated.contains(m.name.name.as_str()))
+        .last()
+        .or_else(|| order.last().copied())
+}
+
+/// A module's ports as `(local_name, dir)` in HEADER declaration order. ANSI
+/// ports read dir inline; non-ANSI merges the body `PortDecl` directions over the
+/// header name list (an undeclared header name defaults to Input + is rare).
+/// Port wiring walks this in order, so a named connection list in any source
+/// order produces a deterministic cont-assign sequence.
+fn port_list_dirs(module: &ast::ModuleDecl) -> Vec<(String, ir::PortDir)> {
+    match &module.ports {
+        ast::PortList::Ansi(list) => list
+            .iter()
+            .map(|p| (p.name.name.clone(), map_port_dir(p.dir)))
+            .collect(),
+        ast::PortList::NonAnsi(names) => {
+            // find each header name's direction in a body PortDecl.
+            names
+                .iter()
+                .map(|n| {
+                    let dir = module
+                        .body
+                        .iter()
+                        .find_map(|it| match it {
+                            ast::ModuleItem::PortDecl(pd)
+                                if pd.names.iter().any(|x| x.name == n.name) =>
+                            {
+                                Some(map_port_dir(pd.dir))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or(ir::PortDir::Input);
+                    (n.name.clone(), dir)
+                })
+                .collect()
+        }
+        ast::PortList::None => Vec::new(),
+    }
+}
+
 struct Elaborator<'s> {
     sink: &'s dyn LogSink,
     had_error: bool,
@@ -94,8 +195,20 @@ struct Elaborator<'s> {
     stmts: Vec<ir::Stmt>,
 
     // ── lookup-only maps (NEVER feed arena order) ──
-    symbols: BTreeMap<String, u32>, // net/var NAME → NetId
+    symbols: BTreeMap<String, u32>, // fully-qualified net/var NAME → NetId
     const_dedup: BTreeMap<ConstKey, u32>,
+
+    // ── v3 hierarchy state ──
+    // `cur_prefix` is the dotted instance path of the instance currently being
+    // lowered ("tb", then "tb.dut", …). The symbol table is keyed by the FQ name
+    // `cur_prefix + "." + local`, so `tb.q` and `tb.dut.q` never collide. Empty
+    // only transiently (the top is always given its module name as the root path).
+    cur_prefix: String,
+    // FQ param-name → const value, visible while lowering an instance scope.
+    // Re-points the v1 free `const_eval_u32` SLOT so `[W-1:0]` folds to a width.
+    params: BTreeMap<String, u32>,
+    // module names on the active instantiation path — the recursion cycle guard.
+    inst_stack: Vec<String>,
 }
 
 impl<'s> Elaborator<'s> {
@@ -112,6 +225,9 @@ impl<'s> Elaborator<'s> {
             stmts: Vec::new(),
             symbols: BTreeMap::new(),
             const_dedup: BTreeMap::new(),
+            cur_prefix: String::new(),
+            params: BTreeMap::new(),
+            inst_stack: Vec::new(),
         }
     }
 
@@ -171,67 +287,550 @@ impl<'s> Elaborator<'s> {
         }));
     }
 
-    // ── two-phase driver ───────────────────────────────────────────
+    // ── v3 multi-module driver ─────────────────────────────────────
+    /// Build the module-name map, pick the top, then recursively flatten the
+    /// hierarchy into ONE SimIr. The v1 single-module path is now the special
+    /// case `top instantiating nothing` (one Instance, parent None).
     fn run(&mut self, unit: &ast::SourceUnit) {
-        // v1: exactly one top module. Take the first; ignore the rest
-        // (multi-module/hierarchy is DEFERRED).
-        let module = match unit.items.iter().find_map(|it| match it {
-            ast::TopItem::Module(m) => Some(m),
-            ast::TopItem::Error(_) => None,
-        }) {
-            Some(m) => m,
+        let (map, order) = build_module_map(unit);
+        if order.is_empty() {
+            // "no module at all" is a missing-construct condition, not a failed
+            // *instance* resolution → ElabUnsupported reads truer.
+            self.error(MsgCode::ElabUnsupported, "no top module to elaborate");
+            return;
+        }
+        // Warn on duplicate module names (first-decl wins in the map).
+        let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+        for m in &order {
+            *seen.entry(m.name.name.as_str()).or_insert(0) += 1;
+        }
+        for (name, n) in seen {
+            if n > 1 {
+                self.warn(&format!(
+                    "module `{name}` declared {n} times; first declaration used"
+                ));
+            }
+        }
+
+        let top = match pick_top(&map, &order) {
+            Some(t) => t,
             None => {
-                // "no module at all" is a missing-construct condition, not a
-                // failed *instance* resolution → ElabUnsupported reads truer than
-                // ElabUnresolvedInstance. (COVERAGE verdict LOW.)
                 self.error(MsgCode::ElabUnsupported, "no top module to elaborate");
                 return;
             }
         };
 
-        // PASS 1: declarations → nets + symbol table (DECLARATION ORDER).
-        // ANSI ports first (they are nets too), then body NetVarDecls.
+        // Top instance: parent None, path = its own module name (root VCD scope),
+        // no incoming port/param bindings.
+        let top_path = top.name.name.clone();
+        self.elaborate_instance(top, &top_path, None, &[], PortBinding::None, &map);
+
+        // whole-net multidriver check over the WHOLE flat IR (instance-agnostic).
+        self.check_whole_net_multidriver();
+    }
+
+    /// Recursively elaborate ONE module instance into the flat SimIr.
+    ///
+    /// Bookkeeping order is the load-bearing determinism contract:
+    ///  (1) cycle guard; (2) reserve the Instance slot + record `first_net`;
+    ///  (3) bind params (so width exprs fold); (4) create THIS instance's nets
+    ///  (ANSI ports, then body NetVarDecls — declaration order); (5) patch
+    ///  `net_count`; (6) wire ports (parent expr ↔ child port net) as cont-assigns;
+    ///  (7) lower THIS body's cont-assigns + processes; (8) recurse into child
+    ///  instances in body declaration order.
+    ///
+    /// Step (8) runs strictly AFTER (4), so the parent's `[first_net,
+    /// first_net+net_count)` slice is a contiguous run with no child nets spliced
+    /// in — the Instance slice invariant.
+    fn elaborate_instance(
+        &mut self,
+        module: &ast::ModuleDecl,
+        inst_path: &str,
+        parent_inst: Option<u32>,
+        param_overrides: &[ResolvedOverride],
+        binding: PortBinding<'_>,
+        map: &ModuleMap<'_>,
+    ) {
+        // (1) CYCLE GUARD — recursive instantiation is illegal (LRM). Bail this
+        //     subtree WITHOUT creating any net/Instance so the arena stays valid.
+        if self.inst_stack.iter().any(|m| m == &module.name.name) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "recursive module instantiation of `{}` (cycle: {} -> {})",
+                    module.name.name,
+                    self.inst_stack.join(" -> "),
+                    module.name.name
+                ),
+            );
+            return;
+        }
+        self.inst_stack.push(module.name.name.clone());
+
+        // (2) reserve Instance slot + first_net cursor.
+        let inst_id = self.instances.len() as u32;
+        let first_net = self.nets.len() as u32;
+        self.instances.push(ir::Instance {
+            parent: parent_inst,
+            module: 0, // sim-engine ignores this; 0 for v3 (no module table needed)
+            first_net,
+            net_count: 0, // patched in (5)
+        });
+
+        // Enter this instance's scope (restored before returning).
+        let saved_prefix = std::mem::replace(&mut self.cur_prefix, inst_path.to_string());
+
+        // (3) bind params (defaults, then overrides) — BEFORE nets so [W-1:0] folds.
+        let saved_params = self.bind_params(module, param_overrides);
+
+        // (4) this instance's nets: ANSI ports, then body NetVarDecls (decl order).
+        //     add_net now keys through `fq`, so names become inst_path-prefixed.
         self.elaborate_ports(&module.ports);
         for item in &module.body {
             if let ast::ModuleItem::NetVar(d) = item {
-                self.elaborate_netvar_decl(d, &module.ports);
+                self.elaborate_netvar_decl(d, &module.ports, &module.body);
             }
         }
 
-        // Self-instance for the top module: window = [0, nets.len()).
-        self.instances.push(ir::Instance {
-            parent: None,
-            module: 0,
-            first_net: 0,
-            net_count: self.nets.len() as u32,
-        });
+        // (5) net_count = nets created for THIS instance only (not children).
+        let net_count = self.nets.len() as u32 - first_net;
+        self.instances[inst_id as usize].net_count = net_count;
 
-        // PASS 2: continuous assigns → cont_assigns (+ exprs/consts arenas).
+        // (6) port-connection cont-assigns (parent expr ↔ child port net).
+        self.wire_ports(module, binding, &saved_prefix);
+
+        // (7) lower THIS body: cont-assigns + processes (reuse v1/v2 helpers).
         for item in &module.body {
             match item {
                 ast::ModuleItem::ContAssign(ca) => self.elaborate_cont_assign(ca),
                 ast::ModuleItem::Proc(p) => {
-                    // v2: procedural-block → Process (one per block, body order).
                     let proc = self.lower_proc_block(p);
                     self.processes.push(proc);
                 }
-                ast::ModuleItem::Instance(_)
-                | ast::ModuleItem::Generate(_)
+                // (8) handled in the second loop below.
+                ast::ModuleItem::Instance(_) => {}
+                ast::ModuleItem::Generate(_)
                 | ast::ModuleItem::Func(_)
                 | ast::ModuleItem::Task(_)
                 | ast::ModuleItem::Defparam(_) => {
-                    self.error(MsgCode::ElabUnsupported, "construct deferred past v1");
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "construct deferred (generate/func/task/defparam)",
+                    );
                 }
-                // NetVar already done; Param/PortDecl/Genvar/Error: no-op in v1.
+                // NetVar/Param/PortDecl/Genvar/Error: no-op here.
                 _ => {}
             }
         }
 
-        // PASS 3: whole-net multidriver check. Bit-level driver resolution is
-        // DEFERRED, but the trivial common case — the SAME net fully driven by
-        // two continuous assigns — is caught here. A "full-net" lhs is a single
-        // chunk with no word/offset/width. (COVERAGE verdict MEDIUM.)
-        self.check_whole_net_multidriver();
+        // (8) recurse into child instances, in body declaration order.
+        for item in &module.body {
+            if let ast::ModuleItem::Instance(mi) = item {
+                self.elaborate_child_instances(mi, inst_id, map);
+            }
+        }
+
+        // restore scope/params so siblings + ancestors resolve correctly.
+        self.restore_params(saved_params);
+        self.cur_prefix = saved_prefix;
+        self.inst_stack.pop();
+    }
+
+    /// Resolve a `ModuleInstance` statement (which may name several instances),
+    /// and recurse into each child. Connection exprs are resolved later, in the
+    /// PARENT scope (still active here), inside the child's `wire_ports`.
+    fn elaborate_child_instances(
+        &mut self,
+        mi: &ast::ModuleInstance,
+        parent_inst: u32,
+        map: &ModuleMap<'_>,
+    ) {
+        let child = match map.get(mi.module_name.name.as_str()) {
+            Some(&(decl, _)) => decl,
+            None => {
+                self.error(
+                    MsgCode::ElabUnresolvedInstance,
+                    &format!("unknown module `{}` instantiated", mi.module_name.name),
+                );
+                return;
+            }
+        };
+
+        // Fix 1: const-eval EVERY override expr NOW, in the PARENT scope, so a
+        // parent-param-dependent override (`#(.W(PARENT_W))`) resolves. A failure
+        // to fold is recorded as value=None (child keeps default + warns), never
+        // a silent 0 that explodes the child's width.
+        let mut overrides: Vec<ResolvedOverride> = Vec::with_capacity(mi.param_overrides.len());
+        for ov in &mi.param_overrides {
+            match ov {
+                ast::ParamConn::Positional(e) => {
+                    let value = self.const_eval_in_scope(e);
+                    if value.is_none() {
+                        self.warn(
+                            "parameter override expression is not a constant; child default kept",
+                        );
+                    }
+                    overrides.push(ResolvedOverride {
+                        name: None,
+                        value,
+                        is_named: false,
+                    });
+                }
+                ast::ParamConn::Named { name, value, .. } => {
+                    // `.W()` (value None) means "keep default" → record is_named with value None.
+                    let v = value.as_ref().and_then(|e| {
+                        let r = self.const_eval_in_scope(e);
+                        if r.is_none() {
+                            self.warn(&format!(
+                                "override of parameter `{}` is not a constant; default kept",
+                                name.name
+                            ));
+                        }
+                        r
+                    });
+                    overrides.push(ResolvedOverride {
+                        name: Some(name.name.clone()),
+                        value: v,
+                        is_named: true,
+                    });
+                }
+            }
+        }
+
+        for item in &mi.instances {
+            if !item.unpacked.is_empty() {
+                // DEFERRED: instance arrays. Lower a single instance + note.
+                self.warn("instance-array range ignored (v3: single instance)");
+            }
+            let child_path = self.child_prefix(&item.name.name);
+            let binding = match &item.conns {
+                ast::PortConnList::Named(v) => PortBinding::Named(v),
+                ast::PortConnList::Positional(v) => PortBinding::Positional(v),
+            };
+            self.elaborate_instance(
+                child,
+                &child_path,
+                Some(parent_inst),
+                &overrides,
+                binding,
+                map,
+            );
+        }
+    }
+
+    // ── scope helpers (FQ-name keying) ─────────────────────────────
+    /// Fully-qualified key of a LOCAL name within the current instance scope.
+    fn fq(&self, local: &str) -> String {
+        if self.cur_prefix.is_empty() {
+            local.to_string()
+        } else {
+            format!("{}.{}", self.cur_prefix, local)
+        }
+    }
+    /// Child prefix = current prefix + child instance name.
+    fn child_prefix(&self, inst_name: &str) -> String {
+        if self.cur_prefix.is_empty() {
+            inst_name.to_string()
+        } else {
+            format!("{}.{}", self.cur_prefix, inst_name)
+        }
+    }
+
+    // ── port wiring (parent expr ↔ child port net) ─────────────────
+    /// Emit one cont-assign per CONNECTED port. Called from inside the child
+    /// instance, where `self.cur_prefix == child_path`; the connection expr must
+    /// be lowered in the PARENT scope, so we temporarily swap the prefix back to
+    /// `parent_prefix` around each connection lowering.
+    ///
+    /// Direction wiring (doc-04):
+    ///  - INPUT  : child port net DRIVEN by the parent expr  → `child_port = parent_expr`
+    ///  - OUTPUT : child net DRIVES the parent lvalue         → `parent_lval = child_port`
+    ///  - INOUT  : approximated child→parent (one-directional) + warn
+    ///
+    /// Unconnected ports: an INPUT floats (z, the net's time-0 default, no
+    /// assign); an OUTPUT/INOUT is allowed + warns. Ports are walked in HEADER
+    /// declaration order, so the cont-assign sequence is deterministic regardless
+    /// of connection source order.
+    fn wire_ports(
+        &mut self,
+        module: &ast::ModuleDecl,
+        binding: PortBinding<'_>,
+        parent_prefix: &str,
+    ) {
+        let ports = port_list_dirs(module);
+        for (i, (pname, dir)) in ports.iter().enumerate() {
+            // find the connection expr for this port (None ⇒ unconnected).
+            let conn: Option<&ast::Expr> = match &binding {
+                PortBinding::None => None,
+                PortBinding::Positional(v) => v.get(i).and_then(|o| o.as_ref()),
+                PortBinding::Named(v) => v
+                    .iter()
+                    .find(|c| &c.name.name == pname)
+                    .and_then(|c| c.value.as_ref()),
+            };
+            let Some(conn_expr) = conn else {
+                // unconnected port.
+                match dir {
+                    ir::PortDir::Output => {
+                        self.warn(&format!("output port `{pname}` left unconnected"));
+                    }
+                    ir::PortDir::Inout => {
+                        self.warn(&format!("inout port `{pname}` left unconnected"));
+                    }
+                    _ => {} // input floats silently (z = time-0 default)
+                }
+                continue;
+            };
+
+            // child port net id (current scope is the child).
+            let child_id = {
+                let key = self.fq(pname);
+                *self.symbols.get(&key).unwrap_or(&POISON_NET)
+            };
+            let child_prefix = self.cur_prefix.clone();
+
+            match dir {
+                // INPUT: child_port = parent_expr  (rhs lowered in PARENT scope).
+                ir::PortDir::Input | ir::PortDir::Inout => {
+                    if matches!(dir, ir::PortDir::Inout) {
+                        self.warn(&format!(
+                            "inout port `{pname}` approximated as one-directional (parent→child)"
+                        ));
+                    }
+                    self.cur_prefix = parent_prefix.to_string();
+                    let rhs = self.lower_expr(conn_expr);
+                    self.cur_prefix = child_prefix;
+                    let lhs = whole_net_lvalue(child_id);
+                    self.cont_assigns.push(ir::ContAssign {
+                        lhs,
+                        rhs,
+                        delay: None,
+                    });
+                }
+                // OUTPUT: parent_lval = child_port  (lval lowered in PARENT scope).
+                ir::PortDir::Output => {
+                    self.cur_prefix = parent_prefix.to_string();
+                    let lhs = match expr_to_lvalue(conn_expr) {
+                        Some(lv) => self.lower_lvalue(&lv),
+                        None => {
+                            self.error(
+                                MsgCode::ElabPortMismatch,
+                                &format!(
+                                    "output port `{pname}` connected to a non-lvalue expression"
+                                ),
+                            );
+                            ir::Lvalue {
+                                chunks: vec![whole_net_chunk(POISON_NET)],
+                            }
+                        }
+                    };
+                    self.cur_prefix = child_prefix;
+                    let rhs = self.push_expr(ir::Expr::Signal {
+                        net: child_id,
+                        word: None,
+                    });
+                    self.cont_assigns.push(ir::ContAssign {
+                        lhs,
+                        rhs,
+                        delay: None,
+                    });
+                }
+                ir::PortDir::Internal => {
+                    // a non-port net in the header list — module-decl bug.
+                    self.error(MsgCode::ElabPortMismatch, "connection to a non-port net");
+                }
+            }
+        }
+
+        // Fix 2 (Finding M2): detect connections that match NO declared port.
+        // Symmetric with bind_params' surplus-positional / unknown-named checks.
+        match &binding {
+            PortBinding::None => {}
+            PortBinding::Positional(v) => {
+                if v.len() > ports.len() {
+                    self.error(
+                        MsgCode::ElabPortMismatch,
+                        &format!(
+                            "instance of `{}` has {} positional connection(s) but the module declares {} port(s)",
+                            module.name.name,
+                            v.len(),
+                            ports.len()
+                        ),
+                    );
+                }
+            }
+            PortBinding::Named(v) => {
+                for c in v.iter() {
+                    if !ports.iter().any(|(pname, _)| pname == &c.name.name) {
+                        self.error(
+                            MsgCode::ElabPortMismatch,
+                            &format!(
+                                "connection `.{}(...)` names no port of module `{}`",
+                                c.name.name, module.name.name
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ── parameter binding (defaults + overrides; FQ-keyed) ──────────
+    /// Bind a module's params for the current instance scope: each declared
+    /// param's default (const-eval'd IN ORDER so a later param sees earlier ones),
+    /// then overlay the instantiation overrides (positional by index, named by
+    /// name). Localparams are NOT overridable. Params are keyed by FQ name so two
+    /// instances with different `WIDTH` coexist. Returns the prior FQ→value
+    /// entries so siblings/ancestors are restored on exit.
+    ///
+    /// The instantiation overrides are ALREADY resolved in the PARENT scope (Fix 1
+    /// / Finding M1), so a `child #(.W(PARENT_W))` override carries the parent's
+    /// `PARENT_W` value — no longer folds to 0 in the child scope.
+    fn bind_params(
+        &mut self,
+        module: &ast::ModuleDecl,
+        overrides: &[ResolvedOverride],
+    ) -> Vec<(String, Option<u32>)> {
+        // Build name→value from the resolved overrides. Positional binds to the
+        // i-th declaration index (matches module.params order).
+        let mut ovr_by_name: BTreeMap<&str, Option<u32>> = BTreeMap::new();
+        let mut pos_i = 0usize;
+        for ov in overrides {
+            if ov.is_named {
+                let Some(n) = ov.name.as_deref() else {
+                    continue;
+                };
+                // Fix 2 (mirror): a named override naming no real param is an error.
+                match module.params.iter().find(|p| p.name.name == n) {
+                    Some(p) => {
+                        if let Some(v) = ov.value {
+                            ovr_by_name.insert(p.name.name.as_str(), Some(v));
+                        }
+                        // `.W()` with no value ⇒ keep default (no insert).
+                    }
+                    None => {
+                        self.error(
+                            MsgCode::ElabPortMismatch,
+                            &format!("override of unknown parameter `{n}`"),
+                        );
+                    }
+                }
+            } else {
+                match module.params.get(pos_i) {
+                    Some(p) => {
+                        ovr_by_name.insert(p.name.name.as_str(), ov.value);
+                    }
+                    None => {
+                        self.error(
+                            MsgCode::ElabPortMismatch,
+                            "more positional parameter overrides than module parameters",
+                        );
+                    }
+                }
+                pos_i += 1;
+            }
+        }
+
+        let mut saved = Vec::new();
+        for p in &module.params {
+            let chosen_val: Option<u32> = match ovr_by_name.get(p.name.name.as_str()) {
+                // override present + param is overridable → use it (None = fold-fail
+                // → fall back to the declared default).
+                Some(ovr) if matches!(p.kind, ast::ParamKind::Parameter) => {
+                    (*ovr).or_else(|| self.const_eval_in_scope(&p.value))
+                }
+                // override targeting a localparam → error, keep declared value.
+                Some(_) => {
+                    self.error(
+                        MsgCode::ElabPortMismatch,
+                        &format!("cannot override localparam `{}`", p.name.name),
+                    );
+                    self.const_eval_in_scope(&p.value)
+                }
+                None => self.const_eval_in_scope(&p.value),
+            };
+            let v = chosen_val.unwrap_or(0);
+            let key = self.fq(&p.name.name);
+            saved.push((key.clone(), self.params.insert(key, v)));
+        }
+        saved
+    }
+
+    /// Restore the param map to the snapshot taken before this instance bound its
+    /// params (so sibling instances of the same module re-bind cleanly).
+    fn restore_params(&mut self, saved: Vec<(String, Option<u32>)>) {
+        for (k, prev) in saved.into_iter().rev() {
+            match prev {
+                Some(v) => {
+                    self.params.insert(k, v);
+                }
+                None => {
+                    self.params.remove(&k);
+                }
+            }
+        }
+    }
+
+    /// Param-aware const-eval (the v1 free `const_eval_u32` SLOT). Extends the
+    /// literal evaluator with: an `Ident` naming a param bound in the current
+    /// scope, and Add/Sub/Mul/Div/Mod/Shl/Shr binary folding (so `WIDTH-1` /
+    /// `WIDTH*2` resolve). Returns None for anything still non-constant (signal
+    /// ref, unbound name, unsupported op) — caller defaults + may diagnose.
+    fn const_eval_in_scope(&self, e: &ast::Expr) -> Option<u32> {
+        match &e.kind {
+            // literal / paren / unary +,-  → reuse the v1 free evaluator.
+            ast::ExprKind::IntLit { .. } => const_eval_u32(e),
+            ast::ExprKind::Paren { inner } => self.const_eval_in_scope(inner),
+            ast::ExprKind::Unary { op, operand } => {
+                let v = self.const_eval_in_scope(operand)?;
+                match op {
+                    ast::UnOp::Plus => Some(v),
+                    ast::UnOp::Minus => Some(v.wrapping_neg()),
+                    ast::UnOp::BitNot => Some(!v),
+                    _ => None,
+                }
+            }
+            // param reference: single-segment name bound in this instance scope.
+            ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
+                self.params.get(&self.fq(&path.segments[0].name)).copied()
+            }
+            ast::ExprKind::Binary { op, lhs, rhs } => {
+                let a = self.const_eval_in_scope(lhs)?;
+                let b = self.const_eval_in_scope(rhs)?;
+                match op {
+                    ast::BinOp::Add => Some(a.wrapping_add(b)),
+                    ast::BinOp::Sub => Some(a.wrapping_sub(b)),
+                    ast::BinOp::Mul => Some(a.wrapping_mul(b)),
+                    ast::BinOp::Div if b != 0 => Some(a / b),
+                    ast::BinOp::Mod if b != 0 => Some(a % b),
+                    ast::BinOp::Shl => Some(a.wrapping_shl(b)),
+                    ast::BinOp::Shr => Some(a.wrapping_shr(b)),
+                    _ => None, // Pow / compare / etc. deferred
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// True iff this range bound is a SUBTRACTION whose const-folded operands
+    /// underflow (`lhs < rhs`) — i.e. a `[W-1:0]` with `W==0` that wraps to
+    /// `u32::MAX`. Distinguishes a param-driven underflow artifact (clamp+warn)
+    /// from a *literal* huge bound like `[4294967295:0]` (still a fatal over-cap
+    /// width). Only the direct `a - b` shape is treated as an artifact; an `Paren`
+    /// wrapper is unwrapped (Fix 1 defensive).
+    fn bound_underflowed(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Paren { inner } => self.bound_underflowed(inner),
+            ast::ExprKind::Binary {
+                op: ast::BinOp::Sub,
+                lhs,
+                rhs,
+            } => match (self.const_eval_in_scope(lhs), self.const_eval_in_scope(rhs)) {
+                (Some(a), Some(b)) => a < b,
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     /// Emit `ElabMultidriver` for any net targeted by ≥2 whole-net continuous
@@ -296,7 +895,12 @@ impl<'s> Elaborator<'s> {
     }
 
     // ── PASS 1b: body NetVarDecl → nets ────────────────────────────
-    fn elaborate_netvar_decl(&mut self, d: &ast::NetVarDecl, ports: &ast::PortList) {
+    fn elaborate_netvar_decl(
+        &mut self,
+        d: &ast::NetVarDecl,
+        ports: &ast::PortList,
+        body: &[ast::ModuleItem],
+    ) {
         if !net_kind_supported(d.kind) {
             self.error(MsgCode::ElabUnsupported, "unsupported net/var kind (v1)");
             // still emit a Wire-shaped net per name so references resolve.
@@ -304,7 +908,7 @@ impl<'s> Elaborator<'s> {
         for decl in &d.names {
             let (width, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
             let array_len = self.array_len_of(&decl.unpacked);
-            let dir = self.dir_for_name(&decl.name.name, ports);
+            let dir = self.dir_for_name(&decl.name.name, ports, body);
             // init: const-fold a literal initializer; otherwise time-0 default.
             let init = match &decl.init {
                 Some(e) => fold_init(e, width).unwrap_or_else(|| default_init(d.kind, width)),
@@ -333,16 +937,17 @@ impl<'s> Elaborator<'s> {
     /// golden hash are not perturbed by an unreferenceable duplicate.
     /// (LOWERING + COVERAGE verdicts: duplicate-net silent acceptance.)
     fn add_net(&mut self, name: &str, net: ir::NetVar) {
-        if self.symbols.contains_key(name) {
+        let key = self.fq(name);
+        if self.symbols.contains_key(&key) {
             self.error(
                 MsgCode::ElabUnsupported,
-                &format!("net/variable `{name}` redeclared (duplicate declaration)"),
+                &format!("net/variable `{key}` redeclared (duplicate declaration)"),
             );
             return;
         }
         let id = self.nets.len() as u32;
         self.nets.push(net);
-        self.symbols.insert(name.to_string(), id);
+        self.symbols.insert(key, id);
     }
 
     /// Resolve declared range → (width, msb, lsb, signed). `Integer` is a fixed
@@ -364,8 +969,22 @@ impl<'s> Elaborator<'s> {
         match range {
             None => (1, 0, 0, signed),
             Some(r) => {
-                let msb = const_eval_u32(&r.msb).unwrap_or(0);
-                let lsb = const_eval_u32(&r.lsb).unwrap_or(0);
+                // v3: fold through the param-aware evaluator so `[W-1:0]` resolves
+                // `W` to the bound parameter value in the current instance scope.
+                let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
+                let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
+                // Guard a degenerate `[W-1:0]` with W==0 → `[0u32.wrapping_sub(1):0]`
+                // = `[0xFFFF_FFFF:0]` (Fix 1 defensive): a bound EXPRESSION whose
+                // subtraction wrapped (a param-dependent underflow) is clamped to
+                // width 1 + warn, NOT a fatal MAX_NET_WIDTH explosion. A *literal*
+                // huge bound (`[4294967295:0]`) is NOT an underflow artifact and
+                // still hits the over-cap error below.
+                if self.bound_underflowed(&r.msb) || self.bound_underflowed(&r.lsb) {
+                    self.warn(
+                        "parameterized range underflowed (param value 0?); net clamped to width 1",
+                    );
+                    return (1, 0, 0, signed);
+                }
                 let width64 = (msb.abs_diff(lsb) as u64) + 1;
                 if width64 > MAX_NET_WIDTH {
                     self.error(
@@ -390,11 +1009,11 @@ impl<'s> Elaborator<'s> {
         for d in dims {
             let n: u32 = match d {
                 ast::Dim::Range(r) => {
-                    let msb = const_eval_u32(&r.msb).unwrap_or(0);
-                    let lsb = const_eval_u32(&r.lsb).unwrap_or(0);
+                    let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
+                    let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
                     (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32
                 }
-                ast::Dim::Size(e) => const_eval_u32(e).unwrap_or(1),
+                ast::Dim::Size(e) => self.const_eval_in_scope(e).unwrap_or(1),
             };
             len = len.saturating_mul(n.max(1));
         }
@@ -403,7 +1022,12 @@ impl<'s> Elaborator<'s> {
 
     /// Direction of a body-declared net: Input/Output/Inout if it appears in the
     /// port list, else Internal.
-    fn dir_for_name(&mut self, name: &str, ports: &ast::PortList) -> ir::PortDir {
+    fn dir_for_name(
+        &mut self,
+        name: &str,
+        ports: &ast::PortList,
+        body: &[ast::ModuleItem],
+    ) -> ir::PortDir {
         match ports {
             ast::PortList::Ansi(list) => list
                 .iter()
@@ -412,12 +1036,19 @@ impl<'s> Elaborator<'s> {
                 .unwrap_or(ir::PortDir::Internal),
             ast::PortList::NonAnsi(names) => {
                 if names.iter().any(|i| i.name == name) {
-                    // TODO(v2, COVERAGE verdict LOW): a non-ANSI body `PortDecl`
-                    // carries the REAL direction (`output reg y;`). v1 defaults
-                    // every non-ANSI port to Input — so an `output` port lowers to
-                    // a WRONG-but-plausible Input dir. Merge body PortDecl dirs
-                    // before trusting `dir` on a NonAnsi module.
-                    ir::PortDir::Input
+                    // Fix 4: merge the body PortDecl direction (`output reg y;`)
+                    // just like `port_list_dirs` does — no more silent Input
+                    // default for a non-ANSI `output`/`inout` port.
+                    body.iter()
+                        .find_map(|it| match it {
+                            ast::ModuleItem::PortDecl(pd)
+                                if pd.names.iter().any(|x| x.name == name) =>
+                            {
+                                Some(map_port_dir(pd.dir))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or(ir::PortDir::Input)
                 } else {
                     ir::PortDir::Internal
                 }
@@ -748,19 +1379,21 @@ impl<'s> Elaborator<'s> {
     /// `had_error` regardless. (COVERAGE verdict MEDIUM.)
     fn resolve_net(&mut self, path: &ast::HierPath) -> u32 {
         if path.segments.len() != 1 {
+            // hierarchical cross-ref (tb.dut.x in an expression) still DEFERRED.
             self.error(
                 MsgCode::ElabUnsupported,
-                "hierarchical name reference (v1: flat only)",
+                "hierarchical name reference in expression (deferred)",
             );
             return POISON_NET;
         }
-        let name = &path.segments[0].name;
-        match self.symbols.get(name) {
+        // prepend the current scope prefix → fully-qualified key.
+        let key = self.fq(&path.segments[0].name);
+        match self.symbols.get(&key) {
             Some(&id) => id,
             None => {
                 self.error(
                     MsgCode::ElabUnresolvedName,
-                    &format!("undeclared net/variable `{name}`"),
+                    &format!("undeclared net/variable `{key}`"),
                 );
                 POISON_NET
             }
@@ -868,7 +1501,8 @@ impl<'s> Elaborator<'s> {
     fn array_word_base(&mut self, base: &ast::Expr) -> Option<u32> {
         if let ast::ExprKind::Ident(path) = &base.kind {
             if path.segments.len() == 1 {
-                if let Some(&net) = self.symbols.get(&path.segments[0].name) {
+                let key = self.fq(&path.segments[0].name);
+                if let Some(&net) = self.symbols.get(&key) {
                     if self.nets.get(net as usize).is_some_and(|n| n.array_len > 1) {
                         return Some(net);
                     }
@@ -1592,7 +2226,8 @@ impl<'s> Elaborator<'s> {
     fn is_net_or_const_arg(&self, a: &ast::Expr) -> bool {
         match &a.kind {
             ast::ExprKind::Ident(path) => {
-                path.segments.len() == 1 && self.symbols.contains_key(&path.segments[0].name)
+                path.segments.len() == 1
+                    && self.symbols.contains_key(&self.fq(&path.segments[0].name))
             }
             ast::ExprKind::IntLit { .. } | ast::ExprKind::StrLit { .. } => true,
             _ => false,
@@ -1790,6 +2425,66 @@ fn map_port_dir(d: ast::PortDir) -> ir::PortDir {
         ast::PortDir::Input => ir::PortDir::Input,
         ast::PortDir::Output => ir::PortDir::Output,
         ast::PortDir::Inout => ir::PortDir::Inout,
+    }
+}
+
+// ── v3 port-wiring helpers ─────────────────────────────────────────
+/// A whole-net lvalue chunk (no word/offset/width → drives the entire net).
+fn whole_net_chunk(net: u32) -> ir::LvalChunk {
+    ir::LvalChunk {
+        net,
+        word: None,
+        offset: None,
+        width: None,
+        kind: ir::SelKind::Bit,
+    }
+}
+/// A single-chunk whole-net lvalue.
+fn whole_net_lvalue(net: u32) -> ir::Lvalue {
+    ir::Lvalue {
+        chunks: vec![whole_net_chunk(net)],
+    }
+}
+
+/// Reinterpret a parent connection `Expr` as an `ast::Lvalue` for an OUTPUT port
+/// (the connection target must be a net / select / concat). Returns None for a
+/// non-lvalue expression (a literal or an arithmetic result) — the caller emits
+/// `ElabPortMismatch`. Mirrors the `Expr`/`Lvalue` variant shapes 1:1.
+fn expr_to_lvalue(e: &ast::Expr) -> Option<ast::Lvalue> {
+    match &e.kind {
+        ast::ExprKind::Ident(path) => Some(ast::Lvalue::Ident(path.clone())),
+        ast::ExprKind::Paren { inner } => expr_to_lvalue(inner),
+        ast::ExprKind::BitSelect { base, index } => Some(ast::Lvalue::BitSelect {
+            base: Box::new(expr_to_lvalue(base)?),
+            index: index.clone(),
+            span: e.span,
+        }),
+        ast::ExprKind::PartSelect { base, msb, lsb } => Some(ast::Lvalue::PartSelect {
+            base: Box::new(expr_to_lvalue(base)?),
+            msb: msb.clone(),
+            lsb: lsb.clone(),
+            span: e.span,
+        }),
+        ast::ExprKind::IndexedPart {
+            base,
+            offset,
+            width,
+            dir,
+        } => Some(ast::Lvalue::IndexedPart {
+            base: Box::new(expr_to_lvalue(base)?),
+            offset: offset.clone(),
+            width: width.clone(),
+            dir: *dir,
+            span: e.span,
+        }),
+        ast::ExprKind::Concat { parts } => {
+            let lv_parts: Option<Vec<ast::Lvalue>> = parts.iter().map(expr_to_lvalue).collect();
+            Some(ast::Lvalue::Concat {
+                parts: lv_parts?,
+                span: e.span,
+            })
+        }
+        _ => None,
     }
 }
 
