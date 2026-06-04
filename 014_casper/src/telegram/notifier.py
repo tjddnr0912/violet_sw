@@ -612,14 +612,16 @@ class TelegramNotifier:
         # Build the bucket table as a single multi-line "row" so column
         # alignment is exact (we control the widths ourselves).
         table_lines = [
-            f"  {'Bucket':<8} {'Symbol':<6} {'Current':>11} {'Target':>11}  Drift",
-            "  " + "─" * 47,
+            f"  {'Bucket':<8} {'Symbol':<9} {'Current':>11} {'Target':>11}  Drift",
+            "  " + "─" * 50,
         ]
         for b in buckets:
             arrow = "↑" if b.drift_pct > 0.001 else ("↓" if b.drift_pct < -0.001 else "•")
+            # Symbol may be a combined label (e.g. "TQQQ+BIL") when the trend
+            # sleeve co-holds the asset + safe legs — the column is sized for it.
             sym = b.current_symbol or "—"
             line = (
-                f"  {b.name:<8} {sym:<6} "
+                f"  {b.name:<8} {sym:<9} "
                 f"${b.current_value_usd:>9,.2f} ${b.target_usd:>9,.2f}  "
                 f"{arrow} {b.drift_pct*100:+5.1f}%"
             )

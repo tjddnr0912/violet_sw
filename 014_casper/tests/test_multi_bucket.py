@@ -357,6 +357,35 @@ def test_bucket_value_resolves_tqqq_or_bil():
     assert trend_b.current_value_usd == 400.0
 
 
+def test_bucket_value_sums_tqqq_and_bil_when_sleeve_split():
+    # The vol-target trend sleeve co-holds TQQQ (asset, ~83%) + BIL (safe,
+    # ~17%). The bucket value must SUM both legs and the label must name both
+    # — the pre-fix first-match loop returned only TQQQ and silently hid the
+    # BIL leg from the 13:00 portfolio summary.
+    holdings = {
+        "TQQQ": {"qty": 6, "value_usd": 524.0, "price": 87.34},
+        "BIL":  {"qty": 1, "value_usd": 92.0,  "price": 92.0},
+    }
+    buckets, _ = pf.evaluate_portfolio(3000.0, holdings,
+                                       state=pf.PortfolioState())
+    trend_b = next(b for b in buckets if b.name == "trend")
+    assert trend_b.current_value_usd == 616.0          # 524 + 92, not 524
+    assert trend_b.current_symbol is not None
+    assert "TQQQ" in trend_b.current_symbol
+    assert "BIL" in trend_b.current_symbol
+
+
+def test_bucket_value_shows_bil_when_only_safe_held():
+    # Risk-off regime (exposure 0): the sleeve is 100% BIL. The summary must
+    # show BIL, not blank, so a defensive sleeve is never invisible.
+    holdings = {"BIL": {"qty": 7, "value_usd": 644.0, "price": 92.0}}
+    buckets, _ = pf.evaluate_portfolio(3000.0, holdings,
+                                       state=pf.PortfolioState())
+    trend_b = next(b for b in buckets if b.name == "trend")
+    assert trend_b.current_symbol == "BIL"
+    assert trend_b.current_value_usd == 644.0
+
+
 def test_needs_rebalance_excludes_trend(monkeypatch):
     import src.utils.time_utils as tu
     monkeypatch.setattr(tu, "is_last_trading_day_of_quarter", lambda d: True)

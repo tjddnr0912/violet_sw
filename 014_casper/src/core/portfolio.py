@@ -279,20 +279,27 @@ def evaluate_portfolio(total_usd: float,
                     claimed_symbols.add(sym)
                     return float(h.get("value_usd", 0)), sym
             return 0.0, None
-        if name == "trend":
+        if name in ("trend", "tqqq_sma"):
+            # The vol-target sleeve co-holds the asset (TQQQ, `exposure` of the
+            # sleeve) AND the safe leg (BIL, the remainder). SUM both legs and
+            # label both. The old code returned the FIRST symbol with qty>0
+            # (always TQQQ), which silently dropped the BIL leg — hiding it
+            # from the daily summary and understating the bucket value (so its
+            # drift read far more negative than reality).
+            # NOTE: at the $10k tier `trend` and `tqqq_sma` coexist and both
+            # map to TQQQ/BIL; that pre-existing double-count is out of scope
+            # here (current capital ≤ one TQQQ/BIL bucket).
+            total_val = 0.0
+            held: list[str] = []
             for sym in ("TQQQ", "BIL"):
                 h = holdings.get(sym, {})
                 if h.get("qty", 0) > 0:
                     claimed_symbols.add(sym)
-                    return float(h.get("value_usd", 0)), sym
-            return 0.0, None
-        if name == "tqqq_sma":
-            for sym in ("TQQQ", "BIL"):
-                h = holdings.get(sym, {})
-                if h.get("qty", 0) > 0:
-                    claimed_symbols.add(sym)
-                    return float(h.get("value_usd", 0)), sym
-            return 0.0, None
+                    total_val += float(h.get("value_usd", 0))
+                    held.append(sym)
+            if not held:
+                return 0.0, None
+            return total_val, "+".join(held)
         if name == "clenow":
             # Will be filled after other buckets claim their symbols.
             return 0.0, None

@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-04: trend 버킷 요약에 BIL(안전자산) 표시 + drift 정상화 (표시 버그 수정)
+
+### 결정 한 줄
+vol-target trend sleeve는 TQQQ+BIL을 동시 보유하는데, 포트폴리오 요약의 버킷 값 계산(`_bucket_value`)이 qty>0 **첫 종목(=TQQQ)만 반환**해 BIL leg를 통째로 누락 → 데일리 요약에서 BIL 불가시 + trend 평가금액 과소(예: $524, 실제 TQQQ+BIL $616) + drift 왜곡(−18% 표시, 실제 ~−4%). 두 종목을 **합산**하고 라벨을 `"TQQQ+BIL"`로 결합 반환하도록 수정.
+
+### 변경
+- `src/core/portfolio.py`: `_bucket_value`의 trend/tqqq_sma 브랜치 병합 — (TQQQ, BIL) 첫-매치 반환 → **합산 + `"TQQQ+BIL"` 라벨**, 둘 다 `claimed_symbols` 등록.
+- `src/telegram/notifier.py`: `notify_portfolio_summary` Symbol 컬럼 폭 6→9(divider 47→50)로 결합 라벨 정렬 보존.
+- `tests/test_multi_bucket.py`: 신규 2건(양쪽 보유 합산 / BIL-only 가드). 전체 624 passed.
+
+### 근거
+2026-06-04 사용자가 "13시 요약에 BIL이 왜 안 보이나"라고 질문. 로그(`2026-06-01 23:36 BUY BIL x1 @ $92.31`, 이후 매도 0)로 BIL은 보유 중·표시만 누락으로 확정. **표시 전용 수정 — 매매 로직·보유 자산 무관**(trend는 자체 월간 스케줄로만 리밸런스, `needs_rebalance`가 trend 제외). 상세·진단 미스 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md) "데일리 포트폴리오 요약에 trend sleeve의 BIL… 안 보임".
+
+---
+
 ## 2026-06-02: 메인 루프 busy-loop 수정 (CPU 100% → idle)
 
 ### 결정 한 줄
