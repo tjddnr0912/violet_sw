@@ -982,15 +982,233 @@ impl<'t, 's> Parser<'t, 's> {
             self.skip_balanced_block();
             return Some(ModuleItem::Error(s));
         }
-        // bare ident ⇒ likely a module instance (deferred) → stub
+        // bare ident at module-item position ⇒ module instantiation.
+        // (No keyword-led item matched above; in V2005 module scope a leading
+        //  bare identifier can ONLY begin an instantiation — there is no
+        //  bare-ident contassign/decl. The dispatch position itself is the
+        //  disambiguation, so no multi-token lookahead is needed to decide.)
         if self.is_ident() {
-            let s = self.cur_span();
-            self.error("(module instantiation parsing not yet implemented)");
-            self.synchronize();
-            return Some(ModuleItem::Error(s));
+            let module_name = self.ident().unwrap();
+            return Some(ModuleItem::Instance(
+                self.parse_module_instance(module_name),
+            ));
         }
         self.error("module item");
         None
+    }
+
+    // ─────────────────────── module instantiation ───────────────────────
+    /// Parse a module instantiation, given the already-consumed `module_name`.
+    /// Grammar:  module_name [ #(param_overrides) ] inst_body {, inst_body} ;
+    /// where     inst_body = inst_name [unpacked_dims] ( port_connections )
+    ///
+    /// Disambiguation: the caller reaches a bare ident at module-item position
+    /// only after every keyword-led item is ruled out; in V2005 module scope a
+    /// leading bare identifier can ONLY start an instantiation, so no lookahead
+    /// is needed to decide. Gate primitives (and/or/not …) are NOT special-cased
+    /// here — they lex as plain idents and so flow through this path; a true
+    /// gate-primitive instance has no module body for elaborate to find and is a
+    /// DEFERRED limitation (it still recovers as an ordinary instance shape).
+    /// Always returns a `ModuleInstance` (recovery is internal: sync via the
+    /// terminal `expect(Semi)` + per-list forward-progress guards).
+    fn parse_module_instance(&mut self, module_name: Ident) -> ModuleInstance {
+        let start = module_name.span;
+
+        // optional parameter override list  #( … )
+        let param_overrides = if self.peek() == Some(TokenKind::Hash) {
+            self.bump(); // '#'
+            self.parse_param_overrides()
+        } else {
+            Vec::new()
+        };
+
+        // one-or-more instance bodies, comma-separated
+        let mut instances = Vec::new();
+        loop {
+            let before = self.pos;
+            instances.push(self.parse_instance_item());
+            if self.pos == before {
+                self.bump(); // forward-progress guard
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+
+        self.expect(TokenKind::Semi, "';' after instantiation");
+        ModuleInstance {
+            module_name,
+            param_overrides,
+            instances,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// Parse `( param_overrides )` after a consumed `#`.
+    /// `.NAME(expr)` ⇒ ParamConn::Named ; bare `expr` ⇒ ParamConn::Positional.
+    /// The first token being `Dot` selects the named form for the whole list.
+    /// An empty `#()` is legal (yields an empty Vec).
+    fn parse_param_overrides(&mut self) -> Vec<ParamConn> {
+        let mut out = Vec::new();
+        if !self.expect(TokenKind::LParen, "'(' after '#'") {
+            return out;
+        }
+        if self.peek() == Some(TokenKind::RParen) {
+            self.bump(); // empty `#()`
+            return out;
+        }
+        let named = self.peek() == Some(TokenKind::Dot);
+        loop {
+            let before = self.pos;
+            if named {
+                out.push(self.parse_named_param_conn());
+            } else {
+                // positional override: a single const-expr (never empty)
+                out.push(ParamConn::Positional(self.expr(0)));
+            }
+            if self.pos == before {
+                self.bump(); // progress guard
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')' closing parameter overrides");
+        out
+    }
+
+    /// `.NAME(expr)` | `.NAME()`  → ParamConn::Named { name, value, span }.
+    fn parse_named_param_conn(&mut self) -> ParamConn {
+        let start = self.cur_span();
+        self.expect(TokenKind::Dot, "'.' in named parameter override");
+        let name = self.ident().unwrap_or(Ident {
+            name: String::new(),
+            span: self.cur_span(),
+        });
+        self.expect(TokenKind::LParen, "'(' after parameter name");
+        let value = if self.peek() == Some(TokenKind::RParen) {
+            None // `.W()` — explicitly-empty override
+        } else {
+            Some(self.expr(0))
+        };
+        self.expect(TokenKind::RParen, "')' after parameter value");
+        ParamConn::Named {
+            name,
+            value,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// One instance: inst_name [unpacked_dims] ( port_connections )
+    fn parse_instance_item(&mut self) -> InstanceItem {
+        let start = self.cur_span();
+        let name = self.ident().unwrap_or(Ident {
+            name: String::new(),
+            span: self.cur_span(),
+        });
+
+        // optional instance-array dims: `u_x [3:0] (...)` / `u_x [4] (...)`
+        let mut unpacked = Vec::new();
+        while self.peek() == Some(TokenKind::LBracket) {
+            match self.parse_dim() {
+                Some(d) => unpacked.push(d),
+                None => break,
+            }
+        }
+
+        let conns = self.parse_port_conns();
+        InstanceItem {
+            name,
+            unpacked,
+            conns,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// `( … )` port-connection list.
+    ///   first element `.NAME(...)`      ⇒ Named
+    ///   first element `.*`               ⇒ implicit (DEFERRED: stub → empty Named)
+    ///   first element bare expr / empty  ⇒ Positional (empty `()` ⇒ Positional([]))
+    fn parse_port_conns(&mut self) -> PortConnList {
+        if !self.expect(TokenKind::LParen, "'(' before port connections") {
+            // recovered with no '(' — synthesize an empty positional list
+            return PortConnList::Positional(Vec::new());
+        }
+        // empty `()` ⇒ zero-arity positional
+        if self.peek() == Some(TokenKind::RParen) {
+            self.bump();
+            return PortConnList::Positional(Vec::new());
+        }
+        // `.*` implicit connection (DEFERRED). `.*` = Dot then Star (no DotStar token).
+        if self.peek() == Some(TokenKind::Dot)
+            && self.toks.get(self.pos + 1).map(|t| t.kind) == Some(TokenKind::Star)
+        {
+            self.error("(.* implicit port connection not yet supported; ignored)");
+            self.bump(); // '.'
+            self.bump(); // '*'
+                         // tolerate any trailing explicit conns after `.*` by skipping to ')'
+            while !self.at_eof() && self.peek() != Some(TokenKind::RParen) {
+                self.bump();
+            }
+            self.expect(TokenKind::RParen, "')' after '.*'");
+            return PortConnList::Named(Vec::new());
+        }
+
+        // named iff the first connection starts with a dot
+        let named = self.peek() == Some(TokenKind::Dot);
+        if named {
+            let mut conns = Vec::new();
+            loop {
+                let before = self.pos;
+                conns.push(self.parse_named_port_conn());
+                if self.pos == before {
+                    self.bump();
+                }
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "')' closing port connections");
+            PortConnList::Named(conns)
+        } else {
+            // positional: each element is `expr` OR empty (a skipped port → None).
+            let mut conns: Vec<Option<Expr>> = Vec::new();
+            loop {
+                match self.peek() {
+                    // an empty slot: `,` or `)` where an expr would start
+                    Some(TokenKind::Comma) | Some(TokenKind::RParen) => conns.push(None),
+                    _ => conns.push(Some(self.expr(0))),
+                }
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "')' closing port connections");
+            PortConnList::Positional(conns)
+        }
+    }
+
+    /// `.PORT(expr)` | `.PORT()`  → PortConn { name, value, span }.
+    /// `.PORT()` (explicitly-unconnected) ⇒ value = None.
+    fn parse_named_port_conn(&mut self) -> PortConn {
+        let start = self.cur_span();
+        self.expect(TokenKind::Dot, "'.' in named port connection");
+        let name = self.ident().unwrap_or(Ident {
+            name: String::new(),
+            span: self.cur_span(),
+        });
+        self.expect(TokenKind::LParen, "'(' after port name");
+        let value = if self.peek() == Some(TokenKind::RParen) {
+            None // `.clk()` — explicitly unconnected
+        } else {
+            Some(self.expr(0))
+        };
+        self.expect(TokenKind::RParen, "')' after port expression");
+        PortConn {
+            name,
+            value,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_port_decl(&mut self) -> Option<PortDecl> {
@@ -2411,5 +2629,162 @@ mod tests {
             panic!("not NonBlocking")
         };
         assert!(delay.is_none(), "intra-assign delay is dropped (deferred)");
+    }
+
+    // ════════════════════ module instantiation (PR3) ════════════════════
+    /// Return the first ModuleInstance in a module body.
+    fn inst_of(body: &str) -> ModuleInstance {
+        let src = format!("module m;\n{body}\nendmodule");
+        let (su, errs) = p(&src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        match m.body.iter().find(|i| matches!(i, ModuleItem::Instance(_))) {
+            Some(ModuleItem::Instance(mi)) => mi.clone(),
+            _ => panic!("no module instance in body"),
+        }
+    }
+    fn id_name(e: &Expr) -> &str {
+        match &e.kind {
+            ExprKind::Ident(p) => p.segments[0].name.as_str(),
+            other => panic!("not a bare ident: {other:?}"),
+        }
+    }
+
+    // I1. named connections: dff u1(.clk(clk), .d(d), .q(q));
+    #[test]
+    fn i1_named_connections() {
+        let mi = inst_of("dff u1(.clk(clk), .d(d), .q(q));");
+        assert_eq!(mi.module_name.name, "dff");
+        assert!(mi.param_overrides.is_empty());
+        assert_eq!(mi.instances.len(), 1);
+        let it = &mi.instances[0];
+        assert_eq!(it.name.name, "u1");
+        let PortConnList::Named(conns) = &it.conns else {
+            panic!("not named")
+        };
+        assert_eq!(conns.len(), 3);
+        assert_eq!(conns[0].name.name, "clk");
+        assert_eq!(id_name(conns[0].value.as_ref().unwrap()), "clk");
+        assert_eq!(conns[2].name.name, "q");
+        assert_eq!(id_name(conns[2].value.as_ref().unwrap()), "q");
+    }
+
+    // I2. positional connections: dff u1(clk, d, q);
+    #[test]
+    fn i2_positional_connections() {
+        let mi = inst_of("dff u1(clk, d, q);");
+        assert_eq!(mi.module_name.name, "dff");
+        let PortConnList::Positional(conns) = &mi.instances[0].conns else {
+            panic!("not positional")
+        };
+        assert_eq!(conns.len(), 3);
+        assert_eq!(id_name(conns[0].as_ref().unwrap()), "clk");
+        assert_eq!(id_name(conns[1].as_ref().unwrap()), "d");
+        assert_eq!(id_name(conns[2].as_ref().unwrap()), "q");
+    }
+
+    // I3. named param override: reg8 #(.W(8)) r(.d(d), .q(q));
+    #[test]
+    fn i3_named_param_override() {
+        let mi = inst_of("reg8 #(.W(8)) r(.d(d), .q(q));");
+        assert_eq!(mi.module_name.name, "reg8");
+        assert_eq!(mi.param_overrides.len(), 1);
+        let ParamConn::Named { name, value, .. } = &mi.param_overrides[0] else {
+            panic!("not a named override")
+        };
+        assert_eq!(name.name, "W");
+        assert!(matches!(
+            value.as_ref().unwrap().kind,
+            ExprKind::IntLit { .. }
+        ));
+        assert_eq!(mi.instances[0].name.name, "r");
+    }
+
+    // I4. positional param override + multiple params: mem #(8, 256) u(.clk(clk));
+    #[test]
+    fn i4_positional_param_override() {
+        let mi = inst_of("mem #(8, 256) u(.clk(clk));");
+        assert_eq!(mi.param_overrides.len(), 2);
+        assert!(matches!(mi.param_overrides[0], ParamConn::Positional(_)));
+        assert!(matches!(mi.param_overrides[1], ParamConn::Positional(_)));
+    }
+
+    // I5. multiple instances per statement: dff u0(clk,q0), u1(q0,q1);
+    #[test]
+    fn i5_multiple_instances_per_statement() {
+        let mi = inst_of("dff u0(clk, q0), u1(q0, q1);");
+        assert_eq!(mi.module_name.name, "dff");
+        assert_eq!(mi.instances.len(), 2);
+        assert_eq!(mi.instances[0].name.name, "u0");
+        assert_eq!(mi.instances[1].name.name, "u1");
+    }
+
+    // I6. unconnected positional slot: alu u(a, , c);  → None in the middle.
+    #[test]
+    fn i6_positional_unconnected_slot() {
+        let mi = inst_of("alu u(a, , c);");
+        let PortConnList::Positional(conns) = &mi.instances[0].conns else {
+            panic!("not positional")
+        };
+        assert_eq!(conns.len(), 3);
+        assert!(conns[0].is_some());
+        assert!(conns[1].is_none()); // skipped port
+        assert!(conns[2].is_some());
+    }
+
+    // I7. explicitly-unconnected named port `.q()` ⇒ value None; empty `()` list.
+    #[test]
+    fn i7_named_empty_and_empty_list() {
+        let mi = inst_of("dff u1(.clk(clk), .q());");
+        let PortConnList::Named(conns) = &mi.instances[0].conns else {
+            panic!("not named")
+        };
+        assert_eq!(conns.len(), 2);
+        assert!(conns[1].value.is_none(), "`.q()` ⇒ None");
+        // empty `()` list ⇒ zero-arity Positional
+        let mi2 = inst_of("noports u2();");
+        let PortConnList::Positional(c2) = &mi2.instances[0].conns else {
+            panic!("empty () should be Positional")
+        };
+        assert!(c2.is_empty());
+    }
+
+    // I8. instance-array dim + a connection expr: rep u_x [3:0] (.in(bus));
+    #[test]
+    fn i8_instance_array_dim() {
+        let mi = inst_of("rep u_x [3:0] (.in(bus));");
+        let it = &mi.instances[0];
+        assert_eq!(it.name.name, "u_x");
+        assert_eq!(it.unpacked.len(), 1);
+        assert!(matches!(it.unpacked[0], Dim::Range(_)));
+    }
+
+    // I9. expression-valued named connection: dff u(.d(a & b), .q(q));
+    #[test]
+    fn i9_expression_connection() {
+        let mi = inst_of("dff u(.d(a & b), .q(q));");
+        let PortConnList::Named(conns) = &mi.instances[0].conns else {
+            panic!("not named")
+        };
+        let (op, _l, _r) = bin(conns[0].value.as_ref().unwrap());
+        assert_eq!(op, BinOp::BitAnd);
+    }
+
+    // I10. recovery: `.*` implicit connection is stubbed (one error), trailing
+    //      good item still parses (verdict: deferred, recovering).
+    #[test]
+    fn i10_dotstar_stub_recovers() {
+        let (su, errs) = p("module m; sub u1(.*); assign y = a;\nendmodule");
+        assert!(!errs.is_empty(), "expected the .* advisory");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        // the instance is still present (as an empty Named list)…
+        assert!(m.body.iter().any(|i| matches!(i, ModuleItem::Instance(_))));
+        // …and the trailing assign still parses.
+        assert!(m
+            .body
+            .iter()
+            .any(|i| matches!(i, ModuleItem::ContAssign(_))));
     }
 }
