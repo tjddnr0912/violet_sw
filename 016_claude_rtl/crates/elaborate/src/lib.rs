@@ -1219,6 +1219,19 @@ impl<'s> Elaborator<'s> {
         match s {
             ast::Stmt::Block { decls, stmts, .. } | ast::Stmt::Fork { decls, stmts, .. } => {
                 for d in decls {
+                    // v1 flattens block-locals into the module namespace (no
+                    // per-block scope). If a local name was already created by an
+                    // EARLIER block, skip re-creating it rather than erroring
+                    // "redeclared" — two SEQUENTIAL named blocks reusing the same
+                    // temp name (`integer local_v;`) then share one net, which is
+                    // correct since they never overlap in time.
+                    let exists = d
+                        .names
+                        .first()
+                        .is_some_and(|n| self.symbols.contains_key(&self.fq(&n.name.name)));
+                    if exists {
+                        continue;
+                    }
                     self.elaborate_netvar_decl(d, ports, body);
                 }
                 for st in stmts {
@@ -3591,8 +3604,12 @@ impl<'s> Elaborator<'s> {
         let arg_ids: Vec<u32> = value_args
             .iter()
             .filter_map(|a| {
+                // `$dumpvars(level, scope)` — the level const and a scope/module
+                // ident. v1 dumps ALL signals (a valid superset of any requested
+                // depth/scope), so a scope ident is silently dropped here rather
+                // than warned: scope/depth-SELECTIVE dumping is a refinement, but
+                // the common `$dumpvars(0, top)` idiom must not spew a warning.
                 if dump_family && !self.is_net_or_const_arg(a) {
-                    self.warn("$dump* scope/non-signal argument skipped (v2)");
                     None
                 } else {
                     Some(self.lower_expr(a))
