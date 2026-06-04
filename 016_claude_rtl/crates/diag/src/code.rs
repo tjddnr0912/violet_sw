@@ -39,6 +39,11 @@ msgcodes! {
     PpIncludeNotFound      => ("E-PP-INCLUDE-NOT-FOUND",    "VITA-E1001", Error,   "`include file not found on search path"),
     PpMacroArity           => ("E-PP-MACRO-ARITY",         "VITA-E1002", Error,   "function-like macro called with wrong arity"),
     LintUnclosed           => ("W-LINT-UNCLOSED",          "VITA-W1003", Warning, "inline lint_off never closed before EOF"),
+    PpRecursiveMacro       => ("E-PP-RECURSIVE-MACRO",     "VITA-E1004", Error,   "recursive text-macro expansion"),
+    PpRecursiveInclude     => ("E-PP-RECURSIVE-INCLUDE",   "VITA-E1005", Error,   "cyclic `include (file includes itself)"),
+    PpBadDirective         => ("E-PP-BAD-DIRECTIVE",       "VITA-E1013", Error,   "unknown compiler directive"),
+    PpMacroRedefined       => ("W-PP-MACRO-REDEFINED",     "VITA-W1007", Warning, "`define redefines a macro with different text"),
+    PpUndefUndefined       => ("W-PP-UNDEF-UNDEFINED",     "VITA-W1008", Warning, "`undef of a macro that was never defined"),
     // 2xxx PARSE
     DupUnit                => ("E-DUP-UNIT",                "VITA-E2001", Error,   "design unit redefined"),
     ParseUnexpectedToken   => ("E-PARSE-UNEXPECTED-TOKEN",  "VITA-E2002", Error,   "unexpected token"),

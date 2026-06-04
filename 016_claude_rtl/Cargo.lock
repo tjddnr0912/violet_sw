@@ -91,6 +91,7 @@ dependencies = [
  "hdl-ast",
  "hdl-lexer",
  "hdl-parser",
+ "hdl-preprocess",
  "sim-engine",
  "sim-ir",
 ]
@@ -205,6 +206,9 @@ dependencies = [
 [[package]]
 name = "hdl-preprocess"
 version = "0.0.0"
+dependencies = [
+ "diag",
+]
 
 [[package]]
 name = "heapless"

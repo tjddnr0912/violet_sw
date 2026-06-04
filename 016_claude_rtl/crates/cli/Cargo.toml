@@ -17,6 +17,7 @@ path = "src/main.rs"
 separate-bins = []
 
 [dependencies]
+hdl-preprocess = { path = "../hdl-preprocess" }
 hdl-lexer = { path = "../hdl-lexer" }
 hdl-parser = { path = "../hdl-parser" }
 hdl-ast = { path = "../hdl-ast" }

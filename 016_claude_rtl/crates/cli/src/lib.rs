@@ -118,8 +118,20 @@ impl LogSink for StderrSink {
 /// Map a byte offset into `src` to a 1-based `(line, col)`. Columns count
 /// Unicode scalar values from the last newline (good enough for v1 caret-less
 /// reporting; the real side-table bridge lives in `vita-log`).
+///
+/// Retained per preprocess-spec §4.3: line/col resolution now flows through
+/// `hdl_preprocess::SourceMap` (which carries a byte-identical copy of this
+/// function), so this is currently unreferenced. It is kept as the reference
+/// the SourceMap copy must agree with byte-for-byte.
+#[allow(dead_code)]
 fn byte_to_line_col(src: &str, byte: usize) -> (u32, u32) {
-    let byte = byte.min(src.len());
+    // Clamp out-of-range, then floor to a UTF-8 char boundary so the
+    // `src[line_start..byte]` slice cannot split a multibyte scalar. Mirrors
+    // `hdl_preprocess::byte_to_line_col` byte-for-byte.
+    let mut byte = byte.min(src.len());
+    while byte > 0 && !src.is_char_boundary(byte) {
+        byte -= 1;
+    }
     let mut line = 1u32;
     let mut line_start = 0usize;
     for (i, c) in src.char_indices() {
@@ -135,23 +147,16 @@ fn byte_to_line_col(src: &str, byte: usize) -> (u32, u32) {
     (line, col)
 }
 
-/// Build a `SourceLoc` for `file` covering the half-open byte range `[lo, hi)`.
-fn loc_from_span(file: &str, src: &str, lo: usize, hi: usize) -> SourceLoc {
-    let (line, col) = byte_to_line_col(src, lo);
-    SourceLoc {
-        file: file.to_string(),
-        line,
-        col,
-        byte_start: lo as u32,
-        byte_end: hi as u32,
-    }
+/// Build a `SourceLoc` for the half-open expanded-byte range `[lo, hi)` by
+/// resolving it through the preprocessor's `SourceMap` back to original positions.
+fn loc_from_span(map: &hdl_preprocess::SourceMap, lo: usize, hi: usize) -> SourceLoc {
+    map.resolve_span(lo, hi)
 }
 
 /// Emit a front-end (lex/parse) diagnostic with a resolved location.
 fn emit_frontend_error(
     sink: &StderrSink,
-    file: &str,
-    src: &str,
+    map: &hdl_preprocess::SourceMap,
     lo: usize,
     hi: usize,
     msg: String,
@@ -160,7 +165,7 @@ fn emit_frontend_error(
         severity: Severity::Error,
         code: MsgCode::ParseUnexpectedToken,
         message: msg,
-        location: Some(loc_from_span(file, src, lo, hi)),
+        location: Some(loc_from_span(map, lo, hi)),
         context: Vec::new(),
         sim_time: None,
     }));
@@ -173,20 +178,44 @@ fn emit_frontend_error(
 pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     let sink = StderrSink::new();
 
-    // preprocess is a passthrough in v1 — the text IS the lexer input.
+    // ── preprocess ─────────────────────────────────────────────────────────
+    // raw source -> expanded text + SourceMap. The expanded text (not `text`) is
+    // what the lexer and parser consume; spans they produce index the expanded
+    // buffer and resolve back to original files via `pp.map`.
+    let base_dir = std::path::Path::new(file)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let pre_opts = hdl_preprocess::PreOpts::default(); // incdirs/-D wired from opts later
+    let pp = hdl_preprocess::preprocess_str(base_dir, file, text, &pre_opts);
+    for d in &pp.diags {
+        let loc = pp.map.resolve_span(d.at, d.at);
+        sink.emit(LogEvent::Diagnostic(Diagnostic {
+            severity: d.severity,
+            code: d.code,
+            message: d.message.clone(),
+            location: Some(loc),
+            context: Vec::new(),
+            sim_time: None,
+        }));
+    }
+    if pp.has_errors() {
+        return EXIT_USER_ERROR;
+    }
+    let expanded: &str = &pp.text;
+
     // ── lex ──────────────────────────────────────────────────────────────
-    let (tokens, lex_errors) = hdl_lexer::lex(text);
+    let (tokens, lex_errors) = hdl_lexer::lex(expanded);
     if !lex_errors.is_empty() {
         for e in &lex_errors {
             let (mnemonic, _) = e.kind.msg_code_hint();
             let msg = format!("lex error: {} ({mnemonic})", lex_error_message(e.kind));
-            emit_frontend_error(&sink, file, text, e.span.start, e.span.end, msg);
+            emit_frontend_error(&sink, &pp.map, e.span.start, e.span.end, msg);
         }
         return EXIT_USER_ERROR;
     }
 
     // ── parse ─────────────────────────────────────────────────────────────
-    let (unit, parse_errors) = hdl_parser::parse(&tokens, text);
+    let (unit, parse_errors) = hdl_parser::parse(&tokens, expanded);
     if !parse_errors.is_empty() {
         for e in &parse_errors {
             let found = match e.found {
@@ -194,14 +223,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
                 None => "end of file".to_string(),
             };
             let msg = format!("expected {}, found {found}", e.expected);
-            emit_frontend_error(
-                &sink,
-                file,
-                text,
-                e.span.lo as usize,
-                e.span.hi as usize,
-                msg,
-            );
+            emit_frontend_error(&sink, &pp.map, e.span.lo as usize, e.span.hi as usize, msg);
         }
         return EXIT_USER_ERROR;
     }
