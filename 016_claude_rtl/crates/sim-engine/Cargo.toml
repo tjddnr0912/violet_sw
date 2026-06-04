@@ -4,3 +4,17 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+
+[dependencies]
+sim-ir     = { path = "../sim-ir" }
+diag       = { path = "../diag" }
+vcd-writer = { path = "../vcd-writer" }
+# NOTE: hdl-builtins intentionally NOT a dep in v1 — $task handlers are inlined
+# in the private `builtins` module (HOOK: extract to hdl-builtins post-v1).
+
+[dev-dependencies]
+# End-to-end tests build a SimIr via the real lex → parse → elaborate pipeline,
+# then simulate it and assert on the VCD buffer + captured $display output.
+hdl-lexer  = { path = "../hdl-lexer" }
+hdl-parser = { path = "../hdl-parser" }
+elaborate  = { path = "../elaborate" }
