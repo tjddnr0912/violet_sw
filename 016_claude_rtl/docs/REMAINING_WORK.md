@@ -34,7 +34,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 - [ ] **[BLOCKER·P1]** Implement timescale unit/precision conversion (currently discarded; no scaling anywhere) — 🚧 **진행 중 (doc-08 전체 모델, 사용자 선택 A)**. 단계별:
   - [x] S1 preprocess: `timescale unit/precision` 파싱 → `TimeScale{unit_exp,prec_exp}` + 확장텍스트 offset region 테이블을 PpResult에 노출 ✅ 2026-06-05 (parse_timescale + PpResult.timescales, 3 테스트)
-  - [ ] S2 glue: 모듈 span으로 per-module timescale 해석 + `global_precision = min(prec_exp)`, no-timescale→1ns/1ns + `W-PP-TIMESCALE-DEFAULT`
+  - [x] S2 resolve: `resolve_module_timescales`(모듈 span↔region 매칭, file-order) + `global_prec=min` + default_used 플래그 ✅ 2026-06-05 (hdl-preprocess plain types, 2 테스트)
   - [ ] S3 elaborate: per-module multiplier `M=10^(unit_exp-global_prec)`로 `#delay` 스케일(round-half-up); 기본 env(M=1)=기존동작
   - [ ] S4 engine: per-process M 사이드테이블(SimOpts)로 `$time=tick/M`(정수)·`$realtime=tick/M`(실수) 스케일
   - [ ] S5 VCD preamble에 global_precision 기록 + 파일순서 상속/부분지정 정책 + iverilog 차분 테스트(성공기준)

@@ -122,6 +122,61 @@ pub fn parse_timescale(arg: &str) -> Result<TimeScale, String> {
     Ok(TimeScale { unit_exp, prec_exp })
 }
 
+/// Per-module timescale resolution result (S2). Plain types so `elaborate` need
+/// not depend on this crate: the glue passes `unit_exp` + `global_prec_exp` in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResolvedTimescales {
+    /// module NAME → its delay-unit exponent (`unit_exp`). The per-module delay
+    /// multiplier is `10^(unit_exp − global_prec_exp)`.
+    pub unit_exp: std::collections::BTreeMap<String, i8>,
+    /// design-wide FINEST precision exponent = the global tick base.
+    pub global_prec_exp: i8,
+    /// true if ANY module fell back to the `1ns/1ns` base (→ W-PP-TIMESCALE-DEFAULT).
+    pub default_used: bool,
+}
+
+/// Resolve each module's governing `` `timescale `` by file order. `modules` is
+/// `(name, span_lo)` in EXPANDED-text coordinates; `regions` is the ascending-offset
+/// table from [`PpResult::timescales`]. A module is governed by the LAST region whose
+/// offset ≤ its `span_lo`; a module before any region (or a directive-free design)
+/// uses the `1ns/1ns` base. `global_prec_exp` is the min precision across all modules
+/// (the tick base). Empty `modules` ⇒ base precision.
+pub fn resolve_module_timescales(
+    modules: &[(&str, usize)],
+    regions: &[(usize, TimeScale)],
+) -> ResolvedTimescales {
+    let mut unit_exp = std::collections::BTreeMap::new();
+    let mut precs: Vec<i8> = Vec::new();
+    let mut default_used = false;
+    for &(name, lo) in modules {
+        let gov = regions
+            .iter()
+            .rev()
+            .find(|(off, _)| *off <= lo)
+            .map(|(_, ts)| *ts);
+        match gov {
+            Some(ts) => {
+                unit_exp.insert(name.to_string(), ts.unit_exp);
+                precs.push(ts.prec_exp);
+            }
+            None => {
+                default_used = true;
+                unit_exp.insert(name.to_string(), TimeScale::DEFAULT.unit_exp);
+                precs.push(TimeScale::DEFAULT.prec_exp);
+            }
+        }
+    }
+    let global_prec_exp = precs
+        .into_iter()
+        .min()
+        .unwrap_or(TimeScale::DEFAULT.prec_exp);
+    ResolvedTimescales {
+        unit_exp,
+        global_prec_exp,
+        default_used,
+    }
+}
+
 /// `{1|10|100}<s|ms|us|ns|ps|fs>` → base-10 exponent of seconds.
 fn parse_time_literal(s: &str) -> Result<i8, String> {
     let digits_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
@@ -1901,6 +1956,42 @@ mod tests {
     fn timescale_malformed_is_error() {
         let r = pp("`timescale 1ns/1us\nmodule m; endmodule\n");
         assert!(r.has_errors(), "coarse precision must error");
+    }
+
+    #[test]
+    fn resolve_module_timescales_file_order_and_global_min() {
+        let regions = [
+            (
+                10usize,
+                TimeScale {
+                    unit_exp: -9,
+                    prec_exp: -10,
+                },
+            ), // 1ns/100ps
+            (
+                50usize,
+                TimeScale {
+                    unit_exp: -8,
+                    prec_exp: -12,
+                },
+            ), // 10ns/1ps
+        ];
+        // a@20 → region@10 ; b@60 → region@50 ; c@5 (before any) → 1ns/1ns base.
+        let modules = [("a", 20usize), ("b", 60usize), ("c", 5usize)];
+        let r = resolve_module_timescales(&modules, &regions);
+        assert_eq!(r.unit_exp["a"], -9);
+        assert_eq!(r.unit_exp["b"], -8);
+        assert_eq!(r.unit_exp["c"], -9); // default
+        assert_eq!(r.global_prec_exp, -12); // min(-10, -12, -9)
+        assert!(r.default_used); // c fell back
+    }
+
+    #[test]
+    fn resolve_no_regions_is_default() {
+        let r = resolve_module_timescales(&[("m", 0)], &[]);
+        assert_eq!(r.unit_exp["m"], -9);
+        assert_eq!(r.global_prec_exp, -9);
+        assert!(r.default_used);
     }
     /// `files` keys are paths RELATIVE to "/virtual" (joined for the shim map).
     fn pp_mem(src: &str, files: &[(&str, &str)]) -> PpResult {
