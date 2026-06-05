@@ -538,33 +538,18 @@ fn reject_out_clobbers_input(inputs: &[String], out: &str) -> Result<(), i32> {
     Ok(())
 }
 
-/// Build the `.vu` header. RULE-V fields (`composite_input_hash`/`consumed`/
-/// `worklib_manifest_hash`) are stamped zero (deferred gate); `global_time_precision`
-/// is not meaningful pre-elaborate.
-fn vu_header(schema_hash: [u8; 32]) -> vita_artifact::VelabHeader {
+/// Build the `.vu`/`.velab` header. `global_time_precision` carries the resolved
+/// design-wide precision exponent (real now that timescale is wired). The RULE-V
+/// upstream-staleness fields (`composite_input_hash`/`consumed`/`worklib_manifest_hash`)
+/// remain zero: their live re-hash gate (`E-ART-STALE-UPSTREAM`) is the documented
+/// Phase-2 piece (`vrun` holds no upstream to re-hash), and `verify_header` already
+/// gates the primary staleness via `schema_hash` + `format_version`.
+fn artifact_header(schema_hash: [u8; 32], global_prec_exp: i8) -> vita_artifact::VelabHeader {
     vita_artifact::VelabHeader {
         format_version: vita_artifact::CURRENT_FORMAT_VERSION,
         schema_hash,
         composite_input_hash: [0u8; 32],
-        global_time_precision: 0,
-        consumed: Vec::new(),
-        worklib_manifest_hash: [0u8; 32],
-        uses_dump: false,
-        tool_semver_major: env!("CARGO_PKG_VERSION_MAJOR")
-            .parse()
-            .expect("CARGO_PKG_VERSION_MAJOR is a valid u32"),
-        provenance: vita_artifact::Provenance::capture(),
-    }
-}
-
-/// Build the `.velab` header. `uses_dump`/`global_time_precision` are stamped
-/// `false`/`0` hints in v1 (not gates). RULE-V fields stay zeroed (deferred).
-fn velab_header(schema_hash: [u8; 32], _ir: &sim_ir::SimIr) -> vita_artifact::VelabHeader {
-    vita_artifact::VelabHeader {
-        format_version: vita_artifact::CURRENT_FORMAT_VERSION,
-        schema_hash,
-        composite_input_hash: [0u8; 32],
-        global_time_precision: 0,
+        global_time_precision: global_prec_exp as i64,
         consumed: Vec::new(),
         worklib_manifest_hash: [0u8; 32],
         uses_dump: false,
@@ -624,7 +609,10 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
         &postcard::to_stdvec(&(rt.unit_exp, rt.global_prec_exp))
             .expect("timescale env postcard encode infallible"),
     );
-    let header = vu_header(vita_schema::schema_hash::<hdl_ast::SourceUnit>());
+    let header = artifact_header(
+        vita_schema::schema_hash::<hdl_ast::SourceUnit>(),
+        rt.global_prec_exp,
+    );
     let bytes = vita_artifact::write_vu(&header, &body);
     if let Err(e) = std::fs::write(out, &bytes) {
         eprintln!(
@@ -710,7 +698,7 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
         &postcard::to_stdvec(&(proc_multipliers, global_prec_exp))
             .expect("timescale trailer postcard encode infallible"),
     );
-    let vheader = velab_header(vita_schema::schema_hash::<sim_ir::SimIr>(), &ir);
+    let vheader = artifact_header(vita_schema::schema_hash::<sim_ir::SimIr>(), global_prec_exp);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
     if let Err(e) = std::fs::write(out, &out_bytes) {
         eprintln!(
