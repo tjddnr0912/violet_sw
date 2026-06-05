@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use diag::{LogEvent, LogSink};
-use sim_engine::{simulate, simulate_capture, FinishReason, SimOpts};
+use sim_engine::{simulate, simulate_capture, Backend, FinishReason, SimOpts};
 
 // ── pipeline + sink helpers ────────────────────────────────────────────────
 
@@ -1555,6 +1555,40 @@ fn float_format_determinism_golden() {
         3, 123456,
     );
     assert_eq!(out, expected);
+}
+
+// 19. [P4 · backend seam] Backend selection rides out-of-band on SimOpts. The
+// Bytecode backend currently falls back to the interpreter for every body
+// (Stage B: no VM yet), so it is byte-identical to Interpreter — stdout AND the
+// SimResult summary. When Stage C lands the VM, this same assertion becomes the
+// meaningful equivalence check (subsumed by the P5 differential gate, which adds
+// VCD-byte comparison + a corpus).
+#[test]
+fn backend_bytecode_falls_back_byte_identical() {
+    let ir = build(
+        "module t; reg [3:0] c; integer k; \
+         initial begin c = 0; for (k = 0; k < 5; k = k + 1) #1 c = c + 1; \
+         $display(\"%0d\", c); $finish; end endmodule",
+    );
+    let (r_i, out_i) = simulate_capture(
+        &ir,
+        SimOpts {
+            backend: Backend::Interpreter,
+            ..Default::default()
+        },
+    );
+    let (r_b, out_b) = simulate_capture(
+        &ir,
+        SimOpts {
+            backend: Backend::Bytecode,
+            ..Default::default()
+        },
+    );
+    assert_eq!(out_i.trim(), "5", "interpreter sanity");
+    assert_eq!(out_i, out_b, "stdout must match across backends");
+    assert_eq!(r_i.sim_time, r_b.sim_time);
+    assert_eq!(r_i.finish_reason, r_b.finish_reason);
+    assert_eq!(r_i.exit_class, r_b.exit_class);
 }
 
 /// Build `src` through lex→parse→elaborate, returning the collected diagnostic

@@ -59,6 +59,25 @@ pub enum ExitClass {
     Fatal,
 }
 
+/// Process-body execution backend (P0a). Selected out-of-band via [`SimOpts`];
+/// NEVER enters the frozen `sim_ir::SimIr` (schema hash unaffected). The shared
+/// net-write and VCD choke point (`state.rs::write_lvalue`/`emit_vcd_change`) stays
+/// on the SHARED side across backends, so only process-body *control flow* differs —
+/// VCD/stdout bytes cannot diverge in a backend-specific way (enforced by the P5 gate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// Tree-walking interpreter (`exec.rs::run_process`) — the reference semantics.
+    #[default]
+    Interpreter,
+    /// Bytecode VM (P0a, opt-in acceleration). Codegen-able bodies (the P9
+    /// suspend-free allow-list) run on the VM; every other body falls back to the
+    /// interpreter. STAGE-B STATE: the VM is not yet built, so ALL bodies fall back
+    /// — Bytecode is therefore byte-identical to Interpreter today. That equivalence
+    /// is exactly what the P5 gate locks as Stage C incrementally moves bodies onto
+    /// the VM.
+    Bytecode,
+}
+
 /// Caller-tunable knobs. All have deterministic, documented defaults.
 #[derive(Debug, Clone)]
 pub struct SimOpts {
@@ -88,6 +107,10 @@ pub struct SimOpts {
     /// `elaborate::elaborate_with_timescale`, for `$time`/`$realtime` scaling
     /// (`$time = now / M`). EMPTY ⇒ multiplier 1 (the 1ns/1ns base). Never golden.
     pub proc_multipliers: Vec<u32>,
+    /// Process-body execution backend (P0a). Default [`Backend::Interpreter`] so
+    /// every existing caller is byte-identical. Rides out-of-band (never enters the
+    /// frozen `SimIr`).
+    pub backend: Backend,
 }
 
 impl Default for SimOpts {
@@ -101,6 +124,7 @@ impl Default for SimOpts {
             fork_modes: ForkModeTable::new(),
             net_names: Vec::new(),
             proc_multipliers: Vec::new(),
+            backend: Backend::Interpreter,
         }
     }
 }
@@ -152,6 +176,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     );
     st.net_names = opts.net_names.clone();
     st.proc_multipliers = opts.proc_multipliers.clone();
+    st.backend = opts.backend;
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

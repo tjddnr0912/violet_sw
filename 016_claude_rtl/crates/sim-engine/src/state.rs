@@ -94,6 +94,9 @@ pub(crate) struct SimState<'a> {
     pub net_names: Vec<String>,
     /// Per-ProcId time multiplier (from `SimOpts.proc_multipliers`); empty ⇒ M=1.
     pub proc_multipliers: Vec<u32>,
+    /// Process-body execution backend (from `SimOpts.backend`). Default
+    /// `Interpreter`; read at the single `run()` body-dispatch seam.
+    pub backend: crate::Backend,
     /// Multiplier of the process CURRENTLY executing — set per `run_process`, read by
     /// `$time`/`$realtime`. 1 outside any process (the 1ns/1ns base).
     pub cur_time_mult: u64,
@@ -160,6 +163,7 @@ impl<'a> SimState<'a> {
             vcd_date,
             net_names: Vec::new(),
             proc_multipliers: Vec::new(),
+            backend: crate::Backend::Interpreter,
             cur_time_mult: 1,
             out,
             finished: false,

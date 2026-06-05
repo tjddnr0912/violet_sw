@@ -328,6 +328,23 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 
     // ── main loop ────────────────────────────────────────────────────────
 
+    /// THE single process-body dispatch seam (P4). The interpreter is the
+    /// always-available reference; the Bytecode backend (P0a) routes codegen-able
+    /// bodies (the P9 suspend-free allow-list) to the VM and falls back to the
+    /// interpreter for the rest. STAGE-B STATE: the VM is not yet built, so the
+    /// Bytecode arm falls back for ALL bodies — making it byte-identical to the
+    /// interpreter. The P5 gate locks that equivalence; Stage C makes the arms
+    /// genuinely diverge (per-process VM dispatch keyed on the P9 predicate).
+    fn run_body(&mut self, proc: u32, block: u32) -> Step {
+        match self.st.backend {
+            crate::Backend::Interpreter => run_process(self, proc, block),
+            // STAGE B: no VM yet → interpret every body (fall-through). Stage C
+            // replaces this arm with `if codegen_able(proc) { vm_run(..) } else
+            // { run_process(..) }`.
+            crate::Backend::Bytecode => run_process(self, proc, block),
+        }
+    }
+
     pub fn run(&mut self) -> FinishReason {
         loop {
             if self.st.finished {
@@ -352,7 +369,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                         if self.st.finished {
                             return self.finish_kind();
                         }
-                        match run_process(self, r.proc, r.block) {
+                        match self.run_body(r.proc, r.block) {
                             Step::Finish => {
                                 self.st.finished = true;
                                 return FinishReason::Finish;
