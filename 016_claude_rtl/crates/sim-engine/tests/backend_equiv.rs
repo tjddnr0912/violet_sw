@@ -25,9 +25,9 @@ use sim_engine::Backend;
 /// stdout + VCD + summary across the two backends.
 #[test]
 fn compiled_equals_interpreter_over_corpus() {
-    // 64 designs over the 8 templates (8 repeats each, varied params). Fixed seed →
+    // 72 designs over the 9 templates (8 repeats each, varied params). Fixed seed →
     // reproducible on every OS.
-    for d in corpus(0x5EED_F00D, 64) {
+    for d in corpus(0x5EED_F00D, 72) {
         let ir = build(&d.src);
         let (ri, oi, vi) = run_capture(&ir, Backend::Interpreter, &d.name);
         let (rb, ob, vb) = run_capture(&ir, Backend::Bytecode, &d.name);
@@ -78,4 +78,51 @@ fn gate_actually_compares_vcd_bytes() {
         "VCD should start with a $-keyword preamble"
     );
     assert_eq!(Some(bytes), vb, "counter VCD must match across backends");
+}
+
+/// [P9b] A single run MIXES backends. In the Bytecode backend the codegen-able
+/// `always @(posedge clk)` body takes the VM path (P9), while the interpreted
+/// `initial #1 …` and BOTH continuous assigns fall back to the interpreter — all
+/// writing SHARED nets (`a`/`sum`/`q`/`r`). Prove the mixed run is byte-identical
+/// (stdout AND VCD) to an all-interpreter run.
+///
+/// nba_seq ordering is verified IMPLICITLY and with teeth: the always body issues two
+/// nonblocking writes (`q <= sum; r <= q;`), so `r` must see the OLD `q` (a one-cycle
+/// lag). If a compiled body ever called `schedule_nba` in a different order, `apply_nba`
+/// would sort differently, `r` would capture the NEW `q`, and the shared-net values —
+/// hence stdout + VCD bytes — would diverge from the interpreter. (Stage B: the VM
+/// delegates, so this is byte-identical now; Stage C makes it the live gate.)
+#[test]
+fn mixed_backend_run_equals_all_interpreter() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [7:0] a, b;\n\
+      wire [7:0] sum;\n\
+      reg [7:0] q, r;\n\
+      integer k;\n\
+      assign sum = a + b;                                 // cont-assign: interpreted\n\
+      always @(posedge clk) begin q <= sum; r <= q; end   // codegen-able: VM path\n\
+      initial begin                                       // initial #1: interpreted\n\
+        $dumpfile(\"x.vcd\"); $dumpvars(0, top);\n\
+        clk = 0; a = 8'd10; b = 8'd20;\n\
+        for (k = 0; k < 4; k = k + 1) begin #1 clk = 1; #1 clk = 0; #1 a = a + 1; end\n\
+        $display(\"%0d %0d %0d\", sum, q, r); $finish;\n\
+      end\n\
+    endmodule";
+    let ir = build(src);
+    let (ri, oi, vi) = run_capture(&ir, Backend::Interpreter, "p9b_mixed");
+    let (rb, ob, vb) = run_capture(&ir, Backend::Bytecode, "p9b_mixed");
+
+    assert_eq!(oi, ob, "mixed-backend stdout must equal all-interpreter");
+    assert_eq!(vi, vb, "mixed-backend VCD must equal all-interpreter");
+    assert!(
+        vi.as_ref().is_some_and(|v| v.len() > 32),
+        "the mixed design must emit a non-trivial VCD (teeth — not a vacuous None==None)"
+    );
+    assert_eq!(ri.sim_time, rb.sim_time, "sim_time must match");
+    assert_eq!(
+        ri.finish_reason, rb.finish_reason,
+        "finish_reason must match"
+    );
+    assert_eq!(ri.exit_class, rb.exit_class, "exit_class must match");
 }
