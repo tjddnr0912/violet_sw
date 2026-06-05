@@ -2482,6 +2482,21 @@ fn enum_labels_are_integer_constants() {
     assert_eq!(out, "1\n2\n0\n");
 }
 
+// ── SV `typedef <type> name;` plain alias — `byte_t x;` declares an 8-bit var;
+//    width truncation applies exactly as for the underlying type. ──────────────
+
+#[test]
+fn typedef_alias_resolves_underlying_width() {
+    // byte_t = logic[7:0]: 16'hABCD truncates to 0xCD. nib_t = reg[3:0]: 8'd29 → 13.
+    let src = "module t; typedef logic [7:0] byte_t; typedef reg [3:0] nib_t; \
+               byte_t x; nib_t y; \
+               initial begin x = 16'hABCD; y = 8'd29; \
+                 $display(\"%h %0d\", x, y); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "cd 13\n");
+}
+
 #[test]
 fn enum_explicit_value_advances_counter() {
     // A=0, B=5 (explicit), C=6 (counter resumes from B+1).

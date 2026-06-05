@@ -1397,8 +1397,12 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         self.bump(); // `typedef`
         if !self.at_kw(Kw::Enum) {
-            // typedef-alias and packed-struct forms are later Phase-2 sub-stages.
-            self.error("`enum` after `typedef`");
+            // `typedef logic [7:0] byte_t;` — plain alias to a net/var type.
+            if self.net_var_kind().is_some() {
+                return self.parse_typedef_alias(start);
+            }
+            // packed-struct/union forms are a later Phase-2 sub-stage.
+            self.error("a type after `typedef`");
             self.synchronize();
             return Some(ModuleItem::Error(start.to(self.prev_span())));
         }
@@ -1450,6 +1454,37 @@ impl<'t, 's> Parser<'t, 's> {
         Some(ModuleItem::Typedef(TypedefDecl {
             name: tname,
             kind: TypedefKind::Enum { base, labels },
+            span: start.to(self.prev_span()),
+        }))
+    }
+
+    /// `typedef <kind> [signed] [range] [packed] name;` — a plain type alias.
+    /// `start` is the span of the leading `typedef` keyword (already consumed).
+    fn parse_typedef_alias(&mut self, start: Span) -> Option<ModuleItem> {
+        let kind = self.net_var_kind().unwrap();
+        self.bump(); // kind keyword
+        let signed = self.opt_signed();
+        let range = self.opt_range();
+        let packed = self.opt_packed_dims();
+        let tname = self.ident()?;
+        self.expect(TokenKind::Semi, "';'");
+        self.typedefs.insert(
+            tname.name.clone(),
+            TypeInfo {
+                kind,
+                signed,
+                range: range.clone(),
+                packed: packed.clone(),
+            },
+        );
+        Some(ModuleItem::Typedef(TypedefDecl {
+            name: tname,
+            kind: TypedefKind::Alias {
+                kind,
+                signed,
+                range,
+                packed,
+            },
             span: start.to(self.prev_span()),
         }))
     }

@@ -12,11 +12,11 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-05: added `ModuleItem::Typedef(TypedefDecl)` + `TypedefKind`/
-/// `EnumLabel` for SV `typedef enum {…}` (Phase-2) — all `.vu` artifacts are stale.
+/// Re-pinned 2026-06-05: added `TypedefKind::Alias` for SV `typedef <type> name;`
+/// plain aliases (Phase-2) — all `.vu` artifacts are stale.
 const EXPECTED: [u8; 32] = [
-    9, 64, 56, 84, 106, 139, 155, 120, 83, 241, 122, 7, 222, 92, 159, 71, 241, 101, 163, 253, 26,
-    89, 47, 145, 125, 216, 5, 160, 43, 177, 103, 211,
+    167, 239, 23, 118, 72, 217, 23, 252, 126, 111, 159, 228, 82, 57, 20, 160, 233, 31, 79, 122,
+    190, 82, 98, 136, 92, 228, 140, 35, 230, 26, 186, 234,
 ];
 
 #[test]

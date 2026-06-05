@@ -166,6 +166,14 @@ pub enum TypedefKind {
         base: Option<Range>,
         labels: Vec<EnumLabel>,
     },
+    /// `typedef logic [7:0] byte_t;` — a plain type alias. The parser resolves
+    /// `byte_t x;` to this underlying net/var type directly; elaborate is a no-op.
+    Alias {
+        kind: NetVarKind,
+        signed: bool,
+        range: Option<Range>,
+        packed: Vec<Range>,
+    },
 }
 
 /// One enum label: `RED` or `GREEN = 5`.

@@ -153,6 +153,17 @@ fn diff_shift_and_arith() {
 }
 
 #[test]
+fn diff_typedef_alias() {
+    assert_matches_iverilog(
+        "typedef_alias",
+        "module tb; typedef logic [7:0] byte_t; typedef reg [3:0] nib_t; \
+           byte_t a, b; nib_t n; \
+           initial begin a = 8'hF0; b = 8'h0F; n = a[7:4]; \
+             $display(\"%h %0d %0d\", a | b, n, a + b); $finish; end endmodule",
+    );
+}
+
+#[test]
 fn diff_enum_labels() {
     assert_matches_iverilog(
         "enum",
