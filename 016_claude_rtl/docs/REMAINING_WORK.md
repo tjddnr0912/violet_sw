@@ -99,7 +99,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** cli/src/lib.rs:496 worklib_manifest_hash 'stamped zero (deferred gate)'; :515 'RULE-V fields stay zeroed (deferred)'; :790 'flag surface is DEFERRED'; vita-artifact/src/header.rs:47 'deferred to a later PR'. Goals 01:47 REQUIRES a working hash-based staleness rejection (E-ART-STALE-UPSTREAM) test.
   - **내용:** schema_hash staleness gating works between stages, but the RULE-V upstream-hash gate fields are zeroed placeholders, so the documented Phase-1 staleness-rejection criterion is not yet met by the CLI path.
   - **조치:** Populate the vcmp/velab/vrun trailer + RULE-V hash gate and wire an E-ART-STALE-UPSTREAM staleness test before claiming Phase-1 done.
-- [ ] **[MINOR·P1]** Document partial/row-slice of multi-dim UNPACKED array lvalue as a known limit (loud E3009 today)
+- [x] **[MINOR·P1]** Document partial/row-slice of multi-dim UNPACKED array lvalue as a known limit (loud E3009 today) — ✅ 2026-06-05 (doc-01 한계표에 명문화)
   - **근거:** elaborate/src/lib.rs:1900-1908: indexing fewer dims → ElabUnsupported 'partial unpacked-array slice (v1: index every dimension)'; bit-then-part on multi-dim lvalue → ElabUnsupported. Test marker end_to_end.rs:1649.
   - **내용:** Whole-element `mem[i][j]` works (HEAD flattening); partial-dim `mem2d[i]` (row) and bit-of-element LHS are rejected loudly (no silent wrong result) — an edge of the freshly added feature.
   - **조치:** Document as a known limitation of the flattening approach; optionally support row-slicing later. Loud error is acceptable for Phase-1.
@@ -195,7 +195,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** Same code as the timescale BLOCKER (hdl-preprocess:1219 discard, sim-engine:84 hardcoded '1ns', sched.rs:230 raw `d as u64`). doc-08:79-114,157-161 prescribes a detailed integer-tick precision model; goals 01:45 makes it a measurable success criterion the code can't meet.
   - **내용:** Largest authored-spec-vs-code gap; either implement (see BLOCKER) or stop the spec claiming a non-existent capability.
   - **조치:** Implement per the timescale BLOCKER, OR explicitly mark doc-08's precision model + goals.md:45 criterion as Phase-1.x/deferred.
-- [ ] **[MINOR·P1]** Fix stale doc comments claiming deferral for already-implemented IN-MVP features
+- [x] **[MINOR·P1]** Fix stale doc comments claiming deferral for already-implemented IN-MVP features — ✅ 2026-06-05 (sim-engine lib.rs 헤더 정정: fork-join/monitor/strobe/real/func-task/멀티인스턴스/128bit/hierarchical-VCD/timescale 전부 구현 반영)
   - **근거:** sim-engine/src/lib.rs:15-16 lists '$monitor/$strobe (stubbed as one-shot $display)' + 'fork/join DEFERRED' — contradicted by builtins.rs:43-67 (postponed FmtCapture FIFO, MonitorState change-detect), sched.rs:474 flush_postponed, and real fork (lib.rs:41,139). elaborate/src/lib.rs:3210 says 'read-set inference deferred' but it's implemented at 3091-3158 (test passes). cli/src/lib.rs:410 + main.rs:2-3 call vcmp/velab/vrun 'stubs' though fully wired.
   - **내용:** Misleads an auditor into thinking mandatory features are stubbed; could mask a real regression if someone trusts the comment. No functional defect.
   - **조치:** Update the doc comments at sim-engine/src/lib.rs:15-19, elaborate/src/lib.rs:3210, cli/src/lib.rs:410, cli/src/main.rs:2-3 to reflect implemented behavior; keep only genuinely deferred items (force/release, real-number, recursive func/task, multi-instance hierarchy, full 17-region).

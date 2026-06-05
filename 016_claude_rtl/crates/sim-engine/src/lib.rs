@@ -12,11 +12,15 @@
 //! `BTreeMap`; cont-assigns settle in declaration order; NBA applies in sample
 //! (`seq`) order.
 //!
-//! DEFERRED (v1): fork/join, $monitor/$strobe Monitor-region semantics (stubbed
-//! as one-shot $display), force/release, real numbers, user task/func `Call`,
-//! multi-instance hierarchy, SV 17-region. Arithmetic poisons the whole result
-//! to X on any operand X/Z; arithmetic is a 64-bit lane; the VCD declares nets
-//! as `n{NetId}` (no name side-table in v1 SimIr).
+//! IMPLEMENTED: fork/join (via `SimOpts.fork_modes`), `$monitor`/`$strobe`
+//! postponed-region semantics, real numbers, inlined user task/func, multi-instance
+//! hierarchy with hierarchical VCD `$scope`/`$var` names (`SimOpts.net_names`), and
+//! per-module timescale scaling of `#delay`/`$time`/`$realtime` (`SimOpts.proc_multipliers`).
+//! Arithmetic is a 128-bit lane (unsigned); any operand X/Z poisons the result to X,
+//! as does a signed result wider than 64 bits or an unsigned one wider than 128.
+//! DEFERRED (Phase-2): `force`/`release`, the full SV 17-region scheduler, full
+//! multi-word arithmetic. All three engine-facing side tables ride out-of-band in
+//! `SimOpts` and never enter the frozen `SimIr`.
 
 mod builtins;
 mod eval;
