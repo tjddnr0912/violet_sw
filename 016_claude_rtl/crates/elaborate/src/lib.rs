@@ -490,9 +490,15 @@ impl<'s> Elaborator<'s> {
     /// "lowered with a documented approximation" warning channel until a dedicated
     /// W-ELAB-DEGRADED code is minted. The message carries the specifics.
     fn warn(&mut self, msg: &str) {
+        self.warn_code(MsgCode::ElabWidthTrunc, msg);
+    }
+
+    /// Emit a Warning with a SPECIFIC code (the generic [`Self::warn`] uses
+    /// `W-ELAB-WIDTH-TRUNC`).
+    fn warn_code(&mut self, code: MsgCode, msg: &str) {
         self.sink.emit(LogEvent::Diagnostic(Diagnostic {
             severity: Severity::Warning,
-            code: MsgCode::ElabWidthTrunc,
+            code,
             message: msg.to_string(),
             location: None,
             context: Vec::new(),
@@ -3859,6 +3865,26 @@ impl<'s> Elaborator<'s> {
                 lhs: scrut_id,
                 rhs: lbl_id,
             });
+        }
+        // `casez` with an EXPLICIT-x label bit (unk & !val) hits the v1 over-lenient
+        // approximation (x masked like z); warn so the divergence from strict casez
+        // is visible. `?`/`z` labels and `casex` never trip this.
+        if matches!(kind, ast::CaseKind::Casez) {
+            if let ir::Expr::Const { val } = self.exprs[lbl_id as usize] {
+                let c = &self.consts[val as usize];
+                let has_x = c
+                    .bits
+                    .val
+                    .iter()
+                    .zip(c.bits.unk.iter())
+                    .any(|(&v, &u)| (u & !v) != 0);
+                if has_x {
+                    self.warn_code(
+                        MsgCode::ElabCasezApprox,
+                        "casez label has an explicit-x bit; treated as don't-care (v1 approximation)",
+                    );
+                }
+            }
         }
         let xor = self.push_expr(ir::Expr::Binary {
             op: ir::BinOp::BitXor,

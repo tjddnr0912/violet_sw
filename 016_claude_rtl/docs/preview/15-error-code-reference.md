@@ -314,6 +314,19 @@ assign narrow = wide;             // 8 -> 4 비트, 상위 nibble 손실
 **해결:** cast를 명시(`wide[3:0]`)하거나 폭을 맞춘다. `-Wno-W-ELAB-WIDTH-TRUNC`(또는 인라인
 `lint_off`, RULE S로 소스 해시 반영)로 억제, `-Werror=`로 승격.
 
+### VITA-W3011 · `W-ELAB-CASEZ-APPROX` (Warning)
+
+`casez` 라벨에 **명시적 `x`** 비트가 있다. v1은 `reduction_or(scrut^label)!==1` 트릭으로 x/z를 모두 don't-care로 마스킹하므로, 엄밀한 `casez`(z/`?`만 와일드카드)와 달리 이 explicit-x를 don't-care로 취급한다(§08 알려진 단순화). `?`/`z` 라벨에는 발생하지 않으며 `casex`는 정의상 정확하다.
+
+```verilog
+casez (sel)
+  4'b10x0: r = 1;   // W-ELAB-CASEZ-APPROX — explicit x는 z처럼 don't-care 처리됨
+  default: r = 0;
+endcase
+```
+
+**해결:** 의도가 don't-care면 `?`/`z`로 표기(무경고). 엄밀한 x-비교가 필요하면 Phase-1.x의 정밀 casez를 기다린다.
+
 ### VITA-E3009 · `E-ELAB-UNSUPPORTED` (Error)
 **elaborate가 아직 지원하지 않는 구문.** v1 슬라이스는 단일 top module의 net/var 선언 +
 continuous `assign`만 lowering한다. 절차 블록(`always`/`initial`), 모듈 인스턴스, generate,

@@ -58,6 +58,7 @@ msgcodes! {
     ElabUserInfo           => ("I-ELAB-USER-INFO",          "VITA-I3006", Info,    "elaboration-time $info"),
     ElabUserWarning        => ("W-ELAB-USER-WARNING",       "VITA-W3007", Warning, "elaboration-time $warning"),
     ElabWidthTrunc         => ("W-ELAB-WIDTH-TRUNC",        "VITA-W3008", Warning, "width mismatch truncated/extended"),
+    ElabCasezApprox        => ("W-ELAB-CASEZ-APPROX",       "VITA-W3011", Warning, "casez treats an explicit-x label bit as don't-care (v1 approximation)"),
     ElabUnsupported        => ("E-ELAB-UNSUPPORTED",        "VITA-E3009", Error,   "construct not yet supported by elaborate"),
     ElabUnresolvedName     => ("E-ELAB-UNRESOLVED-NAME",    "VITA-E3010", Error,   "reference to undeclared net/variable"),
     // 4xxx RUNTIME
