@@ -1199,23 +1199,33 @@ fn v2_7_casez_wildcard_free_lowers_cleanly() {
         ],
     );
     let (ir, warns) = elab_with_warnings(&unit);
-    // A wildcard-FREE casez label (`2'b10`) lowers via the plain exact `===`
-    // path with NO warning (wildcard labels mask their `?`/`z`/`x` bits instead).
-    assert_eq!(
-        warns, 0,
-        "wildcard-free casez label lowers cleanly, no warning"
-    );
+    // casez/casex now lower via the runtime wildcard-aware match
+    // `reduction_or(scrut ^ label) !== 1` (so a SCRUTINEE z/x bit is a don't-care
+    // even against a wildcard-free label like `2'b10`), with NO warning.
+    assert_eq!(warns, 0, "casez label lowers cleanly, no warning");
     let p = &ir.processes[0];
-    let has_caseeq = ir.exprs.iter().any(|e| {
+    let has_redor = ir.exprs.iter().any(|e| {
         matches!(
             e,
-            ir::Expr::Binary {
-                op: ir::BinOp::CaseEq,
+            ir::Expr::Unary {
+                op: ir::UnOp::RedOr,
                 ..
             }
         )
     });
-    assert!(has_caseeq, "casez must lower via CaseEq");
+    let has_casene = ir.exprs.iter().any(|e| {
+        matches!(
+            e,
+            ir::Expr::Binary {
+                op: ir::BinOp::CaseNe,
+                ..
+            }
+        )
+    });
+    assert!(
+        has_redor && has_casene,
+        "casez must lower via reduction_or(scrut ^ label) !== 1"
+    );
     assert!(p
         .body
         .iter()

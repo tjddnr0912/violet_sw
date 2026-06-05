@@ -1499,6 +1499,35 @@ fn casez_casex_wildcards_match() {
     assert_eq!(out, "z=3 x=1\n");
 }
 
+#[test]
+fn casex_scrutinee_xz_is_wildcard() {
+    // REMAINING_WORK item: casex must treat SCRUTINEE x/z as don't-care, not only
+    // label wildcards. s=1x10 matches label 1010 (the x bit washes out); a definite
+    // mismatch (0101 vs 1010) still falls to default.
+    let src = "module t; reg [3:0] s; reg [7:0] r; \
+               initial begin \
+                 s = 4'b1x10; casex (s) 4'b1010: r = 8'd1; default: r = 8'd9; endcase \
+                 $display(\"%0d\", r); \
+                 s = 4'b0101; casex (s) 4'b1010: r = 8'd1; default: r = 8'd9; endcase \
+                 $display(\"%0d\", r); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // 1x10 ~ 1010 → match (1); 0101 vs 1010 → definite mismatch → default (9).
+    assert_eq!(out, "1\n9\n");
+}
+
+#[test]
+fn casez_scrutinee_z_is_wildcard() {
+    // casez: a SCRUTINEE z bit is don't-care. s=1z10 matches label 1010.
+    let src = "module t; reg [3:0] s; reg [7:0] r; \
+               initial begin \
+                 s = 4'b1z10; casez (s) 4'b1010: r = 8'd1; default: r = 8'd9; endcase \
+                 $display(\"%0d\", r); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1\n");
+}
+
 // ── wait(expr) resumes on a false→true transition (sweep gaps 18,19). Before
 //    the fix WaitCause::Expr never woke, hanging the process. ──────────────────
 
