@@ -43,6 +43,22 @@
 
 ## 권고 로드맵 (GPU-free 우선)
 1. ✅ **완료(2026-06-05)**: 비트연산/reduction word化 (안정 u64; std::simd는 nightly 충돌로 제외, LLVM 자동벡터화로 흡수).
-2. **중기·진짜 가속**: 컴파일드 백엔드(IR→네이티브 코드젠, Verilator 방식). 10~100×.
+2. **중기·진짜 가속**: 컴파일드 백엔드(IR→네이티브 코드젠). 아래 §컴파일드 백엔드 참조 — vitamin은 **2a(컴파일드 이벤트구동)부터**.
 3. **장기·선택**: 멀티코어 PDES(결정성 재설계) 또는 stimulus-parallel GPU(별개 모드).
 4. **GPU 코어 엔진: 권장 안 함**.
+
+## 컴파일드 백엔드 — 두 갈래 ("컴파일드" ≠ "사이클기반")
+
+상용 시뮬레이터 계보로 보면 "컴파일드"와 "사이클기반"은 **직교**한다:
+
+| | 인터프리티드 | 컴파일드 |
+|---|---|---|
+| **이벤트구동 (full 4-state)** | Cadence Verilog-XL, **현재 vitamin** | Synopsys VCS, Cadence Xcelium, Siemens Questa |
+| **사이클기반 (보통 2-state)** | (드묾) | Verilator |
+
+- **VCS**(*Verilog **C**ompiled-code **S**imulator*)가 컴파일드의 원조 — Verilog-XL(인터프리티드 레퍼런스)을 속도로 밀어냄. Cadence도 NC-Verilog(**N**ative **C**ompiled)→Incisive→Xcelium으로 컴파일드 전환. **상용 사인오프 시뮬레이터는 컴파일드이되 이벤트구동·4-state·타이밍을 그대로 유지**(글리치/X/Z 정확).
+- **Verilator**는 컴파일드 **+ 사이클기반(2-state 기본)** — 인트라사이클 스케줄링을 버리고 클럭당 일괄 평가 → 10~100×지만 미세 타이밍/일부 4-state 포기(사인오프 부적합).
+
+### vitamin 경로
+- **2a. 컴파일드 이벤트구동 (VCS/Xcelium 길) — 먼저.** 기존 이벤트 커널·`val`/`unk` 4-state·word化(①)를 **그대로 두고** 프로세스 바디(BB의 Stmt/Expr)만 네이티브(Rust) 코드로 lowering. eval-디스패치/트리워크/Value 힙할당 제거. **의미 100% 보존**(인터프리터가 골든), 중간 가속. vitamin의 이벤트구동 코어와 자연 정합.
+- **2b. 사이클기반 컴파일드 (Verilator 길) — 별도 공격적 모드.** combinational rank 정적 스케줄 + 클럭당 일괄 평가. 최대 가속이나 합성가능 서브셋·사이클 의미 제약. 2a 이후 옵트인 모드로.
