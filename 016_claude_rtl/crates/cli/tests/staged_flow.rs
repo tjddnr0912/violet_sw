@@ -203,6 +203,65 @@ fn staged_chain_matches_oneshot_vcd() {
     }
 }
 
+// TEST 6b: a `timescale design threads through the staged path identically to the
+//          one-shot path — proving `.vu`/`.velab` carry the resolved timescale.
+#[test]
+fn staged_chain_matches_oneshot_timescaled() {
+    let dump = "`timescale 1ns/1ps\nmodule top; reg clk; \
+                initial begin $dumpfile(\"IGNORED\"); $dumpvars(0,top); \
+                  clk=0; #5 clk=1; #5 $finish; end endmodule\n";
+    let src = tmp("sv");
+    write(&src, dump);
+    let vu = tmp("vu");
+    let velab = tmp("velab");
+    let vcd_oneshot = tmp("vcd");
+    let vcd_staged = tmp("vcd");
+
+    assert_eq!(
+        cli::run_vita(
+            &[s(&src)],
+            &cli::VitaOpts {
+                vcd_path_override: Some(s(&vcd_oneshot)),
+                ..Default::default()
+            }
+        ),
+        cli::EXIT_OK
+    );
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default()),
+        cli::EXIT_OK
+    );
+    assert_eq!(
+        cli::run_velab(&s(&vu), &s(&velab), &cli::VitaOpts::default()),
+        cli::EXIT_OK
+    );
+    assert_eq!(
+        cli::run_vrun(
+            &s(&velab),
+            &cli::VitaOpts {
+                vcd_path_override: Some(s(&vcd_staged)),
+                ..Default::default()
+            }
+        ),
+        cli::EXIT_OK
+    );
+
+    let a = std::fs::read_to_string(&vcd_oneshot).unwrap();
+    let b = std::fs::read_to_string(&vcd_staged).unwrap();
+    // staged must equal one-shot, AND both must reflect the 1ns/1ps scaling:
+    // global precision 1ps in the preamble and the clk toggle at 5ns = tick 5000.
+    assert_eq!(a, b, "staged timescaled VCD must match one-shot");
+    assert!(
+        a.contains("$timescale 1ps $end"),
+        "preamble precision:\n{a}"
+    );
+    assert!(a.contains("#5000"), "clk toggle at scaled tick 5000:\n{a}");
+
+    for p in [&src, &vu, &velab, &vcd_oneshot, &vcd_staged] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 // TEST 7: a schema-mismatch `.vu` is rejected with E-ART-SCHEMA-MISMATCH.
 #[test]
 fn velab_rejects_stale_vu_schema_mismatch() {

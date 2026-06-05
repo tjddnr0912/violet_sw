@@ -600,15 +600,19 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
     let file = sources[0].as_str();
 
     // preprocess → lex → parse through the SAME shared front-end the one-shot uses.
-    // FOLLOW-UP: the `.vu` does not yet carry the resolved timescale, so the staged
-    // `vcmp→velab→vrun` path elaborates at the 1ns/1ns base; the one-shot `vita`
-    // path is fully timescale-scaled.
-    let Some((unit, _rt)) = frontend_text_to_unit(file, &text, &sink) else {
+    let Some((unit, rt)) = frontend_text_to_unit(file, &text, &sink) else {
         return EXIT_USER_ERROR;
     };
 
-    // ── write `.vu` ──
-    let body = postcard::to_stdvec(&unit).expect("SourceUnit postcard encode infallible");
+    // ── write `.vu` body = postcard(SourceUnit) ++ postcard((unit_exp map, global
+    //    precision)). The resolved timescale rides after the hashed SourceUnit frame
+    //    (the gate covers the type, not these bytes) so `velab` can elaborate the
+    //    staged path with the same scaling as the one-shot path. ──
+    let mut body = postcard::to_stdvec(&unit).expect("SourceUnit postcard encode infallible");
+    body.extend_from_slice(
+        &postcard::to_stdvec(&(rt.unit_exp, rt.global_prec_exp))
+            .expect("timescale env postcard encode infallible"),
+    );
     let header = vu_header(vita_schema::schema_hash::<hdl_ast::SourceUnit>());
     let bytes = vita_artifact::write_vu(&header, &body);
     if let Err(e) = std::fs::write(out, &bytes) {
@@ -644,9 +648,10 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     if let Err(e) = vita_artifact::verify_header(&header, &tool) {
         return emit_artifact_error(&sink, &e); // E-ART-SCHEMA-MISMATCH etc.
     }
-    // decode the SourceUnit body (corrupt body behind a valid header → E-ART-FORMAT-MISMATCH)
-    let unit: hdl_ast::SourceUnit = match postcard::from_bytes(body) {
-        Ok(u) => u,
+    // decode the SourceUnit frame, then the trailing timescale env (tolerant of an
+    // older `.vu` with no env → the 1ns/1ns base).
+    let (unit, vu_rest): (hdl_ast::SourceUnit, &[u8]) = match postcard::take_from_bytes(body) {
+        Ok(x) => x,
         Err(e) => {
             return emit_artifact_error(
                 &sink,
@@ -654,23 +659,45 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
             )
         }
     };
+    let (unit_exp, global_prec_exp): (std::collections::BTreeMap<String, i8>, i8) =
+        if vu_rest.is_empty() {
+            (std::collections::BTreeMap::new(), -9)
+        } else {
+            match postcard::from_bytes(vu_rest) {
+                Ok(x) => x,
+                Err(e) => {
+                    return emit_artifact_error(
+                        &sink,
+                        &vita_artifact::ArtifactError::format(&format!(
+                            "undecodable .vu timescale trailer: {e}"
+                        )),
+                    )
+                }
+            }
+        };
 
-    // ── elaborate ──
-    let (ir, fork_modes, net_names) = elaborate::elaborate_with_sidecars(&unit, &sink);
+    // ── elaborate (with the staged timescale env) ──
+    let (ir, fork_modes, net_names, proc_multipliers) =
+        elaborate::elaborate_with_timescale(&unit, &sink, &unit_exp, global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR; // elab error already emitted
     };
 
     // ── write `.velab` body = postcard(SimIr) ++ postcard(ForkModeTable) ++
-    //    postcard(NetNameTable). Both trailers ride OUTSIDE the hashed SimIr frame
-    //    (the schema gate covers the type, not these bytes), so the golden hash and
-    //    staleness are unaffected; the names give `vrun` hierarchical VCD output. ──
+    //    postcard(NetNameTable) ++ postcard((proc_multipliers, global_prec_exp)). All
+    //    trailers ride OUTSIDE the hashed SimIr frame (the schema gate covers the type,
+    //    not these bytes), so the golden hash and staleness are unaffected; names give
+    //    `vrun` hierarchical VCD and the multipliers give it `$time`/`$realtime` scaling. ──
     let mut velab_body = postcard::to_stdvec(&ir).expect("SimIr postcard encode infallible");
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&fork_modes).expect("ForkModeTable postcard encode infallible"),
     );
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&net_names).expect("NetNameTable postcard encode infallible"),
+    );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&(proc_multipliers, global_prec_exp))
+            .expect("timescale trailer postcard encode infallible"),
     );
     let vheader = velab_header(vita_schema::schema_hash::<sim_ir::SimIr>(), &ir);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
@@ -731,11 +758,11 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
         };
     // NetNameTable trailer (hierarchical VCD names). Tolerant of an older `.velab`
     // with no names trailer → empty ⇒ flat `n{i}` fallback (no decode error).
-    let net_names: sim_engine::NetNameTable = if rest2.is_empty() {
-        Vec::new()
+    let (net_names, rest3): (sim_engine::NetNameTable, &[u8]) = if rest2.is_empty() {
+        (Vec::new(), rest2)
     } else {
-        match postcard::from_bytes(rest2) {
-            Ok(n) => n,
+        match postcard::take_from_bytes(rest2) {
+            Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     &sink,
@@ -746,11 +773,30 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             }
         }
     };
+    // Timescale trailer (proc multipliers + global precision). Tolerant of an older
+    // `.velab` with no trailer → 1ns/1ns base ($time unscaled, preamble 1ns).
+    let (proc_multipliers, global_prec_exp): (Vec<u32>, i8) = if rest3.is_empty() {
+        (Vec::new(), -9)
+    } else {
+        match postcard::from_bytes(rest3) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    &sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab timescale trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
 
     // ── simulate ──
     let sim_opts = SimOpts {
         fork_modes,
         net_names,
+        proc_multipliers,
+        timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
     let result = sim_engine::simulate(&ir, &sink, sim_opts);
