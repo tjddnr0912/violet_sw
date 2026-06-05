@@ -1656,6 +1656,40 @@ fn always_comb_tracks_array_index_signal() {
 }
 
 #[test]
+fn array_nonzero_base_index_normalized() {
+    // REMAINING_WORK item: `reg [7:0] mem[4:7]` — index 4..7 maps to words 0..3
+    // (subtract the dim's lower bound), no aliasing onto a 0-based window, no OOR.
+    let src = "module t; reg [7:0] mem[4:7]; integer i; \
+               initial begin for (i=4;i<=7;i=i+1) mem[i] = i*10; \
+                 $display(\"%0d %0d %0d %0d\", mem[4], mem[5], mem[6], mem[7]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "40 50 60 70\n");
+}
+
+#[test]
+fn array_descending_base_index_normalized() {
+    // `reg [7:0] mem[7:4]` (descending, non-zero min): indices 4..7 round-trip.
+    let src = "module t; reg [7:0] mem[7:4]; integer i; \
+               initial begin for (i=4;i<=7;i=i+1) mem[i] = i+100; \
+                 $display(\"%0d %0d\", mem[4], mem[7]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "104 107\n");
+}
+
+#[test]
+fn array_2d_nonzero_base_index_normalized() {
+    // 2-D non-zero base `g[1:2][1:3]`: each dim normalized by its lower bound.
+    let src = "module t; reg [7:0] g[1:2][1:3]; integer i, j; \
+               initial begin for (i=1;i<=2;i=i+1) for (j=1;j<=3;j=j+1) g[i][j] = i*10+j; \
+                 $display(\"%0d %0d %0d %0d\", g[1][1], g[1][3], g[2][1], g[2][3]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "11 13 21 23\n");
+}
+
+#[test]
 fn array_oob_word_read_is_x_write_ignored() {
     // REMAINING_WORK item: an out-of-range array WORD index reads all-X and a write
     // is IGNORED — not clamped to the last element (which silently returned/corrupted

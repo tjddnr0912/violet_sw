@@ -242,12 +242,13 @@ struct Elaborator<'s> {
     // ── lookup-only maps (NEVER feed arena order) ──
     symbols: BTreeMap<String, u32>, // fully-qualified net/var NAME → NetId
     const_dedup: BTreeMap<ConstKey, u32>,
-    // NetId → per-dimension lengths (source order) for MULTI-dim unpacked arrays
-    // (`reg [7:0] g[0:1][0:2]` ⇒ [2,3]). elaborate-LOCAL only — NEVER in the frozen
-    // sim-ir (NetVar keeps a scalar `array_len`); a multi-index `g[i][j]` is lowered
-    // to the flat word `i*3+j` (row-major) here, so the IR backbone is untouched.
-    // 1-D arrays are absent (the access path falls back to `[array_len]`).
-    array_dims: BTreeMap<u32, Vec<u32>>,
+    // NetId → per-dimension `(lo, size)` extents (source order) for unpacked arrays
+    // whose addressing is NOT plain 0-based (`reg [7:0] g[0:1][0:2]` ⇒ [(0,2),(0,3)];
+    // `mem[4:7]` ⇒ [(4,4)]). elaborate-LOCAL only — NEVER in the frozen sim-ir (NetVar
+    // keeps a scalar `array_len`); a multi-index `g[i][j]` lowers to the row-major flat
+    // word `(i-lo0)*s1 + (j-lo1)`, so the IR backbone is untouched. Plain 0-based 1-D
+    // arrays are absent (the access path falls back to `[(0, array_len)]`).
+    array_dims: BTreeMap<u32, Vec<(u32, u32)>>,
 
     // ── v3 hierarchy state ──
     // `cur_prefix` is the dotted instance path of the instance currently being
@@ -1298,10 +1299,10 @@ impl<'s> Elaborator<'s> {
         }
         for decl in &d.names {
             let (width, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
-            let dim_sizes = self.array_dim_sizes(&decl.unpacked);
-            let array_len = dim_sizes
+            let dim_extents = self.array_dim_extents(&decl.unpacked);
+            let array_len = dim_extents
                 .iter()
-                .fold(1u32, |acc, &n| acc.saturating_mul(n.max(1)));
+                .fold(1u32, |acc, &(_, n)| acc.saturating_mul(n.max(1)));
             let dir = self.dir_for_name(&decl.name.name, ports, body);
             // init: const-fold a literal initializer; otherwise time-0 default.
             let init = match &decl.init {
@@ -1321,37 +1322,38 @@ impl<'s> Elaborator<'s> {
                     init,
                 },
             );
-            // Record per-dim sizes for MULTI-dim arrays only (1-D uses the
-            // `[array_len]` fallback at access time — identical lowering, so the
-            // existing single-dim golden IR is left byte-for-byte unchanged). Keyed
-            // by the just-assigned NetId (looked up post-add so a duplicate-skip
+            // Record per-dim extents when addressing is NOT plain 0-based: any
+            // MULTI-dim array, OR a 1-D array with a non-zero lower bound (`mem[4:7]`).
+            // A plain 0-based 1-D array stays ABSENT so its lowering falls back to
+            // `[(0, array_len)]` — byte-identical to the long-standing golden IR.
+            // Keyed by the just-assigned NetId (looked up post-add so a duplicate-skip
             // does not mis-key). (a)-flattening: no frozen-IR field added.
-            if dim_sizes.len() >= 2 {
+            if dim_extents.len() >= 2 || dim_extents.iter().any(|&(lo, _)| lo != 0) {
                 let key = self.fq(&decl.name.name);
                 if let Some(&id) = self.symbols.get(&key) {
-                    self.array_dims.insert(id, dim_sizes);
+                    self.array_dims.insert(id, dim_extents);
                 }
             }
         }
     }
 
-    /// Per-dimension lengths of an unpacked-array declaration (source order).
-    /// Each length is the param/genvar-aware folded extent (`abs_diff+1`, widened
-    /// to `u64` then clamped to `u32` to avoid the [`Self::range_to_dims`] panic);
-    /// the product of the result is the flat `array_len`. Each length is floored
-    /// at 1 so a degenerate `[0:0]` dim contributes a single word, not zero.
-    fn array_dim_sizes(&mut self, dims: &[ast::Dim]) -> Vec<u32> {
+    /// Per-dimension `(lo, size)` extents of an unpacked-array declaration (source
+    /// order). `lo` is the lower (minimum) range endpoint — the value subtracted
+    /// from a source index to get a 0-based word slot (`mem[4:7]` → lo 4). `size`
+    /// is the param/genvar-aware folded length (`abs_diff+1`, widened to `u64` then
+    /// clamped to `u32` to avoid the [`Self::range_to_dims`] panic), floored at 1 so
+    /// a degenerate `[0:0]` dim contributes one word. The product of the sizes is
+    /// the flat `array_len`.
+    fn array_dim_extents(&mut self, dims: &[ast::Dim]) -> Vec<(u32, u32)> {
         dims.iter()
-            .map(|d| {
-                let n = match d {
-                    ast::Dim::Range(r) => {
-                        let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
-                        let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
-                        (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32
-                    }
-                    ast::Dim::Size(e) => self.const_eval_in_scope(e).unwrap_or(1),
-                };
-                n.max(1)
+            .map(|d| match d {
+                ast::Dim::Range(r) => {
+                    let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
+                    let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
+                    let size = (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32;
+                    (msb.min(lsb), size.max(1))
+                }
+                ast::Dim::Size(e) => (0, self.const_eval_in_scope(e).unwrap_or(1).max(1)),
             })
             .collect()
     }
@@ -1902,7 +1904,7 @@ impl<'s> Elaborator<'s> {
         } = base
         {
             if let Some((net, idxs)) = self.lval_array_chain(b, i) {
-                let dims = self.net_dim_sizes(net);
+                let dims = self.net_dim_extents(net);
                 let d = dims.len();
                 if idxs.len() == d {
                     let word = self.flatten_word(&dims, &idxs);
@@ -2484,36 +2486,51 @@ impl<'s> Elaborator<'s> {
         Some((net, outer_first))
     }
 
-    /// Per-dim lengths of array `net` (source order). Multi-dim nets record their
-    /// shape in `array_dims`; a 1-D array falls back to the single flat extent.
-    fn net_dim_sizes(&self, net: u32) -> Vec<u32> {
+    /// Per-dim `(lo, size)` extents of array `net` (source order). Arrays with
+    /// non-0-based or multi-dim addressing record their shape in `array_dims`; a
+    /// plain 0-based 1-D array falls back to a single `(0, array_len)` extent.
+    fn net_dim_extents(&self, net: u32) -> Vec<(u32, u32)> {
         self.array_dims
             .get(&net)
             .cloned()
-            .unwrap_or_else(|| vec![self.nets[net as usize].array_len.max(1)])
+            .unwrap_or_else(|| vec![(0, self.nets[net as usize].array_len.max(1))])
     }
 
-    /// Row-major flat word ExprId for the first `dims.len()` indices. Strides are
-    /// the suffix products of `dims`; a stride of 1 contributes the raw index with
-    /// no `Mul`, and a single-dim array returns exactly `lower_expr(index)` — so
-    /// the long-standing 1-D `mem[i]` lowering is byte-for-byte preserved.
-    fn flatten_word(&mut self, dims: &[u32], word_idxs: &[&ast::Expr]) -> u32 {
-        let d = dims.len();
-        // strides[k] = product(dims[k+1..]) as u64 (saturating into u32 at use).
+    /// Row-major flat word ExprId for the first `extents.len()` indices. Each index
+    /// is normalized to a 0-based slot by subtracting its dim's `lo` (`mem[4]` on a
+    /// `[4:7]` dim → `i-4`); strides are the suffix products of the dim sizes. A
+    /// `lo` of 0 emits NO `Sub` and a stride of 1 emits NO `Mul`, so a plain 0-based
+    /// 1-D `mem[i]` still lowers to exactly `lower_expr(i)` — the golden IR for the
+    /// common case is byte-for-byte preserved.
+    fn flatten_word(&mut self, extents: &[(u32, u32)], word_idxs: &[&ast::Expr]) -> u32 {
+        let d = extents.len();
+        // strides[k] = product(size[k+1..]) as u64 (saturating into u32 at use).
         let mut strides = vec![1u64; d];
         for k in (0..d.saturating_sub(1)).rev() {
-            strides[k] = strides[k + 1].saturating_mul(dims[k + 1] as u64);
+            strides[k] = strides[k + 1].saturating_mul(extents[k + 1].1 as u64);
         }
         let mut acc: Option<u32> = None;
         for (k, idx) in word_idxs.iter().enumerate() {
-            let term = if strides[k] == 1 {
+            let lo = extents[k].0;
+            // normalized 0-based coordinate: `idx - lo` (lo==0 ⇒ raw index, no Sub).
+            let coord = if lo == 0 {
                 self.lower_expr(idx)
             } else {
                 let i = self.lower_expr(idx);
+                let lo_c = self.const_u32_expr(lo, 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Sub,
+                    lhs: i,
+                    rhs: lo_c,
+                })
+            };
+            let term = if strides[k] == 1 {
+                coord
+            } else {
                 let s = self.const_u32_expr(strides[k].min(u32::MAX as u64) as u32, 32);
                 self.push_expr(ir::Expr::Binary {
                     op: ir::BinOp::Mul,
-                    lhs: i,
+                    lhs: coord,
                     rhs: s,
                 })
             };
@@ -2536,7 +2553,7 @@ impl<'s> Elaborator<'s> {
     /// the write path (`collect_array_write`), so over-indexing is rejected the same
     /// way on read and write rather than silently yielding X on one side.
     fn lower_array_read(&mut self, net: u32, idxs: &[&ast::Expr]) -> u32 {
-        let dims = self.net_dim_sizes(net);
+        let dims = self.net_dim_extents(net);
         let d = dims.len();
         if idxs.len() < d {
             self.error(
@@ -2574,7 +2591,7 @@ impl<'s> Elaborator<'s> {
     /// word; one trailing index → a single bit-select on the element. `< D` indices
     /// (partial slice) and `> D+1` indices (bit-of-bit LHS) are unsupported (loud).
     fn collect_array_write(&mut self, net: u32, idxs: &[&ast::Expr], out: &mut Vec<ir::LvalChunk>) {
-        let dims = self.net_dim_sizes(net);
+        let dims = self.net_dim_extents(net);
         let d = dims.len();
         if idxs.len() < d {
             self.error(
