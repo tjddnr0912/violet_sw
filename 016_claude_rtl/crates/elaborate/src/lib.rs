@@ -1749,25 +1749,26 @@ impl<'s> Elaborator<'s> {
                 if let Some((net, idxs)) = self.expr_array_chain(base, index) {
                     return self.lower_array_read(net, &idxs);
                 }
-                let base = self.lower_expr(base);
-                if self.expr_is_real(base) {
+                let base_id = self.lower_expr(base);
+                if self.expr_is_real(base_id) {
                     self.error(
                         MsgCode::ElabUnsupported,
                         "bit/part-select not defined on real operand",
                     );
                 }
-                let offset = self.lower_expr(index);
+                let raw_off = self.lower_expr(index);
+                let offset = self.norm_offset_if_net(base, raw_off);
                 let width = self.const_u32_expr(1, 32);
                 self.push_expr(ir::Expr::Select {
-                    base,
+                    base: base_id,
                     offset,
                     width,
                     kind: ir::SelKind::Bit,
                 })
             }
             ast::ExprKind::PartSelect { base, msb, lsb } => {
-                let base = self.lower_expr(base);
-                if self.expr_is_real(base) {
+                let base_id = self.lower_expr(base);
+                if self.expr_is_real(base_id) {
                     self.error(
                         MsgCode::ElabUnsupported,
                         "bit/part-select not defined on real operand",
@@ -1776,9 +1777,10 @@ impl<'s> Elaborator<'s> {
                 let lsb_id = self.lower_expr(lsb);
                 let msb_id = self.lower_expr(msb);
                 let width = self.width_from_msb_lsb_checked(msb, lsb, msb_id, lsb_id);
+                let offset = self.norm_offset_if_net(base, lsb_id);
                 self.push_expr(ir::Expr::Select {
-                    base,
-                    offset: lsb_id,
+                    base: base_id,
+                    offset,
                     width,
                     kind: ir::SelKind::PartConst,
                 })
@@ -1789,22 +1791,23 @@ impl<'s> Elaborator<'s> {
                 width,
                 dir,
             } => {
-                let base = self.lower_expr(base);
-                if self.expr_is_real(base) {
+                let base_id = self.lower_expr(base);
+                if self.expr_is_real(base_id) {
                     self.error(
                         MsgCode::ElabUnsupported,
                         "bit/part-select not defined on real operand",
                     );
                 }
-                let offset = self.lower_expr(offset);
+                let raw_off = self.lower_expr(offset);
+                let off = self.norm_offset_if_net(base, raw_off);
                 let width = self.lower_expr(width);
                 let kind = match dir {
                     ast::PartDir::PlusColon => ir::SelKind::PartIdxUp,
                     ast::PartDir::MinusColon => ir::SelKind::PartIdxDown,
                 };
                 self.push_expr(ir::Expr::Select {
-                    base,
-                    offset,
+                    base: base_id,
+                    offset: off,
                     width,
                     kind,
                 })
@@ -1920,7 +1923,8 @@ impl<'s> Elaborator<'s> {
                     self.collect_array_write(net, &idxs, out);
                 } else {
                     let net = self.lval_base_net(base);
-                    let offset = self.lower_expr(index);
+                    let raw_off = self.lower_expr(index);
+                    let offset = self.norm_offset_for_net(net, raw_off);
                     let width = self.const_u32_expr(1, 32);
                     out.push(ir::LvalChunk {
                         net,
@@ -1939,10 +1943,11 @@ impl<'s> Elaborator<'s> {
                 let lsb_id = self.lower_expr(lsb);
                 let msb_id = self.lower_expr(msb);
                 let width = self.width_from_msb_lsb_checked(msb, lsb, msb_id, lsb_id);
+                let offset = self.norm_offset_for_net(net, lsb_id);
                 out.push(ir::LvalChunk {
                     net,
                     word,
-                    offset: Some(lsb_id),
+                    offset: Some(offset),
                     width: Some(width),
                     kind: ir::SelKind::PartConst,
                 });
@@ -1955,7 +1960,8 @@ impl<'s> Elaborator<'s> {
                 ..
             } => {
                 let (net, word) = self.lval_part_base(base);
-                let off = self.lower_expr(offset);
+                let raw_off = self.lower_expr(offset);
+                let off = self.norm_offset_for_net(net, raw_off);
                 let w = self.lower_expr(width);
                 let kind = match dir {
                     ast::PartDir::PlusColon => ir::SelKind::PartIdxUp,
@@ -2479,6 +2485,49 @@ impl<'s> Elaborator<'s> {
     fn const_u32_expr(&mut self, n: u32, w: u32) -> u32 {
         let cid = self.intern_const(make_const_u32(n, w));
         self.push_expr(ir::Expr::Const { val: cid })
+    }
+
+    /// Normalize a select offset (a SOURCE bit index) into an internal-bit position
+    /// for a net declared `[msb:lsb]`: descending (`msb≥lsb`) → `idx − lsb`; ascending
+    /// (`msb<lsb`) → `lsb − idx`. A plain `[N:0]` net (lsb 0, descending) returns the
+    /// raw offset unchanged so the long-standing golden IR is byte-for-byte preserved.
+    /// A POISON/out-of-range net id (error recovery) is a no-op.
+    fn norm_offset_for_net(&mut self, net: u32, raw_off: u32) -> u32 {
+        let Some((msb, lsb)) = self.nets.get(net as usize).map(|nv| (nv.msb, nv.lsb)) else {
+            return raw_off;
+        };
+        if msb >= lsb {
+            if lsb == 0 {
+                return raw_off; // `[N:0]` — raw index is already internal
+            }
+            let lsb_c = self.const_u32_expr(lsb, 32);
+            self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Sub,
+                lhs: raw_off,
+                rhs: lsb_c,
+            })
+        } else {
+            // ascending `[lo:hi]`: the largest source index (`lsb`) is internal bit 0.
+            let lsb_c = self.const_u32_expr(lsb, 32);
+            self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Sub,
+                lhs: lsb_c,
+                rhs: raw_off,
+            })
+        }
+    }
+
+    /// If `base` is a direct single-segment net `Ident`, normalize the offset by its
+    /// declared range; otherwise (a computed/concat base, range `[?:0]`) leave it raw.
+    fn norm_offset_if_net(&mut self, base: &ast::Expr, raw_off: u32) -> u32 {
+        if let ast::ExprKind::Ident(path) = &base.kind {
+            if path.segments.len() == 1 {
+                if let Some(net) = self.lookup_net_scoped(&path.segments[0].name) {
+                    return self.norm_offset_for_net(net, raw_off);
+                }
+            }
+        }
+        raw_off
     }
 
     /// Placeholder used after an error so downstream edges stay valid.

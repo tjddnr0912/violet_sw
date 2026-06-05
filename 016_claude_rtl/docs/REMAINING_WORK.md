@@ -145,7 +145,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** All unpacked dims in tests are [0:N] zero-based ascending (end_to_end.rs:1581,1594,1610,1661,1708; elaborate tests.rs:639). No test declares `reg [7:0] m[1:4]` or `[3:0]`.
   - **내용:** The non-normalization corruption (see correctness section) has zero coverage, so any change is invisible; the multi-dim flattening stride is only ever exercised on zero-based ascending dims.
   - **조치:** Add elaborate/engine tests for `reg [7:0] m[1:4]` and `[3:0]`, asserting the corrected (normalized) addressing so the behavior is locked.
-- [ ] **[MAJOR·P1]** Add coverage for descending/non-zero-base PACKED element ranges (reg [0:7] m, reg [8:1] v)
+- [x] **[MAJOR·P1]** Add coverage for descending/non-zero-base PACKED element ranges (reg [0:7] m, reg [8:1] v) — ✅ 2026-06-05 **(검증 중 실 결함 발견·수정)**: packed bit/part/indexed-part select가 lsb로 정규화 안 됨 → non-zero base(`reg [7:4]`)·ascending(`reg [0:7]`)이 틀린 비트/OOB→X. `norm_offset_for_net`(descending `i-lsb`/ascending `lsb-i`, `[N:0]`은 raw=골든 불변) 6개 select arm 적용. 5 테스트, 383 green.
   - **근거:** Every array element test uses [high:low] with low=0 (e.g. `reg [7:0] g[0:1][0:2]` end_to_end.rs:1581; `reg [63:0] g[0:1][0:1]` :1749). grep for ascending/non-zero-base packed widths returns nothing.
   - **내용:** Packed arrays with arbitrary ranges are IN-MVP; ascending packed `reg [0:7]` and non-zero-base `reg [8:1]` are untested for bit/part-select.
   - **조치:** Add tests for ascending packed element `reg [0:7] m[0:3]` and non-zero-base packed `reg [8:1] v` bit/part-select, asserting documented/correct behavior.

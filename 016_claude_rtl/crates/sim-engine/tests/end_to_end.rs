@@ -1903,6 +1903,57 @@ fn array_x_index_read_x_write_noop() {
 }
 
 #[test]
+fn packed_nonzero_base_bit_select() {
+    // REMAINING_WORK: `reg [7:4]` (4-bit, indices 4..7) — bit-select must normalize
+    // by lsb=4: v[7]=MSB(internal 3), v[4]=LSB(internal 0). Was returning X (raw 7,4).
+    let src = "module t; reg [7:4] v; initial begin v = 4'b1001; \
+               $display(\"%0d %0d\", v[7], v[4]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1 1\n");
+}
+
+#[test]
+fn packed_nonzero_base_mid_bits() {
+    // reg [3:1]: 3'b101 → bit3(MSB)=1, bit2=0, bit1(LSB)=1 (normalized by lsb=1).
+    let src = "module t; reg [3:1] v; initial begin v = 3'b101; \
+               $display(\"%0d %0d %0d\", v[3], v[2], v[1]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1 0 1\n");
+}
+
+#[test]
+fn packed_ascending_bit_select() {
+    // reg [0:7] (ascending): index 0 = MSB. 8'b1000_0000 → r[0]=1, r[7]=0 (lsb-i).
+    let src = "module t; reg [0:7] r; initial begin r = 8'b1000_0000; \
+               $display(\"%0d %0d\", r[0], r[7]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1 0\n");
+}
+
+#[test]
+fn packed_nonzero_base_part_select() {
+    // reg [7:4]; v=4'b1010 (idx7→1,6→0,5→1,4→0). v[6:5] = internal[2:1] = 2'b01 = 1.
+    let src = "module t; reg [7:4] v; reg [1:0] p; initial begin v = 4'b1010; \
+               p = v[6:5]; $display(\"%0d\", p); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1\n");
+}
+
+#[test]
+fn packed_zero_base_unchanged() {
+    // REGRESSION: `reg [7:0]` (lsb=0) bit-select is unchanged (no normalization).
+    let src = "module t; reg [7:0] r; initial begin r = 8'b1010_0001; \
+               $display(\"%0d %0d %0d\", r[0], r[5], r[7]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1 1 1\n");
+}
+
+#[test]
 fn array_oob_word_read_is_x_write_ignored() {
     // REMAINING_WORK item: an out-of-range array WORD index reads all-X and a write
     // is IGNORED — not clamped to the last element (which silently returned/corrupted
