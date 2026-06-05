@@ -96,6 +96,22 @@ Phase 1의 범위는 **SystemVerilog 합성가능 RTL 서브셋** — Verilog-20
 
 Phase 2(SV 확장) 이후의 system tasks — 파일 I/O, 메모리 로드, 변환, 비트벡터, 수학, random, assertion 샘플링, introspection 등 — 는 `hdl-reference/system-tasks/00-index.md`의 Phase별 커버리지 매트릭스에 명시된다.
 
+## 알려진 v1 단순화 (IN-MVP이되 의도적 한계 — 결함 아님)
+
+아래는 Phase-1 IN 기능이지만 **의도적으로 단순화**한 동작이다. 모두 결정적·문서화됨이며, 정밀화는 Phase-1.x/Phase-2에서. (구현 검증 중 확인된 항목; 상세는 저장소 `docs/REMAINING_WORK.md`.)
+
+| 영역 | v1 동작 | 정밀 동작(향후) |
+|---|---|---|
+| `casez`/`casex` 와일드카드 | scrutinee·label의 **모든** x/z를 don't-care로 마스킹(`reduction_or(scrut^label)!==1`) | `casez`는 z/?만, `casex`는 x/z만 (explicit-x-in-casez 분리) |
+| 배열/벡터 인덱스 범위초과 | 읽기 all-X / 쓰기 무시(클램프 아님) — 진단 미발행 | `E-RUN-RANGE`(VITA-E4002) 런타임 진단 발행(엔진 diag-sink 도입 시) |
+| unpacked 배열 *서브차원* 인덱스 초과 | 평탄공간 alias (per-dim bounds 미검사; lo-정규화는 적용) | per-dim 범위 검사 |
+| X/Z 인덱스 | 읽기 all-X / 쓰기 no-op | 동일(이미 정밀) |
+| `$time`/`$realtime` 멀티-timescale | per-process 단위로 정확 | 동일(이미 정밀) |
+| `assign #d` 지연 | transport-delay만(inertial pulse 거부 없음) | inertial 모델 |
+| `$stop` | 배치 종료(에서 `$finish`와 별개 exit class) | 대화형 브레이크포인트는 비지원(배치 시뮬레이터) |
+| `$dumpvars`/`$dump*` 배열 | 배열은 word 0만 VCD 덤프, depth/scope 인자 무시(전체 덤프) | per-element 덤프 + scope 한정 |
+| `>128bit` unsigned / `>64bit` signed 산술 | X로 poison(fail-safe) | full multi-word 산술 |
+
 ## Sources
 
 - 본 spec §2.1 · §2.2 · §2.3 · §3 · §9 — `docs/superpowers/specs/2026-05-26-vitamin-rtl-simulator-design.md`

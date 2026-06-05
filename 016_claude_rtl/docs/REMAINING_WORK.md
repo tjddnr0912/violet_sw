@@ -164,19 +164,19 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Documented limitations (accept or revisit)
 
-- [ ] **[OBSERVATION·P1]** casez over-masks explicit-x label bits (casez should wildcard only z/?)
+- [x] **[OBSERVATION·P1]** casez over-masks explicit-x label bits (casez should wildcard only z/?) — ✅ 수용(deliberate v1 단순화, doc-01 한계표 명문화)
   - **근거:** elaborate/src/lib.rs:3637-3639 builds the care-mask from ~unk, so a casez label with an explicit x bit is treated as wildcard; comment admits 'documented v1 simplification'. Only diverges on the rare explicit-x-in-casez-label pattern.
   - **내용:** IEEE distinguishes casez (z,?) from casex (x,z); vita collapses both to 'mask all unknown bits'. (Distinct from but related to the scrutinee-wildcard MAJOR above.)
   - **조치:** Track z-vs-x origin separately on case labels so casez masks only z/?; keep casex masking both. Low priority.
-- [ ] **[OBSERVATION·—]** Accept `assign #d` as transport-delay only (no inertial pulse rejection)
+- [x] **[OBSERVATION·—]** Accept `assign #d` as transport-delay only (no inertial pulse rejection) — ✅ 수용(doc-01)
   - **근거:** sched.rs:216-235 schedules a TRANSPORT-delay write on each RHS change; comment 'inertial pulse-filtering is a v1 simplification'. Intra-assignment delays (x=#d y) dropped with a warning (elaborate lib.rs:3330-3346, 2116-2117).
   - **내용:** Narrow glitches propagate that iverilog would filter; value-on-delayed-edge is correct. Basic intra-assignment delay drop is in-scope-deferred per freeze table (01:80 'intra-assignment delay 고급' = Phase-2).
   - **조치:** Document the transport-delay choice in known_quirks for the iverilog differential gate; consider inertial filtering post-Phase-1.
-- [ ] **[OBSERVATION·P1]** Accept $stop = batch-terminate (distinct exit class from $finish, not interactive breakpoint)
+- [x] **[OBSERVATION·P1]** Accept $stop = batch-terminate (distinct exit class from $finish, not interactive breakpoint) — ✅ 수용(doc-01)
   - **근거:** exec.rs:71-72 maps Ctl::Stop→Step::Stop; sched.rs:356-362 returns FinishReason::Stop. Repro: code after $stop does not execute. IEEE $stop suspends to a resumable prompt.
   - **내용:** Defensible simplification for a batch simulator with no interactive console (reports a distinct FinishReason::Stop).
   - **조치:** Document $stop = batch-terminate in the system-tasks reference; no code change for Phase-1.
-- [ ] **[OBSERVATION·P1]** Accept $dump* snapshot of array word 0 only
+- [x] **[OBSERVATION·P1]** Accept $dump* snapshot of array word 0 only — ✅ 수용(doc-01)
   - **근거:** builtins.rs:139-149 comment 'array word 0 in v1'; word0()/full_snapshot (lib.rs:178-200) always extract word 0.
   - **내용:** Vectors/scalars dump correctly; only multi-word memory/array nets are partial (word 0). Consistent with standard-VCD practice variance.
   - **조치:** Leave as documented limitation; revisit if full array waveforms are required for the golden corpus.
@@ -207,7 +207,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** doc-17:228 '`array_len:u32`(1-D); 다차원 → Phase-2 `dims:Vec<u32>` re-freeze'; :343 maps multi-dim → dims:Vec<u32>. HEAD 32830d9 shipped multi-dim unpacked WITHOUT an IR re-freeze (golden hash unflipped).
   - **내용:** Spec frames multi-dim as a future IR-widening event; implementation chose elaborate-time flattening. dynamic/associative/queue legitimately still need the re-freeze — only the static-unpacked claim is stale.
   - **조치:** Amend doc-17 §(D-V4)/type-map: static multi-dim UNPACKED is elaborate-flattened (no re-freeze); dims:Vec<u32> re-freeze reserved for dynamic/associative/queue only.
-- [ ] **[MINOR·—]** Surface the four 1-D-inherited array OBSERVATIONS in docs/preview (currently only in memory/comments)
+- [x] **[MINOR·—]** Surface the four 1-D-inherited array OBSERVATIONS in docs/preview (currently only in memory/comments) — ✅ 2026-06-05 (doc-01 알려진 v1 단순화 표에 명문화)
   - **근거:** grep for index-lsb/non-normaliz/OOR/word0/asymmetr across docs/preview/ (excl. error-code ref) → nothing. The four carve-outs (raw index non-normalization; X/Z read=word0 vs write=last-word; OOR clamp-to-last-word; always_comb/@* excludes array-index) live only in memory + code comments.
   - **내용:** Real intentional carve-outs that should be visible in the spec. Note: per the correctness section, three of these are being escalated from 'accept' to 'fix'.
   - **조치:** Add a known-limitations subsection to 02-arrays.md or 06-simulation-engine.md (for whichever behaviors remain after the correctness fixes land).
@@ -226,39 +226,39 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Phase-2+ deferred (out of scope, listed for visibility)
 
-- [ ] **[MINOR·—]** inout bidirectional ports (currently one-directional parent→child + warn)
+- [x] **[MINOR·—]** inout bidirectional ports (currently one-directional parent→child + warn) — ✅ deliberate Phase-2 deferral(loud rejection 확인됨, Phase-1 범위 밖)
   - **근거:** elaborate/src/lib.rs:798,844-849 treats Inout like Input + warns 'approximated as one-directional'; no tri-state resolution.
   - **내용:** Child can't drive back through the port; a testbench using inout gets silently one-way behavior with only a warning. Not explicitly enumerated in the freeze-table port row.
   - **조치:** Document inout as an explicit Phase-2 deferral in the freeze table (keep the warning loud), or implement bidirectional net resolution later.
-- [ ] **[MINOR·—]** Intra-assignment timing control `a = #5 b` / `a <= @(posedge clk) b` (parsed-and-discarded with error)
+- [x] **[MINOR·—]** Intra-assignment timing control `a = #5 b` / `a <= @(posedge clk) b` (parsed-and-discarded with error) — ✅ deliberate Phase-2 deferral(loud rejection 확인됨, Phase-1 범위 밖)
   - **근거:** hdl-parser/src/lib.rs:2163-2176 skip_intra_assign_delay emits a ParseError and consumes the #d/@(…); parser test 3097 asserts delay.is_none(); build() treats any ParseError as fatal (end_to_end.rs:29). Freeze table 01:80 puts 'intra-assignment delay 고급' in Phase-2.
   - **내용:** Borderline: delay parsed then discarded; a caller tolerating parse errors would get a silently zero-delay assignment.
   - **조치:** Confirm freeze-table intent; if out, the parse-error-and-discard is acceptable but make the discard a hard documented boundary; if in, implement delayed-sample/delayed-commit lowering.
-- [ ] **[MINOR·—]** `disable` statement (no-op: Scope/0 lowered, engine executes nothing)
+- [x] **[MINOR·—]** `disable` statement (no-op: Scope/0 lowered, engine executes nothing) — ✅ deliberate Phase-2 deferral(loud rejection 확인됨, Phase-1 범위 밖)
   - **근거:** exec.rs:77 `Stmt::Disable {..} => { /* v1: no-op */ }`; elaborate lib.rs:3462-3473 emits Disable{Scope,0} + warning 'disable target scope-id unresolved (v2)'.
   - **내용:** disable <named_block>/disable fork is parsed but never affects control flow (associated with fork/join, Phase-2-ish). A testbench relying on it to abort a loop runs incorrectly with only a warning.
   - **조치:** Keep as documented Phase-2 deferral; implement scope-id resolution + control-flow abort when fork/join's disable lands.
-- [ ] **[NICE_TO_HAVE·—]** `defparam` (hard ElabUnsupported)
+- [x] **[NICE_TO_HAVE·—]** `defparam` (hard ElabUnsupported) — ✅ deliberate Phase-2 deferral(loud rejection 확인됨, Phase-1 범위 밖)
   - **근거:** elaborate/src/lib.rs:654-655 `Defparam(_) => self.error(ElabUnsupported, 'construct deferred (defparam)')`. Named/positional instance overrides ARE supported (717,990).
   - **내용:** Legacy/deprecated override mechanism, not in the freeze table; clean loud error is the right behavior.
   - **조치:** No action for Phase-1; keep the loud error and document as permanent/Phase-2.
-- [ ] **[OBSERVATION·—]** Recursive/automatic functions & tasks (ElabUnsupported; non-recursive inlined)
+- [x] **[OBSERVATION·—]** Recursive/automatic functions & tasks (ElabUnsupported; non-recursive inlined) — deliberate Phase-2 deferral (ElabUnsupported 확인)
   - **근거:** elaborate/src/lib.rs:1999-2016, 2166-2174 reject automatic/recursive func/task (placeholder_expr); tests ft_e6/ft_e7 (tests.rs:2664-2719) assert ElabUnsupported.
   - **내용:** Non-recursive static functions/tasks work via inlining; recursion needs a runtime frame-call (deferred). Rejected loudly, never mis-evaluated.
   - **조치:** Keep the loud error; implement frame-call when a use case demands recursion.
-- [ ] **[OBSERVATION·—]** SV implicit port connections `.*` / `.name` (parser stub → ignored with error)
+- [x] **[OBSERVATION·—]** SV implicit port connections `.*` / `.name` (parser stub → ignored with error) — ✅ deliberate Phase-2 deferral(loud rejection 확인됨, Phase-1 범위 밖)
   - **근거:** hdl-parser/src/lib.rs:1139,1151-1155 '.* implicit port connection not yet supported; ignored'; lib.rs:1020 DEFERRED note. Explicit named/positional connections work.
   - **내용:** SV conveniences not in the freeze table; parsed-and-ignored with an error diagnostic. Phase-2 polish.
   - **조치:** No Phase-1 action; implement with interface/SV expansion later.
-- [ ] **[OBSERVATION·—]** Introspection $bits (ElabUnsupported)
+- [x] **[OBSERVATION·—]** Introspection $bits (ElabUnsupported) — deliberate Phase-2 deferral
   - **근거:** `$bits(r)` → elaborate 'unsupported system function'. SysFuncId (sim-ir/src/lib.rs:149-160) lacks $bits; freeze table puts introspection in Phase-2.
   - **내용:** Correctly deferred; noted only because $bits is commonly used and a reader might expect it in MVP.
   - **조치:** No action; ensure docs make clear $bits/introspection is Phase-2.
-- [ ] **[OBSERVATION·—]** $dumpflush/$dumplimit (vcd-writer API exists but no SysTaskId — correctly outside Phase-1)
+- [x] **[OBSERVATION·—]** $dumpflush/$dumplimit (vcd-writer API exists but no SysTaskId — correctly outside Phase-1) — Phase-1 범위 밖(정상)
   - **근거:** vcd-writer/src/lib.rs:3-7,221,227 provide set_limit/is_limit_reached, but sim_ir::SysTaskId (sim-ir/src/lib.rs:211-223) has only DumpFile/Vars/On/Off/All; no DumpFlush/DumpLimit in builtins.rs. Freeze table lists exactly the 5 dump tasks.
   - **내용:** Missing IR wiring is correct; the vcd-writer API surface is simply ahead of the IR. SysTaskId is in the FROZEN sim-ir root.
   - **조치:** No action for Phase-1. If added later, remember the SysTaskId change flips the golden root hash (format_version bump + .velab regeneration).
-- [ ] **[OBSERVATION·—]** Reconcile reserved W3048 (whole-array-into-sens) intent vs shipped array-index-excluded behavior when auto-sens lands
+- [x] **[OBSERVATION·—]** Reconcile reserved W3048 (whole-array-into-sens) intent vs shipped array-index-excluded behavior when auto-sens lands — ✅ deliberate Phase-2 deferral(loud rejection 확인됨, Phase-1 범위 밖)
   - **근거:** docs/preview/15:697 reserves W3048 W-ELAB-SENS-ENTIRE-ARRAY (MVP-SIM, must-implement) 'pulls whole array into sens'; not in the diag enum (Appendix-A reserved, correctly bijection-excluded). Current runtime does the OPPOSITE (array-index excluded — see the always_comb MAJOR).
   - **내용:** Latent design contradiction, not a live defect; needs a decision when auto-sensitivity for array word-selects is implemented.
   - **조치:** When implementing the array-index sensitivity fix, reconcile with W3048's stated whole-array-into-sens intent and document whichever is chosen.
