@@ -8,7 +8,7 @@
 
 use sim_ir::{DelayRegion, Lvalue, Stmt, SysTaskId, Terminator, WaitCause};
 
-use crate::builtins::{self, Ctl};
+use crate::builtins::Ctl;
 use crate::sched::Scheduler;
 use crate::value::Value;
 
@@ -19,6 +19,35 @@ pub(crate) enum Step {
     Finish,
     Stop,
     Fatal,
+}
+
+/// The body↔kernel ABI seam (P7b): the calls a process body — the tree-walking
+/// interpreter OR a Stage-C compiled body — makes to drive the simulation kernel.
+/// A READ phase (`k_eval_for_lvalue`/`k_resolve_lvalue_offsets`, no mutation) then a
+/// WRITE phase (`k_write_lvalue`/`k_schedule_nba`/`k_dispatch_systask`). The
+/// interpreter's statement executor ([`compute_effect`]/[`apply_effect`]) is GENERIC
+/// over this trait, so it already runs against the seam — proving the surface is
+/// sufficient for a compiled VM to reuse verbatim (the kernel never knows which body
+/// drove it; only its control flow differs).
+///
+/// SCOPE: the STATEMENT-phase ABI for the suspend-free P9 class. Method names are
+/// `k_*`-prefixed to stay distinct from `Scheduler`'s inherent methods (the impl just
+/// forwards). The terminator/control surface a compiled body also needs — `truthy`
+/// (Branch) and `rearm` (Return) — is added when Stage C writes `vm_run`. Suspend /
+/// resume (Delay/Wait) and fork are deliberately ABSENT: those bodies stay on the
+/// interpreter, which owns the resume-PC state machine (a compiled body runs
+/// atomically entry→Return and never suspends — see the P9 predicate).
+pub(crate) trait Kernel {
+    /// READ: evaluate `rhs` context-sized to `lhs`'s width (IEEE assignment rule).
+    fn k_eval_for_lvalue(&self, lhs: &Lvalue, rhs: u32) -> Value;
+    /// READ: resolve each LHS chunk's `(bit-offset, array-word)` NOW (dynamic index).
+    fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)>;
+    /// WRITE: blocking write of `value` into `lhs` at the resolved `offsets`.
+    fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]);
+    /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
+    fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
+    /// WRITE: run a system task, returning its control outcome.
+    fn k_dispatch_systask(&mut self, which: SysTaskId, fmt: Option<u32>, args: &[u32]) -> Ctl;
 }
 
 /// Execute activity `pi` starting at body block `start`. `pi` is a runtime
@@ -72,7 +101,7 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
         // byte-identical to the prior inline form — same evals, same writes, same order.
         for sid in stmt_ids {
             let stmt = sched.st.ir.stmts[sid as usize].clone();
-            let effect = compute_effect(sched, &stmt);
+            let effect = compute_effect(&*sched, &stmt); // READ phase via Kernel seam
             if let Some(step) = apply_effect(sched, effect) {
                 return step; // a SysTask returned Finish/Stop/Fatal
             }
@@ -179,15 +208,15 @@ enum StmtEffect {
     Nop,
 }
 
-/// READ phase: evaluate `stmt` over read-only `&Scheduler`, producing a
-/// [`StmtEffect`] that captures everything the write phase will apply. No net state
-/// is mutated here. The borrow ends with the returned owned value, so the caller is
-/// free to take `&mut Scheduler` for [`apply_effect`].
-fn compute_effect(sched: &Scheduler, stmt: &Stmt) -> StmtEffect {
+/// READ phase: evaluate `stmt` through the read-only half of the [`Kernel`] seam,
+/// producing a [`StmtEffect`] that captures everything the write phase will apply. No
+/// net state is mutated here. Generic over `K: Kernel`, so the SAME executor serves
+/// the interpreter (`Scheduler`) and a Stage-C compiled body.
+fn compute_effect<K: Kernel>(k: &K, stmt: &Stmt) -> StmtEffect {
     match stmt {
         Stmt::BlockingAssign { lhs, rhs } => {
-            let value = sched.eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
-            let offsets = sched.resolve_lvalue_offsets(lhs); // dynamic index NOW
+            let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
+            let offsets = k.k_resolve_lvalue_offsets(lhs); // dynamic index NOW
             StmtEffect::Blocking {
                 lhs: lhs.clone(),
                 value,
@@ -195,7 +224,7 @@ fn compute_effect(sched: &Scheduler, stmt: &Stmt) -> StmtEffect {
             }
         }
         Stmt::NonblockingAssign { lhs, rhs } => {
-            let value = sched.eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED, sampled now
+            let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED, sampled now
             StmtEffect::Nonblocking {
                 lhs: lhs.clone(),
                 value,
@@ -210,30 +239,29 @@ fn compute_effect(sched: &Scheduler, stmt: &Stmt) -> StmtEffect {
     }
 }
 
-/// WRITE phase: apply a [`StmtEffect`] through the `&mut Scheduler` kernel. Returns
-/// `Some(Step)` only when a `$finish`/`$stop`/fatal system task ends the activation.
-fn apply_effect(sched: &mut Scheduler, effect: StmtEffect) -> Option<Step> {
+/// WRITE phase: apply a [`StmtEffect`] through the mutating half of the [`Kernel`]
+/// seam. Returns `Some(Step)` only when a `$finish`/`$stop`/fatal system task ends the
+/// activation. Generic over `K: Kernel` (same executor for interpreter + compiled VM).
+fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect) -> Option<Step> {
     match effect {
         StmtEffect::Blocking {
             lhs,
             value,
             offsets,
         } => {
-            sched.st.write_lvalue(&lhs, value, &offsets);
+            k.k_write_lvalue(&lhs, value, &offsets);
             None
         }
         StmtEffect::Nonblocking { lhs, value } => {
-            sched.schedule_nba(lhs, value);
+            k.k_schedule_nba(lhs, value);
             None
         }
-        StmtEffect::SysTask { which, fmt, args } => {
-            match builtins::dispatch(sched, which, fmt, &args) {
-                Ctl::Finish => Some(Step::Finish),
-                Ctl::Stop => Some(Step::Stop),
-                Ctl::Fatal => Some(Step::Fatal),
-                Ctl::Continue => None,
-            }
-        }
+        StmtEffect::SysTask { which, fmt, args } => match k.k_dispatch_systask(which, fmt, &args) {
+            Ctl::Finish => Some(Step::Finish),
+            Ctl::Stop => Some(Step::Stop),
+            Ctl::Fatal => Some(Step::Fatal),
+            Ctl::Continue => None,
+        },
         StmtEffect::Nop => None,
     }
 }

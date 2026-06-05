@@ -13,7 +13,7 @@ use elaborate::{ForkModeTable, JoinMode};
 
 use crate::builtins::{format_args_str, write_out};
 use crate::eval::EvalCtx;
-use crate::exec::{run_process, Step};
+use crate::exec::{run_process, Kernel, Step};
 use crate::state::{scalar_bit0, SimState};
 use crate::value::Value;
 
@@ -1049,6 +1049,35 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 },
             );
         }
+    }
+}
+
+/// [P7b] `Scheduler` is the interpreter's implementation of the body↔kernel ABI:
+/// each method forwards to the inherent method of the same purpose (the `k_*` prefix
+/// keeps the trait surface distinct from the inherent one, so there is no shadowing).
+/// The statement executor (`exec::compute_effect`/`apply_effect`) drives the
+/// interpreter through exactly this surface, so the existing suite already exercises
+/// the seam byte-identically — and a Stage-C compiled body will call the same methods.
+impl Kernel for Scheduler<'_, '_> {
+    fn k_eval_for_lvalue(&self, lhs: &Lvalue, rhs: u32) -> Value {
+        self.eval_for_lvalue(lhs, rhs)
+    }
+    fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)> {
+        self.resolve_lvalue_offsets(lhs)
+    }
+    fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) {
+        self.st.write_lvalue(lhs, value, offsets);
+    }
+    fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value) {
+        self.schedule_nba(lhs, value);
+    }
+    fn k_dispatch_systask(
+        &mut self,
+        which: sim_ir::SysTaskId,
+        fmt: Option<u32>,
+        args: &[u32],
+    ) -> crate::builtins::Ctl {
+        crate::builtins::dispatch(self, which, fmt, args)
     }
 }
 
