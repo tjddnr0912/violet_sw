@@ -445,8 +445,10 @@ version = "0.0.0"
 dependencies = [
  "diag",
  "elaborate",
+ "hdl-ast",
  "hdl-lexer",
  "hdl-parser",
+ "hdl-preprocess",
  "sim-ir",
  "vcd-writer",
 ]
