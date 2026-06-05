@@ -371,12 +371,20 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
             }
             'd' | 'D' => {
                 let v = next_arg(sched, args, &mut argi);
-                // NOTE: IEEE 1364 %d right-justifies in a default field width (the
-                // decimal digit count of the operand's bit size). v1 prints the
-                // minimal form (like %0d) — values are exact; column-alignment
-                // padding is deliberately omitted (it would also pad an X to "  x"
-                // and most testbenches use %0d). See sweep gap 20 (informational).
-                out.push_str(&fmt_dec(&v));
+                // IEEE 1364 %d: right-justify in a field width. `%0d` ⇒ minimal;
+                // `%Nd` ⇒ width N; bare `%d` ⇒ the operand's default decimal width
+                // (digit count of its max value). An X/Z prints as a right-justified
+                // `x`/`z` in that field, like a numeric value.
+                let s = fmt_dec(&v);
+                let fw = if min_zero {
+                    0
+                } else {
+                    field_width.unwrap_or_else(|| dec_field_width(v.width))
+                };
+                if s.len() < fw {
+                    out.push_str(&" ".repeat(fw - s.len()));
+                }
+                out.push_str(&s);
             }
             'h' | 'H' | 'x' | 'X' => {
                 let v = next_arg(sched, args, &mut argi);
@@ -420,6 +428,25 @@ fn next_arg(sched: &Scheduler, args: &[u32], argi: &mut usize) -> Value {
 
 fn any_unknown(v: &Value) -> bool {
     v.has_xz()
+}
+
+/// IEEE %d default field width = decimal digit count of an `n`-bit operand's max
+/// value (`2^n − 1`): 1-bit→1, 8-bit→3, 32-bit→10. Computed exactly up to 128 bits,
+/// then via `n·log10(2)` (a column-alignment hint; exactness beyond 128 is moot).
+fn dec_field_width(n: u32) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    if n <= 128 {
+        let maxv: u128 = if n == 128 {
+            u128::MAX
+        } else {
+            (1u128 << n) - 1
+        };
+        maxv.to_string().len()
+    } else {
+        (n as f64 * std::f64::consts::LOG10_2) as usize + 1
+    }
 }
 
 /// %d: decimal; any X/Z → "x". A real ROUNDS half-away (saturating to i64

@@ -519,12 +519,26 @@ fn reduction_and_xprop() {
 
 #[test]
 fn x_value_displays_as_x() {
-    // Uninitialized reg is X; %d of an all-X value prints x.
+    // Uninitialized reg is X; %d of an all-X value prints x, right-justified in the
+    // 4-bit operand's default decimal field width (2 chars: max 15 → " x").
     let src = "module m; reg [3:0] a; \
                initial begin $display(\"%d\", a); $finish; end endmodule";
     let ir = build(src);
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
-    assert_eq!(out, "x\n");
+    assert_eq!(out, " x\n");
+}
+
+#[test]
+fn percent_d_default_field_width() {
+    // IEEE %d: bare `%d` right-justifies in the operand's default decimal field width
+    // (8-bit → 3, 4-bit → 2); `%0d` is minimal; `%5d` is an explicit width.
+    let src = "module t; reg [7:0] a; reg [3:0] b; \
+               initial begin a=8'd5; b=4'd7; \
+                 $display(\"[%d][%0d][%d][%5d]\", a, a, b, b); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // a→"  5" (field 3), %0d→"5", b→" 7" (field 2), %5d→"    7".
+    assert_eq!(out, "[  5][5][ 7][    7]\n");
 }
 
 // ── 12. ternary + concat ───────────────────────────────────────────────────
@@ -961,8 +975,9 @@ fn monitor_reprints_on_unknown_to_unknown_value_change() {
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
     // Three lines? No — two: establish + the X→X value change. The third step is
     // a true no-op (identical (val,unk) planes) and stays silent. All three
-    // render to "q=x"; only value-level equality distinguishes them.
-    assert_eq!(out, "q=x\nq=x\n");
+    // render to "q= x" (4-bit %d field width 2, X right-justified); only value-level
+    // equality distinguishes them.
+    assert_eq!(out, "q= x\nq= x\n");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
