@@ -293,9 +293,11 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 > **참고(2026-06-06 재분류):** 위 doc-01 drift + `%t`는 *인터프리터 문서부채*로, 코드젠과 **결합 없음**(6-매핑/3-비평 워크플로 wzeyxgedk가 P1/P2로 분류 후 prereq 목록에서 제외). 컴파일드 백엔드 선결과 별개 트랙. 원하면 opportunistic 정리.
 
-### Stage B — 컴파일드 이벤트구동 백엔드 선결 (코드젠 착수 전, 미착수)
+### Stage B — 컴파일드 이벤트구동 백엔드 선결 (✅ **11/11 완결**, 2026-06-06)
 
 > 2026-06-06 재작성 · 출처: 워크플로 `wzeyxgedk`(6 서브시스템 매핑 → 합성 → 3 적대적 비평 → 최종 병합, 11에이전트). 이전 4줄 스텁을 grounded 19항목 체크리스트로 대체. **순서는 의존성 위상정렬**(각 항목의 depends_on이 앞에 옴). `[B]`=BLOCKING, `[R]`=RECOMMENDED.
+>
+> **🏁 Stage B 전 항목 완결(P0a→P9b):** substrate=바이트코드 VM 확정 · float 결정성 계약 · backend seam · 시드 corpus 생성기 · 컴파일드-vs-인터프리터 차분 게이트(hard CI) · run_process read/write 분리 · `Kernel` trait ABI seam · suspend-free scope 술어 · 샘플링-모먼트 계약 · mixed-backend byte동일 증명. **434 tests green, clippy/fmt clean, golden(SimIr) unflipped, frozen IR 무변경.** 다음 = Stage C **스펙·플랜 → 리뷰 → 구현**.
 
 | id | 항목 | 수준 | 의존 | 코드 근거 |
 |---|---|---|---|---|
