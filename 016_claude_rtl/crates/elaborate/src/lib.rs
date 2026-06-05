@@ -859,8 +859,18 @@ impl<'s> Elaborator<'s> {
 
         for item in &mi.instances {
             if !item.unpacked.is_empty() {
-                // DEFERRED: instance arrays. Lower a single instance + note.
-                self.warn("instance-array range ignored (v3: single instance)");
+                // Instance arrays (`dff u[3:0](...)`) need per-instance port slicing
+                // (IEEE 1364 §12.1.3) — DEFERRED to Phase-1.x. Reject LOUDLY rather
+                // than silently lowering a single instance with the whole port
+                // vectors mis-connected.
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "instance array `{}[…]` not yet supported (v1: single instance)",
+                        item.name.name
+                    ),
+                );
+                continue;
             }
             let child_path = self.child_prefix(&item.name.name);
             let binding = match &item.conns {

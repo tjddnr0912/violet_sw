@@ -75,7 +75,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Phase-1 completeness — partial/missing IN-MVP features
 
-- [ ] **[MINOR·P1]** Implement (or escalate) instance arrays `dff u[3:0](...)` — currently one instance lowered, range dropped
+- [x] **[MINOR·P1]** Implement (or escalate) instance arrays `dff u[3:0](...)` — currently one instance lowered, range dropped — ✅ 2026-06-05 (silent-wrong 단일인스턴스 lower → loud E3009 escalate; full unrolling은 Phase-1.x. instance_array_rejected_loudly 테스트, doc-01 명문화)
   - **근거:** elaborate/src/lib.rs:751-754 `if !item.unpacked.is_empty() { self.warn("instance-array range ignored (v3: single instance)"); }` — range dropped, one instance elaborated. No instance-array test.
   - **내용:** Module-instance arrays pair with generate/genvar (IN-MVP); array dim silently ignored → missing-replication correctness gap (most idioms expressible via supported generate-for, so bounded).
   - **조치:** Implement N-instance replication with indexed connections, OR escalate to ElabUnsupported so it isn't silently mis-elaborated. Add a test.

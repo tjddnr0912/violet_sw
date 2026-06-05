@@ -1534,6 +1534,20 @@ fn elaborate_diags(src: &str) -> Vec<String> {
     collected
 }
 
+#[test]
+fn instance_array_rejected_loudly() {
+    // REMAINING_WORK: an instance array `u[3:0](...)` is rejected (Phase-1.x), not
+    // silently lowered to a single mis-connected instance.
+    let diags = elaborate_diags(
+        "module dff(input d, output q); assign q = d; endmodule \
+         module top; wire [3:0] a, b; dff u[3:0] (.d(a), .q(b)); endmodule",
+    );
+    assert!(
+        diags.iter().any(|d| d.contains("instance array")),
+        "expected loud instance-array rejection, got: {diags:?}"
+    );
+}
+
 // E1. %h on a real argument is a STATIC elaborate-time rejection (§4.1a).
 #[test]
 fn real_percent_h_rejected_at_elaborate() {
