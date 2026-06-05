@@ -3159,8 +3159,15 @@ impl<'s> Elaborator<'s> {
     fn collect_expr_reads(&self, eid: u32, reads: &mut std::collections::BTreeSet<u32>) {
         match &self.exprs[eid as usize] {
             ir::Expr::Const { .. } => {}
-            ir::Expr::Signal { net, .. } => {
+            ir::Expr::Signal { net, word } => {
                 reads.insert(*net);
+                // The array WORD index is itself a read: `always_comb y = mem[sel]`
+                // must re-fire when `sel` (or any signal in a multi-dim flat index
+                // `i*ncols+j`) changes, not only when the memory changes. Symmetric
+                // with the `Select` arm recursing into its offset.
+                if let Some(weid) = word {
+                    self.collect_expr_reads(*weid, reads);
+                }
             }
             ir::Expr::Select {
                 base,

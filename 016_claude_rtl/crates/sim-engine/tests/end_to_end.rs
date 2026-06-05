@@ -1589,6 +1589,22 @@ fn array_2d_const_index_rw() {
 }
 
 #[test]
+fn always_comb_tracks_array_index_signal() {
+    // REMAINING_WORK item: `always_comb y = mem[sel]` — changing ONLY sel must
+    // re-fire the block (the array WORD index signal belongs to the comb read-set).
+    // Regression for stale combinational output (collect_expr_reads ignored Signal.word).
+    let src = "module t; reg [7:0] mem[0:3]; reg [1:0] sel; reg [7:0] y; \
+               always_comb y = mem[sel]; \
+               initial begin mem[0]=8'd10; mem[1]=8'd20; mem[2]=8'd30; mem[3]=8'd40; \
+                 sel=0; #1 $display(\"%0d\", y); \
+                 sel=2; #1 $display(\"%0d\", y); \
+                 sel=3; #1 $display(\"%0d\", y); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "10\n30\n40\n");
+}
+
+#[test]
 fn array_2d_runtime_fill() {
     // grid[i][j] = i*10 + j over a nested loop with RUNTIME indices, read back.
     let src = "module t; reg [7:0] g[0:1][0:2]; integer i, j; \

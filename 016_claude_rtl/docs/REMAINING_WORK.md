@@ -48,7 +48,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** elaborate/src/lib.rs:3640-3684 case_label_eq builds the care-mask only from the LABEL const's unk bits and only when label is Const; scrutinee compared with CaseEq against (label & mask), no scrutinee masking. Repro: `x=4'b1x10; casex(x) 4'b1010:r=1; default:r=0;` → r=0, but IEEE/iverilog casex → r=1. casex/casez are IN-MVP (01:79).
   - **내용:** casex must wildcard scrutinee x/z (casez: z); missing scrutinee-side wildcard produces wrong sim results vs iverilog golden. Also no warning is emitted for the documented approximation (no self.warn in lower_case).
   - **조치:** For casex mask scrutinee x|z, for casez mask scrutinee z (lower to a runtime wildcard-match primitive or dedicated compare op), emit the documented approximation warning with a stable MsgCode, and add tests for x/z in the SCRUTINEE (not just the label).
-- [ ] **[MAJOR·P1]** Add the array word-index signal to always_comb/@* sensitivity (one-line fix; currently stale output)
+- [x] **[MAJOR·P1]** Add the array word-index signal to always_comb/@* sensitivity (one-line fix; currently stale output) — ✅ 2026-06-05 (`collect_expr_reads` Signal arm now recurses into `word`; regression test `always_comb_tracks_array_index_signal`)
   - **근거:** elaborate/src/lib.rs:3162 (confirmed) `Expr::Signal { net, .. }` inserts only *net and ignores the `word` field; contrast `Expr::Select` (3165-3173) which DOES recurse into offset. Repro: `always_comb outp = mem[sel];` change only sel 0→2 → out stays 11 (stale; should be 33).
   - **내용:** For `always_comb y = mem[i]`, read-set has mem but not i, so changing i alone never re-fires the block → stale combinational output. Internally inconsistent (bit-select form y=vec[i] correctly tracks i via Select.offset). always_comb is IN-MVP.
   - **조치:** In collect_expr_reads, for `Expr::Signal { net, word }` insert net AND recurse into word (Some(eid)) so the index signal joins the comb read-set.
@@ -264,4 +264,6 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 ## 진행 로그
 
 해결 시 한 줄씩 추가 (날짜 · 커밋 · 항목).
+
+- 2026-06-05 · always_comb/@* 배열 word-인덱스 민감도 누락 수정 (MAJOR). `collect_expr_reads`가 `Signal.word`를 재귀 → `always_comb y=mem[sel]`이 sel 변경 시 재발화. 회귀테스트 추가, 워크스페이스 353 green, 골든 unflipped.
 
