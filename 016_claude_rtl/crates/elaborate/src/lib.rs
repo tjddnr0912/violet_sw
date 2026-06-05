@@ -646,6 +646,27 @@ impl<'s> Elaborator<'s> {
             }
         }
 
+        // (3c) `typedef enum {…}` labels → integer constants (RED=0, GREEN=1, …),
+        //      registered like localparams so a runtime `c = GREEN` folds. An
+        //      explicit `LABEL = expr` resets the running counter (next = expr+1).
+        for item in &module.body {
+            if let ast::ModuleItem::Typedef(td) = item {
+                #[allow(irrefutable_let_patterns)]
+                if let ast::TypedefKind::Enum { labels, .. } = &td.kind {
+                    let mut next: u32 = 0;
+                    for lab in labels {
+                        let v = match &lab.value {
+                            Some(e) => self.const_eval_in_scope(e).unwrap_or(0),
+                            None => next,
+                        };
+                        let key = self.fq(&lab.name.name);
+                        saved_params.push((key.clone(), self.params.insert(key, v)));
+                        next = v.wrapping_add(1);
+                    }
+                }
+            }
+        }
+
         // (3.5) collect THIS module's functions/tasks (bare name → def) for inline
         //       expansion at call sites (pass 7). Saved/restored so a sibling/parent
         //       instance of another module does not inherit them. Functions are not

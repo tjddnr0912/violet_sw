@@ -153,6 +153,21 @@ fn diff_shift_and_arith() {
 }
 
 #[test]
+fn diff_enum_labels() {
+    assert_matches_iverilog(
+        "enum",
+        "module tb; typedef enum {RED, GREEN, BLUE} color_t; color_t c; \
+           integer i; reg [31:0] acc; \
+           initial begin acc = 0; \
+             c = RED;   acc = acc + c; \
+             c = GREEN; acc = acc + c; \
+             c = BLUE;  acc = acc + c; \
+             $display(\"%0d %0d %0d\", RED, GREEN, BLUE); \
+             $display(\"%0d\", acc); $finish; end endmodule",
+    );
+}
+
+#[test]
 fn diff_casez_priority() {
     assert_matches_iverilog(
         "casez",

@@ -26,6 +26,17 @@ pub struct ParseError {
 }
 
 // ───────────────────────────── cursor ─────────────────────────────
+/// Resolved underlying type of a `typedef` name, used to lower `T x;` declarations
+/// (Phase-2). For `typedef enum {…} color_t;` the underlying storage is `int`
+/// (32-bit signed); a future `typedef logic [7:0] byte_t;` would carry its range.
+#[derive(Clone)]
+struct TypeInfo {
+    kind: NetVarKind,
+    signed: bool,
+    range: Option<Range>,
+    packed: Vec<Range>,
+}
+
 pub struct Parser<'t, 's> {
     toks: &'t [Spanned],
     src: &'s str,
@@ -33,6 +44,9 @@ pub struct Parser<'t, 's> {
     src_end: u32,
     pub errors: Vec<ParseError>,
     error_limit: usize,
+    /// SV user-defined type names (`typedef … name;`) → resolved underlying type.
+    /// Accumulates across the source unit; lets `name var;` parse as a typed decl.
+    typedefs: std::collections::HashMap<String, TypeInfo>,
 }
 
 impl<'t, 's> Parser<'t, 's> {
@@ -44,6 +58,7 @@ impl<'t, 's> Parser<'t, 's> {
             src_end: src.len() as u32,
             errors: Vec::new(),
             error_limit: 50,
+            typedefs: std::collections::HashMap::new(),
         }
     }
 
@@ -992,9 +1007,17 @@ impl<'t, 's> Parser<'t, 's> {
         ) {
             return self.parse_port_decl().map(ModuleItem::PortDecl);
         }
+        // SV `typedef enum/…/<type> name;` (Phase-2 user-defined types).
+        if self.at_kw(Kw::Typedef) {
+            return self.parse_typedef();
+        }
         // net/var declaration
         if self.net_var_kind().is_some() {
             return self.parse_net_var().map(ModuleItem::NetVar);
+        }
+        // typedef-name declaration: `color_t c, d;` where `color_t` was typedef'd.
+        if let Some(info) = self.peek_typedef_name() {
+            return self.parse_typed_decl(info).map(ModuleItem::NetVar);
         }
         // procedural blocks → REAL parsing (PR2).
         if matches!(
@@ -1298,6 +1321,21 @@ impl<'t, 's> Parser<'t, 's> {
         let signed = self.opt_signed();
         let range = self.opt_range();
         let packed = self.opt_packed_dims(); // additional packed dims `logic [3:0][7:0]`
+        let names = self.parse_decl_name_list()?;
+        self.expect(TokenKind::Semi, "';'");
+        Some(NetVarDecl {
+            kind,
+            signed,
+            range,
+            packed,
+            names,
+            span: start.to(self.prev_span()),
+        })
+    }
+
+    /// Comma-separated declarator list: `a, b[3:0], c = init`. Shared by
+    /// `parse_net_var` and the typedef-name decl path. Does NOT consume the `;`.
+    fn parse_decl_name_list(&mut self) -> Option<Vec<DeclName>> {
         let mut names = Vec::new();
         loop {
             let n_start = self.cur_span();
@@ -1324,15 +1362,96 @@ impl<'t, 's> Parser<'t, 's> {
                 break;
             }
         }
+        Some(names)
+    }
+
+    /// If the current token names a known typedef, return its resolved underlying
+    /// type (peek only — the caller commits the decl). `None` ⇒ not a type name.
+    fn peek_typedef_name(&self) -> Option<TypeInfo> {
+        if self.is_ident() {
+            return self.typedefs.get(self.cur_text()).cloned();
+        }
+        None
+    }
+
+    /// `T name1, name2 = init, …;` where the leading type-name resolved to `info`.
+    fn parse_typed_decl(&mut self, info: TypeInfo) -> Option<NetVarDecl> {
+        let start = self.cur_span();
+        self.bump(); // the type-name identifier
+        let names = self.parse_decl_name_list()?;
         self.expect(TokenKind::Semi, "';'");
         Some(NetVarDecl {
-            kind,
-            signed,
-            range,
-            packed,
+            kind: info.kind,
+            signed: info.signed,
+            range: info.range,
+            packed: info.packed,
             names,
             span: start.to(self.prev_span()),
         })
+    }
+
+    /// `typedef enum [base] { L0, L1 = expr, … } name;` (Phase-2). Registers
+    /// `name` in `self.typedefs` (so a later `name var;` parses) and returns the
+    /// AST node so elaborate can register the labels as integer constants.
+    fn parse_typedef(&mut self) -> Option<ModuleItem> {
+        let start = self.cur_span();
+        self.bump(); // `typedef`
+        if !self.at_kw(Kw::Enum) {
+            // typedef-alias and packed-struct forms are later Phase-2 sub-stages.
+            self.error("`enum` after `typedef`");
+            self.synchronize();
+            return Some(ModuleItem::Error(start.to(self.prev_span())));
+        }
+        self.bump(); // `enum`
+                     // Optional packed base: `enum logic [1:0] {…}` or `enum [1:0] {…}`.
+        let base = if self.net_var_kind().is_some() {
+            self.bump(); // base kind keyword (logic/reg/integer/…)
+            let _ = self.opt_signed();
+            self.opt_range()
+        } else {
+            self.opt_range()
+        };
+        self.expect(TokenKind::LBrace, "'{' for enum body");
+        let mut labels = Vec::new();
+        if self.peek() != Some(TokenKind::RBrace) {
+            loop {
+                let name = self.ident()?;
+                let value = if self.eat(TokenKind::Eq) {
+                    Some(self.expr(0))
+                } else {
+                    None
+                };
+                labels.push(EnumLabel { name, value });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}' to close enum body");
+        let tname = self.ident()?;
+        self.expect(TokenKind::Semi, "';'");
+        // Enum storage is `int` (32-bit signed) unless a packed base range was
+        // given, in which case a `logic` vector of that range.
+        let info = match &base {
+            Some(r) => TypeInfo {
+                kind: NetVarKind::Logic,
+                signed: false,
+                range: Some(r.clone()),
+                packed: Vec::new(),
+            },
+            None => TypeInfo {
+                kind: NetVarKind::Integer,
+                signed: true,
+                range: None,
+                packed: Vec::new(),
+            },
+        };
+        self.typedefs.insert(tname.name.clone(), info);
+        Some(ModuleItem::Typedef(TypedefDecl {
+            name: tname,
+            kind: TypedefKind::Enum { base, labels },
+            span: start.to(self.prev_span()),
+        }))
     }
 
     fn parse_cont_assign(&mut self) -> Option<ContinuousAssign> {

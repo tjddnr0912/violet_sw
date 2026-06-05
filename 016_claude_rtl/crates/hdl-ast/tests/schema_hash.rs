@@ -12,11 +12,11 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-05: added `packed: Vec<Range>` to `NetVarDecl`/`AnsiPort` for
-/// multi-dim packed arrays (`logic [3:0][7:0]`) — all `.vu` artifacts are stale.
+/// Re-pinned 2026-06-05: added `ModuleItem::Typedef(TypedefDecl)` + `TypedefKind`/
+/// `EnumLabel` for SV `typedef enum {…}` (Phase-2) — all `.vu` artifacts are stale.
 const EXPECTED: [u8; 32] = [
-    14, 35, 197, 236, 8, 228, 137, 19, 21, 47, 67, 132, 155, 192, 62, 175, 110, 215, 30, 75, 116,
-    56, 123, 204, 242, 33, 226, 30, 55, 86, 198, 38,
+    9, 64, 56, 84, 106, 139, 155, 120, 83, 241, 122, 7, 222, 92, 159, 71, 241, 101, 163, 253, 26,
+    89, 47, 145, 125, 216, 5, 160, 43, 177, 103, 211,
 ];
 
 #[test]

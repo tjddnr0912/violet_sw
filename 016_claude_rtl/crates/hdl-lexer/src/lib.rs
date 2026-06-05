@@ -473,6 +473,8 @@ pub enum Kw {
     Wor, Xnor, Xor,
     // --- 4 SystemVerilog-subset additions (doc 01 Phase-1) ---
     Logic, AlwaysFf, AlwaysComb, AlwaysLatch,
+    // --- SV user-defined types (Phase-2) ---
+    Typedef, Enum, Struct, Union, Packed,
 }
 
 impl Kw {
@@ -531,6 +533,8 @@ impl Kw {
             // SystemVerilog-subset:
             "logic" => Logic, "always_ff" => AlwaysFf,
             "always_comb" => AlwaysComb, "always_latch" => AlwaysLatch,
+            "typedef" => Typedef, "enum" => Enum, "struct" => Struct,
+            "union" => Union, "packed" => Packed,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

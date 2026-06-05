@@ -2466,3 +2466,30 @@ fn net_decl_initializer_is_continuous_assign() {
     // g = 1111 & 1010 = 1010, o = 1111 | 1010 = 1111.
     assert_eq!(out, "g=1000 o=1110 r=9\ng=1010 o=1111\n");
 }
+
+// ── SV `typedef enum {…} name;` — labels become integer constants (0,1,2,…); the
+//    enum-typed variable is a 32-bit int; `c = GREEN` assigns 1. Explicit `=expr`
+//    sets the running counter (BLUE follows GREEN). ─────────────────────────────
+
+#[test]
+fn enum_labels_are_integer_constants() {
+    let src = "module t; typedef enum {RED, GREEN, BLUE} color_t; color_t c; \
+               initial begin c = GREEN; $display(\"%0d\", c); \
+                 c = BLUE; $display(\"%0d\", c); \
+                 c = RED;  $display(\"%0d\", c); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1\n2\n0\n");
+}
+
+#[test]
+fn enum_explicit_value_advances_counter() {
+    // A=0, B=5 (explicit), C=6 (counter resumes from B+1).
+    let src = "module t; typedef enum {A, B = 5, C} e_t; e_t v; \
+               initial begin v = A; $display(\"%0d\", v); \
+                 v = B; $display(\"%0d\", v); \
+                 v = C; $display(\"%0d\", v); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "0\n5\n6\n");
+}

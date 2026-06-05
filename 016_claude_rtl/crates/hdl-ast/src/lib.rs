@@ -144,8 +144,35 @@ pub enum ModuleItem {
     Func(FunctionDef),           // [A]
     Task(TaskDef),               // [A]
     Defparam(DefparamItem),      // [A] defparam path = expr;
+    Typedef(TypedefDecl),        // SV `typedef enum/struct/<type> name;` (Phase-2)
     /// Recovery placeholder for an unparseable item.
     Error(Span),
+}
+
+/// `typedef <kind> name;` (SV user-defined type, Phase-2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct TypedefDecl {
+    pub name: Ident,
+    pub kind: TypedefKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum TypedefKind {
+    /// `typedef enum [base] { RED, GREEN=5, … } color_t;` — labels become module
+    /// constants; the type is the (default int) base. `base` is the optional packed
+    /// base range (`enum logic [1:0] {…}`).
+    Enum {
+        base: Option<Range>,
+        labels: Vec<EnumLabel>,
+    },
+}
+
+/// One enum label: `RED` or `GREEN = 5`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct EnumLabel {
+    pub name: Ident,
+    pub value: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
