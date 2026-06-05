@@ -271,13 +271,15 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 - [x] **[Phase-1.x]** 엔진 런타임 diag-sink → OOR/X-index 시 `E-RUN-RANGE`(VITA-E4002) 발행 (현재 X/skip 동작은 맞음, 진단만 미발행; rate-limit 포함) — ✅ 2026-06-05 (State에 &dyn LogSink+Cell rate-limit, warn_run_range가 OOR read/write서 E-RUN-RANGE 발행, sim은 recover. 실측 vita 발행, oob_emits_run_range_diagnostic 테스트)
 - [x] **[성공기준]** iverilog 차분 하네스 — 대표 설계를 `iverilog`+`vvp` golden과 신호값/천이시각 비교 (iverilog 미설치 시 graceful skip) — ✅ 2026-06-05 (crates/sim-engine/tests/differential.rs: ALU/counter/memory/shift-arith/casez 5설계를 iverilog+vvp golden과 비교, vita 출력 정확 일치. iverilog 미설치 시 graceful skip)
-- [ ] **[Phase-2]** 자료형 확장: `struct`/`union`/`enum`/`typedef` (자료형 IN-MVP 너머; 큰 작업, 단계별 결정 필요)
+- [x] **[Phase-2]** 자료형 확장: `enum`/`typedef`/`packed struct` — ✅ 2026-06-05 (사용자 선택 범위). 렉서 +5키워드, AST `ModuleItem::Typedef`+`TypedefKind{Enum,Alias,Struct}`+`EnumLabel`/`StructMember`(3회 .vu 재핀), 파서 typedefs/struct_layouts/var_struct 테이블·파스타임 const-literal 폭 폴드·`s.field`→상수 part-select desugar(expr+lvalue), elaborate enum 라벨→localparam-style int const(나머지 파서 desugar로 no-op). end_to_end 6 + iverilog 차분 4(enum/alias/struct/single-bit) 전부 iverilog 13.0 일치. **범위 밖(loud reject):** unpacked struct/union, param-width 멤버.
 - [ ] **[가속·신규]** 4-state 비트연산/reduction word化 + `std::simd` (eval.rs:344 bit-by-bit→word-level; 분석 → docs/preview/18)
 - [ ] **[가속·로드맵]** 컴파일드 백엔드 (IR→네이티브 코드젠, Verilator 방식; 장기, doc-01 로드맵)
 
 ## 진행 로그
 
 해결 시 한 줄씩 추가 (날짜 · 커밋 · 항목).
+
+- 2026-06-05 · **Phase-2 자료형 (enum+typedef+packed struct)**. 사용자 선택 범위를 enum→typedef alias→packed struct 3단계 TDD·커밋. enum 라벨=int const(explicit =expr가 counter 리셋), alias=underlying 폭 절단, struct=MSB-first 평탄 레이아웃+`s.field` 상수 part-select desugar(파서 sugar, elaborate 무변경, frozen IR 무영향). AST 3회 .vu 재핀(의도적). end_to_end 6 + iverilog 차분 4 전부 iverilog 13.0 일치. 워크스페이스 413 green. 커밋 a2736c2/9cdaa10/1c4e5ff.
 
 - 2026-06-05 · **corpus가 신규결함 발견·수정**(MAJOR): ANSI 멀티네임 포트 `input [7:0] a, b`에서 b가 방향만 상속하고 range/type 미상속→scalar(1bit) 절단(흔한 구문). parse_ansi_port가 pure-continuation일 때 prev의 net_or_var/signed/range 상속하도록 수정. 6 corpus + 1 focused 테스트, 워크스페이스 395 green.
 - 2026-06-05 · timescale BLOCKER 완전 마무리: 스테이지드(.vu/.velab 트레일러 vcmp→velab→vrun, staged==one-shot byte-identical) + W-PP-TIMESCALE-DEFAULT(W1017 enum+doc-15 본문 승격, 실측 vita 발화) + doc-08 골든(라운딩 14.4→14·0.5→1·0.4→0/혼합 timescale global-min). 워크스페이스 378 green, 골든 unflipped.

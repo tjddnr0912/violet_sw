@@ -165,6 +165,20 @@ fn diff_packed_struct() {
 }
 
 #[test]
+fn diff_packed_struct_single_bit_field() {
+    // 3 fields incl. a 1-bit member: tag[4](high), valid[1](mid), data[3:0](low).
+    // total=9. Exercises odd-boundary offset math against iverilog.
+    assert_matches_iverilog(
+        "packed_struct_bits",
+        "module tb; typedef struct packed { logic [4:0] tag; logic valid; logic [2:0] data; } e_t; \
+           e_t e; \
+           initial begin e.tag = 5'h1A; e.valid = 1'b1; e.data = 3'h5; \
+             $display(\"%h %b %h %h\", e.tag, e.valid, e.data, e); \
+             e = 9'h0AB; $display(\"%h %b %h\", e.tag, e.valid, e.data); $finish; end endmodule",
+    );
+}
+
+#[test]
 fn diff_typedef_alias() {
     assert_matches_iverilog(
         "typedef_alias",
