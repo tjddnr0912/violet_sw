@@ -191,7 +191,9 @@ pub fn frontend_to_unit(file: &str, sink: &StderrSink) -> Option<hdl_ast::Source
     } else {
         format!("{text}\n")
     };
-    frontend_text_to_unit(file, &text, sink)
+    // `vcmp` serializes only the SourceUnit to `.vu`; timescale resolution happens at
+    // `velab` (one-shot) time where it can ride into the SimIr-bearing `.velab`.
+    frontend_text_to_unit(file, &text, sink).map(|(u, _)| u)
 }
 
 /// The preprocess→lex→parse core, factored so the one-shot driver, multi-file
@@ -203,7 +205,7 @@ pub fn frontend_text_to_unit(
     file: &str,
     text: &str,
     sink: &StderrSink,
-) -> Option<hdl_ast::SourceUnit> {
+) -> Option<(hdl_ast::SourceUnit, hdl_preprocess::ResolvedTimescales)> {
     // ── preprocess ─────────────────────────────────────────────────────────
     // raw source -> expanded text + SourceMap. The expanded text (not `text`) is
     // what the lexer and parser consume; spans they produce index the expanded
@@ -266,7 +268,36 @@ pub fn frontend_text_to_unit(
         }));
         return None;
     };
-    Some(unit)
+    // Resolve each module's `timescale by file order (region offsets and module spans
+    // share the expanded-text coordinate space). The result rides into elaborate.
+    let modules: Vec<(&str, usize)> = unit
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            hdl_ast::TopItem::Module(m) => Some((m.name.name.as_str(), m.span.lo as usize)),
+            _ => None,
+        })
+        .collect();
+    let rt = hdl_preprocess::resolve_module_timescales(&modules, &pp.timescales);
+    drop(modules); // release the borrow of `unit` before moving it
+    Some((unit, rt))
+}
+
+/// Render a base-10 second exponent as a `` `timescale ``-style unit string
+/// (`-9` → `1ns`, `-10` → `100ps`, `-8` → `10ns`) for the VCD `$timescale` preamble.
+pub fn timescale_unit_string(exp: i8) -> String {
+    let unit_exp = (exp as i32).div_euclid(3) * 3; // floor to a multiple of 3
+    let mantissa = 10i32.pow((exp as i32 - unit_exp) as u32);
+    let unit = match unit_exp {
+        0 => "s",
+        -3 => "ms",
+        -6 => "us",
+        -9 => "ns",
+        -12 => "ps",
+        -15 => "fs",
+        _ => "s",
+    };
+    format!("{mantissa}{unit}")
 }
 
 /// Core: run the `vita` one-shot pipeline over already-read source `text`
@@ -277,16 +308,17 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     let sink = StderrSink::new();
 
     // ── preprocess → lex → parse (shared front-end) ─────────────────────────
-    let Some(unit) = frontend_text_to_unit(file, text, &sink) else {
+    let Some((unit, rt)) = frontend_text_to_unit(file, text, &sink) else {
         return EXIT_USER_ERROR;
     };
 
     // ── elaborate ──────────────────────────────────────────────────────────
     // The elaborator emits its own diagnostics through `sink`; `None` ⇒ a hard
-    // elaboration error was reported. `elaborate_with_modes` also yields the
-    // join-mode side table the engine needs to run forks concurrently (threaded
-    // into `SimOpts.fork_modes`); for fork-free designs it is simply empty.
-    let (ir, fork_modes, net_names) = elaborate::elaborate_with_sidecars(&unit, &sink);
+    // elaboration error was reported. `elaborate_with_timescale` also yields the
+    // fork-join, net-name, and per-process time-multiplier side tables threaded into
+    // `SimOpts`; the timescale env scales `#delay`/`$time`/`$realtime`.
+    let (ir, fork_modes, net_names, proc_multipliers) =
+        elaborate::elaborate_with_timescale(&unit, &sink, &rt.unit_exp, rt.global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR;
     };
@@ -295,6 +327,8 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     let sim_opts = SimOpts {
         fork_modes,
         net_names,
+        proc_multipliers,
+        timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
     let result = sim_engine::simulate(&ir, &sink, sim_opts);
@@ -566,7 +600,10 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
     let file = sources[0].as_str();
 
     // preprocess → lex → parse through the SAME shared front-end the one-shot uses.
-    let Some(unit) = frontend_text_to_unit(file, &text, &sink) else {
+    // FOLLOW-UP: the `.vu` does not yet carry the resolved timescale, so the staged
+    // `vcmp→velab→vrun` path elaborates at the 1ns/1ns base; the one-shot `vita`
+    // path is fully timescale-scaled.
+    let Some((unit, _rt)) = frontend_text_to_unit(file, &text, &sink) else {
         return EXIT_USER_ERROR;
     };
 

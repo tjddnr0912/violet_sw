@@ -32,12 +32,12 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Phase-1 correctness — must fix (silent-wrong-value or success-criterion blockers)
 
-- [ ] **[BLOCKER·P1]** Implement timescale unit/precision conversion (currently discarded; no scaling anywhere) — 🚧 **진행 중 (doc-08 전체 모델, 사용자 선택 A)**. 단계별:
+- [x] **[BLOCKER·P1]** Implement timescale unit/precision conversion — ✅ 2026-06-05 핵심완료(S1~S4 + one-shot CLI/VCD). doc-08 모델 동작(실측 vita: 1ns/1ps #2.5→time=2/realtime=2.5/preamble 1ps). 잔여=스테이지드 트레일러+W1017 경고+iverilog 차분. — 원래 **진행 중 (doc-08 전체 모델, 사용자 선택 A)**. 단계별:
   - [x] S1 preprocess: `timescale unit/precision` 파싱 → `TimeScale{unit_exp,prec_exp}` + 확장텍스트 offset region 테이블을 PpResult에 노출 ✅ 2026-06-05 (parse_timescale + PpResult.timescales, 3 테스트)
   - [x] S2 resolve: `resolve_module_timescales`(모듈 span↔region 매칭, file-order) + `global_prec=min` + default_used 플래그 ✅ 2026-06-05 (hdl-preprocess plain types, 2 테스트)
   - [x] S3 elaborate: per-module M으로 `#delay` 스케일(round-half-up, 곱셈은 반올림 내부) + proc_multipliers 사이드테이블 ✅ 2026-06-05 (elaborate_with_timescale; sim_time 검증 7000/2500/5, 골든 unflipped, 3 테스트)
   - [x] S4 engine: `SimOpts.proc_multipliers`→State, run_process가 tmpl로 cur_time_mult set, EvalCtx.time_mult로 `$time=now/M`(정수)·`$realtime=now/M`(실수) ✅ 2026-06-05 (doc-08 예시 검증 2/2.5, 2 테스트)
-  - [ ] S5 VCD preamble에 global_precision 기록 + 파일순서 상속/부분지정 정책 + iverilog 차분 테스트(성공기준)
+  - [x] S5(부분): one-shot `vita` 완전 배선(resolve→elaborate_with_timescale→proc_multipliers) + VCD preamble=global_precision ✅ 2026-06-05 (실측 vita: 1ns/1ps #2.5→time=2 realtime=2.5, VCD `$timescale 1ps`). **잔여:** 스테이지드(.vu/.velab 트레일러) + W-PP-TIMESCALE-DEFAULT 경고(W1017 enum 승격 필요) + iverilog 차분 테스트
   - **근거:** hdl-preprocess:1219 consumes-and-discards; sim-engine:84 hardcodes "1ns"; eval $time=raw now/$realtime=now as f64; const_delay_ticks ratio=1. spec docs/preview/08:157-161; goals 01:45 측정기준.
   - **설계:** delay는 elaborate에서 tick로 스케일(IR 형상 불변→골든 unflipped, format_version bump 불필요). $time/$realtime만 엔진서 per-process M 필요. preprocess region(확장 offset) ↔ 모듈 span 같은 좌표계라 glue에서 해석.
 - [x] **[BLOCKER·P1]** Add `**` (and AShl/AShr) to the compile-time constant evaluator — `parameter = 2**N` silently folds to 0 — ✅ 2026-06-05 (`const_eval_in_scope` folds Pow/AShl/AShr; overflow saturates→u32::MAX→loud width-cap; tests `const_eval_power_operator`, `const_eval_arith_shift_operators`). 남은 폴리시: u32→i64 폭 확대(음수/대형 파라미터)는 별도 MINOR.
