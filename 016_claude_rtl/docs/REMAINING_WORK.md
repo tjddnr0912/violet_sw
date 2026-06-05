@@ -129,7 +129,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Test & verification gaps
 
-- [ ] **[MAJOR·P1]** Add a byte-exact golden-VCD regression (zero .vcd fixtures today)
+- [x] **[MAJOR·P1]** Add a byte-exact golden-VCD regression (zero .vcd fixtures today) — ✅ 2026-06-05 (vcd_golden_byte_exact, 버전블록만 정규화)
   - **근거:** `find . -name '*.vcd'` returns ZERO checked-in fixtures. The two VCD tests (end_to_end.rs:231,251) only do `.contains("b0011 !")` substring asserts; no test pins a full VCD byte-image. vcd-diff (the comparison driver) is a stub.
   - **내용:** VCD byte-reproducibility across 3 OSes is a core determinism goal, but substring checks miss ordering/header/timescale drift, id-code reassignment, whitespace regressions — exactly what cross-OS determinism must guarantee. (Blocked by the VCD-naming blocker for non-trivial designs.)
   - **조치:** Run a fixed design, write the .vcd, assert byte-equality against a checked-in crates/testdata/*.vcd (regenerate-on-intent like the schema_hash golden). Land vcd-diff to drive it.
@@ -137,7 +137,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** corpus-runner is a 1-line stub; the only whole-design test is cli/tests/real_domain.rs (one harmonic-sum testbench that even hand-unrolls a for-loop per a comment at :27). Spec 05 references a compliance corpus.
   - **내용:** No runner feeds whole RTL (counters, FSMs, ALUs, FIFOs, memories) through preprocess→…→VCD; integration-level interactions (multi-module + memory + VCD + timing together) are untested.
   - **조치:** Implement corpus-runner over a testdata/corpus/*.sv dir with expected stdout and/or golden VCD per design, wired into cargo test; seed with shift register, sync FIFO with memory, FSM.
-- [ ] **[MAJOR·P1]** Add a test that $dumpvars a memory/array (no VCD-of-array test exists; only word0 dumped)
+- [x] **[MAJOR·P1]** Add a test that $dumpvars a memory/array (no VCD-of-array test exists; only word0 dumped) — ✅ 2026-06-05 (vcd_dumpvars_declares_memory_array)
   - **근거:** builtins.rs:139 comment 'initial dump of every net (array word 0 in v1)'; word0()/full_snapshot (lib.rs:178-200) extract word 0; declare loop (125-131) declares one $var per net at nv.width with no per-word expansion. No end_to_end.rs test dumps a `reg[..] m[..]` to VCD.
   - **내용:** $dumpvars on a module with a memory is in scope; today only word0 reaches the VCD and even that is unverified for arrays — a future fix/regression goes unnoticed.
   - **조치:** Add a test that $dumpvars a small memory and asserts the $var lines / value changes; decide and document whether per-word expansion is in v1 or explicitly deferred, then assert the chosen behavior.
@@ -149,7 +149,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** Every array element test uses [high:low] with low=0 (e.g. `reg [7:0] g[0:1][0:2]` end_to_end.rs:1581; `reg [63:0] g[0:1][0:1]` :1749). grep for ascending/non-zero-base packed widths returns nothing.
   - **내용:** Packed arrays with arbitrary ranges are IN-MVP; ascending packed `reg [0:7]` and non-zero-base `reg [8:1]` are untested for bit/part-select.
   - **조치:** Add tests for ascending packed element `reg [0:7] m[0:3]` and non-zero-base packed `reg [8:1] v` bit/part-select, asserting documented/correct behavior.
-- [ ] **[MINOR·P1]** Add a cross-OS byte-identical output golden (only structural schema-hash + same-process repeat today)
+- [x] **[MINOR·P1]** Add a cross-OS byte-identical output golden (only structural schema-hash + same-process repeat today) — ✅ 2026-06-05 (vcd_golden_byte_exact = OS-무관 출력 골든; 구조 schema-hash와 보완)
   - **근거:** Determinism gates: sim-ir/tests/schema_hash.rs (structural IR hash, not output) and end_to_end.rs:309/1053 (run the SAME SimIr twice in-process, compare stdout). Nothing diffs output bytes vs a checked-in golden that would catch HashMap-iteration / float-format / path-separator drift.
   - **내용:** CLAUDE.md sells '3-OS byte-identical' but the suite only proves same-input→same-output in one process and IR-shape stability.
   - **조치:** Add checked-in golden stdout fixtures for a few designs and assert byte-equality, complementing the schema_hash gate. (Overlaps the golden-VCD gap.)
