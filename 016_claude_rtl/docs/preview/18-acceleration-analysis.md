@@ -22,13 +22,14 @@
 
 ## 코드에서 찾은 병렬화 기회
 
-### ⭐ (1) 4-state 비트연산 word化 + SIMD — 최우선
-- `sim-engine/src/eval.rs:344` `bitwise()`가 **bit-by-bit**: `for i in 0..w { f(get_vu(i), get_vu(i)) }` (64bit AND가 64회).
-- reduction(`value.rs` `reduce`), 비교(`eval.rs:523`)도 동일.
-- 4-state AND/OR/XOR는 val/unk 2-plane에 **word-parallel 공식**으로 표현 가능
-  (AND known-0 = `(~a.val&~a.unk)|(~b.val&~b.unk)`, known-1 = `(a.val&~a.unk)&(b.val&~b.unk)`).
-- word화만 64비트당 64회→1회; 위에 `std::simd`(portable, NEON/AVX 자동)로 4~8 word 동시.
-- **wide 버스(packed 다차원 등) 큰 이득, 좁은 설계 손해 없음(1 word), 크로스OS·결정성 유지.**
+### ⭐ (1) 4-state 비트연산 word化 + SIMD — 최우선 — ✅ **구현 완료(2026-06-05)**
+- (이전) `eval.rs` `bitwise()`/`BitNot`/6 리덕션이 **bit-by-bit** (`for i in 0..w { f(get_vu(i), …) }`, 64bit AND가 64회).
+- (구현) val/unk 2-plane **word-parallel 공식**으로 교체 — `value.rs`의 `and_w`/`or_w`/`xor_w`/`xnor_w`/`not_w` + `eval.rs`의 `reduce_word`/`RedKind`.
+  AND: known-0 = `(~av&~au)|(~bv&~bu)`, known-1 = `(~au&av)&(~bu&bv)`, rv=known1·ru=`~known0&~known1`.
+  라스트 부분워드는 `low_mask`로 마스킹(not_w/xnor_w가 high 0&0→1). per-bit `*1`은 `#[cfg(test)]` 오라클로 보존(`word_vs_bit_parity`가 4×4 입력×NOT을 bit-exact 대조).
+- 효과: 64비트당 64회→1회 + 브랜치리스 → LLVM 자동벡터화(NEON/AVX). wide 버스 큰 이득, 좁은 설계 무손해(1 word).
+- **`std::simd` 미도입:** portable_simd는 **nightly 전용**이라 MSRV-1.82 stable + `--locked` 3-OS 바이트동일 핀과 충돌. 안정 u64 워드 루프가 이미 SIMD-친화형(64-lane/워드)이며 LLVM이 자동벡터화하므로 명시 SIMD 불요. 도입하려면 nightly 또는 `wide` 크레이트가 필요한데 둘 다 핵심 불변식을 깸 → 의도적 제외.
+- 비교(`eval.rs` relational/eq)는 산술 레인(64/128bit 정수)이라 별개 경로 — 워드化 대상 아님.
 
 ### (2) for-loop copy block (사용자 지목)
 - const-bound for/repeat는 elaborate서 UNROLL(straight-line, cap). 펼친 바디는 순차 실행.
@@ -41,7 +42,7 @@
 - `state.rs:412` `expand_init`, VCD 대용량 배열 덤프 — 데이터병렬이나 일회성·폭 제한. CPU SIMD 적합.
 
 ## 권고 로드맵 (GPU-free 우선)
-1. **즉시·저위험**: 비트연산/reduction word化 + `std::simd`.
+1. ✅ **완료(2026-06-05)**: 비트연산/reduction word化 (안정 u64; std::simd는 nightly 충돌로 제외, LLVM 자동벡터화로 흡수).
 2. **중기·진짜 가속**: 컴파일드 백엔드(IR→네이티브 코드젠, Verilator 방식). 10~100×.
 3. **장기·선택**: 멀티코어 PDES(결정성 재설계) 또는 stimulus-parallel GPU(별개 모드).
 4. **GPU 코어 엔진: 권장 안 함**.
