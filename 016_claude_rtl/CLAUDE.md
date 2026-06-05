@@ -2,7 +2,7 @@
 
 오픈소스 Rust RTL 시뮬레이터. CLI: `vita`(원샷) / `vcmp`(compile) / `velab`(elaborate) / `vrun`(simulate). SystemVerilog 합성가능 RTL 서브셋(Verilog-2005 RTL 전부 포함)이 Phase-1 MVP.
 
-> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 시뮬레이션해 VCD+stdout 산출. timescale(doc-08 전체 모델)·다차원 unpacked·packed 배열·VCD 계층 naming·casex/casez·fork-join·func/task 등 Phase-1 합성 RTL 대부분 구현·검증(398 테스트 green). 잔여 작업은 `docs/REMAINING_WORK.md` 체크리스트 참조. SPEC `docs/preview/`가 여전히 단일 진실 공급원.
+> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 시뮬레이션해 VCD+stdout 산출. timescale(doc-08 전체 모델)·다차원 unpacked·packed 배열·VCD 계층 naming·casex/casez·fork-join·func/task·**SV 자료형(enum/typedef/packed struct)** 등 Phase-1 합성 RTL 대부분 구현·검증(419 테스트 green, iverilog 차분 9건 일치). 4-state 비트연산/리덕션은 word-parallel(u64) 가속. 6축 감사 52항목+후속 큐 5항목 전부 클리어 — `docs/REMAINING_WORK.md` 참조. SPEC `docs/preview/`가 여전히 단일 진실 공급원.
 
 ## 실행 (cargo-only · build.rs 없음)
 
