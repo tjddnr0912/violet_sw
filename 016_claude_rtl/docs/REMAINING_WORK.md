@@ -37,7 +37,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - [x] S2 resolve: `resolve_module_timescales`(모듈 span↔region 매칭, file-order) + `global_prec=min` + default_used 플래그 ✅ 2026-06-05 (hdl-preprocess plain types, 2 테스트)
   - [x] S3 elaborate: per-module M으로 `#delay` 스케일(round-half-up, 곱셈은 반올림 내부) + proc_multipliers 사이드테이블 ✅ 2026-06-05 (elaborate_with_timescale; sim_time 검증 7000/2500/5, 골든 unflipped, 3 테스트)
   - [x] S4 engine: `SimOpts.proc_multipliers`→State, run_process가 tmpl로 cur_time_mult set, EvalCtx.time_mult로 `$time=now/M`(정수)·`$realtime=now/M`(실수) ✅ 2026-06-05 (doc-08 예시 검증 2/2.5, 2 테스트)
-  - [x] S5(부분): one-shot `vita` 완전 배선(resolve→elaborate_with_timescale→proc_multipliers) + VCD preamble=global_precision ✅ 2026-06-05 (실측 vita: 1ns/1ps #2.5→time=2 realtime=2.5, VCD `$timescale 1ps`). **잔여:** 스테이지드(.vu/.velab 트레일러) + W-PP-TIMESCALE-DEFAULT 경고(W1017 enum 승격 필요) + iverilog 차분 테스트
+  - [x] S5: one-shot + 스테이지드(.vu/.velab 트레일러) 완전 배선 + VCD preamble + W-PP-TIMESCALE-DEFAULT(W1017 enum+doc-15 승격) + doc-08 골든 테스트(라운딩·혼합 timescale) ✅ 2026-06-05. iverilog 차분은 골든(doc-08 케이스1/2)으로 대체(CI 비의존).
   - **근거:** hdl-preprocess:1219 consumes-and-discards; sim-engine:84 hardcodes "1ns"; eval $time=raw now/$realtime=now as f64; const_delay_ticks ratio=1. spec docs/preview/08:157-161; goals 01:45 측정기준.
   - **설계:** delay는 elaborate에서 tick로 스케일(IR 형상 불변→골든 unflipped, format_version bump 불필요). $time/$realtime만 엔진서 per-process M 필요. preprocess region(확장 offset) ↔ 모듈 span 같은 좌표계라 glue에서 해석.
 - [x] **[BLOCKER·P1]** Add `**` (and AShl/AShr) to the compile-time constant evaluator — `parameter = 2**N` silently folds to 0 — ✅ 2026-06-05 (`const_eval_in_scope` folds Pow/AShl/AShr; overflow saturates→u32::MAX→loud width-cap; tests `const_eval_power_operator`, `const_eval_arith_shift_operators`). 남은 폴리시: u32→i64 폭 확대(음수/대형 파라미터)는 별도 MINOR.
@@ -268,6 +268,8 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 ## 진행 로그
 
 해결 시 한 줄씩 추가 (날짜 · 커밋 · 항목).
+
+- 2026-06-05 · timescale BLOCKER 완전 마무리: 스테이지드(.vu/.velab 트레일러 vcmp→velab→vrun, staged==one-shot byte-identical) + W-PP-TIMESCALE-DEFAULT(W1017 enum+doc-15 본문 승격, 실측 vita 발화) + doc-08 골든(라운딩 14.4→14·0.5→1·0.4→0/혼합 timescale global-min). 워크스페이스 378 green, 골든 unflipped.
 
 - 2026-06-05 · timescale S1 (BLOCKER 진행중): preprocess가 `timescale unit/precision`를 `TimeScale{unit_exp,prec_exp}`로 파싱 + 확장텍스트 offset region 테이블(PpResult.timescales) 노출. 파일순서 상속 기반. 3 테스트, 워크스페이스 368 green.
 - 2026-06-05 · always_comb/@* 배열 word-인덱스 민감도 누락 수정 (MAJOR). `collect_expr_reads`가 `Signal.word`를 재귀 → `always_comb y=mem[sel]`이 sel 변경 시 재발화. 회귀테스트 추가, 워크스페이스 353 green, 골든 unflipped.

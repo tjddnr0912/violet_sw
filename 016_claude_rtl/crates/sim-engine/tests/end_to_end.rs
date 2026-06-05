@@ -135,6 +135,36 @@ fn timescale_time_default_unscaled() {
     assert_eq!(out, "5\n");
 }
 
+#[test]
+fn timescale_rounding_doc08_case1() {
+    // doc-08 §정밀도 회귀 case 1: 1ns/100ps (M=10), round-half-away. #1.44→14.4→14
+    // ticks (1400ps); #0.05→0.5→1 tick (1500ps); #0.04→0.4→0 ticks (no advance).
+    // Total advanced time = 15 ticks (= 1.5ns), so $time truncates to 1.
+    let (ir, opts) = build_timescaled(
+        "`timescale 1ns/100ps\nmodule top; reg a; initial begin \
+         a=0; #1.44 a=1; #0.05 a=0; #0.04 a=1; $display(\"%0d\", $time); $finish; end endmodule\n",
+    );
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.sim_time, 15);
+    assert_eq!(out, "1\n");
+}
+
+#[test]
+fn timescale_mixed_modules_global_min_precision() {
+    // doc-08 case 2 idea: two modules with different timescales share the design-wide
+    // finest tick (100ps). fast (1ns/100ps, M=10) `#2.5`→25 ticks; slow (1us/10ns,
+    // M=10^(-6 − -10)=10^4) `#1`→10000 ticks. The later $finish bounds the run.
+    let (ir, opts) = build_timescaled(
+        "`timescale 1ns/100ps\nmodule fast; reg q; initial begin #2.5 q=1; end endmodule\n\
+         `timescale 1us/10ns\nmodule slow; reg r; initial begin #1 r=1; $display(\"%0d\", $time); $finish; end endmodule\n\
+         `timescale 1ns/100ps\nmodule top; fast f(); slow s(); initial #20000 ; endmodule\n",
+    );
+    let (res, out) = simulate_capture(&ir, opts);
+    // slow's #1 = 1us = 10000 ticks of 100ps; slow $time = 10000 / 10^4 = 1.
+    assert_eq!(res.sim_time, 10000);
+    assert_eq!(out, "1\n");
+}
+
 /// Elaborate `src` WITH the per-net hierarchical name side table (for VCD naming).
 fn build_named(src: &str) -> (sim_ir::SimIr, Vec<String>) {
     let (toks, le) = hdl_lexer::lex(src);

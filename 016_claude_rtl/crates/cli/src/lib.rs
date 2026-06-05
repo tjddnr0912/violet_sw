@@ -280,6 +280,17 @@ pub fn frontend_text_to_unit(
         .collect();
     let rt = hdl_preprocess::resolve_module_timescales(&modules, &pp.timescales);
     drop(modules); // release the borrow of `unit` before moving it
+                   // doc-08: a design with NO `timescale at all gets the 1ns/1ns base + one warning.
+    if pp.timescales.is_empty() {
+        sink.emit(LogEvent::Diagnostic(Diagnostic {
+            severity: Severity::Warning,
+            code: MsgCode::PpTimescaleDefault,
+            message: "no `timescale in the design; assuming the 1ns/1ns base".to_string(),
+            location: None,
+            context: Vec::new(),
+            sim_time: None,
+        }));
+    }
     Some((unit, rt))
 }
 

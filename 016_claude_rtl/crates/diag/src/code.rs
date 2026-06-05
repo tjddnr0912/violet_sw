@@ -44,6 +44,7 @@ msgcodes! {
     PpBadDirective         => ("E-PP-BAD-DIRECTIVE",       "VITA-E1013", Error,   "unknown compiler directive"),
     PpMacroRedefined       => ("W-PP-MACRO-REDEFINED",     "VITA-W1007", Warning, "`define redefines a macro with different text"),
     PpUndefUndefined       => ("W-PP-UNDEF-UNDEFINED",     "VITA-W1008", Warning, "`undef of a macro that was never defined"),
+    PpTimescaleDefault     => ("W-PP-TIMESCALE-DEFAULT",   "VITA-W1017", Warning, "no `timescale in the design; assuming the 1ns/1ns base"),
     // 2xxx PARSE
     DupUnit                => ("E-DUP-UNIT",                "VITA-E2001", Error,   "design unit redefined"),
     ParseUnexpectedToken   => ("E-PARSE-UNEXPECTED-TOKEN",  "VITA-E2002", Error,   "unexpected token"),

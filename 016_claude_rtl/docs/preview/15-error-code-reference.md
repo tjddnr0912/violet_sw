@@ -165,6 +165,18 @@ warning[VITA-W1003]: 'lint_off W-PARSE-IMPLICIT-NET' at alu.sv:2 never closed be
 
 해결: 대상 매크로 이름의 철자를 확인하거나, 정의 이후에만 `undef 한다.
 
+### VITA-W1017 · `W-PP-TIMESCALE-DEFAULT` (Warning)
+
+설계의 어떤 모듈도 `` `timescale ``을 선언하지 않았고 `--timescale` 플래그도 없다. 전역 시간 단위/정밀도를 기저값 `1ns/1ns`로 잠그고 경고만 발생한다(§08). 기저값은 OS·컴파일 순서와 무관한 상수이므로 결정성을 깨지 않는다.
+
+```verilog
+module top;            // `timescale 없음 → W-PP-TIMESCALE-DEFAULT
+  initial #2.5 $finish; // 2.5ns → 1ns 입도 반올림 = 3ns
+endmodule
+```
+
+해결: 의도한 단위/정밀도를 `` `timescale 1ns/1ps `` 형태로 파일 상단에 선언한다(부분 지정은 별개 코드 `W-PARSE-TIMESCALE-PARTIAL`/`E-PP-TIMESCALE-PARTIAL`).
+
 ---
 
 ## 2xxx · PARSE
