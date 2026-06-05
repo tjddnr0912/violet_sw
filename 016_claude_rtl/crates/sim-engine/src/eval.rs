@@ -10,10 +10,18 @@
 
 use sim_ir::{BinOp, ConstRepr, Expr, SelKind, SimIr, SysFuncId, UnOp};
 
-use crate::value::{and1, low_mask, not1, nwords, or1, xnor1, xor1, Value};
+use crate::value::{and_w, low_mask, not1, not_w, nwords, or_w, xnor_w, xor_w, Value};
 
-/// A per-bit 4-state primitive: `(v,u) op (v,u) -> (v,u)`.
-type BitOp = fn((u64, u64), (u64, u64)) -> (u64, u64);
+/// A word-parallel 4-state primitive: `(av,au, bv,bu) -> (rv,ru)`, 64 bits/op.
+type WordBinOp = fn(u64, u64, u64, u64) -> (u64, u64);
+
+/// Which reduction `reduce_word` performs (the N-forms negate the result).
+#[derive(Clone, Copy)]
+enum RedKind {
+    And,
+    Or,
+    Xor,
+}
 
 /// Read-only net access the evaluator needs. The engine state implements it.
 pub trait NetReader {
@@ -92,11 +100,15 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     self.negate(&a) // width-preserving, stays `w`
                 }
                 UnOp::BitNot => {
+                    // word-parallel 4-state complement; last partial word masked
+                    // (`not_w` sets the high "0&0" region to 1).
                     let a = self.eval_ctx(*operand, w, eff_signed);
                     let mut r = Value::zeros(a.width, eff_signed);
-                    for k in 0..a.width {
-                        let (v, u) = not1(a.get_vu(k));
-                        r.set_vu(k, v, u);
+                    for k in 0..nwords(a.width) {
+                        let (v, u) = not_w(a.val[k], a.unk[k]);
+                        let m = low_mask(a.width - 64 * k as u32);
+                        r.val[k] = v & m;
+                        r.unk[k] = u & m;
                     }
                     r
                 }
@@ -191,32 +203,61 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 Tri::False => Value::one1(),
                 Tri::Unknown => Value::x1(),
             },
-            UnOp::RedAnd => self.reduce(&a, and1),
-            UnOp::RedNand => self.reduce_not(&a, and1),
-            UnOp::RedOr => self.reduce(&a, or1),
-            UnOp::RedNor => self.reduce_not(&a, or1),
-            UnOp::RedXor => self.reduce(&a, xor1),
-            UnOp::RedXnor => self.reduce_not(&a, xor1),
+            UnOp::RedAnd => self.reduce_bit(&a, RedKind::And, false),
+            UnOp::RedNand => self.reduce_bit(&a, RedKind::And, true),
+            UnOp::RedOr => self.reduce_bit(&a, RedKind::Or, false),
+            UnOp::RedNor => self.reduce_bit(&a, RedKind::Or, true),
+            UnOp::RedXor => self.reduce_bit(&a, RedKind::Xor, false),
+            UnOp::RedXnor => self.reduce_bit(&a, RedKind::Xor, true),
             _ => unreachable!("eval_unary_self only for reductions/lognot"),
         }
     }
 
-    fn reduce(&self, a: &Value, f: BitOp) -> Value {
+    /// Word-parallel 4-state reduction → the single result bit `(v, u)`. Scans the
+    /// val/unk plane words (the last masked to valid bits — a masked-out high bit
+    /// must NOT read as a definite-0 and force AND→0), accumulating the three facts
+    /// every reduction needs: any definite-0, any definite-1, any unknown, plus the
+    /// definite-1 popcount for XOR parity. Semantics match the old per-bit fold:
+    /// AND→0 if any 0 else x if any unknown else 1; OR dual; XOR→x if any unknown
+    /// else parity.
+    fn reduce_word(&self, a: &Value, kind: RedKind) -> (u64, u64) {
         if a.width == 0 {
-            return Value::zeros(1, false);
+            return (0, 0); // degenerate; matches the old zeros(1) seed
         }
-        let mut acc = a.get_vu(0);
-        for i in 1..a.width {
-            acc = f(acc, a.get_vu(i));
+        let mut any_unknown = false;
+        let mut any_known1 = false;
+        let mut any_known0 = false;
+        let mut ones: u32 = 0;
+        for k in 0..nwords(a.width) {
+            let m = low_mask(a.width - 64 * k as u32);
+            let av = a.val[k] & m;
+            let au = a.unk[k] & m;
+            let known1 = !au & av; // definite-1 bits (already within m)
+            let known0 = !au & !av & m; // !av sets high bits → re-mask
+            any_unknown |= au != 0;
+            any_known0 |= known0 != 0;
+            if known1 != 0 {
+                any_known1 = true;
+                ones += known1.count_ones();
+            }
         }
-        let mut r = Value::zeros(1, false);
-        r.set_vu(0, acc.0, acc.1);
-        r
+        match kind {
+            RedKind::And if any_known0 => (0, 0),
+            RedKind::And if any_unknown => (0, 1),
+            RedKind::And => (1, 0),
+            RedKind::Or if any_known1 => (1, 0),
+            RedKind::Or if any_unknown => (0, 1),
+            RedKind::Or => (0, 0),
+            RedKind::Xor if any_unknown => (0, 1),
+            RedKind::Xor => ((ones & 1) as u64, 0),
+        }
     }
 
-    fn reduce_not(&self, a: &Value, f: BitOp) -> Value {
-        let red = self.reduce(a, f);
-        let (v, u) = not1(red.get_vu(0));
+    /// `reduce_word` wrapped into a 1-bit `Value`, optionally inverted (the N-forms
+    /// RedNand/RedNor/RedXnor).
+    fn reduce_bit(&self, a: &Value, kind: RedKind, neg: bool) -> Value {
+        let (v, u) = self.reduce_word(a, kind);
+        let (v, u) = if neg { not1((v, u)) } else { (v, u) };
         let mut r = Value::zeros(1, false);
         r.set_vu(0, v, u);
         r
@@ -272,11 +313,11 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             BitAnd | BitOr | BitXor | BitXnor => {
                 let l = self.eval_ctx(lhs, w, eff_signed);
                 let r = self.eval_ctx(rhs, w, eff_signed);
-                let f: BitOp = match op {
-                    BitAnd => and1,
-                    BitOr => or1,
-                    BitXor => xor1,
-                    BitXnor => xnor1,
+                let f: WordBinOp = match op {
+                    BitAnd => and_w,
+                    BitOr => or_w,
+                    BitXor => xor_w,
+                    BitXnor => xnor_w,
                     _ => unreachable!("bitwise arm only handles BitAnd/Or/Xor/Xnor"),
                 };
                 self.bitwise(&l, &r, f)
@@ -341,15 +382,24 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         }
     }
 
-    fn bitwise(&self, l: &Value, r: &Value, f: BitOp) -> Value {
+    /// Element-wise 4-state bitwise op, computed 64 bits at a time over the
+    /// val/unk plane words (was a per-bit `get_vu`/`set_vu` loop). The last partial
+    /// word is masked to the valid bit count — `xnor_w` sets the high "0&0" region
+    /// to 1, which would otherwise corrupt bits ≥ width. Verified bit-for-bit
+    /// against the per-bit tables (`value::tests::word_vs_bit_parity`) and against
+    /// the >64-bit X/Z cases (`bitwise_wide_xz_word_boundary`).
+    fn bitwise(&self, l: &Value, r: &Value, f: WordBinOp) -> Value {
         let w = l.width.max(r.width);
         let both_signed = l.signed && r.signed;
         let le = l.clone().resize_keep_sign(w, both_signed);
         let re = r.clone().resize_keep_sign(w, both_signed);
         let mut out = Value::zeros(w, both_signed);
-        for i in 0..w {
-            let (v, u) = f(le.get_vu(i), re.get_vu(i));
-            out.set_vu(i, v, u);
+        let nw = nwords(w);
+        for k in 0..nw {
+            let (rv, ru) = f(le.val[k], le.unk[k], re.val[k], re.unk[k]);
+            let m = low_mask(w - 64 * k as u32); // full word unless this is the last
+            out.val[k] = rv & m;
+            out.unk[k] = ru & m;
         }
         out
     }

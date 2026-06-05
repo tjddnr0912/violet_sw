@@ -318,9 +318,65 @@ pub(crate) fn low_mask(width: u32) -> u64 {
     }
 }
 
-// ── per-bit 4-state primitives (the truth tables, explicit) ────────────────
+// ── word-parallel 4-state primitives (64 bits at once) ─────────────────────
+//
+// These compute the result (val, unk) plane WORDS for 64 independent 4-state bits
+// in one branchless pass, replacing the per-bit `and1`/`or1`/… fold inside the hot
+// element-wise paths. Encoding (per bit): 0=(v0,u0), 1=(v1,u0), X=(v0,u1),
+// Z=(v1,u1); `unk` (u) is the "not definite" mask, so Z behaves as X in
+// expressions (IEEE 1364 §4). Derivation is verified bit-for-bit against the
+// per-bit tables by `word_vs_bit_parity` below.
+//
+// NOTE on width: callers MUST mask the result's last partial word to the valid
+// bit count — `not_w`/`xnor_w` set the high "0&0" region to 1 (`!0 & !0`), which
+// would corrupt bits ≥ width if left unmasked. `and_w`/`or_w`/`xor_w` already
+// yield 0 there, but masking uniformly is cheap and keeps the value canonical.
+
+/// Word AND: 0 where either is definite-0; 1 where both definite-1; else X.
+#[inline]
+pub(crate) fn and_w(av: u64, au: u64, bv: u64, bu: u64) -> (u64, u64) {
+    let known0 = (!au & !av) | (!bu & !bv);
+    let known1 = (!au & av) & (!bu & bv);
+    (known1, !known0 & !known1)
+}
+
+/// Word OR: 1 where either is definite-1; 0 where both definite-0; else X.
+#[inline]
+pub(crate) fn or_w(av: u64, au: u64, bv: u64, bu: u64) -> (u64, u64) {
+    let known1 = (!au & av) | (!bu & bv);
+    let known0 = (!au & !av) & (!bu & !bv);
+    (known1, !known1 & !known0)
+}
+
+/// Word XOR: X where either is unknown; else val xor.
+#[inline]
+pub(crate) fn xor_w(av: u64, au: u64, bv: u64, bu: u64) -> (u64, u64) {
+    let ru = au | bu;
+    ((av ^ bv) & !ru, ru)
+}
+
+/// Word XNOR: X where either is unknown; else NOT(val xor).
+#[inline]
+pub(crate) fn xnor_w(av: u64, au: u64, bv: u64, bu: u64) -> (u64, u64) {
+    let ru = au | bu;
+    (!(av ^ bv) & !ru, ru)
+}
+
+/// Word NOT: X where unknown; else bit-complement of the definite value.
+#[inline]
+pub(crate) fn not_w(av: u64, au: u64) -> (u64, u64) {
+    (!av & !au, au)
+}
+
+// ── per-bit 4-state reference truth tables (test oracles) ──────────────────
+//
+// The hot paths use the word-parallel `*_w` forms above; these explicit per-bit
+// tables remain as the readable spec that `word_vs_bit_parity` checks `*_w`
+// against (so a future formula edit can't silently drift). `not1` is also the
+// non-test result inverter for the N-form reductions.
 
 /// One-bit AND: any definite 0 → 0; both definite 1 → 1; else (x/z, no 0) → X.
+#[cfg(test)]
 #[inline]
 pub(crate) fn and1(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
     let a0 = a.1 == 0 && a.0 == 0;
@@ -335,6 +391,7 @@ pub(crate) fn and1(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
 }
 
 /// One-bit OR: any definite 1 → 1; both definite 0 → 0; else (x/z, no 1) → X.
+#[cfg(test)]
 #[inline]
 pub(crate) fn or1(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
     let a1 = a.1 == 0 && a.0 == 1;
@@ -349,6 +406,7 @@ pub(crate) fn or1(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
 }
 
 /// One-bit XOR: any x/z operand → X; else val xor.
+#[cfg(test)]
 #[inline]
 pub(crate) fn xor1(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
     if a.1 != 0 || b.1 != 0 {
@@ -364,12 +422,6 @@ pub(crate) fn not1(a: (u64, u64)) -> (u64, u64) {
         return (0, 1);
     }
     ((!a.0) & 1, 0)
-}
-
-/// One-bit XNOR.
-#[inline]
-pub(crate) fn xnor1(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
-    not1(xor1(a, b))
 }
 
 #[cfg(test)]
@@ -397,6 +449,42 @@ mod tests {
         assert_eq!(not1(x), (0, 1));
         assert_eq!(not1(zero), (1, 0));
         assert_eq!(not1(one), (0, 0));
+    }
+
+    /// The word-parallel `*_w` primitives must agree bit-for-bit with the per-bit
+    /// `*1` tables for every 4-state input pair, across all 64 lane positions.
+    #[test]
+    fn word_vs_bit_parity() {
+        type Bit = (u64, u64);
+        let states: [Bit; 4] = [(0, 0), (1, 0), (0, 1), (1, 1)]; // 0,1,X,Z
+        for &(a0, a1) in &states {
+            for &(b0, b1) in &states {
+                // place the same bit in all 64 lanes
+                let (av, au) = (a0 * u64::MAX, a1 * u64::MAX);
+                let (bv, bu) = (b0 * u64::MAX, b1 * u64::MAX);
+                let expect = |f: fn(Bit, Bit) -> Bit| {
+                    let (v, u) = f((a0, a1), (b0, b1));
+                    (v * u64::MAX, u * u64::MAX)
+                };
+                assert_eq!(and_w(av, au, bv, bu), expect(and1), "AND {a0}{a1} {b0}{b1}");
+                assert_eq!(or_w(av, au, bv, bu), expect(or1), "OR {a0}{a1} {b0}{b1}");
+                assert_eq!(xor_w(av, au, bv, bu), expect(xor1), "XOR {a0}{a1} {b0}{b1}");
+                // XNOR = NOT(XOR), bit-exact
+                let (xv, xu) = not1(xor1((a0, a1), (b0, b1)));
+                assert_eq!(
+                    xnor_w(av, au, bv, bu),
+                    (xv * u64::MAX, xu * u64::MAX),
+                    "XNOR {a0}{a1} {b0}{b1}"
+                );
+            }
+            let (av, au) = (a0 * u64::MAX, a1 * u64::MAX);
+            let (nv, nu) = not1((a0, a1));
+            assert_eq!(
+                not_w(av, au),
+                (nv * u64::MAX, nu * u64::MAX),
+                "NOT {a0}{a1}"
+            );
+        }
     }
 
     #[test]

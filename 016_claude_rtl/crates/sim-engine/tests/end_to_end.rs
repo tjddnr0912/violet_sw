@@ -2467,6 +2467,34 @@ fn net_decl_initializer_is_continuous_assign() {
     assert_eq!(out, "g=1000 o=1110 r=9\ng=1010 o=1111\n");
 }
 
+// ── word-level 4-state bitwise across the 64-bit word boundary: an X in the high
+//    word must propagate per-bit (NOT / AND), proving the word-parallel path keeps
+//    IEEE x-semantics past bit 63. ──────────────────────────────────────────────
+
+#[test]
+fn reduction_wide_xz_word_boundary() {
+    // 71-bit vector, all 0 except bit 70 = X. &v sees known-0 → 0 (0 dominates x);
+    // |v sees no known-1 but an unknown → x. Masked high bits must not skew either.
+    let src = "module t; reg [70:0] v; \
+               initial begin v = 71'd0; v[70] = 1'bx; \
+                 $display(\"%b %b\", &v, |v); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "0 x\n");
+}
+
+#[test]
+fn bitwise_wide_xz_word_boundary() {
+    // a is 70-bit, all 0 except bit 65 = X. ~a: definite bits → 1, bit65 → x.
+    let src = "module t; reg [69:0] a, r; \
+               initial begin a = 70'd0; a[65] = 1'bx; r = ~a; \
+                 $display(\"%b\", r[66:64]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // r[66]=1, r[65]=x, r[64]=1.
+    assert_eq!(out, "1x1\n");
+}
+
 // ── SV `typedef enum {…} name;` — labels become integer constants (0,1,2,…); the
 //    enum-typed variable is a 32-bit int; `c = GREEN` assigns 1. Explicit `=expr`
 //    sets the running counter (BLUE follows GREEN). ─────────────────────────────

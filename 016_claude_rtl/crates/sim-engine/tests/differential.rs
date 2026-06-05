@@ -205,6 +205,31 @@ fn diff_enum_labels() {
 }
 
 #[test]
+fn diff_wide_reduction_word_boundary() {
+    // 100-bit reductions spanning two words — exercises word-level reduce_word
+    // (any-0 / any-1 / parity + last-word mask) against iverilog.
+    assert_matches_iverilog(
+        "wide_reduction",
+        "module tb; reg [99:0] v; \
+           initial begin v = 100'h0; v[0] = 1'b1; v[50] = 1'b1; v[99] = 1'b1; \
+             $display(\"%b %b %b %b\", &v, |v, ^v, ~|v); $finish; end endmodule",
+    );
+}
+
+#[test]
+fn diff_wide_bitwise_word_boundary() {
+    // 96-bit bitwise across the 64-bit word boundary — exercises the word-level
+    // and_w/or_w/xor_w/not_w paths + last-word masking against iverilog.
+    assert_matches_iverilog(
+        "wide_bitwise",
+        "module tb; reg [95:0] a, b; \
+           initial begin a = 96'hFFFF0000_FFFF0000_FFFF0000; \
+                         b = 96'h0F0F0F0F_0F0F0F0F_0F0F0F0F; \
+             $display(\"%h %h %h %h\", a & b, a | b, a ^ b, ~a); $finish; end endmodule",
+    );
+}
+
+#[test]
 fn diff_casez_priority() {
     assert_matches_iverilog(
         "casez",
