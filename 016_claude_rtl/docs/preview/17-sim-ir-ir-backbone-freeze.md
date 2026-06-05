@@ -225,7 +225,7 @@ pub enum ConstRepr { Numeric, StrUtf8 }                        // 수치 4-state
 - **(D-V1)** 2-plane `(val,unk)`, 비트맵 `00→0,10→1,01→X,11→Z`, word0-bit0=LSB 정규(포맷 일부).
 - **(D-V2)** `init:BitPacked` inline(자기완결 스냅샷). 자기-엣지 없음 → acyclic.
 - **(D-V3)** `BitPacked`에 `width` 필드 없음 — width는 부모(`NetVar.width`/`ConstVal.width`) 소유.
-- **(D-V4)** 범위 `(msb,lsb)`; 역순 `[0:N]`은 `msb<lsb`. `array_len:u32`(1-D); flat `init`이 `width*array_len` 비트. 다차원 → Phase-2 `dims:Vec<u32>` re-freeze.
+- **(D-V4)** 범위 `(msb,lsb)`; 역순 `[0:N]`은 `msb<lsb`. `array_len:u32`(flat 원소 수); flat `init`이 `width*array_len` 비트. **다차원 UNPACKED 배열은 elaborate에서 row-major 평탄화(`i*s0+…`)로 단일 `array_len`+단일 word ExprId에 매핑 → IR 형상 무변경(골든 불변).** per-dim 크기/lo는 elaborate-로컬 사이드테이블에만. PACKED 다차원·동적/연관 배열만 Phase-2 `dims:Vec<u32>` re-freeze 대상.
 - **(D-V5)** `NetKind`=4 MVP kind; `tri/wand/wor` → Phase-2. genvar/param/localparam은 elaboration 시 `consts`로 fold(`NetVar` 아님).
 - **(D-V6)** `ConstRepr{Numeric,StrUtf8}`로 format/string 리터럴을 수치 operand와 **구조적** 구분 — `$display` format 표현 명확.
 
@@ -340,7 +340,7 @@ node-kind당 append-only `Vec` 1개 = 재로드 시 포인터 fixup 0.
 | intra-assign delay `lhs = #5 rhs` | `BlockingAssign`/`NonblockingAssign`에 `delay:Option<u32>` |
 | named `event` + `->ev` | `WaitCause::Named` 이미 있음; `Stmt::TriggerEvent` 추가 |
 | net types `tri/wand/wor`, drive strength | `NetKind` 확장 / strength 필드 |
-| 다차원 packed/unpacked array | `NetVar.array_len:u32` → `dims:Vec<u32>` |
+| 다차원 PACKED / 동적·연관 array | `NetVar.array_len:u32` → `dims:Vec<u32>` (UNPACKED 다차원은 elaborate 평탄화로 이미 처리됨 — re-freeze 불요) |
 | struct/union/enum/typedef | `NetKind` 확장(packed struct는 `BitPacked` fit); unpacked→`dims` |
 | interface ref | `Instance`-인접 arena + 새 `Expr`/`Lvalue` leaf |
 | `real`/`realtime` 저장 | **✅ DONE — 의도적 sim-ir re-freeze (format_version 2→3).** 당초 "re-freeze 아님(별도 비해시 lane)" 결정을 **의도적으로 번복**: `NetKind::Real` + `ConstRepr::Real`(둘 다 fieldless) + `SysFuncId::{Rtoi,Itor,RealToBits,BitsToReal}` 4종 추가. f64는 **f64 필드 없이** `f64::to_bits()→u64`로 기존 `BitPacked.val[0]`에 저장(width=64, unk=[0]) → no-float derive 가드(usize/f32/f64 reject) 그대로 만족 + reals가 골든 IR/결정성에 **참여**(side-lane보다 엄격히 깨끗). 루트 해시 1회 flip → `EXPECTED_SIMIR_HASH` 재pin(`EXPECTED_PROCESS_HASH`는 불변=정상 sanity gate), 전 `.velab`/`.vu`는 FORMAT 게이트에서 stale 거부(의도된 staleness). 엔진의 `is_real` 플래그는 비해시 런타임 `Value`/`NetSlot`에만 존재(IR 불침투). 상세: `docs/superpowers/plans/2026-06-04-real-domain-spec.md`. |

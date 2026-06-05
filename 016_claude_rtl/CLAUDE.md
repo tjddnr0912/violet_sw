@@ -2,7 +2,7 @@
 
 오픈소스 Rust RTL 시뮬레이터. CLI: `vita`(원샷) / `vcmp`(compile) / `velab`(elaborate) / `vrun`(simulate). SystemVerilog 합성가능 RTL 서브셋(Verilog-2005 RTL 전부 포함)이 Phase-1 MVP.
 
-> **상태:** 설계 문서 완비(`docs/preview/00–17`) + 첫 코드 구현 진행 중. **PR1-B·PR2·M3 origin/main 머지 완료.** SPEC이 코드를 앞서며, `docs/preview/`가 단일 진실 공급원.
+> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 시뮬레이션해 VCD+stdout 산출. timescale(doc-08 전체 모델)·다차원 unpacked 배열·VCD 계층 naming·casex/casez·fork-join·func/task 등 Phase-1 합성 RTL 대부분 구현·검증(378 테스트 green). 잔여 작업은 `docs/REMAINING_WORK.md` 체크리스트 참조. SPEC `docs/preview/`가 여전히 단일 진실 공급원.
 
 ## 실행 (cargo-only · build.rs 없음)
 
@@ -21,20 +21,22 @@ MSRV **1.82** (`rust-toolchain.toml` 고정), **edition 2021**(edition 2024는 r
 |---|---|
 | 파이프라인 | preprocess→lex→parse→elaborate→sim-ir→sim-engine→VCD (parse까지 언어의존, 이후 중립) |
 | 결정성 | `#[derive(SchemaHash)]` 구조적 형상 해시로 `.velab`/`.vu` staleness 게이트, 3-OS 바이트 동일 (BTree-only, usize/float 금지, span-free) |
-| 골든 루트 | `sim_ir::SimIr` (M3). 형상 변경 시 루트 해시 flip → `format_version` bump + 전 `.velab` 재생성 |
+| 골든 루트 | `sim_ir::SimIr`. 형상 변경 시 루트 해시 flip → `format_version` bump(현재 **3**, real 진화) + 전 `.velab` 재생성. 엔진-facing 사이드테이블(fork_modes·net_names·proc_multipliers)은 `SimOpts`로 out-of-band → 골든 무영향 |
 | 직렬화 | `serde` + `postcard 1.x` 단일 인코더, `blake3` 다이제스트 |
 
-## 주요 크레이트 (실코드 / stub)
+## 주요 크레이트 (거의 전부 실코드; stub은 2개)
 
 | crate | 역할 | 상태 |
 |---|---|---|
-| `diag` | Severity + MsgCode(36, doc-15 bijection 게이트) + LogEvent/LogSink (leaf, IO-free) | 실코드 |
-| `vita-schema` | SchemaShape trait + ShapeRegistry + blake3 `schema_hash` (leaf) | 실코드 |
-| `vita-artifact-derive` | `#[derive(SchemaHash)]` proc-macro (usize/f32 거부 가드) | 실코드 |
-| `sim-ir` | 언어중립 IR — SuspendState 폐포 + IR 백본(Expr/Stmt/Terminator/NetVar/SimIr 루트) | 실코드 (M3) |
-| `vita-artifact` | 단계 산출물 컨테이너 헤더 + schema_hash 게이트 (`format_version=2`) | 실코드 (헤더; 본문 M3+) |
-| `cli` | `vita`/`vcmp`/`velab`/`vrun` multicall (argv[0] 디스패치) | stub |
-| 나머지 9개 | hdl-preprocess/lexer/parser/ast · elaborate · sim-engine · hdl-builtins · vcd-writer · vita-log | stub |
+| `cli` | `vita`/`vcmp`/`velab`/`vrun` multicall — 전 파이프라인 구동 + timescale 배선 | **실코드** |
+| `hdl-preprocess` | `` `define ``/`` `include ``/`` `ifdef ``/`` `timescale `` 파싱 + SourceMap | **실코드** |
+| `hdl-lexer`·`hdl-parser`·`hdl-ast` | logos 토크나이저 · hand-RD+Pratt 파서 · AST | **실코드** |
+| `elaborate` | AST→sim-ir lowering(모듈/generate/func-task/다차원배열/timescale 등) | **실코드** |
+| `sim-engine` | 이벤트구동 IEEE-1364 스케줄러 + eval + VCD 방출 | **실코드** |
+| `vcd-writer` | 계층 `$scope`/`$var` VCD 출력 | **실코드** |
+| `sim-ir` | 언어중립 IR(Expr/Stmt/Terminator/NetVar/SimIr 루트) | 실코드 |
+| `vita-artifact`(+derive)·`vita-schema`·`diag` | 산출물 헤더+게이트(`format_version=3`) · SchemaHash · MsgCode(44, doc-15 bijection) | 실코드 |
+| `hdl-builtins`·`vita-log` | $task 핸들러 추출 대상 · 로그 tee | **stub** (각 1줄; 기능은 sim-engine/cli에 인라인) |
 
 ## 상세 문서 (`docs/preview/`)
 

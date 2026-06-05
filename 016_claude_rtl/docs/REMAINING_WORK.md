@@ -141,7 +141,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** builtins.rs:139 comment 'initial dump of every net (array word 0 in v1)'; word0()/full_snapshot (lib.rs:178-200) extract word 0; declare loop (125-131) declares one $var per net at nv.width with no per-word expansion. No end_to_end.rs test dumps a `reg[..] m[..]` to VCD.
   - **내용:** $dumpvars on a module with a memory is in scope; today only word0 reaches the VCD and even that is unverified for arrays — a future fix/regression goes unnoticed.
   - **조치:** Add a test that $dumpvars a small memory and asserts the $var lines / value changes; decide and document whether per-word expansion is in v1 or explicitly deferred, then assert the chosen behavior.
-- [ ] **[MAJOR·P1]** Add coverage for non-zero/descending UNPACKED array bounds (mem[1:4], mem[3:0])
+- [x] **[MAJOR·P1]** Add coverage for non-zero/descending UNPACKED array bounds (mem[1:4], mem[3:0]) — ✅ 2026-06-05 (array_nonzero_base/descending_base/2d_nonzero_base 3 테스트, 정규화 커밋서 추가)
   - **근거:** All unpacked dims in tests are [0:N] zero-based ascending (end_to_end.rs:1581,1594,1610,1661,1708; elaborate tests.rs:639). No test declares `reg [7:0] m[1:4]` or `[3:0]`.
   - **내용:** The non-normalization corruption (see correctness section) has zero coverage, so any change is invisible; the multi-dim flattening stride is only ever exercised on zero-based ascending dims.
   - **조치:** Add elaborate/engine tests for `reg [7:0] m[1:4]` and `[3:0]`, asserting the corrected (normalized) addressing so the behavior is locked.
@@ -183,15 +183,15 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Docs & housekeeping
 
-- [ ] **[MAJOR·—]** Rewrite CLAUDE.md crate table — it marks the entire working pipeline as 'stub'
+- [x] **[MAJOR·—]** Rewrite CLAUDE.md crate table — it marks the entire working pipeline as 'stub' — ✅ 2026-06-05 (상태·크레이트표·format_version=3·MsgCode 44 정정; cli/preprocess/parser/elaborate/sim-engine/vcd-writer=실코드, stub은 hdl-builtins/vita-log 2개뿐)
   - **근거:** CLAUDE.md:36 labels cli 'stub'; :37 labels '나머지 9개' (hdl-preprocess/lexer/parser/ast·elaborate·sim-engine·hdl-builtins·vcd-writer·vita-log) all 'stub'; :5 'first code in progress'. Reality: cli has real run_vita(335)/run_vcmp(535)/run_velab(590)/run_vrun(647); 352 #[test] across crates; full pipeline works.
   - **내용:** The single most misleading doc in the repo — a reader would conclude the simulator doesn't work, when one-shot vita and staged vcmp/velab/vrun are both functional.
   - **조치:** Mark cli/hdl-preprocess/hdl-lexer/hdl-parser/hdl-ast/elaborate/sim-engine/vcd-writer as 실코드; update line 5 to reflect the completed pipeline (one-shot + staged).
-- [ ] **[MAJOR·—]** Document the shipped multi-dim unpacked-array flattening (undocumented in docs/preview)
+- [x] **[MAJOR·—]** Document the shipped multi-dim unpacked-array flattening (undocumented in docs/preview) — ✅ 2026-06-05 (doc-17 D-V4 + re-freeze 표 정정: unpacked 다차원=elaborate 평탄화, IR 무변경)
   - **근거:** HEAD 32830d9 'multi-dimensional unpacked-array support (row-major flattening)'. grep for row-major/suffix-product/array_dims/다차원 unpacked across docs/preview/{17,06}, 02-arrays.md, CLAUDE.md → ZERO hits. Freeze table 01:77 lists only '벡터·packed array'.
   - **내용:** The rationale (elaborate-local array_dims side-table, suffix-product stride, deliberate no-IR-refreeze, loud E3009 reject of partial-slice/over-index) lives only in memory + code comments.
   - **조치:** Add an impl-note (02-arrays.md and/or CHANGELOG): multi-dim unpacked supported via elaborate-time row-major flattening (no IR change); partial-slice/over-index are E3009-rejected; the four 1-D-inherited OBSERVATIONS apply.
-- [ ] **[MAJOR·P1]** Reconcile doc-08 timescale spec / goals.md:45 criterion with the unimplemented precision model
+- [x] **[MAJOR·P1]** Reconcile doc-08 timescale spec / goals.md:45 criterion with the unimplemented precision model — ✅ 2026-06-05 (timescale 전체 모델 구현으로 goals.md:45 측정기준 충족 — 연기 불요)
   - **근거:** Same code as the timescale BLOCKER (hdl-preprocess:1219 discard, sim-engine:84 hardcoded '1ns', sched.rs:230 raw `d as u64`). doc-08:79-114,157-161 prescribes a detailed integer-tick precision model; goals 01:45 makes it a measurable success criterion the code can't meet.
   - **내용:** Largest authored-spec-vs-code gap; either implement (see BLOCKER) or stop the spec claiming a non-existent capability.
   - **조치:** Implement per the timescale BLOCKER, OR explicitly mark doc-08's precision model + goals.md:45 criterion as Phase-1.x/deferred.
@@ -199,11 +199,11 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** sim-engine/src/lib.rs:15-16 lists '$monitor/$strobe (stubbed as one-shot $display)' + 'fork/join DEFERRED' — contradicted by builtins.rs:43-67 (postponed FmtCapture FIFO, MonitorState change-detect), sched.rs:474 flush_postponed, and real fork (lib.rs:41,139). elaborate/src/lib.rs:3210 says 'read-set inference deferred' but it's implemented at 3091-3158 (test passes). cli/src/lib.rs:410 + main.rs:2-3 call vcmp/velab/vrun 'stubs' though fully wired.
   - **내용:** Misleads an auditor into thinking mandatory features are stubbed; could mask a real regression if someone trusts the comment. No functional defect.
   - **조치:** Update the doc comments at sim-engine/src/lib.rs:15-19, elaborate/src/lib.rs:3210, cli/src/lib.rs:410, cli/src/main.rs:2-3 to reflect implemented behavior; keep only genuinely deferred items (force/release, real-number, recursive func/task, multi-instance hierarchy, full 17-region).
-- [ ] **[MINOR·—]** Update CLAUDE.md format_version (says 2; code is 3) and drop the '본문 M3+' caveat
+- [x] **[MINOR·—]** Update CLAUDE.md format_version (says 2; code is 3) and drop the '본문 M3+' caveat — ✅ 2026-06-05 (CLAUDE.md 크레이트표 갱신 시 동반)
   - **근거:** CLAUDE.md:35 says format_version=2 and '실코드 (헤더; 본문 M3+)'. vita-artifact/src/header.rs:15 `CURRENT_FORMAT_VERSION: u32 = 3` (bumped at 1b4a652 for real/realtime IR); lib.rs:8 exports read/write_velab/vu; header.rs:61-68 writes header++body. Staged bodies are real (commit 3f63177).
   - **내용:** The version bump re-pinned the golden SimIr hash and invalidated prior .velab; the 'body deferred' caveat is obsolete (staged bodies round-trip byte-identical to one-shot).
   - **조치:** Update CLAUDE.md:35 to format_version=3, note real/realtime support, and drop the '본문 M3+' caveat.
-- [ ] **[MINOR·—]** Amend doc-17: multi-dim unpacked handled by flattening, not the Phase-2 dims:Vec<u32> re-freeze
+- [x] **[MINOR·—]** Amend doc-17: multi-dim unpacked handled by flattening, not the Phase-2 dims:Vec<u32> re-freeze — ✅ 2026-06-05
   - **근거:** doc-17:228 '`array_len:u32`(1-D); 다차원 → Phase-2 `dims:Vec<u32>` re-freeze'; :343 maps multi-dim → dims:Vec<u32>. HEAD 32830d9 shipped multi-dim unpacked WITHOUT an IR re-freeze (golden hash unflipped).
   - **내용:** Spec frames multi-dim as a future IR-widening event; implementation chose elaborate-time flattening. dynamic/associative/queue legitimately still need the re-freeze — only the static-unpacked claim is stale.
   - **조치:** Amend doc-17 §(D-V4)/type-map: static multi-dim UNPACKED is elaborate-flattened (no re-freeze); dims:Vec<u32> re-freeze reserved for dynamic/associative/queue only.
