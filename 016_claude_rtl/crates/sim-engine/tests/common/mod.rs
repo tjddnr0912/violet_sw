@@ -63,17 +63,49 @@ pub fn build(src: &str) -> sim_ir::SimIr {
     ir.expect("elaborate returned None")
 }
 
+/// Cargo-guaranteed-writable scratch dir for integration tests. `std::env::temp_dir`
+/// can be sandboxed/non-writable under the test harness (its `$dumpfile` `File::create`
+/// would then silently fail and emit no VCD), so use `CARGO_TARGET_TMPDIR` instead.
+fn tmp_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+}
+
 /// Run `ir` on `backend`, capturing stdout. The VCD is redirected to a per-`tag`
 /// temp file so the repo CWD is never littered (P6/P5 compare bytes via the
 /// in-memory path, not these files). Returns `(SimResult, stdout)`.
 pub fn run_on(ir: &sim_ir::SimIr, backend: Backend, tag: &str) -> (SimResult, String) {
-    let tmp = std::env::temp_dir().join(format!("vitamin_corpus_{tag}.vcd"));
+    let tmp = tmp_dir().join(format!("vitamin_corpus_{tag}.vcd"));
     let opts = SimOpts {
         backend,
         vcd_path_override: Some(tmp.to_string_lossy().into_owned()),
         ..SimOpts::default()
     };
     simulate_capture(ir, opts)
+}
+
+/// [P5] Run `ir` on `backend`, capturing stdout AND the emitted VCD bytes. The VCD
+/// is written to a per-(tag,backend) temp file (so two backends never clash), read
+/// back, then removed. Returns `(SimResult, stdout, Some(vcd_bytes))`, or `None` VCD
+/// for a design with no `$dumpvars`. Because both backends run with IDENTICAL opts
+/// (same `$date`/`$version`/timescale and a path that never appears in the file
+/// body), the two VCDs are byte-identical iff the simulation behavior matches — no
+/// normalization needed (unlike the iverilog oracle, whose preamble always differs).
+pub fn run_capture(
+    ir: &sim_ir::SimIr,
+    backend: Backend,
+    tag: &str,
+) -> (SimResult, String, Option<Vec<u8>>) {
+    let path = tmp_dir().join(format!("vitamin_p5_{tag}_{backend:?}.vcd"));
+    let _ = std::fs::remove_file(&path); // clear stale so a no-dump design ⇒ None
+    let opts = SimOpts {
+        backend,
+        vcd_path_override: Some(path.to_string_lossy().into_owned()),
+        ..SimOpts::default()
+    };
+    let (res, out) = simulate_capture(ir, opts);
+    let vcd = std::fs::read(&path).ok();
+    let _ = std::fs::remove_file(&path);
+    (res, out, vcd)
 }
 
 /// A generated design: a stable `name` (for diagnostics) and its SV `src`.
