@@ -150,10 +150,15 @@ impl<'a> SimState<'a> {
 
     // ── reads ────────────────────────────────────────────────────────────
 
-    /// Whole-net value as a `BitPacked` slice for the requested array word.
+    /// Whole-net value as a `BitPacked` slice for the requested array word. An
+    /// out-of-range word index reads all-X (spec E-RUN-RANGE), NOT a clamp to the
+    /// last element — clamping silently returned a valid neighbor's value.
     fn net_word_packed(&self, net: u32, word: Option<u32>) -> BitPacked {
         let slot = &self.nets[net as usize];
-        let w = word.unwrap_or(0).min(slot.array_len.saturating_sub(1));
+        let w = word.unwrap_or(0);
+        if w >= slot.array_len {
+            return Value::xs(slot.width.max(1), false).into_bitpacked(slot.width);
+        }
         slice_word(&slot.cur, slot.width, w)
     }
 
@@ -273,9 +278,14 @@ impl<'a> SimState<'a> {
     ) -> bool {
         let net = c.net as usize;
         // `c.word` is an ExprId; `raw_word` is the caller-evaluated array index
-        // (the runtime `k` of `mem[k] = …`). None ⇒ index 0.
+        // (the runtime `k` of `mem[k] = …`). None ⇒ index 0. An out-of-range word
+        // write is IGNORED (spec E-RUN-RANGE) — clamping to the last element would
+        // silently corrupt a valid neighbor.
         let word = if c.word.is_some() {
-            raw_word.min(self.nets[net].array_len.saturating_sub(1))
+            if raw_word >= self.nets[net].array_len {
+                return false;
+            }
+            raw_word
         } else {
             0
         };

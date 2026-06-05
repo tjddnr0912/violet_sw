@@ -1656,6 +1656,22 @@ fn always_comb_tracks_array_index_signal() {
 }
 
 #[test]
+fn array_oob_word_read_is_x_write_ignored() {
+    // REMAINING_WORK item: an out-of-range array WORD index reads all-X and a write
+    // is IGNORED — not clamped to the last element (which silently returned/corrupted
+    // a valid neighbor). E-RUN-RANGE semantics.
+    let src = "module t; reg [7:0] m[0:3]; integer i; \
+               initial begin \
+                 m[3] = 8'd33; i = 9; \
+                 m[i] = 8'd77;                     /* OOR write → ignored, m[3] intact */ \
+                 $display(\"%0d %b\", m[3], m[i]);  /* m[3]=33 ; OOR read → xxxxxxxx */ \
+                 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "33 xxxxxxxx\n");
+}
+
+#[test]
 fn array_2d_runtime_fill() {
     // grid[i][j] = i*10 + j over a nested loop with RUNTIME indices, read back.
     let src = "module t; reg [7:0] g[0:1][0:2]; integer i, j; \
