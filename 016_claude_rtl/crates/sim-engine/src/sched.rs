@@ -338,11 +338,33 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     fn run_body(&mut self, proc: u32, block: u32) -> Step {
         match self.st.backend {
             crate::Backend::Interpreter => run_process(self, proc, block),
-            // STAGE B: no VM yet → interpret every body (fall-through). Stage C
-            // replaces this arm with `if codegen_able(proc) { vm_run(..) } else
-            // { run_process(..) }`.
-            crate::Backend::Bytecode => run_process(self, proc, block),
+            crate::Backend::Bytecode => {
+                // P9: codegen-able (suspend-free) bodies take the VM path; everything
+                // else (Delay/Wait/Fork/Call/Disable) permanently uses the interpreter.
+                // A design routinely MIXES the two — e.g. `always_ff` is codegen-able
+                // while its testbench's `initial #1 …` is not (P9b proves the mix is
+                // byte-identical to all-interpreter).
+                let tmpl = self.activity_template(proc) as usize;
+                let codegen_able = crate::backend::is_codegen_able(
+                    &self.st.ir.stmts,
+                    &self.st.ir.processes[tmpl].body,
+                );
+                if codegen_able {
+                    self.vm_run_body(proc, block)
+                } else {
+                    run_process(self, proc, block)
+                }
+            }
         }
+    }
+
+    /// Bytecode-VM body entry (Stage C). The P9 predicate has already confirmed this
+    /// body is suspend-free (only Goto/Branch/Return, no Disable). Until the VM lands,
+    /// it delegates to the reference interpreter, so the Bytecode backend stays
+    /// byte-identical (locked by the P5 gate); Stage C replaces the delegation with
+    /// lower-to-bytecode + execute-on-VM, calling the SAME kernel write phase.
+    fn vm_run_body(&mut self, proc: u32, block: u32) -> Step {
+        run_process(self, proc, block)
     }
 
     pub fn run(&mut self) -> FinishReason {

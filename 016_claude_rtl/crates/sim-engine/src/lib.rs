@@ -22,6 +22,7 @@
 //! multi-word arithmetic. All three engine-facing side tables ride out-of-band in
 //! `SimOpts` and never enter the frozen `SimIr`.
 
+mod backend;
 mod builtins;
 mod eval;
 mod exec;

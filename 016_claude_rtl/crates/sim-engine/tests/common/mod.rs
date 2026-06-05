@@ -23,9 +23,21 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use diag::{LogEvent, LogSink};
 use sim_engine::{simulate_capture, Backend, SimOpts, SimResult};
+
+/// Process-unique counter for temp VCD filenames. cargo runs test functions in
+/// PARALLEL threads; two tests that generate the same-named design (e.g. the same
+/// corpus seed) would otherwise write/read the SAME temp path and race — corrupting
+/// the byte comparison. A monotonic suffix makes every run's path unique.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn unique_vcd_path(tag: &str, backend: Backend) -> std::path::PathBuf {
+    let n = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    tmp_dir().join(format!("vitamin_{tag}_{backend:?}_{n}.vcd"))
+}
 
 /// Collects elaborate-time diagnostic strings so the build helper can assert no
 /// hard (Error/Fatal) diagnostics were emitted.
@@ -74,7 +86,7 @@ fn tmp_dir() -> std::path::PathBuf {
 /// temp file so the repo CWD is never littered (P6/P5 compare bytes via the
 /// in-memory path, not these files). Returns `(SimResult, stdout)`.
 pub fn run_on(ir: &sim_ir::SimIr, backend: Backend, tag: &str) -> (SimResult, String) {
-    let tmp = tmp_dir().join(format!("vitamin_corpus_{tag}.vcd"));
+    let tmp = unique_vcd_path(tag, backend);
     let opts = SimOpts {
         backend,
         vcd_path_override: Some(tmp.to_string_lossy().into_owned()),
@@ -95,7 +107,7 @@ pub fn run_capture(
     backend: Backend,
     tag: &str,
 ) -> (SimResult, String, Option<Vec<u8>>) {
-    let path = tmp_dir().join(format!("vitamin_p5_{tag}_{backend:?}.vcd"));
+    let path = unique_vcd_path(tag, backend);
     let _ = std::fs::remove_file(&path); // clear stale so a no-dump design ⇒ None
     let opts = SimOpts {
         backend,
