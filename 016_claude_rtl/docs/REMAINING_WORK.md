@@ -291,16 +291,44 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 - [ ] doc-01 §v1단순화의 산술-레인 문구가 옛 경계(64bit)로 남음 — 실제 128u/64s. (REMAINING_WORK 본문은 정정됨)
 - [ ] hdl-reference/system-tasks가 `$stime` 등을 "Phase1 완전지원"으로 표기하나 코드 미구현(매뉴얼 005가 정확).
 
+> **참고(2026-06-06 재분류):** 위 doc-01 drift + `%t`는 *인터프리터 문서부채*로, 코드젠과 **결합 없음**(6-매핑/3-비평 워크플로 wzeyxgedk가 P1/P2로 분류 후 prereq 목록에서 제외). 컴파일드 백엔드 선결과 별개 트랙. 원하면 opportunistic 정리.
+
 ### Stage B — 컴파일드 이벤트구동 백엔드 선결 (코드젠 착수 전, 미착수)
-IR 안정성은 이미 충분(동결 SimIr·format_version 3·SimOpts 사이드테이블 소비가능·결정성 척추 커널 잔류). 진짜 선결:
-- [ ] **[BLOCKING]** 커널 ABI seam 추출 — `exec.rs::run_process` 모놀리식을 Simulator/ProcessBody trait(read_net/write_lvalue/schedule_nba·resume/suspend_on/exec_fork/const-index eval)로 분리, 인터프리터를 그 뒤로 동작-무변경 리팩터(byte-equiv 증명).
-- [ ] **[BLOCKING]** 런타임 동적 가정 3종 정확 재현 or 범위제외: 배열인덱스 eval-time ExprId + u32::MAX OOR 센티넬 + E-RUN-RANGE / fork activity-id 아레나+barrier / frozen-BB PC suspend-resume. 실용 MVP=fork-free 직선바디만 컴파일.
-- [ ] **[RECOMMENDED]** 차분 하네스를 VCD-바이트 비교 + 랜덤 corpus로 확장 후 CI 게이트화(= 컴파일드==인터프리티드 강제). 이건 릴리스 신뢰도와도 겹침.
-- [ ] **[RECOMMENDED]** 코드젠/커널 ABI 버전 스탬프를 format_version과 별도 게이트.
 
-### Stage C — 컴파일드 이벤트구동 코드젠 MVP (미착수, Stage B 이후)
+> 2026-06-06 재작성 · 출처: 워크플로 `wzeyxgedk`(6 서브시스템 매핑 → 합성 → 3 적대적 비평 → 최종 병합, 11에이전트). 이전 4줄 스텁을 grounded 19항목 체크리스트로 대체. **순서는 의존성 위상정렬**(각 항목의 depends_on이 앞에 옴). `[B]`=BLOCKING, `[R]`=RECOMMENDED.
 
-### 잔여 in-scope (문서화됨; 행동 선택)
+| id | 항목 | 수준 | 의존 | 코드 근거 |
+|---|---|---|---|---|
+| **P0a** | 코드젠 **target form** 결정(emit-Rust / bytecode-VM / typed-IR2) | 🔴 B | — | `run_process`(exec.rs:26-160)는 Stmt/Terminator 트리워크 + `eval_ctx` 재귀(eval.rs:62-175); 3 형식 모두 context-width 재귀를 정확 재현해야. **P10의 "compile-time constant" 표현이 형식마다 다름** → 먼저 고정 |
+| **P0b** | **compile+load 메커니즘** + 결정성 스토리(런타임 rustc / cdylib+dlopen / static dispatch) | 🔴 B | P0a | repo는 cargo-only·**build.rs 금지**·MSRV-1.82·`--locked`(3-OS 바이트동일). emit-Rust면 런타임 툴체인 의존 도입 → 헤르메틱 `.velab→VCD` 계약 파기. **defining fork.** bytecode면 N/A(기록만) |
+| **P3** | **float/host-toolchain 결정성 계약** + cross-OS 바이트-diff CI 게이트(float corpus) | 🔴 B | P0b | `fmt_real`=Rust `{:.*e}`(builtins.rs:483,499); `%d`-on-real `round() as i64`(457); `dec_field_width`=`(n as f64*LOG10_2) as usize`(436-448)=>128bit %d 폭이 FMA/x87차로 흔들림. CI(ci.yml)는 OS간 **diff 안 함**(각자 하드코딩 골든) |
+| **P4** | **backend 선택 seam**(SimOpts/simulate) — net-write/VCD choke point는 **공유측**에 유지, frozen IR 무변경 | 🔴 B | P0b | `simulate()`(lib.rs:141,160-166)이 Scheduler 하드와이어. VCD는 엔진 내부 `File::create`($dumpfile, builtins.rs:112)+`write_lvalue→emit_vcd_change`(state.rs:387) eager 방출 → **이 choke point를 trait 공유측에 둬야** VCD 바이트 발산 차단. backend는 `net_names`/`proc_multipliers`처럼 out-of-band |
+| **P6** | 시드 결정적 **랜덤 corpus 생성기**(P5 입력) | 🟡 R→B | P3 | rand/proptest 0. 손 corpus(differential.rs ~12설계)는 OOR/X-index/wide-arith/sampling-moment 코너 미타격. 손-rolled LCG(MSRV-1.82 교훈상 crate 회피). **refactor 전에** 있어야 회귀 포착 |
+| **P5** | **컴파일드-vs-인터프리터 차분 게이트**(vita 자족, iverilog **비의존**), hard CI 게이트 | 🔴 B | P4,P6 | RECOMMENDED→**BLOCKING 승격**: P7b/P10/P11/P12 수용기준이 전부 "via P5". `differential.rs`는 **stdout-only**(96-103), `corpus-runner`는 1줄 스텁, iverilog VCD는 바이트비교 불가($version/id-code 상이)→stdout 오라클로만 분리. **신규 in-memory VCD 캡처**(현재 File만, builtins.rs:112) + 바이트 비교기 |
+| **P8** | 커널-콜 **순서/샘플링-모먼트 불변식 계약** 동결(eager per-write VCD 방출 포함) | 🔴 B | P7a→P7b | seam이 있어야 ABI 계약化, P5 바이트-diff 분류에 필수. 7 모먼트: cont-assign 선언순 fixpoint(sched.rs:190); NBA 샘플시점+`nba_seq` 정렬(802,554); blocking offset-at-stmt(exec.rs:69); in-body @ arm-snapshot(791); delayed `last_ca`(218); prev-refresh-LAST(658); **eager per-write VCD glitch**(state.rs:386) |
+| **P7a** | `run_process` **read/write-phase 분리**(mut-Scheduler aliasing 정리), byte-equiv, **백엔드 없음** | 🔴 B | P5 | 순수 인터프리터 리팩터(read-then-drop-then-write, exec.rs:68-71), 기존 419로 검증. 고위험 ABI 커밋(P7b)과 분리 |
+| **P7b** | body↔kernel **trait/ABI seam 도입**(코드젠 가능化 커밋) + 명시 suspend/resume 재진입 | 🔴 B | P7a,P9 | ~18 Scheduler 메서드+`builtins::dispatch`를 trait 뒤로. **resumable 재진입 필수**: Delay/Wait→`Step::Suspended`+resume BB 재진입(exec.rs:101-128); 순수 call-return fn으론 불가. P9 scope 결정과 공동설계 |
+| **P9** | scope 술어 = **positive allow-list**(suspend-free·fork-free·Call-free; 루프=Goto/Branch 허용) | 🔴 B | P5 | 초안 "straight-line"은 **사실오류**: for/while/forever=Branch back-edge(elaborate:4108-4136), bare always=implicit forever(3487). 제외={Fork,Call,Delay,Wait}+`WaitCause::Named`(arm=None 파킹, retain 미매치→**HANG**, sched.rs:794,637)+`Stmt::Disable`. 미지 variant는 **인터프리터 fallback** |
+| **P9b** | **mixed-backend per-run 바이트동일** 증명(한 run에 컴파일드+인터프리티드+cont-assign 혼재 == all-interp) | 🔴 B | P9,P5 | P9는 프로세스별 backend 혼재 암시, cont-assign은 별 caller(sched.rs:190). 컴파일드 바디가 `schedule_nba`를 다른 순서로 호출하면 `nba_seq` 재정렬→`apply_nba` 발산. P5 corpus에 혼재설계 필수 |
+
+### Stage C — 컴파일드 이벤트구동 코드젠 MVP (Stage B 이후 · **스펙/플랜/리뷰 후 착수**)
+
+> Stage B 11항목 전부 클리어 → 컴파일드 백엔드 **스펙+플랜 작성 → 리뷰 → 구현**. 아래는 그 구현 항목(IMPL)의 grounded 분해. `[I]`=IMPL.
+
+| id | 항목 | 의존 | 코드 근거(핵심) |
+|---|---|---|---|
+| **P10** | 정적 per-edge **width/sign 해석 패스** + width유도 X/Z poison-regime 분기 | P7b,P9 | `eval_ctx`(eval.rs:62-174) IEEE 5.4.1/5.5 per-context 재계산; w>64 signed/w>128 unsigned→X poison(439-444) 사이트별 선판정 |
+| **P11** | index/width/count expr 정적-vs-런타임 분류; `const_u32_of_expr`의 **shallow fold**+사이트별 fallback+OOR 센티넬 4 arm(read·write 양측) | P7b,P8,P9 | `const_u32_of_expr`(width.rs:306)는 의도적 shallow(Const/Add/Sub만); 사이트별 fallback 상이(width1/net-width). **더 똑똑한 fold 쓰면 발산** |
+| **P12a** | **네이티브 value 표현**(≤128=u64/u128 레지스터+X/Z plane, >128만 힙) + 전 구조연산 | P10,P11,P5 | doc-18:63 주 가속레버(Value `Vec<u64>` 힙제거). concat/replicate/select/shift-4096-cap(eval.rs:642) 모두 growable Vec 가정 → 레지스터 lowering |
+| **P12b** | **real(f64) 산술 도메인** bit-for-bit(is_real lane·NaN poison·±0.0·partial_cmp·int↔real) | P12a,P3 | Value.is_real(value.rs:43) 병렬 2-state f64; `%`/`**`→NaN, Div→±inf NOT X(eval.rs:418-423). no fast-math, P3 formatter 재사용 |
+| **P12c** | per-activation **prologue lowering**: `cur_time_mult` write-point(postponed 중 stale 포함)+dual delta-guard | P12a | `cur_time_mult`는 per-body 상수 아님 — 매 블록 fetch마다 mutable write(exec.rs:51-57); `flush_postponed`는 마지막 프로세스 값으로 평가(sched.rs:483). per-activation guard vs scheduler delta_count가 finish_reason 좌우 |
+| **P12d** | **$display/$strobe/$monitor 포맷엔진=인터프리티드 유지**(명시적 코드젠 경계, target 아님) | P7b,P3 | `format_args_str`(builtins.rs:297-421) printf 파서가 arg ExprId를 **lazy eval**; strobe/monitor는 postponed서 재평가(state.rs:32). 컴파일드 바디가 pre-eval하면 샘플링 깨짐 |
+| **P13** | **continuous-assign 코드젠 경로**(cont-assign=프로세스 바디 아님; settle이 같은 eval/write seam 재사용) | P12a,P9b | `settle_cont_assigns`(sched.rs:190) 선언순 fixpoint, 매 delta 인터리브. 프로세스-바디-only 코드젠은 `assign` 전부 인터프리티드 잔류 → 속도이득 0. **correctness prereq 아님**(인터프리티드 잔류로도 정확) |
+| **P14** | **성능 baseline + speedup 수용 게이트**(컴파일드가 *빠름*을 증명 — 프로젝트의 목적) | P5,P12a | 전 BLOCKING은 correctness-equiv뿐; speedup terminus 부재. P5와 함께 **조기** 측정(rustc/load 오버헤드가 작은 설계서 이득 잠식 가능). RECOMMENDED |
+| **P15** | content-addressed **코드젠 캐시 키** + **kernel-ABI 버전 스탬프**(format_version과 **독립** 4th 게이트 tier) | P7b,P0b | seam ABI는 SimIr shape 불변으로 바뀜 가능; `verify_header`는 format/schema_hash만(gate.rs:67). 두 설계가 같은 schema_hash → 캐시된 .so가 오통과. `composite_input_hash`(header.rs:45, 현재 `[0u8;32]` deferred)가 바로 그 content key. **format_version bump 아닌 독립 필드**. RECOMMENDED |
+| **P16** | ExprId/StmtId→**SourceLoc 사이드카**(컴파일드 경로 디버깅; frozen IR은 span-free) | P4 | SchemaHash는 span-free 요구 → SimIr에 위치필드 없음. CLI는 front-end `SourceMap`만(cli/lib.rs). "디버깅"이 목표면 out-of-band 사이드카(net_names 패턴) 필요. **correctness prereq 아님** · RECOMMENDED |
+
+### 잔여 in-scope (인터프리터 문서부채; 코드젠 무관 · 행동 선택)
 - [ ] **`%t`** 기본 필드폭/$timeformat 미구현 — 값은 정확. 매뉴얼 005·006에 한계로 문서화 완료(릴리스엔 충분). 구현은 %d arm 미러(저위험·golden 불변) — 원하면 Phase-1.x.
 
 ## 진행 로그
