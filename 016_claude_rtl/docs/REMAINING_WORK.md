@@ -299,8 +299,8 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 | id | 항목 | 수준 | 의존 | 코드 근거 |
 |---|---|---|---|---|
-| **P0a** | 코드젠 **target form** 결정(emit-Rust / bytecode-VM / typed-IR2) | 🔴 B | — | `run_process`(exec.rs:26-160)는 Stmt/Terminator 트리워크 + `eval_ctx` 재귀(eval.rs:62-175); 3 형식 모두 context-width 재귀를 정확 재현해야. **P10의 "compile-time constant" 표현이 형식마다 다름** → 먼저 고정 |
-| **P0b** | **compile+load 메커니즘** + 결정성 스토리(런타임 rustc / cdylib+dlopen / static dispatch) | 🔴 B | P0a | repo는 cargo-only·**build.rs 금지**·MSRV-1.82·`--locked`(3-OS 바이트동일). emit-Rust면 런타임 툴체인 의존 도입 → 헤르메틱 `.velab→VCD` 계약 파기. **defining fork.** bytecode면 N/A(기록만) |
+| **P0a** ✅ | 코드젠 **target form** = **바이트코드 VM** 확정 | 🔴 B | — | 사용자 결정 2026-06-06. cargo-only·build.rs금지·3-OS결정성 핀과 충돌하는 emit-Rust 탈락; doc-18:63 두 병목(tree-walk·Value힙) 제거하며 핀 보존. 결정기록=doc-18 §결정 기록 |
+| **P0b** ✅ | **compile+load** = **N/A**(in-process 바이트코드) | 🔴 B | P0a | 런타임 코드생성·로드 없음 → `.velab→VCD` 헤르메틱 무변경. VM opcode가 value.rs/eval.rs 동일 프리미티브 디스패치 → float 축 인터프리터와 byte동일(P3 부담 축소) |
 | **P3** | **float/host-toolchain 결정성 계약** + cross-OS 바이트-diff CI 게이트(float corpus) | 🔴 B | P0b | `fmt_real`=Rust `{:.*e}`(builtins.rs:483,499); `%d`-on-real `round() as i64`(457); `dec_field_width`=`(n as f64*LOG10_2) as usize`(436-448)=>128bit %d 폭이 FMA/x87차로 흔들림. CI(ci.yml)는 OS간 **diff 안 함**(각자 하드코딩 골든) |
 | **P4** | **backend 선택 seam**(SimOpts/simulate) — net-write/VCD choke point는 **공유측**에 유지, frozen IR 무변경 | 🔴 B | P0b | `simulate()`(lib.rs:141,160-166)이 Scheduler 하드와이어. VCD는 엔진 내부 `File::create`($dumpfile, builtins.rs:112)+`write_lvalue→emit_vcd_change`(state.rs:387) eager 방출 → **이 choke point를 trait 공유측에 둬야** VCD 바이트 발산 차단. backend는 `net_names`/`proc_multipliers`처럼 out-of-band |
 | **P6** | 시드 결정적 **랜덤 corpus 생성기**(P5 입력) | 🟡 R→B | P3 | rand/proptest 0. 손 corpus(differential.rs ~12설계)는 OOR/X-index/wide-arith/sampling-moment 코너 미타격. 손-rolled LCG(MSRV-1.82 교훈상 crate 회피). **refactor 전에** 있어야 회귀 포착 |

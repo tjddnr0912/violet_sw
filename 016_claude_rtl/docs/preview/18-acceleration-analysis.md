@@ -62,3 +62,29 @@
 ### vitamin 경로
 - **2a. 컴파일드 이벤트구동 (VCS/Xcelium 길) — 먼저.** 기존 이벤트 커널·`val`/`unk` 4-state·word化(①)를 **그대로 두고** 프로세스 바디(BB의 Stmt/Expr)만 네이티브(Rust) 코드로 lowering. eval-디스패치/트리워크/Value 힙할당 제거. **의미 100% 보존**(인터프리터가 골든), 중간 가속. vitamin의 이벤트구동 코어와 자연 정합.
 - **2b. 사이클기반 컴파일드 (Verilator 길) — 별도 공격적 모드.** combinational rank 정적 스케줄 + 클럭당 일괄 평가. 최대 가속이나 합성가능 서브셋·사이클 의미 제약. 2a 이후 옵트인 모드로.
+
+## 결정 기록 — 코드젠 substrate (P0a/P0b · 2026-06-06)
+
+> 컴파일드 백엔드 선결 체크리스트(`docs/REMAINING_WORK.md` Stage B)의 P0a/P0b를 확정한다. 출처: 워크플로 `wzeyxgedk` 6-매핑/3-비평 + 사용자 결정(2026-06-06).
+
+### P0a — target form = **바이트코드 VM** (확정)
+
+세 후보를 프로젝트 hard-constraint(cargo-only · `build.rs` 금지 · MSRV-1.82 핀 · `--locked` 3-OS 바이트동일) 기준으로 평가:
+
+| 형식 | 속도 | 신규 의존 | 결정성 핀 | 판정 |
+|---|---|---|---|---|
+| 바이트코드 VM | ~2-5× | 없음(순수 Rust) | ✅ 전부 보존 | **선택** |
+| 네이티브 Rust 방출 | 10-100× | 런타임 rustc/cc + libloading | ⚠️ host LLVM 재증명 필요 | 탈락(핀 충돌) |
+| 타입드 IR-2 | ~3-8× | 없음 | ✅ 보존 | 차선(작업량 대비 이득 작음) |
+
+**근거:** 네이티브 방출은 헤드라인 10-100×지만 런타임 호스트 툴체인 의존을 도입해 cargo-only·헤르메틱 `.velab→VCD`·3-OS 결정성 핀과 정면충돌한다(`build.rs`조차 금지하는 저장소에 런타임 `rustc`는 모순). vitamin의 goal #1은 *결정성*(README)이므로, 그 정체성을 깨지 않으면서 `doc-18:63`의 두 실측 병목 — **eval 트리워크 디스패치**(`run_process`의 `Stmt/Terminator` 재귀 + `EvalCtx::eval_ctx` 재귀)와 **`Value` 힙할당**(`Vec<u64>` per 연산) — 을 제거하는 바이트코드 VM을 선택한다. 인터프리터는 항상-가용 레퍼런스로 잔류, 바이트코드는 opt-in 가속 모드.
+
+**바이트코드에서 "compile-time constant"(P10) 표현:** 정적 width/sign·폴드된 index/width/count는 **상수 풀(immediate operand 또는 const-pool 인덱스)** 로 인코딩 — 별도 노드 타입(IR-2)이나 Rust 리터럴(emit-Rust)이 아니라 op의 즉치 피연산자. P11의 shallow-fold·사이트별 fallback은 바이트코드 *컴파일 시점*에 한 번 계산해 immediate로 굳힌다.
+
+### P0b — compile+load 메커니즘 = **N/A (in-process 바이트코드 인터프리터)**
+
+바이트코드 VM은 런타임 코드 생성·로드가 없다. `.vu`/`.velab` 산출물·`vita`/`vrun` 실행경로·헤르메틱 계약 전부 무변경. P0b의 "런타임 rustc / cdylib+dlopen / static dispatch" 분기는 발생하지 않음(기록상 N/A). **결정성 따름정리:** VM opcode는 `value.rs`/`eval.rs`의 *동일한* 4-state·f64 프리미티브를 디스패치하므로(재구현 아님), float 포맷·산술 축이 인터프리터와 byte-for-byte 일치 — P3의 부담을 구조적으로 축소한다.
+
+### 골든 영향 = 없음
+
+바이트코드·VM·backend seam은 전부 `sim_ir::SimIr` 밖(SimOpts 사이드테이블/별도 크레이트). `schema_hash::<SimIr>()` 루트 불변, `format_version` 3 유지. P15의 kernel-ABI 버전은 `format_version`과 **독립** 필드로 별도 게이트.
