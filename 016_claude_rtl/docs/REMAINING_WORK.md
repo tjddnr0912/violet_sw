@@ -277,9 +277,37 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 - [x] **[가속·신규]** 4-state 비트연산/reduction word化 — ✅ 2026-06-05. eval.rs `bitwise()`/`BitNot`/6 리덕션의 per-bit `get_vu`/`set_vu` 폴드를 u64-워드 브랜치리스 공식(`and_w`/`or_w`/`xor_w`/`xnor_w`/`not_w`+`reduce_word`/RedKind)으로 교체 → 64비트/op, LLVM 자동벡터화. 라스트 부분워드 마스킹(not_w/xnor_w가 high 0&0→1). per-bit `*1`는 `#[cfg(test)]` 레퍼런스 오라클로 보존(`word_vs_bit_parity`가 bit-exact 대조). 테스트: >64bit X/Z 워드경계 2 + 96/100bit iverilog 차분 2. golden unflipped, 418 green. **`std::simd` 제외:** portable_simd는 nightly 전용 → MSRV-1.82 stable + 3-OS 재현성 핀과 충돌하여 미도입(워드化가 실질 승부처, 안정 자동벡터화로 흡수).
 - [x] **[가속·로드맵]** 컴파일드 백엔드 (IR→네이티브 코드젠, Verilator 방식) — 📋 **문서화된 장기 로드맵**(수개월 규모 컴파일러 백엔드; v1 작업 아님). doc-18 §권고로드맵 2번에 등재. 인터프리티드 엔진은 word化(④)로 즉시 CPU 이득을 이미 흡수; 10~100× 추가 가속은 코드젠으로만 가능하나 별도 대형 프로젝트로 분리. **체크리스트상 클리어 = "로드맵으로 문서화 완료"**(구현 아님).
 
+## Phase-1 릴리스 하드닝 / 컴파일드 백엔드 로드맵 (2026-06-05 · 4축 감사 wmi10j3sn 기반)
+
+큰 코드젠 프로젝트 전에 Phase-1을 "문서화된 릴리스"로 굳히는 단계. 감사 결론: SPEC(`docs/preview/`)은 최상이나 **사용자/배포 레이어가 부재**했음.
+
+### Stage A — 릴리스 문서 (✅ 2026-06-05, 커밋 f4fbba7)
+- [x] LICENSE-MIT + LICENSE-APACHE (Cargo.toml 선언 듀얼에 맞춤), 루트 README.md(영어), CHANGELOG.md, CONTRIBUTING.md, install.sh(POSIX, Linux/macOS)
+- [x] `docs/manual/` 000–007 (introduction/installation/quickstart/language-reference(TRM)/cli-reference/system-tasks/limitations/error-codes) — **코드 기반 검증**(stale SPEC 아님), cross-link 전수 해소, `disable`=no-op 003/006 일치
+- [x] `examples/` counter·ALU·enum-FSM·shift-register — 전부 `vita` 실행 검증(exit 0, stderr 0, VCD). Windows 범위 밖 명시(사용자 결정)
+
+### 발견된 SPEC drift (매뉴얼은 SHIPPED 상태로 정확; doc-01 SPEC는 stale → 후속 교정 권장)
+- [ ] **doc-01(01-goals-and-scope) freeze 표가 `enum`/`typedef`/`packed struct`를 아직 DEFERRED로 표기** — 실제 구현됨(매뉴얼 003이 정확). doc-01은 "단일 진실 공급원" SPEC이라 교정 필요.
+- [ ] doc-01 §v1단순화의 산술-레인 문구가 옛 경계(64bit)로 남음 — 실제 128u/64s. (REMAINING_WORK 본문은 정정됨)
+- [ ] hdl-reference/system-tasks가 `$stime` 등을 "Phase1 완전지원"으로 표기하나 코드 미구현(매뉴얼 005가 정확).
+
+### Stage B — 컴파일드 이벤트구동 백엔드 선결 (코드젠 착수 전, 미착수)
+IR 안정성은 이미 충분(동결 SimIr·format_version 3·SimOpts 사이드테이블 소비가능·결정성 척추 커널 잔류). 진짜 선결:
+- [ ] **[BLOCKING]** 커널 ABI seam 추출 — `exec.rs::run_process` 모놀리식을 Simulator/ProcessBody trait(read_net/write_lvalue/schedule_nba·resume/suspend_on/exec_fork/const-index eval)로 분리, 인터프리터를 그 뒤로 동작-무변경 리팩터(byte-equiv 증명).
+- [ ] **[BLOCKING]** 런타임 동적 가정 3종 정확 재현 or 범위제외: 배열인덱스 eval-time ExprId + u32::MAX OOR 센티넬 + E-RUN-RANGE / fork activity-id 아레나+barrier / frozen-BB PC suspend-resume. 실용 MVP=fork-free 직선바디만 컴파일.
+- [ ] **[RECOMMENDED]** 차분 하네스를 VCD-바이트 비교 + 랜덤 corpus로 확장 후 CI 게이트화(= 컴파일드==인터프리티드 강제). 이건 릴리스 신뢰도와도 겹침.
+- [ ] **[RECOMMENDED]** 코드젠/커널 ABI 버전 스탬프를 format_version과 별도 게이트.
+
+### Stage C — 컴파일드 이벤트구동 코드젠 MVP (미착수, Stage B 이후)
+
+### 잔여 in-scope (문서화됨; 행동 선택)
+- [ ] **`%t`** 기본 필드폭/$timeformat 미구현 — 값은 정확. 매뉴얼 005·006에 한계로 문서화 완료(릴리스엔 충분). 구현은 %d arm 미러(저위험·golden 불변) — 원하면 Phase-1.x.
+
 ## 진행 로그
 
 해결 시 한 줄씩 추가 (날짜 · 커밋 · 항목).
+
+- 2026-06-05 · **Phase-1 릴리스 문서 세트 (Stage A)** 완결(커밋 f4fbba7). 4축 감사(wmi10j3sn) → 9-에이전트 매뉴얼 생성(코드 검증) → 컨트롤러 조립(cross-link 전수 교정·disable 정확성 003/006 일치·예제 4종 직접 실행 검증·README/LICENSE×2/CHANGELOG/CONTRIBUTING/install.sh). 사용자 결정: Windows 범위 밖, 전체 세트, 번호 인덱스. SPEC corpus는 개발자-내부로 유지, 사용자 매뉴얼이 그 위에 링크. doc-01 SPEC staleness 3건 트래킹 추가. Rust 무변경(419 green).
 
 - 2026-06-05 · 후속 큐 완결 + 적대적 검증: `s.unknown_field`는 loud reject(silent-wrong 아님) 회귀테스트 추가. 컴파일드 백엔드는 문서화된 장기 로드맵으로 종결(구현 아님). 워크스페이스 419 green. 후속 큐 5/5 클리어.
 - 2026-06-05 · **4-state 비트연산/reduction word化** (가속). eval.rs의 per-bit 폴드를 u64-워드 4-state 불리언 공식으로(bitwise/NOT/6 reduction). 64배 적은 반복+브랜치리스+자동벡터화. 라스트워드 마스킹, per-bit 테이블은 test 오라클로 보존. std::simd는 nightly 충돌로 제외(워드化가 실질 승부처). >64bit 워드경계 4테스트(2 X/Z + 2 iverilog 차분), golden unflipped, 418 green. 커밋 ad199d4.
