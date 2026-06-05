@@ -1,8 +1,10 @@
 //! Engine state: the net value table (+ previous-delta snapshot for edges),
 //! VCD wiring, and the single net-write choke point with change detection.
 
+use std::cell::Cell;
 use std::io::Write;
 
+use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
 use sim_ir::{BitPacked, Lvalue, NetKind, SelKind, SimIr};
 use vcd_writer::{IdCode, VarType, VcdWriter};
 
@@ -104,6 +106,14 @@ pub(crate) struct SimState<'a> {
     pub had_error: bool,
     pub had_fatal: bool,
 
+    // ── runtime diagnostics ──
+    /// Direct handle to the diagnostic sink (same `&dyn LogSink` the `out` writer
+    /// wraps), so the engine can emit runtime diagnostics (E-RUN-RANGE) — not just
+    /// `$display` text. Interior mutability: `emit` takes `&self`.
+    pub sink: &'a dyn LogSink,
+    /// Rate-limit counter for E-RUN-RANGE (an OOR access in a loop would spam).
+    pub run_range_count: Cell<u32>,
+
     // ── postponed region ($strobe FIFO + global $monitor singleton) ──
     pub postponed: Postponed,
 }
@@ -112,6 +122,7 @@ impl<'a> SimState<'a> {
     pub fn new(
         ir: &'a SimIr,
         out: Box<dyn Write + 'a>,
+        sink: &'a dyn LogSink,
         timescale_unit: String,
         vcd_date: String,
         vcd_path_override: Option<String>,
@@ -154,8 +165,39 @@ impl<'a> SimState<'a> {
             finished: false,
             had_error: false,
             had_fatal: false,
+            sink,
+            run_range_count: Cell::new(0),
             postponed: Postponed::default(),
         }
+    }
+
+    /// Emit a rate-limited `E-RUN-RANGE` (VITA-E4002) runtime diagnostic for an
+    /// out-of-range array word / select. The OOR is RECOVERED (read X / drop write),
+    /// so the run still finishes; this only surfaces it. Capped at `CAP` per run with
+    /// a final "further suppressed" note so a loop of OOR accesses can't spam.
+    pub fn warn_run_range(&self, what: &str) {
+        const CAP: u32 = 8;
+        let n = self.run_range_count.get();
+        let msg = match n.cmp(&CAP) {
+            std::cmp::Ordering::Less => {
+                Some(format!("{what} (out of range; read X / write ignored)"))
+            }
+            std::cmp::Ordering::Equal => {
+                Some("further out-of-range diagnostics suppressed".to_string())
+            }
+            std::cmp::Ordering::Greater => None,
+        };
+        if let Some(message) = msg {
+            self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                severity: Severity::Error,
+                code: MsgCode::RunRange,
+                message,
+                location: None,
+                context: Vec::new(),
+                sim_time: Some(diag::TimeStamp { ticks: self.now }),
+            }));
+        }
+        self.run_range_count.set(n.saturating_add(1));
     }
 
     // ── reads ────────────────────────────────────────────────────────────
@@ -167,6 +209,7 @@ impl<'a> SimState<'a> {
         let slot = &self.nets[net as usize];
         let w = word.unwrap_or(0);
         if w >= slot.array_len {
+            self.warn_run_range("array word index");
             return Value::xs(slot.width.max(1), false).into_bitpacked(slot.width);
         }
         slice_word(&slot.cur, slot.width, w)
@@ -293,6 +336,7 @@ impl<'a> SimState<'a> {
         // silently corrupt a valid neighbor.
         let word = if c.word.is_some() {
             if raw_word >= self.nets[net].array_len {
+                self.warn_run_range("array word index");
                 return false;
             }
             raw_word

@@ -2185,6 +2185,23 @@ fn packed_zero_base_unchanged() {
 }
 
 #[test]
+fn oob_emits_run_range_diagnostic() {
+    // REMAINING_WORK: an out-of-range array word access now EMITS a runtime
+    // E-RUN-RANGE diagnostic (the access is still recovered: read X / write dropped).
+    let src = "module t; reg [7:0] m[0:3]; integer i; \
+               initial begin i=9; m[i]=8'd7; $display(\"%0d\", m[i]); $finish; end endmodule";
+    let ir = build(src);
+    let sink = DiagSink::default();
+    let res = simulate(&ir, &sink, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish); // OOR is recovered, run finishes
+    let diags = sink.0.borrow();
+    assert!(
+        diags.iter().any(|d| d.contains("out of range")),
+        "expected an E-RUN-RANGE diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
 fn array_oob_word_read_is_x_write_ignored() {
     // REMAINING_WORK item: an out-of-range array WORD index reads all-X and a write
     // is IGNORED — not clamped to the last element (which silently returned/corrupted

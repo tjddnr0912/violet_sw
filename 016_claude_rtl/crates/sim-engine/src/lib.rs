@@ -145,6 +145,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     let mut st = SimState::new(
         ir,
         out,
+        sink,
         opts.timescale_unit.clone(),
         opts.vcd_date.clone(),
         opts.vcd_path_override.clone(),
