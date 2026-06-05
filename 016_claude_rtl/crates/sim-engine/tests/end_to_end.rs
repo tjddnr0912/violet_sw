@@ -2514,6 +2514,32 @@ fn enum_labels_are_integer_constants() {
 //    flat vector; `s.field` is a constant part-select. First member = high bits. ──
 
 #[test]
+fn packed_struct_unknown_field_is_loud() {
+    // `s.zzz` where zzz is not a member must be rejected (parse/elaborate error or
+    // None IR), NEVER silently accepted as a value. Guards against the desugar
+    // quietly falling through to a bogus hierarchical reference.
+    let src = "module t; typedef struct packed { logic [7:0] a; } pkt_t; pkt_t s; \
+               initial begin s.zzz = 8'h1; $display(\"%h\", s.zzz); $finish; end endmodule";
+    let (toks, le) = hdl_lexer::lex(src);
+    assert!(le.is_empty(), "lex: {le:?}");
+    let (su, pe) = hdl_parser::parse(&toks, src);
+    let sink = DiagSink::default();
+    let ir = elaborate::elaborate(&su.expect("su"), &sink);
+    let elab_err = sink
+        .0
+        .borrow()
+        .iter()
+        .any(|d| d.starts_with("Error") || d.starts_with("Fatal"));
+    assert!(
+        !pe.is_empty() || elab_err || ir.is_none(),
+        "unknown struct field s.zzz was silently accepted (parse_ok={}, elab_err={}, ir_some={})",
+        pe.is_empty(),
+        elab_err,
+        ir.is_some()
+    );
+}
+
+#[test]
 fn packed_struct_field_access() {
     // a=[7:0] (high), b=[3:0] (low). total=12. s = {a,b}.
     let src = "module t; typedef struct packed { logic [7:0] a; logic [3:0] b; } pkt_t; \

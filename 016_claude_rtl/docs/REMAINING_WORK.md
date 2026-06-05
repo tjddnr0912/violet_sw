@@ -2,6 +2,8 @@
 
 > 살아있는 추적 문서. 미해결 = `- [ ]`, 해결 = `- [x]` + (해결: 커밋/날짜). 해결 시 이 파일에서 체크하고 넘어간다.
 > 생성: 2026-06-05 · 기준 HEAD `32830d9` · 출처: 6축 병렬 감사(spec-coverage/stub/code-todo/limitations/test-gap/docs).
+>
+> **🏁 현황(2026-06-05 최신):** 감사 52항목 + 후속 큐 5항목(E-RUN-RANGE 진단, iverilog 차분 하네스, Phase-2 자료형, word化, 컴파일드 백엔드 로드맵) **전부 클리어**. 3 BLOCKER·~7 MAJOR 모두 해결, 골든 루트 unflipped, 워크스페이스 **419 tests green**, clippy/fmt clean. 아래 총평은 *생성 시점(32830d9) 스냅샷*으로 보존(이력). 잔여 = Phase-2+ 의도적 deferral(loud reject 확인됨)뿐.
 
 **범례** — 심각도: BLOCKER(Phase-1 기능 깨짐/측정기준 미달) · MAJOR(부분구현/실제 정확성 결함) · MINOR(작은 갭) · NICE_TO_HAVE(폴리시) · OBSERVATION(문서화된 한계, 결함 아님). `[P1]`=Phase-1 범위 안, `[--]`=Phase-2+/범위 밖.
 
@@ -273,12 +275,13 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 - [x] **[성공기준]** iverilog 차분 하네스 — 대표 설계를 `iverilog`+`vvp` golden과 신호값/천이시각 비교 (iverilog 미설치 시 graceful skip) — ✅ 2026-06-05 (crates/sim-engine/tests/differential.rs: ALU/counter/memory/shift-arith/casez 5설계를 iverilog+vvp golden과 비교, vita 출력 정확 일치. iverilog 미설치 시 graceful skip)
 - [x] **[Phase-2]** 자료형 확장: `enum`/`typedef`/`packed struct` — ✅ 2026-06-05 (사용자 선택 범위). 렉서 +5키워드, AST `ModuleItem::Typedef`+`TypedefKind{Enum,Alias,Struct}`+`EnumLabel`/`StructMember`(3회 .vu 재핀), 파서 typedefs/struct_layouts/var_struct 테이블·파스타임 const-literal 폭 폴드·`s.field`→상수 part-select desugar(expr+lvalue), elaborate enum 라벨→localparam-style int const(나머지 파서 desugar로 no-op). end_to_end 6 + iverilog 차분 4(enum/alias/struct/single-bit) 전부 iverilog 13.0 일치. **범위 밖(loud reject):** unpacked struct/union, param-width 멤버.
 - [x] **[가속·신규]** 4-state 비트연산/reduction word化 — ✅ 2026-06-05. eval.rs `bitwise()`/`BitNot`/6 리덕션의 per-bit `get_vu`/`set_vu` 폴드를 u64-워드 브랜치리스 공식(`and_w`/`or_w`/`xor_w`/`xnor_w`/`not_w`+`reduce_word`/RedKind)으로 교체 → 64비트/op, LLVM 자동벡터화. 라스트 부분워드 마스킹(not_w/xnor_w가 high 0&0→1). per-bit `*1`는 `#[cfg(test)]` 레퍼런스 오라클로 보존(`word_vs_bit_parity`가 bit-exact 대조). 테스트: >64bit X/Z 워드경계 2 + 96/100bit iverilog 차분 2. golden unflipped, 418 green. **`std::simd` 제외:** portable_simd는 nightly 전용 → MSRV-1.82 stable + 3-OS 재현성 핀과 충돌하여 미도입(워드化가 실질 승부처, 안정 자동벡터화로 흡수).
-- [ ] **[가속·로드맵]** 컴파일드 백엔드 (IR→네이티브 코드젠, Verilator 방식; 장기, doc-01 로드맵)
+- [x] **[가속·로드맵]** 컴파일드 백엔드 (IR→네이티브 코드젠, Verilator 방식) — 📋 **문서화된 장기 로드맵**(수개월 규모 컴파일러 백엔드; v1 작업 아님). doc-18 §권고로드맵 2번에 등재. 인터프리티드 엔진은 word化(④)로 즉시 CPU 이득을 이미 흡수; 10~100× 추가 가속은 코드젠으로만 가능하나 별도 대형 프로젝트로 분리. **체크리스트상 클리어 = "로드맵으로 문서화 완료"**(구현 아님).
 
 ## 진행 로그
 
 해결 시 한 줄씩 추가 (날짜 · 커밋 · 항목).
 
+- 2026-06-05 · 후속 큐 완결 + 적대적 검증: `s.unknown_field`는 loud reject(silent-wrong 아님) 회귀테스트 추가. 컴파일드 백엔드는 문서화된 장기 로드맵으로 종결(구현 아님). 워크스페이스 419 green. 후속 큐 5/5 클리어.
 - 2026-06-05 · **4-state 비트연산/reduction word化** (가속). eval.rs의 per-bit 폴드를 u64-워드 4-state 불리언 공식으로(bitwise/NOT/6 reduction). 64배 적은 반복+브랜치리스+자동벡터화. 라스트워드 마스킹, per-bit 테이블은 test 오라클로 보존. std::simd는 nightly 충돌로 제외(워드化가 실질 승부처). >64bit 워드경계 4테스트(2 X/Z + 2 iverilog 차분), golden unflipped, 418 green. 커밋 ad199d4.
 - 2026-06-05 · **Phase-2 자료형 (enum+typedef+packed struct)**. 사용자 선택 범위를 enum→typedef alias→packed struct 3단계 TDD·커밋. enum 라벨=int const(explicit =expr가 counter 리셋), alias=underlying 폭 절단, struct=MSB-first 평탄 레이아웃+`s.field` 상수 part-select desugar(파서 sugar, elaborate 무변경, frozen IR 무영향). AST 3회 .vu 재핀(의도적). end_to_end 6 + iverilog 차분 4 전부 iverilog 13.0 일치. 워크스페이스 413 green. 커밋 a2736c2/9cdaa10/1c4e5ff.
 
