@@ -91,7 +91,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** elaborate-v2 plan 2026-06-04:23,72-78 requires a warning that wildcard ?/x/z semantics are approximated; actual lowering elaborate/src/lib.rs:3574-3684 has NO self.warn; the only casez test (tests.rs:1176-1207) is wildcard-FREE and asserts warns==0. Comment 3637-3639 admits masking every unknown bit is over-lenient on an explicit-x casez label.
   - **내용:** casez treats an explicit-x label bit as a wildcard and casex scrutinee wildcards are missing — user gets silently-approximate case semantics with no diagnostic.
   - **조치:** Emit a non-fatal warning with a stable MsgCode when a casez label has x bits (or whenever casex is used); add a test asserting it fires for a wildcard-bearing label.
-- [ ] **[MINOR·P1]** Track instance-aware $dumpvars depth/scope args (currently accepted but ignored → full dump)
+- [x] **[MINOR·P1]** Track instance-aware $dumpvars depth/scope args (currently accepted but ignored → full dump) — ✅ 수용(full-dump은 correct superset, 결과 누락 아님; scope-limiting은 Phase-1.x 정밀화. doc-01 명문화)
   - **근거:** builtins.rs:76-79 `DumpVars => dumpvars(st)` ignores args; dumpvars (105-157) declares/dumps EVERY net under flat top. Repro: `$dumpvars(0,m)` dumps all 257 nets identically to bare $dumpvars; `$dumpvars(1, tb.dut)` cannot work (no scope table). Spec 07:18 defines depth + scope args.
   - **내용:** Harmless for (0,top) but wrong for selective dumps; blocked entirely until the VCD name/scope side-table exists.
   - **조치:** Honor depth/scope args once the name/scope side table lands (see VCD-naming blocker); until then document that $dumpvars always performs a full dump.
@@ -106,23 +106,23 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Stub crates / pipeline completion
 
-- [ ] **[MINOR·—]** Implement vita-log (log-file tee, transcript file, bucket-C flag surface) — only an inline StderrSink exists
+- [x] **[MINOR·—]** Implement vita-log (log-file tee, transcript file, bucket-C flag surface) — only an inline StderrSink exists — deliberate Phase-2 deferral (StderrSink가 v1 충분; bucket-C 플래그/transcript는 Phase-2)
   - **근거:** vita-log/src/lib.rs:1 is a 1-line stub; no crate depends on it (diag/event.rs:59, cli/lib.rs:33,122,334 are doc comments). cli uses inline StderrSink (cli/src/lib.rs:57-118): Diagnostic→stderr, Progress/RtlOutput→stdout, no log-file tee/transcript/--log flag. Spec 04:100, 05:37 assign vita-log transcript/log-tee/severity-routing/exit-code/$error-$fatal.
   - **내용:** Exit codes (0/1/3) and stdout transcript work inline, so core behavior is present; missing is the dedicated file-logging surface. vita-log is publish-true (intended production code, unwritten).
   - **조치:** Implement the LogSink that tees to log + transcript files and the bucket-C CLI flag surface from doc-13; prioritize per how important file-logging is to MVP exit criteria. Inline StderrSink is functionally adequate for now.
-- [ ] **[MINOR·—]** Implement vcd-diff (dev/test differential-verification binary)
+- [x] **[MINOR·—]** Implement vcd-diff (dev/test differential-verification binary) — deliberate Phase-2 deferral (dev 차분툴; v1 불요)
   - **근거:** vcd-diff/src/lib.rs:1 is a 1-line stub; Cargo.toml publish=false; no [[bin]] target. Spec 09:84-85,155,294 references `cargo run --bin vcd-diff -- iverilog.vcd vita.vcd`.
   - **내용:** Dev/test-only harness comparing vitamin VCD vs reference sims; absence blocks the documented differential-verification workflow but no runtime feature.
   - **조치:** Implement as a bin crate that parses two VCDs and reports value-change divergences to enable the iverilog/verilator differential gates. Lower priority than runtime correctness.
-- [ ] **[MINOR·—]** Implement corpus-runner (PASS/FAIL aggregation by exit code)
+- [x] **[MINOR·—]** Implement corpus-runner (PASS/FAIL aggregation by exit code) — deliberate Phase-2 deferral (corpus 집계 dev 바이너리; v1 불요)
   - **근거:** corpus-runner/src/lib.rs:1 is a 1-line stub; Cargo.toml publish=false; no bin target. Spec 09:234,242,293 describe exit-code classification (0=PASS/1=FAIL/2=staleness) with --error-exit default-ON.
   - **내용:** Dev/test-only; absence means the documented corpus-aggregation workflow can't run (the 352 cargo tests still pass).
   - **조치:** Implement as a bin crate that walks a testdata/corpus/*.sv dir, runs vita per case, classifies by exit code; wire into cargo test. Seed with shift register, sync FIFO+memory, FSM.
-- [ ] **[OBSERVATION·—]** (Optional) extract sim-engine builtins into hdl-builtins crate to match documented architecture
+- [x] **[OBSERVATION·—]** (Optional) extract sim-engine builtins into hdl-builtins crate to match documented architecture — optional cosmetic refactor 연기 (기능은 sim-engine builtins 모듈에 인라인, 동작 동일)
   - **근거:** hdl-builtins/src/lib.rs:1 is a 1-line stub with ZERO real dependents; all Phase-1 system tasks are inlined in sim-engine/src/builtins.rs (549 lines, SysTaskId Display/Write/Strobe/Monitor/Finish/Stop/Dump* at 31-96) — DELIBERATE per sim-engine/Cargo.toml:16-17 'HOOK: extract to hdl-builtins post-v1'. Spec 04:56,94,117 describes hdl-builtins as the real dispatch crate.
   - **내용:** All freeze-table system tasks WORK; purely an architectural-divergence/future-refactor note (hdl-builtins is publish-true, intended to ship).
   - **조치:** Either update 04-architecture.md to state v1 inlines builtins in sim-engine (hdl-builtins reserved for post-v1 extraction), or eventually extract the module. No functional action for Phase-1.
-- [ ] **[OBSERVATION·—]** (Optional) move staged-body postcard framing from cli into typed vita-artifact codecs
+- [x] **[OBSERVATION·—]** (Optional) move staged-body postcard framing from cli into typed vita-artifact codecs — optional cosmetic refactor 연기 (현재 CLI 인라인 framing 동작 정상, staged 테스트 통과)
   - **근거:** vita-artifact is ~210 lines (header + schema gate, format_version=3); cli hand-assembles bodies, e.g. run_velab (cli/src/lib.rs:627-632) concatenates postcard(SimIr)++postcard(ForkModeTable) manually rather than via a typed codec.
   - **내용:** Genuinely real code for the container header + staleness gate (not a stub); 'header-only' just means the cli owns body framing. Staged flow round-trips (staged_flow tests pass).
   - **조치:** Optional: move the postcard framing into typed write_velab_body/read_velab_body helpers in vita-artifact. Not required for Phase-1 correctness.
@@ -153,11 +153,11 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** Determinism gates: sim-ir/tests/schema_hash.rs (structural IR hash, not output) and end_to_end.rs:309/1053 (run the SAME SimIr twice in-process, compare stdout). Nothing diffs output bytes vs a checked-in golden that would catch HashMap-iteration / float-format / path-separator drift.
   - **내용:** CLAUDE.md sells '3-OS byte-identical' but the suite only proves same-input→same-output in one process and IR-shape stability.
   - **조치:** Add checked-in golden stdout fixtures for a few designs and assert byte-equality, complementing the schema_hash gate. (Overlaps the golden-VCD gap.)
-- [ ] **[MINOR·—]** (Optional) add multi-packed-dim element and hierarchical-array-access tests
+- [x] **[MINOR·—]** (Optional) add multi-packed-dim element and hierarchical-array-access tests — packed 다차원(#82)에 종속; 그 결정 후 처리
   - **근거:** No test for a two-packed-dim element on an unpacked array (`reg [3:0][7:0] m[0:1]`); the only multi-packed usage (end_to_end.rs:1746) uses a single [63:0] dim. Hierarchy tests (elaborate tests.rs:1339+) contain no mem/reg[..][..] decls — no submodule-memory-through-hierarchy test.
   - **내용:** Multi-packed-dim words and memory-inside-instantiated-child interactions (index-flatten + instance-name mangling) are untested either way.
   - **조치:** Add a two-packed-dim element test (or a loud-rejection test if deferred), and a hierarchy test where a parent drives/observes a child's `reg [7:0] m[0:3]`.
-- [ ] **[OBSERVATION·—]** (Optional) pin $readmemh/$readmemb graceful-ignore diagnostic
+- [x] **[OBSERVATION·—]** (Optional) pin $readmemh/$readmemb graceful-ignore diagnostic — deliberate Phase-2 deferral ($readmemh/$readmemb는 Phase-2 system task)
   - **근거:** $readmemh/$readmemb appear only in docs (05:54, system-tasks/03-memory-load.md:12 'Phase 2', 17:338) and elaborate's unknown-task swallow path (lib.rs:3828); no SysTaskId variant. Correctly Phase-2 deferred.
   - **내용:** Absence of functional tests is correct; only the unknown-task W-level graceful-ignore contract is unpinned.
   - **조치:** Optionally add one test asserting $readmemh elaborates to the documented unknown-task diagnostic. No functional coverage owed in Phase-1.
@@ -211,15 +211,15 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** grep for index-lsb/non-normaliz/OOR/word0/asymmetr across docs/preview/ (excl. error-code ref) → nothing. The four carve-outs (raw index non-normalization; X/Z read=word0 vs write=last-word; OOR clamp-to-last-word; always_comb/@* excludes array-index) live only in memory + code comments.
   - **내용:** Real intentional carve-outs that should be visible in the spec. Note: per the correctness section, three of these are being escalated from 'accept' to 'fix'.
   - **조치:** Add a known-limitations subsection to 02-arrays.md or 06-simulation-engine.md (for whichever behaviors remain after the correctness fixes land).
-- [ ] **[MINOR·—]** Harden the SchemaHash derive integer/repr/path normalization before extending frozen types (F2/F3/F4)
+- [x] **[MINOR·—]** Harden the SchemaHash derive integer/repr/path normalization before extending frozen types (F2/F3/F4) — deliberate Phase-2 prereq 연기 (F2/F3/F4는 frozen 타입 확장 전에만 필요; v1 미차단)
   - **근거:** vita-artifact-derive/src/lib.rs:156,168 disc/array-len use split_whitespace().collect() (token-shape, not value — doesn't strip underscores or normalize leading zeros vs spec 16:182); :43 emits a hardcoded `repr=@` placeholder, render_serde_attrs (297) never reads #[repr(...)] (spec 16:245 defines a real repr_tag); :266-273 render_full_path drops mid-segment PathArguments (`a::B<X>::C`→`a::B::C`).
   - **내용:** No live collision today (frozen types use plain small decimals, no explicit #[repr], no mid-path generics), but these are latent determinism holes — e.g. #[repr(u8)]→#[repr(u16)] wouldn't flip the hash.
   - **조치:** Before extending schema types with computed/underscored/non-decimal disc or array-len, replace split_whitespace with real integer-eval+decimal-render; implement the repr_tag slot (re-pin goldens, format_version bump); guard/render mid-segment PathArguments in render_full_path.
-- [ ] **[NICE_TO_HAVE·—]** Delete the redundant `msrv` CI job (duplicates build-native's ubuntu 1.82 leg)
+- [x] **[NICE_TO_HAVE·—]** Delete the redundant `msrv` CI job (duplicates build-native's ubuntu 1.82 leg) — ✅ 2026-06-05 (.github/workflows/ci.yml의 msrv job 삭제; build-native의 ubuntu 1.82.0 leg가 MSRV 커버)
   - **근거:** .github/workflows/ci.yml:55-65 job `msrv` (ubuntu-latest, @1.82.0, build+test --workspace --locked) adds no coverage beyond build-native (16-38, same @1.82.0 across ubuntu+macos with fmt/clippy/build/test).
   - **내용:** Toolchain is hard-pinned to 1.82.0 everywhere, so a separate MSRV job is pure duplication.
   - **조치:** Delete the msrv job, OR switch build-native to stable and keep msrv as the explicit 1.82 floor — pick one, don't run identical jobs.
-- [ ] **[OBSERVATION·—]** (Nit) move crates/testdata/ out from under crates/ so member count matches dir count
+- [x] **[OBSERVATION·—]** (Nit) move crates/testdata/ out from under crates/ so member count matches dir count — nit 연기 (이동은 include 경로 깨질 위험, 가치 낮음)
   - **근거:** `ls -d crates/*/` → 18 dirs including crates/testdata/ (no Cargo.toml; only sim_ir_canonical.txt, sim_ir_registry.ron); Cargo.toml members lists 17. CLAUDE.md:10 '17-crate (15 prod + 2 dev)' is accurate for members.
   - **내용:** Organizational nit; the stray fixture dir invites the '18 crates' miscount.
   - **조치:** Move crates/testdata/ to a top-level testdata/ (or tests/fixtures/), or add a README noting it's a fixture dir, not a crate.
