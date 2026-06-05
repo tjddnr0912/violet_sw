@@ -179,6 +179,7 @@ const TEMPLATES: &[Template] = &[
     gen_wide_arith,
     gen_xz_index,
     gen_multi_write_glitch,
+    gen_cont_assign_mixed,
 ];
 
 /// Generate `n` designs from `seed`. Cycles templates round-robin with rng-filled
@@ -408,6 +409,43 @@ fn gen_multi_write_glitch(rng: &mut Rng, idx: usize) -> Design {
     );
     Design {
         name: format!("glitch_{idx}_w{w}"),
+        src,
+    }
+}
+
+/// MIXED-backend design (P8 moments 1/5 + P9b): a continuous assign and a delayed
+/// continuous assign (both stay interpreted — cont-assigns are not process bodies),
+/// a codegen-able `always @(posedge clk)` (the suspend-free P9 class), and an
+/// `initial` with `#1` (not codegen-able). One run therefore exercises compiled +
+/// interpreted + cont-assign on SHARED nets.
+fn gen_cont_assign_mixed(rng: &mut Rng, idx: usize) -> Design {
+    let w = rng.range(4, 12);
+    let a = rng.range(0, (1u64 << w.min(12)) - 1);
+    let b = rng.range(0, (1u64 << w.min(12)) - 1);
+    let src = format!(
+        "module top;\n\
+           reg clk;\n\
+           reg [{hi}:0] a, b;\n\
+           wire [{hi}:0] sum;\n\
+           wire [{hi}:0] dly;\n\
+           reg [{hi}:0] q;\n\
+           integer k;\n\
+           assign sum = a + b;        // cont-assign: interpreted (moment 1)\n\
+           assign #2 dly = a;         // delayed cont-assign: interpreted (moment 5)\n\
+           always @(posedge clk) q <= sum;  // codegen-able (always_ff)\n\
+           initial begin\n\
+             $dumpfile(\"m.vcd\"); $dumpvars(0, top);\n\
+             clk = 0; a = {a}; b = {b};\n\
+             for (k = 0; k < 3; k = k + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+             #3 $display(\"%0d %0d %0d\", sum, q, dly); $finish;\n\
+           end\n\
+         endmodule",
+        hi = w - 1,
+        a = a,
+        b = b,
+    );
+    Design {
+        name: format!("cont_mixed_{idx}_w{w}"),
         src,
     }
 }

@@ -107,3 +107,23 @@
 **계약:** 위 함수는 인터프리터와 바이트코드 VM이 *동일 인스턴스*를 호출한다(opcode가 별도 float 로직을 갖지 않음). 따라서 `%f/%e/%g/%t/%d-on-real` 및 >128bit `%d` 폭이 두 경로 byte-for-byte 일치 — 이는 P5(컴파일드==인터프리티드)로 강제되고, **단일-OS 체크인 골든**(`float_format_determinism_golden`, end_to_end.rs)이 cross-OS 재현성을 잠근다(모든 OS가 동일 리터럴 매칭 = cross-OS diff와 등가). CI는 ubuntu+macos에서 같은 골든을 돌려 OS별 발산 시 해당 leg 실패.
 
 **잔여(릴리스 신뢰도, 코드젠 비차단):** CI에 OS-간 산출물 직접 diff 잡(별도 leg 출력 비교)은 골든-리터럴 방식으로 이미 등가 달성 — 추가는 nice-to-have.
+
+## P8 — 커널-콜 순서 / 샘플링-모먼트 계약 (2026-06-06)
+
+> 컴파일드 바디가 인터프리터와 byte-for-byte 일치하려면, "언제 무엇을 읽고/쓰는가"가 **계약**이어야 한다. 아래 7 모먼트를 동결한다 — P5 바이트-diff가 *버그 vs 의도*인지 분류하는 기준이자, Stage C VM이 반드시 재현(또는 위임)해야 할 목록.
+>
+> **핵심 구조적 사실:** 이 모먼트 대부분은 **커널측**(`write_lvalue`/`schedule_nba`/`propagate_changes`/`emit_vcd_change`)에 있다. 컴파일드 바디는 `Kernel` trait(P7b)로 *동일* 커널 메서드를 호출하므로 이들을 **공짜로** 재현한다. VM이 보존해야 할 유일한 바디측 불변식은 **문장 실행 순서**(→ `schedule_nba`가 텍스트 순서로 호출되어 `nba_seq`가 같게 부여됨)이다.
+
+| # | 모먼트 | 위치 | 분류 | VM 의무 |
+|---|---|---|---|---|
+| 1 | cont-assign **선언순** fixpoint | sched.rs `settle_cont_assigns`:190 | 인터프리터-only | cont-assign은 프로세스 바디 아님(P13 전까지 항상 인터프리트) → VM 무관 |
+| 2 | NBA: LHS 인덱스 **schedule-time 샘플** + `nba_seq` **정렬 적용** | sched.rs `schedule_nba`:802 / `apply_nba`:554 | 커널측 + **바디순서** | VM은 `k_schedule_nba`를 **문장 텍스트 순서**로 호출만 하면 됨(순서가 nba_seq) |
+| 3 | blocking offset **statement-time 해석** | exec.rs `compute_effect`(P7a) | 바디(READ phase) | VM이 write 전에 `k_resolve_lvalue_offsets` 호출 — 이미 StmtEffect에 캡처 |
+| 4 | in-body `@(sig)` **arm-snapshot**(Level만 arm=Some) | sched.rs `suspend_on`:791 | 인터프리터-only | `@`=Wait=suspend → **non-codegen**(P9 제외) → VM 무관 |
+| 5 | delayed `assign #d` **last_ca 변화 키잉** | sched.rs:218 | 인터프리터-only | delayed cont-assign(P13) → VM 무관 |
+| 6 | `propagate_changes` **prev-refresh-LAST** | sched.rs:658 | 커널측 | 스케줄러 내부 — 양 backend 공통, VM 무관 |
+| 7 | **eager per-write VCD** 방출(글리치 충실) | state.rs `write_chunk`:386 | 커널측 | `k_write_lvalue`→`emit_vcd_change` 공유측(P4) → VM 공짜 재현 |
+
+**결론:** 7 모먼트 중 VM이 *능동적으로* 책임지는 것은 **#2/#3 (NBA 순서·blocking offset)** 뿐이며, 둘 다 "문장을 인터프리터와 같은 순서로 실행"하면 자동 충족된다(StmtEffect가 #3을 캡처, 텍스트순 실행이 #2를 보장). 나머지(#1/#4/#5 인터프리터-only, #6/#7 커널측)는 backend-중립이다. 이 계약이 깨지면 P5가 즉시 red.
+
+**corpus 커버리지(P6):** #2=`nba_sample`(`a[i]<=v; i=i+1`), #3=`mem_oob`/배열 쓰기, #7=`multi_write_glitch`(동일 delta 3회 쓰기), #1/#5=`cont_assign_mixed`(연속할당+클럭 프로세스 혼재). #4(in-body `@`)는 non-codegen이라 코드젠 corpus 비대상(인터프리터 433 테스트가 커버).

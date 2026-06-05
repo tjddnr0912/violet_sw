@@ -28,15 +28,15 @@ fn corpus_varies_by_seed() {
 }
 
 /// The corpus spans every template (round-robin), so a corpus of >= TEMPLATES.len()
-/// touches each corner. With 8 templates, 8 designs hit all of them; names are unique.
+/// touches each corner. With 9 templates, 9 designs hit all of them; names are unique.
 #[test]
 fn corpus_covers_all_templates_with_unique_names() {
-    let designs = corpus(42, 40);
+    let designs = corpus(42, 45);
     let mut names: Vec<&str> = designs.iter().map(|d| d.name.as_str()).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 40, "design names must be unique");
-    // Each template kind is represented (prefix check over the first 8).
+    assert_eq!(names.len(), 45, "design names must be unique");
+    // Each template kind is represented (prefix check over all 9).
     let prefixes = [
         "counter_",
         "alu_",
@@ -46,6 +46,7 @@ fn corpus_covers_all_templates_with_unique_names() {
         "wide_",
         "xz_index_",
         "glitch_",
+        "cont_mixed_",
     ];
     for p in prefixes {
         assert!(
