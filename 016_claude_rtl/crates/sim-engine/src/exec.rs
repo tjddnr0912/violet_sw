@@ -6,10 +6,11 @@
 //! (`sched.st`) for immediate blocking writes and the scheduler queues for
 //! NBA/Delay/Wait scheduling.
 
-use sim_ir::{DelayRegion, Stmt, Terminator, WaitCause};
+use sim_ir::{DelayRegion, Lvalue, Stmt, SysTaskId, Terminator, WaitCause};
 
 use crate::builtins::{self, Ctl};
 use crate::sched::Scheduler;
+use crate::value::Value;
 
 /// Outcome of one process activation.
 pub(crate) enum Step {
@@ -61,28 +62,19 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
             (block.stmts.clone(), block.term.clone())
         };
 
-        // ── statements ──
+        // ── statements (P7a read/write-phase split) ──
+        // Each statement executes in two explicit phases: a READ phase
+        // (`compute_effect`, pure eval over `&Scheduler` — no mutation) that produces
+        // a self-contained [`StmtEffect`], then a WRITE phase (`apply_effect`, the
+        // `&mut Scheduler` kernel calls). This is the seam a codegen body needs: it
+        // inlines the read phase as native code and routes the write phase through the
+        // kernel (P7b puts apply_effect's calls behind a trait). Behaviour is
+        // byte-identical to the prior inline form — same evals, same writes, same order.
         for sid in stmt_ids {
             let stmt = sched.st.ir.stmts[sid as usize].clone();
-            match stmt {
-                Stmt::BlockingAssign { lhs, rhs } => {
-                    let v = sched.eval_for_lvalue(&lhs, rhs); // CONTEXT-SIZED to lhs width
-                    let offs = sched.resolve_lvalue_offsets(&lhs); // dynamic index NOW
-                    sched.st.write_lvalue(&lhs, v, &offs);
-                }
-                Stmt::NonblockingAssign { lhs, rhs } => {
-                    let sampled = sched.eval_for_lvalue(&lhs, rhs); // CONTEXT-SIZED, sampled now
-                    sched.schedule_nba(lhs, sampled);
-                }
-                Stmt::SysTask { which, fmt, args } => {
-                    match builtins::dispatch(sched, which, fmt, &args) {
-                        Ctl::Finish => return Step::Finish,
-                        Ctl::Stop => return Step::Stop,
-                        Ctl::Fatal => return Step::Fatal,
-                        Ctl::Continue => {}
-                    }
-                }
-                Stmt::Disable { .. } => { /* v1: no-op (fork/disable deferred) */ }
+            let effect = compute_effect(sched, &stmt);
+            if let Some(step) = apply_effect(sched, effect) {
+                return step; // a SysTask returned Finish/Stop/Fatal
             }
         }
 
@@ -157,5 +149,91 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
             sched.mark_fatal();
             return Step::Fatal;
         }
+    }
+}
+
+/// The self-contained result of a statement's READ phase — everything the WRITE
+/// phase needs, with no further reads of net state. Computing this is pure (reads
+/// only, via `&Scheduler`); applying it is where all mutation happens. This is the
+/// P7a boundary: a compiled body produces the same effects from native code, and
+/// [`apply_effect`]'s kernel calls become the trait surface in P7b.
+enum StmtEffect {
+    /// Blocking assign: RHS evaluated context-sized, per-chunk `(offset, word)`
+    /// resolved NOW (dynamic-index sample at statement time).
+    Blocking {
+        lhs: Lvalue,
+        value: Value,
+        offsets: Vec<(u32, u32)>,
+    },
+    /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
+    /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
+    /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
+    Nonblocking { lhs: Lvalue, value: Value },
+    /// System task: a kernel call (its own read+write happen inside `dispatch`).
+    SysTask {
+        which: SysTaskId,
+        fmt: Option<u32>,
+        args: Vec<u32>,
+    },
+    /// `disable`: no-op in v1 (fork/disable deferred).
+    Nop,
+}
+
+/// READ phase: evaluate `stmt` over read-only `&Scheduler`, producing a
+/// [`StmtEffect`] that captures everything the write phase will apply. No net state
+/// is mutated here. The borrow ends with the returned owned value, so the caller is
+/// free to take `&mut Scheduler` for [`apply_effect`].
+fn compute_effect(sched: &Scheduler, stmt: &Stmt) -> StmtEffect {
+    match stmt {
+        Stmt::BlockingAssign { lhs, rhs } => {
+            let value = sched.eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
+            let offsets = sched.resolve_lvalue_offsets(lhs); // dynamic index NOW
+            StmtEffect::Blocking {
+                lhs: lhs.clone(),
+                value,
+                offsets,
+            }
+        }
+        Stmt::NonblockingAssign { lhs, rhs } => {
+            let value = sched.eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED, sampled now
+            StmtEffect::Nonblocking {
+                lhs: lhs.clone(),
+                value,
+            }
+        }
+        Stmt::SysTask { which, fmt, args } => StmtEffect::SysTask {
+            which: *which,
+            fmt: *fmt,
+            args: args.clone(),
+        },
+        Stmt::Disable { .. } => StmtEffect::Nop,
+    }
+}
+
+/// WRITE phase: apply a [`StmtEffect`] through the `&mut Scheduler` kernel. Returns
+/// `Some(Step)` only when a `$finish`/`$stop`/fatal system task ends the activation.
+fn apply_effect(sched: &mut Scheduler, effect: StmtEffect) -> Option<Step> {
+    match effect {
+        StmtEffect::Blocking {
+            lhs,
+            value,
+            offsets,
+        } => {
+            sched.st.write_lvalue(&lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Nonblocking { lhs, value } => {
+            sched.schedule_nba(lhs, value);
+            None
+        }
+        StmtEffect::SysTask { which, fmt, args } => {
+            match builtins::dispatch(sched, which, fmt, &args) {
+                Ctl::Finish => Some(Step::Finish),
+                Ctl::Stop => Some(Step::Stop),
+                Ctl::Fatal => Some(Step::Fatal),
+                Ctl::Continue => None,
+            }
+        }
+        StmtEffect::Nop => None,
     }
 }
