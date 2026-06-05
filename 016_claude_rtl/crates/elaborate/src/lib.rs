@@ -242,6 +242,12 @@ struct Elaborator<'s> {
     // ── lookup-only maps (NEVER feed arena order) ──
     symbols: BTreeMap<String, u32>, // fully-qualified net/var NAME → NetId
     const_dedup: BTreeMap<ConstKey, u32>,
+    // NetId → per-dimension lengths (source order) for MULTI-dim unpacked arrays
+    // (`reg [7:0] g[0:1][0:2]` ⇒ [2,3]). elaborate-LOCAL only — NEVER in the frozen
+    // sim-ir (NetVar keeps a scalar `array_len`); a multi-index `g[i][j]` is lowered
+    // to the flat word `i*3+j` (row-major) here, so the IR backbone is untouched.
+    // 1-D arrays are absent (the access path falls back to `[array_len]`).
+    array_dims: BTreeMap<u32, Vec<u32>>,
 
     // ── v3 hierarchy state ──
     // `cur_prefix` is the dotted instance path of the instance currently being
@@ -317,6 +323,7 @@ impl<'s> Elaborator<'s> {
             stmts: Vec::new(),
             symbols: BTreeMap::new(),
             const_dedup: BTreeMap::new(),
+            array_dims: BTreeMap::new(),
             cur_prefix: String::new(),
             params: BTreeMap::new(),
             inst_stack: Vec::new(),
@@ -1280,7 +1287,10 @@ impl<'s> Elaborator<'s> {
         }
         for decl in &d.names {
             let (width, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
-            let array_len = self.array_len_of(&decl.unpacked);
+            let dim_sizes = self.array_dim_sizes(&decl.unpacked);
+            let array_len = dim_sizes
+                .iter()
+                .fold(1u32, |acc, &n| acc.saturating_mul(n.max(1)));
             let dir = self.dir_for_name(&decl.name.name, ports, body);
             // init: const-fold a literal initializer; otherwise time-0 default.
             let init = match &decl.init {
@@ -1300,7 +1310,39 @@ impl<'s> Elaborator<'s> {
                     init,
                 },
             );
+            // Record per-dim sizes for MULTI-dim arrays only (1-D uses the
+            // `[array_len]` fallback at access time — identical lowering, so the
+            // existing single-dim golden IR is left byte-for-byte unchanged). Keyed
+            // by the just-assigned NetId (looked up post-add so a duplicate-skip
+            // does not mis-key). (a)-flattening: no frozen-IR field added.
+            if dim_sizes.len() >= 2 {
+                let key = self.fq(&decl.name.name);
+                if let Some(&id) = self.symbols.get(&key) {
+                    self.array_dims.insert(id, dim_sizes);
+                }
+            }
         }
+    }
+
+    /// Per-dimension lengths of an unpacked-array declaration (source order).
+    /// Each length is the param/genvar-aware folded extent (`abs_diff+1`, widened
+    /// to `u64` then clamped to `u32` to avoid the [`Self::range_to_dims`] panic);
+    /// the product of the result is the flat `array_len`. Each length is floored
+    /// at 1 so a degenerate `[0:0]` dim contributes a single word, not zero.
+    fn array_dim_sizes(&mut self, dims: &[ast::Dim]) -> Vec<u32> {
+        dims.iter()
+            .map(|d| {
+                let n = match d {
+                    ast::Dim::Range(r) => {
+                        let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
+                        let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
+                        (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32
+                    }
+                    ast::Dim::Size(e) => self.const_eval_in_scope(e).unwrap_or(1),
+                };
+                n.max(1)
+            })
+            .collect()
     }
 
     /// Register a net by name → NetId (declaration-order append). A duplicate
@@ -1375,26 +1417,6 @@ impl<'s> Elaborator<'s> {
                 (width64 as u32, msb, lsb, signed)
             }
         }
-    }
-
-    /// Unpacked-array length = product of each dim's length. Empty → 1.
-    /// Each dim length and the running product are overflow-saturated in `u32`
-    /// (the `abs_diff + 1` is widened to `u64` first to avoid the same panic as
-    /// [`Self::range_to_dims`]). (COVERAGE verdict HIGH — companion guard.)
-    fn array_len_of(&mut self, dims: &[ast::Dim]) -> u32 {
-        let mut len: u32 = 1;
-        for d in dims {
-            let n: u32 = match d {
-                ast::Dim::Range(r) => {
-                    let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
-                    let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
-                    (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32
-                }
-                ast::Dim::Size(e) => self.const_eval_in_scope(e).unwrap_or(1),
-            };
-            len = len.saturating_mul(n.max(1));
-        }
-        len
     }
 
     /// Direction of a body-declared net: Input/Output/Inout if it appears in the
@@ -1594,20 +1616,15 @@ impl<'s> Elaborator<'s> {
 
             // ── selects → Select{base,offset,width,kind} (all ExprIds) ──
             ast::ExprKind::BitSelect { base, index } => {
-                // SYMMETRY with the LHS (`collect_lval_chunks`): `mem[i]` on an
-                // ARRAY net is a WORD select, not a bit select. The LHS disambig
-                // is `array_len > 1`; the RHS must match or a memory-element read
-                // silently lowers to a bit read of the whole memory (LOWERING
-                // verdict MAJOR). Only a direct `Ident` base can be a memory word
-                // in v1; a select-of-a-select base falls through to bit-select.
-                if let Some(net) = self.array_word_base(base) {
-                    // `word` is an ExprId (the index expression), evaluated at read
-                    // time — so `mem[k]` with a runtime `k` works, not just `mem[2]`.
-                    let word = self.lower_expr(index);
-                    return self.push_expr(ir::Expr::Signal {
-                        net,
-                        word: Some(word),
-                    });
+                // SYMMETRY with the LHS (`collect_lval_chunks`): a `base[i]…[k]`
+                // chain rooted at an ARRAY net is a WORD select (the first D indices
+                // flatten row-major to the element word `i0*s0+…+iD`), with any
+                // trailing indices becoming bit-selects INTO that word. The single-
+                // dim `mem[i]` and `mem[i][j]` cases are the D==1 specialisation —
+                // lowered byte-identically to the old path. A scalar base falls
+                // through to the plain bit-select below.
+                if let Some((net, idxs)) = self.expr_array_chain(base, index) {
+                    return self.lower_array_read(net, &idxs);
                 }
                 let base = self.lower_expr(base);
                 if self.expr_is_real(base) {
@@ -1769,27 +1786,17 @@ impl<'s> Elaborator<'s> {
                 });
             }
             ast::Lvalue::BitSelect { base, index, .. } => {
-                let net = self.lval_base_net(base);
-                // Array word-select vs bit-select disambiguated by array_len.
-                // `LvalChunk.word` is an ExprId (the index expression), evaluated
-                // at write time — symmetric with the RHS `Signal.word` — so a
-                // runtime word index `mem[k] = …` works. `offset`/`width` are also
-                // ExprId edges.
-                let is_word = self
-                    .nets
-                    .get(net as usize)
-                    .map(|n| n.array_len > 1)
-                    .unwrap_or(false);
-                if is_word {
-                    let word = self.lower_expr(index);
-                    out.push(ir::LvalChunk {
-                        net,
-                        word: Some(word),
-                        offset: None,
-                        width: None,
-                        kind: ir::SelKind::Bit,
-                    });
+                // SYMMETRY with the RHS read: a `base[i]…[k]` chain rooted at an
+                // ARRAY net writes the flat element word (first D indices, row-major)
+                // with an optional trailing single bit-select. `LvalChunk.word` is an
+                // ExprId, evaluated at write time, so `mem[k] = …` (runtime k) and
+                // `g[i][j] = …` (2-D element) both work; `mem[k]`/`g[i][j]` are the
+                // D==1/D==2 ends of one path. A scalar base falls through to plain
+                // bit-select.
+                if let Some((net, idxs)) = self.lval_array_chain(base, index) {
+                    self.collect_array_write(net, &idxs, out);
                 } else {
+                    let net = self.lval_base_net(base);
                     let offset = self.lower_expr(index);
                     let width = self.const_u32_expr(1, 32);
                     out.push(ir::LvalChunk {
@@ -1802,13 +1809,16 @@ impl<'s> Elaborator<'s> {
                 }
             }
             ast::Lvalue::PartSelect { base, msb, lsb, .. } => {
-                let net = self.lval_base_net(base);
+                // `g[i][j][msb:lsb] = …` — part-select WITHIN an array element word.
+                // `lval_part_base` resolves the element (net + flat word); a scalar
+                // base gives `(net, None)` ⇒ the classic `r[msb:lsb]` chunk.
+                let (net, word) = self.lval_part_base(base);
                 let lsb_id = self.lower_expr(lsb);
                 let msb_id = self.lower_expr(msb);
                 let width = self.width_from_msb_lsb_checked(msb, lsb, msb_id, lsb_id);
                 out.push(ir::LvalChunk {
                     net,
-                    word: None,
+                    word,
                     offset: Some(lsb_id),
                     width: Some(width),
                     kind: ir::SelKind::PartConst,
@@ -1821,7 +1831,7 @@ impl<'s> Elaborator<'s> {
                 dir,
                 ..
             } => {
-                let net = self.lval_base_net(base);
+                let (net, word) = self.lval_part_base(base);
                 let off = self.lower_expr(offset);
                 let w = self.lower_expr(width);
                 let kind = match dir {
@@ -1830,7 +1840,7 @@ impl<'s> Elaborator<'s> {
                 };
                 out.push(ir::LvalChunk {
                     net,
-                    word: None,
+                    word,
                     offset: Some(off),
                     width: Some(w),
                     kind,
@@ -1868,6 +1878,37 @@ impl<'s> Elaborator<'s> {
                 POISON_NET
             }
         }
+    }
+
+    /// Resolve the base of a part-select LHS to `(net, word)`. A bare `Ident` is a
+    /// scalar (or 1-D word-0) base ⇒ `word = None`. A `g[i]…[k]` chain rooted at an
+    /// array net is an ELEMENT part-select (`g[i][j][msb:lsb] = …`): all D indices
+    /// flatten to the element word, and the part-select applies within it. Indexing
+    /// fewer than D dims (partial slice) or more than D (bit-then-part) is loud.
+    fn lval_part_base(&mut self, base: &ast::Lvalue) -> (u32, Option<u32>) {
+        if let ast::Lvalue::BitSelect {
+            base: b, index: i, ..
+        } = base
+        {
+            if let Some((net, idxs)) = self.lval_array_chain(b, i) {
+                let dims = self.net_dim_sizes(net);
+                let d = dims.len();
+                if idxs.len() == d {
+                    let word = self.flatten_word(&dims, &idxs);
+                    return (net, Some(word));
+                }
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    if idxs.len() < d {
+                        "partial unpacked-array slice (v1: index every dimension)"
+                    } else {
+                        "bit-select then part-select on a multi-dim array lvalue (v1 unsupported)"
+                    },
+                );
+                return (POISON_NET, None);
+            }
+        }
+        (self.lval_base_net(base), None)
     }
 
     // ── name resolution ────────────────────────────────────────────
@@ -2360,21 +2401,208 @@ impl<'s> Elaborator<'s> {
         })
     }
 
-    /// If `base` is a plain `Ident` resolving to an ARRAY net (`array_len > 1`),
-    /// return its NetId — meaning `base[index]` is a memory WORD select, not a
-    /// bit select. Otherwise `None`. Used by the RHS BitSelect arm to mirror the
-    /// LHS word/bit disambiguation. (LOWERING verdict MAJOR.)
-    fn array_word_base(&mut self, base: &ast::Expr) -> Option<u32> {
-        if let ast::ExprKind::Ident(path) = &base.kind {
-            if path.segments.len() == 1 {
-                if let Some(net) = self.lookup_net_scoped(&path.segments[0].name) {
-                    if self.nets.get(net as usize).is_some_and(|n| n.array_len > 1) {
-                        return Some(net);
+    // ── multi-dim unpacked-array access (read/write, (a)-flattening) ─────────
+    //
+    // A `base[i0][i1]…[ik]` selection parses as a left-nested BitSelect chain. If
+    // the innermost base is a plain single-segment `Ident` resolving to an ARRAY
+    // net (`array_len > 1`), the whole chain is an array access; otherwise it is an
+    // ordinary bit/part-select on a scalar value and these helpers return `None` so
+    // the caller's existing logic runs. The index `Vec` is returned in SOURCE order
+    // (`[i0, i1, …, ik]`): the chain walk yields outer-first, so the base part is
+    // reversed and the outermost index appended last.
+
+    /// Collect a read-side `base[index]` chain rooted at an array `Ident`.
+    fn expr_array_chain<'a>(
+        &self,
+        base: &'a ast::Expr,
+        index: &'a ast::Expr,
+    ) -> Option<(u32, Vec<&'a ast::Expr>)> {
+        let mut outer_first: Vec<&ast::Expr> = Vec::new();
+        let mut cur = base;
+        let net = loop {
+            match &cur.kind {
+                ast::ExprKind::BitSelect { base: b, index: i } => {
+                    outer_first.push(i);
+                    cur = b;
+                }
+                ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                    match self.lookup_net_scoped(&p.segments[0].name) {
+                        Some(n) if self.nets.get(n as usize).is_some_and(|nv| nv.array_len > 1) => {
+                            break n
+                        }
+                        _ => return None,
                     }
                 }
+                _ => return None,
             }
+        };
+        outer_first.reverse(); // base-chain → source order
+        outer_first.push(index); // outermost index is the last in source order
+        Some((net, outer_first))
+    }
+
+    /// Write-side twin of [`Self::expr_array_chain`] over `Lvalue` nodes.
+    fn lval_array_chain<'a>(
+        &self,
+        base: &'a ast::Lvalue,
+        index: &'a ast::Expr,
+    ) -> Option<(u32, Vec<&'a ast::Expr>)> {
+        let mut outer_first: Vec<&ast::Expr> = Vec::new();
+        let mut cur = base;
+        let net = loop {
+            match cur {
+                ast::Lvalue::BitSelect {
+                    base: b, index: i, ..
+                } => {
+                    outer_first.push(i);
+                    cur = b;
+                }
+                ast::Lvalue::Ident(p) if p.segments.len() == 1 => {
+                    match self.lookup_net_scoped(&p.segments[0].name) {
+                        Some(n) if self.nets.get(n as usize).is_some_and(|nv| nv.array_len > 1) => {
+                            break n
+                        }
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        };
+        outer_first.reverse();
+        outer_first.push(index);
+        Some((net, outer_first))
+    }
+
+    /// Per-dim lengths of array `net` (source order). Multi-dim nets record their
+    /// shape in `array_dims`; a 1-D array falls back to the single flat extent.
+    fn net_dim_sizes(&self, net: u32) -> Vec<u32> {
+        self.array_dims
+            .get(&net)
+            .cloned()
+            .unwrap_or_else(|| vec![self.nets[net as usize].array_len.max(1)])
+    }
+
+    /// Row-major flat word ExprId for the first `dims.len()` indices. Strides are
+    /// the suffix products of `dims`; a stride of 1 contributes the raw index with
+    /// no `Mul`, and a single-dim array returns exactly `lower_expr(index)` — so
+    /// the long-standing 1-D `mem[i]` lowering is byte-for-byte preserved.
+    fn flatten_word(&mut self, dims: &[u32], word_idxs: &[&ast::Expr]) -> u32 {
+        let d = dims.len();
+        // strides[k] = product(dims[k+1..]) as u64 (saturating into u32 at use).
+        let mut strides = vec![1u64; d];
+        for k in (0..d.saturating_sub(1)).rev() {
+            strides[k] = strides[k + 1].saturating_mul(dims[k + 1] as u64);
         }
-        None
+        let mut acc: Option<u32> = None;
+        for (k, idx) in word_idxs.iter().enumerate() {
+            let term = if strides[k] == 1 {
+                self.lower_expr(idx)
+            } else {
+                let i = self.lower_expr(idx);
+                let s = self.const_u32_expr(strides[k].min(u32::MAX as u64) as u32, 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Mul,
+                    lhs: i,
+                    rhs: s,
+                })
+            };
+            acc = Some(match acc {
+                None => term,
+                Some(a) => self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Add,
+                    lhs: a,
+                    rhs: term,
+                }),
+            });
+        }
+        acc.unwrap_or_else(|| self.const_u32_expr(0, 32))
+    }
+
+    /// Lower a read `net[idxs…]`: first D indices → flat word; ONE optional trailing
+    /// index → a bit-select into the element word (`g[i][j][k]`). Fewer than D
+    /// indices is a partial unpacked slice; more than D+1 is a bit-of-bit select —
+    /// both unsupported in v1 (loud, not silent). The trailing cap is SYMMETRIC with
+    /// the write path (`collect_array_write`), so over-indexing is rejected the same
+    /// way on read and write rather than silently yielding X on one side.
+    fn lower_array_read(&mut self, net: u32, idxs: &[&ast::Expr]) -> u32 {
+        let dims = self.net_dim_sizes(net);
+        let d = dims.len();
+        if idxs.len() < d {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "partial unpacked-array slice (v1: index every dimension)",
+            );
+            return self.placeholder_expr();
+        }
+        if idxs.len() > d + 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "bit-select then bit-select on a multi-dim array element (v1: single bit/part)",
+            );
+            return self.placeholder_expr();
+        }
+        let word = self.flatten_word(&dims, &idxs[..d]);
+        let val = self.push_expr(ir::Expr::Signal {
+            net,
+            word: Some(word),
+        });
+        if let Some(bidx) = idxs.get(d) {
+            let offset = self.lower_expr(bidx);
+            let width = self.const_u32_expr(1, 32);
+            return self.push_expr(ir::Expr::Select {
+                base: val,
+                offset,
+                width,
+                kind: ir::SelKind::Bit,
+            });
+        }
+        val
+    }
+
+    /// Lower a write `net[idxs…] = …` into one `LvalChunk`: first D indices → flat
+    /// word; one trailing index → a single bit-select on the element. `< D` indices
+    /// (partial slice) and `> D+1` indices (bit-of-bit LHS) are unsupported (loud).
+    fn collect_array_write(&mut self, net: u32, idxs: &[&ast::Expr], out: &mut Vec<ir::LvalChunk>) {
+        let dims = self.net_dim_sizes(net);
+        let d = dims.len();
+        if idxs.len() < d {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "partial unpacked-array slice (v1: index every dimension)",
+            );
+            out.push(ir::LvalChunk {
+                net: POISON_NET,
+                word: None,
+                offset: None,
+                width: None,
+                kind: ir::SelKind::Bit,
+            });
+            return;
+        }
+        let word = self.flatten_word(&dims, &idxs[..d]);
+        let trailing = &idxs[d..];
+        let (offset, width) = match trailing.len() {
+            0 => (None, None),
+            1 => {
+                let off = self.lower_expr(trailing[0]);
+                let w = self.const_u32_expr(1, 32);
+                (Some(off), Some(w))
+            }
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "nested bit-select on a multi-dim array lvalue (v1: single bit/part)",
+                );
+                (None, None)
+            }
+        };
+        out.push(ir::LvalChunk {
+            net,
+            word: Some(word),
+            offset,
+            width,
+            kind: ir::SelKind::Bit,
+        });
     }
 }
 

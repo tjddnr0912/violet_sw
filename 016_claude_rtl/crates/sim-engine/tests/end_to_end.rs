@@ -1572,6 +1572,189 @@ fn memory_runtime_word_index() {
     assert_eq!(out, "5 6 7 8 r=7\n");
 }
 
+// ── multi-dimensional UNPACKED array (V2001): `reg [7:0] g[0:1][0:2]` is a 2×3
+//    array of 8-bit words. elaborate flattens row-major (i*ncols+j) onto the
+//    existing single-word memory model — no frozen-IR change. Read AND write. ──
+
+#[test]
+fn array_2d_const_index_rw() {
+    let src = "module t; reg [7:0] g[0:1][0:2]; \
+               initial begin \
+                 g[0][0] = 8'd5; g[1][2] = 8'd9; g[1][0] = 8'd7; \
+                 $display(\"%0d %0d %0d\", g[0][0], g[1][0], g[1][2]); $finish; \
+               end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "5 7 9\n");
+}
+
+#[test]
+fn array_2d_runtime_fill() {
+    // grid[i][j] = i*10 + j over a nested loop with RUNTIME indices, read back.
+    let src = "module t; reg [7:0] g[0:1][0:2]; integer i, j; \
+               initial begin \
+                 for (i = 0; i < 2; i = i + 1) \
+                   for (j = 0; j < 3; j = j + 1) g[i][j] = i*10 + j; \
+                 $display(\"%0d %0d %0d %0d %0d %0d\", \
+                   g[0][0], g[0][1], g[0][2], g[1][0], g[1][1], g[1][2]); $finish; \
+               end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // i*10+j → 0 1 2 / 10 11 12
+    assert_eq!(out, "0 1 2 10 11 12\n");
+}
+
+#[test]
+fn array_2d_element_bit_select_read() {
+    // g[i][j][k] = bit k of the 8-bit element at [i][j]. (n == D+1)
+    let src = "module t; reg [7:0] g[0:1][0:1]; \
+               initial begin \
+                 g[1][1] = 8'b1010_0001; \
+                 $display(\"%0d %0d %0d\", g[1][1][0], g[1][1][5], g[1][1][7]); $finish; \
+               end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // bit0=1, bit5=1, bit7=1
+    assert_eq!(out, "1 1 1\n");
+}
+
+#[test]
+fn array_2d_element_bit_write() {
+    // g[i][j][k] = b writes a single bit of element [i][j]. (write n == D+1)
+    let src = "module t; reg [7:0] g[0:1][0:1]; \
+               initial begin \
+                 g[0][1] = 8'd0; g[0][1][0] = 1'b1; g[0][1][3] = 1'b1; \
+                 $display(\"%0d\", g[0][1]); $finish; \
+               end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // bits 0 and 3 set → 0b1001 = 9
+    assert_eq!(out, "9\n");
+}
+
+#[test]
+fn array_1d_element_bit_select_unchanged() {
+    // REGRESSION: `mem[i][j]` on a 1D array is bit j of word i — must still work
+    // (the unified chain handler subsumes the old single-dim path).
+    let src = "module t; reg [7:0] m[0:3]; \
+               initial begin m[2] = 8'b0000_0100; \
+                 $display(\"%0d %0d\", m[2][2], m[2][0]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "1 0\n");
+}
+
+#[test]
+fn array_2d_partial_slice_rejected() {
+    // `g[i] = …` on a 2D array indexes only 1 of 2 dims → unsupported (loud), NOT
+    // a silent mis-lower. Phase-1 requires all dimensions indexed.
+    let diags = elaborate_diags("module t; reg [7:0] g[0:1][0:2]; initial g[0] = 8'd5; endmodule");
+    assert!(
+        diags.iter().any(|d| d.contains("unpacked-array")),
+        "expected partial-slice rejection, got: {diags:?}"
+    );
+}
+
+#[test]
+fn array_3d_runtime_fill() {
+    // 3-D array, strides 4/2/1; element encodes its coordinate i*100+j*10+k.
+    let src = "module t; reg [7:0] g[0:1][0:1][0:1]; integer i, j, k; \
+               initial begin \
+                 for (i=0;i<2;i=i+1) for (j=0;j<2;j=j+1) for (k=0;k<2;k=k+1) g[i][j][k]=i*100+j*10+k; \
+                 $display(\"%0d %0d %0d %0d\", g[0][0][0], g[0][1][1], g[1][0][1], g[1][1][1]); $finish; \
+               end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "0 11 101 111\n");
+}
+
+#[test]
+fn array_2d_element_part_select_write() {
+    // `g[i][j][7:4] = …` part-selects WITHIN a 2-D element; the low nibble survives.
+    let src = "module t; reg [7:0] g[0:1][0:1]; \
+               initial begin g[1][0] = 8'hAB; g[1][0][7:4] = 4'h3; \
+                 $display(\"%0h %0h\", g[1][0], g[1][0][7:4]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // high nibble A→3, low nibble B kept → 0x3B ; read-back of [7:4] = 3.
+    assert_eq!(out, "3b 3\n");
+}
+
+#[test]
+fn array_1d_element_part_select_write() {
+    // 1-D element part-select write `m[i][3:0] = …` (newly symmetric with reads).
+    let src = "module t; reg [7:0] m[0:3]; \
+               initial begin m[2] = 8'hF0; m[2][3:0] = 4'hA; \
+                 $display(\"%0h\", m[2]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "fa\n");
+}
+
+#[test]
+fn array_2d_element_indexed_part_write() {
+    // `g[i][j][k+:4] = …` indexed-part write into a 2-D element.
+    let src = "module t; reg [7:0] g[0:1][0:1]; integer k; \
+               initial begin g[0][1] = 8'h00; k = 4; g[0][1][k+:4] = 4'hF; \
+                 $display(\"%0h\", g[0][1]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "f0\n");
+}
+
+#[test]
+fn array_2d_nba_clocked_write() {
+    // 2-D element written nonblocking under @(posedge clk) behaves like flat mem.
+    let src = "module t; reg clk; reg [7:0] g[0:1][0:1]; integer n; \
+               always @(posedge clk) g[1][1] <= g[1][1] + 8'd1; \
+               initial begin clk=0; g[1][1]=8'd0; \
+                 for (n=0;n<3;n=n+1) begin #5 clk=1; #5 clk=0; end \
+                 $display(\"%0d\", g[1][1]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // three rising edges → incremented to 3.
+    assert_eq!(out, "3\n");
+}
+
+#[test]
+fn array_2d_over_index_read_rejected() {
+    // `g[i][j][k][m]` over-indexes a 2-D 8-bit element (bit-of-bit) → must reject
+    // LOUDLY, SYMMETRIC with the write path (no silent X on the read side).
+    let diags = elaborate_diags(
+        "module t; reg [7:0] g[0:1][0:1]; reg b; initial b = g[1][1][3][0]; endmodule",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("bit-select then bit-select")),
+        "expected over-index read rejection, got: {diags:?}"
+    );
+}
+
+#[test]
+fn array_2d_signed_element() {
+    // A `signed` element sign-extends like the equivalent 1-D signed reg.
+    let src = "module t; reg signed [7:0] g[0:1][0:1]; reg signed [15:0] r; \
+               initial begin g[1][1] = -8'sd5; r = g[1][1]; $display(\"%0d\", r); $finish; end \
+               endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "-5\n");
+}
+
+#[test]
+fn array_2d_wide_element_part_select() {
+    // 64-bit element (multi-chunk word): a part-select crossing the 32-bit chunk
+    // boundary writes/reads correctly — flatten composes with the chunk machinery.
+    let src = "module t; reg [63:0] g[0:1][0:1]; \
+               initial begin g[1][0] = 64'd0; g[1][0][39:24] = 16'hBEEF; \
+                 $display(\"%0h %0h\", g[1][0], g[1][0][39:24]); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // bits [39:24] = 0xBEEF → word 0x0000_00BE_EF00_0000.
+    assert_eq!(out, "beef000000 beef\n");
+}
+
 // ── named block with block-local declarations (sweep gap 16): locals are
 //    hoisted to module nets so references inside the block resolve. ────────────
 
