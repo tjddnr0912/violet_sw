@@ -1520,6 +1520,43 @@ fn real_div_zero_is_inf() {
     assert_eq!(out.trim(), "inf\n-inf");
 }
 
+// 18. [P3 · backend determinism contract] The WHOLE float-format surface as ONE
+// byte-image. Every OS MUST produce these exact bytes: the formatters deliberately
+// avoid libm transcendentals (no log10) and use only Rust's deterministic
+// `{:e}`/`{:.*}`, so the bytecode-VM path (P0a) reuses them VERBATIM — no
+// re-implementation, no fast-math (see doc-18 §결정 기록 / §P3). A regression in
+// any frozen formatter (`fmt_real`/`fmt_real_e`/`format_g`/`fmt_dec`/`dec_field_width`,
+// builtins.rs) or in `value.rs` real ops flips this golden. Covers %f, %e (2-digit
+// padded exp), %g (exp form + signed-zero canon + inf), %d-on-real (round half-away,
+// 64-bit field width 20), and the >128-bit %d field width (200-bit → 61, the only
+// f64-multiply path: `n * LOG10_2`), plus %g on $realtime.
+#[test]
+fn float_format_determinism_golden() {
+    let out = run_sv(
+        "module t;\n\
+           real r; reg [199:0] big;\n\
+           initial begin\n\
+             r = 1.0 / 3.0;     $display(\"%f\", r);\n\
+             r = 1500.0;        $display(\"%e\", r);\n\
+             r = 0.00001;       $display(\"%g\", r);\n\
+             r = -(0.0);        $display(\"%g|%f\", r, r);\n\
+             r = 1.0 / 0.0;     $display(\"%g\", r);\n\
+             r = 2.5;           $display(\"%d\", r);\n\
+             big = 200'd123456; $display(\"[%d]\", big);\n\
+             #3 $display(\"%g\", $realtime);\n\
+           end\n\
+         endmodule",
+    );
+    // %d on a real uses the 64-bit field width (20); %d on a 200-bit operand uses
+    // the n*LOG10_2 path → field width 61. Reconstruct both widths via format! so
+    // they are self-documenting, not a fragile wall of literal spaces.
+    let expected = format!(
+        "0.333333\n1.500000e+03\n1e-05\n0|-0.000000\ninf\n{:>20}\n[{:>61}]\n3\n",
+        3, 123456,
+    );
+    assert_eq!(out, expected);
+}
+
 /// Build `src` through lex→parse→elaborate, returning the collected diagnostic
 /// strings (severity-prefixed). Used to assert real-operand illegality gates.
 fn elaborate_diags(src: &str) -> Vec<String> {

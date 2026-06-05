@@ -88,3 +88,22 @@
 ### 골든 영향 = 없음
 
 바이트코드·VM·backend seam은 전부 `sim_ir::SimIr` 밖(SimOpts 사이드테이블/별도 크레이트). `schema_hash::<SimIr>()` 루트 불변, `format_version` 3 유지. P15의 kernel-ABI 버전은 `format_version`과 **독립** 필드로 별도 게이트.
+
+## P3 — float/host-toolchain 결정성 계약 (2026-06-06)
+
+> 컴파일드 백엔드의 정당성은 "3-OS 바이트동일 유지"인데, **float 경로가 최대 미고정 축**이다. 바이트코드 substrate(P0a) 덕분에 위험은 구조적으로 축소되지만(VM이 동일 함수 호출), 그 *reuse-only 규칙*을 계약으로 동결한다.
+
+**동결된 float-path 표면 (바이트코드 경로는 재구현 금지 · verbatim 재사용 · no fast-math):**
+
+| 함수 | 파일 | 결정성 근거 |
+|---|---|---|
+| `dec_field_width(n)` | builtins.rs:436 | ≤128은 u128 정수; >128만 `n·LOG10_2` f64 — 유일한 float-multiply(컬럼폭 힌트). 양 경로 동일 함수 |
+| `fmt_dec` (real arm) | builtins.rs:454 | `x.round() as i64` saturating; NaN→0 |
+| `fmt_real`(`%f`) | builtins.rs:480 | Rust `{:.*}` (libm 아님) |
+| `fmt_real_e`(`%e`) | builtins.rs:499 | Rust `{:.p$e}` + 2자리 지수 패딩 |
+| `format_g`(`%g`) | builtins.rs:520 | Rust `{:e}`로 지수 도출(**log10 의도적 회피** — libm transcendental은 3-OS 바이트동일 아님), ±0.0 canon |
+| `Value::{from_f64,to_f64}`·`real_to_int_round` | value.rs:255,269,303 | int↔real `as f64`/round-half-away |
+
+**계약:** 위 함수는 인터프리터와 바이트코드 VM이 *동일 인스턴스*를 호출한다(opcode가 별도 float 로직을 갖지 않음). 따라서 `%f/%e/%g/%t/%d-on-real` 및 >128bit `%d` 폭이 두 경로 byte-for-byte 일치 — 이는 P5(컴파일드==인터프리티드)로 강제되고, **단일-OS 체크인 골든**(`float_format_determinism_golden`, end_to_end.rs)이 cross-OS 재현성을 잠근다(모든 OS가 동일 리터럴 매칭 = cross-OS diff와 등가). CI는 ubuntu+macos에서 같은 골든을 돌려 OS별 발산 시 해당 leg 실패.
+
+**잔여(릴리스 신뢰도, 코드젠 비차단):** CI에 OS-간 산출물 직접 diff 잡(별도 leg 출력 비교)은 골든-리터럴 방식으로 이미 등가 달성 — 추가는 nice-to-have.
