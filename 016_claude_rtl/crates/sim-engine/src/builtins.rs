@@ -118,18 +118,63 @@ fn dumpvars(st: &mut SimState) {
     let date = st.vcd_date.clone();
     let unit = st.timescale_unit.clone();
     let mut ids: Vec<Option<IdCode>> = vec![None; st.ir.nets.len()];
+    // Hierarchical naming when the elaborate side table is present (one FQ name per
+    // net); otherwise the legacy flat `top` scope + synthetic `n{i}`.
+    let use_names = st.net_names.len() == st.ir.nets.len();
     {
+        let nets = &st.ir.nets;
+        let names = &st.net_names;
         let w = st.vcd.as_mut().unwrap();
         let _ = w.write_preamble(&date, &unit);
-        let _ = w.push_scope(ScopeType::Module, "top");
-        for (i, nv) in st.ir.nets.iter().enumerate() {
-            let vt = vcd_var_type(nv.kind);
-            let name = format!("n{i}");
-            if let Ok(id) = w.declare_var(vt, nv.width.max(1), &name) {
-                ids[i] = Some(id);
+        if use_names {
+            // Split each FQ name into (scope segments, leaf). Emit a correctly nested
+            // $scope/$upscope tree by visiting nets in scope-sorted order and pushing
+            // / popping as the scope prefix changes (classic sorted-leaf tree walk).
+            let mut order: Vec<usize> = (0..nets.len()).collect();
+            let segs: Vec<Vec<&str>> = names.iter().map(|s| s.split('.').collect()).collect();
+            // sort by scope path (all but the leaf); stable → vars keep net order
+            // within a scope.
+            order.sort_by(|&a, &b| segs[a][..segs[a].len() - 1].cmp(&segs[b][..segs[b].len() - 1]));
+            let mut cur: Vec<&str> = Vec::new();
+            for &i in &order {
+                let scope = &segs[i][..segs[i].len() - 1];
+                let leaf = *segs[i].last().unwrap();
+                // pop to the common prefix
+                let common = cur
+                    .iter()
+                    .zip(scope.iter())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                while cur.len() > common {
+                    let _ = w.pop_scope();
+                    cur.pop();
+                }
+                // push the remaining scope segments
+                while cur.len() < scope.len() {
+                    let seg = scope[cur.len()];
+                    let _ = w.push_scope(ScopeType::Module, seg);
+                    cur.push(seg);
+                }
+                let vt = vcd_var_type(nets[i].kind);
+                if let Ok(id) = w.declare_var(vt, nets[i].width.max(1), leaf) {
+                    ids[i] = Some(id);
+                }
             }
+            while !cur.is_empty() {
+                let _ = w.pop_scope();
+                cur.pop();
+            }
+        } else {
+            let _ = w.push_scope(ScopeType::Module, "top");
+            for (i, nv) in nets.iter().enumerate() {
+                let vt = vcd_var_type(nv.kind);
+                let name = format!("n{i}");
+                if let Ok(id) = w.declare_var(vt, nv.width.max(1), &name) {
+                    ids[i] = Some(id);
+                }
+            }
+            let _ = w.pop_scope();
         }
-        let _ = w.pop_scope();
         let _ = w.write_header();
     }
     for (i, id) in ids.iter().enumerate() {

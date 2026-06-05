@@ -38,6 +38,23 @@ fn build(src: &str) -> sim_ir::SimIr {
     ir.expect("elaborate returned None")
 }
 
+/// Elaborate `src` WITH the per-net hierarchical name side table (for VCD naming).
+fn build_named(src: &str) -> (sim_ir::SimIr, Vec<String>) {
+    let (toks, le) = hdl_lexer::lex(src);
+    assert!(le.is_empty(), "lex errors: {le:?}");
+    let (su, pe) = hdl_parser::parse(&toks, src);
+    assert!(pe.is_empty(), "parse errors: {pe:?}");
+    let sink = DiagSink::default();
+    let (ir, _modes, names) = elaborate::elaborate_with_sidecars(&su.expect("source unit"), &sink);
+    let diags = sink.0.borrow();
+    let hard: Vec<&String> = diags
+        .iter()
+        .filter(|d| d.starts_with("Error") || d.starts_with("Fatal"))
+        .collect();
+    assert!(hard.is_empty(), "elaborate errors: {hard:?}");
+    (ir.expect("elaborate returned None"), names)
+}
+
 /// Elaborate `src` WITH the fork-mode side table and return `(ir, opts)` where
 /// `opts` carries `fork_modes`. Existing non-fork tests keep using
 /// `build()`/`SimOpts::default()` unchanged. Fork tests do:
@@ -244,6 +261,35 @@ fn vcd_dump_initial_and_change() {
     assert!(vcd.contains("b0011 !"), "a=3 appears:\n{vcd}");
     assert!(vcd.contains("b1001 !"), "a=9 appears:\n{vcd}");
     assert!(vcd.contains("#5"), "time 5 recorded");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn vcd_hierarchical_scopes_and_real_names() {
+    // REMAINING_WORK BLOCKER: VCD emits real hierarchical $scope (by instance name)
+    // and real $var names, not a flat `top` scope with synthetic n0..nN.
+    let path = tmp_vcd("hier");
+    let _ = std::fs::remove_file(&path);
+    let src = "module sub(input wire a, output wire b); assign b = ~a; endmodule \
+               module top; reg clk; wire q; sub u(.a(clk), .b(q)); \
+                 initial begin $dumpfile(\"x\"); $dumpvars(0, top); \
+                   clk=0; #5 clk=1; #5 $finish; end endmodule";
+    let (ir, names) = build_named(src);
+    let mut opts = opts_with_vcd(&path);
+    opts.net_names = names;
+    let (res, _out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    let vcd = std::fs::read_to_string(&path).expect("vcd written");
+    assert!(vcd.contains("$scope module top $end"), "top scope:\n{vcd}");
+    assert!(
+        vcd.contains("$scope module u $end"),
+        "sub instance scope:\n{vcd}"
+    );
+    assert!(vcd.contains(" clk $end"), "real name clk:\n{vcd}");
+    assert!(
+        !vcd.contains(" n0 $end") && !vcd.contains(" n1 $end"),
+        "no synthetic names:\n{vcd}"
+    );
     let _ = std::fs::remove_file(&path);
 }
 

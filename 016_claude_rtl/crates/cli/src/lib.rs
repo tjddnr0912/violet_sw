@@ -286,7 +286,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     // elaboration error was reported. `elaborate_with_modes` also yields the
     // join-mode side table the engine needs to run forks concurrently (threaded
     // into `SimOpts.fork_modes`); for fork-free designs it is simply empty.
-    let (ir, fork_modes) = elaborate::elaborate_with_modes(&unit, &sink);
+    let (ir, fork_modes, net_names) = elaborate::elaborate_with_sidecars(&unit, &sink);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR;
     };
@@ -294,6 +294,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     // ── simulate ────────────────────────────────────────────────────────────
     let sim_opts = SimOpts {
         fork_modes,
+        net_names,
         ..opts.sim_opts()
     };
     let result = sim_engine::simulate(&ir, &sink, sim_opts);
@@ -618,16 +619,22 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     };
 
     // ── elaborate ──
-    let (ir, fork_modes) = elaborate::elaborate_with_modes(&unit, &sink);
+    let (ir, fork_modes, net_names) = elaborate::elaborate_with_sidecars(&unit, &sink);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR; // elab error already emitted
     };
 
-    // ── write `.velab` (body = postcard(SimIr) ++ postcard(ForkModeTable)) ──
+    // ── write `.velab` body = postcard(SimIr) ++ postcard(ForkModeTable) ++
+    //    postcard(NetNameTable). Both trailers ride OUTSIDE the hashed SimIr frame
+    //    (the schema gate covers the type, not these bytes), so the golden hash and
+    //    staleness are unaffected; the names give `vrun` hierarchical VCD output. ──
     let mut velab_body = postcard::to_stdvec(&ir).expect("SimIr postcard encode infallible");
-    let trailer =
-        postcard::to_stdvec(&fork_modes).expect("ForkModeTable postcard encode infallible");
-    velab_body.extend_from_slice(&trailer);
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&fork_modes).expect("ForkModeTable postcard encode infallible"),
+    );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&net_names).expect("NetNameTable postcard encode infallible"),
+    );
     let vheader = velab_header(vita_schema::schema_hash::<sim_ir::SimIr>(), &ir);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
     if let Err(e) = std::fs::write(out, &out_bytes) {
@@ -673,21 +680,40 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             )
         }
     };
-    let fork_modes: sim_engine::ForkModeTable = match postcard::from_bytes(rest) {
-        Ok(m) => m,
-        Err(e) => {
-            return emit_artifact_error(
-                &sink,
-                &vita_artifact::ArtifactError::format(&format!(
-                    "undecodable .velab fork trailer: {e}"
-                )),
-            )
+    let (fork_modes, rest2): (sim_engine::ForkModeTable, &[u8]) =
+        match postcard::take_from_bytes(rest) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    &sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab fork trailer: {e}"
+                    )),
+                )
+            }
+        };
+    // NetNameTable trailer (hierarchical VCD names). Tolerant of an older `.velab`
+    // with no names trailer → empty ⇒ flat `n{i}` fallback (no decode error).
+    let net_names: sim_engine::NetNameTable = if rest2.is_empty() {
+        Vec::new()
+    } else {
+        match postcard::from_bytes(rest2) {
+            Ok(n) => n,
+            Err(e) => {
+                return emit_artifact_error(
+                    &sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab name trailer: {e}"
+                    )),
+                )
+            }
         }
     };
 
     // ── simulate ──
     let sim_opts = SimOpts {
         fork_modes,
+        net_names,
         ..opts.sim_opts()
     };
     let result = sim_engine::simulate(&ir, &sink, sim_opts);

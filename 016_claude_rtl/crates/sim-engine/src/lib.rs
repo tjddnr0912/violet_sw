@@ -38,7 +38,7 @@ use sim_ir::SimIr;
 
 /// Re-exported from `elaborate` so callers thread the join-mode side table into
 /// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
-pub use elaborate::{ForkModeTable, JoinMode};
+pub use elaborate::{ForkModeTable, JoinMode, NetNameTable};
 pub use sched::FinishReason;
 
 use sched::Scheduler;
@@ -75,6 +75,11 @@ pub struct SimOpts {
     /// fork-mode lookup is total-or-fatal: a `Terminator::Fork` with no matching
     /// entry aborts the run at t0 rather than fabricating a (wrong) mode.
     pub fork_modes: ForkModeTable,
+    /// Per-NetId hierarchical name table from `elaborate::elaborate_with_sidecars`.
+    /// EMPTY by default (every existing caller unaffected): the VCD writer then
+    /// falls back to a flat `top` scope + synthetic `n{i}` names. When populated it
+    /// drives real hierarchical `$scope`/`$var` output. Never enters the golden IR.
+    pub net_names: NetNameTable,
 }
 
 impl Default for SimOpts {
@@ -86,6 +91,7 @@ impl Default for SimOpts {
             max_deltas: 1_000_000,
             time_limit: None,
             fork_modes: ForkModeTable::new(),
+            net_names: Vec::new(),
         }
     }
 }
@@ -134,6 +140,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
         opts.vcd_date.clone(),
         opts.vcd_path_override.clone(),
     );
+    st.net_names = opts.net_names.clone();
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

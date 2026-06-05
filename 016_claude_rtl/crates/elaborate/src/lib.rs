@@ -96,6 +96,13 @@ pub enum JoinMode {
 /// process body is a private BB arena and `join_bb` is unique within it.
 pub type ForkModeTable = std::collections::BTreeMap<(u32, u32), JoinMode>;
 
+/// Per-NetId fully-qualified hierarchical name (`"top.dut.q"`), source order.
+/// An engine-facing SIDE TABLE for the VCD writer — like [`ForkModeTable`] it
+/// rides out-of-band in `SimOpts` and NEVER enters the frozen `SimIr` root (which
+/// carries no name field). Threaded by the simulate path so `$dumpvars` emits real
+/// hierarchical `$scope`/`$var` instead of a flat `top` + synthetic `n0..nN`.
+pub type NetNameTable = Vec<String>;
+
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
 /// threads into `SimOpts.fork_modes`. `elaborate` is a thin forwarder onto this
 /// so the ~25 existing `elaborate(...)` callers keep compiling verbatim.
@@ -103,13 +110,25 @@ pub fn elaborate_with_modes(
     unit: &ast::SourceUnit,
     sink: &dyn LogSink,
 ) -> (Option<ir::SimIr>, ForkModeTable) {
+    let (ir, modes, _names) = elaborate_with_sidecars(unit, sink);
+    (ir, modes)
+}
+
+/// Like [`elaborate_with_modes`], but ALSO returns the [`NetNameTable`] for VCD
+/// hierarchical naming. Both side tables ride in `SimOpts` and never perturb the
+/// golden `SimIr`.
+pub fn elaborate_with_sidecars(
+    unit: &ast::SourceUnit,
+    sink: &dyn LogSink,
+) -> (Option<ir::SimIr>, ForkModeTable, NetNameTable) {
     let mut el = Elaborator::new(sink);
     el.run(unit);
     let modes = std::mem::take(&mut el.fork_modes);
+    let names = el.net_name_table(); // BEFORE finish() consumes `el`
     if el.had_error {
-        (None, modes)
+        (None, modes, names)
     } else {
-        (Some(el.finish()), modes)
+        (Some(el.finish()), modes, names)
     }
 }
 
@@ -352,6 +371,29 @@ impl<'s> Elaborator<'s> {
             blocks: Vec::new(), // funcs body arena — reserved (deferred past v2)
             consts: self.consts,
         }
+    }
+
+    /// Per-NetId fully-qualified name table for the VCD writer, built by inverting
+    /// the FQ-name → NetId `symbols` map (`"top.dut.q"`). A net with no symbol entry
+    /// (anonymous/implicit) falls back to `n{id}`. BTreeMap iteration is sorted, so
+    /// a net mapped by several aliases keeps the lexicographically smallest FQ name
+    /// (its canonical declaration path). Order-independent of arena order → 3-OS
+    /// stable. Computed before `finish()` (which moves `self.nets`/`self.symbols`).
+    fn net_name_table(&self) -> Vec<String> {
+        let mut names = vec![String::new(); self.nets.len()];
+        for (fq, &id) in &self.symbols {
+            if let Some(slot) = names.get_mut(id as usize) {
+                if slot.is_empty() {
+                    *slot = fq.clone();
+                }
+            }
+        }
+        for (i, n) in names.iter_mut().enumerate() {
+            if n.is_empty() {
+                *n = format!("n{i}");
+            }
+        }
+        names
     }
 
     /// THE deterministic stmt append point (mirror of [`Self::push_expr`]).

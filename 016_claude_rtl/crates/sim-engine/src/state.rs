@@ -88,6 +88,8 @@ pub(crate) struct SimState<'a> {
     pub dumping: bool,
     pub timescale_unit: String,
     pub vcd_date: String,
+    /// Per-NetId hierarchical name (`"top.dut.q"`); empty ⇒ flat `n{i}` fallback.
+    pub net_names: Vec<String>,
 
     // ── stdout for $display/$write (boxed sink, deterministic) ──
     pub out: Box<dyn Write + 'a>,
@@ -140,6 +142,7 @@ impl<'a> SimState<'a> {
             dumping: false,
             timescale_unit,
             vcd_date,
+            net_names: Vec::new(),
             out,
             finished: false,
             had_error: false,
