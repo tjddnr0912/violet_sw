@@ -153,6 +153,18 @@ fn diff_shift_and_arith() {
 }
 
 #[test]
+fn diff_packed_struct() {
+    assert_matches_iverilog(
+        "packed_struct",
+        "module tb; typedef struct packed { logic [7:0] hi; logic [7:0] lo; } word_t; \
+           word_t w; \
+           initial begin w.hi = 8'hDE; w.lo = 8'hAD; \
+             $display(\"%h %h %h\", w.hi, w.lo, w); \
+             w = 16'hBEEF; $display(\"%h %h\", w.hi, w.lo); $finish; end endmodule",
+    );
+}
+
+#[test]
 fn diff_typedef_alias() {
     assert_matches_iverilog(
         "typedef_alias",

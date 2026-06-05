@@ -37,6 +37,22 @@ struct TypeInfo {
     packed: Vec<Range>,
 }
 
+/// Flat bit layout of a packed struct: members are placed MSB-first into one
+/// `logic [total-1:0]` vector. `fields` carries `(name, lsb_offset, width)` so a
+/// `s.field` access desugars to the constant part-select `s[off+w-1 : off]`.
+#[derive(Clone)]
+struct StructLayout {
+    fields: Vec<(String, u32, u32)>,
+}
+impl StructLayout {
+    fn field(&self, name: &str) -> Option<(u32, u32)> {
+        self.fields
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, o, w)| (*o, *w))
+    }
+}
+
 pub struct Parser<'t, 's> {
     toks: &'t [Spanned],
     src: &'s str,
@@ -47,6 +63,10 @@ pub struct Parser<'t, 's> {
     /// SV user-defined type names (`typedef … name;`) → resolved underlying type.
     /// Accumulates across the source unit; lets `name var;` parse as a typed decl.
     typedefs: std::collections::HashMap<String, TypeInfo>,
+    /// Packed-struct type name → flat bit layout (for `s.field` desugaring).
+    struct_layouts: std::collections::HashMap<String, StructLayout>,
+    /// Variable name → its struct type name (module-scoped; cleared per module).
+    var_struct: std::collections::HashMap<String, String>,
 }
 
 impl<'t, 's> Parser<'t, 's> {
@@ -59,6 +79,8 @@ impl<'t, 's> Parser<'t, 's> {
             errors: Vec::new(),
             error_limit: 50,
             typedefs: std::collections::HashMap::new(),
+            struct_layouts: std::collections::HashMap::new(),
+            var_struct: std::collections::HashMap::new(),
         }
     }
 
@@ -161,6 +183,17 @@ impl<'t, 's> Parser<'t, 's> {
         if self.errors.len() < self.error_limit {
             self.errors.push(ParseError {
                 span: self.cur_span(),
+                expected,
+                found: self.peek(),
+            });
+        }
+    }
+
+    /// Like [`error`] but reports at an explicit `span` (e.g. a node parsed earlier).
+    fn error_at(&mut self, span: Span, expected: &'static str) {
+        if self.errors.len() < self.error_limit {
+            self.errors.push(ParseError {
+                span,
                 expected,
                 found: self.peek(),
             });
@@ -520,6 +553,21 @@ impl<'t, 's> Parser<'t, 's> {
             // identifier / hierarchical name / function call
             _ if self.is_ident() => {
                 let path = self.hier_path().unwrap();
+                // packed-struct member access `s.field` → constant part-select.
+                if let Some((base, off, w)) = self.struct_field_select(&path) {
+                    let span = path.span;
+                    return Expr {
+                        kind: ExprKind::PartSelect {
+                            base: Box::new(Expr {
+                                kind: ExprKind::Ident(base),
+                                span,
+                            }),
+                            msb: Box::new(Self::dec_lit(off + w - 1, span)),
+                            lsb: Box::new(Self::dec_lit(off, span)),
+                        },
+                        span,
+                    };
+                }
                 if self.peek() == Some(T::LParen) {
                     let args = self.call_args();
                     Expr {
@@ -763,6 +811,8 @@ impl<'t, 's> Parser<'t, 's> {
 
     fn parse_module(&mut self) -> Option<ModuleDecl> {
         let start = self.cur_span();
+        // Variable→struct bindings are module-scoped (type *names* are not).
+        self.var_struct.clear();
         let is_macromodule = self.at_kw(Kw::Macromodule);
         self.bump(); // module / macromodule
         let name = self.ident()?;
@@ -1377,9 +1427,17 @@ impl<'t, 's> Parser<'t, 's> {
     /// `T name1, name2 = init, …;` where the leading type-name resolved to `info`.
     fn parse_typed_decl(&mut self, info: TypeInfo) -> Option<NetVarDecl> {
         let start = self.cur_span();
+        let tyname = self.cur_text().to_string();
         self.bump(); // the type-name identifier
         let names = self.parse_decl_name_list()?;
         self.expect(TokenKind::Semi, "';'");
+        // If this is a struct type, bind each declared name → type so `var.field`
+        // member accesses can be desugared to part-selects.
+        if self.struct_layouts.contains_key(&tyname) {
+            for n in &names {
+                self.var_struct.insert(n.name.name.clone(), tyname.clone());
+            }
+        }
         Some(NetVarDecl {
             kind: info.kind,
             signed: info.signed,
@@ -1396,13 +1454,16 @@ impl<'t, 's> Parser<'t, 's> {
     fn parse_typedef(&mut self) -> Option<ModuleItem> {
         let start = self.cur_span();
         self.bump(); // `typedef`
+        if self.at_kw(Kw::Struct) {
+            return self.parse_typedef_struct(start);
+        }
         if !self.at_kw(Kw::Enum) {
             // `typedef logic [7:0] byte_t;` — plain alias to a net/var type.
             if self.net_var_kind().is_some() {
                 return self.parse_typedef_alias(start);
             }
-            // packed-struct/union forms are a later Phase-2 sub-stage.
-            self.error("a type after `typedef`");
+            // unpacked struct / union forms are out of v1 scope.
+            self.error("`enum`, `struct packed`, or a type after `typedef`");
             self.synchronize();
             return Some(ModuleItem::Error(start.to(self.prev_span())));
         }
@@ -1487,6 +1548,174 @@ impl<'t, 's> Parser<'t, 's> {
             },
             span: start.to(self.prev_span()),
         }))
+    }
+
+    /// `typedef struct packed { <type> f1, f2; … } name;` (Phase-2). Members are
+    /// laid out MSB-first into one flat `logic [W-1:0]` vector; the layout is
+    /// recorded so `name var;` resolves and `var.field` desugars to a part-select.
+    /// `start` is the span of the leading `typedef` keyword (already consumed).
+    fn parse_typedef_struct(&mut self, start: Span) -> Option<ModuleItem> {
+        self.bump(); // `struct`
+        if !self.eat_kw(Kw::Packed) {
+            // unpacked struct has no flat layout in v1 — reject loudly.
+            self.error("`packed` after `struct` (unpacked struct unsupported in v1)");
+            self.synchronize();
+            return Some(ModuleItem::Error(start.to(self.prev_span())));
+        }
+        let _ = self.opt_signed(); // `struct packed signed` — sign ignored for layout
+        self.expect(TokenKind::LBrace, "'{' for struct body");
+        let mut members = Vec::new();
+        while self.peek() != Some(TokenKind::RBrace) && !self.at_eof() {
+            let before = self.pos;
+            let m_start = self.cur_span();
+            let Some(kind) = self.net_var_kind() else {
+                self.error("a net/var type in struct member");
+                break;
+            };
+            self.bump(); // kind keyword
+            let signed = self.opt_signed();
+            let range = self.opt_range();
+            loop {
+                let Some(name) = self.ident() else { break };
+                members.push(StructMember {
+                    name,
+                    kind,
+                    signed,
+                    range: range.clone(),
+                    span: m_start.to(self.prev_span()),
+                });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Semi, "';'");
+            if self.pos == before {
+                self.bump(); // forward-progress guard
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}' to close struct body");
+        let tname = self.ident()?;
+        self.expect(TokenKind::Semi, "';'");
+        // Compute each member width (constant-literal ranges only in v1).
+        let mut widths = Vec::with_capacity(members.len());
+        for m in &members {
+            match self.member_width(&m.range) {
+                Some(w) if w > 0 => widths.push(w),
+                _ => {
+                    self.error_at(
+                        m.span,
+                        "struct member width must be a constant-literal range in v1",
+                    );
+                    widths.push(1);
+                }
+            }
+        }
+        let total: u32 = widths.iter().sum();
+        // Lay out MSB-first: first member occupies the high bits.
+        let mut off = total;
+        let mut fields = Vec::with_capacity(members.len());
+        for (m, w) in members.iter().zip(&widths) {
+            off -= w;
+            fields.push((m.name.name.clone(), off, *w));
+        }
+        self.struct_layouts
+            .insert(tname.name.clone(), StructLayout { fields });
+        self.typedefs.insert(
+            tname.name.clone(),
+            TypeInfo {
+                kind: NetVarKind::Logic,
+                signed: false,
+                range: Some(Self::dec_range(total.saturating_sub(1))),
+                packed: Vec::new(),
+            },
+        );
+        Some(ModuleItem::Typedef(TypedefDecl {
+            name: tname,
+            kind: TypedefKind::Struct { members },
+            span: start.to(self.prev_span()),
+        }))
+    }
+
+    /// Width of a struct member from its range. `None` ⇒ scalar (1). Only
+    /// constant-literal bounds fold (`[7:0]`, `[8-1:0]`); param widths return `None`.
+    fn member_width(&self, range: &Option<Range>) -> Option<u32> {
+        match range {
+            None => Some(1),
+            Some(r) => {
+                let msb = Self::const_lit(&r.msb)?;
+                let lsb = Self::const_lit(&r.lsb)?;
+                Some(msb.abs_diff(lsb) as u32 + 1)
+            }
+        }
+    }
+
+    /// Fold a constant-literal expression to `i64` at parse time (decimal literals
+    /// and +/-/* of them). Returns `None` for anything non-constant.
+    fn const_lit(e: &Expr) -> Option<i64> {
+        match &e.kind {
+            ExprKind::IntLit {
+                kind: IntLitKind::Decimal,
+                raw,
+            } => raw
+                .chars()
+                .filter(|c| *c != '_')
+                .collect::<String>()
+                .parse::<i64>()
+                .ok(),
+            ExprKind::Unary {
+                op: UnOp::Minus,
+                operand,
+            } => Some(-Self::const_lit(operand)?),
+            ExprKind::Binary { op, lhs, rhs } => {
+                let a = Self::const_lit(lhs)?;
+                let b = Self::const_lit(rhs)?;
+                match op {
+                    BinOp::Add => Some(a + b),
+                    BinOp::Sub => Some(a - b),
+                    BinOp::Mul => Some(a * b),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// A `[hi:0]` range made of decimal literals, for the synthesized struct vector.
+    fn dec_range(hi: u32) -> Range {
+        Range {
+            msb: Self::dec_lit(hi, Span::new(0, 0)),
+            lsb: Self::dec_lit(0, Span::new(0, 0)),
+            span: Span::new(0, 0),
+        }
+    }
+
+    /// A decimal integer-literal expression with the given value.
+    fn dec_lit(v: u32, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::IntLit {
+                kind: IntLitKind::Decimal,
+                raw: v.to_string(),
+            },
+            span,
+        }
+    }
+
+    /// If `path` is `var.field` where `var` is a packed-struct variable and `field`
+    /// is one of its members, return `(base_path_to_var, lsb_offset, width)`.
+    fn struct_field_select(&self, path: &HierPath) -> Option<(HierPath, u32, u32)> {
+        if path.segments.len() != 2 {
+            return None;
+        }
+        let tyname = self.var_struct.get(&path.segments[0].name)?;
+        let (off, w) = self
+            .struct_layouts
+            .get(tyname)?
+            .field(&path.segments[1].name)?;
+        let base = HierPath {
+            segments: vec![path.segments[0].clone()],
+            span: path.segments[0].span,
+        };
+        Some((base, off, w))
     }
 
     fn parse_cont_assign(&mut self) -> Option<ContinuousAssign> {
@@ -1582,7 +1811,18 @@ impl<'t, 's> Parser<'t, 's> {
             let s = self.cur_span();
             return Lvalue::Error(s);
         };
-        let mut lv = Lvalue::Ident(path);
+        // packed-struct member target `s.field = …` → constant part-select lvalue.
+        let mut lv = if let Some((base, off, w)) = self.struct_field_select(&path) {
+            let span = path.span;
+            Lvalue::PartSelect {
+                base: Box::new(Lvalue::Ident(base)),
+                msb: Box::new(Self::dec_lit(off + w - 1, span)),
+                lsb: Box::new(Self::dec_lit(off, span)),
+                span,
+            }
+        } else {
+            Lvalue::Ident(path)
+        };
         while self.peek() == Some(TokenKind::LBracket) {
             let start = lv.span();
             self.bump();

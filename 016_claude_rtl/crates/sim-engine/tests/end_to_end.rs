@@ -2482,6 +2482,34 @@ fn enum_labels_are_integer_constants() {
     assert_eq!(out, "1\n2\n0\n");
 }
 
+// ── SV `typedef struct packed {…} name;` — members lay out MSB-first into one
+//    flat vector; `s.field` is a constant part-select. First member = high bits. ──
+
+#[test]
+fn packed_struct_field_access() {
+    // a=[7:0] (high), b=[3:0] (low). total=12. s = {a,b}.
+    let src = "module t; typedef struct packed { logic [7:0] a; logic [3:0] b; } pkt_t; \
+               pkt_t s; \
+               initial begin s.a = 8'hAB; s.b = 4'h5; \
+                 $display(\"%h %h %h\", s.a, s.b, s); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // s.a=AB, s.b=5, whole 12-bit s = AB5.
+    assert_eq!(out, "ab 5 ab5\n");
+}
+
+#[test]
+fn packed_struct_whole_write_field_read() {
+    // writing the whole vector then reading fields back: 12'hC34 → a=C3, b=4.
+    let src = "module t; typedef struct packed { logic [7:0] a; logic [3:0] b; } pkt_t; \
+               pkt_t s; \
+               initial begin s = 12'hC34; \
+                 $display(\"%h %h\", s.a, s.b); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "c3 4\n");
+}
+
 // ── SV `typedef <type> name;` plain alias — `byte_t x;` declares an 8-bit var;
 //    width truncation applies exactly as for the underlying type. ──────────────
 

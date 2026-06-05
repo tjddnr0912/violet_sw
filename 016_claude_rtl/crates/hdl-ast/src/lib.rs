@@ -174,6 +174,10 @@ pub enum TypedefKind {
         range: Option<Range>,
         packed: Vec<Range>,
     },
+    /// `typedef struct packed { logic [7:0] a; logic [3:0] b; } pkt_t;` — a packed
+    /// struct. The parser lays members MSB-first into one flat `logic` vector and
+    /// desugars `s.a` to a constant part-select; elaborate is a no-op.
+    Struct { members: Vec<StructMember> },
 }
 
 /// One enum label: `RED` or `GREEN = 5`.
@@ -181,6 +185,17 @@ pub enum TypedefKind {
 pub struct EnumLabel {
     pub name: Ident,
     pub value: Option<Expr>,
+}
+
+/// One packed-struct member: `logic [7:0] a;`. v1 members are scalar/vector
+/// net/var types with a constant-literal range (no nested struct / param width).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct StructMember {
+    pub name: Ident,
+    pub kind: NetVarKind,
+    pub signed: bool,
+    pub range: Option<Range>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
