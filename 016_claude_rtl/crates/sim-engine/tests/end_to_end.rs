@@ -1589,6 +1589,28 @@ fn array_2d_const_index_rw() {
 }
 
 #[test]
+fn const_eval_power_operator() {
+    // REMAINING_WORK item: `parameter/localparam = 2**N` must fold (was silently 0,
+    // underflowing the range to a 1-bit net). W = 2**4 = 16 → reg [15:0] holds 0xABCD.
+    let src = "module t; localparam W = 2**4; reg [W-1:0] r; \
+               initial begin r = 16'hABCD; $display(\"%0d %0h\", W, r); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "16 abcd\n");
+}
+
+#[test]
+fn const_eval_arith_shift_operators() {
+    // `<<<`/`>>>` (arith shift) fold in const exprs (unsigned elaboration domain).
+    let src = "module t; localparam A = 3 <<< 2; localparam B = 256 >>> 3; \
+               initial begin $display(\"%0d %0d\", A, B); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // 3<<2 = 12 ; 256>>3 = 32.
+    assert_eq!(out, "12 32\n");
+}
+
+#[test]
 fn always_comb_tracks_array_index_signal() {
     // REMAINING_WORK item: `always_comb y = mem[sel]` — changing ONLY sel must
     // re-fire the block (the array WORD index signal belongs to the comb read-set).

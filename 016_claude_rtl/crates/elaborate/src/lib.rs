@@ -1129,7 +1129,18 @@ impl<'s> Elaborator<'s> {
                     ast::BinOp::BitXnor => Some(!(a ^ b)),
                     ast::BinOp::LogAnd => Some(((a != 0) && (b != 0)) as u32),
                     ast::BinOp::LogOr => Some(((a != 0) || (b != 0)) as u32),
-                    _ => None, // Pow / AShl / AShr deferred
+                    // `**` is IN-MVP and `parameter W = 2**N` is ubiquitous; folding
+                    // it (was the `_ => None` silent-0 trap) keeps width/param exprs
+                    // correct. Overflow saturates to u32::MAX so an absurd width still
+                    // trips the downstream MAX_NET_WIDTH cap LOUDLY rather than wrap.
+                    ast::BinOp::Pow => Some(a.checked_pow(b).unwrap_or(u32::MAX)),
+                    // Arithmetic shifts: in the unsigned u32 elaboration domain
+                    // (genvars/params are non-negative integers) they coincide with
+                    // the logical shifts already handled above.
+                    ast::BinOp::AShl => Some(a.wrapping_shl(b)),
+                    ast::BinOp::AShr => Some(a.wrapping_shr(b)),
+                    // Div/Mod by zero (the guards above fail) → non-constant.
+                    _ => None,
                 }
             }
             _ => None,
