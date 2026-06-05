@@ -76,6 +76,72 @@ pub struct PpResult {
     pub text: String,
     pub map: SourceMap,
     pub diags: Vec<PpDiag>,
+    /// `` `timescale `` regions in EXPANDED-text coordinates: `(from_offset, ts)`,
+    /// source order. Each entry takes effect from `from_offset` until the next
+    /// entry (file-order inheritance). A module is governed by the LAST entry whose
+    /// `from_offset ≤ module.span.lo`. Empty ⇒ no directive seen (caller applies the
+    /// `1ns/1ns` base + `W-PP-TIMESCALE-DEFAULT`).
+    pub timescales: Vec<(usize, TimeScale)>,
+}
+
+/// A `` `timescale unit/precision `` value as base-10 exponents of SECONDS, e.g.
+/// `1ns` → -9, `100ps` → -10, `10ns` → -8, `1ps` → -12. The unit/precision ratio
+/// (`unit_exp - prec_exp`, always ≥ 0) is the per-module delay multiplier; the
+/// design-wide `min(prec_exp)` defines the global tick base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeScale {
+    pub unit_exp: i8,
+    pub prec_exp: i8,
+}
+
+impl TimeScale {
+    /// The `1ns/1ns` no-timescale base (doc-08 lock).
+    pub const DEFAULT: TimeScale = TimeScale {
+        unit_exp: -9,
+        prec_exp: -9,
+    };
+}
+
+/// Parse a `` `timescale `` argument string (`"1ns/100ps"`) into a [`TimeScale`].
+/// Each side is `{1|10|100}{s|ms|us|ns|ps|fs}`; precision must be ≤ unit. Returns
+/// `Err(message)` on any malformed field or a precision coarser than the unit.
+pub fn parse_timescale(arg: &str) -> Result<TimeScale, String> {
+    let mut parts = arg.split('/');
+    let unit_s = parts.next().unwrap_or("").trim();
+    let prec_s = parts.next().map(str::trim).unwrap_or("");
+    if prec_s.is_empty() || parts.next().is_some() {
+        return Err(format!("expected `unit/precision`, got `{}`", arg.trim()));
+    }
+    let unit_exp = parse_time_literal(unit_s)?;
+    let prec_exp = parse_time_literal(prec_s)?;
+    if prec_exp > unit_exp {
+        return Err(format!(
+            "time_precision ({prec_s}) coarser than time_unit ({unit_s})"
+        ));
+    }
+    Ok(TimeScale { unit_exp, prec_exp })
+}
+
+/// `{1|10|100}<s|ms|us|ns|ps|fs>` → base-10 exponent of seconds.
+fn parse_time_literal(s: &str) -> Result<i8, String> {
+    let digits_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (num, unit) = s.split_at(digits_end);
+    let mantissa_exp: i8 = match num {
+        "1" => 0,
+        "10" => 1,
+        "100" => 2,
+        _ => return Err(format!("time mantissa must be 1/10/100, got `{num}`")),
+    };
+    let unit_exp: i8 = match unit.trim() {
+        "s" => 0,
+        "ms" => -3,
+        "us" => -6,
+        "ns" => -9,
+        "ps" => -12,
+        "fs" => -15,
+        other => return Err(format!("unknown time unit `{other}`")),
+    };
+    Ok(mantissa_exp + unit_exp)
 }
 
 impl PpResult {
@@ -390,6 +456,9 @@ struct Preprocessor<'a> {
     /// Whether any directive or macro was seen at all. If false at finish, the
     /// identity fast path is taken (single 1:1 segment).
     saw_directive: bool,
+
+    /// `` `timescale `` regions captured in EXPANDED-text order (offset, scale).
+    timescales: Vec<(usize, TimeScale)>,
 }
 
 /// A captured logical directive line (continuation-joined).
@@ -868,6 +937,7 @@ impl<'a> Preprocessor<'a> {
             pending_nl: None,
             pending_cont: 0,
             saw_directive: false,
+            timescales: Vec::new(),
         }
     }
 
@@ -897,6 +967,7 @@ impl<'a> Preprocessor<'a> {
             text: self.out,
             map,
             diags: self.diags,
+            timescales: self.timescales,
         }
     }
 }
@@ -1216,7 +1287,23 @@ impl Preprocessor<'_> {
             "elsif" => self.dir_elsif(src, name_end),
             "else" => self.dir_else(src, name_end),
             "endif" => self.dir_endif(name_end),
-            "timescale" | "line" => {
+            "timescale" => {
+                let line = self.consume_logical_line(src, name_end);
+                // The directive line is stripped from the output, so `self.out.len()`
+                // is the expanded offset where this timescale takes effect for all
+                // following modules (file-order inheritance).
+                match parse_timescale(&line.text) {
+                    Ok(ts) => self.timescales.push((self.out.len(), ts)),
+                    Err(msg) => self.err(
+                        MsgCode::PpBadDirective,
+                        format!("malformed `timescale: {msg}"),
+                        self.out.len(),
+                    ),
+                }
+                self.note_dir_newline(file, &line);
+                line.cursor
+            }
+            "line" => {
                 let line = self.consume_logical_line(src, name_end);
                 self.note_dir_newline(file, &line);
                 line.cursor
@@ -1749,6 +1836,71 @@ mod tests {
 
     fn pp(src: &str) -> PpResult {
         preprocess_str(Path::new("/virtual"), "top.sv", src, &PreOpts::default())
+    }
+
+    #[test]
+    fn timescale_literal_parsing() {
+        assert_eq!(
+            parse_timescale("1ns/100ps"),
+            Ok(TimeScale {
+                unit_exp: -9,
+                prec_exp: -10
+            })
+        );
+        assert_eq!(
+            parse_timescale("10ns/1ns"),
+            Ok(TimeScale {
+                unit_exp: -8,
+                prec_exp: -9
+            })
+        );
+        assert_eq!(
+            parse_timescale(" 1us / 1ps "),
+            Ok(TimeScale {
+                unit_exp: -6,
+                prec_exp: -12
+            })
+        );
+        // precision coarser than unit → error
+        assert!(parse_timescale("1ns/1us").is_err());
+        // bad mantissa / unit
+        assert!(parse_timescale("5ns/1ns").is_err());
+        assert!(parse_timescale("1xs/1ns").is_err());
+        assert!(parse_timescale("1ns").is_err());
+    }
+
+    #[test]
+    fn timescale_region_table_file_order() {
+        let r = pp(
+            "`timescale 1ns/100ps\nmodule a; endmodule\n`timescale 10ns/1ns\nmodule b; endmodule\n",
+        );
+        assert!(!r.has_errors(), "diags: {:?}", r.diags);
+        assert_eq!(r.timescales.len(), 2);
+        assert_eq!(
+            r.timescales[0].1,
+            TimeScale {
+                unit_exp: -9,
+                prec_exp: -10
+            }
+        );
+        assert_eq!(
+            r.timescales[1].1,
+            TimeScale {
+                unit_exp: -8,
+                prec_exp: -9
+            }
+        );
+        // the first region begins before `module a`, the second before `module b`.
+        let a = r.text.find("module a").unwrap();
+        let b = r.text.find("module b").unwrap();
+        assert!(r.timescales[0].0 <= a && a < r.timescales[1].0);
+        assert!(r.timescales[1].0 <= b);
+    }
+
+    #[test]
+    fn timescale_malformed_is_error() {
+        let r = pp("`timescale 1ns/1us\nmodule m; endmodule\n");
+        assert!(r.has_errors(), "coarse precision must error");
     }
     /// `files` keys are paths RELATIVE to "/virtual" (joined for the shim map).
     fn pp_mem(src: &str, files: &[(&str, &str)]) -> PpResult {

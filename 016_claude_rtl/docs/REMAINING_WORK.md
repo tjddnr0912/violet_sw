@@ -32,10 +32,14 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 ## Phase-1 correctness — must fix (silent-wrong-value or success-criterion blockers)
 
-- [ ] **[BLOCKER·P1]** Implement timescale unit/precision conversion (currently discarded; no scaling anywhere)
-  - **근거:** hdl-preprocess/src/lib.rs:1219 consumes-and-discards `timescale` args; sim-engine/src/lib.rs:84 hardcodes timescale_unit="1ns" (VCD-preamble string only); sched.rs:230 `tick = now + d as u64` (no precision scaling); eval.rs:708-717 $time returns raw now, $realtime = now as f64 ('MVP without per-module unit ratio'); elaborate const_delay_ticks (lib.rs:4028) uses ratio=1. Repro: `#2.5` twice → t=3 then t=6. Spec docs/preview/08:157-161 requires $time=tick/(unit/precision), $realtime=tick*precision/unit; goals 01:45 makes 'precision 환산 정밀도 테스트' a measurable Phase-1 completion criterion.
-  - **내용:** No unit/precision ratio exists anywhere, so any non-1:1 timescale (1ns/100ps, 10ns/1ns) gives wrong transition times, $time truncation, and $realtime — directly failing a stated Phase-1 success gate (1ns/1ns designs happen to work).
-  - **조치:** Parse `timescale unit/precision in preprocess, thread per-module (unit,precision)+global precision into elaborate→sim-ir, lower #delay to precision ticks with doc-08 rounding (>=0.5→up), implement $time/$realtime scaling, emit W-PP-TIMESCALE-DEFAULT when absent, add a multi-timescale differential test vs iverilog. Or explicitly defer doc-08's model + goals.md:45 criterion to Phase-1.x.
+- [ ] **[BLOCKER·P1]** Implement timescale unit/precision conversion (currently discarded; no scaling anywhere) — 🚧 **진행 중 (doc-08 전체 모델, 사용자 선택 A)**. 단계별:
+  - [x] S1 preprocess: `timescale unit/precision` 파싱 → `TimeScale{unit_exp,prec_exp}` + 확장텍스트 offset region 테이블을 PpResult에 노출 ✅ 2026-06-05 (parse_timescale + PpResult.timescales, 3 테스트)
+  - [ ] S2 glue: 모듈 span으로 per-module timescale 해석 + `global_precision = min(prec_exp)`, no-timescale→1ns/1ns + `W-PP-TIMESCALE-DEFAULT`
+  - [ ] S3 elaborate: per-module multiplier `M=10^(unit_exp-global_prec)`로 `#delay` 스케일(round-half-up); 기본 env(M=1)=기존동작
+  - [ ] S4 engine: per-process M 사이드테이블(SimOpts)로 `$time=tick/M`(정수)·`$realtime=tick/M`(실수) 스케일
+  - [ ] S5 VCD preamble에 global_precision 기록 + 파일순서 상속/부분지정 정책 + iverilog 차분 테스트(성공기준)
+  - **근거:** hdl-preprocess:1219 consumes-and-discards; sim-engine:84 hardcodes "1ns"; eval $time=raw now/$realtime=now as f64; const_delay_ticks ratio=1. spec docs/preview/08:157-161; goals 01:45 측정기준.
+  - **설계:** delay는 elaborate에서 tick로 스케일(IR 형상 불변→골든 unflipped, format_version bump 불필요). $time/$realtime만 엔진서 per-process M 필요. preprocess region(확장 offset) ↔ 모듈 span 같은 좌표계라 glue에서 해석.
 - [x] **[BLOCKER·P1]** Add `**` (and AShl/AShr) to the compile-time constant evaluator — `parameter = 2**N` silently folds to 0 — ✅ 2026-06-05 (`const_eval_in_scope` folds Pow/AShl/AShr; overflow saturates→u32::MAX→loud width-cap; tests `const_eval_power_operator`, `const_eval_arith_shift_operators`). 남은 폴리시: u32→i64 폭 확대(음수/대형 파라미터)는 별도 MINOR.
   - **근거:** elaborate/src/lib.rs:1132 `_ => None, // Pow / AShl / AShr deferred` in const_eval_in_scope (confirmed verbatim); param binding lib.rs:522 `.unwrap_or(0)`; folder is u32-only (lib.rs:1082). Repro: `localparam W = 2**4; reg [W-1:0] r; r=16'hFFFF` → printed w=0, r clamped to 1 bit (value 1), only a Warning ElabWidthTrunc, never an error.
   - **내용:** `**` is IN-MVP and `parameter N = 2**K` / `localparam DEPTH = 2**ADDR_W` is ubiquitous; the param silently becomes 0, range underflows, net clamps to 1 bit, downstream values wrong — surfaced only as a Warning.
@@ -265,6 +269,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 해결 시 한 줄씩 추가 (날짜 · 커밋 · 항목).
 
+- 2026-06-05 · timescale S1 (BLOCKER 진행중): preprocess가 `timescale unit/precision`를 `TimeScale{unit_exp,prec_exp}`로 파싱 + 확장텍스트 offset region 테이블(PpResult.timescales) 노출. 파일순서 상속 기반. 3 테스트, 워크스페이스 368 green.
 - 2026-06-05 · always_comb/@* 배열 word-인덱스 민감도 누락 수정 (MAJOR). `collect_expr_reads`가 `Signal.word`를 재귀 → `always_comb y=mem[sel]`이 sel 변경 시 재발화. 회귀테스트 추가, 워크스페이스 353 green, 골든 unflipped.
 - 2026-06-05 · const-eval `**`/`<<<`/`>>>` 폴딩 추가 (BLOCKER). `parameter W=2**N`이 silent 0→정상 폴드, overflow는 u32::MAX 포화로 width-cap loud. 테스트 2종, 워크스페이스 355 green, 골든 unflipped.
 - 2026-06-05 · casex/casez SCRUTINEE x/z 와일드카드 수정 (MAJOR). `case_label_eq`를 `reduction_or(scrut ^ label) !== 1`로 — 라벨+런타임 scrutinee 와일드카드를 기존 op만으로 처리(frozen IR 무변경). v2_7 단위테스트 새 lowering 반영. 신규 2테스트, 워크스페이스 357 green, 골든 unflipped.
