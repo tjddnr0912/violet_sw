@@ -171,6 +171,22 @@ impl Value {
         Some(self.val.first().copied().unwrap_or(0) & low_mask(self.width))
     }
 
+    /// Clean integer of the low 128 bits; `None` if any X/Z. Widens the unsigned
+    /// arithmetic lane from 64 to 128 bits (so a `[127:0]` add carries correctly).
+    pub fn to_u128(&self) -> Option<u128> {
+        if self.has_xz() {
+            return None;
+        }
+        let lo = self.val.first().copied().unwrap_or(0) as u128;
+        let hi = self.val.get(1).copied().unwrap_or(0) as u128;
+        let raw = lo | (hi << 64);
+        if self.width >= 128 {
+            Some(raw)
+        } else {
+            Some(raw & ((1u128 << self.width) - 1))
+        }
+    }
+
     /// Sign-aware i128 view of the low bits (for signed arith/relational).
     pub fn to_i128_signed(&self) -> Option<i128> {
         let u = self.to_u64()? as i128;

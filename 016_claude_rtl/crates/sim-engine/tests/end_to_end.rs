@@ -1640,6 +1640,31 @@ fn const_eval_arith_shift_operators() {
 }
 
 #[test]
+fn unsigned_wide_arithmetic_128bit() {
+    // REMAINING_WORK item: 128-bit unsigned add with a carry across the 64-bit word
+    // boundary must NOT truncate to the low 64 bits. a=b=2^64 → a+b = 2^65.
+    let src = "module t; reg [127:0] a, b, c; \
+               initial begin a = 128'h1_0000_0000_0000_0000; b = a; c = a + b; \
+                 $display(\"%0h\", c); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // 2*2^64 = 0x2 followed by 16 hex zeros.
+    assert_eq!(out, "20000000000000000\n");
+}
+
+#[test]
+fn unsigned_wide_multiply_96bit() {
+    // 96-bit multiply whose product exceeds 64 bits: 2^40 * 2^40 = 2^80.
+    let src = "module t; reg [95:0] a, b, c; \
+               initial begin a = 96'h100_0000_0000; b = a; c = a * b; \
+                 $display(\"%0h\", c); $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    // 2^40 * 2^40 = 2^80 = 0x1 followed by 20 hex zeros.
+    assert_eq!(out, "100000000000000000000\n");
+}
+
+#[test]
 fn always_comb_tracks_array_index_signal() {
     // REMAINING_WORK item: `always_comb y = mem[sel]` — changing ONLY sel must
     // re-fire the block (the array WORD index signal belongs to the comb read-set).

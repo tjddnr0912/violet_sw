@@ -10,7 +10,7 @@
 
 use sim_ir::{BinOp, ConstRepr, Expr, SelKind, SimIr, SysFuncId, UnOp};
 
-use crate::value::{and1, low_mask, not1, or1, xnor1, xor1, Value};
+use crate::value::{and1, low_mask, not1, nwords, or1, xnor1, xor1, Value};
 
 /// A per-bit 4-state primitive: `(v,u) op (v,u) -> (v,u)`.
 type BitOp = fn((u64, u64), (u64, u64)) -> (u64, u64);
@@ -369,15 +369,17 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         if l.has_xz() || r.has_xz() {
             return Value::xs(w, both_signed);
         }
-        // v1 arithmetic is a 64-bit lane. For a SIGNED result wider than 64 bits
-        // the sign reconstruction (`to_i128_signed` gates on width≤64) is unsafe —
-        // `to_u64` would drop bits ≥64 and a negative would read as a large
-        // positive, yielding a DEFINITE wrong number. Poison to X instead: an X is
-        // an honest "unsupported", a silently mis-signed value is not. (Unsigned
-        // width>64 also truncates to 64 bits — a documented lane limitation — but
-        // it does not flip sign, so it is left as-is.)
+        // Arithmetic lane: 128 bits. SIGNED stays a 64-bit lane — sign
+        // reconstruction (`to_i128_signed`) gates on width≤64, and a >64-bit signed
+        // value would read mis-signed; poison to X (an honest "unsupported" beats a
+        // silently wrong number). UNSIGNED now spans the full 128-bit u128 lane (so
+        // a `[127:0]` add/mul carries past bit 63 correctly); only width>128 — beyond
+        // the lane — poisons, mirroring the signed guard rather than truncating.
         if both_signed && w > 64 {
             return Value::xs(w, true);
+        }
+        if !both_signed && w > 128 {
+            return Value::xs(w, false);
         }
         let res: u128 = if both_signed {
             let a = l
@@ -410,8 +412,8 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 _ => unreachable!(),
             }
         } else {
-            let a = l.to_u64().unwrap() as u128;
-            let b = r.to_u64().unwrap() as u128;
+            let a = l.to_u128().unwrap();
+            let b = r.to_u128().unwrap();
             match op {
                 BinOp::Add => a.wrapping_add(b),
                 BinOp::Sub => a.wrapping_sub(b),
@@ -428,12 +430,20 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     }
                     a % b
                 }
-                BinOp::Pow => (a as u64).checked_pow(b as u32).unwrap_or(0) as u128,
+                BinOp::Pow => a.checked_pow(b as u32).unwrap_or(0),
                 _ => unreachable!(),
             }
         };
+        // Store the low 128 bits across word 0 (and word 1 for w>64); `mask_top`
+        // clears bits above `w`.
         let mut out = Value::zeros(w, both_signed);
-        out.val[0] = (res as u64) & low_mask(w);
+        out.val[0] = res as u64;
+        if nwords(w) > 1 {
+            if out.val.len() < 2 {
+                out.val.resize(2, 0);
+            }
+            out.val[1] = (res >> 64) as u64;
+        }
         out.mask_top();
         out
     }
