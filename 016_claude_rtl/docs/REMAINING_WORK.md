@@ -64,7 +64,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** eval.rs:6-9 documents the 64-bit lane; eval.rs:413 `l.to_u64().unwrap()` drops bits≥64; eval.rs:436 (confirmed) `out.val[0] = (res as u64) & low_mask(w)` stores only word 0; signed >64 → Value::xs (379-381). Repro: `reg[127:0] a,b,c; a=b=1<<64; c=a+b; %h` → all-zeros (expected 0x2_0000…). No >64-bit arith test exists.
   - **내용:** Packed vectors are IN-MVP; unsigned add/sub/mul/div >64 bits silently truncates to low 64 (definite wrong number, no diagnostic) while signed fails safe to X. Bitwise/concat/select/shift remain full-width — only the arithmetic lane is affected.
   - **조치:** Either widen the arithmetic lane to full BitPacked (multi-word add/mul) or, mirroring the signed guard, poison unsigned w>64 results that overflow 64 bits to X. Add a wide-arith golden test diffed vs iverilog.
-- [ ] **[MINOR·P1]** Unify X/Z array-index semantics: read→X / write→no-op (currently read=word0, write=last-word)
+- [x] **[MINOR·P1]** Unify X/Z array-index semantics: read→X / write→no-op (currently read=word0, write=last-word) — ✅ 2026-06-05 (read의 `Signal.word` X-인덱스를 `u32::MAX` OOR 센티넬로 매핑→all-X(word0 미읽음); write는 이미 `resolve_lvalue_offsets`의 동일 센티넬+#3 OOR-skip로 no-op. 테스트 `array_x_index_read_x_write_noop`).
   - **근거:** Read eval.rs:69 X/Z index → None → net_word_packed unwrap_or(0) → WORD 0. Write sched.rs:708-714 maps X/Z index to u32::MAX sentinel → write_chunk state.rs:278 `u32::MAX.min(array_len-1)` → LAST word. Repro: idx=8'hxx; write mem[idx]=99 lands in m3, read mem[idx] returns m0. IEEE 1364 §11.5.1: read→x, write→no-op.
   - **내용:** Asymmetric and wrong for an unknown array index; a `mem[x]=mem[x]` round-trip is non-identity. Lower severity (X index is rarer) but a genuine correctness wart.
   - **조치:** Make an X/Z word index return all-X on read and a no-op on write (and emit E-RUN-RANGE), unifying with the bit-select X-index policy.
@@ -271,4 +271,5 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 - 2026-06-05 · OOR array word 정확성 수정 (MAJOR). `net_word_packed` OOR→all-X 읽기, `write_chunk` OOR→쓰기 무시(이웃 무손상), 클램프 제거. 다차원 OOR도 X/skip로 통일. 테스트 1종, 워크스페이스 358 green, 골든 unflipped. (E4002 진단 발행은 엔진 diag-sink 인프라 필요 → 보류)
 - 2026-06-05 · non-zero/내림차순 배열 인덱스 정규화 (MAJOR). `array_dims`를 `(lo,size)` extent로 전환, `flatten_word`가 `idx-lo`로 0-base 슬롯 정규화(lo==0이면 Sub 미생성→golden 불변), 1D 비-0 base도 저장. 테스트 3종, 워크스페이스 361 green, 골든 unflipped.
 - 2026-06-05 · unsigned 산술 레인 64→128bit 확장 (MAJOR). `to_u128` 추가, operand u128 읽기 + 결과 2-word 저장; w>128만 X poison(signed >64 poison과 대칭). 흔한 128bit 카운터/누산기 carry 정확. 테스트 2종, 워크스페이스 363 green, 골든 unflipped.
+- 2026-06-05 · X/Z 배열 인덱스 통일 (MINOR). read `Signal.word` X→u32::MAX OOR 센티넬→all-X(word0 미읽음); write는 기존 센티넬+#3로 이미 no-op. 테스트 1종, 워크스페이스 364 green, 골든 unflipped. **→ correctness 퀵윈 6개 전부 완료.**
 

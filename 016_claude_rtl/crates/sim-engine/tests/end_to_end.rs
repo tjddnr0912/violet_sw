@@ -1715,6 +1715,21 @@ fn array_2d_nonzero_base_index_normalized() {
 }
 
 #[test]
+fn array_x_index_read_x_write_noop() {
+    // REMAINING_WORK item: an X/Z array index reads all-X (not word 0) and its write
+    // is a no-op — consistent with the out-of-range word semantics.
+    let src = "module t; reg [7:0] m[0:3]; reg [1:0] xi; \
+               initial begin \
+                 m[0] = 8'd7; m[1] = 8'd42; xi = 2'bx0;  /* xi unknown (bit1 = x) */ \
+                 m[xi] = 8'd99;                           /* X-index write → no-op */ \
+                 $display(\"%0d %0d %b\", m[0], m[1], m[xi]); /* word0 NOT read; X → xxxxxxxx */ \
+                 $finish; end endmodule";
+    let ir = build(src);
+    let (_res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(out, "7 42 xxxxxxxx\n");
+}
+
+#[test]
 fn array_oob_word_read_is_x_write_ignored() {
     // REMAINING_WORK item: an out-of-range array WORD index reads all-X and a write
     // is IGNORED — not clamped to the last element (which silently returned/corrupted

@@ -66,7 +66,15 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             Expr::Signal { net, word } => {
                 // `word` is an ExprId (the array index expr), evaluated NOW so a
                 // runtime `mem[k]` selects the right element. None ⇒ scalar/whole.
-                let widx = word.and_then(|weid| self.eval(weid).to_u64().map(|v| v as u32));
+                // An X/Z index (`to_u64` → None) maps to the `u32::MAX` out-of-range
+                // sentinel → `net_word_packed` returns all-X — NOT a silent read of
+                // word 0. Symmetric with the write side (`resolve_lvalue_offsets`).
+                let widx = word.map(|weid| {
+                    self.eval(weid)
+                        .to_u64()
+                        .map(|v| v as u32)
+                        .unwrap_or(u32::MAX)
+                });
                 let base = self.nets.read_net(*net, widx);
                 base.resize_keep_sign(w, eff_signed)
             }
