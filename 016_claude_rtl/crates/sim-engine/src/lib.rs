@@ -80,6 +80,10 @@ pub struct SimOpts {
     /// falls back to a flat `top` scope + synthetic `n{i}` names. When populated it
     /// drives real hierarchical `$scope`/`$var` output. Never enters the golden IR.
     pub net_names: NetNameTable,
+    /// Per-ProcId time multiplier `M = 10^(unit_exp − global_prec_exp)` from
+    /// `elaborate::elaborate_with_timescale`, for `$time`/`$realtime` scaling
+    /// (`$time = now / M`). EMPTY ⇒ multiplier 1 (the 1ns/1ns base). Never golden.
+    pub proc_multipliers: Vec<u32>,
 }
 
 impl Default for SimOpts {
@@ -92,6 +96,7 @@ impl Default for SimOpts {
             time_limit: None,
             fork_modes: ForkModeTable::new(),
             net_names: Vec::new(),
+            proc_multipliers: Vec::new(),
         }
     }
 }

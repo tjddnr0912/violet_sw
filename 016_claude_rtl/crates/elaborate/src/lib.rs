@@ -116,19 +116,39 @@ pub fn elaborate_with_modes(
 
 /// Like [`elaborate_with_modes`], but ALSO returns the [`NetNameTable`] for VCD
 /// hierarchical naming. Both side tables ride in `SimOpts` and never perturb the
-/// golden `SimIr`.
+/// golden `SimIr`. Uses the `1ns/1ns` timescale base (no delay scaling).
 pub fn elaborate_with_sidecars(
     unit: &ast::SourceUnit,
     sink: &dyn LogSink,
 ) -> (Option<ir::SimIr>, ForkModeTable, NetNameTable) {
+    let (ir, modes, names, _mult) =
+        elaborate_with_timescale(unit, sink, &std::collections::BTreeMap::new(), -9);
+    (ir, modes, names)
+}
+
+/// Full elaborate entry with the resolved timescale env from
+/// `hdl_preprocess::resolve_module_timescales`. `mod_unit_exp` maps each module name
+/// to its delay-unit exponent and `global_prec_exp` is the design-wide tick base;
+/// `#delay` literals scale to `round(d × 10^(unit−prec))` ticks. Also returns the
+/// per-process multiplier table for `SimOpts.proc_multipliers` (`$time`/`$realtime`
+/// scaling). All three side tables ride out-of-band; the golden `SimIr` is unchanged.
+pub fn elaborate_with_timescale(
+    unit: &ast::SourceUnit,
+    sink: &dyn LogSink,
+    mod_unit_exp: &std::collections::BTreeMap<String, i8>,
+    global_prec_exp: i8,
+) -> (Option<ir::SimIr>, ForkModeTable, NetNameTable, Vec<u32>) {
     let mut el = Elaborator::new(sink);
+    el.mod_unit_exp = mod_unit_exp.clone();
+    el.global_prec_exp = global_prec_exp;
     el.run(unit);
     let modes = std::mem::take(&mut el.fork_modes);
+    let mult = std::mem::take(&mut el.proc_multipliers);
     let names = el.net_name_table(); // BEFORE finish() consumes `el`
     if el.had_error {
-        (None, modes, names)
+        (None, modes, names, mult)
     } else {
-        (Some(el.finish()), modes, names)
+        (Some(el.finish()), modes, names, mult)
     }
 }
 
@@ -327,6 +347,21 @@ struct Elaborator<'s> {
     // Nesting guard: true while lowering a fork CHILD body. A `Stmt::Fork` seen with
     // `in_fork == true` is the nested case → hard ElabUnsupported error (v1 MVP cut).
     in_fork: bool,
+
+    // ── timescale state (engine-facing side channel, NOT in SimIr) ──
+    // module NAME → its delay-unit exponent (base-10 of seconds), and the design-wide
+    // finest precision exponent (the global tick base). Both supplied by the glue from
+    // `hdl_preprocess::resolve_module_timescales`. Empty/`-9` ⇒ the `1ns/1ns` base
+    // (multiplier 1 everywhere → byte-identical to the pre-timescale lowering).
+    mod_unit_exp: std::collections::BTreeMap<String, i8>,
+    global_prec_exp: i8,
+    // Delay multiplier `M = 10^(unit_exp − global_prec_exp)` of the module CURRENTLY
+    // being lowered (saved/restored around each `elaborate_instance`, like cur_prefix).
+    // `#delay` literals scale by this; `$time`/`$realtime` divide by it (per process).
+    cur_time_mult: u64,
+    // Per-ProcId multiplier table (parallel to `processes`), threaded to the engine via
+    // `SimOpts.proc_multipliers` for `$time`/`$realtime` scaling. NEVER in the golden root.
+    proc_multipliers: Vec<u32>,
 }
 
 impl<'s> Elaborator<'s> {
@@ -356,7 +391,34 @@ impl<'s> Elaborator<'s> {
             fork_modes: ForkModeTable::new(),
             cur_proc: 0,
             in_fork: false,
+            mod_unit_exp: BTreeMap::new(),
+            global_prec_exp: -9, // 1ns base precision (no-timescale lock)
+            cur_time_mult: 1,
+            proc_multipliers: Vec::new(),
         }
+    }
+
+    /// Delay multiplier `M = 10^(unit_exp − global_prec_exp)` for module `name`
+    /// (≥ 1, since every module's `unit_exp ≥ global_prec_exp`). A module absent from
+    /// the map (the no-timescale base) defaults to `unit_exp = global_prec_exp` ⇒ M=1.
+    /// The exponent is capped at 18 so `10u64.pow` never overflows on an absurd ratio.
+    fn module_mult(&self, name: &str) -> u64 {
+        let u = self
+            .mod_unit_exp
+            .get(name)
+            .copied()
+            .unwrap_or(self.global_prec_exp);
+        let diff = (u - self.global_prec_exp).max(0) as u32;
+        10u64.pow(diff.min(18))
+    }
+
+    /// Append a process AND its time multiplier in lockstep (invariant:
+    /// `proc_multipliers.len() == processes.len()`). The engine reads the table from
+    /// `SimOpts.proc_multipliers` to scale `$time`/`$realtime` per calling module.
+    fn push_process(&mut self, p: ir::Process) {
+        self.proc_multipliers
+            .push(self.cur_time_mult.min(u32::MAX as u64) as u32);
+        self.processes.push(p);
     }
 
     fn finish(self) -> ir::SimIr {
@@ -552,6 +614,10 @@ impl<'s> Elaborator<'s> {
         // Record this as the instance currently being lowered, so a child created
         // inside a generate block can set its `Instance.parent` to `inst_id`.
         let saved_inst = std::mem::replace(&mut self.cur_inst, inst_id);
+        // This module's delay multiplier governs every `#delay` and process lowered
+        // in its body (restored on the way out, like cur_prefix/cur_inst).
+        let new_mult = self.module_mult(&module.name.name);
+        let saved_mult = std::mem::replace(&mut self.cur_time_mult, new_mult);
 
         // (3) bind params (defaults, then overrides) — BEFORE nets so [W-1:0] folds.
         let mut saved_params = self.bind_params(module, param_overrides);
@@ -681,7 +747,7 @@ impl<'s> Elaborator<'s> {
                         self.cur_proc,
                         "ProcId mismatch: fork_modes keyed by cur_proc would miss"
                     );
-                    self.processes.push(proc);
+                    self.push_process(proc);
                 }
                 // (8) handled in the second loop below.
                 ast::ModuleItem::Instance(_) => {}
@@ -726,6 +792,7 @@ impl<'s> Elaborator<'s> {
         self.task_table = saved_tasks;
         self.cur_prefix = saved_prefix;
         self.cur_inst = saved_inst;
+        self.cur_time_mult = saved_mult;
         self.inst_stack.pop();
     }
 
@@ -1550,10 +1617,11 @@ impl<'s> Elaborator<'s> {
     fn elaborate_cont_assign(&mut self, ca: &ast::ContinuousAssign) {
         // Delay: hdl-ast Delay values are exprs; sim-ir delay is Option<u32>.
         // v1 const-folds a literal rise delay; non-const → None (note slot).
+        let mult = self.cur_time_mult;
         let delay = ca
             .delay
             .as_ref()
-            .and_then(|d| d.values.first().and_then(const_delay_ticks));
+            .and_then(|d| d.values.first().and_then(|e| const_delay_ticks(e, mult)));
         for (lv, rhs) in &ca.assigns {
             let lhs = self.lower_lvalue(lv);
             let rhs_id = self.lower_expr(rhs);
@@ -2988,7 +3056,7 @@ impl<'s> Elaborator<'s> {
                     self.cur_proc,
                     "ProcId mismatch (generate): fork_modes keyed by cur_proc would miss"
                 );
-                self.processes.push(proc);
+                self.push_process(proc);
             }
             // INSTANCES phase: recurse into child module instances. The parent
             // instance id is `self.cur_inst` (the instance whose body we are in).
@@ -3866,10 +3934,11 @@ impl<'s> Elaborator<'s> {
     /// (matches the frozen `Terminator::Delay.amount: u32`). SD3: `#0` →
     /// `Inactive`, `#d>0` → `Active`. Non-const → note + degrade to `#0`.
     fn lower_delay(&mut self, d: &ast::Delay) -> (u32, ir::DelayRegion) {
+        let mult = self.cur_time_mult;
         let amount = d
             .values
             .first()
-            .and_then(const_delay_ticks)
+            .and_then(|e| const_delay_ticks(e, mult))
             .unwrap_or_else(|| {
                 self.warn("non-constant #delay not supported (v2); degraded to #0");
                 0
@@ -4090,27 +4159,31 @@ fn const_eval_u32(e: &ast::Expr) -> Option<u32> {
     }
 }
 
-/// Const-fold a `#delay` value to integer ticks. Like [`const_eval_u32`] but a
-/// real literal `#1.5` is rounded half-away to integer ticks (IEEE 1364 §9). MVP
-/// without per-module unit/precision ratio: ratio = 1, round directly.
-fn const_delay_ticks(e: &ast::Expr) -> Option<u32> {
+/// Const-fold a `#delay` value to integer ticks on the GLOBAL precision timeline.
+/// `mult` is the module's delay multiplier `M = 10^(unit_exp − global_prec_exp)`:
+/// a delay of `d` module-units becomes `round(d × M)` precision ticks (IEEE 1364 §9
+/// round-half-away). The multiply happens INSIDE the rounding so a fractional
+/// `#2.5` with `M=1000` is the exact `2500`, not `round(2.5)×1000`. With `M=1` (the
+/// 1ns/1ns base) this is byte-identical to the prior `round(d)` behavior.
+fn const_delay_ticks(e: &ast::Expr, mult: u64) -> Option<u32> {
     let pick = match &e.kind {
         ast::ExprKind::MinTypMax { typ, .. } => typ.as_ref(),
         _ => e,
     };
-    if let ast::ExprKind::RealLit { raw, .. } = &pick.kind {
-        let x = parse_real_f64(raw);
-        let ticks = (x.round() as i64).clamp(0, u32::MAX as i64) as u32;
-        return Some(ticks);
+    let real = match &pick.kind {
+        ast::ExprKind::RealLit { raw, .. } => Some(raw),
+        ast::ExprKind::Paren { inner } => match &inner.kind {
+            ast::ExprKind::RealLit { raw, .. } => Some(raw),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(raw) = real {
+        let x = parse_real_f64(raw) * mult as f64;
+        return Some((x.round() as i64).clamp(0, u32::MAX as i64) as u32);
     }
-    if let ast::ExprKind::Paren { inner } = &pick.kind {
-        if let ast::ExprKind::RealLit { raw, .. } = &inner.kind {
-            let x = parse_real_f64(raw);
-            let ticks = (x.round() as i64).clamp(0, u32::MAX as i64) as u32;
-            return Some(ticks);
-        }
-    }
-    const_eval_u32(pick)
+    // integer delay: exact `d × M` (saturating into u32).
+    const_eval_u32(pick).map(|d| (d as u64).saturating_mul(mult).min(u32::MAX as u64) as u32)
 }
 
 /// Const-fold a net/var initializer literal into a `BitPacked` of `width`.

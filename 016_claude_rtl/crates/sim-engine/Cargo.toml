@@ -19,5 +19,7 @@ elaborate  = { path = "../elaborate" }
 [dev-dependencies]
 # End-to-end tests build a SimIr via the real lex → parse → elaborate pipeline,
 # then simulate it and assert on the VCD buffer + captured $display output.
+hdl-preprocess = { path = "../hdl-preprocess" }
 hdl-lexer  = { path = "../hdl-lexer" }
 hdl-parser = { path = "../hdl-parser" }
+hdl-ast    = { path = "../hdl-ast" }

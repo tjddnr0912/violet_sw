@@ -38,6 +38,81 @@ fn build(src: &str) -> sim_ir::SimIr {
     ir.expect("elaborate returned None")
 }
 
+/// Full front-end incl. preprocess + per-module `timescale` resolution. Returns
+/// `(ir, opts)` with `proc_multipliers` threaded so delays scale to global-precision
+/// ticks and `$time`/`$realtime` divide by the calling module's multiplier.
+fn build_timescaled(src: &str) -> (sim_ir::SimIr, SimOpts) {
+    let pp = hdl_preprocess::preprocess_str(
+        std::path::Path::new("/v"),
+        "t.sv",
+        src,
+        &hdl_preprocess::PreOpts::default(),
+    );
+    assert!(!pp.has_errors(), "pp errors: {:?}", pp.diags);
+    let (toks, le) = hdl_lexer::lex(&pp.text);
+    assert!(le.is_empty(), "lex errors: {le:?}");
+    let (su, pe) = hdl_parser::parse(&toks, &pp.text);
+    assert!(pe.is_empty(), "parse errors: {pe:?}");
+    let su = su.expect("source unit");
+    let modules: Vec<(&str, usize)> = su
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            hdl_ast::TopItem::Module(m) => Some((m.name.name.as_str(), m.span.lo as usize)),
+            _ => None,
+        })
+        .collect();
+    let rt = hdl_preprocess::resolve_module_timescales(&modules, &pp.timescales);
+    let sink = DiagSink::default();
+    let (ir, fork_modes, _names, proc_multipliers) =
+        elaborate::elaborate_with_timescale(&su, &sink, &rt.unit_exp, rt.global_prec_exp);
+    let hard: Vec<String> = sink
+        .0
+        .borrow()
+        .iter()
+        .filter(|d| d.starts_with("Error") || d.starts_with("Fatal"))
+        .cloned()
+        .collect();
+    assert!(hard.is_empty(), "elaborate errors: {hard:?}");
+    let opts = SimOpts {
+        fork_modes,
+        proc_multipliers,
+        ..SimOpts::default()
+    };
+    (ir.expect("elaborate returned None"), opts)
+}
+
+#[test]
+fn timescale_delay_scales_to_precision_ticks() {
+    // `timescale 1ns/1ps` → tick = 1ps, multiplier 1000. `#5` then `#2` advance
+    // 5000 + 2000 = 7000 ticks (not 7). Proves elaborate scales `#delay`.
+    let (ir, opts) = build_timescaled(
+        "`timescale 1ns/1ps\nmodule top; initial begin #5; #2; $finish; end endmodule\n",
+    );
+    let (res, _out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(res.sim_time, 7000);
+}
+
+#[test]
+fn timescale_fractional_delay_exact() {
+    // Fractional `#2.5` in 1ns/1ps (M=1000) = exactly 2500 ticks (round(2.5*1000)),
+    // NOT round(2.5)*1000 = 3000. The multiply is inside the rounding.
+    let (ir, opts) = build_timescaled(
+        "`timescale 1ns/1ps\nmodule top; initial begin #2.5; $finish; end endmodule\n",
+    );
+    let (res, _out) = simulate_capture(&ir, opts);
+    assert_eq!(res.sim_time, 2500);
+}
+
+#[test]
+fn timescale_default_is_1ns_1ns() {
+    // No `timescale → 1ns/1ns base, multiplier 1: `#5` advances 5 ticks (unchanged).
+    let (ir, opts) = build_timescaled("module top; initial begin #5; $finish; end endmodule\n");
+    let (res, _out) = simulate_capture(&ir, opts);
+    assert_eq!(res.sim_time, 5);
+}
+
 /// Elaborate `src` WITH the per-net hierarchical name side table (for VCD naming).
 fn build_named(src: &str) -> (sim_ir::SimIr, Vec<String>) {
     let (toks, le) = hdl_lexer::lex(src);
