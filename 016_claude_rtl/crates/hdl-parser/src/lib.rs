@@ -811,11 +811,10 @@ impl<'t, 's> Parser<'t, 's> {
             )))
         );
         if ansi {
-            let mut ports = Vec::new();
-            let mut prev_dir: Option<PortDir> = None; // None ⇒ this is the FIRST port
+            let mut ports: Vec<AnsiPort> = Vec::new();
             loop {
-                let port = self.parse_ansi_port(prev_dir);
-                prev_dir = Some(port.dir);
+                let prev = ports.last().cloned(); // for dir + type/range inheritance
+                let port = self.parse_ansi_port(prev.as_ref());
                 ports.push(port);
                 if !self.eat(TokenKind::Comma) {
                     break;
@@ -838,10 +837,12 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// `inherited = None` ⇒ first ANSI port; a missing direction is then an ERROR
-    /// (verdict M4: don't silently default the first port to Input). Subsequent
-    /// ports inherit the previous direction when omitted.
-    fn parse_ansi_port(&mut self, inherited: Option<PortDir>) -> AnsiPort {
+    /// `prev = None` ⇒ first ANSI port; a missing direction is then an ERROR
+    /// (verdict M4: don't silently default the first port to Input). A comma-continued
+    /// port with no direction inherits the previous port's direction; a PURE
+    /// continuation (`input [7:0] a, b`) that also omits its own type/range/signed
+    /// inherits those too, so both `a` and `b` are `[7:0]` (IEEE 1800 §23.2.2.1).
+    fn parse_ansi_port(&mut self, prev: Option<&AnsiPort>) -> AnsiPort {
         let start = self.cur_span();
         let explicit_dir = match self.peek() {
             Some(TokenKind::Word(WordKind::Keyword(Kw::Input))) => {
@@ -858,20 +859,29 @@ impl<'t, 's> Parser<'t, 's> {
             }
             _ => None,
         };
-        let dir = match (explicit_dir, inherited) {
+        let dir = match (explicit_dir, prev.map(|p| p.dir)) {
             (Some(d), _) => d,
-            (None, Some(prev)) => prev, // inherit
+            (None, Some(prev_dir)) => prev_dir, // inherit
             (None, None) => {
                 self.error("port direction (first ANSI port must specify one)");
                 PortDir::Input
             } // recover as Input
         };
-        let net_or_var = self.net_var_kind();
+        let mut net_or_var = self.net_var_kind();
         if net_or_var.is_some() {
             self.bump();
         }
-        let signed = self.opt_signed();
-        let range = self.opt_range();
+        let mut signed = self.opt_signed();
+        let mut range = self.opt_range();
+        // A pure continuation (no own direction/type/range/signed) inherits the
+        // previous port's type — `input [7:0] a, b` ⇒ b is also `[7:0]`.
+        if explicit_dir.is_none() && net_or_var.is_none() && range.is_none() && !signed {
+            if let Some(p) = prev {
+                net_or_var = p.net_or_var;
+                signed = p.signed;
+                range = p.range.clone();
+            }
+        }
         let name = self.ident().unwrap_or(Ident {
             name: String::new(),
             span: self.cur_span(),

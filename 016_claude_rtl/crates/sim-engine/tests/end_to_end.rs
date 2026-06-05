@@ -1534,6 +1534,89 @@ fn elaborate_diags(src: &str) -> Vec<String> {
     collected
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// REAL-DESIGN CORPUS — representative RTL patterns through the full pipeline.
+// Each is a self-checking testbench; the asserted $display output is the golden.
+// ════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn ansi_port_multiname_shares_range() {
+    // REMAINING_WORK (corpus-found defect): `input [7:0] a, b` makes BOTH a and b
+    // 8-bit — the range/type is inherited by the comma-continued name, not just the
+    // direction. Was truncating b to a scalar (b=3 read as 1).
+    let src = "module m(input [7:0] a, b, output [7:0] y); assign y = a + b; endmodule \
+               module tb; wire [7:0] z; m u(8'd200, 8'd55, z); \
+                 initial begin #1 $display(\"%0d\", z); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "255\n"); // 200 + 55, both 8-bit (would truncate if b were scalar)
+}
+
+#[test]
+fn corpus_alu_combinational() {
+    let src = "module alu(input [7:0] a, b, input [1:0] op, output reg [7:0] y); \
+                 always @* case (op) 2'd0: y=a+b; 2'd1: y=a-b; 2'd2: y=a&b; 2'd3: y=a|b; endcase \
+               endmodule \
+               module tb; reg [7:0] a, b; reg [1:0] op; wire [7:0] y; alu u(a, b, op, y); \
+                 initial begin a=8'd10; b=8'd3; \
+                   op=2'd0; #1 $display(\"%0d\", y); op=2'd1; #1 $display(\"%0d\", y); \
+                   op=2'd2; #1 $display(\"%0d\", y); op=2'd3; #1 $display(\"%0d\", y); \
+                   $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "13\n7\n2\n11\n"); // 10+3, 10-3, 10&3, 10|3
+}
+
+#[test]
+fn corpus_shift_register() {
+    let src = "module tb; reg [7:0] sr; integer i; \
+               initial begin sr = 8'b0000_0001; for (i=0;i<3;i=i+1) sr = sr << 1; \
+                 $display(\"%0d\", sr); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "8\n"); // 1 << 3
+}
+
+#[test]
+fn corpus_fsm_modular_state() {
+    let src = "module tb; reg [1:0] state; integer i; \
+               initial begin state = 2'd0; \
+                 for (i=0;i<5;i=i+1) state = (state==2'd2) ? 2'd0 : state + 2'd1; \
+                 $display(\"%0d\", state); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "2\n"); // 0→1→2→0→1→2
+}
+
+#[test]
+fn corpus_memory_accumulate() {
+    let src = "module tb; reg [7:0] mem[0:7]; integer i; reg [7:0] sum; \
+               initial begin for (i=0;i<8;i=i+1) mem[i] = i*2; \
+                 sum = 0; for (i=0;i<8;i=i+1) sum = sum + mem[i]; \
+                 $display(\"%0d\", sum); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "56\n"); // 2*(0+1+…+7)
+}
+
+#[test]
+fn corpus_clocked_dff_hierarchy() {
+    let src = "module dff(input clk, d, output reg q); always @(posedge clk) q <= d; endmodule \
+               module tb; reg clk, d; wire q; dff u(clk, d, q); \
+                 initial begin clk=0; d=1; #5 clk=1; #5 clk=0; $display(\"%0d\", q); $finish; end \
+               endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "1\n"); // posedge samples d=1
+}
+
+#[test]
+fn corpus_counter_with_reset() {
+    let src = "module counter(input clk, rst, output reg [3:0] cnt); \
+                 always @(posedge clk) if (rst) cnt <= 4'd0; else cnt <= cnt + 4'd1; \
+               endmodule \
+               module tb; reg clk, rst; wire [3:0] cnt; counter c(clk, rst, cnt); integer k; \
+                 initial begin clk=0; rst=1; #5 clk=1; #5 clk=0; rst=0; \
+                   for (k=0;k<5;k=k+1) begin #5 clk=1; #5 clk=0; end \
+                   $display(\"%0d\", cnt); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "5\n"); // reset, then 5 increments
+}
+
 #[test]
 fn instance_array_rejected_loudly() {
     // REMAINING_WORK: an instance array `u[3:0](...)` is rejected (Phase-1.x), not

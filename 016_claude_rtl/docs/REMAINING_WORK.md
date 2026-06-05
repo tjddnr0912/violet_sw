@@ -133,7 +133,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** `find . -name '*.vcd'` returns ZERO checked-in fixtures. The two VCD tests (end_to_end.rs:231,251) only do `.contains("b0011 !")` substring asserts; no test pins a full VCD byte-image. vcd-diff (the comparison driver) is a stub.
   - **내용:** VCD byte-reproducibility across 3 OSes is a core determinism goal, but substring checks miss ordering/header/timescale drift, id-code reassignment, whitespace regressions — exactly what cross-OS determinism must guarantee. (Blocked by the VCD-naming blocker for non-trivial designs.)
   - **조치:** Run a fixed design, write the .vcd, assert byte-equality against a checked-in crates/testdata/*.vcd (regenerate-on-intent like the schema_hash golden). Land vcd-diff to drive it.
-- [ ] **[MAJOR·P1]** Stand up a real-design corpus harness (only micro-snippets + one hand-unrolled testbench today)
+- [x] **[MAJOR·P1]** Stand up a real-design corpus harness (only micro-snippets + one hand-unrolled testbench today) — ✅ 2026-06-05 (corpus_alu/shift/fsm/memory/clocked-dff-hierarchy/counter-with-reset 6 대표설계 풀파이프라인. **신규결함 발견·수정**: ANSI 멀티네임 포트 `input [7:0] a, b`의 b가 range 미상속→scalar 절단. ansi_port_multiname_shares_range 테스트)
   - **근거:** corpus-runner is a 1-line stub; the only whole-design test is cli/tests/real_domain.rs (one harmonic-sum testbench that even hand-unrolls a for-loop per a comment at :27). Spec 05 references a compliance corpus.
   - **내용:** No runner feeds whole RTL (counters, FSMs, ALUs, FIFOs, memories) through preprocess→…→VCD; integration-level interactions (multi-module + memory + VCD + timing together) are untested.
   - **조치:** Implement corpus-runner over a testdata/corpus/*.sv dir with expected stdout and/or golden VCD per design, wired into cargo test; seed with shift register, sync FIFO with memory, FSM.
@@ -269,6 +269,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 
 해결 시 한 줄씩 추가 (날짜 · 커밋 · 항목).
 
+- 2026-06-05 · **corpus가 신규결함 발견·수정**(MAJOR): ANSI 멀티네임 포트 `input [7:0] a, b`에서 b가 방향만 상속하고 range/type 미상속→scalar(1bit) 절단(흔한 구문). parse_ansi_port가 pure-continuation일 때 prev의 net_or_var/signed/range 상속하도록 수정. 6 corpus + 1 focused 테스트, 워크스페이스 395 green.
 - 2026-06-05 · timescale BLOCKER 완전 마무리: 스테이지드(.vu/.velab 트레일러 vcmp→velab→vrun, staged==one-shot byte-identical) + W-PP-TIMESCALE-DEFAULT(W1017 enum+doc-15 본문 승격, 실측 vita 발화) + doc-08 골든(라운딩 14.4→14·0.5→1·0.4→0/혼합 timescale global-min). 워크스페이스 378 green, 골든 unflipped.
 
 - 2026-06-05 · timescale S1 (BLOCKER 진행중): preprocess가 `timescale unit/precision`를 `TimeScale{unit_exp,prec_exp}`로 파싱 + 확장텍스트 offset region 테이블(PpResult.timescales) 노출. 파일순서 상속 기반. 3 테스트, 워크스페이스 368 green.
