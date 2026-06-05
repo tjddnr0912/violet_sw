@@ -146,6 +146,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
         opts.vcd_path_override.clone(),
     );
     st.net_names = opts.net_names.clone();
+    st.proc_multipliers = opts.proc_multipliers.clone();
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

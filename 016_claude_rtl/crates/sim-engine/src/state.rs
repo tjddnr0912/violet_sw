@@ -90,6 +90,11 @@ pub(crate) struct SimState<'a> {
     pub vcd_date: String,
     /// Per-NetId hierarchical name (`"top.dut.q"`); empty ⇒ flat `n{i}` fallback.
     pub net_names: Vec<String>,
+    /// Per-ProcId time multiplier (from `SimOpts.proc_multipliers`); empty ⇒ M=1.
+    pub proc_multipliers: Vec<u32>,
+    /// Multiplier of the process CURRENTLY executing — set per `run_process`, read by
+    /// `$time`/`$realtime`. 1 outside any process (the 1ns/1ns base).
+    pub cur_time_mult: u64,
 
     // ── stdout for $display/$write (boxed sink, deterministic) ──
     pub out: Box<dyn Write + 'a>,
@@ -143,6 +148,8 @@ impl<'a> SimState<'a> {
             timescale_unit,
             vcd_date,
             net_names: Vec::new(),
+            proc_multipliers: Vec::new(),
+            cur_time_mult: 1,
             out,
             finished: false,
             had_error: false,

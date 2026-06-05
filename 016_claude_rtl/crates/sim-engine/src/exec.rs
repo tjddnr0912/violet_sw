@@ -47,6 +47,14 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
         // Snapshot the block's stmt ids + terminator (process-local indexing,
         // resolved through this activity's template).
         let tmpl = sched.activity_template(pi) as usize;
+        // $time/$realtime evaluated in this process scale by its module multiplier.
+        sched.st.cur_time_mult = sched
+            .st
+            .proc_multipliers
+            .get(tmpl)
+            .copied()
+            .unwrap_or(1)
+            .max(1) as u64;
         let (stmt_ids, term) = {
             let body = &sched.st.ir.processes[tmpl].body;
             let block = &body[bb as usize];

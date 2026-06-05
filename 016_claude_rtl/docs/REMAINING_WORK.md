@@ -36,7 +36,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - [x] S1 preprocess: `timescale unit/precision` 파싱 → `TimeScale{unit_exp,prec_exp}` + 확장텍스트 offset region 테이블을 PpResult에 노출 ✅ 2026-06-05 (parse_timescale + PpResult.timescales, 3 테스트)
   - [x] S2 resolve: `resolve_module_timescales`(모듈 span↔region 매칭, file-order) + `global_prec=min` + default_used 플래그 ✅ 2026-06-05 (hdl-preprocess plain types, 2 테스트)
   - [x] S3 elaborate: per-module M으로 `#delay` 스케일(round-half-up, 곱셈은 반올림 내부) + proc_multipliers 사이드테이블 ✅ 2026-06-05 (elaborate_with_timescale; sim_time 검증 7000/2500/5, 골든 unflipped, 3 테스트)
-  - [ ] S4 engine: per-process M 사이드테이블(SimOpts)로 `$time=tick/M`(정수)·`$realtime=tick/M`(실수) 스케일
+  - [x] S4 engine: `SimOpts.proc_multipliers`→State, run_process가 tmpl로 cur_time_mult set, EvalCtx.time_mult로 `$time=now/M`(정수)·`$realtime=now/M`(실수) ✅ 2026-06-05 (doc-08 예시 검증 2/2.5, 2 테스트)
   - [ ] S5 VCD preamble에 global_precision 기록 + 파일순서 상속/부분지정 정책 + iverilog 차분 테스트(성공기준)
   - **근거:** hdl-preprocess:1219 consumes-and-discards; sim-engine:84 hardcodes "1ns"; eval $time=raw now/$realtime=now as f64; const_delay_ticks ratio=1. spec docs/preview/08:157-161; goals 01:45 측정기준.
   - **설계:** delay는 elaborate에서 tick로 스케일(IR 형상 불변→골든 unflipped, format_version bump 불필요). $time/$realtime만 엔진서 per-process M 필요. preprocess region(확장 offset) ↔ 모듈 span 같은 좌표계라 glue에서 해석.

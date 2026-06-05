@@ -675,6 +675,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             nets: self.st,
             now: self.st.now,
             wt: &self.st.wt,
+            time_mult: self.st.cur_time_mult,
         };
         ctx.eval(eid)
     }
@@ -685,6 +686,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             nets: self.st,
             now: self.st.now,
             wt: &self.st.wt,
+            time_mult: self.st.cur_time_mult,
         };
         ctx.truthy(eid)
     }
@@ -730,6 +732,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             nets: self.st,
             now: self.st.now,
             wt: &self.st.wt,
+            time_mult: self.st.cur_time_mult,
         };
         ctx.eval_ctx(eid, ctx_width, ctx_signed)
     }

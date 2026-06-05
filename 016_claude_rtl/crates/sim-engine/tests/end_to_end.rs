@@ -113,6 +113,28 @@ fn timescale_default_is_1ns_1ns() {
     assert_eq!(res.sim_time, 5);
 }
 
+#[test]
+fn timescale_time_and_realtime_scaled() {
+    // doc-08 example: 1ns/1ps, after #2.5 (= 2500 ticks) → $time = 2 (truncated to the
+    // module's 1ns unit), $realtime = 2.5 (sub-unit fraction kept).
+    let (ir, opts) = build_timescaled(
+        "`timescale 1ns/1ps\nmodule top; initial begin #2.5; \
+         $display(\"%0d %g\", $time, $realtime); $finish; end endmodule\n",
+    );
+    let (_res, out) = simulate_capture(&ir, opts);
+    assert_eq!(out, "2 2.5\n");
+}
+
+#[test]
+fn timescale_time_default_unscaled() {
+    // No timescale → M=1, $time == raw tick.
+    let (ir, opts) = build_timescaled(
+        "module top; initial begin #5; $display(\"%0d\", $time); $finish; end endmodule\n",
+    );
+    let (_res, out) = simulate_capture(&ir, opts);
+    assert_eq!(out, "5\n");
+}
+
 /// Elaborate `src` WITH the per-net hierarchical name side table (for VCD naming).
 fn build_named(src: &str) -> (sim_ir::SimIr, Vec<String>) {
     let (toks, le) = hdl_lexer::lex(src);

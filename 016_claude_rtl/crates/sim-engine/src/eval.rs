@@ -28,6 +28,9 @@ pub struct EvalCtx<'a, N: NetReader> {
     pub nets: &'a N,
     pub now: u64,
     pub wt: &'a crate::width::WidthTable,
+    /// Time multiplier `M` of the process whose expression is being evaluated
+    /// (`$time = now / M`, `$realtime = now / M` real). 1 ⇒ the 1ns/1ns base.
+    pub time_mult: u64,
 }
 
 impl<'a, N: NetReader> EvalCtx<'a, N> {
@@ -724,14 +727,17 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     fn eval_sysfunc(&self, which: SysFuncId, args: &[u32]) -> Value {
         match which {
             SysFuncId::Time => {
+                // $time: current time in the CALLING module's units, truncated to int
+                // (now is global-precision ticks; divide by the module multiplier M).
+                let m = self.time_mult.max(1);
                 let mut v = Value::zeros(64, false);
-                v.val[0] = self.now; // $time: integer ticks
+                v.val[0] = self.now / m;
                 v
             }
             SysFuncId::Realtime => {
-                // $realtime: current time as a REAL in time-units (fractional kept).
-                // MVP without per-module unit ratio: now-as-f64.
-                Value::from_f64(self.now as f64)
+                // $realtime: same as $time but keeping the sub-unit fraction.
+                let m = self.time_mult.max(1) as f64;
+                Value::from_f64(self.now as f64 / m)
             }
             SysFuncId::Rtoi => {
                 // real → int, TRUNCATE toward zero. Result is a plain integer Value.
