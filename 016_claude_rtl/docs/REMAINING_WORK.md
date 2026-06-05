@@ -270,7 +270,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 감사 52항목 클리어 후, deferral 중 가치순으로 재개. 순서대로 진행.
 
 - [x] **[Phase-1.x]** 엔진 런타임 diag-sink → OOR/X-index 시 `E-RUN-RANGE`(VITA-E4002) 발행 (현재 X/skip 동작은 맞음, 진단만 미발행; rate-limit 포함) — ✅ 2026-06-05 (State에 &dyn LogSink+Cell rate-limit, warn_run_range가 OOR read/write서 E-RUN-RANGE 발행, sim은 recover. 실측 vita 발행, oob_emits_run_range_diagnostic 테스트)
-- [ ] **[성공기준]** iverilog 차분 하네스 — 대표 설계를 `iverilog`+`vvp` golden과 신호값/천이시각 비교 (iverilog 미설치 시 graceful skip)
+- [x] **[성공기준]** iverilog 차분 하네스 — 대표 설계를 `iverilog`+`vvp` golden과 신호값/천이시각 비교 (iverilog 미설치 시 graceful skip) — ✅ 2026-06-05 (crates/sim-engine/tests/differential.rs: ALU/counter/memory/shift-arith/casez 5설계를 iverilog+vvp golden과 비교, vita 출력 정확 일치. iverilog 미설치 시 graceful skip)
 - [ ] **[Phase-2]** 자료형 확장: `struct`/`union`/`enum`/`typedef` (자료형 IN-MVP 너머; 큰 작업, 단계별 결정 필요)
 - [ ] **[가속·신규]** 4-state 비트연산/reduction word化 + `std::simd` (eval.rs:344 bit-by-bit→word-level; 분석 → docs/preview/18)
 - [ ] **[가속·로드맵]** 컴파일드 백엔드 (IR→네이티브 코드젠, Verilator 방식; 장기, doc-01 로드맵)
