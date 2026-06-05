@@ -1618,6 +1618,39 @@ fn corpus_counter_with_reset() {
 }
 
 #[test]
+fn packed_2d_element_rw() {
+    // `logic [3:0][7:0] m` is a 4×8 = 32-bit packed array; m[i] is an 8-bit slice
+    // (bits [i*8 +: 8]). Fill each element and read back.
+    let src = "module t; logic [3:0][7:0] m; integer i; \
+               initial begin for (i=0;i<4;i=i+1) m[i] = i*16 + i; \
+                 $display(\"%0h %0h %0h %0h\", m[0], m[1], m[2], m[3]); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "0 11 22 33\n"); // i*17
+}
+
+#[test]
+fn packed_2d_ansi_port() {
+    // A packed multi-dim ANSI PORT `input [1:0][7:0] m` — the submodule reads element
+    // slices. (Exercises the port-net path, not just body decls.)
+    let src = "module sub(input [1:0][7:0] m, output [7:0] y); assign y = m[1]; endmodule \
+               module tb; wire [7:0] z; sub u(16'hABCD, z); \
+                 initial begin #1 $display(\"%0h\", z); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    assert_eq!(out, "ab\n"); // m = ABCD; m[1] = high byte AB
+}
+
+#[test]
+fn packed_2d_bit_select() {
+    // m[i][j] = bit j of the 8-bit element i.
+    let src = "module t; logic [3:0][7:0] m; \
+               initial begin m[1] = 8'hAB; m[1][0] = 1'b0; \
+                 $display(\"%0h %0d %0d\", m[1], m[1][0], m[1][7]); $finish; end endmodule";
+    let (_r, out) = simulate_capture(&build(src), SimOpts::default());
+    // 0xAB with bit0 cleared → 0xAA; bit0=0, bit7=1.
+    assert_eq!(out, "aa 0 1\n");
+}
+
+#[test]
 fn instance_array_rejected_loudly() {
     // REMAINING_WORK: an instance array `u[3:0](...)` is rejected (Phase-1.x), not
     // silently lowered to a single mis-connected instance.

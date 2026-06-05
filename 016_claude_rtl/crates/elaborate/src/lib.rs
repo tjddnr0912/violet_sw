@@ -288,6 +288,11 @@ struct Elaborator<'s> {
     // word `(i-lo0)*s1 + (j-lo1)`, so the IR backbone is untouched. Plain 0-based 1-D
     // arrays are absent (the access path falls back to `[(0, array_len)]`).
     array_dims: BTreeMap<u32, Vec<(u32, u32)>>,
+    // NetId → per-PACKED-dimension `(lo, width)` for multi-dim packed arrays
+    // (`logic [3:0][7:0]` ⇒ [(0,4),(0,8)]). The net is a flat `product(width)`-bit
+    // vector; a select `m[i]` is the bit-SLICE `[i*stride +: elem_width]` (vs the
+    // unpacked word-select). elaborate-LOCAL — NEVER in the frozen sim-ir.
+    packed_dims: BTreeMap<u32, Vec<(u32, u32)>>,
 
     // ── v3 hierarchy state ──
     // `cur_prefix` is the dotted instance path of the instance currently being
@@ -379,6 +384,7 @@ impl<'s> Elaborator<'s> {
             symbols: BTreeMap::new(),
             const_dedup: BTreeMap::new(),
             array_dims: BTreeMap::new(),
+            packed_dims: BTreeMap::new(),
             cur_prefix: String::new(),
             params: BTreeMap::new(),
             inst_stack: Vec::new(),
@@ -1326,8 +1332,16 @@ impl<'s> Elaborator<'s> {
         if let ast::PortList::Ansi(list) = ports {
             for p in list {
                 let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Wire); // default net type
-                let (width, msb, lsb, signed) =
+                let (mut width, mut msb, lsb, signed) =
                     self.range_to_dims(kind, p.range.as_ref(), p.signed);
+                // A packed multi-dim port (`input [1:0][7:0] m`) is a flat vector.
+                let packed_ext = self.packed_extents(p.range.as_ref(), &p.packed);
+                if !p.packed.is_empty() {
+                    width = packed_ext
+                        .iter()
+                        .fold(1u32, |a, &(_, w)| a.saturating_mul(w.max(1)));
+                    msb = width.saturating_sub(1);
+                }
                 let dir = map_port_dir(p.dir);
                 let init = default_init(kind, width);
                 self.add_net(
@@ -1343,6 +1357,11 @@ impl<'s> Elaborator<'s> {
                         init,
                     },
                 );
+                if !p.packed.is_empty() {
+                    if let Some(&id) = self.symbols.get(&self.fq(&p.name.name)) {
+                        self.packed_dims.insert(id, packed_ext);
+                    }
+                }
                 if !net_kind_supported(kind) {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -1422,8 +1441,19 @@ impl<'s> Elaborator<'s> {
             self.error(MsgCode::ElabUnsupported, "unsupported net/var kind (v1)");
             // still emit a Wire-shaped net per name so references resolve.
         }
+        // Multi-dim PACKED array (`logic [3:0][7:0]`): the net is a flat vector of
+        // `product(packed widths)` bits; a select `m[i]` is a bit-slice. Computed once
+        // per decl (shared by all names; unpacked dims are per-name).
+        let packed_ext = self.packed_extents(d.range.as_ref(), &d.packed);
         for decl in &d.names {
-            let (width, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+            let (mut width, mut msb, lsb, signed) =
+                self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+            if !d.packed.is_empty() {
+                width = packed_ext
+                    .iter()
+                    .fold(1u32, |a, &(_, w)| a.saturating_mul(w.max(1)));
+                msb = width.saturating_sub(1);
+            }
             let dim_extents = self.array_dim_extents(&decl.unpacked);
             let array_len = dim_extents
                 .iter()
@@ -1459,7 +1489,33 @@ impl<'s> Elaborator<'s> {
                     self.array_dims.insert(id, dim_extents);
                 }
             }
+            // Record packed-dim extents for a multi-dim packed net so a select can be
+            // lowered to the right bit-slice.
+            if !d.packed.is_empty() {
+                let key = self.fq(&decl.name.name);
+                if let Some(&id) = self.symbols.get(&key) {
+                    self.packed_dims.insert(id, packed_ext.clone());
+                }
+            }
         }
+    }
+
+    /// Per-PACKED-dim `(lo, width)` extents of `[range][packed…]` (outer→inner). The
+    /// product of the widths is the flat vector width; `lo` is the dim's lower bound
+    /// (subtracted to 0-base a source index). Empty for a scalar/plain vector.
+    fn packed_extents(
+        &mut self,
+        range: Option<&ast::Range>,
+        packed: &[ast::Range],
+    ) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        for r in range.into_iter().chain(packed.iter()) {
+            let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
+            let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
+            let w = (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32;
+            out.push((msb.min(lsb), w.max(1)));
+        }
+        out
     }
 
     /// Per-dimension `(lo, size)` extents of an unpacked-array declaration (source
@@ -1765,6 +1821,9 @@ impl<'s> Elaborator<'s> {
                 if let Some((net, idxs)) = self.expr_array_chain(base, index) {
                     return self.lower_array_read(net, &idxs);
                 }
+                if let Some((net, idxs)) = self.expr_packed_chain(base, index) {
+                    return self.lower_packed_read(net, &idxs);
+                }
                 let base_id = self.lower_expr(base);
                 if self.expr_is_real(base_id) {
                     self.error(
@@ -1937,6 +1996,8 @@ impl<'s> Elaborator<'s> {
                 // bit-select.
                 if let Some((net, idxs)) = self.lval_array_chain(base, index) {
                     self.collect_array_write(net, &idxs, out);
+                } else if let Some((net, idxs)) = self.lval_packed_chain(base, index) {
+                    self.collect_packed_write(net, &idxs, out);
                 } else {
                     let net = self.lval_base_net(base);
                     let raw_off = self.lower_expr(index);
@@ -2629,6 +2690,60 @@ impl<'s> Elaborator<'s> {
         Some((net, outer_first))
     }
 
+    /// Like [`Self::expr_array_chain`] but for a multi-dim PACKED net (a flat vector
+    /// recorded in `packed_dims`): `m[i]…[k]` selects a bit-SLICE, not a word.
+    fn expr_packed_chain<'a>(
+        &self,
+        base: &'a ast::Expr,
+        index: &'a ast::Expr,
+    ) -> Option<(u32, Vec<&'a ast::Expr>)> {
+        let mut outer_first: Vec<&ast::Expr> = Vec::new();
+        let mut cur = base;
+        let net = loop {
+            match &cur.kind {
+                ast::ExprKind::BitSelect { base: b, index: i } => {
+                    outer_first.push(i);
+                    cur = b;
+                }
+                ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                    match self.lookup_net_scoped(&p.segments[0].name) {
+                        Some(n) if self.packed_dims.contains_key(&n) => break n,
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        };
+        outer_first.reverse();
+        outer_first.push(index);
+        Some((net, outer_first))
+    }
+
+    /// Lower a read `m[i0]…[ik]` on a packed multi-dim net to a bit-slice. The first
+    /// `k` indices give the bit OFFSET (`(i-lo)*stride`, stride = product of inner
+    /// dim widths — reusing [`Self::flatten_word`]); the result WIDTH is the product
+    /// of the un-indexed inner dims. Lowered to an indexed part-select.
+    fn lower_packed_read(&mut self, net: u32, idxs: &[&ast::Expr]) -> u32 {
+        let dims = self.packed_dims[&net].clone();
+        if idxs.len() > dims.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "too many indices for packed array (more than its dimensions)",
+            );
+            return self.placeholder_expr();
+        }
+        let offset = self.flatten_word(&dims, idxs);
+        let elem_w: u64 = dims[idxs.len()..].iter().map(|&(_, w)| w as u64).product();
+        let base = self.push_expr(ir::Expr::Signal { net, word: None });
+        let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
+        self.push_expr(ir::Expr::Select {
+            base,
+            offset,
+            width,
+            kind: ir::SelKind::PartIdxUp,
+        })
+    }
+
     /// Write-side twin of [`Self::expr_array_chain`] over `Lvalue` nodes.
     fn lval_array_chain<'a>(
         &self,
@@ -2659,6 +2774,71 @@ impl<'s> Elaborator<'s> {
         outer_first.reverse();
         outer_first.push(index);
         Some((net, outer_first))
+    }
+
+    /// Write-side twin of [`Self::expr_packed_chain`] (multi-dim PACKED net).
+    fn lval_packed_chain<'a>(
+        &self,
+        base: &'a ast::Lvalue,
+        index: &'a ast::Expr,
+    ) -> Option<(u32, Vec<&'a ast::Expr>)> {
+        let mut outer_first: Vec<&ast::Expr> = Vec::new();
+        let mut cur = base;
+        let net = loop {
+            match cur {
+                ast::Lvalue::BitSelect {
+                    base: b, index: i, ..
+                } => {
+                    outer_first.push(i);
+                    cur = b;
+                }
+                ast::Lvalue::Ident(p) if p.segments.len() == 1 => {
+                    match self.lookup_net_scoped(&p.segments[0].name) {
+                        Some(n) if self.packed_dims.contains_key(&n) => break n,
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        };
+        outer_first.reverse();
+        outer_first.push(index);
+        Some((net, outer_first))
+    }
+
+    /// Write `m[i0]…[ik] = …` on a packed multi-dim net into one bit-slice LvalChunk
+    /// (indexed part-select), mirroring [`Self::lower_packed_read`].
+    fn collect_packed_write(
+        &mut self,
+        net: u32,
+        idxs: &[&ast::Expr],
+        out: &mut Vec<ir::LvalChunk>,
+    ) {
+        let dims = self.packed_dims[&net].clone();
+        if idxs.len() > dims.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "too many indices for packed array (more than its dimensions)",
+            );
+            out.push(ir::LvalChunk {
+                net: POISON_NET,
+                word: None,
+                offset: None,
+                width: None,
+                kind: ir::SelKind::Bit,
+            });
+            return;
+        }
+        let offset = self.flatten_word(&dims, idxs);
+        let elem_w: u64 = dims[idxs.len()..].iter().map(|&(_, w)| w as u64).product();
+        let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
+        out.push(ir::LvalChunk {
+            net,
+            word: None,
+            offset: Some(offset),
+            width: Some(width),
+            kind: ir::SelKind::PartIdxUp,
+        });
     }
 
     /// Per-dim `(lo, size)` extents of array `net` (source order). Arrays with

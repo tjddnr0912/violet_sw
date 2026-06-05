@@ -2,7 +2,7 @@
 
 오픈소스 Rust RTL 시뮬레이터. CLI: `vita`(원샷) / `vcmp`(compile) / `velab`(elaborate) / `vrun`(simulate). SystemVerilog 합성가능 RTL 서브셋(Verilog-2005 RTL 전부 포함)이 Phase-1 MVP.
 
-> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 시뮬레이션해 VCD+stdout 산출. timescale(doc-08 전체 모델)·다차원 unpacked 배열·VCD 계층 naming·casex/casez·fork-join·func/task 등 Phase-1 합성 RTL 대부분 구현·검증(378 테스트 green). 잔여 작업은 `docs/REMAINING_WORK.md` 체크리스트 참조. SPEC `docs/preview/`가 여전히 단일 진실 공급원.
+> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 시뮬레이션해 VCD+stdout 산출. timescale(doc-08 전체 모델)·다차원 unpacked·packed 배열·VCD 계층 naming·casex/casez·fork-join·func/task 등 Phase-1 합성 RTL 대부분 구현·검증(398 테스트 green). 잔여 작업은 `docs/REMAINING_WORK.md` 체크리스트 참조. SPEC `docs/preview/`가 여전히 단일 진실 공급원.
 
 ## 실행 (cargo-only · build.rs 없음)
 
@@ -35,7 +35,7 @@ MSRV **1.82** (`rust-toolchain.toml` 고정), **edition 2021**(edition 2024는 r
 | `sim-engine` | 이벤트구동 IEEE-1364 스케줄러 + eval + VCD 방출 | **실코드** |
 | `vcd-writer` | 계층 `$scope`/`$var` VCD 출력 | **실코드** |
 | `sim-ir` | 언어중립 IR(Expr/Stmt/Terminator/NetVar/SimIr 루트) | 실코드 |
-| `vita-artifact`(+derive)·`vita-schema`·`diag` | 산출물 헤더+게이트(`format_version=3`) · SchemaHash · MsgCode(44, doc-15 bijection) | 실코드 |
+| `vita-artifact`(+derive)·`vita-schema`·`diag` | 산출물 헤더+게이트(`format_version=3`) · SchemaHash · MsgCode(45, doc-15 bijection) | 실코드 |
 | `hdl-builtins`·`vita-log` | $task 핸들러 추출 대상 · 로그 tee | **stub** (각 1줄; 기능은 sim-engine/cli에 인라인) |
 
 ## 상세 문서 (`docs/preview/`)

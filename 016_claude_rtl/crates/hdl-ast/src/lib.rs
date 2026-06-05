@@ -113,7 +113,8 @@ pub struct AnsiPort {
     pub dir: PortDir,
     pub net_or_var: Option<NetVarKind>, // None ⇒ default wire
     pub signed: bool,
-    pub range: Option<Range>, // packed [msb:lsb]
+    pub range: Option<Range>, // packed [msb:lsb] (the FIRST/outer packed dim)
+    pub packed: Vec<Range>,   // ADDITIONAL packed dims: `[3:0][7:0]` ⇒ range=[3:0], packed=[[7:0]]
     pub name: Ident,
     pub default: Option<Expr>, // ANSI default value slot (rare)
     pub span: Span,
@@ -194,7 +195,8 @@ pub enum ParamType {
 pub struct NetVarDecl {
     pub kind: NetVarKind,
     pub signed: bool,
-    pub range: Option<Range>, // packed/vector [msb:lsb]
+    pub range: Option<Range>, // packed/vector [msb:lsb] (the FIRST/outer packed dim)
+    pub packed: Vec<Range>,   // ADDITIONAL packed dims: `logic [3:0][7:0]` ⇒ packed=[[7:0]]
     pub names: Vec<DeclName>, // one decl, possibly many names
     pub span: Span,
 }

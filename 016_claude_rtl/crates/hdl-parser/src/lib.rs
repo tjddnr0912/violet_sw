@@ -655,6 +655,17 @@ impl<'t, 's> Parser<'t, 's> {
             span: start.to(self.prev_span()),
         })
     }
+
+    /// Additional packed dims after the first `[msb:lsb]` — `logic [3:0][7:0]` ⇒
+    /// `[[7:0]]`. Each is a `[msb:lsb]` range; collected greedily before the name.
+    fn opt_packed_dims(&mut self) -> Vec<Range> {
+        let mut dims = Vec::new();
+        while let Some(r) = self.opt_range() {
+            dims.push(r);
+        }
+        dims
+    }
+
     /// Unpacked dimension `[hi:lo]` (Range) or `[N]` (Size) — verdict M3.
     fn parse_dim(&mut self) -> Option<Dim> {
         if self.peek() != Some(TokenKind::LBracket) {
@@ -873,13 +884,20 @@ impl<'t, 's> Parser<'t, 's> {
         }
         let mut signed = self.opt_signed();
         let mut range = self.opt_range();
-        // A pure continuation (no own direction/type/range/signed) inherits the
-        // previous port's type — `input [7:0] a, b` ⇒ b is also `[7:0]`.
-        if explicit_dir.is_none() && net_or_var.is_none() && range.is_none() && !signed {
+        let mut packed = self.opt_packed_dims(); // additional packed dims `[3:0][7:0]`
+                                                 // A pure continuation (no own direction/type/range/signed) inherits the
+                                                 // previous port's type — `input [7:0] a, b` ⇒ b is also `[7:0]`.
+        if explicit_dir.is_none()
+            && net_or_var.is_none()
+            && range.is_none()
+            && packed.is_empty()
+            && !signed
+        {
             if let Some(p) = prev {
                 net_or_var = p.net_or_var;
                 signed = p.signed;
                 range = p.range.clone();
+                packed = p.packed.clone();
             }
         }
         let name = self.ident().unwrap_or(Ident {
@@ -896,6 +914,7 @@ impl<'t, 's> Parser<'t, 's> {
             net_or_var,
             signed,
             range,
+            packed,
             name,
             default,
             span: start.to(self.prev_span()),
@@ -1278,6 +1297,7 @@ impl<'t, 's> Parser<'t, 's> {
         self.bump();
         let signed = self.opt_signed();
         let range = self.opt_range();
+        let packed = self.opt_packed_dims(); // additional packed dims `logic [3:0][7:0]`
         let mut names = Vec::new();
         loop {
             let n_start = self.cur_span();
@@ -1309,6 +1329,7 @@ impl<'t, 's> Parser<'t, 's> {
             kind,
             signed,
             range,
+            packed,
             names,
             span: start.to(self.prev_span()),
         })

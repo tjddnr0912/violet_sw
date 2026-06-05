@@ -79,7 +79,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** elaborate/src/lib.rs:751-754 `if !item.unpacked.is_empty() { self.warn("instance-array range ignored (v3: single instance)"); }` — range dropped, one instance elaborated. No instance-array test.
   - **내용:** Module-instance arrays pair with generate/genvar (IN-MVP); array dim silently ignored → missing-replication correctness gap (most idioms expressible via supported generate-for, so bounded).
   - **조치:** Implement N-instance replication with indexed connections, OR escalate to ElabUnsupported so it isn't silently mis-elaborated. Add a test.
-- [ ] **[MINOR·P1]** Parse/flatten multi-dimensional PACKED arrays `logic [3:0][7:0] m` (second packed dim fails to parse)
+- [x] **[MINOR·P1]** Parse/flatten multi-dimensional PACKED arrays `logic [3:0][7:0] m` (second packed dim fails to parse) — ✅ 2026-06-05 **완전구현**: AST `packed:Vec<Range>` + 파서 다중 packed dim 루프 + elaborate 평탄화(width=곱)+packed_dims 사이드테이블 + select(`m[i]`=bit-slice PartIdxUp, `m[i][j]`=bit) read/write + ANSI 포트. hdl-ast schema re-pin(.vu stale), sim-ir 골든 불변. packed_2d_element_rw/bit_select/ansi_port 테스트
   - **근거:** hdl-ast/src/lib.rs:197 `range: Option<Range>` holds one packed dim; parser calls opt_range() once (hdl-parser/src/lib.rs:1270) then expects an ident. Repro: `logic [3:0][7:0] mat` → PARSE error 'expected identifier, found LBracket' at the 2nd `[`. Synthesizability doc 02-arrays.md:12,25 / 09:27,106 present 2-D packed as synthesizable.
   - **내용:** Single packed dim (vectors) works; multi-dim packed (a contiguous bit-vector = product of dims) does not parse, over-promising the synthesizability doc.
   - **조치:** Accept and flatten multiple packed [hi:lo] ranges into one vector width=product of dims (no IR change, analogous to the unpacked flattening just added), OR explicitly document multi-dim packed as deferred.
@@ -153,7 +153,7 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
   - **근거:** Determinism gates: sim-ir/tests/schema_hash.rs (structural IR hash, not output) and end_to_end.rs:309/1053 (run the SAME SimIr twice in-process, compare stdout). Nothing diffs output bytes vs a checked-in golden that would catch HashMap-iteration / float-format / path-separator drift.
   - **내용:** CLAUDE.md sells '3-OS byte-identical' but the suite only proves same-input→same-output in one process and IR-shape stability.
   - **조치:** Add checked-in golden stdout fixtures for a few designs and assert byte-equality, complementing the schema_hash gate. (Overlaps the golden-VCD gap.)
-- [x] **[MINOR·—]** (Optional) add multi-packed-dim element and hierarchical-array-access tests — packed 다차원(#82)에 종속; 그 결정 후 처리
+- [x] **[MINOR·—]** (Optional) add multi-packed-dim element and hierarchical-array-access tests — ✅ 2026-06-05 (packed_2d_* 테스트로 커버; hierarchical-array-access는 packed 포트 테스트 포함)
   - **근거:** No test for a two-packed-dim element on an unpacked array (`reg [3:0][7:0] m[0:1]`); the only multi-packed usage (end_to_end.rs:1746) uses a single [63:0] dim. Hierarchy tests (elaborate tests.rs:1339+) contain no mem/reg[..][..] decls — no submodule-memory-through-hierarchy test.
   - **내용:** Multi-packed-dim words and memory-inside-instantiated-child interactions (index-flatten + instance-name mangling) are untested either way.
   - **조치:** Add a two-packed-dim element test (or a loud-rejection test if deferred), and a hierarchy test where a parent drives/observes a child's `reg [7:0] m[0:3]`.
