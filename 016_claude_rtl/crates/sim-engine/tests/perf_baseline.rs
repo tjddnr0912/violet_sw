@@ -71,23 +71,46 @@ const CODEGEN_HEAVY: &str = "module top;\n\
   end\n\
 endmodule";
 
-#[test]
-#[ignore = "perf baseline (DATA, not a gate); run with --ignored --nocapture"]
-fn perf_baseline_codegen_heavy() {
-    let ir = build(CODEGEN_HEAVY);
-    let reps = 5;
+/// EVAL-dominated: one codegen-able `always @(posedge clk)` body with a heavy inner
+/// `for` loop (a Branch back-edge — all inside ONE activation, no suspension), driven by
+/// only a few hundred clock edges. Each clock runs thousands of 64-bit arithmetic /
+/// shift / xor evals, so wall-time is dominated by the eval + `Value`-alloc path (NOT the
+/// scheduler/clock churn that swamps `CODEGEN_HEAVY`) — this is the case the `Value`
+/// inline-storage change (and later native eval) is meant to move.
+const EVAL_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  reg [63:0] acc;\n\
+  integer i;\n\
+  integer j;\n\
+  always @(posedge clk) begin\n\
+    for (i = 0; i < 3000; i = i + 1) begin\n\
+      acc = acc + (acc << 1) + 64'd7;\n\
+      acc = acc ^ (acc >> 3);\n\
+    end\n\
+  end\n\
+  initial begin\n\
+    clk = 0; acc = 1;\n\
+    for (j = 0; j < 200; j = j + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
+fn report(name: &str, src: &str, reps: u32) {
+    let ir = build(src);
     let interp = time_backend(&ir, Backend::Interpreter, reps);
     let vm = time_backend(&ir, Backend::Bytecode, reps);
-    let ratio = vm as f64 / interp as f64;
-    println!("\n[C3 perf baseline] codegen-heavy design, best-of-{reps}:");
+    println!("\n[C3 perf] {name} (best-of-{reps}):");
     println!("  interpreter : {:>8.3} ms", interp as f64 / 1e6);
     println!(
         "  bytecode VM : {:>8.3} ms   ({:.2}x interpreter)",
         vm as f64 / 1e6,
-        ratio
+        vm as f64 / interp as f64
     );
-    println!(
-        "  => C2 VM is {} the interpreter (expected at-or-below; C3 must beat interp).\n",
-        if ratio <= 1.0 { "at/below" } else { "above" }
-    );
+}
+
+#[test]
+#[ignore = "perf baseline (DATA, not a gate); run with --ignored --nocapture"]
+fn perf_baseline_codegen_heavy() {
+    report("codegen-heavy (scheduler-dominated)", CODEGEN_HEAVY, 5);
+    report("eval-heavy (eval/Value-dominated)", EVAL_HEAVY, 5);
 }
