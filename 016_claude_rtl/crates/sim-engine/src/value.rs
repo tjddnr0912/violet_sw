@@ -210,7 +210,10 @@ impl Value {
     }
 
     /// Resize to `new_width`: signed → sign-extend the MSB *bit value* (X MSB →
-    /// X fill); unsigned → zero-extend; shrink → truncate.
+    /// X fill); unsigned → zero-extend; shrink → truncate. WORD-PARALLEL: copy the
+    /// overlapping low words wholesale (the source is canonical — bits ≥ width are 0 —
+    /// so no per-bit boundary clear is needed), sign-fill the high region word-parallel
+    /// only when extending a signed value with a set sign bit, then mask the top word.
     pub fn resize(mut self, new_width: u32) -> Value {
         if self.is_real {
             return self; // a real is dimensionless 64-bit; width context is a no-op.
@@ -219,22 +222,120 @@ impl Value {
             self.mask_top();
             return self;
         }
-        let mut out = Value::zeros(new_width, self.signed);
-        let copy = self.width.min(new_width);
-        for i in 0..copy {
-            let (v, u) = self.get_vu(i);
-            out.set_vu(i, v, u);
+        let n = nwords(new_width).max(1);
+        let copy_w = nwords(self.width.min(new_width)).min(n);
+        let mut val = vec![0u64; n];
+        let mut unk = vec![0u64; n];
+        for k in 0..copy_w {
+            val[k] = self.val.get(k).copied().unwrap_or(0);
+            unk[k] = self.unk.get(k).copied().unwrap_or(0);
         }
-        if new_width > self.width {
-            let (fv, fu) = if self.signed && self.width > 0 {
-                self.get_vu(self.width - 1)
-            } else {
-                (0, 0)
-            };
-            for i in self.width..new_width {
-                out.set_vu(i, fv, fu);
+        if new_width > self.width && self.signed && self.width > 0 {
+            let (fv, fu) = self.get_vu(self.width - 1);
+            if fv != 0 || fu != 0 {
+                fill_bits(&mut val, &mut unk, self.width, new_width, fv, fu);
             }
         }
+        let mut out = Value {
+            val,
+            unk,
+            width: new_width,
+            signed: self.signed,
+            is_real: false,
+        };
+        out.mask_top();
+        out
+    }
+
+    /// WORD-PARALLEL logical/arithmetic right shift by `amt`, preserving width `w`; the
+    /// vacated top `min(amt,w)` bits are filled with `(fv,fu)` (arith → MSB sign bit,
+    /// logical → 0). Both planes shift identically; bit-exact with the per-bit form
+    /// (locked by `shift_word_vs_bit_parity`).
+    pub fn shr_fill(&self, amt: u64, w: u32, fv: u64, fu: u64) -> Value {
+        let n = nwords(w).max(1);
+        let mut val = vec![0u64; n];
+        let mut unk = vec![0u64; n];
+        if amt < w as u64 {
+            let q = (amt / 64) as usize;
+            let r = (amt % 64) as u32;
+            for k in 0..n {
+                let lo_v = self.val.get(k + q).copied().unwrap_or(0);
+                let lo_u = self.unk.get(k + q).copied().unwrap_or(0);
+                if r == 0 {
+                    val[k] = lo_v;
+                    unk[k] = lo_u;
+                } else {
+                    let hi_v = self.val.get(k + q + 1).copied().unwrap_or(0);
+                    let hi_u = self.unk.get(k + q + 1).copied().unwrap_or(0);
+                    val[k] = (lo_v >> r) | (hi_v << (64 - r));
+                    unk[k] = (lo_u >> r) | (hi_u << (64 - r));
+                }
+            }
+        }
+        // Fill the vacated top bits [w-amt, w) (or all of [0,w) when amt ≥ w). Logical
+        // (fv=fu=0) needs no fill — the shift already brought zeros in.
+        if fv != 0 || fu != 0 {
+            let lo = (w as u64).saturating_sub(amt).min(w as u64) as u32;
+            fill_bits(&mut val, &mut unk, lo, w, fv, fu);
+        }
+        let mut out = Value {
+            val,
+            unk,
+            width: w,
+            signed: self.signed,
+            is_real: false,
+        };
+        out.mask_top();
+        out
+    }
+
+    /// WORD-PARALLEL left shift by `amt`, growing the result to width `grow_w` (the
+    /// caller's lossless-growth policy); vacated low bits are 0. Bit-exact with the
+    /// per-bit form (locked by `shift_word_vs_bit_parity`).
+    pub fn shl_grow(&self, amt: u64, grow_w: u32) -> Value {
+        let n = nwords(grow_w).max(1);
+        let mut val = vec![0u64; n];
+        let mut unk = vec![0u64; n];
+        if amt < grow_w as u64 {
+            let q = (amt / 64) as usize;
+            let r = (amt % 64) as u32;
+            for k in 0..n {
+                let lo_v = if k >= q {
+                    self.val.get(k - q).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                let lo_u = if k >= q {
+                    self.unk.get(k - q).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                if r == 0 {
+                    val[k] = lo_v;
+                    unk[k] = lo_u;
+                } else {
+                    let bv = if k > q {
+                        self.val.get(k - q - 1).copied().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let bu = if k > q {
+                        self.unk.get(k - q - 1).copied().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    val[k] = (lo_v << r) | (bv >> (64 - r));
+                    unk[k] = (lo_u << r) | (bu >> (64 - r));
+                }
+            }
+        }
+        let mut out = Value {
+            val,
+            unk,
+            width: grow_w,
+            signed: self.signed,
+            is_real: false,
+        };
         out.mask_top();
         out
     }
@@ -304,6 +405,36 @@ pub(crate) fn real_to_int_round(x: f64, width: u32, signed: bool) -> Value {
     let r = x.round(); // Rust f64::round = round-half-away-from-zero
     let i = r as i128; // large |x| SATURATES to i128 extremes; NaN → 0
     Value::from_i128(i, width, signed)
+}
+
+/// Set bits `[lo, hi)` of the plane pair to the constant 4-state bit `(fv,fu)`,
+/// word-parallel (used for sign-extension fill in `resize`/`shr_fill`). `fv`/`fu` are
+/// 0/1 flags; each is broadcast across the affected lanes.
+fn fill_bits(val: &mut [u64], unk: &mut [u64], lo: u32, hi: u32, fv: u64, fu: u64) {
+    if lo >= hi {
+        return;
+    }
+    let fvw = if fv != 0 { u64::MAX } else { 0 };
+    let fuw = if fu != 0 { u64::MAX } else { 0 };
+    let mut i = lo;
+    while i < hi {
+        let w = (i / 64) as usize;
+        let s = i % 64;
+        let end = (((w as u32) + 1) * 64).min(hi); // end of this word's fill region
+        let bits = end - i;
+        let mask = if bits >= 64 {
+            u64::MAX
+        } else {
+            ((1u64 << bits) - 1) << s
+        };
+        if let Some(slot) = val.get_mut(w) {
+            *slot = (*slot & !mask) | (fvw & mask);
+        }
+        if let Some(slot) = unk.get_mut(w) {
+            *slot = (*slot & !mask) | (fuw & mask);
+        }
+        i = end;
+    }
 }
 
 /// Low mask over `width` bits in a single u64 (width ≤ 64 usage).
@@ -484,6 +615,82 @@ mod tests {
                 (nv * u64::MAX, nu * u64::MAX),
                 "NOT {a0}{a1}"
             );
+        }
+    }
+
+    /// The word-parallel `shr_fill`/`shl_grow` must agree bit-for-bit with the prior
+    /// per-bit shift forms, across widths spanning word boundaries, shift amounts
+    /// (0 / sub-word / word-multiple / ≥ width), and X/Z-laced operands + arith sign fill.
+    #[test]
+    fn shift_word_vs_bit_parity() {
+        fn ref_shr(l: &Value, amt: u64, w: u32, fv: u64, fu: u64) -> Value {
+            let mut out = Value::zeros(w.max(1), l.signed);
+            out.width = w;
+            for i in 0..w {
+                let src = i as u64 + amt;
+                if src < w as u64 {
+                    let (v, u) = l.get_vu(src as u32);
+                    out.set_vu(i, v, u);
+                } else {
+                    out.set_vu(i, fv, fu);
+                }
+            }
+            out.mask_top();
+            out
+        }
+        fn ref_shl(l: &Value, amt: u64, grow: u32) -> Value {
+            let mut out = Value::zeros(grow.max(1), l.signed);
+            out.width = grow;
+            for i in 0..grow {
+                if (i as u64) >= amt {
+                    let src = i as u64 - amt;
+                    if src < l.width as u64 {
+                        let (v, u) = l.get_vu(src as u32);
+                        out.set_vu(i, v, u);
+                    }
+                }
+            }
+            out.mask_top();
+            out
+        }
+        fn mk(width: u32) -> Value {
+            let mut v = Value::zeros(width.max(1), true);
+            v.width = width;
+            for i in 0..width {
+                let (val, unk) = match i % 4 {
+                    0 => (0, 0),
+                    1 => (1, 0),
+                    2 => (0, 1),
+                    _ => (1, 1),
+                }; // 0,1,X,Z by bit index
+                v.set_vu(i, val, unk);
+            }
+            v.mask_top();
+            v
+        }
+        for &width in &[1u32, 7, 64, 65, 96, 128, 130] {
+            let l = mk(width);
+            let (mv, mu) = if width > 0 {
+                l.get_vu(width - 1)
+            } else {
+                (0, 0)
+            };
+            for &amt in &[0u64, 1, 3, 63, 64, 65, 100, width as u64, width as u64 + 5] {
+                for &(fv, fu) in &[(0u64, 0u64), (mv, mu)] {
+                    assert_eq!(
+                        l.shr_fill(amt, width, fv, fu),
+                        ref_shr(&l, amt, width, fv, fu),
+                        "shr width={width} amt={amt} fill=({fv},{fu})"
+                    );
+                }
+                let grow = (width as u64).saturating_add(amt).min(4096) as u32;
+                let w = grow.max(width).max(1);
+                assert_eq!(
+                    l.shl_grow(amt, w),
+                    ref_shl(&l, amt, w),
+                    "shl width={width} amt={amt} grow={w}"
+                );
+            }
         }
     }
 

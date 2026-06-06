@@ -641,17 +641,7 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         // pathological shift amount can't allocate unboundedly.
         let grow = (l.width as u64).saturating_add(amt).min(4096) as u32;
         let w = grow.max(l.width).max(1);
-        let mut out = Value::zeros(w, l.signed);
-        for i in 0..w {
-            if (i as u64) >= amt {
-                let src = i as u64 - amt;
-                if src < l.width as u64 {
-                    let (v, u) = l.get_vu(src as u32);
-                    out.set_vu(i, v, u);
-                }
-            }
-        }
-        out
+        l.shl_grow(amt, w) // word-parallel (vacated low bits = 0)
     }
 
     fn shift_right(&self, l: &Value, r: &Value, arith: bool) -> Value {
@@ -665,17 +655,7 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         } else {
             (0, 0)
         };
-        let mut out = Value::zeros(w, l.signed);
-        for i in 0..w {
-            let src = i as u64 + amt;
-            if src < w as u64 {
-                let (v, u) = l.get_vu(src as u32);
-                out.set_vu(i, v, u);
-            } else {
-                out.set_vu(i, fv, fu);
-            }
-        }
-        out
+        l.shr_fill(amt, w, fv, fu) // word-parallel (top fill = sign for arith, else 0)
     }
 
     // ── Ternary ────────────────────────────────────────────────────────────
