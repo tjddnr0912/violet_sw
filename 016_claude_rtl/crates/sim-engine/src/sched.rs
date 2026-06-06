@@ -518,6 +518,14 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// implementation-defined; vita freezes strobes-then-monitor for byte-stable
     /// 3-OS golden output.
     fn flush_postponed(&mut self) {
+        // `$time`/`$realtime` inside a postponed render must scale by the
+        // REGISTERING module's multiplier, not the scheduler's live
+        // `cur_time_mult` (which now holds the LAST-run process's `M` — a
+        // different module under mixed timescales). Each `FmtCapture` carries its
+        // own `time_mult`; we drive `cur_time_mult` from it per render and RESTORE
+        // the entering value on exit so nothing downstream (e.g. a cont-assign
+        // `$time` at the next loop-top settle) observes a render's multiplier.
+        let saved_mult = self.st.cur_time_mult;
         // (a) STROBES — drain the FIFO in call order, render NOW (settled values),
         //     print, then CLEAR (one-shot per call: a strobe never repeats next
         //     step unless its statement re-executes and re-registers).
@@ -526,6 +534,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             // needs against `&self` (mirrors `apply_nba`'s `mem::take(&mut nba)`).
             let batch = std::mem::take(&mut self.st.postponed.strobes);
             for cap in &batch {
+                self.st.cur_time_mult = cap.time_mult; // registering module's M
                 let mut line = format_args_str(self, cap.fmt, &cap.args);
                 line.push('\n');
                 write_out(self.st, &line);
@@ -552,45 +561,48 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             Some(m) if m.enabled => {
                 let fmt = m.cap.fmt;
                 let args = m.cap.args.clone();
+                let tmult = m.cap.time_mult; // monitoring module's M (see (a) above)
                 let prev = m.last_vals.take(); // moves baseline out; slot now None
-                Some((fmt, args, prev))
+                Some((fmt, args, tmult, prev))
             }
             // disabled (`$monitoroff`) or no monitor established → nothing to do.
             _ => None,
         };
-        if let Some((fmt, args, prev)) = mon {
-            // No-arg monitor (`$monitor;` → fmt=None, args=[]) prints nothing —
-            // not even a bare newline. Guarded so a future bare-`$monitor` lowering
-            // cannot silently inject a lone "\n" into golden RTL output (see §7.4).
+        if let Some((fmt, args, tmult, prev)) = mon {
             if fmt.is_none() && args.is_empty() {
-                // Seed an empty baseline (`[]` == `[]` keeps it silent forever)
-                // and emit NO line; a zero-expression monitor has no value to
-                // track. Early-return is safe: strobes (a) already drained and the
-                // monitor block is the final action of `flush_postponed`.
+                // No-arg monitor (`$monitor;` → fmt=None, args=[]) prints nothing —
+                // not even a bare newline. Guarded so a future bare-`$monitor`
+                // lowering cannot silently inject a lone "\n" into golden RTL output
+                // (see §7.4). Seed an empty baseline (`[]` == `[]` keeps it silent
+                // forever); a zero-expression monitor has no value to track.
                 if let Some(m) = self.st.postponed.monitor.as_mut() {
                     m.last_vals = Some(Vec::new());
                 }
-                return;
-            }
-            // Evaluate every monitored expression to a settled 4-state Value.
-            // `self.eval` builds `EvalCtx` from `self.st`, reading settled `cur`.
-            let cur_vals: Vec<Value> = args.iter().map(|&eid| self.eval(eid)).collect();
-            let changed = match &prev {
-                None => true,                  // establishment / replace → print
-                Some(old) => *old != cur_vals, // 4-state value-level change
-            };
-            if changed {
-                let mut line = format_args_str(self, fmt, &args);
-                line.push('\n');
-                write_out(self.st, &line);
-            }
-            // Re-seed the baseline with the freshly-evaluated values regardless of
-            // whether we printed: an unchanged step must keep the same baseline,
-            // and a printed step adopts the new one.
-            if let Some(m) = self.st.postponed.monitor.as_mut() {
-                m.last_vals = Some(cur_vals);
+            } else {
+                // Evaluate every monitored expression to a settled 4-state Value,
+                // scaling `$time`/`$realtime` by the monitoring module's M.
+                // `self.eval` builds `EvalCtx` from `self.st`, reading settled `cur`.
+                self.st.cur_time_mult = tmult;
+                let cur_vals: Vec<Value> = args.iter().map(|&eid| self.eval(eid)).collect();
+                let changed = match &prev {
+                    None => true,                  // establishment / replace → print
+                    Some(old) => *old != cur_vals, // 4-state value-level change
+                };
+                if changed {
+                    let mut line = format_args_str(self, fmt, &args);
+                    line.push('\n');
+                    write_out(self.st, &line);
+                }
+                // Re-seed the baseline with the freshly-evaluated values regardless
+                // of whether we printed: an unchanged step must keep the same
+                // baseline, and a printed step adopts the new one.
+                if let Some(m) = self.st.postponed.monitor.as_mut() {
+                    m.last_vals = Some(cur_vals);
+                }
             }
         }
+        // Restore the entering multiplier (see the save at the top of this fn).
+        self.st.cur_time_mult = saved_mult;
     }
 
     // ── NBA ──────────────────────────────────────────────────────────────

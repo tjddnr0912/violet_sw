@@ -45,9 +45,11 @@ pub(crate) fn dispatch(
         // then cleared (one-shot per call). Multiple strobes in one step print
         // in call order (FIFO push).
         SysTaskId::Strobe => {
+            let time_mult = sched.st.cur_time_mult;
             sched.st.postponed.strobes.push(FmtCapture {
                 fmt,
                 args: args.to_vec(),
+                time_mult,
             });
             Ctl::Continue
         }
@@ -56,10 +58,12 @@ pub(crate) fn dispatch(
         // print at the next postponed flush of THIS timestep, seeding the
         // baseline value list.
         SysTaskId::Monitor => {
+            let time_mult = sched.st.cur_time_mult;
             sched.st.postponed.monitor = Some(MonitorState {
                 cap: FmtCapture {
                     fmt,
                     args: args.to_vec(),
+                    time_mult,
                 },
                 last_vals: None,
                 enabled: true,

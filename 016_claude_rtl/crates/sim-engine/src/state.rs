@@ -42,6 +42,12 @@ pub(crate) struct FmtCapture {
     pub fmt: Option<u32>,
     /// `SysTask.args`: the argument ExprIds, evaluated lazily in `format_args_str`.
     pub args: Vec<u32>,
+    /// Time multiplier `M` of the process that REGISTERED this capture (snapshot of
+    /// `cur_time_mult` at registration). The postponed flush renders `$time`/
+    /// `$realtime` with THIS value, never the scheduler's live `cur_time_mult` —
+    /// which by flush time holds whatever process ran LAST in the timestep, a
+    /// DIFFERENT module's `M` under mixed `` `timescale ``s.
+    pub time_mult: u64,
 }
 
 /// The single global `$monitor` record (IEEE 1364-2005: at most one active
