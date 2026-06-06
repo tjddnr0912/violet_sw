@@ -5,8 +5,10 @@
 > **⚠️ 2026-06-07 실측 갱신 (아래 [§실측](#실측-2026-06-07--예측-vs-측정) 참조):** Stage C 바이트코드 VM 구현 후 `/usr/bin/sample`
 > 프로파일링 결과, 본 문서가 지목한 **두 병목(eval 트리워크 디스패치·`Value` 힙할당) 예측이 1차 측정엔 모두 빗나갔다.** 진짜 지배
 > 비용은 **bit-serial bit-by-bit 처리**(net read/write·shift·resize — 인터프리터·VM **공유** 경로)였고, 이를 word化/inline으로
-> 정리해 **누적 ~6x**(eval-heavy 2781→461ms). eval 트리워크는 ~2-4%뿐이라 컴파일드 백엔드의 **native-eval은 저ROI로 정정**.
-> 향후 방향: [`../ROADMAP.md`](../ROADMAP.md).
+> 정리해 **누적 ~6x**(eval-heavy 2781→461ms). **다만 2차 재평가(2026-06-07 오후):** "eval = ~2-4%·native-eval
+> 저ROI"는 *eval-light 벤치마크의 산물*이었다 — 연산자수 스윕으로 eval 비중이 식 복잡도에 선형(K=16 **70%**,
+> K=32 **82%**)임을 측정. **native-eval ROI는 워크로드 의존**: 식-바운드 RTL엔 고ROI(설계당 ~2-3x), 스케줄러-
+> 바운드엔 저ROI. 향후 방향: [`../ROADMAP.md`](../ROADMAP.md).
 
 ## 요약 판정
 
@@ -15,7 +17,7 @@
 | GPU(Metal/CUDA/일반) 코어 엔진 | ❌ 비권장 | 이벤트구동 RTL은 분기발산·희소활성·시간인과·포인터추적으로 GPU-적대적 |
 | CPU word-level + SIMD(NEON/AVX) | ✅ 실질 이득, 저위험 | 4-state 비트연산이 현재 bit-by-bit → word化만으로 ~64×, SIMD 추가. **실측: net I/O·shift·resize·read까지 word化/inline 확장 → 누적 ~6x** |
 | 멀티코어 PDES(timestep 내) | ⚠️ 큰 작업 + 결정성 충돌 | 3-OS byte-identical 보장과 상충 |
-| 컴파일드 백엔드(코드젠) | ⚠️ **정정: 저ROI** (당초 "진짜 가속 경로") | **실측: eval 트리워크 = ~2-4%뿐.** native-eval(코드젠)은 고위험·수개월 대비 보상 작음. VM은 정확한 레퍼런스로서 의미 |
+| 컴파일드 백엔드(코드젠) | ⚠️ **워크로드 의존** (식-바운드 고ROI / 스케줄러-바운드 저ROI) | **2차 재평가:** eval 비중은 식 복잡도에 선형(K=16 70%·K=32 82%). 식-바운드(ALU·crypto·깊은 조합)엔 native-eval ~2-3x; 스케줄러-바운드엔 작음. 고위험·다세션, P5 게이트가 정확성 상쇄. [§실측 native-eval 재평가](#native-eval-재평가-2026-06-07-오후--위-저roi-판정-정정) |
 | stimulus-parallel GPU(Monte-Carlo) | 별개 제품 | branch-free cycle-based 엔진 신규 필요 |
 
 ## 왜 이벤트구동 RTL은 GPU-적대적인가
@@ -146,7 +148,7 @@
 
 | doc-18 예측 | 1차 측정 결과 | 정정 |
 |---|---|---|
-| eval 트리워크 디스패치 = 주 병목 → native-eval(코드젠)이 답 | `eval_ctx` **~1.5%** | native-eval은 ~4% 추격 = **저ROI** |
+| eval 트리워크 디스패치 = 주 병목 → native-eval(코드젠)이 답 | `eval_ctx` **~1.5%** (eval-light 벤치) | 워크로드 의존 — 식-바운드는 70-82%(아래 재평가). 1차 "저ROI"는 과도 |
 | `Value` 힙할당(`Vec<u64>`/op) = 주 병목 | inline-Value 1차 실험 **~0** | 더 큰 비용에 *가려져* 있었음 |
 | (미지목) | **`write_lvalue`+`set_vu`+`slice_word` = ~50%** | 진짜 #1 = **bit-serial net I/O** |
 
@@ -161,6 +163,37 @@
 | 4 | **read/mask 정리** | `mask_top` resize 길이가드 + `read_net` inline 직접 read(transient `BitPacked` 제거) | 461 ms | **~6.0x** |
 
 codegen-heavy(스케줄러 dominated) 196→61ms(~3.2x). VM eval-heavy 2699→385ms(0.84x interp). **모든 윈이 인터프리터·VM 공유 경로** — backend-전용 아님.
+
+### native-eval 재평가 (2026-06-07 오후) — 위 "저ROI" 판정 정정
+
+위 "eval = ~1.5% → native-eval 저ROI"는 **eval-LIGHT 벤치마크의 산물**이었다(`EVAL_HEAVY`는 문장당
+연산자 ~3개). eval 비용은 *식 복잡도에 선형*이라 단일 벤치 한 점으로 일반화할 수 없다. **연산자수
+스윕**(release, 1M 문장, K = 문장당 `acc` 피연산자):
+
+| K (ops/stmt) | 시간(s) | eval 비중 |
+|---|---|---|
+| 1 | 0.45 | ~13% |
+| 4 | 0.62 | ~37% |
+| 8 | 0.85 | ~55% |
+| 16 | 1.32 | ~70% |
+| 32 | 2.25 | ~82% |
+
+선형 적합 `t ≈ 0.39 s(고정) + 0.058 s × K` (R²≈1). **고정항 0.39 s** = net write + 루프 제어 + 문장
+디스패치(= VM이 제거하는 부분, 그래서 VM은 eval-light에서만 이득). **피연산자당 58 ns** = read_net +
+binop. **net-read ≈ literal**(0.45≈0.44 … 2.24≈2.22)이므로 58 ns는 read_net이 아니라 **binop의 Value
+생성 + `eval_ctx` 디스패치**가 지배 — 환원불가 u64 ALU는 ~1 ns. ⇒ **58 ns 중 ~57 ns가 인터프리테이션
+오버헤드**로 레지스터 기반 native-eval이 제거 가능(4-state 마스킹 감안 보수적 **4-6x on eval**).
+
+**정정된 판정 — native-eval ROI는 워크로드 의존:**
+- **식-바운드 RTL**(넓은 ALU·CRC/crypto 데이터패스·깊은 조합 cone): eval 55-82% → native-eval
+  **고ROI**(설계당 ~2-3x 전망). `EXPR_HEAVY`(K=16) **VM 0.92x** — 문장 컴파일은 식-바운드에 거의
+  무력, native-eval이 유일한 레버.
+- **클럭/스케줄러-바운드 RTL**(`CODEGEN_HEAVY`): eval 작음 → native-eval **저ROI**, 스케줄러 축이 답.
+
+즉 당초 doc-18의 "코드젠이 진짜 가속 경로"는 **식-바운드 한정으로는 옳았다**(1차 "저ROI" 정정은 너무
+강했다). 비용 = 4-state 레지스터 머신(val+unk 평면·width/sign 마스킹·X/Z 전파·>128bit heap fallback)으로
+고위험·다세션 — 단 **P5 차분 게이트(compiled==interp byte동일) + iverilog 오라클이 정확성 리스크를 이미
+대폭 상쇄**한다(native-eval을 안전하게 시도 가능). 영구 회귀: `perf_baseline.rs` `EXPR_HEAVY`.
 
 ### 교훈 (방법론)
 

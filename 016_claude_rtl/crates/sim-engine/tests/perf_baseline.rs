@@ -95,6 +95,33 @@ const EVAL_HEAVY: &str = "module top;\n\
   end\n\
 endmodule";
 
+/// EXPRESSION-bound: a deep operator chain (16 `acc` reads + adds) per statement, so
+/// the per-statement EVAL cost dwarfs the fixed net-write/loop/scheduling cost. This is
+/// the case `EVAL_HEAVY` (only ~3 ops/stmt) under-represents — and the one native-eval
+/// would actually move. Measured scaling law (release, 1M statements, K = ops/stmt):
+/// `t ≈ 0.39 s (fixed) + 0.058 s × K`, with the per-operand 58 ns being ~98% Value-
+/// construct + `eval_ctx` dispatch overhead (net-read ≈ literal; irreducible u64 ALU
+/// ≈ 1 ns). ⇒ eval is 55 % of runtime at K=8, 70 % at K=16, 82 % at K=32. Realistic
+/// expression-bound RTL (wide ALUs, CRC/crypto datapaths, deep combinational cones)
+/// lives in this regime; clock/scheduler-bound designs (see `CODEGEN_HEAVY`) do not.
+const EXPR_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  reg [63:0] acc;\n\
+  integer i;\n\
+  integer j;\n\
+  always @(posedge clk) begin\n\
+    for (i = 0; i < 10000; i = i + 1) begin\n\
+      acc = acc + acc + acc + acc + acc + acc + acc + acc\n\
+          + acc + acc + acc + acc + acc + acc + acc + acc + 64'd1;\n\
+    end\n\
+  end\n\
+  initial begin\n\
+    clk = 0; acc = 1;\n\
+    for (j = 0; j < 100; j = j + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
 fn report(name: &str, src: &str, reps: u32) {
     let ir = build(src);
     let interp = time_backend(&ir, Backend::Interpreter, reps);
@@ -113,4 +140,9 @@ fn report(name: &str, src: &str, reps: u32) {
 fn perf_baseline_codegen_heavy() {
     report("codegen-heavy (scheduler-dominated)", CODEGEN_HEAVY, 5);
     report("eval-heavy (eval/Value-dominated)", EVAL_HEAVY, 5);
+    report(
+        "expr-heavy (deep operator chain; native-eval target)",
+        EXPR_HEAVY,
+        5,
+    );
 }
