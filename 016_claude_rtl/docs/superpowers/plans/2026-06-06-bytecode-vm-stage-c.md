@@ -5,6 +5,12 @@
 > (11/11 prerequisites) complete; this is the `구현` design the user's sequence calls for,
 > written against the seams Stage B installed. Substrate: **bytecode VM (P0a)**, in-process,
 > no runtime toolchain (P0b = N/A) — see `docs/preview/18-acceleration-analysis.md`.
+>
+> **IMPLEMENTATION PROGRESS:** **C1 ✅ + C2 ✅ (2026-06-06) — MVP terminus reached.** The VM
+> now actually executes the codegen-able (P9) class byte-identically to the interpreter
+> (P5 gate live over 72 corpus designs + mixed P9b + new prologue/runaway/blocking-index
+> teeth); 439 tests green, clippy/fmt clean, golden `SimIr` root unflipped. **Next = C3**
+> (native value registers — the first phase that can be *faster*).
 
 **Goal:** Replace `Scheduler::vm_run_body`'s interpreter-delegation with a real bytecode
 compiler + register VM that executes a codegen-able (P9 suspend-free) process body,
@@ -160,8 +166,8 @@ Stage B changes; ZERO frozen-IR change in any phase.
 
 | Phase | Maps to | Deliverable | Gate |
 |---|---|---|---|
-| **C1** Terminator-phase ABI | P7b follow-on | Add `k_truthy(&self,eid)->bool` (→ `Scheduler::truthy`) and `k_rearm(&mut self,proc:u32)` (→ `rearm(proc)`, preserving the Edge/Level/Initial asymmetry — NOT reimplemented), plus `k_max_deltas`/`k_mark_fatal` forwarders. **Invariant stated:** a codegen-able template can never be entered as a fork child (its body has no `Fork` terminator, and `is_codegen_able` scans the whole body), so `k_rearm` is total. | suite green (pure forwarding addition) |
-| **C2** Structural VM (delegating eval) | scaffolding | `CompiledBody` + compile pass (1:1 BB lowering) + out-of-band template-keyed `vm_cache` + `vm_exec` with the **cur_time_mult prologue (#1)** and **delta guard (#2)**. Small-body guard keeps tiny bodies interpreted. **Compile-pass unit test:** `blocks.len()==body.len()`, terminators map 1:1 (independent of P5, protects P16 mapping). **New corpus template:** `$time`/`$strobe` inside an `always` body under a non-unit `timescale` (current P6 lacks timescale teeth) + a runaway codegen-able loop asserting identical DeltaLimit. | **P5 byte-identical** over corpus + mixed (P9b) + timescale + runaway |
+| **C1** ✅ Terminator-phase ABI | P7b follow-on | DONE 2026-06-06. Added `k_truthy(&self,eid)->bool` (→ `Scheduler::truthy`) and `k_rearm(&mut self,proc:u32)` (→ `rearm(proc)`, preserving the Edge/Level/Initial asymmetry — NOT reimplemented), plus `k_max_deltas`/`k_mark_fatal` forwarders (exec.rs `trait Kernel` + sched.rs impl). **Invariant stated:** a codegen-able template can never be entered as a fork child (its body has no `Fork` terminator, and `is_codegen_able` scans the whole body), so `k_rearm` is total. | suite green (landed with C2, its first caller) |
+| **C2** ✅ Structural VM (delegating eval) | scaffolding | DONE 2026-06-06 (MVP terminus). `CompiledBody`/`Op`/`compile_body` (1:1 BB lowering) + out-of-band template-keyed `vm_cache` (`VmSlot`/`SimState::vm_compiled`, decide-once, `Rc` owned-handle borrow protocol) + `vm_exec` with the **cur_time_mult prologue (#1)** in `vm_run_body` and **delta guard (#2)** in the exec loop. **Compile-pass unit tests (2):** `blocks.len()==body.len()` + terminator 1:1 (P16) and NBA/systask op shapes (independent of P5). **New teeth tests (3):** `$time` under distinct non-unit multipliers (prologue, adversarially confirmed to fail with a broken prologue), a `forever` runaway (guard → Fatal), and `a[i]=K;i=i+1` (P8 #3 blocking-index sample). | **P5 byte-identical** ✅ over corpus(72) + mixed (P9b) + prologue + runaway + blocking-index; 439 green |
 | **C3** Native value registers | P12a | Replace `Value` heap (val/unk `Vec<u64>`) with ≤128-bit register reps + X/Z plane; structural ops (concat/replicate/select/shift-4096-cap) on registers; >128 heap spill. **First possible net win.** Add a perf harness (DATA, not a gate yet). | P5 + P12a bit-exact |
 | **C4** Static width/sign + poison | P10 | Precompute (width,signed,poison-regime) per (ExprId,context). **Asymmetric poison contract (oracle eval.rs:439-444, value.rs:193):** UNSIGNED 128-bit lane (poison `X` only at width>128), SIGNED 64-bit lane (poison `X` at width>64). A uniform threshold diverges. | P5 + instrumented-eval cross-check |
 | **C5** Index classification | P11 | Static vs runtime index/width/count; reproduce `const_u32_of_expr` **SHALLOW** fold + each site's EXACT fallback + OOR sentinel arms (read & write). Do NOT "improve" the fold. | P5 |

@@ -30,11 +30,10 @@ pub(crate) enum Step {
 /// sufficient for a compiled VM to reuse verbatim (the kernel never knows which body
 /// drove it; only its control flow differs).
 ///
-/// SCOPE: the STATEMENT-phase ABI for the suspend-free P9 class. Method names are
-/// `k_*`-prefixed to stay distinct from `Scheduler`'s inherent methods (the impl just
-/// forwards). The terminator/control surface a compiled body also needs — `truthy`
-/// (Branch) and `rearm` (Return) — is added when Stage C writes `vm_run`. Suspend /
-/// resume (Delay/Wait) and fork are deliberately ABSENT: those bodies stay on the
+/// SCOPE: the STATEMENT-phase ABI for the suspend-free P9 class plus the C1
+/// terminator/control surface. Method names are `k_*`-prefixed to stay distinct from
+/// `Scheduler`'s inherent methods (the impl just forwards). Suspend / resume
+/// (Delay/Wait) and fork are deliberately ABSENT: those bodies stay on the
 /// interpreter, which owns the resume-PC state machine (a compiled body runs
 /// atomically entry→Return and never suspends — see the P9 predicate).
 pub(crate) trait Kernel {
@@ -48,6 +47,26 @@ pub(crate) trait Kernel {
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
     /// WRITE: run a system task, returning its control outcome.
     fn k_dispatch_systask(&mut self, which: SysTaskId, fmt: Option<u32>, args: &[u32]) -> Ctl;
+
+    // ── terminator / control surface (C1) ──
+    // The control-flow ABI a compiled body needs beyond the statement surface above:
+    // `Branch` truthiness, `Return` re-arm, and the per-activation termination guard.
+    // All FORWARD verbatim to the interpreter's inherent methods (the VM reproduces
+    // control flow bit-for-bit through the SAME kernel — it never reimplements it).
+
+    /// CONTROL: tri-valued truthiness of `eid` for a `Branch` (X/Z → false), built on
+    /// the same `EvalCtx` the interpreter's `Terminator::Branch` uses (exec.rs:120).
+    fn k_truthy(&self, eid: u32) -> bool;
+    /// CONTROL: re-arm the process after `Return`, preserving the Edge/Level/Initial
+    /// asymmetry (NOT reimplemented). TOTAL on the codegen-able class: such a body has
+    /// no `Fork` terminator, so it can never be entered as a fork child (a child's
+    /// `Return` is routed to `on_child_complete`, never to `rearm`) — `is_codegen_able`
+    /// scans the WHOLE body, so the VM only ever drives top-level activities here.
+    fn k_rearm(&mut self, proc: u32);
+    /// CONTROL: the infinite-delta termination-guard ceiling (mirror exec.rs:177).
+    fn k_max_deltas(&self) -> u64;
+    /// CONTROL: flag a fatal (delta-limit) termination (mirror exec.rs:178).
+    fn k_mark_fatal(&mut self);
 }
 
 /// Execute activity `pi` starting at body block `start`. `pi` is a runtime

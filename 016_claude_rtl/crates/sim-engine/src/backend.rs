@@ -5,7 +5,13 @@
 //! compiler + register VM; the predicate already gates which bodies that VM may
 //! claim (everything else permanently uses the reference interpreter).
 
-use sim_ir::{BasicBlock, Stmt, Terminator};
+use std::rc::Rc;
+
+use sim_ir::{BasicBlock, Lvalue, Stmt, SysTaskId, Terminator};
+
+use crate::builtins::Ctl;
+use crate::exec::{Kernel, Step};
+use crate::value::Value;
 
 /// **P9 scope predicate.** Is this process `body` codegen-able on the bytecode VM?
 ///
@@ -42,6 +48,247 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], body: &[BasicBlock]) -> bool {
             .all(|&sid| !matches!(stmts[sid as usize], Stmt::Disable { .. }));
         term_ok && stmts_ok
     })
+}
+
+// ── Stage C: bytecode VM (P0a) ─────────────────────────────────────────────
+//
+// The compiled artifact + register VM that executes a codegen-able (P9 suspend-free)
+// process body by calling the SAME `Kernel` the interpreter uses — so net I/O, VCD,
+// NBA, scheduling and float formatting reproduce BY CONSTRUCTION (the P5 gate proves
+// byte-identity). C2 delegates expression eval to the kernel (`k_eval_for_lvalue`);
+// native value registers are C3. The VM's only new code is control flow + cache.
+// See `docs/superpowers/plans/2026-06-06-bytecode-vm-stage-c.md`.
+
+/// Per-activation scratch register file: one value slot per (blocking+nonblocking)
+/// assign. `Value` has no `Default`/`take`, so the `Option` lets `WriteLval`/`ScheduleNba`
+/// `take` the produced value without a clone. Each slot is written (by its `EvalForLval`)
+/// before it is read, so reuse across activations would be sound — C2 allocates per
+/// activation (structural-milestone simplicity; pooling is a C9 perf item).
+type RegFile = Vec<Option<Value>>;
+/// Per-activation offset register file: one slot per blocking assign, holding the
+/// `(bit-offset, array-word)` pairs `ResolveOff` sampled at statement time (P8 #3).
+type OffFile = Vec<Option<Vec<(u32, u32)>>>;
+
+/// A compiled process body, built ONCE per codegen-able **template** and cached
+/// out-of-band on `SimState` (never in the frozen `SimIr`). Block indices are 1:1 with
+/// the frozen `Process.body` (SAME indices — the P16 debugger mapping).
+pub(crate) struct CompiledBody {
+    blocks: Vec<CompiledBlock>,
+    /// Cloned LHS side table; `Op`s reference an `Lvalue` by index into this.
+    lvalues: Vec<Lvalue>,
+    /// Cloned `$systask` arg-ExprId lists; `Op::SysTask` references one by index.
+    arglists: Vec<Vec<u32>>,
+    /// How many value / offset registers a single activation needs.
+    nregs: u32,
+    noffs: u32,
+}
+
+struct CompiledBlock {
+    ops: Vec<Op>,
+    term: CompiledTerm,
+}
+
+/// The P9 allow-list terminators ONLY — `is_codegen_able` guaranteed nothing else
+/// reaches the compiler. `Branch` carries the condition `ExprId` (truthiness is a
+/// tri-valued control-flow rule routed through `k_truthy`, NOT a register boolean).
+#[derive(Clone, Copy)]
+enum CompiledTerm {
+    Goto(u32),
+    Branch {
+        cond: u32,
+        then_bb: u32,
+        else_bb: u32,
+    },
+    Return,
+}
+
+/// One VM instruction. `Copy`-small: `Lvalue`/arg vectors live in `CompiledBody` side
+/// tables, referenced by index. C2 ops delegate eval to the kernel (no native eval yet).
+#[derive(Clone, Copy)]
+enum Op {
+    /// `regs[dst] = k_eval_for_lvalue(&lvalues[lhs], rhs)` — RHS context-sized to LHS.
+    EvalForLval { dst: u32, lhs: u32, rhs: u32 },
+    /// `offs[dst] = k_resolve_lvalue_offsets(&lvalues[lhs])` — dynamic index NOW (P8 #3).
+    ResolveOff { dst: u32, lhs: u32 },
+    /// `k_write_lvalue(&lvalues[lhs], take(regs[val]), take(offs[off]))` — blocking write.
+    WriteLval { lhs: u32, val: u32, off: u32 },
+    /// `k_schedule_nba(lvalues[lhs].clone(), take(regs[val]))` — LHS index sampled in NBA.
+    ScheduleNba { lhs: u32, val: u32 },
+    /// `k_dispatch_systask(which, fmt, &arglists[args])`.
+    SysTask {
+        which: SysTaskId,
+        fmt: Option<u32>,
+        args: u32,
+    },
+}
+
+/// Lower one codegen-able `body` (statements resolved through `stmts`) to a
+/// `CompiledBody`. Mirrors the interpreter's `compute_effect`/`apply_effect`
+/// statement-shape EXACTLY (same kernel calls, same order), so the VM introduces zero
+/// new value logic. Per the P8 contract a blocking assign emits `EvalForLval → ResolveOff
+/// → WriteLval` (RHS, then dynamic index, then write); statements lower in textual order
+/// so `ScheduleNba` calls preserve `nba_seq` (moment #2). MUST be called only on a body
+/// `is_codegen_able` accepted (the `unreachable!` arms assert that contract).
+pub(crate) fn compile_body(stmts: &[Stmt], body: &[BasicBlock]) -> CompiledBody {
+    let mut lvalues: Vec<Lvalue> = Vec::new();
+    let mut arglists: Vec<Vec<u32>> = Vec::new();
+    let mut nregs: u32 = 0;
+    let mut noffs: u32 = 0;
+    let mut blocks = Vec::with_capacity(body.len());
+    for block in body {
+        let mut ops = Vec::new();
+        for &sid in &block.stmts {
+            match &stmts[sid as usize] {
+                Stmt::BlockingAssign { lhs, rhs } => {
+                    let li = lvalues.len() as u32;
+                    lvalues.push(lhs.clone());
+                    let v = nregs;
+                    nregs += 1;
+                    let o = noffs;
+                    noffs += 1;
+                    ops.push(Op::EvalForLval {
+                        dst: v,
+                        lhs: li,
+                        rhs: *rhs,
+                    });
+                    ops.push(Op::ResolveOff { dst: o, lhs: li });
+                    ops.push(Op::WriteLval {
+                        lhs: li,
+                        val: v,
+                        off: o,
+                    });
+                }
+                Stmt::NonblockingAssign { lhs, rhs } => {
+                    let li = lvalues.len() as u32;
+                    lvalues.push(lhs.clone());
+                    let v = nregs;
+                    nregs += 1;
+                    ops.push(Op::EvalForLval {
+                        dst: v,
+                        lhs: li,
+                        rhs: *rhs,
+                    });
+                    ops.push(Op::ScheduleNba { lhs: li, val: v });
+                }
+                Stmt::SysTask { which, fmt, args } => {
+                    let ai = arglists.len() as u32;
+                    arglists.push(args.clone());
+                    ops.push(Op::SysTask {
+                        which: *which,
+                        fmt: *fmt,
+                        args: ai,
+                    });
+                }
+                // `is_codegen_able` rejects any body containing `Disable`, so this is
+                // unreachable for a compiled body; mirror the interpreter's
+                // `StmtEffect::Nop` (emit no op) for totality.
+                Stmt::Disable { .. } => {}
+            }
+        }
+        let term = match &block.term {
+            Terminator::Goto { target } => CompiledTerm::Goto(*target),
+            Terminator::Branch {
+                cond,
+                then_bb,
+                else_bb,
+            } => CompiledTerm::Branch {
+                cond: *cond,
+                then_bb: *then_bb,
+                else_bb: *else_bb,
+            },
+            Terminator::Return => CompiledTerm::Return,
+            // `is_codegen_able` guarantees only the P9 allow-list reaches here.
+            other => unreachable!("non-codegen-able terminator in compile_body: {other:?}"),
+        };
+        blocks.push(CompiledBlock { ops, term });
+    }
+    CompiledBody {
+        blocks,
+        lvalues,
+        arglists,
+        nregs,
+        noffs,
+    }
+}
+
+/// Execute a `CompiledBody` from entry block `bb` to `Return`, calling `k` (the SAME
+/// kernel the interpreter drives) for every eval / write / systask / branch / rearm.
+/// The `cur_time_mult` prologue is the CALLER's job (it bypasses `run_process`, the only
+/// writer — see `Scheduler::vm_run_body`); this function owns ONLY the body's control
+/// flow plus the per-activation termination guard (a byte-mirror of exec.rs:176-180).
+/// Byte-identical to `run_process` on the codegen-able class — the P5 gate enforces it.
+pub(crate) fn vm_exec(k: &mut impl Kernel, body: &CompiledBody, proc: u32, mut bb: u32) -> Step {
+    let mut regs: RegFile = vec![None; body.nregs as usize];
+    let mut offs: OffFile = vec![None; body.noffs as usize];
+    let mut guard: u64 = 0;
+    loop {
+        let block = &body.blocks[bb as usize];
+        for op in &block.ops {
+            match *op {
+                Op::EvalForLval { dst, lhs, rhs } => {
+                    let v = k.k_eval_for_lvalue(&body.lvalues[lhs as usize], rhs);
+                    regs[dst as usize] = Some(v);
+                }
+                Op::ResolveOff { dst, lhs } => {
+                    let o = k.k_resolve_lvalue_offsets(&body.lvalues[lhs as usize]);
+                    offs[dst as usize] = Some(o);
+                }
+                Op::WriteLval { lhs, val, off } => {
+                    let value = regs[val as usize]
+                        .take()
+                        .expect("WriteLval before EvalForLval");
+                    let offsets = offs[off as usize]
+                        .take()
+                        .expect("WriteLval before ResolveOff");
+                    k.k_write_lvalue(&body.lvalues[lhs as usize], value, &offsets);
+                }
+                Op::ScheduleNba { lhs, val } => {
+                    let value = regs[val as usize]
+                        .take()
+                        .expect("ScheduleNba before EvalForLval");
+                    k.k_schedule_nba(body.lvalues[lhs as usize].clone(), value);
+                }
+                Op::SysTask { which, fmt, args } => {
+                    match k.k_dispatch_systask(which, fmt, &body.arglists[args as usize]) {
+                        Ctl::Finish => return Step::Finish,
+                        Ctl::Stop => return Step::Stop,
+                        Ctl::Fatal => return Step::Fatal,
+                        Ctl::Continue => {}
+                    }
+                }
+            }
+        }
+        match block.term {
+            CompiledTerm::Goto(t) => bb = t,
+            CompiledTerm::Branch {
+                cond,
+                then_bb,
+                else_bb,
+            } => {
+                bb = if k.k_truthy(cond) { then_bb } else { else_bb };
+            }
+            CompiledTerm::Return => {
+                k.k_rearm(proc);
+                return Step::Done;
+            }
+        }
+        guard += 1;
+        if guard > k.k_max_deltas() {
+            k.k_mark_fatal();
+            return Step::Fatal;
+        }
+    }
+}
+
+/// One `vm_cache` slot: the decide-once codegen-ability + compiled body for a template.
+pub(crate) enum VmSlot {
+    /// Not yet examined.
+    Unchecked,
+    /// `is_codegen_able` said no — always interpret this template.
+    NotCodegenable,
+    /// Codegen-able; the compiled body shared via `Rc` so `vm_run_body` can take an
+    /// owned handle out BEFORE the `&mut self` kernel call (the §2.3 borrow protocol).
+    Compiled(Rc<CompiledBody>),
 }
 
 #[cfg(test)]
@@ -170,5 +417,82 @@ mod tests {
             block(vec![0], Terminator::Return),
         ];
         assert!(!is_codegen_able(&a, &body));
+    }
+
+    /// [C2] The compile pass maps blocks 1:1 (P16 debugger correspondence) and lowers
+    /// each terminator onto the P9 allow-list verbatim — checked WITHOUT running the VM
+    /// (independent of the P5 differential gate, which proves *behaviour*).
+    #[test]
+    fn compile_pass_maps_blocks_and_terminators_one_to_one() {
+        let a = arena(); // stmt 0 = a blocking assign
+        let body = vec![
+            block(
+                vec![0],
+                Terminator::Branch {
+                    cond: 0,
+                    then_bb: 0, // back-edge
+                    else_bb: 2,
+                },
+            ),
+            block(vec![0], Terminator::Goto { target: 0 }),
+            block(vec![0], Terminator::Return),
+        ];
+        assert!(is_codegen_able(&a, &body));
+        let cb = compile_body(&a, &body);
+
+        // 1:1 block count + per-index terminator mapping.
+        assert_eq!(cb.blocks.len(), body.len(), "block count must be 1:1");
+        assert!(matches!(
+            cb.blocks[0].term,
+            CompiledTerm::Branch {
+                cond: 0,
+                then_bb: 0,
+                else_bb: 2
+            }
+        ));
+        assert!(matches!(cb.blocks[1].term, CompiledTerm::Goto(0)));
+        assert!(matches!(cb.blocks[2].term, CompiledTerm::Return));
+
+        // Each blocking assign lowers to exactly Eval → Resolve → Write (3 ops), and the
+        // register counts equal the number of blocking assigns (3 across the 3 blocks).
+        for b in &cb.blocks {
+            assert_eq!(b.ops.len(), 3, "blocking assign ⇒ 3 ops");
+            assert!(matches!(b.ops[0], Op::EvalForLval { .. }));
+            assert!(matches!(b.ops[1], Op::ResolveOff { .. }));
+            assert!(matches!(b.ops[2], Op::WriteLval { .. }));
+        }
+        assert_eq!(cb.nregs, 3);
+        assert_eq!(cb.noffs, 3);
+    }
+
+    /// [C2] A nonblocking assign lowers to Eval → ScheduleNba (no `ResolveOff` — the NBA
+    /// path samples the LHS index itself at schedule time, P8), and `$systask` to one
+    /// `SysTask` op referencing a cloned arg list.
+    #[test]
+    fn compile_pass_nonblocking_and_systask_shapes() {
+        use sim_ir::SysTaskId;
+        let stmts = vec![
+            Stmt::NonblockingAssign {
+                lhs: Lvalue { chunks: vec![] },
+                rhs: 7,
+            },
+            Stmt::SysTask {
+                which: SysTaskId::Finish,
+                fmt: None,
+                args: vec![1, 2, 3],
+            },
+        ];
+        let body = vec![block(vec![0, 1], Terminator::Return)];
+        let cb = compile_body(&stmts, &body);
+        assert_eq!(cb.blocks[0].ops.len(), 3); // Eval, ScheduleNba, SysTask
+        assert!(matches!(
+            cb.blocks[0].ops[0],
+            Op::EvalForLval { rhs: 7, .. }
+        ));
+        assert!(matches!(cb.blocks[0].ops[1], Op::ScheduleNba { .. }));
+        assert!(matches!(cb.blocks[0].ops[2], Op::SysTask { args: 0, .. }));
+        assert_eq!(cb.nregs, 1, "one value reg for the NBA");
+        assert_eq!(cb.noffs, 0, "NBA does not allocate an offset reg");
+        assert_eq!(cb.arglists, vec![vec![1, 2, 3]]);
     }
 }

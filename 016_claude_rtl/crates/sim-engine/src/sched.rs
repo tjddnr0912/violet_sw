@@ -4,6 +4,7 @@
 //! edge detection.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use sim_ir::{
     BitPacked, EdgeKind, EdgeTerm, FourState, Lvalue, RegionTag, SensKind, Terminator, WaitCause,
@@ -331,40 +332,46 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// THE single process-body dispatch seam (P4). The interpreter is the
     /// always-available reference; the Bytecode backend (P0a) routes codegen-able
     /// bodies (the P9 suspend-free allow-list) to the VM and falls back to the
-    /// interpreter for the rest. STAGE-B STATE: the VM is not yet built, so the
-    /// Bytecode arm falls back for ALL bodies — making it byte-identical to the
-    /// interpreter. The P5 gate locks that equivalence; Stage C makes the arms
-    /// genuinely diverge (per-process VM dispatch keyed on the P9 predicate).
+    /// interpreter for the rest. A design routinely MIXES the two — e.g. `always_ff` is
+    /// codegen-able while its testbench's `initial #1 …` is not (P9b proves the mix is
+    /// byte-identical to all-interpreter). The codegen-ability decision + compile is
+    /// memoized per template by `vm_compiled` (decide-once cache).
     fn run_body(&mut self, proc: u32, block: u32) -> Step {
         match self.st.backend {
             crate::Backend::Interpreter => run_process(self, proc, block),
             crate::Backend::Bytecode => {
-                // P9: codegen-able (suspend-free) bodies take the VM path; everything
-                // else (Delay/Wait/Fork/Call/Disable) permanently uses the interpreter.
-                // A design routinely MIXES the two — e.g. `always_ff` is codegen-able
-                // while its testbench's `initial #1 …` is not (P9b proves the mix is
-                // byte-identical to all-interpreter).
                 let tmpl = self.activity_template(proc) as usize;
-                let codegen_able = crate::backend::is_codegen_able(
-                    &self.st.ir.stmts,
-                    &self.st.ir.processes[tmpl].body,
-                );
-                if codegen_able {
-                    self.vm_run_body(proc, block)
-                } else {
-                    run_process(self, proc, block)
+                match self.st.vm_compiled(tmpl) {
+                    Some(body) => self.vm_run_body(proc, tmpl, block, body),
+                    None => run_process(self, proc, block),
                 }
             }
         }
     }
 
-    /// Bytecode-VM body entry (Stage C). The P9 predicate has already confirmed this
-    /// body is suspend-free (only Goto/Branch/Return, no Disable). Until the VM lands,
-    /// it delegates to the reference interpreter, so the Bytecode backend stays
-    /// byte-identical (locked by the P5 gate); Stage C replaces the delegation with
-    /// lower-to-bytecode + execute-on-VM, calling the SAME kernel write phase.
-    fn vm_run_body(&mut self, proc: u32, block: u32) -> Step {
-        run_process(self, proc, block)
+    /// Bytecode-VM body entry (Stage C / C2). The P9 predicate (via `vm_compiled`) has
+    /// confirmed this body is suspend-free; `body` is its compiled form, handed in as an
+    /// owned `Rc` so this `&mut self` kernel call cannot alias the cache (§2.3).
+    ///
+    /// The VM bypasses `run_process` — the SOLE writer of `cur_time_mult` — so the
+    /// PROLOGUE sets it from THIS process's module multiplier exactly as exec.rs:80-87
+    /// does, before `vm_exec` evaluates any `$time`/`$realtime`. The per-activation
+    /// termination guard then lives inside `vm_exec` (mirror of exec.rs:176-180).
+    fn vm_run_body(
+        &mut self,
+        proc: u32,
+        tmpl: usize,
+        block: u32,
+        body: Rc<crate::backend::CompiledBody>,
+    ) -> Step {
+        self.st.cur_time_mult = self
+            .st
+            .proc_multipliers
+            .get(tmpl)
+            .copied()
+            .unwrap_or(1)
+            .max(1) as u64;
+        crate::backend::vm_exec(self, &body, proc, block)
     }
 
     pub fn run(&mut self) -> FinishReason {
@@ -1078,6 +1085,20 @@ impl Kernel for Scheduler<'_, '_> {
         args: &[u32],
     ) -> crate::builtins::Ctl {
         crate::builtins::dispatch(self, which, fmt, args)
+    }
+
+    // ── terminator / control surface (C1) — pure forwarders ──
+    fn k_truthy(&self, eid: u32) -> bool {
+        self.truthy(eid)
+    }
+    fn k_rearm(&mut self, proc: u32) {
+        self.rearm(proc);
+    }
+    fn k_max_deltas(&self) -> u64 {
+        self.max_deltas_guard()
+    }
+    fn k_mark_fatal(&mut self) {
+        self.mark_fatal();
     }
 }
 

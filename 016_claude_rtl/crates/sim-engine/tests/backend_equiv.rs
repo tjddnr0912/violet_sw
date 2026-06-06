@@ -19,7 +19,7 @@
 mod common;
 
 use common::{build, corpus, run_capture};
-use sim_engine::Backend;
+use sim_engine::{simulate_capture, Backend, ExitClass, SimOpts, SimResult};
 
 /// A wide, fixed-seed sweep: every corpus design must produce byte-identical
 /// stdout + VCD + summary across the two backends.
@@ -125,4 +125,127 @@ fn mixed_backend_run_equals_all_interpreter() {
         "finish_reason must match"
     );
     assert_eq!(ri.exit_class, rb.exit_class, "exit_class must match");
+}
+
+// ── C2 targeted teeth: seams the round-robin corpus does NOT exercise ──────────
+// The P6 corpus runs every codegen-able body through BOTH backends (byte-identity),
+// but with proc-multiplier 1 everywhere and no infinite loops — so the two pieces of
+// run_process-only state the VM must reproduce itself (the cur_time_mult PROLOGUE and
+// the per-activation termination GUARD, review must-fix #1/#2) are UNTESTED by it.
+// These designs add that coverage with teeth.
+
+/// Run `ir` on `backend` with explicit `proc_multipliers` + `max_deltas`, capturing
+/// stdout + summary. No VCD — these teeth live in stdout / finish_reason / exit_class.
+fn run_opts(
+    ir: &sim_ir::SimIr,
+    backend: Backend,
+    mults: Vec<u32>,
+    max_deltas: u64,
+) -> (SimResult, String) {
+    let opts = SimOpts {
+        backend,
+        proc_multipliers: mults,
+        max_deltas,
+        ..SimOpts::default()
+    };
+    simulate_capture(ir, opts)
+}
+
+/// [C2 PROLOGUE teeth] A codegen-able `always @(posedge clk)` body reads `$time`, run
+/// under per-process-DISTINCT non-unit multipliers. `$time = now / M` where M is THIS
+/// process's multiplier — set by `run_process` for the interpreter and by the VM's
+/// `vm_run_body` prologue for the bytecode backend. If the VM dropped the prologue, the
+/// always body would render `$time` with whatever multiplier the previously-run
+/// (interpreted `initial`) process left in `cur_time_mult` — a DIFFERENT value — and the
+/// backends would diverge. Distinct multipliers make the divergence guaranteed,
+/// independent of which ProcId the always body received.
+#[test]
+fn timescale_prologue_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [31:0] t0;\n\
+      always @(posedge clk) t0 = $time;\n\
+      initial begin\n\
+        clk = 0;\n\
+        #5000 clk = 1; #5000 clk = 0;\n\
+        #5000 $display(\"%0d\", t0); $finish;\n\
+      end\n\
+    endmodule";
+    let ir = build(src);
+    // Distinct, non-unit multiplier per process so a stale cur_time_mult on the VM path
+    // can never coincidentally match the correct one.
+    let mults: Vec<u32> = (0..ir.processes.len() as u32)
+        .map(|i| (i + 1) * 10)
+        .collect();
+    let (ri, oi) = run_opts(&ir, Backend::Interpreter, mults.clone(), 1_000_000);
+    let (rb, ob) = run_opts(&ir, Backend::Bytecode, mults, 1_000_000);
+    assert_eq!(
+        oi, ob,
+        "$time (scaled by per-process multiplier) must match across backends"
+    );
+    assert_eq!(ri.sim_time, rb.sim_time);
+    assert_eq!(ri.finish_reason, rb.finish_reason);
+    // Teeth: a scaled, non-zero $time was actually printed (5000/M ∈ {500,250}).
+    let v: u64 = oi
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("expected numeric $time, got {oi:?}"));
+    assert!(v > 0, "scaled $time must be non-zero (teeth), got {v}");
+}
+
+/// [C2 GUARD teeth] A codegen-able body with a delay-free `forever` loops forever in ONE
+/// activation. Both backends must trip the per-activation termination guard at the SAME
+/// point and report the same fatal summary — `run_process` does it (exec.rs:176-180) and
+/// `vm_exec` mirrors it. If the VM dropped the guard this test would HANG instead of
+/// failing, so its mere existence is the teeth; a small `max_deltas` keeps it fast.
+#[test]
+fn runaway_codegenable_loop_equal_and_fatal() {
+    let src = "module top;\n\
+      reg [7:0] y;\n\
+      initial forever y = y + 1;\n\
+    endmodule";
+    let ir = build(src);
+    let unit = vec![1u32; ir.processes.len()];
+    let (ri, oi) = run_opts(&ir, Backend::Interpreter, unit.clone(), 256);
+    let (rb, ob) = run_opts(&ir, Backend::Bytecode, unit, 256);
+    assert_eq!(oi, ob, "runaway stdout must match");
+    assert_eq!(
+        ri.finish_reason, rb.finish_reason,
+        "finish_reason must match"
+    );
+    assert_eq!(ri.exit_class, rb.exit_class, "exit_class must match");
+    // Teeth: the guard actually fired (fatal class), not a clean exit.
+    assert_eq!(
+        rb.exit_class,
+        ExitClass::Fatal,
+        "the per-activation guard must fire on the VM path"
+    );
+}
+
+/// [C2 / P8 #3 teeth] A codegen-able body runs `a[i] = K; i = i + 1;` — the blocking LHS
+/// index must be SAMPLED (`ResolveOff`) before `i` is bumped, so the write lands at the
+/// OLD `i`. The compile pass emits ResolveOff-immediately-before-WriteLval and lowers
+/// statements in textual order; a reorder would write `a[1]` instead of `a[0]`. Both
+/// backends must agree, and the witnessed value pins the sample moment.
+#[test]
+fn blocking_index_sample_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [7:0] a [0:3];\n\
+      integer i;\n\
+      always @(posedge clk) begin a[i] = 8'hAB; i = i + 1; end\n\
+      initial begin\n\
+        i = 0; a[0] = 0; a[1] = 0; a[2] = 0; a[3] = 0;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%0d %0d %0d\", a[0], a[1], i); $finish;\n\
+      end\n\
+    endmodule";
+    let ir = build(src);
+    let unit = vec![1u32; ir.processes.len()];
+    let (ri, oi) = run_opts(&ir, Backend::Interpreter, unit.clone(), 1_000_000);
+    let (rb, ob) = run_opts(&ir, Backend::Bytecode, unit, 1_000_000);
+    assert_eq!(oi, ob, "blocking-index stdout must match across backends");
+    assert_eq!(ri.finish_reason, rb.finish_reason);
+    // Teeth: a[0] got 0xAB (171) via the OLD i=0; a[1] stayed 0; i bumped to 1.
+    assert_eq!(oi.trim(), "171 0 1", "a[i]=K must sample i BEFORE i=i+1");
 }

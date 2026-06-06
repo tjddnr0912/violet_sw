@@ -3,6 +3,7 @@
 
 use std::cell::Cell;
 use std::io::Write;
+use std::rc::Rc;
 
 use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
 use sim_ir::{BitPacked, Lvalue, NetKind, SelKind, SimIr};
@@ -97,6 +98,11 @@ pub(crate) struct SimState<'a> {
     /// Process-body execution backend (from `SimOpts.backend`). Default
     /// `Interpreter`; read at the single `run()` body-dispatch seam.
     pub backend: crate::Backend,
+    /// Out-of-band bytecode-VM compile cache (Stage C, P0a), one slot per template
+    /// (`ir.processes`). Decides codegen-ability ONCE and memoizes the `CompiledBody`;
+    /// fork children sharing a template share its compile. NEVER enters the frozen
+    /// `SimIr`. Used only on the `Bytecode` backend (`Unchecked` is a no-cost default).
+    pub vm_cache: Vec<crate::backend::VmSlot>,
     /// Multiplier of the process CURRENTLY executing — set per `run_process`, read by
     /// `$time`/`$realtime`. 1 outside any process (the 1ns/1ns base).
     pub cur_time_mult: u64,
@@ -164,6 +170,9 @@ impl<'a> SimState<'a> {
             net_names: Vec::new(),
             proc_multipliers: Vec::new(),
             backend: crate::Backend::Interpreter,
+            vm_cache: (0..ir.processes.len())
+                .map(|_| crate::backend::VmSlot::Unchecked)
+                .collect(),
             cur_time_mult: 1,
             out,
             finished: false,
@@ -173,6 +182,34 @@ impl<'a> SimState<'a> {
             run_range_count: Cell::new(0),
             postponed: Postponed::default(),
         }
+    }
+
+    /// Stage-C VM dispatch (P0a): return the cached `CompiledBody` for template `tmpl`
+    /// if it is codegen-able, compiling + caching on first sight; `None` ⇒ interpret.
+    /// The decision is made ONCE per template (the per-fire `is_codegen_able` scan is
+    /// removed). The returned `Rc` is an OWNED handle (cloned out of the cache) so the
+    /// caller can pass `&mut self` as the `Kernel` to `vm_exec` without aliasing the
+    /// cache — the §2.3 borrow protocol.
+    pub(crate) fn vm_compiled(&mut self, tmpl: usize) -> Option<Rc<crate::backend::CompiledBody>> {
+        use crate::backend::VmSlot;
+        match &self.vm_cache[tmpl] {
+            VmSlot::Compiled(rc) => return Some(Rc::clone(rc)),
+            VmSlot::NotCodegenable => return None,
+            VmSlot::Unchecked => {}
+        }
+        // `self.ir` is a `&SimIr` field — copy the reference out so the immutable read
+        // of the IR does not borrow `self` across the `self.vm_cache` write below.
+        let ir: &SimIr = self.ir;
+        if !crate::backend::is_codegen_able(&ir.stmts, &ir.processes[tmpl].body) {
+            self.vm_cache[tmpl] = VmSlot::NotCodegenable;
+            return None;
+        }
+        let compiled = Rc::new(crate::backend::compile_body(
+            &ir.stmts,
+            &ir.processes[tmpl].body,
+        ));
+        self.vm_cache[tmpl] = VmSlot::Compiled(Rc::clone(&compiled));
+        Some(compiled)
     }
 
     /// Emit a rate-limited `E-RUN-RANGE` (VITA-E4002) runtime diagnostic for an
