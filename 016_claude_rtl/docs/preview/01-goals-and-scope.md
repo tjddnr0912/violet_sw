@@ -74,7 +74,7 @@ Phase 1의 범위는 **SystemVerilog 합성가능 RTL 서브셋** — Verilog-20
 | 분류 | IN-MVP (Phase 1) | deferred (Phase 2+) |
 |---|---|---|
 | 설계 단위 | `module`/`endmodule`, 포트, `parameter`/`localparam`, `generate`/`genvar` | `interface`/`modport`, `package`, `program`, `class` |
-| 자료형 | `wire`/`reg`/`logic`/`integer`, 벡터·packed array | `struct`/`union`/`enum`/`typedef`, `string`, 동적/연관 배열 |
+| 자료형 | `wire`/`reg`/`logic`/`integer`, 벡터·packed array, `enum`/`typedef`/packed `struct` | `union`, `string`, 동적/연관 배열 |
 | 절차 블록 | `initial`, `always`, `always_ff`/`always_comb`/`always_latch` | `final`, fork-join 고급 |
 | 문장 | blocking `=` / nonblocking `<=`, `if`/`case`/`casez`/`casex`, `for`/`while`/`repeat`/`forever`, `begin`/`end` | `foreach`, `unique`/`priority`, `do-while` |
 | 타이밍 | `#delay`, `@(event)`, `wait`(테스트벤치) | clocking block, intra-assignment delay 고급 |

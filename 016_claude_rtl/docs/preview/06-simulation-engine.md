@@ -157,7 +157,7 @@ IR의 `builtin-call` 노드(시스템 태스크/함수 호출)를 만나면 `hdl
 | 종류 | 대상 | 처리 |
 |------|------|------|
 | I/O | `$display`, `$write`, `$strobe` | 포맷 문자열 평가 후 표준 출력 |
-| 시간 | `$time`, `$realtime`, `$stime` | 시간 레지스터 읽기 (08-timescale 참조) |
+| 시간 | `$time`, `$realtime` (`$stime` 미구현→`VITA-E3009`) | 시간 레지스터 읽기 (08-timescale 참조) |
 | 덤프 | `$dumpfile`, `$dumpvars`, `$dumpflush` | vcd-writer로 라우팅 (07-vcd-format 참조) |
 | 제어 | `$finish`, `$stop` | 시뮬레이션 종료/정지 |
 | 난수 | `$random` | PRNG 호출 |

@@ -152,7 +152,8 @@ $display($time);      // 출력: 2  (2ns 정수, 500ps 절사)
 $display($realtime);  // 출력: 2.5 (precision 반영한 소수)
 ```
 
-`$stime`도 있다: 32-bit 정수. 큰 시각(2^32 × time_unit 이상)에서 overflow 위험 — 사용 자제.
+`$stime`(IEEE: `$time`의 하위 32비트)도 표준에 있으나 **vitamin 미구현** — 호출 시 `VITA-E3009`.
+하위 32비트가 필요하면 `$time & 32'hFFFF_FFFF`.
 
 본 프로젝트 구현 방침:
 - 내부 시간 레지스터는 `u64` (전역 tick)
