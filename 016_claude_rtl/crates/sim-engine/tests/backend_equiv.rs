@@ -249,3 +249,37 @@ fn blocking_index_sample_equals_across_backends() {
     // Teeth: a[0] got 0xAB (171) via the OLD i=0; a[1] stayed 0; i bumped to 1.
     assert_eq!(oi.trim(), "171 0 1", "a[i]=K must sample i BEFORE i=i+1");
 }
+
+/// [C3 word-write] Exercise the WORD-PARALLEL net write/read fast path on a 64-bit-
+/// element array (`net_w % 64 == 0` ⇒ each element is a whole store word ⇒ the aligned
+/// fast path is taken) and PROVE element INDEPENDENCE: a word-granular write to one
+/// element must not disturb its neighbours (the masking-clobber hazard the fast path's
+/// `array_len <= 1 || net_w % 64 == 0` guard exists to avoid). Both backends must agree.
+#[test]
+fn word_aligned_array_write_read_equals_and_independent() {
+    let src = "module top;\n\
+      reg [63:0] mem [0:3];\n\
+      integer i;\n\
+      initial begin\n\
+        for (i = 0; i < 4; i = i + 1) mem[i] = 0;\n\
+        mem[0] = 64'h0000000100000002;\n\
+        mem[2] = 64'h0000000300000004;\n\
+        #1 mem[1] = mem[0] + mem[2];\n\
+        #1 $display(\"%h %h %h %h\", mem[0], mem[1], mem[2], mem[3]);\n\
+        $finish;\n\
+      end\n\
+    endmodule";
+    let ir = build(src);
+    let unit = vec![1u32; ir.processes.len()];
+    let (ri, oi) = run_opts(&ir, Backend::Interpreter, unit.clone(), 1_000_000);
+    let (rb, ob) = run_opts(&ir, Backend::Bytecode, unit, 1_000_000);
+    assert_eq!(oi, ob, "64-bit array write/read must match across backends");
+    assert_eq!(ri.finish_reason, rb.finish_reason);
+    // mem[1] = mem[0]+mem[2] = 0x..0400000006; mem[0]/mem[2] retain their writes;
+    // mem[3] stays 0 (the word write to its neighbours never touched it).
+    assert_eq!(
+        oi.trim(),
+        "0000000100000002 0000000400000006 0000000300000004 0000000000000000",
+        "64-bit array elements must be written/read correctly AND independently"
+    );
+}

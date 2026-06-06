@@ -10,7 +10,7 @@ use sim_ir::{BitPacked, Lvalue, NetKind, SelKind, SimIr};
 use vcd_writer::{IdCode, VarType, VcdWriter};
 
 use crate::eval::NetReader;
-use crate::value::{nwords, Value};
+use crate::value::{nwords, top_mask, Value};
 
 /// A boxed `Write` sink for the VCD. v1 production uses a `File`; tests use an
 /// in-memory buffer captured via an `Rc<RefCell<Vec<u8>>>` adapter.
@@ -309,6 +309,17 @@ impl<'a> SimState<'a> {
         // Total destination bit width = sum of chunk widths.
         let total: u32 = lhs.chunks.iter().map(|c| self.chunk_width(c)).sum();
         let src = value.resize(total.max(1));
+
+        // Single-chunk LHS — the dominant case (a whole net, or a single bit-/part-
+        // select). With one chunk, `take_lo == 0` and `cw == total`, so the sliced
+        // "piece" IS `src` exactly; skip the per-bit slice entirely and hand `src`
+        // straight to `write_chunk` (which word-writes the whole-net/aligned case). The
+        // per-bit slice loop below is only for a multi-chunk concat LHS (`{a,b} = x`).
+        if lhs.chunks.len() == 1 {
+            let (raw_off, raw_word) = offsets.first().copied().unwrap_or((0, 0));
+            return self.write_chunk(&lhs.chunks[0], raw_off, raw_word, &src);
+        }
+
         let mut changed = false;
         let mut src_hi = total; // next source bit (exclusive top)
         for (idx, chunk) in lhs.chunks.iter().enumerate() {
@@ -410,8 +421,47 @@ impl<'a> SimState<'a> {
             }
         };
 
-        let mut changed = false;
         let slot = &mut self.nets[net];
+
+        // WORD-PARALLEL fast path: a whole-element write to a 64-aligned destination
+        // (every scalar whole-net assign, plus array elements whose width is a multiple
+        // of 64). Copy `piece`'s words into the store with word-granular change detection
+        // + a top-word mask, replacing the per-bit `set_bit` loop. Guard:
+        // `array_len <= 1 || net_w % 64 == 0` guarantees the element occupies WHOLE store
+        // words, so masking the top word cannot clobber a neighbouring element packed in
+        // the same word. Everything else (part/bit-select, unaligned base, OOR) falls
+        // through to the proven bit-serial path below — byte-identical by construction.
+        if off == 0 && width == net_w && base % 64 == 0 && (slot.array_len <= 1 || net_w % 64 == 0)
+        {
+            let wbase = (base / 64) as usize;
+            let nw = nwords(net_w).max(1);
+            let m = top_mask(net_w);
+            let mut changed = false;
+            for k in 0..nw {
+                let mut nv = piece.val.get(k).copied().unwrap_or(0);
+                let mut nu = piece.unk.get(k).copied().unwrap_or(0);
+                if k == nw - 1 {
+                    nv &= m;
+                    nu &= m;
+                }
+                let idx = wbase + k;
+                if slot.cur.val.len() <= idx {
+                    slot.cur.val.resize(idx + 1, 0);
+                    slot.cur.unk.resize(idx + 1, 0);
+                }
+                if slot.cur.val[idx] != nv || slot.cur.unk[idx] != nu {
+                    slot.cur.val[idx] = nv;
+                    slot.cur.unk[idx] = nu;
+                    changed = true;
+                }
+            }
+            if changed {
+                self.emit_vcd_change(net as u32);
+            }
+            return changed;
+        }
+
+        let mut changed = false;
         for i in 0..width {
             // saturating: a `u32::MAX` sentinel offset (X/Z dynamic index) or any
             // out-of-range index drops the bit cleanly instead of overflowing.
@@ -522,6 +572,24 @@ fn expand_init(init: &BitPacked, width: u32, array_len: u32, total_bits: usize) 
 /// Slice `width` bits starting at word `word`*width from a packed store.
 fn slice_word(store: &BitPacked, width: u32, word: u32) -> BitPacked {
     let base = word * width;
+    // WORD-PARALLEL fast path: a 64-aligned element read — copy whole store words and
+    // mask the top partial word (which discards any neighbouring element's bits that
+    // share that word). Covers every scalar net (base 0) and 64-aligned array elements;
+    // an unaligned base (array element with a non-64-aligned offset) falls to bit-serial.
+    if base % 64 == 0 {
+        let n = nwords(width).max(1);
+        let wbase = (base / 64) as usize;
+        let mut val = vec![0u64; n];
+        let mut unk = vec![0u64; n];
+        for k in 0..n {
+            val[k] = store.val.get(wbase + k).copied().unwrap_or(0);
+            unk[k] = store.unk.get(wbase + k).copied().unwrap_or(0);
+        }
+        let m = top_mask(width);
+        val[n - 1] &= m;
+        unk[n - 1] &= m;
+        return BitPacked { val, unk };
+    }
     let mut tmp = Value::zeros(width.max(1), false);
     tmp.width = width;
     for i in 0..width {
