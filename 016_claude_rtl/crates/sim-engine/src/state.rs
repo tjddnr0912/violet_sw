@@ -10,7 +10,7 @@ use sim_ir::{BitPacked, Lvalue, NetKind, SelKind, SimIr};
 use vcd_writer::{IdCode, VarType, VcdWriter};
 
 use crate::eval::NetReader;
-use crate::value::{nwords, top_mask, Value};
+use crate::value::{nwords, top_mask, Value, Words};
 
 /// A boxed `Write` sink for the VCD. v1 production uses a `File`; tests use an
 /// in-memory buffer captured via an `Rc<RefCell<Vec<u8>>>` adapter.
@@ -242,19 +242,6 @@ impl<'a> SimState<'a> {
     }
 
     // ── reads ────────────────────────────────────────────────────────────
-
-    /// Whole-net value as a `BitPacked` slice for the requested array word. An
-    /// out-of-range word index reads all-X (spec E-RUN-RANGE), NOT a clamp to the
-    /// last element — clamping silently returned a valid neighbor's value.
-    fn net_word_packed(&self, net: u32, word: Option<u32>) -> BitPacked {
-        let slot = &self.nets[net as usize];
-        let w = word.unwrap_or(0);
-        if w >= slot.array_len {
-            self.warn_run_range("array word index");
-            return Value::xs(slot.width.max(1), false).into_bitpacked(slot.width);
-        }
-        slice_word(&slot.cur, slot.width, w)
-    }
 
     // ── writes (single choke point) ──────────────────────────────────────
 
@@ -522,8 +509,51 @@ impl<'a> SimState<'a> {
 impl<'a> NetReader for SimState<'a> {
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
         let slot = &self.nets[net as usize];
-        let packed = self.net_word_packed(net, word);
-        let mut v = Value::from_packed(&packed, slot.width, slot.signed);
+        let width = slot.width;
+        let w = word.unwrap_or(0);
+        // Out-of-range array word reads all-X (spec E-RUN-RANGE) — NOT a clamp to the
+        // last element (which would silently return a neighbour's value).
+        if w >= slot.array_len {
+            self.warn_run_range("array word index");
+            let mut v = Value::xs(width.max(1), slot.signed);
+            v.width = width;
+            v.is_real = slot.is_real;
+            return v;
+        }
+        // Read the element DIRECTLY into an inline `Value` — no transient `BitPacked`
+        // Vec (the prior `net_word_packed → slice_word → BitPacked → from_packed` path
+        // allocated two Vecs per read just to copy them into the inline planes). The
+        // word-aligned fast path (every scalar net + 64-aligned array element) copies
+        // whole store words; an unaligned base (non-64 array element) falls to bit-serial.
+        let base = w * width;
+        let n = nwords(width).max(1);
+        let mut v = if base % 64 == 0 {
+            let wbase = (base / 64) as usize;
+            let mut val = Words::zeros(n);
+            let mut unk = Words::zeros(n);
+            for k in 0..n {
+                val[k] = slot.cur.val.get(wbase + k).copied().unwrap_or(0);
+                unk[k] = slot.cur.unk.get(wbase + k).copied().unwrap_or(0);
+            }
+            let m = top_mask(width);
+            val[n - 1] &= m;
+            unk[n - 1] &= m;
+            Value {
+                val,
+                unk,
+                width,
+                signed: slot.signed,
+                is_real: false,
+            }
+        } else {
+            let mut tmp = Value::zeros(width.max(1), slot.signed);
+            tmp.width = width;
+            for i in 0..width {
+                let (vv, uu) = bit_of(&slot.cur, base + i);
+                tmp.set_vu(i, vv, uu);
+            }
+            tmp
+        };
         v.is_real = slot.is_real; // flag the read-back as real (val[0] = IEEE bits)
         v
     }

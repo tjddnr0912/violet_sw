@@ -248,14 +248,22 @@ impl Value {
         v
     }
 
-    /// Clear bits above `width` in the top word (keep planes canonical).
+    /// Clear bits above `width` in the top word (keep planes canonical). The plane
+    /// resizes are GUARDED on length: a `Value` is almost always already exactly
+    /// `nwords(width)` words (every constructor / word-parallel op builds it so), and
+    /// `mask_top` is on the tail of nearly every Value operation, so skipping the
+    /// no-op `resize` (its match + bookkeeping) in the common case is a measured win.
     pub(crate) fn mask_top(&mut self) {
         if self.is_real {
             return; // a real is 64 IEEE bits; never bit-mask (would corrupt it).
         }
         let n = nwords(self.width).max(1);
-        self.val.resize(n, 0);
-        self.unk.resize(n, 0);
+        if self.val.len() != n {
+            self.val.resize(n, 0);
+        }
+        if self.unk.len() != n {
+            self.unk.resize(n, 0);
+        }
         let m = top_mask(self.width);
         if let Some(last) = self.val.get_mut(n - 1) {
             *last &= m;
