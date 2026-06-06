@@ -2,14 +2,20 @@
 
 > 2026-06-05 코드 기반 분석. 결론: **이벤트구동 RTL sim 코어는 GPU 비적합**; CPU word化+SIMD와 컴파일드 백엔드가 실질 가속 경로.
 
+> **⚠️ 2026-06-07 실측 갱신 (아래 [§실측](#실측-2026-06-07--예측-vs-측정) 참조):** Stage C 바이트코드 VM 구현 후 `/usr/bin/sample`
+> 프로파일링 결과, 본 문서가 지목한 **두 병목(eval 트리워크 디스패치·`Value` 힙할당) 예측이 1차 측정엔 모두 빗나갔다.** 진짜 지배
+> 비용은 **bit-serial bit-by-bit 처리**(net read/write·shift·resize — 인터프리터·VM **공유** 경로)였고, 이를 word化/inline으로
+> 정리해 **누적 ~6x**(eval-heavy 2781→461ms). eval 트리워크는 ~2-4%뿐이라 컴파일드 백엔드의 **native-eval은 저ROI로 정정**.
+> 향후 방향: [`../ROADMAP.md`](../ROADMAP.md).
+
 ## 요약 판정
 
 | 방향 | 평가 | 이유 |
 |---|---|---|
 | GPU(Metal/CUDA/일반) 코어 엔진 | ❌ 비권장 | 이벤트구동 RTL은 분기발산·희소활성·시간인과·포인터추적으로 GPU-적대적 |
-| CPU word-level + SIMD(NEON/AVX) | ✅ 실질 이득, 저위험 | 4-state 비트연산이 현재 bit-by-bit → word化만으로 ~64×, SIMD 추가 |
+| CPU word-level + SIMD(NEON/AVX) | ✅ 실질 이득, 저위험 | 4-state 비트연산이 현재 bit-by-bit → word化만으로 ~64×, SIMD 추가. **실측: net I/O·shift·resize·read까지 word化/inline 확장 → 누적 ~6x** |
 | 멀티코어 PDES(timestep 내) | ⚠️ 큰 작업 + 결정성 충돌 | 3-OS byte-identical 보장과 상충 |
-| 컴파일드 백엔드(코드젠) | ✅ 진짜 가속 경로(로드맵) | IR-walking→네이티브 10~100×, GPU 불요 |
+| 컴파일드 백엔드(코드젠) | ⚠️ **정정: 저ROI** (당초 "진짜 가속 경로") | **실측: eval 트리워크 = ~2-4%뿐.** native-eval(코드젠)은 고위험·수개월 대비 보상 작음. VM은 정확한 레퍼런스로서 의미 |
 | stimulus-parallel GPU(Monte-Carlo) | 별개 제품 | branch-free cycle-based 엔진 신규 필요 |
 
 ## 왜 이벤트구동 RTL은 GPU-적대적인가
@@ -127,3 +133,40 @@
 **결론:** 7 모먼트 중 VM이 *능동적으로* 책임지는 것은 **#2/#3 (NBA 순서·blocking offset)** 뿐이며, 둘 다 "문장을 인터프리터와 같은 순서로 실행"하면 자동 충족된다(StmtEffect가 #3을 캡처, 텍스트순 실행이 #2를 보장). 나머지(#1/#4/#5 인터프리터-only, #6/#7 커널측)는 backend-중립이다. 이 계약이 깨지면 P5가 즉시 red.
 
 **corpus 커버리지(P6):** #2=`nba_sample`(`a[i]<=v; i=i+1`), #3=`mem_oob`/배열 쓰기, #7=`multi_write_glitch`(동일 delta 3회 쓰기), #1/#5=`cont_assign_mixed`(연속할당+클럭 프로세스 혼재). #4(in-body `@`)는 non-codegen이라 코드젠 corpus 비대상(인터프리터 433 테스트가 커버).
+
+## 실측 (2026-06-07) — 예측 vs 측정
+
+> Stage C C1·C2 구현 후 **측정 기반 최적화**. 도구: `/usr/bin/sample`(macOS 내장, sudo 불요) + `tests/perf_baseline.rs`
+> (`#[ignore]`, `--ignored --nocapture`). 워크로드: eval-dominated 설계(`always @(posedge clk)` 내부 heavy `for` 루프).
+> 각 fix는 bit-exact(441 tests + iverilog 차분 11이 스펙). **이 절은 위 §요약판정/§코드기회의 예측을 측정으로 정정한다.**
+
+### 예측이 빗나간 지점
+
+본 문서(§codegen 기회·§요약판정)는 두 병목을 지목했다 — **eval 트리워크 디스패치**와 **`Value` 힙할당**. 첫 프로파일은 둘 다 *지배적이 아님*을 보였다:
+
+| doc-18 예측 | 1차 측정 결과 | 정정 |
+|---|---|---|
+| eval 트리워크 디스패치 = 주 병목 → native-eval(코드젠)이 답 | `eval_ctx` **~1.5%** | native-eval은 ~4% 추격 = **저ROI** |
+| `Value` 힙할당(`Vec<u64>`/op) = 주 병목 | inline-Value 1차 실험 **~0** | 더 큰 비용에 *가려져* 있었음 |
+| (미지목) | **`write_lvalue`+`set_vu`+`slice_word` = ~50%** | 진짜 #1 = **bit-serial net I/O** |
+
+### 측정 주도 4 라운드 — 누적 ~6x
+
+| R | fix | 무엇을 | eval-heavy | 누적 |
+|---|---|---|---|---|
+| — | C2 baseline | VM이 eval을 커널에 위임(=interp 동률) | 2781 ms | — |
+| 1 | **word化 net I/O** | `state.rs` `slice_word`·`write_lvalue`·`write_chunk` per-bit→u64 워드 | 1274 ms | 2.18x |
+| 2 | **word化 shift/resize** | `value.rs` `shr_fill`/`shl_grow`/`resize` per-bit→multi-word | 948 ms | 2.9x |
+| 3 | **inline-Value** | `Value.val/unk` `Vec<u64>`→`Words`(≤128 inline, >128 heap) | 618 ms | 4.5x |
+| 4 | **read/mask 정리** | `mask_top` resize 길이가드 + `read_net` inline 직접 read(transient `BitPacked` 제거) | 461 ms | **~6.0x** |
+
+codegen-heavy(스케줄러 dominated) 196→61ms(~3.2x). VM eval-heavy 2699→385ms(0.84x interp). **모든 윈이 인터프리터·VM 공유 경로** — backend-전용 아님.
+
+### 교훈 (방법론)
+
+1. **병목은 양파.** 표면층(bit-serial) 제거 → 재측정 → 그 밑(alloc) → 또 그 밑(정규화/transient-alloc). 한 번 측정으로 끝나지 않음.
+2. **"실패한" 실험도 선행 최적화 후 재시도 가치.** inline-Value: 1차 ~0(net-write per-bit 루프가 alloc 가리고 Deref 오버헤드 상쇄) → 그 루프 word化 후 3차 1.55x.
+3. **공유 경로 > backend-전용.** interp·VM 둘 다 빨라지고 위험 낮음.
+4. **`std::simd` 여전히 미도입**(§(1)과 동일 이유: nightly/MSRV-1.82/3-OS 충돌). u64 워드 루프를 LLVM이 자동벡터화.
+
+향후 과제·전략 결정(VM 동결 vs native-eval vs 인프라)은 [`../ROADMAP.md`](../ROADMAP.md).

@@ -2,7 +2,9 @@
 
 오픈소스 Rust RTL 시뮬레이터. CLI: `vita`(원샷) / `vcmp`(compile) / `velab`(elaborate) / `vrun`(simulate). SystemVerilog 합성가능 RTL 서브셋(Verilog-2005 RTL 전부 포함)이 Phase-1 MVP.
 
-> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 시뮬레이션해 VCD+stdout 산출. timescale(doc-08 전체 모델)·다차원 unpacked·packed 배열·VCD 계층 naming·casex/casez·fork-join·func/task·**SV 자료형(enum/typedef/packed struct)** 등 Phase-1 합성 RTL 대부분 구현·검증(419 테스트 green, iverilog 차분 9건 일치). 4-state 비트연산/리덕션은 word-parallel(u64) 가속. 6축 감사 52항목+후속 큐 5항목 전부 클리어 — `docs/REMAINING_WORK.md` 참조. SPEC `docs/preview/`가 여전히 단일 진실 공급원.
+> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 시뮬레이션해 VCD+stdout 산출. timescale(doc-08 전체 모델)·다차원 unpacked·packed 배열·VCD 계층 naming·casex/casez·fork-join·func/task·**SV 자료형(enum/typedef/packed struct)** 등 Phase-1 합성 RTL 대부분 구현·검증(**441 테스트 green, iverilog 차분 11건 일치**). 6축 감사 52항목+후속 큐 5항목 전부 클리어.
+>
+> **Stage C 컴파일드 백엔드(바이트코드 VM) — C1·C2 완료**(`Backend::Bytecode`가 suspend-free P9 클래스를 VM 실행, P5 차분 게이트가 인터프리터와 byte동일 강제, frozen sim-ir 무변경). **profile-driven 최적화 4R로 누적 ~6x**(eval-heavy 2781→461ms; net I/O·shift·resize word化 + inline-Value, 전부 interp·VM 공유 경로). 프로파일링이 doc-18 가속 전제(eval=병목)를 정정 — native-eval은 저ROI. **향후 과제·전략 = [`docs/ROADMAP.md`](docs/ROADMAP.md), 상세 perf 이력 = `docs/REMAINING_WORK.md` Stage C.** SPEC `docs/preview/`가 여전히 단일 진실 공급원.
 
 ## 실행 (cargo-only · build.rs 없음)
 
@@ -48,7 +50,9 @@ MSRV **1.82** (`rust-toolchain.toml` 고정), **edition 2021**(edition 2024는 r
 | 테스트·진단·산출물 | 09-testing-and-verification · 13-diagnostics-and-logging · [14-staged-artifacts](docs/preview/14-staged-artifacts.md) |
 | 에러코드·SchemaHash·IR백본 freeze | [15-error-code-reference](docs/preview/15-error-code-reference.md) · [16-schema-hash-spec](docs/preview/16-schema-hash-spec.md) · [17-sim-ir-ir-backbone-freeze](docs/preview/17-sim-ir-ir-backbone-freeze.md) |
 | HDL 레퍼런스 | `docs/preview/hdl-reference/{verilog,systemverilog,vhdl,system-tasks}` |
-| 구현 계획 | `docs/superpowers/plans/` (PR1-B·PR2·M3) |
+| 가속 분석·실측 | [18-acceleration-analysis](docs/preview/18-acceleration-analysis.md) (§실측 = profile-driven ~6x 이력) |
+| **향후 과제·로드맵** | **[ROADMAP](docs/ROADMAP.md)** · 잔여작업 트래커 [REMAINING_WORK](docs/REMAINING_WORK.md) |
+| 구현 계획 | `docs/superpowers/plans/` (PR1-B·PR2·M3 · [Stage C 바이트코드 VM](docs/superpowers/plans/2026-06-06-bytecode-vm-stage-c.md)) |
 
 ## 개발 주의
 
