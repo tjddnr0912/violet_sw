@@ -313,9 +313,9 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 | **P9** ✅ | scope 술어 = **positive allow-list**(suspend-free·fork-free·Call-free; 루프=Goto/Branch 허용) | 🔴 B | P5 | 2026-06-06. `backend.rs::is_codegen_able(stmts,body)`: 전 terminator∈{Goto,Branch,Return}∧no Disable. for/while/forever=Branch back-edge 허용; 제외 {Delay,Wait(Named 포함),Fork,Call}+Disable. `run_body` Bytecode arm이 codegen-able→`vm_run_body`(Stage C stub, 현재 인터프리터 위임), 아니면 run_process. always_ff=codegen-able·initial #1=아님→자연 mixed. backend:: 6 단위테스트. **P5 게이트가 잠재 temp-file 레이스 적발→unique 경로로 수정**. 433 green |
 | **P9b** ✅ | **mixed-backend per-run 바이트동일** 증명(한 run에 컴파일드+인터프리티드+cont-assign 혼재 == all-interp) | 🔴 B | P9,P5 | 2026-06-06. `mixed_backend_run_equals_all_interpreter`(backend_equiv.rs): codegen-able `always_ff`(2 NBA: q<=sum;r<=q) + 인터프리터 `initial #1` + cont-assign 2종이 공유 net 구동, Bytecode==Interpreter stdout+VCD byte동일. **nba_seq 순서는 암시적+teeth 검증**: r이 OLD q 봐야(1사이클 lag), 컴파일드가 schedule_nba 순서 바꾸면 apply_nba 발산→byte 차이. 434 green |
 
-### Stage C — 컴파일드 이벤트구동 코드젠 MVP (Stage B 이후 · **스펙/플랜/리뷰 후 착수**)
+### Stage C — 컴파일드 이벤트구동 코드젠 MVP (Stage B 이후 · 구현 대기)
 
-> Stage B 11항목 전부 클리어 → 컴파일드 백엔드 **스펙+플랜 작성 → 리뷰 → 구현**. 아래는 그 구현 항목(IMPL)의 grounded 분해. `[I]`=IMPL.
+> **📋 스펙/플랜 ✅ + 리뷰 ✅ (2026-06-06):** `docs/superpowers/plans/2026-06-06-bytecode-vm-stage-c.md`. 9단계(C1~C9, 각 단계 P5 byte동일 검증). 적대적 리뷰(`w7a0hlp1z`, 4렌즈→REVISE)의 6 must-fix(cur_time_mult·delta-guard를 C2로 이동, truthiness=k_truthy/X·Z→false, borrow protocol+template-keyed cache, C2=구조적 마일스톤·C3가 첫 가속, k_rearm(proc) invariant) + 10 should-fix 전부 반영. **다음 = 구현(C1부터).** 아래 표는 항목(P10~P16)↔단계(C*) 매핑(grounded 분해). `[I]`=IMPL.
 
 | id | 항목 | 의존 | 코드 근거(핵심) |
 |---|---|---|---|
