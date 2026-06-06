@@ -325,7 +325,9 @@ Phase-1 remaining work: 3 true BLOCKERS (timescale precision, `**` in const-eval
 >
 > **✅ C3 word-parallel net write 완료 (2026-06-06, ~2x):** bit-serial 3핫패스 word化 — state.rs `slice_word`(읽기)·`write_lvalue`(single-chunk piece-skip)·`write_chunk`(whole-element store)를 per-bit `get_vu`/`set_vu`/`bit_of`/`set_bit` 대신 u64 워드 복사/마스크. part-select·unaligned·OOR은 bit-serial fallback 유지. guard `array_len≤1 ∥ net_w%64==0`(top-word 마스크 쓰기가 같은 워드 공유 이웃 element 안 건드리게). **결과: 양 backend ~2x** (eval-heavy interp 2781→1274ms=2.18x, codegen-heavy 196→99ms=1.98x). **재프로파일 → 다음 핫스팟 = bit-serial value 연산(`set_vu` #1, `resize`+shift 루프가 공급); `Value::resize`+`shr_fill`/`shl_grow`(multi-word shift, `shift_word_vs_bit_parity`가 bit-exact 잠금) word化 → eval-heavy 1274→948ms.** **3차: 재프로파일 → bit-serial 경로 소멸 후 `Value` 힙 alloc이 단일 최대(~25-30%) → inline-`Value`(`Words` enum: `Inline{[u64;2],len}` ≤128 alloc-free, `Heap` >128) 재시도 = 이번엔 명확한 윈** (동일 변경이 1차엔 ~0였으나, 그땐 net-write/shift per-bit `set_vu` 루프가 alloc 가리고 per-access Deref 두들겼음 — 이제 word化되어 상쇄 사라짐). A/B 동일머신: eval-heavy 959→618ms(1.55x), VM 864→537(0.87x interp).
 >
-> **📊 누적 (3 word化 + inline, profile-driven): eval-heavy 2781→618ms ≈ 4.5x, codegen-heavy 196→73ms ≈ 2.7x, VM eval-heavy 2699→537(0.87x interp).** 441 green + iverilog 차분 11 bit-exact (`Words` Derefs to `[u64]`, `$monitor` 위해 equality by-value). 잔여(저ROI): select/concat/replicate word化, `mask_top`/`eval_ctx` 디스패치. 아래 표는 항목(P10~P16)↔단계(C*) 매핑(grounded 분해). `[I]`=IMPL.
+**4차: 재프로파일 → resize/`mask_top` 정규화 + net read마다 transient `BitPacked` alloc. `mask_top` resize 길이가드(no-op 스킵) + `read_net`이 store에서 inline `Value` 직접 구축(`net_word_packed`→`slice_word`→`BitPacked`→`from_packed` 경로 제거, read당 Vec 2개 alloc 소거). eval-heavy 618→461ms.**
+>
+> **📊 누적 (profile-driven 4R: word化 net/shift + inline-Value + read/mask 정리): eval-heavy 2781→461ms ≈ 6.0x, codegen-heavy 196→61ms ≈ 3.2x, VM eval-heavy 2699→385(0.84x interp).** 441 green + iverilog 차분 11 bit-exact. 잔여(저ROI): select/concat word化, `eval_ctx`/`eval_binary_ctx` 디스패치(native-eval 영역이나 여전히 작음). 아래 표는 항목(P10~P16)↔단계(C*) 매핑(grounded 분해). `[I]`=IMPL.
 
 | id | 항목 | 의존 | 코드 근거(핵심) |
 |---|---|---|---|
