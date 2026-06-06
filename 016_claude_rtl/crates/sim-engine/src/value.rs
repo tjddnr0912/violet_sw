@@ -29,12 +29,154 @@ pub(crate) fn top_mask(width: u32) -> u64 {
     }
 }
 
+/// [C3] Bit-plane word store for a [`Value`]: **inline** for the ≤128-bit case (two
+/// `u64` words, NO heap allocation — the overwhelmingly common RTL width), spilling to a
+/// `Vec` only for >128 bits. Once the bit-serial net I/O + shift paths were word-ized,
+/// profiling showed `Value` heap allocation became the single dominant cost (~25-30%):
+/// every eval intermediate + net read (`from_packed`) allocs two `Vec<u64>`. This rep
+/// keeps the ≤128-bit case alloc-free.
+///
+/// Runtime-only: a `Value` is NEVER serialized or part of the golden `SimIr`/SchemaHash
+/// (it bridges to the frozen `BitPacked` via [`Value::into_bitpacked`]/[`Value::from_packed`]),
+/// so the representation is free. It `Deref`s to `[u64]`, so the 4-state ops index /
+/// slice / iterate it exactly like the old `Vec<u64>`; mutation is via `resize` and
+/// `IndexMut` (through `DerefMut`). Equality is BY VALUE (slice contents), NOT by
+/// inline-vs-heap variant — `Value` derives `PartialEq`/`Eq` and is compared for
+/// `$monitor` change detection, so two equal-valued planes MUST compare equal regardless
+/// of representation.
+#[derive(Clone)]
+pub enum Words {
+    /// ≤128 bits: `len ∈ {0,1,2}` valid words held inline (no allocation).
+    Inline { w: [u64; 2], len: usize },
+    /// >128 bits: heap-backed (the rare wide-arithmetic case).
+    Heap(Vec<u64>),
+}
+
+impl Words {
+    /// `n` words of zero (inline if `n ≤ 2`).
+    #[inline]
+    pub fn zeros(n: usize) -> Self {
+        if n <= 2 {
+            Words::Inline { w: [0, 0], len: n }
+        } else {
+            Words::Heap(vec![0; n])
+        }
+    }
+
+    /// `n` words of all-ones (caller masks the top partial word). Inline if `n ≤ 2`.
+    #[inline]
+    pub fn ones(n: usize) -> Self {
+        if n <= 2 {
+            Words::Inline {
+                w: [u64::MAX, u64::MAX],
+                len: n,
+            }
+        } else {
+            Words::Heap(vec![u64::MAX; n])
+        }
+    }
+
+    /// A single-word inline store `[x]` (for the real lane / 1-word constants).
+    #[inline]
+    pub fn from_word(x: u64) -> Self {
+        Words::Inline { w: [x, 0], len: 1 }
+    }
+
+    /// Copy `s` into an `n`-word store, zero-padding/truncating to `n` — alloc-free for
+    /// `n ≤ 2` (the hot `from_packed` net-read path).
+    #[inline]
+    pub fn from_slice_padded(s: &[u64], n: usize) -> Self {
+        let c = s.len().min(n);
+        if n <= 2 {
+            let mut w = [0u64; 2];
+            w[..c].copy_from_slice(&s[..c]);
+            Words::Inline { w, len: n }
+        } else {
+            let mut v = vec![0u64; n];
+            v[..c].copy_from_slice(&s[..c]);
+            Words::Heap(v)
+        }
+    }
+
+    // NOTE: `len()` / `is_empty()` / `get()` / `first()` / `iter()` / indexing are all
+    // provided by the `Deref`/`DerefMut` to `[u64]` below — callers use them unchanged.
+
+    /// `Vec::resize` semantics (grow appends `fill`, shrink truncates), promoting inline
+    /// → heap when growing past 2 words.
+    pub fn resize(&mut self, new_len: usize, fill: u64) {
+        match self {
+            Words::Inline { w, len } => {
+                if new_len <= 2 {
+                    for slot in w.iter_mut().take(new_len).skip(*len) {
+                        *slot = fill; // grow: write fill into the newly-valid words
+                    }
+                    *len = new_len;
+                } else {
+                    let mut v = Vec::with_capacity(new_len);
+                    v.extend_from_slice(&w[..*len]);
+                    v.resize(new_len, fill);
+                    *self = Words::Heap(v);
+                }
+            }
+            Words::Heap(v) => v.resize(new_len, fill),
+        }
+    }
+
+    /// Consume into a `Vec<u64>` (the `BitPacked` bridge in `into_bitpacked`).
+    #[inline]
+    pub fn into_vec(self) -> Vec<u64> {
+        match self {
+            Words::Inline { w, len } => w[..len].to_vec(),
+            Words::Heap(v) => v,
+        }
+    }
+}
+
+impl std::ops::Deref for Words {
+    type Target = [u64];
+    #[inline]
+    fn deref(&self) -> &[u64] {
+        match self {
+            Words::Inline { w, len } => &w[..*len],
+            Words::Heap(v) => v,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Words {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u64] {
+        match self {
+            Words::Inline { w, len } => &mut w[..*len],
+            Words::Heap(v) => v,
+        }
+    }
+}
+
+// Equality BY VALUE (slice contents): an inline `[1]` MUST equal a heap `[1]` so
+// `Value`'s derived `PartialEq` (used for `$monitor` change detection) is
+// representation-independent.
+impl PartialEq for Words {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+impl Eq for Words {}
+
+impl std::fmt::Debug for Words {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Debug as the word slice — identical to the old `Vec<u64>` rendering.
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+
 /// A runtime 4-state vector. `val`/`unk` are bit-parallel planes, word0 bit0 =
 /// LSB, identical encoding to `sim_ir::BitPacked`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Value {
-    pub val: Vec<u64>,
-    pub unk: Vec<u64>,
+    pub val: Words,
+    pub unk: Words,
     pub width: u32,
     /// Result signedness (drives sign-extension, `>>>`, relational, `$signed`).
     pub signed: bool,
@@ -47,8 +189,8 @@ impl Value {
     pub fn zeros(width: u32, signed: bool) -> Self {
         let n = nwords(width).max(1);
         Value {
-            val: vec![0; n],
-            unk: vec![0; n],
+            val: Words::zeros(n),
+            unk: Words::zeros(n),
             width,
             signed,
             is_real: false,
@@ -60,8 +202,8 @@ impl Value {
     pub fn xs(width: u32, signed: bool) -> Self {
         let n = nwords(width).max(1);
         let mut v = Value {
-            val: vec![0; n],
-            unk: vec![u64::MAX; n],
+            val: Words::zeros(n),
+            unk: Words::ones(n),
             width,
             signed,
             is_real: false,
@@ -90,16 +232,14 @@ impl Value {
         }
     }
 
-    /// Build a `Value` from a `BitPacked` of the given width (net/const read).
+    /// Build a `Value` from a `BitPacked` of the given width (net/const read). Alloc-free
+    /// for ≤128 bits — `from_slice_padded` copies the frozen `BitPacked` words straight
+    /// into the inline store (this is the hot net-read path).
     pub fn from_packed(b: &BitPacked, width: u32, signed: bool) -> Self {
         let n = nwords(width).max(1);
-        let mut val = b.val.clone();
-        let mut unk = b.unk.clone();
-        val.resize(n, 0);
-        unk.resize(n, 0);
         let mut v = Value {
-            val,
-            unk,
+            val: Words::from_slice_padded(&b.val, n),
+            unk: Words::from_slice_padded(&b.unk, n),
             width,
             signed,
             is_real: false,
@@ -204,8 +344,8 @@ impl Value {
     pub fn into_bitpacked(self, out_width: u32) -> BitPacked {
         let r = self.resize(out_width);
         BitPacked {
-            val: r.val,
-            unk: r.unk,
+            val: r.val.into_vec(),
+            unk: r.unk.into_vec(),
         }
     }
 
@@ -224,8 +364,8 @@ impl Value {
         }
         let n = nwords(new_width).max(1);
         let copy_w = nwords(self.width.min(new_width)).min(n);
-        let mut val = vec![0u64; n];
-        let mut unk = vec![0u64; n];
+        let mut val = Words::zeros(n);
+        let mut unk = Words::zeros(n);
         for k in 0..copy_w {
             val[k] = self.val.get(k).copied().unwrap_or(0);
             unk[k] = self.unk.get(k).copied().unwrap_or(0);
@@ -253,8 +393,8 @@ impl Value {
     /// (locked by `shift_word_vs_bit_parity`).
     pub fn shr_fill(&self, amt: u64, w: u32, fv: u64, fu: u64) -> Value {
         let n = nwords(w).max(1);
-        let mut val = vec![0u64; n];
-        let mut unk = vec![0u64; n];
+        let mut val = Words::zeros(n);
+        let mut unk = Words::zeros(n);
         if amt < w as u64 {
             let q = (amt / 64) as usize;
             let r = (amt % 64) as u32;
@@ -294,8 +434,8 @@ impl Value {
     /// per-bit form (locked by `shift_word_vs_bit_parity`).
     pub fn shl_grow(&self, amt: u64, grow_w: u32) -> Value {
         let n = nwords(grow_w).max(1);
-        let mut val = vec![0u64; n];
-        let mut unk = vec![0u64; n];
+        let mut val = Words::zeros(n);
+        let mut unk = Words::zeros(n);
         if amt < grow_w as u64 {
             let q = (amt / 64) as usize;
             let r = (amt % 64) as u32;
@@ -355,8 +495,8 @@ impl Value {
     /// Build a real Value from an f64. width=64, signed=true, unk=0, is_real.
     pub fn from_f64(x: f64) -> Value {
         Value {
-            val: vec![x.to_bits()],
-            unk: vec![0],
+            val: Words::from_word(x.to_bits()),
+            unk: Words::zeros(1),
             width: 64,
             signed: true,
             is_real: true,
