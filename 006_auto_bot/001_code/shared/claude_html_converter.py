@@ -86,7 +86,8 @@ def extract_html_from_response(response: str) -> str:
 def convert_md_to_html_via_claude(
     md_content: str,
     output_path: str = None,
-    include_investment_disclaimer: bool = False  # deprecated, 무시됨
+    include_investment_disclaimer: bool = False,  # deprecated, 무시됨
+    editorial: dict = None,
 ) -> tuple:
     """
     Claude CLI를 사용하여 Markdown을 Blogger용 HTML로 변환
@@ -95,6 +96,11 @@ def convert_md_to_html_via_claude(
         md_content: Markdown 콘텐츠
         output_path: HTML 저장 경로 (선택)
         include_investment_disclaimer: deprecated - Claude가 내용에 따라 자체 판단
+        editorial: 편집 레이어 컨텍스트(선택). 예:
+            {"author": "sector", "content_type": "sector"}
+            None이면 env EDITORIAL_ENABLED(기본 true) 기준으로 기본 author/disclaimer 적용.
+            author 박스 + 투명성/면책 라인을 본문 끝에 덧붙여 E-E-A-T 신호를 준다.
+            (Blogger는 공개 미러; 이 콘텐츠가 Tistory로 복사되어 승인/노출에 기여)
 
     Returns:
         tuple: (html_content, blog_title) — blog_title은 없으면 빈 문자열
@@ -167,6 +173,12 @@ def convert_md_to_html_via_claude(
     # 비활성화 모드에서도 마커는 반드시 제거 — 그렇지 않으면 원본 텍스트로 발행됨.
     html_content = _maybe_inject_images(html_content)
 
+    # 편집 레이어 (2026-06-07~)
+    # 저자(E-E-A-T) 박스 + 투명성/면책 라인을 본문 끝에 덧붙인다.
+    # 광고(인아티클·멀티플렉스)는 그대로 둔다 — Blogger 공개 미러에 올린 뒤
+    # 그 콘텐츠를 승인된 Tistory로 복사하므로 광고 코드도 함께 따라간다.
+    html_content = _maybe_apply_editorial(html_content, blog_title, editorial)
+
     # HTML 파일로 저장 (선택)
     if output_path:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -229,6 +241,31 @@ def _maybe_inject_images(html: str) -> str:
             lambda _: f"<!-- image inject failed: {str(e)[:80]} -->",
             html,
         )
+
+
+def _maybe_apply_editorial(html: str, title: str, editorial) -> str:
+    """편집 레이어(저자 박스 + 투명성/면책)를 본문 끝에 덧붙인다.
+
+    - editorial(dict): {"author": <key>, "content_type": <key>} (둘 다 선택)
+    - editorial=None이면 env 기본값으로 동작:
+        EDITORIAL_ENABLED(기본 true), EDITORIAL_AUTHOR(기본 default),
+        EDITORIAL_CONTENT_TYPE(기본 general).
+    실패해도 발행 파이프라인을 막지 않는다(경고 후 원본 반환).
+    """
+    enabled = os.getenv("EDITORIAL_ENABLED", "true").lower() in ("true", "on", "1", "yes")
+    if not enabled:
+        return html
+
+    ctx = editorial or {}
+    author_key = ctx.get("author") or os.getenv("EDITORIAL_AUTHOR", "default")
+    content_type = ctx.get("content_type") or os.getenv("EDITORIAL_CONTENT_TYPE", "general")
+
+    try:
+        from shared.editorial import apply_editorial
+        return apply_editorial(html, author_key=author_key, content_type=content_type)
+    except Exception as e:
+        logger.warning(f"Editorial layer failed ({e}); skipping")
+        return html
 
 
 if __name__ == "__main__":

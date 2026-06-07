@@ -261,7 +261,7 @@ def test_run_national_scope_publishes(tmp_path, monkeypatch):
         return {"success": True, "url": "http://blog/x"}
 
     monkeypatch.setattr(bot, "convert_md_to_html_via_claude",
-                        lambda c: ("<p>html</p>", "전국 신고가 테스트 헤드라인"))
+                        lambda c, **kw: ("<p>html</p>", "전국 신고가 테스트 헤드라인"))
     monkeypatch.setattr(bot.commentary, "make_commentary", lambda s: "")
 
     b = bot.RealEstateBot(test_mode=False)

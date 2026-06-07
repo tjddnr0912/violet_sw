@@ -175,7 +175,8 @@ class WeeklySectorBot:
                 try:
                     html_content, _ = convert_md_to_html_via_claude(
                         save_result['content'],
-                        include_investment_disclaimer=True
+                        include_investment_disclaimer=True,
+                        editorial={"author": "sector", "content_type": "sector"}
                     )
                     logger.info(f"[{sector.name}] HTML: {len(html_content)} chars")
                 except Exception as e:
@@ -412,7 +413,9 @@ class WeeklySectorBot:
         for i, chunk in enumerate(chunks, 1):
             logger.info(f"Converting chunk {i}/{len(chunks)} ({len(chunk)} chars)...")
             try:
-                html, _ = convert_md_to_html_via_claude(chunk)
+                html, _ = convert_md_to_html_via_claude(
+                    chunk, editorial={"author": "sector", "content_type": "sector"}
+                )
 
                 # 변환 결과 검증 (원본의 30% 미만이면 실패)
                 if len(html) < len(chunk) * 0.3:

@@ -27,11 +27,11 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 |------|------|
 | `investment_bot.py` | 통합 오케스트레이터 (뉴스+버핏+섹터 스케줄 관리) |
 | `buffett_bot.py` | 버핏/멍거 관점 일일 투자 분석 (Claude CLI) |
-| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발 |
+| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. **업로드=선택한 블로그 1곳만(default 자동 업로드 폐지), 무선택 타임아웃 시 취소** |
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
 | `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
-| `shared/` | HTML 변환, Telegram API, Blogger 업로드, Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증) |
+| `shared/` | HTML 변환, Telegram API, Blogger 업로드, Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (애드센스 편집 레이어: 저자 박스+면책/투명성+고유 데이터 표. Blogger 발행물 품질↑→수동 Tistory 복붙) |
 
 ## 핵심 참조
 
@@ -52,8 +52,10 @@ BLOGGER_BLOG_ID=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 BLOG_LIST='[{"key":"...","id":"...","name":"..."}, ...]'
-DEFAULT_BLOG=brave_ogu
+DEFAULT_BLOG=brave_ogu           # 단일 블로그 모드 대상. (텔레그램은 더 이상 default 자동 업로드 안 함)
 BLOG_SELECTION_TIMEOUT=180
+EDITORIAL_ENABLED=true           # 편집 레이어(저자 박스+면책+데이터 표) on/off. default true
+# EDITORIAL_AUTHOR / EDITORIAL_CONTENT_TYPE  # 호출부 미지정 시 기본 author/타입 override. 저자 페르소나=config/authors.json
 SECTOR_BLOGGER_BLOG_ID=9115231004981625966
 SECTOR_GEMINI_MODEL=gemini-3.5-flash             # 섹터 분석 primary(풍성한 분량). default 3.5-flash
 SECTOR_GEMINI_FALLBACK_MODELS=gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash  # 3.5-flash 쿼터 소진 시 순차. flash-lite 우선
@@ -98,3 +100,4 @@ Gemini 429/503 / Claude CLI empty / Blogger OAuth / Telegram HTML parse / Sector
 | 뉴스봇 상세 (orchestrator + 5차원 게이트) | [docs/NEWS_BOT.md](docs/NEWS_BOT.md) |
 | 텔레그램 봇 상세 (보존) | [docs/TELEGRAM_BOT.md](docs/TELEGRAM_BOT.md) |
 | 부동산봇 상세 (전국 디제스트, 백필, MOLIT MCP) | [docs/REALESTATE_BOT.md](docs/REALESTATE_BOT.md) |
+| 애드센스 편집 레이어 설계 (C1~C8, 구현 현황) | [docs/ADSENSE_EDITORIAL_LAYER.md](docs/ADSENSE_EDITORIAL_LAYER.md) |

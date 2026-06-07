@@ -9,8 +9,11 @@
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | ✅ | — | Telegram chat ID |
 | `BLOG_LIST` | ❌ | — | JSON 배열, 다중 블로그 등록 (`[{"key":"...","id":"...","name":"..."}, ...]`) |
-| `DEFAULT_BLOG` | ❌ | `brave_ogu` | timeout 시 사용할 default blog key |
-| `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 블로그 선택 prompt timeout (초) |
+| `DEFAULT_BLOG` | ❌ | `brave_ogu` | 단일 블로그 모드(`len(blogs)==1`) 대상 key. **2026-06-08~ 텔레그램은 더 이상 default 자동 업로드 안 함**(선택 블로그 1곳만). |
+| `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 블로그 선택 prompt timeout (초). 무선택 시 업로드 취소. |
+| `EDITORIAL_ENABLED` | ❌ | `true` | 편집 레이어(저자 박스 + 면책/투명성 라인) on/off. 모든 봇 발행물 HTML 끝에 적용. 저자 페르소나=`config/authors.json`. |
+| `EDITORIAL_AUTHOR` | ❌ | `default` | 호출부가 `editorial={"author":...}` 미지정 시 기본 author key. |
+| `EDITORIAL_CONTENT_TYPE` | ❌ | `general` | 호출부 미지정 시 기본 content_type(면책 결정용). |
 | `SECTOR_BLOGGER_BLOG_ID` | ❌ | `9115231004981625966` | 섹터봇 전용 블로그 |
 | `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.5-flash` | 섹터 **분석**(`sector_bot/analyzer.py`) primary 모델. 2026-06-07 `gemini-3.1-flash-lite`→`gemini-3.5-flash`로 승격(분석 길이가 모델 비례, flash-lite ~2.3천자 vs 3.5-flash ~6-16천자). 검색은 별도 agy(`AGY_SEARCH_MODELS`). |
 | `SECTOR_GEMINI_FALLBACK_MODELS` | ❌ | `gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash` | 섹터 분석 전용 fallback chain(요약봇의 글로벌 `GEMINI_FALLBACK_MODELS`와 격리). 3.5-flash 쿼터 소진(429/503) 시 순차 — flash-lite 우선. |

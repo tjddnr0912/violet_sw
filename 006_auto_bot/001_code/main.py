@@ -118,6 +118,17 @@ class NewsBot:
                 if raw_markdown:
                     blog_summary = self.ai_summarizer.create_blog_summary(raw_markdown)
 
+                    # C3: 수집 데이터 블록(카테고리별 건수·Tier-1 비중·국내외 비율)을
+                    # 본문에 결정적으로 박제 — 봇만 가진 고유 수치(originality 신호).
+                    try:
+                        from shared.editorial.data_blocks import news_quality_block
+                        _data_block = news_quality_block(orch.stats)
+                        if _data_block:
+                            blog_summary = f"{blog_summary}\n\n{_data_block}"
+                            logger.info("C3 news data block injected")
+                    except Exception as e:
+                        logger.warning(f"News data block injection failed (continuing): {e}")
+
                     # Step 4: Save blog summary
                     logger.info("Step 4: Saving blog summary...")
                     blog_result = self.markdown_writer.save_blog_summary(blog_summary)
@@ -153,7 +164,8 @@ class NewsBot:
                                         upload_content, _ = convert_md_to_html_via_claude(
                                             md_content=blog_summary,
                                             output_path=html_output_path,
-                                            include_investment_disclaimer=True
+                                            include_investment_disclaimer=True,
+                                            editorial={"author": "news", "content_type": "news"}
                                         )
                                         is_markdown = False
                                         logger.info(f"Claude HTML conversion complete: {html_output_path}")
@@ -308,7 +320,8 @@ class NewsBot:
                             upload_content, _ = convert_md_to_html_via_claude(
                                 md_content=weekly_summary,
                                 output_path=html_output_path,
-                                include_investment_disclaimer=True
+                                include_investment_disclaimer=True,
+                                editorial={"author": "news", "content_type": "news"}
                             )
                             is_markdown = False
                             logger.info(f"Claude HTML conversion complete: {html_output_path}")
@@ -439,7 +452,8 @@ class NewsBot:
                             upload_content, _ = convert_md_to_html_via_claude(
                                 md_content=monthly_summary,
                                 output_path=html_output_path,
-                                include_investment_disclaimer=True
+                                include_investment_disclaimer=True,
+                                editorial={"author": "news", "content_type": "news"}
                             )
                             is_markdown = False
                             logger.info(f"Claude HTML conversion complete: {html_output_path}")

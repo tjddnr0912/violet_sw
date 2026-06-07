@@ -169,7 +169,9 @@ def _convert_html(md: str):
     parts, headline = [], ""
     for i, c in enumerate(chunks, 1):
         try:
-            html, title = convert_md_to_html_via_claude(c)
+            html, title = convert_md_to_html_via_claude(
+                c, editorial={"author": "realestate", "content_type": "realestate"}
+            )
             if i == 1 and title:
                 headline = title
             parts.append(html if len(html) >= len(c) * 0.3 else c)

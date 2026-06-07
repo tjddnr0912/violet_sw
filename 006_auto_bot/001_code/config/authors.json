@@ -1,0 +1,45 @@
+{
+  "_comment": "편집 레이어 저자(E-E-A-T) 페르소나. 이름은 티스토리 정체성으로 통일(마구쓰는 일상공간), 직함/약력만 주제별로 다르게. 거짓 학위·자격 날조 금지. avatar는 비우면 이름 첫 글자 아이콘 자동 생성. 각 봇이 editorial={'author': <key>}로 선택, 없으면 default.",
+  "default": {
+    "name": "마구쓰는 일상공간",
+    "title": "데이터로 보는 시장·일상 기록",
+    "bio": "공개 데이터(시장·뉴스·실거래)를 모아 직접 정리하고, 올리기 전에 사실관계를 한 번 더 확인합니다.",
+    "avatar": "",
+    "links": [{"label": "블로그", "url": "https://gong-mil-le.tistory.com"}]
+  },
+  "news": {
+    "name": "마구쓰는 일상공간",
+    "title": "경제·시장 뉴스 정리",
+    "bio": "여러 뉴스 출처를 모아 중요도·신선도 기준으로 골라 요약하고, 원문 출처를 함께 적습니다.",
+    "avatar": "",
+    "links": [{"label": "블로그", "url": "https://gong-mil-le.tistory.com"}]
+  },
+  "buffett": {
+    "name": "마구쓰는 일상공간",
+    "title": "가치투자 관점 시장 읽기",
+    "bio": "당일 시장 뉴스를 버핏·멍거의 가치투자 원칙으로 풀어 봅니다. 특정 종목 권유가 아닌 생각의 틀을 나누는 글입니다.",
+    "avatar": "",
+    "links": [{"label": "블로그", "url": "https://gong-mil-le.tistory.com"}]
+  },
+  "sector": {
+    "name": "마구쓰는 일상공간",
+    "title": "섹터 로테이션 추적",
+    "bio": "11개 산업 섹터를 매주 모아 누적 추세와 자금 이동 흐름을 정리합니다. 수치는 직접 집계, 해석은 한 번 더 확인합니다.",
+    "avatar": "",
+    "links": [{"label": "블로그", "url": "https://gong-mil-le.tistory.com"}]
+  },
+  "realestate": {
+    "name": "마구쓰는 일상공간",
+    "title": "전국 실거래 데이터 정리",
+    "bio": "국토부(MOLIT) 공개 실거래 데이터를 직접 모아 지역별 거래 동향을 정리합니다. 수치는 모두 원자료 기반입니다.",
+    "avatar": "",
+    "links": [{"label": "블로그", "url": "https://gong-mil-le.tistory.com"}]
+  },
+  "research": {
+    "name": "마구쓰는 일상공간",
+    "title": "여러 출처로 확인한 리서치",
+    "bio": "웹 검색과 원문 확인을 거쳐 사실관계를 교차 점검한 뒤 정리합니다. 인용한 출처를 본문에 적습니다.",
+    "avatar": "",
+    "links": [{"label": "블로그", "url": "https://gong-mil-le.tistory.com"}]
+  }
+}

@@ -419,13 +419,14 @@ SOURCES: (출처)
             self._process_and_upload_single(question=question, mode=mode)
 
     def _show_blog_selection_first(self, question: str, mode: str = "deep") -> None:
-        """Show blog selection UI immediately after receiving question"""
-        # Build inline keyboard (exclude default blog from selection)
+        """Show blog selection UI immediately after receiving question.
+
+        선택한 블로그 1곳에만 업로드한다. (기존 default 자동 업로드 폐지)
+        """
+        # Build inline keyboard with ALL blogs (default 제외 안 함)
         keyboard = []
         row = []
         for key, blog in self.blogs.items():
-            if key == self.default_blog_key:
-                continue
             row.append({
                 "text": f"{blog['name']}",
                 "callback_data": f"blog:{key}"
@@ -436,16 +437,9 @@ SOURCES: (출처)
         if row:
             keyboard.append(row)
 
-        # Add "Default only" button
-        keyboard.append([{
-            "text": "Default only",
-            "callback_data": "blog:default_only"
-        }])
-
         # Preview question
         question_preview = question[:200] + ('...' if len(question) > 200 else '')
         timeout_min = self.selection_timeout // 60
-        default_blog_name = self.blogs.get(self.default_blog_key, {}).get("name", "Default")
 
         mode_label = "🔎 Deep research" if mode == "deep" else "⚡ Quick"
         msg_text = f"""<b>Question received! ({mode_label})</b>
@@ -454,7 +448,7 @@ SOURCES: (출처)
 {question_preview}
 
 <b>Select blog to upload:</b>
-(Auto-upload to {default_blog_name} only after {timeout_min} min)"""
+(No selection in {timeout_min} min → upload cancelled)"""
 
         # Send message with inline keyboard
         result = self.send_message_with_inline_keyboard(
@@ -482,7 +476,7 @@ SOURCES: (출처)
         message_id: Optional[int] = None,
         mode: str = "deep",
     ) -> None:
-        """Process question and upload to default blog only (single-blog mode)."""
+        """Process question and upload to the single available blog (single-blog mode)."""
         opening = "🔎 Deep research 시작…" if mode == "deep" else "⚡ Asking Gemini…"
         if message_id:
             self.edit_message_text(message_id, opening)
@@ -515,13 +509,19 @@ SOURCES: (출처)
         claude_title = ""
         try:
             from shared.claude_html_converter import convert_md_to_html_via_claude
-            html_content, claude_title = convert_md_to_html_via_claude(full_md_content)
+            html_content, claude_title = convert_md_to_html_via_claude(
+                full_md_content, editorial={"author": "research", "content_type": "research"}
+            )
         except Exception as e:
             logger.warning(f"Claude HTML failed: {e}")
 
         final_title = claude_title or title_hint
 
-        self._upload_default_only(
+        # 단일 블로그 모드: 유일한 블로그 또는 default_blog_key를 대상으로
+        single_key = self.default_blog_key if self.default_blog_key in self.blogs \
+            else (next(iter(self.blogs)) if self.blogs else self.default_blog_key)
+        self._upload_single(
+            blog_key=single_key,
             md_content=full_md_content,
             html_content=html_content,
             title=final_title,
@@ -595,34 +595,26 @@ SOURCES: (출처)
         claude_title = ""
         try:
             from shared.claude_html_converter import convert_md_to_html_via_claude
-            html_content, claude_title = convert_md_to_html_via_claude(full_md_content)
+            html_content, claude_title = convert_md_to_html_via_claude(
+                full_md_content, editorial={"author": "research", "content_type": "research"}
+            )
             logger.info(f"Claude HTML done ({len(html_content)} chars)")
         except Exception as e:
             logger.warning(f"Claude HTML failed: {e}")
 
         final_title = claude_title or title_hint
 
-        # Upload
+        # Upload (선택한 블로그 1곳에만)
         self.edit_message_text(message_id, "Uploading to blog…")
-        if blog_key == "default_only":
-            self._upload_default_only(
-                md_content=full_md_content,
-                html_content=html_content,
-                title=final_title,
-                labels=labels,
-                sources=sources,
-                message_id=message_id,
-            )
-        else:
-            self._upload_dual(
-                blog_key=blog_key,
-                md_content=full_md_content,
-                html_content=html_content,
-                title=final_title,
-                labels=labels,
-                sources=sources,
-                message_id=message_id,
-            )
+        self._upload_single(
+            blog_key=blog_key,
+            md_content=full_md_content,
+            html_content=html_content,
+            title=final_title,
+            labels=labels,
+            sources=sources,
+            message_id=message_id,
+        )
 
     def _check_pending_timeouts(self) -> None:
         """Check and process timed out pending uploads"""
@@ -636,78 +628,14 @@ SOURCES: (출처)
 
         for message_id in expired_ids:
             pending = self.pending_uploads.pop(message_id)
-            logger.info(f"Selection timeout, processing with default only (msg_id: {message_id}, mode: {pending.get('mode', 'deep')})")
-
-            self._process_after_selection(
-                question=pending["question"],
-                blog_key="default_only",
-                message_id=message_id,
-                mode=pending.get("mode", "deep"),
+            logger.info(f"Selection timeout, upload cancelled (msg_id: {message_id}, mode: {pending.get('mode', 'deep')})")
+            # 무선택 시 업로드하지 않는다(기존 default 자동 업로드 폐지).
+            self.edit_message_text(
+                message_id,
+                "<b>Selection timed out</b>\n\nNo blog selected → upload cancelled.",
             )
 
-    def _upload_default_only(
-        self,
-        md_content: str,
-        html_content: Optional[str],
-        title: str,
-        labels: list,
-        sources: list,
-        message_id: Optional[int] = None,
-        is_timeout: bool = False
-    ) -> None:
-        """Upload to default blog only (HTML + original markdown)"""
-        if not self.upload_to_blog:
-            result_msg = f"<b>Test mode - upload skipped</b>\n\nTitle: {title}"
-            if message_id:
-                self.edit_message_text(message_id, result_msg)
-            else:
-                self.send_message(result_msg)
-            return
-
-        default_blog = self.blogs.get(self.default_blog_key)
-        if not default_blog:
-            logger.error(f"Default blog '{self.default_blog_key}' not found")
-            return
-
-        # Prepare content: HTML + original section
-        if html_content:
-            original_section = self._create_original_section(md_content)
-            upload_content = f"{html_content}\n{original_section}"
-            is_markdown = False
-        else:
-            upload_content = md_content
-            is_markdown = True
-
-        # Upload
-        success, url = self._do_upload(
-            blog_id=default_blog["id"],
-            title=title,
-            content=upload_content,
-            labels=labels,
-            is_markdown=is_markdown
-        )
-
-        timeout_notice = " (auto-upload after timeout)" if is_timeout else ""
-        if success:
-            result_msg = f"""<b>Blog upload complete!{timeout_notice}</b>
-
-<b>Blog:</b> {default_blog['name']}
-<b>Title:</b> {title}
-<b>URL:</b> {url}"""
-        else:
-            result_msg = f"""<b>Upload failed{timeout_notice}</b>
-
-<b>Blog:</b> {default_blog['name']}
-<b>Error:</b> {url}"""
-
-        if message_id:
-            self.edit_message_text(message_id, result_msg)
-        else:
-            self.send_message(result_msg)
-
-        logger.info(f"Default upload {'success' if success else 'failed'}: {title}")
-
-    def _upload_dual(
+    def _upload_single(
         self,
         blog_key: str,
         md_content: str,
@@ -717,7 +645,7 @@ SOURCES: (출처)
         sources: list,
         message_id: Optional[int] = None
     ) -> None:
-        """Upload to both default blog and selected blog"""
+        """선택한 블로그 1곳에만 업로드(HTML only). default 자동 업로드 폐지."""
         if not self.upload_to_blog:
             result_msg = f"<b>Test mode - upload skipped</b>\n\nTitle: {title}"
             if message_id:
@@ -726,67 +654,50 @@ SOURCES: (출처)
                 self.send_message(result_msg)
             return
 
-        default_blog = self.blogs.get(self.default_blog_key)
-        selected_blog = self.blogs.get(blog_key)
-
-        if not default_blog or not selected_blog:
-            logger.error(f"Blog not found: default={self.default_blog_key}, selected={blog_key}")
+        blog = self.blogs.get(blog_key)
+        if not blog:
+            logger.error(f"Selected blog not found: {blog_key}")
+            msg = f"<b>Upload failed</b>\n\nBlog not found: {blog_key}"
+            if message_id:
+                self.edit_message_text(message_id, msg)
+            else:
+                self.send_message(msg)
             return
 
-        results = []
-
-        # 1. Upload to default blog: HTML + original section
+        # 공개용: HTML만 업로드(raw 마크다운 섹션은 붙이지 않음)
         if html_content:
-            original_section = self._create_original_section(md_content)
-            default_content = f"{html_content}\n{original_section}"
-            default_is_md = False
+            upload_content = html_content
+            is_markdown = False
         else:
-            default_content = md_content
-            default_is_md = True
+            upload_content = md_content
+            is_markdown = True
 
-        success1, url1 = self._do_upload(
-            blog_id=default_blog["id"],
+        success, url = self._do_upload(
+            blog_id=blog["id"],
             title=title,
-            content=default_content,
+            content=upload_content,
             labels=labels,
-            is_markdown=default_is_md
+            is_markdown=is_markdown
         )
-        results.append((default_blog["name"], success1, url1, "HTML + Raw"))
 
-        # 2. Upload to selected blog: HTML only (no original section)
-        if html_content:
-            selected_content = html_content
-            selected_is_md = False
+        if success:
+            result_msg = f"""<b>Blog upload complete!</b>
+
+<b>Blog:</b> {blog['name']}
+<b>Title:</b> {title}
+<b>URL:</b> {url}"""
         else:
-            selected_content = md_content
-            selected_is_md = True
+            result_msg = f"""<b>Upload failed</b>
 
-        success2, url2 = self._do_upload(
-            blog_id=selected_blog["id"],
-            title=title,
-            content=selected_content,
-            labels=labels,
-            is_markdown=selected_is_md
-        )
-        results.append((selected_blog["name"], success2, url2, "HTML only"))
-
-        # Build result message
-        result_lines = ["<b>Dual upload complete!</b>", f"\n<b>Title:</b> {title}\n"]
-        for blog_name, success, url, content_type in results:
-            status = "OK" if success else "FAILED"
-            if success:
-                result_lines.append(f"<b>{blog_name}</b> ({content_type}): {url}")
-            else:
-                result_lines.append(f"<b>{blog_name}</b> ({content_type}): {status} - {url}")
-
-        result_msg = "\n".join(result_lines)
+<b>Blog:</b> {blog['name']}
+<b>Error:</b> {url}"""
 
         if message_id:
             self.edit_message_text(message_id, result_msg)
         else:
             self.send_message(result_msg)
 
-        logger.info(f"Dual upload: default={'OK' if success1 else 'FAIL'}, selected={'OK' if success2 else 'FAIL'}")
+        logger.info(f"Upload to '{blog_key}' {'success' if success else 'failed'}: {title}")
 
     def _do_upload(
         self,

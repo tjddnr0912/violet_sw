@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-06-08: 애드센스 편집 레이어(C1·C3·C4) + 텔레그램 단일 블로그 업로드
+
+- **배경**: Blogger 블로그가 애드센스 심사에서 반복 거부 — 원인은 플랫폼이 아니라 "AI 무편집 대량 생성물(low value)". 구글 공식 입장은 "AI 사용≠위반, 품질이 기준". 콘텐츠에 E-E-A-T·고유 데이터 신호를 주입하는 편집 레이어 도입. 설계=[docs/ADSENSE_EDITORIAL_LAYER.md].
+- **운영 결정**: Tistory(이미 승인됨)를 수익처로 유지, Blogger는 공개 미러. **자동 업로드는 Blogger만**(Tistory API 부재) → 사람이 수동 복붙. 광고(인아티클·멀티플렉스)는 Blogger 발행물에 그대로 유지(복붙 시 함께 이동).
+- **C1 저자 박스 + C4 면책/투명성** (`shared/editorial/`, `config/authors.json`): 모든 봇 발행물 HTML 끝에 저자(E-E-A-T) 박스 + "데이터·출처 기반 / 최종 업데이트" 라인 자동 삽입. 인라인 스타일만(Tistory sanitize 대비). 면책은 `blogger-html` 스킬이 contextual하게 담당(중복 회피) — 편집 레이어는 기본 미포함(`include_disclaimer` opt-in). 저자명은 티스토리 정체성("마구쓰는 일상공간")으로 통일, 주제별 직함만 차등. AI/자동 언급 없음(스킬 규칙 준수).
+- **C3 고유 데이터 표** (`shared/editorial/data_blocks.py`): 봇만 가진 수치를 결정적 마크다운 표로 본문에 박제. 뉴스 일간=`orch.stats`(카테고리별 건수·Tier-1 비중·국내외 비율)를 "이번 호 수집 데이터" 표로(`main.py`). 부동산=`digest.py`가 이미 실거래 표 렌더(준수). 섹터/버핏=구조화 숫자 부재로 보류.
+- **중앙 연결**: `convert_md_to_html_via_claude(editorial=...)` — 전 봇 호출부(news/buffett/sector/realestate/telegram) 배선. env `EDITORIAL_ENABLED`(기본 on).
+- **텔레그램 단일 블로그 업로드**: `bravebabyogu` default 무조건 업로드 폐지 → **선택한 블로그 1곳만**. 무선택 타임아웃=업로드 취소. `_upload_default_only`/`_upload_dual` → `_upload_single` 통합.
+- **폐기**: 세션 중 티스토리 자동 업로드(`tistory_poster.py`) 프로토타입을 구현·검증했으나, **발행이 캡차/봇탐지(`/manage/dkaptcha`)로 게이트**되어 무인 발행 불가(+캡차 우회는 약관 위반·미지원) 판단 → 전량 폐기. 결론: 수동 복붙 유지, 진짜 무인 자동화는 워드프레스가 정공법.
+- **테스트**: `tests/test_editorial.py`(8) + `tests/test_data_blocks.py`(4) 신규, full suite **95 pass**.
+
 ## 2026-06-07: 섹터봇 분석 모델 3.5-flash 승격 + 분량 floor 상향
 
 - **배경**: 섹터 분석 길이가 모델에 비례(실측 `gemini-3.1-flash-lite` ~2,300자 vs `gemini-3.5-flash` ~7-16k자). 기본이 flash-lite라 보고서가 얇게 나옴(주차별로 flash-lite가 quota로 3.5-flash fallback될 때만 길어짐).

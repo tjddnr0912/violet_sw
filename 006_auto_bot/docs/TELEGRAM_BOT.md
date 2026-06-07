@@ -14,10 +14,12 @@
          블로그 업로드 (Claude 제목 우선, Gemini 제목 fallback)
 ```
 
-## 업로드 방식
+## 업로드 방식 (2026-06-08 변경: 선택 블로그 1곳만)
 
-- **블로그 선택 시**: 2군데 업로드 (Default: HTML+Raw, 선택 블로그: HTML만)
-- **Default만 클릭 / 타임아웃**: 1군데만 업로드 (Brave Ogu)
+- **블로그 선택 시**: **선택한 블로그 1곳에만** 업로드 (HTML only). 선택 UI에 모든 블로그 표시.
+- **무선택 타임아웃**: **업로드 취소**(알림만). — 기존 "default(bravebabyogu) 자동 업로드"는 폐지됨.
+- 단일 블로그 모드(`len(blogs)==1`): 그 블로그 1곳에 업로드.
+- 구현: `_upload_single` (기존 `_upload_default_only`/`_upload_dual` 통합).
 
 ## 지원 블로그 (7개)
 

@@ -206,7 +206,9 @@ def convert_long_md_to_html(md_content: str) -> str:
     for i, chunk in enumerate(chunks, 1):
         logger.info(f"Converting chunk {i}/{len(chunks)} ({len(chunk)} chars)...")
         try:
-            html, _ = convert_md_to_html_via_claude(chunk)
+            html, _ = convert_md_to_html_via_claude(
+                chunk, editorial={"author": "buffett", "content_type": "buffett"}
+            )
             if len(html) < len(chunk) * 0.3:
                 logger.warning(f"Chunk {i} HTML too short, using markdown")
                 html = None
