@@ -12,7 +12,8 @@
 | `DEFAULT_BLOG` | ❌ | `brave_ogu` | timeout 시 사용할 default blog key |
 | `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 블로그 선택 prompt timeout (초) |
 | `SECTOR_BLOGGER_BLOG_ID` | ❌ | `9115231004981625966` | 섹터봇 전용 블로그 |
-| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | (주: 2026-05-27 PM 이후 grounding 호출은 Claude WebSearch로 이전됨. 이 변수는 `sector_bot/analyzer.py`의 non-grounding 분석 호출에만 영향 — searcher는 별도 `CLAUDE_MODEL_SECTOR_SEARCH` 사용.) |
+| `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.5-flash` | 섹터 **분석**(`sector_bot/analyzer.py`) primary 모델. 2026-06-07 `gemini-3.1-flash-lite`→`gemini-3.5-flash`로 승격(분석 길이가 모델 비례, flash-lite ~2.3천자 vs 3.5-flash ~6-16천자). 검색은 별도 agy(`AGY_SEARCH_MODELS`). |
+| `SECTOR_GEMINI_FALLBACK_MODELS` | ❌ | `gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash` | 섹터 분석 전용 fallback chain(요약봇의 글로벌 `GEMINI_FALLBACK_MODELS`와 격리). 3.5-flash 쿼터 소진(429/503) 시 순차 — flash-lite 우선. |
 | `CLAUDE_SEARCH_MODEL` | ❌ | `sonnet` | `shared.claude_search.claude_websearch`의 default 모델. alias(`haiku`/`sonnet`/`opus`) 또는 full ID. |
 | `CLAUDE_SEARCH_FALLBACK_MODEL` | ❌ | `haiku` | Primary가 overloaded 시 Claude CLI가 자동 retry 모델. `None` 효과를 원하면 빈 문자열. |
 | `CLAUDE_SEARCH_TIMEOUT` | ❌ | `900` | claude subprocess timeout (초). (주: 2026-06-07 이후 `claude_search`는 웹서치 **fallback** 단계. primary는 agy — 아래 `AGY_*`.) |

@@ -55,7 +55,7 @@ def main():
   월~금 06:30  버핏의 투자 노트
   일    07:00  주간 뉴스 요약
   매월1일 07:30  월간 뉴스 요약
-  일    13:00~18:40  11개 섹터별 투자 분석
+  일    12:00~18:40  11개 섹터별 투자 분석
   일    19:20  주간 섹터 요약 알림
   일    19:40  종합 투자 평가 보고서
   토    01:00  부동산봇 주간 다이제스트
@@ -120,7 +120,7 @@ def main():
     )
     logger.info("Scheduled: News Monthly check at 07:30 (runs on 1st only)")
 
-    # 섹터봇: 일요일 13:00~18:00 (11개 섹터)
+    # 섹터봇: 일요일 12:00~18:40 (11개 섹터, 40분 간격)
     from sector_bot import SECTORS
     for sector in SECTORS:
         schedule.every().sunday.at(sector.scheduled_time).do(

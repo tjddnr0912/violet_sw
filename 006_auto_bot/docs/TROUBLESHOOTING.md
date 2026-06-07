@@ -4,6 +4,27 @@
 
 ---
 
+## 섹터봇 분석이 주차별로 묘하게 짧아짐
+
+- **증상**: 섹터 주간 보고서가 어떤 주는 풍성하고 어떤 주는 얇음. 사용자가 "지난주보다 짧은 느낌".
+- **원인**: 섹터 분석 길이는 **순전히 어느 Gemini 모델이 그 섹터를 처리했냐**에 좌우(실측 `gemini-3.1-flash-lite` ~2,300자 vs `gemini-3.5-flash` ~7-16천자, 3~8배). 기본이 flash-lite라 평소엔 얇고, flash-lite가 quota로 3.5-flash fallback될 때만 길어짐. `sector-analysis/SKILL.md` 분량 floor가 `2000자`로 낮아 flash-lite가 바닥에 밀착. (검색은 별개 — agy/Gemini Pro로 ~6천자 잘 가져옴, 짧음은 검색이 아니라 **분석 모델** 문제.)
+- **해결**: `SECTOR_GEMINI_MODEL` 기본값을 `gemini-3.5-flash`로 승격 + 섹터 전용 `SECTOR_GEMINI_FALLBACK_MODELS`(flash-lite 우선)로 무중단 degrade + SKILL 분량 floor `5000자 이상(상한 없음)`. (2026-06-07, [[agy-websearch-migration]] 후속)
+- **복구 절차**: (a) 짧으면 로그 `grep "Analysis completed: model="`로 모델 확인 (b) flash-lite면 `SECTOR_GEMINI_MODEL=gemini-3.5-flash` 적용 (c) **봇 재시작** 후 다음 섹터부터 반영(`SectorAnalyzer initialized (primary model: ...)` 로그로 확인).
+- **관련 사고**: 2026-06-07.
+- **재발 감지**: `grep "Analysis completed: model=" logs/*.log` 에서 chars 값이 2천대로 떨어지면 flash-lite로 처리 중(3.5-flash 쿼터 소진 가능성).
+
+### Claude 진단 미스
+
+- **Claude 처음 가설**: 섹터 짧음을 진단하며 "agy 변경은 **아직 미배포**(일요일 실행이라 다음 주에나 반영) + 섹터 짧음과 무관"이라고 단정.
+- **실제 원인 (사용자 지적)**: 사용자가 "11:47에 봇을 재시작했다"고 지적 → 로그(`grep agy_websearch`) 확인 결과 **agy는 이미 배포·작동 중**이었음(섹터 검색이 `agy:Gemini 3.1 Pro (High)`로 동작). 짧음의 진단(analyzer 모델) 자체는 맞았으나 "미배포" 사실관계가 틀림.
+- **방향 전환 지점**: 사용자의 "11:47에 재시작했어" 메시지 직후 로그를 직접 확인.
+- **교훈 (다음에 같은 패턴이면)**:
+  - 첫 의심 영역: 배포 여부는 **추정 금지** — 파일 mtime + 재시작 로그(`SectorAnalyzer initialized`)/호출 로그(`agy_websearch`)로 **반드시 확인**.
+  - 빨리 배제할 가설: "스케줄이 일요일이니 안 돌았을 것" — `--once` 수동 실행/요일 착각 가능. 로그 타임스탬프가 진실.
+  - 핵심 진단 명령: `grep -E "initialized \(primary model|Analysis completed: model=" logs/investment_bot_$(date +%Y%m%d).log | tail`
+
+---
+
 ## 데이터 파이프라인 봇 "완료" 보고 시 발행 범위 ≠ 수집 범위 간과
 
 - **증상**: 부동산봇이 백필로 119시군구 4종을 적재했는데 주간 블로그 디제스트는 서울 25구만 발행. 코드는 정상 동작(설계상 v1 발행 범위가 `SEOUL_GU`).

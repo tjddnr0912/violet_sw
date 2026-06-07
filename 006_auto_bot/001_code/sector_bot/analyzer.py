@@ -277,10 +277,16 @@ class SectorAnalyzer:
         logger.info(f"SectorAnalyzer initialized (primary model: {self.model_name})")
 
     def _models_chain(self) -> List[str]:
-        """[primary, *fallbacks] for this analyzer."""
+        """[primary, *fallbacks] for this analyzer.
+
+        Sector-specific fallback list (`SECTOR_GEMINI_FALLBACK_MODELS`) so the
+        sector chain is independent of the global summarizer chain. Default
+        puts flash-lite first so when the verbose 3.5-flash primary exhausts
+        its quota, analysis degrades to flash-lite (terser, but keeps running).
+        """
         raw = os.getenv(
-            "GEMINI_FALLBACK_MODELS",
-            "gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash",
+            "SECTOR_GEMINI_FALLBACK_MODELS",
+            "gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash",
         )
         fallbacks = [m.strip() for m in raw.split(",") if m.strip()]
         return [self.model_name] + [m for m in fallbacks if m != self.model_name]

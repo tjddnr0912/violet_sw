@@ -266,7 +266,9 @@ class SectorConfig:
 
     # Gemini API
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_MODEL = os.getenv('SECTOR_GEMINI_MODEL', 'gemini-3.1-flash-lite')
+    # 분석 길이가 모델에 비례(3.5-flash ~6-8천자 vs flash-lite ~2.3천자).
+    # 풍성한 보고서를 위해 3.5-flash를 primary로, 쿼터 소진 시 flash-lite fallback.
+    GEMINI_MODEL = os.getenv('SECTOR_GEMINI_MODEL', 'gemini-3.5-flash')
 
     # Blogger
     BLOGGER_BLOG_ID = os.getenv('SECTOR_BLOGGER_BLOG_ID', '9115231004981625966')  # OgusInvest

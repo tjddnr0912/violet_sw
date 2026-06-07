@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-07: 섹터봇 분석 모델 3.5-flash 승격 + 분량 floor 상향
+
+- **배경**: 섹터 분석 길이가 모델에 비례(실측 `gemini-3.1-flash-lite` ~2,300자 vs `gemini-3.5-flash` ~7-16k자). 기본이 flash-lite라 보고서가 얇게 나옴(주차별로 flash-lite가 quota로 3.5-flash fallback될 때만 길어짐).
+- **변경**:
+  - `sector_bot/config.py` — `SECTOR_GEMINI_MODEL` 기본값 `gemini-3.1-flash-lite` → **`gemini-3.5-flash`**(풍성한 분석 primary).
+  - `sector_bot/analyzer.py` `_models_chain()` — 섹터 전용 fallback env `SECTOR_GEMINI_FALLBACK_MODELS`(기본 `gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash`) 신설. 요약봇의 글로벌 `GEMINI_FALLBACK_MODELS`와 격리. → 섹터 체인 = `[3.5-flash, 3.1-flash-lite, 3-flash-preview, 2.5-flash]`(3.5-flash 쿼터 소진 시 flash-lite로 무중단 degrade).
+  - `~/.claude/skills/sector-analysis/SKILL.md` 분량 floor `2000자` → **`5000자 이상, 길수록 좋음(상한 없음)`**.
+- **라이브 검증(2026-06-07 16:22 재시작 후)**: 반도체 섹터 분석 `model=gemini-3.5-flash chars=16,497`(직전 flash-lite 주식시장 1,947자 대비 ~8.5배), HTML 35,780자, 출처 14~15개. agy 검색(Gemini 3.1 Pro High)도 정상.
+- **테스트**: `tests/test_sector_model_chain.py` 3개(체인 순서·섹터 전용 fallback 격리·기본값) + full suite 84 pass.
+- **주의**: 3.5-flash는 쿼터·시간 소모↑(분석당 ~6-16k자, 섹터당 ~8분). 소진 시 flash-lite fallback.
+
+---
+
 ## 2026-06-07: 웹서치 백엔드 agy(Antigravity CLI) 전환 + Claude fallback
 
 - **배경**: 2026-05-27 PM에 grounding 4곳을 Claude WebSearch로 옮겼는데, gemini CLI 종료 대비로 antigravity CLI(`agy`) 설치 → `agy -p`가 `gemini -p` 대체. 웹서치를 agy(Gemini) primary로 되돌리되 Claude는 fallback으로 보존.
