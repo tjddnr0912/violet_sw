@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-07: 웹서치 백엔드 agy(Antigravity CLI) 전환 + Claude fallback
+
+- **배경**: 2026-05-27 PM에 grounding 4곳을 Claude WebSearch로 옮겼는데, gemini CLI 종료 대비로 antigravity CLI(`agy`) 설치 → `agy -p`가 `gemini -p` 대체. 웹서치를 agy(Gemini) primary로 되돌리되 Claude는 fallback으로 보존.
+- **신규 모듈**: `shared/agy_search.py`(`agy_websearch(prompt, model, timeout)`, `AgySearchError`) + `shared/web_search.py`(`web_search()` 디스패처). agy 모델 캐스케이드 **Gemini 3.1 Pro (High) → 3.5 Flash (High) → 3.5 Flash (Medium)** 순차, 전부 하드실패 시 `claude_websearch` fallback. 반환 타입(`ClaudeSearchResponse`)·`_extract_sources` 재사용 → 호출부는 함수명만 swap.
+- **갱신 호출부 4곳**: `telegram_gemini_bot.py`, `news_bot/orchestrator.py`, `shared/research_orchestrator.py`, `sector_bot/searcher.py` (`claude_websearch`→`web_search`, kwargs 그대로라 fallback이 기존 동작 보존). `claude_search.py`는 fallback으로 무수정.
+- **신규 env**: `AGY_SEARCH_MODELS`(파이프 구분 캐스케이드 override), `AGY_SEARCH_TIMEOUT`(기본 300s, agy 단계용), `AGY_BIN`(바이너리 경로).
+- **agy CLI 함정 3건**(→ TROUBLESHOOTING): `-p`가 상속 stdin에서 무한 행(→`stdin=DEVNULL` 필수) / 기본 모델 auto-routing(→`--model` 명시) / 잘못된 모델명 무시(에러 안 냄). 바이너리 부재 시 `OSError→AgySearchError→Claude fallback`(크래시 X).
+- **리서치 스킬**: 봇이 쓰는 `telegram-qa/SKILL.md`는 백엔드 중립(Claude 전용 도구 지시 0건)이라 무수정. `~/.claude/skills/research/SKILL.md`는 봇 미참조(Claude Code 대화형)라 그대로 유지.
+- **테스트**: pytest 11개(mock 캐스케이드/fallback/실패모드/argv/stdin/바이너리부재), full suite **81 pass**. 라이브: `web_search()` 24.7s(agy Pro High) / `AGY_BIN=/nonexistent`로 강제 fallback→Claude haiku 35.8s 검증.
+
+---
+
 ## 2026-06-04: 부동산봇 전국 확장(v2) + 오피스텔 전월세 노출 + 명명 정리
 
 - **전국 확장(v2)**: 주간 디제스트 발행 범위 서울 25구 → **전국 119시군구**(`ALL_REGIONS`). 전국 단일 글(전국 헤더 → 서울 상세 → 경기·6대광역시·세종 권역 요약). 신규 모듈 `regions_extra.group_of`(코드 prefix→권역) / `indicators.rollup_groups`(권역 집계+top movers) / `publish_meta`(제목 "날짜, N월 M주차 {AI헤드라인}" + 7~9 동적 라벨). `commentary` 전국 다문단. `_convert_html`이 버리던 Claude blog_title 보존. 비서울 오피스텔=경기·광역시 건수(세종 제외). 하이브리드(숫자=코드·해석=Gemini·HTML=Claude) 불변. (브랜치 `realestate-national` → main FF, 69 tests, 라이브 전국 스모크 OK) 스펙/계획 `docs/superpowers/*/2026-06-04-realestate-national-digest-expansion*`.

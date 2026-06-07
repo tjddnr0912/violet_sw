@@ -33,8 +33,8 @@ from typing import Callable, Optional
 from shared.claude_search import (
     ClaudeSearchError,
     ClaudeSearchResponse,
-    claude_websearch,
 )
+from shared.web_search import web_search
 
 logger = logging.getLogger(__name__)
 
@@ -60,24 +60,25 @@ class GeminiRoundError(RuntimeError):
 
 
 def _run_gemini_round(prompt: str, timeout: int = DEFAULT_GEMINI_TIMEOUT) -> str:
-    """Run one research round via Claude CLI + WebSearch.
+    """Run one research round via web search (agy cascade -> Claude fallback).
 
-    Sonnet primary, Haiku fallback — multi-round deep research benefits from
-    Sonnet's analysis depth, and Haiku catches CLI overload retries cheaply.
+    Primary is the agy Gemini cascade; if exhausted, Claude (Sonnet primary,
+    Haiku fallback) answers — multi-round deep research still benefits from
+    that analysis depth on the fallback path.
 
     Returns the response text (may include an inline `Sources:` footer
     that Claude appends automatically). Raises GeminiRoundError on any
     failure so existing except clauses upstream keep working.
     """
     try:
-        response: ClaudeSearchResponse = claude_websearch(
+        response: ClaudeSearchResponse = web_search(
             prompt,
             model="sonnet",
             fallback_model="haiku",
             timeout=timeout,
         )
     except ClaudeSearchError as e:
-        raise GeminiRoundError(f"claude_websearch failed: {e}") from e
+        raise GeminiRoundError(f"web_search failed: {e}") from e
     except Exception as e:
         raise GeminiRoundError(f"research round failed: {e}") from e
 

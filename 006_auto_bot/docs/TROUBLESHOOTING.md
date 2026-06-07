@@ -157,6 +157,27 @@
 
 ---
 
+## agy(Antigravity CLI) `-p` 웹서치가 subprocess에서 무한 행 / 모델 미고정
+
+- **증상**: `agy -p` 웹서치가 터미널 직접 호출은 ~15-25s에 정상인데, 봇 코드(`subprocess.run`)에서 호출하면 응답 없이 timeout(180s+). 또 `--model` 없이 호출하면 같은 코드가 호출마다 다른 모델(Claude Sonnet ↔ Gemini Pro)로 응답.
+- **원인**: (1) `agy -p`는 상속받은 stdin 파이프에서 입력을 기다리며 **블록**한다 — 봇 데몬/heredoc처럼 stdin이 EOF가 아니면 행. (2) `agy`의 default 모델은 가용성/쿼터 기반 **auto-routing**이라 비결정적. (3) `--model`에 잘못된 이름을 주면 **에러 없이 default로 조용히 라우팅**(exit 0 + 엉뚱한 응답).
+- **해결**: `subprocess.run(..., stdin=subprocess.DEVNULL)`로 즉시 EOF 부여(필수). `--model`로 모델 명시 고정(캐스케이드 `shared/web_search.py`). 바이너리는 `_agy_bin()`이 `AGY_BIN`→`which agy`→`~/.local/bin/agy` 순 해석, 부재 시 `OSError→AgySearchError`로 묶어 Claude fallback.
+- **복구 절차**: (a) 웹서치 응답 지연/공백이면 `agy_search.py`의 `stdin=DEVNULL` 존재 확인 (b) 봇 PATH에 `~/.local/bin` 있는지 / `AGY_BIN` 설정 (c) `AGY_BIN=/nonexistent`로 강제하면 Claude fallback이 도는지 점검.
+- **관련 사고**: 2026-06-07 (agy 웹서치 마이그레이션, [[agy-websearch-migration]])
+- **재발 감지**: 텔레그램/뉴스/섹터 웹서치 응답이 갑자기 전부 Claude fallback 모델(`model_used`에 `agy:` prefix 없음)로 바뀌면 agy 호출이 전부 실패 중 — 로그 `grep "agy model .* failed"`.
+
+### Claude 진단 미스
+
+- **Claude 처음 가설**: CLI에서 `agy -p "..."`가 ~24s에 깔끔히 동작하는 것을 보고, 같은 명령을 `subprocess.run([...argv...])`로 옮기면 그대로 동작할 것이라 가정(설계 단계에서 "출력 깔끔, ~24s"로 단정).
+- **실제 원인**: 첫 라이브 subprocess 테스트가 180s 타임아웃. CLI(대화형 셸)와 subprocess(상속 stdin 파이프)의 stdin 컨텍스트 차이 때문. `stdin=DEVNULL` 부여로 즉시 해결. (사용자 corrective 아님 — 라이브 테스트가 잡음.)
+- **방향 전환 지점**: 라이브 스모크 [A] 타임아웃 직후, CLI vs subprocess / 단일행 vs 멀티행 / stdin 변수를 분리 실측해 stdin이 원인임을 확정.
+- **교훈 (다음에 같은 패턴이면)**:
+  - 첫 의심 영역: 에이전트 CLI를 subprocess로 부를 때 행하면 **stdin 처리부터** 본다(`stdin=subprocess.DEVNULL`). **CLI 테스트 통과 ≠ subprocess 동작.**
+  - 빨리 배제할 가설: "프롬프트 멀티라인/argv 길이 문제" — 실측상 멀티라인은 무관, stdin이 범인.
+  - 핵심 진단 명령: `python -c "import subprocess as s; print(s.run(['agy','-p','test','--dangerously-skip-permissions'], stdin=s.DEVNULL, timeout=60, capture_output=True, text=True).returncode)"`
+
+---
+
 ## 인라인 SVG 플로우차트 화살표가 박스에 안 닿음 / 다이어그램 깨짐
 
 - **증상**: 봇이 만든 글의 의사결정 흐름 다이어그램에서 다이아몬드 옆구리에서 출발한 YES/NO 화살표가 결과 박스에 *연결되지 않고 허공에서 끝남*. 결과 박스가 SVG 영역 밖 별도 div로 빠지면서 시각적으로 어긋남.

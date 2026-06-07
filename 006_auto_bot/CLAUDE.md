@@ -31,7 +31,7 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
 | `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
-| `shared/` | HTML 변환, Telegram API, Blogger 업로드, Claude HTML 변환, **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증) |
+| `shared/` | HTML 변환, Telegram API, Blogger 업로드, Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증) |
 
 ## 핵심 참조
 
@@ -60,6 +60,10 @@ GEMINI_MODEL=gemini-3.1-flash-lite               # default primary model (overri
 GEMINI_FALLBACK_MODELS=gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-flash   # 429/503 시 순차 fallback
 RESEARCH_QUICK_COMMAND=/quick    # Telegram Q&A 단발 모드 트리거 (default `/quick`)
 RESEARCH_MAX_ROUNDS=3            # Deep research 라운드 상한 (1~4, default 3)
+# 웹서치(telegram/news gap-fill/sector/research): agy primary → Claude fallback
+AGY_SEARCH_MODELS=Gemini 3.1 Pro (High)|Gemini 3.5 Flash (High)|Gemini 3.5 Flash (Medium)  # 캐스케이드(파이프 구분)
+AGY_SEARCH_TIMEOUT=300          # agy 단계별 timeout(초). 전부 실패 시 Claude(CLAUDE_SEARCH_*) fallback
+# AGY_BIN=                       # agy 경로 override (기본 which agy → ~/.local/bin/agy)
 ```
 
 ## 스킬 파일 (프롬프트 외부화)

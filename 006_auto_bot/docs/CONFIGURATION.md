@@ -15,7 +15,10 @@
 | `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.1-flash-lite` | (주: 2026-05-27 PM 이후 grounding 호출은 Claude WebSearch로 이전됨. 이 변수는 `sector_bot/analyzer.py`의 non-grounding 분석 호출에만 영향 — searcher는 별도 `CLAUDE_MODEL_SECTOR_SEARCH` 사용.) |
 | `CLAUDE_SEARCH_MODEL` | ❌ | `sonnet` | `shared.claude_search.claude_websearch`의 default 모델. alias(`haiku`/`sonnet`/`opus`) 또는 full ID. |
 | `CLAUDE_SEARCH_FALLBACK_MODEL` | ❌ | `haiku` | Primary가 overloaded 시 Claude CLI가 자동 retry 모델. `None` 효과를 원하면 빈 문자열. |
-| `CLAUDE_SEARCH_TIMEOUT` | ❌ | `900` | claude subprocess timeout (초). |
+| `CLAUDE_SEARCH_TIMEOUT` | ❌ | `900` | claude subprocess timeout (초). (주: 2026-06-07 이후 `claude_search`는 웹서치 **fallback** 단계. primary는 agy — 아래 `AGY_*`.) |
+| `AGY_SEARCH_MODELS` | ❌ | `Gemini 3.1 Pro (High)\|Gemini 3.5 Flash (High)\|Gemini 3.5 Flash (Medium)` | `shared.web_search`의 agy 웹서치 모델 캐스케이드(파이프 `\|` 구분). 순차 시도 후 전부 하드실패면 Claude(`CLAUDE_SEARCH_*`)로 fallback. |
+| `AGY_SEARCH_TIMEOUT` | ❌ | `300` | agy 단계별 subprocess timeout(초). 실측 ~15-25s라 빠른 실패용. Claude fallback은 caller의 긴 timeout 유지. |
+| `AGY_BIN` | ❌ | (`which agy` → `~/.local/bin/agy`) | agy 바이너리 경로 override. 봇 PATH에 `~/.local/bin` 누락 시 대비. 부재 시 Claude fallback. |
 | `CLAUDE_MODEL_SECTOR_SEARCH` | ❌ | `sonnet` | 섹터봇 searcher 전용 primary 모델 (섹터별 깊이 필요). |
 | `CLAUDE_MODEL_SECTOR_SEARCH_FALLBACK` | ❌ | `opus` | 섹터봇 searcher fallback 모델. |
 | `BLOGGER_IMAGES_ENABLED` | ❌ | `false` | 블로그 HTML 본문의 `[[IMAGE:...]]` 마커 처리 활성화. `false`(default)이면 마커를 HTML 주석으로 strip. `true`이면 Imagen/Pollinations 호출 → Cloudinary 업로드 → `<img>` 교체. (2026-05-28~) |

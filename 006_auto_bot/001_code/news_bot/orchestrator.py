@@ -25,7 +25,8 @@ from .dimensions import (
     NEWS_DIMENSIONS, claude_judge_news,
     TIER1_SOURCES, KOREAN_SOURCES, EXPECTED_CATEGORIES,
 )
-from shared.claude_search import claude_websearch, ClaudeSearchError
+from shared.claude_search import ClaudeSearchError
+from shared.web_search import web_search
 
 logger = logging.getLogger(__name__)
 
@@ -233,17 +234,18 @@ def _pick_gap_target(dim_name: str, news_items: list) -> dict:
 
 def _gap_fill_via_cli(followup_query: str, category: Optional[str]) -> list:
     """
-    Run a gap-fill round via Claude CLI + WebSearch, parse a JSON array of
-    news items, and convert to the news_item dict shape the rest of the
-    pipeline expects. Returns [] on any failure (gap-fill is best-effort).
+    Run a gap-fill round via web search (agy cascade -> Claude fallback),
+    parse a JSON array of news items, and convert to the news_item dict shape
+    the rest of the pipeline expects. Returns [] on any failure (gap-fill is
+    best-effort).
 
-    Name kept (`_via_cli`) for backward compat — backend has been Gemini API
-    in May 2026 morning, and is now Claude CLI + WebSearch (May 2026 evening,
-    after discovering Gemini 3.x grounding has a tight separate quota).
-    Haiku primary (JSON output is simple); Sonnet fallback for overload.
+    Name kept (`_via_cli`) for backward compat. Backend evolution: Gemini API
+    -> Claude CLI + WebSearch -> now agy (Gemini) cascade with Claude CLI
+    fallback. The Claude fallback stage uses Haiku primary (JSON output is
+    simple), Sonnet for overload.
     """
     try:
-        response = claude_websearch(
+        response = web_search(
             followup_query,
             model="haiku",
             fallback_model="sonnet",

@@ -33,8 +33,8 @@ from shared.html_utils import HtmlUtils
 from shared.claude_search import (
     ClaudeSearchError,
     ClaudeSearchResponse,
-    claude_websearch,
 )
+from shared.web_search import web_search
 
 # 스킬 파일 경로
 QA_SKILL_FILE = os.path.expanduser('~/.claude/skills/telegram-qa/SKILL.md')
@@ -173,9 +173,9 @@ LABELS: (키워드 2-3개)
 SOURCES: (출처)
 """
 
-            # Sonnet primary, Haiku fallback — quick mode is single-shot Q&A so
-            # Sonnet's analysis depth is justified, but Haiku catches overload.
-            response: ClaudeSearchResponse = claude_websearch(
+            # agy (Gemini) cascade primary; Claude (sonnet->haiku) fallback —
+            # quick mode is single-shot Q&A, fallback keeps the prior behavior.
+            response: ClaudeSearchResponse = web_search(
                 prompt,
                 model="sonnet",
                 fallback_model="haiku",

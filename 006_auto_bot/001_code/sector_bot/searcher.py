@@ -32,8 +32,8 @@ from .config import SectorConfig, Sector
 from shared.claude_search import (
     ClaudeSearchError,
     ClaudeSearchResponse,
-    claude_websearch,
 )
+from shared.web_search import web_search
 from shared.gemini_cli import extract_urls  # URL regex utility, no API call
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ class SectorSearcher:
 
             search_prompt = self._build_search_prompt(sector)
 
-            response: ClaudeSearchResponse = claude_websearch(
+            response: ClaudeSearchResponse = web_search(
                 search_prompt,
                 model=self.primary_model,
                 fallback_model=self.fallback_model,
