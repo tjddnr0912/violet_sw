@@ -10,32 +10,26 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 프롬프트 파일 경로 (스킬 파일 우선, fallback으로 기존 프롬프트)
+# 프롬프트 소스: blogger-html 스킬 파일이 단일 소스
 SKILL_FILE = os.path.expanduser('~/.claude/skills/blogger-html/SKILL.md')
-PROMPT_FILE = os.path.join(
-    os.path.dirname(__file__),
-    '..', 'prompts', 'blogger_html_prompt.md'
-)
 
 
 def load_prompt_template() -> str:
-    """프롬프트 템플릿 로드 — 스킬 파일 우선, 없으면 기존 프롬프트 fallback"""
+    """프롬프트 템플릿 로드 — blogger-html 스킬 파일이 단일 소스"""
     import re
 
-    if os.path.exists(SKILL_FILE):
-        with open(SKILL_FILE, 'r', encoding='utf-8') as f:
-            content = f.read()
-        # YAML frontmatter 제거
-        content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
-        logger.info(f"Loaded HTML prompt from skill: {SKILL_FILE}")
-        return content.strip()
+    if not os.path.exists(SKILL_FILE):
+        raise FileNotFoundError(
+            f"HTML 변환 스킬 파일을 찾을 수 없습니다: {SKILL_FILE} "
+            "(~/.claude/skills/blogger-html/SKILL.md 설치 필요)"
+        )
 
-    if not os.path.exists(PROMPT_FILE):
-        raise FileNotFoundError(f"Prompt template not found: {PROMPT_FILE}")
-
-    with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
-        logger.info(f"Loaded HTML prompt from fallback: {PROMPT_FILE}")
-        return f.read()
+    with open(SKILL_FILE, 'r', encoding='utf-8') as f:
+        content = f.read()
+    # YAML frontmatter 제거
+    content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
+    logger.info(f"Loaded HTML prompt from skill: {SKILL_FILE}")
+    return content.strip()
 
 
 def extract_title_from_response(response: str) -> str:
