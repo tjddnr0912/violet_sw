@@ -1592,6 +1592,91 @@ fn v3_2_top_selection_picks_uninstantiated() {
     assert_eq!(s.instances[1].net_count, 1); // leaf: o
 }
 
+// v3-2b: MULTIPLE uninstantiated top modules — IEEE 1364 / iverilog elaborate
+//        EVERY uninstantiated module as an independent root (not just the
+//        last-declared). Two modules, neither instantiating the other, must BOTH
+//        become root instances (parent None) and BOTH bodies be lowered.
+#[test]
+fn v3_2b_multiple_uninstantiated_tops_all_become_roots() {
+    let a = module_p(
+        "mod_a",
+        vec![],
+        vec![],
+        vec![proc_item(
+            ast::ProcKind::Initial,
+            None,
+            blk(vec![systask("$display", vec![str_e("a")])]),
+        )],
+    );
+    let b = module_p(
+        "mod_b",
+        vec![],
+        vec![],
+        vec![proc_item(
+            ast::ProcKind::Initial,
+            None,
+            blk(vec![systask("$display", vec![str_e("b")])]),
+        )],
+    );
+    let unit = unit_of(vec![a, b]);
+    let (s, _w) = elab_with_warnings(&unit);
+    // BOTH modules are roots: 2 instances, both parent None.
+    assert_eq!(
+        s.instances.len(),
+        2,
+        "both uninstantiated modules must be roots"
+    );
+    assert!(s.instances[0].parent.is_none());
+    assert!(s.instances[1].parent.is_none());
+    // BOTH bodies lowered → 2 processes (one initial each).
+    assert_eq!(s.processes.len(), 2, "both top bodies must be lowered");
+}
+
+// v3-2c: a module instantiated ONLY inside a generate block is NOT a spurious
+//        extra root. `holder` instantiates `leaf` inside a `generate` block, so
+//        `leaf` is reachable and must appear EXACTLY once (under holder), never as
+//        its own root. Guards the multi-root scan against missing generate-nested
+//        instantiations (which would double-elaborate `leaf`).
+#[test]
+fn v3_2c_generate_nested_instance_is_not_a_root() {
+    let leaf = module_p(
+        "leaf",
+        vec![],
+        vec![ansi_port(ast::PortDir::Output, None, "o")],
+        vec![],
+    );
+    let holder = module_p(
+        "holder",
+        vec![],
+        vec![],
+        vec![
+            netvar(ast::NetVarKind::Wire, None, false, &["w"]),
+            ast::ModuleItem::Generate(ast::GenerateConstruct {
+                items: vec![ast::GenItem::Block {
+                    label: Some(ident("g")),
+                    items: vec![ast::GenItem::Item(Box::new(inst_named(
+                        "leaf",
+                        "u",
+                        vec![("o", id_expr("w"))],
+                    )))],
+                    span: SP,
+                }],
+                span: SP,
+            }),
+        ],
+    );
+    let unit = unit_of(vec![leaf, holder]);
+    let (s, _w) = elab_with_warnings(&unit);
+    // exactly 2 instances: holder (root) + leaf (under holder via generate).
+    assert_eq!(
+        s.instances.len(),
+        2,
+        "leaf instantiated in a generate must not also be a root"
+    );
+    assert!(s.instances[0].parent.is_none()); // holder
+    assert_eq!(s.instances[1].parent, Some(0)); // leaf under holder
+}
+
 // v3-3: 2-deep hierarchy tb → mid → leaf. 3 instances, parent chain 0←1←2,
 //       contiguous net slices.
 #[test]

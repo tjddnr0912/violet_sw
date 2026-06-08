@@ -196,30 +196,110 @@ fn build_module_map(unit: &ast::SourceUnit) -> (ModuleMap<'_>, Vec<&ast::ModuleD
     (map, order)
 }
 
-/// Pick the TOP module: one never instantiated by any other. Tie-break (≥2
-/// candidates, e.g. two independent testbenches): the LAST-declared, matching the
-/// common DUT-then-testbench file order. Degenerate (every module instantiated —
-/// a cycle, or a pure library): fall back to the last-declared so `run` still
-/// produces IR. Deterministic (declaration-order scan; `BTreeSet`).
-fn pick_top<'a>(map: &ModuleMap<'a>, order: &[&'a ast::ModuleDecl]) -> Option<&'a ast::ModuleDecl> {
-    let mut instantiated: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for m in order {
-        for item in &m.body {
-            if let ast::ModuleItem::Instance(inst) = item {
-                // count only names that resolve to a known module (an unknown name
-                // is an instantiation error, surfaced later in the recursion).
+/// Collect every module name instantiated ANYWHERE in `order` — directly in a
+/// module body OR nested inside a `generate` construct — restricted to names that
+/// resolve to a known module (an unknown name is an instantiation error surfaced
+/// later in the recursion). The set of modules NOT in here is the ROOT set.
+/// Descending generates is load-bearing: a module instantiated ONLY inside a
+/// `generate` is still instantiated, so it must not also be elaborated as a
+/// spurious extra root (which would double-lower its body). Deterministic
+/// (declaration-order walk into a `BTreeSet`).
+fn collect_instantiated<'a>(
+    map: &ModuleMap<'a>,
+    order: &[&'a ast::ModuleDecl],
+) -> std::collections::BTreeSet<&'a str> {
+    fn from_item<'a>(
+        item: &'a ast::ModuleItem,
+        map: &ModuleMap<'a>,
+        set: &mut std::collections::BTreeSet<&'a str>,
+    ) {
+        match item {
+            ast::ModuleItem::Instance(inst) => {
                 if map.contains_key(inst.module_name.name.as_str()) {
-                    instantiated.insert(inst.module_name.name.as_str());
+                    set.insert(inst.module_name.name.as_str());
+                }
+            }
+            ast::ModuleItem::Generate(g) => {
+                for gi in &g.items {
+                    from_genitem(gi, map, set);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn from_genitem<'a>(
+        gi: &'a ast::GenItem,
+        map: &ModuleMap<'a>,
+        set: &mut std::collections::BTreeSet<&'a str>,
+    ) {
+        match gi {
+            ast::GenItem::Item(boxed) => from_item(boxed, map, set),
+            ast::GenItem::For { body, .. } => {
+                for g in body {
+                    from_genitem(g, map, set);
+                }
+            }
+            ast::GenItem::Block { items, .. } => {
+                for g in items {
+                    from_genitem(g, map, set);
+                }
+            }
+            ast::GenItem::If { then_b, else_b, .. } => {
+                for g in then_b.iter().chain(else_b) {
+                    from_genitem(g, map, set);
+                }
+            }
+            ast::GenItem::Case { items, .. } => {
+                for ci in items {
+                    let body = match ci {
+                        ast::GenCaseItem::Match { body, .. } => body,
+                        ast::GenCaseItem::Default { body, .. } => body,
+                    };
+                    for g in body {
+                        from_genitem(g, map, set);
+                    }
                 }
             }
         }
     }
-    order
-        .iter()
-        .copied()
-        .filter(|m| !instantiated.contains(m.name.name.as_str()))
-        .last()
-        .or_else(|| order.last().copied())
+    let mut set = std::collections::BTreeSet::new();
+    for m in order {
+        for item in &m.body {
+            from_item(item, map, &mut set);
+        }
+    }
+    set
+}
+
+/// Pick ALL TOP (root) modules: every module never instantiated by another, in
+/// DECLARATION order (deterministic flat-IR layout). IEEE 1364 / iverilog
+/// elaborate every uninstantiated module as an independent root, so two
+/// independent top modules both simulate — the old single-pick dropped all but
+/// the last-declared. A duplicate module name yields at most one root, resolved
+/// to its canonical (first-declared) decl via `map` so a root never diverges from
+/// how the same name is instantiated elsewhere. Degenerate (every module
+/// instantiated — a cycle or a pure library, so the set is empty): fall back to
+/// the last-declared single module so `run` still produces IR. Deterministic.
+fn pick_roots<'a>(map: &ModuleMap<'a>, order: &[&'a ast::ModuleDecl]) -> Vec<&'a ast::ModuleDecl> {
+    let instantiated = collect_instantiated(map, order);
+    let canon = |name: &str, fallback: &'a ast::ModuleDecl| -> &'a ast::ModuleDecl {
+        map.get(name).map(|(d, _)| *d).unwrap_or(fallback)
+    };
+    let mut roots: Vec<&ast::ModuleDecl> = Vec::new();
+    let mut added: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for m in order {
+        let name = m.name.name.as_str();
+        if instantiated.contains(name) || !added.insert(name) {
+            continue;
+        }
+        roots.push(canon(name, m));
+    }
+    if roots.is_empty() {
+        if let Some(m) = order.last() {
+            roots.push(canon(m.name.name.as_str(), m));
+        }
+    }
+    roots
 }
 
 /// A module's ports as `(local_name, dir)` in HEADER declaration order. ANSI
@@ -556,18 +636,22 @@ impl<'s> Elaborator<'s> {
             }
         }
 
-        let top = match pick_top(&map, &order) {
-            Some(t) => t,
-            None => {
-                self.error(MsgCode::ElabUnsupported, "no top module to elaborate");
-                return;
-            }
-        };
+        let roots = pick_roots(&map, &order);
+        if roots.is_empty() {
+            self.error(MsgCode::ElabUnsupported, "no top module to elaborate");
+            return;
+        }
 
-        // Top instance: parent None, path = its own module name (root VCD scope),
-        // no incoming port/param bindings.
-        let top_path = top.name.name.clone();
-        self.elaborate_instance(top, &top_path, None, &[], PortBinding::None, &map);
+        // Each root is its OWN top instance: parent None, path = its module name
+        // (root VCD scope), no incoming port/param bindings. `elaborate_instance`
+        // saves/restores all scope state (cur_prefix/cur_inst/cur_time_mult/params/
+        // func_table/task_table/inst_stack), so roots are independent and the flat
+        // arenas stay contiguous per instance. The common single-top design has one
+        // root → byte-identical to the old single-pick path.
+        for top in roots {
+            let top_path = top.name.name.clone();
+            self.elaborate_instance(top, &top_path, None, &[], PortBinding::None, &map);
+        }
 
         // whole-net multidriver check over the WHOLE flat IR (instance-agnostic).
         self.check_whole_net_multidriver();

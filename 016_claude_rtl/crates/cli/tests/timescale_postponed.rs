@@ -6,7 +6,8 @@
 //!
 //! Repro shape: one top instantiating two submodules with DIFFERENT `` `timescale ``s,
 //! both firing in the postponed region at the SAME global tick. (Two bare top modules
-//! cannot be used — vitamin elaborates only one top hierarchy.)
+//! would now also both elaborate — see `multi_top.rs` — but the single-top form is the
+//! tighter repro: it guarantees both fire in the SAME timestep's postponed batch.)
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
