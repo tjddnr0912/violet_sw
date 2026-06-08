@@ -39,6 +39,10 @@ pub(crate) enum Step {
 pub(crate) trait Kernel {
     /// READ: evaluate `rhs` context-sized to `lhs`'s width (IEEE assignment rule).
     fn k_eval_for_lvalue(&self, lhs: &Lvalue, rhs: u32) -> Value;
+    /// READ: evaluate a pre-compiled native expression program (VM-only fast path,
+    /// [C4-lite]). Byte-identical to `k_eval_for_lvalue` for the bounded subset
+    /// `native_eval::try_compile` accepts; the compiler only emits this where it does.
+    fn k_eval_native(&self, prog: &crate::native_eval::NativeProg) -> Value;
     /// READ: resolve each LHS chunk's `(bit-offset, array-word)` NOW (dynamic index).
     fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)>;
     /// WRITE: blocking write of `value` into `lhs` at the resolved `offsets`.

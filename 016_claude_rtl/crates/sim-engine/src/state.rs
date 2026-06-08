@@ -213,6 +213,7 @@ impl<'a> SimState<'a> {
         let compiled = Rc::new(crate::backend::compile_body(
             &ir.stmts,
             &ir.processes[tmpl].body,
+            Some((ir, &self.wt)),
         ));
         self.vm_cache[tmpl] = VmSlot::Compiled(Rc::clone(&compiled));
         Some(compiled)

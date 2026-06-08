@@ -195,6 +195,23 @@ binop. **net-read ≈ literal**(0.45≈0.44 … 2.24≈2.22)이므로 58 ns는 r
 고위험·다세션 — 단 **P5 차분 게이트(compiled==interp byte동일) + iverilog 오라클이 정확성 리스크를 이미
 대폭 상쇄**한다(native-eval을 안전하게 시도 가능). 영구 회귀: `perf_baseline.rs` `EXPR_HEAVY`.
 
+**✅ C4-lite 구현 (2026-06-08) — 예측 실현.** 위 전략에 따라 native-eval 첫 증분 랜딩(`native_eval.rs`,
+VM 전용). **≤64bit 정수 서브셋**(Const·scalar Signal·Add/Sub/Mul·BitAnd/Or/Xor/Xnor·BitNot/Plus/Minus)을
+codegen-able 바디 assign RHS에서 post-order 레지스터 프로그램으로 컴파일(노드당 `Value` 미생성), 그 외는
+`try_compile`이 `None`→`eval_ctx` fallback. 측정(release, best-of-5):
+
+| 벤치 | C2 VM/interp | **C4-lite VM/interp** |
+|---|---|---|
+| `EXPR_HEAVY` (식-바운드, K=16) | 0.92x | **0.42x (≈2.3x)** |
+| `EVAL_HEAVY` (혼합, ~3 ops/stmt) | ~0.84x | **0.77x** |
+| `CODEGEN_HEAVY` (스케줄러-바운드) | ~0.97x | 0.94x (불변) |
+
+식-바운드 ~2-3x 예측이 실측으로 실현, 클럭-바운드는 eval 비병목이라 불변 — 워크로드-의존 ROI 확정. 정확성:
+인터프리터=오라클(leaf는 `read_net`+`resize_keep_sign` 재사용), 산술은 X/Z poison+u64 wrapping(w≤64 sign-무관),
+bitwise는 `value::*_w` 동일 primitive; native_eval 오라클 대조 단위 8 + backend_equiv native teeth 5 + 72-design
+P5 차분 + iverilog 차분(460 green). frozen sim-ir 0줄 변경. follow-on(비교/시프트/Div·Mod/리덕션/ternary/concat/
+>64bit/real)은 `../ROADMAP.md` §C.
+
 ### 교훈 (방법론)
 
 1. **병목은 양파.** 표면층(bit-serial) 제거 → 재측정 → 그 밑(alloc) → 또 그 밑(정규화/transient-alloc). 한 번 측정으로 끝나지 않음.

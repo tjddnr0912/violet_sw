@@ -783,6 +783,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             .collect()
     }
 
+    /// Run a pre-compiled native expression program against the net table (VM-only
+    /// fast path). `self.st` is the same `NetReader` `eval_ctx_top` builds its EvalCtx
+    /// over, so a native leaf load reads exactly what the interpreter would.
+    pub(crate) fn eval_native(&self, prog: &crate::native_eval::NativeProg) -> Value {
+        crate::native_eval::run(prog, self.st)
+    }
+
     /// Build an EvalCtx and run eval_ctx (mirror of the `eval` façade).
     pub(crate) fn eval_ctx_top(&self, eid: u32, ctx_width: u32, ctx_signed: bool) -> Value {
         let ctx = EvalCtx {
@@ -1080,6 +1087,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 impl Kernel for Scheduler<'_, '_> {
     fn k_eval_for_lvalue(&self, lhs: &Lvalue, rhs: u32) -> Value {
         self.eval_for_lvalue(lhs, rhs)
+    }
+    fn k_eval_native(&self, prog: &crate::native_eval::NativeProg) -> Value {
+        self.eval_native(prog)
     }
     fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)> {
         self.resolve_lvalue_offsets(lhs)

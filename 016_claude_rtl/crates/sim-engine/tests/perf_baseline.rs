@@ -98,12 +98,20 @@ endmodule";
 /// EXPRESSION-bound: a deep operator chain (16 `acc` reads + adds) per statement, so
 /// the per-statement EVAL cost dwarfs the fixed net-write/loop/scheduling cost. This is
 /// the case `EVAL_HEAVY` (only ~3 ops/stmt) under-represents — and the one native-eval
-/// would actually move. Measured scaling law (release, 1M statements, K = ops/stmt):
+/// actually moves. Measured scaling law (release, 1M statements, K = ops/stmt):
 /// `t ≈ 0.39 s (fixed) + 0.058 s × K`, with the per-operand 58 ns being ~98% Value-
 /// construct + `eval_ctx` dispatch overhead (net-read ≈ literal; irreducible u64 ALU
 /// ≈ 1 ns). ⇒ eval is 55 % of runtime at K=8, 70 % at K=16, 82 % at K=32. Realistic
 /// expression-bound RTL (wide ALUs, CRC/crypto datapaths, deep combinational cones)
 /// lives in this regime; clock/scheduler-bound designs (see `CODEGEN_HEAVY`) do not.
+///
+/// [C4-lite] With the native-eval VM fast path (`native_eval`) live, the bytecode VM
+/// now runs this body's `+` chain on native u64 registers instead of delegating each
+/// operator to `eval_ctx`: measured **VM ≈ 0.42x interpreter** here (was 0.92x at C2 —
+/// statement compilation alone was nearly useless for an expression-bound body), i.e.
+/// ~2.3x on the VM path, realizing the "expression-bound ~2-3x" prediction. `EVAL_HEAVY`
+/// (mixed) improves to ~0.77x; `CODEGEN_HEAVY` (scheduler-bound) stays ~0.94x (eval is
+/// not its bottleneck — native-eval correctly does not help there).
 const EXPR_HEAVY: &str = "module top;\n\
   reg clk;\n\
   reg [63:0] acc;\n\

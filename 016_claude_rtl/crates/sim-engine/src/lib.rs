@@ -26,6 +26,7 @@ mod backend;
 mod builtins;
 mod eval;
 mod exec;
+mod native_eval;
 mod sched;
 mod state;
 mod value;

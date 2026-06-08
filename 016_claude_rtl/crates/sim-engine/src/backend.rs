@@ -7,11 +7,13 @@
 
 use std::rc::Rc;
 
-use sim_ir::{BasicBlock, Lvalue, Stmt, SysTaskId, Terminator};
+use sim_ir::{BasicBlock, LvalChunk, Lvalue, SelKind, SimIr, Stmt, SysTaskId, Terminator};
 
 use crate::builtins::Ctl;
 use crate::exec::{Kernel, Step};
+use crate::native_eval::NativeProg;
 use crate::value::Value;
+use crate::width::WidthTable;
 
 /// **P9 scope predicate.** Is this process `body` codegen-able on the bytecode VM?
 ///
@@ -78,6 +80,10 @@ pub(crate) struct CompiledBody {
     lvalues: Vec<Lvalue>,
     /// Cloned `$systask` arg-ExprId lists; `Op::SysTask` references one by index.
     arglists: Vec<Vec<u32>>,
+    /// Pre-compiled native expression programs (VM-only fast path); `Op::EvalNative`
+    /// references one by index. Empty when native compilation was disabled (the
+    /// `None` ctx) or no RHS qualified.
+    natives: Vec<NativeProg>,
     /// How many value / offset registers a single activation needs.
     nregs: u32,
     noffs: u32,
@@ -108,6 +114,9 @@ enum CompiledTerm {
 enum Op {
     /// `regs[dst] = k_eval_for_lvalue(&lvalues[lhs], rhs)` — RHS context-sized to LHS.
     EvalForLval { dst: u32, lhs: u32, rhs: u32 },
+    /// `regs[dst] = k_eval_native(&natives[native])` — VM-only native fast path
+    /// (byte-identical to `EvalForLval` for the subset `try_compile` accepts).
+    EvalNative { dst: u32, native: u32 },
     /// `offs[dst] = k_resolve_lvalue_offsets(&lvalues[lhs])` — dynamic index NOW (P8 #3).
     ResolveOff { dst: u32, lhs: u32 },
     /// `k_write_lvalue(&lvalues[lhs], take(regs[val]), take(offs[off]))` — blocking write.
@@ -129,9 +138,66 @@ enum Op {
 /// → WriteLval` (RHS, then dynamic index, then write); statements lower in textual order
 /// so `ScheduleNba` calls preserve `nba_seq` (moment #2). MUST be called only on a body
 /// `is_codegen_able` accepted (the `unreachable!` arms assert that contract).
-pub(crate) fn compile_body(stmts: &[Stmt], body: &[BasicBlock]) -> CompiledBody {
+/// Replicates `SimState::lvalue_width` from the IR alone (no runtime net table) so
+/// `compile_body` can compute the RHS eval context (`ctx_w = max(lvalue_w,
+/// self_w(rhs))`) the same way `eval_for_lvalue` does. The runtime `NetSlot.width`
+/// is seeded verbatim from `ir.nets[n].width` and never mutated, so reading the IR
+/// is byte-equivalent.
+fn lvalue_width_of(ir: &SimIr, lhs: &Lvalue) -> u32 {
+    lhs.chunks
+        .iter()
+        .map(|c| chunk_width_of(ir, c))
+        .sum::<u32>()
+        .max(1)
+}
+fn chunk_width_of(ir: &SimIr, c: &LvalChunk) -> u32 {
+    match c.kind {
+        SelKind::Bit => {
+            if c.offset.is_none() && c.width.is_none() {
+                ir.nets[c.net as usize].width
+            } else {
+                1
+            }
+        }
+        SelKind::PartConst | SelKind::PartIdxUp | SelKind::PartIdxDown => c
+            .width
+            .and_then(|eid| crate::width::const_u32_of_expr(ir, eid))
+            .unwrap_or_else(|| ir.nets[c.net as usize].width),
+    }
+}
+
+/// Choose the RHS eval op for an assignment: a native program (VM fast path) when
+/// `native` ctx is present AND `try_compile` accepts the whole tree, else the
+/// kernel-delegating `EvalForLval`. The native and delegated paths are byte-identical
+/// (the P5 gate enforces it), so this choice never changes observable behaviour.
+fn eval_rhs_op(
+    native: Option<(&SimIr, &WidthTable)>,
+    lhs: &Lvalue,
+    rhs: u32,
+    dst: u32,
+    li: u32,
+    natives: &mut Vec<NativeProg>,
+) -> Op {
+    if let Some((ir, wt)) = native {
+        let ctx_w = lvalue_width_of(ir, lhs).max(wt.width(rhs));
+        let ctx_signed = wt.signed(rhs);
+        if let Some(prog) = crate::native_eval::try_compile(ir, wt, rhs, ctx_w, ctx_signed) {
+            let ni = natives.len() as u32;
+            natives.push(prog);
+            return Op::EvalNative { dst, native: ni };
+        }
+    }
+    Op::EvalForLval { dst, lhs: li, rhs }
+}
+
+pub(crate) fn compile_body(
+    stmts: &[Stmt],
+    body: &[BasicBlock],
+    native: Option<(&SimIr, &WidthTable)>,
+) -> CompiledBody {
     let mut lvalues: Vec<Lvalue> = Vec::new();
     let mut arglists: Vec<Vec<u32>> = Vec::new();
+    let mut natives: Vec<NativeProg> = Vec::new();
     let mut nregs: u32 = 0;
     let mut noffs: u32 = 0;
     let mut blocks = Vec::with_capacity(body.len());
@@ -146,11 +212,7 @@ pub(crate) fn compile_body(stmts: &[Stmt], body: &[BasicBlock]) -> CompiledBody 
                     nregs += 1;
                     let o = noffs;
                     noffs += 1;
-                    ops.push(Op::EvalForLval {
-                        dst: v,
-                        lhs: li,
-                        rhs: *rhs,
-                    });
+                    ops.push(eval_rhs_op(native, lhs, *rhs, v, li, &mut natives));
                     ops.push(Op::ResolveOff { dst: o, lhs: li });
                     ops.push(Op::WriteLval {
                         lhs: li,
@@ -163,11 +225,7 @@ pub(crate) fn compile_body(stmts: &[Stmt], body: &[BasicBlock]) -> CompiledBody 
                     lvalues.push(lhs.clone());
                     let v = nregs;
                     nregs += 1;
-                    ops.push(Op::EvalForLval {
-                        dst: v,
-                        lhs: li,
-                        rhs: *rhs,
-                    });
+                    ops.push(eval_rhs_op(native, lhs, *rhs, v, li, &mut natives));
                     ops.push(Op::ScheduleNba { lhs: li, val: v });
                 }
                 Stmt::SysTask { which, fmt, args } => {
@@ -206,6 +264,7 @@ pub(crate) fn compile_body(stmts: &[Stmt], body: &[BasicBlock]) -> CompiledBody 
         blocks,
         lvalues,
         arglists,
+        natives,
         nregs,
         noffs,
     }
@@ -227,6 +286,10 @@ pub(crate) fn vm_exec(k: &mut impl Kernel, body: &CompiledBody, proc: u32, mut b
             match *op {
                 Op::EvalForLval { dst, lhs, rhs } => {
                     let v = k.k_eval_for_lvalue(&body.lvalues[lhs as usize], rhs);
+                    regs[dst as usize] = Some(v);
+                }
+                Op::EvalNative { dst, native } => {
+                    let v = k.k_eval_native(&body.natives[native as usize]);
                     regs[dst as usize] = Some(v);
                 }
                 Op::ResolveOff { dst, lhs } => {
@@ -438,7 +501,7 @@ mod tests {
             block(vec![0], Terminator::Return),
         ];
         assert!(is_codegen_able(&a, &body));
-        let cb = compile_body(&a, &body);
+        let cb = compile_body(&a, &body, None);
 
         // 1:1 block count + per-index terminator mapping.
         assert_eq!(cb.blocks.len(), body.len(), "block count must be 1:1");
@@ -483,7 +546,7 @@ mod tests {
             },
         ];
         let body = vec![block(vec![0, 1], Terminator::Return)];
-        let cb = compile_body(&stmts, &body);
+        let cb = compile_body(&stmts, &body, None);
         assert_eq!(cb.blocks[0].ops.len(), 3); // Eval, ScheduleNba, SysTask
         assert!(matches!(
             cb.blocks[0].ops[0],

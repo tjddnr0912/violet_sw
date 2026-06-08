@@ -250,6 +250,149 @@ fn blocking_index_sample_equals_across_backends() {
     assert_eq!(oi.trim(), "171 0 1", "a[i]=K must sample i BEFORE i=i+1");
 }
 
+// ── [C4-lite] native-eval teeth: designs whose codegen-able bodies exercise the
+// VM-only native expression fast path (Const/scalar Signal, +/-/* , &/|/^/~^, ~,
+// unary +/-) at ≤64 bits. The native path must be byte-identical to the kernel
+// tree-walk `eval_ctx` the interpreter uses — these give the P5 gate teeth ON the
+// native path (the round-robin corpus does not target it specifically). Each asserts
+// cross-backend identity AND a hand-computed witness so a silently-wrong native op
+// (which would match neither) is caught.
+
+/// Run `src` on both backends, assert byte-identical stdout/VCD/summary, and return
+/// the (shared) stdout for an additional witness assertion.
+fn assert_backends_equal(src: &str, name: &str) -> String {
+    let ir = build(src);
+    let (ri, oi, vi) = run_capture(&ir, Backend::Interpreter, name);
+    let (rb, ob, vb) = run_capture(&ir, Backend::Bytecode, name);
+    assert_eq!(oi, ob, "stdout differs across backends for `{name}`");
+    assert_eq!(vi, vb, "VCD differs across backends for `{name}`");
+    assert_eq!(ri.sim_time, rb.sim_time, "sim_time differs for `{name}`");
+    assert_eq!(
+        ri.finish_reason, rb.finish_reason,
+        "finish_reason differs for `{name}`"
+    );
+    assert_eq!(
+        ri.exit_class, rb.exit_class,
+        "exit_class differs for `{name}`"
+    );
+    oi
+}
+
+/// A deep arithmetic chain (the EXPR_HEAVY shape) in a codegen-able always body:
+/// `acc <= acc + acc + ... + 1` over a few clocks. Pure native `Add`s on 32 bits.
+#[test]
+fn native_arith_chain_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [31:0] acc;\n\
+      integer k;\n\
+      always @(posedge clk) acc <= acc + acc + acc + acc + 32'd1;\n\
+      initial begin\n\
+        acc = 32'd1; clk = 0;\n\
+        for (k = 0; k < 5; k = k + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+        #1 $display(\"%0d\", acc); $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_arith_chain");
+    // acc_{n+1} = 4*acc_n + 1, acc_0=1: 1→5→21→85→341→1365.
+    assert_eq!(
+        out.trim(),
+        "1365",
+        "native add chain must compute 4*acc+1 per clock"
+    );
+}
+
+/// X/Z propagation: an uninitialised reg is all-X; any arith touching it must poison
+/// the whole result to X (native `(0,unk)` poison mirroring `Value::xs`). `%0d` of an
+/// all-X 8-bit value prints `x`; both backends must agree.
+#[test]
+fn native_arith_xz_poison_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [7:0] a, b, s;\n\
+      always @(posedge clk) s <= a + b;\n\
+      initial begin\n\
+        a = 8'hxx; b = 8'd5; clk = 0;        // a is X ⇒ s must be all-X\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%0d %h\", s, s); $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_xz_poison");
+    assert_eq!(
+        out.trim(),
+        "x xx",
+        "X operand must poison the whole native add to X"
+    );
+}
+
+/// Signed arithmetic + two's-complement negate at ≤64 bits. The native low-`w` math
+/// is sign-independent at the bit level, so the printed signed value must match the
+/// interpreter's signed-lane result.
+#[test]
+fn native_signed_arith_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg signed [7:0] a, b, d;\n\
+      always @(posedge clk) d <= a - b;\n\
+      initial begin\n\
+        a = -8'sd10; b = 8'sd20; clk = 0;    // -10 - 20 = -30\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%0d\", d); $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_signed");
+    assert_eq!(
+        out.trim(),
+        "-30",
+        "signed native sub must wrap two's-complement"
+    );
+}
+
+/// 4-state bitwise + complement: mixes definite bits with X so the native `and_w/
+/// or_w/xor_w/xnor_w/not_w` truth tables (not just 2-state) are exercised.
+#[test]
+fn native_bitwise_4state_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [7:0] a, b, x1, x2, x3, n;\n\
+      always @(posedge clk) begin\n\
+        x1 <= a & b; x2 <= a | b; x3 <= a ^ b; n <= ~a;\n\
+      end\n\
+      initial begin\n\
+        a = 8'b1010_01xz; b = 8'b1100_0011; clk = 0;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%h %h %h %h\", x1, x2, x3, n); $finish;\n\
+      end\n\
+    endmodule";
+    // Just identity across backends — the 4-state result is whatever the oracle says;
+    // the point is the native path reproduces it bit-for-bit.
+    assert_backends_equal(src, "native_bitwise");
+}
+
+/// Mixed operand widths into a wider context (8-bit + 16-bit → 16-bit): exercises the
+/// per-node context width/sign propagation in `try_compile` (each leaf resizes to the
+/// node width via the SAME `resize_keep_sign` the oracle uses).
+#[test]
+fn native_mixed_width_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [7:0]  a;\n\
+      reg [15:0] b, s;\n\
+      always @(posedge clk) s <= a + b;     // 8-bit a widens into the 16-bit add\n\
+      initial begin\n\
+        a = 8'd200; b = 16'd1000; clk = 0;  // 200 + 1000 = 1200, no truncation\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%0d\", s); $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_mixed_width");
+    assert_eq!(
+        out.trim(),
+        "1200",
+        "8-bit operand must widen into the 16-bit native add"
+    );
+}
+
 /// [C3 word-write] Exercise the WORD-PARALLEL net write/read fast path on a 64-bit-
 /// element array (`net_w % 64 == 0` ⇒ each element is a whole store word ⇒ the aligned
 /// fast path is taken) and PROVE element INDEPENDENCE: a word-granular write to one
