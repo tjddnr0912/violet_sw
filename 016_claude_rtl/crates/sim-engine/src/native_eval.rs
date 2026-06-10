@@ -10,9 +10,12 @@
 //! leaves `Const` (non-real) and scalar `Signal` (`word == None`); binary
 //! `Add`/`Sub`/`Mul`/`Div`/`Mod`, the four bitwise ops, all eight comparisons
 //! (`<`/`<=`/`>`/`>=`/`==`/`!=`/`===`/`!==`), shifts (`<<`/`>>`/`>>>`), logical
-//! `&&`/`||`; unary `BitNot`/`Plus`/`Minus`, the six reductions, `!`; and the
-//! ternary `?:` (X-cond branch merge included). Any other variant (`**`, concat,
-//! replicate, select, sysfunc, call), a real const, an array-indexed signal, or a
+//! `&&`/`||`; unary `BitNot`/`Plus`/`Minus`, the six reductions, `!`; the
+//! ternary `?:` (X-cond branch merge included); and the structural trio —
+//! bit/part `Select` (dynamic offset, X/Z-offset and out-of-range → X),
+//! `Concat`, `Replicate` (const count) — all unsigned zero-extended into their
+//! context exactly as the oracle's `resize_keep_sign(w, false)`. Any other
+//! variant (`**`, sysfunc, call), a real const, an array-indexed signal, or a
 //! node wider than 64 bits makes the whole expression return `None`, so the VM
 //! delegates to the kernel's tree-walk `eval_ctx` (the differential ORACLE). The
 //! over-64-bit lane and real stay deferred follow-ons.
@@ -33,7 +36,7 @@
 //! masked to its node width on production, so the program rebuilds exactly one
 //! `Value` at the end.
 
-use sim_ir::{BinOp, ConstRepr, Expr, SimIr, UnOp};
+use sim_ir::{BinOp, ConstRepr, Expr, SelKind, SimIr, UnOp};
 
 use crate::eval::NetReader;
 use crate::value::{and_w, low_mask, not_w, or_w, xnor_w, xor_w, Value};
@@ -120,6 +123,21 @@ enum NOp {
     LogNot { opw: u32 },
     /// pop r, pop l (each self-determined) → push 1-bit `&&`/`||` (tri-valued).
     LogBin { and: bool, lw: u32, rw: u32 },
+    /// pop offset (self-determined), pop base (`src_w` self bits) → push the
+    /// `sel_w` gathered bits zero-extended to node width (oracle `eval_select`
+    /// then unsigned `resize_keep_sign`): X/Z offset ⇒ `sel_w` X bits; an
+    /// out-of-range source bit reads X.
+    Select {
+        kind: SelKind,
+        sel_w: u32,
+        src_w: u32,
+    },
+    /// pop lo (`lo_w` self bits), pop hi → push `(hi << lo_w) | lo` masked to
+    /// the running natural concat width `w` (4-state planes shift+or alike).
+    ConcatPair { lo_w: u32, w: u32 },
+    /// pop part (`part_w` self bits) → push it repeated `count` times (`w` =
+    /// part_w × count natural bits; X/Z bits repeat with the pattern).
+    Repl { part_w: u32, count: u32, w: u32 },
 }
 
 /// A compiled expression. `root_w`/`root_signed` stamp the final `Value` so it is
@@ -141,7 +159,11 @@ const NATIVE_STACK: usize = 64;
 fn arity(op: &NOp) -> (u32, u32) {
     match op {
         NOp::Const { .. } | NOp::LoadScalar { .. } => (0, 1),
-        NOp::Not { .. } | NOp::Neg { .. } | NOp::Reduce { .. } | NOp::LogNot { .. } => (1, 1),
+        NOp::Not { .. }
+        | NOp::Neg { .. }
+        | NOp::Reduce { .. }
+        | NOp::LogNot { .. }
+        | NOp::Repl { .. } => (1, 1),
         NOp::Ternary { .. } => (3, 1),
         _ => (2, 1),
     }
@@ -206,14 +228,21 @@ pub(crate) fn try_compile(
     if maxd as usize > NATIVE_STACK {
         return None; // absurdly right-leaning nesting: leave it to the oracle
     }
+    // At the root, `ctx_signed` IS `rhs` self-sign (eval_for_lvalue), so
+    // `eff_signed = self_signed && ctx_signed == ctx_signed`, and the arith/
+    // bitwise/compare arms stamp the result `signed = eff_signed` = `ctx_signed`.
+    // The STRUCTURAL arms are the exception: the oracle finishes them with
+    // `resize_keep_sign(w, false)` (select/concat/replicate are unsigned by
+    // definition), which stamps `signed = false` REGARDLESS of context — mirror
+    // that so a structural root matches the oracle for any caller-provided ctx.
+    let root_signed = match ir.exprs.get(eid as usize) {
+        Some(Expr::Select { .. } | Expr::Concat { .. } | Expr::Replicate { .. }) => false,
+        _ => ctx_signed,
+    };
     Some(NativeProg {
         ops,
         root_w,
-        // At the root, `ctx_signed` IS `rhs` self-sign (eval_for_lvalue), so
-        // `eff_signed = self_signed && ctx_signed == ctx_signed`, and every oracle
-        // arm stamps the result `signed = eff_signed`. So the final Value's sign flag
-        // is `ctx_signed` — matching `resize_keep_sign(w, ctx_signed)`.
-        root_signed: ctx_signed,
+        root_signed,
     })
 }
 
@@ -427,7 +456,78 @@ fn lower(
             ops.push(NOp::Ternary { w, cond_w });
             Some(())
         }
-        // concat / replicate / select / sysfunc / call: deferred increment.
+        // ── structural ops: SELF-determined natural value, then UNSIGNED
+        //    zero-extend to the node width (oracle: `eval_select`/`eval_concat`/
+        //    `eval_replicate` + `resize_keep_sign(w, false)` — and unsigned
+        //    `resize` is a plain zero-extend, which is FREE here because every
+        //    register keeps its upper bits 0). ──
+        Expr::Select {
+            base,
+            offset,
+            width,
+            kind,
+        } => {
+            // `width` is a const-expr edge — fold it exactly as the oracle does
+            // (`unwrap_or(1)`); `Bit` forces a 1-bit select regardless.
+            let folded = crate::width::const_u32_of_expr(ir, *width).unwrap_or(1);
+            let sel_w = match kind {
+                SelKind::Bit => 1,
+                _ => folded,
+            };
+            let src_w = wt.get(*base).width;
+            if sel_w == 0 || sel_w > 64 || src_w == 0 || src_w > 64 {
+                return None;
+            }
+            lower(ir, wt, *base, 0, true, ops)?; // oracle: self.eval(base)
+            lower(ir, wt, *offset, 0, true, ops)?; // oracle: self.eval(offset)
+            ops.push(NOp::Select {
+                kind: *kind,
+                sel_w,
+                src_w,
+            });
+            Some(())
+        }
+        Expr::Concat { parts } => {
+            // parts[0] is MSB-most; left-fold `(hi << lo_w) | lo` reproduces the
+            // oracle's top-down fill. Natural width = Σ self widths ≤ node w ≤ 64.
+            let (&first, rest) = parts.split_first()?;
+            let mut tot = wt.get(first).width;
+            if tot == 0 || tot > 64 {
+                return None;
+            }
+            lower(ir, wt, first, 0, true, ops)?;
+            for &p in rest {
+                let pw = wt.get(p).width;
+                if pw == 0 || pw > 64 {
+                    return None;
+                }
+                tot = tot.checked_add(pw).filter(|&t| t <= 64)?;
+                lower(ir, wt, p, 0, true, ops)?;
+                ops.push(NOp::ConcatPair { lo_w: pw, w: tot });
+            }
+            Some(())
+        }
+        Expr::Replicate { count, value } => {
+            // `count` is a const-expr edge (oracle folds with `unwrap_or(0)`);
+            // a zero count is the degenerate width-0 case — leave it to the oracle.
+            let count = crate::width::const_u32_of_expr(ir, *count).unwrap_or(0);
+            if count == 0 {
+                return None;
+            }
+            let part_w = wt.get(*value).width;
+            if part_w == 0 || part_w > 64 {
+                return None;
+            }
+            let total = part_w.checked_mul(count).filter(|&t| t <= 64)?;
+            lower(ir, wt, *value, 0, true, ops)?;
+            ops.push(NOp::Repl {
+                part_w,
+                count,
+                w: total,
+            });
+            Some(())
+        }
+        // sysfunc / call / array-indexed signal: deferred increment.
         _ => None,
     }
 }
@@ -707,6 +807,56 @@ pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
                 };
                 stack.push(res);
             }
+            NOp::Select { kind, sel_w, src_w } => {
+                let (off_v, off_u) = stack.pop().expect("native select: missing offset");
+                let (sv, su) = stack.pop().expect("native select: missing base");
+                let m = low_mask(sel_w);
+                // Oracle: X/Z offset (or one beyond the i64 lane) ⇒ the whole
+                // select reads X at its natural width (upper bits stay 0 — the
+                // unsigned resize is a zero-extend).
+                let res = match (off_u == 0)
+                    .then_some(off_v)
+                    .and_then(|v| i64::try_from(v).ok())
+                {
+                    None => (0, m),
+                    Some(off) => {
+                        let lsb = match kind {
+                            SelKind::Bit | SelKind::PartConst | SelKind::PartIdxUp => off,
+                            SelKind::PartIdxDown => off - (sel_w as i64) + 1,
+                        };
+                        let (mut rv, mut ru) = (0u64, 0u64);
+                        for i in 0..sel_w as i64 {
+                            let si = lsb + i;
+                            if si >= 0 && (si as u32) < src_w {
+                                rv |= ((sv >> si) & 1) << i;
+                                ru |= ((su >> si) & 1) << i;
+                            } else {
+                                ru |= 1 << i; // out-of-range read → X (val=0)
+                            }
+                        }
+                        (rv, ru)
+                    }
+                };
+                stack.push(res);
+            }
+            NOp::ConcatPair { lo_w, w } => {
+                let (lo_v, lo_u) = stack.pop().expect("native concat: missing lo");
+                let (hi_v, hi_u) = stack.pop().expect("native concat: missing hi");
+                let m = low_mask(w);
+                // lo_w ≤ 63 here: with ≥2 parts of ≥1 bit each and w ≤ 64.
+                stack.push((((hi_v << lo_w) | lo_v) & m, ((hi_u << lo_w) | lo_u) & m));
+            }
+            NOp::Repl { part_w, count, w } => {
+                let (pv, pu) = stack.pop().expect("native repl: missing part");
+                let (mut rv, mut ru) = (0u64, 0u64);
+                for c in 0..count {
+                    let sh = c * part_w; // (count-1)·part_w < w ≤ 64
+                    rv |= pv << sh;
+                    ru |= pu << sh;
+                }
+                let m = low_mask(w);
+                stack.push((rv & m, ru & m));
+            }
         }
     }
     let (fv, fu) = stack.pop().expect("native eval produced no result");
@@ -953,12 +1103,19 @@ mod tests {
 
     #[test]
     fn unsupported_operator_bails() {
-        // Concat stays outside the subset → None (Div joined the subset in the
-        // comparisons/shifts/div increment).
+        // SysFunc stays outside the subset → None (Concat/Select/Replicate
+        // joined in the structural increment).
         let ir = ir_of(
-            vec![sig(0), sig(1), Expr::Concat { parts: vec![0, 1] }],
+            vec![
+                sig(0),
+                Expr::SysFunc {
+                    which: sim_ir::SysFuncId::Time,
+                    args: vec![],
+                },
+                bin(BinOp::Add, 0, 1),
+            ],
             vec![],
-            vec![nv(32, false), nv(32, false)],
+            vec![nv(32, false)],
         );
         let wt = WidthTable::build(&ir);
         assert!(try_compile(&ir, &wt, 2, 64, false).is_none());
@@ -1208,5 +1365,174 @@ mod tests {
             false,
             &[vw(16, 1000), vw(16, 2000), vw(16, 2), vw(16, 3)],
         );
+    }
+
+    // ── follow-on increment 2: select / concat / replicate (REMAINING_WORK
+    //    "native-eval >64bit/real/select/concat lane" — the ≤64-bit half) ──
+
+    fn cnum(w: u32, x: u64) -> sim_ir::ConstVal {
+        sim_ir::ConstVal {
+            width: w,
+            signed: false,
+            repr: sim_ir::ConstRepr::Numeric,
+            bits: sim_ir::BitPacked {
+                val: vec![x],
+                unk: vec![0],
+            },
+        }
+    }
+
+    #[test]
+    fn bit_select_matches_oracle() {
+        // exprs: 0=sig0(16b), 1=Const#0 (offset), 2=Const#1 (width edge, =1),
+        // 3 = sig0[off]. Sweep in-range bits (0/1/X at the picked bit) + OOR.
+        for off in [0u64, 5, 15, 16, 200] {
+            let ir = ir_of(
+                vec![
+                    sig(0),
+                    Expr::Const { val: 0 },
+                    Expr::Const { val: 1 },
+                    Expr::Select {
+                        base: 0,
+                        offset: 1,
+                        width: 2,
+                        kind: SelKind::Bit,
+                    },
+                ],
+                vec![cnum(32, off), cnum(32, 1)],
+                vec![nv(16, false)],
+            );
+            assert_matches_oracle(
+                &ir,
+                3,
+                8,
+                false,
+                &[vw_xz(16, 0b1010_0101_1100_0011, 0b10_0000)],
+            );
+        }
+    }
+
+    #[test]
+    fn part_selects_match_oracle_incl_oor_and_xz_src() {
+        // [11:4] as PartConst(off=4,w=8); s[4 +: 8]; s[11 -: 8]; plus a select
+        // whose window hangs off the top (off=12 ⇒ upper bits OOR→X) and one off
+        // the bottom (IdxDown off=3 ⇒ lsb=-4 ⇒ low bits OOR→X).
+        for (kind, off) in [
+            (SelKind::PartConst, 4u64),
+            (SelKind::PartIdxUp, 4),
+            (SelKind::PartIdxDown, 11),
+            (SelKind::PartConst, 12),
+            (SelKind::PartIdxDown, 3),
+        ] {
+            let ir = ir_of(
+                vec![
+                    sig(0),
+                    Expr::Const { val: 0 },
+                    Expr::Const { val: 1 },
+                    Expr::Select {
+                        base: 0,
+                        offset: 1,
+                        width: 2,
+                        kind,
+                    },
+                ],
+                vec![cnum(32, off), cnum(32, 8)],
+                vec![nv(16, false)],
+            );
+            // ctx wider than the select (32) — proves the unsigned zero-extend;
+            // ctx_signed=true proves a select stays unsigned in a signed context.
+            assert_matches_oracle(&ir, 3, 32, true, &[vw_xz(16, 0xA5C3, 0x0420)]);
+        }
+    }
+
+    #[test]
+    fn dynamic_select_offset_from_net_matches_oracle() {
+        // offset comes from a NET (exprs: 1=sig1) — in-range, OOR, and X-offset.
+        let ir = ir_of(
+            vec![
+                sig(0),
+                sig(1),
+                Expr::Const { val: 0 },
+                Expr::Select {
+                    base: 0,
+                    offset: 1,
+                    width: 2,
+                    kind: SelKind::PartIdxUp,
+                },
+            ],
+            vec![cnum(32, 4)],
+            vec![nv(16, false), nv(8, false)],
+        );
+        let src = vw_xz(16, 0xA5C3, 0x0420);
+        assert_matches_oracle(&ir, 3, 16, false, &[src.clone(), vw(8, 6)]);
+        assert_matches_oracle(&ir, 3, 16, false, &[src.clone(), vw(8, 14)]); // window OOR top
+                                                                             // X/Z offset ⇒ the whole select reads X (zero-extended into ctx).
+        assert_matches_oracle(&ir, 3, 16, false, &[src, vw_xz(8, 6, 0b1)]);
+    }
+
+    #[test]
+    fn concat_matches_oracle() {
+        // {sig0(8b), sig1(4b), sig2(4b)} = 16 natural bits; parts[0] is MSB-most.
+        let ir = ir_of(
+            vec![
+                sig(0),
+                sig(1),
+                sig(2),
+                Expr::Concat {
+                    parts: vec![0, 1, 2],
+                },
+            ],
+            vec![],
+            vec![nv(8, false), nv(4, false), nv(4, false)],
+        );
+        // clean + X/Z-bearing parts; ctx 32 (zero-extend) and ctx_signed=true
+        // (concat is unsigned regardless of context).
+        assert_matches_oracle(&ir, 3, 32, true, &[vw(8, 0xAB), vw(4, 0x5), vw(4, 0xC)]);
+        assert_matches_oracle(
+            &ir,
+            3,
+            32,
+            true,
+            &[vw_xz(8, 0xAB, 0x0F), vw_xz(4, 0x5, 0b1000), vw(4, 0xC)],
+        );
+    }
+
+    #[test]
+    fn replicate_matches_oracle() {
+        // {3{sig0(5b)}} = 15 natural bits, X bits repeat with the pattern.
+        let ir = ir_of(
+            vec![
+                sig(0),
+                Expr::Const { val: 0 },
+                Expr::Replicate { count: 1, value: 0 },
+            ],
+            vec![cnum(32, 3)],
+            vec![nv(5, false)],
+        );
+        assert_matches_oracle(&ir, 2, 16, false, &[vw(5, 0b10110)]);
+        assert_matches_oracle(&ir, 2, 16, false, &[vw_xz(5, 0b10110, 0b00100)]);
+    }
+
+    #[test]
+    fn select_of_concat_composes() {
+        // {sig0, sig1}[6 +: 4] — structural ops compose inside one program.
+        let ir = ir_of(
+            vec![
+                sig(0),
+                sig(1),
+                Expr::Concat { parts: vec![0, 1] },
+                Expr::Const { val: 0 },
+                Expr::Const { val: 1 },
+                Expr::Select {
+                    base: 2,
+                    offset: 3,
+                    width: 4,
+                    kind: SelKind::PartIdxUp,
+                },
+            ],
+            vec![cnum(32, 6), cnum(32, 4)],
+            vec![nv(8, false), nv(8, false)],
+        );
+        assert_matches_oracle(&ir, 5, 8, false, &[vw(8, 0x3C), vw_xz(8, 0xF0, 0x0F)]);
     }
 }

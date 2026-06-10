@@ -212,6 +212,19 @@ bitwise는 `value::*_w` 동일 primitive; native_eval 오라클 대조 단위 8 
 P5 차분 + iverilog 차분(460 green). frozen sim-ir 0줄 변경. follow-on(비교/시프트/Div·Mod/리덕션/ternary/concat/
 >64bit/real)은 `../ROADMAP.md` §C.
 
+### native-eval 구조 증분 (2026-06-10) — select/concat/replicate, 구조-바운드 ≈2.8x
+
+C4-lite follow-on 2탄: **구조 트리오**가 native 서브셋에 합류 — bit/part `Select`(동적 offset,
+X/Z-offset·OOR→X), `Concat`(`(hi<<lo_w)|lo` 좌측 fold = 오라클의 top-down fill), `Replicate`
+(const count). 전부 자연폭 unsigned (`resize_keep_sign(w,false)` = 플레인 zero-extend — 레지스터
+상위비트가 이미 0이라 **공짜**). ⭐함정: 구조 op의 오라클 root 스탬프는 signed ctx에서도
+`signed=false`(`resize_keep_sign(w, false)`) — root_signed를 root 노드 종류로 분기(실사용 ctx에선
+미발화나, 임의 ctx 호출자 대비 오라클 정합). 신규 `STRUCT_HEAVY` 벤치(문장당 select 4 + concat 3 +
+replicate 1): **VM 0.36x interp(≈2.8x)** — 증분 전엔 select/concat 노드 하나가 전체 식을 오라클로
+bail시켜 ~0.9x였던 영역. 검증: 오라클 대조 단위 6(동적 offset X·OOR·합성 select-of-concat 포함) +
+teeth `native_select_concat_repl`(iverilog 라이브 일치 "5c 5c 5c 0 5c5c 5c5c xx") + P5 차분.
+잔여 lane: >64bit·real·array-indexed Signal·sysfunc.
+
 ### 스케줄러축 라운드 1 (2026-06-10) — 클럭-바운드 ≈1.85x
 
 `CODEGEN_HEAVY`(클럭-바운드: 20k 사이클 × 5 NBA, native-eval이 못 움직이던 케이스)를

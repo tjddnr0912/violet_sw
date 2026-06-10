@@ -437,3 +437,43 @@ fn word_aligned_array_write_read_equals_and_independent() {
         "64-bit array elements must be written/read correctly AND independently"
     );
 }
+
+/// Structural increment: bit/part selects (incl. dynamic offsets), concat and
+/// replicate compiled native inside a codegen-able body — both backends must
+/// produce identical bytes AND the expected oracle values.
+#[test]
+fn native_select_concat_repl_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [15:0] s;\n\
+      reg [3:0] idx;\n\
+      reg [7:0] p, q, r, m;\n\
+      reg b0;\n\
+      reg [15:0] cat, rep;\n\
+      always @(posedge clk) begin\n\
+        p <= s[11:4];\n\
+        q <= s[idx +: 8];\n\
+        r <= s[11 -: 8];\n\
+        b0 <= s[5];\n\
+        cat <= {p, q};\n\
+        rep <= {2{p}};\n\
+        m <= s[idx2 +: 8];\n\
+      end\n\
+      reg [3:0] idx2;\n\
+      initial begin\n\
+        s = 16'hA5C3; idx = 4'd4; idx2 = 4'bxxxx; clk = 0;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%h %h %h %b %h %h %h\", p, q, r, b0, cat, rep, m);\n\
+        $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_select_concat_repl");
+    // s=A5C3=1010_0101_1100_0011: [11:4]=5C, [4+:8]=5C, [11-:8]=5C, s[5]=0,
+    // {p,q}=5C5C, {2{p}}=5C5C; X index ⇒ m all-X.
+    assert_eq!(
+        out.trim(),
+        "5c 5c 5c 0 5c5c 5c5c xx",
+        "native structural ops must match the oracle's select/concat/replicate"
+    );
+}

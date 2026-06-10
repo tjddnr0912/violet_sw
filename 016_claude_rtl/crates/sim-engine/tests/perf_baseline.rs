@@ -130,6 +130,31 @@ const EXPR_HEAVY: &str = "module top;\n\
   end\n\
 endmodule";
 
+/// STRUCTURAL-bound: selects, concats and a replicate per statement inside a hot
+/// loop — the shape the native structural increment (Select/ConcatPair/Repl ops)
+/// targets. Before that increment any select/concat node bailed the WHOLE
+/// expression to `eval_ctx`, so this regime sat at VM ≈ interp.
+const STRUCT_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  reg [31:0] s;\n\
+  reg [15:0] acc;\n\
+  reg [3:0] idx;\n\
+  integer i;\n\
+  integer j;\n\
+  always @(posedge clk) begin\n\
+    for (i = 0; i < 3000; i = i + 1) begin\n\
+      acc = acc + {s[11:4], s[3:0], s[19 -: 4]} + {2{s[7:0]}};\n\
+      acc = acc ^ {12'd0, s[idx +: 4]};\n\
+      s = {s[30:0], s[31]};\n\
+    end\n\
+  end\n\
+  initial begin\n\
+    s = 32'hA5C31234; acc = 0; idx = 4'd6; clk = 0;\n\
+    for (j = 0; j < 100; j = j + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
 fn report(name: &str, src: &str, reps: u32) {
     let ir = build(src);
     let interp = time_backend(&ir, Backend::Interpreter, reps);
@@ -151,6 +176,11 @@ fn perf_baseline_codegen_heavy() {
     report(
         "expr-heavy (deep operator chain; native-eval target)",
         EXPR_HEAVY,
+        5,
+    );
+    report(
+        "struct-heavy (select/concat/replicate; structural-native target)",
+        STRUCT_HEAVY,
         5,
     );
 }
