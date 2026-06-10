@@ -205,7 +205,10 @@ fn lower(
     if w == 0 || w > 64 {
         return None;
     }
-    match &ir.exprs[eid as usize] {
+    // P2-8: a same-schema corrupted `.velab` can carry an out-of-range ExprId;
+    // bail to the interpreter (which raises its own diagnostics) over panicking.
+    let expr = ir.exprs.get(eid as usize)?;
+    match expr {
         Expr::Const { val } => {
             let r = const_value(ir, *val)?.resize_keep_sign(w, eff_signed);
             let m = low_mask(w);

@@ -115,6 +115,13 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
             .copied()
             .unwrap_or(1)
             .max(1) as u64;
+        // `%m` scope of this process (P2-11); flat "top" when no sidecar.
+        sched.st.cur_scope = sched
+            .st
+            .proc_scopes
+            .get(tmpl)
+            .cloned()
+            .unwrap_or_else(|| "top".to_string());
         let (stmt_ids, term) = {
             let body = &sched.st.ir.processes[tmpl].body;
             let block = &body[bb as usize];

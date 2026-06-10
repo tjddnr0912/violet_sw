@@ -129,3 +129,30 @@ fn threads_env_accepted() {
         let _ = std::fs::remove_file(p);
     }
 }
+
+// ── P2-9: `--timeout <ticks>` CI killswitch ─────────────────────────────────
+
+/// A design that never `$finish`es is bounded by `--timeout` (clean exit 0).
+#[test]
+fn timeout_bounds_endless_design() {
+    let src = write_tmp(
+        "tmo.sv",
+        "module t; reg clk; initial clk = 0; always #1 clk = ~clk; endmodule",
+    );
+    let out = vita(&[src.to_str().unwrap(), "--timeout", "200"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn timeout_invalid_value_exits_three() {
+    let src = write_tmp("tmobad.sv", "module t; endmodule");
+    let out = vita(&[src.to_str().unwrap(), "--timeout", "soon"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(out.status.code(), Some(3));
+}

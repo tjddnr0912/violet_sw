@@ -39,6 +39,10 @@ pub struct VitaOpts {
     /// `VITA_THREADS` env if set, else `min(available_parallelism, 8)`. Output is
     /// byte-identical for every value (the P4 contract) — wall-clock only.
     pub threads: Option<u32>,
+    /// Hard cap on advanced simulation time in ticks (CLI `--timeout N`, P2-9).
+    /// Reaching it ends the run cleanly (Quiescent) — a CI killswitch for
+    /// designs that never `$finish`. `None` ⇒ unbounded.
+    pub time_limit: Option<u64>,
 }
 
 impl VitaOpts {
@@ -46,6 +50,7 @@ impl VitaOpts {
         SimOpts {
             vcd_path_override: self.vcd_path_override.clone(),
             threads: resolve_threads(self.threads),
+            time_limit: self.time_limit,
             ..SimOpts::default()
         }
     }
@@ -364,6 +369,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
         proc_multipliers: sc.proc_multipliers,
         severities: sc.severities,
         radixes: sc.radixes,
+        proc_scopes: sc.proc_scopes,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
@@ -501,13 +507,14 @@ pub fn run(argv: &[String]) -> i32 {
             // One-shot flag surface: `-o <vcd>` + `--threads N` (P4-T1), then
             // positional sources. (Before T1 the one-shot accepted NO flags —
             // `-o` was read as a source file.)
-            let (pos, out, threads) = match parse_io_args(&args) {
+            let (pos, out, threads, time_limit) = match parse_io_args(&args) {
                 Ok(x) => x,
                 Err(c) => return c,
             };
             let opts = VitaOpts {
                 vcd_path_override: out,
                 threads,
+                time_limit,
             };
             run_vita(&pos, &opts)
         }
@@ -553,8 +560,10 @@ fn print_help(applet: &str) {
     );
     println!("{body}");
     println!(
-        "\nOptions:\n  -o, --out <PATH>   output path override\n  \
-         -h, --help         print help\n  -V, --version      print version"
+        "\nOptions:\n  -o, --out <PATH>      output path override\n  \
+         --threads, -j <N>     worker threads (output byte-identical for any N)\n  \
+         --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
+         -h, --help            print help\n  -V, --version         print version"
     );
 }
 
@@ -803,6 +812,9 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&sc.radixes).expect("radix trailer postcard encode infallible"),
     );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.proc_scopes).expect("scope trailer postcard encode infallible"),
+    );
     let vheader = artifact_header(vita_schema::schema_hash::<sim_ir::SimIr>(), global_prec_exp);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
     if let Err(e) = write_artifact_atomic(out, &out_bytes) {
@@ -913,16 +925,32 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
         }
     };
     // Radix trailer (b/o/h print variants, P1-5). Tolerant → empty ⇒ decimal.
-    let radixes: sim_engine::RadixTable = if rest5.is_empty() {
-        sim_engine::RadixTable::new()
+    let (radixes, rest6): (sim_engine::RadixTable, &[u8]) = if rest5.is_empty() {
+        (sim_engine::RadixTable::new(), rest5)
     } else {
-        match postcard::from_bytes(rest5) {
+        match postcard::take_from_bytes(rest5) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     &sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab radix trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // Scope trailer (`%m`, P2-11). Tolerant → empty ⇒ flat `top`.
+    let proc_scopes: Vec<String> = if rest6.is_empty() {
+        Vec::new()
+    } else {
+        match postcard::from_bytes(rest6) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    &sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab scope trailer: {e}"
                     )),
                 )
             }
@@ -936,6 +964,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
         proc_multipliers,
         severities,
         radixes,
+        proc_scopes,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
@@ -945,13 +974,14 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
 
 /// Parse a flat arg list into (positional paths, `-o` value). `-o`/`--out`
 /// consume the next arg. Unknown flags → `Err(EXIT_CLI_ERROR)`.
-/// Parsed common applet flags: (positional args, `-o` value, `--threads` value).
-type IoArgs = (Vec<String>, Option<String>, Option<u32>);
+/// Parsed common applet flags: (positional args, `-o`, `--threads`, `--timeout`).
+type IoArgs = (Vec<String>, Option<String>, Option<u32>, Option<u64>);
 
 fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut pos = Vec::new();
     let mut out = None;
     let mut threads = None;
+    let mut timeout = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -980,6 +1010,20 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                 threads = Some(n.max(1));
                 i += 2;
             }
+            // P2-9: CI killswitch — cap advanced sim time (ticks). Reaching the
+            // cap ends the run cleanly (Quiescent), bounding `always #1;` hangs.
+            "--timeout" => {
+                let parsed = args.get(i + 1).and_then(|v| v.parse::<u64>().ok());
+                let Some(n) = parsed else {
+                    eprintln!(
+                        "error[{}]: '--timeout' needs a tick count",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                timeout = Some(n);
+                i += 2;
+            }
             s if s.starts_with('-') && s.len() > 1 => {
                 eprintln!(
                     "error[{}]: unknown flag '{s}'",
@@ -993,11 +1037,11 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
             }
         }
     }
-    Ok((pos, out, threads))
+    Ok((pos, out, threads, timeout))
 }
 
 fn dispatch_vcmp(args: &[String]) -> i32 {
-    let (pos, out, _threads) = match parse_io_args(args) {
+    let (pos, out, _threads, _timeout) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -1016,7 +1060,7 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
 }
 
 fn dispatch_velab(args: &[String]) -> i32 {
-    let (pos, out, _threads) = match parse_io_args(args) {
+    let (pos, out, _threads, _timeout) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -1035,7 +1079,7 @@ fn dispatch_velab(args: &[String]) -> i32 {
 }
 
 fn dispatch_vrun(args: &[String]) -> i32 {
-    let (pos, out, threads) = match parse_io_args(args) {
+    let (pos, out, threads, time_limit) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -1060,6 +1104,7 @@ fn dispatch_vrun(args: &[String]) -> i32 {
     let opts = VitaOpts {
         vcd_path_override: out,
         threads,
+        time_limit,
         ..Default::default()
     };
     run_vrun(&pos[0], &opts)
@@ -1180,6 +1225,7 @@ mod tests {
         let opts = VitaOpts {
             vcd_path_override: Some(vcd_str.clone()),
             threads: None,
+            time_limit: None,
         };
         let (code, _) = run_on_temp(&src, &opts);
         assert_eq!(code, EXIT_OK);

@@ -60,6 +60,9 @@ const GENERATE_DEPTH_CAP: u32 = 32;
 /// overflow the `+1` width arithmetic. 2^20 bits = 16 KiB of planes per net —
 /// generous for real RTL, hostile-input-safe. (COVERAGE verdict HIGH.)
 const MAX_NET_WIDTH: u64 = 1 << 20;
+/// P2-6: unpacked-array element cap (16M elements; with the 1 MiB-bit width cap
+/// the worst legal net is still bounded far below an OOM-kill allocation).
+const MAX_ARRAY_LEN: u64 = 1 << 24;
 
 /// Poison NetId returned on an unresolvable reference. `u32::MAX` (not 0) so an
 /// accidentally-surviving placeholder edge is detectable, never a silent alias
@@ -143,6 +146,9 @@ pub struct Sidecars {
     pub proc_multipliers: Vec<u32>,
     pub severities: SeverityTable,
     pub radixes: RadixTable,
+    /// Per-ProcId hierarchical instance path (`"tb.u1"`) — drives `%m` (P2-11).
+    /// Parallel to `processes`, like `proc_multipliers`.
+    pub proc_scopes: Vec<String>,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -189,6 +195,7 @@ pub fn elaborate_with_timescale(
         proc_multipliers: std::mem::take(&mut el.proc_multipliers),
         severities: std::mem::take(&mut el.severities),
         radixes: std::mem::take(&mut el.radixes),
+        proc_scopes: std::mem::take(&mut el.proc_scopes),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -500,6 +507,8 @@ struct Elaborator<'s> {
     severities: SeverityTable,
     // StmtId → default radix (2/8/16) for the b/o/h print-task variants (P1-5).
     radixes: RadixTable,
+    // Per-ProcId instance path for `%m` (P2-11); lockstep with `processes`.
+    proc_scopes: Vec<String>,
 }
 
 impl<'s> Elaborator<'s> {
@@ -530,6 +539,7 @@ impl<'s> Elaborator<'s> {
             fork_modes: ForkModeTable::new(),
             severities: SeverityTable::new(),
             radixes: RadixTable::new(),
+            proc_scopes: Vec::new(),
             cur_proc: 0,
             in_fork: false,
             mod_unit_exp: BTreeMap::new(),
@@ -559,6 +569,10 @@ impl<'s> Elaborator<'s> {
     fn push_process(&mut self, p: ir::Process) {
         self.proc_multipliers
             .push(self.cur_time_mult.min(u32::MAX as u64) as u32);
+        // `%m` scope: the instance path of the module being lowered ("tb.u1");
+        // an empty prefix (single top) renders as the top module's own name —
+        // but cur_prefix is ALWAYS the instance path incl. the top ("m" / "m.u1").
+        self.proc_scopes.push(self.cur_prefix.clone());
         self.processes.push(p);
     }
 
@@ -631,7 +645,10 @@ impl<'s> Elaborator<'s> {
     /// "lowered with a documented approximation" warning channel until a dedicated
     /// W-ELAB-DEGRADED code is minted. The message carries the specifics.
     fn warn(&mut self, msg: &str) {
-        self.warn_code(MsgCode::ElabWidthTrunc, msg);
+        // P2-10: the generic warn class is "legal construct accepted but
+        // simplified" (W-ELAB-FEATURE-LIMIT) — it used to stamp EVERY warning
+        // `W-ELAB-WIDTH-TRUNC`, breaking the doc-15 bijection/suppress routing.
+        self.warn_code(MsgCode::ElabFeatureLimit, msg);
     }
 
     /// Emit a Warning with a SPECIFIC code (the generic [`Self::warn`] uses
@@ -685,9 +702,12 @@ impl<'s> Elaborator<'s> {
         }
         for (name, n) in seen {
             if n > 1 {
-                self.warn(&format!(
-                    "module `{name}` declared {n} times; first declaration used"
-                ));
+                // P2-11: duplicate design-unit definition is an ERROR (doc-15
+                // E-DUP-UNIT; iverilog parity) — was a warn + first-decl-wins.
+                self.error(
+                    MsgCode::DupUnit,
+                    &format!("module `{name}` declared {n} times"),
+                );
             }
         }
 
@@ -1771,6 +1791,19 @@ impl<'s> Elaborator<'s> {
             let array_len = dim_extents
                 .iter()
                 .fold(1u32, |acc, &(_, n)| acc.saturating_mul(n.max(1)));
+            // P2-6: cap the unpacked element count like MAX_NET_WIDTH caps the
+            // vector width — `reg [7:0] m [0:2147483647]` would otherwise try a
+            // multi-GB allocation at t0 (OS OOM kill, no diagnostic).
+            if (array_len as u64) > MAX_ARRAY_LEN {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "unpacked array `{}` has {} elements (cap {MAX_ARRAY_LEN})",
+                        decl.name.name, array_len
+                    ),
+                );
+                continue;
+            }
             let dir = self.dir_for_name(&decl.name.name, ports, body);
             // init: const-fold a literal initializer; otherwise time-0 default.
             let init = match &decl.init {

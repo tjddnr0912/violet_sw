@@ -58,6 +58,7 @@ pub(crate) fn dispatch(
                 args: args.to_vec(),
                 time_mult,
                 radix,
+                scope: sched.st.cur_scope.clone(),
             });
             Ctl::Continue
         }
@@ -73,6 +74,7 @@ pub(crate) fn dispatch(
                     args: args.to_vec(),
                     time_mult,
                     radix,
+                    scope: sched.st.cur_scope.clone(),
                 },
                 last_vals: None,
                 enabled: true,
@@ -516,7 +518,10 @@ fn render_template(
         let spec = chars.next().unwrap_or('%');
         match spec {
             '%' => out.push('%'),
-            'm' => out.push_str("top"),
+            // P2-11: hierarchical scope of the EXECUTING process (was: always
+            // the literal "top"). Strobe/monitor renders restore the
+            // REGISTERING process's scope first (FmtCapture.scope).
+            'm' => out.push_str(&sched.st.cur_scope),
             't' => {
                 let v = next_arg(sched, args, argi);
                 out.push_str(&fmt_dec(&v));

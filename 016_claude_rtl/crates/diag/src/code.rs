@@ -62,6 +62,7 @@ msgcodes! {
     ElabUnsupported        => ("E-ELAB-UNSUPPORTED",        "VITA-E3009", Error,   "construct not yet supported by elaborate"),
     ElabUnresolvedName     => ("E-ELAB-UNRESOLVED-NAME",    "VITA-E3010", Error,   "reference to undeclared net/variable"),
     ElabLvalueKind         => ("E-ELAB-LVALUE-KIND",        "VITA-E3018", Error,   "continuous assign to a variable / procedural assign to a net"),
+    ElabFeatureLimit       => ("W-ELAB-FEATURE-LIMIT",      "VITA-W3056", Warning, "legal construct accepted but simplified"),
     // 4xxx RUNTIME
     RunAssertFail          => ("E-RUN-ASSERT-FAIL",         "VITA-E4001", Error,   "assertion failed (no action block)"),
     RunRange               => ("E-RUN-RANGE",               "VITA-E4002", Error,   "runtime index/select out of range"),

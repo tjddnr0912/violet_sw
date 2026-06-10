@@ -548,6 +548,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             let batch = std::mem::take(&mut self.st.postponed.strobes);
             for cap in &batch {
                 self.st.cur_time_mult = cap.time_mult; // registering module's M
+                self.st.cur_scope = cap.scope.clone(); // registering module's %m
                 let mut line = format_args_str(self, cap.fmt, &cap.args, cap.radix);
                 line.push('\n');
                 write_out(self.st, &line);
@@ -576,13 +577,14 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 let args = m.cap.args.clone();
                 let tmult = m.cap.time_mult; // monitoring module's M (see (a) above)
                 let radix = m.cap.radix;
+                let scope = m.cap.scope.clone();
                 let prev = m.last_vals.take(); // moves baseline out; slot now None
-                Some((fmt, args, tmult, radix, prev))
+                Some((fmt, args, tmult, radix, scope, prev))
             }
             // disabled (`$monitoroff`) or no monitor established → nothing to do.
             _ => None,
         };
-        if let Some((fmt, args, tmult, radix, prev)) = mon {
+        if let Some((fmt, args, tmult, radix, scope, prev)) = mon {
             if fmt.is_none() && args.is_empty() {
                 // No-arg monitor (`$monitor;` → fmt=None, args=[]) prints nothing —
                 // not even a bare newline. Guarded so a future bare-`$monitor`
@@ -603,6 +605,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 // (width/val/unk) only, not the derived `PartialEq` (which also
                 // compares the static signed/is_real metadata).
                 self.st.cur_time_mult = tmult;
+                self.st.cur_scope = scope;
                 let is_direct_time = |eid: u32| {
                     matches!(
                         self.st.ir.exprs[eid as usize],

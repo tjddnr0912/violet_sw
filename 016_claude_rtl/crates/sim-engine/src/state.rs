@@ -50,6 +50,8 @@ pub(crate) struct FmtCapture {
     pub time_mult: u64,
     /// Default radix for unformatted args (P1-5 b/o/h variants); `None` ⇒ decimal.
     pub radix: Option<u8>,
+    /// `%m` scope of the registering process (P2-11) — snapshot, like `time_mult`.
+    pub scope: String,
 }
 
 /// The single global `$monitor` record (IEEE 1364-2005: at most one active
@@ -108,6 +110,11 @@ pub(crate) struct SimState<'a> {
     pub severities: crate::SeverityTable,
     /// StmtId → default radix (2/8/16) for b/o/h print variants (P1-5).
     pub radixes: crate::RadixTable,
+    /// Per-ProcId instance path for `%m` (P2-11); empty ⇒ flat `top` fallback.
+    pub proc_scopes: Vec<String>,
+    /// Instance path of the process CURRENTLY executing — set per `run_process`
+    /// (like `cur_time_mult`), read by the `%m` format spec.
+    pub cur_scope: String,
     /// Worker-thread budget (from `SimOpts.threads`); `≥2` ⇒ VCD writer thread.
     pub threads: u32,
     /// Process-body execution backend (from `SimOpts.backend`). Default
@@ -186,6 +193,8 @@ impl<'a> SimState<'a> {
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),
+            proc_scopes: Vec::new(),
+            cur_scope: "top".to_string(),
             threads: 1,
             backend: crate::Backend::Interpreter,
             vm_cache: (0..ir.processes.len())

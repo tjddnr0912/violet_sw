@@ -243,3 +243,38 @@ endmodule
         "disjoint selects are legal: {errs:?}"
     );
 }
+
+// ── P2-6 / P2-11 operational legality ───────────────────────────────────────
+
+/// P2-6: a multi-GB unpacked array is rejected loudly (was: OS OOM kill).
+#[test]
+fn huge_unpacked_array_rejected() {
+    let (ok, diags) = elab(
+        r#"
+module t;
+  reg [7:0] m [0:2147483647];
+endmodule
+"#,
+    );
+    assert!(!ok, "must fail; diags: {diags:?}");
+    assert!(
+        diags.iter().any(|d| d.contains("elements")),
+        "expected array-cap error; got {diags:?}"
+    );
+}
+
+/// P2-11: duplicate module definition is E-DUP-UNIT (was: warn, first wins).
+#[test]
+fn duplicate_module_is_error() {
+    let (ok, diags) = elab(
+        r#"
+module t; endmodule
+module t; endmodule
+"#,
+    );
+    assert!(!ok, "must fail; diags: {diags:?}");
+    assert!(
+        diags.iter().any(|d| d.contains("VITA-E2001")),
+        "expected E-DUP-UNIT; got {diags:?}"
+    );
+}

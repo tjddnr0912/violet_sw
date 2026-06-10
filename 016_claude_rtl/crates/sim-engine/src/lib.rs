@@ -124,6 +124,9 @@ pub struct SimOpts {
     /// Default-radix side table (P1-5): StmtId → 2/8/16 for the b/o/h print
     /// variants. EMPTY by default (decimal everywhere). Never enters the IR.
     pub radixes: RadixTable,
+    /// Per-ProcId instance path (`"tb.u1"`) for `%m` (P2-11). EMPTY ⇒ `%m`
+    /// renders the legacy flat `top`. Never enters the IR.
+    pub proc_scopes: Vec<String>,
     /// Worker-thread budget (P4-T1, CLI `--threads`/`-j`). `1` (the default) is
     /// the exact single-thread path; `≥2` moves VCD file writes onto a dedicated
     /// writer thread behind an order-preserving bounded FIFO. CONTRACT: output
@@ -146,6 +149,7 @@ impl Default for SimOpts {
             backend: Backend::Interpreter,
             severities: SeverityTable::new(),
             radixes: RadixTable::new(),
+            proc_scopes: Vec::new(),
             threads: 1,
         }
     }
@@ -201,6 +205,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.backend = opts.backend;
     st.severities = opts.severities.clone();
     st.radixes = opts.radixes.clone();
+    st.proc_scopes = opts.proc_scopes.clone();
     st.threads = opts.threads;
 
     let reason = {

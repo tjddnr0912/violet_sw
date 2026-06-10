@@ -60,6 +60,9 @@ pub struct Parser<'t, 's> {
     src_end: u32,
     pub errors: Vec<ParseError>,
     error_limit: usize,
+    /// P2-5: live expression-recursion depth; capped so a pathological
+    /// `((((…))))` yields a parse error instead of a stack overflow.
+    expr_depth: u32,
     /// SV user-defined type names (`typedef … name;`) → resolved underlying type.
     /// Accumulates across the source unit; lets `name var;` parse as a typed decl.
     typedefs: std::collections::HashMap<String, TypeInfo>,
@@ -78,6 +81,7 @@ impl<'t, 's> Parser<'t, 's> {
             src_end: src.len() as u32,
             errors: Vec::new(),
             error_limit: 50,
+            expr_depth: 0,
             typedefs: std::collections::HashMap::new(),
             struct_layouts: std::collections::HashMap::new(),
             var_struct: std::collections::HashMap::new(),
@@ -382,7 +386,28 @@ impl<'t, 's> Parser<'t, 's> {
     /// Pratt entry. `min_bp` = caller's right binding power. After the fold loop,
     /// if the next token is operator-class but matched no infix slot, emit one
     /// error (verdict B1: do not silently leave `~& b` unconsumed).
+    /// P2-5 guard: cap the expression recursion so deep nesting is a clean
+    /// parse error, never a SIGSEGV. 256 is ≫ any real RTL expression (deepest
+    /// practical cones are <50) and fits a default 2 MiB test-thread stack
+    /// even in debug builds (~5 fat frames per paren level).
+    const MAX_EXPR_DEPTH: u32 = 256;
+
     pub fn expr(&mut self, min_bp: u8) -> Expr {
+        self.expr_depth += 1;
+        if self.expr_depth > Self::MAX_EXPR_DEPTH {
+            self.expr_depth -= 1;
+            self.error("expression nesting too deep (cap 256)");
+            return Expr {
+                kind: ExprKind::Error,
+                span: self.cur_span(),
+            };
+        }
+        let r = self.expr_capped(min_bp);
+        self.expr_depth -= 1;
+        r
+    }
+
+    fn expr_capped(&mut self, min_bp: u8) -> Expr {
         let mut lhs = self.expr_prefix();
         loop {
             let Some(op) = self.peek() else { break };
