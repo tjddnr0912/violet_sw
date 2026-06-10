@@ -136,6 +136,13 @@ pub type SeverityTable = std::collections::BTreeMap<u32, SeverityKind>;
 /// Out-of-band like the other tables; the frozen `SysTaskId` is unchanged.
 pub type RadixTable = std::collections::BTreeMap<u32, u8>;
 
+/// Assign-rank side table (IEEE 1364 §9.3.1): the StmtIds of `Stmt::Force` /
+/// `Stmt::Release` statements that are really procedural `assign`/`deassign`
+/// (the frozen `Stmt` has no Assign/Deassign variants — they reuse the force
+/// machinery at a WEAKER rank: a real `force` overrides an active assign and
+/// `release` hands control back to it). Out-of-band like the other tables.
+pub type AssignRankTable = std::collections::BTreeSet<u32>;
+
 /// Engine-facing side tables produced by one elaboration — ALL out-of-band
 /// (`SimOpts` fields / `.velab` trailers, each serialized as its OWN postcard
 /// segment for append-only compatibility); none ever enters the golden `SimIr`.
@@ -149,6 +156,8 @@ pub struct Sidecars {
     /// Per-ProcId hierarchical instance path (`"tb.u1"`) — drives `%m` (P2-11).
     /// Parallel to `processes`, like `proc_multipliers`.
     pub proc_scopes: Vec<String>,
+    /// StmtIds of Force/Release stmts that are procedural assign/deassign.
+    pub assign_ranks: AssignRankTable,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -196,6 +205,7 @@ pub fn elaborate_with_timescale(
         severities: std::mem::take(&mut el.severities),
         radixes: std::mem::take(&mut el.radixes),
         proc_scopes: std::mem::take(&mut el.proc_scopes),
+        assign_ranks: std::mem::take(&mut el.assign_ranks),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -485,6 +495,15 @@ struct Elaborator<'s> {
     // Nesting guard: true while lowering a fork CHILD body. A `Stmt::Fork` seen with
     // `in_fork == true` is the nested case → hard ElabUnsupported error (v1 MVP cut).
     in_fork: bool,
+    // `disable` lowering state: (label, exit-BB) per lexically-enclosing NAMED
+    // begin-block of the statement being lowered. Exit BBs are allocated LAZILY
+    // (pre-scan: only labels some `disable` in the block body actually targets),
+    // so designs without disable lower to byte-identical CFGs (golden corpus
+    // untouched). `disable_fork_floor` is the stack depth at the current
+    // fork-child boundary: a child may only disable blocks INSIDE its own body —
+    // a Goto across the fork boundary would bypass the join barrier.
+    disable_stack: Vec<(String, BlockId)>,
+    disable_fork_floor: usize,
 
     // ── timescale state (engine-facing side channel, NOT in SimIr) ──
     // module NAME → its delay-unit exponent (base-10 of seconds), and the design-wide
@@ -507,6 +526,9 @@ struct Elaborator<'s> {
     severities: SeverityTable,
     // StmtId → default radix (2/8/16) for the b/o/h print-task variants (P1-5).
     radixes: RadixTable,
+    // StmtIds of Force/Release stmts that are procedural assign/deassign (§9.3.1
+    // weak rank — see [`AssignRankTable`]).
+    assign_ranks: AssignRankTable,
     // Per-ProcId instance path for `%m` (P2-11); lockstep with `processes`.
     proc_scopes: Vec<String>,
 }
@@ -539,9 +561,12 @@ impl<'s> Elaborator<'s> {
             fork_modes: ForkModeTable::new(),
             severities: SeverityTable::new(),
             radixes: RadixTable::new(),
+            assign_ranks: AssignRankTable::new(),
             proc_scopes: Vec::new(),
             cur_proc: 0,
             in_fork: false,
+            disable_stack: Vec::new(),
+            disable_fork_floor: 0,
             mod_unit_exp: BTreeMap::new(),
             global_prec_exp: -9, // 1ns base precision (no-timescale lock)
             cur_time_mult: 1,
@@ -4242,9 +4267,28 @@ impl<'s> Elaborator<'s> {
             // ── SEQUENCING: begin … end ─────────────────────────────
             // begin..end: block-local decls were already hoisted to module nets in
             // the Nets phase (hoist_block_local_nets), so just lower the stmts here.
-            ast::Stmt::Block { stmts, .. } => {
+            ast::Stmt::Block { label, stmts, .. } => {
+                // Named block targeted by some `disable` in its own body:
+                // allocate an exit BB so the disable lowers as a Goto (doc-17
+                // lowering row). Allocation is LAZY (pre-scan) so unlabeled /
+                // never-disabled blocks lower byte-identically to the old CFG.
+                let exit = label.as_ref().and_then(|lab| {
+                    stmts
+                        .iter()
+                        .any(|st| stmt_disables_label(st, &lab.name))
+                        .then(|| {
+                            let exit = b.new_block();
+                            self.disable_stack.push((lab.name.clone(), exit));
+                            exit
+                        })
+                });
                 for st in stmts {
                     self.lower_stmt(b, st);
+                }
+                if let Some(exit) = exit {
+                    self.disable_stack.pop();
+                    b.goto(exit);
+                    b.start_block(exit);
                 }
             }
 
@@ -4358,18 +4402,55 @@ impl<'s> Elaborator<'s> {
                 ..
             } => self.lower_for(b, init, cond, step, body),
 
-            // ── SECONDARY / DEFERRED → WARN + recover (stay in block) ──
-            // disable: doc-17 lowering table says "Stmt::Disable then Goto", but
-            // scope-id resolution (DisableKind/target) is deferred. Emit the
-            // Stmt::Disable with a Scope/0 placeholder so the *shape* is present,
-            // then continue straight-line. Non-fatal. (CFG MINOR-1 reconciled.)
-            ast::Stmt::Disable { .. } => {
-                self.warn("disable target scope-id unresolved (v2); emitted as Scope/0 no-op");
-                let sid = self.push_stmt(ir::Stmt::Disable {
-                    scope_kind: ir::DisableKind::Scope,
-                    target: 0,
-                });
-                b.push_stmt_id(sid);
+            // disable: REAL for a lexically-enclosing named begin-block (the
+            // break/continue idiom) — doc-17's lowering row "Stmt::Disable then
+            // Goto": the Disable stmt keeps the diagnostic shape (engine no-op,
+            // target = the exit BB it jumps to), the Goto does the work. The
+            // fork floor keeps a child from jumping across its join barrier.
+            // Anything else (cross-process block, task body, hierarchical path,
+            // unknown label) is a LOUD error — the old warn+no-op silently kept
+            // executing the "disabled" block.
+            ast::Stmt::Disable { target, .. } => {
+                let hit = if target.segments.len() == 1 {
+                    self.disable_stack[self.disable_fork_floor..]
+                        .iter()
+                        .rev()
+                        .find(|(n, _)| n == &target.segments[0].name)
+                        .map(|(_, exit)| *exit)
+                } else {
+                    None
+                };
+                match hit {
+                    Some(exit) => {
+                        let sid = self.push_stmt(ir::Stmt::Disable {
+                            scope_kind: ir::DisableKind::Scope,
+                            target: exit.raw(),
+                        });
+                        b.push_stmt_id(sid);
+                        b.goto(exit);
+                        // unreachable continuation keeps the one-open-cursor
+                        // contract (INV-1) for the rest of the block.
+                        let dead = b.new_block();
+                        b.start_block(dead);
+                    }
+                    None => {
+                        let path = target
+                            .segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "disable target `{path}` is not a lexically-enclosing \
+                                 named block of this statement; v1 supports only the \
+                                 break/continue idiom (cross-process, task, fork-crossing \
+                                 and hierarchical disable are unsupported)"
+                            ),
+                        );
+                    }
+                }
             }
             ast::Stmt::Fork {
                 stmts,
@@ -4431,11 +4512,16 @@ impl<'s> Elaborator<'s> {
                 // so any Fork lowered INSIDE a child hits the hard error above.
                 let prev_in_fork = self.in_fork;
                 self.in_fork = true;
+                // A fork child is its own process: it may disable only blocks
+                // inside its OWN body (floor), never across the join barrier.
+                let prev_floor = self.disable_fork_floor;
+                self.disable_fork_floor = self.disable_stack.len();
                 for (child_entry, st) in child_entries.iter().zip(stmts.iter()) {
                     b.start_block(*child_entry);
                     self.lower_stmt(b, st);
                     b.goto(join_bb);
                 }
+                self.disable_fork_floor = prev_floor;
                 self.in_fork = prev_in_fork;
 
                 // Seal the join block: join_bb → resume_bb. IMPORTANT: this Goto is a
@@ -4462,11 +4548,44 @@ impl<'s> Elaborator<'s> {
                     "'->' named-event trigger is unsupported in v1 (an '@(ev)' would                      never wake); use a net change instead",
                 );
             }
-            ast::Stmt::Assign { .. } | ast::Stmt::Deassign { .. } => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "procedural assign/deassign is unsupported in v1 (was silently                      ignored); use a continuous assign or a plain procedural assignment",
-                );
+            // Procedural continuous assignment (IEEE 1364 §9.3.1): reuses the
+            // force machinery at a WEAKER rank — lowered as Stmt::Force /
+            // Stmt::Release with the StmtId marked in the assign-rank sidecar
+            // (the frozen Stmt has no Assign/Deassign variants; designs without
+            // proc-assign lower byte-identically). Targets must be a WHOLE
+            // VARIABLE: a net is E3018 (same check as procedural writes), a
+            // bit/part-select is loud-unsupported (the force restriction).
+            ast::Stmt::Assign { lhs, rhs, .. } => {
+                let rhs_id = self.lower_expr(rhs);
+                let lv = self.lower_lvalue(lhs);
+                self.check_lvalue_kind(&lv, true);
+                if !is_whole_single_net(&lv) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "procedural assign target must be a whole variable (a bit/part-select is not a legal target)",
+                    );
+                    return;
+                }
+                let sid = self.push_stmt(ir::Stmt::Force {
+                    lhs: lv,
+                    rhs: rhs_id,
+                });
+                self.assign_ranks.insert(sid);
+                b.push_stmt_id(sid);
+            }
+            ast::Stmt::Deassign { lhs, .. } => {
+                let lv = self.lower_lvalue(lhs);
+                self.check_lvalue_kind(&lv, true);
+                if !is_whole_single_net(&lv) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "deassign target must be a whole variable",
+                    );
+                    return;
+                }
+                let sid = self.push_stmt(ir::Stmt::Release { lhs: lv });
+                self.assign_ranks.insert(sid);
+                b.push_stmt_id(sid);
             }
             // force/release (IEEE 1364 §9.3.2) — WHOLE net/variable targets
             // only (bit/part-selects are illegal force targets per the LRM and
@@ -4933,6 +5052,49 @@ impl<'s> Elaborator<'s> {
             ast::ExprKind::IntLit { .. } | ast::ExprKind::StrLit { .. } => true,
             _ => false,
         }
+    }
+}
+
+/// Does any `disable <label>` (single-segment) appear in this statement tree?
+/// Drives LAZY exit-BB allocation for named blocks: a label nobody disables
+/// lowers exactly like an unlabeled block (byte-identical CFG to the
+/// pre-disable lowering — golden corpus unaffected). Fork children are
+/// included (a child's cross-boundary disable is rejected loudly later;
+/// scanning them keeps this a pure syntactic property). Task bodies are NOT
+/// resolved here — `disable` of a caller's label from inside a task stays a
+/// loud unsupported error (the label is then absent from the disable stack).
+fn stmt_disables_label(s: &ast::Stmt, label: &str) -> bool {
+    use ast::Stmt as S;
+    match s {
+        S::Disable { target, .. } => target.segments.len() == 1 && target.segments[0].name == label,
+        S::Block { stmts, .. } | S::Fork { stmts, .. } => {
+            stmts.iter().any(|st| stmt_disables_label(st, label))
+        }
+        S::If { then_s, else_s, .. } => {
+            stmt_disables_label(then_s, label)
+                || else_s
+                    .as_deref()
+                    .is_some_and(|e| stmt_disables_label(e, label))
+        }
+        S::Case { items, .. } => items.iter().any(|it| match it {
+            ast::CaseItem::Match { body, .. } | ast::CaseItem::Default { body, .. } => {
+                stmt_disables_label(body, label)
+            }
+        }),
+        S::For {
+            init, step, body, ..
+        } => {
+            stmt_disables_label(init, label)
+                || stmt_disables_label(step, label)
+                || stmt_disables_label(body, label)
+        }
+        S::While { body, .. } | S::Repeat { body, .. } | S::Forever { body, .. } => {
+            stmt_disables_label(body, label)
+        }
+        S::DelayCtrl { body, .. } | S::EventCtrl { body, .. } | S::Wait { body, .. } => body
+            .as_deref()
+            .is_some_and(|b| stmt_disables_label(b, label)),
+        _ => false,
     }
 }
 

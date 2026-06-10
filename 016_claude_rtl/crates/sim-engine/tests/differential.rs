@@ -53,6 +53,7 @@ fn vita_out(src: &str) -> String {
         net_names: sc.net_names,
         proc_multipliers: sc.proc_multipliers,
         severities: sc.severities,
+        assign_ranks: sc.assign_ranks,
         radixes: sc.radixes,
         ..SimOpts::default()
     };
@@ -573,6 +574,94 @@ fn diff_immediate_assert() {
              assert (a | b) else $display(\"f4\"); \
              c = 2'b10; \
              assert (c[1] & ~c[0]) $display(\"p5\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}
+
+#[test]
+fn diff_disable_break_continue() {
+    // break idiom: disable of the enclosing named block abandons loop + tail.
+    assert_matches_iverilog(
+        "disable_break",
+        "module tb; integer i; \
+           initial begin : L \
+             for (i = 0; i < 10; i = i + 1) begin \
+               if (i == 3) disable L; \
+               $display(\"i=%0d\", i); \
+             end \
+             $display(\"tail\"); \
+           end \
+           initial #1 begin $display(\"done\"); $finish; end \
+         endmodule",
+    );
+    // continue idiom: disable of the per-iteration block skips to the step.
+    assert_matches_iverilog(
+        "disable_continue",
+        "module tb; integer i; \
+           initial begin \
+             for (i = 0; i < 5; i = i + 1) begin : ITER \
+               if (i == 2) disable ITER; \
+               $display(\"i=%0d\", i); \
+             end \
+             $display(\"end\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    // nested: disable OUTER from INNER skips both tails.
+    assert_matches_iverilog(
+        "disable_nested",
+        "module tb; \
+           initial begin \
+             begin : OUTER \
+               begin : INNER disable OUTER; $display(\"x1\"); end \
+               $display(\"x2\"); \
+             end \
+             $display(\"after\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}
+
+#[test]
+fn diff_proc_assign_deassign() {
+    // CONST-RHS proc assign/deassign lanes only: iverilog implements the
+    // pin/hold/rank model for constants but self-admits "evaluated once" for
+    // expression RHS (same as force) — the expression lane is pinned by the
+    // hand-IEEE end_to_end test instead.
+    assert_matches_iverilog(
+        "proc_assign_basic",
+        "module tb; reg [7:0] q; \
+           initial begin \
+             q = 8'd1; \
+             $display(\"t0 q=%0d\", q); \
+             assign q = 8'd42; \
+             #1 q = 8'd5; \
+             $display(\"t1 q=%0d\", q); \
+             deassign q; \
+             $display(\"t2 q=%0d\", q); \
+             q = 8'd7; \
+             $display(\"t3 q=%0d\", q); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    assert_matches_iverilog(
+        "proc_assign_force_rank",
+        "module tb; reg [7:0] q; \
+           initial begin \
+             assign q = 8'd10; \
+             $display(\"a q=%0d\", q); \
+             force q = 8'd20; \
+             $display(\"b q=%0d\", q); \
+             release q; \
+             $display(\"c q=%0d\", q); \
+             deassign q; \
+             q = 8'd30; \
+             $display(\"d q=%0d\", q); \
              $finish; \
            end \
          endmodule",

@@ -78,6 +78,7 @@ fn build_timescaled(src: &str) -> (sim_ir::SimIr, SimOpts) {
         fork_modes: sc.fork_modes,
         proc_multipliers: sc.proc_multipliers,
         severities: sc.severities,
+        assign_ranks: sc.assign_ranks,
         radixes: sc.radixes,
         ..SimOpts::default()
     };
@@ -2923,4 +2924,146 @@ fn immediate_assert_actions_follow_verilog_truthiness() {
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(out, "p1\nf2\nf3\nf4\np5\n");
+}
+
+#[test]
+fn disable_enclosing_block_is_break() {
+    // Oracle (iverilog, probed live): `disable L` from inside terminates the
+    // whole named block L — loop AND tail are abandoned (break idiom).
+    let ir = build(
+        "module tb; integer i; \
+           initial begin : L \
+             for (i = 0; i < 10; i = i + 1) begin \
+               if (i == 3) disable L; \
+               $display(\"i=%0d\", i); \
+             end \
+             $display(\"tail\"); \
+           end \
+           initial #1 begin $display(\"done\"); $finish; end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "i=0\ni=1\ni=2\ndone\n");
+}
+
+#[test]
+fn disable_loop_body_block_is_continue() {
+    // Oracle (iverilog, probed live): disabling the per-iteration named block
+    // skips the REST of that iteration only — the for loop keeps stepping.
+    let ir = build(
+        "module tb; integer i; \
+           initial begin \
+             for (i = 0; i < 5; i = i + 1) begin : ITER \
+               if (i == 2) disable ITER; \
+               $display(\"i=%0d\", i); \
+             end \
+             $display(\"end\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "i=0\ni=1\ni=3\ni=4\nend\n");
+}
+
+#[test]
+fn disable_outer_from_inner_skips_both_tails() {
+    // Oracle (iverilog, probed live): `disable OUTER` from INNER abandons the
+    // inner remainder AND the outer remainder in one jump.
+    let ir = build(
+        "module tb; \
+           initial begin \
+             begin : OUTER \
+               begin : INNER \
+                 disable OUTER; \
+                 $display(\"x1\"); \
+               end \
+               $display(\"x2\"); \
+             end \
+             $display(\"after\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "after\n");
+}
+
+#[test]
+fn proc_assign_pins_and_deassign_holds() {
+    // Oracle (iverilog, probed live): while `assign q = 42` is active an
+    // ordinary procedural write is overridden; `deassign` HOLDS the value
+    // (variable semantics); afterwards ordinary writes work again.
+    let (ir, opts) = build_timescaled(
+        "module tb; reg [7:0] q; \
+           initial begin \
+             q = 8'd1; \
+             $display(\"t0 q=%0d\", q); \
+             assign q = 8'd42; \
+             #1 q = 8'd5; \
+             $display(\"t1 q=%0d\", q); \
+             deassign q; \
+             $display(\"t2 q=%0d\", q); \
+             q = 8'd7; \
+             $display(\"t3 q=%0d\", q); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t0 q=1\nt1 q=42\nt2 q=42\nt3 q=7\n");
+}
+
+#[test]
+fn force_overrides_assign_release_resumes_it() {
+    // Oracle (iverilog, probed live): force WINS over an active proc-assign;
+    // release hands control BACK to the assign (latent re-pin); deassign then
+    // frees the variable for ordinary writes.
+    let (ir, opts) = build_timescaled(
+        "module tb; reg [7:0] q; \
+           initial begin \
+             assign q = 8'd10; \
+             $display(\"a q=%0d\", q); \
+             force q = 8'd20; \
+             $display(\"b q=%0d\", q); \
+             release q; \
+             $display(\"c q=%0d\", q); \
+             deassign q; \
+             q = 8'd30; \
+             $display(\"d q=%0d\", q); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "a q=10\nb q=20\nc q=10\nd q=30\n");
+}
+
+#[test]
+fn proc_assign_expression_reevaluates_continuously() {
+    // IEEE 1364 §9.3.1: a proc-assign with an expression RHS behaves as a
+    // continuous assignment until deassigned. iverilog DIVERGES by its own
+    // admission ("sorry: ... evaluated once"), so this lane is pinned by hand
+    // against the LRM (the force-expression precedent); const-rhs lanes keep
+    // iverilog differential parity.
+    let (ir, opts) = build_timescaled(
+        "module tb; reg [7:0] y; reg [7:0] a; \
+           initial begin \
+             a = 8'd1; \
+             assign y = a + 8'd1; \
+             $display(\"p y=%0d\", y); \
+             #1 a = 8'd9; \
+             #1 $display(\"q y=%0d\", y); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "p y=2\nq y=10\n");
 }

@@ -49,10 +49,15 @@ pub(crate) trait Kernel {
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]);
     /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
-    /// WRITE: `force lhs = value` (whole-net; sample-once v1 model — §9.3.2).
-    fn k_force(&mut self, lhs: &Lvalue, value: Value, rhs: u32);
+    /// WRITE: `force lhs = value` (whole-net, continuous re-eval — §9.3.2). `sid`
+    /// keys the assign-rank side table: a marked stmt is a procedural `assign`
+    /// (§9.3.1, WEAK rank — a real force overrides it and parks it as latent).
+    fn k_force(&mut self, lhs: &Lvalue, value: Value, rhs: u32, sid: u32);
     /// WRITE: `release lhs` (net → driver re-settles; variable → keeps value).
-    fn k_release(&mut self, lhs: &Lvalue);
+    /// `sid` keys the assign-rank table: a marked stmt is a `deassign` (removes
+    /// the assign wherever it lives); a real release removes the FORCE and
+    /// re-pins a latent assign if one is parked.
+    fn k_release(&mut self, lhs: &Lvalue, sid: u32);
     /// WRITE: run a system task, returning its control outcome. `sid` is the
     /// StmtId — the severity side table (`$fatal`/`$error`/…, P1-1) is keyed by it.
     fn k_dispatch_systask(
@@ -292,13 +297,15 @@ enum StmtEffect<'s> {
     },
     /// `force lhs = value` (RHS sampled in the READ phase; `rhs` rides along
     /// so the kernel can register the IEEE §9.3.2 continuous re-evaluation).
+    /// `sid` keys the assign-rank table (§9.3.1 proc-assign = weak rank).
     Force {
         lhs: &'s Lvalue,
         value: Value,
         rhs: u32,
+        sid: u32,
     },
-    /// `release lhs`.
-    Release { lhs: &'s Lvalue },
+    /// `release lhs`. `sid` keys the assign-rank table (deassign vs release).
+    Release { lhs: &'s Lvalue, sid: u32 },
     /// `disable`: no-op in v1 (fork/disable deferred).
     Nop,
 }
@@ -339,9 +346,10 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
                 lhs,
                 value,
                 rhs: *rhs,
+                sid,
             }
         }
-        Stmt::Release { lhs } => StmtEffect::Release { lhs },
+        Stmt::Release { lhs } => StmtEffect::Release { lhs, sid },
     }
 }
 
@@ -363,12 +371,17 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
             k.k_schedule_nba(lhs.clone(), value);
             None
         }
-        StmtEffect::Force { lhs, value, rhs } => {
-            k.k_force(lhs, value, rhs);
+        StmtEffect::Force {
+            lhs,
+            value,
+            rhs,
+            sid,
+        } => {
+            k.k_force(lhs, value, rhs, sid);
             None
         }
-        StmtEffect::Release { lhs } => {
-            k.k_release(lhs);
+        StmtEffect::Release { lhs, sid } => {
+            k.k_release(lhs, sid);
             None
         }
         StmtEffect::SysTask {

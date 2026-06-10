@@ -532,3 +532,37 @@ fn corrupted_fork_trailer_fails_gracefully() {
         let _ = std::fs::remove_file(p);
     }
 }
+
+/// The assign-rank sidecar must survive the `.velab` trailer: without it the
+/// staged `vrun` would treat the proc-assign as a STRONG force — `release`
+/// would then unpin (value holds 20) instead of resuming the assign (10), and
+/// the design $fatals (exit 1).
+#[test]
+fn staged_assign_rank_trailer_roundtrip() {
+    let src = tmp("sv");
+    write(
+        &src,
+        "module tb; reg [7:0] q; \
+           initial begin \
+             assign q = 8'd10; \
+             force q = 8'd20; \
+             release q; \
+             if (q != 8'd10) $fatal(1, \"assign rank lost across the trailer\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let vu = tmp("vu");
+    let velab = tmp("velab");
+    let opts = cli::VitaOpts::default();
+    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vrun(&s(&velab), &opts),
+        cli::EXIT_OK,
+        "release must resume the assign (rank table round-trips)"
+    );
+    for p in [&src, &vu, &velab] {
+        let _ = std::fs::remove_file(p);
+    }
+}

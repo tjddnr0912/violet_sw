@@ -73,7 +73,7 @@ vitamin은 **서브셋** 시뮬레이터. 실사용 가치는 "더 빠르게"보
 ~~`$fatal` 계열·b/o/h·`%m`~~(✅) · ~~`time` 타입~~(✅) · ~~`$dumpflush/$dumplimit`~~(✅) — **잔여 deferral은 전부
 loud-reject로 확인됨(이제 참):**
 
-- proc-`assign`/`deassign` · `->event`+`@(ev)` · `disable` 실동작 — loud-reject 유지(Phase-2 제어흐름)
+- ~~proc-`assign`/`deassign` · `disable` 실동작~~ ✅ 2026-06-10 (§F-(F)) — **disable**: 동봉 named block의 break/continue 이디엄 실구현(doc-17 "Disable 후 Goto", lazy exit-BB로 기존 디자인 byte-불변; 크로스-프로세스/task/fork-경계/계층 경로=loud). **proc-assign/deassign**: force 기계 weak-rank 재사용(`assign_ranks` 사이드카 — force가 assign을 latent로 밀어내고 release가 복귀; iverilog const-rhs 차분 일치, 식-RHS는 iverilog "evaluated once" 자인이라 hand-IEEE 핀). `->event`+`@(ev)`만 잔존 — **단, 카운터-desugar 설계로 bump 불요 가능성 확인(§F-(B) 참조)**
 - ~~force/release **full 재평가 모델**~~ ✅ 2026-06-10 — expression force는 IEEE §9.3.2 연속 재평가(`active_forces` 레지스트리, delta마다 재핀·BTree 결정성·mult 스냅샷). **iverilog와 의도적 발산**(iverilog는 "sorry: evaluated once" 자인 — const-rhs 차분만 유지, expression lane은 hand-IEEE end_to_end 핀)
 - ~~intra-assignment delay(`a = #d b`)~~ ✅ 2026-06-10 — **blocking 형은 실semantics**(capture-now/write-later: tmp(폭=lhs 정확) → `Terminator::Delay` → write; `#0`=inactive·런타임 d 지원, iverilog 차분 일치). **NBA 형(`<= #d`)은 loud E3009로 이관** — 값-운반 delayed NBA 이벤트가 없으면 겹침 활성화(transport delay)에서 silent-wrong이라 차기 format bump 묶음
 - dynamic/associative array, queue (정적 평탄화 불가 → 새 IR 노드 = 차기 format bump 후보)
@@ -106,7 +106,7 @@ loud-reject로 확인됨(이제 참):**
 | **(C) dynamic array / queue / assoc array** | 정적 평탄화 전제(고정폭 `BitPacked` storage) 자체를 깸 — NetVar storage 모델 + Expr/Stmt(인덱싱·push/pop·size) 신설 | **bump 필수 + Phase-2 코어.** 엔진 storage 재설계라 **별도 설계 문서가 선행** — 설계가 익기 전 (A)+(B)만으로 bump하지 말 것(이중 bump 방지) |
 | ✅(D) interface / modport — **스파이크 완료(GO)** | **SimIr 무변경 확정** — 신호=평범한 net + 심볼 aliasing(cont-assign 금지: 방향 없음), `.vu` AST 해시만 1회 flip(핀 골든 0) | 설계 = [`superpowers/plans/2026-06-10-interface-flattening-spike.md`](superpowers/plans/2026-06-10-interface-flattening-spike.md). 구현은 v5 묶음과 같은 시기 권장(AST flip 1회로 수렴) |
 | ✅(E) immediate assertion `assert(e) else $error` | **무변경** — 파서가 `Stmt::If`로 desugar(AST 동결 유지) + 디폴트 실패는 `$error("Assertion failed")` 합성(severity 테이블 경유 stderr+exit1) | **완료 2026-06-10** (654 green, iverilog 차분 일치 — X-cond=fail 포함). concurrent SVA는 별개(거대, Phase-3), `assert property`/`#0`/`final`=loud |
-| (F) `disable` 실동작 / proc-`assign`/`deassign` | `Disable`은 IR에 이미 있음(엔진 no-op); proc-assign은 force 기계 재사용 가능성 | 엔진/사이드테이블 위주 — bump 불요 추정 |
+| ✅(F) `disable` 실동작 / proc-`assign`/`deassign` | **완료 2026-06-10, bump 0** — disable=동봉 named block Goto(lazy exit-BB, 기존 CFG byte-불변·비동봉은 loud); proc-assign=Force/Release 재사용+`assign_ranks` 사이드카(weak rank·latent 복귀, `.velab` trailer 세그먼트 append) | 665 green, iverilog 차분(disable 3종·assign const-rhs 2종)+staged trailer 왕복 |
 
 **진입 시퀀스(권장):** ① IR-무변경부터 — ~~(E) immediate assert~~✅ → (D) interface 스파이크 → (F) ②
 (C) dynamic storage **설계 문서**(엔진 storage·결정성·VCD 표현) ③ 설계 확정 후 **v5 bump 일괄 = (A)+(B)+(C)**.

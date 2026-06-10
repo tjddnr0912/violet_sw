@@ -745,10 +745,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// and re-pin its target. The forcing module's time multiplier is restored
     /// around each eval so `$time` in a force RHS renders with the right scale.
     fn reeval_active_forces(&mut self) {
-        let entries: Vec<(sim_ir::Lvalue, u32, u64)> =
+        // ACTIVE pins only — both force (§9.3.2) and proc-assign (§9.3.1)
+        // re-evaluate continuously; a latent (force-displaced) assign does not
+        // run until release re-pins it.
+        let entries: Vec<(sim_ir::Lvalue, u32, u64, bool)> =
             self.st.active_forces.values().cloned().collect();
         let saved = self.st.cur_time_mult;
-        for (lhs, rhs, mult) in entries {
+        for (lhs, rhs, mult, _weak) in entries {
             self.st.cur_time_mult = mult;
             let v = self.eval_for_lvalue(&lhs, rhs);
             self.st.force_write(&lhs, v);
@@ -1363,19 +1366,62 @@ impl Kernel for Scheduler<'_, '_> {
     fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets {
         self.resolve_lvalue_offsets(lhs)
     }
-    fn k_force(&mut self, lhs: &Lvalue, value: Value, rhs: u32) {
-        self.st.force_write(lhs, value);
-        // Register for continuous re-evaluation (IEEE §9.3.2); snapshot the
-        // forcing module's multiplier so a `$time` in the RHS keeps rendering
-        // with the right scale on later re-evals (the C7 lesson).
+    fn k_force(&mut self, lhs: &Lvalue, value: Value, rhs: u32, sid: u32) {
+        // The multiplier is snapshot at registration so a `$time` in the RHS
+        // keeps rendering with the right scale on later re-evals (C7 lesson).
+        let net = lhs.chunks[0].net;
         let mult = self.st.cur_time_mult;
+        let weak = self.st.assign_ranks.contains(&sid);
+        if weak {
+            // §9.3.1 proc-assign: an active FORCE keeps priority — park the
+            // assign as latent (it takes control at release). Otherwise (re)pin
+            // at assign rank (a second assign overrides the first).
+            if matches!(self.st.active_forces.get(&net), Some((.., false))) {
+                self.st.latent_assigns.insert(net, (lhs.clone(), rhs, mult));
+                return;
+            }
+            self.st.latent_assigns.remove(&net);
+        } else if let Some((plv, prhs, pmult, true)) = self.st.active_forces.get(&net).cloned() {
+            // real force displacing an active assign: park it for release.
+            self.st.latent_assigns.insert(net, (plv, prhs, pmult));
+        }
+        self.st.force_write(lhs, value);
+        // Register for continuous re-evaluation (IEEE §9.3.2 / §9.3.1).
         self.st
             .active_forces
-            .insert(lhs.chunks[0].net, (lhs.clone(), rhs, mult));
+            .insert(net, (lhs.clone(), rhs, mult, weak));
     }
-    fn k_release(&mut self, lhs: &Lvalue) {
-        self.st.active_forces.remove(&lhs.chunks[0].net);
-        self.st.release(lhs);
+    fn k_release(&mut self, lhs: &Lvalue, sid: u32) {
+        let net = lhs.chunks[0].net;
+        if self.st.assign_ranks.contains(&sid) {
+            // `deassign`: drop the assign wherever it lives. An active STRONG
+            // force is untouched; an active assign unpins (the variable HOLDS
+            // its value, §9.3.1); a latent assign is just forgotten.
+            self.st.latent_assigns.remove(&net);
+            if matches!(self.st.active_forces.get(&net), Some((.., true))) {
+                self.st.active_forces.remove(&net);
+                self.st.release(lhs);
+            }
+            return;
+        }
+        // `release`: removes the FORCE. A parked proc-assign resumes control
+        // (re-pin + re-evaluate NOW, §9.3.1); an active assign is NOT a force
+        // and keeps control; otherwise plain unpin.
+        match self.st.active_forces.get(&net) {
+            Some((.., true)) => {} // assign active, no force: release is a no-op
+            _ => {
+                self.st.active_forces.remove(&net);
+                self.st.release(lhs);
+                if let Some((alv, arhs, amult)) = self.st.latent_assigns.remove(&net) {
+                    let saved = self.st.cur_time_mult;
+                    self.st.cur_time_mult = amult;
+                    let v = self.eval_for_lvalue(&alv, arhs);
+                    self.st.force_write(&alv, v);
+                    self.st.cur_time_mult = saved;
+                    self.st.active_forces.insert(net, (alv, arhs, amult, true));
+                }
+            }
+        }
     }
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) {
         self.st.write_lvalue(lhs, value, offsets);

@@ -105,7 +105,10 @@ pub(crate) struct SimState<'a> {
     /// IEEE §9.3.2 continuous-force registry: net → (whole-net lvalue, rhs
     /// ExprId, forcing module's time multiplier). BTreeMap ⇒ deterministic
     /// re-evaluation order; empty unless a force is live (zero steady cost).
-    pub active_forces: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64)>,
+    pub active_forces: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64, bool)>,
+    /// Proc-assigns displaced by an overriding `force` (§9.3.1): net → the
+    /// parked (lvalue, rhs ExprId, time-mult). `release` re-pins from here.
+    pub latent_assigns: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64)>,
     /// IEEE 1364-2005 self-width side table — built once, immutable for the run.
     pub wt: crate::width::WidthTable,
 
@@ -126,6 +129,9 @@ pub(crate) struct SimState<'a> {
     pub severities: crate::SeverityTable,
     /// StmtId → default radix (2/8/16) for b/o/h print variants (P1-5).
     pub radixes: crate::RadixTable,
+    /// Assign-rank table (§9.3.1, from `SimOpts.assign_ranks`): StmtIds of
+    /// Force/Release stmts that are procedural assign/deassign (weak rank).
+    pub assign_ranks: crate::AssignRankTable,
     /// Per-ProcId instance path for `%m` (P2-11); empty ⇒ flat `top` fallback.
     pub proc_scopes: Vec<String>,
     /// Instance path of the process CURRENTLY executing — set per `run_process`
@@ -202,6 +208,7 @@ impl<'a> SimState<'a> {
             dirty_flag: vec![false; nnets],
             forced: vec![false; nnets],
             active_forces: std::collections::BTreeMap::new(),
+            latent_assigns: std::collections::BTreeMap::new(),
             wt,
             vcd: None,
             vcd_path: None,
@@ -214,6 +221,7 @@ impl<'a> SimState<'a> {
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),
+            assign_ranks: crate::AssignRankTable::new(),
             proc_scopes: Vec::new(),
             cur_scope: "top".to_string(),
             threads: 1,

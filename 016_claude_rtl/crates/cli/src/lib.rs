@@ -557,6 +557,7 @@ fn run_vita_str_gated(
         proc_multipliers: sc.proc_multipliers,
         severities: sc.severities,
         radixes: sc.radixes,
+        assign_ranks: sc.assign_ranks,
         proc_scopes: sc.proc_scopes,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
@@ -1142,6 +1143,10 @@ fn run_velab_gated(
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&sc.proc_scopes).expect("scope trailer postcard encode infallible"),
     );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.assign_ranks)
+            .expect("assign-rank trailer postcard encode infallible"),
+    );
     let vheader = artifact_header(vita_schema::schema_hash::<sim_ir::SimIr>(), global_prec_exp);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
     if let Err(e) = write_artifact_atomic(out, &out_bytes) {
@@ -1288,16 +1293,34 @@ fn run_vrun_gated(
         }
     };
     // Scope trailer (`%m`, P2-11). Tolerant → empty ⇒ flat `top`.
-    let proc_scopes: Vec<String> = if rest6.is_empty() {
-        Vec::new()
+    let (proc_scopes, rest7): (Vec<String>, &[u8]) = if rest6.is_empty() {
+        (Vec::new(), rest6)
     } else {
-        match postcard::from_bytes(rest6) {
+        match postcard::take_from_bytes(rest6) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab scope trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // Assign-rank trailer (§9.3.1 proc assign/deassign). Tolerant → empty ⇒
+    // every Force/Release stmt is a real force/release (pre-rank `.velab`s
+    // cannot contain proc-assign stmts, so empty is also CORRECT for them).
+    let assign_ranks: sim_engine::AssignRankTable = if rest7.is_empty() {
+        sim_engine::AssignRankTable::new()
+    } else {
+        match postcard::from_bytes(rest7) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab assign-rank trailer: {e}"
                     )),
                 )
             }
@@ -1311,6 +1334,7 @@ fn run_vrun_gated(
         proc_multipliers,
         severities,
         radixes,
+        assign_ranks,
         proc_scopes,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()

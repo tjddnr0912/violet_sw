@@ -46,7 +46,8 @@ use sim_ir::SimIr;
 /// Re-exported from `elaborate` so callers thread the join-mode side table into
 /// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
 pub use elaborate::{
-    ForkModeTable, JoinMode, NetNameTable, RadixTable, SeverityKind, SeverityTable, Sidecars,
+    AssignRankTable, ForkModeTable, JoinMode, NetNameTable, RadixTable, SeverityKind,
+    SeverityTable, Sidecars,
 };
 pub use sched::FinishReason;
 
@@ -124,6 +125,10 @@ pub struct SimOpts {
     /// Default-radix side table (P1-5): StmtId → 2/8/16 for the b/o/h print
     /// variants. EMPTY by default (decimal everywhere). Never enters the IR.
     pub radixes: RadixTable,
+    /// Assign-rank side table (§9.3.1): StmtIds of Force/Release stmts that are
+    /// procedural `assign`/`deassign` (weak rank — a real force overrides them;
+    /// release hands control back). EMPTY by default. Never enters the IR.
+    pub assign_ranks: AssignRankTable,
     /// Per-ProcId instance path (`"tb.u1"`) for `%m` (P2-11). EMPTY ⇒ `%m`
     /// renders the legacy flat `top`. Never enters the IR.
     pub proc_scopes: Vec<String>,
@@ -149,6 +154,7 @@ impl Default for SimOpts {
             backend: Backend::Interpreter,
             severities: SeverityTable::new(),
             radixes: RadixTable::new(),
+            assign_ranks: AssignRankTable::new(),
             proc_scopes: Vec::new(),
             threads: 1,
         }
@@ -205,6 +211,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.backend = opts.backend;
     st.severities = opts.severities.clone();
     st.radixes = opts.radixes.clone();
+    st.assign_ranks = opts.assign_ranks.clone();
     st.proc_scopes = opts.proc_scopes.clone();
     st.threads = opts.threads;
 

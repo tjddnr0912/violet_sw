@@ -4,6 +4,8 @@
 //! procedural `assign/deassign`, `->event` were warn+no-op (values never
 //! changed; an `@(ev)` waited forever), a non-constant `#delay` silently
 //! degraded to `#0` (turning `forever #x` into a delta-limit blowup), and
+//! (2026-06-10 §F-(F): force/release, proc assign/deassign and enclosing-block
+//! `disable` are REAL now — the loud lanes below are the remaining v1 cuts) —
 //! net-vs-variable assignment legality was never checked (iverilog rejects
 //! both directions; doc-02 documents them as errors). All are LOUD now:
 //! `E-ELAB-UNSUPPORTED` for the v1 cuts, `E-ELAB-LVALUE-KIND` (VITA-E3018,
@@ -92,10 +94,13 @@ endmodule
     );
 }
 
-/// procedural `assign`/`deassign` silently changed nothing.
+/// procedural `assign`/`deassign` (IEEE 1364 §9.3.1) is now REAL: it rides the
+/// force machinery at a weaker rank (sidecar-marked StmtIds). Variable targets
+/// elaborate cleanly; semantics are pinned by end_to_end + the iverilog
+/// differential (const-rhs lanes).
 #[test]
-fn procedural_assign_is_rejected() {
-    assert_rejected(
+fn procedural_assign_is_accepted() {
+    let (ok, diags) = elab(
         r#"
 module t;
   reg a;
@@ -105,7 +110,29 @@ module t;
   end
 endmodule
 "#,
-        "assign",
+    );
+    assert!(ok, "proc assign/deassign must elaborate; diags: {diags:?}");
+    assert!(
+        diags.iter().all(|d| !d.starts_with("error[")),
+        "no errors expected: {diags:?}"
+    );
+}
+
+/// §9.3.1 legality: proc-assign targets a VARIABLE (E3018 for a wire) and only
+/// a WHOLE variable (bit/part-select is loud-unsupported, like force).
+#[test]
+fn procedural_assign_to_wire_or_select_is_loud() {
+    assert_rejected(
+        "module t; wire w; initial assign w = 1'b1; endmodule",
+        "VITA-E3018",
+    );
+    assert_rejected(
+        "module t; reg [3:0] r; initial assign r[0] = 1'b1; endmodule",
+        "whole",
+    );
+    assert_rejected(
+        "module t; wire w; initial deassign w; endmodule",
+        "VITA-E3018",
     );
 }
 
@@ -344,5 +371,32 @@ endmodule
     assert!(
         diags.iter().any(|d| d.starts_with("error[")),
         "must be an error: {diags:?}"
+    );
+}
+
+/// `disable` is REAL for a lexically-enclosing named begin-block (break /
+/// continue idiom — see end_to_end.rs). Everything else was warn+no-op
+/// (silent-wrong: the disable did nothing) and is now LOUD: cross-process
+/// targets, unknown labels, hierarchical paths, and a fork child disabling a
+/// block OUTSIDE the fork (which would bypass the join barrier).
+#[test]
+fn disable_non_enclosing_targets_are_loud() {
+    // cross-process: A is another process's block.
+    assert_rejected(
+        "module tb; reg x; initial begin : A x = 1; end \
+         always @(x) disable A; endmodule",
+        "disable",
+    );
+    // unknown label.
+    assert_rejected("module tb; initial disable NOPE; endmodule", "disable");
+    // hierarchical path.
+    assert_rejected(
+        "module tb; initial begin : A disable tb.A; end endmodule",
+        "disable",
+    );
+    // fork child may not disable a block outside its own body.
+    assert_rejected(
+        "module tb; initial begin : B fork begin disable B; end join end endmodule",
+        "disable",
     );
 }
