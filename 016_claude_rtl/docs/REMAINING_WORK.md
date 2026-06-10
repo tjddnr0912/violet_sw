@@ -86,9 +86,9 @@
 
 | 단계 | 내용 | 기대효과 | 결정성 리스크 | 공수 |
 |---|---|---|---|---|
-| ⬜ **T0a** | multi-run 병렬: P5 `backend_equiv`가 interp·VM을 `thread::scope` 동시 실행 + Send-가능 capture sink | 차분 스위트 ~2x, run 수에 선형 | 0 | 시간 |
-| ⬜ **T0b** | VCD `BufWriter`(=P3-3) + `perf_baseline.rs`에 dump-heavy 케이스(현재 VCD 비중 **미측정**) | 측정 후 판단(현 1 syscall/record) | 0 | 시간 |
-| ⬜ **T1** | `--threads ≥2`: VCD 전용 writer 스레드 — 인코딩·`$dumplimit` byte-카운팅은 producer측 유지, bounded FIFO(순서=byte 보존), `$dumpflush`/finalize는 block-drain | T0b 측정 VCD I/O 비중에 비례(30%→≤1.43x, 50%→≤2x) | 低 | 일 |
+| ✅ **T0a** | ~~multi-run 병렬~~ — 2026-06-10 완료. `backend_equiv`가 interp·VM을 `thread::scope` 동시 실행(`SimIr`=Sync, sink/VCD 경로 스레드별 분리) | 차분 스위트 ~2x | 0 | — |
+| ✅ **T0b** | ~~BufWriter+측정~~ — BufWriter(P3-3)+`perf_dump_share` 측정 케이스. **실측: dump-heavy VCD 비중 40.9%(BufWriter 적용 후), T1 이론상한 ≤1.69x** | 측정 완료 → T1 정당화 | 0 | — |
+| ✅ **T1** | ~~`--threads ≥2` VCD writer 스레드~~ — 2026-06-10 완료. `vcd_thread::ThreadedWriter`(bounded FIFO 8×64KiB chunk, 순서보존, write에러는 flush에서 표면화→W4019 경로 유지, Drop=drain+join). CLI `--threads N`/`-j N`(vita·vrun)+`VITA_THREADS`+auto(min(cores,8)). **byte-identical 계약 게이트**: `tests/threads.rs`(엔진 1vs4) + `cli_ux.rs`(subprocess 1vs4 VCD byte-diff) | VCD I/O 은닉(상한 1.69x) | 0(게이트 강제) | — |
 | ⬜ **T2** | front-end per-compilation-unit 병렬 — 현 다중파일은 의도적 단일 연결(`` `define`` 순서 의존)이라 SV `-u` 의미론 결정 선행 | 小(front-end는 ms 스케일) | 中 | 보류 |
 | ✕ **T3** | parallel elaborate — **비추천**: 전역 arena ID 순서 자체가 골든 계약, byte-identical 재현 머지 비용 高 | 小 | **高** | — |
 | 🔬 **T4** | 엔진 내 PDES/정적 파티셔닝 — 연구 트랙 유지(doc-18 판정대로). Verilator `--threads`는 cycle-based 정적 파티셔닝+배리어라 가능; 이벤트구동+tie 순서+eager VCD에는 부적합, Icarus도 미지원 | 설계 의존 | 最高 | 연구 |

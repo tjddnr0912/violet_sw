@@ -30,6 +30,7 @@ mod native_eval;
 mod sched;
 mod state;
 mod value;
+mod vcd_thread;
 mod width;
 
 #[cfg(test)]
@@ -118,6 +119,12 @@ pub struct SimOpts {
     /// `SysTaskId::Display`). EMPTY for severity-free designs (the default), so
     /// every existing caller is unaffected. Never enters the golden IR.
     pub severities: SeverityTable,
+    /// Worker-thread budget (P4-T1, CLI `--threads`/`-j`). `1` (the default) is
+    /// the exact single-thread path; `≥2` moves VCD file writes onto a dedicated
+    /// writer thread behind an order-preserving bounded FIFO. CONTRACT: output
+    /// (VCD/stdout/exit) is byte-identical for every value — N changes
+    /// wall-clock only (enforced by `tests/threads.rs`).
+    pub threads: u32,
 }
 
 impl Default for SimOpts {
@@ -133,6 +140,7 @@ impl Default for SimOpts {
             proc_multipliers: Vec::new(),
             backend: Backend::Interpreter,
             severities: SeverityTable::new(),
+            threads: 1,
         }
     }
 }
@@ -186,6 +194,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.proc_multipliers = opts.proc_multipliers.clone();
     st.backend = opts.backend;
     st.severities = opts.severities.clone();
+    st.threads = opts.threads;
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

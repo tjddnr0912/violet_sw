@@ -181,7 +181,17 @@ fn dumpvars(st: &mut SimState) {
     };
     // P3-3/T0b: buffer the VCD sink (raw `File` was ~1 write syscall per record).
     // `finalize_vcd` flushes explicitly, so buffering never changes the bytes.
-    st.open_vcd(Box::new(std::io::BufWriter::with_capacity(64 * 1024, file)));
+    // P4-T1: with `--threads ≥2` the buffered chunks go to a dedicated writer
+    // thread (order-preserving bounded FIFO) — byte-identical, wall-clock only.
+    let sink: crate::state::VcdSink = if st.threads >= 2 {
+        Box::new(std::io::BufWriter::with_capacity(
+            64 * 1024,
+            crate::vcd_thread::ThreadedWriter::spawn(file),
+        ))
+    } else {
+        Box::new(std::io::BufWriter::with_capacity(64 * 1024, file))
+    };
+    st.open_vcd(sink);
 
     let date = st.vcd_date.clone();
     let unit = st.timescale_unit.clone();

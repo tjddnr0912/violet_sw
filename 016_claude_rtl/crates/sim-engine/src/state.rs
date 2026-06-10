@@ -104,6 +104,8 @@ pub(crate) struct SimState<'a> {
     /// StmtId → severity for `$fatal`/`$error`/`$warning`/`$info` statements
     /// (from `SimOpts.severities`); empty ⇒ no severity tasks in the design.
     pub severities: crate::SeverityTable,
+    /// Worker-thread budget (from `SimOpts.threads`); `≥2` ⇒ VCD writer thread.
+    pub threads: u32,
     /// Process-body execution backend (from `SimOpts.backend`). Default
     /// `Interpreter`; read at the single `run()` body-dispatch seam.
     pub backend: crate::Backend,
@@ -179,6 +181,7 @@ impl<'a> SimState<'a> {
             net_names: Vec::new(),
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
+            threads: 1,
             backend: crate::Backend::Interpreter,
             vm_cache: (0..ir.processes.len())
                 .map(|_| crate::backend::VmSlot::Unchecked)

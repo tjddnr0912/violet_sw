@@ -154,3 +154,64 @@ fn perf_baseline_codegen_heavy() {
         5,
     );
 }
+
+/// [P4-T0b] DUMP-heavy: many VCD value-change records (8 nets toggling every tick
+/// for 20k ticks ≈ 320k records) with trivially cheap eval, so wall-time isolates
+/// the VCD encode+write path. The no-dump twin is byte-for-byte the same design
+/// minus `$dumpfile/$dumpvars` — the delta is the VCD share that a writer THREAD
+/// (T1, `--threads ≥2`) can hide. Measures, does not gate.
+const DUMP_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  reg [63:0] a, b, c, d, e, f, g;\n\
+  integer k;\n\
+  always @(posedge clk) begin\n\
+    a <= a + 64'd1; b <= b + 64'd2; c <= c + 64'd3; d <= d + 64'd5;\n\
+    e <= e + 64'd7; f <= f + 64'd11; g <= g + 64'd13;\n\
+  end\n\
+  initial begin\n\
+    DUMP\n\
+    clk = 0; a = 0; b = 0; c = 0; d = 0; e = 0; f = 0; g = 0;\n\
+    for (k = 0; k < 20000; k = k + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
+/// Best-of-`reps` wall-time (ns) of `simulate` with an optional real-file VCD dump.
+fn time_dump(ir: &sim_ir::SimIr, vcd_path: Option<&std::path::Path>, reps: u32) -> u128 {
+    let sink = NullSink;
+    let mut best = u128::MAX;
+    for _ in 0..reps {
+        let opts = SimOpts {
+            vcd_path_override: vcd_path.map(|p| p.to_string_lossy().into_owned()),
+            ..SimOpts::default()
+        };
+        let t = Instant::now();
+        let res = simulate(ir, &sink, opts);
+        best = best.min(t.elapsed().as_nanos());
+        assert_eq!(res.finish_reason, FinishReason::Finish);
+    }
+    best
+}
+
+#[test]
+#[ignore = "perf data (VCD share measurement for P4-T1); run with --ignored --nocapture"]
+fn perf_dump_share() {
+    let with_dump_src = DUMP_HEAVY.replace("DUMP", "$dumpfile(\"x.vcd\"); $dumpvars;");
+    let no_dump_src = DUMP_HEAVY.replace("DUMP", "");
+    let ir_dump = build(&with_dump_src);
+    let ir_plain = build(&no_dump_src);
+    let path = std::env::temp_dir().join(format!("vita_perf_dump_{}.vcd", std::process::id()));
+    let t_dump = time_dump(&ir_dump, Some(&path), 5);
+    let t_plain = time_dump(&ir_plain, None, 5);
+    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let _ = std::fs::remove_file(&path);
+    let share = 1.0 - (t_plain as f64 / t_dump as f64);
+    println!("\n[T0b] dump-heavy VCD share (best-of-5, {bytes} VCD bytes):");
+    println!("  with dump   : {:>8.3} ms", t_dump as f64 / 1e6);
+    println!("  without dump: {:>8.3} ms", t_plain as f64 / 1e6);
+    println!(
+        "  VCD share   : {:>7.1}%   (T1 writer-thread ceiling ≤ {:.2}x)",
+        share * 100.0,
+        1.0 / (1.0 - share)
+    );
+}

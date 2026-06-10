@@ -35,15 +35,38 @@ pub const EXIT_CLI_ERROR: i32 = 3;
 pub struct VitaOpts {
     /// Overrides the design's `$dumpfile` path (CLI `-o`). `None` ⇒ use `$dumpfile`.
     pub vcd_path_override: Option<String>,
+    /// Worker-thread budget (P4-T1, CLI `--threads N`/`-j N`). `None` ⇒ auto:
+    /// `VITA_THREADS` env if set, else `min(available_parallelism, 8)`. Output is
+    /// byte-identical for every value (the P4 contract) — wall-clock only.
+    pub threads: Option<u32>,
 }
 
 impl VitaOpts {
     fn sim_opts(&self) -> SimOpts {
         SimOpts {
             vcd_path_override: self.vcd_path_override.clone(),
+            threads: resolve_threads(self.threads),
             ..SimOpts::default()
         }
     }
+}
+
+/// P4-T1 thread-count resolution: explicit flag > `VITA_THREADS` env > auto
+/// (`min(available_parallelism, 8)`). Clamped to ≥1. The count never changes
+/// output bytes — only wall-clock — so "auto" is safe as the default.
+fn resolve_threads(flag: Option<u32>) -> u32 {
+    flag.or_else(|| {
+        std::env::var("VITA_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+    })
+    .unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1)
+            .min(8)
+    })
+    .max(1)
 }
 
 /// A minimal concrete `LogSink`: the first real sink in the workspace.
@@ -473,7 +496,20 @@ pub fn run(argv: &[String]) -> i32 {
         return EXIT_OK;
     }
     match applet {
-        Applet::Vita => run_vita(&args, &VitaOpts::default()),
+        Applet::Vita => {
+            // One-shot flag surface: `-o <vcd>` + `--threads N` (P4-T1), then
+            // positional sources. (Before T1 the one-shot accepted NO flags —
+            // `-o` was read as a source file.)
+            let (pos, out, threads) = match parse_io_args(&args) {
+                Ok(x) => x,
+                Err(c) => return c,
+            };
+            let opts = VitaOpts {
+                vcd_path_override: out,
+                threads,
+            };
+            run_vita(&pos, &opts)
+        }
         Applet::Staged("vcmp") => dispatch_vcmp(&args),
         Applet::Staged("velab") => dispatch_velab(&args),
         Applet::Staged("vrun") => dispatch_vrun(&args),
@@ -889,9 +925,13 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
 
 /// Parse a flat arg list into (positional paths, `-o` value). `-o`/`--out`
 /// consume the next arg. Unknown flags → `Err(EXIT_CLI_ERROR)`.
-fn parse_io_args(args: &[String]) -> Result<(Vec<String>, Option<String>), i32> {
+/// Parsed common applet flags: (positional args, `-o` value, `--threads` value).
+type IoArgs = (Vec<String>, Option<String>, Option<u32>);
+
+fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut pos = Vec::new();
     let mut out = None;
+    let mut threads = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -904,6 +944,20 @@ fn parse_io_args(args: &[String]) -> Result<(Vec<String>, Option<String>), i32> 
                     return Err(EXIT_CLI_ERROR);
                 };
                 out = Some(v.clone());
+                i += 2;
+            }
+            // P4-T1: worker-thread budget. Output is byte-identical for every N
+            // (contract); the value only moves wall-clock.
+            "--threads" | "-j" => {
+                let parsed = args.get(i + 1).and_then(|v| v.parse::<u32>().ok());
+                let Some(n) = parsed else {
+                    eprintln!(
+                        "error[{}]: '--threads' needs a positive integer",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                threads = Some(n.max(1));
                 i += 2;
             }
             s if s.starts_with('-') && s.len() > 1 => {
@@ -919,11 +973,11 @@ fn parse_io_args(args: &[String]) -> Result<(Vec<String>, Option<String>), i32> 
             }
         }
     }
-    Ok((pos, out))
+    Ok((pos, out, threads))
 }
 
 fn dispatch_vcmp(args: &[String]) -> i32 {
-    let (pos, out) = match parse_io_args(args) {
+    let (pos, out, _threads) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -942,7 +996,7 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
 }
 
 fn dispatch_velab(args: &[String]) -> i32 {
-    let (pos, out) = match parse_io_args(args) {
+    let (pos, out, _threads) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -961,7 +1015,7 @@ fn dispatch_velab(args: &[String]) -> i32 {
 }
 
 fn dispatch_vrun(args: &[String]) -> i32 {
-    let (pos, out) = match parse_io_args(args) {
+    let (pos, out, threads) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -985,6 +1039,7 @@ fn dispatch_vrun(args: &[String]) -> i32 {
     #[allow(clippy::needless_update)]
     let opts = VitaOpts {
         vcd_path_override: out,
+        threads,
         ..Default::default()
     };
     run_vrun(&pos[0], &opts)
@@ -1104,6 +1159,7 @@ mod tests {
         );
         let opts = VitaOpts {
             vcd_path_override: Some(vcd_str.clone()),
+            threads: None,
         };
         let (code, _) = run_on_temp(&src, &opts);
         assert_eq!(code, EXIT_OK);

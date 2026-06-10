@@ -29,8 +29,19 @@ fn compiled_equals_interpreter_over_corpus() {
     // reproducible on every OS.
     for d in corpus(0x5EED_F00D, 72) {
         let ir = build(&d.src);
-        let (ri, oi, vi) = run_capture(&ir, Backend::Interpreter, &d.name);
-        let (rb, ob, vb) = run_capture(&ir, Backend::Bytecode, &d.name);
+        // P4-T0a: the two backend runs are independent (separate sinks, separate
+        // VCD temp paths) — run them CONCURRENTLY via thread::scope. `SimIr` is
+        // plain shared data (Sync); each thread builds its own capture sink, so
+        // nothing crosses threads but the `&ir` borrow. ~2x suite wall-clock.
+        let (ir_ref, name) = (&ir, d.name.as_str());
+        let ((ri, oi, vi), (rb, ob, vb)) = std::thread::scope(|s| {
+            let hi = s.spawn(move || run_capture(ir_ref, Backend::Interpreter, name));
+            let hb = s.spawn(move || run_capture(ir_ref, Backend::Bytecode, name));
+            (
+                hi.join().expect("interpreter run panicked"),
+                hb.join().expect("bytecode run panicked"),
+            )
+        });
 
         assert_eq!(oi, ob, "stdout differs across backends for `{}`", d.name);
         assert_eq!(
