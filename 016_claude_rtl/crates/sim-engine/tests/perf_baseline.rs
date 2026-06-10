@@ -307,8 +307,14 @@ fn perf_dump_share() {
 /// timestep; the dirty-list sweep (scheduler R2) makes the sweep proportional
 /// to nets actually WRITTEN. 512 idle regs + a 2-net clk/counter churn.
 fn nets_heavy_src() -> String {
+    nets_heavy_src_n(512)
+}
+
+/// Same shape with a parameterized idle-net count (scaling probe for the
+/// net_to_edge/waiter layer: post-R2 wall-clock should be FLAT in N).
+fn nets_heavy_src_n(n: usize) -> String {
     let mut decls = String::new();
-    for i in 0..512 {
+    for i in 0..n {
         decls.push_str(&format!("  reg [63:0] idle{i};\n"));
     }
     format!(
@@ -330,4 +336,13 @@ fn nets_heavy_src() -> String {
 fn perf_nets_heavy() {
     let src = nets_heavy_src();
     report("nets-heavy (512 idle nets; dirty-list target)", &src, 5);
+}
+
+#[test]
+#[ignore = "perf data (idle-net scaling probe); run with --ignored --nocapture"]
+fn perf_nets_scaling() {
+    for n in [512usize, 2048, 8192] {
+        let src = nets_heavy_src_n(n);
+        report(&format!("nets-scaling ({n} idle nets)"), &src, 3);
+    }
 }
