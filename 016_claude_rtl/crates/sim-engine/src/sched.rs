@@ -582,11 +582,30 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 // Evaluate every monitored expression to a settled 4-state Value,
                 // scaling `$time`/`$realtime` by the monitoring module's M.
                 // `self.eval` builds `EvalCtx` from `self.st`, reading settled `cur`.
+                // IEEE §17.1.3 (P0-9): a DIRECT `$time`/`$realtime` argument does
+                // NOT participate in change detection (it is rendered, but time
+                // advancing must not retrigger the monitor) — filter those out of
+                // the comparison vector. Change compare is on the BIT PLANES
+                // (width/val/unk) only, not the derived `PartialEq` (which also
+                // compares the static signed/is_real metadata).
                 self.st.cur_time_mult = tmult;
-                let cur_vals: Vec<Value> = args.iter().map(|&eid| self.eval(eid)).collect();
+                let is_direct_time = |eid: u32| {
+                    matches!(
+                        self.st.ir.exprs[eid as usize],
+                        sim_ir::Expr::SysFunc {
+                            which: sim_ir::SysFuncId::Time | sim_ir::SysFuncId::Realtime,
+                            ..
+                        }
+                    )
+                };
+                let cur_vals: Vec<Value> = args
+                    .iter()
+                    .filter(|&&eid| !is_direct_time(eid))
+                    .map(|&eid| self.eval(eid))
+                    .collect();
                 let changed = match &prev {
-                    None => true,                  // establishment / replace → print
-                    Some(old) => *old != cur_vals, // 4-state value-level change
+                    None => true, // establishment / replace → print
+                    Some(old) => !vals_same_bits(old, &cur_vals),
                 };
                 if changed {
                     let mut line = format_args_str(self, fmt, &args);
@@ -1144,6 +1163,17 @@ fn push_sorted(q: &mut Vec<Ready>, r: Ready) {
 /// ≤ 65535 children per fork (far above any MVP testbench).
 fn compose_child_tie(parent_tie: u32, child_idx: u32) -> u32 {
     ((parent_tie + 1) << 16) | (child_idx & 0xFFFF)
+}
+
+/// `$monitor` change detection compares the BIT PLANES only (width + val +
+/// unk). The derived `Value::PartialEq` also compares the static `signed` /
+/// `is_real` metadata, which is representation — IEEE §17.1 keys reprints on
+/// VALUE change (P0-9).
+fn vals_same_bits(a: &[Value], b: &[Value]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.width == y.width && x.val == y.val && x.unk == y.unk)
 }
 
 fn is_posedge(prev: FourState, new: FourState) -> bool {

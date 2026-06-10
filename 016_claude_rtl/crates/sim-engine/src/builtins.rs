@@ -299,19 +299,75 @@ fn const_string(st: &SimState, cid: u32) -> String {
 // ── $display format engine (4-state aware) ─────────────────────────────────
 
 pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32]) -> String {
-    let Some(fmt_eid) = fmt else {
-        // bare args → space-joined decimals
-        return args
-            .iter()
-            .map(|&e| fmt_dec(&sched.eval(e)))
-            .collect::<Vec<_>>()
-            .join(" ");
-    };
-    // FROZEN IR: `SysTask.fmt` is an ExprId pointing to a `Const{val}` whose
-    // `val` is the format-string ConstId (verified against elaborate).
-    let template = expr_const_string(sched.st, fmt_eid);
     let mut out = String::new();
     let mut argi = 0usize;
+    if let Some(fmt_eid) = fmt {
+        // FROZEN IR: `SysTask.fmt` is an ExprId pointing to a `Const{val}` whose
+        // `val` is the format-string ConstId (verified against elaborate).
+        let template = expr_const_string(sched.st, fmt_eid);
+        render_template(sched, &template, args, &mut argi, &mut out);
+    }
+    // IEEE 1364-2005 §17.1 (P0-8): any argument NOT consumed by a format
+    // string prints sequentially — a string-literal arg is itself a format
+    // segment (its `%` specs consume the args that follow it); every other
+    // arg prints in the default radix (a padded `%d` field; `%g` for a real).
+    // Previously everything after the leading format string was silently
+    // dropped, and a bare string arg printed as a packed-ASCII decimal.
+    while argi < args.len() {
+        let e = args[argi];
+        argi += 1;
+        if let Some(text) = str_const_of_expr(sched.st, e) {
+            render_template(sched, &text, args, &mut argi, &mut out);
+        } else {
+            push_default_radix(&sched.eval(e), &mut out);
+        }
+    }
+    out
+}
+
+/// The argument ExprId IFF it is a string-literal constant (`ConstRepr::StrUtf8`).
+fn str_const_of_expr(st: &SimState, eid: u32) -> Option<String> {
+    if let sim_ir::Expr::Const { val } = &st.ir.exprs[eid as usize] {
+        if st.ir.consts[*val as usize].repr == sim_ir::ConstRepr::StrUtf8 {
+            return Some(const_string(st, *val));
+        }
+    }
+    None
+}
+
+/// Default-radix rendering of an argument with no format spec: a `%d` field
+/// padded to the operand's default decimal width (`%g` for a real).
+fn push_default_radix(v: &Value, out: &mut String) {
+    if v.is_real {
+        out.push_str(&fmt_real(v, 'g', None, None));
+        return;
+    }
+    let s = fmt_dec(v);
+    let fw = dec_field_width(v.width);
+    if s.len() < fw {
+        out.push_str(&" ".repeat(fw - s.len()));
+    }
+    out.push_str(&s);
+}
+
+/// iverilog-style `%v` strength form of bit 0: St0/St1/StX/HiZ (vitamin has no
+/// strength model; the driven-strong prefix is the conventional rendering).
+fn strength_form(v: &Value) -> &'static str {
+    match v.get_vu(0) {
+        (0, 0) => "St0",
+        (1, 0) => "St1",
+        (1, 1) => "HiZ",
+        _ => "StX",
+    }
+}
+
+fn render_template(
+    sched: &Scheduler,
+    template: &str,
+    args: &[u32],
+    argi: &mut usize,
+    out: &mut String,
+) {
     let mut chars = template.chars().peekable();
 
     while let Some(c) = chars.next() {
@@ -370,11 +426,11 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
             '%' => out.push('%'),
             'm' => out.push_str("top"),
             't' => {
-                let v = next_arg(sched, args, &mut argi);
+                let v = next_arg(sched, args, argi);
                 out.push_str(&fmt_dec(&v));
             }
             'd' | 'D' => {
-                let v = next_arg(sched, args, &mut argi);
+                let v = next_arg(sched, args, argi);
                 // IEEE 1364 %d: right-justify in a field width. `%0d` ⇒ minimal;
                 // `%Nd` ⇒ width N; bare `%d` ⇒ the operand's default decimal width
                 // (digit count of its max value). An X/Z prints as a right-justified
@@ -391,29 +447,45 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
                 out.push_str(&s);
             }
             'h' | 'H' | 'x' | 'X' => {
-                let v = next_arg(sched, args, &mut argi);
+                let v = next_arg(sched, args, argi);
                 out.push_str(&fmt_radix(&v, 4, min_zero));
             }
             'o' | 'O' => {
-                let v = next_arg(sched, args, &mut argi);
+                let v = next_arg(sched, args, argi);
                 out.push_str(&fmt_radix(&v, 3, min_zero));
             }
             'b' | 'B' => {
-                let v = next_arg(sched, args, &mut argi);
+                let v = next_arg(sched, args, argi);
                 out.push_str(&fmt_radix(&v, 1, min_zero));
             }
             'f' | 'F' | 'g' | 'G' | 'e' | 'E' => {
-                let v = next_arg(sched, args, &mut argi);
+                let v = next_arg(sched, args, argi);
                 out.push_str(&fmt_real(&v, spec, field_width, precision));
             }
             'c' => {
-                let v = next_arg(sched, args, &mut argi);
+                let v = next_arg(sched, args, argi);
                 out.push(char_of(&v));
             }
             's' => {
-                let e = args.get(argi).copied();
-                argi += 1;
+                let e = args.get(*argi).copied();
+                *argi += 1;
                 out.push_str(&arg_string(sched, e));
+            }
+            // P0-8③: the remaining IEEE specs CONSUME their argument — leaving
+            // them unconsumed shifted every later spec onto the wrong arg.
+            'v' | 'V' => {
+                let v = next_arg(sched, args, argi);
+                out.push_str(strength_form(&v));
+            }
+            // binary-dump specs: consume; vitamin emits no text for them (v1 —
+            // the IEEE form writes raw bytes, useless in a text log).
+            'u' | 'U' | 'z' | 'Z' => {
+                let _ = next_arg(sched, args, argi);
+            }
+            // `%p` (SV assignment pattern): minimal-width value form (v1).
+            'p' | 'P' => {
+                let v = next_arg(sched, args, argi);
+                out.push_str(&fmt_dec(&v));
             }
             other => {
                 out.push('%');
@@ -421,7 +493,6 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
             }
         }
     }
-    out
 }
 
 fn next_arg(sched: &Scheduler, args: &[u32], argi: &mut usize) -> Value {

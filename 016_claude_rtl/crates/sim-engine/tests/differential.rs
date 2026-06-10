@@ -241,6 +241,35 @@ fn diff_casez_priority() {
 }
 
 #[test]
+fn diff_display_arg_semantics() {
+    // P0-8/9 (2026-06-10): sequential $display argument processing (trailing
+    // args in default radix, string args as inline format segments, %v
+    // consumption) + $monitor not retriggering on a direct $time argument.
+    assert_matches_iverilog(
+        "display_args",
+        "module tb; reg clk; reg [7:0] v; reg w; \
+           initial begin \
+             v = 8'd255; \
+             $display(\"val=\", v); \
+             $display(\"v=\", 8'd5); \
+             $display(8'd7, \" is a\"); \
+             $display(\"a=%0d\", 4'd1, \" b=\", 8'd5); \
+             $display(8'd255, 8'd255); \
+             w = 1'b1; \
+             $display(\"%v %0d\", w, 8'd5); \
+           end \
+           initial begin \
+             v = 8'd5; clk = 0; \
+             $monitor(\"t=%0t mv=%0d\", $time, v); \
+             #2 v = 8'd9; \
+             #2 $finish; \
+           end \
+           always #1 clk = ~clk; \
+         endmodule",
+    );
+}
+
+#[test]
 fn diff_const_domain_cluster() {
     // P0-5/6/7 (2026-06-10): signed-i64 elaboration const domain — ternary and
     // $clog2 param folding, `1<<32` past the old u32 wrap, signed `>>>`,
