@@ -292,3 +292,160 @@ fn artifact_gate_failure_exits_class_two() {
     assert_eq!(out.status.code(), Some(2), "artifact gate must exit 2");
     assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-E9001"));
 }
+
+// ── Phase-1.x E: filelist -f/-F expansion (doc-14 §3.1, v1 subset) ───────────
+
+fn tmpdir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("vita_flist_{}_{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn filelist_expands_sources_and_flags() {
+    // A .f can hold sources AND any flag legal on the command line.
+    let d = tmpdir("basic");
+    std::fs::write(
+        d.join("t.sv"),
+        "`timescale 1ns/1ns\nmodule t; initial $finish; endmodule\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("build.f"),
+        format!(
+            "// comment line\n# hash comment\n{} \\\n  --timeout 500\n",
+            d.join("t.sv").display()
+        ),
+    )
+    .unwrap();
+    let out = vita(&["-f", d.join("build.f").to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn filelist_big_f_resolves_relative_to_file_dir() {
+    // -F: relative paths inside resolve against the .f's OWN directory, so the
+    // tree is relocatable; a nested -f inside a -F frame warns (mixed base).
+    let d = tmpdir("bigf");
+    std::fs::create_dir_all(d.join("ip")).unwrap();
+    std::fs::write(
+        d.join("ip/t.sv"),
+        "`timescale 1ns/1ns\nmodule t; initial $finish; endmodule\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("ip/vendor.f"), "t.sv\n").unwrap();
+    let out = vita(&["-F", d.join("ip/vendor.f").to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn filelist_mixed_base_warns() {
+    let d = tmpdir("mixed");
+    std::fs::write(
+        d.join("t.sv"),
+        "`timescale 1ns/1ns\nmodule t; initial $finish; endmodule\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("inner.f"), format!("{}\n", d.join("t.sv").display())).unwrap();
+    std::fs::write(
+        d.join("outer.f"),
+        format!("-f {}\n", d.join("inner.f").display()),
+    )
+    .unwrap();
+    let out = vita(&["-F", d.join("outer.f").to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("VITA-W8008"),
+        "-f inside a -F frame must warn W-FLIST-MIXED-BASE"
+    );
+}
+
+#[test]
+fn filelist_cycle_is_loud() {
+    let d = tmpdir("cycle");
+    std::fs::write(d.join("a.f"), format!("-f {}\n", d.join("b.f").display())).unwrap();
+    std::fs::write(d.join("b.f"), format!("-f {}\n", d.join("a.f").display())).unwrap();
+    let out = vita(&["-f", d.join("a.f").to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-E8001"));
+}
+
+#[test]
+fn filelist_env_expansion_and_undefined_are_handled() {
+    let d = tmpdir("env");
+    std::fs::write(
+        d.join("t.sv"),
+        "`timescale 1ns/1ns\nmodule t; initial $finish; endmodule\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("ok.f"), "${VITA_FLIST_DIR}/t.sv\n").unwrap();
+    std::fs::write(d.join("bad.f"), "$VITA_FLIST_UNDEFINED_VAR/t.sv\n").unwrap();
+    let ok = Command::new(env!("CARGO_BIN_EXE_vita"))
+        .args(["-f", d.join("ok.f").to_str().unwrap()])
+        .env("VITA_FLIST_DIR", &d)
+        .output()
+        .expect("run vita");
+    let bad = vita(&["-f", d.join("bad.f").to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert_eq!(bad.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("VITA-E8006"));
+}
+
+#[test]
+fn filelist_glob_and_missing_are_loud() {
+    let d = tmpdir("globmiss");
+    std::fs::write(d.join("g.f"), "*.sv\n").unwrap();
+    let glob = vita(&["-f", d.join("g.f").to_str().unwrap()]);
+    let miss = vita(&["-f", d.join("nope.f").to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(glob.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&glob.stderr).contains("VITA-E8004"));
+    assert_eq!(miss.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&miss.stderr).contains("VITA-E8005"));
+}
+
+#[test]
+fn filelist_works_for_staged_vcmp() {
+    // The expansion is argv-level, so staged applets accept .f too.
+    let d = tmpdir("staged");
+    std::fs::write(d.join("t.sv"), "module t; endmodule\n").unwrap();
+    std::fs::write(d.join("c.f"), format!("{}\n", d.join("t.sv").display())).unwrap();
+    let vu = d.join("out.vu");
+    let out = vita(&[
+        "vcmp",
+        "-f",
+        d.join("c.f").to_str().unwrap(),
+        "-o",
+        vu.to_str().unwrap(),
+    ]);
+    let made = vu.exists();
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(made, ".vu must be written from a filelist-driven vcmp");
+}

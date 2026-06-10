@@ -33,6 +33,8 @@ pub const EXIT_STALE: i32 = 2;
 /// Exit code for a CLI/usage error (no sources, file not found, unknown applet).
 pub const EXIT_CLI_ERROR: i32 = 3;
 
+mod filelist;
+
 /// Knobs the `vita` driver threads down into the pipeline. Kept tiny for v1 — the
 /// full bucket-C flag surface (doc-13) lands with `vita-log`.
 #[derive(Debug, Clone, Default)]
@@ -519,6 +521,13 @@ pub fn run(argv: &[String]) -> i32 {
         println!("{applet_name} {}", env!("CARGO_PKG_VERSION"));
         return EXIT_OK;
     }
+    // Filelist expansion (doc-14 §3.1) happens at the ARGV level, before any
+    // per-applet flag parsing — every applet accepts `-f`/`-F` uniformly and
+    // a `.f` may carry any flag legal on the command line.
+    let args = match filelist::expand_argv(&args, &StderrSink::new()) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     match applet {
         Applet::Vita => {
             // One-shot flag surface: `-o <vcd>` + `--threads N` (P4-T1), then
@@ -579,6 +588,8 @@ fn print_help(applet: &str) {
     println!("{body}");
     println!(
         "\nOptions:\n  -o, --out <PATH>      output path override\n  \
+         -f <FILE>             expand a filelist (paths relative to the CWD)\n  \
+         -F <FILE>             expand a filelist (paths relative to the file's dir)\n  \
          --threads, -j <N>     worker threads (output byte-identical for any N)\n  \
          --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
          -Wno-<CODE>           suppress a Warning/Info diagnostic (mnemonic, doc-15)\n  \
