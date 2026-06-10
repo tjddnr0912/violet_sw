@@ -12,7 +12,9 @@
 //! rejection (`E-FLIST-GLOB`), cycle (`E-FLIST-CYCLE`, lexical ∪ physical
 //! identity) and depth (`E-FLIST-DEPTH`, cap 256) guards, and the
 //! `W-FLIST-MIXED-BASE` lint (`-f` inside a `-F` frame re-anchors to CWD).
-//! `+incdir+`/`+define+` buckets land with the PreOpts plumbing (Phase-1.x).
+//! `+define+N=V+M` rides verbatim (macro text, never base-resolved) and
+//! `+incdir+a+b` segments resolve against the frame base — both feed the
+//! typed `PreOpts` surface via `parse_io_args` (`-D`/`-I` equivalents).
 //!
 //! Path policy (doc-14 "canonicalization 잠금"): identity for the cycle guard
 //! uses pure LEXICAL `.`/`..` normalization — `fs::canonicalize` (symlink
@@ -29,7 +31,10 @@ const MAX_DEPTH: u32 = 256;
 /// Flags whose NEXT token is a value, not a source path — the value must not
 /// be base-resolved (e.g. `--timeout 200`: "200" is not a path).
 fn takes_value(flag: &str) -> bool {
-    matches!(flag, "-o" | "--out" | "--threads" | "-j" | "--timeout")
+    matches!(
+        flag,
+        "-o" | "--out" | "--threads" | "-j" | "--timeout" | "-D" | "--define" | "-I" | "--incdir"
+    )
 }
 
 /// True if `tok` smells like a glob — banned in filelists (readdir order is
@@ -329,6 +334,30 @@ impl Expander<'_> {
                         }
                     }
                     i += 2;
+                }
+                // `+define+N=V+M` rides verbatim — its segments are macro text,
+                // NEVER paths (base resolution would corrupt them).
+                t if t.starts_with("+define+") => {
+                    out.push(tok.clone());
+                    i += 1;
+                }
+                // `+incdir+a+b`: each '+'-joined segment IS a path — resolve
+                // against this frame's base (a -F vendor tree stays relocatable).
+                t if t.starts_with("+incdir+") => {
+                    let mut joined = String::from("+incdir");
+                    for seg in t["+incdir+".len()..].split('+').filter(|x| !x.is_empty()) {
+                        if is_glob(seg) {
+                            self.err(
+                                MsgCode::FlistGlob,
+                                format!("wildcard '{seg}' not allowed in a filelist"),
+                            );
+                            return Err(());
+                        }
+                        joined.push('+');
+                        joined.push_str(&self.resolve(seg, base));
+                    }
+                    out.push(joined);
+                    i += 1;
                 }
                 flag if flag.starts_with('-') && flag.len() > 1 => {
                     out.push(tok.clone());

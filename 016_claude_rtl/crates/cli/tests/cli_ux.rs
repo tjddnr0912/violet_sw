@@ -478,3 +478,122 @@ fn explain_unknown_code_exits_three() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-E0001"));
 }
+
+// ── filelist typed buckets: -D/-I, +define+/+incdir+ (doc-14 §3.1) ──────────
+
+#[test]
+fn define_flag_reaches_preprocessor() {
+    let src = write_tmp(
+        "defflag.sv",
+        "`timescale 1ns/1ns\nmodule t; reg [`W-1:0] q; initial begin q = {`W{1'b1}}; $display(\"%0d\", q); $finish; end endmodule\n",
+    );
+    let with = vita(&[src.to_str().unwrap(), "-D", "W=4"]);
+    let without = vita(&[src.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(
+        with.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&with.stderr)
+    );
+    assert!(String::from_utf8_lossy(&with.stdout).contains("15"));
+    assert_eq!(without.status.code(), Some(1), "undefined `W must fail");
+}
+
+#[test]
+fn plus_define_token_with_multiple_names() {
+    let src = write_tmp(
+        "plusdef.sv",
+        "`timescale 1ns/1ns\nmodule t; initial begin $display(\"%0d %0d\", `A, `B); $finish; end endmodule\n",
+    );
+    let out = vita(&[src.to_str().unwrap(), "+define+A=3+B=9"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("3 9"));
+}
+
+#[test]
+fn incdir_resolves_include() {
+    let d = tmpdir("incdir");
+    std::fs::create_dir_all(d.join("inc")).unwrap();
+    std::fs::write(d.join("inc/w.svh"), "`define W 6\n").unwrap();
+    std::fs::write(
+        d.join("t.sv"),
+        "`timescale 1ns/1ns\n`include \"w.svh\"\nmodule t; initial begin $display(\"%0d\", `W); $finish; end endmodule\n",
+    )
+    .unwrap();
+    let flag = vita(&[
+        d.join("t.sv").to_str().unwrap(),
+        "-I",
+        d.join("inc").to_str().unwrap(),
+    ]);
+    let plus = vita(&[
+        d.join("t.sv").to_str().unwrap(),
+        &format!("+incdir+{}", d.join("inc").display()),
+    ]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(
+        flag.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&flag.stderr)
+    );
+    assert_eq!(plus.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&flag.stdout).contains("6"));
+}
+
+#[test]
+fn filelist_carries_defines_and_relative_incdir() {
+    // +define+ rides a .f verbatim; +incdir+ RELATIVE paths in a -F frame
+    // resolve against the .f's own directory (relocatable vendor tree).
+    let d = tmpdir("fbucket");
+    std::fs::create_dir_all(d.join("ip/inc")).unwrap();
+    std::fs::write(d.join("ip/inc/p.svh"), "`define P 7\n").unwrap();
+    std::fs::write(
+        d.join("ip/t.sv"),
+        "`timescale 1ns/1ns\n`include \"p.svh\"\nmodule t; initial begin $display(\"%0d %0d\", `P, `Q); $finish; end endmodule\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("ip/vendor.f"), "+incdir+inc\n+define+Q=2\nt.sv\n").unwrap();
+    let out = vita(&["-F", d.join("ip/vendor.f").to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("7 2"));
+}
+
+#[test]
+fn wrong_stage_rejects_preprocess_buckets() {
+    // velab/vrun have no preprocess pass — a +define+ (from argv or a .f)
+    // must be a loud E-FLIST-WRONG-STAGE, never silently ignored.
+    let bad = write_tmp("ws.velab", "module x; endmodule\n");
+    let out = vita(&["velab", bad.to_str().unwrap(), "+define+W=8"]);
+    let out2 = vita(&["vrun", bad.to_str().unwrap(), "-D", "W=8"]);
+    let _ = std::fs::remove_file(&bad);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-E8007"));
+    assert_eq!(out2.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out2.stderr).contains("VITA-E8007"));
+}
+
+#[test]
+fn single_value_knob_override_warns_last_wins() {
+    let src = warning_design("ovr.sv");
+    let out = vita(&[src.to_str().unwrap(), "--timeout", "5", "--timeout", "500"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("VITA-W8009"),
+        "override must warn (always-logged), got:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

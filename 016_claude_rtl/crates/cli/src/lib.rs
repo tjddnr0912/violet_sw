@@ -52,6 +52,12 @@ pub struct VitaOpts {
     /// Diagnostic suppress/promote policy (`-Wno-*` / `-Werror[=*]`, doc-13
     /// bucket C). Pure output-stream filtering — never hashed into artifacts.
     pub gate: vita_log::GatePolicy,
+    /// `` `include `` search dirs (`-I <dir>` / `+incdir+a+b`), tried in order
+    /// after the current file's directory.
+    pub incdirs: Vec<String>,
+    /// Predefined object-like macros (`-D NAME[=VAL]` / `+define+N=V+M`).
+    /// Name-wise last-wins is applied by the PREPROCESSOR seed order.
+    pub defines: Vec<(String, String)>,
 }
 
 impl VitaOpts {
@@ -62,6 +68,23 @@ impl VitaOpts {
             time_limit: self.time_limit,
             ..SimOpts::default()
         }
+    }
+}
+
+/// Build the preprocessor options a `VitaOpts` describes (`-I`/`-D` surface).
+fn pre_opts_of(opts: &VitaOpts) -> hdl_preprocess::PreOpts {
+    hdl_preprocess::PreOpts {
+        incdirs: opts.incdirs.iter().map(std::path::PathBuf::from).collect(),
+        cli_defines: opts.defines.clone(),
+        ..hdl_preprocess::PreOpts::default()
+    }
+}
+
+/// Split a `NAME[=VAL]` define token (empty VAL = definedness only).
+fn split_define(tok: &str) -> (String, String) {
+    match tok.split_once('=') {
+        Some((n, v)) => (n.to_string(), v.to_string()),
+        None => (tok.to_string(), String::new()),
     }
 }
 
@@ -243,6 +266,16 @@ pub fn frontend_text_to_unit(
     text: &str,
     sink: &dyn LogSink,
 ) -> Option<(hdl_ast::SourceUnit, hdl_preprocess::ResolvedTimescales)> {
+    frontend_text_to_unit_pre(file, text, sink, &hdl_preprocess::PreOpts::default())
+}
+
+/// [`frontend_text_to_unit`] with an explicit preprocessor surface (`-I`/`-D`).
+pub fn frontend_text_to_unit_pre(
+    file: &str,
+    text: &str,
+    sink: &dyn LogSink,
+    pre_opts: &hdl_preprocess::PreOpts,
+) -> Option<(hdl_ast::SourceUnit, hdl_preprocess::ResolvedTimescales)> {
     // ── preprocess ─────────────────────────────────────────────────────────
     // raw source -> expanded text + SourceMap. The expanded text (not `text`) is
     // what the lexer and parser consume; spans they produce index the expanded
@@ -250,8 +283,7 @@ pub fn frontend_text_to_unit(
     let base_dir = std::path::Path::new(file)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let pre_opts = hdl_preprocess::PreOpts::default(); // incdirs/-D wired from opts later
-    let pp = hdl_preprocess::preprocess_str(base_dir, file, text, &pre_opts);
+    let pp = hdl_preprocess::preprocess_str(base_dir, file, text, pre_opts);
     for d in &pp.diags {
         let loc = pp.map.resolve_span(d.at, d.at);
         sink.emit(LogEvent::Diagnostic(Diagnostic {
@@ -360,7 +392,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
 
     // ── preprocess → lex → parse (shared front-end) ─────────────────────────
-    let Some((unit, rt)) = frontend_text_to_unit(file, text, &sink) else {
+    let Some((unit, rt)) = frontend_text_to_unit_pre(file, text, &sink, &pre_opts_of(opts)) else {
         return EXIT_USER_ERROR;
     };
 
@@ -537,17 +569,19 @@ pub fn run(argv: &[String]) -> i32 {
             // One-shot flag surface: `-o <vcd>` + `--threads N` (P4-T1), then
             // positional sources. (Before T1 the one-shot accepted NO flags —
             // `-o` was read as a source file.)
-            let (pos, out, threads, time_limit, gate) = match parse_io_args(&args) {
+            let io = match parse_io_args(&args) {
                 Ok(x) => x,
                 Err(c) => return c,
             };
             let opts = VitaOpts {
-                vcd_path_override: out,
-                threads,
-                time_limit,
-                gate,
+                vcd_path_override: io.out,
+                threads: io.threads,
+                time_limit: io.timeout,
+                gate: io.gate,
+                incdirs: io.incdirs,
+                defines: io.defines,
             };
-            run_vita(&pos, &opts)
+            run_vita(&io.pos, &opts)
         }
         Applet::Staged("vcmp") => dispatch_vcmp(&args),
         Applet::Staged("velab") => dispatch_velab(&args),
@@ -647,6 +681,8 @@ fn print_help(applet: &str) {
     println!(
         "\nOptions:\n  -o, --out <PATH>      output path override\n  \
          -f <FILE>             expand a filelist (paths relative to the CWD)\n  \
+         -D, --define <N[=V]>  predefine a text macro (+define+N=V+M also accepted)\n  \
+         -I, --incdir <DIR>    `include search dir (+incdir+a+b also accepted)\n  \
          -F <FILE>             expand a filelist (paths relative to the file's dir)\n  \
          --threads, -j <N>     worker threads (output byte-identical for any N)\n  \
          --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
@@ -793,7 +829,7 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
     let file = sources[0].as_str();
 
     // preprocess → lex → parse through the SAME shared front-end the one-shot uses.
-    let Some((unit, rt)) = frontend_text_to_unit(file, &text, &sink) else {
+    let Some((unit, rt)) = frontend_text_to_unit_pre(file, &text, &sink, &pre_opts_of(opts)) else {
         return EXIT_USER_ERROR;
     };
 
@@ -1078,22 +1114,35 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
 
 /// Parse a flat arg list into (positional paths, `-o` value). `-o`/`--out`
 /// consume the next arg. Unknown flags → `Err(EXIT_CLI_ERROR)`.
-/// Parsed common applet flags: (positional args, `-o`, `--threads`, `--timeout`,
-/// diagnostic gate policy from `-Wno-*`/`-Werror[=*]`).
-type IoArgs = (
-    Vec<String>,
-    Option<String>,
-    Option<u32>,
-    Option<u64>,
-    vita_log::GatePolicy,
-);
+/// Parsed common applet flags.
+#[derive(Default)]
+struct IoArgs {
+    pos: Vec<String>,
+    out: Option<String>,
+    threads: Option<u32>,
+    timeout: Option<u64>,
+    gate: vita_log::GatePolicy,
+    incdirs: Vec<String>,
+    defines: Vec<(String, String)>,
+}
+
+/// W-FLIST-OVERRIDE (always-logged): a single-value knob set twice — proceed
+/// with last-wins but say so loudly (doc-14 §3.1).
+fn warn_override(knob: &str, old_v: &str, new_v: &str) {
+    eprintln!(
+        "warning[{}]: {knob} '{old_v}' overridden by '{new_v}' (last wins)",
+        MsgCode::FlistOverride.code_num()
+    );
+}
 
 fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut pos = Vec::new();
-    let mut out = None;
-    let mut threads = None;
-    let mut timeout = None;
+    let mut out: Option<String> = None;
+    let mut threads: Option<u32> = None;
+    let mut timeout: Option<u64> = None;
     let mut gate = vita_log::GatePolicy::default();
+    let mut incdirs: Vec<String> = Vec::new();
+    let mut defines: Vec<(String, String)> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1105,6 +1154,9 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                     );
                     return Err(EXIT_CLI_ERROR);
                 };
+                if let Some(prev) = &out {
+                    warn_override("-o", prev, v);
+                }
                 out = Some(v.clone());
                 i += 2;
             }
@@ -1119,6 +1171,9 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                     );
                     return Err(EXIT_CLI_ERROR);
                 };
+                if let Some(prev) = threads {
+                    warn_override("--threads", &prev.to_string(), &n.to_string());
+                }
                 threads = Some(n.max(1));
                 i += 2;
             }
@@ -1133,8 +1188,46 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                     );
                     return Err(EXIT_CLI_ERROR);
                 };
+                if let Some(prev) = timeout {
+                    warn_override("--timeout", &prev.to_string(), &n.to_string());
+                }
                 timeout = Some(n);
                 i += 2;
+            }
+            "-D" | "--define" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '-D' needs NAME[=VAL]",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                defines.push(split_define(v));
+                i += 2;
+            }
+            "-I" | "--incdir" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '-I' needs a directory",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                incdirs.push(v.clone());
+                i += 2;
+            }
+            s if s.starts_with("+define+") => {
+                // `+define+N=V+M[=…]` — '+'-joined multi-value (doc-14 §3.1).
+                for seg in s["+define+".len()..].split('+').filter(|t| !t.is_empty()) {
+                    defines.push(split_define(seg));
+                }
+                i += 1;
+            }
+            s if s.starts_with("+incdir+") => {
+                for seg in s["+incdir+".len()..].split('+').filter(|t| !t.is_empty()) {
+                    incdirs.push(seg.to_string());
+                }
+                i += 1;
             }
             s if s.starts_with('-') && s.len() > 1 => {
                 // Diagnostic gate flags (`-Wno-<CODE>` / `-Werror[=<CODE>]`).
@@ -1161,67 +1254,98 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
             }
         }
     }
-    Ok((pos, out, threads, timeout, gate))
+    Ok(IoArgs {
+        pos,
+        out,
+        threads,
+        timeout,
+        gate,
+        incdirs,
+        defines,
+    })
+}
+
+/// E-FLIST-WRONG-STAGE: velab/vrun have no preprocess pass — a `+define+`/
+/// `+incdir+`/`-D`/`-I` reaching them (argv or expanded from a `.f`) would be
+/// silently meaningless. Reject loudly (doc-14 §3.1).
+fn reject_preprocess_buckets(stage: &str, io: &IoArgs) -> Result<(), i32> {
+    if io.defines.is_empty() && io.incdirs.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "error[{}]: +define+/+incdir+/-D/-I are compile-stage (vcmp/vita) inputs — \
+         '{stage}' has no preprocess pass, so they would be silently meaningless",
+        MsgCode::FlistWrongStage.code_num()
+    );
+    Err(EXIT_CLI_ERROR)
 }
 
 fn dispatch_vcmp(args: &[String]) -> i32 {
-    let (pos, out, _threads, _timeout, gate) = match parse_io_args(args) {
+    let io = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
-    if pos.is_empty() {
+    if io.pos.is_empty() {
         eprintln!(
             "error[{}]: vcmp: no source files",
             MsgCode::CliBadFlag.code_num()
         );
         return EXIT_CLI_ERROR;
     }
-    let out = out.unwrap_or_else(|| default_out(&pos[0], "vu"));
-    if let Err(c) = reject_out_clobbers_input(&pos, &out) {
+    let out = io.out.unwrap_or_else(|| default_out(&io.pos[0], "vu"));
+    if let Err(c) = reject_out_clobbers_input(&io.pos, &out) {
         return c;
     }
     run_vcmp(
-        &pos,
+        &io.pos,
         &out,
         &VitaOpts {
-            gate,
+            gate: io.gate,
+            incdirs: io.incdirs,
+            defines: io.defines,
             ..VitaOpts::default()
         },
     )
 }
 
 fn dispatch_velab(args: &[String]) -> i32 {
-    let (pos, out, _threads, _timeout, gate) = match parse_io_args(args) {
+    let io = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
-    if pos.len() != 1 {
+    if let Err(c) = reject_preprocess_buckets("velab", &io) {
+        return c;
+    }
+    if io.pos.len() != 1 {
         eprintln!(
             "error[{}]: velab: expected exactly one .vu input",
             MsgCode::CliBadFlag.code_num()
         );
         return EXIT_CLI_ERROR;
     }
-    let out = out.unwrap_or_else(|| default_out(&pos[0], "velab"));
-    if let Err(c) = reject_out_clobbers_input(&pos, &out) {
+    let out = io.out.unwrap_or_else(|| default_out(&io.pos[0], "velab"));
+    if let Err(c) = reject_out_clobbers_input(&io.pos, &out) {
         return c;
     }
     run_velab(
-        &pos[0],
+        &io.pos[0],
         &out,
         &VitaOpts {
-            gate,
+            gate: io.gate,
             ..VitaOpts::default()
         },
     )
 }
 
 fn dispatch_vrun(args: &[String]) -> i32 {
-    let (pos, out, threads, time_limit, gate) = match parse_io_args(args) {
+    let io = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
-    if pos.len() != 1 {
+    if let Err(c) = reject_preprocess_buckets("vrun", &io) {
+        return c;
+    }
+    if io.pos.len() != 1 {
         eprintln!(
             "error[{}]: vrun: expected exactly one .velab input",
             MsgCode::CliBadFlag.code_num()
@@ -1230,18 +1354,19 @@ fn dispatch_vrun(args: &[String]) -> i32 {
     }
     // vrun accepts `-o` as a VCD path override (parity with one-shot vita -o).
     // Guard: a `-o` that names the input `.velab` would clobber the file being read.
-    if let Some(ref o) = out {
-        if let Err(c) = reject_out_clobbers_input(&pos, o) {
+    if let Some(ref o) = io.out {
+        if let Err(c) = reject_out_clobbers_input(&io.pos, o) {
             return c;
         }
     }
     let opts = VitaOpts {
-        vcd_path_override: out,
-        threads,
-        time_limit,
-        gate,
+        vcd_path_override: io.out,
+        threads: io.threads,
+        time_limit: io.timeout,
+        gate: io.gate,
+        ..VitaOpts::default()
     };
-    run_vrun(&pos[0], &opts)
+    run_vrun(&io.pos[0], &opts)
 }
 
 #[cfg(test)]
