@@ -1,6 +1,8 @@
 # ROADMAP — Stage C 이후 향후 과제 (vitamin)
 
-> **갱신:** 2026-06-10 — **7축 감사**(Gemini-fix 검토/spec-gap/sim-engine/front-end/메모리/운용성/병렬화) 반영: correctness 트랙 재개(§B), §D 사실관계 정정, **병렬화 트랙 §E 신설**. 잔여 항목의 단일 트래커 = [`REMAINING_WORK.md`](REMAINING_WORK.md)(2026-06-10 전면 리뉴얼: P0 정확성 9 · P1 의미론 9 · P2 운용 12 · P3 메모리 5 · P4 병렬화 · P5 문서부채).
+> **갱신:** 2026-06-10 — **7축 감사**(Gemini-fix 검토/spec-gap/sim-engine/front-end/메모리/운용성/병렬화) 반영: correctness 트랙 재개(§B), §D 사실관계 정정, **병렬화 트랙 §E 신설**. 잔여 항목의 단일 트래커 = [`REMAINING_WORK.md`](REMAINING_WORK.md).
+>
+> **동일자 후속(HEAD `0945dfe`, 566 green): 감사 발견 항목 일괄 처리 완료** — P0 정확성 9 · P1 의미론 9(severity/radix/`%m` 사이드테이블, in-body @(*), finish-flush, per-bit 멀티드라이버, E3018) · P2 운용 11/12(`--help/--version`·`--threads`·`--timeout`, VCD/델타 진단, 원자적 아티팩트, parser/array 캡, W3056 taxonomy) · P3 메모리 4(fork free-list·monitor in-place·clone 제거·native 고정스택) · P4 T0a/T0b/T1(`--threads` VCD writer 스레드, byte-identical 게이트, 실측 VCD 비중 40.9%) · native-eval follow-on(비교/시프트/DivMod/ternary/리덕션/논리 — expr-heavy VM 0.42x, eval-heavy 0.54x). 잔여 = P2-12 정책 소항목 + P5 문서 동기화 + §E T2/T4 + Phase-1.x.
 > 직전: 2026-06-08 native-eval C4-lite 랜딩 + 멀티-top 다중 root. 현 단계 = **Stage C C1·C2 완료**(VM MVP, byte-identical) + **native-eval C4-lite(식-바운드 VM 0.42x)** + **profile-driven 최적화 누적 ~6x**(eval-heavy 2781→461ms). 이 문서는 *여기서부터 무엇을 할지*를 트랙별로 정리한 단일 진실. perf 이력 = [`preview/18-acceleration-analysis.md`](preview/18-acceleration-analysis.md) §실측(+구 트래커 git 이력), 설계는
 > [`superpowers/plans/2026-06-06-bytecode-vm-stage-c.md`](superpowers/plans/2026-06-06-bytecode-vm-stage-c.md).
 

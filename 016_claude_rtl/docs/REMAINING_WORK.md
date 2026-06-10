@@ -1,6 +1,6 @@
 # vitamin — 잔여 작업 트래커 (Remaining Work)
 
-> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa`(+동일자 진행: shift fix 채택 `4241435` → P0-1~4 `7bfd8c3` → P0-5~7 `b30881a` → P0-8/9 `5b3c6d4`) · **493 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3).
+> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa` → **동일자 P0~P4 일괄 처리 완료(HEAD `0945dfe`)**: P0 9건 → P1 9건 → P2 11/12건 → P3 4건+양호판정 → P4 T0a/T0b/T1 → native-eval follow-on. · **566 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3) · MsgCode 45→**50**(F4016·W4018·W4019·E3018·W3056 본문 승격, bijection 동기화).
 > 출처: 7축 감사 — ①Gemini-fix 검토 ②spec-gap ③sim-engine ④front-end ⑤메모리/자원 ⑥운용성 ⑦병렬화. 핵심 항목은 라이브 재현(+iverilog 차분)으로 확정, 각 항목에 `재현:` 표기.
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
@@ -35,14 +35,14 @@
 ## P1 — 시뮬 의미론: warn-후-오동작 (정지·계속 클래스)
 
 - [x] **[P1-1]** `$fatal/$error/$warning/$info` — ✅ 2026-06-10 `8d6abec`. Display 스텀트 + **SeverityTable 사이드테이블**(StmtId→kind, SimOpts/.velab 5번째 trailer, frozen IR 0줄·골든 무영향)로 구현. `$fatal`=묵시 $finish+ExitClass::Fatal(exit 1, 선행 finish_number 리터럴 소비), `$error`=HadErrors+계속, `$warning/$info`=진단만. 출력=진단 스트림(F4004/E4003/W4007/I4005, sim_time 부착) — stdout 비오염. Kernel/Op/StmtEffect에 StmtId 배선(인터프리터=VM parity 테스트). 회귀 `severity_tasks.rs` 8 + `severity_exit.rs` 4(staged trailer 왕복 포함).
-- [ ] **[P1-2]** `force/release` / procedural `assign/deassign` / `->event` = warn+no-op — 값 불변, `@(ev)` 영구 대기(lib.rs:4056-4062). `ElabUnsupported` 하드에러 승격(defparam :880과 일관) or 구현. ROADMAP §D "전부 loud-reject" 문구는 거짓이었음 → 이번 리뉴얼에서 정정.
-- [ ] **[P1-3]** 비상수 `#delay` → `#0` 강등 — lib.rs:4310-4319(`unwrap_or_else(warn→0)`). `forever #x clk=~clk`가 delta-limit fatal로 변질. loud-reject로(런타임 delay는 frozen `Terminator::Delay{u32}` 형상 변경이라 Phase-2).
-- [ ] **[P1-4]** in-body `@(*)` 영구 대기(`Level{nets:[]}`) + in-body 멀티엣지 `@(posedge a or posedge b)` 첫 항만 — lib.rs:4278-4295. 블록 헤더 형은 정상(read-set/EdgeTerm 기계 존재 — 재사용).
-- [ ] **[P1-5]** `$displayb/o/h`·`$writeb/o/h` → 10진 alias(기수 무시·무진단, lib.rs:4463-4464) + `$monitorb/o/h`·`$strobeb/o/h` 미구현(:4465). doc(01-display-io.md:219)은 "16종 모두 Phase-1 구현" 주장. radix 사이드채널(out-of-band, fork_modes 패턴) or doc 강등.
-- [ ] **[P1-6]** `$finish` 동일 타임스텝의 postponed `$strobe/$monitor` 유실 — sched.rs:402-404가 flush(:454) 전 반환. end_to_end.rs:943에 "의도적 MVP 분기"로 박제 — iverilog 정합(flush 후 종료)으로 전환 권장.
-- [ ] **[P1-7]** `fork_mode()` panic — staged `.velab`의 빈/불일치 ForkModeTable trailer(스키마 게이트 밖)로 사용자 도달 가능(sched.rs:915-924). E-code Fatal 진단으로 전환.
-- [ ] **[P1-8]** 멀티드라이버 검출 = whole-net cont-assign 한정 — part/bit-select 드라이버 미계상(lib.rs:1412-1424). 충돌 시 IEEE x-resolution 아닌 last-write-wins/델타 폭주. per-bit 구간 계상 or doc-01 v1 단순화 표 등재.
-- [ ] **[P1-9]** net-vs-variable 대입 적법성 미검사 — `always`에서 wire 대입·`assign`으로 reg 구동 둘 다 수용(iverilog 거부, doc-02는 에러로 기술). NetKind 검사 2건.
+- [x] **[P1-2]** force/release·proc assign/deassign·`->event` — ✅ 2026-06-10 `522e76c`. ElabUnsupported 하드에러 승격(구문별 메시지). 회귀 `legality_semantics.rs`.
+- [x] **[P1-3]** 비상수 `#delay` — ✅ `522e76c`. loud-reject(런타임 delay=Phase-2, frozen Delay{u32}).
+- [x] **[P1-4]** in-body `@(*)`·멀티엣지 — ✅ 2026-06-10 `097f2c3`. `@(*)`=제어 문장 read-set 추론(IEEE 1800 §9.4.2.2, Wait cause 사후 패치로 comb 기계 재사용); 멀티엣지=loud-reject(frozen Edge 1-term). iverilog 차분 포함.
+- [x] **[P1-5]** b/o/h 16종 — ✅ 2026-06-10 `4292eec`. RadixTable 사이드테이블(StmtId→2/8/16, 6번째 trailer)+FmtCapture.radix, `fmt_radix` 재사용(iverilog 무구분자 padded join까지 byte 일치, 라이브+차분 검증). **Sidecars 구조체 도입**(5→7테이블 번들; trailer는 세그먼트별 append-only 유지). doc-01 주장은 이제 참.
+- [x] **[P1-6]** `$finish` 동일스텝 postponed 유실 — ✅ `097f2c3`. Finish/Stop/Fatal 전부 현 스텝 드레인 후 종료(IEEE §17, Icarus/VCS 정합). MVP-분기 박제 테스트는 IEEE-strict 계약으로 갱신.
+- [x] **[P1-7]** `fork_mode()` panic — ✅ `522e76c`. t0 게이트+런타임 둘 다 Fatal 진단(E9001)+graceful 종료. trailer 외과 절단 회귀(staged_flow.rs).
+- [x] **[P1-8]** part/bit-select 멀티드라이버 — ✅ `097f2c3`. per-bit 구간 계상(whole=[0,w), 정적 select=[off,off+w), `(msb-lsb)+1` 폭 엣지 폴딩). 중첩=E3001, 분할 구동=합법 유지. 동적 offset은 보수적 미계상.
+- [x] **[P1-9]** net-vs-var 적법성 — ✅ `522e76c`. **E3018 `E-ELAB-LVALUE-KIND`**(부록A→본문 승격): user `assign`→Reg/Integer/Real 거부, 절차 대입→Wire 거부, SV logic 양방향 통과, 포트바인딩/decl-init 합성분 면제(IEEE 1800 var-port). 위법 픽스처 3건 교정 부수확.
 
 ## P2 — 운용/CLI/진단 견고성
 
@@ -55,25 +55,25 @@
 
 **안전 레일:**
 
-- [ ] **[P2-5]** parser 재귀 깊이 가드 부재 — 깊은 중첩식(`(((…)))` 수천 단)에 stack overflow(SIGSEGV, 진단 불능). depth cap(~512)+진단. (elaborate generate는 DEPTH_CAP=32 보유, parser만 무방비)
-- [ ] **[P2-6]** unpacked `array_len` cap 부재 — `reg [7:0] m [0:2147483647]` 즉시 수GB alloc → OS OOM kill. `MAX_NET_WIDTH`(1<<20)처럼 `MAX_ARRAY_LEN`+ElabUnsupported.
+- [x] **[P2-5]** parser 재귀 가드 — ✅ 2026-06-10 `41f5162`. expr 재귀 cap **256**(2MiB 디버그 테스트 스택에서 512도 초과 — 프레임 비대) → clean parse error. ⚠️깊은 **문장** 중첩(begin×N)은 별도(희귀, 잔여 소항목).
+- [x] **[P2-6]** `MAX_ARRAY_LEN`(1<<24) — ✅ `41f5162`. 초과=ElabUnsupported.
 - [x] **[P2-7]** 아티팩트 비원자적 쓰기 — ✅ 2026-06-10 `write_artifact_atomic`(`<out>.tmp.<pid>` → rename, 실패 시 tmp 정리). vcmp/velab 양쪽. 잔여물-부재 회귀 `staged_flow.rs`.
-- [ ] **[P2-8]** native_eval `lower()`가 eid를 무검사 인덱싱 — 같은-schema 손상 `.velab` 방어로 `exprs.get()`+None fallback(native_eval.rs).
-- [ ] **[P2-9]** `--timeout`/기본 time_limit 부재 — `always #1;`가 무한 진행(SimOpts.time_limit 기본 None). CI용 킬스위치 옵션.
+- [x] **[P2-8]** native_eval eid 방어 — ✅ `41f5162`. `exprs.get()?` bail→오라클 폴백.
+- [x] **[P2-9]** `--timeout <ticks>` — ✅ `41f5162`. vita/vrun, SimOpts.time_limit 배선(도달=clean Quiescent exit 0). 기본은 무제한 유지.
 
 **진단 taxonomy/계약:**
 
-- [ ] **[P2-10]** elaborate 범용 `warn()`이 전부 `W-ELAB-WIDTH-TRUNC` 코드 — lib.rs:578-580(미지원-task skip·force no-op·dup-module·unconnected port까지 전부). doc-15 bijection·suppress 라우팅 파괴. 정확한 MsgCode 부여.
-- [ ] **[P2-11]** dead MsgCodes ~10종(DupUnit·ParseImplicitNet·ElabUser\*·RunAssertFail·RunUser\*·RunFatal·RunNoLocations·LintUnclosed) + 중복 모듈 정의=warn(doc-15 `E-DUP-UNIT`는 Error) + `%m` 항상 `top`(builtins.rs:371; NetNameTable 패턴으로 FQ 경로 배선) + exit class 2 문서 불일치(실제 0/1/3) — P1-1과 묶어 정리.
-- [ ] **[P2-12]** 정책 결정 소항목 묶음 — `$finish(n)/$stop(n)` 인자 무시(doc은 "처리 포함" 주장) · `timescale_unit_string` 범위외 silent "s"(cli:302-310) · `time` 타입 E3009 거부(64bit unsigned 수용 trivial) · `` `pragma`` "undefined macro" 거부(수용-무시로) · implicit net 항상-strict(E3010; W2003 dead) 정책 명문화 · `same_path` 문자열 비교(canonicalize로).
+- [x] **[P2-10]** warn() 코드 오염 — ✅ `41f5162`. 범용 warn=**W3056 `W-ELAB-FEATURE-LIMIT`**(부록A→본문 승격). W3008은 실제 폭-절단 경고 구현 전까지 본문 예약(현재 emitter 0 — 의도된 dead).
+- [x] **[P2-11]** ✅ `41f5162`(+P1-1로 RunUser\*/RunFatal 활성화). 중복 모듈=**E-DUP-UNIT Error**, `%m`=proc_scopes 사이드카(7번째 trailer)로 실 계층경로(strobe/monitor는 등록 스코프 복원; iverilog 내용 일치 라이브 검증). 잔여 dead codes(DupUnit→활성됨 제외: ParseImplicitNet·ElabUser\*·RunAssertFail·RunNoLocations·LintUnclosed·W3008)=예약 상태 명문화. exit class 2 문서 불일치=P5로.
+- [ ] **[P2-12]** 정책 소항목 묶음(유일 잔여) — ~~`$finish(n)` doc 주장~~(✅ doc-04 수용-무시 명기) · `timescale_unit_string` 범위외 silent "s" · `time` 타입 E3009 거부(64bit unsigned 수용 trivial) · `` `pragma`` 수용-무시 · implicit-net 정책 명문화 · `same_path` canonicalize. 전부 비긴급 정책결정류.
 
 ## P3 — 메모리/장기 시뮬 안정성
 
-- [ ] **[P3-1]** fork `activities`/`barriers` 아레나 append-only 무한 성장 — sched.rs:979·997. `forever fork…join_none` 패턴에서 O(타임스텝) 누적(10M cycle×2child ≈ 800MB). 타임스텝 경계 컴팩션/epoch 재사용.
-- [ ] **[P3-2]** `$monitor` last_vals 매 스텝 Vec 재할당 — sched.rs:586·600. in-place 재사용.
+- [x] **[P3-1]** fork 아레나 무한 성장 — ✅ 2026-06-10 `0945dfe`. free-list 슬롯 재활용(child=보고 직후, barrier=전 자식 보고 시 — 그 시점엔 살아있는 참조 0 ⇒ ABA-safe; 순서키=tie라 byte 불변). churn 회귀 2종(join_none×5000 정확 1회 실행, blocking join×2000).
+- [x] **[P3-2]** monitor baseline Vec — ✅ `0945dfe`. eval→비교→in-place 덮어쓰기(모니터 수명당 1회 할당).
 - [x] **[P3-3]** VCD sink BufWriter — ✅ 2026-06-10. `BufWriter::with_capacity(64KiB)` 래핑(finalize가 명시 flush → byte 불변). dump-heavy perf 측정(T0b 잔여)은 P4에서.
-- [ ] **[P3-4]** `net_to_edge[n].clone()` per changed-net per delta — sched.rs:657(borrow 회피용). 인덱스 루프화.
-- [ ] **[P3-5]** native_eval `run()` per-call 스택 Vec — native_eval.rs:213. SimState scratch/SmallVec화.
+- [x] **[P3-4]** net_to_edge clone — ✅ `0945dfe`. 인덱스 루프(바디는 cur.active만 push).
+- [x] **[P3-5]** native 스택 alloc — ✅ `0945dfe`. 고정 64슬롯 배열+sp(호출당 heap 0); try_compile이 post-order 깊이 검증(초과=오라클 bail).
 - [x] **[P3-기록] 종료/메모리 위생 양호 판정 (2026-06-10 감사)** — `unsafe` 0건 · Rc 9곳(vm_cache 한정) 비순환 · `finalize_vcd` 전 종료경로(정상/$finish/$stop/delta-limit/error) 호출 · HashMap 3곳(vcd by_id·parser typedefs 등) lookup-only로 결정성 무해 · BTree-only 스케줄러 재확인. Ctrl-C 핸들러 없음 = 커널 fd flush로 마지막 완료 write까지 유효한 truncated VCD(문서화만 권장). CLI 종료 시 미해제 누수 없음(정상 Drop + OS 회수). 라이브러리 임베딩 시 재평가.
 
 ## P4 — 병렬화 트랙 (신규 · 2026-06-10)
@@ -95,21 +95,19 @@
 
 ## P5 — 문서부채 (docs ↔ code 불일치)
 
-- [ ] 01-display-io.md:11·219("b/o/h 16종 Phase-1 구현")·:46(`$display("val=",val)` → `val=255` 예시) — P0-8/P1-5 해소 전까지 실태 명기.
+- [x] 01-display-io.md b/o/h·예시 주장 — ✅ **구현으로 해소**(P0-8이 :46 예시를, P1-5가 :11/219 "16종" 주장을 참으로 만듦). 문서 수정 불요.
 - [ ] ROADMAP §D "의도적 deferral 전부 loud-reject 확인됨" → **거짓**(force/release/->ev/disable=warn+no-op, 비상수 delay→#0) — ✅ 이번 리뉴얼에서 §D 정정함.
-- [ ] doc-13/15의 `$fatal` abort·exit-1 / `-Wno-*`·`-Werror=` 억제 플래그 / "body MsgCode 전부 MVP 구현 대상" 서술 vs dead codes 실태 — P1-1·P2-11과 동기화.
-- [ ] 소항목: 10-vcd-dump.md:15 "7종"(실제 5종) · 04-simulation-control.md:137 "$finish severity 처리"(실제 무시) · hdl-parser:1119 게이트 프리미티브 주석(실제 키워드 lex) · doc-01:22-26 filelist `-f`/multi-lib/`vita explain` 커밋 vs 부재(Phase-1.x 트래킹 or de-scope 결정).
+- [ ] doc-13/15 동기화 잔여 — ~~`$fatal` abort·exit-1~~(✅ P1-1로 참) · `-Wno-*`/`-Werror=` 억제 플래그 서술=미래형(미구현 명기 필요) · 예약 dead codes(ParseImplicitNet·ElabUser\*·RunAssertFail·RunNoLocations·LintUnclosed·W3008) 실태 명기 · exit class 2 문서 불일치(실제 0/1/3).
+- [ ] 소항목 잔여 — ~~10-vcd "7종"~~(✅ 5종+Phase-1.x 명기) · ~~04 "$finish severity 처리"~~(✅ 수용-무시+P1-6 드레인 명기) · hdl-parser:1119 게이트 프리미티브 주석 · doc-01:22-26 filelist `-f`/multi-lib/`vita explain`(Phase-1.x 트래킹 or de-scope 결정).
 - [x] (구)트래커:290-292 doc-01 drift 3건 — 2026-06-07에 이미 교정 완료된 stale checkbox였음. 이번 리뉴얼로 해소.
 
 ## 권장 작업 순서 (다음 세션)
 
-1. ~~P0 런타임 절단 클러스터(P0-1~4)~~ — ✅ 2026-06-10 `7bfd8c3`.
-2. ~~P0-5/6/7 elaborate 상수 도메인~~ — ✅ 2026-06-10 `b30881a`.
-3. ~~P0-8/9 display·monitor 의미론~~ — ✅ 2026-06-10 `5b3c6d4`. **→ P0 전 항목 완료.**
-4. **P1-1 `$fatal` 계열** — 최소 $fatal→error-exit 브리지(CI 신뢰성 직결).
-5. **P2 quick wins** — VCD open/flush 진단·delta-limit 진단·`--help/--version`·BufWriter(T0b)·아티팩트 temp+rename.
-6. **P4 T0a/T0b → T1** — 병렬화 진입(측정 게이트 후 writer 스레드).
-7. 이후: native-eval follow-on(ROADMAP §C) → 스케줄러축 → P1 나머지 → P3.
+1. ~~P0 전체(1~9)~~ ✅ · ~~P1 전체(1~9)~~ ✅ · ~~P2 1~11~~ ✅ · ~~P3 전체~~ ✅ · ~~P4 T0a/T0b/T1~~ ✅ · ~~native-eval follow-on(비교/시프트/DivMod/ternary/리덕션/논리)~~ ✅ — **2026-06-10 일괄 완료(HEAD `0945dfe`, 566 green).**
+2. **P2-12 정책 소항목** — time 타입 수용 · `` `pragma`` 수용-무시 · same_path canonicalize 등(비긴급).
+3. **P5 문서 동기화 잔여** — 억제 플래그 미래형 명기 · 예약 codes 실태 · exit-class 표 · doc-01 filelist de-scope 결정.
+4. **perf 다음 축** — ①스케줄러축(클럭-바운드: codegen-heavy 0.90x이 상한 — doc-18 분석 선행) ②native-eval >64bit/real/select/concat lane ③P4-T2(front-end 병렬, `-u` 의미론 결정 선행).
+5. **Phase-1.x 기능** — 런타임 delay(frozen Delay 형상 → format_version bump 동반) · force/release 실semantics · `$dumpflush/$dumplimit` · `-Wno-*`/`-Werror=` 게이트.
 
 ## 아카이브 (완결 이력 요약)
 

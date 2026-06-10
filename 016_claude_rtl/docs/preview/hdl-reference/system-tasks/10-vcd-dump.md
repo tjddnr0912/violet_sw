@@ -12,7 +12,7 @@ VCD 파일 포맷 자체 (헤더·scope·변수 선언·값 변화 형식)는
 
 ## 지원 Phase
 
-- **Phase 1**: `$dumpfile`, `$dumpvars`, `$dumpoff`, `$dumpon`, `$dumpall`, `$dumpflush`, `$dumplimit` 전 7종
+- **Phase 1**: `$dumpfile`, `$dumpvars`, `$dumpoff`, `$dumpon`, `$dumpall` 5종 (`$dumpflush`/`$dumplimit`는 Phase-1.x — 미구현 시 warn+skip)
 
 ---
 

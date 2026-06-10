@@ -134,8 +134,8 @@ endprogram
 
 ## 본 프로젝트 구현 메모
 
-- Phase 1: `$finish`, `$stop` 구현. severity 파라미터 처리 포함.
-- `$finish` 호출 시 시뮬 이벤트 큐 즉시 중단 + OS exit 트리거.
+- Phase 1: `$finish`, `$stop` 구현. severity 파라미터(0|1|2)는 **수용-무시**(verbosity 미구현; exit code와 무관).
+- `$finish` 호출 시 현 타임스텝 postponed 영역($strobe/$monitor)을 드레인한 뒤 종료(IEEE §17, P1-6).
 - exit code 전달 방식은 simulator runner 레이어에서 결정 (hdl-builtins 범위 밖).
 - Phase 2: `$exit` (program 블록 tracking 필요)
 
