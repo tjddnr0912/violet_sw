@@ -3157,3 +3157,65 @@ fn nba_transport_index_sampled_at_schedule() {
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(out, "m1=42 m3=0\n");
 }
+
+#[test]
+fn named_event_trigger_wakes_waiter() {
+    // Oracle (iverilog, probed live): `->e` wakes every `@(e)` waiter at the
+    // trigger time; an event has no value and no latch.
+    let ir = build(
+        "module tb; event e; \
+           initial begin \
+             #1 -> e; \
+             #2 -> e; \
+             #2 $finish; \
+           end \
+           always @(e) $display(\"t%0d fired\", $time); \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t1 fired\nt3 fired\n");
+}
+
+#[test]
+fn named_event_in_mixed_sensitivity_list() {
+    // Oracle (iverilog, probed live): `@(posedge clk or e)` wakes on both.
+    // $finish sits at t8 (no clk edge): a same-tick tie between an Active
+    // $finish and a same-slot edge wake is a tool-ordering divergence zone
+    // (vvp runs the woken waiter first; our region order runs finish first).
+    let ir = build(
+        "module tb; event e; reg clk; \
+           initial clk = 0; \
+           always #1 clk = ~clk; \
+           initial begin \
+             #4 -> e; \
+             #4 $finish; \
+           end \
+           always @(posedge clk or e) $display(\"t%0d wake\", $time); \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t1 wake\nt3 wake\nt4 wake\nt5 wake\nt7 wake\n");
+}
+
+#[test]
+fn named_event_trigger_before_arm_is_lost() {
+    // Oracle (iverilog, probed live): a trigger fired BEFORE the waiter arms
+    // is LOST (events are instantaneous, never latched) — only t1 is caught.
+    let ir = build(
+        "module tb; event e; \
+           initial begin \
+             -> e; \
+             #1 -> e; \
+             #1 $finish; \
+           end \
+           initial begin \
+             #0 @(e) $display(\"t%0d caught\", $time); \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t1 caught\n");
+}

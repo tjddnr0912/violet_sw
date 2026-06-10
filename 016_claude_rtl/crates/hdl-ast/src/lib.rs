@@ -286,6 +286,8 @@ pub enum NetVarKind {
     Real,
     Realtime,
     Time,
+    /// `event e;` (v5 batch B — elaborate desugars it to a 64-bit counter reg).
+    Event,
 }
 
 /// `[msb:lsb]`. Bounds are exprs (usually const), NOT pre-evaluated.

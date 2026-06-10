@@ -798,6 +798,7 @@ impl<'t, 's> Parser<'t, 's> {
                 Real => NetVarKind::Real,
                 Realtime => NetVarKind::Realtime,
                 Time => NetVarKind::Time,
+                Event => NetVarKind::Event,
                 _ => return None,
             }),
             _ => None,

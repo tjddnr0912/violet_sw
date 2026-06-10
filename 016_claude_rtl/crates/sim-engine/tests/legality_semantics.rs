@@ -53,19 +53,38 @@ fn assert_rejected(src: &str, needle: &str) {
     );
 }
 
-/// `->event` was a no-op while `@(ev)` waited forever — now a hard error.
-/// (`event` declarations don't parse in v1, so the trigger statement is the
-/// reachable surface.)
+/// Named events are REAL (v5 batch B, counter desugar): a declared event
+/// elaborates cleanly with `->`/`@()`; an UNDECLARED trigger target stays a
+/// hard error, and the event has NO value surface — reads, writes, and a
+/// packed range on the declaration are all loud.
 #[test]
-fn event_trigger_is_rejected() {
-    assert_rejected(
+fn named_event_accepted_and_value_surface_is_loud() {
+    let (ok, diags) = elab(
         r#"
 module t;
+  event ev;
   initial -> ev;
+  always @(ev) ;
 endmodule
 "#,
+    );
+    assert!(ok, "declared event must elaborate; diags: {diags:?}");
+    assert!(
+        diags.iter().all(|d| !d.starts_with("error[")),
+        "no errors expected: {diags:?}"
+    );
+
+    // undeclared trigger target stays loud.
+    assert_rejected("module t; initial -> nope; endmodule", "nope");
+    // an event cannot be READ as a value…
+    assert_rejected(
+        "module t; event ev; reg x; initial x = ev; endmodule",
         "event",
     );
+    // …or WRITTEN like a variable…
+    assert_rejected("module t; event ev; initial ev = 1'b1; endmodule", "event");
+    // …and carries no packed range.
+    assert_rejected("module t; event [3:0] ev; endmodule", "event");
 }
 
 /// force/release semantics landed (format_version 4 follow-up): whole-net

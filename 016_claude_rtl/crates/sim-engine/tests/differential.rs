@@ -727,3 +727,33 @@ fn diff_nba_transport_delay() {
          endmodule",
     );
 }
+
+#[test]
+fn diff_named_events() {
+    // v5 batch (B), re-classified OUT of the bump: named events desugar to a
+    // 64-bit counter reg (`->e` = e+1, `@(e)` = AnyEdge on the net). Three
+    // lanes: plain trigger/wake, mixed sensitivity list, no-latch semantics.
+    assert_matches_iverilog(
+        "event_basic",
+        "module tb; event e; \
+           initial begin #1 -> e; #2 -> e; #2 $finish; end \
+           always @(e) $display(\"t%0d fired\", $time); \
+         endmodule",
+    );
+    assert_matches_iverilog(
+        "event_mixed_list",
+        "module tb; event e; reg clk; \
+           initial clk = 0; \
+           always #1 clk = ~clk; \
+           initial begin #4 -> e; #4 $finish; end \
+           always @(posedge clk or e) $display(\"t%0d wake\", $time); \
+         endmodule",
+    );
+    assert_matches_iverilog(
+        "event_no_latch",
+        "module tb; event e; \
+           initial begin -> e; #1 -> e; #1 $finish; end \
+           initial begin #0 @(e) $display(\"t%0d caught\", $time); end \
+         endmodule",
+    );
+}

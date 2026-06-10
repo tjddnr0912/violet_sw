@@ -529,6 +529,10 @@ struct Elaborator<'s> {
     // StmtIds of Force/Release stmts that are procedural assign/deassign (§9.3.1
     // weak rank — see [`AssignRankTable`]).
     assign_ranks: AssignRankTable,
+    // NetIds of named events (v5 batch B): each `event e` is a 64-bit counter
+    // Reg (init 0). `->e` increments it; `@(e)` is plain AnyEdge sensitivity.
+    // The set guards the VALUE surface — an event cannot be read or written.
+    event_nets: std::collections::BTreeSet<u32>,
     // Per-ProcId instance path for `%m` (P2-11); lockstep with `processes`.
     proc_scopes: Vec<String>,
 }
@@ -562,6 +566,7 @@ impl<'s> Elaborator<'s> {
             severities: SeverityTable::new(),
             radixes: RadixTable::new(),
             assign_ranks: AssignRankTable::new(),
+            event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
             cur_proc: 0,
             in_fork: false,
@@ -1803,6 +1808,20 @@ impl<'s> Elaborator<'s> {
         // `product(packed widths)` bits; a select `m[i]` is a bit-slice. Computed once
         // per decl (shared by all names; unpacked dims are per-name).
         let packed_ext = self.packed_extents(d.range.as_ref(), &d.packed);
+        // a named event carries NO range/init/array surface (IEEE §6.17) —
+        // loud, then the bare counter net is still created so refs resolve.
+        if matches!(d.kind, ast::NetVarKind::Event)
+            && (d.range.is_some()
+                || !d.packed.is_empty()
+                || d.names
+                    .iter()
+                    .any(|n| n.init.is_some() || !n.unpacked.is_empty()))
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a named event takes no range, initializer or array dimensions",
+            );
+        }
         for decl in &d.names {
             let (mut width, mut msb, lsb, signed) =
                 self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
@@ -1848,6 +1867,12 @@ impl<'s> Elaborator<'s> {
                     init,
                 },
             );
+            if matches!(d.kind, ast::NetVarKind::Event) {
+                let key = self.fq(&decl.name.name);
+                if let Some(&id) = self.symbols.get(&key) {
+                    self.event_nets.insert(id);
+                }
+            }
             // Record per-dim extents when addressing is NOT plain 0-based: any
             // MULTI-dim array, OR a 1-D array with a non-zero lower bound (`mem[4:7]`).
             // A plain 0-based 1-D array stays ABSENT so its lowering falls back to
@@ -2017,6 +2042,10 @@ impl<'s> Elaborator<'s> {
         if matches!(kind, ast::NetVarKind::Time) {
             return (64, 63, 0, false);
         }
+        // a named event is dimensionless; its counter desugar is 64-bit unsigned.
+        if matches!(kind, ast::NetVarKind::Event) {
+            return (64, 63, 0, false);
+        }
         match range {
             None => (1, 0, 0, signed),
             Some(r) => {
@@ -2106,6 +2135,7 @@ impl<'s> Elaborator<'s> {
                 | ast::NetVarKind::Real
                 | ast::NetVarKind::Realtime
                 | ast::NetVarKind::Time
+                | ast::NetVarKind::Event
         );
         if is_var {
             return;
@@ -2182,6 +2212,13 @@ impl<'s> Elaborator<'s> {
                     }
                 }
                 let net = self.resolve_net(path);
+                if self.event_nets.contains(&net) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a named event has no value: it cannot be read in an \
+                         expression (only `->e` and `@(e)` touch it)",
+                    );
+                }
                 self.push_expr(ir::Expr::Signal { net, word: None })
             }
 
@@ -2425,6 +2462,12 @@ impl<'s> Elaborator<'s> {
                 } else {
                     self.resolve_net(path)
                 };
+                if self.event_nets.contains(&net) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a named event cannot be assigned (only `->e` triggers it)",
+                    );
+                }
                 out.push(ir::LvalChunk {
                     net,
                     word: None,
@@ -4536,11 +4579,43 @@ impl<'s> Elaborator<'s> {
             // P1-2: these were warn+no-op — values never changed and an `@(ev)`
             // waited forever. A hard error beats silent misbehavior (defparam
             // precedent); real semantics are a Phase-2 item.
-            ast::Stmt::EventTrigger { .. } => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "'->' named-event trigger is unsupported in v1 (an '@(ev)' would                      never wake); use a net change instead",
-                );
+            // `->e` (v5 batch B): the named event is a 64-bit counter reg, so
+            // the trigger is `e = e + 1` — every waiter (`@(e)`, mixed lists)
+            // sees a guaranteed value change. A same-slot DOUBLE trigger still
+            // changes the counter (0→2) where a 1-bit toggle would be lost
+            // (0→1→0). The frozen WaitCause::Named / WakeCond::NamedEvent stay
+            // reserved-unused; sim-ir is untouched by this lane.
+            ast::Stmt::EventTrigger { name, .. } => {
+                let net = self.resolve_net(name);
+                if net == POISON_NET {
+                    return; // resolve_net already errored
+                }
+                if !self.event_nets.contains(&net) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "`->` target `{}` is not a named event",
+                            name.segments
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(".")
+                        ),
+                    );
+                    return;
+                }
+                let sig = self.push_expr(ir::Expr::Signal { net, word: None });
+                let one = self.const_u32_expr(1, 64);
+                let add = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Add,
+                    lhs: sig,
+                    rhs: one,
+                });
+                let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                    lhs: whole_net_lvalue(net),
+                    rhs: add,
+                });
+                b.push_stmt_id(sid);
             }
             // Procedural continuous assignment (IEEE 1364 §9.3.1): reuses the
             // force machinery at a WEAKER rank — lowered as Stmt::Force /
@@ -5486,6 +5561,8 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
         // user `assign` rejected) and 4-state all-X init. Width/signedness come
         // from range_to_dims (64, unsigned).
         Time => ir::NetKind::Reg,
+        // named event → its 64-bit counter reg (v5 batch B desugar).
+        Event => ir::NetKind::Reg,
         // Wire + all net aliases (Tri/Uwire/Wand/...) behave as Wire in v1.
         _ => ir::NetKind::Wire,
     }
@@ -5511,7 +5588,7 @@ fn net_kind_supported(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
     matches!(
         k,
-        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime | Time
+        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime | Time | Event
     )
 }
 
@@ -5520,6 +5597,14 @@ fn net_kind_supported(k: ast::NetVarKind) -> bool {
 fn default_init(kind: ast::NetVarKind, width: u32) -> ir::BitPacked {
     // A real default = +0.0 = all-zero bits, never X (it is always 2-state).
     if matches!(kind, ast::NetVarKind::Real | ast::NetVarKind::Realtime) {
+        return ir::BitPacked {
+            val: vec![0],
+            unk: vec![0],
+        };
+    }
+    // A named-event counter starts at ZERO, never X: `e = e + 1` on an all-X
+    // start would stay X forever and no `@(e)` edge could ever fire.
+    if matches!(kind, ast::NetVarKind::Event) {
         return ir::BitPacked {
             val: vec![0],
             unk: vec![0],
