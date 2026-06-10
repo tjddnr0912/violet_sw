@@ -1,6 +1,6 @@
 # vitamin — 잔여 작업 트래커 (Remaining Work)
 
-> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa` → **동일자 전 항목 소진**: P0 9건 → P1 9건 → P2 12/12건 → P3 4건+양호판정 → P4 T0a/T0b/T1 → native-eval follow-on → P5 문서부채 전체. · **571 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3) · MsgCode 45→**50**(F4016·W4018·W4019·E3018·W3056 본문 승격, bijection 동기화). **이 트래커는 완결 — 신규 작업은 §권장 순서(perf 축·Phase-1.x)에서 시작.**
+> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa` → **동일자 전 항목 소진**: P0 9건 → P1 9건 → P2 12/12건 → P3 4건+양호판정 → P4 T0a/T0b/T1 → native-eval follow-on → P5 문서부채 전체(571 green, golden unflipped fmt_ver 3) → **2탄: perf 축 2건 + Phase-1.x 전부**(스케줄러축 ≈1.85x · 구조 native lane ≈2.8x · vita-log 게이트+exit 2 · filelist · explain · **format_version 4**(런타임 delay·dump flush/limit·Force/Release) — HEAD `8664627`, **611 tests green**) · clippy/fmt clean · MsgCode **50**. **이 트래커는 완결 — 신규 작업은 §권장 순서(아래 갱신본) 또는 ROADMAP §2.**
 > 출처: 7축 감사 — ①Gemini-fix 검토 ②spec-gap ③sim-engine ④front-end ⑤메모리/자원 ⑥운용성 ⑦병렬화. 핵심 항목은 라이브 재현(+iverilog 차분)으로 확정, 각 항목에 `재현:` 표기.
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
@@ -101,10 +101,10 @@
 - [x] 소항목 잔여 — ✅ 2026-06-10. ~~10-vcd "7종"~~(✅) · ~~04 "$finish severity"~~(✅) · hdl-parser:1119 주석(게이트 프리미티브=키워드-led, 이 arm 미도달·E2002 loud 명기) · doc-01:22-26 filelist `-f`/multi-lib/`vita explain`=**Phase-1.x 인라인 표기로 결정**(de-scope 아님, 목표 유지).
 - [x] (구)트래커:290-292 doc-01 drift 3건 — 2026-06-07에 이미 교정 완료된 stale checkbox였음. 이번 리뉴얼로 해소.
 
-## 권장 작업 순서 (다음 세션)
+## 권장 작업 순서 (다음 세션 — 2026-06-10 2탄 후 갱신)
 
-1. ~~P0 전체(1~9)~~ ✅ · ~~P1 전체(1~9)~~ ✅ · ~~P2 전체(1~12)~~ ✅ · ~~P3 전체~~ ✅ · ~~P4 T0a/T0b/T1~~ ✅ · ~~native-eval follow-on~~ ✅ · ~~P5 문서부채 전체~~ ✅ — **2026-06-10 트래커 전 항목 소진(571 green).**
-2. **perf 다음 축** — ~~①스케줄러축 라운드 1~~ ✅ 2026-06-10(클럭-바운드 ≈1.85x — 핫루프 할당 제거, doc-18 §실측; 라운드 2 후보=dirty-list 넷 스캔) ~~②native-eval select/concat/replicate lane~~ ✅ 2026-06-10(STRUCT_HEAVY VM 0.36x ≈2.8x; 잔여=>64bit/real/array-indexed/sysfunc) ③P4-T2(front-end 병렬, `-u` 의미론 결정 선행).
+1. ~~트래커 P0~P5 전체~~ ✅ · ~~perf 축(스케줄러 R1·구조 native lane)~~ ✅ · ~~Phase-1.x 전체(게이트/filelist/explain/v4 bump/force-release)~~ ✅ — **611 green, HEAD `8664627`.**
+2. **다음 후보(ROI 순, = ROADMAP §2):** ①dirty-list 넷 스캔(스케줄러 R2) ②filelist typed 버킷(+incdir+/+define+ → PreOpts 플러밍) ③native-eval C6 lane(>64bit/real/array-indexed) ④vita-log 2단계(--log tee·-q/-v·counts epilogue) ⑤intra-assignment delay·force full 재평가·implicit-net ⑥Phase-2 관문(dynamic array/queue/interface — 차기 bump 묶음) ⑦3-OS CI 실구동 ⑧P4-T2(front-end 병렬, `-u` 의미론 선행).
 3. **Phase-1.x 기능** — ~~`-Wno-*`/`-Werror=` 게이트 + exit class 2~~ ✅ 2026-06-10 `791cca4`(vita-log GatePolicy/GatedSink; 승격 실패=class 1·산출물 미생성, 아티팩트 게이트=exit 2) · ~~filelist `-f`/`-F`~~ ✅ `eedd486`(argv-레벨 전개 v1 서브셋; 잔여=+incdir+/+define+ 버킷·WRONG-STAGE·OVERRIDE) · ~~`vita explain`~~ ✅ `2ca8949` · ~~런타임 delay~~ ✅ **format_version 4 bump**(Delay.amount=ExprId, 평가·×M·round는 엔진 suspension-time; X/Z→0 iverilog parity) · ~~`$dumpflush/$dumplimit`~~ ✅ (bump 무임승차, vcd-writer 기계는 기존재) · ~~force/release 실semantics~~ ✅ 2026-06-10 — sample-once 모델(iverilog 오라클 패리티: iverilog 스스로 RHS 1회 평가 경고), per-net `forced` 플래그가 write_chunk 깔때기에서 전 일반 경로(절차/NBA/settle/delayed-ca) 차단, release=net settle-복원/var 값-유지 비대칭, whole-net 타깃만(bit-select=loud). **Phase-1.x 전 항목 소진.**
 
 ## 아카이브 (완결 이력 요약)

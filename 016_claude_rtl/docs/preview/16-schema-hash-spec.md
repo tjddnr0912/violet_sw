@@ -393,7 +393,7 @@ fn schema_hash_is_pinned() {
 1. `cargo test schema_hash_is_pinned` **실패**(해시 flip).
 2. 정규-문자열 골든 **실패** — `sim_ir::Frame=…struct{#[]return_pc:u32,…}` → `…return_pc:u64,…` 정확 라인.
 3. Layer 3 RON 골든 **실패** — `Frame` `return_pc` `U32`→`U64`.
-4. 셋 다 무시하고 ship 하면, 신 바이너리가 구 `.velab` decode 시 **clean "incompatible tool, recompile" 에러**(Layer 1 런타임 게이트), never silent misparse(§5 line 484–485). 합법 진행은 의도적 atomic re-freeze 처리(§1 line 121/§5 line 495): `format_version` bump, 전 `.velab` 재생성, 두 골든 갱신.
+4. 셋 다 무시하고 ship 하면, 신 바이너리가 구 `.velab` decode 시 **clean "incompatible tool, recompile" 에러**(Layer 1 런타임 게이트), never silent misparse(§5 line 484–485). 합법 진행은 의도적 atomic re-freeze 처리(§1 line 121/§5 line 495): `format_version` bump, 전 `.velab` 재생성, 두 골든 갱신 — **재생성은 sanctioned 스위치 `REGEN_GOLDEN=1 cargo test -p sim-ir`로**(canonical txt·serde-reflection RON을 다시 쓰고 새 핀 해시를 출력; 2026-06-10 v4 bump에서 신설).
 
 **런타임 게이트 (Layer 1).** `vita-artifact`가 `schema_hash::<SimIrRoot>()`를 stamp 시 한 번 읽어 `.velab`/`.vu` 헤더에 박음. decode 시 헤더 `schema_hash` ≠ 현 빌드 해시 → **하드 에러, silent reuse 없음**(§5 line 528). 정책은 version-GATE(refuse-and-rebuild), migrate 아님(§5 line 531–532).
 

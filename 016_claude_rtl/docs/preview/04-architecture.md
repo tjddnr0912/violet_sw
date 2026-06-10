@@ -97,7 +97,7 @@ preprocess → lex → parse → elaborate → sim → VCD 전 과정을 한 명
 | `vita-artifact` | 단계 산출물 (역)직렬화 + 헤더(magic/format_version/schema_hash/빌드지문) + staleness 검사(D3 트리플 대조) + `--dump` RON 뷰 | hdl-ast, sim-ir, hdl-preprocess, diag, vita-artifact-derive |
 | `vita-artifact-derive` | `#[derive(SchemaHash)]` proc-macro — 타입별 local shape 문자열을 컴파일 타임 방출 (leaf, syn/quote) | — |
 | `vita-schema` | `SchemaShape` trait + `ShapeRegistry` — 참여 타입 폐포를 정렬 합성해 blake3 `SCHEMA_HASH` 런타임 산출 (leaf; trait를 `vita-artifact`에 두면 순환이라 분리 — 16) | blake3 |
-| `vita-log` | 운영 로깅 — transcript·로그파일 tee·severity 라우팅·메시지 코드·exit-code·`$error`/`$fatal` 연동; diag 위에 적층 | diag, vita-artifact, sim-ir, tracing |
+| `vita-log` | 운영 로깅 — **구현됨(2026-06-10): `-Wno-*`/`-Werror=` suppress/promote 게이트(`GatePolicy`/`GatedSink`)**; transcript·로그파일 tee·배너는 Phase-1.x 잔여 | diag *(tracing은 tee 랜딩 시)* |
 | `cli` | 드라이버 바이너리 — `vita`(원샷) + `vcmp`/`velab`/`vrun`(단계별); 프로덕션은 단일 multicall 바이너리 | 전부 + vita-artifact + vita-log |
 
 크레이트별 책임과 분리 이유:

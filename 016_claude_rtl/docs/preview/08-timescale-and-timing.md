@@ -90,6 +90,11 @@ endmodule
 
 각 모듈의 `#delay`는 다음 두 단계로 정수 tick으로 변환된다:
 
+> **구현 위치(format_version 4, 2026-06-10):** 이 환산은 **엔진이 suspension-time에** 수행한다 —
+> `Terminator::Delay.amount`는 모듈 단위의 RAW 값을 평가하는 ExprId이므로 `#5` 같은 상수와
+> `#d`/`#(d*2)`/`#r` 같은 **런타임 식이 한 경로**를 공유한다(상수는 Const 노드로 폴딩될 뿐).
+> X/Z delay는 0 tick(iverilog parity), 정수는 u64-saturating × M, real은 아래 round 규칙 그대로.
+
 **1단계: 모듈 precision으로 반올림**
 ```
 반올림 규칙: fractional_part >= 0.5 → 올림, < 0.5 → 내림
