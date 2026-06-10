@@ -104,7 +104,7 @@
 ## 권장 작업 순서 (다음 세션)
 
 1. ~~P0 전체(1~9)~~ ✅ · ~~P1 전체(1~9)~~ ✅ · ~~P2 전체(1~12)~~ ✅ · ~~P3 전체~~ ✅ · ~~P4 T0a/T0b/T1~~ ✅ · ~~native-eval follow-on~~ ✅ · ~~P5 문서부채 전체~~ ✅ — **2026-06-10 트래커 전 항목 소진(571 green).**
-2. **perf 다음 축** — ①스케줄러축(클럭-바운드: codegen-heavy 0.90x이 상한 — doc-18 분석 선행) ②native-eval >64bit/real/select/concat lane ③P4-T2(front-end 병렬, `-u` 의미론 결정 선행).
+2. **perf 다음 축** — ~~①스케줄러축 라운드 1~~ ✅ 2026-06-10(클럭-바운드 ≈1.85x — 핫루프 할당 제거, doc-18 §실측; 라운드 2 후보=dirty-list 넷 스캔) ②native-eval >64bit/real/select/concat lane ③P4-T2(front-end 병렬, `-u` 의미론 결정 선행).
 3. **Phase-1.x 기능** — 런타임 delay(frozen Delay 형상 → format_version bump 동반) · force/release 실semantics · `$dumpflush/$dumplimit` · `-Wno-*`/`-Werror=` 게이트 · filelist `-f`/`-F` · `vita explain` · exit class 2 분리(`vita-log`).
 
 ## 아카이브 (완결 이력 요약)

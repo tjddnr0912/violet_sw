@@ -44,7 +44,7 @@ pub(crate) trait Kernel {
     /// `native_eval::try_compile` accepts; the compiler only emits this where it does.
     fn k_eval_native(&self, prog: &crate::native_eval::NativeProg) -> Value;
     /// READ: resolve each LHS chunk's `(bit-offset, array-word)` NOW (dynamic index).
-    fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)>;
+    fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets;
     /// WRITE: blocking write of `value` into `lhs` at the resolved `offsets`.
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]);
     /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
@@ -115,18 +115,28 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
             .copied()
             .unwrap_or(1)
             .max(1) as u64;
-        // `%m` scope of this process (P2-11); flat "top" when no sidecar.
-        sched.st.cur_scope = sched
-            .st
-            .proc_scopes
-            .get(tmpl)
-            .cloned()
-            .unwrap_or_else(|| "top".to_string());
-        let (stmt_ids, term) = {
-            let body = &sched.st.ir.processes[tmpl].body;
-            let block = &body[bb as usize];
-            (block.stmts.clone(), block.term.clone())
-        };
+        // `%m` scope of this process (P2-11); flat "top" when no sidecar. Skip the
+        // String alloc when the scope is already current (the common case for a
+        // process resumed many times) — `clone_from` reuses capacity otherwise.
+        match sched.st.proc_scopes.get(tmpl) {
+            Some(s) => {
+                if &sched.st.cur_scope != s {
+                    sched.st.cur_scope.clone_from(s);
+                }
+            }
+            None => {
+                if sched.st.cur_scope != "top" {
+                    sched.st.cur_scope.clear();
+                    sched.st.cur_scope.push_str("top");
+                }
+            }
+        }
+        // `ir` is `&'ir SimIr` (shared, outliving this `&mut sched` borrow), so the
+        // block's stmt list and terminator are read IN PLACE. The previous
+        // `stmts.clone()`/`term.clone()`/per-stmt `Stmt::clone()` allocated on every
+        // block activation — the second-largest malloc source of clock-bound designs.
+        let ir = sched.st.ir;
+        let block = &ir.processes[tmpl].body[bb as usize];
 
         // ── statements (P7a read/write-phase split) ──
         // Each statement executes in two explicit phases: a READ phase
@@ -136,25 +146,29 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
         // inlines the read phase as native code and routes the write phase through the
         // kernel (P7b puts apply_effect's calls behind a trait). Behaviour is
         // byte-identical to the prior inline form — same evals, same writes, same order.
-        for sid in stmt_ids {
-            let stmt = sched.st.ir.stmts[sid as usize].clone();
-            let effect = compute_effect(&*sched, &stmt, sid); // READ phase via Kernel seam
+        for &sid in &block.stmts {
+            let stmt = &ir.stmts[sid as usize];
+            let effect = compute_effect(&*sched, stmt, sid); // READ phase via Kernel seam
             if let Some(step) = apply_effect(sched, effect) {
                 return step; // a SysTask returned Finish/Stop/Fatal
             }
         }
 
         // ── terminator ──
-        match term {
+        match &block.term {
             Terminator::Goto { target } => {
-                bb = target;
+                bb = *target;
             }
             Terminator::Branch {
                 cond,
                 then_bb,
                 else_bb,
             } => {
-                bb = if sched.truthy(cond) { then_bb } else { else_bb };
+                bb = if sched.truthy(*cond) {
+                    *then_bb
+                } else {
+                    *else_bb
+                };
             }
             Terminator::Delay {
                 amount,
@@ -162,16 +176,16 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                 resume,
             } => {
                 // `amount` is a literal tick count (FROZEN IR: u32, NOT an ExprId).
-                let inactive = matches!(region, DelayRegion::Inactive) || amount == 0;
-                let tick = sched.now() + amount as u64;
-                sched.schedule_resume(pi, resume, tick, inactive);
+                let inactive = matches!(region, DelayRegion::Inactive) || *amount == 0;
+                let tick = sched.now() + *amount as u64;
+                sched.schedule_resume(pi, *resume, tick, inactive);
                 return Step::Suspended;
             }
             Terminator::Wait { cond, resume } => {
-                match &cond {
+                match cond {
                     WaitCause::Expr { expr } => {
                         if sched.truthy(*expr) {
-                            bb = resume; // already true → fall through
+                            bb = *resume; // already true → fall through
                             guard += 1;
                             if guard > sched.max_deltas_guard() {
                                 sched.mark_fatal();
@@ -179,9 +193,10 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                             }
                             continue;
                         }
-                        sched.suspend_on(pi, resume, cond);
+                        // Suspending: the one place the cause must be OWNED.
+                        sched.suspend_on(pi, *resume, cond.clone());
                     }
-                    _ => sched.suspend_on(pi, resume, cond),
+                    _ => sched.suspend_on(pi, *resume, cond.clone()),
                 }
                 return Step::Suspended;
             }
@@ -198,7 +213,7 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                 children,
                 join,
                 resume_bb,
-            } => match sched.exec_fork(pi, &children, join, resume_bb) {
+            } => match sched.exec_fork(pi, children, *join, *resume_bb) {
                 Some(cont) => {
                     bb = cont;
                 }
@@ -207,7 +222,7 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
             // Deferred v1: user task/func `Call`. elaborate inlines tasks, so this
             // should not appear from v1 elaborate; advance to keep liveness.
             Terminator::Call { ret_bb, .. } => {
-                bb = ret_bb;
+                bb = *ret_bb;
             }
         }
 
@@ -219,29 +234,53 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
     }
 }
 
+/// Resolved per-chunk `(bit-offset, array-word)` pairs for an lvalue write.
+/// Inline up to 2 chunks — virtually every real lvalue — so the per-statement
+/// READ phase does not allocate; a concat wider than 2 chunks spills to a Vec.
+/// (The previous `Vec` return allocated once per executed assign, a top
+/// malloc source of clock-bound designs.)
+#[derive(Clone)]
+pub(crate) enum Offsets {
+    Inline { buf: [(u32, u32); 2], len: u8 },
+    Heap(Vec<(u32, u32)>),
+}
+
+impl Offsets {
+    pub(crate) fn as_slice(&self) -> &[(u32, u32)] {
+        match self {
+            Offsets::Inline { buf, len } => &buf[..*len as usize],
+            Offsets::Heap(v) => v,
+        }
+    }
+}
+
 /// The self-contained result of a statement's READ phase — everything the WRITE
 /// phase needs, with no further reads of net state. Computing this is pure (reads
 /// only, via `&Scheduler`); applying it is where all mutation happens. This is the
 /// P7a boundary: a compiled body produces the same effects from native code, and
 /// [`apply_effect`]'s kernel calls become the trait surface in P7b.
-enum StmtEffect {
+///
+/// `'s` borrows from the (ir-owned) `Stmt`, so building an effect allocates
+/// nothing for the lvalue/args themselves — only the NBA arm clones (its lvalue
+/// must outlive the activation inside the scheduler's NBA queue).
+enum StmtEffect<'s> {
     /// Blocking assign: RHS evaluated context-sized, per-chunk `(offset, word)`
     /// resolved NOW (dynamic-index sample at statement time).
     Blocking {
-        lhs: Lvalue,
+        lhs: &'s Lvalue,
         value: Value,
-        offsets: Vec<(u32, u32)>,
+        offsets: Offsets,
     },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
-    Nonblocking { lhs: Lvalue, value: Value },
+    Nonblocking { lhs: &'s Lvalue, value: Value },
     /// System task: a kernel call (its own read+write happen inside `dispatch`).
     /// `sid` keys the severity side table (P1-1).
     SysTask {
         which: SysTaskId,
         fmt: Option<u32>,
-        args: Vec<u32>,
+        args: &'s [u32],
         sid: u32,
     },
     /// `disable`: no-op in v1 (fork/disable deferred).
@@ -252,28 +291,25 @@ enum StmtEffect {
 /// producing a [`StmtEffect`] that captures everything the write phase will apply. No
 /// net state is mutated here. Generic over `K: Kernel`, so the SAME executor serves
 /// the interpreter (`Scheduler`) and a Stage-C compiled body.
-fn compute_effect<K: Kernel>(k: &K, stmt: &Stmt, sid: u32) -> StmtEffect {
+fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<'s> {
     match stmt {
         Stmt::BlockingAssign { lhs, rhs } => {
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
             let offsets = k.k_resolve_lvalue_offsets(lhs); // dynamic index NOW
             StmtEffect::Blocking {
-                lhs: lhs.clone(),
+                lhs,
                 value,
                 offsets,
             }
         }
         Stmt::NonblockingAssign { lhs, rhs } => {
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED, sampled now
-            StmtEffect::Nonblocking {
-                lhs: lhs.clone(),
-                value,
-            }
+            StmtEffect::Nonblocking { lhs, value }
         }
         Stmt::SysTask { which, fmt, args } => StmtEffect::SysTask {
             which: *which,
             fmt: *fmt,
-            args: args.clone(),
+            args,
             sid,
         },
         Stmt::Disable { .. } => StmtEffect::Nop,
@@ -283,18 +319,19 @@ fn compute_effect<K: Kernel>(k: &K, stmt: &Stmt, sid: u32) -> StmtEffect {
 /// WRITE phase: apply a [`StmtEffect`] through the mutating half of the [`Kernel`]
 /// seam. Returns `Some(Step)` only when a `$finish`/`$stop`/fatal system task ends the
 /// activation. Generic over `K: Kernel` (same executor for interpreter + compiled VM).
-fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect) -> Option<Step> {
+fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
     match effect {
         StmtEffect::Blocking {
             lhs,
             value,
             offsets,
         } => {
-            k.k_write_lvalue(&lhs, value, &offsets);
+            k.k_write_lvalue(lhs, value, offsets.as_slice());
             None
         }
         StmtEffect::Nonblocking { lhs, value } => {
-            k.k_schedule_nba(lhs, value);
+            // The NBA queue outlives this activation — the one owned clone left.
+            k.k_schedule_nba(lhs.clone(), value);
             None
         }
         StmtEffect::SysTask {
@@ -302,7 +339,7 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect) -> Option<Step> {
             fmt,
             args,
             sid,
-        } => match k.k_dispatch_systask(which, fmt, &args, sid) {
+        } => match k.k_dispatch_systask(which, fmt, args, sid) {
             Ctl::Finish => Some(Step::Finish),
             Ctl::Stop => Some(Step::Stop),
             Ctl::Fatal => Some(Step::Fatal),

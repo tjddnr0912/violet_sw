@@ -517,7 +517,13 @@ impl<'a> SimState<'a> {
     /// Snapshot cur → prev for every net (called at start of each new time).
     pub fn snapshot_prev(&mut self) {
         for slot in &mut self.nets {
-            slot.prev.clone_from(&slot.cur);
+            // Per-field Vec::clone_from reuses each Vec's existing allocation.
+            // BitPacked's derived Clone has no clone_from override, so
+            // `prev.clone_from(&cur)` was `prev = cur.clone()` — two Vec
+            // alloc/free pairs per net per timestep, the dominant malloc
+            // traffic of clock-bound designs (scheduler-axis profile).
+            slot.prev.val.clone_from(&slot.cur.val);
+            slot.prev.unk.clone_from(&slot.cur.unk);
         }
     }
 

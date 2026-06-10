@@ -212,11 +212,40 @@ bitwise는 `value::*_w` 동일 primitive; native_eval 오라클 대조 단위 8 
 P5 차분 + iverilog 차분(460 green). frozen sim-ir 0줄 변경. follow-on(비교/시프트/Div·Mod/리덕션/ternary/concat/
 >64bit/real)은 `../ROADMAP.md` §C.
 
+### 스케줄러축 라운드 1 (2026-06-10) — 클럭-바운드 ≈1.85x
+
+`CODEGEN_HEAVY`(클럭-바운드: 20k 사이클 × 5 NBA, native-eval이 못 움직이던 케이스)를
+`/usr/bin/sample`로 프로파일: **top-of-stack의 ~45%가 malloc/free** — 스케줄러-바운드의 실체는
+"스케줄링 알고리즘"이 아니라 **타임스텝당 고정 heap churn**이었다. 제거한 할당원(전부 interp·VM
+공유 경로, 순서/내용 불변이라 byte-identical by construction):
+
+| 할당원 | 빈도 | 수리 |
+|---|---|---|
+| `snapshot_prev`의 derived-Clone(`prev = cur.clone()`) | 매 타임스텝 × 전체 넷 × Vec 2개 | per-field `Vec::clone_from`(capacity 재사용) |
+| `propagate_changes` (c) prev 갱신 `cur.clone()` | 매 델타 × 변경 넷 | 동일 — split-borrow `clone_from` |
+| `propagate_changes` `changed_nets`/`edges` Vec | 매 델타 | take/restore 스크래치 필드 |
+| run-loop `cur.active` take→drop / `apply_nba` take→drop | 매 델타 / 매 NBA flush | drain + capacity 반납 |
+| wheel 버킷 `BTreeMap::remove`가 Vec drop | 시뮬 시각마다 | `bucket_pool` 재활용 |
+| `run_process`의 `stmts.clone()`/`term.clone()`/`Stmt::clone()` | **블록 활성화·문장 실행마다** | `&'ir SimIr` reborrow로 제자리 참조(클론 0) |
+| `StmtEffect` 소유 `Lvalue`/`args` 클론 | 문장 실행마다 | `StmtEffect<'s>` 차용(NBA만 1클론 잔존) |
+| `resolve_lvalue_offsets`의 `Vec<(u32,u32)>` | 대입 실행마다 | `Offsets` 인라인 enum(≤2청크 무할당, 초과만 spill) |
+| `cur_scope` String 클론 | 블록 활성화마다 | 비교 후 `clone_from` |
+
+측정(release, best-of-5): `CODEGEN_HEAVY` interp **61.8→33.4 ms (≈1.85x)** / VM **56.0→30.3 ms (≈1.85x)**;
+부수 효과 `EVAL_HEAVY` interp 497→390 ms(≈1.27x — 루프 내 blocking 대입의 효과/offsets 클론 제거),
+`EXPR_HEAVY` VM 0.42x 유지. 최종 프로파일에서 **malloc/free가 top-of-stack 목록에서 소멸** — 잔여는
+eval축(interp `mask_top`/`resize`/`read_net` 정규화, VM native-eval이 우회)과 per-delta 전체-넷 스캔
+(`cur != prev` memcmp — 넷 수 선형이라 대형 디자인용 다음 구조 단계 = dirty-list, 쓰기 경로 훅 +
+정렬로 byte-identity 유지 필요). 571 green, 골든 byte 불변.
+
 ### 교훈 (방법론)
 
 1. **병목은 양파.** 표면층(bit-serial) 제거 → 재측정 → 그 밑(alloc) → 또 그 밑(정규화/transient-alloc). 한 번 측정으로 끝나지 않음.
 2. **"실패한" 실험도 선행 최적화 후 재시도 가치.** inline-Value: 1차 ~0(net-write per-bit 루프가 alloc 가리고 Deref 오버헤드 상쇄) → 그 루프 word化 후 3차 1.55x.
 3. **공유 경로 > backend-전용.** interp·VM 둘 다 빨라지고 위험 낮음.
 4. **`std::simd` 여전히 미도입**(§(1)과 동일 이유: nightly/MSRV-1.82/3-OS 충돌). u64 워드 루프를 LLVM이 자동벡터화.
+5. **"스케줄러-바운드"의 절반은 allocator-바운드.** (2026-06-10) 알고리즘 교체 없이 타임스텝당 고정
+   할당만 제거해도 클럭-바운드 1.85x — derived `Clone::clone_from`가 재할당이라는 함정(`Vec::clone_from`은
+   재사용)과 `mem::take` 후 소비가 capacity를 버린다는 함정이 반복 패턴.
 
 향후 과제·전략 결정(VM 동결 vs native-eval vs 인프라)은 [`../ROADMAP.md`](../ROADMAP.md).

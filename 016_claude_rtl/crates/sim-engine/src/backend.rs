@@ -69,7 +69,7 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], body: &[BasicBlock]) -> bool {
 type RegFile = Vec<Option<Value>>;
 /// Per-activation offset register file: one slot per blocking assign, holding the
 /// `(bit-offset, array-word)` pairs `ResolveOff` sampled at statement time (P8 #3).
-type OffFile = Vec<Option<Vec<(u32, u32)>>>;
+type OffFile = Vec<Option<crate::exec::Offsets>>;
 
 /// A compiled process body, built ONCE per codegen-able **template** and cached
 /// out-of-band on `SimState` (never in the frozen `SimIr`). Block indices are 1:1 with
@@ -306,7 +306,7 @@ pub(crate) fn vm_exec(k: &mut impl Kernel, body: &CompiledBody, proc: u32, mut b
                     let offsets = offs[off as usize]
                         .take()
                         .expect("WriteLval before ResolveOff");
-                    k.k_write_lvalue(&body.lvalues[lhs as usize], value, &offsets);
+                    k.k_write_lvalue(&body.lvalues[lhs as usize], value, offsets.as_slice());
                 }
                 Op::ScheduleNba { lhs, val } => {
                     let value = regs[val as usize]

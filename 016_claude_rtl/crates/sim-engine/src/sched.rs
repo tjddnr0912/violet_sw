@@ -14,7 +14,7 @@ use elaborate::{ForkModeTable, JoinMode};
 
 use crate::builtins::{format_args_str, write_out};
 use crate::eval::EvalCtx;
-use crate::exec::{run_process, Kernel, Step};
+use crate::exec::{run_process, Kernel, Offsets, Step};
 use crate::state::{scalar_bit0, SimState};
 use crate::value::Value;
 
@@ -79,7 +79,7 @@ pub(crate) struct NbaUpdate {
     /// Per-chunk `(bit-offset, array-word)` sampled in the ACTIVE region when the
     /// `<=` executed (so `a[i] <= x; i = i+1;` / `m[k] <= x;` use the OLD `i`/`k`),
     /// one per `lhs.chunks`.
-    pub offsets: Vec<(u32, u32)>,
+    pub offsets: Offsets,
 }
 
 /// One simulation time's three region buckets. Active/Inactive hold process
@@ -105,7 +105,7 @@ struct Waiter {
 
 /// One transport-delay continuous-assign write: `(lhs, value, per-chunk
 /// (offset, word))`, applied when the simulation reaches the scheduled tick.
-type DelayedWrite = (Lvalue, Value, Vec<(u32, u32)>);
+type DelayedWrite = (Lvalue, Value, Offsets);
 
 pub(crate) struct Scheduler<'a, 'ir> {
     pub st: &'a mut SimState<'ir>,
@@ -145,6 +145,13 @@ pub(crate) struct Scheduler<'a, 'ir> {
     delta_count: u64,
     max_deltas: u64,
     time_limit: Option<u64>,
+    /// Scratch buffers reused across `propagate_changes` calls (take/restore —
+    /// the alternative per-call `Vec::new` allocates on every delta).
+    scratch_changed: Vec<u32>,
+    scratch_edges: Vec<(u32, FourState, FourState)>,
+    /// Recycled wheel-bucket Vecs: `wheel.remove` would otherwise drop one
+    /// bucket allocation per distinct simulation time (O(timesteps) churn).
+    bucket_pool: Vec<Vec<(RegionTag, Ready)>>,
 }
 
 /// Why the run ended (scheduler precedence order).
@@ -184,6 +191,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             delta_count: 0,
             max_deltas,
             time_limit,
+            scratch_changed: Vec::new(),
+            scratch_edges: Vec::new(),
+            bucket_pool: Vec::new(),
         }
     }
 
@@ -211,7 +221,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
                 let v = self.eval_for_lvalue(&lhs, ca_rhs); // CONTEXT-SIZED to lhs width
                 let offs = self.resolve_lvalue_offsets(&lhs); // dynamic index NOW (settle time)
-                changed |= self.st.write_lvalue(&lhs, v, &offs);
+                changed |= self.st.write_lvalue(&lhs, v, offs.as_slice());
             }
             if !changed {
                 break;
@@ -412,8 +422,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     Some(false) => {}
                 }
                 if !self.cur.active.is_empty() {
-                    let batch = std::mem::take(&mut self.cur.active);
-                    for r in batch {
+                    // Take the batch so wakes triggered DURING it land in a fresh
+                    // `cur.active`; iterate borrowed (`Ready: Copy`) so the Vec can
+                    // be handed back below — consuming it dropped one allocation
+                    // per delta.
+                    let mut batch = std::mem::take(&mut self.cur.active);
+                    for &r in &batch {
                         if self.st.finished {
                             return self.finish_kind();
                         }
@@ -440,6 +454,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                             }
                             Step::Suspended | Step::Done => {}
                         }
+                    }
+                    // Recycle the drained batch Vec when no process was woken
+                    // mid-batch (the overwhelmingly common case).
+                    batch.clear();
+                    if self.cur.active.is_empty() {
+                        self.cur.active = batch;
                     }
                     self.propagate_changes();
                     self.delta_count += 1;
@@ -503,19 +523,21 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             if let Some(writes) = self.delayed_ca.remove(&next) {
                 let mut moved = false;
                 for (lhs, v, offs) in writes {
-                    moved |= self.st.write_lvalue(&lhs, v, &offs);
+                    moved |= self.st.write_lvalue(&lhs, v, offs.as_slice());
                 }
                 if moved {
                     self.propagate_changes();
                 }
             }
-            let events = self.wheel.remove(&next).unwrap_or_default();
-            for (region, ready) in events {
+            let mut events = self.wheel.remove(&next).unwrap_or_default();
+            for (region, ready) in events.drain(..) {
                 match region {
                     RegionTag::Inactive => push_sorted(&mut self.cur.inactive, ready),
                     _ => push_sorted(&mut self.cur.active, ready),
                 }
             }
+            // Return the drained bucket to the pool for the next schedule().
+            self.bucket_pool.push(events);
             // a fresh time may also need cont-assign settle before draining (loop top).
         }
     }
@@ -690,9 +712,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     fn apply_nba(&mut self) {
         let mut batch = std::mem::take(&mut self.nba);
         batch.sort_by_key(|u| u.seq);
-        for u in batch {
-            self.st.write_lvalue(&u.lhs, u.sampled, &u.offsets);
+        for u in batch.drain(..) {
+            self.st
+                .write_lvalue(&u.lhs, u.sampled, u.offsets.as_slice());
         }
+        // Hand the drained Vec back so the next timestep's NBA pushes reuse its
+        // capacity (consuming it dropped one allocation per NBA flush).
+        self.nba = batch;
     }
 
     // ── change propagation + edge detection ──────────────────────────────
@@ -709,28 +735,31 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// `prev`/`cur` read saw `prev == cur` → no edge.)
     fn propagate_changes(&mut self) {
         let nnets = self.st.nets.len();
-        let mut changed_nets: Vec<u32> = Vec::new();
+        // Take/restore the scratch buffers: this runs once per delta, and a
+        // fresh Vec pair per call was measurable allocator traffic.
+        let mut changed_nets = std::mem::take(&mut self.scratch_changed);
+        changed_nets.clear();
         for i in 0..nnets {
             if self.st.nets[i].cur != self.st.nets[i].prev {
                 changed_nets.push(i as u32);
             }
         }
         if changed_nets.is_empty() {
+            self.scratch_changed = changed_nets;
             return;
         }
 
         // Precompute scalar (bit0) prev→new for each changed net (still pre-refresh).
-        let edges: Vec<(u32, FourState, FourState)> = changed_nets
-            .iter()
-            .map(|&net| {
-                let i = net as usize;
-                (
-                    net,
-                    scalar_bit0(&self.st.nets[i].prev),
-                    scalar_bit0(&self.st.nets[i].cur),
-                )
-            })
-            .collect();
+        let mut edges = std::mem::take(&mut self.scratch_edges);
+        edges.clear();
+        edges.extend(changed_nets.iter().map(|&net| {
+            let i = net as usize;
+            (
+                net,
+                scalar_bit0(&self.st.nets[i].prev),
+                scalar_bit0(&self.st.nets[i].cur),
+            )
+        }));
 
         // (a) wake statically edge-sensitive `always` processes.
         for &(net, prev, new) in &edges {
@@ -797,11 +826,15 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         }
 
         // (c) refresh prev LAST, now that every edge observer has run.
+        // Per-field clone_from reuses prev's Vec allocations (a whole-struct
+        // clone allocated two fresh Vecs per changed net per delta).
         for &net in &changed_nets {
-            let i = net as usize;
-            let cur = self.st.nets[i].cur.clone();
-            self.st.nets[i].prev = cur;
+            let slot = &mut self.st.nets[net as usize];
+            slot.prev.val.clone_from(&slot.cur.val);
+            slot.prev.unk.clone_from(&slot.cur.unk);
         }
+        self.scratch_changed = changed_nets;
+        self.scratch_edges = edges;
     }
 
     /// P2-3: every delta-limit overflow path (t0/run-loop settle, the
@@ -868,7 +901,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// resolved here at the correct sampling moment. An X/Z or unresolvable index
     /// yields the `u32::MAX` sentinel → `write_chunk` drops the bit (out-of-range
     /// no-op), matching the READ side where `eval_select` returns X for `a[x]`.
-    pub(crate) fn resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)> {
+    pub(crate) fn resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets {
         let ev = |eid: u32| {
             // X/Z or beyond-u32 index → u32::MAX OOR sentinel (write dropped),
             // never a wrapped small offset (P0-4).
@@ -877,15 +910,25 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or(u32::MAX)
         };
-        lhs.chunks
-            .iter()
-            .map(|c| {
-                let off = c.offset.map(ev).unwrap_or(0);
-                // `word` is an ExprId array index (`mem[k] = …`); resolve NOW.
-                let word = c.word.map(ev).unwrap_or(0);
-                (off, word)
-            })
-            .collect()
+        let pair = |c: &sim_ir::LvalChunk| {
+            let off = c.offset.map(ev).unwrap_or(0);
+            // `word` is an ExprId array index (`mem[k] = …`); resolve NOW.
+            let word = c.word.map(ev).unwrap_or(0);
+            (off, word)
+        };
+        // Inline the ≤2-chunk case (virtually all lvalues) — no allocation.
+        if lhs.chunks.len() <= 2 {
+            let mut buf = [(0u32, 0u32); 2];
+            for (i, c) in lhs.chunks.iter().enumerate() {
+                buf[i] = pair(c);
+            }
+            Offsets::Inline {
+                buf,
+                len: lhs.chunks.len() as u8,
+            }
+        } else {
+            Offsets::Heap(lhs.chunks.iter().map(pair).collect())
+        }
     }
 
     /// Run a pre-compiled native expression program against the net table (VM-only
@@ -938,7 +981,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             } else {
                 RegionTag::Active
             };
-            self.wheel.entry(tick).or_default().push((region, ready));
+            // Reuse a pooled bucket on first insert at a new tick (or_default
+            // would allocate a fresh Vec per distinct simulation time).
+            let pool = &mut self.bucket_pool;
+            self.wheel
+                .entry(tick)
+                .or_insert_with(|| pool.pop().unwrap_or_default())
+                .push((region, ready));
         }
     }
 
@@ -1244,7 +1293,7 @@ impl Kernel for Scheduler<'_, '_> {
     fn k_eval_native(&self, prog: &crate::native_eval::NativeProg) -> Value {
         self.eval_native(prog)
     }
-    fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)> {
+    fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets {
         self.resolve_lvalue_offsets(lhs)
     }
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) {
