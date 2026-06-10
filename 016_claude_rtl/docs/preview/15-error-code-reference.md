@@ -512,6 +512,16 @@ $dumpfile("/no/such/dir/wave.vcd"); $dumpvars;
 ```
 **해결:** 디스크 공간/마운트 상태 확인 후 재실행. `-Werror=`로 CI 승격 가능.
 
+### VITA-W4020 · `W-RUN-DYN-DEGRADE` (Warning)
+**dynamic-storage 연산이 명세된 degraded 경로를 탔음** (v5 (C)): `new[n]`의 n이 X/Z →
+빈 배열, 범위 밖 인덱스 read → X / write → 무시, empty pop → X 등 (설계 문서
+2026-06-10 §4). **핸들 net당 1회만** 발행(warn-once 래치) — 루프 안의 degraded 연산이
+진단 스트림을 폭주시키지 않는다.
+```
+->  warning[VITA-W4020] W-RUN-DYN-DEGRADE: new[] size is X/Z; array degraded to empty
+```
+**해결:** 크기/인덱스 식의 X 근원을 수정. `-Werror=`로 CI 승격 가능.
+
 ---
 
 ## 8xxx · FILELIST

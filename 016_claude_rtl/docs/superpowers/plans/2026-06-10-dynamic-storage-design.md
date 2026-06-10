@@ -61,11 +61,15 @@
 - **OOB write**: dyn array 범위 밖 → 무시+warn. queue `q[size]` 직접 write는 IEEE상 무시(append는
   push로만). assoc write 미존재 키 → 원소 생성.
 - **`new[n]`**: 기존 원소 보존 없는 형(`d = new[n]`)은 전부 X로, 복사형 `new[n](d)`는 prefix 복사.
-  n이 X/0 → 빈 배열 + warn.
+  **n이 X/Z → 빈 배열 + warn-once; n==0은 합법-무음**(IEEE §7.5.1 — 구현 시 정정, 2026-06-11).
+  n > 1<<24(=elaborate MAX_ARRAY_LEN과 동일 캡 클래스) → **경고 후 클램프**(no silent caps).
 - **pop on empty**: 원소-폭 X + warn (iverilog/상용 모두 warn류 — 라이브 확인 후 핀).
 - **이벤트/센스티비티**: dyn 핸들은 `@()`/wait/VCD 대상 불가 — elaborate loud 거부.
   내용 변경은 net dirty 채널에 **참여하지 않음**(조합 re-eval 트리거 없음) — 절차 코드 전용.
-- **VCD**: 미덤프. `$dumpvars`가 dyn 핸들을 만나면 1회 정보 진단(doc-07에 명기).
+- **VCD**: 미덤프 — **구현됨(③)**: 두 declare 경로 모두 dyn 핸들 skip(vcd_id=None →
+  initial dump·change record가 구조적으로 0). 1회 정보 진단은 보류(skip이 무해해 노이즈 판단;
+  필요시 doc-07에 추가). 진단 코드 = **`VITA-W4020 W-RUN-DYN-DEGRADE`**(warn-once per net,
+  doc-15 등재 — X-size new/캡 클램프/향후 OOB·empty-pop 공용).
 
 ## 5. (A) NBA delayed write — 같은 bump의 동승자
 
@@ -81,8 +85,10 @@
 1. 형상 diff(§3) 일괄 적용 + `CURRENT_FORMAT_VERSION = 5`.
 2. `REGEN_GOLDEN=1`로 canonical txt·RON registry·`.velab` corpus 재생성(스위치 기존).
 3. doc-17 lowering 표 + doc-15 코드(신규 warn/error) + doc-14 trailer 문서 갱신.
-4. 구현 증분 순서: ①bump PR(형상+REGEN만, 기능 0 — NBA delay=None, 신규 NetKind 미발생)
-   ②(A) NBA-delay ③dyn array ④queue ⑤assoc ⑥front-end 일괄(.vu flip = (B)+(D)+(C) 문법).
+4. 구현 증분 순서: ~~①bump PR~~✅(`e7f08e8`) ~~②(A) NBA-delay~~✅(`1617980`) —
+   ③dyn array(**3a: heap/new/size/delete ✅ 2026-06-11** — `dyn_heap`+`DynObj`, hand-built
+   SimIr 시임으로 테스트(문법은 ⑥); **잔여 3b: 인덱스 read/write 라우팅+OOB=X/무시+warn-once**)
+   ④queue ⑤assoc ⑥front-end 일괄(.vu flip = (B는 완료)+(D)+(C) 문법).
    각 증분은 TDD + iverilog 라이브 오라클(§4의 warn 문구류는 hand-IEEE 핀).
 5. P9/native-eval: dyn 관련 Expr/Stmt·NBA-delay는 allow-list 제외로 시작(전부 interp) —
    P5 차분 게이트가 자동으로 안전망.

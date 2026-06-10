@@ -36,13 +36,71 @@ pub(crate) fn dispatch(
     // P1-5: the b/o/h variants change the default radix of unformatted args.
     let radix = sched.st.radixes.get(&sid).copied();
     match which {
-        // v5 shape reserve (dyn-storage methods): elaborate cannot emit these
-        // until the (C) increments land — defensive no-op, never a panic.
-        SysTaskId::DynNew
-        | SysTaskId::DynDelete
-        | SysTaskId::QPushBack
-        | SysTaskId::QPushFront
-        | SysTaskId::AssocDeleteKey => Ctl::Continue,
+        // v5 (C)-③: dyn-array object methods. args[0] is always the HANDLE's
+        // Signal expr (elaborate contract); a malformed handle is a defensive
+        // no-op, never a panic.
+        SysTaskId::DynNew => {
+            let Some(net) = dyn_handle_net(sched, args.first()) else {
+                return Ctl::Continue;
+            };
+            // n: X/Z degrades to EMPTY + warn-once; an explicit 0 is
+            // legal-silent (IEEE §7.5.1). Cap at the static array cap class —
+            // a huge n is a t-runtime OOM hazard exactly like P2-6.
+            let nv = args.get(1).map(|&a| sched.eval(a));
+            let n = match nv {
+                Some(v) if v.has_xz() => {
+                    dyn_warn_once(sched, net, "new[] size is X/Z; array degraded to empty");
+                    0
+                }
+                Some(v) => {
+                    // Same cap class as elaborate's MAX_ARRAY_LEN (P2-6, 1<<24):
+                    // a runtime OOM is as silent-deadly as the t0 one. NO silent
+                    // caps — a clamped n warns (once per net).
+                    let raw = v.to_u64().unwrap_or(0);
+                    if raw > (1 << 24) {
+                        dyn_warn_once(
+                            sched,
+                            net,
+                            "new[] size exceeds the element cap (1<<24); clamped",
+                        );
+                    }
+                    raw.min(1 << 24) as usize
+                }
+                None => 0,
+            };
+            let (w, signed) = sched
+                .st
+                .ir
+                .nets
+                .get(net as usize)
+                .map(|nv| (nv.width.max(1), nv.signed))
+                .unwrap_or((1, false));
+            let mut elems = vec![Value::xs(w, signed); n];
+            // copy form `new[n](src)`: prefix-copy from the src handle.
+            if let Some(src_net) = dyn_handle_net(sched, args.get(2)) {
+                if let Some(crate::state::DynObj::DynArray { elems: src }) =
+                    sched.st.dyn_heap.get(&src_net)
+                {
+                    for (dst, s) in elems.iter_mut().zip(src.iter()) {
+                        *dst = s.clone();
+                    }
+                }
+            }
+            sched
+                .st
+                .dyn_heap
+                .insert(net, crate::state::DynObj::DynArray { elems });
+            Ctl::Continue
+        }
+        SysTaskId::DynDelete => {
+            if let Some(net) = dyn_handle_net(sched, args.first()) {
+                sched.st.dyn_heap.remove(&net); // absent entry IS the empty object
+            }
+            Ctl::Continue
+        }
+        // v5 shape reserve (queue/assoc methods): elaborate cannot emit these
+        // until their increments land — defensive no-op, never a panic.
+        SysTaskId::QPushBack | SysTaskId::QPushFront | SysTaskId::AssocDeleteKey => Ctl::Continue,
         SysTaskId::Display => {
             let mut s = format_args_str(sched, fmt, args, radix);
             s.push('\n');
@@ -269,6 +327,14 @@ fn dumpvars(st: &mut SimState) {
                     let _ = w.push_scope(ScopeType::Module, seg);
                     cur.push(seg);
                 }
+                // v5 (C): dyn handles have no $var form (variable length) —
+                // never declared, so no initial dump and no change records.
+                if matches!(
+                    nets[i].kind,
+                    sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue | sim_ir::NetKind::Assoc
+                ) {
+                    continue;
+                }
                 let vt = vcd_var_type(nets[i].kind);
                 if let Ok(id) = w.declare_var(vt, nets[i].width.max(1), leaf) {
                     ids[i] = Some(id);
@@ -281,6 +347,12 @@ fn dumpvars(st: &mut SimState) {
         } else {
             let _ = w.push_scope(ScopeType::Module, "top");
             for (i, nv) in nets.iter().enumerate() {
+                if matches!(
+                    nv.kind,
+                    sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue | sim_ir::NetKind::Assoc
+                ) {
+                    continue; // dyn handles: no $var form (see above)
+                }
                 let vt = vcd_var_type(nv.kind);
                 let name = format!("n{i}");
                 if let Ok(id) = w.declare_var(vt, nv.width.max(1), &name) {
@@ -826,4 +898,33 @@ fn char_of(v: &Value) -> char {
     }
     let byte = (v.val.first().copied().unwrap_or(0) & 0xFF) as u8;
     byte as char
+}
+
+/// v5 (C): resolve a dyn-method HANDLE argument (the ExprId of the handle's
+/// whole-net `Signal`) to its NetId. Anything else → None (defensive no-op).
+fn dyn_handle_net(sched: &Scheduler, arg: Option<&u32>) -> Option<u32> {
+    let &eid = arg?;
+    match sched.st.ir.exprs.get(eid as usize) {
+        Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+        _ => None,
+    }
+}
+
+/// One W-RUN-DYN-DEGRADE per handle net (latched in `dyn_warned`) — a degraded
+/// dyn op inside a loop must not spam the diagnostic stream.
+fn dyn_warn_once(sched: &mut Scheduler, net: u32, msg: &str) {
+    if !sched.st.dyn_warned.insert(net) {
+        return;
+    }
+    use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
+    sched.st.sink.emit(LogEvent::Diagnostic(Diagnostic {
+        severity: Severity::Warning,
+        code: MsgCode::RunDynDegrade,
+        message: msg.to_string(),
+        location: None,
+        context: Vec::new(),
+        sim_time: Some(TimeStamp {
+            ticks: sched.st.now,
+        }),
+    }));
 }

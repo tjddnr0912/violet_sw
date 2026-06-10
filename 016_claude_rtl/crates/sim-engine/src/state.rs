@@ -109,6 +109,13 @@ pub(crate) struct SimState<'a> {
     /// Proc-assigns displaced by an overriding `force` (§9.3.1): net → the
     /// parked (lvalue, rhs ExprId, time-mult). `release` re-pins from here.
     pub latent_assigns: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64)>,
+    /// v5 (C): dynamic-storage heap, keyed by HANDLE NetId (deterministic —
+    /// declaration order). A missing entry IS the empty object (lazy). Dyn
+    /// objects never live in the flat BitPacked store.
+    pub dyn_heap: std::collections::BTreeMap<u32, DynObj>,
+    /// Warn-once latch for dyn degradations (X-size new[], OOB, …) — one
+    /// W-RUN-DYN-DEGRADE per handle net, never a per-iteration spam.
+    pub dyn_warned: std::collections::BTreeSet<u32>,
     /// IEEE 1364-2005 self-width side table — built once, immutable for the run.
     pub wt: crate::width::WidthTable,
 
@@ -209,6 +216,8 @@ impl<'a> SimState<'a> {
             forced: vec![false; nnets],
             active_forces: std::collections::BTreeMap::new(),
             latent_assigns: std::collections::BTreeMap::new(),
+            dyn_heap: std::collections::BTreeMap::new(),
+            dyn_warned: std::collections::BTreeSet::new(),
             wt,
             vcd: None,
             vcd_path: None,
@@ -613,7 +622,41 @@ impl<'a> SimState<'a> {
     }
 }
 
+/// v5 (C): one dynamic-storage object. Engine-internal RUNTIME state — never
+/// serialized, never in the frozen IR. Queue/Assoc variants land with their
+/// increments (design doc 2026-06-10 §2).
+#[derive(Debug, Clone)]
+pub enum DynObj {
+    /// `int d[]` — element values, length set only by `new[n]`/`delete()`.
+    DynArray { elems: Vec<Value> },
+}
+
+impl DynObj {
+    pub fn len(&self) -> usize {
+        match self {
+            DynObj::DynArray { elems } => elems.len(),
+        }
+    }
+    /// Clippy pairing for `len` — also the `pop`-on-empty guard for the queue
+    /// increment (3b/④).
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 impl<'a> NetReader for SimState<'a> {
+    fn dyn_size(&self, net: u32) -> Option<u64> {
+        // Only a dyn HANDLE answers; a missing heap entry IS the empty object
+        // (size 0 — IEEE: a declared dynamic array starts empty). Any other
+        // net kind returns None → the eval arm X-poisons defensively.
+        match self.ir.nets.get(net as usize).map(|n| n.kind) {
+            Some(sim_ir::NetKind::DynArray) => {
+                Some(self.dyn_heap.get(&net).map(|o| o.len() as u64).unwrap_or(0))
+            }
+            _ => None,
+        }
+    }
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
         let slot = &self.nets[net as usize];
         let width = slot.width;

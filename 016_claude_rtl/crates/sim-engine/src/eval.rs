@@ -27,6 +27,13 @@ enum RedKind {
 pub trait NetReader {
     /// Current 4-state value of net `net`, optional array word index.
     fn read_net(&self, net: u32, word: Option<u32>) -> Value;
+    /// v5 (C): element count of the dynamic-storage object behind HANDLE net
+    /// `net`. `Some(0)` for a declared-but-never-`new`ed handle (IEEE: empty),
+    /// `None` when the net is not a dyn handle (the caller X-poisons). Default
+    /// `None` keeps non-engine readers (native-eval test fakes) unchanged.
+    fn dyn_size(&self, _net: u32) -> Option<u64> {
+        None
+    }
 }
 
 /// Evaluation context: the IR (consts/exprs), the net table, current time, and
@@ -788,10 +795,28 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
 
     fn eval_sysfunc(&self, which: SysFuncId, args: &[u32]) -> Value {
         match which {
-            // v5 shape reserve: elaborate cannot emit these until the
-            // dynamic-storage increments land. X-poison (never panic) if hit.
-            SysFuncId::DynSize
-            | SysFuncId::QPopBack
+            // v5 (C)-③: `.size()` of a dyn handle. The arg is the handle's
+            // Signal expr — resolve the NetId and ask the reader; a non-handle
+            // (or a non-engine reader) X-poisons defensively, never panics.
+            SysFuncId::DynSize => {
+                let net = args
+                    .first()
+                    .and_then(|&a| match self.ir.exprs.get(a as usize) {
+                        Some(Expr::Signal { net, word: None }) => Some(*net),
+                        _ => None,
+                    });
+                match net.and_then(|n| self.nets.dyn_size(n)) {
+                    Some(n) => {
+                        let mut v = Value::zeros(32, true);
+                        v.val[0] = n.min(i32::MAX as u64);
+                        v
+                    }
+                    None => Value::xs(32, true),
+                }
+            }
+            // v5 shape reserve: elaborate cannot emit these until their
+            // increments land. X-poison (never panic) if hit.
+            SysFuncId::QPopBack
             | SysFuncId::QPopFront
             | SysFuncId::AssocExists
             | SysFuncId::AssocNum => Value::xs(32, false),
