@@ -156,3 +156,35 @@ fn timeout_invalid_value_exits_three() {
     let _ = std::fs::remove_file(&src);
     assert_eq!(out.status.code(), Some(3));
 }
+
+// ── P2-12: defensive clamp of the VCD `$timescale` unit renderer ─────────────
+
+#[test]
+fn timescale_unit_string_clamps_to_vcd_range() {
+    // VCD admits only 1|10|100 × s..fs (exp ∈ [-15, +2]). Out-of-range
+    // exponents must saturate, never misrender (old fallback: -16 → "100s").
+    assert_eq!(cli::timescale_unit_string(-16), "1fs");
+    assert_eq!(cli::timescale_unit_string(3), "100s");
+    // Boundaries and representative in-range values keep exact rendering.
+    assert_eq!(cli::timescale_unit_string(-15), "1fs");
+    assert_eq!(cli::timescale_unit_string(2), "100s");
+    assert_eq!(cli::timescale_unit_string(-9), "1ns");
+    assert_eq!(cli::timescale_unit_string(-10), "100ps");
+}
+
+#[test]
+fn out_clobbering_input_dot_spelling_rejected() {
+    // P2-12 regression: `-o` naming an input through a different spelling
+    // (./x.sv vs x.sv) is caught by canonicalization — exit 3, input intact.
+    let src = write_tmp("clob.sv", "module m; endmodule\n");
+    let dotted = format!(
+        "{}/./{}",
+        src.parent().unwrap().display(),
+        src.file_name().unwrap().to_string_lossy()
+    );
+    let out = vita(&["vcmp", &dotted, "-o", src.to_str().unwrap()]);
+    let body = std::fs::read_to_string(&src).unwrap();
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(body, "module m; endmodule\n", "input must be untouched");
+}

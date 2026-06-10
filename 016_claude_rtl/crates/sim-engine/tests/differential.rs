@@ -390,3 +390,27 @@ fn diff_radix_print_variants() {
          endmodule",
     );
 }
+
+#[test]
+fn diff_time_type_semantics() {
+    // P2-12: `time` = 64-bit unsigned 4-state variable. Unsigned wrap of -1,
+    // full 64-bit hex, $time capture, and unpacked time arrays must all match
+    // iverilog byte-for-byte. (No `timescale — this harness skips preprocess;
+    // both sides then count raw 1-unit ticks, so $time agrees.)
+    assert_matches_iverilog(
+        "time_type",
+        "module tb; time t; time arr [0:1]; \
+           initial begin \
+             #5 t = $time; \
+             $display(\"a=%0d\", t); \
+             t = -1; \
+             $display(\"b=%0d\", t); \
+             t = 64'hFFFF_FFFF_FFFF_FFFF; \
+             $display(\"c=%0h\", t); \
+             arr[0] = $time; arr[1] = arr[0] + 1; \
+             $display(\"p=%0d q=%0d\", arr[0], arr[1]); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}

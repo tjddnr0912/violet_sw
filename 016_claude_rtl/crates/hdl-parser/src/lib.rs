@@ -1122,7 +1122,10 @@ impl<'t, 's> Parser<'t, 's> {
         // (No keyword-led item matched above; in V2005 module scope a leading
         //  bare identifier can ONLY begin an instantiation — there is no
         //  bare-ident contassign/decl. The dispatch position itself is the
-        //  disambiguation, so no multi-token lookahead is needed to decide.)
+        //  disambiguation, so no multi-token lookahead is needed to decide.
+        //  Gate PRIMITIVES (`and`/`or`/`buf`/…) are keyword-led, never reach
+        //  this arm, and are not parsed in v1 — they fall through to the loud
+        //  "expected module item" E2002 below.)
         if self.is_ident() {
             let module_name = self.ident().unwrap();
             return Some(ModuleItem::Instance(

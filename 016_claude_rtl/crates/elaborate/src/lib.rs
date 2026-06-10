@@ -1934,6 +1934,10 @@ impl<'s> Elaborator<'s> {
         if matches!(kind, ast::NetVarKind::Real | ast::NetVarKind::Realtime) {
             return (64, 63, 0, true);
         }
+        // `time` is a dimensionless 64-bit UNSIGNED 4-state variable (IEEE §6.11).
+        if matches!(kind, ast::NetVarKind::Time) {
+            return (64, 63, 0, false);
+        }
         match range {
             None => (1, 0, 0, signed),
             Some(r) => {
@@ -5181,19 +5185,24 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
         Integer => ir::NetKind::Integer,
         // `real`/`realtime` → IEEE-754 f64 net (64-bit, signed, 2-state).
         Real | Realtime => ir::NetKind::Real,
+        // `time` → 64-bit unsigned 4-state VARIABLE. The frozen NetKind has no
+        // Time variant; Reg carries the same legality (procedural-assign ok,
+        // user `assign` rejected) and 4-state all-X init. Width/signedness come
+        // from range_to_dims (64, unsigned).
+        Time => ir::NetKind::Reg,
         // Wire + all net aliases (Tri/Uwire/Wand/...) behave as Wire in v1.
         _ => ir::NetKind::Wire,
     }
 }
 
 /// Whether a kind is modeled in v1 without an `ElabUnsupported` note. Pure
-/// aliases (Tri/Uwire) are accepted silently; resolution nets and real/time are
-/// flagged (still mapped to Wire so the arena stays valid).
+/// aliases (Tri/Uwire) are accepted silently; resolution nets (wand/wor/...)
+/// are flagged (still mapped to Wire so the arena stays valid).
 fn net_kind_supported(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
     matches!(
         k,
-        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime
+        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime | Time
     )
 }
 

@@ -2652,3 +2652,18 @@ fn enum_explicit_value_advances_counter() {
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(out, "0\n5\n6\n");
 }
+
+// ── P2-12: `time` type = 64-bit unsigned variable (IEEE 1800 §6.11) ──────────
+
+#[test]
+fn time_type_is_64bit_unsigned_var() {
+    // Scaled $time lands in it; -1 wraps unsigned under %0d; a full 64-bit hex
+    // literal round-trips. Expectations = live iverilog output.
+    let (ir, opts) = build_timescaled(
+        "`timescale 1ns/1ps\nmodule top; time t; initial begin #5 t = $time; \
+         $display(\"a=%0d\", t); t = -1; $display(\"b=%0d\", t); \
+         t = 64'hFFFF_FFFF_FFFF_FFFF; $display(\"c=%0h\", t); $finish; end endmodule\n",
+    );
+    let (_res, out) = simulate_capture(&ir, opts);
+    assert_eq!(out, "a=5\nb=18446744073709551615\nc=ffffffffffffffff\n");
+}

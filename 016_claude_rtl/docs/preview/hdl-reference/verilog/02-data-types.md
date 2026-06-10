@@ -124,6 +124,9 @@ time     start_time;
 time     elapsed;
 ```
 
+> **vitamin: IN-MVP** — 64-bit unsigned 4-state 변수(절차 대입 가능, `assign` 구동 불가,
+> 초기값 all-X). unpacked 배열·`parameter time`까지 수용(iverilog 차분 일치).
+
 ---
 
 ## 벡터(Vector) 선언

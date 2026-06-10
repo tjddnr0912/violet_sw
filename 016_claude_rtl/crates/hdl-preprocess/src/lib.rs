@@ -581,6 +581,7 @@ fn is_directive_kw(name: &str) -> bool {
             | "endcelldefine"
             | "resetall"
             | "line"
+            | "pragma"
     )
 }
 
@@ -1359,6 +1360,13 @@ impl Preprocessor<'_> {
                 line.cursor
             }
             "line" => {
+                let line = self.consume_logical_line(src, name_end);
+                self.note_dir_newline(file, &line);
+                line.cursor
+            }
+            // `pragma <expression…>` (IEEE 1800 §22.11): accept-ignore policy —
+            // the whole logical line is consumed, nothing is emitted, no diag.
+            "pragma" => {
                 let line = self.consume_logical_line(src, name_end);
                 self.note_dir_newline(file, &line);
                 line.cursor
@@ -2277,7 +2285,20 @@ keepM
         assert!(r.text.contains("wire [3-1:0] z;"));
     }
 
-    // 26. byte_to_line_col / SourceMap::resolve never panic on a byte that lands
+    // 26. P2-12 policy: `` `pragma <rest-of-line> `` is accepted and ignored
+    // (IEEE 1800 §22.11) — previously misparsed as an undefined macro use.
+    #[test]
+    fn pragma_directive_accepted_and_ignored() {
+        let r = pp_mem(
+            "`pragma protect begin\nmodule m; endmodule\n`pragma translate_off // tail\n",
+            &[],
+        );
+        assert!(!r.has_errors(), "diags: {:?}", r.diags);
+        assert!(r.text.contains("module m"));
+        assert!(!r.text.contains("pragma"));
+    }
+
+    // 27. byte_to_line_col / SourceMap::resolve never panic on a byte that lands
     // mid-UTF-8-scalar (a resolved orig_byte can fall inside a multibyte char).
     #[test]
     fn resolve_mid_char_no_panic() {

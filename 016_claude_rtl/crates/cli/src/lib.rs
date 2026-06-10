@@ -324,17 +324,20 @@ pub fn frontend_text_to_unit(
 
 /// Render a base-10 second exponent as a `` `timescale ``-style unit string
 /// (`-9` → `1ns`, `-10` → `100ps`, `-8` → `10ns`) for the VCD `$timescale` preamble.
+/// VCD admits only 1|10|100 × s..fs, i.e. exp ∈ [-15, +2]; the preprocessor only
+/// produces that range, but out-of-range exponents saturate to the nearest
+/// representable unit rather than misrendering (old fallback: -16 → "100s").
 pub fn timescale_unit_string(exp: i8) -> String {
-    let unit_exp = (exp as i32).div_euclid(3) * 3; // floor to a multiple of 3
-    let mantissa = 10i32.pow((exp as i32 - unit_exp) as u32);
+    let exp = (exp as i32).clamp(-15, 2);
+    let unit_exp = exp.div_euclid(3) * 3; // floor to a multiple of 3
+    let mantissa = 10i32.pow((exp - unit_exp) as u32);
     let unit = match unit_exp {
         0 => "s",
         -3 => "ms",
         -6 => "us",
         -9 => "ns",
         -12 => "ps",
-        -15 => "fs",
-        _ => "s",
+        _ => "fs", // -15 (the clamp admits nothing lower)
     };
     format!("{mantissa}{unit}")
 }
