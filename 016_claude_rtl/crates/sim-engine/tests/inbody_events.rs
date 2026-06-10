@@ -39,14 +39,15 @@ fn run(src: &str) -> (Option<FinishReason>, String, Vec<String>) {
     let (su, pe) = hdl_parser::parse(&toks, src);
     assert!(pe.is_empty(), "parse errors: {pe:?}");
     let sink = Sink::default();
-    let (ir, modes, names, mults, sevs) =
+    let (ir, sc) =
         elaborate::elaborate_with_timescale(&su.expect("source unit"), &sink, &BTreeMap::new(), -9);
     let reason = ir.map(|ir| {
         let opts = SimOpts {
-            fork_modes: modes,
-            net_names: names,
-            proc_multipliers: mults,
-            severities: sevs,
+            fork_modes: sc.fork_modes,
+            net_names: sc.net_names,
+            proc_multipliers: sc.proc_multipliers,
+            severities: sc.severities,
+            radixes: sc.radixes,
             ..SimOpts::default()
         };
         simulate(&ir, &sink, opts).finish_reason

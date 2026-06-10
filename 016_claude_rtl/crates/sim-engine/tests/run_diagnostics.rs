@@ -40,14 +40,15 @@ fn run_with(src: &str, backend: Backend) -> (SimResult, String, Vec<String>) {
     let (su, pe) = hdl_parser::parse(&toks, src);
     assert!(pe.is_empty(), "parse errors: {pe:?}");
     let sink = RunSink::default();
-    let (ir, modes, names, mults, sevs) =
+    let (ir, sc) =
         elaborate::elaborate_with_timescale(&su.expect("source unit"), &sink, &BTreeMap::new(), -9);
     let ir = ir.expect("elaborate");
     let opts = SimOpts {
-        fork_modes: modes,
-        net_names: names,
-        proc_multipliers: mults,
-        severities: sevs,
+        fork_modes: sc.fork_modes,
+        net_names: sc.net_names,
+        proc_multipliers: sc.proc_multipliers,
+        severities: sc.severities,
+        radixes: sc.radixes,
         backend,
         ..SimOpts::default()
     };

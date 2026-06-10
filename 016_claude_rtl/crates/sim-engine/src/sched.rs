@@ -548,7 +548,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             let batch = std::mem::take(&mut self.st.postponed.strobes);
             for cap in &batch {
                 self.st.cur_time_mult = cap.time_mult; // registering module's M
-                let mut line = format_args_str(self, cap.fmt, &cap.args);
+                let mut line = format_args_str(self, cap.fmt, &cap.args, cap.radix);
                 line.push('\n');
                 write_out(self.st, &line);
             }
@@ -575,13 +575,14 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 let fmt = m.cap.fmt;
                 let args = m.cap.args.clone();
                 let tmult = m.cap.time_mult; // monitoring module's M (see (a) above)
+                let radix = m.cap.radix;
                 let prev = m.last_vals.take(); // moves baseline out; slot now None
-                Some((fmt, args, tmult, prev))
+                Some((fmt, args, tmult, radix, prev))
             }
             // disabled (`$monitoroff`) or no monitor established → nothing to do.
             _ => None,
         };
-        if let Some((fmt, args, tmult, prev)) = mon {
+        if let Some((fmt, args, tmult, radix, prev)) = mon {
             if fmt.is_none() && args.is_empty() {
                 // No-arg monitor (`$monitor;` → fmt=None, args=[]) prints nothing —
                 // not even a bare newline. Guarded so a future bare-`$monitor`
@@ -621,7 +622,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     Some(old) => !vals_same_bits(old, &cur_vals),
                 };
                 if changed {
-                    let mut line = format_args_str(self, fmt, &args);
+                    let mut line = format_args_str(self, fmt, &args, radix);
                     line.push('\n');
                     write_out(self.st, &line);
                 }

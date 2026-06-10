@@ -31,7 +31,15 @@ fn vita_out(src: &str) -> String {
     let (su, pe) = hdl_parser::parse(&toks, src);
     assert!(pe.is_empty(), "parse errors: {pe:?}");
     let sink = DiagSink::default();
-    let ir = elaborate::elaborate(&su.expect("source unit"), &sink);
+    // Full sidecars (severity/radix/fork/timescale tables) — a differential
+    // case using $displayh or $fatal must exercise the SAME tables production
+    // threads through SimOpts.
+    let (ir, sc) = elaborate::elaborate_with_timescale(
+        &su.expect("source unit"),
+        &sink,
+        &std::collections::BTreeMap::new(),
+        -9,
+    );
     let hard: Vec<String> = sink
         .0
         .borrow()
@@ -40,7 +48,15 @@ fn vita_out(src: &str) -> String {
         .cloned()
         .collect();
     assert!(hard.is_empty(), "elaborate errors: {hard:?}");
-    let (_res, out) = simulate_capture(&ir.expect("ir"), SimOpts::default());
+    let opts = SimOpts {
+        fork_modes: sc.fork_modes,
+        net_names: sc.net_names,
+        proc_multipliers: sc.proc_multipliers,
+        severities: sc.severities,
+        radixes: sc.radixes,
+        ..SimOpts::default()
+    };
+    let (_res, out) = simulate_capture(&ir.expect("ir"), opts);
     out
 }
 
@@ -343,6 +359,33 @@ fn diff_inbody_star_and_finish_flush() {
            initial begin \
              s = 4'd3; \
              $strobe(\"s=%0d\", s); \
+           end \
+         endmodule",
+    );
+}
+
+#[test]
+fn diff_radix_print_variants() {
+    // P1-5: $displayb/o/h + $writeh + $strobeh + $monitorh — the b/o/h variants
+    // change ONLY the default radix of unformatted args (iverilog parity,
+    // including the no-separator padded-field join). Same-step strobe-vs-monitor
+    // flush ORDER is sim-specific, so the two register in different timesteps.
+    assert_matches_iverilog(
+        "radix_variants",
+        "module tb; reg [7:0] a; reg [15:0] b; reg [3:0] c; reg [7:0] m; \
+           initial begin \
+             a = 8'd255; b = 16'h00ab; c = 4'd5; \
+             $displayh(a, b); \
+             $displayb(c); \
+             $displayo(c); \
+             $displayh(\"d=%0d\", 4'd5, a); \
+             $writeh(8'hf0); \
+             $display(\"\"); \
+             $strobeh(a); \
+             #1 m = 8'd16; \
+             $monitorh(m); \
+             #1 m = 8'd255; \
+             #1 $finish; \
            end \
          endmodule",
     );

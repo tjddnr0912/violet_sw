@@ -48,6 +48,8 @@ pub(crate) struct FmtCapture {
     /// which by flush time holds whatever process ran LAST in the timestep, a
     /// DIFFERENT module's `M` under mixed `` `timescale ``s.
     pub time_mult: u64,
+    /// Default radix for unformatted args (P1-5 b/o/h variants); `None` ⇒ decimal.
+    pub radix: Option<u8>,
 }
 
 /// The single global `$monitor` record (IEEE 1364-2005: at most one active
@@ -104,6 +106,8 @@ pub(crate) struct SimState<'a> {
     /// StmtId → severity for `$fatal`/`$error`/`$warning`/`$info` statements
     /// (from `SimOpts.severities`); empty ⇒ no severity tasks in the design.
     pub severities: crate::SeverityTable,
+    /// StmtId → default radix (2/8/16) for b/o/h print variants (P1-5).
+    pub radixes: crate::RadixTable,
     /// Worker-thread budget (from `SimOpts.threads`); `≥2` ⇒ VCD writer thread.
     pub threads: u32,
     /// Process-body execution backend (from `SimOpts.backend`). Default
@@ -181,6 +185,7 @@ impl<'a> SimState<'a> {
             net_names: Vec::new(),
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
+            radixes: crate::RadixTable::new(),
             threads: 1,
             backend: crate::Backend::Interpreter,
             vm_cache: (0..ir.processes.len())

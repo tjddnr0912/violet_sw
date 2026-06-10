@@ -46,15 +46,16 @@ fn run_threads(threads: u32, tag: &str) -> (SimResult, String, Vec<u8>) {
     let (su, pe) = hdl_parser::parse(&toks, DUMP_SRC);
     assert!(pe.is_empty(), "parse errors: {pe:?}");
     let sink = OutSink(RefCell::new(String::new()));
-    let (ir, modes, names, mults, sevs) =
+    let (ir, sc) =
         elaborate::elaborate_with_timescale(&su.expect("source unit"), &sink, &BTreeMap::new(), -9);
     let ir = ir.expect("elaborate");
     let path = std::env::temp_dir().join(format!("vita_threads_{}_{tag}.vcd", std::process::id()));
     let opts = SimOpts {
-        fork_modes: modes,
-        net_names: names,
-        proc_multipliers: mults,
-        severities: sevs,
+        fork_modes: sc.fork_modes,
+        net_names: sc.net_names,
+        proc_multipliers: sc.proc_multipliers,
+        severities: sc.severities,
+        radixes: sc.radixes,
         threads,
         vcd_path_override: Some(path.to_string_lossy().into_owned()),
         ..SimOpts::default()

@@ -127,6 +127,24 @@ pub enum SeverityKind {
 /// `SimOpts` / the `.velab` trailer and NEVER enters the golden `SimIr` root.
 pub type SeverityTable = std::collections::BTreeMap<u32, SeverityKind>;
 
+/// Default-radix side table (P1-5): StmtId → radix (2/8/16) for the
+/// `$displayb/o/h`, `$writeb/o/h`, `$strobeb/o/h`, `$monitorb/o/h` variants —
+/// the b/o/h changes only how UNFORMATTED arguments render (IEEE §17.1.1.1).
+/// Out-of-band like the other tables; the frozen `SysTaskId` is unchanged.
+pub type RadixTable = std::collections::BTreeMap<u32, u8>;
+
+/// Engine-facing side tables produced by one elaboration — ALL out-of-band
+/// (`SimOpts` fields / `.velab` trailers, each serialized as its OWN postcard
+/// segment for append-only compatibility); none ever enters the golden `SimIr`.
+#[derive(Debug, Clone, Default)]
+pub struct Sidecars {
+    pub fork_modes: ForkModeTable,
+    pub net_names: NetNameTable,
+    pub proc_multipliers: Vec<u32>,
+    pub severities: SeverityTable,
+    pub radixes: RadixTable,
+}
+
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
 /// threads into `SimOpts.fork_modes`. `elaborate` is a thin forwarder onto this
 /// so the ~25 existing `elaborate(...)` callers keep compiling verbatim.
@@ -145,9 +163,8 @@ pub fn elaborate_with_sidecars(
     unit: &ast::SourceUnit,
     sink: &dyn LogSink,
 ) -> (Option<ir::SimIr>, ForkModeTable, NetNameTable) {
-    let (ir, modes, names, _mult, _sev) =
-        elaborate_with_timescale(unit, sink, &std::collections::BTreeMap::new(), -9);
-    (ir, modes, names)
+    let (ir, sc) = elaborate_with_timescale(unit, sink, &std::collections::BTreeMap::new(), -9);
+    (ir, sc.fork_modes, sc.net_names)
 }
 
 /// Full elaborate entry with the resolved timescale env from
@@ -162,25 +179,22 @@ pub fn elaborate_with_timescale(
     sink: &dyn LogSink,
     mod_unit_exp: &std::collections::BTreeMap<String, i8>,
     global_prec_exp: i8,
-) -> (
-    Option<ir::SimIr>,
-    ForkModeTable,
-    NetNameTable,
-    Vec<u32>,
-    SeverityTable,
-) {
+) -> (Option<ir::SimIr>, Sidecars) {
     let mut el = Elaborator::new(sink);
     el.mod_unit_exp = mod_unit_exp.clone();
     el.global_prec_exp = global_prec_exp;
     el.run(unit);
-    let modes = std::mem::take(&mut el.fork_modes);
-    let mult = std::mem::take(&mut el.proc_multipliers);
-    let sevs = std::mem::take(&mut el.severities);
-    let names = el.net_name_table(); // BEFORE finish() consumes `el`
+    let sc = Sidecars {
+        fork_modes: std::mem::take(&mut el.fork_modes),
+        proc_multipliers: std::mem::take(&mut el.proc_multipliers),
+        severities: std::mem::take(&mut el.severities),
+        radixes: std::mem::take(&mut el.radixes),
+        net_names: el.net_name_table(), // BEFORE finish() consumes `el`
+    };
     if el.had_error {
-        (None, modes, names, mult, sevs)
+        (None, sc)
     } else {
-        (Some(el.finish()), modes, names, mult, sevs)
+        (Some(el.finish()), sc)
     }
 }
 
@@ -484,6 +498,8 @@ struct Elaborator<'s> {
     // StmtId → SeverityKind for every `$fatal`/`$error`/`$warning`/`$info` lowered
     // (each as a `SysTaskId::Display` stmt). Threaded via `SimOpts.severities`.
     severities: SeverityTable,
+    // StmtId → default radix (2/8/16) for the b/o/h print-task variants (P1-5).
+    radixes: RadixTable,
 }
 
 impl<'s> Elaborator<'s> {
@@ -513,6 +529,7 @@ impl<'s> Elaborator<'s> {
             inline_stack: Vec::new(),
             fork_modes: ForkModeTable::new(),
             severities: SeverityTable::new(),
+            radixes: RadixTable::new(),
             cur_proc: 0,
             in_fork: false,
             mod_unit_exp: BTreeMap::new(),
@@ -4678,11 +4695,17 @@ impl<'s> Elaborator<'s> {
         if let Some(fmt_str) = &fmt_raw {
             self.check_format_real_radix(fmt_str, &arg_ids);
         }
-        Some(self.push_stmt(ir::Stmt::SysTask {
+        let sid = self.push_stmt(ir::Stmt::SysTask {
             which,
             fmt,
             args: arg_ids,
-        }))
+        });
+        // P1-5: the b/o/h print variants change the DEFAULT radix of unformatted
+        // args — record it out-of-band (frozen SysTaskId has no radix variants).
+        if let Some(r) = radix_of_systask(&name.name) {
+            self.radixes.insert(sid, r);
+        }
+        Some(sid)
     }
 
     /// P1-1: lower `$fatal([finish_number][, fmt, args…])` / `$error`/`$warning`/
@@ -4788,12 +4811,23 @@ fn map_severity(dollar_name: &str) -> Option<SeverityKind> {
     }
 }
 
+/// b/o/h print-task variant → its default radix (P1-5). Exact-match (so
+/// `$monitoron`/`$monitoroff` never alias `$monitoro` + a stray suffix).
+fn radix_of_systask(dollar_name: &str) -> Option<u8> {
+    match dollar_name {
+        "$displayb" | "$writeb" | "$strobeb" | "$monitorb" => Some(2),
+        "$displayo" | "$writeo" | "$strobeo" | "$monitoro" => Some(8),
+        "$displayh" | "$writeh" | "$strobeh" | "$monitorh" => Some(16),
+        _ => None,
+    }
+}
+
 fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
     match dollar_name {
         "$display" | "$displayb" | "$displayo" | "$displayh" => Some(ir::SysTaskId::Display),
         "$write" | "$writeb" | "$writeo" | "$writeh" => Some(ir::SysTaskId::Write),
-        "$monitor" => Some(ir::SysTaskId::Monitor),
-        "$strobe" => Some(ir::SysTaskId::Strobe),
+        "$monitor" | "$monitorb" | "$monitoro" | "$monitorh" => Some(ir::SysTaskId::Monitor),
+        "$strobe" | "$strobeb" | "$strobeo" | "$strobeh" => Some(ir::SysTaskId::Strobe),
         "$finish" => Some(ir::SysTaskId::Finish),
         "$stop" => Some(ir::SysTaskId::Stop),
         "$dumpfile" => Some(ir::SysTaskId::DumpFile),

@@ -351,7 +351,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     // elaboration error was reported. `elaborate_with_timescale` also yields the
     // fork-join, net-name, and per-process time-multiplier side tables threaded into
     // `SimOpts`; the timescale env scales `#delay`/`$time`/`$realtime`.
-    let (ir, fork_modes, net_names, proc_multipliers, severities) =
+    let (ir, sc) =
         elaborate::elaborate_with_timescale(&unit, &sink, &rt.unit_exp, rt.global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR;
@@ -359,10 +359,11 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
 
     // ── simulate ────────────────────────────────────────────────────────────
     let sim_opts = SimOpts {
-        fork_modes,
-        net_names,
-        proc_multipliers,
-        severities,
+        fork_modes: sc.fork_modes,
+        net_names: sc.net_names,
+        proc_multipliers: sc.proc_multipliers,
+        severities: sc.severities,
+        radixes: sc.radixes,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
@@ -773,8 +774,7 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
         };
 
     // ── elaborate (with the staged timescale env) ──
-    let (ir, fork_modes, net_names, proc_multipliers, severities) =
-        elaborate::elaborate_with_timescale(&unit, &sink, &unit_exp, global_prec_exp);
+    let (ir, sc) = elaborate::elaborate_with_timescale(&unit, &sink, &unit_exp, global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR; // elab error already emitted
     };
@@ -788,17 +788,20 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     //    `$fatal`/`$error`/`$warning`/`$info` routing (P1-1). ──
     let mut velab_body = postcard::to_stdvec(&ir).expect("SimIr postcard encode infallible");
     velab_body.extend_from_slice(
-        &postcard::to_stdvec(&fork_modes).expect("ForkModeTable postcard encode infallible"),
+        &postcard::to_stdvec(&sc.fork_modes).expect("ForkModeTable postcard encode infallible"),
     );
     velab_body.extend_from_slice(
-        &postcard::to_stdvec(&net_names).expect("NetNameTable postcard encode infallible"),
+        &postcard::to_stdvec(&sc.net_names).expect("NetNameTable postcard encode infallible"),
     );
     velab_body.extend_from_slice(
-        &postcard::to_stdvec(&(proc_multipliers, global_prec_exp))
+        &postcard::to_stdvec(&(sc.proc_multipliers, global_prec_exp))
             .expect("timescale trailer postcard encode infallible"),
     );
     velab_body.extend_from_slice(
-        &postcard::to_stdvec(&severities).expect("severity trailer postcard encode infallible"),
+        &postcard::to_stdvec(&sc.severities).expect("severity trailer postcard encode infallible"),
+    );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.radixes).expect("radix trailer postcard encode infallible"),
     );
     let vheader = artifact_header(vita_schema::schema_hash::<sim_ir::SimIr>(), global_prec_exp);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
@@ -894,16 +897,32 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
     };
     // Severity trailer ($fatal/$error/$warning/$info, P1-1). Tolerant of an older
     // `.velab` with no trailer → empty ⇒ severity tasks degrade to plain $display.
-    let severities: sim_engine::SeverityTable = if rest4.is_empty() {
-        sim_engine::SeverityTable::new()
+    let (severities, rest5): (sim_engine::SeverityTable, &[u8]) = if rest4.is_empty() {
+        (sim_engine::SeverityTable::new(), rest4)
     } else {
-        match postcard::from_bytes(rest4) {
+        match postcard::take_from_bytes(rest4) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     &sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab severity trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // Radix trailer (b/o/h print variants, P1-5). Tolerant → empty ⇒ decimal.
+    let radixes: sim_engine::RadixTable = if rest5.is_empty() {
+        sim_engine::RadixTable::new()
+    } else {
+        match postcard::from_bytes(rest5) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    &sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab radix trailer: {e}"
                     )),
                 )
             }
@@ -916,6 +935,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
         net_names,
         proc_multipliers,
         severities,
+        radixes,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };

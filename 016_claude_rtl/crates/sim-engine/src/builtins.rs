@@ -33,15 +33,17 @@ pub(crate) fn dispatch(
     if let Some(sev) = sched.st.severities.get(&sid).copied() {
         return run_severity(sched, sev, fmt, args);
     }
+    // P1-5: the b/o/h variants change the default radix of unformatted args.
+    let radix = sched.st.radixes.get(&sid).copied();
     match which {
         SysTaskId::Display => {
-            let mut s = format_args_str(sched, fmt, args);
+            let mut s = format_args_str(sched, fmt, args, radix);
             s.push('\n');
             write_out(sched.st, &s);
             Ctl::Continue
         }
         SysTaskId::Write => {
-            let s = format_args_str(sched, fmt, args);
+            let s = format_args_str(sched, fmt, args, radix);
             write_out(sched.st, &s);
             Ctl::Continue
         }
@@ -55,6 +57,7 @@ pub(crate) fn dispatch(
                 fmt,
                 args: args.to_vec(),
                 time_mult,
+                radix,
             });
             Ctl::Continue
         }
@@ -69,6 +72,7 @@ pub(crate) fn dispatch(
                     fmt,
                     args: args.to_vec(),
                     time_mult,
+                    radix,
                 },
                 last_vals: None,
                 enabled: true,
@@ -129,7 +133,7 @@ fn run_severity(
         K::Warning => (Severity::Warning, MsgCode::RunUserWarning),
         K::Info => (Severity::Info, MsgCode::RunUserInfo),
     };
-    let mut message = format_args_str(sched, fmt, args);
+    let mut message = format_args_str(sched, fmt, args, None);
     if message.is_empty() {
         message = code.title().to_string();
     }
@@ -372,7 +376,12 @@ fn const_string(st: &SimState, cid: u32) -> String {
 
 // ── $display format engine (4-state aware) ─────────────────────────────────
 
-pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32]) -> String {
+pub(crate) fn format_args_str(
+    sched: &Scheduler,
+    fmt: Option<u32>,
+    args: &[u32],
+    radix: Option<u8>,
+) -> String {
     let mut out = String::new();
     let mut argi = 0usize;
     if let Some(fmt_eid) = fmt {
@@ -393,7 +402,7 @@ pub(crate) fn format_args_str(sched: &Scheduler, fmt: Option<u32>, args: &[u32])
         if let Some(text) = str_const_of_expr(sched.st, e) {
             render_template(sched, &text, args, &mut argi, &mut out);
         } else {
-            push_default_radix(&sched.eval(e), &mut out);
+            push_default_radix(&sched.eval(e), &mut out, radix);
         }
     }
     out
@@ -409,19 +418,28 @@ fn str_const_of_expr(st: &SimState, eid: u32) -> Option<String> {
     None
 }
 
-/// Default-radix rendering of an argument with no format spec: a `%d` field
-/// padded to the operand's default decimal width (`%g` for a real).
-fn push_default_radix(v: &Value, out: &mut String) {
+/// Default-radix rendering of an argument with no format spec: a padded `%d`
+/// field (`%g` for a real) — or, under a b/o/h task variant (P1-5), the padded
+/// `%b`/`%o`/`%h` form (same `fmt_radix` the explicit specs use; iverilog joins
+/// these fields with no separator).
+fn push_default_radix(v: &Value, out: &mut String, radix: Option<u8>) {
     if v.is_real {
         out.push_str(&fmt_real(v, 'g', None, None));
         return;
     }
-    let s = fmt_dec(v);
-    let fw = dec_field_width(v.width);
-    if s.len() < fw {
-        out.push_str(&" ".repeat(fw - s.len()));
+    match radix {
+        Some(2) => out.push_str(&fmt_radix(v, 1, false)),
+        Some(8) => out.push_str(&fmt_radix(v, 3, false)),
+        Some(16) => out.push_str(&fmt_radix(v, 4, false)),
+        _ => {
+            let s = fmt_dec(v);
+            let fw = dec_field_width(v.width);
+            if s.len() < fw {
+                out.push_str(&" ".repeat(fw - s.len()));
+            }
+            out.push_str(&s);
+        }
     }
-    out.push_str(&s);
 }
 
 /// iverilog-style `%v` strength form of bit 0: St0/St1/StX/HiZ (vitamin has no

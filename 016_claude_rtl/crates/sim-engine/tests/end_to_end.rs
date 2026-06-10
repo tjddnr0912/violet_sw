@@ -64,7 +64,7 @@ fn build_timescaled(src: &str) -> (sim_ir::SimIr, SimOpts) {
         .collect();
     let rt = hdl_preprocess::resolve_module_timescales(&modules, &pp.timescales);
     let sink = DiagSink::default();
-    let (ir, fork_modes, _names, proc_multipliers, severities) =
+    let (ir, sc) =
         elaborate::elaborate_with_timescale(&su, &sink, &rt.unit_exp, rt.global_prec_exp);
     let hard: Vec<String> = sink
         .0
@@ -75,9 +75,10 @@ fn build_timescaled(src: &str) -> (sim_ir::SimIr, SimOpts) {
         .collect();
     assert!(hard.is_empty(), "elaborate errors: {hard:?}");
     let opts = SimOpts {
-        fork_modes,
-        proc_multipliers,
-        severities,
+        fork_modes: sc.fork_modes,
+        proc_multipliers: sc.proc_multipliers,
+        severities: sc.severities,
+        radixes: sc.radixes,
         ..SimOpts::default()
     };
     (ir.expect("elaborate returned None"), opts)
