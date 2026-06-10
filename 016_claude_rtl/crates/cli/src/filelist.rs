@@ -33,7 +33,17 @@ const MAX_DEPTH: u32 = 256;
 fn takes_value(flag: &str) -> bool {
     matches!(
         flag,
-        "-o" | "--out" | "--threads" | "-j" | "--timeout" | "-D" | "--define" | "-I" | "--incdir"
+        "-o" | "--out"
+            | "--threads"
+            | "-j"
+            | "--timeout"
+            | "-D"
+            | "--define"
+            | "-I"
+            | "--incdir"
+            | "-l"
+            | "--log"
+            | "--verbosity"
     )
 }
 

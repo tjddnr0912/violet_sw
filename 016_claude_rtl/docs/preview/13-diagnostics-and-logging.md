@@ -216,8 +216,15 @@ span/caret은 diag, side-table 룩업·include/macro/-f 스택·sim_time·instan
 
 > **구현 상태:** **`-Wno-<CODE>` / `-Werror[=<CODE>]`는 구현됨**(2026-06-10, `vita-log`
 > `GatePolicy`/`GatedSink` — 전 applet, 알 수 없는 mnemonic은 E0001 exit 3, Error/Fatal
-> spine은 억제 불가, 승격 실패 시 산출물 미생성). 나머지 표면(`-q`/`-v`/`-Wwarn=`/
-> `--suppress=`/`--error-limit`/`--log` 계열)은 Phase-1.x 미래형 — `vita --help`가 진실 공급원.
+> spine은 억제 불가, 승격 실패 시 산출물 미생성). **2단계도 구현됨**(2026-06-10, 전 applet):
+> `-q`/`-v`/`-vv`/`--verbosity=<0..3>`(`-q`는 터미널의 `$display`+progress 복사만 억제 — 진단
+> spine·`--log` 복사는 무관; `-v`는 유효 files/defines/incdirs echo; `-vv`는 표면만 예약 = 현재
+> `-v`와 동일 렌더), `--log <file>`/`-l`(단일 writer tee: RTL+진단+progress를 방출 순서대로
+> 한 파일에, `-`=stderr, 기본 overwrite)·`--log-append`, **counts epilogue**(`errors=E
+> warnings=W notes=N`를 stage 끝 stderr에 항상 — Fatal은 errors에 합산, notes=Info+Note,
+> post-gate 카운트라 `-Werror` 승격이 errors로 이동; `--help`/`--version`/usage-error엔 없음).
+> 잔여 미래형: `-Wwarn=`/`--suppress=`/`--error-limit`/자동 `<stage>.log`/`--log-dir`/
+> `--no-log`/색상 계열/`--diagnostics-json` — `vita --help`가 진실 공급원.
 
 전부 bucket C다(RULE API: PreprocInputs/ElabInputs에 필드가 없어 **구조적으로 해시 진입 불가** —
 `--log`나 `-Wall`이 `.vu`/`.velab`를 무효화하면 안 됨):

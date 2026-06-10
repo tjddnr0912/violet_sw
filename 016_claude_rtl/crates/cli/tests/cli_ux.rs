@@ -597,3 +597,130 @@ fn single_value_knob_override_warns_last_wins() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ── Phase-1.x: vita-log stage 2 — `--log` tee / `-q`/`-v` / counts epilogue ──
+
+/// A design that prints RTL output AND trips W1017 (no `timescale).
+fn talky_design(name: &str) -> std::path::PathBuf {
+    write_tmp(
+        name,
+        "module t; initial begin $display(\"hello-rtl\"); $finish; end endmodule\n",
+    )
+}
+
+fn tmp_log(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("vita_ux_{}_{name}", std::process::id()))
+}
+
+#[test]
+fn log_tee_captures_display_diags_and_progress() {
+    let src = talky_design("tee.sv");
+    let log = tmp_log("tee.log");
+    let out = vita(&[src.to_str().unwrap(), "--log", log.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&src);
+    let transcript = std::fs::read_to_string(&log).expect("log file must exist");
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(out.status.code(), Some(0));
+    // terminal keeps the $display transcript…
+    assert!(String::from_utf8_lossy(&out.stdout).contains("hello-rtl"));
+    // …and the log holds the FULL interleaved transcript: RTL output,
+    // diagnostics (same rendering as stderr), and progress lines.
+    assert!(transcript.contains("hello-rtl"), "log:\n{transcript}");
+    assert!(transcript.contains("VITA-W1017"), "log:\n{transcript}");
+    assert!(
+        transcript.contains("simulation ended"),
+        "log:\n{transcript}"
+    );
+}
+
+#[test]
+fn quiet_hides_terminal_rtl_output_but_not_log_or_diags() {
+    let src = talky_design("quiet.sv");
+    let log = tmp_log("quiet.log");
+    let out = vita(&[src.to_str().unwrap(), "-q", "--log", log.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&src);
+    let transcript = std::fs::read_to_string(&log).expect("log file must exist");
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(out.status.code(), Some(0));
+    // -q silences the TERMINAL copy of $display/progress…
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("hello-rtl"));
+    // …but neither the diagnostics spine nor the log copy.
+    assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-W1017"));
+    assert!(transcript.contains("hello-rtl"), "log:\n{transcript}");
+}
+
+#[test]
+fn verbose_echoes_effective_inputs() {
+    let src = talky_design("verb.sv");
+    let out = vita(&[
+        src.to_str().unwrap(),
+        "-v",
+        "-D",
+        "FOO=1",
+        "-I",
+        "somewhere",
+    ]);
+    let _ = std::fs::remove_file(&src);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "got:\n{stdout}");
+    assert!(stdout.contains("defines: FOO=1"), "got:\n{stdout}");
+    assert!(stdout.contains("incdirs: somewhere"), "got:\n{stdout}");
+}
+
+#[test]
+fn log_append_accumulates_overwrite_resets() {
+    let src = talky_design("app.sv");
+    let log = tmp_log("app.log");
+    let s = src.to_str().unwrap().to_owned();
+    let l = log.to_str().unwrap().to_owned();
+    vita(&[&s, "--log", &l]);
+    vita(&[&s, "--log", &l, "--log-append"]);
+    let appended = std::fs::read_to_string(&log).unwrap();
+    vita(&[&s, "--log", &l]); // no append ⇒ overwrite
+    let fresh = std::fs::read_to_string(&log).unwrap();
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(
+        appended.matches("hello-rtl").count(),
+        2,
+        "append must accumulate:\n{appended}"
+    );
+    assert_eq!(
+        fresh.matches("hello-rtl").count(),
+        1,
+        "default must overwrite:\n{fresh}"
+    );
+}
+
+#[test]
+fn counts_epilogue_always_printed() {
+    let src = talky_design("epi.sv");
+    let plain = vita(&[src.to_str().unwrap()]);
+    let promoted = vita(&[src.to_str().unwrap(), "-Werror"]);
+    let _ = std::fs::remove_file(&src);
+    // W1017 fires once: plain run counts it as a warning…
+    assert!(
+        String::from_utf8_lossy(&plain.stderr).contains("errors=0 warnings=1 notes=0"),
+        "got:\n{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    // …and -Werror promotion moves it into the error bucket (post-gate counts).
+    assert!(
+        String::from_utf8_lossy(&promoted.stderr).contains("errors=1 warnings=0 notes=0"),
+        "got:\n{}",
+        String::from_utf8_lossy(&promoted.stderr)
+    );
+}
+
+#[test]
+fn log_open_failure_is_cli_error() {
+    let src = talky_design("badlog.sv");
+    let out = vita(&[
+        src.to_str().unwrap(),
+        "--log",
+        "/definitely/not/a/dir/x.log",
+    ]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(out.status.code(), Some(3), "unopenable log = usage error");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot open log"));
+}

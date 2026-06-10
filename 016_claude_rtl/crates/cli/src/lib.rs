@@ -17,7 +17,8 @@
 //! (golden `SimIr` frame + non-golden `ForkModeTable` trailer), and simulate it,
 //! with a `schema_hash` staleness gate between every stage.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::io::Write;
 
 use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity, SourceLoc};
 use sim_engine::{ExitClass, FinishReason, SimOpts};
@@ -58,6 +59,13 @@ pub struct VitaOpts {
     /// Predefined object-like macros (`-D NAME[=VAL]` / `+define+N=V+M`).
     /// Name-wise last-wins is applied by the PREPROCESSOR seed order.
     pub defines: Vec<(String, String)>,
+    /// Output verbosity (`-q`=0 / default 1 / `-v`=2 / `-vv`=3). `None` ⇒ 1.
+    /// Pure sink policy — never hashed into artifacts (doc-13 bucket C).
+    pub verbosity: Option<u8>,
+    /// `--log <file>` tee transcript path (`-` = stderr). `None` ⇒ no tee.
+    pub log: Option<String>,
+    /// `--log-append`: accumulate instead of the default overwrite.
+    pub log_append: bool,
 }
 
 impl VitaOpts {
@@ -110,20 +118,41 @@ fn resolve_threads(flag: Option<u32>) -> u32 {
 ///
 /// - `Diagnostic` → stderr as `<severity>[<CODE>]: <message>` (+ `file:line:col`
 ///   when a `location` is present).
-/// - `Progress` / `RtlOutput` → stdout (the `$display` transcript + run summary).
+/// - `Progress` / `RtlOutput` → stdout (the `$display` transcript + run summary),
+///   suppressed on the TERMINAL at verbosity 0 (`-q`) — diagnostics never are.
+/// - With a `--log` writer attached, EVERY event line is teed to that single
+///   writer in emission order (doc-13 단일 writer tee: terminal copy and file
+///   copy consume the SAME stream so they cannot drift; `-q` only affects the
+///   terminal copy).
 ///
-/// Error/Fatal diagnostics bump an interior-mutable counter so the driver can
-/// decide the exit code (the trait's `emit(&self)` forbids `&mut`).
+/// Severity counters are interior-mutable so the driver can decide the exit
+/// code and print the doc-13 counts epilogue (the trait's `emit(&self)`
+/// forbids `&mut`).
 pub struct StderrSink {
     errors: Cell<u32>,
     fatals: Cell<u32>,
+    warnings: Cell<u32>,
+    notes: Cell<u32>,
+    /// 0 = quiet (`-q`), 1 = default, 2 = verbose (`-v`), 3 = trace (`-vv`,
+    /// currently rendering the same as 2 — reserved surface).
+    verbosity: u8,
+    log: Option<RefCell<Box<dyn Write>>>,
 }
 
 impl StderrSink {
     pub fn new() -> Self {
+        Self::with_output(1, None)
+    }
+
+    /// Sink with an explicit verbosity and an optional `--log` tee writer.
+    pub fn with_output(verbosity: u8, log: Option<Box<dyn Write>>) -> Self {
         StderrSink {
             errors: Cell::new(0),
             fatals: Cell::new(0),
+            warnings: Cell::new(0),
+            notes: Cell::new(0),
+            verbosity,
+            log: log.map(RefCell::new),
         }
     }
 
@@ -142,11 +171,37 @@ impl StderrSink {
         self.errors.get() > 0 || self.fatals.get() > 0
     }
 
+    /// Verbose mode (`-v` and up)?
+    pub fn verbose(&self) -> bool {
+        self.verbosity >= 2
+    }
+
+    fn tee(&self, line: &str) {
+        if let Some(w) = &self.log {
+            let _ = w.borrow_mut().write_all(line.as_bytes());
+        }
+    }
+
+    /// doc-13 counts summary epilogue (`errors=E warnings=W notes=N`) — the
+    /// unsuppressible end-of-stage spine. A `$fatal`/Fatal counts as an error
+    /// here (the run definitely failed); `notes` = Info + Note.
+    pub fn epilogue(&self) {
+        let line = format!(
+            "errors={} warnings={} notes={}",
+            self.errors.get() + self.fatals.get(),
+            self.warnings.get(),
+            self.notes.get()
+        );
+        eprintln!("{line}");
+        self.tee(&format!("{line}\n"));
+    }
+
     fn render_diagnostic(&self, d: &Diagnostic) {
         match d.severity {
             Severity::Error => self.errors.set(self.errors.get() + 1),
             Severity::Fatal => self.fatals.set(self.fatals.get() + 1),
-            _ => {}
+            Severity::Warning => self.warnings.set(self.warnings.get() + 1),
+            _ => self.notes.set(self.notes.get() + 1),
         }
         let head = format!(
             "{}[{}]: {}",
@@ -154,10 +209,12 @@ impl StderrSink {
             d.code.code_num(),
             d.message
         );
-        match &d.location {
-            Some(loc) => eprintln!("{}:{}:{}: {}", loc.file, loc.line, loc.col, head),
-            None => eprintln!("{head}"),
-        }
+        let line = match &d.location {
+            Some(loc) => format!("{}:{}:{}: {}", loc.file, loc.line, loc.col, head),
+            None => head,
+        };
+        eprintln!("{line}");
+        self.tee(&format!("{line}\n"));
     }
 }
 
@@ -171,9 +228,75 @@ impl LogSink for StderrSink {
     fn emit(&self, event: LogEvent) {
         match event {
             LogEvent::Diagnostic(d) => self.render_diagnostic(&d),
-            LogEvent::Progress(p) => println!("{}", p.message),
-            LogEvent::RtlOutput(t) => print!("{}", t.text),
+            LogEvent::Progress(p) => {
+                if self.verbosity >= 1 {
+                    println!("{}", p.message);
+                }
+                self.tee(&format!("{}\n", p.message));
+            }
+            LogEvent::RtlOutput(t) => {
+                if self.verbosity >= 1 {
+                    print!("{}", t.text);
+                }
+                self.tee(&t.text);
+            }
         }
+    }
+}
+
+/// Open the `--log` tee writer a `VitaOpts` describes (`-` = stderr, vvp `-l -`
+/// parity; default overwrite, `--log-append` accumulates). An unopenable path
+/// is a loud CLI/usage error — never a silent no-log run.
+fn open_log(opts: &VitaOpts) -> Result<Option<Box<dyn Write>>, i32> {
+    let Some(path) = &opts.log else {
+        return Ok(None);
+    };
+    if path == "-" {
+        return Ok(Some(Box::new(std::io::stderr())));
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true).write(true);
+    if opts.log_append {
+        o.append(true);
+    } else {
+        o.truncate(true);
+    }
+    match o.open(path) {
+        Ok(f) => Ok(Some(Box::new(std::io::LineWriter::new(f)))),
+        Err(e) => {
+            eprintln!(
+                "error[{}]: cannot open log '{path}': {e}",
+                MsgCode::CliBadFlag.code_num()
+            );
+            Err(EXIT_CLI_ERROR)
+        }
+    }
+}
+
+/// `-v` effective-inputs echo (doc-13): the define/incdir sets the run will
+/// actually use, as Progress events (⇒ terminal stdout + `--log` tee).
+fn echo_effective_inputs(sink: &dyn LogSink, opts: &VitaOpts) {
+    if !opts.defines.is_empty() {
+        let s = opts
+            .defines
+            .iter()
+            .map(|(n, v)| {
+                if v.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{n}={v}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        sink.emit(LogEvent::Progress(diag::ProgressEvent {
+            message: format!("defines: {s}"),
+        }));
+    }
+    if !opts.incdirs.is_empty() {
+        sink.emit(LogEvent::Progress(diag::ProgressEvent {
+            message: format!("incdirs: {}", opts.incdirs.join(" ")),
+        }));
     }
 }
 
@@ -388,11 +511,31 @@ pub fn timescale_unit_string(exp: i8) -> String {
 /// code. This is the unit-test entry point — it never reads argv or files and
 /// never calls `std::process::exit`.
 pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
-    let inner = StderrSink::new();
+    let log = match open_log(opts) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let inner = StderrSink::with_output(opts.verbosity.unwrap_or(1), log);
     let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
+    if inner.verbose() {
+        echo_effective_inputs(&sink, opts);
+    }
+    let code = run_vita_str_gated(file, text, opts, &inner, &sink);
+    // doc-13: the counts summary epilogue is the unsuppressible end-of-stage
+    // spine — printed on EVERY pipeline run (not on --help/--version/usage).
+    inner.epilogue();
+    code
+}
 
+fn run_vita_str_gated(
+    file: &str,
+    text: &str,
+    opts: &VitaOpts,
+    inner: &StderrSink,
+    sink: &vita_log::GatedSink,
+) -> i32 {
     // ── preprocess → lex → parse (shared front-end) ─────────────────────────
-    let Some((unit, rt)) = frontend_text_to_unit_pre(file, text, &sink, &pre_opts_of(opts)) else {
+    let Some((unit, rt)) = frontend_text_to_unit_pre(file, text, sink, &pre_opts_of(opts)) else {
         return EXIT_USER_ERROR;
     };
 
@@ -402,7 +545,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     // fork-join, net-name, and per-process time-multiplier side tables threaded into
     // `SimOpts`; the timescale env scales `#delay`/`$time`/`$realtime`.
     let (ir, sc) =
-        elaborate::elaborate_with_timescale(&unit, &sink, &rt.unit_exp, rt.global_prec_exp);
+        elaborate::elaborate_with_timescale(&unit, sink, &rt.unit_exp, rt.global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR;
     };
@@ -418,7 +561,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
-    let result = sim_engine::simulate(&ir, &sink, sim_opts);
+    let result = sim_engine::simulate(&ir, sink, sim_opts);
     let code = sim_exit_code(&result);
     // A `-Werror`-promoted warning is a real Error in the post-gate stream:
     // doc-13 class 1 ("승격-warning 실패") — flip an otherwise-clean exit.
@@ -580,6 +723,9 @@ pub fn run(argv: &[String]) -> i32 {
                 gate: io.gate,
                 incdirs: io.incdirs,
                 defines: io.defines,
+                verbosity: io.verbosity,
+                log: io.log,
+                log_append: io.log_append,
             };
             run_vita(&io.pos, &opts)
         }
@@ -688,6 +834,11 @@ fn print_help(applet: &str) {
          --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
          -Wno-<CODE>           suppress a Warning/Info diagnostic (mnemonic, doc-15)\n  \
          -Werror[=<CODE>]      promote warnings (all, or one code) to errors\n  \
+         -q, --quiet           silence terminal $display/progress (diags + --log keep all)\n  \
+         -v / -vv              verbose: echo effective files/defines/incdirs (-vv reserved)\n  \
+         --verbosity <0..3>    numeric form of -q/-v/-vv\n  \
+         -l, --log <FILE>      tee the full transcript (RTL+diags+progress) to FILE ('-'=stderr)\n  \
+         --log-append          accumulate into --log instead of overwriting\n  \
          -h, --help            print help\n  -V, --version         print version"
     );
 }
@@ -804,9 +955,30 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
         );
         return EXIT_CLI_ERROR;
     }
-    let inner = StderrSink::new();
+    let log = match open_log(opts) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let inner = StderrSink::with_output(opts.verbosity.unwrap_or(1), log);
     let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
+    if inner.verbose() {
+        sink.emit(LogEvent::Progress(diag::ProgressEvent {
+            message: format!("files: {}", sources.join(" ")),
+        }));
+        echo_effective_inputs(&sink, opts);
+    }
+    let code = run_vcmp_gated(sources, out, opts, &inner, &sink);
+    inner.epilogue();
+    code
+}
 
+fn run_vcmp_gated(
+    sources: &[String],
+    out: &str,
+    opts: &VitaOpts,
+    inner: &StderrSink,
+    sink: &vita_log::GatedSink,
+) -> i32 {
     // read+concat (mirrors run_vita): read error → exit 3.
     let mut text = String::new();
     for path in sources {
@@ -829,7 +1001,7 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
     let file = sources[0].as_str();
 
     // preprocess → lex → parse through the SAME shared front-end the one-shot uses.
-    let Some((unit, rt)) = frontend_text_to_unit_pre(file, &text, &sink, &pre_opts_of(opts)) else {
+    let Some((unit, rt)) = frontend_text_to_unit_pre(file, &text, sink, &pre_opts_of(opts)) else {
         return EXIT_USER_ERROR;
     };
 
@@ -867,9 +1039,29 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
 /// body(`postcard(SimIr) ++ postcard(ForkModeTable)`).
 /// Exit: 0 ok / 1 gate-reject|elab-fail|corrupt-body / 3 missing-file|write-error.
 pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
-    let inner = StderrSink::new();
+    let log = match open_log(opts) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let inner = StderrSink::with_output(opts.verbosity.unwrap_or(1), log);
     let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
+    if inner.verbose() {
+        sink.emit(LogEvent::Progress(diag::ProgressEvent {
+            message: format!("in: {vu_path}  out: {out}"),
+        }));
+    }
+    let code = run_velab_gated(vu_path, out, opts, &inner, &sink);
+    inner.epilogue();
+    code
+}
 
+fn run_velab_gated(
+    vu_path: &str,
+    out: &str,
+    _opts: &VitaOpts,
+    inner: &StderrSink,
+    sink: &vita_log::GatedSink,
+) -> i32 {
     let bytes = match read_artifact_bytes(vu_path) {
         Ok(b) => b,
         Err(code) => return code,
@@ -878,12 +1070,12 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     // header-only decode (bad magic/header → E-ART-FORMAT-MISMATCH)
     let (header, body) = match vita_artifact::read_vu(&bytes) {
         Ok(x) => x,
-        Err(e) => return emit_artifact_error(&sink, &e),
+        Err(e) => return emit_artifact_error(sink, &e),
     };
     // staleness gate: this `.vu` must match the hdl-ast shape THIS velab was built against.
     let tool = vita_artifact::ToolContext::new(vita_schema::schema_hash::<hdl_ast::SourceUnit>());
     if let Err(e) = vita_artifact::verify_header(&header, &tool) {
-        return emit_artifact_error(&sink, &e); // E-ART-SCHEMA-MISMATCH etc.
+        return emit_artifact_error(sink, &e); // E-ART-SCHEMA-MISMATCH etc.
     }
     // decode the SourceUnit frame, then the trailing timescale env (tolerant of an
     // older `.vu` with no env → the 1ns/1ns base).
@@ -891,7 +1083,7 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
         Ok(x) => x,
         Err(e) => {
             return emit_artifact_error(
-                &sink,
+                sink,
                 &vita_artifact::ArtifactError::format(&format!("undecodable .vu body: {e}")),
             )
         }
@@ -904,7 +1096,7 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
                 Ok(x) => x,
                 Err(e) => {
                     return emit_artifact_error(
-                        &sink,
+                        sink,
                         &vita_artifact::ArtifactError::format(&format!(
                             "undecodable .vu timescale trailer: {e}"
                         )),
@@ -914,7 +1106,7 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
         };
 
     // ── elaborate (with the staged timescale env) ──
-    let (ir, sc) = elaborate::elaborate_with_timescale(&unit, &sink, &unit_exp, global_prec_exp);
+    let (ir, sc) = elaborate::elaborate_with_timescale(&unit, sink, &unit_exp, global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR; // elab error already emitted
     };
@@ -967,9 +1159,28 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
 /// doc-13 sim exit code.
 /// Exit: 0 clean / 1 gate-reject|corrupt-body|runtime-fatal / 3 missing-file.
 pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
-    let inner = StderrSink::new();
+    let log = match open_log(opts) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let inner = StderrSink::with_output(opts.verbosity.unwrap_or(1), log);
     let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
+    if inner.verbose() {
+        sink.emit(LogEvent::Progress(diag::ProgressEvent {
+            message: format!("in: {velab_path}"),
+        }));
+    }
+    let code = run_vrun_gated(velab_path, opts, &inner, &sink);
+    inner.epilogue();
+    code
+}
 
+fn run_vrun_gated(
+    velab_path: &str,
+    opts: &VitaOpts,
+    inner: &StderrSink,
+    sink: &vita_log::GatedSink,
+) -> i32 {
     let bytes = match read_artifact_bytes(velab_path) {
         Ok(b) => b,
         Err(code) => return code,
@@ -977,11 +1188,11 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
 
     let (header, body) = match vita_artifact::read_velab(&bytes) {
         Ok(x) => x,
-        Err(e) => return emit_artifact_error(&sink, &e), // bad magic → E-ART-FORMAT-MISMATCH
+        Err(e) => return emit_artifact_error(sink, &e), // bad magic → E-ART-FORMAT-MISMATCH
     };
     let tool = vita_artifact::ToolContext::current(); // SimIr-flavored
     if let Err(e) = vita_artifact::verify_header(&header, &tool) {
-        return emit_artifact_error(&sink, &e); // schema/version → E-ART-SCHEMA-MISMATCH / E-ART-VERSION-GATE
+        return emit_artifact_error(sink, &e); // schema/version → E-ART-SCHEMA-MISMATCH / E-ART-VERSION-GATE
     }
 
     // split the golden SimIr frame from the fork trailer.
@@ -989,7 +1200,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
         Ok(x) => x,
         Err(e) => {
             return emit_artifact_error(
-                &sink,
+                sink,
                 &vita_artifact::ArtifactError::format(&format!(
                     "undecodable .velab SimIr body: {e}"
                 )),
@@ -1001,7 +1212,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
-                    &sink,
+                    sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab fork trailer: {e}"
                     )),
@@ -1017,7 +1228,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
-                    &sink,
+                    sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab name trailer: {e}"
                     )),
@@ -1035,7 +1246,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
-                    &sink,
+                    sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab timescale trailer: {e}"
                     )),
@@ -1052,7 +1263,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
-                    &sink,
+                    sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab severity trailer: {e}"
                     )),
@@ -1068,7 +1279,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
-                    &sink,
+                    sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab radix trailer: {e}"
                     )),
@@ -1084,7 +1295,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
-                    &sink,
+                    sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab scope trailer: {e}"
                     )),
@@ -1104,7 +1315,7 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
-    let result = sim_engine::simulate(&ir, &sink, sim_opts);
+    let result = sim_engine::simulate(&ir, sink, sim_opts);
     let code = sim_exit_code(&result);
     if code == EXIT_OK && inner.had_error_or_fatal() {
         return EXIT_USER_ERROR; // `-Werror`-promoted warning (doc-13 class 1)
@@ -1124,6 +1335,9 @@ struct IoArgs {
     gate: vita_log::GatePolicy,
     incdirs: Vec<String>,
     defines: Vec<(String, String)>,
+    verbosity: Option<u8>,
+    log: Option<String>,
+    log_append: bool,
 }
 
 /// W-FLIST-OVERRIDE (always-logged): a single-value knob set twice — proceed
@@ -1143,6 +1357,9 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut gate = vita_log::GatePolicy::default();
     let mut incdirs: Vec<String> = Vec::new();
     let mut defines: Vec<(String, String)> = Vec::new();
+    let mut verbosity: Option<u8> = None;
+    let mut log: Option<String> = None;
+    let mut log_append = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1216,6 +1433,50 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                 incdirs.push(v.clone());
                 i += 2;
             }
+            // vita-log stage 2: verbosity + transcript tee (doc-13 bucket C —
+            // pure sink policy, never hashed into artifacts).
+            "-q" | "--quiet" => {
+                verbosity = Some(0);
+                i += 1;
+            }
+            "-v" => {
+                verbosity = Some(2);
+                i += 1;
+            }
+            "-vv" => {
+                verbosity = Some(3);
+                i += 1;
+            }
+            "--verbosity" => {
+                let parsed = args.get(i + 1).and_then(|v| v.parse::<u8>().ok());
+                let Some(n) = parsed.filter(|&n| n <= 3) else {
+                    eprintln!(
+                        "error[{}]: '--verbosity' needs 0..=3",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                verbosity = Some(n);
+                i += 2;
+            }
+            "-l" | "--log" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '--log' needs a path ('-' = stderr)",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                if let Some(prev) = &log {
+                    warn_override("--log", prev, v);
+                }
+                log = Some(v.clone());
+                i += 2;
+            }
+            "--log-append" => {
+                log_append = true;
+                i += 1;
+            }
             s if s.starts_with("+define+") => {
                 // `+define+N=V+M[=…]` — '+'-joined multi-value (doc-14 §3.1).
                 for seg in s["+define+".len()..].split('+').filter(|t| !t.is_empty()) {
@@ -1262,6 +1523,9 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
         gate,
         incdirs,
         defines,
+        verbosity,
+        log,
+        log_append,
     })
 }
 
@@ -1303,6 +1567,9 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
             gate: io.gate,
             incdirs: io.incdirs,
             defines: io.defines,
+            verbosity: io.verbosity,
+            log: io.log,
+            log_append: io.log_append,
             ..VitaOpts::default()
         },
     )
@@ -1332,6 +1599,9 @@ fn dispatch_velab(args: &[String]) -> i32 {
         &out,
         &VitaOpts {
             gate: io.gate,
+            verbosity: io.verbosity,
+            log: io.log,
+            log_append: io.log_append,
             ..VitaOpts::default()
         },
     )
@@ -1364,6 +1634,9 @@ fn dispatch_vrun(args: &[String]) -> i32 {
         threads: io.threads,
         time_limit: io.timeout,
         gate: io.gate,
+        verbosity: io.verbosity,
+        log: io.log,
+        log_append: io.log_append,
         ..VitaOpts::default()
     };
     run_vrun(&io.pos[0], &opts)
