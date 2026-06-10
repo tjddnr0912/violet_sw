@@ -58,8 +58,10 @@
 
 - **OOB/미존재 read**: dyn/queue 범위 밖, assoc 미존재 키 → **원소-폭 X**(4-state) + 런타임
   warn(net당 1회 — 진단 폭주 방지). X/Z 인덱스 → 동일 (정적 배열 sentinel 모델 재사용).
-- **OOB write**: dyn array 범위 밖 → 무시+warn. queue `q[size]` 직접 write는 IEEE상 무시(append는
-  push로만). assoc write 미존재 키 → 원소 생성.
+- **OOB write**: dyn array 범위 밖 → 무시+warn. queue는 **`q[size()] = v`가 push_back 동등
+  (IEEE §7.10.1, 합법-무음·1개 성장)**, 그 너머만 무시+warn — 당초 "q[size] write 무시"는
+  iverilog 라이브 오라클(size 1→2 성장 확인)로 **구현 시 정정(2026-06-11)**. assoc write
+  미존재 키 → 원소 생성.
 - **`new[n]`**: 기존 원소 보존 없는 형(`d = new[n]`)은 전부 X로, 복사형 `new[n](d)`는 prefix 복사.
   **n이 X/Z → 빈 배열 + warn-once; n==0은 합법-무음**(IEEE §7.5.1 — 구현 시 정정, 2026-06-11).
   n > 1<<24(=elaborate MAX_ARRAY_LEN과 동일 캡 클래스) → **경고 후 클램프**(no silent caps).
@@ -92,7 +94,16 @@
    read=원소폭 X·write=무시(+W4020 once), **NBA-to-element는 같은 write_lvalue 깔때기라
    by-construction 라우팅 — 바운드는 APPLY 시점 크기 기준**(스케줄-적용 사이 resize는 IEEE
    미규정 — 결정적 규칙으로 핀), dirty 채널 비참여=설계 §4 그대로)
-   ④queue ⑤assoc ⑥front-end 일괄(.vu flip = (B는 완료)+(D)+(C) 문법).
+   **④queue ✅ 2026-06-11** — `DynObj::Queue{VecDeque}`; push=SysTask 디스패치(원소형 cast
+   §5.5, cap 초과=warn+drop), 인덱스 r/w는 3b 깔때기 공유(+`q[size()]`=append 합법-무음 —
+   §4 정정 참조), **pop=`StmtEffect::QPop` 문장-레벨 인터셉트**(side-effect는 WRITE phase —
+   P7a read-phase 순수성 유지; lvalue offsets는 pop 전 resolve로 핀): Kernel에
+   `k_queue_pop_rhs`/`k_queue_pop` 2메서드, **pop-rhs 바디는 `is_codegen_able` 제외**(VM은
+   interp fallback — 설계 §3 각주 그대로; teeth는 VM byte-parity 테스트로 검증), 그 외
+   배치(NBA rhs·중첩 식)의 pop은 eval 순수-arm에서 X+W4020(미-pop, ⑥이 loud-reject 예정),
+   pop SelfWidth=원소형(signed byte −1→int −1 / unsigned 255→255, iverilog 라이브),
+   `q[$]` desugar(`DynSize-1`) 시임 테스트 포함(빈 큐 → −1 → OOR 센티넬 → X+warn).
+   ⑤assoc ⑥front-end 일괄(.vu flip = (B는 완료)+(D)+(C) 문법).
    각 증분은 TDD + iverilog 라이브 오라클(§4의 warn 문구류는 hand-IEEE 핀).
 5. P9/native-eval: dyn 관련 Expr/Stmt·NBA-delay는 allow-list 제외로 시작(전부 interp) —
    P5 차분 게이트가 자동으로 안전망.

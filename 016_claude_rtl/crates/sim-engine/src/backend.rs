@@ -7,7 +7,9 @@
 
 use std::rc::Rc;
 
-use sim_ir::{BasicBlock, LvalChunk, Lvalue, SelKind, SimIr, Stmt, SysTaskId, Terminator};
+use sim_ir::{
+    BasicBlock, Expr, LvalChunk, Lvalue, SelKind, SimIr, Stmt, SysFuncId, SysTaskId, Terminator,
+};
 
 use crate::builtins::Ctl;
 use crate::exec::{Kernel, Step};
@@ -36,27 +38,44 @@ use crate::width::WidthTable;
 /// `Stmt::Disable` is excluded as well: a no-op today, but a Phase-2 control-flow
 /// change we will not silently bake into compiled code.
 ///
+/// A `BlockingAssign` whose rhs is a queue POP (v5 ④) is also excluded: the pop
+/// is side-effecting, so the interpreter intercepts it as a statement-level
+/// effect (`StmtEffect::QPop`) — the VM's `EvalForLval` funnel would X-poison
+/// instead of popping and silently diverge. (Queue PUSHES stay codegen-able:
+/// they are SysTasks riding the shared kernel dispatch.)
+///
 /// Anything not on the allow-list falls back to the interpreter, so an unknown or
 /// future terminator/statement variant is safe by default.
-pub(crate) fn is_codegen_able(stmts: &[Stmt], body: &[BasicBlock]) -> bool {
+pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock]) -> bool {
     body.iter().all(|block| {
         let term_ok = matches!(
             block.term,
             Terminator::Goto { .. } | Terminator::Branch { .. } | Terminator::Return
         );
         let stmts_ok = block.stmts.iter().all(|&sid| {
-            !matches!(
-                stmts[sid as usize],
-                // Disable: Phase-2 control flow we will not bake into compiled
-                // code. Force/Release: format_version-4 shape reserve — keep
-                // compiled bodies away until the semantics increment lands.
-                // NBA transport delay (v5): interp-only until increment (A)
-                // wires the value-carrying delayed event into the VM path.
-                Stmt::Disable { .. }
-                    | Stmt::Force { .. }
-                    | Stmt::Release { .. }
-                    | Stmt::NonblockingAssign { delay: Some(_), .. }
-            )
+            let pop_rhs = matches!(
+                &stmts[sid as usize],
+                Stmt::BlockingAssign { rhs, .. } if matches!(
+                    exprs.get(*rhs as usize),
+                    Some(Expr::SysFunc {
+                        which: SysFuncId::QPopBack | SysFuncId::QPopFront,
+                        ..
+                    })
+                )
+            );
+            !pop_rhs
+                && !matches!(
+                    stmts[sid as usize],
+                    // Disable: Phase-2 control flow we will not bake into compiled
+                    // code. Force/Release: format_version-4 shape reserve — keep
+                    // compiled bodies away until the semantics increment lands.
+                    // NBA transport delay (v5): interp-only until increment (A)
+                    // wires the value-carrying delayed event into the VM path.
+                    Stmt::Disable { .. }
+                        | Stmt::Force { .. }
+                        | Stmt::Release { .. }
+                        | Stmt::NonblockingAssign { delay: Some(_), .. }
+                )
         });
         term_ok && stmts_ok
     })
@@ -413,7 +432,7 @@ mod tests {
             block(vec![0], Terminator::Goto { target: 0 }),
             block(vec![0], Terminator::Return),
         ];
-        assert!(is_codegen_able(&a, &body));
+        assert!(is_codegen_able(&a, &[], &body));
     }
 
     #[test]
@@ -427,7 +446,7 @@ mod tests {
                 resume: 0,
             },
         )];
-        assert!(!is_codegen_able(&a, &body));
+        assert!(!is_codegen_able(&a, &[], &body));
     }
 
     #[test]
@@ -443,7 +462,7 @@ mod tests {
             WaitCause::Named { ev: 0 }, // the never-waking variant — must be excluded
         ] {
             let body = vec![block(vec![], Terminator::Wait { cond, resume: 0 })];
-            assert!(!is_codegen_able(&a, &body), "Wait must exclude");
+            assert!(!is_codegen_able(&a, &[], &body), "Wait must exclude");
         }
     }
 
@@ -458,7 +477,7 @@ mod tests {
                 resume_bb: 0,
             },
         )];
-        assert!(!is_codegen_able(&a, &fork));
+        assert!(!is_codegen_able(&a, &[], &fork));
         let call = vec![block(
             vec![],
             Terminator::Call {
@@ -466,7 +485,7 @@ mod tests {
                 ret_bb: 0,
             },
         )];
-        assert!(!is_codegen_able(&a, &call));
+        assert!(!is_codegen_able(&a, &[], &call));
     }
 
     #[test]
@@ -477,7 +496,43 @@ mod tests {
             block(vec![1], Terminator::Goto { target: 1 }),
             block(vec![0], Terminator::Return),
         ];
-        assert!(!is_codegen_able(&a, &body));
+        assert!(!is_codegen_able(&a, &[], &body));
+    }
+
+    /// v5 ④: a BlockingAssign whose rhs is a queue pop (side-effecting
+    /// SysFunc) is interpreter-only — the VM's `EvalForLval` funnel cannot pop
+    /// (pure READ phase), so compiling it would silently diverge. Queue PUSH
+    /// SysTask bodies stay codegen-able (shared kernel dispatch).
+    #[test]
+    fn queue_pop_rhs_is_not_codegen_able() {
+        for which in [SysFuncId::QPopBack, SysFuncId::QPopFront] {
+            let exprs = vec![
+                Expr::Signal { net: 0, word: None },
+                Expr::SysFunc {
+                    which,
+                    args: vec![0],
+                },
+            ];
+            let a = vec![Stmt::BlockingAssign {
+                lhs: Lvalue { chunks: vec![] },
+                rhs: 1,
+            }];
+            let body = vec![block(vec![0], Terminator::Return)];
+            assert!(
+                !is_codegen_able(&a, &exprs, &body),
+                "{which:?} must exclude"
+            );
+        }
+        let push = vec![Stmt::SysTask {
+            which: SysTaskId::QPushBack,
+            fmt: None,
+            args: vec![0, 0],
+        }];
+        let body = vec![block(vec![0], Terminator::Return)];
+        assert!(
+            is_codegen_able(&push, &[], &body),
+            "pushes stay codegen-able"
+        );
     }
 
     /// One suspend-bearing block anywhere disqualifies the whole body (the predicate
@@ -497,7 +552,7 @@ mod tests {
             ),
             block(vec![0], Terminator::Return),
         ];
-        assert!(!is_codegen_able(&a, &body));
+        assert!(!is_codegen_able(&a, &[], &body));
     }
 
     /// [C2] The compile pass maps blocks 1:1 (P16 debugger correspondence) and lowers
@@ -518,7 +573,7 @@ mod tests {
             block(vec![0], Terminator::Goto { target: 0 }),
             block(vec![0], Terminator::Return),
         ];
-        assert!(is_codegen_able(&a, &body));
+        assert!(is_codegen_able(&a, &[], &body));
         let cb = compile_body(&a, &body, None);
 
         // 1:1 block count + per-index terminator mapping.

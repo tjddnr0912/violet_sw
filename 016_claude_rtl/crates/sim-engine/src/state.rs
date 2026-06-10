@@ -275,7 +275,7 @@ impl<'a> SimState<'a> {
         // `self.ir` is a `&SimIr` field — copy the reference out so the immutable read
         // of the IR does not borrow `self` across the `self.vm_cache` write below.
         let ir: &SimIr = self.ir;
-        if !crate::backend::is_codegen_able(&ir.stmts, &ir.processes[tmpl].body) {
+        if !crate::backend::is_codegen_able(&ir.stmts, &ir.exprs, &ir.processes[tmpl].body) {
             self.vm_cache[tmpl] = VmSlot::NotCodegenable;
             return None;
         }
@@ -636,23 +636,33 @@ impl<'a> SimState<'a> {
     }
 }
 
+/// Shared element-count cap for dynamic storage (same hazard class as
+/// elaborate's `MAX_ARRAY_LEN`, P2-6): a runtime OOM from `new[huge]` or a
+/// runaway push loop is as silent-deadly as the t0 one. NO silent caps — every
+/// clamp/drop warns (W4020, once per net).
+pub(crate) const MAX_DYN_ELEMS: usize = 1 << 24;
+
 /// v5 (C): one dynamic-storage object. Engine-internal RUNTIME state — never
-/// serialized, never in the frozen IR. Queue/Assoc variants land with their
-/// increments (design doc 2026-06-10 §2).
+/// serialized, never in the frozen IR. The Assoc variant lands with its
+/// increment (design doc 2026-06-10 §2).
 #[derive(Debug, Clone)]
 pub enum DynObj {
     /// `int d[]` — element values, length set only by `new[n]`/`delete()`.
     DynArray { elems: Vec<Value> },
+    /// `int q[$]` — pushes/pops at both ends, `q[size] = v` appends (§7.10.1).
+    Queue {
+        elems: std::collections::VecDeque<Value>,
+    },
 }
 
 impl DynObj {
     pub fn len(&self) -> usize {
         match self {
             DynObj::DynArray { elems } => elems.len(),
+            DynObj::Queue { elems } => elems.len(),
         }
     }
-    /// Clippy pairing for `len` — also the `pop`-on-empty guard for the queue
-    /// increment (3b/④).
+    /// Clippy pairing for `len`.
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -694,6 +704,9 @@ impl<'a> SimState<'a> {
             Some(DynObj::DynArray { elems }) if (i as usize) < elems.len() => {
                 elems[i as usize].clone()
             }
+            Some(DynObj::Queue { elems }) if (i as usize) < elems.len() => {
+                elems[i as usize].clone()
+            }
             _ => {
                 self.dyn_warn_once_at(net, "dyn index out of range or X (read X)");
                 xs()
@@ -701,11 +714,14 @@ impl<'a> SimState<'a> {
         }
     }
 
-    /// v5 (C)-3b: indexed WRITE of a dyn handle. OOB / X-index / bit-select
-    /// within an element → IGNORED + warn-once (clamping or auto-grow would
-    /// silently corrupt). Returns false ALWAYS: dyn content changes do not
-    /// participate in the net dirty channel (design §4 — no sensitivity on
-    /// handles, no VCD records).
+    /// v5 (C)-3b/④: indexed WRITE of a dyn handle. Shared rules: X-index /
+    /// bit-select within an element → IGNORED + warn-once (clamping or
+    /// auto-grow would silently corrupt). Kind split (iverilog live):
+    /// dyn array — any OOB → IGNORED + warn; queue — `q[size] = v` is
+    /// push_back-equivalent (IEEE §7.10.1, legal and SILENT, grows by one),
+    /// beyond that → IGNORED + warn.
+    /// Returns false ALWAYS: dyn content changes do not participate in the net
+    /// dirty channel (design §4 — no sensitivity on handles, no VCD records).
     fn dyn_write(&mut self, c: &sim_ir::LvalChunk, raw_word: u32, piece: &Value) -> bool {
         let net = c.net;
         let w = self.ir.nets[net as usize].width.max(1);
@@ -713,9 +729,38 @@ impl<'a> SimState<'a> {
             self.dyn_warn_once_at(net, "unsupported dyn lvalue shape (write ignored)");
             return false;
         }
+        let i = raw_word as usize;
+        if self.ir.nets[net as usize].kind == NetKind::Queue {
+            // A missing entry IS the empty queue: the append lane must be
+            // reachable on a never-touched handle (`q[0] = v` creates it).
+            let DynObj::Queue { elems } =
+                self.dyn_heap.entry(net).or_insert_with(|| DynObj::Queue {
+                    elems: std::collections::VecDeque::new(),
+                })
+            else {
+                return false; // kind-mismatched entry: unreachable by construction
+            };
+            let len = elems.len();
+            match i.cmp(&len) {
+                std::cmp::Ordering::Less => elems[i] = piece.clone().resize(w),
+                // The u32::MAX X-sentinel can never land in the Equal arm:
+                // len ≤ the cap, far below the sentinel.
+                std::cmp::Ordering::Equal if len < MAX_DYN_ELEMS => {
+                    elems.push_back(piece.clone().resize(w));
+                }
+                std::cmp::Ordering::Equal => self.dyn_warn_once_at(
+                    net,
+                    "queue exceeds the element cap (1<<24); write-append dropped",
+                ),
+                std::cmp::Ordering::Greater => {
+                    self.dyn_warn_once_at(net, "queue index beyond size or X (write ignored)");
+                }
+            }
+            return false;
+        }
         match self.dyn_heap.get_mut(&net) {
-            Some(DynObj::DynArray { elems }) if (raw_word as usize) < elems.len() => {
-                elems[raw_word as usize] = piece.clone().resize(w);
+            Some(DynObj::DynArray { elems }) if i < elems.len() => {
+                elems[i] = piece.clone().resize(w);
                 false
             }
             _ => {
@@ -729,14 +774,19 @@ impl<'a> SimState<'a> {
 impl<'a> NetReader for SimState<'a> {
     fn dyn_size(&self, net: u32) -> Option<u64> {
         // Only a dyn HANDLE answers; a missing heap entry IS the empty object
-        // (size 0 — IEEE: a declared dynamic array starts empty). Any other
-        // net kind returns None → the eval arm X-poisons defensively.
+        // (size 0 — IEEE: a declared dynamic array/queue starts empty). Any
+        // other net kind returns None → the eval arm X-poisons defensively.
         match self.ir.nets.get(net as usize).map(|n| n.kind) {
-            Some(sim_ir::NetKind::DynArray) => {
+            Some(sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue) => {
                 Some(self.dyn_heap.get(&net).map(|o| o.len() as u64).unwrap_or(0))
             }
             _ => None,
         }
+    }
+    fn dyn_warn(&self, net: u32, msg: &str) {
+        // The eval-side degradation hook (e.g. a pop outside its statement
+        // intercept) — same W4020 once-per-net latch as every other lane.
+        self.dyn_warn_once_at(net, msg);
     }
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
         // v5 (C)-3b: a dyn HANDLE never reads the flat store — its elements

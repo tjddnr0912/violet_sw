@@ -1473,6 +1473,65 @@ impl Kernel for Scheduler<'_, '_> {
     ) -> crate::builtins::Ctl {
         crate::builtins::dispatch(self, which, fmt, args, sid)
     }
+    fn k_queue_pop_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::QPopBack | sim_ir::SysFuncId::QPopFront,
+                ..
+            })
+        )
+    }
+    fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value {
+        // `k_queue_pop_rhs` guaranteed the shape; everything below is
+        // defensive against a hand-built IR — degrade, never panic.
+        let Some(sim_ir::Expr::SysFunc { which, args }) = self.st.ir.exprs.get(rhs as usize) else {
+            return Value::xs(1, false);
+        };
+        let front = matches!(which, sim_ir::SysFuncId::QPopFront);
+        let net = args
+            .first()
+            .and_then(|&a| match self.st.ir.exprs.get(a as usize) {
+                Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                _ => None,
+            });
+        let popped = match net {
+            Some(n) => {
+                let (w, signed) = self
+                    .st
+                    .ir
+                    .nets
+                    .get(n as usize)
+                    .map(|nv| (nv.width.max(1), nv.signed))
+                    .unwrap_or((1, false));
+                match self.st.dyn_heap.get_mut(&n) {
+                    Some(crate::state::DynObj::Queue { elems }) if !elems.is_empty() => {
+                        let v = if front {
+                            elems.pop_front()
+                        } else {
+                            elems.pop_back()
+                        };
+                        v.unwrap_or_else(|| Value::xs(w, signed))
+                    }
+                    _ => {
+                        // empty (a missing entry IS the empty queue) or a
+                        // non-queue object: element-width X + warn-once
+                        // (iverilog live: per-call warning + x; our once-latch
+                        // is the established anti-spam policy).
+                        self.st.dyn_warn_once_at(n, "pop on an empty queue (X)");
+                        Value::xs(w, signed)
+                    }
+                }
+            }
+            None => Value::xs(1, false),
+        };
+        // Context-size EXACTLY as `k_eval_for_lvalue` sizes an rhs: width =
+        // max(lhs width, pop self-width), extension driven by the pop's
+        // self-signedness (= the ELEMENT's, via the width table).
+        let lw = self.st.lvalue_width(lhs);
+        let sw = self.st.wt.get(rhs);
+        popped.resize_keep_sign(lw.max(sw.width), sw.signed)
+    }
 
     // ── terminator / control surface (C1) — pure forwarders ──
     fn k_truthy(&self, eid: u32) -> bool {

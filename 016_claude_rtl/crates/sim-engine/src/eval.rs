@@ -34,6 +34,11 @@ pub trait NetReader {
     fn dyn_size(&self, _net: u32) -> Option<u64> {
         None
     }
+    /// v5 ④: report a dyn-storage degradation observed DURING eval (e.g. a
+    /// queue pop in an unsupported placement). The engine latches it through
+    /// the W4020 warn-once funnel; the no-op default keeps non-engine readers
+    /// (native-eval test fakes) unchanged.
+    fn dyn_warn(&self, _net: u32, _msg: &str) {}
 }
 
 /// Evaluation context: the IR (consts/exprs), the net table, current time, and
@@ -814,12 +819,32 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     None => Value::xs(32, true),
                 }
             }
-            // v5 shape reserve: elaborate cannot emit these until their
-            // increments land. X-poison (never panic) if hit.
-            SysFuncId::QPopBack
-            | SysFuncId::QPopFront
-            | SysFuncId::AssocExists
-            | SysFuncId::AssocNum => Value::xs(32, false),
+            // v5 ④: queue pops are SIDE-EFFECTING — legal only as the DIRECT
+            // rhs of a blocking assign, where the executor intercepts them
+            // BEFORE eval (`StmtEffect::QPop`). Reaching THIS arm means an
+            // unsupported placement (NBA rhs, nested expr, $monitor arg, …):
+            // degrade LOUDLY to element-width X and do NOT pop — eval is the
+            // pure READ phase (P7a) and must never mutate the heap.
+            SysFuncId::QPopBack | SysFuncId::QPopFront => {
+                let net = args
+                    .first()
+                    .and_then(|&a| match self.ir.exprs.get(a as usize) {
+                        Some(Expr::Signal { net, word: None }) => Some(*net),
+                        _ => None,
+                    });
+                match net.and_then(|n| self.ir.nets.get(n as usize).map(|nv| (n, nv))) {
+                    Some((n, nv)) => {
+                        self.nets.dyn_warn(
+                            n,
+                            "queue pop outside a direct blocking assign (X; not popped)",
+                        );
+                        Value::xs(nv.width.max(1), nv.signed)
+                    }
+                    None => Value::xs(32, false),
+                }
+            }
+            // v5 shape reserve (assoc — increment ⑤): X-poison, never panic.
+            SysFuncId::AssocExists | SysFuncId::AssocNum => Value::xs(32, false),
             SysFuncId::Time => {
                 // $time: current time in the CALLING module's units, truncated to int
                 // (now is global-precision ticks; divide by the module multiplier M).

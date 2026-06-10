@@ -73,6 +73,17 @@ pub(crate) trait Kernel {
         args: &[u32],
         sid: u32,
     ) -> Ctl;
+    /// READ: is `rhs` (the WHOLE expression) a queue-pop SysFunc? Pops are
+    /// side-effecting, so the executor intercepts them as a statement-level
+    /// effect (`StmtEffect::QPop`) instead of routing them through the pure
+    /// eval funnel — the same family as `SysTask` ("its own read+write happen
+    /// inside dispatch"). Any OTHER placement of a pop X-poisons in eval.
+    fn k_queue_pop_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: pop one element (front/back per `rhs`'s SysFuncId) from the
+    /// queue behind `rhs`'s handle argument, context-sized to `lhs` exactly as
+    /// `k_eval_for_lvalue` sizes an rhs. Empty / non-queue → element-width X
+    /// + warn-once (v5 ④; iverilog live: warning + x).
+    fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value;
 
     // ── terminator / control surface (C1) ──
     // The control-flow ABI a compiled body needs beyond the statement surface above:
@@ -289,6 +300,16 @@ enum StmtEffect<'s> {
         value: Value,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is a queue pop (v5 ④): the pop MUTATES the
+    /// queue, so it runs in the WRITE phase (`k_queue_pop`), not the pure READ
+    /// phase. The lvalue offsets still resolve in the READ phase — i.e. BEFORE
+    /// the pop shrinks the queue (deterministic rule pinned in the design doc,
+    /// the same family as the NBA apply-time bounds rule).
+    QPop {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
@@ -329,6 +350,16 @@ enum StmtEffect<'s> {
 fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<'s> {
     match stmt {
         Stmt::BlockingAssign { lhs, rhs } => {
+            // v5 ④: a queue-pop rhs is a statement-level EFFECT (it mutates
+            // the queue) — defer the pop itself to the write phase.
+            if k.k_queue_pop_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::QPop {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
             let offsets = k.k_resolve_lvalue_offsets(lhs); // dynamic index NOW
             StmtEffect::Blocking {
@@ -380,6 +411,11 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
             value,
             offsets,
         } => {
+            k.k_write_lvalue(lhs, value, offsets.as_slice());
+            None
+        }
+        StmtEffect::QPop { lhs, rhs, offsets } => {
+            let value = k.k_queue_pop(lhs, rhs); // pop + context-size (WRITE phase)
             k.k_write_lvalue(lhs, value, offsets.as_slice());
             None
         }

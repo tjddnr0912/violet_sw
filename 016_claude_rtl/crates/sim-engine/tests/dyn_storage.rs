@@ -1,17 +1,20 @@
-//! v5 increment (C)-③: dynamic-array ENGINE layer (heap + new/size/delete).
+//! v5 increment (C)-③/④: dynamic-array + queue ENGINE layer.
 //!
 //! No front-end syntax exists yet (that is increment ⑥, batched with the .vu
 //! flip), so these tests HAND-BUILD a frozen `SimIr` and drive it through the
 //! public `simulate`/`simulate_capture` seam — exactly what elaborate will emit
 //! once the syntax lands. Semantics oracle: iverilog -g2012 probed live
-//! (`new[5]`→size 5, `delete()`→0, copy form `new[6](d)`→6).
+//! (③ `new[5]`→size 5, `delete()`→0, copy form `new[6](d)`→6; ④ push order
+//! 5/10/20, pop_back→20/pop_front→5, `q[size]=v` APPENDS (push_back equiv,
+//! IEEE §7.10.1 — silent), far-OOB write ignored+warn, empty pop warn+x,
+//! signed byte −1 pops sign-extended / unsigned 255 zero-extended).
 
 use std::cell::RefCell;
 
 use diag::{LogEvent, LogSink};
-use sim_engine::{simulate, simulate_capture, FinishReason, SimOpts};
+use sim_engine::{simulate, simulate_capture, Backend, FinishReason, SimOpts};
 use sim_ir::{
-    BasicBlock, BitPacked, ConstRepr, ConstVal, Expr, Instance, JoinState, NetKind, NetVar,
+    BasicBlock, BinOp, BitPacked, ConstRepr, ConstVal, Expr, Instance, JoinState, NetKind, NetVar,
     PortDir, ProcFlags, Process, RegionTag, SensKind, Sensitivity, SimIr, Stmt, SuspendState,
     SysFuncId, SysTaskId, Terminator, WakeCond, WakeKey,
 };
@@ -350,6 +353,519 @@ fn dyn_oob_and_x_index_read_is_x_with_one_warn() {
     let diags = sink.0.into_inner();
     let dyn_warns = diags.iter().filter(|d| d.contains("W4020")).count();
     assert_eq!(dyn_warns, 1, "OOB+X reads on ONE net warn once: {diags:?}");
+}
+
+// ───────────────────────── ④ queue engine layer ─────────────────────────
+
+/// Queue HANDLE net: element width/signedness, `array_len 0` (same handle
+/// shape as `dyn_handle`, kind = Queue).
+fn q_handle(width: u32, signed: bool) -> NetVar {
+    NetVar {
+        kind: NetKind::Queue,
+        width,
+        msb: width - 1,
+        lsb: 0,
+        signed,
+        array_len: 0,
+        dir: PortDir::Internal,
+        init: BitPacked {
+            val: vec![0],
+            unk: vec![if width >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            }],
+        },
+    }
+}
+
+/// Plain 32-bit variable net (pop destination).
+fn reg32(signed: bool) -> NetVar {
+    NetVar {
+        kind: NetKind::Reg,
+        width: 32,
+        msb: 31,
+        lsb: 0,
+        signed,
+        array_len: 0,
+        dir: PortDir::Internal,
+        init: BitPacked {
+            val: vec![0],
+            unk: vec![0xffff_ffff],
+        },
+    }
+}
+
+/// Whole-net blocking assign `net = rhs_eid`.
+fn assign(net: u32, rhs_eid: u32) -> Stmt {
+    Stmt::BlockingAssign {
+        lhs: sim_ir::Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: None,
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        },
+        rhs: rhs_eid,
+    }
+}
+
+/// push_back 10, push_back 20, push_front 5 → size 3, q = {5, 10, 20}.
+/// (Oracle: iverilog live — 3 / 5 / 10 / 20.)
+fn queue_push_ir() -> SimIr {
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (push 10)
+        Expr::Const { val: 0 },              // 1: 10
+        Expr::Signal { net: 0, word: None }, // 2: handle (push 20)
+        Expr::Const { val: 1 },              // 3: 20
+        Expr::Signal { net: 0, word: None }, // 4: handle (push_front 5)
+        Expr::Const { val: 2 },              // 5: 5
+        Expr::Signal { net: 0, word: None }, // 6: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![6],
+        }, // 7
+        Expr::Const { val: 3 },              // 8: idx 0
+        Expr::Signal {
+            net: 0,
+            word: Some(8),
+        }, // 9: q[0]
+        Expr::Const { val: 4 },              // 10: idx 1
+        Expr::Signal {
+            net: 0,
+            word: Some(10),
+        }, // 11: q[1]
+        Expr::Const { val: 5 },              // 12: idx 2
+        Expr::Signal {
+            net: 0,
+            word: Some(12),
+        }, // 13: q[2]
+    ];
+    let consts = vec![
+        int_const(10),
+        int_const(20),
+        int_const(5),
+        int_const(0),
+        int_const(1),
+        int_const(2),
+    ];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![2, 3]),
+        systask(SysTaskId::QPushFront, vec![4, 5]),
+        systask(SysTaskId::Display, vec![7]),
+        systask(SysTaskId::Display, vec![9]),
+        systask(SysTaskId::Display, vec![11]),
+        systask(SysTaskId::Display, vec![13]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    ir_of(vec![q_handle(32, false)], consts, exprs, stmts)
+}
+
+#[test]
+fn queue_push_index_size_roundtrip() {
+    let (res, out) = simulate_capture(&queue_push_ir(), SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         3\n         5\n        10\n        20\n");
+}
+
+/// pushes {5,10,20}, then x = pop_back (20), y = pop_front (5), size 1.
+/// (Oracle: iverilog live.)
+fn queue_pop_ir() -> SimIr {
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (push 10)
+        Expr::Const { val: 0 },              // 1: 10
+        Expr::Signal { net: 0, word: None }, // 2: handle (push 20)
+        Expr::Const { val: 1 },              // 3: 20
+        Expr::Signal { net: 0, word: None }, // 4: handle (push_front 5)
+        Expr::Const { val: 2 },              // 5: 5
+        Expr::Signal { net: 0, word: None }, // 6: handle (pop_back)
+        Expr::SysFunc {
+            which: SysFuncId::QPopBack,
+            args: vec![6],
+        }, // 7
+        Expr::Signal { net: 0, word: None }, // 8: handle (pop_front)
+        Expr::SysFunc {
+            which: SysFuncId::QPopFront,
+            args: vec![8],
+        }, // 9
+        Expr::Signal { net: 1, word: None }, // 10: x
+        Expr::Signal { net: 2, word: None }, // 11: y
+        Expr::Signal { net: 0, word: None }, // 12: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![12],
+        }, // 13
+    ];
+    let consts = vec![int_const(10), int_const(20), int_const(5)];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![2, 3]),
+        systask(SysTaskId::QPushFront, vec![4, 5]),
+        assign(1, 7), // x = q.pop_back()  → 20
+        assign(2, 9), // y = q.pop_front() → 5
+        systask(SysTaskId::Display, vec![10]),
+        systask(SysTaskId::Display, vec![11]),
+        systask(SysTaskId::Display, vec![13]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    ir_of(
+        vec![q_handle(32, false), reg32(false), reg32(false)],
+        consts,
+        exprs,
+        stmts,
+    )
+}
+
+#[test]
+fn queue_pop_back_front_values_and_size() {
+    let (res, out) = simulate_capture(&queue_pop_ir(), SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "        20\n         5\n         1\n");
+}
+
+#[test]
+fn queue_pop_empty_is_x_with_one_warn() {
+    // pop on a never-touched queue → element-width X + ONE W4020 (iverilog
+    // warns per call and prints x; our warn-once-per-net is the established
+    // anti-spam policy, the VALUE surface x is the oracle pin).
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (pop)
+        Expr::SysFunc {
+            which: SysFuncId::QPopBack,
+            args: vec![0],
+        }, // 1
+        Expr::Signal { net: 1, word: None }, // 2: x
+        Expr::Signal { net: 0, word: None }, // 3: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![3],
+        }, // 4
+    ];
+    let stmts = vec![
+        assign(1, 1), // x = q.pop_back() on empty
+        systask(SysTaskId::Display, vec![2]),
+        systask(SysTaskId::Display, vec![4]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(
+        vec![q_handle(32, false), reg32(false)],
+        vec![],
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         x\n         0\n");
+    let sink = DiagSink::default();
+    let res = simulate(&ir, &sink, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(warns, 1, "empty pop warns exactly once per net: {diags:?}");
+}
+
+#[test]
+fn queue_last_index_via_size_minus_one() {
+    // The ⑥ `q[$]` desugar contract: `q[DynSize(q)-1]` reads the LAST element.
+    // (Oracle: iverilog live — q[$] of {5,10,20} is 20; here {10,20} → 20.)
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (push 10)
+        Expr::Const { val: 0 },              // 1: 10
+        Expr::Signal { net: 0, word: None }, // 2: handle (push 20)
+        Expr::Const { val: 1 },              // 3: 20
+        Expr::Signal { net: 0, word: None }, // 4: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![4],
+        }, // 5
+        Expr::Const { val: 2 },              // 6: 1
+        Expr::Binary {
+            op: BinOp::Sub,
+            lhs: 5,
+            rhs: 6,
+        }, // 7: size-1
+        Expr::Signal {
+            net: 0,
+            word: Some(7),
+        }, // 8: q[$]
+    ];
+    let consts = vec![int_const(10), int_const(20), int_const(1)];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![2, 3]),
+        systask(SysTaskId::Display, vec![8]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![q_handle(32, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "        20\n");
+}
+
+#[test]
+fn queue_last_index_on_empty_is_x_with_warn() {
+    // `q[$]` of an EMPTY queue: DynSize-1 = -1 → the u32::MAX OOR sentinel →
+    // element-width X + warn-once (deterministic rule; read never grows).
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![0],
+        }, // 1
+        Expr::Const { val: 0 },              // 2: 1
+        Expr::Binary {
+            op: BinOp::Sub,
+            lhs: 1,
+            rhs: 2,
+        }, // 3: size-1 = -1
+        Expr::Signal {
+            net: 0,
+            word: Some(3),
+        }, // 4: q[$]
+    ];
+    let stmts = vec![
+        systask(SysTaskId::Display, vec![4]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![q_handle(32, false)], vec![int_const(1)], exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         x\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(warns, 1, "{diags:?}");
+}
+
+#[test]
+fn queue_write_at_size_appends_beyond_is_ignored() {
+    // IEEE §7.10.1 (iverilog live): a write to EXACTLY q[size] is push_back —
+    // legal, SILENT, grows by one. A write beyond that is ignored + warn.
+    // (Design-doc §4 originally said "q[size] write ignored" — corrected by
+    // the live oracle, same as the new[0] refinement.)
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (push 1)
+        Expr::Const { val: 0 },              // 1: 1
+        Expr::Signal { net: 0, word: None }, // 2: handle (push 2)
+        Expr::Const { val: 1 },              // 3: 2
+        Expr::Const { val: 2 },              // 4: idx 2 (== size → append)
+        Expr::Const { val: 3 },              // 5: 33
+        Expr::Const { val: 4 },              // 6: idx 9 (far OOB → ignore)
+        Expr::Const { val: 5 },              // 7: 99
+        Expr::Signal { net: 0, word: None }, // 8: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![8],
+        }, // 9
+        Expr::Signal {
+            net: 0,
+            word: Some(4),
+        }, // 10: q[2]
+    ];
+    let consts = vec![
+        int_const(1),
+        int_const(2),
+        int_const(2),
+        int_const(33),
+        int_const(9),
+        int_const(99),
+    ];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![2, 3]),
+        elem_write(0, 4, 5), // q[2] = 33 → append (size 3)
+        elem_write(0, 6, 7), // q[9] = 99 → ignored + warn
+        systask(SysTaskId::Display, vec![9]),
+        systask(SysTaskId::Display, vec![10]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![q_handle(32, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         3\n        33\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(warns, 1, "append is silent, far OOB warns once: {diags:?}");
+}
+
+#[test]
+fn queue_delete_empties() {
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (push 7)
+        Expr::Const { val: 0 },              // 1: 7
+        Expr::Signal { net: 0, word: None }, // 2: handle (push 8)
+        Expr::Const { val: 1 },              // 3: 8
+        Expr::Signal { net: 0, word: None }, // 4: handle (size #1)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![4],
+        }, // 5
+        Expr::Signal { net: 0, word: None }, // 6: handle (delete)
+        Expr::Signal { net: 0, word: None }, // 7: handle (size #2)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![7],
+        }, // 8
+    ];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![2, 3]),
+        systask(SysTaskId::Display, vec![5]),
+        systask(SysTaskId::DynDelete, vec![6]),
+        systask(SysTaskId::Display, vec![8]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(
+        vec![q_handle(32, false)],
+        vec![int_const(7), int_const(8)],
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         2\n         0\n");
+}
+
+#[test]
+fn queue_pop_extends_by_element_signedness() {
+    // 8-bit SIGNED queue: push −1 (stored 0xFF), push 300 (truncates → 44);
+    // pops into a 32-bit dst sign-extend → −1, 44. 8-bit UNSIGNED queue:
+    // push 255; pop zero-extends → 255 (NOT −1). Oracle: iverilog live.
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: sq (push −1)
+        Expr::Const { val: 0 },              // 1: −1
+        Expr::Signal { net: 0, word: None }, // 2: sq (push 300)
+        Expr::Const { val: 1 },              // 3: 300
+        Expr::Signal { net: 1, word: None }, // 4: uq (push 255)
+        Expr::Const { val: 2 },              // 5: 255
+        Expr::Signal { net: 0, word: None }, // 6: sq (pop #1)
+        Expr::SysFunc {
+            which: SysFuncId::QPopFront,
+            args: vec![6],
+        }, // 7
+        Expr::Signal { net: 0, word: None }, // 8: sq (pop #2)
+        Expr::SysFunc {
+            which: SysFuncId::QPopFront,
+            args: vec![8],
+        }, // 9
+        Expr::Signal { net: 1, word: None }, // 10: uq (pop)
+        Expr::SysFunc {
+            which: SysFuncId::QPopBack,
+            args: vec![10],
+        }, // 11
+        Expr::Signal { net: 2, word: None }, // 12: xs
+        Expr::Signal { net: 3, word: None }, // 13: xu
+    ];
+    let consts = vec![int_const(0xffff_ffff), int_const(300), int_const(255)];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![2, 3]),
+        systask(SysTaskId::QPushBack, vec![4, 5]),
+        assign(2, 7), // xs = sq.pop_front() → −1 (sign-extend)
+        systask(SysTaskId::Display, vec![12]),
+        assign(2, 9), // xs = sq.pop_front() → 44
+        systask(SysTaskId::Display, vec![12]),
+        assign(3, 11), // xu = uq.pop_back() → 255 (zero-extend)
+        systask(SysTaskId::Display, vec![13]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(
+        vec![
+            q_handle(8, true),
+            q_handle(8, false),
+            reg32(true),
+            reg32(false),
+        ],
+        consts,
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "        -1\n        44\n       255\n");
+}
+
+#[test]
+fn queue_nba_pop_rhs_is_x_and_queue_intact() {
+    // MVP contract: pop is a STATEMENT-level effect, valid only as the direct
+    // RHS of a blocking assign. An NBA rhs pop X-poisons (with the W4020
+    // once-latch) and the queue is NOT mutated — identical on both backends
+    // by construction (same eval funnel); ⑥ elaborate will loud-reject it.
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (push 10)
+        Expr::Const { val: 0 },              // 1: 10
+        Expr::Signal { net: 0, word: None }, // 2: handle (pop)
+        Expr::SysFunc {
+            which: SysFuncId::QPopBack,
+            args: vec![2],
+        }, // 3
+        Expr::Signal { net: 0, word: None }, // 4: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![4],
+        }, // 5
+    ];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        Stmt::NonblockingAssign {
+            lhs: sim_ir::Lvalue {
+                chunks: vec![sim_ir::LvalChunk {
+                    net: 1,
+                    word: None,
+                    offset: None,
+                    width: None,
+                    kind: sim_ir::SelKind::Bit,
+                }],
+            },
+            rhs: 3,
+            delay: None,
+        },
+        systask(SysTaskId::Display, vec![5]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(
+        vec![q_handle(32, false), reg32(false)],
+        vec![int_const(10)],
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(
+        out, "         1\n",
+        "queue must NOT be drained by an NBA pop"
+    );
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(warns, 1, "NBA pop degrades loudly (X): {diags:?}");
+}
+
+#[test]
+fn queue_vm_backend_byte_parity() {
+    // P5-style gate, pre-⑥ form: the SAME hand-built IR must produce
+    // byte-identical stdout on Interpreter and Bytecode. The push-only body is
+    // codegen-able (SysTask rides the shared kernel dispatch); the pop body is
+    // excluded by the P9 allow-list and falls back to the interpreter.
+    for ir in [queue_push_ir(), queue_pop_ir()] {
+        let (ri, oi) = simulate_capture(&ir, SimOpts::default());
+        let (rv, ov) = simulate_capture(
+            &ir,
+            SimOpts {
+                backend: Backend::Bytecode,
+                ..SimOpts::default()
+            },
+        );
+        assert_eq!(ri.finish_reason, rv.finish_reason);
+        assert_eq!(oi, ov, "interp vs VM stdout must be byte-identical");
+    }
 }
 
 #[test]

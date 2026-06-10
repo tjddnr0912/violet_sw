@@ -245,9 +245,8 @@ impl WidthTable {
                     width: 64,
                     signed: false,
                 },
-                // v5 dyn-storage methods (shape reserve — not emitted yet):
-                // size()/num() are int (32 signed), exists() is 1 bit; the pop
-                // pair is ELEMENT-width and will be refined by increment (C).
+                // v5 dyn-storage methods: size()/num() are int (32 signed),
+                // exists() is 1 bit.
                 SysFuncId::DynSize | SysFuncId::AssocNum => SelfWidth {
                     width: 32,
                     signed: true,
@@ -256,10 +255,24 @@ impl WidthTable {
                     width: 1,
                     signed: false,
                 },
-                SysFuncId::QPopBack | SysFuncId::QPopFront => SelfWidth {
-                    width: 32,
-                    signed: true,
-                },
+                // ④: pops return the ELEMENT type of their handle (args[0] is
+                // its whole-net Signal) — the signedness drives the §5.5
+                // assignment extension (a signed byte −1 pops as −1 into an
+                // int, an unsigned 255 stays 255; iverilog live).
+                SysFuncId::QPopBack | SysFuncId::QPopFront => args
+                    .first()
+                    .and_then(|&a| match ir.exprs.get(a as usize) {
+                        Some(Expr::Signal { net, .. }) => ir.nets.get(*net as usize),
+                        _ => None,
+                    })
+                    .map(|nv| SelfWidth {
+                        width: nv.width.max(1),
+                        signed: nv.signed,
+                    })
+                    .unwrap_or(SelfWidth {
+                        width: 32,
+                        signed: true,
+                    }),
                 // $signed / $unsigned: PRESERVE operand width, flip sign attribute.
                 SysFuncId::Signed => {
                     let w = args.first().map(|&a| child(sw, i, a).width).unwrap_or(1);

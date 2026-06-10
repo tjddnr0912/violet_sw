@@ -43,6 +43,15 @@ pub(crate) fn dispatch(
             let Some(net) = dyn_handle_net(sched, args.first()) else {
                 return Ctl::Continue;
             };
+            // `new[]` is dyn-array syntax: acting on a queue/assoc handle
+            // would put a kind-mismatched object in the heap — defensive
+            // warn+ignore (elaborate never emits it).
+            if sched.st.ir.nets.get(net as usize).map(|nv| nv.kind)
+                != Some(sim_ir::NetKind::DynArray)
+            {
+                dyn_warn_once(sched, net, "new[] on a non-dynamic-array handle (ignored)");
+                return Ctl::Continue;
+            }
             // n: X/Z degrades to EMPTY + warn-once; an explicit 0 is
             // legal-silent (IEEE §7.5.1). Cap at the static array cap class —
             // a huge n is a t-runtime OOM hazard exactly like P2-6.
@@ -53,18 +62,18 @@ pub(crate) fn dispatch(
                     0
                 }
                 Some(v) => {
-                    // Same cap class as elaborate's MAX_ARRAY_LEN (P2-6, 1<<24):
-                    // a runtime OOM is as silent-deadly as the t0 one. NO silent
+                    // Same cap class as elaborate's MAX_ARRAY_LEN (P2-6): a
+                    // runtime OOM is as silent-deadly as the t0 one. NO silent
                     // caps — a clamped n warns (once per net).
                     let raw = v.to_u64().unwrap_or(0);
-                    if raw > (1 << 24) {
+                    if raw > crate::state::MAX_DYN_ELEMS as u64 {
                         dyn_warn_once(
                             sched,
                             net,
                             "new[] size exceeds the element cap (1<<24); clamped",
                         );
                     }
-                    raw.min(1 << 24) as usize
+                    raw.min(crate::state::MAX_DYN_ELEMS as u64) as usize
                 }
                 None => 0,
             };
@@ -98,9 +107,68 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
-        // v5 shape reserve (queue/assoc methods): elaborate cannot emit these
-        // until their increments land — defensive no-op, never a panic.
-        SysTaskId::QPushBack | SysTaskId::QPushFront | SysTaskId::AssocDeleteKey => Ctl::Continue,
+        // v5 (C)-④: queue pushes. args = [handle, value]; the value is CAST
+        // to the element type with assignment semantics (§5.5: evaluate at
+        // max(element, self) width with the SOURCE's signedness, then truncate
+        // — `push_back(300)` into a byte queue stores 44; iverilog live).
+        SysTaskId::QPushBack | SysTaskId::QPushFront => {
+            let Some(net) = dyn_handle_net(sched, args.first()) else {
+                return Ctl::Continue;
+            };
+            let Some((w, kind)) = sched
+                .st
+                .ir
+                .nets
+                .get(net as usize)
+                .map(|nv| (nv.width.max(1), nv.kind))
+            else {
+                return Ctl::Continue;
+            };
+            if kind != sim_ir::NetKind::Queue {
+                dyn_warn_once(sched, net, "queue push on a non-queue handle (ignored)");
+                return Ctl::Continue;
+            }
+            let v = match args.get(1) {
+                Some(&a) => {
+                    let sw = sched.st.wt.get(a);
+                    sched.eval_ctx_top(a, w.max(sw.width), sw.signed).resize(w)
+                }
+                None => Value::xs(w, false),
+            };
+            // Cap BEFORE taking the entry borrow (the warn needs `&mut sched`).
+            // No silent caps (P2-6 class): a runaway push loop is a runtime
+            // OOM hazard — warn (once per net) and DROP the push.
+            let len = sched.st.dyn_heap.get(&net).map(|o| o.len()).unwrap_or(0);
+            if len >= crate::state::MAX_DYN_ELEMS {
+                dyn_warn_once(
+                    sched,
+                    net,
+                    "queue exceeds the element cap (1<<24); push dropped",
+                );
+                return Ctl::Continue;
+            }
+            // A missing entry IS the empty queue (lazy, like every dyn object).
+            let entry =
+                sched
+                    .st
+                    .dyn_heap
+                    .entry(net)
+                    .or_insert_with(|| crate::state::DynObj::Queue {
+                        elems: std::collections::VecDeque::new(),
+                    });
+            if let crate::state::DynObj::Queue { elems } = entry {
+                if which == SysTaskId::QPushFront {
+                    elems.push_front(v);
+                } else {
+                    elems.push_back(v);
+                }
+            }
+            Ctl::Continue
+        }
+        // v5 shape reserve (assoc methods — increment ⑤): elaborate cannot
+        // emit these until their increment lands — defensive no-op, never a
+        // panic.
+        SysTaskId::AssocDeleteKey => Ctl::Continue,
         SysTaskId::Display => {
             let mut s = format_args_str(sched, fmt, args, radix);
             s.push('\n');
