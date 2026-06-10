@@ -77,13 +77,14 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             Expr::Signal { net, word } => {
                 // `word` is an ExprId (the array index expr), evaluated NOW so a
                 // runtime `mem[k]` selects the right element. None ⇒ scalar/whole.
-                // An X/Z index (`to_u64` → None) maps to the `u32::MAX` out-of-range
-                // sentinel → `net_word_packed` returns all-X — NOT a silent read of
-                // word 0. Symmetric with the write side (`resolve_lvalue_offsets`).
+                // An X/Z index (`to_u64` → None) OR an index beyond u32 maps to
+                // the `u32::MAX` out-of-range sentinel → `net_word_packed` returns
+                // all-X — NOT a silent read of a wrapped element. Symmetric with
+                // the write side (`resolve_lvalue_offsets`).
                 let widx = word.map(|weid| {
                     self.eval(weid)
                         .to_u64()
-                        .map(|v| v as u32)
+                        .and_then(|v| u32::try_from(v).ok())
                         .unwrap_or(u32::MAX)
                 });
                 let base = self.nets.read_net(*net, widx);
@@ -272,10 +273,16 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         if a.has_xz() {
             return Value::xs(a.width, a.signed);
         }
-        let m = low_mask(a.width);
-        let r = (!a.val.first().copied().unwrap_or(0)).wrapping_add(1) & m;
+        // Full-width two's complement (~x + 1 with word carry) — exact at any
+        // width; the old single-word form left words 1+ zero for >64-bit
+        // operands (P0-3).
         let mut out = Value::zeros(a.width, a.signed);
-        out.val[0] = r;
+        let mut carry = 1u64;
+        for k in 0..nwords(a.width).max(1) {
+            let (s, c) = (!a.val.get(k).copied().unwrap_or(0)).overflowing_add(carry);
+            out.val[k] = s;
+            carry = c as u64;
+        }
         out.mask_top();
         out
     }
@@ -527,16 +534,37 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         if l.has_xz() || r.has_xz() {
             return Value::x1();
         }
-        let both_signed = l.signed && r.signed;
-        let ord = if both_signed {
-            l.clone()
-                .to_i128_signed()
-                .unwrap()
-                .cmp(&r.clone().to_i128_signed().unwrap())
-        } else {
-            l.to_u64().unwrap().cmp(&r.to_u64().unwrap())
-        };
+        // Exact word-wise compare at ANY width (no 64/128-bit lane): extend both
+        // operands to the common width (§4.5: sign-extend only when BOTH signed),
+        // then compare. For equal-width same-sign two's-complement values the
+        // plain lexicographic word order IS the numeric order; differing sign
+        // bits decide directly. Fixes the silent low-word truncation (P0-1).
         use std::cmp::Ordering::*;
+        let w = l.width.max(r.width).max(1);
+        let both_signed = l.signed && r.signed;
+        let le = l.clone().resize_keep_sign(w, both_signed);
+        let re = r.clone().resize_keep_sign(w, both_signed);
+        let cmp_words = |a: &Value, b: &Value| {
+            let n = a.val.len().max(b.val.len());
+            for k in (0..n).rev() {
+                let av = a.val.get(k).copied().unwrap_or(0);
+                let bv = b.val.get(k).copied().unwrap_or(0);
+                match av.cmp(&bv) {
+                    Equal => continue,
+                    o => return o,
+                }
+            }
+            Equal
+        };
+        let ord = if both_signed {
+            match (le.get_vu(w - 1).0, re.get_vu(w - 1).0) {
+                (1, 0) => Less,
+                (0, 1) => Greater,
+                _ => cmp_words(&le, &re),
+            }
+        } else {
+            cmp_words(&le, &re)
+        };
         let b = matches!(
             (op, ord),
             (BinOp::Lt, Less)
@@ -627,10 +655,12 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     }
 
     fn shift_left(&self, l: &Value, r: &Value) -> Value {
-        let amt = match r.to_u64() {
-            Some(a) => a,
-            None => return Value::xs(l.width, l.signed),
-        };
+        if r.has_xz() {
+            return Value::xs(l.width, l.signed);
+        }
+        // An amount that doesn't fit u64 is astronomically larger than any net
+        // width — saturate so everything shifts out (was: silent low-word use).
+        let amt = r.to_u64().unwrap_or(u64::MAX);
         // v1 has no context-determined width (elaborate defers expr sizing), so a
         // self-determined `<<` would truncate to `l.width` and drop bits that a
         // wider assignment context would keep (`4'b0001 << 5` → 0 instead of
@@ -645,10 +675,11 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     }
 
     fn shift_right(&self, l: &Value, r: &Value, arith: bool) -> Value {
-        let amt = match r.to_u64() {
-            Some(a) => a,
-            None => return Value::xs(l.width, l.signed),
-        };
+        if r.has_xz() {
+            return Value::xs(l.width, l.signed);
+        }
+        // Over-u64 amount ⇒ saturate (shift everything out / full sign fill).
+        let amt = r.to_u64().unwrap_or(u64::MAX);
         let w = l.width;
         let (fv, fu) = if arith && w > 0 {
             l.get_vu(w - 1)
@@ -728,8 +759,9 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         let width = crate::width::const_u32_of_expr(self.ir, width).unwrap_or(1);
         let src = self.eval(base);
         let off_val = self.eval(offset);
-        let off = match off_val.to_u64() {
-            Some(o) => o as i64,
+        let off = match off_val.to_u64().and_then(|o| i64::try_from(o).ok()) {
+            Some(o) => o,
+            // X/Z offset or one beyond the i64 lane: the select is out of range.
             None => return Value::xs(width.max(1), false),
         };
         let (lsb, w) = match kind {
@@ -812,17 +844,40 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 a
             }
             SysFuncId::Clog2 => {
+                // Exact at any width: $clog2(n) = highest set bit of (n-1) + 1.
+                // Word-wise so a >64-bit argument is not truncated (P0-4).
                 let a = self.eval(args[0]);
-                match a.to_u64() {
-                    None => Value::xs(32, false),
-                    Some(0) | Some(1) => Value::zeros(32, false),
-                    Some(n) => {
-                        let bits = 64 - (n - 1).leading_zeros();
-                        let mut v = Value::zeros(32, false);
-                        v.val[0] = bits as u64;
-                        v
-                    }
+                if a.has_xz() {
+                    return Value::xs(32, false);
                 }
+                let mut words: Vec<u64> = a.val.iter().copied().collect();
+                let le_one = {
+                    let w0 = words.first().copied().unwrap_or(0);
+                    w0 <= 1 && words.iter().skip(1).all(|&w| w == 0)
+                };
+                let bits = if le_one {
+                    0u64
+                } else {
+                    // n -= 1 (word-wise borrow), then locate the highest set bit.
+                    for w in words.iter_mut() {
+                        if *w > 0 {
+                            *w -= 1;
+                            break;
+                        }
+                        *w = u64::MAX;
+                    }
+                    let (k, top) = words
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, &w)| w != 0)
+                        .map(|(k, &w)| (k as u64, w))
+                        .unwrap_or((0, 0));
+                    64 * k + (64 - top.leading_zeros() as u64)
+                };
+                let mut v = Value::zeros(32, false);
+                v.val[0] = bits;
+                v
             }
         }
     }

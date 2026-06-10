@@ -310,19 +310,29 @@ impl Value {
         false
     }
 
-    /// Clean integer of the low 64 bits; `None` if any X/Z (caller poisons).
-    /// v1: arithmetic is a 64-bit lane (documented limitation).
+    /// Clean integer value IF IT FITS in u64; `None` on any X/Z (caller
+    /// poisons) or when set bits exist above bit 63. Returning the truncated
+    /// low word for a wider value let relational/shift/index sites silently
+    /// use a wrong small number (P0-4, 2026-06-10 audit) — overflow is now
+    /// `None` and every caller decides (saturate, OOR sentinel, or X).
     pub fn to_u64(&self) -> Option<u64> {
         if self.has_xz() {
+            return None;
+        }
+        if self.val.iter().skip(1).any(|&w| w != 0) {
             return None;
         }
         Some(self.val.first().copied().unwrap_or(0) & low_mask(self.width))
     }
 
-    /// Clean integer of the low 128 bits; `None` if any X/Z. Widens the unsigned
-    /// arithmetic lane from 64 to 128 bits (so a `[127:0]` add carries correctly).
+    /// Clean integer value IF IT FITS in u128; `None` on any X/Z or when set
+    /// bits exist above bit 127 (same no-silent-truncation contract as
+    /// `to_u64`). Unsigned arithmetic lane: 128 bits.
     pub fn to_u128(&self) -> Option<u128> {
         if self.has_xz() {
+            return None;
+        }
+        if self.val.iter().skip(2).any(|&w| w != 0) {
             return None;
         }
         let lo = self.val.first().copied().unwrap_or(0) as u128;
@@ -525,7 +535,7 @@ impl Value {
         if self.signed {
             self.to_i128_signed().map(|i| i as f64)
         } else {
-            self.to_u64().map(|u| u as f64)
+            self.to_u128().map(|u| u as f64)
         }
     }
 

@@ -767,9 +767,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// no-op), matching the READ side where `eval_select` returns X for `a[x]`.
     pub(crate) fn resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Vec<(u32, u32)> {
         let ev = |eid: u32| {
+            // X/Z or beyond-u32 index → u32::MAX OOR sentinel (write dropped),
+            // never a wrapped small offset (P0-4).
             self.eval(eid)
                 .to_u64()
-                .map(|v| v as u32)
+                .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or(u32::MAX)
         };
         lhs.chunks

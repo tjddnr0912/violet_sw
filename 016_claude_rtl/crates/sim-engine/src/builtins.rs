@@ -620,6 +620,12 @@ fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool) -> String {
 }
 
 fn char_of(v: &Value) -> char {
-    let byte = (v.to_u64().unwrap_or(0) & 0xFF) as u8;
+    // IEEE %c: the LOW 8 bits regardless of value width — a wide value with
+    // high bits set must not degrade to NUL under the strict no-truncation
+    // `to_u64`. X/Z keeps the old None→0 policy.
+    if v.has_xz() {
+        return '\0';
+    }
+    let byte = (v.val.first().copied().unwrap_or(0) & 0xFF) as u8;
     byte as char
 }

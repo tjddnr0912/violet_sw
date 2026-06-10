@@ -239,3 +239,29 @@ fn diff_casez_priority() {
              $display(\"%0d\", r); $finish; end endmodule",
     );
 }
+
+#[test]
+fn diff_wide_value_truncation_cluster() {
+    // P0-1~4 (2026-06-10): >64-bit relational compare, over-u64 shift amounts,
+    // full-width unary minus and wide $clog2 — all formerly truncated to the
+    // low word. Locks the fixed semantics against the iverilog oracle.
+    assert_matches_iverilog(
+        "wide_trunc",
+        "module tb; reg [127:0] a, b, n; reg signed [127:0] sa, sb; \
+           reg [7:0] x, l, r; reg signed [7:0] sx, sy; reg [127:0] s; \
+           initial begin \
+             a = 128'h1_0000_0000_0000_0000; b = 128'h1; \
+             $display(\"%b %b %b %b\", a > b, a < b, a >= b, a <= b); \
+             sa = 128'hffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff; sb = 128'sd1; \
+             $display(\"%b %b\", sa < sb, sa > sb); \
+             x = 8'hFF; s = 128'h1_0000_0000_0000_0000; \
+             l = x << s; r = x >> s; \
+             $display(\"%h %h\", l, r); \
+             sx = -8'sd2; sy = sx >>> s; \
+             $display(\"%b\", sy); \
+             n = -128'd1; \
+             $display(\"%h\", n); \
+             $display(\"%0d %0d\", $clog2(a), $clog2(a + 1)); \
+             $finish; end endmodule",
+    );
+}
