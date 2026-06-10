@@ -26,6 +26,10 @@ use sim_engine::{ExitClass, FinishReason, SimOpts};
 pub const EXIT_OK: i32 = 0;
 /// Exit code for a user/design error (lex/parse/elab/runtime-fatal).
 pub const EXIT_USER_ERROR: i32 = 1;
+/// Exit code for a stale/artifact-gate rejection (doc-13 class 2): magic/
+/// schema/format/version mismatches. Distinct from 1 so CI re-runs vcmp/velab
+/// instead of debugging RTL.
+pub const EXIT_STALE: i32 = 2;
 /// Exit code for a CLI/usage error (no sources, file not found, unknown applet).
 pub const EXIT_CLI_ERROR: i32 = 3;
 
@@ -43,6 +47,9 @@ pub struct VitaOpts {
     /// Reaching it ends the run cleanly (Quiescent) — a CI killswitch for
     /// designs that never `$finish`. `None` ⇒ unbounded.
     pub time_limit: Option<u64>,
+    /// Diagnostic suppress/promote policy (`-Wno-*` / `-Werror[=*]`, doc-13
+    /// bucket C). Pure output-stream filtering — never hashed into artifacts.
+    pub gate: vita_log::GatePolicy,
 }
 
 impl VitaOpts {
@@ -185,7 +192,7 @@ fn loc_from_span(map: &hdl_preprocess::SourceMap, lo: usize, hi: usize) -> Sourc
 
 /// Emit a front-end (lex/parse) diagnostic with a resolved location.
 fn emit_frontend_error(
-    sink: &StderrSink,
+    sink: &dyn LogSink,
     map: &hdl_preprocess::SourceMap,
     lo: usize,
     hi: usize,
@@ -212,7 +219,7 @@ fn emit_frontend_error(
 /// so byte offsets / spans match the production one-shot path exactly. The staged
 /// `vcmp` path and the round-trip tests parse through this same function so the
 /// comparison never silently depends on a preprocessor bypass.
-pub fn frontend_to_unit(file: &str, sink: &StderrSink) -> Option<hdl_ast::SourceUnit> {
+pub fn frontend_to_unit(file: &str, sink: &dyn LogSink) -> Option<hdl_ast::SourceUnit> {
     let text = std::fs::read_to_string(file).ok()?;
     let text = if text.ends_with('\n') {
         text
@@ -232,7 +239,7 @@ pub fn frontend_to_unit(file: &str, sink: &StderrSink) -> Option<hdl_ast::Source
 pub fn frontend_text_to_unit(
     file: &str,
     text: &str,
-    sink: &StderrSink,
+    sink: &dyn LogSink,
 ) -> Option<(hdl_ast::SourceUnit, hdl_preprocess::ResolvedTimescales)> {
     // ── preprocess ─────────────────────────────────────────────────────────
     // raw source -> expanded text + SourceMap. The expanded text (not `text`) is
@@ -347,7 +354,8 @@ pub fn timescale_unit_string(exp: i8) -> String {
 /// code. This is the unit-test entry point — it never reads argv or files and
 /// never calls `std::process::exit`.
 pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
-    let sink = StderrSink::new();
+    let inner = StderrSink::new();
+    let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
 
     // ── preprocess → lex → parse (shared front-end) ─────────────────────────
     let Some((unit, rt)) = frontend_text_to_unit(file, text, &sink) else {
@@ -377,7 +385,13 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
         ..opts.sim_opts()
     };
     let result = sim_engine::simulate(&ir, &sink, sim_opts);
-    sim_exit_code(&result)
+    let code = sim_exit_code(&result);
+    // A `-Werror`-promoted warning is a real Error in the post-gate stream:
+    // doc-13 class 1 ("승격-warning 실패") — flip an otherwise-clean exit.
+    if code == EXIT_OK && inner.had_error_or_fatal() {
+        return EXIT_USER_ERROR;
+    }
+    code
 }
 
 /// Map a finished `SimResult` to the doc-13 exit code. A clean `$finish`/quiescent
@@ -510,7 +524,7 @@ pub fn run(argv: &[String]) -> i32 {
             // One-shot flag surface: `-o <vcd>` + `--threads N` (P4-T1), then
             // positional sources. (Before T1 the one-shot accepted NO flags —
             // `-o` was read as a source file.)
-            let (pos, out, threads, time_limit) = match parse_io_args(&args) {
+            let (pos, out, threads, time_limit, gate) = match parse_io_args(&args) {
                 Ok(x) => x,
                 Err(c) => return c,
             };
@@ -518,6 +532,7 @@ pub fn run(argv: &[String]) -> i32 {
                 vcd_path_override: out,
                 threads,
                 time_limit,
+                gate,
             };
             run_vita(&pos, &opts)
         }
@@ -566,6 +581,8 @@ fn print_help(applet: &str) {
         "\nOptions:\n  -o, --out <PATH>      output path override\n  \
          --threads, -j <N>     worker threads (output byte-identical for any N)\n  \
          --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
+         -Wno-<CODE>           suppress a Warning/Info diagnostic (mnemonic, doc-15)\n  \
+         -Werror[=<CODE>]      promote warnings (all, or one code) to errors\n  \
          -h, --help            print help\n  -V, --version         print version"
     );
 }
@@ -585,9 +602,10 @@ fn write_artifact_atomic(out: &str, bytes: &[u8]) -> std::io::Result<()> {
 // ───────────────────────── staged-flow applets ──────────────────────────────
 
 /// Render an artifact-gate rejection through the sink as an Error diagnostic
-/// (no source location — artifact-level), then return `EXIT_USER_ERROR`. Gate
-/// rejections are design/data errors (doc-13: code 1), NOT CLI usage errors.
-fn emit_artifact_error(sink: &StderrSink, e: &vita_artifact::ArtifactError) -> i32 {
+/// (no source location — artifact-level), then return `EXIT_STALE` (doc-13
+/// class 2: "rebuild upstream", distinct from class-1 design errors and
+/// class-3 usage errors).
+fn emit_artifact_error(sink: &dyn LogSink, e: &vita_artifact::ArtifactError) -> i32 {
     sink.emit(LogEvent::Diagnostic(Diagnostic {
         severity: Severity::Error,
         code: e.code,
@@ -596,7 +614,7 @@ fn emit_artifact_error(sink: &StderrSink, e: &vita_artifact::ArtifactError) -> i
         context: Vec::new(),
         sim_time: None,
     }));
-    EXIT_USER_ERROR
+    EXIT_STALE
 }
 
 /// Read a file as bytes; a read failure is a CLI/usage error (exit 3).
@@ -674,7 +692,6 @@ fn artifact_header(schema_hash: [u8; 32], global_prec_exp: i8) -> vita_artifact:
 /// a `.vu` artifact. `out` is the resolved output path.
 /// Exit: 0 ok / 1 lex|parse|empty-unit / 3 missing-file|write-error.
 pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
-    let _ = opts; // vcmp ignores sim knobs; kept for signature symmetry
     if sources.is_empty() {
         eprintln!(
             "error[{}]: no source files given",
@@ -682,7 +699,8 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
         );
         return EXIT_CLI_ERROR;
     }
-    let sink = StderrSink::new();
+    let inner = StderrSink::new();
+    let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
 
     // read+concat (mirrors run_vita): read error → exit 3.
     let mut text = String::new();
@@ -714,6 +732,11 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
     //    precision)). The resolved timescale rides after the hashed SourceUnit frame
     //    (the gate covers the type, not these bytes) so `velab` can elaborate the
     //    staged path with the same scaling as the one-shot path. ──
+    // `-Werror`: a promoted warning is an Error — the stage fails and writes
+    // NO artifact (matching a real compile error).
+    if inner.had_error_or_fatal() {
+        return EXIT_USER_ERROR;
+    }
     let mut body = postcard::to_stdvec(&unit).expect("SourceUnit postcard encode infallible");
     body.extend_from_slice(
         &postcard::to_stdvec(&(rt.unit_exp, rt.global_prec_exp))
@@ -739,8 +762,8 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
 /// body(`postcard(SimIr) ++ postcard(ForkModeTable)`).
 /// Exit: 0 ok / 1 gate-reject|elab-fail|corrupt-body / 3 missing-file|write-error.
 pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
-    let _ = opts;
-    let sink = StderrSink::new();
+    let inner = StderrSink::new();
+    let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
 
     let bytes = match read_artifact_bytes(vu_path) {
         Ok(b) => b,
@@ -798,6 +821,10 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     //    staleness are unaffected; names give `vrun` hierarchical VCD, the multipliers
     //    give it `$time`/`$realtime` scaling, and the severities give it
     //    `$fatal`/`$error`/`$warning`/`$info` routing (P1-1). ──
+    // `-Werror`: promoted warnings fail the stage before any artifact lands.
+    if inner.had_error_or_fatal() {
+        return EXIT_USER_ERROR;
+    }
     let mut velab_body = postcard::to_stdvec(&ir).expect("SimIr postcard encode infallible");
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&sc.fork_modes).expect("ForkModeTable postcard encode infallible"),
@@ -835,7 +862,8 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
 /// doc-13 sim exit code.
 /// Exit: 0 clean / 1 gate-reject|corrupt-body|runtime-fatal / 3 missing-file.
 pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
-    let sink = StderrSink::new();
+    let inner = StderrSink::new();
+    let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
 
     let bytes = match read_artifact_bytes(velab_path) {
         Ok(b) => b,
@@ -972,19 +1000,31 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
         ..opts.sim_opts()
     };
     let result = sim_engine::simulate(&ir, &sink, sim_opts);
-    sim_exit_code(&result)
+    let code = sim_exit_code(&result);
+    if code == EXIT_OK && inner.had_error_or_fatal() {
+        return EXIT_USER_ERROR; // `-Werror`-promoted warning (doc-13 class 1)
+    }
+    code
 }
 
 /// Parse a flat arg list into (positional paths, `-o` value). `-o`/`--out`
 /// consume the next arg. Unknown flags → `Err(EXIT_CLI_ERROR)`.
-/// Parsed common applet flags: (positional args, `-o`, `--threads`, `--timeout`).
-type IoArgs = (Vec<String>, Option<String>, Option<u32>, Option<u64>);
+/// Parsed common applet flags: (positional args, `-o`, `--threads`, `--timeout`,
+/// diagnostic gate policy from `-Wno-*`/`-Werror[=*]`).
+type IoArgs = (
+    Vec<String>,
+    Option<String>,
+    Option<u32>,
+    Option<u64>,
+    vita_log::GatePolicy,
+);
 
 fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut pos = Vec::new();
     let mut out = None;
     let mut threads = None;
     let mut timeout = None;
+    let mut gate = vita_log::GatePolicy::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1028,6 +1068,18 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                 i += 2;
             }
             s if s.starts_with('-') && s.len() > 1 => {
+                // Diagnostic gate flags (`-Wno-<CODE>` / `-Werror[=<CODE>]`).
+                match gate.parse_arg(s) {
+                    Some(Ok(())) => {
+                        i += 1;
+                        continue;
+                    }
+                    Some(Err(msg)) => {
+                        eprintln!("error[{}]: {msg}", MsgCode::CliBadFlag.code_num());
+                        return Err(EXIT_CLI_ERROR);
+                    }
+                    None => {}
+                }
                 eprintln!(
                     "error[{}]: unknown flag '{s}'",
                     MsgCode::CliBadFlag.code_num()
@@ -1040,11 +1092,11 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
             }
         }
     }
-    Ok((pos, out, threads, timeout))
+    Ok((pos, out, threads, timeout, gate))
 }
 
 fn dispatch_vcmp(args: &[String]) -> i32 {
-    let (pos, out, _threads, _timeout) = match parse_io_args(args) {
+    let (pos, out, _threads, _timeout, gate) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -1059,11 +1111,18 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
     if let Err(c) = reject_out_clobbers_input(&pos, &out) {
         return c;
     }
-    run_vcmp(&pos, &out, &VitaOpts::default())
+    run_vcmp(
+        &pos,
+        &out,
+        &VitaOpts {
+            gate,
+            ..VitaOpts::default()
+        },
+    )
 }
 
 fn dispatch_velab(args: &[String]) -> i32 {
-    let (pos, out, _threads, _timeout) = match parse_io_args(args) {
+    let (pos, out, _threads, _timeout, gate) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -1078,11 +1137,18 @@ fn dispatch_velab(args: &[String]) -> i32 {
     if let Err(c) = reject_out_clobbers_input(&pos, &out) {
         return c;
     }
-    run_velab(&pos[0], &out, &VitaOpts::default())
+    run_velab(
+        &pos[0],
+        &out,
+        &VitaOpts {
+            gate,
+            ..VitaOpts::default()
+        },
+    )
 }
 
 fn dispatch_vrun(args: &[String]) -> i32 {
-    let (pos, out, threads, time_limit) = match parse_io_args(args) {
+    let (pos, out, threads, time_limit, gate) = match parse_io_args(args) {
         Ok(x) => x,
         Err(c) => return c,
     };
@@ -1100,15 +1166,11 @@ fn dispatch_vrun(args: &[String]) -> i32 {
             return c;
         }
     }
-    // `..Default::default()` is forward-compat: when a bucket-C VitaOpts field
-    // lands (the flag surface is DEFERRED), this stays non-breaking. VitaOpts has
-    // a single field today, so clippy's needless-update fires — allow it here.
-    #[allow(clippy::needless_update)]
     let opts = VitaOpts {
         vcd_path_override: out,
         threads,
         time_limit,
-        ..Default::default()
+        gate,
     };
     run_vrun(&pos[0], &opts)
 }
@@ -1227,8 +1289,7 @@ mod tests {
         );
         let opts = VitaOpts {
             vcd_path_override: Some(vcd_str.clone()),
-            threads: None,
-            time_limit: None,
+            ..VitaOpts::default()
         };
         let (code, _) = run_on_temp(&src, &opts);
         assert_eq!(code, EXIT_OK);

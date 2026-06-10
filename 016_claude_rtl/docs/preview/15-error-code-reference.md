@@ -24,8 +24,10 @@
   해당 밴드의 다음 빈 번호를 단조 부여**한다(알파벳 재정렬 금지). 공식 출처 기반 추가 케이스
   인벤토리는 **부록 A** 참조(미구현 예약 코드 107개 + 밴드 5/6/7).
 - severity·게이트·exit 의미는 [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md).
-- **억제/승격 플래그는 미래형이다(Phase-1.x):** 본문 곳곳의 `-Wno-<MNEMONIC>`/`-Werror=` 안내는
-  계획된 UX이며 **현 CLI에 아직 없다**(`vita --help`가 진실 공급원). 현재 억제 수단은 코드 수정뿐.
+- **억제/승격 플래그는 구현됨(2026-06-10):** `-Wno-<MNEMONIC>`(Warning/Info 억제; Error/Fatal
+  spine은 불가)·`-Werror`(전체)·`-Werror=<MNEMONIC>`(코드별 승격, 원 코드번호 유지·exit class 1)이
+  전 applet에서 동작. 알 수 없는 mnemonic = E0001 usage error(오타는 loud). 인라인 `lint_off`
+  프라그마·`-Wwarn=`/`--suppress=` alias는 Phase-1.x 잔여.
 - **본문 등재 = 발행 보장이 아니다(예약 dead codes):** 다음 코드는 enum에 실재하나 **현 구현에
   emitter가 0개**인 의도적 예약 상태다 — `W-PARSE-IMPLICIT-NET`(vitamin v1은 implicit net을
   생성하지 않음 — 미선언 참조는 E3010 hard error; 추후 IEEE 기본 동작 구현 시 활성화),

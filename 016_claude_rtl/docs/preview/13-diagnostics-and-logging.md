@@ -214,9 +214,10 @@ span/caret은 diag, side-table 룩업·include/macro/-f 스택·sim_time·instan
 
 ## Verbosity / suppression 플래그 (전부 bucket C)
 
-> **구현 상태(Phase-1.x — 미래형):** 이 절의 플래그 표면(`-q`/`-Wno-*`/`-Werror=`/`--log` 등)은
-> **설계 확정·구현 전**이다. 현 CLI 플래그는 `vita --help`가 진실 공급원(`-o`/`--threads`/
-> `--timeout`/`--help`/`--version`). `vita-log` 크레이트 랜딩과 함께 단계적 활성화.
+> **구현 상태:** **`-Wno-<CODE>` / `-Werror[=<CODE>]`는 구현됨**(2026-06-10, `vita-log`
+> `GatePolicy`/`GatedSink` — 전 applet, 알 수 없는 mnemonic은 E0001 exit 3, Error/Fatal
+> spine은 억제 불가, 승격 실패 시 산출물 미생성). 나머지 표면(`-q`/`-v`/`-Wwarn=`/
+> `--suppress=`/`--error-limit`/`--log` 계열)은 Phase-1.x 미래형 — `vita --help`가 진실 공급원.
 
 전부 bucket C다(RULE API: PreprocInputs/ElabInputs에 필드가 없어 **구조적으로 해시 진입 불가** —
 `--log`나 `-Wall`이 `.vu`/`.velab`를 무효화하면 안 됨):
@@ -248,15 +249,16 @@ span/caret은 diag, side-table 룩업·include/macro/-f 스택·sim_time·instan
 ## Exit 코드 (CI 계약)
 
 CI(09 corpus-runner/차등검증)가 게이트할 수 있게 클래스를 구분한다.
-**현 구현 실태: 0/1/3(+101 panic 관례)만 사용** — class 2는 예약(아래 행 참조), 이 절의
-`-n`/`-N`/`--error-exit`/`--quiet-exit`/`--finish-at` 플래그는 Phase-1.x 미래형이다(현행
-타임아웃은 `--timeout <ticks>`, clean exit 0).
+**현 구현 실태: 0/1/2/3(+101 panic 관례)** — class 2는 구현됨(2026-06-10: 아티팩트
+magic/schema/version 게이트 거부 = exit 2), `-Werror` 승격 실패는 class 1("승격-warning 실패").
+이 절의 `-n`/`-N`/`--error-exit`/`--quiet-exit`/`--finish-at` 플래그는 Phase-1.x 미래형이다
+(현행 타임아웃은 `--timeout <ticks>`, clean exit 0).
 
 | 코드 | 의미 |
 |---|---|
 | 0 | clean: compile/elab/run 성공; `$finish`(또는 `--finish-at`)로 종료; Error/Fatal·승격 warning 없음 |
 | 1 | user/design 실패: compile/elab Error, runtime `$fatal`, 승격-warning 실패, 또는 `-N` 하 `$stop` |
-| 2 | **(예약 — Phase-1.x, 현 구현 미사용)** staleness/artifact 게이트(RULE V): vrun이 stale 상류 거부(`E-ART-STALE-UPSTREAM`) 또는 schema/version/format 게이트(`E-ART-SCHEMA-MISMATCH`/`E-ART-VERSION-GATE`). **1과 구별** — CI가 RTL 디버그가 아니라 vcmp/velab 재실행임을 앎. silent 재사용 절대 없음. **현 구현은 이들 게이트 실패를 class 1로 분류**(MsgCode E9001-9004로 구별 가능); class 2 분리는 `vita-log` exit-정책 랜딩과 함께 |
+| 2 | staleness/artifact 게이트(RULE V): vrun/velab이 magic/schema/version 게이트 거부(`E-ART-FORMAT-MISMATCH`/`E-ART-SCHEMA-MISMATCH`/`E-ART-VERSION-GATE`; RULE-V composite `E-ART-STALE-UPSTREAM`은 Phase-2). **1과 구별** — CI가 RTL 디버그가 아니라 vcmp/velab 재실행임을 앎. silent 재사용 절대 없음 *(2026-06-10 구현)* |
 | 3 | CLI/usage 에러(잘못된 플래그, filelist 못 찾음, `E-FLIST-CYCLE`) |
 | 101 | 내부 에러/panic: `panic=unwind` + cli `catch_unwind`(03 release 근거)로 잡아 **부분 VCD flush** + diag 내부오류 리포트. 전용 코드라 09 차등검증 runner가 vitamin crash를 RTL 실패로 **절대 오인 안 함**(101 = Rust panic 관례) |
 

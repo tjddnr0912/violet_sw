@@ -25,6 +25,7 @@ elaborate = { path = "../elaborate" }
 sim-ir = { path = "../sim-ir" }
 sim-engine = { path = "../sim-engine" }
 diag = { path = "../diag" }
+vita-log = { path = "../vita-log" }
 vita-artifact = { path = "../vita-artifact" }
 vita-schema = { path = "../vita-schema" }
 postcard = { workspace = true }

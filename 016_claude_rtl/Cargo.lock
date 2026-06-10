@@ -96,6 +96,7 @@ dependencies = [
  "sim-engine",
  "sim-ir",
  "vita-artifact",
+ "vita-log",
  "vita-schema",
 ]
 
@@ -580,6 +581,9 @@ dependencies = [
 [[package]]
 name = "vita-log"
 version = "0.0.0"
+dependencies = [
+ "diag",
+]
 
 [[package]]
 name = "vita-schema"

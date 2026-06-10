@@ -275,11 +275,11 @@ fn velab_rejects_stale_vu_schema_mismatch() {
     let vu = tmp("vu");
     std::fs::write(&vu, &bytes).unwrap();
 
-    // run_velab must reject at the gate → exit 1 (and emit E-ART-SCHEMA-MISMATCH).
+    // run_velab must reject at the gate → exit 2 (class 2: rebuild upstream).
     let velab = tmp("velab");
     assert_eq!(
         cli::run_velab(&s(&vu), &s(&velab), &cli::VitaOpts::default()),
-        cli::EXIT_USER_ERROR
+        cli::EXIT_STALE
     );
     assert!(!velab.exists(), "rejected .vu must not produce a .velab");
 
@@ -292,14 +292,14 @@ fn velab_rejects_stale_vu_schema_mismatch() {
     let _ = std::fs::remove_file(&vu);
 }
 
-// TEST 8: a bad-magic file is rejected with E-ART-FORMAT-MISMATCH (vrun exit 1).
+// TEST 8: a bad-magic file is rejected with E-ART-FORMAT-MISMATCH (vrun exit 2).
 #[test]
 fn vrun_rejects_bad_magic() {
     let junk = tmp("velab");
     std::fs::write(&junk, b"NOTVELAB....garbage").unwrap();
     assert_eq!(
         cli::run_vrun(&s(&junk), &cli::VitaOpts::default()),
-        cli::EXIT_USER_ERROR
+        cli::EXIT_STALE
     );
     let err = vita_artifact::read_velab(b"NOTVELAB....garbage").unwrap_err();
     assert_eq!(err.code, diag::MsgCode::ArtFormatMismatch);
@@ -325,7 +325,7 @@ fn vrun_rejects_stale_velab_schema_mismatch() {
     std::fs::write(&stale, &bad).unwrap();
     assert_eq!(
         cli::run_vrun(&s(&stale), &cli::VitaOpts::default()),
-        cli::EXIT_USER_ERROR
+        cli::EXIT_STALE
     );
 
     let tool = vita_artifact::ToolContext::current();
@@ -383,7 +383,7 @@ fn vrun_rejects_corrupt_body() {
     std::fs::write(&bad, &truncated).unwrap();
     assert_eq!(
         cli::run_vrun(&s(&bad), &cli::VitaOpts::default()),
-        cli::EXIT_USER_ERROR
+        cli::EXIT_STALE
     );
 
     // Pin the failure to the BODY-DECODE boundary: the header gate must PASS

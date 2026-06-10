@@ -188,3 +188,107 @@ fn out_clobbering_input_dot_spelling_rejected() {
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(body, "module m; endmodule\n", "input must be untouched");
 }
+
+// ── Phase-1.x D: -Wno-<CODE> / -Werror[=<CODE>] gates + exit class 2 ─────────
+
+/// A design that always emits W1017 (no `timescale) and finishes cleanly.
+fn warning_design(name: &str) -> std::path::PathBuf {
+    write_tmp(name, "module t; initial $finish; endmodule\n")
+}
+
+#[test]
+fn wno_suppresses_a_warning() {
+    let src = warning_design("wno.sv");
+    let base = vita(&[src.to_str().unwrap()]);
+    let gated = vita(&[src.to_str().unwrap(), "-Wno-W-PP-TIMESCALE-DEFAULT"]);
+    let _ = std::fs::remove_file(&src);
+    assert!(
+        String::from_utf8_lossy(&base.stderr).contains("VITA-W1017"),
+        "baseline must warn"
+    );
+    assert_eq!(gated.status.code(), Some(0));
+    assert!(
+        !String::from_utf8_lossy(&gated.stderr).contains("VITA-W1017"),
+        "suppressed warning must not print"
+    );
+}
+
+#[test]
+fn werror_promotes_warnings_and_fails() {
+    let src = warning_design("werr.sv");
+    let out = vita(&[src.to_str().unwrap(), "-Werror"]);
+    let _ = std::fs::remove_file(&src);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "promoted warning must fail");
+    // Rendered as an ERROR but keeps its original (stable) code number.
+    assert!(
+        err.contains("error[VITA-W1017]"),
+        "promotion renders error with the original code, got:\n{err}"
+    );
+}
+
+#[test]
+fn werror_targeted_hits_only_that_code() {
+    let src = warning_design("werrt.sv");
+    let hit = vita(&[src.to_str().unwrap(), "-Werror=W-PP-TIMESCALE-DEFAULT"]);
+    let miss = vita(&[src.to_str().unwrap(), "-Werror=W-PP-MACRO-REDEFINED"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(hit.status.code(), Some(1));
+    assert_eq!(
+        miss.status.code(),
+        Some(0),
+        "unrelated promotion must not fire"
+    );
+}
+
+#[test]
+fn gate_flag_with_unknown_mnemonic_is_cli_error() {
+    let src = warning_design("wbad.sv");
+    let out = vita(&[src.to_str().unwrap(), "-Wno-NOT-A-REAL-CODE"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-E0001"));
+}
+
+#[test]
+fn errors_are_never_suppressible() {
+    // -Wno- of an Error code is accepted (valid mnemonic) but has no effect:
+    // the always-logged spine keeps every Error/Fatal.
+    let src = write_tmp(
+        "wnoerr.sv",
+        "module t; initial x = 1; endmodule\n", // undeclared name → E3010
+    );
+    let out = vita(&[src.to_str().unwrap(), "-Wno-E-ELAB-UNRESOLVED-NAME"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("VITA-E3010"),
+        "errors must still print under -Wno-"
+    );
+}
+
+#[test]
+fn promoted_runtime_warning_fails_run() {
+    // doc-13: `-Werror=W-RUN-USER-WARNING` turns RTL $warning into a CI failure
+    // without editing the RTL.
+    let src = write_tmp(
+        "werrrun.sv",
+        "`timescale 1ns/1ns\nmodule t; initial begin $warning(\"w\"); $finish; end endmodule\n",
+    );
+    let ok = vita(&[src.to_str().unwrap()]);
+    let promoted = vita(&[src.to_str().unwrap(), "-Werror=W-RUN-USER-WARNING"]);
+    let _ = std::fs::remove_file(&src);
+    assert_eq!(ok.status.code(), Some(0));
+    assert_eq!(promoted.status.code(), Some(1));
+}
+
+#[test]
+fn artifact_gate_failure_exits_class_two() {
+    // doc-13 exit table: stale/artifact gates are class 2 — CI re-runs
+    // vcmp/velab instead of debugging RTL. Garbage header → magic mismatch.
+    let bad = write_tmp("garbage.velab", "this is not a velab artifact\n");
+    let out = vita(&["vrun", bad.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&bad);
+    assert_eq!(out.status.code(), Some(2), "artifact gate must exit 2");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-E9001"));
+}
