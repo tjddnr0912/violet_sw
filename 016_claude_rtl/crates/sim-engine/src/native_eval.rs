@@ -131,6 +131,22 @@ pub(crate) struct NativeProg {
     root_signed: bool,
 }
 
+/// P3-5: the run-time value stack is a FIXED 64-slot array (zero per-call heap
+/// allocation). Max live depth == the expression's right-leaning nesting depth
+/// (a linear `a+b+c+…` chain peaks at 2–3); `try_compile` verifies the compiled
+/// program never exceeds the cap and bails to the oracle otherwise.
+const NATIVE_STACK: usize = 64;
+
+/// Stack effect of one op: (pops, pushes).
+fn arity(op: &NOp) -> (u32, u32) {
+    match op {
+        NOp::Const { .. } | NOp::LoadScalar { .. } => (0, 1),
+        NOp::Not { .. } | NOp::Neg { .. } | NOp::Reduce { .. } | NOp::LogNot { .. } => (1, 1),
+        NOp::Ternary { .. } => (3, 1),
+        _ => (2, 1),
+    }
+}
+
 /// `eval_const` minus the real lane (we bail on real). Returns the const's natural
 /// `Value` (pre-resize); `None` for a real const.
 fn const_value(ir: &SimIr, cid: u32) -> Option<Value> {
@@ -178,6 +194,18 @@ pub(crate) fn try_compile(
     }
     let mut ops = Vec::new();
     lower(ir, wt, eid, ctx_width, ctx_signed, &mut ops)?;
+    // P3-5: verify the post-order program fits the fixed run-time stack.
+    let mut bal: u32 = 0;
+    let mut maxd: u32 = 0;
+    for op in &ops {
+        let (pop, push) = arity(op);
+        bal = bal.checked_sub(pop)?; // malformed program defends as a bail
+        bal += push;
+        maxd = maxd.max(bal);
+    }
+    if maxd as usize > NATIVE_STACK {
+        return None; // absurdly right-leaning nesting: leave it to the oracle
+    }
     Some(NativeProg {
         ops,
         root_w,
@@ -407,7 +435,14 @@ fn lower(
 /// Run a compiled program against `nets`, producing the single `Value` the oracle's
 /// `eval_ctx` would return for the same `(ExprId, ctx)`.
 pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
-    let mut stack: Vec<(u64, u64)> = Vec::with_capacity(prog.ops.len());
+    // P3-5: fixed array + manual sp — no heap allocation per evaluation.
+    // `try_compile` guaranteed the program's max depth ≤ NATIVE_STACK.
+    let mut buf = [(0u64, 0u64); NATIVE_STACK];
+    let mut sp = 0usize;
+    let mut stack = FixedStack {
+        buf: &mut buf,
+        sp: &mut sp,
+    };
     for op in &prog.ops {
         match *op {
             NOp::Const { val, unk } => stack.push((val, unk)),
@@ -679,6 +714,28 @@ pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
     out.val[0] = fv;
     out.unk[0] = fu;
     out
+}
+
+/// Minimal push/pop facade over the fixed buffer so the op arms read identically
+/// to the previous `Vec` form.
+struct FixedStack<'a> {
+    buf: &'a mut [(u64, u64); NATIVE_STACK],
+    sp: &'a mut usize,
+}
+impl FixedStack<'_> {
+    #[inline]
+    fn push(&mut self, v: (u64, u64)) {
+        self.buf[*self.sp] = v;
+        *self.sp += 1;
+    }
+    #[inline]
+    fn pop(&mut self) -> Option<(u64, u64)> {
+        if *self.sp == 0 {
+            return None;
+        }
+        *self.sp -= 1;
+        Some(self.buf[*self.sp])
+    }
 }
 
 #[cfg(test)]

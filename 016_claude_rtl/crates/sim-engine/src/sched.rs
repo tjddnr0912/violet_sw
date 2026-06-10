@@ -123,9 +123,18 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// Per-activity private state. `index == Ready.proc` (activity id). Seeded 1:1
     /// with `ir.processes` at t0; fork appends children (append-only, never reused).
     activities: Vec<Activity>,
-    /// Live fork join barriers. `index == JoinBarrier id` (a child's `join_ref`);
-    /// append-only, never reused (so no ABA on the barrier id space).
+    /// Live fork join barriers. `index == JoinBarrier id` (a child's `join_ref`).
+    /// Slots are RECYCLED through `free_barriers` once every child has reported
+    /// (P3-1) — no live reference can outlast that point, so no ABA.
     barriers: Vec<JoinBarrier>,
+    /// P3-1 free lists: completed fork-child activity slots / fully-drained
+    /// barrier slots, recycled by the next `exec_fork`. Without these a
+    /// `forever fork … join_none` loop grows both arenas O(timesteps)
+    /// (~800 MB over 10M cycles). Determinism: the free-list state is a pure
+    /// function of the (deterministic) execution, and ids are internal — VCD/
+    /// stdout bytes are unchanged (P5 gate + corpus enforce).
+    free_activities: Vec<u32>,
+    free_barriers: Vec<u32>,
     /// Join-mode side table from elaborate, keyed `(template, join_bb)`.
     fork_modes: ForkModeTable,
     /// Last RHS value seen per cont-assign — only used by DELAYED `assign #d`
@@ -167,6 +176,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             net_to_edge: vec![Vec::new(); nnets],
             activities: Vec::new(),
             barriers: Vec::new(),
+            free_activities: Vec::new(),
+            free_barriers: Vec::new(),
             fork_modes,
             last_ca: vec![None; nca],
             delayed_ca: BTreeMap::new(),
@@ -242,6 +253,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // Pre-seed top-level activities 1:1 with process declarations. `tie ==
         // template == declaration index` so existing single-process ordering is
         // byte-identical to before the activity-id refactor.
+        self.free_activities.clear();
+        self.free_barriers.clear();
         self.activities = (0..self.st.ir.processes.len() as u32)
             .map(|pi| Activity {
                 template: pi,
@@ -615,14 +628,45 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                         }
                     )
                 };
-                let cur_vals: Vec<Value> = args
-                    .iter()
-                    .filter(|&&eid| !is_direct_time(eid))
-                    .map(|&eid| self.eval(eid))
-                    .collect();
-                let changed = match &prev {
-                    None => true, // establishment / replace → print
-                    Some(old) => !vals_same_bits(old, &cur_vals),
+                // P3-2: reuse the previous baseline Vec — evaluate each arg,
+                // compare against the old slot, then overwrite IN PLACE (one
+                // allocation per monitor lifetime, not one per timestep).
+                let (changed, cur_vals) = match prev {
+                    None => (
+                        true, // establishment / replace → print
+                        args.iter()
+                            .filter(|&&eid| !is_direct_time(eid))
+                            .map(|&eid| self.eval(eid))
+                            .collect::<Vec<Value>>(),
+                    ),
+                    Some(mut old) => {
+                        let mut changed = false;
+                        let mut i = 0usize;
+                        for &eid in args.iter().filter(|&&eid| !is_direct_time(eid)) {
+                            let v = self.eval(eid);
+                            match old.get_mut(i) {
+                                Some(slot) => {
+                                    if !(slot.width == v.width
+                                        && slot.val == v.val
+                                        && slot.unk == v.unk)
+                                    {
+                                        changed = true;
+                                    }
+                                    *slot = v;
+                                }
+                                None => {
+                                    changed = true;
+                                    old.push(v);
+                                }
+                            }
+                            i += 1;
+                        }
+                        if i != old.len() {
+                            changed = true;
+                            old.truncate(i);
+                        }
+                        (changed, old)
+                    }
                 };
                 if changed {
                     let mut line = format_args_str(self, fmt, &args, radix);
@@ -690,8 +734,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 
         // (a) wake statically edge-sensitive `always` processes.
         for &(net, prev, new) in &edges {
-            let edge_list = self.net_to_edge[net as usize].clone();
-            for (kind, ready) in edge_list {
+            // P3-4: index loop instead of cloning the per-net waiter list every
+            // delta — the body only pushes into `cur.active`, never mutates
+            // `net_to_edge`, so the indexed re-borrow is sound.
+            for k in 0..self.net_to_edge[net as usize].len() {
+                let (kind, ready) = self.net_to_edge[net as usize][k];
                 if edge_fires(kind, prev, new) {
                     push_sorted(&mut self.cur.active, ready);
                 }
@@ -1052,16 +1099,25 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             return None; // parent parks; run loop sees `finished` and ends the run
         };
 
-        // Register the barrier (append-only id space → no ABA).
-        let join_ref = self.barriers.len() as u32;
-        self.barriers.push(JoinBarrier {
+        // Register the barrier, recycling a drained slot when available (P3-1).
+        let barrier = JoinBarrier {
             parent: parent_aid,
             join_bb: join,
             resume_bb,
             mode,
             outstanding: children.len() as u32,
             fired: false,
-        });
+        };
+        let join_ref = match self.free_barriers.pop() {
+            Some(id) => {
+                self.barriers[id as usize] = barrier;
+                id
+            }
+            None => {
+                self.barriers.push(barrier);
+                (self.barriers.len() - 1) as u32
+            }
+        };
 
         // Spawn each child as a NEW activity. Deterministic: declaration order ==
         // the order of `children`; each child's tie composes parent.tie + child idx.
@@ -1071,14 +1127,25 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         let parent_tie = self.activities[parent_aid as usize].tie;
         for (child_idx, &child_entry) in children.iter().enumerate() {
             let child_tie = compose_child_tie(parent_tie, child_idx as u32);
-            let child_aid = self.activities.len() as u32;
-            self.activities.push(Activity {
+            let child = Activity {
                 template: parent_tmpl,
                 tie: child_tie,
                 join_ref: Some(join_ref),
                 is_child: true,
                 reported: false,
-            });
+            };
+            // Recycle a completed child slot when available (P3-1): a freed slot's
+            // old activity has reported (it cannot be queued/waiting anywhere).
+            let child_aid = match self.free_activities.pop() {
+                Some(id) => {
+                    self.activities[id as usize] = child;
+                    id
+                }
+                None => {
+                    self.activities.push(child);
+                    (self.activities.len() - 1) as u32
+                }
+            };
             // Make the child runnable NOW (same instant, Active region); push_sorted
             // by the composed tie keeps siblings in declaration order.
             push_sorted(
@@ -1124,6 +1191,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             "internal error: child {child_aid} reported completion twice"
         );
         self.activities[child_aid as usize].reported = true;
+        // P3-1: the reporting child is DEAD past this point (its run_process
+        // returns Step::Done right after; children never re-arm) — recycle.
+        self.free_activities.push(child_aid);
 
         let b = &mut self.barriers[join_ref as usize];
         debug_assert!(
@@ -1131,6 +1201,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             "internal error: barrier {join_ref} outstanding underflow"
         );
         b.outstanding -= 1;
+        if b.outstanding == 0 {
+            // Every child has reported: nothing references this barrier anymore
+            // (the parent resume below reads its fields by value) — recycle.
+            self.free_barriers.push(join_ref);
+        }
         let fire = match b.mode {
             JoinMode::All => b.outstanding == 0, // last child
             JoinMode::Any => true,               // first child (later guarded by `fired`)
@@ -1221,17 +1296,6 @@ fn push_sorted(q: &mut Vec<Ready>, r: Ready) {
 /// ≤ 65535 children per fork (far above any MVP testbench).
 fn compose_child_tie(parent_tie: u32, child_idx: u32) -> u32 {
     ((parent_tie + 1) << 16) | (child_idx & 0xFFFF)
-}
-
-/// `$monitor` change detection compares the BIT PLANES only (width + val +
-/// unk). The derived `Value::PartialEq` also compares the static `signed` /
-/// `is_real` metadata, which is representation — IEEE §17.1 keys reprints on
-/// VALUE change (P0-9).
-fn vals_same_bits(a: &[Value], b: &[Value]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(x, y)| x.width == y.width && x.val == y.val && x.unk == y.unk)
 }
 
 fn is_posedge(prev: FourState, new: FourState) -> bool {
