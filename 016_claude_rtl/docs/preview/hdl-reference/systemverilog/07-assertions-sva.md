@@ -13,6 +13,12 @@ IEEE 1800-2017 §16 기준.
 즉각 assertion은 절차적 블록 안에서 현재 시뮬레이션 시간의 값을 직접 평가한다.
 `if/else`문과 동작 방식이 같다 — 클록과 무관하다.
 
+> **vitamin 구현 상태 (2026-06-10):** **immediate `assert`는 구현됨** — 파서가
+> `Stmt::If`로 desugar(AST 동결 유지, X/Z cond → 실패 분기 = `if` 의미론과 동일).
+> else절 생략 시 IEEE 디폴트 동작 `$error("Assertion failed")` 합성(stderr 진단 +
+> exit 1, 런 계속). `assert property`(동시)·`assert #0`/`assert final`(연기형)은
+> **loud 파스 에러**, `assume`/`cover`는 미지원(키워드 아님 → loud).
+
 ```systemverilog
 always_ff @(posedge clk) begin
     // 즉각 assert: 현재 시뮬레이션 시간에 평가

@@ -552,3 +552,29 @@ fn diff_blocking_intra_assignment_delay() {
          endmodule",
     );
 }
+
+#[test]
+fn diff_immediate_assert() {
+    // Immediate assert with EXPLICIT actions only — both tools print the same
+    // pass/else $display lines. The no-else asserts in this design always PASS
+    // so no tool-specific default-failure text reaches stdout. X conditions
+    // (uninitialized reg) must take the else branch in both tools.
+    assert_matches_iverilog(
+        "immediate_assert",
+        "module tb; \
+           reg a; reg b; reg [1:0] c; \
+           initial begin \
+             a = 1; \
+             assert (a) $display(\"p1\"); else $display(\"f1\"); \
+             a = 0; \
+             assert (a) $display(\"p2\"); else $display(\"f2\"); \
+             assert (b) $display(\"p3\"); else $display(\"f3\"); \
+             assert (a == 0); \
+             assert (a | b) else $display(\"f4\"); \
+             c = 2'b10; \
+             assert (c[1] & ~c[0]) $display(\"p5\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}

@@ -2524,6 +2524,7 @@ impl<'t, 's> Parser<'t, 's> {
                 Kw::Deassign => self.parse_deassign(),
                 Kw::Force => self.parse_force(),
                 Kw::Release => self.parse_release(),
+                Kw::Assert => self.parse_assert(),
                 _ => self.stmt_error(),
             },
             Some(T::SystemTask) => self.parse_systask_call(),
@@ -2693,6 +2694,61 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::Semi, "';'");
         Stmt::Release {
             lhs,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// SV immediate assertion (IEEE 1800 §16.3):
+    ///   `assert (expr) [pass_stmt] [else fail_stmt]`
+    /// Desugared AT PARSE TIME to `Stmt::If` — the AST `Stmt` variant set is
+    /// frozen (verdict M7), and `if` already has the exact assert condition
+    /// semantics (0/X/Z cond → else branch = assertion failure). A missing
+    /// else clause synthesizes the IEEE default failure action
+    /// `$error("Assertion failed")`, which lowers through the severity table
+    /// (stderr diagnostic + nonzero exit; run continues). Concurrent
+    /// (`assert property`) and deferred (`assert #0` / `assert final`) forms
+    /// are LOUD parse errors, never dropped. Dangling-else: in
+    /// `assert (c) if (x) a; else b;` the else binds to the inner if
+    /// (nearest) and the assert gets the synthesized default — the same
+    /// resolution the SV grammar specifies.
+    fn parse_assert(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // `assert`
+        if self.peek() != Some(TokenKind::LParen) {
+            self.error("'(' after 'assert' (concurrent/deferred assertions are unsupported in v1)");
+            return self.stmt_error_at(start);
+        }
+        self.bump(); // `(`
+        let cond = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        // action_block ::= statement_or_null | [statement] `else` statement
+        let then_s = if self.at_kw(Kw::Else) {
+            Box::new(Stmt::Null(start)) // else-only form: no pass action
+        } else {
+            Box::new(self.parse_statement())
+        };
+        let else_s = if self.eat_kw(Kw::Else) {
+            Box::new(self.parse_statement())
+        } else {
+            let sp = start.to(self.prev_span());
+            Box::new(Stmt::SysTaskCall {
+                name: Ident {
+                    name: "$error".to_string(),
+                    span: sp,
+                },
+                args: vec![Expr {
+                    kind: ExprKind::StrLit {
+                        raw: "\"Assertion failed\"".to_string(),
+                    },
+                    span: sp,
+                }],
+                span: sp,
+            })
+        };
+        Stmt::If {
+            cond,
+            then_s,
+            else_s: Some(else_s),
             span: start.to(self.prev_span()),
         }
     }
@@ -3578,6 +3634,99 @@ mod tests {
             errs.len(),
             1,
             "intra-assign EVENT control stays an advisory"
+        );
+    }
+
+    // S15. SV immediate assert (IEEE 1800 §16.3) desugars AT PARSE TIME to
+    //      `Stmt::If` — the frozen AST Stmt set (M7) gains no variant, and `if`
+    //      already has the exact assert condition semantics (X/Z → else). No
+    //      else clause ⇒ the IEEE default failure action is synthesized as
+    //      `$error("Assertion failed")`.
+    #[test]
+    fn s15_assert_desugars_to_if_with_default_error() {
+        let (su, errs) = p("module m;\ninitial assert (a == 1);\nendmodule");
+        assert!(errs.is_empty(), "immediate assert parses clean: {errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let Some(ModuleItem::Proc(pb)) = m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
+        else {
+            panic!("no proc block")
+        };
+        let Stmt::If { then_s, else_s, .. } = &*pb.body else {
+            panic!("assert must desugar to If: {:?}", pb.body)
+        };
+        assert!(
+            matches!(**then_s, Stmt::Null(_)),
+            "no pass action → Null then-branch"
+        );
+        let Some(e) = else_s else {
+            panic!("missing else clause must synthesize the default action")
+        };
+        let Stmt::SysTaskCall { name, args, .. } = &**e else {
+            panic!("default else must be a $error call: {e:?}")
+        };
+        assert_eq!(name.name, "$error");
+        assert_eq!(args.len(), 1);
+        assert!(
+            matches!(&args[0].kind, ExprKind::StrLit { raw } if raw.contains("Assertion failed"))
+        );
+    }
+
+    // S15b. explicit pass/else actions map onto the If branches verbatim; the
+    //       else-only form gets a Null then-branch.
+    #[test]
+    fn s15b_assert_actions_map_to_if_branches() {
+        let (su, errs) =
+            p("module m;\ninitial assert (a) $display(\"ok\"); else $display(\"no\");\nendmodule");
+        assert!(errs.is_empty(), "{errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let Some(ModuleItem::Proc(pb)) = m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
+        else {
+            panic!("no proc block")
+        };
+        let Stmt::If { then_s, else_s, .. } = &*pb.body else {
+            panic!("not If: {:?}", pb.body)
+        };
+        let Stmt::SysTaskCall { name, .. } = &**then_s else {
+            panic!("pass action must be the then-branch")
+        };
+        assert_eq!(name.name, "$display");
+        let Some(e) = else_s else { panic!("no else") };
+        let Stmt::SysTaskCall { name, .. } = &**e else {
+            panic!("user else action must be kept verbatim")
+        };
+        assert_eq!(name.name, "$display");
+
+        // else-only: `assert (a) else x = 1;`
+        let (su2, errs2) = p("module m;\ninitial assert (a) else x = 1;\nendmodule");
+        assert!(errs2.is_empty(), "{errs2:?}");
+        let su2 = su2.unwrap();
+        let m2 = first_module(&su2);
+        let Some(ModuleItem::Proc(pb2)) = m2.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
+        else {
+            panic!("no proc block")
+        };
+        let Stmt::If { then_s, else_s, .. } = &*pb2.body else {
+            panic!("not If")
+        };
+        assert!(matches!(**then_s, Stmt::Null(_)));
+        assert!(matches!(else_s.as_deref(), Some(Stmt::Blocking { .. })));
+    }
+
+    // S15c. concurrent (`assert property`) and deferred (`assert #0`) forms are
+    //       LOUD parse errors — never silently dropped.
+    #[test]
+    fn s15c_assert_property_and_deferred_are_loud() {
+        let (_, errs) = p("module m;\ninitial assert property (@(posedge clk) a);\nendmodule");
+        assert!(
+            !errs.is_empty(),
+            "concurrent assertion must be a loud parse error"
+        );
+        let (_, errs2) = p("module m;\ninitial assert #0 (a);\nendmodule");
+        assert!(
+            !errs2.is_empty(),
+            "deferred assertion must be a loud parse error"
         );
     }
 

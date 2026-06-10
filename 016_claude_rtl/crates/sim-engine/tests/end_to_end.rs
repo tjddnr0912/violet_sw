@@ -2897,3 +2897,30 @@ fn force_expression_reevaluates_continuously() {
     // r keeps its last value 0.
     assert_eq!(out, "t2 w=1 r=1\nt3 w=0 r=0\nt4 w=0 r=0\nt5 w=0 r=0\n");
 }
+
+#[test]
+fn immediate_assert_actions_follow_verilog_truthiness() {
+    // Oracle (iverilog -g2012, probed live → p1 f2 f3 f4 p5): an X condition
+    // FAILS the assert (if-(x) takes else per IEEE 1800 §16.3), pass/else
+    // actions are plain statements, and a PASSING assert with no action block
+    // is silent (its synthesized default $error must not run).
+    let ir = build(
+        "module tb; reg a; reg b; reg [1:0] c; \
+           initial begin \
+             a = 1; \
+             assert (a) $display(\"p1\"); else $display(\"f1\"); \
+             a = 0; \
+             assert (a) $display(\"p2\"); else $display(\"f2\"); \
+             assert (b) $display(\"p3\"); else $display(\"f3\"); \
+             assert (a == 0); \
+             assert (a | b) else $display(\"f4\"); \
+             c = 2'b10; \
+             assert (c[1] & ~c[0]) $display(\"p5\"); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "p1\nf2\nf3\nf4\np5\n");
+}

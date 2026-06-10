@@ -475,6 +475,8 @@ pub enum Kw {
     Logic, AlwaysFf, AlwaysComb, AlwaysLatch,
     // --- SV user-defined types (Phase-2) ---
     Typedef, Enum, Struct, Union, Packed,
+    // --- SV immediate assertion (Phase-2 gateway item E) ---
+    Assert,
 }
 
 impl Kw {
@@ -535,6 +537,7 @@ impl Kw {
             "always_comb" => AlwaysComb, "always_latch" => AlwaysLatch,
             "typedef" => Typedef, "enum" => Enum, "struct" => Struct,
             "union" => Union, "packed" => Packed,
+            "assert" => Assert,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

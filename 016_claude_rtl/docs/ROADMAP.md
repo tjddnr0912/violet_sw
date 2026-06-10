@@ -105,10 +105,10 @@ loud-reject로 확인됨(이제 참):**
 | **(B) named event + `->`/`@(ev)`** | `NetKind::Event`(또는 별도 arena) + `Stmt::EventTrigger` + `WaitCause` 확장 | **bump 필수.** P1-2 loud-reject의 해제 조건. 소형~중형 |
 | **(C) dynamic array / queue / assoc array** | 정적 평탄화 전제(고정폭 `BitPacked` storage) 자체를 깸 — NetVar storage 모델 + Expr/Stmt(인덱싱·push/pop·size) 신설 | **bump 필수 + Phase-2 코어.** 엔진 storage 재설계라 **별도 설계 문서가 선행** — 설계가 익기 전 (A)+(B)만으로 bump하지 말 것(이중 bump 방지) |
 | (D) interface / modport | 아마 **무변경** — 모듈 평탄화처럼 elaborate에서 와이어 번들로 lower 가능성 높음 | bump 불요 가설 검증부터(스파이크). package/import도 동류 |
-| (E) immediate assertion `assert(e) else $error` | **무변경** — `If` + SeverityTable lower로 충분 | bump 불요, 아무 때나. concurrent SVA는 별개(거대, Phase-3) |
+| ✅(E) immediate assertion `assert(e) else $error` | **무변경** — 파서가 `Stmt::If`로 desugar(AST 동결 유지) + 디폴트 실패는 `$error("Assertion failed")` 합성(severity 테이블 경유 stderr+exit1) | **완료 2026-06-10** (654 green, iverilog 차분 일치 — X-cond=fail 포함). concurrent SVA는 별개(거대, Phase-3), `assert property`/`#0`/`final`=loud |
 | (F) `disable` 실동작 / proc-`assign`/`deassign` | `Disable`은 IR에 이미 있음(엔진 no-op); proc-assign은 force 기계 재사용 가능성 | 엔진/사이드테이블 위주 — bump 불요 추정 |
 
-**진입 시퀀스(권장):** ① IR-무변경부터 — (E) immediate assert → (D) interface 스파이크 → (F) ②
+**진입 시퀀스(권장):** ① IR-무변경부터 — ~~(E) immediate assert~~✅ → (D) interface 스파이크 → (F) ②
 (C) dynamic storage **설계 문서**(엔진 storage·결정성·VCD 표현) ③ 설계 확정 후 **v5 bump 일괄 = (A)+(B)+(C)**.
 
 ---

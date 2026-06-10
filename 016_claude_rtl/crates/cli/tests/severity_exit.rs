@@ -116,3 +116,61 @@ fn staged_error_exits_one() {
         let _ = std::fs::remove_file(p);
     }
 }
+
+const ASSERT_DEFAULT_TB: &str = r#"
+module tb;
+  initial begin
+    assert (1'b0);
+    #1 $display("kept going");
+    $finish;
+  end
+endmodule
+"#;
+
+const ASSERT_PASS_TB: &str = r#"
+module tb;
+  initial begin
+    assert (1'b1);
+    $finish;
+  end
+endmodule
+"#;
+
+/// SV immediate assert with NO else clause: failure runs the IEEE 1800 §16.3
+/// default action — `$error` ⇒ stderr diagnostic + exit 1, run completes.
+#[test]
+fn oneshot_assert_default_failure_exits_one() {
+    let src = tmp("sv");
+    std::fs::write(&src, ASSERT_DEFAULT_TB).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_vita"))
+        .arg(&src)
+        .output()
+        .expect("run vita");
+    let _ = std::fs::remove_file(&src);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "exit code; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("Assertion failed"),
+        "default action must carry the assert message:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("kept going"),
+        "$error continues the run:\n{stdout}"
+    );
+}
+
+/// A PASSING no-action assert is silent: exit 0, no synthesized diagnostic.
+#[test]
+fn oneshot_assert_pass_exits_zero() {
+    let src = tmp("sv");
+    std::fs::write(&src, ASSERT_PASS_TB).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_vita"))
+        .arg(&src)
+        .output()
+        .expect("run vita");
+    let _ = std::fs::remove_file(&src);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+    assert!(!stderr.contains("Assertion failed"), "stderr:\n{stderr}");
+}
