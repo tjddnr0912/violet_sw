@@ -1,6 +1,6 @@
 # vitamin — 잔여 작업 트래커 (Remaining Work)
 
-> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa` → **동일자 P0~P4 일괄 처리 완료(HEAD `0945dfe`)**: P0 9건 → P1 9건 → P2 11/12건 → P3 4건+양호판정 → P4 T0a/T0b/T1 → native-eval follow-on. · **566 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3) · MsgCode 45→**50**(F4016·W4018·W4019·E3018·W3056 본문 승격, bijection 동기화).
+> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa` → **동일자 전 항목 소진**: P0 9건 → P1 9건 → P2 12/12건 → P3 4건+양호판정 → P4 T0a/T0b/T1 → native-eval follow-on → P5 문서부채 전체. · **571 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3) · MsgCode 45→**50**(F4016·W4018·W4019·E3018·W3056 본문 승격, bijection 동기화). **이 트래커는 완결 — 신규 작업은 §권장 순서(perf 축·Phase-1.x)에서 시작.**
 > 출처: 7축 감사 — ①Gemini-fix 검토 ②spec-gap ③sim-engine ④front-end ⑤메모리/자원 ⑥운용성 ⑦병렬화. 핵심 항목은 라이브 재현(+iverilog 차분)으로 확정, 각 항목에 `재현:` 표기.
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
@@ -65,7 +65,7 @@
 
 - [x] **[P2-10]** warn() 코드 오염 — ✅ `41f5162`. 범용 warn=**W3056 `W-ELAB-FEATURE-LIMIT`**(부록A→본문 승격). W3008은 실제 폭-절단 경고 구현 전까지 본문 예약(현재 emitter 0 — 의도된 dead).
 - [x] **[P2-11]** ✅ `41f5162`(+P1-1로 RunUser\*/RunFatal 활성화). 중복 모듈=**E-DUP-UNIT Error**, `%m`=proc_scopes 사이드카(7번째 trailer)로 실 계층경로(strobe/monitor는 등록 스코프 복원; iverilog 내용 일치 라이브 검증). 잔여 dead codes(DupUnit→활성됨 제외: ParseImplicitNet·ElabUser\*·RunAssertFail·RunNoLocations·LintUnclosed·W3008)=예약 상태 명문화. exit class 2 문서 불일치=P5로.
-- [ ] **[P2-12]** 정책 소항목 묶음(유일 잔여) — ~~`$finish(n)` doc 주장~~(✅ doc-04 수용-무시 명기) · `timescale_unit_string` 범위외 silent "s" · `time` 타입 E3009 거부(64bit unsigned 수용 trivial) · `` `pragma`` 수용-무시 · implicit-net 정책 명문화 · `same_path` canonicalize. 전부 비긴급 정책결정류.
+- [x] **[P2-12]** 정책 소항목 묶음 — ✅ 2026-06-10 일괄 처리. ~~`$finish(n)` doc 주장~~(✅ doc-04) · `timescale_unit_string`=clamp([-15,+2] 포화, "-16→100s" 오렌더 제거) · **`time` 타입 수용**(64-bit unsigned 4-state 변수, NetKind::Reg 매핑 — frozen IR 무변경; unpacked 배열·`parameter time` 포함, iverilog 차분 `diff_time_type_semantics` 추가) · `` `pragma`` 수용-무시(IEEE §22.11, 줄 소비·무진단) · implicit-net 정책 명문화(doc-15 W2003: v1=사실상 `default_nettype none`, 미선언→E3010, W2003=예약) · `same_path`=이미 canonicalize 동작 확인(./x.sv vs x.sv 거부 회귀 박제). 잔여 없음.
 
 ## P3 — 메모리/장기 시뮬 안정성
 
@@ -96,18 +96,16 @@
 ## P5 — 문서부채 (docs ↔ code 불일치)
 
 - [x] 01-display-io.md b/o/h·예시 주장 — ✅ **구현으로 해소**(P0-8이 :46 예시를, P1-5가 :11/219 "16종" 주장을 참으로 만듦). 문서 수정 불요.
-- [ ] ROADMAP §D "의도적 deferral 전부 loud-reject 확인됨" → **거짓**(force/release/->ev/disable=warn+no-op, 비상수 delay→#0) — ✅ 이번 리뉴얼에서 §D 정정함.
-- [ ] doc-13/15 동기화 잔여 — ~~`$fatal` abort·exit-1~~(✅ P1-1로 참) · `-Wno-*`/`-Werror=` 억제 플래그 서술=미래형(미구현 명기 필요) · 예약 dead codes(ParseImplicitNet·ElabUser\*·RunAssertFail·RunNoLocations·LintUnclosed·W3008) 실태 명기 · exit class 2 문서 불일치(실제 0/1/3).
-- [ ] 소항목 잔여 — ~~10-vcd "7종"~~(✅ 5종+Phase-1.x 명기) · ~~04 "$finish severity 처리"~~(✅ 수용-무시+P1-6 드레인 명기) · hdl-parser:1119 게이트 프리미티브 주석 · doc-01:22-26 filelist `-f`/multi-lib/`vita explain`(Phase-1.x 트래킹 or de-scope 결정).
+- [x] ROADMAP §D "의도적 deferral 전부 loud-reject 확인됨" → 거짓이었음 — ✅ 2026-06-10 리뉴얼에서 §D 정정 + P1-2/3으로 실제 loud-reject화 완료.
+- [x] doc-13/15 동기화 잔여 — ✅ 2026-06-10. ~~`$fatal` abort·exit-1~~(✅ P1-1로 참) · `-Wno-*`/`-Werror=` 억제 플래그=Phase-1.x 미래형 명기(doc-15 거버넌스 + doc-13 suppression 절, `--help`=진실 공급원) · 예약 dead codes(ParseImplicitNet·ElabUser\*·RunAssertFail·RunNoLocations·LintUnclosed·W3008) 실태 명기(doc-15 거버넌스 불릿) · exit class 표 정정(doc-13: 현 구현=0/1/3+101, class 2=예약·현재는 1로 분류 명기).
+- [x] 소항목 잔여 — ✅ 2026-06-10. ~~10-vcd "7종"~~(✅) · ~~04 "$finish severity"~~(✅) · hdl-parser:1119 주석(게이트 프리미티브=키워드-led, 이 arm 미도달·E2002 loud 명기) · doc-01:22-26 filelist `-f`/multi-lib/`vita explain`=**Phase-1.x 인라인 표기로 결정**(de-scope 아님, 목표 유지).
 - [x] (구)트래커:290-292 doc-01 drift 3건 — 2026-06-07에 이미 교정 완료된 stale checkbox였음. 이번 리뉴얼로 해소.
 
 ## 권장 작업 순서 (다음 세션)
 
-1. ~~P0 전체(1~9)~~ ✅ · ~~P1 전체(1~9)~~ ✅ · ~~P2 1~11~~ ✅ · ~~P3 전체~~ ✅ · ~~P4 T0a/T0b/T1~~ ✅ · ~~native-eval follow-on(비교/시프트/DivMod/ternary/리덕션/논리)~~ ✅ — **2026-06-10 일괄 완료(HEAD `0945dfe`, 566 green).**
-2. **P2-12 정책 소항목** — time 타입 수용 · `` `pragma`` 수용-무시 · same_path canonicalize 등(비긴급).
-3. **P5 문서 동기화 잔여** — 억제 플래그 미래형 명기 · 예약 codes 실태 · exit-class 표 · doc-01 filelist de-scope 결정.
-4. **perf 다음 축** — ①스케줄러축(클럭-바운드: codegen-heavy 0.90x이 상한 — doc-18 분석 선행) ②native-eval >64bit/real/select/concat lane ③P4-T2(front-end 병렬, `-u` 의미론 결정 선행).
-5. **Phase-1.x 기능** — 런타임 delay(frozen Delay 형상 → format_version bump 동반) · force/release 실semantics · `$dumpflush/$dumplimit` · `-Wno-*`/`-Werror=` 게이트.
+1. ~~P0 전체(1~9)~~ ✅ · ~~P1 전체(1~9)~~ ✅ · ~~P2 전체(1~12)~~ ✅ · ~~P3 전체~~ ✅ · ~~P4 T0a/T0b/T1~~ ✅ · ~~native-eval follow-on~~ ✅ · ~~P5 문서부채 전체~~ ✅ — **2026-06-10 트래커 전 항목 소진(571 green).**
+2. **perf 다음 축** — ①스케줄러축(클럭-바운드: codegen-heavy 0.90x이 상한 — doc-18 분석 선행) ②native-eval >64bit/real/select/concat lane ③P4-T2(front-end 병렬, `-u` 의미론 결정 선행).
+3. **Phase-1.x 기능** — 런타임 delay(frozen Delay 형상 → format_version bump 동반) · force/release 실semantics · `$dumpflush/$dumplimit` · `-Wno-*`/`-Werror=` 게이트 · filelist `-f`/`-F` · `vita explain` · exit class 2 분리(`vita-log`).
 
 ## 아카이브 (완결 이력 요약)
 

@@ -24,6 +24,15 @@
   해당 밴드의 다음 빈 번호를 단조 부여**한다(알파벳 재정렬 금지). 공식 출처 기반 추가 케이스
   인벤토리는 **부록 A** 참조(미구현 예약 코드 107개 + 밴드 5/6/7).
 - severity·게이트·exit 의미는 [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md).
+- **억제/승격 플래그는 미래형이다(Phase-1.x):** 본문 곳곳의 `-Wno-<MNEMONIC>`/`-Werror=` 안내는
+  계획된 UX이며 **현 CLI에 아직 없다**(`vita --help`가 진실 공급원). 현재 억제 수단은 코드 수정뿐.
+- **본문 등재 = 발행 보장이 아니다(예약 dead codes):** 다음 코드는 enum에 실재하나 **현 구현에
+  emitter가 0개**인 의도적 예약 상태다 — `W-PARSE-IMPLICIT-NET`(vitamin v1은 implicit net을
+  생성하지 않음 — 미선언 참조는 E3010 hard error; 추후 IEEE 기본 동작 구현 시 활성화),
+  `E/F/I/W-ELAB-USER-*`(elaboration-time severity 태스크 — 현재 severity 태스크는 런타임
+  4xxx로 발행), `E-RUN-ASSERT-FAIL`(assert는 Phase-1.x), `W-RUN-NO-LOCATIONS`,
+  `W-LINT-UNCLOSED`(lint_off 프라그마 미구현), `W-ELAB-WIDTH-TRUNC`(실제 폭-절단 경고
+  emitter 구현 전까지 예약).
 
 ### 번호대 예약
 
@@ -219,6 +228,12 @@ warning[VITA-W2003]: implicit net 'enabel' inferred (default_nettype wire)  --> 
 ```
 **해결:** net 명시 선언 또는 오타 수정. 프로덕션 RTL은 `` `default_nettype none `` 권장.
 `-Wno-W-PARSE-IMPLICIT-NET`(또는 인라인 `lint_off`)로 억제, `-Werror=`로 승격.
+
+> **현 구현 정책(P2-12 명문화):** vitamin v1은 **implicit net을 생성하지 않는다** — 미선언
+> 식별자 참조는 일률적으로 `E-ELAB-UNRESOLVED-NAME`(E3010) hard error다. 즉 현재 동작은
+> IEEE 기본(`default_nettype wire`)이 아니라 사실상 `` `default_nettype none ``이며, 이 코드는
+> implicit-net 추론을 구현하는 시점까지 **예약(emitter 0)** 상태다. 오타가 조용히 wire가 되는
+> 사고 클래스가 원천 차단되는 보수적 선택.
 
 ---
 
