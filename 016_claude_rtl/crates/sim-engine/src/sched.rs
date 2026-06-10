@@ -1318,6 +1318,12 @@ impl Kernel for Scheduler<'_, '_> {
     fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets {
         self.resolve_lvalue_offsets(lhs)
     }
+    fn k_force(&mut self, lhs: &Lvalue, value: Value) {
+        self.st.force_write(lhs, value);
+    }
+    fn k_release(&mut self, lhs: &Lvalue) {
+        self.st.release(lhs);
+    }
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) {
         self.st.write_lvalue(lhs, value, offsets);
     }

@@ -4373,11 +4373,39 @@ impl<'s> Elaborator<'s> {
                     "procedural assign/deassign is unsupported in v1 (was silently                      ignored); use a continuous assign or a plain procedural assignment",
                 );
             }
-            ast::Stmt::Force { .. } | ast::Stmt::Release { .. } => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "force/release is unsupported in v1 (was silently ignored)",
-                );
+            // force/release (IEEE 1364 §9.3.2) — WHOLE net/variable targets
+            // only (bit/part-selects are illegal force targets per the LRM and
+            // rejected loudly). v1 model = sample-once: the RHS is evaluated
+            // at execution time (matching the iverilog oracle, which warns
+            // "RHS will only be evaluated once"); full procedural-continuous
+            // re-evaluation is a documented refinement.
+            ast::Stmt::Force { lhs, rhs, .. } => {
+                let rhs_id = self.lower_expr(rhs);
+                let lv = self.lower_lvalue(lhs);
+                if !is_whole_single_net(&lv) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "force target must be a whole net/variable (a bit/part-select is not a legal force target)",
+                    );
+                    return;
+                }
+                let sid = self.push_stmt(ir::Stmt::Force {
+                    lhs: lv,
+                    rhs: rhs_id,
+                });
+                b.push_stmt_id(sid);
+            }
+            ast::Stmt::Release { lhs, .. } => {
+                let lv = self.lower_lvalue(lhs);
+                if !is_whole_single_net(&lv) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "release target must be a whole net/variable",
+                    );
+                    return;
+                }
+                let sid = self.push_stmt(ir::Stmt::Release { lhs: lv });
+                b.push_stmt_id(sid);
             }
             // Parse error is the ONE genuinely-fatal stmt: keep self.error.
             ast::Stmt::Error(_) => {
@@ -5210,6 +5238,19 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
         // Wire + all net aliases (Tri/Uwire/Wand/...) behave as Wire in v1.
         _ => ir::NetKind::Wire,
     }
+}
+
+/// True iff an lvalue is exactly ONE whole-net chunk (no bit/part-select, no
+/// array word) — the only legal force/release target shape (IEEE §9.3.2).
+fn is_whole_single_net(lv: &ir::Lvalue) -> bool {
+    matches!(
+        lv.chunks.as_slice(),
+        [ir::LvalChunk {
+            word: None,
+            offset: None,
+            ..
+        }]
+    )
 }
 
 /// Whether a kind is modeled in v1 without an `ElabUnsupported` note. Pure

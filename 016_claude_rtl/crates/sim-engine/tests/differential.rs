@@ -434,3 +434,28 @@ fn diff_runtime_delay() {
          endmodule",
     );
 }
+
+#[test]
+fn diff_force_release() {
+    // Sample-once force on a net + a variable; release restores the net's
+    // driver and a variable keeps the forced value — iverilog byte parity
+    // (iverilog itself warns its force-RHS is evaluated once: same v1 model).
+    assert_matches_iverilog(
+        "force_release",
+        "module tb; wire w; reg a; assign w = a; reg r; \
+           initial begin \
+             a = 0; r = 0; \
+             #1 $display(\"t1 %b %b\", w, r); \
+             force w = 1'b1; force r = 1'b1; \
+             #1 $display(\"t2 %b %b\", w, r); \
+             a = 1; r = 0; \
+             #1 $display(\"t3 %b %b\", w, r); \
+             release w; release r; \
+             #1 $display(\"t4 %b %b\", w, r); \
+             r = 0; \
+             #1 $display(\"t5 %b\", r); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}

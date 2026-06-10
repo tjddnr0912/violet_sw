@@ -49,6 +49,10 @@ pub(crate) trait Kernel {
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]);
     /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
+    /// WRITE: `force lhs = value` (whole-net; sample-once v1 model — §9.3.2).
+    fn k_force(&mut self, lhs: &Lvalue, value: Value);
+    /// WRITE: `release lhs` (net → driver re-settles; variable → keeps value).
+    fn k_release(&mut self, lhs: &Lvalue);
     /// WRITE: run a system task, returning its control outcome. `sid` is the
     /// StmtId — the severity side table (`$fatal`/`$error`/…, P1-1) is keyed by it.
     fn k_dispatch_systask(
@@ -286,6 +290,10 @@ enum StmtEffect<'s> {
         args: &'s [u32],
         sid: u32,
     },
+    /// `force lhs = value` (RHS sampled in the READ phase, like Blocking).
+    Force { lhs: &'s Lvalue, value: Value },
+    /// `release lhs`.
+    Release { lhs: &'s Lvalue },
     /// `disable`: no-op in v1 (fork/disable deferred).
     Nop,
 }
@@ -316,10 +324,14 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             sid,
         },
         Stmt::Disable { .. } => StmtEffect::Nop,
-        // format_version 4 shape reserve: elaborate still loud-rejects
-        // force/release, so these are unreachable from v1 lowering — a
-        // defensive no-op (like `Call`) keeps a hand-built IR alive.
-        Stmt::Force { .. } | Stmt::Release { .. } => StmtEffect::Nop,
+        Stmt::Force { lhs, rhs } => {
+            // Sample-once (iverilog-parity v1 model): evaluate NOW, context-
+            // sized to the target — full procedural-continuous re-evaluation
+            // is the documented refinement.
+            let value = k.k_eval_for_lvalue(lhs, *rhs);
+            StmtEffect::Force { lhs, value }
+        }
+        Stmt::Release { lhs } => StmtEffect::Release { lhs },
     }
 }
 
@@ -339,6 +351,14 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         StmtEffect::Nonblocking { lhs, value } => {
             // The NBA queue outlives this activation — the one owned clone left.
             k.k_schedule_nba(lhs.clone(), value);
+            None
+        }
+        StmtEffect::Force { lhs, value } => {
+            k.k_force(lhs, value);
+            None
+        }
+        StmtEffect::Release { lhs } => {
+            k.k_release(lhs);
             None
         }
         StmtEffect::SysTask {

@@ -2765,3 +2765,60 @@ fn dumpflush_is_accepted_and_vcd_complete() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(body.contains("#2"), "post-flush changes must still dump");
 }
+
+// ── force/release semantics (format_version 4 follow-up) ────────────────────
+
+#[test]
+fn force_release_net_and_variable() {
+    // Mirrors the live iverilog probe byte-for-byte: a forced net ignores its
+    // driver, a forced reg ignores procedural assigns; release restores the
+    // net's driver but a variable KEEPS the forced value until reassigned.
+    let (ir, opts) = build_timescaled(
+        "module top; wire w; reg a; assign w = a; reg r; \
+         initial begin \
+           a = 0; r = 0; \
+           #1 $display(\"t1 w=%b r=%b\", w, r); \
+           force w = 1'b1; \
+           force r = 1'b1; \
+           #1 $display(\"t2 w=%b r=%b\", w, r); \
+           a = 1; r = 0; \
+           #1 $display(\"t3 w=%b r=%b\", w, r); \
+           release w; \
+           release r; \
+           #1 $display(\"t4 w=%b r=%b\", w, r); \
+           r = 0; \
+           #1 $display(\"t5 r=%b\", r); \
+           $finish; \
+         end endmodule\n",
+    );
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(
+        out,
+        "t1 w=0 r=0\nt2 w=1 r=1\nt3 w=1 r=1\nt4 w=1 r=1\nt5 r=0\n"
+    );
+}
+
+#[test]
+fn force_blocks_nba_and_re_force_wins() {
+    let (ir, opts) = build_timescaled(
+        "module top; reg [3:0] q; reg clk; \
+         always @(posedge clk) q <= q + 1; \
+         initial begin \
+           q = 0; clk = 0; \
+           force q = 4'd9; \
+           #1 clk = 1; #1 clk = 0; \
+           $display(\"a q=%0d\", q); \
+           force q = 4'd5; \
+           $display(\"b q=%0d\", q); \
+           release q; \
+           #1 clk = 1; #1 clk = 0; \
+           $display(\"c q=%0d\", q); \
+           $finish; \
+         end endmodule\n",
+    );
+    let (_res, out) = simulate_capture(&ir, opts);
+    // NBA increments are swallowed while forced; re-force overrides; after
+    // release the next posedge increments from the kept value (5 -> 6).
+    assert_eq!(out, "a q=9\nb q=5\nc q=6\n");
+}

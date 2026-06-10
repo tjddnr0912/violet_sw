@@ -90,6 +90,11 @@ pub(crate) struct SimState<'a> {
     pub ir: &'a SimIr,
     pub now: u64,
     pub nets: Vec<NetSlot>,
+    /// Per-net `force` flag (IEEE §9.3.2): while set, EVERY normal write path
+    /// (procedural, NBA commit, cont-assign settle, delayed CA) is a silent
+    /// no-op for that net — only `force_write`/`release` touch it. Whole-net
+    /// granularity (bit/part-select force targets are rejected at elaborate).
+    pub forced: Vec<bool>,
     /// IEEE 1364-2005 self-width side table — built once, immutable for the run.
     pub wt: crate::width::WidthTable,
 
@@ -177,10 +182,12 @@ impl<'a> SimState<'a> {
             })
             .collect();
         let wt = crate::width::WidthTable::build(ir); // single forward pass
+        let nnets = ir.nets.len();
         SimState {
             ir,
             now: 0,
             nets,
+            forced: vec![false; nnets],
             wt,
             vcd: None,
             vcd_path: None,
@@ -397,6 +404,10 @@ impl<'a> SimState<'a> {
         piece: &Value,
     ) -> bool {
         let net = c.net as usize;
+        // A forced net ignores every normal driver until release (§9.3.2).
+        if self.forced[net] {
+            return false;
+        }
         // `c.word` is an ExprId; `raw_word` is the caller-evaluated array index
         // (the runtime `k` of `mem[k] = …`). None ⇒ index 0. An out-of-range word
         // write is IGNORED (spec E-RUN-RANGE) — clamping to the last element would
@@ -525,6 +536,27 @@ impl<'a> SimState<'a> {
             slot.prev.val.clone_from(&slot.cur.val);
             slot.prev.unk.clone_from(&slot.cur.unk);
         }
+    }
+
+    // ── force / release (IEEE 1364 §9.3.2; sample-once v1 model) ─────────
+
+    /// Apply `force lhs = value`: write THROUGH the force flag (a re-force on
+    /// an already-forced net must land), then pin the net. `lhs` is a single
+    /// whole-net chunk (elaborate-validated).
+    pub fn force_write(&mut self, lhs: &Lvalue, value: Value) -> bool {
+        let net = lhs.chunks[0].net as usize;
+        self.forced[net] = false;
+        let changed = self.write_lvalue(lhs, value, &[(0, 0)]);
+        self.forced[net] = true;
+        changed
+    }
+
+    /// `release lhs`: unpin. A NET target snaps back to its driver at the next
+    /// cont-assign settle (same timestep — the run loop settles every delta);
+    /// a VARIABLE keeps the forced value until the next procedural assignment
+    /// (no settle entry exists for it) — both fall out of just clearing the flag.
+    pub fn release(&mut self, lhs: &Lvalue) {
+        self.forced[lhs.chunks[0].net as usize] = false;
     }
 
     // ── VCD lifecycle (driven by $dumpfile/$dumpvars) ────────────────────

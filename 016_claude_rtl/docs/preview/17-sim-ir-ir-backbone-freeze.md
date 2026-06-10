@@ -317,8 +317,8 @@ node-kind당 append-only `Vec` 1개 = 재로드 시 포인터 fixup 0.
 - **루트 해시:** `SuspendState` → **`SimIr`**. 헤더 stamp·골든 게이트 모두 `schema_hash::<sim_ir::SimIr>()`. `Process`는 런타임 클러스터 sub-pin 골든으로 유지.
 - **format_version 4 (2026-06-10) — 의도적 re-freeze:** `Terminator::Delay.amount`가 **ExprId 의미**로
   전환(런타임 `#delay`; u32 형상 동일이라 해시 단독으론 못 잡아 컨테이너 버전이 게이트) +
-  `SysTaskId::{DumpFlush,DumpLimit}` + `Stmt::{Force,Release}` 형상 선예약(semantics는 후속 증분,
-  elaborate는 여전히 loud-reject). 루트 해시 재pin(d6d078bc…), Process 서브pin 불변(=정상 sanity),
+  `SysTaskId::{DumpFlush,DumpLimit}` + `Stmt::{Force,Release}` 형상 선예약 — **semantics도 같은 날 landed**(sample-once 모델,
+  per-net forced 플래그가 모든 일반 write 경로를 차단; release는 net=settle 복원/var=값 유지). 루트 해시 재pin(d6d078bc…), Process 서브pin 불변(=정상 sanity),
   canonical/RON 골든 재생성(`REGEN_GOLDEN=1` 스위치 신설), 전 `.velab`/`.vu`는 FORMAT 게이트에서
   exit 2로 거부(의도된 staleness).
 - **`format_version` bump:** M3가 전 백본 동결 → 루트 해시 by construction 변경 → 이전 모든 `.velab` 무효(decode 시 incompatible-tool 하드 에러, silent misparse 없음). M3 동결로 1회 bump; 새 `schema_hash_is_pinned` EXPECTED + canonical 골든(SimIr 루트) 커밋.

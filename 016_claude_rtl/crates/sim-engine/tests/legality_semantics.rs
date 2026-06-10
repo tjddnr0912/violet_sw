@@ -66,10 +66,12 @@ endmodule
     );
 }
 
-/// `force`/`release` silently changed nothing.
+/// force/release semantics landed (format_version 4 follow-up): whole-net
+/// targets elaborate cleanly. Behaviour pinned by end_to_end `force_*` +
+/// `diff_force_release`; the bit-select reject below keeps the legality edge.
 #[test]
-fn force_release_is_rejected() {
-    assert_rejected(
+fn force_release_whole_net_is_accepted() {
+    let (ok, diags) = elab(
         r#"
 module t;
   reg a;
@@ -79,7 +81,14 @@ module t;
   end
 endmodule
 "#,
-        "force",
+    );
+    assert!(
+        ok,
+        "whole-net force/release must elaborate; diags: {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| !d.starts_with("Error")),
+        "no errors expected: {diags:?}"
     );
 }
 
@@ -282,5 +291,19 @@ module t; endmodule
     assert!(
         diags.iter().any(|d| d.contains("VITA-E2001")),
         "expected E-DUP-UNIT; got {diags:?}"
+    );
+}
+
+/// A bit/part-select is not a legal force/release target (IEEE §9.3.2) — loud.
+#[test]
+fn force_on_bit_select_is_rejected() {
+    assert_rejected(
+        r#"
+module t;
+  reg [3:0] q;
+  initial force q[1] = 1'b1;
+endmodule
+"#,
+        "force target",
     );
 }
