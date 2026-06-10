@@ -1904,7 +1904,7 @@ fn parameter_override_and_generate_with_param() {
     // child param overridden via #(.P()); generate-for bound + body indexed by a
     // genvar into a memory both fold to the genvar/param scope value.
     let src = "module sub #(parameter P = 1) (output [7:0] y); assign y = P + 10; endmodule \
-               module t; parameter N = 4; wire [7:0] y; reg [7:0] v[0:3]; genvar g; \
+               module t; parameter N = 4; wire [7:0] y; logic [7:0] v[0:3]; genvar g; \
                sub #(.P(7)) u (y); \
                generate for (g = 0; g < N; g = g + 1) begin: gen assign v[g] = g*2; end endgenerate \
                initial begin #1 $display(\"y=%0d v=%0d %0d %0d %0d\", y, v[0], v[1], v[2], v[3]); $finish; end endmodule";
@@ -2025,11 +2025,11 @@ fn wait_resumes_on_false_to_true() {
 
 #[test]
 fn generate_if_else_scoping() {
-    let src = "module t; parameter MODE = 1; reg [7:0] a, b, y; reg [7:0] a2, y2; \
+    let src = "module t; parameter MODE = 1; reg [7:0] a, b; logic [7:0] y; reg [7:0] a2; logic [7:0] y2; \
                generate if (MODE == 1) begin: ga assign y = a + b; end \
                         else            begin: gb assign y = a - b; end endgenerate \
                generate if (MODE == 0) begin: gc assign y2 = 0; end \
-                        else begin: gd reg [7:0] tmp; assign tmp = a2 + 1; assign y2 = tmp * 2; end \
+                        else begin: gd logic [7:0] tmp; assign tmp = a2 + 1; assign y2 = tmp * 2; end \
                endgenerate \
                initial begin a=20; b=5; a2=5; #1 $display(\"y=%0d y2=%0d\", y, y2); $finish; end endmodule";
     let ir = build(src);

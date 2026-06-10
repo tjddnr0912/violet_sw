@@ -254,18 +254,24 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 
         // TOTAL-OR-FATAL mode gate: every `Terminator::Fork` in every body MUST
         // have a matching `(template, join_bb)` entry in `fork_modes`. A miss means
-        // a keying mismatch / lost sidecar — abort loudly at t0, never run with a
-        // fabricated default that would silently miscompile join_any/join_none.
+        // a keying mismatch / lost sidecar (the trailer rides outside the schema
+        // gate, so a truncated `.velab` can reach here) — P1-7: emit a FATAL
+        // diagnostic and end the run at t0 (was: panic), never a fabricated
+        // default that would silently miscompile join_any/join_none.
+        let mut missing: Option<(u32, u32)> = None;
         for (proc_id, p) in self.st.ir.processes.iter().enumerate() {
             for blk in &p.body {
                 if let Terminator::Fork { join, .. } = &blk.term {
-                    assert!(
-                        self.fork_modes.contains_key(&(proc_id as u32, *join)),
-                        "internal error: Fork in process {proc_id} join_bb {join} has \
-                         no ForkModeTable entry (lost/stale mode sidecar?)"
-                    );
+                    if !self.fork_modes.contains_key(&(proc_id as u32, *join)) {
+                        missing = Some((proc_id as u32, *join));
+                        break;
+                    }
                 }
             }
+        }
+        if let Some((tmpl, join)) = missing {
+            self.fatal_fork_mode_missing(tmpl, join);
+            return; // nothing armed; run() sees `finished` and ends immediately
         }
 
         for aid in 0..self.activities.len() as u32 {
@@ -955,16 +961,30 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// a miss is impossible after the `arm_processes` gate, but we never default to
     /// a blocking join — a fabricated `All` would silently turn a lost-side-channel
     /// `join_none`/`join_any` into a deadlock with no diagnostic. Panic instead.
-    pub(crate) fn fork_mode(&self, template: u32, join_bb: u32) -> JoinMode {
-        *self
-            .fork_modes
-            .get(&(template, join_bb))
-            .unwrap_or_else(|| {
-                panic!(
-                    "internal error: no ForkModeTable entry for (template={template}, \
-                 join_bb={join_bb}) — mode sidecar lost/stale?"
-                )
-            })
+    pub(crate) fn fork_mode(&self, template: u32, join_bb: u32) -> Option<JoinMode> {
+        self.fork_modes.get(&(template, join_bb)).copied()
+    }
+
+    /// P1-7: a `Terminator::Fork` with no ForkModeTable entry means the `.velab`
+    /// fork-mode trailer was lost/stale (it rides OUTSIDE the schema gate, so a
+    /// hand-truncated artifact can reach here). Fabricating a mode would silently
+    /// turn a `join_none` into a deadlock — emit a FATAL artifact diagnostic and
+    /// end the run instead (was: panic!).
+    fn fatal_fork_mode_missing(&mut self, template: u32, join_bb: u32) {
+        use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
+        self.st.sink.emit(LogEvent::Diagnostic(Diagnostic {
+            severity: Severity::Fatal,
+            code: MsgCode::ArtFormatMismatch,
+            message: format!(
+                "fork join-mode sidecar entry missing for (template={template}, \
+                 join_bb={join_bb}) — .velab trailer lost or stale; re-run velab"
+            ),
+            location: None,
+            context: Vec::new(),
+            sim_time: Some(TimeStamp { ticks: self.st.now }),
+        }));
+        self.st.had_fatal = true;
+        self.st.finished = true;
     }
 
     /// Accessors the executor's loop-top intercept + body fetch use (the
@@ -1015,7 +1035,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         resume_bb: u32,
     ) -> Option<u32> {
         let parent_tmpl = self.activities[parent_aid as usize].template;
-        let mode = self.fork_mode(parent_tmpl, join); // total-or-fatal; never defaults
+        // P1-7: missing sidecar entry → graceful FATAL stop (never a default mode).
+        let Some(mode) = self.fork_mode(parent_tmpl, join) else {
+            self.fatal_fork_mode_missing(parent_tmpl, join);
+            return None; // parent parks; run loop sees `finished` and ends the run
+        };
 
         // Register the barrier (append-only id space → no ABA).
         let join_ref = self.barriers.len() as u32;

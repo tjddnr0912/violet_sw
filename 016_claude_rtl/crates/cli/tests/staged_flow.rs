@@ -496,3 +496,39 @@ fn artifact_write_leaves_no_tmp_residue() {
     assert!(residue.is_empty(), "tmp residue left behind: {residue:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// P1-7: a `.velab` whose fork-mode trailer is missing its entries (the trailer
+// rides OUTSIDE the schema gate, so hand-truncation can produce this) must end
+// in a graceful FATAL diagnostic + exit 1 — not a process abort (was: panic!).
+#[test]
+fn corrupted_fork_trailer_fails_gracefully() {
+    let src = tmp("sv");
+    write(
+        &src,
+        "module tb; reg a; initial begin fork a = 1; join $finish; end endmodule",
+    );
+    let vu = tmp("vu");
+    let velab = tmp("velab");
+    let opts = cli::VitaOpts::default();
+    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
+
+    // Surgically EMPTY the ForkModeTable trailer, leaving everything else intact.
+    let bytes = std::fs::read(&velab).unwrap();
+    let (header, body) = vita_artifact::read_velab(&bytes).expect("read_velab");
+    let (_ir, rest): (sim_ir::SimIr, &[u8]) = postcard::take_from_bytes(body).expect("SimIr frame");
+    let ir_len = body.len() - rest.len();
+    let (fm, rest2): (sim_engine::ForkModeTable, &[u8]) =
+        postcard::take_from_bytes(rest).expect("fork trailer");
+    assert!(!fm.is_empty(), "fixture must actually have a fork entry");
+    let mut new_body = body[..ir_len].to_vec();
+    new_body.extend_from_slice(&postcard::to_stdvec(&sim_engine::ForkModeTable::new()).unwrap());
+    new_body.extend_from_slice(rest2);
+    std::fs::write(&velab, vita_artifact::write_velab(&header, &new_body)).unwrap();
+
+    // Must be a clean nonzero exit (Fatal diagnostic), not a panic/abort.
+    assert_eq!(cli::run_vrun(&s(&velab), &opts), cli::EXIT_USER_ERROR);
+    for p in [&src, &vu, &velab] {
+        let _ = std::fs::remove_file(p);
+    }
+}

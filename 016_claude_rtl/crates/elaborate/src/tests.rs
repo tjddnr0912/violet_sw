@@ -18,16 +18,6 @@ impl LogSink for CollectSink {
         self.events.borrow_mut().push(event);
     }
 }
-impl CollectSink {
-    fn n_diags(&self) -> usize {
-        self.events
-            .borrow()
-            .iter()
-            .filter(|e| matches!(e, LogEvent::Diagnostic(_)))
-            .count()
-    }
-}
-
 // ── tiny AST builders ──
 const SP: ast::Span = ast::Span { lo: 0, hi: 0 };
 
@@ -128,7 +118,16 @@ fn module(name: &str, body: Vec<ast::ModuleItem>) -> ast::SourceUnit {
 fn elab_ok(unit: &ast::SourceUnit) -> ir::SimIr {
     let sink = CollectSink::default();
     let ir = elaborate(unit, &sink);
-    assert_eq!(sink.n_diags(), 0, "unexpected diagnostics");
+    let diags: Vec<String> = sink
+        .events
+        .borrow()
+        .iter()
+        .filter_map(|e| match e {
+            LogEvent::Diagnostic(d) => Some(format!("{}: {}", d.code.code_num(), d.message)),
+            _ => None,
+        })
+        .collect();
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     ir.expect("elaborate returned None on clean input")
 }
 
@@ -611,6 +610,14 @@ fn t13_bit_select_lhs() {
 }
 
 // ── array (memory) builder: `reg [bw:0] name [0:depth-1];` ──
+fn logic_mem(bit_msb: u32, depth_msb: u32, name: &str) -> ast::ModuleItem {
+    let ast::ModuleItem::NetVar(mut d) = reg_mem(bit_msb, depth_msb, name) else {
+        unreachable!()
+    };
+    d.kind = ast::NetVarKind::Logic;
+    ast::ModuleItem::NetVar(d)
+}
+
 fn reg_mem(bit_msb: u32, depth_msb: u32, name: &str) -> ast::ModuleItem {
     ast::ModuleItem::NetVar(ast::NetVarDecl {
         kind: ast::NetVarKind::Reg,
@@ -690,11 +697,13 @@ fn t14_rhs_memory_word_select_is_signal_word() {
         "memory word read must not emit a bit Select"
     );
 
-    // LHS symmetry: `mem[1] = y` → LvalChunk{word:Some(1)}.
+    // LHS symmetry: `mem[1] = y` → LvalChunk{word:Some(1)}. The array is a SV
+    // `logic` (one continuous driver is legal — E3018 rejects `assign` to a reg,
+    // so the old reg fixture became an illegal-code fixture).
     let unit2 = module(
         "m",
         vec![
-            reg_mem(7, 3, "mem"),
+            logic_mem(7, 3, "mem"),
             wire_vec(7, 0, &["y"]),
             cont_assign(
                 ast::Lvalue::BitSelect {

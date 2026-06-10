@@ -1493,6 +1493,42 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// P1-9 (E3018): assignment-kind legality. `is_proc=true` (a procedural `=`/
+    /// `<=`) may not target a NET (`wire`); `is_proc=false` (a user `assign`) may
+    /// not drive a VARIABLE (`reg`/`integer`/`real`). SV `logic` passes both ways
+    /// (IEEE 1800 admits either one continuous driver or procedural writes).
+    /// Called ONLY for user-written assignments — port-binding/decl-init synthetic
+    /// cont-assigns are exempt (IEEE 1800 §23.3.3 var ports are legal).
+    fn check_lvalue_kind(&mut self, lhs: &ir::Lvalue, is_proc: bool) {
+        for c in &lhs.chunks {
+            let Some(nv) = self.nets.get(c.net as usize) else {
+                continue; // POISON_NET / post-error recovery chunk
+            };
+            let bad = if is_proc {
+                matches!(nv.kind, ir::NetKind::Wire)
+            } else {
+                matches!(
+                    nv.kind,
+                    ir::NetKind::Reg | ir::NetKind::Integer | ir::NetKind::Real
+                )
+            };
+            if bad {
+                let name = self
+                    .symbols
+                    .iter()
+                    .find(|(_, &id)| id == c.net)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| format!("#{}", c.net));
+                let msg = if is_proc {
+                    format!("procedural assignment to net `{name}` (declare it reg/logic)")
+                } else {
+                    format!("continuous assign drives variable `{name}` (declare it wire/logic)")
+                };
+                self.error(MsgCode::ElabLvalueKind, &msg);
+            }
+        }
+    }
+
     /// Emit `ElabMultidriver` for any net targeted by ≥2 whole-net continuous
     /// assigns. Deterministic: nets scanned in ascending NetId (BTreeMap), each
     /// reported once. Partial-select / bit-select drivers are NOT counted (that
@@ -1902,6 +1938,11 @@ impl<'s> Elaborator<'s> {
             .and_then(|d| d.values.first().and_then(|e| const_delay_ticks(e, mult)));
         for (lv, rhs) in &ca.assigns {
             let lhs = self.lower_lvalue(lv);
+            // P1-9 (E3018): a user `assign` may not drive a Reg/Integer/Real
+            // variable (SV `logic` admits one continuous driver — passes). Port
+            // bindings / decl-inits are NOT routed here (IEEE 1800 var-port and
+            // legacy `reg r = init` forms stay accepted).
+            self.check_lvalue_kind(&lhs, false);
             let rhs_id = self.lower_expr(rhs);
             self.cont_assigns.push(ir::ContAssign {
                 lhs,
@@ -3947,6 +3988,7 @@ impl<'s> Elaborator<'s> {
                 }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
+                self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
                 let sid = self.push_stmt(ir::Stmt::BlockingAssign {
                     lhs: lv,
                     rhs: rhs_id,
@@ -3961,6 +4003,7 @@ impl<'s> Elaborator<'s> {
                 }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
+                self.check_lvalue_kind(&lv, true); // P1-9 (E3018)
                 let sid = self.push_stmt(ir::Stmt::NonblockingAssign {
                     lhs: lv,
                     rhs: rhs_id,
@@ -4168,12 +4211,26 @@ impl<'s> Elaborator<'s> {
                 b.start_block(resume_bb);
             }
             ast::Stmt::UserTaskCall { name, args, .. } => self.inline_task(b, name, args),
-            ast::Stmt::EventTrigger { .. }
-            | ast::Stmt::Assign { .. }
-            | ast::Stmt::Deassign { .. }
-            | ast::Stmt::Force { .. }
-            | ast::Stmt::Release { .. } => {
-                self.warn("procedural-continuous / event-trigger construct skipped (v2); no-op");
+            // P1-2: these were warn+no-op — values never changed and an `@(ev)`
+            // waited forever. A hard error beats silent misbehavior (defparam
+            // precedent); real semantics are a Phase-2 item.
+            ast::Stmt::EventTrigger { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "'->' named-event trigger is unsupported in v1 (an '@(ev)' would                      never wake); use a net change instead",
+                );
+            }
+            ast::Stmt::Assign { .. } | ast::Stmt::Deassign { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "procedural assign/deassign is unsupported in v1 (was silently                      ignored); use a continuous assign or a plain procedural assignment",
+                );
+            }
+            ast::Stmt::Force { .. } | ast::Stmt::Release { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "force/release is unsupported in v1 (was silently ignored)",
+                );
             }
             // Parse error is the ONE genuinely-fatal stmt: keep self.error.
             ast::Stmt::Error(_) => {
@@ -4429,7 +4486,13 @@ impl<'s> Elaborator<'s> {
             .first()
             .and_then(|e| const_delay_ticks(e, mult))
             .unwrap_or_else(|| {
-                self.warn("non-constant #delay not supported (v2); degraded to #0");
+                // P1-3: degrading to #0 turned `forever #x clk=~clk` into a
+                // delta-limit blowup — reject loudly (runtime-evaluated delays
+                // need a frozen Terminator::Delay shape change; Phase-2).
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "non-constant #delay is unsupported in v1 (delay must be a                      compile-time constant)",
+                );
                 0
             });
         let region = if amount == 0 {
