@@ -1,6 +1,6 @@
 # vitamin — 잔여 작업 트래커 (Remaining Work)
 
-> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa`(+동일자 진행: shift fix 채택 `4241435` → P0-1~4 `7bfd8c3` → P0-5~7 `b30881a`) · **482 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3).
+> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa`(+동일자 진행: shift fix 채택 `4241435` → P0-1~4 `7bfd8c3` → P0-5~7 `b30881a` → P0-8/9 `5b3c6d4`) · **493 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3).
 > 출처: 7축 감사 — ①Gemini-fix 검토 ②spec-gap ③sim-engine ④front-end ⑤메모리/자원 ⑥운용성 ⑦병렬화. 핵심 항목은 라이브 재현(+iverilog 차분)으로 확정, 각 항목에 `재현:` 표기.
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
@@ -29,8 +29,8 @@
 
 **display/monitor 의미론:**
 
-- [ ] **[P0-8]** `$display` 인자 의미론 3종 — ①선행 문자열 뒤 인자 유실: **재현:** `$display("val=", val)` → vita `val=` / iverilog `val=255`(IEEE 1364 §17.1: 잔여 인자를 기본 radix로 출력) ②bare-arg 자리 문자열 리터럴이 10진수로 출력 ③`%v/%u/%z/%p/%l`이 literal로 찍히며 **인자 미소비 → 후속 specifier 인자 시프트**. elaborate:4368-4377 + builtins.rs:301-425.
-- [ ] **[P0-9]** `$monitor` 트리거 과민 — ①직접 `$time/$realtime` 인자도 변화 비교에 포함(sched.rs:586; IEEE §17.1.3은 제외 요구) ②last_vals 비교가 derived `PartialEq`(signed/is_real 메타 포함) — 비트평면(val/unk/width)만 비교로.
+- [x] **[P0-8]** `$display` 인자 의미론 — ✅ 2026-06-10 `5b3c6d4`. IEEE §17.1 순차 처리로 엔진 통합: ①잔여 인자=기본 radix(padded %d/실수 %g) ②문자열 인자=inline 포맷 세그먼트(StrUtf8 검출, 후속 인자 소비) ③무포맷 branch=패딩 필드 연접(공백 join 제거) ④`%v`(St0/St1/StX/HiZ)·`%u/%z`(소비+무출력)·`%p`(값) 인자 소비. elaborate 무변경(엔진만), 회귀 `display_semantics.rs` 10 + iverilog 차분 `diff_display_arg_semantics`(패딩까지 byte 일치).
+- [x] **[P0-9]** `$monitor` 트리거 과민 — ✅ `5b3c6d4`. ①직접 `$time/$realtime` 인자는 변화 비교에서 제외(IEEE §17.1.3 — 시간만 흘러도 매 스텝 재인쇄하던 버그) ②비교를 비트평면(width/val/unk)만으로(`vals_same_bits`).
 
 ## P1 — 시뮬 의미론: warn-후-오동작 (정지·계속 클래스)
 
@@ -105,7 +105,7 @@
 
 1. ~~P0 런타임 절단 클러스터(P0-1~4)~~ — ✅ 2026-06-10 `7bfd8c3`.
 2. ~~P0-5/6/7 elaborate 상수 도메인~~ — ✅ 2026-06-10 `b30881a`.
-3. **P0-8/9 display·monitor 의미론** — `$display` 선행 문자열 뒤 인자/`%v…` 미소비 시프트, `$monitor` $time 재트리거.
+3. ~~P0-8/9 display·monitor 의미론~~ — ✅ 2026-06-10 `5b3c6d4`. **→ P0 전 항목 완료.**
 4. **P1-1 `$fatal` 계열** — 최소 $fatal→error-exit 브리지(CI 신뢰성 직결).
 5. **P2 quick wins** — VCD open/flush 진단·delta-limit 진단·`--help/--version`·BufWriter(T0b)·아티팩트 temp+rename.
 6. **P4 T0a/T0b → T1** — 병렬화 진입(측정 게이트 후 writer 스레드).
