@@ -1,0 +1,56 @@
+# vitamin (016_claude_rtl) — 3-OS CI matrix (doc-09 §CI 통합 실구동).
+#
+# Determinism contract: the golden hashes (SimIr root pin, .vu/.velab schema
+# pins, canonical txt) are asserted by in-repo tests on EVERY OS — if any OS
+# produced different bytes, its own hash-pin test fails, so cross-OS
+# byte-identity is enforced without artifact exchange.
+#
+# The toolchain comes from 016_claude_rtl/rust-toolchain.toml (MSRV 1.82 pin);
+# rustup on the runners honors it automatically. iverilog is installed on
+# ubuntu only — the differential suite runs against the live oracle there and
+# skips gracefully (by design) where the tool is absent.
+name: vitamin-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "016_claude_rtl/**"
+      - ".github/workflows/vitamin-ci.yml"
+  pull_request:
+    paths:
+      - "016_claude_rtl/**"
+      - ".github/workflows/vitamin-ci.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: 016_claude_rtl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install iverilog (differential oracle, ubuntu only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 016_claude_rtl
+
+      - name: rustfmt gate
+        run: cargo fmt --all -- --check
+
+      - name: clippy gate
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: test (workspace, locked — includes determinism golden gates)
+        run: cargo test --workspace --locked

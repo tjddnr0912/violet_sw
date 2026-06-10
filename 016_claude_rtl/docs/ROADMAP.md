@@ -93,6 +93,24 @@ loud-reject로 확인됨(이제 참):**
 
 **옵션 설계:** `--threads N`/`-j N`(vita·vrun), 기본 auto=`min(available_parallelism,8)`, env `VITA_THREADS`, `--threads 1`=현행 동일. **계약 = "모든 N에서 출력 byte-identical"**, corpus `--threads 1` vs `4` byte-diff 게이트로 강제. SimOpts out-of-band(골든 무영향). 상세 = REMAINING_WORK §P4.
 
+### F. Phase-2 관문 — 차기 format bump 묶음 (2026-06-10 평가)
+
+**원칙:** SchemaHash flip(=전 `.velab` 무효 + REGEN_GOLDEN 절차)은 비용이므로 frozen-IR 형상 변경은
+**한 번의 v5 bump에 일괄**. v4 절차(REGEN_GOLDEN=1 스위치·canonical txt·RON 재생성)가 그대로 재사용된다.
+반대로 **IR-무변경으로 가능한 Phase-2 항목은 bump를 기다릴 이유가 없다** — front-end/사이드테이블만으로 먼저 간다.
+
+| 항목 | IR 영향 | 평가 |
+|---|---|---|
+| **(A) NBA delayed write** `q <= #d rhs` | `NonblockingAssign + delay: Option<ExprId>` 필드 + 엔진 wheel의 값-운반 NBA-region 이벤트 | **bump 필수.** ⑤에서 이관(정적 capture는 transport-delay 겹침에서 silent-wrong). 엔진은 `schedule_nba_at(t+d)` 1개 — 소형 |
+| **(B) named event + `->`/`@(ev)`** | `NetKind::Event`(또는 별도 arena) + `Stmt::EventTrigger` + `WaitCause` 확장 | **bump 필수.** P1-2 loud-reject의 해제 조건. 소형~중형 |
+| **(C) dynamic array / queue / assoc array** | 정적 평탄화 전제(고정폭 `BitPacked` storage) 자체를 깸 — NetVar storage 모델 + Expr/Stmt(인덱싱·push/pop·size) 신설 | **bump 필수 + Phase-2 코어.** 엔진 storage 재설계라 **별도 설계 문서가 선행** — 설계가 익기 전 (A)+(B)만으로 bump하지 말 것(이중 bump 방지) |
+| (D) interface / modport | 아마 **무변경** — 모듈 평탄화처럼 elaborate에서 와이어 번들로 lower 가능성 높음 | bump 불요 가설 검증부터(스파이크). package/import도 동류 |
+| (E) immediate assertion `assert(e) else $error` | **무변경** — `If` + SeverityTable lower로 충분 | bump 불요, 아무 때나. concurrent SVA는 별개(거대, Phase-3) |
+| (F) `disable` 실동작 / proc-`assign`/`deassign` | `Disable`은 IR에 이미 있음(엔진 no-op); proc-assign은 force 기계 재사용 가능성 | 엔진/사이드테이블 위주 — bump 불요 추정 |
+
+**진입 시퀀스(권장):** ① IR-무변경부터 — (E) immediate assert → (D) interface 스파이크 → (F) ②
+(C) dynamic storage **설계 문서**(엔진 storage·결정성·VCD 표현) ③ 설계 확정 후 **v5 bump 일괄 = (A)+(B)+(C)**.
+
 ---
 
 ## 2. 추천 우선순위 (다음 세션)

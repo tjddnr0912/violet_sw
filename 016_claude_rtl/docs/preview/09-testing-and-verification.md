@@ -279,8 +279,17 @@ strict — 두 요구를 분리해 만족한다(13-diagnostics-and-logging.md `-
 
 ### 빌드 매트릭스
 
+> **구현됨(2026-06-10):** 모노레포 루트 `.github/workflows/vitamin-ci.yml` —
+> `016_claude_rtl/**` paths 필터, **ubuntu-latest / macos-14 / windows-latest**
+> 3-OS 매트릭스(결정성 계약과 일치), toolchain은 `rust-toolchain.toml`(MSRV 1.82
+> 핀)을 rustup이 자동 인식(stable/beta 매트릭스는 핀과 충돌이라 비채택), 게이트 =
+> `fmt --check` → `clippy -D warnings` → `test --workspace --locked`. ubuntu에만
+> iverilog를 설치해 차분 스위트가 라이브 오라클로 돌고, 부재 OS에선 설계대로
+> graceful skip. **골든 해시 핀이 in-repo 테스트라 3-OS 바이트 동일성은 아티팩트
+> 교환 없이 OS별 자체 검증으로 강제된다.**
+
 ```yaml
-# .github/workflows/ci.yml 예시 구조
+# 초기 스케치(역사 보존; 실물은 위 워크플로)
 matrix:
   os: [ubuntu-22.04, ubuntu-24.04, macos-14]
   rust: [stable, beta]
