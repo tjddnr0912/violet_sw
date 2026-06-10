@@ -167,6 +167,7 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                             bb = resume; // already true → fall through
                             guard += 1;
                             if guard > sched.max_deltas_guard() {
+                                sched.mark_fatal();
                                 return Step::Fatal;
                             }
                             continue;

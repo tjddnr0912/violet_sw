@@ -467,3 +467,32 @@ fn fork_trailer_survives_staged_path() {
         let _ = std::fs::remove_file(p);
     }
 }
+
+// P2-7: artifact writes are atomic (temp + rename) — a successful write leaves
+// no `.tmp.` residue next to the artifact, so a crash mid-write can never leave
+// a partial file that the staleness gate would misreport as format-mismatch.
+#[test]
+fn artifact_write_leaves_no_tmp_residue() {
+    let dir = std::env::temp_dir().join(format!(
+        "vita_atomic_{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("tb.sv");
+    write(&src, CLEAN_TB);
+    let vu = dir.join("tb.vu");
+    let velab = dir.join("tb.velab");
+    let opts = cli::VitaOpts::default();
+    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
+    assert!(vu.exists() && velab.exists());
+    let residue: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp."))
+        .collect();
+    assert!(residue.is_empty(), "tmp residue left behind: {residue:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

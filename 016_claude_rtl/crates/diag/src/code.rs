@@ -69,6 +69,9 @@ msgcodes! {
     RunUserInfo            => ("I-RUN-USER-INFO",           "VITA-I4005", Info,    "runtime $info"),
     RunNoLocations         => ("W-RUN-NO-LOCATIONS",        "VITA-W4006", Warning, "snapshot has no location side-table"),
     RunUserWarning         => ("W-RUN-USER-WARNING",        "VITA-W4007", Warning, "runtime $warning"),
+    RunNoConverge          => ("F-RUN-NO-CONVERGE",         "VITA-F4016", Fatal,   "simulation failed to converge (delta limit)"),
+    RunVcdOpenFail         => ("W-RUN-VCD-OPEN-FAIL",       "VITA-W4018", Warning, "cannot open VCD dump file"),
+    RunVcdWriteFail        => ("W-RUN-VCD-WRITE-FAIL",      "VITA-W4019", Warning, "VCD write/flush failed"),
     // 8xxx FILELIST
     FlistCycle             => ("E-FLIST-CYCLE",             "VITA-E8001", Error,   "filelist cycle"),
     FlistDepth             => ("E-FLIST-DEPTH",             "VITA-E8002", Error,   "filelist nesting exceeded depth cap"),

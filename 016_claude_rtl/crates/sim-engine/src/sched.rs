@@ -740,7 +740,27 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         }
     }
 
+    /// P2-3: every delta-limit overflow path (t0/run-loop settle, the
+    /// interpreter's in-body activation guard via `mark_fatal`, the VM guard via
+    /// `k_mark_fatal`) funnels here — emit ONE `F-RUN-NO-CONVERGE` diagnostic
+    /// (was: exit 1 with zero diagnostic lines) and flag the fatal exit class.
+    /// The `had_fatal` check keeps it single-shot per run.
     fn fatal_delta_limit(&mut self) {
+        if !self.st.had_fatal {
+            use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
+            self.st.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                severity: Severity::Fatal,
+                code: MsgCode::RunNoConverge,
+                message: format!(
+                    "did not converge: delta limit ({}) exceeded at time {} \
+                     (zero-delay loop / combinational oscillation)",
+                    self.max_deltas, self.st.now
+                ),
+                location: None,
+                context: Vec::new(),
+                sim_time: Some(TimeStamp { ticks: self.st.now }),
+            }));
+        }
         self.st.had_fatal = true;
     }
 
@@ -832,7 +852,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     }
 
     pub(crate) fn mark_fatal(&mut self) {
-        self.st.had_fatal = true;
+        // Only the in-body delta guards (interpreter + VM `k_mark_fatal`) call
+        // this — same condition class, same single-shot diagnostic.
+        self.fatal_delta_limit();
     }
 
     pub(crate) fn schedule_resume(&mut self, proc: u32, block: u32, tick: u64, inactive: bool) {

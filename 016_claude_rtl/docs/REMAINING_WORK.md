@@ -34,7 +34,7 @@
 
 ## P1 — 시뮬 의미론: warn-후-오동작 (정지·계속 클래스)
 
-- [ ] **[P1-1]** `$fatal/$error/$warning/$info` = warn+no-op — **$fatal TB가 exit 0**(CI silent PASS). **재현:** vita는 W3008 경고 후 계속 실행·exit 0 / iverilog FATAL 출력·exit 1. 조치: SysTaskId 4종 추가(frozen IR 변경 → format_version bump 동반) or 단기 브리지: `$fatal`→Finish+error exit. cli/lib.rs:11 주석("runtime $fatal → exit 1")은 현재 거짓.
+- [x] **[P1-1]** `$fatal/$error/$warning/$info` — ✅ 2026-06-10 `8d6abec`. Display 스텀트 + **SeverityTable 사이드테이블**(StmtId→kind, SimOpts/.velab 5번째 trailer, frozen IR 0줄·골든 무영향)로 구현. `$fatal`=묵시 $finish+ExitClass::Fatal(exit 1, 선행 finish_number 리터럴 소비), `$error`=HadErrors+계속, `$warning/$info`=진단만. 출력=진단 스트림(F4004/E4003/W4007/I4005, sim_time 부착) — stdout 비오염. Kernel/Op/StmtEffect에 StmtId 배선(인터프리터=VM parity 테스트). 회귀 `severity_tasks.rs` 8 + `severity_exit.rs` 4(staged trailer 왕복 포함).
 - [ ] **[P1-2]** `force/release` / procedural `assign/deassign` / `->event` = warn+no-op — 값 불변, `@(ev)` 영구 대기(lib.rs:4056-4062). `ElabUnsupported` 하드에러 승격(defparam :880과 일관) or 구현. ROADMAP §D "전부 loud-reject" 문구는 거짓이었음 → 이번 리뉴얼에서 정정.
 - [ ] **[P1-3]** 비상수 `#delay` → `#0` 강등 — lib.rs:4310-4319(`unwrap_or_else(warn→0)`). `forever #x clk=~clk`가 delta-limit fatal로 변질. loud-reject로(런타임 delay는 frozen `Terminator::Delay{u32}` 형상 변경이라 Phase-2).
 - [ ] **[P1-4]** in-body `@(*)` 영구 대기(`Level{nets:[]}`) + in-body 멀티엣지 `@(posedge a or posedge b)` 첫 항만 — lib.rs:4278-4295. 블록 헤더 형은 정상(read-set/EdgeTerm 기계 존재 — 재사용).
@@ -48,16 +48,16 @@
 
 **silent-failure 군집:**
 
-- [ ] **[P2-1]** VCD open 실패 완전 침묵 — builtins.rs:116-119 `Err(_) => return`. **재현:** unwritable 경로 → exit 0·진단 0줄·VCD 없음(주 산출물 무단 증발). 최소 Warning 진단.
-- [ ] **[P2-2]** VCD write/flush 에러 침묵 — state.rs:489-490·511 `let _ =`. 최소 `finalize_vcd`의 flush 결과는 진단으로.
-- [ ] **[P2-3]** delta-limit 도달 시 진단 0줄(exit 1만) — `RunDeltaLimit`류 Fatal 진단 발행.
-- [ ] **[P2-4]** `--help`/`--version` 부재 — **재현:** `vita --help` → `cannot read '--help'`(파일로 해석). 첫인상 UX.
+- [x] **[P2-1]** VCD open 실패 침묵 — ✅ 2026-06-10. `W-RUN-VCD-OPEN-FAIL`(VITA-W4018, 경로+OS에러) 경고 후 시뮬 계속. 회귀 `run_diagnostics.rs`.
+- [x] **[P2-2]** VCD flush 에러 침묵 — ✅ `finalize_vcd` flush 실패 → `W-RUN-VCD-WRITE-FAIL`(VITA-W4019). 단위테스트 state.rs(FailWriter 주입).
+- [x] **[P2-3]** delta-limit 무진단 — ✅ `F-RUN-NO-CONVERGE`(VITA-F4016, 부록A→본문 승격) 단일샷 발행. 전 경로 funnel(settle/run-loop `fatal_delta_limit` + interp/VM in-body guard `mark_fatal`), VM parity 테스트. ⭐4-state에선 `assign a=~a`가 X-안정이라 발진 repro에 정의값 시드 필요.
+- [x] **[P2-4]** `--help/-h`/`--version/-V` — ✅ 전 applet(vita/vcmp/velab/vrun) usage+버전 출력, exit 0. `cli_ux.rs` 4 테스트. MsgCode 45→**48**(bijection 게이트 동기화, doc-15 본문 3절 추가).
 
 **안전 레일:**
 
 - [ ] **[P2-5]** parser 재귀 깊이 가드 부재 — 깊은 중첩식(`(((…)))` 수천 단)에 stack overflow(SIGSEGV, 진단 불능). depth cap(~512)+진단. (elaborate generate는 DEPTH_CAP=32 보유, parser만 무방비)
 - [ ] **[P2-6]** unpacked `array_len` cap 부재 — `reg [7:0] m [0:2147483647]` 즉시 수GB alloc → OS OOM kill. `MAX_NET_WIDTH`(1<<20)처럼 `MAX_ARRAY_LEN`+ElabUnsupported.
-- [ ] **[P2-7]** 아티팩트 `.vu/.velab` 비원자적 쓰기 — cli/lib.rs:617·703 `fs::write`. 크래시 시 부분 파일을 게이트가 format-mismatch로 혼란 보고. temp+rename(+"재생성" 안내 진단).
+- [x] **[P2-7]** 아티팩트 비원자적 쓰기 — ✅ 2026-06-10 `write_artifact_atomic`(`<out>.tmp.<pid>` → rename, 실패 시 tmp 정리). vcmp/velab 양쪽. 잔여물-부재 회귀 `staged_flow.rs`.
 - [ ] **[P2-8]** native_eval `lower()`가 eid를 무검사 인덱싱 — 같은-schema 손상 `.velab` 방어로 `exprs.get()`+None fallback(native_eval.rs).
 - [ ] **[P2-9]** `--timeout`/기본 time_limit 부재 — `always #1;`가 무한 진행(SimOpts.time_limit 기본 None). CI용 킬스위치 옵션.
 
@@ -71,7 +71,7 @@
 
 - [ ] **[P3-1]** fork `activities`/`barriers` 아레나 append-only 무한 성장 — sched.rs:979·997. `forever fork…join_none` 패턴에서 O(타임스텝) 누적(10M cycle×2child ≈ 800MB). 타임스텝 경계 컴팩션/epoch 재사용.
 - [ ] **[P3-2]** `$monitor` last_vals 매 스텝 Vec 재할당 — sched.rs:586·600. in-place 재사용.
-- [ ] **[P3-3]** VCD sink **BufWriter 부재** — builtins.rs:120이 raw `File`을 직접 Box → VCD 레코드당 ~1 write syscall. **P4-T0b와 동일 항목**(1줄 fix + dump-heavy perf 측정 추가).
+- [x] **[P3-3]** VCD sink BufWriter — ✅ 2026-06-10. `BufWriter::with_capacity(64KiB)` 래핑(finalize가 명시 flush → byte 불변). dump-heavy perf 측정(T0b 잔여)은 P4에서.
 - [ ] **[P3-4]** `net_to_edge[n].clone()` per changed-net per delta — sched.rs:657(borrow 회피용). 인덱스 루프화.
 - [ ] **[P3-5]** native_eval `run()` per-call 스택 Vec — native_eval.rs:213. SimState scratch/SmallVec화.
 - [x] **[P3-기록] 종료/메모리 위생 양호 판정 (2026-06-10 감사)** — `unsafe` 0건 · Rc 9곳(vm_cache 한정) 비순환 · `finalize_vcd` 전 종료경로(정상/$finish/$stop/delta-limit/error) 호출 · HashMap 3곳(vcd by_id·parser typedefs 등) lookup-only로 결정성 무해 · BTree-only 스케줄러 재확인. Ctrl-C 핸들러 없음 = 커널 fd flush로 마지막 완료 write까지 유효한 truncated VCD(문서화만 권장). CLI 종료 시 미해제 누수 없음(정상 Drop + OS 회수). 라이브러리 임베딩 시 재평가.

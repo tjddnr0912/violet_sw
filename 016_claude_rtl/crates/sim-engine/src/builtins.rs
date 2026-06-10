@@ -164,9 +164,24 @@ fn dumpvars(st: &mut SimState) {
 
     let file = match std::fs::File::create(&path) {
         Ok(f) => f,
-        Err(_) => return, // cannot open: silently skip (v1)
+        Err(e) => {
+            // P2-1: the main artifact must not vanish silently — warn (with the
+            // path + OS error) and keep simulating without a waveform.
+            use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
+            st.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                severity: Severity::Warning,
+                code: MsgCode::RunVcdOpenFail,
+                message: format!("cannot open VCD dump file '{path}': {e}"),
+                location: None,
+                context: Vec::new(),
+                sim_time: Some(TimeStamp { ticks: st.now }),
+            }));
+            return;
+        }
     };
-    st.open_vcd(Box::new(file));
+    // P3-3/T0b: buffer the VCD sink (raw `File` was ~1 write syscall per record).
+    // `finalize_vcd` flushes explicitly, so buffering never changes the bytes.
+    st.open_vcd(Box::new(std::io::BufWriter::with_capacity(64 * 1024, file)));
 
     let date = st.vcd_date.clone();
     let unit = st.timescale_unit.clone();

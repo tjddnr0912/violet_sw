@@ -458,6 +458,20 @@ pub fn resolve_applet(argv: &[String]) -> (Applet, Vec<String>) {
 /// the process exit code. `main()` is a thin wrapper around this.
 pub fn run(argv: &[String]) -> i32 {
     let (applet, args) = resolve_applet(argv);
+    // P2-4: `--help`/`--version` anywhere in the args short-circuits (before this,
+    // `vita --help` tried to READ a file named `--help`). Applet-specific usage.
+    let applet_name = match applet {
+        Applet::Vita => "vita",
+        Applet::Staged(s) => s,
+    };
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help(applet_name);
+        return EXIT_OK;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{applet_name} {}", env!("CARGO_PKG_VERSION"));
+        return EXIT_OK;
+    }
     match applet {
         Applet::Vita => run_vita(&args, &VitaOpts::default()),
         Applet::Staged("vcmp") => dispatch_vcmp(&args),
@@ -471,6 +485,52 @@ pub fn run(argv: &[String]) -> i32 {
             EXIT_CLI_ERROR
         }
     }
+}
+
+/// P2-4: applet-specific usage text (doc-13 exit table: help/version are clean
+/// exits). Kept truthful to the IMPLEMENTED surface (`-o` only).
+fn print_help(applet: &str) {
+    let body = match applet {
+        "vcmp" => {
+            "Usage: vcmp [-o <out.vu>] <sources>...\n\n\
+             Compile sources (preprocess + lex + parse) into a `.vu` snapshot."
+        }
+        "velab" => {
+            "Usage: velab [-o <out.velab>] <in.vu>\n\n\
+             Elaborate a `.vu` snapshot into a `.velab` (golden SimIr + side tables)."
+        }
+        "vrun" => {
+            "Usage: vrun [-o <out.vcd>] <in.velab>\n\n\
+             Simulate a `.velab`, writing the VCD and RTL stdout."
+        }
+        _ => {
+            "Usage: vita [-o <out.vcd>] <sources>...\n\
+             \x20      vita {vcmp|velab|vrun} [OPTIONS] ...\n\n\
+             One-shot RTL simulation: preprocess -> lex -> parse -> elaborate ->\n\
+             simulate -> VCD. The staged subcommands split the same pipeline."
+        }
+    };
+    println!(
+        "{applet} {} - vitamin RTL simulator",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("{body}");
+    println!(
+        "\nOptions:\n  -o, --out <PATH>   output path override\n  \
+         -h, --help         print help\n  -V, --version      print version"
+    );
+}
+
+/// P2-7: atomic artifact write — stage into `<out>.tmp.<pid>` then rename, so a
+/// crash mid-write can never leave a partial `.vu`/`.velab` that the staleness
+/// gate would misreport as a format mismatch. Same-directory rename is atomic on
+/// POSIX and best-effort-replace on Windows.
+fn write_artifact_atomic(out: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = format!("{out}.tmp.{}", std::process::id());
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, out).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 // ───────────────────────── staged-flow applets ──────────────────────────────
@@ -615,7 +675,7 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
         rt.global_prec_exp,
     );
     let bytes = vita_artifact::write_vu(&header, &body);
-    if let Err(e) = std::fs::write(out, &bytes) {
+    if let Err(e) = write_artifact_atomic(out, &bytes) {
         eprintln!(
             "error[{}]: cannot write '{out}': {e}",
             MsgCode::CliBadFlag.code_num()
@@ -706,7 +766,7 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     );
     let vheader = artifact_header(vita_schema::schema_hash::<sim_ir::SimIr>(), global_prec_exp);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
-    if let Err(e) = std::fs::write(out, &out_bytes) {
+    if let Err(e) = write_artifact_atomic(out, &out_bytes) {
         eprintln!(
             "error[{}]: cannot write '{out}': {e}",
             MsgCode::CliBadFlag.code_num()
