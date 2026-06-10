@@ -477,3 +477,110 @@ fn native_select_concat_repl_equals_across_backends() {
         "native structural ops must match the oracle's select/concat/replicate"
     );
 }
+
+/// [C6] The 65..=128-bit two-word wide lane end-to-end: 100-bit unsigned
+/// arith/bitwise/shift/div/compare/reduction compiled native inside a
+/// codegen-able body. Witnesses hand-computed at mod 2^100.
+#[test]
+fn native_wide_lane_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [99:0] a, b, sum, dif, prd, bnd, sl, sr, dv, md;\n\
+      reg lt, rx;\n\
+      always @(posedge clk) begin\n\
+        sum <= a + b;\n\
+        dif <= a - b;\n\
+        prd <= a * b;\n\
+        bnd <= (a & b) ^ ~a;\n\
+        sl  <= a << 37;\n\
+        sr  <= a >> 65;\n\
+        dv  <= a / 7;\n\
+        md  <= a % 7;\n\
+        lt  <= a < b;\n\
+        rx  <= ^a;\n\
+      end\n\
+      initial begin\n\
+        a = 100'habcdef0123456789abcdef012;\n\
+        b = 100'h00003fffffffffffffff00001;\n\
+        clk = 0;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%h %h %h %h %h %h %h %h %b %b\",\n\
+                    sum, dif, prd, bnd, sl, sr, dv, md, lt, rx);\n\
+        $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_wide_lane");
+    assert_eq!(
+        out.trim(),
+        "abce2f0123456789abccef013 abcdaf0123456789abceef011 \
+         77c03aaaaaaaaaaabbbbef012 54323fffffffffffffff10fed \
+         68acf13579bde024000000000 000000000000000055e6f7809 \
+         188b2224bbe557ef188b2224b 0000000000000000000000005 0 1",
+        "wide native lane must compute exact 100-bit results"
+    );
+}
+
+/// [C6] Wide X-poison: any X bit (here only in the HIGH word) must poison the
+/// whole wide arith result; bitwise keeps per-bit 4-state. Both backends agree.
+#[test]
+fn native_wide_xz_poison_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [99:0] a, b, s, o;\n\
+      always @(posedge clk) begin\n\
+        s <= a + b;\n\
+        o <= a | b;\n\
+      end\n\
+      initial begin\n\
+        a = 100'h0; a[99] = 1'bx;            // X only above bit 63\n\
+        b = 100'hfffffffffffffffffffffffff;\n\
+        clk = 0;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%h %h\", s, o); $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_wide_xz");
+    // add: all-X (25 x's); or: definite-1 everywhere (1|x = 1).
+    assert_eq!(
+        out.trim(),
+        "xxxxxxxxxxxxxxxxxxxxxxxxx fffffffffffffffffffffffff",
+        "high-word X must poison wide add; wide OR keeps definite bits"
+    );
+}
+
+/// [C6] Array-indexed reads INSIDE expressions (the LoadIndexed lane): valid
+/// index, X index (→ all-X read), and out-of-range index (→ all-X read), each
+/// composing with native arith. Both backends agree + witness.
+#[test]
+fn native_indexed_read_equals_across_backends() {
+    let src = "module top;\n\
+      reg clk;\n\
+      reg [15:0] mem [0:3];\n\
+      reg [1:0] i, j;\n\
+      reg [3:0] xi;\n\
+      reg [15:0] q, qx, qo;\n\
+      always @(posedge clk) begin\n\
+        q  <= mem[i] + mem[j] * 16'd2;\n\
+        qx <= mem[xi[1:0]] + 16'd1;\n\
+        qo <= mem[xi] + 16'd1;\n\
+      end\n\
+      initial begin\n\
+        mem[0] = 16'h0010; mem[1] = 16'h0200; mem[2] = 16'h3000; mem[3] = 16'h0004;\n\
+        i = 2'd1; j = 2'd2; xi = 4'bxxxx; clk = 0;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%h %h %h\", q, qx, qo);\n\
+        xi = 4'd9;\n\
+        #1 clk = 1; #1 clk = 0;\n\
+        #1 $display(\"%h\", qo);\n\
+        $finish;\n\
+      end\n\
+    endmodule";
+    let out = assert_backends_equal(src, "native_indexed_read");
+    // q = 0x200 + 0x3000*2 = 0x6200; X index ⇒ all-X read ⇒ X+1 = all-X;
+    // then xi=9 (out of range on mem[0:3]) ⇒ all-X read again.
+    assert_eq!(
+        out.trim(),
+        "6200 xxxx xxxx\nxxxx",
+        "indexed native reads must select/poison exactly like the oracle"
+    );
+}

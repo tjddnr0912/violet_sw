@@ -459,3 +459,68 @@ fn diff_force_release() {
          endmodule",
     );
 }
+
+#[test]
+fn diff_wide_lane_c6() {
+    // [C6] 100-bit two-word datapath: arith carries crossing bit 63, wide
+    // bitwise/shift/div/mod/compare/reduction — the native wide lane's oracle
+    // (the interpreter) must match iverilog bit-for-bit; backend_equiv's
+    // native_wide_lane teeth then pin VM == interpreter on the same shape.
+    assert_matches_iverilog(
+        "wide_lane_c6",
+        "module tb; \
+           reg clk; \
+           reg [99:0] a, b, sum, dif, prd, bnd, sl, sr, dv, md; \
+           reg lt, rx; \
+           always @(posedge clk) begin \
+             sum <= a + b; \
+             dif <= a - b; \
+             prd <= a * b; \
+             bnd <= (a & b) ^ ~a; \
+             sl  <= a << 37; \
+             sr  <= a >> 65; \
+             dv  <= a / 7; \
+             md  <= a % 7; \
+             lt  <= a < b; \
+             rx  <= ^a; \
+           end \
+           initial begin \
+             a = 100'habcdef0123456789abcdef012; \
+             b = 100'h00003fffffffffffffff00001; \
+             clk = 0; \
+             #1 clk = 1; #1 clk = 0; \
+             #1 $display(\"%h %h %h %h\", sum, dif, prd, bnd); \
+             $display(\"%h %h %h %h %b %b\", sl, sr, dv, md, lt, rx); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}
+
+#[test]
+fn diff_indexed_expr_reads() {
+    // [C6] array-word reads inside expressions (LoadIndexed): valid and
+    // out-of-range indices (OOR reads all-X; X+1 stays all-X under %h).
+    assert_matches_iverilog(
+        "indexed_expr_reads",
+        "module tb; \
+           reg clk; \
+           reg [15:0] mem [0:3]; \
+           reg [1:0] i, j; \
+           reg [3:0] oor; \
+           reg [15:0] q, qo; \
+           always @(posedge clk) begin \
+             q  <= mem[i] + mem[j] * 16'd2; \
+             qo <= mem[oor] + 16'd1; \
+           end \
+           initial begin \
+             mem[0] = 16'h0010; mem[1] = 16'h0200; \
+             mem[2] = 16'h3000; mem[3] = 16'h0004; \
+             i = 2'd1; j = 2'd2; oor = 4'd9; clk = 0; \
+             #1 clk = 1; #1 clk = 0; \
+             #1 $display(\"%h %h\", q, qo); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}

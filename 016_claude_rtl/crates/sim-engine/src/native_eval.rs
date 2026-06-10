@@ -84,45 +84,94 @@ enum RedK {
 #[derive(Clone, Copy)]
 enum NOp {
     /// push a compile-time constant, already resized to its node width and masked.
-    Const { val: u64, unk: u64 },
+    Const {
+        val: u64,
+        unk: u64,
+    },
     /// push `read_net(net, None).resize_keep_sign(w, signed)`, masked to `w`.
-    LoadScalar { net: u32, w: u32, signed: bool },
+    LoadScalar {
+        net: u32,
+        w: u32,
+        signed: bool,
+    },
     /// pop b, pop a → push the `w`-wide arith result (all-X if either has any X/Z).
-    Arith { kind: ArithKind, w: u32 },
+    Arith {
+        kind: ArithKind,
+        w: u32,
+    },
     /// pop b, pop a → push the `w`-wide 4-state bitwise result.
-    Bitwise { kind: BitKind, w: u32 },
+    Bitwise {
+        kind: BitKind,
+        w: u32,
+    },
     /// pop a → push the `w`-wide 4-state complement.
-    Not { w: u32 },
+    Not {
+        w: u32,
+    },
     /// pop a → push the `w`-wide two's-complement negate (all-X if any X/Z).
-    Neg { w: u32 },
+    Neg {
+        w: u32,
+    },
     /// pop b, pop a → push the 1-bit relational result at pair width `w`
     /// (signed iff BOTH operands signed; any X/Z → 1-bit X). Mirrors oracle
     /// `relational` (single-word case).
-    Cmp { kind: CmpKind, w: u32, signed: bool },
+    Cmp {
+        kind: CmpKind,
+        w: u32,
+        signed: bool,
+    },
     /// pop b, pop a → push 1-bit `==`/`!=` (any X/Z in the compared bits → X).
-    EqNe { ne: bool, w: u32 },
+    EqNe {
+        ne: bool,
+        w: u32,
+    },
     /// pop b, pop a → push 1-bit `===`/`!==` (exact 4-state plane compare; never X).
-    CaseEqNe { ne: bool, w: u32 },
+    CaseEqNe {
+        ne: bool,
+        w: u32,
+    },
     /// pop amount (self-determined), pop l (`w`-wide) → push `l << amt` at `w`
     /// (X/Z amount → all-X; amt ≥ w shifts everything out). Oracle `shift_left`
     /// grow-then-truncate ≡ direct masked shift for w ≤ 64.
-    Shl { w: u32 },
+    Shl {
+        w: u32,
+    },
     /// pop amount, pop l → push `l >> amt` at `w`. `arith` (the lhs OWN sign for
     /// `>>>`) fills vacated top bits with l's MSB pair (which may be X/Z).
-    Shr { w: u32, arith: bool },
+    Shr {
+        w: u32,
+        arith: bool,
+    },
     /// pop b, pop a → push `w`-wide div/mod (X/Z or divide-by-zero → all-X;
     /// signed = truncating toward zero, exactly oracle `arith`'s i128 lane).
-    DivMod { kind: DivKind, w: u32, signed: bool },
+    DivMod {
+        kind: DivKind,
+        w: u32,
+        signed: bool,
+    },
     /// pop else, pop then, pop cond → push the selected branch at `w`; an X/Z
     /// cond merges the branches bit-wise (agree → through, differ → X).
-    Ternary { w: u32, cond_w: u32 },
+    Ternary {
+        w: u32,
+        cond_w: u32,
+    },
     /// pop a (self-determined, `opw` wide) → push the 1-bit reduction
     /// (negated for the N-forms; X stays X under negation).
-    Reduce { kind: RedK, neg: bool, opw: u32 },
+    Reduce {
+        kind: RedK,
+        neg: bool,
+        opw: u32,
+    },
     /// pop a → push 1-bit `!a` via tri-valued truthiness.
-    LogNot { opw: u32 },
+    LogNot {
+        opw: u32,
+    },
     /// pop r, pop l (each self-determined) → push 1-bit `&&`/`||` (tri-valued).
-    LogBin { and: bool, lw: u32, rw: u32 },
+    LogBin {
+        and: bool,
+        lw: u32,
+        rw: u32,
+    },
     /// pop offset (self-determined), pop base (`src_w` self bits) → push the
     /// `sel_w` gathered bits zero-extended to node width (oracle `eval_select`
     /// then unsigned `resize_keep_sign`): X/Z offset ⇒ `sel_w` X bits; an
@@ -134,10 +183,112 @@ enum NOp {
     },
     /// pop lo (`lo_w` self bits), pop hi → push `(hi << lo_w) | lo` masked to
     /// the running natural concat width `w` (4-state planes shift+or alike).
-    ConcatPair { lo_w: u32, w: u32 },
+    ConcatPair {
+        lo_w: u32,
+        w: u32,
+    },
     /// pop part (`part_w` self bits) → push it repeated `count` times (`w` =
     /// part_w × count natural bits; X/Z bits repeat with the pattern).
-    Repl { part_w: u32, count: u32, w: u32 },
+    Repl {
+        part_w: u32,
+        count: u32,
+        w: u32,
+    },
+    /// pop index (self-determined, narrow), then push
+    /// `read_net(net, Some(idx)).resize_keep_sign(w, signed)` — the oracle's
+    /// array-word read: an X/Z index or one beyond u32 maps to the `u32::MAX`
+    /// out-of-range sentinel (`net_word_packed` then reads all-X).
+    LoadIndexed {
+        net: u32,
+        w: u32,
+        signed: bool,
+    },
+
+    // ── C6 wide lane: 65..=128-bit values on a SEPARATE u128 pair stack.
+    //    Same oracle contracts, two-word registers. `lower` guarantees a node's
+    //    register is wide IFF its eval width w > 64 (`Promote` bridges narrow
+    //    producers feeding wide contexts; the reverse never occurs). ──
+    /// pop a narrow register → push it on the wide stack (zero-extend; narrow
+    /// registers keep bits ≥ their node width 0, so the pass-through is exact).
+    Promote,
+    /// push a compile-time wide constant (resized + masked at compile).
+    WConst {
+        val: u128,
+        unk: u128,
+    },
+    /// wide `read_net(net, None).resize_keep_sign(w, signed)`.
+    WLoadScalar {
+        net: u32,
+        w: u32,
+        signed: bool,
+    },
+    /// pop narrow index → wide array-word read (same sentinel rules).
+    WLoadIndexed {
+        net: u32,
+        w: u32,
+        signed: bool,
+    },
+    /// pop b, pop a (wide) → `w`-wide UNSIGNED arith (oracle's u128 lane;
+    /// signed >64-bit arith X-poisons in the oracle and stays oracle-bound).
+    WArith {
+        kind: ArithKind,
+        w: u32,
+    },
+    /// pop b, pop a (wide) → 4-state bitwise at `w` (same `*_w` formulas on u128).
+    WBitwise {
+        kind: BitKind,
+        w: u32,
+    },
+    WNot {
+        w: u32,
+    },
+    /// any X/Z → all-X; else `(!a + 1) & mask` ≡ the oracle's word-carry chain.
+    WNeg {
+        w: u32,
+    },
+    /// pop b, pop a (wide) → 1-bit relational on the NARROW stack.
+    WCmp {
+        kind: CmpKind,
+        w: u32,
+        signed: bool,
+    },
+    WEqNe {
+        ne: bool,
+        w: u32,
+    },
+    WCaseEqNe {
+        ne: bool,
+        w: u32,
+    },
+    /// pop narrow amount, pop wide l → wide shift at `w` (guards at 128).
+    WShl {
+        w: u32,
+    },
+    WShr {
+        w: u32,
+        arith: bool,
+    },
+    /// UNSIGNED wide div/mod (signed >64 stays oracle-bound).
+    WDivMod {
+        kind: DivKind,
+        w: u32,
+    },
+    /// pop wide else, wide then, then the cond (wide or narrow stack by
+    /// `cond_wide`) → wide select/merge at `w`.
+    WTernary {
+        w: u32,
+        cond_wide: bool,
+        cond_w: u32,
+    },
+    /// pop a wide operand → 1-bit reduction on the NARROW stack.
+    WReduce {
+        kind: RedK,
+        neg: bool,
+        opw: u32,
+    },
+    WLogNot {
+        opw: u32,
+    },
 }
 
 /// A compiled expression. `root_w`/`root_signed` stamp the final `Value` so it is
@@ -149,23 +300,57 @@ pub(crate) struct NativeProg {
     root_signed: bool,
 }
 
-/// P3-5: the run-time value stack is a FIXED 64-slot array (zero per-call heap
+/// P3-5: the run-time value stacks are FIXED arrays (zero per-call heap
 /// allocation). Max live depth == the expression's right-leaning nesting depth
 /// (a linear `a+b+c+…` chain peaks at 2–3); `try_compile` verifies the compiled
-/// program never exceeds the cap and bails to the oracle otherwise.
+/// program never exceeds either cap and bails to the oracle otherwise.
 const NATIVE_STACK: usize = 64;
+/// Wide (u128 pair) stack cap. Deliberately SMALL: the buffer is stack-zeroed
+/// on every `run` call (no-unsafe policy ⇒ no MaybeUninit), so its size is a
+/// per-eval tax on NARROW programs too. Real wide expressions peak at depth
+/// 2–3 (post-order left-fold); anything deeper bails to the oracle at compile.
+const WIDE_STACK: usize = 8;
 
-/// Stack effect of one op: (pops, pushes).
-fn arity(op: &NOp) -> (u32, u32) {
+/// `low_mask` at 128 bits.
+#[inline]
+fn wmask(w: u32) -> u128 {
+    if w >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << w) - 1
+    }
+}
+
+/// Stack effect of one op on (narrow, wide): (npop, npush, wpop, wpush).
+fn arity(op: &NOp) -> (u32, u32, u32, u32) {
     match op {
-        NOp::Const { .. } | NOp::LoadScalar { .. } => (0, 1),
+        NOp::Const { .. } | NOp::LoadScalar { .. } => (0, 1, 0, 0),
+        NOp::LoadIndexed { .. } => (1, 1, 0, 0),
         NOp::Not { .. }
         | NOp::Neg { .. }
         | NOp::Reduce { .. }
         | NOp::LogNot { .. }
-        | NOp::Repl { .. } => (1, 1),
-        NOp::Ternary { .. } => (3, 1),
-        _ => (2, 1),
+        | NOp::Repl { .. } => (1, 1, 0, 0),
+        NOp::Ternary { .. } => (3, 1, 0, 0),
+        // wide lane
+        NOp::Promote => (1, 0, 0, 1),
+        NOp::WConst { .. } | NOp::WLoadScalar { .. } => (0, 0, 0, 1),
+        NOp::WLoadIndexed { .. } => (1, 0, 0, 1),
+        NOp::WArith { .. } | NOp::WBitwise { .. } | NOp::WDivMod { .. } => (0, 0, 2, 1),
+        NOp::WNot { .. } | NOp::WNeg { .. } => (0, 0, 1, 1),
+        NOp::WCmp { .. } | NOp::WEqNe { .. } | NOp::WCaseEqNe { .. } => (0, 1, 2, 0),
+        NOp::WShl { .. } | NOp::WShr { .. } => (1, 0, 1, 1),
+        NOp::WTernary { cond_wide, .. } => {
+            if *cond_wide {
+                (0, 0, 3, 1)
+            } else {
+                (1, 0, 2, 1)
+            }
+        }
+        NOp::WReduce { .. } | NOp::WLogNot { .. } => (0, 1, 1, 0),
+        // remaining narrow binaries (Arith/Bitwise/Cmp/EqNe/CaseEqNe/Shl/Shr/
+        // DivMod/LogBin/Select/ConcatPair)
+        _ => (2, 1, 0, 0),
     }
 }
 
@@ -178,6 +363,24 @@ fn const_value(ir: &SimIr, cid: u32) -> Option<Value> {
     }
     let signed = matches!(c.repr, ConstRepr::Numeric) && c.signed;
     Some(Value::from_packed(&c.bits, c.width, signed))
+}
+
+/// Extract a `Value`'s low 128 bits as a masked u128 pair (wide registers).
+fn wide_pair(v: &Value, w: u32) -> (u128, u128) {
+    let m = wmask(w);
+    let vlo = v.val.first().copied().unwrap_or(0) as u128;
+    let vhi = v.val.get(1).copied().unwrap_or(0) as u128;
+    let ulo = v.unk.first().copied().unwrap_or(0) as u128;
+    let uhi = v.unk.get(1).copied().unwrap_or(0) as u128;
+    ((vlo | (vhi << 64)) & m, (ulo | (uhi << 64)) & m)
+}
+
+/// Bridge a narrow 1-bit/natural producer into a wide context (plain
+/// zero-extend — narrow registers keep bits ≥ node width 0).
+fn promote_if(wide: bool, ops: &mut Vec<NOp>) {
+    if wide {
+        ops.push(NOp::Promote);
+    }
 }
 
 /// `BinOp` → its native class, or `None` if unsupported (Div/Mod/Pow/compare/shift/
@@ -211,21 +414,24 @@ pub(crate) fn try_compile(
 ) -> Option<NativeProg> {
     let self_sw = wt.get(eid);
     let root_w = self_sw.width.max(ctx_width);
-    if root_w == 0 || root_w > 64 {
+    if root_w == 0 || root_w > 128 {
         return None;
     }
     let mut ops = Vec::new();
     lower(ir, wt, eid, ctx_width, ctx_signed, &mut ops)?;
-    // P3-5: verify the post-order program fits the fixed run-time stack.
-    let mut bal: u32 = 0;
-    let mut maxd: u32 = 0;
+    // P3-5: verify the post-order program fits BOTH fixed run-time stacks.
+    let (mut nbal, mut wbal): (u32, u32) = (0, 0);
+    let (mut nmax, mut wmax): (u32, u32) = (0, 0);
     for op in &ops {
-        let (pop, push) = arity(op);
-        bal = bal.checked_sub(pop)?; // malformed program defends as a bail
-        bal += push;
-        maxd = maxd.max(bal);
+        let (npop, npush, wpop, wpush) = arity(op);
+        nbal = nbal.checked_sub(npop)?; // malformed program defends as a bail
+        wbal = wbal.checked_sub(wpop)?;
+        nbal += npush;
+        wbal += wpush;
+        nmax = nmax.max(nbal);
+        wmax = wmax.max(wbal);
     }
-    if maxd as usize > NATIVE_STACK {
+    if nmax as usize > NATIVE_STACK || wmax as usize > WIDE_STACK {
         return None; // absurdly right-leaning nesting: leave it to the oracle
     }
     // At the root, `ctx_signed` IS `rhs` self-sign (eval_for_lvalue), so
@@ -259,31 +465,66 @@ fn lower(
     let self_sw = wt.get(eid);
     let w = self_sw.width.max(ctx_width);
     let eff_signed = self_sw.signed && ctx_signed;
-    if w == 0 || w > 64 {
+    if w == 0 || w > 128 {
         return None;
     }
+    // C6: a node's register lives on the wide stack IFF its eval width > 64.
+    let wide = w > 64;
     // P2-8: a same-schema corrupted `.velab` can carry an out-of-range ExprId;
     // bail to the interpreter (which raises its own diagnostics) over panicking.
     let expr = ir.exprs.get(eid as usize)?;
     match expr {
         Expr::Const { val } => {
             let r = const_value(ir, *val)?.resize_keep_sign(w, eff_signed);
-            let m = low_mask(w);
-            ops.push(NOp::Const {
-                val: r.val.first().copied().unwrap_or(0) & m,
-                unk: r.unk.first().copied().unwrap_or(0) & m,
-            });
+            if wide {
+                let (cv, cu) = wide_pair(&r, w);
+                ops.push(NOp::WConst { val: cv, unk: cu });
+            } else {
+                let m = low_mask(w);
+                ops.push(NOp::Const {
+                    val: r.val.first().copied().unwrap_or(0) & m,
+                    unk: r.unk.first().copied().unwrap_or(0) & m,
+                });
+            }
             Some(())
         }
         Expr::Signal { net, word } => {
-            if word.is_some() {
-                return None; // array-indexed read: dynamic index, deferred
+            if let Some(weid) = word {
+                // dynamic array-word read: index is SELF-determined (oracle
+                // `self.eval(weid)`); a wide index stays oracle-bound.
+                let iw = wt.get(*weid).width;
+                if iw == 0 || iw > 64 {
+                    return None;
+                }
+                lower(ir, wt, *weid, 0, true, ops)?;
+                ops.push(if wide {
+                    NOp::WLoadIndexed {
+                        net: *net,
+                        w,
+                        signed: eff_signed,
+                    }
+                } else {
+                    NOp::LoadIndexed {
+                        net: *net,
+                        w,
+                        signed: eff_signed,
+                    }
+                });
+            } else {
+                ops.push(if wide {
+                    NOp::WLoadScalar {
+                        net: *net,
+                        w,
+                        signed: eff_signed,
+                    }
+                } else {
+                    NOp::LoadScalar {
+                        net: *net,
+                        w,
+                        signed: eff_signed,
+                    }
+                });
             }
-            ops.push(NOp::LoadScalar {
-                net: *net,
-                w,
-                signed: eff_signed,
-            });
             Some(())
         }
         Expr::Unary { op, operand } => match op {
@@ -291,12 +532,20 @@ fn lower(
             UnOp::Plus => lower(ir, wt, *operand, w, eff_signed, ops), // passthrough
             UnOp::Minus => {
                 lower(ir, wt, *operand, w, eff_signed, ops)?;
-                ops.push(NOp::Neg { w });
+                ops.push(if wide {
+                    NOp::WNeg { w }
+                } else {
+                    NOp::Neg { w }
+                });
                 Some(())
             }
             UnOp::BitNot => {
                 lower(ir, wt, *operand, w, eff_signed, ops)?;
-                ops.push(NOp::Not { w });
+                ops.push(if wide {
+                    NOp::WNot { w }
+                } else {
+                    NOp::Not { w }
+                });
                 Some(())
             }
             // reductions / lognot: 1-bit result over a SELF-DETERMINED operand
@@ -306,7 +555,12 @@ fn lower(
             UnOp::LogNot => {
                 let opw = wt.get(*operand).width;
                 lower(ir, wt, *operand, 0, true, ops)?;
-                ops.push(NOp::LogNot { opw });
+                ops.push(if opw > 64 {
+                    NOp::WLogNot { opw }
+                } else {
+                    NOp::LogNot { opw }
+                });
+                promote_if(wide, ops);
                 Some(())
             }
             UnOp::RedAnd
@@ -325,7 +579,12 @@ fn lower(
                     UnOp::RedXor => (RedK::Xor, false),
                     _ => (RedK::Xor, true), // RedXnor
                 };
-                ops.push(NOp::Reduce { kind, neg, opw });
+                ops.push(if opw > 64 {
+                    NOp::WReduce { kind, neg, opw }
+                } else {
+                    NOp::Reduce { kind, neg, opw }
+                });
+                promote_if(wide, ops);
                 Some(())
             }
         },
@@ -336,50 +595,63 @@ fn lower(
                 // (max(self_w(L), self_w(R)), bothsigned); 1-bit result.
                 B::Lt | B::Le | B::Gt | B::Ge | B::Eq | B::Ne | B::CaseEq | B::CaseNe => {
                     let cmp_w = wt.get(*lhs).width.max(wt.get(*rhs).width);
-                    if cmp_w == 0 || cmp_w > 64 {
+                    if cmp_w == 0 || cmp_w > 128 {
                         return None;
                     }
+                    let cmp_wide = cmp_w > 64;
                     let pair_signed = wt.get(*lhs).signed && wt.get(*rhs).signed;
                     lower(ir, wt, *lhs, cmp_w, pair_signed, ops)?;
                     lower(ir, wt, *rhs, cmp_w, pair_signed, ops)?;
+                    let cmp = |kind| {
+                        if cmp_wide {
+                            NOp::WCmp {
+                                kind,
+                                w: cmp_w,
+                                signed: pair_signed,
+                            }
+                        } else {
+                            NOp::Cmp {
+                                kind,
+                                w: cmp_w,
+                                signed: pair_signed,
+                            }
+                        }
+                    };
+                    let eq = |ne| {
+                        if cmp_wide {
+                            NOp::WEqNe { ne, w: cmp_w }
+                        } else {
+                            NOp::EqNe { ne, w: cmp_w }
+                        }
+                    };
+                    let ceq = |ne| {
+                        if cmp_wide {
+                            NOp::WCaseEqNe { ne, w: cmp_w }
+                        } else {
+                            NOp::CaseEqNe { ne, w: cmp_w }
+                        }
+                    };
                     ops.push(match op {
-                        B::Lt => NOp::Cmp {
-                            kind: CmpKind::Lt,
-                            w: cmp_w,
-                            signed: pair_signed,
-                        },
-                        B::Le => NOp::Cmp {
-                            kind: CmpKind::Le,
-                            w: cmp_w,
-                            signed: pair_signed,
-                        },
-                        B::Gt => NOp::Cmp {
-                            kind: CmpKind::Gt,
-                            w: cmp_w,
-                            signed: pair_signed,
-                        },
-                        B::Ge => NOp::Cmp {
-                            kind: CmpKind::Ge,
-                            w: cmp_w,
-                            signed: pair_signed,
-                        },
-                        B::Eq => NOp::EqNe {
-                            ne: false,
-                            w: cmp_w,
-                        },
-                        B::Ne => NOp::EqNe { ne: true, w: cmp_w },
-                        B::CaseEq => NOp::CaseEqNe {
-                            ne: false,
-                            w: cmp_w,
-                        },
-                        _ => NOp::CaseEqNe { ne: true, w: cmp_w }, // CaseNe
+                        B::Lt => cmp(CmpKind::Lt),
+                        B::Le => cmp(CmpKind::Le),
+                        B::Gt => cmp(CmpKind::Gt),
+                        B::Ge => cmp(CmpKind::Ge),
+                        B::Eq => eq(false),
+                        B::Ne => eq(true),
+                        B::CaseEq => ceq(false),
+                        _ => ceq(true), // CaseNe
                     });
+                    promote_if(wide, ops);
                     Some(())
                 }
-                // LOGICAL: each operand self-determined, tri-valued combine.
+                // LOGICAL: each operand self-determined, tri-valued combine
+                // (wide operands stay oracle-bound — `c = a128 && b` is rare).
                 B::LogAnd | B::LogOr => {
                     let lw = wt.get(*lhs).width;
                     let rw = wt.get(*rhs).width;
+                    if lw > 64 || rw > 64 {
+                        return None;
+                    }
                     lower(ir, wt, *lhs, 0, true, ops)?;
                     lower(ir, wt, *rhs, 0, true, ops)?;
                     ops.push(NOp::LogBin {
@@ -387,57 +659,99 @@ fn lower(
                         lw,
                         rw,
                     });
+                    promote_if(wide, ops);
                     Some(())
                 }
-                // SHIFTS: LEFT context-determined; amount SELF-determined.
+                // SHIFTS: LEFT context-determined; amount SELF-determined
+                // (a >64-bit amount register stays oracle-bound).
                 B::Shl | B::AShl => {
+                    if wt.get(*rhs).width > 64 {
+                        return None;
+                    }
                     lower(ir, wt, *lhs, w, eff_signed, ops)?;
                     lower(ir, wt, *rhs, 0, true, ops)?;
-                    ops.push(NOp::Shl { w });
+                    ops.push(if wide {
+                        NOp::WShl { w }
+                    } else {
+                        NOp::Shl { w }
+                    });
                     Some(())
                 }
                 B::Shr => {
+                    if wt.get(*rhs).width > 64 {
+                        return None;
+                    }
                     lower(ir, wt, *lhs, w, eff_signed, ops)?;
                     lower(ir, wt, *rhs, 0, true, ops)?;
-                    ops.push(NOp::Shr { w, arith: false });
+                    ops.push(if wide {
+                        NOp::WShr { w, arith: false }
+                    } else {
+                        NOp::Shr { w, arith: false }
+                    });
                     Some(())
                 }
                 // `>>>`: fill governed by the LEFT operand's OWN sign (oracle
                 // evaluates lhs at (w, own-sign); the final ctx re-stamp only
                 // changes the sign FLAG, never the bits — registers carry bits).
                 B::AShr => {
+                    if wt.get(*rhs).width > 64 {
+                        return None;
+                    }
                     let lhs_signed = wt.get(*lhs).signed;
                     lower(ir, wt, *lhs, w, lhs_signed, ops)?;
                     lower(ir, wt, *rhs, 0, true, ops)?;
-                    ops.push(NOp::Shr {
-                        w,
-                        arith: lhs_signed,
+                    ops.push(if wide {
+                        NOp::WShr {
+                            w,
+                            arith: lhs_signed,
+                        }
+                    } else {
+                        NOp::Shr {
+                            w,
+                            arith: lhs_signed,
+                        }
                     });
                     Some(())
                 }
                 // DIV/MOD: context-determined like Add (X/Z or /0 → all-X).
+                // SIGNED wide div/mod X-poisons in the oracle — oracle-bound.
                 B::Div | B::Mod => {
+                    if wide && eff_signed {
+                        return None;
+                    }
                     lower(ir, wt, *lhs, w, eff_signed, ops)?;
                     lower(ir, wt, *rhs, w, eff_signed, ops)?;
-                    ops.push(NOp::DivMod {
-                        kind: if matches!(op, B::Div) {
-                            DivKind::Div
-                        } else {
-                            DivKind::Mod
-                        },
-                        w,
-                        signed: eff_signed,
+                    let kind = if matches!(op, B::Div) {
+                        DivKind::Div
+                    } else {
+                        DivKind::Mod
+                    };
+                    ops.push(if wide {
+                        NOp::WDivMod { kind, w }
+                    } else {
+                        NOp::DivMod {
+                            kind,
+                            w,
+                            signed: eff_signed,
+                        }
                     });
                     Some(())
                 }
                 _ => {
                     let class = classify_binop(*op)?;
+                    // SIGNED wide arith: the oracle X-poisons (its i128 sign lane
+                    // gates at 64) — conservatively oracle-bound.
+                    if wide && eff_signed && matches!(class, BinClass::Arith(_)) {
+                        return None;
+                    }
                     // ARITHMETIC + BITWISE: BOTH operands at (w, eff_signed).
                     lower(ir, wt, *lhs, w, eff_signed, ops)?;
                     lower(ir, wt, *rhs, w, eff_signed, ops)?;
-                    ops.push(match class {
-                        BinClass::Arith(kind) => NOp::Arith { kind, w },
-                        BinClass::Bit(kind) => NOp::Bitwise { kind, w },
+                    ops.push(match (class, wide) {
+                        (BinClass::Arith(kind), false) => NOp::Arith { kind, w },
+                        (BinClass::Arith(kind), true) => NOp::WArith { kind, w },
+                        (BinClass::Bit(kind), false) => NOp::Bitwise { kind, w },
+                        (BinClass::Bit(kind), true) => NOp::WBitwise { kind, w },
                     });
                     Some(())
                 }
@@ -450,10 +764,23 @@ fn lower(
             else_e,
         } => {
             let cond_w = wt.get(*cond).width;
+            // a wide cond steering NARROW branches stays oracle-bound (the
+            // narrow Ternary op reads a single-word cond register).
+            if !wide && cond_w > 64 {
+                return None;
+            }
             lower(ir, wt, *cond, 0, true, ops)?;
             lower(ir, wt, *then_e, w, eff_signed, ops)?;
             lower(ir, wt, *else_e, w, eff_signed, ops)?;
-            ops.push(NOp::Ternary { w, cond_w });
+            ops.push(if wide {
+                NOp::WTernary {
+                    w,
+                    cond_wide: cond_w > 64,
+                    cond_w,
+                }
+            } else {
+                NOp::Ternary { w, cond_w }
+            });
             Some(())
         }
         // ── structural ops: SELF-determined natural value, then UNSIGNED
@@ -475,7 +802,12 @@ fn lower(
                 _ => folded,
             };
             let src_w = wt.get(*base).width;
+            // structural ops stay single-word (the >64-bit cross-word gather is
+            // a documented residual); a wide OFFSET register also bails.
             if sel_w == 0 || sel_w > 64 || src_w == 0 || src_w > 64 {
+                return None;
+            }
+            if wt.get(*offset).width > 64 {
                 return None;
             }
             lower(ir, wt, *base, 0, true, ops)?; // oracle: self.eval(base)
@@ -485,6 +817,7 @@ fn lower(
                 sel_w,
                 src_w,
             });
+            promote_if(wide, ops);
             Some(())
         }
         Expr::Concat { parts } => {
@@ -505,6 +838,7 @@ fn lower(
                 lower(ir, wt, p, 0, true, ops)?;
                 ops.push(NOp::ConcatPair { lo_w: pw, w: tot });
             }
+            promote_if(wide, ops);
             Some(())
         }
         Expr::Replicate { count, value } => {
@@ -525,6 +859,7 @@ fn lower(
                 count,
                 w: total,
             });
+            promote_if(wide, ops);
             Some(())
         }
         // sysfunc / call / array-indexed signal: deferred increment.
@@ -535,13 +870,19 @@ fn lower(
 /// Run a compiled program against `nets`, producing the single `Value` the oracle's
 /// `eval_ctx` would return for the same `(ExprId, ctx)`.
 pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
-    // P3-5: fixed array + manual sp — no heap allocation per evaluation.
-    // `try_compile` guaranteed the program's max depth ≤ NATIVE_STACK.
+    // P3-5: fixed arrays + manual sp — no heap allocation per evaluation.
+    // `try_compile` guaranteed the program's max depth fits BOTH stacks.
     let mut buf = [(0u64, 0u64); NATIVE_STACK];
     let mut sp = 0usize;
     let mut stack = FixedStack {
         buf: &mut buf,
         sp: &mut sp,
+    };
+    let mut wbuf = [(0u128, 0u128); WIDE_STACK];
+    let mut wsp = 0usize;
+    let mut wstack = FixedStack {
+        buf: &mut wbuf,
+        sp: &mut wsp,
     };
     for op in &prog.ops {
         match *op {
@@ -857,29 +1198,311 @@ pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
                 let m = low_mask(w);
                 stack.push((rv & m, ru & m));
             }
+            NOp::LoadIndexed { net, w, signed } => {
+                let (iv, iu) = stack.pop().expect("native loadidx: missing index");
+                let v = nets
+                    .read_net(net, Some(word_index(iv, iu)))
+                    .resize_keep_sign(w, signed);
+                let m = low_mask(w);
+                stack.push((
+                    v.val.first().copied().unwrap_or(0) & m,
+                    v.unk.first().copied().unwrap_or(0) & m,
+                ));
+            }
+
+            // ── C6 wide lane ──
+            NOp::Promote => {
+                let (v, u) = stack.pop().expect("native promote: missing operand");
+                wstack.push((v as u128, u as u128));
+            }
+            NOp::WConst { val, unk } => wstack.push((val, unk)),
+            NOp::WLoadScalar { net, w, signed } => {
+                let v = nets.read_net(net, None).resize_keep_sign(w, signed);
+                wstack.push(wide_pair(&v, w));
+            }
+            NOp::WLoadIndexed { net, w, signed } => {
+                let (iv, iu) = stack.pop().expect("native wloadidx: missing index");
+                let v = nets
+                    .read_net(net, Some(word_index(iv, iu)))
+                    .resize_keep_sign(w, signed);
+                wstack.push(wide_pair(&v, w));
+            }
+            NOp::WArith { kind, w } => {
+                let (bv, bu) = wstack.pop().expect("native warith: missing rhs");
+                let (av, au) = wstack.pop().expect("native warith: missing lhs");
+                let m = wmask(w);
+                // oracle `arith` unsigned lane: u128 wrapping ops, X/Z poisons.
+                let res = if (au & m) != 0 || (bu & m) != 0 {
+                    (0, m)
+                } else {
+                    let rv = match kind {
+                        ArithKind::Add => av.wrapping_add(bv),
+                        ArithKind::Sub => av.wrapping_sub(bv),
+                        ArithKind::Mul => av.wrapping_mul(bv),
+                    };
+                    (rv & m, 0)
+                };
+                wstack.push(res);
+            }
+            NOp::WBitwise { kind, w } => {
+                let (bv, bu) = wstack.pop().expect("native wbitwise: missing rhs");
+                let (av, au) = wstack.pop().expect("native wbitwise: missing lhs");
+                let m = wmask(w);
+                // the same `value::*_w` plane formulas, bit-parallel at u128.
+                let (rv, ru) = match kind {
+                    BitKind::And => {
+                        let known0 = (!au & !av) | (!bu & !bv);
+                        let known1 = (!au & av) & (!bu & bv);
+                        (known1, !known0 & !known1)
+                    }
+                    BitKind::Or => {
+                        let known1 = (!au & av) | (!bu & bv);
+                        let known0 = (!au & !av) & (!bu & !bv);
+                        (known1, !known1 & !known0)
+                    }
+                    BitKind::Xor => {
+                        let ru = au | bu;
+                        ((av ^ bv) & !ru, ru)
+                    }
+                    BitKind::Xnor => {
+                        let ru = au | bu;
+                        (!(av ^ bv) & !ru, ru)
+                    }
+                };
+                wstack.push((rv & m, ru & m));
+            }
+            NOp::WNot { w } => {
+                let (av, au) = wstack.pop().expect("native wnot: missing operand");
+                let m = wmask(w);
+                wstack.push(((!av & !au) & m, au & m));
+            }
+            NOp::WNeg { w } => {
+                let (av, au) = wstack.pop().expect("native wneg: missing operand");
+                let m = wmask(w);
+                let res = if (au & m) != 0 {
+                    (0, m) // oracle `negate`: any X/Z poisons to X
+                } else {
+                    // (!x + 1) at u128 ≡ the oracle's per-word carry chain.
+                    ((!av).wrapping_add(1) & m, 0)
+                };
+                wstack.push(res);
+            }
+            NOp::WCmp { kind, w, signed } => {
+                let (bv, bu) = wstack.pop().expect("native wcmp: missing rhs");
+                let (av, au) = wstack.pop().expect("native wcmp: missing lhs");
+                let m = wmask(w);
+                let res = if (au & m) != 0 || (bu & m) != 0 {
+                    (0, 1) // oracle: any X/Z → 1-bit X
+                } else {
+                    use std::cmp::Ordering::*;
+                    let ord = if signed {
+                        // sign-extend from w (65..=128; w==128 shifts by 0).
+                        let sx = |x: u128| ((x << (128 - w)) as i128) >> (128 - w);
+                        sx(av & m).cmp(&sx(bv & m))
+                    } else {
+                        (av & m).cmp(&(bv & m))
+                    };
+                    let b = matches!(
+                        (kind, ord),
+                        (CmpKind::Lt, Less)
+                            | (CmpKind::Le, Less)
+                            | (CmpKind::Le, Equal)
+                            | (CmpKind::Gt, Greater)
+                            | (CmpKind::Ge, Greater)
+                            | (CmpKind::Ge, Equal)
+                    );
+                    (b as u64, 0)
+                };
+                stack.push(res);
+            }
+            NOp::WEqNe { ne, w } => {
+                let (bv, bu) = wstack.pop().expect("native weq: missing rhs");
+                let (av, au) = wstack.pop().expect("native weq: missing lhs");
+                let m = wmask(w);
+                let res = if (au & m) != 0 || (bu & m) != 0 {
+                    (0, 1)
+                } else {
+                    let eq = (av & m) == (bv & m);
+                    ((eq ^ ne) as u64, 0)
+                };
+                stack.push(res);
+            }
+            NOp::WCaseEqNe { ne, w } => {
+                let (bv, bu) = wstack.pop().expect("native wcaseeq: missing rhs");
+                let (av, au) = wstack.pop().expect("native wcaseeq: missing lhs");
+                let m = wmask(w);
+                let eq = (av & m) == (bv & m) && (au & m) == (bu & m);
+                stack.push(((eq ^ ne) as u64, 0));
+            }
+            NOp::WShl { w } => {
+                let (rv, ru) = stack.pop().expect("native wshl: missing amount");
+                let (lv, lu) = wstack.pop().expect("native wshl: missing lhs");
+                let m = wmask(w);
+                let res = if ru != 0 {
+                    (0, m)
+                } else if rv >= 128 {
+                    (0, 0)
+                } else {
+                    ((lv << rv) & m, (lu << rv) & m)
+                };
+                wstack.push(res);
+            }
+            NOp::WShr { w, arith } => {
+                let (rv, ru) = stack.pop().expect("native wshr: missing amount");
+                let (lv, lu) = wstack.pop().expect("native wshr: missing lhs");
+                let m = wmask(w);
+                let res = if ru != 0 {
+                    (0, m)
+                } else if !arith {
+                    if rv >= 128 {
+                        (0, 0)
+                    } else {
+                        ((lv >> rv) & m, (lu >> rv) & m)
+                    }
+                } else {
+                    let fv = (lv >> (w - 1)) & 1;
+                    let fu = (lu >> (w - 1)) & 1;
+                    let body = if rv >= 128 {
+                        (0, 0)
+                    } else {
+                        ((lv >> rv) & m, (lu >> rv) & m)
+                    };
+                    let fill_n = rv.min(w as u64) as u32;
+                    let fill_mask = if fill_n == 0 {
+                        0
+                    } else {
+                        m & !wmask(w - fill_n)
+                    };
+                    (
+                        (body.0 & !fill_mask) | (if fv == 1 { fill_mask } else { 0 }),
+                        (body.1 & !fill_mask) | (if fu == 1 { fill_mask } else { 0 }),
+                    )
+                };
+                wstack.push(res);
+            }
+            NOp::WDivMod { kind, w } => {
+                let (bv, bu) = wstack.pop().expect("native wdivmod: missing rhs");
+                let (av, au) = wstack.pop().expect("native wdivmod: missing lhs");
+                let m = wmask(w);
+                let res = if (au & m) != 0 || (bu & m) != 0 {
+                    (0, m)
+                } else {
+                    let b = bv & m;
+                    if b == 0 {
+                        (0, m)
+                    } else {
+                        let a = av & m;
+                        let r = match kind {
+                            DivKind::Div => a / b,
+                            DivKind::Mod => a % b,
+                        };
+                        (r & m, 0)
+                    }
+                };
+                wstack.push(res);
+            }
+            NOp::WTernary {
+                w,
+                cond_wide,
+                cond_w,
+            } => {
+                let (ev, eu) = wstack.pop().expect("native wternary: missing else");
+                let (tv, tu) = wstack.pop().expect("native wternary: missing then");
+                // truthiness fold is OR-equivalent across words, so the wide
+                // cond uses the same rule on u128.
+                let (c1, cx) = if cond_wide {
+                    let (cv, cu) = wstack.pop().expect("native wternary: missing cond");
+                    let mc = wmask(cond_w);
+                    ((cv & !cu & mc) != 0, (cu & mc) != 0)
+                } else {
+                    let (cv, cu) = stack.pop().expect("native wternary: missing cond");
+                    let mc = low_mask(cond_w);
+                    ((cv & !cu & mc) != 0, (cu & mc) != 0)
+                };
+                let m = wmask(w);
+                let res = if c1 {
+                    (tv & m, tu & m)
+                } else if cx {
+                    let ident = !((tv ^ ev) | (tu ^ eu)) & m;
+                    ((tv & ident), (tu & ident) | (m & !ident))
+                } else {
+                    (ev & m, eu & m)
+                };
+                wstack.push(res);
+            }
+            NOp::WReduce { kind, neg, opw } => {
+                let (av, au) = wstack.pop().expect("native wreduce: missing operand");
+                let m = wmask(opw);
+                let known1 = av & !au & m;
+                let known0 = !au & !av & m;
+                let unk = au & m;
+                let (v, u): (u64, u64) = match kind {
+                    RedK::And if known0 != 0 => (0, 0),
+                    RedK::And if unk != 0 => (0, 1),
+                    RedK::And => (1, 0),
+                    RedK::Or if known1 != 0 => (1, 0),
+                    RedK::Or if unk != 0 => (0, 1),
+                    RedK::Or => (0, 0),
+                    RedK::Xor if unk != 0 => (0, 1),
+                    RedK::Xor => ((known1.count_ones() & 1) as u64, 0),
+                };
+                let out = if neg && u == 0 { (v ^ 1, 0) } else { (v, u) };
+                stack.push(out);
+            }
+            NOp::WLogNot { opw } => {
+                let (av, au) = wstack.pop().expect("native wlognot: missing operand");
+                let m = wmask(opw);
+                let res = if (av & !au & m) != 0 {
+                    (0, 0)
+                } else if (au & m) != 0 {
+                    (0, 1)
+                } else {
+                    (1, 0)
+                };
+                stack.push(res);
+            }
         }
     }
-    let (fv, fu) = stack.pop().expect("native eval produced no result");
     let mut out = Value::zeros(prog.root_w, prog.root_signed);
-    out.val[0] = fv;
-    out.unk[0] = fu;
+    if prog.root_w > 64 {
+        let (fv, fu) = wstack.pop().expect("native eval produced no wide result");
+        out.val[0] = fv as u64;
+        out.val[1] = (fv >> 64) as u64;
+        out.unk[0] = fu as u64;
+        out.unk[1] = (fu >> 64) as u64;
+    } else {
+        let (fv, fu) = stack.pop().expect("native eval produced no result");
+        out.val[0] = fv;
+        out.unk[0] = fu;
+    }
     out
 }
 
-/// Minimal push/pop facade over the fixed buffer so the op arms read identically
-/// to the previous `Vec` form.
-struct FixedStack<'a> {
-    buf: &'a mut [(u64, u64); NATIVE_STACK],
+/// The oracle's array-word index conversion: `to_u64` (None on X/Z) then
+/// `u32::try_from`, both failures mapping to the `u32::MAX` OOR sentinel.
+#[inline]
+fn word_index(iv: u64, iu: u64) -> u32 {
+    if iu != 0 {
+        u32::MAX
+    } else {
+        u32::try_from(iv).unwrap_or(u32::MAX)
+    }
+}
+
+/// Minimal push/pop facade over a fixed buffer so the op arms read identically
+/// to the previous `Vec` form (instantiated per stack: narrow u64 / wide u128).
+struct FixedStack<'a, T: Copy> {
+    buf: &'a mut [T],
     sp: &'a mut usize,
 }
-impl FixedStack<'_> {
+impl<T: Copy> FixedStack<'_, T> {
     #[inline]
-    fn push(&mut self, v: (u64, u64)) {
+    fn push(&mut self, v: T) {
         self.buf[*self.sp] = v;
         *self.sp += 1;
     }
     #[inline]
-    fn pop(&mut self) -> Option<(u64, u64)> {
+    fn pop(&mut self) -> Option<T> {
         if *self.sp == 0 {
             return None;
         }
@@ -941,12 +1564,23 @@ mod tests {
     /// net `Value`s. Asserts the produced `Value`s are byte-identical (val, unk,
     /// width, signed) — the same equality the P5 gate enforces end-to-end.
     fn assert_matches_oracle(ir: &SimIr, eid: u32, ctx_w: u32, ctx_signed: bool, nets: &[Value]) {
+        assert_matches_oracle_on(ir, eid, ctx_w, ctx_signed, &FakeNets(nets.to_vec()));
+    }
+
+    /// Generic core: same byte-identity contrast over ANY `NetReader` (the
+    /// array-indexed lane needs word-indexed fakes).
+    fn assert_matches_oracle_on(
+        ir: &SimIr,
+        eid: u32,
+        ctx_w: u32,
+        ctx_signed: bool,
+        fake: &impl NetReader,
+    ) {
         let wt = WidthTable::build(ir);
-        let fake = FakeNets(nets.to_vec());
         let oracle = {
             let ctx = crate::eval::EvalCtx {
                 ir,
-                nets: &fake,
+                nets: fake,
                 now: 0,
                 wt: &wt,
                 time_mult: 1,
@@ -955,7 +1589,7 @@ mod tests {
         };
         let prog = try_compile(ir, &wt, eid, ctx_w, ctx_signed)
             .expect("expression must be native-compilable in this test");
-        let native = run(&prog, &fake);
+        let native = run(&prog, fake);
         assert_eq!(
             native, oracle,
             "native eval diverged from oracle for eid {eid} ctx ({ctx_w},{ctx_signed})"
@@ -1090,15 +1724,16 @@ mod tests {
     }
 
     #[test]
-    fn over_64_bits_is_not_native_compilable() {
-        // a 100-bit add must bail (None) → the VM keeps interpreting it.
+    fn over_128_bits_is_not_native_compilable() {
+        // beyond the two-word wide lane (>128) the whole tree must bail (None)
+        // → the VM keeps interpreting it. (65..=128 now compiles — C6 lane.)
         let ir = ir_of(
             vec![sig(0), sig(1), bin(BinOp::Add, 0, 1)],
             vec![],
-            vec![nv(100, false), nv(100, false)],
+            vec![nv(200, false), nv(200, false)],
         );
         let wt = WidthTable::build(&ir);
-        assert!(try_compile(&ir, &wt, 2, 100, false).is_none());
+        assert!(try_compile(&ir, &wt, 2, 200, false).is_none());
     }
 
     #[test]
@@ -1534,5 +2169,494 @@ mod tests {
             vec![nv(8, false), nv(8, false)],
         );
         assert_matches_oracle(&ir, 5, 8, false, &[vw(8, 0x3C), vw_xz(8, 0xF0, 0x0F)]);
+    }
+
+    // ── C6 lane: array-indexed Signal + the 65..=128-bit two-word wide lane ──
+
+    /// Per-net fake honoring the array word index (mirrors `net_word_packed`'s
+    /// OOR ⇒ all-X-at-element-width contract; the contrast only needs both
+    /// sides to see the SAME reader).
+    enum FakeNet {
+        Scalar(Value),
+        Array(Vec<Value>, u32), // elements, element width
+    }
+    struct FakeMem(Vec<FakeNet>);
+    impl NetReader for FakeMem {
+        fn read_net(&self, net: u32, word: Option<u32>) -> Value {
+            match (&self.0[net as usize], word) {
+                (FakeNet::Scalar(v), None) => v.clone(),
+                (FakeNet::Array(els, ew), Some(i)) => els
+                    .get(i as usize)
+                    .cloned()
+                    .unwrap_or_else(|| Value::xs(*ew, false)),
+                (FakeNet::Scalar(v), Some(_)) => v.clone(),
+                (FakeNet::Array(_, ew), None) => Value::xs(*ew, false),
+            }
+        }
+    }
+
+    /// 2-word Value builders for the wide lane.
+    fn vwide(w: u32, lo: u64, hi: u64) -> Value {
+        let mut v = Value::zeros(w, false);
+        v.val[0] = lo;
+        if v.val.len() > 1 {
+            v.val[1] = hi;
+        }
+        v.mask_top();
+        v
+    }
+    fn vwide_s(w: u32, lo: u64, hi: u64) -> Value {
+        let mut v = vwide(w, lo, hi);
+        v.signed = true;
+        v
+    }
+    fn vwide_xz(w: u32, lo: u64, hi: u64, xlo: u64, xhi: u64) -> Value {
+        let mut v = vwide(w, lo & !xlo, hi & !xhi);
+        v.unk[0] = xlo;
+        if v.unk.len() > 1 {
+            v.unk[1] = xhi;
+        }
+        v.mask_top();
+        v
+    }
+    /// Two-word numeric const.
+    fn cnum2(w: u32, lo: u64, hi: u64) -> sim_ir::ConstVal {
+        sim_ir::ConstVal {
+            width: w,
+            signed: false,
+            repr: sim_ir::ConstRepr::Numeric,
+            bits: sim_ir::BitPacked {
+                val: vec![lo, hi],
+                unk: vec![0, 0],
+            },
+        }
+    }
+
+    #[test]
+    fn indexed_load_matches_oracle() {
+        // mem[idx] where idx comes from a net: exprs 0=sig(1) (index), 1=mem read.
+        let ir = ir_of(
+            vec![
+                sig(1),
+                Expr::Signal {
+                    net: 0,
+                    word: Some(0),
+                },
+            ],
+            vec![],
+            vec![nv(8, false), nv(8, false)],
+        );
+        let mem = |idx: Value| {
+            FakeMem(vec![
+                FakeNet::Array(vec![vw(8, 0x11), vw(8, 0x22), vw_xz(8, 0x30, 0xF)], 8),
+                FakeNet::Scalar(idx),
+            ])
+        };
+        assert_matches_oracle_on(&ir, 1, 16, false, &mem(vw(8, 0))); // first
+        assert_matches_oracle_on(&ir, 1, 16, false, &mem(vw(8, 2))); // X-bearing element
+        assert_matches_oracle_on(&ir, 1, 16, false, &mem(vw(8, 200))); // OOR → all-X
+        assert_matches_oracle_on(&ir, 1, 16, false, &mem(vw_xz(8, 1, 0b1))); // X idx → all-X
+    }
+
+    #[test]
+    fn indexed_load_in_arith_matches_oracle() {
+        // mem[i] + 1 — indexed read composing with the arith lane.
+        let ir = ir_of(
+            vec![
+                sig(1),
+                Expr::Signal {
+                    net: 0,
+                    word: Some(0),
+                },
+                Expr::Const { val: 0 },
+                bin(BinOp::Add, 1, 2),
+            ],
+            vec![cnum(32, 1)],
+            vec![nv(16, false), nv(4, false)],
+        );
+        let mem = FakeMem(vec![
+            FakeNet::Array(vec![vw(16, 0xFFFF), vw(16, 7)], 16),
+            FakeNet::Scalar(vw(4, 0)),
+        ]);
+        assert_matches_oracle_on(&ir, 3, 32, false, &mem);
+    }
+
+    #[test]
+    fn wide_indexed_load_matches_oracle() {
+        // a 100-bit element array read lands on the WIDE stack.
+        let ir = ir_of(
+            vec![
+                sig(1),
+                Expr::Signal {
+                    net: 0,
+                    word: Some(0),
+                },
+            ],
+            vec![],
+            vec![nv(100, false), nv(8, false)],
+        );
+        let mem = |idx: Value| {
+            FakeMem(vec![
+                FakeNet::Array(
+                    vec![vwide(100, u64::MAX, 0xABC), vwide(100, 5, 1 << 35)],
+                    100,
+                ),
+                FakeNet::Scalar(idx),
+            ])
+        };
+        assert_matches_oracle_on(&ir, 1, 100, false, &mem(vw(8, 1)));
+        assert_matches_oracle_on(&ir, 1, 100, false, &mem(vw(8, 99))); // OOR
+        assert_matches_oracle_on(&ir, 1, 100, false, &mem(vw_xz(8, 0, 1))); // X idx
+    }
+
+    #[test]
+    fn wide_arith_matches_oracle() {
+        for op in [BinOp::Add, BinOp::Sub, BinOp::Mul] {
+            let ir = ir_of(
+                vec![sig(0), sig(1), bin(op, 0, 1)],
+                vec![],
+                vec![nv(100, false), nv(100, false)],
+            );
+            for (a, b) in [
+                (vwide(100, u64::MAX, 0), vwide(100, 1, 0)), // carry crosses word 0→1
+                (vwide(100, 0, 1), vwide(100, 1, 0)),        // borrow crosses back
+                (vwide(100, u64::MAX, 0xF_FFFF_FFFF), vwide(100, 3, 7)), // wrap at 100
+                (vwide(100, 1 << 60, 0), vwide(100, 1 << 60, 0)), // mul carries past 63
+            ] {
+                assert_matches_oracle(&ir, 2, 100, false, &[a.clone(), b.clone()]);
+            }
+            // X anywhere (here: only in word 1) poisons the whole result.
+            assert_matches_oracle(
+                &ir,
+                2,
+                100,
+                false,
+                &[vwide_xz(100, 5, 0, 0, 1 << 10), vwide(100, 9, 0)],
+            );
+        }
+    }
+
+    #[test]
+    fn wide_bitwise_not_neg_match_oracle() {
+        for op in [BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor, BinOp::BitXnor] {
+            let ir = ir_of(
+                vec![sig(0), sig(1), bin(op, 0, 1)],
+                vec![],
+                vec![nv(96, false), nv(96, false)],
+            );
+            let a = vwide_xz(96, 0xA5A5, 0xFF00, 0x0F, 0x3);
+            let b = vwide_xz(96, 0x5A5A, 0x00FF, 0xF0, 0xC);
+            assert_matches_oracle(&ir, 2, 96, false, &[a, b]);
+        }
+        let ir_not = ir_of(
+            vec![sig(0), un(UnOp::BitNot, 0)],
+            vec![],
+            vec![nv(96, false)],
+        );
+        assert_matches_oracle(&ir_not, 1, 96, false, &[vwide_xz(96, 0xA5, 0x10, 0xF, 0x1)]);
+        let ir_neg = ir_of(
+            vec![sig(0), un(UnOp::Minus, 0)],
+            vec![],
+            vec![nv(100, false)],
+        );
+        assert_matches_oracle(&ir_neg, 1, 100, false, &[vwide(100, 0, 1)]); // borrow chain
+        assert_matches_oracle(&ir_neg, 1, 100, false, &[vwide(100, 5, 7)]);
+        assert_matches_oracle(&ir_neg, 1, 100, false, &[vwide_xz(100, 5, 0, 1, 0)]);
+        // X poison
+    }
+
+    #[test]
+    fn wide_cmp_and_equality_match_oracle() {
+        // signed 100-bit: sign bit is bit 99 (word-1 bit 35).
+        let neg = vwide_s(100, 5, 1 << 35 | 3); // negative (bit 99 set)
+        let pos = vwide_s(100, u64::MAX, 0x3_FFFF_FFFF); // large positive
+        for op in [BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge] {
+            let irs = ir_of(
+                vec![sig(0), sig(1), bin(op, 0, 1)],
+                vec![],
+                vec![nv(100, true), nv(100, true)],
+            );
+            assert_matches_oracle(&irs, 2, 8, false, &[neg.clone(), pos.clone()]);
+            assert_matches_oracle(&irs, 2, 8, false, &[pos.clone(), neg.clone()]);
+            assert_matches_oracle(&irs, 2, 8, false, &[neg.clone(), neg.clone()]);
+            // unsigned pair: same bits compare the other way around.
+            let iru = ir_of(
+                vec![sig(0), sig(1), bin(op, 0, 1)],
+                vec![],
+                vec![nv(100, false), nv(100, false)],
+            );
+            let (a, b) = (
+                vwide(100, 5, 1 << 35 | 3),
+                vwide(100, u64::MAX, 0x3_FFFF_FFFF),
+            );
+            assert_matches_oracle(&iru, 2, 8, false, &[a.clone(), b.clone()]);
+            // X in word 1 only → 1-bit X.
+            assert_matches_oracle(&iru, 2, 8, false, &[vwide_xz(100, 0, 0, 0, 1), b]);
+        }
+        for op in [BinOp::Eq, BinOp::Ne, BinOp::CaseEq, BinOp::CaseNe] {
+            let ir = ir_of(
+                vec![sig(0), sig(1), bin(op, 0, 1)],
+                vec![],
+                vec![nv(128, false), nv(128, false)],
+            );
+            let same = vwide(128, 0xDEAD_BEEF, 0xFEED_F00D);
+            let diff_hi = vwide(128, 0xDEAD_BEEF, 0xFEED_F00E); // differs only in word 1
+            assert_matches_oracle(&ir, 2, 8, false, &[same.clone(), same.clone()]);
+            assert_matches_oracle(&ir, 2, 8, false, &[same.clone(), diff_hi]);
+            // matching X positions: ==/!= → X, ===/!== → equal.
+            let x1 = vwide_xz(128, 0xA0, 0xB0, 0xF, 0xF0);
+            assert_matches_oracle(&ir, 2, 8, false, &[x1.clone(), x1.clone()]);
+            assert_matches_oracle(&ir, 2, 8, false, &[x1, same]);
+        }
+    }
+
+    #[test]
+    fn wide_shifts_match_oracle() {
+        for op in [BinOp::Shl, BinOp::Shr, BinOp::AShr] {
+            let ir = ir_of(
+                vec![sig(0), sig(1), bin(op, 0, 1)],
+                vec![],
+                vec![nv(100, true), nv(8, false)],
+            );
+            let x = vwide_s(100, 0xDEAD_BEEF_CAFE_F00D, 1 << 35 | 0x123); // bit 99 set
+            for amt in [0u64, 1, 37, 63, 64, 65, 99, 100, 127, 200] {
+                assert_matches_oracle(&ir, 2, 100, false, &[x.clone(), vw(8, amt)]);
+                assert_matches_oracle(&ir, 2, 100, true, &[x.clone(), vw(8, amt)]);
+            }
+            // X amount → all-X; X MSB on >>> fills X.
+            assert_matches_oracle(&ir, 2, 100, false, &[x.clone(), vw_xz(8, 2, 1)]);
+            assert_matches_oracle(
+                &ir,
+                2,
+                100,
+                false,
+                &[vwide_xz(100, 1, 0, 0, 1 << 35), vw(8, 3)],
+            );
+        }
+    }
+
+    #[test]
+    fn wide_divmod_match_oracle() {
+        for op in [BinOp::Div, BinOp::Mod] {
+            let ir = ir_of(
+                vec![sig(0), sig(1), bin(op, 0, 1)],
+                vec![],
+                vec![nv(128, false), nv(128, false)],
+            );
+            let big = vwide(128, 0x1234_5678_9ABC_DEF0, 0xFFFF_0000_1111_2222);
+            assert_matches_oracle(&ir, 2, 128, false, &[big.clone(), vwide(128, 7, 0)]);
+            assert_matches_oracle(&ir, 2, 128, false, &[big.clone(), vwide(128, 0, 3)]);
+            assert_matches_oracle(&ir, 2, 128, false, &[vwide(128, 7, 0), big.clone()]);
+            assert_matches_oracle(&ir, 2, 128, false, &[big, vwide(128, 0, 0)]);
+            // /0 → X
+        }
+    }
+
+    #[test]
+    fn wide_ternary_matches_oracle() {
+        // 1-bit cond steering 100-bit branches (clean, X-cond merge).
+        let ir = ir_of(
+            vec![
+                sig(2),
+                sig(0),
+                sig(1),
+                Expr::Ternary {
+                    cond: 0,
+                    then_e: 1,
+                    else_e: 2,
+                },
+            ],
+            vec![],
+            vec![nv(100, false), nv(100, false), nv(1, false)],
+        );
+        let (t, e) = (vwide(100, 0xAAAA, 0xA), vwide(100, 0xAAAC, 0xC));
+        assert_matches_oracle(&ir, 3, 100, false, &[t.clone(), e.clone(), vw(1, 1)]);
+        assert_matches_oracle(&ir, 3, 100, false, &[t.clone(), e.clone(), vw(1, 0)]);
+        assert_matches_oracle(&ir, 3, 100, false, &[t, e, vw_xz(1, 0, 1)]);
+        // WIDE cond whose only definite-1 lives in word 1.
+        let ir_wc = ir_of(
+            vec![
+                sig(2),
+                sig(0),
+                sig(1),
+                Expr::Ternary {
+                    cond: 0,
+                    then_e: 1,
+                    else_e: 2,
+                },
+            ],
+            vec![],
+            vec![nv(100, false), nv(100, false), nv(100, false)],
+        );
+        for cond in [
+            vwide(100, 0, 1 << 20),         // true via word 1
+            vwide(100, 0, 0),               // false
+            vwide_xz(100, 0, 0, 0, 1 << 5), // unknown via word 1
+        ] {
+            assert_matches_oracle(
+                &ir_wc,
+                3,
+                100,
+                false,
+                &[vwide(100, 1, 2), vwide(100, 3, 4), cond],
+            );
+        }
+    }
+
+    #[test]
+    fn wide_reductions_and_lognot_match_oracle() {
+        for op in [
+            UnOp::RedAnd,
+            UnOp::RedNand,
+            UnOp::RedOr,
+            UnOp::RedNor,
+            UnOp::RedXor,
+            UnOp::RedXnor,
+            UnOp::LogNot,
+        ] {
+            let ir = ir_of(vec![sig(0), un(op, 0)], vec![], vec![nv(128, false)]);
+            for v in [
+                vwide(128, u64::MAX, u64::MAX),     // all ones
+                vwide(128, u64::MAX, u64::MAX - 1), // single 0 in word 1
+                vwide(128, 0, 0),                   // all zeros
+                vwide(128, 1, 1 << 40),             // parity across words
+                vwide_xz(128, u64::MAX, 0, 0, 1),   // X only in word 1
+                vwide_xz(128, 0, 0, 0, 1 << 63),    // X with otherwise-all-0
+            ] {
+                assert_matches_oracle(&ir, 1, 8, false, &[v.clone()]);
+            }
+        }
+    }
+
+    #[test]
+    fn wide_const_matches_oracle() {
+        // 128-bit const + 128-bit signal — WConst materialization.
+        let ir = ir_of(
+            vec![Expr::Const { val: 0 }, sig(0), bin(BinOp::Add, 0, 1)],
+            vec![cnum2(128, u64::MAX, 0x7)],
+            vec![nv(128, false)],
+        );
+        assert_matches_oracle(&ir, 2, 128, false, &[vwide(128, 1, 0)]);
+    }
+
+    #[test]
+    fn wide_compare_feeds_narrow_context() {
+        // (a & b) != 0 over 100 bits → 1-bit result zero-extended into 8-bit ctx.
+        let ir = ir_of(
+            vec![
+                sig(0),
+                sig(1),
+                bin(BinOp::BitAnd, 0, 1),
+                Expr::Const { val: 0 },
+                bin(BinOp::Ne, 2, 3),
+            ],
+            vec![cnum2(100, 0, 0)],
+            vec![nv(100, false), nv(100, false)],
+        );
+        assert_matches_oracle(
+            &ir,
+            4,
+            8,
+            false,
+            &[vwide(100, 0, 1 << 30), vwide(100, 0, 1 << 30)],
+        );
+        assert_matches_oracle(
+            &ir,
+            4,
+            8,
+            false,
+            &[vwide(100, 0, 1 << 30), vwide(100, 1, 0)],
+        );
+    }
+
+    #[test]
+    fn wide_lane_bails_outside_subset() {
+        let wt_of = |ir: &SimIr| WidthTable::build(ir);
+        // SIGNED >64-bit arith: the oracle X-poisons via a different route —
+        // conservatively out of the native subset.
+        let ir = ir_of(
+            vec![sig(0), sig(1), bin(BinOp::Add, 0, 1)],
+            vec![],
+            vec![nv(100, true), nv(100, true)],
+        );
+        assert!(try_compile(&ir, &wt_of(&ir), 2, 100, true).is_none());
+        // shift AMOUNT wider than 64 bits.
+        let ir = ir_of(
+            vec![sig(0), sig(1), bin(BinOp::Shl, 0, 1)],
+            vec![],
+            vec![nv(32, false), nv(100, false)],
+        );
+        assert!(try_compile(&ir, &wt_of(&ir), 2, 32, false).is_none());
+        // select over a wide source stays oracle-bound (structural wide lane
+        // is a documented residual).
+        let ir = ir_of(
+            vec![
+                sig(0),
+                Expr::Const { val: 0 },
+                Expr::Const { val: 1 },
+                Expr::Select {
+                    base: 0,
+                    offset: 1,
+                    width: 2,
+                    kind: SelKind::PartConst,
+                },
+            ],
+            vec![cnum(32, 4), cnum(32, 8)],
+            vec![nv(100, false)],
+        );
+        assert!(try_compile(&ir, &wt_of(&ir), 3, 8, false).is_none());
+        // select OFFSET wider than 64 bits (base narrow).
+        let ir = ir_of(
+            vec![
+                sig(0),
+                sig(1),
+                Expr::Const { val: 0 },
+                Expr::Select {
+                    base: 0,
+                    offset: 1,
+                    width: 2,
+                    kind: SelKind::PartIdxUp,
+                },
+            ],
+            vec![cnum(32, 4)],
+            vec![nv(16, false), nv(100, false)],
+        );
+        assert!(try_compile(&ir, &wt_of(&ir), 3, 16, false).is_none());
+        // logical &&/|| over a wide operand.
+        let ir = ir_of(
+            vec![sig(0), sig(1), bin(BinOp::LogAnd, 0, 1)],
+            vec![],
+            vec![nv(100, false), nv(8, false)],
+        );
+        assert!(try_compile(&ir, &wt_of(&ir), 2, 8, false).is_none());
+        // narrow-result ternary steered by a WIDE cond.
+        let ir = ir_of(
+            vec![
+                sig(2),
+                sig(0),
+                sig(1),
+                Expr::Ternary {
+                    cond: 0,
+                    then_e: 1,
+                    else_e: 2,
+                },
+            ],
+            vec![],
+            vec![nv(8, false), nv(8, false), nv(100, false)],
+        );
+        assert!(try_compile(&ir, &wt_of(&ir), 3, 8, false).is_none());
+        // array index expr wider than 64 bits.
+        let ir = ir_of(
+            vec![
+                sig(1),
+                Expr::Signal {
+                    net: 0,
+                    word: Some(0),
+                },
+            ],
+            vec![],
+            vec![nv(8, false), nv(100, false)],
+        );
+        assert!(try_compile(&ir, &wt_of(&ir), 1, 8, false).is_none());
     }
 }

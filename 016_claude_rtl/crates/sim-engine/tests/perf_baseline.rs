@@ -155,6 +155,52 @@ const STRUCT_HEAVY: &str = "module top;\n\
   end\n\
 endmodule";
 
+/// [C6] WIDE-bound: the EXPR_HEAVY shape at 100 bits — every operator runs on
+/// TWO-word values, the regime the u128 wide lane (WArith/WBitwise/WShl/…)
+/// moves. Before C6 any >64-bit node bailed the whole expression to `eval_ctx`.
+const WIDE_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  reg [99:0] acc;\n\
+  integer i;\n\
+  integer j;\n\
+  always @(posedge clk) begin\n\
+    for (i = 0; i < 5000; i = i + 1) begin\n\
+      acc = acc + acc + acc + acc + acc + acc + acc + acc + 100'd1;\n\
+      acc = acc ^ (acc >> 13);\n\
+    end\n\
+  end\n\
+  initial begin\n\
+    clk = 0; acc = 1;\n\
+    for (j = 0; j < 100; j = j + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
+/// [C6] MEMORY-bound expressions: dynamic `mem[i]` reads inside every statement
+/// (the LoadIndexed lane). Before C6 an array-indexed Signal bailed the whole
+/// expression to `eval_ctx`.
+const MEM_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  reg [31:0] mem [0:15];\n\
+  reg [31:0] acc;\n\
+  reg [3:0] p, q;\n\
+  integer i;\n\
+  integer j;\n\
+  always @(posedge clk) begin\n\
+    for (i = 0; i < 5000; i = i + 1) begin\n\
+      acc = acc + mem[p] + (mem[q] ^ acc);\n\
+      p = p + 4'd3;\n\
+      q = q + 4'd5;\n\
+    end\n\
+  end\n\
+  initial begin\n\
+    clk = 0; acc = 1; p = 0; q = 7;\n\
+    for (i = 0; i < 16; i = i + 1) mem[i] = i * 32'h01010101;\n\
+    for (j = 0; j < 100; j = j + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
 fn report(name: &str, src: &str, reps: u32) {
     let ir = build(src);
     let interp = time_backend(&ir, Backend::Interpreter, reps);
@@ -181,6 +227,16 @@ fn perf_baseline_codegen_heavy() {
     report(
         "struct-heavy (select/concat/replicate; structural-native target)",
         STRUCT_HEAVY,
+        5,
+    );
+    report(
+        "wide-heavy (100-bit two-word; C6 wide-lane target)",
+        WIDE_HEAVY,
+        5,
+    );
+    report(
+        "mem-heavy (dynamic mem[i] reads; C6 LoadIndexed target)",
+        MEM_HEAVY,
         5,
     );
 }
