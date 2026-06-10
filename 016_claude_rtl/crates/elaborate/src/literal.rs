@@ -330,6 +330,25 @@ pub fn parse_real_f64(raw: &str) -> f64 {
     cleaned.parse::<f64>().unwrap_or(0.0)
 }
 
+/// Synthesize a 2-state `ConstVal` from an i64 (two's-complement image masked
+/// to `width`). Param values outside the legacy u32 range bind through this
+/// (negative → 32-bit signed; beyond 32 bits → 64-bit), P0-6.
+pub fn make_const_i64(v: i64, width: u32, signed: bool) -> ConstVal {
+    let nwords = ((width as usize).div_ceil(64)).max(1);
+    let mut val = vec![0u64; nwords];
+    let unk = vec![0u64; nwords];
+    val[0] = v as u64;
+    if width < 64 {
+        val[0] &= (1u64 << width) - 1;
+    }
+    ConstVal {
+        width,
+        signed,
+        repr: ConstRepr::Numeric,
+        bits: BitPacked { val, unk },
+    }
+}
+
 /// Synthesize a small unsigned `ConstVal` of `n` in `width` bits (used for
 /// select widths / single-bit selects). Always 2-state (`unk` all zero).
 pub fn make_const_u32(n: u32, width: u32) -> ConstVal {

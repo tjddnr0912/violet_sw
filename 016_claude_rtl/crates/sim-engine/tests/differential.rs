@@ -241,6 +241,35 @@ fn diff_casez_priority() {
 }
 
 #[test]
+fn diff_const_domain_cluster() {
+    // P0-5/6/7 (2026-06-10): signed-i64 elaboration const domain — ternary and
+    // $clog2 param folding, `1<<32` past the old u32 wrap, signed `>>>`,
+    // negative-param display, and a descending generate-for. iverilog parity.
+    assert_matches_iverilog(
+        "const_domain",
+        "module tb; \
+           parameter MODE = 1; \
+           parameter W = MODE ? 16 : 8; \
+           parameter DEPTH = 300; \
+           localparam AW = $clog2(DEPTH); \
+           parameter [63:0] F = 1 << 32; \
+           parameter S = -4; \
+           parameter T = S >>> 1; \
+           wire [3:0] in_w, out_w; \
+           assign in_w = 4'b1010; \
+           genvar i; \
+           generate for (i = 3; i >= 0; i = i - 1) begin: g \
+             assign out_w[i] = in_w[i]; \
+           end endgenerate \
+           initial begin \
+             $display(\"%0d %0d %0d %0d %0d\", W, AW, F, S, T); \
+             #1 $display(\"%b\", out_w); \
+             $finish; \
+           end endmodule",
+    );
+}
+
+#[test]
 fn diff_wide_value_truncation_cluster() {
     // P0-1~4 (2026-06-10): >64-bit relational compare, over-u64 shift amounts,
     // full-width unary minus and wide $clog2 — all formerly truncated to the

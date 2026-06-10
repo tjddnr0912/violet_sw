@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
 use hdl_ast as ast;
 use literal::{
-    make_const_u32, parse_int_literal, parse_real_f64, parse_real_literal, parse_str_literal,
-    parse_str_literal_text,
+    make_const_i64, make_const_u32, parse_int_literal, parse_real_f64, parse_real_literal,
+    parse_str_literal, parse_str_literal_text,
 };
 use sim_ir as ir;
 
@@ -177,7 +177,7 @@ enum PortBinding<'a> {
 /// `child #(.W(PARENT_W))` see the parent's `PARENT_W` (Fix 1 / Finding M1).
 struct ResolvedOverride {
     name: Option<String>,
-    value: Option<u32>,
+    value: Option<i64>,
     is_named: bool,
 }
 
@@ -382,7 +382,7 @@ struct Elaborator<'s> {
     cur_prefix: String,
     // FQ param-name → const value, visible while lowering an instance scope.
     // Re-points the v1 free `const_eval_u32` SLOT so `[W-1:0]` folds to a width.
-    params: BTreeMap<String, u32>,
+    params: BTreeMap<String, i64>,
     // module names on the active instantiation path — the recursion cycle guard.
     inst_stack: Vec<String>,
     // Instance id of the instance whose body is currently being lowered. Set in
@@ -724,7 +724,19 @@ impl<'s> Elaborator<'s> {
         //      BEFORE nets so `[W-1:0]` folds and runtime refs (`x = P`) resolve.
         for item in &module.body {
             if let ast::ModuleItem::Param(p) = item {
-                let v = self.const_eval_in_scope(&p.value).unwrap_or(0);
+                // Unfoldable value = LOUD error (never a silent 0): a parameter
+                // bound to a wrong default poisons every downstream width with
+                // no trace (P0-5). 0 stays only as the post-error recovery value.
+                let v = self.const_eval_in_scope(&p.value).unwrap_or_else(|| {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "parameter `{}` value is not a foldable constant expression",
+                            p.name.name
+                        ),
+                    );
+                    0
+                });
                 let key = self.fq(&p.name.name);
                 saved_params.push((key.clone(), self.params.insert(key, v)));
             }
@@ -737,10 +749,19 @@ impl<'s> Elaborator<'s> {
             if let ast::ModuleItem::Typedef(td) = item {
                 #[allow(irrefutable_let_patterns)]
                 if let ast::TypedefKind::Enum { labels, .. } = &td.kind {
-                    let mut next: u32 = 0;
+                    let mut next: i64 = 0;
                     for lab in labels {
                         let v = match &lab.value {
-                            Some(e) => self.const_eval_in_scope(e).unwrap_or(0),
+                            Some(e) => self.const_eval_in_scope(e).unwrap_or_else(|| {
+                                self.error(
+                                    MsgCode::ElabUnsupported,
+                                    &format!(
+                                        "enum label `{}` value is not a foldable constant",
+                                        lab.name.name
+                                    ),
+                                );
+                                0
+                            }),
                             None => next,
                         };
                         let key = self.fq(&lab.name.name);
@@ -1177,10 +1198,10 @@ impl<'s> Elaborator<'s> {
         &mut self,
         module: &ast::ModuleDecl,
         overrides: &[ResolvedOverride],
-    ) -> Vec<(String, Option<u32>)> {
+    ) -> Vec<(String, Option<i64>)> {
         // Build name→value from the resolved overrides. Positional binds to the
         // i-th declaration index (matches module.params order).
-        let mut ovr_by_name: BTreeMap<&str, Option<u32>> = BTreeMap::new();
+        let mut ovr_by_name: BTreeMap<&str, Option<i64>> = BTreeMap::new();
         let mut pos_i = 0usize;
         for ov in overrides {
             if ov.is_named {
@@ -1220,7 +1241,7 @@ impl<'s> Elaborator<'s> {
 
         let mut saved = Vec::new();
         for p in &module.params {
-            let chosen_val: Option<u32> = match ovr_by_name.get(p.name.name.as_str()) {
+            let chosen_val: Option<i64> = match ovr_by_name.get(p.name.name.as_str()) {
                 // override present + param is overridable → use it (None = fold-fail
                 // → fall back to the declared default).
                 Some(ovr) if matches!(p.kind, ast::ParamKind::Parameter) => {
@@ -1236,7 +1257,18 @@ impl<'s> Elaborator<'s> {
                 }
                 None => self.const_eval_in_scope(&p.value),
             };
-            let v = chosen_val.unwrap_or(0);
+            // Unfoldable param value = LOUD error, never a silent 0 (P0-5);
+            // 0 is only the post-error recovery value.
+            let v = chosen_val.unwrap_or_else(|| {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "parameter `{}` value is not a foldable constant expression",
+                        p.name.name
+                    ),
+                );
+                0
+            });
             let key = self.fq(&p.name.name);
             saved.push((key.clone(), self.params.insert(key, v)));
         }
@@ -1245,7 +1277,7 @@ impl<'s> Elaborator<'s> {
 
     /// Restore the param map to the snapshot taken before this instance bound its
     /// params (so sibling instances of the same module re-bind cleanly).
-    fn restore_params(&mut self, saved: Vec<(String, Option<u32>)>) {
+    fn restore_params(&mut self, saved: Vec<(String, Option<i64>)>) {
         for (k, prev) in saved.into_iter().rev() {
             match prev {
                 Some(v) => {
@@ -1265,7 +1297,7 @@ impl<'s> Elaborator<'s> {
     /// …) — exactly Verilog's generate-scope visibility. The walk STOPS at an
     /// INSTANCE boundary (a plain-identifier segment) so a child instance never
     /// sees a parent module's param by bare name. Innermost binding wins.
-    fn lookup_scoped(&self, name: &str) -> Option<u32> {
+    fn lookup_scoped(&self, name: &str) -> Option<i64> {
         self.walk_scopes(name, &self.params)
     }
 
@@ -1280,7 +1312,7 @@ impl<'s> Elaborator<'s> {
     /// the current scope, then each enclosing generate-block scope, stopping at
     /// the first instance boundary. Used for both params/genvars and the symbol
     /// (net) table so the visibility rule is identical for each.
-    fn walk_scopes(&self, name: &str, table: &BTreeMap<String, u32>) -> Option<u32> {
+    fn walk_scopes<T: Copy>(&self, name: &str, table: &BTreeMap<String, T>) -> Option<T> {
         let mut prefix = self.cur_prefix.as_str();
         loop {
             let key = if prefix.is_empty() {
@@ -1311,22 +1343,26 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Param-aware const-eval (the v1 free `const_eval_u32` SLOT). Extends the
-    /// literal evaluator with: an `Ident` naming a param bound in the current
-    /// scope, and Add/Sub/Mul/Div/Mod/Shl/Shr binary folding (so `WIDTH-1` /
-    /// `WIDTH*2` resolve). Returns None for anything still non-constant (signal
-    /// ref, unbound name, unsupported op) — caller defaults + may diagnose.
-    fn const_eval_in_scope(&self, e: &ast::Expr) -> Option<u32> {
+    /// Param-aware const-eval in a SIGNED 64-bit domain (P0-6, 2026-06-10).
+    /// Folds: literals (sign-aware), params/genvars in scope, unary `+ - ~ !`,
+    /// the binary operator set with i64 semantics (so a descending genvar
+    /// condition `i >= 0` actually terminates), ternary `?:` and `$clog2`
+    /// (P0-5 — the `localparam AW = $clog2(DEPTH)` / `W = M ? a : b` idioms).
+    /// Overflow and ill-defined folds return None — param-binding callers
+    /// escalate None to an ERROR (never a silent 0), width callers clamp
+    /// loudly. NOTE: this is a width-less mathematical-integer model; a
+    /// logical `>>` of a NEGATIVE value is width-dependent and folds None.
+    fn const_eval_in_scope(&self, e: &ast::Expr) -> Option<i64> {
         match &e.kind {
-            // literal / paren / unary +,-  → reuse the v1 free evaluator.
-            ast::ExprKind::IntLit { .. } => const_eval_u32(e),
+            ast::ExprKind::IntLit { .. } => const_eval_i64_lit(e),
             ast::ExprKind::Paren { inner } => self.const_eval_in_scope(inner),
             ast::ExprKind::Unary { op, operand } => {
                 let v = self.const_eval_in_scope(operand)?;
                 match op {
                     ast::UnOp::Plus => Some(v),
-                    ast::UnOp::Minus => Some(v.wrapping_neg()),
+                    ast::UnOp::Minus => v.checked_neg(),
                     ast::UnOp::BitNot => Some(!v),
+                    ast::UnOp::LogNot => Some((v == 0) as i64),
                     _ => None,
                 }
             }
@@ -1337,75 +1373,85 @@ impl<'s> Elaborator<'s> {
             ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
                 self.lookup_scoped(&path.segments[0].name)
             }
+            ast::ExprKind::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => {
+                let c = self.const_eval_in_scope(cond)?;
+                if c != 0 {
+                    self.const_eval_in_scope(then_e)
+                } else {
+                    self.const_eval_in_scope(else_e)
+                }
+            }
+            ast::ExprKind::SysCall { name, args } if name.name == "$clog2" && args.len() == 1 => {
+                let n = self.const_eval_in_scope(&args[0])?;
+                if n < 0 {
+                    return None; // width-dependent in IEEE; loud in this domain
+                }
+                if n <= 1 {
+                    Some(0)
+                } else {
+                    Some((64 - ((n - 1) as u64).leading_zeros()) as i64)
+                }
+            }
             ast::ExprKind::Binary { op, lhs, rhs } => {
                 let a = self.const_eval_in_scope(lhs)?;
                 let b = self.const_eval_in_scope(rhs)?;
                 match op {
-                    ast::BinOp::Add => Some(a.wrapping_add(b)),
-                    ast::BinOp::Sub => Some(a.wrapping_sub(b)),
-                    ast::BinOp::Mul => Some(a.wrapping_mul(b)),
-                    ast::BinOp::Div if b != 0 => Some(a / b),
-                    ast::BinOp::Mod if b != 0 => Some(a % b),
+                    // checked_*: i64 overflow → None → LOUD at the call sites.
+                    ast::BinOp::Add => a.checked_add(b),
+                    ast::BinOp::Sub => a.checked_sub(b),
+                    ast::BinOp::Mul => a.checked_mul(b),
+                    ast::BinOp::Div if b != 0 => a.checked_div(b),
+                    ast::BinOp::Mod if b != 0 => a.checked_rem(b),
 
                     // Comparison / equality / logical / bitwise folding — required
-                    // so a generate-for CONDITION (`i < N`, `i != 0`, …) const-folds
-                    // to 1/0 during unroll. Unsigned u32 semantics (genvars are
-                    // elaboration integers); `===`/`!==` collapse to `==`/`!=` since
-                    // a folded const has no x/z. (Width/sign-correct evaluation is a
-                    // later refinement; this is exact for the genvar-loop domain.)
-                    ast::BinOp::Lt => Some((a < b) as u32),
-                    ast::BinOp::Le => Some((a <= b) as u32),
-                    ast::BinOp::Gt => Some((a > b) as u32),
-                    ast::BinOp::Ge => Some((a >= b) as u32),
-                    ast::BinOp::Eq | ast::BinOp::CaseEq => Some((a == b) as u32),
-                    ast::BinOp::Ne | ast::BinOp::CaseNe => Some((a != b) as u32),
+                    // so a generate-for CONDITION (`i < N`, `i >= 0`, …) const-folds
+                    // to 1/0 during unroll. SIGNED i64 semantics; `===`/`!==`
+                    // collapse to `==`/`!=` since a folded const has no x/z.
+                    ast::BinOp::Lt => Some((a < b) as i64),
+                    ast::BinOp::Le => Some((a <= b) as i64),
+                    ast::BinOp::Gt => Some((a > b) as i64),
+                    ast::BinOp::Ge => Some((a >= b) as i64),
+                    ast::BinOp::Eq | ast::BinOp::CaseEq => Some((a == b) as i64),
+                    ast::BinOp::Ne | ast::BinOp::CaseNe => Some((a != b) as i64),
                     ast::BinOp::BitAnd => Some(a & b),
                     ast::BinOp::BitOr => Some(a | b),
                     ast::BinOp::BitXor => Some(a ^ b),
                     ast::BinOp::BitXnor => Some(!(a ^ b)),
-                    ast::BinOp::LogAnd => Some(((a != 0) && (b != 0)) as u32),
-                    ast::BinOp::LogOr => Some(((a != 0) || (b != 0)) as u32),
-                    // `**` is IN-MVP and `parameter W = 2**N` is ubiquitous; folding
-                    // it (was the `_ => None` silent-0 trap) keeps width/param exprs
-                    // correct. Overflow saturates to u32::MAX so an absurd width still
-                    // trips the downstream MAX_NET_WIDTH cap LOUDLY rather than wrap.
-                    ast::BinOp::Pow => Some(a.checked_pow(b).unwrap_or(u32::MAX)),
-                    // Arithmetic shifts: in the unsigned u32 elaboration domain
-                    // (genvars/params are non-negative integers) they coincide with
-                    // the logical shifts already handled above.
-                    // Verilog semantics: shift by >= width logically yields 0.
-                    // Rust's `wrapping_shl` wraps the amount modulo 32, so we use `checked_shl/shr`
-                    // and default to 0 on None (which means amount >= 32).
-                    ast::BinOp::Shl => Some(a.checked_shl(b).unwrap_or(0)),
-                    ast::BinOp::Shr => Some(a.checked_shr(b).unwrap_or(0)),
-                    ast::BinOp::AShl => Some(a.checked_shl(b).unwrap_or(0)),
-                    ast::BinOp::AShr => Some(a.checked_shr(b).unwrap_or(0)),
-                    // Div/Mod by zero (the guards above fail) → non-constant.
+                    ast::BinOp::LogAnd => Some(((a != 0) && (b != 0)) as i64),
+                    ast::BinOp::LogOr => Some(((a != 0) || (b != 0)) as i64),
+                    ast::BinOp::Pow => const_pow_i64(a, b),
+                    // `<<`/`<<<`: value-preserving or None (a shifted-out/sign-
+                    // overflowing param value would be silently wrong). `1<<32`
+                    // folds to 4294967296 (iverilog folds unsized consts wide).
+                    ast::BinOp::Shl | ast::BinOp::AShl => const_shl_i64(a, b),
+                    // `>>` (logical): well-defined here only for a ≥ 0 (the
+                    // result of a logical shift of a negative value depends on
+                    // the operand WIDTH, which this domain doesn't model).
+                    ast::BinOp::Shr if a >= 0 => {
+                        if !(0..64).contains(&b) {
+                            Some(0)
+                        } else {
+                            Some(((a as u64) >> b) as i64)
+                        }
+                    }
+                    // `>>>` (arithmetic): sign-extending shift; an over-width or
+                    // negative amount saturates to all-sign.
+                    ast::BinOp::AShr => {
+                        if !(0..64).contains(&b) {
+                            Some(if a < 0 { -1 } else { 0 })
+                        } else {
+                            Some(a >> b)
+                        }
+                    }
+                    // Div/Mod by zero, negative-operand `>>` → non-constant.
                     _ => None,
                 }
             }
             _ => None,
-        }
-    }
-
-    /// True iff this range bound is a SUBTRACTION whose const-folded operands
-    /// underflow (`lhs < rhs`) — i.e. a `[W-1:0]` with `W==0` that wraps to
-    /// `u32::MAX`. Distinguishes a param-driven underflow artifact (clamp+warn)
-    /// from a *literal* huge bound like `[4294967295:0]` (still a fatal over-cap
-    /// width). Only the direct `a - b` shape is treated as an artifact; an `Paren`
-    /// wrapper is unwrapped (Fix 1 defensive).
-    fn bound_underflowed(&self, e: &ast::Expr) -> bool {
-        match &e.kind {
-            ast::ExprKind::Paren { inner } => self.bound_underflowed(inner),
-            ast::ExprKind::Binary {
-                op: ast::BinOp::Sub,
-                lhs,
-                rhs,
-            } => match (self.const_eval_in_scope(lhs), self.const_eval_in_scope(rhs)) {
-                (Some(a), Some(b)) => a < b,
-                _ => false,
-            },
-            _ => false,
         }
     }
 
@@ -1619,8 +1665,10 @@ impl<'s> Elaborator<'s> {
     ) -> Vec<(u32, u32)> {
         let mut out = Vec::new();
         for r in range.into_iter().chain(packed.iter()) {
-            let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
-            let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
+            // Negative folded bounds (underflow artifact) clamp to 0 — width math
+            // stays small instead of the old u32-wrap explosion.
+            let msb = clamp_bound_u32(self.const_eval_in_scope(&r.msb));
+            let lsb = clamp_bound_u32(self.const_eval_in_scope(&r.lsb));
             let w = (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32;
             out.push((msb.min(lsb), w.max(1)));
         }
@@ -1638,12 +1686,19 @@ impl<'s> Elaborator<'s> {
         dims.iter()
             .map(|d| match d {
                 ast::Dim::Range(r) => {
-                    let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
-                    let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
+                    let msb = clamp_bound_u32(self.const_eval_in_scope(&r.msb));
+                    let lsb = clamp_bound_u32(self.const_eval_in_scope(&r.lsb));
                     let size = (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32;
                     (msb.min(lsb), size.max(1))
                 }
-                ast::Dim::Size(e) => (0, self.const_eval_in_scope(e).unwrap_or(1).max(1)),
+                ast::Dim::Size(e) => (
+                    0,
+                    self.const_eval_in_scope(e)
+                        .map_or(1, |v| {
+                            u32::try_from(v).unwrap_or(if v < 0 { 1 } else { u32::MAX })
+                        })
+                        .max(1),
+                ),
             })
             .collect()
     }
@@ -1693,20 +1748,24 @@ impl<'s> Elaborator<'s> {
             Some(r) => {
                 // v3: fold through the param-aware evaluator so `[W-1:0]` resolves
                 // `W` to the bound parameter value in the current instance scope.
-                let msb = self.const_eval_in_scope(&r.msb).unwrap_or(0);
-                let lsb = self.const_eval_in_scope(&r.lsb).unwrap_or(0);
-                // Guard a degenerate `[W-1:0]` with W==0 → `[0u32.wrapping_sub(1):0]`
-                // = `[0xFFFF_FFFF:0]` (Fix 1 defensive): a bound EXPRESSION whose
-                // subtraction wrapped (a param-dependent underflow) is clamped to
-                // width 1 + warn, NOT a fatal MAX_NET_WIDTH explosion. A *literal*
-                // huge bound (`[4294967295:0]`) is NOT an underflow artifact and
-                // still hits the over-cap error below.
-                if self.bound_underflowed(&r.msb) || self.bound_underflowed(&r.lsb) {
+                let msb_v = self.const_eval_in_scope(&r.msb);
+                let lsb_v = self.const_eval_in_scope(&r.lsb);
+                // A bound that folds NEGATIVE is the degenerate `[W-1:0]`-with-W==0
+                // underflow artifact (the signed i64 domain shows it directly; the
+                // old u32 wrap needed Sub-shape detection): clamp to width 1 + warn,
+                // NOT a fatal MAX_NET_WIDTH explosion. A *literal* huge bound
+                // (`[4294967295:0]`) folds positive and still hits the over-cap
+                // error below.
+                if msb_v.is_some_and(|v| v < 0) || lsb_v.is_some_and(|v| v < 0) {
                     self.warn(
                         "parameterized range underflowed (param value 0?); net clamped to width 1",
                     );
                     return (1, 0, 0, signed);
                 }
+                let clamp =
+                    |v: Option<i64>| v.map_or(0u32, |v| u32::try_from(v).unwrap_or(u32::MAX));
+                let msb = clamp(msb_v);
+                let lsb = clamp(lsb_v);
                 let width64 = (msb.abs_diff(lsb) as u64) + 1;
                 if width64 > MAX_NET_WIDTH {
                     self.error(
@@ -1840,7 +1899,7 @@ impl<'s> Elaborator<'s> {
                     // Resolved before `resolve_net` so a param never errors as an
                     // undeclared net (mirrors `const_eval_in_scope`'s lookup_scoped).
                     if let Some(v) = self.lookup_scoped(seg) {
-                        return self.const_u32_expr(v, 32);
+                        return self.const_param_expr(v);
                     }
                 }
                 let net = self.resolve_net(path);
@@ -2670,6 +2729,24 @@ impl<'s> Elaborator<'s> {
     /// Append a `Const` expr of literal `n` (width `w`); returns its ExprId.
     fn const_u32_expr(&mut self, n: u32, w: u32) -> u32 {
         let cid = self.intern_const(make_const_u32(n, w));
+        self.push_expr(ir::Expr::Const { val: cid })
+    }
+
+    /// Lower an i64-domain param/genvar VALUE to a Const expr (P0-6). The
+    /// legacy `0..=u32::MAX` range keeps the exact old shape (unsigned 32-bit,
+    /// byte-identical golden bytes for every pre-existing design); a negative
+    /// value in i32 range becomes a 32-bit SIGNED const (so `%0d` prints `-4`,
+    /// iverilog parity); anything wider binds as a 64-bit const.
+    fn const_param_expr(&mut self, v: i64) -> u32 {
+        if let Ok(u) = u32::try_from(v) {
+            return self.const_u32_expr(u, 32);
+        }
+        let cv = if i32::try_from(v).is_ok() {
+            make_const_i64(v, 32, true)
+        } else {
+            make_const_i64(v, 64, v < 0)
+        };
+        let cid = self.intern_const(cv);
         self.push_expr(ir::Expr::Const { val: cid })
     }
 
@@ -4499,6 +4576,75 @@ fn stmt_has_timing(s: &ast::Stmt) -> bool {
         | ast::Stmt::Forever { body, .. } => stmt_has_timing(body),
         ast::Stmt::Fork { stmts, .. } => stmts.iter().any(stmt_has_timing),
         _ => false,
+    }
+}
+
+/// Clamp a folded i64 range bound to the u32 width math: negative (underflow
+/// artifact) → 0, beyond u32 → u32::MAX (the over-cap width check then fires
+/// loudly). None (non-constant) → 0 (caller's legacy default).
+fn clamp_bound_u32(v: Option<i64>) -> u32 {
+    v.map_or(0, |v| {
+        u32::try_from(v).unwrap_or(if v < 0 { 0 } else { u32::MAX })
+    })
+}
+
+/// Sign-aware i64 fold of an integer literal: an EXPLICITLY signed based
+/// literal with its sign bit set (`8'shFF`) folds negative. A plain decimal
+/// (`4294967295`) is the positive value as written — IEEE marks unsized
+/// decimals signed, but the written magnitude is the value (iverilog folds it
+/// positive), so sign-extending on the bit image would turn it into -1. The
+/// image must fit i64 (else None → loud at the param sites). X/Z bits → None.
+fn const_eval_i64_lit(e: &ast::Expr) -> Option<i64> {
+    let ast::ExprKind::IntLit { kind, raw } = &e.kind else {
+        return None;
+    };
+    let cv = parse_int_literal(raw, *kind)?;
+    if cv.bits.unk.iter().any(|&w| w != 0) {
+        return None;
+    }
+    if cv.bits.val.iter().skip(1).any(|&w| w != 0) {
+        return None; // >64-bit literal value — outside the i64 const domain
+    }
+    let v = cv.bits.val.first().copied().unwrap_or(0);
+    let explicit_signed = cv.signed && !matches!(kind, ast::IntLitKind::Decimal);
+    if explicit_signed && cv.width >= 1 && cv.width < 64 && (v >> (cv.width - 1)) & 1 == 1 {
+        return Some((v | (!0u64 << cv.width)) as i64);
+    }
+    if explicit_signed && cv.width == 64 {
+        return Some(v as i64);
+    }
+    i64::try_from(v).ok()
+}
+
+/// `**` in the i64 const domain. Negative exponents follow the IEEE integer
+/// table (1**n=1, (-1)**n=±1, 0**neg undefined → None, else 0); overflow → None.
+fn const_pow_i64(a: i64, b: i64) -> Option<i64> {
+    if b < 0 {
+        return match a {
+            1 => Some(1),
+            -1 => Some(if b % 2 == 0 { 1 } else { -1 }),
+            0 => None,
+            _ => Some(0),
+        };
+    }
+    a.checked_pow(u32::try_from(b).ok()?)
+}
+
+/// `<<`/`<<<` in the i64 const domain: value-preserving or None. A shift that
+/// loses bits (or lands in the sign bit) would be a silently wrong param value
+/// — the round-trip check rejects it loudly. `0 << anything` stays 0.
+fn const_shl_i64(a: i64, b: i64) -> Option<i64> {
+    if a == 0 {
+        return Some(0);
+    }
+    if !(0..64).contains(&b) {
+        return None; // every bit of a non-zero value shifted out / negative amount
+    }
+    let r = a.checked_shl(b as u32)?;
+    if (r >> b) == a {
+        Some(r)
+    } else {
+        None
     }
 }
 
