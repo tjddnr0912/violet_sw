@@ -3915,6 +3915,12 @@ impl<'s> Elaborator<'s> {
                         }
                     }
                     ir::Stmt::Disable { .. } => {}
+                    // shape-reserved at format_version 4 (never lowered yet);
+                    // a force RHS would be a read when the increment lands.
+                    ir::Stmt::Force { rhs, .. } => {
+                        self.collect_expr_reads(*rhs, &mut reads);
+                    }
+                    ir::Stmt::Release { .. } => {}
                 }
             }
             if let ir::Terminator::Branch { cond, .. } = &bb.term {
@@ -4626,26 +4632,35 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// `#delay` → `(amount, region)`. `amount` is the const-folded tick count
-    /// (matches the frozen `Terminator::Delay.amount: u32`). SD3: `#0` →
-    /// `Inactive`, `#d>0` → `Active`. Non-const → note + degrade to `#0`.
+    /// `#delay` → `(amount, region)`. Since format_version 4 `amount` is the
+    /// **ExprId of the raw delay value in module time units** — the engine
+    /// evaluates it at suspension time and scales by the per-process
+    /// multiplier (round(v × M); X/Z → 0, iverilog parity). A const `#5`
+    /// simply folds to a Const expr, so const and runtime delays share one
+    /// path. SD3: a delay that PROVABLY rounds to 0 ticks (`#0`, or a real
+    /// under half a precision tick) marks `Inactive`; everything else —
+    /// including runtime values that happen to be 0 — is `Active` and the
+    /// engine's `ticks == 0` check supplies the inactive nudge at runtime.
     fn lower_delay(&mut self, d: &ast::Delay) -> (u32, ir::DelayRegion) {
         let mult = self.cur_time_mult;
-        let amount = d
-            .values
-            .first()
-            .and_then(|e| const_delay_ticks(e, mult))
-            .unwrap_or_else(|| {
-                // P1-3: degrading to #0 turned `forever #x clk=~clk` into a
-                // delta-limit blowup — reject loudly (runtime-evaluated delays
-                // need a frozen Terminator::Delay shape change; Phase-2).
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "non-constant #delay is unsupported in v1 (delay must be a                      compile-time constant)",
-                );
-                0
+        let Some(e) = d.values.first() else {
+            // defensive: parser always supplies a value; treat as `#0`.
+            let zero = self.lower_expr(&ast::Expr {
+                kind: ast::ExprKind::IntLit {
+                    kind: ast::IntLitKind::Decimal,
+                    raw: "0".to_string(),
+                },
+                span: ast::Span { lo: 0, hi: 0 },
             });
-        let region = if amount == 0 {
+            return (zero, ir::DelayRegion::Inactive);
+        };
+        // min:typ:max picks typ — same branch const_delay_ticks used.
+        let pick = match &e.kind {
+            ast::ExprKind::MinTypMax { typ, .. } => typ.as_ref(),
+            _ => e,
+        };
+        let amount = self.lower_expr(pick);
+        let region = if const_delay_ticks(pick, mult) == Some(0) {
             ir::DelayRegion::Inactive
         } else {
             ir::DelayRegion::Active
@@ -4872,6 +4887,8 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         "$dumpon" => Some(ir::SysTaskId::DumpOn),
         "$dumpoff" => Some(ir::SysTaskId::DumpOff),
         "$dumpall" => Some(ir::SysTaskId::DumpAll),
+        "$dumpflush" => Some(ir::SysTaskId::DumpFlush),
+        "$dumplimit" => Some(ir::SysTaskId::DumpLimit),
         _ => None,
     }
 }

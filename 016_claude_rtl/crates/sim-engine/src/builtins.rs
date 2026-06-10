@@ -108,6 +108,29 @@ pub(crate) fn dispatch(
             dump_all(sched.st);
             Ctl::Continue
         }
+        SysTaskId::DumpFlush => {
+            // IEEE §21.7.2.4: push buffered VCD bytes to the OS now (crash-safe
+            // checkpoints for long runs). Errors surface at finalize (W4019).
+            if let Some(w) = sched.st.vcd.as_mut() {
+                let _ = w.flush();
+            }
+            Ctl::Continue
+        }
+        SysTaskId::DumpLimit => {
+            // IEEE §21.7.2.5: byte budget; the writer emits a one-time
+            // `$comment Dump limit reached $end` and drops further records.
+            // X/Z or missing size → no-op (no budget installed).
+            let size = args
+                .first()
+                .and_then(|&a| sched.eval(a).to_u64())
+                .unwrap_or(0);
+            if size > 0 {
+                if let Some(w) = sched.st.vcd.as_mut() {
+                    w.set_limit(size);
+                }
+            }
+            Ctl::Continue
+        }
     }
 }
 

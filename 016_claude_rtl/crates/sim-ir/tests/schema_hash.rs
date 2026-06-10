@@ -2,9 +2,12 @@
 //! Golden #2: canonical-string diff. Plus a Process sub-pin (runtime-cluster regression).
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
-/// blake3 of the full M3 SimIr-closure canonical string. Locked M3.
+/// blake3 of the full SimIr-closure canonical string. Locked at
+/// format_version 4 (2026-06-10: +SysTaskId Dump{Flush,Limit}, +Stmt
+/// Force/Release shape reserve; Delay.amount became an ExprId semantically —
+/// same u32 shape, hence the explicit container-version bump).
 const EXPECTED_SIMIR_HASH: &str =
-    "4b2e4fc5ea142072ba467a1ec159cac738f95ca40e9cf191448a3dd28f98a50d";
+    "d6d078bcba99d873cd1cefab367d4a4ad59603116fb52686d35c1f952f375bdd";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "927e19344413644037635cfcebc50c76c08a413356b9463b5819f7979f1f486b";
@@ -33,5 +36,21 @@ fn process_subpin() {
 fn canonical_string_golden() {
     let mut reg = ShapeRegistry::new();
     sim_ir::SimIr::register(&mut reg);
+    // Sanctioned regen switch for an INTENTIONAL format_version bump:
+    //   REGEN_GOLDEN=1 cargo test -p sim-ir --test schema_hash -- --nocapture
+    // rewrites the canonical golden and prints the two hashes to paste above.
+    if std::env::var("REGEN_GOLDEN").is_ok() {
+        std::fs::write("../testdata/sim_ir_canonical.txt", reg.canonical_string())
+            .expect("write canonical golden");
+        println!(
+            "REGEN SimIr   = {}",
+            hex::encode(schema_hash::<sim_ir::SimIr>())
+        );
+        println!(
+            "REGEN Process = {}",
+            hex::encode(schema_hash::<sim_ir::Process>())
+        );
+        return;
+    }
     assert_eq!(reg.canonical_string(), GOLDEN_CANON);
 }

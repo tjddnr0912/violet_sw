@@ -561,6 +561,23 @@
                 },
             ]),
         },
+        4: {
+            "Force": STRUCT([
+                {
+                    "lhs": TYPENAME("Lvalue"),
+                },
+                {
+                    "rhs": U32,
+                },
+            ]),
+        },
+        5: {
+            "Release": STRUCT([
+                {
+                    "lhs": TYPENAME("Lvalue"),
+                },
+            ]),
+        },
     }),
     "SuspendState": STRUCT([
         {
@@ -644,6 +661,12 @@
         },
         10: {
             "DumpAll": UNIT,
+        },
+        11: {
+            "DumpFlush": UNIT,
+        },
+        12: {
+            "DumpLimit": UNIT,
         },
     }),
     "Terminator": ENUM({

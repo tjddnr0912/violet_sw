@@ -50,6 +50,13 @@ fn traced_registry_ron() -> String {
 
 #[test]
 fn serde_reflection_ron_golden() {
+    // Sanctioned regen for an INTENTIONAL format_version bump (same switch as
+    // schema_hash.rs): REGEN_GOLDEN=1 rewrites the committed RON golden.
+    if std::env::var("REGEN_GOLDEN").is_ok() {
+        std::fs::write("../testdata/sim_ir_registry.ron", traced_registry_ron())
+            .expect("write RON golden");
+        return;
+    }
     let golden = include_str!("../../testdata/sim_ir_registry.ron");
     assert_eq!(
         traced_registry_ron().trim_end(),

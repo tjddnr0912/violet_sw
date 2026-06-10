@@ -220,6 +220,12 @@ pub enum SysTaskId {
     DumpOn,
     DumpOff,
     DumpAll,
+    /// `$dumpflush` — flush the VCD sink now (format_version 4).
+    DumpFlush,
+    /// `$dumplimit(bytes)` — byte budget; on exceeding it the writer emits a
+    /// one-time `$comment Dump limit reached $end` and drops further records
+    /// (format_version 4).
+    DumpLimit,
 }
 
 /// Disable kind (§2).
@@ -248,6 +254,17 @@ pub enum Stmt {
     Disable {
         scope_kind: sim_ir::DisableKind,
         target: u32,
+    },
+    /// `force lhs = rhs` (shape reserved at format_version 4; elaborate still
+    /// loud-rejects until the force/release semantics increment lands — the
+    /// engine treats it as a defensive no-op meanwhile).
+    Force {
+        lhs: sim_ir::Lvalue,
+        rhs: u32,
+    },
+    /// `release lhs` (shape reserved at format_version 4 — see `Force`).
+    Release {
+        lhs: sim_ir::Lvalue,
     },
 }
 
@@ -295,6 +312,12 @@ pub enum Terminator {
         else_bb: u32,
     },
     Delay {
+        /// ExprId of the delay VALUE in the process's module TIME UNITS — raw
+        /// and unscaled (format_version 4; was a pre-scaled literal tick count
+        /// in v3). The engine evaluates it AT SUSPENSION TIME and converts:
+        /// real → round(v × M), integral → v × M (u64-saturating), any X/Z
+        /// → 0 ticks (iverilog parity), where M is the per-process timescale
+        /// multiplier. A const `#5`/`#2.5` simply folds to a Const expr.
         amount: u32,
         region: sim_ir::DelayRegion,
         resume: u32,

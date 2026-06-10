@@ -100,11 +100,13 @@ endmodule
     );
 }
 
-/// A non-constant `#delay` degraded to `#0`, turning `forever #x` into a
-/// delta-limit blowup — now a hard error naming the construct.
+/// format_version 4 flipped the P1-3 contract: a non-constant `#delay` is now
+/// SUPPORTED (`Delay.amount` is an ExprId, evaluated at suspension time) — it
+/// must elaborate cleanly. Behaviour is pinned by `end_to_end`
+/// `runtime_delay_*` + the `diff_runtime_delay` iverilog case.
 #[test]
-fn nonconstant_delay_is_rejected() {
-    assert_rejected(
+fn nonconstant_delay_is_accepted() {
+    let (ok, diags) = elab(
         r#"
 module t;
   reg clk;
@@ -115,7 +117,11 @@ module t;
   end
 endmodule
 "#,
-        "delay",
+    );
+    assert!(ok, "runtime #delay must elaborate; diags: {diags:?}");
+    assert!(
+        diags.iter().all(|d| !d.starts_with("Error")),
+        "no errors expected: {diags:?}"
     );
 }
 

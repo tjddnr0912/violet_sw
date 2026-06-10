@@ -175,9 +175,12 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                 region,
                 resume,
             } => {
-                // `amount` is a literal tick count (FROZEN IR: u32, NOT an ExprId).
-                let inactive = matches!(region, DelayRegion::Inactive) || *amount == 0;
-                let tick = sched.now() + *amount as u64;
+                // format_version 4: `amount` is the ExprId of the RAW delay
+                // value in module units — evaluate NOW and scale by this
+                // process's multiplier (X/Z → 0; real → round(v×M)).
+                let ticks = sched.delay_ticks(*amount);
+                let inactive = matches!(region, DelayRegion::Inactive) || ticks == 0;
+                let tick = sched.now().saturating_add(ticks);
                 sched.schedule_resume(pi, *resume, tick, inactive);
                 return Step::Suspended;
             }
@@ -313,6 +316,10 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             sid,
         },
         Stmt::Disable { .. } => StmtEffect::Nop,
+        // format_version 4 shape reserve: elaborate still loud-rejects
+        // force/release, so these are unreachable from v1 lowering — a
+        // defensive no-op (like `Call`) keeps a hand-built IR alive.
+        Stmt::Force { .. } | Stmt::Release { .. } => StmtEffect::Nop,
     }
 }
 

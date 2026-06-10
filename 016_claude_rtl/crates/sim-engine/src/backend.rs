@@ -44,10 +44,15 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], body: &[BasicBlock]) -> bool {
             block.term,
             Terminator::Goto { .. } | Terminator::Branch { .. } | Terminator::Return
         );
-        let stmts_ok = block
-            .stmts
-            .iter()
-            .all(|&sid| !matches!(stmts[sid as usize], Stmt::Disable { .. }));
+        let stmts_ok = block.stmts.iter().all(|&sid| {
+            !matches!(
+                stmts[sid as usize],
+                // Disable: Phase-2 control flow we will not bake into compiled
+                // code. Force/Release: format_version-4 shape reserve — keep
+                // compiled bodies away until the semantics increment lands.
+                Stmt::Disable { .. } | Stmt::Force { .. } | Stmt::Release { .. }
+            )
+        });
         term_ok && stmts_ok
     })
 }
@@ -240,10 +245,10 @@ pub(crate) fn compile_body(
                         sid,
                     });
                 }
-                // `is_codegen_able` rejects any body containing `Disable`, so this is
-                // unreachable for a compiled body; mirror the interpreter's
+                // `is_codegen_able` rejects any body containing these, so they
+                // are unreachable for a compiled body; mirror the interpreter's
                 // `StmtEffect::Nop` (emit no op) for totality.
-                Stmt::Disable { .. } => {}
+                Stmt::Disable { .. } | Stmt::Force { .. } | Stmt::Release { .. } => {}
             }
         }
         let term = match &block.term {

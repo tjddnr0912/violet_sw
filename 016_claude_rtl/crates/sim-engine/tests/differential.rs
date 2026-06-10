@@ -414,3 +414,23 @@ fn diff_time_type_semantics() {
          endmodule",
     );
 }
+
+#[test]
+fn diff_runtime_delay() {
+    // format_version 4: #<expr> evaluates at suspension time. Integer var,
+    // arithmetic expr, and an X delay (= 0 ticks) — iverilog byte parity.
+    // (No `timescale in this harness ⇒ M=1 on both sides.)
+    assert_matches_iverilog(
+        "runtime_delay",
+        "module tb; integer d; reg [3:0] xd; integer n; reg clk; \
+           initial begin \
+             d = 3; clk = 0; n = 0; \
+             #d $display(\"a=%0d\", $time); \
+             #(d*2) $display(\"b=%0d\", $time); \
+             xd = 4'hx; \
+             #xd $display(\"c=%0d\", $time); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}

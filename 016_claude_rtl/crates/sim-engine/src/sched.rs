@@ -931,6 +931,28 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         }
     }
 
+    /// Evaluate a `Terminator::Delay` amount (format_version 4: an ExprId of
+    /// the raw delay value in module units) into global-precision ticks:
+    /// real → round(v × M) clamped at 0; any X/Z → 0 (iverilog parity);
+    /// integral → v × M, u64-saturating. `M` = the CURRENT process's
+    /// timescale multiplier (`cur_time_mult`, set per activation) — exactly
+    /// the scaling the old const-fold path applied at elaborate time.
+    pub(crate) fn delay_ticks(&self, eid: u32) -> u64 {
+        let v = self.eval(eid);
+        let mult = self.st.cur_time_mult.max(1);
+        if v.is_real {
+            let x = v.to_f64().unwrap_or(0.0) * mult as f64;
+            if x <= 0.0 {
+                return 0;
+            }
+            return x.round() as u64;
+        }
+        if v.has_xz() {
+            return 0;
+        }
+        v.to_u64().unwrap_or(u64::MAX).saturating_mul(mult)
+    }
+
     /// Run a pre-compiled native expression program against the net table (VM-only
     /// fast path). `self.st` is the same `NetReader` `eval_ctx_top` builds its EvalCtx
     /// over, so a native leaf load reads exactly what the interpreter would.

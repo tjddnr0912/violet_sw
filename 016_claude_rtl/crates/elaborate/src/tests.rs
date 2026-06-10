@@ -1038,12 +1038,25 @@ fn v2_1_initial_testbench_structure() {
     assert!(p.sensitivity.edges.is_empty());
     assert_cfg_valid(p);
     assert_all_paths_return(p);
-    // two #5 delays → two Delay terminators with Active region.
+    // two #5 delays → two Delay terminators with Active region. Since
+    // format_version 4 `amount` is an ExprId — resolve each to its folded
+    // Const value (raw module units; the engine scales at suspension time).
     let delays: Vec<_> = p
         .body
         .iter()
         .filter_map(|bb| match bb.term {
-            ir::Terminator::Delay { amount, region, .. } => Some((amount, region)),
+            ir::Terminator::Delay { amount, region, .. } => {
+                let v = match &ir.exprs[amount as usize] {
+                    ir::Expr::Const { val } => ir.consts[*val as usize]
+                        .bits
+                        .val
+                        .first()
+                        .copied()
+                        .unwrap_or(u64::MAX),
+                    other => panic!("const #5 must lower to a Const expr, got {other:?}"),
+                };
+                Some((v, region))
+            }
             _ => None,
         })
         .collect();

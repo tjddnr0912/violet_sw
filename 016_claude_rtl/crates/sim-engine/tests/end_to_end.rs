@@ -2667,3 +2667,101 @@ fn time_type_is_64bit_unsigned_var() {
     let (_res, out) = simulate_capture(&ir, opts);
     assert_eq!(out, "a=5\nb=18446744073709551615\nc=ffffffffffffffff\n");
 }
+
+// ── format_version 4: runtime #delay (ExprId amount) ─────────────────────────
+
+#[test]
+fn runtime_delay_variable_scales_by_module_timescale() {
+    // iverilog (probed live): `#d` with d=3 under 1ns/1ps advances 3000 ticks;
+    // `#(d*2)` adds 6000; real `#r` (1.5) adds 1500; X delay adds 0.
+    let (ir, opts) = build_timescaled(
+        "`timescale 1ns/1ps\nmodule top; integer d; reg [7:0] xd; real r; \
+         initial begin \
+           d = 3; \
+           #d $display(\"a=%0d\", $time); \
+           #(d*2) $display(\"b=%0d\", $time); \
+           r = 1.5; \
+           #r $display(\"c=%0d\", $time); \
+           xd = 8'hxx; \
+           #xd $display(\"d=%0d\", $time); \
+           $finish; \
+         end endmodule\n",
+    );
+    let (res, out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "a=3\nb=9\nc=10\nd=10\n");
+    assert_eq!(res.sim_time, 10500);
+}
+
+#[test]
+fn runtime_delay_loop_terminates() {
+    // P1-3 regression shape: `forever #d` with a runtime d must actually
+    // advance time (the old #0 degrade spun the delta limit).
+    let (ir, opts) = build_timescaled(
+        "module top; integer d; reg clk; integer n; \
+         initial begin d = 2; clk = 0; n = 0; end \
+         always @(posedge clk) begin n = n + 1; if (n == 5) $finish; end \
+         initial forever #d clk = ~clk; \
+         endmodule\n",
+    );
+    let (res, _out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(res.sim_time, 18, "5 posedges at #2 toggles end at t=18");
+}
+
+// ── format_version 4: $dumpflush / $dumplimit ────────────────────────────────
+
+#[test]
+fn dumplimit_stops_dump_with_comment() {
+    let dir = std::env::temp_dir().join(format!("vita_dl_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let vcd = dir.join("lim.vcd");
+    let src = format!(
+        "module top; reg [7:0] a; integer i; \
+         initial begin \
+           $dumpfile(\"{}\"); $dumpvars; $dumplimit(300); \
+           a = 0; \
+           for (i = 0; i < 200; i = i + 1) #1 a = a + 1; \
+           $finish; \
+         end endmodule\n",
+        vcd.display()
+    );
+    let (ir, opts) = build_timescaled(&src);
+    let (res, _out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    let body = std::fs::read_to_string(&vcd).expect("vcd written");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        body.contains("$comment Dump limit reached $end"),
+        "limit comment expected, got:\n{body}"
+    );
+    assert!(
+        body.len() < 1200,
+        "dump must stop near the byte budget (got {} bytes)",
+        body.len()
+    );
+}
+
+#[test]
+fn dumpflush_is_accepted_and_vcd_complete() {
+    let dir = std::env::temp_dir().join(format!("vita_df_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let vcd = dir.join("fl.vcd");
+    let src = format!(
+        "module top; reg a; \
+         initial begin \
+           $dumpfile(\"{}\"); $dumpvars; \
+           a = 0; #1 a = 1; \
+           $dumpflush; \
+           #1 a = 0; \
+           $finish; \
+         end endmodule\n",
+        vcd.display()
+    );
+    let (ir, opts) = build_timescaled(&src);
+    let (res, _out) = simulate_capture(&ir, opts);
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    let body = std::fs::read_to_string(&vcd).expect("vcd written");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(body.contains("#2"), "post-flush changes must still dump");
+}

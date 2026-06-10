@@ -95,7 +95,7 @@
 
 ### 골든 영향 = 없음
 
-바이트코드·VM·backend seam은 전부 `sim_ir::SimIr` 밖(SimOpts 사이드테이블/별도 크레이트). `schema_hash::<SimIr>()` 루트 불변, `format_version` 3 유지. P15의 kernel-ABI 버전은 `format_version`과 **독립** 필드로 별도 게이트.
+바이트코드·VM·backend seam은 전부 `sim_ir::SimIr` 밖(SimOpts 사이드테이블/별도 크레이트). `schema_hash::<SimIr>()` 루트 불변(이후 2026-06-10 런타임-delay re-freeze로 format_version 4 — doc-17). P15의 kernel-ABI 버전은 `format_version`과 **독립** 필드로 별도 게이트.
 
 ## P3 — float/host-toolchain 결정성 계약 (2026-06-06)
 

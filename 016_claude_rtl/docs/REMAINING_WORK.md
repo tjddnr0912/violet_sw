@@ -105,7 +105,7 @@
 
 1. ~~P0 전체(1~9)~~ ✅ · ~~P1 전체(1~9)~~ ✅ · ~~P2 전체(1~12)~~ ✅ · ~~P3 전체~~ ✅ · ~~P4 T0a/T0b/T1~~ ✅ · ~~native-eval follow-on~~ ✅ · ~~P5 문서부채 전체~~ ✅ — **2026-06-10 트래커 전 항목 소진(571 green).**
 2. **perf 다음 축** — ~~①스케줄러축 라운드 1~~ ✅ 2026-06-10(클럭-바운드 ≈1.85x — 핫루프 할당 제거, doc-18 §실측; 라운드 2 후보=dirty-list 넷 스캔) ~~②native-eval select/concat/replicate lane~~ ✅ 2026-06-10(STRUCT_HEAVY VM 0.36x ≈2.8x; 잔여=>64bit/real/array-indexed/sysfunc) ③P4-T2(front-end 병렬, `-u` 의미론 결정 선행).
-3. **Phase-1.x 기능** — 런타임 delay(frozen Delay 형상 → format_version bump 동반) · force/release 실semantics · `$dumpflush/$dumplimit` · `-Wno-*`/`-Werror=` 게이트 · filelist `-f`/`-F` · `vita explain` · exit class 2 분리(`vita-log`).
+3. **Phase-1.x 기능** — ~~`-Wno-*`/`-Werror=` 게이트 + exit class 2~~ ✅ 2026-06-10 `791cca4`(vita-log GatePolicy/GatedSink; 승격 실패=class 1·산출물 미생성, 아티팩트 게이트=exit 2) · ~~filelist `-f`/`-F`~~ ✅ `eedd486`(argv-레벨 전개 v1 서브셋; 잔여=+incdir+/+define+ 버킷·WRONG-STAGE·OVERRIDE) · ~~`vita explain`~~ ✅ `2ca8949` · ~~런타임 delay~~ ✅ **format_version 4 bump**(Delay.amount=ExprId, 평가·×M·round는 엔진 suspension-time; X/Z→0 iverilog parity) · ~~`$dumpflush/$dumplimit`~~ ✅ (bump 무임승차, vcd-writer 기계는 기존재) · **force/release 실semantics** — Stmt::Force/Release 형상은 v4에 선예약됨(elaborate는 여전히 loud-reject); 잔여=드라이버-override 엔진 기계(write 경로 분기 — perf 주의).
 
 ## 아카이브 (완결 이력 요약)
 

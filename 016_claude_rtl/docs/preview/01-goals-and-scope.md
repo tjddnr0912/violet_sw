@@ -77,7 +77,7 @@ Phase 1의 범위는 **SystemVerilog 합성가능 RTL 서브셋** — Verilog-20
 | 자료형 | `wire`/`reg`/`logic`/`integer`, 벡터·packed array, `enum`/`typedef`/packed `struct` | `union`, `string`, 동적/연관 배열 |
 | 절차 블록 | `initial`, `always`, `always_ff`/`always_comb`/`always_latch` | `final`, fork-join 고급 |
 | 문장 | blocking `=` / nonblocking `<=`, `if`/`case`/`casez`/`casex`, `for`/`while`/`repeat`/`forever`, `begin`/`end` | `foreach`, `unique`/`priority`, `do-while` |
-| 타이밍 | `#delay`, `@(event)`, `wait`(테스트벤치) | clocking block, intra-assignment delay 고급 |
+| 타이밍 | `#delay`(상수+**런타임 식** — format_version 4), `@(event)`, `wait`(테스트벤치) | clocking block, intra-assignment delay 고급 |
 | 연속 대입 | `assign`(+지연) | — |
 | system tasks | 아래 핵심 셋 | 파일 I/O·메모리 로드·변환·random·assertion 샘플링 등 (Phase 2) |
 
@@ -90,7 +90,7 @@ Phase 1의 범위는 **SystemVerilog 합성가능 RTL 서브셋** — Verilog-20
 | 출력 (display I/O) | `$display` / `$write` / `$monitor` / `$strobe` |
 | 시간 | `$time` / `$realtime` |
 | 시뮬레이션 제어 | `$finish` / `$stop` |
-| VCD dump 패밀리 | `$dumpfile` / `$dumpvars` / `$dumpon` / `$dumpoff` / `$dumpall` |
+| VCD dump 패밀리 | `$dumpfile` / `$dumpvars` / `$dumpon` / `$dumpoff` / `$dumpall` / `$dumpflush` / `$dumplimit` |
 
 각 system task의 전체 시맨틱과 인자 명세는 `hdl-reference/system-tasks/` 섹터 참조.
 
