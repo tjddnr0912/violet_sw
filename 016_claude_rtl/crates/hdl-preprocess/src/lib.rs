@@ -1856,11 +1856,14 @@ mod tests {
     }
     impl MemReader {
         /// Lexically normalize a path to a "/"-joined string (no fs access): drop
-        /// "." components, pop on "..".
+        /// "." components, pop on "..". Splits on BOTH separators — on Windows
+        /// `Path::join` inserts `\`, which silently missed the '/'-keyed map
+        /// (caught by the first 3-OS CI run: nested include NOT-FOUND on
+        /// windows-latest only).
         fn norm(p: &Path) -> String {
             let mut parts: Vec<&str> = Vec::new();
             let lossy = p.to_string_lossy();
-            for comp in lossy.split('/') {
+            for comp in lossy.split(['/', '\\']) {
                 match comp {
                     "" | "." => {}
                     ".." => {
