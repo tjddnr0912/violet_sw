@@ -921,28 +921,17 @@ fn strobe_then_monitor_ordering_in_one_step() {
 }
 
 #[test]
-fn strobe_then_finish_same_step_is_skipped() {
+fn strobe_then_finish_same_step_flushes() {
     // $strobe then $finish in the SAME active region with no intervening delay:
-    // the engine returns on $finish before the settle break, so the postponed
-    // flush never runs for this step → the strobe prints nothing.
-    //
-    // PORTABILITY NOTE: this DIVERGES from reference simulators. IEEE 1364-2005
-    // §5.4/§17 drain the CURRENT timestep's postponed region before terminating
-    // on $finish, so Icarus/VCS would print "s=3\n" here. vita's MVP skips it for
-    // implementation simplicity/determinism (documented §3.4 + §7.3). The expected
-    // target for a future IEEE-strict revision is therefore `"s=3\n"`; this test
-    // pins the deliberate MVP behavior (empty output) so the divergence is golden,
-    // not accidental.
+    // P1-6 (IEEE 1364-2005 §5.4/§17): the CURRENT timestep's postponed region is
+    // drained BEFORE terminating on $finish, so the strobe prints — matching
+    // Icarus/VCS. (The old MVP skipped the flush; that divergence is gone.)
     let src = "module m; reg [3:0] a; \
                initial begin a=4'd3; $strobe(\"s=%0d\", a); $finish; end endmodule";
     let ir = build(src);
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    // MVP: "" (skip). IEEE-strict / Icarus / VCS reference target: "s=3\n".
-    assert_eq!(
-        out, "",
-        "no postponed flush after same-step $finish (MVP divergence)"
-    );
+    assert_eq!(out, "s=3\n", "same-step $strobe must flush before $finish");
 }
 
 #[test]

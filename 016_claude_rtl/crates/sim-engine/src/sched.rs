@@ -405,17 +405,24 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                             return self.finish_kind();
                         }
                         match self.run_body(r.proc, r.block) {
+                            // P1-6 (IEEE 1364-2005 §5.4/§17): drain the CURRENT
+                            // timestep's postponed region ($strobe/$monitor) before
+                            // terminating — Icarus/VCS parity. $fatal/$stop are
+                            // $finish-class terminations and drain identically.
                             Step::Finish => {
                                 self.st.finished = true;
+                                self.flush_postponed();
                                 return FinishReason::Finish;
                             }
                             Step::Stop => {
                                 self.st.finished = true;
+                                self.flush_postponed();
                                 return FinishReason::Stop;
                             }
                             Step::Fatal => {
                                 self.st.finished = true;
                                 self.st.had_fatal = true;
+                                self.flush_postponed();
                                 return FinishReason::Error;
                             }
                             Step::Suspended | Step::Done => {}

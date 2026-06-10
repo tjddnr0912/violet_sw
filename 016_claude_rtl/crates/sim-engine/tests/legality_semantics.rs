@@ -177,3 +177,69 @@ endmodule
         "legal design must elaborate: {errs:?}"
     );
 }
+
+// ── P1-8: part/bit-select multi-driver accounting ───────────────────────────
+
+/// Overlapping part-selects from two `assign`s were silently last-write-wins —
+/// now E-ELAB-MULTIDRIVER (the v1 policy: no resolution, loud reject).
+#[test]
+fn overlapping_part_select_drivers_rejected() {
+    let (ok, diags) = elab(
+        r#"
+module t;
+  wire [7:0] y;
+  reg [7:0] a, b;
+  assign y[3:0] = a[3:0];
+  assign y[4:2] = b[2:0];
+endmodule
+"#,
+    );
+    assert!(!ok, "overlap must fail; diags: {diags:?}");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("E-ELAB-MULTIDRIVER") || d.contains("VITA-E3001")),
+        "expected multidriver error; got {diags:?}"
+    );
+}
+
+/// Whole-net + bit-select on the same net overlaps too.
+#[test]
+fn whole_net_plus_bit_select_rejected() {
+    let (ok, diags) = elab(
+        r#"
+module t;
+  wire [7:0] y;
+  reg [7:0] a;
+  reg c;
+  assign y = a;
+  assign y[0] = c;
+endmodule
+"#,
+    );
+    assert!(!ok, "overlap must fail; diags: {diags:?}");
+    assert!(
+        diags.iter().any(|d| d.contains("VITA-E3001")),
+        "got {diags:?}"
+    );
+}
+
+/// DISJOINT part-selects are a legal, common idiom — must stay accepted.
+#[test]
+fn disjoint_part_selects_accepted() {
+    let (ok, diags) = elab(
+        r#"
+module t;
+  wire [7:0] y;
+  reg [3:0] a, b;
+  assign y[3:0] = a;
+  assign y[7:4] = b;
+endmodule
+"#,
+    );
+    let errs: Vec<&String> = diags.iter().filter(|d| d.starts_with("error[")).collect();
+    assert!(
+        ok && errs.is_empty(),
+        "disjoint selects are legal: {errs:?}"
+    );
+}

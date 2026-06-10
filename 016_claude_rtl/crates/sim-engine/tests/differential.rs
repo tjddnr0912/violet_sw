@@ -323,3 +323,27 @@ fn diff_wide_value_truncation_cluster() {
              $finish; end endmodule",
     );
 }
+
+#[test]
+fn diff_inbody_star_and_finish_flush() {
+    // P1-4 (in-body @(*) wakes on the controlled statement's read set) +
+    // P1-6 (same-step $strobe/$monitor flush before $finish) — iverilog parity.
+    assert_matches_iverilog(
+        "inbody_star_finish_flush",
+        "module tb; reg a, b, y; reg [3:0] s; \
+           initial begin \
+             a = 0; b = 0; \
+             #1 a = 1; \
+             #2 $finish; \
+           end \
+           initial begin \
+             @(*) y = a ^ b; \
+             $display(\"y=%b at %0t\", y, $time); \
+           end \
+           initial begin \
+             s = 4'd3; \
+             $strobe(\"s=%0d\", s); \
+           end \
+         endmodule",
+    );
+}

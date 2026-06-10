@@ -1529,30 +1529,97 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Emit `ElabMultidriver` for any net targeted by ≥2 whole-net continuous
-    /// assigns. Deterministic: nets scanned in ascending NetId (BTreeMap), each
-    /// reported once. Partial-select / bit-select drivers are NOT counted (that
-    /// needs the deferred bit-level resolver).
+    /// `Expr::Const` → its u64 value (None for non-const / X-bearing) — used to
+    /// turn a static part-select's `(offset, width)` ExprId edges into a bit
+    /// interval for the multi-driver scan.
+    fn const_expr_u64(&self, eid: u32) -> Option<u64> {
+        match self.exprs.get(eid as usize)? {
+            ir::Expr::Const { val } => {
+                let c = self.consts.get(*val as usize)?;
+                if c.bits.unk.iter().any(|&u| u != 0) {
+                    return None;
+                }
+                Some(c.bits.val.first().copied().unwrap_or(0))
+            }
+            // A static part-select's width edge is the unfolded `(msb - lsb) + 1`
+            // tree (`width_from_msb_lsb_checked`); fold the two arithmetic ops.
+            ir::Expr::Binary {
+                op: ir::BinOp::Add,
+                lhs,
+                rhs,
+            } => Some(
+                self.const_expr_u64(*lhs)?
+                    .wrapping_add(self.const_expr_u64(*rhs)?),
+            ),
+            ir::Expr::Binary {
+                op: ir::BinOp::Sub,
+                lhs,
+                rhs,
+            } => Some(
+                self.const_expr_u64(*lhs)?
+                    .wrapping_sub(self.const_expr_u64(*rhs)?),
+            ),
+            _ => None,
+        }
+    }
+
+    /// P1-8: emit `ElabMultidriver` for any net whose continuous-assign drivers
+    /// OVERLAP at the bit level. Whole-net targets count as `[0, width)`; a
+    /// static part/bit-select as `[off, off+w)`. DYNAMIC (non-const offset)
+    /// selects and array-element writes are not counted (the conservative cut —
+    /// a false positive on a disjoint dynamic split would reject legal code).
+    /// Deterministic: nets in ascending id, intervals sorted, one report per net.
     fn check_whole_net_multidriver(&mut self) {
-        let mut full_drives: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut per_net: BTreeMap<u32, Vec<(u64, u64)>> = BTreeMap::new();
         for ca in &self.cont_assigns {
-            if ca.lhs.chunks.len() == 1 {
-                let c = &ca.lhs.chunks[0];
-                if c.word.is_none() && c.offset.is_none() && c.width.is_none() {
-                    *full_drives.entry(c.net).or_insert(0) += 1;
+            for c in &ca.lhs.chunks {
+                if c.word.is_some() {
+                    continue; // array-element write: not counted (v1)
+                }
+                let Some(nv) = self.nets.get(c.net as usize) else {
+                    continue;
+                };
+                let iv = match (c.offset, c.width) {
+                    (None, None) => Some((0u64, nv.width.max(1) as u64)),
+                    (Some(off_e), w_e) => {
+                        let off = self.const_expr_u64(off_e);
+                        let w = match w_e {
+                            Some(we) => self.const_expr_u64(we),
+                            None => Some(1), // bit-select
+                        };
+                        match (off, w) {
+                            (Some(o), Some(w)) => Some((o, o.saturating_add(w.max(1)))),
+                            _ => None, // dynamic select: skip
+                        }
+                    }
+                    (None, Some(_)) => None, // not produced by collect_lval_chunks
+                };
+                if let Some(iv) = iv {
+                    per_net.entry(c.net).or_default().push(iv);
                 }
             }
         }
-        let dups: Vec<u32> = full_drives
-            .into_iter()
-            .filter(|&(_, n)| n > 1)
-            .map(|(net, _)| net)
-            .collect();
-        for net in dups {
-            self.error(
-                MsgCode::ElabMultidriver,
-                &format!("net #{net} driven by multiple continuous assignments"),
-            );
+        for (net, mut ivs) in per_net {
+            if ivs.len() < 2 {
+                continue;
+            }
+            ivs.sort_unstable();
+            let overlap = ivs.windows(2).any(|p| p[1].0 < p[0].1);
+            if overlap {
+                let name = self
+                    .symbols
+                    .iter()
+                    .find(|(_, &id)| id == net)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| format!("#{net}"));
+                self.error(
+                    MsgCode::ElabMultidriver,
+                    &format!(
+                        "net `{name}` driven by multiple overlapping continuous \
+                         assignments"
+                    ),
+                );
+            }
         }
     }
 
@@ -4078,7 +4145,17 @@ impl<'s> Elaborator<'s> {
 
             // ── @(event) ────────────────────────────────────────────
             ast::Stmt::EventCtrl { ctrl, body, .. } => {
-                let cause = self.lower_event_wait_cause(ctrl);
+                // P1-4: in-body `@(*)` infers the read-set of the statement it
+                // CONTROLS (IEEE 1800 §9.4.2.2) — the cause is patched after the
+                // body lowers (blocks ≥ `resume` are exactly the controlled
+                // statement at snapshot time; later siblings append afterwards).
+                let star = matches!(ctrl, ast::Sensitivity::Star);
+                let cause = if star {
+                    ir::WaitCause::Level { nets: Vec::new() } // patched below
+                } else {
+                    self.lower_event_wait_cause(ctrl)
+                };
+                let wait_bb = b.cur.expect("EventCtrl with no open block");
                 let resume = b.new_block();
                 b.end_block_with(ir::Terminator::Wait {
                     cond: cause,
@@ -4087,6 +4164,16 @@ impl<'s> Elaborator<'s> {
                 b.start_block(resume);
                 if let Some(body) = body {
                     self.lower_stmt(b, body);
+                }
+                if star {
+                    let nets = self.comb_read_set(&b.body[resume.raw() as usize..]);
+                    if nets.is_empty() {
+                        self.warn("in-body @(*) reads no nets; it can never wake");
+                    }
+                    b.body[wait_bb.raw() as usize].term = ir::Terminator::Wait {
+                        cond: ir::WaitCause::Level { nets },
+                        resume: resume.raw(),
+                    };
                 }
             }
 
@@ -4444,23 +4531,32 @@ impl<'s> Elaborator<'s> {
 
     // ── in-body @(...) / wait → WaitCause; #delay → (amount, region) ─
     /// In-body `@(...)` → ONE `WaitCause`. Single edge term → `Edge`; all bare →
-    /// `Level`; multi-edge → first edge term + note (no multi-edge variant).
+    /// `Level`; multi-edge → ERROR (the frozen `WaitCause::Edge` carries one term;
+    /// silently waiting on the FIRST term only changed wake semantics — P1-4).
+    /// `@(*)` is handled by the `EventCtrl` arm (read-set patch), not here.
     fn lower_event_wait_cause(&mut self, ctrl: &ast::Sensitivity) -> ir::WaitCause {
         match ctrl {
             ast::Sensitivity::Star => {
-                self.warn("in-body @(*) wait (v2: explicit signal list)");
-                ir::WaitCause::Level { nets: Vec::new() }
+                unreachable!("in-body @(*) is lowered by the EventCtrl arm")
             }
             ast::Sensitivity::List(list) => {
-                let has_edge = list.iter().any(|ev| !matches!(ev.edge, ast::Edge::NoEdge));
-                if has_edge {
+                let n_edges = list
+                    .iter()
+                    .filter(|ev| !matches!(ev.edge, ast::Edge::NoEdge))
+                    .count();
+                if n_edges > 0 {
                     if list.len() > 1 {
-                        self.warn("multi-term in-body edge wait (v2: single edge term)");
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "multi-term in-body edge wait is unsupported in v1 \
+                             (the IR carries a single edge term; move it to a \
+                             block-header sensitivity or split the wait)",
+                        );
                     }
                     let ev = list
                         .iter()
                         .find(|ev| !matches!(ev.edge, ast::Edge::NoEdge))
-                        .expect("has_edge ⇒ at least one edge term");
+                        .expect("n_edges>0 ⇒ at least one edge term");
                     ir::WaitCause::Edge {
                         net: self.sens_event_net(&ev.expr),
                         kind: map_edge(ev.edge),
