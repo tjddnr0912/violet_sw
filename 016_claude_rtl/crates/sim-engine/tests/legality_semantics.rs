@@ -307,3 +307,42 @@ endmodule
         "force target",
     );
 }
+
+#[test]
+fn blocking_intra_delay_accepted_nba_intra_delay_rejected() {
+    // `a = #d rhs` carries real semantics (capture-now, write-later). The NBA
+    // form `a <= #d rhs` needs a value-carrying delayed NBA event to be correct
+    // for overlapping activations (transport delay) — that lands with the next
+    // format bump; meanwhile it is LOUDLY rejected, never silently dropped.
+    let (ok, diags) = elab(
+        r#"
+module t;
+  reg [7:0] a, b;
+  initial a = #2 b;
+endmodule
+"#,
+    );
+    assert!(ok, "blocking intra-delay must elaborate; diags: {diags:?}");
+    assert!(
+        diags.iter().all(|d| !d.starts_with("error[")),
+        "no errors expected: {diags:?}"
+    );
+
+    let (ok, diags) = elab(
+        r#"
+module t;
+  reg [7:0] a, b;
+  reg clk;
+  always @(posedge clk) a <= #2 b;
+endmodule
+"#,
+    );
+    assert!(
+        !ok,
+        "NBA intra-delay must be a loud error, got ok; {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.starts_with("error[")),
+        "must be an error: {diags:?}"
+    );
+}

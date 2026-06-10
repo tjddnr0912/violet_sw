@@ -50,7 +50,7 @@ pub(crate) trait Kernel {
     /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
     /// WRITE: `force lhs = value` (whole-net; sample-once v1 model — §9.3.2).
-    fn k_force(&mut self, lhs: &Lvalue, value: Value);
+    fn k_force(&mut self, lhs: &Lvalue, value: Value, rhs: u32);
     /// WRITE: `release lhs` (net → driver re-settles; variable → keeps value).
     fn k_release(&mut self, lhs: &Lvalue);
     /// WRITE: run a system task, returning its control outcome. `sid` is the
@@ -290,8 +290,13 @@ enum StmtEffect<'s> {
         args: &'s [u32],
         sid: u32,
     },
-    /// `force lhs = value` (RHS sampled in the READ phase, like Blocking).
-    Force { lhs: &'s Lvalue, value: Value },
+    /// `force lhs = value` (RHS sampled in the READ phase; `rhs` rides along
+    /// so the kernel can register the IEEE §9.3.2 continuous re-evaluation).
+    Force {
+        lhs: &'s Lvalue,
+        value: Value,
+        rhs: u32,
+    },
     /// `release lhs`.
     Release { lhs: &'s Lvalue },
     /// `disable`: no-op in v1 (fork/disable deferred).
@@ -325,11 +330,16 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
         },
         Stmt::Disable { .. } => StmtEffect::Nop,
         Stmt::Force { lhs, rhs } => {
-            // Sample-once (iverilog-parity v1 model): evaluate NOW, context-
-            // sized to the target — full procedural-continuous re-evaluation
-            // is the documented refinement.
+            // Evaluate NOW (context-sized to the target) for the initial pin;
+            // the kernel registers `rhs` for continuous re-evaluation
+            // (IEEE §9.3.2 — a force with an expression RHS behaves as a
+            // continuous assignment until released).
             let value = k.k_eval_for_lvalue(lhs, *rhs);
-            StmtEffect::Force { lhs, value }
+            StmtEffect::Force {
+                lhs,
+                value,
+                rhs: *rhs,
+            }
         }
         Stmt::Release { lhs } => StmtEffect::Release { lhs },
     }
@@ -353,8 +363,8 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
             k.k_schedule_nba(lhs.clone(), value);
             None
         }
-        StmtEffect::Force { lhs, value } => {
-            k.k_force(lhs, value);
+        StmtEffect::Force { lhs, value, rhs } => {
+            k.k_force(lhs, value, rhs);
             None
         }
         StmtEffect::Release { lhs } => {

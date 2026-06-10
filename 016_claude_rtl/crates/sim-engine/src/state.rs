@@ -102,6 +102,10 @@ pub(crate) struct SimState<'a> {
     /// no-op for that net — only `force_write`/`release` touch it. Whole-net
     /// granularity (bit/part-select force targets are rejected at elaborate).
     pub forced: Vec<bool>,
+    /// IEEE §9.3.2 continuous-force registry: net → (whole-net lvalue, rhs
+    /// ExprId, forcing module's time multiplier). BTreeMap ⇒ deterministic
+    /// re-evaluation order; empty unless a force is live (zero steady cost).
+    pub active_forces: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64)>,
     /// IEEE 1364-2005 self-width side table — built once, immutable for the run.
     pub wt: crate::width::WidthTable,
 
@@ -197,6 +201,7 @@ impl<'a> SimState<'a> {
             dirty: Vec::new(),
             dirty_flag: vec![false; nnets],
             forced: vec![false; nnets],
+            active_forces: std::collections::BTreeMap::new(),
             wt,
             vcd: None,
             vcd_path: None,
@@ -554,7 +559,8 @@ impl<'a> SimState<'a> {
     // a provable no-op costing O(nets) per timestep. Byte-compare suites
     // (staged/threads/corpus/differential) pin the equivalence.
 
-    // ── force / release (IEEE 1364 §9.3.2; sample-once v1 model) ─────────
+    // ── force / release (IEEE 1364 §9.3.2; expression forces re-evaluate
+    //    continuously via the scheduler's active_forces registry) ─────────
 
     /// Apply `force lhs = value`: write THROUGH the force flag (a re-force on
     /// an already-forced net must land), then pin the net. `lhs` is a single

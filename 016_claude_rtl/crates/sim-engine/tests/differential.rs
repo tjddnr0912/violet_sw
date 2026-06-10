@@ -437,9 +437,12 @@ fn diff_runtime_delay() {
 
 #[test]
 fn diff_force_release() {
-    // Sample-once force on a net + a variable; release restores the net's
-    // driver and a variable keeps the forced value — iverilog byte parity
-    // (iverilog itself warns its force-RHS is evaluated once: same v1 model).
+    // CONST-RHS force on a net + a variable; release restores the net's
+    // driver and a variable keeps the forced value — iverilog byte parity.
+    // (EXPRESSION-RHS forces re-evaluate continuously per IEEE §9.3.2 in
+    // vitamin but NOT in iverilog — iverilog itself warns "sorry: ... will
+    // only be evaluated once" — so that lane is pinned by the hand-computed
+    // end_to_end::force_expression_reevaluates_continuously instead.)
     assert_matches_iverilog(
         "force_release",
         "module tb; wire w; reg a; assign w = a; reg r; \
@@ -521,6 +524,31 @@ fn diff_indexed_expr_reads() {
              #1 $display(\"%h %h\", q, qo); \
              $finish; \
            end \
+         endmodule",
+    );
+}
+
+#[test]
+fn diff_blocking_intra_assignment_delay() {
+    // `a = #d rhs` — RHS captured at eval time (a cross-process write during
+    // the suspension must not leak in), write + resume at t+d; `#0` form lands
+    // same-time (inactive region); runtime delay expr works in the intra form.
+    assert_matches_iverilog(
+        "blocking_intra_delay",
+        "module tb; \
+           reg [7:0] a, b, z; integer d; \
+           initial begin \
+             b = 8'd5; \
+             a = #3 b; \
+             $display(\"t=%0d a=%0d b=%0d\", $time, a, b); \
+             z = #0 8'd9; \
+             $display(\"t=%0d z=%0d\", $time, z); \
+             d = 4; \
+             a = #(d) b + 8'd1; \
+             $display(\"t=%0d a=%0d\", $time, a); \
+             $finish; \
+           end \
+           initial #1 b = 8'd77; \
          endmodule",
     );
 }

@@ -2822,3 +2822,78 @@ fn force_blocks_nba_and_re_force_wins() {
     // release the next posedge increments from the kept value (5 -> 6).
     assert_eq!(out, "a q=9\nb q=5\nc q=6\n");
 }
+
+#[test]
+fn blocking_intra_assignment_delay_captures_now_writes_later() {
+    // iverilog (probed live): `a = #3 b;` evaluates b NOW (5), suspends 3,
+    // then writes — a cross-process `#1 b=77` during the suspension must NOT
+    // leak into the captured value. $display runs after the write at t=3.
+    let ir = build(
+        "module tb; reg [7:0] a, b; \
+           initial begin \
+             b = 8'd5; \
+             a = #3 b; \
+             $display(\"t=%0d a=%0d b=%0d\", $time, a, b); \
+             $finish; \
+           end \
+           initial #1 b = 8'd77; \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t=3 a=5 b=77\n");
+    assert_eq!(res.sim_time, 3);
+}
+
+#[test]
+fn blocking_intra_assignment_zero_and_runtime_delay() {
+    // `#0` form reschedules in the inactive region (write still lands at t=0);
+    // a RUNTIME delay expr (format_version 4) works in the intra form too.
+    let ir = build(
+        "module tb; reg [7:0] a, c; integer d; \
+           initial begin \
+             a = #0 8'd9; \
+             d = 4; \
+             c = #(d) 8'd3; \
+             $display(\"t=%0d a=%0d c=%0d\", $time, a, c); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t=4 a=9 c=3\n");
+}
+
+#[test]
+fn force_expression_reevaluates_continuously() {
+    // IEEE 1364 §9.3.2: a force with an EXPRESSION RHS behaves as a continuous
+    // assignment — operand changes re-evaluate and re-pin the target. iverilog
+    // diverges here BY ITS OWN ADMISSION ("sorry: ... evaluated once", probed
+    // live), so this pins hand-computed IEEE semantics, not iverilog parity:
+    //   t2: w = 0^1 = 1, r = 0^1 = 1
+    //   t3: a=1 ⇒ both re-evaluate to 1^1 = 0   (sample-once would keep 1)
+    //   t4: released — the net snaps to its driver (0), the variable keeps 0.
+    let ir = build(
+        "module tb; reg a, b; wire w; reg r; \
+           assign w = 1'b0; \
+           initial begin \
+             a = 0; b = 1; r = 0; \
+             #1 force w = a ^ b; force r = a ^ b; \
+             #1 $display(\"t2 w=%b r=%b\", w, r); \
+             a = 1; \
+             #1 $display(\"t3 w=%b r=%b\", w, r); \
+             release w; release r; \
+             #1 $display(\"t4 w=%b r=%b\", w, r); \
+             a = 0; \
+             #1 $display(\"t5 w=%b r=%b\", w, r); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // t5: released force must NOT fire again (a back to 0): w stays 0 (driver),
+    // r keeps its last value 0.
+    assert_eq!(out, "t2 w=1 r=1\nt3 w=0 r=0\nt4 w=0 r=0\nt5 w=0 r=0\n");
+}

@@ -74,8 +74,8 @@ vitamin은 **서브셋** 시뮬레이터. 실사용 가치는 "더 빠르게"보
 loud-reject로 확인됨(이제 참):**
 
 - proc-`assign`/`deassign` · `->event`+`@(ev)` · `disable` 실동작 — loud-reject 유지(Phase-2 제어흐름)
-- force/release **full 재평가 모델**(IEEE 절차적 연속 대입 — 현 sample-once는 iverilog 동일 모델, doc-01 v1 단순화 표)
-- intra-assignment delay(`a = #d b`) — warn+drop → 실semantics(Phase-1.x 후순위)
+- ~~force/release **full 재평가 모델**~~ ✅ 2026-06-10 — expression force는 IEEE §9.3.2 연속 재평가(`active_forces` 레지스트리, delta마다 재핀·BTree 결정성·mult 스냅샷). **iverilog와 의도적 발산**(iverilog는 "sorry: evaluated once" 자인 — const-rhs 차분만 유지, expression lane은 hand-IEEE end_to_end 핀)
+- ~~intra-assignment delay(`a = #d b`)~~ ✅ 2026-06-10 — **blocking 형은 실semantics**(capture-now/write-later: tmp(폭=lhs 정확) → `Terminator::Delay` → write; `#0`=inactive·런타임 d 지원, iverilog 차분 일치). **NBA 형(`<= #d`)은 loud E3009로 이관** — 값-운반 delayed NBA 이벤트가 없으면 겹침 활성화(transport delay)에서 silent-wrong이라 차기 format bump 묶음
 - dynamic/associative array, queue (정적 평탄화 불가 → 새 IR 노드 = 차기 format bump 후보)
 - `+incdir+`/`+define+` filelist 버킷(PreOpts 플러밍), implicit-net 추론(W2003 활성화), `-Wwarn=`/`--log` tee
 - 추가 SV 구문 (interface, package, assertion 등 — Phase-2+)
@@ -109,7 +109,7 @@ loud-reject로 확인됨(이제 참):**
 2. ~~filelist typed 버킷~~ — ✅ 2026-06-10. `-D`/`-I` + `+define+`/`+incdir+`(verbatim/베이스해소) → PreOpts, `E-FLIST-WRONG-STAGE`(velab/vrun), `W-FLIST-OVERRIDE`(단일값 knob last-wins 경고). 잔여=DUP-CTX(sticky 도입 시)·--dump-filelist.
 3. ~~native-eval C6 lane~~ — ✅ 2026-06-10. array-indexed Signal(`LoadIndexed`/`WLoadIndexed`, OOR/X→sentinel) + 65..=128bit wide lane(별도 u128-pair 스택 — narrow 무변경·무세금, WIDE_STACK=8). WIDE_HEAVY 0.59x·MEM_HEAVY 0.72x. 잔여 native lane(저ROI 문서화): signed >64 arith/divmod(오라클 X-poison 영역)·wide 구조 트리오·>128bit·real·sysfunc.
 4. **vita-log 2단계** — `--log` tee(단일 writer 불변식, doc-13)·`-q`/`-v` verbosity·counts summary epilogue.
-5. **언어 커버리지(§D 잔여)** — intra-assignment delay 실semantics · force full 재평가 · implicit-net 추론(W2003).
+5. ~~언어 커버리지(§D 잔여)~~ — ✅ 2026-06-10 intra-assignment delay(blocking 실구현·NBA는 loud-defer→bump 묶음) · force 연속 재평가. implicit-net은 P2-12에서 **E3010 정책으로 확정**(추론 대신 명시적 에러 — `default_nettype` 지원이 미래 옵션) — 항목 종결.
 6. **Phase-2 관문** — dynamic array/queue·interface·assertion은 새 IR 노드 = 차기 format bump로 묶어서.
 7. **운영 인프라** — 3-OS CI 매트릭스 실구동(doc-09 §285 스케치 → 실 워크플로), `--dump-filelist`, RULE-V composite 해시(Phase-2).
 

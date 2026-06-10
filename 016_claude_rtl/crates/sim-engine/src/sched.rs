@@ -741,7 +741,31 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// of this pass. (A previous version refreshed prev per-net inside the static
     /// loop, which silently masked all in-body `@(edge)` waits — their later
     /// `prev`/`cur` read saw `prev == cur` → no edge.)
+    /// Re-evaluate every live expression force (BTree order = deterministic)
+    /// and re-pin its target. The forcing module's time multiplier is restored
+    /// around each eval so `$time` in a force RHS renders with the right scale.
+    fn reeval_active_forces(&mut self) {
+        let entries: Vec<(sim_ir::Lvalue, u32, u64)> =
+            self.st.active_forces.values().cloned().collect();
+        let saved = self.st.cur_time_mult;
+        for (lhs, rhs, mult) in entries {
+            self.st.cur_time_mult = mult;
+            let v = self.eval_for_lvalue(&lhs, rhs);
+            self.st.force_write(&lhs, v);
+        }
+        self.st.cur_time_mult = saved;
+    }
+
     fn propagate_changes(&mut self) {
+        // IEEE §9.3.2 continuous force: while a force with an expression RHS is
+        // live, re-evaluate it whenever ANYTHING changed this delta and re-pin
+        // the target through the force funnel. Over-sensitivity is harmless (a
+        // same-value re-pin is dropped by the write funnel) and the re-force
+        // lands in the SAME sweep below via the dirty list. Designs without a
+        // live force never enter (empty registry).
+        if !self.st.active_forces.is_empty() && !self.st.dirty.is_empty() {
+            self.reeval_active_forces();
+        }
         // Take/restore the scratch buffers: this runs once per delta, and a
         // fresh Vec pair per call was measurable allocator traffic.
         let mut changed_nets = std::mem::take(&mut self.scratch_changed);
@@ -1339,10 +1363,18 @@ impl Kernel for Scheduler<'_, '_> {
     fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets {
         self.resolve_lvalue_offsets(lhs)
     }
-    fn k_force(&mut self, lhs: &Lvalue, value: Value) {
+    fn k_force(&mut self, lhs: &Lvalue, value: Value, rhs: u32) {
         self.st.force_write(lhs, value);
+        // Register for continuous re-evaluation (IEEE §9.3.2); snapshot the
+        // forcing module's multiplier so a `$time` in the RHS keeps rendering
+        // with the right scale on later re-evals (the C7 lesson).
+        let mult = self.st.cur_time_mult;
+        self.st
+            .active_forces
+            .insert(lhs.chunks[0].net, (lhs.clone(), rhs, mult));
     }
     fn k_release(&mut self, lhs: &Lvalue) {
+        self.st.active_forces.remove(&lhs.chunks[0].net);
         self.st.release(lhs);
     }
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) {

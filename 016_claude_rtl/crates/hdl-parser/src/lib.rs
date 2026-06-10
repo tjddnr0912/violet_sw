@@ -2564,24 +2564,24 @@ impl<'t, 's> Parser<'t, 's> {
         match self.peek() {
             Some(TokenKind::Eq) => {
                 self.bump();
-                self.skip_intra_assign_delay(); // M4: discard `#d`/`@(ev)`, one advisory
+                let delay = self.parse_intra_assign_delay();
                 let rhs = self.expr(0);
                 self.expect(TokenKind::Semi, "';'");
                 Stmt::Blocking {
                     lhs,
-                    delay: None,
+                    delay,
                     rhs,
                     span: start.to(self.prev_span()),
                 }
             }
             Some(TokenKind::LtEq) => {
                 self.bump();
-                self.skip_intra_assign_delay(); // M4: `q <= #1 d;` is extremely common
+                let delay = self.parse_intra_assign_delay();
                 let rhs = self.expr(0);
                 self.expect(TokenKind::Semi, "';'");
                 Stmt::NonBlocking {
                     lhs,
-                    delay: None,
+                    delay,
                     rhs,
                     span: start.to(self.prev_span()),
                 }
@@ -2613,19 +2613,19 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// M4: intra-assignment timing control after `=`/`<=`. DEFERRED — parse-and-DISCARD
-    /// with ONE advisory error so the RHS still parses cleanly (no cascade).
-    fn skip_intra_assign_delay(&mut self) {
+    /// Intra-assignment timing control after `=`/`<=`. A `#d` delay is CAPTURED
+    /// into the AST `delay` field (the elaborator implements blocking semantics
+    /// and loud-defers the NBA form); `@(ev)` event control stays a parse-and-
+    /// DISCARD advisory error so the RHS still parses cleanly (no cascade).
+    fn parse_intra_assign_delay(&mut self) -> Option<Delay> {
         match self.peek() {
-            Some(TokenKind::Hash) => {
-                self.error("intra-assignment delay (not yet supported; ignored)");
-                let _ = self.parse_delay(); // consumes `#d` / `#(…)`
-            }
+            Some(TokenKind::Hash) => self.parse_delay(),
             Some(TokenKind::At) => {
                 self.error("intra-assignment event control (not yet supported; ignored)");
                 let _ = self.parse_sensitivity(); // consumes `@(…)`
+                None
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -3518,13 +3518,12 @@ mod tests {
     }
 
     // S14. repeat body is a bare EventCtrl (body None); wait body None;
-    //      and intra-assign delay `q <= #1 d;` parses RHS cleanly with an advisory.
+    //      and intra-assign delay `q <= #1 d;` parses CLEAN into the delay field.
     #[test]
     fn s14_event_body_none_and_intra_delay() {
-        // M4: intra-assign delay emits ONE advisory error — parse directly (not proc_of).
         let src = "module m;\ninitial begin repeat (8) @(posedge clk); wait (ready); q <= #1 d; end\nendmodule";
         let (su, errs) = p(src);
-        assert_eq!(errs.len(), 1, "exactly one advisory for intra-assign delay");
+        assert!(errs.is_empty(), "intra-assign delay parses clean: {errs:?}");
         let su = su.unwrap();
         let m = first_module(&su);
         let Some(ModuleItem::Proc(pb)) = m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
@@ -3543,11 +3542,43 @@ mod tests {
             panic!()
         };
         assert!(wb.is_none());
-        // M4: intra-assign delay discarded, RHS still parses as a NonBlocking to `d`.
+        // intra-assign delay is CAPTURED into the AST delay field (the
+        // elaborator decides semantics: blocking = real, NBA = loud defer).
         let Stmt::NonBlocking { delay, .. } = &stmts[2] else {
             panic!("not NonBlocking")
         };
-        assert!(delay.is_none(), "intra-assign delay is dropped (deferred)");
+        assert!(delay.is_some(), "intra-assign delay must be captured");
+    }
+
+    // S14b. blocking intra-assign delay `a = #3 b;` also captures (and event
+    //       control after `=` stays a loud advisory — still unsupported).
+    #[test]
+    fn s14b_blocking_intra_delay_captures_event_ctrl_stays_loud() {
+        let (su, errs) = p("module m;\ninitial a = #3 b;\nendmodule");
+        assert!(
+            errs.is_empty(),
+            "blocking intra-delay parses clean: {errs:?}"
+        );
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let Some(ModuleItem::Proc(pb)) = m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
+        else {
+            panic!("no proc block")
+        };
+        let Stmt::Blocking { delay, .. } = &*pb.body else {
+            panic!("not Blocking: {:?}", pb.body)
+        };
+        assert!(
+            delay.is_some(),
+            "blocking intra-assign delay must be captured"
+        );
+
+        let (_, errs) = p("module m;\ninitial a = @(posedge clk) b;\nendmodule");
+        assert_eq!(
+            errs.len(),
+            1,
+            "intra-assign EVENT control stays an advisory"
+        );
     }
 
     // ════════════════════ module instantiation (PR3) ════════════════════

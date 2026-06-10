@@ -1894,6 +1894,60 @@ impl<'s> Elaborator<'s> {
             .collect()
     }
 
+    /// Total bit width of a LOWERED lvalue (mirrors the engine's
+    /// `lvalue_width`/backend `lvalue_width_of`): whole-net chunks read the net
+    /// (element) width, bit selects are 1, part selects read their const width
+    /// edge. Used to size intra-assignment capture temps EXACTLY.
+    fn ir_lvalue_width(&self, lv: &ir::Lvalue) -> u32 {
+        lv.chunks
+            .iter()
+            .map(|c| match c.kind {
+                ir::SelKind::Bit => {
+                    if c.offset.is_none() && c.width.is_none() {
+                        self.nets[c.net as usize].width
+                    } else {
+                        1
+                    }
+                }
+                _ => c
+                    .width
+                    .and_then(|eid| self.const_of_expr_u32(eid))
+                    .unwrap_or(1),
+            })
+            .sum::<u32>()
+            .max(1)
+    }
+
+    /// Read back a const width edge this elaboration pushed (`Expr::Const`).
+    fn const_of_expr_u32(&self, eid: u32) -> Option<u32> {
+        if let ir::Expr::Const { val } = self.exprs.get(eid as usize)? {
+            let c = self.consts.get(*val as usize)?;
+            if c.bits.unk.iter().any(|&u| u != 0) {
+                return None;
+            }
+            return u32::try_from(c.bits.val.first().copied().unwrap_or(0)).ok();
+        }
+        None
+    }
+
+    /// Synthesize a private capture temp for an intra-assignment delay site
+    /// (`$ia_tmp$<n>` — `$` keeps it collision-proof against user identifiers).
+    fn fresh_ia_tmp(&mut self, width: u32) -> u32 {
+        let name = format!("$ia_tmp${}", self.nets.len());
+        let nv = ir::NetVar {
+            kind: ir::NetKind::Reg,
+            width,
+            msb: width.saturating_sub(1),
+            lsb: 0,
+            signed: false,
+            array_len: 1,
+            dir: ir::PortDir::Internal,
+            init: default_init(ast::NetVarKind::Reg, width),
+        };
+        self.add_net(&name, nv);
+        (self.nets.len() - 1) as u32
+    }
+
     /// Register a net by name → NetId (declaration-order append). A duplicate
     /// name is a hard error: we keep the FIRST binding, emit `ElabUnsupported`
     /// (closest v1 code; doc-15 reserves `E-ELAB-DUP-DECL` for the eventual
@@ -4109,24 +4163,65 @@ impl<'s> Elaborator<'s> {
             ast::Stmt::Blocking {
                 lhs, delay, rhs, ..
             } => {
-                // intra-assignment delay: WARN + drop the delay, keep the assign (M-D).
-                if delay.is_some() {
-                    self.warn("intra-assignment delay (= #d) dropped (v2); assign kept");
-                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
-                let sid = self.push_stmt(ir::Stmt::BlockingAssign {
-                    lhs: lv,
-                    rhs: rhs_id,
-                });
-                b.push_stmt_id(sid);
+                if let Some(d) = delay {
+                    // IEEE §9.2.2 intra-assignment delay: the RHS evaluates NOW,
+                    // the process suspends `d`, THEN the write happens. Lower as
+                    //   tmp = rhs;  #d;  lhs = tmp;
+                    // with a synthetic tmp sized EXACTLY to the lvalue width so
+                    // the rhs eval context (max(lhs_w, self_w)) is unchanged —
+                    // a wider tmp would alter div/shift operand truncation.
+                    let w = self.ir_lvalue_width(&lv);
+                    let tmp = self.fresh_ia_tmp(w);
+                    let cap = self.push_stmt(ir::Stmt::BlockingAssign {
+                        lhs: whole_net_lvalue(tmp),
+                        rhs: rhs_id,
+                    });
+                    b.push_stmt_id(cap);
+                    let (amount, region) = self.lower_delay(d);
+                    let resume = b.new_block();
+                    b.end_block_with(ir::Terminator::Delay {
+                        amount,
+                        region,
+                        resume: resume.raw(),
+                    });
+                    b.start_block(resume);
+                    let tmp_read = self.push_expr(ir::Expr::Signal {
+                        net: tmp,
+                        word: None,
+                    });
+                    let wr = self.push_stmt(ir::Stmt::BlockingAssign {
+                        lhs: lv,
+                        rhs: tmp_read,
+                    });
+                    b.push_stmt_id(wr);
+                } else {
+                    let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                        lhs: lv,
+                        rhs: rhs_id,
+                    });
+                    b.push_stmt_id(sid);
+                }
             }
             ast::Stmt::NonBlocking {
                 lhs, delay, rhs, ..
             } => {
+                // NBA intra-assignment delay (`a <= #d rhs`) needs a VALUE-
+                // CARRYING delayed NBA event to be correct when activations
+                // overlap (transport-delay modeling) — a static capture net
+                // would be silently wrong there. The frozen NonblockingAssign
+                // shape has no delay field, so real semantics land with the
+                // next format bump; until then: loud error, never a drop.
                 if delay.is_some() {
-                    self.warn("intra-assignment delay (<= #d) dropped (v2); assign kept");
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "NBA intra-assignment delay (`<= #d`) is unsupported in v1 \
+                         (needs a value-carrying delayed NBA event — next format \
+                         bump); a plain `<=` or a blocking `= #d` works today",
+                    );
+                    return;
                 }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
