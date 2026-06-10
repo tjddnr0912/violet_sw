@@ -516,7 +516,15 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 }
             }
             self.st.now = next;
-            self.st.snapshot_prev();
+            // No prev snapshot needed here (R2): at the settled point every
+            // mutation path has been swept — `propagate_changes` step (c)
+            // already refreshed `prev` for every changed net, and unchanged
+            // nets have `prev == cur` by induction (the only `prev` writers
+            // are step (c) and the t0 constructor, both setting prev = cur).
+            // The old full-net `snapshot_prev` was therefore a no-op pass
+            // costing O(nets) per timestep (512 idle nets ≈ half the
+            // nets-heavy wall-clock). Soundness is pinned by the byte-compare
+            // suites (staged/threads/corpus/differential).
             // Apply transport-delay cont-assign writes due at this tick; propagate
             // so edges/level-waiters on the delayed net fire (these are NET writes,
             // not process resumes, so the loop-top settle would not see them).
@@ -734,16 +742,29 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// loop, which silently masked all in-body `@(edge)` waits — their later
     /// `prev`/`cur` read saw `prev == cur` → no edge.)
     fn propagate_changes(&mut self) {
-        let nnets = self.st.nets.len();
         // Take/restore the scratch buffers: this runs once per delta, and a
         // fresh Vec pair per call was measurable allocator traffic.
         let mut changed_nets = std::mem::take(&mut self.scratch_changed);
         changed_nets.clear();
-        for i in 0..nnets {
-            if self.st.nets[i].cur != self.st.nets[i].prev {
-                changed_nets.push(i as u32);
+        // Dirty sweep (scheduler R2): only nets that took an actual bit change
+        // since the last sweep are candidates — the previous full O(nets)
+        // `cur != prev` scan taxed every idle net on every delta (512 idle
+        // regs ≈ 9x the 8-net wall-clock). Sorting restores the old scan's
+        // ascending order (byte-identity); the `cur != prev` filter drops
+        // A→B→A round-trips within the delta. Soundness: `prev` only changes
+        // in step (c) below / `snapshot_prev` (both set prev = cur), so any
+        // net with `cur != prev` MUST have taken a marked write since the
+        // last sweep — the dirty list cannot miss a changed net.
+        let mut cand = std::mem::take(&mut self.st.dirty);
+        cand.sort_unstable();
+        for &n in &cand {
+            self.st.dirty_flag[n as usize] = false;
+            if self.st.nets[n as usize].cur != self.st.nets[n as usize].prev {
+                changed_nets.push(n);
             }
         }
+        cand.clear();
+        self.st.dirty = cand; // hand the capacity back for the next writes
         if changed_nets.is_empty() {
             self.scratch_changed = changed_nets;
             return;

@@ -245,3 +245,33 @@ fn perf_dump_share() {
         1.0 / (1.0 - share)
     );
 }
+
+/// NETS-heavy: many mostly-IDLE nets. The per-delta change sweep used to be a
+/// full O(nets) `cur != prev` scan, so idle nets taxed every delta of every
+/// timestep; the dirty-list sweep (scheduler R2) makes the sweep proportional
+/// to nets actually WRITTEN. 512 idle regs + a 2-net clk/counter churn.
+fn nets_heavy_src() -> String {
+    let mut decls = String::new();
+    for i in 0..512 {
+        decls.push_str(&format!("  reg [63:0] idle{i};\n"));
+    }
+    format!(
+        "module top;\n\
+         {decls}\
+         reg clk; reg [63:0] acc; integer k;\n\
+         always @(posedge clk) acc <= acc + 64'd1;\n\
+         initial begin\n\
+           clk = 0; acc = 0;\n\
+           for (k = 0; k < 20000; k = k + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+           $finish;\n\
+         end\n\
+         endmodule"
+    )
+}
+
+#[test]
+#[ignore = "perf baseline (DATA, not a gate); run with --ignored --nocapture"]
+fn perf_nets_heavy() {
+    let src = nets_heavy_src();
+    report("nets-heavy (512 idle nets; dirty-list target)", &src, 5);
+}

@@ -90,6 +90,13 @@ pub(crate) struct SimState<'a> {
     pub ir: &'a SimIr,
     pub now: u64,
     pub nets: Vec<NetSlot>,
+    /// Dirty-sweep list (scheduler R2): nets that took an ACTUAL bit change
+    /// since the last `propagate_changes` sweep, in write order (`dirty_flag`
+    /// dedups). Replaces the per-delta full O(nets) `cur != prev` scan — the
+    /// sweep sorts this list, so the resulting changed-net order is identical
+    /// to the old ascending scan (byte-identity).
+    pub dirty: Vec<u32>,
+    pub dirty_flag: Vec<bool>,
     /// Per-net `force` flag (IEEE §9.3.2): while set, EVERY normal write path
     /// (procedural, NBA commit, cont-assign settle, delayed CA) is a silent
     /// no-op for that net — only `force_write`/`release` touch it. Whole-net
@@ -187,6 +194,8 @@ impl<'a> SimState<'a> {
             ir,
             now: 0,
             nets,
+            dirty: Vec::new(),
+            dirty_flag: vec![false; nnets],
             forced: vec![false; nnets],
             wt,
             vcd: None,
@@ -482,7 +491,7 @@ impl<'a> SimState<'a> {
                 }
             }
             if changed {
-                self.emit_vcd_change(net as u32);
+                self.note_change(net as u32);
             }
             return changed;
         }
@@ -501,9 +510,22 @@ impl<'a> SimState<'a> {
             }
         }
         if changed {
-            self.emit_vcd_change(net as u32);
+            self.note_change(net as u32);
         }
         changed
+    }
+
+    /// Record an ACTUAL bit change on `net`: mark it for the next
+    /// `propagate_changes` dirty sweep, then emit the VCD record. This is the
+    /// single funnel both `write_chunk` exit paths use — any future mutation
+    /// path MUST route through it or the sweep goes blind.
+    fn note_change(&mut self, net: u32) {
+        let i = net as usize;
+        if !self.dirty_flag[i] {
+            self.dirty_flag[i] = true;
+            self.dirty.push(net);
+        }
+        self.emit_vcd_change(net);
     }
 
     /// Emit a VCD value_change for a net that changed (array word 0 in v1 VCD).
@@ -525,18 +547,12 @@ impl<'a> SimState<'a> {
 
     // ── edge support ─────────────────────────────────────────────────────
 
-    /// Snapshot cur → prev for every net (called at start of each new time).
-    pub fn snapshot_prev(&mut self) {
-        for slot in &mut self.nets {
-            // Per-field Vec::clone_from reuses each Vec's existing allocation.
-            // BitPacked's derived Clone has no clone_from override, so
-            // `prev.clone_from(&cur)` was `prev = cur.clone()` — two Vec
-            // alloc/free pairs per net per timestep, the dominant malloc
-            // traffic of clock-bound designs (scheduler-axis profile).
-            slot.prev.val.clone_from(&slot.cur.val);
-            slot.prev.unk.clone_from(&slot.cur.unk);
-        }
-    }
+    // (R2) The former `snapshot_prev` full-net cur→prev copy at each time
+    // advance was DELETED: at the settled point `prev == cur` holds for every
+    // net by induction — the only `prev` writers are `propagate_changes`
+    // step (c) and the constructor, both setting prev = cur — so the pass was
+    // a provable no-op costing O(nets) per timestep. Byte-compare suites
+    // (staged/threads/corpus/differential) pin the equivalence.
 
     // ── force / release (IEEE 1364 §9.3.2; sample-once v1 model) ─────────
 
