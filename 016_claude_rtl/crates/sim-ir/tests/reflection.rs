@@ -45,7 +45,11 @@ fn traced_registry_ron() -> String {
     tracer.trace_simple_type::<sim_ir::FuncDef>().unwrap();
     tracer.trace_simple_type::<sim_ir::SimIr>().unwrap();
     let registry = tracer.registry().unwrap();
-    ron::ser::to_string_pretty(&registry, ron::ser::PrettyConfig::default()).unwrap()
+    // PrettyConfig::default() picks the PLATFORM newline (\r\n on Windows),
+    // which broke the byte-compared golden on windows-latest (3-OS CI run 3).
+    // Pin "\n" explicitly — the golden must be byte-identical on every OS.
+    let cfg = ron::ser::PrettyConfig::default().new_line("\n".to_string());
+    ron::ser::to_string_pretty(&registry, cfg).unwrap()
 }
 
 #[test]
