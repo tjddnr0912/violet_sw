@@ -101,15 +101,15 @@ loud-reject로 확인됨(이제 참):**
 
 | 항목 | IR 영향 | 평가 |
 |---|---|---|
-| **(A) NBA delayed write** `q <= #d rhs` | `NonblockingAssign + delay: Option<ExprId>` 필드 + 엔진 wheel의 값-운반 NBA-region 이벤트 | **bump 필수.** ⑤에서 이관(정적 capture는 transport-delay 겹침에서 silent-wrong). 엔진은 `schedule_nba_at(t+d)` 1개 — 소형 |
-| **(B) named event + `->`/`@(ev)` — 재분류(2026-06-10 설계)** | **sim-ir 무변경으로 강등** — 카운터 desugar(`event e`→64-bit Reg, `->e`→`e=e+1`, `@(e)`→net AnyEdge; 같은-슬롯 이중 trigger도 카운터라 edge 누락 없음). 동결 `WaitCause::Named`/`WakeCond::NamedEvent`는 예약-미사용 유지 | **v5에서 제외.** 비용=AST decl kind(.vu flip, (D)와 일괄)+elaborate desugar. 설계 = [dynamic-storage design §0](superpowers/plans/2026-06-10-dynamic-storage-design.md) |
+| ✅**(A) NBA delayed write** `q <= #d rhs` | **완료 2026-06-10 (v5)** — `NonblockingAssign.delay`(ExprId, 실행 시 평가·mult 스케일) + `delayed_nba` wheel(값-운반, `apply_nba` 전역 seq 정렬로 문장순 보존) | iverilog 차분 4레인(NBA-region 착지·겹침 transport·`#0` 문장순·인덱스 동결). finish-vs-due-update 동시-틱 tie는 도구-발산 영역으로 핀 |
+| ✅**(B) named event + `->`/`@(ev)`** | **완료 2026-06-11, sim-ir 0** — 카운터 desugar(64-bit Reg init 0, `->e`=`e=e+1`, `@(e)`=AnyEdge; 같은-슬롯 이중 trigger도 edge 보존). 값-표면 전부 loud(읽기/쓰기/range/init) | iverilog 차분 3레인(trigger/wake·혼합 리스트·no-latch). `.vu` AST 해시 재핀(NetVarKind::Event) |
 | **(C) dynamic array / queue / assoc array — 📐 설계 완료(2026-06-10)** | handle-net + 엔진 힙(`dyn_heap: BTreeMap<NetId, DynObj>`, BitPacked 스토어 비침투): `NetKind` +3, `SysFuncId` +5, `SysTaskId` +5, `Signal/LvalChunk` word 재사용 — **v5 형상 diff 전량 확정** | 설계 = [`superpowers/plans/2026-06-10-dynamic-storage-design.md`](superpowers/plans/2026-06-10-dynamic-storage-design.md) (MVP 컷·OOB=X+warn-once·VCD 미덤프·결정성 계약·bump 체크리스트 포함) |
 | ✅(D) interface / modport — **스파이크 완료(GO)** | **SimIr 무변경 확정** — 신호=평범한 net + 심볼 aliasing(cont-assign 금지: 방향 없음), `.vu` AST 해시만 1회 flip(핀 골든 0) | 설계 = [`superpowers/plans/2026-06-10-interface-flattening-spike.md`](superpowers/plans/2026-06-10-interface-flattening-spike.md). 구현은 v5 묶음과 같은 시기 권장(AST flip 1회로 수렴) |
 | ✅(E) immediate assertion `assert(e) else $error` | **무변경** — 파서가 `Stmt::If`로 desugar(AST 동결 유지) + 디폴트 실패는 `$error("Assertion failed")` 합성(severity 테이블 경유 stderr+exit1) | **완료 2026-06-10** (654 green, iverilog 차분 일치 — X-cond=fail 포함). concurrent SVA는 별개(거대, Phase-3), `assert property`/`#0`/`final`=loud |
 | ✅(F) `disable` 실동작 / proc-`assign`/`deassign` | **완료 2026-06-10, bump 0** — disable=동봉 named block Goto(lazy exit-BB, 기존 CFG byte-불변·비동봉은 loud); proc-assign=Force/Release 재사용+`assign_ranks` 사이드카(weak rank·latent 복귀, `.velab` trailer 세그먼트 append) | 665 green, iverilog 차분(disable 3종·assign const-rhs 2종)+staged trailer 왕복 |
 
 **진입 시퀀스(권장):** ① IR-무변경부터 — ~~(E) immediate assert~~✅ → ~~(D) interface 스파이크~~✅ → ~~(F)~~✅ ②
-~~(C) dynamic storage **설계 문서**~~✅ ③ 설계 확정 후 **v5 bump 일괄 = (A)+(C)** ((B)는 desugar로 강등 — `.vu` flip은 (B)+(D)+(C 문법) 1회 일괄).
+~~(C) dynamic storage **설계 문서**~~✅ ③ ~~v5 bump 일괄~~✅ **완주(2026-06-10/11)**: bump(형상+REGEN, `e7f08e8`) → (A) 구현(`1617980`) → (B) 구현(`0a39dec`). **잔여 = (C) 엔진 증분 ③dyn array→④queue→⑤assoc→⑥front-end 일괄(.vu flip — dyn 문법+(D) interface)** — [설계 문서 §6](superpowers/plans/2026-06-10-dynamic-storage-design.md) 순서.
 
 ---
 
@@ -128,7 +128,7 @@ loud-reject로 확인됨(이제 참):**
 3. ~~native-eval C6 lane~~ — ✅ 2026-06-10. array-indexed Signal(`LoadIndexed`/`WLoadIndexed`, OOR/X→sentinel) + 65..=128bit wide lane(별도 u128-pair 스택 — narrow 무변경·무세금, WIDE_STACK=8). WIDE_HEAVY 0.59x·MEM_HEAVY 0.72x. 잔여 native lane(저ROI 문서화): signed >64 arith/divmod(오라클 X-poison 영역)·wide 구조 트리오·>128bit·real·sysfunc.
 4. **vita-log 2단계** — `--log` tee(단일 writer 불변식, doc-13)·`-q`/`-v` verbosity·counts summary epilogue.
 5. ~~언어 커버리지(§D 잔여)~~ — ✅ 2026-06-10 intra-assignment delay(blocking 실구현·NBA는 loud-defer→bump 묶음) · force 연속 재평가. implicit-net은 P2-12에서 **E3010 정책으로 확정**(추론 대신 명시적 에러 — `default_nettype` 지원이 미래 옵션) — 항목 종결.
-6. **Phase-2 관문** — dynamic array/queue·interface·assertion은 새 IR 노드 = 차기 format bump로 묶어서.
+6. ~~Phase-2 관문~~ — ✅ 2026-06-10/11 §F 진입 시퀀스 완주: (E) assert·(D) 스파이크·(F) disable/proc-assign·(C) 설계·v5 bump·(A) NBA-delay·(B) named-event. 잔여 = (C) 엔진 증분(③④⑤)+⑥ front-end.
 7. **운영 인프라** — 3-OS CI 매트릭스 실구동(doc-09 §285 스케치 → 실 워크플로), `--dump-filelist`, RULE-V composite 해시(Phase-2).
 
 ---

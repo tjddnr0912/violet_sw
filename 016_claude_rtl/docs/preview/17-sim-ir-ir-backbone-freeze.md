@@ -87,7 +87,7 @@ pub enum SysTaskId {
 pub enum DisableKind { Fork, Scope }                            // detached-only vs recursive-children reap
 ```
 
-- **(D-S1)** intra-assign delay 필드 없음(MVP 제외). 문장-선두 `#d`/`@()`는 assign BB 앞의 `Delay`/`Wait` terminator로 lower. Phase-2가 `delay:Option<u32>` 재추가.
+- **(D-S1)** ~~intra-assign delay 필드 없음(MVP 제외)~~ **v5 갱신(2026-06-10)**: `NonblockingAssign`이 `delay:Option<u32 ExprId>`를 가짐(transport NBA — 실행 시 평가, t+d NBA region에 값-운반 이벤트). blocking 형 `a = #d b`는 필드 없이 tmp-capture + `Delay` terminator로 lower(둘 다 구현됨). 문장-선두 `#d`/`@()`는 종전대로 terminator.
 - **(D-S2)** `SysTask{which,fmt,args}`: `fmt:Option<u32>`는 `consts`의 `ConstVal{repr:StrUtf8}`(format-control 문자열)을 가리킴. `args`는 post-format 식 인덱스. format 없는 태스크(`$finish`/`$dumpvars`)는 `fmt=None`. format 문자열이 수치 operand와 **구조적으로 구분**(별도 필드 + 가리키는 const가 자기-식별)되어 3-OS 바이트 동일 `$display` 충족(doc 01:46). `$monitor`/`$strobe` 영속: 엔진이 (`fmt`,`args`) 인덱스 튜플을 보존(인덱스 안정 → 형상 변화 0).
 - **(D-S3)** `Disable{scope_kind,target}`: `target`=`ProcId`(reap할 스코프), `scope_kind`=teardown 의미(doc 14 RULE-D2 inv.2: `Fork`=`detached`만, `Scope`=`children` 재귀). reap-scope는 **해시 필드**(side-metadata 아님 — doc 06:139가 해시 밖 스케줄링 로직 금지). CFG 엣지는 disabling BB의 `Goto`로.
 - **(D-S4)** `ContinuousAssign`은 `Stmt` 아님 — top-level `ContAssign` arena(§7).
@@ -343,8 +343,8 @@ node-kind당 append-only `Vec` 1개 = 재로드 시 포인터 fixup 0.
 | `==?`/`!=?`, `inside`, 스트리밍 `{>>}/{<<}` | `BinOp` 확장 / 새 `Expr` variant |
 | `$readmemh`/`$fopen`/파일 I/O, `$random` | `SysTaskId` 확장(`$random`→`SysFuncId`) |
 | `$bits`/`$countones`/`$signed` 확장 | `SysFuncId` 확장 |
-| intra-assign delay `lhs = #5 rhs` | `BlockingAssign`/`NonblockingAssign`에 `delay:Option<u32>` |
-| named `event` + `->ev` | `WaitCause::Named` 이미 있음; `Stmt::TriggerEvent` 추가 |
+| ~~intra-assign delay `lhs = #5 rhs`~~ ✅ v4/v5 | blocking=tmp+`Delay` terminator(v4, 필드 불요) · NBA=`NonblockingAssign.delay`(v5) |
+| ~~named `event` + `->ev`~~ ✅ 2026-06-11 | **형상 0**: 카운터 desugar(64-bit Reg + `e=e+1` + AnyEdge) — `WaitCause::Named`/`WakeCond::NamedEvent`는 예약-미사용 유지 |
 | net types `tri/wand/wor`, drive strength | `NetKind` 확장 / strength 필드 |
 | 다차원 PACKED / 동적·연관 array | `NetVar.array_len:u32` → `dims:Vec<u32>` (UNPACKED 다차원은 elaborate 평탄화로 이미 처리됨 — re-freeze 불요) |
 | struct/union/enum/typedef | `NetKind` 확장(packed struct는 `BitPacked` fit); unpacked→`dims` |
