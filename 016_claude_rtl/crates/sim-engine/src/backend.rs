@@ -123,11 +123,13 @@ enum Op {
     WriteLval { lhs: u32, val: u32, off: u32 },
     /// `k_schedule_nba(lvalues[lhs].clone(), take(regs[val]))` — LHS index sampled in NBA.
     ScheduleNba { lhs: u32, val: u32 },
-    /// `k_dispatch_systask(which, fmt, &arglists[args])`.
+    /// `k_dispatch_systask(which, fmt, &arglists[args], sid)`. `sid` is the source
+    /// StmtId — it keys the severity side table (`$fatal`/`$error`/…, P1-1).
     SysTask {
         which: SysTaskId,
         fmt: Option<u32>,
         args: u32,
+        sid: u32,
     },
 }
 
@@ -235,6 +237,7 @@ pub(crate) fn compile_body(
                         which: *which,
                         fmt: *fmt,
                         args: ai,
+                        sid,
                     });
                 }
                 // `is_codegen_able` rejects any body containing `Disable`, so this is
@@ -311,14 +314,17 @@ pub(crate) fn vm_exec(k: &mut impl Kernel, body: &CompiledBody, proc: u32, mut b
                         .expect("ScheduleNba before EvalForLval");
                     k.k_schedule_nba(body.lvalues[lhs as usize].clone(), value);
                 }
-                Op::SysTask { which, fmt, args } => {
-                    match k.k_dispatch_systask(which, fmt, &body.arglists[args as usize]) {
-                        Ctl::Finish => return Step::Finish,
-                        Ctl::Stop => return Step::Stop,
-                        Ctl::Fatal => return Step::Fatal,
-                        Ctl::Continue => {}
-                    }
-                }
+                Op::SysTask {
+                    which,
+                    fmt,
+                    args,
+                    sid,
+                } => match k.k_dispatch_systask(which, fmt, &body.arglists[args as usize], sid) {
+                    Ctl::Finish => return Step::Finish,
+                    Ctl::Stop => return Step::Stop,
+                    Ctl::Fatal => return Step::Fatal,
+                    Ctl::Continue => {}
+                },
             }
         }
         match block.term {

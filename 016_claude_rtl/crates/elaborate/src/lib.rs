@@ -103,6 +103,30 @@ pub type ForkModeTable = std::collections::BTreeMap<(u32, u32), JoinMode>;
 /// hierarchical `$scope`/`$var` instead of a flat `top` + synthetic `n0..nN`.
 pub type NetNameTable = Vec<String>;
 
+/// Severity class of a lowered `$fatal`/`$error`/`$warning`/`$info` statement.
+/// NOT part of `SimIr` (the frozen `SysTaskId` has no severity variants): a
+/// severity task lowers to a plain `SysTaskId::Display` stmt, and this kind rides
+/// out-of-band in the [`SeverityTable`] so the golden root stays byte-identical.
+/// The engine consults it per-StmtId to route the text to the DIAGNOSTIC stream
+/// (doc-13 tokens `fatal[VITA-F4004]`/`error[VITA-E4003]`/…) instead of stdout,
+/// and to abort (`$fatal`) or flag the exit class (`$error`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SeverityKind {
+    /// `$info` — diagnostic only; exit class untouched.
+    Info,
+    /// `$warning` — diagnostic only; exit class untouched.
+    Warning,
+    /// `$error` — diagnostic + `ExitClass::HadErrors`; run continues.
+    Error,
+    /// `$fatal` — diagnostic + implicit `$finish` with `ExitClass::Fatal`.
+    Fatal,
+}
+
+/// Severity side table: StmtId → [`SeverityKind`]. A deterministic `BTreeMap`
+/// (3-OS byte-stable when serialized); like [`ForkModeTable`] it rides in
+/// `SimOpts` / the `.velab` trailer and NEVER enters the golden `SimIr` root.
+pub type SeverityTable = std::collections::BTreeMap<u32, SeverityKind>;
+
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
 /// threads into `SimOpts.fork_modes`. `elaborate` is a thin forwarder onto this
 /// so the ~25 existing `elaborate(...)` callers keep compiling verbatim.
@@ -121,7 +145,7 @@ pub fn elaborate_with_sidecars(
     unit: &ast::SourceUnit,
     sink: &dyn LogSink,
 ) -> (Option<ir::SimIr>, ForkModeTable, NetNameTable) {
-    let (ir, modes, names, _mult) =
+    let (ir, modes, names, _mult, _sev) =
         elaborate_with_timescale(unit, sink, &std::collections::BTreeMap::new(), -9);
     (ir, modes, names)
 }
@@ -131,24 +155,32 @@ pub fn elaborate_with_sidecars(
 /// to its delay-unit exponent and `global_prec_exp` is the design-wide tick base;
 /// `#delay` literals scale to `round(d × 10^(unit−prec))` ticks. Also returns the
 /// per-process multiplier table for `SimOpts.proc_multipliers` (`$time`/`$realtime`
-/// scaling). All three side tables ride out-of-band; the golden `SimIr` is unchanged.
+/// scaling) and the [`SeverityTable`] for `$fatal`/`$error`/`$warning`/`$info`.
+/// All side tables ride out-of-band; the golden `SimIr` is unchanged.
 pub fn elaborate_with_timescale(
     unit: &ast::SourceUnit,
     sink: &dyn LogSink,
     mod_unit_exp: &std::collections::BTreeMap<String, i8>,
     global_prec_exp: i8,
-) -> (Option<ir::SimIr>, ForkModeTable, NetNameTable, Vec<u32>) {
+) -> (
+    Option<ir::SimIr>,
+    ForkModeTable,
+    NetNameTable,
+    Vec<u32>,
+    SeverityTable,
+) {
     let mut el = Elaborator::new(sink);
     el.mod_unit_exp = mod_unit_exp.clone();
     el.global_prec_exp = global_prec_exp;
     el.run(unit);
     let modes = std::mem::take(&mut el.fork_modes);
     let mult = std::mem::take(&mut el.proc_multipliers);
+    let sevs = std::mem::take(&mut el.severities);
     let names = el.net_name_table(); // BEFORE finish() consumes `el`
     if el.had_error {
-        (None, modes, names, mult)
+        (None, modes, names, mult, sevs)
     } else {
-        (Some(el.finish()), modes, names, mult)
+        (Some(el.finish()), modes, names, mult, sevs)
     }
 }
 
@@ -447,6 +479,11 @@ struct Elaborator<'s> {
     // Per-ProcId multiplier table (parallel to `processes`), threaded to the engine via
     // `SimOpts.proc_multipliers` for `$time`/`$realtime` scaling. NEVER in the golden root.
     proc_multipliers: Vec<u32>,
+
+    // ── severity-task state (engine-facing side channel, NOT in SimIr) ──
+    // StmtId → SeverityKind for every `$fatal`/`$error`/`$warning`/`$info` lowered
+    // (each as a `SysTaskId::Display` stmt). Threaded via `SimOpts.severities`.
+    severities: SeverityTable,
 }
 
 impl<'s> Elaborator<'s> {
@@ -475,6 +512,7 @@ impl<'s> Elaborator<'s> {
             out_subst: Vec::new(),
             inline_stack: Vec::new(),
             fork_modes: ForkModeTable::new(),
+            severities: SeverityTable::new(),
             cur_proc: 0,
             in_fork: false,
             mod_unit_exp: BTreeMap::new(),
@@ -4409,6 +4447,12 @@ impl<'s> Elaborator<'s> {
     /// literal, becomes `fmt`; the rest are value args. Non-print tasks
     /// ($finish/$dumpfile/...) carry `fmt: None`, every arg in `args`.
     fn lower_systask(&mut self, name: &ast::Ident, args: &[ast::Expr]) -> Option<u32> {
+        // P1-1: `$fatal`/`$error`/`$warning`/`$info` lower as `Display` stmts plus
+        // an out-of-band SeverityTable entry (the frozen SysTaskId has no severity
+        // variants; the engine intercepts by StmtId and routes to the diag stream).
+        if let Some(sev) = map_severity(&name.name) {
+            return Some(self.lower_severity_task(sev, args));
+        }
         let which = match map_systask(&name.name) {
             Some(w) => w,
             None => {
@@ -4482,6 +4526,44 @@ impl<'s> Elaborator<'s> {
         }))
     }
 
+    /// P1-1: lower `$fatal([finish_number][, fmt, args…])` / `$error`/`$warning`/
+    /// `$info([fmt, args…])` to a `SysTaskId::Display` stmt + a [`SeverityTable`]
+    /// entry keyed by its StmtId. `$fatal`'s leading INTEGER LITERAL is the IEEE
+    /// finish_number — consumed and ignored (like `$finish(n)`), never printed.
+    /// The fmt/args split mirrors the print family (first string literal = fmt).
+    fn lower_severity_task(&mut self, sev: SeverityKind, args: &[ast::Expr]) -> u32 {
+        let args: &[ast::Expr] = if sev == SeverityKind::Fatal
+            && matches!(
+                args.first().map(|e| &e.kind),
+                Some(ast::ExprKind::IntLit { .. })
+            ) {
+            &args[1..]
+        } else {
+            args
+        };
+        let mut fmt_raw: Option<String> = None;
+        let (fmt, value_args): (Option<u32>, &[ast::Expr]) = match args.first().map(|e| &e.kind) {
+            Some(ast::ExprKind::StrLit { raw }) => {
+                fmt_raw = Some(parse_str_literal_text(raw));
+                let cid = self.intern_const(parse_str_literal(raw));
+                let fmt_expr = self.push_expr(ir::Expr::Const { val: cid });
+                (Some(fmt_expr), &args[1..])
+            }
+            _ => (None, args),
+        };
+        let arg_ids: Vec<u32> = value_args.iter().map(|a| self.lower_expr(a)).collect();
+        if let Some(fmt_str) = &fmt_raw {
+            self.check_format_real_radix(fmt_str, &arg_ids);
+        }
+        let sid = self.push_stmt(ir::Stmt::SysTask {
+            which: ir::SysTaskId::Display,
+            fmt,
+            args: arg_ids,
+        });
+        self.severities.insert(sid, sev);
+        sid
+    }
+
     /// True if `a` is a bare net Ident or an integer/string literal — i.e. a thing
     /// `lower_expr` can lower without a fatal unresolved-name. A hierarchical /
     /// scope name (`top.dut`) or anything else returns false (dump-family skips it).
@@ -4535,6 +4617,18 @@ fn map_edge(e: ast::Edge) -> ir::EdgeKind {
 /// `$display`→Display … `$dumpall`→DumpAll. `name` retains the leading `$`
 /// (parser keeps it, parallel to `map_sysfunc`). Unknown → None.
 /// `$monitoron`/`$monitoroff`/`$timeformat` etc. are DEFERRED.
+/// Severity-task name → [`SeverityKind`] (P1-1). These do NOT map to a frozen
+/// `SysTaskId`; they lower as `Display` + an out-of-band severity entry.
+fn map_severity(dollar_name: &str) -> Option<SeverityKind> {
+    match dollar_name {
+        "$fatal" => Some(SeverityKind::Fatal),
+        "$error" => Some(SeverityKind::Error),
+        "$warning" => Some(SeverityKind::Warning),
+        "$info" => Some(SeverityKind::Info),
+        _ => None,
+    }
+}
+
 fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
     match dollar_name {
         "$display" | "$displayb" | "$displayo" | "$displayh" => Some(ir::SysTaskId::Display),

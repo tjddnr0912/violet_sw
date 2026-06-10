@@ -101,6 +101,9 @@ pub(crate) struct SimState<'a> {
     pub net_names: Vec<String>,
     /// Per-ProcId time multiplier (from `SimOpts.proc_multipliers`); empty ⇒ M=1.
     pub proc_multipliers: Vec<u32>,
+    /// StmtId → severity for `$fatal`/`$error`/`$warning`/`$info` statements
+    /// (from `SimOpts.severities`); empty ⇒ no severity tasks in the design.
+    pub severities: crate::SeverityTable,
     /// Process-body execution backend (from `SimOpts.backend`). Default
     /// `Interpreter`; read at the single `run()` body-dispatch seam.
     pub backend: crate::Backend,
@@ -175,6 +178,7 @@ impl<'a> SimState<'a> {
             vcd_date,
             net_names: Vec::new(),
             proc_multipliers: Vec::new(),
+            severities: crate::SeverityTable::new(),
             backend: crate::Backend::Interpreter,
             vm_cache: (0..ir.processes.len())
                 .map(|_| crate::backend::VmSlot::Unchecked)

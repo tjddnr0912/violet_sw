@@ -1126,8 +1126,9 @@ impl Kernel for Scheduler<'_, '_> {
         which: sim_ir::SysTaskId,
         fmt: Option<u32>,
         args: &[u32],
+        sid: u32,
     ) -> crate::builtins::Ctl {
-        crate::builtins::dispatch(self, which, fmt, args)
+        crate::builtins::dispatch(self, which, fmt, args, sid)
     }
 
     // ── terminator / control surface (C1) — pure forwarders ──

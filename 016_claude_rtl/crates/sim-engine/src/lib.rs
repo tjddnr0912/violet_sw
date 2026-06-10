@@ -44,7 +44,7 @@ use sim_ir::SimIr;
 
 /// Re-exported from `elaborate` so callers thread the join-mode side table into
 /// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
-pub use elaborate::{ForkModeTable, JoinMode, NetNameTable};
+pub use elaborate::{ForkModeTable, JoinMode, NetNameTable, SeverityKind, SeverityTable};
 pub use sched::FinishReason;
 
 use sched::Scheduler;
@@ -113,6 +113,11 @@ pub struct SimOpts {
     /// every existing caller is byte-identical. Rides out-of-band (never enters the
     /// frozen `SimIr`).
     pub backend: Backend,
+    /// Severity side table from `elaborate::elaborate_with_timescale`, keyed by
+    /// StmtId: marks `$fatal`/`$error`/`$warning`/`$info` statements (lowered as
+    /// `SysTaskId::Display`). EMPTY for severity-free designs (the default), so
+    /// every existing caller is unaffected. Never enters the golden IR.
+    pub severities: SeverityTable,
 }
 
 impl Default for SimOpts {
@@ -127,6 +132,7 @@ impl Default for SimOpts {
             net_names: Vec::new(),
             proc_multipliers: Vec::new(),
             backend: Backend::Interpreter,
+            severities: SeverityTable::new(),
         }
     }
 }
@@ -179,6 +185,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.net_names = opts.net_names.clone();
     st.proc_multipliers = opts.proc_multipliers.clone();
     st.backend = opts.backend;
+    st.severities = opts.severities.clone();
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

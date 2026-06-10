@@ -328,7 +328,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
     // elaboration error was reported. `elaborate_with_timescale` also yields the
     // fork-join, net-name, and per-process time-multiplier side tables threaded into
     // `SimOpts`; the timescale env scales `#delay`/`$time`/`$realtime`.
-    let (ir, fork_modes, net_names, proc_multipliers) =
+    let (ir, fork_modes, net_names, proc_multipliers, severities) =
         elaborate::elaborate_with_timescale(&unit, &sink, &rt.unit_exp, rt.global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR;
@@ -339,6 +339,7 @@ pub fn run_vita_str(file: &str, text: &str, opts: &VitaOpts) -> i32 {
         fork_modes,
         net_names,
         proc_multipliers,
+        severities,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
@@ -676,17 +677,19 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
         };
 
     // ── elaborate (with the staged timescale env) ──
-    let (ir, fork_modes, net_names, proc_multipliers) =
+    let (ir, fork_modes, net_names, proc_multipliers, severities) =
         elaborate::elaborate_with_timescale(&unit, &sink, &unit_exp, global_prec_exp);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR; // elab error already emitted
     };
 
     // ── write `.velab` body = postcard(SimIr) ++ postcard(ForkModeTable) ++
-    //    postcard(NetNameTable) ++ postcard((proc_multipliers, global_prec_exp)). All
-    //    trailers ride OUTSIDE the hashed SimIr frame (the schema gate covers the type,
-    //    not these bytes), so the golden hash and staleness are unaffected; names give
-    //    `vrun` hierarchical VCD and the multipliers give it `$time`/`$realtime` scaling. ──
+    //    postcard(NetNameTable) ++ postcard((proc_multipliers, global_prec_exp)) ++
+    //    postcard(SeverityTable). All trailers ride OUTSIDE the hashed SimIr frame
+    //    (the schema gate covers the type, not these bytes), so the golden hash and
+    //    staleness are unaffected; names give `vrun` hierarchical VCD, the multipliers
+    //    give it `$time`/`$realtime` scaling, and the severities give it
+    //    `$fatal`/`$error`/`$warning`/`$info` routing (P1-1). ──
     let mut velab_body = postcard::to_stdvec(&ir).expect("SimIr postcard encode infallible");
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&fork_modes).expect("ForkModeTable postcard encode infallible"),
@@ -697,6 +700,9 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&(proc_multipliers, global_prec_exp))
             .expect("timescale trailer postcard encode infallible"),
+    );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&severities).expect("severity trailer postcard encode infallible"),
     );
     let vheader = artifact_header(vita_schema::schema_hash::<sim_ir::SimIr>(), global_prec_exp);
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
@@ -774,10 +780,11 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
     };
     // Timescale trailer (proc multipliers + global precision). Tolerant of an older
     // `.velab` with no trailer → 1ns/1ns base ($time unscaled, preamble 1ns).
-    let (proc_multipliers, global_prec_exp): (Vec<u32>, i8) = if rest3.is_empty() {
-        (Vec::new(), -9)
+    let ((proc_multipliers, global_prec_exp), rest4): ((Vec<u32>, i8), &[u8]) = if rest3.is_empty()
+    {
+        ((Vec::new(), -9), rest3)
     } else {
-        match postcard::from_bytes(rest3) {
+        match postcard::take_from_bytes(rest3) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
@@ -789,12 +796,30 @@ pub fn run_vrun(velab_path: &str, opts: &VitaOpts) -> i32 {
             }
         }
     };
+    // Severity trailer ($fatal/$error/$warning/$info, P1-1). Tolerant of an older
+    // `.velab` with no trailer → empty ⇒ severity tasks degrade to plain $display.
+    let severities: sim_engine::SeverityTable = if rest4.is_empty() {
+        sim_engine::SeverityTable::new()
+    } else {
+        match postcard::from_bytes(rest4) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    &sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab severity trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
 
     // ── simulate ──
     let sim_opts = SimOpts {
         fork_modes,
         net_names,
         proc_multipliers,
+        severities,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };

@@ -16,9 +16,7 @@ pub(crate) enum Ctl {
     Continue,
     Finish,
     Stop,
-    /// Reserved: runtime $fatal (RunFatal). No frozen SysTaskId emits it in v1;
-    /// kept so the executor's match is total and future $fatal lowering plugs in.
-    #[allow(dead_code)]
+    /// Runtime `$fatal` (RunFatal): abort the run with `ExitClass::Fatal`.
     Fatal,
 }
 
@@ -27,7 +25,14 @@ pub(crate) fn dispatch(
     which: SysTaskId,
     fmt: Option<u32>,
     args: &[u32],
+    sid: u32,
 ) -> Ctl {
+    // P1-1: `$fatal`/`$error`/`$warning`/`$info` lower as `Display` plus an
+    // out-of-band severity entry keyed by StmtId — intercept BEFORE the normal
+    // stdout print so the text reaches the DIAGNOSTIC stream only (doc-13).
+    if let Some(sev) = sched.st.severities.get(&sid).copied() {
+        return run_severity(sched, sev, fmt, args);
+    }
     match which {
         SysTaskId::Display => {
             let mut s = format_args_str(sched, fmt, args);
@@ -102,6 +107,50 @@ pub(crate) fn dispatch(
 
 pub(crate) fn write_out(st: &mut SimState, text: &str) {
     let _ = st.out.write_all(text.as_bytes());
+}
+
+/// P1-1: execute a severity task (doc-13 §Severity). The user message renders
+/// through the SAME `format_args_str` engine as `$display` (so `%0d`/defaults
+/// behave identically) but is emitted as a `LogEvent::Diagnostic` — stderr in
+/// production, never the stdout stream. Empty message ⇒ the code's title.
+/// `$fatal` aborts (implicit `$finish`, `ExitClass::Fatal`); `$error` flags
+/// `HadErrors` and continues; `$warning`/`$info` only print.
+fn run_severity(
+    sched: &mut Scheduler,
+    sev: crate::SeverityKind,
+    fmt: Option<u32>,
+    args: &[u32],
+) -> Ctl {
+    use crate::SeverityKind as K;
+    use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
+    let (severity, code) = match sev {
+        K::Fatal => (Severity::Fatal, MsgCode::RunFatal),
+        K::Error => (Severity::Error, MsgCode::RunUserError),
+        K::Warning => (Severity::Warning, MsgCode::RunUserWarning),
+        K::Info => (Severity::Info, MsgCode::RunUserInfo),
+    };
+    let mut message = format_args_str(sched, fmt, args);
+    if message.is_empty() {
+        message = code.title().to_string();
+    }
+    sched.st.sink.emit(LogEvent::Diagnostic(Diagnostic {
+        severity,
+        code,
+        message,
+        location: None,
+        context: Vec::new(),
+        sim_time: Some(TimeStamp {
+            ticks: sched.st.now,
+        }),
+    }));
+    match sev {
+        K::Fatal => Ctl::Fatal,
+        K::Error => {
+            sched.st.had_error = true;
+            Ctl::Continue
+        }
+        K::Warning | K::Info => Ctl::Continue,
+    }
 }
 
 // ── $dumpvars: declare all nets, header, initial dump ──────────────────────

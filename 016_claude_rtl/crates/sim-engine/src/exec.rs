@@ -49,8 +49,15 @@ pub(crate) trait Kernel {
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]);
     /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
-    /// WRITE: run a system task, returning its control outcome.
-    fn k_dispatch_systask(&mut self, which: SysTaskId, fmt: Option<u32>, args: &[u32]) -> Ctl;
+    /// WRITE: run a system task, returning its control outcome. `sid` is the
+    /// StmtId — the severity side table (`$fatal`/`$error`/…, P1-1) is keyed by it.
+    fn k_dispatch_systask(
+        &mut self,
+        which: SysTaskId,
+        fmt: Option<u32>,
+        args: &[u32],
+        sid: u32,
+    ) -> Ctl;
 
     // ── terminator / control surface (C1) ──
     // The control-flow ABI a compiled body needs beyond the statement surface above:
@@ -124,7 +131,7 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
         // byte-identical to the prior inline form — same evals, same writes, same order.
         for sid in stmt_ids {
             let stmt = sched.st.ir.stmts[sid as usize].clone();
-            let effect = compute_effect(&*sched, &stmt); // READ phase via Kernel seam
+            let effect = compute_effect(&*sched, &stmt, sid); // READ phase via Kernel seam
             if let Some(step) = apply_effect(sched, effect) {
                 return step; // a SysTask returned Finish/Stop/Fatal
             }
@@ -222,10 +229,12 @@ enum StmtEffect {
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
     Nonblocking { lhs: Lvalue, value: Value },
     /// System task: a kernel call (its own read+write happen inside `dispatch`).
+    /// `sid` keys the severity side table (P1-1).
     SysTask {
         which: SysTaskId,
         fmt: Option<u32>,
         args: Vec<u32>,
+        sid: u32,
     },
     /// `disable`: no-op in v1 (fork/disable deferred).
     Nop,
@@ -235,7 +244,7 @@ enum StmtEffect {
 /// producing a [`StmtEffect`] that captures everything the write phase will apply. No
 /// net state is mutated here. Generic over `K: Kernel`, so the SAME executor serves
 /// the interpreter (`Scheduler`) and a Stage-C compiled body.
-fn compute_effect<K: Kernel>(k: &K, stmt: &Stmt) -> StmtEffect {
+fn compute_effect<K: Kernel>(k: &K, stmt: &Stmt, sid: u32) -> StmtEffect {
     match stmt {
         Stmt::BlockingAssign { lhs, rhs } => {
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
@@ -257,6 +266,7 @@ fn compute_effect<K: Kernel>(k: &K, stmt: &Stmt) -> StmtEffect {
             which: *which,
             fmt: *fmt,
             args: args.clone(),
+            sid,
         },
         Stmt::Disable { .. } => StmtEffect::Nop,
     }
@@ -279,7 +289,12 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect) -> Option<Step> {
             k.k_schedule_nba(lhs, value);
             None
         }
-        StmtEffect::SysTask { which, fmt, args } => match k.k_dispatch_systask(which, fmt, &args) {
+        StmtEffect::SysTask {
+            which,
+            fmt,
+            args,
+            sid,
+        } => match k.k_dispatch_systask(which, fmt, &args, sid) {
             Ctl::Finish => Some(Step::Finish),
             Ctl::Stop => Some(Step::Stop),
             Ctl::Fatal => Some(Step::Fatal),
