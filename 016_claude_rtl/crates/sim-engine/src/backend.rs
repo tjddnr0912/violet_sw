@@ -50,7 +50,12 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], body: &[BasicBlock]) -> bool {
                 // Disable: Phase-2 control flow we will not bake into compiled
                 // code. Force/Release: format_version-4 shape reserve — keep
                 // compiled bodies away until the semantics increment lands.
-                Stmt::Disable { .. } | Stmt::Force { .. } | Stmt::Release { .. }
+                // NBA transport delay (v5): interp-only until increment (A)
+                // wires the value-carrying delayed event into the VM path.
+                Stmt::Disable { .. }
+                    | Stmt::Force { .. }
+                    | Stmt::Release { .. }
+                    | Stmt::NonblockingAssign { delay: Some(_), .. }
             )
         });
         term_ok && stmts_ok
@@ -227,7 +232,9 @@ pub(crate) fn compile_body(
                         off: o,
                     });
                 }
-                Stmt::NonblockingAssign { lhs, rhs } => {
+                Stmt::NonblockingAssign { lhs, rhs, delay } => {
+                    // delay: Some(_) is excluded by `is_codegen_able` above.
+                    debug_assert!(delay.is_none());
                     let li = lvalues.len() as u32;
                     lvalues.push(lhs.clone());
                     let v = nregs;
@@ -549,6 +556,7 @@ mod tests {
             Stmt::NonblockingAssign {
                 lhs: Lvalue { chunks: vec![] },
                 rhs: 7,
+                delay: None,
             },
             Stmt::SysTask {
                 which: SysTaskId::Finish,

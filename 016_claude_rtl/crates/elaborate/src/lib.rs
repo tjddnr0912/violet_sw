@@ -4254,6 +4254,7 @@ impl<'s> Elaborator<'s> {
                 let sid = self.push_stmt(ir::Stmt::NonblockingAssign {
                     lhs: lv,
                     rhs: rhs_id,
+                    delay: None, // `<= #d` lands with v5 increment (A); E3009 until then
                 });
                 b.push_stmt_id(sid);
             }

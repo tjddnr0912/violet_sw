@@ -379,6 +379,15 @@
         4: {
             "Real": UNIT,
         },
+        5: {
+            "DynArray": UNIT,
+        },
+        6: {
+            "Queue": UNIT,
+        },
+        7: {
+            "Assoc": UNIT,
+        },
     }),
     "NetVar": STRUCT([
         {
@@ -536,6 +545,9 @@
                 {
                     "rhs": U32,
                 },
+                {
+                    "delay": OPTION(U32),
+                },
             ]),
         },
         2: {
@@ -627,6 +639,21 @@
         8: {
             "BitsToReal": UNIT,
         },
+        9: {
+            "DynSize": UNIT,
+        },
+        10: {
+            "QPopBack": UNIT,
+        },
+        11: {
+            "QPopFront": UNIT,
+        },
+        12: {
+            "AssocExists": UNIT,
+        },
+        13: {
+            "AssocNum": UNIT,
+        },
     }),
     "SysTaskId": ENUM({
         0: {
@@ -667,6 +694,21 @@
         },
         12: {
             "DumpLimit": UNIT,
+        },
+        13: {
+            "DynNew": UNIT,
+        },
+        14: {
+            "DynDelete": UNIT,
+        },
+        15: {
+            "QPushBack": UNIT,
+        },
+        16: {
+            "QPushFront": UNIT,
+        },
+        17: {
+            "AssocDeleteKey": UNIT,
         },
     }),
     "Terminator": ENUM({

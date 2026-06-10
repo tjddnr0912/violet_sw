@@ -245,6 +245,21 @@ impl WidthTable {
                     width: 64,
                     signed: false,
                 },
+                // v5 dyn-storage methods (shape reserve — not emitted yet):
+                // size()/num() are int (32 signed), exists() is 1 bit; the pop
+                // pair is ELEMENT-width and will be refined by increment (C).
+                SysFuncId::DynSize | SysFuncId::AssocNum => SelfWidth {
+                    width: 32,
+                    signed: true,
+                },
+                SysFuncId::AssocExists => SelfWidth {
+                    width: 1,
+                    signed: false,
+                },
+                SysFuncId::QPopBack | SysFuncId::QPopFront => SelfWidth {
+                    width: 32,
+                    signed: true,
+                },
                 // $signed / $unsigned: PRESERVE operand width, flip sign attribute.
                 SysFuncId::Signed => {
                     let w = args.first().map(|&a| child(sw, i, a).width).unwrap_or(1);

@@ -157,6 +157,16 @@ pub enum SysFuncId {
     Itor,       // $itor  — int  → real, exact convert
     RealToBits, // $realtobits — real → 64-bit vector (raw IEEE bits)
     BitsToReal, // $bitstoreal — 64-bit vector → real (raw IEEE bits)
+    /// dyn/queue/assoc `.size()`/`.num()` länge (v5; args = [handle Signal]).
+    DynSize,
+    /// queue `.pop_back()` (v5; side-effecting — excluded from the P9 VM allow-list).
+    QPopBack,
+    /// queue `.pop_front()` (v5; side-effecting — see `QPopBack`).
+    QPopFront,
+    /// assoc `.exists(key)` (v5; args = [handle, key]).
+    AssocExists,
+    /// assoc `.num()` (v5; args = [handle]).
+    AssocNum,
 }
 
 /// Expression arena node (§1).
@@ -226,6 +236,16 @@ pub enum SysTaskId {
     /// one-time `$comment Dump limit reached $end` and drops further records
     /// (format_version 4).
     DumpLimit,
+    /// dyn array `= new[n]` / `new[n](src)` (v5; args = [handle, n (, src)]).
+    DynNew,
+    /// dyn/queue/assoc `.delete()` — whole-object clear (v5; args = [handle]).
+    DynDelete,
+    /// queue `.push_back(v)` (v5; args = [handle, v]).
+    QPushBack,
+    /// queue `.push_front(v)` (v5; args = [handle, v]).
+    QPushFront,
+    /// assoc `.delete(key)` (v5; args = [handle, key]).
+    AssocDeleteKey,
 }
 
 /// Disable kind (§2).
@@ -245,6 +265,11 @@ pub enum Stmt {
     NonblockingAssign {
         lhs: sim_ir::Lvalue,
         rhs: u32,
+        /// `<= #d` transport delay (v5): ExprId evaluated at EXECUTION time
+        /// (the v4 runtime-delay model). Each activation carries its own
+        /// captured value to `t+d` (overlapping activations stay independent).
+        /// `None` ⇒ plain same-tick NBA (the v4 byte path).
+        delay: Option<u32>,
     },
     SysTask {
         which: sim_ir::SysTaskId,
@@ -374,6 +399,15 @@ pub enum NetKind {
     /// field is introduced — the V-PRIM derive guard sees only `u64` inside
     /// `BitPacked`. `realtime` is a synonym and ALSO maps here (no 6th variant).
     Real,
+    /// SV dynamic-array HANDLE (v5). `width` = ELEMENT width, `array_len = 0`;
+    /// storage lives in the engine heap (`dyn_heap`), never the flat BitPacked
+    /// store. Shape reserved by the v5 bump; front-end emission lands with the
+    /// dynamic-storage increments (design doc 2026-06-10).
+    DynArray,
+    /// SV queue HANDLE (v5) — see `DynArray`.
+    Queue,
+    /// SV associative-array HANDLE (v5; integer keys ≤64 bit) — see `DynArray`.
+    Assoc,
 }
 
 /// Port direction (§6).

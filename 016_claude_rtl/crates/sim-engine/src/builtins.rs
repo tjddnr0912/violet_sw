@@ -36,6 +36,13 @@ pub(crate) fn dispatch(
     // P1-5: the b/o/h variants change the default radix of unformatted args.
     let radix = sched.st.radixes.get(&sid).copied();
     match which {
+        // v5 shape reserve (dyn-storage methods): elaborate cannot emit these
+        // until the (C) increments land — defensive no-op, never a panic.
+        SysTaskId::DynNew
+        | SysTaskId::DynDelete
+        | SysTaskId::QPushBack
+        | SysTaskId::QPushFront
+        | SysTaskId::AssocDeleteKey => Ctl::Continue,
         SysTaskId::Display => {
             let mut s = format_args_str(sched, fmt, args, radix);
             s.push('\n');

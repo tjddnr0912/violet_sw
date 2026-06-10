@@ -325,7 +325,15 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
                 offsets,
             }
         }
-        Stmt::NonblockingAssign { lhs, rhs } => {
+        Stmt::NonblockingAssign { lhs, rhs, delay } => {
+            // v5 shape: `delay: Some(_)` cannot be emitted yet (elaborate still
+            // E3009s `<= #d` until increment (A) wires the value-carrying
+            // delayed NBA event). Guarded here so the increment cannot land
+            // without revisiting this path.
+            debug_assert!(
+                delay.is_none(),
+                "NBA delay execution lands with v5 increment (A)"
+            );
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED, sampled now
             StmtEffect::Nonblocking { lhs, value }
         }

@@ -788,6 +788,13 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
 
     fn eval_sysfunc(&self, which: SysFuncId, args: &[u32]) -> Value {
         match which {
+            // v5 shape reserve: elaborate cannot emit these until the
+            // dynamic-storage increments land. X-poison (never panic) if hit.
+            SysFuncId::DynSize
+            | SysFuncId::QPopBack
+            | SysFuncId::QPopFront
+            | SysFuncId::AssocExists
+            | SysFuncId::AssocNum => Value::xs(32, false),
             SysFuncId::Time => {
                 // $time: current time in the CALLING module's units, truncated to int
                 // (now is global-precision ticks; divide by the module multiplier M).

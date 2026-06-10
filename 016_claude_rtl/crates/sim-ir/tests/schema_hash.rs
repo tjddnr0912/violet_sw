@@ -3,11 +3,12 @@
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full SimIr-closure canonical string. Locked at
-/// format_version 4 (2026-06-10: +SysTaskId Dump{Flush,Limit}, +Stmt
-/// Force/Release shape reserve; Delay.amount became an ExprId semantically —
-/// same u32 shape, hence the explicit container-version bump).
+/// format_version 5 (2026-06-10: +NonblockingAssign.delay transport field,
+/// +NetKind Dyn{Array,Queue,Assoc} handles, +SysFuncId/SysTaskId dyn-storage
+/// methods — the COMPLETE shape diff settled by the dynamic-storage design
+/// doc; the runtime Process cluster is untouched, so its sub-pin holds).
 const EXPECTED_SIMIR_HASH: &str =
-    "d6d078bcba99d873cd1cefab367d4a4ad59603116fb52686d35c1f952f375bdd";
+    "39d097208a6b782a5f331fc20386df285e424a3c0fece6fa9238dba4e47be0f8";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "927e19344413644037635cfcebc50c76c08a413356b9463b5819f7979f1f486b";
