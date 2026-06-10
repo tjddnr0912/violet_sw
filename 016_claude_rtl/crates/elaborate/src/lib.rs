@@ -1346,8 +1346,7 @@ impl<'s> Elaborator<'s> {
                     ast::BinOp::Mul => Some(a.wrapping_mul(b)),
                     ast::BinOp::Div if b != 0 => Some(a / b),
                     ast::BinOp::Mod if b != 0 => Some(a % b),
-                    ast::BinOp::Shl => Some(a.wrapping_shl(b)),
-                    ast::BinOp::Shr => Some(a.wrapping_shr(b)),
+
                     // Comparison / equality / logical / bitwise folding — required
                     // so a generate-for CONDITION (`i < N`, `i != 0`, …) const-folds
                     // to 1/0 during unroll. Unsigned u32 semantics (genvars are
@@ -1374,8 +1373,13 @@ impl<'s> Elaborator<'s> {
                     // Arithmetic shifts: in the unsigned u32 elaboration domain
                     // (genvars/params are non-negative integers) they coincide with
                     // the logical shifts already handled above.
-                    ast::BinOp::AShl => Some(a.wrapping_shl(b)),
-                    ast::BinOp::AShr => Some(a.wrapping_shr(b)),
+                    // Verilog semantics: shift by >= width logically yields 0.
+                    // Rust's `wrapping_shl` wraps the amount modulo 32, so we use `checked_shl/shr`
+                    // and default to 0 on None (which means amount >= 32).
+                    ast::BinOp::Shl => Some(a.checked_shl(b).unwrap_or(0)),
+                    ast::BinOp::Shr => Some(a.checked_shr(b).unwrap_or(0)),
+                    ast::BinOp::AShl => Some(a.checked_shl(b).unwrap_or(0)),
+                    ast::BinOp::AShr => Some(a.checked_shr(b).unwrap_or(0)),
                     // Div/Mod by zero (the guards above fail) → non-constant.
                     _ => None,
                 }
