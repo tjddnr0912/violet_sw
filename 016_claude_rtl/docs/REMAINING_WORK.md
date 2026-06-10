@@ -1,6 +1,6 @@
 # vitamin — 잔여 작업 트래커 (Remaining Work)
 
-> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa` + elaborate shift fix(uncommitted, Gemini) · **460 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3).
+> **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa`(+동일자 진행: shift fix 채택 `4241435` → P0-1~4 `7bfd8c3` → P0-5~7 `b30881a`) · **482 tests green** · clippy/fmt clean · golden(SimIr) unflipped(format_version 3).
 > 출처: 7축 감사 — ①Gemini-fix 검토 ②spec-gap ③sim-engine ④front-end ⑤메모리/자원 ⑥운용성 ⑦병렬화. 핵심 항목은 라이브 재현(+iverilog 차분)으로 확정, 각 항목에 `재현:` 표기.
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
@@ -16,16 +16,16 @@
 
 **런타임 >64bit 절단 클러스터** — 공통 근원: `Value::to_u64`(value.rs:313-320)가 width>64에서 None 대신 word0 절단값을 반환.
 
-- [ ] **[P0-1]** >64bit relational 비교 절단 — eval.rs:537이 `to_u64`(arith는 이미 `to_u128`, relational만 누락). **재현:** `128'h1_0000_0000_0000_0000 > 128'h1` → vita `0` / iverilog `1`.
-- [ ] **[P0-2]** shift-amount 절단 — eval.rs:630·648. amt 피연산자의 상위 word 무시 → `2^64`만큼 shift가 no-shift로. `to_u128`+width 클램프.
-- [ ] **[P0-3]** unary minus(negate) 단일워드 — eval.rs:266-281. `-128'h1`의 word1이 0 (`128'h0 - x` arith 경로와 결과 불일치).
-- [ ] **[P0-4]** **`to_u64` 계약 수정**(overflow→None) + 호출부 10곳 전수 감사 — eval.rs:85·731(part-select offset, 동일 절단 클래스)·816 / sched.rs:771(signal발 #delay) / value.rs:340(`to_i128_signed` — signed >64 비교에도 절단 유입)·528(real cast) / builtins.rs:623(%c, 무해).
+- [x] **[P0-1]** >64bit relational 비교 절단 — ✅ 2026-06-10 `7bfd8c3`. 임의 폭 word-wise 정확 비교(부호 인지)로 교체, 64/128 lane 의존 제거. 회귀 `wide_value_semantics.rs` + iverilog 차분 `diff_wide_value_truncation_cluster`.
+- [x] **[P0-2]** shift-amount 절단 — ✅ `7bfd8c3`. over-u64 amount는 saturate(전부 shift-out: 논리 0/산술 sign-fill). x/z는 기존대로 X.
+- [x] **[P0-3]** unary minus(negate) 단일워드 — ✅ `7bfd8c3`. 전 폭 two's complement(word carry).
+- [x] **[P0-4]** **`to_u64`/`to_u128` 계약 수정**(overflow→None) + 호출부 전수 — ✅ `7bfd8c3`. array word index/lvalue offset의 `as u32` wrap(2^32+k→k, 읽기·쓰기 모두)도 OOR sentinel로; part-select offset·$clog2(임의 폭 정확)·%c(low byte 유지)·unsigned→real(u128 lane). arith()는 기존 width 게이트 뒤라 unwrap 안전. 워크스페이스 470 green.
 
 **elaborate 상수 도메인 클러스터:**
 
-- [ ] **[P0-5]** 폴딩 불가 param/localparam/enum-label → **silent 0** — lib.rs:1239(`unwrap_or(0)`)·727·743·1622. `const_eval_in_scope`에 ternary `?:`/`$clog2`/concat/함수호출 arm 부재(:1384 `_=>None`). **재현:** `parameter W = MODE ? 16 : 8` → vita W=0 / iverilog 16, 진단 0줄. 조치: Cond·$clog2 폴딩 추가 + 그래도 미폴딩이면 **Error**(0 기본값 절대 금지 — 2026-06-05 BLOCKER#2에 적힌 미이행 조치).
-- [ ] **[P0-6]** const 도메인 u32 → **부호 있는 i64+ 확대** — ①`1<<32`: vita 0 vs iverilog 4294967296 ②`parameter [63:0] F=1<<32` → 0(IEEE 컨텍스트 확장상 2^32) ③64bit 리터럴 param u32 절단(lib.rs:4521 `as u32`) ④signed AShr가 논리시프트(:1382, `(-4)>>>1`→0x7FFFFFFE) ⑤Mul wrapping(:1346 — Pow는 saturate, 비대칭). Gemini fix의 잔존 한계 해소(위 검토 결과 참조).
-- [ ] **[P0-7]** 하강 generate-for 폭주 — unsigned u32 비교라 `i>=0` 항상 참 → GENERATE_UNROLL_CAP(4096) E3009. **재현:** `for(i=3; i>=0; i=i-1)` vita 에러 / iverilog 정상. loud지만 합법 IEEE 거부, 실사용 빈출 패턴. (P0-6에 포함 가능; 선행 단독 fix = 비교 연산만 signed)
+- [x] **[P0-5]** 폴딩 불가 param/localparam/enum-label → silent 0 — ✅ 2026-06-10 `b30881a`. ternary `?:`+`$clog2` 폴딩 추가, 미폴딩 param/enum-label은 **ElabUnsupported Error**(0은 post-error recovery 값일 뿐). concat/함수호출 폴딩은 필요 시 후속(현재는 loud).
+- [x] **[P0-6]** const 도메인 u32 → 부호 있는 i64 — ✅ `b30881a`. `1<<32`=4294967296(iverilog parity), checked 산술(overflow=loud), signed AShr sign-extend, 음수 param은 32bit signed const로 바인딩(`%0d`→`-4`), `0..=u32::MAX`는 기존 const 형상 그대로 → **기존 디자인 골든 byte 불변**(482 green). 잔여: >64bit 리터럴/i64 초과값은 도메인 밖 → None(loud).
+- [x] **[P0-7]** 하강 generate-for 폭주 — ✅ `b30881a`(P0-6의 signed 비교로 해결). `for(i=3;i>=0;i=i-1)` 정상 4회 unroll + zero-trip(-1 시작) 무진단 통과. 회귀 `const_domain_semantics.rs` + iverilog 차분 `diff_const_domain_cluster`.
 
 **display/monitor 의미론:**
 
@@ -103,12 +103,13 @@
 
 ## 권장 작업 순서 (다음 세션)
 
-1. **P0 런타임 절단 클러스터**(P0-1~4) — `to_u64` 계약 수정 + 호출부 전수. 소규모·고가치. iverilog 차분 회귀 추가.
-2. **P0-5/6/7 elaborate 상수 도메인** — silent-0 박멸(Cond·$clog2 + 미폴딩=Error) → 부호 i64 확대 → 하강 genvar. 같은 파일 연쇄 작업.
-3. **P1-1 `$fatal` 계열** — 최소 $fatal→error-exit 브리지(CI 신뢰성 직결).
-4. **P2 quick wins** — VCD open/flush 진단·delta-limit 진단·`--help/--version`·BufWriter(T0b)·아티팩트 temp+rename.
-5. **P4 T0a/T0b → T1** — 병렬화 진입(측정 게이트 후 writer 스레드).
-6. 이후: P0-8/9 display·monitor 의미론 → native-eval follow-on(ROADMAP §C) → 스케줄러축 → P1 나머지 → P3.
+1. ~~P0 런타임 절단 클러스터(P0-1~4)~~ — ✅ 2026-06-10 `7bfd8c3`.
+2. ~~P0-5/6/7 elaborate 상수 도메인~~ — ✅ 2026-06-10 `b30881a`.
+3. **P0-8/9 display·monitor 의미론** — `$display` 선행 문자열 뒤 인자/`%v…` 미소비 시프트, `$monitor` $time 재트리거.
+4. **P1-1 `$fatal` 계열** — 최소 $fatal→error-exit 브리지(CI 신뢰성 직결).
+5. **P2 quick wins** — VCD open/flush 진단·delta-limit 진단·`--help/--version`·BufWriter(T0b)·아티팩트 temp+rename.
+6. **P4 T0a/T0b → T1** — 병렬화 진입(측정 게이트 후 writer 스레드).
+7. 이후: native-eval follow-on(ROADMAP §C) → 스케줄러축 → P1 나머지 → P3.
 
 ## 아카이브 (완결 이력 요약)
 
