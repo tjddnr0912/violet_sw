@@ -104,7 +104,7 @@ loud-reject로 확인됨(이제 참):**
 | **(A) NBA delayed write** `q <= #d rhs` | `NonblockingAssign + delay: Option<ExprId>` 필드 + 엔진 wheel의 값-운반 NBA-region 이벤트 | **bump 필수.** ⑤에서 이관(정적 capture는 transport-delay 겹침에서 silent-wrong). 엔진은 `schedule_nba_at(t+d)` 1개 — 소형 |
 | **(B) named event + `->`/`@(ev)`** | `NetKind::Event`(또는 별도 arena) + `Stmt::EventTrigger` + `WaitCause` 확장 | **bump 필수.** P1-2 loud-reject의 해제 조건. 소형~중형 |
 | **(C) dynamic array / queue / assoc array** | 정적 평탄화 전제(고정폭 `BitPacked` storage) 자체를 깸 — NetVar storage 모델 + Expr/Stmt(인덱싱·push/pop·size) 신설 | **bump 필수 + Phase-2 코어.** 엔진 storage 재설계라 **별도 설계 문서가 선행** — 설계가 익기 전 (A)+(B)만으로 bump하지 말 것(이중 bump 방지) |
-| (D) interface / modport | 아마 **무변경** — 모듈 평탄화처럼 elaborate에서 와이어 번들로 lower 가능성 높음 | bump 불요 가설 검증부터(스파이크). package/import도 동류 |
+| ✅(D) interface / modport — **스파이크 완료(GO)** | **SimIr 무변경 확정** — 신호=평범한 net + 심볼 aliasing(cont-assign 금지: 방향 없음), `.vu` AST 해시만 1회 flip(핀 골든 0) | 설계 = [`superpowers/plans/2026-06-10-interface-flattening-spike.md`](superpowers/plans/2026-06-10-interface-flattening-spike.md). 구현은 v5 묶음과 같은 시기 권장(AST flip 1회로 수렴) |
 | ✅(E) immediate assertion `assert(e) else $error` | **무변경** — 파서가 `Stmt::If`로 desugar(AST 동결 유지) + 디폴트 실패는 `$error("Assertion failed")` 합성(severity 테이블 경유 stderr+exit1) | **완료 2026-06-10** (654 green, iverilog 차분 일치 — X-cond=fail 포함). concurrent SVA는 별개(거대, Phase-3), `assert property`/`#0`/`final`=loud |
 | (F) `disable` 실동작 / proc-`assign`/`deassign` | `Disable`은 IR에 이미 있음(엔진 no-op); proc-assign은 force 기계 재사용 가능성 | 엔진/사이드테이블 위주 — bump 불요 추정 |
 
