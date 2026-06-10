@@ -232,3 +232,168 @@ fn dyn_new_x_size_degrades_to_empty_with_one_warn() {
         "X-size new[] must warn EXACTLY once per net: {diags:?}"
     );
 }
+
+/// 32-bit-element handle (padding-stable Display fields, like slice 3a).
+fn dyn_handle32() -> NetVar {
+    NetVar {
+        kind: NetKind::DynArray,
+        width: 32,
+        msb: 31,
+        lsb: 0,
+        signed: false,
+        array_len: 0,
+        dir: PortDir::Internal,
+        init: BitPacked {
+            val: vec![0],
+            unk: vec![0xffff_ffff],
+        },
+    }
+}
+
+fn elem_write(net: u32, idx_eid: u32, rhs_eid: u32) -> Stmt {
+    Stmt::BlockingAssign {
+        lhs: sim_ir::Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: Some(idx_eid),
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        },
+        rhs: rhs_eid,
+    }
+}
+
+#[test]
+fn dyn_indexed_write_read_roundtrip() {
+    // d = new[3]; d[0]=10; d[1]=20; d[2]=30; read all three back.
+    // (Oracle: iverilog live — 10 20 30.)
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle (new)
+        Expr::Const { val: 0 },              // 1: 3
+        Expr::Const { val: 1 },              // 2: idx 0
+        Expr::Const { val: 2 },              // 3: 10
+        Expr::Const { val: 3 },              // 4: idx 1
+        Expr::Const { val: 4 },              // 5: 20
+        Expr::Const { val: 5 },              // 6: idx 2
+        Expr::Const { val: 6 },              // 7: 30
+        Expr::Signal {
+            net: 0,
+            word: Some(2),
+        }, // 8: d[0]
+        Expr::Signal {
+            net: 0,
+            word: Some(4),
+        }, // 9: d[1]
+        Expr::Signal {
+            net: 0,
+            word: Some(6),
+        }, // 10: d[2]
+    ];
+    let consts = vec![
+        int_const(3),
+        int_const(0),
+        int_const(10),
+        int_const(1),
+        int_const(20),
+        int_const(2),
+        int_const(30),
+    ];
+    let stmts = vec![
+        systask(SysTaskId::DynNew, vec![0, 1]),
+        elem_write(0, 2, 3),
+        elem_write(0, 4, 5),
+        elem_write(0, 6, 7),
+        systask(SysTaskId::Display, vec![8]),
+        systask(SysTaskId::Display, vec![9]),
+        systask(SysTaskId::Display, vec![10]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![dyn_handle32()], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "        10\n        20\n        30\n");
+}
+
+#[test]
+fn dyn_oob_and_x_index_read_is_x_with_one_warn() {
+    // d = new[2]; read d[5] (OOB) and d[X-idx] → BOTH element-width X, ONE
+    // W4020 (warn-once per net). 4-state elements default to X — iverilog's
+    // 2-state `int` prints 0 there by ITS element-default rule; ours is X by
+    // the design-doc rule (hand-IEEE pin, same family as the force precedent).
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: 2
+        Expr::Const { val: 1 },              // 2: idx 5 (OOB)
+        Expr::Signal {
+            net: 0,
+            word: Some(2),
+        }, // 3: d[5]
+        Expr::Const { val: 2 },              // 4: X idx
+        Expr::Signal {
+            net: 0,
+            word: Some(4),
+        }, // 5: d[X]
+    ];
+    let consts = vec![int_const(2), int_const(5), x_const()];
+    let stmts = vec![
+        systask(SysTaskId::DynNew, vec![0, 1]),
+        systask(SysTaskId::Display, vec![3]),
+        systask(SysTaskId::Display, vec![5]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![dyn_handle32()], consts, exprs, stmts);
+    let sink = DiagSink::default();
+    let res = simulate(&ir, &sink, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    let diags = sink.0.into_inner();
+    let dyn_warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(dyn_warns, 1, "OOB+X reads on ONE net warn once: {diags:?}");
+}
+
+#[test]
+fn dyn_oob_write_is_ignored_with_warn() {
+    // d = new[2]; d[0]=7; d[9]=99 (OOB, ignored); size stays 2, d[0] intact.
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: 2
+        Expr::Const { val: 1 },              // 2: idx 0
+        Expr::Const { val: 2 },              // 3: 7
+        Expr::Const { val: 3 },              // 4: idx 9 (OOB)
+        Expr::Const { val: 4 },              // 5: 99
+        Expr::Signal { net: 0, word: None }, // 6: handle (size)
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![6],
+        }, // 7
+        Expr::Signal {
+            net: 0,
+            word: Some(2),
+        }, // 8: d[0]
+    ];
+    let consts = vec![
+        int_const(2),
+        int_const(0),
+        int_const(7),
+        int_const(9),
+        int_const(99),
+    ];
+    let stmts = vec![
+        systask(SysTaskId::DynNew, vec![0, 1]),
+        elem_write(0, 2, 3),
+        elem_write(0, 4, 5),
+        systask(SysTaskId::Display, vec![7]),
+        systask(SysTaskId::Display, vec![8]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![dyn_handle32()], consts, exprs, stmts);
+    // (the W4020 once-latch is covered by the read test above; here we pin
+    // the VALUE surface: size unchanged + neighbour intact)
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(
+        out, "         2\n         7\n",
+        "size unchanged, d[0] intact"
+    );
+}

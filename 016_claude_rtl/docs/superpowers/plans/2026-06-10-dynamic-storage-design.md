@@ -87,7 +87,11 @@
 3. doc-17 lowering 표 + doc-15 코드(신규 warn/error) + doc-14 trailer 문서 갱신.
 4. 구현 증분 순서: ~~①bump PR~~✅(`e7f08e8`) ~~②(A) NBA-delay~~✅(`1617980`) —
    ③dyn array(**3a: heap/new/size/delete ✅ 2026-06-11** — `dyn_heap`+`DynObj`, hand-built
-   SimIr 시임으로 테스트(문법은 ⑥); **잔여 3b: 인덱스 read/write 라우팅+OOB=X/무시+warn-once**)
+   SimIr 시임으로 테스트(문법은 ⑥); **3b: 인덱스 r/w 라우팅 ✅ 2026-06-11** — `read_net`/
+   `write_chunk` 깔때기에 `dyn_is_handle` 비트맵 1로드 라우팅(정적 경로 무세금 확인), OOB/X-idx
+   read=원소폭 X·write=무시(+W4020 once), **NBA-to-element는 같은 write_lvalue 깔때기라
+   by-construction 라우팅 — 바운드는 APPLY 시점 크기 기준**(스케줄-적용 사이 resize는 IEEE
+   미규정 — 결정적 규칙으로 핀), dirty 채널 비참여=설계 §4 그대로)
    ④queue ⑤assoc ⑥front-end 일괄(.vu flip = (B는 완료)+(D)+(C) 문법).
    각 증분은 TDD + iverilog 라이브 오라클(§4의 warn 문구류는 hand-IEEE 핀).
 5. P9/native-eval: dyn 관련 Expr/Stmt·NBA-delay는 allow-list 제외로 시작(전부 interp) —

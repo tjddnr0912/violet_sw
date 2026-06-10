@@ -913,18 +913,5 @@ fn dyn_handle_net(sched: &Scheduler, arg: Option<&u32>) -> Option<u32> {
 /// One W-RUN-DYN-DEGRADE per handle net (latched in `dyn_warned`) — a degraded
 /// dyn op inside a loop must not spam the diagnostic stream.
 fn dyn_warn_once(sched: &mut Scheduler, net: u32, msg: &str) {
-    if !sched.st.dyn_warned.insert(net) {
-        return;
-    }
-    use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
-    sched.st.sink.emit(LogEvent::Diagnostic(Diagnostic {
-        severity: Severity::Warning,
-        code: MsgCode::RunDynDegrade,
-        message: msg.to_string(),
-        location: None,
-        context: Vec::new(),
-        sim_time: Some(TimeStamp {
-            ticks: sched.st.now,
-        }),
-    }));
+    sched.st.dyn_warn_once_at(net, msg);
 }

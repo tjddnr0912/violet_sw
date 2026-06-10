@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::io::Write;
 use std::rc::Rc;
 
-use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
+use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity, TimeStamp};
 use sim_ir::{BitPacked, Lvalue, NetKind, SelKind, SimIr};
 use vcd_writer::{IdCode, VarType, VcdWriter};
 
@@ -114,8 +114,13 @@ pub(crate) struct SimState<'a> {
     /// objects never live in the flat BitPacked store.
     pub dyn_heap: std::collections::BTreeMap<u32, DynObj>,
     /// Warn-once latch for dyn degradations (X-size new[], OOB, …) — one
-    /// W-RUN-DYN-DEGRADE per handle net, never a per-iteration spam.
-    pub dyn_warned: std::collections::BTreeSet<u32>,
+    /// W-RUN-DYN-DEGRADE per handle net, never a per-iteration spam. RefCell:
+    /// the READ path (`read_net` is `&self`) must latch too.
+    pub dyn_warned: std::cell::RefCell<std::collections::BTreeSet<u32>>,
+    /// Per-net "is a dyn handle" bitmap (DynArray/Queue/Assoc), precomputed so
+    /// the hot read/write funnels pay ONE Vec<bool> load — not an `ir.nets`
+    /// kind match — per indexed access.
+    pub dyn_is_handle: Vec<bool>,
     /// IEEE 1364-2005 self-width side table — built once, immutable for the run.
     pub wt: crate::width::WidthTable,
 
@@ -217,7 +222,12 @@ impl<'a> SimState<'a> {
             active_forces: std::collections::BTreeMap::new(),
             latent_assigns: std::collections::BTreeMap::new(),
             dyn_heap: std::collections::BTreeMap::new(),
-            dyn_warned: std::collections::BTreeSet::new(),
+            dyn_warned: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            dyn_is_handle: ir
+                .nets
+                .iter()
+                .map(|nv| matches!(nv.kind, NetKind::DynArray | NetKind::Queue | NetKind::Assoc))
+                .collect(),
             wt,
             vcd: None,
             vcd_path: None,
@@ -435,6 +445,10 @@ impl<'a> SimState<'a> {
         piece: &Value,
     ) -> bool {
         let net = c.net as usize;
+        // v5 (C)-3b: dyn-handle element write → heap (never the flat store).
+        if self.dyn_is_handle[net] {
+            return self.dyn_write(c, raw_word, piece);
+        }
         // A forced net ignores every normal driver until release (§9.3.2).
         if self.forced[net] {
             return false;
@@ -645,6 +659,73 @@ impl DynObj {
     }
 }
 
+impl<'a> SimState<'a> {
+    /// One W-RUN-DYN-DEGRADE per handle net, callable from `&self` (read path).
+    pub(crate) fn dyn_warn_once_at(&self, net: u32, msg: &str) {
+        if !self.dyn_warned.borrow_mut().insert(net) {
+            return;
+        }
+        self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+            severity: Severity::Warning,
+            code: MsgCode::RunDynDegrade,
+            message: msg.to_string(),
+            location: None,
+            context: Vec::new(),
+            sim_time: Some(TimeStamp { ticks: self.now }),
+        }));
+    }
+
+    /// v5 (C)-3b: indexed READ of a dyn handle. `idx` is the caller-resolved
+    /// word (X/Z or >u32 already mapped to the `u32::MAX` sentinel — the same
+    /// rule as static arrays). OOB / X-index / empty / whole-handle reads are
+    /// element-width X + warn-once (IEEE: the element default; our elements
+    /// are 4-state).
+    fn dyn_read(&self, net: u32, idx: Option<u32>) -> Value {
+        let nv = &self.ir.nets[net as usize];
+        let (w, signed) = (nv.width.max(1), nv.signed);
+        let xs = || Value::xs(w, signed);
+        let Some(i) = idx else {
+            // a handle has no scalar value surface (elaborate guards at ⑥;
+            // defensive here — e.g. a hand-built IR or future regression).
+            self.dyn_warn_once_at(net, "dyn handle read without an index");
+            return xs();
+        };
+        match self.dyn_heap.get(&net) {
+            Some(DynObj::DynArray { elems }) if (i as usize) < elems.len() => {
+                elems[i as usize].clone()
+            }
+            _ => {
+                self.dyn_warn_once_at(net, "dyn index out of range or X (read X)");
+                xs()
+            }
+        }
+    }
+
+    /// v5 (C)-3b: indexed WRITE of a dyn handle. OOB / X-index / bit-select
+    /// within an element → IGNORED + warn-once (clamping or auto-grow would
+    /// silently corrupt). Returns false ALWAYS: dyn content changes do not
+    /// participate in the net dirty channel (design §4 — no sensitivity on
+    /// handles, no VCD records).
+    fn dyn_write(&mut self, c: &sim_ir::LvalChunk, raw_word: u32, piece: &Value) -> bool {
+        let net = c.net;
+        let w = self.ir.nets[net as usize].width.max(1);
+        if c.word.is_none() || c.offset.is_some() || c.width.is_some() {
+            self.dyn_warn_once_at(net, "unsupported dyn lvalue shape (write ignored)");
+            return false;
+        }
+        match self.dyn_heap.get_mut(&net) {
+            Some(DynObj::DynArray { elems }) if (raw_word as usize) < elems.len() => {
+                elems[raw_word as usize] = piece.clone().resize(w);
+                false
+            }
+            _ => {
+                self.dyn_warn_once_at(net, "dyn index out of range or X (write ignored)");
+                false
+            }
+        }
+    }
+}
+
 impl<'a> NetReader for SimState<'a> {
     fn dyn_size(&self, net: u32) -> Option<u64> {
         // Only a dyn HANDLE answers; a missing heap entry IS the empty object
@@ -658,6 +739,11 @@ impl<'a> NetReader for SimState<'a> {
         }
     }
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
+        // v5 (C)-3b: a dyn HANDLE never reads the flat store — its elements
+        // live in the heap. One bitmap load on the hot path.
+        if self.dyn_is_handle[net as usize] {
+            return self.dyn_read(net, word);
+        }
         let slot = &self.nets[net as usize];
         let width = slot.width;
         let w = word.unwrap_or(0);
