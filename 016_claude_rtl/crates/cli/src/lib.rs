@@ -530,6 +530,10 @@ pub fn run(argv: &[String]) -> i32 {
     };
     match applet {
         Applet::Vita => {
+            // `vita explain <CODE>` — doc-15 catalog lookup (no pipeline).
+            if args.first().map(String::as_str) == Some("explain") {
+                return run_explain(&args[1..]);
+            }
             // One-shot flag surface: `-o <vcd>` + `--threads N` (P4-T1), then
             // positional sources. (Before T1 the one-shot accepted NO flags —
             // `-o` was read as a source file.)
@@ -558,6 +562,59 @@ pub fn run(argv: &[String]) -> i32 {
     }
 }
 
+/// The doc-15 catalog, embedded at compile time (cargo-only — no build.rs).
+/// doc-15 is the single authority for cause/example/fix text; the bijection
+/// test guarantees every `MsgCode` has a full entry in it.
+const ERROR_CATALOG: &str = include_str!("../../../docs/preview/15-error-code-reference.md");
+
+/// `vita explain <CODE>`: print the doc-15 entry for a mnemonic
+/// (`E-ELAB-MULTIDRIVER`) or grep-number (`VITA-E3001`) form.
+fn run_explain(args: &[String]) -> i32 {
+    let Some(query) = args.first() else {
+        eprintln!(
+            "error[{}]: 'explain' needs a diagnostic code (mnemonic or VITA-####)",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    };
+    let Some(code) = MsgCode::ALL
+        .iter()
+        .copied()
+        .find(|c| c.mnemonic() == query || c.code_num() == query)
+    else {
+        eprintln!(
+            "error[{}]: unknown diagnostic code '{query}'",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return EXIT_CLI_ERROR;
+    };
+    let header = format!("### {} ·", code.code_num());
+    if let Some(start) = ERROR_CATALOG.find(&header) {
+        let body = &ERROR_CATALOG[start..];
+        // The entry runs to the next section header or horizontal rule.
+        let next_hdr = body[4..].find("\n### ").map(|p| p + 4);
+        let next_hr = body.find("\n---");
+        let end = match (next_hdr, next_hr) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => body.len(),
+        };
+        println!("{}", body[..end].trim_end());
+    } else {
+        // Defensive: enum-registered but no full entry (the bijection gate
+        // makes this unreachable; print the enum metadata rather than nothing).
+        println!(
+            "{} · `{}` ({:?})\n{}",
+            code.code_num(),
+            code.mnemonic(),
+            code.default_severity(),
+            code.title()
+        );
+    }
+    EXIT_OK
+}
+
 /// P2-4: applet-specific usage text (doc-13 exit table: help/version are clean
 /// exits). Kept truthful to the IMPLEMENTED surface (`-o` only).
 fn print_help(applet: &str) {
@@ -578,7 +635,8 @@ fn print_help(applet: &str) {
             "Usage: vita [-o <out.vcd>] <sources>...\n\
              \x20      vita {vcmp|velab|vrun} [OPTIONS] ...\n\n\
              One-shot RTL simulation: preprocess -> lex -> parse -> elaborate ->\n\
-             simulate -> VCD. The staged subcommands split the same pipeline."
+             simulate -> VCD. The staged subcommands split the same pipeline.\n\
+             `vita explain <CODE>` prints the doc-15 entry for a diagnostic."
         }
     };
     println!(

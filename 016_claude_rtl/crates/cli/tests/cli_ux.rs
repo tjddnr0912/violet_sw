@@ -449,3 +449,32 @@ fn filelist_works_for_staged_vcmp() {
     );
     assert!(made, ".vu must be written from a filelist-driven vcmp");
 }
+
+// ── Phase-1.x F: `vita explain <CODE>` ───────────────────────────────────────
+
+#[test]
+fn explain_prints_entry_for_mnemonic() {
+    let out = vita(&["explain", "E-ELAB-MULTIDRIVER"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "got:\n{stdout}");
+    assert!(stdout.contains("VITA-E3001"), "got:\n{stdout}");
+    assert!(
+        stdout.contains("E-ELAB-MULTIDRIVER"),
+        "entry body expected, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn explain_accepts_grep_number_form() {
+    let out = vita(&["explain", "VITA-W1017"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout.contains("W-PP-TIMESCALE-DEFAULT"), "got:\n{stdout}");
+}
+
+#[test]
+fn explain_unknown_code_exits_three() {
+    let out = vita(&["explain", "E-NOT-A-CODE"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("VITA-E0001"));
+}
