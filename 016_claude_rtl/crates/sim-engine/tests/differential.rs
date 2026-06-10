@@ -667,3 +667,63 @@ fn diff_proc_assign_deassign() {
          endmodule",
     );
 }
+
+#[test]
+fn diff_nba_transport_delay() {
+    // v5 increment (A): value-carrying delayed NBA. Four lanes — NBA-region
+    // landing vs active reads, overlapping in-flight activations (the case a
+    // static capture net gets silently wrong), #0 statement order, and
+    // schedule-time index sampling.
+    assert_matches_iverilog(
+        "nba_transport_basic",
+        "module tb; reg [7:0] q; \
+           initial begin \
+             q = 8'd1; \
+             q <= #3 8'd9; \
+             $display(\"t%0d q=%0d\", $time, q); \
+             #1 $display(\"t%0d q=%0d\", $time, q); \
+             #1 $display(\"t%0d q=%0d\", $time, q); \
+             #1 $display(\"t%0d q=%0d\", $time, q); \
+             #1 $finish; \
+           end \
+         endmodule",
+    );
+    assert_matches_iverilog(
+        "nba_transport_overlap",
+        "module tb; reg clk; reg [7:0] d, q; \
+           initial begin clk = 0; d = 8'd1; end \
+           always #1 clk = ~clk; \
+           always @(posedge clk) begin \
+             q <= #3 d; \
+             d <= d + 8'd1; \
+           end \
+           initial #13 $finish; \
+           always @(q) $display(\"t%0d q=%0d\", $time, q); \
+         endmodule",
+    );
+    assert_matches_iverilog(
+        "nba_zero_delay_order",
+        "module tb; reg [7:0] q; \
+           initial begin \
+             q = 8'd1; \
+             q <= #0 8'd5; \
+             q <= 8'd7; \
+             #1 $display(\"t1 q=%0d\", q); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    assert_matches_iverilog(
+        "nba_index_freeze",
+        "module tb; reg [7:0] mem [0:3]; integer i; \
+           initial begin \
+             mem[0] = 8'd0; mem[1] = 8'd0; mem[2] = 8'd0; mem[3] = 8'd0; \
+             i = 1; \
+             mem[i] <= #2 8'd42; \
+             i = 3; \
+             #3 $display(\"m1=%0d m3=%0d\", mem[1], mem[3]); \
+             $finish; \
+           end \
+         endmodule",
+    );
+}

@@ -3067,3 +3067,93 @@ fn proc_assign_expression_reevaluates_continuously() {
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(out, "p y=2\nq y=10\n");
 }
+
+#[test]
+fn nba_transport_basic_lands_in_nba_region() {
+    // Oracle (iverilog, probed live): `q <= #3 v` lands in the NBA region of
+    // t=3 — an ACTIVE-region read at t=3 still sees the old value (all four
+    // prints show q=1; the write applies after the last print).
+    let ir = build(
+        "module tb; reg [7:0] q; \
+           initial begin \
+             q = 8'd1; \
+             q <= #3 8'd9; \
+             $display(\"t%0d q=%0d\", $time, q); \
+             #1 $display(\"t%0d q=%0d\", $time, q); \
+             #1 $display(\"t%0d q=%0d\", $time, q); \
+             #1 $display(\"t%0d q=%0d\", $time, q); \
+             #1 $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t0 q=1\nt1 q=1\nt2 q=1\nt3 q=1\n");
+}
+
+#[test]
+fn nba_transport_overlapping_activations_carry_own_values() {
+    // Oracle (iverilog, probed live): the transport case that forced the v5
+    // shape — three activations are IN FLIGHT at once and each delivers ITS
+    // OWN captured d (a static capture net would deliver the latest d).
+    // $finish is at #13, NOT #12: a same-tick tie between an Active-region
+    // $finish and a due transport update is a tool-divergence zone (vvp
+    // applies the update slot-top; the LRM puts it in the NBA region AFTER
+    // active, so finish wins) — the design sidesteps the tie.
+    let ir = build(
+        "module tb; reg clk; reg [7:0] d, q; \
+           initial begin clk = 0; d = 8'd1; end \
+           always #1 clk = ~clk; \
+           always @(posedge clk) begin \
+             q <= #3 d; \
+             d <= d + 8'd1; \
+           end \
+           initial #13 $finish; \
+           always @(q) $display(\"t%0d q=%0d\", $time, q); \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t4 q=1\nt6 q=2\nt8 q=3\nt10 q=4\nt12 q=5\n");
+}
+
+#[test]
+fn nba_zero_delay_keeps_statement_order() {
+    // Oracle (iverilog, probed live): `<= #0` joins the SAME tick's NBA queue
+    // in statement order — the later plain `<=` wins.
+    let ir = build(
+        "module tb; reg [7:0] q; \
+           initial begin \
+             q = 8'd1; \
+             q <= #0 8'd5; \
+             q <= 8'd7; \
+             #1 $display(\"t1 q=%0d\", q); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "t1 q=7\n");
+}
+
+#[test]
+fn nba_transport_index_sampled_at_schedule() {
+    // Oracle (iverilog, probed live): `mem[i] <= #2 v` freezes the index at
+    // schedule time — a later i change must not move the target.
+    let ir = build(
+        "module tb; reg [7:0] mem [0:3]; integer i; \
+           initial begin \
+             mem[0] = 8'd0; mem[1] = 8'd0; mem[2] = 8'd0; mem[3] = 8'd0; \
+             i = 1; \
+             mem[i] <= #2 8'd42; \
+             i = 3; \
+             #3 $display(\"m1=%0d m3=%0d\", mem[1], mem[3]); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "m1=42 m3=0\n");
+}

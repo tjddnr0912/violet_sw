@@ -4233,28 +4233,21 @@ impl<'s> Elaborator<'s> {
             ast::Stmt::NonBlocking {
                 lhs, delay, rhs, ..
             } => {
-                // NBA intra-assignment delay (`a <= #d rhs`) needs a VALUE-
-                // CARRYING delayed NBA event to be correct when activations
-                // overlap (transport-delay modeling) — a static capture net
-                // would be silently wrong there. The frozen NonblockingAssign
-                // shape has no delay field, so real semantics land with the
-                // next format bump; until then: loud error, never a drop.
-                if delay.is_some() {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "NBA intra-assignment delay (`<= #d`) is unsupported in v1 \
-                         (needs a value-carrying delayed NBA event — next format \
-                         bump); a plain `<=` or a blocking `= #d` works today",
-                    );
-                    return;
-                }
+                // `a <= #d rhs` (v5 increment A): a VALUE-CARRYING transport
+                // delay — RHS and any LHS index are sampled at execution time,
+                // the update joins the NBA region of t+d, and overlapping
+                // activations each deliver their own capture. `d` is an ExprId
+                // evaluated at execution (v4 runtime-delay model, scaled by
+                // the process's timescale multiplier); d == 0 degenerates to
+                // the plain same-tick NBA path (statement order preserved).
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018)
+                let delay_id = delay.as_ref().map(|d| self.lower_delay(d).0);
                 let sid = self.push_stmt(ir::Stmt::NonblockingAssign {
                     lhs: lv,
                     rhs: rhs_id,
-                    delay: None, // `<= #d` lands with v5 increment (A); E3009 until then
+                    delay: delay_id,
                 });
                 b.push_stmt_id(sid);
             }

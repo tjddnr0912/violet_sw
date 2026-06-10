@@ -49,6 +49,12 @@ pub(crate) trait Kernel {
     fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]);
     /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
+    /// READ: evaluate a delay ExprId into global-precision ticks (module-mult
+    /// scaled; X/Z → 0 — the shared `Terminator::Delay` rule).
+    fn k_delay_ticks(&self, eid: u32) -> u64;
+    /// WRITE: schedule a TRANSPORT nonblocking update into the NBA region of
+    /// `now + ticks` (v5 increment A; index sampled at schedule time).
+    fn k_schedule_nba_at(&mut self, lhs: Lvalue, value: Value, ticks: u64);
     /// WRITE: `force lhs = value` (whole-net, continuous re-eval — §9.3.2). `sid`
     /// keys the assign-rank side table: a marked stmt is a procedural `assign`
     /// (§9.3.1, WEAK rank — a real force overrides it and parks it as latent).
@@ -286,7 +292,13 @@ enum StmtEffect<'s> {
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
-    Nonblocking { lhs: &'s Lvalue, value: Value },
+    Nonblocking {
+        lhs: &'s Lvalue,
+        value: Value,
+        /// `<= #d` transport delay in ticks, evaluated in the READ phase
+        /// (v5). `None`/`Some(0)` both take the plain same-tick NBA path.
+        delay_ticks: Option<u64>,
+    },
     /// System task: a kernel call (its own read+write happen inside `dispatch`).
     /// `sid` keys the severity side table (P1-1).
     SysTask {
@@ -326,16 +338,13 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             }
         }
         Stmt::NonblockingAssign { lhs, rhs, delay } => {
-            // v5 shape: `delay: Some(_)` cannot be emitted yet (elaborate still
-            // E3009s `<= #d` until increment (A) wires the value-carrying
-            // delayed NBA event). Guarded here so the increment cannot land
-            // without revisiting this path.
-            debug_assert!(
-                delay.is_none(),
-                "NBA delay execution lands with v5 increment (A)"
-            );
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED, sampled now
-            StmtEffect::Nonblocking { lhs, value }
+            let delay_ticks = delay.map(|d| k.k_delay_ticks(d));
+            StmtEffect::Nonblocking {
+                lhs,
+                value,
+                delay_ticks,
+            }
         }
         Stmt::SysTask { which, fmt, args } => StmtEffect::SysTask {
             which: *which,
@@ -374,9 +383,16 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
             k.k_write_lvalue(lhs, value, offsets.as_slice());
             None
         }
-        StmtEffect::Nonblocking { lhs, value } => {
+        StmtEffect::Nonblocking {
+            lhs,
+            value,
+            delay_ticks,
+        } => {
             // The NBA queue outlives this activation — the one owned clone left.
-            k.k_schedule_nba(lhs.clone(), value);
+            match delay_ticks {
+                Some(d) if d > 0 => k.k_schedule_nba_at(lhs.clone(), value, d),
+                _ => k.k_schedule_nba(lhs.clone(), value),
+            }
             None
         }
         StmtEffect::Force {

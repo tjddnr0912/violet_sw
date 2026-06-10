@@ -336,42 +336,22 @@ endmodule
 }
 
 #[test]
-fn blocking_intra_delay_accepted_nba_intra_delay_rejected() {
-    // `a = #d rhs` carries real semantics (capture-now, write-later). The NBA
-    // form `a <= #d rhs` needs a value-carrying delayed NBA event to be correct
-    // for overlapping activations (transport delay) — that lands with the next
-    // format bump; meanwhile it is LOUDLY rejected, never silently dropped.
-    let (ok, diags) = elab(
-        r#"
-module t;
-  reg [7:0] a, b;
-  initial a = #2 b;
-endmodule
-"#,
-    );
-    assert!(ok, "blocking intra-delay must elaborate; diags: {diags:?}");
-    assert!(
-        diags.iter().all(|d| !d.starts_with("error[")),
-        "no errors expected: {diags:?}"
-    );
-
-    let (ok, diags) = elab(
-        r#"
-module t;
-  reg [7:0] a, b;
-  reg clk;
-  always @(posedge clk) a <= #2 b;
-endmodule
-"#,
-    );
-    assert!(
-        !ok,
-        "NBA intra-delay must be a loud error, got ok; {diags:?}"
-    );
-    assert!(
-        diags.iter().any(|d| d.starts_with("error[")),
-        "must be an error: {diags:?}"
-    );
+fn blocking_and_nba_intra_delay_both_accepted() {
+    // `a = #d rhs` carries capture-now/write-later semantics; the NBA form
+    // `a <= #d rhs` is REAL since format_version 5 (value-carrying delayed
+    // NBA event — increment (A)). Both must elaborate cleanly; behaviour is
+    // pinned by end_to_end `nba_transport_*` + `diff_nba_transport_delay`.
+    for src in [
+        "module t; reg [7:0] a, b; initial a = #2 b; endmodule",
+        "module t; reg [7:0] a, b; reg clk; always @(posedge clk) a <= #2 b; endmodule",
+    ] {
+        let (ok, diags) = elab(src);
+        assert!(ok, "intra-delay must elaborate; diags: {diags:?}");
+        assert!(
+            diags.iter().all(|d| !d.starts_with("error[")),
+            "no errors expected: {diags:?}"
+        );
+    }
 }
 
 /// `disable` is REAL for a lexically-enclosing named begin-block (break /

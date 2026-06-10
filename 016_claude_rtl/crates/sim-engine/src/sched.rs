@@ -142,6 +142,10 @@ pub(crate) struct Scheduler<'a, 'ir> {
     last_ca: Vec<Option<Value>>,
     /// Pending transport-delay cont-assign writes, keyed by absolute apply tick.
     delayed_ca: BTreeMap<u64, Vec<DelayedWrite>>,
+    /// Transport NBAs (`q <= #d v`, v5 increment A): updates due at a FUTURE
+    /// tick's NBA region. Drained into `nba` when time advances to the key;
+    /// `apply_nba`'s global-seq sort keeps statement order across both paths.
+    delayed_nba: BTreeMap<u64, Vec<NbaUpdate>>,
     delta_count: u64,
     max_deltas: u64,
     time_limit: Option<u64>,
@@ -188,6 +192,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             fork_modes,
             last_ca: vec![None; nca],
             delayed_ca: BTreeMap::new(),
+            delayed_nba: BTreeMap::new(),
             delta_count: 0,
             max_deltas,
             time_limit,
@@ -501,14 +506,17 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 
             // Advance time to the next scheduled tick — the earliest of a wheel
             // event OR a pending transport-delay cont-assign write.
-            let next = match (
+            let next = match [
                 self.wheel.keys().next().copied(),
                 self.delayed_ca.keys().next().copied(),
-            ) {
-                (None, None) => return FinishReason::Quiescent,
-                (Some(a), None) => a,
-                (None, Some(b)) => b,
-                (Some(a), Some(b)) => a.min(b),
+                self.delayed_nba.keys().next().copied(),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            {
+                None => return FinishReason::Quiescent,
+                Some(t) => t,
             };
             if let Some(lim) = self.time_limit {
                 if next > lim {
@@ -536,6 +544,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 if moved {
                     self.propagate_changes();
                 }
+            }
+            // Transport NBAs due now join this tick's NBA region; the global
+            // seq sort in `apply_nba` interleaves them with NBAs scheduled
+            // during the tick in original statement order.
+            if let Some(ups) = self.delayed_nba.remove(&next) {
+                self.nba.extend(ups);
             }
             let mut events = self.wheel.remove(&next).unwrap_or_default();
             for (region, ready) in events.drain(..) {
@@ -1090,6 +1104,21 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         self.waiters.push(Waiter { cause, ready, arm });
     }
 
+    /// v5 increment (A): a transport NBA — index + value sampled NOW, update
+    /// due in the NBA region of `now + ticks` (saturating).
+    pub(crate) fn schedule_nba_at(&mut self, lhs: Lvalue, sampled: Value, ticks: u64) {
+        let offsets = self.resolve_lvalue_offsets(&lhs);
+        let seq = self.nba_seq;
+        self.nba_seq += 1;
+        let at = self.st.now.saturating_add(ticks);
+        self.delayed_nba.entry(at).or_default().push(NbaUpdate {
+            seq,
+            lhs,
+            sampled,
+            offsets,
+        });
+    }
+
     pub(crate) fn schedule_nba(&mut self, lhs: Lvalue, sampled: Value) {
         // Sample the dynamic LHS index NOW (Active region), BEFORE the mutable
         // push, so a later same-step write to the index net cannot move the target.
@@ -1428,6 +1457,12 @@ impl Kernel for Scheduler<'_, '_> {
     }
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value) {
         self.schedule_nba(lhs, value);
+    }
+    fn k_delay_ticks(&self, eid: u32) -> u64 {
+        self.delay_ticks(eid)
+    }
+    fn k_schedule_nba_at(&mut self, lhs: Lvalue, value: Value, ticks: u64) {
+        self.schedule_nba_at(lhs, value, ticks);
     }
     fn k_dispatch_systask(
         &mut self,
