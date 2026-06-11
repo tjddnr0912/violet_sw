@@ -29,11 +29,13 @@ vita-log = { path = "../vita-log" }
 vita-artifact = { path = "../vita-artifact" }
 vita-schema = { path = "../vita-schema" }
 postcard = { workspace = true }
+blake3 = { workspace = true }
 
 [dev-dependencies]
 vita-artifact = { path = "../vita-artifact" }
 vita-schema = { path = "../vita-schema" }
 postcard = { workspace = true }
+blake3 = { workspace = true }
 hdl-ast = { path = "../hdl-ast" }
 hdl-lexer = { path = "../hdl-lexer" }
 hdl-parser = { path = "../hdl-parser" }

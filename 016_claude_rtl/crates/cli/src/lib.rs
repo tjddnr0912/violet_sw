@@ -717,6 +717,9 @@ pub fn run(argv: &[String]) -> i32 {
                 Ok(x) => x,
                 Err(c) => return c,
             };
+            if io.dump_filelist {
+                return run_dump_filelist(&io);
+            }
             let opts = VitaOpts {
                 vcd_path_override: io.out,
                 threads: io.threads,
@@ -831,6 +834,7 @@ fn print_help(applet: &str) {
          -D, --define <N[=V]>  predefine a text macro (+define+N=V+M also accepted)\n  \
          -I, --incdir <DIR>    `include search dir (+incdir+a+b also accepted)\n  \
          -F <FILE>             expand a filelist (paths relative to the file's dir)\n  \
+         --dump-filelist       print the effective post-expansion inputs and exit\n  \
          --threads, -j <N>     worker threads (output byte-identical for any N)\n  \
          --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
          -Wno-<CODE>           suppress a Warning/Info diagnostic (mnemonic, doc-15)\n  \
@@ -924,16 +928,23 @@ fn reject_out_clobbers_input(inputs: &[String], out: &str) -> Result<(), i32> {
 }
 
 /// Build the `.vu`/`.velab` header. `global_time_precision` carries the resolved
-/// design-wide precision exponent (real now that timescale is wired). The RULE-V
-/// upstream-staleness fields (`composite_input_hash`/`consumed`/`worklib_manifest_hash`)
-/// remain zero: their live re-hash gate (`E-ART-STALE-UPSTREAM`) is the documented
-/// Phase-2 piece (`vrun` holds no upstream to re-hash), and `verify_header` already
-/// gates the primary staleness via `schema_hash` + `format_version`.
-fn artifact_header(schema_hash: [u8; 32], global_prec_exp: i8) -> vita_artifact::VelabHeader {
+/// design-wide precision exponent (real now that timescale is wired).
+/// `composite` is the RULE-V upstream digest — blake3 of the stage's INPUT
+/// (vcmp: the preprocessed source text; velab: the consumed `.vu` bytes) —
+/// RECORDED since 2026-06-11 for provenance/forensics. The live re-hash gate
+/// (`E-ART-STALE-UPSTREAM`) plus `consumed`/`worklib_manifest_hash` remain the
+/// documented Phase-2 piece (they need a worklib for vrun to re-hash against);
+/// `verify_header` already gates the primary staleness via `schema_hash` +
+/// `format_version`.
+fn artifact_header(
+    schema_hash: [u8; 32],
+    global_prec_exp: i8,
+    composite: [u8; 32],
+) -> vita_artifact::VelabHeader {
     vita_artifact::VelabHeader {
         format_version: vita_artifact::CURRENT_FORMAT_VERSION,
         schema_hash,
-        composite_input_hash: [0u8; 32],
+        composite_input_hash: composite,
         global_time_precision: global_prec_exp as i64,
         consumed: Vec::new(),
         worklib_manifest_hash: [0u8; 32],
@@ -1020,9 +1031,29 @@ fn run_vcmp_gated(
         &postcard::to_stdvec(&(rt.unit_exp, rt.global_prec_exp))
             .expect("timescale env postcard encode infallible"),
     );
+    // RULE-V composite (recorded 2026-06-11): digest of this stage's INPUT —
+    // the concatenated raw source plus the -D/-I surface in argv order (they
+    // change preprocessing). `include`d FILE contents are not yet folded in
+    // (that is the worklib `consumed[]` Phase-2 piece — documented limit).
+    let composite = {
+        let mut h = blake3::Hasher::new();
+        h.update(text.as_bytes());
+        for (n, v) in &opts.defines {
+            h.update(n.as_bytes());
+            h.update(b"=");
+            h.update(v.as_bytes());
+            h.update(b"\n");
+        }
+        for d in &opts.incdirs {
+            h.update(d.as_bytes());
+            h.update(b"\n");
+        }
+        *h.finalize().as_bytes()
+    };
     let header = artifact_header(
         vita_schema::schema_hash::<hdl_ast::SourceUnit>(),
         rt.global_prec_exp,
+        composite,
     );
     let bytes = vita_artifact::write_vu(&header, &body);
     if let Err(e) = write_artifact_atomic(out, &bytes) {
@@ -1067,6 +1098,10 @@ fn run_velab_gated(
         Ok(b) => b,
         Err(code) => return code,
     };
+    // RULE-V composite (recorded 2026-06-11): the `.velab` carries the digest
+    // of the exact `.vu` bytes it consumed — provenance now, the
+    // E-ART-STALE-UPSTREAM re-hash gate when a worklib exists (Phase-2).
+    let vu_composite = *blake3::hash(&bytes).as_bytes();
 
     // header-only decode (bad magic/header → E-ART-FORMAT-MISMATCH)
     let (header, body) = match vita_artifact::read_vu(&bytes) {
@@ -1147,7 +1182,11 @@ fn run_velab_gated(
         &postcard::to_stdvec(&sc.assign_ranks)
             .expect("assign-rank trailer postcard encode infallible"),
     );
-    let vheader = artifact_header(vita_schema::schema_hash::<sim_ir::SimIr>(), global_prec_exp);
+    let vheader = artifact_header(
+        vita_schema::schema_hash::<sim_ir::SimIr>(),
+        global_prec_exp,
+        vu_composite,
+    );
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
     if let Err(e) = write_artifact_atomic(out, &out_bytes) {
         eprintln!(
@@ -1362,6 +1401,8 @@ struct IoArgs {
     verbosity: Option<u8>,
     log: Option<String>,
     log_append: bool,
+    /// `--dump-filelist`: print the EFFECTIVE post-expansion inputs and exit.
+    dump_filelist: bool,
 }
 
 /// W-FLIST-OVERRIDE (always-logged): a single-value knob set twice — proceed
@@ -1384,6 +1425,7 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut verbosity: Option<u8> = None;
     let mut log: Option<String> = None;
     let mut log_append = false;
+    let mut dump_filelist = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1501,6 +1543,10 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                 log_append = true;
                 i += 1;
             }
+            "--dump-filelist" => {
+                dump_filelist = true;
+                i += 1;
+            }
             s if s.starts_with("+define+") => {
                 // `+define+N=V+M[=…]` — '+'-joined multi-value (doc-14 §3.1).
                 for seg in s["+define+".len()..].split('+').filter(|t| !t.is_empty()) {
@@ -1550,7 +1596,30 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
         verbosity,
         log,
         log_append,
+        dump_filelist,
     })
+}
+
+/// `--dump-filelist` (doc-14 §3.1 debugging surface): print the EFFECTIVE
+/// post-expansion inputs — sources in argv order, then defines, then incdirs
+/// — and exit 0 without compiling. Deterministic (no sorting, no resolution
+/// beyond what the expansion itself did), so CI can diff two trees' effective
+/// inputs directly.
+fn run_dump_filelist(io: &IoArgs) -> i32 {
+    for f in &io.pos {
+        println!("source {f}");
+    }
+    for (n, v) in &io.defines {
+        if v.is_empty() {
+            println!("define {n}");
+        } else {
+            println!("define {n}={v}");
+        }
+    }
+    for d in &io.incdirs {
+        println!("incdir {d}");
+    }
+    EXIT_OK
 }
 
 /// E-FLIST-WRONG-STAGE: velab/vrun have no preprocess pass — a `+define+`/
@@ -1573,6 +1642,9 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
         Ok(x) => x,
         Err(c) => return c,
     };
+    if io.dump_filelist {
+        return run_dump_filelist(&io);
+    }
     if io.pos.is_empty() {
         eprintln!(
             "error[{}]: vcmp: no source files",
@@ -1604,6 +1676,9 @@ fn dispatch_velab(args: &[String]) -> i32 {
         Ok(x) => x,
         Err(c) => return c,
     };
+    if io.dump_filelist {
+        return run_dump_filelist(&io);
+    }
     if let Err(c) = reject_preprocess_buckets("velab", &io) {
         return c;
     }
@@ -1636,6 +1711,9 @@ fn dispatch_vrun(args: &[String]) -> i32 {
         Ok(x) => x,
         Err(c) => return c,
     };
+    if io.dump_filelist {
+        return run_dump_filelist(&io);
+    }
     if let Err(c) = reject_preprocess_buckets("vrun", &io) {
         return c;
     }

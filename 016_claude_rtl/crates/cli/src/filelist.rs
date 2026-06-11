@@ -439,7 +439,34 @@ pub(crate) fn expand_argv(args: &[String], sink: &dyn LogSink) -> Result<Vec<Str
             }
         }
     }
-    Ok(out)
+    // doc-15 E8003 family: the SAME canonical source appearing twice in the
+    // expansion dedups to its FIRST occurrence (a silent duplicate would
+    // otherwise double-compile the unit → a confusing downstream E-DUP-UNIT).
+    // The CONFLICT arm (`E-FLIST-DUP-CTX-CONFLICT`) stays reserved until the
+    // sticky-directive context (RULE S) exists — with no tracked context, two
+    // occurrences are always "the same input". Flags and their values are
+    // exempt (only source positionals dedup).
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut deduped = Vec::with_capacity(out.len());
+    let mut skip_value = false;
+    for tok in out {
+        if skip_value {
+            skip_value = false;
+            deduped.push(tok);
+            continue;
+        }
+        if tok.starts_with('-') || tok.starts_with('+') {
+            skip_value = takes_value(&tok);
+            deduped.push(tok);
+            continue;
+        }
+        let resolved = lexical_normalize(&ex.cwd.join(&tok));
+        let key = phys_id(&resolved).unwrap_or_else(|| resolved.to_string_lossy().into_owned());
+        if seen.insert(key) {
+            deduped.push(tok);
+        }
+    }
+    Ok(deduped)
 }
 
 #[cfg(test)]

@@ -554,6 +554,9 @@ error[VITA-E8002] E-FLIST-DEPTH: filelist nesting exceeded depth cap 256 at f256
 (exit class 3).
 
 ### VITA-E8003 · `E-FLIST-DUP-CTX-CONFLICT` (Error)
+*(silent-dedup arm은 **구현됨 2026-06-11** — 같은 canonical 경로(phys_id, 폴백 lexical)는
+첫 occurrence로 dedup. CONFLICT arm은 sticky 컨텍스트(RULE S) 도입 시 활성 — 현재는
+추적되는 컨텍스트가 없어 두 occurrence가 항상 "같은 입력".)*
 **같은 canonical 소스가 다른 상속 sticky 컨텍스트로 두 번.** 소스는 기본 dedup 안 함(중복 모듈은
 `E-DUP-UNIT`). 같은 canonical 경로가 두 번인 경우만 dedup하되, 두 occurrence가 다른 상속 sticky
 디렉티브(`timescale`/`default_nettype`, RULE S) 컨텍스트면 같은 입력이 아니므로 silent dedup이
