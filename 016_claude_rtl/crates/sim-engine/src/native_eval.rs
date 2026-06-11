@@ -490,6 +490,16 @@ fn lower(
         }
         Expr::Signal { net, word } => {
             if let Some(weid) = word {
+                // v5 ⑤: assoc keys are SIGNED-i64 domain — the u32
+                // LoadIndexed funnel cannot carry them (a negative key would
+                // sentinel to X while the interpreter reads the element).
+                // Stay oracle-bound (eval_ctx fallback).
+                if matches!(
+                    ir.nets.get(*net as usize).map(|n| n.kind),
+                    Some(sim_ir::NetKind::Assoc)
+                ) {
+                    return None;
+                }
                 // dynamic array-word read: index is SELF-determined (oracle
                 // `self.eval(weid)`); a wide index stays oracle-bound.
                 let iw = wt.get(*weid).width;

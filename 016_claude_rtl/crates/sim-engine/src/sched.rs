@@ -13,7 +13,7 @@ use sim_ir::{
 use elaborate::{ForkModeTable, JoinMode};
 
 use crate::builtins::{format_args_str, write_out};
-use crate::eval::EvalCtx;
+use crate::eval::{EvalCtx, NetReader};
 use crate::exec::{run_process, Kernel, Offsets, Step};
 use crate::state::{scalar_bit0, SimState};
 use crate::value::Value;
@@ -226,7 +226,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
                 let v = self.eval_for_lvalue(&lhs, ca_rhs); // CONTEXT-SIZED to lhs width
                 let offs = self.resolve_lvalue_offsets(&lhs); // dynamic index NOW (settle time)
-                changed |= self.st.write_lvalue(&lhs, v, offs.as_slice());
+                changed |= self.st.write_lvalue(&lhs, v, &offs);
             }
             if !changed {
                 break;
@@ -539,7 +539,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             if let Some(writes) = self.delayed_ca.remove(&next) {
                 let mut moved = false;
                 for (lhs, v, offs) in writes {
-                    moved |= self.st.write_lvalue(&lhs, v, offs.as_slice());
+                    moved |= self.st.write_lvalue(&lhs, v, &offs);
                 }
                 if moved {
                     self.propagate_changes();
@@ -735,8 +735,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         let mut batch = std::mem::take(&mut self.nba);
         batch.sort_by_key(|u| u.seq);
         for u in batch.drain(..) {
-            self.st
-                .write_lvalue(&u.lhs, u.sampled, u.offsets.as_slice());
+            self.st.write_lvalue(&u.lhs, u.sampled, &u.offsets);
         }
         // Hand the drained Vec back so the next timestep's NBA pushes reuse its
         // capacity (consuming it dropped one allocation per NBA flush).
@@ -964,6 +963,19 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// yields the `u32::MAX` sentinel → `write_chunk` drops the bit (out-of-range
     /// no-op), matching the READ side where `eval_select` returns X for `a[x]`.
     pub(crate) fn resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets {
+        // ── v5 ⑤: single-chunk assoc-element lvalue → i64 key side-channel ──
+        // (the SIGNED key domain cannot ride the u32 pairs). Concat/offset
+        // shapes fall through to the pair path, where the dyn write funnel
+        // degrades them loud+ignored (outside the MVP; ⑥ rejects them).
+        if let [c] = lhs.chunks.as_slice() {
+            if c.offset.is_none() && c.width.is_none() {
+                if let Some(weid) = c.word {
+                    if self.st.is_assoc(c.net) {
+                        return Offsets::AssocKey(self.assoc_key_of(weid));
+                    }
+                }
+            }
+        }
         let ev = |eid: u32| {
             // X/Z or beyond-u32 index → u32::MAX OOR sentinel (write dropped),
             // never a wrapped small offset (P0-4).
@@ -1032,6 +1044,20 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             time_mult: self.st.cur_time_mult,
         };
         ctx.eval_ctx(eid, ctx_width, ctx_signed)
+    }
+
+    /// v5 ⑤: READ-phase assoc-key resolution (the scheduler-side mirror of
+    /// `EvalCtx::assoc_key` — one recipe, two entry points: lvalue offsets
+    /// here, rvalue reads in the eval arm).
+    pub(crate) fn assoc_key_of(&self, eid: u32) -> Option<i64> {
+        let ctx = EvalCtx {
+            ir: self.st.ir,
+            nets: self.st,
+            now: self.st.now,
+            wt: &self.st.wt,
+            time_mult: self.st.cur_time_mult,
+        };
+        ctx.assoc_key(eid)
     }
 
     pub(crate) fn now(&self) -> u64 {
@@ -1452,7 +1478,7 @@ impl Kernel for Scheduler<'_, '_> {
             }
         }
     }
-    fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) {
+    fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &Offsets) {
         self.st.write_lvalue(lhs, value, offsets);
     }
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value) {

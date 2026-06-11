@@ -45,8 +45,9 @@ pub(crate) trait Kernel {
     fn k_eval_native(&self, prog: &crate::native_eval::NativeProg) -> Value;
     /// READ: resolve each LHS chunk's `(bit-offset, array-word)` NOW (dynamic index).
     fn k_resolve_lvalue_offsets(&self, lhs: &Lvalue) -> Offsets;
-    /// WRITE: blocking write of `value` into `lhs` at the resolved `offsets`.
-    fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]);
+    /// WRITE: blocking write of `value` into `lhs` at the resolved `offsets`
+    /// (the full enum, not the pair slice — the assoc lane carries an i64 key).
+    fn k_write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &Offsets);
     /// WRITE: schedule a nonblocking update (LHS index sampled at schedule time).
     fn k_schedule_nba(&mut self, lhs: Lvalue, value: Value);
     /// READ: evaluate a delay ExprId into global-precision ticks (module-mult
@@ -270,8 +271,17 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
 /// malloc source of clock-bound designs.)
 #[derive(Clone)]
 pub(crate) enum Offsets {
-    Inline { buf: [(u32, u32); 2], len: u8 },
+    Inline {
+        buf: [(u32, u32); 2],
+        len: u8,
+    },
     Heap(Vec<(u32, u32)>),
+    /// v5 ⑤: a single-chunk assoc-element lvalue. Assoc keys are full SIGNED
+    /// i64 domain (negative and beyond-u32 keys are legal), so they cannot
+    /// ride the u32 pairs — the key resolves in the READ phase like every
+    /// other offset and travels here. `None` = X/Z key (the write degrades
+    /// loud + ignored at the funnel).
+    AssocKey(Option<i64>),
 }
 
 impl Offsets {
@@ -279,6 +289,7 @@ impl Offsets {
         match self {
             Offsets::Inline { buf, len } => &buf[..*len as usize],
             Offsets::Heap(v) => v,
+            Offsets::AssocKey(_) => &[],
         }
     }
 }
@@ -411,12 +422,12 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
             value,
             offsets,
         } => {
-            k.k_write_lvalue(lhs, value, offsets.as_slice());
+            k.k_write_lvalue(lhs, value, &offsets);
             None
         }
         StmtEffect::QPop { lhs, rhs, offsets } => {
             let value = k.k_queue_pop(lhs, rhs); // pop + context-size (WRITE phase)
-            k.k_write_lvalue(lhs, value, offsets.as_slice());
+            k.k_write_lvalue(lhs, value, &offsets);
             None
         }
         StmtEffect::Nonblocking {

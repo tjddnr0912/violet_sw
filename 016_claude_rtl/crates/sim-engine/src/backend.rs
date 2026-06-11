@@ -337,7 +337,7 @@ pub(crate) fn vm_exec(k: &mut impl Kernel, body: &CompiledBody, proc: u32, mut b
                     let offsets = offs[off as usize]
                         .take()
                         .expect("WriteLval before ResolveOff");
-                    k.k_write_lvalue(&body.lvalues[lhs as usize], value, offsets.as_slice());
+                    k.k_write_lvalue(&body.lvalues[lhs as usize], value, &offsets);
                 }
                 Op::ScheduleNba { lhs, val } => {
                     let value = regs[val as usize]

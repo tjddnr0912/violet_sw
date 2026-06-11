@@ -165,10 +165,29 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
-        // v5 shape reserve (assoc methods — increment ⑤): elaborate cannot
-        // emit these until their increment lands — defensive no-op, never a
-        // panic.
-        SysTaskId::AssocDeleteKey => Ctl::Continue,
+        // v5 ⑤: `a.delete(k)` — args = [handle, key]. A MISSING key is a
+        // SILENT no-op (IEEE §7.9); an X/Z key warns (invalid index, §7.8.6);
+        // a non-assoc handle warns (hand-built IR only — ⑥ type-checks).
+        SysTaskId::AssocDeleteKey => {
+            if let Some(net) = dyn_handle_net(sched, args.first()) {
+                let kind = sched.st.ir.nets.get(net as usize).map(|nv| nv.kind);
+                if kind != Some(sim_ir::NetKind::Assoc) {
+                    dyn_warn_once(sched, net, "assoc delete on a non-assoc handle (ignored)");
+                    return Ctl::Continue;
+                }
+                match args.get(1).and_then(|&k| sched.assoc_key_of(k)) {
+                    None => dyn_warn_once(sched, net, "assoc delete key is X/Z (ignored)"),
+                    Some(k) => {
+                        if let Some(crate::state::DynObj::Assoc { map }) =
+                            sched.st.dyn_heap.get_mut(&net)
+                        {
+                            map.remove(&k);
+                        }
+                    }
+                }
+            }
+            Ctl::Continue
+        }
         SysTaskId::Display => {
             let mut s = format_args_str(sched, fmt, args, radix);
             s.push('\n');

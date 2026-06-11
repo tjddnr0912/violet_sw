@@ -1,4 +1,4 @@
-//! v5 increment (C)-③/④: dynamic-array + queue ENGINE layer.
+//! v5 increment (C)-③/④/⑤: dynamic-array + queue + assoc ENGINE layer.
 //!
 //! No front-end syntax exists yet (that is increment ⑥, batched with the .vu
 //! flip), so these tests HAND-BUILD a frozen `SimIr` and drive it through the
@@ -8,15 +8,17 @@
 //! 5/10/20, pop_back→20/pop_front→5, `q[size]=v` APPENDS (push_back equiv,
 //! IEEE §7.10.1 — silent), far-OOB write ignored+warn, empty pop warn+x,
 //! signed byte −1 pops sign-extended / unsigned 255 zero-extended).
+//! ⑤ assoc has NO iverilog lane (13.0 rejects the declarations) — hand-IEEE
+//! pinned, see the ⑤ section header below.
 
 use std::cell::RefCell;
 
 use diag::{LogEvent, LogSink};
 use sim_engine::{simulate, simulate_capture, Backend, FinishReason, SimOpts};
 use sim_ir::{
-    BasicBlock, BinOp, BitPacked, ConstRepr, ConstVal, Expr, Instance, JoinState, NetKind, NetVar,
-    PortDir, ProcFlags, Process, RegionTag, SensKind, Sensitivity, SimIr, Stmt, SuspendState,
-    SysFuncId, SysTaskId, Terminator, WakeCond, WakeKey,
+    BasicBlock, BinOp, BitPacked, ConstRepr, ConstVal, DelayRegion, Expr, Instance, JoinState,
+    NetKind, NetVar, PortDir, ProcFlags, Process, RegionTag, SensKind, Sensitivity, SimIr, Stmt,
+    SuspendState, SysFuncId, SysTaskId, Terminator, WakeCond, WakeKey,
 };
 
 /// Diagnostic collector (runtime warns ride the LogSink, not stdout).
@@ -912,4 +914,508 @@ fn dyn_oob_write_is_ignored_with_warn() {
         out, "         2\n         7\n",
         "size unchanged, d[0] intact"
     );
+}
+
+// ───────────────────────── ⑤ assoc engine layer ─────────────────────────
+//
+// iverilog 13.0 does NOT support associative arrays (the `[int]`/`[longint]`/
+// `[*]` declarations are syntax/elaboration errors — probed live 2026-06-11),
+// so unlike ③/④ there is no live-oracle lane. Semantics below are HAND-IEEE
+// pinned (1800-2017 §7.8 / §7.9, same precedent as the expression-force lane):
+//   read missing key / X-Z key  → element-width X + W4020 (once per net, §7.8.6)
+//   write X/Z key               → IGNORED + W4020 (§7.8.6)
+//   write missing key           → creates the element (§7.8)
+//   exists(k)                   → 1/0; X key → 0 (+ the same once-latch warn)
+//   num()/size()                → entry count (int)
+//   delete(k) on a missing key  → silent no-op (§7.9); delete() clears
+// Key domain at the ENGINE seam = i64 (⑥ elaborate casts the surface key type
+// down/up before the IR, so negative AND beyond-u32 keys must round-trip).
+
+/// Assoc HANDLE net: element width/signedness, `array_len 0` (same handle
+/// shape as `q_handle`, kind = Assoc).
+fn a_handle(width: u32, signed: bool) -> NetVar {
+    NetVar {
+        kind: NetKind::Assoc,
+        width,
+        msb: width - 1,
+        lsb: 0,
+        signed,
+        array_len: 0,
+        dir: PortDir::Internal,
+        init: BitPacked {
+            val: vec![0],
+            unk: vec![if width >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            }],
+        },
+    }
+}
+
+/// 64-bit signed const (keys beyond the u32 sentinel domain).
+fn long_const(v: u64) -> ConstVal {
+    ConstVal {
+        width: 64,
+        signed: true,
+        repr: ConstRepr::Numeric,
+        bits: BitPacked {
+            val: vec![v],
+            unk: vec![0],
+        },
+    }
+}
+
+/// a[5]=10; a[-3]=20 → a[5], a[-3], num() = 10 / 20 / 2. The −3 key pins the
+/// SIGNED i64 key domain (a u32-index funnel would sentinel it to X).
+fn assoc_rw_ir() -> SimIr {
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: key 5
+        Expr::Const { val: 1 }, // 1: 10
+        Expr::Const { val: 2 }, // 2: key −3
+        Expr::Const { val: 3 }, // 3: 20
+        Expr::Signal {
+            net: 0,
+            word: Some(0),
+        }, // 4: a[5]
+        Expr::Signal {
+            net: 0,
+            word: Some(2),
+        }, // 5: a[-3]
+        Expr::Signal { net: 0, word: None }, // 6: handle (num)
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![6],
+        }, // 7
+    ];
+    let consts = vec![
+        int_const(5),
+        int_const(10),
+        int_const(0xFFFF_FFFD), // 32-bit signed −3
+        int_const(20),
+    ];
+    let stmts = vec![
+        elem_write(0, 0, 1),
+        elem_write(0, 2, 3),
+        systask(SysTaskId::Display, vec![4]),
+        systask(SysTaskId::Display, vec![5]),
+        systask(SysTaskId::Display, vec![7]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    ir_of(vec![a_handle(32, false)], consts, exprs, stmts)
+}
+
+#[test]
+fn assoc_write_read_num_roundtrip() {
+    let (res, out) = simulate_capture(&assoc_rw_ir(), SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "        10\n        20\n         2\n");
+}
+
+#[test]
+fn assoc_key_beyond_u32_roundtrips() {
+    // a[2^40] = 7 → reads 7 back. Proves the key path is i64 end-to-end, not
+    // the static-array u32 funnel (whose OOR sentinel would X this).
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: key 2^40
+        Expr::Const { val: 1 }, // 1: 7
+        Expr::Signal {
+            net: 0,
+            word: Some(0),
+        }, // 2: a[2^40]
+    ];
+    let consts = vec![long_const(1u64 << 40), int_const(7)];
+    let stmts = vec![
+        elem_write(0, 0, 1),
+        systask(SysTaskId::Display, vec![2]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![a_handle(32, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         7\n");
+}
+
+#[test]
+fn assoc_missing_key_read_is_x_with_one_warn() {
+    // Read of a never-written key → element-width X + ONE W4020 (§7.8.6;
+    // the missing heap entry IS the empty assoc).
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: key 7
+        Expr::Signal {
+            net: 0,
+            word: Some(0),
+        }, // 1: a[7]
+    ];
+    let stmts = vec![
+        systask(SysTaskId::Display, vec![1]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![a_handle(32, false)], vec![int_const(7)], exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         x\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(warns, 1, "missing-key read warns once: {diags:?}");
+}
+
+#[test]
+fn assoc_x_key_read_x_write_ignored_with_warn() {
+    // a[5]=10; a[X]=99 (IGNORED); a[X] reads X; num stays 1; a[5] intact.
+    // X/Z key = "invalid index" (§7.8.6): write ignored, read X — both W4020,
+    // latched once per net.
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: key 5
+        Expr::Const { val: 1 }, // 1: 10
+        Expr::Const { val: 2 }, // 2: X key
+        Expr::Const { val: 3 }, // 3: 99
+        Expr::Signal {
+            net: 0,
+            word: Some(2),
+        }, // 4: a[X]
+        Expr::Signal { net: 0, word: None }, // 5: handle (num)
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![5],
+        }, // 6
+        Expr::Signal {
+            net: 0,
+            word: Some(0),
+        }, // 7: a[5]
+    ];
+    let consts = vec![int_const(5), int_const(10), x_const(), int_const(99)];
+    let stmts = vec![
+        elem_write(0, 0, 1),
+        elem_write(0, 2, 3),
+        systask(SysTaskId::Display, vec![4]),
+        systask(SysTaskId::Display, vec![6]),
+        systask(SysTaskId::Display, vec![7]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![a_handle(32, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         x\n         1\n        10\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(
+        warns, 1,
+        "X-key lanes share the once-per-net latch: {diags:?}"
+    );
+}
+
+/// a[5]=1; exists(5)/exists(6)/exists(X) → 1 / 0 / 0 (X key matches nothing).
+fn assoc_exists_ir() -> SimIr {
+    let exprs = vec![
+        Expr::Const { val: 0 },              // 0: key 5
+        Expr::Const { val: 1 },              // 1: 1
+        Expr::Signal { net: 0, word: None }, // 2: handle
+        Expr::Const { val: 0 },              // 3: key 5 (exists hit)
+        Expr::SysFunc {
+            which: SysFuncId::AssocExists,
+            args: vec![2, 3],
+        }, // 4
+        Expr::Signal { net: 0, word: None }, // 5: handle
+        Expr::Const { val: 2 },              // 6: key 6 (exists miss)
+        Expr::SysFunc {
+            which: SysFuncId::AssocExists,
+            args: vec![5, 6],
+        }, // 7
+        Expr::Signal { net: 0, word: None }, // 8: handle
+        Expr::Const { val: 3 },              // 9: X key
+        Expr::SysFunc {
+            which: SysFuncId::AssocExists,
+            args: vec![8, 9],
+        }, // 10
+    ];
+    let consts = vec![int_const(5), int_const(1), int_const(6), x_const()];
+    let stmts = vec![
+        elem_write(0, 0, 1),
+        systask(SysTaskId::Display, vec![4]),
+        systask(SysTaskId::Display, vec![7]),
+        systask(SysTaskId::Display, vec![10]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    ir_of(vec![a_handle(32, false)], consts, exprs, stmts)
+}
+
+#[test]
+fn assoc_exists_hit_miss_and_x_key() {
+    let (res, out) = simulate_capture(&assoc_exists_ir(), SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "1\n0\n0\n"); // exists is 1-bit (width table)
+}
+
+/// a[1]=10; a[2]=20; delete(1) → num 1, exists(1) 0; delete(99) (missing —
+/// SILENT no-op, §7.9); delete() → num 0.
+fn assoc_delete_ir() -> SimIr {
+    let exprs = vec![
+        Expr::Const { val: 0 },              // 0: key 1
+        Expr::Const { val: 1 },              // 1: 10
+        Expr::Const { val: 2 },              // 2: key 2
+        Expr::Const { val: 3 },              // 3: 20
+        Expr::Signal { net: 0, word: None }, // 4: handle (delete(1))
+        Expr::Const { val: 0 },              // 5: key 1
+        Expr::Signal { net: 0, word: None }, // 6: handle (num #1)
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![6],
+        }, // 7
+        Expr::Signal { net: 0, word: None }, // 8: handle
+        Expr::Const { val: 0 },              // 9: key 1
+        Expr::SysFunc {
+            which: SysFuncId::AssocExists,
+            args: vec![8, 9],
+        }, // 10
+        Expr::Signal { net: 0, word: None }, // 11: handle (delete(99))
+        Expr::Const { val: 4 },              // 12: key 99
+        Expr::Signal { net: 0, word: None }, // 13: handle (num #2)
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![13],
+        }, // 14
+        Expr::Signal { net: 0, word: None }, // 15: handle (delete())
+        Expr::Signal { net: 0, word: None }, // 16: handle (num #3)
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![16],
+        }, // 17
+    ];
+    let consts = vec![
+        int_const(1),
+        int_const(10),
+        int_const(2),
+        int_const(20),
+        int_const(99),
+    ];
+    let stmts = vec![
+        elem_write(0, 0, 1),
+        elem_write(0, 2, 3),
+        systask(SysTaskId::AssocDeleteKey, vec![4, 5]),
+        systask(SysTaskId::Display, vec![7]),
+        systask(SysTaskId::Display, vec![10]),
+        systask(SysTaskId::AssocDeleteKey, vec![11, 12]),
+        systask(SysTaskId::Display, vec![14]),
+        systask(SysTaskId::DynDelete, vec![15]),
+        systask(SysTaskId::Display, vec![17]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    ir_of(vec![a_handle(32, false)], consts, exprs, stmts)
+}
+
+#[test]
+fn assoc_delete_key_missing_silent_then_clear() {
+    let (res, out) = simulate_capture(&assoc_delete_ir(), SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         1\n0\n         1\n         0\n");
+    let sink = DiagSink::default();
+    simulate(&assoc_delete_ir(), &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(
+        warns, 0,
+        "delete of a missing key is SILENT (§7.9): {diags:?}"
+    );
+}
+
+#[test]
+fn assoc_element_signedness_extension() {
+    // signed byte element −1 reads back sign-extended into an int (−1);
+    // unsigned byte 255 stays 255 — the same §5.5 lanes as queue pop.
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: key 0
+        Expr::Const { val: 1 }, // 1: −1
+        Expr::Const { val: 0 }, // 2: key 0
+        Expr::Const { val: 2 }, // 3: 255
+        Expr::Signal {
+            net: 0,
+            word: Some(0),
+        }, // 4: a[0] (signed byte)
+        Expr::Signal {
+            net: 1,
+            word: Some(2),
+        }, // 5: b[0] (unsigned byte)
+        Expr::Signal { net: 2, word: None }, // 6: r
+        Expr::Signal { net: 3, word: None }, // 7: s
+    ];
+    let consts = vec![int_const(0), int_const(0xFFFF_FFFF), int_const(255)];
+    let stmts = vec![
+        elem_write(0, 0, 1), // a[0] = −1  (stored as 8'hFF)
+        elem_write(1, 2, 3), // b[0] = 255 (stored as 8'hFF)
+        assign(2, 4),        // r = a[0] → sign-extend → −1
+        assign(3, 5),        // s = b[0] → zero-extend → 255
+        systask(SysTaskId::Display, vec![6]),
+        systask(SysTaskId::Display, vec![7]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(
+        vec![
+            a_handle(8, true),
+            a_handle(8, false),
+            reg32(true),
+            reg32(true),
+        ],
+        consts,
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "        -1\n       255\n");
+}
+
+#[test]
+fn assoc_nba_write_lands() {
+    // a[5] <= 7 in the NBA region, observed after a #1 — the AssocKey offsets
+    // variant must survive the schedule→apply trip (same write_lvalue funnel).
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: key 5
+        Expr::Const { val: 1 }, // 1: 7
+        Expr::Signal {
+            net: 0,
+            word: Some(0),
+        }, // 2: a[5]
+        Expr::Const { val: 2 }, // 3: delay 1
+    ];
+    let consts = vec![int_const(5), int_const(7), int_const(1)];
+    let stmts = vec![
+        Stmt::NonblockingAssign {
+            lhs: sim_ir::Lvalue {
+                chunks: vec![sim_ir::LvalChunk {
+                    net: 0,
+                    word: Some(0),
+                    offset: None,
+                    width: None,
+                    kind: sim_ir::SelKind::Bit,
+                }],
+            },
+            rhs: 1,
+            delay: None,
+        },
+        systask(SysTaskId::Display, vec![2]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = SimIr {
+        instances: vec![Instance {
+            parent: None,
+            module: 0,
+            first_net: 0,
+            net_count: 1,
+        }],
+        nets: vec![a_handle(32, false)],
+        processes: vec![Process {
+            sensitivity: Sensitivity {
+                kind: SensKind::Initial,
+                edges: Vec::new(),
+            },
+            body: vec![
+                BasicBlock {
+                    stmts: vec![0],
+                    term: Terminator::Delay {
+                        amount: 3,
+                        region: DelayRegion::Active,
+                        resume: 1,
+                    },
+                },
+                BasicBlock {
+                    stmts: vec![1, 2],
+                    term: Terminator::Return,
+                },
+            ],
+            entry: 0,
+            suspend: suspend0(),
+        }],
+        cont_assigns: Vec::new(),
+        funcs: Vec::new(),
+        exprs,
+        stmts,
+        blocks: Vec::new(),
+        consts,
+    };
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         7\n");
+}
+
+#[test]
+fn assoc_concat_lvalue_chunk_degrades_loud() {
+    // {a[5], r} = 77 — an assoc element inside a CONCAT lvalue is outside the
+    // MVP shape (⑥ will loud-reject it). The engine degrades: the assoc chunk
+    // is IGNORED + W4020, the sibling reg still gets its slice (77).
+    let exprs = vec![
+        Expr::Const { val: 0 },              // 0: key 5
+        Expr::Const { val: 1 },              // 1: 77
+        Expr::Signal { net: 0, word: None }, // 2: handle (num)
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![2],
+        }, // 3
+        Expr::Signal { net: 1, word: None }, // 4: r
+    ];
+    let consts = vec![int_const(5), int_const(77)];
+    let stmts = vec![
+        Stmt::BlockingAssign {
+            lhs: sim_ir::Lvalue {
+                chunks: vec![
+                    sim_ir::LvalChunk {
+                        net: 0,
+                        word: Some(0),
+                        offset: None,
+                        width: None,
+                        kind: sim_ir::SelKind::Bit,
+                    },
+                    sim_ir::LvalChunk {
+                        net: 1,
+                        word: None,
+                        offset: None,
+                        width: None,
+                        kind: sim_ir::SelKind::Bit,
+                    },
+                ],
+            },
+            rhs: 1,
+        },
+        systask(SysTaskId::Display, vec![3]),
+        systask(SysTaskId::Display, vec![4]),
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(
+        vec![a_handle(32, false), reg32(false)],
+        consts,
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         0\n        77\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    let warns = diags.iter().filter(|d| d.contains("W4020")).count();
+    assert_eq!(warns, 1, "concat assoc chunk degrades loudly: {diags:?}");
+}
+
+#[test]
+fn assoc_vm_backend_byte_parity() {
+    // Same P5-style pre-⑥ gate as the queue: byte-identical stdout on
+    // Interpreter vs Bytecode. exists/num are PURE eval arms and delete rides
+    // the shared SysTask dispatch, so no new P9 exclusions are involved —
+    // parity must hold by construction.
+    for ir in [assoc_rw_ir(), assoc_exists_ir(), assoc_delete_ir()] {
+        let (ri, oi) = simulate_capture(&ir, SimOpts::default());
+        let (rv, ov) = simulate_capture(
+            &ir,
+            SimOpts {
+                backend: Backend::Bytecode,
+                ..SimOpts::default()
+            },
+        );
+        assert_eq!(ri.finish_reason, rv.finish_reason);
+        assert_eq!(oi, ov, "interp vs VM stdout must be byte-identical");
+    }
 }

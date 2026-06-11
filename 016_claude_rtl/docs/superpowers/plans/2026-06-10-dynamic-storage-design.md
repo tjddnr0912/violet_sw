@@ -66,6 +66,9 @@
   **n이 X/Z → 빈 배열 + warn-once; n==0은 합법-무음**(IEEE §7.5.1 — 구현 시 정정, 2026-06-11).
   n > 1<<24(=elaborate MAX_ARRAY_LEN과 동일 캡 클래스) → **경고 후 클램프**(no silent caps).
 - **pop on empty**: 원소-폭 X + warn (iverilog/상용 모두 warn류 — 라이브 확인 후 핀).
+- **assoc 오라클 주의**: iverilog 13.0은 assoc array 선언 자체를 거부(파스 에러) —
+  ⑤의 의미론은 **hand-IEEE 핀**(§7.8.6 invalid-index, §7.9 메서드; 2026-06-11 라이브
+  확인). `exists(X키)`=0+warn-once, `delete(미존재 키)`=무음 no-op은 이 핀의 일부.
 - **이벤트/센스티비티**: dyn 핸들은 `@()`/wait/VCD 대상 불가 — elaborate loud 거부.
   내용 변경은 net dirty 채널에 **참여하지 않음**(조합 re-eval 트리거 없음) — 절차 코드 전용.
 - **VCD**: 미덤프 — **구현됨(③)**: 두 declare 경로 모두 dyn 핸들 skip(vcd_id=None →
@@ -103,7 +106,22 @@
    배치(NBA rhs·중첩 식)의 pop은 eval 순수-arm에서 X+W4020(미-pop, ⑥이 loud-reject 예정),
    pop SelfWidth=원소형(signed byte −1→int −1 / unsigned 255→255, iverilog 라이브),
    `q[$]` desugar(`DynSize-1`) 시임 테스트 포함(빈 큐 → −1 → OOR 센티넬 → X+warn).
-   ⑤assoc ⑥front-end 일괄(.vu flip = (B는 완료)+(D)+(C) 문법).
-   각 증분은 TDD + iverilog 라이브 오라클(§4의 warn 문구류는 hand-IEEE 핀).
+   **⑤assoc ✅ 2026-06-11** — `DynObj::Assoc{BTreeMap<i64,Value>}`. **키 도메인 =
+   signed i64 전역**(음수·>u32 키 합법)이라 기존 `(u32,u32)` offsets 쌍에 실을 수 없음
+   (모든 u64 비트패턴이 합법 키 → in-band 센티넬 불가) → **`Offsets::AssocKey(Option<i64>)`
+   variant 신설** + `k_write_lvalue`/`write_lvalue` ABI를 pair-slice→`&Offsets`로 변경
+   (blocking·NBA·delayed-CA·QPop·VM 전부 같은 깔때기 = by-construction 일관). READ는
+   eval Signal arm이 u32 word coercion **전에** `is_assoc` 분기(핸들 비트맵 short-circuit,
+   정적 경로 무세금) → `assoc_key`(키 expr을 자기 signedness로 64-bit 확장, >64 절단=§5.5,
+   X/Z·real=invalid `None`) → `assoc_read`. exists/num=**순수** eval arm(힙 불변 — pop과
+   달리 인터셉트 불요, VM parity by-construction), `delete(k)`=SysTask 디스패치(미존재
+   키=무음 no-op §7.9, X/Z 키=W4020), `delete()`=DynDelete 공용. native-eval
+   `LoadIndexed`는 **Assoc bail**(u32 도메인이라 음수 키가 인터프리터와 발산할 것 —
+   컴파일 거부로 oracle-bound 유지). concat-lvalue 안의 assoc chunk = pair 경로로
+   폴스루 → dyn_write가 loud 무시(⑥이 reject). ⚠️ **iverilog 13.0은 assoc 선언
+   자체를 거부**(`[int]`/`[longint]`/`[*]` 전부, 라이브 확인 2026-06-11) — dyn 3종 중
+   유일하게 **hand-IEEE 핀**(§7.8/§7.9, expression-force 선례)으로 의미론 고정.
+   ⑥front-end 일괄(.vu flip = (B는 완료)+(D)+(C) 문법).
+   각 증분은 TDD + iverilog 라이브 오라클(§4의 warn 문구류·assoc 전체는 hand-IEEE 핀).
 5. P9/native-eval: dyn 관련 Expr/Stmt·NBA-delay는 allow-list 제외로 시작(전부 interp) —
    P5 차분 게이트가 자동으로 안전망.

@@ -330,12 +330,12 @@ impl<'a> SimState<'a> {
     /// sampling moment (statement time for blocking, SAMPLE time for NBA so
     /// `a[i] <= x; i = i+1;` uses the OLD `i`, settle time for cont-assign),
     /// because this `&mut self` path has no read-only `EvalCtx`.
-    pub fn write_lvalue(&mut self, lhs: &Lvalue, value: Value, offsets: &[(u32, u32)]) -> bool {
-        debug_assert_eq!(
-            offsets.len(),
-            lhs.chunks.len(),
-            "one (offset,word) per chunk"
-        );
+    pub fn write_lvalue(
+        &mut self,
+        lhs: &Lvalue,
+        value: Value,
+        offsets: &crate::exec::Offsets,
+    ) -> bool {
         // ── real↔int assignment coercion (IEEE 1364 §6.2) ──
         // Only a WHOLE-NET lvalue (single Bit chunk, no offset/width) can be a
         // real destination: a real is dimensionless and never bit/part-selected
@@ -368,6 +368,23 @@ impl<'a> SimState<'a> {
             // integer net ← integer value: unchanged legacy path.
             (false, false) => value,
         };
+
+        // ── v5 ⑤: assoc-element lane (single chunk, i64 key) ──
+        // The key cannot ride the u32 pairs; `resolve_lvalue_offsets` claims
+        // the shape and the funnel splits here, AFTER the real coercion (an
+        // assoc element gets the same real→int rounding as a dyn element).
+        if let crate::exec::Offsets::AssocKey(key) = offsets {
+            if let Some(c) = lhs.chunks.first() {
+                self.assoc_write(c.net, *key, &value);
+            }
+            return false; // dyn content never enters the dirty channel
+        }
+        let offsets = offsets.as_slice();
+        debug_assert_eq!(
+            offsets.len(),
+            lhs.chunks.len(),
+            "one (offset,word) per chunk"
+        );
 
         // Total destination bit width = sum of chunk widths.
         let total: u32 = lhs.chunks.iter().map(|c| self.chunk_width(c)).sum();
@@ -599,7 +616,11 @@ impl<'a> SimState<'a> {
     pub fn force_write(&mut self, lhs: &Lvalue, value: Value) -> bool {
         let net = lhs.chunks[0].net as usize;
         self.forced[net] = false;
-        let changed = self.write_lvalue(lhs, value, &[(0, 0)]);
+        let offs = crate::exec::Offsets::Inline {
+            buf: [(0, 0); 2],
+            len: 1,
+        };
+        let changed = self.write_lvalue(lhs, value, &offs);
         self.forced[net] = true;
         changed
     }
@@ -643,8 +664,7 @@ impl<'a> SimState<'a> {
 pub(crate) const MAX_DYN_ELEMS: usize = 1 << 24;
 
 /// v5 (C): one dynamic-storage object. Engine-internal RUNTIME state — never
-/// serialized, never in the frozen IR. The Assoc variant lands with its
-/// increment (design doc 2026-06-10 §2).
+/// serialized, never in the frozen IR (design doc 2026-06-10 §2).
 #[derive(Debug, Clone)]
 pub enum DynObj {
     /// `int d[]` — element values, length set only by `new[n]`/`delete()`.
@@ -653,6 +673,12 @@ pub enum DynObj {
     Queue {
         elems: std::collections::VecDeque<Value>,
     },
+    /// `int a[longint]` — signed-i64 key domain (⑥ elaborate casts the surface
+    /// key type before the IR). BTree = deterministic order for any future
+    /// iteration/dump surface (first/next land post-MVP for free).
+    Assoc {
+        map: std::collections::BTreeMap<i64, Value>,
+    },
 }
 
 impl DynObj {
@@ -660,6 +686,7 @@ impl DynObj {
         match self {
             DynObj::DynArray { elems } => elems.len(),
             DynObj::Queue { elems } => elems.len(),
+            DynObj::Assoc { map } => map.len(),
         }
     }
     /// Clippy pairing for `len`.
@@ -729,6 +756,16 @@ impl<'a> SimState<'a> {
             self.dyn_warn_once_at(net, "unsupported dyn lvalue shape (write ignored)");
             return false;
         }
+        // ⑤: an assoc element on the u32 pair funnel = a shape the AssocKey
+        // lane did not claim (a concat chunk, …) — outside the MVP, IGNORED
+        // loud. The single-chunk lane (`write_lvalue`) never reaches here.
+        if self.ir.nets[net as usize].kind == NetKind::Assoc {
+            self.dyn_warn_once_at(
+                net,
+                "assoc element write in an unsupported lvalue shape (ignored)",
+            );
+            return false;
+        }
         let i = raw_word as usize;
         if self.ir.nets[net as usize].kind == NetKind::Queue {
             // A missing entry IS the empty queue: the append lane must be
@@ -769,15 +806,46 @@ impl<'a> SimState<'a> {
             }
         }
     }
+
+    /// v5 ⑤: assoc-element WRITE (`a[k] = v`) — the `Offsets::AssocKey` lane.
+    /// `None` key = X/Z (invalid index, IEEE §7.8.6): IGNORED + warn-once. A
+    /// missing key CREATES the element (§7.8); the value is cast to the
+    /// element type (the same `resize(w)` as every other dyn store). Inserts
+    /// past the shared cap warn + drop (no silent caps).
+    pub(crate) fn assoc_write(&mut self, net: u32, key: Option<i64>, value: &Value) {
+        let w = self.ir.nets[net as usize].width.max(1);
+        let Some(k) = key else {
+            self.dyn_warn_once_at(net, "assoc key is X/Z (write ignored)");
+            return;
+        };
+        // Cap BEFORE the entry borrow (the warn latch needs `&self` while the
+        // map borrow holds `&mut self`); replacing an existing key is exempt.
+        let (len, exists) = match self.dyn_heap.get(&net) {
+            Some(DynObj::Assoc { map }) => (map.len(), map.contains_key(&k)),
+            _ => (0, false),
+        };
+        if !exists && len >= MAX_DYN_ELEMS {
+            self.dyn_warn_once_at(net, "assoc exceeds the element cap (1<<24); write dropped");
+            return;
+        }
+        // A missing entry IS the empty assoc (lazy, like every dyn object).
+        let entry = self.dyn_heap.entry(net).or_insert_with(|| DynObj::Assoc {
+            map: std::collections::BTreeMap::new(),
+        });
+        if let DynObj::Assoc { map } = entry {
+            map.insert(k, value.clone().resize(w));
+        }
+    }
 }
 
 impl<'a> NetReader for SimState<'a> {
     fn dyn_size(&self, net: u32) -> Option<u64> {
         // Only a dyn HANDLE answers; a missing heap entry IS the empty object
-        // (size 0 — IEEE: a declared dynamic array/queue starts empty). Any
+        // (size 0 — IEEE: a declared dynamic array/queue/assoc starts empty).
+        // Assoc included: `size()` is the IEEE alias of `num()` (§7.9.1). Any
         // other net kind returns None → the eval arm X-poisons defensively.
         match self.ir.nets.get(net as usize).map(|n| n.kind) {
-            Some(sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue) => {
+            Some(sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue | sim_ir::NetKind::Assoc) => {
                 Some(self.dyn_heap.get(&net).map(|o| o.len() as u64).unwrap_or(0))
             }
             _ => None,
@@ -787,6 +855,58 @@ impl<'a> NetReader for SimState<'a> {
         // The eval-side degradation hook (e.g. a pop outside its statement
         // intercept) — same W4020 once-per-net latch as every other lane.
         self.dyn_warn_once_at(net, msg);
+    }
+    fn is_assoc(&self, net: u32) -> bool {
+        // Bitmap first: the static-array hot path short-circuits on one bit
+        // load (the same budget `read_net` already pays), only real handles
+        // pay the kind lookup.
+        self.dyn_is_handle
+            .get(net as usize)
+            .copied()
+            .unwrap_or(false)
+            && matches!(
+                self.ir.nets.get(net as usize).map(|n| n.kind),
+                Some(sim_ir::NetKind::Assoc)
+            )
+    }
+    fn assoc_read(&self, net: u32, key: Option<i64>) -> Value {
+        let (w, signed) = self
+            .ir
+            .nets
+            .get(net as usize)
+            .map(|nv| (nv.width.max(1), nv.signed))
+            .unwrap_or((1, false));
+        let Some(k) = key else {
+            // X/Z key = invalid index (IEEE §7.8.6): element-width X + warn.
+            self.dyn_warn_once_at(net, "assoc key is X/Z (read X)");
+            return Value::xs(w, signed);
+        };
+        match self.dyn_heap.get(&net) {
+            Some(DynObj::Assoc { map }) => map.get(&k).cloned().unwrap_or_else(|| {
+                self.dyn_warn_once_at(net, "assoc key not found (read X)");
+                Value::xs(w, signed)
+            }),
+            // A missing entry IS the empty assoc — every key is "not found".
+            _ => {
+                self.dyn_warn_once_at(net, "assoc key not found (read X)");
+                Value::xs(w, signed)
+            }
+        }
+    }
+    fn assoc_exists(&self, net: u32, key: Option<i64>) -> Option<bool> {
+        if !self.is_assoc(net) {
+            return None; // not an assoc handle → the eval arm X-poisons
+        }
+        let Some(k) = key else {
+            // exists() with an X/Z key matches nothing — 0, but LOUD (the
+            // same invalid-index family as read/write, policy pin).
+            self.dyn_warn_once_at(net, "assoc key is X/Z (exists 0)");
+            return Some(false);
+        };
+        Some(match self.dyn_heap.get(&net) {
+            Some(DynObj::Assoc { map }) => map.contains_key(&k),
+            _ => false,
+        })
     }
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
         // v5 (C)-3b: a dyn HANDLE never reads the flat store — its elements

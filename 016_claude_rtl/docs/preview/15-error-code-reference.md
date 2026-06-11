@@ -515,10 +515,14 @@ $dumpfile("/no/such/dir/wave.vcd"); $dumpvars;
 ### VITA-W4020 · `W-RUN-DYN-DEGRADE` (Warning)
 **dynamic-storage 연산이 명세된 degraded 경로를 탔음** (v5 (C)): `new[n]`의 n이 X/Z →
 빈 배열, 범위 밖 인덱스 read → X / write → 무시, queue empty pop → X, 직접-대입
-위치 밖의 pop(NBA rhs·중첩 식 등) → X(미-pop), 원소 cap(1<<24) 초과 push/new → drop/clamp
-등 (설계 문서 2026-06-10 §4). 단 queue `q[size()] = v`는 **push_back 동등으로 합법-무음**
-(IEEE §7.10.1 — 경고 아님). **핸들 net당 1회만** 발행(warn-once 래치) — 루프 안의
-degraded 연산이 진단 스트림을 폭주시키지 않는다.
+위치 밖의 pop(NBA rhs·중첩 식 등) → X(미-pop), 원소 cap(1<<24) 초과 push/new/assoc-write
+→ drop/clamp, assoc X/Z 키 read → X / write·delete(k) → 무시 / exists → 0, assoc
+미존재 키 read → X, concat-lvalue 안의 assoc 원소 chunk → 무시
+등 (설계 문서 2026-06-10 §4, IEEE §7.8.6 invalid-index). 단 queue `q[size()] = v`는
+**push_back 동등으로 합법-무음**(IEEE §7.10.1 — 경고 아님)이고, assoc **미존재 키
+write는 원소 생성**(§7.8), **`delete(k)` 미존재 키는 무음 no-op**(§7.9) — 셋 다 경고
+아님. **핸들 net당 1회만** 발행(warn-once 래치) — 루프 안의 degraded 연산이 진단
+스트림을 폭주시키지 않는다.
 ```
 ->  warning[VITA-W4020] W-RUN-DYN-DEGRADE: new[] size is X/Z; array degraded to empty
 ```

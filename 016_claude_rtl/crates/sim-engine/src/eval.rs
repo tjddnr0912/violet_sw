@@ -39,6 +39,23 @@ pub trait NetReader {
     /// the W4020 warn-once funnel; the no-op default keeps non-engine readers
     /// (native-eval test fakes) unchanged.
     fn dyn_warn(&self, _net: u32, _msg: &str) {}
+    /// v5 ⑤: is `net` an ASSOC handle? Gates the i64-key read path in the
+    /// Signal arm (assoc keys cannot ride the u32 word funnel). Default false
+    /// — non-engine readers never see assoc nets.
+    fn is_assoc(&self, _net: u32) -> bool {
+        false
+    }
+    /// v5 ⑤: assoc-element read. `None` key = X/Z (invalid index). Only
+    /// called where `is_assoc` returned true, so the default is unreachable
+    /// by construction — it X-poisons defensively all the same.
+    fn assoc_read(&self, _net: u32, _key: Option<i64>) -> Value {
+        Value::xs(1, false)
+    }
+    /// v5 ⑤: `a.exists(k)` — `Some(true/false)` on an assoc handle (X/Z key
+    /// matches nothing), `None` otherwise (the eval arm X-poisons).
+    fn assoc_exists(&self, _net: u32, _key: Option<i64>) -> Option<bool> {
+        None
+    }
 }
 
 /// Evaluation context: the IR (consts/exprs), the net table, current time, and
@@ -59,6 +76,20 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     pub fn eval(&self, eid: u32) -> Value {
         let sw = self.wt.get(eid);
         self.eval_ctx(eid, sw.width, sw.signed)
+    }
+
+    /// v5 ⑤: evaluate an assoc KEY expression into the engine's signed-i64
+    /// key domain — extend (sign- or zero-, per the expr's OWN signedness) to
+    /// 64 bits, truncate anything wider (assignment-to-key-type semantics,
+    /// §5.5; ⑥ elaborate casts the declared key type before the IR). Any X/Z
+    /// (or a real) in the evaluated key → `None` = invalid index (§7.8.6).
+    pub(crate) fn assoc_key(&self, eid: u32) -> Option<i64> {
+        let sw = self.wt.get(eid);
+        let v = self.eval_ctx(eid, sw.width.max(64), sw.signed);
+        if v.is_real || v.has_xz() {
+            return None;
+        }
+        Some(v.val.first().copied().unwrap_or(0) as i64)
     }
 
     /// Evaluate `eid` in a context of at least `ctx_width` bits with context
@@ -87,6 +118,16 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 base.resize_keep_sign(w, eff_signed)
             }
             Expr::Signal { net, word } => {
+                // v5 ⑤: assoc element — the key domain is SIGNED i64 (negative
+                // and beyond-u32 keys are legal), so it must branch BEFORE the
+                // u32 word funnel below. Scalar reads short-circuit on
+                // `word.is_some()`; static arrays on the handle bitmap.
+                if let Some(weid) = word {
+                    if self.nets.is_assoc(*net) {
+                        let base = self.nets.assoc_read(*net, self.assoc_key(*weid));
+                        return base.resize_keep_sign(w, eff_signed);
+                    }
+                }
                 // `word` is an ExprId (the array index expr), evaluated NOW so a
                 // runtime `mem[k]` selects the right element. None ⇒ scalar/whole.
                 // An X/Z index (`to_u64` → None) OR an index beyond u32 maps to
@@ -843,8 +884,44 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     None => Value::xs(32, false),
                 }
             }
-            // v5 shape reserve (assoc — increment ⑤): X-poison, never panic.
-            SysFuncId::AssocExists | SysFuncId::AssocNum => Value::xs(32, false),
+            // v5 ⑤: `a.num()` — the entry count, same recipe as DynSize (the
+            // reader's `dyn_size` covers assoc: num == size, IEEE §7.9.1).
+            SysFuncId::AssocNum => {
+                let net = args
+                    .first()
+                    .and_then(|&a| match self.ir.exprs.get(a as usize) {
+                        Some(Expr::Signal { net, word: None }) => Some(*net),
+                        _ => None,
+                    });
+                match net.and_then(|n| self.nets.dyn_size(n)) {
+                    Some(n) => {
+                        let mut v = Value::zeros(32, true);
+                        v.val[0] = n.min(i32::MAX as u64);
+                        v
+                    }
+                    None => Value::xs(32, true),
+                }
+            }
+            // v5 ⑤: `a.exists(k)` — args = [handle, key]. PURE (a query, no
+            // heap mutation), so unlike the pops it lives in the eval arm and
+            // is VM-correct by construction. 1/0; X/Z key matches nothing.
+            SysFuncId::AssocExists => {
+                let net = args
+                    .first()
+                    .and_then(|&a| match self.ir.exprs.get(a as usize) {
+                        Some(Expr::Signal { net, word: None }) => Some(*net),
+                        _ => None,
+                    });
+                let key = args.get(1).and_then(|&k| self.assoc_key(k));
+                match net.and_then(|n| self.nets.assoc_exists(n, key)) {
+                    Some(b) => {
+                        let mut v = Value::zeros(1, false);
+                        v.val[0] = b as u64;
+                        v
+                    }
+                    None => Value::xs(1, false),
+                }
+            }
             SysFuncId::Time => {
                 // $time: current time in the CALLING module's units, truncated to int
                 // (now is global-precision ticks; divide by the module multiplier M).
