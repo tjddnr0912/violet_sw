@@ -155,7 +155,7 @@ loud-reject로 확인됨(이제 참):**
 
 | 트랙 | 내용 | IR/AST 영향 | 오라클 | 공수 | 비고 |
 |---|---|---|---|---|---|
-| **P2-A worklib** | `-work`/`-L` 디렉터리 라이브러리: unit 자동 발견(→E9003 상류 검증 자동화), RULE-S 매니페스트 완성, E8003 sticky-ctx 일반화, RULE-V 소비 게이트 | **0** (CLI/아티팩트 레이어, bump 불요) | 해당 없음(운영) | 中 | **최우선 후보** — E9003 검증/발견 시임이 이미 분리돼 착수 마찰 최소. 결정성: 발견 순서=정렬 강제 |
+| ~~**P2-A worklib**~~ ✅ **2026-06-12 v1 완료**(`33ec95c`+`db48aa1`) | `vcmp --work`(lib.toml 정규형+content-addressed CU blob, E2001 dup·소스경로 재컴파일=교체·GC) + `velab -L/--top`(클로저 로딩·**unit_map 승자 기반 머지** — passenger 그림자가 로드 순서로 이기는 결함을 자가 리뷰로 적발·수정) + **vrun RULE-V 자동 게이트**(매니페스트/blob/소스·include raw 재해시=E9003 exit 2) + E9005 신설. 적대 리뷰 9불변식 PASS. 디퍼: `-y`/`-v`/`-P`/`--lib-map`·per-unit blob·vrun -L 재배치. E8003 sticky 일반화=**N/A 판정**(sticky 표면이 timescale뿐 — 이미 커버) | 0 (bump 0, 골든 불변) | e2e 11 | 완료 | lib-모드 .velab의 경로 문자열은 same-machine 스코프(리뷰 D-9: cross-OS 복사는 loud exit 2) |
 | **P2-B Phase-2 system tasks** | 파일 I/O(`$fopen/$fclose/$fdisplay/$fwrite/$sformat(f)`) · `$readmemb/h` · `$random/$urandom(_range)`(**시드 결정성 계약 명시** — 3-OS byte-identical 유지) · bit-vector(`$bits/$countones/$onehot/$isunknown`) · math · `$value$plusargs` · `$stime` | SysFunc/SysTask 다수 = **v7 bump 묶음 #1** | iverilog 전부 지원 → 차분 풍부 | 中 | 실사용 TB 호환성 최대 레버. conversion(`$signed/$rtoi/$itor/...`)·`$clog2`는 기구현 |
 | **P2-C full `string` 타입** | `NetKind::String`(가변 바이트) + 메서드(`len/substr/getc/putc/toupper/...`) + 비교/concat, `$sformatf` 합류 | NetKind 등 = **v7 묶음 #2** + AST flip(타입 키워드) | iverilog 부분 지원(영역 확인 필요) | 中 | string-키 foreach 8byte ref-var 한계 해소. dyn 헤더/힙 패턴 재사용 |
 | **P2-D package** | `package/endpackage`, `import pkg::*`/`pkg::sym` 이름 해소 | IR **0** 전망(elaborate 평탄화 — interface 선례), AST flip 1회 | iverilog 지원 → 차분 | 中 | **AST flip은 P2-C와 동시 1회로 수렴** 권장 |
@@ -180,10 +180,14 @@ loud-reject로 확인됨(이제 참):**
 | hierarchical 이름/함수/태스크 참조 (E3009) | P2 소항목(읽기 한정 검토) 또는 유지 |
 | `` `default_nettype`` (implicit-net=E3010 정책) | 유지(명시적 에러가 정책) — worklib 후 옵션 재평가 |
 
-### 4.3 권장 진입 순서 (제안)
+### 4.3 권장 진입 순서 (제안 → 진행 중)
 
-1. **P2-A worklib** — bump 0·골든 무영향·운영 가치 즉시.
-2. **v7 bump 묶음** = P2-B(system tasks) + P2-C(string) + P2-D(package, AST flip 동시) + §4.2 Phase-1.x 정밀화 소묶음 — bump 일괄 원칙, REGEN_GOLDEN 절차 재사용. 진입 전 §F식 관문 평가.
+1. ~~**P2-A worklib**~~ ✅ 2026-06-12 완료(§4.1 행 참조).
+2. **v7 bump 묶음** = P2-B(system tasks) + P2-C(string) + P2-D(package, AST flip 동시) + §4.2 Phase-1.x 정밀화 소묶음 — bump 일괄 원칙, REGEN_GOLDEN 절차 재사용.
+   **관문 평가(2026-06-12) 결과:**
+   - **IR-0 선행분**(bump 불요 — 즉시 진행): ~~①instance array 언롤~~ ✅ 2026-06-12(`00ae25e` — iverilog 핀: 선언순 첫 인덱스=MSB 청크·W=P 공유/N·P 슬라이스·`[-1:0]`은 합법 2-원소 발견) → ②다차원 부분 슬라이스/whole-array 대입 → ③per-dim bounds → ④`assign #d` inertial → ⑤`$dump*` 배열 per-element/depth → ⑥>64 signed/>128 unsigned multi-word 산술.
+   - **bump 합류 확정분**: casez/casex 정밀 분리는 **IR-0 불가 판정** — scrutinee 측 z 식별에 per-bit `===`가 필요해 `BinOp::CasezEq/CasexEq` 신설(현 `redor(xor)!==1`은 casex엔 정확, casez엔 over-lenient). + SysFunc/SysTask 다수(파일 I/O·readmem·**random=IEEE Annex 알고리즘 핀**(iverilog 차분 가능; `$urandom`은 구현정의→hand-pin)·bit-vector·plusargs·`$stime`·`$sformat(f)`) + `NetKind::String` + AST flip 1회(string 타입+package+`pkg::` scope expr).
+   - **측정-디퍼**: math transcendentals(`$ln`/`$sin`…)는 **3-OS libm 발산 리스크** — 순수-Rust `libm` 핀 도입 결정 전까지 loud 유지.
 3. **P2-E 절차 고급** — IR 영향 작아 v7 뒤 독립 진행.
 4. **P2-F SVA** — 별도 관문 평가 후 서브셋부터(Phase-3 성격).
 - 조건부/장기 트랙(PDES·cycle-based·native lane·VHDL)은 각자의 트리거(워크로드 증거/수요) 충족 시에만.
