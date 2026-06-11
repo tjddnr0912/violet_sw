@@ -172,12 +172,12 @@ pub enum TokenKind {
     #[regex(r"`[A-Za-z_][A-Za-z0-9_$]*")]
     Directive,
 
-    // Bare sigils with no identifier body. These are shorter than the
-    // `SystemTask`/`Directive` regexes above, so maximal-munch picks those when
-    // an ident follows; only a lone `$` / backtick reaches the callback, which
-    // returns `LoneSigil`. The variant exists solely to host the rule (the
-    // callback always errors, so it never appears as an `Ok` token).
-    #[token("$", lone_sigil)]
+    // Bare backtick with no identifier body — shorter than the `Directive`
+    // regex above, so maximal-munch picks that when an ident follows; only a
+    // lone backtick reaches the callback, which returns `LoneSigil`. The
+    // variant exists solely to host the rule (the callback always errors, so
+    // it never appears as an `Ok` token). A lone `$` is a REAL token since
+    // v5 ⑥ (queue last-index `q[$]`) — see `Dollar` above.
     #[token("`", lone_sigil)]
     LoneSigilTok,
 
@@ -263,6 +263,8 @@ pub enum TokenKind {
     MinusColon, // descending part-select [base-:width]
     #[token("->")]
     Arrow, // event trigger
+    #[token("$")]
+    Dollar, // bare `$` — queue last-index (`q[$]`) / `[$]` queue dim (v5 ⑥)
 
     #[token("=")]
     Eq, // blocking assign / param assign / net init
@@ -477,6 +479,8 @@ pub enum Kw {
     Typedef, Enum, Struct, Union, Packed,
     // --- SV immediate assertion (Phase-2 gateway item E) ---
     Assert,
+    // --- SV interface (v5 ⑥, Phase-2 gateway item D) ---
+    Interface, Endinterface, Modport,
 }
 
 impl Kw {
@@ -538,6 +542,8 @@ impl Kw {
             "typedef" => Typedef, "enum" => Enum, "struct" => Struct,
             "union" => Union, "packed" => Packed,
             "assert" => Assert,
+            "interface" => Interface, "endinterface" => Endinterface,
+            "modport" => Modport,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)
@@ -755,11 +761,10 @@ mod tests {
     #[test]
     fn ex8_lone_sigil_recovers_with_lonesigil_reason() {
         use TokenKind::*;
-        // bare `$` (no ident body) -> LoneSigil, then the rest lexes normally
+        // bare `$` is a REAL token since v5 ⑥ (queue last-index `q[$]`)
         let (toks, errs) = lex("$ x");
-        assert_eq!(errs.len(), 1);
-        assert_eq!(errs[0].kind, LexErrorKind::LoneSigil);
-        assert_eq!(toks[0].kind, Error(LexErrorKind::LoneSigil));
+        assert_eq!(errs.len(), 0);
+        assert_eq!(toks[0].kind, Dollar);
         assert_eq!(toks[1].kind, Word(WordKind::Ident)); // x
                                                          // bare backtick -> LoneSigil; `$display`/`` `define `` still munch longer
         let (_t, errs) = lex("`");

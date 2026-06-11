@@ -1,5 +1,10 @@
 # Spike — SV interface/modport 평탄화 (Phase-2 관문 (D))
 
+> **2026-06-11 · 구현 완료** — §2 스케치 그대로 랜딩(⑥ front-end 일괄, 722 green).
+> 차이점 1개: 인스턴스 평탄화를 **nets 단계(4c)로 조기화**(부모 body가 `i.sig`를
+> 참조하려면 pass 7 이전에 심볼이 있어야 — 스케치는 child-인스턴스 단계를 가정).
+> iverilog 13.0이 interface-typed port를 거부해 차분 불가 → hand-IEEE 핀(§25).
+>
 > **2026-06-10 · 판정: GO — "bump 불요" 가설 지지.** SimIr(frozen)·`.velab` 무변경으로
 > interface를 elaborate에서 net 번들로 평탄화할 수 있다. 비용은 front-end뿐이며,
 > 유일한 형상 영향은 **AST(`.vu` 스키마 해시) 1회 flip** — 커밋 골든 churn 0(핀 골든

@@ -370,6 +370,17 @@ fn pick_roots<'a>(map: &ModuleMap<'a>, order: &[&'a ast::ModuleDecl]) -> Vec<&'a
 /// header name list (an undeclared header name defaults to Input + is rare).
 /// Port wiring walks this in order, so a named connection list in any source
 /// order produces a deterministic cont-assign sequence.
+/// v5 ⑥ (D): the `IfaceRef` of an ANSI interface-typed port, by name.
+fn ansi_iface_ref<'m>(module: &'m ast::ModuleDecl, pname: &str) -> Option<&'m ast::IfaceRef> {
+    match &module.ports {
+        ast::PortList::Ansi(list) => list
+            .iter()
+            .find(|p| p.name.name == pname)
+            .and_then(|p| p.iface.as_ref()),
+        _ => None,
+    }
+}
+
 fn port_list_dirs(module: &ast::ModuleDecl) -> Vec<(String, ir::PortDir)> {
     match &module.ports {
         ast::PortList::Ansi(list) => list
@@ -436,6 +447,16 @@ struct Elaborator<'s> {
     // vector; a select `m[i]` is the bit-SLICE `[i*stride +: elem_width]` (vs the
     // unpacked word-select). elaborate-LOCAL — NEVER in the frozen sim-ir.
     packed_dims: BTreeMap<u32, Vec<(u32, u32)>>,
+    // v5 ⑥: the active `$` substitution while lowering a QUEUE element index —
+    // the ExprId of `size(handle)-1`. Save/restore around each queue index so
+    // nested selects (`q[$ - r[$]]`) bind each `$` to ITS OWN queue. `None`
+    // outside a queue index ⇒ a bare `$` is loud-rejected.
+    dollar_subst: Option<u32>,
+    // v5 ⑥ (D): interface declarations (OWNED clones — avoids threading the
+    // unit lifetime) + the registry of elaborated interface INSTANCES
+    // (FQ path → interface name) consulted by interface-port binding.
+    ifaces: BTreeMap<String, ast::ModuleDecl>,
+    iface_insts: BTreeMap<String, String>,
 
     // ── v3 hierarchy state ──
     // `cur_prefix` is the dotted instance path of the instance currently being
@@ -553,6 +574,9 @@ impl<'s> Elaborator<'s> {
             const_dedup: BTreeMap::new(),
             array_dims: BTreeMap::new(),
             packed_dims: BTreeMap::new(),
+            dollar_subst: None,
+            ifaces: BTreeMap::new(),
+            iface_insts: BTreeMap::new(),
             cur_prefix: String::new(),
             params: BTreeMap::new(),
             inst_stack: Vec::new(),
@@ -719,6 +743,21 @@ impl<'s> Elaborator<'s> {
     /// case `top instantiating nothing` (one Instance, parent None).
     fn run(&mut self, unit: &ast::SourceUnit) {
         let (map, order) = build_module_map(unit);
+        // v5 ⑥ (D): interfaces live in their OWN map (they are never roots and
+        // never modules); a name colliding with a module is a duplicate design
+        // unit (single design-unit namespace, doc-15 E-DUP-UNIT).
+        for it in &unit.items {
+            if let ast::TopItem::Interface(i) = it {
+                if map.contains_key(i.name.name.as_str())
+                    || self.ifaces.insert(i.name.name.clone(), i.clone()).is_some()
+                {
+                    self.error(
+                        MsgCode::DupUnit,
+                        &format!("design unit `{}` declared more than once", i.name.name),
+                    );
+                }
+            }
+        }
         if order.is_empty() {
             // "no module at all" is a missing-construct condition, not a failed
             // *instance* resolution → ElabUnsupported reads truer.
@@ -976,6 +1015,19 @@ impl<'s> Elaborator<'s> {
         let net_count = self.nets.len() as u32 - first_net;
         self.instances[inst_id as usize].net_count = net_count;
 
+        // (4c) v5 ⑥ (D): flatten DIRECT-body interface instances EARLY (nets
+        // phase) — unlike module children (whose nets are per-instance
+        // private), interface members ARE the parent-visible API (`i.sig` in
+        // pass-7 bodies must resolve). Generate-nested ones flatten in the
+        // late pass (8); the per-item registry guard makes both idempotent.
+        for item in &module.body {
+            if let ast::ModuleItem::Instance(mi) = item {
+                if self.ifaces.contains_key(mi.module_name.name.as_str()) {
+                    self.elaborate_iface_instances(mi);
+                }
+            }
+        }
+
         // (6) port-connection cont-assigns (parent expr ↔ child port net).
         self.wire_ports(module, binding, &saved_prefix);
 
@@ -1051,6 +1103,13 @@ impl<'s> Elaborator<'s> {
         let child = match map.get(mi.module_name.name.as_str()) {
             Some(&(decl, _)) => decl,
             None => {
+                // v5 ⑥ (D): `intf i();` — an interface instance flattens to
+                // plain nets under the instance prefix (no ir::Instance row,
+                // no new IR — spike 2026-06-10).
+                if self.ifaces.contains_key(mi.module_name.name.as_str()) {
+                    self.elaborate_iface_instances(mi);
+                    return;
+                }
                 self.error(
                     MsgCode::ElabUnresolvedInstance,
                     &format!("unknown module `{}` instantiated", mi.module_name.name),
@@ -1131,6 +1190,178 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// v5 ⑥ (D): flatten interface instances (`intf i();`) into plain nets
+    /// under `cur_prefix.i` — interface signals ARE nets (spike: no new IR).
+    /// MVP: parameterless, portless interfaces; body = signals + cont-assigns
+    /// + procs (+ modports, accepted); anything else is loud.
+    fn elaborate_iface_instances(&mut self, mi: &ast::ModuleInstance) {
+        let iface_name = mi.module_name.name.clone();
+        let Some(decl) = self.ifaces.get(&iface_name).cloned() else {
+            return;
+        };
+        if !mi.param_overrides.is_empty() || !decl.params.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "interface parameters are outside the MVP",
+            );
+            return;
+        }
+        let portless = match &decl.ports {
+            ast::PortList::None => true,
+            ast::PortList::Ansi(v) => v.is_empty(),
+            ast::PortList::NonAnsi(v) => v.is_empty(),
+        };
+        if !portless {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "interface header ports are outside the MVP",
+            );
+            return;
+        }
+        for item in &mi.instances {
+            if !item.unpacked.is_empty() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "interface instance arrays are outside the MVP",
+                );
+                continue;
+            }
+            let has_conns = match &item.conns {
+                ast::PortConnList::Named(v) => !v.is_empty(),
+                ast::PortConnList::Positional(v) => !v.is_empty(),
+            };
+            if has_conns {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "interface instance connections are outside the MVP",
+                );
+                continue;
+            }
+            let path = self.child_prefix(&item.name.name);
+            if self.iface_insts.contains_key(&path) {
+                continue; // already flattened in the EARLY pass (4c)
+            }
+            let saved_prefix = std::mem::replace(&mut self.cur_prefix, path.clone());
+            // nets first (declaration order), then logic — mirroring the
+            // module body passes (4)/(7).
+            for it in &decl.body {
+                if let ast::ModuleItem::NetVar(d) = it {
+                    self.elaborate_netvar_decl(d, &decl.ports, &decl.body);
+                }
+            }
+            for it in &decl.body {
+                match it {
+                    ast::ModuleItem::ContAssign(ca) => self.elaborate_cont_assign(ca),
+                    ast::ModuleItem::Proc(pb) => {
+                        let proc = self.lower_proc_block(pb);
+                        self.push_process(proc);
+                    }
+                    ast::ModuleItem::NetVar(d) => self.elaborate_net_init_drivers(d),
+                    ast::ModuleItem::Modport(_) => {} // accepted (checks follow on)
+                    ast::ModuleItem::Error(_)
+                    | ast::ModuleItem::Param(_)
+                    | ast::ModuleItem::PortDecl(_)
+                    | ast::ModuleItem::Genvar { .. } => {}
+                    other => {
+                        let what = match other {
+                            ast::ModuleItem::Instance(_) => "nested instances",
+                            ast::ModuleItem::Generate(_) => "generate blocks",
+                            ast::ModuleItem::Func(_) | ast::ModuleItem::Task(_) => {
+                                "functions/tasks"
+                            }
+                            ast::ModuleItem::Typedef(_) => "typedefs",
+                            ast::ModuleItem::Defparam(_) => "defparam",
+                            _ => "this construct",
+                        };
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!("{what} inside an interface are outside the MVP"),
+                        );
+                    }
+                }
+            }
+            self.iface_insts.insert(path.clone(), iface_name.clone());
+            self.cur_prefix = saved_prefix;
+        }
+    }
+
+    /// v5 ⑥ (D): bind an interface-typed module port by SYMBOL ALIASING —
+    /// every net under the connected interface instance becomes visible as
+    /// `<child>.<port>.<sig>` (net creation 0; canonical VCD naming is the
+    /// lexicographically-smallest FQ, the established multi-FQ rule).
+    fn bind_iface_port(
+        &mut self,
+        iref: &ast::IfaceRef,
+        pname: &str,
+        conn_expr: &ast::Expr,
+        parent_prefix: &str,
+    ) {
+        let inst_name = match &conn_expr.kind {
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => p.segments[0].name.clone(),
+            _ => {
+                self.error(
+                    MsgCode::ElabPortMismatch,
+                    &format!(
+                        "interface port `{pname}` must be connected to an interface instance name"
+                    ),
+                );
+                return;
+            }
+        };
+        let parent_fq = if parent_prefix.is_empty() {
+            inst_name.clone()
+        } else {
+            format!("{parent_prefix}.{inst_name}")
+        };
+        let Some(actual) = self.iface_insts.get(&parent_fq).cloned() else {
+            self.error(
+                MsgCode::ElabPortMismatch,
+                &format!(
+                    "interface port `{pname}`: `{inst_name}` is not an interface instance in the parent scope"
+                ),
+            );
+            return;
+        };
+        if actual != iref.iface.name {
+            self.error(
+                MsgCode::ElabPortMismatch,
+                &format!(
+                    "interface port `{pname}` is typed `{}` but `{inst_name}` is an instance of `{actual}`",
+                    iref.iface.name
+                ),
+            );
+            return;
+        }
+        if let Some(mp) = &iref.modport {
+            // MVP: the modport must EXIST (a typo is loud); per-member
+            // direction enforcement is a follow-on increment.
+            let exists = self.ifaces.get(&actual).is_some_and(|d| {
+                d.body
+                    .iter()
+                    .any(|it| matches!(it, ast::ModuleItem::Modport(m) if m.name.name == mp.name))
+            });
+            if !exists {
+                self.error(
+                    MsgCode::ElabPortMismatch,
+                    &format!("interface `{actual}` has no modport `{}`", mp.name),
+                );
+                return;
+            }
+        }
+        // Alias every symbol under the instance into the child port scope.
+        let src_prefix = format!("{parent_fq}.");
+        let dst_prefix = format!("{}.", self.fq(pname));
+        let aliases: Vec<(String, u32)> = self
+            .symbols
+            .range(src_prefix.clone()..)
+            .take_while(|(k, _)| k.starts_with(&src_prefix))
+            .map(|(k, &id)| (format!("{dst_prefix}{}", &k[src_prefix.len()..]), id))
+            .collect();
+        for (k, id) in aliases {
+            self.symbols.insert(k, id);
+        }
+    }
+
     // ── scope helpers (FQ-name keying) ─────────────────────────────
     /// Fully-qualified key of a LOCAL name within the current instance scope.
     fn fq(&self, local: &str) -> String {
@@ -1181,6 +1412,17 @@ impl<'s> Elaborator<'s> {
                     .find(|c| &c.name.name == pname)
                     .and_then(|c| c.value.as_ref()),
             };
+            // v5 ⑥ (D): interface-typed port → symbol aliasing, not wiring.
+            if let Some(iref) = ansi_iface_ref(module, pname) {
+                match conn {
+                    Some(c) => self.bind_iface_port(iref, pname, c, parent_prefix),
+                    None => self.error(
+                        MsgCode::ElabPortMismatch,
+                        &format!("interface port `{pname}` left unconnected"),
+                    ),
+                }
+                continue;
+            }
             let Some(conn_expr) = conn else {
                 // unconnected port.
                 match dir {
@@ -1694,6 +1936,11 @@ impl<'s> Elaborator<'s> {
     fn elaborate_ports(&mut self, ports: &ast::PortList) {
         if let ast::PortList::Ansi(list) = ports {
             for p in list {
+                if p.iface.is_some() {
+                    // v5 ⑥ (D): an interface-typed port creates NO net — its
+                    // members alias the connected instance's nets at binding.
+                    continue;
+                }
                 let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Wire); // default net type
                 let (mut width, mut msb, lsb, signed) =
                     self.range_to_dims(kind, p.range.as_ref(), p.signed);
@@ -1831,6 +2078,73 @@ impl<'s> Elaborator<'s> {
                     .fold(1u32, |a, &(_, w)| a.saturating_mul(w.max(1)));
                 msb = width.saturating_sub(1);
             }
+            // ── v5 ⑥: dynamic-storage HANDLE declaration ──
+            // `integer d[]` / `logic [7:0] q[$]` / `integer a[integer]`:
+            // one dyn dim → a handle net (element width/signedness,
+            // `array_len 0`, heap-backed). Engine slices ③④⑤ are the
+            // storage; this is the front door.
+            if let Some(handle_kind) = self.dyn_dim_kind(&decl.unpacked) {
+                if decl.unpacked.len() != 1 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a dynamic dimension cannot be mixed with other unpacked dimensions (nested dynamic storage is outside the MVP)",
+                    );
+                    continue;
+                }
+                if matches!(decl.unpacked[0], ast::Dim::Queue(Some(_))) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "bounded queue `[$:N]` is outside the MVP (use an unbounded `[$]`)",
+                    );
+                    continue;
+                }
+                if decl.init.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a dynamic-storage handle takes no initializer (use `new[]`/methods at runtime)",
+                    );
+                    continue;
+                }
+                if matches!(
+                    d.kind,
+                    ast::NetVarKind::Real | ast::NetVarKind::Realtime | ast::NetVarKind::Event
+                ) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "real/event elements in dynamic storage are outside the MVP",
+                    );
+                    continue;
+                }
+                if !net_is_variable(d.kind) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "dynamic storage must be a VARIABLE kind (reg/logic/integer/time), not a net",
+                    );
+                    continue;
+                }
+                let dir = self.dir_for_name(&decl.name.name, ports, body);
+                if dir != ir::PortDir::Internal {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a dynamic-storage handle cannot be a port (outside the MVP)",
+                    );
+                    continue;
+                }
+                self.add_net(
+                    &decl.name.name,
+                    ir::NetVar {
+                        kind: handle_kind,
+                        width,
+                        msb,
+                        lsb,
+                        signed,
+                        array_len: 0, // the handle marker — elements live in the engine heap
+                        dir,
+                        init: default_init(d.kind, width),
+                    },
+                );
+                continue;
+            }
             let dim_extents = self.array_dim_extents(&decl.unpacked);
             let array_len = dim_extents
                 .iter()
@@ -1940,6 +2254,10 @@ impl<'s> Elaborator<'s> {
                         })
                         .max(1),
                 ),
+                // v5 ⑥: dyn dims never reach the static-extent path
+                // (`elaborate_netvar_decl` routes them to handle nets first) —
+                // neutral extent, defensive only.
+                ast::Dim::Dyn | ast::Dim::Queue(_) | ast::Dim::Assoc(_) => (0, 1),
             })
             .collect()
     }
@@ -2219,6 +2537,14 @@ impl<'s> Elaborator<'s> {
                          expression (only `->e` and `@(e)` touch it)",
                     );
                 }
+                if self.is_dyn_handle_net(net) {
+                    // v5 ⑥: whole-handle reads (incl. handle copy `d2 = d`)
+                    // are outside the MVP — elements/methods only.
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a dynamic-storage handle has no whole-value surface (read elements or call methods)",
+                    );
+                }
                 self.push_expr(ir::Expr::Signal { net, word: None })
             }
 
@@ -2295,6 +2621,12 @@ impl<'s> Elaborator<'s> {
 
             // ── selects → Select{base,offset,width,kind} (all ExprIds) ──
             ast::ExprKind::BitSelect { base, index } => {
+                // v5 ⑥: dyn-handle element read (`d[i]`, `q[$]`, `a[k]`) —
+                // BEFORE the static array/packed chains (handles have
+                // `array_len 0`, so those would mis-route to bit-select).
+                if let Some(eid) = self.dyn_select_read(base, index) {
+                    return eid;
+                }
                 // SYMMETRY with the LHS (`collect_lval_chunks`): a `base[i]…[k]`
                 // chain rooted at an ARRAY net is a WORD select (the first D indices
                 // flatten row-major to the element word `i0*s0+…+iD`), with any
@@ -2434,6 +2766,49 @@ impl<'s> Elaborator<'s> {
                 let cid = self.intern_const(parse_real_literal(raw));
                 self.push_expr(ir::Expr::Const { val: cid })
             }
+            // v5 ⑥: `new[n]` reached OUTSIDE `d = new[n]` (its only legal
+            // placement, intercepted in `dyn_blocking_special`).
+            ast::ExprKind::New { size, src } => {
+                // V2005 compat: a net actually named `new` — re-lower as the
+                // indexed read the source meant (`new[i]`).
+                if src.is_none() && self.lookup_net_scoped("new").is_some() {
+                    let span = e.span;
+                    let fake = ast::Expr {
+                        kind: ast::ExprKind::BitSelect {
+                            base: Box::new(ast::Expr {
+                                kind: ast::ExprKind::Ident(ast::HierPath {
+                                    segments: vec![ast::Ident {
+                                        name: "new".to_string(),
+                                        span,
+                                    }],
+                                    span,
+                                }),
+                                span,
+                            }),
+                            index: size.clone(),
+                        },
+                        span,
+                    };
+                    return self.lower_expr(&fake);
+                }
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "`new[n]` is only valid as the rhs of a blocking assignment to a dynamic-array handle",
+                );
+                self.placeholder_expr()
+            }
+            // v5 ⑥: bare `$` — meaningful only inside a queue element select
+            // (`lower_dyn_index` pins the substitution).
+            ast::ExprKind::Dollar => match self.dollar_subst {
+                Some(eid) => eid,
+                None => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "`$` is only valid inside a queue element select (`q[$]`)",
+                    );
+                    self.placeholder_expr()
+                }
+            },
             ast::ExprKind::Error => {
                 self.error(
                     MsgCode::ElabUnsupported,
@@ -2468,6 +2843,15 @@ impl<'s> Elaborator<'s> {
                         "a named event cannot be assigned (only `->e` triggers it)",
                     );
                 }
+                if self.is_dyn_handle_net(net) {
+                    // v5 ⑥: whole-handle assignment (`d2 = d`, `assign q = …`)
+                    // is outside the MVP (`d = new[n]` is intercepted earlier
+                    // and never reaches the lvalue path).
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a dynamic-storage handle cannot be assigned as a whole (use `new[]`, methods or element writes)",
+                    );
+                }
                 out.push(ir::LvalChunk {
                     net,
                     word: None,
@@ -2477,6 +2861,23 @@ impl<'s> Elaborator<'s> {
                 });
             }
             ast::Lvalue::BitSelect { base, index, .. } => {
+                // v5 ⑥: dyn-handle element write (`d[i] = v`, `q[$] = v`,
+                // `a[k] = v`) — handles never take the static chunk paths.
+                if let ast::Lvalue::Ident(p) = &**base {
+                    if p.segments.len() == 1 {
+                        if let Some((net, kind)) = self.dyn_handle(&p.segments[0].name) {
+                            let word = self.lower_dyn_index(net, kind, index);
+                            out.push(ir::LvalChunk {
+                                net,
+                                word: Some(word),
+                                offset: None,
+                                width: None,
+                                kind: ir::SelKind::Bit,
+                            });
+                            return;
+                        }
+                    }
+                }
                 // SYMMETRY with the RHS read: a `base[i]…[k]` chain rooted at an
                 // ARRAY net writes the flat element word (first D indices, row-major)
                 // with an optional trailing single bit-select. `LvalChunk.word` is an
@@ -2614,6 +3015,18 @@ impl<'s> Elaborator<'s> {
     /// `had_error` regardless. (COVERAGE verdict MEDIUM.)
     fn resolve_net(&mut self, path: &ast::HierPath) -> u32 {
         if path.segments.len() != 1 {
+            // v5 ⑥ (D): interface member access (`bus.sig`, `i.sig`) — the
+            // dotted name IS the symbol key (aliases inserted by interface
+            // port binding; direct `i.sig` hits the instance's own nets).
+            let joined = path
+                .segments
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            if let Some(id) = self.lookup_net_scoped(&joined) {
+                return id;
+            }
             // hierarchical cross-ref (tb.dut.x in an expression) still DEFERRED.
             self.error(
                 MsgCode::ElabUnsupported,
@@ -2671,6 +3084,13 @@ impl<'s> Elaborator<'s> {
     /// placeholder ExprId on any unsupported shape (after emitting the diagnostic)
     /// so arena edges stay valid.
     fn inline_function(&mut self, name: &ast::HierPath, args: &[ast::Expr]) -> u32 {
+        // v5 ⑥: `handle.method(args)` — a 2-segment call whose head is a dyn
+        // handle is a METHOD, not a hierarchical call.
+        if name.segments.len() == 2 {
+            if let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) {
+                return self.lower_dyn_method_expr(net, kind, &name.segments[1].name, args);
+            }
+        }
         if name.segments.len() != 1 {
             self.error(
                 MsgCode::ElabUnsupported,
@@ -2839,6 +3259,14 @@ impl<'s> Elaborator<'s> {
     /// if/case/delay just works). INPUT formals substitute a read ExprId; OUTPUT/
     /// INOUT formals bind to the caller's net (reads + writes hit it directly).
     fn inline_task(&mut self, b: &mut ProcessBuilder, name: &ast::HierPath, args: &[ast::Expr]) {
+        // v5 ⑥: `handle.method(args);` — a 2-segment task enable whose head is
+        // a dyn handle is a METHOD statement, not a hierarchical call.
+        if name.segments.len() == 2 {
+            if let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) {
+                self.lower_dyn_method_stmt(b, net, kind, &name.segments[1].name, args);
+                return;
+            }
+        }
         if name.segments.len() != 1 {
             self.error(
                 MsgCode::ElabUnsupported,
@@ -3156,6 +3584,323 @@ impl<'s> Elaborator<'s> {
             lhs: diff,
             rhs: one,
         })
+    }
+
+    // ── v5 ⑥: dynamic-storage front-end (decl/index/method lowering) ─────────
+
+    /// The handle NetKind when `dims` declares dynamic storage.
+    fn dyn_dim_kind(&self, dims: &[ast::Dim]) -> Option<ir::NetKind> {
+        dims.iter().find_map(|d| match d {
+            ast::Dim::Dyn => Some(ir::NetKind::DynArray),
+            ast::Dim::Queue(_) => Some(ir::NetKind::Queue),
+            ast::Dim::Assoc(_) => Some(ir::NetKind::Assoc),
+            _ => None,
+        })
+    }
+
+    /// `name` (single segment, current scope) as a dyn HANDLE net + its kind.
+    fn dyn_handle(&self, name: &str) -> Option<(u32, ir::NetKind)> {
+        let n = self.lookup_net_scoped(name)?;
+        let k = self.nets.get(n as usize)?.kind;
+        matches!(
+            k,
+            ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc
+        )
+        .then_some((n, k))
+    }
+
+    /// Is `net` (already resolved) a dyn handle? Whole-handle value surfaces
+    /// (reads, whole assigns, event controls) are loud-rejected on these.
+    fn is_dyn_handle_net(&self, net: u32) -> bool {
+        matches!(
+            self.nets.get(net as usize).map(|n| n.kind),
+            Some(ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc)
+        )
+    }
+
+    /// Lower a dyn ELEMENT index. For a QUEUE the bare `$` substitutes
+    /// `size(handle)-1` (IEEE §7.10.1: `q[$]` = the last element), scoped to
+    /// THIS index by save/restore so nested selects bind `$` to their own
+    /// queue. Assoc keys lower plain — the engine's signed-i64 key domain
+    /// takes the expression's own width/signedness.
+    fn lower_dyn_index(&mut self, net: u32, kind: ir::NetKind, index: &ast::Expr) -> u32 {
+        if kind != ir::NetKind::Queue {
+            return self.lower_expr(index);
+        }
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let size = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::DynSize,
+            args: vec![handle],
+        });
+        let one = self.const_u32_expr(1, 32);
+        let last = self.push_expr(ir::Expr::Binary {
+            op: ir::BinOp::Sub,
+            lhs: size,
+            rhs: one,
+        });
+        let saved = self.dollar_subst.replace(last);
+        let idx = self.lower_expr(index);
+        self.dollar_subst = saved;
+        idx
+    }
+
+    /// Read-side `handle[idx]` interception — `None` for non-handles so the
+    /// caller's array/packed/scalar logic runs unchanged.
+    fn dyn_select_read(&mut self, base: &ast::Expr, index: &ast::Expr) -> Option<u32> {
+        let ast::ExprKind::Ident(p) = &base.kind else {
+            return None;
+        };
+        if p.segments.len() != 1 {
+            return None;
+        }
+        let (net, kind) = self.dyn_handle(&p.segments[0].name)?;
+        let word = self.lower_dyn_index(net, kind, index);
+        Some(self.push_expr(ir::Expr::Signal {
+            net,
+            word: Some(word),
+        }))
+    }
+
+    /// Method-call EXPRESSION on a dyn handle (`d.size()`, `a.exists(k)`…).
+    /// Pops reaching HERE are NOT the direct rhs of a blocking assign (that
+    /// shape is intercepted in `dyn_blocking_special`) — loud, per the engine
+    /// contract (`StmtEffect::QPop` is statement-level).
+    fn lower_dyn_method_expr(
+        &mut self,
+        net: u32,
+        kind: ir::NetKind,
+        method: &str,
+        args: &[ast::Expr],
+    ) -> u32 {
+        use ir::NetKind as K;
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        match (method, kind) {
+            ("size", _) | ("num", K::Assoc) => {
+                if !args.is_empty() {
+                    self.error(MsgCode::ElabUnsupported, "size()/num() take no arguments");
+                }
+                let which = if method == "num" {
+                    ir::SysFuncId::AssocNum
+                } else {
+                    ir::SysFuncId::DynSize
+                };
+                self.push_expr(ir::Expr::SysFunc {
+                    which,
+                    args: vec![handle],
+                })
+            }
+            ("exists", K::Assoc) => {
+                let Some(k) = args.first() else {
+                    self.error(MsgCode::ElabUnsupported, "exists() takes the key argument");
+                    return self.placeholder_expr();
+                };
+                let key = self.lower_expr(k);
+                self.push_expr(ir::Expr::SysFunc {
+                    which: ir::SysFuncId::AssocExists,
+                    args: vec![handle, key],
+                })
+            }
+            ("pop_back" | "pop_front", K::Queue) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a queue pop is only supported as the DIRECT rhs of a blocking assignment (`x = q.pop_back();`)",
+                );
+                self.placeholder_expr()
+            }
+            ("push_back" | "push_front" | "delete", _) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "statement method used in expression position",
+                );
+                self.placeholder_expr()
+            }
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!("unknown or kind-mismatched dynamic-storage method `.{method}()`"),
+                );
+                self.placeholder_expr()
+            }
+        }
+    }
+
+    /// Method-call STATEMENT on a dyn handle (`q.push_back(v);`, `a.delete(k);`).
+    fn lower_dyn_method_stmt(
+        &mut self,
+        b: &mut ProcessBuilder,
+        net: u32,
+        kind: ir::NetKind,
+        method: &str,
+        args: &[ast::Expr],
+    ) {
+        use ir::NetKind as K;
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let task = match (method, kind, args.len()) {
+            ("push_back", K::Queue, 1) | ("push_front", K::Queue, 1) => {
+                let v = self.lower_expr(&args[0]);
+                let which = if method == "push_back" {
+                    ir::SysTaskId::QPushBack
+                } else {
+                    ir::SysTaskId::QPushFront
+                };
+                ir::Stmt::SysTask {
+                    which,
+                    fmt: None,
+                    args: vec![handle, v],
+                }
+            }
+            ("delete", _, 0) => ir::Stmt::SysTask {
+                which: ir::SysTaskId::DynDelete,
+                fmt: None,
+                args: vec![handle],
+            },
+            ("delete", K::Assoc, 1) => {
+                let k = self.lower_expr(&args[0]);
+                ir::Stmt::SysTask {
+                    which: ir::SysTaskId::AssocDeleteKey,
+                    fmt: None,
+                    args: vec![handle, k],
+                }
+            }
+            ("delete", _, 1) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "indexed delete(i) on a queue/dyn array is outside the MVP (assoc delete(key) only)",
+                );
+                return;
+            }
+            ("pop_back" | "pop_front", K::Queue, _) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a queue pop result must be assigned (`x = q.pop_back();`)",
+                );
+                return;
+            }
+            ("size" | "num" | "exists", _, _) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "value-returning method used as a statement",
+                );
+                return;
+            }
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!("unknown or kind-mismatched dynamic-storage method `.{method}()`"),
+                );
+                return;
+            }
+        };
+        let sid = self.push_stmt(task);
+        b.push_stmt_id(sid);
+    }
+
+    /// `d = new[n] [(src)]` and `x = q.pop_*()` — the two BLOCKING-assign
+    /// special forms (v5 ⑥). True ⇒ fully lowered here.
+    fn dyn_blocking_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        match &rhs.kind {
+            ast::ExprKind::New { size, src } => {
+                // V2005 compat: a net actually named `new` → not the
+                // allocation form; the plain path re-lowers it as a read.
+                if self.lookup_net_scoped("new").is_some() {
+                    return false;
+                }
+                let handle = match lhs {
+                    ast::Lvalue::Ident(p) if p.segments.len() == 1 => {
+                        self.dyn_handle(&p.segments[0].name)
+                    }
+                    _ => None,
+                };
+                let Some((net, ir::NetKind::DynArray)) = handle else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "`new[n]` assigns only to a dynamic-ARRAY handle (`integer d[]; d = new[n];`)",
+                    );
+                    return true;
+                };
+                if delay.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a delayed `new[]` assignment is outside the MVP",
+                    );
+                    return true;
+                }
+                let h = self.push_expr(ir::Expr::Signal { net, word: None });
+                let n_eid = self.lower_expr(size);
+                let mut args = vec![h, n_eid];
+                if let Some(s) = src {
+                    let src_handle = match &s.kind {
+                        ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                            self.dyn_handle(&p.segments[0].name)
+                        }
+                        _ => None,
+                    };
+                    let Some((src_net, ir::NetKind::DynArray)) = src_handle else {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "`new[n](src)` copy source must be a dynamic-array handle",
+                        );
+                        return true;
+                    };
+                    args.push(self.push_expr(ir::Expr::Signal {
+                        net: src_net,
+                        word: None,
+                    }));
+                }
+                let sid = self.push_stmt(ir::Stmt::SysTask {
+                    which: ir::SysTaskId::DynNew,
+                    fmt: None,
+                    args,
+                });
+                b.push_stmt_id(sid);
+                true
+            }
+            ast::ExprKind::Call { name, args } if name.segments.len() == 2 => {
+                let Some((net, ir::NetKind::Queue)) = self.dyn_handle(&name.segments[0].name)
+                else {
+                    return false;
+                };
+                let m = name.segments[1].name.as_str();
+                if m != "pop_back" && m != "pop_front" {
+                    return false; // size()/exists() etc. ride the normal expr path
+                }
+                if delay.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a delayed queue-pop assignment is outside the MVP",
+                    );
+                    return true;
+                }
+                if !args.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "pop_back()/pop_front() take no arguments",
+                    );
+                    return true;
+                }
+                let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+                let pop = self.push_expr(ir::Expr::SysFunc {
+                    which: if m == "pop_front" {
+                        ir::SysFuncId::QPopFront
+                    } else {
+                        ir::SysFuncId::QPopBack
+                    },
+                    args: vec![handle],
+                });
+                let lv = self.lower_lvalue(lhs);
+                self.check_lvalue_kind(&lv, true);
+                let sid = self.push_stmt(ir::Stmt::BlockingAssign { lhs: lv, rhs: pop });
+                b.push_stmt_id(sid);
+                true
+            }
+            _ => false,
+        }
     }
 
     // ── multi-dim unpacked-array access (read/write, (a)-flattening) ─────────
@@ -4213,7 +4958,18 @@ impl<'s> Elaborator<'s> {
     /// (or parenthesized one); anything else → POISON_NET + note.
     fn sens_event_net(&mut self, e: &ast::Expr) -> u32 {
         match &e.kind {
-            ast::ExprKind::Ident(path) => self.resolve_net(path),
+            ast::ExprKind::Ident(path) => {
+                let n = self.resolve_net(path);
+                if self.is_dyn_handle_net(n) {
+                    // v5 ⑥: handles carry no dirty channel — they can never
+                    // wake a process (design §4).
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a dynamic-storage handle cannot appear in an event control",
+                    );
+                }
+                n
+            }
             ast::ExprKind::Paren { inner } => self.sens_event_net(inner),
             _ => {
                 self.warn("event control on a non-signal expression (v2: bare signal names)");
@@ -4231,6 +4987,10 @@ impl<'s> Elaborator<'s> {
             ast::Stmt::Blocking {
                 lhs, delay, rhs, ..
             } => {
+                // v5 ⑥: `d = new[n]` / `x = q.pop_*()` special forms.
+                if self.dyn_blocking_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -5566,6 +6326,13 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
         // Wire + all net aliases (Tri/Uwire/Wand/...) behave as Wire in v1.
         _ => ir::NetKind::Wire,
     }
+}
+
+/// v5 ⑥: VARIABLE kinds eligible as dynamic-storage ELEMENT types (the heap
+/// stores 4-state `Value`s; real elements are deferred, nets are illegal).
+fn net_is_variable(k: ast::NetVarKind) -> bool {
+    use ast::NetVarKind::*;
+    matches!(k, Reg | Logic | Integer | Time)
 }
 
 /// True iff an lvalue is exactly ONE whole-net chunk (no bit/part-select, no

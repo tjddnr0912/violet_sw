@@ -12,12 +12,15 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-11: added `NetVarKind::Event` for named events (v5 batch
-/// B counter desugar) — all `.vu` artifacts are stale. (Previous re-pin
-/// 2026-06-05: `TypedefKind::Struct` + `StructMember`.)
+/// Re-pinned 2026-06-11 (v5 ⑥ front-end batch — ONE flip for the whole
+/// increment): `Dim::{Dyn, Queue, Assoc}` + `AssocKey` + `ExprKind::{New,
+/// Dollar}` (dyn storage) and `TopItem::Interface` + `ModuleItem::Modport` +
+/// `ModportDecl` + `AnsiPort.iface`/`IfaceRef` (interfaces) — all `.vu`
+/// artifacts are stale. (Previous re-pins: 2026-06-11 `NetVarKind::Event`;
+/// 2026-06-05 `TypedefKind::Struct` + `StructMember`.)
 const EXPECTED: [u8; 32] = [
-    53, 21, 195, 152, 139, 248, 53, 61, 113, 107, 228, 140, 183, 189, 149, 162, 204, 198, 210, 41,
-    36, 191, 25, 94, 118, 172, 221, 92, 160, 53, 73, 106,
+    153, 57, 249, 68, 49, 29, 28, 187, 152, 123, 186, 88, 206, 159, 218, 211, 248, 148, 0, 24, 44,
+    177, 75, 109, 164, 8, 240, 215, 124, 199, 77, 26,
 ];
 
 #[test]

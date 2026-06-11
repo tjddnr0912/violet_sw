@@ -121,7 +121,27 @@
    폴스루 → dyn_write가 loud 무시(⑥이 reject). ⚠️ **iverilog 13.0은 assoc 선언
    자체를 거부**(`[int]`/`[longint]`/`[*]` 전부, 라이브 확인 2026-06-11) — dyn 3종 중
    유일하게 **hand-IEEE 핀**(§7.8/§7.9, expression-force 선례)으로 의미론 고정.
-   ⑥front-end 일괄(.vu flip = (B는 완료)+(D)+(C) 문법).
-   각 증분은 TDD + iverilog 라이브 오라클(§4의 warn 문구류·assoc 전체는 hand-IEEE 핀).
+   **⑥front-end 일괄 ✅ 2026-06-11(722 green, .vu flip 1회)** — (C) 문법: lexer `$`
+   토큰(LoneSigil에서 분리)·`Dim::{Dyn,Queue(Option bound),Assoc(AssocKey)}`·
+   `ExprKind::{New,Dollar}`(new는 컨텍스추얼 파스 — V2005의 `new` 식별자는 elaborate
+   net-named-new 폴백으로 보존)·parse_dim 4분기(`[*]`=parse-loud)·메서드는 기존
+   `Call{HierPath 2seg}` AST 재사용(파서 무변경). elaborate: 핸들 NetVar(array_len 0)
+   decl 인터셉트(포트/init/real·event 원소/혼합 dim/bounded=loud), BitSelect r/w를
+   정적 체인보다 먼저 dyn 라우팅, `q[$]`=`dollar_subst` save/restore로 `DynSize-1`
+   치환(`q[$-1]` 산술 지원 — iverilog는 이 문법 자체를 거부, hand-IEEE), `d=new[n]`/
+   `x=q.pop_*()`만 BlockingAssign 특수형(그 외 배치 전부 E3009 loud), 메서드 표
+   (size/num/exists/push/pop/delete(k)) kind-체크 디스패치, 전 핸들 오용(whole r/w·
+   센스티비티·이중 dim) loud. iverilog 차분: dyn/queue 레인 라이브 핀(`q[$-1]`·assoc
+   제외 — 후자는 hand-IEEE). e2e 13 테스트. (D) interface: 스파이크 설계 그대로 —
+   `TopItem::Interface(ModuleDecl 재사용)`+`ModuleItem::Modport`+`AnsiPort.iface`,
+   parse_module_like 공용 파서, elaborate `ifaces`(owned clone)/`iface_insts` 레지스트리,
+   **인스턴스는 nets 단계(4c) 조기 평탄화**(부모 body의 `i.sig`가 pass 7에서 해소돼야
+   — 멱등 가드로 generate-경유 늦은 경로와 공존), 포트 바인딩=심볼 aliasing(BTreeMap
+   prefix-range 복사, cont-assign 0개·net 0개), resolve_net 다중-세그=dot-join 스코프
+   워크(실패시 기존 deferred loud 유지), modport=존재 검증+수용(방향 강제는 후속).
+   **iverilog 13.0은 interface-typed port도 거부 — hand-IEEE 핀**(§25). e2e 8 테스트
+   (alias 동일-net 증명=엣지 센스티비티 관통, MVP cut loud 레인 포함). SimIr 무변경
+   (frozen 0줄, format_version 5 유지), `.vu` 해시 재핀 1회(dyn+iface 일괄).
+   각 증분은 TDD + iverilog 라이브 오라클(§4의 warn 문구류·assoc·interface 전체는 hand-IEEE 핀).
 5. P9/native-eval: dyn 관련 Expr/Stmt·NBA-delay는 allow-list 제외로 시작(전부 interp) —
    P5 차분 게이트가 자동으로 안전망.

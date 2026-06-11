@@ -83,6 +83,11 @@ pub struct SourceUnit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum TopItem {
     Module(ModuleDecl),
+    /// `interface name; … endinterface` (v5 ⑥). The body SHAPE reuses
+    /// `ModuleDecl` (params/signals/cont-assigns/procs come for free);
+    /// elaborate keeps interfaces in their own map and flattens an instance
+    /// into plain nets + symbol aliases (spike 2026-06-10: no new IR).
+    Interface(ModuleDecl),
     /// Recovery placeholder for an unparseable top-level construct.
     Error(Span),
 }
@@ -117,6 +122,18 @@ pub struct AnsiPort {
     pub packed: Vec<Range>,   // ADDITIONAL packed dims: `[3:0][7:0]` ⇒ range=[3:0], packed=[[7:0]]
     pub name: Ident,
     pub default: Option<Expr>, // ANSI default value slot (rare)
+    /// Interface-typed port `intf p` / `intf.mp p` (v5 ⑥). When set, `dir`
+    /// is a placeholder (interface ports carry no direction) and elaborate
+    /// binds the port by SYMBOL ALIASING instead of cont-assign wiring.
+    pub iface: Option<IfaceRef>,
+    pub span: Span,
+}
+
+/// The interface type of an ANSI port: `intf` or `intf.modport`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct IfaceRef {
+    pub iface: Ident,
+    pub modport: Option<Ident>,
     pub span: Span,
 }
 
@@ -145,8 +162,21 @@ pub enum ModuleItem {
     Task(TaskDef),               // [A]
     Defparam(DefparamItem),      // [A] defparam path = expr;
     Typedef(TypedefDecl),        // SV `typedef enum/struct/<type> name;` (Phase-2)
+    /// `modport mp (input a, output b);` (v5 ⑥ — parsed and ACCEPTED; the
+    /// per-member direction checks are a follow-on increment).
+    Modport(ModportDecl),
     /// Recovery placeholder for an unparseable item.
     Error(Span),
+}
+
+/// An interface modport: a named direction view over interface members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ModportDecl {
+    pub name: Ident,
+    /// `(dir, member)` pairs in source order; the direction is sticky across
+    /// commas (`input a, b` ⇒ both inputs).
+    pub ports: Vec<(PortDir, Ident)>,
+    pub span: Span,
 }
 
 /// `typedef <kind> name;` (SV user-defined type, Phase-2).
@@ -263,6 +293,22 @@ pub struct DeclName {
 pub enum Dim {
     Range(Range), // [hi:lo]
     Size(Expr),   // [N]
+    /// `[]` — dynamic array (v5 ⑥).
+    Dyn,
+    /// `[$]` queue; `[$:N]` bounded queue (bound PARSED, elaborate loud-rejects
+    /// it — bounded queues are outside the MVP).
+    Queue(Option<Expr>),
+    /// `[integer]` / `[time]` — associative array with an integer key type
+    /// (v5 ⑥ MVP: keys live in the engine's signed-i64 domain).
+    Assoc(AssocKey),
+}
+
+/// Assoc-array key type (integer keys only in the MVP — string keys are a
+/// Phase-2+ follow-on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum AssocKey {
+    Integer, // 32-bit signed
+    Time,    // 64-bit unsigned
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum NetVarKind {
@@ -577,6 +623,18 @@ pub enum ExprKind {
         typ: Box<Expr>,
         max: Box<Expr>,
     }, // a:b:c
+    /// `new[n]` / `new[n](src)` — dynamic-array allocation (v5 ⑥). Parsed
+    /// CONTEXTUALLY (the ident `new` immediately followed by `[`); elaborate
+    /// falls back to an ordinary array read when a net named `new` is in
+    /// scope, preserving V2005 programs that use `new` as an identifier.
+    New {
+        size: Box<Expr>,
+        src: Option<Box<Expr>>,
+    },
+    /// Bare `$` — the queue last-index (`q[$]`, `q[$-1]`). Only meaningful
+    /// inside a queue element select; elaborate substitutes `size()-1` there
+    /// and loud-rejects it anywhere else.
+    Dollar,
     /// Recovery placeholder so the Pratt loop can keep folding past an error.
     Error,
 }

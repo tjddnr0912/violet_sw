@@ -109,7 +109,7 @@ loud-reject로 확인됨(이제 참):**
 | ✅(F) `disable` 실동작 / proc-`assign`/`deassign` | **완료 2026-06-10, bump 0** — disable=동봉 named block Goto(lazy exit-BB, 기존 CFG byte-불변·비동봉은 loud); proc-assign=Force/Release 재사용+`assign_ranks` 사이드카(weak rank·latent 복귀, `.velab` trailer 세그먼트 append) | 665 green, iverilog 차분(disable 3종·assign const-rhs 2종)+staged trailer 왕복 |
 
 **진입 시퀀스(권장):** ① IR-무변경부터 — ~~(E) immediate assert~~✅ → ~~(D) interface 스파이크~~✅ → ~~(F)~~✅ ②
-~~(C) dynamic storage **설계 문서**~~✅ ③ ~~v5 bump 일괄~~✅ **완주(2026-06-10/11)**: bump(형상+REGEN, `e7f08e8`) → (A) 구현(`1617980`) → (B) 구현(`0a39dec`). **(C) 엔진 증분도 ~~③dyn array~~✅·~~④queue~~✅·~~⑤assoc~~✅(2026-06-11, 701 green — assoc은 iverilog 미지원이라 hand-IEEE 핀). 잔여 = ⑥front-end 일괄(.vu flip — dyn 문법+(D) interface)** — [설계 문서 §6](superpowers/plans/2026-06-10-dynamic-storage-design.md) 순서.
+~~(C) dynamic storage **설계 문서**~~✅ ③ ~~v5 bump 일괄~~✅ **완주(2026-06-10/11)**: bump(형상+REGEN, `e7f08e8`) → (A) 구현(`1617980`) → (B) 구현(`0a39dec`). **(C) 엔진 증분 ~~③dyn array~~✅·~~④queue~~✅·~~⑤assoc~~✅·~~⑥front-end 일괄~~✅(2026-06-11, 722 green — dyn/queue 문법은 iverilog 차분, assoc·interface는 iverilog 자체 미지원이라 hand-IEEE 핀; SimIr 무변경·.vu 재핀 1회). §F 전 항목 소진 — 잔여 후속 = modport 방향 강제·iface 파라미터·dyn 슬라이스/중첩 등 MVP cut 명시분** — [설계 문서 §6](superpowers/plans/2026-06-10-dynamic-storage-design.md) 순서.
 
 ---
 

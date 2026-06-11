@@ -126,6 +126,11 @@ impl<'t, 's> Parser<'t, 's> {
     fn peek(&self) -> Option<TokenKind> {
         self.toks.get(self.pos).map(|t| t.kind)
     }
+    /// Lookahead `n` tokens past the cursor (0 = `peek`).
+    #[inline]
+    fn peek_at(&self, n: usize) -> Option<TokenKind> {
+        self.toks.get(self.pos + n).map(|t| t.kind)
+    }
     #[inline]
     fn at_eof(&self) -> bool {
         self.pos >= self.toks.len()
@@ -575,9 +580,46 @@ impl<'t, 's> Parser<'t, 's> {
                     span: start.to(self.prev_span()),
                 }
             }
+            // v5 ⑥: bare `$` — queue last-index (`q[$]`, `q[$-1]`). A primary
+            // so Pratt arithmetic folds over it; elaborate substitutes
+            // `size()-1` inside a queue select and loud-rejects it elsewhere.
+            Some(T::Dollar) => {
+                self.bump();
+                Expr {
+                    kind: ExprKind::Dollar,
+                    span: start,
+                }
+            }
             // identifier / hierarchical name / function call
             _ if self.is_ident() => {
                 let path = self.hier_path().unwrap();
+                // v5 ⑥: contextual `new[n]` / `new[n](src)` — the ident `new`
+                // immediately followed by `[`. Elaborate falls back to an
+                // array read when a net named `new` is actually in scope
+                // (V2005 keeps `new` as an ordinary identifier).
+                if path.segments.len() == 1
+                    && path.segments[0].name == "new"
+                    && self.peek() == Some(T::LBracket)
+                {
+                    self.bump(); // '['
+                    let size = self.expr(0);
+                    self.expect(T::RBracket, "']'");
+                    let src = if self.peek() == Some(T::LParen) {
+                        self.bump();
+                        let s = self.expr(0);
+                        self.expect(T::RParen, "')'");
+                        Some(Box::new(s))
+                    } else {
+                        None
+                    };
+                    return Expr {
+                        kind: ExprKind::New {
+                            size: Box::new(size),
+                            src,
+                        },
+                        span: start.to(self.prev_span()),
+                    };
+                }
                 // packed-struct member access `s.field` → constant part-select.
                 if let Some((base, off, w)) = self.struct_field_select(&path) {
                     let span = path.span;
@@ -755,11 +797,54 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// Unpacked dimension `[hi:lo]` (Range) or `[N]` (Size) — verdict M3.
+    /// v5 ⑥ adds the dynamic-storage forms: `[]` (dyn array), `[$]`/`[$:N]`
+    /// (queue / bounded queue — the bound parses, elaborate loud-rejects it),
+    /// `[integer]`/`[time]` (assoc, integer key types only). `[*]` (wildcard
+    /// assoc) is a parse error — outside the MVP.
     fn parse_dim(&mut self) -> Option<Dim> {
         if self.peek() != Some(TokenKind::LBracket) {
             return None;
         }
         self.bump(); // '['
+        match self.peek() {
+            // `[]` — dynamic array.
+            Some(TokenKind::RBracket) => {
+                self.bump();
+                return Some(Dim::Dyn);
+            }
+            // `[$]` / `[$:N]` — queue.
+            Some(TokenKind::Dollar) => {
+                self.bump();
+                let bound = if self.peek() == Some(TokenKind::Colon) {
+                    self.bump();
+                    Some(self.expr(0))
+                } else {
+                    None
+                };
+                self.expect(TokenKind::RBracket, "']'");
+                return Some(Dim::Queue(bound));
+            }
+            // `[integer]` / `[time]` — assoc key type (keyword-led, so it can
+            // never shadow a same-named size parameter).
+            Some(TokenKind::Word(WordKind::Keyword(k @ (Kw::Integer | Kw::Time)))) => {
+                self.bump();
+                self.expect(TokenKind::RBracket, "']'");
+                return Some(Dim::Assoc(if k == Kw::Integer {
+                    AssocKey::Integer
+                } else {
+                    AssocKey::Time
+                }));
+            }
+            // `[*]` — wildcard assoc index: outside the MVP, reject loudly at
+            // parse (recover as a plain dyn dim so the decl still resolves).
+            Some(TokenKind::Star) => {
+                self.bump();
+                self.error("a concrete assoc key type (`[integer]`/`[time]`) — wildcard `[*]` is unsupported");
+                self.expect(TokenKind::RBracket, "']'");
+                return Some(Dim::Dyn);
+            }
+            _ => {}
+        }
         let first = self.expr(0);
         let dim = if self.peek() == Some(TokenKind::Colon) {
             let r_start = first.span;
@@ -818,6 +903,15 @@ impl<'t, 's> Parser<'t, 's> {
                         self.synchronize();
                     }
                 }
+            } else if self.at_kw(Kw::Interface) {
+                // v5 ⑥: `interface … endinterface` — same shape as a module.
+                match self.parse_module_like(Kw::Interface, Kw::Endinterface) {
+                    Some(m) => items.push(TopItem::Interface(m)),
+                    None => {
+                        items.push(TopItem::Error(self.prev_span()));
+                        self.synchronize();
+                    }
+                }
             } else {
                 self.error("'module'");
                 let s = self.cur_span();
@@ -836,11 +930,17 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     fn parse_module(&mut self) -> Option<ModuleDecl> {
+        self.parse_module_like(Kw::Module, Kw::Endmodule)
+    }
+
+    /// One body shared by `module…endmodule` and `interface…endinterface`
+    /// (v5 ⑥): the header/body grammar is identical for the MVP subset.
+    fn parse_module_like(&mut self, _start_kw: Kw, end_kw: Kw) -> Option<ModuleDecl> {
         let start = self.cur_span();
         // Variable→struct bindings are module-scoped (type *names* are not).
         self.var_struct.clear();
         let is_macromodule = self.at_kw(Kw::Macromodule);
-        self.bump(); // module / macromodule
+        self.bump(); // module / macromodule / interface
         let name = self.ident()?;
 
         // ANSI param port list: #( parameter … )
@@ -863,9 +963,9 @@ impl<'t, 's> Parser<'t, 's> {
         let ports = self.parse_port_list();
         self.expect(TokenKind::Semi, "';' after module header");
 
-        // body until endmodule — with forward-progress guard (BLOCKER B3)
+        // body until the end keyword — with forward-progress guard (BLOCKER B3)
         let mut body = Vec::new();
-        while !self.at_eof() && !self.at_kw(Kw::Endmodule) {
+        while !self.at_eof() && !self.at_kw(end_kw) {
             let before = self.pos;
             match self.parse_module_item() {
                 Some(it) => body.push(it),
@@ -879,8 +979,12 @@ impl<'t, 's> Parser<'t, 's> {
             } // B3: never spin on a stuck token
         }
         self.expect(
-            TokenKind::Word(WordKind::Keyword(Kw::Endmodule)),
-            "'endmodule'",
+            TokenKind::Word(WordKind::Keyword(end_kw)),
+            if end_kw == Kw::Endinterface {
+                "'endinterface'"
+            } else {
+                "'endmodule'"
+            },
         );
         Some(ModuleDecl {
             is_macromodule,
@@ -911,7 +1015,14 @@ impl<'t, 's> Parser<'t, 's> {
             Some(TokenKind::Word(WordKind::Keyword(
                 Kw::Input | Kw::Output | Kw::Inout
             )))
-        );
+        ) ||
+            // v5 ⑥: `module m(intf bus, …)` — an interface-typed first port:
+            // Ident followed by Ident (`intf bus`) or Dot (`intf.mp bus`).
+            (matches!(self.peek(), Some(TokenKind::Word(WordKind::Ident)))
+                && matches!(
+                    self.peek_at(1),
+                    Some(TokenKind::Word(WordKind::Ident) | TokenKind::Dot)
+                ));
         if ansi {
             let mut ports: Vec<AnsiPort> = Vec::new();
             loop {
@@ -939,6 +1050,54 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    /// v5 ⑥: `modport name (input a, b, output c);` — the direction is sticky
+    /// across commas. Parsed + ACCEPTED (per-member direction checks are a
+    /// follow-on); task/function modport members are outside the MVP.
+    fn parse_modport(&mut self) -> Option<ModportDecl> {
+        let start = self.cur_span();
+        self.bump(); // modport
+        let name = self.ident()?;
+        self.expect(TokenKind::LParen, "'('");
+        let mut ports = Vec::new();
+        let mut dir: Option<PortDir> = None;
+        loop {
+            match self.peek() {
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Input))) => {
+                    self.bump();
+                    dir = Some(PortDir::Input);
+                }
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Output))) => {
+                    self.bump();
+                    dir = Some(PortDir::Output);
+                }
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Inout))) => {
+                    self.bump();
+                    dir = Some(PortDir::Inout);
+                }
+                _ => {}
+            }
+            let Some(d) = dir else {
+                self.error("a direction (input/output/inout) before the first modport member");
+                break;
+            };
+            let Some(member) = self.ident() else {
+                self.error("modport member name");
+                break;
+            };
+            ports.push((d, member));
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')'");
+        self.expect(TokenKind::Semi, "';'");
+        Some(ModportDecl {
+            name,
+            ports,
+            span: start.to(self.prev_span()),
+        })
+    }
+
     /// `prev = None` ⇒ first ANSI port; a missing direction is then an ERROR
     /// (verdict M4: don't silently default the first port to Input). A comma-continued
     /// port with no direction inherits the previous port's direction; a PURE
@@ -946,6 +1105,41 @@ impl<'t, 's> Parser<'t, 's> {
     /// inherits those too, so both `a` and `b` are `[7:0]` (IEEE 1800 §23.2.2.1).
     fn parse_ansi_port(&mut self, prev: Option<&AnsiPort>) -> AnsiPort {
         let start = self.cur_span();
+        // v5 ⑥: interface-typed port `intf p` / `intf.mp p` — an Ident in the
+        // type position followed by Ident/Dot. No direction, no range.
+        if matches!(self.peek(), Some(TokenKind::Word(WordKind::Ident)))
+            && matches!(
+                self.peek_at(1),
+                Some(TokenKind::Word(WordKind::Ident) | TokenKind::Dot)
+            )
+        {
+            let iface = self.ident().unwrap();
+            let modport = if self.eat(TokenKind::Dot) {
+                self.ident()
+            } else {
+                None
+            };
+            let name = self.ident().unwrap_or(Ident {
+                name: String::new(),
+                span: self.cur_span(),
+            });
+            let ispan = iface.span;
+            return AnsiPort {
+                dir: PortDir::Input, // placeholder — iface ports carry no dir
+                net_or_var: None,
+                signed: false,
+                range: None,
+                packed: Vec::new(),
+                name,
+                default: None,
+                iface: Some(IfaceRef {
+                    iface,
+                    modport,
+                    span: ispan,
+                }),
+                span: start.to(self.prev_span()),
+            };
+        }
         let explicit_dir = match self.peek() {
             Some(TokenKind::Word(WordKind::Keyword(Kw::Input))) => {
                 self.bump();
@@ -1008,6 +1202,7 @@ impl<'t, 's> Parser<'t, 's> {
             packed,
             name,
             default,
+            iface: None,
             span: start.to(self.prev_span()),
         }
     }
@@ -1086,6 +1281,10 @@ impl<'t, 's> Parser<'t, 's> {
         // SV `typedef enum/…/<type> name;` (Phase-2 user-defined types).
         if self.at_kw(Kw::Typedef) {
             return self.parse_typedef();
+        }
+        // v5 ⑥: `modport mp (input a, output b);` — interface body item.
+        if self.at_kw(Kw::Modport) {
+            return self.parse_modport().map(ModuleItem::Modport);
         }
         // net/var declaration
         if self.net_var_kind().is_some() {
