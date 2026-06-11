@@ -29,7 +29,7 @@
 
 mod literal;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
 use hdl_ast as ast;
@@ -457,6 +457,10 @@ struct Elaborator<'s> {
     // (FQ path → interface name) consulted by interface-port binding.
     ifaces: BTreeMap<String, ast::ModuleDecl>,
     iface_insts: BTreeMap<String, String>,
+    /// v6 ②: symbol keys aliased through a modport whose direction is INPUT —
+    /// writes through these names are loud (§25.5). Keyed at alias-copy time;
+    /// empty unless a modport binding is live (zero steady cost).
+    modport_readonly: BTreeSet<String>,
 
     // ── v3 hierarchy state ──
     // `cur_prefix` is the dotted instance path of the instance currently being
@@ -577,6 +581,7 @@ impl<'s> Elaborator<'s> {
             dollar_subst: None,
             ifaces: BTreeMap::new(),
             iface_insts: BTreeMap::new(),
+            modport_readonly: BTreeSet::new(),
             cur_prefix: String::new(),
             params: BTreeMap::new(),
             inst_stack: Vec::new(),
@@ -1023,7 +1028,7 @@ impl<'s> Elaborator<'s> {
         for item in &module.body {
             if let ast::ModuleItem::Instance(mi) = item {
                 if self.ifaces.contains_key(mi.module_name.name.as_str()) {
-                    self.elaborate_iface_instances(mi);
+                    self.elaborate_iface_instances(mi, false);
                 }
             }
         }
@@ -1107,7 +1112,7 @@ impl<'s> Elaborator<'s> {
                 // plain nets under the instance prefix (no ir::Instance row,
                 // no new IR — spike 2026-06-10).
                 if self.ifaces.contains_key(mi.module_name.name.as_str()) {
-                    self.elaborate_iface_instances(mi);
+                    self.elaborate_iface_instances(mi, true);
                     return;
                 }
                 self.error(
@@ -1190,31 +1195,62 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// v5 ⑥ (D): flatten interface instances (`intf i();`) into plain nets
-    /// under `cur_prefix.i` — interface signals ARE nets (spike: no new IR).
-    /// MVP: parameterless, portless interfaces; body = signals + cont-assigns
-    /// + procs (+ modports, accepted); anything else is loud.
-    fn elaborate_iface_instances(&mut self, mi: &ast::ModuleInstance) {
+    /// v5 ⑥ (D), extended v6 ②: flatten interface instances (`intf i();`)
+    /// into plain nets under `cur_prefix.i` — interface signals ARE nets
+    /// (spike: no new IR). v6 adds `#(parameter)` overrides and ANSI header
+    /// ports (`interface bus(input logic c)`). Header-port CONNECTIONS wire
+    /// in the LATE pass only (`wire_phase` — pass 8, when every parent net
+    /// exists); the early 4c pass flattens for parent-body visibility.
+    /// Non-ANSI / interface-typed header ports stay loud.
+    fn elaborate_iface_instances(&mut self, mi: &ast::ModuleInstance, wire_phase: bool) {
         let iface_name = mi.module_name.name.clone();
         let Some(decl) = self.ifaces.get(&iface_name).cloned() else {
             return;
         };
-        if !mi.param_overrides.is_empty() || !decl.params.is_empty() {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "interface parameters are outside the MVP",
-            );
-            return;
+        // v6 ②: per-instance parameter overrides — resolved NOW, in the
+        // PARENT scope, exactly like the module-instance path (Fix 1).
+        let mut overrides: Vec<ResolvedOverride> = Vec::with_capacity(mi.param_overrides.len());
+        for ov in &mi.param_overrides {
+            match ov {
+                ast::ParamConn::Positional(e) => {
+                    let value = self.const_eval_in_scope(e);
+                    if value.is_none() {
+                        self.warn("parameter override expression is not a constant; default kept");
+                    }
+                    overrides.push(ResolvedOverride {
+                        name: None,
+                        value,
+                        is_named: false,
+                    });
+                }
+                ast::ParamConn::Named { name, value, .. } => {
+                    let v = value.as_ref().and_then(|e| {
+                        let r = self.const_eval_in_scope(e);
+                        if r.is_none() {
+                            self.warn(&format!(
+                                "override of parameter `{}` is not a constant; default kept",
+                                name.name
+                            ));
+                        }
+                        r
+                    });
+                    overrides.push(ResolvedOverride {
+                        name: Some(name.name.clone()),
+                        value: v,
+                        is_named: true,
+                    });
+                }
+            }
         }
-        let portless = match &decl.ports {
+        let ports_ok = match &decl.ports {
             ast::PortList::None => true,
-            ast::PortList::Ansi(v) => v.is_empty(),
+            ast::PortList::Ansi(v) => v.iter().all(|p| p.iface.is_none()),
             ast::PortList::NonAnsi(v) => v.is_empty(),
         };
-        if !portless {
+        if !ports_ok {
             self.error(
                 MsgCode::ElabUnsupported,
-                "interface header ports are outside the MVP",
+                "non-ANSI or interface-typed header ports on an interface are outside the MVP",
             );
             return;
         }
@@ -1226,62 +1262,99 @@ impl<'s> Elaborator<'s> {
                 );
                 continue;
             }
-            let has_conns = match &item.conns {
-                ast::PortConnList::Named(v) => !v.is_empty(),
-                ast::PortConnList::Positional(v) => !v.is_empty(),
-            };
-            if has_conns {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "interface instance connections are outside the MVP",
-                );
-                continue;
-            }
             let path = self.child_prefix(&item.name.name);
-            if self.iface_insts.contains_key(&path) {
-                continue; // already flattened in the EARLY pass (4c)
-            }
-            let saved_prefix = std::mem::replace(&mut self.cur_prefix, path.clone());
-            // nets first (declaration order), then logic — mirroring the
-            // module body passes (4)/(7).
-            for it in &decl.body {
-                if let ast::ModuleItem::NetVar(d) = it {
-                    self.elaborate_netvar_decl(d, &decl.ports, &decl.body);
-                }
-            }
-            for it in &decl.body {
-                match it {
-                    ast::ModuleItem::ContAssign(ca) => self.elaborate_cont_assign(ca),
-                    ast::ModuleItem::Proc(pb) => {
-                        let proc = self.lower_proc_block(pb);
-                        self.push_process(proc);
-                    }
-                    ast::ModuleItem::NetVar(d) => self.elaborate_net_init_drivers(d),
-                    ast::ModuleItem::Modport(_) => {} // accepted (checks follow on)
-                    ast::ModuleItem::Error(_)
-                    | ast::ModuleItem::Param(_)
-                    | ast::ModuleItem::PortDecl(_)
-                    | ast::ModuleItem::Genvar { .. } => {}
-                    other => {
-                        let what = match other {
-                            ast::ModuleItem::Instance(_) => "nested instances",
-                            ast::ModuleItem::Generate(_) => "generate blocks",
-                            ast::ModuleItem::Func(_) | ast::ModuleItem::Task(_) => {
-                                "functions/tasks"
-                            }
-                            ast::ModuleItem::Typedef(_) => "typedefs",
-                            ast::ModuleItem::Defparam(_) => "defparam",
-                            _ => "this construct",
-                        };
-                        self.error(
-                            MsgCode::ElabUnsupported,
-                            &format!("{what} inside an interface are outside the MVP"),
-                        );
+            if !self.iface_insts.contains_key(&path) {
+                let saved_prefix = std::mem::replace(&mut self.cur_prefix, path.clone());
+                // params (header `#(...)` then body localparams) BEFORE nets
+                // so `[W-1:0]` folds — mirroring module passes (3)/(3b).
+                let mut saved_params = self.bind_params(&decl, &overrides);
+                for it in &decl.body {
+                    if let ast::ModuleItem::Param(pp) = it {
+                        let v = self.const_eval_in_scope(&pp.value).unwrap_or_else(|| {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!(
+                                    "parameter `{}` value is not a foldable constant expression",
+                                    pp.name.name
+                                ),
+                            );
+                            0
+                        });
+                        let key = self.fq(&pp.name.name);
+                        saved_params.push((key.clone(), self.params.insert(key, v)));
                     }
                 }
+                // ANSI header ports → nets (the iface body + `i.<port>` see them).
+                self.elaborate_ports(&decl.ports);
+                // nets first (declaration order), then logic — mirroring the
+                // module body passes (4)/(7).
+                for it in &decl.body {
+                    if let ast::ModuleItem::NetVar(d) = it {
+                        self.elaborate_netvar_decl(d, &decl.ports, &decl.body);
+                    }
+                }
+                for it in &decl.body {
+                    match it {
+                        ast::ModuleItem::ContAssign(ca) => self.elaborate_cont_assign(ca),
+                        ast::ModuleItem::Proc(pb) => {
+                            let proc = self.lower_proc_block(pb);
+                            self.push_process(proc);
+                        }
+                        ast::ModuleItem::NetVar(d) => self.elaborate_net_init_drivers(d),
+                        ast::ModuleItem::Modport(_) => {} // binding enforces dirs
+                        ast::ModuleItem::Error(_)
+                        | ast::ModuleItem::Param(_)
+                        | ast::ModuleItem::PortDecl(_)
+                        | ast::ModuleItem::Genvar { .. } => {}
+                        other => {
+                            let what = match other {
+                                ast::ModuleItem::Instance(_) => "nested instances",
+                                ast::ModuleItem::Generate(_) => "generate blocks",
+                                ast::ModuleItem::Func(_) | ast::ModuleItem::Task(_) => {
+                                    "functions/tasks"
+                                }
+                                ast::ModuleItem::Typedef(_) => "typedefs",
+                                ast::ModuleItem::Defparam(_) => "defparam",
+                                _ => "this construct",
+                            };
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!("{what} inside an interface are outside the MVP"),
+                            );
+                        }
+                    }
+                }
+                self.iface_insts.insert(path.clone(), iface_name.clone());
+                self.restore_params(saved_params);
+                self.cur_prefix = saved_prefix;
             }
-            self.iface_insts.insert(path.clone(), iface_name.clone());
-            self.cur_prefix = saved_prefix;
+            // v6 ②: header-port connections wire LATE (all parent nets exist
+            // by pass 8); the early 4c call leaves them for this pass.
+            if wire_phase {
+                let has_conns = match &item.conns {
+                    ast::PortConnList::Named(v) => !v.is_empty(),
+                    ast::PortConnList::Positional(v) => !v.is_empty(),
+                };
+                let has_ports = !matches!(&decl.ports, ast::PortList::None)
+                    && !matches!(&decl.ports, ast::PortList::Ansi(v) if v.is_empty());
+                if has_conns && !has_ports {
+                    self.error(
+                        MsgCode::ElabPortMismatch,
+                        "connections on a portless interface instance",
+                    );
+                    continue;
+                }
+                if has_ports {
+                    let binding = match &item.conns {
+                        ast::PortConnList::Named(v) => PortBinding::Named(v),
+                        ast::PortConnList::Positional(v) => PortBinding::Positional(v),
+                    };
+                    let saved_prefix = std::mem::replace(&mut self.cur_prefix, path.clone());
+                    let parent = saved_prefix.clone();
+                    self.wire_ports(&decl, binding, &parent);
+                    self.cur_prefix = saved_prefix;
+                }
+            }
         }
     }
 
@@ -1308,12 +1381,14 @@ impl<'s> Elaborator<'s> {
                 return;
             }
         };
-        let parent_fq = if parent_prefix.is_empty() {
-            inst_name.clone()
-        } else {
-            format!("{parent_prefix}.{inst_name}")
-        };
-        let Some(actual) = self.iface_insts.get(&parent_fq).cloned() else {
+        // v6 ② (D): resolve the instance name with the SAME outward scope
+        // walk nets use, so a child inside a generate block binds an iface
+        // declared in the enclosing module body. The walk runs in the PARENT
+        // scope (cur_prefix is the child's during port binding).
+        let saved_for_lookup = std::mem::replace(&mut self.cur_prefix, parent_prefix.to_string());
+        let found = self.walk_scopes_key(&inst_name, |k| self.iface_insts.contains_key(k));
+        self.cur_prefix = saved_for_lookup;
+        let Some(parent_fq) = found else {
             self.error(
                 MsgCode::ElabPortMismatch,
                 &format!(
@@ -1322,6 +1397,7 @@ impl<'s> Elaborator<'s> {
             );
             return;
         };
+        let actual = self.iface_insts[&parent_fq].clone();
         if actual != iref.iface.name {
             self.error(
                 MsgCode::ElabPortMismatch,
@@ -1332,33 +1408,83 @@ impl<'s> Elaborator<'s> {
             );
             return;
         }
-        if let Some(mp) = &iref.modport {
-            // MVP: the modport must EXIST (a typo is loud); per-member
-            // direction enforcement is a follow-on increment.
-            let exists = self.ifaces.get(&actual).is_some_and(|d| {
-                d.body
-                    .iter()
-                    .any(|it| matches!(it, ast::ModuleItem::Modport(m) if m.name.name == mp.name))
-            });
-            if !exists {
-                self.error(
-                    MsgCode::ElabPortMismatch,
-                    &format!("interface `{actual}` has no modport `{}`", mp.name),
-                );
-                return;
+        // v6 ②: with a modport, only the LISTED members are visible through
+        // the port (§25.5) and `input` members are read-only. Without one,
+        // every member aliases with full access.
+        let mp_dirs: Option<BTreeMap<String, ast::PortDir>> = match &iref.modport {
+            Some(mp) => {
+                let decl = self.ifaces.get(&actual).and_then(|d| {
+                    d.body.iter().find_map(|it| match it {
+                        ast::ModuleItem::Modport(m) if m.name.name == mp.name => Some(m.clone()),
+                        _ => None,
+                    })
+                });
+                let Some(m) = decl else {
+                    self.error(
+                        MsgCode::ElabPortMismatch,
+                        &format!("interface `{actual}` has no modport `{}`", mp.name),
+                    );
+                    return;
+                };
+                Some(
+                    m.ports
+                        .iter()
+                        .map(|(d, id)| (id.name.clone(), *d))
+                        .collect(),
+                )
             }
-        }
-        // Alias every symbol under the instance into the child port scope.
+            None => None,
+        };
+        // Alias the visible symbols under the instance into the child port scope.
         let src_prefix = format!("{parent_fq}.");
         let dst_prefix = format!("{}.", self.fq(pname));
-        let aliases: Vec<(String, u32)> = self
+        let aliases: Vec<(String, u32, Option<ast::PortDir>)> = self
             .symbols
             .range(src_prefix.clone()..)
             .take_while(|(k, _)| k.starts_with(&src_prefix))
-            .map(|(k, &id)| (format!("{dst_prefix}{}", &k[src_prefix.len()..]), id))
+            .filter_map(|(k, &id)| {
+                let suffix = &k[src_prefix.len()..];
+                // The modport lists direct MEMBERS (single segment) — match on
+                // the first path segment so any future nested suffix follows
+                // its member's visibility.
+                let member = suffix.split('.').next().unwrap_or(suffix);
+                let dir = match &mp_dirs {
+                    Some(dirs) => Some(*dirs.get(member)?), // unlisted → invisible
+                    None => None,
+                };
+                Some((format!("{dst_prefix}{suffix}"), id, dir))
+            })
             .collect();
-        for (k, id) in aliases {
+        for (k, id, dir) in aliases {
+            if matches!(dir, Some(ast::PortDir::Input)) {
+                self.modport_readonly.insert(k.clone());
+            }
             self.symbols.insert(k, id);
+        }
+    }
+
+    /// v6 ②: error on a WRITE that resolves through a modport `input` alias.
+    /// Called once per lvalue root; mirrors the symbol lookup exactly via
+    /// [`Self::walk_scopes_key`], so name-level granularity is preserved (the
+    /// same net stays writable through the parent or an `output` modport).
+    fn check_modport_write(&mut self, path: &ast::HierPath) {
+        if self.modport_readonly.is_empty() {
+            return;
+        }
+        let joined = path
+            .segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(".");
+        let key = self.walk_scopes_key(&joined, |k| self.symbols.contains_key(k));
+        if let Some(k) = key {
+            if self.modport_readonly.contains(&k) {
+                self.error(
+                    MsgCode::ElabPortMismatch,
+                    &format!("cannot write `{joined}` through a modport `input` (read-only)"),
+                );
+            }
         }
     }
 
@@ -1660,6 +1786,15 @@ impl<'s> Elaborator<'s> {
     /// the first instance boundary. Used for both params/genvars and the symbol
     /// (net) table so the visibility rule is identical for each.
     fn walk_scopes<T: Copy>(&self, name: &str, table: &BTreeMap<String, T>) -> Option<T> {
+        self.walk_scopes_key(name, |k| table.contains_key(k))
+            .and_then(|k| table.get(&k).copied())
+    }
+
+    /// The key-returning core of [`Self::walk_scopes`] — ONE source of truth
+    /// for the visibility rule, so key-level consumers (the modport
+    /// read-only check, the iface-instance lookup) can never drift from the
+    /// value-level lookups.
+    fn walk_scopes_key(&self, name: &str, hit: impl Fn(&str) -> bool) -> Option<String> {
         let mut prefix = self.cur_prefix.as_str();
         loop {
             let key = if prefix.is_empty() {
@@ -1667,8 +1802,8 @@ impl<'s> Elaborator<'s> {
             } else {
                 format!("{prefix}.{name}")
             };
-            if let Some(&v) = table.get(&key) {
-                return Some(v);
+            if hit(&key) {
+                return Some(key);
             }
             if prefix.is_empty() {
                 return None;
@@ -2827,6 +2962,12 @@ impl<'s> Elaborator<'s> {
     }
 
     fn collect_lval_chunks(&mut self, lv: &ast::Lvalue, out: &mut Vec<ir::LvalChunk>) {
+        // v6 ②: every lvalue shape roots at one Ident — check the modport
+        // write rule once per root (concat parts re-enter here per part).
+        if let Some(path) = lval_root_path(lv) {
+            let path = path.clone();
+            self.check_modport_write(&path);
+        }
         match lv {
             ast::Lvalue::Ident(path) => {
                 // An output/inout task formal written by an inlined body targets the
@@ -6479,6 +6620,18 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
 
 /// v5 ⑥: VARIABLE kinds eligible as dynamic-storage ELEMENT types (the heap
 /// stores 4-state `Value`s; real elements are deferred, nets are illegal).
+/// The root `Ident` of an lvalue (through select bases). `None` for a concat
+/// (its parts are checked individually) and parse-error recovery.
+fn lval_root_path(lv: &ast::Lvalue) -> Option<&ast::HierPath> {
+    match lv {
+        ast::Lvalue::Ident(p) => Some(p),
+        ast::Lvalue::BitSelect { base, .. }
+        | ast::Lvalue::PartSelect { base, .. }
+        | ast::Lvalue::IndexedPart { base, .. } => lval_root_path(base),
+        _ => None,
+    }
+}
+
 fn net_is_variable(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
     matches!(k, Reg | Logic | Integer | Time)

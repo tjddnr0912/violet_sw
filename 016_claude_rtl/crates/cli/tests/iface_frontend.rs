@@ -243,18 +243,6 @@ endmodule
 
 #[test]
 fn iface_mvp_cuts_are_loud() {
-    // parameterized interface
-    assert_loud(
-        r#"
-interface bus_if #(parameter W = 8);
-  logic [W-1:0] d;
-endinterface
-module t;
-  bus_if i();
-endmodule
-"#,
-        "interface parameters",
-    );
     // nested module instance inside an interface
     assert_loud(
         r#"
@@ -286,4 +274,224 @@ endmodule
 "#,
         "module/interface name collision",
     );
+}
+
+// ───────────────────────── ② interface follow-ons (v6 batch) ─────────────────────────
+
+#[test]
+fn modport_input_write_is_loud() {
+    // hand-IEEE §25.5: a modport `input` member is read-only inside the
+    // module bound through that modport — a write is an error.
+    let src = r#"
+interface bus_if;
+  logic req;
+  logic ack;
+  modport consumer (input req, output ack);
+endinterface
+
+module sink(bus_if.consumer p);
+  initial p.req = 1'b1;
+endmodule
+
+module t;
+  bus_if i();
+  sink u(.p(i));
+endmodule
+"#;
+    assert_loud(src, "write through a modport input");
+}
+
+#[test]
+fn modport_input_nba_and_cont_assign_writes_are_loud() {
+    let nba = r#"
+interface bus_if;
+  logic req;
+  modport consumer (input req);
+endinterface
+module sink(bus_if.consumer p);
+  initial p.req <= 1'b1;
+endmodule
+module t;
+  bus_if i();
+  sink u(.p(i));
+endmodule
+"#;
+    assert_loud(nba, "NBA write through a modport input");
+    let ca = r#"
+interface bus_if;
+  logic req;
+  modport consumer (input req);
+endinterface
+module sink(bus_if.consumer p);
+  assign p.req = 1'b0;
+endmodule
+module t;
+  bus_if i();
+  sink u(.p(i));
+endmodule
+"#;
+    assert_loud(ca, "cont-assign through a modport input");
+}
+
+#[test]
+fn modport_output_write_reaches_parent() {
+    // Output members stay writable; the write lands on the SAME net the
+    // parent sees (aliasing, not a copy).
+    let src = r#"
+interface bus_if;
+  logic req;
+  logic ack;
+  modport consumer (input req, output ack);
+endinterface
+
+module sink(bus_if.consumer p);
+  initial begin
+    #1;
+    if (p.req) p.ack = 1'b1;
+  end
+endmodule
+
+module t;
+  bus_if i();
+  sink u(.p(i));
+  initial i.req = 1'b1;
+  initial begin
+    #2;
+    $display("ack=%0d", i.ack);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "ack=1\n");
+}
+
+#[test]
+fn modport_unlisted_member_is_invisible() {
+    // §25.5: a modport RESTRICTS access to its listed members — an unlisted
+    // member is not visible through the port at all.
+    let src = r#"
+interface bus_if;
+  logic req;
+  logic secret;
+  modport consumer (input req);
+endinterface
+
+module sink(bus_if.consumer p);
+  initial $display("%0d", p.secret);
+endmodule
+
+module t;
+  bus_if i();
+  sink u(.p(i));
+endmodule
+"#;
+    assert_loud(src, "unlisted modport member");
+}
+
+#[test]
+fn iface_parameter_override() {
+    // interface #(parameter W) — per-instance override widens the bundle.
+    let src = r#"
+interface bus_if #(parameter W = 4);
+  logic [W-1:0] d;
+endinterface
+
+module t;
+  bus_if #(8) wide();
+  bus_if narrow();
+  initial begin
+    wide.d = 8'd165;
+    narrow.d = 8'd165; // truncates to 4 bits → 5
+    #1;
+    $display("%0d %0d", wide.d, narrow.d);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "165 5\n");
+}
+
+#[test]
+fn iface_header_input_port_wires_parent_expr() {
+    // interface HEADER port (ANSI input): the parent connection drives the
+    // iface-internal port net, visible to the iface body and via i.<port>.
+    let src = r#"
+interface bus_if(input logic c);
+  logic d;
+  assign d = c;
+endinterface
+
+module t;
+  logic clk;
+  bus_if b(clk);
+  initial begin
+    clk = 1'b1;
+    #1;
+    $display("%0d %0d", b.c, b.d);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "1 1\n");
+}
+
+#[test]
+fn iface_header_output_port_drives_parent() {
+    let src = r#"
+interface bus_if(output logic ready);
+  initial ready = 1'b1;
+endinterface
+
+module t;
+  logic r;
+  bus_if b(r);
+  initial begin
+    #1;
+    $display("%0d", r);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "1\n");
+}
+
+#[test]
+fn generate_nested_child_takes_iface_port() {
+    // A child instantiated INSIDE a generate block binds an iface declared at
+    // the top level — the binding lookup walks generate scopes outward.
+    let src = r#"
+interface bus_if;
+  logic [7:0] d;
+endinterface
+
+module sink(bus_if b);
+  initial begin
+    #1;
+    $display("%0d", b.d);
+  end
+endmodule
+
+module t;
+  bus_if i();
+  genvar g;
+  generate
+    for (g = 0; g < 1; g = g + 1) begin : blk
+      sink u(.b(i));
+    end
+  endgenerate
+  initial i.d = 8'd77;
+endmodule
+"#;
+    assert_eq!(run_vita(src), "77\n");
+}
+
+#[test]
+fn iface_header_nonansi_ports_stay_loud() {
+    let src = r#"
+interface bus_if(c);
+  input c;
+endinterface
+
+module t;
+  logic clk;
+  bus_if b(clk);
+endmodule
+"#;
+    assert_loud(src, "non-ANSI interface header ports");
 }
