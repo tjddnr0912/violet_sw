@@ -277,16 +277,7 @@ endmodule
 }
 
 #[test]
-fn bounded_queue_and_wildcard_assoc_are_loud() {
-    assert_loud_reject(
-        r#"
-module t;
-  integer q [$:4];
-  initial q.push_back(1);
-endmodule
-"#,
-        "bounded queue [$:N]",
-    );
+fn wildcard_assoc_is_loud() {
     let (_, err, ok) = run_vita_full(
         r#"
 module t;
@@ -605,4 +596,92 @@ module t;
 endmodule
 "#;
     assert_eq!(run_vita(src), "24930\n1836016741\n");
+}
+
+// ── v6 ③: bounded queue [$:N] (iverilog-pinned) ──
+
+#[test]
+fn bounded_queue_truncates_tail() {
+    // Oracle: iverilog live (2026-06-11) — bound 2 = max size 3 (N+1).
+    // ONE rule covers all ops: whatever ends beyond the bound falls off the
+    // TAIL (push_back-on-full = skip; push_front/insert-on-full drop the
+    // back element).
+    let src = r#"
+module t;
+  integer q [$:2];
+  integer x;
+  initial begin
+    q.push_back(1); q.push_back(2); q.push_back(3);
+    $display("size=%0d", q.size());
+    q.push_back(4);
+    $display("after push4 size=%0d back=%0d", q.size(), q[q.size()-1]);
+    q.push_front(0);
+    $display("after pushf size=%0d front=%0d back=%0d", q.size(), q[0], q[q.size()-1]);
+    q.insert(1, 99);
+    $display("after ins size=%0d", q.size());
+    x = q.pop_back();
+    $display("pop=%0d size=%0d", x, q.size());
+  end
+endmodule
+"#;
+    let (out, err, ok) = run_vita_full(src);
+    assert!(ok, "stderr:\n{err}");
+    let mut body = String::new();
+    for l in out.lines().filter(|l| !l.starts_with("simulation ended")) {
+        body.push_str(l);
+        body.push('\n');
+    }
+    assert_eq!(
+        body,
+        "size=3\nafter push4 size=3 back=3\nafter pushf size=3 front=0 back=2\nafter ins size=3\npop=1 size=2\n"
+    );
+    assert!(err.contains("W4020"), "bound drops must warn: {err}");
+}
+
+#[test]
+fn bounded_queue_staged_roundtrip_preserves_bound() {
+    // vcmp → velab → vrun: the bound rides the .velab trailer (sidecar), so
+    // the staged flow enforces it exactly like the oneshot.
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("vita_bq_{}_{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sv = dir.join("b.sv");
+    std::fs::write(
+        &sv,
+        r#"
+module t;
+  integer q [$:1];
+  initial begin
+    q.push_back(7); q.push_back(8); q.push_back(9);
+    $display("%0d %0d %0d", q.size(), q[0], q[1]);
+    $finish;
+  end
+endmodule
+"#,
+    )
+    .unwrap();
+    let vu = dir.join("b.vu");
+    let velab = dir.join("b.velab");
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_vita"))
+            .args(args)
+            .output()
+            .expect("run vita");
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            out.status.success(),
+        )
+    };
+    let (_, err, ok) = run(&["vcmp", sv.to_str().unwrap(), "-o", vu.to_str().unwrap()]);
+    assert!(ok, "vcmp: {err}");
+    let (_, err, ok) = run(&["velab", vu.to_str().unwrap(), "-o", velab.to_str().unwrap()]);
+    assert!(ok, "velab: {err}");
+    let (out, err, ok) = run(&["vrun", velab.to_str().unwrap()]);
+    assert!(ok, "vrun: {err}");
+    assert!(
+        out.starts_with("2 7 8\n"),
+        "staged bound must hold (max size 2); got:\n{out}"
+    );
+    assert!(err.contains("W4020"), "staged drop warns: {err}");
 }

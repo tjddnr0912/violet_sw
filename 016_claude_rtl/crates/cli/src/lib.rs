@@ -558,6 +558,7 @@ fn run_vita_str_gated(
         severities: sc.severities,
         radixes: sc.radixes,
         assign_ranks: sc.assign_ranks,
+        queue_bounds: sc.queue_bounds,
         proc_scopes: sc.proc_scopes,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
@@ -1182,6 +1183,10 @@ fn run_velab_gated(
         &postcard::to_stdvec(&sc.assign_ranks)
             .expect("assign-rank trailer postcard encode infallible"),
     );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.queue_bounds)
+            .expect("queue-bound trailer postcard encode infallible"),
+    );
     let vheader = artifact_header(
         vita_schema::schema_hash::<sim_ir::SimIr>(),
         global_prec_exp,
@@ -1350,16 +1355,33 @@ fn run_vrun_gated(
     // Assign-rank trailer (§9.3.1 proc assign/deassign). Tolerant → empty ⇒
     // every Force/Release stmt is a real force/release (pre-rank `.velab`s
     // cannot contain proc-assign stmts, so empty is also CORRECT for them).
-    let assign_ranks: sim_engine::AssignRankTable = if rest7.is_empty() {
-        sim_engine::AssignRankTable::new()
+    let (assign_ranks, rest8): (sim_engine::AssignRankTable, &[u8]) = if rest7.is_empty() {
+        (sim_engine::AssignRankTable::new(), rest7)
     } else {
-        match postcard::from_bytes(rest7) {
+        match postcard::take_from_bytes(rest7) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab assign-rank trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // Queue-bound trailer (v6 ③). Tolerant → empty ⇒ every queue unbounded
+    // (also CORRECT for pre-bound `.velab`s, which reject `[$:N]` upstream).
+    let queue_bounds: sim_engine::QueueBoundTable = if rest8.is_empty() {
+        sim_engine::QueueBoundTable::new()
+    } else {
+        match postcard::from_bytes(rest8) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab queue-bound trailer: {e}"
                     )),
                 )
             }
@@ -1374,6 +1396,7 @@ fn run_vrun_gated(
         severities,
         radixes,
         assign_ranks,
+        queue_bounds,
         proc_scopes,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()

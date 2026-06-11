@@ -144,6 +144,9 @@ pub(crate) struct SimState<'a> {
     /// Assign-rank table (§9.3.1, from `SimOpts.assign_ranks`): StmtIds of
     /// Force/Release stmts that are procedural assign/deassign (weak rank).
     pub assign_ranks: crate::AssignRankTable,
+    /// Bounded-queue bounds (v6 ③, from `SimOpts.queue_bounds`): handle
+    /// NetId → N. Empty ⇒ every queue unbounded.
+    pub queue_bounds: crate::QueueBoundTable,
     /// Per-ProcId instance path for `%m` (P2-11); empty ⇒ flat `top` fallback.
     pub proc_scopes: Vec<String>,
     /// Instance path of the process CURRENTLY executing — set per `run_process`
@@ -246,6 +249,7 @@ impl<'a> SimState<'a> {
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),
             assign_ranks: crate::AssignRankTable::new(),
+            queue_bounds: crate::QueueBoundTable::new(),
             proc_scopes: Vec::new(),
             cur_scope: "top".to_string(),
             threads: 1,
@@ -807,6 +811,7 @@ impl<'a> SimState<'a> {
                 // len ≤ the cap, far below the sentinel.
                 std::cmp::Ordering::Equal if len < MAX_DYN_ELEMS => {
                     elems.push_back(piece.clone().resize(w));
+                    self.enforce_queue_bound(net); // v6 ③ (no-op when unbounded)
                 }
                 std::cmp::Ordering::Equal => self.dyn_warn_once_at(
                     net,
@@ -884,6 +889,30 @@ impl<'a> SimState<'a> {
             });
         if let DynObj::AssocStr { map } = entry {
             map.insert(k.clone(), value.clone().resize(w));
+        }
+    }
+
+    /// v6 ③: bounded-queue post-op rule (iverilog live, IEEE §7.10):
+    /// whatever the op left beyond size N+1 falls off the TAIL — one rule
+    /// reproduces push_back-on-full (= skip), push_front-on-full (back
+    /// drops) and insert-on-full (back drops). Loud (W4020 once per net).
+    pub(crate) fn enforce_queue_bound(&mut self, net: u32) {
+        let Some(&b) = self.queue_bounds.get(&net) else {
+            return;
+        };
+        let cap = b as usize + 1;
+        let mut dropped = false;
+        if let Some(DynObj::Queue { elems }) = self.dyn_heap.get_mut(&net) {
+            while elems.len() > cap {
+                elems.pop_back();
+                dropped = true;
+            }
+        }
+        if dropped {
+            self.dyn_warn_once_at(
+                net,
+                "bounded queue exceeded its bound; tail element(s) dropped",
+            );
         }
     }
 }

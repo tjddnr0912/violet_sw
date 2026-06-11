@@ -163,6 +163,7 @@ pub(crate) fn dispatch(
                     elems.push_back(v);
                 }
             }
+            sched.st.enforce_queue_bound(net); // v6 ③ (no-op when unbounded)
             Ctl::Continue
         }
         // v6: queue `.insert(i, v)` / `.delete(i)` — iverilog live (2026-06-11):
@@ -231,6 +232,7 @@ pub(crate) fn dispatch(
                 if let crate::state::DynObj::Queue { elems } = entry {
                     elems.insert(idx.unwrap_or(0) as usize, v);
                 }
+                sched.st.enforce_queue_bound(net); // v6 ③ (no-op when unbounded)
             } else {
                 let ok = matches!(idx, Some(i) if i < len as u64);
                 if !ok {

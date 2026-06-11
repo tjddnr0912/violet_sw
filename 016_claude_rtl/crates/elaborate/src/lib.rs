@@ -143,6 +143,12 @@ pub type RadixTable = std::collections::BTreeMap<u32, u8>;
 /// `release` hands control back to it). Out-of-band like the other tables.
 pub type AssignRankTable = std::collections::BTreeSet<u32>;
 
+/// Bounded-queue side table (v6 ③): HANDLE NetId → declared bound N
+/// (`[$:N]`, max size N+1 — iverilog live). EMPTY by default (every queue
+/// unbounded). Never enters the golden IR — rides `SimOpts` + a `.velab`
+/// trailer segment like every other sidecar.
+pub type QueueBoundTable = std::collections::BTreeMap<u32, u32>;
+
 /// Engine-facing side tables produced by one elaboration — ALL out-of-band
 /// (`SimOpts` fields / `.velab` trailers, each serialized as its OWN postcard
 /// segment for append-only compatibility); none ever enters the golden `SimIr`.
@@ -158,6 +164,8 @@ pub struct Sidecars {
     pub proc_scopes: Vec<String>,
     /// StmtIds of Force/Release stmts that are procedural assign/deassign.
     pub assign_ranks: AssignRankTable,
+    /// Bounded-queue bounds (v6 ③): handle NetId → N.
+    pub queue_bounds: QueueBoundTable,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -206,6 +214,7 @@ pub fn elaborate_with_timescale(
         radixes: std::mem::take(&mut el.radixes),
         proc_scopes: std::mem::take(&mut el.proc_scopes),
         assign_ranks: std::mem::take(&mut el.assign_ranks),
+        queue_bounds: std::mem::take(&mut el.queue_bounds),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -554,6 +563,8 @@ struct Elaborator<'s> {
     // StmtIds of Force/Release stmts that are procedural assign/deassign (§9.3.1
     // weak rank — see [`AssignRankTable`]).
     assign_ranks: AssignRankTable,
+    // Bounded-queue bounds (v6 ③): handle NetId → N.
+    queue_bounds: QueueBoundTable,
     // NetIds of named events (v5 batch B): each `event e` is a 64-bit counter
     // Reg (init 0). `->e` increments it; `@(e)` is plain AnyEdge sensitivity.
     // The set guards the VALUE surface — an event cannot be read or written.
@@ -595,6 +606,7 @@ impl<'s> Elaborator<'s> {
             severities: SeverityTable::new(),
             radixes: RadixTable::new(),
             assign_ranks: AssignRankTable::new(),
+            queue_bounds: QueueBoundTable::new(),
             event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
             cur_proc: 0,
@@ -2226,13 +2238,25 @@ impl<'s> Elaborator<'s> {
                     );
                     continue;
                 }
-                if matches!(decl.unpacked[0], ast::Dim::Queue(Some(_))) {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "bounded queue `[$:N]` is outside the MVP (use an unbounded `[$]`)",
-                    );
-                    continue;
-                }
+                // v6 ③: bounded queue `[$:N]` — fold N (a non-negative
+                // const) into the sidecar; the engine truncates the TAIL of
+                // any op that exceeds size N+1 (iverilog live).
+                let queue_bound: Option<u32> = match &decl.unpacked[0] {
+                    ast::Dim::Queue(Some(be)) => {
+                        let n = self.const_eval_in_scope(be);
+                        match n {
+                            Some(v) if (0..=i64::from(u32::MAX)).contains(&v) => Some(v as u32),
+                            _ => {
+                                self.error(
+                                    MsgCode::ElabUnsupported,
+                                    "a queue bound must be a non-negative constant expression",
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    _ => None,
+                };
                 if decl.init.is_some() {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -2265,6 +2289,7 @@ impl<'s> Elaborator<'s> {
                     );
                     continue;
                 }
+                let next_id = self.nets.len() as u32;
                 self.add_net(
                     &decl.name.name,
                     ir::NetVar {
@@ -2278,6 +2303,11 @@ impl<'s> Elaborator<'s> {
                         init: default_init(d.kind, width),
                     },
                 );
+                if let Some(b) = queue_bound {
+                    if self.nets.len() as u32 > next_id {
+                        self.queue_bounds.insert(next_id, b);
+                    }
+                }
                 continue;
             }
             let dim_extents = self.array_dim_extents(&decl.unpacked);

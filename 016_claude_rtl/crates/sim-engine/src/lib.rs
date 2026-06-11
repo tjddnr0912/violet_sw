@@ -46,8 +46,8 @@ use sim_ir::SimIr;
 /// Re-exported from `elaborate` so callers thread the join-mode side table into
 /// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
 pub use elaborate::{
-    AssignRankTable, ForkModeTable, JoinMode, NetNameTable, RadixTable, SeverityKind,
-    SeverityTable, Sidecars,
+    AssignRankTable, ForkModeTable, JoinMode, NetNameTable, QueueBoundTable, RadixTable,
+    SeverityKind, SeverityTable, Sidecars,
 };
 pub use sched::FinishReason;
 
@@ -129,6 +129,10 @@ pub struct SimOpts {
     /// procedural `assign`/`deassign` (weak rank — a real force overrides them;
     /// release hands control back). EMPTY by default. Never enters the IR.
     pub assign_ranks: AssignRankTable,
+    /// Bounded-queue side table (v6 ③): handle NetId → declared bound N
+    /// (`[$:N]`, max size N+1). Any queue op that ends beyond the bound has
+    /// its TAIL truncated + W4020 (iverilog live). EMPTY ⇒ all unbounded.
+    pub queue_bounds: QueueBoundTable,
     /// Per-ProcId instance path (`"tb.u1"`) for `%m` (P2-11). EMPTY ⇒ `%m`
     /// renders the legacy flat `top`. Never enters the IR.
     pub proc_scopes: Vec<String>,
@@ -155,6 +159,7 @@ impl Default for SimOpts {
             severities: SeverityTable::new(),
             radixes: RadixTable::new(),
             assign_ranks: AssignRankTable::new(),
+            queue_bounds: QueueBoundTable::new(),
             proc_scopes: Vec::new(),
             threads: 1,
         }
@@ -212,6 +217,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.severities = opts.severities.clone();
     st.radixes = opts.radixes.clone();
     st.assign_ranks = opts.assign_ranks.clone();
+    st.queue_bounds = opts.queue_bounds.clone();
     st.proc_scopes = opts.proc_scopes.clone();
     st.threads = opts.threads;
 
