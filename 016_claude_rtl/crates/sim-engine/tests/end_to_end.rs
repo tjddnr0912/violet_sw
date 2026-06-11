@@ -1714,16 +1714,17 @@ fn packed_2d_bit_select() {
 }
 
 #[test]
-fn instance_array_rejected_loudly() {
-    // REMAINING_WORK: an instance array `u[3:0](...)` is rejected (Phase-1.x), not
-    // silently lowered to a single mis-connected instance.
+fn instance_array_remaining_cuts_stay_loud() {
+    // The 2026-06-12 unroll absorbed the basic form (see cli/tests/
+    // inst_array.rs); the REMAINING v1 cuts must stay loud — here the
+    // non-ANSI child (port widths cannot fold for slicing).
     let diags = elaborate_diags(
-        "module dff(input d, output q); assign q = d; endmodule \
+        "module dff(d, q); input d; output q; assign q = d; endmodule \
          module top; wire [3:0] a, b; dff u[3:0] (.d(a), .q(b)); endmodule",
     );
     assert!(
-        diags.iter().any(|d| d.contains("instance array")),
-        "expected loud instance-array rejection, got: {diags:?}"
+        diags.iter().any(|d| d.contains("non-ANSI")),
+        "expected loud non-ANSI instance-array rejection, got: {diags:?}"
     );
 }
 

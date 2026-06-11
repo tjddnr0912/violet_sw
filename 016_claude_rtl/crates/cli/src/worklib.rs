@@ -310,8 +310,22 @@ pub fn add_cu(
         }
     };
 
+    // Canonical form is line-oriented: a newline in any recorded string
+    // would corrupt it (loudly, but only on the NEXT parse) — reject now.
+    let has_nl = |t: &str| t.contains('\n') || t.contains('\r');
+    if has_nl(lib_name)
+        || cu.defines.iter().any(|d| has_nl(d))
+        || cu.incdirs.iter().any(|d| has_nl(d))
+        || cu.sources.iter().any(|(p, _)| has_nl(p))
+        || cu.includes.iter().any(|(p, _)| has_nl(p))
+    {
+        return Err(
+            "a recorded path/define contains a newline — unsupported in the canonical manifest"
+                .into(),
+        );
+    }
     let blob_hash = blake3::hash(blob_bytes);
-    cu.blob = format!("units/cu_{}.vu", &hex(blob_hash.as_bytes())[..16]);
+    cu.blob = format!("units/cu_{}.vu", &hex(blob_hash.as_bytes())[..32]);
 
     // Supersede CUs sharing any source path; remember the earliest slot.
     let new_paths: std::collections::BTreeSet<&str> =
