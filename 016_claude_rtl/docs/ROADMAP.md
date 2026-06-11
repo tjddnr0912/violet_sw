@@ -89,7 +89,7 @@ loud-reject로 확인됨(이제 참):**
 | T0a | P5 차분(interp·VM) `thread::scope` 동시 실행 + Send sink | 0 / 시간 |
 | T0b | VCD `BufWriter`(현 레코드당 ~1 syscall!) + dump-heavy perf 측정 | 0 / 시간 |
 | ✅T1 | ~~`--threads ≥2`: VCD 전용 writer 스레드~~ — 완료(2026-06-10, byte-identical 게이트) | — |
-| T2+ | front-end per-CU(보류) · parallel elaborate(비추천: arena ID=골든 계약) · PDES(연구) | 中~最高 |
+| ❎T2+ | ~~front-end per-CU~~ — **2026-06-11 측정 폐기**: 400모듈/12k라인 vcmp(전 front-end)=**~10ms**(비병목) + vita는 단일-CU concat 모델(파일 간 `` `define `` 가시성)이라 per-CU 분할은 의미론 변경 없이 불가. parallel elaborate(비추천: arena ID=골든 계약)·PDES(연구)는 기존 결론 유지 | 폐기(측정) |
 
 **옵션 설계:** `--threads N`/`-j N`(vita·vrun), 기본 auto=`min(available_parallelism,8)`, env `VITA_THREADS`, `--threads 1`=현행 동일. **계약 = "모든 N에서 출력 byte-identical"**, corpus `--threads 1` vs `4` byte-diff 게이트로 강제. SimOpts out-of-band(골든 무영향). 상세 = REMAINING_WORK §P4.
 
