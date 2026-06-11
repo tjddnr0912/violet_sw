@@ -141,3 +141,49 @@ loud-reject로 확인됨(이제 참):**
 - **사이클 = profile → 최소 fix → re-profile 반복.** 각 fix는 항상 bit-exact(suite + iverilog 차분이 스펙). `cargo test -p sim-engine --test perf_baseline -- --ignored --nocapture`로 before/after 측정, `/usr/bin/sample`(macOS, sudo 불요)로 self-time 히스토그램.
 - **공유 경로 최적화가 backend-전용보다 유리했다** — interp·VM 둘 다 빨라지고 위험도 낮음.
 - **타 모델 수정 리뷰는 "코드 ≠ 서술" (2026-06-10).** Gemini shift fix는 코드는 옳았지만 근거 두 건이 틀렸다(존재하지 않는 "중복 매치 암", 오라클 미확인 "0이 정답" — iverilog는 4294967296). 리뷰는 diff만 읽지 말고 **오라클 라이브 차분**(t1/t2)으로 닫을 것. 또: "warn 떴으니 loud-reject"라고 믿지 말 것 — warn+no-op는 silent-wrong의 사촌(§D 정정 사례).
+
+---
+
+## 4. Phase-2+ 퓨처 플랜 (2026-06-11 — Phase-1 작업 큐 소진 후 스코프 결정용)
+
+> Phase-1 큐 소진(765 green, format_version 6, PDES 연구 종결) 시점의 **전체 잔여 지형도**.
+> 두 축으로 펼친다: §4.1 스코프 확장 트랙(결정 대기) · §4.2 의도적 MVP 컷 인벤토리(전부 loud/문서화 —
+> 해제 시 합류 트랙 매핑). 원칙은 그대로: **frozen-IR 변경은 한 번의 v7 bump에 일괄**(§F 선례),
+> IR-무변경 항목 선행, 오라클(iverilog) 차분 가능 영역 우선, 진입 전 §F식 관문 평가(스파이크→설계→bump).
+
+### 4.1 스코프 확장 트랙
+
+| 트랙 | 내용 | IR/AST 영향 | 오라클 | 공수 | 비고 |
+|---|---|---|---|---|---|
+| **P2-A worklib** | `-work`/`-L` 디렉터리 라이브러리: unit 자동 발견(→E9003 상류 검증 자동화), RULE-S 매니페스트 완성, E8003 sticky-ctx 일반화, RULE-V 소비 게이트 | **0** (CLI/아티팩트 레이어, bump 불요) | 해당 없음(운영) | 中 | **최우선 후보** — E9003 검증/발견 시임이 이미 분리돼 착수 마찰 최소. 결정성: 발견 순서=정렬 강제 |
+| **P2-B Phase-2 system tasks** | 파일 I/O(`$fopen/$fclose/$fdisplay/$fwrite/$sformat(f)`) · `$readmemb/h` · `$random/$urandom(_range)`(**시드 결정성 계약 명시** — 3-OS byte-identical 유지) · bit-vector(`$bits/$countones/$onehot/$isunknown`) · math · `$value$plusargs` · `$stime` | SysFunc/SysTask 다수 = **v7 bump 묶음 #1** | iverilog 전부 지원 → 차분 풍부 | 中 | 실사용 TB 호환성 최대 레버. conversion(`$signed/$rtoi/$itor/...`)·`$clog2`는 기구현 |
+| **P2-C full `string` 타입** | `NetKind::String`(가변 바이트) + 메서드(`len/substr/getc/putc/toupper/...`) + 비교/concat, `$sformatf` 합류 | NetKind 등 = **v7 묶음 #2** + AST flip(타입 키워드) | iverilog 부분 지원(영역 확인 필요) | 中 | string-키 foreach 8byte ref-var 한계 해소. dyn 헤더/힙 패턴 재사용 |
+| **P2-D package** | `package/endpackage`, `import pkg::*`/`pkg::sym` 이름 해소 | IR **0** 전망(elaborate 평탄화 — interface 선례), AST flip 1회 | iverilog 지원 → 차분 | 中 | **AST flip은 P2-C와 동시 1회로 수렴** 권장 |
+| **P2-E 절차 고급** | `final`, fork `join_any`/`join_none`/`wait fork`/`disable fork`, automatic/recursive func·task frame-call, `do-while`/`unique`/`priority` | 小(fork_modes 사이드카 선례) | iverilog 차분 | 中 | 엔진 스케줄링 확장 — fork free-list 기반 위 |
+| **P2-F concurrent SVA** | `assert property`, sequence/property, `\|->`/`\|=>`, `$rose/$fell/$stable/$past`, Preponed 샘플링 | 별도 관찰 오토마타 — **최대 항목** | iverilog 약함 → hand-IEEE 비중 큼 | **大** | **Phase-3 권장.** 진입 시 서브셋(단일 클럭 bounded implication)부터, immediate assert 기반 위 |
+| 조건부① PDES BSP v1 | 재진입 조건(지속 W≥64 + grain≥200ns 실워크로드) 충족 시 — doc-18 §PDES 스케치 + T1식 byte-diff 게이트 | SimOpts out-of-band | byte-diff 게이트 | 大 | 트리거 대기 |
+| 조건부② cycle-based 컴파일드 모드 | Verilator-lane(2-state·정적 스케줄) 옵트인 — doc-18 §2b | 별도 백엔드 | 자체 차분 | 大 | 사실상 별제품 — 수요 확인 후 |
+| 조건부③ native-eval 잔여 lane | signed>64 arith·>128bit·sysfunc lane | 0 (VM 전용) | P5 게이트 | 小~中 | 저ROI 박제 — 워크로드 증거 시 |
+| 장기④ VHDL front-end | parse까지 언어의존 구조라 시임 준비됨 — lexer/parser/AST→elaborate 신규 | sim-ir 무변경이 설계 목표 | GHDL 차분 | 大大 | Phase-4+/별도 결정 |
+
+### 4.2 MVP 컷 인벤토리 → 해제 매핑 (현재 전부 loud-reject 또는 문서화된 degrade)
+
+| 컷 (현재 동작) | 해제 트랙 |
+|---|---|
+| `class`/OOP · `program` · `union` (parse/elab loud) | Phase-3+ (P2-F 이후 — 검증 생태계 일괄) |
+| full `string` 타입(decl loud) · wildcard assoc `[*]`(loud) | P2-C |
+| 파일 I/O · `$readmem*` · random · math · plusargs · `$stime` (E3009) | P2-B |
+| `final` · fork 고급 · automatic/recursive frame-call (E3009) | P2-E |
+| `assert property`/`#0`/`final` assertion · clocking block · repeat-event intra-assign 고급 (loud) | P2-F |
+| instance array `u[3:0](...)` · 다차원 부분 슬라이스/whole-array 대입 (E3009) · per-dim bounds 미검사 · `$dump*` 배열=word0/depth 무시 · casez/casex don't-care 정밀 분리 · `assign #d` inertial · >128bit unsigned/>64bit signed 산술 X-poison | **Phase-1.x 정밀화 소묶음** — v7 bump 세션에 합류 권장(IR 영향 0~小, doc-01 "알려진 v1 단순화" 표가 정본) |
+| `defparam` (E3009) | **해제 안 함 권장** — IEEE deprecated, `#(.param())` override로 충분(정책 박제) |
+| hierarchical 이름/함수/태스크 참조 (E3009) | P2 소항목(읽기 한정 검토) 또는 유지 |
+| `` `default_nettype`` (implicit-net=E3010 정책) | 유지(명시적 에러가 정책) — worklib 후 옵션 재평가 |
+
+### 4.3 권장 진입 순서 (제안)
+
+1. **P2-A worklib** — bump 0·골든 무영향·운영 가치 즉시.
+2. **v7 bump 묶음** = P2-B(system tasks) + P2-C(string) + P2-D(package, AST flip 동시) + §4.2 Phase-1.x 정밀화 소묶음 — bump 일괄 원칙, REGEN_GOLDEN 절차 재사용. 진입 전 §F식 관문 평가.
+3. **P2-E 절차 고급** — IR 영향 작아 v7 뒤 독립 진행.
+4. **P2-F SVA** — 별도 관문 평가 후 서브셋부터(Phase-3 성격).
+- 조건부/장기 트랙(PDES·cycle-based·native lane·VHDL)은 각자의 트리거(워크로드 증거/수요) 충족 시에만.
