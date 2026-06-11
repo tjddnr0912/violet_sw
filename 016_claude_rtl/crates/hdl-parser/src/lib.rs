@@ -3439,8 +3439,11 @@ pub fn parse(tokens: &[Spanned], src: &str) -> (Option<SourceUnit>, Vec<ParseErr
 }
 
 /// v5 ⑥ foreach desugar: rename every SINGLE-SEGMENT `Ident` reference to
-/// `from` into `to`, across a statement tree (exprs, lvalues, nested stmts).
-/// Multi-segment paths are left alone (`x.y` never names the loop index).
+/// `from` into `to`, across a statement tree — exprs, lvalues, nested stmts,
+/// block-local decl initializers/dims AND event-control sensitivity exprs
+/// (the last two were review finding 2026-06-11: a missed arm silently binds
+/// the reference to the OUTER variable). Multi-segment paths are left alone
+/// (`x.y` never names the loop index).
 fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
     let fix_path = |p: &mut HierPath| {
         if p.segments.len() == 1 && p.segments[0].name == from {
@@ -3630,6 +3633,34 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             {
                 return;
             }
+            // decl INITIALIZERS and dimension exprs reference outer names too
+            // (review finding 2026-06-11 — they live outside `stmts`).
+            for d in decls.iter_mut() {
+                if let Some(r) = &mut d.range {
+                    fix_expr(&mut r.msb, from, to);
+                    fix_expr(&mut r.lsb, from, to);
+                }
+                for r in &mut d.packed {
+                    fix_expr(&mut r.msb, from, to);
+                    fix_expr(&mut r.lsb, from, to);
+                }
+                for n in d.names.iter_mut() {
+                    if let Some(e) = &mut n.init {
+                        fix_expr(e, from, to);
+                    }
+                    for dim in &mut n.unpacked {
+                        match dim {
+                            Dim::Size(e) => fix_expr(e, from, to),
+                            Dim::Range(r) => {
+                                fix_expr(&mut r.msb, from, to);
+                                fix_expr(&mut r.lsb, from, to);
+                            }
+                            Dim::Queue(Some(b)) => fix_expr(b, from, to),
+                            Dim::Queue(None) | Dim::Dyn | Dim::Assoc(_) => {}
+                        }
+                    }
+                }
+            }
             for st in stmts {
                 rename_ident_in_stmt(st, from, to);
             }
@@ -3645,7 +3676,14 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                 rename_ident_in_stmt(b, from, to);
             }
         }
-        Stmt::EventCtrl { body, .. } => {
+        Stmt::EventCtrl { ctrl, body, .. } => {
+            // the sensitivity exprs reference names too (review finding
+            // 2026-06-11 — `@(arr[i])` inside a foreach body).
+            if let Sensitivity::List(evs) = ctrl {
+                for ev in evs {
+                    fix_expr(&mut ev.expr, from, to);
+                }
+            }
             if let Some(b) = body {
                 rename_ident_in_stmt(b, from, to);
             }
@@ -3668,6 +3706,140 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// Review-finding regressions (2026-06-11): the foreach rename walker
+    /// must leave NO single-segment reference to the source-level index name
+    /// anywhere in the desugared tree — including block-local decl
+    /// initializers/dims and event-control sensitivity exprs (the two arms a
+    /// review caught as missed → silent outer-variable capture).
+    #[test]
+    fn foreach_rename_covers_decl_inits_and_event_ctrl() {
+        let src = r#"
+module t;
+  integer q [$];
+  integer r;
+  initial begin
+    foreach (q[i]) begin
+      integer k = q[i];
+      @(q[i]) r = q[i];
+    end
+  end
+endmodule
+"#;
+        let (toks, lex_errs) = hdl_lexer::lex(src);
+        assert!(lex_errs.is_empty());
+        let (unit, errs) = parse(&toks, src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let unit = unit.unwrap();
+        // walk the whole AST; collect every single-segment ident name.
+        fn idents_in_expr(e: &Expr, out: &mut Vec<String>) {
+            match &e.kind {
+                ExprKind::Ident(p) => {
+                    if p.segments.len() == 1 {
+                        out.push(p.segments[0].name.clone());
+                    }
+                }
+                ExprKind::Unary { operand, .. } => idents_in_expr(operand, out),
+                ExprKind::Binary { lhs, rhs, .. } => {
+                    idents_in_expr(lhs, out);
+                    idents_in_expr(rhs, out);
+                }
+                ExprKind::Ternary {
+                    cond,
+                    then_e,
+                    else_e,
+                } => {
+                    idents_in_expr(cond, out);
+                    idents_in_expr(then_e, out);
+                    idents_in_expr(else_e, out);
+                }
+                ExprKind::BitSelect { base, index } => {
+                    idents_in_expr(base, out);
+                    idents_in_expr(index, out);
+                }
+                ExprKind::PartSelect { base, msb, lsb } => {
+                    idents_in_expr(base, out);
+                    idents_in_expr(msb, out);
+                    idents_in_expr(lsb, out);
+                }
+                ExprKind::Call { args, .. } | ExprKind::SysCall { args, .. } => {
+                    for a in args {
+                        idents_in_expr(a, out);
+                    }
+                }
+                ExprKind::Paren { inner } => idents_in_expr(inner, out),
+                _ => {}
+            }
+        }
+        fn idents_in_stmt(s: &Stmt, out: &mut Vec<String>) {
+            match s {
+                Stmt::Blocking { lhs, rhs, .. } | Stmt::NonBlocking { lhs, rhs, .. } => {
+                    if let Lvalue::Ident(p) = lhs {
+                        if p.segments.len() == 1 {
+                            out.push(p.segments[0].name.clone());
+                        }
+                    }
+                    if let Lvalue::BitSelect { index, .. } = lhs {
+                        idents_in_expr(index, out);
+                    }
+                    idents_in_expr(rhs, out);
+                }
+                Stmt::For {
+                    init,
+                    cond,
+                    step,
+                    body,
+                    ..
+                } => {
+                    idents_in_stmt(init, out);
+                    idents_in_expr(cond, out);
+                    idents_in_stmt(step, out);
+                    idents_in_stmt(body, out);
+                }
+                Stmt::Block { decls, stmts, .. } => {
+                    for d in decls {
+                        for n in &d.names {
+                            if let Some(e) = &n.init {
+                                idents_in_expr(e, out);
+                            }
+                        }
+                    }
+                    for st in stmts {
+                        idents_in_stmt(st, out);
+                    }
+                }
+                Stmt::EventCtrl { ctrl, body, .. } => {
+                    if let Sensitivity::List(evs) = ctrl {
+                        for ev in evs {
+                            idents_in_expr(&ev.expr, out);
+                        }
+                    }
+                    if let Some(b) = body {
+                        idents_in_stmt(b, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut names = Vec::new();
+        for it in &unit.items {
+            if let TopItem::Module(m) = it {
+                for item in &m.body {
+                    if let ModuleItem::Proc(pb) = item {
+                        idents_in_stmt(&pb.body, &mut names);
+                    }
+                }
+            }
+        }
+        assert!(
+            !names.iter().any(|n| n == "i"),
+            "the source index name must be fully renamed; leftover refs: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with("__foreach_i_")),
+            "the synthetic index must appear: {names:?}"
+        );
+    }
+
     use super::*;
 
     fn p(src: &str) -> (Option<SourceUnit>, Vec<ParseError>) {
