@@ -82,14 +82,15 @@ loud-reject로 확인됨(이제 참):**
 
 ### E. 병렬화 (신규 트랙 · 2026-06-10)
 
-현황: 스레딩 0·계획 0이었음(doc-18:19가 PDES만 "결정성 충돌·장기"로 박제). 감사 결론 — **엔진 내부 병렬(PDES/Verilator식 파티셔닝)은 결정성 invariant(3-OS byte-identical, tie 순서, eager VCD)와 정면충돌이라 최저 ROI(연구 트랙 유지)**, 실질 윈은 엔진 밖:
+현황: 스레딩 0·계획 0이었음(doc-18:19가 PDES만 "결정성 충돌·장기"로 박제). 감사 결론 — **엔진 내부 병렬(PDES/Verilator식 파티셔닝)은 결정성 invariant(3-OS byte-identical, tie 순서, eager VCD)와 정면충돌이라 최저 ROI(연구 트랙 유지)**, 실질 윈은 엔진 밖. *(→ 2026-06-11 T4 연구가 이 프레임을 정정: 결정성은 보존 설계가 존재해 차단 요인이 아님 — 진짜 제약은 워크로드 폭·직렬 몫·공수. 아래 T4.)*:
 
 | 단계 | 내용 | 리스크/공수 |
 |---|---|---|
 | T0a | P5 차분(interp·VM) `thread::scope` 동시 실행 + Send sink | 0 / 시간 |
 | T0b | VCD `BufWriter`(현 레코드당 ~1 syscall!) + dump-heavy perf 측정 | 0 / 시간 |
 | ✅T1 | ~~`--threads ≥2`: VCD 전용 writer 스레드~~ — 완료(2026-06-10, byte-identical 게이트) | — |
-| ❎T2+ | ~~front-end per-CU~~ — **2026-06-11 측정 폐기**: 400모듈/12k라인 vcmp(전 front-end)=**~10ms**(비병목) + vita는 단일-CU concat 모델(파일 간 `` `define `` 가시성)이라 per-CU 분할은 의미론 변경 없이 불가. parallel elaborate(비추천: arena ID=골든 계약)·PDES(연구)는 기존 결론 유지 | 폐기(측정) |
+| ❎T2+ | ~~front-end per-CU~~ — **2026-06-11 측정 폐기**: 400모듈/12k라인 vcmp(전 front-end)=**~10ms**(비병목) + vita는 단일-CU concat 모델(파일 간 `` `define `` 가시성)이라 per-CU 분할은 의미론 변경 없이 불가. parallel elaborate(비추천: arena ID=골든 계약) 결론 유지 | 폐기(측정) |
+| ❎T4 | ~~엔진 내 PDES~~ — **2026-06-11 타당성 연구 종결(조건부 NO-GO)**: 프로브 3종 실측(τ 상주풀 0.3~0.5µs/delta·naive spawn 31~93µs 즉사, g≈700ns/activation, BSP mock 디스패치 측 최대 3.9x@T4) + sample 분류(직렬 잔류 ~20% → **Amdahl 상한 T4 ≈2.5x**) → 이상적 wide-synchronous(W≥64)에서만 2~3x, **corpus 워크로드(W=1~8)는 0~손해**. byte-identical은 보존 설계 존재(NBA-pure 클래스+run-splitting+per-process 로그 머지 — by construction)로 차단 요인 아님. **재진입 조건 핀: 지속 W≥64 + grain≥200ns 실워크로드 출현 시 BSP v1 착수.** 상세 = [doc-18 §PDES 타당성 연구](preview/18-acceleration-analysis.md#pdes-타당성-연구-2026-06-11--p4-t4-종결) | 종결(연구) |
 
 **옵션 설계:** `--threads N`/`-j N`(vita·vrun), 기본 auto=`min(available_parallelism,8)`, env `VITA_THREADS`, `--threads 1`=현행 동일. **계약 = "모든 N에서 출력 byte-identical"**, corpus `--threads 1` vs `4` byte-diff 게이트로 강제. SimOpts out-of-band(골든 무영향). 상세 = REMAINING_WORK §P4.
 

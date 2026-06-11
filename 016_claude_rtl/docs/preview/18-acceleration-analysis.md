@@ -16,7 +16,7 @@
 |---|---|---|
 | GPU(Metal/CUDA/일반) 코어 엔진 | ❌ 비권장 | 이벤트구동 RTL은 분기발산·희소활성·시간인과·포인터추적으로 GPU-적대적 |
 | CPU word-level + SIMD(NEON/AVX) | ✅ 실질 이득, 저위험 | 4-state 비트연산이 현재 bit-by-bit → word化만으로 ~64×, SIMD 추가. **실측: net I/O·shift·resize·read까지 word化/inline 확장 → 누적 ~6x** |
-| 멀티코어 PDES(timestep 내) | ⚠️ 큰 작업 + 결정성 충돌 | 3-OS byte-identical 보장과 상충 |
+| 멀티코어 PDES(timestep 내) | ❎ **조건부 NO-GO (2026-06-11 연구 종결)** | 결정성은 차단 요인 아님(보존 설계 존재) — 진짜 제약은 워크로드 폭(W=1~8)·직렬 잔류 ~20%(Amdahl 상한 T4 ≈2.5x)·공수. [§PDES 타당성 연구](#pdes-타당성-연구-2026-06-11--p4-t4-종결) |
 | 컴파일드 백엔드(코드젠) | ⚠️ **워크로드 의존** (식-바운드 고ROI / 스케줄러-바운드 저ROI) | **2차 재평가:** eval 비중은 식 복잡도에 선형(K=16 70%·K=32 82%). 식-바운드(ALU·crypto·깊은 조합)엔 native-eval ~2-3x; 스케줄러-바운드엔 작음. 고위험·다세션, P5 게이트가 정확성 상쇄. [§실측 native-eval 재평가](#native-eval-재평가-2026-06-07-오후--위-저roi-판정-정정) |
 | stimulus-parallel GPU(Monte-Carlo) | 별개 제품 | branch-free cycle-based 엔진 신규 필요 |
 
@@ -45,6 +45,7 @@
 
 ### (3) timestep 내 프로세스 병렬 (PDES)
 - `sched.rs` active `batch`를 `for r in batch` 순차. 공유 net 쓰기 동기화 + `tie`(선언순) 결정성 충돌 → 결정적 merge 필요(큰 엔지니어링).
+- **→ 2026-06-11 타당성 연구로 종결(조건부 NO-GO)** — 측정·설계 스케치·재진입 조건 = [§PDES 타당성 연구](#pdes-타당성-연구-2026-06-11--p4-t4-종결).
 
 ### (4) 대용량 메모리/init
 - `state.rs:412` `expand_init`, VCD 대용량 배열 덤프 — 데이터병렬이나 일회성·폭 제한. CPU SIMD 적합.
@@ -326,5 +327,61 @@ witness·고워드 X-poison·indexed 3종) + iverilog 차분 2 디자인(`diff_w
 5. **"스케줄러-바운드"의 절반은 allocator-바운드.** (2026-06-10) 알고리즘 교체 없이 타임스텝당 고정
    할당만 제거해도 클럭-바운드 1.85x — derived `Clone::clone_from`가 재할당이라는 함정(`Vec::clone_from`은
    재사용)과 `mem::take` 후 소비가 capacity를 버린다는 함정이 반복 패턴.
+
+## PDES 타당성 연구 (2026-06-11 · P4-T4 종결)
+
+> **결론 먼저: 조건부 NO-GO.** byte-identical 결정성은 차단 요인이 **아니다** — 보존 설계가 존재한다(아래 스케치).
+> 실제 차단 요인 셋: ①워크로드 폭(현 corpus는 활성 배치 W=1~8 — 이득 0~손해) ②엔진 직렬 잔류 몫 ~20%
+> (Amdahl 상한 T=4 ≈2.5x·T=8 ≈3.3x·∞ 5x) ③상당한 엔진 스레딩 공사 대비 측정 상한 2~3x. 재진입 조건은 말미에 핀.
+> 종전 "결정성 invariant와 정면충돌이라 불가" 프레임(본 문서 구판·감사)은 **과했다** — 이 연구로 정정한다.
+
+### 측정 — 프로브 3종 (`perf_baseline.rs` `perf_pdes_*`, 영구 계기 · Apple Silicon 10-core)
+
+1. **τ (per-delta 디스패치 왕복)** — `perf_pdes_sync_cost`
+   - naive `thread::scope` spawn/join: **31µs(T2) ~ 93µs(T8)/delta** → 즉사(델타당 일이 µs 단위인데 디스패치가 수십 µs).
+   - 상주 풀 + spin barrier(generation scatter·countdown gather): **294ns(T2) / 471ns(T4) / 2.0µs(T8)**.
+     T8 급증 = P-core 초과분이 E-core 스핀 — 실설계는 T를 P-core 수로 클램프해야 함.
+2. **g (엔진 활성화 입도)** — `perf_pdes_engine_grain`: W개의 독립 4-NBA flop `always` 블록(이상적 최대 병렬 케이스)
+   - 한계비용 **~700ns/activation**(W=16→1024 수렴 707→686ns; W=1은 1351ns — 고정 슬롯 오버헤드 포함).
+   - `/usr/bin/sample`(release+debuginfo) 자가시간 분류: **병렬화 가능 ~78-82%**(eval_binary_ctx 282·mask_top 244·
+     eval_ctx 242·resize 216·read_net 187·NBA 캡처 k_schedule_nba 54·Value 말록류 ~188 등 — 전부 per-process 작업)
+     vs **직렬 잔류 ~18-22%**(apply_nba 측 write_chunk 95·write_lvalue 83·propagate_changes 105·정렬 등 — 커밋/전파 phase).
+3. **BSP mock (디스패치 측 스피드업 매트릭스)** — `perf_pdes_bsp_mock`: 상주 풀+정적 chunk 소유+직렬 commit pass,
+   설계 스케치와 동일한 결정적 디스패치 형상. 실측 grain 보정 후(T=4 기준):
+
+   | grain(실측) | W=8 | W=64 | W=512 | W=4096 |
+   |---|---|---|---|---|
+   | ~28ns | 0.39x | 1.56x | 2.96x | 3.51x |
+   | ~195ns | 1.59x | 3.09x | 3.61x | 3.69x |
+   | ~890ns | 2.93x | 3.61x | 3.72x | 3.95x |
+
+   T=8은 W×g가 클 때만 우세(최대 5.1x @ g890·W4096) — 저부하에선 E-core 스핀이 역효과(0.11x까지).
+
+**합성 추정(이상적 wide-synchronous, g≈700ns):** 디스패치 측과 Amdahl 상한의 min → **W≥64에서 ≈2~2.5x(T4), ≈3x(T8)**.
+W≤8 소형 바디 ≤1.6x~손해, **W=1(corpus의 테스트벤치형 전부)은 병렬 대상 자체가 없음.**
+
+### byte-identical 보존 설계 스케치 — BSP-per-delta v1 ("가능하나 비싸다"의 근거)
+
+- **적격 클래스**: suspend-free + 쓰기 전부 NBA인 프로세스(= P9 분류 재사용, "pure-eval"). NBA-pure끼리는 같은 델타 내
+  상호 가시성이 원천 차단(쓰기가 NBA 리전에 착지)이라 **read/write set 충돌 분석 없이 병렬 안전**.
+- **run-splitting**: blocking-writer/fork/dyn-heap 터치 프로세스가 배치를 분할 — 경계 사이 pure-eval 구간만 산개,
+  분할자는 배치 순서 그대로 직렬 실행(순차 가시성 보존 by construction).
+- **per-process 로그**: NBA 캡처=(batch_idx, intra_seq) 키 머지(현 전역 seq와 동일 전순서) · `$display`/`$strobe`/`$monitor`
+  등록=프로세스별 버퍼→batch 순 flush(순차 출력은 프로세스별 연속이므로 byte 동일) · `$finish`류=최소 batch_idx 승자
+  +이후 인덱스 로그 폐기(순차의 mid-batch 중단 재현 — pure-eval은 상태 직접 쓰기가 없어 폐기=무료).
+- **dirty-list**: per-thread 수집→머지→기존 정렬(스케줄러 R2가 이미 정렬 기반이라 자연 합류). wheel 스케줄은
+  pure-eval에 없음(suspend-free라 mid-body delay/`@` 부재).
+- **엔진 공사 비용(왜 비싼가)**: `!Send` 해체(`Box<dyn Write>`/`LogSink`/`Cell`/Rc `vm_cache` 9곳→per-worker),
+  EvalCtx/native 스택 per-worker 복제, corpus 전체 `--threads 1` vs N byte-diff 게이트(T1 인프라 재사용 가능).
+  v2(NBA apply 자체를 disjoint-net 병렬화)는 직렬 몫을 ~10%로 낮춰 상한 ~10x까지 열 수 있으나
+  propagate(엣지 검출·웨이커 정렬·리전 제어)는 본질적으로 순서 민감 — v1 범위 밖.
+
+### 판정 + 재진입 조건 (핀)
+
+- **지금 구현하지 않는다(NO-GO).** 측정 상한 2~3x는 "지속적 W≥64 + eval-지배 바디" 워크로드에서만 실현되는데
+  현 corpus/Phase-1 사용자 워크로드에 부재. 기계 비용(스레딩 공사+결정성 머지+게이트 유지)이 조건부 이득을 상회.
+- **재진입 조건**: 실사용 디자인이 (a) 시뮬 시간 대부분에서 활성 배치 폭 **W ≥ ~64**, (b) 활성화당 병렬-phase grain
+  **≥ ~200ns**(eval-지배 바디)를 보일 때 BSP v1 착수 — 기대 2~3x(T=P-core 클램프). 그 미만은 mock이 ≤1.6x,
+  Amdahl+머지 상수가 잠식. 진입 시 위 스케치 + T1식 byte-diff 게이트가 출발점.
 
 향후 과제·전략 결정(VM 동결 vs native-eval vs 인프라)은 [`../ROADMAP.md`](../ROADMAP.md).

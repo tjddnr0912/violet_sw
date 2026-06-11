@@ -91,7 +91,7 @@
 | ✅ **T1** | ~~`--threads ≥2` VCD writer 스레드~~ — 2026-06-10 완료. `vcd_thread::ThreadedWriter`(bounded FIFO 8×64KiB chunk, 순서보존, write에러는 flush에서 표면화→W4019 경로 유지, Drop=drain+join). CLI `--threads N`/`-j N`(vita·vrun)+`VITA_THREADS`+auto(min(cores,8)). **byte-identical 계약 게이트**: `tests/threads.rs`(엔진 1vs4) + `cli_ux.rs`(subprocess 1vs4 VCD byte-diff) | VCD I/O 은닉(상한 1.69x) | 0(게이트 강제) | — |
 | ❎ **T2** | ~~front-end per-CU 병렬~~ — **2026-06-11 측정 폐기**: 400모듈/12k라인 전체 front-end(vcmp)=**~10ms**(예상대로 비병목) + 단일-CU concat 모델(파일 간 `` `define`` 가시성)이라 per-CU 분할=의미론 변경. dump-heavy 추가 실측: 64-net/20k-tick $dumpvars 0.78s, writer 스레드(--threads 2) −3%(BufWriter가 syscall 비용 기흡수) | 폐기(측정) | — | — |
 | ✕ **T3** | parallel elaborate — **비추천**: 전역 arena ID 순서 자체가 골든 계약, byte-identical 재현 머지 비용 高 | 小 | **高** | — |
-| 🔬 **T4** | 엔진 내 PDES/정적 파티셔닝 — 연구 트랙 유지(doc-18 판정대로). Verilator `--threads`는 cycle-based 정적 파티셔닝+배리어라 가능; 이벤트구동+tie 순서+eager VCD에는 부적합, Icarus도 미지원 | 설계 의존 | 最高 | 연구 |
+| ❎ **T4** | ~~엔진 내 PDES/정적 파티셔닝~~ — **2026-06-11 타당성 연구 종결(조건부 NO-GO)**. 실측: τ(상주 spin-pool) 0.3~0.5µs/delta(naive spawn 31~93µs=즉사) · g≈700ns/activation · BSP mock 디스패치 측 W=64↑에서 3~4x — 그러나 sample 분류상 직렬 잔류(apply_nba/propagate) ~20% → **Amdahl 상한 T4 ≈2.5x**, corpus 워크로드는 W=1~8이라 0~손해. **결정성은 차단 요인 아님**(NBA-pure 클래스 병렬+run-splitting+per-process 로그 머지로 byte-identical by construction — 설계 스케치 doc-18). 재진입 조건 핀: 지속 W≥64+grain≥200ns 실워크로드 → BSP v1. 프로브 3종(`perf_pdes_*`)은 영구 계기 | 종결 | — | 연구 완료 |
 
 ## P5 — 문서부채 (docs ↔ code 불일치)
 
@@ -128,7 +128,9 @@
 > `` `timescale``, dup 존재 시에만 컨텍스트 워크) + **E9003 `vrun --upstream`**(라이브 재해시 vs
 > composite, exit class 2 — worklib은 발견 자동화만 추가).
 >
-> **현재 잔여:** ⑥ **PDES(연구 트랙)** 가 유일한 미착수 트랙. 그 외는 Phase-2+ 스코프 확장
+> **현재 잔여:** 없음 — ~~⑥ PDES(연구 트랙)~~ ✅ **2026-06-11 타당성 연구로 종결(조건부 NO-GO,
+> P4-T4 행·doc-18 §PDES 참조 — 재진입 조건 핀: 지속 W≥64+grain≥200ns 실워크로드)**. 이로써
+> **Phase-1 작업 큐 완전 소진.** 이후는 작업 항목이 아니라 스코프 결정 사안: Phase-2+ 확장
 > (worklib(→E9003 자동 발견·RULE S 매니페스트 완성)·full `string` 타입(string-키 foreach 8byte
 > 한계 해소)·package·concurrent SVA — ROADMAP §D/§F 참조)과 의도적 MVP 컷(loud)뿐.
 

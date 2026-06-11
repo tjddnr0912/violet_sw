@@ -402,3 +402,257 @@ fn perf_nets_scaling() {
         report(&format!("nets-scaling ({n} idle nets)"), &src, 3);
     }
 }
+
+// ─── [P4-T4] PDES feasibility probes (research track) ───────────────────────
+//
+// Three instruments that bound the engine-internal-parallelism design space
+// WITHOUT touching the engine. The BSP-per-delta sketch (doc-18 §PDES) only
+// pays when, per delta, `W × g` (batch width × per-activation work) clears the
+// scatter-gather round-trip `τ` with margin; these measure all three on the
+// host so the verdict is numbers, not vibes.
+
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+/// Per-round-trip cost (ns) of a naive `thread::scope` spawn+join per delta —
+/// the zero-infrastructure dispatch a first cut would reach for.
+fn tau_scope_spawn(threads: usize, rounds: u32) -> f64 {
+    let t = Instant::now();
+    for _ in 0..rounds {
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(|| std::hint::black_box(0u64));
+            }
+        });
+    }
+    t.elapsed().as_nanos() as f64 / rounds as f64
+}
+
+/// Per-round-trip cost (ns) of a persistent worker pool with a spin barrier —
+/// the realistic floor for per-delta dispatch (generation counter scatter,
+/// countdown gather, no parking).
+fn tau_spin_pool(threads: usize, rounds: u64) -> f64 {
+    let gen = AtomicU64::new(0);
+    let done = AtomicUsize::new(0);
+    let stop = AtomicU64::new(0);
+    let mut elapsed = 0f64;
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                let mut seen = 0u64;
+                loop {
+                    while gen.load(Ordering::Acquire) == seen {
+                        if stop.load(Ordering::Acquire) == 1 {
+                            return;
+                        }
+                        std::hint::spin_loop();
+                    }
+                    seen += 1;
+                    done.fetch_add(1, Ordering::AcqRel);
+                }
+            });
+        }
+        let t = Instant::now();
+        for _ in 0..rounds {
+            done.store(0, Ordering::Release);
+            gen.fetch_add(1, Ordering::AcqRel);
+            while done.load(Ordering::Acquire) < threads {
+                std::hint::spin_loop();
+            }
+        }
+        elapsed = t.elapsed().as_nanos() as f64 / rounds as f64;
+        stop.store(1, Ordering::Release);
+    });
+    elapsed
+}
+
+#[test]
+#[ignore = "perf data (PDES sync-cost probe); run with --ignored --nocapture"]
+fn perf_pdes_sync_cost() {
+    let avail = std::thread::available_parallelism().map_or(1, |n| n.get());
+    println!("\n[P4-T4] per-delta dispatch round-trip τ (host parallelism {avail}):");
+    for t in [2usize, 4, 8] {
+        if t > avail {
+            continue;
+        }
+        let scope = tau_scope_spawn(t, 2000);
+        let spin = tau_spin_pool(t, 200_000);
+        println!(
+            "  {t} threads : scope-spawn {:>9.0} ns/delta   spin-pool {:>7.0} ns/delta",
+            scope, spin
+        );
+    }
+}
+
+/// WIDE design: `n` independent `always @(posedge clk)` blocks (the PDES unit
+/// of work), each four 64-bit NBAs on private regs — every posedge delta has an
+/// active batch of width `n`, the best case the BSP sketch could parallelize.
+fn pdes_wide_src(n: usize, cycles: usize) -> String {
+    let mut body = String::new();
+    for i in 0..n {
+        body.push_str(&format!(
+            "  reg [63:0] a{i}, b{i}, c{i}, d{i};\n\
+             \x20 always @(posedge clk) begin\n\
+             \x20   a{i} <= a{i} + 64'd3;\n\
+             \x20   b{i} <= b{i} ^ a{i};\n\
+             \x20   c{i} <= c{i} + b{i};\n\
+             \x20   d{i} <= (d{i} << 1) | (d{i} >> 63);\n\
+             \x20 end\n"
+        ));
+    }
+    format!(
+        "module top;\n\
+         \x20 reg clk; integer k;\n\
+         {body}\
+         \x20 initial begin\n\
+         \x20   clk = 0;\n\
+         \x20   for (k = 0; k < {cycles}; k = k + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+         \x20   $finish;\n\
+         \x20 end\n\
+         endmodule"
+    )
+}
+
+#[test]
+#[ignore = "perf data (PDES per-activation grain probe); run with --ignored --nocapture"]
+fn perf_pdes_engine_grain() {
+    println!("\n[P4-T4] engine per-activation grain g (4-NBA flop body, interp):");
+    let mut prev: Option<(usize, u128)> = None;
+    for n in [1usize, 16, 256, 1024] {
+        let cycles = 2000usize;
+        let ir = build(&pdes_wide_src(n, cycles));
+        let t = time_backend(&ir, Backend::Interpreter, 3);
+        let per_act = t as f64 / (cycles as f64 * n as f64);
+        // Marginal cost vs the previous width isolates the body+NBA share from
+        // the fixed clock-driver/timestep overhead.
+        let marginal =
+            prev.map(|(pn, pt)| (t.saturating_sub(pt)) as f64 / (cycles as f64 * (n - pn) as f64));
+        match marginal {
+            Some(m) => println!(
+                "  W={n:>5} : {:>8.3} ms   {per_act:>7.1} ns/activation (marginal {m:>6.1} ns)",
+                t as f64 / 1e6
+            ),
+            None => println!(
+                "  W={n:>5} : {:>8.3} ms   {per_act:>7.1} ns/activation",
+                t as f64 / 1e6
+            ),
+        }
+        prev = Some((n, t));
+    }
+}
+
+/// The synthetic per-task work kernel (wrapping integer mix on private state,
+/// like a flop-body eval). File-scope so calibration times exactly this loop.
+fn pdes_kernel(seed: u64, iters: u64) -> u64 {
+    let mut x = seed | 1;
+    for _ in 0..iters {
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        x ^= x >> 29;
+    }
+    x
+}
+
+/// End-to-end BSP mock: per "delta", `w` tasks of synthetic eval work
+/// (private-state integer arithmetic, like a flop body) plus a serial commit
+/// pass (~the dirty-list/NBA merge a real BSP delta keeps sequential), run (a)
+/// single-thread and (b) on a persistent spin-barrier pool with static chunk
+/// partitioning — exactly the deterministic-by-construction dispatch the
+/// design sketch proposes. Returns (sequential ns/delta, parallel ns/delta).
+fn bsp_mock(w: usize, iters_per_task: u64, threads: usize, deltas: u32) -> (f64, f64) {
+    let kernel = pdes_kernel;
+    let mut out = vec![0u64; w];
+    // Sequential reference.
+    let t = Instant::now();
+    for _ in 0..deltas {
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = kernel(i as u64, iters_per_task);
+        }
+        std::hint::black_box(&mut out);
+    }
+    let seq = t.elapsed().as_nanos() as f64 / deltas as f64;
+
+    // Parallel: persistent pool, generation-counter scatter, countdown gather,
+    // static contiguous chunks (deterministic ownership), serial commit after.
+    let gen = AtomicU64::new(0);
+    let done = AtomicUsize::new(0);
+    let stop = AtomicU64::new(0);
+    let chunk = w.div_ceil(threads);
+    let slots: Vec<AtomicU64> = (0..w).map(|_| AtomicU64::new(0)).collect();
+    let mut par = 0f64;
+    std::thread::scope(|s| {
+        for tid in 0..threads {
+            let slots = &slots;
+            let gen = &gen;
+            let done = &done;
+            let stop = &stop;
+            s.spawn(move || {
+                let lo = tid * chunk;
+                let hi = ((tid + 1) * chunk).min(w);
+                let mut seen = 0u64;
+                loop {
+                    while gen.load(Ordering::Acquire) == seen {
+                        if stop.load(Ordering::Acquire) == 1 {
+                            return;
+                        }
+                        std::hint::spin_loop();
+                    }
+                    seen += 1;
+                    for (i, slot) in slots.iter().enumerate().take(hi).skip(lo) {
+                        slot.store(kernel(i as u64, iters_per_task), Ordering::Relaxed);
+                    }
+                    done.fetch_add(1, Ordering::AcqRel);
+                }
+            });
+        }
+        let t = Instant::now();
+        for _ in 0..deltas {
+            done.store(0, Ordering::Release);
+            gen.fetch_add(1, Ordering::AcqRel);
+            while done.load(Ordering::Acquire) < threads {
+                std::hint::spin_loop();
+            }
+            // Serial commit pass: the merge work a real BSP delta keeps
+            // single-threaded (dirty-list push + NBA log splice per task).
+            for (slot, o) in slots.iter().zip(out.iter_mut()) {
+                *o = slot.load(Ordering::Relaxed);
+            }
+            std::hint::black_box(&mut out);
+        }
+        par = t.elapsed().as_nanos() as f64 / deltas as f64;
+        stop.store(1, Ordering::Release);
+    });
+    (seq, par)
+}
+
+#[test]
+#[ignore = "perf data (PDES BSP-mock speedup matrix); run with --ignored --nocapture"]
+fn perf_pdes_bsp_mock() {
+    let avail = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // Calibrate the bare kernel loop so iteration counts map to target grains.
+    let cal_iters = 50_000_000u64;
+    let t = Instant::now();
+    std::hint::black_box(pdes_kernel(1, cal_iters));
+    let ns_per_iter = t.elapsed().as_nanos() as f64 / cal_iters as f64;
+    println!(
+        "\n[P4-T4] BSP scatter-gather mock (host parallelism {avail}, kernel {ns_per_iter:.2} ns/iter):"
+    );
+    for &g_target in &[60f64, 250.0, 1000.0] {
+        let iters = (g_target / ns_per_iter).max(1.0) as u64;
+        for &w in &[8usize, 64, 512, 4096] {
+            // Keep each config ~tens of ms total.
+            let deltas = ((40e6 / (w as f64 * g_target)) as u32).clamp(20, 20_000);
+            for &t in &[4usize, 8] {
+                if t > avail {
+                    continue;
+                }
+                let (seq, par) = bsp_mock(w, iters, t, deltas);
+                println!(
+                    "  g≈{g_target:>4.0}ns W={w:>4} T={t} : seq {seq:>10.0} ns/delta (meas {:>5.0} ns/task)   par {par:>10.0} ns/delta   speedup {:>5.2}x",
+                    seq / w as f64,
+                    seq / par
+                );
+            }
+        }
+    }
+}
