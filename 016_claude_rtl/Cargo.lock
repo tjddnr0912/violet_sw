@@ -94,6 +94,7 @@ dependencies = [
  "hdl-parser",
  "hdl-preprocess",
  "postcard",
+ "serde",
  "sim-engine",
  "sim-ir",
  "vita-artifact",

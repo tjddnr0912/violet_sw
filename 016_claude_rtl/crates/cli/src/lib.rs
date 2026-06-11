@@ -35,6 +35,7 @@ pub const EXIT_STALE: i32 = 2;
 pub const EXIT_CLI_ERROR: i32 = 3;
 
 mod filelist;
+pub mod worklib;
 
 /// Knobs the `vita` driver threads down into the pipeline. Kept tiny for v1 — the
 /// full bucket-C flag surface (doc-13) lands with `vita-log`.
@@ -71,6 +72,11 @@ pub struct VitaOpts {
     /// recorded `composite_input_hash` (`E-ART-STALE-UPSTREAM`, exit class 2).
     /// `None` ⇒ no verification (the pre-worklib default).
     pub upstream: Option<String>,
+    /// `vcmp --work` (P2-A): record the compiled CU into this work library —
+    /// (logical name, directory). `None` ⇒ plain `-o` flow only.
+    pub work: Option<(String, String)>,
+    /// `--top <unit>` (P2-A): explicit elaborate roots (velab/lib mode).
+    pub tops: Vec<String>,
 }
 
 impl VitaOpts {
@@ -397,6 +403,13 @@ pub fn frontend_text_to_unit(
     frontend_text_to_unit_pre(file, text, sink, &hdl_preprocess::PreOpts::default())
 }
 
+/// (parsed unit, resolved timescales, include closure as (path, raw digest)).
+pub type FrontendUnit = (
+    hdl_ast::SourceUnit,
+    hdl_preprocess::ResolvedTimescales,
+    Vec<(String, [u8; 32])>,
+);
+
 /// [`frontend_text_to_unit`] with an explicit preprocessor surface (`-I`/`-D`).
 pub fn frontend_text_to_unit_pre(
     file: &str,
@@ -404,6 +417,20 @@ pub fn frontend_text_to_unit_pre(
     sink: &dyn LogSink,
     pre_opts: &hdl_preprocess::PreOpts,
 ) -> Option<(hdl_ast::SourceUnit, hdl_preprocess::ResolvedTimescales)> {
+    frontend_text_to_unit_pre_with_includes(file, text, sink, pre_opts).map(|(u, rt, _)| (u, rt))
+}
+
+/// [`frontend_text_to_unit_pre`] that ALSO returns the `\`include` closure —
+/// every on-disk file the preprocessor opened, as (canonical path, raw bytes
+/// digest) pairs. The worklib manifest records these so a header edit without
+/// recompiling trips the RULE-V gate (the entry file itself is excluded: its
+/// digest is taken per-source by the caller).
+pub fn frontend_text_to_unit_pre_with_includes(
+    file: &str,
+    text: &str,
+    sink: &dyn LogSink,
+    pre_opts: &hdl_preprocess::PreOpts,
+) -> Option<FrontendUnit> {
     // ── preprocess ─────────────────────────────────────────────────────────
     // raw source -> expanded text + SourceMap. The expanded text (not `text`) is
     // what the lexer and parser consume; spans they produce index the expanded
@@ -488,7 +515,20 @@ pub fn frontend_text_to_unit_pre(
             sim_time: None,
         }));
     }
-    Some((unit, rt))
+    let includes: Vec<(String, [u8; 32])> = pp
+        .map
+        .files
+        .iter()
+        .filter_map(|f| {
+            f.canon.as_ref().map(|c| {
+                (
+                    c.to_string_lossy().into_owned(),
+                    *blake3::hash(f.text.as_bytes()).as_bytes(),
+                )
+            })
+        })
+        .collect();
+    Some((unit, rt, includes))
 }
 
 /// Render a base-10 second exponent as a `` `timescale ``-style unit string
@@ -726,6 +766,9 @@ pub fn run(argv: &[String]) -> i32 {
             if io.dump_filelist {
                 return run_dump_filelist(&io);
             }
+            if let Err(c) = reject_worklib_flags("vita", &io, false, false) {
+                return c;
+            }
             let opts = VitaOpts {
                 vcd_path_override: io.out,
                 threads: io.threads,
@@ -737,6 +780,8 @@ pub fn run(argv: &[String]) -> i32 {
                 log: io.log,
                 log_append: io.log_append,
                 upstream: None, // one-shot has no staged upstream
+                work: None,
+                tops: Vec::new(),
             };
             run_vita(&io.pos, &opts)
         }
@@ -811,12 +856,17 @@ fn run_explain(args: &[String]) -> i32 {
 fn print_help(applet: &str) {
     let body = match applet {
         "vcmp" => {
-            "Usage: vcmp [-o <out.vu>] <sources>...\n\n\
-             Compile sources (preprocess + lex + parse) into a `.vu` snapshot."
+            "Usage: vcmp [-o <out.vu>] [--work <name[=dir]>] <sources>...\n\n\
+             Compile sources (preprocess + lex + parse) into a `.vu` snapshot.\n\
+             With --work, record the unit(s) into a work library (lib.toml +\n\
+             content-addressed blob) instead of / in addition to `-o`."
         }
         "velab" => {
-            "Usage: velab [-o <out.velab>] <in.vu>\n\n\
-             Elaborate a `.vu` snapshot into a `.velab` (golden SimIr + side tables)."
+            "Usage: velab [-o <out.velab>] <in.vu> [--top <unit>]\n\
+             \x20      velab -L <name[=dir]>... --top <unit>... [-o <out.velab>]\n\n\
+             Elaborate a `.vu` snapshot into a `.velab` (golden SimIr + side tables).\n\
+             Library mode (-L) resolves --top units by logical name (first -L wins)\n\
+             and elaborates their instantiation closure."
         }
         "vrun" => {
             "Usage: vrun [-o <out.vcd>] <in.velab>\n\n\
@@ -845,6 +895,10 @@ fn print_help(applet: &str) {
          --threads, -j <N>     worker threads (output byte-identical for any N)\n  \
          --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
          --upstream <FILE>     (vrun) verify the .velab's recorded upstream digest\n  \
+         --work <NAME[=DIR]>   (vcmp) record units into a work library (default dir ./NAME)\n  \
+         --workdir <DIR>       (vcmp) work-library directory when --work has no =dir\n  \
+         -L <NAME[=DIR]>       (velab) bind a compiled library; search order = -L order\n  \
+         --top <UNIT>          (velab) explicit elaborate root(s); required with -L\n  \
          -Wno-<CODE>           suppress a Warning/Info diagnostic (mnemonic, doc-15)\n  \
          -Werror[=<CODE>]      promote warnings (all, or one code) to errors\n  \
          -q, --quiet           silence terminal $display/progress (diags + --log keep all)\n  \
@@ -967,7 +1021,7 @@ fn artifact_header(
 /// `vcmp`: read+preprocess+lex+parse the source(s) into a `SourceUnit`, then write
 /// a `.vu` artifact. `out` is the resolved output path.
 /// Exit: 0 ok / 1 lex|parse|empty-unit / 3 missing-file|write-error.
-pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
+pub fn run_vcmp(sources: &[String], out: Option<&str>, opts: &VitaOpts) -> i32 {
     if sources.is_empty() {
         eprintln!(
             "error[{}]: no source files given",
@@ -994,16 +1048,19 @@ pub fn run_vcmp(sources: &[String], out: &str, opts: &VitaOpts) -> i32 {
 
 fn run_vcmp_gated(
     sources: &[String],
-    out: &str,
+    out: Option<&str>,
     opts: &VitaOpts,
     inner: &StderrSink,
     sink: &vita_log::GatedSink,
 ) -> i32 {
-    // read+concat (mirrors run_vita): read error → exit 3.
+    // read+concat (mirrors run_vita): read error → exit 3. Per-source raw
+    // digests feed the worklib manifest (RULE-V staleness keys).
     let mut text = String::new();
+    let mut src_digests: Vec<(String, [u8; 32])> = Vec::new();
     for path in sources {
         match std::fs::read_to_string(path) {
             Ok(s) => {
+                src_digests.push((path.clone(), *blake3::hash(s.as_bytes()).as_bytes()));
                 text.push_str(&s);
                 if !s.ends_with('\n') {
                     text.push('\n');
@@ -1021,7 +1078,9 @@ fn run_vcmp_gated(
     let file = sources[0].as_str();
 
     // preprocess → lex → parse through the SAME shared front-end the one-shot uses.
-    let Some((unit, rt)) = frontend_text_to_unit_pre(file, &text, sink, &pre_opts_of(opts)) else {
+    let Some((unit, rt, includes)) =
+        frontend_text_to_unit_pre_with_includes(file, &text, sink, &pre_opts_of(opts))
+    else {
         return EXIT_USER_ERROR;
     };
 
@@ -1064,12 +1123,80 @@ fn run_vcmp_gated(
         composite,
     );
     let bytes = vita_artifact::write_vu(&header, &body);
-    if let Err(e) = write_artifact_atomic(out, &bytes) {
-        eprintln!(
-            "error[{}]: cannot write '{out}': {e}",
-            MsgCode::CliBadFlag.code_num()
-        );
-        return EXIT_CLI_ERROR;
+    if let Some(out) = out {
+        if let Err(e) = write_artifact_atomic(out, &bytes) {
+            eprintln!(
+                "error[{}]: cannot write '{out}': {e}",
+                MsgCode::CliBadFlag.code_num()
+            );
+            return EXIT_CLI_ERROR;
+        }
+    }
+    // `--work`: record the CU (blob + canonical manifest entry) into the
+    // library. The blob bytes ARE the `.vu` bytes — the frozen artifact
+    // format is reused verbatim, only the directory layout is new.
+    if let Some((lib_name, dir)) = &opts.work {
+        let units: Vec<(String, String)> = unit
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                hdl_ast::TopItem::Module(m) => Some(("module".to_string(), m.name.name.clone())),
+                hdl_ast::TopItem::Interface(m) => {
+                    Some(("interface".to_string(), m.name.name.clone()))
+                }
+                hdl_ast::TopItem::Error(_) => None,
+            })
+            .collect();
+        let cu = worklib::Cu {
+            blob: String::new(), // content-addressed name assigned by add_cu
+            defines: opts
+                .defines
+                .iter()
+                .map(|(n, v)| {
+                    if v.is_empty() {
+                        n.clone()
+                    } else {
+                        format!("{n}={v}")
+                    }
+                })
+                .collect(),
+            incdirs: opts.incdirs.clone(),
+            sources: src_digests,
+            includes,
+            units,
+        };
+        match worklib::add_cu(
+            std::path::Path::new(dir),
+            lib_name,
+            &bytes,
+            cu,
+            &write_artifact_atomic,
+        ) {
+            Ok(worklib::AddOutcome::Ok) => {}
+            Ok(worklib::AddOutcome::DupUnit(name)) => {
+                sink.emit(LogEvent::Diagnostic(Diagnostic {
+                    severity: Severity::Error,
+                    code: MsgCode::DupUnit,
+                    message: format!(
+                        "design unit `{name}` is already defined in library `{lib_name}` \
+                         by a different source — recompile that source, or rename"
+                    ),
+                    location: None,
+                    context: Vec::new(),
+                    sim_time: None,
+                }));
+                return EXIT_USER_ERROR;
+            }
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError {
+                        code: MsgCode::WorkManifestInvalid,
+                        message: e,
+                    },
+                );
+            }
+        }
     }
     EXIT_OK
 }
@@ -1098,7 +1225,7 @@ pub fn run_velab(vu_path: &str, out: &str, opts: &VitaOpts) -> i32 {
 fn run_velab_gated(
     vu_path: &str,
     out: &str,
-    _opts: &VitaOpts,
+    opts: &VitaOpts,
     inner: &StderrSink,
     sink: &vita_log::GatedSink,
 ) -> i32 {
@@ -1111,46 +1238,19 @@ fn run_velab_gated(
     // E-ART-STALE-UPSTREAM re-hash gate when a worklib exists (Phase-2).
     let vu_composite = *blake3::hash(&bytes).as_bytes();
 
-    // header-only decode (bad magic/header → E-ART-FORMAT-MISMATCH)
-    let (header, body) = match vita_artifact::read_vu(&bytes) {
+    let (unit, unit_exp, global_prec_exp) = match decode_vu_unit(&bytes, sink) {
         Ok(x) => x,
-        Err(e) => return emit_artifact_error(sink, &e),
+        Err(code) => return code,
     };
-    // staleness gate: this `.vu` must match the hdl-ast shape THIS velab was built against.
-    let tool = vita_artifact::ToolContext::new(vita_schema::schema_hash::<hdl_ast::SourceUnit>());
-    if let Err(e) = vita_artifact::verify_header(&header, &tool) {
-        return emit_artifact_error(sink, &e); // E-ART-SCHEMA-MISMATCH etc.
-    }
-    // decode the SourceUnit frame, then the trailing timescale env (tolerant of an
-    // older `.vu` with no env → the 1ns/1ns base).
-    let (unit, vu_rest): (hdl_ast::SourceUnit, &[u8]) = match postcard::take_from_bytes(body) {
-        Ok(x) => x,
-        Err(e) => {
-            return emit_artifact_error(
-                sink,
-                &vita_artifact::ArtifactError::format(&format!("undecodable .vu body: {e}")),
-            )
-        }
-    };
-    let (unit_exp, global_prec_exp): (std::collections::BTreeMap<String, i8>, i8) =
-        if vu_rest.is_empty() {
-            (std::collections::BTreeMap::new(), -9)
-        } else {
-            match postcard::from_bytes(vu_rest) {
-                Ok(x) => x,
-                Err(e) => {
-                    return emit_artifact_error(
-                        sink,
-                        &vita_artifact::ArtifactError::format(&format!(
-                            "undecodable .vu timescale trailer: {e}"
-                        )),
-                    )
-                }
-            }
-        };
 
-    // ── elaborate (with the staged timescale env) ──
-    let (ir, sc) = elaborate::elaborate_with_timescale(&unit, sink, &unit_exp, global_prec_exp);
+    // ── elaborate (with the staged timescale env; `--top` overrides roots) ──
+    let roots: Option<&[String]> = if opts.tops.is_empty() {
+        None
+    } else {
+        Some(&opts.tops)
+    };
+    let (ir, sc) =
+        elaborate::elaborate_with_timescale_roots(&unit, sink, &unit_exp, global_prec_exp, roots);
     let Some(ir) = ir else {
         return EXIT_USER_ERROR; // elab error already emitted
     };
@@ -1166,7 +1266,75 @@ fn run_velab_gated(
     if inner.had_error_or_fatal() {
         return EXIT_USER_ERROR;
     }
-    let mut velab_body = postcard::to_stdvec(&ir).expect("SimIr postcard encode infallible");
+    write_velab_file(out, &ir, &sc, global_prec_exp, vu_composite, None)
+}
+
+/// Decode a `.vu`: header gate (magic/format/schema) + `SourceUnit` frame +
+/// the tolerant timescale tail. Shared by the legacy positional path and the
+/// worklib closure loader.
+fn decode_vu_unit(
+    bytes: &[u8],
+    sink: &dyn LogSink,
+) -> Result<
+    (
+        hdl_ast::SourceUnit,
+        std::collections::BTreeMap<String, i8>,
+        i8,
+    ),
+    i32,
+> {
+    let (header, body) = match vita_artifact::read_vu(bytes) {
+        Ok(x) => x,
+        Err(e) => return Err(emit_artifact_error(sink, &e)),
+    };
+    // staleness gate: this `.vu` must match the hdl-ast shape THIS velab was built against.
+    let tool = vita_artifact::ToolContext::new(vita_schema::schema_hash::<hdl_ast::SourceUnit>());
+    if let Err(e) = vita_artifact::verify_header(&header, &tool) {
+        return Err(emit_artifact_error(sink, &e)); // E-ART-SCHEMA-MISMATCH etc.
+    }
+    // decode the SourceUnit frame, then the trailing timescale env (tolerant of an
+    // older `.vu` with no env → the 1ns/1ns base).
+    let (unit, vu_rest): (hdl_ast::SourceUnit, &[u8]) = match postcard::take_from_bytes(body) {
+        Ok(x) => x,
+        Err(e) => {
+            return Err(emit_artifact_error(
+                sink,
+                &vita_artifact::ArtifactError::format(&format!("undecodable .vu body: {e}")),
+            ))
+        }
+    };
+    let (unit_exp, global_prec_exp): (std::collections::BTreeMap<String, i8>, i8) =
+        if vu_rest.is_empty() {
+            (std::collections::BTreeMap::new(), -9)
+        } else {
+            match postcard::from_bytes(vu_rest) {
+                Ok(x) => x,
+                Err(e) => {
+                    return Err(emit_artifact_error(
+                        sink,
+                        &vita_artifact::ArtifactError::format(&format!(
+                            "undecodable .vu timescale trailer: {e}"
+                        )),
+                    ))
+                }
+            }
+        };
+    Ok((unit, unit_exp, global_prec_exp))
+}
+
+/// Serialize and atomically write a `.velab`: golden `SimIr` frame + the
+/// append-only side-table trailers (+ the optional 9th WorkConsumed trailer —
+/// legacy explicit-path builds write NOTHING extra, so their bytes are
+/// unchanged by the worklib feature).
+fn write_velab_file(
+    out: &str,
+    ir: &sim_ir::SimIr,
+    sc: &elaborate::Sidecars,
+    global_prec_exp: i8,
+    composite: [u8; 32],
+    consumed: Option<&worklib::WorkConsumed>,
+) -> i32 {
+    let mut velab_body = postcard::to_stdvec(ir).expect("SimIr postcard encode infallible");
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&sc.fork_modes).expect("ForkModeTable postcard encode infallible"),
     );
@@ -1174,7 +1342,7 @@ fn run_velab_gated(
         &postcard::to_stdvec(&sc.net_names).expect("NetNameTable postcard encode infallible"),
     );
     velab_body.extend_from_slice(
-        &postcard::to_stdvec(&(sc.proc_multipliers, global_prec_exp))
+        &postcard::to_stdvec(&(&sc.proc_multipliers, global_prec_exp))
             .expect("timescale trailer postcard encode infallible"),
     );
     velab_body.extend_from_slice(
@@ -1194,10 +1362,15 @@ fn run_velab_gated(
         &postcard::to_stdvec(&sc.queue_bounds)
             .expect("queue-bound trailer postcard encode infallible"),
     );
+    if let Some(wc) = consumed {
+        velab_body.extend_from_slice(
+            &postcard::to_stdvec(wc).expect("work-consumed trailer postcard encode infallible"),
+        );
+    }
     let vheader = artifact_header(
         vita_schema::schema_hash::<sim_ir::SimIr>(),
         global_prec_exp,
-        vu_composite,
+        composite,
     );
     let out_bytes = vita_artifact::write_velab(&vheader, &velab_body);
     if let Err(e) = write_artifact_atomic(out, &out_bytes) {
@@ -1208,6 +1381,262 @@ fn run_velab_gated(
         return EXIT_CLI_ERROR;
     }
     EXIT_OK
+}
+
+/// `velab -L <lib> --top <unit>` (P2-A worklib): discover units by logical
+/// name across the given libraries (first `-L` wins a name), load the
+/// instantiation CLOSURE of the requested tops (a library's unrelated units
+/// never become roots), elaborate with the explicit roots, and record the
+/// consumed manifests/blobs/files into the 9th `.velab` trailer for the
+/// `vrun` RULE-V auto-gate.
+pub fn run_velab_lib(
+    libs: &[(String, String)],
+    tops: &[String],
+    out: &str,
+    opts: &VitaOpts,
+) -> i32 {
+    let log = match open_log(opts) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let inner = StderrSink::with_output(opts.verbosity.unwrap_or(1), log);
+    let sink = vita_log::GatedSink::new(&inner, opts.gate.clone());
+    if inner.verbose() {
+        sink.emit(LogEvent::Progress(diag::ProgressEvent {
+            message: format!(
+                "libs: {}  tops: {}  out: {out}",
+                libs.iter()
+                    .map(|(n, d)| format!("{n}={d}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                tops.join(" ")
+            ),
+        }));
+    }
+    let code = run_velab_lib_gated(libs, tops, out, &inner, &sink);
+    inner.epilogue();
+    code
+}
+
+fn run_velab_lib_gated(
+    libs: &[(String, String)],
+    tops: &[String],
+    out: &str,
+    inner: &StderrSink,
+    sink: &vita_log::GatedSink,
+) -> i32 {
+    // ── 1. load manifests (strict; E-WORK-MANIFEST on any failure) ──
+    struct Lib {
+        name: String,
+        dir: std::path::PathBuf,
+        manifest: worklib::Manifest,
+        mhash: [u8; 32],
+        dir_str: String,
+    }
+    let mut loaded_libs: Vec<Lib> = Vec::new();
+    for (name, dir) in libs {
+        let mpath = std::path::Path::new(dir).join("lib.toml");
+        let text = match std::fs::read_to_string(&mpath) {
+            Ok(t) => t,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError {
+                        code: MsgCode::WorkManifestInvalid,
+                        message: format!("{}: {e}", mpath.display()),
+                    },
+                )
+            }
+        };
+        let mhash = *blake3::hash(text.as_bytes()).as_bytes();
+        let manifest = match worklib::Manifest::parse(&text) {
+            Ok(m) => m,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError {
+                        code: MsgCode::WorkManifestInvalid,
+                        message: format!("{}: {e}", mpath.display()),
+                    },
+                )
+            }
+        };
+        if &manifest.name != name {
+            return emit_artifact_error(
+                sink,
+                &vita_artifact::ArtifactError {
+                    code: MsgCode::WorkManifestInvalid,
+                    message: format!(
+                        "{}: directory holds library `{}` (requested `{name}`)",
+                        mpath.display(),
+                        manifest.name
+                    ),
+                },
+            );
+        }
+        loaded_libs.push(Lib {
+            name: name.clone(),
+            dir: std::path::PathBuf::from(dir),
+            manifest,
+            mhash,
+            dir_str: dir.clone(),
+        });
+    }
+
+    // ── 2. logical unit map — FIRST `-L` wins a duplicate name ──
+    let mut unit_map: std::collections::BTreeMap<String, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for (li, lib) in loaded_libs.iter().enumerate() {
+        for (_, name, ci) in lib.manifest.unit_index() {
+            unit_map.entry(name.to_string()).or_insert((li, ci));
+        }
+    }
+
+    // ── 3. resolve tops, then walk the instantiation closure (BFS) ──
+    let mut queue: std::collections::VecDeque<(usize, usize)> = std::collections::VecDeque::new();
+    let mut seen_cu: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
+    for t in tops {
+        let Some(&key) = unit_map.get(t) else {
+            sink.emit(LogEvent::Diagnostic(Diagnostic {
+                severity: Severity::Error,
+                code: MsgCode::ElabUnsupported,
+                message: format!("top unit `{t}` not found in the given libraries"),
+                location: None,
+                context: Vec::new(),
+                sim_time: None,
+            }));
+            return EXIT_USER_ERROR;
+        };
+        if seen_cu.insert(key) {
+            queue.push_back(key);
+        }
+    }
+    struct LoadedCu {
+        unit: hdl_ast::SourceUnit,
+        unit_exp: std::collections::BTreeMap<String, i8>,
+        prec: i8,
+        blob_path: String,
+        blob_hash: [u8; 32],
+        lib_idx: usize,
+        cu_idx: usize,
+    }
+    let mut loaded: Vec<LoadedCu> = Vec::new();
+    let mut loaded_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut blob_bytes_all: Vec<u8> = Vec::new();
+    while let Some((li, ci)) = queue.pop_front() {
+        let lib = &loaded_libs[li];
+        let blob_rel = &lib.manifest.cus[ci].blob;
+        let blob_path = lib.dir.join(blob_rel);
+        let bytes = match std::fs::read(&blob_path) {
+            Ok(b) => b,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError {
+                        code: MsgCode::WorkManifestInvalid,
+                        message: format!(
+                            "{}: {e} (library blob missing — re-run `vcmp --work`)",
+                            blob_path.display()
+                        ),
+                    },
+                )
+            }
+        };
+        let blob_hash = *blake3::hash(&bytes).as_bytes();
+        blob_bytes_all.extend_from_slice(&bytes);
+        let (unit, unit_exp, prec) = match decode_vu_unit(&bytes, sink) {
+            Ok(x) => x,
+            Err(code) => return code,
+        };
+        for (_, n) in &lib.manifest.cus[ci].units {
+            loaded_names.insert(n.clone());
+        }
+        // Enqueue CUs that define units this CU instantiates but no loaded CU
+        // provides (deterministic: BTreeSet walk over a BTreeMap lookup).
+        for name in elaborate::instantiated_names(&unit) {
+            if loaded_names.contains(&name) {
+                continue;
+            }
+            if let Some(&key) = unit_map.get(&name) {
+                if seen_cu.insert(key) {
+                    queue.push_back(key);
+                }
+            }
+        }
+        loaded.push(LoadedCu {
+            unit,
+            unit_exp,
+            prec,
+            blob_path: blob_path.to_string_lossy().into_owned(),
+            blob_hash,
+            lib_idx: li,
+            cu_idx: ci,
+        });
+    }
+
+    // ── 4. merge into ONE SourceUnit (shadow dedup: first definition wins —
+    //       the unit-map winner is in an earlier-loaded CU by construction) ──
+    let mut merged = hdl_ast::SourceUnit {
+        items: Vec::new(),
+        span: hdl_ast::Span { lo: 0, hi: 0 },
+    };
+    let mut emitted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut merged_exp: std::collections::BTreeMap<String, i8> = std::collections::BTreeMap::new();
+    let mut prec = i8::MAX;
+    for cu in &loaded {
+        prec = prec.min(cu.prec);
+        for (k, v) in &cu.unit_exp {
+            merged_exp.entry(k.clone()).or_insert(*v);
+        }
+        for it in &cu.unit.items {
+            let name = match it {
+                hdl_ast::TopItem::Module(m) | hdl_ast::TopItem::Interface(m) => {
+                    Some(m.name.name.clone())
+                }
+                hdl_ast::TopItem::Error(_) => None,
+            };
+            if let Some(n) = name {
+                if !emitted.insert(n) {
+                    continue; // shadowed by an earlier library
+                }
+            }
+            merged.items.push(it.clone());
+        }
+    }
+    if prec == i8::MAX {
+        prec = -9;
+    }
+
+    // ── 5. elaborate with the EXPLICIT roots ──
+    let (ir, sc) =
+        elaborate::elaborate_with_timescale_roots(&merged, sink, &merged_exp, prec, Some(tops));
+    let Some(ir) = ir else {
+        return EXIT_USER_ERROR;
+    };
+    if inner.had_error_or_fatal() {
+        return EXIT_USER_ERROR;
+    }
+
+    // ── 6. record the consumed upstream for the vrun auto-gate ──
+    let mut consumed = worklib::WorkConsumed::default();
+    for lib in &loaded_libs {
+        consumed
+            .libs
+            .push((lib.name.clone(), lib.dir_str.clone(), lib.mhash));
+    }
+    let mut files_seen: std::collections::BTreeSet<(String, [u8; 32])> =
+        std::collections::BTreeSet::new();
+    for cu in &loaded {
+        consumed.blobs.push((cu.blob_path.clone(), cu.blob_hash));
+        let mcu = &loaded_libs[cu.lib_idx].manifest.cus[cu.cu_idx];
+        for (p, h) in mcu.sources.iter().chain(&mcu.includes) {
+            if files_seen.insert((p.clone(), *h)) {
+                consumed.files.push((p.clone(), *h));
+            }
+        }
+    }
+    let composite = *blake3::hash(&blob_bytes_all).as_bytes();
+    write_velab_file(out, &ir, &sc, prec, composite, Some(&consumed))
 }
 
 /// `vrun`: read a `.velab`, gate the SimIr hash, decode SimIr+ForkModeTable,
@@ -1402,10 +1831,10 @@ fn run_vrun_gated(
     };
     // Queue-bound trailer (v6 ③). Tolerant → empty ⇒ every queue unbounded
     // (also CORRECT for pre-bound `.velab`s, which reject `[$:N]` upstream).
-    let queue_bounds: sim_engine::QueueBoundTable = if rest8.is_empty() {
-        sim_engine::QueueBoundTable::new()
+    let (queue_bounds, rest9): (sim_engine::QueueBoundTable, &[u8]) = if rest8.is_empty() {
+        (sim_engine::QueueBoundTable::new(), rest8)
     } else {
-        match postcard::from_bytes(rest8) {
+        match postcard::take_from_bytes(rest8) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
@@ -1417,6 +1846,95 @@ fn run_vrun_gated(
             }
         }
     };
+    // WorkConsumed trailer (P2-A worklib). Tolerant → empty ⇒ no work gate
+    // (legacy/explicit-path `.velab`s carry no library provenance).
+    let consumed: worklib::WorkConsumed = if rest9.is_empty() {
+        worklib::WorkConsumed::default()
+    } else {
+        match postcard::from_bytes(rest9) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab work-consumed trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // ── RULE V auto-gate (doc-14 vrun 재검증): re-hash the LIVE upstream the
+    //    snapshot recorded — manifest bytes, CU blobs, and raw source/include
+    //    files. Content hashes only (never mtime); ANY mismatch refuses to
+    //    simulate a stale snapshot (E-ART-STALE-UPSTREAM, exit class 2). ──
+    {
+        let stale = |message: String| vita_artifact::ArtifactError {
+            code: diag::MsgCode::ArtStaleUpstream,
+            message,
+        };
+        for (name, dir, h) in &consumed.libs {
+            let mpath = std::path::Path::new(dir).join("lib.toml");
+            match std::fs::read(&mpath) {
+                Ok(b) if blake3::hash(&b).as_bytes() == h => {}
+                Ok(_) => {
+                    return emit_artifact_error(
+                        sink,
+                        &stale(format!(
+                            "work library `{name}`: {} changed since the .velab snapshot (re-run velab)",
+                            mpath.display()
+                        )),
+                    )
+                }
+                Err(e) => {
+                    return emit_artifact_error(
+                        sink,
+                        &stale(format!(
+                            "work library `{name}`: {}: {e} (re-run `vcmp --work` + velab)",
+                            mpath.display()
+                        )),
+                    )
+                }
+            }
+        }
+        for (path, h) in &consumed.blobs {
+            match std::fs::read(path) {
+                Ok(b) if blake3::hash(&b).as_bytes() == h => {}
+                Ok(_) => {
+                    return emit_artifact_error(
+                        sink,
+                        &stale(format!(
+                            "{path}: library blob changed since the .velab snapshot (re-run velab)"
+                        )),
+                    )
+                }
+                Err(e) => {
+                    return emit_artifact_error(
+                        sink,
+                        &stale(format!("{path}: {e} (re-run `vcmp --work` + velab)")),
+                    )
+                }
+            }
+        }
+        for (path, h) in &consumed.files {
+            match std::fs::read(path) {
+                Ok(b) if blake3::hash(&b).as_bytes() == h => {}
+                Ok(_) => {
+                    return emit_artifact_error(
+                        sink,
+                        &stale(format!(
+                            "{path}: source changed since `vcmp --work` (re-run vcmp + velab)"
+                        )),
+                    )
+                }
+                Err(e) => {
+                    return emit_artifact_error(
+                        sink,
+                        &stale(format!("{path}: {e} (re-run `vcmp --work` + velab)")),
+                    )
+                }
+            }
+        }
+    }
 
     // ── simulate ──
     let sim_opts = SimOpts {
@@ -1458,6 +1976,14 @@ struct IoArgs {
     dump_filelist: bool,
     /// `--upstream <file>` (vrun, v6 ⑤): RULE-V staleness verification.
     upstream: Option<String>,
+    /// `--work <name[=dir]>` (vcmp, P2-A): logical work library to record into.
+    work: Option<String>,
+    /// `--workdir <dir>` (vcmp, P2-A): output dir when `--work` has no `=dir`.
+    workdir: Option<String>,
+    /// `-L <name[=dir]>` (velab, P2-A): precompiled libraries, search order.
+    libs: Vec<String>,
+    /// `--top <unit>` (velab, P2-A): explicit root units (required with `-L`).
+    tops: Vec<String>,
 }
 
 /// W-FLIST-OVERRIDE (always-logged): a single-value knob set twice — proceed
@@ -1482,6 +2008,10 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut log: Option<String> = None;
     let mut log_append = false;
     let mut dump_filelist = false;
+    let mut work: Option<String> = None;
+    let mut workdir: Option<String> = None;
+    let mut libs: Vec<String> = Vec::new();
+    let mut tops: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1547,6 +2077,56 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                     warn_override("--upstream", prev, v);
                 }
                 upstream = Some(v.clone());
+                i += 2;
+            }
+            "--work" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '--work' needs a name[=dir]",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                if let Some(prev) = &work {
+                    warn_override("--work", prev, v);
+                }
+                work = Some(v.clone());
+                i += 2;
+            }
+            "--workdir" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '--workdir' needs a directory",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                if let Some(prev) = &workdir {
+                    warn_override("--workdir", prev, v);
+                }
+                workdir = Some(v.clone());
+                i += 2;
+            }
+            "-L" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '-L' needs a name[=dir]",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                libs.push(v.clone());
+                i += 2;
+            }
+            "--top" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '--top' needs a unit name",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                tops.push(v.clone());
                 i += 2;
             }
             "-D" | "--define" => {
@@ -1670,6 +2250,10 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
         log_append,
         dump_filelist,
         upstream,
+        work,
+        workdir,
+        libs,
+        tops,
     })
 }
 
@@ -1710,6 +2294,61 @@ fn reject_preprocess_buckets(stage: &str, io: &IoArgs) -> Result<(), i32> {
     Err(EXIT_CLI_ERROR)
 }
 
+/// Loud wrong-stage rejection for the worklib flag family — `--work`/`--workdir`
+/// belong to vcmp, `-L`/`--top` to velab; anywhere else they would be silently
+/// meaningless (the E-FLIST-WRONG-STAGE principle applied to argv).
+fn reject_worklib_flags(
+    stage: &str,
+    io: &IoArgs,
+    allow_work: bool,
+    allow_libs: bool,
+) -> Result<(), i32> {
+    if !allow_work && (io.work.is_some() || io.workdir.is_some()) {
+        eprintln!(
+            "error[{}]: --work/--workdir are vcmp flags — '{stage}' does not write libraries",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return Err(EXIT_CLI_ERROR);
+    }
+    if !allow_libs && !io.libs.is_empty() {
+        eprintln!(
+            "error[{}]: -L is a velab flag — '{stage}' does not read libraries",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return Err(EXIT_CLI_ERROR);
+    }
+    if !allow_libs && !io.tops.is_empty() {
+        eprintln!(
+            "error[{}]: --top is a velab flag — '{stage}' has no root selection",
+            MsgCode::CliBadFlag.code_num()
+        );
+        return Err(EXIT_CLI_ERROR);
+    }
+    Ok(())
+}
+
+/// Resolve `--work <name[=dir]>` / `--workdir <dir>` into (logical name, dir):
+/// `--work n=d` pins both; `--work n` puts the library at `./n` unless
+/// `--workdir` overrides; a bare `--workdir d` means the default name `work`.
+fn parse_work_spec(io: &IoArgs) -> Result<Option<(String, String)>, i32> {
+    let spec = match (&io.work, &io.workdir) {
+        (None, None) => return Ok(None),
+        (None, Some(d)) => ("work".to_string(), d.clone()),
+        (Some(w), wd) => match w.split_once('=') {
+            Some((n, d)) if !n.is_empty() && !d.is_empty() => (n.to_string(), d.to_string()),
+            Some(_) => {
+                eprintln!(
+                    "error[{}]: '--work' needs name[=dir] with both parts non-empty",
+                    MsgCode::CliBadFlag.code_num()
+                );
+                return Err(EXIT_CLI_ERROR);
+            }
+            None => (w.clone(), wd.clone().unwrap_or_else(|| format!("./{w}"))),
+        },
+    };
+    Ok(Some(spec))
+}
+
 fn dispatch_vcmp(args: &[String]) -> i32 {
     let io = match parse_io_args(args) {
         Ok(x) => x,
@@ -1718,6 +2357,9 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
     if io.dump_filelist {
         return run_dump_filelist(&io);
     }
+    if let Err(c) = reject_worklib_flags("vcmp", &io, true, false) {
+        return c;
+    }
     if io.pos.is_empty() {
         eprintln!(
             "error[{}]: vcmp: no source files",
@@ -1725,13 +2367,25 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
         );
         return EXIT_CLI_ERROR;
     }
-    let out = io.out.unwrap_or_else(|| default_out(&io.pos[0], "vu"));
-    if let Err(c) = reject_out_clobbers_input(&io.pos, &out) {
-        return c;
+    let work = match parse_work_spec(&io) {
+        Ok(w) => w,
+        Err(c) => return c,
+    };
+    // `-o` stays the default flow; with `--work` the library IS the output and
+    // an explicit `-o` additionally writes the plain `.vu` (same bytes).
+    let out = match (&io.out, &work) {
+        (Some(o), _) => Some(o.clone()),
+        (None, Some(_)) => None,
+        (None, None) => Some(default_out(&io.pos[0], "vu")),
+    };
+    if let Some(o) = &out {
+        if let Err(c) = reject_out_clobbers_input(&io.pos, o) {
+            return c;
+        }
     }
     run_vcmp(
         &io.pos,
-        &out,
+        out.as_deref(),
         &VitaOpts {
             gate: io.gate,
             incdirs: io.incdirs,
@@ -1739,6 +2393,7 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
             verbosity: io.verbosity,
             log: io.log,
             log_append: io.log_append,
+            work,
             ..VitaOpts::default()
         },
     )
@@ -1754,6 +2409,56 @@ fn dispatch_velab(args: &[String]) -> i32 {
     }
     if let Err(c) = reject_preprocess_buckets("velab", &io) {
         return c;
+    }
+    if let Err(c) = reject_worklib_flags("velab", &io, false, true) {
+        return c;
+    }
+    // ── library mode (`-L`): logical discovery instead of a positional .vu ──
+    if !io.libs.is_empty() {
+        if !io.pos.is_empty() {
+            eprintln!(
+                "error[{}]: velab: a positional .vu and -L libraries are mutually exclusive",
+                MsgCode::CliBadFlag.code_num()
+            );
+            return EXIT_CLI_ERROR;
+        }
+        if io.tops.is_empty() {
+            eprintln!(
+                "error[{}]: velab: library mode needs at least one --top <unit> \
+                 (a library's unrelated units must not become roots)",
+                MsgCode::CliBadFlag.code_num()
+            );
+            return EXIT_CLI_ERROR;
+        }
+        let mut libs: Vec<(String, String)> = Vec::new();
+        for l in &io.libs {
+            match l.split_once('=') {
+                Some((n, d)) if !n.is_empty() && !d.is_empty() => {
+                    libs.push((n.to_string(), d.to_string()))
+                }
+                Some(_) => {
+                    eprintln!(
+                        "error[{}]: '-L' needs name[=dir] with both parts non-empty",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return EXIT_CLI_ERROR;
+                }
+                None => libs.push((l.clone(), format!("./{l}"))),
+            }
+        }
+        let out = io.out.unwrap_or_else(|| format!("{}.velab", io.tops[0]));
+        return run_velab_lib(
+            &libs,
+            &io.tops,
+            &out,
+            &VitaOpts {
+                gate: io.gate,
+                verbosity: io.verbosity,
+                log: io.log,
+                log_append: io.log_append,
+                ..VitaOpts::default()
+            },
+        );
     }
     if io.pos.len() != 1 {
         eprintln!(
@@ -1774,6 +2479,7 @@ fn dispatch_velab(args: &[String]) -> i32 {
             verbosity: io.verbosity,
             log: io.log,
             log_append: io.log_append,
+            tops: io.tops,
             ..VitaOpts::default()
         },
     )
@@ -1788,6 +2494,9 @@ fn dispatch_vrun(args: &[String]) -> i32 {
         return run_dump_filelist(&io);
     }
     if let Err(c) = reject_preprocess_buckets("vrun", &io) {
+        return c;
+    }
+    if let Err(c) = reject_worklib_flags("vrun", &io, false, false) {
         return c;
     }
     if io.pos.len() != 1 {

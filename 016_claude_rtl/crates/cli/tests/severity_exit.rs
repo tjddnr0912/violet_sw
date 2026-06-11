@@ -89,7 +89,10 @@ fn staged_fatal_exits_one() {
     let vu = tmp("vu");
     let velab = tmp("velab");
     let opts = cli::VitaOpts::default();
-    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &opts),
+        cli::EXIT_OK
+    );
     assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
     assert_eq!(
         cli::run_vrun(&s(&velab), &opts),
@@ -109,7 +112,10 @@ fn staged_error_exits_one() {
     let vu = tmp("vu");
     let velab = tmp("velab");
     let opts = cli::VitaOpts::default();
-    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &opts),
+        cli::EXIT_OK
+    );
     assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
     assert_eq!(cli::run_vrun(&s(&velab), &opts), cli::EXIT_USER_ERROR);
     for p in [&src, &vu, &velab] {

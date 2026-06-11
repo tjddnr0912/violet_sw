@@ -19,8 +19,8 @@
   구체 목록과 Phase별 커버리지는 `hdl-reference/system-tasks/00-index.md` 참조.
 - **3개 HDL 지원** (로드맵 단계별): SystemVerilog(IEEE 1800) → 그 부분집합인 Verilog(IEEE 1364) → VHDL(IEEE 1076). 단계별 상세는 [로드맵 섹션](#phase-1-mvp-정의) 참조.
 - **3-OS 소스 빌드** (cargo) + CI 매트릭스.
-- **멀티 라이브러리** *(Phase-1.x — 현 구현 미포함)* — 단위를 `library:unit` 논리 키로 주소화하고 논리명→디렉터리 매핑(`cds.lib`/`synopsys_sim.setup` 계열)을 지원 (D3, §14).
-- **단계 산출물 온디스크 포맷 + staleness 재검증** — `vcmp`의 `work/` 라이브러리 + `velab`의 `.velab` 스냅샷을 해시 결합으로 묶어, 상류가 바뀐 stale 산출물에 대한 `vrun`을 거부한다 (RULE V, §14). *(현 구현: schema_hash+format_version 게이트 동작; RULE-V composite_input_hash는 **기록 활성**(2026-06-11 — vcmp=원문+(-D/-I) 다이제스트, velab=소비한 .vu 바이트 다이제스트), 소비측 재해시 게이트 `E-ART-STALE-UPSTREAM`·consumed[]는 worklib 도입 시)*
+- **멀티 라이브러리** *(✅ v1 구현 2026-06-12: `vcmp --work`/`velab -L`/`--top` + vrun RULE-V 자동 게이트 — doc-14 §3 구현 상태 참조; `--lib-map`/`-y`/`-v`는 후속)* — 단위를 `library:unit` 논리 키로 주소화하고 논리명→디렉터리 매핑(`cds.lib`/`synopsys_sim.setup` 계열)을 지원 (D3, §14).
+- **단계 산출물 온디스크 포맷 + staleness 재검증** — `vcmp`의 `work/` 라이브러리 + `velab`의 `.velab` 스냅샷을 해시 결합으로 묶어, 상류가 바뀐 stale 산출물에 대한 `vrun`을 거부한다 (RULE V, §14). *(✅ 전 체인 가동 2026-06-12: schema_hash+format_version 게이트 + lib-모드 `.velab`의 WorkConsumed 기록(매니페스트/blob/소스·include 다이제스트)을 bare `vrun`이 자동 재해시 — 불일치=`E-ART-STALE-UPSTREAM` exit 2. 명시 경로는 `vrun --upstream`)*
 - **filelist** — `-f`/`-F` 재귀 중첩 + `+incdir+`/`+define+` 집계 *(2026-06-10 전부 구현: argv-레벨 전개, 사이클/깊이/glob/env 가드, MIXED-BASE/OVERRIDE/WRONG-STAGE, -D/-I → PreOpts)* (§14 §3.1).
 - **진단/로깅 서브시스템** — transcript + 로그파일 tee, severity 라우팅, 소스 위치 추적 (§13). *(현 구현: stderr 진단+소스 위치; tee/라우팅 게이트는 `vita-log`와 함께 Phase-1.x)*
 - **에러 코드 카탈로그** — 안정 `MsgCode`(mnemonic + `VITA-####`) CI 1:1 동기 + `vita explain <CODE>`(doc-15 항목 출력, mnemonic/번호 양형 — 2026-06-10 구현) (§15).

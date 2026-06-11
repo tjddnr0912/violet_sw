@@ -90,4 +90,5 @@ msgcodes! {
     ArtSchemaMismatch      => ("E-ART-SCHEMA-MISMATCH",     "VITA-E9002", Error,   "artifact schema_hash mismatch"),
     ArtStaleUpstream       => ("E-ART-STALE-UPSTREAM",      "VITA-E9003", Error,   "stale upstream snapshot (RULE V)"),
     ArtVersionGate         => ("E-ART-VERSION-GATE",        "VITA-E9004", Error,   "producer tool semver-major incompatible"),
+    WorkManifestInvalid    => ("E-WORK-MANIFEST",           "VITA-E9005", Error,   "invalid or unreadable work-library manifest"),
 }

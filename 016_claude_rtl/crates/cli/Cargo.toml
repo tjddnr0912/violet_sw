@@ -30,6 +30,7 @@ vita-artifact = { path = "../vita-artifact" }
 vita-schema = { path = "../vita-schema" }
 postcard = { workspace = true }
 blake3 = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 vita-artifact = { path = "../vita-artifact" }

@@ -203,9 +203,24 @@ pub fn elaborate_with_timescale(
     mod_unit_exp: &std::collections::BTreeMap<String, i8>,
     global_prec_exp: i8,
 ) -> (Option<ir::SimIr>, Sidecars) {
+    elaborate_with_timescale_roots(unit, sink, mod_unit_exp, global_prec_exp, None)
+}
+
+/// [`elaborate_with_timescale`] with an explicit ROOT override (`--top`): when
+/// `roots` is `Some`, exactly those units are elaborated as top instances (in
+/// the given order) instead of the every-uninstantiated-module default — the
+/// worklib/`--top` surface. An unknown name is a loud elaborate error.
+pub fn elaborate_with_timescale_roots(
+    unit: &ast::SourceUnit,
+    sink: &dyn LogSink,
+    mod_unit_exp: &std::collections::BTreeMap<String, i8>,
+    global_prec_exp: i8,
+    roots: Option<&[String]>,
+) -> (Option<ir::SimIr>, Sidecars) {
     let mut el = Elaborator::new(sink);
     el.mod_unit_exp = mod_unit_exp.clone();
     el.global_prec_exp = global_prec_exp;
+    el.root_override = roots.map(<[String]>::to_vec);
     el.run(unit);
     let sc = Sidecars {
         fork_modes: std::mem::take(&mut el.fork_modes),
@@ -338,6 +353,71 @@ fn collect_instantiated<'a>(
     for m in order {
         for item in &m.body {
             from_item(item, map, &mut set);
+        }
+    }
+    set
+}
+
+/// Collect every design-unit name instantiated anywhere in `unit` — directly in
+/// a module body or nested inside `generate` — WITHOUT resolving against a
+/// module map (unresolved names are exactly what a worklib closure walk needs:
+/// they may live in another compilation unit). Interface instances surface here
+/// too (they parse as `ModuleItem::Instance`). Deterministic (decl-order walk
+/// into a `BTreeSet`).
+pub fn instantiated_names(unit: &ast::SourceUnit) -> std::collections::BTreeSet<String> {
+    fn from_item(item: &ast::ModuleItem, set: &mut std::collections::BTreeSet<String>) {
+        match item {
+            ast::ModuleItem::Instance(inst) => {
+                set.insert(inst.module_name.name.clone());
+            }
+            ast::ModuleItem::Generate(g) => {
+                for gi in &g.items {
+                    from_genitem(gi, set);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn from_genitem(gi: &ast::GenItem, set: &mut std::collections::BTreeSet<String>) {
+        match gi {
+            ast::GenItem::Item(boxed) => from_item(boxed, set),
+            ast::GenItem::For { body, .. } => {
+                for g in body {
+                    from_genitem(g, set);
+                }
+            }
+            ast::GenItem::Block { items, .. } => {
+                for g in items {
+                    from_genitem(g, set);
+                }
+            }
+            ast::GenItem::If { then_b, else_b, .. } => {
+                for g in then_b.iter().chain(else_b) {
+                    from_genitem(g, set);
+                }
+            }
+            ast::GenItem::Case { items, .. } => {
+                for ci in items {
+                    let body = match ci {
+                        ast::GenCaseItem::Match { body, .. } => body,
+                        ast::GenCaseItem::Default { body, .. } => body,
+                    };
+                    for g in body {
+                        from_genitem(g, set);
+                    }
+                }
+            }
+        }
+    }
+    let mut set = std::collections::BTreeSet::new();
+    for it in &unit.items {
+        let body = match it {
+            ast::TopItem::Module(m) => &m.body,
+            ast::TopItem::Interface(m) => &m.body,
+            _ => continue,
+        };
+        for item in body {
+            from_item(item, &mut set);
         }
     }
     set
@@ -546,6 +626,9 @@ struct Elaborator<'s> {
     // (multiplier 1 everywhere → byte-identical to the pre-timescale lowering).
     mod_unit_exp: std::collections::BTreeMap<String, i8>,
     global_prec_exp: i8,
+    // `--top` root override (worklib / multi-top selection): when `Some`, these
+    // units are the roots — in the given order — instead of `pick_roots`.
+    root_override: Option<Vec<String>>,
     // Delay multiplier `M = 10^(unit_exp − global_prec_exp)` of the module CURRENTLY
     // being lowered (saved/restored around each `elaborate_instance`, like cur_prefix).
     // `#delay` literals scale by this; `$time`/`$realtime` divide by it (per process).
@@ -614,6 +697,7 @@ impl<'s> Elaborator<'s> {
             disable_stack: Vec::new(),
             disable_fork_floor: 0,
             mod_unit_exp: BTreeMap::new(),
+            root_override: None,
             global_prec_exp: -9, // 1ns base precision (no-timescale lock)
             cur_time_mult: 1,
             proc_multipliers: Vec::new(),
@@ -797,7 +881,28 @@ impl<'s> Elaborator<'s> {
             }
         }
 
-        let roots = pick_roots(&map, &order);
+        let roots = match self.root_override.clone() {
+            // `--top` override: the named units, in the given order. Unknown
+            // names are loud — silently elaborating the default set instead
+            // would be a silent-wrong root selection.
+            Some(tops) => {
+                let mut sel = Vec::new();
+                for t in &tops {
+                    match map.get(t.as_str()) {
+                        Some((m, _)) => sel.push(*m),
+                        None => {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!("top module `{t}` not found in the design"),
+                            );
+                            return;
+                        }
+                    }
+                }
+                sel
+            }
+            None => pick_roots(&map, &order),
+        };
         if roots.is_empty() {
             self.error(MsgCode::ElabUnsupported, "no top module to elaborate");
             return;

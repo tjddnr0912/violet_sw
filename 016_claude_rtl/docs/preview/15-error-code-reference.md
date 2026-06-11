@@ -670,8 +670,9 @@ error[VITA-E9002] E-ART-SCHEMA-MISMATCH: top.velab schema 9f3c.., current tool s
 
 ### VITA-E9003 · `E-ART-STALE-UPSTREAM` (Error)
 *(검증 시임 구현 2026-06-11: `vrun --upstream <file.vu>`가 라이브 .vu를 재해시해 `.velab`의
-`composite_input_hash`와 대조 — 불일치 = 이 에러, exit class 2. 상류 **자동 발견**과 소스-레벨
-재해시 체인은 worklib 도입 시 — 아래 전체 모델.)*
+`composite_input_hash`와 대조 — 불일치 = 이 에러, exit class 2. **2026-06-12 worklib v1로 자동
+발견 체인 가동:** lib-모드 `.velab`은 소비한 매니페스트/blob/소스·include 다이제스트를 기록하고
+bare `vrun`이 전부 라이브 재해시 — 어느 하나라도 다르면 이 에러.)*
 **vrun이 라이브 소스 재해시 후 stale 스냅샷 거부(RULE V).** 매 실행 vrun이 상류 체인 전체를
 라이브 소스에 재검증 — 소비 (lib:unit, src_sha256) 트리플마다 라이브 파일을 재전처리(상속 적용)해
 다이제스트 재계산, 매니페스트 내용 해시·두 schema 해시 재확인. 라이브 해시가 스냅샷에 박힌 값과
@@ -696,6 +697,19 @@ error[VITA-E9004] E-ART-VERSION-GATE: top.velab produced by vitamin 2.x, this to
 ```
 **해결:** 소비 도구와 major가 맞는 도구로 재생성하거나 맞는 버전 설치. refuse-and-rebuild;
 마이그레이션은 산출물이 배포 포맷이 될 때까지 연기. exit class 2. 억제 불가.
+
+### VITA-E9005 · `E-WORK-MANIFEST` (Error)
+**work 라이브러리 매니페스트(`lib.toml`)가 없거나 정규형이 아님.** `-L`이 가리킨 디렉터리에
+`lib.toml`이 없거나, 기계-작성 정규형(canonical v1)을 벗어나 strict 파서가 거부했거나, 논리
+이름이 요청과 다를 때. 매니페스트는 vcmp `--work`가 기계-작성하며 수동 편집은 내용 해시를
+바꿔 하류 스냅샷을 stale로 만든다(그건 E9003) — 이 에러는 그 이전, 읽기/파싱 자체의 실패다.
+```
+$ velab -L work=./w --top cpu
+error[VITA-E9005] E-WORK-MANIFEST: ./w/lib.toml: not a canonical work manifest (line 1)
+  hint: regenerate the library with `vcmp --work`, or fix the -L path
+```
+**해결:** `vcmp --work`로 라이브러리 재생성, 또는 `-L` 경로 교정. exit class 2(아티팩트 클래스 —
+RTL 버그 아님). 억제 불가.
 
 ---
 

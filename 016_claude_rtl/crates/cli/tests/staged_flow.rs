@@ -43,7 +43,7 @@ fn vu_roundtrip_sourceunit_byte_equal() {
     write(&src, CLEAN_TB);
     let vu = tmp("vu");
     assert_eq!(
-        cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default()),
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default()),
         cli::EXIT_OK
     );
 
@@ -72,7 +72,7 @@ fn velab_roundtrip_simir_and_forktable() {
     let vu = tmp("vu");
     let velab = tmp("velab");
     assert_eq!(
-        cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default()),
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default()),
         cli::EXIT_OK
     );
     assert_eq!(
@@ -115,7 +115,7 @@ fn staged_chain_matches_oneshot_display() {
 
     // staged chain
     assert_eq!(
-        cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default()),
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default()),
         cli::EXIT_OK
     );
     assert_eq!(
@@ -175,7 +175,7 @@ fn staged_chain_matches_oneshot_vcd() {
     );
     // staged
     assert_eq!(
-        cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default()),
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default()),
         cli::EXIT_OK
     );
     assert_eq!(
@@ -228,7 +228,7 @@ fn staged_chain_matches_oneshot_timescaled() {
         cli::EXIT_OK
     );
     assert_eq!(
-        cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default()),
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default()),
         cli::EXIT_OK
     );
     assert_eq!(
@@ -313,7 +313,7 @@ fn vrun_rejects_stale_velab_schema_mismatch() {
     write(&src, CLEAN_TB);
     let vu = tmp("vu");
     let velab = tmp("velab");
-    cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default());
+    cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default());
     cli::run_velab(&s(&vu), &s(&velab), &cli::VitaOpts::default());
 
     // corrupt the header schema_hash in place, re-stitch, and feed to vrun.
@@ -358,7 +358,7 @@ fn missing_input_exits_three() {
     assert_eq!(
         cli::run_vcmp(
             &["/nonexistent/path/x.sv".into()],
-            "/tmp/x.vu",
+            Some("/tmp/x.vu"),
             &cli::VitaOpts::default()
         ),
         cli::EXIT_CLI_ERROR
@@ -372,7 +372,7 @@ fn vrun_rejects_corrupt_body() {
     write(&src, CLEAN_TB);
     let vu = tmp("vu");
     let velab = tmp("velab");
-    cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default());
+    cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default());
     cli::run_velab(&s(&vu), &s(&velab), &cli::VitaOpts::default());
 
     // keep the header+magic, append only 1 body byte → undecodable SimIr frame.
@@ -421,7 +421,7 @@ fn fork_trailer_survives_staged_path() {
     let vu = tmp("vu");
     let velab = tmp("velab");
     assert_eq!(
-        cli::run_vcmp(&[s(&src)], &s(&vu), &cli::VitaOpts::default()),
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &cli::VitaOpts::default()),
         cli::EXIT_OK
     );
     assert_eq!(
@@ -484,7 +484,10 @@ fn artifact_write_leaves_no_tmp_residue() {
     let vu = dir.join("tb.vu");
     let velab = dir.join("tb.velab");
     let opts = cli::VitaOpts::default();
-    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &opts),
+        cli::EXIT_OK
+    );
     assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
     assert!(vu.exists() && velab.exists());
     let residue: Vec<String> = std::fs::read_dir(&dir)
@@ -510,7 +513,10 @@ fn corrupted_fork_trailer_fails_gracefully() {
     let vu = tmp("vu");
     let velab = tmp("velab");
     let opts = cli::VitaOpts::default();
-    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &opts),
+        cli::EXIT_OK
+    );
     assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
 
     // Surgically EMPTY the ForkModeTable trailer, leaving everything else intact.
@@ -555,7 +561,10 @@ fn staged_assign_rank_trailer_roundtrip() {
     let vu = tmp("vu");
     let velab = tmp("velab");
     let opts = cli::VitaOpts::default();
-    assert_eq!(cli::run_vcmp(&[s(&src)], &s(&vu), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &opts),
+        cli::EXIT_OK
+    );
     assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
     assert_eq!(
         cli::run_vrun(&s(&velab), &opts),
