@@ -21,7 +21,8 @@
 |---|---|
 | dynamic array: `int d[];` `d = new[n];` `new[n](d)`(복사) `d[i]` r/w `d.size()` `d.delete()` | `d[i:j]` 슬라이스, 다차원 dynamic |
 | queue: `int q[$];` `q[i]` r/w, `q[$]`, `push_back/push_front/pop_back/pop_front/size/delete()` | `insert/delete(i)`(후속 가능), bounded queue `[$:N]`, 슬라이스 |
-| assoc: `int a[int];`(정수 키 ≤64bit) `a[k]` r/w `a.exists(k)` `a.delete(k)`/`a.delete()` `a.num()` | **string 키**, `first/next/last/prev`, `foreach`(전부 후속 — 순회는 BTree 정렬이라 추가 시 결정성 공짜) |
+| assoc: `int a[int];`(정수 키 ≤64bit) `a[k]` r/w `a.exists(k)` `a.delete(k)`/`a.delete()` `a.num()` | **string 키**, `first/next/last/prev`(SysFunc 추가=차기 bump 묶음), assoc-`foreach`(first/next 의존) |
+| **`foreach (arr[i])` — dyn array/queue ✅ 2026-06-11**: 파서가 `size()` 카운팅 루프로 desugar(신규 AST/IR 0 — 합성 인덱스명+body rename으로 IEEE 인덱스 지역성 보존, iverilog 차분) | queue `insert(i,v)`/`delete(i)`·bounded `[$:N]` 실동작(SysTask 추가 또는 사이드카 — 차기 bump/사이드카 묶음) |
 | 원소 타입: 임의 폭 packed(4-state `Value` 보존), real | 원소가 struct/another-dyn인 중첩 |
 
 ## 2. 스토리지 모델 — handle-net + 엔진 힙

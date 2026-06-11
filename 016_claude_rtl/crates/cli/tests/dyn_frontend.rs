@@ -343,3 +343,45 @@ endmodule
         "dyn handle non-ANSI port",
     );
 }
+
+#[test]
+fn foreach_over_queue_and_dyn_array() {
+    // Oracle: iverilog live — 12 / 0 10 20 30. `foreach (arr[i])` is a
+    // parse-time desugar to a counting loop over arr.size() (no new IR).
+    let src = r#"
+module t;
+  integer q [$];
+  integer d [];
+  integer sum;
+  initial begin
+    q.push_back(3); q.push_back(4); q.push_back(5);
+    sum = 0;
+    foreach (q[i]) sum = sum + q[i];
+    $display("%0d", sum);
+    d = new[4];
+    foreach (d[k]) d[k] = k * 10;
+    $display("%0d %0d %0d %0d", d[0], d[1], d[2], d[3]);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "12\n0 10 20 30\n");
+}
+
+#[test]
+fn foreach_index_is_block_local() {
+    // The desugared index var must not collide with (or leak into) an outer
+    // name — it lives in the synthetic block's decls.
+    let src = r#"
+module t;
+  integer q [$];
+  integer i;
+  initial begin
+    i = 99;
+    q.push_back(1); q.push_back(2);
+    foreach (q[i]) $display("%0d", q[i]);
+    $display("%0d", i);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "1\n2\n99\n");
+}

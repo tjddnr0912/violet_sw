@@ -481,6 +481,8 @@ pub enum Kw {
     Assert,
     // --- SV interface (v5 ⑥, Phase-2 gateway item D) ---
     Interface, Endinterface, Modport,
+    // --- SV foreach (v5 ⑥ follow-on — parse-desugar, no AST/IR change) ---
+    Foreach,
 }
 
 impl Kw {
@@ -543,7 +545,7 @@ impl Kw {
             "union" => Union, "packed" => Packed,
             "assert" => Assert,
             "interface" => Interface, "endinterface" => Endinterface,
-            "modport" => Modport,
+            "modport" => Modport, "foreach" => Foreach,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

@@ -76,7 +76,7 @@ loud-reject로 확인됨(이제 참):**
 - ~~proc-`assign`/`deassign` · `disable` 실동작~~ ✅ 2026-06-10 (§F-(F)) — **disable**: 동봉 named block의 break/continue 이디엄 실구현(doc-17 "Disable 후 Goto", lazy exit-BB로 기존 디자인 byte-불변; 크로스-프로세스/task/fork-경계/계층 경로=loud). **proc-assign/deassign**: force 기계 weak-rank 재사용(`assign_ranks` 사이드카 — force가 assign을 latent로 밀어내고 release가 복귀; iverilog const-rhs 차분 일치, 식-RHS는 iverilog "evaluated once" 자인이라 hand-IEEE 핀). `->event`+`@(ev)`만 잔존 — **단, 카운터-desugar 설계로 bump 불요 가능성 확인(§F-(B) 참조)**
 - ~~force/release **full 재평가 모델**~~ ✅ 2026-06-10 — expression force는 IEEE §9.3.2 연속 재평가(`active_forces` 레지스트리, delta마다 재핀·BTree 결정성·mult 스냅샷). **iverilog와 의도적 발산**(iverilog는 "sorry: evaluated once" 자인 — const-rhs 차분만 유지, expression lane은 hand-IEEE end_to_end 핀)
 - ~~intra-assignment delay(`a = #d b`)~~ ✅ 2026-06-10 — **blocking 형은 실semantics**(capture-now/write-later: tmp(폭=lhs 정확) → `Terminator::Delay` → write; `#0`=inactive·런타임 d 지원, iverilog 차분 일치). **NBA 형(`<= #d`)은 loud E3009로 이관** — 값-운반 delayed NBA 이벤트가 없으면 겹침 활성화(transport delay)에서 silent-wrong이라 차기 format bump 묶음
-- dynamic/associative array, queue (정적 평탄화 불가 → 새 IR 노드 = 차기 format bump 후보)
+- ~~dynamic/associative array, queue~~ ✅ v5+⑥로 전부 랜딩(엔진+문법) · **`foreach(arr[i])` ✅ 2026-06-11**(파서 desugar — 합성 인덱스+body rename, IR 0, iverilog 차분). 잔여 = queue `insert/delete(i)`·assoc `first/next/prev/last`·string 키(전부 SysFunc/SysTask 추가 = **차기 format bump 묶음 후보**), bounded queue 실동작(사이드카 후보)
 - `+incdir+`/`+define+` filelist 버킷(PreOpts 플러밍), implicit-net 추론(W2003 활성화), `-Wwarn=`/`--log` tee
 - 추가 SV 구문 (interface, package, assertion 등 — Phase-2+)
 

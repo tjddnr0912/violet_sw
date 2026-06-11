@@ -2716,6 +2716,7 @@ impl<'t, 's> Parser<'t, 's> {
                 Kw::Casex => self.parse_case(CaseKind::Casex),
                 Kw::For => self.parse_for(),
                 Kw::While => self.parse_while(),
+                Kw::Foreach => self.parse_foreach(),
                 Kw::Repeat => self.parse_repeat(),
                 Kw::Forever => self.parse_forever(),
                 Kw::Wait => self.parse_wait(),
@@ -3070,6 +3071,130 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    /// v5 ⑥ follow-on: `foreach (arr[i]) stmt` — PARSE-TIME desugar to the
+    /// equivalent counting loop over `arr.size()` (no new AST/IR node):
+    ///   begin : (anon)  integer i;
+    ///     for (i = 0; i < arr.size(); i = i + 1) stmt
+    ///   end
+    /// Targets are dynamic arrays/queues (the size() method resolves on dyn
+    /// handles at elaborate; anything else gets the method-call loud error).
+    /// Multi-index foreach (`a[i,j]`) is outside the MVP — loud at parse.
+    fn parse_foreach(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // foreach
+        self.expect(TokenKind::LParen, "'(' after 'foreach'");
+        let Some(arr) = self.ident() else {
+            self.error("an array name in 'foreach (name[index])'");
+            return Stmt::Error(start);
+        };
+        self.expect(TokenKind::LBracket, "'['");
+        let Some(ivar) = self.ident() else {
+            self.error("a loop-index name in 'foreach (name[index])'");
+            return Stmt::Error(start);
+        };
+        if self.peek() == Some(TokenKind::Comma) {
+            self.error("a single foreach index (multi-dimension foreach is unsupported)");
+        }
+        self.expect(TokenKind::RBracket, "']'");
+        self.expect(TokenKind::RParen, "')'");
+        let mut body = self.parse_statement();
+        let span = start.to(self.prev_span());
+        // v1 elaborate FLATTENS block-locals into the module namespace (no
+        // per-block scoping), so a decl named like an outer variable would be
+        // skipped and the loop would CLOBBER the outer one (silent-wrong vs
+        // IEEE/iverilog, where the foreach index is implicitly local). Make
+        // the index a synthetic unique name and rename its references inside
+        // the body instead — correct shadowing with zero scoping support.
+        // (A nested foreach reusing the same index name renames ITS body
+        // first, so the outer pass only sees its own occurrences.)
+        let synth = Ident {
+            name: format!("__foreach_{}_{}", ivar.name, start.lo),
+            span: ivar.span,
+        };
+        rename_ident_in_stmt(&mut body, &ivar.name, &synth.name);
+        let ivar = synth;
+        let one_seg = |id: &Ident| HierPath {
+            segments: vec![id.clone()],
+            span: id.span,
+        };
+        let ivar_expr = |id: &Ident| Expr {
+            kind: ExprKind::Ident(one_seg(id)),
+            span: id.span,
+        };
+        // i = 0
+        let init = Stmt::Blocking {
+            lhs: Lvalue::Ident(one_seg(&ivar)),
+            delay: None,
+            rhs: Self::dec_lit(0, span),
+            span,
+        };
+        // i < arr.size()
+        let size_call = Expr {
+            kind: ExprKind::Call {
+                name: HierPath {
+                    segments: vec![
+                        arr.clone(),
+                        Ident {
+                            name: "size".to_string(),
+                            span: arr.span,
+                        },
+                    ],
+                    span: arr.span,
+                },
+                args: Vec::new(),
+            },
+            span: arr.span,
+        };
+        let cond = Expr {
+            kind: ExprKind::Binary {
+                op: BinOp::Lt,
+                lhs: Box::new(ivar_expr(&ivar)),
+                rhs: Box::new(size_call),
+            },
+            span,
+        };
+        // i = i + 1
+        let step = Stmt::Blocking {
+            lhs: Lvalue::Ident(one_seg(&ivar)),
+            delay: None,
+            rhs: Expr {
+                kind: ExprKind::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(ivar_expr(&ivar)),
+                    rhs: Box::new(Self::dec_lit(1, span)),
+                },
+                span,
+            },
+            span,
+        };
+        // block-local `integer i;` so the index never leaks/collides.
+        let idecl = NetVarDecl {
+            kind: NetVarKind::Integer,
+            signed: true,
+            range: None,
+            packed: Vec::new(),
+            names: vec![DeclName {
+                name: ivar.clone(),
+                unpacked: Vec::new(),
+                init: None,
+                span: ivar.span,
+            }],
+            span: ivar.span,
+        };
+        Stmt::Block {
+            label: None, // the synthetic index name needs no block scope
+            decls: vec![idecl],
+            stmts: vec![Stmt::For {
+                init: Box::new(init),
+                cond,
+                step: Box::new(step),
+                body: Box::new(body),
+                span,
+            }],
+            span,
+        }
+    }
+
     fn parse_repeat(&mut self) -> Stmt {
         let start = self.cur_span();
         self.bump(); // repeat
@@ -3311,6 +3436,234 @@ pub fn parse(tokens: &[Spanned], src: &str) -> (Option<SourceUnit>, Vec<ParseErr
         Some(unit)
     };
     (su, p.errors)
+}
+
+/// v5 ⑥ foreach desugar: rename every SINGLE-SEGMENT `Ident` reference to
+/// `from` into `to`, across a statement tree (exprs, lvalues, nested stmts).
+/// Multi-segment paths are left alone (`x.y` never names the loop index).
+fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
+    let fix_path = |p: &mut HierPath| {
+        if p.segments.len() == 1 && p.segments[0].name == from {
+            p.segments[0].name = to.to_string();
+        }
+    };
+    fn fix_expr(e: &mut Expr, from: &str, to: &str) {
+        match &mut e.kind {
+            ExprKind::Ident(p) => {
+                if p.segments.len() == 1 && p.segments[0].name == from {
+                    p.segments[0].name = to.to_string();
+                }
+            }
+            ExprKind::Unary { operand, .. } => fix_expr(operand, from, to),
+            ExprKind::Binary { lhs, rhs, .. } => {
+                fix_expr(lhs, from, to);
+                fix_expr(rhs, from, to);
+            }
+            ExprKind::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => {
+                fix_expr(cond, from, to);
+                fix_expr(then_e, from, to);
+                fix_expr(else_e, from, to);
+            }
+            ExprKind::BitSelect { base, index } => {
+                fix_expr(base, from, to);
+                fix_expr(index, from, to);
+            }
+            ExprKind::PartSelect { base, msb, lsb } => {
+                fix_expr(base, from, to);
+                fix_expr(msb, from, to);
+                fix_expr(lsb, from, to);
+            }
+            ExprKind::IndexedPart {
+                base,
+                offset,
+                width,
+                ..
+            } => {
+                fix_expr(base, from, to);
+                fix_expr(offset, from, to);
+                fix_expr(width, from, to);
+            }
+            ExprKind::Concat { parts } | ExprKind::Replicate { value: parts, .. } => {
+                for p in parts {
+                    fix_expr(p, from, to);
+                }
+            }
+            ExprKind::Call { args, .. } | ExprKind::SysCall { args, .. } => {
+                for a in args {
+                    fix_expr(a, from, to);
+                }
+            }
+            ExprKind::Paren { inner } => fix_expr(inner, from, to),
+            ExprKind::MinTypMax { min, typ, max } => {
+                fix_expr(min, from, to);
+                fix_expr(typ, from, to);
+                fix_expr(max, from, to);
+            }
+            ExprKind::New { size, src } => {
+                fix_expr(size, from, to);
+                if let Some(s) = src {
+                    fix_expr(s, from, to);
+                }
+            }
+            ExprKind::IntLit { .. }
+            | ExprKind::RealLit { .. }
+            | ExprKind::StrLit { .. }
+            | ExprKind::Dollar
+            | ExprKind::Error => {}
+        }
+        // Replicate.count rides outside the parts vec.
+        if let ExprKind::Replicate { count, .. } = &mut e.kind {
+            fix_expr(count, from, to);
+        }
+    }
+    fn fix_lv(lv: &mut Lvalue, from: &str, to: &str) {
+        match lv {
+            Lvalue::Ident(p) => {
+                if p.segments.len() == 1 && p.segments[0].name == from {
+                    p.segments[0].name = to.to_string();
+                }
+            }
+            Lvalue::BitSelect { base, index, .. } => {
+                fix_lv(base, from, to);
+                fix_expr(index, from, to);
+            }
+            Lvalue::PartSelect { base, msb, lsb, .. } => {
+                fix_lv(base, from, to);
+                fix_expr(msb, from, to);
+                fix_expr(lsb, from, to);
+            }
+            Lvalue::IndexedPart {
+                base,
+                offset,
+                width,
+                ..
+            } => {
+                fix_lv(base, from, to);
+                fix_expr(offset, from, to);
+                fix_expr(width, from, to);
+            }
+            Lvalue::Concat { parts, .. } => {
+                for p in parts {
+                    fix_lv(p, from, to);
+                }
+            }
+            Lvalue::Error(_) => {}
+        }
+    }
+    let fix_delay = |d: &mut Delay, from: &str, to: &str| {
+        for e in &mut d.values {
+            fix_expr(e, from, to);
+        }
+    };
+    match s {
+        Stmt::Blocking {
+            lhs, delay, rhs, ..
+        }
+        | Stmt::NonBlocking {
+            lhs, delay, rhs, ..
+        } => {
+            fix_lv(lhs, from, to);
+            if let Some(d) = delay {
+                fix_delay(d, from, to);
+            }
+            fix_expr(rhs, from, to);
+        }
+        Stmt::If {
+            cond,
+            then_s,
+            else_s,
+            ..
+        } => {
+            fix_expr(cond, from, to);
+            rename_ident_in_stmt(then_s, from, to);
+            if let Some(e) = else_s {
+                rename_ident_in_stmt(e, from, to);
+            }
+        }
+        Stmt::Case {
+            scrutinee, items, ..
+        } => {
+            fix_expr(scrutinee, from, to);
+            for it in items {
+                match it {
+                    CaseItem::Match { labels, body, .. } => {
+                        for l in labels {
+                            fix_expr(l, from, to);
+                        }
+                        rename_ident_in_stmt(body, from, to);
+                    }
+                    CaseItem::Default { body, .. } => rename_ident_in_stmt(body, from, to),
+                }
+            }
+        }
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+            ..
+        } => {
+            rename_ident_in_stmt(init, from, to);
+            fix_expr(cond, from, to);
+            rename_ident_in_stmt(step, from, to);
+            rename_ident_in_stmt(body, from, to);
+        }
+        Stmt::While { cond, body, .. } => {
+            fix_expr(cond, from, to);
+            rename_ident_in_stmt(body, from, to);
+        }
+        Stmt::Repeat { count, body, .. } => {
+            fix_expr(count, from, to);
+            rename_ident_in_stmt(body, from, to);
+        }
+        Stmt::Forever { body, .. } => rename_ident_in_stmt(body, from, to),
+        Stmt::Block { decls, stmts, .. } | Stmt::Fork { decls, stmts, .. } => {
+            // a nested redeclaration of the SAME name shadows — stop renaming
+            // inside (its own occurrences already bind to the inner decl).
+            if decls
+                .iter()
+                .any(|d| d.names.iter().any(|n| n.name.name == from))
+            {
+                return;
+            }
+            for st in stmts {
+                rename_ident_in_stmt(st, from, to);
+            }
+        }
+        Stmt::SysTaskCall { args, .. } | Stmt::UserTaskCall { args, .. } => {
+            for a in args {
+                fix_expr(a, from, to);
+            }
+        }
+        Stmt::DelayCtrl { delay, body, .. } => {
+            fix_delay(delay, from, to);
+            if let Some(b) = body {
+                rename_ident_in_stmt(b, from, to);
+            }
+        }
+        Stmt::EventCtrl { body, .. } => {
+            if let Some(b) = body {
+                rename_ident_in_stmt(b, from, to);
+            }
+        }
+        Stmt::Wait { cond, body, .. } => {
+            fix_expr(cond, from, to);
+            if let Some(b) = body {
+                rename_ident_in_stmt(b, from, to);
+            }
+        }
+        Stmt::Assign { lhs, rhs, .. } | Stmt::Force { lhs, rhs, .. } => {
+            fix_lv(lhs, from, to);
+            fix_expr(rhs, from, to);
+        }
+        Stmt::Deassign { lhs, .. } | Stmt::Release { lhs, .. } => fix_lv(lhs, from, to),
+        Stmt::EventTrigger { name, .. } => fix_path(name),
+        Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
+    }
 }
 
 #[cfg(test)]
