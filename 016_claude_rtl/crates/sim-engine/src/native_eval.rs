@@ -289,6 +289,32 @@ enum NOp {
     WLogNot {
         opw: u32,
     },
+    /// v6 ④ wide structural trio. pop narrow offset, pop base (wide stack iff
+    /// `base_wide`) → gather `sel_w` bits (same OOB→X / X-offset rules as the
+    /// narrow `Select`), result on the wide stack iff `out_wide` (sel_w > 64).
+    WSelect {
+        kind: SelKind,
+        sel_w: u32,
+        src_w: u32,
+        base_wide: bool,
+        out_wide: bool,
+    },
+    /// One >64-bit concat fold step: pop part (lo; wide iff `part_wide`), pop
+    /// the running acc (hi; wide iff `acc_wide`) → push `(hi << lo_w) | lo`
+    /// masked to `w` (65..=128) on the wide stack.
+    WConcatPair {
+        lo_w: u32,
+        w: u32,
+        acc_wide: bool,
+        part_wide: bool,
+    },
+    /// pop narrow part (`part_w` ≤ 64) → push it repeated `count` times on the
+    /// wide stack (`w` = part_w × count ∈ 65..=128).
+    WRepl {
+        part_w: u32,
+        count: u32,
+        w: u32,
+    },
 }
 
 /// A compiled expression. `root_w`/`root_signed` stamp the final `Value` so it is
@@ -348,6 +374,28 @@ fn arity(op: &NOp) -> (u32, u32, u32, u32) {
             }
         }
         NOp::WReduce { .. } | NOp::WLogNot { .. } => (0, 1, 1, 0),
+        // v6 ④ wide structural trio
+        NOp::WSelect {
+            base_wide,
+            out_wide,
+            ..
+        } => (
+            1 + u32::from(!base_wide),
+            u32::from(!out_wide),
+            u32::from(*base_wide),
+            u32::from(*out_wide),
+        ),
+        NOp::WConcatPair {
+            acc_wide,
+            part_wide,
+            ..
+        } => (
+            u32::from(!acc_wide) + u32::from(!part_wide),
+            0,
+            u32::from(*acc_wide) + u32::from(*part_wide),
+            1,
+        ),
+        NOp::WRepl { .. } => (1, 0, 0, 1),
         // remaining narrow binaries (Arith/Bitwise/Cmp/EqNe/CaseEqNe/Shl/Shr/
         // DivMod/LogBin/Select/ConcatPair)
         _ => (2, 1, 0, 0),
@@ -812,9 +860,9 @@ fn lower(
                 _ => folded,
             };
             let src_w = wt.get(*base).width;
-            // structural ops stay single-word (the >64-bit cross-word gather is
-            // a documented residual); a wide OFFSET register also bails.
-            if sel_w == 0 || sel_w > 64 || src_w == 0 || src_w > 64 {
+            // v6 ④: the trio runs to 128 bits (two-word gather); only a wide
+            // OFFSET register still bails.
+            if sel_w == 0 || sel_w > 128 || src_w == 0 || src_w > 128 {
                 return None;
             }
             if wt.get(*offset).width > 64 {
@@ -822,12 +870,26 @@ fn lower(
             }
             lower(ir, wt, *base, 0, true, ops)?; // oracle: self.eval(base)
             lower(ir, wt, *offset, 0, true, ops)?; // oracle: self.eval(offset)
-            ops.push(NOp::Select {
-                kind: *kind,
-                sel_w,
-                src_w,
-            });
-            promote_if(wide, ops);
+            let base_wide = src_w > 64;
+            let out_wide = sel_w > 64;
+            if !base_wide && !out_wide {
+                ops.push(NOp::Select {
+                    kind: *kind,
+                    sel_w,
+                    src_w,
+                });
+            } else {
+                ops.push(NOp::WSelect {
+                    kind: *kind,
+                    sel_w,
+                    src_w,
+                    base_wide,
+                    out_wide,
+                });
+            }
+            // a narrow result feeding a wide context still bridges; a wide
+            // result is already in place (zero-extend beyond sel_w is free).
+            promote_if(wide && !out_wide, ops);
             Some(())
         }
         Expr::Concat { parts } => {
@@ -835,20 +897,32 @@ fn lower(
             // oracle's top-down fill. Natural width = Σ self widths ≤ node w ≤ 64.
             let (&first, rest) = parts.split_first()?;
             let mut tot = wt.get(first).width;
-            if tot == 0 || tot > 64 {
+            if tot == 0 || tot > 128 {
                 return None;
             }
             lower(ir, wt, first, 0, true, ops)?;
             for &p in rest {
                 let pw = wt.get(p).width;
-                if pw == 0 || pw > 64 {
+                if pw == 0 || pw > 128 {
                     return None;
                 }
-                tot = tot.checked_add(pw).filter(|&t| t <= 64)?;
+                let acc_wide = tot > 64; // where the RUNNING acc lives
+                tot = tot.checked_add(pw).filter(|&t| t <= 128)?;
                 lower(ir, wt, p, 0, true, ops)?;
-                ops.push(NOp::ConcatPair { lo_w: pw, w: tot });
+                if tot <= 64 {
+                    ops.push(NOp::ConcatPair { lo_w: pw, w: tot });
+                } else {
+                    ops.push(NOp::WConcatPair {
+                        lo_w: pw,
+                        w: tot,
+                        acc_wide,
+                        part_wide: pw > 64,
+                    });
+                }
             }
-            promote_if(wide, ops);
+            // single-part `{x}` (or an all-narrow fold) may end narrow in a
+            // wide context — bridge; a >64 fold already sits on the wide stack.
+            promote_if(wide && tot <= 64, ops);
             Some(())
         }
         Expr::Replicate { count, value } => {
@@ -859,17 +933,27 @@ fn lower(
                 return None;
             }
             let part_w = wt.get(*value).width;
+            // v6 ④: total runs to 128 (the PART stays narrow — a >64-bit part
+            // with count ≥ 2 exceeds the wide lane anyway).
             if part_w == 0 || part_w > 64 {
                 return None;
             }
-            let total = part_w.checked_mul(count).filter(|&t| t <= 64)?;
+            let total = part_w.checked_mul(count).filter(|&t| t <= 128)?;
             lower(ir, wt, *value, 0, true, ops)?;
-            ops.push(NOp::Repl {
-                part_w,
-                count,
-                w: total,
-            });
-            promote_if(wide, ops);
+            if total <= 64 {
+                ops.push(NOp::Repl {
+                    part_w,
+                    count,
+                    w: total,
+                });
+                promote_if(wide, ops);
+            } else {
+                ops.push(NOp::WRepl {
+                    part_w,
+                    count,
+                    w: total,
+                });
+            }
             Some(())
         }
         // sysfunc / call / array-indexed signal: deferred increment.
@@ -1458,6 +1542,90 @@ pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
                 };
                 let out = if neg && u == 0 { (v ^ 1, 0) } else { (v, u) };
                 stack.push(out);
+            }
+            // ── v6 ④ wide structural trio ──
+            NOp::WSelect {
+                kind,
+                sel_w,
+                src_w,
+                base_wide,
+                out_wide,
+            } => {
+                let (off_v, off_u) = stack.pop().expect("native wselect: missing offset");
+                let (sv, su): (u128, u128) = if base_wide {
+                    wstack.pop().expect("native wselect: missing base")
+                } else {
+                    let (v, u) = stack.pop().expect("native wselect: missing base");
+                    (v as u128, u as u128)
+                };
+                let m = wmask(sel_w);
+                let res: (u128, u128) = match (off_u == 0)
+                    .then_some(off_v)
+                    .and_then(|v| i64::try_from(v).ok())
+                {
+                    None => (0, m), // X/Z offset → sel_w X bits (oracle)
+                    Some(off) => {
+                        let lsb = match kind {
+                            SelKind::Bit | SelKind::PartConst | SelKind::PartIdxUp => off,
+                            SelKind::PartIdxDown => off - (sel_w as i64) + 1,
+                        };
+                        // fully in-range: one two-word shift (oracle fast path)
+                        if lsb >= 0 && (lsb as u64) + sel_w as u64 <= src_w as u64 {
+                            (((sv >> lsb) & m), ((su >> lsb) & m))
+                        } else {
+                            let (mut rv, mut ru) = (0u128, 0u128);
+                            for i in 0..sel_w as i64 {
+                                let si = lsb + i;
+                                if si >= 0 && (si as u32) < src_w {
+                                    rv |= ((sv >> si) & 1) << i;
+                                    ru |= ((su >> si) & 1) << i;
+                                } else {
+                                    ru |= 1 << i; // out-of-range read → X
+                                }
+                            }
+                            (rv, ru)
+                        }
+                    }
+                };
+                if out_wide {
+                    wstack.push(res);
+                } else {
+                    stack.push((res.0 as u64, res.1 as u64));
+                }
+            }
+            NOp::WConcatPair {
+                lo_w,
+                w,
+                acc_wide,
+                part_wide,
+            } => {
+                let (lo_v, lo_u): (u128, u128) = if part_wide {
+                    wstack.pop().expect("native wconcat: missing lo")
+                } else {
+                    let (v, u) = stack.pop().expect("native wconcat: missing lo");
+                    (v as u128, u as u128)
+                };
+                let (hi_v, hi_u): (u128, u128) = if acc_wide {
+                    wstack.pop().expect("native wconcat: missing hi")
+                } else {
+                    let (v, u) = stack.pop().expect("native wconcat: missing hi");
+                    (v as u128, u as u128)
+                };
+                // lo_w ≤ 127 here: tot = acc_w + lo_w ≤ 128 with acc_w ≥ 1.
+                let m = wmask(w);
+                wstack.push((((hi_v << lo_w) | lo_v) & m, ((hi_u << lo_w) | lo_u) & m));
+            }
+            NOp::WRepl { part_w, count, w } => {
+                let (pv, pu) = stack.pop().expect("native wrepl: missing part");
+                let (pv, pu) = (pv as u128, pu as u128);
+                let (mut rv, mut ru) = (0u128, 0u128);
+                for c in 0..count {
+                    let sh = c * part_w; // (count-1)·part_w < w ≤ 128
+                    rv |= pv << sh;
+                    ru |= pu << sh;
+                }
+                let m = wmask(w);
+                wstack.push((rv & m, ru & m));
             }
             NOp::WLogNot { opw } => {
                 let (av, au) = wstack.pop().expect("native wlognot: missing operand");
@@ -2597,8 +2765,8 @@ mod tests {
             vec![nv(32, false), nv(100, false)],
         );
         assert!(try_compile(&ir, &wt_of(&ir), 2, 32, false).is_none());
-        // select over a wide source stays oracle-bound (structural wide lane
-        // is a documented residual).
+        // select over a >128-bit source stays oracle-bound (the v6 ④ wide
+        // structural trio runs to 128; beyond it the whole tree bails).
         let ir = ir_of(
             vec![
                 sig(0),
@@ -2612,7 +2780,7 @@ mod tests {
                 },
             ],
             vec![cnum(32, 4), cnum(32, 8)],
-            vec![nv(100, false)],
+            vec![nv(200, false)],
         );
         assert!(try_compile(&ir, &wt_of(&ir), 3, 8, false).is_none());
         // select OFFSET wider than 64 bits (base narrow).
@@ -2668,5 +2836,157 @@ mod tests {
             vec![nv(8, false), nv(100, false)],
         );
         assert!(try_compile(&ir, &wt_of(&ir), 1, 8, false).is_none());
+    }
+
+    // ── v6 ④ wide structural trio (select/concat/replicate to 128 bits) ──
+
+    #[test]
+    fn wide_select_from_wide_base_matches_oracle() {
+        // 100-bit base; windows crossing the word-0/1 boundary, hanging off the
+        // top (OOR→X), and an X/Z offset — narrow result (sel_w 16).
+        for off in [0u64, 56, 60, 90, 96, 200] {
+            let ir = ir_of(
+                vec![
+                    sig(0),
+                    Expr::Const { val: 0 },
+                    Expr::Const { val: 1 },
+                    Expr::Select {
+                        base: 0,
+                        offset: 1,
+                        width: 2,
+                        kind: SelKind::PartConst,
+                    },
+                ],
+                vec![cnum(32, off), cnum(32, 16)],
+                vec![nv(100, false)],
+            );
+            assert_matches_oracle(
+                &ir,
+                3,
+                32,
+                true,
+                &[vwide_xz(
+                    100,
+                    0xA5C3_1234_DEAD_BEEF,
+                    0x9_ABCD,
+                    1 << 62,
+                    0b1010,
+                )],
+            );
+        }
+    }
+
+    #[test]
+    fn wide_select_wide_result_matches_oracle() {
+        // sel_w 100 from a 120-bit base (wide → wide) AND from a 32-bit base
+        // (narrow base, wide result: everything beyond bit 31 reads X).
+        for (base_w, src) in [
+            (120u32, vwide_xz(120, 77, 0xFFFF_0000_0000_0001, 0, 1 << 50)),
+            (32u32, vw_xz(32, 0xA5C3_0F0F, 0x10)),
+        ] {
+            let ir = ir_of(
+                vec![
+                    sig(0),
+                    Expr::Const { val: 0 },
+                    Expr::Const { val: 1 },
+                    Expr::Select {
+                        base: 0,
+                        offset: 1,
+                        width: 2,
+                        kind: SelKind::PartConst,
+                    },
+                ],
+                vec![cnum(32, 4), cnum(32, 100)],
+                vec![nv(base_w, false)],
+            );
+            assert_matches_oracle(&ir, 3, 100, false, &[src]);
+        }
+    }
+
+    #[test]
+    fn wide_select_idxdown_negative_lsb_matches_oracle() {
+        // s[3 -: 8] on a 100-bit base ⇒ lsb = −4 ⇒ low half OOR→X.
+        let ir = ir_of(
+            vec![
+                sig(0),
+                Expr::Const { val: 0 },
+                Expr::Const { val: 1 },
+                Expr::Select {
+                    base: 0,
+                    offset: 1,
+                    width: 2,
+                    kind: SelKind::PartIdxDown,
+                },
+            ],
+            vec![cnum(32, 3), cnum(32, 8)],
+            vec![nv(100, false)],
+        );
+        assert_matches_oracle(&ir, 3, 8, false, &[vwide(100, 0xCAFE, 0x3)]);
+    }
+
+    #[test]
+    fn wide_concat_folds_match_oracle() {
+        // {a(64), b(36)} = 100: the fold CROSSES 64 on the second part
+        // (acc narrow + part narrow → wide).
+        let ir = ir_of(
+            vec![sig(0), sig(1), Expr::Concat { parts: vec![0, 1] }],
+            vec![],
+            vec![nv(64, false), nv(36, false)],
+        );
+        assert_matches_oracle(
+            &ir,
+            2,
+            100,
+            true,
+            &[
+                vw_xz(64, 0xDEAD_BEEF_A5C3_1234, 1 << 40),
+                vw(36, 0xF_F00F_F00F),
+            ],
+        );
+        // {w(100), n(20)} = 120: acc already wide + narrow part.
+        let ir2 = ir_of(
+            vec![sig(0), sig(1), Expr::Concat { parts: vec![0, 1] }],
+            vec![],
+            vec![nv(100, false), nv(20, false)],
+        );
+        assert_matches_oracle(
+            &ir2,
+            2,
+            120,
+            false,
+            &[vwide_xz(100, 1, 0xF_0000_0001, 0, 1 << 35), vw(20, 0xABCDE)],
+        );
+        // {n(20), w(100)} = 120: narrow acc + WIDE part.
+        let ir3 = ir_of(
+            vec![sig(0), sig(1), Expr::Concat { parts: vec![1, 0] }],
+            vec![],
+            vec![nv(100, false), nv(20, false)],
+        );
+        assert_matches_oracle(
+            &ir3,
+            2,
+            120,
+            false,
+            &[vwide(100, u64::MAX, 0x9_9999), vw_xz(20, 0x12345, 0b100)],
+        );
+    }
+
+    #[test]
+    fn wide_replicate_matches_oracle() {
+        // {3{s(40)}} = 120 natural bits — X bits repeat with the pattern.
+        let ir = ir_of(
+            vec![sig(0), Expr::Replicate { count: 1, value: 0 }],
+            vec![],
+            vec![nv(40, false)],
+        );
+        // count edge is a const-expr edge: build via cnum like the width edges.
+        let ir = {
+            let mut ir = ir;
+            ir.consts.push(cnum(32, 3));
+            ir.exprs[1] = Expr::Replicate { count: 2, value: 0 };
+            ir.exprs.push(Expr::Const { val: 0 });
+            ir
+        };
+        assert_matches_oracle(&ir, 1, 128, false, &[vw_xz(40, 0xAB_CD12_3456, 0xF0)]);
     }
 }

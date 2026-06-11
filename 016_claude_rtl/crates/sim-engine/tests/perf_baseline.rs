@@ -176,6 +176,52 @@ const WIDE_HEAVY: &str = "module top;\n\
   end\n\
 endmodule";
 
+/// [v6 ④] WIDE-STRUCTURAL: >64-bit selects/concats/replicates per statement —
+/// the wide-struct trio (WSelect/WConcatPair/WRepl). Before it, any wide
+/// structural node bailed the WHOLE expression to `eval_ctx` (VM ≈ interp).
+const WIDE_STRUCT_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  reg [99:0] s;\n\
+  reg [99:0] acc;\n\
+  integer i;\n\
+  integer j;\n\
+  always @(posedge clk) begin\n\
+    for (i = 0; i < 3000; i = i + 1) begin\n\
+      acc = acc + {s[91:28], s[27:0], s[95 -: 8]} + {2{s[49:0]}};\n\
+      acc = acc ^ {s[63:0], s[99:64]};\n\
+      s = {s[98:0], s[99]};\n\
+    end\n\
+  end\n\
+  initial begin\n\
+    s = 100'hA5C31234DEADBEEF55AA33; acc = 0; clk = 0;\n\
+    for (j = 0; j < 100; j = j + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
+/// [v6 ④] REAL-bound: f64 arithmetic per statement. The native lane has NO
+/// real support (every real node bails the whole expression to `eval_ctx`),
+/// so VM ≈ interp here — this probe MEASURES whether a dedicated f64 register
+/// lane would pay (the measure-retire gate for the documented low-ROI item).
+const REAL_HEAVY: &str = "module top;\n\
+  reg clk;\n\
+  real a, b, acc;\n\
+  integer i;\n\
+  integer j;\n\
+  always @(posedge clk) begin\n\
+    for (i = 0; i < 5000; i = i + 1) begin\n\
+      acc = acc + a * b - acc / 1.0001;\n\
+      a = a * 1.0000001;\n\
+      b = b + 0.0000003;\n\
+    end\n\
+  end\n\
+  initial begin\n\
+    clk = 0; a = 1.5; b = 2.25; acc = 0.0;\n\
+    for (j = 0; j < 100; j = j + 1) begin #1 clk = 1; #1 clk = 0; end\n\
+    $finish;\n\
+  end\n\
+endmodule";
+
 /// [C6] MEMORY-bound expressions: dynamic `mem[i]` reads inside every statement
 /// (the LoadIndexed lane). Before C6 an array-indexed Signal bailed the whole
 /// expression to `eval_ctx`.
@@ -237,6 +283,16 @@ fn perf_baseline_codegen_heavy() {
     report(
         "mem-heavy (dynamic mem[i] reads; C6 LoadIndexed target)",
         MEM_HEAVY,
+        5,
+    );
+    report(
+        "wide-struct-heavy (>64-bit select/concat/replicate; v6 trio target)",
+        WIDE_STRUCT_HEAVY,
+        5,
+    );
+    report(
+        "real-heavy (f64 arithmetic; native-lane measure-retire probe)",
+        REAL_HEAVY,
         5,
     );
 }
