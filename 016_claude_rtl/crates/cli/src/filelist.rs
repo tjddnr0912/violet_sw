@@ -21,6 +21,7 @@
 //! resolution) is used only for the PHYSICAL identity key, which is
 //! diagnostic-only and never reaches hashes or manifests.
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use diag::{Diagnostic, LogEvent, LogSink, MsgCode, Severity};
@@ -442,31 +443,135 @@ pub(crate) fn expand_argv(args: &[String], sink: &dyn LogSink) -> Result<Vec<Str
     // doc-15 E8003 family: the SAME canonical source appearing twice in the
     // expansion dedups to its FIRST occurrence (a silent duplicate would
     // otherwise double-compile the unit → a confusing downstream E-DUP-UNIT).
-    // The CONFLICT arm (`E-FLIST-DUP-CTX-CONFLICT`) stays reserved until the
-    // sticky-directive context (RULE S) exists — with no tracked context, two
-    // occurrences are always "the same input". Flags and their values are
-    // exempt (only source positionals dedup).
+    // v6 ⑤ CONFLICT arm: the tracked sticky context (RULE S) is the inherited
+    // `` `timescale `` — if the dropped occurrence would have inherited a
+    // DIFFERENT directive than the kept one, the dedup would silently change
+    // meaning → hard error presenting both contexts. The context walk (which
+    // reads file text) only runs when a duplicate actually exists.
+    // Flags and their values are exempt (only source positionals dedup).
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut deduped = Vec::with_capacity(out.len());
     let mut skip_value = false;
-    for tok in out {
+    let mut has_dup = false;
+    for tok in &out {
         if skip_value {
             skip_value = false;
-            deduped.push(tok);
+            deduped.push(tok.clone());
             continue;
         }
         if tok.starts_with('-') || tok.starts_with('+') {
-            skip_value = takes_value(&tok);
-            deduped.push(tok);
+            skip_value = takes_value(tok);
+            deduped.push(tok.clone());
             continue;
         }
-        let resolved = lexical_normalize(&ex.cwd.join(&tok));
+        let resolved = lexical_normalize(&ex.cwd.join(tok));
         let key = phys_id(&resolved).unwrap_or_else(|| resolved.to_string_lossy().into_owned());
         if seen.insert(key) {
-            deduped.push(tok);
+            deduped.push(tok.clone());
+        } else {
+            has_dup = true;
         }
     }
+    if has_dup && !check_dup_contexts(&ex, &out) {
+        return Err(crate::EXIT_CLI_ERROR);
+    }
     Ok(deduped)
+}
+
+/// v6 ⑤ (E8003 CONFLICT arm): walk the PRE-dedup token stream in order,
+/// tracking the sticky `` `timescale `` state over KEPT sources (the dedup'd
+/// compilation that actually runs). The kept first occurrence records its
+/// inherited context; a dropped duplicate compares its would-be inherited
+/// context against it — different → `E-FLIST-DUP-CTX-CONFLICT`. Returns
+/// false on conflict.
+fn check_dup_contexts(ex: &Expander<'_>, toks: &[String]) -> bool {
+    let mut first_ctx: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    let mut ts_state: Option<String> = None;
+    let mut skip_value = false;
+    let mut ok = true;
+    for tok in toks {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if tok.starts_with('-') || tok.starts_with('+') {
+            skip_value = takes_value(tok);
+            continue;
+        }
+        let resolved = lexical_normalize(&ex.cwd.join(tok));
+        let key = phys_id(&resolved).unwrap_or_else(|| resolved.to_string_lossy().into_owned());
+        match first_ctx.get(&key) {
+            None => {
+                first_ctx.insert(key, (tok.clone(), ts_state.clone()));
+                // a KEPT file's own directives govern what follows it.
+                if let Ok(text) = std::fs::read_to_string(&resolved) {
+                    if let Some(ts) = last_timescale_directive(&text) {
+                        ts_state = Some(ts);
+                    }
+                }
+            }
+            Some((first_tok, first_inherited)) => {
+                if *first_inherited != ts_state {
+                    let show = |c: &Option<String>| {
+                        c.clone().unwrap_or_else(|| "(base 1ns/1ns)".to_string())
+                    };
+                    ex.err(
+                        MsgCode::FlistDupCtxConflict,
+                        format!(
+                            "{tok} included twice under differing sticky context: first ({first_tok}) inherits `{}`, duplicate inherits `{}`",
+                            show(first_inherited),
+                            show(&ts_state)
+                        ),
+                    );
+                    ok = false;
+                }
+                // the duplicate is DROPPED — its directives never run.
+            }
+        }
+    }
+    ok
+}
+
+/// Last `` `timescale `` directive in `src`, comment- and string-aware (a
+/// light scan — only the E8003 duplicate gate reads it, and only when a
+/// duplicate exists). `None` ⇒ the file sets no timescale.
+fn last_timescale_directive(src: &str) -> Option<String> {
+    let b = src.as_bytes();
+    let mut i = 0usize;
+    let mut last = None;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(b.len());
+            }
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'`' if src[i..].starts_with("`timescale") => {
+                let end = src[i..].find('\n').map(|e| i + e).unwrap_or(src.len());
+                last = Some(src[i..end].trim().to_string());
+                i = end;
+            }
+            _ => i += 1,
+        }
+    }
+    last
 }
 
 #[cfg(test)]

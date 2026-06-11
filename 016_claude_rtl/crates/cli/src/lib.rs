@@ -66,6 +66,11 @@ pub struct VitaOpts {
     pub log: Option<String>,
     /// `--log-append`: accumulate instead of the default overwrite.
     pub log_append: bool,
+    /// `vrun --upstream <file.vu>` (v6 ⑤, RULE V): re-hash the live upstream
+    /// artifact and refuse to run on a digest mismatch with the `.velab`'s
+    /// recorded `composite_input_hash` (`E-ART-STALE-UPSTREAM`, exit class 2).
+    /// `None` ⇒ no verification (the pre-worklib default).
+    pub upstream: Option<String>,
 }
 
 impl VitaOpts {
@@ -731,6 +736,7 @@ pub fn run(argv: &[String]) -> i32 {
                 verbosity: io.verbosity,
                 log: io.log,
                 log_append: io.log_append,
+                upstream: None, // one-shot has no staged upstream
             };
             run_vita(&io.pos, &opts)
         }
@@ -838,6 +844,7 @@ fn print_help(applet: &str) {
          --dump-filelist       print the effective post-expansion inputs and exit\n  \
          --threads, -j <N>     worker threads (output byte-identical for any N)\n  \
          --timeout <TICKS>     stop cleanly after TICKS sim time (CI killswitch)\n  \
+         --upstream <FILE>     (vrun) verify the .velab's recorded upstream digest\n  \
          -Wno-<CODE>           suppress a Warning/Info diagnostic (mnemonic, doc-15)\n  \
          -Werror[=<CODE>]      promote warnings (all, or one code) to errors\n  \
          -q, --quiet           silence terminal $display/progress (diags + --log keep all)\n  \
@@ -1243,6 +1250,29 @@ fn run_vrun_gated(
     if let Err(e) = vita_artifact::verify_header(&header, &tool) {
         return emit_artifact_error(sink, &e); // schema/version → E-ART-SCHEMA-MISMATCH / E-ART-VERSION-GATE
     }
+    // v6 ⑤ (RULE V, doc-15 E9003): `--upstream <file.vu>` — re-hash the LIVE
+    // upstream bytes and compare against the digest the `.velab` recorded
+    // when it consumed them. Content hash only (never mtime); a mismatch
+    // refuses to run rather than simulate a stale snapshot. The worklib
+    // increment automates upstream DISCOVERY; the verification seam is this.
+    if let Some(up) = &opts.upstream {
+        let up_bytes = match read_artifact_bytes(up) {
+            Ok(b) => b,
+            Err(code) => return code,
+        };
+        let live = *blake3::hash(&up_bytes).as_bytes();
+        if live != header.composite_input_hash {
+            return emit_artifact_error(
+                sink,
+                &vita_artifact::ArtifactError {
+                    code: diag::MsgCode::ArtStaleUpstream,
+                    message: format!(
+                        "{up}: digest changed since the .velab snapshot (rerun velab, or drop --upstream)"
+                    ),
+                },
+            );
+        }
+    }
 
     // split the golden SimIr frame from the fork trailer.
     let (ir, rest): (sim_ir::SimIr, &[u8]) = match postcard::take_from_bytes(body) {
@@ -1426,6 +1456,8 @@ struct IoArgs {
     log_append: bool,
     /// `--dump-filelist`: print the EFFECTIVE post-expansion inputs and exit.
     dump_filelist: bool,
+    /// `--upstream <file>` (vrun, v6 ⑤): RULE-V staleness verification.
+    upstream: Option<String>,
 }
 
 /// W-FLIST-OVERRIDE (always-logged): a single-value knob set twice — proceed
@@ -1442,6 +1474,7 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut out: Option<String> = None;
     let mut threads: Option<u32> = None;
     let mut timeout: Option<u64> = None;
+    let mut upstream: Option<String> = None;
     let mut gate = vita_log::GatePolicy::default();
     let mut incdirs: Vec<String> = Vec::new();
     let mut defines: Vec<(String, String)> = Vec::new();
@@ -1498,6 +1531,22 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                     warn_override("--timeout", &prev.to_string(), &n.to_string());
                 }
                 timeout = Some(n);
+                i += 2;
+            }
+            // v6 ⑤ (RULE V): verify the .velab's recorded upstream digest
+            // against the live artifact before running.
+            "--upstream" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!(
+                        "error[{}]: '--upstream' needs a file path",
+                        MsgCode::CliBadFlag.code_num()
+                    );
+                    return Err(EXIT_CLI_ERROR);
+                };
+                if let Some(prev) = &upstream {
+                    warn_override("--upstream", prev, v);
+                }
+                upstream = Some(v.clone());
                 i += 2;
             }
             "-D" | "--define" => {
@@ -1620,6 +1669,7 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
         log,
         log_append,
         dump_filelist,
+        upstream,
     })
 }
 
@@ -1762,6 +1812,7 @@ fn dispatch_vrun(args: &[String]) -> i32 {
         verbosity: io.verbosity,
         log: io.log,
         log_append: io.log_append,
+        upstream: io.upstream,
         ..VitaOpts::default()
     };
     run_vrun(&io.pos[0], &opts)

@@ -113,3 +113,111 @@ fn composite_input_hash_is_recorded_in_vu_and_velab() {
         ".velab composite = blake3(consumed .vu)"
     );
 }
+
+// ── v6 ⑤: the two reserved diagnostic arms ──
+
+#[test]
+fn duplicate_source_under_differing_timescale_conflicts() {
+    // doc-15 E8003 CONFLICT arm: the SAME canonical file twice, but the two
+    // occurrences would inherit DIFFERENT sticky `timescale contexts (RULE S)
+    // — silent dedup would drop a semantically distinct compilation → loud.
+    let d = tdir();
+    let ts1 = d.join("ts1.sv");
+    let ts2 = d.join("ts2.sv");
+    let shared = d.join("shared.sv");
+    std::fs::write(&ts1, "`timescale 1ns/1ns\nmodule a; endmodule\n").unwrap();
+    std::fs::write(&ts2, "`timescale 1ps/1ps\nmodule b; endmodule\n").unwrap();
+    std::fs::write(
+        &shared,
+        "module t; initial begin $display(\"x\"); $finish; end endmodule\n",
+    )
+    .unwrap();
+    let f = d.join("dupctx.f");
+    std::fs::write(
+        &f,
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            ts1.display(),
+            shared.display(),
+            ts2.display(),
+            shared.display()
+        ),
+    )
+    .unwrap();
+    let (_, err, ok) = vita(&["-f", f.to_str().unwrap()]);
+    assert!(!ok, "differing-context duplicate must be loud");
+    assert!(
+        err.contains("VITA-E8003"),
+        "E-FLIST-DUP-CTX-CONFLICT expected; got:\n{err}"
+    );
+
+    // SAME inherited context (both occurrences after ts1) → silent dedup, runs once.
+    let f2 = d.join("dupsame.f");
+    std::fs::write(
+        &f2,
+        format!(
+            "{}\n{}\n{}\n",
+            ts1.display(),
+            shared.display(),
+            shared.display()
+        ),
+    )
+    .unwrap();
+    let (out, err, ok) = vita(&["-f", f2.to_str().unwrap()]);
+    assert!(ok, "same-context duplicate dedups silently; stderr:\n{err}");
+    assert_eq!(out.lines().filter(|l| *l == "x").count(), 1);
+}
+
+#[test]
+fn vrun_upstream_staleness_gate() {
+    // doc-15 E9003 (RULE V): `vrun --upstream <.vu>` re-hashes the live .vu
+    // and compares against the digest the .velab recorded at build time —
+    // a mismatch refuses to run (exit class 2), a match runs normally.
+    let d = tdir();
+    let src = d.join("u.sv");
+    std::fs::write(
+        &src,
+        "module t; initial begin $display(\"ok\"); $finish; end endmodule\n",
+    )
+    .unwrap();
+    let vu = d.join("u.vu");
+    let velab = d.join("u.velab");
+    let (_, err, ok) = vita(&["vcmp", src.to_str().unwrap(), "-o", vu.to_str().unwrap()]);
+    assert!(ok, "vcmp: {err}");
+    let (_, err, ok) = vita(&["velab", vu.to_str().unwrap(), "-o", velab.to_str().unwrap()]);
+    assert!(ok, "velab: {err}");
+
+    // fresh upstream → runs
+    let (out, err, ok) = vita(&[
+        "vrun",
+        velab.to_str().unwrap(),
+        "--upstream",
+        vu.to_str().unwrap(),
+    ]);
+    assert!(ok, "fresh upstream must run; stderr:\n{err}");
+    assert!(out.starts_with("ok\n"), "got:\n{out}");
+
+    // edit the source + rebuild ONLY the .vu → the .velab snapshot is stale
+    std::fs::write(
+        &src,
+        "module t; initial begin $display(\"edited\"); $finish; end endmodule\n",
+    )
+    .unwrap();
+    let (_, err, ok) = vita(&["vcmp", src.to_str().unwrap(), "-o", vu.to_str().unwrap()]);
+    assert!(ok, "vcmp 2: {err}");
+    let out = Command::new(env!("CARGO_BIN_EXE_vita"))
+        .args([
+            "vrun",
+            velab.to_str().unwrap(),
+            "--upstream",
+            vu.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vita");
+    assert_eq!(out.status.code(), Some(2), "stale = artifact exit class 2");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("VITA-E9003"),
+        "E-ART-STALE-UPSTREAM expected; got:\n{err}"
+    );
+}
