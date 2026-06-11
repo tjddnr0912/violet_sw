@@ -107,14 +107,30 @@
 > ⑥front-end 일괄(.vu 재핀 1회) → ⑨P4-T2 측정 폐기 → 운영 인프라 3종
 > (--dump-filelist·filelist dedup·RULE-V composite 기록) → §A word化(STRUCT_HEAVY
 > interp ≈1.44x) → foreach desugar(AST/IR 0) → 적대 리뷰 적발 2건(rename 워커
-> silent-capture) 수정·teeth 회귀. **현재 잔여(전부 후속 묶음):**
-> ① **차기 format-bump 묶음 후보** — queue `insert(i,v)`/`delete(i)`, assoc
-> `first/next/last/prev`(+assoc-foreach), string 키 (SysFunc/SysTask 추가 필요 —
-> 단독 bump 부당, 다음 묶음 대기) ② **(D) 후속** — modport 방향 강제, interface
-> 파라미터/헤더 포트, generate-내 iface 포트 전달 ③ bounded queue `[$:N]` 실동작
-> (사이드카 후보) ④ §A 미세 잔여(has_xz/to_u128·wide 구조 트리오·real native lane —
-> 전부 저ROI 문서화) ⑤ E8003 CONFLICT arm(sticky 컨텍스트 도입 시)·E-ART-STALE-UPSTREAM
-> (worklib 도입 시) ⑥ PDES(연구 트랙 유지).
+> silent-capture) 수정·teeth 회귀.
+>
+> **🏁 2026-06-11 2차 마라톤: 구현 트랙 ①~⑤ 전부 소진(765 green, 5커밋 push, 적대 리뷰 9불변식 PASS·결함 0).**
+> ~~①차기 format-bump 묶음~~ ✅ **v6 bump**(`212f85f`) — queue `insert(i,v)`/`delete(i)`(iverilog 차분),
+> assoc `first/next/last/prev`(QPop-가족 문장-인터셉트 `StmtEffect::AssocIter`, hand-IEEE §7.9.4,
+> 좁은 ref var=truncate+−1+W4020), **foreach를 uniform first/next desugar로 재작업**(dyn/queue=
+> dense walk, 합성 인덱스 게이트), string 키(`NetKind::AssocStr`+`Offsets::AssocStrKey`+사전식
+> first/next; AST `AssocKey::Str` 재핀). ⭐부수 적발: **string 리터럴 LSB-first 패킹 = IEEE §5.9
+> 위반 라이브 버그**("ab"=25185 vs iverilog 24930) — 패킹·`const_string` 대칭 플립+회귀 핀.
+> ~~②(D) 후속~~ ✅(`5840f20`) — modport 방향 강제(listed-only 가시성+input=read-only,
+> `walk_scopes_key` 단일 진실 리팩터로 name-레벨 정밀도), iface `#(parameter)`(부모-스코프 해소),
+> ANSI 헤더 포트(LATE pass 배선=wire_ports 재사용), generate-내 iface 바인딩(외향 스코프 워크).
+> ~~③bounded queue~~ ✅(`5f6a549`) — `QueueBoundTable` 사이드카(8번째 trailer)+엔진 tail-truncate
+> 단일 규칙(iverilog 라이브: push_back-full=skip/push_front·insert-full=뒤 요소 탈락 전부 재현),
+> staged 왕복 e2e. ~~④§A 미세~~ ✅(`68f545a`) — **wide 구조 트리오**(WSelect/WConcatPair/WRepl,
+> 65..=128bit: WIDE_STRUCT_HEAVY **VM 0.44x ≈2.3x**) + real lane **측정-폐기**(REAL_HEAVY VM 0.90x,
+> real은 합성 핫패스 부재 — 프로브는 영구 계기) + has_xz/to_u128 **검사-폐기**(inline-Value 때 이미
+> word-parallel). ~~⑤예약 진단 arm~~ ✅(`bf7f146`) — **E8003 CONFLICT arm**(sticky ctx=상속
+> `` `timescale``, dup 존재 시에만 컨텍스트 워크) + **E9003 `vrun --upstream`**(라이브 재해시 vs
+> composite, exit class 2 — worklib은 발견 자동화만 추가).
+>
+> **현재 잔여:** ⑥ **PDES(연구 트랙)** 가 유일한 미착수 트랙. 그 외는 Phase-2+ 스코프 확장
+> (worklib(→E9003 자동 발견·RULE S 매니페스트 완성)·full `string` 타입(string-키 foreach 8byte
+> 한계 해소)·package·concurrent SVA — ROADMAP §D/§F 참조)과 의도적 MVP 컷(loud)뿐.
 
 1. ~~트래커 P0~P5 전체~~ ✅ · ~~perf 축(스케줄러 R1·구조 native lane)~~ ✅ · ~~Phase-1.x 전체(게이트/filelist/explain/v4 bump/force-release)~~ ✅ — **611 green, HEAD `8664627`.**
 2. ~~①dirty-list 넷 스캔(R2)~~ ✅ 2026-06-10(NETS_HEAVY 305→15.5ms ≈19.7x — dirty 스윕+snapshot_prev 삭제) · ~~②filelist typed 버킷~~ ✅ 2026-06-10(-D/-I·+define+/+incdir+·WRONG-STAGE·OVERRIDE) · ~~③native-eval C6 lane~~ ✅ 2026-06-10(array-indexed `LoadIndexed` + 65..=128bit u128-pair wide 스택 — WIDE_HEAVY 0.59x·MEM_HEAVY 0.72x, narrow 무변경; 잔여 native = signed>64/wide 구조/real/sysfunc 저ROI 문서화, doc-18 §실측). ~~④vita-log 2단계~~ ✅ 2026-06-10(--log 단일-writer tee·-q/-v/--verbosity·counts epilogue `errors= warnings= notes=`·unopenable log=exit 3) · ~~⑤intra-assignment delay·force 재평가·implicit-net~~ ✅ 2026-06-10(blocking `= #d` 실semantics + NBA `<= #d`=loud E3009→차기 bump·force 연속 재평가·implicit-net=E3010 정책 확정으로 종결). ~~⑥Phase-2 관문~~ ✅ 2026-06-10 평가 완료(ROADMAP §F: bump-필수=NBA-delay·named-event·dynamic-storage는 v5 일괄, IR-무변경=immediate-assert·interface 스파이크·disable은 즉시 가능 — 진입 시퀀스 명문화) · ~~⑦3-OS CI~~ ✅ 2026-06-10(`.github/workflows/vitamin-ci.yml` — ubuntu/macos-14/windows 매트릭스, fmt/clippy/test --locked, ubuntu에 iverilog 설치로 차분 오라클 실가동, paths 필터로 vitamin 변경시만). **첫 가동이 Windows-전용 발산 3건을 연속 적발·수정 후 3-OS 전부 green**(run `27276108641`): ①테스트 include 셰임의 `/`-키 맵이 `Path::join`의 `\` 미스(`b34f67e`) ②autocrlf 체크아웃이 LF 골든을 CRLF화 → `.gitattributes` `-text` 핀(`b28ecb8`) ③ron `PrettyConfig::default()`가 플랫폼 newline(Windows `\r\n`)로 생성 → 명시 `\n` 핀(`3a52230`). 셋 다 프로덕션 코드 아닌 주변부의 byte-identity 누수. ~~⑧net_to_edge/waiter 자료구조~~ ❎ 2026-06-10 **측정으로 폐기** — `perf_nets_scaling` 프로브(512→2048→8192 idle nets)가 평탄(~15-17ms)을 보임: R2가 idle-net 세금을 전부 제거, waiter 워크는 부하 비례라 세금 아님. 프로브는 영구 회귀 계기로 잔류. ~~ROADMAP §F 진입 시퀀스~~ ✅ **2026-06-10/11 완주(674 green)**: (E) immediate assert(파서 If-desugar, AST 동결 유지, iverilog 차분 — `66c880b`) → (D) interface 스파이크(GO: 심볼 aliasing, SimIr 무변경 확정 — `3068be9`) → (F) disable 실동작(동봉 named block Goto, lazy exit-BB로 기존 CFG byte-불변)+proc-assign/deassign(force weak-rank 재사용, `assign_ranks` 사이드카+trailer 세그먼트 — `0ac0069`) → (C) dynamic-storage 설계 문서(`af5898a`, v5 형상 diff 전량 확정+B 재분류) → **v5 bump**(형상+REGEN, 기능 0 — `e7f08e8`) → (A) NBA transport delay(`delayed_nba` wheel, 차분 4레인 — `1617980`) → (B) named-event 카운터 desugar(sim-ir 0, 차분 3레인, `.vu` 재핀 — `0a39dec`). ⭐동시-틱 tie(Active $finish vs due-update/edge-wake)는 도구-발산 영역 — 차분 디자인은 tie를 회피하고 주석으로 핀. **다음 후보:** **(C) 엔진 증분 — ③dyn array 3a(heap/new/size/delete) ✅ 2026-06-11(`33e741a`, 677 green: `dyn_heap`+`DynObj`+`NetReader::dyn_size` 시임, W4020 warn-once, VCD 핸들 skip, hand-built SimIr 시임 테스트 — 문법은 ⑥) → 3b(인덱스 r/w 라우팅) ✅ 2026-06-11(`dyn_is_handle` 비트맵 깔때기 라우팅, OOB/X=원소폭 X·무시+W4020, 680 green) → ④queue ✅ 2026-06-11(691 green: `DynObj::Queue{VecDeque}` — push=SysTask 디스패치(원소형 §5.5 cast·cap warn+drop), 인덱스 r/w=3b 깔때기 공유+**`q[size()]`=push_back 동등 append(IEEE §7.10.1, iverilog 라이브로 설계문서 "무시" 가정 정정)**, **pop=`StmtEffect::QPop` 문장-레벨 인터셉트**(P7a read-phase 순수성 유지, Kernel 2메서드)+pop-rhs 바디 `is_codegen_able` 제외(VM=interp fallback, teeth는 parity 테스트로 입증), 비지원 배치 pop=eval arm X+W4020, pop SelfWidth=원소형(signed/unsigned 확장 차분), `q[$]`=DynSize-1 desugar 시임 테스트, empty pop=X+warn-once) → ⑤assoc ✅ 2026-06-11(701 green: `DynObj::Assoc{BTreeMap<i64,Value>}` — **키 도메인=signed i64 전역**(음수·>u32 합법)이라 u32 offsets 쌍에 못 실림 → `Offsets::AssocKey(Option<i64>)` variant 신설+`k_write_lvalue` ABI를 slice→`&Offsets`로(NBA·CA·VM·QPop 전 깔때기 공유=by-construction), READ는 eval Signal arm이 u32 coercion **전에** `is_assoc` 분기→`assoc_key`(64-bit 부호확장, X/Z·real=invalid)→`assoc_read`; exists/num=순수 eval arm(VM parity 자동)·delete(k)=SysTask 디스패치(미존재 키=무음 no-op §7.9, X키=W4020)·delete()=DynDelete 공용; X키 r/w=X/무시+W4020, 미존재 read=X+warn, write=원소 생성(§7.8.6), cap 1<<24 warn+drop; **native-eval LoadIndexed에 Assoc bail**(u32 도메인 발산 차단); concat-lvalue 내 assoc chunk=loud degrade. **iverilog 13.0이 assoc 선언 자체를 거부(라이브 확인)** → 유일하게 hand-IEEE 핀 레인(§7.8/§7.9, expression-force 선례)) → **⑥front-end 일괄 ✅ 2026-06-11(722 green, .vu 해시 재핀 1회)**: (C) 문법(lexer `$`·`Dim` 3변형·`ExprKind::{New,Dollar}`·메서드=기존 Call AST 재사용·핸들 decl/인덱스/메서드/특수형 elaborate 인터셉트·오용 전부 E3009 loud — dyn/queue=iverilog 차분 13 e2e, assoc=hand-IEEE) + (D) interface(스파이크 그대로: ModuleDecl 재사용+Modport+AnsiPort.iface, **nets 단계 4c 조기 평탄화**(부모 body `i.sig` 해소), 포트=심볼 aliasing(net/cont-assign 0), resolve_net 다중-세그 dot-join, modport 존재검증 — **iverilog가 interface port도 거부 → hand-IEEE 핀**, e2e 8). SimIr 무변경(format_version 5 유지). 잔여 = **(D) modport 방향 강제·interface 파라미터·generate-내 iface 포트 전달(후속 증분)** · ~~⑨P4-T2~~ ❎ 2026-06-11 측정 폐기(parse ~10ms 비병목+단일-CU concat 의미론 — §P4 표) · §A 잔여(저빈도 value-op word化 등 저ROI).

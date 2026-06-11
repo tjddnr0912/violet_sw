@@ -289,8 +289,23 @@ C4-lite의 마지막 큰 lane 2개가 합류 (`native_eval.rs` dual-stack 설계
    `WEqNe`/`WCaseEqNe`/`WShl`/`WShr`(128 가드+MSB pair fill)/`WDivMod`(unsigned)/
    `WTernary`(cond wide/narrow 양쪽)/`WReduce`/`WLogNot`. narrow 1-bit 생산자가 wide ctx에
    먹힐 땐 `Promote`(zero-extend 브리지). **bail(오라클 잔류): signed >64 arith/divmod**(오라클이
-   X-poison하는 영역 — 보수적 제외), **wide 구조 트리오**(cross-word gather), wide shift-amount,
-   wide LogBin 피연산자, >128bit, real, sysfunc.
+   X-poison하는 영역 — 보수적 제외), wide shift-amount,
+   wide LogBin 피연산자, >128bit, real, sysfunc. *(wide 구조 트리오는 v6 ④에서 랜딩 — 아래.)*
+
+### native-eval v6 ④ (2026-06-11) — wide 구조 트리오 + real lane 측정-폐기
+
+**wide 구조 트리오 랜딩**: `WSelect`/`WConcatPair`/`WRepl`이 select/concat/replicate를
+65..=128bit까지 — 혼합-스택 op(narrow offset/part가 wide base/acc와 합성, 결과는 자연폭>64
+iff wide 스택), 오라클 계약 동일(X/Z offset=sel_w X·OOB bit=X·in-range는 2-word shift 1회).
+신규 벤치 `WIDE_STRUCT_HEAVY`(100-bit select/concat/replicate 핫루프): **VM 0.44x interp
+(≈2.3x)** — 트리오 전엔 wide 구조 노드가 전체 식을 bail시켜 ~1x였던 형. >128 bail 핀 유지.
+
+**real lane 측정-폐기**: 신규 `REAL_HEAVY` 프로브(f64 산술 핫루프) — **VM 0.90x**. 식 평가는
+오라클-bound지만 real 산술은 합성가능 RTL 핫패스에 사실상 부재(테스트벤치 영역)라 제3의 f64
+레지스터 파일이 지불하지 않음. 프로브는 영구 계기로 잔류(워크로드가 바뀌면 재평가).
+
+**has_xz/to_u128 검사-폐기**: inline-Value 라운드에서 이미 word-parallel(마스크된 word 로드,
+bit 루프 0) — §A 미세 항목 종결.
 
 신규 벤치(release, best-of-5): **`WIDE_HEAVY`(100-bit EXPR_HEAVY 형) VM 0.59x interp(≈1.7x)** ·
 **`MEM_HEAVY`(문장마다 동적 `mem[p]`/`mem[q]` 읽기) VM 0.72x(≈1.4x)**; 기존 lane 불변

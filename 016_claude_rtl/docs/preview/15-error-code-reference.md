@@ -554,9 +554,10 @@ error[VITA-E8002] E-FLIST-DEPTH: filelist nesting exceeded depth cap 256 at f256
 (exit class 3).
 
 ### VITA-E8003 · `E-FLIST-DUP-CTX-CONFLICT` (Error)
-*(silent-dedup arm은 **구현됨 2026-06-11** — 같은 canonical 경로(phys_id, 폴백 lexical)는
-첫 occurrence로 dedup. CONFLICT arm은 sticky 컨텍스트(RULE S) 도입 시 활성 — 현재는
-추적되는 컨텍스트가 없어 두 occurrence가 항상 "같은 입력".)*
+*(silent-dedup arm 구현 2026-06-11; **CONFLICT arm도 같은 날 구현** — 추적되는 sticky
+컨텍스트는 상속 `` `timescale``(comment/string-aware 라이트 스캔, 중복 존재 시에만 컨텍스트
+워크 실행). `default_nettype`은 v1 미지원(E3010 정책)이라 컨텍스트 밖; RULE S 매니페스트
+해시 통합은 worklib 도입 시.)*
 **같은 canonical 소스가 다른 상속 sticky 컨텍스트로 두 번.** 소스는 기본 dedup 안 함(중복 모듈은
 `E-DUP-UNIT`). 같은 canonical 경로가 두 번인 경우만 dedup하되, 두 occurrence가 다른 상속 sticky
 디렉티브(`timescale`/`default_nettype`, RULE S) 컨텍스트면 같은 입력이 아니므로 silent dedup이
@@ -668,6 +669,9 @@ error[VITA-E9002] E-ART-SCHEMA-MISMATCH: top.velab schema 9f3c.., current tool s
 마이그레이션 기계 없음. exit class 2. 억제 불가.
 
 ### VITA-E9003 · `E-ART-STALE-UPSTREAM` (Error)
+*(검증 시임 구현 2026-06-11: `vrun --upstream <file.vu>`가 라이브 .vu를 재해시해 `.velab`의
+`composite_input_hash`와 대조 — 불일치 = 이 에러, exit class 2. 상류 **자동 발견**과 소스-레벨
+재해시 체인은 worklib 도입 시 — 아래 전체 모델.)*
 **vrun이 라이브 소스 재해시 후 stale 스냅샷 거부(RULE V).** 매 실행 vrun이 상류 체인 전체를
 라이브 소스에 재검증 — 소비 (lib:unit, src_sha256) 트리플마다 라이브 파일을 재전처리(상속 적용)해
 다이제스트 재계산, 매니페스트 내용 해시·두 schema 해시 재확인. 라이브 해시가 스냅샷에 박힌 값과
