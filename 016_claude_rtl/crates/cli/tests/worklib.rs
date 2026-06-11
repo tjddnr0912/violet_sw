@@ -516,3 +516,71 @@ fn malformed_manifest_is_loud_e9005() {
         "E-WORK-MANIFEST expected:\n{err}"
     );
 }
+
+#[test]
+fn passenger_definition_does_not_beat_search_order() {
+    // `util` is defined in BOTH libs. liba is first, so its `util` must win —
+    // even though libb's CU (loaded for `leaf`) carries a `util` definition as
+    // a passenger and happens to load EARLIER in the closure walk.
+    let d = tdir();
+    let top = d.join("top.sv");
+    write(
+        &top,
+        "module top; leaf l(); util u(); initial begin #1 $finish; end endmodule\n",
+    );
+    let pair = d.join("pair.sv");
+    write(
+        &pair,
+        "module leaf; initial $display(\"leaf-B\"); endmodule\n\
+         module util; initial $display(\"UTIL-B\"); endmodule\n",
+    );
+    let util_a = d.join("util_a.sv");
+    write(
+        &util_a,
+        "module util; initial $display(\"UTIL-A\"); endmodule\n",
+    );
+    let liba = format!("liba={}", d.join("la").display());
+    let libb = format!("libb={}", d.join("lb").display());
+    assert_eq!(
+        vita(&["vcmp", top.to_str().unwrap(), "--work", &liba]).2,
+        Some(0)
+    );
+    assert_eq!(
+        vita(&["vcmp", util_a.to_str().unwrap(), "--work", &liba]).2,
+        Some(0)
+    );
+    assert_eq!(
+        vita(&["vcmp", pair.to_str().unwrap(), "--work", &libb]).2,
+        Some(0)
+    );
+    let ve = d.join("t.velab");
+    assert_eq!(
+        vita(&[
+            "velab",
+            "-L",
+            &liba,
+            "-L",
+            &libb,
+            "--top",
+            "top",
+            "-o",
+            ve.to_str().unwrap()
+        ])
+        .2,
+        Some(0)
+    );
+    let (out, err, code) = vita(&["vrun", ve.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "vrun: {err}");
+    assert!(
+        out.contains("UTIL-A"),
+        "first -L wins for util; got:\n{out}"
+    );
+    assert!(
+        !out.contains("UTIL-B"),
+        "passenger must not shadow; got:\n{out}"
+    );
+    assert!(
+        out.contains("leaf-B"),
+        "leaf resolves from libb; got:\n{out}"
+    );
+}

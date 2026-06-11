@@ -1521,7 +1521,6 @@ fn run_velab_lib_gated(
         cu_idx: usize,
     }
     let mut loaded: Vec<LoadedCu> = Vec::new();
-    let mut loaded_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut blob_bytes_all: Vec<u8> = Vec::new();
     while let Some((li, ci)) = queue.pop_front() {
         let lib = &loaded_libs[li];
@@ -1548,15 +1547,12 @@ fn run_velab_lib_gated(
             Ok(x) => x,
             Err(code) => return code,
         };
-        for (_, n) in &lib.manifest.cus[ci].units {
-            loaded_names.insert(n.clone());
-        }
-        // Enqueue CUs that define units this CU instantiates but no loaded CU
-        // provides (deterministic: BTreeSet walk over a BTreeMap lookup).
+        // Enqueue the unit-map WINNER for every name this CU instantiates.
+        // Resolution is by-name against the -L search order — never by
+        // whatever definition happens to ride along in an already-loaded CU
+        // (a passenger must not beat the search order). Deterministic:
+        // BTreeSet walk over a BTreeMap lookup; `seen_cu` dedups.
         for name in elaborate::instantiated_names(&unit) {
-            if loaded_names.contains(&name) {
-                continue;
-            }
             if let Some(&key) = unit_map.get(&name) {
                 if seen_cu.insert(key) {
                     queue.push_back(key);
@@ -1574,8 +1570,10 @@ fn run_velab_lib_gated(
         });
     }
 
-    // ── 4. merge into ONE SourceUnit (shadow dedup: first definition wins —
-    //       the unit-map winner is in an earlier-loaded CU by construction) ──
+    // ── 4. merge into ONE SourceUnit. A NAMED item is emitted only from the
+    //       CU the unit map resolves its name to (first `-L` wins) — a
+    //       shadowed passenger definition in another loaded CU is skipped
+    //       regardless of load order. ──
     let mut merged = hdl_ast::SourceUnit {
         items: Vec::new(),
         span: hdl_ast::Span { lo: 0, hi: 0 },
@@ -1596,8 +1594,17 @@ fn run_velab_lib_gated(
                 hdl_ast::TopItem::Error(_) => None,
             };
             if let Some(n) = name {
-                if !emitted.insert(n) {
-                    continue; // shadowed by an earlier library
+                match unit_map.get(&n) {
+                    // The search-order winner for this name is a DIFFERENT
+                    // CU: this copy is shadowed.
+                    Some(&key) if key != (cu.lib_idx, cu.cu_idx) => continue,
+                    // Winner (or unmapped — a manifest that under-reports its
+                    // units): first emission wins as a deterministic fallback.
+                    _ => {
+                        if !emitted.insert(n) {
+                            continue;
+                        }
+                    }
                 }
             }
             merged.items.push(it.clone());
