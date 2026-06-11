@@ -23,6 +23,40 @@ enum RedKind {
     Xor,
 }
 
+/// 64-bit window of `plane` at an arbitrary BIT offset (two-word funnel; bits
+/// beyond the slice read as 0). §A word化 helper, 2026-06-11.
+#[inline]
+fn window64(plane: &[u64], bit: u32) -> u64 {
+    let w = (bit / 64) as usize;
+    let sh = bit % 64;
+    let lo = plane.get(w).copied().unwrap_or(0);
+    if sh == 0 {
+        return lo;
+    }
+    let hi = plane.get(w + 1).copied().unwrap_or(0);
+    (lo >> sh) | (hi << (64 - sh))
+}
+
+/// Copy `w` bits of BOTH planes from `src[src_off..]` into `dst[dst_off..]`,
+/// word-parallel. The destination range must be ZERO on entry (every caller
+/// builds into a fresh `Value::zeros`) — bits are OR-merged in.
+#[inline]
+fn copy_bits(dst: &mut Value, dst_off: u32, src: &Value, src_off: u32, w: u32) {
+    let mut i = 0u32;
+    while i < w {
+        let dbit = dst_off + i;
+        let dw = (dbit / 64) as usize;
+        let dsh = dbit % 64;
+        let n = (64 - dsh).min(w - i);
+        let m = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
+        let sv = window64(&src.val, src_off + i) & m;
+        let su = window64(&src.unk, src_off + i) & m;
+        dst.val[dw] |= sv << dsh;
+        dst.unk[dw] |= su << dsh;
+        i += n;
+    }
+}
+
 /// Read-only net access the evaluator needs. The engine state implements it.
 pub trait NetReader {
     /// Current 4-state value of net `net`, optional array word index.
@@ -749,16 +783,24 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     /// `eval_ctx`, so no inner resize is needed (verbatim former eval_ternary
     /// unknown-branch body).
     fn merge_x(&self, t: &Value, e: &Value, w: u32, signed: bool) -> Value {
+        // WORD-PARALLEL X-merge (§A word化, 2026-06-11 — was bit-serial):
+        // a result bit keeps the operand bit where BOTH planes agree and
+        // X-poisons where they differ. Bits beyond an operand's width read
+        // as (0,0), exactly like the old `get_vu` path (mask_top invariant).
         let mut out = Value::zeros(w, signed);
-        for k in 0..w {
-            let a = t.get_vu(k);
-            let b = e.get_vu(k);
-            if a == b {
-                out.set_vu(k, a.0, a.1);
-            } else {
-                out.set_vu(k, 0, 1); // differ → X
-            }
+        let n = crate::value::nwords(w).max(1);
+        for k in 0..n {
+            let tv = t.val.get(k).copied().unwrap_or(0);
+            let tu = t.unk.get(k).copied().unwrap_or(0);
+            let ev = e.val.get(k).copied().unwrap_or(0);
+            let eu = e.unk.get(k).copied().unwrap_or(0);
+            let eq = !((tv ^ ev) | (tu ^ eu));
+            out.val[k] = tv & eq;
+            out.unk[k] = (tu & eq) | !eq;
         }
+        let m = crate::value::top_mask(w);
+        out.val[n - 1] &= m;
+        out.unk[n - 1] &= m;
         out
     }
 
@@ -769,14 +811,12 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         let total: u32 = vals.iter().map(|v| v.width).sum();
         let mut out = Value::zeros(total.max(1), false);
         out.width = total;
-        // parts[0] is MSB-most; fill from the top down.
+        // parts[0] is MSB-most; fill from the top down — word-parallel copy
+        // (§A word化, 2026-06-11; was a per-bit set_vu loop).
         let mut pos = total;
         for v in &vals {
             pos -= v.width;
-            for i in 0..v.width {
-                let (vv, uu) = v.get_vu(i);
-                out.set_vu(pos + i, vv, uu);
-            }
+            copy_bits(&mut out, pos, v, 0, v.width);
         }
         out.mask_top();
         out
@@ -791,12 +831,9 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         let total = v.width.saturating_mul(count);
         let mut out = Value::zeros(total.max(1), false);
         out.width = total;
+        // word-parallel per repetition (§A word化, 2026-06-11).
         for c in 0..count {
-            let base = c * v.width;
-            for i in 0..v.width {
-                let (vv, uu) = v.get_vu(i);
-                out.set_vu(base + i, vv, uu);
-            }
+            copy_bits(&mut out, c * v.width, &v, 0, v.width);
         }
         out.mask_top();
         out
@@ -824,6 +861,14 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         };
         let mut out = Value::zeros(w.max(1), false);
         out.width = w;
+        // Fully in-range select: ONE word-parallel copy (§A word化,
+        // 2026-06-11 — the dominant case). Any out-of-range overlap keeps
+        // the per-bit path (mixed copied/X-filled bits).
+        if lsb >= 0 && (lsb as u64) + (w as u64) <= src.width as u64 {
+            copy_bits(&mut out, 0, &src, lsb as u32, w);
+            out.mask_top();
+            return out;
+        }
         for i in 0..w as i64 {
             let src_idx = lsb + i;
             if src_idx >= 0 && (src_idx as u32) < src.width {
