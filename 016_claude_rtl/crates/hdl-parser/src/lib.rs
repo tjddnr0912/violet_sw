@@ -131,6 +131,11 @@ impl<'t, 's> Parser<'t, 's> {
     fn peek_at(&self, n: usize) -> Option<TokenKind> {
         self.toks.get(self.pos + n).map(|t| t.kind)
     }
+    /// Source text of the CURRENT token (contextual-keyword checks).
+    #[inline]
+    fn peek_text(&self) -> Option<&str> {
+        self.toks.get(self.pos).map(|t| &self.src[t.span.clone()])
+    }
     #[inline]
     fn at_eof(&self) -> bool {
         self.pos >= self.toks.len()
@@ -834,6 +839,17 @@ impl<'t, 's> Parser<'t, 's> {
                 } else {
                     AssocKey::Time
                 }));
+            }
+            // `[string]` (v6) — CONTEXTUAL: `string` is a plain identifier
+            // everywhere else (V2005 compat), but an identifier spelled
+            // exactly `string` directly inside `[ ]` is the assoc key type.
+            // (A V2005 parameter literally named `string` used as a dim is
+            // shadowed — iverilog -g2012 rejects such code outright, so the
+            // corner is already non-portable.)
+            Some(TokenKind::Word(WordKind::Ident)) if self.peek_text() == Some("string") => {
+                self.bump();
+                self.expect(TokenKind::RBracket, "']'");
+                return Some(Dim::Assoc(AssocKey::Str));
             }
             // `[*]` — wildcard assoc index: outside the MVP, reject loudly at
             // parse (recover as a plain dyn dim so the decl still resolves).
@@ -3071,13 +3087,19 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// v5 ⑥ follow-on: `foreach (arr[i]) stmt` — PARSE-TIME desugar to the
-    /// equivalent counting loop over `arr.size()` (no new AST/IR node):
-    ///   begin : (anon)  integer i;
-    ///     for (i = 0; i < arr.size(); i = i + 1) stmt
+    /// v5 ⑥ follow-on, reworked at v6: `foreach (arr[i]) stmt` — PARSE-TIME
+    /// desugar to the uniform first/next walk (no new AST/IR node):
+    ///   begin : (anon)  integer i; integer __st;
+    ///     __st = arr.first(i);
+    ///     while (__st == 1) begin stmt  __st = arr.next(i); end
     ///   end
-    /// Targets are dynamic arrays/queues (the size() method resolves on dyn
-    /// handles at elaborate; anything else gets the method-call loud error).
+    /// ONE shape serves every dyn kind: elaborate lowers first/next on
+    /// dyn/queue handles to the DENSE 0..size-1 walk (synthetic-index gated —
+    /// the user surface keeps them assoc-only) and on assoc handles to the
+    /// key-order walk (§7.9.4). A status of −1 (key wider than the integer
+    /// index — possible on i64/string-keyed assoc) stops the loop with the
+    /// engine's W4020 truncation warn. Anything that is not a dyn handle gets
+    /// the method-call loud error at elaborate.
     /// Multi-index foreach (`a[i,j]`) is outside the MVP — loud at parse.
     fn parse_foreach(&mut self) -> Stmt {
         let start = self.cur_span();
@@ -3121,76 +3143,75 @@ impl<'t, 's> Parser<'t, 's> {
             kind: ExprKind::Ident(one_seg(id)),
             span: id.span,
         };
-        // i = 0
-        let init = Stmt::Blocking {
-            lhs: Lvalue::Ident(one_seg(&ivar)),
-            delay: None,
-            rhs: Self::dec_lit(0, span),
-            span,
+        // synthetic status var (unique like the index — same collision rules).
+        let stvar = Ident {
+            name: format!("__foreach_st_{}", start.lo),
+            span: ivar.span,
         };
-        // i < arr.size()
-        let size_call = Expr {
+        // __st = arr.first(i) / arr.next(i)
+        let iter_call = |method: &str| Expr {
             kind: ExprKind::Call {
                 name: HierPath {
                     segments: vec![
                         arr.clone(),
                         Ident {
-                            name: "size".to_string(),
+                            name: method.to_string(),
                             span: arr.span,
                         },
                     ],
                     span: arr.span,
                 },
-                args: Vec::new(),
+                args: vec![ivar_expr(&ivar)],
             },
             span: arr.span,
         };
+        let st_assign = |method: &str| Stmt::Blocking {
+            lhs: Lvalue::Ident(one_seg(&stvar)),
+            delay: None,
+            rhs: iter_call(method),
+            span,
+        };
+        // while (__st == 1) — a −1 truncation status stops the walk (W4020
+        // already warned at the engine seam).
         let cond = Expr {
             kind: ExprKind::Binary {
-                op: BinOp::Lt,
-                lhs: Box::new(ivar_expr(&ivar)),
-                rhs: Box::new(size_call),
+                op: BinOp::Eq,
+                lhs: Box::new(ivar_expr(&stvar)),
+                rhs: Box::new(Self::dec_lit(1, span)),
             },
             span,
         };
-        // i = i + 1
-        let step = Stmt::Blocking {
-            lhs: Lvalue::Ident(one_seg(&ivar)),
-            delay: None,
-            rhs: Expr {
-                kind: ExprKind::Binary {
-                    op: BinOp::Add,
-                    lhs: Box::new(ivar_expr(&ivar)),
-                    rhs: Box::new(Self::dec_lit(1, span)),
-                },
-                span,
-            },
+        let loop_body = Stmt::Block {
+            label: None,
+            decls: Vec::new(),
+            stmts: vec![body, st_assign("next")],
             span,
         };
-        // block-local `integer i;` so the index never leaks/collides.
-        let idecl = NetVarDecl {
+        // block-local `integer i; integer __st;` so neither leaks/collides.
+        let decl_of = |id: &Ident| NetVarDecl {
             kind: NetVarKind::Integer,
             signed: true,
             range: None,
             packed: Vec::new(),
             names: vec![DeclName {
-                name: ivar.clone(),
+                name: id.clone(),
                 unpacked: Vec::new(),
                 init: None,
-                span: ivar.span,
+                span: id.span,
             }],
-            span: ivar.span,
+            span: id.span,
         };
         Stmt::Block {
-            label: None, // the synthetic index name needs no block scope
-            decls: vec![idecl],
-            stmts: vec![Stmt::For {
-                init: Box::new(init),
-                cond,
-                step: Box::new(step),
-                body: Box::new(body),
-                span,
-            }],
+            label: None, // the synthetic names need no block scope
+            decls: vec![decl_of(&ivar), decl_of(&stvar)],
+            stmts: vec![
+                st_assign("first"),
+                Stmt::While {
+                    cond,
+                    body: Box::new(loop_body),
+                    span,
+                },
+            ],
             span,
         }
     }

@@ -255,6 +255,15 @@ impl WidthTable {
                     width: 1,
                     signed: false,
                 },
+                // v6: assoc iteration methods return the int STATUS
+                // (1 found / 0 none / −1 ref-arg truncation, §7.9.4).
+                SysFuncId::AssocFirst
+                | SysFuncId::AssocNext
+                | SysFuncId::AssocLast
+                | SysFuncId::AssocPrev => SelfWidth {
+                    width: 32,
+                    signed: true,
+                },
                 // ④: pops return the ELEMENT type of their handle (args[0] is
                 // its whole-net Signal) — the signedness drives the §5.5
                 // assignment extension (a signed byte −1 pops as −1 into an

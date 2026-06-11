@@ -167,6 +167,18 @@ pub enum SysFuncId {
     AssocExists,
     /// assoc `.num()` (v5; args = [handle]).
     AssocNum,
+    /// assoc `.first(k)` (v6; args = [handle, key-VAR Signal]). Side-effecting
+    /// (writes the ref key argument) — legal only as the DIRECT rhs of a
+    /// blocking assign, intercepted statement-level like the queue pops.
+    /// On dyn/queue handles the engine serves the DENSE 0..size-1 order
+    /// (internal `foreach` desugar target; user surface stays assoc-only).
+    AssocFirst,
+    /// assoc `.next(k)` (v6) — strictly-greater successor; see `AssocFirst`.
+    AssocNext,
+    /// assoc `.last(k)` (v6) — greatest key; see `AssocFirst`.
+    AssocLast,
+    /// assoc `.prev(k)` (v6) — strictly-less predecessor; see `AssocFirst`.
+    AssocPrev,
 }
 
 /// Expression arena node (§1).
@@ -246,6 +258,12 @@ pub enum SysTaskId {
     QPushFront,
     /// assoc `.delete(key)` (v5; args = [handle, key]).
     AssocDeleteKey,
+    /// queue `.insert(i, v)` (v6; args = [handle, i, v]) — IEEE §7.10.2.2,
+    /// legal i ∈ [0, size] (i == size appends); OOB/X = warn + no-op.
+    QInsert,
+    /// queue `.delete(i)` — single-index erase (v6; args = [handle, i]) —
+    /// IEEE §7.10.2.3, legal i ∈ [0, size-1]; OOB/X = warn + no-op.
+    QDeleteIdx,
 }
 
 /// Disable kind (§2).
@@ -408,6 +426,11 @@ pub enum NetKind {
     Queue,
     /// SV associative-array HANDLE (v5; integer keys ≤64 bit) — see `DynArray`.
     Assoc,
+    /// SV associative-array HANDLE with STRING keys (v6). Keys live in the
+    /// engine heap as raw byte strings (`Vec<u8>`, lexicographic BTree order =
+    /// IEEE string compare); integral key expressions convert by stripping
+    /// leading 0x00 bytes (packed-ASCII surface, §6.16 family).
+    AssocStr,
 }
 
 /// Port direction (§6).

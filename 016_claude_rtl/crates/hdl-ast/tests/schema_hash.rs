@@ -12,15 +12,13 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-11 (v5 ⑥ front-end batch — ONE flip for the whole
-/// increment): `Dim::{Dyn, Queue, Assoc}` + `AssocKey` + `ExprKind::{New,
-/// Dollar}` (dyn storage) and `TopItem::Interface` + `ModuleItem::Modport` +
-/// `ModportDecl` + `AnsiPort.iface`/`IfaceRef` (interfaces) — all `.vu`
-/// artifacts are stale. (Previous re-pins: 2026-06-11 `NetVarKind::Event`;
-/// 2026-06-05 `TypedefKind::Struct` + `StructMember`.)
+/// Re-pinned 2026-06-11 v6 (`AssocKey::Str` — `[string]` assoc keys; all
+/// `.vu` artifacts are stale). (Previous re-pins: 2026-06-11 v5 ⑥ front-end
+/// batch `Dim::{Dyn,Queue,Assoc}`+`ExprKind::{New,Dollar}`+interfaces;
+/// 2026-06-11 `NetVarKind::Event`; 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    153, 57, 249, 68, 49, 29, 28, 187, 152, 123, 186, 88, 206, 159, 218, 211, 248, 148, 0, 24, 44,
-    177, 75, 109, 164, 8, 240, 215, 124, 199, 77, 26,
+    222, 241, 12, 68, 63, 115, 88, 8, 44, 230, 168, 167, 52, 35, 113, 111, 106, 60, 150, 203, 179,
+    13, 153, 25, 143, 238, 254, 47, 102, 241, 11, 114,
 ];
 
 #[test]

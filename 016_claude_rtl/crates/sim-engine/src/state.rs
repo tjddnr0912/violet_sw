@@ -226,7 +226,12 @@ impl<'a> SimState<'a> {
             dyn_is_handle: ir
                 .nets
                 .iter()
-                .map(|nv| matches!(nv.kind, NetKind::DynArray | NetKind::Queue | NetKind::Assoc))
+                .map(|nv| {
+                    matches!(
+                        nv.kind,
+                        NetKind::DynArray | NetKind::Queue | NetKind::Assoc | NetKind::AssocStr
+                    )
+                })
                 .collect(),
             wt,
             vcd: None,
@@ -378,6 +383,13 @@ impl<'a> SimState<'a> {
                 self.assoc_write(c.net, *key, &value);
             }
             return false; // dyn content never enters the dirty channel
+        }
+        // v6: the string-keyed twin lane.
+        if let crate::exec::Offsets::AssocStrKey(key) = offsets {
+            if let Some(c) = lhs.chunks.first() {
+                self.assoc_str_write(c.net, key, &value);
+            }
+            return false;
         }
         let offsets = offsets.as_slice();
         debug_assert_eq!(
@@ -679,6 +691,12 @@ pub enum DynObj {
     Assoc {
         map: std::collections::BTreeMap<i64, Value>,
     },
+    /// `int a[string]` (v6) — raw-byte-string keys (leading-0x00-stripped
+    /// packed ASCII). BTree byte order = IEEE lexicographic string compare,
+    /// so first/next iterate in the §7.9.4 order for free.
+    AssocStr {
+        map: std::collections::BTreeMap<Vec<u8>, Value>,
+    },
 }
 
 impl DynObj {
@@ -687,6 +705,7 @@ impl DynObj {
             DynObj::DynArray { elems } => elems.len(),
             DynObj::Queue { elems } => elems.len(),
             DynObj::Assoc { map } => map.len(),
+            DynObj::AssocStr { map } => map.len(),
         }
     }
     /// Clippy pairing for `len`.
@@ -756,10 +775,14 @@ impl<'a> SimState<'a> {
             self.dyn_warn_once_at(net, "unsupported dyn lvalue shape (write ignored)");
             return false;
         }
-        // ⑤: an assoc element on the u32 pair funnel = a shape the AssocKey
-        // lane did not claim (a concat chunk, …) — outside the MVP, IGNORED
-        // loud. The single-chunk lane (`write_lvalue`) never reaches here.
-        if self.ir.nets[net as usize].kind == NetKind::Assoc {
+        // ⑤/v6: an assoc element on the u32 pair funnel = a shape the
+        // AssocKey/AssocStrKey lane did not claim (a concat chunk, …) —
+        // outside the MVP, IGNORED loud. The single-chunk lane
+        // (`write_lvalue`) never reaches here.
+        if matches!(
+            self.ir.nets[net as usize].kind,
+            NetKind::Assoc | NetKind::AssocStr
+        ) {
             self.dyn_warn_once_at(
                 net,
                 "assoc element write in an unsupported lvalue shape (ignored)",
@@ -836,6 +859,33 @@ impl<'a> SimState<'a> {
             map.insert(k, value.clone().resize(w));
         }
     }
+
+    /// v6: string-keyed assoc WRITE — the `Offsets::AssocStrKey` lane (the
+    /// byte-string twin of `assoc_write`; same X-key / cap / create rules).
+    pub(crate) fn assoc_str_write(&mut self, net: u32, key: &Option<Vec<u8>>, value: &Value) {
+        let w = self.ir.nets[net as usize].width.max(1);
+        let Some(k) = key else {
+            self.dyn_warn_once_at(net, "assoc key is X/Z (write ignored)");
+            return;
+        };
+        let (len, exists) = match self.dyn_heap.get(&net) {
+            Some(DynObj::AssocStr { map }) => (map.len(), map.contains_key(k)),
+            _ => (0, false),
+        };
+        if !exists && len >= MAX_DYN_ELEMS {
+            self.dyn_warn_once_at(net, "assoc exceeds the element cap (1<<24); write dropped");
+            return;
+        }
+        let entry = self
+            .dyn_heap
+            .entry(net)
+            .or_insert_with(|| DynObj::AssocStr {
+                map: std::collections::BTreeMap::new(),
+            });
+        if let DynObj::AssocStr { map } = entry {
+            map.insert(k.clone(), value.clone().resize(w));
+        }
+    }
 }
 
 impl<'a> NetReader for SimState<'a> {
@@ -845,9 +895,12 @@ impl<'a> NetReader for SimState<'a> {
         // Assoc included: `size()` is the IEEE alias of `num()` (§7.9.1). Any
         // other net kind returns None → the eval arm X-poisons defensively.
         match self.ir.nets.get(net as usize).map(|n| n.kind) {
-            Some(sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue | sim_ir::NetKind::Assoc) => {
-                Some(self.dyn_heap.get(&net).map(|o| o.len() as u64).unwrap_or(0))
-            }
+            Some(
+                sim_ir::NetKind::DynArray
+                | sim_ir::NetKind::Queue
+                | sim_ir::NetKind::Assoc
+                | sim_ir::NetKind::AssocStr,
+            ) => Some(self.dyn_heap.get(&net).map(|o| o.len() as u64).unwrap_or(0)),
             _ => None,
         }
     }
@@ -905,6 +958,51 @@ impl<'a> NetReader for SimState<'a> {
         };
         Some(match self.dyn_heap.get(&net) {
             Some(DynObj::Assoc { map }) => map.contains_key(&k),
+            _ => false,
+        })
+    }
+    fn is_assoc_str(&self, net: u32) -> bool {
+        self.dyn_is_handle
+            .get(net as usize)
+            .copied()
+            .unwrap_or(false)
+            && matches!(
+                self.ir.nets.get(net as usize).map(|n| n.kind),
+                Some(sim_ir::NetKind::AssocStr)
+            )
+    }
+    fn assoc_str_read(&self, net: u32, key: &Option<Vec<u8>>) -> Value {
+        let (w, signed) = self
+            .ir
+            .nets
+            .get(net as usize)
+            .map(|nv| (nv.width.max(1), nv.signed))
+            .unwrap_or((1, false));
+        let Some(k) = key else {
+            self.dyn_warn_once_at(net, "assoc key is X/Z (read X)");
+            return Value::xs(w, signed);
+        };
+        match self.dyn_heap.get(&net) {
+            Some(DynObj::AssocStr { map }) => map.get(k).cloned().unwrap_or_else(|| {
+                self.dyn_warn_once_at(net, "assoc key not found (read X)");
+                Value::xs(w, signed)
+            }),
+            _ => {
+                self.dyn_warn_once_at(net, "assoc key not found (read X)");
+                Value::xs(w, signed)
+            }
+        }
+    }
+    fn assoc_str_exists(&self, net: u32, key: &Option<Vec<u8>>) -> Option<bool> {
+        if !self.is_assoc_str(net) {
+            return None;
+        }
+        let Some(k) = key else {
+            self.dyn_warn_once_at(net, "assoc key is X/Z (exists 0)");
+            return Some(false);
+        };
+        Some(match self.dyn_heap.get(&net) {
+            Some(DynObj::AssocStr { map }) => map.contains_key(k),
             _ => false,
         })
     }
@@ -974,9 +1072,9 @@ pub(crate) fn vcd_var_type(kind: NetKind) -> VarType {
         NetKind::Integer => VarType::Integer,
         NetKind::Real => VarType::Real, // VCD `$var real`
         NetKind::Wire | NetKind::Logic => VarType::Wire,
-        // v5 dyn handles are NEVER declared to the VCD (design doc: variable
+        // v5/v6 dyn handles are NEVER declared to the VCD (design doc: variable
         // length has no $var form) — they are filtered upstream; defensive map.
-        NetKind::DynArray | NetKind::Queue | NetKind::Assoc => VarType::Wire,
+        NetKind::DynArray | NetKind::Queue | NetKind::Assoc | NetKind::AssocStr => VarType::Wire,
     }
 }
 

@@ -85,6 +85,17 @@ pub(crate) trait Kernel {
     /// `k_eval_for_lvalue` sizes an rhs. Empty / non-queue → element-width X
     /// + warn-once (v5 ④; iverilog live: warning + x).
     fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value;
+    /// READ: is `rhs` an assoc-iteration SysFunc (`first`/`next`/`last`/
+    /// `prev`)? They WRITE their ref key argument, so like the pops they are
+    /// statement-level effects (`StmtEffect::AssocIter`); any other placement
+    /// X-poisons in eval (v6).
+    fn k_assoc_iter_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: run one assoc-iteration step — writes the ref key variable on a
+    /// hit and returns the int STATUS (1 found / 0 none / −1 ref-arg too
+    /// narrow, key truncated + W4020), context-sized to `lhs` (v6; hand-IEEE
+    /// §7.9.4 — no iverilog lane). Dense 0..size-1 walk on dyn/queue handles
+    /// (the internal `foreach` desugar target).
+    fn k_assoc_iter(&mut self, lhs: &Lvalue, rhs: u32) -> Value;
 
     // ── terminator / control surface (C1) ──
     // The control-flow ABI a compiled body needs beyond the statement surface above:
@@ -282,6 +293,10 @@ pub(crate) enum Offsets {
     /// other offset and travels here. `None` = X/Z key (the write degrades
     /// loud + ignored at the funnel).
     AssocKey(Option<i64>),
+    /// v6: the string-keyed twin of `AssocKey` (`NetKind::AssocStr`). The key
+    /// is the raw byte string (leading-0x00-stripped packed ASCII); `None` =
+    /// X/Z key, same degrade.
+    AssocStrKey(Option<Vec<u8>>),
 }
 
 impl Offsets {
@@ -289,7 +304,7 @@ impl Offsets {
         match self {
             Offsets::Inline { buf, len } => &buf[..*len as usize],
             Offsets::Heap(v) => v,
-            Offsets::AssocKey(_) => &[],
+            Offsets::AssocKey(_) | Offsets::AssocStrKey(_) => &[],
         }
     }
 }
@@ -317,6 +332,14 @@ enum StmtEffect<'s> {
     /// the pop shrinks the queue (deterministic rule pinned in the design doc,
     /// the same family as the NBA apply-time bounds rule).
     QPop {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
+    /// Blocking assign whose rhs is an assoc-iteration call (v6): the call
+    /// WRITES its ref key argument, so it runs in the WRITE phase — the same
+    /// family as `QPop` (lvalue offsets still resolve in the READ phase).
+    AssocIter {
         lhs: &'s Lvalue,
         rhs: u32,
         offsets: Offsets,
@@ -366,6 +389,16 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             if k.k_queue_pop_rhs(*rhs) {
                 let offsets = k.k_resolve_lvalue_offsets(lhs);
                 return StmtEffect::QPop {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
+            // v6: an assoc-iteration rhs writes its ref key argument — same
+            // statement-level deferral as the pops.
+            if k.k_assoc_iter_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::AssocIter {
                     lhs,
                     rhs: *rhs,
                     offsets,
@@ -427,6 +460,11 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::QPop { lhs, rhs, offsets } => {
             let value = k.k_queue_pop(lhs, rhs); // pop + context-size (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::AssocIter { lhs, rhs, offsets } => {
+            let value = k.k_assoc_iter(lhs, rhs); // key write + status (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }

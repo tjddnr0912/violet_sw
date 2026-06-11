@@ -1419,3 +1419,591 @@ fn assoc_vm_backend_byte_parity() {
         assert_eq!(oi, ov, "interp vs VM stdout must be byte-identical");
     }
 }
+
+// ───────────────────────── v6 follow-on batch ─────────────────────────
+//
+// queue `.insert(i, v)` / `.delete(i)` — iverilog 13.0 live oracle
+// (2026-06-11): insert middle shifts right; `insert(size, v)` APPENDS;
+// OOB insert = warning + not added; `delete(i)` erases one; OOB delete =
+// warning + skip.
+//
+// assoc `.first/.next/.last/.prev(k)` — NO iverilog lane (assoc unsupported),
+// HAND-IEEE pinned (1800-2017 §7.9.4):
+//   found → key var WRITTEN, return 1; none/empty → key var UNCHANGED, ret 0;
+//   key does not fit the (too-narrow) ref var → TRUNCATED write + return −1
+//   (+ our W4020 once-latch). Order = signed-i64 ascending (the engine key
+//   domain; a `[time]`-keyed array with ≥2^63 keys deviates from unsigned
+//   order — documented limitation).
+// On dyn/queue handles the same SysFuncIds serve the DENSE 0..size-1 walk
+// (the internal `foreach` desugar target — user surface stays assoc-only).
+
+/// `st = handle.first/next/…(k)` — BlockingAssign with the iter SysFunc rhs.
+fn iter_assign(
+    st_net: u32,
+    which: SysFuncId,
+    handle_eid: u32,
+    key_eid: u32,
+    exprs: &mut Vec<Expr>,
+) -> Stmt {
+    let rhs = exprs.len() as u32;
+    exprs.push(Expr::SysFunc {
+        which,
+        args: vec![handle_eid, key_eid],
+    });
+    assign(st_net, rhs)
+}
+
+#[test]
+fn queue_insert_middle_append_and_oob() {
+    // {10,20,30}; insert(1,99) → {10,99,20,30}; insert(4,77) appends;
+    // insert(9,55) OOB → warn + no-op. (iverilog live.)
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: 10
+        Expr::Const { val: 1 },              // 2: 20
+        Expr::Const { val: 2 },              // 3: 30
+        Expr::Const { val: 3 },              // 4: idx 1
+        Expr::Const { val: 4 },              // 5: 99
+        Expr::Const { val: 5 },              // 6: idx 4
+        Expr::Const { val: 6 },              // 7: 77
+        Expr::Const { val: 7 },              // 8: idx 9
+        Expr::Const { val: 8 },              // 9: 55
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![0],
+        }, // 10: size
+        Expr::Const { val: 3 },              // 11: idx 1 (reused for read)
+        Expr::Signal {
+            net: 0,
+            word: Some(11),
+        }, // 12: q[1]
+        Expr::Const { val: 9 },              // 13: idx 0
+        Expr::Signal {
+            net: 0,
+            word: Some(13),
+        }, // 14: q[0]
+        Expr::Const { val: 10 },             // 15: idx 4
+        Expr::Signal {
+            net: 0,
+            word: Some(15),
+        }, // 16: q[4]
+    ];
+    let consts = vec![
+        int_const(10),
+        int_const(20),
+        int_const(30),
+        int_const(1),
+        int_const(99),
+        int_const(4),
+        int_const(77),
+        int_const(9),
+        int_const(55),
+        int_const(0),
+        int_const(4),
+    ];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![0, 2]),
+        systask(SysTaskId::QPushBack, vec![0, 3]),
+        systask(SysTaskId::QInsert, vec![0, 4, 5]), // insert(1, 99)
+        systask(SysTaskId::Display, vec![10]),      // 4
+        systask(SysTaskId::Display, vec![14]),      // 10
+        systask(SysTaskId::Display, vec![12]),      // 99
+        systask(SysTaskId::QInsert, vec![0, 6, 7]), // insert(4, 77) — append
+        systask(SysTaskId::Display, vec![10]),      // 5
+        systask(SysTaskId::Display, vec![16]),      // 77
+        systask(SysTaskId::QInsert, vec![0, 8, 9]), // insert(9, 55) — OOB
+        systask(SysTaskId::Display, vec![10]),      // 5 (unchanged)
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![q_handle(32, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(
+        out,
+        "         4\n        10\n        99\n         5\n        77\n         5\n"
+    );
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    assert_eq!(
+        diags.iter().filter(|d| d.contains("W4020")).count(),
+        1,
+        "OOB insert warns once: {diags:?}"
+    );
+}
+
+#[test]
+fn queue_delete_index_and_oob() {
+    // {10,99,20,30}; delete(0) → {99,20,30}; delete(2) → {99,20};
+    // delete(7) OOB → warn + skip. (iverilog live.)
+    let exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: 10
+        Expr::Const { val: 1 },              // 2: 99
+        Expr::Const { val: 2 },              // 3: 20
+        Expr::Const { val: 3 },              // 4: 30
+        Expr::Const { val: 4 },              // 5: idx 0
+        Expr::Const { val: 5 },              // 6: idx 2
+        Expr::Const { val: 6 },              // 7: idx 7
+        Expr::SysFunc {
+            which: SysFuncId::DynSize,
+            args: vec![0],
+        }, // 8: size
+        Expr::Signal {
+            net: 0,
+            word: Some(5),
+        }, // 9: q[0]
+        Expr::Const { val: 7 },              // 10: idx 1
+        Expr::Signal {
+            net: 0,
+            word: Some(10),
+        }, // 11: q[1]
+    ];
+    let consts = vec![
+        int_const(10),
+        int_const(99),
+        int_const(20),
+        int_const(30),
+        int_const(0),
+        int_const(2),
+        int_const(7),
+        int_const(1),
+    ];
+    let stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![0, 2]),
+        systask(SysTaskId::QPushBack, vec![0, 3]),
+        systask(SysTaskId::QPushBack, vec![0, 4]),
+        systask(SysTaskId::QDeleteIdx, vec![0, 5]), // delete(0)
+        systask(SysTaskId::QDeleteIdx, vec![0, 6]), // delete(2) → erase 30
+        systask(SysTaskId::Display, vec![8]),       // 2
+        systask(SysTaskId::Display, vec![9]),       // 99
+        systask(SysTaskId::Display, vec![11]),      // 20
+        systask(SysTaskId::QDeleteIdx, vec![0, 7]), // delete(7) — OOB
+        systask(SysTaskId::Display, vec![8]),       // 2 (unchanged)
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![q_handle(32, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         2\n        99\n        20\n         2\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    assert_eq!(
+        diags.iter().filter(|d| d.contains("W4020")).count(),
+        1,
+        "OOB delete warns once: {diags:?}"
+    );
+}
+
+/// a[-3]=1, a[7]=2, a[100]=3, then first/next ×3 → ascending keys, last 0.
+fn assoc_iter_ir(descend: bool) -> SimIr {
+    // nets: 0 = assoc handle, 1 = k (32-bit signed), 2 = st (32-bit signed)
+    let mut exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: key −3
+        Expr::Const { val: 1 },              // 2: 1
+        Expr::Const { val: 2 },              // 3: key 7
+        Expr::Const { val: 3 },              // 4: 2
+        Expr::Const { val: 4 },              // 5: key 100
+        Expr::Const { val: 5 },              // 6: 3
+        Expr::Signal { net: 1, word: None }, // 7: k (read + ref arg)
+        Expr::Signal { net: 2, word: None }, // 8: st
+    ];
+    let consts = vec![
+        int_const(0xFFFF_FFFD), // −3
+        int_const(1),
+        int_const(7),
+        int_const(2),
+        int_const(100),
+        int_const(3),
+    ];
+    let (a, b) = if descend {
+        (SysFuncId::AssocLast, SysFuncId::AssocPrev)
+    } else {
+        (SysFuncId::AssocFirst, SysFuncId::AssocNext)
+    };
+    let mut stmts = vec![
+        elem_write(0, 1, 2),
+        elem_write(0, 3, 4),
+        elem_write(0, 5, 6),
+    ];
+    stmts.push(iter_assign(2, a, 0, 7, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![8])); // st
+    stmts.push(systask(SysTaskId::Display, vec![7])); // k
+    for _ in 0..3 {
+        stmts.push(iter_assign(2, b, 0, 7, &mut exprs));
+        stmts.push(systask(SysTaskId::Display, vec![8]));
+        stmts.push(systask(SysTaskId::Display, vec![7]));
+    }
+    stmts.push(systask(SysTaskId::Finish, vec![]));
+    ir_of(
+        vec![a_handle(32, false), reg32(true), reg32(true)],
+        consts,
+        exprs,
+        stmts,
+    )
+}
+
+#[test]
+fn assoc_first_next_ascending_then_exhausted() {
+    let (res, out) = simulate_capture(&assoc_iter_ir(false), SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // st/k pairs: (1,−3) (1,7) (1,100) (0,100 — k UNCHANGED on exhaustion).
+    assert_eq!(
+        out,
+        "         1\n        -3\n         1\n         7\n         1\n       100\n         0\n       100\n"
+    );
+}
+
+#[test]
+fn assoc_last_prev_descending_then_exhausted() {
+    let (res, out) = simulate_capture(&assoc_iter_ir(true), SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(
+        out,
+        "         1\n       100\n         1\n         7\n         1\n        -3\n         0\n        -3\n"
+    );
+}
+
+#[test]
+fn assoc_first_on_empty_returns_zero_key_unchanged() {
+    let mut exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: 5
+        Expr::Signal { net: 1, word: None }, // 2: k
+        Expr::Signal { net: 2, word: None }, // 3: st
+    ];
+    let consts = vec![int_const(5)];
+    let mut stmts = vec![assign(1, 1)]; // k = 5
+    stmts.push(iter_assign(2, SysFuncId::AssocFirst, 0, 2, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![3])); // st = 0
+    stmts.push(systask(SysTaskId::Display, vec![2])); // k stays 5
+    stmts.push(systask(SysTaskId::Finish, vec![]));
+    let ir = ir_of(
+        vec![a_handle(32, false), reg32(true), reg32(true)],
+        consts,
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         0\n         5\n");
+}
+
+#[test]
+fn assoc_iter_narrow_key_truncates_with_minus1() {
+    // a[300]=1 with an 8-bit signed ref var: 300 does not fit → st = −1,
+    // k = truncated low byte (300 & 0xFF = 44). Hand-IEEE §7.9.4.
+    let narrow_reg = NetVar {
+        kind: NetKind::Reg,
+        width: 8,
+        msb: 7,
+        lsb: 0,
+        signed: true,
+        array_len: 0,
+        dir: PortDir::Internal,
+        init: BitPacked {
+            val: vec![0],
+            unk: vec![0xff],
+        },
+    };
+    let mut exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: key 300
+        Expr::Const { val: 1 },              // 2: 1
+        Expr::Signal { net: 1, word: None }, // 3: k8
+        Expr::Signal { net: 2, word: None }, // 4: st
+    ];
+    let consts = vec![int_const(300), int_const(1)];
+    let mut stmts = vec![elem_write(0, 1, 2)];
+    stmts.push(iter_assign(2, SysFuncId::AssocFirst, 0, 3, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![4])); // st = −1
+    stmts.push(systask(SysTaskId::Display, vec![3])); // k8 = 44
+    stmts.push(systask(SysTaskId::Finish, vec![]));
+    let ir = ir_of(
+        vec![a_handle(32, false), narrow_reg, reg32(true)],
+        consts,
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "        -1\n 44\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    assert_eq!(
+        diags.iter().filter(|d| d.contains("W4020")).count(),
+        1,
+        "truncated iter key warns once: {diags:?}"
+    );
+}
+
+#[test]
+fn queue_dense_first_next_walk() {
+    // The internal foreach target: first/next on a QUEUE = dense 0..size-1.
+    // {5,10}: first → k=0 st=1; next → k=1 st=1; next → st=0, k unchanged.
+    let mut exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: 5
+        Expr::Const { val: 1 },              // 2: 10
+        Expr::Signal { net: 1, word: None }, // 3: k
+        Expr::Signal { net: 2, word: None }, // 4: st
+    ];
+    let consts = vec![int_const(5), int_const(10)];
+    let mut stmts = vec![
+        systask(SysTaskId::QPushBack, vec![0, 1]),
+        systask(SysTaskId::QPushBack, vec![0, 2]),
+    ];
+    stmts.push(iter_assign(2, SysFuncId::AssocFirst, 0, 3, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![4]));
+    stmts.push(systask(SysTaskId::Display, vec![3]));
+    stmts.push(iter_assign(2, SysFuncId::AssocNext, 0, 3, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![4]));
+    stmts.push(systask(SysTaskId::Display, vec![3]));
+    stmts.push(iter_assign(2, SysFuncId::AssocNext, 0, 3, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![4]));
+    stmts.push(systask(SysTaskId::Display, vec![3]));
+    stmts.push(systask(SysTaskId::Finish, vec![]));
+    let ir = ir_of(
+        vec![q_handle(32, false), reg32(true), reg32(true)],
+        consts,
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(
+        out,
+        "         1\n         0\n         1\n         1\n         0\n         1\n"
+    );
+}
+
+#[test]
+fn assoc_iter_vm_backend_byte_parity() {
+    // The iter rhs is side-effecting → excluded from codegen (P9 allow-list);
+    // the VM must fall back to the interpreter and stay byte-identical.
+    for ir in [assoc_iter_ir(false), assoc_iter_ir(true)] {
+        let (ri, oi) = simulate_capture(&ir, SimOpts::default());
+        let (rv, ov) = simulate_capture(
+            &ir,
+            SimOpts {
+                backend: Backend::Bytecode,
+                ..SimOpts::default()
+            },
+        );
+        assert_eq!(ri.finish_reason, rv.finish_reason);
+        assert_eq!(oi, ov, "interp vs VM stdout must be byte-identical");
+    }
+}
+
+// ── v6 string-keyed assoc (NetKind::AssocStr) ──
+//
+// NO iverilog lane (assoc unsupported) — hand-IEEE pinned (§7.8.2 family):
+// keys are byte strings; an integral key expression converts by stripping
+// leading 0x00 bytes (packed-ASCII, §6.16 conversion family), so the SAME
+// text at different packed widths is the SAME key. X/Z key = invalid index
+// (read X / write ignored / exists 0, each + W4020 once). Order for first/
+// next = lexicographic byte order (IEEE string compare).
+
+/// String-keyed assoc HANDLE net.
+fn as_handle(width: u32, signed: bool) -> NetVar {
+    NetVar {
+        kind: NetKind::AssocStr,
+        width,
+        msb: width - 1,
+        lsb: 0,
+        signed,
+        array_len: 0,
+        dir: PortDir::Internal,
+        init: BitPacked {
+            val: vec![0],
+            unk: vec![if width >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            }],
+        },
+    }
+}
+
+/// Packed-ASCII const of `s` (width = 8×len, unsigned), optionally zero-padded
+/// to `pad_width` bits (leading 0x00 bytes — must be the SAME key).
+fn str_const(s: &str, pad_width: u32) -> ConstVal {
+    let mut v: u64 = 0;
+    for b in s.bytes() {
+        v = (v << 8) | b as u64;
+    }
+    let w = (s.len() as u32 * 8).max(8).max(pad_width);
+    ConstVal {
+        width: w,
+        signed: false,
+        repr: ConstRepr::Numeric,
+        bits: BitPacked {
+            val: vec![v],
+            unk: vec![0],
+        },
+    }
+}
+
+#[test]
+fn assoc_str_write_read_exists_delete_roundtrip() {
+    // a["ab"]=7 (16-bit key); read back via a 32-bit ZERO-PADDED "ab" (same
+    // key after the leading-null strip); exists("ab")=1, exists("cd")=0;
+    // delete("ab") → num 0; delete("zz") silent.
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: "ab" @16
+        Expr::Const { val: 1 }, // 1: 7
+        Expr::Const { val: 2 }, // 2: "ab" @32 (padded)
+        Expr::Signal {
+            net: 0,
+            word: Some(2),
+        }, // 3: a["ab" padded]
+        Expr::Signal { net: 0, word: None }, // 4: handle
+        Expr::SysFunc {
+            which: SysFuncId::AssocExists,
+            args: vec![4, 0],
+        }, // 5: exists("ab")
+        Expr::Const { val: 3 }, // 6: "cd"
+        Expr::SysFunc {
+            which: SysFuncId::AssocExists,
+            args: vec![4, 6],
+        }, // 7: exists("cd")
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![4],
+        }, // 8: num
+        Expr::Const { val: 4 }, // 9: "zz"
+    ];
+    let consts = vec![
+        str_const("ab", 0),
+        int_const(7),
+        str_const("ab", 32),
+        str_const("cd", 0),
+        str_const("zz", 0),
+    ];
+    let stmts = vec![
+        elem_write(0, 0, 1),
+        systask(SysTaskId::Display, vec![3]),           // 7
+        systask(SysTaskId::Display, vec![5]),           // 1
+        systask(SysTaskId::Display, vec![7]),           // 0
+        systask(SysTaskId::Display, vec![8]),           // 1
+        systask(SysTaskId::AssocDeleteKey, vec![4, 9]), // delete("zz") silent
+        systask(SysTaskId::AssocDeleteKey, vec![4, 0]), // delete("ab")
+        systask(SysTaskId::Display, vec![8]),           // 0
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![as_handle(32, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         7\n1\n0\n         1\n         0\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    assert!(
+        diags.iter().filter(|d| d.contains("W4020")).count() == 0,
+        "clean roundtrip warns nothing: {diags:?}"
+    );
+}
+
+#[test]
+fn assoc_str_first_next_lexicographic() {
+    // keys "b", "aa" → lexicographic byte order: "aa" < "b". 64-bit ref var
+    // receives the packed bytes right-justified.
+    let key_reg = NetVar {
+        kind: NetKind::Reg,
+        width: 64,
+        msb: 63,
+        lsb: 0,
+        signed: false,
+        array_len: 0,
+        dir: PortDir::Internal,
+        init: BitPacked {
+            val: vec![0],
+            unk: vec![u64::MAX],
+        },
+    };
+    let mut exprs = vec![
+        Expr::Signal { net: 0, word: None }, // 0: handle
+        Expr::Const { val: 0 },              // 1: "b"
+        Expr::Const { val: 1 },              // 2: 1
+        Expr::Const { val: 2 },              // 3: "aa"
+        Expr::Const { val: 3 },              // 4: 2
+        Expr::Signal { net: 1, word: None }, // 5: k64
+        Expr::Signal { net: 2, word: None }, // 6: st
+    ];
+    let consts = vec![
+        str_const("b", 0),
+        int_const(1),
+        str_const("aa", 0),
+        int_const(2),
+    ];
+    let mut stmts = vec![elem_write(0, 1, 2), elem_write(0, 3, 4)];
+    stmts.push(iter_assign(2, SysFuncId::AssocFirst, 0, 5, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![6])); // 1
+    stmts.push(systask(SysTaskId::Display, vec![5])); // "aa" = 0x6161 = 24929
+    stmts.push(iter_assign(2, SysFuncId::AssocNext, 0, 5, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![6])); // 1
+    stmts.push(systask(SysTaskId::Display, vec![5])); // "b" = 0x62 = 98
+    stmts.push(iter_assign(2, SysFuncId::AssocNext, 0, 5, &mut exprs));
+    stmts.push(systask(SysTaskId::Display, vec![6])); // 0
+    stmts.push(systask(SysTaskId::Finish, vec![]));
+    let ir = ir_of(
+        vec![as_handle(32, false), key_reg, reg32(true)],
+        consts,
+        exprs,
+        stmts,
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // 64-bit unsigned display pads to 20 columns.
+    assert_eq!(
+        out,
+        "         1\n               24929\n         1\n                  98\n         0\n"
+    );
+}
+
+#[test]
+fn assoc_str_x_key_lanes_warn() {
+    // X key: write ignored, read X, exists 0 — same family as the i64 lanes.
+    let exprs = vec![
+        Expr::Const { val: 0 }, // 0: X key
+        Expr::Const { val: 1 }, // 1: 7
+        Expr::Signal {
+            net: 0,
+            word: Some(0),
+        }, // 2: a[X]
+        Expr::Signal { net: 0, word: None }, // 3: handle
+        Expr::SysFunc {
+            which: SysFuncId::AssocExists,
+            args: vec![3, 0],
+        }, // 4
+        Expr::SysFunc {
+            which: SysFuncId::AssocNum,
+            args: vec![3],
+        }, // 5
+    ];
+    let consts = vec![x_const(), int_const(7)];
+    let stmts = vec![
+        elem_write(0, 0, 1),                  // write a[X] — ignored
+        systask(SysTaskId::Display, vec![5]), // num 0
+        systask(SysTaskId::Display, vec![2]), // read a[X] — X
+        systask(SysTaskId::Display, vec![4]), // exists X — 0
+        systask(SysTaskId::Finish, vec![]),
+    ];
+    let ir = ir_of(vec![as_handle(8, false)], consts, exprs, stmts);
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    assert_eq!(out, "         0\n  x\n0\n");
+    let sink = DiagSink::default();
+    simulate(&ir, &sink, SimOpts::default());
+    let diags = sink.0.into_inner();
+    assert_eq!(
+        diags.iter().filter(|d| d.contains("W4020")).count(),
+        1,
+        "X-key lanes share the once-latch: {diags:?}"
+    );
+}

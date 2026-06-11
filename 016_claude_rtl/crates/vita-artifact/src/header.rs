@@ -12,7 +12,7 @@ pub const MAGIC_VELAB: [u8; 8] = *b"VELAB\0\0\0";
 pub const MAGIC_VU: [u8; 8] = *b"VU\0\0\0\0\0\0";
 
 /// Container format version. Bumped whenever the header layout changes.
-pub const CURRENT_FORMAT_VERSION: u32 = 5; // v5 (2026-06-10): +NonblockingAssign.delay (NBA transport), +NetKind Dyn{Array,Queue,Assoc} handles, +SysFuncId/SysTaskId dyn-storage methods (design doc 2026-06-10)
+pub const CURRENT_FORMAT_VERSION: u32 = 6; // v6 (2026-06-11): +SysFuncId Assoc{First,Next,Last,Prev}, +SysTaskId QInsert/QDeleteIdx, +NetKind AssocStr (string-keyed assoc)
 
 /// Build provenance (Layer 2). Stamped for traceability, NEVER a staleness key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

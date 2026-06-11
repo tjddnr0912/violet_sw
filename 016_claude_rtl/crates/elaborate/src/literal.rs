@@ -240,9 +240,13 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
 ///
 /// The surrounding double-quotes are stripped (recovery-safe if one is missing),
 /// C-style escapes (`\n \t \r \\ \" \0`) are processed, and the resulting UTF-8
-/// bytes are packed LSB-byte-first: byte `k` occupies bits `[k*8 .. k*8+8)`.
+/// bytes are packed in IEEE §5.9 order: the FIRST character is the MOST
+/// significant byte (byte `k` of `n` occupies bits `[(n-1-k)*8 .. (n-k)*8)`),
+/// so `"ab"` evaluates numerically to 16'h6162 (iverilog live: 24930).
 /// `width = nbytes*8`. Strings are 2-state, so the `unk` plane is all zero.
 /// (`\ddd` octal / `\xhh` hex are deferred — recovered by literal copy.)
+/// (v6 fix: the pre-v6 packing was LSB-first — a latent numeric-surface
+/// divergence that string-keyed assoc arrays were the first to expose.)
 /// Unescape a raw string-literal lexeme (quotes stripped, C escapes processed)
 /// into its byte vector. Shared by `parse_str_literal` and the elaborate-time
 /// format-specifier scan (§4.1a).
@@ -290,7 +294,8 @@ pub fn parse_str_literal(raw: &str) -> ConstVal {
     let mut val = vec![0u64; nwords];
     let unk = vec![0u64; nwords]; // strings are 2-state
     for (k, &b) in bytes.iter().enumerate() {
-        let bit = k * 8;
+        // IEEE §5.9: first character = MOST significant byte.
+        let bit = (bytes.len() - 1 - k) * 8;
         // bit % 64 ∈ {0,8,..,56} (8 | 64) → a byte never straddles a word.
         val[bit / 64] |= (b as u64) << (bit % 64);
     }

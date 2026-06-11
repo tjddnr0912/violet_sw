@@ -57,6 +57,32 @@ fn copy_bits(dst: &mut Value, dst_off: u32, src: &Value, src_off: u32, w: u32) {
     }
 }
 
+/// v6: the packed bits of a (fully-defined) value as a byte STRING — bytes
+/// MSB-first with leading 0x00 bytes stripped (packed-ASCII surface, §6.16
+/// conversion family). Shared by the string-assoc key eval and the iteration
+/// methods' current-key read.
+pub(crate) fn value_str_bytes(v: &Value) -> Vec<u8> {
+    let nbytes = v.width.div_ceil(8);
+    let mut out = Vec::with_capacity(nbytes as usize);
+    let mut leading = true;
+    for bi in (0..nbytes).rev() {
+        let mut b: u8 = 0;
+        for bit in 0..8u32 {
+            let idx = bi * 8 + bit;
+            if idx < v.width {
+                let (val, _) = v.get_vu(idx);
+                b |= (val as u8) << bit;
+            }
+        }
+        if b == 0 && leading {
+            continue; // strip leading nulls (width padding)
+        }
+        leading = false;
+        out.push(b);
+    }
+    out
+}
+
 /// Read-only net access the evaluator needs. The engine state implements it.
 pub trait NetReader {
     /// Current 4-state value of net `net`, optional array word index.
@@ -88,6 +114,19 @@ pub trait NetReader {
     /// v5 ⑤: `a.exists(k)` — `Some(true/false)` on an assoc handle (X/Z key
     /// matches nothing), `None` otherwise (the eval arm X-poisons).
     fn assoc_exists(&self, _net: u32, _key: Option<i64>) -> Option<bool> {
+        None
+    }
+    /// v6: is `net` a STRING-keyed assoc handle? Gates the byte-key read path
+    /// (checked BEFORE `is_assoc` in the Signal arm).
+    fn is_assoc_str(&self, _net: u32) -> bool {
+        false
+    }
+    /// v6: string-keyed element read — the byte twin of `assoc_read`.
+    fn assoc_str_read(&self, _net: u32, _key: &Option<Vec<u8>>) -> Value {
+        Value::xs(1, false)
+    }
+    /// v6: string-keyed `exists` — the byte twin of `assoc_exists`.
+    fn assoc_str_exists(&self, _net: u32, _key: &Option<Vec<u8>>) -> Option<bool> {
         None
     }
 }
@@ -126,6 +165,19 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         Some(v.val.first().copied().unwrap_or(0) as i64)
     }
 
+    /// v6: evaluate a STRING-assoc key expression into the byte-string key
+    /// domain — self-determined eval, then the packed bits become bytes
+    /// MSB-first with leading 0x00 bytes STRIPPED (packed-ASCII surface,
+    /// §6.16 conversion family), so the same text at any padded width is the
+    /// same key. X/Z anywhere (or a real) → `None` = invalid index.
+    pub(crate) fn assoc_str_key(&self, eid: u32) -> Option<Vec<u8>> {
+        let v = self.eval(eid);
+        if v.is_real || v.has_xz() {
+            return None;
+        }
+        Some(value_str_bytes(&v))
+    }
+
     /// Evaluate `eid` in a context of at least `ctx_width` bits with context
     /// signedness `ctx_signed`. Returns a Value of width
     /// `max(self_width, ctx_width)`.
@@ -157,6 +209,11 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 // u32 word funnel below. Scalar reads short-circuit on
                 // `word.is_some()`; static arrays on the handle bitmap.
                 if let Some(weid) = word {
+                    // v6: the string-key twin branches first (disjoint kinds).
+                    if self.nets.is_assoc_str(*net) {
+                        let base = self.nets.assoc_str_read(*net, &self.assoc_str_key(*weid));
+                        return base.resize_keep_sign(w, eff_signed);
+                    }
                     if self.nets.is_assoc(*net) {
                         let base = self.nets.assoc_read(*net, self.assoc_key(*weid));
                         return base.resize_keep_sign(w, eff_signed);
@@ -929,6 +986,28 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     None => Value::xs(32, false),
                 }
             }
+            // v6: assoc iteration methods WRITE their ref key argument — like
+            // the pops they are legal only as the DIRECT rhs of a blocking
+            // assign (statement-level intercept). Reaching THIS arm is an
+            // unsupported placement: X status, no key write, loud.
+            SysFuncId::AssocFirst
+            | SysFuncId::AssocNext
+            | SysFuncId::AssocLast
+            | SysFuncId::AssocPrev => {
+                if let Some(net) = args
+                    .first()
+                    .and_then(|&a| match self.ir.exprs.get(a as usize) {
+                        Some(Expr::Signal { net, word: None }) => Some(*net),
+                        _ => None,
+                    })
+                {
+                    self.nets.dyn_warn(
+                        net,
+                        "assoc first/next/last/prev outside a direct blocking assign (X; key not written)",
+                    );
+                }
+                Value::xs(32, true)
+            }
             // v5 ⑤: `a.num()` — the entry count, same recipe as DynSize (the
             // reader's `dyn_size` covers assoc: num == size, IEEE §7.9.1).
             SysFuncId::AssocNum => {
@@ -957,8 +1036,17 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                         Some(Expr::Signal { net, word: None }) => Some(*net),
                         _ => None,
                     });
-                let key = args.get(1).and_then(|&k| self.assoc_key(k));
-                match net.and_then(|n| self.nets.assoc_exists(n, key)) {
+                // v6: dispatch on the handle's key domain (string vs i64).
+                let hit = net.and_then(|n| {
+                    if self.nets.is_assoc_str(n) {
+                        let key = args.get(1).and_then(|&k| self.assoc_str_key(k));
+                        self.nets.assoc_str_exists(n, &key)
+                    } else {
+                        let key = args.get(1).and_then(|&k| self.assoc_key(k));
+                        self.nets.assoc_exists(n, key)
+                    }
+                });
+                match hit {
                     Some(b) => {
                         let mut v = Value::zeros(1, false);
                         v.val[0] = b as u64;

@@ -3593,6 +3593,7 @@ impl<'s> Elaborator<'s> {
         dims.iter().find_map(|d| match d {
             ast::Dim::Dyn => Some(ir::NetKind::DynArray),
             ast::Dim::Queue(_) => Some(ir::NetKind::Queue),
+            ast::Dim::Assoc(ast::AssocKey::Str) => Some(ir::NetKind::AssocStr),
             ast::Dim::Assoc(_) => Some(ir::NetKind::Assoc),
             _ => None,
         })
@@ -3604,7 +3605,7 @@ impl<'s> Elaborator<'s> {
         let k = self.nets.get(n as usize)?.kind;
         matches!(
             k,
-            ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc
+            ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc | ir::NetKind::AssocStr
         )
         .then_some((n, k))
     }
@@ -3614,7 +3615,12 @@ impl<'s> Elaborator<'s> {
     fn is_dyn_handle_net(&self, net: u32) -> bool {
         matches!(
             self.nets.get(net as usize).map(|n| n.kind),
-            Some(ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc)
+            Some(
+                ir::NetKind::DynArray
+                    | ir::NetKind::Queue
+                    | ir::NetKind::Assoc
+                    | ir::NetKind::AssocStr
+            )
         )
     }
 
@@ -3675,7 +3681,7 @@ impl<'s> Elaborator<'s> {
         use ir::NetKind as K;
         let handle = self.push_expr(ir::Expr::Signal { net, word: None });
         match (method, kind) {
-            ("size", _) | ("num", K::Assoc) => {
+            ("size", _) | ("num", K::Assoc | K::AssocStr) => {
                 if !args.is_empty() {
                     self.error(MsgCode::ElabUnsupported, "size()/num() take no arguments");
                 }
@@ -3689,7 +3695,7 @@ impl<'s> Elaborator<'s> {
                     args: vec![handle],
                 })
             }
-            ("exists", K::Assoc) => {
+            ("exists", K::Assoc | K::AssocStr) => {
                 let Some(k) = args.first() else {
                     self.error(MsgCode::ElabUnsupported, "exists() takes the key argument");
                     return self.placeholder_expr();
@@ -3707,7 +3713,16 @@ impl<'s> Elaborator<'s> {
                 );
                 self.placeholder_expr()
             }
-            ("push_back" | "push_front" | "delete", _) => {
+            // v6: the iteration methods WRITE their ref key argument — same
+            // direct-rhs-only contract as the pops.
+            ("first" | "next" | "last" | "prev", _) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "first/next/last/prev are only supported as the DIRECT rhs of a blocking assignment (`st = a.first(k);`)",
+                );
+                self.placeholder_expr()
+            }
+            ("push_back" | "push_front" | "delete" | "insert", _) => {
                 self.error(
                     MsgCode::ElabUnsupported,
                     "statement method used in expression position",
@@ -3754,7 +3769,7 @@ impl<'s> Elaborator<'s> {
                 fmt: None,
                 args: vec![handle],
             },
-            ("delete", K::Assoc, 1) => {
+            ("delete", K::Assoc | K::AssocStr, 1) => {
                 let k = self.lower_expr(&args[0]);
                 ir::Stmt::SysTask {
                     which: ir::SysTaskId::AssocDeleteKey,
@@ -3762,10 +3777,38 @@ impl<'s> Elaborator<'s> {
                     args: vec![handle, k],
                 }
             }
+            // v6: queue positional delete(i) — IEEE §7.10.2.3 (OOB/X index =
+            // engine warn + skip).
+            ("delete", K::Queue, 1) => {
+                let i = self.lower_expr(&args[0]);
+                ir::Stmt::SysTask {
+                    which: ir::SysTaskId::QDeleteIdx,
+                    fmt: None,
+                    args: vec![handle, i],
+                }
+            }
             ("delete", _, 1) => {
                 self.error(
                     MsgCode::ElabUnsupported,
-                    "indexed delete(i) on a queue/dyn array is outside the MVP (assoc delete(key) only)",
+                    "indexed delete(i) is a queue/assoc method (a dyn array only supports delete())",
+                );
+                return;
+            }
+            // v6: queue positional insert(i, v) — IEEE §7.10.2.2 (i == size
+            // appends; OOB/X index = engine warn + no-op).
+            ("insert", K::Queue, 2) => {
+                let i = self.lower_expr(&args[0]);
+                let v = self.lower_expr(&args[1]);
+                ir::Stmt::SysTask {
+                    which: ir::SysTaskId::QInsert,
+                    fmt: None,
+                    args: vec![handle, i, v],
+                }
+            }
+            ("insert", K::Queue, _) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "insert() takes exactly (index, value)",
                 );
                 return;
             }
@@ -3780,6 +3823,15 @@ impl<'s> Elaborator<'s> {
                 self.error(
                     MsgCode::ElabUnsupported,
                     "value-returning method used as a statement",
+                );
+                return;
+            }
+            // v6: an iteration call whose status is discarded — loud (the
+            // result drives the walk; dropping it is almost surely a bug).
+            ("first" | "next" | "last" | "prev", _, _) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "first/next/last/prev results must be assigned (`st = a.first(k);`)",
                 );
                 return;
             }
@@ -3862,13 +3914,19 @@ impl<'s> Elaborator<'s> {
                 true
             }
             ast::ExprKind::Call { name, args } if name.segments.len() == 2 => {
-                let Some((net, ir::NetKind::Queue)) = self.dyn_handle(&name.segments[0].name)
-                else {
+                let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) else {
                     return false;
                 };
                 let m = name.segments[1].name.as_str();
+                // v6: iteration methods — `st = h.first(k);` (ref key arg).
+                if matches!(m, "first" | "next" | "last" | "prev") {
+                    return self.lower_iter_special(b, lhs, delay, net, kind, m, args);
+                }
                 if m != "pop_back" && m != "pop_front" {
                     return false; // size()/exists() etc. ride the normal expr path
+                }
+                if kind != ir::NetKind::Queue {
+                    return false; // normal expr path louds the kind mismatch
                 }
                 if delay.is_some() {
                     self.error(
@@ -3901,6 +3959,97 @@ impl<'s> Elaborator<'s> {
             }
             _ => false,
         }
+    }
+
+    /// v6: `st = h.first(k);` / next/last/prev — the iteration special form
+    /// (the third BLOCKING-assign special). The key is a REF argument: it must
+    /// be a plain whole VARIABLE; the engine writes it on a hit. On dyn/queue
+    /// handles the dense walk is an INTERNAL desugar target only — gated to
+    /// the synthetic `__foreach_*` index so the user surface stays assoc-only
+    /// (IEEE defines first/next on associative arrays alone).
+    #[allow(clippy::too_many_arguments)]
+    fn lower_iter_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        net: u32,
+        kind: ir::NetKind,
+        method: &str,
+        args: &[ast::Expr],
+    ) -> bool {
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a delayed iteration assignment is outside the MVP",
+            );
+            return true;
+        }
+        if args.len() != 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "first/next/last/prev take exactly the key variable",
+            );
+            return true;
+        }
+        let key_net = match &args[0].kind {
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                self.lookup_net_scoped(&p.segments[0].name)
+            }
+            _ => None,
+        };
+        let Some(knet) = key_net else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "the iteration key must be a plain variable (`st = a.first(k);`)",
+            );
+            return true;
+        };
+        let kkind = self.nets.get(knet as usize).map(|n| n.kind);
+        if !matches!(
+            kkind,
+            Some(ir::NetKind::Reg | ir::NetKind::Logic | ir::NetKind::Integer)
+        ) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "the iteration key must be an integral VARIABLE (reg/logic/integer family)",
+            );
+            return true;
+        }
+        if !matches!(kind, ir::NetKind::Assoc | ir::NetKind::AssocStr) {
+            // The dense dyn/queue walk exists only for the foreach desugar.
+            let synthetic = matches!(
+                &args[0].kind,
+                ast::ExprKind::Ident(p) if p.segments[0].name.starts_with("__foreach_")
+            );
+            if !synthetic {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "first/next/last/prev are associative-array methods (use `foreach` to walk a dyn array/queue)",
+                );
+                return true;
+            }
+        }
+        let which = match method {
+            "first" => ir::SysFuncId::AssocFirst,
+            "next" => ir::SysFuncId::AssocNext,
+            "last" => ir::SysFuncId::AssocLast,
+            _ => ir::SysFuncId::AssocPrev,
+        };
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let key = self.push_expr(ir::Expr::Signal {
+            net: knet,
+            word: None,
+        });
+        let rhs = self.push_expr(ir::Expr::SysFunc {
+            which,
+            args: vec![handle, key],
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign { lhs: lv, rhs });
+        b.push_stmt_id(sid);
+        true
     }
 
     // ── multi-dim unpacked-array access (read/write, (a)-flattening) ─────────

@@ -970,6 +970,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         if let [c] = lhs.chunks.as_slice() {
             if c.offset.is_none() && c.width.is_none() {
                 if let Some(weid) = c.word {
+                    if self.st.is_assoc_str(c.net) {
+                        return Offsets::AssocStrKey(self.assoc_str_key_of(weid));
+                    }
                     if self.st.is_assoc(c.net) {
                         return Offsets::AssocKey(self.assoc_key_of(weid));
                     }
@@ -1058,6 +1061,208 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             time_mult: self.st.cur_time_mult,
         };
         ctx.assoc_key(eid)
+    }
+
+    /// v6: the byte-string twin of `assoc_key_of` (string-keyed assoc).
+    pub(crate) fn assoc_str_key_of(&self, eid: u32) -> Option<Vec<u8>> {
+        let ctx = EvalCtx {
+            ir: self.st.ir,
+            nets: self.st,
+            now: self.st.now,
+            wt: &self.st.wt,
+            time_mult: self.st.cur_time_mult,
+        };
+        ctx.assoc_str_key(eid)
+    }
+
+    /// v6: one assoc-iteration step (`first`/`next`/`last`/`prev`) — the
+    /// WRITE-phase body behind `k_assoc_iter`. Returns the int status
+    /// (1 found / 0 none / −1 found-but-truncated, hand-IEEE §7.9.4). On a
+    /// hit the ref key variable is written through the NORMAL lvalue funnel
+    /// (so `@(k)` sensitivity and VCD see it like any blocking assign). On
+    /// dyn/queue handles the walk is the DENSE 0..size-1 order (the internal
+    /// `foreach` desugar target).
+    fn assoc_iter_step(&mut self, rhs: u32) -> i32 {
+        use std::ops::Bound;
+        let Some(sim_ir::Expr::SysFunc { which, args }) = self.st.ir.exprs.get(rhs as usize) else {
+            return 0; // defensive: hand-built IR only (the rhs probe matched)
+        };
+        let which = *which;
+        let net_of = |a: Option<&u32>| {
+            a.and_then(|&e| match self.st.ir.exprs.get(e as usize) {
+                Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                _ => None,
+            })
+        };
+        let (Some(hnet), Some(knet)) = (net_of(args.first()), net_of(args.get(1))) else {
+            return 0; // malformed args: degrade, never panic
+        };
+        let (kw, ks) = self
+            .st
+            .ir
+            .nets
+            .get(knet as usize)
+            .map(|nv| (nv.width.max(1), nv.signed))
+            .unwrap_or((32, true));
+        use sim_ir::SysFuncId as F;
+        let needs_cur = matches!(which, F::AssocNext | F::AssocPrev);
+        let cur_val = if needs_cur {
+            let v = self.st.read_net(knet, None);
+            if v.has_xz() {
+                self.st
+                    .dyn_warn_once_at(hnet, "assoc iteration key variable is X/Z (status 0)");
+                return 0;
+            }
+            Some(v)
+        } else {
+            None
+        };
+
+        // The located key, in whichever key domain the handle uses.
+        enum Hit {
+            Int(i64),
+            Str(Vec<u8>),
+        }
+        let hit: Option<Hit> = match self.st.dyn_heap.get(&hnet) {
+            Some(crate::state::DynObj::Assoc { map }) => {
+                let cur = cur_val.as_ref().map(|v| {
+                    // Current key from the var's OWN width/signedness (the
+                    // same extension `assoc_key` applies to an expr).
+                    let raw = v.val.first().copied().unwrap_or(0);
+                    if kw >= 64 {
+                        raw as i64
+                    } else {
+                        let m = (1u64 << kw) - 1;
+                        let r = raw & m;
+                        if ks && (r >> (kw - 1)) & 1 == 1 {
+                            (r | !m) as i64
+                        } else {
+                            r as i64
+                        }
+                    }
+                });
+                match which {
+                    F::AssocFirst => map.keys().next().copied(),
+                    F::AssocLast => map.keys().next_back().copied(),
+                    F::AssocNext => map
+                        .range((Bound::Excluded(cur.unwrap_or(0)), Bound::Unbounded))
+                        .next()
+                        .map(|(k, _)| *k),
+                    _ => map
+                        .range((Bound::Unbounded, Bound::Excluded(cur.unwrap_or(0))))
+                        .next_back()
+                        .map(|(k, _)| *k),
+                }
+                .map(Hit::Int)
+            }
+            Some(crate::state::DynObj::AssocStr { map }) => {
+                let cur = cur_val.as_ref().map(crate::eval::value_str_bytes);
+                match which {
+                    F::AssocFirst => map.keys().next().cloned(),
+                    F::AssocLast => map.keys().next_back().cloned(),
+                    F::AssocNext => map
+                        .range((
+                            Bound::Excluded(cur.clone().unwrap_or_default()),
+                            Bound::Unbounded,
+                        ))
+                        .next()
+                        .map(|(k, _)| k.clone()),
+                    _ => map
+                        .range::<Vec<u8>, _>((
+                            Bound::Unbounded,
+                            Bound::Excluded(&cur.unwrap_or_default()),
+                        ))
+                        .next_back()
+                        .map(|(k, _)| k.clone()),
+                }
+                .map(Hit::Str)
+            }
+            // Dense walk on dyn/queue (a missing entry IS the empty object).
+            other => {
+                let len = other.map(|o| o.len() as u64).unwrap_or(0);
+                let cur = cur_val.as_ref().and_then(|v| v.to_u64());
+                let dense = match which {
+                    F::AssocFirst => (len > 0).then_some(0),
+                    F::AssocLast => len.checked_sub(1),
+                    F::AssocNext => cur.and_then(|c| c.checked_add(1)).filter(|&n| n < len),
+                    _ => cur.and_then(|c| c.checked_sub(1)).filter(|&p| p < len),
+                };
+                dense.map(|d| Hit::Int(d as i64))
+            }
+        };
+
+        let Some(hit) = hit else {
+            return 0; // none/empty/exhausted: key var UNCHANGED (§7.9.4)
+        };
+
+        // Build the key-var value + the "fits the ref var" verdict.
+        let (kval, fits) = match hit {
+            Hit::Int(k) => {
+                let fits = if kw >= 64 {
+                    true // i64 domain always round-trips through ≥64 bits
+                } else if ks {
+                    let m = (1u64 << kw) - 1;
+                    let t = (k as u64) & m;
+                    let back = if (t >> (kw - 1)) & 1 == 1 {
+                        (t | !m) as i64
+                    } else {
+                        t as i64
+                    };
+                    back == k
+                } else {
+                    k >= 0 && (k as u64) >> kw.min(63) == 0
+                };
+                let mut v = Value::zeros(kw, ks);
+                let sign_fill = if k < 0 { u64::MAX } else { 0 };
+                for (i, w) in v.val.iter_mut().enumerate() {
+                    *w = if i == 0 { k as u64 } else { sign_fill };
+                }
+                v.mask_top();
+                (v, fits)
+            }
+            Hit::Str(bytes) => {
+                let fits = (bytes.len() as u64) * 8 <= kw as u64;
+                let mut v = Value::zeros(kw, ks);
+                for (i, b) in bytes.iter().rev().enumerate() {
+                    for bit in 0..8u32 {
+                        let idx = i as u32 * 8 + bit;
+                        if idx < kw {
+                            v.set_vu(idx, ((b >> bit) & 1) as u64, 0);
+                        }
+                    }
+                }
+                (v, fits)
+            }
+        };
+        if !fits {
+            self.st.dyn_warn_once_at(
+                hnet,
+                "assoc iteration key does not fit the index variable (truncated, status -1)",
+            );
+        }
+        // Whole-var write through the normal funnel (dirty channel included).
+        let klv = sim_ir::Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net: knet,
+                word: None,
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        };
+        self.st.write_lvalue(
+            &klv,
+            kval,
+            &Offsets::Inline {
+                buf: [(0, 0); 2],
+                len: 1,
+            },
+        );
+        if fits {
+            1
+        } else {
+            -1
+        }
     }
 
     pub(crate) fn now(&self) -> u64 {
@@ -1557,6 +1762,28 @@ impl Kernel for Scheduler<'_, '_> {
         let lw = self.st.lvalue_width(lhs);
         let sw = self.st.wt.get(rhs);
         popped.resize_keep_sign(lw.max(sw.width), sw.signed)
+    }
+    fn k_assoc_iter_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::AssocFirst
+                    | sim_ir::SysFuncId::AssocNext
+                    | sim_ir::SysFuncId::AssocLast
+                    | sim_ir::SysFuncId::AssocPrev,
+                ..
+            })
+        )
+    }
+    fn k_assoc_iter(&mut self, lhs: &Lvalue, rhs: u32) -> Value {
+        let status = self.assoc_iter_step(rhs);
+        // Context-size the int status exactly as `k_queue_pop` sizes its
+        // result (self-width of the rhs = 32 signed via the width table).
+        let mut v = Value::zeros(32, true);
+        v.val[0] = (status as u32) as u64;
+        let lw = self.st.lvalue_width(lhs);
+        let sw = self.st.wt.get(rhs);
+        v.resize_keep_sign(lw.max(sw.width), sw.signed)
     }
 
     // ── terminator / control surface (C1) — pure forwarders ──

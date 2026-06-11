@@ -490,13 +490,13 @@ fn lower(
         }
         Expr::Signal { net, word } => {
             if let Some(weid) = word {
-                // v5 ⑤: assoc keys are SIGNED-i64 domain — the u32
-                // LoadIndexed funnel cannot carry them (a negative key would
-                // sentinel to X while the interpreter reads the element).
-                // Stay oracle-bound (eval_ctx fallback).
+                // v5 ⑤/v6: assoc keys are SIGNED-i64 (or byte-string) domain
+                // — the u32 LoadIndexed funnel cannot carry them (a negative
+                // key would sentinel to X while the interpreter reads the
+                // element). Stay oracle-bound (eval_ctx fallback).
                 if matches!(
                     ir.nets.get(*net as usize).map(|n| n.kind),
-                    Some(sim_ir::NetKind::Assoc)
+                    Some(sim_ir::NetKind::Assoc | sim_ir::NetKind::AssocStr)
                 ) {
                     return None;
                 }

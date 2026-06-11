@@ -53,12 +53,21 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
             Terminator::Goto { .. } | Terminator::Branch { .. } | Terminator::Return
         );
         let stmts_ok = block.stmts.iter().all(|&sid| {
+            // v5 ④ pops + v6 assoc-iteration calls: both WRITE state from an
+            // rhs position (queue shrink / ref key arg), so both are
+            // statement-level intercepts the VM's pure EvalForLval funnel
+            // cannot reproduce — interpreter-only.
             let pop_rhs = matches!(
                 &stmts[sid as usize],
                 Stmt::BlockingAssign { rhs, .. } if matches!(
                     exprs.get(*rhs as usize),
                     Some(Expr::SysFunc {
-                        which: SysFuncId::QPopBack | SysFuncId::QPopFront,
+                        which: SysFuncId::QPopBack
+                            | SysFuncId::QPopFront
+                            | SysFuncId::AssocFirst
+                            | SysFuncId::AssocNext
+                            | SysFuncId::AssocLast
+                            | SysFuncId::AssocPrev,
                         ..
                     })
                 )

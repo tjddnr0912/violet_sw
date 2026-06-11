@@ -388,6 +388,9 @@
         7: {
             "Assoc": UNIT,
         },
+        8: {
+            "AssocStr": UNIT,
+        },
     }),
     "NetVar": STRUCT([
         {
@@ -654,6 +657,18 @@
         13: {
             "AssocNum": UNIT,
         },
+        14: {
+            "AssocFirst": UNIT,
+        },
+        15: {
+            "AssocNext": UNIT,
+        },
+        16: {
+            "AssocLast": UNIT,
+        },
+        17: {
+            "AssocPrev": UNIT,
+        },
     }),
     "SysTaskId": ENUM({
         0: {
@@ -709,6 +724,12 @@
         },
         17: {
             "AssocDeleteKey": UNIT,
+        },
+        18: {
+            "QInsert": UNIT,
+        },
+        19: {
+            "QDeleteIdx": UNIT,
         },
     }),
     "Terminator": ENUM({

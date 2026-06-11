@@ -298,17 +298,20 @@ pub enum Dim {
     /// `[$]` queue; `[$:N]` bounded queue (bound PARSED, elaborate loud-rejects
     /// it — bounded queues are outside the MVP).
     Queue(Option<Expr>),
-    /// `[integer]` / `[time]` — associative array with an integer key type
-    /// (v5 ⑥ MVP: keys live in the engine's signed-i64 domain).
+    /// `[integer]` / `[time]` / `[string]` — associative array key type
+    /// (integral keys live in the engine's signed-i64 domain; string keys in
+    /// the byte-string domain, v6).
     Assoc(AssocKey),
 }
 
-/// Assoc-array key type (integer keys only in the MVP — string keys are a
-/// Phase-2+ follow-on).
+/// Assoc-array key type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum AssocKey {
     Integer, // 32-bit signed
     Time,    // 64-bit unsigned
+    /// `[string]` (v6) — byte-string keys (contextual keyword: `string` stays
+    /// a plain identifier everywhere else).
+    Str,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum NetVarKind {

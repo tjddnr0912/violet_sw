@@ -268,11 +268,11 @@ endmodule
     assert_loud_reject(
         r#"
 module t;
-  integer q [$];
-  initial q.delete(0);
+  integer d [];
+  initial d.delete(0);
 endmodule
 "#,
-        "queue delete(i) (excluded from MVP)",
+        "indexed delete(i) on a dyn array (queue/assoc only)",
     );
 }
 
@@ -384,4 +384,225 @@ module t;
 endmodule
 "#;
     assert_eq!(run_vita(src), "1\n2\n99\n");
+}
+
+// ───────────────────────── v6 follow-on batch ─────────────────────────
+
+#[test]
+fn queue_insert_delete_index() {
+    // Oracle: iverilog live (2026-06-11) — insert shifts right, insert(size)
+    // appends, OOB insert/delete warn + no-op (sizes unchanged).
+    let src = r#"
+module t;
+  integer q [$];
+  initial begin
+    q.push_back(10); q.push_back(20); q.push_back(30);
+    q.insert(1, 99);
+    $display("%0d %0d %0d %0d %0d", q.size(), q[0], q[1], q[2], q[3]);
+    q.insert(4, 77);
+    $display("%0d %0d", q.size(), q[4]);
+    q.insert(9, 55);
+    $display("%0d", q.size());
+    q.delete(0);
+    q.delete(2);
+    $display("%0d %0d %0d %0d", q.size(), q[0], q[1], q[2]);
+    q.delete(7);
+    $display("%0d", q.size());
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "4 10 99 20 30\n5 77\n5\n3 99 20 77\n3\n");
+}
+
+#[test]
+fn assoc_first_next_hand_loop() {
+    // hand-IEEE §7.9.4 (iverilog rejects assoc): 64-bit key var walks the
+    // full signed-i64 key domain, ascending; last/prev walk back down.
+    let src = r#"
+module t;
+  integer a [integer];
+  reg signed [63:0] k;
+  integer st;
+  initial begin
+    a[7] = 2; a[-3] = 1; a[64'd1099511627776] = 3;
+    st = a.first(k);
+    while (st == 1) begin
+      $display("%0d -> %0d", k, a[k]);
+      st = a.next(k);
+    end
+    st = a.last(k);
+    $display("last %0d", k);
+    st = a.prev(k);
+    $display("prev %0d", k);
+  end
+endmodule
+"#;
+    assert_eq!(
+        run_vita(src),
+        "-3 -> 1\n7 -> 2\n1099511627776 -> 3\nlast 1099511627776\nprev 7\n"
+    );
+}
+
+#[test]
+fn foreach_assoc_walks_keys_ascending() {
+    // hand-IEEE: foreach over an assoc = key order (signed ascending), the
+    // index var holds the KEY (not a position).
+    let src = r#"
+module t;
+  integer a [integer];
+  initial begin
+    a[5] = 50; a[-2] = 20; a[9] = 90;
+    foreach (a[k]) $display("%0d=%0d", k, a[k]);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "-2=20\n5=50\n9=90\n");
+}
+
+#[test]
+fn foreach_assoc_wide_key_stops_loud() {
+    // A key beyond the 32-bit foreach index → status −1 stops the walk and
+    // the engine warns (W4020) — LOUD degrade, never a silent wrong walk.
+    let src = r#"
+module t;
+  integer a [integer];
+  initial begin
+    a[64'd1099511627776] = 1;
+    foreach (a[k]) $display("%0d", k);
+    $display("done");
+  end
+endmodule
+"#;
+    let (out, err, ok) = run_vita_full(src);
+    assert!(ok, "must still finish; stderr:\n{err}");
+    assert!(
+        out.starts_with("done"),
+        "the walk must not yield a truncated key; got:\n{out}"
+    );
+    assert!(err.contains("W4020"), "truncation must warn: {err}");
+}
+
+#[test]
+fn assoc_string_keys_roundtrip() {
+    // hand-IEEE §7.8.2: [string] keys; literal keys at different padded
+    // widths are the SAME key; first/next = lexicographic ("b" < "mode").
+    let src = r#"
+module t;
+  integer cfg [string];
+  reg [63:0] k;
+  integer st;
+  initial begin
+    cfg["mode"] = 3;
+    cfg["b"] = 1;
+    $display("%0d %0d", cfg["mode"], cfg.num());
+    if (cfg.exists("mode")) $display("has mode");
+    if (!cfg.exists("nope")) $display("no nope");
+    st = cfg.first(k);
+    $display("%0d %0d", st, k);
+    st = cfg.next(k);
+    $display("%0d %0d", st, k);
+    cfg.delete("mode");
+    $display("%0d", cfg.num());
+    cfg.delete();
+    $display("%0d", cfg.num());
+  end
+endmodule
+"#;
+    assert_eq!(
+        run_vita(src),
+        "3 2\nhas mode\nno nope\n1 98\n1 1836016741\n1\n0\n"
+    );
+}
+
+#[test]
+fn foreach_string_assoc_short_keys() {
+    // String keys ≤4 bytes fit the 32-bit foreach index — the walk yields
+    // the packed key bytes ("aa"=24929, "b"=98 — lexicographic order).
+    let src = r#"
+module t;
+  integer a [string];
+  initial begin
+    a["b"] = 2;
+    a["aa"] = 1;
+    foreach (a[k]) $display("%0d=%0d", k, a[k]);
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "24929=1\n98=2\n");
+}
+
+#[test]
+fn iter_misuse_is_loud() {
+    // user-surface first() on a queue (IEEE: assoc-only method)
+    assert_loud_reject(
+        r#"
+module t;
+  integer q [$];
+  integer k, st;
+  initial st = q.first(k);
+endmodule
+"#,
+        "first on a queue",
+    );
+    // expression position (not the direct blocking rhs)
+    assert_loud_reject(
+        r#"
+module t;
+  integer a [integer];
+  integer k;
+  initial $display("%0d", a.first(k));
+endmodule
+"#,
+        "first in expr position",
+    );
+    // bare statement (status discarded)
+    assert_loud_reject(
+        r#"
+module t;
+  integer a [integer];
+  integer k;
+  initial a.first(k);
+endmodule
+"#,
+        "bare first stmt",
+    );
+    // non-variable key
+    assert_loud_reject(
+        r#"
+module t;
+  integer a [integer];
+  wire w;
+  integer st;
+  initial st = a.first(w);
+endmodule
+"#,
+        "wire iteration key",
+    );
+    // insert arity
+    assert_loud_reject(
+        r#"
+module t;
+  integer q [$];
+  initial q.insert(1);
+endmodule
+"#,
+        "insert arity",
+    );
+}
+
+#[test]
+fn string_literal_numeric_surface_is_ieee_order() {
+    // Regression for the latent pre-v6 bug the string-keyed assoc work
+    // exposed: string literals packed LSB-first, so their NUMERIC surface
+    // was byte-reversed ("ab" → 25185). IEEE §5.9 + iverilog live: the first
+    // character is the MOST significant byte → "ab" = 24930.
+    let src = r#"
+module t;
+  initial begin
+    $display("%0d", "ab");
+    $display("%0d", "mode");
+  end
+endmodule
+"#;
+    assert_eq!(run_vita(src), "24930\n1836016741\n");
 }

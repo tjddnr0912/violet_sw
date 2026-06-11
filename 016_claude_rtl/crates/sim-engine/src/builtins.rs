@@ -165,12 +165,106 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        // v6: queue `.insert(i, v)` / `.delete(i)` — iverilog live (2026-06-11):
+        // insert shifts right, `insert(size, v)` APPENDS, OOB/X index = warn +
+        // no-op; delete(i) erases one, OOB/X = warn + skip.
+        SysTaskId::QInsert | SysTaskId::QDeleteIdx => {
+            let Some(net) = dyn_handle_net(sched, args.first()) else {
+                return Ctl::Continue;
+            };
+            let Some((w, kind)) = sched
+                .st
+                .ir
+                .nets
+                .get(net as usize)
+                .map(|nv| (nv.width.max(1), nv.kind))
+            else {
+                return Ctl::Continue;
+            };
+            if kind != sim_ir::NetKind::Queue {
+                dyn_warn_once(
+                    sched,
+                    net,
+                    "queue insert/delete on a non-queue handle (ignored)",
+                );
+                return Ctl::Continue;
+            }
+            // The index: X/Z (or beyond-u64 wide) → invalid; a NEGATIVE int
+            // evaluates to a huge unsigned here and lands in the same OOB arm
+            // (warn + no-op) — identical surface either way.
+            let idx = args.get(1).and_then(|&a| sched.eval(a).to_u64());
+            let len = sched.st.dyn_heap.get(&net).map(|o| o.len()).unwrap_or(0);
+            if which == SysTaskId::QInsert {
+                let ok = matches!(idx, Some(i) if i <= len as u64);
+                if !ok {
+                    dyn_warn_once(
+                        sched,
+                        net,
+                        "queue insert index out of range or X (not inserted)",
+                    );
+                    return Ctl::Continue;
+                }
+                if len >= crate::state::MAX_DYN_ELEMS {
+                    dyn_warn_once(
+                        sched,
+                        net,
+                        "queue exceeds the element cap (1<<24); insert dropped",
+                    );
+                    return Ctl::Continue;
+                }
+                // Element cast = the push recipe (§5.5 assignment semantics).
+                let v = match args.get(2) {
+                    Some(&a) => {
+                        let sw = sched.st.wt.get(a);
+                        sched.eval_ctx_top(a, w.max(sw.width), sw.signed).resize(w)
+                    }
+                    None => Value::xs(w, false),
+                };
+                let entry =
+                    sched
+                        .st
+                        .dyn_heap
+                        .entry(net)
+                        .or_insert_with(|| crate::state::DynObj::Queue {
+                            elems: std::collections::VecDeque::new(),
+                        });
+                if let crate::state::DynObj::Queue { elems } = entry {
+                    elems.insert(idx.unwrap_or(0) as usize, v);
+                }
+            } else {
+                let ok = matches!(idx, Some(i) if i < len as u64);
+                if !ok {
+                    dyn_warn_once(sched, net, "queue delete index out of range or X (skipped)");
+                    return Ctl::Continue;
+                }
+                if let Some(crate::state::DynObj::Queue { elems }) = sched.st.dyn_heap.get_mut(&net)
+                {
+                    elems.remove(idx.unwrap_or(0) as usize);
+                }
+            }
+            Ctl::Continue
+        }
         // v5 ⑤: `a.delete(k)` — args = [handle, key]. A MISSING key is a
         // SILENT no-op (IEEE §7.9); an X/Z key warns (invalid index, §7.8.6);
         // a non-assoc handle warns (hand-built IR only — ⑥ type-checks).
         SysTaskId::AssocDeleteKey => {
             if let Some(net) = dyn_handle_net(sched, args.first()) {
                 let kind = sched.st.ir.nets.get(net as usize).map(|nv| nv.kind);
+                // v6: the string-keyed twin shares the SysTask — dispatch on
+                // the handle's key domain.
+                if kind == Some(sim_ir::NetKind::AssocStr) {
+                    match args.get(1).and_then(|&k| sched.assoc_str_key_of(k)) {
+                        None => dyn_warn_once(sched, net, "assoc delete key is X/Z (ignored)"),
+                        Some(k) => {
+                            if let Some(crate::state::DynObj::AssocStr { map }) =
+                                sched.st.dyn_heap.get_mut(&net)
+                            {
+                                map.remove(&k);
+                            }
+                        }
+                    }
+                    return Ctl::Continue;
+                }
                 if kind != Some(sim_ir::NetKind::Assoc) {
                     dyn_warn_once(sched, net, "assoc delete on a non-assoc handle (ignored)");
                     return Ctl::Continue;
@@ -538,12 +632,14 @@ fn expr_const_string(st: &SimState, eid: u32) -> String {
     }
 }
 
-/// Decode a `ConstVal` (StrUtf8 → bytes LSB-first; numeric → packed bytes).
+/// Decode a `ConstVal` (StrUtf8 → text; numeric → packed bytes).
 fn const_string(st: &SimState, cid: u32) -> String {
     let c = &st.ir.consts[cid as usize];
     let nbytes = ((c.width + 7) / 8) as usize;
     let mut bytes = Vec::with_capacity(nbytes);
-    for b in 0..nbytes {
+    // StrUtf8 packs in IEEE §5.9 order (v6): the FIRST character is the MOST
+    // significant byte — read the value top byte down to recover source order.
+    for b in (0..nbytes).rev() {
         let bit = (b as u32) * 8;
         let w = (bit / 64) as usize;
         let s = bit % 64;
@@ -556,9 +652,6 @@ fn const_string(st: &SimState, cid: u32) -> String {
         };
         bytes.push(byte);
     }
-    // StrUtf8 packs LSB-byte-first AND in source order: byte 0 (the LSB) is the
-    // FIRST character of the string (verified against elaborate: "a=%d" →
-    // 0x64253D61 → LSB bytes 'a','=','%','d'). No reversal needed.
     while bytes.last() == Some(&0) {
         bytes.pop();
     }
