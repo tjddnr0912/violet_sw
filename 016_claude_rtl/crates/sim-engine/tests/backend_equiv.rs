@@ -611,3 +611,28 @@ fn array_assignment_equals_across_backends() {
     );
     assert_eq!(out.trim(), "30 31 32 33 | 30 33");
 }
+
+/// Phase-1.x ③: per-dim bounds guards lower to Ge/Le/LogAnd/Ternary around
+/// the flat word — pin that OOB X-reads and no-op writes (and the E4002
+/// stderr surface, which rides stdout capture here as a SimResult) are
+/// byte-identical across backends.
+#[test]
+fn per_dim_bounds_guard_equals_across_backends() {
+    let out = assert_backends_equal(
+        "module t; \
+           reg [7:0] g [0:1][0:2]; \
+           integer i; \
+           initial begin \
+             g[0][0]=8'h10; g[1][2]=8'h22; \
+             i = 5; \
+             $display(\"r=%h\", g[0][i]); \
+             g[0][i] = 8'hee; \
+             i = 1; \
+             $display(\"v=%h g12=%h\", g[0][i], g[1][2]); \
+             $finish; \
+           end \
+         endmodule",
+        "bounds_guard_parity",
+    );
+    assert_eq!(out.trim(), "r=xx\nv=xx g12=22");
+}

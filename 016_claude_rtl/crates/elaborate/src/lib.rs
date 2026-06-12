@@ -4877,18 +4877,57 @@ impl<'s> Elaborator<'s> {
         for k in (0..d.saturating_sub(1)).rev() {
             strides[k] = strides[k + 1].saturating_mul(extents[k + 1].1 as u64);
         }
+        // Phase-1.x ③: per-dim bounds guards, MULTI-dim only. A 1-D access is
+        // already exact (lo-normalization wraps an under-index to a huge word
+        // that the engine's flat check rejects) and stays byte-identically
+        // guard-free; with d ≥ 2 an inner-dim violation lands INSIDE the flat
+        // space — a silent alias into the neighbouring row (iverilog 13.0
+        // shares that alias, so the X behavior is hand-pinned to IEEE §7.4.6).
+        let guard_dims = d >= 2;
+        let mut valid: Option<u32> = None;
         let mut acc: Option<u32> = None;
         for (k, idx) in word_idxs.iter().enumerate() {
-            let lo = extents[k].0;
+            let (lo, size) = extents[k];
+            let i_eid = self.lower_expr(idx);
+            if guard_dims {
+                // `idx >= lo && idx <= hi` on the RAW index. A negative or
+                // wrapped index always fails one side in either signedness
+                // reading (bounds < 2^24 « 2^31); an X index X-poisons the
+                // conjunction and the final ternary merge below.
+                let lo_c = self.const_u32_expr(lo, 32);
+                let hi_c = self.const_u32_expr(lo.saturating_add(size - 1), 32);
+                let ge = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Ge,
+                    lhs: i_eid,
+                    rhs: lo_c,
+                });
+                let le = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Le,
+                    lhs: i_eid,
+                    rhs: hi_c,
+                });
+                let both = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::LogAnd,
+                    lhs: ge,
+                    rhs: le,
+                });
+                valid = Some(match valid {
+                    None => both,
+                    Some(v) => self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::LogAnd,
+                        lhs: v,
+                        rhs: both,
+                    }),
+                });
+            }
             // normalized 0-based coordinate: `idx - lo` (lo==0 ⇒ raw index, no Sub).
             let coord = if lo == 0 {
-                self.lower_expr(idx)
+                i_eid
             } else {
-                let i = self.lower_expr(idx);
                 let lo_c = self.const_u32_expr(lo, 32);
                 self.push_expr(ir::Expr::Binary {
                     op: ir::BinOp::Sub,
-                    lhs: i,
+                    lhs: i_eid,
                     rhs: lo_c,
                 })
             };
@@ -4911,7 +4950,24 @@ impl<'s> Elaborator<'s> {
                 }),
             });
         }
-        acc.unwrap_or_else(|| self.const_u32_expr(0, 32))
+        let flat = acc.unwrap_or_else(|| self.const_u32_expr(0, 32));
+        match valid {
+            None => flat,
+            Some(cond) => {
+                // OOB sentinel 0x8000_0000: far above MAX_ARRAY_LEN (2^24) and
+                // ADDITION-STABLE — a downstream `base + residual` (the array-
+                // assignment expansion) cannot wrap it back into range. An X
+                // condition ternary-merges flat-vs-sentinel into an unknown-
+                // contaminated word, which the engine already treats as
+                // invalid (read X / write no-op).
+                let oob = self.const_u32_expr(0x8000_0000, 32);
+                self.push_expr(ir::Expr::Ternary {
+                    cond,
+                    then_e: flat,
+                    else_e: oob,
+                })
+            }
+        }
     }
 
     /// Lower a read `net[idxs…]`: first D indices → flat word; ONE optional trailing
