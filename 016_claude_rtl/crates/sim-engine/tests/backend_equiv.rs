@@ -584,3 +584,30 @@ fn native_indexed_read_equals_across_backends() {
         "indexed native reads must select/poison exactly like the oracle"
     );
 }
+
+/// Phase-1.x ②: array ASSIGNMENT desugars to element-wise statements at
+/// elaborate, so both backends see the same SimIr — this pins that the VM
+/// executes the expanded shapes (Signal-word RHS reads, word-expr LHS chunks,
+/// per-element NBAs) byte-identically in a clocked codegen-able body.
+#[test]
+fn array_assignment_equals_across_backends() {
+    let out = assert_backends_equal(
+        "module t; \
+           reg clk; reg [7:0] src [0:3]; reg [7:0] dst [0:3]; \
+           reg [7:0] g [0:1][0:3]; \
+           integer i; \
+           always @(posedge clk) begin g[1] <= src; end \
+           initial begin \
+             clk = 0; \
+             for (i=0;i<4;i=i+1) begin src[i] = 8'h30 + i; dst[i] = 0; end \
+             dst = src; \
+             #1 clk = 1; #1 clk = 0; \
+             $display(\"%h %h %h %h | %h %h\", dst[0], dst[1], dst[2], dst[3], \
+                      g[1][0], g[1][3]); \
+             $finish; \
+           end \
+         endmodule",
+        "array_assign_parity",
+    );
+    assert_eq!(out.trim(), "30 31 32 33 | 30 33");
+}

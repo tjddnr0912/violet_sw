@@ -185,7 +185,7 @@ loud-reject로 확인됨(이제 참):**
 1. ~~**P2-A worklib**~~ ✅ 2026-06-12 완료(§4.1 행 참조).
 2. **v7 bump 묶음** = P2-B(system tasks) + P2-C(string) + P2-D(package, AST flip 동시) + §4.2 Phase-1.x 정밀화 소묶음 — bump 일괄 원칙, REGEN_GOLDEN 절차 재사용.
    **관문 평가(2026-06-12) 결과:**
-   - **IR-0 선행분**(bump 불요 — 즉시 진행): ~~①instance array 언롤~~ ✅ 2026-06-12(`00ae25e` — iverilog 핀: 선언순 첫 인덱스=MSB 청크·W=P 공유/N·P 슬라이스·`[-1:0]`은 합법 2-원소 발견) → ②다차원 부분 슬라이스/whole-array 대입 → ③per-dim bounds → ④`assign #d` inertial → ⑤`$dump*` 배열 per-element/depth → ⑥>64 signed/>128 unsigned multi-word 산술.
+   - **IR-0 선행분**(bump 불요 — 즉시 진행): ~~①instance array 언롤~~ ✅ 2026-06-12(`00ae25e` — iverilog 핀: 선언순 첫 인덱스=MSB 청크·W=P 공유/N·P 슬라이스·`[-1:0]`은 합법 2-원소 발견) → ~~②다차원 부분 슬라이스/whole-array 대입~~ ✅ 2026-06-12(IEEE §7.6 위치 대응 element-wise desugar; **iverilog가 기능 미지원→hand-IEEE 핀 레인**; 대입 외 whole-array=silent word-0→loud 승격, `$dump*` 인자만 현상 유지; 잔여 컷은 doc-01 표 정본) → ③per-dim bounds → ④`assign #d` inertial → ⑤`$dump*` 배열 per-element/depth → ⑥>64 signed/>128 unsigned multi-word 산술.
    - **bump 합류 확정분**: casez/casex 정밀 분리는 **IR-0 불가 판정** — scrutinee 측 z 식별에 per-bit `===`가 필요해 `BinOp::CasezEq/CasexEq` 신설(현 `redor(xor)!==1`은 casex엔 정확, casez엔 over-lenient). + SysFunc/SysTask 다수(파일 I/O·readmem·**random=IEEE Annex 알고리즘 핀**(iverilog 차분 가능; `$urandom`은 구현정의→hand-pin)·bit-vector·plusargs·`$stime`·`$sformat(f)`) + `NetKind::String` + AST flip 1회(string 타입+package+`pkg::` scope expr).
    - **측정-디퍼**: math transcendentals(`$ln`/`$sin`…)는 **3-OS libm 발산 리스크** — 순수-Rust `libm` 핀 도입 결정 전까지 loud 유지.
 3. **P2-E 절차 고급** — IR 영향 작아 v7 뒤 독립 진행.

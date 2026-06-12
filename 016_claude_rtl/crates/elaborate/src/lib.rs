@@ -531,6 +531,16 @@ struct Elaborator<'s> {
     // word `(i-lo0)*s1 + (j-lo1)`, so the IR backbone is untouched. Plain 0-based 1-D
     // arrays are absent (the access path falls back to `[(0, array_len)]`).
     array_dims: BTreeMap<u32, Vec<(u32, u32)>>,
+    // NetId → per-unpacked-dimension DESCENDING flag (`mem[3:0]` ⇒ [true]).
+    // Recorded only when some dim is descending (absent = all ascending);
+    // array ASSIGNMENT pairs elements positionally left-to-right in DECLARED
+    // index order (IEEE 1800 §7.6), so the copy expansion needs the declared
+    // direction that `(lo, size)` extents erase. elaborate-LOCAL only.
+    array_dim_desc: BTreeMap<u32, Vec<bool>>,
+    // Every net DECLARED with static unpacked dims — including 1-element
+    // arrays (`reg x [0:0]`), which `array_len > 1` cannot distinguish from
+    // scalars (adversarial find #5). elaborate-LOCAL only.
+    unpacked_array_nets: BTreeSet<u32>,
     // NetId → per-PACKED-dimension `(lo, width)` for multi-dim packed arrays
     // (`logic [3:0][7:0]` ⇒ [(0,4),(0,8)]). The net is a flat `product(width)`-bit
     // vector; a select `m[i]` is the bit-SLICE `[i*stride +: elem_width]` (vs the
@@ -671,6 +681,8 @@ impl<'s> Elaborator<'s> {
             symbols: BTreeMap::new(),
             const_dedup: BTreeMap::new(),
             array_dims: BTreeMap::new(),
+            array_dim_desc: BTreeMap::new(),
+            unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
             dollar_subst: None,
             ifaces: BTreeMap::new(),
@@ -2731,6 +2743,34 @@ impl<'s> Elaborator<'s> {
                     self.array_dims.insert(id, dim_extents);
                 }
             }
+            // Declared per-dim DIRECTION for array-assignment correspondence
+            // (sparse: only when some dim is descending, e.g. `mem[3:0]`).
+            let desc: Vec<bool> = decl
+                .unpacked
+                .iter()
+                .map(|d| match d {
+                    ast::Dim::Range(r) => {
+                        let msb = self.const_eval_in_scope(&r.msb);
+                        let lsb = self.const_eval_in_scope(&r.lsb);
+                        matches!((msb, lsb), (Some(m), Some(l)) if m > l)
+                    }
+                    _ => false,
+                })
+                .collect();
+            if desc.iter().any(|&d| d) {
+                let key = self.fq(&decl.name.name);
+                if let Some(&id) = self.symbols.get(&key) {
+                    self.array_dim_desc.insert(id, desc);
+                }
+            }
+            // Declared array-ness — covers `[0:0]` (1-element) arrays that
+            // `array_len > 1` cannot distinguish from scalars.
+            if !decl.unpacked.is_empty() {
+                let key = self.fq(&decl.name.name);
+                if let Some(&id) = self.symbols.get(&key) {
+                    self.unpacked_array_nets.insert(id);
+                }
+            }
             // Record packed-dim extents for a multi-dim packed net so a select can be
             // lowered to the right bit-slice.
             if !d.packed.is_empty() {
@@ -3051,6 +3091,17 @@ impl<'s> Elaborator<'s> {
                     }
                     // output/inout task formal: resolves to the caller's net.
                     if let Some(net) = self.out_subst_lookup(seg) {
+                        if self.net_is_static_array(net) {
+                            // Phase-1.x ②: an out-actual bound to a whole
+                            // array would otherwise read word 0 SILENTLY
+                            // through the formal (adversarial find #2).
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a task output formal bound to a whole unpacked \
+                                 array has no value (v1: arrays cannot pass \
+                                 through task ports)",
+                            );
+                        }
                         return self.push_expr(ir::Expr::Signal { net, word: None });
                     }
                     // parameter / localparam / genvar: a constant in THIS scope (or
@@ -3075,6 +3126,17 @@ impl<'s> Elaborator<'s> {
                     self.error(
                         MsgCode::ElabUnsupported,
                         "a dynamic-storage handle has no whole-value surface (read elements or call methods)",
+                    );
+                }
+                if self.net_is_static_array(net) {
+                    // Phase-1.x ②: a whole unpacked array is only a value in
+                    // ARRAY ASSIGNMENT (intercepted before lowering reaches
+                    // here). Anywhere else it used to read word 0 SILENTLY.
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a whole unpacked array has no value in this context \
+                         (v1: arrays are copied by array assignment; index an \
+                         element elsewhere)",
                     );
                 }
                 self.push_expr(ir::Expr::Signal { net, word: None })
@@ -3388,6 +3450,17 @@ impl<'s> Elaborator<'s> {
                     self.error(
                         MsgCode::ElabUnsupported,
                         "a dynamic-storage handle cannot be assigned as a whole (use `new[]`, methods or element writes)",
+                    );
+                }
+                if self.net_is_static_array(net) {
+                    // Phase-1.x ②: a whole unpacked array is only a write
+                    // target in procedural ARRAY ASSIGNMENT (intercepted
+                    // before lowering reaches here). Anywhere else — force,
+                    // continuous assign, … — it used to write word 0 SILENTLY.
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a whole unpacked array cannot be the write target in \
+                         this context (v1: procedural array assignment only)",
                     );
                 }
                 out.push(ir::LvalChunk {
@@ -4616,9 +4689,10 @@ impl<'s> Elaborator<'s> {
                 }
                 ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
                     match self.lookup_net_scoped(&p.segments[0].name) {
-                        Some(n) if self.nets.get(n as usize).is_some_and(|nv| nv.array_len > 1) => {
-                            break n
-                        }
+                        // Declared array-ness, NOT `array_len > 1`: a `[0:0]`
+                        // array's element access is still an ELEMENT access
+                        // (adversarial find #5 — it used to bit-select word 0).
+                        Some(n) if self.net_is_static_array(n) => break n,
                         _ => return None,
                     }
                 }
@@ -4702,9 +4776,8 @@ impl<'s> Elaborator<'s> {
                 }
                 ast::Lvalue::Ident(p) if p.segments.len() == 1 => {
                     match self.lookup_net_scoped(&p.segments[0].name) {
-                        Some(n) if self.nets.get(n as usize).is_some_and(|nv| nv.array_len > 1) => {
-                            break n
-                        }
+                        // Same declared-array-ness rule as expr_array_chain.
+                        Some(n) if self.net_is_static_array(n) => break n,
                         _ => return None,
                     }
                 }
@@ -4926,6 +4999,374 @@ impl<'s> Elaborator<'s> {
             width,
             kind: ir::SelKind::Bit,
         });
+    }
+
+    // ── unpacked-array ASSIGNMENT (whole array / partial slice) ─────
+    //
+    // IEEE 1800 §7.6: source and target need the same number of unpacked
+    // dims, the same SIZE per dim, and identical element types; elements
+    // correspond POSITIONALLY in declared left-to-right index order (the
+    // LRM example pairs `A[10:1] = B[0:9]` as A[10]=B[0] … A[1]=B[9]).
+    //
+    // ⚠️ iverilog 13.0 rejects fixed-size unpacked array assignment outright,
+    // so this lane is hand-pinned to the LRM (same precedent as assoc /
+    // interface ports). The expansion is element-wise: one assignment per
+    // element, leading (user) indices lowered ONCE and shared as a base
+    // word expression, each element adding its constant residual offset.
+    // Element-wise order is observationally equivalent to the LRM's
+    // evaluate-then-assign because the supported slice forms make source
+    // and target rows either identical or disjoint, and slice indices are
+    // REJECTED if they read the target array (the one case where a write
+    // mid-copy could move the index).
+
+    /// `Some((net, leading))` when `lv` is a static unpacked-array lvalue
+    /// indexed by FEWER indices than its dimension count (whole = zero).
+    fn lval_array_view<'a>(&self, lv: &'a ast::Lvalue) -> Option<(u32, Vec<&'a ast::Expr>)> {
+        match lv {
+            ast::Lvalue::Ident(p) => {
+                let name = match p.segments.as_slice() {
+                    [seg] => {
+                        if self.out_subst_lookup(&seg.name).is_some() {
+                            return None; // task out-formal: vector surface
+                        }
+                        seg.name.clone()
+                    }
+                    segs => segs
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                };
+                let net = self.lookup_net_scoped(&name)?;
+                self.net_is_static_array(net).then(|| (net, Vec::new()))
+            }
+            ast::Lvalue::BitSelect { base, index, .. } => {
+                let (net, idxs) = self.lval_array_chain(base, index)?;
+                (idxs.len() < self.net_dim_extents(net).len()).then_some((net, idxs))
+            }
+            _ => None,
+        }
+    }
+
+    /// Read-side twin of [`Self::lval_array_view`] over expressions.
+    fn expr_array_view<'a>(&self, e: &'a ast::Expr) -> Option<(u32, Vec<&'a ast::Expr>)> {
+        match &e.kind {
+            ast::ExprKind::Ident(p) => {
+                let name = match p.segments.as_slice() {
+                    [seg] => {
+                        // Inline-subst formals / params shadow nets (mirrors
+                        // the lower_expr Ident arm's resolution priority).
+                        if self.subst_lookup(&seg.name).is_some()
+                            || self.out_subst_lookup(&seg.name).is_some()
+                            || self.lookup_scoped(&seg.name).is_some()
+                        {
+                            return None;
+                        }
+                        seg.name.clone()
+                    }
+                    segs => segs
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                };
+                let net = self.lookup_net_scoped(&name)?;
+                self.net_is_static_array(net).then(|| (net, Vec::new()))
+            }
+            ast::ExprKind::BitSelect { base, index } => {
+                let (net, idxs) = self.expr_array_chain(base, index)?;
+                (idxs.len() < self.net_dim_extents(net).len()).then_some((net, idxs))
+            }
+            ast::ExprKind::Paren { inner } => self.expr_array_view(inner),
+            _ => None,
+        }
+    }
+
+    /// Fixed-size unpacked array stored in the flat word store (dyn/queue/assoc
+    /// handles have `array_len == 0`). `array_len > 1` alone would exempt
+    /// 1-element arrays (`reg x [0:0]`, adversarial find #5), so declared
+    /// array-ness is tracked explicitly in `unpacked_array_nets`.
+    fn net_is_static_array(&self, net: u32) -> bool {
+        self.unpacked_array_nets.contains(&net)
+            || self
+                .nets
+                .get(net as usize)
+                .is_some_and(|nv| nv.array_len > 1)
+    }
+
+    /// Conservative aliasing walk: does `e` read net `target` through any
+    /// name it mentions? (Names resolve exactly like the lowering would —
+    /// scoped lookup incl. dotted interface aliases — so an index variable
+    /// `i` never false-positives.)
+    fn expr_reads_net(&self, e: &ast::Expr, target: u32) -> bool {
+        match &e.kind {
+            ast::ExprKind::Ident(p) => {
+                let name = p
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                self.lookup_net_scoped(&name) == Some(target)
+            }
+            ast::ExprKind::BitSelect { base, index } => {
+                self.expr_reads_net(base, target) || self.expr_reads_net(index, target)
+            }
+            ast::ExprKind::Paren { inner } => self.expr_reads_net(inner, target),
+            ast::ExprKind::Unary { operand, .. } => self.expr_reads_net(operand, target),
+            ast::ExprKind::Binary { lhs, rhs, .. } => {
+                self.expr_reads_net(lhs, target) || self.expr_reads_net(rhs, target)
+            }
+            ast::ExprKind::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => {
+                self.expr_reads_net(cond, target)
+                    || self.expr_reads_net(then_e, target)
+                    || self.expr_reads_net(else_e, target)
+            }
+            ast::ExprKind::PartSelect { base, msb, lsb } => {
+                self.expr_reads_net(base, target)
+                    || self.expr_reads_net(msb, target)
+                    || self.expr_reads_net(lsb, target)
+            }
+            ast::ExprKind::IndexedPart {
+                base,
+                offset,
+                width,
+                ..
+            } => {
+                self.expr_reads_net(base, target)
+                    || self.expr_reads_net(offset, target)
+                    || self.expr_reads_net(width, target)
+            }
+            ast::ExprKind::Concat { parts } => parts.iter().any(|p| self.expr_reads_net(p, target)),
+            ast::ExprKind::Replicate { count, value } => {
+                self.expr_reads_net(count, target)
+                    || value.iter().any(|p| self.expr_reads_net(p, target))
+            }
+            // A user function body could read anything — conservative TRUE
+            // keeps the guard sound (loud beats a silently moved index).
+            ast::ExprKind::Call { .. } => true,
+            // V2005-compat: with a net literally named `new` in scope,
+            // `new[i]` lowers as a READ of that net (adversarial find #3) —
+            // check the fallback target and walk the children.
+            ast::ExprKind::New { size, src } => {
+                self.lookup_net_scoped("new") == Some(target)
+                    || self.expr_reads_net(size, target)
+                    || src.as_ref().is_some_and(|s| self.expr_reads_net(s, target))
+            }
+            ast::ExprKind::MinTypMax { min, typ, max } => {
+                self.expr_reads_net(min, target)
+                    || self.expr_reads_net(typ, target)
+                    || self.expr_reads_net(max, target)
+            }
+            ast::ExprKind::SysCall { args, .. } => {
+                args.iter().any(|a| self.expr_reads_net(a, target))
+            }
+            _ => false,
+        }
+    }
+
+    /// Per-position word offsets of a residual sub-array in DECLARED
+    /// left-to-right order: position 0 is the leftmost element of every dim.
+    /// `dims` are the residual `(lo, size)` extents (trailing dims of the
+    /// full array, so suffix-product strides within the residual equal the
+    /// full array's strides); `desc[k]` flips dim `k`'s traversal.
+    fn residual_word_offsets(dims: &[(u32, u32)], desc: &[bool]) -> Vec<u32> {
+        let n: u64 = dims.iter().map(|&(_, s)| s as u64).product();
+        let mut strides = vec![1u64; dims.len()];
+        for k in (0..dims.len().saturating_sub(1)).rev() {
+            strides[k] = strides[k + 1].saturating_mul(dims[k + 1].1 as u64);
+        }
+        (0..n)
+            .map(|p| {
+                let mut rem = p;
+                let mut off = 0u64;
+                for k in (0..dims.len()).rev() {
+                    let size = dims[k].1 as u64;
+                    let digit = rem % size;
+                    rem /= size;
+                    let slot = if desc.get(k).copied().unwrap_or(false) {
+                        size - 1 - digit
+                    } else {
+                        digit
+                    };
+                    off += slot * strides[k];
+                }
+                off.min(u32::MAX as u64) as u32
+            })
+            .collect()
+    }
+
+    /// Word ExprId for `base + off` (no Add node when either side is trivial).
+    fn word_expr_at(&mut self, base: Option<u32>, off: u32) -> u32 {
+        match base {
+            None => self.const_u32_expr(off, 32),
+            Some(b) if off == 0 => b,
+            Some(b) => {
+                let c = self.const_u32_expr(off, 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Add,
+                    lhs: b,
+                    rhs: c,
+                })
+            }
+        }
+    }
+
+    /// Intercept `lhs = rhs` / `lhs <= [#d] rhs` when the LHS is an unpacked
+    /// array (whole or partial slice). Returns `true` when the statement was
+    /// consumed (expanded element-wise, or rejected loudly).
+    fn array_assign_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+        nonblocking: bool,
+    ) -> bool {
+        const ARRAY_COPY_UNROLL_CAP: u64 = 4096;
+        let Some((t_net, t_lead)) = self.lval_array_view(lhs) else {
+            return false;
+        };
+        // The expansion builds chunks by hand, bypassing collect_lval_chunks
+        // — re-run its modport write rule here (adversarial find #1: a
+        // modport-`input` array was silently writable as `p.arr = l`).
+        if let Some(path) = lval_root_path(lhs) {
+            let path = path.clone();
+            self.check_modport_write(&path);
+        }
+        let Some((s_net, s_lead)) = self.expr_array_view(rhs) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "assigning a non-array value to an unpacked array (copy from an \
+                 identically-shaped array, or index an element)",
+            );
+            return true;
+        };
+        let t_dims = self.net_dim_extents(t_net);
+        let s_dims = self.net_dim_extents(s_net);
+        let t_res = &t_dims[t_lead.len()..];
+        let s_res = &s_dims[s_lead.len()..];
+        if t_res.len() != s_res.len()
+            || t_res.iter().zip(s_res).any(|(&(_, ts), &(_, ss))| ts != ss)
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "unpacked-array assignment requires the same number of dimensions \
+                 and the same size per dimension (IEEE 1800 §7.6)",
+            );
+            return true;
+        }
+        let (tw, tk, tsg) = {
+            let nv = &self.nets[t_net as usize];
+            (nv.width, nv.kind, nv.signed)
+        };
+        let (sw, sk, ssg) = {
+            let nv = &self.nets[s_net as usize];
+            (nv.width, nv.kind, nv.signed)
+        };
+        // §6.22.2 equivalent element types: width, realness AND signedness
+        // (a raw word copy would be bit-correct either way, but accepting a
+        // signed/unsigned mix would silently diverge from conformant tools).
+        if tw != sw || (tk == ir::NetKind::Real) != (sk == ir::NetKind::Real) || tsg != ssg {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "unpacked-array assignment requires identical element types \
+                 (IEEE 1800 §7.6)",
+            );
+            return true;
+        }
+        if !nonblocking && delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "intra-assignment delay on an unpacked-array assignment \
+                 (v1: plain `=`, `<=`, or `<= #d`)",
+            );
+            return true;
+        }
+        if t_lead
+            .iter()
+            .chain(s_lead.iter())
+            .any(|i| self.expr_reads_net(i, t_net))
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "an array-slice index in an array assignment reads the assignment \
+                 target itself (v1: the element-wise copy could move the index)",
+            );
+            return true;
+        }
+        let n: u64 = t_res.iter().map(|&(_, s)| s as u64).product();
+        if n > ARRAY_COPY_UNROLL_CAP {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "unpacked-array assignment copies {n} elements \
+                     (v1 cap {ARRAY_COPY_UNROLL_CAP})"
+                ),
+            );
+            return true;
+        }
+        let t_desc: Vec<bool> = self
+            .array_dim_desc
+            .get(&t_net)
+            .map(|v| v[t_lead.len()..].to_vec())
+            .unwrap_or_default();
+        let s_desc: Vec<bool> = self
+            .array_dim_desc
+            .get(&s_net)
+            .map(|v| v[s_lead.len()..].to_vec())
+            .unwrap_or_default();
+        let t_offs = Self::residual_word_offsets(t_res, &t_desc);
+        let s_offs = Self::residual_word_offsets(s_res, &s_desc);
+        // Leading (user) indices lower ONCE; every element shares the base
+        // ExprId (pure reads — sharing is the function-inline precedent).
+        let t_base = (!t_lead.is_empty()).then(|| self.flatten_word(&t_dims, &t_lead));
+        let s_base = (!s_lead.is_empty()).then(|| self.flatten_word(&s_dims, &s_lead));
+        let delay_id = if nonblocking {
+            delay.map(|d| self.lower_delay(d).0)
+        } else {
+            None
+        };
+        let mut kind_checked = false;
+        for (&t_off, &s_off) in t_offs.iter().zip(&s_offs) {
+            let t_word = self.word_expr_at(t_base, t_off);
+            let s_word = self.word_expr_at(s_base, s_off);
+            let rhs_id = self.push_expr(ir::Expr::Signal {
+                net: s_net,
+                word: Some(s_word),
+            });
+            let lv = ir::Lvalue {
+                chunks: vec![ir::LvalChunk {
+                    net: t_net,
+                    word: Some(t_word),
+                    offset: None,
+                    width: None,
+                    kind: ir::SelKind::Bit,
+                }],
+            };
+            if !kind_checked {
+                self.check_lvalue_kind(&lv, true); // E3018 once (same net throughout)
+                kind_checked = true;
+            }
+            let sid = if nonblocking {
+                self.push_stmt(ir::Stmt::NonblockingAssign {
+                    lhs: lv,
+                    rhs: rhs_id,
+                    delay: delay_id,
+                })
+            } else {
+                self.push_stmt(ir::Stmt::BlockingAssign {
+                    lhs: lv,
+                    rhs: rhs_id,
+                })
+            };
+            b.push_stmt_id(sid);
+        }
+        true
     }
 }
 
@@ -5678,6 +6119,10 @@ impl<'s> Elaborator<'s> {
                 if self.dyn_blocking_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // Phase-1.x ②: unpacked-array assignment (whole / slice).
+                if self.array_assign_special(b, lhs, delay.as_ref(), rhs, false) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -5730,6 +6175,10 @@ impl<'s> Elaborator<'s> {
                 // evaluated at execution (v4 runtime-delay model, scaled by
                 // the process's timescale multiplier); d == 0 degenerates to
                 // the plain same-tick NBA path (statement order preserved).
+                // Phase-1.x ②: unpacked-array assignment (whole / slice).
+                if self.array_assign_special(b, lhs, delay.as_ref(), rhs, true) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018)
@@ -6496,6 +6945,17 @@ impl<'s> Elaborator<'s> {
                 if dump_family && !self.is_net_or_const_arg(a) {
                     None
                 } else {
+                    // Item-⑤ status quo: a whole-array `$dumpvars(1, mem)` arg
+                    // keeps its historical word-0 surface (doc-01 known v1
+                    // simplification: v1 dumps ALL signals anyway) — the
+                    // Phase-1.x ② whole-array loud check must not fire here.
+                    if dump_family {
+                        if let Some((net, lead)) = self.expr_array_view(a) {
+                            if lead.is_empty() {
+                                return Some(self.push_expr(ir::Expr::Signal { net, word: None }));
+                            }
+                        }
+                    }
                     Some(self.lower_expr(a))
                 }
             })

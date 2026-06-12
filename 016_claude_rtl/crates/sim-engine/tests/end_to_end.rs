@@ -2338,13 +2338,13 @@ fn array_1d_element_bit_select_unchanged() {
 }
 
 #[test]
-fn array_2d_partial_slice_rejected() {
-    // `g[i] = …` on a 2D array indexes only 1 of 2 dims → unsupported (loud), NOT
-    // a silent mis-lower. Phase-1 requires all dimensions indexed.
+fn array_2d_partial_slice_scalar_rhs_rejected() {
+    // Phase-1.x ②: `g[i] = <array>` is a real ARRAY ASSIGNMENT now, but a
+    // partial slice fed a SCALAR stays loud — NOT a silent word write.
     let diags = elaborate_diags("module t; reg [7:0] g[0:1][0:2]; initial g[0] = 8'd5; endmodule");
     assert!(
-        diags.iter().any(|d| d.contains("unpacked-array")),
-        "expected partial-slice rejection, got: {diags:?}"
+        diags.iter().any(|d| d.contains("non-array value")),
+        "expected scalar-into-slice rejection, got: {diags:?}"
     );
 }
 
