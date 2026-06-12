@@ -46,8 +46,8 @@ use sim_ir::SimIr;
 /// Re-exported from `elaborate` so callers thread the join-mode side table into
 /// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
 pub use elaborate::{
-    AssignRankTable, ForkModeTable, JoinMode, NetNameTable, QueueBoundTable, RadixTable,
-    SeverityKind, SeverityTable, Sidecars,
+    AssignRankTable, ForkModeTable, JoinMode, NetDimsTable, NetNameTable, QueueBoundTable,
+    RadixTable, SeverityKind, SeverityTable, Sidecars,
 };
 pub use sched::FinishReason;
 
@@ -136,6 +136,10 @@ pub struct SimOpts {
     /// Per-ProcId instance path (`"tb.u1"`) for `%m` (P2-11). EMPTY ⇒ `%m`
     /// renders the legacy flat `top`. Never enters the IR.
     pub proc_scopes: Vec<String>,
+    /// Unpacked-array dims (Phase-1.x ⑤): array NetId → per-dim `(lo, size)`.
+    /// SPARSE — an absent array means 1-D 0-based, so per-element VCD names
+    /// fall back to `mem[k]`. EMPTY by default. Never enters the IR.
+    pub net_dims: NetDimsTable,
     /// Worker-thread budget (P4-T1, CLI `--threads`/`-j`). `1` (the default) is
     /// the exact single-thread path; `≥2` moves VCD file writes onto a dedicated
     /// writer thread behind an order-preserving bounded FIFO. CONTRACT: output
@@ -161,6 +165,7 @@ impl Default for SimOpts {
             assign_ranks: AssignRankTable::new(),
             queue_bounds: QueueBoundTable::new(),
             proc_scopes: Vec::new(),
+            net_dims: NetDimsTable::new(),
             threads: 1,
         }
     }
@@ -219,6 +224,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.assign_ranks = opts.assign_ranks.clone();
     st.queue_bounds = opts.queue_bounds.clone();
     st.proc_scopes = opts.proc_scopes.clone();
+    st.net_dims = opts.net_dims.clone();
     st.threads = opts.threads;
 
     let reason = {

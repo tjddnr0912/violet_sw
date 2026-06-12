@@ -425,8 +425,8 @@ fn vcd_hierarchical_scopes_and_real_names() {
 
 #[test]
 fn vcd_dumpvars_declares_memory_array() {
-    // REMAINING_WORK: $dumpvars of a design with a memory declares the array net
-    // (word 0 dumped — the documented v1 array-VCD limitation).
+    // Phase-1.x ⑤: $dumpvars of a design with a memory declares one $var PER
+    // ELEMENT (`mem[0]`..`mem[3]`) — v1 used to declare a single word-0 var.
     let path = tmp_vcd("memdump");
     let src = "module top; reg [7:0] mem[0:3]; reg [3:0] a; \
                initial begin $dumpfile(\"x\"); $dumpvars(0, top); \
@@ -436,14 +436,19 @@ fn vcd_dumpvars_declares_memory_array() {
     opts.net_names = names;
     let _ = simulate_capture(&ir, opts);
     let vcd = std::fs::read_to_string(&path).expect("vcd");
+    for k in 0..4 {
+        assert!(
+            vcd.contains(&format!("mem[{k}] $end")),
+            "element {k} declared:\n{vcd}"
+        );
+    }
     assert!(
-        vcd.contains("$var reg 8 ! mem $end"),
-        "memory declared:\n{vcd}"
+        !vcd.contains(" mem $end"),
+        "the old single word-0 var must be gone:\n{vcd}"
     );
-    assert!(
-        vcd.contains("$var reg 4 \" a $end"),
-        "scalar declared:\n{vcd}"
-    );
+    assert!(vcd.contains(" a $end"), "scalar declared:\n{vcd}");
+    // mem[1] = 8'hAB must land on element 1's id (10101011).
+    assert!(vcd.contains("b10101011 "), "element change record:\n{vcd}");
     let _ = std::fs::remove_file(&path);
 }
 

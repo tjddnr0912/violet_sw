@@ -605,6 +605,7 @@ fn run_vita_str_gated(
         assign_ranks: sc.assign_ranks,
         queue_bounds: sc.queue_bounds,
         proc_scopes: sc.proc_scopes,
+        net_dims: sc.net_dims,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
@@ -1362,11 +1363,17 @@ fn write_velab_file(
         &postcard::to_stdvec(&sc.queue_bounds)
             .expect("queue-bound trailer postcard encode infallible"),
     );
-    if let Some(wc) = consumed {
-        velab_body.extend_from_slice(
-            &postcard::to_stdvec(wc).expect("work-consumed trailer postcard encode infallible"),
-        );
-    }
+    // 9th segment: ALWAYS written since the net_dims trailer follows it —
+    // a missing-when-legacy optional segment would make the 10th ambiguous.
+    let wc_default = worklib::WorkConsumed::default();
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(consumed.unwrap_or(&wc_default))
+            .expect("work-consumed trailer postcard encode infallible"),
+    );
+    // 10th segment: unpacked-array dims for per-element VCD naming (⑤).
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.net_dims).expect("net-dims trailer postcard encode infallible"),
+    );
     let vheader = artifact_header(
         vita_schema::schema_hash::<sim_ir::SimIr>(),
         global_prec_exp,
@@ -1855,16 +1862,32 @@ fn run_vrun_gated(
     };
     // WorkConsumed trailer (P2-A worklib). Tolerant → empty ⇒ no work gate
     // (legacy/explicit-path `.velab`s carry no library provenance).
-    let consumed: worklib::WorkConsumed = if rest9.is_empty() {
-        worklib::WorkConsumed::default()
+    let (consumed, rest10): (worklib::WorkConsumed, &[u8]) = if rest9.is_empty() {
+        (worklib::WorkConsumed::default(), rest9)
     } else {
-        match postcard::from_bytes(rest9) {
+        match postcard::take_from_bytes(rest9) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab work-consumed trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // net-dims trailer (Phase-1.x ⑤). Tolerant → empty ⇒ 1-D 0-based VCD names.
+    let net_dims: sim_engine::NetDimsTable = if rest10.is_empty() {
+        sim_engine::NetDimsTable::new()
+    } else {
+        match postcard::from_bytes(rest10) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab net-dims trailer: {e}"
                     )),
                 )
             }
@@ -1953,6 +1976,7 @@ fn run_vrun_gated(
         assign_ranks,
         queue_bounds,
         proc_scopes,
+        net_dims,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };

@@ -337,7 +337,7 @@ pub(crate) fn dispatch(
             Ctl::Continue
         }
         SysTaskId::DumpVars => {
-            dumpvars(sched.st);
+            dumpvars(sched.st, args);
             Ctl::Continue
         }
         SysTaskId::DumpOff => {
@@ -432,7 +432,26 @@ fn run_severity(
 
 // ── $dumpvars: declare all nets, header, initial dump ──────────────────────
 
-fn dumpvars(st: &mut SimState) {
+fn dumpvars(st: &mut SimState, args: &[u32]) {
+    // ⑤b: the FIRST call opens the VCD and fixes the filter; the header
+    // cannot be rewritten, so later calls warn once (W4021) and no-op
+    // (the LRM's accumulate-across-calls model is a v1 cut).
+    if st.vcd.is_some() {
+        if !st.dump_multi_warned {
+            st.dump_multi_warned = true;
+            use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
+            st.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                severity: Severity::Warning,
+                code: MsgCode::RunDumpMulti,
+                message: "extra $dumpvars call ignored (v1: the first call wins)".to_string(),
+                location: None,
+                context: Vec::new(),
+                sim_time: Some(TimeStamp { ticks: st.now }),
+            }));
+        }
+        return;
+    }
+    st.dump_filter = dump_filter_from_args(st, args);
     let path = st
         .vcd_path_override
         .clone()
@@ -473,6 +492,9 @@ fn dumpvars(st: &mut SimState) {
     let date = st.vcd_date.clone();
     let unit = st.timescale_unit.clone();
     let mut ids: Vec<Option<IdCode>> = vec![None; st.ir.nets.len()];
+    let mut word_ids: Vec<Vec<Option<IdCode>>> = vec![Vec::new(); st.ir.nets.len()];
+    let st_dims = st.net_dims.clone();
+    let dump_filter = st.dump_filter.clone();
     // Hierarchical naming when the elaborate side table is present (one FQ name per
     // net); otherwise the legacy flat `top` scope + synthetic `n{i}`.
     let use_names = st.net_names.len() == st.ir.nets.len();
@@ -518,8 +540,29 @@ fn dumpvars(st: &mut SimState) {
                 ) {
                     continue;
                 }
+                // ⑤b: outside the $dumpvars depth/scope/net selection → no var.
+                if dump_filter
+                    .as_ref()
+                    .is_some_and(|f| !f.contains(&(i as u32)))
+                {
+                    continue;
+                }
                 let vt = vcd_var_type(nets[i].kind);
-                if let Ok(id) = w.declare_var(vt, nets[i].width.max(1), leaf) {
+                if nets[i].array_len > 1 {
+                    // Phase-1.x ⑤: one $var PER ELEMENT (`mem[4]`, `g[1][2]`),
+                    // declared indices from the dims sidecar (absent ⇒ 1-D
+                    // 0-based). v1 only ever declared/dumped word 0.
+                    let dims = st_dims
+                        .get(&(i as u32))
+                        .cloned()
+                        .unwrap_or_else(|| vec![(0, nets[i].array_len)]);
+                    let mut wv = Vec::with_capacity(nets[i].array_len as usize);
+                    for word in 0..nets[i].array_len {
+                        let name = elem_name(leaf, &dims, word);
+                        wv.push(w.declare_var(vt, nets[i].width.max(1), &name).ok());
+                    }
+                    word_ids[i] = wv;
+                } else if let Ok(id) = w.declare_var(vt, nets[i].width.max(1), leaf) {
                     ids[i] = Some(id);
                 }
             }
@@ -536,9 +579,26 @@ fn dumpvars(st: &mut SimState) {
                 ) {
                     continue; // dyn handles: no $var form (see above)
                 }
+                if dump_filter
+                    .as_ref()
+                    .is_some_and(|f| !f.contains(&(i as u32)))
+                {
+                    continue; // ⑤b: outside the $dumpvars selection
+                }
                 let vt = vcd_var_type(nv.kind);
                 let name = format!("n{i}");
-                if let Ok(id) = w.declare_var(vt, nv.width.max(1), &name) {
+                if nv.array_len > 1 {
+                    let dims = st_dims
+                        .get(&(i as u32))
+                        .cloned()
+                        .unwrap_or_else(|| vec![(0, nv.array_len)]);
+                    let mut wv = Vec::with_capacity(nv.array_len as usize);
+                    for word in 0..nv.array_len {
+                        let ename = elem_name(&name, &dims, word);
+                        wv.push(w.declare_var(vt, nv.width.max(1), &ename).ok());
+                    }
+                    word_ids[i] = wv;
+                } else if let Ok(id) = w.declare_var(vt, nv.width.max(1), &name) {
                     ids[i] = Some(id);
                 }
             }
@@ -549,18 +609,12 @@ fn dumpvars(st: &mut SimState) {
     for (i, id) in ids.iter().enumerate() {
         st.nets[i].vcd_id = *id;
     }
+    for (i, wv) in word_ids.into_iter().enumerate() {
+        st.nets[i].vcd_word_ids = wv;
+    }
 
-    // initial dump of every net (array word 0 in v1).
-    let snap: Vec<(IdCode, sim_ir::BitPacked, u32)> = st
-        .nets
-        .iter()
-        .filter_map(|slot| {
-            slot.vcd_id.map(|id| {
-                let w = slot.width;
-                (id, word0(&slot.cur, w), w)
-            })
-        })
-        .collect();
+    // initial dump of every declared var (arrays: one entry per element).
+    let snap = full_snapshot(st);
     {
         let w = st.vcd.as_mut().unwrap();
         let _ = w.dump_initial(snap.iter().map(|(id, b, wd)| (*id, b, *wd)));
@@ -589,14 +643,126 @@ fn dump_all(st: &mut SimState) {
     }
 }
 
+/// ⑤b: build the dump filter from `$dumpvars` args. `None` ⇒ everything
+/// (bare call, or level-only). Net args (`Signal{net}`) select that net;
+/// scope-string args (the elaborate `fq\x01raw` encoding) select nets whose
+/// hierarchical name sits within LEVEL segments below the scope (level 0 =
+/// unlimited; level N = N levels — iverilog-pinned: `$dumpvars(1, top)` is
+/// top's OWN vars only). Scope args resolve against `net_names`; with no
+/// name table they cannot match and are ignored.
+fn dump_filter_from_args(st: &SimState, args: &[u32]) -> Option<std::collections::BTreeSet<u32>> {
+    let mut level: Option<u64> = None;
+    let mut net_targets: Vec<u32> = Vec::new();
+    let mut scopes: Vec<Vec<String>> = Vec::new(); // candidate list per arg
+    for &a in args {
+        match &st.ir.exprs[a as usize] {
+            sim_ir::Expr::Signal { net, word: None } => net_targets.push(*net),
+            sim_ir::Expr::Const { val } => {
+                let cv = &st.ir.consts[*val as usize];
+                if cv.repr == sim_ir::ConstRepr::StrUtf8 {
+                    let enc = const_string(st, *val);
+                    scopes.push(enc.split('\u{0001}').map(str::to_string).collect());
+                } else if level.is_none() {
+                    level = Some(cv.bits.val.first().copied().unwrap_or(0));
+                }
+            }
+            _ => {}
+        }
+    }
+    if net_targets.is_empty() && scopes.is_empty() {
+        return None;
+    }
+    let lvl = level.unwrap_or(0);
+    let mut set: std::collections::BTreeSet<u32> = net_targets.into_iter().collect();
+    let scope_count = scopes.len();
+    if !scopes.is_empty() && st.net_names.len() == st.ir.nets.len() {
+        for cands in &scopes {
+            // First candidate that matches ANY net wins (fq form, then raw).
+            let chosen = cands.iter().find(|c| {
+                st.net_names.iter().any(|n| {
+                    n.strip_prefix(c.as_str())
+                        .is_some_and(|r| r.starts_with('.'))
+                })
+            });
+            let Some(scope) = chosen else { continue };
+            let depth_of = |s: &str| s.split('.').count() as u64;
+            let base = depth_of(scope);
+            for (i, name) in st.net_names.iter().enumerate() {
+                let within = name
+                    .strip_prefix(scope.as_str())
+                    .is_some_and(|r| r.starts_with('.'));
+                if !within {
+                    continue;
+                }
+                let extra = depth_of(name) - base;
+                if lvl == 0 || extra <= lvl {
+                    set.insert(i as u32);
+                }
+            }
+        }
+    }
+    // An UNRESOLVED scope arg (no name table — the legacy n{i} path — or a
+    // path matching nothing) degrades to the historical dump-everything
+    // rather than an empty waveform.
+    if set.is_empty() && scope_count > 0 {
+        return None;
+    }
+    Some(set)
+}
+
 fn full_snapshot(st: &SimState) -> Vec<(IdCode, sim_ir::BitPacked, u32)> {
-    st.nets
-        .iter()
-        .filter_map(|slot| {
-            slot.vcd_id
-                .map(|id| (id, word0(&slot.cur, slot.width), slot.width))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for slot in &st.nets {
+        if !slot.vcd_word_ids.is_empty() {
+            for (word, id) in slot.vcd_word_ids.iter().enumerate() {
+                if let Some(id) = id {
+                    out.push((
+                        *id,
+                        nth_word(&slot.cur, slot.width, word as u32),
+                        slot.width,
+                    ));
+                }
+            }
+        } else if let Some(id) = slot.vcd_id {
+            out.push((id, word0(&slot.cur, slot.width), slot.width));
+        }
+    }
+    out
+}
+
+/// Extract array word `k` (`width` bits) from a packed net store.
+fn nth_word(store: &sim_ir::BitPacked, width: u32, word: u32) -> sim_ir::BitPacked {
+    let base = word * width;
+    let mut v = Value::zeros(width.max(1), false);
+    v.width = width;
+    for i in 0..width {
+        let bit = base + i;
+        let w = (bit / 64) as usize;
+        let s = bit % 64;
+        let bv = store.val.get(w).map_or(0, |x| (x >> s) & 1);
+        let bu = store.unk.get(w).map_or(0, |x| (x >> s) & 1);
+        v.set_vu(i, bv, bu);
+    }
+    v.into_bitpacked(width)
+}
+
+/// Per-element VCD var name: row-major word → declared indices (`lo + digit`
+/// per dim, e.g. word 5 of `[0:1][0:2]` ⇒ `leaf[1][2]`).
+fn elem_name(leaf: &str, dims: &[(u32, u32)], word: u32) -> String {
+    let mut digits = vec![0u32; dims.len()];
+    let mut rem = u64::from(word);
+    for k in (0..dims.len()).rev() {
+        let size = u64::from(dims[k].1.max(1));
+        digits[k] = (rem % size) as u32;
+        rem /= size;
+    }
+    let mut s = String::from(leaf);
+    for (k, &(lo, _)) in dims.iter().enumerate() {
+        s.push('[');
+        s.push_str(&(lo + digits[k]).to_string());
+        s.push(']');
+    }
+    s
 }
 
 /// Extract array-word-0 (`width` bits) from a packed net store.

@@ -149,6 +149,13 @@ pub type AssignRankTable = std::collections::BTreeSet<u32>;
 /// trailer segment like every other sidecar.
 pub type QueueBoundTable = std::collections::BTreeMap<u32, u32>;
 
+/// Unpacked-dimension side table (Phase-1.x ⑤): array NetId → per-dim
+/// `(lo, size)` in declared order. SPARSE — exactly the elaborate-local
+/// `array_dims` map, so a plain 0-based 1-D array is ABSENT and the engine
+/// falls back to `[(0, array_len)]`. Drives per-element VCD naming
+/// (`mem[4]`, `g[1][2]`). Out-of-band like every other sidecar.
+pub type NetDimsTable = std::collections::BTreeMap<u32, Vec<(u32, u32)>>;
+
 /// Engine-facing side tables produced by one elaboration — ALL out-of-band
 /// (`SimOpts` fields / `.velab` trailers, each serialized as its OWN postcard
 /// segment for append-only compatibility); none ever enters the golden `SimIr`.
@@ -166,6 +173,8 @@ pub struct Sidecars {
     pub assign_ranks: AssignRankTable,
     /// Bounded-queue bounds (v6 ③): handle NetId → N.
     pub queue_bounds: QueueBoundTable,
+    /// Unpacked-array dims for per-element VCD naming (Phase-1.x ⑤).
+    pub net_dims: NetDimsTable,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -230,7 +239,8 @@ pub fn elaborate_with_timescale_roots(
         proc_scopes: std::mem::take(&mut el.proc_scopes),
         assign_ranks: std::mem::take(&mut el.assign_ranks),
         queue_bounds: std::mem::take(&mut el.queue_bounds),
-        net_names: el.net_name_table(), // BEFORE finish() consumes `el`
+        net_dims: el.array_dims.clone(), // the sparse decl map IS the table
+        net_names: el.net_name_table(),  // BEFORE finish() consumes `el`
     };
     if el.had_error {
         (None, sc)
@@ -6999,7 +7009,26 @@ impl<'s> Elaborator<'s> {
                 // than warned: scope/depth-SELECTIVE dumping is a refinement, but
                 // the common `$dumpvars(0, top)` idiom must not spew a warning.
                 if dump_family && !self.is_net_or_const_arg(a) {
-                    None
+                    // ⑤b: a scope/module arg encodes as a SYNTHETIC string
+                    // const carrying two candidates `fq\x01raw` — the runtime
+                    // filter tries the elaborate-scope-resolved FQ first, then
+                    // the raw text as a root-absolute path. Non-ident args
+                    // keep the historical silent drop.
+                    if let ast::ExprKind::Ident(p) = &a.kind {
+                        let joined = p
+                            .segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        let fq = self.fq(&joined);
+                        let enc = format!("{fq}\u{0001}{joined}");
+                        let cid =
+                            self.intern_const(crate::literal::str_const_from_bytes(enc.as_bytes()));
+                        Some(self.push_expr(ir::Expr::Const { val: cid }))
+                    } else {
+                        None
+                    }
                 } else {
                     // Item-⑤ status quo: a whole-array `$dumpvars(1, mem)` arg
                     // keeps its historical word-0 surface (doc-01 known v1

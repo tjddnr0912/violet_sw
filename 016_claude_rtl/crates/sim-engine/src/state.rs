@@ -28,6 +28,9 @@ pub(crate) struct NetSlot {
     /// in `write_lvalue` and the `is_real` flag on reads.
     pub is_real: bool,
     pub vcd_id: Option<IdCode>,
+    /// Per-element VCD ids for an unpacked array (Phase-1.x ⑤): one id per
+    /// word, declared as `mem[idx]` vars. EMPTY for scalars (vcd_id is used).
+    pub vcd_word_ids: Vec<Option<IdCode>>,
 }
 
 /// One captured `$strobe`/`$monitor` argument list. Stores ExprIds (not values)
@@ -149,6 +152,14 @@ pub(crate) struct SimState<'a> {
     pub queue_bounds: crate::QueueBoundTable,
     /// Per-ProcId instance path for `%m` (P2-11); empty ⇒ flat `top` fallback.
     pub proc_scopes: Vec<String>,
+    /// Unpacked-array dims for per-element VCD naming (Phase-1.x ⑤, from
+    /// `SimOpts.net_dims`); an absent array falls back to 1-D 0-based names.
+    pub net_dims: crate::NetDimsTable,
+    /// ⑤b: net ids selected by the FIRST `$dumpvars` call's depth/scope/net
+    /// args. `None` ⇒ dump everything (bare `$dumpvars` / level-only forms).
+    pub dump_filter: Option<std::collections::BTreeSet<u32>>,
+    /// ⑤b: W4021 once-latch for second-and-later `$dumpvars` calls.
+    pub dump_multi_warned: bool,
     /// Instance path of the process CURRENTLY executing — set per `run_process`
     /// (like `cur_time_mult`), read by the `%m` format spec.
     pub cur_scope: String,
@@ -210,6 +221,7 @@ impl<'a> SimState<'a> {
                     signed: nv.signed,
                     is_real: nv.kind == NetKind::Real,
                     vcd_id: None,
+                    vcd_word_ids: Vec::new(),
                 }
             })
             .collect();
@@ -245,6 +257,9 @@ impl<'a> SimState<'a> {
             timescale_unit,
             vcd_date,
             net_names: Vec::new(),
+            net_dims: crate::NetDimsTable::new(),
+            dump_filter: None,
+            dump_multi_warned: false,
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),
@@ -560,7 +575,7 @@ impl<'a> SimState<'a> {
                 }
             }
             if changed {
-                self.note_change(net as u32);
+                self.note_change(net as u32, word);
             }
             return changed;
         }
@@ -579,7 +594,7 @@ impl<'a> SimState<'a> {
             }
         }
         if changed {
-            self.note_change(net as u32);
+            self.note_change(net as u32, word);
         }
         changed
     }
@@ -588,26 +603,36 @@ impl<'a> SimState<'a> {
     /// `propagate_changes` dirty sweep, then emit the VCD record. This is the
     /// single funnel both `write_chunk` exit paths use — any future mutation
     /// path MUST route through it or the sweep goes blind.
-    fn note_change(&mut self, net: u32) {
+    fn note_change(&mut self, net: u32, word: u32) {
         let i = net as usize;
         if !self.dirty_flag[i] {
             self.dirty_flag[i] = true;
             self.dirty.push(net);
         }
-        self.emit_vcd_change(net);
+        self.emit_vcd_change(net, word);
     }
 
-    /// Emit a VCD value_change for a net that changed (array word 0 in v1 VCD).
-    fn emit_vcd_change(&mut self, net: u32) {
+    /// Emit a VCD value_change for the net word that changed. Arrays carry one
+    /// id PER ELEMENT (Phase-1.x ⑤ — the v1 VCD only ever showed word 0);
+    /// scalars keep the single `vcd_id`.
+    fn emit_vcd_change(&mut self, net: u32, word: u32) {
         if !self.dumping {
             return;
         }
         let i = net as usize;
-        let (id, width) = match self.nets[i].vcd_id {
-            Some(id) => (id, self.nets[i].width),
-            None => return,
+        let width = self.nets[i].width;
+        let id = if self.nets[i].vcd_word_ids.is_empty() {
+            match self.nets[i].vcd_id {
+                Some(id) => id,
+                None => return,
+            }
+        } else {
+            match self.nets[i].vcd_word_ids.get(word as usize) {
+                Some(Some(id)) => *id,
+                _ => return,
+            }
         };
-        let packed = slice_word(&self.nets[i].cur, width, 0);
+        let packed = slice_word(&self.nets[i].cur, width, word);
         if let Some(w) = self.vcd.as_mut() {
             let _ = w.set_time(self.now);
             let _ = w.value_change(id, &packed, width);

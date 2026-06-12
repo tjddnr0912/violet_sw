@@ -75,6 +75,7 @@ msgcodes! {
     RunVcdOpenFail         => ("W-RUN-VCD-OPEN-FAIL",       "VITA-W4018", Warning, "cannot open VCD dump file"),
     RunVcdWriteFail        => ("W-RUN-VCD-WRITE-FAIL",      "VITA-W4019", Warning, "VCD write/flush failed"),
     RunDynDegrade          => ("W-RUN-DYN-DEGRADE",          "VITA-W4020", Warning, "dynamic-storage operation degraded"),
+    RunDumpMulti           => ("W-RUN-DUMP-MULTI",           "VITA-W4021", Warning, "extra $dumpvars call ignored (v1: the first call wins)"),
     // 8xxx FILELIST
     FlistCycle             => ("E-FLIST-CYCLE",             "VITA-E8001", Error,   "filelist cycle"),
     FlistDepth             => ("E-FLIST-DEPTH",             "VITA-E8002", Error,   "filelist nesting exceeded depth cap"),

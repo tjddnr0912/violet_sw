@@ -287,8 +287,12 @@ pub fn parse_str_literal_text(raw: &str) -> String {
 }
 
 pub fn parse_str_literal(raw: &str) -> ConstVal {
-    let bytes = unescape_str_literal_bytes(raw);
+    str_const_from_bytes(&unescape_str_literal_bytes(raw))
+}
 
+/// Build a `StrUtf8` ConstVal from plain bytes (no quotes/escapes). Used for
+/// SYNTHETIC strings too (e.g. the $dumpvars scope-path encoding, ⑤b).
+pub fn str_const_from_bytes(bytes: &[u8]) -> ConstVal {
     let width = (bytes.len() as u32).saturating_mul(8);
     let nwords = (((width as usize) + 63) / 64).max(1);
     let mut val = vec![0u64; nwords];
