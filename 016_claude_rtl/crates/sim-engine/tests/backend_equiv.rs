@@ -637,6 +637,30 @@ fn per_dim_bounds_guard_equals_across_backends() {
     assert_eq!(out.trim(), "r=xx\nv=xx g12=22");
 }
 
+/// v7 no-arg `$random` rides the SHARED eval kernel (the RNG cell advances
+/// identically in both backends; the SEEDED form is excluded from codegen
+/// like the queue pops) — pin byte-parity on a clocked draw sequence.
+#[test]
+fn random_draws_equal_across_backends() {
+    let out = assert_backends_equal(
+        "module t; \
+           reg clk; integer r; \
+           always @(posedge clk) r <= $random; \
+           initial begin \
+             clk = 0; \
+             #1 clk = 1; #1 clk = 0; \
+             $display(\"a=%0d\", r); \
+             #1 clk = 1; #1 clk = 0; \
+             $display(\"b=%0d\", r); \
+             $finish; \
+           end \
+         endmodule",
+        "random_parity",
+    );
+    // The Annex N default-seed sequence (iverilog-pinned in random_funcs.rs).
+    assert_eq!(out.trim(), "a=303379748\nb=-1064739199");
+}
+
 /// v7 casez/casex match ops live in the SHARED comparison kernel (native-eval
 /// compile-bails on CasezEq/CasexEq) — pin byte-parity on a clocked decoder
 /// exercising z-wildcard hit, strict-x miss, and a casex x-wash.

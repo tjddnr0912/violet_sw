@@ -141,6 +141,9 @@ pub struct EvalCtx<'a, N: NetReader> {
     /// Time multiplier `M` of the process whose expression is being evaluated
     /// (`$time = now / M`, `$realtime = now / M` real). 1 ⇒ the 1ns/1ns base.
     pub time_mult: u64,
+    /// v7 RNG state (`Cell`s — eval stays `&self`; every evaluation of
+    /// `$random`/`$urandom` is a fresh draw, see `SimState::rng`).
+    pub rng: &'a crate::state::RngCells,
 }
 
 impl<'a, N: NetReader> EvalCtx<'a, N> {
@@ -1295,15 +1298,78 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     _ => Value::logic(unk_any),
                 }
             }
+            // v7 `$random` — no-arg form only (the seeded form is a
+            // statement-level intercept that writes the ref seed back;
+            // elaborate rejects any other seeded placement, so an arg here
+            // is a hand-built IR — defensive X, no state advance).
+            SysFuncId::Random => {
+                if !args.is_empty() {
+                    return Value::xs(32, true);
+                }
+                let mut s = self.rng.random.get();
+                let r = crate::rng::annex_n_random(&mut s);
+                self.rng.random.set(s);
+                Value::from_i128(r as i128, 32, true)
+            }
+            // v7 `$urandom[(seed)]` — the optional seed is INPUT-only (IEEE
+            // §18.13.1: not written back, unlike $random): it re-seeds the
+            // generator, then the draw proceeds. X/Z seed = 0.
+            SysFuncId::Urandom => {
+                if let Some(&a0) = args.first() {
+                    let seed = self.eval(a0).to_u64().unwrap_or(0);
+                    self.rng.urandom.set(seed);
+                }
+                let mut st = self.rng.urandom.get();
+                let r = crate::rng::splitmix_urandom(&mut st);
+                self.rng.urandom.set(st);
+                let mut v = Value::zeros(32, false);
+                v.val[0] = r as u64;
+                v
+            }
+            // v7 `$urandom_range(maxval[, minval])` — inclusive; swapped
+            // bounds auto-correct (IEEE §18.13.3). X/Z bound → X result.
+            SysFuncId::UrandomRange => {
+                let bound = |i: usize| -> Option<u32> {
+                    args.get(i)
+                        .map(|&a| self.eval(a))
+                        .filter(|v| !v.has_xz())
+                        .and_then(|v| v.to_u64())
+                        .map(|v| v as u32)
+                };
+                let Some(b0) = bound(0) else {
+                    return Value::xs(32, false);
+                };
+                let b1 = if args.len() > 1 {
+                    match bound(1) {
+                        Some(b) => b,
+                        None => return Value::xs(32, false),
+                    }
+                } else {
+                    0
+                };
+                let (lo, hi) = if b0 <= b1 { (b0, b1) } else { (b1, b0) };
+                let range = (hi - lo) as u64 + 1;
+                let mut st = self.rng.urandom.get();
+                let r = crate::rng::splitmix_urandom(&mut st);
+                self.rng.urandom.set(st);
+                let mut v = Value::zeros(32, false);
+                v.val[0] = lo as u64 + (r as u64 % range);
+                v
+            }
+            // v7 `$stime` — `$time` truncated to unsigned 32 bit (1364 §17.7.2).
+            SysFuncId::Stime => {
+                let m = self.time_mult.max(1);
+                let mut v = Value::zeros(32, false);
+                v.val[0] = (self.now / m) & 0xffff_ffff;
+                v
+            }
             // v7 shape, features not wired yet (elaborate still rejects the
             // names): defensive X at each func's declared self-width.
-            SysFuncId::Random
-            | SysFuncId::Fopen
+            SysFuncId::Fopen
             | SysFuncId::TestPlusargs
             | SysFuncId::ValuePlusargs
             | SysFuncId::StrLen
             | SysFuncId::StrCmp => Value::xs(32, true),
-            SysFuncId::Urandom | SysFuncId::UrandomRange | SysFuncId::Stime => Value::xs(32, false),
             SysFuncId::StrGetC
             | SysFuncId::Sformatf
             | SysFuncId::StrSubstr

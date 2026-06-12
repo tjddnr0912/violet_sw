@@ -952,6 +952,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             now: self.st.now,
             wt: &self.st.wt,
             time_mult: self.st.cur_time_mult,
+            rng: &self.st.rng,
         };
         ctx.eval(eid)
     }
@@ -963,6 +964,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             now: self.st.now,
             wt: &self.st.wt,
             time_mult: self.st.cur_time_mult,
+            rng: &self.st.rng,
         };
         ctx.truthy(eid)
     }
@@ -1066,6 +1068,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             now: self.st.now,
             wt: &self.st.wt,
             time_mult: self.st.cur_time_mult,
+            rng: &self.st.rng,
         };
         ctx.eval_ctx(eid, ctx_width, ctx_signed)
     }
@@ -1080,6 +1083,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             now: self.st.now,
             wt: &self.st.wt,
             time_mult: self.st.cur_time_mult,
+            rng: &self.st.rng,
         };
         ctx.assoc_key(eid)
     }
@@ -1092,6 +1096,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             now: self.st.now,
             wt: &self.st.wt,
             time_mult: self.st.cur_time_mult,
+            rng: &self.st.rng,
         };
         ctx.assoc_str_key(eid)
     }
@@ -1733,6 +1738,56 @@ impl Kernel for Scheduler<'_, '_> {
                 ..
             })
         )
+    }
+    fn k_random_seeded_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Random,
+                args,
+            }) if !args.is_empty()
+        )
+    }
+    fn k_random_seeded(&mut self, rhs: u32) -> Value {
+        // shape guaranteed by `k_random_seeded_rhs` + elaborate's whole-net
+        // seed contract; everything below defends a hand-built IR.
+        let seed_net = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) => {
+                args.first()
+                    .and_then(|&a| match self.st.ir.exprs.get(a as usize) {
+                        Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        };
+        let Some(net) = seed_net else {
+            return Value::xs(32, true);
+        };
+        // seed in: low 32 bits of the variable; X/Z reads as 0 (then the
+        // Annex zero-substitution applies, like an uninitialized iverilog reg).
+        let cur = self.st.read_net(net, None);
+        let mut s = if cur.has_xz() {
+            0
+        } else {
+            (cur.to_u64().unwrap_or(0) & 0xffff_ffff) as u32
+        };
+        let r = crate::rng::annex_n_random(&mut s);
+        // write the updated seed back through the normal lvalue funnel
+        // (resizes to the variable's width like any blocking assign).
+        let lv = Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: None,
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        };
+        let sv = Value::from_i128(s as i32 as i128, 32, true);
+        let off = self.resolve_lvalue_offsets(&lv);
+        self.k_write_lvalue(&lv, sv, &off);
+        Value::from_i128(r as i128, 32, true)
     }
     fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value {
         // `k_queue_pop_rhs` guaranteed the shape; everything below is

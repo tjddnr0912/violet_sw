@@ -160,6 +160,12 @@ pub(crate) struct SimState<'a> {
     pub dump_filter: Option<std::collections::BTreeSet<u32>>,
     /// ⑤b: W4021 once-latch for second-and-later `$dumpvars` calls.
     pub dump_multi_warned: bool,
+    /// v7 random state — `Cell`s so the read-phase eval (`&self`) can draw:
+    /// each evaluation of `$random`/`$urandom` IS a new draw (matches
+    /// iverilog; a re-rendered `$monitor` re-rolls). Net/heap purity (P7a)
+    /// is untouched. `$random` seed 0 = the Annex N zero-substitution path
+    /// (iverilog default); `$urandom` initial state 0 is the vitamin pin.
+    pub rng: RngCells,
     /// Instance path of the process CURRENTLY executing — set per `run_process`
     /// (like `cur_time_mult`), read by the `%m` format spec.
     pub cur_scope: String,
@@ -260,6 +266,7 @@ impl<'a> SimState<'a> {
             net_dims: crate::NetDimsTable::new(),
             dump_filter: None,
             dump_multi_warned: false,
+            rng: RngCells::default(),
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),
@@ -1118,6 +1125,15 @@ impl<'a> NetReader for SimState<'a> {
 }
 
 // ── free helpers ───────────────────────────────────────────────────────────
+
+/// v7 RNG state cells (see `SimState::rng`).
+#[derive(Default)]
+pub(crate) struct RngCells {
+    /// `$random` Annex-N LCG seed (global generator, like iverilog's).
+    pub random: std::cell::Cell<u32>,
+    /// `$urandom` splitmix64 state (vitamin-pinned sequence).
+    pub urandom: std::cell::Cell<u64>,
+}
 
 /// NetKind → VCD VarType.
 pub(crate) fn vcd_var_type(kind: NetKind) -> VarType {

@@ -3366,6 +3366,18 @@ impl<'s> Elaborator<'s> {
                 if name.name == "$bits" && args.len() == 1 {
                     return self.lower_bits_fold(&args[0]);
                 }
+                // v7: a SEEDED $random updates its ref argument — legal ONLY
+                // as the direct rhs of a blocking assign (the special form
+                // bypasses this arm). Any other placement is loud, never a
+                // silent unseeded draw.
+                if name.name == "$random" && !args.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "seeded $random is supported only as the direct rhs of \
+                         a blocking assignment (v7)",
+                    );
+                    return self.placeholder_expr();
+                }
                 let arg_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
                 match map_sysfunc(&name.name) {
                     Some(which) => {
@@ -6236,6 +6248,11 @@ impl<'s> Elaborator<'s> {
                 if self.array_assign_special(b, lhs, delay.as_ref(), rhs, false) {
                     return;
                 }
+                // v7: `x = $random(seed)` — the seeded draw writes the seed
+                // back, statement-level intercept (the only legal placement).
+                if self.random_seeded_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -6766,6 +6783,85 @@ impl<'s> Elaborator<'s> {
             b.goto(merge);
         }
         b.start_block(merge);
+    }
+
+    /// v7: `x = $random(seed)` special form. The seed must lower to a plain
+    /// whole-net Signal (an integral VARIABLE — IEEE 1364 §17.9.1); the rhs
+    /// becomes `SysFunc{Random,[seed]}` which the engine intercepts
+    /// statement-level (`StmtEffect::SeededRandom` — seed written back in the
+    /// WRITE phase). Returns false when the rhs is not a seeded $random.
+    /// An intra-assignment delay keeps draw-now/write-later semantics by
+    /// riding the SAME desugar as a plain blocking (`tmp = draw; #d; lhs=tmp`)
+    /// — the seed updates at the DRAW, like iverilog.
+    fn random_seeded_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$random" || args.is_empty() {
+            return false;
+        }
+        if args.len() > 1 {
+            self.error(MsgCode::ElabUnsupported, "$random takes at most one seed");
+            return true;
+        }
+        let seed_id = self.lower_expr(&args[0]);
+        if !matches!(
+            self.exprs.get(seed_id as usize),
+            Some(ir::Expr::Signal { word: None, .. })
+        ) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$random seed must be a plain integral variable (v7)",
+            );
+            return true;
+        }
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Random,
+            args: vec![seed_id],
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        if let Some(d) = delay {
+            // capture-now/write-later: the DRAW (and seed update) happens at
+            // the capture statement; only the lhs write is delayed.
+            let w = self.ir_lvalue_width(&lv);
+            let tmp = self.fresh_ia_tmp(w);
+            let cap = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: whole_net_lvalue(tmp),
+                rhs: rhs_id,
+            });
+            b.push_stmt_id(cap);
+            let (amount, region) = self.lower_delay(d);
+            let resume = b.new_block();
+            b.end_block_with(ir::Terminator::Delay {
+                amount,
+                region,
+                resume: resume.raw(),
+            });
+            b.start_block(resume);
+            let tmp_read = self.push_expr(ir::Expr::Signal {
+                net: tmp,
+                word: None,
+            });
+            let wr = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: lv,
+                rhs: tmp_read,
+            });
+            b.push_stmt_id(wr);
+        } else {
+            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: lv,
+                rhs: rhs_id,
+            });
+            b.push_stmt_id(sid);
+        }
+        true
     }
 
     // ── $bits const-fold (v7, IR-0) ────────────────────────────────
@@ -7744,6 +7840,11 @@ fn map_sysfunc(dollar_name: &str) -> Option<ir::SysFuncId> {
         "$onehot" => Some(ir::SysFuncId::OneHot),
         "$onehot0" => Some(ir::SysFuncId::OneHot0),
         "$isunknown" => Some(ir::SysFuncId::IsUnknown),
+        // v7 random + time.
+        "$random" => Some(ir::SysFuncId::Random),
+        "$urandom" => Some(ir::SysFuncId::Urandom),
+        "$urandom_range" => Some(ir::SysFuncId::UrandomRange),
+        "$stime" => Some(ir::SysFuncId::Stime),
         _ => None,
     }
 }

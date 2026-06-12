@@ -85,6 +85,13 @@ pub(crate) trait Kernel {
     /// `k_eval_for_lvalue` sizes an rhs. Empty / non-queue → element-width X
     /// + warn-once (v5 ④; iverilog live: warning + x).
     fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value;
+    /// READ: is `rhs` a SEEDED `$random(seed)` call (v7)? It writes the new
+    /// LCG state back into the ref seed variable, so it is a statement-level
+    /// effect like the pops; elaborate rejects every other seeded placement.
+    fn k_random_seeded_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: one Annex-N draw seeded from the ref variable; writes the
+    /// updated seed back to its net and returns the 32-bit signed draw.
+    fn k_random_seeded(&mut self, rhs: u32) -> Value;
     /// READ: is `rhs` an assoc-iteration SysFunc (`first`/`next`/`last`/
     /// `prev`)? They WRITE their ref key argument, so like the pops they are
     /// statement-level effects (`StmtEffect::AssocIter`); any other placement
@@ -344,6 +351,14 @@ enum StmtEffect<'s> {
         rhs: u32,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is a SEEDED `$random(seed)` (v7): the draw
+    /// writes the updated LCG state back into the seed variable — WRITE
+    /// phase, same family as `QPop`/`AssocIter`.
+    SeededRandom {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
@@ -399,6 +414,15 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             if k.k_assoc_iter_rhs(*rhs) {
                 let offsets = k.k_resolve_lvalue_offsets(lhs);
                 return StmtEffect::AssocIter {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
+            // v7: a seeded $random(seed) rhs writes the seed back — same family.
+            if k.k_random_seeded_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::SeededRandom {
                     lhs,
                     rhs: *rhs,
                     offsets,
@@ -465,6 +489,11 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::AssocIter { lhs, rhs, offsets } => {
             let value = k.k_assoc_iter(lhs, rhs); // key write + status (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::SeededRandom { lhs, rhs, offsets } => {
+            let value = k.k_random_seeded(rhs); // seed write + draw (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }

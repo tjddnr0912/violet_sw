@@ -1756,12 +1756,14 @@ mod tests {
     ) {
         let wt = WidthTable::build(ir);
         let oracle = {
+            let rng = crate::state::RngCells::default();
             let ctx = crate::eval::EvalCtx {
                 ir,
                 nets: fake,
                 now: 0,
                 wt: &wt,
                 time_mult: 1,
+                rng: &rng,
             };
             ctx.eval_ctx(eid, ctx_w, ctx_signed)
         };

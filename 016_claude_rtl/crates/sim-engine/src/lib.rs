@@ -27,6 +27,7 @@ mod builtins;
 mod eval;
 mod exec;
 mod native_eval;
+mod rng;
 mod sched;
 mod state;
 mod value;
