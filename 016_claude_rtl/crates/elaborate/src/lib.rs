@@ -541,6 +541,12 @@ struct Elaborator<'s> {
     // word `(i-lo0)*s1 + (j-lo1)`, so the IR backbone is untouched. Plain 0-based 1-D
     // arrays are absent (the access path falls back to `[(0, array_len)]`).
     array_dims: BTreeMap<u32, Vec<(u32, u32)>>,
+    /// v7 `$bits` prescan: name → (element bits, unpacked dim lengths) for the
+    /// CURRENT module's body decls, recorded in declaration order during the
+    /// body param-binding walk (3b) — a `localparam X = $bits(mem[0])` binds
+    /// before nets lower, so the real net table can't serve it. Unfoldable
+    /// decls are silently skipped (the `$bits` SITE goes loud instead).
+    bits_prescan: BTreeMap<String, (u64, Vec<u64>)>,
     // NetId → per-unpacked-dimension DESCENDING flag (`mem[3:0]` ⇒ [true]).
     // Recorded only when some dim is descending (absent = all ascending);
     // array ASSIGNMENT pairs elements positionally left-to-right in DECLARED
@@ -691,6 +697,7 @@ impl<'s> Elaborator<'s> {
             symbols: BTreeMap::new(),
             const_dedup: BTreeMap::new(),
             array_dims: BTreeMap::new(),
+            bits_prescan: BTreeMap::new(),
             array_dim_desc: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -1010,23 +1017,30 @@ impl<'s> Elaborator<'s> {
         //      the ANSI `#(...)` header that `bind_params` handles). Bind in decl
         //      order — a `localparam C = A*B+1` may reference an earlier param —
         //      BEFORE nets so `[W-1:0]` folds and runtime refs (`x = P`) resolve.
+        //      Net decls in the SAME walk pre-register their widths (v7), so a
+        //      decl-order `localparam X = $bits(mem[0])` folds too.
+        let saved_prescan = std::mem::take(&mut self.bits_prescan);
         for item in &module.body {
-            if let ast::ModuleItem::Param(p) = item {
-                // Unfoldable value = LOUD error (never a silent 0): a parameter
-                // bound to a wrong default poisons every downstream width with
-                // no trace (P0-5). 0 stays only as the post-error recovery value.
-                let v = self.const_eval_in_scope(&p.value).unwrap_or_else(|| {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        &format!(
-                            "parameter `{}` value is not a foldable constant expression",
-                            p.name.name
-                        ),
-                    );
-                    0
-                });
-                let key = self.fq(&p.name.name);
-                saved_params.push((key.clone(), self.params.insert(key, v)));
+            match item {
+                ast::ModuleItem::Param(p) => {
+                    // Unfoldable value = LOUD error (never a silent 0): a parameter
+                    // bound to a wrong default poisons every downstream width with
+                    // no trace (P0-5). 0 stays only as the post-error recovery value.
+                    let v = self.const_eval_in_scope(&p.value).unwrap_or_else(|| {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "parameter `{}` value is not a foldable constant expression",
+                                p.name.name
+                            ),
+                        );
+                        0
+                    });
+                    let key = self.fq(&p.name.name);
+                    saved_params.push((key.clone(), self.params.insert(key, v)));
+                }
+                ast::ModuleItem::NetVar(d) => self.prescan_net_bits(d),
+                _ => {}
             }
         }
 
@@ -1227,6 +1241,7 @@ impl<'s> Elaborator<'s> {
 
         // restore scope/params so siblings + ancestors resolve correctly.
         self.restore_params(saved_params);
+        self.bits_prescan = saved_prescan;
         self.func_table = saved_funcs;
         self.task_table = saved_tasks;
         self.cur_prefix = saved_prefix;
@@ -2278,6 +2293,12 @@ impl<'s> Elaborator<'s> {
                 } else {
                     Some((64 - ((n - 1) as u64).leading_zeros()) as i64)
                 }
+            }
+            // v7 `$bits` in const contexts (localparam init, range specs): the
+            // view subset only — no lowering happens in this domain. A shape
+            // it can't see folds None → LOUD at the binding site.
+            ast::ExprKind::SysCall { name, args } if name.name == "$bits" && args.len() == 1 => {
+                self.bits_of_view(&args[0], true).map(|n| n as i64)
             }
             ast::ExprKind::Binary { op, lhs, rhs } => {
                 let a = self.const_eval_in_scope(lhs)?;
@@ -3338,12 +3359,38 @@ impl<'s> Elaborator<'s> {
 
             // ── calls ──────────────────────────────────────────────
             ast::ExprKind::SysCall { name, args } => {
+                // v7: `$bits` is a TYPE function — its argument is NOT
+                // evaluated (IEEE §20.6.2) — and folds to a const at
+                // elaborate (IR-0). Array views bypass lowering entirely
+                // (whole-array reads are loud by design).
+                if name.name == "$bits" && args.len() == 1 {
+                    return self.lower_bits_fold(&args[0]);
+                }
                 let arg_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
                 match map_sysfunc(&name.name) {
-                    Some(which) => self.push_expr(ir::Expr::SysFunc {
-                        which,
-                        args: arg_ids,
-                    }),
+                    Some(which) => {
+                        // v7 bit-vector predicates are integral-only; a real
+                        // argument would silently count IEEE-754 mantissa
+                        // bits — loud instead (IEEE: illegal operand type).
+                        if matches!(
+                            which,
+                            ir::SysFuncId::CountOnes
+                                | ir::SysFuncId::OneHot
+                                | ir::SysFuncId::OneHot0
+                                | ir::SysFuncId::IsUnknown
+                        ) && arg_ids.iter().any(|&a| self.expr_is_real(a))
+                        {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "real operand is not legal for a bit-vector system function",
+                            );
+                            return self.placeholder_expr();
+                        }
+                        self.push_expr(ir::Expr::SysFunc {
+                            which,
+                            args: arg_ids,
+                        })
+                    }
                     None => {
                         self.error(
                             MsgCode::ElabUnsupported,
@@ -6721,6 +6768,273 @@ impl<'s> Elaborator<'s> {
         b.start_block(merge);
     }
 
+    // ── $bits const-fold (v7, IR-0) ────────────────────────────────
+    /// `$bits(arg)` → 32-bit Const. The argument is a TYPE reference, never
+    /// evaluated; unsupported shapes are LOUD (E3009), never a silent 0.
+    fn lower_bits_fold(&mut self, arg: &ast::Expr) -> u32 {
+        let n = self
+            .bits_of_view(arg, false)
+            .or_else(|| {
+                // General expression: lower it (dead arena nodes — the arg is
+                // not evaluated at runtime) and fold its self-determined width.
+                let eid = self.lower_expr(arg);
+                self.ir_bits_of(eid)
+            })
+            .filter(|&n| n > 0);
+        match n {
+            Some(n) => self.const_u32_expr(n, 32),
+            None => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$bits argument shape unsupported (nets, array views, and \
+                     self-determined expressions fold; v7)",
+                );
+                self.placeholder_expr()
+            }
+        }
+    }
+
+    /// Width of the shapes `$bits` can take WITHOUT lowering: a static-array
+    /// view (whole array = total bits, partial chain = remaining slice), a
+    /// plain net ident, or a bound param (unsized i64 domain → 32,
+    /// iverilog-pinned). Inline-subst formals fall through to the lowering
+    /// path (the subst maps them to the actual's expr).
+    ///
+    /// `prescan_first`: in CONST contexts (param binding (3b), range specs)
+    /// the current module's nets are not in the real table yet — the
+    /// decl-order prescan is the authority there. At runtime the real table
+    /// resolves first (it sees generate-scoped shadows the prescan doesn't).
+    fn bits_of_view(&self, e: &ast::Expr, prescan_first: bool) -> Option<u32> {
+        if let ast::ExprKind::Paren { inner } = &e.kind {
+            return self.bits_of_view(inner, prescan_first);
+        }
+        let from_prescan = |me: &Self| -> Option<u32> {
+            let (root, depth) = ident_index_chain(e)?;
+            // mirror the lower_expr Ident resolution priority: a bound
+            // formal/param shadows a same-named decl.
+            if me.subst_lookup(root).is_some()
+                || me.out_subst_lookup(root).is_some()
+                || me.lookup_scoped(root).is_some()
+            {
+                return None;
+            }
+            let (elem, dims) = me.bits_prescan.get(root)?;
+            if depth > dims.len() {
+                return None; // indexing into packed space → lowering path
+            }
+            let rem: u64 = dims[depth..].iter().product();
+            u32::try_from(elem.saturating_mul(rem)).ok()
+        };
+        let from_table = |me: &Self| -> Option<u32> {
+            if let Some((net, idxs)) = me.expr_array_view(e) {
+                let nv = me.nets.get(net as usize)?;
+                let w = nv.width.max(1) as u64;
+                if idxs.is_empty() {
+                    return u32::try_from(w * nv.array_len.max(1) as u64).ok();
+                }
+                let dims = me.array_dims.get(&net)?;
+                if idxs.len() > dims.len() {
+                    return None; // trailing packed selects → lowering path
+                }
+                let rem: u64 = dims[idxs.len()..]
+                    .iter()
+                    .map(|&(lo, hi)| hi.abs_diff(lo) as u64 + 1)
+                    .product();
+                return u32::try_from(rem * w).ok();
+            }
+            if let ast::ExprKind::Ident(p) = &e.kind {
+                if let [seg] = p.segments.as_slice() {
+                    let name = seg.name.as_str();
+                    if me.subst_lookup(name).is_some() || me.out_subst_lookup(name).is_some() {
+                        return None; // formal — resolve via the lowering path
+                    }
+                    if me.lookup_scoped(name).is_some() {
+                        return Some(32); // param/genvar (width-less i64 domain)
+                    }
+                    if let Some(net) = me.lookup_net_scoped(name) {
+                        let nv = me.nets.get(net as usize)?;
+                        return Some(nv.width.max(1));
+                    }
+                }
+            }
+            None
+        };
+        if prescan_first {
+            from_prescan(self).or_else(|| from_table(self))
+        } else {
+            from_table(self).or_else(|| from_prescan(self))
+        }
+    }
+
+    /// v7 `$bits` prescan (see `bits_prescan`): record one body decl's widths.
+    /// Every fold failure is a SILENT skip — the `$bits` call site is the loud
+    /// one; the real net lowering later re-folds with full diagnostics.
+    fn prescan_net_bits(&mut self, d: &ast::NetVarDecl) {
+        let fold_range = |me: &Self, r: &ast::Range| -> Option<u64> {
+            match (
+                me.const_eval_in_scope(&r.msb),
+                me.const_eval_in_scope(&r.lsb),
+            ) {
+                (Some(m), Some(l)) if m >= 0 && l >= 0 => Some(m.abs_diff(l) + 1),
+                _ => None,
+            }
+        };
+        let elem: u64 = match d.kind {
+            ast::NetVarKind::Integer => 32,
+            ast::NetVarKind::Real
+            | ast::NetVarKind::Realtime
+            | ast::NetVarKind::Time
+            | ast::NetVarKind::Event => 64,
+            _ => {
+                let mut w = match &d.range {
+                    None => 1u64,
+                    Some(r) => match fold_range(self, r) {
+                        Some(w) => w,
+                        None => return,
+                    },
+                };
+                for r in &d.packed {
+                    match fold_range(self, r) {
+                        Some(pw) => w = w.saturating_mul(pw),
+                        None => return,
+                    }
+                }
+                w
+            }
+        };
+        'names: for n in &d.names {
+            let mut dims: Vec<u64> = Vec::new();
+            for dim in &n.unpacked {
+                match dim {
+                    ast::Dim::Range(r) => match fold_range(self, r) {
+                        Some(len) => dims.push(len),
+                        None => continue 'names,
+                    },
+                    ast::Dim::Size(e) => match self.const_eval_in_scope(e) {
+                        Some(s) if s > 0 => dims.push(s as u64),
+                        _ => continue 'names,
+                    },
+                    // dyn/queue/assoc — no static bit size
+                    _ => continue 'names,
+                }
+            }
+            self.bits_prescan.insert(n.name.name.clone(), (elem, dims));
+        }
+    }
+
+    /// Self-determined width of an already-lowered expr (mirrors the engine's
+    /// width table rules over the partial arena). `None` ⇒ loud at the caller.
+    fn ir_bits_of(&self, eid: u32) -> Option<u32> {
+        let e = self.exprs.get(eid as usize)?;
+        Some(match e {
+            ir::Expr::Const { val } => self.consts.get(*val as usize)?.width.max(1),
+            ir::Expr::Signal { net, .. } => self.nets.get(*net as usize)?.width.max(1),
+            ir::Expr::Select { width, kind, .. } => match kind {
+                ir::SelKind::Bit => 1,
+                // direct Const OR the synthesized `Add(Sub(msb,lsb),1)` width
+                // tree (mirrors the engine's shallow width-edge fold).
+                _ => self.width_edge_u32(*width)?,
+            },
+            ir::Expr::Concat { parts } => {
+                let mut s: u64 = 0;
+                for &p in parts {
+                    s += self.ir_bits_of(p)? as u64;
+                }
+                u32::try_from(s).ok()?
+            }
+            ir::Expr::Replicate { count, value } => {
+                let c = self.width_edge_u32(*count)? as u64;
+                let vw = self.ir_bits_of(*value)? as u64;
+                u32::try_from(c * vw).ok()?
+            }
+            ir::Expr::Unary { op, operand } => match op {
+                ir::UnOp::Plus | ir::UnOp::Minus | ir::UnOp::BitNot => self.ir_bits_of(*operand)?,
+                _ => 1, // reductions / LogNot
+            },
+            ir::Expr::Binary { op, lhs, rhs } => {
+                use ir::BinOp::*;
+                match op {
+                    Add | Sub | Mul | Div | Mod | Pow | BitAnd | BitOr | BitXor | BitXnor => {
+                        self.ir_bits_of(*lhs)?.max(self.ir_bits_of(*rhs)?)
+                    }
+                    Shl | Shr | AShl | AShr => self.ir_bits_of(*lhs)?,
+                    _ => 1, // comparisons / case(z/x) / logical
+                }
+            }
+            ir::Expr::Ternary { then_e, else_e, .. } => {
+                self.ir_bits_of(*then_e)?.max(self.ir_bits_of(*else_e)?)
+            }
+            ir::Expr::SysFunc { which, args } => {
+                use ir::SysFuncId as F;
+                match which {
+                    F::Time | F::Realtime | F::Itor | F::BitsToReal | F::RealToBits => 64,
+                    F::Signed | F::Unsigned => {
+                        let a = *args.first()?;
+                        self.ir_bits_of(a)?
+                    }
+                    F::Clog2
+                    | F::Rtoi
+                    | F::DynSize
+                    | F::AssocNum
+                    | F::AssocFirst
+                    | F::AssocNext
+                    | F::AssocLast
+                    | F::AssocPrev
+                    | F::Random
+                    | F::Urandom
+                    | F::UrandomRange
+                    | F::CountOnes
+                    | F::Stime
+                    | F::Fopen
+                    | F::TestPlusargs
+                    | F::ValuePlusargs
+                    | F::StrLen
+                    | F::StrCmp => 32,
+                    F::AssocExists | F::OneHot | F::OneHot0 | F::IsUnknown => 1,
+                    F::StrGetC => 8,
+                    // element-typed pops / dynamic-length string producers
+                    F::QPopBack
+                    | F::QPopFront
+                    | F::Sformatf
+                    | F::StrSubstr
+                    | F::StrToUpper
+                    | F::StrToLower => return None,
+                }
+            }
+            ir::Expr::Call { .. } => return None,
+        })
+    }
+
+    /// Width-edge fold for `ir_bits_of`: a direct `Const`, or the shallow
+    /// `Add(Sub(msb,lsb),1)` tree elaborate synthesizes for `[msb:lsb]` —
+    /// the same two shapes the engine's width-table fold accepts.
+    fn width_edge_u32(&self, eid: u32) -> Option<u32> {
+        if let Some(c) = self.const_of_expr_u32(eid) {
+            return Some(c);
+        }
+        match self.exprs.get(eid as usize)? {
+            ir::Expr::Binary {
+                op: ir::BinOp::Add,
+                lhs,
+                rhs,
+            } => {
+                let a = self.width_edge_u32(*lhs)?;
+                let b = self.width_edge_u32(*rhs)?;
+                Some(a.saturating_add(b))
+            }
+            ir::Expr::Binary {
+                op: ir::BinOp::Sub,
+                lhs,
+                rhs,
+            } => {
+                let a = self.width_edge_u32(*lhs)?;
+                let b = self.width_edge_u32(*rhs)?;
+                Some(a.saturating_sub(b))
+            }
+            _ => None,
+        }
+    }
+
     /// Per-label equality test for a case arm. Plain `case` is the exact 4-state
     /// `scrut === label`.
     ///
@@ -7425,7 +7739,35 @@ fn map_sysfunc(dollar_name: &str) -> Option<ir::SysFuncId> {
         "$itor" => Some(ir::SysFuncId::Itor),
         "$realtobits" => Some(ir::SysFuncId::RealToBits),
         "$bitstoreal" => Some(ir::SysFuncId::BitsToReal),
+        // v7 bit-vector predicates ($bits never reaches here — const-folded).
+        "$countones" => Some(ir::SysFuncId::CountOnes),
+        "$onehot" => Some(ir::SysFuncId::OneHot),
+        "$onehot0" => Some(ir::SysFuncId::OneHot0),
+        "$isunknown" => Some(ir::SysFuncId::IsUnknown),
         _ => None,
+    }
+}
+
+/// Walk a `name[i][j]…` chain to its single-segment root ident, counting the
+/// indices ($bits prescan key — the indices are NOT evaluated, IEEE §20.6.2).
+fn ident_index_chain(e: &ast::Expr) -> Option<(&str, usize)> {
+    let mut depth = 0usize;
+    let mut cur = e;
+    loop {
+        match &cur.kind {
+            ast::ExprKind::BitSelect { base, .. } => {
+                depth += 1;
+                cur = base;
+            }
+            ast::ExprKind::Paren { inner } => cur = inner,
+            ast::ExprKind::Ident(p) => {
+                return match p.segments.as_slice() {
+                    [seg] => Some((seg.name.as_str(), depth)),
+                    _ => None,
+                };
+            }
+            _ => return None,
+        }
     }
 }
 

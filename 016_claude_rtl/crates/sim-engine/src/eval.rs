@@ -1261,17 +1261,49 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 v.val[0] = bits;
                 v
             }
+            // v7 bit-vector predicates (iverilog-pinned): x/z bits never count
+            // as 1; the result is always KNOWN (a 1x1z operand gives co=2,
+            // onehot=0 — not x). Word-parallel popcount over val & !unk.
+            SysFuncId::CountOnes
+            | SysFuncId::OneHot
+            | SysFuncId::OneHot0
+            | SysFuncId::IsUnknown => {
+                let Some(&a0) = args.first() else {
+                    // malformed arity (defensive — elaborate emits 1 arg)
+                    return match which {
+                        SysFuncId::CountOnes => Value::xs(32, true),
+                        _ => Value::xs(1, false),
+                    };
+                };
+                let a = self.eval(a0);
+                let mut ones: u64 = 0;
+                let mut unk_any = false;
+                for k in 0..nwords(a.width).max(1) {
+                    let v = a.val.get(k).copied().unwrap_or(0);
+                    let u = a.unk.get(k).copied().unwrap_or(0);
+                    ones += (v & !u).count_ones() as u64;
+                    unk_any |= u != 0;
+                }
+                match which {
+                    SysFuncId::CountOnes => {
+                        let mut v = Value::zeros(32, true);
+                        v.val[0] = ones;
+                        v
+                    }
+                    SysFuncId::OneHot => Value::logic(ones == 1),
+                    SysFuncId::OneHot0 => Value::logic(ones <= 1),
+                    _ => Value::logic(unk_any),
+                }
+            }
             // v7 shape, features not wired yet (elaborate still rejects the
             // names): defensive X at each func's declared self-width.
             SysFuncId::Random
-            | SysFuncId::CountOnes
             | SysFuncId::Fopen
             | SysFuncId::TestPlusargs
             | SysFuncId::ValuePlusargs
             | SysFuncId::StrLen
             | SysFuncId::StrCmp => Value::xs(32, true),
             SysFuncId::Urandom | SysFuncId::UrandomRange | SysFuncId::Stime => Value::xs(32, false),
-            SysFuncId::OneHot | SysFuncId::OneHot0 | SysFuncId::IsUnknown => Value::xs(1, false),
             SysFuncId::StrGetC
             | SysFuncId::Sformatf
             | SysFuncId::StrSubstr
