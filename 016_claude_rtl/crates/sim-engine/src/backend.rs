@@ -87,7 +87,12 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
                 &stmts[sid as usize],
                 Stmt::BlockingAssign { rhs, .. } if matches!(
                     exprs.get(*rhs as usize),
-                    Some(Expr::SysFunc { which: SysFuncId::ValuePlusargs | SysFuncId::Fopen, .. })
+                    Some(Expr::SysFunc {
+                        which: SysFuncId::ValuePlusargs
+                            | SysFuncId::Fopen
+                            | SysFuncId::Sformatf,
+                        ..
+                    })
                 )
             );
             let pop_rhs = pop_rhs || seeded_random_rhs || value_plusargs_rhs;

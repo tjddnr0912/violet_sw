@@ -427,10 +427,58 @@ pub(crate) fn dispatch(
             readmem(sched, args, matches!(which, SysTaskId::ReadmemH));
             Ctl::Continue
         }
-        // v7 shape, features not wired yet: elaborate still rejects/skips these
-        // names, so a Stmt carrying them can only come from a hand-built IR —
-        // defensive no-op, never a panic.
-        SysTaskId::Sformat | SysTaskId::StrPutC => Ctl::Continue,
+        // v7 P2-C `s.putc(i, c)` — the one string MUTATOR (in-place byte
+        // write; OOB index or a NUL byte = silent no-op, IEEE §6.16.3).
+        SysTaskId::StrPutC => {
+            let net = args
+                .first()
+                .and_then(|&a| match sched.st.ir.exprs.get(a as usize) {
+                    Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                    _ => None,
+                });
+            let i = args.get(1).and_then(|&a| sched.eval(a).to_u64());
+            let c = args.get(2).and_then(|&a| sched.eval(a).to_u64());
+            if let (Some(net), Some(i), Some(c)) = (net, i, c) {
+                let c = (c & 0xff) as u8;
+                if c != 0 {
+                    if let Some(crate::state::DynObj::Str { bytes }) =
+                        sched.st.dyn_heap.get_mut(&net)
+                    {
+                        if let Some(slot) = bytes.get_mut(i as usize) {
+                            *slot = c;
+                        }
+                    }
+                }
+            }
+            Ctl::Continue
+        }
+        // v7 P2-C `$sformat(dest, fmt, args…)` — renders through the SAME
+        // format engine and writes dest (string net = byte store; packed =
+        // the normal funnel with §6.16 conversion).
+        SysTaskId::Sformat => {
+            let text = format_args_str(sched, fmt, args.get(1..).unwrap_or(&[]), radix);
+            let dest = args
+                .first()
+                .and_then(|&a| match sched.st.ir.exprs.get(a as usize) {
+                    Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                    _ => None,
+                });
+            if let Some(net) = dest {
+                let v = Value::from_str_bytes(text.as_bytes());
+                let lv = sim_ir::Lvalue {
+                    chunks: vec![sim_ir::LvalChunk {
+                        net,
+                        word: None,
+                        offset: None,
+                        width: None,
+                        kind: sim_ir::SelKind::Bit,
+                    }],
+                };
+                let off = sched.resolve_lvalue_offsets(&lv);
+                sched.st.write_lvalue(&lv, v, &off);
+            }
+            Ctl::Continue
+        }
     }
 }
 
@@ -827,7 +875,11 @@ fn dumpvars(st: &mut SimState, args: &[u32]) {
                 // never declared, so no initial dump and no change records.
                 if matches!(
                     nets[i].kind,
-                    sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue | sim_ir::NetKind::Assoc
+                    sim_ir::NetKind::DynArray
+                        | sim_ir::NetKind::Queue
+                        | sim_ir::NetKind::Assoc
+                        | sim_ir::NetKind::AssocStr
+                        | sim_ir::NetKind::String
                 ) {
                     continue;
                 }
@@ -866,7 +918,11 @@ fn dumpvars(st: &mut SimState, args: &[u32]) {
             for (i, nv) in nets.iter().enumerate() {
                 if matches!(
                     nv.kind,
-                    sim_ir::NetKind::DynArray | sim_ir::NetKind::Queue | sim_ir::NetKind::Assoc
+                    sim_ir::NetKind::DynArray
+                        | sim_ir::NetKind::Queue
+                        | sim_ir::NetKind::Assoc
+                        | sim_ir::NetKind::AssocStr
+                        | sim_ir::NetKind::String
                 ) {
                     continue; // dyn handles: no $var form (see above)
                 }
@@ -1319,9 +1375,15 @@ fn render_template(
                     }
                     // packed VALUE: byte-per-char, NUL bytes as spaces
                     // (iverilog-pinned: 64-bit "hello" prints "   hello").
+                    // v7 P2-C: a STRING-domain value renders its EXACT bytes
+                    // (iverilog: a string prints "hello", never padded).
                     Some(eid) => {
                         let v = sched.eval(eid);
-                        out.push_str(&fmt_packed_chars(&v));
+                        if v.is_str {
+                            out.push_str(&String::from_utf8_lossy(&v.to_str_bytes()));
+                        } else {
+                            out.push_str(&fmt_packed_chars(&v));
+                        }
                     }
                     None => {}
                 }

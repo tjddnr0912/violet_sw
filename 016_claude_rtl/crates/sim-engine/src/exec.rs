@@ -104,6 +104,12 @@ pub(crate) trait Kernel {
     /// WRITE: open the file (mode form → 0x8000_0003… fd; MCD form → channel
     /// bit) and return the descriptor value; failure returns 0.
     fn k_fopen(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$sformatf(fmt, args…)` call (v7)? Formatting needs
+    /// the full kernel (the format engine renders through the Scheduler), so
+    /// it is a statement-level effect; other placements are loud at elaborate.
+    fn k_sformatf_rhs(&self, rhs: u32) -> bool;
+    /// WRITE-phase render of a `$sformatf` rhs → the STRING-domain value.
+    fn k_sformatf(&mut self, rhs: u32) -> Value;
     /// READ: is `rhs` an assoc-iteration SysFunc (`first`/`next`/`last`/
     /// `prev`)? They WRITE their ref key argument, so like the pops they are
     /// statement-level effects (`StmtEffect::AssocIter`); any other placement
@@ -385,6 +391,13 @@ enum StmtEffect<'s> {
         rhs: u32,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is `$sformatf(...)` (v7): rendering runs
+    /// through the kernel-side format engine — WRITE phase, same family.
+    Sformatf {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
@@ -472,6 +485,15 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
                     offsets,
                 };
             }
+            // v7: $sformatf renders through the kernel — same family.
+            if k.k_sformatf_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Sformatf {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
             let offsets = k.k_resolve_lvalue_offsets(lhs); // dynamic index NOW
             StmtEffect::Blocking {
@@ -548,6 +570,11 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::Fopen { lhs, rhs, offsets } => {
             let value = k.k_fopen(rhs); // file-table mutation (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Sformatf { lhs, rhs, offsets } => {
+            let value = k.k_sformatf(rhs); // kernel-side render (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }

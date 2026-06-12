@@ -1954,6 +1954,24 @@ impl Kernel for Scheduler<'_, '_> {
         v.val[0] = fd as u64;
         v
     }
+    fn k_sformatf_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Sformatf,
+                ..
+            })
+        )
+    }
+    fn k_sformatf(&mut self, rhs: u32) -> Value {
+        // args = [fmt string-literal Const, value args…] (elaborate contract).
+        let Some(sim_ir::Expr::SysFunc { args, .. }) = self.st.ir.exprs.get(rhs as usize) else {
+            return Value::from_str_bytes(&[]);
+        };
+        let (fmt, rest) = (args.first().copied(), args.get(1..).unwrap_or(&[]).to_vec());
+        let text = crate::builtins::format_args_str(self, fmt, &rest, None);
+        Value::from_str_bytes(text.as_bytes())
+    }
     fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value {
         // `k_queue_pop_rhs` guaranteed the shape; everything below is
         // defensive against a hand-built IR — degrade, never panic.

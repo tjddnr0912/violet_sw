@@ -121,6 +121,10 @@ pub trait NetReader {
     fn is_assoc_str(&self, _net: u32) -> bool {
         false
     }
+    /// v7 P2-C: the raw bytes of a STRING handle (`None` = not a string net).
+    fn str_bytes(&self, _net: u32) -> Option<Vec<u8>> {
+        None
+    }
     /// v6: string-keyed element read — the byte twin of `assoc_read`.
     fn assoc_str_read(&self, _net: u32, _key: &Option<Vec<u8>>) -> Value {
         Value::xs(1, false)
@@ -166,6 +170,16 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             }
         }
         None
+    }
+
+    /// v7 P2-C: bytes of the STRING handle named by an arg ExprId (the
+    /// `Signal{net, word:None}` elaborate emits for method receivers).
+    fn handle_str_bytes(&self, arg: Option<&u32>) -> Option<Vec<u8>> {
+        let net = arg.and_then(|&a| match self.ir.exprs.get(a as usize) {
+            Some(Expr::Signal { net, word: None }) => Some(*net),
+            _ => None,
+        })?;
+        self.nets.str_bytes(net)
     }
 
     /// v5 ⑤: evaluate an assoc KEY expression into the engine's signed-i64
@@ -1390,18 +1404,85 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     None => Value::xs(32, true),
                 }
             }
+            // v7 P2-C string methods. args[0] = the handle's Signal (elaborate
+            // contract); a malformed handle X-poisons, never panics. Methods
+            // are PURE heap reads (putc is the one mutator = SysTask).
+            SysFuncId::StrLen => {
+                let b = self.handle_str_bytes(args.first());
+                match b {
+                    Some(b) => Value::from_i128(b.len() as i128, 32, true),
+                    None => Value::xs(32, true),
+                }
+            }
+            SysFuncId::StrGetC => {
+                let b = self.handle_str_bytes(args.first());
+                let i = args.get(1).and_then(|&a| self.eval(a).to_u64());
+                match (b, i) {
+                    // OOB index reads 0 (IEEE §6.16.2).
+                    (Some(b), Some(i)) => {
+                        let c = b.get(i as usize).copied().unwrap_or(0);
+                        let mut v = Value::zeros(8, false);
+                        v.val[0] = c as u64;
+                        v
+                    }
+                    _ => Value::xs(8, false),
+                }
+            }
+            SysFuncId::StrSubstr => {
+                let b = self.handle_str_bytes(args.first());
+                let i = args.get(1).and_then(|&a| self.eval(a).to_u64());
+                let j = args.get(2).and_then(|&a| self.eval(a).to_u64());
+                match (b, i, j) {
+                    // inclusive [i..=j]; any invalid range = "" (IEEE §6.16.8).
+                    (Some(b), Some(i), Some(j)) => {
+                        let (i, j) = (i as usize, j as usize);
+                        if i > j || j >= b.len() {
+                            Value::from_str_bytes(&[])
+                        } else {
+                            Value::from_str_bytes(&b[i..=j])
+                        }
+                    }
+                    _ => Value::from_str_bytes(&[]),
+                }
+            }
+            SysFuncId::StrToUpper | SysFuncId::StrToLower => {
+                let b = self.handle_str_bytes(args.first());
+                match b {
+                    Some(b) => {
+                        let mapped: Vec<u8> = if matches!(which, SysFuncId::StrToUpper) {
+                            b.iter().map(|c| c.to_ascii_uppercase()).collect()
+                        } else {
+                            b.iter().map(|c| c.to_ascii_lowercase()).collect()
+                        };
+                        Value::from_str_bytes(&mapped)
+                    }
+                    None => Value::from_str_bytes(&[]),
+                }
+            }
+            // lexicographic compare of the two args' DENOTED byte strings
+            // (§6.16 conversion: leading NULs strip) — backs both the
+            // `.compare()` method and every string relational operator.
+            SysFuncId::StrCmp => {
+                let a = args.first().map(|&a| self.eval(a).to_str_bytes());
+                let b = args.get(1).map(|&a| self.eval(a).to_str_bytes());
+                match (a, b) {
+                    (Some(a), Some(b)) => {
+                        let r = match a.cmp(&b) {
+                            std::cmp::Ordering::Less => -1i64,
+                            std::cmp::Ordering::Equal => 0,
+                            std::cmp::Ordering::Greater => 1,
+                        };
+                        Value::from_i128(r as i128, 32, true)
+                    }
+                    _ => Value::xs(32, true),
+                }
+            }
             // v7 shape, features not wired yet (elaborate still rejects the
             // names): defensive X at each func's declared self-width.
-            // `ValuePlusargs` here = unsupported placement (the legal direct-
-            // rhs form is intercepted statement-level before eval).
-            SysFuncId::Fopen | SysFuncId::ValuePlusargs | SysFuncId::StrLen | SysFuncId::StrCmp => {
-                Value::xs(32, true)
-            }
-            SysFuncId::StrGetC
-            | SysFuncId::Sformatf
-            | SysFuncId::StrSubstr
-            | SysFuncId::StrToUpper
-            | SysFuncId::StrToLower => Value::xs(8, false),
+            // `ValuePlusargs`/`Sformatf` here = unsupported placement (the
+            // legal direct-rhs forms are intercepted statement-level).
+            SysFuncId::Fopen | SysFuncId::ValuePlusargs => Value::xs(32, true),
+            SysFuncId::Sformatf => Value::xs(8, false),
         }
     }
 

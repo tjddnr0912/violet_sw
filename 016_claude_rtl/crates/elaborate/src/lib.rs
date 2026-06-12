@@ -2435,7 +2435,10 @@ impl<'s> Elaborator<'s> {
             } else {
                 matches!(
                     nv.kind,
-                    ir::NetKind::Reg | ir::NetKind::Integer | ir::NetKind::Real
+                    ir::NetKind::Reg
+                        | ir::NetKind::Integer
+                        | ir::NetKind::Real
+                        | ir::NetKind::String
                 )
             };
             if bad {
@@ -2694,6 +2697,49 @@ impl<'s> Elaborator<'s> {
                     .iter()
                     .fold(1u32, |a, &(_, w)| a.saturating_mul(w.max(1)));
                 msb = width.saturating_sub(1);
+            }
+            // ── v7 P2-C: `string s` — heap-handle declaration ──
+            // width 0 / array_len 0; the engine heap holds the bytes (dyn
+            // precedent). Reads materialize is_str packed values; writes
+            // strip leading NULs through the funnel.
+            if matches!(d.kind, ast::NetVarKind::String) {
+                if d.range.is_some() || !d.packed.is_empty() || !decl.unpacked.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a string variable takes no packed/unpacked dimensions (v7)",
+                    );
+                    continue;
+                }
+                if decl.init.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a string declaration initializer is outside the v7 \
+                         scope (assign in an initial block)",
+                    );
+                    continue;
+                }
+                let dir = self.dir_for_name(&decl.name.name, ports, body);
+                if dir != ir::PortDir::Internal {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a string variable cannot be a port (outside the v7 scope)",
+                    );
+                    continue;
+                }
+                self.add_net(
+                    &decl.name.name,
+                    ir::NetVar {
+                        kind: ir::NetKind::String,
+                        width: 0,
+                        msb: 0,
+                        lsb: 0,
+                        signed: false,
+                        array_len: 0,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(ast::NetVarKind::Reg, 1),
+                    },
+                );
+                continue;
             }
             // ── v5 ⑥: dynamic-storage HANDLE declaration ──
             // `integer d[]` / `logic [7:0] q[$]` / `integer a[integer]`:
@@ -3283,6 +3329,37 @@ impl<'s> Elaborator<'s> {
                 self.push_expr(ir::Expr::Unary { op: irop, operand })
             }
             ast::ExprKind::Binary { op, lhs, rhs } => {
+                // v7 P2-C: a comparison with a STRING-domain operand routes
+                // through StrCmp (packed compare zero-extends MSB-side, which
+                // is NOT lexicographic for unequal lengths; sizing the
+                // dynamic widths statically would truncate). `cmp <op> 0`
+                // with a SIGNED zero keeps the relational signed.
+                if matches!(
+                    op,
+                    ast::BinOp::Eq
+                        | ast::BinOp::Ne
+                        | ast::BinOp::Lt
+                        | ast::BinOp::Le
+                        | ast::BinOp::Gt
+                        | ast::BinOp::Ge
+                ) && (self.expr_is_string_ast(lhs) || self.expr_is_string_ast(rhs))
+                {
+                    let l = self.lower_expr(lhs);
+                    let r = self.lower_expr(rhs);
+                    let cmp = self.push_expr(ir::Expr::SysFunc {
+                        which: ir::SysFuncId::StrCmp,
+                        args: vec![l, r],
+                    });
+                    let zero = {
+                        let cid = self.intern_const(make_const_i64(0, 32, true));
+                        self.push_expr(ir::Expr::Const { val: cid })
+                    };
+                    return self.push_expr(ir::Expr::Binary {
+                        op: map_binop(*op),
+                        lhs: cmp,
+                        rhs: zero,
+                    });
+                }
                 let lhs = self.lower_expr(lhs); // POST-ORDER: lhs, then rhs, then self
                 let rhs = self.lower_expr(rhs);
                 let irop = map_binop(*op);
@@ -3415,6 +3492,15 @@ impl<'s> Elaborator<'s> {
 
             // ── structural ─────────────────────────────────────────
             ast::ExprKind::Concat { parts } => {
+                // v7 P2-C: string concatenation needs dynamic-width results
+                // the static Concat node cannot carry — loud, $sformatf works.
+                if parts.iter().any(|p| self.expr_is_string_ast(p)) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "string concatenation is outside the v7 scope (use $sformatf(\"%s%s\", a, b))",
+                    );
+                    return self.placeholder_expr();
+                }
                 let part_ids: Vec<u32> = parts.iter().map(|p| self.lower_expr(p)).collect();
                 if part_ids.iter().any(|&p| self.expr_is_real(p)) {
                     self.error(
@@ -3467,6 +3553,17 @@ impl<'s> Elaborator<'s> {
                     self.error(
                         MsgCode::ElabUnsupported,
                         "$fopen is supported only as the direct rhs of a \
+                         blocking assignment (v7)",
+                    );
+                    return self.placeholder_expr();
+                }
+                // v7 P2-C: $sformatf renders through the kernel-side format
+                // engine — direct-rhs only (the dominant TB pattern is
+                // `msg = $sformatf(...); $display("%s", msg);`).
+                if name.name == "$sformatf" {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "$sformatf is supported only as the direct rhs of a \
                          blocking assignment (v7)",
                     );
                     return self.placeholder_expr();
@@ -3886,6 +3983,10 @@ impl<'s> Elaborator<'s> {
             if let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) {
                 return self.lower_dyn_method_expr(net, kind, &name.segments[1].name, args);
             }
+            // v7 P2-C: string methods.
+            if let Some(net) = self.string_handle(&name.segments[0].name) {
+                return self.lower_string_method_expr(net, &name.segments[1].name, args);
+            }
         }
         if name.segments.len() != 1 {
             self.error(
@@ -4060,6 +4161,11 @@ impl<'s> Elaborator<'s> {
         if name.segments.len() == 2 {
             if let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) {
                 self.lower_dyn_method_stmt(b, net, kind, &name.segments[1].name, args);
+                return;
+            }
+            // v7 P2-C: `s.putc(i, c);`.
+            if let Some(net) = self.string_handle(&name.segments[0].name) {
+                self.lower_string_method_stmt(b, net, &name.segments[1].name, args);
                 return;
             }
         }
@@ -4404,6 +4510,100 @@ impl<'s> Elaborator<'s> {
             ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc | ir::NetKind::AssocStr
         )
         .then_some((n, k))
+    }
+
+    /// v7 P2-C: `name` (single segment, current scope) as a STRING net.
+    fn string_handle(&self, name: &str) -> Option<u32> {
+        let n = self.lookup_net_scoped(name)?;
+        (self.nets.get(n as usize)?.kind == ir::NetKind::String).then_some(n)
+    }
+
+    /// v7 P2-C: does this AST expression denote a STRING-domain value?
+    /// (a string variable read, or a string-producing method call). Literals
+    /// stay packed — a string-vs-literal comparison routes via the string
+    /// side. Conservative: anything else is not string-domain.
+    fn expr_is_string_ast(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Paren { inner } => self.expr_is_string_ast(inner),
+            ast::ExprKind::Ident(p) => match p.segments.as_slice() {
+                [seg] => {
+                    self.subst_lookup(&seg.name).is_none()
+                        && self.out_subst_lookup(&seg.name).is_none()
+                        && self.lookup_scoped(&seg.name).is_none()
+                        && self.string_handle(&seg.name).is_some()
+                }
+                _ => false,
+            },
+            ast::ExprKind::Call { name, .. } => {
+                name.segments.len() == 2
+                    && self.string_handle(&name.segments[0].name).is_some()
+                    && matches!(
+                        name.segments[1].name.as_str(),
+                        "substr" | "toupper" | "tolower"
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    /// v7 P2-C: is `net` a string variable?
+    fn is_string_net(&self, net: u32) -> bool {
+        self.nets.get(net as usize).map(|n| n.kind) == Some(ir::NetKind::String)
+    }
+
+    /// v7 P2-C: method-call EXPRESSION on a string (`s.len()`, `s.substr(i,j)`,
+    /// `s.toupper()`, `s.getc(i)`, `s.compare(t)`). `putc` is the statement
+    /// mutator (`lower_string_method_stmt`); unknown methods are loud.
+    fn lower_string_method_expr(&mut self, net: u32, method: &str, args: &[ast::Expr]) -> u32 {
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let arity_ok = |n: usize| args.len() == n;
+        let which = match method {
+            "len" if arity_ok(0) => ir::SysFuncId::StrLen,
+            "getc" if arity_ok(1) => ir::SysFuncId::StrGetC,
+            "substr" if arity_ok(2) => ir::SysFuncId::StrSubstr,
+            "toupper" if arity_ok(0) => ir::SysFuncId::StrToUpper,
+            "tolower" if arity_ok(0) => ir::SysFuncId::StrToLower,
+            "compare" if arity_ok(1) => ir::SysFuncId::StrCmp,
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "string method `{method}` (with this arity) is outside \
+                         the v7 scope (len/getc/substr/toupper/tolower/compare/putc)"
+                    ),
+                );
+                return self.placeholder_expr();
+            }
+        };
+        let mut ids = vec![handle];
+        ids.extend(args.iter().map(|a| self.lower_expr(a)));
+        self.push_expr(ir::Expr::SysFunc { which, args: ids })
+    }
+
+    /// v7 P2-C: method-call STATEMENT on a string — `s.putc(i, c);`.
+    fn lower_string_method_stmt(
+        &mut self,
+        b: &mut ProcessBuilder,
+        net: u32,
+        method: &str,
+        args: &[ast::Expr],
+    ) {
+        if method != "putc" || args.len() != 2 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("string method statement `{method}` is outside the v7 scope (putc)"),
+            );
+            return;
+        }
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let mut ids = vec![handle];
+        ids.extend(args.iter().map(|a| self.lower_expr(a)));
+        let sid = self.push_stmt(ir::Stmt::SysTask {
+            which: ir::SysTaskId::StrPutC,
+            fmt: None,
+            args: ids,
+        });
+        b.push_stmt_id(sid);
     }
 
     /// Is `net` (already resolved) a dyn handle? Whole-handle value surfaces
@@ -6329,9 +6529,9 @@ impl<'s> Elaborator<'s> {
         match &e.kind {
             ast::ExprKind::Ident(path) => {
                 let n = self.resolve_net(path);
-                if self.is_dyn_handle_net(n) {
-                    // v5 ⑥: handles carry no dirty channel — they can never
-                    // wake a process (design §4).
+                if self.is_dyn_handle_net(n) || self.is_string_net(n) {
+                    // v5 ⑥/v7: handles carry no dirty channel — they can
+                    // never wake a process (design §4).
                     self.error(
                         MsgCode::ElabUnsupported,
                         "a dynamic-storage handle cannot appear in an event control",
@@ -6375,6 +6575,10 @@ impl<'s> Elaborator<'s> {
                 }
                 // v7: `fd = $fopen(name[, mode])` — same family.
                 if self.fopen_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
+                // v7 P2-C: `s = $sformatf(fmt, args…)` — same family.
+                if self.sformatf_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
                 let rhs_id = self.lower_expr(rhs);
@@ -7333,6 +7537,52 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// v7 P2-C: `dest = $sformatf(fmt, args…)` special form. The format
+    /// must be a string LITERAL; rendering runs kernel-side (WRITE phase,
+    /// `StmtEffect::Sformatf`) and the result is a string-domain value the
+    /// funnel converts per the destination (§6.16).
+    fn sformatf_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$sformatf" {
+            return false;
+        }
+        let Some(ast::ExprKind::StrLit { .. }) = args.first().map(|a| &a.kind) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$sformatf needs a string-literal format (v7)",
+            );
+            return true;
+        };
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "intra-assignment delay on $sformatf is unsupported (v7)",
+            );
+            return true;
+        }
+        let arg_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Sformatf,
+            args: arg_ids,
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
     // ── $bits const-fold (v7, IR-0) ────────────────────────────────
     /// `$bits(arg)` → 32-bit Const. The argument is a TYPE reference, never
     /// evaluated; unsupported shapes are LOUD (E3009), never a silent 0.
@@ -7418,6 +7668,9 @@ impl<'s> Elaborator<'s> {
                     }
                     if let Some(net) = me.lookup_net_scoped(name) {
                         let nv = me.nets.get(net as usize)?;
+                        if nv.kind == ir::NetKind::String {
+                            return None; // dynamic length — loud at the site
+                        }
                         return Some(nv.width.max(1));
                     }
                 }
@@ -7444,6 +7697,9 @@ impl<'s> Elaborator<'s> {
                 _ => None,
             }
         };
+        if matches!(d.kind, ast::NetVarKind::String) {
+            return; // dynamic length — $bits on a string stays loud
+        }
         let elem: u64 = match d.kind {
             ast::NetVarKind::Integer => 32,
             ast::NetVarKind::Real
@@ -7828,7 +8084,10 @@ impl<'s> Elaborator<'s> {
         let mut fmt_raw: Option<String> = None;
         // v7 file print family: args[0] is the DESCRIPTOR; the format (when a
         // string literal) is args[1]. Stmt args stay [fd, value-args…].
-        let file_fmt = matches!(which, ir::SysTaskId::Fdisplay | ir::SysTaskId::Fwrite);
+        let file_fmt = matches!(
+            which,
+            ir::SysTaskId::Fdisplay | ir::SysTaskId::Fwrite | ir::SysTaskId::Sformat
+        );
         let mut file_args_buf: Vec<ast::Expr> = Vec::new();
         let (fmt, value_args): (Option<u32>, &[ast::Expr]) = if file_fmt {
             match args.get(1).map(|e| &e.kind) {
@@ -8098,6 +8357,7 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         "$readmemb" => Some(ir::SysTaskId::ReadmemB),
         "$readmemh" => Some(ir::SysTaskId::ReadmemH),
         "$fclose" => Some(ir::SysTaskId::Fclose),
+        "$sformat" => Some(ir::SysTaskId::Sformat),
         "$fdisplay" | "$fdisplayb" | "$fdisplayo" | "$fdisplayh" => Some(ir::SysTaskId::Fdisplay),
         "$fwrite" | "$fwriteb" | "$fwriteo" | "$fwriteh" => Some(ir::SysTaskId::Fwrite),
         _ => None,
@@ -8499,7 +8759,7 @@ fn net_kind_supported(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
     matches!(
         k,
-        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime | Time | Event
+        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime | Time | Event | String
     )
 }
 

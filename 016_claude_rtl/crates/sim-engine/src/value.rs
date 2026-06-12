@@ -183,6 +183,11 @@ pub struct Value {
     /// When true, `val[0]` is `f64::to_bits(x)` and this Value is an IEEE-754
     /// real (64-bit, 2-state, `unk == [0]`). All 4-state paths keep this false.
     pub is_real: bool,
+    /// v7 P2-C: a STRING-domain value (width = 8×len packed ASCII, MSB-first).
+    /// Sizing bypasses context resizing (like `is_real`) — a dynamic-length
+    /// string must never be truncated by a static width; the write funnel
+    /// owns the §6.16 string↔packed conversion instead.
+    pub is_str: bool,
 }
 
 impl Value {
@@ -194,6 +199,7 @@ impl Value {
             width,
             signed,
             is_real: false,
+            is_str: false,
         }
     }
 
@@ -207,6 +213,7 @@ impl Value {
             width,
             signed,
             is_real: false,
+            is_str: false,
         };
         v.mask_top();
         v
@@ -243,6 +250,7 @@ impl Value {
             width,
             signed,
             is_real: false,
+            is_str: false,
         };
         v.mask_top();
         v
@@ -400,6 +408,7 @@ impl Value {
             width: new_width,
             signed: self.signed,
             is_real: false,
+            is_str: false,
         };
         out.mask_top();
         out
@@ -442,6 +451,7 @@ impl Value {
             width: w,
             signed: self.signed,
             is_real: false,
+            is_str: false,
         };
         out.mask_top();
         out
@@ -493,6 +503,7 @@ impl Value {
             width: grow_w,
             signed: self.signed,
             is_real: false,
+            is_str: false,
         };
         out.mask_top();
         out
@@ -504,10 +515,47 @@ impl Value {
         if self.is_real {
             return self; // FIRST: before any `.signed` mutation — a real is width/sign-free.
         }
+        if self.is_str {
+            // v7: a string's width is its DYNAMIC length — context sizing
+            // never truncates it; the write funnel owns §6.16 conversion.
+            return self;
+        }
         self.signed = self.signed && ctx_signed;
         let mut out = self.resize(w);
         out.signed = ctx_signed;
         out
+    }
+
+    /// v7 P2-C: the byte string a value DENOTES (§6.16 conversion): the
+    /// packed bytes MSB-first with LEADING NULs stripped (interior NULs
+    /// kept). X/Z bits read through the value plane (2-state collapse).
+    pub fn to_str_bytes(&self) -> Vec<u8> {
+        let nbytes = (self.width as usize).div_ceil(8);
+        let mut out = Vec::with_capacity(nbytes);
+        let mut started = false;
+        for bi in (0..nbytes).rev() {
+            let bit = bi * 8;
+            let byte = (self.val.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) as u8;
+            if !started && byte == 0 {
+                continue;
+            }
+            started = true;
+            out.push(byte);
+        }
+        out
+    }
+
+    /// v7 P2-C: build a STRING-domain value from raw bytes (8×len packed,
+    /// MSB-first; empty ⇒ a width-8 zero that renders/strips back to "").
+    pub fn from_str_bytes(bytes: &[u8]) -> Value {
+        let w = ((bytes.len() as u32) * 8).max(8);
+        let mut v = Value::zeros(w, false);
+        for (i, &b) in bytes.iter().rev().enumerate() {
+            let bit = i * 8;
+            v.val[bit / 64] |= (b as u64) << (bit % 64);
+        }
+        v.is_str = true;
+        v
     }
 
     /// Build a real Value from an f64. width=64, signed=true, unk=0, is_real.
@@ -518,6 +566,7 @@ impl Value {
             width: 64,
             signed: true,
             is_real: true,
+            is_str: false,
         }
     }
 

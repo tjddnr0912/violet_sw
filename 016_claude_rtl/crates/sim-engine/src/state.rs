@@ -264,7 +264,11 @@ impl<'a> SimState<'a> {
                 .map(|nv| {
                     matches!(
                         nv.kind,
-                        NetKind::DynArray | NetKind::Queue | NetKind::Assoc | NetKind::AssocStr
+                        NetKind::DynArray
+                            | NetKind::Queue
+                            | NetKind::Assoc
+                            | NetKind::AssocStr
+                            | NetKind::String
                     )
                 })
                 .collect(),
@@ -444,6 +448,16 @@ impl<'a> SimState<'a> {
             "one (offset,word) per chunk"
         );
 
+        // v7 P2-C: a STRING destination takes the WHOLE source value — its
+        // net-table width is 0 (dynamic), so the total-width resize below
+        // would chop the value to 1 bit; §6.16 conversion is dyn_write's
+        // byte-strip, never a bit resize.
+        if let [c] = lhs.chunks.as_slice() {
+            if self.ir.nets[c.net as usize].kind == NetKind::String {
+                let (raw_off, raw_word) = offsets.first().copied().unwrap_or((0, 0));
+                return self.write_chunk(c, raw_off, raw_word, &value);
+            }
+        }
         // Total destination bit width = sum of chunk widths.
         let total: u32 = lhs.chunks.iter().map(|c| self.chunk_width(c)).sum();
         let src = value.resize(total.max(1));
@@ -747,6 +761,9 @@ pub enum DynObj {
     Assoc {
         map: std::collections::BTreeMap<i64, Value>,
     },
+    /// v7 P2-C `string s` — raw bytes (a missing entry IS "" — lazy, like
+    /// every dyn object).
+    Str { bytes: Vec<u8> },
     /// `int a[string]` (v6) — raw-byte-string keys (leading-0x00-stripped
     /// packed ASCII). BTree byte order = IEEE lexicographic string compare,
     /// so first/next iterate in the §7.9.4 order for free.
@@ -762,6 +779,7 @@ impl DynObj {
             DynObj::Queue { elems } => elems.len(),
             DynObj::Assoc { map } => map.len(),
             DynObj::AssocStr { map } => map.len(),
+            DynObj::Str { bytes } => bytes.len(),
         }
     }
     /// Clippy pairing for `len`.
@@ -797,6 +815,15 @@ impl<'a> SimState<'a> {
         let (w, signed) = (nv.width.max(1), nv.signed);
         let xs = || Value::xs(w, signed);
         let Some(i) = idx else {
+            // v7 P2-C: a STRING handle's whole-value read IS its packed
+            // materialization (8×len, is_str — context resizing bypassed).
+            if nv.kind == NetKind::String {
+                let bytes: &[u8] = match self.dyn_heap.get(&net) {
+                    Some(DynObj::Str { bytes }) => bytes,
+                    _ => &[],
+                };
+                return Value::from_str_bytes(bytes);
+            }
             // a handle has no scalar value surface (elaborate guards at ⑥;
             // defensive here — e.g. a hand-built IR or future regression).
             self.dyn_warn_once_at(net, "dyn handle read without an index");
@@ -827,6 +854,18 @@ impl<'a> SimState<'a> {
     fn dyn_write(&mut self, c: &sim_ir::LvalChunk, raw_word: u32, piece: &Value) -> bool {
         let net = c.net;
         let w = self.ir.nets[net as usize].width.max(1);
+        // v7 P2-C: STRING whole-handle assignment — strip leading NULs from
+        // the packed value (§6.16) and store the bytes. The only legal
+        // string lvalue shape; anything narrower falls to the loud arm.
+        if self.ir.nets[net as usize].kind == NetKind::String
+            && c.word.is_none()
+            && c.offset.is_none()
+            && c.width.is_none()
+        {
+            let bytes = piece.to_str_bytes();
+            self.dyn_heap.insert(net, DynObj::Str { bytes });
+            return false; // no net dirty channel (design §4, dyn precedent)
+        }
         if c.word.is_none() || c.offset.is_some() || c.width.is_some() {
             self.dyn_warn_once_at(net, "unsupported dyn lvalue shape (write ignored)");
             return false;
@@ -1042,6 +1081,15 @@ impl<'a> NetReader for SimState<'a> {
             _ => false,
         })
     }
+    fn str_bytes(&self, net: u32) -> Option<Vec<u8>> {
+        if self.ir.nets.get(net as usize).map(|n| n.kind) != Some(NetKind::String) {
+            return None;
+        }
+        Some(match self.dyn_heap.get(&net) {
+            Some(DynObj::Str { bytes }) => bytes.clone(),
+            _ => Vec::new(),
+        })
+    }
     fn is_assoc_str(&self, net: u32) -> bool {
         self.dyn_is_handle
             .get(net as usize)
@@ -1129,6 +1177,7 @@ impl<'a> NetReader for SimState<'a> {
                 width,
                 signed: slot.signed,
                 is_real: false,
+                is_str: false,
             }
         } else {
             let mut tmp = Value::zeros(width.max(1), slot.signed);
