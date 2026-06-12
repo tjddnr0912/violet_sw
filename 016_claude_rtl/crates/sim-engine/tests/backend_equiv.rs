@@ -636,3 +636,31 @@ fn per_dim_bounds_guard_equals_across_backends() {
     );
     assert_eq!(out.trim(), "r=xx\nv=xx g12=22");
 }
+
+/// Phase-1.x ⑥: multi-word arithmetic lives in the SHARED eval kernel
+/// (native-eval compile-bails past its lanes → EvalForLval → same kernel) —
+/// pin byte-parity on a clocked body mixing 256-bit unsigned and 128-bit
+/// signed arithmetic.
+#[test]
+fn wide_arith_equals_across_backends() {
+    let out = assert_backends_equal(
+        "module t; \
+           reg clk; reg [255:0] acc; reg signed [127:0] s; \
+           always @(posedge clk) begin \
+             acc <= acc * 256'd1000003 + 256'd7; \
+             s <= s - 128'sd5; \
+           end \
+           initial begin \
+             clk = 0; acc = 256'd1; s = -128'sd2; \
+             #1 clk = 1; #1 clk = 0; #1 clk = 1; #1 clk = 0; \
+             $display(\"%h %0d\", acc, s); \
+             $finish; \
+           end \
+         endmodule",
+        "wide_arith_parity",
+    );
+    assert_eq!(
+        out.trim(),
+        "000000000000000000000000000000000000000000000000000000e8d56b6d65 -12"
+    );
+}

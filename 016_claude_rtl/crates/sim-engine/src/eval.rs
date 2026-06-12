@@ -587,11 +587,11 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         // silently wrong number). UNSIGNED now spans the full 128-bit u128 lane (so
         // a `[127:0]` add/mul carries past bit 63 correctly); only width>128 — beyond
         // the lane — poisons, mirroring the signed guard rather than truncating.
-        if both_signed && w > 64 {
-            return Value::xs(w, true);
-        }
-        if !both_signed && w > 128 {
-            return Value::xs(w, false);
+        // Phase-1.x ⑥: beyond the native lanes (signed >64 / unsigned >128)
+        // arithmetic computes EXACTLY on the word grid (iverilog-differential)
+        // — these used to X-poison as an honest "unsupported".
+        if (both_signed && w > 64) || (!both_signed && w > 128) {
+            return self.arith_wide(op, l, r, w, both_signed);
         }
         let res: u128 = if both_signed {
             let a = l
@@ -655,6 +655,84 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 out.val.resize(2, 0);
             }
             out.val[1] = (res >> 64) as u64;
+        }
+        out.mask_top();
+        out
+    }
+
+    /// Multi-word arithmetic (Phase-1.x ⑥) for widths beyond the native
+    /// lanes. Operands are X-free (gated by the caller); both extend to the
+    /// w-bit grid (sign-extending only when BOTH are signed, §4.5) and every
+    /// op computes mod 2^w in two's complement — school multiplication,
+    /// short (one-word divisor) or restoring long division, square-multiply
+    /// power. Division signs per IEEE: quotient truncates toward zero, the
+    /// remainder takes the DIVIDEND's sign.
+    fn arith_wide(&self, op: BinOp, l: &Value, r: &Value, w: u32, both_signed: bool) -> Value {
+        let n = nwords(w).max(1);
+        let le = l.clone().resize_keep_sign(w, both_signed);
+        let re = r.clone().resize_keep_sign(w, both_signed);
+        let a: Vec<u64> = (0..n)
+            .map(|k| le.val.get(k).copied().unwrap_or(0))
+            .collect();
+        let b: Vec<u64> = (0..n)
+            .map(|k| re.val.get(k).copied().unwrap_or(0))
+            .collect();
+        let sa = both_signed && le.get_vu(w - 1).0 == 1;
+        let sb = both_signed && re.get_vu(w - 1).0 == 1;
+        let words = match op {
+            BinOp::Add => mw_mask(mw_add(&a, &b), w),
+            BinOp::Sub => mw_mask(mw_add(&a, &mw_neg(&b)), w),
+            BinOp::Mul => mw_mask(mw_mul(&a, &b, n), w),
+            BinOp::Div | BinOp::Mod => {
+                if mw_is_zero(&b) {
+                    return Value::xs(w, both_signed);
+                }
+                let ma = if sa {
+                    mw_mask(mw_neg(&a), w)
+                } else {
+                    a.clone()
+                };
+                let mb = if sb {
+                    mw_mask(mw_neg(&b), w)
+                } else {
+                    b.clone()
+                };
+                let (q, rem) = mw_divmod(&ma, &mb);
+                if op == BinOp::Div {
+                    let neg = sa != sb;
+                    mw_mask(if neg { mw_neg(&q) } else { q }, w)
+                } else {
+                    mw_mask(if sa { mw_neg(&rem) } else { rem }, w)
+                }
+            }
+            BinOp::Pow => {
+                if sb {
+                    // negative exponent (IEEE 1364 table): 1 → 1; -1 → ±1 by
+                    // exponent parity; 0 → X; |base| > 1 → 0.
+                    let one = mw_one(n);
+                    let minus_one = mw_mask(mw_neg(&one), w);
+                    if a == one {
+                        one
+                    } else if a == minus_one {
+                        if b[0] & 1 == 0 {
+                            one
+                        } else {
+                            minus_one
+                        }
+                    } else if mw_is_zero(&a) {
+                        return Value::xs(w, both_signed);
+                    } else {
+                        vec![0; n]
+                    }
+                } else {
+                    mw_pow(&a, &b, w)
+                }
+            }
+            _ => unreachable!(),
+        };
+        let mut out = Value::zeros(w, both_signed);
+        for (k, &wd) in words.iter().enumerate().take(n) {
+            out.val[k] = wd;
         }
         out.mask_top();
         out
@@ -1242,4 +1320,169 @@ fn ipow_signed(base: i128, exp: i128) -> u128 {
         e >>= 1;
     }
     acc as u128
+}
+
+// ── multi-word kernels (Phase-1.x ⑥) — all operate on little-endian u64
+//    word vectors of equal length; callers mask to the target width. ──────
+
+fn mw_add(a: &[u64], b: &[u64]) -> Vec<u64> {
+    let mut out = vec![0u64; a.len()];
+    let mut carry = 0u64;
+    for k in 0..a.len() {
+        let (s1, c1) = a[k].overflowing_add(b.get(k).copied().unwrap_or(0));
+        let (s2, c2) = s1.overflowing_add(carry);
+        out[k] = s2;
+        carry = (c1 as u64) + (c2 as u64);
+    }
+    out
+}
+
+/// Two's complement on the word grid (`!a + 1`); caller masks to width.
+pub(crate) fn mw_neg(a: &[u64]) -> Vec<u64> {
+    let mut out = vec![0u64; a.len()];
+    let mut carry = 1u64;
+    for k in 0..a.len() {
+        let (s, c) = (!a[k]).overflowing_add(carry);
+        out[k] = s;
+        carry = c as u64;
+    }
+    out
+}
+
+pub(crate) fn mw_mask(mut a: Vec<u64>, w: u32) -> Vec<u64> {
+    let n = nwords(w).max(1);
+    a.truncate(n);
+    a.resize(n, 0);
+    let top = w - 64 * (n as u32 - 1);
+    a[n - 1] &= low_mask(top);
+    a
+}
+
+fn mw_is_zero(a: &[u64]) -> bool {
+    a.iter().all(|&x| x == 0)
+}
+
+fn mw_one(n: usize) -> Vec<u64> {
+    let mut v = vec![0u64; n];
+    v[0] = 1;
+    v
+}
+
+/// School multiplication, LOW `n` words (mod 2^(64n)).
+fn mw_mul(a: &[u64], b: &[u64], n: usize) -> Vec<u64> {
+    let mut out = vec![0u64; n];
+    for i in 0..n.min(a.len()) {
+        if a[i] == 0 {
+            continue;
+        }
+        let mut carry = 0u128;
+        for j in 0..n - i {
+            let bj = b.get(j).copied().unwrap_or(0);
+            let cur = (a[i] as u128) * (bj as u128) + (out[i + j] as u128) + carry;
+            out[i + j] = cur as u64;
+            carry = cur >> 64;
+        }
+    }
+    out
+}
+
+fn mw_cmp(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
+    for k in (0..a.len().max(b.len())).rev() {
+        let av = a.get(k).copied().unwrap_or(0);
+        let bv = b.get(k).copied().unwrap_or(0);
+        match av.cmp(&bv) {
+            std::cmp::Ordering::Equal => continue,
+            o => return o,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// Unsigned divmod; `b != 0` (caller-gated). One-word divisors take the O(n)
+/// short path; otherwise classic restoring long division over the dividend
+/// bits (O(bits·n) word ops).
+fn mw_divmod(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
+    let n = a.len();
+    if b.iter().skip(1).all(|&x| x == 0) {
+        let d = b[0] as u128;
+        let mut q = vec![0u64; n];
+        let mut rem = 0u128;
+        for k in (0..n).rev() {
+            let cur = (rem << 64) | a[k] as u128;
+            q[k] = (cur / d) as u64;
+            rem = cur % d;
+        }
+        let mut r = vec![0u64; n];
+        r[0] = rem as u64;
+        return (q, r);
+    }
+    // rem gets one extra word so the shift-in never clips.
+    let mut rem = vec![0u64; n + 1];
+    let mut bx = b.to_vec();
+    bx.push(0);
+    let mut q = vec![0u64; n];
+    for i in (0..n as u32 * 64).rev() {
+        // rem = (rem << 1) | bit i of a
+        let mut carry = (a[(i / 64) as usize] >> (i % 64)) & 1;
+        for word in rem.iter_mut() {
+            let top = *word >> 63;
+            *word = (*word << 1) | carry;
+            carry = top;
+        }
+        if mw_cmp(&rem, &bx) != std::cmp::Ordering::Less {
+            rem = mw_add(&rem, &mw_neg(&bx));
+            q[(i / 64) as usize] |= 1 << (i % 64);
+        }
+    }
+    rem.truncate(n);
+    (q, rem)
+}
+
+/// Exact decimal rendering of an arbitrary-width unsigned word vector:
+/// repeated short division by 10^19 (the largest power of ten in a u64),
+/// emitting 19-digit chunks. Phase-1.x ⑥ — `%d` used to truncate past 128.
+pub(crate) fn mw_decimal(words: &[u64]) -> String {
+    const D: u128 = 10_000_000_000_000_000_000; // 10^19
+    if mw_is_zero(words) {
+        return "0".to_string();
+    }
+    let mut w = words.to_vec();
+    let mut chunks: Vec<u64> = Vec::new();
+    while !mw_is_zero(&w) {
+        let mut rem: u128 = 0;
+        for k in (0..w.len()).rev() {
+            let cur = (rem << 64) | w[k] as u128;
+            w[k] = (cur / D) as u64;
+            rem = cur % D;
+        }
+        chunks.push(rem as u64);
+    }
+    let mut out = chunks.pop().unwrap().to_string();
+    for c in chunks.into_iter().rev() {
+        out.push_str(&format!("{c:019}"));
+    }
+    out
+}
+
+/// Square-multiply power mod 2^w (exponent ≥ 0, X-free).
+fn mw_pow(base: &[u64], exp: &[u64], w: u32) -> Vec<u64> {
+    let n = base.len();
+    let top = match (0..n * 64)
+        .rev()
+        .find(|&i| (exp[i / 64] >> (i % 64)) & 1 == 1)
+    {
+        None => return mw_one(n), // exp == 0
+        Some(t) => t,
+    };
+    let mut acc = mw_one(n);
+    let mut sq = base.to_vec();
+    for i in 0..=top {
+        if (exp[i / 64] >> (i % 64)) & 1 == 1 {
+            acc = mw_mask(mw_mul(&acc, &sq, n), w);
+        }
+        if i < top {
+            sq = mw_mask(mw_mul(&sq, &sq, n), w);
+        }
+    }
+    acc
 }

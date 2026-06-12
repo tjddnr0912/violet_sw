@@ -1082,19 +1082,21 @@ fn fmt_dec(v: &Value) -> String {
     if any_unknown(v) {
         return "x".to_string();
     }
-    let mut acc: u128 = 0;
-    for i in 0..v.width.min(128) {
-        let (b, _) = v.get_vu(i);
-        if b == 1 {
-            acc |= 1u128 << i;
-        }
+    // Exact decimal at ANY width (Phase-1.x ⑥): a wide signed value renders
+    // sign + two's-complement magnitude; unsigned long-divides by 10^19.
+    // (%d used to render signed >64 as unsigned and TRUNCATE past 128 bits.)
+    let n = crate::value::nwords(v.width).max(1);
+    let mut words: Vec<u64> = (0..n).map(|k| v.val.get(k).copied().unwrap_or(0)).collect();
+    let neg = v.signed && v.width >= 1 && v.get_vu(v.width - 1).0 == 1;
+    if neg {
+        words = crate::eval::mw_mask(crate::eval::mw_neg(&words), v.width);
     }
-    if v.signed && v.width >= 1 && v.width <= 64 {
-        if let Some(s) = v.to_i128_signed() {
-            return s.to_string();
-        }
+    let s = crate::eval::mw_decimal(&words);
+    if neg {
+        format!("-{s}")
+    } else {
+        s
     }
-    acc.to_string()
 }
 
 /// `%f`/`%e`/`%g` of a real Value (the arg may be an integer promoted to real).
