@@ -547,6 +547,16 @@ struct Elaborator<'s> {
     /// before nets lower, so the real net table can't serve it. Unfoldable
     /// decls are silently skipped (the `$bits` SITE goes loud instead).
     bits_prescan: BTreeMap<String, (u64, Vec<u64>)>,
+    /// v7 P2-D: package name → its const symbols (params/localparams + enum
+    /// labels), folded EAGERLY in declaration order at `run()` entry.
+    pkg_consts: BTreeMap<String, BTreeMap<String, i64>>,
+    /// v7 P2-D: package name → its function/task definitions (clones — the
+    /// same inline-expansion tables modules use).
+    pkg_funcs: BTreeMap<String, BTreeMap<String, ast::FunctionDef>>,
+    pkg_tasks: BTreeMap<String, BTreeMap<String, ast::TaskDef>>,
+    /// v7 P2-D: compilation-unit-scope `import` items — applied to every
+    /// module elaboration (IEEE visibility is decl-order; TBs put them first).
+    cu_imports: Vec<ast::ImportDecl>,
     // NetId → per-unpacked-dimension DESCENDING flag (`mem[3:0]` ⇒ [true]).
     // Recorded only when some dim is descending (absent = all ascending);
     // array ASSIGNMENT pairs elements positionally left-to-right in DECLARED
@@ -698,6 +708,10 @@ impl<'s> Elaborator<'s> {
             const_dedup: BTreeMap::new(),
             array_dims: BTreeMap::new(),
             bits_prescan: BTreeMap::new(),
+            pkg_consts: BTreeMap::new(),
+            pkg_funcs: BTreeMap::new(),
+            pkg_tasks: BTreeMap::new(),
+            cu_imports: Vec::new(),
             array_dim_desc: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -887,13 +901,23 @@ impl<'s> Elaborator<'s> {
                     );
                 }
             }
-            // v7 AST flip is parse-only: package semantics land with the next
-            // slice — LOUD until then (never a silent drop).
-            if matches!(it, ast::TopItem::Package(_) | ast::TopItem::Import(_)) {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "package/import support lands with the v7 package slice",
-                );
+            // v7 P2-D: packages register into their own maps (never roots);
+            // a name colliding with a module/interface/package is E-DUP-UNIT.
+            if let ast::TopItem::Package(pm) = it {
+                if map.contains_key(pm.name.name.as_str())
+                    || self.ifaces.contains_key(&pm.name.name)
+                    || self.pkg_consts.contains_key(&pm.name.name)
+                {
+                    self.error(
+                        MsgCode::DupUnit,
+                        &format!("design unit `{}` declared more than once", pm.name.name),
+                    );
+                } else {
+                    self.elaborate_package(pm);
+                }
+            }
+            if let ast::TopItem::Import(i) = it {
+                self.cu_imports.push(i.clone());
             }
         }
         if order.is_empty() {
@@ -1021,6 +1045,23 @@ impl<'s> Elaborator<'s> {
         // (3) bind params (defaults, then overrides) — BEFORE nets so [W-1:0] folds.
         let mut saved_params = self.bind_params(module, param_overrides);
 
+        // (3a.5) v7 P2-D imports — CONST symbols bind first so body params
+        //        and ranges can use them; a later LOCAL declaration of the
+        //        same name simply rebinds (local wins, iverilog-pinned).
+        //        Function/task imports apply after (3.5) below.
+        let import_list: Vec<ast::ImportDecl> = self
+            .cu_imports
+            .clone()
+            .into_iter()
+            .chain(module.body.iter().filter_map(|it| match it {
+                ast::ModuleItem::Import(i) => Some(i.clone()),
+                _ => None,
+            }))
+            .collect();
+        for imp in &import_list {
+            self.apply_import_consts(imp, &mut saved_params);
+        }
+
         // (3b) BODY-level `parameter`/`localparam` (a `ModuleItem::Param`, NOT in
         //      the ANSI `#(...)` header that `bind_params` handles). Bind in decl
         //      order — a `localparam C = A*B+1` may reference an earlier param —
@@ -1048,11 +1089,6 @@ impl<'s> Elaborator<'s> {
                     saved_params.push((key.clone(), self.params.insert(key, v)));
                 }
                 ast::ModuleItem::NetVar(d) => self.prescan_net_bits(d),
-                // v7 AST flip is parse-only — loud until the package slice.
-                ast::ModuleItem::Import(_) => self.error(
-                    MsgCode::ElabUnsupported,
-                    "package/import support lands with the v7 package slice",
-                ),
                 _ => {}
             }
         }
@@ -1121,6 +1157,11 @@ impl<'s> Elaborator<'s> {
                 }
                 _ => {}
             }
+        }
+        // (3.6) v7 P2-D: imported functions/tasks — LOCAL definitions win
+        // (skip-if-present, no spurious redeclare warning).
+        for imp in &import_list {
+            self.apply_import_routines(imp);
         }
 
         // (4) this instance's nets: ANSI ports, then body NetVarDecls (decl order).
@@ -2307,6 +2348,12 @@ impl<'s> Elaborator<'s> {
                     Some((64 - ((n - 1) as u64).leading_zeros()) as i64)
                 }
             }
+            // v7 P2-D: `pkg::sym` in const contexts.
+            ast::ExprKind::PkgScoped { pkg, name } => self
+                .pkg_consts
+                .get(&pkg.name)
+                .and_then(|c| c.get(&name.name))
+                .copied(),
             // v7 `$bits` in const contexts (localparam init, range specs): the
             // view subset only — no lowering happens in this domain. A shape
             // it can't see folds None → LOUD at the binding site.
@@ -3124,14 +3171,29 @@ impl<'s> Elaborator<'s> {
                 let cid = self.lower_int_literal(*kind, raw);
                 self.push_expr(ir::Expr::Const { val: cid })
             }
-            // v7 P2-D: explicit `pkg::name` — semantics land with the package
-            // slice; loud until then (the AST flip is parse-only).
-            ast::ExprKind::PkgScoped { .. } => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "package-scoped reference support lands with the v7 package slice",
-                );
-                self.placeholder_expr()
+            // v7 P2-D: explicit `pkg::name` — folds through the package
+            // const map (sees the PACKAGE value even when a local declaration
+            // shadows an import, iverilog-pinned). Function references need
+            // call syntax, which is outside the v7 scope — loud.
+            ast::ExprKind::PkgScoped { pkg, name } => {
+                match self
+                    .pkg_consts
+                    .get(&pkg.name)
+                    .and_then(|c| c.get(&name.name))
+                {
+                    Some(&v) => self.const_param_expr(v),
+                    None => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "`{}::{}` does not name a package constant (v7 \
+                                 supports param/enum-label references)",
+                                pkg.name, name.name
+                            ),
+                        );
+                        self.placeholder_expr()
+                    }
+                }
             }
             ast::ExprKind::Ident(path) => {
                 // INLINE substitution (function/task formals). A single-segment name
@@ -7097,6 +7159,178 @@ impl<'s> Elaborator<'s> {
         });
         b.push_stmt_id(sid);
         true
+    }
+
+    // ── v7 P2-D packages (IR-0 — elaborate-side symbol flattening) ──
+    /// Fold one package body: params/localparams + enum labels (decl order,
+    /// package-local visibility) into `pkg_consts`; clone funcs/tasks into
+    /// `pkg_funcs`/`pkg_tasks`. Anything else in a package body is loud
+    /// (variables / cont-assigns / procs are outside the v7 scope).
+    fn elaborate_package(&mut self, pm: &ast::ModuleDecl) {
+        let pkg = pm.name.name.clone();
+        // fold under a synthetic scope so the package's own params resolve
+        // while folding later ones (`localparam L2 = W * 2`).
+        let saved_prefix = std::mem::replace(&mut self.cur_prefix, format!("$pkg${pkg}"));
+        let mut saved: Vec<(String, Option<i64>)> = Vec::new();
+        let mut consts: BTreeMap<String, i64> = BTreeMap::new();
+        let mut funcs: BTreeMap<String, ast::FunctionDef> = BTreeMap::new();
+        let mut tasks: BTreeMap<String, ast::TaskDef> = BTreeMap::new();
+        for item in &pm.body {
+            match item {
+                ast::ModuleItem::Param(p) => {
+                    let v = self.const_eval_in_scope(&p.value).unwrap_or_else(|| {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "package parameter `{}` value is not a foldable constant",
+                                p.name.name
+                            ),
+                        );
+                        0
+                    });
+                    let key = self.fq(&p.name.name);
+                    saved.push((key.clone(), self.params.insert(key, v)));
+                    consts.insert(p.name.name.clone(), v);
+                }
+                ast::ModuleItem::Typedef(td) => {
+                    #[allow(irrefutable_let_patterns)]
+                    if let ast::TypedefKind::Enum { labels, .. } = &td.kind {
+                        let mut next: i64 = 0;
+                        for l in labels {
+                            let v = match &l.value {
+                                Some(e) => self.const_eval_in_scope(e).unwrap_or_else(|| {
+                                    self.error(
+                                        MsgCode::ElabUnsupported,
+                                        &format!(
+                                            "enum label `{}` value is not a foldable constant",
+                                            l.name.name
+                                        ),
+                                    );
+                                    0
+                                }),
+                                None => next,
+                            };
+                            next = v + 1;
+                            let key = self.fq(&l.name.name);
+                            saved.push((key.clone(), self.params.insert(key, v)));
+                            consts.insert(l.name.name.clone(), v);
+                        }
+                    }
+                    // Alias/Struct typedefs ride the parser's unit-global
+                    // typedef map (type NAMES are parse-resolved) — no
+                    // elaborate-side symbol needed.
+                }
+                ast::ModuleItem::Func(f) => {
+                    funcs.insert(f.name.name.clone(), f.clone());
+                }
+                ast::ModuleItem::Task(t) => {
+                    tasks.insert(t.name.name.clone(), t.clone());
+                }
+                ast::ModuleItem::Import(_) => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "imports inside a package are outside the v7 scope",
+                    );
+                }
+                _ => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "only parameters/typedefs/functions/tasks are supported \
+                         in a package body (v7)",
+                    );
+                }
+            }
+        }
+        for (k, prev) in saved.into_iter().rev() {
+            match prev {
+                Some(v) => {
+                    self.params.insert(k, v);
+                }
+                None => {
+                    self.params.remove(&k);
+                }
+            }
+        }
+        self.cur_prefix = saved_prefix;
+        self.pkg_consts.insert(pkg.clone(), consts);
+        self.pkg_funcs.insert(pkg.clone(), funcs);
+        self.pkg_tasks.insert(pkg, tasks);
+    }
+
+    /// Bind one import's CONST symbols into the current module scope.
+    fn apply_import_consts(
+        &mut self,
+        imp: &ast::ImportDecl,
+        saved_params: &mut Vec<(String, Option<i64>)>,
+    ) {
+        let pkg = imp.pkg.name.as_str();
+        let Some(consts) = self.pkg_consts.get(pkg) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("import from unknown package `{pkg}`"),
+            );
+            return;
+        };
+        match &imp.item {
+            None => {
+                let all: Vec<(String, i64)> = consts.iter().map(|(k, &v)| (k.clone(), v)).collect();
+                for (name, v) in all {
+                    let key = self.fq(&name);
+                    saved_params.push((key.clone(), self.params.insert(key, v)));
+                }
+            }
+            Some(sym) => {
+                if let Some(&v) = consts.get(&sym.name) {
+                    let key = self.fq(&sym.name);
+                    saved_params.push((key.clone(), self.params.insert(key, v)));
+                } else if !self
+                    .pkg_funcs
+                    .get(pkg)
+                    .is_some_and(|f| f.contains_key(&sym.name))
+                    && !self
+                        .pkg_tasks
+                        .get(pkg)
+                        .is_some_and(|t| t.contains_key(&sym.name))
+                {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!("package `{pkg}` has no symbol `{}`", sym.name),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Bind one import's FUNCTION/TASK symbols (local definitions win —
+    /// skip-if-present, called after the module's own (3.5) collection).
+    fn apply_import_routines(&mut self, imp: &ast::ImportDecl) {
+        let pkg = imp.pkg.name.as_str();
+        let (funcs, tasks) = match (self.pkg_funcs.get(pkg), self.pkg_tasks.get(pkg)) {
+            (Some(f), Some(t)) => (f.clone(), t.clone()),
+            _ => return, // unknown package already diagnosed in the const pass
+        };
+        match &imp.item {
+            None => {
+                for (n, f) in funcs {
+                    self.func_table.entry(n).or_insert(f);
+                }
+                for (n, t) in tasks {
+                    self.task_table.entry(n).or_insert(t);
+                }
+            }
+            Some(sym) => {
+                if let Some(f) = funcs.get(&sym.name) {
+                    self.func_table
+                        .entry(sym.name.clone())
+                        .or_insert_with(|| f.clone());
+                }
+                if let Some(t) = tasks.get(&sym.name) {
+                    self.task_table
+                        .entry(sym.name.clone())
+                        .or_insert_with(|| t.clone());
+                }
+            }
+        }
     }
 
     // ── $bits const-fold (v7, IR-0) ────────────────────────────────
