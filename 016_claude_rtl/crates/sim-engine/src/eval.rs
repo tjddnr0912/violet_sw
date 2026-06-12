@@ -144,6 +144,8 @@ pub struct EvalCtx<'a, N: NetReader> {
     /// v7 RNG state (`Cell`s — eval stays `&self`; every evaluation of
     /// `$random`/`$urandom` is a fresh draw, see `SimState::rng`).
     pub rng: &'a crate::state::RngCells,
+    /// v7 runtime plusargs (CLI order — the $test/$value$plusargs search set).
+    pub plusargs: &'a [String],
 }
 
 impl<'a, N: NetReader> EvalCtx<'a, N> {
@@ -152,6 +154,18 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     pub fn eval(&self, eid: u32) -> Value {
         let sw = self.wt.get(eid);
         self.eval_ctx(eid, sw.width, sw.signed)
+    }
+
+    /// v7: decode an arg ExprId that is a string-literal Const (plusarg
+    /// queries / formats). `None` for anything else.
+    pub(crate) fn const_str_arg(&self, eid: u32) -> Option<String> {
+        if let Expr::Const { val } = self.ir.exprs.get(eid as usize)? {
+            let c = self.ir.consts.get(*val as usize)?;
+            if c.repr == sim_ir::ConstRepr::StrUtf8 {
+                return Some(crate::builtins::const_string(self.ir, *val));
+            }
+        }
+        None
     }
 
     /// v5 ⑤: evaluate an assoc KEY expression into the engine's signed-i64
@@ -1363,13 +1377,26 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 v.val[0] = (self.now / m) & 0xffff_ffff;
                 v
             }
+            // v7 `$test$plusargs(query)` — true iff some plusarg STARTS WITH
+            // the query (iverilog-pinned prefix rule). The query is a string
+            // LITERAL (elaborate enforces); a hand-built non-literal is X.
+            SysFuncId::TestPlusargs => {
+                let q = args.first().and_then(|&a| self.const_str_arg(a));
+                match q {
+                    Some(q) => {
+                        let hit = self.plusargs.iter().any(|p| p.starts_with(&q));
+                        Value::from_i128(hit as i128, 32, true)
+                    }
+                    None => Value::xs(32, true),
+                }
+            }
             // v7 shape, features not wired yet (elaborate still rejects the
             // names): defensive X at each func's declared self-width.
-            SysFuncId::Fopen
-            | SysFuncId::TestPlusargs
-            | SysFuncId::ValuePlusargs
-            | SysFuncId::StrLen
-            | SysFuncId::StrCmp => Value::xs(32, true),
+            // `ValuePlusargs` here = unsupported placement (the legal direct-
+            // rhs form is intercepted statement-level before eval).
+            SysFuncId::Fopen | SysFuncId::ValuePlusargs | SysFuncId::StrLen | SysFuncId::StrCmp => {
+                Value::xs(32, true)
+            }
             SysFuncId::StrGetC
             | SysFuncId::Sformatf
             | SysFuncId::StrSubstr

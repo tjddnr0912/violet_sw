@@ -670,7 +670,7 @@ fn dump_filter_from_args(st: &SimState, args: &[u32]) -> Option<std::collections
             sim_ir::Expr::Const { val } => {
                 let cv = &st.ir.consts[*val as usize];
                 if cv.repr == sim_ir::ConstRepr::StrUtf8 {
-                    let enc = const_string(st, *val);
+                    let enc = const_string(st.ir, *val);
                     scopes.push(enc.split('\u{0001}').map(str::to_string).collect());
                 } else if level.is_none() {
                     level = Some(cv.bits.val.first().copied().unwrap_or(0));
@@ -795,7 +795,7 @@ fn word0(store: &sim_ir::BitPacked, width: u32) -> sim_ir::BitPacked {
 fn arg_string(sched: &Scheduler, eid: Option<u32>) -> String {
     let Some(eid) = eid else { return String::new() };
     if let sim_ir::Expr::Const { val } = &sched.st.ir.exprs[eid as usize] {
-        return const_string(sched.st, *val);
+        return const_string(sched.st.ir, *val);
     }
     // non-const arg: render its value as decimal (best-effort)
     fmt_dec(&sched.eval(eid))
@@ -804,15 +804,15 @@ fn arg_string(sched: &Scheduler, eid: Option<u32>) -> String {
 /// Resolve an ExprId that is a `Const{val}` into its const string (format str).
 fn expr_const_string(st: &SimState, eid: u32) -> String {
     if let sim_ir::Expr::Const { val } = &st.ir.exprs[eid as usize] {
-        const_string(st, *val)
+        const_string(st.ir, *val)
     } else {
         String::new()
     }
 }
 
 /// Decode a `ConstVal` (StrUtf8 → text; numeric → packed bytes).
-fn const_string(st: &SimState, cid: u32) -> String {
-    let c = &st.ir.consts[cid as usize];
+pub(crate) fn const_string(ir: &sim_ir::SimIr, cid: u32) -> String {
+    let c = &ir.consts[cid as usize];
     let nbytes = ((c.width + 7) / 8) as usize;
     let mut bytes = Vec::with_capacity(nbytes);
     // StrUtf8 packs in IEEE §5.9 order (v6): the FIRST character is the MOST
@@ -874,7 +874,7 @@ pub(crate) fn format_args_str(
 fn str_const_of_expr(st: &SimState, eid: u32) -> Option<String> {
     if let sim_ir::Expr::Const { val } = &st.ir.exprs[eid as usize] {
         if st.ir.consts[*val as usize].repr == sim_ir::ConstRepr::StrUtf8 {
-            return Some(const_string(st, *val));
+            return Some(const_string(st.ir, *val));
         }
     }
     None
@@ -1026,7 +1026,24 @@ fn render_template(
             's' => {
                 let e = args.get(*argi).copied();
                 *argi += 1;
-                out.push_str(&arg_string(sched, e));
+                match e {
+                    // string LITERAL: decoded text (the classic fmt-arg path).
+                    Some(eid)
+                        if matches!(
+                            sched.st.ir.exprs.get(eid as usize),
+                            Some(sim_ir::Expr::Const { .. })
+                        ) =>
+                    {
+                        out.push_str(&arg_string(sched, Some(eid)));
+                    }
+                    // packed VALUE: byte-per-char, NUL bytes as spaces
+                    // (iverilog-pinned: 64-bit "hello" prints "   hello").
+                    Some(eid) => {
+                        let v = sched.eval(eid);
+                        out.push_str(&fmt_packed_chars(&v));
+                    }
+                    None => {}
+                }
             }
             // P0-8③: the remaining IEEE specs CONSUME their argument — leaving
             // them unconsumed shifted every later spec onto the wrong arg.
@@ -1050,6 +1067,19 @@ fn render_template(
             }
         }
     }
+}
+
+/// `%s` on a packed value: width/8 chars MSB-first, NUL bytes render as
+/// spaces (iverilog live pin, probe t7).
+fn fmt_packed_chars(v: &Value) -> String {
+    let nbytes = (v.width as usize).div_ceil(8).max(1);
+    let mut s = String::with_capacity(nbytes);
+    for bi in (0..nbytes).rev() {
+        let bit = bi * 8;
+        let byte = (v.val.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) as u8;
+        s.push(if byte == 0 { ' ' } else { byte as char });
+    }
+    s
 }
 
 fn next_arg(sched: &Scheduler, args: &[u32], argi: &mut usize) -> Value {

@@ -77,6 +77,10 @@ pub struct VitaOpts {
     pub work: Option<(String, String)>,
     /// `--top <unit>` (P2-A): explicit elaborate roots (velab/lib mode).
     pub tops: Vec<String>,
+    /// Runtime plusargs (v7, `+name[=value]`, leading '+' stripped, CLI
+    /// order). Searched first-match by `$test/$value$plusargs`. Pure runtime
+    /// input — never hashed into artifacts.
+    pub plusargs: Vec<String>,
 }
 
 impl VitaOpts {
@@ -85,6 +89,7 @@ impl VitaOpts {
             vcd_path_override: self.vcd_path_override.clone(),
             threads: resolve_threads(self.threads),
             time_limit: self.time_limit,
+            plusargs: self.plusargs.clone(),
             ..SimOpts::default()
         }
     }
@@ -783,6 +788,7 @@ pub fn run(argv: &[String]) -> i32 {
                 upstream: None, // one-shot has no staged upstream
                 work: None,
                 tops: Vec::new(),
+                plusargs: io.plusargs,
             };
             run_vita(&io.pos, &opts)
         }
@@ -2015,6 +2021,11 @@ struct IoArgs {
     libs: Vec<String>,
     /// `--top <unit>` (velab, P2-A): explicit root units (required with `-L`).
     tops: Vec<String>,
+    /// Runtime plusargs (v7): every bare `+...` arg that is not a
+    /// `+define+`/`+incdir+` directive, leading '+' stripped, command-line
+    /// order preserved ($test/$value$plusargs search order). vita/vrun only —
+    /// the compile applets reject them loud.
+    plusargs: Vec<String>,
 }
 
 /// W-FLIST-OVERRIDE (always-logged): a single-value knob set twice — proceed
@@ -2043,6 +2054,7 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
     let mut workdir: Option<String> = None;
     let mut libs: Vec<String> = Vec::new();
     let mut tops: Vec<String> = Vec::new();
+    let mut plusargs: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -2243,6 +2255,11 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
                 }
                 i += 1;
             }
+            // v7: any other `+...` arg is a RUNTIME plusarg (vvp convention).
+            s if s.starts_with('+') && s.len() > 1 => {
+                plusargs.push(s[1..].to_string());
+                i += 1;
+            }
             s if s.starts_with('-') && s.len() > 1 => {
                 // Diagnostic gate flags (`-Wno-<CODE>` / `-Werror[=<CODE>]`).
                 match gate.parse_arg(s) {
@@ -2285,6 +2302,7 @@ fn parse_io_args(args: &[String]) -> Result<IoArgs, i32> {
         workdir,
         libs,
         tops,
+        plusargs,
     })
 }
 
@@ -2328,6 +2346,21 @@ fn reject_preprocess_buckets(stage: &str, io: &IoArgs) -> Result<(), i32> {
 /// Loud wrong-stage rejection for the worklib flag family — `--work`/`--workdir`
 /// belong to vcmp, `-L`/`--top` to velab; anywhere else they would be silently
 /// meaningless (the E-FLIST-WRONG-STAGE principle applied to argv).
+/// v7: runtime plusargs are vita/vrun inputs; the compile stages reject them
+/// (a stray `+FOO` at vcmp is far more likely a typo'd `+define+`).
+fn reject_plusargs(stage: &str, io: &IoArgs) -> Result<(), i32> {
+    if !io.plusargs.is_empty() {
+        eprintln!(
+            "error[{}]: runtime plusargs (+{}) are vita/vrun arguments — '{stage}' \
+             compiles, it does not simulate",
+            MsgCode::CliBadFlag.code_num(),
+            io.plusargs[0]
+        );
+        return Err(EXIT_CLI_ERROR);
+    }
+    Ok(())
+}
+
 fn reject_worklib_flags(
     stage: &str,
     io: &IoArgs,
@@ -2391,6 +2424,9 @@ fn dispatch_vcmp(args: &[String]) -> i32 {
     if let Err(c) = reject_worklib_flags("vcmp", &io, true, false) {
         return c;
     }
+    if let Err(c) = reject_plusargs("vcmp", &io) {
+        return c;
+    }
     if io.pos.is_empty() {
         eprintln!(
             "error[{}]: vcmp: no source files",
@@ -2442,6 +2478,9 @@ fn dispatch_velab(args: &[String]) -> i32 {
         return c;
     }
     if let Err(c) = reject_worklib_flags("velab", &io, false, true) {
+        return c;
+    }
+    if let Err(c) = reject_plusargs("velab", &io) {
         return c;
     }
     // ── library mode (`-L`): logical discovery instead of a positional .vu ──
@@ -2553,6 +2592,7 @@ fn dispatch_vrun(args: &[String]) -> i32 {
         log: io.log,
         log_append: io.log_append,
         upstream: io.upstream,
+        plusargs: io.plusargs,
         ..VitaOpts::default()
     };
     run_vrun(&io.pos[0], &opts)

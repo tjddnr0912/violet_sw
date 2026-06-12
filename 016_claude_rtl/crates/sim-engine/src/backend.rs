@@ -72,9 +72,10 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
                     })
                 )
             );
-            // v7: a SEEDED $random rhs writes the seed variable back — the
-            // same statement-level intercept family (the NO-ARG form stays
-            // codegen-able: the draw rides the shared eval kernel).
+            // v7: a SEEDED $random rhs writes the seed variable back, and
+            // $value$plusargs writes its ref var — the same statement-level
+            // intercept family (the NO-ARG $random form stays codegen-able:
+            // the draw rides the shared eval kernel).
             let seeded_random_rhs = matches!(
                 &stmts[sid as usize],
                 Stmt::BlockingAssign { rhs, .. } if matches!(
@@ -82,7 +83,14 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
                     Some(Expr::SysFunc { which: SysFuncId::Random, args }) if !args.is_empty()
                 )
             );
-            let pop_rhs = pop_rhs || seeded_random_rhs;
+            let value_plusargs_rhs = matches!(
+                &stmts[sid as usize],
+                Stmt::BlockingAssign { rhs, .. } if matches!(
+                    exprs.get(*rhs as usize),
+                    Some(Expr::SysFunc { which: SysFuncId::ValuePlusargs, .. })
+                )
+            );
+            let pop_rhs = pop_rhs || seeded_random_rhs || value_plusargs_rhs;
             !pop_rhs
                 && !matches!(
                     stmts[sid as usize],

@@ -1764,6 +1764,7 @@ mod tests {
                 wt: &wt,
                 time_mult: 1,
                 rng: &rng,
+                plusargs: &[],
             };
             ctx.eval_ctx(eid, ctx_w, ctx_signed)
         };

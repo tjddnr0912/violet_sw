@@ -92,6 +92,12 @@ pub(crate) trait Kernel {
     /// WRITE: one Annex-N draw seeded from the ref variable; writes the
     /// updated seed back to its net and returns the 32-bit signed draw.
     fn k_random_seeded(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$value$plusargs(fmt, var)` call (v7)? It writes the
+    /// ref VAR on a match — statement-level effect, the seeded-$random family.
+    fn k_value_plusargs_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: search the plusargs, convert the first match's remainder per the
+    /// format spec into the ref var, return 1/0 (32-bit signed).
+    fn k_value_plusargs(&mut self, rhs: u32) -> Value;
     /// READ: is `rhs` an assoc-iteration SysFunc (`first`/`next`/`last`/
     /// `prev`)? They WRITE their ref key argument, so like the pops they are
     /// statement-level effects (`StmtEffect::AssocIter`); any other placement
@@ -359,6 +365,13 @@ enum StmtEffect<'s> {
         rhs: u32,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is `$value$plusargs(fmt, var)` (v7): the
+    /// match writes the ref var — WRITE phase, same family.
+    ValuePlusargs {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
@@ -423,6 +436,15 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             if k.k_random_seeded_rhs(*rhs) {
                 let offsets = k.k_resolve_lvalue_offsets(lhs);
                 return StmtEffect::SeededRandom {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
+            // v7: $value$plusargs writes its ref var — same family.
+            if k.k_value_plusargs_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::ValuePlusargs {
                     lhs,
                     rhs: *rhs,
                     offsets,
@@ -494,6 +516,11 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::SeededRandom { lhs, rhs, offsets } => {
             let value = k.k_random_seeded(rhs); // seed write + draw (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::ValuePlusargs { lhs, rhs, offsets } => {
+            let value = k.k_value_plusargs(rhs); // var write + status (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }

@@ -166,6 +166,8 @@ pub(crate) struct SimState<'a> {
     /// is untouched. `$random` seed 0 = the Annex N zero-substitution path
     /// (iverilog default); `$urandom` initial state 0 is the vitamin pin.
     pub rng: RngCells,
+    /// v7 runtime plusargs (from `SimOpts.plusargs`, CLI order).
+    pub plusargs: Vec<String>,
     /// Instance path of the process CURRENTLY executing — set per `run_process`
     /// (like `cur_time_mult`), read by the `%m` format spec.
     pub cur_scope: String,
@@ -267,6 +269,7 @@ impl<'a> SimState<'a> {
             dump_filter: None,
             dump_multi_warned: false,
             rng: RngCells::default(),
+            plusargs: Vec::new(),
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),

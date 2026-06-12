@@ -147,6 +147,11 @@ pub struct SimOpts {
     /// (VCD/stdout/exit) is byte-identical for every value — N changes
     /// wall-clock only (enforced by `tests/threads.rs`).
     pub threads: u32,
+    /// Runtime plusargs (v7, `+name[=value]` with the '+' stripped, CLI
+    /// order). `$test$plusargs` prefix-probes them; `$value$plusargs`
+    /// converts the first match's remainder. Pure runtime input — never
+    /// hashed into artifacts.
+    pub plusargs: Vec<String>,
 }
 
 impl Default for SimOpts {
@@ -168,6 +173,7 @@ impl Default for SimOpts {
             proc_scopes: Vec::new(),
             net_dims: NetDimsTable::new(),
             threads: 1,
+            plusargs: Vec::new(),
         }
     }
 }
@@ -227,6 +233,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.proc_scopes = opts.proc_scopes.clone();
     st.net_dims = opts.net_dims.clone();
     st.threads = opts.threads;
+    st.plusargs = opts.plusargs.clone();
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

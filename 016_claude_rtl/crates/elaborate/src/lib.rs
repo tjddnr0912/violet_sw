@@ -3378,6 +3378,29 @@ impl<'s> Elaborator<'s> {
                     );
                     return self.placeholder_expr();
                 }
+                // v7: $value$plusargs writes its ref var — direct-rhs only.
+                if name.name == "$value$plusargs" {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "$value$plusargs is supported only as the direct rhs \
+                         of a blocking assignment (v7)",
+                    );
+                    return self.placeholder_expr();
+                }
+                // v7: the $test$plusargs query must be a string literal (the
+                // full string type lands with P2-C).
+                if name.name == "$test$plusargs"
+                    && !matches!(
+                        args.first().map(|a| &a.kind),
+                        Some(ast::ExprKind::StrLit { .. })
+                    )
+                {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "$test$plusargs needs a string-literal query (v7)",
+                    );
+                    return self.placeholder_expr();
+                }
                 let arg_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
                 match map_sysfunc(&name.name) {
                     Some(which) => {
@@ -6253,6 +6276,10 @@ impl<'s> Elaborator<'s> {
                 if self.random_seeded_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // v7: `ok = $value$plusargs(fmt, var)` — same family.
+                if self.value_plusargs_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -6830,6 +6857,125 @@ impl<'s> Elaborator<'s> {
         if let Some(d) = delay {
             // capture-now/write-later: the DRAW (and seed update) happens at
             // the capture statement; only the lhs write is delayed.
+            let w = self.ir_lvalue_width(&lv);
+            let tmp = self.fresh_ia_tmp(w);
+            let cap = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: whole_net_lvalue(tmp),
+                rhs: rhs_id,
+            });
+            b.push_stmt_id(cap);
+            let (amount, region) = self.lower_delay(d);
+            let resume = b.new_block();
+            b.end_block_with(ir::Terminator::Delay {
+                amount,
+                region,
+                resume: resume.raw(),
+            });
+            b.start_block(resume);
+            let tmp_read = self.push_expr(ir::Expr::Signal {
+                net: tmp,
+                word: None,
+            });
+            let wr = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: lv,
+                rhs: tmp_read,
+            });
+            b.push_stmt_id(wr);
+        } else {
+            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: lv,
+                rhs: rhs_id,
+            });
+            b.push_stmt_id(sid);
+        }
+        true
+    }
+
+    /// v7: `ok = $value$plusargs(fmt, var)` special form (the seeded-$random
+    /// family — the engine writes `var` in the WRITE phase). The fmt must be
+    /// a string LITERAL with at most one conversion spec from the supported
+    /// set (%d/%h/%x/%o/%b/%s — %e/%f/%g real conversions are loud-deferred);
+    /// `var` must lower to a plain whole-net Signal.
+    fn value_plusargs_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$value$plusargs" {
+            return false;
+        }
+        if args.len() != 2 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$value$plusargs takes (format, variable)",
+            );
+            return true;
+        }
+        let ast::ExprKind::StrLit { .. } = &args[0].kind else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$value$plusargs needs a string-literal format (v7)",
+            );
+            return true;
+        };
+        let fmt_id = self.lower_expr(&args[0]);
+        // validate the conversion set on the DECODED text (the const pool
+        // holds the unescaped bytes the engine will see).
+        if let Some(ir::Expr::Const { val }) = self.exprs.get(fmt_id as usize) {
+            let c = &self.consts[*val as usize];
+            let mut bytes = Vec::new();
+            let nbytes = (c.width as usize).div_ceil(8);
+            for bi in (0..nbytes).rev() {
+                let bit = bi * 8;
+                let w = bit / 64;
+                let sh = bit % 64;
+                bytes.push((c.bits.val.get(w).copied().unwrap_or(0) >> sh) as u8);
+            }
+            let text: String = String::from_utf8_lossy(&bytes).into_owned();
+            let specs: Vec<char> = text
+                .match_indices('%')
+                .filter_map(|(i, _)| text[i + 1..].chars().next())
+                .collect();
+            if specs.len() > 1
+                || specs.first().is_some_and(|c| {
+                    !matches!(
+                        c,
+                        'd' | 'D' | 'h' | 'H' | 'x' | 'X' | 'o' | 'O' | 'b' | 'B' | 's' | 'S'
+                    )
+                })
+            {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$value$plusargs format supports one %d/%h/%x/%o/%b/%s spec (v7)",
+                );
+                return true;
+            }
+        }
+        let var_id = self.lower_expr(&args[1]);
+        if !matches!(
+            self.exprs.get(var_id as usize),
+            Some(ir::Expr::Signal { word: None, .. })
+        ) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$value$plusargs target must be a plain variable (v7)",
+            );
+            return true;
+        }
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::ValuePlusargs,
+            args: vec![fmt_id, var_id],
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        if let Some(d) = delay {
+            // capture-now/write-later (the shared intra-assignment desugar) —
+            // the plusarg search and var write happen at the CAPTURE.
             let w = self.ir_lvalue_width(&lv);
             let tmp = self.fresh_ia_tmp(w);
             let cap = self.push_stmt(ir::Stmt::BlockingAssign {
@@ -7840,7 +7986,9 @@ fn map_sysfunc(dollar_name: &str) -> Option<ir::SysFuncId> {
         "$onehot" => Some(ir::SysFuncId::OneHot),
         "$onehot0" => Some(ir::SysFuncId::OneHot0),
         "$isunknown" => Some(ir::SysFuncId::IsUnknown),
-        // v7 random + time.
+        // v7 random + time + plusarg probe ($value$plusargs is a special
+        // form — it writes its ref var, never mapped here).
+        "$test$plusargs" => Some(ir::SysFuncId::TestPlusargs),
         "$random" => Some(ir::SysFuncId::Random),
         "$urandom" => Some(ir::SysFuncId::Urandom),
         "$urandom_range" => Some(ir::SysFuncId::UrandomRange),
