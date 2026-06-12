@@ -73,13 +73,13 @@ Phase 1의 범위는 **SystemVerilog 합성가능 RTL 서브셋** — Verilog-20
 
 | 분류 | IN-MVP (Phase 1) | deferred (Phase 2+) |
 |---|---|---|
-| 설계 단위 | `module`/`endmodule`, 포트, `parameter`/`localparam`, `generate`/`genvar`, `interface`/`modport`(*2026-06-11 IN 승격 — 평탄화+심볼 aliasing, 방향 강제·파라미터·헤더 포트 포함*) | `package`, `program`, `class` |
-| 자료형 | `wire`/`reg`/`logic`/`integer`, 벡터·packed array, `enum`/`typedef`/packed `struct`, 동적 배열·queue(`[$:N]` bounded 포함)·연관 배열(int/string 키)(*2026-06-11 IN 승격, format_version 5/6*) | `union`, full `string` 타입(string **리터럴/키**는 IN) |
+| 설계 단위 | `module`/`endmodule`, 포트, `parameter`/`localparam`, `generate`/`genvar`, `interface`/`modport`(*2026-06-11 IN 승격*), **`package`/`import`/`pkg::`**(*2026-06-12 IN 승격, v7 — param/enum-label/func/task 평탄화; 패키지 변수·패키지내 import는 loud*) | `program`, `class` |
+| 자료형 | `wire`/`reg`/`logic`/`integer`, 벡터·packed array, `enum`/`typedef`/packed `struct`, 동적 배열·queue(`[$:N]` bounded 포함)·연관 배열(int/string 키)(*2026-06-11 IN 승격, format_version 5/6*), **full `string` 타입**(*2026-06-12 IN 승격, v7 — 힙 핸들·len/getc/putc/substr/toupper/tolower/compare·StrCmp 비교·`$sformat(f)`; concat·decl-init·port는 loud*) | `union` |
 | 절차 블록 | `initial`, `always`, `always_ff`/`always_comb`/`always_latch`, fork-join(기본), named `event`/`->`/`@(ev)` | `final`, fork-join 고급(`join_any`/`join_none`/`wait fork`) |
 | 문장 | blocking `=` / nonblocking `<=`, `if`/`case`/`casez`/`casex`, `for`/`while`/`repeat`/`forever`, `begin`/`end`, `foreach`(*IN 승격 — uniform first/next desugar*), `disable`(동봉 named block), proc-`assign`/`deassign`, immediate `assert` | `unique`/`priority`, `do-while` |
 | 타이밍 | `#delay`(상수+**런타임 식** — format_version 4), `@(event)`, `wait`(테스트벤치), intra-assignment `= #d`(실semantics)·`<= #d`(transport, v5) | clocking block, repeat-event intra-assignment 고급 |
 | 연속 대입 | `assign`(+지연), `force`/`release`(연속 재평가 포함) | — |
-| system tasks | 아래 핵심 셋 + conversion(`$signed`/`$unsigned`/`$rtoi`/`$itor`/`$realtobits`/`$bitstoreal`)·`$clog2` | 파일 I/O·메모리 로드·random·math·plusargs·assertion 샘플링 등 (Phase 2 — 플랜 = `docs/ROADMAP.md` §4) |
+| system tasks | 아래 핵심 셋 + conversion(`$signed`/`$unsigned`/`$rtoi`/`$itor`/`$realtobits`/`$bitstoreal`)·`$clog2` + **v7 일괄 승격(2026-06-12)**: 파일 I/O(`$fopen/$fclose/$fdisplay/$fwrite`+b/o/h) · `$readmemb/h` · `$random`(Annex N)/`$urandom(_range)`(자체 계약) · `$stime` · `$test$plusargs`/`$value$plusargs` · bit-vector(`$bits/$countones/$onehot(0)/$isunknown`) · `$sformat(f)` | math transcendentals(libm 3-OS 리스크)·assertion 샘플링·introspection (플랜 = `docs/ROADMAP.md` §4) |
 
 > **합성가능성 마커는 구현 경계가 아니다.** `hdl-reference/`의 합성가능성 범례는 RTL→게이트 *합성* 가능 여부를 표기할 뿐이다. `initial`·`#delay`·`$display`·`$finish`는 합성 불가로 표기되지만 **시뮬레이터에 필수**이므로 Phase 1 IN이다. MVP의 IN/OUT 경계는 위 동결 표가 단일 기준이다.
 
