@@ -423,13 +423,200 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        SysTaskId::ReadmemB | SysTaskId::ReadmemH => {
+            readmem(sched, args, matches!(which, SysTaskId::ReadmemH));
+            Ctl::Continue
+        }
         // v7 shape, features not wired yet: elaborate still rejects/skips these
         // names, so a Stmt carrying them can only come from a hand-built IR —
         // defensive no-op, never a panic.
-        SysTaskId::Sformat | SysTaskId::ReadmemB | SysTaskId::ReadmemH | SysTaskId::StrPutC => {
-            Ctl::Continue
+        SysTaskId::Sformat | SysTaskId::StrPutC => Ctl::Continue,
+    }
+}
+
+/// v7 `$readmemb/h(file, mem[, start[, finish]])` — iverilog-pinned (t11–14):
+/// default fill = LOWEST declared index ascending (1364-2005), `@addr` is hex
+/// in BOTH variants and lives in the DECLARED index domain, unwritten
+/// elements keep their value, token shortfall warns only for directive-free
+/// files, and every problem is W4023 + continue (exit parity with iverilog).
+fn readmem(sched: &mut Scheduler, args: &[u32], hex: bool) {
+    let warn = |sched: &mut Scheduler, msg: String| {
+        sched
+            .st
+            .sink
+            .emit(diag::LogEvent::Diagnostic(diag::Diagnostic {
+                severity: diag::Severity::Warning,
+                code: diag::MsgCode::RunReadmem,
+                message: msg,
+                location: None,
+                context: Vec::new(),
+                sim_time: Some(diag::TimeStamp {
+                    ticks: sched.st.now,
+                }),
+            }));
+    };
+    let Some(&a0) = args.first() else { return };
+    let name = match sched.st.ir.exprs.get(a0 as usize) {
+        Some(sim_ir::Expr::Const { val }) => const_string(sched.st.ir, *val),
+        _ => return,
+    };
+    let net = match args.get(1).and_then(|&a| sched.st.ir.exprs.get(a as usize)) {
+        Some(sim_ir::Expr::Signal { net, word: None }) => *net,
+        _ => {
+            warn(sched, "$readmem target is not a memory".to_string());
+            return;
+        }
+    };
+    let (alen, w) = {
+        let nv = &sched.st.ir.nets[net as usize];
+        (nv.array_len.max(1) as u64, nv.width.max(1))
+    };
+    // declared base = min index of dim 0 (sparse table; absent ⇒ 0-based).
+    // Multi-dim memories use flat word-offset addressing from that base.
+    let base = sched
+        .st
+        .net_dims
+        .get(&net)
+        .and_then(|d| d.first())
+        .map(|&(lo, hi)| lo.min(hi) as u64)
+        .unwrap_or(0);
+    let Ok(text) = std::fs::read_to_string(&name) else {
+        warn(
+            sched,
+            format!("$readmem: unable to open '{name}' for reading"),
+        );
+        return;
+    };
+    // strip // line and /* */ block comments.
+    let mut cleaned = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    'outer: while !rest.is_empty() {
+        let line_c = rest.find("//");
+        let block_c = rest.find("/*");
+        match (line_c, block_c) {
+            (Some(l), b) if b.is_none_or(|b| l < b) => {
+                cleaned.push_str(&rest[..l]);
+                match rest[l..].find('\n') {
+                    Some(nl) => rest = &rest[l + nl..],
+                    None => break 'outer,
+                }
+            }
+            (_, Some(bs)) => {
+                cleaned.push_str(&rest[..bs]);
+                match rest[bs..].find("*/") {
+                    Some(be) => rest = &rest[bs + be + 2..],
+                    None => break 'outer,
+                }
+            }
+            _ => {
+                cleaned.push_str(rest);
+                break 'outer;
+            }
         }
     }
+    // range window (declared-index domain). Default: full array ascending.
+    let r_start = args.get(2).and_then(|&a| sched.eval(a).to_u64());
+    let r_finish = args.get(3).and_then(|&a| sched.eval(a).to_u64());
+    let (start, finish) = match (r_start, r_finish) {
+        (Some(s), Some(f)) => (s, f),
+        (Some(s), None) => (s, base + alen - 1),
+        _ => (base, base + alen - 1),
+    };
+    let step: i64 = if start <= finish { 1 } else { -1 };
+    let (win_lo, win_hi) = (start.min(finish), start.max(finish));
+    let window = win_hi - win_lo + 1;
+
+    let mut addr = start as i64;
+    let mut wrote: u64 = 0;
+    let mut had_at = false;
+    for tok in cleaned.split_whitespace() {
+        if let Some(a) = tok.strip_prefix('@') {
+            had_at = true;
+            match u64::from_str_radix(a, 16) {
+                Ok(v) => addr = v as i64,
+                Err(_) => warn(sched, format!("$readmem: bad address token '@{a}'")),
+            }
+            continue;
+        }
+        let a = addr as u64;
+        if addr < 0 || a < win_lo || a > win_hi || a < base || a - base >= alen {
+            warn(
+                sched,
+                format!("$readmem('{name}'): address {addr} outside the load range; stopped"),
+            );
+            return;
+        }
+        let val = parse_mem_token(tok, w, hex);
+        let word = (a - base) as u32;
+        // funnel write: the dummy `word: Some(0)` ExprId is never evaluated —
+        // `write_chunk` takes the resolved word from the offsets pair.
+        let lv = sim_ir::Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: Some(0),
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        };
+        let off = crate::exec::Offsets::Inline {
+            buf: [(0, word), (0, 0)],
+            len: 1,
+        };
+        sched.st.write_lvalue(&lv, val, &off);
+        wrote += 1;
+        addr += step;
+    }
+    if !had_at && wrote < window {
+        warn(
+            sched,
+            format!(
+                "$readmem('{name}'): not enough words for the range \
+                 [{start}:{finish}] ({wrote} of {window}); rest unchanged"
+            ),
+        );
+    }
+}
+
+/// One memory-file token → a `Value` of element width `w` (right-aligned,
+/// high bits zero; surplus digits truncate on the left). Hex digits are 4
+/// bits, binary 1; `x`/`z` poison their digit's bits; `_` is ignored.
+fn parse_mem_token(tok: &str, w: u32, hex: bool) -> Value {
+    let bits_per = if hex { 4u32 } else { 1 };
+    // per-bit (val, unk) MSB-first
+    let mut bits: Vec<(bool, bool)> = Vec::with_capacity(tok.len() * bits_per as usize);
+    for ch in tok.chars() {
+        match ch {
+            '_' => {}
+            'x' | 'X' => bits.extend(std::iter::repeat_n((false, true), bits_per as usize)),
+            'z' | 'Z' | '?' => bits.extend(std::iter::repeat_n((true, true), bits_per as usize)),
+            // a non-digit stray char skips (comment-residue defensiveness)
+            c => {
+                if let Some(d) = c.to_digit(if hex { 16 } else { 2 }) {
+                    for k in (0..bits_per).rev() {
+                        bits.push(((d >> k) & 1 != 0, false));
+                    }
+                }
+            }
+        }
+    }
+    let mut v = Value::zeros(w, false);
+    // place LSB-first from the token's tail; bits beyond w truncate (left).
+    for (i, &(bv, bu)) in bits.iter().rev().enumerate() {
+        if (i as u32) >= w {
+            break;
+        }
+        let word = i / 64;
+        let sh = i % 64;
+        if bv {
+            v.val[word] |= 1u64 << sh;
+        }
+        if bu {
+            v.unk[word] |= 1u64 << sh;
+        }
+    }
+    v.mask_top();
+    v
 }
 
 /// v7: route `text` to a descriptor — fd form (bit 31) hits one file; MCD

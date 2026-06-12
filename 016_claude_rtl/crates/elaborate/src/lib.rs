@@ -7633,7 +7633,11 @@ impl<'s> Elaborator<'s> {
                     // keeps its historical word-0 surface (doc-01 known v1
                     // simplification: v1 dumps ALL signals anyway) — the
                     // Phase-1.x ② whole-array loud check must not fire here.
-                    if dump_family {
+                    // v7: $readmem's MEMORY argument is the same whole-array
+                    // Signal shape (the engine writes elements via the funnel).
+                    let readmem_family =
+                        matches!(which, ir::SysTaskId::ReadmemB | ir::SysTaskId::ReadmemH);
+                    if dump_family || readmem_family {
                         if let Some((net, lead)) = self.expr_array_view(a) {
                             if lead.is_empty() {
                                 return Some(self.push_expr(ir::Expr::Signal { net, word: None }));
@@ -7835,6 +7839,8 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         "$dumpflush" => Some(ir::SysTaskId::DumpFlush),
         "$dumplimit" => Some(ir::SysTaskId::DumpLimit),
         // v7 file I/O ($fopen is a special form — it returns the fd).
+        "$readmemb" => Some(ir::SysTaskId::ReadmemB),
+        "$readmemh" => Some(ir::SysTaskId::ReadmemH),
         "$fclose" => Some(ir::SysTaskId::Fclose),
         "$fdisplay" | "$fdisplayb" | "$fdisplayo" | "$fdisplayh" => Some(ir::SysTaskId::Fdisplay),
         "$fwrite" | "$fwriteb" | "$fwriteo" | "$fwriteh" => Some(ir::SysTaskId::Fwrite),

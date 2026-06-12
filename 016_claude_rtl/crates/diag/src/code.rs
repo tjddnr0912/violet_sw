@@ -77,6 +77,7 @@ msgcodes! {
     RunDynDegrade          => ("W-RUN-DYN-DEGRADE",          "VITA-W4020", Warning, "dynamic-storage operation degraded"),
     RunDumpMulti           => ("W-RUN-DUMP-MULTI",           "VITA-W4021", Warning, "extra $dumpvars call ignored (v1: the first call wins)"),
     RunBadFd               => ("W-RUN-BAD-FD",               "VITA-W4022", Warning, "file operation on an invalid/closed descriptor ignored"),
+    RunReadmem             => ("W-RUN-READMEM",              "VITA-W4023", Warning, "$readmemb/h problem (missing file / word-count mismatch); memory partially loaded"),
     // 8xxx FILELIST
     FlistCycle             => ("E-FLIST-CYCLE",             "VITA-E8001", Error,   "filelist cycle"),
     FlistDepth             => ("E-FLIST-DEPTH",             "VITA-E8002", Error,   "filelist nesting exceeded depth cap"),
