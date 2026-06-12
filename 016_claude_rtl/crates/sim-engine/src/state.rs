@@ -168,6 +168,8 @@ pub(crate) struct SimState<'a> {
     pub rng: RngCells,
     /// v7 runtime plusargs (from `SimOpts.plusargs`, CLI order).
     pub plusargs: Vec<String>,
+    /// P2-E `final` ProcIds (from `SimOpts.final_procs`).
+    pub final_procs: std::collections::BTreeSet<u32>,
     /// v7 file I/O: fd-form table (`$fopen(name, mode)` → 0x8000_0003…).
     /// 0x8000_0000..=0x8000_0002 are reserved (stdin/stdout/stderr).
     pub files: std::collections::BTreeMap<u32, std::fs::File>,
@@ -286,6 +288,7 @@ impl<'a> SimState<'a> {
             dump_multi_warned: false,
             rng: RngCells::default(),
             plusargs: Vec::new(),
+            final_procs: std::collections::BTreeSet::new(),
             files: std::collections::BTreeMap::new(),
             mcd_files: std::collections::BTreeMap::new(),
             next_fd: 3,

@@ -1375,7 +1375,12 @@ impl<'t, 's> Parser<'t, 's> {
         if matches!(
             self.peek(),
             Some(TokenKind::Word(WordKind::Keyword(
-                Kw::Initial | Kw::Always | Kw::AlwaysFf | Kw::AlwaysComb | Kw::AlwaysLatch
+                Kw::Initial
+                    | Kw::Always
+                    | Kw::AlwaysFf
+                    | Kw::AlwaysComb
+                    | Kw::AlwaysLatch
+                    | Kw::Final
             )))
         ) {
             return Some(ModuleItem::Proc(self.parse_procedural_block()));
@@ -2441,6 +2446,7 @@ impl<'t, 's> Parser<'t, 's> {
                 Kw::AlwaysFf => ProcKind::AlwaysFf,
                 Kw::AlwaysComb => ProcKind::AlwaysComb,
                 Kw::AlwaysLatch => ProcKind::AlwaysLatch,
+                Kw::Final => ProcKind::Final,
                 _ => unreachable!("parse_procedural_block: caller pre-screens proc kw"),
             },
             _ => unreachable!("parse_procedural_block: caller pre-screens proc kw"),
@@ -2793,6 +2799,13 @@ impl<'t, 's> Parser<'t, 's> {
                 Kw::Casex => self.parse_case(CaseKind::Casex),
                 Kw::For => self.parse_for(),
                 Kw::While => self.parse_while(),
+                // P2-E: `do body while (cond);` — parse-time desugar (no new
+                // AST node): { body; while (cond) body }.
+                Kw::Do => self.parse_do_while(),
+                // P2-E: unique/priority QUALIFIERS on if/case — the violation
+                // check desugars to a synthesized `$warning` arm (IEEE
+                // §12.4/12.5: a no-match is a runtime violation warning).
+                Kw::Unique | Kw::Priority => self.parse_unique_priority(),
                 Kw::Foreach => self.parse_foreach(),
                 Kw::Repeat => self.parse_repeat(),
                 Kw::Forever => self.parse_forever(),
@@ -3145,6 +3158,95 @@ impl<'t, 's> Parser<'t, 's> {
             cond,
             body,
             span: start.to(self.prev_span()),
+        }
+    }
+
+    /// P2-E: `do body while (cond);` desugars at parse to
+    /// `begin body; while (cond) body end` — the body runs once before the
+    /// first test (body CLONE; loops with side-effecting macro-expanded
+    /// bodies are identical either way since both copies are the same AST).
+    fn parse_do_while(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // do
+        let body = self.parse_statement();
+        if !self.at_kw(Kw::While) {
+            self.error("'while' after a do-body");
+            return Stmt::Error(start.to(self.prev_span()));
+        }
+        self.bump(); // while
+        self.expect(TokenKind::LParen, "'(' after 'while'");
+        let cond = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        self.expect(TokenKind::Semi, "';' after do-while");
+        let span = start.to(self.prev_span());
+        let again = Stmt::While {
+            cond,
+            body: Box::new(body.clone()),
+            span,
+        };
+        Stmt::Block {
+            label: None,
+            decls: Vec::new(),
+            stmts: vec![body, again],
+            span,
+        }
+    }
+
+    /// P2-E: `unique`/`priority` qualified if/case. The qualified statement
+    /// parses normally; the VIOLATION surface (IEEE §12.4.2/§12.5.3 — no
+    /// branch/arm taken) desugars to a synthesized `$warning` else/default
+    /// arm (iverilog-pinned text class: "value is unhandled..."). A statement
+    /// that already HAS an else/default cannot miss — left untouched. The
+    /// multi-match uniqueness check is a documented cut (the lowered cascade
+    /// is first-match-wins, so overlap is unobservable).
+    fn parse_unique_priority(&mut self) -> Stmt {
+        let qspan = self.cur_span();
+        self.bump(); // unique / priority
+        let warn_stmt = |span: Span| Stmt::SysTaskCall {
+            name: Ident {
+                name: "$warning".to_string(),
+                span,
+            },
+            args: vec![Expr {
+                kind: ExprKind::StrLit {
+                    raw: "\"value is unhandled for priority or unique case statement\"".to_string(),
+                },
+                span,
+            }],
+            span,
+        };
+        match self.peek() {
+            Some(TokenKind::Word(WordKind::Keyword(Kw::If))) => {
+                let mut s = self.parse_if();
+                if let Stmt::If { else_s, span, .. } = &mut s {
+                    if else_s.is_none() {
+                        *else_s = Some(Box::new(warn_stmt(*span)));
+                    }
+                }
+                s
+            }
+            Some(TokenKind::Word(WordKind::Keyword(k @ (Kw::Case | Kw::Casez | Kw::Casex)))) => {
+                let kind = match k {
+                    Kw::Casez => CaseKind::Casez,
+                    Kw::Casex => CaseKind::Casex,
+                    _ => CaseKind::Case,
+                };
+                let mut s = self.parse_case(kind);
+                if let Stmt::Case { items, span, .. } = &mut s {
+                    let has_default = items.iter().any(|i| matches!(i, CaseItem::Default { .. }));
+                    if !has_default {
+                        items.push(CaseItem::Default {
+                            body: Box::new(warn_stmt(*span)),
+                            span: *span,
+                        });
+                    }
+                }
+                s
+            }
+            _ => {
+                self.error("'if' or 'case' after a unique/priority qualifier");
+                Stmt::Error(qspan.to(self.prev_span()))
+            }
         }
     }
 

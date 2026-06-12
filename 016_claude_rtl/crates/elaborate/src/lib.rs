@@ -175,6 +175,8 @@ pub struct Sidecars {
     pub queue_bounds: QueueBoundTable,
     /// Unpacked-array dims for per-element VCD naming (Phase-1.x ⑤).
     pub net_dims: NetDimsTable,
+    /// P2-E: ProcIds of `final` blocks (skip arming; run at end of sim).
+    pub final_procs: std::collections::BTreeSet<u32>,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -240,7 +242,8 @@ pub fn elaborate_with_timescale_roots(
         assign_ranks: std::mem::take(&mut el.assign_ranks),
         queue_bounds: std::mem::take(&mut el.queue_bounds),
         net_dims: el.array_dims.clone(), // the sparse decl map IS the table
-        net_names: el.net_name_table(),  // BEFORE finish() consumes `el`
+        final_procs: el.final_procs.clone(),
+        net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
         (None, sc)
@@ -557,6 +560,9 @@ struct Elaborator<'s> {
     /// v7 P2-D: compilation-unit-scope `import` items — applied to every
     /// module elaboration (IEEE visibility is decl-order; TBs put them first).
     cu_imports: Vec<ast::ImportDecl>,
+    /// P2-E: ProcIds of `final` blocks — engine side table (never the IR):
+    /// skipped at arming, run once at end of simulation.
+    pub final_procs: std::collections::BTreeSet<u32>,
     // NetId → per-unpacked-dimension DESCENDING flag (`mem[3:0]` ⇒ [true]).
     // Recorded only when some dim is descending (absent = all ascending);
     // array ASSIGNMENT pairs elements positionally left-to-right in DECLARED
@@ -712,6 +718,7 @@ impl<'s> Elaborator<'s> {
             pkg_funcs: BTreeMap::new(),
             pkg_tasks: BTreeMap::new(),
             cu_imports: Vec::new(),
+            final_procs: std::collections::BTreeSet::new(),
             array_dim_desc: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -6310,6 +6317,19 @@ impl<'s> Elaborator<'s> {
         // never lowered while already inside a fork child of another process).
         self.in_fork = false;
 
+        // P2-E `final`: zero-time one-shot — ANY timing control in the body
+        // (#/@/wait, anywhere, fork branches included) is illegal (§9.2.3).
+        if matches!(p.kind, ast::ProcKind::Final) {
+            if stmt_has_timing(&p.body) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a final block executes in zero time — timing controls \
+                     (#/@/wait) are illegal inside it (IEEE §9.2.3)",
+                );
+            }
+            self.final_procs.insert(self.cur_proc);
+        }
+
         // M-C: a bare `always` with NO header @(...) re-arms via its own in-body
         // timing (`always #5 clk=~clk;`). Detect that and wrap the body in an
         // implicit forever so control loops back to the in-body delay/event.
@@ -6468,7 +6488,10 @@ impl<'s> Elaborator<'s> {
     ) -> ir::Sensitivity {
         use ast::ProcKind::*;
         match kind {
-            Initial => ir::Sensitivity {
+            // P2-E `final`: Initial-shaped in the frozen IR (no sensitivity
+            // variant exists and none is needed) — the engine SKIPS arming it
+            // via the final_procs side table and runs it at end of simulation.
+            Initial | Final => ir::Sensitivity {
                 kind: ir::SensKind::Initial,
                 edges: Vec::new(),
             },
@@ -6844,6 +6867,16 @@ impl<'s> Elaborator<'s> {
                 } else {
                     None
                 };
+                // P2-E: `disable fork` — kill the caller's descendants
+                // (IEEE §9.6.3). Straight-line statement, no control flow.
+                if target.segments.len() == 1 && target.segments[0].name == "fork" {
+                    let sid = self.push_stmt(ir::Stmt::Disable {
+                        scope_kind: ir::DisableKind::Fork,
+                        target: 0,
+                    });
+                    b.push_stmt_id(sid);
+                    return;
+                }
                 match hit {
                     Some(exit) => {
                         let sid = self.push_stmt(ir::Stmt::Disable {

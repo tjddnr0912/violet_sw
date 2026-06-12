@@ -12,15 +12,15 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-12 v7 (the P2-C/P2-D AST flip: `TopItem::{Package,
-/// Import}` + `ImportDecl` + `ModuleItem::Import` + `ExprKind::PkgScoped` +
-/// `NetVarKind::String`; all `.vu` artifacts are stale). (Previous re-pins:
-/// 2026-06-11 v6 `AssocKey::Str`; 2026-06-11 v5 ⑥ front-end batch
-/// `Dim::{Dyn,Queue,Assoc}`+`ExprKind::{New,Dollar}`+interfaces;
-/// 2026-06-11 `NetVarKind::Event`; 2026-06-05 `TypedefKind::Struct`.)
+/// Re-pinned 2026-06-12 P2-E (`ProcKind::Final` — final blocks; all `.vu`
+/// artifacts are stale). (Previous re-pins: 2026-06-12 v7 P2-C/P2-D flip
+/// `TopItem::{Package,Import}`+`ImportDecl`+`ModuleItem::Import`+
+/// `ExprKind::PkgScoped`+`NetVarKind::String`; 2026-06-11 v6 `AssocKey::Str`;
+/// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
+/// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    199, 112, 99, 183, 63, 36, 179, 47, 138, 44, 202, 165, 236, 51, 115, 161, 40, 80, 109, 114,
-    217, 41, 65, 145, 143, 212, 97, 214, 137, 123, 35, 62,
+    47, 41, 25, 204, 218, 123, 126, 179, 167, 81, 221, 154, 75, 2, 223, 9, 34, 166, 138, 160, 209,
+    208, 8, 211, 222, 140, 170, 16, 11, 62, 9, 0,
 ];
 
 #[test]

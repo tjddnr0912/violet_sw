@@ -104,6 +104,10 @@ pub(crate) trait Kernel {
     /// WRITE: open the file (mode form → 0x8000_0003… fd; MCD form → channel
     /// bit) and return the descriptor value; failure returns 0.
     fn k_fopen(&mut self, rhs: u32) -> Value;
+    /// WRITE: `disable fork` — kill every active descendant of the calling
+    /// process (P2-E; the activity arena marks them dead, stale queue
+    /// entries drop at the dispatch choke).
+    fn k_disable_fork(&mut self);
     /// READ: is `rhs` a `$sformatf(fmt, args…)` call (v7)? Formatting needs
     /// the full kernel (the format engine renders through the Scheduler), so
     /// it is a statement-level effect; other placements are loud at elaborate.
@@ -427,7 +431,10 @@ enum StmtEffect<'s> {
     },
     /// `release lhs`. `sid` keys the assign-rank table (deassign vs release).
     Release { lhs: &'s Lvalue, sid: u32 },
-    /// `disable`: no-op in v1 (fork/disable deferred).
+    /// `disable fork` (P2-E): kills the caller's active descendants.
+    DisableFork,
+    /// `disable <block>`: the Goto desugar did the control-flow work at
+    /// elaborate; the statement itself is a marker no-op.
     Nop,
 }
 
@@ -517,7 +524,10 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             args,
             sid,
         },
-        Stmt::Disable { .. } => StmtEffect::Nop,
+        Stmt::Disable { scope_kind, .. } => match scope_kind {
+            sim_ir::DisableKind::Fork => StmtEffect::DisableFork,
+            sim_ir::DisableKind::Scope => StmtEffect::Nop,
+        },
         Stmt::Force { lhs, rhs } => {
             // Evaluate NOW (context-sized to the target) for the initial pin;
             // the kernel registers `rhs` for continuous re-evaluation
@@ -576,6 +586,10 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         StmtEffect::Sformatf { lhs, rhs, offsets } => {
             let value = k.k_sformatf(rhs); // kernel-side render (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::DisableFork => {
+            k.k_disable_fork();
             None
         }
         StmtEffect::Nonblocking {

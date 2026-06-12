@@ -488,6 +488,8 @@ pub enum Kw {
     Foreach,
     // --- SV package + string type (v7 P2-C/P2-D) ---
     Package, Endpackage, Import, String,
+    // --- SV procedural advanced (P2-E) ---
+    Do, Unique, Priority, Final,
 }
 
 impl Kw {
@@ -553,6 +555,8 @@ impl Kw {
             "modport" => Modport, "foreach" => Foreach,
             "package" => Package, "endpackage" => Endpackage,
             "import" => Import, "string" => String,
+            "do" => Do, "unique" => Unique, "priority" => Priority,
+            "final" => Final,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

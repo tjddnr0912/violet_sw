@@ -396,6 +396,9 @@ pub enum ProcKind {
     AlwaysFf,
     AlwaysComb,
     AlwaysLatch,
+    /// `final` (P2-E): a zero-time one-shot at end of simulation (IEEE
+    /// §9.2.3 — timing controls inside are illegal, loud at elaborate).
+    Final,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]

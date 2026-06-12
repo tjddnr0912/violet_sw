@@ -147,6 +147,10 @@ pub struct SimOpts {
     /// (VCD/stdout/exit) is byte-identical for every value — N changes
     /// wall-clock only (enforced by `tests/threads.rs`).
     pub threads: u32,
+    /// P2-E: ProcIds of `final` blocks — never armed at t0; run ONCE (in
+    /// ascending ProcId order) after the main loop ends, whatever the finish
+    /// reason. EMPTY default keeps every existing caller unchanged.
+    pub final_procs: std::collections::BTreeSet<u32>,
     /// Runtime plusargs (v7, `+name[=value]` with the '+' stripped, CLI
     /// order). `$test$plusargs` prefix-probes them; `$value$plusargs`
     /// converts the first match's remainder. Pure runtime input — never
@@ -174,6 +178,7 @@ impl Default for SimOpts {
             net_dims: NetDimsTable::new(),
             threads: 1,
             plusargs: Vec::new(),
+            final_procs: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -234,6 +239,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.net_dims = opts.net_dims.clone();
     st.threads = opts.threads;
     st.plusargs = opts.plusargs.clone();
+    st.final_procs = opts.final_procs.clone();
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);
@@ -241,7 +247,13 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
         // stop immediately with DeltaLimit rather than running on a divergent t0.
         if sched.settle_cont_assigns().is_some() {
             sched.arm_processes();
-            sched.run()
+            let reason = sched.run();
+            // P2-E: end-of-simulation `final` blocks (zero-time one-shots),
+            // whatever the finish reason — including the delta-limit path's
+            // else arm below NOT running them (a divergent t0 has no
+            // meaningful end-of-sim state).
+            sched.run_finals();
+            reason
         } else {
             FinishReason::DeltaLimit
         }

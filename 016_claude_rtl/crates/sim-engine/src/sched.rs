@@ -52,6 +52,9 @@ pub(crate) struct Activity {
     /// barrier's join_bb. A second report is an internal error (double-decrement).
     /// Always `false` for top-level activities.
     pub reported: bool,
+    /// P2-E `disable fork`: a killed descendant. Stale queue/waiter/wheel
+    /// entries survive; the single dispatch choke (`run_body`) drops them.
+    pub dead: bool,
 }
 
 /// One live fork's join barrier.
@@ -122,6 +125,9 @@ pub(crate) struct Scheduler<'a, 'ir> {
     wheel: BTreeMap<u64, Vec<(RegionTag, Ready)>>,
     /// Processes blocked on Wait conditions.
     waiters: Vec<Waiter>,
+    /// Activity id currently executing a body (set by `run_body`, the single
+    /// dispatch choke) — `disable fork` kills THIS activity's descendants.
+    cur_aid: u32,
     /// net → edge-sensitive process resumes.
     net_to_edge: Vec<Vec<(EdgeKind, Ready)>>,
     /// Per-activity private state. `index == Ready.proc` (activity id). Seeded 1:1
@@ -192,6 +198,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             nba_seq: 0,
             wheel: BTreeMap::new(),
             waiters: Vec::new(),
+            cur_aid: 0,
             net_to_edge: vec![Vec::new(); nnets],
             activities: Vec::new(),
             barriers: Vec::new(),
@@ -293,6 +300,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 join_ref: None,
                 is_child: false,
                 reported: false,
+                dead: false,
             })
             .collect();
 
@@ -320,6 +328,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
 
         for aid in 0..self.activities.len() as u32 {
             let tmpl = self.activities[aid as usize].template as usize;
+            // P2-E: `final` blocks are Initial-shaped in the IR but never
+            // armed — `run_finals` executes them after the main loop ends.
+            if self.st.final_procs.contains(&(tmpl as u32)) {
+                continue;
+            }
             let tie = self.activities[aid as usize].tie;
             let entry = self.st.ir.processes[tmpl].entry;
             let ready = Ready {
@@ -377,6 +390,25 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         }
     }
 
+    /// P2-E: execute every `final` block ONCE, ascending ProcId, after the
+    /// main loop ends (any finish reason). Bodies are zero-time by elaborate
+    /// contract (timing controls rejected), so each runs entry→Return in one
+    /// activation; a `$finish` inside one is absorbed (the run is already
+    /// ending — IEEE end-of-sim re-entry must not recurse).
+    pub(crate) fn run_finals(&mut self) {
+        let finals: Vec<u32> = self.st.final_procs.iter().copied().collect();
+        for pid in finals {
+            if (pid as usize) >= self.activities.len() {
+                continue; // defensive: stale side table
+            }
+            let entry = self.st.ir.processes[pid as usize].entry;
+            let _ = self.run_body(pid, entry);
+            // flush any $strobe/$monitor the final body queued (postponed
+            // machinery is per-timestep; end-of-sim is the last timestep).
+            self.flush_postponed();
+        }
+    }
+
     // ── main loop ────────────────────────────────────────────────────────
 
     /// THE single process-body dispatch seam (P4). The interpreter is the
@@ -387,6 +419,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     /// byte-identical to all-interpreter). The codegen-ability decision + compile is
     /// memoized per template by `vm_compiled` (decide-once cache).
     fn run_body(&mut self, proc: u32, block: u32) -> Step {
+        // P2-E `disable fork`: a killed activity's stale resume entries
+        // (slot queues, waiters, delay wheel) all funnel through here — drop.
+        if self.activities.get(proc as usize).is_some_and(|a| a.dead) {
+            return Step::Done;
+        }
+        self.cur_aid = proc;
         match self.st.backend {
             crate::Backend::Interpreter => run_process(self, proc, block),
             crate::Backend::Bytecode => {
@@ -1543,6 +1581,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 join_ref: Some(join_ref),
                 is_child: true,
                 reported: false,
+                dead: false,
             };
             // Recycle a completed child slot when available (P3-1): a freed slot's
             // old activity has reported (it cannot be queued/waiting anywhere).
@@ -1971,6 +2010,36 @@ impl Kernel for Scheduler<'_, '_> {
         let (fmt, rest) = (args.first().copied(), args.get(1..).unwrap_or(&[]).to_vec());
         let text = crate::builtins::format_args_str(self, fmt, &rest, None);
         Value::from_str_bytes(text.as_bytes())
+    }
+    fn k_disable_fork(&mut self) {
+        // IEEE §9.6.3: terminate every ACTIVE DESCENDANT of the calling
+        // process. Transitive walk: barriers parented by the kill set spread
+        // to their children. The arena is append-only and the walk is
+        // index-ordered — deterministic. Stale resume entries are dropped at
+        // the `run_body` choke.
+        let mut kill: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        kill.insert(self.cur_aid);
+        loop {
+            let mut grew = false;
+            for (aid, a) in self.activities.iter().enumerate() {
+                if a.dead || a.reported || kill.contains(&(aid as u32)) {
+                    continue;
+                }
+                let Some(jr) = a.join_ref else { continue };
+                let parent = self.barriers[jr as usize].parent;
+                if kill.contains(&parent) {
+                    kill.insert(aid as u32);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        kill.remove(&self.cur_aid); // the caller itself lives on
+        for aid in kill {
+            self.activities[aid as usize].dead = true;
+        }
     }
     fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value {
         // `k_queue_pop_rhs` guaranteed the shape; everything below is

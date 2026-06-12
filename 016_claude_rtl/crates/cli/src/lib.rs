@@ -611,6 +611,7 @@ fn run_vita_str_gated(
         queue_bounds: sc.queue_bounds,
         proc_scopes: sc.proc_scopes,
         net_dims: sc.net_dims,
+        final_procs: sc.final_procs,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
@@ -1382,6 +1383,11 @@ fn write_velab_file(
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&sc.net_dims).expect("net-dims trailer postcard encode infallible"),
     );
+    // 11th segment: P2-E `final` ProcIds (BTreeSet — postcard-deterministic).
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.final_procs)
+            .expect("final-procs trailer postcard encode infallible"),
+    );
     let vheader = artifact_header(
         vita_schema::schema_hash::<sim_ir::SimIr>(),
         global_prec_exp,
@@ -1886,16 +1892,32 @@ fn run_vrun_gated(
         }
     };
     // net-dims trailer (Phase-1.x ⑤). Tolerant → empty ⇒ 1-D 0-based VCD names.
-    let net_dims: sim_engine::NetDimsTable = if rest10.is_empty() {
-        sim_engine::NetDimsTable::new()
+    let (net_dims, rest11): (sim_engine::NetDimsTable, &[u8]) = if rest10.is_empty() {
+        (sim_engine::NetDimsTable::new(), &[])
     } else {
-        match postcard::from_bytes(rest10) {
+        match postcard::take_from_bytes(rest10) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab net-dims trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // 11th: P2-E final ProcIds. Tolerant → empty ⇒ no final blocks (legacy).
+    let final_procs: std::collections::BTreeSet<u32> = if rest11.is_empty() {
+        std::collections::BTreeSet::new()
+    } else {
+        match postcard::from_bytes(rest11) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab final-procs trailer: {e}"
                     )),
                 )
             }
@@ -1985,6 +2007,7 @@ fn run_vrun_gated(
         queue_bounds,
         proc_scopes,
         net_dims,
+        final_procs,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
