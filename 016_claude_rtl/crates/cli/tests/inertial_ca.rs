@@ -10,6 +10,7 @@
 //!   - EXACTLY-5ns pulse → survives (the pending write delivers at the tick
 //!     boundary BEFORE the new change re-arms) — matches our drain order
 //!     (delayed writes apply at tick start, then processes run).
+//!
 //! (The t0 undriven surface differs — iverilog shows `x`, vita `z` — which is
 //! a pre-existing init-value surface, so assertions start at the first edge.)
 use std::process::Command;
