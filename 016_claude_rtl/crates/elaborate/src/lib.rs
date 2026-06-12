@@ -3699,6 +3699,15 @@ impl<'s> Elaborator<'s> {
     fn lower_lvalue(&mut self, lv: &ast::Lvalue) -> ir::Lvalue {
         let mut chunks = Vec::new();
         self.collect_lval_chunks(lv, &mut chunks);
+        // review F3: a string chunk inside a CONCAT lvalue has chunk width 0
+        // — the runtime slice loop wrote an EMPTY piece (silently clearing
+        // the string). Whole-string single-chunk stays the supported shape.
+        if chunks.len() > 1 && chunks.iter().any(|c| self.is_string_net(c.net)) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a string inside a concatenation lvalue is outside the v7 scope",
+            );
+        }
         ir::Lvalue { chunks }
     }
 
@@ -4527,9 +4536,17 @@ impl<'s> Elaborator<'s> {
             ast::ExprKind::Paren { inner } => self.expr_is_string_ast(inner),
             ast::ExprKind::Ident(p) => match p.segments.as_slice() {
                 [seg] => {
-                    self.subst_lookup(&seg.name).is_none()
-                        && self.out_subst_lookup(&seg.name).is_none()
-                        && self.lookup_scoped(&seg.name).is_none()
+                    // review F2: an inlined FORMAL bound to a string actual
+                    // must keep its string-domain-ness — resolve through the
+                    // subst (the bypass lowered `a < b` as a packed compare,
+                    // non-lexicographic for unequal lengths).
+                    if let Some(eid) = self.subst_lookup(&seg.name) {
+                        return self.ir_expr_is_string(eid);
+                    }
+                    if let Some(net) = self.out_subst_lookup(&seg.name) {
+                        return self.is_string_net(net);
+                    }
+                    self.lookup_scoped(&seg.name).is_none()
                         && self.string_handle(&seg.name).is_some()
                 }
                 _ => false,
@@ -4549,6 +4566,22 @@ impl<'s> Elaborator<'s> {
     /// v7 P2-C: is `net` a string variable?
     fn is_string_net(&self, net: u32) -> bool {
         self.nets.get(net as usize).map(|n| n.kind) == Some(ir::NetKind::String)
+    }
+
+    /// v7 P2-C: does an already-LOWERED expr denote a string-domain value?
+    /// (subst-bound formals resolve here — review F2.)
+    fn ir_expr_is_string(&self, eid: u32) -> bool {
+        match self.exprs.get(eid as usize) {
+            Some(ir::Expr::Signal { net, word: None }) => self.is_string_net(*net),
+            Some(ir::Expr::SysFunc { which, .. }) => matches!(
+                which,
+                ir::SysFuncId::StrSubstr
+                    | ir::SysFuncId::StrToUpper
+                    | ir::SysFuncId::StrToLower
+                    | ir::SysFuncId::Sformatf
+            ),
+            _ => false,
+        }
     }
 
     /// v7 P2-C: method-call EXPRESSION on a string (`s.len()`, `s.substr(i,j)`,
@@ -7749,7 +7782,15 @@ impl<'s> Elaborator<'s> {
         let e = self.exprs.get(eid as usize)?;
         Some(match e {
             ir::Expr::Const { val } => self.consts.get(*val as usize)?.width.max(1),
-            ir::Expr::Signal { net, .. } => self.nets.get(*net as usize)?.width.max(1),
+            ir::Expr::Signal { net, .. } => {
+                let nv = self.nets.get(*net as usize)?;
+                // review F1: a String handle's table width is 0 — `.max(1)`
+                // made `$bits(s)` a silent 1. Dynamic length ⇒ loud at site.
+                if nv.kind == ir::NetKind::String {
+                    return None;
+                }
+                nv.width.max(1)
+            }
             ir::Expr::Select { width, kind, .. } => match kind {
                 ir::SelKind::Bit => 1,
                 // direct Const OR the synthesized `Add(Sub(msb,lsb),1)` width

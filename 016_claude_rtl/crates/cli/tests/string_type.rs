@@ -177,3 +177,92 @@ fn string_in_nba_and_if_condition() {
     assert_eq!(code, Some(0), "stderr:\n{err}");
     assert!(out.contains("nba_ok"), "got:\n{out}");
 }
+
+// ── v7 adversarial-review regressions (2026-06-12) ──────────────────────
+
+#[test]
+fn bits_of_string_is_loud() {
+    // review F1: the general-expression $bits lane read the String net's
+    // width-0 table entry through `.max(1)` → silent 1.
+    let (_o, err, code) = run("module top;\n\
+         string s;\n\
+         initial begin\n\
+           s = \"hello\";\n\
+           $display(\"%0d\", $bits(s));\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_ne!(code, Some(0));
+    assert!(err.contains("E3009"), "stderr:\n{err}");
+}
+
+#[test]
+fn string_relational_through_function_formal() {
+    // review F2 (variant): a string FORMAL is subst-bound, which bypassed
+    // the string-domain detection — relationals lowered as packed compare
+    // (non-lexicographic for unequal lengths: "ab" < "b" came out 0).
+    // Equality was already correct via the strip invariant.
+    let (out, err, code) = run("module top;\n\
+         string s;\n\
+         integer r;\n\
+         function integer strlt(input string a, input string b);\n\
+           strlt = (a < b);\n\
+         endfunction\n\
+         initial begin\n\
+           s = \"ab\";\n\
+           r = strlt(s, \"b\");\n\
+           $display(\"lt=%0d\", r);\n\
+           r = strlt(s, \"aa\");\n\
+           $display(\"lt2=%0d\", r);\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("lt=1"), "got:\n{out}");
+    assert!(out.contains("lt2=0"), "got:\n{out}");
+}
+
+#[test]
+fn string_in_concat_lhs_is_loud() {
+    // review F3: `{s, x} = v` silently CLEARED the string (chunk width 0 →
+    // empty piece through the dyn funnel) — loud now.
+    let (_o, err, code) = run("module top;\n\
+         string s;\n\
+         reg [7:0] x;\n\
+         initial begin\n\
+           s = \"old\";\n\
+           {s, x} = 16'h4142;\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_ne!(code, Some(0));
+    assert!(err.contains("E3009"), "stderr:\n{err}");
+}
+
+#[test]
+fn case_on_string_stays_correct() {
+    // review F4 was REFUTED live: reads materialize real widths, and case
+    // EQUALITY is exact under the leading-NUL-strip invariant (unequal
+    // lengths zero-extend and can never falsely match). Pin it.
+    let (out, err, code) = run("module top;\n\
+         string s;\n\
+         initial begin\n\
+           s = \"b\";\n\
+           case (s)\n\
+             \"a\": $display(\"got a\");\n\
+             \"b\": $display(\"got b\");\n\
+             default: $display(\"default\");\n\
+           endcase\n\
+           s = \"ab\";\n\
+           case (s)\n\
+             \"b\": $display(\"2:got b\");\n\
+             \"ab\": $display(\"2:got ab\");\n\
+             default: $display(\"2:default\");\n\
+           endcase\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("got b"), "got:\n{out}");
+    assert!(out.contains("2:got ab"), "got:\n{out}");
+}
