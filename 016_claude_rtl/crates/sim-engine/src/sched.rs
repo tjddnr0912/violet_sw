@@ -103,9 +103,13 @@ struct Waiter {
     arm: Option<Vec<BitPacked>>,
 }
 
-/// One transport-delay continuous-assign write: `(lhs, value, per-chunk
-/// (offset, word))`, applied when the simulation reaches the scheduled tick.
-type DelayedWrite = (Lvalue, Value, Offsets);
+/// One INERTIAL-delay continuous-assign write: `(cont-assign index,
+/// generation, lhs, value, per-chunk (offset, word))`. Applied when the
+/// simulation reaches the scheduled tick IF the generation still matches
+/// `ca_gen[ci]` — a later RHS change bumps the generation, so the stale
+/// pending write is silently dropped (IEEE inertial pulse filtering: a pulse
+/// narrower than the delay never reaches the LHS; iverilog-pinned live).
+type DelayedWrite = (u32, u64, Lvalue, Value, Offsets);
 
 pub(crate) struct Scheduler<'a, 'ir> {
     pub st: &'a mut SimState<'ir>,
@@ -140,7 +144,11 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// Last RHS value seen per cont-assign — only used by DELAYED `assign #d`
     /// (change detection, so a delayed write schedules once per RHS change).
     last_ca: Vec<Option<Value>>,
-    /// Pending transport-delay cont-assign writes, keyed by absolute apply tick.
+    /// Per-cont-assign schedule generation — bumped on every new RHS change,
+    /// invalidating any pending write carrying an older generation (the
+    /// inertial cancel; see `DelayedWrite`).
+    ca_gen: Vec<u64>,
+    /// Pending inertial-delay cont-assign writes, keyed by absolute apply tick.
     delayed_ca: BTreeMap<u64, Vec<DelayedWrite>>,
     /// Transport NBAs (`q <= #d v`, v5 increment A): updates due at a FUTURE
     /// tick's NBA region. Drained into `nba` when time advances to the key;
@@ -191,6 +199,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             free_barriers: Vec::new(),
             fork_modes,
             last_ca: vec![None; nca],
+            ca_gen: vec![0; nca],
             delayed_ca: BTreeMap::new(),
             delayed_nba: BTreeMap::new(),
             delta_count: 0,
@@ -238,10 +247,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 return None;
             }
         }
-        // Delayed `assign #d y = rhs`: the zero-delay fixpoint has settled, so the
-        // RHS is stable. On each RHS-value CHANGE, schedule a TRANSPORT-delay write
-        // of the new value at `now + d` (inertial pulse-filtering is a v1
-        // simplification; the value at the delayed time is correct).
+        // Delayed `assign #d y = rhs`: the zero-delay fixpoint has settled, so
+        // the RHS is stable. On each RHS-value CHANGE, schedule an INERTIAL
+        // write of the new value at `now + d` — bumping `ca_gen[ci]` cancels
+        // any still-pending older write for THIS assign (a pulse narrower
+        // than d never lands; a pulse of EXACTLY d survives because pending
+        // writes apply at the tick start, before processes re-change the RHS
+        // — both iverilog-pinned live, 2026-06-12).
         for ci in 0..self.st.ir.cont_assigns.len() {
             let Some(d) = self.st.ir.cont_assigns[ci].delay else {
                 continue;
@@ -253,12 +265,16 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 continue; // RHS unchanged → no new scheduled write
             }
             self.last_ca[ci] = Some(v.clone());
+            self.ca_gen[ci] += 1;
             let offs = self.resolve_lvalue_offsets(&lhs);
             let tick = self.st.now + d as u64;
-            self.delayed_ca
-                .entry(tick)
-                .or_default()
-                .push((lhs, v, offs));
+            self.delayed_ca.entry(tick).or_default().push((
+                ci as u32,
+                self.ca_gen[ci],
+                lhs,
+                v,
+                offs,
+            ));
         }
         Some(any)
     }
@@ -533,12 +549,17 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             // costing O(nets) per timestep (512 idle nets ≈ half the
             // nets-heavy wall-clock). Soundness is pinned by the byte-compare
             // suites (staged/threads/corpus/differential).
-            // Apply transport-delay cont-assign writes due at this tick; propagate
+            // Apply inertial-delay cont-assign writes due at this tick; propagate
             // so edges/level-waiters on the delayed net fire (these are NET writes,
             // not process resumes, so the loop-top settle would not see them).
+            // A write whose generation was superseded by a later RHS change is
+            // STALE — dropped (the inertial cancel).
             if let Some(writes) = self.delayed_ca.remove(&next) {
                 let mut moved = false;
-                for (lhs, v, offs) in writes {
+                for (ci, gen, lhs, v, offs) in writes {
+                    if self.ca_gen[ci as usize] != gen {
+                        continue;
+                    }
                     moved |= self.st.write_lvalue(&lhs, v, &offs);
                 }
                 if moved {
