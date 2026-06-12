@@ -379,17 +379,111 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        // v7 file I/O. args[0] = descriptor; fmt/args render like $display.
+        SysTaskId::Fdisplay | SysTaskId::Fwrite => {
+            let fd = args
+                .first()
+                .map(|&a| sched.eval(a))
+                .filter(|v| !v.has_xz())
+                .and_then(|v| v.to_u64())
+                .map(|v| v as u32);
+            let mut text = format_args_str(sched, fmt, args.get(1..).unwrap_or(&[]), radix);
+            if matches!(which, SysTaskId::Fdisplay) {
+                text.push('\n');
+            }
+            match fd {
+                Some(fd) => file_write(sched, fd, &text),
+                None => bad_fd_warn(sched, u32::MAX),
+            }
+            Ctl::Continue
+        }
+        SysTaskId::Fclose => {
+            let fd = args
+                .first()
+                .map(|&a| sched.eval(a))
+                .filter(|v| !v.has_xz())
+                .and_then(|v| v.to_u64())
+                .map(|v| v as u32);
+            match fd {
+                // fd form: drop the File (flush+close on Drop).
+                Some(fd) if fd & 0x8000_0000 != 0 => {
+                    if sched.st.files.remove(&fd).is_none() {
+                        bad_fd_warn(sched, fd);
+                    }
+                }
+                // MCD form: close every set channel bit (bit 0 = stdout, kept).
+                Some(mcd) => {
+                    for bit in 1..31u32 {
+                        if mcd & (1 << bit) != 0 {
+                            sched.st.mcd_files.remove(&bit);
+                        }
+                    }
+                }
+                None => bad_fd_warn(sched, u32::MAX),
+            }
+            Ctl::Continue
+        }
         // v7 shape, features not wired yet: elaborate still rejects/skips these
         // names, so a Stmt carrying them can only come from a hand-built IR —
         // defensive no-op, never a panic.
-        SysTaskId::Fclose
-        | SysTaskId::Fdisplay
-        | SysTaskId::Fwrite
-        | SysTaskId::Sformat
-        | SysTaskId::ReadmemB
-        | SysTaskId::ReadmemH
-        | SysTaskId::StrPutC => Ctl::Continue,
+        SysTaskId::Sformat | SysTaskId::ReadmemB | SysTaskId::ReadmemH | SysTaskId::StrPutC => {
+            Ctl::Continue
+        }
     }
+}
+
+/// v7: route `text` to a descriptor — fd form (bit 31) hits one file; MCD
+/// form broadcasts to every set channel bit (bit 0 = stdout). A bad/closed
+/// fd warns once (W4022) and drops the write, iverilog parity.
+fn file_write(sched: &mut Scheduler, fd: u32, text: &str) {
+    use std::io::Write as _;
+    if fd & 0x8000_0000 != 0 {
+        match sched.st.files.get_mut(&fd) {
+            Some(f) => {
+                let _ = f.write_all(text.as_bytes());
+            }
+            None => bad_fd_warn(sched, fd),
+        }
+        return;
+    }
+    // MCD broadcast.
+    if fd == 0 {
+        bad_fd_warn(sched, fd);
+        return;
+    }
+    if fd & 1 != 0 {
+        write_out(sched.st, text);
+    }
+    for bit in 1..31u32 {
+        if fd & (1 << bit) != 0 {
+            match sched.st.mcd_files.get_mut(&bit) {
+                Some(f) => {
+                    let _ = f.write_all(text.as_bytes());
+                }
+                None => bad_fd_warn(sched, fd),
+            }
+        }
+    }
+}
+
+/// W4022 once-per-descriptor (the dyn W4020 latch pattern).
+fn bad_fd_warn(sched: &mut Scheduler, fd: u32) {
+    if !sched.st.bad_fd_warned.insert(fd) {
+        return;
+    }
+    sched
+        .st
+        .sink
+        .emit(diag::LogEvent::Diagnostic(diag::Diagnostic {
+            severity: diag::Severity::Warning,
+            code: diag::MsgCode::RunBadFd,
+            message: format!("file operation on invalid/closed descriptor 0x{fd:08x} ignored"),
+            location: None,
+            context: Vec::new(),
+            sim_time: Some(diag::TimeStamp {
+                ticks: sched.st.now,
+            }),
+        }));
 }
 
 pub(crate) fn write_out(st: &mut SimState, text: &str) {

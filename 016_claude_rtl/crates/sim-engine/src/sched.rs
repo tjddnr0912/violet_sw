@@ -1886,6 +1886,74 @@ impl Kernel for Scheduler<'_, '_> {
         self.k_write_lvalue(&lv, value, &off);
         Value::from_i128(1, 32, true)
     }
+    fn k_fopen_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Fopen,
+                ..
+            })
+        )
+    }
+    fn k_fopen(&mut self, rhs: u32) -> Value {
+        // args = [name strconst (, mode strconst)] — elaborate's contract.
+        let args = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) => args.clone(),
+            _ => return Value::from_i128(0, 32, true),
+        };
+        let name = match args.first().map(|&a| self.st.ir.exprs.get(a as usize)) {
+            Some(Some(sim_ir::Expr::Const { val })) => {
+                crate::builtins::const_string(self.st.ir, *val)
+            }
+            _ => return Value::from_i128(0, 32, true),
+        };
+        let mode = args
+            .get(1)
+            .and_then(|&a| match self.st.ir.exprs.get(a as usize) {
+                Some(sim_ir::Expr::Const { val }) => {
+                    Some(crate::builtins::const_string(self.st.ir, *val))
+                }
+                _ => None,
+            });
+        let open = |mode: &str| -> std::io::Result<std::fs::File> {
+            let mut o = std::fs::OpenOptions::new();
+            match mode.trim_end_matches('b') {
+                "r" | "r+" => o.read(true).write(mode.contains('+')),
+                "a" | "a+" => o.create(true).append(true),
+                // "w"/"w+" and anything unrecognized: truncate-write (the
+                // overwhelmingly common TB mode; unknown modes behave as "w").
+                _ => o.create(true).write(true).truncate(true),
+            };
+            o.open(&name)
+        };
+        let fd = match mode {
+            Some(m) => match open(&m) {
+                Ok(f) => {
+                    let n = self.st.next_fd;
+                    self.st.next_fd += 1;
+                    let fd = 0x8000_0000 | n;
+                    self.st.files.insert(fd, f);
+                    fd
+                }
+                Err(_) => 0, // IEEE: $fopen failure returns 0
+            },
+            None => match open("w") {
+                Ok(f) => {
+                    let bit = self.st.next_mcd_bit;
+                    if bit >= 31 {
+                        return Value::from_i128(0, 32, true); // channel space full
+                    }
+                    self.st.next_mcd_bit += 1;
+                    self.st.mcd_files.insert(bit, f);
+                    1u32 << bit
+                }
+                Err(_) => 0,
+            },
+        };
+        let mut v = Value::zeros(32, true);
+        v.val[0] = fd as u64;
+        v
+    }
     fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value {
         // `k_queue_pop_rhs` guaranteed the shape; everything below is
         // defensive against a hand-built IR — degrade, never panic.

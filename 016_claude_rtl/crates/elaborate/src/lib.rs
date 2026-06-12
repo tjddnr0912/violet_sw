@@ -3378,6 +3378,15 @@ impl<'s> Elaborator<'s> {
                     );
                     return self.placeholder_expr();
                 }
+                // v7: $fopen mutates the file table — direct-rhs only.
+                if name.name == "$fopen" {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "$fopen is supported only as the direct rhs of a \
+                         blocking assignment (v7)",
+                    );
+                    return self.placeholder_expr();
+                }
                 // v7: $value$plusargs writes its ref var — direct-rhs only.
                 if name.name == "$value$plusargs" {
                     self.error(
@@ -6280,6 +6289,10 @@ impl<'s> Elaborator<'s> {
                 if self.value_plusargs_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // v7: `fd = $fopen(name[, mode])` — same family.
+                if self.fopen_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -7010,6 +7023,60 @@ impl<'s> Elaborator<'s> {
         true
     }
 
+    /// v7: `fd = $fopen(name[, mode])` special form — the open mutates the
+    /// engine file table (WRITE phase). Both arguments must be string
+    /// LITERALS (a runtime filename needs the P2-C string type).
+    fn fopen_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$fopen" {
+            return false;
+        }
+        if args.is_empty() || args.len() > 2 {
+            self.error(MsgCode::ElabUnsupported, "$fopen takes (name[, mode])");
+            return true;
+        }
+        if !args
+            .iter()
+            .all(|a| matches!(a.kind, ast::ExprKind::StrLit { .. }))
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$fopen arguments must be string literals (v7)",
+            );
+            return true;
+        }
+        let arg_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Fopen,
+            args: arg_ids,
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        if delay.is_some() {
+            // exotic; keep the contract narrow + loud rather than guessing
+            // open-now/assign-later semantics nobody writes.
+            self.error(
+                MsgCode::ElabUnsupported,
+                "intra-assignment delay on $fopen is unsupported (v7)",
+            );
+            return true;
+        }
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
     // ── $bits const-fold (v7, IR-0) ────────────────────────────────
     /// `$bits(arg)` → 32-bit Const. The argument is a TYPE reference, never
     /// evaluated; unsupported shapes are LOUD (E3009), never a silent 0.
@@ -7503,7 +7570,23 @@ impl<'s> Elaborator<'s> {
                 | ir::SysTaskId::DumpAll
         );
         let mut fmt_raw: Option<String> = None;
-        let (fmt, value_args): (Option<u32>, &[ast::Expr]) = if takes_fmt {
+        // v7 file print family: args[0] is the DESCRIPTOR; the format (when a
+        // string literal) is args[1]. Stmt args stay [fd, value-args…].
+        let file_fmt = matches!(which, ir::SysTaskId::Fdisplay | ir::SysTaskId::Fwrite);
+        let mut file_args_buf: Vec<ast::Expr> = Vec::new();
+        let (fmt, value_args): (Option<u32>, &[ast::Expr]) = if file_fmt {
+            match args.get(1).map(|e| &e.kind) {
+                Some(ast::ExprKind::StrLit { raw }) => {
+                    fmt_raw = Some(parse_str_literal_text(raw));
+                    let cid = self.intern_const(parse_str_literal(raw));
+                    let fmt_expr = self.push_expr(ir::Expr::Const { val: cid });
+                    file_args_buf.push(args[0].clone());
+                    file_args_buf.extend(args.iter().skip(2).cloned());
+                    (Some(fmt_expr), file_args_buf.as_slice())
+                }
+                _ => (None, args),
+            }
+        } else if takes_fmt {
             match args.first().map(|e| &e.kind) {
                 Some(ast::ExprKind::StrLit { raw }) => {
                     fmt_raw = Some(parse_str_literal_text(raw));
@@ -7729,9 +7812,9 @@ fn map_severity(dollar_name: &str) -> Option<SeverityKind> {
 /// `$monitoron`/`$monitoroff` never alias `$monitoro` + a stray suffix).
 fn radix_of_systask(dollar_name: &str) -> Option<u8> {
     match dollar_name {
-        "$displayb" | "$writeb" | "$strobeb" | "$monitorb" => Some(2),
-        "$displayo" | "$writeo" | "$strobeo" | "$monitoro" => Some(8),
-        "$displayh" | "$writeh" | "$strobeh" | "$monitorh" => Some(16),
+        "$displayb" | "$writeb" | "$strobeb" | "$monitorb" | "$fdisplayb" | "$fwriteb" => Some(2),
+        "$displayo" | "$writeo" | "$strobeo" | "$monitoro" | "$fdisplayo" | "$fwriteo" => Some(8),
+        "$displayh" | "$writeh" | "$strobeh" | "$monitorh" | "$fdisplayh" | "$fwriteh" => Some(16),
         _ => None,
     }
 }
@@ -7751,6 +7834,10 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         "$dumpall" => Some(ir::SysTaskId::DumpAll),
         "$dumpflush" => Some(ir::SysTaskId::DumpFlush),
         "$dumplimit" => Some(ir::SysTaskId::DumpLimit),
+        // v7 file I/O ($fopen is a special form — it returns the fd).
+        "$fclose" => Some(ir::SysTaskId::Fclose),
+        "$fdisplay" | "$fdisplayb" | "$fdisplayo" | "$fdisplayh" => Some(ir::SysTaskId::Fdisplay),
+        "$fwrite" | "$fwriteb" | "$fwriteo" | "$fwriteh" => Some(ir::SysTaskId::Fwrite),
         _ => None,
     }
 }

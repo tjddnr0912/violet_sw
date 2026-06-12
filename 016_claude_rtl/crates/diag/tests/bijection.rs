@@ -65,8 +65,8 @@ fn msgcode_matches_doc15_body_one_to_one() {
 
     assert_eq!(
         enum_codes.len(),
-        53,
-        "MsgCode must have exactly 53 body variants"
+        54,
+        "MsgCode must have exactly 54 body variants"
     );
     assert_eq!(
         enum_codes, doc,

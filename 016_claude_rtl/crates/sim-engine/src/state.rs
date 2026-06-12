@@ -168,6 +168,18 @@ pub(crate) struct SimState<'a> {
     pub rng: RngCells,
     /// v7 runtime plusargs (from `SimOpts.plusargs`, CLI order).
     pub plusargs: Vec<String>,
+    /// v7 file I/O: fd-form table (`$fopen(name, mode)` → 0x8000_0003…).
+    /// 0x8000_0000..=0x8000_0002 are reserved (stdin/stdout/stderr).
+    pub files: std::collections::BTreeMap<u32, std::fs::File>,
+    /// v7 MCD-form table (`$fopen(name)`): channel BIT index → file.
+    /// Bit 0 is stdout; opens take bits from 1 (iverilog parity).
+    pub mcd_files: std::collections::BTreeMap<u32, std::fs::File>,
+    /// Next fd-form counter (low bits; the returned fd is 0x8000_0000|n).
+    pub next_fd: u32,
+    /// Next MCD channel bit.
+    pub next_mcd_bit: u32,
+    /// W4022 once-per-descriptor latch (bad/closed fd writes).
+    pub bad_fd_warned: std::collections::BTreeSet<u32>,
     /// Instance path of the process CURRENTLY executing — set per `run_process`
     /// (like `cur_time_mult`), read by the `%m` format spec.
     pub cur_scope: String,
@@ -270,6 +282,11 @@ impl<'a> SimState<'a> {
             dump_multi_warned: false,
             rng: RngCells::default(),
             plusargs: Vec::new(),
+            files: std::collections::BTreeMap::new(),
+            mcd_files: std::collections::BTreeMap::new(),
+            next_fd: 3,
+            next_mcd_bit: 1,
+            bad_fd_warned: std::collections::BTreeSet::new(),
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),
