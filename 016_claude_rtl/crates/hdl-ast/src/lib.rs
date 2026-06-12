@@ -88,8 +88,23 @@ pub enum TopItem {
     /// elaborate keeps interfaces in their own map and flattens an instance
     /// into plain nets + symbol aliases (spike 2026-06-10: no new IR).
     Interface(ModuleDecl),
+    /// `package name; … endpackage` (v7 P2-D). Body shape reuses
+    /// `ModuleDecl` like interfaces (params/typedefs/funcs/tasks); elaborate
+    /// flattens imported symbols by name — no IR.
+    Package(ModuleDecl),
+    /// Compilation-unit-scope `import pkg::*;` / `import pkg::sym;` (v7) —
+    /// one item per comma-separated term.
+    Import(ImportDecl),
     /// Recovery placeholder for an unparseable top-level construct.
     Error(Span),
+}
+
+/// One `import` term (v7 P2-D): `pkg::*` (`item: None`) or `pkg::sym`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ImportDecl {
+    pub pkg: Ident,
+    pub item: Option<Ident>,
+    pub span: Span,
 }
 
 // ──────────────────────────── Module ────────────────────────────
@@ -162,6 +177,7 @@ pub enum ModuleItem {
     Task(TaskDef),               // [A]
     Defparam(DefparamItem),      // [A] defparam path = expr;
     Typedef(TypedefDecl),        // SV `typedef enum/struct/<type> name;` (Phase-2)
+    Import(ImportDecl),          // v7 P2-D module-scope `import pkg::…;`
     /// `modport mp (input a, output b);` (v5 ⑥ — parsed and ACCEPTED; the
     /// per-member direction checks are a follow-on increment).
     Modport(ModportDecl),
@@ -337,6 +353,8 @@ pub enum NetVarKind {
     Time,
     /// `event e;` (v5 batch B — elaborate desugars it to a 64-bit counter reg).
     Event,
+    /// SV `string` variable (v7 P2-C — heap-handle storage, dyn precedent).
+    String,
 }
 
 /// `[msb:lsb]`. Bounds are exprs (usually const), NOT pre-evaluated.
@@ -564,6 +582,11 @@ pub enum ExprKind {
     StrLit {
         raw: String,
     }, // includes quotes; unescape deferred
+    /// `pkg::name` package-scoped value reference (v7 P2-D).
+    PkgScoped {
+        pkg: Ident,
+        name: Ident,
+    },
     // names
     Ident(HierPath), // a, a.b.c
     // operators (precedence table §4 → Pratt binding powers)

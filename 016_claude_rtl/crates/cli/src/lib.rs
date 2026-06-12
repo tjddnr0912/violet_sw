@@ -1151,7 +1151,9 @@ fn run_vcmp_gated(
                 hdl_ast::TopItem::Interface(m) => {
                     Some(("interface".to_string(), m.name.name.clone()))
                 }
-                hdl_ast::TopItem::Error(_) => None,
+                // v7: packages are units too (importable from libraries).
+                hdl_ast::TopItem::Package(m) => Some(("package".to_string(), m.name.name.clone())),
+                hdl_ast::TopItem::Import(_) | hdl_ast::TopItem::Error(_) => None,
             })
             .collect();
         let cu = worklib::Cu {
@@ -1601,10 +1603,10 @@ fn run_velab_lib_gated(
         }
         for it in &cu.unit.items {
             let name = match it {
-                hdl_ast::TopItem::Module(m) | hdl_ast::TopItem::Interface(m) => {
-                    Some(m.name.name.clone())
-                }
-                hdl_ast::TopItem::Error(_) => None,
+                hdl_ast::TopItem::Module(m)
+                | hdl_ast::TopItem::Interface(m)
+                | hdl_ast::TopItem::Package(m) => Some(m.name.name.clone()),
+                hdl_ast::TopItem::Import(_) | hdl_ast::TopItem::Error(_) => None,
             };
             if let Some(n) = name {
                 match unit_map.get(&n) {

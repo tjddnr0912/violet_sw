@@ -131,11 +131,6 @@ impl<'t, 's> Parser<'t, 's> {
     fn peek_at(&self, n: usize) -> Option<TokenKind> {
         self.toks.get(self.pos + n).map(|t| t.kind)
     }
-    /// Source text of the CURRENT token (contextual-keyword checks).
-    #[inline]
-    fn peek_text(&self) -> Option<&str> {
-        self.toks.get(self.pos).map(|t| &self.src[t.span.clone()])
-    }
     #[inline]
     fn at_eof(&self) -> bool {
         self.pos >= self.toks.len()
@@ -598,6 +593,23 @@ impl<'t, 's> Parser<'t, 's> {
             // identifier / hierarchical name / function call
             _ if self.is_ident() => {
                 let path = self.hier_path().unwrap();
+                // v7 P2-D: `pkg::name` package-scoped value reference.
+                if path.segments.len() == 1 && self.peek() == Some(T::ColonColon) {
+                    self.bump(); // '::'
+                    if let Some(name) = self.ident() {
+                        return Expr {
+                            kind: ExprKind::PkgScoped {
+                                pkg: path.segments.into_iter().next().unwrap(),
+                                name,
+                            },
+                            span: start.to(self.prev_span()),
+                        };
+                    }
+                    return Expr {
+                        kind: ExprKind::Error,
+                        span: start.to(self.prev_span()),
+                    };
+                }
                 // v5 ⑥: contextual `new[n]` / `new[n](src)` — the ident `new`
                 // immediately followed by `[`. Elaborate falls back to an
                 // array read when a net named `new` is actually in scope
@@ -840,13 +852,10 @@ impl<'t, 's> Parser<'t, 's> {
                     AssocKey::Time
                 }));
             }
-            // `[string]` (v6) — CONTEXTUAL: `string` is a plain identifier
-            // everywhere else (V2005 compat), but an identifier spelled
-            // exactly `string` directly inside `[ ]` is the assoc key type.
-            // (A V2005 parameter literally named `string` used as a dim is
-            // shadowed — iverilog -g2012 rejects such code outright, so the
-            // corner is already non-portable.)
-            Some(TokenKind::Word(WordKind::Ident)) if self.peek_text() == Some("string") => {
+            // `[string]` (v6) — since the v7 AST flip `string` is a real
+            // KEYWORD (the P2-C type), so the assoc key form is keyword-led
+            // like `[integer]`/`[time]`.
+            Some(TokenKind::Word(WordKind::Keyword(Kw::String))) => {
                 self.bump();
                 self.expect(TokenKind::RBracket, "']'");
                 return Some(Dim::Assoc(AssocKey::Str));
@@ -877,6 +886,35 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::RBracket, "']'");
         Some(dim)
     }
+    /// v7 P2-D: `import pkg::*;` / `import pkg::sym;` — ONE term per
+    /// statement (a comma list is a loud parse error; rare in practice).
+    fn parse_import_decl(&mut self) -> Option<ImportDecl> {
+        let start = self.cur_span();
+        self.bump(); // import
+        let pkg = self.ident()?;
+        if !self.expect(TokenKind::ColonColon, "'::'") {
+            return None;
+        }
+        let item = if self.peek() == Some(TokenKind::Star) {
+            self.bump();
+            None
+        } else {
+            Some(self.ident()?)
+        };
+        if self.peek() == Some(TokenKind::Comma) {
+            self.error("';' (one import term per statement in v7)");
+            return None;
+        }
+        if !self.expect(TokenKind::Semi, "';'") {
+            return None;
+        }
+        Some(ImportDecl {
+            pkg,
+            item,
+            span: start.to(self.prev_span()),
+        })
+    }
+
     fn net_var_kind(&self) -> Option<NetVarKind> {
         use Kw::*;
         match self.peek() {
@@ -900,6 +938,7 @@ impl<'t, 's> Parser<'t, 's> {
                 Realtime => NetVarKind::Realtime,
                 Time => NetVarKind::Time,
                 Event => NetVarKind::Event,
+                String => NetVarKind::String,
                 _ => return None,
             }),
             _ => None,
@@ -923,6 +962,24 @@ impl<'t, 's> Parser<'t, 's> {
                 // v5 ⑥: `interface … endinterface` — same shape as a module.
                 match self.parse_module_like(Kw::Interface, Kw::Endinterface) {
                     Some(m) => items.push(TopItem::Interface(m)),
+                    None => {
+                        items.push(TopItem::Error(self.prev_span()));
+                        self.synchronize();
+                    }
+                }
+            } else if self.at_kw(Kw::Package) {
+                // v7 P2-D: `package … endpackage` — body shape reuses modules.
+                match self.parse_module_like(Kw::Package, Kw::Endpackage) {
+                    Some(m) => items.push(TopItem::Package(m)),
+                    None => {
+                        items.push(TopItem::Error(self.prev_span()));
+                        self.synchronize();
+                    }
+                }
+            } else if self.at_kw(Kw::Import) {
+                // v7 P2-D: compilation-unit-scope import.
+                match self.parse_import_decl() {
+                    Some(i) => items.push(TopItem::Import(i)),
                     None => {
                         items.push(TopItem::Error(self.prev_span()));
                         self.synchronize();
@@ -1301,6 +1358,10 @@ impl<'t, 's> Parser<'t, 's> {
         // v5 ⑥: `modport mp (input a, output b);` — interface body item.
         if self.at_kw(Kw::Modport) {
             return self.parse_modport().map(ModuleItem::Modport);
+        }
+        // v7 P2-D: module/package-scope `import pkg::…;`.
+        if self.at_kw(Kw::Import) {
+            return self.parse_import_decl().map(ModuleItem::Import);
         }
         // net/var declaration
         if self.net_var_kind().is_some() {
@@ -3478,6 +3539,8 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                     p.segments[0].name = to.to_string();
                 }
             }
+            // v7: a package-scoped name can never be the loop index.
+            ExprKind::PkgScoped { .. } => {}
             ExprKind::Unary { operand, .. } => fix_expr(operand, from, to),
             ExprKind::Binary { lhs, rhs, .. } => {
                 fix_expr(lhs, from, to);
@@ -3727,6 +3790,68 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// v7 AST flip: package/import/string/pkg:: parse to their dedicated
+    /// shapes (semantics land in the follow-on slices — parse-only here).
+    #[test]
+    fn v7_package_import_string_pkgscoped_parse() {
+        let src = r#"
+package p;
+  parameter W = 8;
+endpackage
+import p::*;
+module t;
+  import p::W;
+  string s;
+  integer x;
+  initial x = p::W;
+endmodule
+"#;
+        let (toks, lex_errs) = hdl_lexer::lex(src);
+        assert!(lex_errs.is_empty());
+        let (unit, errs) = parse(&toks, src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let unit = unit.unwrap();
+        assert!(matches!(unit.items[0], TopItem::Package(ref m) if m.name.name == "p"));
+        assert!(
+            matches!(unit.items[1], TopItem::Import(ref i) if i.pkg.name == "p" && i.item.is_none())
+        );
+        let TopItem::Module(ref m) = unit.items[2] else {
+            panic!("expected module, got {:?}", unit.items[2]);
+        };
+        assert!(matches!(
+            m.body[0],
+            ModuleItem::Import(ref i) if i.pkg.name == "p"
+                && i.item.as_ref().map(|x| x.name.as_str()) == Some("W")
+        ));
+        assert!(matches!(
+            m.body[1],
+            ModuleItem::NetVar(ref d) if matches!(d.kind, NetVarKind::String)
+        ));
+        // the initial body holds `x = p::W` — walk to the PkgScoped expr.
+        let ModuleItem::Proc(ref pb) = m.body[3] else {
+            panic!("expected proc, got {:?}", m.body[3]);
+        };
+        let mut found = false;
+        fn walk(s: &Stmt, found: &mut bool) {
+            if let Stmt::Blocking { rhs, .. } = s {
+                if matches!(
+                    rhs.kind,
+                    ExprKind::PkgScoped { ref pkg, ref name }
+                        if pkg.name == "p" && name.name == "W"
+                ) {
+                    *found = true;
+                }
+            }
+            if let Stmt::Block { stmts, .. } = s {
+                for st in stmts {
+                    walk(st, found);
+                }
+            }
+        }
+        walk(&pb.body, &mut found);
+        assert!(found, "p::W must parse as PkgScoped");
+    }
+
     /// Review-finding regressions (2026-06-11): the foreach rename walker
     /// must leave NO single-segment reference to the source-level index name
     /// anywhere in the desugared tree — including block-local decl

@@ -257,6 +257,9 @@ pub enum TokenKind {
     Question,
     #[token(":")]
     Colon,
+    /// SV package-scope operator `pkg::sym` (v7).
+    #[token("::")]
+    ColonColon,
     #[token("+:")]
     PlusColon, // ascending part-select [base+:width]
     #[token("-:")]
@@ -483,6 +486,8 @@ pub enum Kw {
     Interface, Endinterface, Modport,
     // --- SV foreach (v5 ⑥ follow-on — parse-desugar, no AST/IR change) ---
     Foreach,
+    // --- SV package + string type (v7 P2-C/P2-D) ---
+    Package, Endpackage, Import, String,
 }
 
 impl Kw {
@@ -546,6 +551,8 @@ impl Kw {
             "assert" => Assert,
             "interface" => Interface, "endinterface" => Endinterface,
             "modport" => Modport, "foreach" => Foreach,
+            "package" => Package, "endpackage" => Endpackage,
+            "import" => Import, "string" => String,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

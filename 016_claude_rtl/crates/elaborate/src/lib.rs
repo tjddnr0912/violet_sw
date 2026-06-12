@@ -887,6 +887,14 @@ impl<'s> Elaborator<'s> {
                     );
                 }
             }
+            // v7 AST flip is parse-only: package semantics land with the next
+            // slice — LOUD until then (never a silent drop).
+            if matches!(it, ast::TopItem::Package(_) | ast::TopItem::Import(_)) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "package/import support lands with the v7 package slice",
+                );
+            }
         }
         if order.is_empty() {
             // "no module at all" is a missing-construct condition, not a failed
@@ -1040,6 +1048,11 @@ impl<'s> Elaborator<'s> {
                     saved_params.push((key.clone(), self.params.insert(key, v)));
                 }
                 ast::ModuleItem::NetVar(d) => self.prescan_net_bits(d),
+                // v7 AST flip is parse-only — loud until the package slice.
+                ast::ModuleItem::Import(_) => self.error(
+                    MsgCode::ElabUnsupported,
+                    "package/import support lands with the v7 package slice",
+                ),
                 _ => {}
             }
         }
@@ -3110,6 +3123,15 @@ impl<'s> Elaborator<'s> {
             ast::ExprKind::IntLit { kind, raw } => {
                 let cid = self.lower_int_literal(*kind, raw);
                 self.push_expr(ir::Expr::Const { val: cid })
+            }
+            // v7 P2-D: explicit `pkg::name` — semantics land with the package
+            // slice; loud until then (the AST flip is parse-only).
+            ast::ExprKind::PkgScoped { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "package-scoped reference support lands with the v7 package slice",
+                );
+                self.placeholder_expr()
             }
             ast::ExprKind::Ident(path) => {
                 // INLINE substitution (function/task formals). A single-segment name
