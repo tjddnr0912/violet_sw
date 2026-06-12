@@ -3,12 +3,14 @@
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full SimIr-closure canonical string. Locked at
-/// format_version 6 (2026-06-11: +SysFuncId Assoc{First,Next,Last,Prev}
-/// iteration methods, +SysTaskId QInsert/QDeleteIdx, +NetKind AssocStr —
-/// the dyn-storage follow-on batch; the runtime Process cluster is
-/// untouched, so its sub-pin holds).
+/// format_version 7 (2026-06-12: +BinOp CasezEq/CasexEq, +SysFuncId
+/// Random/Urandom(Range)/CountOnes/OneHot(0)/IsUnknown/Stime/Fopen/
+/// Sformatf/(Test|Value)Plusargs/Str{Len,GetC,Substr,ToUpper,ToLower,Cmp},
+/// +SysTaskId Fclose/Fdisplay/Fwrite/Sformat/Readmem{B,H}/StrPutC,
+/// +NetKind String — the Phase-2 system-task/string batch; the runtime
+/// Process cluster is untouched, so its sub-pin holds).
 const EXPECTED_SIMIR_HASH: &str =
-    "fdd1f7524aab3744da6664bc7b556354fece43ba053b7f729a10a556f5e16f15";
+    "fbbb9362b066ed118486cb77c4e3691eabadef7ed5b22623bed9c299891b970c";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "927e19344413644037635cfcebc50c76c08a413356b9463b5819f7979f1f486b";

@@ -1126,9 +1126,13 @@ pub(crate) fn vcd_var_type(kind: NetKind) -> VarType {
         NetKind::Integer => VarType::Integer,
         NetKind::Real => VarType::Real, // VCD `$var real`
         NetKind::Wire | NetKind::Logic => VarType::Wire,
-        // v5/v6 dyn handles are NEVER declared to the VCD (design doc: variable
-        // length has no $var form) — they are filtered upstream; defensive map.
-        NetKind::DynArray | NetKind::Queue | NetKind::Assoc | NetKind::AssocStr => VarType::Wire,
+        // v5/v6/v7 dyn + string handles are NEVER declared to the VCD (design
+        // doc: variable length has no $var form) — filtered upstream; defensive map.
+        NetKind::DynArray
+        | NetKind::Queue
+        | NetKind::Assoc
+        | NetKind::AssocStr
+        | NetKind::String => VarType::Wire,
     }
 }
 

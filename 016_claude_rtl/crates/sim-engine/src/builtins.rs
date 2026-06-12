@@ -379,6 +379,16 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        // v7 shape, features not wired yet: elaborate still rejects/skips these
+        // names, so a Stmt carrying them can only come from a hand-built IR —
+        // defensive no-op, never a panic.
+        SysTaskId::Fclose
+        | SysTaskId::Fdisplay
+        | SysTaskId::Fwrite
+        | SysTaskId::Sformat
+        | SysTaskId::ReadmemB
+        | SysTaskId::ReadmemH
+        | SysTaskId::StrPutC => Ctl::Continue,
     }
 }
 

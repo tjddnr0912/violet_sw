@@ -205,7 +205,8 @@ impl WidthTable {
                         width: clamp_w(l.width.max(r.width).max(1)),
                         signed: l.signed, // BASE sign only
                     },
-                    // comparisons / case-eq / logical: 1-bit, UNSIGNED
+                    // comparisons / case-eq (incl. v7 casez/casex match) /
+                    // logical: 1-bit, UNSIGNED
                     BinOp::Lt
                     | BinOp::Le
                     | BinOp::Gt
@@ -214,6 +215,8 @@ impl WidthTable {
                     | BinOp::Ne
                     | BinOp::CaseEq
                     | BinOp::CaseNe
+                    | BinOp::CasezEq
+                    | BinOp::CasexEq
                     | BinOp::LogAnd
                     | BinOp::LogOr => SelfWidth {
                         width: 1,
@@ -316,6 +319,43 @@ impl WidthTable {
                 // $realtobits: raw 64-bit vector → 64-bit unsigned.
                 SysFuncId::RealToBits => SelfWidth {
                     width: 64,
+                    signed: false,
+                },
+                // v7: int-returning funcs (32 signed — IEEE function returns).
+                SysFuncId::Random
+                | SysFuncId::CountOnes
+                | SysFuncId::Fopen
+                | SysFuncId::TestPlusargs
+                | SysFuncId::ValuePlusargs
+                | SysFuncId::StrLen
+                | SysFuncId::StrCmp => SelfWidth {
+                    width: 32,
+                    signed: true,
+                },
+                // v7: unsigned-32 funcs ($urandom family per §18.13, $stime's
+                // truncated 32-bit time per 1364 §17.7.2).
+                SysFuncId::Urandom | SysFuncId::UrandomRange | SysFuncId::Stime => SelfWidth {
+                    width: 32,
+                    signed: false,
+                },
+                // v7: 1-bit predicates.
+                SysFuncId::OneHot | SysFuncId::OneHot0 | SysFuncId::IsUnknown => SelfWidth {
+                    width: 1,
+                    signed: false,
+                },
+                // v7: string `.getc(i)` is one byte.
+                SysFuncId::StrGetC => SelfWidth {
+                    width: 8,
+                    signed: false,
+                },
+                // v7: string-VALUE producers — true width is DYNAMIC (8×len at
+                // eval). Static placeholder pending the string slice, which
+                // gives string-domain values a resize bypass (like is_real).
+                SysFuncId::Sformatf
+                | SysFuncId::StrSubstr
+                | SysFuncId::StrToUpper
+                | SysFuncId::StrToLower => SelfWidth {
+                    width: 8,
                     signed: false,
                 },
             },

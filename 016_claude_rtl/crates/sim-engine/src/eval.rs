@@ -492,6 +492,10 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 bit.resize_keep_sign(w, false) // zero-extend 1→w (= max(1,ctx))
             }
 
+            // v7 shape, semantics land with the casez/casex slice — elaborate
+            // does not emit these yet; defensive X like any unknown construct.
+            CasezEq | CasexEq => Value::xs(w.max(1), false),
+
             // LOGICAL — self-determined operands, each reduced independently.
             LogAnd | LogOr => {
                 let l = self.eval(lhs); // OWN self-width
@@ -1224,6 +1228,22 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 v.val[0] = bits;
                 v
             }
+            // v7 shape, features not wired yet (elaborate still rejects the
+            // names): defensive X at each func's declared self-width.
+            SysFuncId::Random
+            | SysFuncId::CountOnes
+            | SysFuncId::Fopen
+            | SysFuncId::TestPlusargs
+            | SysFuncId::ValuePlusargs
+            | SysFuncId::StrLen
+            | SysFuncId::StrCmp => Value::xs(32, true),
+            SysFuncId::Urandom | SysFuncId::UrandomRange | SysFuncId::Stime => Value::xs(32, false),
+            SysFuncId::OneHot | SysFuncId::OneHot0 | SysFuncId::IsUnknown => Value::xs(1, false),
+            SysFuncId::StrGetC
+            | SysFuncId::Sformatf
+            | SysFuncId::StrSubstr
+            | SysFuncId::StrToUpper
+            | SysFuncId::StrToLower => Value::xs(8, false),
         }
     }
 

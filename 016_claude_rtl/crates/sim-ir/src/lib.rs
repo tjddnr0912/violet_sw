@@ -134,6 +134,13 @@ pub enum BinOp {
     Shr,
     AShl,
     AShr,
+    /// `casez` per-label match (v7): a bit is don't-care iff EITHER side is
+    /// `z` there; remaining positions compare 4-state exact (`===`, so x
+    /// matches only x). Result is always known 1'b0/1'b1, like `CaseEq`.
+    CasezEq,
+    /// `casex` per-label match (v7): don't-care iff EITHER side is x OR z;
+    /// remaining (both-known) positions compare by value. Known 0/1 result.
+    CasexEq,
 }
 
 /// Bit/part-select kind (§1).
@@ -179,6 +186,54 @@ pub enum SysFuncId {
     AssocLast,
     /// assoc `.prev(k)` (v6) — strictly-less predecessor; see `AssocFirst`.
     AssocPrev,
+    /// `$random[(seed)]` (v7) — IEEE 1364 Annex N algorithm, signed 32-bit.
+    /// The seeded form writes the ref seed VAR — statement-level intercept
+    /// (direct rhs of a blocking assign), like the queue pops.
+    Random,
+    /// `$urandom[(seed)]` (v7) — unsigned 32-bit. Implementation-defined by
+    /// IEEE; vitamin pins its own generator (documented, 3-OS deterministic).
+    Urandom,
+    /// `$urandom_range(max[, min])` (v7) — inclusive range, arg order
+    /// auto-swapped per IEEE §18.13.3.
+    UrandomRange,
+    /// `$countones(x)` (v7) — 1-bits; x/z positions do not count.
+    CountOnes,
+    /// `$onehot(x)` (v7) — exactly one 1-bit (x/z don't count).
+    OneHot,
+    /// `$onehot0(x)` (v7) — at most one 1-bit.
+    OneHot0,
+    /// `$isunknown(x)` (v7) — any x/z bit.
+    IsUnknown,
+    /// `$stime` (v7) — current time scaled to the caller's module, truncated
+    /// to unsigned 32 bit.
+    Stime,
+    /// `$fopen(name[, mode])` (v7) — side-effecting (file table) — statement-
+    /// level intercept as the direct rhs of a blocking assign.
+    Fopen,
+    /// `$sformatf(fmt, args...)` (v7) — formatted string VALUE, materialized
+    /// as a packed-ASCII vector (8×len bits, string-net write strips NULs).
+    Sformatf,
+    /// `$test$plusargs(str)` (v7) — plusarg prefix probe, 1'b1/1'b0.
+    TestPlusargs,
+    /// `$value$plusargs(fmt, var)` (v7) — writes the ref VAR on match —
+    /// statement-level intercept, like `Random`'s seeded form.
+    ValuePlusargs,
+    /// string `.len()` (v7; args = [handle Signal]).
+    StrLen,
+    /// string `.getc(i)` (v7; args = [handle, i]) — byte at i, 0 if OOB.
+    StrGetC,
+    /// string `.substr(i, j)` (v7; args = [handle, i, j]) — inclusive byte
+    /// range; empty string on invalid range (IEEE §6.16.8).
+    StrSubstr,
+    /// string `.toupper()` (v7; args = [handle]) — ASCII-mapped copy.
+    StrToUpper,
+    /// string `.tolower()` (v7; args = [handle]).
+    StrToLower,
+    /// String lexicographic compare (v7; args = [a, b]) — signed <0/0/>0 like
+    /// C `strcmp`. Backs both the `.compare()` method and string relational
+    /// operators (packed compare zero-extends MSB-side, which is NOT
+    /// lexicographic for unequal lengths).
+    StrCmp,
 }
 
 /// Expression arena node (§1).
@@ -264,6 +319,23 @@ pub enum SysTaskId {
     /// queue `.delete(i)` — single-index erase (v6; args = [handle, i]) —
     /// IEEE §7.10.2.3, legal i ∈ [0, size-1]; OOB/X = warn + no-op.
     QDeleteIdx,
+    /// `$fclose(fd)` (v7).
+    Fclose,
+    /// `$fdisplay(fd, fmt, args...)` (v7) — fd is args[0]; fmt/args split
+    /// follows the print family (fmt = first STRING-LITERAL arg after fd).
+    Fdisplay,
+    /// `$fwrite(fd, fmt, args...)` (v7) — `Fdisplay` without the newline.
+    Fwrite,
+    /// `$sformat(dest, fmt, args...)` (v7) — renders into the dest VAR
+    /// (string net or packed); dest is args[0].
+    Sformat,
+    /// `$readmemb(file, mem[, start[, finish]])` (v7).
+    ReadmemB,
+    /// `$readmemh(file, mem[, start[, finish]])` (v7).
+    ReadmemH,
+    /// string `.putc(i, c)` (v7; args = [handle, i, c]) — in-place byte
+    /// write; OOB index or NUL byte = no-op (IEEE §6.16.3).
+    StrPutC,
 }
 
 /// Disable kind (§2).
@@ -431,6 +503,11 @@ pub enum NetKind {
     /// IEEE string compare); integral key expressions convert by stripping
     /// leading 0x00 bytes (packed-ASCII surface, §6.16 family).
     AssocStr,
+    /// SV `string` variable (v7). HANDLE-style like `DynArray`: the bytes live
+    /// in the engine heap (`Vec<u8>`); `width` = 0, `array_len` = 0. Reads
+    /// materialize a packed-ASCII value (8×len bits, MSB-first); writes strip
+    /// leading 0x00 bytes (IEEE §6.16 packed↔string conversion).
+    String,
 }
 
 /// Port direction (§6).

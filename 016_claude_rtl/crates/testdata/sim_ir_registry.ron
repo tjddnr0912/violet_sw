@@ -80,6 +80,12 @@
         23: {
             "AShr": UNIT,
         },
+        24: {
+            "CasezEq": UNIT,
+        },
+        25: {
+            "CasexEq": UNIT,
+        },
     }),
     "BitPacked": STRUCT([
         {
@@ -391,6 +397,9 @@
         8: {
             "AssocStr": UNIT,
         },
+        9: {
+            "String": UNIT,
+        },
     }),
     "NetVar": STRUCT([
         {
@@ -669,6 +678,60 @@
         17: {
             "AssocPrev": UNIT,
         },
+        18: {
+            "Random": UNIT,
+        },
+        19: {
+            "Urandom": UNIT,
+        },
+        20: {
+            "UrandomRange": UNIT,
+        },
+        21: {
+            "CountOnes": UNIT,
+        },
+        22: {
+            "OneHot": UNIT,
+        },
+        23: {
+            "OneHot0": UNIT,
+        },
+        24: {
+            "IsUnknown": UNIT,
+        },
+        25: {
+            "Stime": UNIT,
+        },
+        26: {
+            "Fopen": UNIT,
+        },
+        27: {
+            "Sformatf": UNIT,
+        },
+        28: {
+            "TestPlusargs": UNIT,
+        },
+        29: {
+            "ValuePlusargs": UNIT,
+        },
+        30: {
+            "StrLen": UNIT,
+        },
+        31: {
+            "StrGetC": UNIT,
+        },
+        32: {
+            "StrSubstr": UNIT,
+        },
+        33: {
+            "StrToUpper": UNIT,
+        },
+        34: {
+            "StrToLower": UNIT,
+        },
+        35: {
+            "StrCmp": UNIT,
+        },
     }),
     "SysTaskId": ENUM({
         0: {
@@ -730,6 +793,27 @@
         },
         19: {
             "QDeleteIdx": UNIT,
+        },
+        20: {
+            "Fclose": UNIT,
+        },
+        21: {
+            "Fdisplay": UNIT,
+        },
+        22: {
+            "Fwrite": UNIT,
+        },
+        23: {
+            "Sformat": UNIT,
+        },
+        24: {
+            "ReadmemB": UNIT,
+        },
+        25: {
+            "ReadmemH": UNIT,
+        },
+        26: {
+            "StrPutC": UNIT,
         },
     }),
     "Terminator": ENUM({

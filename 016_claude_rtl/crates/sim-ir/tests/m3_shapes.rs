@@ -7,7 +7,7 @@ use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 fn binop_fieldless_enum() {
     assert_eq!(
         BinOp::local_shape(),
-        "repr=@#[]enum{#[]Add,#[]Sub,#[]Mul,#[]Div,#[]Mod,#[]Pow,#[]BitAnd,#[]BitOr,#[]BitXor,#[]BitXnor,#[]LogAnd,#[]LogOr,#[]Lt,#[]Le,#[]Gt,#[]Ge,#[]Eq,#[]Ne,#[]CaseEq,#[]CaseNe,#[]Shl,#[]Shr,#[]AShl,#[]AShr}"
+        "repr=@#[]enum{#[]Add,#[]Sub,#[]Mul,#[]Div,#[]Mod,#[]Pow,#[]BitAnd,#[]BitOr,#[]BitXor,#[]BitXnor,#[]LogAnd,#[]LogOr,#[]Lt,#[]Le,#[]Gt,#[]Ge,#[]Eq,#[]Ne,#[]CaseEq,#[]CaseNe,#[]Shl,#[]Shr,#[]AShl,#[]AShr,#[]CasezEq,#[]CasexEq}"
     );
 }
 
