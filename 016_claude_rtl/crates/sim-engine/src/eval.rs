@@ -492,9 +492,15 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 bit.resize_keep_sign(w, false) // zero-extend 1→w (= max(1,ctx))
             }
 
-            // v7 shape, semantics land with the casez/casex slice — elaborate
-            // does not emit these yet; defensive X like any unknown construct.
-            CasezEq | CasexEq => Value::xs(w.max(1), false),
+            // v7 casez/casex per-label match — same mutually-context-determined
+            // operand sizing as the comparison class; known 0/1 result.
+            CasezEq | CasexEq => {
+                let cmp_w = self.wt.width(lhs).max(self.wt.width(rhs));
+                let pair_signed = self.wt.signed(lhs) && self.wt.signed(rhs);
+                let l = self.eval_ctx(lhs, cmp_w, pair_signed);
+                let r = self.eval_ctx(rhs, cmp_w, pair_signed);
+                self.casez_eq(op, &l, &r).resize_keep_sign(w, false)
+            }
 
             // LOGICAL — self-determined operands, each reduced independently.
             LogAnd | LogOr => {
@@ -862,6 +868,33 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             }
         }
         Value::logic(if op == BinOp::CaseEq { eq } else { !eq })
+    }
+
+    /// v7 casez/casex per-label match (IEEE 1364 §9.5.1, live-pinned against
+    /// iverilog). A bit is don't-care iff EITHER side is z (`CasezEq`) or
+    /// x-or-z (`CasexEq`); every remaining position compares 4-state EXACT
+    /// (val AND unk planes equal — so an explicit x in a casez label matches
+    /// only an x). Word-parallel; the result is always known 0/1.
+    /// Encoding reminder: x = (val 0, unk 1), z = (val 1, unk 1).
+    fn casez_eq(&self, op: BinOp, l: &Value, r: &Value) -> Value {
+        let n = nwords(l.width.max(r.width)).max(1);
+        for k in 0..n {
+            let lv = l.val.get(k).copied().unwrap_or(0);
+            let lu = l.unk.get(k).copied().unwrap_or(0);
+            let rv = r.val.get(k).copied().unwrap_or(0);
+            let ru = r.unk.get(k).copied().unwrap_or(0);
+            let dc = if op == BinOp::CasezEq {
+                (lu & lv) | (ru & rv) // z on either side
+            } else {
+                lu | ru // x OR z on either side
+            };
+            // 4-state exact mismatch on a non-don't-care position. mask_top
+            // keeps both planes zero past `width`, so no spurious top bits.
+            if !dc & ((lv ^ rv) | (lu ^ ru)) != 0 {
+                return Value::logic(false);
+            }
+        }
+        Value::logic(true)
     }
 
     fn log_and(&self, l: &Value, r: &Value) -> Value {

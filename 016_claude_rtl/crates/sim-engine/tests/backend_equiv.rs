@@ -637,6 +637,41 @@ fn per_dim_bounds_guard_equals_across_backends() {
     assert_eq!(out.trim(), "r=xx\nv=xx g12=22");
 }
 
+/// v7 casez/casex match ops live in the SHARED comparison kernel (native-eval
+/// compile-bails on CasezEq/CasexEq) — pin byte-parity on a clocked decoder
+/// exercising z-wildcard hit, strict-x miss, and a casex x-wash.
+#[test]
+fn casez_casex_equal_across_backends() {
+    let out = assert_backends_equal(
+        "module t; \
+           reg clk; reg [3:0] s; reg [7:0] r; \
+           always @(posedge clk) begin \
+             casez (s) \
+               4'b1z10: r <= 8'd1; \
+               4'b0x01: r <= 8'd2; \
+               default: r <= 8'd9; \
+             endcase \
+           end \
+           initial begin \
+             clk = 0; s = 4'b1010; \
+             #1 clk = 1; #1 clk = 0; \
+             $display(\"a=%0d\", r); \
+             s = 4'b0001; \
+             #1 clk = 1; #1 clk = 0; \
+             $display(\"b=%0d\", r); \
+             s = 4'b1x10; \
+             casex (s) 4'b1010: r = 8'd5; default: r = 8'd6; endcase \
+             $display(\"c=%0d\", r); \
+             $finish; \
+           end \
+         endmodule",
+        "casez_parity",
+    );
+    // a: 1010 matches 1z10 via the label z. b: 0001 vs 0x01 is a strict miss
+    // (x is not a casez wildcard) -> default 9. c: casex washes the x -> 5.
+    assert_eq!(out.trim(), "a=1\nb=9\nc=5");
+}
+
 /// Phase-1.x ⑥: multi-word arithmetic lives in the SHARED eval kernel
 /// (native-eval compile-bails past its lanes → EvalForLval → same kernel) —
 /// pin byte-parity on a clocked body mixing 256-bit unsigned and 128-bit

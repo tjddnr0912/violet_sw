@@ -6724,63 +6724,23 @@ impl<'s> Elaborator<'s> {
     /// Per-label equality test for a case arm. Plain `case` is the exact 4-state
     /// `scrut === label`.
     ///
-    /// For `casez`/`casex`, a bit position is don't-care if EITHER the label OR the
-    /// SCRUTINEE has a wildcard there — and the scrutinee's wildcards are RUNTIME
-    /// values, so a static label-only mask is insufficient (it left `casex(1x10)`
-    /// vs `1010` falsely missing). We instead exploit the 4-state algebra:
-    ///   match  ⇔  reduction_or(scrut ^ label) !== 1'b1
-    /// `^` yields `1` only where both sides are KNOWN and DIFFER, and `x` wherever
-    /// either side is x/z; reduction-or is `1` iff some position definitely differs
-    /// (the `x`/`z` positions wash to `x`, which is `!== 1`). This covers label AND
-    /// scrutinee wildcards at runtime using only existing ops — NO frozen-IR change.
-    ///
-    /// (casez nominally wildcards only `z`/`?`, not `x`; this treats every unknown —
-    /// on either side — as a wildcard, which is exact for the ubiquitous `z`/`?`
-    /// form and only over-lenient on a rare explicit-`x`-in-casez, the same v1
-    /// simplification the prior label-mask already made, now symmetric on both sides.)
+    /// `casez`/`casex` lower to the dedicated v7 match ops: a bit position is
+    /// don't-care iff EITHER side (label or RUNTIME scrutinee) has z there
+    /// (`CasezEq`) or x-or-z (`CasexEq`); every remaining position compares
+    /// 4-state exact. This replaces the v1 `redor(scrut^label) !== 1` formula,
+    /// which was exact for casex but over-lenient for casez (it wildcarded x
+    /// too — `casez(1x10)` falsely matched `1010`; iverilog-pinned strict).
     fn case_label_eq(&mut self, scrut_id: u32, label: &ast::Expr, kind: ast::CaseKind) -> u32 {
         let lbl_id = self.lower_expr(label);
-        if matches!(kind, ast::CaseKind::Case) {
-            return self.push_expr(ir::Expr::Binary {
-                op: ir::BinOp::CaseEq,
-                lhs: scrut_id,
-                rhs: lbl_id,
-            });
-        }
-        // `casez` with an EXPLICIT-x label bit (unk & !val) hits the v1 over-lenient
-        // approximation (x masked like z); warn so the divergence from strict casez
-        // is visible. `?`/`z` labels and `casex` never trip this.
-        if matches!(kind, ast::CaseKind::Casez) {
-            if let ir::Expr::Const { val } = self.exprs[lbl_id as usize] {
-                let c = &self.consts[val as usize];
-                let has_x = c
-                    .bits
-                    .val
-                    .iter()
-                    .zip(c.bits.unk.iter())
-                    .any(|(&v, &u)| (u & !v) != 0);
-                if has_x {
-                    self.warn_code(
-                        MsgCode::ElabCasezApprox,
-                        "casez label has an explicit-x bit; treated as don't-care (v1 approximation)",
-                    );
-                }
-            }
-        }
-        let xor = self.push_expr(ir::Expr::Binary {
-            op: ir::BinOp::BitXor,
+        let op = match kind {
+            ast::CaseKind::Case => ir::BinOp::CaseEq,
+            ast::CaseKind::Casez => ir::BinOp::CasezEq,
+            ast::CaseKind::Casex => ir::BinOp::CasexEq,
+        };
+        self.push_expr(ir::Expr::Binary {
+            op,
             lhs: scrut_id,
             rhs: lbl_id,
-        });
-        let red = self.push_expr(ir::Expr::Unary {
-            op: ir::UnOp::RedOr,
-            operand: xor,
-        });
-        let one = self.const_u32_expr(1, 1);
-        self.push_expr(ir::Expr::Binary {
-            op: ir::BinOp::CaseNe,
-            lhs: red,
-            rhs: one,
         })
     }
 

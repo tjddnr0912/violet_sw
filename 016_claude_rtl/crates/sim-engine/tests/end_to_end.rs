@@ -1967,26 +1967,22 @@ fn casex_scrutinee_xz_is_wildcard() {
 }
 
 #[test]
-fn casez_explicit_x_label_warns() {
-    // A casez with an explicit-x label bit warns (W-ELAB-CASEZ-APPROX); `?`/`z`
-    // labels and casex do not.
-    let warns = elaborate_diags(
+fn casez_explicit_x_label_no_longer_warns() {
+    // v7: casez is EXACT (CasezEq — an explicit-x label bit compares 4-state,
+    // it is no longer approximated as don't-care), so the old
+    // W-ELAB-CASEZ-APPROX warning is retired (code reserved in doc-15).
+    for src in [
         "module t; reg [3:0] s; reg r; initial \
          casez (s) 4'b10x0: r=1; default: r=0; endcase endmodule",
-    );
-    assert!(
-        warns.iter().any(|d| d.contains("explicit-x")),
-        "expected casez-x approximation warning, got: {warns:?}"
-    );
-    // `?` label → no warning.
-    let no_warn = elaborate_diags(
         "module t; reg [3:0] s; reg r; initial \
          casez (s) 4'b10?0: r=1; default: r=0; endcase endmodule",
-    );
-    assert!(
-        !no_warn.iter().any(|d| d.contains("explicit-x")),
-        "wildcard `?` must not warn, got: {no_warn:?}"
-    );
+    ] {
+        let warns = elaborate_diags(src);
+        assert!(
+            !warns.iter().any(|d| d.contains("explicit-x")),
+            "casez no longer warns (exact since v7), got: {warns:?}"
+        );
+    }
 }
 
 #[test]

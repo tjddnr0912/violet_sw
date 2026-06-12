@@ -1223,33 +1223,20 @@ fn v2_7_casez_wildcard_free_lowers_cleanly() {
         ],
     );
     let (ir, warns) = elab_with_warnings(&unit);
-    // casez/casex now lower via the runtime wildcard-aware match
-    // `reduction_or(scrut ^ label) !== 1` (so a SCRUTINEE z/x bit is a don't-care
-    // even against a wildcard-free label like `2'b10`), with NO warning.
+    // v7: casez/casex lower to ONE dedicated match op per label (z-only /
+    // x-or-z don't-care on EITHER side, computed at runtime), with NO warning.
     assert_eq!(warns, 0, "casez label lowers cleanly, no warning");
     let p = &ir.processes[0];
-    let has_redor = ir.exprs.iter().any(|e| {
-        matches!(
-            e,
-            ir::Expr::Unary {
-                op: ir::UnOp::RedOr,
-                ..
-            }
-        )
-    });
-    let has_casene = ir.exprs.iter().any(|e| {
+    let has_casez_eq = ir.exprs.iter().any(|e| {
         matches!(
             e,
             ir::Expr::Binary {
-                op: ir::BinOp::CaseNe,
+                op: ir::BinOp::CasezEq,
                 ..
             }
         )
     });
-    assert!(
-        has_redor && has_casene,
-        "casez must lower via reduction_or(scrut ^ label) !== 1"
-    );
+    assert!(has_casez_eq, "casez must lower via BinOp::CasezEq (v7)");
     assert!(p
         .body
         .iter()
