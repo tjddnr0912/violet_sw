@@ -105,6 +105,80 @@ def strip_raw_source(html: str) -> str:
     return _RE_RAW_SOURCE.sub('', html)
 
 
+# --- 본문 H1 강등 (테마가 글 제목을 <h1>로 렌더하므로 본문은 h2부터) ---
+# Rank Math "Single H1" 규칙: 페이지에 H1은 1개여야 한다.
+# 봇 본문이 헤드라인을 <h1>로 넣으면 테마 제목과 합쳐 2개가 되어 빨간 X.
+_RE_H1_OPEN = re.compile(r'<h1(\s[^>]*)?>', re.I)
+_RE_H1_CLOSE = re.compile(r'</h1\s*>', re.I)
+
+
+def demote_body_h1(html: str) -> str:
+    """본문 HTML의 <h1>…</h1>를 <h2>…</h2>로 강등(테마 제목 h1만 유일하게 남김)."""
+    if not html:
+        return html
+    html = _RE_H1_OPEN.sub(lambda m: "<h2" + (m.group(1) or "") + ">", html)
+    return _RE_H1_CLOSE.sub("</h2>", html)
+
+
+# --- 메타 설명용 자동 excerpt (Rank Math가 글 발췌를 메타 description으로 사용) ---
+_RE_HEADING_BLOCK = re.compile(r'<h[1-6]\b[^>]*>.*?</h[1-6]>', re.S | re.I)
+_RE_TAG = re.compile(r'<[^>]+>')
+_RE_WS = re.compile(r'\s+')
+
+
+def auto_excerpt(html: str, max_len: int = 155) -> str:
+    """본문 HTML에서 메타 설명용 발췌를 생성.
+
+    헤딩 블록을 건너뛴 첫 본문 텍스트를 max_len 자 내에서 단어 경계로 자른다.
+    """
+    if not html:
+        return ""
+    text = _RE_HEADING_BLOCK.sub(" ", html)
+    text = _RE_TAG.sub(" ", text)
+    text = _html.unescape(text)
+    text = _RE_WS.sub(" ", text).strip()
+    if not text:
+        return ""
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len]
+    sp = cut.rfind(" ")
+    if sp > max_len * 0.6:
+        cut = cut[:sp]
+    return cut.rstrip(" .,") + "…"
+
+
+# --- 한글 제목 → ASCII 슬러그 (국립국어원 로마자 표기, 단순화) ---
+_RR_CHO = ['g', 'kk', 'n', 'd', 'tt', 'r', 'm', 'b', 'pp', 's', 'ss',
+           '', 'j', 'jj', 'ch', 'k', 't', 'p', 'h']
+_RR_JUNG = ['a', 'ae', 'ya', 'yae', 'eo', 'e', 'yeo', 'ye', 'o', 'wa', 'wae',
+            'oe', 'yo', 'u', 'wo', 'we', 'wi', 'yu', 'eu', 'ui', 'i']
+_RR_JONG = ['', 'k', 'k', 'ks', 'n', 'nj', 'nh', 't', 'l', 'lk', 'lm', 'lb',
+            'ls', 'lt', 'lp', 'lh', 'm', 'p', 'ps', 't', 't', 'ng', 't', 't',
+            'k', 't', 'p', 't']
+
+
+def _romanize_char(ch: str) -> str:
+    code = ord(ch) - 0xAC00
+    if 0 <= code < 11172:
+        cho, rem = divmod(code, 21 * 28)
+        jung, jong = divmod(rem, 28)
+        return _RR_CHO[cho] + _RR_JUNG[jung] + _RR_JONG[jong]
+    if ch.isalnum() and ch.isascii():
+        return ch
+    return " "
+
+
+def slugify(text: str, max_words: int = 6, max_len: int = 60) -> str:
+    """한글/영문 제목을 ASCII 케밥 슬러그로 변환. 빈 결과면 '' (WP 자동 슬러그)."""
+    if not text:
+        return ""
+    romanized = "".join(_romanize_char(c) for c in text).lower()
+    words = [w for w in _RE_WS.sub(" ", romanized).split(" ") if w]
+    slug = "-".join(words[:max_words])[:max_len].strip("-")
+    return slug
+
+
 class WordPressUploader:
     """WordPress REST API 글 발행기."""
 
@@ -276,6 +350,8 @@ class WordPressUploader:
             content_html = strip_raw_source(content_html)
         if render_diagrams:
             content_html = self._render_diagrams_in_html(content_html)
+        # 테마가 글 제목을 <h1>로 렌더 → 본문 h1은 h2로 강등(Single-H1, Rank Math)
+        content_html = demote_body_h1(content_html)
 
         payload: Dict = {
             "title": title,
@@ -292,8 +368,14 @@ class WordPressUploader:
                 tag_ids = self.ensure_tags(tags)
             if tag_ids:
                 payload["tags"] = tag_ids
+        # 슬러그 미지정 시 제목에서 ASCII 슬러그 자동 생성(한글 퍼센트 인코딩 URL 방지)
+        if not slug:
+            slug = slugify(title)
         if slug:
             payload["slug"] = slug
+        # 발췌 미지정 시 본문에서 자동 생성(Rank Math 메타 description 소스)
+        if not excerpt:
+            excerpt = auto_excerpt(content_html)
         if excerpt:
             payload["excerpt"] = excerpt
         if featured_media:
