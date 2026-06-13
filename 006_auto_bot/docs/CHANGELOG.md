@@ -7,6 +7,7 @@
 ## 2026-06-13: WordPress SEO 보강 + 텔레그램 로컬 백업 폐지
 
 - 업로더 SEO 헬퍼(`create_post` 자동 적용): `slugify()`(한글 제목→ASCII 슬러그, 로마자 표기), `auto_excerpt()`(본문→메타 description), `demote_body_h1()`(본문 `<h1>`→`<h2>`, Rank Math Single-H1).
+- **슬러그를 의미 담긴 영어 번역으로 업그레이드**: `english_slug()`가 한글 제목을 Gemini로 영어 슬러그 번역(예: "양자컴퓨터가 깨뜨릴 암호와 PQC 전환 로드맵"→`quantum-computing-threats-pqc-roadmap`), Gemini 실패/쿼터 소진 시 로마자(`slugify`) 폴백. `create_post` 기본값을 `english_slug`로 교체.
 - 버핏봇 제목·태그에서 "버핏의" 제거 → `{날짜} 투자 노트` / 태그 `투자노트`.
 - 텔레그램 로컬 백업(`~/blog_posts/`) 폐지: `shared/local_archive.py`·테스트 삭제, 발행 완료 메시지에서 백업 경로 제거. 발행은 WordPress 한 곳으로만.
 - **버핏·섹터 저자 박스 중복 버그 수정**: 청크 변환(`convert_long_md_to_html`/`_convert_long_md_to_html`)이 청크마다 박스를 붙여 2청크 이상이면 박스가 글 중간에 중복되던 문제 → 청크엔 `apply_editorial_box=False`, 합친 뒤 `_maybe_apply_editorial`로 1회만 적용. 회귀 테스트 `tests/test_editorial_single_box.py` 추가.

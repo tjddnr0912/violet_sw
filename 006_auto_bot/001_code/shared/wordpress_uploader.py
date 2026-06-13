@@ -170,13 +170,56 @@ def _romanize_char(ch: str) -> str:
 
 
 def slugify(text: str, max_words: int = 6, max_len: int = 60) -> str:
-    """한글/영문 제목을 ASCII 케밥 슬러그로 변환. 빈 결과면 '' (WP 자동 슬러그)."""
+    """한글/영문 제목을 ASCII 케밥 슬러그로 변환(로마자 표기). 빈 결과면 ''."""
     if not text:
         return ""
     romanized = "".join(_romanize_char(c) for c in text).lower()
     words = [w for w in _RE_WS.sub(" ", romanized).split(" ") if w]
     slug = "-".join(words[:max_words])[:max_len].strip("-")
     return slug
+
+
+_RE_HANGUL = re.compile(r"[가-힣]")
+
+
+def _kebab(text: str, max_words: int = 8, max_len: int = 70) -> str:
+    """임의 텍스트 → 소문자 ASCII 케밥(영숫자만, 단어/길이 캡)."""
+    text = (text or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    words = [w for w in text.split("-") if w]
+    return "-".join(words[:max_words])[:max_len].strip("-")
+
+
+def english_slug(title: str) -> str:
+    """제목 → 의미가 담긴 영어 슬러그.
+
+    한글이 없으면 그대로 케밥화. 한글이면 Gemini로 짧은 영어 슬러그를 번역
+    생성하고, 실패하면 로마자 표기(`slugify`)로 폴백한다.
+    """
+    if not title:
+        return ""
+    if not _RE_HANGUL.search(title):
+        return _kebab(title) or slugify(title)
+    try:
+        from shared.gemini_cli import call_gemini_with_fallback
+        prompt = (
+            "Convert this Korean blog post title into a concise, SEO-friendly "
+            "English URL slug.\n"
+            "Rules: lowercase, 3-7 words, hyphen-separated, no articles (a/the/of), "
+            "no punctuation, keep technical acronyms (AI, PQC, SoC, GPU, ETF). "
+            "Output ONLY the slug, nothing else.\n\n"
+            f"Title: {title}"
+        )
+        resp = call_gemini_with_fallback(
+            prompt, use_grounding=False, temperature=0.0, max_output_tokens=40
+        )
+        slug = _kebab(resp.text or "")
+        if slug and slug.isascii() and len(slug) >= 3:
+            return slug
+        logger.warning(f"english_slug 결과 부적합('{slug}'), 로마자 폴백")
+    except Exception as e:
+        logger.warning(f"english_slug Gemini 실패({e}), 로마자 폴백")
+    return slugify(title)
 
 
 class WordPressUploader:
@@ -368,9 +411,10 @@ class WordPressUploader:
                 tag_ids = self.ensure_tags(tags)
             if tag_ids:
                 payload["tags"] = tag_ids
-        # 슬러그 미지정 시 제목에서 ASCII 슬러그 자동 생성(한글 퍼센트 인코딩 URL 방지)
+        # 슬러그 미지정 시 제목에서 의미 담긴 영어 슬러그 자동 생성
+        # (한글 퍼센트 인코딩·발음 로마자 URL 방지; Gemini 실패 시 로마자 폴백)
         if not slug:
-            slug = slugify(title)
+            slug = english_slug(title)
         if slug:
             payload["slug"] = slug
         # 발췌 미지정 시 본문에서 자동 생성(Rank Math 메타 description 소스)

@@ -1,6 +1,13 @@
-"""WordPress 업로더 SEO 헬퍼(slugify / auto_excerpt / demote_body_h1) 단위 테스트."""
+"""WordPress 업로더 SEO 헬퍼(slugify / auto_excerpt / demote_body_h1 / english_slug) 단위 테스트."""
 
-from shared.wordpress_uploader import slugify, auto_excerpt, demote_body_h1
+import shared.gemini_cli as gemini_cli
+from shared.wordpress_uploader import (
+    slugify,
+    auto_excerpt,
+    demote_body_h1,
+    english_slug,
+    _kebab,
+)
 
 
 def test_slugify_korean_to_ascii():
@@ -59,3 +66,49 @@ def test_auto_excerpt_truncates_with_ellipsis():
 def test_auto_excerpt_empty():
     assert auto_excerpt("") == ""
     assert auto_excerpt("<h1>제목뿐</h1>") == ""  # 헤딩만 있으면 빈 발췌
+
+
+# --- english_slug ---
+
+def _fake_resp(text):
+    return type("R", (), {"text": text})()
+
+
+def test_kebab_sanitizes():
+    assert _kebab("Quantum Computing! PQC, Roadmap.") == "quantum-computing-pqc-roadmap"
+    assert _kebab("  Hello   World  ") == "hello-world"
+
+
+def test_english_slug_ascii_no_gemini(monkeypatch):
+    # ASCII 제목은 Gemini를 호출하지 않아야 한다(호출하면 실패하도록 세팅)
+    def boom(*a, **k):
+        raise AssertionError("ASCII 제목에 Gemini 호출하면 안 됨")
+    monkeypatch.setattr(gemini_cli, "call_gemini_with_fallback", boom)
+    assert english_slug("Buffett Daily Note 2026-06-13") == "buffett-daily-note-2026-06-13"
+
+
+def test_english_slug_korean_uses_gemini(monkeypatch):
+    monkeypatch.setattr(
+        gemini_cli, "call_gemini_with_fallback",
+        lambda *a, **k: _fake_resp("Quantum Computing, PQC Migration Roadmap"),
+    )
+    s = english_slug("양자컴퓨터가 깨뜨릴 암호와 PQC 전환 로드맵")
+    assert s == "quantum-computing-pqc-migration-roadmap"
+    assert s.isascii()
+
+
+def test_english_slug_falls_back_to_romanization_on_error(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("gemini down")
+    monkeypatch.setattr(gemini_cli, "call_gemini_with_fallback", boom)
+    s = english_slug("뉴스 요약")
+    assert s and s.isascii()  # 로마자 폴백(non-empty ascii)
+
+
+def test_english_slug_falls_back_on_garbage(monkeypatch):
+    # Gemini가 빈/너무짧은 결과를 주면 로마자 폴백
+    monkeypatch.setattr(
+        gemini_cli, "call_gemini_with_fallback", lambda *a, **k: _fake_resp("   ")
+    )
+    s = english_slug("부동산 주간 디제스트")
+    assert s and s.isascii()
