@@ -261,7 +261,9 @@
 
 ---
 
-## Blogger OAuth 인증 실패
+## Blogger OAuth 인증 실패 (보존 — 2026-06-12 WordPress 전환으로 폐지)
+
+> 2026-06-12부터 전 봇이 WordPress(grace-moon.com) 발행으로 전환되어 Blogger 발행은 사용하지 않는다(`shared/blogger_uploader.py` 삭제됨). 아래는 이력 보존. 현행 발행 이슈는 "WordPress(grace-moon.com) 발행물…" 항목 참조.
 
 - **증상**: Blogger 업로드 시 `invalid_grant` 또는 토큰 만료 에러.
 - **원인**: 저장된 OAuth refresh token이 무효화됨 (장기간 미사용 또는 사용자가 권한 회수).
@@ -273,6 +275,31 @@
   ```
 - **관련 사고**: 정기적 (refresh token 만료, 분기 단위)
 - **재발 감지**: `invalid_grant` 로그 발생 즉시 알림.
+
+---
+
+## WordPress(grace-moon.com) 발행물·소유권 검증이 옛 페이지로 남음 (Cafe24 캐시)
+
+- **증상**: WordPress 설정/메타태그를 바꿔 발행·재검증했는데도 페이지 소스가 **옛 값**을 계속 내보냄. 구글/네이버 서치콘솔 메타태그 소유확인이 "메타태그가 잘못됨"으로 반복 실패.
+- **원인**: Cafe24(openresty) **엣지 캐시 + WP Super Cache**가 홈페이지 정적 스냅샷을 물고 있어, 클라이언트 `no-cache`·쿼리스트링 우회·관리바 "캐시 삭제"로도 갱신 안 됨. (구글 인증 `<meta>`는 Rank Math가 **홈페이지에만** 출력 → 홈 캐시가 박제되면 영영 옛 값.)
+- **해결**:
+  - 소유권 검증은 캐시를 안 타는 **DNS TXT(도메인 속성)** 또는 **HTML 파일 업로드**로 우회. 메타태그 방식은 이 스택에서 불안정.
+  - Rank Math 사이트맵이 갑자기 404면 **설정→고유주소→저장**(rewrite flush). WP Super Cache 토글 직후 흔함.
+  - 봇 발행물이 스테일하게 보일 때도 동일 원인 — WP Super Cache 캐시 삭제.
+- **복구 절차**: (a) WP Super Cache 캐싱 끄기+삭제 (b) 그래도 옛 값이면 엣지 캐시로 판단→DNS/파일 방식 전환 (c) 사이트맵 404면 퍼머링크 재저장.
+- **관련 사고**: 2026-06-12 (블로그 WordPress 이관 + 서치콘솔 등록)
+- **재발 감지**: 발행/설정 변경 직후 `curl -s -L "https://grace-moon.com/?cb=$RANDOM"`로 라이브 값이 바뀌는지 확인. 안 바뀌면 캐시 의심.
+
+### Claude 진단 미스 (2026-06-12 세션, 서치콘솔 메타태그 소유확인)
+
+- **Claude 처음 가설**: ①속성 유형이 "도메인"이라 메타태그 무시 → ②GSC 코드값 불일치 → ③WP Super Cache stale, 순으로 추정.
+- **실제 원인**: ①②는 아니었고(URL 접두어 맞고 값도 일치), WP Super Cache를 꺼도 안 바뀐 것으로 보아 **Cafe24 openresty 엣지 캐시**가 홈 스냅샷을 유지. 메타태그 방식 자체가 이 호스트에서 비현실적이었음.
+- **방향 전환 지점**: 캐싱 끈 뒤에도 `curl` 라이브 값이 옛 값이고, 404 페이지엔 태그가 아예 없던(=홈에만 출력) 것을 확인한 순간 → "메타태그 우회, DNS로" 결정.
+- **교훈 (다음에 같은 패턴이 보이면)**:
+  - 첫 의심 영역: **호스트/엣지 캐시**부터 본다(`curl ...?cb=$RANDOM` 라이브 비교). WordPress 플러그인 설정보다 위 계층.
+  - 빨리 배제할 가설: "플러그인에 값을 잘못 넣었다"는 보통 원인 아님 — `curl`로 태그가 살아있으면 입력은 정상.
+  - 핵심 진단 명령: <kbd>curl -s -L "https://grace-moon.com/?cb=$RANDOM" | grep -i site-verification</kbd> / <kbd>dig +short TXT &lt;domain&gt; @8.8.8.8</kbd>
+  - 검증 방법 우선순위: **DNS TXT > HTML 파일 > 메타태그**(캐시 무관 순).
 
 ---
 

@@ -36,7 +36,7 @@ from sector_bot import (
     ComprehensiveReportGenerator,
 )
 from sector_bot.orchestrator import run_sector_research, OrchestrationResult
-from shared.blogger_uploader import BloggerUploader
+from shared.wordpress_uploader import WordPressUploader
 from shared.telegram_notifier import TelegramNotifier
 from shared.claude_html_converter import convert_md_to_html_via_claude
 
@@ -84,12 +84,11 @@ class WeeklySectorBot:
         self.writer = SectorWriter()
         self.state_manager = StateManager()
 
-        # Blogger
+        # WordPress(grace-moon.com) 발행 — 섹터봇 → '섹터'(7)
         if not test_mode:
-            self.blogger = BloggerUploader(
-                blog_id=SectorConfig.BLOGGER_BLOG_ID,
-                credentials_path=SectorConfig.BLOGGER_CREDENTIALS_PATH,
-                token_path=SectorConfig.BLOGGER_TOKEN_PATH,
+            self.blogger = WordPressUploader(
+                default_categories=[7],
+                strip_ads_default=True,
             )
         else:
             self.blogger = None
@@ -183,7 +182,7 @@ class WeeklySectorBot:
                     logger.warning(f"[{sector.name}] HTML conversion failed, using markdown: {e}")
                     html_content = None
 
-                logger.info(f"[{sector.name}] Step 5: Uploading to blog...")
+                logger.info(f"[{sector.name}] Step 5: WordPress 발행 중...")
                 labels = SectorConfig.get_sector_labels(sector)
 
                 upload_result = self.blogger.upload_post(

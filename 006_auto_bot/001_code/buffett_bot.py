@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 # 프로젝트 루트를 path에 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from shared.blogger_uploader import BloggerUploader
+from shared.wordpress_uploader import WordPressUploader
 from shared.telegram_notifier import TelegramNotifier
 from shared.claude_html_converter import convert_md_to_html_via_claude
 
@@ -233,10 +233,10 @@ class BuffettBot:
         self.test_mode = test_mode
 
         if not test_mode:
-            self.blogger = BloggerUploader(
-                blog_id=BLOGGER_BLOG_ID,
-                credentials_path=BLOGGER_CREDENTIALS_PATH,
-                token_path=BLOGGER_TOKEN_PATH,
+            # WordPress(grace-moon.com) 발행 — 버핏봇 → '일일시황'(6)
+            self.blogger = WordPressUploader(
+                default_categories=[6],
+                strip_ads_default=True,
             )
         else:
             self.blogger = None

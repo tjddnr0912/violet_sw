@@ -5,16 +5,22 @@
 | 이름 | 필수 | 기본값 | 설명 |
 |------|------|------|------|
 | `GEMINI_API_KEY` | ✅ | — | Google AI Studio API key |
-| `BLOGGER_BLOG_ID` | ✅ | — | 메인 블로그 ID |
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | ✅ | — | Telegram chat ID |
-| `BLOG_LIST` | ❌ | — | JSON 배열, 다중 블로그 등록 (`[{"key":"...","id":"...","name":"..."}, ...]`) |
-| `DEFAULT_BLOG` | ❌ | `brave_ogu` | 단일 블로그 모드(`len(blogs)==1`) 대상 key. **2026-06-08~ 텔레그램은 더 이상 default 자동 업로드 안 함**(선택 블로그 1곳만). |
-| `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 블로그 선택 prompt timeout (초). 무선택 시 업로드 취소. |
+| `WORDPRESS_URL` | ✅ | — | WordPress 사이트 URL (`https://grace-moon.com`). **2026-06-12~ 전 봇 발행처**. |
+| `WORDPRESS_USER` | ✅ | — | WP 로그인 ID |
+| `WORDPRESS_APP_PASSWORD` | ✅ | — | WP 애플리케이션 비밀번호(공백 자동 제거). **절대 Git 커밋 금지**. |
+| `WORDPRESS_DEFAULT_STATUS` | ❌ | `publish` | 발행 상태. `publish` 또는 `draft`. |
+| `KROKI_URL` | ❌ | `https://kroki.io` | mermaid→PNG 렌더 서버. WordPress 발행 시 코드블록을 이미지로 변환. |
+| `BLOGGER_ENABLED` / `NEWS_BLOGGER_ENABLED` | ❌ | — | 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). `false`면 발행 스킵. |
+| `BLOGGER_BLOG_ID` | (레거시) | — | Blogger 시절 잔재. 2026-06-12 WordPress 전환 후 미사용(일부 config 검증에만 잔존). |
+| `BLOG_LIST` | (레거시) | — | 옛 다중 블로그(blogspot) 등록. WordPress 전환 후 미사용(텔레그램 self.blogs 잔재). |
+| `DEFAULT_BLOG` | (레거시) | `brave_ogu` | 옛 단일 블로그 모드 대상 key. WordPress 전환 후 미사용. |
+| `BLOG_SELECTION_TIMEOUT` | ❌ | 180 | 텔레그램 **WordPress 카테고리** 선택 prompt timeout (초). 무선택 시 발행 취소. |
 | `EDITORIAL_ENABLED` | ❌ | `true` | 편집 레이어(저자 박스 + 면책/투명성 라인) on/off. 모든 봇 발행물 HTML 끝에 적용. 저자 페르소나=`config/authors.json`. |
 | `EDITORIAL_AUTHOR` | ❌ | `default` | 호출부가 `editorial={"author":...}` 미지정 시 기본 author key. |
 | `EDITORIAL_CONTENT_TYPE` | ❌ | `general` | 호출부 미지정 시 기본 content_type(면책 결정용). |
-| `SECTOR_BLOGGER_BLOG_ID` | ❌ | `9115231004981625966` | 섹터봇 전용 블로그 |
+| `SECTOR_BLOGGER_BLOG_ID` | (레거시) | `9115231004981625966` | 옛 섹터봇 Blogger 블로그 ID. WordPress 전환 후 섹터봇은 카테고리 7로 발행(일부 config 검증에만 잔존). |
 | `SECTOR_GEMINI_MODEL` | ❌ | `gemini-3.5-flash` | 섹터 **분석**(`sector_bot/analyzer.py`) primary 모델. 2026-06-07 `gemini-3.1-flash-lite`→`gemini-3.5-flash`로 승격(분석 길이가 모델 비례, flash-lite ~2.3천자 vs 3.5-flash ~6-16천자). 검색은 별도 agy(`AGY_SEARCH_MODELS`). |
 | `SECTOR_GEMINI_FALLBACK_MODELS` | ❌ | `gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash` | 섹터 분석 전용 fallback chain(요약봇의 글로벌 `GEMINI_FALLBACK_MODELS`와 격리). 3.5-flash 쿼터 소진(429/503) 시 순차 — flash-lite 우선. |
 | `CLAUDE_SEARCH_MODEL` | ❌ | `sonnet` | `shared.claude_search.claude_websearch`의 default 모델. alias(`haiku`/`sonnet`/`opus`) 또는 full ID. |
@@ -96,61 +102,20 @@ Telegram에서 발행 시 사용자에게 블로그 key 선택 prompt 전송. ti
 - 로그·스택트레이스에 `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN` 직접 노출 금지
 - `.env`, `credentials/*.pkl`, `credentials/client_secret.json` 모두 git commit 금지 (`.gitignore` 등재됨)
 
-## Mermaid.js 글로벌 등록 (Blogger / Tistory)
+## Mermaid 다이어그램 (WordPress: 서버측 PNG 렌더)
 
-봇이 만든 `<pre><code class="language-mermaid">` 코드블록을 다이어그램으로 자동 렌더링하려면 발행 플랫폼의 **테마/스킨에 Mermaid.js v11을 1회 등록**해야 한다. 등록 후에는 봇 출력 무변경으로 모든 글에서 작동.
+봇이 만든 `<pre><code class="language-mermaid">` 코드블록은 **발행 시 `WordPressUploader`가 kroki(`KROKI_URL`)로 PNG를 렌더**해 미디어 업로드 후 `<img>`로 치환한다. 테마/스킨에 Mermaid.js를 등록할 필요가 없다(코드 변경 없이 모든 봇 적용).
 
-### Blogger 등록
-
-1. `blogger.com` → 좌측 메뉴 **테마** → 적용된 테마 박스 우측 `▼` → **HTML 편집** (`맞춤설정`이 아니라 *그 옆* ▼)
-2. `</body>` 바로 위에 아래 스크립트 추가 → 저장 (위젯 보존 경고 시 *유지* 선택)
-
-Blogger는 XML 파서를 사용하므로 인라인 스크립트 내 `<`/`>`/`&`는 `//<![CDATA[ … //]]>` 로 감싸야 한다.
-
-### Tistory 등록
-
-1. `관리` → `꾸미기` → **스킨 편집** → 우측 상단 **html 편집** 탭 → `HTML` 탭
-2. `</body>` 바로 위에 동일 스크립트 추가 → **[적용]**
-3. 본문 단의 `<script>`는 Tistory가 sanitize함 → 스킨 단에만 박을 것
-
-Tistory는 일반 HTML 파서라 CDATA 불필요. 외부 `https://` CDN 호출 허용 (무료 도메인 포함).
-
-### 등록 스크립트 (양쪽 호환, v1)
-
-```html
-<script type='module'>
-//<![CDATA[
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
-document.addEventListener('DOMContentLoaded', async () => {
-  document.querySelectorAll('pre > code.language-mermaid, pre.mermaid-code').forEach(block => {
-    const pre = block.parentElement;
-    const div = document.createElement('div');
-    div.className = 'mermaid';
-    div.textContent = block.textContent;
-    pre.parentNode.replaceChild(div, pre);
-  });
-  await mermaid.run({ querySelector: '.mermaid' });
-});
-//]]>
-</script>
-<style>.mermaid { overflow-x: auto; max-width: 100%; text-align: center; margin: 16px 0; }</style>
-```
-
-### v2 옵션 (사용자 결정에 따라 보류 — 필요 시 추가)
-
-큰 다이어그램에서 글자가 작아지는 문제를 *완전히* 제거하려면 v1 대신 UMD 빌드 + `useMaxWidth: false` + `fontSize: '17px'` + 모바일 가로 스크롤을 적용한 v2 스크립트로 교체한다. SKILL.md의 노드 6개 제한만으로 가독성이 충분하면 v1 유지가 권장. v2 전체 코드는 git 히스토리의 PR 또는 별도 메모로 보관.
+- 인라인 `<svg>`/`<script>` 방식은 WordPress(wpautop·sanitize)가 도형을 깨뜨려 **PNG로 결정**(2026-06-12). 옛 Blogger/Tistory용 테마 Mermaid.js v11 등록 절차는 폐지.
+- 중복 다이어그램은 `hashlib.md5`로 dedup해 미디어를 1회만 업로드.
 
 ### 검증
 
-발행물 raw HTML을 다음 명령으로 확인:
-
 ```bash
-curl -sL -A "Mozilla/5.0" "$URL" | grep -ciE "language-mermaid|import mermaid|mermaid\.run"
+curl -sL -A "Mozilla/5.0" "$POST_URL" | grep -ciE "<img[^>]+mermaid|kroki"
 ```
 
-- 봇이 만든 코드블록 카운트 + 스킨 스크립트 시그니처가 양수면 정상.
-- WebFetch 도구는 inline `<svg>`/`<script>`/style을 markdown 변환에서 소실시키므로 사용 금지 (→ TROUBLESHOOTING의 "인라인 SVG 플로우차트" Claude 진단 미스 참조).
+- 발행물 raw 확인엔 `curl` 사용. WebFetch 도구는 inline `<svg>`/`<script>`/style을 markdown 변환에서 소실시키므로 사용 금지 (→ TROUBLESHOOTING의 "인라인 SVG 플로우차트" Claude 진단 미스 참조).
 
 ## Deep research 동작
 

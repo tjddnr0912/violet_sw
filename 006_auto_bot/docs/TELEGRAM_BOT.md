@@ -1,44 +1,56 @@
 # Telegram Gemini Bot
 
-질문 수신 → Gemini 처리 → Claude HTML 변환 → Blogger 업로드 (블로그 선택 기능).
+질문 수신 → Gemini/Claude 리서치 → Claude HTML 변환 → WordPress 발행 (카테고리 선택 기능).
 
 ## 데이터 흐름
 
 ```
-질문 수신 → 블로그 선택 UI (Inline Keyboard) → 선택/타임아웃
+질문 수신 → WordPress 카테고리 선택 UI (Inline Keyboard) → 선택/타임아웃
                     ↓
-         Gemini 처리 (1500자+ 요구, 제목/라벨/출처 메타데이터)
+         Deep research (Gemini × Claude 다라운드) 또는 /quick 단발
                     ↓
-         Claude HTML 변환 (1000자+ 요구, 블로그 제목 생성)
+         Claude HTML 변환 (한글, 블로그 제목 생성)
                     ↓
-         블로그 업로드 (Claude 제목 우선, Gemini 제목 fallback)
+         선택 카테고리로 WordPress(grace-moon.com) 발행 (Claude 제목 우선, Gemini 제목 fallback)
 ```
 
-## 업로드 방식 (2026-06-08 변경: 선택 블로그 1곳만)
+## 발행 방식 (2026-06-12: WordPress 단일 사이트 + 카테고리 선택)
 
-- **블로그 선택 시**: **선택한 블로그 1곳에만** 업로드 (HTML only). 선택 UI에 모든 블로그 표시.
-- **무선택 타임아웃**: **업로드 취소**(알림만). — 기존 "default(bravebabyogu) 자동 업로드"는 폐지됨.
-- 단일 블로그 모드(`len(blogs)==1`): 그 블로그 1곳에 업로드.
-- 구현: `_upload_single` (기존 `_upload_default_only`/`_upload_dual` 통합).
+- **카테고리 선택 시**: 선택한 **WordPress 카테고리 1곳**에 발행(HTML). 선택 UI에 8개 카테고리 버튼 표시. `callback_data=cat:{id}`.
+- **무선택 타임아웃**: **발행 취소**(알림만). `BLOG_SELECTION_TIMEOUT`(default 180초).
+- 옛 멀티 블로그(blogspot)·영문 변환·raw 첨부는 **전부 폐지**. 모든 글을 한글 그대로 WordPress에 발행.
 
-## 지원 블로그 (7개)
+## 발행 워크플로우 (`_finalize_and_upload`)
 
-| Key | Name | URL |
-|-----|------|-----|
-| brave_ogu | Brave Ogu (Default) | bravebabyogu.blogspot.com |
-| soc_design | SoC Design | socdesignengineer.blogspot.com |
-| ogusinvest | OgusInvest | ogusinvest.blogspot.com |
-| sw_develope | SW Develope | swdevelope.blogspot.com |
-| booksreview | BooksReview | booksreview333.blogspot.com |
-| virtual_lifes | Virtual Life's | virtuallifeininternet.blogspot.com |
-| wherewego | Where we go | wherewegoinworld.blogspot.com |
+진입점: `_show_category_selection`(버튼) → `_handle_callback_query`(`cat:` 파싱) → `_process_after_selection` → `_finalize_and_upload`. (`/quick` 단발은 `_process_and_upload_single` 경유.)
+
+1. **한글 본문 HTML 생성** — `convert_md_to_html_via_claude(..., apply_editorial_box=False)`. 저자 박스는 다음 단계에서 따로 적용.
+2. **저자 박스(GraceMoon) 적용** — `shared.editorial.apply_editorial(author_key="research", content_type="research")`. 박스 이름=GraceMoon, 링크=grace-moon.com (`config/authors.json`).
+3. **한글본 로컬 백업** — `shared.local_archive.save_post_draft`로 `~/blog_posts/오늘날짜/HHMMSS_제목.txt`에 **제목→태그→내용**(저자 박스 포함) 순 저장. 날짜는 호출 시점 `datetime.now()`로 매번 재확인. raw 원문은 더 이상 첨부하지 않음.
+4. **WordPress 발행** — `_upload_single`→`_do_upload`가 `shared.wordpress_uploader.WordPressUploader`로 선택 카테고리에 발행. **mermaid→PNG(kroki)·AdSense/raw strip은 업로더가 처리**(본문엔 박스까지만 넣고 넘김).
+5. **텔레그램 통지** — 완료 메시지에 발행 URL + 로컬 백업 경로/파일명 포함.
+
+## WordPress 카테고리 (선택 버튼 8종)
+
+`WP_CATEGORY_CHOICES` (telegram_gemini_bot.py). 전체 카테고리 ID 맵은 `shared/wordpress_uploader.py`의 `CATEGORY_IDS`.
+
+| 버튼 | 카테고리 ID |
+|------|------------|
+| 뉴스 | 5 |
+| 일일시황 | 6 |
+| 섹터 | 7 |
+| 부동산 | 8 |
+| SoC | 9 |
+| SW | 10 |
+| AI | 11 |
+| 기타 | 4 |
 
 ## 진행 상황 메시지
 
 1. "Processing: Asking Gemini..."
-2. "Processing: Claude에서 HTML을 생성 중..."
-3. "Processing: Uploading to blog..."
-4. 완료 메시지 (URL 포함)
+2. "Claude HTML 생성 중…"
+3. "Publishing to WordPress…"
+4. 완료 메시지 (발행 URL + 로컬 백업 경로 포함)
 
 ## 최소 글자 수
 
@@ -61,11 +73,21 @@
 
 ### shared/claude_html_converter.py
 
-`convert_md_to_html_via_claude()` - Markdown을 Blogger용 HTML로 변환. 반환: `(html, blog_title)` 튜플.
+`convert_md_to_html_via_claude()` - Markdown을 WordPress용 한글 HTML로 변환. 반환: `(html, blog_title)` 튜플.
 - **블로그 제목 생성**: Claude가 `BLOG_TITLE:` 라인으로 제목 출력 → 텔레그램봇에서 Gemini 제목 대신 사용
 - 투자 면책조항: Claude가 내용 판단하여 자동 포함
 - 공통 금지: AI, 자동 생성, Gemini, Claude 등 AI 관련 문구
 - 제목 미생성 시 Gemini 제목으로 fallback (뉴스봇/버핏봇/섹터봇은 자체 제목 사용, 제목 무시)
+- `apply_editorial_box=False`면 본문(body)만 반환 — 호출부가 저자 박스를 따로 입힌다.
+- (2026-06-12 정리) AdSense 인라인 삽입·영문 변환(`convert_ko_html_to_english`)·raw 첨부(`append_raw_source_details`)·`translate_markdown_to_english`는 **전부 제거됨**. mermaid→PNG·AdSense/raw strip은 발행 단계에서 `WordPressUploader`가 담당.
+
+### shared/wordpress_uploader.py
+
+`WordPressUploader` - WordPress REST(`/wp-json/wp/v2/*`) 발행. App Password + HTTP Basic Auth.
+- `.env`: `WORDPRESS_URL` / `WORDPRESS_USER` / `WORDPRESS_APP_PASSWORD` / `WORDPRESS_DEFAULT_STATUS`.
+- `CATEGORY_IDS`: 이름→ID 매핑 (투자2/기술3/기타4/뉴스5/일일시황6/섹터7/부동산8/SoC9/SW10/AI11).
+- `create_post()` 발행 시 mermaid 코드블록→PNG(kroki) 렌더 후 미디어 업로드, `strip_adsense`/`strip_raw_source` 적용.
+- `upload_post(...)` = 옛 `BloggerUploader.upload_post` 드롭인 호환 어댑터(`{success, url, post_id, message}` 반환) — 봇 호출부 무수정 교체용.
 
 ## Research Modes (Deep default, `/quick` opt-out)
 

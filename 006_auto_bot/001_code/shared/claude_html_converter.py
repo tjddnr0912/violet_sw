@@ -12,24 +12,77 @@ logger = logging.getLogger(__name__)
 
 # 프롬프트 소스: blogger-html 스킬 파일이 단일 소스
 SKILL_FILE = os.path.expanduser('~/.claude/skills/blogger-html/SKILL.md')
+# 한글 HTML → 영문 HTML (US 현지화 + WebSearch 재검증) 스킬
+EN_SKILL_FILE = os.path.expanduser('~/.claude/skills/blogger-html-en/SKILL.md')
+
+
+def _load_skill(skill_path: str) -> str:
+    """스킬 파일에서 YAML frontmatter를 제거한 본문 프롬프트를 로드."""
+    import re
+
+    if not os.path.exists(skill_path):
+        raise FileNotFoundError(
+            f"HTML 변환 스킬 파일을 찾을 수 없습니다: {skill_path}"
+        )
+    with open(skill_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
+    logger.info(f"Loaded HTML prompt from skill: {skill_path}")
+    return content.strip()
 
 
 def load_prompt_template() -> str:
     """프롬프트 템플릿 로드 — blogger-html 스킬 파일이 단일 소스"""
-    import re
+    return _load_skill(SKILL_FILE)
 
-    if not os.path.exists(SKILL_FILE):
-        raise FileNotFoundError(
-            f"HTML 변환 스킬 파일을 찾을 수 없습니다: {SKILL_FILE} "
-            "(~/.claude/skills/blogger-html/SKILL.md 설치 필요)"
-        )
 
-    with open(SKILL_FILE, 'r', encoding='utf-8') as f:
-        content = f.read()
-    # YAML frontmatter 제거
-    content = re.sub(r'^---\s*\n.*?\n---\s*\n?', '', content, count=1, flags=re.DOTALL)
-    logger.info(f"Loaded HTML prompt from skill: {SKILL_FILE}")
-    return content.strip()
+def _run_claude_cli(full_prompt: str, timeout: int = 900, model: str = None) -> str:
+    """Claude CLI(-p)에 프롬프트를 stdin으로 넘기고 stdout(raw)을 반환.
+
+    긴 프롬프트는 임시 파일에 써서 stdin으로 전달한다.
+    --dangerously-skip-permissions 로 도구(WebSearch/WebFetch 등)를 허용한다.
+    model 지정 시 `--model <alias>`로 모델을 고정한다(미지정이면 CLI 기본값).
+    """
+    import tempfile
+
+    cmd = ['claude', '-p', '--dangerously-skip-permissions']
+    if model:
+        cmd += ['--model', model]
+    cmd += ['-']
+
+    temp_file = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+            f.write(full_prompt)
+            temp_file = f.name
+        with open(temp_file, 'r', encoding='utf-8') as f:
+            result = subprocess.run(
+                cmd,
+                stdin=f,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+    except subprocess.TimeoutExpired:
+        logger.error(f"Claude CLI timed out after {timeout} seconds")
+        raise Exception("Claude CLI timed out")
+    except FileNotFoundError:
+        logger.error("Claude CLI not found. Is it installed and in PATH?")
+        raise Exception("Claude CLI not found")
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            os.unlink(temp_file)
+
+    if result.returncode != 0:
+        error_msg = result.stderr or "Unknown error"
+        logger.error(f"Claude CLI error (code {result.returncode}): {error_msg}")
+        raise Exception(f"Claude CLI failed: {error_msg}")
+
+    raw_output = result.stdout.strip()
+    if not raw_output:
+        logger.warning("Claude CLI returned empty content")
+        raise Exception("Claude CLI returned empty content")
+    return raw_output
 
 
 def extract_title_from_response(response: str) -> str:
@@ -88,6 +141,7 @@ def convert_md_to_html_via_claude(
     output_path: str = None,
     include_investment_disclaimer: bool = False,  # deprecated, 무시됨
     editorial: dict = None,
+    apply_editorial_box: bool = True,
 ) -> tuple:
     """
     Claude CLI를 사용하여 Markdown을 Blogger용 HTML로 변환
@@ -108,8 +162,6 @@ def convert_md_to_html_via_claude(
     Raises:
         Exception: Claude CLI 실행 실패 시
     """
-    import tempfile
-
     # 프롬프트 템플릿 로드
     prompt_template = load_prompt_template()
 
@@ -118,46 +170,7 @@ def convert_md_to_html_via_claude(
 
     logger.info(f"Calling Claude CLI for HTML conversion ({len(md_content)} chars)...")
 
-    # 긴 프롬프트는 임시 파일에 저장 후 stdin으로 전달
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
-            f.write(full_prompt)
-            temp_file = f.name
-
-        # stdin으로 프롬프트 전달 (긴 인자 문제 방지)
-        with open(temp_file, 'r', encoding='utf-8') as f:
-            result = subprocess.run(
-                ['claude', '-p', '--dangerously-skip-permissions', '-'],
-                stdin=f,
-                capture_output=True,
-                text=True,
-                timeout=900  # 15분 타임아웃 (HTML 디자인 생성에 시간 소요)
-            )
-
-        # 임시 파일 정리
-        os.unlink(temp_file)
-
-    except subprocess.TimeoutExpired:
-        if 'temp_file' in locals():
-            os.unlink(temp_file)
-        logger.error("Claude CLI timed out after 900 seconds")
-        raise Exception("Claude CLI timed out")
-    except FileNotFoundError:
-        if 'temp_file' in locals():
-            os.unlink(temp_file)
-        logger.error("Claude CLI not found. Is it installed and in PATH?")
-        raise Exception("Claude CLI not found")
-
-    if result.returncode != 0:
-        error_msg = result.stderr or "Unknown error"
-        logger.error(f"Claude CLI error (code {result.returncode}): {error_msg}")
-        raise Exception(f"Claude CLI failed: {error_msg}")
-
-    raw_output = result.stdout.strip()
-
-    if not raw_output:
-        logger.warning("Claude CLI returned empty content")
-        raise Exception("Claude CLI returned empty content")
+    raw_output = _run_claude_cli(full_prompt, timeout=900)  # 15분 (HTML 디자인 생성)
 
     # 제목 추출
     blog_title = extract_title_from_response(raw_output)
@@ -175,9 +188,11 @@ def convert_md_to_html_via_claude(
 
     # 편집 레이어 (2026-06-07~)
     # 저자(E-E-A-T) 박스 + 투명성/면책 라인을 본문 끝에 덧붙인다.
-    # 광고(인아티클·멀티플렉스)는 그대로 둔다 — Blogger 공개 미러에 올린 뒤
-    # 그 콘텐츠를 승인된 Tistory로 복사하므로 광고 코드도 함께 따라간다.
-    html_content = _maybe_apply_editorial(html_content, blog_title, editorial)
+    # (AdSense 인라인 삽입은 폐지 — WordPress는 광고를 플러그인으로 처리한다.)
+    # apply_editorial_box=False면 본문(body)만 반환 — 호출부가 따로 저자 박스를
+    # 입힐 수 있게 한다(텔레그램봇 등).
+    if apply_editorial_box:
+        html_content = _maybe_apply_editorial(html_content, blog_title, editorial)
 
     # HTML 파일로 저장 (선택)
     if output_path:

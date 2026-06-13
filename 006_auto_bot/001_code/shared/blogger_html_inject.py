@@ -22,7 +22,7 @@ Usage in bot:
 
     html, title = convert_md_to_html_via_claude(markdown)
     html = inject_images(html, run_id="news_2026-05-28")
-    blogger_uploader.upload_post(title=title, content=html, ...)
+    wordpress_uploader.upload_post(title=title, content=html, ...)
 """
 
 from __future__ import annotations

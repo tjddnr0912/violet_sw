@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Telegram + Gemini CLI + Blogger Integration Bot
-------------------------------------------------
+Telegram Research Bot + WordPress Integration
+---------------------------------------------
 1. Receive messages from Telegram (polling)
-2. Send questions to Gemini CLI
-3. Upload results to Google Blogger
+2. Run deep research / Q&A via Claude + Gemini
+3. Publish results to WordPress (grace-moon.com), category chosen at publish time
 4. Send notification via Telegram
 
 Usage:
@@ -75,7 +75,7 @@ logger = setup_logging()
 
 
 class TelegramGeminiBot(TelegramClient):
-    """Telegram bot that processes messages with Gemini and uploads to Blogger"""
+    """Telegram bot that processes messages with Gemini and publishes to WordPress"""
 
     def __init__(
         self,
@@ -412,25 +412,26 @@ SOURCES: (출처)
 
         logger.info(f"Question received (mode={mode}, length={len(question)}): {question[:100]}{'...' if len(question) > 100 else ''}")
 
-        # Multi-blog → show selection first; single-blog → process directly
-        if len(self.blogs) > 1 and self.upload_to_blog:
-            self._show_blog_selection_first(question=question, mode=mode)
+        # WordPress 발행: 항상 카테고리 선택 먼저 (업로드 OFF면 선택 없이 처리)
+        if self.upload_to_blog:
+            self._show_category_selection(question=question, mode=mode)
         else:
             self._process_and_upload_single(question=question, mode=mode)
 
-    def _show_blog_selection_first(self, question: str, mode: str = "deep") -> None:
-        """Show blog selection UI immediately after receiving question.
+    # WP 카테고리 (표시명, term_id) — 텔레그램 발행 선택용
+    WP_CATEGORY_CHOICES = [
+        ("뉴스", 5), ("일일시황", 6), ("섹터", 7), ("부동산", 8),
+        ("SoC", 9), ("SW", 10), ("AI", 11), ("기타", 4),
+    ]
+    WP_CATEGORY_NAMES = {cid: name for name, cid in WP_CATEGORY_CHOICES}
 
-        선택한 블로그 1곳에만 업로드한다. (기존 default 자동 업로드 폐지)
-        """
-        # Build inline keyboard with ALL blogs (default 제외 안 함)
+    def _show_category_selection(self, question: str, mode: str = "deep") -> None:
+        """질문 수신 직후 카테고리 선택 UI 표시. 선택한 카테고리로 WordPress에 발행."""
+        # Build inline keyboard with WP categories (2개씩 한 줄)
         keyboard = []
         row = []
-        for key, blog in self.blogs.items():
-            row.append({
-                "text": f"{blog['name']}",
-                "callback_data": f"blog:{key}"
-            })
+        for name, cid in self.WP_CATEGORY_CHOICES:
+            row.append({"text": name, "callback_data": f"cat:{cid}"})
             if len(row) == 2:
                 keyboard.append(row)
                 row = []
@@ -447,8 +448,8 @@ SOURCES: (출처)
 <b>Question:</b>
 {question_preview}
 
-<b>Select blog to upload:</b>
-(No selection in {timeout_min} min → upload cancelled)"""
+<b>Select category to publish:</b>
+(No selection in {timeout_min} min → publish cancelled)"""
 
         # Send message with inline keyboard
         result = self.send_message_with_inline_keyboard(
@@ -464,10 +465,10 @@ SOURCES: (출처)
                 "mode": mode,
                 "created_at": time.time()
             }
-            logger.info(f"Blog selection pending (msg_id: {message_id}, mode: {mode}, timeout: {timeout_min}min)")
+            logger.info(f"Category selection pending (msg_id: {message_id}, mode: {mode}, timeout: {timeout_min}min)")
         else:
-            # Fallback to default processing if keyboard send fails
-            logger.warning("Failed to send selection UI, processing with default only")
+            # Fallback to no-upload processing if keyboard send fails
+            logger.warning("Failed to send selection UI, processing without upload")
             self._process_and_upload_single(question=question, mode=mode)
 
     def _process_and_upload_single(
@@ -505,26 +506,11 @@ SOURCES: (출처)
         sources_section = self._format_sources_section(sources)
         full_md_content = content + sources_section
 
-        html_content = None
-        claude_title = ""
-        try:
-            from shared.claude_html_converter import convert_md_to_html_via_claude
-            html_content, claude_title = convert_md_to_html_via_claude(
-                full_md_content, editorial={"author": "research", "content_type": "research"}
-            )
-        except Exception as e:
-            logger.warning(f"Claude HTML failed: {e}")
-
-        final_title = claude_title or title_hint
-
-        # 단일 블로그 모드: 유일한 블로그 또는 default_blog_key를 대상으로
-        single_key = self.default_blog_key if self.default_blog_key in self.blogs \
-            else (next(iter(self.blogs)) if self.blogs else self.default_blog_key)
-        self._upload_single(
-            blog_key=single_key,
-            md_content=full_md_content,
-            html_content=html_content,
-            title=final_title,
+        # 카테고리 미선택 경로(업로드 OFF/테스트) — 기본 '기타'(4)
+        self._finalize_and_upload(
+            category_id=4,
+            full_md_content=full_md_content,
+            title_hint=title_hint,
             labels=labels,
             sources=sources,
             message_id=message_id,
@@ -543,12 +529,16 @@ SOURCES: (출처)
             self.answer_callback_query(callback_id, "Unauthorized", show_alert=True)
             return
 
-        # Parse callback data
-        if not data.startswith("blog:"):
+        # Parse callback data (cat:<term_id>)
+        if not data.startswith("cat:"):
             self.answer_callback_query(callback_id, "Unknown action")
             return
 
-        blog_key = data.split(":", 1)[1]
+        try:
+            category_id = int(data.split(":", 1)[1])
+        except ValueError:
+            self.answer_callback_query(callback_id, "Invalid category")
+            return
 
         # Check if pending data exists
         if message_id not in self.pending_uploads:
@@ -556,10 +546,11 @@ SOURCES: (출처)
             return
 
         pending = self.pending_uploads.pop(message_id)
-        self.answer_callback_query(callback_id, "Processing started...")
+        cat_name = self.WP_CATEGORY_NAMES.get(category_id, str(category_id))
+        self.answer_callback_query(callback_id, f"Publishing to '{cat_name}'...")
         self._process_after_selection(
             question=pending["question"],
-            blog_key=blog_key,
+            category_id=category_id,
             message_id=message_id,
             mode=pending.get("mode", "deep"),
         )
@@ -567,14 +558,14 @@ SOURCES: (출처)
     def _process_after_selection(
         self,
         question: str,
-        blog_key: str,
+        category_id: int,
         message_id: int,
         mode: str = "deep",
     ) -> None:
-        """Process question after blog selection (research → Claude HTML → Upload)."""
+        """Process question after category selection (research → Claude HTML → WP 발행)."""
         opening = "🔎 Deep research 시작…" if mode == "deep" else "⚡ Asking Gemini…"
         self.edit_message_text(message_id, opening)
-        logger.info(f"Processing after selection (blog={blog_key}, mode={mode})")
+        logger.info(f"Processing after selection (category={category_id}, mode={mode})")
 
         success, content, title_hint, labels, sources, contradictions = \
             self._run_research_stage(question, message_id, mode)
@@ -589,28 +580,11 @@ SOURCES: (출처)
         sources_section = self._format_sources_section(sources)
         full_md_content = content + sources_section
 
-        # Claude HTML conversion
-        self.edit_message_text(message_id, "Claude HTML 생성 중…")
-        html_content = None
-        claude_title = ""
-        try:
-            from shared.claude_html_converter import convert_md_to_html_via_claude
-            html_content, claude_title = convert_md_to_html_via_claude(
-                full_md_content, editorial={"author": "research", "content_type": "research"}
-            )
-            logger.info(f"Claude HTML done ({len(html_content)} chars)")
-        except Exception as e:
-            logger.warning(f"Claude HTML failed: {e}")
-
-        final_title = claude_title or title_hint
-
-        # Upload (선택한 블로그 1곳에만)
-        self.edit_message_text(message_id, "Uploading to blog…")
-        self._upload_single(
-            blog_key=blog_key,
-            md_content=full_md_content,
-            html_content=html_content,
-            title=final_title,
+        # 한글 HTML 생성 → 로컬 저장(백업) → WP 발행 → 통지
+        self._finalize_and_upload(
+            category_id=category_id,
+            full_md_content=full_md_content,
+            title_hint=title_hint,
             labels=labels,
             sources=sources,
             message_id=message_id,
@@ -632,36 +606,93 @@ SOURCES: (출처)
             # 무선택 시 업로드하지 않는다(기존 default 자동 업로드 폐지).
             self.edit_message_text(
                 message_id,
-                "<b>Selection timed out</b>\n\nNo blog selected → upload cancelled.",
+                "<b>Selection timed out</b>\n\nNo category selected → publish cancelled.",
             )
+
+    def _finalize_and_upload(
+        self,
+        category_id: int,
+        full_md_content: str,
+        title_hint: str,
+        labels: list,
+        sources: list,
+        message_id: Optional[int],
+    ) -> None:
+        """발행 워크플로우 (WordPress, 한글 그대로).
+
+        1) 한글 본문 HTML 생성(저자 박스 미적용).
+        2) 저자 박스(GraceMoon) 적용.
+        3) 로컬 백업 저장(저자 박스까지 — raw 원문은 더 이상 첨부하지 않음).
+        4) 선택한 카테고리로 WordPress 발행(다이어그램 PNG·광고 제거는 업로더가 처리).
+        """
+        from shared.claude_html_converter import convert_md_to_html_via_claude
+
+        if message_id:
+            self.edit_message_text(message_id, "Claude HTML 생성 중…")
+
+        body_ko = None
+        claude_title = ""
+        try:
+            body_ko, claude_title = convert_md_to_html_via_claude(
+                full_md_content, apply_editorial_box=False
+            )
+        except Exception as e:
+            logger.warning(f"Claude HTML failed: {e}")
+        final_title = claude_title or title_hint
+
+        local_path = None
+        upload_html = None
+        if body_ko:
+            from shared.editorial import apply_editorial
+            from shared.local_archive import save_post_draft
+            # 저자 박스(GraceMoon) 적용
+            html_with_box = apply_editorial(
+                body_ko, author_key="research", content_type="research"
+            )
+            # 로컬 백업: 저자 박스까지 (raw 원문 미첨부)
+            try:
+                local_path = save_post_draft(final_title, labels, html_with_box)
+                logger.info(f"Local archive saved: {local_path}")
+            except Exception as e:
+                logger.warning(f"Local archive save failed: {e}")
+            # 업로드본: 박스까지만 (raw·광고·다이어그램은 WordPressUploader가 처리)
+            upload_html = html_with_box
+
+        if message_id:
+            self.edit_message_text(message_id, "Publishing to WordPress…")
+        self._upload_single(
+            category_id=category_id,
+            md_content=full_md_content,
+            html_content=upload_html,
+            title=final_title,
+            labels=labels,
+            sources=sources,
+            message_id=message_id,
+            local_path=local_path,
+        )
 
     def _upload_single(
         self,
-        blog_key: str,
+        category_id: int,
         md_content: str,
         html_content: Optional[str],
         title: str,
         labels: list,
         sources: list,
-        message_id: Optional[int] = None
+        message_id: Optional[int] = None,
+        local_path: Optional[str] = None,
     ) -> None:
-        """선택한 블로그 1곳에만 업로드(HTML only). default 자동 업로드 폐지."""
+        """선택한 카테고리로 WordPress에 발행(HTML)."""
+        cat_name = self.WP_CATEGORY_NAMES.get(category_id, str(category_id))
+
         if not self.upload_to_blog:
-            result_msg = f"<b>Test mode - upload skipped</b>\n\nTitle: {title}"
+            result_msg = f"<b>Test mode - publish skipped</b>\n\nTitle: {title}"
+            if local_path:
+                result_msg += f"\n<b>Local backup:</b> <code>{local_path}</code>"
             if message_id:
                 self.edit_message_text(message_id, result_msg)
             else:
                 self.send_message(result_msg)
-            return
-
-        blog = self.blogs.get(blog_key)
-        if not blog:
-            logger.error(f"Selected blog not found: {blog_key}")
-            msg = f"<b>Upload failed</b>\n\nBlog not found: {blog_key}"
-            if message_id:
-                self.edit_message_text(message_id, msg)
-            else:
-                self.send_message(msg)
             return
 
         # 공개용: HTML만 업로드(raw 마크다운 섹션은 붙이지 않음)
@@ -673,55 +704,59 @@ SOURCES: (출처)
             is_markdown = True
 
         success, url = self._do_upload(
-            blog_id=blog["id"],
+            category_id=category_id,
             title=title,
             content=upload_content,
             labels=labels,
             is_markdown=is_markdown
         )
 
-        if success:
-            result_msg = f"""<b>Blog upload complete!</b>
-
-<b>Blog:</b> {blog['name']}
-<b>Title:</b> {title}
-<b>URL:</b> {url}"""
+        # 로컬 백업 경로(있으면) 안내
+        if local_path:
+            fname = os.path.basename(local_path)
+            local_line = f"\n<b>Local backup:</b> {fname}\n<code>{local_path}</code>"
         else:
-            result_msg = f"""<b>Upload failed</b>
+            local_line = ""
 
-<b>Blog:</b> {blog['name']}
-<b>Error:</b> {url}"""
+        if success:
+            result_msg = f"""<b>WordPress 발행 완료!</b>
+
+<b>Category:</b> {cat_name}
+<b>Title:</b> {title}
+<b>URL:</b> {url}{local_line}"""
+        else:
+            result_msg = f"""<b>발행 실패</b>
+
+<b>Category:</b> {cat_name}
+<b>Error:</b> {url}{local_line}"""
 
         if message_id:
             self.edit_message_text(message_id, result_msg)
         else:
             self.send_message(result_msg)
 
-        logger.info(f"Upload to '{blog_key}' {'success' if success else 'failed'}: {title}")
+        logger.info(f"WP publish to '{cat_name}' {'success' if success else 'failed'}: {title}")
 
     def _do_upload(
         self,
-        blog_id: str,
+        category_id: int,
         title: str,
         content: str,
         labels: list,
         is_markdown: bool = False
     ) -> Tuple[bool, str]:
-        """Perform actual blog upload"""
+        """WordPress 발행 수행 (선택한 카테고리)."""
         try:
-            from shared.blogger_uploader import BloggerUploader
+            from shared.wordpress_uploader import WordPressUploader
 
-            credentials_path = os.getenv("BLOGGER_CREDENTIALS_PATH", "./credentials/blogger_credentials.json")
-            token_path = os.getenv("BLOGGER_TOKEN_PATH", "./credentials/blogger_token.pkl")
-            is_draft = os.getenv("BLOGGER_IS_DRAFT", "false").lower() == "true"
+            is_draft = os.getenv("WORDPRESS_DEFAULT_STATUS", "publish").lower() == "draft"
 
             if not labels:
-                labels = ["AI", "Gemini"]
+                labels = ["AI"]
 
-            uploader = BloggerUploader(
-                blog_id=blog_id,
-                credentials_path=credentials_path,
-                token_path=token_path
+            uploader = WordPressUploader(
+                default_categories=[category_id],
+                strip_ads_default=True,
             )
 
             result = uploader.upload_post(
@@ -738,7 +773,7 @@ SOURCES: (출처)
                 return False, result.get("message", "Upload failed")
 
         except ImportError:
-            return False, "blogger_uploader module not found"
+            return False, "wordpress_uploader module not found"
         except Exception as e:
             return False, f"Upload error: {str(e)}"
 
@@ -747,11 +782,11 @@ SOURCES: (출처)
         cmd = command.split()[0].lower()
 
         if cmd == "/start":
-            self.send_message("""<b>Gemini Blogger Bot</b>
+            self.send_message("""<b>GraceMoon Research Bot</b>
 
 Enter a question and:
-1. Gemini CLI generates response
-2. Auto-upload to Google Blogger
+1. Deep research (Gemini + Claude 검증)
+2. Select category → publish to WordPress
 3. Notification via Telegram
 
 <b>Commands:</b>
@@ -769,16 +804,14 @@ Examples:
 
         elif cmd == "/status":
             upload_status = "Enabled" if self.upload_to_blog else "Test mode"
-            blogs_list = "\n".join([f"  - {k}: {v['name']}" for k, v in self.blogs.items()])
+            cats = ", ".join(name for name, _ in self.WP_CATEGORY_CHOICES)
             pending_count = len(self.pending_uploads)
             self.send_message(f"""<b>Bot Status</b>
 - Default mode: Deep research (multi-round)
 - Quick opt-out: {self.quick_command}
 - Deep max rounds: {self.research_max_rounds}
-- Blog upload: {upload_status}
-- Blogs configured: {len(self.blogs)}
-{blogs_list}
-- Default blog: {self.default_blog_key}
+- WordPress publish: {upload_status}
+- Categories: {cats}
 - Selection timeout: {self.selection_timeout // 60} min
 - Pending selections: {pending_count}
 - Last update ID: {self.last_update_id}""")
@@ -795,15 +828,14 @@ Examples:
     def run(self) -> None:
         """Bot main loop"""
         logger.info("=" * 50)
-        logger.info("Telegram Gemini Blogger Bot started")
-        logger.info(f"Blogger upload: {'Enabled' if self.upload_to_blog else 'Disabled'}")
-        logger.info(f"Blogs configured: {len(self.blogs)} ({', '.join(self.blogs.keys())})")
-        logger.info(f"Default blog: {self.default_blog_key}")
+        logger.info("Telegram Research Bot (WordPress) started")
+        logger.info(f"WordPress publish: {'Enabled' if self.upload_to_blog else 'Disabled'}")
+        logger.info(f"Categories: {', '.join(n for n, _ in self.WP_CATEGORY_CHOICES)}")
         logger.info(f"Selection timeout: {self.selection_timeout}s")
         logger.info("=" * 50)
 
         logger.info("Sending startup message...")
-        self.send_message("Gemini Blogger bot started! Enter your question.")
+        self.send_message("Research bot started! Enter your question.")
         logger.info("Startup message sent, starting polling...")
 
         loop_errors = 0
@@ -846,7 +878,7 @@ Examples:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Telegram Gemini Blogger Bot")
+    parser = argparse.ArgumentParser(description="Telegram Research Bot (WordPress)")
     parser.add_argument("--test", action="store_true", help="Test mode (skip blog upload)")
     args = parser.parse_args()
 

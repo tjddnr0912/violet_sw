@@ -139,11 +139,11 @@ class NewsBot:
                         blog_url = None
                         blog_error = None
 
-                        # Step 5: Upload to Google Blogger (if enabled)
+                        # Step 5: Publish to WordPress (if enabled)
                         if getattr(self.config, 'BLOGGER_ENABLED', False):
-                            logger.info("Step 5: Uploading to Google Blogger...")
+                            logger.info("Step 5: WordPress 발행 중...")
                             try:
-                                from shared.blogger_uploader import BloggerUploader
+                                from shared.wordpress_uploader import WordPressUploader
 
                                 current_date = datetime.now().strftime("%Y년 %m월 %d일")
                                 post_title = f"{current_date} 뉴스 요약"
@@ -174,10 +174,9 @@ class NewsBot:
                                         upload_content = blog_summary
                                         is_markdown = True
 
-                                with BloggerUploader(
-                                    blog_id=self.config.BLOGGER_BLOG_ID,
-                                    credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
-                                    token_path=self.config.BLOGGER_TOKEN_PATH
+                                with WordPressUploader(
+                                    default_categories=[5],  # 뉴스
+                                    strip_ads_default=True,
                                 ) as uploader:
                                     upload_result = uploader.upload_post(
                                         title=post_title,
@@ -188,21 +187,21 @@ class NewsBot:
                                     )
 
                                     if upload_result['success']:
-                                        logger.info(f"Blogger upload success: {upload_result.get('url', 'N/A')}")
+                                        logger.info(f"WordPress 발행 성공: {upload_result.get('url', 'N/A')}")
                                         blog_upload_success = True
                                         blog_url = upload_result.get('url')
                                     else:
-                                        logger.warning(f"Blogger upload failed: {upload_result['message']}")
+                                        logger.warning(f"WordPress 발행 실패: {upload_result['message']}")
                                         blog_error = upload_result['message']
 
                             except ImportError:
-                                blog_error = "blogger_uploader not found"
-                                logger.error("blogger_uploader not found. Run: pip install google-api-python-client google-auth-oauthlib")
+                                blog_error = "wordpress_uploader not found"
+                                logger.error("wordpress_uploader not found. Run: pip install requests")
                             except Exception as e:
                                 blog_error = str(e)
-                                logger.error(f"Blogger upload error: {e}")
+                                logger.error(f"WordPress 발행 오류: {e}")
                         else:
-                            logger.info("Blogger upload disabled (BLOGGER_ENABLED=false)")
+                            logger.info("WordPress 발행 비활성화 (BLOGGER_ENABLED=false)")
 
                         # Step 6: Send Telegram notification (if enabled)
                         if getattr(self.config, 'TELEGRAM_ENABLED', False):
@@ -295,12 +294,12 @@ class NewsBot:
                 logger.error(f"Failed to save weekly summary: {save_result['message']}")
                 return
 
-            # Step 4: Upload to Blogger (if enabled)
+            # Step 4: WordPress 발행 (if enabled)
             blog_url = None
             if getattr(self.config, 'BLOGGER_ENABLED', False):
-                logger.info("Step 4: Uploading weekly summary to Blogger...")
+                logger.info("Step 4: 주간 요약 WordPress 발행 중...")
                 try:
-                    from shared.blogger_uploader import BloggerUploader
+                    from shared.wordpress_uploader import WordPressUploader
 
                     post_title = f"Weekly News Summary ({start_date_str} ~ {end_date_str})"
 
@@ -330,10 +329,9 @@ class NewsBot:
                             upload_content = weekly_summary
                             is_markdown = True
 
-                    with BloggerUploader(
-                        blog_id=self.config.BLOGGER_BLOG_ID,
-                        credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
-                        token_path=self.config.BLOGGER_TOKEN_PATH
+                    with WordPressUploader(
+                        default_categories=[5],  # 뉴스
+                        strip_ads_default=True,
                     ) as uploader:
                         upload_result = uploader.upload_post(
                             title=post_title,
@@ -347,10 +345,10 @@ class NewsBot:
                             blog_url = upload_result.get('url')
                             logger.info(f"Weekly summary uploaded: {blog_url}")
                         else:
-                            logger.warning(f"Blogger upload failed: {upload_result['message']}")
+                            logger.warning(f"WordPress 발행 실패: {upload_result['message']}")
 
                 except Exception as e:
-                    logger.error(f"Blogger upload error: {e}")
+                    logger.error(f"WordPress 발행 오류: {e}")
 
             # Step 5: Send Telegram notification (if enabled)
             if getattr(self.config, 'TELEGRAM_ENABLED', False):
@@ -425,14 +423,14 @@ class NewsBot:
                 logger.error(f"Failed to save monthly summary: {save_result['message']}")
                 return
 
-            # Step 4: Upload to Blogger (if enabled)
+            # Step 4: WordPress 발행 (if enabled)
             blog_upload_success = False
             blog_url = None
 
             if getattr(self.config, 'BLOGGER_ENABLED', False):
-                logger.info("Step 4: Uploading monthly summary to Blogger...")
+                logger.info("Step 4: 월간 요약 WordPress 발행 중...")
                 try:
-                    from shared.blogger_uploader import BloggerUploader
+                    from shared.wordpress_uploader import WordPressUploader
 
                     post_title = f"Monthly News Summary - {last_year}/{last_month}"
 
@@ -462,10 +460,9 @@ class NewsBot:
                             upload_content = monthly_summary
                             is_markdown = True
 
-                    with BloggerUploader(
-                        blog_id=self.config.BLOGGER_BLOG_ID,
-                        credentials_path=self.config.BLOGGER_CREDENTIALS_PATH,
-                        token_path=self.config.BLOGGER_TOKEN_PATH
+                    with WordPressUploader(
+                        default_categories=[5],  # 뉴스
+                        strip_ads_default=True,
                     ) as uploader:
                         upload_result = uploader.upload_post(
                             title=post_title,
@@ -480,10 +477,10 @@ class NewsBot:
                             blog_upload_success = True
                             blog_url = upload_result.get('url')
                         else:
-                            logger.warning(f"Blogger upload failed: {upload_result['message']}")
+                            logger.warning(f"WordPress 발행 실패: {upload_result['message']}")
 
                 except Exception as e:
-                    logger.error(f"Blogger upload error: {e}")
+                    logger.error(f"WordPress 발행 오류: {e}")
 
             # Step 5: Cleanup 2-month-old folders (only after successful blog upload)
             if blog_upload_success:

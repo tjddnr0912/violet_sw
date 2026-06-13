@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-06-12: 전 봇 Blogger → WordPress(grace-moon.com) 발행 전환
+
+- 신규 `shared/wordpress_uploader.py` — WordPress REST 발행(App Password + HTTP Basic Auth). 카테고리 매핑(`CATEGORY_IDS` 11종), 태그 생성, mermaid→PNG(kroki), AdSense/raw strip, 옛 `BloggerUploader.upload_post` 드롭인 호환 어댑터.
+- 뉴스·버핏·섹터·부동산·텔레그램 봇 발행처를 WordPress로 교체. 텔레그램은 발행 시 **WordPress 카테고리 버튼 선택(8종)**, 영문 변환·raw 첨부 폐지(전부 한글 그대로).
+- `shared/blogger_uploader.py` **삭제**(504줄). `shared/__init__.py`에서 `BloggerUploader` export 제거.
+- `claude_html_converter.py`: 영문 변환(`convert_ko_html_to_english`)·raw 첨부(`append_raw_source_details`)·`translate_markdown_to_english`·AdSense 인라인 삽입 **전부 제거**. `blogger-html` 스킬에서 AdSense 섹션 제거.
+- 저자 박스 → **GraceMoon**(grace-moon.com), `config/authors.json` 전 페르소나 갱신.
+- 신규 `shared/local_archive.py` — 발행 시 한글본 로컬 백업(`~/blog_posts/오늘날짜/`).
+- 터미널 출력 legacy 문구(Blogger/blogspot/Tistory)를 WordPress 기준으로 갱신.
+- 라이브 발행 테스트: 부동산봇(id 55)·뉴스봇(id 56) 정상.
+
 ## 2026-06-08: 애드센스 편집 레이어(C1·C3·C4) + 텔레그램 단일 블로그 업로드
 
 - **배경**: Blogger 블로그가 애드센스 심사에서 반복 거부 — 원인은 플랫폼이 아니라 "AI 무편집 대량 생성물(low value)". 구글 공식 입장은 "AI 사용≠위반, 품질이 기준". 콘텐츠에 E-E-A-T·고유 데이터 신호를 주입하는 편집 레이어 도입. 설계=[docs/ADSENSE_EDITORIAL_LAYER.md].

@@ -23,7 +23,7 @@ from realestate_bot import config, fetcher, indicators, commentary, digest, mcp_
 from realestate_bot.regions_extra import group_of
 from realestate_bot.store import RealEstateStore
 from realestate_bot.detector import classify
-from shared.blogger_uploader import BloggerUploader
+from shared.wordpress_uploader import WordPressUploader
 from shared.telegram_notifier import TelegramNotifier
 from shared.claude_html_converter import convert_md_to_html_via_claude
 
@@ -185,10 +185,10 @@ class RealEstateBot:
     def __init__(self, test_mode: bool = False):
         self.test_mode = test_mode
         self.store = RealEstateStore()
-        self.blogger = None if test_mode else BloggerUploader(
-            blog_id=config.REALESTATE_BLOGGER_BLOG_ID,
-            credentials_path=os.getenv("BLOGGER_CREDENTIALS_PATH", "./credentials/blogger_credentials.json"),
-            token_path=os.getenv("BLOGGER_TOKEN_PATH", "./credentials/blogger_token.pkl"))
+        # WordPress(grace-moon.com) 발행 — 부동산봇 → '부동산'(8)
+        self.blogger = None if test_mode else WordPressUploader(
+            default_categories=[8],
+            strip_ads_default=True)
         self.telegram = (TelegramNotifier(os.getenv("TELEGRAM_BOT_TOKEN", ""),
                                           os.getenv("TELEGRAM_CHAT_ID", ""))
                          if TELEGRAM_ENABLED else None)

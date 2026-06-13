@@ -2,7 +2,7 @@ be brief
 
 # CLAUDE.md - News + Buffett + Sector + 부동산 + Telegram Gemini Bot
 
-뉴스 수집 → AI 분석 → Blogger 업로드 → Telegram 알림 자동화 봇.
+뉴스 수집 → AI 분석 → WordPress(grace-moon.com) 발행 → Telegram 알림 자동화 봇.
 
 ## 실행
 
@@ -27,36 +27,40 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 |------|------|
 | `investment_bot.py` | 통합 오케스트레이터 (뉴스+버핏+섹터 스케줄 관리) |
 | `buffett_bot.py` | 버핏/멍거 관점 일일 투자 분석 (Claude CLI) |
-| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. **업로드=선택한 블로그 1곳만(default 자동 업로드 폐지), 무선택 타임아웃 시 취소** |
+| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. 발행 시 **WordPress 카테고리를 버튼으로 선택**(무선택 타임아웃 시 취소). 발행 워크플로우: 한글 HTML 생성→한글본을 `~/blog_posts/오늘날짜/`에 로컬 백업(`local_archive`)→선택 카테고리로 **WordPress(grace-moon.com) 발행**(전 카테고리 한글 그대로. 영문 변환·raw 첨부·블로그스팟 폐지)→텔레그램에 로컬경로+발행 URL 통지 |
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
 | `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
-| `shared/` | HTML 변환, Telegram API, Blogger 업로드, Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (애드센스 편집 레이어: 저자 박스+면책/투명성+고유 데이터 표. Blogger 발행물 품질↑→수동 Tistory 복붙) |
+| `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·mermaid→PNG(kroki)·AdSense/raw strip·Blogger 드롭인 호환 어댑터), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표), **local_archive** (한글본을 `~/blog_posts/오늘날짜/`에 제목→태그→내용 순으로 로컬 백업) |
 
 ## 핵심 참조
 
 | 항목 | 값 |
 |------|-----|
 | AI | Gemini + Claude (분석, HTML 변환, 스킬 파일 참조) |
-| 출력 | Blogger (OgusInvest 등 7개 블로그) |
+| 출력 | **WordPress (grace-moon.com)** — 단일 사이트. 카테고리 11종(투자2/기술3/기타4/뉴스5/일일시황6/섹터7/부동산8/SoC9/SW10/AI11) |
 | 뉴스봇 | Daily 06:00 (orchestrator + 5차원 게이트), Weekly 일요일 07:00, Monthly 1일 07:30. `news_bot/orchestrator.py`가 균형/신선도/다양성/출처신뢰/글로벌균형 검증 + Gemini CLI 갭필 |
 | 버핏봇 | 월~금 06:30 (뉴스 기반, Claude CLI 분석) |
 | 섹터봇 | 일요일 12:00~18:40 (11개 섹터, 40분 간격), 19:20 텔레그램 알림, 19:40 종합 보고서. `sector_bot/orchestrator.py`가 5차원 검증 게이트 + 갭필 + 종합 게이트 수행 |
-| 부동산봇 | 토 01:00 전국 119시군구 주간 디제스트(서울 상세 + 경기·6대광역시·세종 권역 요약) → Blogger(OgusInvest, `SECTOR_BLOGGER_BLOG_ID`)+Telegram. MOLIT 실거래 직접 MCP(Claude 0콜), 숫자=코드·해석=Gemini·HTML=Claude |
+| 부동산봇 | 토 01:00 전국 119시군구 주간 디제스트(서울 상세 + 경기·6대광역시·세종 권역 요약) → **WordPress(부동산 카테고리)**+Telegram. MOLIT 실거래 직접 MCP(Claude 0콜), 숫자=코드·해석=Gemini·HTML=Claude |
 
 ## 환경변수 (.env)
 
 ```bash
 GEMINI_API_KEY=
-BLOGGER_BLOG_ID=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
-BLOG_LIST='[{"key":"...","id":"...","name":"..."}, ...]'
-DEFAULT_BLOG=brave_ogu           # 단일 블로그 모드 대상. (텔레그램은 더 이상 default 자동 업로드 안 함)
-BLOG_SELECTION_TIMEOUT=180
-EDITORIAL_ENABLED=true           # 편집 레이어(저자 박스+면책+데이터 표) on/off. default true
+# === WordPress (grace-moon.com) REST 자동발행 ===
+WORDPRESS_URL=https://grace-moon.com
+WORDPRESS_USER=                  # WP 로그인 ID
+WORDPRESS_APP_PASSWORD=          # 애플리케이션 비밀번호(공백 자동 제거). 절대 Git 커밋 금지
+WORDPRESS_DEFAULT_STATUS=publish # publish | draft
+# KROKI_URL=https://kroki.io     # mermaid→PNG 렌더 서버 override (default kroki.io)
+BLOGGER_ENABLED=true             # 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). false면 발행 스킵
+BLOG_SELECTION_TIMEOUT=180       # 텔레그램 카테고리 선택 타임아웃(초). 무선택 시 발행 취소
+EDITORIAL_ENABLED=true           # 편집 레이어(저자 박스 GraceMoon+면책+데이터 표) on/off. default true
 # EDITORIAL_AUTHOR / EDITORIAL_CONTENT_TYPE  # 호출부 미지정 시 기본 author/타입 override. 저자 페르소나=config/authors.json
-SECTOR_BLOGGER_BLOG_ID=9115231004981625966
+TISTORY_ARCHIVE_DIR=~/blog_posts # 발행 시 한글본 로컬 백업 루트(오늘날짜 하위폴더). default ~/blog_posts
 SECTOR_GEMINI_MODEL=gemini-3.5-flash             # 섹터 분석 primary(풍성한 분량). default 3.5-flash
 SECTOR_GEMINI_FALLBACK_MODELS=gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash  # 3.5-flash 쿼터 소진 시 순차. flash-lite 우선
 GEMINI_MODEL=gemini-3.1-flash-lite               # default primary model (override per-caller via env)
@@ -81,11 +85,11 @@ AGY_SEARCH_TIMEOUT=300          # agy 단계별 timeout(초). 전부 실패 시 
 | 섹터 종합 보고서 | `sector-comprehensive/SKILL.md` |
 | 버핏봇 분석 | `buffett/SKILL.md` |
 | 텔레그램 Q&A | `telegram-qa/SKILL.md` |
-| HTML 변환 (공유) | `blogger-html/SKILL.md` |
+| HTML 변환 (공유) | `blogger-html/SKILL.md` (WordPress용 한글 HTML. AdSense 삽입 제거됨) |
 
 ## 트러블슈팅 핵심
 
-Gemini 429/503 / Claude CLI empty / Blogger OAuth / Telegram HTML parse / Sector resume·state 손상 — 각 항목은 6필드 + Claude 진단 미스 기록 → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Gemini 429/503 / Claude CLI empty / WordPress REST 발행·검증(Cafe24 캐시) / Telegram HTML parse / Sector resume·state 손상 — 각 항목은 6필드 + Claude 진단 미스 기록 → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## 상세 문서
 
