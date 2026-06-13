@@ -26,9 +26,10 @@
 
 1. **한글 본문 HTML 생성** — `convert_md_to_html_via_claude(..., apply_editorial_box=False)`. 저자 박스는 다음 단계에서 따로 적용.
 2. **저자 박스(GraceMoon) 적용** — `shared.editorial.apply_editorial(author_key="research", content_type="research")`. 박스 이름=GraceMoon, 링크=grace-moon.com (`config/authors.json`).
-3. **한글본 로컬 백업** — `shared.local_archive.save_post_draft`로 `~/blog_posts/오늘날짜/HHMMSS_제목.txt`에 **제목→태그→내용**(저자 박스 포함) 순 저장. 날짜는 호출 시점 `datetime.now()`로 매번 재확인. raw 원문은 더 이상 첨부하지 않음.
-4. **WordPress 발행** — `_upload_single`→`_do_upload`가 `shared.wordpress_uploader.WordPressUploader`로 선택 카테고리에 발행. **mermaid→PNG(kroki)·AdSense/raw strip은 업로더가 처리**(본문엔 박스까지만 넣고 넘김).
-5. **텔레그램 통지** — 완료 메시지에 발행 URL + 로컬 백업 경로/파일명 포함.
+3. **WordPress 발행** — `_upload_single`→`_do_upload`가 `shared.wordpress_uploader.WordPressUploader`로 선택 카테고리에 발행. **mermaid→PNG(kroki)·AdSense/raw strip은 업로더가 처리**(본문엔 박스까지만 넣고 넘김).
+4. **텔레그램 통지** — 완료 메시지에 발행 URL 포함.
+
+> 발행은 WordPress 한 곳으로만 (로컬 백업·메시지 내 백업 경로 없음).
 
 ## WordPress 카테고리 (선택 버튼 8종)
 
@@ -50,7 +51,7 @@
 1. "Processing: Asking Gemini..."
 2. "Claude HTML 생성 중…"
 3. "Publishing to WordPress…"
-4. 완료 메시지 (발행 URL + 로컬 백업 경로 포함)
+4. 완료 메시지 (발행 URL 포함)
 
 ## 최소 글자 수
 

@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-06-13: WordPress SEO 보강 + 텔레그램 로컬 백업 폐지
+
+- 업로더 SEO 헬퍼(`create_post` 자동 적용): `slugify()`(한글 제목→ASCII 슬러그, 로마자 표기), `auto_excerpt()`(본문→메타 description), `demote_body_h1()`(본문 `<h1>`→`<h2>`, Rank Math Single-H1).
+- 버핏봇 제목·태그에서 "버핏의" 제거 → `{날짜} 투자 노트` / 태그 `투자노트`.
+- 텔레그램 로컬 백업(`~/blog_posts/`) 폐지: `shared/local_archive.py`·테스트 삭제, 발행 완료 메시지에서 백업 경로 제거. 발행은 WordPress 한 곳으로만.
+- `tests/test_wordpress_helpers.py` 9건 추가.
+
 ## 2026-06-12: 전 봇 Blogger → WordPress(grace-moon.com) 발행 전환
 
 - 신규 `shared/wordpress_uploader.py` — WordPress REST 발행(App Password + HTTP Basic Auth). 카테고리 매핑(`CATEGORY_IDS` 11종), 태그 생성, mermaid→PNG(kroki), AdSense/raw strip, 옛 `BloggerUploader.upload_post` 드롭인 호환 어댑터.
@@ -11,7 +18,6 @@
 - `shared/blogger_uploader.py` **삭제**(504줄). `shared/__init__.py`에서 `BloggerUploader` export 제거.
 - `claude_html_converter.py`: 영문 변환(`convert_ko_html_to_english`)·raw 첨부(`append_raw_source_details`)·`translate_markdown_to_english`·AdSense 인라인 삽입 **전부 제거**. `blogger-html` 스킬에서 AdSense 섹션 제거.
 - 저자 박스 → **GraceMoon**(grace-moon.com), `config/authors.json` 전 페르소나 갱신.
-- 신규 `shared/local_archive.py` — 발행 시 한글본 로컬 백업(`~/blog_posts/오늘날짜/`).
 - 터미널 출력 legacy 문구(Blogger/blogspot/Tistory)를 WordPress 기준으로 갱신.
 - 라이브 발행 테스트: 부동산봇(id 55)·뉴스봇(id 56) 정상.
 

@@ -278,7 +278,7 @@ class BuffettBot:
             output_dir = os.path.join(BUFFETT_OUTPUT_DIR, date_str)
             os.makedirs(output_dir, exist_ok=True)
 
-            title = f"{today.strftime('%Y-%m-%d')} 버핏의 투자 노트"
+            title = f"{today.strftime('%Y-%m-%d')} 투자 노트"
             report_content = f"""## {title}
 
 > 작성일: {today.strftime('%Y년 %m월 %d일')}
@@ -299,7 +299,7 @@ class BuffettBot:
                 logger.info("Converting to HTML (chunked)...")
                 html_content = convert_long_md_to_html(report_content)
 
-                labels = ['버핏의 투자노트', '일간', '투자정보']
+                labels = ['투자노트', '일간', '투자정보']
 
                 upload_result = self.blogger.upload_post(
                     title=title,

@@ -458,7 +458,7 @@ class WordPressUploader:
 
 
 def parse_archive_file(path: str) -> Dict:
-    """local_archive 형식(제목/태그/빈줄/HTML) 파일을 파싱.
+    """제목/태그/빈줄/HTML 형식 백업 .txt 파일을 파싱(일회성 마이그레이션용).
 
     Returns: {"title": str, "tags": [..], "content": html}
     """

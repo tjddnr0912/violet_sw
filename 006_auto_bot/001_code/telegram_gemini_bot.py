@@ -640,23 +640,13 @@ SOURCES: (출처)
             logger.warning(f"Claude HTML failed: {e}")
         final_title = claude_title or title_hint
 
-        local_path = None
         upload_html = None
         if body_ko:
             from shared.editorial import apply_editorial
-            from shared.local_archive import save_post_draft
-            # 저자 박스(GraceMoon) 적용
-            html_with_box = apply_editorial(
+            # 저자 박스(GraceMoon) 적용 (raw·광고·다이어그램은 WordPressUploader가 처리)
+            upload_html = apply_editorial(
                 body_ko, author_key="research", content_type="research"
             )
-            # 로컬 백업: 저자 박스까지 (raw 원문 미첨부)
-            try:
-                local_path = save_post_draft(final_title, labels, html_with_box)
-                logger.info(f"Local archive saved: {local_path}")
-            except Exception as e:
-                logger.warning(f"Local archive save failed: {e}")
-            # 업로드본: 박스까지만 (raw·광고·다이어그램은 WordPressUploader가 처리)
-            upload_html = html_with_box
 
         if message_id:
             self.edit_message_text(message_id, "Publishing to WordPress…")
@@ -668,7 +658,6 @@ SOURCES: (출처)
             labels=labels,
             sources=sources,
             message_id=message_id,
-            local_path=local_path,
         )
 
     def _upload_single(
@@ -680,15 +669,12 @@ SOURCES: (출처)
         labels: list,
         sources: list,
         message_id: Optional[int] = None,
-        local_path: Optional[str] = None,
     ) -> None:
         """선택한 카테고리로 WordPress에 발행(HTML)."""
         cat_name = self.WP_CATEGORY_NAMES.get(category_id, str(category_id))
 
         if not self.upload_to_blog:
             result_msg = f"<b>Test mode - publish skipped</b>\n\nTitle: {title}"
-            if local_path:
-                result_msg += f"\n<b>Local backup:</b> <code>{local_path}</code>"
             if message_id:
                 self.edit_message_text(message_id, result_msg)
             else:
@@ -711,24 +697,17 @@ SOURCES: (출처)
             is_markdown=is_markdown
         )
 
-        # 로컬 백업 경로(있으면) 안내
-        if local_path:
-            fname = os.path.basename(local_path)
-            local_line = f"\n<b>Local backup:</b> {fname}\n<code>{local_path}</code>"
-        else:
-            local_line = ""
-
         if success:
             result_msg = f"""<b>WordPress 발행 완료!</b>
 
 <b>Category:</b> {cat_name}
 <b>Title:</b> {title}
-<b>URL:</b> {url}{local_line}"""
+<b>URL:</b> {url}"""
         else:
             result_msg = f"""<b>발행 실패</b>
 
 <b>Category:</b> {cat_name}
-<b>Error:</b> {url}{local_line}"""
+<b>Error:</b> {url}"""
 
         if message_id:
             self.edit_message_text(message_id, result_msg)
