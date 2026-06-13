@@ -38,7 +38,7 @@ from sector_bot import (
 from sector_bot.orchestrator import run_sector_research, OrchestrationResult
 from shared.wordpress_uploader import WordPressUploader
 from shared.telegram_notifier import TelegramNotifier
-from shared.claude_html_converter import convert_md_to_html_via_claude
+from shared.claude_html_converter import convert_md_to_html_via_claude, _maybe_apply_editorial
 
 # Load environment variables
 load_dotenv(override=True)
@@ -412,8 +412,9 @@ class WeeklySectorBot:
         for i, chunk in enumerate(chunks, 1):
             logger.info(f"Converting chunk {i}/{len(chunks)} ({len(chunk)} chars)...")
             try:
+                # 청크엔 저자 박스 미적용 — 합친 뒤 한 번만 적용(중복 방지)
                 html, _ = convert_md_to_html_via_claude(
-                    chunk, editorial={"author": "sector", "content_type": "sector"}
+                    chunk, apply_editorial_box=False
                 )
 
                 # 변환 결과 검증 (원본의 30% 미만이면 실패)
@@ -443,7 +444,10 @@ class WeeklySectorBot:
         else:
             logger.warning(f"Some chunks fell back to markdown ({len(combined)} chars)")
 
-        return combined.strip()
+        # 저자 박스(GraceMoon)는 합친 결과 끝에 한 번만 적용 (청크 중복 방지)
+        return _maybe_apply_editorial(
+            combined.strip(), "", {"author": "sector", "content_type": "sector"}
+        )
 
     def _scheduled_comprehensive_report(self) -> None:
         """스케줄된 종합 보고서 생성"""

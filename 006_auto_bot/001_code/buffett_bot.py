@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from shared.wordpress_uploader import WordPressUploader
 from shared.telegram_notifier import TelegramNotifier
-from shared.claude_html_converter import convert_md_to_html_via_claude
+from shared.claude_html_converter import convert_md_to_html_via_claude, _maybe_apply_editorial
 
 # Load environment variables
 load_dotenv(override=True)
@@ -206,8 +206,9 @@ def convert_long_md_to_html(md_content: str) -> str:
     for i, chunk in enumerate(chunks, 1):
         logger.info(f"Converting chunk {i}/{len(chunks)} ({len(chunk)} chars)...")
         try:
+            # 청크엔 저자 박스 미적용 — 합친 뒤 한 번만 적용(중복 방지)
             html, _ = convert_md_to_html_via_claude(
-                chunk, editorial={"author": "buffett", "content_type": "buffett"}
+                chunk, apply_editorial_box=False
             )
             if len(html) < len(chunk) * 0.3:
                 logger.warning(f"Chunk {i} HTML too short, using markdown")
@@ -223,7 +224,10 @@ def convert_long_md_to_html(md_content: str) -> str:
     for html, chunk in zip(html_parts, chunks):
         combined += (html if html else chunk) + "\n\n"
 
-    return combined.strip()
+    # 저자 박스(GraceMoon)는 합친 결과 끝에 한 번만 적용
+    return _maybe_apply_editorial(
+        combined.strip(), "", {"author": "buffett", "content_type": "buffett"}
+    )
 
 
 class BuffettBot:

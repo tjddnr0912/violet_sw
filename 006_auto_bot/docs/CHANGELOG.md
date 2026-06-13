@@ -9,6 +9,7 @@
 - 업로더 SEO 헬퍼(`create_post` 자동 적용): `slugify()`(한글 제목→ASCII 슬러그, 로마자 표기), `auto_excerpt()`(본문→메타 description), `demote_body_h1()`(본문 `<h1>`→`<h2>`, Rank Math Single-H1).
 - 버핏봇 제목·태그에서 "버핏의" 제거 → `{날짜} 투자 노트` / 태그 `투자노트`.
 - 텔레그램 로컬 백업(`~/blog_posts/`) 폐지: `shared/local_archive.py`·테스트 삭제, 발행 완료 메시지에서 백업 경로 제거. 발행은 WordPress 한 곳으로만.
+- **버핏·섹터 저자 박스 중복 버그 수정**: 청크 변환(`convert_long_md_to_html`/`_convert_long_md_to_html`)이 청크마다 박스를 붙여 2청크 이상이면 박스가 글 중간에 중복되던 문제 → 청크엔 `apply_editorial_box=False`, 합친 뒤 `_maybe_apply_editorial`로 1회만 적용. 회귀 테스트 `tests/test_editorial_single_box.py` 추가.
 - `tests/test_wordpress_helpers.py` 9건 추가.
 
 ## 2026-06-12: 전 봇 Blogger → WordPress(grace-moon.com) 발행 전환
