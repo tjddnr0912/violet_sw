@@ -3138,15 +3138,26 @@ impl<'t, 's> Parser<'t, 's> {
     /// `expect`. (min,max) carry the bound; max==Some(min) is the single-count
     /// form.
     fn parse_sequence(&mut self) -> Sequence {
-        let first = self.parse_seq_primary();
-        // `cond throughout seq` (slice S7) — `throughout` is a contextual keyword
-        // (only special here); its left operand must be a boolean leaf, its right
-        // operand a full sequence (looser than `##`, so `g throughout a ##2 c` is
+        // `##` concatenation (tightest of the binary sequence ops).
+        let lhs = self.parse_seq_concat();
+        // `seq1 within seq2` (slice S9) — contextual keyword, binary over `##`
+        // chains, RHS a full sequence.
+        if self.at_ident_kw("within") {
+            self.bump(); // `within`
+            let rhs = self.parse_sequence();
+            return Sequence::Within {
+                seq1: Box::new(lhs),
+                seq2: Box::new(rhs),
+            };
+        }
+        // `cond throughout seq` (slice S7) — `throughout` is a contextual keyword;
+        // its left operand must be a boolean leaf, its right operand a full
+        // sequence (looser than `##`, so `g throughout a ##2 c` is
         // `g throughout (a ##2 c)`).
         if self.at_ident_kw("throughout") {
             self.bump(); // `throughout`
             let seq = self.parse_sequence();
-            return match first {
+            return match lhs {
                 Sequence::Boolean(cond) => Sequence::Throughout {
                     cond: Box::new(cond),
                     seq: Box::new(seq),
@@ -3157,7 +3168,12 @@ impl<'t, 's> Parser<'t, 's> {
                 }
             };
         }
-        let mut lhs = first;
+        lhs
+    }
+
+    /// `##`-concatenation chain over sequence primaries (left-associative).
+    fn parse_seq_concat(&mut self) -> Sequence {
+        let mut lhs = self.parse_seq_primary();
         while self.peek() == Some(TokenKind::HashHash) {
             self.bump(); // `##`
             let (min, max) = self.parse_seq_delay();
@@ -3905,6 +3921,10 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             Sequence::Throughout { cond, seq } => {
                 fix_expr(cond, from, to);
                 fix_sequence(seq, from, to);
+            }
+            Sequence::Within { seq1, seq2 } => {
+                fix_sequence(seq1, from, to);
+                fix_sequence(seq2, from, to);
             }
         }
     }
@@ -5281,15 +5301,43 @@ endmodule
         }
     }
 
+    // S15j (S9). `seq1 within seq2` parses to Sequence::Within (binary over `##`
+    // chains: `a within b ##2 c` = `a within (b ##2 c)`).
+    #[test]
+    fn concurrent_assert_within_parses() {
+        let (su, errs) = p(
+            "module m;\ninitial assert property (@(posedge clk) a within b ##2 c |-> d);\nendmodule",
+        );
+        assert!(errs.is_empty(), "within must parse: {errs:?}");
+        let m = first_module(su.as_ref().unwrap());
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert { antecedent, .. } = &*pb.body else {
+            panic!("expected ConcurrentAssert")
+        };
+        let Sequence::Within { seq2, .. } = antecedent else {
+            panic!("expected Sequence::Within, got {antecedent:?}")
+        };
+        assert!(
+            matches!(&**seq2, Sequence::Delay { min: 2, .. }),
+            "within RHS must be `b ##2 c`, got {seq2:?}"
+        );
+    }
+
     // Still-deferred sequence forms (unbounded REPEAT `[*m:$]`, empty `[*0]`,
-    // `within`, goto/nonconsec RANGES) stay LOUD — they pin the slice-S8
-    // boundary (`[->n]`/`[=n]` single counts are now supported, above).
+    // goto/nonconsec RANGES) stay LOUD — they pin the slice-S9 boundary
+    // (`within` is now supported, above).
     #[test]
     fn concurrent_assert_deferred_seq_forms_are_loud() {
         for src in [
             "module m;\ninitial assert property (@(posedge clk) a[*1:$] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a[*0] |-> b);\nendmodule",
-            "module m;\ninitial assert property (@(posedge clk) a within b |-> c);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a ##1 b[->1:2] |-> c);\nendmodule",
         ] {
             let (_, errs) = p(src);

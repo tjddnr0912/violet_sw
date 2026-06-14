@@ -613,6 +613,13 @@ pub enum Sequence {
     /// clock of `seq`'s match window. Lowered by ANDing `cond` into the seed and
     /// every shift stage of the synthesized pipeline (bounded inner only).
     Throughout { cond: Box<Expr>, seq: Box<Sequence> },
+    /// `seq1 within seq2` (slice S9) — `seq1` must match entirely inside a match
+    /// of `seq2`. Lowered (bounded both) to `match(seq2) & OR over the seq2
+    /// window of registered `match(seq1)`. Top-level antecedent only.
+    Within {
+        seq1: Box<Sequence>,
+        seq2: Box<Sequence>,
+    },
 }
 /// SVA repetition operator (slices S4/S5/S8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]

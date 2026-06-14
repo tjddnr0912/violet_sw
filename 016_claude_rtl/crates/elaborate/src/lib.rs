@@ -593,6 +593,31 @@ fn sva_one(sp: ast::Span) -> ast::Expr {
     }
 }
 
+/// The 1-bit constant `1'b0` — a never-matching antecedent (e.g. a `within`
+/// whose seq1 is longer than every seq2 window).
+fn sva_zero(sp: ast::Span) -> ast::Expr {
+    ast::Expr {
+        kind: ast::ExprKind::IntLit {
+            kind: ast::IntLitKind::Sized,
+            raw: "1'b0".to_string(),
+        },
+        span: sp,
+    }
+}
+
+/// The clock-window length (in clocks) of a flattened bounded Bool-only
+/// alternative: 1 (the seed clock) plus the sum of the inter-term `##d` delays.
+fn window_len(terms: &[(SeqTerm, SeqHop)]) -> u32 {
+    1 + terms
+        .iter()
+        .skip(1)
+        .map(|(_, h)| match h {
+            SeqHop::Fixed(d) => *d,
+            SeqHop::AtLeast(_) => 0,
+        })
+        .sum::<u32>()
+}
+
 /// AND two optional (1-bit) `throughout` guards. The common (top-level
 /// throughout) case has at most one guard, so no BinOp is built.
 fn and_opt(a: Option<ast::Expr>, b: Option<ast::Expr>, sp: ast::Span) -> Option<ast::Expr> {
@@ -609,6 +634,7 @@ fn seq_span(seq: &ast::Sequence) -> ast::Span {
         ast::Sequence::Delay { lhs, .. } => seq_span(lhs),
         ast::Sequence::Repeat { seq, .. } => seq_span(seq),
         ast::Sequence::Throughout { cond, .. } => cond.span,
+        ast::Sequence::Within { seq1, .. } => seq_span(seq1),
     }
 }
 
@@ -6520,49 +6546,57 @@ impl<'s> Elaborator<'s> {
             // signal (a shift-register pipeline for ≥2 terms), and OR them. A
             // single 1-term alternative reproduces the flat-property path
             // byte-for-byte; bounded ranges produce >1 alternative.
-            let mut alternatives = self.expand_sequence(&sva.ante, &mut regs);
-            if alternatives.len() > SVA_SEQ_ALT_CAP {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    &format!(
-                        "an SVA sequence expanded to {} alternatives (cap {}); narrow the bounded ranges",
-                        alternatives.len(),
-                        SVA_SEQ_ALT_CAP
-                    ),
-                );
-                alternatives.truncate(SVA_SEQ_ALT_CAP);
-            }
             let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
-            let match_sigs: Vec<ast::Expr> = alternatives
-                .into_iter()
-                .map(|(terms, guard)| {
-                    // Flat byte-identical path: a single PLAIN BOOLEAN term with
-                    // no throughout guard reproduces the old `ante` exactly. A
-                    // single goto/nonconsec term still needs the FSM (synth).
-                    if terms.len() == 1 && guard.is_none() {
-                        if let SeqTerm::Bool(_) = terms[0].0 {
-                            let (SeqTerm::Bool(e), _) = terms.into_iter().next().unwrap() else {
-                                unreachable!()
-                            };
-                            return e;
-                        }
-                    }
-                    self.synth_seq_pipeline(terms, guard, &mut pipeline_nbas, sp)
-                })
-                .collect();
-            // OR the alternatives' match signals. A single signal stays raw
-            // (flat byte-identical); multiple are each reduced to a boolean
-            // (reduction-OR) before the bitwise OR.
-            let ante = if match_sigs.len() == 1 {
-                match_sigs.into_iter().next().unwrap()
+            let ante = if let ast::Sequence::Within { seq1, seq2 } = &sva.ante {
+                // `seq1 within seq2` combines two sub-pipelines — synthesized
+                // whole rather than as a (term, hop) alternative list.
+                self.synth_within(seq1, seq2, &mut regs, &mut pipeline_nbas, sp)
             } else {
-                let mut it = match_sigs.into_iter();
-                let mut acc = sva_unary(ast::UnOp::RedOr, it.next().unwrap(), sp);
-                for m in it {
-                    let mb = sva_unary(ast::UnOp::RedOr, m, sp);
-                    acc = sva_binary(ast::BinOp::BitOr, acc, mb, sp);
+                let mut alternatives = self.expand_sequence(&sva.ante, &mut regs);
+                if alternatives.len() > SVA_SEQ_ALT_CAP {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "an SVA sequence expanded to {} alternatives (cap {}); narrow the bounded ranges",
+                            alternatives.len(),
+                            SVA_SEQ_ALT_CAP
+                        ),
+                    );
+                    alternatives.truncate(SVA_SEQ_ALT_CAP);
                 }
-                acc
+                let match_sigs: Vec<ast::Expr> = alternatives
+                    .into_iter()
+                    .map(|(terms, guard)| {
+                        // Flat byte-identical path: a single PLAIN BOOLEAN term
+                        // with no throughout guard reproduces the old `ante`
+                        // exactly. A single goto/nonconsec term still needs the
+                        // FSM (synth).
+                        if terms.len() == 1 && guard.is_none() {
+                            if let SeqTerm::Bool(_) = terms[0].0 {
+                                let (SeqTerm::Bool(e), _) = terms.into_iter().next().unwrap()
+                                else {
+                                    unreachable!()
+                                };
+                                return e;
+                            }
+                        }
+                        self.synth_seq_pipeline(terms, guard, &mut pipeline_nbas, sp)
+                    })
+                    .collect();
+                // OR the alternatives' match signals. A single signal stays raw
+                // (flat byte-identical); multiple are each reduced to a boolean
+                // (reduction-OR) before the bitwise OR.
+                if match_sigs.len() == 1 {
+                    match_sigs.into_iter().next().unwrap()
+                } else {
+                    let mut it = match_sigs.into_iter();
+                    let mut acc = sva_unary(ast::UnOp::RedOr, it.next().unwrap(), sp);
+                    for m in it {
+                        let mb = sva_unary(ast::UnOp::RedOr, m, sp);
+                        acc = sva_binary(ast::BinOp::BitOr, acc, mb, sp);
+                    }
+                    acc
+                }
             };
             let cons = self.rewrite_sampled(&sva.cons, &mut regs);
 
@@ -6768,7 +6802,92 @@ impl<'s> Elaborator<'s> {
                 }
                 out
             }
+            ast::Sequence::Within { seq1, .. } => {
+                // `within` is synthesized as a whole (two sub-pipelines combined)
+                // by `synth_within` at the top level — it cannot appear as a term
+                // inside a larger `##` chain in this subset.
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "`within` is only supported as a top-level concurrent-assertion antecedent",
+                );
+                vec![(
+                    vec![(SeqTerm::Bool(sva_zero(seq_span(seq1))), SeqHop::Fixed(0))],
+                    None,
+                )]
+            }
         }
+    }
+
+    /// Synthesize the top-level `seq1 within seq2` antecedent match signal
+    /// (slice S9): `seq1` must match entirely inside a `seq2` match. For bounded
+    /// boolean operands this is `match(seq2) & OR_{i=0}^{L-k1} reg^i(match(seq1))`
+    /// — over a seq2 window of length `L`, seq1 (length `k1`) completed at some
+    /// clock that both ends within the window and starts at/after its start. ORed
+    /// over every (seq2-alt × seq1-alt) combination. Pure IR-0.
+    fn synth_within(
+        &mut self,
+        seq1: &ast::Sequence,
+        seq2: &ast::Sequence,
+        regs: &mut SvaRegs,
+        nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> ast::Expr {
+        let s1 = self.expand_sequence(seq1, regs);
+        let s2 = self.expand_sequence(seq2, regs);
+        // Both operands must be bounded, boolean-only, guard-free (no `##[m:$]`,
+        // goto/nonconsec, throughout, or nested within inside).
+        let ok = |alts: &[SeqAlt]| {
+            alts.iter().all(|(t, g)| {
+                g.is_none()
+                    && t.iter().all(|(tm, h)| {
+                        matches!(tm, SeqTerm::Bool(_)) && matches!(h, SeqHop::Fixed(_))
+                    })
+            })
+        };
+        if !ok(&s1) || !ok(&s2) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "`within` requires bounded boolean sequences in this subset",
+            );
+            return sva_zero(sp);
+        }
+        if s1.len() * s2.len() > SVA_SEQ_ALT_CAP {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a `within` expanded past the sequence alternative cap; narrow the bounded ranges",
+            );
+            return sva_zero(sp);
+        }
+        let mut combos: Vec<ast::Expr> = Vec::new();
+        for (s2t, _) in &s2 {
+            let l = window_len(s2t);
+            let match_2 = self.synth_seq_pipeline(s2t.clone(), None, nbas, sp);
+            for (s1t, _) in &s1 {
+                let k1 = window_len(s1t);
+                if k1 > l {
+                    continue; // seq1 cannot fit in this seq2 window
+                }
+                let match_1 = self.synth_seq_pipeline(s1t.clone(), None, nbas, sp);
+                // OR match_1 over the last (L - k1 + 1) clocks (the positions
+                // where seq1 fits inside the seq2 window ending now).
+                let mut acc = match_1.clone();
+                let mut cur = match_1;
+                for _ in 0..(l - k1) {
+                    cur = self.seq_delay_reg(cur, nbas, sp);
+                    acc = sva_binary(ast::BinOp::BitOr, acc, cur.clone(), sp);
+                }
+                combos.push(sva_binary(ast::BinOp::BitAnd, match_2.clone(), acc, sp));
+            }
+        }
+        if combos.is_empty() {
+            return sva_zero(sp); // seq1 longer than every seq2 window
+        }
+        let mut it = combos.into_iter();
+        let mut acc = it.next().unwrap();
+        for c in it {
+            acc = sva_binary(ast::BinOp::BitOr, acc, c, sp);
+        }
+        acc
     }
 
     /// Synthesize the "sequence matches and ends THIS clock" boolean from a

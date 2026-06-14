@@ -953,3 +953,61 @@ fn sva_seq_nonconsec_broken_by_extra_b() {
         "no violation expected:\n{err}\n{out}"
     );
 }
+
+// ── SVA WITHIN (slice S9, hand-IEEE) ─────────────────────────────────────────
+// `seq1 within seq2` — seq1 must match entirely INSIDE a match of seq2 (seq1's
+// start >= seq2's start, seq1's end <= seq2's end); the within match ends at
+// seq2's end. Desugar (bounded both) = match_2 & OR_{i=0}^{L-k1} reg^i(match_1)
+// (seq1 completed within seq2's L-clock window). Hand-IEEE (no oracle).
+
+#[test]
+fn sva_seq_within_holds_fires() {
+    // a within (b ##2 c) |-> d: window b@t15 .. c@t35; a@t25 is inside -> the
+    // within match completes at t35 with d=0 -> fires.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a within b ##2 c |-> d);\n\
+         initial begin\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=1; b=0; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "a within the b..c window must complete and fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_within_a_outside_window_no_match() {
+    // a within (b ##2 c) |-> d: a never occurs inside the b@t15..c@t35 window ->
+    // no within match -> d (low) imposes no obligation.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a within b ##2 c |-> d);\n\
+         initial begin\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=0; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "a outside the seq2 window must not match within. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
