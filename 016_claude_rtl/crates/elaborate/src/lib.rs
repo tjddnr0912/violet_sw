@@ -514,6 +514,19 @@ fn port_list_dirs(module: &ast::ModuleDecl) -> Vec<(String, ir::PortDir)> {
     }
 }
 
+/// A concurrent assertion (`assert property(@(clk) ante |-> cons)`) collected
+/// during statement lowering and materialized AFTER the module's process loop as
+/// a synthesized clocked checker (v8 SVA subset). It is a continuously-checking
+/// background process, not a one-shot procedural statement, so it cannot be
+/// lowered inline — see `materialize_sva_checkers`.
+struct PendingSva {
+    clock: ast::Sensitivity,
+    ante: ast::Expr,
+    kind: ast::ImplicationKind,
+    cons: ast::Expr,
+    span: ast::Span,
+}
+
 struct Elaborator<'s> {
     sink: &'s dyn LogSink,
     had_error: bool,
@@ -696,6 +709,9 @@ struct Elaborator<'s> {
     event_nets: std::collections::BTreeSet<u32>,
     // Per-ProcId instance path for `%m` (P2-11); lockstep with `processes`.
     proc_scopes: Vec<String>,
+    // v8 SVA: concurrent assertions collected during statement lowering, drained
+    // into synthesized clocked checker processes after each module's process loop.
+    pending_sva: Vec<PendingSva>,
 }
 
 impl<'s> Elaborator<'s> {
@@ -742,6 +758,7 @@ impl<'s> Elaborator<'s> {
             queue_bounds: QueueBoundTable::new(),
             event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
+            pending_sva: Vec::new(),
             cur_proc: 0,
             in_fork: false,
             disable_stack: Vec::new(),
@@ -1285,6 +1302,11 @@ impl<'s> Elaborator<'s> {
                 _ => {}
             }
         }
+
+        // (7.5) v8 SVA: materialize every concurrent assertion collected during
+        //       the process loop above as a synthesized clocked checker process.
+        //       Drained here (this instance's scope) so child instances start clean.
+        self.materialize_sva_checkers();
 
         // (8) recurse into child instances, in body declaration order — including
         //     those nested inside a generate construct (Instances phase).
@@ -6306,6 +6328,116 @@ impl ProcessBuilder {
 }
 
 impl<'s> Elaborator<'s> {
+    /// Synthesize a fresh 1-bit `Reg` for an SVA pending bit (`|=>` antecedent
+    /// delay), returning its name. Mirrors `fresh_ia_tmp` but names it so the
+    /// synthesized checker AST can reference it by `Ident`. Init is the default
+    /// `Reg` X — an X pending bit makes the first-clock `if (pend && …)` false,
+    /// so there is no spurious violation before any antecedent has been sampled.
+    fn fresh_sva_pend_net(&mut self) -> String {
+        let name = format!("__sva_pend_{}", self.nets.len());
+        let nv = ir::NetVar {
+            kind: ir::NetKind::Reg,
+            width: 1,
+            msb: 0,
+            lsb: 0,
+            signed: false,
+            array_len: 1,
+            dir: ir::PortDir::Internal,
+            init: default_init(ast::NetVarKind::Reg, 1),
+        };
+        self.add_net(&name, nv);
+        name
+    }
+
+    /// v8 SVA: drain `pending_sva` into synthesized clocked checker processes.
+    /// `assert property(@(clk) ante |-> cons)` ≡ `always @(clk) if (ante &&
+    /// !cons) $error(...)`. For `|=>` (non-overlapping) the antecedent is delayed
+    /// one clock through a pending reg: `always @(clk) begin if (pend && !cons)
+    /// $error(...); pend <= ante; end` — the check reads the PRIOR clock's
+    /// antecedent, then samples this clock's. The `$error` reuses the immediate-
+    /// assert severity shape (routes to the diagnostic stream + exit class 1).
+    fn materialize_sva_checkers(&mut self) {
+        let pending = std::mem::take(&mut self.pending_sva);
+        for sva in pending {
+            let sp = sva.span;
+            let error_stmt = ast::Stmt::SysTaskCall {
+                name: ast::Ident {
+                    name: "$error".to_string(),
+                    span: sp,
+                },
+                args: vec![ast::Expr {
+                    kind: ast::ExprKind::StrLit {
+                        raw: "\"Assertion property violation\"".to_string(),
+                    },
+                    span: sp,
+                }],
+                span: sp,
+            };
+            let not_cons = ast::Expr {
+                kind: ast::ExprKind::Unary {
+                    op: ast::UnOp::LogNot,
+                    operand: Box::new(sva.cons.clone()),
+                },
+                span: sp,
+            };
+            let (cond_lhs, extra_nba) = match sva.kind {
+                ast::ImplicationKind::Overlap => (sva.ante.clone(), None),
+                ast::ImplicationKind::NonOverlap => {
+                    let pend = self.fresh_sva_pend_net();
+                    let pend_path = ast::HierPath {
+                        segments: vec![ast::Ident {
+                            name: pend,
+                            span: sp,
+                        }],
+                        span: sp,
+                    };
+                    let pend_ref = ast::Expr {
+                        kind: ast::ExprKind::Ident(pend_path.clone()),
+                        span: sp,
+                    };
+                    let nba = ast::Stmt::NonBlocking {
+                        lhs: ast::Lvalue::Ident(pend_path),
+                        delay: None,
+                        rhs: sva.ante.clone(),
+                        span: sp,
+                    };
+                    (pend_ref, Some(nba))
+                }
+            };
+            let cond = ast::Expr {
+                kind: ast::ExprKind::Binary {
+                    op: ast::BinOp::LogAnd,
+                    lhs: Box::new(cond_lhs),
+                    rhs: Box::new(not_cons),
+                },
+                span: sp,
+            };
+            let if_stmt = ast::Stmt::If {
+                cond,
+                then_s: Box::new(error_stmt),
+                else_s: None,
+                span: sp,
+            };
+            let body = match extra_nba {
+                None => if_stmt,
+                Some(nba) => ast::Stmt::Block {
+                    label: None,
+                    decls: Vec::new(),
+                    stmts: vec![if_stmt, nba], // check PRIOR antecedent, then sample
+                    span: sp,
+                },
+            };
+            let pb = ast::ProceduralBlock {
+                kind: ast::ProcKind::Always,
+                sensitivity: Some(sva.clock),
+                body: Box::new(body),
+                span: sp,
+            };
+            let proc = self.lower_proc_block(&pb);
+            self.push_process(proc);
+        }
+    }
+
     // ── one ProceduralBlock → one Process ──────────────────────────
     fn lower_proc_block(&mut self, p: &ast::ProceduralBlock) -> ir::Process {
         // The ProcId this process WILL occupy when the caller pushes it. Stable for
@@ -7122,14 +7254,25 @@ impl<'s> Elaborator<'s> {
                 });
                 b.start_block(resume);
             }
-            // v8 bump (shape-only, inert): the parser does not yet produce
-            // concurrent assertions — the SVA feature slice replaces this arm
-            // with the real desugar. Loud E3009 keeps it unreachable-but-safe.
-            ast::Stmt::ConcurrentAssert { .. } => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "concurrent assertions are not yet wired",
-                );
+            // v8 SVA subset: a concurrent assertion is a CONTINUOUSLY-checking
+            // background process clocked by `@(clk)`, not a one-shot procedural
+            // statement — collect it and emit nothing into the enclosing block.
+            // It is materialized as a synthesized clocked checker after the
+            // module's process loop (`materialize_sva_checkers`).
+            ast::Stmt::ConcurrentAssert {
+                clock,
+                antecedent,
+                implication_kind,
+                consequent,
+                span,
+            } => {
+                self.pending_sva.push(PendingSva {
+                    clock: clock.clone(),
+                    ante: antecedent.clone(),
+                    kind: *implication_kind,
+                    cons: consequent.clone(),
+                    span: *span,
+                });
             }
             // Parse error is the ONE genuinely-fatal stmt: keep self.error.
             ast::Stmt::Error(_) => {
