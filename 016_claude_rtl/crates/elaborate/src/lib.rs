@@ -7110,6 +7110,18 @@ impl<'s> Elaborator<'s> {
                 let sid = self.push_stmt(ir::Stmt::Release { lhs: lv });
                 b.push_stmt_id(sid);
             }
+            // v8 bump (shape-only, inert): the parser does not yet produce
+            // these — the wait-fork / SVA feature slices replace these arms
+            // with the real lowering. Loud E3009 keeps them unreachable-but-safe.
+            ast::Stmt::WaitFork { .. } => {
+                self.error(MsgCode::ElabUnsupported, "wait fork is not yet wired");
+            }
+            ast::Stmt::ConcurrentAssert { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "concurrent assertions are not yet wired",
+                );
+            }
             // Parse error is the ONE genuinely-fatal stmt: keep self.error.
             ast::Stmt::Error(_) => {
                 self.error(

@@ -33,6 +33,6 @@ sim_ir::SysFuncId=repr=@#[]enum{#[]Time,#[]Realtime,#[]Signed,#[]Unsigned,#[]Clo
 sim_ir::SysTaskId=repr=@#[]enum{#[]Display,#[]Write,#[]Monitor,#[]Strobe,#[]Finish,#[]Stop,#[]DumpFile,#[]DumpVars,#[]DumpOn,#[]DumpOff,#[]DumpAll,#[]DumpFlush,#[]DumpLimit,#[]DynNew,#[]DynDelete,#[]QPushBack,#[]QPushFront,#[]AssocDeleteKey,#[]QInsert,#[]QDeleteIdx,#[]Fclose,#[]Fdisplay,#[]Fwrite,#[]Sformat,#[]ReadmemB,#[]ReadmemH,#[]StrPutC}
 sim_ir::Terminator=repr=@#[]enum{#[]Goto{#[]target:u32},#[]Branch{#[]cond:u32,#[]then_bb:u32,#[]else_bb:u32},#[]Delay{#[]amount:u32,#[]region:sim_ir::DelayRegion,#[]resume:u32},#[]Wait{#[]cond:sim_ir::WaitCause,#[]resume:u32},#[]Fork{#[]children:Vec<u32>,#[]join:u32,#[]resume_bb:u32},#[]Call{#[]target:u32,#[]ret_bb:u32},#[]Return}
 sim_ir::UnOp=repr=@#[]enum{#[]Plus,#[]Minus,#[]LogNot,#[]BitNot,#[]RedAnd,#[]RedNand,#[]RedOr,#[]RedNor,#[]RedXor,#[]RedXnor}
-sim_ir::WaitCause=repr=@#[]enum{#[]Edge{#[]net:u32,#[]kind:sim_ir::EdgeKind},#[]Level{#[]nets:Vec<u32>},#[]Expr{#[]expr:u32},#[]Named{#[]ev:u32}}
+sim_ir::WaitCause=repr=@#[]enum{#[]Edge{#[]net:u32,#[]kind:sim_ir::EdgeKind},#[]Level{#[]nets:Vec<u32>},#[]Expr{#[]expr:u32},#[]Named{#[]ev:u32},#[]Fork}
 sim_ir::WakeCond=repr=@#[]enum{#[]Edge{#[]net:u32,#[]kind:sim_ir::EdgeKind},#[]Level{#[]nets:Vec<u32>},#[]WaitTrue{#[]expr:u32},#[]TimeAbs{#[]tick:u64},#[]NamedEvent{#[]ev:u32},#[]Join{#[]join_ref:u32}}
 sim_ir::WakeKey=repr=@#[]struct{#[]cond:sim_ir::WakeCond,#[]region:sim_ir::RegionTag,#[]tie_break:u32}

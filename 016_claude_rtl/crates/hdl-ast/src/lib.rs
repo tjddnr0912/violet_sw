@@ -517,6 +517,23 @@ pub enum Stmt {
         target: HierPath,
         span: Span,
     },
+    /// `wait fork;` (IEEE §9.6.1) — block until all child processes forked by
+    /// the current process complete. v8 AST flip; parser/elaborate wired in the
+    /// wait-fork feature slice (the bump leaves it shape-only).
+    WaitFork {
+        span: Span,
+    },
+    /// Concurrent assertion subset (SVA, Phase-3): `assert property(@(clk) a
+    /// |-> b)` / `|=>`. Single-clock, flat property only. v8 AST flip; the
+    /// parser/elaborate desugar (sample registers + clocked `$error`) lands in
+    /// the SVA feature slices (the bump leaves it shape-only).
+    ConcurrentAssert {
+        clock: Sensitivity,
+        antecedent: Expr,
+        implication_kind: ImplicationKind,
+        consequent: Expr,
+        span: Span,
+    },
     // procedural-continuous family (§2.7):
     Assign {
         lhs: Lvalue,
@@ -545,6 +562,16 @@ pub enum JoinKind {
     Join,
     JoinAny,
     JoinNone,
+}
+/// SVA implication operator (Phase-3 subset). `|->` checks the consequent in the
+/// SAME clock tick as the antecedent match (overlapping); `|=>` checks it on the
+/// NEXT tick (non-overlapping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum ImplicationKind {
+    /// `|->` overlapping — consequent evaluated in the same tick.
+    Overlap,
+    /// `|=>` non-overlapping — consequent evaluated on the next clock tick.
+    NonOverlap,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum CaseKind {

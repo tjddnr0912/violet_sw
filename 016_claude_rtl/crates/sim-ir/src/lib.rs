@@ -409,10 +409,25 @@ pub enum DelayRegion {
 /// In-body wait cause (§4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum WaitCause {
-    Edge { net: u32, kind: sim_ir::EdgeKind },
-    Level { nets: Vec<u32> },
-    Expr { expr: u32 },
-    Named { ev: u32 },
+    Edge {
+        net: u32,
+        kind: sim_ir::EdgeKind,
+    },
+    Level {
+        nets: Vec<u32>,
+    },
+    Expr {
+        expr: u32,
+    },
+    Named {
+        ev: u32,
+    },
+    /// `wait fork;` (IEEE §9.6.1) — block until all child processes forked by
+    /// the current process complete. v8: unit variant (no payload — the
+    /// `Terminator::Wait { resume }` already carries the resume block). Never
+    /// satisfied by a net/expr edge; resolved by an implicit join barrier in
+    /// the scheduler (the feature slice wires it; the bump leaves it inert).
+    Fork,
 }
 
 /// Basic-block terminator (§4, RULE-D2 Fork/Call verbatim).

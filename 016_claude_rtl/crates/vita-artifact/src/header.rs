@@ -12,7 +12,7 @@ pub const MAGIC_VELAB: [u8; 8] = *b"VELAB\0\0\0";
 pub const MAGIC_VU: [u8; 8] = *b"VU\0\0\0\0\0\0";
 
 /// Container format version. Bumped whenever the header layout changes.
-pub const CURRENT_FORMAT_VERSION: u32 = 7; // v7 (2026-06-12): +BinOp Casez/CasexEq, +SysFuncId Random/Urandom(Range)/CountOnes/OneHot(0)/IsUnknown/Stime/Fopen/Sformatf/(Test|Value)Plusargs/Str*, +SysTaskId Fclose/Fdisplay/Fwrite/Sformat/Readmem{B,H}/StrPutC, +NetKind String
+pub const CURRENT_FORMAT_VERSION: u32 = 8; // v8 (2026-06-14): +WaitCause::Fork (wait fork stmt IR) + AST flip Stmt::WaitFork/ConcurrentAssert + ImplicationKind (SVA subset). Shape-only bump; features land in follow-on slices.
 
 /// Build provenance (Layer 2). Stamped for traceability, NEVER a staleness key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

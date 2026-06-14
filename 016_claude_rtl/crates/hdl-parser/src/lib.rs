@@ -3886,7 +3886,23 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
         }
         Stmt::Deassign { lhs, .. } | Stmt::Release { lhs, .. } => fix_lv(lhs, from, to),
         Stmt::EventTrigger { name, .. } => fix_path(name),
-        Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
+        Stmt::ConcurrentAssert {
+            clock,
+            antecedent,
+            consequent,
+            ..
+        } => {
+            // Rename every operand (clock sensitivity exprs + antecedent +
+            // consequent) — same completeness lesson as EventCtrl above.
+            if let Sensitivity::List(evs) = clock {
+                for ev in evs {
+                    fix_expr(&mut ev.expr, from, to);
+                }
+            }
+            fix_expr(antecedent, from, to);
+            fix_expr(consequent, from, to);
+        }
+        Stmt::WaitFork { .. } | Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
     }
 }
 

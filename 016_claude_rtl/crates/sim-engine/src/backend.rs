@@ -493,6 +493,7 @@ mod tests {
             WaitCause::Level { nets: vec![0] },
             WaitCause::Expr { expr: 0 },
             WaitCause::Named { ev: 0 }, // the never-waking variant — must be excluded
+            WaitCause::Fork,            // v8: wait fork — suspend-bearing, excluded
         ] {
             let body = vec![block(vec![], Terminator::Wait { cond, resume: 0 })];
             assert!(!is_codegen_able(&a, &[], &body), "Wait must exclude");
