@@ -1,11 +1,14 @@
 """WordPress 업로더 SEO 헬퍼(slugify / auto_excerpt / demote_body_h1 / english_slug) 단위 테스트."""
 
 import shared.gemini_cli as gemini_cli
+import shared.wordpress_uploader as wp
 from shared.wordpress_uploader import (
     slugify,
     auto_excerpt,
     demote_body_h1,
     english_slug,
+    auto_draft_enabled,
+    WordPressUploader,
     _kebab,
 )
 
@@ -112,3 +115,67 @@ def test_english_slug_falls_back_on_garbage(monkeypatch):
     )
     s = english_slug("부동산 주간 디제스트")
     assert s and s.isascii()
+
+
+# --- force_draft (investment_bot 자동봇 강제 draft) ---
+
+class _FakePostResp:
+    status_code = 201
+    content = b"{}"
+
+    def json(self):
+        return {"id": 1, "link": "https://x/p", "status": "draft"}
+
+
+def _capture_post(monkeypatch):
+    """requests.post를 가로채 /posts payload를 잡는다. (captured dict 반환)"""
+    captured = {}
+
+    def fake_post(url, json=None, **kw):
+        if url.endswith("/posts"):
+            captured["payload"] = json
+        return _FakePostResp()
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    return captured
+
+
+def _uploader(**kw):
+    return WordPressUploader(
+        base_url="https://x", user="u", app_password="p", **kw
+    )
+
+
+def test_force_draft_overrides_explicit_publish(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader(force_draft=True)
+    res = up.create_post("Title Only ASCII", "<p>body</p>", status="publish")
+    assert res["success"]
+    assert captured["payload"]["status"] == "draft"  # publish 요청을 draft로 강제
+
+
+def test_force_draft_overrides_upload_post_publish(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader(force_draft=True)
+    res = up.upload_post("Title Only ASCII", "<p>body</p>", is_draft=False)
+    assert res["success"]
+    assert captured["payload"]["status"] == "draft"  # is_draft=False여도 강제 draft
+
+
+def test_no_force_draft_keeps_publish(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader(force_draft=False)
+    up.create_post("Title Only ASCII", "<p>body</p>", status="publish")
+    assert captured["payload"]["status"] == "publish"  # 기본 동작 보존(텔레그램 봇)
+
+
+def test_auto_draft_enabled_default_true(monkeypatch):
+    monkeypatch.delenv("AUTO_BOT_DRAFT_ONLY", raising=False)
+    assert auto_draft_enabled() is True  # .env 없으면 안전하게 draft
+
+
+def test_auto_draft_enabled_false_toggle(monkeypatch):
+    monkeypatch.setenv("AUTO_BOT_DRAFT_ONLY", "false")
+    assert auto_draft_enabled() is False
+    monkeypatch.setenv("AUTO_BOT_DRAFT_ONLY", "true")
+    assert auto_draft_enabled() is True

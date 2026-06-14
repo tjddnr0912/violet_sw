@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-06-14: 자동봇 강제 draft 토글 + 이미지 마커 주석 중첩 버그 수정
+
+- **`AUTO_BOT_DRAFT_ONLY`(default true) 추가** — 애드센스 심사 준비 동안 investment_bot 계열 자동봇(뉴스/버핏/섹터/부동산)이 발행하는 글을 항상 draft로 올린다. `shared/wordpress_uploader.py`에 `force_draft` 옵션 + `auto_draft_enabled()` 헬퍼 추가(`create_post` 단일 choke point에서 status→draft 강제). 자동봇 4종(`buffett_bot`·`weekly_sector_bot`·`weekly_realestate_bot`·`main` 뉴스 3곳)이 `force_draft=auto_draft_enabled()` 연결. **텔레그램 봇은 미연결 → 계속 publish**(별도 프로세스). 복귀 시 `.env`에서 `AUTO_BOT_DRAFT_ONLY=false`.
+- **이미지 마커 주석 중첩 버그 수정** — Claude가 `[[IMAGE:...]]` 마커를 `<!-- [[IMAGE:...]] -->`로 감싸 출력하면 strip 시 주석이 중첩(`<!-- <!-- ... --> -->`)돼 본문에 `-->`가 노출되던 문제. `_maybe_inject_images`가 처리 전 주석 래퍼를 먼저 벗기도록 정규화. 기존 발행 글 id 159·92 정리. 상세→[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+- 테스트: `tests/test_wordpress_helpers.py` force_draft 5건 + `tests/test_image_marker_strip.py` 3건 추가.
+
 ## 2026-06-13: WordPress SEO 보강 + 텔레그램 로컬 백업 폐지
 
 - 업로더 SEO 헬퍼(`create_post` 자동 적용): `slugify()`(한글 제목→ASCII 슬러그, 로마자 표기), `auto_excerpt()`(본문→메타 description), `demote_body_h1()`(본문 `<h1>`→`<h2>`, Rank Math Single-H1).

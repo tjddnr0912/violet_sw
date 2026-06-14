@@ -36,7 +36,7 @@ from sector_bot import (
     ComprehensiveReportGenerator,
 )
 from sector_bot.orchestrator import run_sector_research, OrchestrationResult
-from shared.wordpress_uploader import WordPressUploader
+from shared.wordpress_uploader import WordPressUploader, auto_draft_enabled
 from shared.telegram_notifier import TelegramNotifier
 from shared.claude_html_converter import convert_md_to_html_via_claude, _maybe_apply_editorial
 
@@ -89,6 +89,7 @@ class WeeklySectorBot:
             self.blogger = WordPressUploader(
                 default_categories=[7],
                 strip_ads_default=True,
+                force_draft=auto_draft_enabled(),
             )
         else:
             self.blogger = None

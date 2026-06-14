@@ -38,6 +38,16 @@ CATEGORY_IDS: Dict[str, int] = {
     "SoC": 9, "SW": 10, "AI": 11,
 }
 
+
+def auto_draft_enabled() -> bool:
+    """investment_bot 계열 자동봇(뉴스/버핏/섹터/부동산)의 강제 draft 토글.
+
+    .env `AUTO_BOT_DRAFT_ONLY` (default true) — true면 자동봇이 발행하는 모든
+    글을 publish 대신 draft로 올린다. 텔레그램 봇은 이 함수를 쓰지 않으므로
+    영향을 받지 않는다(계속 publish). 다시 자동 발행하려면 false로 바꾼다.
+    """
+    return os.getenv("AUTO_BOT_DRAFT_ONLY", "true").strip().lower() == "true"
+
 # --- AdSense 제거 패턴 (본문 중간 광고 블록) ---
 # <ins class="adsbygoogle" ...></ins>
 _RE_ADS_INS = re.compile(r'<ins\b[^>]*adsbygoogle[^>]*>(?:(?!</ins>).)*?</ins>', re.S | re.I)
@@ -234,6 +244,7 @@ class WordPressUploader:
         default_categories: Optional[List[Union[str, int]]] = None,
         default_status: Optional[str] = None,
         strip_ads_default: bool = False,
+        force_draft: bool = False,
         **_ignored,  # 레거시 호환: blog_id/credentials_path/token_path 등 무시
     ):
         self.base_url = (base_url or os.getenv("WORDPRESS_URL", "")).rstrip("/")
@@ -248,6 +259,8 @@ class WordPressUploader:
         self.default_categories = default_categories or []
         self.default_status = default_status
         self.strip_ads_default = strip_ads_default
+        # True면 status 인자와 무관하게 항상 draft로 발행(자동봇 일시정지용)
+        self.force_draft = force_draft
 
     # --- 상태 ---
     def is_configured(self) -> bool:
@@ -396,10 +409,14 @@ class WordPressUploader:
         # 테마가 글 제목을 <h1>로 렌더 → 본문 h1은 h2로 강등(Single-H1, Rank Math)
         content_html = demote_body_h1(content_html)
 
+        _status = status or os.getenv("WORDPRESS_DEFAULT_STATUS", "publish")
+        if self.force_draft and _status != "draft":
+            logger.info("force_draft 활성 → status '%s'→'draft' 강제", _status)
+            _status = "draft"
         payload: Dict = {
             "title": title,
             "content": content_html,
-            "status": status or os.getenv("WORDPRESS_DEFAULT_STATUS", "publish"),
+            "status": _status,
         }
         cat_ids = self.resolve_categories(categories)
         if cat_ids:

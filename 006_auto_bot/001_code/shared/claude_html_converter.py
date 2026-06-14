@@ -223,6 +223,17 @@ def _maybe_inject_images(html: str) -> str:
     enabled = os.getenv("BLOGGER_IMAGES_ENABLED", "false").lower() in ("true", "on", "1", "yes")
     marker_re = re.compile(r"\[\[IMAGE\s*:\s*(.+?)\s*\]\]", re.DOTALL)
 
+    # Claude가 마커를 HTML 주석으로 감싸 출력하는 경우(`<!-- [[IMAGE: ...]] -->`)가 있다.
+    # 그대로 두면 아래 strip/inject가 안쪽 마커만 치환해 주석이 중첩되고
+    # (`<!-- <!-- ... --> -->`), 브라우저가 첫 -->에서 주석을 닫아 남은 `-->`가
+    # 본문에 노출된다. 처리 전에 마커를 감싼 주석 래퍼를 먼저 벗긴다.
+    html = re.sub(
+        r"<!--\s*(\[\[IMAGE\s*:\s*.+?\s*\]\])\s*-->",
+        r"\1",
+        html,
+        flags=re.DOTALL,
+    )
+
     # Quick exit if no markers.
     if not marker_re.search(html):
         return html

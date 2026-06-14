@@ -55,6 +55,7 @@ WORDPRESS_URL=https://grace-moon.com
 WORDPRESS_USER=                  # WP 로그인 ID
 WORDPRESS_APP_PASSWORD=          # 애플리케이션 비밀번호(공백 자동 제거). 절대 Git 커밋 금지
 WORDPRESS_DEFAULT_STATUS=publish # publish | draft
+AUTO_BOT_DRAFT_ONLY=true         # 자동봇(뉴스/버핏/섹터/부동산=investment_bot)만 강제 draft. 텔레그램 봇은 영향 없음(계속 publish). 애드센스 준비 일시정지용. 자동 publish 복귀 시 false
 # KROKI_URL=https://kroki.io     # mermaid→PNG 렌더 서버 override (default kroki.io)
 BLOGGER_ENABLED=true             # 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). false면 발행 스킵
 BLOG_SELECTION_TIMEOUT=180       # 텔레그램 카테고리 선택 타임아웃(초). 무선택 시 발행 취소

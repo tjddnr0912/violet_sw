@@ -143,7 +143,7 @@ class NewsBot:
                         if getattr(self.config, 'BLOGGER_ENABLED', False):
                             logger.info("Step 5: WordPress 발행 중...")
                             try:
-                                from shared.wordpress_uploader import WordPressUploader
+                                from shared.wordpress_uploader import WordPressUploader, auto_draft_enabled
 
                                 current_date = datetime.now().strftime("%Y년 %m월 %d일")
                                 post_title = f"{current_date} 뉴스 요약"
@@ -177,6 +177,7 @@ class NewsBot:
                                 with WordPressUploader(
                                     default_categories=[5],  # 뉴스
                                     strip_ads_default=True,
+                                    force_draft=auto_draft_enabled(),
                                 ) as uploader:
                                     upload_result = uploader.upload_post(
                                         title=post_title,
@@ -299,7 +300,7 @@ class NewsBot:
             if getattr(self.config, 'BLOGGER_ENABLED', False):
                 logger.info("Step 4: 주간 요약 WordPress 발행 중...")
                 try:
-                    from shared.wordpress_uploader import WordPressUploader
+                    from shared.wordpress_uploader import WordPressUploader, auto_draft_enabled
 
                     post_title = f"Weekly News Summary ({start_date_str} ~ {end_date_str})"
 
@@ -332,6 +333,7 @@ class NewsBot:
                     with WordPressUploader(
                         default_categories=[5],  # 뉴스
                         strip_ads_default=True,
+                        force_draft=auto_draft_enabled(),
                     ) as uploader:
                         upload_result = uploader.upload_post(
                             title=post_title,
@@ -430,7 +432,7 @@ class NewsBot:
             if getattr(self.config, 'BLOGGER_ENABLED', False):
                 logger.info("Step 4: 월간 요약 WordPress 발행 중...")
                 try:
-                    from shared.wordpress_uploader import WordPressUploader
+                    from shared.wordpress_uploader import WordPressUploader, auto_draft_enabled
 
                     post_title = f"Monthly News Summary - {last_year}/{last_month}"
 
@@ -463,6 +465,7 @@ class NewsBot:
                     with WordPressUploader(
                         default_categories=[5],  # 뉴스
                         strip_ads_default=True,
+                        force_draft=auto_draft_enabled(),
                     ) as uploader:
                         upload_result = uploader.upload_post(
                             title=post_title,

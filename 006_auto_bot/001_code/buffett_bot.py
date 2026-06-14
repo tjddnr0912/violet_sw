@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 # 프로젝트 루트를 path에 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from shared.wordpress_uploader import WordPressUploader
+from shared.wordpress_uploader import WordPressUploader, auto_draft_enabled
 from shared.telegram_notifier import TelegramNotifier
 from shared.claude_html_converter import convert_md_to_html_via_claude, _maybe_apply_editorial
 
@@ -241,6 +241,7 @@ class BuffettBot:
             self.blogger = WordPressUploader(
                 default_categories=[6],
                 strip_ads_default=True,
+                force_draft=auto_draft_enabled(),
             )
         else:
             self.blogger = None
