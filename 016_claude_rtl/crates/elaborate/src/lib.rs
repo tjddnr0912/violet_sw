@@ -527,6 +527,73 @@ struct PendingSva {
     span: ast::Span,
 }
 
+/// Collected sampled-value state for one concurrent assertion: each distinct
+/// sampled signal gets ONE prev-register (shared across `$past`/`$rose`/etc.),
+/// plus the per-clock `prev <= signal` NBA updates that maintain them.
+#[derive(Default)]
+struct SvaRegs {
+    /// signal name → prev-register name (dedup so `$rose(a)` + `$stable(a)` share).
+    by_signal: Vec<(String, String)>,
+    /// `prev <= signal;` NBA updates appended to the checker's clocked body.
+    nbas: Vec<ast::Stmt>,
+}
+
+/// Is `name` (incl. the leading `$`) an SVA sampled-value function we desugar?
+fn is_sva_sampled_fn(name: &str) -> bool {
+    matches!(name, "$past" | "$rose" | "$fell" | "$stable")
+}
+
+fn sva_ident_expr(name: &str, sp: ast::Span) -> ast::Expr {
+    ast::Expr {
+        kind: ast::ExprKind::Ident(ast::HierPath {
+            segments: vec![ast::Ident {
+                name: name.to_string(),
+                span: sp,
+            }],
+            span: sp,
+        }),
+        span: sp,
+    }
+}
+
+fn sva_binary(op: ast::BinOp, lhs: ast::Expr, rhs: ast::Expr, sp: ast::Span) -> ast::Expr {
+    ast::Expr {
+        kind: ast::ExprKind::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        },
+        span: sp,
+    }
+}
+
+fn sva_unary(op: ast::UnOp, operand: ast::Expr, sp: ast::Span) -> ast::Expr {
+    ast::Expr {
+        kind: ast::ExprKind::Unary {
+            op,
+            operand: Box::new(operand),
+        },
+        span: sp,
+    }
+}
+
+/// `e[0]` — the LSB, for `$rose`/`$fell` (IEEE 1800 §16.9.3 sample the LSB).
+fn sva_bit0(e: ast::Expr, sp: ast::Span) -> ast::Expr {
+    ast::Expr {
+        kind: ast::ExprKind::BitSelect {
+            base: Box::new(e),
+            index: Box::new(ast::Expr {
+                kind: ast::ExprKind::IntLit {
+                    kind: ast::IntLitKind::Decimal,
+                    raw: "0".to_string(),
+                },
+                span: sp,
+            }),
+        },
+        span: sp,
+    }
+}
+
 struct Elaborator<'s> {
     sink: &'s dyn LogSink,
     had_error: bool,
@@ -6328,22 +6395,23 @@ impl ProcessBuilder {
 }
 
 impl<'s> Elaborator<'s> {
-    /// Synthesize a fresh 1-bit `Reg` for an SVA pending bit (`|=>` antecedent
-    /// delay), returning its name. Mirrors `fresh_ia_tmp` but names it so the
-    /// synthesized checker AST can reference it by `Ident`. Init is the default
-    /// `Reg` X — an X pending bit makes the first-clock `if (pend && …)` false,
-    /// so there is no spurious violation before any antecedent has been sampled.
-    fn fresh_sva_pend_net(&mut self) -> String {
-        let name = format!("__sva_pend_{}", self.nets.len());
+    /// Synthesize a fresh `Reg` for an SVA helper (`|=>` pending bit / sampled-
+    /// value prev register), returning its name so the synthesized checker AST
+    /// can reference it by `Ident`. Mirrors `fresh_ia_tmp`. Init is the default
+    /// `Reg` X — an X helper makes the first-clock `if (pend && …)` / `$rose`
+    /// false, so there is no spurious violation before any value has been sampled.
+    fn fresh_sva_reg(&mut self, width: u32, tag: &str) -> String {
+        let w = width.max(1);
+        let name = format!("__sva_{tag}_{}", self.nets.len());
         let nv = ir::NetVar {
             kind: ir::NetKind::Reg,
-            width: 1,
-            msb: 0,
+            width: w,
+            msb: w.saturating_sub(1),
             lsb: 0,
             signed: false,
             array_len: 1,
             dir: ir::PortDir::Internal,
-            init: default_init(ast::NetVarKind::Reg, 1),
+            init: default_init(ast::NetVarKind::Reg, w),
         };
         self.add_net(&name, nv);
         name
@@ -6360,6 +6428,13 @@ impl<'s> Elaborator<'s> {
         let pending = std::mem::take(&mut self.pending_sva);
         for sva in pending {
             let sp = sva.span;
+            // Rewrite sampled-value functions ($past/$rose/$fell/$stable) into
+            // reads of synthesized prev-registers, collecting the per-clock NBA
+            // updates (`prev <= signal`) that maintain them.
+            let mut regs = SvaRegs::default();
+            let ante = self.rewrite_sampled(&sva.ante, &mut regs);
+            let cons = self.rewrite_sampled(&sva.cons, &mut regs);
+
             let error_stmt = ast::Stmt::SysTaskCall {
                 name: ast::Ident {
                     name: "$error".to_string(),
@@ -6373,59 +6448,54 @@ impl<'s> Elaborator<'s> {
                 }],
                 span: sp,
             };
-            let not_cons = ast::Expr {
-                kind: ast::ExprKind::Unary {
-                    op: ast::UnOp::LogNot,
-                    operand: Box::new(sva.cons.clone()),
-                },
-                span: sp,
-            };
-            let (cond_lhs, extra_nba) = match sva.kind {
-                ast::ImplicationKind::Overlap => (sva.ante.clone(), None),
+            let not_cons = sva_unary(ast::UnOp::LogNot, cons, sp);
+            let (cond_lhs, pending_nba) = match sva.kind {
+                ast::ImplicationKind::Overlap => (ante, None),
                 ast::ImplicationKind::NonOverlap => {
-                    let pend = self.fresh_sva_pend_net();
+                    // 1-bit pending reg: NBA-sampled with the antecedent's BOOLEAN
+                    // truthiness each clock (reduction-OR, so a multi-bit antecedent
+                    // is not truncated to its LSB), checked against the consequent
+                    // on the FOLLOWING clock.
+                    let pend = self.fresh_sva_reg(1, "pend");
                     let pend_path = ast::HierPath {
                         segments: vec![ast::Ident {
-                            name: pend,
+                            name: pend.clone(),
                             span: sp,
                         }],
-                        span: sp,
-                    };
-                    let pend_ref = ast::Expr {
-                        kind: ast::ExprKind::Ident(pend_path.clone()),
                         span: sp,
                     };
                     let nba = ast::Stmt::NonBlocking {
                         lhs: ast::Lvalue::Ident(pend_path),
                         delay: None,
-                        rhs: sva.ante.clone(),
+                        rhs: sva_unary(ast::UnOp::RedOr, ante, sp),
                         span: sp,
                     };
-                    (pend_ref, Some(nba))
+                    (sva_ident_expr(&pend, sp), Some(nba))
                 }
             };
-            let cond = ast::Expr {
-                kind: ast::ExprKind::Binary {
-                    op: ast::BinOp::LogAnd,
-                    lhs: Box::new(cond_lhs),
-                    rhs: Box::new(not_cons),
-                },
-                span: sp,
-            };
+            let cond = sva_binary(ast::BinOp::LogAnd, cond_lhs, not_cons, sp);
             let if_stmt = ast::Stmt::If {
                 cond,
                 then_s: Box::new(error_stmt),
                 else_s: None,
                 span: sp,
             };
-            let body = match extra_nba {
-                None => if_stmt,
-                Some(nba) => ast::Stmt::Block {
+            // Clocked body: check FIRST (reads the prior clock's prev/pend), then
+            // the NBA updates apply in the NBA region for the next clock.
+            let mut stmts = vec![if_stmt];
+            stmts.extend(regs.nbas);
+            if let Some(nba) = pending_nba {
+                stmts.push(nba);
+            }
+            let body = if stmts.len() == 1 {
+                stmts.pop().unwrap()
+            } else {
+                ast::Stmt::Block {
                     label: None,
                     decls: Vec::new(),
-                    stmts: vec![if_stmt, nba], // check PRIOR antecedent, then sample
+                    stmts,
                     span: sp,
-                },
+                }
             };
             let pb = ast::ProceduralBlock {
                 kind: ast::ProcKind::Always,
@@ -6436,6 +6506,134 @@ impl<'s> Elaborator<'s> {
             let proc = self.lower_proc_block(&pb);
             self.push_process(proc);
         }
+    }
+
+    /// Recursively rewrite SVA sampled-value functions in `e` into reads of
+    /// synthesized prev-registers, registering each prev-reg + its `prev <=
+    /// signal` NBA in `regs` (one prev-reg per distinct signal, shared). The
+    /// argument must be a simple signal; anything else is a loud E3009.
+    ///   $past(x)   → prev_x                (value one clock ago)
+    ///   $stable(x) → (prev_x === x)        (no change, full 4-state)
+    ///   $rose(x)   → (~prev_x[0] & x[0])   (LSB 0→1)
+    ///   $fell(x)   → ( prev_x[0] & ~x[0])  (LSB 1→0)
+    fn rewrite_sampled(&mut self, e: &ast::Expr, regs: &mut SvaRegs) -> ast::Expr {
+        let sp = e.span;
+        match &e.kind {
+            ast::ExprKind::SysCall { name, args } if is_sva_sampled_fn(&name.name) => {
+                if args.len() != 1 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!("`{}` takes one signal argument in v1", name.name),
+                    );
+                    return e.clone();
+                }
+                let ast::ExprKind::Ident(path) = &args[0].kind else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!("`{}` argument must be a simple signal in v1", name.name),
+                    );
+                    return e.clone();
+                };
+                // A hierarchical (multi-segment) reference would be keyed only by
+                // its last segment below — two distinct signals (`top.x`/`u.x`)
+                // would silently ALIAS onto one prev-register. Reject it loudly,
+                // matching the existing hierarchical-reference policy (E3009).
+                if path.segments.len() != 1 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "`{}` of a hierarchical signal is unsupported in v1",
+                            name.name
+                        ),
+                    );
+                    return e.clone();
+                }
+                let sig = path
+                    .segments
+                    .last()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                let prev = self.sva_prev_for(&sig, &args[0], regs);
+                let prev_ref = sva_ident_expr(&prev, sp);
+                match name.name.as_str() {
+                    "$past" => prev_ref,
+                    "$stable" => sva_binary(ast::BinOp::CaseEq, prev_ref, args[0].clone(), sp),
+                    "$rose" => sva_binary(
+                        ast::BinOp::BitAnd,
+                        sva_unary(ast::UnOp::BitNot, sva_bit0(prev_ref, sp), sp),
+                        sva_bit0(args[0].clone(), sp),
+                        sp,
+                    ),
+                    "$fell" => sva_binary(
+                        ast::BinOp::BitAnd,
+                        sva_bit0(prev_ref, sp),
+                        sva_unary(ast::UnOp::BitNot, sva_bit0(args[0].clone(), sp), sp),
+                        sp,
+                    ),
+                    _ => unreachable!("guarded by is_sva_sampled_fn"),
+                }
+            }
+            ast::ExprKind::Unary { op, operand } => {
+                sva_unary(*op, self.rewrite_sampled(operand, regs), sp)
+            }
+            ast::ExprKind::Binary { op, lhs, rhs } => sva_binary(
+                *op,
+                self.rewrite_sampled(lhs, regs),
+                self.rewrite_sampled(rhs, regs),
+                sp,
+            ),
+            ast::ExprKind::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => ast::Expr {
+                kind: ast::ExprKind::Ternary {
+                    cond: Box::new(self.rewrite_sampled(cond, regs)),
+                    then_e: Box::new(self.rewrite_sampled(then_e, regs)),
+                    else_e: Box::new(self.rewrite_sampled(else_e, regs)),
+                },
+                span: sp,
+            },
+            ast::ExprKind::Paren { inner } => ast::Expr {
+                kind: ast::ExprKind::Paren {
+                    inner: Box::new(self.rewrite_sampled(inner, regs)),
+                },
+                span: sp,
+            },
+            // Leaf or a form that cannot host a sampled-value call in the subset:
+            // clone verbatim (a sampled call nested in e.g. a concat is left as a
+            // plain SysCall → the usual "unsupported system function" E3009).
+            _ => e.clone(),
+        }
+    }
+
+    /// Get-or-create the shared prev-register for `sig` (matching its declared
+    /// width), registering the `prev <= signal` NBA on first creation.
+    fn sva_prev_for(&mut self, sig: &str, sig_expr: &ast::Expr, regs: &mut SvaRegs) -> String {
+        if let Some((_, prev)) = regs.by_signal.iter().find(|(s, _)| s == sig) {
+            return prev.clone();
+        }
+        let width = self
+            .lookup_net_scoped(sig)
+            .map(|id| self.nets[id as usize].width)
+            .unwrap_or(1);
+        let prev = self.fresh_sva_reg(width, "prev");
+        let sp = sig_expr.span;
+        let prev_path = ast::HierPath {
+            segments: vec![ast::Ident {
+                name: prev.clone(),
+                span: sp,
+            }],
+            span: sp,
+        };
+        regs.nbas.push(ast::Stmt::NonBlocking {
+            lhs: ast::Lvalue::Ident(prev_path),
+            delay: None,
+            rhs: sig_expr.clone(),
+            span: sp,
+        });
+        regs.by_signal.push((sig.to_string(), prev.clone()));
+        prev
     }
 
     // ── one ProceduralBlock → one Process ──────────────────────────

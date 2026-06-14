@@ -3064,16 +3064,23 @@ impl<'t, 's> Parser<'t, 's> {
             self.error("'@(...)' clocking event in concurrent assertion");
             Sensitivity::List(Vec::new())
         };
-        let antecedent = self.expr(0);
-        let implication_kind = if self.eat(TokenKind::PipeArrow) {
-            ImplicationKind::Overlap
+        // `expr [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
+        // implication) desugars to `1'b1 |-> expr` (check `expr` every clock).
+        let first = self.expr(0);
+        let (antecedent, implication_kind, consequent) = if self.eat(TokenKind::PipeArrow) {
+            (first, ImplicationKind::Overlap, self.expr(0))
         } else if self.eat(TokenKind::PipeEqArrow) {
-            ImplicationKind::NonOverlap
+            (first, ImplicationKind::NonOverlap, self.expr(0))
         } else {
-            self.error("'|->' or '|=>' implication in concurrent assertion");
-            ImplicationKind::Overlap // recover
+            let true_lit = Expr {
+                kind: ExprKind::IntLit {
+                    kind: IntLitKind::Decimal,
+                    raw: "1".to_string(),
+                },
+                span: start,
+            };
+            (true_lit, ImplicationKind::Overlap, first)
         };
-        let consequent = self.expr(0);
         self.expect(TokenKind::RParen, "')'");
         self.expect(TokenKind::Semi, "';'");
         Stmt::ConcurrentAssert {
