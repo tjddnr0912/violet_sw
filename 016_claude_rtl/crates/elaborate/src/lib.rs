@@ -7110,12 +7110,21 @@ impl<'s> Elaborator<'s> {
                 let sid = self.push_stmt(ir::Stmt::Release { lhs: lv });
                 b.push_stmt_id(sid);
             }
-            // v8 bump (shape-only, inert): the parser does not yet produce
-            // these — the wait-fork / SVA feature slices replace these arms
-            // with the real lowering. Loud E3009 keeps them unreachable-but-safe.
+            // ── wait fork — block on the implicit child barrier (v8) ────
+            // No condition expr and no body: the scheduler resolves it against
+            // this process's outstanding forked children (IEEE §9.6.1). Final
+            // blocks already reject it via `stmt_has_timing` above.
             ast::Stmt::WaitFork { .. } => {
-                self.error(MsgCode::ElabUnsupported, "wait fork is not yet wired");
+                let resume = b.new_block();
+                b.end_block_with(ir::Terminator::Wait {
+                    cond: ir::WaitCause::Fork,
+                    resume: resume.raw(),
+                });
+                b.start_block(resume);
             }
+            // v8 bump (shape-only, inert): the parser does not yet produce
+            // concurrent assertions — the SVA feature slice replaces this arm
+            // with the real desugar. Loud E3009 keeps it unreachable-but-safe.
             ast::Stmt::ConcurrentAssert { .. } => {
                 self.error(
                     MsgCode::ElabUnsupported,
@@ -8458,7 +8467,10 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
 /// unschedulable one. Conservative: any nested timing anywhere counts. (M-C)
 fn stmt_has_timing(s: &ast::Stmt) -> bool {
     match s {
-        ast::Stmt::DelayCtrl { .. } | ast::Stmt::EventCtrl { .. } | ast::Stmt::Wait { .. } => true,
+        ast::Stmt::DelayCtrl { .. }
+        | ast::Stmt::EventCtrl { .. }
+        | ast::Stmt::Wait { .. }
+        | ast::Stmt::WaitFork { .. } => true,
         ast::Stmt::Block { stmts, .. } => stmts.iter().any(stmt_has_timing),
         ast::Stmt::If { then_s, else_s, .. } => {
             stmt_has_timing(then_s) || else_s.as_deref().is_some_and(stmt_has_timing)

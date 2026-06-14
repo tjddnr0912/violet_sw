@@ -266,6 +266,20 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                         // Suspending: the one place the cause must be OWNED.
                         sched.suspend_on(pi, *resume, cond.clone());
                     }
+                    // `wait fork` (v8): park on the implicit child barrier, or
+                    // fall through immediately when there are no live children.
+                    WaitCause::Fork => {
+                        if sched.exec_wait_fork(pi, *resume) {
+                            bb = *resume; // no outstanding children → fall through
+                            guard += 1;
+                            if guard > sched.max_deltas_guard() {
+                                sched.mark_fatal();
+                                return Step::Fatal;
+                            }
+                            continue;
+                        }
+                        // parked by exec_wait_fork; on_child_complete resumes it.
+                    }
                     _ => sched.suspend_on(pi, *resume, cond.clone()),
                 }
                 return Step::Suspended;

@@ -55,6 +55,30 @@ pub(crate) struct Activity {
     /// P2-E `disable fork`: a killed descendant. Stale queue/waiter/wheel
     /// entries survive; the single dispatch choke (`run_body`) drops them.
     pub dead: bool,
+    /// v8 `wait fork`: when `Some`, this (parent) activity is parked until all
+    /// its outstanding immediate children report completion. `None` otherwise.
+    pub wait_fork: Option<WaitForkPark>,
+    /// `true` while this activity is SUSPENDED MID-BODY — it has run from its
+    /// `entry` and hit a blocking control (`#delay` / `wait` / `@(...)` /
+    /// `fork` / `wait fork`) without yet reaching `Return`. An edge-sensitive
+    /// `always`'s permanent `net_to_edge` entry must NOT re-trigger it from
+    /// `entry` while busy (IEEE: a process is not re-entered until it completes
+    /// and re-arms). Set on `Step::Suspended`, cleared on `Step::Done`. In-body
+    /// waiter wakes (the `resume` block) are unaffected — only the static
+    /// top-sensitivity re-fire is gated.
+    pub busy: bool,
+}
+
+/// A process blocked on `wait fork;` (IEEE §9.6.1) — parked until all of its
+/// outstanding forked children report completion. Tracked directly on the
+/// parent activity (not a `JoinBarrier`) because the cumulative child set spans
+/// every prior `fork ... join_none` / surplus `join_any` child, which report to
+/// their OWN barriers; the count here is decremented by `on_child_complete`.
+pub(crate) struct WaitForkPark {
+    /// Continuation BB where the parent resumes once `outstanding` hits 0.
+    pub resume_bb: u32,
+    /// Count of the parent's still-running immediate children.
+    pub outstanding: u32,
 }
 
 /// One live fork's join barrier.
@@ -301,6 +325,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 is_child: false,
                 reported: false,
                 dead: false,
+                wait_fork: None,
+                busy: false,
             })
             .collect();
 
@@ -511,7 +537,19 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                                 self.flush_postponed();
                                 return FinishReason::Error;
                             }
-                            Step::Suspended | Step::Done => {}
+                            // Track mid-body suspension so the permanent
+                            // edge-sensitivity entry does not re-trigger a
+                            // process that is still parked inside its body.
+                            Step::Suspended => {
+                                if let Some(a) = self.activities.get_mut(r.proc as usize) {
+                                    a.busy = true;
+                                }
+                            }
+                            Step::Done => {
+                                if let Some(a) = self.activities.get_mut(r.proc as usize) {
+                                    a.busy = false;
+                                }
+                            }
                         }
                     }
                     // Recycle the drained batch Vec when no process was woken
@@ -888,7 +926,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             // `net_to_edge`, so the indexed re-borrow is sound.
             for k in 0..self.net_to_edge[net as usize].len() {
                 let (kind, ready) = self.net_to_edge[net as usize][k];
-                if edge_fires(kind, prev, new) {
+                // Skip a process that is still SUSPENDED MID-BODY: its static
+                // edge entry is permanent (never deregistered), but IEEE does
+                // not re-enter an `always` until it completes and re-arms. Its
+                // legitimate in-body wake comes via the waiter path (b) below.
+                if edge_fires(kind, prev, new) && !self.activities[ready.proc as usize].busy {
                     push_sorted(&mut self.cur.active, ready);
                 }
             }
@@ -1582,6 +1624,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 is_child: true,
                 reported: false,
                 dead: false,
+                wait_fork: None,
+                busy: false,
             };
             // Recycle a completed child slot when available (P3-1): a freed slot's
             // old activity has reported (it cannot be queued/waiting anywhere).
@@ -1630,6 +1674,35 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         }
     }
 
+    /// Execute `wait fork;` (IEEE §9.6.1). Counts this process's outstanding
+    /// immediate children — every live (non-dead, non-reported) child activity
+    /// whose join barrier names this parent (covers the CUMULATIVE set across
+    /// all prior `fork ... join_none` and surplus `join_any` children). Returns
+    /// `true` if the parent may continue THIS activation (zero outstanding), or
+    /// `false` after parking it (`on_child_complete` re-enqueues at `resume_bb`).
+    pub(crate) fn exec_wait_fork(&mut self, parent_aid: u32, resume_bb: u32) -> bool {
+        let barriers = &self.barriers;
+        let outstanding = self
+            .activities
+            .iter()
+            .filter(|c| {
+                c.is_child
+                    && !c.dead
+                    && !c.reported
+                    && c.join_ref
+                        .is_some_and(|jr| barriers[jr as usize].parent == parent_aid)
+            })
+            .count() as u32;
+        if outstanding == 0 {
+            return true; // no live children → fall through immediately
+        }
+        self.activities[parent_aid as usize].wait_fork = Some(WaitForkPark {
+            resume_bb,
+            outstanding,
+        });
+        false // parked; on_child_complete resumes the parent at resume_bb
+    }
+
     /// A fork child has reached its barrier's join_bb. Decrement and, on the firing
     /// condition for the mode, re-enqueue the parent at `resume_bb` exactly once.
     pub(crate) fn on_child_complete(&mut self, join_ref: u32, child_aid: u32) {
@@ -1643,6 +1716,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // P3-1: the reporting child is DEAD past this point (its run_process
         // returns Step::Done right after; children never re-arm) — recycle.
         self.free_activities.push(child_aid);
+
+        // v8 `wait fork`: capture the forking parent BEFORE the barrier may be
+        // recycled below — used by the wait-fork hook at the end.
+        let parent_aid = self.barriers[join_ref as usize].parent;
 
         let b = &mut self.barriers[join_ref as usize];
         debug_assert!(
@@ -1673,6 +1750,36 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 Ready {
                     tie,
                     proc: parent,
+                    block: resume_bb,
+                },
+            );
+        }
+
+        // v8 `wait fork`: this completion also counts against the parent's
+        // parked wait-fork set (a join_none/join_any-surplus child reports to
+        // its OWN barrier above, but its parent may be blocked on `wait fork`).
+        // Decrement and resume the parent once its last child reports.
+        let wf_resume = {
+            let pa = &mut self.activities[parent_aid as usize];
+            if let Some(wf) = pa.wait_fork.as_mut() {
+                wf.outstanding = wf.outstanding.saturating_sub(1);
+                if wf.outstanding == 0 {
+                    Some(wf.resume_bb)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(resume_bb) = wf_resume {
+            self.activities[parent_aid as usize].wait_fork = None;
+            let tie = self.activities[parent_aid as usize].tie;
+            push_sorted(
+                &mut self.cur.active,
+                Ready {
+                    tie,
+                    proc: parent_aid,
                     block: resume_bb,
                 },
             );

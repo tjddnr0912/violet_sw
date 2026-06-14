@@ -3545,6 +3545,15 @@ impl<'t, 's> Parser<'t, 's> {
     fn parse_wait(&mut self) -> Stmt {
         let start = self.cur_span();
         self.bump(); // wait
+                     // `wait fork;` — `fork` is `Kw::Fork`, not an ident, so special-case it
+                     // before the `wait(expr)` path (mirrors `parse_disable`).
+        if self.at_kw(Kw::Fork) {
+            self.bump(); // fork
+            self.expect(TokenKind::Semi, "';'");
+            return Stmt::WaitFork {
+                span: start.to(self.prev_span()),
+            };
+        }
         self.expect(TokenKind::LParen, "'(' after 'wait'");
         let cond = self.expr(0);
         self.expect(TokenKind::RParen, "')'");
