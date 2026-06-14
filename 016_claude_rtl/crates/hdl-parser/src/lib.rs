@@ -3125,20 +3125,22 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Parse an SVA sequence (Phase-3 slice S4): bounded constant `##n`
-    /// cycle-delay concatenation (left-associative, looser) over primaries that
-    /// may carry a `[*n]` consecutive-repetition postfix (tighter). Range /
-    /// unbounded / goto / nonconsecutive / `throughout` / `within` forms are
-    /// deferred — they fall through to a loud error at the enclosing `expect`.
+    /// Parse an SVA sequence (Phase-3 slices S4/S5): `##n` / bounded-range
+    /// `##[m:n]` cycle-delay concatenation (left-associative, looser) over
+    /// primaries that may carry a `[*n]` / `[*m:n]` consecutive-repetition
+    /// postfix (tighter). Unbounded (`[*m:$]`/`##[m:$]`) / goto / nonconsecutive
+    /// / `throughout` / `within` forms are deferred — loud at the enclosing
+    /// `expect`. (min,max) carry the bound; max==Some(min) is the single-count
+    /// form.
     fn parse_sequence(&mut self) -> Sequence {
         let mut lhs = self.parse_seq_primary();
         while self.peek() == Some(TokenKind::HashHash) {
             self.bump(); // `##`
-            let delay = self.parse_seq_delay();
+            let (min, max) = self.parse_seq_delay();
             let rhs = self.parse_seq_primary();
             lhs = Sequence::Delay {
-                min: delay,
-                max: Some(delay),
+                min,
+                max,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             };
@@ -3147,51 +3149,73 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// A sequence primary: a boolean leaf expression, optionally followed by one
-    /// or more `[*n]` consecutive-repetition postfixes.
+    /// or more `[*n]` / `[*m:n]` consecutive-repetition postfixes.
     fn parse_seq_primary(&mut self) -> Sequence {
         let e = self.expr(0);
         let mut seq = Sequence::Boolean(e);
         while self.peek() == Some(TokenKind::LBracketStar) {
             self.bump(); // `[*`
-            let n = self.parse_seq_count();
+            let (min, max) = self.parse_seq_repeat_bounds();
             self.expect(TokenKind::RBracket, "']' to close `[*n]`");
             seq = Sequence::Repeat {
                 seq: Box::new(seq),
-                min: n,
-                max: Some(n),
+                min,
+                max,
             };
         }
         seq
     }
 
-    /// Constant cycle delay after `##`. Only a literal non-negative decimal is
-    /// accepted; `##[m:n]` ranges / `##[m:$]` unbounded are deferred (loud).
-    fn parse_seq_delay(&mut self) -> u32 {
+    /// Cycle delay after `##`: `##n` → (n, Some(n)) or bounded range `##[m:n]`
+    /// → (m, Some(n)). Unbounded `##[m:$]` is deferred (loud, recovered bounded).
+    fn parse_seq_delay(&mut self) -> (u32, Option<u32>) {
         if self.peek() == Some(TokenKind::LBracket) {
-            self.error(
-                "a constant cycle delay `##n` (range `##[m:n]` is unsupported in this subset)",
-            );
-            return 1;
+            self.bump(); // `[`
+            let lo = self.parse_small_const("a lower bound in `##[m:n]`");
+            self.expect(TokenKind::Colon, "':' in `##[m:n]`");
+            if self.peek() == Some(TokenKind::Dollar) {
+                self.bump();
+                self.error("a bounded cycle-delay range `##[m:n]` (unbounded `##[m:$]` is unsupported in this subset)");
+                self.expect(TokenKind::RBracket, "']'");
+                return (lo, Some(lo));
+            }
+            let hi = self.parse_small_const("an upper bound in `##[m:n]`");
+            self.expect(TokenKind::RBracket, "']'");
+            let (lo, hi) = (lo.min(hi), lo.max(hi));
+            return (lo, Some(hi));
         }
-        self.parse_small_const("a constant cycle delay after `##`")
+        let n = self.parse_small_const("a constant cycle delay after `##`");
+        (n, Some(n))
     }
 
-    /// Constant `[*n]` repetition count. Only a literal positive decimal;
-    /// `[*m:n]` ranges, `[*0:$]` unbounded and `[*0]` empty are deferred (loud).
-    fn parse_seq_count(&mut self) -> u32 {
-        let n = self.parse_small_const("a constant repetition count in `[*n]`");
+    /// `[*n]` repetition bounds: `[*n]` → (n, Some(n)) or bounded range `[*m:n]`
+    /// → (m, Some(n)). `[*0]`/`[*0:n]` (empty) and `[*m:$]` (unbounded) are
+    /// deferred (loud, recovered positive-bounded). Caller consumed `[*`; this
+    /// stops before `]`.
+    fn parse_seq_repeat_bounds(&mut self) -> (u32, Option<u32>) {
+        let lo = self.parse_small_const("a repetition count in `[*n]`");
         if self.peek() == Some(TokenKind::Colon) {
-            self.error(
-                "a constant repetition count `[*n]` (range `[*m:n]`/`[*n:$]` is unsupported in this subset)",
-            );
+            self.bump(); // ':'
+            if self.peek() == Some(TokenKind::Dollar) {
+                self.bump();
+                self.error("a bounded repetition range `[*m:n]` (unbounded `[*m:$]` is unsupported in this subset)");
+                return (lo.max(1), Some(lo.max(1)));
+            }
+            let hi = self.parse_small_const("an upper bound in `[*m:n]`");
+            let (lo, hi) = (lo.min(hi), lo.max(hi));
+            if lo == 0 {
+                self.error("a positive repetition lower bound (`[*0:n]` empty match is unsupported in this subset)");
+                return (1, Some(hi.max(1)));
+            }
+            return (lo, Some(hi));
         }
-        if n == 0 {
+        if lo == 0 {
             self.error(
                 "a positive repetition count (`[*0]` empty match is unsupported in this subset)",
             );
-            return 1;
+            return (1, Some(1));
         }
-        n
+        (lo, Some(lo))
     }
 
     /// Read a small unsigned decimal constant from the current `IntDecimal`
@@ -5030,13 +5054,77 @@ endmodule
         );
     }
 
-    // S15f. Deferred sequence forms (range/unbounded delays, `throughout`,
-    // `within`) stay LOUD parse errors — they pin the slice-S4 boundary.
+    // S15f (S5). Bounded ranges `##[m:n]` / `[*m:n]` now PARSE to Delay/Repeat
+    // with min != max; unbounded (`$`), `throughout`, `within` stay LOUD.
+    #[test]
+    fn concurrent_assert_seq_ranges_parse() {
+        let (su, errs) =
+            p("module m;\ninitial assert property (@(posedge clk) a ##[1:2] b |-> c);\nendmodule");
+        assert!(errs.is_empty(), "bounded delay range must parse: {errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert { antecedent, .. } = &*pb.body else {
+            panic!("expected ConcurrentAssert, got {:?}", pb.body)
+        };
+        assert!(
+            matches!(
+                antecedent,
+                Sequence::Delay {
+                    min: 1,
+                    max: Some(2),
+                    ..
+                }
+            ),
+            "expected Sequence::Delay{{1,2}}, got {antecedent:?}"
+        );
+
+        let (su2, errs2) =
+            p("module m;\ninitial assert property (@(posedge clk) a[*2:3] |-> b);\nendmodule");
+        assert!(
+            errs2.is_empty(),
+            "bounded repeat range must parse: {errs2:?}"
+        );
+        let m2 = first_module(su2.as_ref().unwrap());
+        let ModuleItem::Proc(pb2) = m2
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert { antecedent, .. } = &*pb2.body else {
+            panic!("expected ConcurrentAssert, got {:?}", pb2.body)
+        };
+        assert!(
+            matches!(
+                antecedent,
+                Sequence::Repeat {
+                    min: 2,
+                    max: Some(3),
+                    ..
+                }
+            ),
+            "expected Sequence::Repeat{{2,3}}, got {antecedent:?}"
+        );
+    }
+
+    // Still-deferred sequence forms (unbounded `$`, `throughout`, `within`,
+    // empty `[*0]`) stay LOUD parse errors — they pin the slice-S5 boundary.
     #[test]
     fn concurrent_assert_deferred_seq_forms_are_loud() {
         for src in [
             "module m;\ninitial assert property (@(posedge clk) a ##[1:$] b |-> c);\nendmodule",
-            "module m;\ninitial assert property (@(posedge clk) a[*1:3] |-> b);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a[*1:$] |-> b);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a[*0] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a throughout b |-> c);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a within b |-> c);\nendmodule",
         ] {

@@ -538,6 +538,15 @@ struct SvaRegs {
     nbas: Vec<ast::Stmt>,
 }
 
+/// Cap on the number of disjunctive ALTERNATIVES a bounded SVA sequence range
+/// (`##[m:n]`/`[*m:n]`, possibly nested/producted) may expand to before a loud
+/// reject — the range-blowup guard. Note the synthesized pipeline regs are NOT
+/// prefix-shared across alternatives, so a single `[*1:N]` allocates ~N²/2 regs
+/// (each `[*k]` alternative its own k-1 stage chain); the cap therefore bounds
+/// the worst-case reg count quadratically (≈cap²/2), not linearly. That still
+/// elaborates deterministically at the cap; prefix-sharing is a perf follow-on.
+const SVA_SEQ_ALT_CAP: usize = 256;
+
 /// Is `name` (incl. the leading `$`) an SVA sampled-value function we desugar?
 fn is_sva_sampled_fn(name: &str) -> bool {
     matches!(name, "$past" | "$rose" | "$fell" | "$stable")
@@ -6432,18 +6441,47 @@ impl<'s> Elaborator<'s> {
             // reads of synthesized prev-registers, collecting the per-clock NBA
             // updates (`prev <= signal`) that maintain them.
             let mut regs = SvaRegs::default();
-            // Flatten the antecedent Sequence into an ordered list of
-            // (boolean-term, hop-delay), then synthesize its match-this-clock
-            // signal. A single boolean term reproduces the flat-property path
-            // byte-for-byte; a real sequence (≥2 terms) builds a shift-register
-            // pipeline of 1-bit pending regs (`pipeline_nbas`).
-            let mut terms: Vec<(ast::Expr, u32)> = Vec::new();
-            self.flatten_sequence(&sva.ante, &mut regs, &mut terms);
+            // Expand the antecedent Sequence into a disjunction of (boolean-term,
+            // hop-delay) alternatives, synthesize each one's match-this-clock
+            // signal (a shift-register pipeline for ≥2 terms), and OR them. A
+            // single 1-term alternative reproduces the flat-property path
+            // byte-for-byte; bounded ranges produce >1 alternative.
+            let mut alternatives = self.expand_sequence(&sva.ante, &mut regs);
+            if alternatives.len() > SVA_SEQ_ALT_CAP {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "an SVA sequence expanded to {} alternatives (cap {}); narrow the bounded ranges",
+                        alternatives.len(),
+                        SVA_SEQ_ALT_CAP
+                    ),
+                );
+                alternatives.truncate(SVA_SEQ_ALT_CAP);
+            }
             let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
-            let ante = if terms.len() == 1 {
-                terms.pop().unwrap().0
+            let match_sigs: Vec<ast::Expr> = alternatives
+                .into_iter()
+                .map(|mut terms| {
+                    if terms.len() == 1 {
+                        terms.pop().unwrap().0
+                    } else {
+                        self.synth_seq_pipeline(terms, &mut pipeline_nbas, sp)
+                    }
+                })
+                .collect();
+            // OR the alternatives' match signals. A single signal stays raw
+            // (flat byte-identical); multiple are each reduced to a boolean
+            // (reduction-OR) before the bitwise OR.
+            let ante = if match_sigs.len() == 1 {
+                match_sigs.into_iter().next().unwrap()
             } else {
-                self.synth_seq_pipeline(terms, &mut pipeline_nbas, sp)
+                let mut it = match_sigs.into_iter();
+                let mut acc = sva_unary(ast::UnOp::RedOr, it.next().unwrap(), sp);
+                for m in it {
+                    let mb = sva_unary(ast::UnOp::RedOr, m, sp);
+                    acc = sva_binary(ast::BinOp::BitOr, acc, mb, sp);
+                }
+                acc
             };
             let cons = self.rewrite_sampled(&sva.cons, &mut regs);
 
@@ -6521,46 +6559,77 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Flatten a `Sequence` into an ordered list of `(boolean-term, hop-delay)`,
-    /// where `hop-delay` is the `##d` cycle gap BEFORE that term (the first
-    /// term's delay is unused — it is the start/seed). `[*n]` repetitions expand
-    /// to `##1` chains. Each leaf term is passed through `rewrite_sampled` so a
-    /// sampled-value fn ($past/$rose/…) inside a sequence term still works.
-    fn flatten_sequence(
+    /// Expand a `Sequence` into a DISJUNCTION of conjunctive term-lists — each a
+    /// `Vec<(boolean-term, hop-delay)>` where `hop-delay` is the `##d` cycle gap
+    /// BEFORE that term (the first term's delay is unused — it is the seed). A
+    /// bounded range `##[m:n]` / `[*m:n]` fans out into `n-m+1` (or a product of
+    /// such) alternatives; the antecedent matches if ANY alternative completes.
+    /// `[*k]` repetitions expand to `##1` chains. Each leaf term is passed
+    /// through `rewrite_sampled` (deduped by signal), so a sampled-value fn
+    /// inside a sequence term still works and is allocated once.
+    fn expand_sequence(
         &mut self,
         seq: &ast::Sequence,
         regs: &mut SvaRegs,
-        out: &mut Vec<(ast::Expr, u32)>,
-    ) {
+    ) -> Vec<Vec<(ast::Expr, u32)>> {
         match seq {
             ast::Sequence::Boolean(e) => {
                 let term = self.rewrite_sampled(e, regs);
-                out.push((term, 0));
+                vec![vec![(term, 0)]]
             }
-            ast::Sequence::Delay { min, lhs, rhs, .. } => {
-                self.flatten_sequence(lhs, regs, out);
-                let rhs_start = out.len();
-                self.flatten_sequence(rhs, regs, out);
-                // The first term of `rhs` is reached `##min` clocks after the
-                // last term of `lhs`.
-                if let Some(first_rhs) = out.get_mut(rhs_start) {
-                    first_rhs.1 = *min;
-                }
-            }
-            ast::Sequence::Repeat { seq, min, .. } => {
-                let n = (*min).max(1);
-                let base_start = out.len();
-                self.flatten_sequence(seq, regs, out);
-                let base: Vec<(ast::Expr, u32)> = out[base_start..].to_vec();
-                for _ in 1..n {
-                    let copy_start = out.len();
-                    out.extend(base.iter().cloned());
-                    // consecutive repetition: each extra copy begins one clock
-                    // after the previous copy's last term.
-                    if let Some(first) = out.get_mut(copy_start) {
-                        first.1 = 1;
+            ast::Sequence::Delay {
+                min, max, lhs, rhs, ..
+            } => {
+                let ls = self.expand_sequence(lhs, regs);
+                let rs = self.expand_sequence(rhs, regs);
+                let hi = max.unwrap_or(*min);
+                let mut out = Vec::new();
+                for d in *min..=hi {
+                    for l in &ls {
+                        for r in &rs {
+                            let mut combined = l.clone();
+                            let mut r2 = r.clone();
+                            // The first term of `rhs` is reached `##d` clocks
+                            // after the last term of `lhs`.
+                            if let Some(first) = r2.first_mut() {
+                                first.1 = d;
+                            }
+                            combined.extend(r2);
+                            out.push(combined);
+                        }
                     }
                 }
+                out
+            }
+            ast::Sequence::Repeat { seq, min, max } => {
+                let base = self.expand_sequence(seq, regs);
+                let lo = (*min).max(1);
+                let hi = max.unwrap_or(*min).max(lo);
+                let mut out = Vec::new();
+                for k in lo..=hi {
+                    // k copies of `base`, each copy after the first prefixed with
+                    // `##1`. A multi-alternative base makes this a k-fold product.
+                    let mut combos: Vec<Vec<(ast::Expr, u32)>> = vec![Vec::new()];
+                    for i in 0..k {
+                        let mut next = Vec::new();
+                        for prefix in &combos {
+                            for alt in &base {
+                                let mut copy = alt.clone();
+                                if i > 0 {
+                                    if let Some(first) = copy.first_mut() {
+                                        first.1 = 1;
+                                    }
+                                }
+                                let mut merged = prefix.clone();
+                                merged.extend(copy);
+                                next.push(merged);
+                            }
+                        }
+                        combos = next;
+                    }
+                    out.extend(combos);
+                }
+                out
             }
         }
     }

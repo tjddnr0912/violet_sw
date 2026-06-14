@@ -539,3 +539,112 @@ fn sva_seq_first_clock_no_spurious() {
         "no first-clock spurious violation expected:\n{err}\n{out}"
     );
 }
+
+// ── SVA SEQUENCE RANGES (slice S5, hand-IEEE) ────────────────────────────────
+// Bounded constant ranges `##[m:n]` cycle-delay and `[*m:n]` consecutive
+// repetition. Desugar = OR of the (n-m+1) fixed-delay alternatives (each a
+// shift-register pipeline), match = any alternative completes. No AST change
+// (reuses Sequence::Delay/Repeat min/max), no sim-ir bump. Hand-IEEE (no oracle).
+
+#[test]
+fn sva_seq_delay_range_upper_bound_fires() {
+    // a ##[1:2] b |-> c: a@t15, b at t35 (delay 2, in [1:2]) with c=0 -> the
+    // delay-2 alternative matches and fires (b is LOW at t25 so delay-1 misses).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##[1:2] b |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "delay-2 alternative of ##[1:2] must fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_delay_range_lower_bound_holds() {
+    // a ##[1:2] b |-> c: b@t25 (delay 1) with c=1 -> the delay-1 alternative
+    // holds; b is LOW at t35 so no delay-2 obligation -> clean pass.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##[1:2] b |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=1; c=1;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "delay-1 alternative holding must pass cleanly. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_repeat_range_fires() {
+    // a[*2:3] |-> b: a true 2 consecutive (t15,t25) completes the [*2] alternative
+    // at t25 with b=0 -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a[*2:3] |-> b);\n\
+         initial begin\n\
+           #10 a=1; b=0;\n\
+           #10 a=1; b=0;\n\
+           #10 a=0; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "a 2-consecutive run must satisfy [*2:3] and fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_repeat_range_below_min_vacuous() {
+    // a[*2:3] |-> b: a true only 1 clock (run=1 < min 2) -> no alternative matches
+    // -> b ignored -> exit 0.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a[*2:3] |-> b);\n\
+         initial begin\n\
+           #10 a=1; b=0;\n\
+           #10 a=0; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "a run shorter than the min repeat must impose no obligation. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
