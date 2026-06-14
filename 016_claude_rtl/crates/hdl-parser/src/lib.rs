@@ -3005,8 +3005,14 @@ impl<'t, 's> Parser<'t, 's> {
     fn parse_assert(&mut self) -> Stmt {
         let start = self.cur_span();
         self.bump(); // `assert`
+                     // v8 SVA subset: `assert property(@(clk) a |-> b);`
+        if self.at_kw(Kw::Property) {
+            return self.parse_concurrent_assert(start);
+        }
         if self.peek() != Some(TokenKind::LParen) {
-            self.error("'(' after 'assert' (concurrent/deferred assertions are unsupported in v1)");
+            self.error(
+                "'(' after 'assert' (deferred assertions `assert #0`/`assert final` are unsupported in v1)",
+            );
             return self.stmt_error_at(start);
         }
         self.bump(); // `(`
@@ -3040,6 +3046,41 @@ impl<'t, 's> Parser<'t, 's> {
             cond,
             then_s,
             else_s: Some(else_s),
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// v8 SVA subset: `assert property(@(posedge clk) antecedent |-> consequent);`
+    /// (overlapping `|->` / non-overlapping `|=>`). Single-clock, flat property —
+    /// no sequences/`##n`/repetition (those stay a loud parse error). The failure
+    /// action is the implicit `$error` synthesized at elaborate time.
+    fn parse_concurrent_assert(&mut self, start: Span) -> Stmt {
+        self.bump(); // `property`
+        self.expect(TokenKind::LParen, "'(' after 'property'");
+        // Clocking event `@(...)`. `parse_sensitivity` consumes the leading `@`.
+        let clock = if self.peek() == Some(TokenKind::At) {
+            self.parse_sensitivity()
+        } else {
+            self.error("'@(...)' clocking event in concurrent assertion");
+            Sensitivity::List(Vec::new())
+        };
+        let antecedent = self.expr(0);
+        let implication_kind = if self.eat(TokenKind::PipeArrow) {
+            ImplicationKind::Overlap
+        } else if self.eat(TokenKind::PipeEqArrow) {
+            ImplicationKind::NonOverlap
+        } else {
+            self.error("'|->' or '|=>' implication in concurrent assertion");
+            ImplicationKind::Overlap // recover
+        };
+        let consequent = self.expr(0);
+        self.expect(TokenKind::RParen, "')'");
+        self.expect(TokenKind::Semi, "';'");
+        Stmt::ConcurrentAssert {
+            clock,
+            antecedent,
+            implication_kind,
+            consequent,
             span: start.to(self.prev_span()),
         }
     }
@@ -4712,19 +4753,69 @@ endmodule
         assert!(matches!(else_s.as_deref(), Some(Stmt::Blocking { .. })));
     }
 
-    // S15c. concurrent (`assert property`) and deferred (`assert #0`) forms are
-    //       LOUD parse errors — never silently dropped.
+    // S15c. the DEFERRED (`assert #0` / `assert final`) forms stay LOUD parse
+    //       errors; the concurrent (`assert property`) subset now PARSES (v8).
     #[test]
-    fn s15c_assert_property_and_deferred_are_loud() {
-        let (_, errs) = p("module m;\ninitial assert property (@(posedge clk) a);\nendmodule");
-        assert!(
-            !errs.is_empty(),
-            "concurrent assertion must be a loud parse error"
-        );
+    fn s15c_deferred_assert_is_loud() {
         let (_, errs2) = p("module m;\ninitial assert #0 (a);\nendmodule");
         assert!(
             !errs2.is_empty(),
             "deferred assertion must be a loud parse error"
+        );
+    }
+
+    // S15d (v8 SVA subset). `assert property(@(clk) a |-> b)` parses to a
+    // `Stmt::ConcurrentAssert`; `|->` is Overlap, `|=>` is NonOverlap.
+    #[test]
+    fn concurrent_assert_property_parses_overlap_and_nonoverlap() {
+        let (su, errs) =
+            p("module m;\ninitial assert property (@(posedge clk) a |-> b);\nendmodule");
+        assert!(errs.is_empty(), "concurrent assertion must parse: {errs:?}");
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            matches!(
+                &*pb.body,
+                Stmt::ConcurrentAssert {
+                    implication_kind: ImplicationKind::Overlap,
+                    ..
+                }
+            ),
+            "expected ConcurrentAssert{{Overlap}}, got {:?}",
+            pb.body
+        );
+
+        let (su2, errs2) =
+            p("module m;\ninitial assert property (@(posedge clk) a |=> b);\nendmodule");
+        assert!(errs2.is_empty(), "non-overlap must parse: {errs2:?}");
+        let su2 = su2.unwrap();
+        let m2 = first_module(&su2);
+        let ModuleItem::Proc(pb2) = m2
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            matches!(
+                &*pb2.body,
+                Stmt::ConcurrentAssert {
+                    implication_kind: ImplicationKind::NonOverlap,
+                    ..
+                }
+            ),
+            "expected ConcurrentAssert{{NonOverlap}}, got {:?}",
+            pb2.body
         );
     }
 

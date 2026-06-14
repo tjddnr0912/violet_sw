@@ -310,6 +310,10 @@ pub enum TokenKind {
     AmpAmp, // logical AND
     #[token("||")]
     PipePipe, // logical OR
+    #[token("|->")]
+    PipeArrow, // SVA overlapping implication (v8, Phase-3)
+    #[token("|=>")]
+    PipeEqArrow, // SVA non-overlapping implication (v8, Phase-3)
 
     #[token("<")]
     Lt,
@@ -490,6 +494,8 @@ pub enum Kw {
     Package, Endpackage, Import, String,
     // --- SV procedural advanced (P2-E) ---
     Do, Unique, Priority, Final,
+    // --- SVA concurrent assertion subset (v8, Phase-3) ---
+    Property,
 }
 
 impl Kw {
@@ -557,6 +563,7 @@ impl Kw {
             "import" => Import, "string" => String,
             "do" => Do, "unique" => Unique, "priority" => Priority,
             "final" => Final,
+            "property" => Property,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)
