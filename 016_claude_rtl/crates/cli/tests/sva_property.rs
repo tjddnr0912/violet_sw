@@ -307,3 +307,235 @@ fn sva_sampled_hierarchical_signal_is_loud() {
         "expected a loud hierarchical-signal diagnostic:\n{err}"
     );
 }
+
+// ── SVA SEQUENCES (slice S4, hand-IEEE) ──────────────────────────────────────
+// Bounded compile-time-constant `##n` cycle-delay + `[*n]` consecutive repetition
+// in the ANTECEDENT, for both |-> and |=>. iverilog 13.0 rejects ALL concurrent
+// assertions (even bare |->) at COMPILE, so these are hand-IEEE pinned (no oracle).
+// Desugar = a shift-register pipeline of 1-bit pending regs synthesized into the
+// clocked checker. `a ##1 b ##1 c |-> d` becomes
+//   always @(posedge clk) begin
+//     if ((s2 & |c) & !d) $error;   // CHECK reads prior-clock pipeline state first
+//     s1 <= |a; s2 <= s1 & |b;      // NBA shift; stage0 re-seeds every clock (overlap)
+//   end
+// Clock posedges at t=5,15,25,35,...; stimulus driven at t=10,20,30,... so each value
+// is stable when sampled at the following posedge. s1/s2 are X-init so the first clocks
+// produce `if(X)` = don't-fire (Verilog X-condition is false — the lenient-X policy).
+
+#[test]
+fn sva_seq_delay_violation_fires() {
+    // a ##1 b ##1 c |-> d: a@t15, b@t25, c@t35 -> sequence ends t35 with d=0 -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0; d=0;\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "seq-delay completion with low consequent must fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_delay_holds_no_error() {
+    // same sequence but d=1 exactly when it completes (t35) -> holds, no $error.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0; d=0;\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=1;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "seq-delay completion with high consequent holds. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_delay_gap_breaks_no_obligation() {
+    // b is LOW at its slot (t25) -> the pipeline thread drops; c high later imposes
+    // NO obligation (vacuous), even with d=0.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0; d=0;\n\
+           #10 a=0; b=0; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "a dropped sequence thread must impose no obligation. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_repeat_violation_fires() {
+    // a[*3] |-> b: a high 3 consecutive clocks (t15,t25,t35), b=0 on the 3rd -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a[*3] |-> b);\n\
+         initial begin\n\
+           #10 a=1; b=0;\n\
+           #10 a=1; b=0;\n\
+           #10 a=1; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "3-consecutive repetition with low consequent must fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_repeat_holds_no_error() {
+    // a[*3] |-> b: b high on the completion clock -> holds.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a[*3] |-> b);\n\
+         initial begin\n\
+           #10 a=1; b=0;\n\
+           #10 a=1; b=0;\n\
+           #10 a=1; b=1;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "3-consecutive repetition with high consequent holds. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_nonoverlap_delays_one_clock() {
+    // a ##1 b |=> c: sequence a@t15,b@t25 matches at t25; |=> obliges c at t35. c low -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b |=> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "nonoverlap seq with low consequent next clock must fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_overlap_two_threads_both_checked() {
+    // a ##1 b |-> c with a high at t15 AND t25 -> two overlapping antecedent threads.
+    // thread A ends t25 (c=1 holds), thread B ends t35 (c=0 violates) -> fires once.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=1; b=1; c=1;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "the second overlapping thread must be enforced independently. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_antecedent_never_matches_vacuous() {
+    // a never high -> no antecedent thread ever completes -> d ignored -> exit 0.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b ##1 c |-> d);\n\
+         initial begin #40 $finish; end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "an antecedent that never matches is vacuously true. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_first_clock_no_spurious() {
+    // a ##1 b |-> c asserted from t=0: at the first posedge the pipeline reg is X, so
+    // the check is `if(X) $error` = don't-fire (no thread legitimately started pre-t0).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=1, b=1, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b |-> c);\n\
+         initial begin #8 $finish; end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "X-init pipeline must not fire on the first clock. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no first-clock spurious violation expected:\n{err}\n{out}"
+    );
+}

@@ -818,7 +818,31 @@ impl<'t, 's> Parser<'t, 's> {
     /// (queue / bounded queue — the bound parses, elaborate loud-rejects it),
     /// `[integer]`/`[time]` (assoc, integer key types only). `[*]` (wildcard
     /// assoc) is a parse error — outside the MVP.
+    /// A dimension can start with `[` or — since slice S4 fused `[*` into one
+    /// token — `[*` (the wildcard assoc `[*]` spelling). `parse_dim` handles
+    /// both; the array-dim loops gate on this so the no-space `[*]` still reaches
+    /// the precise wildcard diagnostic instead of a generic token cascade.
+    fn at_dim_start(&self) -> bool {
+        matches!(
+            self.peek(),
+            Some(TokenKind::LBracket | TokenKind::LBracketStar)
+        )
+    }
     fn parse_dim(&mut self) -> Option<Dim> {
+        // `[*]` wildcard assoc index. Since slice S4 the lexer fuses `[*` into a
+        // single `LBracketStar` token (for SVA `[*n]`), so the canonical no-space
+        // spelling never reaches the `Star` arm below — handle it here. Outside
+        // the MVP: reject loudly with the precise message, recover as a dyn dim.
+        // (The spaced `[ *]` spelling still lexes as `[`+`*` and hits the `Star`
+        // arm.)
+        if self.peek() == Some(TokenKind::LBracketStar) {
+            self.bump(); // `[*`
+            self.error(
+                "a concrete assoc key type (`[integer]`/`[time]`) — wildcard `[*]` is unsupported",
+            );
+            self.expect(TokenKind::RBracket, "']'");
+            return Some(Dim::Dyn);
+        }
         if self.peek() != Some(TokenKind::LBracket) {
             return None;
         }
@@ -1530,7 +1554,7 @@ impl<'t, 's> Parser<'t, 's> {
 
         // optional instance-array dims: `u_x [3:0] (...)` / `u_x [4] (...)`
         let mut unpacked = Vec::new();
-        while self.peek() == Some(TokenKind::LBracket) {
+        while self.at_dim_start() {
             match self.parse_dim() {
                 Some(d) => unpacked.push(d),
                 None => break,
@@ -1701,7 +1725,7 @@ impl<'t, 's> Parser<'t, 's> {
             let n_start = self.cur_span();
             let name = self.ident()?;
             let mut unpacked = Vec::new();
-            while self.peek() == Some(TokenKind::LBracket) {
+            while self.at_dim_start() {
                 match self.parse_dim() {
                     Some(d) => unpacked.push(d),
                     None => break,
@@ -3050,9 +3074,11 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// v8 SVA subset: `assert property(@(posedge clk) antecedent |-> consequent);`
-    /// (overlapping `|->` / non-overlapping `|=>`). Single-clock, flat property —
-    /// no sequences/`##n`/repetition (those stay a loud parse error). The failure
+    /// SVA subset (Phase-3): `assert property(@(posedge clk) seq |-> consequent);`
+    /// (overlapping `|->` / non-overlapping `|=>`). Single clock. The antecedent
+    /// is a `Sequence` — slice S4 added bounded `##n` cycle-delay and `[*n]`
+    /// consecutive repetition (ranges/unbounded/goto/throughout/within stay a
+    /// loud parse error). The consequent stays a flat boolean. The failure
     /// action is the implicit `$error` synthesized at elaborate time.
     fn parse_concurrent_assert(&mut self, start: Span) -> Stmt {
         self.bump(); // `property`
@@ -3064,13 +3090,14 @@ impl<'t, 's> Parser<'t, 's> {
             self.error("'@(...)' clocking event in concurrent assertion");
             Sensitivity::List(Vec::new())
         };
-        // `expr [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
-        // implication) desugars to `1'b1 |-> expr` (check `expr` every clock).
-        let first = self.expr(0);
+        // `seq [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
+        // implication) desugars to `1'b1 |-> expr` (check `expr` every clock);
+        // a bare *sequence* (multi-clock) without implication is deferred.
+        let ante_seq = self.parse_sequence();
         let (antecedent, implication_kind, consequent) = if self.eat(TokenKind::PipeArrow) {
-            (first, ImplicationKind::Overlap, self.expr(0))
+            (ante_seq, ImplicationKind::Overlap, self.expr(0))
         } else if self.eat(TokenKind::PipeEqArrow) {
-            (first, ImplicationKind::NonOverlap, self.expr(0))
+            (ante_seq, ImplicationKind::NonOverlap, self.expr(0))
         } else {
             let true_lit = Expr {
                 kind: ExprKind::IntLit {
@@ -3079,7 +3106,13 @@ impl<'t, 's> Parser<'t, 's> {
                 },
                 span: start,
             };
-            (true_lit, ImplicationKind::Overlap, first)
+            match ante_seq {
+                Sequence::Boolean(e) => (Sequence::Boolean(true_lit), ImplicationKind::Overlap, e),
+                other => {
+                    self.error("an implication `|->`/`|=>` (a bare sequence property is unsupported in this subset)");
+                    (other, ImplicationKind::Overlap, true_lit)
+                }
+            }
         };
         self.expect(TokenKind::RParen, "')'");
         self.expect(TokenKind::Semi, "';'");
@@ -3090,6 +3123,89 @@ impl<'t, 's> Parser<'t, 's> {
             consequent,
             span: start.to(self.prev_span()),
         }
+    }
+
+    /// Parse an SVA sequence (Phase-3 slice S4): bounded constant `##n`
+    /// cycle-delay concatenation (left-associative, looser) over primaries that
+    /// may carry a `[*n]` consecutive-repetition postfix (tighter). Range /
+    /// unbounded / goto / nonconsecutive / `throughout` / `within` forms are
+    /// deferred — they fall through to a loud error at the enclosing `expect`.
+    fn parse_sequence(&mut self) -> Sequence {
+        let mut lhs = self.parse_seq_primary();
+        while self.peek() == Some(TokenKind::HashHash) {
+            self.bump(); // `##`
+            let delay = self.parse_seq_delay();
+            let rhs = self.parse_seq_primary();
+            lhs = Sequence::Delay {
+                min: delay,
+                max: Some(delay),
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+        lhs
+    }
+
+    /// A sequence primary: a boolean leaf expression, optionally followed by one
+    /// or more `[*n]` consecutive-repetition postfixes.
+    fn parse_seq_primary(&mut self) -> Sequence {
+        let e = self.expr(0);
+        let mut seq = Sequence::Boolean(e);
+        while self.peek() == Some(TokenKind::LBracketStar) {
+            self.bump(); // `[*`
+            let n = self.parse_seq_count();
+            self.expect(TokenKind::RBracket, "']' to close `[*n]`");
+            seq = Sequence::Repeat {
+                seq: Box::new(seq),
+                min: n,
+                max: Some(n),
+            };
+        }
+        seq
+    }
+
+    /// Constant cycle delay after `##`. Only a literal non-negative decimal is
+    /// accepted; `##[m:n]` ranges / `##[m:$]` unbounded are deferred (loud).
+    fn parse_seq_delay(&mut self) -> u32 {
+        if self.peek() == Some(TokenKind::LBracket) {
+            self.error(
+                "a constant cycle delay `##n` (range `##[m:n]` is unsupported in this subset)",
+            );
+            return 1;
+        }
+        self.parse_small_const("a constant cycle delay after `##`")
+    }
+
+    /// Constant `[*n]` repetition count. Only a literal positive decimal;
+    /// `[*m:n]` ranges, `[*0:$]` unbounded and `[*0]` empty are deferred (loud).
+    fn parse_seq_count(&mut self) -> u32 {
+        let n = self.parse_small_const("a constant repetition count in `[*n]`");
+        if self.peek() == Some(TokenKind::Colon) {
+            self.error(
+                "a constant repetition count `[*n]` (range `[*m:n]`/`[*n:$]` is unsupported in this subset)",
+            );
+        }
+        if n == 0 {
+            self.error(
+                "a positive repetition count (`[*0]` empty match is unsupported in this subset)",
+            );
+            return 1;
+        }
+        n
+    }
+
+    /// Read a small unsigned decimal constant from the current `IntDecimal`
+    /// token (digit separators stripped). Non-literal / oversized → loud, 1.
+    fn parse_small_const(&mut self, what: &'static str) -> u32 {
+        if self.peek() == Some(TokenKind::IntDecimal) {
+            let v = self.cur_text().replace('_', "").parse::<u32>().ok();
+            self.bump();
+            if let Some(v) = v {
+                return v;
+            }
+        }
+        self.error(what);
+        1
     }
 
     // ─────────────────────── 4. control flow ───────────────────────
@@ -3691,6 +3807,19 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             p.segments[0].name = to.to_string();
         }
     };
+    // SVA sequence antecedent: recurse into every boolean leaf so a loop-index
+    // rename reaches sequence terms too (same outer-capture lesson as the
+    // EventCtrl/foreach rename arms).
+    fn fix_sequence(seq: &mut Sequence, from: &str, to: &str) {
+        match seq {
+            Sequence::Boolean(e) => fix_expr(e, from, to),
+            Sequence::Delay { lhs, rhs, .. } => {
+                fix_sequence(lhs, from, to);
+                fix_sequence(rhs, from, to);
+            }
+            Sequence::Repeat { seq, .. } => fix_sequence(seq, from, to),
+        }
+    }
     fn fix_expr(e: &mut Expr, from: &str, to: &str) {
         match &mut e.kind {
             ExprKind::Ident(p) => {
@@ -3956,7 +4085,7 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                     fix_expr(&mut ev.expr, from, to);
                 }
             }
-            fix_expr(antecedent, from, to);
+            fix_sequence(antecedent, from, to);
             fix_expr(consequent, from, to);
         }
         Stmt::WaitFork { .. } | Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
@@ -4824,6 +4953,99 @@ endmodule
             "expected ConcurrentAssert{{NonOverlap}}, got {:?}",
             pb2.body
         );
+    }
+
+    // S15e (SVA slice S4). Sequence antecedents: `##n` cycle-delay parses to
+    // `Sequence::Delay`, `[*n]` consecutive repetition to `Sequence::Repeat`.
+    #[test]
+    fn concurrent_assert_seq_delay_parses() {
+        let (su, errs) =
+            p("module m;\ninitial assert property (@(posedge clk) a ##1 b |-> c);\nendmodule");
+        assert!(
+            errs.is_empty(),
+            "sequence-delay antecedent must parse: {errs:?}"
+        );
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert {
+            antecedent,
+            implication_kind: ImplicationKind::Overlap,
+            ..
+        } = &*pb.body
+        else {
+            panic!("expected ConcurrentAssert(Overlap), got {:?}", pb.body)
+        };
+        assert!(
+            matches!(
+                antecedent,
+                Sequence::Delay {
+                    min: 1,
+                    max: Some(1),
+                    ..
+                }
+            ),
+            "expected Sequence::Delay{{1}}, got {antecedent:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_assert_seq_repeat_parses() {
+        let (su, errs) =
+            p("module m;\ninitial assert property (@(posedge clk) a[*3] |-> b);\nendmodule");
+        assert!(
+            errs.is_empty(),
+            "repetition antecedent must parse: {errs:?}"
+        );
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert { antecedent, .. } = &*pb.body else {
+            panic!("expected ConcurrentAssert, got {:?}", pb.body)
+        };
+        assert!(
+            matches!(
+                antecedent,
+                Sequence::Repeat {
+                    min: 3,
+                    max: Some(3),
+                    ..
+                }
+            ),
+            "expected Sequence::Repeat{{3}}, got {antecedent:?}"
+        );
+    }
+
+    // S15f. Deferred sequence forms (range/unbounded delays, `throughout`,
+    // `within`) stay LOUD parse errors — they pin the slice-S4 boundary.
+    #[test]
+    fn concurrent_assert_deferred_seq_forms_are_loud() {
+        for src in [
+            "module m;\ninitial assert property (@(posedge clk) a ##[1:$] b |-> c);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a[*1:3] |-> b);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a throughout b |-> c);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a within b |-> c);\nendmodule",
+        ] {
+            let (_, errs) = p(src);
+            assert!(
+                !errs.is_empty(),
+                "deferred sequence form must be loud: {src}"
+            );
+        }
     }
 
     // ════════════════════ module instantiation (PR3) ════════════════════

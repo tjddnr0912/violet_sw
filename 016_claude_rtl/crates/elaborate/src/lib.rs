@@ -521,7 +521,7 @@ fn port_list_dirs(module: &ast::ModuleDecl) -> Vec<(String, ir::PortDir)> {
 /// lowered inline — see `materialize_sva_checkers`.
 struct PendingSva {
     clock: ast::Sensitivity,
-    ante: ast::Expr,
+    ante: ast::Sequence,
     kind: ast::ImplicationKind,
     cons: ast::Expr,
     span: ast::Span,
@@ -6432,7 +6432,19 @@ impl<'s> Elaborator<'s> {
             // reads of synthesized prev-registers, collecting the per-clock NBA
             // updates (`prev <= signal`) that maintain them.
             let mut regs = SvaRegs::default();
-            let ante = self.rewrite_sampled(&sva.ante, &mut regs);
+            // Flatten the antecedent Sequence into an ordered list of
+            // (boolean-term, hop-delay), then synthesize its match-this-clock
+            // signal. A single boolean term reproduces the flat-property path
+            // byte-for-byte; a real sequence (≥2 terms) builds a shift-register
+            // pipeline of 1-bit pending regs (`pipeline_nbas`).
+            let mut terms: Vec<(ast::Expr, u32)> = Vec::new();
+            self.flatten_sequence(&sva.ante, &mut regs, &mut terms);
+            let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
+            let ante = if terms.len() == 1 {
+                terms.pop().unwrap().0
+            } else {
+                self.synth_seq_pipeline(terms, &mut pipeline_nbas, sp)
+            };
             let cons = self.rewrite_sampled(&sva.cons, &mut regs);
 
             let error_stmt = ast::Stmt::SysTaskCall {
@@ -6484,6 +6496,7 @@ impl<'s> Elaborator<'s> {
             // the NBA updates apply in the NBA region for the next clock.
             let mut stmts = vec![if_stmt];
             stmts.extend(regs.nbas);
+            stmts.extend(pipeline_nbas);
             if let Some(nba) = pending_nba {
                 stmts.push(nba);
             }
@@ -6506,6 +6519,95 @@ impl<'s> Elaborator<'s> {
             let proc = self.lower_proc_block(&pb);
             self.push_process(proc);
         }
+    }
+
+    /// Flatten a `Sequence` into an ordered list of `(boolean-term, hop-delay)`,
+    /// where `hop-delay` is the `##d` cycle gap BEFORE that term (the first
+    /// term's delay is unused — it is the start/seed). `[*n]` repetitions expand
+    /// to `##1` chains. Each leaf term is passed through `rewrite_sampled` so a
+    /// sampled-value fn ($past/$rose/…) inside a sequence term still works.
+    fn flatten_sequence(
+        &mut self,
+        seq: &ast::Sequence,
+        regs: &mut SvaRegs,
+        out: &mut Vec<(ast::Expr, u32)>,
+    ) {
+        match seq {
+            ast::Sequence::Boolean(e) => {
+                let term = self.rewrite_sampled(e, regs);
+                out.push((term, 0));
+            }
+            ast::Sequence::Delay { min, lhs, rhs, .. } => {
+                self.flatten_sequence(lhs, regs, out);
+                let rhs_start = out.len();
+                self.flatten_sequence(rhs, regs, out);
+                // The first term of `rhs` is reached `##min` clocks after the
+                // last term of `lhs`.
+                if let Some(first_rhs) = out.get_mut(rhs_start) {
+                    first_rhs.1 = *min;
+                }
+            }
+            ast::Sequence::Repeat { seq, min, .. } => {
+                let n = (*min).max(1);
+                let base_start = out.len();
+                self.flatten_sequence(seq, regs, out);
+                let base: Vec<(ast::Expr, u32)> = out[base_start..].to_vec();
+                for _ in 1..n {
+                    let copy_start = out.len();
+                    out.extend(base.iter().cloned());
+                    // consecutive repetition: each extra copy begins one clock
+                    // after the previous copy's last term.
+                    if let Some(first) = out.get_mut(copy_start) {
+                        first.1 = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synthesize the "sequence matches and ends THIS clock" boolean from a
+    /// flattened (≥2-term) term list as a shift-register pipeline of 1-bit
+    /// pending regs. `cur` starts as term0's truthiness, re-seeded every clock
+    /// (overlapping match threads are inherent to the NBA shift). For each later
+    /// term with hop-delay `d`, delay `cur` by `d` registered clocks (`d == 0` is
+    /// same-cycle `##0` fusion — no register), then AND with that term's
+    /// truthiness. A stage-reg read yields the PRIOR clock's value (the checker's
+    /// if-check runs before the NBAs), so the chain advances one term per clock.
+    /// Every term is reduced with `|` so a multi-bit term is a boolean (the F1
+    /// reduction-OR rule). Pure IR-0 — only pre-existing sim-ir nodes.
+    fn synth_seq_pipeline(
+        &mut self,
+        terms: Vec<(ast::Expr, u32)>,
+        pipeline_nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> ast::Expr {
+        let mut it = terms.into_iter();
+        let (t0, _) = it
+            .next()
+            .expect("synth_seq_pipeline requires at least one term");
+        let mut cur = sva_unary(ast::UnOp::RedOr, t0, sp); // |t0 (boolean seed)
+        for (term, delay) in it {
+            for _ in 0..delay {
+                let r = self.fresh_sva_reg(1, "seq");
+                let r_path = ast::HierPath {
+                    segments: vec![ast::Ident {
+                        name: r.clone(),
+                        span: sp,
+                    }],
+                    span: sp,
+                };
+                pipeline_nbas.push(ast::Stmt::NonBlocking {
+                    lhs: ast::Lvalue::Ident(r_path),
+                    delay: None,
+                    rhs: cur,
+                    span: sp,
+                });
+                cur = sva_ident_expr(&r, sp);
+            }
+            let term_bool = sva_unary(ast::UnOp::RedOr, term, sp);
+            cur = sva_binary(ast::BinOp::BitAnd, cur, term_bool, sp);
+        }
+        cur
     }
 
     /// Recursively rewrite SVA sampled-value functions in `e` into reads of

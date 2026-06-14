@@ -237,6 +237,8 @@ pub enum TokenKind {
     RParen,
     #[token("[")]
     LBracket,
+    #[token("[*")]
+    LBracketStar, // SVA consecutive-repetition `[*n]` (Phase-3, slice S4)
     #[token("]")]
     RBracket,
     #[token("{")]
@@ -253,6 +255,8 @@ pub enum TokenKind {
     At,
     #[token("#")]
     Hash,
+    #[token("##")]
+    HashHash, // SVA sequence cycle-delay `##n` (Phase-3, slice S4)
     #[token("?")]
     Question,
     #[token(":")]

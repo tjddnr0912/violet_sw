@@ -524,12 +524,14 @@ pub enum Stmt {
         span: Span,
     },
     /// Concurrent assertion subset (SVA, Phase-3): `assert property(@(clk) a
-    /// |-> b)` / `|=>`. Single-clock, flat property only. v8 AST flip; the
-    /// parser/elaborate desugar (sample registers + clocked `$error`) lands in
-    /// the SVA feature slices (the bump leaves it shape-only).
+    /// |-> b)` / `|=>`. The antecedent is a `Sequence` (slice S4 added bounded
+    /// `##n` cycle-delay + `[*n]` consecutive repetition; a flat boolean is
+    /// `Sequence::Boolean`); the consequent stays a flat boolean `Expr`. The
+    /// parser/elaborate desugar (shift-register pipeline + clocked `$error`)
+    /// lands in the SVA feature slices.
     ConcurrentAssert {
         clock: Sensitivity,
-        antecedent: Expr,
+        antecedent: Sequence,
         implication_kind: ImplicationKind,
         consequent: Expr,
         span: Span,
@@ -572,6 +574,37 @@ pub enum ImplicationKind {
     Overlap,
     /// `|=>` non-overlapping — consequent evaluated on the next clock tick.
     NonOverlap,
+}
+/// SVA sequence (Phase-3 subset, slice S4). A sequence describes a multi-clock
+/// match pattern in a concurrent assertion's antecedent. Slice S4 supports only
+/// bounded compile-time-constant forms (`min == max`); ranges (`##[m:n]`,
+/// `[*m:n]`), unbounded (`[*0:$]`), goto/nonconsecutive (`[->n]`/`[=n]`),
+/// `throughout`/`within` and multi-clock are deferred (loud parse errors). The
+/// elaborate desugar lowers a `Sequence` to a synthesized shift-register pipeline
+/// of 1-bit pending registers inside the clocked checker — pure IR-0, no sim-ir
+/// change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum Sequence {
+    /// A boolean leaf term. A flat property antecedent (`a |-> b`) is
+    /// `Boolean(a)`.
+    Boolean(Expr),
+    /// `lhs ##min rhs` cycle-delay concatenation. Slice S4 emits only
+    /// `min == max` (a constant delay; `max` is `Some(min)`); `##0` is
+    /// same-cycle fusion, `##1` next cycle. The range form keeps `max` for
+    /// forward compatibility but the parser rejects `min != max` (deferred).
+    Delay {
+        min: u32,
+        max: Option<u32>,
+        lhs: Box<Sequence>,
+        rhs: Box<Sequence>,
+    },
+    /// `seq[*min]` consecutive repetition. Slice S4 emits only `min == max`
+    /// (`min >= 1`); `[*0]` (empty) and ranges are deferred (loud).
+    Repeat {
+        seq: Box<Sequence>,
+        min: u32,
+        max: Option<u32>,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum CaseKind {

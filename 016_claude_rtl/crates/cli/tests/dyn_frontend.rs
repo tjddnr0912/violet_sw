@@ -278,15 +278,22 @@ endmodule
 
 #[test]
 fn wildcard_assoc_is_loud() {
-    let (_, err, ok) = run_vita_full(
-        r#"
-module t;
-  integer a [*];
-  initial a[0] = 1;
-endmodule
-"#,
-    );
-    assert!(!ok, "wildcard assoc must be rejected; stderr:\n{err}");
+    // Both the canonical no-space `[*]` (lexed as one LBracketStar since slice S4)
+    // and the spaced `[ *]` (lexed as `[`+`*`) must reject with the SAME precise
+    // wildcard diagnostic — not a generic LBracketStar-token cascade.
+    for decl in ["integer a[*];", "integer a [*];"] {
+        let (_, err, ok) = run_vita_full(&format!(
+            "module t;\n  {decl}\n  initial a[0] = 1;\nendmodule\n"
+        ));
+        assert!(
+            !ok,
+            "wildcard assoc must be rejected ({decl}); stderr:\n{err}"
+        );
+        assert!(
+            err.to_lowercase().contains("wildcard"),
+            "wildcard assoc must keep its precise diagnostic ({decl}); stderr:\n{err}"
+        );
+    }
 }
 
 #[test]
