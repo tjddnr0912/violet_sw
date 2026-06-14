@@ -151,6 +151,11 @@ impl<'t, 's> Parser<'t, 's> {
             Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
         )
     }
+    /// True if the next token is a plain identifier spelled exactly `name` — used
+    /// for SVA contextual keywords (`throughout`) that are not reserved globally.
+    fn at_ident_kw(&self, name: &str) -> bool {
+        matches!(self.peek(), Some(TokenKind::Word(WordKind::Ident))) && self.cur_text() == name
+    }
     /// True if the next token is a lexer error sentinel (verdict: dedicated handling —
     /// the lexer already emitted the LexError, so we recover WITHOUT re-reporting).
     fn at_lex_error(&self) -> bool {
@@ -3133,7 +3138,26 @@ impl<'t, 's> Parser<'t, 's> {
     /// `expect`. (min,max) carry the bound; max==Some(min) is the single-count
     /// form.
     fn parse_sequence(&mut self) -> Sequence {
-        let mut lhs = self.parse_seq_primary();
+        let first = self.parse_seq_primary();
+        // `cond throughout seq` (slice S7) — `throughout` is a contextual keyword
+        // (only special here); its left operand must be a boolean leaf, its right
+        // operand a full sequence (looser than `##`, so `g throughout a ##2 c` is
+        // `g throughout (a ##2 c)`).
+        if self.at_ident_kw("throughout") {
+            self.bump(); // `throughout`
+            let seq = self.parse_sequence();
+            return match first {
+                Sequence::Boolean(cond) => Sequence::Throughout {
+                    cond: Box::new(cond),
+                    seq: Box::new(seq),
+                },
+                _ => {
+                    self.error("`throughout` requires a boolean left operand");
+                    seq
+                }
+            };
+        }
+        let mut lhs = first;
         while self.peek() == Some(TokenKind::HashHash) {
             self.bump(); // `##`
             let (min, max) = self.parse_seq_delay();
@@ -3841,6 +3865,10 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                 fix_sequence(rhs, from, to);
             }
             Sequence::Repeat { seq, .. } => fix_sequence(seq, from, to),
+            Sequence::Throughout { cond, seq } => {
+                fix_expr(cond, from, to);
+                fix_sequence(seq, from, to);
+            }
         }
     }
     fn fix_expr(e: &mut Expr, from: &str, to: &str) {
@@ -5147,15 +5175,43 @@ endmodule
         );
     }
 
+    // S15h (S7). `cond throughout seq` parses to Sequence::Throughout.
+    #[test]
+    fn concurrent_assert_throughout_parses() {
+        let (su, errs) = p(
+            "module m;\ninitial assert property (@(posedge clk) g throughout a ##2 c |-> d);\nendmodule",
+        );
+        assert!(errs.is_empty(), "throughout must parse: {errs:?}");
+        let m = first_module(su.as_ref().unwrap());
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert { antecedent, .. } = &*pb.body else {
+            panic!("expected ConcurrentAssert, got {:?}", pb.body)
+        };
+        // `g throughout (a ##2 c)` — throughout is looser than `##`.
+        let Sequence::Throughout { seq, .. } = antecedent else {
+            panic!("expected Sequence::Throughout, got {antecedent:?}")
+        };
+        assert!(
+            matches!(&**seq, Sequence::Delay { min: 2, .. }),
+            "throughout RHS must be the `a ##2 c` sequence, got {seq:?}"
+        );
+    }
+
     // Still-deferred sequence forms (unbounded REPEAT `[*m:$]`, empty `[*0]`,
-    // `throughout`, `within`) stay LOUD parse errors — they pin the slice-S6
-    // boundary (unbounded DELAY `##[m:$]` is now supported, above).
+    // `within`) stay LOUD parse errors — they pin the slice-S7 boundary
+    // (`throughout` is now supported, above).
     #[test]
     fn concurrent_assert_deferred_seq_forms_are_loud() {
         for src in [
             "module m;\ninitial assert property (@(posedge clk) a[*1:$] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a[*0] |-> b);\nendmodule",
-            "module m;\ninitial assert property (@(posedge clk) a throughout b |-> c);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a within b |-> c);\nendmodule",
         ] {
             let (_, errs) = p(src);

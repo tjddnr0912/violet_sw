@@ -605,6 +605,10 @@ pub enum Sequence {
         min: u32,
         max: Option<u32>,
     },
+    /// `cond throughout seq` (slice S7) — the boolean `cond` must hold at every
+    /// clock of `seq`'s match window. Lowered by ANDing `cond` into the seed and
+    /// every shift stage of the synthesized pipeline (bounded inner only).
+    Throughout { cond: Box<Expr>, seq: Box<Sequence> },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum CaseKind {

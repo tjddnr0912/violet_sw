@@ -548,6 +548,30 @@ enum SeqHop {
     AtLeast(u32),
 }
 
+/// One expanded sequence alternative: an ordered (term, hop) list plus an
+/// optional already-reduced (1-bit) `throughout` guard that must hold at every
+/// clock of the window.
+type SeqAlt = (Vec<(ast::Expr, SeqHop)>, Option<ast::Expr>);
+
+/// AND two optional (1-bit) `throughout` guards. The common (top-level
+/// throughout) case has at most one guard, so no BinOp is built.
+fn and_opt(a: Option<ast::Expr>, b: Option<ast::Expr>, sp: ast::Span) -> Option<ast::Expr> {
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(x), Some(y)) => Some(sva_binary(ast::BinOp::BitAnd, x, y, sp)),
+    }
+}
+
+/// A representative span for a `Sequence` node (its first boolean leaf).
+fn seq_span(seq: &ast::Sequence) -> ast::Span {
+    match seq {
+        ast::Sequence::Boolean(e) => e.span,
+        ast::Sequence::Delay { lhs, .. } => seq_span(lhs),
+        ast::Sequence::Repeat { seq, .. } => seq_span(seq),
+        ast::Sequence::Throughout { cond, .. } => cond.span,
+    }
+}
+
 /// Cap on the number of disjunctive ALTERNATIVES a bounded SVA sequence range
 /// (`##[m:n]`/`[*m:n]`, possibly nested/producted) may expand to before a loud
 /// reject — the range-blowup guard. Note the synthesized pipeline regs are NOT
@@ -6471,11 +6495,12 @@ impl<'s> Elaborator<'s> {
             let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
             let match_sigs: Vec<ast::Expr> = alternatives
                 .into_iter()
-                .map(|mut terms| {
-                    if terms.len() == 1 {
+                .map(|(mut terms, guard)| {
+                    if terms.len() == 1 && guard.is_none() {
+                        // flat byte-identical path (single boolean, no throughout)
                         terms.pop().unwrap().0
                     } else {
-                        self.synth_seq_pipeline(terms, &mut pipeline_nbas, sp)
+                        self.synth_seq_pipeline(terms, guard, &mut pipeline_nbas, sp)
                     }
                 })
                 .collect();
@@ -6577,15 +6602,11 @@ impl<'s> Elaborator<'s> {
     /// `[*k]` repetitions expand to `##1` chains. Each leaf term is passed
     /// through `rewrite_sampled` (deduped by signal), so a sampled-value fn
     /// inside a sequence term still works and is allocated once.
-    fn expand_sequence(
-        &mut self,
-        seq: &ast::Sequence,
-        regs: &mut SvaRegs,
-    ) -> Vec<Vec<(ast::Expr, SeqHop)>> {
+    fn expand_sequence(&mut self, seq: &ast::Sequence, regs: &mut SvaRegs) -> Vec<SeqAlt> {
         match seq {
             ast::Sequence::Boolean(e) => {
                 let term = self.rewrite_sampled(e, regs);
-                vec![vec![(term, SeqHop::Fixed(0))]]
+                vec![(vec![(term, SeqHop::Fixed(0))], None)]
             }
             ast::Sequence::Delay {
                 min, max, lhs, rhs, ..
@@ -6601,17 +6622,17 @@ impl<'s> Elaborator<'s> {
                     Some(n) => (*min..=*n).map(SeqHop::Fixed).collect(),
                 };
                 for hop in hops {
-                    for l in &ls {
-                        for r in &rs {
-                            let mut combined = l.clone();
-                            let mut r2 = r.clone();
+                    for (lt, lg) in &ls {
+                        for (rt, rg) in &rs {
+                            let mut combined = lt.clone();
+                            let mut r2 = rt.clone();
                             // The first term of `rhs` is reached via `hop` after
                             // the last term of `lhs`.
                             if let Some(first) = r2.first_mut() {
                                 first.1 = hop;
                             }
                             combined.extend(r2);
-                            out.push(combined);
+                            out.push((combined, and_opt(lg.clone(), rg.clone(), seq_span(lhs))));
                         }
                     }
                 }
@@ -6625,25 +6646,44 @@ impl<'s> Elaborator<'s> {
                 for k in lo..=hi {
                     // k copies of `base`, each copy after the first prefixed with
                     // `##1`. A multi-alternative base makes this a k-fold product.
-                    let mut combos: Vec<Vec<(ast::Expr, SeqHop)>> = vec![Vec::new()];
+                    let mut combos: Vec<SeqAlt> = vec![(Vec::new(), None)];
                     for i in 0..k {
                         let mut next = Vec::new();
-                        for prefix in &combos {
-                            for alt in &base {
-                                let mut copy = alt.clone();
+                        for (pterms, pg) in &combos {
+                            for (bterms, bg) in &base {
+                                let mut copy = bterms.clone();
                                 if i > 0 {
                                     if let Some(first) = copy.first_mut() {
                                         first.1 = SeqHop::Fixed(1);
                                     }
                                 }
-                                let mut merged = prefix.clone();
+                                let mut merged = pterms.clone();
                                 merged.extend(copy);
-                                next.push(merged);
+                                let sp = seq_span(seq);
+                                next.push((merged, and_opt(pg.clone(), bg.clone(), sp)));
                             }
                         }
                         combos = next;
                     }
                     out.extend(combos);
+                }
+                out
+            }
+            ast::Sequence::Throughout { cond, seq } => {
+                let inner = self.expand_sequence(seq, regs);
+                let sp = cond.span;
+                let g = sva_unary(ast::UnOp::RedOr, self.rewrite_sampled(cond, regs), sp);
+                let mut out = Vec::new();
+                for (terms, og) in inner {
+                    // `throughout` over an unbounded inner hop (`##[m:$]`) would
+                    // need the guard threaded through the latch — deferred.
+                    if terms.iter().any(|(_, h)| matches!(h, SeqHop::AtLeast(_))) {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "`throughout` over an unbounded sequence is unsupported in this subset",
+                        );
+                    }
+                    out.push((terms, and_opt(og, Some(g.clone()), sp)));
                 }
                 out
             }
@@ -6663,19 +6703,26 @@ impl<'s> Elaborator<'s> {
     fn synth_seq_pipeline(
         &mut self,
         terms: Vec<(ast::Expr, SeqHop)>,
+        guard: Option<ast::Expr>,
         pipeline_nbas: &mut Vec<ast::Stmt>,
         sp: ast::Span,
     ) -> ast::Expr {
+        // A `throughout` guard `g` (already 1-bit) must hold at EVERY clock the
+        // thread is alive: AND it into the seed and after every shift stage.
+        let guard_and = |cur: ast::Expr| match &guard {
+            Some(g) => sva_binary(ast::BinOp::BitAnd, cur, g.clone(), sp),
+            None => cur,
+        };
         let mut it = terms.into_iter();
         let (t0, _) = it
             .next()
             .expect("synth_seq_pipeline requires at least one term");
-        let mut cur = sva_unary(ast::UnOp::RedOr, t0, sp); // |t0 (boolean seed)
+        let mut cur = guard_and(sva_unary(ast::UnOp::RedOr, t0, sp)); // |t0 & g (seed)
         for (term, hop) in it {
             match hop {
                 SeqHop::Fixed(d) => {
                     for _ in 0..d {
-                        cur = self.seq_delay_reg(cur, pipeline_nbas, sp);
+                        cur = guard_and(self.seq_delay_reg(cur, pipeline_nbas, sp));
                     }
                 }
                 SeqHop::AtLeast(m) => {

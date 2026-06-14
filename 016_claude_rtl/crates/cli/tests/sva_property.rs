@@ -754,3 +754,62 @@ fn sva_seq_delay_unbounded_no_antecedent_vacuous() {
         "no violation expected:\n{err}\n{out}"
     );
 }
+
+// ── SVA THROUGHOUT (slice S7, hand-IEEE) ─────────────────────────────────────
+// `cond throughout seq` — boolean `cond` must hold at EVERY clock of seq's match
+// window (start through end). Desugar = AND `|cond` into the seed and every
+// shift-register stage of the synthesized pipeline, so a thread dies the instant
+// cond drops. IR-0 over bounded inner sequences (unbounded inner = loud).
+
+#[test]
+fn sva_seq_throughout_holds_fires() {
+    // g throughout a ##2 c |-> d: g high across the whole window (t15,t25,t35),
+    // a ##2 c completes at t35 with d=0 -> the throughout passes and the
+    // implication fires.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, g=0, a=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) g throughout a ##2 c |-> d);\n\
+         initial begin\n\
+           #10 g=1; a=1; c=0; d=0;\n\
+           #10 g=1; a=0; c=0; d=0;\n\
+           #10 g=1; a=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "throughout holding across the window must let the match fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_throughout_violated_kills_match() {
+    // g throughout a ##2 c |-> d: g DROPS at the gap clock (t25), so the throughout
+    // is broken -> the thread dies -> no match -> d (low) imposes no obligation.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, g=0, a=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) g throughout a ##2 c |-> d);\n\
+         initial begin\n\
+           #10 g=1; a=1; c=0; d=0;\n\
+           #10 g=0; a=0; c=0; d=0;\n\
+           #10 g=1; a=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "a dropped throughout condition must kill the match. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
