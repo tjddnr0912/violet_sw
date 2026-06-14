@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<!--
+  단위 변환 계산기 — standalone(의존성 0), 15종 카테고리 실시간 양방향 변환.
+  발행처: grace-moon.com '기타' 카테고리 (slug: unit-converter-calculator).
+  WP 임베드 방식: 전체 문서를 <iframe srcdoc>로 격리 → 테마 CSS·wpautop·id 충돌 회피.
+    · NinjaFirewall이 본문의 <script>(엔티티 인코딩 &lt;script&gt; 포함, 디코딩 후 매칭)를 403 차단
+      → 발행 시 IP 화이트리스트(.htninja) 또는 방화벽 예외 필요.
+    · srcdoc 은 & < > " 전부 엔티티 인코딩(부모측 demote_body_h1/strip 정규식 무력화, 브라우저가 디코딩).
+  iframe 자동 높이(fitFrame): same-origin srcdoc 이므로 window.frameElement.style.height 로 자기 높이 조정.
+    ⚠️ 진단 함정(이 세션 실수): "하단 박스가 너무 김"의 초기 가설은 swap transform 오버플로였으나 오진.
+       실제 원인 = body{min-height:100vh} ↔ fitFrame scrollHeight 가 만드는 피드백 루프(높이 무한 증가).
+       추가로 documentElement.scrollHeight 는 viewport 에 클램프돼 다시 부풂.
+       → 해결: 측정 전 body.minHeight=0 + body.scrollHeight(콘텐츠 기준) 으로 측정.
+    별개로 "가운데 세로 막대"는 모바일 swap의 width:100%+rotate(90deg) → 폭100% 요소 회전이 원인(width:100% 제거).
+-->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>단위 변환 계산기 · Unit Converter</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --line:#334155;
+    --txt:#e2e8f0; --muted:#94a3b8; --from:#38bdf8; --to:#34d399;
+    --accent:#818cf8; --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+      "Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+    background:radial-gradient(1200px 600px at 70% -10%,#1e3a8a33,transparent),var(--bg);
+    color:var(--txt); min-height:100vh; padding:24px;
+  }
+  .wrap{max-width:920px;margin:0 auto}
+  header h1{font-size:26px;margin:0 0 4px;letter-spacing:-.3px}
+  header p{margin:0 0 20px;color:var(--muted);font-size:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;
+    padding:22px;box-shadow:var(--shadow)}
+  /* category chips */
+  .cats{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+  .chip{padding:8px 13px;border-radius:999px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--muted);font-size:13px;cursor:pointer;
+    transition:.15s;user-select:none}
+  .chip:hover{color:var(--txt);border-color:var(--accent)}
+  .chip.active{background:linear-gradient(135deg,var(--accent),#6366f1);
+    color:#fff;border-color:transparent;font-weight:600}
+  /* converter row */
+  .conv{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:end}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;
+    text-transform:uppercase;letter-spacing:.5px}
+  .field.from label{color:var(--from)} .field.to label{color:var(--to)}
+  input,select{width:100%;padding:13px 14px;border-radius:12px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--txt);font-size:18px;outline:none;transition:.15s}
+  input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px #818cf833}
+  input{font-variant-numeric:tabular-nums;font-weight:600;margin-bottom:9px}
+  select{font-size:14px;cursor:pointer}
+  .field.from input{border-color:#38bdf855}
+  .field.to input{border-color:#34d39955}
+  .swap{display:flex;align-items:center;justify-content:center;height:54px;width:46px;
+    border-radius:12px;border:1px solid var(--line);background:var(--panel2);
+    cursor:pointer;font-size:20px;color:var(--accent);transition:.15s;margin-bottom:9px}
+  .swap:hover{transform:rotate(180deg);border-color:var(--accent)}
+  .eq{margin-top:18px;text-align:center;font-size:15px;color:var(--muted)}
+  .eq b{color:var(--txt)} .eq .a{color:var(--from)} .eq .b2{color:var(--to)}
+  /* bottom scale */
+  h2{font-size:15px;margin:26px 0 4px;color:var(--txt)}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 16px}
+  .scalebox{background:var(--panel);border:1px solid var(--line);border-radius:18px;
+    padding:26px 22px 14px;box-shadow:var(--shadow);overflow-x:auto}
+  .scale{position:relative;height:160px;min-width:560px;margin:10px 6px 4px}
+  .axis{position:absolute;left:0;right:0;top:54px;height:3px;border-radius:3px;
+    background:linear-gradient(to right,#475569,#64748b)}
+  .tick{position:absolute;top:54px;transform:translateX(-50%);text-align:center}
+  .tick .dot{width:11px;height:11px;border-radius:50%;background:#64748b;margin:0 auto;
+    border:2px solid var(--panel);position:relative;top:-4px}
+  .tick .lbl{margin-top:4px}
+  .tick.lvl1 .lbl{margin-top:36px;position:relative}
+  .tick.lvl1 .lbl:before{content:'';position:absolute;left:50%;top:-32px;height:30px;border-left:1px dotted #475569}
+  .tick .u{font-size:11px;color:var(--muted);white-space:nowrap}
+  .tick .v{font-size:10.5px;color:#94a3b8;white-space:nowrap;font-variant-numeric:tabular-nums;margin-top:1px}
+  .tick.from .dot{background:var(--from);box-shadow:0 0 0 4px #38bdf833}
+  .tick.from .u{color:var(--from);font-weight:700}
+  .tick.to .dot{background:var(--to);box-shadow:0 0 0 4px #34d39933}
+  .tick.to .u{color:var(--to);font-weight:700}
+  .tick.from .v,.tick.to .v{color:var(--txt);font-weight:700}
+  .arrow{position:absolute;top:30px;height:18px;border-top:2px dashed var(--accent)}
+  .arrow:after{content:'';position:absolute;right:-1px;top:-5px;border:5px solid transparent;
+    border-left-color:var(--accent)}
+  .arrow.rev:after{right:auto;left:-1px;border-left-color:transparent;border-right-color:var(--accent)}
+  /* table */
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  td.val{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  tr.from td{color:var(--from)} tr.to td{color:var(--to)}
+  tr.from,tr.to{background:#ffffff08}
+  .impl{margin-top:22px;font-size:12.5px;color:var(--muted);line-height:1.7}
+  .impl b{color:var(--txt)}
+  @media(max-width:640px){.conv{grid-template-columns:1fr;gap:10px}.swap{transform:rotate(90deg);margin:2px auto 9px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>단위 변환 계산기</h1>
+    <p>실시간 변환 · 양방향 입력 · 하단에 단위 스케일(기준/방향) 표시</p>
+  </header>
+
+  <div class="card">
+    <div class="cats" id="cats"></div>
+    <div class="conv">
+      <div class="field from">
+        <label id="lblFrom">From</label>
+        <input id="fromVal" type="text" inputmode="decimal" autocomplete="off" placeholder="값 입력">
+        <select id="fromUnit"></select>
+      </div>
+      <div class="swap" id="swap" title="단위 교환">⇄</div>
+      <div class="field to">
+        <label id="lblTo">To</label>
+        <input id="toVal" type="text" inputmode="decimal" autocomplete="off" placeholder="실시간 결과">
+        <select id="toUnit"></select>
+      </div>
+    </div>
+    <div class="eq" id="eq"></div>
+  </div>
+
+  <h2>단위 스케일 — 변환의 기준과 방향</h2>
+  <p class="sub" id="scaleSub">선택한 카테고리의 모든 단위를 크기(로그) 순으로 배치하고, 현재 변환의 시작(파랑)·도착(초록)을 표시합니다.</p>
+  <div class="scalebox">
+    <div class="scale" id="scale"></div>
+    <table id="tbl"><thead><tr><th>단위</th><th style="text-align:right">현재 값 환산</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="impl">
+    <b>구현된 변환 (15종):</b> 길이 · 무게/질량 · 온도 · 시간 · 주파수(공학) · 데이터 크기 ·
+    속도 · 넓이 · 부피 · 압력 · 에너지 · 전력 · 힘 · 각도 · 데이터 전송률.<br>
+    <b>설계 근거:</b> 온라인 변환기 표준 카테고리(omnicalculator / unitconverters.net / convertunits.com)를
+    조사해 길이·무게·온도·부피·넓이·속도·압력·에너지·시간·데이터·전력·힘을 핵심으로 채택하고,
+    공학용 주파수·각도·데이터 전송률을 추가했습니다.
+  </div>
+</div>
+
+<script>
+/* ---------- 변환 데이터 (base 단위 기준 계수) ---------- */
+const CATS = {
+  length:{label:'길이', base:'m', def:['m','km'], units:{
+    'fm':[1e-15,'펨토미터 fm'],'pm':[1e-12,'피코미터 pm'],
+    'nm':[1e-9,'나노미터 nm'],'µm':[1e-6,'마이크로미터 µm'],'mm':[1e-3,'밀리미터 mm'],
+    'cm':[1e-2,'센티미터 cm'],'m':[1,'미터 m'],'km':[1000,'킬로미터 km'],
+    'in':[0.0254,'인치 in'],'ft':[0.3048,'피트 ft'],'yd':[0.9144,'야드 yd'],
+    'mi':[1609.344,'마일 mi'],'nmi':[1852,'해리 nmi'],'ly':[9.4607304725808e15,'광년 ly']}},
+  mass:{label:'무게', base:'kg', def:['kg','g'], units:{
+    'ng':[1e-12,'나노그램 ng'],'µg':[1e-9,'마이크로그램 µg'],
+    'mg':[1e-6,'밀리그램 mg'],'g':[1e-3,'그램 g'],'kg':[1,'킬로그램 kg'],'t':[1000,'톤 t'],
+    'oz':[0.028349523125,'온스 oz'],'lb':[0.45359237,'파운드 lb'],'st':[6.35029318,'스톤 st']}},
+  temp:{label:'온도', special:'temp', units:{
+    'C':[0,'섭씨 °C'],'F':[0,'화씨 °F'],'K':[0,'켈빈 K']}},
+  time:{label:'시간', base:'s', def:['s','ms'], units:{
+    'fs':[1e-15,'펨토초 fs'],'ps':[1e-12,'피코초 ps'],
+    'ns':[1e-9,'나노초 ns'],'µs':[1e-6,'마이크로초 µs'],'ms':[1e-3,'밀리초 ms'],'s':[1,'초 s'],
+    'min':[60,'분 min'],'h':[3600,'시간 h'],'day':[86400,'일 day'],'week':[604800,'주 week']}},
+  freq:{label:'주파수', base:'Hz', def:['Hz','kHz'], units:{
+    'nHz':[1e-9,'나노헤르츠 nHz'],'µHz':[1e-6,'마이크로헤르츠 µHz'],
+    'mHz':[1e-3,'밀리헤르츠 mHz'],'Hz':[1,'헤르츠 Hz'],'kHz':[1e3,'킬로 kHz'],
+    'MHz':[1e6,'메가 MHz'],'GHz':[1e9,'기가 GHz'],'THz':[1e12,'테라 THz']}},
+  freqtime:{label:'주파수↔주기 (t=1/f)', special:'recip', def:['kHz','ms'], units:{
+    /* 3번째 원소 = 종류: 'f'=주파수(계수→Hz), 't'=시간(계수→s). 교차 시 역수 변환 */
+    'THz':[1e12,'주파수 THz','f'],'GHz':[1e9,'주파수 GHz','f'],'MHz':[1e6,'주파수 MHz','f'],
+    'kHz':[1e3,'주파수 kHz','f'],'Hz':[1,'주파수 Hz','f'],
+    'mHz':[1e-3,'주파수 mHz','f'],'µHz':[1e-6,'주파수 µHz','f'],
+    'fs':[1e-15,'주기 fs','t'],'ps':[1e-12,'주기 ps','t'],
+    'ns':[1e-9,'주기 ns','t'],'µs':[1e-6,'주기 µs','t'],'ms':[1e-3,'주기 ms','t'],
+    's':[1,'주기 s','t'],'min':[60,'주기 min','t']}},
+  data:{label:'데이터 크기', base:'B', units:{
+    'bit':[0.125,'비트 bit'],'B':[1,'바이트 B'],'KB':[1e3,'킬로바이트 KB'],'MB':[1e6,'메가 MB'],
+    'GB':[1e9,'기가 GB'],'TB':[1e12,'테라 TB'],'PB':[1e15,'페타 PB'],
+    'KiB':[1024,'키비 KiB'],'MiB':[1048576,'메비 MiB'],'GiB':[1073741824,'기비 GiB']}},
+  speed:{label:'속도', base:'m/s', def:['km/h','mph'], units:{
+    'mm/s':[1e-3,'mm/s'],'cm/s':[1e-2,'cm/s'],
+    'm/s':[1,'m/s'],'km/h':[1/3.6,'km/h'],'mph':[0.44704,'mph'],'knot':[0.514444,'노트 knot'],'ft/s':[0.3048,'ft/s']}},
+  area:{label:'넓이', base:'m²', def:['m²','km²'], units:{
+    'nm²':[1e-18,'nm²'],'µm²':[1e-12,'µm²'],
+    'mm²':[1e-6,'mm²'],'cm²':[1e-4,'cm²'],'m²':[1,'m²'],'km²':[1e6,'km²'],
+    'ha':[1e4,'헥타르 ha'],'acre':[4046.8564224,'에이커 acre'],'ft²':[0.09290304,'ft²'],'평':[3.3057851,'평']}},
+  volume:{label:'부피', base:'L', def:['L','mL'], units:{
+    'nL':[1e-9,'나노리터 nL'],'µL':[1e-6,'마이크로리터 µL'],
+    'mL':[1e-3,'mL'],'L':[1,'리터 L'],'m³':[1000,'m³'],'gal':[3.785411784,'갤런(US) gal'],
+    'qt':[0.946352946,'쿼트 qt'],'pt':[0.473176473,'파인트 pt'],'cup':[0.2365882365,'컵 cup'],'floz':[0.0295735296,'액량온스 fl oz']}},
+  pressure:{label:'압력', base:'Pa', def:['bar','psi'], units:{
+    'µPa':[1e-6,'µPa'],'mPa':[1e-3,'mPa'],
+    'Pa':[1,'파스칼 Pa'],'kPa':[1e3,'kPa'],'MPa':[1e6,'MPa'],'bar':[1e5,'바 bar'],
+    'atm':[101325,'기압 atm'],'psi':[6894.757293,'psi'],'mmHg':[133.322387415,'mmHg']}},
+  energy:{label:'에너지', base:'J', units:{
+    'J':[1,'줄 J'],'kJ':[1e3,'kJ'],'cal':[4.184,'칼로리 cal'],'kcal':[4184,'kcal'],
+    'Wh':[3600,'Wh'],'kWh':[3.6e6,'kWh'],'eV':[1.602176634e-19,'eV'],
+    'meV':[1.602176634e-22,'meV'],'µeV':[1.602176634e-25,'µeV'],'BTU':[1055.05585262,'BTU']}},
+  power:{label:'전력', base:'W', def:['W','kW'], units:{
+    'nW':[1e-9,'nW'],'µW':[1e-6,'µW'],
+    'mW':[1e-3,'mW'],'W':[1,'와트 W'],'kW':[1e3,'kW'],'MW':[1e6,'MW'],'hp':[745.69987158,'마력 hp']}},
+  force:{label:'힘', base:'N', def:['N','kgf'], units:{
+    'nN':[1e-9,'nN'],'µN':[1e-6,'µN'],
+    'dyn':[1e-5,'다인 dyn'],'N':[1,'뉴턴 N'],'kN':[1e3,'kN'],'kgf':[9.80665,'kgf'],'lbf':[4.4482216153,'lbf']}},
+  angle:{label:'각도', base:'rad', def:['deg','rad'], units:{
+    'µas':[Math.PI/648000000000,'마이크로각초 µas'],'mas':[Math.PI/648000000,'밀리각초 mas'],
+    'arcsec':[Math.PI/648000,'각초 ″'],'arcmin':[Math.PI/10800,'각분 ′'],'deg':[Math.PI/180,'도 °'],
+    'grad':[Math.PI/200,'그라드 grad'],'rad':[1,'라디안 rad'],'turn':[2*Math.PI,'회전 turn']}},
+  datarate:{label:'전송률', base:'bps', units:{
+    'bps':[1,'bps'],'kbps':[1e3,'kbps'],'Mbps':[1e6,'Mbps'],'Gbps':[1e9,'Gbps'],
+    'B/s':[8,'B/s'],'KB/s':[8e3,'KB/s'],'MB/s':[8e6,'MB/s']}},
+};
+
+/* ---------- 온도 특수 변환 ---------- */
+function tempToK(v,u){return u==='C'?v+273.15:u==='F'?(v-32)*5/9+273.15:v;}
+function tempFromK(k,u){return u==='C'?k-273.15:u==='F'?(k-273.15)*9/5+32:k;}
+function convert(catKey,val,from,to){
+  const c=CATS[catKey];
+  if(c.special==='temp')return tempFromK(tempToK(val,from),to);
+  if(c.special==='recip'){           // 주파수↔주기: t = 1/f, f = 1/t
+    const U=c.units, fk=U[from][2], tk=U[to][2];
+    if(fk===tk) return (val*U[from][0])/U[to][0];        // f→f / t→t (선형)
+    if(fk==='f'){const Hz=val*U[from][0]; return (1/Hz)/U[to][0];}  // f→t: t=1/f
+    const sec=val*U[from][0]; return (1/sec)/U[to][0];   // t→f: f=1/t
+  }
+  return (val*c.units[from][0])/c.units[to][0];
+}
+
+/* ---------- 숫자 포맷 ---------- */
+function fmt(n){
+  if(n===''||n===null||n===undefined||Number.isNaN(n))return '';
+  if(!isFinite(n))return '∞';
+  if(n===0)return '0';
+  const a=Math.abs(n);
+  if(a>=1e13||a<1e-6)return n.toExponential(6).replace(/(\.\d*?)0+e/,'$1e').replace(/\.e/,'e');
+  return Number(n.toPrecision(9)).toLocaleString('en-US',{maximumFractionDigits:9});
+}
+
+/* ---------- 상태 ---------- */
+let cat='length', lastEdited='from', freqDir='f2t';  // recip 방향: f2t(주파수→주기) | t2f(주기→주파수)
+const $=id=>document.getElementById(id);
+
+function buildCats(){
+  const box=$('cats'); box.innerHTML='';
+  Object.entries(CATS).forEach(([k,c])=>{
+    const el=document.createElement('div');
+    el.className='chip'+(k===cat?' active':''); el.textContent=c.label; el.dataset.k=k;
+    el.onclick=()=>{cat=k;buildCats();buildUnits();recompute('from');};
+    box.appendChild(el);
+  });
+}
+function fillSel(id,keys,c){
+  const sel=$(id); sel.innerHTML='';
+  keys.forEach(u=>{const o=document.createElement('option');o.value=u;o.textContent=c.units[u][1];sel.appendChild(o);});
+}
+function recipKind(role){ // role 'from'|'to' → 단위 종류('f'|'t')
+  const f=(freqDir==='f2t'); return role==='from'?(f?'f':'t'):(f?'t':'f');
+}
+function buildUnits(){
+  const c=CATS[cat];
+  if(c.special==='recip'){
+    // FROM=한 종류(예: 주파수)의 여러 단위, TO=다른 종류(주기). ⇄로 방향 전환.
+    const fromKeys=Object.keys(c.units).filter(u=>c.units[u][2]===recipKind('from'));
+    const toKeys  =Object.keys(c.units).filter(u=>c.units[u][2]===recipKind('to'));
+    fillSel('fromUnit',fromKeys,c); fillSel('toUnit',toKeys,c);
+    $('fromUnit').value=(freqDir==='f2t'?'kHz':'ms');
+    $('toUnit').value  =(freqDir==='f2t'?'ms':'kHz');
+    if($('fromVal').value==='')$('fromVal').value='1';
+    return;
+  }
+  const keys=Object.keys(c.units);
+  ['fromUnit','toUnit'].forEach((id,i)=>{
+    fillSel(id,keys,c);
+    $(id).value=(c.def&&c.def[i])?c.def[i]:keys[i===0?0:Math.min(1,keys.length-1)];
+  });
+  if($('fromVal').value==='')$('fromVal').value='1';
+}
+
+function recompute(src){
+  const fu=$('fromUnit').value, tu=$('toUnit').value;
+  if(src==='from'||src===undefined){
+    const v=parseFloat($('fromVal').value);
+    $('toVal').value = ($('fromVal').value.trim()===''||Number.isNaN(v))?'':fmt(convert(cat,v,fu,tu));
+    lastEdited='from';
+  } else {
+    const v=parseFloat($('toVal').value);
+    $('fromVal').value = ($('toVal').value.trim()===''||Number.isNaN(v))?'':fmt(convert(cat,v,tu,fu));
+    lastEdited='to';
+  }
+  updateLabels(); updateEq(); buildScale(); buildTable(); fitFrame();
+}
+function updateLabels(){
+  const c=CATS[cat];
+  $('lblFrom').textContent='From · '+c.label;
+  $('lblTo').textContent='To · '+c.label;
+}
+function updateEq(){
+  const fu=$('fromUnit').value, tu=$('toUnit').value;
+  const one=convert(cat,1,fu,tu);
+  $('eq').innerHTML=`기준: <b>1</b> <span class="a">${fu}</span> = <b>${fmt(one)}</b> <span class="b2">${tu}</span>`;
+}
+
+/* 현재 from 값(없으면 1)을 모든 단위로 환산하기 위한 기준값 */
+function currentFromValue(){
+  const v=parseFloat($('fromVal').value);
+  return Number.isNaN(v)?1:v;
+}
+
+/* iframe(srcdoc, same-origin) 임베드 시 부모 iframe 높이를 콘텐츠에 맞춤. standalone에선 무해. */
+function fitFrame(){
+  if(window.frameElement){
+    try{
+      document.body.style.minHeight='0';  // iframe 내 min-height:100vh ↔ scrollHeight 피드백 루프 차단
+      // documentElement.scrollHeight는 viewport에 클램프돼 다시 부풀므로 body 콘텐츠 높이로 측정
+      window.frameElement.style.height=(document.body.scrollHeight+14)+'px';
+    }catch(e){}
+  }
+}
+
+function buildScale(){
+  const box=$('scale'); box.innerHTML='';
+  const c=CATS[cat], fu=$('fromUnit').value, tu=$('toUnit').value, base=currentFromValue();
+  const axis=document.createElement('div'); axis.className='axis'; box.appendChild(axis);
+  // recip은 FROM 그룹(예: 주파수)만 스케일에 표시 — 각 From 단위를 선택한 TO(주기) 단위로 환산.
+  let keys=Object.keys(c.units);
+  const isRecip=c.special==='recip';
+  if(isRecip) keys=keys.filter(u=>c.units[u][2]===c.units[fu][2]);
+  let xOf;
+  if(c.special==='temp'){
+    $('scaleSub').textContent='온도는 크기비(로그)가 없어 단위를 균등 배치 — 각 단위를 From으로 보고 선택한 TO('+tu+')로 환산. 파랑=From.';
+    xOf=u=>keys.indexOf(u)/(keys.length-1)*100;
+  } else {
+    $('scaleSub').textContent=(isRecip
+      ? 'FROM('+(recipKind('from')==='f'?'주파수':'주기')+')의 각 단위를 선택한 TO('+tu+', '+(recipKind('to')==='f'?'주파수':'주기')+')로 t=1/f 환산. 오른쪽일수록 큰 단위. 파랑=From.'
+      : '단위를 크기(로그) 순으로 배치 — 오른쪽일수록 큰 단위. 각 단위를 From으로 보고 선택한 TO('+tu+')로 환산. 파랑=From, 초록=To.');
+    const lg=u=>Math.log10(c.units[u][0]);
+    const ls=keys.map(lg), lo=Math.min(...ls), hi=Math.max(...ls), span=(hi-lo)||1;
+    xOf=u=>((lg(u)-lo)/span)*100;
+  }
+  box.style.minWidth=Math.max(560, keys.length*82)+'px';
+  // 각 단위를 From으로 보고 현재 값을 선택한 TO 단위로 환산해 표시. x순 정렬 후 2단 stagger로 겹침 방지.
+  const items=keys.map(u=>({u, x:xOf(u), val:fmt(convert(cat,base,u,tu)), isFrom:u===fu, isTo:(!isRecip&&u===tu)}))
+                  .sort((a,b)=>a.x-b.x);
+  items.forEach((it,i)=>placeTick(box,it.x,it.u,it.val,it.isFrom,it.isTo,i%2));
+  if(!isRecip) drawArrow(box,xOf(fu),xOf(tu));  // recip은 TO가 다른 그룹이라 화살표 없음
+}
+function placeTick(box,xPct,unit,val,isFrom,isTo,lvl){
+  const t=document.createElement('div');
+  t.className='tick'+(isFrom?' from':'')+(isTo?' to':'')+(lvl?' lvl1':'');
+  t.style.left=xPct+'%';
+  t.innerHTML=`<div class="dot"></div><div class="lbl"><div class="u">${unit}</div><div class="v">${val}</div></div>`;
+  box.appendChild(t);
+}
+function drawArrow(box,x1,x2){
+  const a=document.createElement('div'); a.className='arrow'+(x2<x1?' rev':'');
+  const L=Math.min(x1,x2), R=Math.max(x1,x2);
+  a.style.left=L+'%'; a.style.width=(R-L)+'%';
+  box.appendChild(a);
+}
+
+function buildTable(){
+  const c=CATS[cat], fu=$('fromUnit').value, tu=$('toUnit').value, base=currentFromValue();
+  const ths=$('tbl').querySelectorAll('thead th');
+  ths[0].textContent='단위 (From)'; ths[1].textContent='→ '+tu+' 환산';
+  const tb=$('tbl').querySelector('tbody'); tb.innerHTML='';
+  // recip은 FROM 그룹(예: 주파수) 단위만 행으로 — 각 From 단위를 선택한 TO로 환산.
+  let keys=Object.keys(c.units);
+  if(c.special==='recip') keys=keys.filter(u=>c.units[u][2]===c.units[fu][2]);
+  keys.forEach(u=>{
+    const tr=document.createElement('tr');
+    if(u===fu)tr.className='from'; if(u===tu)tr.className='to';
+    // 각 단위(u)를 From으로 보고 현재 값을 선택한 TO 단위(tu)로 환산
+    tr.innerHTML=`<td>${c.units[u][1]}</td><td class="val">${fmt(convert(cat,base,u,tu))}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+/* ---------- 이벤트 ---------- */
+$('fromVal').addEventListener('input',()=>recompute('from'));
+$('toVal').addEventListener('input',()=>recompute('to'));
+$('fromUnit').addEventListener('change',()=>recompute(lastEdited));
+$('toUnit').addEventListener('change',()=>recompute(lastEdited));
+$('swap').addEventListener('click',()=>{
+  if(CATS[cat].special==='recip'){
+    const oldTo=$('toVal').value;            // 역할 교환 → 새 from 값 = 옛 to 값
+    freqDir=(freqDir==='f2t')?'t2f':'f2t';
+    buildUnits();
+    $('fromVal').value=oldTo||$('fromVal').value;
+    recompute('from'); return;
+  }
+  const fu=$('fromUnit'),tu=$('toUnit');[fu.value,tu.value]=[tu.value,fu.value];
+  $('fromVal').value=$('toVal').value; recompute('from');
+});
+
+/* ---------- init ---------- */
+buildCats(); buildUnits(); recompute('from');
+window.addEventListener('resize',fitFrame);
+window.addEventListener('load',fitFrame);
+</script>
+</body>
+</html>
