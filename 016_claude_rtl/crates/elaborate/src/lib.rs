@@ -548,10 +548,50 @@ enum SeqHop {
     AtLeast(u32),
 }
 
+/// A term in a flattened sequence alternative: a plain boolean, or a
+/// goto/nonconsecutive repetition of a boolean (synthesized as an existence-
+/// latch FSM rather than a fixed shift).
+#[derive(Clone)]
+enum SeqTerm {
+    Bool(ast::Expr),
+    /// `b[->n]` — completes on the n-th (gap-allowed) occurrence of `b`.
+    Goto(ast::Expr, u32),
+    /// `b[=n]` — n occurrences of `b`, match extends past the n-th until the next.
+    Nonconsec(ast::Expr, u32),
+}
+
 /// One expanded sequence alternative: an ordered (term, hop) list plus an
 /// optional already-reduced (1-bit) `throughout` guard that must hold at every
 /// clock of the window.
-type SeqAlt = (Vec<(ast::Expr, SeqHop)>, Option<ast::Expr>);
+type SeqAlt = (Vec<(SeqTerm, SeqHop)>, Option<ast::Expr>);
+
+/// Build a `name <= rhs;` NBA to an already-named synthesized reg.
+fn sva_nb(name: &str, rhs: ast::Expr, sp: ast::Span) -> ast::Stmt {
+    ast::Stmt::NonBlocking {
+        lhs: ast::Lvalue::Ident(ast::HierPath {
+            segments: vec![ast::Ident {
+                name: name.to_string(),
+                span: sp,
+            }],
+            span: sp,
+        }),
+        delay: None,
+        rhs,
+        span: sp,
+    }
+}
+
+/// The 1-bit constant `1'b1` — the activation for a leading goto/nonconsec term
+/// (a counting thread starts every clock).
+fn sva_one(sp: ast::Span) -> ast::Expr {
+    ast::Expr {
+        kind: ast::ExprKind::IntLit {
+            kind: ast::IntLitKind::Sized,
+            raw: "1'b1".to_string(),
+        },
+        span: sp,
+    }
+}
 
 /// AND two optional (1-bit) `throughout` guards. The common (top-level
 /// throughout) case has at most one guard, so no BinOp is built.
@@ -6495,13 +6535,19 @@ impl<'s> Elaborator<'s> {
             let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
             let match_sigs: Vec<ast::Expr> = alternatives
                 .into_iter()
-                .map(|(mut terms, guard)| {
+                .map(|(terms, guard)| {
+                    // Flat byte-identical path: a single PLAIN BOOLEAN term with
+                    // no throughout guard reproduces the old `ante` exactly. A
+                    // single goto/nonconsec term still needs the FSM (synth).
                     if terms.len() == 1 && guard.is_none() {
-                        // flat byte-identical path (single boolean, no throughout)
-                        terms.pop().unwrap().0
-                    } else {
-                        self.synth_seq_pipeline(terms, guard, &mut pipeline_nbas, sp)
+                        if let SeqTerm::Bool(_) = terms[0].0 {
+                            let (SeqTerm::Bool(e), _) = terms.into_iter().next().unwrap() else {
+                                unreachable!()
+                            };
+                            return e;
+                        }
                     }
+                    self.synth_seq_pipeline(terms, guard, &mut pipeline_nbas, sp)
                 })
                 .collect();
             // OR the alternatives' match signals. A single signal stays raw
@@ -6606,7 +6652,7 @@ impl<'s> Elaborator<'s> {
         match seq {
             ast::Sequence::Boolean(e) => {
                 let term = self.rewrite_sampled(e, regs);
-                vec![(vec![(term, SeqHop::Fixed(0))], None)]
+                vec![(vec![(SeqTerm::Bool(term), SeqHop::Fixed(0))], None)]
             }
             ast::Sequence::Delay {
                 min, max, lhs, rhs, ..
@@ -6638,7 +6684,39 @@ impl<'s> Elaborator<'s> {
                 }
                 out
             }
-            ast::Sequence::Repeat { seq, min, max } => {
+            ast::Sequence::Repeat {
+                seq,
+                min,
+                kind: kind @ (ast::RepeatKind::Goto | ast::RepeatKind::Nonconsec),
+                ..
+            } => {
+                // goto `[->n]` / nonconsec `[=n]` synthesize an existence-latch
+                // FSM rather than a fixed shift, so they become a single FSM
+                // term (boolean operand only; `min == max == n`).
+                let n = (*min).max(1);
+                let ast::Sequence::Boolean(b) = &**seq else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "goto/nonconsec repetition requires a boolean operand in this subset",
+                    );
+                    return vec![(
+                        vec![(SeqTerm::Bool(sva_one(seq_span(seq))), SeqHop::Fixed(0))],
+                        None,
+                    )];
+                };
+                let bt = self.rewrite_sampled(b, regs);
+                let term = match kind {
+                    ast::RepeatKind::Goto => SeqTerm::Goto(bt, n),
+                    _ => SeqTerm::Nonconsec(bt, n),
+                };
+                vec![(vec![(term, SeqHop::Fixed(0))], None)]
+            }
+            ast::Sequence::Repeat {
+                seq,
+                min,
+                max,
+                kind: ast::RepeatKind::Consec,
+            } => {
                 let base = self.expand_sequence(seq, regs);
                 let lo = (*min).max(1);
                 let hi = max.unwrap_or(*min).max(lo);
@@ -6675,12 +6753,15 @@ impl<'s> Elaborator<'s> {
                 let g = sva_unary(ast::UnOp::RedOr, self.rewrite_sampled(cond, regs), sp);
                 let mut out = Vec::new();
                 for (terms, og) in inner {
-                    // `throughout` over an unbounded inner hop (`##[m:$]`) would
-                    // need the guard threaded through the latch — deferred.
-                    if terms.iter().any(|(_, h)| matches!(h, SeqHop::AtLeast(_))) {
+                    // `throughout` over an unbounded inner hop (`##[m:$]`) or a
+                    // goto/nonconsec FSM term would need the guard threaded
+                    // through the latch/FSM — deferred.
+                    if terms.iter().any(|(t, h)| {
+                        matches!(h, SeqHop::AtLeast(_)) || !matches!(t, SeqTerm::Bool(_))
+                    }) {
                         self.error(
                             MsgCode::ElabUnsupported,
-                            "`throughout` over an unbounded sequence is unsupported in this subset",
+                            "`throughout` over an unbounded or goto/nonconsec sequence is unsupported in this subset",
                         );
                     }
                     out.push((terms, and_opt(og, Some(g.clone()), sp)));
@@ -6702,7 +6783,7 @@ impl<'s> Elaborator<'s> {
     /// reduction-OR rule). Pure IR-0 — only pre-existing sim-ir nodes.
     fn synth_seq_pipeline(
         &mut self,
-        terms: Vec<(ast::Expr, SeqHop)>,
+        terms: Vec<(SeqTerm, SeqHop)>,
         guard: Option<ast::Expr>,
         pipeline_nbas: &mut Vec<ast::Stmt>,
         sp: ast::Span,
@@ -6717,7 +6798,14 @@ impl<'s> Elaborator<'s> {
         let (t0, _) = it
             .next()
             .expect("synth_seq_pipeline requires at least one term");
-        let mut cur = guard_and(sva_unary(ast::UnOp::RedOr, t0, sp)); // |t0 & g (seed)
+        // Seed: a Bool term is just `|t0`; a leading goto/nonconsec activates a
+        // counting thread every clock (act = 1'b1).
+        let seed = match t0 {
+            SeqTerm::Bool(e) => sva_unary(ast::UnOp::RedOr, e, sp),
+            SeqTerm::Goto(b, n) => self.goto_fsm(sva_one(sp), b, n, pipeline_nbas, sp),
+            SeqTerm::Nonconsec(b, n) => self.nonconsec_fsm(sva_one(sp), b, n, pipeline_nbas, sp),
+        };
+        let mut cur = guard_and(seed);
         for (term, hop) in it {
             match hop {
                 SeqHop::Fixed(d) => {
@@ -6754,9 +6842,92 @@ impl<'s> Elaborator<'s> {
                     cur = sva_ident_expr(&armed, sp);
                 }
             }
-            let term_bool = sva_unary(ast::UnOp::RedOr, term, sp);
-            cur = sva_binary(ast::BinOp::BitAnd, cur, term_bool, sp);
+            // Apply the term to the (post-hop) activation `cur`:
+            cur = match term {
+                SeqTerm::Bool(e) => sva_binary(
+                    ast::BinOp::BitAnd,
+                    cur,
+                    sva_unary(ast::UnOp::RedOr, e, sp),
+                    sp,
+                ),
+                SeqTerm::Goto(b, n) => self.goto_fsm(cur, b, n, pipeline_nbas, sp),
+                SeqTerm::Nonconsec(b, n) => self.nonconsec_fsm(cur, b, n, pipeline_nbas, sp),
+            };
         }
+        cur
+    }
+
+    /// Goto repetition `b[->n]` (slice S8). `act` is the (this-clock) activation:
+    /// a counting thread starts wherever `act` is true. Existence-latch FSM with
+    /// `n` 1-bit regs `reg_0..reg_{n-1}` (`reg_s` = "∃ thread that has seen `s`
+    /// b's, pending the next"); a `b` advances every stage. Returns the
+    /// match-this-clock signal `b & avail_{n-1}` (the n-th b). Exact for the
+    /// `|->` any-completion semantics. Pure IR-0.
+    fn goto_fsm(
+        &mut self,
+        act: ast::Expr,
+        b: ast::Expr,
+        n: u32,
+        nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> ast::Expr {
+        let n = n.max(1) as usize;
+        let regs: Vec<String> = (0..n).map(|_| self.fresh_sva_reg(1, "gto")).collect();
+        let bb = || sva_unary(ast::UnOp::RedOr, b.clone(), sp); // |b
+        let nbb = || sva_unary(ast::UnOp::BitNot, bb(), sp); // ~|b
+                                                             // avail_s = reg_s, except avail_0 also admits a freshly-activated thread.
+        let avail = |s: usize| -> ast::Expr {
+            if s == 0 {
+                sva_binary(
+                    ast::BinOp::BitOr,
+                    sva_ident_expr(&regs[0], sp),
+                    act.clone(),
+                    sp,
+                )
+            } else {
+                sva_ident_expr(&regs[s], sp)
+            }
+        };
+        // reg_0 <= avail_0 & ~b  (seen-0 threads persist while no b)
+        nbas.push(sva_nb(
+            &regs[0],
+            sva_binary(ast::BinOp::BitAnd, avail(0), nbb(), sp),
+            sp,
+        ));
+        // reg_s <= (b & avail_{s-1}) | (~b & reg_s)  for s = 1..n-1
+        #[allow(clippy::needless_range_loop)] // s indexes regs AND feeds avail(s-1)
+        for s in 1..n {
+            let adv = sva_binary(ast::BinOp::BitAnd, bb(), avail(s - 1), sp);
+            let stay = sva_binary(ast::BinOp::BitAnd, nbb(), sva_ident_expr(&regs[s], sp), sp);
+            nbas.push(sva_nb(
+                &regs[s],
+                sva_binary(ast::BinOp::BitOr, adv, stay, sp),
+                sp,
+            ));
+        }
+        // match = b & avail_{n-1}
+        sva_binary(ast::BinOp::BitAnd, bb(), avail(n - 1), sp)
+    }
+
+    /// Nonconsecutive repetition `b[=n]` (slice S8) = goto to the n-th b, then an
+    /// `ext` latch that keeps the match alive on subsequent non-b clocks (a
+    /// further b would be the (n+1)-th and breaks it). Output this clock =
+    /// `match_g | (ext & ~b)`; the latch holds exactly that. Pure IR-0.
+    fn nonconsec_fsm(
+        &mut self,
+        act: ast::Expr,
+        b: ast::Expr,
+        n: u32,
+        nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> ast::Expr {
+        let match_g = self.goto_fsm(act, b.clone(), n, nbas, sp);
+        let ext = self.fresh_sva_reg(1, "ncx");
+        let nbb = sva_unary(ast::UnOp::BitNot, sva_unary(ast::UnOp::RedOr, b, sp), sp);
+        let ext_alive = sva_binary(ast::BinOp::BitAnd, sva_ident_expr(&ext, sp), nbb, sp);
+        // cur = match_g | (ext & ~b); ext <= cur (the same expression).
+        let cur = sva_binary(ast::BinOp::BitOr, match_g, ext_alive, sp);
+        nbas.push(sva_nb(&ext, cur.clone(), sp));
         cur
     }
 

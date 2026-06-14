@@ -3173,21 +3173,58 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// A sequence primary: a boolean leaf expression, optionally followed by one
-    /// or more `[*n]` / `[*m:n]` consecutive-repetition postfixes.
+    /// or more repetition postfixes — `[*n]`/`[*m:n]` consecutive, `[->n]` goto,
+    /// or `[=n]` nonconsecutive.
     fn parse_seq_primary(&mut self) -> Sequence {
         let e = self.expr(0);
         let mut seq = Sequence::Boolean(e);
-        while self.peek() == Some(TokenKind::LBracketStar) {
-            self.bump(); // `[*`
-            let (min, max) = self.parse_seq_repeat_bounds();
-            self.expect(TokenKind::RBracket, "']' to close `[*n]`");
-            seq = Sequence::Repeat {
-                seq: Box::new(seq),
-                min,
-                max,
-            };
+        loop {
+            match self.peek() {
+                Some(TokenKind::LBracketStar) => {
+                    self.bump(); // `[*`
+                    let (min, max) = self.parse_seq_repeat_bounds();
+                    self.expect(TokenKind::RBracket, "']' to close `[*n]`");
+                    seq = Sequence::Repeat {
+                        seq: Box::new(seq),
+                        min,
+                        max,
+                        kind: RepeatKind::Consec,
+                    };
+                }
+                Some(tok @ (TokenKind::LBracketArrow | TokenKind::LBracketEq)) => {
+                    self.bump(); // `[->` / `[=`
+                    let (which, kind) = if tok == TokenKind::LBracketArrow {
+                        ("[->n]", RepeatKind::Goto)
+                    } else {
+                        ("[=n]", RepeatKind::Nonconsec)
+                    };
+                    let n = self.parse_seq_count_single(which);
+                    self.expect(TokenKind::RBracket, "']' to close goto/nonconsec count");
+                    seq = Sequence::Repeat {
+                        seq: Box::new(seq),
+                        min: n,
+                        max: Some(n),
+                        kind,
+                    };
+                }
+                _ => break,
+            }
         }
         seq
+    }
+
+    /// Single positive count for `[->n]` / `[=n]`. Ranges (`[->m:n]`) and `0`
+    /// are deferred (loud, recovered to 1).
+    fn parse_seq_count_single(&mut self, which: &'static str) -> u32 {
+        let n = self.parse_small_const(which);
+        if self.peek() == Some(TokenKind::Colon) {
+            self.error("a single goto/nonconsec count (ranges are unsupported in this subset)");
+        }
+        if n == 0 {
+            self.error("a positive goto/nonconsec count");
+            return 1;
+        }
+        n
     }
 
     /// Cycle delay after `##`: `##n` → (n, Some(n)), bounded range `##[m:n]`
@@ -5204,15 +5241,56 @@ endmodule
         );
     }
 
+    // S15i (S8). `b[->n]` goto / `b[=n]` nonconsec parse to Repeat with the right
+    // RepeatKind.
+    #[test]
+    fn concurrent_assert_goto_nonconsec_parse() {
+        for (src, want_goto) in [
+            (
+                "module m;\ninitial assert property (@(posedge clk) a ##1 b[->2] |-> c);\nendmodule",
+                true,
+            ),
+            (
+                "module m;\ninitial assert property (@(posedge clk) a ##1 b[=2] |-> c);\nendmodule",
+                false,
+            ),
+        ] {
+            let (su, errs) = p(src);
+            assert!(errs.is_empty(), "goto/nonconsec must parse: {errs:?} ({src})");
+            let m = first_module(su.as_ref().unwrap());
+            let ModuleItem::Proc(pb) = m
+                .body
+                .iter()
+                .find(|i| matches!(i, ModuleItem::Proc(_)))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            let Stmt::ConcurrentAssert { antecedent, .. } = &*pb.body else {
+                panic!("expected ConcurrentAssert")
+            };
+            // antecedent is `a ##1 b[->2]` = Delay{.., rhs: Repeat{kind}}.
+            let Sequence::Delay { rhs, .. } = antecedent else {
+                panic!("expected Delay, got {antecedent:?}")
+            };
+            let Sequence::Repeat { kind, min: 2, .. } = &**rhs else {
+                panic!("expected Repeat with count 2, got {rhs:?}")
+            };
+            let is_goto = matches!(kind, RepeatKind::Goto);
+            assert_eq!(is_goto, want_goto, "wrong repeat kind for {src}");
+        }
+    }
+
     // Still-deferred sequence forms (unbounded REPEAT `[*m:$]`, empty `[*0]`,
-    // `within`) stay LOUD parse errors — they pin the slice-S7 boundary
-    // (`throughout` is now supported, above).
+    // `within`, goto/nonconsec RANGES) stay LOUD — they pin the slice-S8
+    // boundary (`[->n]`/`[=n]` single counts are now supported, above).
     #[test]
     fn concurrent_assert_deferred_seq_forms_are_loud() {
         for src in [
             "module m;\ninitial assert property (@(posedge clk) a[*1:$] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a[*0] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a within b |-> c);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a ##1 b[->1:2] |-> c);\nendmodule",
         ] {
             let (_, errs) = p(src);
             assert!(

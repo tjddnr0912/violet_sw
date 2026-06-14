@@ -239,6 +239,10 @@ pub enum TokenKind {
     LBracket,
     #[token("[*")]
     LBracketStar, // SVA consecutive-repetition `[*n]` (Phase-3, slice S4)
+    #[token("[->")]
+    LBracketArrow, // SVA goto-repetition `[->n]` (Phase-3, slice S8)
+    #[token("[=")]
+    LBracketEq, // SVA nonconsecutive-repetition `[=n]` (Phase-3, slice S8)
     #[token("]")]
     RBracket,
     #[token("{")]

@@ -598,17 +598,31 @@ pub enum Sequence {
         lhs: Box<Sequence>,
         rhs: Box<Sequence>,
     },
-    /// `seq[*min]` consecutive repetition. Slice S4 emits only `min == max`
-    /// (`min >= 1`); `[*0]` (empty) and ranges are deferred (loud).
+    /// Repetition. `Consec` (`[*n]`/`[*m:n]`, slices S4/S5) is consecutive;
+    /// `Goto` (`[->n]`, slice S8) ends ON the n-th (gap-allowed) occurrence;
+    /// `Nonconsec` (`[=n]`, slice S8) allows the match to extend past the n-th.
+    /// Goto/Nonconsec require a boolean `seq` operand and a single count
+    /// (`min == max`); their ranges are deferred (loud).
     Repeat {
         seq: Box<Sequence>,
         min: u32,
         max: Option<u32>,
+        kind: RepeatKind,
     },
     /// `cond throughout seq` (slice S7) — the boolean `cond` must hold at every
     /// clock of `seq`'s match window. Lowered by ANDing `cond` into the seed and
     /// every shift stage of the synthesized pipeline (bounded inner only).
     Throughout { cond: Box<Expr>, seq: Box<Sequence> },
+}
+/// SVA repetition operator (slices S4/S5/S8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum RepeatKind {
+    /// `[*n]` / `[*m:n]` — consecutive.
+    Consec,
+    /// `[->n]` — goto: the n-th (gap-allowed) occurrence, ending on it.
+    Goto,
+    /// `[=n]` — nonconsecutive: n occurrences, match may extend past the n-th.
+    Nonconsec,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum CaseKind {

@@ -813,3 +813,143 @@ fn sva_seq_throughout_violated_kills_match() {
         "no violation expected:\n{err}\n{out}"
     );
 }
+
+// ── SVA GOTO / NONCONSECUTIVE REPETITION (slice S8, hand-IEEE) ────────────────
+// `b[->n]` goto: the n-th occurrence of b (gaps allowed), match ends ON the n-th.
+// `b[=n]` nonconsec: n occurrences of b, match may extend past the n-th (until
+// the next b). Desugar = existence-latch FSM (per-stage boolean regs), which is
+// exact for the |-> any-completion semantics. Hand-IEEE (no oracle).
+
+#[test]
+fn sva_seq_goto_fires_on_nth_b() {
+    // a ##1 b[->2] |-> c: after a@t15, the 2nd b (gaps allowed) lands at t45
+    // (b@t25 is the 1st, gap@t35, b@t45 the 2nd) with c=0 -> fires at t45.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b[->2] |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "the 2nd b (with a gap) must complete the goto and fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_goto_not_yet_nth_no_fire() {
+    // a ##1 b[->2] |-> c: only ONE b after a (t25), never a 2nd -> no goto
+    // completion -> c (low) imposes no obligation.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b[->2] |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "one b is not enough for [->2]. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_goto_first_b_immediate() {
+    // a ##1 b[->1] |-> c: the FIRST b after a (t25) completes [->1]; c=0 -> fires.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b[->1] |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "the first b must complete [->1] and fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_nonconsec_extends_past_nth() {
+    // a ##1 b[=1] ##1 c |-> d: after a, 1 b (t25), then c one-or-more clocks later
+    // (t45, with a non-b gap at t35) -> d=0 at t45 fires. Proves [=n] lets the
+    // match float past the n-th b (a non-b clock between the b and c).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b[=1] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0; d=0;\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=0; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "[=1] must let c land a non-b clock after the b. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_nonconsec_broken_by_extra_b() {
+    // a ##1 b[=1] ##1 c |-> d: a 2nd b (t35) before c makes it 2 b's, not 1 ->
+    // the [=1] thread dies -> c at t45 imposes no obligation.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b[=1] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0; d=0;\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "an extra b must break [=1]. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
