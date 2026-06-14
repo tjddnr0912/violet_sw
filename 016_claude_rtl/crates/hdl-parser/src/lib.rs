@@ -3166,18 +3166,17 @@ impl<'t, 's> Parser<'t, 's> {
         seq
     }
 
-    /// Cycle delay after `##`: `##n` → (n, Some(n)) or bounded range `##[m:n]`
-    /// → (m, Some(n)). Unbounded `##[m:$]` is deferred (loud, recovered bounded).
+    /// Cycle delay after `##`: `##n` → (n, Some(n)), bounded range `##[m:n]`
+    /// → (m, Some(n)), or unbounded `##[m:$]` → (m, None) (slice S6).
     fn parse_seq_delay(&mut self) -> (u32, Option<u32>) {
         if self.peek() == Some(TokenKind::LBracket) {
             self.bump(); // `[`
             let lo = self.parse_small_const("a lower bound in `##[m:n]`");
             self.expect(TokenKind::Colon, "':' in `##[m:n]`");
             if self.peek() == Some(TokenKind::Dollar) {
-                self.bump();
-                self.error("a bounded cycle-delay range `##[m:n]` (unbounded `##[m:$]` is unsupported in this subset)");
+                self.bump(); // `$` — unbounded upper bound
                 self.expect(TokenKind::RBracket, "']'");
-                return (lo, Some(lo));
+                return (lo, None);
             }
             let hi = self.parse_small_const("an upper bound in `##[m:n]`");
             self.expect(TokenKind::RBracket, "']'");
@@ -5117,12 +5116,43 @@ endmodule
         );
     }
 
-    // Still-deferred sequence forms (unbounded `$`, `throughout`, `within`,
-    // empty `[*0]`) stay LOUD parse errors — they pin the slice-S5 boundary.
+    // S15g (S6). Unbounded cycle delay `##[m:$]` parses to Delay{min, max:None}.
+    #[test]
+    fn concurrent_assert_seq_unbounded_delay_parses() {
+        let (su, errs) =
+            p("module m;\ninitial assert property (@(posedge clk) a ##[1:$] b |-> c);\nendmodule");
+        assert!(errs.is_empty(), "unbounded delay must parse: {errs:?}");
+        let m = first_module(su.as_ref().unwrap());
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert { antecedent, .. } = &*pb.body else {
+            panic!("expected ConcurrentAssert, got {:?}", pb.body)
+        };
+        assert!(
+            matches!(
+                antecedent,
+                Sequence::Delay {
+                    min: 1,
+                    max: None,
+                    ..
+                }
+            ),
+            "expected Sequence::Delay{{1, $}}, got {antecedent:?}"
+        );
+    }
+
+    // Still-deferred sequence forms (unbounded REPEAT `[*m:$]`, empty `[*0]`,
+    // `throughout`, `within`) stay LOUD parse errors — they pin the slice-S6
+    // boundary (unbounded DELAY `##[m:$]` is now supported, above).
     #[test]
     fn concurrent_assert_deferred_seq_forms_are_loud() {
         for src in [
-            "module m;\ninitial assert property (@(posedge clk) a ##[1:$] b |-> c);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a[*1:$] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a[*0] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a throughout b |-> c);\nendmodule",

@@ -538,6 +538,16 @@ struct SvaRegs {
     nbas: Vec<ast::Stmt>,
 }
 
+/// The cycle gap before a sequence term in a flattened alternative: a fixed
+/// `##d` delay (`d` shift-register stages), or an unbounded `##[m:$]` (≥m — an
+/// `m-1` fixed delay followed by a never-reset `armed` latch, so every later
+/// term clock re-completes the match).
+#[derive(Clone, Copy)]
+enum SeqHop {
+    Fixed(u32),
+    AtLeast(u32),
+}
+
 /// Cap on the number of disjunctive ALTERNATIVES a bounded SVA sequence range
 /// (`##[m:n]`/`[*m:n]`, possibly nested/producted) may expand to before a loud
 /// reject — the range-blowup guard. Note the synthesized pipeline regs are NOT
@@ -6571,28 +6581,34 @@ impl<'s> Elaborator<'s> {
         &mut self,
         seq: &ast::Sequence,
         regs: &mut SvaRegs,
-    ) -> Vec<Vec<(ast::Expr, u32)>> {
+    ) -> Vec<Vec<(ast::Expr, SeqHop)>> {
         match seq {
             ast::Sequence::Boolean(e) => {
                 let term = self.rewrite_sampled(e, regs);
-                vec![vec![(term, 0)]]
+                vec![vec![(term, SeqHop::Fixed(0))]]
             }
             ast::Sequence::Delay {
                 min, max, lhs, rhs, ..
             } => {
                 let ls = self.expand_sequence(lhs, regs);
                 let rs = self.expand_sequence(rhs, regs);
-                let hi = max.unwrap_or(*min);
                 let mut out = Vec::new();
-                for d in *min..=hi {
+                // An unbounded `##[m:$]` cannot fan out — it becomes one
+                // `AtLeast(m)` hop (synthesized as a latch). A bounded `##[m:n]`
+                // fans into the n-m+1 `Fixed(d)` delay alternatives.
+                let hops: Vec<SeqHop> = match max {
+                    None => vec![SeqHop::AtLeast(*min)],
+                    Some(n) => (*min..=*n).map(SeqHop::Fixed).collect(),
+                };
+                for hop in hops {
                     for l in &ls {
                         for r in &rs {
                             let mut combined = l.clone();
                             let mut r2 = r.clone();
-                            // The first term of `rhs` is reached `##d` clocks
-                            // after the last term of `lhs`.
+                            // The first term of `rhs` is reached via `hop` after
+                            // the last term of `lhs`.
                             if let Some(first) = r2.first_mut() {
-                                first.1 = d;
+                                first.1 = hop;
                             }
                             combined.extend(r2);
                             out.push(combined);
@@ -6609,7 +6625,7 @@ impl<'s> Elaborator<'s> {
                 for k in lo..=hi {
                     // k copies of `base`, each copy after the first prefixed with
                     // `##1`. A multi-alternative base makes this a k-fold product.
-                    let mut combos: Vec<Vec<(ast::Expr, u32)>> = vec![Vec::new()];
+                    let mut combos: Vec<Vec<(ast::Expr, SeqHop)>> = vec![Vec::new()];
                     for i in 0..k {
                         let mut next = Vec::new();
                         for prefix in &combos {
@@ -6617,7 +6633,7 @@ impl<'s> Elaborator<'s> {
                                 let mut copy = alt.clone();
                                 if i > 0 {
                                     if let Some(first) = copy.first_mut() {
-                                        first.1 = 1;
+                                        first.1 = SeqHop::Fixed(1);
                                     }
                                 }
                                 let mut merged = prefix.clone();
@@ -6646,7 +6662,7 @@ impl<'s> Elaborator<'s> {
     /// reduction-OR rule). Pure IR-0 — only pre-existing sim-ir nodes.
     fn synth_seq_pipeline(
         &mut self,
-        terms: Vec<(ast::Expr, u32)>,
+        terms: Vec<(ast::Expr, SeqHop)>,
         pipeline_nbas: &mut Vec<ast::Stmt>,
         sp: ast::Span,
     ) -> ast::Expr {
@@ -6655,28 +6671,72 @@ impl<'s> Elaborator<'s> {
             .next()
             .expect("synth_seq_pipeline requires at least one term");
         let mut cur = sva_unary(ast::UnOp::RedOr, t0, sp); // |t0 (boolean seed)
-        for (term, delay) in it {
-            for _ in 0..delay {
-                let r = self.fresh_sva_reg(1, "seq");
-                let r_path = ast::HierPath {
-                    segments: vec![ast::Ident {
-                        name: r.clone(),
+        for (term, hop) in it {
+            match hop {
+                SeqHop::Fixed(d) => {
+                    for _ in 0..d {
+                        cur = self.seq_delay_reg(cur, pipeline_nbas, sp);
+                    }
+                }
+                SeqHop::AtLeast(m) => {
+                    // `##[m:$]`: delay `m-1` fixed clocks, then a never-reset
+                    // `armed` latch — `armed <= armed | cur`. Reads of `armed`
+                    // give the PRIOR-clock value (= "the prefix matched at some
+                    // clock ≥ m ago"), so the match stays alive and re-completes
+                    // on every later term clock. X-init armed stays don't-know
+                    // until the first prefix match (no spurious fire via if(X)).
+                    for _ in 0..m.saturating_sub(1) {
+                        cur = self.seq_delay_reg(cur, pipeline_nbas, sp);
+                    }
+                    let armed = self.fresh_sva_reg(1, "arm");
+                    let armed_path = ast::HierPath {
+                        segments: vec![ast::Ident {
+                            name: armed.clone(),
+                            span: sp,
+                        }],
                         span: sp,
-                    }],
-                    span: sp,
-                };
-                pipeline_nbas.push(ast::Stmt::NonBlocking {
-                    lhs: ast::Lvalue::Ident(r_path),
-                    delay: None,
-                    rhs: cur,
-                    span: sp,
-                });
-                cur = sva_ident_expr(&r, sp);
+                    };
+                    let latch_rhs =
+                        sva_binary(ast::BinOp::BitOr, sva_ident_expr(&armed, sp), cur, sp);
+                    pipeline_nbas.push(ast::Stmt::NonBlocking {
+                        lhs: ast::Lvalue::Ident(armed_path),
+                        delay: None,
+                        rhs: latch_rhs,
+                        span: sp,
+                    });
+                    cur = sva_ident_expr(&armed, sp);
+                }
             }
             let term_bool = sva_unary(ast::UnOp::RedOr, term, sp);
             cur = sva_binary(ast::BinOp::BitAnd, cur, term_bool, sp);
         }
         cur
+    }
+
+    /// Register `cur` into a fresh 1-bit `seq` stage (one clock of delay) and
+    /// return a read of it (which yields the PRIOR clock's value). Shared by the
+    /// fixed-delay shift and the `##[m:$]` latch's `m-1` pre-delay.
+    fn seq_delay_reg(
+        &mut self,
+        cur: ast::Expr,
+        pipeline_nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> ast::Expr {
+        let r = self.fresh_sva_reg(1, "seq");
+        let r_path = ast::HierPath {
+            segments: vec![ast::Ident {
+                name: r.clone(),
+                span: sp,
+            }],
+            span: sp,
+        };
+        pipeline_nbas.push(ast::Stmt::NonBlocking {
+            lhs: ast::Lvalue::Ident(r_path),
+            delay: None,
+            rhs: cur,
+            span: sp,
+        });
+        sva_ident_expr(&r, sp)
     }
 
     /// Recursively rewrite SVA sampled-value functions in `e` into reads of

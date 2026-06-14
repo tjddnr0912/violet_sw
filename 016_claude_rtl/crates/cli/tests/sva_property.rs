@@ -648,3 +648,109 @@ fn sva_seq_repeat_range_below_min_vacuous() {
         "no violation expected:\n{err}\n{out}"
     );
 }
+
+// ── SVA UNBOUNDED DELAY (slice S6, hand-IEEE) ────────────────────────────────
+// `##[m:$]` — the consequent term may arrive ANY number of clocks (>=m) after
+// the prefix. Cannot expand to fixed alternatives; desugar = an `armed` latch:
+// once the prefix matches it latches (never resets), and every later term clock
+// (>=m after) re-completes the match. Hand-IEEE (no oracle).
+
+#[test]
+fn sva_seq_delay_unbounded_fires() {
+    // a ##[1:$] b |-> c: a@t15, b@t35 (delay 2, >=1) with c=0 -> the armed latch
+    // (set by a@t15) makes b@t35 a match -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##[1:$] b |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "an unbounded-delay match must fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_delay_unbounded_min_excludes_early() {
+    // a ##[2:$] b |-> c: b at t25 is only 1 clock after a@t15 (< min 2) -> NO match,
+    // c ignored -> exit 0.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##[2:$] b |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "a term closer than the min delay must not match. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_delay_unbounded_latch_persists() {
+    // a ##[1:$] b |-> c: a@t15. b@t25 holds (c=1). b@t45 (still armed, delay 3)
+    // with c=0 -> fires -> proves the armed latch persists across clocks.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##[1:$] b |-> c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 a=0; b=1; c=1;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 a=0; b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "the armed latch must persist and fire on a later term. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_delay_unbounded_no_antecedent_vacuous() {
+    // a never high -> the latch never arms -> b ignored -> exit 0 (X-init latch
+    // stays don't-know, if(X) doesn't fire).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=1, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##[1:$] b |-> c);\n\
+         initial begin #40 $finish; end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "no prefix match means the latch never arms. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
