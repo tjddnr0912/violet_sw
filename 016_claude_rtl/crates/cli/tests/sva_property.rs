@@ -1082,3 +1082,225 @@ fn sva_module_level_immediate_assert_is_loud() {
         "immediate assert at module level must be loud. stderr:\n{err}\nout:\n{out}"
     );
 }
+
+// ── unbounded consecutive repeat `b[*m:$]` (slice S13, hand-IEEE) ─────────────
+// `b[*m:$]` = b true for >= m consecutive clocks. Cannot fan out (unbounded), so
+// it lowers to a gated run-latch: a chain of 1-bit regs c_1..c_m where
+// c_1 = act & |b, c_k = reg(c_{k-1}) & |b, and the top c_m self-latches
+// ((reg(c_{m-1})|reg(c_m)) & |b) to saturate at ">= m". match = c_m. Boolean
+// operand only (S8 goto/nonconsec precedent); `[*0:$]` (empty match) deferred.
+// iverilog rejects concurrent assertions, so hand-IEEE pinned.
+
+#[test]
+fn sva_seq_consec_unbounded_fires() {
+    // b[*2:$] |-> c : at t=25 b has been high 2 consecutive posedges (t15,t25)
+    // -> run>=2 -> obligation c; c=0 -> violation.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*2:$] |-> c);\n\
+         initial begin\n\
+           #10 b=1; c=1;\n\
+           #10 b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "run>=2 with c low must fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_consec_unbounded_holds_no_error() {
+    // b[*2:$] |-> c with c high whenever run>=2 -> holds, no $error.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*2:$] |-> c);\n\
+         initial begin\n\
+           #10 b=1; c=1;\n\
+           #10 b=1; c=1;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "run>=2 with c high should hold. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_consec_unbounded_gap_resets_run() {
+    // b[*2:$] |-> c : a 0 in the middle breaks the consecutive run, so it never
+    // reaches 2 -> no obligation ever -> vacuous even though c stays low.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*2:$] |-> c);\n\
+         initial begin\n\
+           #10 b=1; c=0;\n\
+           #10 b=0; c=0;\n\
+           #10 b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "a gap must reset the consecutive run. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_consec_unbounded_saturates_past_min() {
+    // b[*2:$] |-> c : the obligation persists for run lengths 3,4,... (the >= m
+    // self-latch). c high at run=2 (t25) but low at run=3 (t35) -> fires at t35.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*2:$] |-> c);\n\
+         initial begin\n\
+           #10 b=1; c=1;\n\
+           #10 b=1; c=1;\n\
+           #10 b=1; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "obligation must persist past the minimum run. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_consec_unbounded_mid_sequence_fires() {
+    // a ##1 b[*2:$] ##1 c |-> d : a@t15, then b>=2 consec (t25,t35), then c@t45,
+    // d=0 -> fires. Exercises [*m:$] as a MID-sequence term (not just terminal).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) a ##1 b[*2:$] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0; d=0;\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=1; c=0; d=0;\n\
+           #10 a=0; b=0; c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "mid-sequence [*m:$] then c must complete and fire. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_consec_unbounded_empty_is_loud() {
+    // `[*0:$]` (zero-or-more, empty match allowed) is deferred -> loud.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*0:$] |-> c);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "[*0:$] must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_consec_unbounded_nonbool_operand_is_loud() {
+    // A non-boolean operand (a chained repeat) for `[*m:$]` is deferred -> loud.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*2][*2:$] |-> c);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "non-boolean [*m:$] operand must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}
+
+// ── repetition-count cap (slice S13 review fix) ──────────────────────────────
+// Every SVA repetition count synthesizes O(count) helper regs (or fans out one
+// alternative per count), so an absurd literal would hang elaboration. Each form
+// — unbounded `[*m:$]`, goto/nonconsec `[->n]`/`[=n]`, and bounded `[*n]`/`[*m:n]`
+// (whose per-count term-length the post-expansion alternative cap misses) — is
+// capped at SVA_SEQ_ALT_CAP (256): a count above it is a loud E3009, not a hang.
+
+#[test]
+fn sva_seq_consec_unbounded_over_cap_is_loud() {
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*300:$] |-> c);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "[*m:$] over the count cap must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_goto_over_cap_is_loud() {
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[->300] |-> c);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "[->n] over the count cap must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}
+
+#[test]
+fn sva_seq_consec_bounded_over_cap_is_loud() {
+    // `b[*300]` (exact) is a single alternative of 300 terms — the
+    // post-expansion alternative cap misses it; the per-count cap catches it.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) b[*300] |-> c);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "[*n] over the count cap must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}

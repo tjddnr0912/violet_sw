@@ -3291,18 +3291,21 @@ impl<'t, 's> Parser<'t, 's> {
         (n, Some(n))
     }
 
-    /// `[*n]` repetition bounds: `[*n]` → (n, Some(n)) or bounded range `[*m:n]`
-    /// → (m, Some(n)). `[*0]`/`[*0:n]` (empty) and `[*m:$]` (unbounded) are
-    /// deferred (loud, recovered positive-bounded). Caller consumed `[*`; this
-    /// stops before `]`.
+    /// `[*n]` repetition bounds: `[*n]` → (n, Some(n)), bounded range `[*m:n]`
+    /// → (m, Some(n)), or unbounded `[*m:$]` → (m, None) (slice S13). `[*0]` /
+    /// `[*0:n]` (empty) and `[*0:$]` (zero-or-more / empty match) are deferred
+    /// (loud, recovered positive). Caller consumed `[*`; this stops before `]`.
     fn parse_seq_repeat_bounds(&mut self) -> (u32, Option<u32>) {
         let lo = self.parse_small_const("a repetition count in `[*n]`");
         if self.peek() == Some(TokenKind::Colon) {
             self.bump(); // ':'
             if self.peek() == Some(TokenKind::Dollar) {
-                self.bump();
-                self.error("a bounded repetition range `[*m:n]` (unbounded `[*m:$]` is unsupported in this subset)");
-                return (lo.max(1), Some(lo.max(1)));
+                self.bump(); // `$` — unbounded upper bound: `[*m:$]` (>= m)
+                if lo == 0 {
+                    self.error("a positive lower bound in `[*m:$]` (`[*0:$]` empty match is unsupported in this subset)");
+                    return (1, None);
+                }
+                return (lo, None);
             }
             let hi = self.parse_small_const("an upper bound in `[*m:n]`");
             let (lo, hi) = (lo.min(hi), lo.max(hi));
@@ -5357,13 +5360,46 @@ endmodule
         );
     }
 
-    // Still-deferred sequence forms (unbounded REPEAT `[*m:$]`, empty `[*0]`,
-    // goto/nonconsec RANGES) stay LOUD — they pin the slice-S9 boundary
-    // (`within` is now supported, above).
+    // S13. Unbounded consecutive repeat `a[*m:$]` (m>=1) parses to
+    // `Sequence::Repeat { min: m, max: None, kind: Consec }`.
+    #[test]
+    fn concurrent_assert_consec_unbounded_parses() {
+        let (su, errs) =
+            p("module m;\ninitial assert property (@(posedge clk) a[*2:$] |-> b);\nendmodule");
+        assert!(errs.is_empty(), "`a[*2:$]` must parse: {errs:?}");
+        let m = first_module(su.as_ref().unwrap());
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::ConcurrentAssert { antecedent, .. } = &*pb.body else {
+            panic!("expected ConcurrentAssert")
+        };
+        assert!(
+            matches!(
+                antecedent,
+                Sequence::Repeat {
+                    min: 2,
+                    max: None,
+                    kind: RepeatKind::Consec,
+                    ..
+                }
+            ),
+            "expected Repeat{{2, None, Consec}}, got {antecedent:?}"
+        );
+    }
+
+    // Still-deferred sequence forms (empty unbounded `[*0:$]`, empty `[*0]`,
+    // goto/nonconsec RANGES) stay LOUD — they pin the slice boundary (bounded
+    // `[*m:n]` / unbounded `[*m:$]` with m>=1 are now supported, above).
     #[test]
     fn concurrent_assert_deferred_seq_forms_are_loud() {
         for src in [
-            "module m;\ninitial assert property (@(posedge clk) a[*1:$] |-> b);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a[*0:$] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a[*0] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a ##1 b[->1:2] |-> c);\nendmodule",
         ] {

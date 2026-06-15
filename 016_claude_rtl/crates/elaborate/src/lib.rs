@@ -558,6 +558,10 @@ enum SeqTerm {
     Goto(ast::Expr, u32),
     /// `b[=n]` — n occurrences of `b`, match extends past the n-th until the next.
     Nonconsec(ast::Expr, u32),
+    /// `b[*m:$]` — `b` true for ≥ m CONSECUTIVE clocks (slice S13). Synthesized as
+    /// a gated run-latch (a chain of 1-bit regs that saturates at the count `m`)
+    /// rather than a fixed shift, since the upper bound is unbounded.
+    ConsecAtLeast(ast::Expr, u32),
 }
 
 /// One expanded sequence alternative: an ordered (term, hop) list plus an
@@ -603,6 +607,17 @@ fn sva_zero(sp: ast::Span) -> ast::Expr {
         },
         span: sp,
     }
+}
+
+/// A single never-matching (`1'b0`) sequence alternative — the recovery value
+/// substituted when a sequence form is rejected (e.g. a repetition count over
+/// the cap). `1'b0` (rather than `1'b1`) so the errored design can never produce
+/// a spurious assertion fire on the abort path.
+fn sva_never_alt(seq: &ast::Sequence) -> Vec<SeqAlt> {
+    vec![(
+        vec![(SeqTerm::Bool(sva_zero(seq_span(seq))), SeqHop::Fixed(0))],
+        None,
+    )]
 }
 
 /// The clock-window length (in clocks) of a flattened bounded Bool-only
@@ -6674,6 +6689,27 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// Reject an SVA repetition count that exceeds the synthesis cap
+    /// (`SVA_SEQ_ALT_CAP`). Every repetition count synthesizes O(count) 1-bit
+    /// helper regs (goto/nonconsec/unbounded-consec FSMs) or fans a bounded
+    /// `[*n]` into an n-term shift pipeline, so an absurd literal would hang
+    /// elaboration; this caps it loudly, mirroring the post-expansion alternative
+    /// cap and the bounded-range / `within` guards. Returns `false` (with the
+    /// error already emitted) when the count is over the cap.
+    fn sva_count_within_cap(&mut self, count: u32, what: &str) -> bool {
+        if count as usize > SVA_SEQ_ALT_CAP {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "an SVA {what} count {count} exceeds the cap {SVA_SEQ_ALT_CAP}; narrow it"
+                ),
+            );
+            false
+        } else {
+            true
+        }
+    }
+
     /// Expand a `Sequence` into a DISJUNCTION of conjunctive term-lists — each a
     /// `Vec<(boolean-term, hop-delay)>` where `hop-delay` is the `##d` cycle gap
     /// BEFORE that term (the first term's delay is unused — it is the seed). A
@@ -6728,6 +6764,9 @@ impl<'s> Elaborator<'s> {
                 // FSM rather than a fixed shift, so they become a single FSM
                 // term (boolean operand only; `min == max == n`).
                 let n = (*min).max(1);
+                if !self.sva_count_within_cap(n, "goto/nonconsec repetition") {
+                    return sva_never_alt(seq);
+                }
                 let ast::Sequence::Boolean(b) = &**seq else {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -6748,14 +6787,50 @@ impl<'s> Elaborator<'s> {
             ast::Sequence::Repeat {
                 seq,
                 min,
+                max: None,
+                kind: ast::RepeatKind::Consec,
+            } => {
+                // `b[*m:$]` — unbounded consecutive repeat (≥ m). Cannot fan out;
+                // synthesize a gated run-latch (a single ConsecAtLeast term).
+                // Boolean operand only (S8 goto/nonconsec precedent).
+                let m = (*min).max(1);
+                if !self.sva_count_within_cap(m, "unbounded consecutive repetition") {
+                    return sva_never_alt(seq);
+                }
+                let ast::Sequence::Boolean(b) = &**seq else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "unbounded consecutive repetition `[*m:$]` requires a boolean operand in this subset",
+                    );
+                    return vec![(
+                        vec![(SeqTerm::Bool(sva_one(seq_span(seq))), SeqHop::Fixed(0))],
+                        None,
+                    )];
+                };
+                let bt = self.rewrite_sampled(b, regs);
+                vec![(
+                    vec![(SeqTerm::ConsecAtLeast(bt, m), SeqHop::Fixed(0))],
+                    None,
+                )]
+            }
+            ast::Sequence::Repeat {
+                seq,
+                min,
                 max,
                 kind: ast::RepeatKind::Consec,
             } => {
                 let base = self.expand_sequence(seq, regs);
                 let lo = (*min).max(1);
                 let hi = max.unwrap_or(*min).max(lo);
+                // Cap the upper count: each copy adds `base`'s terms to every
+                // alternative (an `n`-term shift pipeline for the exact `[*n]`
+                // case, which the post-expansion alternative-COUNT cap misses),
+                // so an absurd literal would hang the fan-out below.
+                if !self.sva_count_within_cap(hi, "consecutive repetition") {
+                    return sva_never_alt(seq);
+                }
                 let mut out = Vec::new();
-                for k in lo..=hi {
+                'kloop: for k in lo..=hi {
                     // k copies of `base`, each copy after the first prefixed with
                     // `##1`. A multi-alternative base makes this a k-fold product.
                     let mut combos: Vec<SeqAlt> = vec![(Vec::new(), None)];
@@ -6776,6 +6851,18 @@ impl<'s> Elaborator<'s> {
                             }
                         }
                         combos = next;
+                        // Guard the k-fold PRODUCT of a multi-alternative base
+                        // (e.g. `(a ##[1:2] b)[*1:20]` = 2^20) from exploding the
+                        // build before the post-expansion cap can truncate it.
+                        if out.len() + combos.len() > SVA_SEQ_ALT_CAP {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!(
+                                    "an SVA bounded repetition expanded past the cap {SVA_SEQ_ALT_CAP}; narrow the ranges"
+                                ),
+                            );
+                            break 'kloop;
+                        }
                     }
                     out.extend(combos);
                 }
@@ -6923,6 +7010,9 @@ impl<'s> Elaborator<'s> {
             SeqTerm::Bool(e) => sva_unary(ast::UnOp::RedOr, e, sp),
             SeqTerm::Goto(b, n) => self.goto_fsm(sva_one(sp), b, n, pipeline_nbas, sp),
             SeqTerm::Nonconsec(b, n) => self.nonconsec_fsm(sva_one(sp), b, n, pipeline_nbas, sp),
+            SeqTerm::ConsecAtLeast(b, m) => {
+                self.consec_run_fsm(sva_one(sp), b, m, pipeline_nbas, sp)
+            }
         };
         let mut cur = guard_and(seed);
         for (term, hop) in it {
@@ -6971,6 +7061,7 @@ impl<'s> Elaborator<'s> {
                 ),
                 SeqTerm::Goto(b, n) => self.goto_fsm(cur, b, n, pipeline_nbas, sp),
                 SeqTerm::Nonconsec(b, n) => self.nonconsec_fsm(cur, b, n, pipeline_nbas, sp),
+                SeqTerm::ConsecAtLeast(b, m) => self.consec_run_fsm(cur, b, m, pipeline_nbas, sp),
             };
         }
         cur
@@ -7048,6 +7139,61 @@ impl<'s> Elaborator<'s> {
         let cur = sva_binary(ast::BinOp::BitOr, match_g, ext_alive, sp);
         nbas.push(sva_nb(&ext, cur.clone(), sp));
         cur
+    }
+
+    /// Unbounded consecutive repetition `b[*m:$]` (slice S13). `act` is the
+    /// (this-clock) activation: a run may START wherever `act` is true. A gated
+    /// run-latch with `m` 1-bit regs `c_1..c_m`, where `c_k` = "an alive thread
+    /// (started at a valid activation) has now seen `k` consecutive `b`'s":
+    ///   c_1 = act & |b                                  (a run begins)
+    ///   c_k = reg(c_{k-1}) & |b              for 1<k<m  (the run advances)
+    ///   c_m = (reg(c_{m-1}) | reg(c_m)) & |b            (advance OR self-latch ≥m)
+    /// (`m == 1` collapses to the single self-latch `c_1 = (act|reg(c_1)) & |b`).
+    /// Returns the match-this-clock signal `c_m` ("run ≥ m ends now"), exact for
+    /// the `|->` any-completion semantics. A reg read yields the PRIOR clock's
+    /// value (the checker's if-check runs before the NBAs), so the chain advances
+    /// one count per clock; a non-`b` clock zeroes `c_1` and (one clock later)
+    /// collapses the chain. X-init regs stay don't-know until the first real run
+    /// (lenient: `if(X)` never fires). Pure IR-0.
+    fn consec_run_fsm(
+        &mut self,
+        act: ast::Expr,
+        b: ast::Expr,
+        m: u32,
+        nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> ast::Expr {
+        let m = m.max(1) as usize;
+        let regs: Vec<String> = (0..m).map(|_| self.fresh_sva_reg(1, "crl")).collect();
+        let bb = || sva_unary(ast::UnOp::RedOr, b.clone(), sp); // |b
+                                                                // c_1 (also the self-latch when m == 1).
+        let c1 = if m == 1 {
+            let or = sva_binary(ast::BinOp::BitOr, act, sva_ident_expr(&regs[0], sp), sp);
+            sva_binary(ast::BinOp::BitAnd, or, bb(), sp)
+        } else {
+            sva_binary(ast::BinOp::BitAnd, act, bb(), sp)
+        };
+        nbas.push(sva_nb(&regs[0], c1.clone(), sp));
+        let mut last = c1;
+        for k in 2..=m {
+            // reg(c_{k-1}) — the prior-clock count-(k-1) state.
+            let prior_prev = sva_ident_expr(&regs[k - 2], sp);
+            let ck = if k < m {
+                sva_binary(ast::BinOp::BitAnd, prior_prev, bb(), sp)
+            } else {
+                // top reg saturates at ≥ m: (reg(c_{m-1}) | reg(c_m)) & |b.
+                let or = sva_binary(
+                    ast::BinOp::BitOr,
+                    prior_prev,
+                    sva_ident_expr(&regs[k - 1], sp),
+                    sp,
+                );
+                sva_binary(ast::BinOp::BitAnd, or, bb(), sp)
+            };
+            nbas.push(sva_nb(&regs[k - 1], ck.clone(), sp));
+            last = ck;
+        }
+        last
     }
 
     /// Register `cur` into a fresh 1-bit `seq` stage (one clock of delay) and
