@@ -4633,9 +4633,21 @@ impl<'s> Elaborator<'s> {
         let cv = match parse_int_literal(raw, kind) {
             Some(cv) => cv,
             None => {
+                // Truncate the echoed lexeme: a digit-cap-rejected decimal can be
+                // hundreds of thousands of chars, and echoing it verbatim would be
+                // unbounded stderr (a DoS in its own right).
+                let shown: String = if raw.chars().count() > 64 {
+                    format!(
+                        "{}…({} chars)",
+                        raw.chars().take(64).collect::<String>(),
+                        raw.len()
+                    )
+                } else {
+                    raw.to_string()
+                };
                 self.error(
                     MsgCode::ElabUnsupported,
-                    &format!("malformed integer literal `{raw}`"),
+                    &format!("malformed integer literal `{shown}`"),
                 );
                 make_const_u32(0, 32)
             }

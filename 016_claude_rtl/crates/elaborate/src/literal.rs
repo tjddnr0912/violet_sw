@@ -35,6 +35,32 @@ const B1: Bit = Bit { v: true, u: false };
 const BX: Bit = Bit { v: false, u: true };
 const BZ: Bit = Bit { v: true, u: true };
 
+/// v1 width cap, mirrored from `elaborate::MAX_NET_WIDTH` (`1 << 20`). A literal
+/// whose RESOLVED width exceeds this is rejected by `lower_int_literal`; the same
+/// bound clamps the `pack_bits` allocation here so a tiny source like
+/// `4294967295'h1` (or `4294967295'0`) cannot size a multi-gigabyte `BitPacked`
+/// BEFORE that reject runs. In-cap widths are never touched (byte-identical).
+const LITERAL_WIDTH_CAP: u32 = 1 << 20;
+
+/// Max decimal digits accepted before the base conversion runs. A magnitude with
+/// MORE digits than this can never fit `LITERAL_WIDTH_CAP` bits, so it is rejected
+/// here in O(n) (a digit scan) rather than running the (still O(n²)) conversion to
+/// completion and only THEN hitting the width cap — i.e. this is a TIME bound, not
+/// just the width-cap boundary. `floor(cap·log10 2)` is the digit count of the
+/// widest in-cap value; `30103/100000 ≥ log10 2` and the `+4` margin keep the bound
+/// on the LOOSE side so no in-cap literal is ever wrongly rejected (the authoritative
+/// width-cap reject still lives in `lower_int_literal`). For `cap = 1 << 20` this is
+/// 315 656 — a literal of 315 657+ digits rejects in microseconds.
+const MAX_DECIMAL_DIGITS: usize = (LITERAL_WIDTH_CAP as usize * 30103) / 100_000 + 4;
+
+/// Words actually allocated for a literal whose REPORTED width may exceed the v1
+/// cap. Clamping the allocation (NOT the reported width) means an over-cap literal
+/// — which `lower_int_literal` rejects loud — cannot size a giant `BitPacked`
+/// first. Any in-cap width passes through unchanged.
+fn alloc_width(width: u32) -> u32 {
+    width.min(LITERAL_WIDTH_CAP.saturating_add(64))
+}
+
 /// Pack an LSB-first `Bit` slice into `width` bits. Missing bits use `fill`;
 /// bits beyond `width` are dropped. Result has `ceil(width/64)` words (≥1).
 fn pack_bits(bits: &[Bit], width: u32, fill: Bit) -> BitPacked {
@@ -94,31 +120,94 @@ fn based_bits(digits: &str, base: u32) -> Option<Vec<Bit>> {
     Some(msb_first)
 }
 
-/// Decimal magnitude → LSB-first bit vector (schoolbook base-10→binary, so it is
-/// overflow-proof and width-agnostic). Returns `None` on a non-digit char.
+/// Decimal magnitude → LSB-first, TRIMMED (`len = msb+1`) bit vector. Overflow-proof
+/// and width-agnostic. `None` on a non-digit char, an empty string, or a digit count
+/// past `MAX_DECIMAL_DIGITS` (DoS guard — such a value can never fit the v1 width cap).
+///
+/// Conversion is Horner in base 10¹⁹ over little-endian base-2⁶⁴ limbs: each ≤19-digit
+/// chunk does `limbs = limbs*10ⁿ + chunk` in O(limbs). The previous version emitted
+/// one output bit per full-width division pass (plus a fresh `Vec` per bit), making it
+/// O(n²) with a large constant — a ~40 000-digit literal took tens of seconds. This is
+/// still O(n²) in the worst accepted case, but with a ~700× smaller constant; the
+/// `MAX_DECIMAL_DIGITS` guard bounds n so the wall-clock stays well in hand.
 fn decimal_bits(digits: &str) -> Option<Vec<Bit>> {
-    let mut dividend: Vec<u8> = Vec::with_capacity(digits.len());
+    // Validate + collect digit VALUES (0..=9). O(n); rejects any non-digit.
+    let mut dv: Vec<u8> = Vec::with_capacity(digits.len());
     for b in digits.bytes() {
         if !b.is_ascii_digit() {
             return None;
         }
-        dividend.push(b - b'0');
+        dv.push(b - b'0');
     }
-    if dividend.is_empty() {
+    if dv.is_empty() {
         return None;
     }
-    let mut bits: Vec<Bit> = Vec::new();
-    while dividend.iter().any(|&d| d != 0) {
-        let mut rem = 0u32;
-        let mut quot: Vec<u8> = Vec::with_capacity(dividend.len());
-        for &d in &dividend {
-            let cur = rem * 10 + d as u32;
-            quot.push((cur / 2) as u8);
-            rem = cur % 2;
+    if dv.len() > MAX_DECIMAL_DIGITS {
+        return None; // exceeds the v1 width cap regardless of digit content
+    }
+
+    // 10ⁿ for n ∈ 0..=19; 10¹⁹ < 2⁶⁴, so every ≤19-digit chunk value fits one u64.
+    const POW10: [u64; 20] = [
+        1,
+        10,
+        100,
+        1_000,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        100_000_000,
+        1_000_000_000,
+        10_000_000_000,
+        100_000_000_000,
+        1_000_000_000_000,
+        10_000_000_000_000,
+        100_000_000_000_000,
+        1_000_000_000_000_000,
+        10_000_000_000_000_000,
+        100_000_000_000_000_000,
+        1_000_000_000_000_000_000,
+        10_000_000_000_000_000_000,
+    ];
+    const CHUNK: usize = 19;
+    // Horner base-10¹⁹ into little-endian base-2⁶⁴ limbs (no leading-zero limbs;
+    // value 0 → empty `limbs`). The most-significant chunk may be 1..=19 digits.
+    let mut limbs: Vec<u64> = Vec::new();
+    let n = dv.len();
+    let lead = if n % CHUNK == 0 { CHUNK } else { n % CHUNK };
+    let mut i = 0;
+    while i < n {
+        let end = if i == 0 { lead } else { i + CHUNK };
+        let mut chunk = 0u64;
+        for &d in &dv[i..end] {
+            chunk = chunk * 10 + d as u64; // ≤19 digits → ≤10¹⁹−1 < 2⁶⁴
         }
-        let first_nz = quot.iter().position(|&d| d != 0).unwrap_or(quot.len());
-        dividend = quot[first_nz..].to_vec();
-        bits.push(if rem == 1 { B1 } else { B0 });
+        // limbs = limbs * 10^(end-i) + chunk. `carry` stays ≤ 10¹⁹ < 2⁶⁴ throughout
+        // (limb<2⁶⁴, m≤10¹⁹, so cur ≤ 10¹⁹·2⁶⁴ < u128::MAX; cur>>64 ≤ 10¹⁹).
+        let m = POW10[end - i] as u128;
+        let mut carry = chunk as u128;
+        for limb in limbs.iter_mut() {
+            let cur = (*limb as u128) * m + carry;
+            *limb = cur as u64;
+            carry = cur >> 64;
+        }
+        while carry != 0 {
+            limbs.push(carry as u64);
+            carry >>= 64;
+        }
+        i = end;
+    }
+
+    // LSB-first bit image, then trim trailing zero bits (keep ≥1) so the result is
+    // the minimal `len = msb+1` vector the callers (width = msb+1/+2) expect.
+    let mut bits: Vec<Bit> = Vec::with_capacity(limbs.len() * 64);
+    for &limb in &limbs {
+        for b in 0..64 {
+            bits.push(if (limb >> b) & 1 == 1 { B1 } else { B0 });
+        }
+    }
+    while bits.len() > 1 && !bits.last().unwrap().v {
+        bits.pop();
     }
     if bits.is_empty() {
         bits.push(B0); // the value 0
@@ -149,7 +238,7 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
             // width = max(32, nbits+1). `decimal_bits` is trimmed (len = msb+1),
             // so for any value < 2^31 this stays 32 (pre-P0-10 byte-identical).
             let width = (bits.len() as u32 + 1).max(32);
-            let bits_packed = pack_bits(&bits, width, B0);
+            let bits_packed = pack_bits(&bits, alloc_width(width), B0);
             Some(ConstVal {
                 width,
                 signed: true,
@@ -206,7 +295,7 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
                     width,
                     signed,
                     repr: ConstRepr::Numeric,
-                    bits: pack_bits(&[], width, fill),
+                    bits: pack_bits(&[], alloc_width(width), fill),
                 });
             }
 
@@ -256,7 +345,7 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
                 width,
                 signed,
                 repr: ConstRepr::Numeric,
-                bits: pack_bits(&bits, width, fill),
+                bits: pack_bits(&bits, alloc_width(width), fill),
             })
         }
     }

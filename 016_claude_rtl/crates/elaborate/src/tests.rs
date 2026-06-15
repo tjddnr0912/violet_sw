@@ -618,6 +618,53 @@ fn t11b_unsized_literal_width_grows() {
     );
 }
 
+// ─────────── 11c. decimal → multi-WORD bit image (P-perf refactor guard) ───────────
+// The decimal magnitude conversion is the only path that crosses 64-bit word
+// boundaries with a carry, yet every other literal test is single-word. These
+// pin the exact (val plane) image of decimals whose MSB lands in word 1 / word 2,
+// so a faster base-conversion (Horner limbs) that mis-propagates a limb carry is
+// caught. Widths follow §3.5.1 (plain decimal signed → msb+2). Values verified
+// against iverilog 13.0 ($bits + the exact magnitude).
+#[test]
+fn t11c_decimal_multiword_bits() {
+    let dec = |s: &str| parse_int_literal(s, ast::IntLitKind::Decimal).unwrap();
+
+    // 2^64 = 18446744073709551616 : bit64 set → bits.len()=65, width=66, val=[0,1]
+    let cv = dec("18446744073709551616");
+    assert_eq!(cv.width, 66);
+    assert_eq!(cv.bits.val, vec![0, 1]);
+    assert_eq!(cv.bits.unk, vec![0, 0]);
+
+    // 2^64 + 1 : both word0 bit0 and word1 bit0 set → val=[1,1]
+    let cv = dec("18446744073709551617");
+    assert_eq!(cv.width, 66);
+    assert_eq!(cv.bits.val, vec![1, 1]);
+
+    // 2^64 - 1 = 18446744073709551615 : 64 ones in word0, msb=63 → width 65, two words
+    let cv = dec("18446744073709551615");
+    assert_eq!(cv.width, 65);
+    assert_eq!(cv.bits.val, vec![u64::MAX, 0]);
+
+    // a value spanning words 0 AND 1 with a non-trivial high word (0xDEADBEEF):
+    // 0xDEADBEEF * 2^64 + 1 = 68915718005535514953299001345 (python-verified).
+    let cv = dec("68915718005535514953299001345");
+    assert_eq!(cv.bits.val, vec![1, 0xDEAD_BEEF]);
+    // MSB of 0xDEADBEEF is bit 31 → absolute bit 64+31 = 95 → bits.len()=96, width 97
+    assert_eq!(cv.width, 97);
+
+    // 2^128 = 340282366920938463463374607431768211456 : bit128 → 3 words, width 130
+    let cv = dec("340282366920938463463374607431768211456");
+    assert_eq!(cv.width, 130);
+    assert_eq!(cv.bits.val, vec![0, 0, 1]);
+    assert_eq!(cv.bits.unk, vec![0, 0, 0]);
+
+    // a true 3-word value, every word non-trivial (carry must thread word0→1→2):
+    // 0xCAFE*2^128 + 0xBEEF*2^64 + 0x1234 = 17683113479413488193239383253378116049965620
+    let cv = dec("17683113479413488193239383253378116049965620");
+    assert_eq!(cv.bits.val, vec![0x1234, 0xBEEF, 0xCAFE]);
+    assert_eq!(cv.width, 145); // MSB of 0xCAFE = bit15 → 128+15=143 → bits.len()=144 → +1
+}
+
 // ───────────────────────── 12. determinism: identical input → identical IR ─────────────────────────
 #[test]
 fn t12_determinism_repeatable() {

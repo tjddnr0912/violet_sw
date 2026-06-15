@@ -7,8 +7,35 @@
 //! Every expected value/width is pinned LIVE against iverilog 13.0 ($bits).
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// Run vita on `src` and report (stdout, stderr, exit-code, wall-clock). Used by
+/// the DoS-guard tests: a pathological literal must finish (loud or quiet) WITHOUT
+/// the O(n^2) decimal conversion or a width-sized giant allocation blowing the
+/// time/space budget. The bound is generous (seconds) — pre-fix the 40000-digit
+/// case took ~27s and the over-cap cases were minutes / ~1 GiB.
+fn run_timed(src: &str) -> (String, String, Option<i32>, Duration) {
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("vita_litw_{}_{n}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("t.sv");
+    std::fs::write(&f, src).unwrap();
+    let t0 = Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_vita"))
+        .arg(f.to_str().unwrap())
+        .current_dir(&d)
+        .output()
+        .expect("run vita");
+    let elapsed = t0.elapsed();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code(),
+        elapsed,
+    )
+}
 
 fn run(src: &str) -> String {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -118,6 +145,73 @@ fn oversized_literal_width_is_capped_loud() {
     let out =
         run("module t; initial begin $display(\"%0d\", $bits(1024'h1)); $finish; end endmodule\n");
     assert_eq!(out, "1024\n");
+}
+
+// Generous wall-clock ceiling for the DoS-guard tests. After the fix every case
+// below is milliseconds; pre-fix they were 27 s / minutes / a ~1 GiB allocation.
+const DOS_BUDGET: Duration = Duration::from_secs(8);
+
+#[test]
+fn wide_decimal_value_roundtrips() {
+    // A 97-bit (2-word) decimal: parse -> store -> %0d must echo it exactly. This
+    // locks the multi-word magnitude conversion end-to-end (0xDEADBEEF*2^64 + 1).
+    let out = run("module t; initial begin\n\
+         $display(\"%0d\", 68915718005535514953299001345);\n\
+         $finish; end endmodule\n");
+    assert_eq!(out, "68915718005535514953299001345\n");
+}
+
+#[test]
+fn huge_decimal_completes_fast() {
+    // 40000-digit literal (well under the 2^20-bit width cap): the schoolbook
+    // bit-at-a-time division was O(n^2) (~27 s). With Horner base-10^9 it is ms.
+    // Round-trips through %0d, so we also assert the value survives intact.
+    let digits = "1234567890".repeat(4000); // 40000 digits, no leading zero
+    let src =
+        format!("module t; initial begin $display(\"%0d\", {digits}); $finish; end endmodule\n");
+    let (out, err, code, elapsed) = run_timed(&src);
+    assert_eq!(code, Some(0), "should elaborate+run; stderr:\n{err}");
+    // run_timed keeps vita's trailing "simulation ended" status line; the value is
+    // the FIRST output line.
+    assert_eq!(
+        out.lines().next(),
+        Some(digits.as_str()),
+        "value must round-trip"
+    );
+    assert!(elapsed < DOS_BUDGET, "decimal DoS: took {elapsed:?}");
+}
+
+#[test]
+fn over_digit_cap_decimal_rejected_fast() {
+    // > MAX_DECIMAL_DIGITS: a value with this many digits cannot fit the 2^20-bit
+    // width cap, so it is rejected in O(n) (a digit scan) instead of running the
+    // O(n^2) base conversion. Pre-fix this was minutes of CPU.
+    let digits = "9".repeat(400_000);
+    let src =
+        format!("module t; initial begin $display(\"%0d\", {digits}); #1 $finish; end endmodule\n");
+    let (_o, err, code, elapsed) = run_timed(&src);
+    assert_eq!(
+        code,
+        Some(1),
+        "must reject loud; stderr head:\n{}",
+        &err[..err.len().min(200)]
+    );
+    assert!(err.contains("VITA-E3009"), "E3009 expected");
+    assert!(elapsed < DOS_BUDGET, "digit-cap guard: took {elapsed:?}");
+}
+
+#[test]
+fn huge_sized_width_rejected_without_oom() {
+    // `4294967295'h1`: tiny source, but the explicit width would size a ~1 GiB
+    // BitPacked before the width-cap reject. The allocation is now clamped, so it
+    // is rejected loud and fast. (Adversarial-review-found sibling of the decimal
+    // O(n^2): same "tiny input, huge work" shape, in the sized-width pack path.)
+    let (_o, err, code, elapsed) = run_timed(
+        "module t; initial begin $display(\"%0d\", 4294967295'h1); #1 $finish; end endmodule\n",
+    );
+    assert_eq!(code, Some(1), "must reject loud; stderr:\n{err}");
+    assert!(err.contains("VITA-E3009"), "E3009 expected:\n{err}");
+    assert!(elapsed < DOS_BUDGET, "sized-width pack: took {elapsed:?}");
 }
 
 #[test]
