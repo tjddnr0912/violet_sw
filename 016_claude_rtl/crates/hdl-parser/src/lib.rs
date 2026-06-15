@@ -1429,6 +1429,33 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Generate) {
             return Some(ModuleItem::Generate(self.parse_generate_construct()));
         }
+        // module-level concurrent assertion: `assert property(@(clk) …);`
+        // (slice S10). Only `assert property` is a module item — an immediate
+        // `assert (expr)` is procedural-only and is a loud error here. The
+        // concurrent form is wrapped in a synthetic `initial` so it flows
+        // through the same procedural ConcurrentAssert collection
+        // (`pending_sva`); the checker is materialized at module level
+        // regardless, so this is a pure parser-placement change (no AST shape
+        // change, no sim-ir change).
+        if self.at_kw(Kw::Assert) {
+            let start = self.cur_span();
+            self.bump(); // `assert`
+            if !self.at_kw(Kw::Property) {
+                self.error(
+                    "`property` after `assert` at module level (immediate \
+                     assertions are procedural-only)",
+                );
+                return Some(ModuleItem::Error(start.to(self.prev_span())));
+            }
+            let stmt = self.parse_concurrent_assert(start);
+            let span = start.to(self.prev_span());
+            return Some(ModuleItem::Proc(ProceduralBlock {
+                kind: ProcKind::Initial,
+                sensitivity: None,
+                body: Box::new(stmt),
+                span,
+            }));
+        }
         // bare ident at module-item position ⇒ module instantiation.
         // (No keyword-led item matched above; in V2005 module scope a leading
         //  bare identifier can ONLY begin an instantiation — there is no

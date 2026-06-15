@@ -1011,3 +1011,74 @@ fn sva_seq_within_a_outside_window_no_match() {
         "no violation expected:\n{err}\n{out}"
     );
 }
+
+// ── module-level `assert property` (slice S10, hand-IEEE) ─────────────────────
+// A concurrent assertion may appear as a module item (not only inside an
+// initial/always). The parser wraps it in a synthetic `initial` so it flows
+// through the same `pending_sva` collection; the checker is materialized at
+// module level regardless, so this is a pure parser-placement change (no AST
+// shape change). iverilog rejects it (concurrent assertions unsupported).
+
+#[test]
+fn sva_module_level_violation_fires() {
+    // `assert property(...)` at MODULE level (no enclosing initial) must still
+    // synthesize the clocked checker. At t=25 a=1,b=0 -> violation -> exit 1.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) a |-> b);\n\
+         initial begin\n\
+           #10 a=1; b=1;\n\
+           #10 a=1; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "module-level assert property must check. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "a violation diagnostic was expected:\nstderr={err}\nout={out}"
+    );
+}
+
+#[test]
+fn sva_module_level_holds_no_error() {
+    // module-level assert that always holds -> clean exit 0, no diagnostic.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         assert property(@(posedge clk) a |-> b);\n\
+         initial begin\n\
+           #10 a=1; b=1;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "module-level assert that holds should pass. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_module_level_immediate_assert_is_loud() {
+    // A bare immediate `assert (expr)` is procedural-only; at module level it is
+    // a loud parse error (only `assert property` is a module item).
+    let (out, err, code) = run("module top;\n\
+         reg a=1;\n\
+         assert (a);\n\
+         initial #10 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "immediate assert at module level must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}
