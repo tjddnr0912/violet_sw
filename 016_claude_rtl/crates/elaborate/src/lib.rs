@@ -4640,6 +4640,22 @@ impl<'s> Elaborator<'s> {
                 make_const_u32(0, 32)
             }
         };
+        // P0-10: an unsized literal grows to hold its value (IEEE §3.5.1); cap the
+        // result at MAX_NET_WIDTH like a declared net so a pathological wide
+        // literal is rejected loud instead of interning a giant const (this also
+        // makes the `bits.len() as u32` width casts in literal.rs unreachable past
+        // u32). A sized over-cap literal is rejected for the same reason a
+        // same-width net is.
+        if cv.width as u64 > MAX_NET_WIDTH {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "integer literal width {} exceeds the v1 cap ({MAX_NET_WIDTH})",
+                    cv.width
+                ),
+            );
+            return self.intern_const(make_const_u32(0, 32));
+        }
         self.intern_const(cv)
     }
 

@@ -556,6 +556,68 @@ fn t11_literal_4state_planes() {
     assert_eq!(cv.bits.unk[0], 0xFFFF_FFFF);
 }
 
+// ─────────── 11b. unsized literal width grows to hold the value (P0-10) ───────────
+// IEEE §3.5.1: an unsized literal is "at least 32 bits", grown to hold its value.
+// Every width below is pinned LIVE against iverilog 13.0 ($bits): plain decimal &
+// 'sd are SIGNED (a positive value needs a sign bit → msb+2); 'd is UNSIGNED
+// (msb+1); based h/b/o use the DIGIT span (not the value MSB). Pre-P0-10 these all
+// truncated to a fixed 32 bits (2^31 → -2^31, 2^32 → 0).
+#[test]
+fn t11b_unsized_literal_width_grows() {
+    let dec = |s: &str| parse_int_literal(s, ast::IntLitKind::Decimal).unwrap();
+    let based = |s: &str| parse_int_literal(s, ast::IntLitKind::UnsizedBased).unwrap();
+
+    // plain decimal (signed): width = max(32, msb+2)
+    assert_eq!(dec("2147483647").width, 32); // 2^31-1, msb=30 → 32
+    assert_eq!(dec("2147483648").width, 33); // 2^31,   msb=31 → 33
+    assert_eq!(dec("4294967295").width, 33); // 2^32-1, msb=31 → 33
+    assert_eq!(dec("4294967296").width, 34); // 2^32,   msb=32 → 34
+    assert_eq!(dec("8589934592").width, 35); // 2^33,   msb=33 → 35
+    assert_eq!(dec("42").width, 32); // small stays 32 (byte-identical)
+
+    // values are PRESERVED (positive sign bit = 0), signed flag stays true
+    let cv = dec("2147483648");
+    assert!(cv.signed);
+    assert_eq!(cv.bits.val[0], 0x8000_0000); // bit31 set, sign bit (32) clear
+    assert_eq!(cv.bits.unk[0], 0x0);
+    let cv = dec("4294967296");
+    assert_eq!(cv.bits.val[0], 0x1_0000_0000); // bit32 set
+    let cv = dec("8589934592");
+    assert_eq!(cv.bits.val[0], 0x2_0000_0000); // bit33 set
+
+    // 'd (unsigned decimal): width = max(32, msb+1)
+    assert_eq!(based("'d2147483648").width, 32); // 2^31 fits in 32 unsigned
+    assert_eq!(based("'d4294967296").width, 33); // 2^32 → 33
+    assert!(!based("'d2147483648").signed);
+
+    // 'sd (signed decimal): like plain decimal → msb+2
+    assert_eq!(based("'sd2147483648").width, 33);
+    assert!(based("'sd2147483648").signed);
+
+    // based h/b/o: DIGIT span, not value MSB
+    assert_eq!(based("'hFFFFFFFF").width, 32); // 8 hex digits = 32 bits
+    assert_eq!(based("'h1FFFFFFFF").width, 36); // 9 hex digits = 36 bits (iverilog)
+    assert_eq!(based("'hFF").width, 32); // 2 digits, min 32
+    assert_eq!(based("'sh1FFFFFFFF").width, 36); // signed h: still digit span (no +1)
+    let cv = based("'h1FFFFFFFF");
+    assert_eq!(cv.bits.val[0], 0x1_FFFF_FFFF);
+    assert_eq!(cv.bits.unk[0], 0);
+
+    // sized literals are UNCHANGED (explicit width wins)
+    assert_eq!(
+        parse_int_literal("8'hFF", ast::IntLitKind::Sized)
+            .unwrap()
+            .width,
+        8
+    );
+    assert_eq!(
+        parse_int_literal("64'd1099511627776", ast::IntLitKind::Sized)
+            .unwrap()
+            .width,
+        64
+    );
+}
+
 // ───────────────────────── 12. determinism: identical input → identical IR ─────────────────────────
 #[test]
 fn t12_determinism_repeatable() {

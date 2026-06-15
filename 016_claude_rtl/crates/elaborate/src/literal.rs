@@ -143,9 +143,15 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
         IntLitKind::Decimal => {
             let digits: String = raw.chars().filter(|&c| c != '_').collect();
             let bits = decimal_bits(&digits)?;
-            let bits_packed = pack_bits(&bits, 32, B0);
+            // IEEE §3.5.1: an unsized literal is "at least 32 bits", grown to
+            // hold its value (iverilog parity). A plain decimal is SIGNED, so a
+            // positive value needs one extra (sign) bit above its MSB:
+            // width = max(32, nbits+1). `decimal_bits` is trimmed (len = msb+1),
+            // so for any value < 2^31 this stays 32 (pre-P0-10 byte-identical).
+            let width = (bits.len() as u32 + 1).max(32);
+            let bits_packed = pack_bits(&bits, width, B0);
             Some(ConstVal {
-                width: 32,
+                width,
                 signed: true,
                 repr: ConstRepr::Numeric,
                 bits: bits_packed,
@@ -165,14 +171,16 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
                 rest.next();
             }
 
-            // width: explicit for Sized; 32 for unsized (context sizing deferred).
-            let width: u32 = if size_part.is_empty() {
-                32
+            // explicit width for Sized; None for unsized (computed from the
+            // digits below, P0-10 — IEEE §3.5.1 "at least 32", grown to hold
+            // the value, iverilog parity).
+            let explicit_width: Option<u32> = if size_part.is_empty() {
+                None
             } else {
                 let sd: String = size_part.chars().filter(|&c| c != '_').collect();
-                sd.parse::<u32>().ok()?
+                Some(sd.parse::<u32>().ok()?)
             };
-            if width == 0 {
+            if explicit_width == Some(0) {
                 return None;
             }
 
@@ -181,6 +189,7 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
 
             if !is_base {
                 // SV single-char fill: '0 '1 'x 'z (no base letter, no digits).
+                // Self-determined width is context-sized; keep the v1 default 32.
                 let fill = match base_char {
                     '0' => B0,
                     '1' => B1,
@@ -192,6 +201,7 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
                 if rest.next().is_some() {
                     return None; // trailing junk after a single fill char
                 }
+                let width = explicit_width.unwrap_or(32);
                 return Some(ConstVal {
                     width,
                     signed,
@@ -222,6 +232,23 @@ pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {
                 }
             } else {
                 based_bits(&digits, base)?
+            };
+
+            // Unsized width (P0-10): based h/b/o use the DIGIT span itself
+            // (`bits.len()` = digits×bits-per-digit — `'h1FFFFFFFF`→36, NOT the
+            // value MSB 33). Based decimal uses the trimmed value width; a SIGNED
+            // `'sd` needs one extra sign bit (like plain decimal), `'d`/h/b/o do
+            // not. ≤32-bit literals stay 32 (pre-P0-10 byte-identical).
+            let width = match explicit_width {
+                Some(w) => w,
+                None => {
+                    let natural = if base == 10 && signed {
+                        bits.len() as u32 + 1
+                    } else {
+                        bits.len() as u32
+                    };
+                    natural.max(32)
+                }
             };
 
             let fill = ext_fill(&bits);
