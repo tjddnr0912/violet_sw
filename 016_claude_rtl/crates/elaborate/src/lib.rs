@@ -521,6 +521,8 @@ fn port_list_dirs(module: &ast::ModuleDecl) -> Vec<(String, ir::PortDir)> {
 /// lowered inline — see `materialize_sva_checkers`.
 struct PendingSva {
     clock: ast::Sensitivity,
+    /// `disable iff (expr)` reset condition (slice S12), if any.
+    disable_iff: Option<ast::Expr>,
     ante: ast::Sequence,
     kind: ast::ImplicationKind,
     cons: ast::Expr,
@@ -610,6 +612,34 @@ fn sva_zero(sp: ast::Span) -> ast::Expr {
             raw: "1'b0".to_string(),
         },
         span: sp,
+    }
+}
+
+/// Wrap an obligation NBA's RHS in `dis ? 1'b0 : rhs` so a `disable iff (dis)`
+/// reset clears in-flight pipeline/pending state on the clock it is asserted
+/// (slice S12). Only NonBlocking stmts occur in the obligation list; any other
+/// stmt (none expected) passes through unchanged.
+fn gate_nba_with_disable(stmt: ast::Stmt, dis: &ast::Expr, sp: ast::Span) -> ast::Stmt {
+    match stmt {
+        ast::Stmt::NonBlocking {
+            lhs,
+            delay,
+            rhs,
+            span,
+        } => ast::Stmt::NonBlocking {
+            lhs,
+            delay,
+            rhs: ast::Expr {
+                kind: ast::ExprKind::Ternary {
+                    cond: Box::new(dis.clone()),
+                    then_e: Box::new(sva_zero(sp)),
+                    else_e: Box::new(rhs),
+                },
+                span: sp,
+            },
+            span,
+        },
+        other => other,
     }
 }
 
@@ -6641,6 +6671,15 @@ impl<'s> Elaborator<'s> {
                 },
             };
             let pass_action = sva.pass;
+            // `disable iff (expr)` reset (slice S12): a 1-bit reduction of the
+            // (sampled) condition. When present, fire conditions are gated with
+            // `!dis` and every obligation NBA is reset to 0 on the dis clock, so
+            // in-flight attempts are aborted. Absent → the body is byte-identical
+            // to the pre-S12 checker.
+            let dis = sva
+                .disable_iff
+                .as_ref()
+                .map(|e| sva_unary(ast::UnOp::RedOr, self.rewrite_sampled(e, &mut regs), sp));
             let (cond_lhs, pending_nba) = match sva.kind {
                 ast::ImplicationKind::Overlap => (ante, None),
                 ast::ImplicationKind::NonOverlap => {
@@ -6665,13 +6704,21 @@ impl<'s> Elaborator<'s> {
                     (sva_ident_expr(&pend, sp), Some(nba))
                 }
             };
-            // violation = antecedent matched AND consequent false.
-            let violation = sva_binary(
+            // violation = antecedent matched AND consequent false, gated by `!dis`.
+            let mut violation = sva_binary(
                 ast::BinOp::LogAnd,
                 cond_lhs.clone(),
                 sva_unary(ast::UnOp::LogNot, cons.clone(), sp),
                 sp,
             );
+            if let Some(d) = &dis {
+                violation = sva_binary(
+                    ast::BinOp::LogAnd,
+                    sva_unary(ast::UnOp::LogNot, d.clone(), sp),
+                    violation,
+                    sp,
+                );
+            }
             let if_fail = ast::Stmt::If {
                 cond: violation,
                 then_s: Box::new(fail_stmt),
@@ -6683,9 +6730,17 @@ impl<'s> Elaborator<'s> {
             let mut stmts = vec![if_fail];
             // Pass action (if any) runs on a NON-VACUOUS success: antecedent
             // matched AND consequent held (vacuous success — antecedent false —
-            // does not fire it; a hand-IEEE choice, documented).
+            // does not fire it; a hand-IEEE choice, documented). Also gated `!dis`.
             if let Some(ps) = pass_action {
-                let success = sva_binary(ast::BinOp::LogAnd, cond_lhs, cons, sp);
+                let mut success = sva_binary(ast::BinOp::LogAnd, cond_lhs, cons, sp);
+                if let Some(d) = &dis {
+                    success = sva_binary(
+                        ast::BinOp::LogAnd,
+                        sva_unary(ast::UnOp::LogNot, d.clone(), sp),
+                        success,
+                        sp,
+                    );
+                }
                 stmts.push(ast::Stmt::If {
                     cond: success,
                     then_s: ps,
@@ -6693,6 +6748,20 @@ impl<'s> Elaborator<'s> {
                     span: sp,
                 });
             }
+            // `disable iff` reset: clear in-flight obligation state (pipeline +
+            // pend NBAs) when dis is true. The prev-sampling NBAs (regs.nbas)
+            // keep sampling — only the attempt obligations are aborted.
+            let (pipeline_nbas, pending_nba) = if let Some(d) = &dis {
+                (
+                    pipeline_nbas
+                        .into_iter()
+                        .map(|s| gate_nba_with_disable(s, d, sp))
+                        .collect::<Vec<_>>(),
+                    pending_nba.map(|s| gate_nba_with_disable(s, d, sp)),
+                )
+            } else {
+                (pipeline_nbas, pending_nba)
+            };
             stmts.extend(regs.nbas);
             stmts.extend(pipeline_nbas);
             if let Some(nba) = pending_nba {
@@ -8203,6 +8272,7 @@ impl<'s> Elaborator<'s> {
             // module's process loop (`materialize_sva_checkers`).
             ast::Stmt::ConcurrentAssert {
                 clock,
+                disable_iff,
                 antecedent,
                 implication_kind,
                 consequent,
@@ -8212,6 +8282,7 @@ impl<'s> Elaborator<'s> {
             } => {
                 self.pending_sva.push(PendingSva {
                     clock: clock.clone(),
+                    disable_iff: disable_iff.clone(),
                     ante: antecedent.clone(),
                     kind: *implication_kind,
                     cons: consequent.clone(),

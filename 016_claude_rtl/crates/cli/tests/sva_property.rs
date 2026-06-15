@@ -1458,3 +1458,117 @@ fn sva_action_default_fail_unchanged() {
         "default fail text expected:\n{err}\n{out}"
     );
 }
+
+// ── disable iff (slice S12, hand-IEEE) ───────────────────────────────────────
+// `assert property(@(clk) disable iff (rst) seq |-> cons)` (IEEE 1800 §16.12.7):
+// when the (clock-sampled) reset is true, the attempt is aborted — no violation,
+// no pass — and in-flight pipeline/pending state is cleared so no obligation
+// survives the reset. Desugar: fire condition gated with `!|rst`; every
+// obligation NBA (pipeline + pend) becomes `rst ? 1'b0 : rhs`. Absent, the
+// checker is byte-identical to before. AST flip; sim-ir unchanged. iverilog
+// rejects concurrent assertions, so hand-IEEE pinned.
+
+#[test]
+fn sva_disable_iff_suppresses_violation() {
+    // rst high during the (only) violation window -> aborted -> no fire, exit 0.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, rst=1, a=1, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) disable iff (rst) a |-> b);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "disable iff must suppress the violation. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_disable_iff_inactive_fires() {
+    // Same trace, rst low: the disable is inert -> the violation fires normally.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, rst=0, a=1, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) disable iff (rst) a |-> b);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "inactive disable must not block firing. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_disable_iff_kills_inflight_sequence() {
+    // a ##2 c |-> d : a@t15 starts an attempt that would mature at t35. rst@t25
+    // (mid-sequence) clears the pipeline -> the attempt is killed -> no match at
+    // t35 even though c=1,d=0 -> exit 0.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, rst=0, a=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) disable iff (rst) a ##2 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0; rst=1;\n\
+           #10 c=1; d=0; rst=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "disable iff must kill the in-flight sequence attempt. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_disable_iff_inflight_control_no_disable_fires() {
+    // Control: the SAME sequence trace WITHOUT disable iff DOES fire (proving the
+    // suppression above is the disable, not a vacuous trace).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##2 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0;\n\
+           #10 c=1; d=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "the un-disabled sequence must fire. stderr:\n{err}\nout:\n{out}"
+    );
+}
+
+#[test]
+fn sva_disable_iff_missing_iff_is_loud() {
+    // `disable (rst)` without `iff` is a loud parse error.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, rst=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) disable (rst) a |-> b);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "`disable` without `iff` must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}

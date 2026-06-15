@@ -531,6 +531,10 @@ pub enum Stmt {
     /// lands in the SVA feature slices.
     ConcurrentAssert {
         clock: Sensitivity,
+        /// Optional `disable iff (expr)` reset (slice S12, IEEE 1800 §16.12.7):
+        /// when the (clock-sampled) condition is true the attempt is aborted (no
+        /// pass/fail) and in-flight pipeline/pending state is cleared.
+        disable_iff: Option<Expr>,
         antecedent: Sequence,
         implication_kind: ImplicationKind,
         consequent: Expr,

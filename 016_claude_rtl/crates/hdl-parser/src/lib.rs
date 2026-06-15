@@ -3122,6 +3122,23 @@ impl<'t, 's> Parser<'t, 's> {
             self.error("'@(...)' clocking event in concurrent assertion");
             Sensitivity::List(Vec::new())
         };
+        // Optional `disable iff (expr)` reset (slice S12), between the clocking
+        // event and the property expression. `disable` is a keyword; `iff` is a
+        // contextual keyword (a plain identifier elsewhere).
+        let disable_iff = if self.at_kw(Kw::Disable) {
+            self.bump(); // `disable`
+            if self.at_ident_kw("iff") {
+                self.bump(); // `iff`
+            } else {
+                self.error("`iff` after `disable` in a concurrent assertion");
+            }
+            self.expect(TokenKind::LParen, "'(' after `disable iff`");
+            let e = self.expr(0);
+            self.expect(TokenKind::RParen, "')' after `disable iff` condition");
+            Some(e)
+        } else {
+            None
+        };
         // `seq [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
         // implication) desugars to `1'b1 |-> expr` (check `expr` every clock);
         // a bare *sequence* (multi-clock) without implication is deferred.
@@ -3152,6 +3169,7 @@ impl<'t, 's> Parser<'t, 's> {
         let (pass, fail) = self.parse_assert_action_block();
         Stmt::ConcurrentAssert {
             clock,
+            disable_iff,
             antecedent,
             implication_kind,
             consequent,
@@ -4238,20 +4256,24 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
         Stmt::EventTrigger { name, .. } => fix_path(name),
         Stmt::ConcurrentAssert {
             clock,
+            disable_iff,
             antecedent,
             consequent,
             pass,
             fail,
             ..
         } => {
-            // Rename every operand (clock sensitivity exprs + antecedent +
-            // consequent + action-block statements) — same completeness lesson
-            // as EventCtrl above (an unrenamed action stmt would silently capture
-            // the outer signal).
+            // Rename every operand (clock sensitivity exprs + disable iff +
+            // antecedent + consequent + action-block statements) — same
+            // completeness lesson as EventCtrl above (an unrenamed operand would
+            // silently capture the outer signal).
             if let Sensitivity::List(evs) = clock {
                 for ev in evs {
                     fix_expr(&mut ev.expr, from, to);
                 }
+            }
+            if let Some(e) = disable_iff {
+                fix_expr(e, from, to);
             }
             fix_sequence(antecedent, from, to);
             fix_expr(consequent, from, to);
