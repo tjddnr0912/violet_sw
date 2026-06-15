@@ -3147,14 +3147,40 @@ impl<'t, 's> Parser<'t, 's> {
             }
         };
         self.expect(TokenKind::RParen, "')'");
-        self.expect(TokenKind::Semi, "';'");
+        // action_block ::= statement_or_null | [statement] `else` statement_or_null
+        // (slice S11). A bare `;` leaves both None (default $error, no pass).
+        let (pass, fail) = self.parse_assert_action_block();
         Stmt::ConcurrentAssert {
             clock,
             antecedent,
             implication_kind,
             consequent,
+            pass,
+            fail,
             span: start.to(self.prev_span()),
         }
+    }
+
+    /// Parse an assertion action block after the `property(...)` close paren
+    /// (slice S11): `[pass_stmt] [else fail_stmt]`. A bare `;` yields
+    /// `(None, None)` — the default $error fail and no pass action, kept distinct
+    /// from `(Some(Null), None)` so the no-action checker is byte-identical to
+    /// before this slice. Each statement consumes its own terminating `;`.
+    fn parse_assert_action_block(&mut self) -> (Option<Box<Stmt>>, Option<Box<Stmt>>) {
+        // `eat(Semi)` consumes a bare `;` (empty action block); `at_kw(Else)`
+        // (else-only form) leaves the `else` for the `fail` arm below — both yield
+        // no pass action. Short-circuit `||` keeps the `;`-consuming side effect.
+        let pass = if self.eat(TokenKind::Semi) || self.at_kw(Kw::Else) {
+            None
+        } else {
+            Some(Box::new(self.parse_statement()))
+        };
+        let fail = if self.eat_kw(Kw::Else) {
+            Some(Box::new(self.parse_statement()))
+        } else {
+            None
+        };
+        (pass, fail)
     }
 
     /// Parse an SVA sequence (Phase-3 slices S4/S5): `##n` / bounded-range
@@ -4214,10 +4240,14 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             clock,
             antecedent,
             consequent,
+            pass,
+            fail,
             ..
         } => {
             // Rename every operand (clock sensitivity exprs + antecedent +
-            // consequent) — same completeness lesson as EventCtrl above.
+            // consequent + action-block statements) — same completeness lesson
+            // as EventCtrl above (an unrenamed action stmt would silently capture
+            // the outer signal).
             if let Sensitivity::List(evs) = clock {
                 for ev in evs {
                     fix_expr(&mut ev.expr, from, to);
@@ -4225,6 +4255,12 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             }
             fix_sequence(antecedent, from, to);
             fix_expr(consequent, from, to);
+            if let Some(s) = pass {
+                rename_ident_in_stmt(s, from, to);
+            }
+            if let Some(s) = fail {
+                rename_ident_in_stmt(s, from, to);
+            }
         }
         Stmt::WaitFork { .. } | Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
     }

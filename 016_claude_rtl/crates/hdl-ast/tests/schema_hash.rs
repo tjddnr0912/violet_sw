@@ -12,11 +12,12 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-15 SVA slice S9 (`Sequence::Within` variant — `seq1 within
-/// seq2` AST flip; all `.vu` artifacts are stale, no sim-ir/format_version
-/// change). (Previous re-pins: 2026-06-15 S8 `Sequence::Repeat.kind:
-/// RepeatKind`; 2026-06-15 S7 `Sequence::Throughout`; 2026-06-15 S4 `Sequence`
-/// enum + `ConcurrentAssert.antecedent: Expr → Sequence`;
+/// Re-pinned 2026-06-15 SVA slice S11 (`ConcurrentAssert.{pass,fail}:
+/// Option<Box<Stmt>>` action block — AST flip; all `.vu` artifacts are stale, no
+/// sim-ir/format_version change). (Previous re-pins: 2026-06-15 S9
+/// `Sequence::Within`; 2026-06-15 S8 `Sequence::Repeat.kind: RepeatKind`;
+/// 2026-06-15 S7 `Sequence::Throughout`; 2026-06-15 S4 `Sequence` enum +
+/// `ConcurrentAssert.antecedent: Expr → Sequence`;
 /// 2026-06-14 v8 `Stmt::WaitFork`+`ConcurrentAssert`+`ImplicationKind`;
 /// 2026-06-12 P2-E `ProcKind::Final`; 2026-06-12 v7 P2-C/P2-D flip
 /// `TopItem::{Package,Import}`+`ImportDecl`+`ModuleItem::Import`+
@@ -24,8 +25,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    134, 100, 31, 242, 177, 123, 65, 27, 185, 94, 181, 155, 41, 65, 212, 139, 36, 238, 191, 15,
-    133, 1, 226, 87, 163, 18, 119, 131, 226, 215, 97, 52,
+    90, 78, 94, 151, 224, 246, 59, 81, 141, 61, 35, 31, 185, 180, 169, 41, 199, 134, 117, 28, 53,
+    16, 207, 153, 161, 121, 147, 168, 106, 24, 34, 181,
 ];
 
 #[test]

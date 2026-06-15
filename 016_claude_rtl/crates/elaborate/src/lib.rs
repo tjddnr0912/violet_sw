@@ -524,6 +524,10 @@ struct PendingSva {
     ante: ast::Sequence,
     kind: ast::ImplicationKind,
     cons: ast::Expr,
+    /// Action block (slice S11): `fail` (the `else` statement) replaces the
+    /// default `$error` on a violation; `pass` runs on a non-vacuous success.
+    pass: Option<Box<ast::Stmt>>,
+    fail: Option<Box<ast::Stmt>>,
     span: ast::Span,
 }
 
@@ -6615,20 +6619,28 @@ impl<'s> Elaborator<'s> {
             };
             let cons = self.rewrite_sampled(&sva.cons, &mut regs);
 
-            let error_stmt = ast::Stmt::SysTaskCall {
-                name: ast::Ident {
-                    name: "$error".to_string(),
+            // Action block (slice S11). The fail action — the `else` statement, or
+            // the default `$error("Assertion property violation")` when absent —
+            // runs on a violation; the optional pass action runs on a non-vacuous
+            // success. When both are absent the body is byte-identical to the
+            // pre-S11 checker (default $error, no pass branch).
+            let fail_stmt = match sva.fail {
+                Some(s) => *s,
+                None => ast::Stmt::SysTaskCall {
+                    name: ast::Ident {
+                        name: "$error".to_string(),
+                        span: sp,
+                    },
+                    args: vec![ast::Expr {
+                        kind: ast::ExprKind::StrLit {
+                            raw: "\"Assertion property violation\"".to_string(),
+                        },
+                        span: sp,
+                    }],
                     span: sp,
                 },
-                args: vec![ast::Expr {
-                    kind: ast::ExprKind::StrLit {
-                        raw: "\"Assertion property violation\"".to_string(),
-                    },
-                    span: sp,
-                }],
-                span: sp,
             };
-            let not_cons = sva_unary(ast::UnOp::LogNot, cons, sp);
+            let pass_action = sva.pass;
             let (cond_lhs, pending_nba) = match sva.kind {
                 ast::ImplicationKind::Overlap => (ante, None),
                 ast::ImplicationKind::NonOverlap => {
@@ -6653,16 +6665,34 @@ impl<'s> Elaborator<'s> {
                     (sva_ident_expr(&pend, sp), Some(nba))
                 }
             };
-            let cond = sva_binary(ast::BinOp::LogAnd, cond_lhs, not_cons, sp);
-            let if_stmt = ast::Stmt::If {
-                cond,
-                then_s: Box::new(error_stmt),
+            // violation = antecedent matched AND consequent false.
+            let violation = sva_binary(
+                ast::BinOp::LogAnd,
+                cond_lhs.clone(),
+                sva_unary(ast::UnOp::LogNot, cons.clone(), sp),
+                sp,
+            );
+            let if_fail = ast::Stmt::If {
+                cond: violation,
+                then_s: Box::new(fail_stmt),
                 else_s: None,
                 span: sp,
             };
             // Clocked body: check FIRST (reads the prior clock's prev/pend), then
             // the NBA updates apply in the NBA region for the next clock.
-            let mut stmts = vec![if_stmt];
+            let mut stmts = vec![if_fail];
+            // Pass action (if any) runs on a NON-VACUOUS success: antecedent
+            // matched AND consequent held (vacuous success — antecedent false —
+            // does not fire it; a hand-IEEE choice, documented).
+            if let Some(ps) = pass_action {
+                let success = sva_binary(ast::BinOp::LogAnd, cond_lhs, cons, sp);
+                stmts.push(ast::Stmt::If {
+                    cond: success,
+                    then_s: ps,
+                    else_s: None,
+                    span: sp,
+                });
+            }
             stmts.extend(regs.nbas);
             stmts.extend(pipeline_nbas);
             if let Some(nba) = pending_nba {
@@ -8176,6 +8206,8 @@ impl<'s> Elaborator<'s> {
                 antecedent,
                 implication_kind,
                 consequent,
+                pass,
+                fail,
                 span,
             } => {
                 self.pending_sva.push(PendingSva {
@@ -8183,6 +8215,8 @@ impl<'s> Elaborator<'s> {
                     ante: antecedent.clone(),
                     kind: *implication_kind,
                     cons: consequent.clone(),
+                    pass: pass.clone(),
+                    fail: fail.clone(),
                     span: *span,
                 });
             }

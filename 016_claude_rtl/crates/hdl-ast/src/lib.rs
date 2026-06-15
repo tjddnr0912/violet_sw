@@ -534,6 +534,13 @@ pub enum Stmt {
         antecedent: Sequence,
         implication_kind: ImplicationKind,
         consequent: Expr,
+        /// Optional action block (slice S11, IEEE 1800 §16.14.1):
+        /// `assert property(...) [pass] [else fail]`. `pass` runs on a
+        /// non-vacuous success, `fail` (the `else` statement) replaces the
+        /// default `$error` on a violation. A bare `assert property(...);` leaves
+        /// both `None` (default $error, no pass action).
+        pass: Option<Box<Stmt>>,
+        fail: Option<Box<Stmt>>,
         span: Span,
     },
     // procedural-continuous family (§2.7):

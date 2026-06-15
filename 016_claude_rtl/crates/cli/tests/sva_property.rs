@@ -1304,3 +1304,157 @@ fn sva_seq_consec_bounded_over_cap_is_loud() {
         "[*n] over the count cap must be loud. stderr:\n{err}\nout:\n{out}"
     );
 }
+
+// ── assertion action block (slice S11, hand-IEEE) ────────────────────────────
+// `assert property(...) [pass_stmt] [else fail_stmt]` (IEEE 1800 §16.14.1). The
+// fail statement (after `else`) replaces the default `$error` on a violation;
+// the pass statement runs on a NON-VACUOUS success (antecedent matched AND
+// consequent held — a hand-IEEE choice: pass does not fire on vacuous success).
+// A bare `assert property(...);` keeps the default $error (byte-identical to
+// before). AST flip (pass/fail fields); sim-ir unchanged.
+
+#[test]
+fn sva_action_custom_fail_replaces_default() {
+    // else <fail>: the custom fail action runs on violation (and the default
+    // "Assertion property violation" text is NOT used).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b) else $error(\"CUSTOMFAILXYZ\");\n\
+         initial begin\n\
+           #10 a=1; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    let blob = format!("{err}{out}");
+    assert_eq!(
+        code,
+        Some(1),
+        "violation -> exit 1. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        blob.contains("CUSTOMFAILXYZ"),
+        "custom fail text expected:\n{blob}"
+    );
+    assert!(
+        !blob.contains("Assertion property violation"),
+        "default text must be replaced:\n{blob}"
+    );
+}
+
+#[test]
+fn sva_action_fail_fatal_exits() {
+    // else $fatal: a custom fatal fail action fires and exits nonzero.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b) else $fatal(1, \"BOOMFATAL\");\n\
+         initial begin\n\
+           #10 a=1; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "fatal fail must exit nonzero. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").contains("BOOMFATAL"),
+        "fatal message expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_action_pass_runs_on_success() {
+    // pass_stmt runs when the property holds non-vacuously (a&&b at a posedge).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b) $display(\"PROPPASSXYZ\");\n\
+         initial begin\n\
+           #10 a=1; b=1;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "holds -> exit 0. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").contains("PROPPASSXYZ"),
+        "pass action expected on success:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_action_pass_not_on_vacuous() {
+    // pass_stmt must NOT run on vacuous success (antecedent never true).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b) $display(\"VACPASSXYZ\");\n\
+         initial begin\n\
+           #10 a=0; b=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "vacuous -> exit 0. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").contains("VACPASSXYZ"),
+        "pass action must not fire on vacuous success:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_action_pass_and_fail() {
+    // `pass; else fail;` — pass on the holding clock, fail on the violating one.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b) $display(\"OKPASSXYZ\"); else $error(\"BADFAILXYZ\");\n\
+         initial begin\n\
+           #10 a=1; b=1;\n\
+           #10 a=1; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    let blob = format!("{err}{out}");
+    assert_eq!(code, Some(1), "violation -> exit 1. {blob}");
+    assert!(
+        blob.contains("OKPASSXYZ"),
+        "pass action on hold expected:\n{blob}"
+    );
+    assert!(
+        blob.contains("BADFAILXYZ"),
+        "custom fail action on violation expected:\n{blob}"
+    );
+}
+
+#[test]
+fn sva_action_default_fail_unchanged() {
+    // No action block -> default $error("Assertion property violation").
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b);\n\
+         initial begin\n\
+           #10 a=1; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "violation -> exit 1. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").contains("Assertion property violation"),
+        "default fail text expected:\n{err}\n{out}"
+    );
+}
