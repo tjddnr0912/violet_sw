@@ -3270,6 +3270,20 @@ impl<'t, 's> Parser<'t, 's> {
     /// or more repetition postfixes — `[*n]`/`[*m:n]` consecutive, `[->n]` goto,
     /// or `[=n]` nonconsecutive.
     fn parse_seq_primary(&mut self) -> Sequence {
+        // A second `@(...)` clocking event inside a property body (after the
+        // leading property clock, which `parse_concurrent_assert` already
+        // consumed) is a MULTI-CLOCK property (slice S15) — deferred. Emit one
+        // dedicated diagnostic and consume the `@(...)` so the generic
+        // "expected expression, found At" + lvalue-recovery cascade is suppressed;
+        // the run aborts on the error regardless.
+        if self.peek() == Some(TokenKind::At) {
+            self.error(
+                "a single-clock property (multi-clock concurrent assertions — a \
+                 second `@` clocking event inside a property — are unsupported in \
+                 this subset)",
+            );
+            let _ = self.parse_sensitivity();
+        }
         let e = self.expr(0);
         let mut seq = Sequence::Boolean(e);
         loop {

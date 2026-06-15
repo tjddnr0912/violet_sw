@@ -1743,6 +1743,107 @@ fn sva_consequent_range_is_loud() {
     );
 }
 
+// ── multi-clock: deferred, but loud (slice S15) ──────────────────────────────
+// Multi-clock concurrent assertions (a property sampling different signals on
+// different clocks) are deferred. The single-`always` checker model does not
+// extend, and iverilog gives no oracle. This slice keeps multi-clock LOUD and
+// closes a silent-accept hole: an OR-of-clocks property clock
+// `@(posedge c1 or posedge c2)` was previously built into one (semantically
+// wrong) `always @(c1 or c2)` checker; it is now a loud reject. A second `@`
+// inside a property body gets a dedicated diagnostic. The future two-process
+// design is documented in docs/ROADMAP.md.
+
+#[test]
+fn sva_multiclock_or_clock_is_loud() {
+    // `@(posedge c1 or posedge c2)` as a property clock is an OR-of-clocks event
+    // — not a legal single SVA clock. Must be a loud elaborate reject (a single
+    // clocking-event diagnostic), NOT a built checker (was silently accepted).
+    let (out, err, code) = run("module top;\n\
+         reg c1=0, c2=0, a=0, b=0;\n\
+         always #5 c1=~c1;\n\
+         always #7 c2=~c2;\n\
+         initial assert property(@(posedge c1 or posedge c2) a |=> b);\n\
+         initial #30 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "OR-clock property must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}")
+            .to_lowercase()
+            .contains("single clocking event"),
+        "expected a single-clocking-event diagnostic:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_multiclock_consequent_at_is_loud() {
+    // A second `@` clocking event in the consequent is a multi-clock property.
+    let (out, err, code) = run("module top;\n\
+         reg c1=0, c2=0, a=0, b=0;\n\
+         always #5 c1=~c1;\n\
+         always #7 c2=~c2;\n\
+         initial assert property(@(posedge c1) a |=> @(posedge c2) b);\n\
+         initial #30 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "multi-clock consequent must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("multi-clock"),
+        "expected a multi-clock diagnostic:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_multiclock_midseq_at_is_loud() {
+    // A second `@` mid-sequence (after ##1) is a multi-clock property.
+    let (out, err, code) = run("module top;\n\
+         reg c1=0, c2=0, a=0, b=0, d=0;\n\
+         always #5 c1=~c1;\n\
+         always #7 c2=~c2;\n\
+         initial assert property(@(posedge c1) a ##1 @(posedge c2) b |-> d);\n\
+         initial #30 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "multi-clock mid-sequence must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("multi-clock"),
+        "expected a multi-clock diagnostic:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_multiclock_normal_or_always_unaffected() {
+    // The OR-clock fix is scoped to concurrent-assertion clocks ONLY: a normal
+    // `always @(posedge c1 or posedge c2)` process (clock-gen / async-reset
+    // idiom) must still work.
+    let (out, err, code) = run("module top;\n\
+         reg c1=0, c2=0;\n\
+         reg [7:0] hits=0;\n\
+         always #5 c1=~c1;\n\
+         always #7 c2=~c2;\n\
+         always @(posedge c1 or posedge c2) hits = hits + 1;\n\
+         initial begin #40 $display(\"HITS=%0d\", hits); $finish; end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "normal OR-edge always must work. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").contains("HITS="),
+        "the always block must run:\n{err}\n{out}"
+    );
+}
+
 #[test]
 fn sva_consequent_sequence_multibit_antecedent() {
     // Regression (S14 review HIGH): a multi-bit antecedent that is truthy but has

@@ -6588,6 +6588,23 @@ impl<'s> Elaborator<'s> {
         let pending = std::mem::take(&mut self.pending_sva);
         for sva in pending {
             let sp = sva.span;
+            // A concurrent assertion must have a SINGLE clocking event (slice
+            // S15). An OR-of-clocks event `@(posedge c1 or posedge c2)` (a
+            // `Sensitivity::List` with >1 term) or `@(*)` is a multi-clock
+            // property — the single-`always` checker model does not implement it.
+            // Reject it loudly instead of building one (semantically wrong)
+            // `always @(c1 or c2)` checker (this closes a silent-accept hole).
+            // Mid-property second-`@` events are caught earlier by the parser.
+            let single_clock = matches!(&sva.clock, ast::Sensitivity::List(evs) if evs.len() == 1);
+            if !single_clock {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a concurrent assertion must have a single clocking event \
+                     (multi-clock / OR-of-clocks property clocks are unsupported \
+                     in this subset)",
+                );
+                continue;
+            }
             // Rewrite sampled-value functions ($past/$rose/$fell/$stable) into
             // reads of synthesized prev-registers, collecting the per-clock NBA
             // updates (`prev <= signal`) that maintain them.
