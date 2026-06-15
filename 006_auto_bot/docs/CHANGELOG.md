@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-06-15: 출처 외부 링크 섹션 + 타이틀 카드 대표 이미지 (SEO·AdSense)
+
+- **출처→'참고 자료' 외부 링크 섹션 (근본 수정)** — Rank Math "outbound links" 경고 + E-E-A-T + AdSense 가치. 봇이 이미 보유한 출처(`{title,url}`)를 발행 단계에서 **결정론적으로** 본문 끝에 클릭 가능한 링크로 렌더. `shared/wordpress_uploader.render_sources_section()` 신설(새 탭·**dofollow** `rel="noopener"`·중복 URL 제거·http(s)만·이스케이프·최대 12개), `create_post`/`upload_post`에 `sources` 인자 추가(단일 choke point, 이미 섹션 있으면 중복 안 붙임).
+  - 배선: **텔레그램**(기존 마크다운 `## References`는 AI 변환에서 비결정적으로 누락 → 제거하고 업로더로 결정론적 첨부), **섹터**(`orch.sources`), **부동산**(국토부 실거래가 공개시스템 링크 상수). 뉴스(100+ 피드 종합=노이즈)·버핏(구조화 출처 없음)은 제외.
+- **타이틀 카드 대표 이미지(featured/og:image) 자동 첨부** — `shared/title_card.py` 신설: 제목·카테고리→1200×630 다크 카드 PNG(Pillow + 시스템 한글 폰트, **비용0·무네트워크·결정론적**, 폰트/렌더 실패 시 None→발행 계속). `create_post`가 `featured_media` 미지정 + `AUTO_FEATURED_CARD=true`면 카드 생성→`upload_media`→대표 이미지로 설정(카테고리 ID→이름 역매핑으로 칩 라벨·색상). og:image(SNS·검색 미리보기)+글목록 썸네일 브랜딩 확보. **PNG 미디어 업로드는 NinjaFirewall을 그대로 통과**(mermaid 파이프라인과 동일, 본문 미전송이라 WAF 무관).
+- 단위 변환기 글(id 180)에 실제 도구 스크린샷을 대표 이미지로 설정(헤드리스 Chrome 1200×630 캡처→media id 199, `featured_media`만 PATCH=본문 미전송→방화벽 무관, status publish 유지).
+- 검토 결정: Rank Math **포커스 키워드 자동화는 보류**(구글 랭킹 신호 아님=cosmetic, 기계 추출 키워드는 거짓 안심). 무료 AI 이미지(Higgsfield 등)는 무료 한도가 봇 자동발행에 무의미해 채택 안 함.
+- 테스트: `tests/test_wordpress_helpers.py`에 sources(7건)+title card(6건) 추가 → 전체 134건 통과.
+
 ## 2026-06-14: 자동봇 강제 draft 토글 + 이미지 마커 주석 중첩 버그 수정
 
 - **`AUTO_BOT_DRAFT_ONLY`(default true) 추가** — 애드센스 심사 준비 동안 investment_bot 계열 자동봇(뉴스/버핏/섹터/부동산)이 발행하는 글을 항상 draft로 올린다. `shared/wordpress_uploader.py`에 `force_draft` 옵션 + `auto_draft_enabled()` 헬퍼 추가(`create_post` 단일 choke point에서 status→draft 강제). 자동봇 4종(`buffett_bot`·`weekly_sector_bot`·`weekly_realestate_bot`·`main` 뉴스 3곳)이 `force_draft=auto_draft_enabled()` 연결. **텔레그램 봇은 미연결 → 계속 publish**(별도 프로세스). 복귀 시 `.env`에서 `AUTO_BOT_DRAFT_ONLY=false`.

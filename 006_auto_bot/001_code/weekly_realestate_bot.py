@@ -250,8 +250,16 @@ class RealEstateBot:
                 html, headline = _convert_html(md)
                 title = publish_meta.build_title(date.today(), headline)
                 labels = publish_meta.build_labels(rollup, hottest_gu=hottest)
-                up = self.blogger.upload_post(title=title, content=html, labels=labels,
-                                              is_draft=False, is_markdown=False)
+                # 데이터 출처(국토부 실거래가)를 권위 있는 외부 링크로 첨부
+                # (Rank Math outbound links + 데이터 투명성).
+                up = self.blogger.upload_post(
+                    title=title, content=html, labels=labels,
+                    is_draft=False, is_markdown=False,
+                    sources=[{
+                        "title": "국토교통부 실거래가 공개시스템",
+                        "url": "https://rt.molit.go.kr/",
+                    }],
+                )
                 if not up["success"]:
                     raise RuntimeError(f"upload failed: {up.get('message')}")
                 result["blog_url"] = up.get("url")

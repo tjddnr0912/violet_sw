@@ -191,7 +191,8 @@ class WeeklySectorBot:
                     content=html_content if html_content else save_result['content'],
                     labels=labels,
                     is_draft=False,
-                    is_markdown=(html_content is None)
+                    is_markdown=(html_content is None),
+                    sources=analysis_result.get('sources'),
                 )
 
                 if not upload_result['success']:

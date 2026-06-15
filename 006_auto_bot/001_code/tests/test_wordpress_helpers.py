@@ -8,6 +8,7 @@ from shared.wordpress_uploader import (
     demote_body_h1,
     english_slug,
     auto_draft_enabled,
+    render_sources_section,
     WordPressUploader,
     _kebab,
 )
@@ -179,3 +180,140 @@ def test_auto_draft_enabled_false_toggle(monkeypatch):
     assert auto_draft_enabled() is False
     monkeypatch.setenv("AUTO_BOT_DRAFT_ONLY", "true")
     assert auto_draft_enabled() is True
+
+
+# --- render_sources_section (출처 → '참고 자료' 외부 링크 섹션) ---
+
+def test_render_sources_section_basic():
+    out = render_sources_section([
+        {"title": "BLS CPI", "url": "https://www.bls.gov/cpi/"},
+        {"title": "Fed", "url": "https://www.federalreserve.gov"},
+    ])
+    assert "참고 자료" in out
+    assert 'href="https://www.bls.gov/cpi/"' in out
+    assert 'target="_blank"' in out
+    assert 'rel="noopener"' in out  # 진짜 출처 → dofollow(nofollow 아님)
+    assert "nofollow" not in out
+    assert ">BLS CPI</a>" in out and ">Fed</a>" in out
+    assert "data-sources-section" in out
+
+
+def test_render_sources_section_dedup_http_only_and_empty():
+    assert render_sources_section([]) == ""
+    assert render_sources_section(None) == ""
+    # http 아닌 항목은 제외 → 결과 없음
+    assert render_sources_section([{"title": "x", "url": "ftp://h"}]) == ""
+    # 끝 슬래시만 다른 중복 URL은 1개로
+    out = render_sources_section([
+        {"title": "A", "url": "https://e.com/x"},
+        {"title": "B", "url": "https://e.com/x/"},
+    ])
+    assert out.count("<li") == 1
+
+
+def test_render_sources_section_escapes():
+    out = render_sources_section([
+        {"title": 'a<b>&"', "url": "https://e.com/?a=1&b=2"},
+    ])
+    assert "<b>" not in out  # 제목 태그 이스케이프됨
+    assert "a&lt;b&gt;&amp;&quot;" in out
+    assert "a=1&amp;b=2" in out  # URL의 & 이스케이프
+
+
+def test_render_sources_section_accepts_url_strings():
+    out = render_sources_section(["https://e.com/a", "not-a-url"])
+    assert out.count("<li") == 1
+    assert 'href="https://e.com/a"' in out
+
+
+def test_create_post_appends_sources_section(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader()
+    up.create_post(
+        "T", "<p>body</p>", status="publish",
+        sources=[{"title": "Ref", "url": "https://e.com/r"}],
+    )
+    content = captured["payload"]["content"]
+    assert "참고 자료" in content
+    assert 'href="https://e.com/r"' in content
+
+
+def test_create_post_no_sources_no_section(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader()
+    up.create_post("T", "<p>body</p>", status="publish")
+    assert "참고 자료" not in captured["payload"]["content"]
+
+
+def test_create_post_sources_idempotent(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader()
+    # 본문에 이미 섹션 마커가 있으면 다시 붙이지 않는다
+    body = '<p>b</p><div data-sources-section><h2>참고 자료</h2></div>'
+    up.create_post(
+        "T", body, status="publish",
+        sources=[{"title": "Ref", "url": "https://e.com/r"}],
+    )
+    assert captured["payload"]["content"].count("data-sources-section") == 1
+
+
+def test_upload_post_threads_sources(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader()
+    up.upload_post(
+        "T", "<p>b</p>", is_draft=True,
+        sources=[{"title": "Ref", "url": "https://e.com/r"}],
+    )
+    assert 'href="https://e.com/r"' in captured["payload"]["content"]
+
+
+# --- 타이틀 카드 (대표 이미지 자동 첨부) ---
+import shared.title_card as tc  # noqa: E402
+from shared.title_card import make_title_card, accent_for  # noqa: E402
+
+
+def test_make_title_card_returns_png():
+    png = make_title_card("엔비디아 실적 서프라이즈, 반도체 섹터 다시 불붙나", "섹터")
+    # 시스템 폰트가 있으면 PNG 매직바이트로 시작
+    if png is not None:
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert len(png) > 1000
+
+
+def test_make_title_card_empty_title_none():
+    assert make_title_card("", "섹터") is None
+
+
+def test_accent_for_mapping():
+    assert accent_for("섹터") == (39, 174, 96)
+    assert accent_for("부동산") == (217, 119, 6)
+    assert accent_for("없는카테고리") == (100, 116, 139)  # 기본 슬레이트
+
+
+def test_create_post_auto_featured_card(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    monkeypatch.setenv("AUTO_FEATURED_CARD", "true")
+    # 폰트 유무와 무관하게 결정적으로: 카드 생성을 스텁
+    monkeypatch.setattr(tc, "make_title_card", lambda *a, **k: b"\x89PNG\r\n\x1a\nfake")
+    up = _uploader()
+    up.create_post("T", "<p>b</p>", categories=[7], status="publish")
+    # _FakePostResp.json()의 id=1 이 featured_media로 설정됨
+    assert captured["payload"].get("featured_media") == 1
+
+
+def test_create_post_no_card_when_disabled(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    monkeypatch.setenv("AUTO_FEATURED_CARD", "false")
+    monkeypatch.setattr(tc, "make_title_card", lambda *a, **k: b"\x89PNG\r\n\x1a\nfake")
+    up = _uploader()
+    up.create_post("T", "<p>b</p>", categories=[7], status="publish")
+    assert "featured_media" not in captured["payload"]
+
+
+def test_create_post_explicit_featured_media_wins(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    monkeypatch.setenv("AUTO_FEATURED_CARD", "true")
+    monkeypatch.setattr(tc, "make_title_card", lambda *a, **k: b"\x89PNG\r\n\x1a\nfake")
+    up = _uploader()
+    up.create_post("T", "<p>b</p>", categories=[7], status="publish", featured_media=99)
+    assert captured["payload"]["featured_media"] == 99  # 명시값이 카드보다 우선

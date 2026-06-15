@@ -4,6 +4,19 @@
 
 ---
 
+## 발행 글에 출처(외부 링크)가 안 보임 — AI HTML 변환이 비결정적으로 삭제
+
+- **증상**: 봇이 조사한 출처가 있는데도 발행된 WordPress 글에 클릭 가능한 외부 링크(`<a href>`)가 없음. Rank Math가 "outbound links 없음 / 전부 nofollow" 경고. 텔레그램 글은 어떤 날은 링크가 있고 어떤 날은 없음(들쭉날쭉).
+- **원인**: 출처는 데이터로 존재했으나(`research_orchestrator`가 `{title,url}`로 파싱) 본문 HTML로 만드는 경로가 **AI 변환(`blogger-html` SKILL)** 을 거치는데, SKILL의 "연구 과정 흔적 제거" 단계가 출처/References를 **비결정적으로 누락**시킴. 텔레그램은 마크다운 `## References`를 붙였지만 그게 AI 변환에서 살아남을지가 모델 출력마다 달랐음.
+- **해결**: AI에 맡기지 말고 **모든 봇이 거치는 발행 단계(`wordpress_uploader`)에서 결정론적으로** 렌더. `render_sources_section()`(dofollow `rel="noopener"`·새 탭·중복 제거·http only) + `create_post`/`upload_post`에 `sources` 인자. 텔레그램은 마크다운 References 주입을 제거하고 `sources`만 업로더로 전달(중복 방지). (2026-06-15)
+- **복구 절차**: (a) 발행 글 본문에 `data-sources-section` 마커 유무 확인 (b) 없으면 해당 봇 호출부가 `upload_post(..., sources=...)`로 넘기는지 확인 (c) 출처가 구조화 안 된 봇(뉴스 종합·버핏)은 의도적 제외임을 기억.
+- **관련 사고**: 2026-06-15.
+- **재발 감지**: 발행 직후 글 HTML에 `data-sources-section`/`참고 자료`가 있는지, 또는 Rank Math outbound-links 항목으로 점검. AI 변환 SKILL을 고쳤다고 출처가 보장되는 게 아님(그 경로는 비결정적) — 항상 업로더 결정론 경로로 확인.
+
+> Claude 진단 미스: 이번 작업엔 사용자 corrective 신호 없음(기능 추가, 헛발질 아님). 단 교훈 1건 — 서브에이전트(Explore)가 "출처는 완전히 stripped"라고 단정했으나 직접 코드를 읽으니 텔레그램엔 (불안정한) References 경로가 있었음. **서브에이전트의 "전혀 없다"류 단정은 직접 grep으로 검증**할 것.
+
+---
+
 ## 섹터봇 분석이 주차별로 묘하게 짧아짐
 
 - **증상**: 섹터 주간 보고서가 어떤 주는 풍성하고 어떤 주는 얇음. 사용자가 "지난주보다 짧은 느낌".

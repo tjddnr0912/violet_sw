@@ -38,6 +38,9 @@ CATEGORY_IDS: Dict[str, int] = {
     "SoC": 9, "SW": 10, "AI": 11,
 }
 
+# term_id → 이름 (타이틀 카드 카테고리 라벨용 역매핑)
+CATEGORY_NAMES: Dict[int, str] = {v: k for k, v in CATEGORY_IDS.items()}
+
 
 def auto_draft_enabled() -> bool:
     """investment_bot 계열 자동봇(뉴스/버핏/섹터/부동산)의 강제 draft 토글.
@@ -47,6 +50,16 @@ def auto_draft_enabled() -> bool:
     영향을 받지 않는다(계속 publish). 다시 자동 발행하려면 false로 바꾼다.
     """
     return os.getenv("AUTO_BOT_DRAFT_ONLY", "true").strip().lower() == "true"
+
+
+def auto_featured_card_enabled() -> bool:
+    """봇 글에 대표 이미지(로컬 타이틀 카드)를 자동 생성·첨부할지 토글.
+
+    .env `AUTO_FEATURED_CARD` (default false). true면 featured_media 미지정 글에
+    제목·카테고리 기반 타이틀 카드를 만들어 og:image/썸네일로 붙인다. 카드 생성/
+    업로드 실패 시 조용히 건너뛰고 발행은 그대로 진행한다.
+    """
+    return os.getenv("AUTO_FEATURED_CARD", "false").strip().lower() == "true"
 
 # --- AdSense 제거 패턴 (본문 중간 광고 블록) ---
 # <ins class="adsbygoogle" ...></ins>
@@ -128,6 +141,59 @@ def demote_body_h1(html: str) -> str:
         return html
     html = _RE_H1_OPEN.sub(lambda m: "<h2" + (m.group(1) or "") + ">", html)
     return _RE_H1_CLOSE.sub("</h2>", html)
+
+
+# --- 출처/외부 링크 섹션 (Rank Math 'outbound links' + E-E-A-T + AdSense 가치) ---
+# 봇이 조사한 출처 [{title, url}, …]를 본문 끝에 클릭 가능한 '참고 자료' 링크로 렌더한다.
+# AI HTML 변환(blogger-html SKILL)은 '과정 흔적 제거' 단계에서 출처를 비결정적으로
+# 누락시키므로, 모든 봇이 거치는 발행 단계(업로더)에서 결정론적으로 붙인다.
+_RE_SOURCES_MARKER = re.compile(r'data-sources-section', re.I)
+_RE_URL = re.compile(r'https?://', re.I)
+
+
+def render_sources_section(sources, heading: str = "참고 자료", max_items: int = 12) -> str:
+    """출처 리스트 → '참고 자료' 외부 링크 섹션 HTML. 빈/무효면 ''.
+
+    - sources: [{"title": str, "url": str}, …] 또는 ["http…", …]
+    - http(s) URL만, 중복 URL 제거(끝 슬래시 무시), 최대 max_items개.
+    - 진짜 출처이므로 dofollow(rel="noopener", nofollow 아님) + 새 탭.
+    """
+    items: List[str] = []
+    seen = set()
+    for s in (sources or []):
+        if isinstance(s, dict):
+            url = (s.get("url") or "").strip()
+            title = (s.get("title") or url).strip()
+        elif isinstance(s, str):
+            url = s.strip()
+            title = url
+        else:
+            continue
+        if not _RE_URL.match(url):
+            continue
+        key = url.rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        title_e = _html.escape(title or url)
+        url_e = _html.escape(url, quote=True)
+        items.append(
+            f'<li style="margin:6px 0;"><a href="{url_e}" target="_blank" '
+            f'rel="noopener" style="color:#2980b9 !important;">{title_e}</a></li>'
+        )
+        if len(items) >= max_items:
+            break
+    if not items:
+        return ""
+    h = _html.escape(heading)
+    return (
+        '\n<div data-sources-section style="margin:28px 0 0 0;">'
+        f'<h2 style="font-size:22px;font-weight:700;color:#2c3e50 !important;'
+        f'background:none !important;border:none !important;">{h}</h2>'
+        '<ul style="list-style:none;padding-left:0;margin:12px 0 0 0;">'
+        + "".join(items)
+        + "</ul></div>\n"
+    )
 
 
 # --- 메타 설명용 자동 excerpt (Rank Math가 글 발췌를 메타 description으로 사용) ---
@@ -355,6 +421,33 @@ class WordPressUploader:
             logger.error(f"미디어 업로드 오류: {e}")
         return None
 
+    def _category_label(self, categories) -> str:
+        """카드 칩에 쓸 카테고리 이름 1개를 고른다(이름/ID 혼합 리스트 허용)."""
+        for c in (categories or []):
+            if isinstance(c, str) and c.strip() in CATEGORY_IDS:
+                return c.strip()
+            try:
+                cid = int(c)
+            except (TypeError, ValueError):
+                continue
+            if cid in CATEGORY_NAMES:
+                return CATEGORY_NAMES[cid]
+        return ""
+
+    def _ensure_title_card(self, title, categories) -> Optional[int]:
+        """제목·카테고리로 타이틀 카드를 만들어 미디어 업로드. 반환 media id 또는 None."""
+        try:
+            from shared.title_card import make_title_card
+        except Exception:
+            return None
+        label = self._category_label(categories)
+        png = make_title_card(title, label)
+        if not png:
+            return None
+        digest = hashlib.md5(f"{title}|{label}".encode("utf-8")).hexdigest()[:12]
+        media = self.upload_media(png, f"card-{digest}.png", "image/png")
+        return media.get("id") if media else None
+
     def _render_diagrams_in_html(self, html_content: str) -> str:
         """<pre><code class="language-mermaid"> 블록을 PNG <img>로 치환.
 
@@ -395,6 +488,7 @@ class WordPressUploader:
         strip_ads: bool = False,
         render_diagrams: bool = False,
         strip_raw: bool = False,
+        sources: Optional[List] = None,
     ) -> Dict:
         """글 1건 발행. 반환: {success, id, url, status} 또는 {success: False, error}."""
         if not self.is_configured():
@@ -408,6 +502,10 @@ class WordPressUploader:
             content_html = self._render_diagrams_in_html(content_html)
         # 테마가 글 제목을 <h1>로 렌더 → 본문 h1은 h2로 강등(Single-H1, Rank Math)
         content_html = demote_body_h1(content_html)
+        # 출처를 결정론적으로 '참고 자료' 외부 링크 섹션으로 추가(Rank Math outbound).
+        # 이미 섹션이 있으면(중복 호출) 다시 붙이지 않는다.
+        if sources and not _RE_SOURCES_MARKER.search(content_html):
+            content_html = content_html + render_sources_section(sources)
 
         _status = status or os.getenv("WORDPRESS_DEFAULT_STATUS", "publish")
         if self.force_draft and _status != "draft":
@@ -439,6 +537,9 @@ class WordPressUploader:
             excerpt = auto_excerpt(content_html)
         if excerpt:
             payload["excerpt"] = excerpt
+        # 대표 이미지 미지정 시 타이틀 카드 자동 생성·첨부(og:image/썸네일). 실패 시 생략.
+        if featured_media is None and auto_featured_card_enabled():
+            featured_media = self._ensure_title_card(title, categories)
         if featured_media:
             payload["featured_media"] = featured_media
 
@@ -479,10 +580,12 @@ class WordPressUploader:
         slug: Optional[str] = None,
         excerpt: Optional[str] = None,
         strip_ads: Optional[bool] = None,
+        sources: Optional[List] = None,
     ) -> Dict:
         """레거시 업로더 upload_post 호환 시그니처.
 
         labels→WP 태그, is_draft→status, 다이어그램 자동 렌더.
+        sources→본문 끝 '참고 자료' 외부 링크 섹션(있을 때만).
         반환은 레거시 형식({success, url, post_id, message})으로 맞춘다.
         """
         html_content = self._md_to_html(content) if is_markdown else content
@@ -500,6 +603,7 @@ class WordPressUploader:
             strip_ads=self.strip_ads_default if strip_ads is None else strip_ads,
             render_diagrams=True,
             strip_raw=True,  # raw source 블록은 WP에 올리지 않음
+            sources=sources,
         )
         if res.get("success"):
             return {

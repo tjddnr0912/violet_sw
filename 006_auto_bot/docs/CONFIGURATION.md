@@ -12,6 +12,8 @@
 | `WORDPRESS_APP_PASSWORD` | ✅ | — | WP 애플리케이션 비밀번호(공백 자동 제거). **절대 Git 커밋 금지**. |
 | `WORDPRESS_DEFAULT_STATUS` | ❌ | `publish` | 발행 상태. `publish` 또는 `draft`. |
 | `AUTO_BOT_DRAFT_ONLY` | ❌ | `true` | `true`이면 investment_bot 계열 자동봇(뉴스/버핏/섹터/부동산)이 발행하는 글을 status 인자와 무관하게 **항상 draft**로 올린다(`WordPressUploader(force_draft=...)`, `create_post` 단일 choke point에서 강제). **텔레그램 봇은 이 값을 읽지 않아 영향 없음(계속 publish)**. 애드센스 심사 준비 동안 자동 발행 일시정지용. 자동 publish 복귀 시 `false`. (2026-06-14~) |
+| `AUTO_FEATURED_CARD` | ❌ | `false`(.env=`true`) | `true`이면 `featured_media` 미지정 글에 제목·카테고리 기반 **타이틀 카드(1200×630 다크)** 를 자동 생성해 대표 이미지(og:image/썸네일)로 첨부(`create_post`→`shared/title_card.make_title_card`→`upload_media`). **비용0·무네트워크**(Pillow + 시스템 한글 폰트). 폰트/렌더 실패 시 조용히 생략하고 발행은 계속. 명시 `featured_media`가 있으면 그게 우선. (2026-06-15~) |
+| `TITLE_CARD_FONT` | ❌ | (자동탐지) | 타이틀 카드 폰트 경로 override. 미지정 시 AppleSDGothicNeo→AppleGothic→NanumGothic→NotoSansCJK 순으로 탐지. |
 | `KROKI_URL` | ❌ | `https://kroki.io` | mermaid→PNG 렌더 서버. WordPress 발행 시 코드블록을 이미지로 변환. |
 | `BLOGGER_ENABLED` / `NEWS_BLOGGER_ENABLED` | ❌ | — | 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). `false`면 발행 스킵. |
 | `BLOGGER_BLOG_ID` | (레거시) | — | Blogger 시절 잔재. 2026-06-12 WordPress 전환 후 미사용(일부 config 검증에만 잔존). |

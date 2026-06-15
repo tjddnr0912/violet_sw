@@ -31,7 +31,7 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
 | `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
-| `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·mermaid→PNG(kroki)·AdSense/raw strip·Blogger 드롭인 호환 어댑터), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표) |
+| `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·mermaid→PNG(kroki)·AdSense/raw strip·**출처→'참고 자료' 외부 링크 섹션**(`sources` 인자, dofollow)·**타이틀 카드 featured image 자동 첨부**(`AUTO_FEATURED_CARD`)·Blogger 드롭인 호환 어댑터), **title_card** (제목·카테고리→1200×630 다크 og:image, Pillow 로컬·무료·무네트워크), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표) |
 
 ## 핵심 참조
 
@@ -56,6 +56,7 @@ WORDPRESS_USER=                  # WP 로그인 ID
 WORDPRESS_APP_PASSWORD=          # 애플리케이션 비밀번호(공백 자동 제거). 절대 Git 커밋 금지
 WORDPRESS_DEFAULT_STATUS=publish # publish | draft
 AUTO_BOT_DRAFT_ONLY=true         # 자동봇(뉴스/버핏/섹터/부동산=investment_bot)만 강제 draft. 텔레그램 봇은 영향 없음(계속 publish). 애드센스 준비 일시정지용. 자동 publish 복귀 시 false
+AUTO_FEATURED_CARD=true          # featured 미지정 글에 제목·카테고리 기반 타이틀 카드(1200×630 다크)를 자동 생성해 og:image/썸네일로 첨부. 비용0·무네트워크(Pillow+시스템 한글 폰트). 폰트 override=TITLE_CARD_FONT
 # KROKI_URL=https://kroki.io     # mermaid→PNG 렌더 서버 override (default kroki.io)
 BLOGGER_ENABLED=true             # 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). false면 발행 스킵
 BLOG_SELECTION_TIMEOUT=180       # 텔레그램 카테고리 선택 타임아웃(초). 무선택 시 발행 취소

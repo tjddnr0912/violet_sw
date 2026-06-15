@@ -500,11 +500,11 @@ SOURCES: (출처)
         if message_id:
             self.edit_message_text(message_id, "Claude HTML 생성 중…")
 
-        # Contradictions section (if any) goes BEFORE the References block
         if contradictions:
             content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
-        sources_section = self._format_sources_section(sources)
-        full_md_content = content + sources_section
+        # 출처는 발행 단계(업로더)에서 결정론적으로 '참고 자료' 링크 섹션으로 붙인다
+        # (AI 변환에 맡기면 비결정적으로 누락됨). sources는 _finalize_and_upload로 전달.
+        full_md_content = content
 
         # 카테고리 미선택 경로(업로드 OFF/테스트) — 기본 '기타'(4)
         self._finalize_and_upload(
@@ -574,11 +574,10 @@ SOURCES: (출처)
             self.edit_message_text(message_id, content[:4000])
             return
 
-        # Contradictions section (if any) goes BEFORE the References block
         if contradictions:
             content += "\n\n## 라운드 간 모순\n" + "\n".join(f"- {c}" for c in contradictions)
-        sources_section = self._format_sources_section(sources)
-        full_md_content = content + sources_section
+        # 출처는 발행 단계(업로더)에서 결정론적으로 '참고 자료' 링크 섹션으로 붙인다.
+        full_md_content = content
 
         # 한글 HTML 생성 → 로컬 저장(백업) → WP 발행 → 통지
         self._finalize_and_upload(
@@ -694,7 +693,8 @@ SOURCES: (출처)
             title=title,
             content=upload_content,
             labels=labels,
-            is_markdown=is_markdown
+            is_markdown=is_markdown,
+            sources=sources,
         )
 
         if success:
@@ -722,7 +722,8 @@ SOURCES: (출처)
         title: str,
         content: str,
         labels: list,
-        is_markdown: bool = False
+        is_markdown: bool = False,
+        sources: Optional[list] = None,
     ) -> Tuple[bool, str]:
         """WordPress 발행 수행 (선택한 카테고리)."""
         try:
@@ -743,7 +744,8 @@ SOURCES: (출처)
                 content=content,
                 labels=labels,
                 is_draft=is_draft,
-                is_markdown=is_markdown
+                is_markdown=is_markdown,
+                sources=sources,
             )
 
             if result.get("success"):
