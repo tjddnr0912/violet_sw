@@ -31,6 +31,7 @@
 
 - [x] **[P0-8]** `$display` 인자 의미론 — ✅ 2026-06-10 `5b3c6d4`. IEEE §17.1 순차 처리로 엔진 통합: ①잔여 인자=기본 radix(padded %d/실수 %g) ②문자열 인자=inline 포맷 세그먼트(StrUtf8 검출, 후속 인자 소비) ③무포맷 branch=패딩 필드 연접(공백 join 제거) ④`%v`(St0/St1/StX/HiZ)·`%u/%z`(소비+무출력)·`%p`(값) 인자 소비. elaborate 무변경(엔진만), 회귀 `display_semantics.rs` 10 + iverilog 차분 `diff_display_arg_semantics`(패딩까지 byte 일치).
 - [x] **[P0-9]** `$monitor` 트리거 과민 — ✅ `5b3c6d4`. ①직접 `$time/$realtime` 인자는 변화 비교에서 제외(IEEE §17.1.3 — 시간만 흘러도 매 스텝 재인쇄하던 버그) ②비교를 비트평면(width/val/unk)만으로(`vals_same_bits`).
+- [ ] **[P0-10]** unsized decimal 리터럴 ≥ 2³² silent 절단 — `crates/elaborate/src/literal.rs` `parse_int_literal`(Decimal)이 unsized 십진 리터럴을 32-bit로 절단(`4294967296`→0, `4294967297`→1, `2147483648`→−2147483648). IEEE 1364 §5.7.1은 unsized 십진을 값을 담을 폭(≥32bit)으로 확장. 영향: `$display`/param/**bit-select 인덱스** 등 전역(예: `clk[4294967296]`이 `clk[0]`로 폴딩되어 event-control LSB 깔때기를 silent 통과 — 2026-06-15 clk[0] 패닉 수정 적대 리뷰가 표면화, 단 근본은 literal.rs로 별개 subsystem·diff 무관). iverilog 차분 명확(full value 유지). 수정 시 literal.rs 한 곳에서 전역 해소.
 
 ## P1 — 시뮬 의미론: warn-후-오동작 (정지·계속 클래스)
 
