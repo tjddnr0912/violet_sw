@@ -525,7 +525,9 @@ struct PendingSva {
     disable_iff: Option<ast::Expr>,
     ante: ast::Sequence,
     kind: ast::ImplicationKind,
-    cons: ast::Expr,
+    /// The consequent (slice S14: a `Sequence`; a boolean consequent is
+    /// `Sequence::Boolean` and keeps the byte-identical lowering).
+    cons: ast::Sequence,
     /// Action block (slice S11): `fail` (the `else` statement) replaces the
     /// default `$error` on a violation; `pass` runs on a non-vacuous success.
     pass: Option<Box<ast::Stmt>>,
@@ -6647,7 +6649,14 @@ impl<'s> Elaborator<'s> {
                     acc
                 }
             };
-            let cons = self.rewrite_sampled(&sva.cons, &mut regs);
+            // Consequent (slice S14). A boolean consequent is rewritten here (so
+            // its prev-reg allocation order — and the byte-identical lowering —
+            // is preserved); a sequence consequent is built as an obligation
+            // chain AFTER `cond_lhs` is known (it seeds the chain).
+            let cons_boolean = match &sva.cons {
+                ast::Sequence::Boolean(e) => Some(self.rewrite_sampled(e, &mut regs)),
+                _ => None,
+            };
 
             // Action block (slice S11). The fail action — the `else` statement, or
             // the default `$error("Assertion property violation")` when absent —
@@ -6704,13 +6713,32 @@ impl<'s> Elaborator<'s> {
                     (sva_ident_expr(&pend, sp), Some(nba))
                 }
             };
-            // violation = antecedent matched AND consequent false, gated by `!dis`.
-            let mut violation = sva_binary(
-                ast::BinOp::LogAnd,
-                cond_lhs.clone(),
-                sva_unary(ast::UnOp::LogNot, cons.clone(), sp),
-                sp,
-            );
+            // Consequent core (slice S14): the violation and (non-vacuous)
+            // success signals. A boolean consequent is `cond_lhs && !cons` /
+            // `cond_lhs && cons` (byte-identical to before S14); a sequence
+            // consequent is an obligation chain whose due-delay regs are
+            // obligation state (reset by `disable iff` like the antecedent).
+            let mut cons_chain_nbas: Vec<ast::Stmt> = Vec::new();
+            let (violation_core, success_core) = match cons_boolean {
+                Some(cons) => (
+                    sva_binary(
+                        ast::BinOp::LogAnd,
+                        cond_lhs.clone(),
+                        sva_unary(ast::UnOp::LogNot, cons.clone(), sp),
+                        sp,
+                    ),
+                    sva_binary(ast::BinOp::LogAnd, cond_lhs.clone(), cons, sp),
+                ),
+                None => self.build_seq_consequent(
+                    &sva.cons,
+                    &cond_lhs,
+                    &mut regs,
+                    &mut cons_chain_nbas,
+                    sp,
+                ),
+            };
+            // violation gated by `!dis`.
+            let mut violation = violation_core;
             if let Some(d) = &dis {
                 violation = sva_binary(
                     ast::BinOp::LogAnd,
@@ -6732,7 +6760,7 @@ impl<'s> Elaborator<'s> {
             // matched AND consequent held (vacuous success — antecedent false —
             // does not fire it; a hand-IEEE choice, documented). Also gated `!dis`.
             if let Some(ps) = pass_action {
-                let mut success = sva_binary(ast::BinOp::LogAnd, cond_lhs, cons, sp);
+                let mut success = success_core;
                 if let Some(d) = &dis {
                     success = sva_binary(
                         ast::BinOp::LogAnd,
@@ -6748,22 +6776,28 @@ impl<'s> Elaborator<'s> {
                     span: sp,
                 });
             }
-            // `disable iff` reset: clear in-flight obligation state (pipeline +
-            // pend NBAs) when dis is true. The prev-sampling NBAs (regs.nbas)
-            // keep sampling — only the attempt obligations are aborted.
-            let (pipeline_nbas, pending_nba) = if let Some(d) = &dis {
+            // `disable iff` reset: clear in-flight obligation state (antecedent
+            // pipeline + consequent chain + |=> pend NBAs) when dis is true. The
+            // prev-sampling NBAs (regs.nbas) keep sampling — only the attempt
+            // obligations are aborted.
+            let (pipeline_nbas, cons_chain_nbas, pending_nba) = if let Some(d) = &dis {
                 (
                     pipeline_nbas
+                        .into_iter()
+                        .map(|s| gate_nba_with_disable(s, d, sp))
+                        .collect::<Vec<_>>(),
+                    cons_chain_nbas
                         .into_iter()
                         .map(|s| gate_nba_with_disable(s, d, sp))
                         .collect::<Vec<_>>(),
                     pending_nba.map(|s| gate_nba_with_disable(s, d, sp)),
                 )
             } else {
-                (pipeline_nbas, pending_nba)
+                (pipeline_nbas, cons_chain_nbas, pending_nba)
             };
             stmts.extend(regs.nbas);
             stmts.extend(pipeline_nbas);
+            stmts.extend(cons_chain_nbas);
             if let Some(nba) = pending_nba {
                 stmts.push(nba);
             }
@@ -7319,6 +7353,93 @@ impl<'s> Elaborator<'s> {
             span: sp,
         });
         sva_ident_expr(&r, sp)
+    }
+
+    /// Build the (violation, completion) signals for a SEQUENCE consequent
+    /// (`ante |-> b ##1 c`, slice S14) as an obligation chain. `cond_lhs` is the
+    /// antecedent match (already +1-clock-delayed for `|=>`), which SEEDS the
+    /// obligation. For each flattened term `term_k` due `hop_k` clocks after the
+    /// prior term held:
+    ///   viol_k     = due_k && !|term_k          (the obligation breaks here)
+    ///   due_{k+1}  = delay_{hop_{k+1}}(due_k && |term_k)
+    /// violation = OR_k viol_k; completion = due_{last} && |term_last (a
+    /// non-vacuous success for the pass action). A reg read yields the PRIOR
+    /// clock's value (the if-check runs before the NBAs), so the chain advances
+    /// one term per clock. Bounded, single-alternative, boolean-term consequents
+    /// only (ranges / goto / nonconsec / unbounded / throughout / within → loud).
+    /// Pure IR-0.
+    fn build_seq_consequent(
+        &mut self,
+        cons: &ast::Sequence,
+        cond_lhs: &ast::Expr,
+        regs: &mut SvaRegs,
+        chain_nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> (ast::Expr, ast::Expr) {
+        let mut alts = self.expand_sequence(cons, regs);
+        let ok = alts.len() == 1
+            && alts[0].1.is_none()
+            && alts[0]
+                .0
+                .iter()
+                .all(|(t, h)| matches!(t, SeqTerm::Bool(_)) && matches!(h, SeqHop::Fixed(_)));
+        if !ok {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a sequence consequent must be a single bounded boolean sequence \
+                 (ranges / goto / nonconsec / unbounded / throughout / within / \
+                 multi-clock consequents are unsupported in this subset)",
+            );
+            // Recovery: never-violate / never-complete (the run aborts on error).
+            return (sva_zero(sp), sva_zero(sp));
+        }
+        let (terms, _) = alts.pop().unwrap();
+        // Seed the obligation with the BOOLEAN truthiness of the antecedent match.
+        // `due` is advanced each term with a width-preserving `BitAnd(due, |term)`,
+        // so a multi-bit `cond_lhs` (e.g. `valid_vec |-> …`, where the |-> match
+        // expr is the raw, un-reduced antecedent) MUST be reduced first — else a
+        // truthy value with bit0=0 (2'b10 & 2'b01 = 0) would silently drop the
+        // obligation (S14 review HIGH). `|=>` already reduces cond_lhs to the
+        // 1-bit pend reg, and RedOr of a 1-bit value is idempotent, so this is
+        // uniformly correct.
+        let mut due = sva_unary(ast::UnOp::RedOr, cond_lhs.clone(), sp);
+        let mut viols: Vec<ast::Expr> = Vec::new();
+        for (k, (term, hop)) in terms.into_iter().enumerate() {
+            let SeqTerm::Bool(e) = term else {
+                unreachable!("ok-check guarantees Bool terms")
+            };
+            let tb = sva_unary(ast::UnOp::RedOr, e, sp); // |term_k
+                                                         // Delay the obligation by the hop BEFORE this term (hop_0 unused: the
+                                                         // first term is due the seed clock).
+            if k > 0 {
+                if let SeqHop::Fixed(d) = hop {
+                    for _ in 0..d {
+                        due = self.seq_delay_reg(due, chain_nbas, sp);
+                    }
+                }
+            }
+            // viol_k = due && !|term_k.
+            viols.push(sva_binary(
+                ast::BinOp::LogAnd,
+                due.clone(),
+                sva_unary(ast::UnOp::LogNot, tb.clone(), sp),
+                sp,
+            ));
+            // Advance: due_next (combinational) = due && |term_k. The next
+            // iteration's hop registers it.
+            due = sva_binary(ast::BinOp::BitAnd, due, tb, sp);
+        }
+        // After the last term, `due` = due_last && |term_last = "consequent
+        // completed this clock" (the pass-action success signal).
+        let completed = due;
+        let mut it = viols.into_iter();
+        let mut violation = it
+            .next()
+            .expect("a sequence consequent has at least one term");
+        for v in it {
+            violation = sva_binary(ast::BinOp::BitOr, violation, v, sp);
+        }
+        (violation, completed)
     }
 
     /// Recursively rewrite SVA sampled-value functions in `e` into reads of

@@ -3142,11 +3142,13 @@ impl<'t, 's> Parser<'t, 's> {
         // `seq [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
         // implication) desugars to `1'b1 |-> expr` (check `expr` every clock);
         // a bare *sequence* (multi-clock) without implication is deferred.
+        // `seq [ |-> | |=> ] seq` — the consequent is also a Sequence (slice S14;
+        // a plain boolean consequent is `Sequence::Boolean`).
         let ante_seq = self.parse_sequence();
         let (antecedent, implication_kind, consequent) = if self.eat(TokenKind::PipeArrow) {
-            (ante_seq, ImplicationKind::Overlap, self.expr(0))
+            (ante_seq, ImplicationKind::Overlap, self.parse_sequence())
         } else if self.eat(TokenKind::PipeEqArrow) {
-            (ante_seq, ImplicationKind::NonOverlap, self.expr(0))
+            (ante_seq, ImplicationKind::NonOverlap, self.parse_sequence())
         } else {
             let true_lit = Expr {
                 kind: ExprKind::IntLit {
@@ -3156,10 +3158,15 @@ impl<'t, 's> Parser<'t, 's> {
                 span: start,
             };
             match ante_seq {
-                Sequence::Boolean(e) => (Sequence::Boolean(true_lit), ImplicationKind::Overlap, e),
+                // bare `property(@(clk) expr)` desugars to `1'b1 |-> expr`.
+                Sequence::Boolean(e) => (
+                    Sequence::Boolean(true_lit),
+                    ImplicationKind::Overlap,
+                    Sequence::Boolean(e),
+                ),
                 other => {
                     self.error("an implication `|->`/`|=>` (a bare sequence property is unsupported in this subset)");
-                    (other, ImplicationKind::Overlap, true_lit)
+                    (other, ImplicationKind::Overlap, Sequence::Boolean(true_lit))
                 }
             }
         };
@@ -4276,7 +4283,7 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                 fix_expr(e, from, to);
             }
             fix_sequence(antecedent, from, to);
-            fix_expr(consequent, from, to);
+            fix_sequence(consequent, from, to);
             if let Some(s) = pass {
                 rename_ident_in_stmt(s, from, to);
             }

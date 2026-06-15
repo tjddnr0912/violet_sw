@@ -537,7 +537,10 @@ pub enum Stmt {
         disable_iff: Option<Expr>,
         antecedent: Sequence,
         implication_kind: ImplicationKind,
-        consequent: Expr,
+        /// The consequent. Slice S14 generalized this from a flat boolean `Expr`
+        /// to a `Sequence` (`a |-> b ##1 c`); a plain boolean consequent is
+        /// `Sequence::Boolean(_)` and keeps the byte-identical lowering.
+        consequent: Sequence,
         /// Optional action block (slice S11, IEEE 1800 §16.14.1):
         /// `assert property(...) [pass] [else fail]`. `pass` runs on a
         /// non-vacuous success, `fail` (the `else` statement) replaces the

@@ -1572,3 +1572,202 @@ fn sva_disable_iff_missing_iff_is_loud() {
         "`disable` without `iff` must be loud. stderr:\n{err}\nout:\n{out}"
     );
 }
+
+// ── sequence consequent (slice S14, hand-IEEE) ───────────────────────────────
+// The consequent may be a SEQUENCE (`a |-> b ##1 c`), not only a boolean. When
+// the antecedent matches, the consequent sequence must match starting at that
+// clock (|->) or the next (|=>); the property fails at the first consequent term
+// that does not hold. Desugar (obligation chain, pure IR-0): due_0 = ante match;
+// for each term, viol = due && !term, due_next = delay_hop(due && term);
+// violation = OR of the viols. A boolean consequent keeps the byte-identical
+// path. Bounded single-alternative boolean consequents only (ranges/goto/
+// unbounded -> loud). AST flip (consequent: Expr -> Sequence); sim-ir unchanged.
+
+#[test]
+fn sva_consequent_sequence_holds() {
+    // a |-> b ##1 c : a&&b at t15, c at t25 -> consequent matches -> no fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b ##1 c);\n\
+         initial begin\n\
+           #10 a=1; b=1; c=0;\n\
+           #10 a=0; b=0; c=1;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "consequent sequence holds. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_consequent_sequence_first_term_fails() {
+    // a |-> b ##1 c : a high but b low at t15 -> consequent cannot start -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b ##1 c);\n\
+         initial begin\n\
+           #10 a=1; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "first consequent term fails. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_consequent_sequence_second_term_fails() {
+    // a |-> b ##1 c : b holds at t15 but c low at t25 -> fire at t25.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b ##1 c);\n\
+         initial begin\n\
+           #10 a=1; b=1; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "second consequent term fails. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_consequent_repeat_fails() {
+    // a |-> b[*2] : b must hold for 2 consecutive clocks; it drops at t25 -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b[*2]);\n\
+         initial begin\n\
+           #10 a=1; b=1;\n\
+           #10 a=0; b=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "consequent repeat must hold 2 clocks. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_consequent_nonoverlap_sequence_fails() {
+    // a |=> b ##1 c : consequent starts the clock AFTER a. a@t15 -> b due t25,
+    // c due t35; c low at t35 -> fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |=> b ##1 c);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0; b=1;\n\
+           #10 b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "nonoverlap consequent sequence fails. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_consequent_sequence_vacuous_no_fire() {
+    // a never true -> no obligation -> no fire even though b/c never match.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b ##1 c);\n\
+         initial begin\n\
+           #10 a=0; b=0; c=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "vacuous antecedent -> no obligation. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        !format!("{err}{out}").to_lowercase().contains("assertion"),
+        "no violation expected:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn sva_consequent_range_is_loud() {
+    // A ranged consequent (multiple alternatives) is deferred -> loud.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b ##[1:2] c);\n\
+         initial #20 $finish;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "ranged consequent must be loud. stderr:\n{err}\nout:\n{out}"
+    );
+}
+
+#[test]
+fn sva_consequent_sequence_multibit_antecedent() {
+    // Regression (S14 review HIGH): a multi-bit antecedent that is truthy but has
+    // bit0=0 (2'b10) must still carry the sequence-consequent obligation. The
+    // due-advance must booleanize the seed (RedOr), not BitAnd a multi-bit value
+    // (2'b10 & 2'b01 = 0 would silently drop the obligation). a=2'b10 & b@t15,
+    // c=0@t25 -> b##1c is obligated and fails at t25.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, b=0, c=0;\n\
+         reg [1:0] a=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a |-> b ##1 c);\n\
+         initial begin\n\
+           #10 a=2'b10; b=1; c=0;\n\
+           #10 a=0; b=0; c=0;\n\
+           #10 $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "multi-bit truthy antecedent must carry the obligation. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion"),
+        "{err}\n{out}"
+    );
+}
