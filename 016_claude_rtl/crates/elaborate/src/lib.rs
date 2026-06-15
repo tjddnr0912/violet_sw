@@ -7846,7 +7846,7 @@ impl<'s> Elaborator<'s> {
         let edges = list
             .iter()
             .map(|ev| ir::EdgeTerm {
-                net: self.sens_event_net(&ev.expr),
+                net: self.sens_event_net(&ev.expr, any_edge),
                 kind: map_edge(ev.edge),
             })
             .collect();
@@ -7860,9 +7860,20 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Resolve an event-control expr to the net it senses. v2: bare signal name
-    /// (or parenthesized one); anything else → POISON_NET + note.
-    fn sens_event_net(&mut self, e: &ast::Expr) -> u32 {
+    /// Resolve an event-control expr to the net it senses. Supported: a bare
+    /// signal name (or parenthesized one), and — only in an EDGE-sensitive list
+    /// (`edge_ctx`) — a CONSTANT bit-select whose selected bit IS the net's LSB
+    /// (packed bit 0). The engine's EDGE model checks bit 0 only, so
+    /// `@(posedge clk[lsb])` arms identically to `@(posedge clk)` (IEEE: vector
+    /// posedge tracks the LSB). LEVEL sensitivity, by contrast, fires on a
+    /// WHOLE-NET change, so a level bit-select (`@(clk[0])`) is NOT representable
+    /// (mapping it to the net over-triggers on sibling-bit changes) → rejected.
+    /// Everything else (non-LSB bit, part-select, variable/non-const index, array
+    /// element, multi-dim packed select, computed base) needs per-bit tracking we
+    /// lack → LOUD reject (E3009), NOT a silent POISON_NET that would index
+    /// `net_to_edge[u32::MAX]` and panic the scheduler (`error` sets `had_error`,
+    /// so the IR is discarded and sim-engine is never reached).
+    fn sens_event_net(&mut self, e: &ast::Expr, edge_ctx: bool) -> u32 {
         match &e.kind {
             ast::ExprKind::Ident(path) => {
                 let n = self.resolve_net(path);
@@ -7876,12 +7887,62 @@ impl<'s> Elaborator<'s> {
                 }
                 n
             }
-            ast::ExprKind::Paren { inner } => self.sens_event_net(inner),
+            ast::ExprKind::Paren { inner } => self.sens_event_net(inner, edge_ctx),
+            ast::ExprKind::BitSelect { base, index } => {
+                if edge_ctx {
+                    if let Some(net) = self.lsb_bitselect_net(base, index) {
+                        return net; // == the bare-ident net id: bit0 edge is exact
+                    }
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "edge event-control bit-select must select the net's LSB with a constant \
+                         index (non-LSB / part-select / variable index / array / packed need \
+                         per-bit edge tracking)",
+                    );
+                } else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "single-bit level (non-edge) event control is not supported; use \
+                         posedge/negedge or the whole signal (level fires on any whole-net change)",
+                    );
+                }
+                POISON_NET
+            }
             _ => {
-                self.warn("event control on a non-signal expression (v2: bare signal names)");
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "event control must be a bare signal name or a constant LSB bit-select",
+                );
                 POISON_NET
             }
         }
+    }
+
+    /// `clk[k]` maps EXACTLY to arming on the underlying net (bit-0 edge) iff `k`
+    /// is a compile-time constant equal to the net's LSB endpoint. `nv.lsb` is the
+    /// source index that lands on packed bit 0 in BOTH range directions (descending
+    /// `[hi:lo]` → `lo`; ascending `[lo:hi]` stored as `msb<lsb` → the larger bound
+    /// `lsb`). Returns the net id when supported, else `None` (→ caller rejects loud).
+    fn lsb_bitselect_net(&self, base: &ast::Expr, index: &ast::Expr) -> Option<u32> {
+        let ast::ExprKind::Ident(path) = &base.kind else {
+            return None; // computed / hierarchical / concat base
+        };
+        if path.segments.len() != 1 {
+            return None;
+        }
+        let net = self.lookup_net_scoped(&path.segments[0].name)?;
+        // Reject array elements (multi-bit words), multi-dim packed selects, and
+        // dyn-storage/string handles — none is a scalar net whose bit 0 we can arm.
+        if self.net_is_static_array(net)
+            || self.packed_dims.contains_key(&net)
+            || self.is_dyn_handle_net(net)
+            || self.is_string_net(net)
+        {
+            return None;
+        }
+        let k = self.const_eval_in_scope(index)?;
+        let lsb = self.nets.get(net as usize)?.lsb as i64;
+        (k == lsb).then_some(net)
     }
 
     // ── the recursive statement-lowering heart ─────────────────────
@@ -9379,13 +9440,13 @@ impl<'s> Elaborator<'s> {
                         .find(|ev| !matches!(ev.edge, ast::Edge::NoEdge))
                         .expect("n_edges>0 ⇒ at least one edge term");
                     ir::WaitCause::Edge {
-                        net: self.sens_event_net(&ev.expr),
+                        net: self.sens_event_net(&ev.expr, true),
                         kind: map_edge(ev.edge),
                     }
                 } else {
                     let nets = list
                         .iter()
-                        .map(|ev| self.sens_event_net(&ev.expr))
+                        .map(|ev| self.sens_event_net(&ev.expr, false))
                         .collect();
                     ir::WaitCause::Level { nets }
                 }
