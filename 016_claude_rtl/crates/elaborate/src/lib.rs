@@ -906,6 +906,22 @@ fn sva_unary(op: ast::UnOp, operand: ast::Expr, sp: ast::Span) -> ast::Expr {
     }
 }
 
+/// The `(edge, signal-name)` of a single bare-identifier clocking event
+/// (`@(posedge clk)`), or `None` for a multi-event / non-ident / `@(*)` clock. Used
+/// to compare two clocks span-insensitively (the `Sensitivity` derive compares spans,
+/// so two textually-identical `@(posedge clk)` at different locations are `!=`).
+fn sva_clock_signal(s: &ast::Sensitivity) -> Option<(ast::Edge, String)> {
+    match s {
+        ast::Sensitivity::List(evs) if evs.len() == 1 => match &evs[0].expr.kind {
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                Some((evs[0].edge, p.segments[0].name.clone()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Wrap statements as a single synthesized clocked-checker body — the lone statement
 /// directly, or a `Block` of several (slice A3 two-process synthesis).
 fn sva_block_or_single(mut stmts: Vec<ast::Stmt>, sp: ast::Span) -> ast::Stmt {
@@ -1613,26 +1629,13 @@ impl<'s> Elaborator<'s> {
                 // FIRST declaration wins (insert-if-absent), so the redeclaration
                 // warning text is accurate (review 2026-06-16: `BTreeMap::insert`
                 // would keep the LAST, contradicting "first declaration used").
-                ast::ModuleItem::SequenceDecl(s) => {
-                    if self.seq_table.contains_key(&s.name.name) {
-                        self.warn(&format!(
-                            "sequence `{}` redeclared; first declaration used",
-                            s.name.name
-                        ));
-                    } else {
-                        self.seq_table.insert(s.name.name.clone(), s.clone());
-                    }
-                }
-                ast::ModuleItem::PropertyDecl(p) => {
-                    if self.prop_table.contains_key(&p.name.name) {
-                        self.warn(&format!(
-                            "property `{}` redeclared; first declaration used",
-                            p.name.name
-                        ));
-                    } else {
-                        self.prop_table.insert(p.name.name.clone(), p.clone());
-                    }
-                }
+                ast::ModuleItem::SequenceDecl(s) => self.register_seq_decl(s),
+                ast::ModuleItem::PropertyDecl(p) => self.register_prop_decl(p),
+                // SVA decls inside a `generate` block are module-global too (slice
+                // A4): the prescan walks generate structurally (no const-eval / no
+                // genvar binding) so a reference resolves regardless of loop trip
+                // count or which branch the const-cond later selects.
+                ast::ModuleItem::Generate(g) => self.collect_gen_sva_decls(&g.items),
                 _ => {}
             }
         }
@@ -6812,6 +6815,195 @@ impl ProcessBuilder {
 }
 
 impl<'s> Elaborator<'s> {
+    /// Register a named SVA sequence into the module-global table (first-wins, with a
+    /// redeclaration warning). Shared by the top-level prescan and the generate-scope
+    /// collector (slice A4) so both keep identical first-wins semantics.
+    fn register_seq_decl(&mut self, s: &ast::SeqDecl) {
+        if self.seq_table.contains_key(&s.name.name) {
+            self.warn(&format!(
+                "sequence `{}` redeclared; first declaration used",
+                s.name.name
+            ));
+        } else {
+            self.seq_table.insert(s.name.name.clone(), s.clone());
+        }
+    }
+
+    /// Register a named SVA property (first-wins + redeclare warning). See
+    /// [`Self::register_seq_decl`].
+    fn register_prop_decl(&mut self, p: &ast::PropDecl) {
+        if self.prop_table.contains_key(&p.name.name) {
+            self.warn(&format!(
+                "property `{}` redeclared; first declaration used",
+                p.name.name
+            ));
+        } else {
+            self.prop_table.insert(p.name.name.clone(), p.clone());
+        }
+    }
+
+    /// Collect `sequence`/`property` declarations from a generate block into the
+    /// module-global tables (slice A4). Walks the generate STRUCTURE — For/If/Case/
+    /// Block bodies and nested generates — WITHOUT const-eval or genvar binding: a
+    /// declaration is a definition (registered once), not per-instance logic.
+    /// Limitations (loud, never silent-wrong): both branches of a generate-if are
+    /// collected (a same-named decl in each yields a benign redeclare warning,
+    /// first-wins); a genvar-parameterized decl body keeps its unbound genvar, which
+    /// is a loud unresolved-name at the use site.
+    fn collect_gen_sva_decls(&mut self, items: &[ast::GenItem]) {
+        for gi in items {
+            match gi {
+                ast::GenItem::Item(boxed) => match &**boxed {
+                    ast::ModuleItem::SequenceDecl(s) => self.register_seq_decl(s),
+                    ast::ModuleItem::PropertyDecl(p) => self.register_prop_decl(p),
+                    ast::ModuleItem::Generate(g) => self.collect_gen_sva_decls(&g.items),
+                    _ => {}
+                },
+                ast::GenItem::For { body, .. } => self.collect_gen_sva_decls(body),
+                ast::GenItem::Block { items, .. } => self.collect_gen_sva_decls(items),
+                ast::GenItem::If { then_b, else_b, .. } => {
+                    self.collect_gen_sva_decls(then_b);
+                    self.collect_gen_sva_decls(else_b);
+                }
+                ast::GenItem::Case { items, .. } => {
+                    for it in items {
+                        match it {
+                            ast::GenCaseItem::Match { body, .. }
+                            | ast::GenCaseItem::Default { body, .. } => {
+                                self.collect_gen_sva_decls(body)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Property-references-property (slice A4): if the consequent is a bare named
+    /// OVERLAP property `q`, replace it with the boolean `!q.ante || q.cons` (the
+    /// single-tick meaning of `q`'s `b |-> c`). A no-op for any other consequent
+    /// (literal / sequence / net / non-property name) — byte-identical. A guard
+    /// violation leaves a benign `1'b1` consequent (the loud diagnostic already gates
+    /// the run), so there is no spurious fire on top of the error.
+    fn flatten_prop_consequent(&mut self, sva: &mut PendingSva) {
+        let sp = sva.span;
+        let name = match &sva.cons {
+            ast::Sequence::Boolean(e) => match &e.kind {
+                ast::ExprKind::Ident(p) if p.segments.len() == 1 => p.segments[0].name.clone(),
+                _ => return,
+            },
+            _ => return,
+        };
+        // A real net of the same name wins the leaf path (preserves byte-identity for
+        // a design with a net named like a property); a non-property name is left for
+        // the ordinary lowering (a loud undeclared-net if neither).
+        if self.lookup_net_scoped(&name).is_some() || !self.prop_table.contains_key(&name) {
+            return;
+        }
+        match self.flatten_overlap_property(&name, &sva.clock, sp) {
+            Some(b) => sva.cons = ast::Sequence::Boolean(b),
+            None => sva.cons = ast::Sequence::Boolean(sva_one(sp)),
+        }
+    }
+
+    /// Flatten a named OVERLAP property `name` to the boolean `!ante || cons` (slice
+    /// A4) — the single-tick meaning of `b |-> c`. Recurses when `cons` is itself a
+    /// bare overlap-property reference (cycle-guarded via `sva_inline_stack`).
+    /// Returns `None` (after emitting a loud diagnostic) for any unsupported inner
+    /// form: a different clock (multi-clock), `disable iff`, a consequent clock,
+    /// formal arguments, a non-overlap `|=>`, a non-boolean antecedent/consequent, or
+    /// recursion.
+    fn flatten_overlap_property(
+        &mut self,
+        name: &str,
+        clock: &ast::Sensitivity,
+        sp: ast::Span,
+    ) -> Option<ast::Expr> {
+        if self.sva_inline_stack.iter().any(|n| n == name) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("recursive property `{name}` is illegal (IEEE 1800 §16.12)"),
+            );
+            return None;
+        }
+        let pd = self.prop_table.get(name).cloned()?;
+        if !pd.formals.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a parameterized property as a consequent is unsupported in this subset",
+            );
+            return None;
+        }
+        // Span-insensitive clock match: both must be the SAME single bare-ident edge.
+        let outer = sva_clock_signal(clock);
+        if pd.consequent_clock.is_some() || outer.is_none() || outer != sva_clock_signal(&pd.clock)
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a named property consequent with a different / multi-clock clocking \
+                 event is unsupported in this subset",
+            );
+            return None;
+        }
+        if pd.disable_iff.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a named property consequent with its own `disable iff` is unsupported \
+                 in this subset",
+            );
+            return None;
+        }
+        if !matches!(pd.implication_kind, ast::ImplicationKind::Overlap) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a named `|=>` property used as a consequent is unsupported (overlap \
+                 `|->` only in this subset)",
+            );
+            return None;
+        }
+        let ast::Sequence::Boolean(ante_e) = &pd.antecedent else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a named property consequent with a sequence antecedent is unsupported \
+                 in this subset",
+            );
+            return None;
+        };
+        let ante_e = ante_e.clone();
+        self.sva_inline_stack.push(name.to_string());
+        // The inner consequent: a boolean leaf, or itself a bare overlap-property ref.
+        let cons_b = match &pd.consequent {
+            ast::Sequence::Boolean(e) => match &e.kind {
+                ast::ExprKind::Ident(p)
+                    if p.segments.len() == 1
+                        && self.lookup_net_scoped(&p.segments[0].name).is_none()
+                        && self.prop_table.contains_key(&p.segments[0].name) =>
+                {
+                    let inner = p.segments[0].name.clone();
+                    self.flatten_overlap_property(&inner, clock, sp)
+                }
+                _ => Some(e.clone()),
+            },
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a named property consequent with a sequence consequent is \
+                     unsupported in this subset",
+                );
+                None
+            }
+        };
+        self.sva_inline_stack.pop();
+        let cons_b = cons_b?;
+        // `b |-> c` at one tick ≡ `!b || c`.
+        Some(sva_binary(
+            ast::BinOp::LogOr,
+            sva_unary(ast::UnOp::LogNot, ante_e, sp),
+            cons_b,
+            sp,
+        ))
+    }
+
     /// Synthesize a fresh `Reg` for an SVA helper (`|=>` pending bit / sampled-
     /// value prev register), returning its name so the synthesized checker AST
     /// can reference it by `Ident`. Mirrors `fresh_ia_tmp`. Init is the default
@@ -7006,7 +7198,7 @@ impl<'s> Elaborator<'s> {
     /// assert severity shape (routes to the diagnostic stream + exit class 1).
     fn materialize_sva_checkers(&mut self) {
         let pending = std::mem::take(&mut self.pending_sva);
-        for sva in pending {
+        for mut sva in pending {
             let sp = sva.span;
             // A concurrent assertion must have a SINGLE clocking event (slice
             // S15). An OR-of-clocks event `@(posedge c1 or posedge c2)` (a
@@ -7033,6 +7225,12 @@ impl<'s> Elaborator<'s> {
                 self.synth_multiclock(sva, sp);
                 continue;
             }
+            // Property-references-property (slice A4): a bare named-PROPERTY consequent
+            // `… |-> q` (q an OVERLAP property, same clock) flattens to the boolean
+            // `!q.ante || q.cons`. A no-op for a literal / sequence / net consequent
+            // (byte-identical), so it runs before the prev-reg allocation below to keep
+            // the single-property path's numbering unchanged.
+            self.flatten_prop_consequent(&mut sva);
             // Rewrite sampled-value functions ($past/$rose/$fell/$stable) into
             // reads of synthesized prev-registers, collecting the per-clock NBA
             // updates (`prev <= signal`) that maintain them.
