@@ -532,6 +532,10 @@ struct PendingSva {
     /// default `$error` on a violation; `pass` runs on a non-vacuous success.
     pass: Option<Box<ast::Stmt>>,
     fail: Option<Box<ast::Stmt>>,
+    /// Consequent clocking event (slice A3, multi-clock): `Some(c2)` selects the
+    /// two-process handoff synthesis for `@(c1) ante |=> @(c2) cons`. Out-of-band
+    /// (elaborate-internal, NOT serialized → golden-free).
+    cons_clock: Option<ast::Sensitivity>,
     span: ast::Span,
 }
 
@@ -899,6 +903,21 @@ fn sva_unary(op: ast::UnOp, operand: ast::Expr, sp: ast::Span) -> ast::Expr {
             operand: Box::new(operand),
         },
         span: sp,
+    }
+}
+
+/// Wrap statements as a single synthesized clocked-checker body — the lone statement
+/// directly, or a `Block` of several (slice A3 two-process synthesis).
+fn sva_block_or_single(mut stmts: Vec<ast::Stmt>, sp: ast::Span) -> ast::Stmt {
+    if stmts.len() == 1 {
+        stmts.pop().unwrap()
+    } else {
+        ast::Stmt::Block {
+            label: None,
+            decls: Vec::new(),
+            stmts,
+            span: sp,
+        }
     }
 }
 
@@ -6815,6 +6834,169 @@ impl<'s> Elaborator<'s> {
         name
     }
 
+    /// Multi-clock canonical pattern (slice A3): `@(c1) ante |=> @(c2) cons`. The
+    /// (boolean) antecedent is sampled on c1 into a 1-bit handoff reg, and a SECOND
+    /// synthesized process — clocked by c2 — consumes the handoff on its next c2 edge
+    /// to check the (boolean) consequent:
+    ///   always @(c1) handoff <= |ante;
+    ///   always @(c2) if (handoff && !cons) $error(...);
+    /// Pure IR-0 two-process synthesis (sim-ir untouched). The two sides use SEPARATE
+    /// `SvaRegs`, so a `$past` in the antecedent samples on c1 and one in the
+    /// consequent samples on c2 — each on its own clock, no cross-clock aliasing.
+    ///
+    /// TIE SEMANTICS (oracle-free, hand-IEEE pin): when c1 and c2 tick the same
+    /// instant the c2 process reads the PRIOR-edge handoff (proc A's `handoff <= |ante`
+    /// is an NBA that settles in the NBA region, after the c2 process's Active-region
+    /// read). This is the conservative `|=>`-on-next-consume-edge reading; it is
+    /// tool-divergent and unverifiable (iverilog rejects SVA), so it is pinned by a
+    /// determinism test, not claimed IEEE-conformant.
+    ///
+    /// Everything outside the canonical shape is LOUD: `|->` with a consequent clock
+    /// (parser), an OR-of-clocks / `@(*)` on either side, a multi-term sequence
+    /// antecedent/consequent, and `disable iff` / a custom action block combined with
+    /// a second clock (their sampling clock is ambiguous — deferred).
+    fn synth_multiclock(&mut self, sva: PendingSva, sp: ast::Span) {
+        let cons_clock = sva.cons_clock.clone().expect("cons_clock is Some");
+        // `|=>` only (the parser only attaches a consequent clock to `|=>`).
+        if !matches!(sva.kind, ast::ImplicationKind::NonOverlap) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a consequent clocking event requires `|=>` (non-overlapping implication)",
+            );
+            return;
+        }
+        // The consequent clock must be a single edge-event (no OR-of-clocks / `@(*)`).
+        let c2_single = matches!(&cons_clock, ast::Sensitivity::List(evs) if evs.len() == 1);
+        if !c2_single {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "the consequent clocking event must be a single edge (an OR-of-clocks / \
+                 `@(*)` consequent clock is unsupported in this subset)",
+            );
+            return;
+        }
+        // v1 restricts both sides to a boolean (a multi-term sequence across two clocks
+        // is deferred).
+        let ast::Sequence::Boolean(ante_e) = &sva.ante else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a multi-clock property's antecedent must be a boolean in this subset \
+                 (a sequence antecedent with a consequent clock is deferred)",
+            );
+            return;
+        };
+        let ast::Sequence::Boolean(cons_e) = &sva.cons else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a multi-clock property's consequent must be a boolean in this subset \
+                 (a sequence consequent under a second clock is deferred)",
+            );
+            return;
+        };
+        // `disable iff` / a custom action block with a second clock is deferred: the
+        // sampling/reset clock becomes ambiguous across the two processes.
+        if sva.disable_iff.is_some() || sva.pass.is_some() || sva.fail.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "`disable iff` / a custom action block combined with a consequent clock \
+                 is unsupported in this subset",
+            );
+            return;
+        }
+
+        // 1-bit handoff reg (X-init like `pend`, so no spurious fire before c1 ticks).
+        let handoff = self.fresh_sva_reg(1, "mc_pend");
+
+        let handoff_path = ast::HierPath {
+            segments: vec![ast::Ident {
+                name: handoff.clone(),
+                span: sp,
+            }],
+            span: sp,
+        };
+
+        // PROCESS A @ c1: SET-only `if (|ante) handoff <= 1'b1;` (the `|=>` obligation
+        // persists until the CONSUMER discharges it — a later `ante`=0 c1 edge must
+        // NOT clear a pending obligation), plus the antecedent's prev-reg NBAs (c1).
+        // (review 2026-06-16: a level-held `handoff <= |ante` re-fired on every c2
+        // edge in the window when c2 is faster than c1, and dropped an obligation on a
+        // c1 edge with ante=0.)
+        let mut regs_a = SvaRegs::default();
+        let ante_b = self.rewrite_sampled(ante_e, &mut regs_a);
+        let set_handoff = ast::Stmt::If {
+            cond: sva_unary(ast::UnOp::RedOr, ante_b, sp),
+            then_s: Box::new(ast::Stmt::NonBlocking {
+                lhs: ast::Lvalue::Ident(handoff_path.clone()),
+                delay: None,
+                rhs: sva_one(sp),
+                span: sp,
+            }),
+            else_s: None,
+            span: sp,
+        };
+        let mut body_a = vec![set_handoff];
+        body_a.extend(regs_a.nbas);
+        let proc_a = self.lower_proc_block(&ast::ProceduralBlock {
+            kind: ast::ProcKind::Always,
+            sensitivity: Some(sva.clock.clone()),
+            body: Box::new(sva_block_or_single(body_a, sp)),
+            span: sp,
+        });
+        self.push_process(proc_a);
+
+        // PROCESS B @ c2: CHECK + DISCHARGE — `if (handoff) begin if (!cons)
+        // $error(...); handoff <= 1'b0; end` — so each match is consumed at EXACTLY
+        // ONE c2 edge (single-shot obligation, not a level flag), plus the
+        // consequent's prev-reg NBAs (sampled on c2). The X-init handoff keeps
+        // `if (handoff)` from firing/discharging before the first c1 match.
+        let mut regs_b = SvaRegs::default();
+        let cons_b = self.rewrite_sampled(cons_e, &mut regs_b);
+        let fire = ast::Stmt::If {
+            cond: sva_unary(ast::UnOp::LogNot, cons_b, sp),
+            then_s: Box::new(ast::Stmt::SysTaskCall {
+                name: ast::Ident {
+                    name: "$error".to_string(),
+                    span: sp,
+                },
+                args: vec![ast::Expr {
+                    kind: ast::ExprKind::StrLit {
+                        raw: "\"Assertion property violation\"".to_string(),
+                    },
+                    span: sp,
+                }],
+                span: sp,
+            }),
+            else_s: None,
+            span: sp,
+        };
+        let discharge = ast::Stmt::NonBlocking {
+            lhs: ast::Lvalue::Ident(handoff_path),
+            delay: None,
+            rhs: sva_zero(sp),
+            span: sp,
+        };
+        let consume = ast::Stmt::If {
+            cond: sva_ident_expr(&handoff, sp),
+            then_s: Box::new(ast::Stmt::Block {
+                label: None,
+                decls: Vec::new(),
+                stmts: vec![fire, discharge],
+                span: sp,
+            }),
+            else_s: None,
+            span: sp,
+        };
+        let mut body_b = vec![consume];
+        body_b.extend(regs_b.nbas);
+        let proc_b = self.lower_proc_block(&ast::ProceduralBlock {
+            kind: ast::ProcKind::Always,
+            sensitivity: Some(cons_clock),
+            body: Box::new(sva_block_or_single(body_b, sp)),
+            span: sp,
+        });
+        self.push_process(proc_b);
+    }
+
     /// v8 SVA: drain `pending_sva` into synthesized clocked checker processes.
     /// `assert property(@(clk) ante |-> cons)` ≡ `always @(clk) if (ante &&
     /// !cons) $error(...)`. For `|=>` (non-overlapping) the antecedent is delayed
@@ -6841,6 +7023,14 @@ impl<'s> Elaborator<'s> {
                      (multi-clock / OR-of-clocks property clocks are unsupported \
                      in this subset)",
                 );
+                continue;
+            }
+            // Multi-clock canonical pattern (slice A3): `@(c1) ante |=> @(c2) cons`
+            // synthesizes TWO processes (a c1-clocked sampler + a c2-clocked consumer)
+            // joined by a 1-bit handoff reg, instead of the single-clock checker below.
+            // Single-clock asserts (the common case) keep the byte-identical path.
+            if sva.cons_clock.is_some() {
+                self.synth_multiclock(sva, sp);
                 continue;
             }
             // Rewrite sampled-value functions ($past/$rose/$fell/$stable) into
@@ -8978,6 +9168,7 @@ impl<'s> Elaborator<'s> {
                 antecedent,
                 implication_kind,
                 consequent,
+                consequent_clock,
                 pass,
                 fail,
                 span,
@@ -9013,6 +9204,7 @@ impl<'s> Elaborator<'s> {
                                 cons: pd.consequent,
                                 pass: pass.clone(),
                                 fail: fail.clone(),
+                                cons_clock: pd.consequent_clock,
                                 span: *span,
                             });
                         }
@@ -9029,6 +9221,10 @@ impl<'s> Elaborator<'s> {
                                 cons: subst_sequence(&pd.consequent, &map),
                                 pass: pass.clone(),
                                 fail: fail.clone(),
+                                cons_clock: pd
+                                    .consequent_clock
+                                    .as_ref()
+                                    .map(|s| subst_sensitivity(s, &map)),
                                 span: *span,
                             });
                         }
@@ -9063,6 +9259,7 @@ impl<'s> Elaborator<'s> {
                         cons: consequent.clone(),
                         pass: pass.clone(),
                         fail: fail.clone(),
+                        cons_clock: consequent_clock.clone(),
                         span: *span,
                     });
                 }

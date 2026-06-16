@@ -12,10 +12,13 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-16 named-SVA slice (`Sequence::Instance` +
+/// Re-pinned 2026-06-16 multi-clock slice A3 (`ConcurrentAssert.consequent_clock:
+/// Option<Sensitivity>` + `PropDecl.consequent_clock` — the `@(c2)` consequent clock
+/// of `@(c1) ante |=> @(c2) cons`; all `.vu` artifacts are stale, no
+/// sim-ir/format_version change, pure IR-0). (Previous re-pins:
+/// 2026-06-16 named-SVA slice (`Sequence::Instance` +
 /// `ModuleItem::{SequenceDecl,PropertyDecl}` + `SeqDecl`/`PropDecl` — named
-/// `sequence`/`property` declarations & instantiation; all `.vu` artifacts are
-/// stale, no sim-ir/format_version change, pure IR-0). (Previous re-pins:
+/// `sequence`/`property` declarations & instantiation);
 /// 2026-06-15 SVA slice S14 (`ConcurrentAssert.consequent: Expr →
 /// Sequence` — sequence consequent AST flip; all `.vu` artifacts are stale, no
 /// sim-ir/format_version change); 2026-06-15 S12
@@ -31,8 +34,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    156, 72, 166, 176, 93, 215, 80, 77, 78, 252, 204, 242, 247, 27, 184, 161, 193, 169, 178, 63,
-    150, 130, 241, 191, 239, 137, 206, 109, 150, 199, 120, 247,
+    2, 220, 161, 237, 45, 66, 116, 112, 6, 123, 70, 194, 137, 95, 192, 236, 148, 153, 77, 154, 74,
+    215, 238, 147, 90, 218, 235, 125, 225, 42, 135, 134,
 ];
 
 #[test]

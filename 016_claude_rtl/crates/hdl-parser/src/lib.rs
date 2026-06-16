@@ -3173,6 +3173,7 @@ impl<'t, 's> Parser<'t, 's> {
                 },
                 implication_kind: ImplicationKind::Overlap,
                 consequent: Sequence::Boolean(Self::sva_true_lit(start)),
+                consequent_clock: None,
                 pass,
                 fail,
                 span: start.to(self.prev_span()),
@@ -3207,12 +3208,13 @@ impl<'t, 's> Parser<'t, 's> {
                 },
                 implication_kind: ImplicationKind::Overlap,
                 consequent: Sequence::Boolean(Self::sva_true_lit(start)),
+                consequent_clock: None,
                 pass,
                 fail,
                 span: start.to(self.prev_span()),
             };
         }
-        let (clock, disable_iff, antecedent, implication_kind, consequent) =
+        let (clock, disable_iff, antecedent, implication_kind, consequent, consequent_clock) =
             self.parse_property_spec(start);
         self.expect(TokenKind::RParen, "')'");
         // action_block ::= statement_or_null | [statement] `else` statement_or_null
@@ -3224,6 +3226,7 @@ impl<'t, 's> Parser<'t, 's> {
             antecedent,
             implication_kind,
             consequent,
+            consequent_clock,
             pass,
             fail,
             span: start.to(self.prev_span()),
@@ -3255,6 +3258,7 @@ impl<'t, 's> Parser<'t, 's> {
         Sequence,
         ImplicationKind,
         Sequence,
+        Option<Sensitivity>,
     ) {
         // Sequence/property LOCAL VARIABLES (slice A2): a typed declaration at the
         // body start (`property p; int x; @(clk) …`) needs per-attempt thread storage
@@ -3309,23 +3313,28 @@ impl<'t, 's> Parser<'t, 's> {
         };
         // `seq [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
         // implication) desugars to `1'b1 |-> expr`; `seq [ |-> | |=> ] seq` — the
-        // consequent is also a Sequence (slice S14).
+        // consequent is also a Sequence (slice S14). A leading `@(c2)` on the
+        // consequent of a `|=>` is a multi-clock property (slice A3).
         let ante_seq = self.parse_sequence();
         if self.eat(TokenKind::PipeArrow) {
+            let cons_clock = self.parse_optional_consequent_clock(true);
             (
                 clock,
                 disable_iff,
                 ante_seq,
                 ImplicationKind::Overlap,
                 self.parse_sequence(),
+                cons_clock,
             )
         } else if self.eat(TokenKind::PipeEqArrow) {
+            let cons_clock = self.parse_optional_consequent_clock(false);
             (
                 clock,
                 disable_iff,
                 ante_seq,
                 ImplicationKind::NonOverlap,
                 self.parse_sequence(),
+                cons_clock,
             )
         } else {
             let true_lit = Self::sva_true_lit(start);
@@ -3337,6 +3346,7 @@ impl<'t, 's> Parser<'t, 's> {
                     Sequence::Boolean(true_lit),
                     ImplicationKind::Overlap,
                     Sequence::Boolean(e),
+                    None,
                 ),
                 other => {
                     self.error("an implication `|->`/`|=>` (a bare sequence property is unsupported in this subset)");
@@ -3346,10 +3356,31 @@ impl<'t, 's> Parser<'t, 's> {
                         other,
                         ImplicationKind::Overlap,
                         Sequence::Boolean(true_lit),
+                        None,
                     )
                 }
             }
         }
+    }
+
+    /// Parse an optional leading `@(c2)` consequent clocking event (slice A3, after
+    /// the implication operator). `|=>` accepts it (multi-clock handoff); `|->` does
+    /// NOT (no coherent same-tick cross-clock check) → loud, consume for recovery.
+    fn parse_optional_consequent_clock(&mut self, is_overlap: bool) -> Option<Sensitivity> {
+        if self.peek() != Some(TokenKind::At) {
+            return None;
+        }
+        if is_overlap {
+            // `self.error` frames its argument as "expected <X>, found <Y>", so the
+            // message must be a noun phrase (review 2026-06-16).
+            self.error(
+                "a `|=>` for a multi-clock property (an overlapping `|->` cannot take \
+                 a consequent clocking event)",
+            );
+            let _ = self.parse_sensitivity(); // consume `@(c2)` so the rest recovers
+            return None;
+        }
+        Some(self.parse_sensitivity())
     }
 
     /// Disambiguate `sequence IDENT ( … )` (cursor on `sequence`) between an SVA
@@ -3459,7 +3490,7 @@ impl<'t, 's> Parser<'t, 's> {
         let name = self.ident()?;
         let formals = self.parse_sva_formals();
         self.expect(TokenKind::Semi, "';' after property name");
-        let (clock, disable_iff, antecedent, implication_kind, consequent) =
+        let (clock, disable_iff, antecedent, implication_kind, consequent, consequent_clock) =
             self.parse_property_spec(start);
         self.expect(TokenKind::Semi, "';' after property body");
         if self.at_ident_kw("endproperty") {
@@ -3476,6 +3507,7 @@ impl<'t, 's> Parser<'t, 's> {
             antecedent,
             implication_kind,
             consequent,
+            consequent_clock,
             span: start.to(self.prev_span()),
         }))
     }

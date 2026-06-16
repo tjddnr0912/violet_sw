@@ -547,6 +547,11 @@ pub enum Stmt {
         /// to a `Sequence` (`a |-> b ##1 c`); a plain boolean consequent is
         /// `Sequence::Boolean(_)` and keeps the byte-identical lowering.
         consequent: Sequence,
+        /// Optional CONSEQUENT clocking event (slice A3, multi-clock): the leading
+        /// `@(c2)` of `@(c1) ante |=> @(c2) cons`. `None` = single-clock (the byte-
+        /// identical lowering). `Some(c2)` selects the two-process handoff synthesis
+        /// (a c1-clocked sampler + a c2-clocked consumer); only valid with `|=>`.
+        consequent_clock: Option<Sensitivity>,
         /// Optional action block (slice S11, IEEE 1800 §16.14.1):
         /// `assert property(...) [pass] [else fail]`. `pass` runs on a
         /// non-vacuous success, `fail` (the `else` statement) replaces the
@@ -681,6 +686,9 @@ pub struct PropDecl {
     pub antecedent: Sequence,
     pub implication_kind: ImplicationKind,
     pub consequent: Sequence,
+    /// Optional consequent clocking event (slice A3, multi-clock) — see
+    /// [`Stmt::ConcurrentAssert`]'s `consequent_clock`. `None` = single-clock.
+    pub consequent_clock: Option<Sensitivity>,
     pub span: Span,
 }
 /// SVA repetition operator (slices S4/S5/S8).

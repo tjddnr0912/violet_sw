@@ -1779,8 +1779,10 @@ fn sva_multiclock_or_clock_is_loud() {
 }
 
 #[test]
-fn sva_multiclock_consequent_at_is_loud() {
-    // A second `@` clocking event in the consequent is a multi-clock property.
+fn sva_multiclock_consequent_at_now_accepted() {
+    // Slice A3: a consequent `@(c2)` on a `|=>` is now the CANONICAL multi-clock
+    // pattern (two-process handoff), no longer loud. With a=0 the antecedent never
+    // holds → handoff stays 0 → clean. (Behavioral coverage lives in sva_multiclock.rs.)
     let (out, err, code) = run("module top;\n\
          reg c1=0, c2=0, a=0, b=0;\n\
          always #5 c1=~c1;\n\
@@ -1788,14 +1790,14 @@ fn sva_multiclock_consequent_at_is_loud() {
          initial assert property(@(posedge c1) a |=> @(posedge c2) b);\n\
          initial #30 $finish;\n\
          endmodule\n");
-    assert_ne!(
+    assert_eq!(
         code,
         Some(0),
-        "multi-clock consequent must be loud. stderr:\n{err}\nout:\n{out}"
+        "the canonical multi-clock pattern is accepted; a=0 → no fire. stderr:\n{err}\nout:\n{out}"
     );
     assert!(
-        format!("{err}{out}").to_lowercase().contains("multi-clock"),
-        "expected a multi-clock diagnostic:\n{err}\n{out}"
+        !format!("{err}{out}").to_lowercase().contains("multi-clock"),
+        "no longer a multi-clock rejection:\n{err}\n{out}"
     );
 }
 
