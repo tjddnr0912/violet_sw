@@ -690,6 +690,170 @@ fn seq_span(seq: &ast::Sequence) -> ast::Span {
     }
 }
 
+/// Substitute SVA formal identifiers with their bound actual expressions (slice A1).
+/// `map` is `formal-name → actual-expr`; a single-segment `Ident` whose name is a
+/// formal is replaced by a clone of the actual (carrying the actual's span). Every
+/// other node is rebuilt structurally so the substitution reaches nested operands.
+/// Pure AST rewrite — used to inline `sequence s(x,y); …` at `s(a,b)` (IR-0).
+fn subst_expr(e: &ast::Expr, map: &BTreeMap<String, ast::Expr>) -> ast::Expr {
+    use ast::ExprKind as K;
+    // A formal occurrence (a bare single-segment name that is a key) → the actual.
+    if let K::Ident(p) = &e.kind {
+        if p.segments.len() == 1 {
+            if let Some(actual) = map.get(&p.segments[0].name) {
+                return actual.clone();
+            }
+        }
+    }
+    let sp = e.span;
+    let kind = match &e.kind {
+        K::Unary { op, operand } => K::Unary {
+            op: *op,
+            operand: Box::new(subst_expr(operand, map)),
+        },
+        K::Binary { op, lhs, rhs } => K::Binary {
+            op: *op,
+            lhs: Box::new(subst_expr(lhs, map)),
+            rhs: Box::new(subst_expr(rhs, map)),
+        },
+        K::Ternary {
+            cond,
+            then_e,
+            else_e,
+        } => K::Ternary {
+            cond: Box::new(subst_expr(cond, map)),
+            then_e: Box::new(subst_expr(then_e, map)),
+            else_e: Box::new(subst_expr(else_e, map)),
+        },
+        K::BitSelect { base, index } => K::BitSelect {
+            base: Box::new(subst_expr(base, map)),
+            index: Box::new(subst_expr(index, map)),
+        },
+        K::PartSelect { base, msb, lsb } => K::PartSelect {
+            base: Box::new(subst_expr(base, map)),
+            msb: Box::new(subst_expr(msb, map)),
+            lsb: Box::new(subst_expr(lsb, map)),
+        },
+        K::IndexedPart {
+            base,
+            offset,
+            width,
+            dir,
+        } => K::IndexedPart {
+            base: Box::new(subst_expr(base, map)),
+            offset: Box::new(subst_expr(offset, map)),
+            width: Box::new(subst_expr(width, map)),
+            dir: *dir,
+        },
+        K::Concat { parts } => K::Concat {
+            parts: parts.iter().map(|x| subst_expr(x, map)).collect(),
+        },
+        K::Replicate { count, value } => K::Replicate {
+            count: Box::new(subst_expr(count, map)),
+            value: value.iter().map(|x| subst_expr(x, map)).collect(),
+        },
+        K::Call { name, args } => K::Call {
+            name: name.clone(),
+            args: args.iter().map(|x| subst_expr(x, map)).collect(),
+        },
+        K::SysCall { name, args } => K::SysCall {
+            name: name.clone(),
+            args: args.iter().map(|x| subst_expr(x, map)).collect(),
+        },
+        K::Paren { inner } => K::Paren {
+            inner: Box::new(subst_expr(inner, map)),
+        },
+        K::MinTypMax { min, typ, max } => K::MinTypMax {
+            min: Box::new(subst_expr(min, map)),
+            typ: Box::new(subst_expr(typ, map)),
+            max: Box::new(subst_expr(max, map)),
+        },
+        // literals, pkg-scoped, multi-segment ident, new, dollar, error: no formal
+        // occurrence to rewrite — clone verbatim.
+        _ => e.kind.clone(),
+    };
+    ast::Expr { kind, span: sp }
+}
+
+/// Substitute SVA formals (slice A1) through a `Sequence`, recursing into the
+/// boolean leaves / guards. A nested named-sequence `Instance` whose NAME is itself
+/// a formal bound to a bare-ident actual is renamed; its args are substituted too.
+fn subst_sequence(seq: &ast::Sequence, map: &BTreeMap<String, ast::Expr>) -> ast::Sequence {
+    use ast::Sequence as S;
+    match seq {
+        S::Boolean(e) => S::Boolean(subst_expr(e, map)),
+        S::Delay { min, max, lhs, rhs } => S::Delay {
+            min: *min,
+            max: *max,
+            lhs: Box::new(subst_sequence(lhs, map)),
+            rhs: Box::new(subst_sequence(rhs, map)),
+        },
+        S::Repeat {
+            seq,
+            min,
+            max,
+            kind,
+        } => S::Repeat {
+            seq: Box::new(subst_sequence(seq, map)),
+            min: *min,
+            max: *max,
+            kind: *kind,
+        },
+        S::Throughout { cond, seq } => S::Throughout {
+            cond: Box::new(subst_expr(cond, map)),
+            seq: Box::new(subst_sequence(seq, map)),
+        },
+        S::Within { seq1, seq2 } => S::Within {
+            seq1: Box::new(subst_sequence(seq1, map)),
+            seq2: Box::new(subst_sequence(seq2, map)),
+        },
+        S::Instance { name, args, span } => {
+            let name = match map.get(&name.name) {
+                Some(ast::Expr {
+                    kind: ast::ExprKind::Ident(p),
+                    ..
+                }) if p.segments.len() == 1 => ast::Ident {
+                    name: p.segments[0].name.clone(),
+                    span: name.span,
+                },
+                _ => name.clone(),
+            };
+            S::Instance {
+                name,
+                args: args.iter().map(|a| subst_expr(a, map)).collect(),
+                span: *span,
+            }
+        }
+    }
+}
+
+/// Substitute SVA formals (slice A1) through a clocking event's expressions (a
+/// formal may name the clock signal of a parameterized property).
+fn subst_sensitivity(s: &ast::Sensitivity, map: &BTreeMap<String, ast::Expr>) -> ast::Sensitivity {
+    match s {
+        ast::Sensitivity::Star => ast::Sensitivity::Star,
+        ast::Sensitivity::List(evs) => ast::Sensitivity::List(
+            evs.iter()
+                .map(|ev| ast::EventExpr {
+                    edge: ev.edge,
+                    expr: subst_expr(&ev.expr, map),
+                    span: ev.span,
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// Build the positional formal→actual substitution map for a parameterized SVA
+/// instance (slice A1). The caller has already arity-checked.
+fn sva_formal_map(formals: &[ast::Ident], actuals: &[ast::Expr]) -> BTreeMap<String, ast::Expr> {
+    formals
+        .iter()
+        .map(|f| f.name.clone())
+        .zip(actuals.iter().cloned())
+        .collect()
+}
+
 /// Cap on the number of disjunctive ALTERNATIVES a bounded SVA sequence range
 /// (`##[m:n]`/`[*m:n]`, possibly nested/producted) may expand to before a loud
 /// reject — the range-blowup guard. Note the synthesized pipeline regs are NOT
@@ -6955,11 +7119,23 @@ impl<'s> Elaborator<'s> {
     /// recursion). A self/mutual-recursive sequence (IEEE 1800 §16.8: illegal) is
     /// rejected loud and yields a never-matching `1'b0` alternative so elaboration
     /// continues. Parameterized decls are rejected loud (reserved for a follow-on).
-    fn inline_named_sequence(&mut self, decl: &ast::SeqDecl, regs: &mut SvaRegs) -> Vec<SeqAlt> {
-        if !decl.formals.is_empty() {
+    fn inline_named_sequence(
+        &mut self,
+        decl: &ast::SeqDecl,
+        args: &[ast::Expr],
+        regs: &mut SvaRegs,
+    ) -> Vec<SeqAlt> {
+        // Positional formal-argument binding (slice A1). Arity mismatch (including a
+        // non-parameterized sequence given args, or vice versa) is loud.
+        if decl.formals.len() != args.len() {
             self.error(
                 MsgCode::ElabUnsupported,
-                "parameterized sequences are unsupported in this subset",
+                &format!(
+                    "named sequence `{}` expects {} formal argument(s), got {}",
+                    decl.name.name,
+                    decl.formals.len(),
+                    args.len()
+                ),
             );
             return sva_never_alt(&decl.body);
         }
@@ -6973,8 +7149,15 @@ impl<'s> Elaborator<'s> {
             );
             return sva_never_alt(&decl.body);
         }
+        // The no-formal path clones (then expands) the body, structurally identical
+        // to expanding `&decl.body` directly → byte-identical to before slice A1.
+        let body = if decl.formals.is_empty() {
+            decl.body.clone()
+        } else {
+            subst_sequence(&decl.body, &sva_formal_map(&decl.formals, args))
+        };
         self.sva_inline_stack.push(decl.name.name.clone());
-        let out = self.expand_sequence(&decl.body, regs);
+        let out = self.expand_sequence(&body, regs);
         self.sva_inline_stack.pop();
         out
     }
@@ -7005,6 +7188,23 @@ impl<'s> Elaborator<'s> {
         let Some(decl) = self.seq_table.get(&name).cloned() else {
             return seq.clone(); // a real net / unknown name — leave it for expand_sequence
         };
+        // A bare top-level reference (`s |-> …`) passes ZERO actuals; a parameterized
+        // sequence needs its formals bound. Mirror `inline_named_sequence`'s arity
+        // error (review 2026-06-16: this path was peeling `decl.body` with the formals
+        // left as net references — silent-wrong when a formal name shadowed a real
+        // net). Every sibling path (expand_sequence Boolean/Call/Instance, property
+        // collect) already arity-checks; close the hole here too.
+        if !decl.formals.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "named sequence `{}` expects {} formal argument(s), got 0",
+                    name,
+                    decl.formals.len()
+                ),
+            );
+            return ast::Sequence::Boolean(sva_zero(decl.span));
+        }
         if self.sva_inline_stack.iter().any(|n| n == &name) {
             self.error(
                 MsgCode::ElabUnsupported,
@@ -7028,7 +7228,19 @@ impl<'s> Elaborator<'s> {
                 if let ast::ExprKind::Ident(path) = &e.kind {
                     if path.segments.len() == 1 {
                         if let Some(decl) = self.seq_table.get(&path.segments[0].name).cloned() {
-                            return self.inline_named_sequence(&decl, regs);
+                            return self.inline_named_sequence(&decl, &[], regs);
+                        }
+                    }
+                }
+                // A `Call` whose callee names a declared sequence is a PARAMETERIZED
+                // sequence instance `s(a,b)` (it parses as a boolean-leaf `Call` in a
+                // sequence body / antecedent). Bind the actuals and inline. A callee
+                // that is NOT a declared sequence falls through to the ordinary
+                // boolean leaf (an actual user function call → the usual lowering).
+                if let ast::ExprKind::Call { name, args } = &e.kind {
+                    if name.segments.len() == 1 {
+                        if let Some(decl) = self.seq_table.get(&name.segments[0].name).cloned() {
+                            return self.inline_named_sequence(&decl, args, regs);
                         }
                     }
                 }
@@ -7040,15 +7252,9 @@ impl<'s> Elaborator<'s> {
             // covers a named SEQUENCE instance / future forms): resolve it against
             // the sequence table and inline. Unknown name / non-empty args are loud.
             ast::Sequence::Instance { name, args, .. } => {
-                if !args.is_empty() {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "parameterized sequences/properties are unsupported in this subset",
-                    );
-                    return sva_never_alt(seq);
-                }
                 match self.seq_table.get(&name.name).cloned() {
-                    Some(decl) => self.inline_named_sequence(&decl, regs),
+                    // Inline (binding `args` to the declared formals — slice A1).
+                    Some(decl) => self.inline_named_sequence(&decl, args, regs),
                     None => {
                         self.error(
                             MsgCode::ElabUnsupported,
@@ -8670,20 +8876,44 @@ impl<'s> Elaborator<'s> {
                 // sees the named property's clock (never the empty sentinel). The
                 // call-site action block (pass/fail) is carried through.
                 if let ast::Sequence::Instance { name, args, .. } = antecedent {
-                    if !args.is_empty() {
-                        self.error(
-                            MsgCode::ElabUnsupported,
-                            "parameterized properties are unsupported in this subset",
-                        );
-                    }
                     match self.prop_table.get(&name.name).cloned() {
-                        Some(pd) => {
+                        Some(pd) if pd.formals.len() != args.len() => {
+                            // Arity mismatch (slice A1) — includes a bare `p` instance
+                            // of a parameterized property (0 args vs N formals).
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!(
+                                    "named property `{}` expects {} formal argument(s), got {}",
+                                    name.name,
+                                    pd.formals.len(),
+                                    args.len()
+                                ),
+                            );
+                        }
+                        Some(pd) if pd.formals.is_empty() => {
+                            // Byte-identical to before slice A1 (no substitution).
                             self.pending_sva.push(PendingSva {
                                 clock: pd.clock,
                                 disable_iff: pd.disable_iff,
                                 ante: pd.antecedent,
                                 kind: pd.implication_kind,
                                 cons: pd.consequent,
+                                pass: pass.clone(),
+                                fail: fail.clone(),
+                                span: *span,
+                            });
+                        }
+                        Some(pd) => {
+                            // Parameterized property: bind actuals → formals and
+                            // substitute through the whole spliced spec (clock,
+                            // disable, antecedent, consequent) before scheduling.
+                            let map = sva_formal_map(&pd.formals, args);
+                            self.pending_sva.push(PendingSva {
+                                clock: subst_sensitivity(&pd.clock, &map),
+                                disable_iff: pd.disable_iff.as_ref().map(|e| subst_expr(e, &map)),
+                                ante: subst_sequence(&pd.antecedent, &map),
+                                kind: pd.implication_kind,
+                                cons: subst_sequence(&pd.consequent, &map),
                                 pass: pass.clone(),
                                 fail: fail.clone(),
                                 span: *span,

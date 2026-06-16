@@ -120,6 +120,13 @@ impl<'t, 's> Parser<'t, 's> {
             .map(|t| &self.src[t.span.clone()])
             .unwrap_or("")
     }
+    /// Source text of the token `n` past the cursor (0 = current). Empty past EOF.
+    fn text_at(&self, n: usize) -> &'s str {
+        self.toks
+            .get(self.pos + n)
+            .map(|t| &self.src[t.span.clone()])
+            .unwrap_or("")
+    }
 
     // -- cursor primitives --
     #[inline]
@@ -1464,19 +1471,23 @@ impl<'t, 's> Parser<'t, 's> {
         // (`wire sequence;`) is unaffected — `net_var_kind` matches first.
         //
         // `sequence` is NOT a Verilog-2005 reserved word, so a V2005 module TYPE
-        // literally named `sequence` and its instantiation (`sequence u(...)`) must
-        // STILL parse — only `sequence NAME ;` (a no-formals decl) is routed here;
-        // `sequence IDENT (` falls through to the instantiation arm (review
-        // 2026-06-16: a bare `at_ident_kw("sequence")` masked that instantiation).
-        // A parameterized decl `sequence s(x);` is reserved/unsupported and is loud
-        // either way. `property` IS a hard keyword (`Kw::Property`) — it cannot name
-        // a module, so there is no masking there.
+        // literally named `sequence` and its instantiation (`sequence u(.o(o))`) must
+        // STILL parse. A no-formals decl `sequence NAME ;` routes here on the cheap
+        // 2-token guard. A PARAMETERIZED decl `sequence NAME ( … ) ;` (slice A1)
+        // collides with a positional/named module instantiation of the same shape;
+        // disambiguate by a content-independent forward scan for the terminating
+        // `endsequence` (a decl always has one; an instantiation never does). The
+        // scan is what lets `sequence u(.o(o));` (no `endsequence`) stay an
+        // instantiation while `sequence s(x,y); … endsequence` is a decl.
+        // `property` IS a hard keyword (`Kw::Property`) — it cannot name a module, so
+        // there is no masking there.
         if self.at_ident_kw("sequence")
             && matches!(
                 self.peek_at(1),
                 Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
             )
-            && self.peek_at(2) == Some(TokenKind::Semi)
+            && (self.peek_at(2) == Some(TokenKind::Semi)
+                || (self.peek_at(2) == Some(TokenKind::LParen) && self.is_sequence_decl_ahead()))
         {
             return self.parse_sequence_decl();
         }
@@ -3168,17 +3179,32 @@ impl<'t, 's> Parser<'t, 's> {
             };
         }
         if self.is_ident() && self.peek_at(1) == Some(TokenKind::LParen) {
-            // `assert property(NAME(args))` — parameterized instance (reserved).
-            self.error(
-                "a parameterless named property (formal arguments are unsupported \
-                 in this subset)",
-            );
-            self.skip_balanced_parens();
+            // `assert property(NAME(args))` — parameterized property instance
+            // (slice A1). Parse the positional actual arguments; elaborate binds them
+            // to the declared property's formals and substitutes before splicing.
+            let name = self.ident().unwrap();
+            self.expect(TokenKind::LParen, "'(' before property arguments");
+            let mut args = Vec::new();
+            if self.peek() != Some(TokenKind::RParen) {
+                loop {
+                    args.push(self.expr(0));
+                    if self.eat(TokenKind::Comma) {
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "')' after property arguments");
+            self.expect(TokenKind::RParen, "')'");
             let (pass, fail) = self.parse_assert_action_block();
             return Stmt::ConcurrentAssert {
                 clock: Sensitivity::List(Vec::new()),
                 disable_iff: None,
-                antecedent: Sequence::Boolean(Self::sva_true_lit(start)),
+                antecedent: Sequence::Instance {
+                    name,
+                    args,
+                    span: start,
+                },
                 implication_kind: ImplicationKind::Overlap,
                 consequent: Sequence::Boolean(Self::sva_true_lit(start)),
                 pass,
@@ -3299,41 +3325,87 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Consume a balanced `( … )` group starting at the current `(` (recovery for
-    /// a reserved parameterized form). No-op if not at `(`.
-    fn skip_balanced_parens(&mut self) {
-        if self.peek() != Some(TokenKind::LParen) {
-            return;
-        }
-        let mut depth = 0u32;
-        while let Some(k) = self.peek() {
-            match k {
-                TokenKind::LParen => {
+    /// Disambiguate `sequence IDENT ( … )` (cursor on `sequence`) between an SVA
+    /// sequence DECLARATION and a module instantiation of a V2005 module literally
+    /// named `sequence`. The decl shape is exactly `sequence NAME ( formals ) ; BODY
+    /// ; endsequence`, so AFTER the formals-terminator `;` the body is a single
+    /// sequence expression with NO top-level `;`, and its terminating `;` is
+    /// immediately followed by `endsequence`. An instantiation `sequence u(…) ;` has
+    /// no such body+`endsequence`. We therefore (1) skip the balanced `( … )`, (2)
+    /// require the formals `;`, then (3) scan the body to its next depth-0 `;` and
+    /// accept ONLY if `endsequence` follows it. DECISIVE and bounded to the candidate
+    /// construct — it cannot be poisoned by an unrelated later `sequence … endsequence`
+    /// (review 2026-06-16: a content-independent scan-until-`endsequence` mis-routed a
+    /// positional `sequence u(o);` merely followed by a real decl, and a fixed token
+    /// budget flipped long decls). Lets `sequence u(.o(o));` stay an instantiation.
+    fn is_sequence_decl_ahead(&self) -> bool {
+        const BUDGET: usize = 65536;
+        // (1) Skip the balanced `( … )` — peek_at(2) is the opening `(`.
+        let mut i = 2usize;
+        let mut depth = 0usize;
+        loop {
+            match self.peek_at(i) {
+                None => return false,
+                Some(TokenKind::LParen) => {
                     depth += 1;
-                    self.bump();
+                    i += 1;
                 }
-                TokenKind::RParen => {
-                    self.bump();
+                Some(TokenKind::RParen) => {
+                    i += 1;
                     depth -= 1;
                     if depth == 0 {
                         break;
                     }
                 }
-                _ => {
-                    self.bump();
+                _ => i += 1,
+            }
+            if i > BUDGET {
+                return false;
+            }
+        }
+        // (2) The formals list must be terminated by `;`.
+        if self.peek_at(i) != Some(TokenKind::Semi) {
+            return false;
+        }
+        i += 1;
+        // (3) Scan the body to its next depth-0 `;`; a decl has `endsequence` after it.
+        let mut bdepth = 0usize;
+        loop {
+            match self.peek_at(i) {
+                None => return false,
+                Some(TokenKind::LParen | TokenKind::LBracket) => {
+                    bdepth += 1;
+                    i += 1;
                 }
+                Some(TokenKind::RParen | TokenKind::RBracket) => {
+                    bdepth = bdepth.saturating_sub(1);
+                    i += 1;
+                }
+                Some(TokenKind::Semi) if bdepth == 0 => {
+                    return self.text_at(i + 1) == "endsequence";
+                }
+                // A hard module boundary before the body terminator ⇒ not a decl.
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Module | Kw::Endmodule)))
+                    if bdepth == 0 =>
+                {
+                    return false
+                }
+                _ => i += 1,
+            }
+            if i > BUDGET {
+                return false;
             }
         }
     }
 
     /// Named SVA `sequence NAME [(formals)]; <seq>; endsequence` (IEEE §16.8).
-    /// Formal arguments are reserved (loud-rejected non-empty); the body reuses the
-    /// existing `parse_sequence`, so every sequence operator is available by name.
+    /// Formal arguments (slice A1) bind by position at the use site; the body reuses
+    /// the existing `parse_sequence`, so every sequence operator is available by name.
     fn parse_sequence_decl(&mut self) -> Option<ModuleItem> {
         let start = self.cur_span();
         self.bump(); // `sequence` (contextual keyword)
         let name = self.ident()?;
-        let formals = self.reserved_sva_formals();
+        let formals = self.parse_sva_formals();
         self.expect(TokenKind::Semi, "';' after sequence name");
         let body = self.parse_sequence();
         self.expect(TokenKind::Semi, "';' after sequence body");
@@ -3358,7 +3430,7 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         self.bump(); // `property` (Kw::Property)
         let name = self.ident()?;
-        let formals = self.reserved_sva_formals();
+        let formals = self.parse_sva_formals();
         self.expect(TokenKind::Semi, "';' after property name");
         let (clock, disable_iff, antecedent, implication_kind, consequent) =
             self.parse_property_spec(start);
@@ -3381,19 +3453,63 @@ impl<'t, 's> Parser<'t, 's> {
         }))
     }
 
-    /// Reject (loud) a non-empty SVA formal-argument list `(...)` after a named
-    /// sequence/property name; the parameterized follow-on will parse it. Always
-    /// returns an empty list in this subset, consuming a balanced `(...)` group on
-    /// the reject path so parsing continues.
-    fn reserved_sva_formals(&mut self) -> Vec<Ident> {
-        if self.peek() == Some(TokenKind::LParen) {
-            self.error(
-                "a parameterless named sequence/property (formal arguments are \
-                 unsupported in this subset)",
-            );
-            self.skip_balanced_parens();
+    /// Parse an SVA formal-argument list `( formal {, formal} )` after a named
+    /// sequence/property name (slice A1, IEEE 1800 §16.8/§16.12). A formal is
+    /// `[data_type] name [= default]`; the formal NAME is what elaborate substitutes,
+    /// so we capture the LAST identifier before a top-level `,` / `)` / `=` and skip
+    /// the optional type prefix and any default value (defaults are unsupported — all
+    /// actuals must be passed; an arity mismatch is loud at the use site). No `(` →
+    /// an empty list (a non-parameterized decl, byte-identical to before this slice).
+    fn parse_sva_formals(&mut self) -> Vec<Ident> {
+        let mut out = Vec::new();
+        if self.peek() != Some(TokenKind::LParen) {
+            return out;
         }
-        Vec::new()
+        self.bump(); // `(`
+        if self.eat(TokenKind::RParen) {
+            return out; // empty `()`
+        }
+        loop {
+            match self.parse_one_sva_formal() {
+                Some(id) => out.push(id),
+                // An empty entry (`(,)`, `(,x)`, `(x,)`) is malformed — loud rather
+                // than silently normalized (review 2026-06-16). Arity is still
+                // enforced at the use site; this is recovery, not fatal.
+                None => self.error("a formal name in the sequence/property formal list"),
+            }
+            if self.eat(TokenKind::Comma) {
+                continue;
+            }
+            if !self.eat(TokenKind::RParen) {
+                self.error("',' or ')' in a sequence/property formal list");
+            }
+            break;
+        }
+        out
+    }
+
+    /// One SVA formal: scan to the next top-level `,` / `)` / `=`, returning the last
+    /// identifier seen (the formal name), regardless of any leading type / range
+    /// tokens. A `= default` value is parse-and-dropped (unsupported).
+    fn parse_one_sva_formal(&mut self) -> Option<Ident> {
+        let mut last: Option<Ident> = None;
+        loop {
+            match self.peek() {
+                Some(TokenKind::Comma) | Some(TokenKind::RParen) | None => break,
+                Some(TokenKind::Eq) => {
+                    self.bump(); // `=`
+                    let _ = self.expr(0); // default value — consumed and ignored
+                    break;
+                }
+                _ if self.is_ident() => {
+                    last = self.ident();
+                }
+                _ => {
+                    self.bump(); // a type keyword / `[m:l]` range / etc.
+                }
+            }
+        }
+        last
     }
 
     /// Consume an optional `: label` after `endsequence`/`endproperty`

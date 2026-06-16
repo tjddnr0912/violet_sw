@@ -6,7 +6,9 @@
 //! property/sequence decls, so this is HAND-IEEE pinned: each named form must be
 //! BEHAVIORALLY equivalent to the inline form it desugars to.
 //!
-//! MVP scope: module-scope, NO formal arguments (reserved, parser-rejected loud).
+//! MVP scope: module-scope. Formal arguments are now supported (slice A1, in
+//! `sva_formal_args.rs`): `sequence s(x,y); …; endsequence` + `s(a,b)` binds the
+//! actuals by position and substitutes them into the body before the desugar.
 //! Known subset limitations (all LOUD, never silent-wrong; deferred follow-ons):
 //!   - a decl inside a `generate` block is not collected (the prescan does not
 //!     recurse into generate) — the reference is then a loud "undeclared net".
@@ -266,17 +268,22 @@ fn unknown_property_name_is_loud() {
 }
 
 #[test]
-fn parameterized_sequence_is_loud() {
-    // formal arguments are reserved (fields carried, parser rejects non-empty).
+fn unused_parameterized_sequence_declaration_is_clean() {
+    // Slice A1: a parameterized sequence is no longer parser-rejected. Declaring it
+    // (even unused) must NOT error — the assert here uses an unrelated inline
+    // property that holds. (Formal-args BEHAVIOR is tested in sva_formal_args.rs.)
     let (_o, err, code) = run("module top;\n\
          reg clk=0, a=0, b=0;\n\
          always #5 clk=~clk;\n\
          sequence s_p(x); x ##1 b; endsequence\n\
          initial assert property(@(posedge clk) a |-> b);\n\
-         initial #20 $finish;\n\
+         initial begin #10 a=1; b=1; #20 $finish; end\n\
          endmodule\n");
-    assert_eq!(code, Some(1), "parameterized sequence must be loud. {err}");
-    assert!(err.contains("VITA-E"), "{err}");
+    assert_eq!(
+        code,
+        Some(0),
+        "an unused parameterized sequence decl is clean (A1). {err}"
+    );
 }
 
 #[test]
