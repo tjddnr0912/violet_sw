@@ -9,6 +9,8 @@ from shared.wordpress_uploader import (
     english_slug,
     auto_draft_enabled,
     render_sources_section,
+    render_kroki_png,
+    render_mermaid_png,
     WordPressUploader,
     _kebab,
 )
@@ -317,3 +319,88 @@ def test_create_post_explicit_featured_media_wins(monkeypatch):
     up = _uploader()
     up.create_post("T", "<p>b</p>", categories=[7], status="publish", featured_media=99)
     assert captured["payload"]["featured_media"] == 99  # 명시값이 카드보다 우선
+
+
+# --- kroki 다중 타입 다이어그램 렌더 ---
+_PNG = b"\x89PNG\r\n\x1a\nfake"
+
+
+class _FakeKrokiResp:
+    status_code = 200
+    content = _PNG
+
+    @property
+    def text(self):
+        return ""
+
+
+def _capture_kroki(monkeypatch):
+    """kroki POST URL을 가로채 호출된 경로를 잡는다."""
+    calls = []
+
+    def fake_post(url, data=None, **kw):
+        calls.append(url)
+        return _FakeKrokiResp()
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    return calls
+
+
+def test_render_kroki_png_builds_typed_path(monkeypatch):
+    calls = _capture_kroki(monkeypatch)
+    assert render_kroki_png("x", "d2") == _PNG
+    assert calls[-1].endswith("/d2/png")
+    render_kroki_png("x", "wavedrom")
+    assert calls[-1].endswith("/wavedrom/png")
+
+
+def test_render_kroki_png_lang_alias_to_path(monkeypatch):
+    calls = _capture_kroki(monkeypatch)
+    render_kroki_png("digraph{a->b}", "dot")     # dot → graphviz
+    assert calls[-1].endswith("/graphviz/png")
+    render_kroki_png("x", "vega-lite")            # vega-lite → vegalite
+    assert calls[-1].endswith("/vegalite/png")
+
+
+def test_render_mermaid_png_still_mermaid(monkeypatch):
+    calls = _capture_kroki(monkeypatch)
+    assert render_mermaid_png("graph TD; a-->b") == _PNG
+    assert calls[-1].endswith("/mermaid/png")
+
+
+def test_render_kroki_png_empty_none(monkeypatch):
+    _capture_kroki(monkeypatch)
+    assert render_kroki_png("   ", "d2") is None
+
+
+def _diagram_block(lang, code):
+    return f'<pre><code class="language-{lang}">{code}</code></pre>'
+
+
+def test_render_diagrams_converts_d2_and_wavedrom(monkeypatch):
+    monkeypatch.setattr(wp, "render_kroki_png", lambda code, t, *a, **k: _PNG)
+    up = _uploader()
+    up.upload_media = lambda *a, **k: {"id": 5, "url": "https://x/m.png"}
+    html = _diagram_block("d2", "a -> b") + _diagram_block("wavedrom", "{}")
+    out = up._render_diagrams_in_html(html)
+    assert out.count("<img") == 2
+    assert "language-d2" not in out and "language-wavedrom" not in out
+
+
+def test_render_diagrams_leaves_plain_code_untouched(monkeypatch):
+    monkeypatch.setattr(wp, "render_kroki_png", lambda *a, **k: _PNG)
+    up = _uploader()
+    up.upload_media = lambda *a, **k: {"id": 5, "url": "https://x/m.png"}
+    html = _diagram_block("python", "print('hi')") + _diagram_block("verilog", "module m;")
+    out = up._render_diagrams_in_html(html)
+    assert out == html  # 일반 코드 블록은 그대로
+    assert "<img" not in out
+
+
+def test_render_diagrams_keeps_block_on_render_failure(monkeypatch):
+    monkeypatch.setattr(wp, "render_kroki_png", lambda *a, **k: None)  # 렌더 실패
+    up = _uploader()
+    up.upload_media = lambda *a, **k: {"id": 5, "url": "https://x/m.png"}
+    html = _diagram_block("graphviz", "digraph{a->b}")
+    out = up._render_diagrams_in_html(html)
+    assert out == html  # 실패 시 원본 유지

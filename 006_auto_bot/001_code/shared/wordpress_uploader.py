@@ -88,8 +88,31 @@ def strip_adsense(html: str) -> str:
 # 그래서 PNG로 평탄화해 미디어로 업로드하고 <img>로 삽입한다(어디서나 안전).
 KROKI_URL = os.getenv("KROKI_URL", "https://kroki.io")
 
-_RE_MERMAID_BLOCK = re.compile(
-    r'<pre>\s*<code[^>]*class="[^"]*language-mermaid[^"]*"[^>]*>(.*?)</code>\s*</pre>',
+# 코드펜스 언어명 → kroki 경로명.
+# 여기에 있는 언어만 다이어그램으로 렌더하고, 일반 코드 블록(python/c/verilog/bash 등
+# 여기 없는 language-*)은 그대로 둔다. SoC/AI 기술 글에 유용한 타입 중심.
+_LANG_TO_KROKI = {
+    "mermaid": "mermaid",
+    "d2": "d2",
+    "graphviz": "graphviz", "dot": "graphviz",
+    "plantuml": "plantuml", "puml": "plantuml",
+    "wavedrom": "wavedrom",          # 디지털 신호 타이밍 다이어그램 (SoC/RTL)
+    "vega-lite": "vegalite", "vegalite": "vegalite",
+    "vega": "vega",
+    "blockdiag": "blockdiag",
+    "nomnoml": "nomnoml",
+    "erd": "erd",
+    "pikchr": "pikchr",
+    "svgbob": "svgbob",
+    "bytefield": "bytefield",
+    "structurizr": "structurizr",
+    "excalidraw": "excalidraw",
+}
+
+# language-<type> 코드 블록 일반 매칭. 타입 판별은 _repl에서 _LANG_TO_KROKI로.
+_RE_DIAGRAM_BLOCK = re.compile(
+    r'<pre>\s*<code[^>]*class="[^"]*language-([a-z0-9][a-z0-9-]*)[^"]*"[^>]*>'
+    r'(.*?)</code>\s*</pre>',
     re.S | re.I,
 )
 
@@ -101,24 +124,37 @@ _RE_RAW_SOURCE = re.compile(
 )
 
 
-def render_mermaid_png(code: str, timeout: int = 40) -> Optional[bytes]:
-    """mermaid 소스 → PNG 바이트(kroki). 실패 시 None."""
+def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40) -> Optional[bytes]:
+    """다이어그램 소스 → PNG 바이트(kroki). 실패 시 None.
+
+    diagram_type: 코드펜스 언어명(mermaid/d2/graphviz/wavedrom/plantuml…) 또는
+    kroki 경로명. _LANG_TO_KROKI로 정규화하되, 미등록값은 그대로 경로로 시도한다.
+    """
     code = _html.unescape(code or "").strip()
     if not code:
         return None
+    t = (diagram_type or "").strip().lower()
+    kroki_type = _LANG_TO_KROKI.get(t, t)
+    if not kroki_type:
+        return None
     try:
         r = requests.post(
-            f"{KROKI_URL.rstrip('/')}/mermaid/png",
+            f"{KROKI_URL.rstrip('/')}/{kroki_type}/png",
             data=code.encode("utf-8"),
             headers={"Content-Type": "text/plain"},
             timeout=timeout,
         )
         if r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n":
             return r.content
-        logger.warning(f"mermaid PNG 렌더 실패 {r.status_code}: {r.text[:120]}")
+        logger.warning(f"{kroki_type} PNG 렌더 실패 {r.status_code}: {r.text[:120]}")
     except Exception as e:
-        logger.error(f"mermaid PNG 렌더 오류: {e}")
+        logger.error(f"{kroki_type} PNG 렌더 오류: {e}")
     return None
+
+
+def render_mermaid_png(code: str, timeout: int = 40) -> Optional[bytes]:
+    """mermaid 소스 → PNG 바이트(kroki). 하위호환 래퍼 (render_kroki_png 위임)."""
+    return render_kroki_png(code, "mermaid", timeout)
 
 
 def strip_raw_source(html: str) -> str:
@@ -449,30 +485,37 @@ class WordPressUploader:
         return media.get("id") if media else None
 
     def _render_diagrams_in_html(self, html_content: str) -> str:
-        """<pre><code class="language-mermaid"> 블록을 PNG <img>로 치환.
+        """<pre><code class="language-{mermaid|d2|graphviz|wavedrom|plantuml…}"> 블록을
+        kroki로 PNG 렌더 → WP 미디어 업로드 → <figure><img>로 치환.
 
-        PNG로 렌더 → WP 미디어 업로드 → <figure><img>. 실패 시 원본 유지.
-        동일 다이어그램은 해시 파일명으로 중복 업로드 방지.
+        - 지원 다이어그램 언어(_LANG_TO_KROKI)만 변환. 일반 코드 블록
+          (python/c/verilog 등)은 그대로 둔다.
+        - 동일 다이어그램은 (타입+소스) 해시 파일명으로 중복 업로드 방지.
+        - 렌더/업로드 실패 시 원본 블록 유지.
         """
-        if not html_content or "language-mermaid" not in html_content:
+        if not html_content or "language-" not in html_content:
             return html_content
 
         def _repl(m):
-            code = _html.unescape(m.group(1) or "").strip()
-            png = render_mermaid_png(code)
+            lang = (m.group(1) or "").lower()
+            kroki_type = _LANG_TO_KROKI.get(lang)
+            if not kroki_type:
+                return m.group(0)  # 일반 코드 블록 — 변환하지 않음
+            code = _html.unescape(m.group(2) or "").strip()
+            png = render_kroki_png(code, kroki_type)
             if not png:
                 return m.group(0)
-            digest = hashlib.md5(code.encode("utf-8")).hexdigest()[:12]
-            media = self.upload_media(png, f"diagram-{digest}.png", "image/png")
+            digest = hashlib.md5(f"{kroki_type}|{code}".encode("utf-8")).hexdigest()[:12]
+            media = self.upload_media(png, f"diagram-{kroki_type}-{digest}.png", "image/png")
             if not media or not media.get("url"):
                 return m.group(0)
             return (
                 '<figure style="margin:24px auto;text-align:center;">'
-                f'<img src="{media["url"]}" alt="diagram" '
+                f'<img src="{media["url"]}" alt="{kroki_type} diagram" '
                 'style="max-width:100%;height:auto;" loading="lazy" /></figure>'
             )
 
-        return _RE_MERMAID_BLOCK.sub(_repl, html_content)
+        return _RE_DIAGRAM_BLOCK.sub(_repl, html_content)
 
     # --- 발행 ---
     def create_post(
