@@ -1080,6 +1080,7 @@ fn bassign(lhs: &str, rhs: ast::Expr) -> ast::Stmt {
     ast::Stmt::Blocking {
         lhs: lv_id(lhs),
         delay: None,
+        event: None,
         rhs,
         span: SP,
     }

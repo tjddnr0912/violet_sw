@@ -3495,6 +3495,86 @@ impl<'s> Elaborator<'s> {
         None
     }
 
+    /// Lower a blocking intra-assignment EVENT control `lhs = [repeat(n)] @(ev) rhs`
+    /// (IEEE 1800 §9.4.5) as capture-now / wait / write:
+    ///   `tmp = rhs;  @(ev) × n;  lhs = tmp;`
+    /// The RHS is captured NOW into a temp sized EXACTLY to the lvalue (so the rhs
+    /// eval context is unchanged), the process waits for the event `n` times, then
+    /// the captured value is written. The repeat count is folded scope-aware (so a
+    /// `parameter`/`localparam` count works), and the wait is emitted `n` times via
+    /// the validated EventCtrl lowering — NOT through `Stmt::Repeat`, whose
+    /// scope-blind count fold would silently elide the wait for a non-literal count.
+    /// A non-constant or oversized count is LOUD (never a silent 0-event write).
+    /// `repeat(0)`/`repeat(<0)` ⇒ zero waits = an immediate write (IEEE). The lvalue
+    /// is resolved up front but its index evaluates at the final write — identical to
+    /// the `#d` intra-delay path.
+    fn lower_intra_event_assign(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        ie: &ast::IntraEvent,
+        rhs: &ast::Expr,
+        span: ast::Span,
+    ) {
+        // Fold the repeat count FIRST (loud-and-return before emitting any IR).
+        let waits: u32 = match &ie.repeat {
+            None => 1,
+            Some(n) => match self.const_eval_in_scope(n) {
+                Some(c) => {
+                    let c = c.max(0); // repeat(0)/repeat(<0) ⇒ zero iterations (IEEE)
+                    if c > REPEAT_UNROLL_CAP as i64 {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "an intra-assignment `repeat(n)` count exceeds the unroll cap ({REPEAT_UNROLL_CAP})"
+                            ),
+                        );
+                        return;
+                    }
+                    c as u32
+                }
+                None => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a runtime (non-constant) `repeat(n)` count in an intra-assignment \
+                         event control is unsupported (n must fold to a constant)",
+                    );
+                    return;
+                }
+            },
+        };
+        let rhs_id = self.lower_expr(rhs);
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
+        let w = self.ir_lvalue_width(&lv);
+        let tmp = self.fresh_ia_tmp(w);
+        let cap = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: whole_net_lvalue(tmp),
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(cap);
+        // Wait for the event `waits` times (zero ⇒ immediate write). Emitting the
+        // EventCtrl `waits` times produces `waits` sequential Wait terminators.
+        let evt = ast::Stmt::EventCtrl {
+            ctrl: ie.ctrl.clone(),
+            body: None,
+            span,
+        };
+        for _ in 0..waits {
+            self.lower_stmt(b, &evt);
+        }
+        // Write the captured value (lvalue index evaluated here, at write time).
+        let tmp_read = self.push_expr(ir::Expr::Signal {
+            net: tmp,
+            word: None,
+        });
+        let wr = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: tmp_read,
+        });
+        b.push_stmt_id(wr);
+    }
+
     /// Synthesize a private capture temp for an intra-assignment delay site
     /// (`$ia_tmp$<n>` — `$` keeps it collision-proof against user identifiers).
     fn fresh_ia_tmp(&mut self, width: u32) -> u32 {
@@ -8467,11 +8547,13 @@ impl<'s> Elaborator<'s> {
             S::Blocking {
                 lhs,
                 delay,
+                event,
                 rhs,
                 span,
             } => S::Blocking {
                 lhs: lhs.clone(),
                 delay: delay.clone(),
+                event: event.clone(),
                 rhs: self.rewrite_sampled(rhs, regs),
                 span: *span,
             },
@@ -8914,8 +8996,20 @@ impl<'s> Elaborator<'s> {
         match s {
             // ── STRAIGHT-LINE (stay in the same block) ──────────────
             ast::Stmt::Blocking {
-                lhs, delay, rhs, ..
+                lhs,
+                delay,
+                event,
+                rhs,
+                span,
             } => {
+                // Intra-assignment EVENT control `= [repeat(n)] @(ev) rhs` (IEEE
+                // §9.4.5): capture-now / wait / write. Handled FIRST — the rhs is a
+                // plain captured value (a special form like `new`/`pop` combined with
+                // event control falls through lower_expr to its own loud diagnostic).
+                if let Some(ie) = event {
+                    self.lower_intra_event_assign(b, lhs, ie, rhs, *span);
+                    return;
+                }
                 // v5 ⑥: `d = new[n]` / `x = q.pop_*()` special forms.
                 if self.dyn_blocking_special(b, lhs, delay.as_ref(), rhs) {
                     return;

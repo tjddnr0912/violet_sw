@@ -2950,19 +2950,20 @@ impl<'t, 's> Parser<'t, 's> {
         match self.peek() {
             Some(TokenKind::Eq) => {
                 self.bump();
-                let delay = self.parse_intra_assign_delay();
+                let (delay, event) = self.parse_intra_assign_timing(true);
                 let rhs = self.expr(0);
                 self.expect(TokenKind::Semi, "';'");
                 Stmt::Blocking {
                     lhs,
                     delay,
+                    event,
                     rhs,
                     span: start.to(self.prev_span()),
                 }
             }
             Some(TokenKind::LtEq) => {
                 self.bump();
-                let delay = self.parse_intra_assign_delay();
+                let (delay, _event) = self.parse_intra_assign_timing(false);
                 let rhs = self.expr(0);
                 self.expect(TokenKind::Semi, "';'");
                 Stmt::NonBlocking {
@@ -2999,19 +3000,53 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Intra-assignment timing control after `=`/`<=`. A `#d` delay is CAPTURED
-    /// into the AST `delay` field (the elaborator implements blocking semantics
-    /// and loud-defers the NBA form); `@(ev)` event control stays a parse-and-
-    /// DISCARD advisory error so the RHS still parses cleanly (no cascade).
-    fn parse_intra_assign_delay(&mut self) -> Option<Delay> {
+    /// Intra-assignment timing control after `=`/`<=` (IEEE 1800 §9.4.5): a `#d`
+    /// delay (CAPTURED into `delay`), an `@(ev)` event control, or `repeat(n) @(ev)`
+    /// (both CAPTURED into `event` for a BLOCKING `=` — the elaborator lowers them
+    /// as capture-now/wait/write). For a non-blocking `<=`, event control stays a
+    /// parse-and-DISCARD advisory so the RHS still parses cleanly (the `<=` event
+    /// form is out of this subset).
+    fn parse_intra_assign_timing(&mut self, blocking: bool) -> (Option<Delay>, Option<IntraEvent>) {
         match self.peek() {
-            Some(TokenKind::Hash) => self.parse_delay(),
+            Some(TokenKind::Hash) => (self.parse_delay(), None),
             Some(TokenKind::At) => {
-                self.error("intra-assignment event control (not yet supported; ignored)");
-                let _ = self.parse_sensitivity(); // consumes `@(…)`
-                None
+                let ctrl = self.parse_sensitivity(); // consumes `@(…)`
+                if blocking {
+                    (None, Some(IntraEvent { repeat: None, ctrl }))
+                } else {
+                    self.error(
+                        "intra-assignment event control on `<=` (not yet supported; ignored)",
+                    );
+                    (None, None)
+                }
             }
-            _ => None,
+            _ if self.at_kw(Kw::Repeat) => {
+                self.bump(); // repeat
+                self.expect(TokenKind::LParen, "'(' after 'repeat'");
+                let count = self.expr(0);
+                self.expect(TokenKind::RParen, "')'");
+                if self.peek() == Some(TokenKind::At) {
+                    let ctrl = self.parse_sensitivity();
+                    if blocking {
+                        (
+                            None,
+                            Some(IntraEvent {
+                                repeat: Some(count),
+                                ctrl,
+                            }),
+                        )
+                    } else {
+                        self.error(
+                            "intra-assignment `repeat` event control on `<=` (not yet supported; ignored)",
+                        );
+                        (None, None)
+                    }
+                } else {
+                    self.error("`@(event)` after `repeat(n)` in an intra-assignment control");
+                    (None, None)
+                }
+            }
+            _ => (None, None),
         }
     }
 
@@ -3990,6 +4025,7 @@ impl<'t, 's> Parser<'t, 's> {
         Stmt::Blocking {
             lhs,
             delay: None,
+            event: None,
             rhs,
             span: start.to(self.prev_span()),
         }
@@ -4179,6 +4215,7 @@ impl<'t, 's> Parser<'t, 's> {
         let st_assign = |method: &str| Stmt::Blocking {
             lhs: Lvalue::Ident(one_seg(&stvar)),
             delay: None,
+            event: None,
             rhs: iter_call(method),
             span,
         };
@@ -5495,10 +5532,11 @@ endmodule
         assert!(delay.is_some(), "intra-assign delay must be captured");
     }
 
-    // S14b. blocking intra-assign delay `a = #3 b;` also captures (and event
-    //       control after `=` stays a loud advisory — still unsupported).
+    // S14b. blocking intra-assign delay `a = #3 b;` captures into `delay`; blocking
+    //       intra-assign EVENT control `a = @(ev) b` / `a = repeat(n) @(ev) b`
+    //       captures into `event` (slice: repeat-event intra-assignment).
     #[test]
-    fn s14b_blocking_intra_delay_captures_event_ctrl_stays_loud() {
+    fn s14b_blocking_intra_delay_and_event_control_captured() {
         let (su, errs) = p("module m;\ninitial a = #3 b;\nendmodule");
         assert!(
             errs.is_empty(),
@@ -5510,19 +5548,61 @@ endmodule
         else {
             panic!("no proc block")
         };
-        let Stmt::Blocking { delay, .. } = &*pb.body else {
+        let Stmt::Blocking { delay, event, .. } = &*pb.body else {
             panic!("not Blocking: {:?}", pb.body)
         };
         assert!(
-            delay.is_some(),
-            "blocking intra-assign delay must be captured"
+            delay.is_some() && event.is_none(),
+            "blocking intra-assign delay must be captured (no event)"
         );
 
-        let (_, errs) = p("module m;\ninitial a = @(posedge clk) b;\nendmodule");
-        assert_eq!(
-            errs.len(),
-            1,
-            "intra-assign EVENT control stays an advisory"
+        // Plain `@(ev)` intra-assign now parses clean and captures `event` (repeat=None).
+        let (su, errs) = p("module m;\ninitial a = @(posedge clk) b;\nendmodule");
+        assert!(
+            errs.is_empty(),
+            "intra-assign event control parses clean: {errs:?}"
+        );
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::Blocking { event, delay, .. } = &*pb.body else {
+            panic!("not Blocking")
+        };
+        let ev = event.as_ref().expect("event control must be captured");
+        assert!(
+            delay.is_none() && ev.repeat.is_none(),
+            "plain @(ev): repeat None"
+        );
+
+        // `repeat(n) @(ev)` captures the count.
+        let (su, errs) = p("module m;\ninitial a = repeat(3) @(posedge clk) b;\nendmodule");
+        assert!(
+            errs.is_empty(),
+            "repeat-event intra-assign parses clean: {errs:?}"
+        );
+        let su = su.unwrap();
+        let m = first_module(&su);
+        let ModuleItem::Proc(pb) = m
+            .body
+            .iter()
+            .find(|i| matches!(i, ModuleItem::Proc(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let Stmt::Blocking { event, .. } = &*pb.body else {
+            panic!("not Blocking")
+        };
+        assert!(
+            event.as_ref().and_then(|e| e.repeat.as_ref()).is_some(),
+            "repeat(n) @(ev): repeat count must be captured"
         );
     }
 

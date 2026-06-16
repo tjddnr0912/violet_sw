@@ -12,7 +12,11 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-16 multi-clock slice A3 (`ConcurrentAssert.consequent_clock:
+/// Re-pinned 2026-06-16 intra-assignment event control (`Stmt::Blocking.event:
+/// Option<IntraEvent>` + new `IntraEvent` struct — `lhs = [repeat(n)] @(ev) rhs`;
+/// all `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0
+/// capture/wait/write desugar). (Previous re-pins:
+/// 2026-06-16 multi-clock slice A3 (`ConcurrentAssert.consequent_clock:
 /// Option<Sensitivity>` + `PropDecl.consequent_clock` — the `@(c2)` consequent clock
 /// of `@(c1) ante |=> @(c2) cons`; all `.vu` artifacts are stale, no
 /// sim-ir/format_version change, pure IR-0). (Previous re-pins:
@@ -34,8 +38,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    2, 220, 161, 237, 45, 66, 116, 112, 6, 123, 70, 194, 137, 95, 192, 236, 148, 153, 77, 154, 74,
-    215, 238, 147, 90, 218, 235, 125, 225, 42, 135, 134,
+    164, 81, 109, 219, 10, 29, 142, 93, 28, 176, 171, 32, 153, 127, 37, 253, 38, 77, 197, 162, 161,
+    230, 202, 91, 233, 72, 210, 179, 104, 96, 169, 174,
 ];
 
 #[test]
