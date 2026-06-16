@@ -686,6 +686,7 @@ fn seq_span(seq: &ast::Sequence) -> ast::Span {
         ast::Sequence::Repeat { seq, .. } => seq_span(seq),
         ast::Sequence::Throughout { cond, .. } => cond.span,
         ast::Sequence::Within { seq1, .. } => seq_span(seq1),
+        ast::Sequence::Instance { span, .. } => *span,
     }
 }
 
@@ -860,6 +861,18 @@ struct Elaborator<'s> {
     // tables are point-queried only (BTreeMap), never iterated into arena order.
     func_table: BTreeMap<String, ast::FunctionDef>,
     task_table: BTreeMap<String, ast::TaskDef>,
+    // Named SVA declarations (Phase-3 named-SVA slice): bare name → decl, collected
+    // per-instance like func_table/task_table (saved/restored so siblings don't
+    // inherit). Kept SEPARATE from the net symbol table so a net and a sequence of
+    // the same name coexist — only the assert-property-instance position and
+    // `expand_sequence`'s bare-ident leaves consult these (the func/task-name
+    // namespace precedent). Inlined at use sites → pure IR-0, golden untouched.
+    seq_table: BTreeMap<String, ast::SeqDecl>,
+    prop_table: BTreeMap<String, ast::PropDecl>,
+    // Recursion guard for named-sequence inlining (separate from `inline_stack`,
+    // which is empty by the time SVA checkers materialize, but a dedicated stack
+    // keeps SVA correctness independent of func/task inline state).
+    sva_inline_stack: Vec<String>,
 
     // Substitution scope: a formal-param NAME currently bound to an actual ExprId
     // (a function/task INPUT formal during inlining). `lower_expr`'s Ident arm
@@ -975,6 +988,9 @@ impl<'s> Elaborator<'s> {
             cur_inst: 0,
             func_table: BTreeMap::new(),
             task_table: BTreeMap::new(),
+            seq_table: BTreeMap::new(),
+            prop_table: BTreeMap::new(),
+            sva_inline_stack: Vec::new(),
             subst: Vec::new(),
             out_subst: Vec::new(),
             inline_stack: Vec::new(),
@@ -1380,6 +1396,11 @@ impl<'s> Elaborator<'s> {
         //       hierarchical in v1, so the bare name is the key.
         let saved_funcs = std::mem::take(&mut self.func_table);
         let saved_tasks = std::mem::take(&mut self.task_table);
+        // Named SVA seq/prop decls collected in the SAME whole-body prescan, so an
+        // `assert property(p)` BEFORE `property p; …` (forward reference) resolves —
+        // identical mechanism to func/task. Saved/restored alongside.
+        let saved_seqs = std::mem::take(&mut self.seq_table);
+        let saved_props = std::mem::take(&mut self.prop_table);
         for item in &module.body {
             match item {
                 ast::ModuleItem::Func(f) => {
@@ -1404,6 +1425,29 @@ impl<'s> Elaborator<'s> {
                             "task `{}` redeclared; first declaration used",
                             t.name.name
                         ));
+                    }
+                }
+                // FIRST declaration wins (insert-if-absent), so the redeclaration
+                // warning text is accurate (review 2026-06-16: `BTreeMap::insert`
+                // would keep the LAST, contradicting "first declaration used").
+                ast::ModuleItem::SequenceDecl(s) => {
+                    if self.seq_table.contains_key(&s.name.name) {
+                        self.warn(&format!(
+                            "sequence `{}` redeclared; first declaration used",
+                            s.name.name
+                        ));
+                    } else {
+                        self.seq_table.insert(s.name.name.clone(), s.clone());
+                    }
+                }
+                ast::ModuleItem::PropertyDecl(p) => {
+                    if self.prop_table.contains_key(&p.name.name) {
+                        self.warn(&format!(
+                            "property `{}` redeclared; first declaration used",
+                            p.name.name
+                        ));
+                    } else {
+                        self.prop_table.insert(p.name.name.clone(), p.clone());
                     }
                 }
                 _ => {}
@@ -1554,6 +1598,8 @@ impl<'s> Elaborator<'s> {
         self.bits_prescan = saved_prescan;
         self.func_table = saved_funcs;
         self.task_table = saved_tasks;
+        self.seq_table = saved_seqs;
+        self.prop_table = saved_props;
         self.cur_prefix = saved_prefix;
         self.cur_inst = saved_inst;
         self.cur_time_mult = saved_mult;
@@ -6643,12 +6689,20 @@ impl<'s> Elaborator<'s> {
             // single 1-term alternative reproduces the flat-property path
             // byte-for-byte; bounded ranges produce >1 alternative.
             let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
-            let ante = if let ast::Sequence::Within { seq1, seq2 } = &sva.ante {
+            // Peel a top-level NAMED-sequence reference to its declared body FIRST, so
+            // a named sequence whose body is a top-level `within` reaches synth_within
+            // exactly like the literal-antecedent path — otherwise the inlined `within`
+            // body hit the unconditional reject in expand_sequence's Within arm (review
+            // 2026-06-16: named ≠ inline for `within`). Cycle-guarded; byte-identical
+            // for a literal antecedent (no top-level name to peel) and for a named
+            // non-`within` antecedent (the body still flows through expand_sequence).
+            let resolved_ante = self.resolve_named_top(&sva.ante);
+            let ante = if let ast::Sequence::Within { seq1, seq2 } = &resolved_ante {
                 // `seq1 within seq2` combines two sub-pipelines — synthesized
                 // whole rather than as a (term, hop) alternative list.
                 self.synth_within(seq1, seq2, &mut regs, &mut pipeline_nbas, sp)
             } else {
-                let mut alternatives = self.expand_sequence(&sva.ante, &mut regs);
+                let mut alternatives = self.expand_sequence(&resolved_ante, &mut regs);
                 if alternatives.len() > SVA_SEQ_ALT_CAP {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -6896,11 +6950,113 @@ impl<'s> Elaborator<'s> {
     /// `[*k]` repetitions expand to `##1` chains. Each leaf term is passed
     /// through `rewrite_sampled` (deduped by signal), so a sampled-value fn
     /// inside a sequence term still works and is allocated once.
+    /// Inline a named sequence INSTANCE: cycle-guard, then expand the declared
+    /// body (which may itself reference other named sequences — handled by the
+    /// recursion). A self/mutual-recursive sequence (IEEE 1800 §16.8: illegal) is
+    /// rejected loud and yields a never-matching `1'b0` alternative so elaboration
+    /// continues. Parameterized decls are rejected loud (reserved for a follow-on).
+    fn inline_named_sequence(&mut self, decl: &ast::SeqDecl, regs: &mut SvaRegs) -> Vec<SeqAlt> {
+        if !decl.formals.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "parameterized sequences are unsupported in this subset",
+            );
+            return sva_never_alt(&decl.body);
+        }
+        if self.sva_inline_stack.iter().any(|n| n == &decl.name.name) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "recursive sequence `{}` is illegal (IEEE 1800 §16.8)",
+                    decl.name.name
+                ),
+            );
+            return sva_never_alt(&decl.body);
+        }
+        self.sva_inline_stack.push(decl.name.name.clone());
+        let out = self.expand_sequence(&decl.body, regs);
+        self.sva_inline_stack.pop();
+        out
+    }
+
+    /// Peel a TOP-LEVEL named-sequence reference (a bare-ident `Boolean` or an
+    /// `Instance`) to its declared body, recursing through a chain (`s1`→`s2`→body),
+    /// so the materialize dispatch sees the real top-level shape (notably a top-level
+    /// `within`). Returns an owned clone; non-name shapes (Delay/Repeat/literal
+    /// Within/…) and unknown names are returned as-is (their nested named references
+    /// are still resolved later by `expand_sequence`). Cycle-guarded: a recursive top
+    /// sequence is loud and collapses to `1'b0`.
+    fn resolve_named_top(&mut self, seq: &ast::Sequence) -> ast::Sequence {
+        let name = match seq {
+            ast::Sequence::Boolean(e) => match &e.kind {
+                ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                    Some(p.segments[0].name.clone())
+                }
+                _ => None,
+            },
+            ast::Sequence::Instance { name, args, .. } if args.is_empty() => {
+                Some(name.name.clone())
+            }
+            _ => None,
+        };
+        let Some(name) = name else {
+            return seq.clone();
+        };
+        let Some(decl) = self.seq_table.get(&name).cloned() else {
+            return seq.clone(); // a real net / unknown name — leave it for expand_sequence
+        };
+        if self.sva_inline_stack.iter().any(|n| n == &name) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("recursive sequence `{}` is illegal (IEEE 1800 §16.8)", name),
+            );
+            return ast::Sequence::Boolean(sva_zero(decl.span));
+        }
+        self.sva_inline_stack.push(name);
+        let r = self.resolve_named_top(&decl.body);
+        self.sva_inline_stack.pop();
+        r
+    }
+
     fn expand_sequence(&mut self, seq: &ast::Sequence, regs: &mut SvaRegs) -> Vec<SeqAlt> {
         match seq {
             ast::Sequence::Boolean(e) => {
+                // A bare single-segment identifier that names a declared sequence is
+                // a sequence INSTANCE — inline its body (cycle-guarded). Anything
+                // else (a real net, an expression) is an ordinary boolean leaf, so a
+                // net and a sequence of the same name coexist (lookup miss → leaf).
+                if let ast::ExprKind::Ident(path) = &e.kind {
+                    if path.segments.len() == 1 {
+                        if let Some(decl) = self.seq_table.get(&path.segments[0].name).cloned() {
+                            return self.inline_named_sequence(&decl, regs);
+                        }
+                    }
+                }
                 let term = self.rewrite_sampled(e, regs);
                 vec![(vec![(SeqTerm::Bool(term), SeqHop::Fixed(0))], None)]
+            }
+            // An explicit named instance reaching a sequence position (a property
+            // instance is spliced at collect time and never gets here; this arm
+            // covers a named SEQUENCE instance / future forms): resolve it against
+            // the sequence table and inline. Unknown name / non-empty args are loud.
+            ast::Sequence::Instance { name, args, .. } => {
+                if !args.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "parameterized sequences/properties are unsupported in this subset",
+                    );
+                    return sva_never_alt(seq);
+                }
+                match self.seq_table.get(&name.name).cloned() {
+                    Some(decl) => self.inline_named_sequence(&decl, regs),
+                    None => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!("unknown sequence `{}`", name.name),
+                        );
+                        sva_never_alt(seq)
+                    }
+                }
             }
             ast::Sequence::Delay {
                 min, max, lhs, rhs, ..
@@ -8507,16 +8663,66 @@ impl<'s> Elaborator<'s> {
                 fail,
                 span,
             } => {
-                self.pending_sva.push(PendingSva {
-                    clock: clock.clone(),
-                    disable_iff: disable_iff.clone(),
-                    ante: antecedent.clone(),
-                    kind: *implication_kind,
-                    cons: consequent.clone(),
-                    pass: pass.clone(),
-                    fail: fail.clone(),
-                    span: *span,
-                });
+                // Named-property INSTANCE: `assert property(NAME)` parses to an empty
+                // clock + a `Sequence::Instance` antecedent. Splice the declared
+                // property's REAL spec (clock/disable_iff/ante/kind/cons) here, at
+                // collect time, so the single-clock gate in `materialize_sva_checkers`
+                // sees the named property's clock (never the empty sentinel). The
+                // call-site action block (pass/fail) is carried through.
+                if let ast::Sequence::Instance { name, args, .. } = antecedent {
+                    if !args.is_empty() {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "parameterized properties are unsupported in this subset",
+                        );
+                    }
+                    match self.prop_table.get(&name.name).cloned() {
+                        Some(pd) => {
+                            self.pending_sva.push(PendingSva {
+                                clock: pd.clock,
+                                disable_iff: pd.disable_iff,
+                                ante: pd.antecedent,
+                                kind: pd.implication_kind,
+                                cons: pd.consequent,
+                                pass: pass.clone(),
+                                fail: fail.clone(),
+                                span: *span,
+                            });
+                        }
+                        None => {
+                            // Distinguish a declared-but-wrong-kind name from a
+                            // genuinely unknown one (review 2026-06-16: a net or a
+                            // sequence name reported a misleading "unknown property").
+                            let msg = if self.seq_table.contains_key(&name.name) {
+                                format!(
+                                    "`{}` is a named SEQUENCE, not a property; a bare \
+                                     sequence used as a property (without `|->`/`|=>`) \
+                                     is unsupported in this subset",
+                                    name.name
+                                )
+                            } else {
+                                format!(
+                                    "unknown property `{}` in `assert property(...)` \
+                                     (declare a `property {} ; … endproperty`, or use a \
+                                     clocked boolean property `@(...) {}`)",
+                                    name.name, name.name, name.name
+                                )
+                            };
+                            self.error(MsgCode::ElabUnsupported, &msg);
+                        }
+                    }
+                } else {
+                    self.pending_sva.push(PendingSva {
+                        clock: clock.clone(),
+                        disable_iff: disable_iff.clone(),
+                        ante: antecedent.clone(),
+                        kind: *implication_kind,
+                        cons: consequent.clone(),
+                        pass: pass.clone(),
+                        fail: fail.clone(),
+                        span: *span,
+                    });
+                }
             }
             // Parse error is the ONE genuinely-fatal stmt: keep self.error.
             ast::Stmt::Error(_) => {

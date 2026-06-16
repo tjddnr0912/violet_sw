@@ -181,6 +181,12 @@ pub enum ModuleItem {
     /// `modport mp (input a, output b);` (v5 ⑥ — parsed and ACCEPTED; the
     /// per-member direction checks are a follow-on increment).
     Modport(ModportDecl),
+    /// Named SVA `sequence NAME; …; endsequence` (Phase-3 named-SVA slice). Inlined
+    /// at use sites by elaborate; pure IR-0.
+    SequenceDecl(SeqDecl),
+    /// Named SVA `property NAME; …; endproperty` (Phase-3 named-SVA slice). Spliced
+    /// at `assert property(NAME)` by elaborate; pure IR-0.
+    PropertyDecl(PropDecl),
     /// Recovery placeholder for an unparseable item.
     Error(Span),
 }
@@ -634,6 +640,48 @@ pub enum Sequence {
         seq1: Box<Sequence>,
         seq2: Box<Sequence>,
     },
+    /// A NAMED property/sequence instance: `assert property(NAME)` (a property
+    /// instance) or a future parameterized reference. The parser emits this ONLY
+    /// at the property-instance position (a bare `NAME` inside a sequence body
+    /// still parses as `Boolean(Ident)` and is resolved against the sequence
+    /// table at elaborate). `args` is reserved for the formal-arguments follow-on
+    /// (the current subset rejects a non-empty list loud); carrying the field now
+    /// means that slice adds NO further `.vu` AST-hash re-pin. Elaborate inlines
+    /// the named declaration's body, so this is pure IR-0 (no sim-ir change).
+    Instance {
+        name: Ident,
+        args: Vec<Expr>,
+        span: Span,
+    },
+}
+
+/// A named SVA sequence declaration: `sequence NAME [(formals)]; <seq>; endsequence`
+/// (IEEE 1800 §16.8). Stored at elaborate and INLINED at each use site (reusing the
+/// existing sequence desugar). `formals` is reserved for the parameterized follow-on
+/// (the current subset rejects a non-empty list loud).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct SeqDecl {
+    pub name: Ident,
+    pub formals: Vec<Ident>,
+    pub body: Sequence,
+    pub span: Span,
+}
+
+/// A named SVA property declaration: `property NAME [(formals)]; <property_spec>;
+/// endproperty` (IEEE 1800 §16.12). The body mirrors a `Stmt::ConcurrentAssert`'s
+/// property spec (clock + optional `disable iff` + `antecedent impl consequent`); a
+/// `assert property(NAME)` instance splices these fields at elaborate. `formals`
+/// reserved (see [`SeqDecl`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct PropDecl {
+    pub name: Ident,
+    pub formals: Vec<Ident>,
+    pub clock: Sensitivity,
+    pub disable_iff: Option<Expr>,
+    pub antecedent: Sequence,
+    pub implication_kind: ImplicationKind,
+    pub consequent: Sequence,
+    pub span: Span,
 }
 /// SVA repetition operator (slices S4/S5/S8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]

@@ -12,9 +12,13 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-15 SVA slice S14 (`ConcurrentAssert.consequent: Expr →
+/// Re-pinned 2026-06-16 named-SVA slice (`Sequence::Instance` +
+/// `ModuleItem::{SequenceDecl,PropertyDecl}` + `SeqDecl`/`PropDecl` — named
+/// `sequence`/`property` declarations & instantiation; all `.vu` artifacts are
+/// stale, no sim-ir/format_version change, pure IR-0). (Previous re-pins:
+/// 2026-06-15 SVA slice S14 (`ConcurrentAssert.consequent: Expr →
 /// Sequence` — sequence consequent AST flip; all `.vu` artifacts are stale, no
-/// sim-ir/format_version change). (Previous re-pins: 2026-06-15 S12
+/// sim-ir/format_version change); 2026-06-15 S12
 /// `ConcurrentAssert.disable_iff: Option<Expr>`; 2026-06-15 S11
 /// `ConcurrentAssert.{pass,fail}: Option<Box<Stmt>>`; 2026-06-15 S9
 /// `Sequence::Within`; 2026-06-15 S8 `Sequence::Repeat.kind: RepeatKind`;
@@ -27,8 +31,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    139, 35, 27, 132, 110, 39, 139, 246, 215, 22, 239, 190, 27, 229, 94, 58, 247, 39, 185, 207, 65,
-    185, 88, 208, 198, 119, 232, 47, 187, 243, 187, 170,
+    156, 72, 166, 176, 93, 215, 80, 77, 78, 252, 204, 242, 247, 27, 184, 161, 193, 169, 178, 63,
+    150, 130, 241, 191, 239, 137, 206, 109, 150, 199, 120, 247,
 ];
 
 #[test]

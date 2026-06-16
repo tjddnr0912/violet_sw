@@ -1456,6 +1456,33 @@ impl<'t, 's> Parser<'t, 's> {
                 span,
             }));
         }
+        // Named SVA declarations (Phase-3 named-SVA slice). `sequence` /
+        // `endsequence` / `endproperty` are CONTEXTUAL keywords (`at_ident_kw`,
+        // like `throughout`/`within`/`iff`); `property` is `Kw::Property`. Placed
+        // before the bare-ident instantiation arm so `sequence s; …` is not
+        // mis-parsed as a module instantiation. A net named `sequence`
+        // (`wire sequence;`) is unaffected — `net_var_kind` matches first.
+        //
+        // `sequence` is NOT a Verilog-2005 reserved word, so a V2005 module TYPE
+        // literally named `sequence` and its instantiation (`sequence u(...)`) must
+        // STILL parse — only `sequence NAME ;` (a no-formals decl) is routed here;
+        // `sequence IDENT (` falls through to the instantiation arm (review
+        // 2026-06-16: a bare `at_ident_kw("sequence")` masked that instantiation).
+        // A parameterized decl `sequence s(x);` is reserved/unsupported and is loud
+        // either way. `property` IS a hard keyword (`Kw::Property`) — it cannot name
+        // a module, so there is no masking there.
+        if self.at_ident_kw("sequence")
+            && matches!(
+                self.peek_at(1),
+                Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
+            )
+            && self.peek_at(2) == Some(TokenKind::Semi)
+        {
+            return self.parse_sequence_decl();
+        }
+        if self.at_kw(Kw::Property) {
+            return self.parse_property_decl();
+        }
         // bare ident at module-item position ⇒ module instantiation.
         // (No keyword-led item matched above; in V2005 module scope a leading
         //  bare identifier can ONLY begin an instantiation — there is no
@@ -3115,6 +3142,94 @@ impl<'t, 's> Parser<'t, 's> {
     fn parse_concurrent_assert(&mut self, start: Span) -> Stmt {
         self.bump(); // `property`
         self.expect(TokenKind::LParen, "'(' after 'property'");
+        // Named-property INSTANCE: `assert property(NAME);` — NAME is a property
+        // declared elsewhere, resolved + inlined at elaborate. Detect by a single
+        // identifier immediately followed by `)`. A `NAME(args)` form is the
+        // parameterized instance, reserved + loud in this subset.
+        if self.is_ident() && self.peek_at(1) == Some(TokenKind::RParen) {
+            let name = self.ident().unwrap();
+            self.expect(TokenKind::RParen, "')'");
+            let (pass, fail) = self.parse_assert_action_block();
+            return Stmt::ConcurrentAssert {
+                // empty clock = "named-property reference"; elaborate splices the
+                // declared property's real clock/spec in at collect time.
+                clock: Sensitivity::List(Vec::new()),
+                disable_iff: None,
+                antecedent: Sequence::Instance {
+                    name,
+                    args: Vec::new(),
+                    span: start,
+                },
+                implication_kind: ImplicationKind::Overlap,
+                consequent: Sequence::Boolean(Self::sva_true_lit(start)),
+                pass,
+                fail,
+                span: start.to(self.prev_span()),
+            };
+        }
+        if self.is_ident() && self.peek_at(1) == Some(TokenKind::LParen) {
+            // `assert property(NAME(args))` — parameterized instance (reserved).
+            self.error(
+                "a parameterless named property (formal arguments are unsupported \
+                 in this subset)",
+            );
+            self.skip_balanced_parens();
+            let (pass, fail) = self.parse_assert_action_block();
+            return Stmt::ConcurrentAssert {
+                clock: Sensitivity::List(Vec::new()),
+                disable_iff: None,
+                antecedent: Sequence::Boolean(Self::sva_true_lit(start)),
+                implication_kind: ImplicationKind::Overlap,
+                consequent: Sequence::Boolean(Self::sva_true_lit(start)),
+                pass,
+                fail,
+                span: start.to(self.prev_span()),
+            };
+        }
+        let (clock, disable_iff, antecedent, implication_kind, consequent) =
+            self.parse_property_spec(start);
+        self.expect(TokenKind::RParen, "')'");
+        // action_block ::= statement_or_null | [statement] `else` statement_or_null
+        // (slice S11). A bare `;` leaves both None (default $error, no pass).
+        let (pass, fail) = self.parse_assert_action_block();
+        Stmt::ConcurrentAssert {
+            clock,
+            disable_iff,
+            antecedent,
+            implication_kind,
+            consequent,
+            pass,
+            fail,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// A synthetic `1` literal expr (the bare-property `1'b1 |-> e` sentinel and
+    /// the named-instance placeholder consequent).
+    fn sva_true_lit(span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::IntLit {
+                kind: IntLitKind::Decimal,
+                raw: "1".to_string(),
+            },
+            span,
+        }
+    }
+
+    /// Parse a property spec `@(clk) [disable iff(e)] seq [ |-> | |=> ] seq` — the
+    /// body shared by an inline `assert property( <spec> )` and a named
+    /// `property NAME; <spec>; endproperty`. Does NOT consume the surrounding
+    /// parens / terminators; the caller does.
+    fn parse_property_spec(
+        &mut self,
+        start: Span,
+    ) -> (
+        Sensitivity,
+        Option<Expr>,
+        Sequence,
+        ImplicationKind,
+        Sequence,
+    ) {
         // Clocking event `@(...)`. `parse_sensitivity` consumes the leading `@`.
         let clock = if self.peek() == Some(TokenKind::At) {
             self.parse_sensitivity()
@@ -3140,49 +3255,153 @@ impl<'t, 's> Parser<'t, 's> {
             None
         };
         // `seq [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
-        // implication) desugars to `1'b1 |-> expr` (check `expr` every clock);
-        // a bare *sequence* (multi-clock) without implication is deferred.
-        // `seq [ |-> | |=> ] seq` — the consequent is also a Sequence (slice S14;
-        // a plain boolean consequent is `Sequence::Boolean`).
+        // implication) desugars to `1'b1 |-> expr`; `seq [ |-> | |=> ] seq` — the
+        // consequent is also a Sequence (slice S14).
         let ante_seq = self.parse_sequence();
-        let (antecedent, implication_kind, consequent) = if self.eat(TokenKind::PipeArrow) {
-            (ante_seq, ImplicationKind::Overlap, self.parse_sequence())
+        if self.eat(TokenKind::PipeArrow) {
+            (
+                clock,
+                disable_iff,
+                ante_seq,
+                ImplicationKind::Overlap,
+                self.parse_sequence(),
+            )
         } else if self.eat(TokenKind::PipeEqArrow) {
-            (ante_seq, ImplicationKind::NonOverlap, self.parse_sequence())
+            (
+                clock,
+                disable_iff,
+                ante_seq,
+                ImplicationKind::NonOverlap,
+                self.parse_sequence(),
+            )
         } else {
-            let true_lit = Expr {
-                kind: ExprKind::IntLit {
-                    kind: IntLitKind::Decimal,
-                    raw: "1".to_string(),
-                },
-                span: start,
-            };
+            let true_lit = Self::sva_true_lit(start);
             match ante_seq {
                 // bare `property(@(clk) expr)` desugars to `1'b1 |-> expr`.
                 Sequence::Boolean(e) => (
+                    clock,
+                    disable_iff,
                     Sequence::Boolean(true_lit),
                     ImplicationKind::Overlap,
                     Sequence::Boolean(e),
                 ),
                 other => {
                     self.error("an implication `|->`/`|=>` (a bare sequence property is unsupported in this subset)");
-                    (other, ImplicationKind::Overlap, Sequence::Boolean(true_lit))
+                    (
+                        clock,
+                        disable_iff,
+                        other,
+                        ImplicationKind::Overlap,
+                        Sequence::Boolean(true_lit),
+                    )
                 }
             }
-        };
-        self.expect(TokenKind::RParen, "')'");
-        // action_block ::= statement_or_null | [statement] `else` statement_or_null
-        // (slice S11). A bare `;` leaves both None (default $error, no pass).
-        let (pass, fail) = self.parse_assert_action_block();
-        Stmt::ConcurrentAssert {
+        }
+    }
+
+    /// Consume a balanced `( … )` group starting at the current `(` (recovery for
+    /// a reserved parameterized form). No-op if not at `(`.
+    fn skip_balanced_parens(&mut self) {
+        if self.peek() != Some(TokenKind::LParen) {
+            return;
+        }
+        let mut depth = 0u32;
+        while let Some(k) = self.peek() {
+            match k {
+                TokenKind::LParen => {
+                    depth += 1;
+                    self.bump();
+                }
+                TokenKind::RParen => {
+                    self.bump();
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    /// Named SVA `sequence NAME [(formals)]; <seq>; endsequence` (IEEE §16.8).
+    /// Formal arguments are reserved (loud-rejected non-empty); the body reuses the
+    /// existing `parse_sequence`, so every sequence operator is available by name.
+    fn parse_sequence_decl(&mut self) -> Option<ModuleItem> {
+        let start = self.cur_span();
+        self.bump(); // `sequence` (contextual keyword)
+        let name = self.ident()?;
+        let formals = self.reserved_sva_formals();
+        self.expect(TokenKind::Semi, "';' after sequence name");
+        let body = self.parse_sequence();
+        self.expect(TokenKind::Semi, "';' after sequence body");
+        if self.at_ident_kw("endsequence") {
+            self.bump();
+        } else {
+            self.error("`endsequence`");
+        }
+        self.eat_end_label();
+        Some(ModuleItem::SequenceDecl(SeqDecl {
+            name,
+            formals,
+            body,
+            span: start.to(self.prev_span()),
+        }))
+    }
+
+    /// Named SVA `property NAME [(formals)]; <property_spec>; endproperty`
+    /// (IEEE §16.12). Reuses `parse_property_spec` for the body; spliced at an
+    /// `assert property(NAME)` instance by elaborate.
+    fn parse_property_decl(&mut self) -> Option<ModuleItem> {
+        let start = self.cur_span();
+        self.bump(); // `property` (Kw::Property)
+        let name = self.ident()?;
+        let formals = self.reserved_sva_formals();
+        self.expect(TokenKind::Semi, "';' after property name");
+        let (clock, disable_iff, antecedent, implication_kind, consequent) =
+            self.parse_property_spec(start);
+        self.expect(TokenKind::Semi, "';' after property body");
+        if self.at_ident_kw("endproperty") {
+            self.bump();
+        } else {
+            self.error("`endproperty`");
+        }
+        self.eat_end_label();
+        Some(ModuleItem::PropertyDecl(PropDecl {
+            name,
+            formals,
             clock,
             disable_iff,
             antecedent,
             implication_kind,
             consequent,
-            pass,
-            fail,
             span: start.to(self.prev_span()),
+        }))
+    }
+
+    /// Reject (loud) a non-empty SVA formal-argument list `(...)` after a named
+    /// sequence/property name; the parameterized follow-on will parse it. Always
+    /// returns an empty list in this subset, consuming a balanced `(...)` group on
+    /// the reject path so parsing continues.
+    fn reserved_sva_formals(&mut self) -> Vec<Ident> {
+        if self.peek() == Some(TokenKind::LParen) {
+            self.error(
+                "a parameterless named sequence/property (formal arguments are \
+                 unsupported in this subset)",
+            );
+            self.skip_balanced_parens();
+        }
+        Vec::new()
+    }
+
+    /// Consume an optional `: label` after `endsequence`/`endproperty`
+    /// (accept-and-ignore — the minimal-surface choice).
+    fn eat_end_label(&mut self) {
+        if self.peek() == Some(TokenKind::Colon) {
+            self.bump();
+            let _ = self.ident();
         }
     }
 
@@ -4020,6 +4239,14 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             Sequence::Within { seq1, seq2 } => {
                 fix_sequence(seq1, from, to);
                 fix_sequence(seq2, from, to);
+            }
+            // A named instance: the `name` is a sequence/property identifier (not a
+            // loop index), so it is never renamed; only the (reserved) actual-arg
+            // expressions are.
+            Sequence::Instance { args, .. } => {
+                for a in args.iter_mut() {
+                    fix_expr(a, from, to);
+                }
             }
         }
     }
