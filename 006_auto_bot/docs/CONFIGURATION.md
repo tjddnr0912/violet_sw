@@ -14,7 +14,7 @@
 | `AUTO_BOT_DRAFT_ONLY` | ❌ | `true` | `true`이면 investment_bot 계열 자동봇(뉴스/버핏/섹터/부동산)이 발행하는 글을 status 인자와 무관하게 **항상 draft**로 올린다(`WordPressUploader(force_draft=...)`, `create_post` 단일 choke point에서 강제). **텔레그램 봇은 이 값을 읽지 않아 영향 없음(계속 publish)**. 애드센스 심사 준비 동안 자동 발행 일시정지용. 자동 publish 복귀 시 `false`. (2026-06-14~) |
 | `AUTO_FEATURED_CARD` | ❌ | `false`(.env=`true`) | `true`이면 `featured_media` 미지정 글에 제목·카테고리 기반 **타이틀 카드(1200×630 다크)** 를 자동 생성해 대표 이미지(og:image/썸네일)로 첨부(`create_post`→`shared/title_card.make_title_card`→`upload_media`). **비용0·무네트워크**(Pillow + 시스템 한글 폰트). 폰트/렌더 실패 시 조용히 생략하고 발행은 계속. 명시 `featured_media`가 있으면 그게 우선. (2026-06-15~) |
 | `TITLE_CARD_FONT` | ❌ | (자동탐지) | 타이틀 카드 폰트 경로 override. 미지정 시 AppleSDGothicNeo→AppleGothic→NanumGothic→NotoSansCJK 순으로 탐지. |
-| `KROKI_URL` | ❌ | `https://kroki.io` | mermaid→PNG 렌더 서버. WordPress 발행 시 코드블록을 이미지로 변환. |
+| `KROKI_URL` | ❌ | `https://kroki.io` | 다이어그램→PNG 렌더 서버. WordPress 발행 시 mermaid·d2·wavedrom·graphviz·plantuml 등 코드블록을 이미지로 변환. |
 | `BLOGGER_ENABLED` / `NEWS_BLOGGER_ENABLED` | ❌ | — | 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). `false`면 발행 스킵. |
 | `BLOGGER_BLOG_ID` | (레거시) | — | Blogger 시절 잔재. 2026-06-12 WordPress 전환 후 미사용(일부 config 검증에만 잔존). |
 | `BLOG_LIST` | (레거시) | — | 옛 다중 블로그(blogspot) 등록. WordPress 전환 후 미사용(텔레그램 self.blogs 잔재). |
@@ -105,12 +105,14 @@ Telegram에서 발행 시 사용자에게 블로그 key 선택 prompt 전송. ti
 - 로그·스택트레이스에 `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN` 직접 노출 금지
 - `.env`, `credentials/*.pkl`, `credentials/client_secret.json` 모두 git commit 금지 (`.gitignore` 등재됨)
 
-## Mermaid 다이어그램 (WordPress: 서버측 PNG 렌더)
+## 다이어그램 (WordPress: 서버측 PNG 렌더, kroki 다중 타입)
 
-봇이 만든 `<pre><code class="language-mermaid">` 코드블록은 **발행 시 `WordPressUploader`가 kroki(`KROKI_URL`)로 PNG를 렌더**해 미디어 업로드 후 `<img>`로 치환한다. 테마/스킨에 Mermaid.js를 등록할 필요가 없다(코드 변경 없이 모든 봇 적용).
+봇이 만든 다이어그램 코드블록은 **발행 시 `WordPressUploader`가 kroki(`KROKI_URL`)로 PNG를 렌더**해 미디어 업로드 후 `<img>`로 치환한다. 테마/스킨에 JS 라이브러리를 등록할 필요가 없다(코드 변경 없이 모든 봇 적용).
 
+- **지원 타입(`_LANG_TO_KROKI`)**: `mermaid`(흐름·시퀀스·상태), `d2`(중첩 아키텍처·계층), `wavedrom`(신호/클럭 타이밍 — SoC/RTL), `graphviz`(=`dot`), `plantuml`(=`puml`), `blockdiag`/`nomnoml`/`erd`/`pikchr`/`svgbob`/`vega-lite` 등. 코드펜스 `class="language-<type>"`로 인식.
+- ⚠️ **목록에 없는 `language-*`(python/c/verilog/bash 등 일반 코드)는 다이어그램으로 변환하지 않고 그대로 둔다.** (`render_kroki_png(code, type)`이 경로를 동적 구성, `render_mermaid_png`은 하위호환 래퍼.)
 - 인라인 `<svg>`/`<script>` 방식은 WordPress(wpautop·sanitize)가 도형을 깨뜨려 **PNG로 결정**(2026-06-12). 옛 Blogger/Tistory용 테마 Mermaid.js v11 등록 절차는 폐지.
-- 중복 다이어그램은 `hashlib.md5`로 dedup해 미디어를 1회만 업로드.
+- 중복 다이어그램은 (타입+소스) `hashlib.md5`로 dedup해 미디어를 1회만 업로드.
 
 ### 검증
 

@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-06-16: kroki 다중 타입 다이어그램 + 텔레그램 리서치 전제 가드
+
+- **kroki 다이어그램 다중 타입 지원** — 기존 mermaid 전용 렌더를 일반화. `render_mermaid_png` → `render_kroki_png(code, diagram_type)`(언어→kroki 경로 매핑 `_LANG_TO_KROKI`, `dot→graphviz`·`vega-lite→vegalite` 별칭), `_render_diagrams_in_html`이 `language-mermaid`만이 아니라 **지원 다이어그램 펜스 전부**(d2/wavedrom/graphviz/plantuml/blockdiag/nomnoml/erd/pikchr/svgbob 등)를 PNG로 렌더. ⚠️ **일반 코드 블록(python/c/verilog/bash)은 변환 안 함**(다이어그램 언어만 매핑). `render_mermaid_png`은 하위호환 래퍼 유지. 파일명 해시에 타입 포함. SoC/AI 기술 글용: 중첩 아키텍처=d2, 신호/클럭 타이밍=wavedrom. 신규 테스트 6 (140 통과). `blogger-html` SKILL에 d2/wavedrom 등 펜스 안내 추가(글로벌). (commit `68ea391`)
+- **텔레그램 리서치 '전제 가드'** — 질문의 부정확한 전제·가정·수치가 발행 글에 사실로 섞여 "AI가 쓴 느낌"을 주던 문제. 누수 지점은 HTML 변환이 **아니라**(변환기는 MD만 받음) **research/합성 단계**(질문 verbatim 임베드 + answer-framing). deep `_SYNTH_PROMPT_TEMPLATE` + quick 프롬프트 + `telegram-qa` SKILL(글로벌) 3곳에 가드: 질문=주제/의도로만, 전제 미확인 시 교정("질문의 전제와 달리…"), 독자는 질문을 못 보므로 독립·자기완결 기사로 작성(인용·되묻기 금지).
+- **기술 다이어그램 nudge** — 합성/QA에 "기술 주제(아키텍처·프로토콜·SoC·반도체)면 **본문에 근거가 있는 경우에 한해** 구조=d2·타이밍=wavedrom·흐름=mermaid 펜스를 직접 포함, **지어낸 다이어그램 금지**(특히 wavedrom은 출처에 신호 동작 명시 시에만)" 추가. (commit `e6dc7cf`)
+
+---
+
 ## 2026-06-15: 출처 외부 링크 섹션 + 타이틀 카드 대표 이미지 (SEO·AdSense)
 
 - **출처→'참고 자료' 외부 링크 섹션 (근본 수정)** — Rank Math "outbound links" 경고 + E-E-A-T + AdSense 가치. 봇이 이미 보유한 출처(`{title,url}`)를 발행 단계에서 **결정론적으로** 본문 끝에 클릭 가능한 링크로 렌더. `shared/wordpress_uploader.render_sources_section()` 신설(새 탭·**dofollow** `rel="noopener"`·중복 URL 제거·http(s)만·이스케이프·최대 12개), `create_post`/`upload_post`에 `sources` 인자 추가(단일 choke point, 이미 섹션 있으면 중복 안 붙임).

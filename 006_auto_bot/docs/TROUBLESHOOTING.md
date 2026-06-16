@@ -4,6 +4,19 @@
 
 ---
 
+## 발행 글이 "AI가 쓴 느낌" / 질문의 부정확한 전제가 사실처럼 섞임
+
+- **증상**: 텔레그램봇으로 질문해 발행한 글에서, 내가 질문에 담았던 (틀릴 수도 있는) 전제·가정·수치가 검증 없이 사실처럼 본문에 들어감. 글이 "주제에 대한 독립 기사"가 아니라 "내 질문에 대한 답변"처럼 읽혀 AI 생성 티가 남.
+- **원인**: 누수 지점은 직관과 달리 **HTML 변환이 아니다.** `convert_md_to_html_via_claude`는 **MD 본문만** 받고 원 질문은 전달받지 않는다(`telegram_gemini_bot.py:635`). 실제 원인은 그 앞 **research/합성 단계** — quick `run_gemini` 프롬프트, deep `_build_round1_prompt`/`_synthesize`(`_SYNTH_PROMPT_TEMPLATE`)가 **질문을 verbatim 임베드**하고 작업을 "사용자 질문에 대한 답변/보고서 작성"으로 프레이밍 → 모델이 질문 전제를 사실로 받아들이고(premise-echoing/sycophancy) 질문 틀을 그대로 따라감.
+- **해결**: 질문을 '주제·의도'로만 쓰도록 **3곳에 전제 가드** 추가(2026-06-16): deep `_SYNTH_PROMPT_TEMPLATE`(`research_orchestrator.py`), quick 프롬프트(`telegram_gemini_bot.py`), `telegram-qa/SKILL.md` 핵심 원칙. "전제 미확인 시 교정('질문의 전제와 달리…'), 독자는 질문 미열람→인용·되묻기 금지, 독립 기사로 작성." HTML 변환기는 손대지 않음(이미 깨끗).
+- **복구 절차**: (a) 발행 글이 "~라는 질문을 주셨는데" 류로 시작/되묻으면 가드 미적용 의심 (b) **research 프롬프트**(`_SYNTH_PROMPT_TEMPLATE`·quick prompt)와 `telegram-qa/SKILL.md`를 확인 — HTML 변환기/blogger-html SKILL은 **이 증상의 원인이 아니다** (c) 봇 재시작 후 다음 발행부터 반영.
+- **관련 사고**: 2026-06-16.
+- **재발 감지**: 발행 글 도입부가 질문을 인용/되묻는지, 검증 안 된 질문 전제가 단정형으로 들어갔는지 육안 점검. **"AI 느낌/부정확 정보" 디버깅 시 HTML 변환부터 보지 말 것 — 질문 텍스트는 거기 도달하지 않는다.** research/합성 프롬프트가 1순위 의심 영역.
+
+> Claude 진단 미스: 없음. 이번엔 사용자가 Claude를 정정한 게 아니라 **사용자 가설("HTML 변환 과정에서 질문이 참조되는 것 같다")을 Claude가 코드 추적으로 반증**(실제 누수=research 단계, HTML 변환기는 MD만 수신). 교훈은 위 "재발 감지"에 박제 — 직관적으로 HTML 변환을 의심하기 쉬우나 데이터 흐름상 틀림.
+
+---
+
 ## 발행 글에 출처(외부 링크)가 안 보임 — AI HTML 변환이 비결정적으로 삭제
 
 - **증상**: 봇이 조사한 출처가 있는데도 발행된 WordPress 글에 클릭 가능한 외부 링크(`<a href>`)가 없음. Rank Math가 "outbound links 없음 / 전부 nofollow" 경고. 텔레그램 글은 어떤 날은 링크가 있고 어떤 날은 없음(들쭉날쭉).

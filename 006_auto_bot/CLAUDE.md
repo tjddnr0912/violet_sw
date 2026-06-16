@@ -27,11 +27,11 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 |------|------|
 | `investment_bot.py` | 통합 오케스트레이터 (뉴스+버핏+섹터 스케줄 관리) |
 | `buffett_bot.py` | 버핏/멍거 관점 일일 투자 분석 (Claude CLI) |
-| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. 발행 시 **WordPress 카테고리를 버튼으로 선택**(무선택 타임아웃 시 취소). 발행 워크플로우: 한글 HTML 생성→선택 카테고리로 **WordPress(grace-moon.com) 발행**(전 카테고리 한글 그대로. 영문 변환·raw 첨부·블로그스팟·로컬 백업 폐지)→텔레그램에 발행 URL 통지 |
+| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. 발행 시 **WordPress 카테고리를 버튼으로 선택**(무선택 타임아웃 시 취소). 발행 워크플로우: 한글 HTML 생성→선택 카테고리로 **WordPress(grace-moon.com) 발행**(전 카테고리 한글 그대로. 영문 변환·raw 첨부·블로그스팟·로컬 백업 폐지)→텔레그램에 발행 URL 통지. **전제 가드**: 질문=주제/의도로만(전제 미확인 시 교정), 독자는 질문 미열람→독립 기사로(인용·되묻기 금지). 기술 주제는 근거 있을 때만 d2/wavedrom/mermaid 펜스 직접 포함 |
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
 | `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
-| `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·mermaid→PNG(kroki)·AdSense/raw strip·**출처→'참고 자료' 외부 링크 섹션**(`sources` 인자, dofollow)·**타이틀 카드 featured image 자동 첨부**(`AUTO_FEATURED_CARD`)·Blogger 드롭인 호환 어댑터), **title_card** (제목·카테고리→1200×630 다크 og:image, Pillow 로컬·무료·무네트워크), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표) |
+| `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·**다이어그램→PNG(kroki 다중 타입: mermaid/d2/wavedrom/graphviz/plantuml…, 일반 코드블록은 미변환)**·AdSense/raw strip·**출처→'참고 자료' 외부 링크 섹션**(`sources` 인자, dofollow)·**타이틀 카드 featured image 자동 첨부**(`AUTO_FEATURED_CARD`)·Blogger 드롭인 호환 어댑터), **title_card** (제목·카테고리→1200×630 다크 og:image, Pillow 로컬·무료·무네트워크), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표) |
 
 ## 핵심 참조
 
@@ -57,7 +57,7 @@ WORDPRESS_APP_PASSWORD=          # 애플리케이션 비밀번호(공백 자동
 WORDPRESS_DEFAULT_STATUS=publish # publish | draft
 AUTO_BOT_DRAFT_ONLY=true         # 자동봇(뉴스/버핏/섹터/부동산=investment_bot)만 강제 draft. 텔레그램 봇은 영향 없음(계속 publish). 애드센스 준비 일시정지용. 자동 publish 복귀 시 false
 AUTO_FEATURED_CARD=true          # featured 미지정 글에 제목·카테고리 기반 타이틀 카드(1200×630 다크)를 자동 생성해 og:image/썸네일로 첨부. 비용0·무네트워크(Pillow+시스템 한글 폰트). 폰트 override=TITLE_CARD_FONT
-# KROKI_URL=https://kroki.io     # mermaid→PNG 렌더 서버 override (default kroki.io)
+# KROKI_URL=https://kroki.io     # 다이어그램→PNG 렌더 서버 override (mermaid/d2/wavedrom/graphviz/plantuml 등, default kroki.io)
 BLOGGER_ENABLED=true             # 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). false면 발행 스킵
 BLOG_SELECTION_TIMEOUT=180       # 텔레그램 카테고리 선택 타임아웃(초). 무선택 시 발행 취소
 EDITORIAL_ENABLED=true           # 편집 레이어(저자 박스 GraceMoon+면책+데이터 표) on/off. default true
