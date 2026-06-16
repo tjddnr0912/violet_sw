@@ -393,6 +393,51 @@ def test_svg_to_png_no_chrome_returns_none(monkeypatch):
     assert wp._svg_to_png(b'<svg width="10" height="10"></svg>') is None
 
 
+# --- WaveDrom 톱니 제거 (리터럴 반복 → '.') ---
+def test_collapse_wave_levels_folded():
+    assert wp._collapse_wave("00110011") == "0.1.0.1."
+    assert wp._collapse_wave("0000") == "0..."
+    assert wp._collapse_wave("1111") == "1..."
+    assert wp._collapse_wave("xxzz") == "x.z."
+    assert wp._collapse_wave("0.1.") == "0.1."  # 이미 dotted면 그대로
+
+
+def test_collapse_wave_preserves_glitch():
+    # MUX_OUT의 의도된 1주기 글리치(…101…)는 보존
+    assert wp._collapse_wave("00110011001011111111") == "0.1.0.1.0.101......."
+
+
+def test_collapse_wave_preserves_clock_and_busdata():
+    assert wp._collapse_wave("pppp") == "pppp"   # 클럭은 접지 않음(에지 의미)
+    assert wp._collapse_wave("hlhl") == "hlhl"
+    assert wp._collapse_wave("2222") == "2222"   # 버스 데이터(data[] 인덱스) 보존
+    assert wp._collapse_wave("====") == "===="
+
+
+def test_normalize_wavedrom_only_touches_wave_field():
+    src = '{"signal":[{"name":"CLK0","wave":"00110011"},{"name":"D","wave":"0000"}]}'
+    out = wp._normalize_wavedrom(src)
+    assert '"wave":"0.1.0.1."' in out
+    assert '"wave":"0..."' in out
+    assert '"name":"CLK0"' in out  # 다른 필드 불변
+
+
+def test_render_kroki_png_normalizes_wavedrom(monkeypatch):
+    sent = {}
+
+    def fake_post(url, data=None, **kw):
+        sent["url"] = url
+        sent["data"] = data.decode() if isinstance(data, bytes) else data
+        return _Resp(200, _SVG)
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    monkeypatch.setattr(wp, "_svg_to_png", lambda svg, *a, **k: _RASTER)
+    out = render_kroki_png('{"signal":[{"name":"C","wave":"0011"}]}', "wavedrom")
+    assert out == _RASTER
+    assert sent["url"].endswith("/wavedrom/svg")
+    assert '"wave":"0.1."' in sent["data"]  # 정규화되어 전송됨
+
+
 def _diagram_block(lang, code):
     return f'<pre><code class="language-{lang}">{code}</code></pre>'
 

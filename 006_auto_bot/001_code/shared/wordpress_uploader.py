@@ -206,6 +206,41 @@ def _svg_to_png(svg_bytes: bytes, scale: int = 2, max_px: int = 4000, timeout: i
     return None
 
 
+# WaveDrom 톱니 제거: 같은 레벨을 리터럴 반복(0000/1111)하면 매 주기 경계에 재샘플
+# notch(톱니)가 생긴다. 인접 동일한 '레벨' 기호({0,1,x,z})만 '.'(이전 상태 유지)로 접어
+# 톱니를 없앤다. 클럭(p/n/P/N/h/l/H/L)·버스 데이터(=,2-9; data[] 라벨 인덱스와 결합)·
+# gap(|)은 반복에 의미가 있어 건드리지 않는다. 의도된 1주기 글리치(예: 101)는 인접
+# 비동일이라 그대로 보존된다.
+_WAVE_LEVEL = set("01xz")
+_RE_WAVE_FIELD = re.compile(r'("wave"\s*:\s*")([^"\\]*)(")')
+
+
+def _collapse_wave(wave: str) -> str:
+    """wave 문자열에서 안전한 레벨 반복을 '.'로 접는다(클럭·버스데이터·글리치 보존)."""
+    out: List[str] = []
+    held = None  # 현재 유지 중인 레벨('.' 가 가리키는 값)
+    for ch in wave:
+        if ch == ".":
+            out.append(".")
+            continue
+        if ch in _WAVE_LEVEL and ch == held:
+            out.append(".")
+        else:
+            out.append(ch)
+            held = ch
+    return "".join(out)
+
+
+def _normalize_wavedrom(code: str) -> str:
+    """WaveDrom 소스의 모든 "wave": "..." 값을 _collapse_wave로 정규화.
+
+    JSON 파싱 없이 wave 필드만 치환하므로 원본 포맷/loose-JSON에도 안전.
+    """
+    return _RE_WAVE_FIELD.sub(
+        lambda m: m.group(1) + _collapse_wave(m.group(2)) + m.group(3), code
+    )
+
+
 def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40) -> Optional[bytes]:
     """다이어그램 소스 → PNG 바이트. 실패 시 None.
 
@@ -219,6 +254,8 @@ def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40
     kroki_type = _LANG_TO_KROKI.get(t, t)
     if not kroki_type:
         return None
+    if kroki_type == "wavedrom":
+        code = _normalize_wavedrom(code)  # 리터럴 반복(0000) → '.'(톱니 제거)
     base = KROKI_URL.rstrip("/")
     # svg-only로 알려진 타입은 svg부터, 그 외는 png→(실패 시)svg 순으로 시도.
     formats = ["svg"] if kroki_type in _KROKI_SVG_ONLY else ["png", "svg"]

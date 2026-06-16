@@ -115,6 +115,7 @@ Telegram에서 발행 시 사용자에게 블로그 key 선택 prompt 전송. ti
 - ⚠️ **kroki PNG 미지원(SVG-only) 타입 처리**: kroki는 mermaid/graphviz/plantuml/blockdiag엔 PNG를 주지만 **d2·wavedrom·nomnoml·pikchr·svgbob·vega(-lite) 등엔 SVG만** 준다(`/d2/png`→HTTP 400). 이들(`_KROKI_SVG_ONLY`)은 SVG를 받아 **headless Chrome(`CHROME_BIN`)으로 PNG 래스터화**(`_svg_to_png`) 후 동일 미디어 경로로 업로드. Chrome 부재 시 원본 코드블록 유지(발행 계속). 한글 라벨 정상 렌더.
 - 인라인 `<svg>`/`<script>` 방식은 WordPress(wpautop·sanitize)가 도형을 깨뜨려 **PNG로 결정**(2026-06-12). 옛 Blogger/Tistory용 테마 Mermaid.js v11 등록 절차는 폐지.
 - 중복 다이어그램은 (타입+소스) `hashlib.md5`로 dedup해 미디어를 1회만 업로드.
+- **WaveDrom 톱니 정규화**: wave를 `"0000"`처럼 리터럴 반복하면 WaveDrom이 매 경계에 재샘플 톱니(notch)를 그린다. `render_kroki_png`(wavedrom)에서 `_normalize_wavedrom`이 인접 동일 레벨 `{0,1,x,z}`만 `.`로 접어 제거(클럭·버스데이터·gap 미변경, 의도된 글리치 보존).
 
 ### 검증
 

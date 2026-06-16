@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-06-16: [fix] WaveDrom 톱니(notch) 제거 — wave 리터럴 반복 정규화
+
+- **증상**: wavedrom 파형이 유지 구간에서도 매 주기 작은 `∨` 톱니가 계속 보임(클럭/신호가 깨진 것처럼).
+- **원인**: AI가 wave를 `"00110011"`처럼 **같은 레벨을 리터럴로 반복**해 생성 → WaveDrom이 같은 값 반복 경계마다 재샘플 글리치(notch)를 그림. `.`(이전 상태 유지)로 쓰면 깔끔.
+- **해결**: 업로더 단일 choke point(`render_kroki_png`, wavedrom일 때)에서 **결정론적 정규화** — `_normalize_wavedrom`/`_collapse_wave`가 `"wave"` 문자열의 인접 동일 **레벨 기호 `{0,1,x,z}`만 `.`로 접음**. AI 준수에 의존하지 않음(출처 누락 때와 같은 비결정성 회피). ⚠️ 클럭(`p/n/P/N/h/l/H/L`)·버스 데이터(`=`,`2~9`; `data[]` 인덱스 결합)·gap(`|`)은 반복에 의미가 있어 **건드리지 않음**. 의도된 1주기 글리치(`101`)는 인접 비동일이라 **보존**. 신규 테스트 5 (146 통과). 기존 글(post 229) wavedrom 2개도 재렌더해 교체.
+
 ## 2026-06-16: [fix] d2/wavedrom가 이미지로 안 바뀌던 버그 — kroki svg-only → 로컬 래스터화
 
 - **증상**: 텔레그램봇 발행 글(`clock-switching-pitfalls-glitch-free-mux`)에서 d2 아키텍처·wavedrom 타이밍 블록이 PNG가 아니라 `<pre><code class="language-d2/wavedrom">` 원본 코드 그대로 노출. mermaid는 정상 렌더.
