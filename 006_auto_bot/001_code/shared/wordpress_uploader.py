@@ -21,9 +21,13 @@ from __future__ import annotations
 
 import os
 import re
+import math
 import html as _html
 import hashlib
 import logging
+import shutil
+import subprocess
+import tempfile
 from typing import Optional, List, Dict, Union
 
 import requests
@@ -124,11 +128,89 @@ _RE_RAW_SOURCE = re.compile(
 )
 
 
-def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40) -> Optional[bytes]:
-    """다이어그램 소스 → PNG 바이트(kroki). 실패 시 None.
+# kroki가 PNG 출력을 지원하지 않는(SVG 전용) 타입. 이들은 SVG를 받아 로컬에서
+# PNG로 래스터화한다. 목록이 불완전해도 정상 동작(누락 시 png 1회 시도→실패→svg fallback)
+# 하므로 어디까지나 불필요한 요청을 줄이는 최적화 힌트다. (kroki: d2/wavedrom 등은 svg-only)
+_KROKI_SVG_ONLY = {
+    "d2", "wavedrom", "nomnoml", "pikchr", "svgbob", "vega", "vegalite",
+    "excalidraw", "bytefield", "structurizr", "wireviz", "symbolator",
+    "tikz", "bpmn", "dbml",
+}
 
-    diagram_type: 코드펜스 언어명(mermaid/d2/graphviz/wavedrom/plantuml…) 또는
-    kroki 경로명. _LANG_TO_KROKI로 정규화하되, 미등록값은 그대로 경로로 시도한다.
+# headless Chrome (SVG→PNG 래스터화용). env override 우선.
+_CHROME_CANDIDATES = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+]
+
+
+def _chrome_bin() -> Optional[str]:
+    cand = os.getenv("CHROME_BIN", "").strip()
+    if cand and os.path.exists(cand):
+        return cand
+    for c in _CHROME_CANDIDATES:
+        if os.path.exists(c):
+            return c
+    return shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chrome")
+
+
+def _svg_to_png(svg_bytes: bytes, scale: int = 2, max_px: int = 4000, timeout: int = 60) -> Optional[bytes]:
+    """SVG 바이트 → PNG 바이트 (headless Chrome 래스터화). 실패/Chrome 부재 시 None.
+
+    SVG 본연 크기(width/height 또는 viewBox)로 윈도우를 잡고 스크린샷한다.
+    인라인 SVG는 WordPress wpautop/sanitize에 깨지므로, kroki가 svg만 주는 타입
+    (d2/wavedrom 등)도 이렇게 PNG로 평탄화해 mermaid와 동일한 미디어 경로를 탄다.
+    """
+    chrome = _chrome_bin()
+    if not chrome:
+        logger.warning("SVG→PNG: Chrome 미발견(CHROME_BIN 설정 필요) — 다이어그램 렌더 스킵")
+        return None
+    try:
+        text = svg_bytes.decode("utf-8", "replace")
+        w = h = None
+        mw = re.search(r'<svg[^>]*\bwidth="([\d.]+)', text)
+        mh = re.search(r'<svg[^>]*\bheight="([\d.]+)', text)
+        if mw and mh:
+            w, h = float(mw.group(1)), float(mh.group(1))
+        if not (w and h):
+            vb = re.search(r'viewBox="[\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)"', text)
+            if vb:
+                w, h = float(vb.group(1)), float(vb.group(2))
+        if not (w and h) or w < 1 or h < 1:
+            logger.warning("SVG→PNG: 크기 파싱 실패")
+            return None
+        W, H = int(math.ceil(w)), int(math.ceil(h))
+        eff_scale = scale if (W * scale <= max_px and H * scale <= max_px) else 1
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "in.svg")
+            pp = os.path.join(d, "out.png")
+            with open(sp, "wb") as f:
+                f.write(svg_bytes)
+            cmd = [
+                chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+                f"--force-device-scale-factor={eff_scale}",
+                "--default-background-color=FFFFFFFF",
+                f"--screenshot={pp}", f"--window-size={W},{H}",
+                "--virtual-time-budget=2000", f"file://{sp}",
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=timeout)
+            if os.path.exists(pp):
+                with open(pp, "rb") as f:
+                    png = f.read()
+                if png[:8] == b"\x89PNG\r\n\x1a\n":
+                    return png
+        logger.warning("SVG→PNG: Chrome 스크린샷 산출 실패")
+    except Exception as e:
+        logger.error(f"SVG→PNG 래스터화 오류: {e}")
+    return None
+
+
+def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40) -> Optional[bytes]:
+    """다이어그램 소스 → PNG 바이트. 실패 시 None.
+
+    diagram_type: 코드펜스 언어명(mermaid/d2/graphviz/wavedrom/plantuml…) 또는 kroki 경로명.
+    kroki가 PNG를 주면 그대로, **SVG만 주는 타입(d2/wavedrom 등)은 SVG→PNG 로컬 래스터화**.
     """
     code = _html.unescape(code or "").strip()
     if not code:
@@ -137,18 +219,32 @@ def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40
     kroki_type = _LANG_TO_KROKI.get(t, t)
     if not kroki_type:
         return None
+    base = KROKI_URL.rstrip("/")
+    # svg-only로 알려진 타입은 svg부터, 그 외는 png→(실패 시)svg 순으로 시도.
+    formats = ["svg"] if kroki_type in _KROKI_SVG_ONLY else ["png", "svg"]
     try:
-        r = requests.post(
-            f"{KROKI_URL.rstrip('/')}/{kroki_type}/png",
-            data=code.encode("utf-8"),
-            headers={"Content-Type": "text/plain"},
-            timeout=timeout,
-        )
-        if r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n":
-            return r.content
-        logger.warning(f"{kroki_type} PNG 렌더 실패 {r.status_code}: {r.text[:120]}")
+        for fmt in formats:
+            r = requests.post(
+                f"{base}/{kroki_type}/{fmt}",
+                data=code.encode("utf-8"),
+                headers={"Content-Type": "text/plain"},
+                timeout=timeout,
+            )
+            if r.status_code != 200:
+                logger.warning(f"{kroki_type}/{fmt} 렌더 실패 {r.status_code}: {r.text[:120]}")
+                continue
+            if fmt == "png":
+                if r.content[:8] == b"\x89PNG\r\n\x1a\n":
+                    return r.content
+                # kroki가 png 미지원(보통 400) → svg fallback으로 진행
+            else:  # svg → 로컬 PNG 래스터화
+                if b"<svg" in r.content[:1000]:
+                    png = _svg_to_png(r.content)
+                    if png:
+                        return png
+                    logger.warning(f"{kroki_type}: svg→png 래스터화 실패(Chrome 확인)")
     except Exception as e:
-        logger.error(f"{kroki_type} PNG 렌더 오류: {e}")
+        logger.error(f"{kroki_type} 렌더 오류: {e}")
     return None
 
 

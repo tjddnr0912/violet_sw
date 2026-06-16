@@ -321,56 +321,76 @@ def test_create_post_explicit_featured_media_wins(monkeypatch):
     assert captured["payload"]["featured_media"] == 99  # 명시값이 카드보다 우선
 
 
-# --- kroki 다중 타입 다이어그램 렌더 ---
-_PNG = b"\x89PNG\r\n\x1a\nfake"
+# --- kroki 다중 타입 다이어그램 렌더 (png 네이티브 + svg-only→로컬 래스터화) ---
+_PNG = b"\x89PNG\r\n\x1a\nfake"        # kroki png 응답
+_SVG = b'<?xml version="1.0"?><svg width="100" height="50"></svg>'  # kroki svg 응답
+_RASTER = b"\x89PNG\r\n\x1a\nraster"  # _svg_to_png(Chrome) 래스터화 결과
 
 
-class _FakeKrokiResp:
-    status_code = 200
-    content = _PNG
+class _Resp:
+    def __init__(self, status, content):
+        self.status_code = status
+        self.content = content
 
     @property
     def text(self):
-        return ""
+        return self.content.decode("utf-8", "replace")
 
 
-def _capture_kroki(monkeypatch):
-    """kroki POST URL을 가로채 호출된 경로를 잡는다."""
+def _capture_kroki(monkeypatch, png_ok=True):
+    """kroki POST URL을 가로채고, /png·/svg 경로별로 응답을 흉내낸다.
+    Chrome 래스터화(_svg_to_png)는 _RASTER를 돌려주도록 스텁(실제 Chrome 미실행)."""
     calls = []
 
     def fake_post(url, data=None, **kw):
         calls.append(url)
-        return _FakeKrokiResp()
+        if url.endswith("/png"):
+            return _Resp(200, _PNG) if png_ok else _Resp(400, b"Error 400: Unsupported output format: png")
+        if url.endswith("/svg"):
+            return _Resp(200, _SVG)
+        return _Resp(404, b"")
 
     monkeypatch.setattr(wp.requests, "post", fake_post)
+    monkeypatch.setattr(wp, "_svg_to_png", lambda svg, *a, **k: _RASTER)
     return calls
 
 
-def test_render_kroki_png_builds_typed_path(monkeypatch):
-    calls = _capture_kroki(monkeypatch)
-    assert render_kroki_png("x", "d2") == _PNG
-    assert calls[-1].endswith("/d2/png")
-    render_kroki_png("x", "wavedrom")
-    assert calls[-1].endswith("/wavedrom/png")
-
-
-def test_render_kroki_png_lang_alias_to_path(monkeypatch):
-    calls = _capture_kroki(monkeypatch)
-    render_kroki_png("digraph{a->b}", "dot")     # dot → graphviz
-    assert calls[-1].endswith("/graphviz/png")
-    render_kroki_png("x", "vega-lite")            # vega-lite → vegalite
-    assert calls[-1].endswith("/vegalite/png")
-
-
-def test_render_mermaid_png_still_mermaid(monkeypatch):
+def test_render_kroki_png_png_native_types(monkeypatch):
     calls = _capture_kroki(monkeypatch)
     assert render_mermaid_png("graph TD; a-->b") == _PNG
     assert calls[-1].endswith("/mermaid/png")
+    assert render_kroki_png("digraph{a->b}", "dot") == _PNG   # dot → graphviz
+    assert calls[-1].endswith("/graphviz/png")
+
+
+def test_render_kroki_png_svg_only_rasterized(monkeypatch):
+    calls = _capture_kroki(monkeypatch)
+    # d2/wavedrom = kroki svg-only → svg 요청 후 로컬 래스터화 결과 반환, png 시도 안 함
+    assert render_kroki_png("a -> b", "d2") == _RASTER
+    assert calls[-1].endswith("/d2/svg")
+    assert not any(c.endswith("/d2/png") for c in calls)
+    assert render_kroki_png("{}", "wavedrom") == _RASTER
+    assert calls[-1].endswith("/wavedrom/svg")
+    assert render_kroki_png("x", "vega-lite") == _RASTER       # vega-lite → vegalite (svg-only)
+    assert calls[-1].endswith("/vegalite/svg")
+
+
+def test_render_kroki_png_png_unsupported_falls_back_to_svg(monkeypatch):
+    # png 네이티브로 분류됐는데 kroki가 png를 거부(400)하면 svg 래스터화로 fallback
+    calls = _capture_kroki(monkeypatch, png_ok=False)
+    assert render_kroki_png("graph TD; a-->b", "mermaid") == _RASTER
+    assert any(c.endswith("/mermaid/png") for c in calls)   # png 먼저 시도
+    assert calls[-1].endswith("/mermaid/svg")               # 실패 후 svg
 
 
 def test_render_kroki_png_empty_none(monkeypatch):
     _capture_kroki(monkeypatch)
     assert render_kroki_png("   ", "d2") is None
+
+
+def test_svg_to_png_no_chrome_returns_none(monkeypatch):
+    monkeypatch.setattr(wp, "_chrome_bin", lambda: None)
+    assert wp._svg_to_png(b'<svg width="10" height="10"></svg>') is None
 
 
 def _diagram_block(lang, code):

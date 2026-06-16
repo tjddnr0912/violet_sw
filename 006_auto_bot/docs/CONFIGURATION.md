@@ -15,6 +15,7 @@
 | `AUTO_FEATURED_CARD` | ❌ | `false`(.env=`true`) | `true`이면 `featured_media` 미지정 글에 제목·카테고리 기반 **타이틀 카드(1200×630 다크)** 를 자동 생성해 대표 이미지(og:image/썸네일)로 첨부(`create_post`→`shared/title_card.make_title_card`→`upload_media`). **비용0·무네트워크**(Pillow + 시스템 한글 폰트). 폰트/렌더 실패 시 조용히 생략하고 발행은 계속. 명시 `featured_media`가 있으면 그게 우선. (2026-06-15~) |
 | `TITLE_CARD_FONT` | ❌ | (자동탐지) | 타이틀 카드 폰트 경로 override. 미지정 시 AppleSDGothicNeo→AppleGothic→NanumGothic→NotoSansCJK 순으로 탐지. |
 | `KROKI_URL` | ❌ | `https://kroki.io` | 다이어그램→PNG 렌더 서버. WordPress 발행 시 mermaid·d2·wavedrom·graphviz·plantuml 등 코드블록을 이미지로 변환. |
+| `CHROME_BIN` | ❌ | (자동탐지) | headless Chrome 경로 override. **kroki가 SVG만 주는 타입(d2/wavedrom 등)을 SVG→PNG 래스터화**할 때 사용. 미지정 시 `/Applications/Google Chrome.app/…` → Chromium → PATH 순 탐지. 부재 시 해당 다이어그램은 원본 코드블록으로 남음(발행은 계속). |
 | `BLOGGER_ENABLED` / `NEWS_BLOGGER_ENABLED` | ❌ | — | 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). `false`면 발행 스킵. |
 | `BLOGGER_BLOG_ID` | (레거시) | — | Blogger 시절 잔재. 2026-06-12 WordPress 전환 후 미사용(일부 config 검증에만 잔존). |
 | `BLOG_LIST` | (레거시) | — | 옛 다중 블로그(blogspot) 등록. WordPress 전환 후 미사용(텔레그램 self.blogs 잔재). |
@@ -111,6 +112,7 @@ Telegram에서 발행 시 사용자에게 블로그 key 선택 prompt 전송. ti
 
 - **지원 타입(`_LANG_TO_KROKI`)**: `mermaid`(흐름·시퀀스·상태), `d2`(중첩 아키텍처·계층), `wavedrom`(신호/클럭 타이밍 — SoC/RTL), `graphviz`(=`dot`), `plantuml`(=`puml`), `blockdiag`/`nomnoml`/`erd`/`pikchr`/`svgbob`/`vega-lite` 등. 코드펜스 `class="language-<type>"`로 인식.
 - ⚠️ **목록에 없는 `language-*`(python/c/verilog/bash 등 일반 코드)는 다이어그램으로 변환하지 않고 그대로 둔다.** (`render_kroki_png(code, type)`이 경로를 동적 구성, `render_mermaid_png`은 하위호환 래퍼.)
+- ⚠️ **kroki PNG 미지원(SVG-only) 타입 처리**: kroki는 mermaid/graphviz/plantuml/blockdiag엔 PNG를 주지만 **d2·wavedrom·nomnoml·pikchr·svgbob·vega(-lite) 등엔 SVG만** 준다(`/d2/png`→HTTP 400). 이들(`_KROKI_SVG_ONLY`)은 SVG를 받아 **headless Chrome(`CHROME_BIN`)으로 PNG 래스터화**(`_svg_to_png`) 후 동일 미디어 경로로 업로드. Chrome 부재 시 원본 코드블록 유지(발행 계속). 한글 라벨 정상 렌더.
 - 인라인 `<svg>`/`<script>` 방식은 WordPress(wpautop·sanitize)가 도형을 깨뜨려 **PNG로 결정**(2026-06-12). 옛 Blogger/Tistory용 테마 Mermaid.js v11 등록 절차는 폐지.
 - 중복 다이어그램은 (타입+소스) `hashlib.md5`로 dedup해 미디어를 1회만 업로드.
 

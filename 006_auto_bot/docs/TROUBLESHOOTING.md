@@ -4,6 +4,19 @@
 
 ---
 
+## d2/wavedrom 다이어그램이 이미지가 아니라 원본 코드로 발행됨
+
+- **증상**: 발행 글에서 d2(아키텍처)·wavedrom(타이밍) 코드블록이 PNG로 안 바뀌고 `<pre><code class="language-d2/wavedrom">` 원본 그대로 노출. 같은 글의 mermaid는 정상 이미지.
+- **원인**: **kroki가 d2·wavedrom(및 nomnoml/pikchr/svgbob/vega 등)에 PNG 출력을 지원하지 않음** — `/d2/png`·`/wavedrom/png`는 HTTP 400 "Unsupported output format: png … Must be one of svg" 반환. 옛 `render_kroki_png`는 `/{type}/png`만 호출+PNG 매직바이트 요구 → None → `_render_diagrams_in_html`이 원본 블록 유지. (인라인 SVG는 WordPress가 깨므로 SVG 직삽도 불가.)
+- **해결**: `render_kroki_png` 포맷 인지형 — svg-only 타입(`_KROKI_SVG_ONLY`)은 `/svg`를 받아 **headless Chrome(`_svg_to_png`, `CHROME_BIN`)으로 PNG 래스터화**. png 네이티브 타입은 종전대로 `/png`(거부 시 svg fallback). 라이브 d2+wavedrom로 검증(한글 라벨 OK). (2026-06-16)
+- **복구 절차**: (a) `curl -sL <글> | grep -o 'language-[a-z0-9-]*'` 로 잔존 다이어그램 펜스 확인 (b) `curl -X POST --data-binary @x.d2 https://kroki.io/d2/png` 로 kroki가 png 주는지 직접 확인(400이면 svg-only) (c) `CHROME_BIN` 경로/존재 확인 (d) **봇 재시작** 후 재발행 또는 기존 글 재렌더.
+- **관련 사고**: 2026-06-16.
+- **재발 감지**: 신규 kroki 타입 추가 시 `curl .../<type>/png`로 PNG 지원 여부 먼저 확인. PNG 미지원이면 `_KROKI_SVG_ONLY`에 추가(누락해도 png 1회 시도 후 svg fallback으로 동작은 함). 발행 글에 `language-` 잔존 grep으로 점검.
+
+> Claude 진단 미스: **초기 가설이 "봇이 옛 코드로 구동 중(미재시작)"이었으나 증거로 반증됨** — 렌더된 PNG 파일명이 `diagram-mermaid-…`(신naming `diagram-{type}-{hash}`)이고 봇 시작시각(22:29)이 코드 커밋(22:04) 이후라 **신 코드가 돌고 있었음**이 확정. mermaid만 되고 d2/wavedrom만 안 되는 *선택적* 실패가 핵심 단서였는데 "재시작 누락"으로 오인할 뻔함. 교훈: **"일부 타입만 실패"는 코드 버전이 아니라 타입별 backend(여기선 kroki png 지원) 차이를 먼저 의심**할 것. 결정 명령 = `curl -X POST --data-binary @src https://kroki.io/<type>/png`(라이브로 png 지원 직접 확인).
+
+---
+
 ## 발행 글이 "AI가 쓴 느낌" / 질문의 부정확한 전제가 사실처럼 섞임
 
 - **증상**: 텔레그램봇으로 질문해 발행한 글에서, 내가 질문에 담았던 (틀릴 수도 있는) 전제·가정·수치가 검증 없이 사실처럼 본문에 들어감. 글이 "주제에 대한 독립 기사"가 아니라 "내 질문에 대한 답변"처럼 읽혀 AI 생성 티가 남.

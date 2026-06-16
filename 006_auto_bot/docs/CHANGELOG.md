@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-06-16: [fix] d2/wavedrom가 이미지로 안 바뀌던 버그 — kroki svg-only → 로컬 래스터화
+
+- **증상**: 텔레그램봇 발행 글(`clock-switching-pitfalls-glitch-free-mux`)에서 d2 아키텍처·wavedrom 타이밍 블록이 PNG가 아니라 `<pre><code class="language-d2/wavedrom">` 원본 코드 그대로 노출. mermaid는 정상 렌더.
+- **원인**: kroki는 **d2·wavedrom(및 nomnoml/pikchr/svgbob/vega 등)에 PNG 출력을 지원하지 않고 SVG만 제공**(`/d2/png` → HTTP 400 "Unsupported output format: png for d2. Must be one of svg"). 기존 `render_kroki_png`는 `/{type}/png`만 호출하고 PNG 매직바이트를 요구해 None 반환 → `_render_diagrams_in_html`이 원본 블록 유지. (인라인 SVG는 WordPress wpautop/sanitize가 깨뜨리므로 SVG 직삽도 불가.)
+- **해결**: `render_kroki_png`을 포맷 인지형으로 — png 네이티브 타입은 `/png`, **svg-only 타입(`_KROKI_SVG_ONLY`)은 `/svg`를 받아 headless Chrome(`_svg_to_png`, `CHROME_BIN` override)으로 PNG 래스터화** 후 mermaid와 동일하게 미디어 업로드. png 네이티브가 예외적으로 png 거부 시에도 svg fallback. **Chrome은 이미 설치돼 있어 추가 설치·비용 0**, 한글 라벨도 정상 렌더(라이브 d2+wavedrom 검증). Chrome 부재 시 조용히 None(원본 블록 유지). 신규 테스트 5 (141 통과).
+
 ## 2026-06-16: kroki 다중 타입 다이어그램 + 텔레그램 리서치 전제 가드
 
 - **kroki 다이어그램 다중 타입 지원** — 기존 mermaid 전용 렌더를 일반화. `render_mermaid_png` → `render_kroki_png(code, diagram_type)`(언어→kroki 경로 매핑 `_LANG_TO_KROKI`, `dot→graphviz`·`vega-lite→vegalite` 별칭), `_render_diagrams_in_html`이 `language-mermaid`만이 아니라 **지원 다이어그램 펜스 전부**(d2/wavedrom/graphviz/plantuml/blockdiag/nomnoml/erd/pikchr/svgbob 등)를 PNG로 렌더. ⚠️ **일반 코드 블록(python/c/verilog/bash)은 변환 안 함**(다이어그램 언어만 매핑). `render_mermaid_png`은 하위호환 래퍼 유지. 파일명 해시에 타입 포함. SoC/AI 기술 글용: 중첩 아키텍처=d2, 신호/클럭 타이밍=wavedrom. 신규 테스트 6 (140 통과). `blogger-html` SKILL에 d2/wavedrom 등 펜스 안내 추가(글로벌). (commit `68ea391`)

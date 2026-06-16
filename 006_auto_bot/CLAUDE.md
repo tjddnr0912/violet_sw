@@ -58,6 +58,7 @@ WORDPRESS_DEFAULT_STATUS=publish # publish | draft
 AUTO_BOT_DRAFT_ONLY=true         # 자동봇(뉴스/버핏/섹터/부동산=investment_bot)만 강제 draft. 텔레그램 봇은 영향 없음(계속 publish). 애드센스 준비 일시정지용. 자동 publish 복귀 시 false
 AUTO_FEATURED_CARD=true          # featured 미지정 글에 제목·카테고리 기반 타이틀 카드(1200×630 다크)를 자동 생성해 og:image/썸네일로 첨부. 비용0·무네트워크(Pillow+시스템 한글 폰트). 폰트 override=TITLE_CARD_FONT
 # KROKI_URL=https://kroki.io     # 다이어그램→PNG 렌더 서버 override (mermaid/d2/wavedrom/graphviz/plantuml 등, default kroki.io)
+# CHROME_BIN=                     # headless Chrome 경로 override. kroki가 SVG만 주는 타입(d2/wavedrom 등) SVG→PNG 래스터화용(미지정=자동탐지). 부재 시 해당 다이어그램은 코드블록으로 남음
 BLOGGER_ENABLED=true             # 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). false면 발행 스킵
 BLOG_SELECTION_TIMEOUT=180       # 텔레그램 카테고리 선택 타임아웃(초). 무선택 시 발행 취소
 EDITORIAL_ENABLED=true           # 편집 레이어(저자 박스 GraceMoon+면책+데이터 표) on/off. default true
