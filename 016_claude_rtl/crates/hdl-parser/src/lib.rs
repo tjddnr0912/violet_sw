@@ -3119,18 +3119,24 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// SV immediate assertion (IEEE 1800 §16.3):
-    ///   `assert (expr) [pass_stmt] [else fail_stmt]`
+    ///   `assert [final] (expr) [pass_stmt] [else fail_stmt]`
     /// Desugared AT PARSE TIME to `Stmt::If` — the AST `Stmt` variant set is
     /// frozen (verdict M7), and `if` already has the exact assert condition
     /// semantics (0/X/Z cond → else branch = assertion failure). A missing
     /// else clause synthesizes the IEEE default failure action
     /// `$error("Assertion failed")`, which lowers through the severity table
-    /// (stderr diagnostic + nonzero exit; run continues). Concurrent
-    /// (`assert property`) and deferred (`assert #0` / `assert final`) forms
-    /// are LOUD parse errors, never dropped. Dangling-else: in
-    /// `assert (c) if (x) a; else b;` the else binds to the inner if
-    /// (nearest) and the assert gets the synthesized default — the same
-    /// resolution the SV grammar specifies.
+    /// (stderr diagnostic + nonzero exit; run continues).
+    ///
+    /// `assert final (expr)` is a FINAL deferred immediate assertion (§16.4):
+    /// evaluated WHEN REACHED, its report matured in the Reactive region.
+    /// vita has no Reactive-region maturation, so `final` is approximated as
+    /// evaluate-when-reached — the SAME `Stmt::If` desugar as a simple immediate
+    /// assert (exact for a stable condition, hand-IEEE under an intra-step glitch;
+    /// iverilog rejects deferred assertions, so there is no oracle). The `#0`
+    /// (Observed deferred) form needs Observed-region maturation + a flush queue
+    /// and stays a LOUD parse error. Concurrent (`assert property`) is handled
+    /// separately. Dangling-else: in `assert (c) if (x) a; else b;` the else binds
+    /// to the inner if and the assert gets the synthesized default.
     fn parse_assert(&mut self) -> Stmt {
         let start = self.cur_span();
         self.bump(); // `assert`
@@ -3138,10 +3144,21 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Property) {
             return self.parse_concurrent_assert(start);
         }
-        if self.peek() != Some(TokenKind::LParen) {
+        // `#0` (Observed deferred) assertion — needs Observed-region maturation +
+        // a flush queue this subset does not have → loud, never silently treated
+        // as immediate (whose intra-step glitch behavior would differ).
+        if self.peek() == Some(TokenKind::Hash) {
             self.error(
-                "'(' after 'assert' (deferred assertions `assert #0`/`assert final` are unsupported in v1)",
+                "a `#0` (Observed deferred) assertion is unsupported in this subset \
+                 (use immediate `assert` or `assert final`)",
             );
+            return self.stmt_error_at(start);
+        }
+        // `final` (Reactive deferred) assertion — approximated as evaluate-when-
+        // reached (same `Stmt::If` desugar as immediate; see the method doc).
+        let _deferred_final = self.eat_kw(Kw::Final);
+        if self.peek() != Some(TokenKind::LParen) {
+            self.error("'(' after 'assert'");
             return self.stmt_error_at(start);
         }
         self.bump(); // `(`
