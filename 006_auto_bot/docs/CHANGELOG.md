@@ -4,6 +4,11 @@
 
 ---
 
+## 2026-06-17: [fix] 미리보기에 CSS 누수 + 코드 블록 미화(다크 카드)
+
+- **[fix] 메인 미리보기/메타설명에 `.gm-lb{display:none…}` CSS가 노출**: 라이트박스/코드 보정용으로 본문 맨 앞에 주입한 `<style>` 블록을, `auto_excerpt`가 태그만 벗기고 **CSS 텍스트는 남겨** 발췌로 써버림(Rank Math meta description도 오염). `auto_excerpt`가 이제 `<style>·<script>·<pre>` 블록을 **내용째 제거**한 뒤 발췌 생성. 누수된 기존 글 4건(254/238/229/249) 발췌 재설정+PATCH.
+- **코드 블록 미화(`beautify_code_blocks`)**: AI가 코드/수식을 bare `<pre><code>` 또는 `<pre style="…dark…">`로 비일관 출력 → (다이어그램 변환 후) 남은 모든 `<pre><code>`를 **일관된 다크 카드 `.gm-code-box`**(언어 라벨 헤더 + 둥근 모서리 + 그림자 + 라이트-온-슬레이트 monospace)로 결정론적 재작성. 인라인 스타일 제거 후 주입 CSS가 모양 통제(글마다 동일). `_LANG_LABEL`로 `systemverilog→SystemVerilog` 등 라벨 prettify. inline `!important` 다크 박스도 카드로 흡수(대비 문제 해소). `create_post`에 배선(`fix_styled_code_contrast`는 잔여 안전망). 라이브 검증(SystemVerilog 카드 렌더). 신규 테스트 +9 (157 통과).
+
 ## 2026-06-17: [fix] 다이어그램 전부 코드로 발행되던 버그(<pre style>) + 클릭 확대(라이트박스)
 
 - **증상**: 글의 d2·wavedrom·**mermaid까지 전부** 이미지가 아니라 원본 코드블록으로 발행됨(이전엔 mermaid는 됐었음).

@@ -150,12 +150,83 @@ def fix_styled_code_contrast(html: str) -> str:
     """inline-background <pre><code> 다크 박스가 테마 code 배경에 묻히는 문제를 보정.
 
     해당 패턴이 있고 아직 보정 스타일이 없으면 스코프된 <style>를 1회 주입.
+    (beautify_code_blocks가 대부분의 <pre><code>를 정규화하므로 잔여 케이스용 안전망.)
     """
     if not html or "data-gm-codefix" in html:
         return html
     if _RE_STYLED_PRE_CODE.search(html):
         return _CODEFIX_STYLE + html
     return html
+
+
+# --- 코드 블록 미화(beautify): 일관된 다크 카드 + 언어 라벨 ---
+# AI가 코드/수식을 bare <pre><code> 또는 <pre style="…dark…"><code>로 비일관 출력하므로,
+# (다이어그램 변환 이후 남은) 모든 <pre><code>를 깔끔한 .gm-code-box 카드로 결정론적 재작성.
+# 인라인 스타일을 제거하고 주입 CSS가 모양을 통제 → 글마다 동일하게 멋진 코드 블록.
+_LANG_LABEL = {
+    "systemverilog": "SystemVerilog", "verilog": "Verilog", "vhdl": "VHDL",
+    "python": "Python", "py": "Python", "c": "C", "cpp": "C++", "c++": "C++",
+    "rust": "Rust", "go": "Go", "java": "Java", "tcl": "Tcl",
+    "javascript": "JavaScript", "js": "JavaScript", "typescript": "TypeScript", "ts": "TypeScript",
+    "bash": "Bash", "sh": "Shell", "shell": "Shell", "zsh": "Shell",
+    "json": "JSON", "yaml": "YAML", "yml": "YAML", "toml": "TOML",
+    "sql": "SQL", "make": "Makefile", "makefile": "Makefile", "diff": "Diff",
+    "html": "HTML", "css": "CSS", "xml": "XML",
+}
+_CODE_STYLE = (
+    '<style data-gm-codestyle>'
+    '.gm-code-box{margin:22px 0;border-radius:10px;overflow:hidden;'
+    'border:1px solid #334155;box-shadow:0 3px 14px rgba(15,23,42,.18);}'
+    '.gm-code-lang{display:block;background:#0f172a !important;color:#94a3b8 !important;'
+    'font:600 11px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
+    'letter-spacing:.08em;text-transform:uppercase;padding:9px 14px;border:0;}'
+    '.gm-code{margin:0 !important;background:#1e293b !important;color:#e2e8f0 !important;'
+    'padding:15px 16px !important;overflow-x:auto;border:0 !important;border-radius:0 !important;'
+    'font:13.5px/1.65 "SFMono-Regular",Menlo,Consolas,"DejaVu Sans Mono",monospace !important;}'
+    '.gm-code code{background:transparent !important;color:inherit !important;'
+    'white-space:pre;padding:0 !important;border:0 !important;font:inherit !important;display:block;}'
+    '</style>'
+)
+# 다이어그램 figure/이미지는 건드리지 않고, 코드/수식 <pre><code>만 매칭.
+_RE_CODE_BLOCK = re.compile(
+    r'<pre[^>]*>\s*<code([^>]*)>(.*?)</code>\s*</pre>', re.S | re.I
+)
+_RE_CODE_LANG = re.compile(r'language-([A-Za-z0-9+#.\-]+)', re.I)
+
+
+def beautify_code_blocks(html: str) -> str:
+    """남은 <pre><code> 블록을 .gm-code-box 다크 카드(언어 라벨 포함)로 재작성.
+
+    - 코드 본문은 그대로 보존(인라인 스타일만 제거).
+    - language-<x> 클래스가 있으면 라벨 표시 + 클래스 유지.
+    - 이미 미화됐으면(중복 호출) 그대로 — idempotent.
+    """
+    if not html or "<pre" not in html or "gm-code-box" in html:
+        return html
+    found = [False]
+
+    def _repl(m):
+        code_attrs, body = m.group(1) or "", m.group(2) or ""
+        lm = _RE_CODE_LANG.search(code_attrs)
+        lang = lm.group(1) if lm else ""
+        found[0] = True
+        code_cls = f' class="language-{lang}"' if lang else ""
+        label = _LANG_LABEL.get(lang.lower(), lang)
+        label_html = (
+            f'<span class="gm-code-lang">{_html.escape(label)}</span>' if label else ""
+        )
+        return (
+            '<div class="gm-code-box">'
+            f'{label_html}'
+            f'<pre class="gm-code"><code{code_cls}>{body}</code></pre>'
+            '</div>'
+        )
+
+    out = _RE_CODE_BLOCK.sub(_repl, html)
+    if found[0] and "data-gm-codestyle" not in out:
+        out = _CODE_STYLE + out
+    return out
+
 
 # 발행 끝에 붙는 '원본 데이터(raw source)' 접힘 블록 제거용
 _RE_RAW_SOURCE = re.compile(
@@ -404,6 +475,9 @@ def render_sources_section(sources, heading: str = "참고 자료", max_items: i
 
 # --- 메타 설명용 자동 excerpt (Rank Math가 글 발췌를 메타 description으로 사용) ---
 _RE_HEADING_BLOCK = re.compile(r'<h[1-6]\b[^>]*>.*?</h[1-6]>', re.S | re.I)
+# <style>/<script>/<pre>는 내용(CSS·JS·코드)이 발췌에 새면 안 되므로 통째로 제거.
+# (특히 주입한 <style> CSS가 strip_tags 후 발췌 텍스트로 노출되던 버그 방지.)
+_RE_NON_EXCERPT = re.compile(r'<(style|script|pre)\b[^>]*>.*?</\1\s*>', re.S | re.I)
 _RE_TAG = re.compile(r'<[^>]+>')
 _RE_WS = re.compile(r'\s+')
 
@@ -411,11 +485,13 @@ _RE_WS = re.compile(r'\s+')
 def auto_excerpt(html: str, max_len: int = 155) -> str:
     """본문 HTML에서 메타 설명용 발췌를 생성.
 
-    헤딩 블록을 건너뛴 첫 본문 텍스트를 max_len 자 내에서 단어 경계로 자른다.
+    <style>/<script>/<pre>(CSS·JS·코드) 블록과 헤딩을 제거한 첫 본문 텍스트를
+    max_len 자 내에서 단어 경계로 자른다.
     """
     if not html:
         return ""
-    text = _RE_HEADING_BLOCK.sub(" ", html)
+    text = _RE_NON_EXCERPT.sub(" ", html)
+    text = _RE_HEADING_BLOCK.sub(" ", text)
     text = _RE_TAG.sub(" ", text)
     text = _html.unescape(text)
     text = _RE_WS.sub(" ", text).strip()
@@ -734,7 +810,9 @@ class WordPressUploader:
         # 이미 섹션이 있으면(중복 호출) 다시 붙이지 않는다.
         if sources and not _RE_SOURCES_MARKER.search(content_html):
             content_html = content_html + render_sources_section(sources)
-        # 다크 코드박스(수식 등) 대비 보정 — 테마 code 배경이 글자를 묻는 문제 방지
+        # 코드/수식 블록을 일관된 다크 카드로 미화(언어 라벨 포함)
+        content_html = beautify_code_blocks(content_html)
+        # 잔여 <pre style=dark><code> 대비 보정 안전망(미화에서 누락된 케이스)
         content_html = fix_styled_code_contrast(content_html)
 
         _status = status or os.getenv("WORDPRESS_DEFAULT_STATUS", "publish")

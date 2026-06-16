@@ -118,7 +118,9 @@ Telegram에서 발행 시 사용자에게 블로그 key 선택 prompt 전송. ti
 - **WaveDrom 톱니 정규화**: wave를 `"0000"`처럼 리터럴 반복하면 WaveDrom이 매 경계에 재샘플 톱니(notch)를 그린다. `render_kroki_png`(wavedrom)에서 `_normalize_wavedrom`이 인접 동일 레벨 `{0,1,x,z}`만 `.`로 접어 제거(클럭·버스데이터·gap 미변경, 의도된 글리치 보존).
 - **컨테이너 매칭**: `_RE_DIAGRAM_BLOCK`은 `<pre[^>]*>`로 **속성 붙은 `<pre style="…">`도 매칭**(AI 변환기가 bare/styled를 비결정적으로 출력). bare-only면 일부 글에서 전 다이어그램이 코드로 노출되니 주의.
 - **클릭 확대(라이트박스)**: 각 다이어그램 이미지를 순수 CSS `:target` 라이트박스로 감싼다(썸네일 클릭=풀스크린 원본, 오버레이 클릭=닫기). JS 없음(WAF 안전), `<style data-gm-lightbox>` 글당 1회. WordPress `unfiltered_html` 사용자라 `<style>` 보존됨.
-- **다크 코드박스 대비 보정**: AI가 `<pre style="background:#2c3e50"><code>`로 수식/평문을 넣으면 테마 `code{background:연한색}`가 글자를 묻는다. `create_post`→`fix_styled_code_contrast`가 `pre[style*="background"] code{background:transparent!important;color:inherit!important}` 스코프 `<style>`(`data-gm-codefix`)를 1회 주입해 `<pre>` 배경이 보이게 한다(일반 코드블록 무관, idempotent).
+- **코드 블록 미화(`beautify_code_blocks`)**: (다이어그램 변환 후) 남은 `<pre><code>`를 일관된 다크 카드 `.gm-code-box`(언어 라벨 헤더 + 둥근 모서리 + monospace)로 결정론적 재작성. AI 인라인 스타일 제거 → 주입 `<style data-gm-codestyle>`가 모양 통제. `_LANG_LABEL`로 라벨 prettify(systemverilog→SystemVerilog). idempotent(`gm-code-box` 존재 시 skip). inline-dark 박스도 카드로 흡수. `create_post`에 배선.
+- **대비 보정 안전망(`fix_styled_code_contrast`)**: 미화에서 누락된 잔여 `<pre style="background…"><code>`용. `pre[style*="background"] code{background:transparent!important}` 1회 주입(`data-gm-codefix`).
+- **발췌(excerpt) 안전**: `auto_excerpt`는 `<style>·<script>·<pre>` 블록을 내용째 제거 후 발췌 생성 — 주입 CSS가 미리보기/메타설명으로 새지 않게 한다.
 
 ### 검증
 

@@ -4,6 +4,19 @@
 
 ---
 
+## 메인 미리보기/메타설명에 CSS(`.gm-lb{display:none…}`)가 노출
+
+- **증상**: 글 본문은 정상인데 **메인 페이지 미리보기(발췌)** 와 검색 메타설명이 `.gm-lb{display:none;position:fixed;…}` 같은 **CSS 텍스트**로 깨져 보임.
+- **원인**: 라이트박스/코드 보정용 `<style>` 블록을 본문 **맨 앞에 주입**했는데, `auto_excerpt`가 `<[^>]+>`로 **태그만 벗기고 `<style>` 안 CSS 텍스트는 남겨** 그게 발췌 첫 글자가 됨. (Rank Math meta description도 같은 발췌를 써서 SEO 오염.)
+- **해결**: `auto_excerpt`가 발췌 추출 전에 `<style>·<script>·<pre>` 블록을 **내용째 제거**(`_RE_NON_EXCERPT`). 누수된 기존 글은 발췌 재설정+PATCH(전수 탐지: excerpt에 `.gm-lb`/`display:none`/`data-gm-` 시그니처). (2026-06-17)
+- **복구 절차**: (a) `GET /posts?context=edit`로 각 글 `excerpt.raw` 점검 (b) 시그니처 매칭 글에 `excerpt=auto_excerpt(content)` 재설정 PATCH (c) 신규 글은 봇 재시작 후 자동.
+- **관련 사고**: 2026-06-17.
+- **재발 감지**: 발행 후 `excerpt.raw`에 `{`/`display:`/`data-gm-` 포함 여부. 본문에 `<style>`/`<script>`/`<pre>`를 주입할 때는 **반드시 발췌 생성에서 제외**할 것.
+
+> Claude 진단 미스: 없음. 사용자가 미리보기 깨짐 + "내용은 정상"을 정확히 제시 → `excerpt.raw`를 직접 조회해 CSS 텍스트가 발췌로 들어간 것을 즉시 특정. 교훈: 주입한 `<style>`가 **발췌 경로**에 영향(태그만 strip하면 CSS 텍스트 잔존).
+
+---
+
 ## 수식/평문 다크 코드박스가 빈 박스처럼 보임(글자 안 보임)
 
 - **증상**: `<pre>` 다크 박스 안 수식("Setup 제약 : T_period ≥ …")이 보이지 않고 빈 박스처럼 깨져 보임.

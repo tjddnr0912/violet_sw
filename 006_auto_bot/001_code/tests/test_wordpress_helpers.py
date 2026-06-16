@@ -500,11 +500,55 @@ def test_fix_styled_code_contrast_idempotent():
     assert once == twice and twice.count("data-gm-codefix") == 1
 
 
-def test_create_post_applies_code_contrast_fix(monkeypatch):
+def test_create_post_beautifies_code_blocks(monkeypatch):
     captured = _capture_post(monkeypatch)
     up = _uploader()
+    # 다크 인라인 박스도 create_post에서 .gm-code-box 카드로 미화됨
     up.create_post("T", '<pre style="background:#2c3e50"><code>eq</code></pre>', status="publish")
-    assert "data-gm-codefix" in captured["payload"]["content"]
+    c = captured["payload"]["content"]
+    assert "gm-code-box" in c and "data-gm-codestyle" in c
+    assert "background:#2c3e50" not in c   # AI 인라인 스타일 제거
+    assert "eq" in c
+
+
+# --- 코드 블록 미화(beautify) ---
+def test_beautify_code_blocks_wraps_with_label():
+    html = '<pre><code class="language-systemverilog">always_ff @(posedge clk)</code></pre>'
+    out = wp.beautify_code_blocks(html)
+    assert 'class="gm-code-box"' in out
+    assert '<span class="gm-code-lang">SystemVerilog</span>' in out  # 라벨 prettify
+    assert 'class="language-systemverilog"' in out                  # 클래스 유지
+    assert "always_ff @(posedge clk)" in out                        # 본문 보존
+    assert "data-gm-codestyle" in out                               # 스타일 1회
+
+
+def test_beautify_code_blocks_strips_inline_dark_style():
+    html = '<pre style="background:#2c3e50"><code style="color:#ecf0f1">x ≥ y</code></pre>'
+    out = wp.beautify_code_blocks(html)
+    assert 'class="gm-code"' in out and "background:#2c3e50" not in out
+    assert "x ≥ y" in out
+
+
+def test_beautify_code_blocks_idempotent():
+    html = '<pre><code class="language-python">print(1)</code></pre>'
+    once = wp.beautify_code_blocks(html)
+    twice = wp.beautify_code_blocks(once)
+    assert once == twice and twice.count("data-gm-codestyle") == 1
+
+
+def test_beautify_no_pre_unchanged():
+    html = '<p>no code here</p>'
+    assert wp.beautify_code_blocks(html) == html
+
+
+def test_auto_excerpt_strips_style_script_pre():
+    html = ('<style data-gm-lightbox>.gm-lb{display:none;position:fixed}</style>'
+            '<p>실제 본문 텍스트가 여기서 시작한다 그리고 충분히 길게 이어진다.</p>'
+            '<pre><code>this code must not appear</code></pre>')
+    exc = wp.auto_excerpt(html)
+    assert exc.startswith("실제 본문")
+    assert ".gm-lb" not in exc and "display:none" not in exc
+    assert "this code must not appear" not in exc
 
 
 def test_render_diagrams_leaves_plain_code_untouched(monkeypatch):
