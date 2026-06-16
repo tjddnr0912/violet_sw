@@ -79,7 +79,31 @@ pub(crate) struct MonitorState {
     pub enabled: bool,
 }
 
-/// Per-timestep postponed-region queue + the global monitor singleton.
+/// A pending deferred-immediate-assertion report (IEEE 1800-2017 §16.4) captured
+/// when the action SysTask was REACHED, held until the maturation region. The
+/// message text is RENDERED AT REACH — §16.4.3: a deferred action's input
+/// arguments are sampled when the assertion is evaluated, NOT at maturation.
+/// (`$time`/`%m` are reach-time too: identical to maturation for `$time` since a
+/// deferred assert matures in the SAME time slot, and the registering scope for
+/// `%m`.) `action_sid` re-keys the `severities` table at maturation so the text
+/// routes correctly — `$error`→diagnostic stream + exit class, `$fatal`→abort, a
+/// plain `$display`→stdout.
+#[derive(Clone)]
+pub(crate) struct DeferredReport {
+    /// StmtId of the action SysTask — re-keys `severities` at maturation.
+    pub action_sid: u32,
+    /// The action's `SysTaskId` (governs the stdout newline for non-severity tasks).
+    pub which: sim_ir::SysTaskId,
+    /// The action text, fully rendered at REACH (reach-time arg values).
+    pub message: String,
+}
+
+/// Per-timestep postponed-region queue + the global monitor singleton + the
+/// deferred-assert maturation queues (§16.4). The deferred maps are keyed by
+/// `(marker StmtId, activity id, activity GENERATION)`: the generation
+/// disambiguates a recycled activity slot (`free_activities`) so a re-issued
+/// child cannot flush a COMPLETED prior instance's still-pending report
+/// (otherwise a real failure would silently vanish).
 #[derive(Default)]
 pub(crate) struct Postponed {
     /// FIFO of pending strobes for the CURRENT timestep. Drained-and-CLEARED at
@@ -87,6 +111,14 @@ pub(crate) struct Postponed {
     pub strobes: Vec<FmtCapture>,
     /// The global monitor (replace-on-redefine). `None` until first `$monitor`.
     pub monitor: Option<MonitorState>,
+    /// `assert #0` pending reports, keyed by `(marker StmtId, activity id,
+    /// generation)` so a re-reach of the SAME assertion instance REPLACES its
+    /// prior report (flush-on-re-reach). Drained at the Observed region each
+    /// settled timestep.
+    pub deferred_observed: std::collections::BTreeMap<(u32, u32, u32), DeferredReport>,
+    /// `assert final` pending reports — same keying; drained at the Reactive
+    /// region, after Observed and before Postponed (IEEE 1800 §4.4 order).
+    pub deferred_reactive: std::collections::BTreeMap<(u32, u32, u32), DeferredReport>,
 }
 
 pub(crate) struct SimState<'a> {
@@ -170,6 +202,12 @@ pub(crate) struct SimState<'a> {
     pub plusargs: Vec<String>,
     /// P2-E `final` ProcIds (from `SimOpts.final_procs`).
     pub final_procs: std::collections::BTreeSet<u32>,
+    /// §16.4 deferred-assert flush markers (from `SimOpts.defer_marks`): marker
+    /// StmtId → region. Empty ⇒ no deferred asserts in the design.
+    pub defer_marks: crate::DeferMarkTable,
+    /// §16.4 deferred-assert actions (from `SimOpts.defer_acts`): action StmtId →
+    /// (marker StmtId, region).
+    pub defer_acts: crate::DeferActTable,
     /// v7 file I/O: fd-form table (`$fopen(name, mode)` → 0x8000_0003…).
     /// 0x8000_0000..=0x8000_0002 are reserved (stdin/stdout/stderr).
     pub files: std::collections::BTreeMap<u32, std::fs::File>,
@@ -289,6 +327,8 @@ impl<'a> SimState<'a> {
             rng: RngCells::default(),
             plusargs: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
+            defer_marks: crate::DeferMarkTable::new(),
+            defer_acts: crate::DeferActTable::new(),
             files: std::collections::BTreeMap::new(),
             mcd_files: std::collections::BTreeMap::new(),
             next_fd: 3,

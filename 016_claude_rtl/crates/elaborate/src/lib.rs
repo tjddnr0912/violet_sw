@@ -136,6 +136,36 @@ pub type SeverityTable = std::collections::BTreeMap<u32, SeverityKind>;
 /// Out-of-band like the other tables; the frozen `SysTaskId` is unchanged.
 pub type RadixTable = std::collections::BTreeMap<u32, u8>;
 
+/// Maturation region of a deferred immediate assertion (IEEE 1800 §16.4 / §4.4),
+/// mirrored at the engine. NOT part of `SimIr` and deliberately NOT
+/// `sim_ir::RegionTag` (which is golden-reachable via `WakeKey`→`Process`→`SimIr`
+/// and would flip the root hash) — a fresh out-of-band enum that rides `SimOpts`
+/// and the `.velab` trailer like every other sidecar, so the golden root stays
+/// byte-identical and `format_version` is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DeferRegion {
+    /// `assert #0` — matures in the Observed region.
+    Observed,
+    /// `assert final` — matures in the Reactive region.
+    Reactive,
+}
+
+/// Deferred-assert FLUSH-MARKER side table (§16.4): the StmtId of the synthesized
+/// no-op marker emitted just before each deferred assertion's `Branch` → its
+/// region. The marker StmtId IS the assertion-instance identity; reaching it (in
+/// the Active region) cancels any prior pending report for `(marker_sid,
+/// activity)` — this is flush-on-re-reach, the defining deferred-assert
+/// behavior. Out-of-band; the frozen IR is unchanged (the marker is an ordinary
+/// `SysTaskId::Display` stmt the engine suppresses via this table).
+pub type DeferMarkTable = std::collections::BTreeMap<u32, DeferRegion>;
+
+/// Deferred-assert ACTION side table (§16.4): the StmtId of each pass/fail action
+/// SysTask (the `$error`/`$display`/`$fatal`/… inside a deferred assert's arms) →
+/// `(owning marker StmtId, region)`. Reaching the action ENQUEUES a report under
+/// `(marker_sid, activity)` for region maturation instead of firing inline.
+/// Out-of-band like the other tables.
+pub type DeferActTable = std::collections::BTreeMap<u32, (u32, DeferRegion)>;
+
 /// Assign-rank side table (IEEE 1364 §9.3.1): the StmtIds of `Stmt::Force` /
 /// `Stmt::Release` statements that are really procedural `assign`/`deassign`
 /// (the frozen `Stmt` has no Assign/Deassign variants — they reuse the force
@@ -177,6 +207,10 @@ pub struct Sidecars {
     pub net_dims: NetDimsTable,
     /// P2-E: ProcIds of `final` blocks (skip arming; run at end of sim).
     pub final_procs: std::collections::BTreeSet<u32>,
+    /// §16.4 deferred-assert flush markers: marker StmtId → region.
+    pub defer_marks: DeferMarkTable,
+    /// §16.4 deferred-assert actions: action StmtId → (marker StmtId, region).
+    pub defer_acts: DeferActTable,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -243,6 +277,8 @@ pub fn elaborate_with_timescale_roots(
         queue_bounds: std::mem::take(&mut el.queue_bounds),
         net_dims: el.array_dims.clone(), // the sparse decl map IS the table
         final_procs: el.final_procs.clone(),
+        defer_marks: std::mem::take(&mut el.defer_marks),
+        defer_acts: std::mem::take(&mut el.defer_acts),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -1151,6 +1187,18 @@ struct Elaborator<'s> {
     // v8 SVA: concurrent assertions collected during statement lowering, drained
     // into synthesized clocked checker processes after each module's process loop.
     pending_sva: Vec<PendingSva>,
+    // §16.4 deferred immediate asserts (out-of-band, engine-facing): marker
+    // StmtId → region, and action StmtId → (marker StmtId, region). See
+    // [`DeferMarkTable`]/[`DeferActTable`].
+    defer_marks: DeferMarkTable,
+    defer_acts: DeferActTable,
+    // Set while lowering a deferred assert's pass/fail arms: (marker StmtId,
+    // region). The `push_stmt` hook records every SysTask emitted under it into
+    // `defer_acts`, path-independently (severity OR plain $display).
+    cur_defer: Option<(u32, DeferRegion)>,
+    // One-shot W-note: a deferred-assert arm contained no deferrable action
+    // (only side-effecting statements), so it ran inline (evaluate-when-reached).
+    defer_inline_warned: bool,
 }
 
 impl<'s> Elaborator<'s> {
@@ -1201,6 +1249,10 @@ impl<'s> Elaborator<'s> {
             event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
             pending_sva: Vec::new(),
+            defer_marks: DeferMarkTable::new(),
+            defer_acts: DeferActTable::new(),
+            cur_defer: None,
+            defer_inline_warned: false,
             cur_proc: 0,
             in_fork: false,
             disable_stack: Vec::new(),
@@ -1280,6 +1332,17 @@ impl<'s> Elaborator<'s> {
     /// THE deterministic stmt append point (mirror of [`Self::push_expr`]).
     #[inline]
     fn push_stmt(&mut self, s: ir::Stmt) -> u32 {
+        // §16.4: while lowering a deferred assert's pass/fail arm, every SysTask
+        // emitted (the $error/$display/$fatal/… action — any lowering path) is
+        // recorded as a deferred ACTION so the engine enqueues it under the
+        // assertion's marker instead of firing it inline. Path-independent: both
+        // `lower_severity_task` and the plain `$display` path funnel through here.
+        if let Some((marker, region)) = self.cur_defer {
+            if matches!(s, ir::Stmt::SysTask { .. }) {
+                let id = self.stmts.len() as u32;
+                self.defer_acts.insert(id, (marker, region));
+            }
+        }
         let id = self.stmts.len() as u32;
         self.stmts.push(s);
         id
@@ -9162,6 +9225,70 @@ impl<'s> Elaborator<'s> {
                 }
                 b.goto(merge);
                 b.start_block(merge); // continue in merge (post-condition)
+            }
+
+            // ── DEFERRED IMMEDIATE ASSERT (§16.4) — If + flush marker ─
+            // `assert #0` (Observed) / `assert final` (Reactive): lowered like an
+            // immediate assert (Branch over pass/fail BBs) PLUS a per-assertion
+            // flush marker emitted before the Branch. The action SysTask(s) are
+            // recorded out-of-band so the engine enqueues them for region
+            // maturation with flush-on-re-reach instead of firing inline.
+            ast::Stmt::DeferredAssert {
+                region,
+                cond,
+                then_s,
+                else_s,
+                ..
+            } => {
+                let dr = match region {
+                    ast::AssertDefer::Observed => DeferRegion::Observed,
+                    ast::AssertDefer::Reactive => DeferRegion::Reactive,
+                };
+                // Clear any enclosing deferred context so the marker itself is not
+                // recorded as an outer assert's action (nested deferreds are
+                // pathological but kept correct).
+                let outer = self.cur_defer.take();
+                // (1) FLUSH MARKER: a suppressed no-op `$display`. Reaching it (in
+                //     the Active region) cancels any prior pending report for this
+                //     assertion instance + activity — flush-on-re-reach (§16.4).
+                let marker = self.push_stmt(ir::Stmt::SysTask {
+                    which: ir::SysTaskId::Display,
+                    fmt: None,
+                    args: Vec::new(),
+                });
+                self.defer_marks.insert(marker, dr);
+                b.push_stmt_id(marker);
+                // (2) Lower like an `If`; the `push_stmt` hook (keyed on
+                //     `cur_defer`) records each arm's action SysTasks into
+                //     `defer_acts` under this marker.
+                let cond_id = self.lower_expr(cond);
+                let then_bb = b.new_block();
+                let else_bb = b.new_block();
+                let merge = b.new_block();
+                b.end_block_with(ir::Terminator::Branch {
+                    cond: cond_id,
+                    then_bb: then_bb.raw(),
+                    else_bb: else_bb.raw(),
+                });
+                let n_before = self.defer_acts.len();
+                self.cur_defer = Some((marker, dr));
+                b.start_block(then_bb);
+                self.lower_stmt(b, then_s);
+                b.goto(merge);
+                b.start_block(else_bb);
+                self.lower_stmt(b, else_s);
+                b.goto(merge);
+                self.cur_defer = outer;
+                b.start_block(merge);
+                // (3) Neither arm produced a deferrable action ⇒ it ran inline
+                //     (evaluate-when-reached): a documented hand-IEEE corner.
+                if self.defer_acts.len() == n_before && !self.defer_inline_warned {
+                    self.defer_inline_warned = true;
+                    self.warn(
+                        "a deferred assertion's action contains no $display/$error-class \
+                         statement; it executes inline (evaluate-when-reached), not deferred",
+                    );
+                }
             }
 
             // ── CASE / CASEZ / CASEX — Branch chain ─────────────────

@@ -3127,14 +3127,15 @@ impl<'t, 's> Parser<'t, 's> {
     /// `$error("Assertion failed")`, which lowers through the severity table
     /// (stderr diagnostic + nonzero exit; run continues).
     ///
-    /// `assert final (expr)` is a FINAL deferred immediate assertion (§16.4):
-    /// evaluated WHEN REACHED, its report matured in the Reactive region.
-    /// vita has no Reactive-region maturation, so `final` is approximated as
-    /// evaluate-when-reached — the SAME `Stmt::If` desugar as a simple immediate
-    /// assert (exact for a stable condition, hand-IEEE under an intra-step glitch;
-    /// iverilog rejects deferred assertions, so there is no oracle). The `#0`
-    /// (Observed deferred) form needs Observed-region maturation + a flush queue
-    /// and stays a LOUD parse error. Concurrent (`assert property`) is handled
+    /// DEFERRED immediate assertions (§16.4): `assert #0 (expr)` (Observed
+    /// deferred) and `assert final (expr)` (Reactive deferred) are evaluated WHEN
+    /// REACHED but their action MATURES in a later scheduling region with
+    /// flush-on-re-reach. These parse to `Stmt::DeferredAssert` (carrying the
+    /// region); elaborate emits a per-assertion flush marker + records the action
+    /// StmtIds in the deferred sidecars, and the engine adds genuine Observed/
+    /// Reactive maturation queues. iverilog rejects deferred assertions, so there
+    /// is no oracle (hand-IEEE). A non-zero `#<n>` delay on an assert is NOT a
+    /// deferred assertion → loud. Concurrent (`assert property`) is handled
     /// separately. Dangling-else: in `assert (c) if (x) a; else b;` the else binds
     /// to the inner if and the assert gets the synthesized default.
     fn parse_assert(&mut self) -> Stmt {
@@ -3144,19 +3145,31 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Property) {
             return self.parse_concurrent_assert(start);
         }
-        // `#0` (Observed deferred) assertion — needs Observed-region maturation +
-        // a flush queue this subset does not have → loud, never silently treated
-        // as immediate (whose intra-step glitch behavior would differ).
-        if self.peek() == Some(TokenKind::Hash) {
-            self.error(
-                "a `#0` (Observed deferred) assertion is unsupported in this subset \
-                 (use immediate `assert` or `assert final`)",
-            );
-            return self.stmt_error_at(start);
-        }
-        // `final` (Reactive deferred) assertion — approximated as evaluate-when-
-        // reached (same `Stmt::If` desugar as immediate; see the method doc).
-        let _deferred_final = self.eat_kw(Kw::Final);
+        // Deferred immediate assertion (IEEE 1800-2017 §16.4): `assert #0` is the
+        // Observed-deferred form, `assert final` the Reactive-deferred form. Both
+        // sample the condition WHEN REACHED but MATURE the pass/fail action in a
+        // later scheduling region with flush-on-re-reach (see Stmt::DeferredAssert
+        // + the engine's Observed/Reactive maturation queues). A plain `assert`
+        // (no `#0`/`final`) stays the immediate `Stmt::If` desugar below.
+        let defer: Option<AssertDefer> = if self.peek() == Some(TokenKind::Hash) {
+            self.bump(); // `#`
+                         // Only `#0` is the Observed deferred form (§16.4). A non-zero delay on
+                         // an assert is not a deferred assertion → loud.
+            if matches!(self.peek(), Some(TokenKind::IntDecimal)) && self.cur_text() == "0" {
+                self.bump(); // `0`
+                Some(AssertDefer::Observed)
+            } else {
+                self.error(
+                    "a deferred-assertion delay must be `#0` (the Observed deferred form); \
+                     a non-zero `#` delay on an assertion is unsupported",
+                );
+                return self.stmt_error_at(start);
+            }
+        } else if self.eat_kw(Kw::Final) {
+            Some(AssertDefer::Reactive)
+        } else {
+            None
+        };
         if self.peek() != Some(TokenKind::LParen) {
             self.error("'(' after 'assert'");
             return self.stmt_error_at(start);
@@ -3188,11 +3201,24 @@ impl<'t, 's> Parser<'t, 's> {
                 span: sp,
             })
         };
-        Stmt::If {
-            cond,
-            then_s,
-            else_s: Some(else_s),
-            span: start.to(self.prev_span()),
+        let span = start.to(self.prev_span());
+        match defer {
+            // Deferred (#0 / final): preserve the region so elaborate emits the
+            // flush marker + records the action StmtIds in the deferred sidecars.
+            Some(region) => Stmt::DeferredAssert {
+                region,
+                cond,
+                then_s,
+                else_s,
+                span,
+            },
+            // Plain immediate assert: the byte-identical `Stmt::If` desugar.
+            None => Stmt::If {
+                cond,
+                then_s,
+                else_s: Some(else_s),
+                span,
+            },
         }
     }
 
@@ -4856,6 +4882,16 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                 rename_ident_in_stmt(s, from, to);
             }
         }
+        Stmt::DeferredAssert {
+            cond,
+            then_s,
+            else_s,
+            ..
+        } => {
+            fix_expr(cond, from, to);
+            rename_ident_in_stmt(then_s, from, to);
+            rename_ident_in_stmt(else_s, from, to);
+        }
         Stmt::WaitFork { .. } | Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
     }
 }
@@ -5700,15 +5736,38 @@ endmodule
         assert!(matches!(else_s.as_deref(), Some(Stmt::Blocking { .. })));
     }
 
-    // S15c. the DEFERRED (`assert #0` / `assert final`) forms stay LOUD parse
-    //       errors; the concurrent (`assert property`) subset now PARSES (v8).
+    // S15c. the DEFERRED forms now PARSE to `Stmt::DeferredAssert` (faithful
+    //       deferred-assert slice): `#0` = Observed, `final` = Reactive. A
+    //       non-zero `#<n>` delay on an assert stays a LOUD parse error.
     #[test]
-    fn s15c_deferred_assert_is_loud() {
-        let (_, errs2) = p("module m;\ninitial assert #0 (a);\nendmodule");
-        assert!(
-            !errs2.is_empty(),
-            "deferred assertion must be a loud parse error"
-        );
+    fn s15c_deferred_assert_parses_observed_and_reactive() {
+        for (src, want) in [
+            (
+                "module m;\ninitial assert #0 (a);\nendmodule",
+                AssertDefer::Observed,
+            ),
+            (
+                "module m;\ninitial assert final (a);\nendmodule",
+                AssertDefer::Reactive,
+            ),
+        ] {
+            let (su, errs) = p(src);
+            assert!(errs.is_empty(), "{src}: {errs:?}");
+            let su = su.unwrap();
+            let m = first_module(&su);
+            let Some(ModuleItem::Proc(pb)) =
+                m.body.iter().find(|i| matches!(i, ModuleItem::Proc(_)))
+            else {
+                panic!("no proc block")
+            };
+            let Stmt::DeferredAssert { region, .. } = &*pb.body else {
+                panic!("not DeferredAssert: {:?}", pb.body)
+            };
+            assert_eq!(*region, want, "{src}");
+        }
+        // a non-zero `#` delay on an assert is NOT a deferred assert → loud.
+        let (_, errs) = p("module m;\ninitial assert #1 (a);\nendmodule");
+        assert!(!errs.is_empty(), "`assert #1` must be a loud parse error");
     }
 
     // S15d (v8 SVA subset). `assert property(@(clk) a |-> b)` parses to a

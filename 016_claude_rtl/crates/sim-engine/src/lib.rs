@@ -47,8 +47,8 @@ use sim_ir::SimIr;
 /// Re-exported from `elaborate` so callers thread the join-mode side table into
 /// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
 pub use elaborate::{
-    AssignRankTable, ForkModeTable, JoinMode, NetDimsTable, NetNameTable, QueueBoundTable,
-    RadixTable, SeverityKind, SeverityTable, Sidecars,
+    AssignRankTable, DeferActTable, DeferMarkTable, DeferRegion, ForkModeTable, JoinMode,
+    NetDimsTable, NetNameTable, QueueBoundTable, RadixTable, SeverityKind, SeverityTable, Sidecars,
 };
 pub use sched::FinishReason;
 
@@ -156,6 +156,11 @@ pub struct SimOpts {
     /// converts the first match's remainder. Pure runtime input — never
     /// hashed into artifacts.
     pub plusargs: Vec<String>,
+    /// §16.4 deferred-assert flush markers: marker StmtId → maturation region.
+    /// EMPTY default ⇒ no deferred asserts (every existing caller byte-identical).
+    pub defer_marks: DeferMarkTable,
+    /// §16.4 deferred-assert actions: action StmtId → (marker StmtId, region).
+    pub defer_acts: DeferActTable,
 }
 
 impl Default for SimOpts {
@@ -179,6 +184,8 @@ impl Default for SimOpts {
             threads: 1,
             plusargs: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
+            defer_marks: DeferMarkTable::new(),
+            defer_acts: DeferActTable::new(),
         }
     }
 }
@@ -240,6 +247,8 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.threads = opts.threads;
     st.plusargs = opts.plusargs.clone();
     st.final_procs = opts.final_procs.clone();
+    st.defer_marks = opts.defer_marks.clone();
+    st.defer_acts = opts.defer_acts.clone();
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

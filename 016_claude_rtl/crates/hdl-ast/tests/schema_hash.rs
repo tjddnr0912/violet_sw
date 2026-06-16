@@ -12,7 +12,11 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-16 intra-assignment event control (`Stmt::Blocking.event:
+/// Re-pinned 2026-06-16 deferred immediate assertions (`Stmt::DeferredAssert` +
+/// `AssertDefer` enum — `assert #0` (Observed) / `assert final` (Reactive); all
+/// `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0: a
+/// flush-marker + region maturation queues carried out-of-band). (Previous re-pins:
+/// 2026-06-16 intra-assignment event control (`Stmt::Blocking.event:
 /// Option<IntraEvent>` + new `IntraEvent` struct — `lhs = [repeat(n)] @(ev) rhs`;
 /// all `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0
 /// capture/wait/write desugar). (Previous re-pins:
@@ -38,8 +42,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    164, 81, 109, 219, 10, 29, 142, 93, 28, 176, 171, 32, 153, 127, 37, 253, 38, 77, 197, 162, 161,
-    230, 202, 91, 233, 72, 210, 179, 104, 96, 169, 174,
+    128, 57, 124, 18, 0, 90, 217, 217, 134, 108, 156, 6, 83, 66, 179, 129, 129, 135, 105, 71, 48,
+    206, 18, 30, 97, 117, 200, 76, 223, 48, 107, 218,
 ];
 
 #[test]

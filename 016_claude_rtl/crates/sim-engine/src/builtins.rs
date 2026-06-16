@@ -27,6 +27,13 @@ pub(crate) fn dispatch(
     args: &[u32],
     sid: u32,
 ) -> Ctl {
+    // §16.4 DEFERRED immediate assertion: a flush MARKER (cancel prior pending
+    // report) or a deferred ACTION (enqueue for Observed/Reactive maturation) is
+    // intercepted here and does NOT fire inline. Bypassed while the engine is
+    // maturing a captured action (then it re-dispatches for real, below).
+    if sched.try_defer(which, fmt, args, sid) {
+        return Ctl::Continue;
+    }
     // P1-1: `$fatal`/`$error`/`$warning`/`$info` lower as `Display` plus an
     // out-of-band severity entry keyed by StmtId — intercept BEFORE the normal
     // stdout print so the text reaches the DIAGNOSTIC stream only (doc-13).
@@ -737,6 +744,19 @@ fn run_severity(
     fmt: Option<u32>,
     args: &[u32],
 ) -> Ctl {
+    let message = format_args_str(sched, fmt, args, None);
+    emit_severity_message(sched, sev, message)
+}
+
+/// Emit an already-rendered severity message to the diagnostic stream and apply
+/// its control/exit-class effect. Split out of `run_severity` so a §16.4
+/// deferred assert can render its text at REACH and emit it at maturation
+/// (the args are sampled at reach per §16.4.3, not re-evaluated here).
+pub(crate) fn emit_severity_message(
+    sched: &mut Scheduler,
+    sev: crate::SeverityKind,
+    mut message: String,
+) -> Ctl {
     use crate::SeverityKind as K;
     use diag::{Diagnostic, LogEvent, MsgCode, Severity, TimeStamp};
     let (severity, code) = match sev {
@@ -745,7 +765,6 @@ fn run_severity(
         K::Warning => (Severity::Warning, MsgCode::RunUserWarning),
         K::Info => (Severity::Info, MsgCode::RunUserInfo),
     };
-    let mut message = format_args_str(sched, fmt, args, None);
     if message.is_empty() {
         message = code.title().to_string();
     }

@@ -17,6 +17,7 @@ use crate::eval::{EvalCtx, NetReader};
 use crate::exec::{run_process, Kernel, Offsets, Step};
 use crate::state::{scalar_bit0, SimState};
 use crate::value::Value;
+use crate::DeferRegion;
 
 /// A schedulable process resume. `proc` is a runtime ACTIVITY id (index into
 /// `Scheduler::activities`), NOT a declaration index: top-level processes seed
@@ -67,6 +68,12 @@ pub(crate) struct Activity {
     /// waiter wakes (the `resume` block) are unaffected — only the static
     /// top-sensitivity re-fire is gated.
     pub busy: bool,
+    /// Incarnation counter for this activity SLOT (§16.4 deferred-assert keying):
+    /// bumped each time the slot is re-issued to a new fork child via
+    /// `free_activities`. Distinguishes a completed activation's pending deferred
+    /// report from a later activation that recycled the same `aid`. Top-level
+    /// processes never recycle, so their generation stays 0.
+    pub gen: u32,
 }
 
 /// A process blocked on `wait fork;` (IEEE §9.6.1) — parked until all of its
@@ -194,6 +201,10 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// Recycled wheel-bucket Vecs: `wheel.remove` would otherwise drop one
     /// bucket allocation per distinct simulation time (O(timesteps) churn).
     bucket_pool: Vec<Vec<(RegionTag, Ready)>>,
+    /// Generation of the CURRENTLY-running activity (`activities[cur_aid].gen`),
+    /// set alongside `cur_aid`. Keys §16.4 deferred reports so a recycled `aid`
+    /// cannot flush a completed prior instance's pending report.
+    cur_gen: u32,
 }
 
 /// Why the run ended (scheduler precedence order).
@@ -239,6 +250,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             scratch_changed: Vec::new(),
             scratch_edges: Vec::new(),
             bucket_pool: Vec::new(),
+            cur_gen: 0,
         }
     }
 
@@ -327,6 +339,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 dead: false,
                 wait_fork: None,
                 busy: false,
+                gen: 0,
             })
             .collect();
 
@@ -451,6 +464,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             return Step::Done;
         }
         self.cur_aid = proc;
+        self.cur_gen = self.activities[proc as usize].gen;
         match self.st.backend {
             crate::Backend::Interpreter => run_process(self, proc, block),
             crate::Backend::Bytecode => {
@@ -523,17 +537,20 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                             // $finish-class terminations and drain identically.
                             Step::Finish => {
                                 self.st.finished = true;
+                                self.drain_deferred_on_finish();
                                 self.flush_postponed();
                                 return FinishReason::Finish;
                             }
                             Step::Stop => {
                                 self.st.finished = true;
+                                self.drain_deferred_on_finish();
                                 self.flush_postponed();
                                 return FinishReason::Stop;
                             }
                             Step::Fatal => {
                                 self.st.finished = true;
                                 self.st.had_fatal = true;
+                                self.drain_deferred_on_finish();
                                 self.flush_postponed();
                                 return FinishReason::Error;
                             }
@@ -579,6 +596,55 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 // NBA: apply the sampled batch.
                 if !self.nba.is_empty() {
                     self.apply_nba();
+                    self.propagate_changes();
+                    self.delta_count += 1;
+                    if self.delta_count > self.max_deltas {
+                        self.fatal_delta_limit();
+                        return FinishReason::DeltaLimit;
+                    }
+                    continue;
+                }
+                // OBSERVED (IEEE 1800 §4.4 / §16.4): `assert #0` deferred reports
+                // mature here — Active/Inactive/NBA empty, cont-assigns at
+                // fixpoint, nets settled, time NOT advanced. A matured action that
+                // re-activates a process re-drains Active/NBA before Reactive (the
+                // `continue` re-runs the region cascade from the top).
+                if !self.st.postponed.deferred_observed.is_empty() {
+                    if let Some(step) = self.mature_deferred(DeferRegion::Observed) {
+                        self.st.finished = true;
+                        if let Step::Fatal = step {
+                            self.st.had_fatal = true;
+                        }
+                        self.flush_postponed();
+                        return match step {
+                            Step::Stop => FinishReason::Stop,
+                            Step::Fatal => FinishReason::Error,
+                            _ => FinishReason::Finish,
+                        };
+                    }
+                    self.propagate_changes();
+                    self.delta_count += 1;
+                    if self.delta_count > self.max_deltas {
+                        self.fatal_delta_limit();
+                        return FinishReason::DeltaLimit;
+                    }
+                    continue;
+                }
+                // REACTIVE (IEEE 1800 §4.4 / §16.4): `assert final` deferred
+                // reports mature AFTER Observed, BEFORE Postponed.
+                if !self.st.postponed.deferred_reactive.is_empty() {
+                    if let Some(step) = self.mature_deferred(DeferRegion::Reactive) {
+                        self.st.finished = true;
+                        if let Step::Fatal = step {
+                            self.st.had_fatal = true;
+                        }
+                        self.flush_postponed();
+                        return match step {
+                            Step::Stop => FinishReason::Stop,
+                            Step::Fatal => FinishReason::Error,
+                            _ => FinishReason::Finish,
+                        };
+                    }
                     self.propagate_changes();
                     self.delta_count += 1;
                     if self.delta_count > self.max_deltas {
@@ -667,6 +733,119 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         } else {
             FinishReason::Finish
         }
+    }
+
+    // ── §16.4 deferred immediate assertions ───────────────────────────────
+
+    /// `builtins::dispatch` calls this at its top for every SysTask. Returns
+    /// `true` if the call was INTERCEPTED as a deferred-assert marker/action (so
+    /// `dispatch` must do nothing further), `false` if it should run normally.
+    ///
+    /// A MARKER cancels any prior pending report for this assertion instance —
+    /// keyed `(marker_sid, cur_aid, cur_gen)` so flush-on-re-reach hits only THIS
+    /// activation, never a recycled-slot predecessor (§16.4). An ACTION renders
+    /// its text NOW (reach-time arg values, §16.4.3) and enqueues/REPLACES it for
+    /// region maturation.
+    pub(crate) fn try_defer(
+        &mut self,
+        which: sim_ir::SysTaskId,
+        fmt: Option<u32>,
+        args: &[u32],
+        sid: u32,
+    ) -> bool {
+        if let Some(&region) = self.st.defer_marks.get(&sid) {
+            let key = (sid, self.cur_aid, self.cur_gen);
+            match region {
+                DeferRegion::Observed => {
+                    self.st.postponed.deferred_observed.remove(&key);
+                }
+                DeferRegion::Reactive => {
+                    self.st.postponed.deferred_reactive.remove(&key);
+                }
+            }
+            return true; // marker is a no-op (suppressed empty $display)
+        }
+        if let Some(&(marker, region)) = self.st.defer_acts.get(&sid) {
+            // §16.4.3: render the action text NOW, at reach (sampling reach-time
+            // arg values / `$time` / `%m`). A severity task renders with no
+            // default radix (matching `run_severity`); a plain print uses its
+            // b/o/h radix.
+            let radix = if self.st.severities.contains_key(&sid) {
+                None
+            } else {
+                self.st.radixes.get(&sid).copied()
+            };
+            let message = crate::builtins::format_args_str(self, fmt, args, radix);
+            let report = crate::state::DeferredReport {
+                action_sid: sid,
+                which,
+                message,
+            };
+            let key = (marker, self.cur_aid, self.cur_gen);
+            match region {
+                DeferRegion::Observed => {
+                    self.st.postponed.deferred_observed.insert(key, report);
+                }
+                DeferRegion::Reactive => {
+                    self.st.postponed.deferred_reactive.insert(key, report);
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    /// §16.4: drain ONE deferred-assert maturation queue, emitting each surviving
+    /// pending report (text already rendered at reach). A severity action routes
+    /// to the diagnostic stream + exit class ($fatal aborts); a plain print goes
+    /// to stdout. Deterministic `(marker, aid, gen)` BTreeMap order. Returns
+    /// `Some(step)` if a deferred `$fatal` matured.
+    fn mature_deferred(&mut self, region: DeferRegion) -> Option<Step> {
+        let map = match region {
+            DeferRegion::Observed => std::mem::take(&mut self.st.postponed.deferred_observed),
+            DeferRegion::Reactive => std::mem::take(&mut self.st.postponed.deferred_reactive),
+        };
+        if map.is_empty() {
+            return None;
+        }
+        let mut term: Option<Step> = None;
+        for (_key, rpt) in map {
+            if let Some(sev) = self.st.severities.get(&rpt.action_sid).copied() {
+                match crate::builtins::emit_severity_message(self, sev, rpt.message) {
+                    crate::builtins::Ctl::Fatal => {
+                        term = Some(Step::Fatal);
+                        break;
+                    }
+                    crate::builtins::Ctl::Finish => {
+                        term = Some(Step::Finish);
+                        break;
+                    }
+                    crate::builtins::Ctl::Stop => {
+                        term = Some(Step::Stop);
+                        break;
+                    }
+                    crate::builtins::Ctl::Continue => {}
+                }
+            } else {
+                // Plain $display/$write deferred action: stdout, newline for the
+                // Display family ($write keeps none).
+                let mut line = rpt.message;
+                if !matches!(rpt.which, sim_ir::SysTaskId::Write) {
+                    line.push('\n');
+                }
+                write_out(self.st, &line);
+            }
+        }
+        term
+    }
+
+    /// §16.4 termination drain: mature the current slot's pending deferred
+    /// reports (Observed then Reactive) before a `$finish`/`$stop`/`$fatal`
+    /// exit, mirroring the postponed drain — a verdict already evaluated this
+    /// slot is not lost. Any further `$fatal` is ignored (already terminating).
+    fn drain_deferred_on_finish(&mut self) {
+        let _ = self.mature_deferred(DeferRegion::Observed);
+        let _ = self.mature_deferred(DeferRegion::Reactive);
     }
 
     // ── postponed region ($strobe FIFO drain + $monitor change-detect) ─────
@@ -1626,12 +1805,20 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 dead: false,
                 wait_fork: None,
                 busy: false,
+                gen: 0,
             };
             // Recycle a completed child slot when available (P3-1): a freed slot's
             // old activity has reported (it cannot be queued/waiting anywhere).
+            // BUMP the generation on reuse so a §16.4 deferred report still pending
+            // under the OLD incarnation's `(marker, aid, gen)` key is not flushed
+            // by this fresh incarnation reaching the same marker.
             let child_aid = match self.free_activities.pop() {
                 Some(id) => {
-                    self.activities[id as usize] = child;
+                    let next_gen = self.activities[id as usize].gen.wrapping_add(1);
+                    self.activities[id as usize] = Activity {
+                        gen: next_gen,
+                        ..child
+                    };
                     id
                 }
                 None => {
@@ -2144,8 +2331,27 @@ impl Kernel for Scheduler<'_, '_> {
             }
         }
         kill.remove(&self.cur_aid); // the caller itself lives on
-        for aid in kill {
+                                    // §16.4: a deferred report pending in a KILLED process is cancelled (the
+                                    // action never matures). Drop by `(aid, gen)` of the LIVE killed
+                                    // activities so a recycled slot's COMPLETED predecessor report (a
+                                    // different gen under the same aid) is NOT also cancelled.
+        let mut kill_keys: std::collections::BTreeSet<(u32, u32)> =
+            std::collections::BTreeSet::new();
+        for &aid in &kill {
             self.activities[aid as usize].dead = true;
+            kill_keys.insert((aid, self.activities[aid as usize].gen));
+        }
+        if !self.st.postponed.deferred_observed.is_empty() {
+            self.st
+                .postponed
+                .deferred_observed
+                .retain(|&(_, aid, gen), _| !kill_keys.contains(&(aid, gen)));
+        }
+        if !self.st.postponed.deferred_reactive.is_empty() {
+            self.st
+                .postponed
+                .deferred_reactive
+                .retain(|&(_, aid, gen), _| !kill_keys.contains(&(aid, gen)));
         }
     }
     fn k_queue_pop(&mut self, lhs: &Lvalue, rhs: u32) -> Value {

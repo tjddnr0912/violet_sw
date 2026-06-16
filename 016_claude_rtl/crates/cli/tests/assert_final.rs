@@ -1,17 +1,18 @@
 //! `assert final (expr) [action]` — a FINAL deferred immediate assertion (IEEE
 //! 1800-2017 §16.4). A deferred assertion is evaluated WHEN REACHED (like a simple
-//! immediate assertion) but its pass/fail report is "matured" in a later region —
+//! immediate assertion) but its pass/fail action is "matured" in a later region —
 //! the Reactive region for `final`, the Observed region for `#0` — so transient
-//! intra-time-step glitches are filtered out.
+//! intra-time-step glitches are filtered out (flush-on-re-reach).
 //!
-//! vita has no Observed/Reactive-region maturation (assertions evaluate inline in
-//! the Active region), so `assert final` is approximated as evaluate-when-reached,
-//! i.e. it desugars to the SAME `Stmt::If` as a simple immediate `assert`. This is
-//! exact for a condition that is stable when the statement executes (the common
-//! case) and a documented hand-IEEE approximation under an intra-step glitch.
-//! iverilog 13.0 rejects deferred assertions outright ("Deferred assertions are not
-//! supported") → NULL oracle, hand-IEEE. The `#0` (Observed deferred) form stays a
-//! loud parse error (see assert_hash0_is_loud).
+//! vita now implements this FAITHFULLY: genuine Observed/Reactive maturation
+//! queues in the scheduler, fed by per-assertion flush markers, all out-of-band
+//! (format_version unchanged). The faithful behavior (glitch filtering, region
+//! ordering, disable-fork cancellation) is exercised in `assert_deferred.rs`.
+//! THIS file pins that a `final` assert with a STABLE condition behaves exactly
+//! as before from an observer's standpoint (the verdict and exit class are
+//! unchanged; only the action's scheduling region moved) — the common case must
+//! not regress. iverilog 13.0 rejects deferred assertions outright ("Deferred
+//! assertions are not supported") → NULL oracle, hand-IEEE.
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -113,15 +114,21 @@ fn assert_final_pass_and_fail_actions() {
 }
 
 #[test]
-fn assert_hash0_is_loud() {
-    // The `#0` (Observed deferred) form stays a loud parse error in this subset.
-    let (_o, err, code) = run("module top;\n\
-         reg clk=0, a=0; always #5 clk=~clk;\n\
+fn assert_hash0_now_parses_and_is_faithful() {
+    // BEHAVIOR CHANGE (faithful deferred-assert slice): `#0` (Observed deferred)
+    // was a loud parse error; it now parses and defers to the Observed region.
+    // A holding `#0` is clean (full faithful behavior is in assert_deferred.rs).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=1; always #5 clk=~clk;\n\
          always @(posedge clk) assert #0 (a);\n\
          initial #10 $finish;\n\
          endmodule\n");
-    assert_eq!(code, Some(1), "`assert #0` must be loud. {err}");
-    assert!(err.contains("VITA-E"), "{err}");
+    assert_eq!(
+        code,
+        Some(0),
+        "`assert #0 (true)` parses + holds. err:\n{err}\nout:\n{out}"
+    );
+    assert!(!err.contains("VITA-E"), "must not be loud:\n{err}");
 }
 
 #[test]

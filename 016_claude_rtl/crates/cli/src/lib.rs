@@ -612,6 +612,8 @@ fn run_vita_str_gated(
         proc_scopes: sc.proc_scopes,
         net_dims: sc.net_dims,
         final_procs: sc.final_procs,
+        defer_marks: sc.defer_marks,
+        defer_acts: sc.defer_acts,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
@@ -1384,9 +1386,21 @@ fn write_velab_file(
         &postcard::to_stdvec(&sc.net_dims).expect("net-dims trailer postcard encode infallible"),
     );
     // 11th segment: P2-E `final` ProcIds (BTreeSet — postcard-deterministic).
+    // ALWAYS written (the deferred-assert trailers follow it) — same
+    // disambiguation rule as the 9th segment.
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&sc.final_procs)
             .expect("final-procs trailer postcard encode infallible"),
+    );
+    // 12th + 13th segments (§16.4 deferred immediate asserts): marker→region and
+    // action→(marker, region). Empty by default (no deferred asserts).
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.defer_marks)
+            .expect("defer-marks trailer postcard encode infallible"),
+    );
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&sc.defer_acts)
+            .expect("defer-acts trailer postcard encode infallible"),
     );
     let vheader = artifact_header(
         vita_schema::schema_hash::<sim_ir::SimIr>(),
@@ -1908,16 +1922,49 @@ fn run_vrun_gated(
         }
     };
     // 11th: P2-E final ProcIds. Tolerant → empty ⇒ no final blocks (legacy).
-    let final_procs: std::collections::BTreeSet<u32> = if rest11.is_empty() {
-        std::collections::BTreeSet::new()
+    let (final_procs, rest12): (std::collections::BTreeSet<u32>, &[u8]) = if rest11.is_empty() {
+        (std::collections::BTreeSet::new(), rest11)
     } else {
-        match postcard::from_bytes(rest11) {
+        match postcard::take_from_bytes(rest11) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab final-procs trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // 12th + 13th (§16.4 deferred asserts). Tolerant → empty ⇒ no deferred
+    // asserts (also correct for pre-deferred `.velab`s, which reject `#0`/`final`
+    // upstream and never emit a marker).
+    let (defer_marks, rest13): (sim_engine::DeferMarkTable, &[u8]) = if rest12.is_empty() {
+        (sim_engine::DeferMarkTable::new(), rest12)
+    } else {
+        match postcard::take_from_bytes(rest12) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab defer-marks trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    let defer_acts: sim_engine::DeferActTable = if rest13.is_empty() {
+        sim_engine::DeferActTable::new()
+    } else {
+        match postcard::from_bytes(rest13) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab defer-acts trailer: {e}"
                     )),
                 )
             }
@@ -2008,6 +2055,8 @@ fn run_vrun_gated(
         proc_scopes,
         net_dims,
         final_procs,
+        defer_marks,
+        defer_acts,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };

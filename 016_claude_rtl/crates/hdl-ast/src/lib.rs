@@ -593,6 +593,20 @@ pub enum Stmt {
         lhs: Lvalue,
         span: Span,
     },
+    /// Deferred immediate assertion (IEEE 1800-2017 §16.4): `assert #0 (c)` is
+    /// the Observed-deferred form, `assert final (c)` the Reactive-deferred form.
+    /// Unlike a plain immediate `assert` (which stays `Stmt::If`), the condition
+    /// is sampled WHEN REACHED but the pass/fail action MATURES in a later
+    /// scheduling region with flush-on-re-reach (§4.4). The desugar mirrors `If`:
+    /// `then_s` is the pass action (`Null` when none), `else_s` the fail action
+    /// (the synthesized `$error("Assertion failed")` when there is no `else`).
+    DeferredAssert {
+        region: AssertDefer,
+        cond: Expr,
+        then_s: Box<Stmt>,
+        else_s: Box<Stmt>,
+        span: Span,
+    },
     Null(Span), // bare ;
     /// Recovery placeholder for an unparseable / not-yet-implemented statement.
     Error(Span),
@@ -602,6 +616,16 @@ pub enum JoinKind {
     Join,
     JoinAny,
     JoinNone,
+}
+/// Maturation region of a deferred immediate assertion (IEEE 1800 §16.4 / §4.4).
+/// `assert #0` → Observed, `assert final` → Reactive. The plain immediate
+/// `assert` carries no `AssertDefer` (it stays `Stmt::If`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum AssertDefer {
+    /// `assert #0` — matures in the Observed region.
+    Observed,
+    /// `assert final` — matures in the Reactive region.
+    Reactive,
 }
 /// SVA implication operator (Phase-3 subset). `|->` checks the consequent in the
 /// SAME clock tick as the antecedent match (overlapping); `|=>` checks it on the
