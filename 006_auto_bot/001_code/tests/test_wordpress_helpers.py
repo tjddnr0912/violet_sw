@@ -442,14 +442,42 @@ def _diagram_block(lang, code):
     return f'<pre><code class="language-{lang}">{code}</code></pre>'
 
 
+def _styled_diagram_block(lang, code):
+    # AI 변환기가 실제로 내보내는 형태: <pre>에 style 속성이 붙음
+    return (f'<pre style="background-color:#f8f9fa;border-radius:8px;">'
+            f'<code class="language-{lang}">{code}</code></pre>')
+
+
 def test_render_diagrams_converts_d2_and_wavedrom(monkeypatch):
     monkeypatch.setattr(wp, "render_kroki_png", lambda code, t, *a, **k: _PNG)
     up = _uploader()
     up.upload_media = lambda *a, **k: {"id": 5, "url": "https://x/m.png"}
     html = _diagram_block("d2", "a -> b") + _diagram_block("wavedrom", "{}")
     out = up._render_diagrams_in_html(html)
-    assert out.count("<img") == 2
+    assert out.count("<figure") == 2          # 다이어그램 2개
+    assert out.count('class="gm-lb"') == 2     # 각자 라이트박스 오버레이
     assert "language-d2" not in out and "language-wavedrom" not in out
+
+
+def test_render_diagrams_matches_styled_pre(monkeypatch):
+    # 회귀: <pre style="…">도 매칭해야 함(AI 변환기가 bare/styled를 비결정적으로 출력)
+    monkeypatch.setattr(wp, "render_kroki_png", lambda code, t, *a, **k: _PNG)
+    up = _uploader()
+    up.upload_media = lambda *a, **k: {"id": 7, "url": "https://x/d.png"}
+    html = _styled_diagram_block("mermaid", "graph TD; a-->b")
+    out = up._render_diagrams_in_html(html)
+    assert "<figure" in out and "language-mermaid" not in out
+
+
+def test_render_diagrams_lightbox_style_once(monkeypatch):
+    monkeypatch.setattr(wp, "render_kroki_png", lambda code, t, *a, **k: _PNG)
+    up = _uploader()
+    up.upload_media = lambda *a, **k: {"id": 5, "url": "https://x/m.png"}
+    html = _diagram_block("d2", "a -> b") + _diagram_block("mermaid", "x")
+    out = up._render_diagrams_in_html(html)
+    assert out.count("data-gm-lightbox") == 1   # 스타일 블록은 글당 1회
+    assert "cursor:zoom-in" in out              # 썸네일 확대 커서
+    assert out.count('href="#gm-lb-') == 2      # 썸네일→오버레이 링크 2개
 
 
 def test_render_diagrams_leaves_plain_code_untouched(monkeypatch):

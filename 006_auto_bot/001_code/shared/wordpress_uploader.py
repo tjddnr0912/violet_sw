@@ -114,10 +114,24 @@ _LANG_TO_KROKI = {
 }
 
 # language-<type> 코드 블록 일반 매칭. 타입 판별은 _repl에서 _LANG_TO_KROKI로.
+# <pre>에 style 등 속성이 붙어도 매칭(AI 변환기가 <pre style="…">를 비결정적으로 붙임).
 _RE_DIAGRAM_BLOCK = re.compile(
-    r'<pre>\s*<code[^>]*class="[^"]*language-([a-z0-9][a-z0-9-]*)[^"]*"[^>]*>'
+    r'<pre[^>]*>\s*<code[^>]*class="[^"]*language-([a-z0-9][a-z0-9-]*)[^"]*"[^>]*>'
     r'(.*?)</code>\s*</pre>',
     re.S | re.I,
+)
+
+# 다이어그램 클릭 확대(라이트박스): 순수 CSS :target (JS 없음 → WAF 안전).
+# WordPress unfiltered_html 사용자라 <style> 블록이 보존됨(드래프트 프로브로 확인).
+_LIGHTBOX_STYLE = (
+    '<style data-gm-lightbox>'
+    '.gm-lb{display:none;position:fixed;inset:0;z-index:99999;'
+    'background:rgba(0,0,0,.9);align-items:center;justify-content:center;'
+    'padding:16px;cursor:zoom-out;}'
+    '.gm-lb:target{display:flex;}'
+    '.gm-lb img{max-width:96vw;max-height:96vh;width:auto;height:auto;'
+    'box-shadow:0 0 40px rgba(0,0,0,.5);}'
+    '</style>'
 )
 
 # 발행 끝에 붙는 '원본 데이터(raw source)' 접힘 블록 제거용
@@ -618,16 +632,19 @@ class WordPressUploader:
         return media.get("id") if media else None
 
     def _render_diagrams_in_html(self, html_content: str) -> str:
-        """<pre><code class="language-{mermaid|d2|graphviz|wavedrom|plantuml…}"> 블록을
-        kroki로 PNG 렌더 → WP 미디어 업로드 → <figure><img>로 치환.
+        """<pre [..]><code class="language-{mermaid|d2|graphviz|wavedrom|plantuml…}">
+        블록을 kroki로 PNG 렌더 → WP 미디어 업로드 → <figure><img>로 치환.
 
         - 지원 다이어그램 언어(_LANG_TO_KROKI)만 변환. 일반 코드 블록
           (python/c/verilog 등)은 그대로 둔다.
         - 동일 다이어그램은 (타입+소스) 해시 파일명으로 중복 업로드 방지.
         - 렌더/업로드 실패 시 원본 블록 유지.
+        - 각 다이어그램 이미지는 클릭 시 원본 크기로 확대되는 라이트박스(순수 CSS)로 감싼다.
         """
         if not html_content or "language-" not in html_content:
             return html_content
+
+        rendered = []  # 라이트박스 <style> 1회 주입 판단용
 
         def _repl(m):
             lang = (m.group(1) or "").lower()
@@ -642,13 +659,25 @@ class WordPressUploader:
             media = self.upload_media(png, f"diagram-{kroki_type}-{digest}.png", "image/png")
             if not media or not media.get("url"):
                 return m.group(0)
+            rendered.append(digest)
+            url = media["url"]
+            lb_id = f"gm-lb-{kroki_type}-{digest}"
+            # 썸네일(클릭=확대) + 풀스크린 오버레이(클릭=닫기). 순수 CSS :target.
             return (
                 '<figure style="margin:24px auto;text-align:center;">'
-                f'<img src="{media["url"]}" alt="{kroki_type} diagram" '
-                'style="max-width:100%;height:auto;" loading="lazy" /></figure>'
+                f'<a href="#{lb_id}" aria-label="원본 크기로 확대">'
+                f'<img src="{url}" alt="{kroki_type} diagram" '
+                'style="max-width:100%;height:auto;cursor:zoom-in;" loading="lazy" /></a>'
+                '</figure>'
+                f'<a href="#_" class="gm-lb" id="{lb_id}" aria-hidden="true">'
+                f'<img src="{url}" alt="{kroki_type} diagram (원본)" /></a>'
             )
 
-        return _RE_DIAGRAM_BLOCK.sub(_repl, html_content)
+        out = _RE_DIAGRAM_BLOCK.sub(_repl, html_content)
+        # 라이트박스 스타일은 글당 1회만(이미 있으면 생략 — 재렌더 idempotent).
+        if rendered and "data-gm-lightbox" not in out:
+            out = _LIGHTBOX_STYLE + out
+        return out
 
     # --- 발행 ---
     def create_post(
