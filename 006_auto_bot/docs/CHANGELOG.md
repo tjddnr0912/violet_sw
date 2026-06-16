@@ -10,6 +10,7 @@
 - **원인**: `_RE_DIAGRAM_BLOCK`이 **bare `<pre>`만** 매칭했는데, AI HTML 변환기가 `<pre style="background-color:…">`처럼 **속성을 붙여** 출력하는 경우가 있어(비결정적) 전혀 매칭되지 않음 → 모든 다이어그램 미렌더. mermaid가 됐던 글은 우연히 bare `<pre>`였을 뿐.
 - **해결**: 정규식 `<pre>` → `<pre[^>]*>`로 속성 허용. 회귀 테스트 추가(styled-pre 매칭).
 - **클릭 확대(라이트박스)**: 다이어그램 이미지가 본문 폭에 맞춰 작게 보이는 문제 → 각 이미지를 **순수 CSS `:target` 라이트박스**로 감쌈(썸네일 클릭=풀스크린 원본, 오버레이 클릭=닫기). **JS 없음(WAF 안전)**, `<style data-gm-lightbox>` 1회 주입(글당). WordPress `unfiltered_html`로 `<style>` 보존 확인(드래프트 프로브 + 라이브 브라우저 `:target` 동작 검증). 기존 글(post 238) 재렌더+PATCH 완료. 신규 테스트 +2 (148 통과).
+- **[fix] 다크 코드박스(수식 등) light-on-light로 안 보임**: AI가 `<pre style="background:#2c3e50"><code style="color:#ecf0f1">`로 수식을 넣으면, 테마의 `code{background:연한색}`가 안쪽 `<code>`에 적용돼 **밝은 글자가 밝은 배경에 묻혀** 빈 박스처럼 보임(라이브 computed style로 확인: codeBg `rgb(236,239,243)`). `create_post`가 `fix_styled_code_contrast`로 **`pre[style*="background"] code{background:transparent!important;color:inherit!important}`** 스코프 `<style>`를 1회 주입 → `<pre`의 의도된 배경이 보이게(일반 코드블록 무관). 라이브 재로딩+스크린샷으로 가독 확인. post 238 PATCH 완료. 신규 테스트 +4 (152 통과).
 
 ## 2026-06-16: [fix] WaveDrom 톱니(notch) 제거 — wave 리터럴 반복 정규화
 

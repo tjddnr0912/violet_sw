@@ -4,6 +4,19 @@
 
 ---
 
+## 수식/평문 다크 코드박스가 빈 박스처럼 보임(글자 안 보임)
+
+- **증상**: `<pre>` 다크 박스 안 수식("Setup 제약 : T_period ≥ …")이 보이지 않고 빈 박스처럼 깨져 보임.
+- **원인**: AI가 `<pre style="background:#2c3e50"><code style="color:#ecf0f1">`로 다크 박스를 만드는데, **테마 CSS `code{background:연한색}`가 안쪽 `<code>`에 적용**돼 밝은 글자가 밝은 배경에 묻힘. (라이브 computed style: preBg=`rgb(44,62,80)` 다크지만 codeBg=`rgb(236,239,243)` 연한색 → light-on-light.)
+- **해결**: `create_post`→`fix_styled_code_contrast`가 `pre[style*="background"] code{background:transparent!important;color:inherit!important}` 스코프 `<style>`(`data-gm-codefix`)를 1회 주입 → `<pre>`의 다크 배경이 보이고 글자 가독. 일반(bare) 코드블록은 무관. (2026-06-17)
+- **복구 절차**: (a) 브라우저 DevTools/`getComputedStyle(code).backgroundColor`로 code 배경이 pre와 충돌하는지 확인 (b) 기존 글은 `fix_styled_code_contrast(content.raw)` 후 PATCH(post 238 선례) (c) 봇 재시작.
+- **관련 사고**: 2026-06-17.
+- **재발 감지**: 다크 스타일 코드박스 발행 후 육안(빈 박스 여부). 테마 교체 시 `pre code` 배경 규칙 재확인. 라이브 검증은 브라우저 computed style이 가장 확실(렌더 HTML grep으로는 테마 CSS 적용 결과를 못 봄).
+
+> Claude 진단 미스: 없음. "수식이 깨져 보인다"를 곧장 라이브 `getComputedStyle`로 확인 → code 배경(연한색)이 pre 다크 배경 위에 덮여 light-on-light임을 특정. 교훈: **렌더 결과(테마 CSS 적용)는 HTML grep이 아니라 브라우저 computed style로 진단**.
+
+---
+
 ## 다이어그램이 (mermaid 포함) 전부 코드블록으로 발행됨 — <pre style> 미매칭
 
 - **증상**: 어떤 글은 다이어그램이 잘 나오는데 어떤 글은 d2·wavedrom·**mermaid까지 전부** 원본 코드로 노출. "여전히 그림이 아닌 게 많다".

@@ -480,6 +480,33 @@ def test_render_diagrams_lightbox_style_once(monkeypatch):
     assert out.count('href="#gm-lb-') == 2      # 썸네일→오버레이 링크 2개
 
 
+# --- 다크 코드박스 대비 보정 (수식 등 light-on-light 방지) ---
+def test_fix_styled_code_contrast_injects_for_dark_pre():
+    html = '<pre style="background-color:#2c3e50"><code style="color:#ecf0f1">eq</code></pre>'
+    out = wp.fix_styled_code_contrast(html)
+    assert "data-gm-codefix" in out
+    assert 'pre[style*="background"] code' in out
+
+
+def test_fix_styled_code_contrast_skips_plain_pre():
+    html = '<pre><code>print(1)</code></pre>'
+    assert wp.fix_styled_code_contrast(html) == html   # 일반 코드블록은 무관
+
+
+def test_fix_styled_code_contrast_idempotent():
+    html = '<pre style="background:#222"><code>x</code></pre>'
+    once = wp.fix_styled_code_contrast(html)
+    twice = wp.fix_styled_code_contrast(once)
+    assert once == twice and twice.count("data-gm-codefix") == 1
+
+
+def test_create_post_applies_code_contrast_fix(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    up = _uploader()
+    up.create_post("T", '<pre style="background:#2c3e50"><code>eq</code></pre>', status="publish")
+    assert "data-gm-codefix" in captured["payload"]["content"]
+
+
 def test_render_diagrams_leaves_plain_code_untouched(monkeypatch):
     monkeypatch.setattr(wp, "render_kroki_png", lambda *a, **k: _PNG)
     up = _uploader()

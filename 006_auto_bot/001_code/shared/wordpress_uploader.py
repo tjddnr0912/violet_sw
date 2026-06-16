@@ -134,6 +134,29 @@ _LIGHTBOX_STYLE = (
     '</style>'
 )
 
+# 코드블록 대비(contrast) 보정: AI가 <pre style="background:#2c3e50"><code> 같은 다크 박스로
+# 수식/평문을 넣으면, 테마의 `code{background:연한색}` 규칙이 안쪽 <code>에 적용돼
+# 밝은 글자가 밝은 배경에 묻혀 보이지 않는다(라이브 확인). inline-background를 가진 <pre>
+# 안의 <code>만 배경 투명·색 상속으로 강제해 <pre>의 의도된 배경이 보이게 한다(일반 코드블록 무관).
+_CODEFIX_STYLE = (
+    '<style data-gm-codefix>'
+    'pre[style*="background"] code{background:transparent!important;color:inherit!important}'
+    '</style>'
+)
+_RE_STYLED_PRE_CODE = re.compile(r'<pre[^>]*style="[^"]*background[^"]*"[^>]*>\s*<code', re.I)
+
+
+def fix_styled_code_contrast(html: str) -> str:
+    """inline-background <pre><code> 다크 박스가 테마 code 배경에 묻히는 문제를 보정.
+
+    해당 패턴이 있고 아직 보정 스타일이 없으면 스코프된 <style>를 1회 주입.
+    """
+    if not html or "data-gm-codefix" in html:
+        return html
+    if _RE_STYLED_PRE_CODE.search(html):
+        return _CODEFIX_STYLE + html
+    return html
+
 # 발행 끝에 붙는 '원본 데이터(raw source)' 접힘 블록 제거용
 _RE_RAW_SOURCE = re.compile(
     r'(?:<!--\s*raw-source-details\s*-->\s*)?<details\b[^>]*>(?:(?!</details>).)*?'
@@ -711,6 +734,8 @@ class WordPressUploader:
         # 이미 섹션이 있으면(중복 호출) 다시 붙이지 않는다.
         if sources and not _RE_SOURCES_MARKER.search(content_html):
             content_html = content_html + render_sources_section(sources)
+        # 다크 코드박스(수식 등) 대비 보정 — 테마 code 배경이 글자를 묻는 문제 방지
+        content_html = fix_styled_code_contrast(content_html)
 
         _status = status or os.getenv("WORDPRESS_DEFAULT_STATUS", "publish")
         if self.force_draft and _status != "draft":
