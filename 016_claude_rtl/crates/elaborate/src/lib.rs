@@ -6926,7 +6926,7 @@ impl<'s> Elaborator<'s> {
             // runs on a violation; the optional pass action runs on a non-vacuous
             // success. When both are absent the body is byte-identical to the
             // pre-S11 checker (default $error, no pass branch).
-            let fail_stmt = match sva.fail {
+            let fail_stmt_raw = match sva.fail {
                 Some(s) => *s,
                 None => ast::Stmt::SysTaskCall {
                     name: ast::Ident {
@@ -6942,7 +6942,7 @@ impl<'s> Elaborator<'s> {
                     span: sp,
                 },
             };
-            let pass_action = sva.pass;
+            let pass_action_raw = sva.pass;
             // `disable iff (expr)` reset (slice S12): a 1-bit reduction of the
             // (sampled) condition. When present, fire conditions are gated with
             // `!dis` and every obligation NBA is reset to 0 on the dis clock, so
@@ -6952,6 +6952,15 @@ impl<'s> Elaborator<'s> {
                 .disable_iff
                 .as_ref()
                 .map(|e| sva_unary(ast::UnOp::RedOr, self.rewrite_sampled(e, &mut regs), sp));
+            // Action-block sampled values (slice A2): rewrite $past/$rose/$fell/$stable
+            // inside the fail/pass action statements to the SAME shared prev-regs the
+            // property body uses. Done AFTER the antecedent/consequent/disable rewrites
+            // so those keep the lower net IDs and an action `$past(sig)` of an
+            // already-sampled signal dedups onto the existing prev-reg (regs.by_signal).
+            // A no-sampled action allocates ZERO nets → byte-identical to pre-A2.
+            let fail_stmt = self.rewrite_sampled_stmt(&fail_stmt_raw, &mut regs);
+            let pass_action =
+                pass_action_raw.map(|ps| Box::new(self.rewrite_sampled_stmt(&ps, &mut regs)));
             let (cond_lhs, pending_nba) = match sva.kind {
                 ast::ImplicationKind::Overlap => (ante, None),
                 ast::ImplicationKind::NonOverlap => {
@@ -7945,6 +7954,110 @@ impl<'s> Elaborator<'s> {
             // clone verbatim (a sampled call nested in e.g. a concat is left as a
             // plain SysCall → the usual "unsupported system function" E3009).
             _ => e.clone(),
+        }
+    }
+
+    /// Walk an SVA action-block statement (slice A2), rewriting every contained
+    /// expression through `rewrite_sampled` so `$past`/`$rose`/`$fell`/`$stable`
+    /// inside `$error`/`$display`/condition/assignment leaves resolve to the SAME
+    /// shared prev-registers as the property body. Structural clone otherwise, so an
+    /// action with NO sampled-value fn allocates no nets (byte-identical to pre-A2).
+    /// rewrite_sampled keeps its own guards (hierarchical / multi-arg / non-signal
+    /// sampled args → E3009; sampled fn nested in a concat/select stays unsupported),
+    /// because every Expr is routed through it rather than cloned blind.
+    fn rewrite_sampled_stmt(&mut self, s: &ast::Stmt, regs: &mut SvaRegs) -> ast::Stmt {
+        use ast::Stmt as S;
+        match s {
+            S::SysTaskCall { name, args, span } => S::SysTaskCall {
+                name: name.clone(),
+                args: args.iter().map(|e| self.rewrite_sampled(e, regs)).collect(),
+                span: *span,
+            },
+            S::UserTaskCall { name, args, span } => S::UserTaskCall {
+                name: name.clone(),
+                args: args.iter().map(|e| self.rewrite_sampled(e, regs)).collect(),
+                span: *span,
+            },
+            S::If {
+                cond,
+                then_s,
+                else_s,
+                span,
+            } => S::If {
+                cond: self.rewrite_sampled(cond, regs),
+                then_s: Box::new(self.rewrite_sampled_stmt(then_s, regs)),
+                else_s: else_s
+                    .as_ref()
+                    .map(|e| Box::new(self.rewrite_sampled_stmt(e, regs))),
+                span: *span,
+            },
+            S::Block {
+                label,
+                decls,
+                stmts,
+                span,
+            } => S::Block {
+                label: label.clone(),
+                decls: decls.clone(),
+                stmts: stmts
+                    .iter()
+                    .map(|st| self.rewrite_sampled_stmt(st, regs))
+                    .collect(),
+                span: *span,
+            },
+            S::Blocking {
+                lhs,
+                delay,
+                rhs,
+                span,
+            } => S::Blocking {
+                lhs: lhs.clone(),
+                delay: delay.clone(),
+                rhs: self.rewrite_sampled(rhs, regs),
+                span: *span,
+            },
+            S::NonBlocking {
+                lhs,
+                delay,
+                rhs,
+                span,
+            } => S::NonBlocking {
+                lhs: lhs.clone(),
+                delay: delay.clone(),
+                rhs: self.rewrite_sampled(rhs, regs),
+                span: *span,
+            },
+            S::Case {
+                kind,
+                scrutinee,
+                items,
+                span,
+            } => S::Case {
+                kind: *kind,
+                scrutinee: self.rewrite_sampled(scrutinee, regs),
+                items: items
+                    .iter()
+                    .map(|it| match it {
+                        ast::CaseItem::Match { labels, body, span } => ast::CaseItem::Match {
+                            labels: labels
+                                .iter()
+                                .map(|e| self.rewrite_sampled(e, regs))
+                                .collect(),
+                            body: Box::new(self.rewrite_sampled_stmt(body, regs)),
+                            span: *span,
+                        },
+                        ast::CaseItem::Default { body, span } => ast::CaseItem::Default {
+                            body: Box::new(self.rewrite_sampled_stmt(body, regs)),
+                            span: *span,
+                        },
+                    })
+                    .collect(),
+                span: *span,
+            },
+            // Action statements with no sampled-value-hosting expressions (or forms
+            // out of the action-block subset — timing controls, fork, …) clone
+            // verbatim: no net allocation, so byte-identical to pre-A2.
+            other => other.clone(),
         }
     }
 

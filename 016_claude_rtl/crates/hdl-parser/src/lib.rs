@@ -3256,6 +3256,33 @@ impl<'t, 's> Parser<'t, 's> {
         ImplicationKind,
         Sequence,
     ) {
+        // Sequence/property LOCAL VARIABLES (slice A2): a typed declaration at the
+        // body start (`property p; int x; @(clk) …`) needs per-attempt thread storage
+        // that is not synthesizable to a single register — unsupported. Detect it here
+        // for a TARGETED diagnostic (instead of the generic "'@(...)'" cascade) and
+        // skip the declaration(s) up to the real clocking event so the rest recovers.
+        if self.at_sva_local_var_decl() {
+            self.error(
+                "no sequence/property local variables (e.g. `int x; (a, x=d)`) — \
+                 they need per-attempt thread storage, not synthesizable RTL",
+            );
+            // Skip the declaration(s) — each is `<type> <name> [= e] ;` — landing the
+            // cursor on the real `@` clocking event. Each decl ends at its own `;`
+            // (which precedes the clock), so we consume THROUGH that `;` and repeat
+            // while another decl follows (review 2026-06-16: stopping ON the first
+            // `;` left the cursor before `@` and never cleared a second decl).
+            while self.at_sva_local_var_decl() {
+                while !matches!(
+                    self.peek(),
+                    Some(TokenKind::Semi) | Some(TokenKind::At) | None
+                ) {
+                    self.bump();
+                }
+                if !self.eat(TokenKind::Semi) {
+                    break; // hit `@` / EOF before a `;` — stop skipping
+                }
+            }
+        }
         // Clocking event `@(...)`. `parse_sensitivity` consumes the leading `@`.
         let clock = if self.peek() == Some(TokenKind::At) {
             self.parse_sensitivity()
@@ -3512,6 +3539,88 @@ impl<'t, 's> Parser<'t, 's> {
         last
     }
 
+    /// True at a sequence/property body LOCAL-VARIABLE declaration (slice A2): a
+    /// data-type keyword (`logic`/`reg`/`integer`/`bit`-via-`logic`/…) or an SV
+    /// integral type name lexed as an identifier (`int`/`bit`/`byte`/`shortint`/
+    /// `longint`). A property/sequence body must otherwise begin with `@(clk)` (a
+    /// property) or a sequence expression, so a type at the body start is a local var.
+    fn at_sva_local_var_decl(&self) -> bool {
+        if self.net_var_kind().is_some() {
+            return true;
+        }
+        self.is_ident()
+            && matches!(
+                self.cur_text(),
+                "int" | "bit" | "byte" | "shortint" | "longint"
+            )
+    }
+
+    /// True if the upcoming `( … )` (cursor on `(`) contains a comma at paren-depth
+    /// one — a sequence MATCH-ITEM local-variable list `(bool, x = e, …)` (slice A2).
+    /// A parenthesized sequence has no top-level comma; concat/select commas nest
+    /// deeper (counted via all bracket kinds), so they are not mistaken for one.
+    fn at_sva_match_item_paren(&self) -> bool {
+        if self.peek() != Some(TokenKind::LParen) {
+            return false;
+        }
+        const BUDGET: usize = 8192;
+        let mut depth = 0usize;
+        let mut i = 0usize;
+        while i < BUDGET {
+            match self.peek_at(i) {
+                None => return false,
+                Some(
+                    TokenKind::LParen
+                    | TokenKind::LBracket
+                    | TokenKind::LBrace
+                    | TokenKind::LBracketStar
+                    | TokenKind::LBracketArrow
+                    | TokenKind::LBracketEq,
+                ) => {
+                    depth += 1;
+                    i += 1;
+                }
+                Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace) => {
+                    depth = depth.saturating_sub(1);
+                    i += 1;
+                    if depth == 0 {
+                        return false; // outer paren closed with no top-level comma
+                    }
+                }
+                Some(TokenKind::Comma) if depth == 1 => return true,
+                _ => i += 1,
+            }
+        }
+        false
+    }
+
+    /// Consume a balanced `( … )` group starting at the current `(` (recovery). Tracks
+    /// only paren depth (a nested `[ ]`/`{ }` contains no stray `)`). No-op if not at `(`.
+    fn skip_balanced_paren_group(&mut self) {
+        if self.peek() != Some(TokenKind::LParen) {
+            return;
+        }
+        let mut depth = 0usize;
+        while let Some(k) = self.peek() {
+            match k {
+                TokenKind::LParen => {
+                    depth += 1;
+                    self.bump();
+                }
+                TokenKind::RParen => {
+                    self.bump();
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
     /// Consume an optional `: label` after `endsequence`/`endproperty`
     /// (accept-and-ignore — the minimal-surface choice).
     fn eat_end_label(&mut self) {
@@ -3618,6 +3727,19 @@ impl<'t, 's> Parser<'t, 's> {
                  this subset)",
             );
             let _ = self.parse_sensitivity();
+        }
+        // A `( boolean , local_var = expr {, …} )` match-item paren (slice A2) is a
+        // sequence LOCAL-VARIABLE assignment — a top-level comma just inside the paren
+        // distinguishes it from a parenthesized sequence (which has none). Per-attempt
+        // capture storage is not synthesizable to a single register → loud + skip,
+        // instead of the generic `expected ')'` cascade.
+        if self.at_sva_match_item_paren() {
+            self.error(
+                "no sequence/property local variables (e.g. `(a, x=d)` match-item \
+                 capture) — they need per-attempt thread storage, not synthesizable RTL",
+            );
+            self.skip_balanced_paren_group();
+            return Sequence::Boolean(Self::sva_true_lit(self.prev_span()));
         }
         let e = self.expr(0);
         let mut seq = Sequence::Boolean(e);
