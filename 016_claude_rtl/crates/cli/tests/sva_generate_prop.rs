@@ -8,7 +8,9 @@
 //!
 //! iverilog 13.0 rejects all of this (NULL oracle) → hand-IEEE. LOUD (deferred):
 //! a self/mutually recursive property; an inner property with a DIFFERENT clock
-//! (multi-clock), its own `disable iff`, an inner `|=>`, or formal arguments.
+//! (multi-clock), its own `disable iff`, or formal arguments. (An inner `|=>` is no
+//! longer loud — slice SVA-R2 synthesizes the canonical `a |-> (b |=> c)` ≡
+//! `(a && b) |=> c`; see cli/tests/sva_propref_nonoverlap.rs.)
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -204,7 +206,11 @@ fn inner_property_different_clock_is_loud() {
 }
 
 #[test]
-fn inner_property_nonoverlap_is_loud() {
+fn inner_property_nonoverlap_now_synthesized() {
+    // SVA-R2 (2026-06-16): an inner NON-OVERLAP property `q: b |=> c` referenced by an
+    // OVERLAP outer `p: a |-> q` is now synthesized as `(a && b) |=> c` (was loud
+    // pre-SVA-R2). a=b=0 → (a&&b)=0 → vacuous → clean. Full behavior coverage lives in
+    // cli/tests/sva_propref_nonoverlap.rs.
     let (_o, err, code) = run("module top;\n\
          reg clk=0, a=0, b=0, c=0; always #5 clk=~clk;\n\
          property q; @(posedge clk) b |=> c; endproperty\n\
@@ -212,6 +218,10 @@ fn inner_property_nonoverlap_is_loud() {
          initial assert property(p);\n\
          initial #20 $finish;\n\
          endmodule\n");
-    assert_eq!(code, Some(1), "inner |=> property must be loud. {err}");
-    assert!(err.contains("VITA-E"), "{err}");
+    assert_eq!(
+        code,
+        Some(0),
+        "inner |=> property is now synthesized (vacuous here) → clean. {err}"
+    );
+    assert!(!err.contains("VITA-E"), "must not be loud anymore:\n{err}");
 }

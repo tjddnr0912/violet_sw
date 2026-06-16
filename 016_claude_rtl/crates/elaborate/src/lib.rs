@@ -6900,10 +6900,81 @@ impl<'s> Elaborator<'s> {
         if self.lookup_net_scoped(&name).is_some() || !self.prop_table.contains_key(&name) {
             return;
         }
+        // Inner NON-OVERLAP property reference (slice SVA-R2): `a |-> (b |=> c)`
+        // ≡ `(a && b) |=> c` — the obligation spans a clock, so (unlike A4's
+        // overlap `!b || c`) it cannot collapse to a single-tick boolean. Only the
+        // canonical shape folds: an OVERLAP outer with a BOOLEAN outer antecedent
+        // `a`. Rewriting the top-level `sva` to `(a && b) |=> c` (kind=NonOverlap)
+        // hands the 1-cycle skew to the existing top-level `|=>` pend-reg machinery
+        // below. Everything else (a 2-cycle skew from an outer `|=>`, a sequence
+        // outer antecedent, an inner property whose own sides are property refs)
+        // falls through to the overlap flattener's loud `|=>`-as-consequent reject.
+        if matches!(sva.kind, ast::ImplicationKind::Overlap) {
+            let outer_ante = match &sva.ante {
+                ast::Sequence::Boolean(a) => Some(a.clone()),
+                _ => None,
+            };
+            if let Some(a) = outer_ante {
+                if let Some((b, c)) = self.peel_nonoverlap_property(&name, &sva.clock) {
+                    sva.ante = ast::Sequence::Boolean(sva_binary(ast::BinOp::LogAnd, a, b, sp));
+                    sva.cons = ast::Sequence::Boolean(c);
+                    sva.kind = ast::ImplicationKind::NonOverlap;
+                    return;
+                }
+            }
+        }
         match self.flatten_overlap_property(&name, &sva.clock, sp) {
             Some(b) => sva.cons = ast::Sequence::Boolean(b),
             None => sva.cons = ast::Sequence::Boolean(sva_one(sp)),
         }
+    }
+
+    /// Non-emitting probe (slice SVA-R2): returns `(inner_ante, inner_cons)` iff
+    /// `name` is a clean single-clock NON-OVERLAP property `b |=> c` whose
+    /// antecedent and consequent are both plain booleans (NOT themselves property
+    /// references), with no formals / `disable iff` / consequent clock and the SAME
+    /// single bare-ident clock as the outer assertion. Returns `None` silently for
+    /// any other shape, so the caller falls through to the loud overlap flattener.
+    fn peel_nonoverlap_property(
+        &self,
+        name: &str,
+        clock: &ast::Sensitivity,
+    ) -> Option<(ast::Expr, ast::Expr)> {
+        let pd = self.prop_table.get(name)?;
+        if !matches!(pd.implication_kind, ast::ImplicationKind::NonOverlap)
+            || !pd.formals.is_empty()
+            || pd.disable_iff.is_some()
+            || pd.consequent_clock.is_some()
+        {
+            return None;
+        }
+        let outer = sva_clock_signal(clock);
+        if outer.is_none() || outer != sva_clock_signal(&pd.clock) {
+            return None;
+        }
+        let (ast::Sequence::Boolean(b), ast::Sequence::Boolean(c)) =
+            (&pd.antecedent, &pd.consequent)
+        else {
+            return None;
+        };
+        // A bare property-name on either side is a deeper (nested) skew beyond this
+        // slice → `None` → loud fallthrough.
+        if self.is_property_name(b) || self.is_property_name(c) {
+            return None;
+        }
+        Some((b.clone(), c.clone()))
+    }
+
+    /// True iff `e` is a single-segment identifier that names a declared property
+    /// and NOT a net of the same name (a real net wins the leaf path).
+    fn is_property_name(&self, e: &ast::Expr) -> bool {
+        if let ast::ExprKind::Ident(p) = &e.kind {
+            if p.segments.len() == 1 {
+                let n = &p.segments[0].name;
+                return self.lookup_net_scoped(n).is_none() && self.prop_table.contains_key(n);
+            }
+        }
+        false
     }
 
     /// Flatten a named OVERLAP property `name` to the boolean `!ante || cons` (slice
