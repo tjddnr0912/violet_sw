@@ -1,6 +1,7 @@
 # vitamin — 잔여 작업 트래커 (Remaining Work)
 
 > **리뉴얼: 2026-06-10** · 기준 HEAD `b3651fa` → **동일자 전 항목 소진**: P0 9건 → P1 9건 → P2 12/12건 → P3 4건+양호판정 → P4 T0a/T0b/T1 → native-eval follow-on → P5 문서부채 전체(571 green, golden unflipped fmt_ver 3) → **2탄: perf 축 2건 + Phase-1.x 전부**(스케줄러축 ≈1.85x · 구조 native lane ≈2.8x · vita-log 게이트+exit 2 · filelist · explain · **format_version 4**(런타임 delay·dump flush/limit·Force/Release) — HEAD `8664627`, **611 tests green**) · clippy/fmt clean · MsgCode **50**. **이 트래커는 완결 — 신규 작업은 §권장 순서(아래 갱신본) 또는 ROADMAP §2.**
+> **⚠️ 이 헤더는 2026-06-10 Phase-2 이전 스냅샷이다.** 2026-06-16 현재 = **format_version 8** · 약 **1088 tests green** · MsgCode **55**. Phase-2/3 진행(worklib·v7 bump·Phase-3 SVA 트랙 S4–S15+A1–A4·wait fork)은 **[ROADMAP](ROADMAP.md) §4가 단일 라이브 트래커**다 — 이 파일은 더 갱신하지 않는다.
 > 출처: 7축 감사 — ①Gemini-fix 검토 ②spec-gap ③sim-engine ④front-end ⑤메모리/자원 ⑥운용성 ⑦병렬화. 핵심 항목은 라이브 재현(+iverilog 차분)으로 확정, 각 항목에 `재현:` 표기.
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).

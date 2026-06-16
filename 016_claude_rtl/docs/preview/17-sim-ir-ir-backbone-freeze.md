@@ -321,6 +321,12 @@ node-kind당 append-only `Vec` 1개 = 재로드 시 포인터 fixup 0.
   per-net forced 플래그가 모든 일반 write 경로를 차단; release는 net=settle 복원/var=값 유지). 루트 해시 재pin(d6d078bc…), Process 서브pin 불변(=정상 sanity),
   canonical/RON 골든 재생성(`REGEN_GOLDEN=1` 스위치 신설), 전 `.velab`/`.vu`는 FORMAT 게이트에서
   exit 2로 거부(의도된 staleness).
+- **format_version 5–8 (2026-06-10~14) — 후속 re-freeze:** v5=`NonblockingAssign.delay`(NBA transport delay)
+  +`NetKind` Dyn 3종(동적 배열/queue/assoc)+`SysFunc`/`SysTask` 메서드 — v6=queue `insert/delete`·assoc iter·string 키
+  — v7=`BinOp::CasezEq/CasexEq`+`SysFuncId`/`SysTaskId` 다수($random·파일 I/O·readmem·bit-vector)+`NetKind::String`
+  — **v8=`WaitCause::Fork`(wait fork IR)**. **현재 골든 `format_version` = 8.** SVA(concurrent assert·시퀀스·
+  sampled fn·named property/sequence·multi-clock)와 wait fork **기능**은 v8 위에 **순수 IR-0 desugar + AST-flip**으로
+  얹혀 `.vu` AST-해시만 재핀(SimIr 골든 무변경).
 - **`format_version` bump:** M3가 전 백본 동결 → 루트 해시 by construction 변경 → 이전 모든 `.velab` 무효(decode 시 incompatible-tool 하드 에러, silent misparse 없음). M3 동결로 1회 bump; 새 `schema_hash_is_pinned` EXPECTED + canonical 골든(SimIr 루트) 커밋.
 - **decode 게이트:** 정책 불변(version-GATE refuse-and-rebuild).
 - **Layer-3 RON 골든:** `serde-reflection` tracer 루트를 `Process` 클러스터 → `SimIr`로 확장.
@@ -340,15 +346,16 @@ node-kind당 append-only `Vec` 1개 = 재로드 시 포인터 fixup 0.
 
 | Phase-2 구문 | re-freeze 위치 |
 |---|---|
-| `==?`/`!=?`, `inside`, 스트리밍 `{>>}/{<<}` | `BinOp` 확장 / 새 `Expr` variant |
-| `$readmemh`/`$fopen`/파일 I/O, `$random` | `SysTaskId` 확장(`$random`→`SysFuncId`) |
-| `$bits`/`$countones`/`$signed` 확장 | `SysFuncId` 확장 |
+| ~~casez/casex 정밀(`==?`/`!=?`)~~ ✅ v7(`BinOp::CasezEq/CasexEq`) · `inside`, 스트리밍 `{>>}/{<<}`(잔여) | `BinOp` 확장 / 새 `Expr` variant |
+| ~~`$readmemh`/`$fopen`/파일 I/O, `$random`~~ ✅ v7 | `SysTaskId`/`SysFuncId` 확장(`$random`=`SysFuncId`) |
+| ~~`$bits`/`$countones`~~ ✅ v7 · `$signed` 확장(잔여) | `SysFuncId` 확장 |
 | ~~intra-assign delay `lhs = #5 rhs`~~ ✅ v4/v5 | blocking=tmp+`Delay` terminator(v4, 필드 불요) · NBA=`NonblockingAssign.delay`(v5) |
 | ~~named `event` + `->ev`~~ ✅ 2026-06-11 | **형상 0**: 카운터 desugar(64-bit Reg + `e=e+1` + AnyEdge) — `WaitCause::Named`/`WakeCond::NamedEvent`는 예약-미사용 유지 |
 | net types `tri/wand/wor`, drive strength | `NetKind` 확장 / strength 필드 |
 | 다차원 PACKED / 동적·연관 array | `NetVar.array_len:u32` → `dims:Vec<u32>` (UNPACKED 다차원은 elaborate 평탄화로 이미 처리됨 — re-freeze 불요) |
 | struct/union/enum/typedef | `NetKind` 확장(packed struct는 `BitPacked` fit); unpacked→`dims` |
 | interface ref | `Instance`-인접 arena + 새 `Expr`/`Lvalue` leaf |
+| ~~SVA(concurrent assert·시퀀스·sampled fn·named property/sequence·multi-clock)·wait fork~~ ✅ v8 | **IR-0 / AST-flip만** — 합성 clocked-always 체커 desugar, `.vu` 재핀(SimIr 골든 무변경) |
 | `real`/`realtime` 저장 | **✅ DONE — 의도적 sim-ir re-freeze (format_version 2→3).** 당초 "re-freeze 아님(별도 비해시 lane)" 결정을 **의도적으로 번복**: `NetKind::Real` + `ConstRepr::Real`(둘 다 fieldless) + `SysFuncId::{Rtoi,Itor,RealToBits,BitsToReal}` 4종 추가. f64는 **f64 필드 없이** `f64::to_bits()→u64`로 기존 `BitPacked.val[0]`에 저장(width=64, unk=[0]) → no-float derive 가드(usize/f32/f64 reject) 그대로 만족 + reals가 골든 IR/결정성에 **참여**(side-lane보다 엄격히 깨끗). 루트 해시 1회 flip → `EXPECTED_SIMIR_HASH` 재pin(`EXPECTED_PROCESS_HASH`는 불변=정상 sanity gate), 전 `.velab`/`.vu`는 FORMAT 게이트에서 stale 거부(의도된 staleness). 엔진의 `is_real` 플래그는 비해시 런타임 `Value`/`NetSlot`에만 존재(IR 불침투). 상세: `docs/superpowers/plans/2026-06-04-real-domain-spec.md`. |
 | `final`, `foreach`, `unique`/`priority`, `do-while`, `join_any`/`join_none` | **lowering-only** — 기존 `Terminator`/`Branch`/`Goto`/`Fork`, 새 이름 0, re-freeze 0 |
 

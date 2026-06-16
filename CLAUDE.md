@@ -45,7 +45,7 @@ violet_sw/
 | 012_stock_dashboard | 글로벌 시장 대시보드 (Bloomberg-style, port 5002) | `./run_dashboard.sh` | [CLAUDE.md](012_stock_dashboard/CLAUDE.md) |
 | 013_shortcut | 비주얼 블록 Apple Shortcuts 빌더 (iOS/macOS) | `xcodegen generate` | [CLAUDE.md](013_shortcut/CLAUDE.md) |
 | 014_casper | **미장봇 (US Stock Bot)** — SPMO 50%/GEM 30%/Casper(ORB+FVG) 20% 멀티 bucket, 자본 $5k/$10k에서 MTUM·QUAL·Clenow 자동 활성화 | `./run_casper.sh start` | [CLAUDE.md](014_casper/CLAUDE.md) |
-| 016_claude_rtl | **vitamin** — 오픈소스 Rust RTL 시뮬레이터 (SystemVerilog/Verilog, cargo 워크스페이스). SPEC 완비 + 구현 진행 중(PR1-B·PR2·M3) | `cargo test --workspace --locked` | [CLAUDE.md](016_claude_rtl/CLAUDE.md) |
+| 016_claude_rtl | **vitamin** — 오픈소스 Rust RTL 시뮬레이터 (SystemVerilog/Verilog, cargo 워크스페이스). 전 파이프라인 동작 + Phase-3 SVA 서브셋 (1088 tests green, format_version 8) | `cargo test --workspace --locked` | [CLAUDE.md](016_claude_rtl/CLAUDE.md) |
 
 ## Development Guidelines
 

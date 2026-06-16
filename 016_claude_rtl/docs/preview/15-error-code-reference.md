@@ -20,7 +20,8 @@
   CLI(`-Wno-`/`-Werror=`)·corpus(`expect_codes`)·문서는 **숫자가 아닌 mnemonic으로 참조**한다.
 - **`VITA-<S>####` 숫자는 보조**(빠른 grep용). 한 번 부여하면 **영구**(빈 번호는 빈 채로,
   재사용·renumber 금지 — rustc `E0001` 방식). severity 접두 `S` ∈ {E=Error, W=Warning,
-  I=Info, F=Fatal}. **초기 36개**는 카테고리 내 mnemonic 알파벳순으로 부여했고, **이후 추가는
+  I=Info, F=Fatal}. **초기 36개**(시드 할당)는 카테고리 내 mnemonic 알파벳순으로 부여했고(현재 본문
+  full-entry 코드는 **55개** — 2026-06-12 v7 기준), **이후 추가는
   해당 밴드의 다음 빈 번호를 단조 부여**한다(알파벳 재정렬 금지). 공식 출처 기반 추가 케이스
   인벤토리는 **부록 A** 참조(미구현 예약 코드 107개 + 밴드 5/6/7).
 - severity·게이트·exit 의미는 [13-diagnostics-and-logging.md](13-diagnostics-and-logging.md).
@@ -399,7 +400,8 @@ module m(input i); endmodule  module t; m u1(); endmodule   // 포트 미연결
 **action block 없는 assert 실패 — 묵시 `$error` severity.** immediate `assert(...)` 또는
 concurrent `assert property(...)`가 거짓이고 `else`(fail) 블록이 없을 때, IEEE §16.3상 묵시
 `$error` severity를 갖는다. RTL `$error`와 **같은 게이트**로 라우팅, 실패 플래그 기록 후 계속.
-(SVA Phase 2 — 코드 예약.)
+(immediate `assert`=Phase-1.x. concurrent `assert property`(SVA)는 **Phase-3 구현됨** — 단, 실패는
+합성 clocked-always 체커의 `$error`(→`E-RUN-USER-ERROR` E4003)로 방출되어 이 코드 자체는 **예약-미발화**.)
 ```
 always @(posedge clk) assert (state != ERR_STATE);   // state==ERR_STATE 시 실패
 ->  error[VITA-E4001] E-RUN-ASSERT-FAIL: assertion failed at tb.dut.fsm (state.sv:42) time=1750ns
@@ -746,7 +748,7 @@ RTL 버그 아님). 억제 불가.
 
 ## 부록 A · 조사 기반 에러/경고 케이스 인벤토리 (공식 출처)
 
-> 본문(§0~9)의 36개는 **MVP 설계·구현 대상** 코드다. 본 부록은 실제 시뮬레이터
+> 본문(§0~9)의 55개(현재 full-entry / `MsgCode` enum 등재 수, 2026-06-12 v7 기준)는 **MVP 설계·구현 대상** 코드다. 본 부록은 실제 시뮬레이터
 > (Verilator · Icarus iverilog · VCS · Xcelium · GHDL) 공식 문서 + IEEE 1800/1364가 정의하는
 > **추가 오류/경고 조건 107개를 미리 수집한 인벤토리**다 — 추후 구현 시 어떤 케이스를 처리해야
 > 하는지 미리 드러내 구현을 용이하게 하려는 목적이다. **이 코드들은 아직 미구현(예약)** 이며,
@@ -763,7 +765,7 @@ RTL 버그 아님). 억제 불가.
 `LINT` = 스타일/린트(선택; Verilator 기본 off 다수) · `SVA`/`SV-TYPE`/`VHDL` = 예약 밴드(향후 기능).
 *sev* 약어 Erro=Error.
 
-**번호 부여 (거버넌스 보강):** 초기 36개는 알파벳순으로 부여했고, **이후 추가는 해당 밴드의
+**번호 부여 (거버넌스 보강):** 초기 36개(시드)는 알파벳순으로 부여했고(현재 본문 55개), **이후 추가는 해당 밴드의
 다음 빈 번호를 영구 부여한다(재정렬·renumber 금지)** — 그래서 본 부록 번호는 알파벳순이 아니다.
 mnemonic이 1차 안정 키임은 동일. 구현 전이므로 일부 번호는 향후 통합·재배치될 수 있다(미구현
 인벤토리 한정).

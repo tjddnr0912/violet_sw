@@ -9,10 +9,12 @@ SVA(SystemVerilog Assertions) concurrent assertion에서 사용되는
 
 전부 합성 불가 검증 전용이며 IEEE 1800-2017 §16에 정의되어 있다.
 
-## 지원 Phase
+## 구현 상태
 
-- **Phase 2**: 전 함수 — `$past`, `$rose`, `$fell`, `$stable`, `$changed`, `$sampled`,
-  `$assertoff`, `$asserton`, `$assertkill`, `$assertcontrol`
+- **구현됨 (2026-06-16, hand-IEEE)**: `$past`, `$rose`, `$fell`, `$stable` — signal당 공유
+  prev-reg desugar(`rewrite_sampled`)로 합성되며, SVA antecedent 시퀀스 + pass/fail action block
+  내부에서 사용할 수 있다. ⚠️ iverilog 13.0이 이들을 거부('not defined')해 차분 오라클이 없어 hand-IEEE 핀.
+- **미구현 (참조)**: `$changed`, `$sampled`, `$assertoff`, `$asserton`, `$assertkill`, `$assertcontrol`.
 
 ---
 
@@ -315,14 +317,15 @@ $assertcontrol(4, 255, 2);
 
 | 함수 | Icarus Verilog | Verilator |
 |------|---------------|-----------|
-| `$past`, `$rose`, `$fell`, `$stable`, `$changed` | 지원 (SVA 서브셋) | 지원 (`--assert` 활성화 필요) |
-| `$sampled` | 지원 | 지원 |
+| `$past`, `$rose`, `$fell`, `$stable`, `$changed` | ❌ 거부 (13.0, 아래 ⚠️) | 지원 (`--assert` 활성화 필요) |
+| `$sampled` | ❌ 거부 (13.0) | 지원 |
 | `$assertoff`, `$asserton`, `$assertkill` | 부분 지원 | 지원 |
 | `$assertcontrol` | 제한적 | 제한적 |
 
-Icarus는 concurrent assertion을 제한적으로 지원한다 — 단순 property는 동작하나
-복잡한 sequence 기반 property는 차이가 있을 수 있다.
-Verilator는 `--assert` 플래그 없이는 assertion 자체를 무시한다.
+> ⚠️ **vitamin 라이브 검증 (iverilog 13.0):** iverilog 13.0은 concurrent assertion과
+> `$past`/`$rose`/`$fell`/`$stable`을 **모두 거부**한다('not supported'/'not defined') —
+> 차분 오라클이 없어 vitamin은 이 함수들을 **hand-IEEE**로 구현한다(검증=합성 prev-reg 등가).
+> Verilator는 `--assert` 플래그 없이는 assertion 자체를 무시한다.
 
 ---
 
@@ -336,6 +339,11 @@ Verilator는 `--assert` 플래그 없이는 assertion 자체를 무시한다.
 
 ## 본 프로젝트 구현 메모
 
+- **구현 방식 (2026-06-16)**: `$past`/`$rose`/`$fell`/`$stable`은 Observed-region 훅·circular
+  buffer가 아니라 **순수 IR-0 prev-reg desugar**로 구현됐다 — `rewrite_sampled`가 signal당 공유
+  full-width `prev` reg를 합성하고 NBA `prev<=sig`로 1-사이클 지연시킨다(`$past(e,n)`=n-스테이지 시프트,
+  `$rose`=`~prev[0]&e[0]`·`$fell`=`prev[0]&~e[0]`·`$stable`=`prev===e`). hand-IEEE 핀(iverilog 13.0 거부).
+  **아래 항목은 미구현 함수(`$changed`/`$sampled`/`$assert*`)의 향후 설계 메모다.**
 - **샘플링 타이밍**: assertion 평가 엔진은 Observed 리전에서 호출되어야 한다.
   NBA 완료 후 신호 스냅샷을 캡처하는 훅이 필요.
 - **$past 이력 버퍼**: 각 concurrent assertion이 참조하는 신호에 대해

@@ -56,19 +56,24 @@ VHDL(IEEE 1076)은 다른 언어이므로 별도 프론트엔드(lexer/parser/el
 - 비트벡터: `$bits` / `$clog2` / `$countones` / `$countbits` / `$onehot` / `$onehot0` / `$isunknown`
 - 수학: `$pow` / `$ln` / `$log10` / `$exp` / `$sqrt` / `$sin` / `$cos` / `$tan`
 - random: `$random` / `$urandom` / `$urandom_range` / `$dist_*`
-- assertion 샘플링: `$past` / `$rose` / `$fell` / `$stable` / `$changed` / `$sampled`
+- assertion 샘플링: ✅ `$past` / `$rose` / `$fell` / `$stable`(*구현 — prev-reg desugar, Phase-3 SVA 트랙*) / `$changed` / `$sampled`(후속)
 - introspection: `$typename` / `$cast` / `$size` / `$left` / `$right` / `$low` / `$high` / `$increment`
 - 기타: `$value$plusargs` / `$test$plusargs` / `$system`
 
 **Phase 2 마일스톤:**
 
-1. `package` + `typedef` 정상 동작
-2. `interface`로 신호 그룹 전달
-3. assertion 샘플링 함수(`$rose` / `$fell` 등) 동작
+1. ✅ `package` + `typedef` 정상 동작 (v7)
+2. ✅ `interface`로 신호 그룹 전달
+3. ✅ assertion 샘플링 함수(`$past` / `$rose` / `$fell` / `$stable`) 동작 — 구현 완료(Phase-3 SVA 트랙)
 
 ---
 
 ## Phase 3 — VHDL
+
+> **현 상태(2026-06):** Phase 3은 **SVA(SystemVerilog Assertions) 서브셋 트랙으로 먼저 진입·완료**됐다
+> (format_version 8, 순수 IR-0 desugar — 단일/다중-클럭 concurrent assert·전 시퀀스 연산자·sampled
+> value func·named property/sequence+formal args·generate-scope; 상세 = `docs/ROADMAP.md` §4.3 #6).
+> 아래 VHDL 프론트엔드는 Phase-3의 **후속** 트랙이며 아직 미착수다.
 
 **범위:** IEEE 1076 프론트엔드를 별도로 구축하되, elaborate 이후 공유 IR 위에 얹는다.
 

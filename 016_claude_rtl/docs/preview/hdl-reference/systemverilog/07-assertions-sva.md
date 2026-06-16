@@ -16,7 +16,8 @@ IEEE 1800-2017 §16 기준.
 > **vitamin 구현 상태 (2026-06-10):** **immediate `assert`는 구현됨** — 파서가
 > `Stmt::If`로 desugar(AST 동결 유지, X/Z cond → 실패 분기 = `if` 의미론과 동일).
 > else절 생략 시 IEEE 디폴트 동작 `$error("Assertion failed")` 합성(stderr 진단 +
-> exit 1, 런 계속). `assert property`(동시)·`assert #0`/`assert final`(연기형)은
+> exit 1, 런 계속). `assert property`(동시)는 **구현됨**(아래 '§16.14 Concurrent
+> Assertion' 섹션의 vitamin 구현 상태 참조). `assert #0`/`assert final`(연기형)은
 > **loud 파스 에러**, `assume`/`cover`는 미지원(키워드 아님 → loud).
 
 ```systemverilog
@@ -55,6 +56,25 @@ assert (expr) else $info("note");                     // 정보
 
 동시 assertion은 **클록 엣지마다** 평가되며, 여러 사이클에 걸친 시퀀스 동작을 기술한다.
 모듈·인터페이스·program 블록에 직접 배치하거나 `always` 블록 안에 넣을 수 있다.
+
+> **vitamin 구현 상태 (2026-06-16, format_version 8):** concurrent assertion 서브셋이
+> **구현됨** — 전부 **순수 IR-0 desugar**(ConcurrentAssert → 합성 clocked-always 체커,
+> `materialize_sva_checkers`; sim-ir 골든 무변경, `.vu` AST-해시만 재핀). 구현 범위:
+> - **함의**: 단일 클럭 `@(clk) a |-> b`(overlap)·`a |=> b`(non-overlap)·무-implication
+>   `property(@(clk) e)`(=`1'b1 |-> e`); **multi-clock 정준** `@(c1) a |=> @(c2) b`(두-프로세스 핸드오프).
+> - **시퀀스(antecedent)**: `##n`·`##[m:n]`·`##[m:$]`·`[*n]`·`[*m:n]`·`throughout`·`[->n]`·`[=n]`·`within`.
+> - **sampled value func**: `$past`/`$rose`/`$fell`/`$stable`(prev-reg desugar; property body + pass/fail action block 내부).
+> - **named 선언**: `sequence NAME;…endsequence`·`property NAME;…endproperty` + `assert property(NAME)`
+>   + **formal arguments**(`sequence s(x,y)` 위치 바인딩) + generate-scope 선언 + property-references-property(overlap inner).
+> - **action block** `[pass] else fail` · **disable iff**.
+>
+> **⭐오라클 NULL → 전면 hand-IEEE 핀**: iverilog 13.0이 concurrent assertion·named property/sequence·
+> `$past`/`$rose`/`$fell`/`$stable`를 **모두 거부**('not supported'/'not defined')해 차분 오라클이 없다 —
+> 검증은 named≡inline 행동 등가 + 합성 체커 byte-identity로 수행.
+>
+> **LOUD(미구현·거부)**: multi-term 시퀀스 cross-clock·sequence local variable·recursive property·
+> outer-`|=>` prop-ref skew. `assume`/`cover` property·`s_eventually`/`always`/`until(_with)`/`implies`
+> 등 property 연산자도 미지원(loud).
 
 ```systemverilog
 // property + assert property 분리 선언 (권장)
