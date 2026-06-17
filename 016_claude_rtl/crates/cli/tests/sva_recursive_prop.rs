@@ -519,6 +519,33 @@ fn deep_andor_nesting_is_loud_not_a_crash() {
 }
 
 #[test]
+fn very_deep_andor_chain_does_not_overflow_default_stack() {
+    // Regression for the Windows CI stack overflow (after 27d639d): the parser
+    // builds `a and a and …` into a left-leaning `PropExpr` tree that
+    // `synth_prop_expr` CLONEs (and later drops) recursively. At 40 000 operands
+    // that recursion overflows not just Windows' ~1 MiB main-thread stack but the
+    // ~8 MiB Linux/macOS default too — so it crashes on EVERY OS unless the driver
+    // runs on the large-stack worker thread (see `crates/cli/src/main.rs`). It must
+    // still terminate with the loud depth-cap diagnostic, never an overflow abort.
+    let chain = std::iter::repeat("a")
+        .take(40_000)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK}reg a=1;\n\
+         initial assert property(@(posedge clk) {chain});\n\
+         initial #20 $finish;\n\
+         endmodule\n"
+    ));
+    // `134` is the Unix SIGABRT code; on Windows a stack overflow exits with a
+    // different (STATUS_STACK_OVERFLOW) code, so `assert_loud` is the real
+    // cross-OS guard: it requires a nonzero exit AND a "unsupported"/"vita-e"
+    // diagnostic, which a silent overflow abort cannot produce on any OS.
+    assert_ne!(code, Some(134), "must NOT stack-overflow:\n{err}\n{out}");
+    assert_loud(&out, &err, code, "very deep and/or chain");
+}
+
+#[test]
 fn disable_iff_with_andor_is_loud() {
     let (out, err, code) = run(&format!(
         "module top;\n{CLK}reg a=1, b=0, c=1, d=1, rst=0;\n\

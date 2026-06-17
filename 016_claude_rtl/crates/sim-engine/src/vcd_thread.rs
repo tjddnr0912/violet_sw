@@ -34,6 +34,10 @@ pub(crate) struct ThreadedWriter {
 impl ThreadedWriter {
     pub(crate) fn spawn<W: Write + Send + 'static>(mut inner: W) -> Self {
         let (tx, rx): (SyncSender<Msg>, Receiver<Msg>) = sync_channel(8);
+        // This thread performs NO recursive work — it only `write_all`s
+        // pre-serialized byte chunks from the FIFO — so the OS default stack is
+        // safe by design (unlike the recursive parse/elaborate pipeline, which
+        // the driver runs on a large explicit stack; see crates/cli/src/main.rs).
         let handle = std::thread::spawn(move || {
             let mut first_err: Option<std::io::Error> = None;
             for msg in rx {
