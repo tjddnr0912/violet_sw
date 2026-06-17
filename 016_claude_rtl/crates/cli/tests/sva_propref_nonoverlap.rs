@@ -7,9 +7,10 @@
 //! to `(a && b) |=> c` and lets the existing top-level `|=>` pend-reg machinery
 //! produce the 1-cycle skew. Pure IR-0 (sim-ir frozen, format_version 8).
 //!
-//! iverilog 13.0 rejects all of this (NULL oracle) → hand-IEEE. LOUD (deferred):
-//! a 2-cycle skew (outer `|=>` AND inner `|=>`), a sequence outer antecedent, an
-//! inner property whose own consequent is a property reference, a different/multi
+//! iverilog 13.0 rejects all of this (NULL oracle) → hand-IEEE. The 2-cycle skew
+//! (outer `|=>` AND inner `|=>`) is now synthesized as `(a ##1 b) |=> c` (slice N2b,
+//! see `sva_propref_2cycle.rs`). STILL LOUD (deferred): a sequence outer antecedent,
+//! a DEEPER chain (inner consequent is itself a property reference), a different/multi
 //! clock, formals, or `disable iff`.
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -168,9 +169,11 @@ fn nonoverlap_outer_overlap_inner_still_works() {
 // ── LOUD (deferred) ────────────────────────────────────────────────────────────
 
 #[test]
-fn two_cycle_skew_outer_and_inner_nonoverlap_is_loud() {
-    // outer |=> AND inner |=> = a 2-cycle skew, beyond this slice → loud.
-    let (_o, err, code) = run("module top;\n\
+fn two_cycle_skew_outer_and_inner_nonoverlap_now_synthesized() {
+    // SLICE N2b: outer |=> AND inner |=> = a genuine 2-cycle skew, now synthesized as
+    // `(a ##1 b) |=> c` (was loud pre-N2b). a=b=1,c=0 → obligation every clock, c=0 two
+    // clocks later → fires (an ASSERTION violation, NOT a VITA-E unsupported reject).
+    let (out, err, code) = run("module top;\n\
          reg clk=0, a=1, b=1, c=0; always #5 clk=~clk;\n\
          property q_bc; @(posedge clk) b |=> c; endproperty\n\
          property p_aq; @(posedge clk) a |=> q_bc; endproperty\n\
@@ -180,9 +183,12 @@ fn two_cycle_skew_outer_and_inner_nonoverlap_is_loud() {
     assert_eq!(
         code,
         Some(1),
-        "a 2-cycle (outer |=> + inner |=>) skew must be loud. {err}"
+        "a 2-cycle (outer |=> + inner |=>) skew with c=0 must FIRE. stderr:\n{err}\nout:\n{out}"
     );
-    assert!(err.contains("VITA-E"), "{err}");
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion") && !err.contains("unsupported"),
+        "must be an assertion violation, not a loud unsupported reject:\n{err}\n{out}"
+    );
 }
 
 #[test]

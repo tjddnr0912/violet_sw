@@ -7988,6 +7988,37 @@ impl<'s> Elaborator<'s> {
                 }
             }
         }
+        // Slice N2b: genuine 2-cycle skew — an outer NON-OVERLAP `a |=> q` whose
+        // referenced property is a clean inner NON-OVERLAP `q: b |=> c`.
+        // `a |=> (b |=> c)` ≡ `(a ##1 b) |=> c` (IEEE 1800 §16.12 textual
+        // substitution): the outer `|=>` skews a→b by one clock — exactly the `##1`
+        // connector — and the inner `|=>` skews b→c by one more, which the top-level
+        // `|=>` pend reg already supplies. So rewrite the antecedent to the SEQUENCE
+        // `a ##1 b` (kept NonOverlap) and let the existing sequence pipeline +
+        // pend-reg machinery produce BOTH skews — no new synthesis. (Unlike the
+        // OVERLAP outer above, where a and b are fused at the same clock = `a && b`.)
+        // Deeper chains (inner consequent is itself a property ref) and a sequence
+        // outer antecedent fall through to the overlap flattener's loud `|=>` reject.
+        if matches!(sva.kind, ast::ImplicationKind::NonOverlap) {
+            let outer_ante = match &sva.ante {
+                ast::Sequence::Boolean(a) => Some(a.clone()),
+                _ => None,
+            };
+            if let Some(a) = outer_ante {
+                if let Some((b, c)) = self.peel_nonoverlap_property(&name, &sva.clock) {
+                    sva.ante = ast::Sequence::Delay {
+                        min: 1,
+                        max: Some(1),
+                        lhs: Box::new(ast::Sequence::Boolean(a)),
+                        rhs: Box::new(ast::Sequence::Boolean(b)),
+                    };
+                    sva.cons = ast::Sequence::Boolean(c);
+                    // kind stays NonOverlap: the `##1` gives the a→b skew, the pend
+                    // reg the b→c skew (a total 2-clock obligation).
+                    return;
+                }
+            }
+        }
         match self.flatten_overlap_property(&name, &sva.clock, sp) {
             Some(b) => sva.cons = ast::Sequence::Boolean(b),
             None => sva.cons = ast::Sequence::Boolean(sva_one(sp)),
