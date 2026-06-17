@@ -1175,14 +1175,22 @@ impl<'a> SimState<'a> {
     }
 }
 
-/// Runaway-recursion guard for the frame-call evaluator. NOT a host-stack
-/// bound — it caps the LOGICAL nesting of `eval_call` re-entries. Set well
-/// above any legal depth an oracle (iverilog) completes (`cnt(20000)` is
-/// fine); the deep-recursion corpus is run on a large-stack worker thread (the
-/// CLI / test harness spawns it) so a native stack overflow cannot fire first.
-/// Hitting the cap latches `call_fatal` → the scheduler ends with
-/// `FinishReason::Error` (same exit class as user `$fatal`).
-pub(crate) const MAX_CALL_DEPTH: u32 = 65536;
+/// Runaway-recursion guard for the frame-call evaluator. It caps the LOGICAL
+/// nesting of `eval_call` re-entries; hitting it latches `call_fatal` → the
+/// scheduler ends with `FinishReason::Error` (same exit class as user `$fatal`).
+///
+/// The deep-recursion corpus runs on a large (256 MiB) worker stack — the CLI
+/// driver (crates/cli/src/main.rs) and the frame_call test harness both spawn
+/// one — so this cap, NOT a host stack overflow, is the guard. For that to hold
+/// on EVERY OS the cap must be small enough that `MAX_CALL_DEPTH` re-entries fit
+/// that stack on the platform with the FATTEST frames: each `eval_call` frame is
+/// ~4 KiB on macOS but ~2.5× that on Windows debug builds, so the old 65536
+/// (~0.5 GiB on Windows) overflowed 256 MiB and aborted BEFORE the cap fired
+/// (Windows CI stack overflow). 8192 ⇒ ≤ ~80 MiB worst-case (≈3× headroom in
+/// 256 MiB), yet still 4× the deepest legal-recursion test (`cnt(2000)`) and far
+/// beyond any real RTL recursion. (Raising it requires raising BOTH worker
+/// stacks in lockstep.)
+pub(crate) const MAX_CALL_DEPTH: u32 = 8192;
 
 /// RAII decrement of `call_depth` on EVERY exit of `eval_call` (normal return,
 /// fatal-return, or a panic unwinding through it) so a missed early-return can
