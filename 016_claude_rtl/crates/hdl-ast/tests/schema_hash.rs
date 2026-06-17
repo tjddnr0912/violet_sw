@@ -12,7 +12,12 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-16 deferred immediate assertions (`Stmt::DeferredAssert` +
+/// Re-pinned 2026-06-17 B4 frame-call variable-lifetime override
+/// (`NetVarDecl.lifetime: Option<bool>` — `automatic int x;` in a frame
+/// function/task body_decl gives that local fresh-per-call storage; all `.vu`
+/// artifacts are stale, no sim-ir/format_version change, pure IR-0: the per-slot
+/// lifetime rides the engine routing side table out-of-band). (Previous re-pins:
+/// 2026-06-16 deferred immediate assertions (`Stmt::DeferredAssert` +
 /// `AssertDefer` enum — `assert #0` (Observed) / `assert final` (Reactive); all
 /// `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0: a
 /// flush-marker + region maturation queues carried out-of-band). (Previous re-pins:
@@ -42,8 +47,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    128, 57, 124, 18, 0, 90, 217, 217, 134, 108, 156, 6, 83, 66, 179, 129, 129, 135, 105, 71, 48,
-    206, 18, 30, 97, 117, 200, 76, 223, 48, 107, 218,
+    174, 45, 223, 111, 133, 56, 186, 113, 199, 196, 163, 206, 68, 228, 215, 25, 105, 111, 42, 117,
+    200, 63, 153, 106, 252, 176, 55, 249, 142, 134, 177, 35,
 ];
 
 #[test]

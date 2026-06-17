@@ -300,6 +300,11 @@ pub struct NetVarDecl {
     pub range: Option<Range>, // packed/vector [msb:lsb] (the FIRST/outer packed dim)
     pub packed: Vec<Range>,   // ADDITIONAL packed dims: `logic [3:0][7:0]` ⇒ packed=[[7:0]]
     pub names: Vec<DeclName>, // one decl, possibly many names
+    /// B4: per-declaration lifetime OVERRIDE (`automatic int x;` / `static int y;`).
+    /// `Some(true)` = automatic, `Some(false)` = static, `None` = follow the
+    /// enclosing function/task default. Honored only on a frame function/task
+    /// body_decl (IEEE §6.21; iverilog rejects the override outright).
+    pub lifetime: Option<bool>,
     pub span: Span,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]

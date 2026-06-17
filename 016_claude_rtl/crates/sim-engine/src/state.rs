@@ -289,6 +289,17 @@ pub(crate) struct SimState<'a> {
     /// B2 frame-call: nested task-call sites (in task bodies), keyed by GLOBAL
     /// `ir.blocks` index. `run_task` consults this; outputs must be frame-local.
     pub task_calls_func: crate::TaskCallFunc,
+    /// B4 frame-call: per-net EFFECTIVE-automatic lifetime (len `ir.nets.len()`),
+    /// derived in `build_func_routing`. A frame-local net is read/written from the
+    /// per-call WINDOW when true, the persistent STATIC slab when false. For a
+    /// func with no lifetime overrides this equals its `is_automatic` for every
+    /// slot (byte-identical to B1/B2).
+    pub frame_slot_auto: Vec<bool>,
+    /// B4: per-func "has ≥1 automatic slot" (len `func_table.len()`) — the frame
+    /// pushes a per-call window iff true.
+    pub func_has_auto: Vec<bool>,
+    /// B4: per-func "has ≥1 static slot" — the frame keeps a persistent slab iff true.
+    pub func_has_static: Vec<bool>,
 }
 
 impl<'a> SimState<'a> {
@@ -400,6 +411,9 @@ impl<'a> SimState<'a> {
             call_fatal: Cell::new(false),
             task_calls_proc: crate::TaskCallProc::new(),
             task_calls_func: crate::TaskCallFunc::new(),
+            frame_slot_auto: vec![false; nnets],
+            func_has_auto: Vec::new(),
+            func_has_static: Vec::new(),
         }
     }
 
@@ -412,6 +426,10 @@ impl<'a> SimState<'a> {
         let nnets = self.ir.nets.len();
         self.frame_local = vec![false; nnets];
         self.frame_route = vec![None; nnets];
+        // B4: per-net EFFECTIVE-automatic flag + per-func storage needs.
+        self.frame_slot_auto = vec![false; nnets];
+        self.func_has_auto = vec![false; self.func_table.len()];
+        self.func_has_static = vec![false; self.func_table.len()];
         if self.func_table.is_empty() {
             return;
         }
@@ -432,6 +450,16 @@ impl<'a> SimState<'a> {
                 let net = (m.base_net + slot) as usize;
                 self.frame_local[net] = true;
                 self.frame_route[net] = Some((fi as u32, slot));
+                // B4: a slot is EFFECTIVE-automatic iff its override bit is set OR
+                // the function/task default is automatic (bit 0 for slots ≥ 64).
+                let overridden = slot < 64 && (m.auto_override >> slot) & 1 == 1;
+                let auto = overridden || m.is_automatic;
+                self.frame_slot_auto[net] = auto;
+                if auto {
+                    self.func_has_auto[fi] = true;
+                } else {
+                    self.func_has_static[fi] = true;
+                }
             }
         }
     }
@@ -1224,7 +1252,7 @@ impl<'a> SimState<'a> {
     /// (§borrowDiscipline rule 2). Part-select / array / module-net lvalues are
     /// rejected at ELABORATE, so the engine only ever sees a whole-net chunk;
     /// the `debug_assert` is a release-stripped backstop.
-    fn frame_write_lvalue(&self, automatic: bool, lhs: &Lvalue, v: Value) {
+    fn frame_write_lvalue(&self, lhs: &Lvalue, v: Value) {
         debug_assert_eq!(
             lhs.chunks.len(),
             1,
@@ -1239,7 +1267,8 @@ impl<'a> SimState<'a> {
         let (fidx, slot) = self.frame_route[net].expect("frame lvalue net is routed");
         let nv = &self.ir.nets[net];
         let val = v.resize_keep_sign(nv.width.max(1), nv.signed);
-        self.frame_slot_write(fidx, automatic, slot, val);
+        // B4: route by this slot's EFFECTIVE lifetime (window vs static slab).
+        self.frame_slot_write(fidx, self.frame_slot_auto[net], slot, val);
     }
 
     /// B1 frame-call evaluator. Runs user function `func`'s lowered body (in the
@@ -1292,24 +1321,32 @@ impl<'a> SimState<'a> {
                 && self.ir.nets[(m.base_net + m.return_slot) as usize].signed == m.ret_signed,
             "return-var net width/sign must equal the declared ret_width/ret_signed"
         );
-        let automatic = m.is_automatic;
         let base = m.base_net;
         let nloc = m.locals_len;
         let np = fd.n_params;
+        // B4: per-func storage needs (window for automatic slots, slab for static).
+        let has_auto = self.func_has_auto[func as usize];
+        let has_static = self.func_has_static[func as usize];
 
-        // ── FRAME SETUP: build the fresh window in a LOCAL, push under ONE
-        //    scoped borrow. AUTOMATIC = a new X-init window per call; STATIC =
-        //    one slab, X-init ONCE and never reset (shared-slot persistence). ──
+        // ── FRAME SETUP: build the fresh window in a LOCAL, then install it.
+        //    The per-call WINDOW holds automatic slots (push/pop); the persistent
+        //    STATIC slab (X-init ONCE, never reset) holds static slots. A func with
+        //    no lifetime overrides uses exactly one of them (byte-identical to B1). ──
         let fresh: Vec<Value> = (0..nloc)
             .map(|s| {
                 let nv = &self.ir.nets[(base + s) as usize];
                 Value::xs(nv.width.max(1), nv.signed)
             })
             .collect();
-        if automatic {
-            self.frame_stack.borrow_mut().push(fresh);
-        } else {
-            self.static_store.borrow_mut().entry(func).or_insert(fresh);
+        match (has_auto, has_static) {
+            (true, true) => {
+                self.frame_stack.borrow_mut().push(fresh.clone());
+                self.static_store.borrow_mut().entry(func).or_insert(fresh);
+            }
+            (true, false) => self.frame_stack.borrow_mut().push(fresh),
+            (false, _) => {
+                self.static_store.borrow_mut().entry(func).or_insert(fresh);
+            }
         }
 
         // ── BIND ARGS into the formal slots (resize to the formal's width). ──
@@ -1320,7 +1357,7 @@ impl<'a> SimState<'a> {
                 .cloned()
                 .unwrap_or_else(|| Value::xs(nv.width.max(1), nv.signed))
                 .resize_keep_sign(nv.width.max(1), nv.signed);
-            self.frame_slot_write(func, automatic, i, v);
+            self.frame_slot_write(func, self.frame_slot_auto[(base + i) as usize], i, v);
         }
 
         // ── BB LOOP over the GLOBAL func arena from `fd.entry`. Process bodies
@@ -1342,7 +1379,7 @@ impl<'a> SimState<'a> {
                         .mk_eval_ctx()
                         .eval_ctx(*rhs, lw.max(sw.width), sw.signed);
                     // THEN store (borrow scoped to the index-store only).
-                    self.frame_write_lvalue(automatic, lhs, v);
+                    self.frame_write_lvalue(lhs, v);
                 }
                 // SysTask/NBA/delay/event in a func body are rejected at
                 // ELABORATE (B1 cut) → never reach here.
@@ -1365,10 +1402,11 @@ impl<'a> SimState<'a> {
         }
 
         // ── READ the return slot (clone + release), resize to declared width. ──
+        let ret_auto = self.frame_slot_auto[(base + m.return_slot) as usize];
         let rv = self
-            .frame_slot_read(func, automatic, m.return_slot)
+            .frame_slot_read(func, ret_auto, m.return_slot)
             .resize_keep_sign(rw, rsig);
-        if automatic {
+        if has_auto {
             self.frame_stack.borrow_mut().pop(); // static: leave the slab (persistence)
         }
         Some(rv) // _g drops here → call_depth decremented
@@ -1423,31 +1461,46 @@ impl<'a> SimState<'a> {
         let _g = DepthGuard(&self.call_depth);
         let fd = self.ir.funcs[callee as usize];
         debug_assert!(fd.is_task, "run_task on a non-task FuncDef");
-        let automatic = m.is_automatic;
         let base = m.base_net;
         let nloc = m.locals_len;
+        // B4: per-func storage needs (window for automatic slots, slab for static).
+        let has_auto = self.func_has_auto[callee as usize];
+        let has_static = self.func_has_static[callee as usize];
 
-        // ── FRAME SETUP (X-init window; static = persistent slab). ──
+        // ── FRAME SETUP (window for automatic slots; persistent slab for static). ──
         let fresh: Vec<Value> = (0..nloc)
             .map(|s| {
                 let nv = &self.ir.nets[(base + s) as usize];
                 Value::xs(nv.width.max(1), nv.signed)
             })
             .collect();
-        if automatic {
-            self.frame_stack.borrow_mut().push(fresh);
-        } else {
-            self.static_store
-                .borrow_mut()
-                .entry(callee)
-                .or_insert(fresh);
+        match (has_auto, has_static) {
+            (true, true) => {
+                self.frame_stack.borrow_mut().push(fresh.clone());
+                self.static_store
+                    .borrow_mut()
+                    .entry(callee)
+                    .or_insert(fresh);
+            }
+            (true, false) => self.frame_stack.borrow_mut().push(fresh),
+            (false, _) => {
+                self.static_store
+                    .borrow_mut()
+                    .entry(callee)
+                    .or_insert(fresh);
+            }
         }
 
         // ── COPY-IN the input args (resize to each formal's width). ──
         for (slot, v) in in_vals {
             let nv = &self.ir.nets[(base + *slot) as usize];
             let bound = v.clone().resize_keep_sign(nv.width.max(1), nv.signed);
-            self.frame_slot_write(callee, automatic, *slot, bound);
+            self.frame_slot_write(
+                callee,
+                self.frame_slot_auto[(base + *slot) as usize],
+                *slot,
+                bound,
+            );
         }
 
         // ── BB LOOP over the GLOBAL func arena from fd.entry. ──
@@ -1465,7 +1518,7 @@ impl<'a> SimState<'a> {
                     let v = self
                         .mk_eval_ctx()
                         .eval_ctx(*rhs, lw.max(sw.width), sw.signed);
-                    self.frame_write_lvalue(automatic, lhs, v);
+                    self.frame_write_lvalue(lhs, v);
                 }
             }
             match &blk.term {
@@ -1508,7 +1561,7 @@ impl<'a> SimState<'a> {
                     // callee popped → top frame is the calling task again; write
                     // its frame-local output lvalues.
                     for ((_, lval), val) in info.out_binds.iter().zip(outs) {
-                        self.frame_write_lvalue(automatic, lval, val);
+                        self.frame_write_lvalue(lval, val);
                     }
                     cur = *ret_bb;
                 }
@@ -1522,11 +1575,11 @@ impl<'a> SimState<'a> {
             .iter()
             .map(|&s| {
                 let nv = &self.ir.nets[(base + s) as usize];
-                self.frame_slot_read(callee, automatic, s)
+                self.frame_slot_read(callee, self.frame_slot_auto[(base + s) as usize], s)
                     .resize_keep_sign(nv.width.max(1), nv.signed)
             })
             .collect();
-        if automatic {
+        if has_auto {
             self.frame_stack.borrow_mut().pop();
         }
         Some(outs)
@@ -1699,8 +1752,8 @@ impl<'a> NetReader for SimState<'a> {
                 word.is_none(),
                 "B1 frame-local nets are scalar (no array word)"
             );
-            let automatic = self.func_table[fidx as usize].is_automatic;
-            return self.frame_slot_read(fidx, automatic, slot);
+            // B4: route by this slot's EFFECTIVE lifetime (window vs static slab).
+            return self.frame_slot_read(fidx, self.frame_slot_auto[net as usize], slot);
         }
         // v5 (C)-3b: a dyn HANDLE never reads the flat store — its elements
         // live in the heap. One bitmap load on the hot path.

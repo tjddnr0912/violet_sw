@@ -85,6 +85,7 @@ fn netvar(
                 span: SP,
             })
             .collect(),
+        lifetime: None,
         span: SP,
     })
 }
@@ -747,6 +748,7 @@ fn reg_mem(bit_msb: u32, depth_msb: u32, name: &str) -> ast::ModuleItem {
             init: None,
             span: SP,
         }],
+        lifetime: None,
         span: SP,
     })
 }
@@ -2361,6 +2363,7 @@ fn wire_range_expr(msb: ast::Expr, names: &[&str]) -> ast::ModuleItem {
                 span: SP,
             })
             .collect(),
+        lifetime: None,
         span: SP,
     })
 }
@@ -2653,6 +2656,7 @@ fn netvar_decl_reg(name: &str) -> ast::NetVarDecl {
             init: None,
             span: SP,
         }],
+        lifetime: None,
         span: SP,
     }
 }

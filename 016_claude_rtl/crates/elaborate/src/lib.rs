@@ -226,6 +226,12 @@ pub struct FuncMeta {
     pub ret_width: u32,
     /// Declared return signedness.
     pub ret_signed: bool,
+    /// B4: per-slot AUTOMATIC lifetime override bitmask (bit `i` set ⇒ slot `i`
+    /// was declared `automatic` regardless of the function/task default). A slot's
+    /// EFFECTIVE lifetime is automatic iff `(auto_override >> i) & 1 == 1` OR
+    /// `is_automatic`. `0` (the common case) ⇒ every slot follows `is_automatic`
+    /// (byte-identical to B1/B2). Slots ≥ 64 always follow the default.
+    pub auto_override: u64,
 }
 
 /// Frame-call sidecar (B1): `Vec<FuncMeta>` index-aligned to `ir.funcs`.
@@ -5000,7 +5006,7 @@ impl<'s> Elaborator<'s> {
         let (ret_width, ret_signed) = self.func_return_dims(func);
         let scope_seg = format!("$func${name}");
         let ret_name = name.to_string();
-        self.with_scope(&scope_seg, |s| {
+        let auto_override = self.with_scope(&scope_seg, |s| {
             // [0..n_params): input formals, port order.
             for p in &func.ports {
                 let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
@@ -5040,6 +5046,9 @@ impl<'s> Elaborator<'s> {
             // [n_params+1..]: body_decls, source order (scalars only — a frame-
             // local array/dyn/string is outside the B1 cut and lowers as a 1-elem
             // net here; the body validator rejects any select/array lvalue use).
+            // B4: a body_decl declared `automatic` sets its slot's override bit.
+            let mut auto_override: u64 = 0;
+            let mut slot = n_params + 1; // formals + return var
             for d in &func.body_decls {
                 for decl in &d.names {
                     let (w, msb, lsb, signed) = s.range_to_dims(d.kind, d.range.as_ref(), d.signed);
@@ -5056,8 +5065,13 @@ impl<'s> Elaborator<'s> {
                             init: default_init(d.kind, w),
                         },
                     );
+                    if d.lifetime == Some(true) && slot < 64 {
+                        auto_override |= 1u64 << slot;
+                    }
+                    slot += 1;
                 }
             }
+            auto_override
         });
         let locals_len = self.nets.len() as u32 - base_net;
         self.frame_idx.insert(name.to_string(), fid);
@@ -5075,6 +5089,7 @@ impl<'s> Elaborator<'s> {
             is_automatic: func.automatic,
             ret_width,
             ret_signed,
+            auto_override,
         });
     }
 
@@ -5111,7 +5126,7 @@ impl<'s> Elaborator<'s> {
         let base_net = self.nets.len() as u32;
         let n_params = task.ports.len() as u32;
         let scope_seg = format!("$func${name}");
-        self.with_scope(&scope_seg, |s| {
+        let auto_override = self.with_scope(&scope_seg, |s| {
             // [0..n_params): formals (input AND output, declared order).
             for p in &task.ports {
                 let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
@@ -5130,7 +5145,10 @@ impl<'s> Elaborator<'s> {
                     },
                 );
             }
-            // [n_params..): body_decls, source order (scalars).
+            // [n_params..): body_decls, source order (scalars). B4: a body_decl
+            // declared `automatic` sets its slot's override bit.
+            let mut auto_override: u64 = 0;
+            let mut slot = n_params; // tasks have no return var
             for d in &task.body_decls {
                 for decl in &d.names {
                     let (w, msb, lsb, signed) = s.range_to_dims(d.kind, d.range.as_ref(), d.signed);
@@ -5147,8 +5165,13 @@ impl<'s> Elaborator<'s> {
                             init: default_init(d.kind, w),
                         },
                     );
+                    if d.lifetime == Some(true) && slot < 64 {
+                        auto_override |= 1u64 << slot;
+                    }
+                    slot += 1;
                 }
             }
+            auto_override
         });
         let locals_len = self.nets.len() as u32 - base_net;
         self.task_frame_idx.insert(name.to_string(), fid);
@@ -5166,6 +5189,7 @@ impl<'s> Elaborator<'s> {
             is_automatic: task.automatic,
             ret_width: 1,
             ret_signed: false,
+            auto_override,
         });
     }
 

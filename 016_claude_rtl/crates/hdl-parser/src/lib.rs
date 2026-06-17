@@ -1783,6 +1783,7 @@ impl<'t, 's> Parser<'t, 's> {
             range,
             packed,
             names,
+            lifetime: None,
             span: start.to(self.prev_span()),
         })
     }
@@ -1848,6 +1849,7 @@ impl<'t, 's> Parser<'t, 's> {
             range: info.range,
             packed: info.packed,
             names,
+            lifetime: None,
             span: start.to(self.prev_span()),
         })
     }
@@ -2743,6 +2745,28 @@ impl<'t, 's> Parser<'t, 's> {
                 // non-ANSI formal: `input [7:0] a, b;` → one TfPort per name.
                 let before = self.pos;
                 self.parse_tf_port_decl_into(ports);
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
+            }
+            // B4: a per-decl lifetime override `automatic <kind> <name>;` (only
+            // `automatic` — `static` is not a reserved word). The keyword precedes
+            // a normal var decl; consume it and stamp the lifetime on the decl.
+            if self.at_kw(Kw::Automatic)
+                && matches!(
+                    self.peek_at(1),
+                    Some(TokenKind::Word(WordKind::Keyword(
+                        Kw::Reg | Kw::Logic | Kw::Integer | Kw::Real | Kw::Realtime | Kw::Time
+                    )))
+                )
+            {
+                self.bump(); // 'automatic'
+                let before = self.pos;
+                if let Some(mut d) = self.parse_net_var() {
+                    d.lifetime = Some(true);
+                    body_decls.push(d);
+                }
                 if self.pos == before {
                     self.bump();
                 }
@@ -4290,6 +4314,7 @@ impl<'t, 's> Parser<'t, 's> {
                 init: None,
                 span: id.span,
             }],
+            lifetime: None,
             span: id.span,
         };
         Stmt::Block {

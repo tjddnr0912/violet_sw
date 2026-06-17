@@ -244,6 +244,7 @@ impl B {
             is_automatic: automatic,
             ret_width: ret_w,
             ret_signed,
+            auto_override: 0,
         });
         func
     }
@@ -292,6 +293,7 @@ impl B {
             is_automatic: automatic,
             ret_width: 32,
             ret_signed: true,
+            auto_override: 0,
         });
         func
     }
@@ -512,6 +514,7 @@ fn runaway_recursion_hits_depth_cap_fatal() {
             is_automatic: true,
             ret_width: 32,
             ret_signed: true,
+            auto_override: 0,
         });
         let c = b.k(5);
         let v = b.call(func, vec![c]);
@@ -573,6 +576,7 @@ fn cont_assign_originated_runaway_terminates() {
             is_automatic: true,
             ret_width: 32,
             ret_signed: true,
+            auto_override: 0,
         });
         // module nets: x (driver, =5) and y (cont-assign target).
         let x = b.net(int_net(32, true));
@@ -752,6 +756,7 @@ fn recursive_automatic_task_with_output_formal() {
         is_automatic: true,
         ret_width: 32,
         ret_signed: true,
+        auto_override: 0,
     });
 
     // process: P0 Call(factt, ret=P1); P1 [$display(res)] Return
@@ -1047,6 +1052,47 @@ module tb;
 endmodule
 "#;
     check(src, "120\n1\n5040");
+}
+
+#[test]
+fn e2e_b4_automatic_lifetime_override() {
+    // B4 (hand-IEEE — iverilog rejects "overriding the default variable
+    // lifetime"): an `automatic` local in a DEFAULT-STATIC recursive function gets
+    // fresh-per-call storage. The probe `f = f(n-1) + acc` with `acc = n*10`:
+    //   `automatic integer acc` → each frame keeps its own acc → probe(3) = 60
+    //   plain (default-static) `integer acc` → shared/clobbered → probe(3) = 30
+    // The first is a MIXED-lifetime frame (automatic acc, static n/return).
+    let src = r#"
+module tb;
+  function integer probe_a(input integer n);
+    automatic integer acc;
+    begin
+      acc = n * 10;
+      if (n > 1) probe_a = probe_a(n - 1) + acc;
+      else probe_a = acc;
+    end
+  endfunction
+  function integer probe_s(input integer n);
+    integer acc;
+    begin
+      acc = n * 10;
+      if (n > 1) probe_s = probe_s(n - 1) + acc;
+      else probe_s = acc;
+    end
+  endfunction
+  initial begin
+    $display("%0d", probe_a(3));
+    $display("%0d", probe_s(3));
+  end
+endmodule
+"#;
+    // value-pin only (no iverilog oracle — it rejects the override).
+    let out = vita_out(src);
+    assert_eq!(
+        lines_trimmed(&out),
+        vec!["60", "30"],
+        "automatic-local acc is per-frame (60); default-static acc is shared (30)"
+    );
 }
 
 #[test]
