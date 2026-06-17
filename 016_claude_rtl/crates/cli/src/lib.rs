@@ -614,6 +614,11 @@ fn run_vita_str_gated(
         final_procs: sc.final_procs,
         defer_marks: sc.defer_marks,
         defer_acts: sc.defer_acts,
+        // B1/B2 frame-call: thread the func/task sidecars on the one-shot path
+        // (empty for designs with no automatic/recursive func/task → byte-identical).
+        func_table: sc.func_table,
+        task_calls_proc: sc.task_calls_proc,
+        task_calls_func: sc.task_calls_func,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };

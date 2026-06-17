@@ -281,6 +281,14 @@ pub(crate) struct SimState<'a> {
     /// Latched by `eval_call` when `call_depth` hits the cap (a `&self` path
     /// cannot return a `Step`); the scheduler converts it to `FinishReason::Error`.
     pub call_fatal: Cell<bool>,
+    /// B2 frame-call: process-body task-call sites, keyed by `(proc template,
+    /// process-local block id)`. The `&mut` executor's `Terminator::Call` arm
+    /// runs the task and writes its outputs to the (possibly module-net) caller
+    /// lvalues. Empty ⇒ no frame-task calls.
+    pub task_calls_proc: crate::TaskCallProc,
+    /// B2 frame-call: nested task-call sites (in task bodies), keyed by GLOBAL
+    /// `ir.blocks` index. `run_task` consults this; outputs must be frame-local.
+    pub task_calls_func: crate::TaskCallFunc,
 }
 
 impl<'a> SimState<'a> {
@@ -390,6 +398,8 @@ impl<'a> SimState<'a> {
             static_store: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             call_depth: Cell::new(0),
             call_fatal: Cell::new(false),
+            task_calls_proc: crate::TaskCallProc::new(),
+            task_calls_func: crate::TaskCallFunc::new(),
         }
     }
 
@@ -410,9 +420,11 @@ impl<'a> SimState<'a> {
             return;
         }
         for (fi, m) in self.func_table.iter().enumerate() {
-            if m.return_slot >= m.locals_len
-                || (m.base_net as usize) + (m.locals_len as usize) > nnets
-            {
+            // The return-slot check applies only to FUNCTIONS (a task has no
+            // func-named return var; `return_slot` is unused/0 for `is_task`).
+            let is_task = self.ir.funcs.get(fi).map(|f| f.is_task).unwrap_or(false);
+            let return_bad = !is_task && m.locals_len > 0 && m.return_slot >= m.locals_len;
+            if return_bad || (m.base_net as usize) + (m.locals_len as usize) > nnets {
                 self.fatal_run("frame-call FuncMeta slot range out of bounds");
                 return;
             }
@@ -1360,6 +1372,175 @@ impl<'a> SimState<'a> {
             self.frame_stack.borrow_mut().pop(); // static: leave the slab (persistence)
         }
         Some(rv) // _g drops here → call_depth decremented
+    }
+
+    /// B2 frame-call: execute TASK `callee` against a fresh frame. `in_vals` are
+    /// `(callee input-formal slot, value)` pairs already evaluated in the CALLER
+    /// context; `out_slots` are the callee output-formal slots to read back at
+    /// `Return`. Returns those slots' values (the caller writes them to its
+    /// lvalues). Same `&self` frame arena + borrow discipline as `run_frame_call`;
+    /// a NESTED task call (`Terminator::Call` in the task body) recurses and writes
+    /// its outputs to the CALLING task's frame-local lvalues. `None` ⇒ empty
+    /// sidecar (no frame tasks).
+    fn run_task(
+        &self,
+        callee: u32,
+        in_vals: &[(u32, Value)],
+        out_slots: &[u32],
+    ) -> Option<Vec<Value>> {
+        use sim_ir::{Stmt, Terminator};
+        if self.func_table.is_empty() {
+            return None;
+        }
+        let m = self.func_table[callee as usize];
+        // runaway guard (shared with run_frame_call).
+        let d = self.call_depth.get();
+        if d >= MAX_CALL_DEPTH {
+            if !self.call_fatal.get() {
+                self.call_fatal.set(true);
+                self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                    severity: Severity::Fatal,
+                    code: MsgCode::RunFatal,
+                    message: format!(
+                        "frame-task recursion exceeded the depth limit ({MAX_CALL_DEPTH})"
+                    ),
+                    location: None,
+                    context: Vec::new(),
+                    sim_time: Some(TimeStamp { ticks: self.now }),
+                }));
+            }
+            return Some(
+                out_slots
+                    .iter()
+                    .map(|&s| {
+                        let nv = &self.ir.nets[(m.base_net + s) as usize];
+                        Value::xs(nv.width.max(1), nv.signed)
+                    })
+                    .collect(),
+            );
+        }
+        self.call_depth.set(d + 1);
+        let _g = DepthGuard(&self.call_depth);
+        let fd = self.ir.funcs[callee as usize];
+        debug_assert!(fd.is_task, "run_task on a non-task FuncDef");
+        let automatic = m.is_automatic;
+        let base = m.base_net;
+        let nloc = m.locals_len;
+
+        // ── FRAME SETUP (X-init window; static = persistent slab). ──
+        let fresh: Vec<Value> = (0..nloc)
+            .map(|s| {
+                let nv = &self.ir.nets[(base + s) as usize];
+                Value::xs(nv.width.max(1), nv.signed)
+            })
+            .collect();
+        if automatic {
+            self.frame_stack.borrow_mut().push(fresh);
+        } else {
+            self.static_store
+                .borrow_mut()
+                .entry(callee)
+                .or_insert(fresh);
+        }
+
+        // ── COPY-IN the input args (resize to each formal's width). ──
+        for (slot, v) in in_vals {
+            let nv = &self.ir.nets[(base + *slot) as usize];
+            let bound = v.clone().resize_keep_sign(nv.width.max(1), nv.signed);
+            self.frame_slot_write(callee, automatic, *slot, bound);
+        }
+
+        // ── BB LOOP over the GLOBAL func arena from fd.entry. ──
+        let mut cur = fd.entry;
+        loop {
+            debug_assert!(
+                (cur as usize) < self.ir.blocks.len(),
+                "task CFG target in range"
+            );
+            let blk = &self.ir.blocks[cur as usize];
+            for &sid in &blk.stmts {
+                if let Stmt::BlockingAssign { lhs, rhs } = &self.ir.stmts[sid as usize] {
+                    let lw = self.lvalue_width(lhs);
+                    let sw = self.wt.get(*rhs);
+                    let v = self
+                        .mk_eval_ctx()
+                        .eval_ctx(*rhs, lw.max(sw.width), sw.signed);
+                    self.frame_write_lvalue(automatic, lhs, v);
+                }
+            }
+            match &blk.term {
+                Terminator::Goto { target } => cur = *target,
+                Terminator::Branch {
+                    cond,
+                    then_bb,
+                    else_bb,
+                } => {
+                    cur = if self.mk_eval_ctx().truthy(*cond) {
+                        *then_bb
+                    } else {
+                        *else_bb
+                    };
+                }
+                // NESTED task call — keyed by THIS block's global index.
+                Terminator::Call { ret_bb, .. } => {
+                    let Some(info) = self.task_calls_func.get(&cur).cloned() else {
+                        break; // malformed sidecar: stop defensively
+                    };
+                    let cm = self.func_table[info.callee as usize];
+                    let in_v: Vec<(u32, Value)> = info
+                        .in_binds
+                        .iter()
+                        .map(|&(slot, e)| {
+                            let nv = &self.ir.nets[(cm.base_net + slot) as usize];
+                            let sw = self.wt.get(e);
+                            let v = self.mk_eval_ctx().eval_ctx(
+                                e,
+                                nv.width.max(1).max(sw.width),
+                                nv.signed,
+                            );
+                            (slot, v)
+                        })
+                        .collect();
+                    let out_s: Vec<u32> = info.out_binds.iter().map(|&(s, _)| s).collect();
+                    let outs = self
+                        .run_task(info.callee, &in_v, &out_s)
+                        .unwrap_or_default();
+                    // callee popped → top frame is the calling task again; write
+                    // its frame-local output lvalues.
+                    for ((_, lval), val) in info.out_binds.iter().zip(outs) {
+                        self.frame_write_lvalue(automatic, lval, val);
+                    }
+                    cur = *ret_bb;
+                }
+                Terminator::Return => break,
+                _ => break,
+            }
+        }
+
+        // ── COPY-OUT the requested output slots (resize to slot width). ──
+        let outs: Vec<Value> = out_slots
+            .iter()
+            .map(|&s| {
+                let nv = &self.ir.nets[(base + s) as usize];
+                self.frame_slot_read(callee, automatic, s)
+                    .resize_keep_sign(nv.width.max(1), nv.signed)
+            })
+            .collect();
+        if automatic {
+            self.frame_stack.borrow_mut().pop();
+        }
+        Some(outs)
+    }
+
+    /// B2 frame-call: public &self entry for the executor's `Terminator::Call`
+    /// (the `run_task` core is private to the frame-eval impl).
+    pub(crate) fn run_task_call(
+        &self,
+        callee: u32,
+        in_vals: &[(u32, Value)],
+        out_slots: &[u32],
+    ) -> Option<Vec<Value>> {
+        self.run_task(callee, in_vals, out_slots)
     }
 }
 

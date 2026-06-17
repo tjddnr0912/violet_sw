@@ -303,9 +303,33 @@ pub(crate) fn run_process(sched: &mut Scheduler, pi: u32, mut bb: u32) -> Step {
                 }
                 None => return Step::Suspended,
             },
-            // Deferred v1: user task/func `Call`. elaborate inlines tasks, so this
-            // should not appear from v1 elaborate; advance to keep liveness.
+            // B2 frame-call: a recursive/automatic TASK call. The sidecar carries
+            // the positional arg↔formal binding (the frozen Terminator has none).
+            // Evaluate inputs in THIS (caller) process scope, run the task frame
+            // (&self, re-entrant), then write its outputs to the caller lvalues —
+            // which here MAY be module nets (the &mut executor can write the flat
+            // store). A non-frame Call (no sidecar entry) just advances.
             Terminator::Call { ret_bb, .. } => {
+                if let Some(info) = sched.st.task_calls_proc.get(&(tmpl as u32, bb)).cloned() {
+                    let cm = sched.st.func_table[info.callee as usize];
+                    let in_v: Vec<(u32, Value)> = info
+                        .in_binds
+                        .iter()
+                        .map(|&(slot, e)| {
+                            let nv = &sched.st.ir.nets[(cm.base_net + slot) as usize];
+                            let sw = sched.st.wt.get(e);
+                            let v = sched.eval_ctx_top(e, nv.width.max(1).max(sw.width), nv.signed);
+                            (slot, v)
+                        })
+                        .collect();
+                    let out_s: Vec<u32> = info.out_binds.iter().map(|&(s, _)| s).collect();
+                    if let Some(outs) = sched.st.run_task_call(info.callee, &in_v, &out_s) {
+                        for ((_, lval), val) in info.out_binds.iter().zip(outs) {
+                            let offs = sched.resolve_lvalue_offsets(lval);
+                            sched.st.write_lvalue(lval, val, &offs);
+                        }
+                    }
+                }
                 bb = *ret_bb;
             }
         }

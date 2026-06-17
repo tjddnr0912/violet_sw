@@ -49,7 +49,7 @@ use sim_ir::SimIr;
 pub use elaborate::{
     AssignRankTable, DeferActTable, DeferMarkTable, DeferRegion, ForkModeTable, FuncMeta,
     FuncTable, JoinMode, NetDimsTable, NetNameTable, QueueBoundTable, RadixTable, SeverityKind,
-    SeverityTable, Sidecars,
+    SeverityTable, Sidecars, TaskCallFunc, TaskCallInfo, TaskCallProc,
 };
 pub use sched::FinishReason;
 
@@ -165,6 +165,10 @@ pub struct SimOpts {
     /// B1 frame-call metadata, index-aligned to `ir.funcs`. EMPTY default ⇒ no
     /// automatic/recursive functions ⇒ every existing caller byte-identical.
     pub func_table: FuncTable,
+    /// B2 frame-call: process-body task-call sites (executor-facing).
+    pub task_calls_proc: TaskCallProc,
+    /// B2 frame-call: nested (task-body) task-call sites (`run_task`-facing).
+    pub task_calls_func: TaskCallFunc,
 }
 
 impl Default for SimOpts {
@@ -191,6 +195,8 @@ impl Default for SimOpts {
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             func_table: FuncTable::new(),
+            task_calls_proc: TaskCallProc::new(),
+            task_calls_func: TaskCallFunc::new(),
         }
     }
 }
@@ -261,6 +267,8 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.func_table = opts.func_table.clone();
     st.build_func_routing();
     st.wt = crate::width::WidthTable::build(ir, &st.func_table);
+    st.task_calls_proc = opts.task_calls_proc.clone(); // B2
+    st.task_calls_func = opts.task_calls_func.clone(); // B2
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

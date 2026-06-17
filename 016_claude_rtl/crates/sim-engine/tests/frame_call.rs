@@ -674,6 +674,159 @@ fn frame_local_nets_have_no_vcd_surface() {
     );
 }
 
+// ── B2: recursive/automatic TASKS (hand-built engine teeth) ──────────────────
+
+fn whole_lval(net: u32) -> Lvalue {
+    Lvalue {
+        chunks: vec![LvalChunk {
+            net,
+            word: None,
+            offset: None,
+            width: None,
+            kind: SelKind::Bit,
+        }],
+    }
+}
+
+#[test]
+fn recursive_automatic_task_with_output_formal() {
+    // task automatic factt(input integer n, output integer r);
+    //   integer t;
+    //   if (n <= 1) r = 1;
+    //   else begin factt(n-1, t); r = n * t; end
+    // endtask
+    // initial begin factt(5, res); $display(res); end   → res = 120
+    use sim_engine::{TaskCallFunc, TaskCallInfo, TaskCallProc};
+    let mut b = B::default();
+    let n = b.net(int_net(32, true)); // 0: input formal
+    let r = b.net(int_net(32, true)); // 1: output formal
+    let t = b.net(int_net(32, true)); // 2: local
+    let res = b.net(int_net(32, true)); // 3: module net (caller output target)
+
+    // body exprs/stmts
+    let e_n = b.sig(n);
+    let one = b.k(1);
+    let cond = b.bin(BinOp::Le, e_n, one); // n <= 1
+    let one_r = b.k(1);
+    let s_then = b.assign(r, one_r); // r = 1
+    let e_n2 = b.sig(n);
+    let one2 = b.k(1);
+    let nm1 = b.bin(BinOp::Sub, e_n2, one2); // n - 1  (nested-call arg)
+    let e_n3 = b.sig(n);
+    let e_t = b.sig(t);
+    let mul = b.bin(BinOp::Mul, e_n3, e_t); // n * t
+    let s_mul = b.assign(r, mul); // r = n * t
+
+    // func arena blocks (this is the first func → indices start at 0):
+    //   0 entry: Branch(cond → 1 / 2)   1 then: [r=1] Return
+    //   2 else:  Call(target=0, ret=3)  3 after: [r=n*t] Return
+    let _entry = b.block(
+        vec![],
+        Terminator::Branch {
+            cond,
+            then_bb: 1,
+            else_bb: 2,
+        },
+    );
+    let _then = b.block(vec![s_then], Terminator::Return);
+    let _else = b.block(
+        vec![],
+        Terminator::Call {
+            target: 0,
+            ret_bb: 3,
+        },
+    );
+    let _after = b.block(vec![s_mul], Terminator::Return);
+
+    b.funcs.push(FuncDef {
+        entry: 0,
+        n_params: 2,
+        locals_len: 3,
+        is_task: true,
+    });
+    b.func_table.push(FuncMeta {
+        base_net: 0,
+        n_params: 2,
+        return_slot: 0, // unused for tasks (no func-named return var)
+        locals_len: 3,
+        is_automatic: true,
+        ret_width: 32,
+        ret_signed: true,
+    });
+
+    // process: P0 Call(factt, ret=P1); P1 [$display(res)] Return
+    let c5 = b.k(5);
+    let disp_arg = b.sig(res);
+    let s_disp = b.display(disp_arg);
+
+    // nested-call site (func block 2): factt(n-1, t) → out into frame-local t
+    let mut tcf = TaskCallFunc::new();
+    tcf.insert(
+        2,
+        TaskCallInfo {
+            callee: 0,
+            in_binds: vec![(0, nm1)],
+            out_binds: vec![(1, whole_lval(t))],
+        },
+    );
+    // top-level call site (proc 0, process block 0): factt(5, res) → out into res
+    let mut tcp = TaskCallProc::new();
+    tcp.insert(
+        (0, 0),
+        TaskCallInfo {
+            callee: 0,
+            in_binds: vec![(0, c5)],
+            out_binds: vec![(1, whole_lval(res))],
+        },
+    );
+
+    let ir = SimIr {
+        instances: vec![Instance {
+            parent: None,
+            module: 0,
+            first_net: 0,
+            net_count: b.nets.len() as u32,
+        }],
+        nets: b.nets,
+        processes: vec![Process {
+            sensitivity: Sensitivity {
+                kind: SensKind::Initial,
+                edges: Vec::new(),
+            },
+            body: vec![
+                BasicBlock {
+                    stmts: vec![],
+                    term: Terminator::Call {
+                        target: 0,
+                        ret_bb: 1,
+                    },
+                },
+                BasicBlock {
+                    stmts: vec![s_disp],
+                    term: Terminator::Return,
+                },
+            ],
+            entry: 0,
+            suspend: suspend0(),
+        }],
+        cont_assigns: Vec::new(),
+        funcs: b.funcs,
+        exprs: b.exprs,
+        stmts: b.stmts,
+        blocks: b.blocks,
+        consts: b.consts,
+    };
+    let opts = SimOpts {
+        func_table: b.func_table,
+        task_calls_proc: tcp,
+        task_calls_func: tcf,
+        ..SimOpts::default()
+    };
+    let (res_r, out) = simulate_capture(&ir, opts);
+    assert_eq!(res_r.finish_reason, FinishReason::Quiescent);
+    assert_eq!(lines_trimmed(&out), vec!["120"], "factt(5) writes res=120");
+}
+
 // ── Increment 5: REAL-pipeline differential (vita design.sv vs iverilog) ─────
 // These drive the FULL elaborate front-end (Increment 4), which still loud-
 // rejects automatic/recursive functions. They go green once that lands.
@@ -711,6 +864,8 @@ fn vita_out(src: &str) -> String {
         assign_ranks: sc.assign_ranks,
         radixes: sc.radixes,
         func_table: sc.func_table,
+        task_calls_proc: sc.task_calls_proc,
+        task_calls_func: sc.task_calls_func,
         ..SimOpts::default()
     };
     let (_res, out) = simulate_capture(&ir.expect("ir"), opts);
@@ -853,6 +1008,29 @@ module tb;
 endmodule
 "#;
     check(src, "fact(5)=120\nfact(0)=1\nfact(1)=1\nfact(10)=3628800");
+}
+
+#[test]
+fn e2e_recursive_automatic_task() {
+    // B2: a recursive automatic TASK with an output formal, through the REAL
+    // pipeline + iverilog. factt(n,r): r=n! computed into the output. Each
+    // automatic frame keeps its own local `t`.
+    let src = r#"
+module tb;
+  task automatic factt(input integer n, output integer r);
+    integer t;
+    if (n <= 1) r = 1;
+    else begin factt(n - 1, t); r = n * t; end
+  endtask
+  integer res;
+  initial begin
+    factt(5, res); $display("%0d", res);
+    factt(0, res); $display("%0d", res);
+    factt(7, res); $display("%0d", res);
+  end
+endmodule
+"#;
+    check(src, "120\n1\n5040");
 }
 
 #[test]

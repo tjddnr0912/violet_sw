@@ -232,6 +232,33 @@ pub struct FuncMeta {
 /// `Default` (empty) ⇒ golden-neutral.
 pub type FuncTable = Vec<FuncMeta>;
 
+/// B2 frame-call (tasks): one task-call site's argument↔formal binding. The
+/// frozen `Terminator::Call` carries only `{target, ret_bb}`, so the positional
+/// mapping rides this sidecar. `in_binds[i] = (callee INPUT formal slot, arg
+/// ExprId)` — evaluated in the CALLER context, written into the fresh frame.
+/// `out_binds[j] = (callee OUTPUT formal slot, caller Lvalue)` — read from the
+/// frame at `Return`, written back to the caller. (The `Lvalue` is the frozen
+/// sim-ir type, but this whole table is out-of-band, never the golden root.)
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskCallInfo {
+    /// FuncId of the called task (`ir.funcs[callee].is_task`).
+    pub callee: u32,
+    /// (callee input-formal slot, arg ExprId) — positional copy-in.
+    pub in_binds: Vec<(u32, u32)>,
+    /// (callee output-formal slot, caller Lvalue) — positional copy-out.
+    pub out_binds: Vec<(u32, sim_ir::Lvalue)>,
+}
+
+/// B2: task-call sites in PROCESS bodies, keyed by `(process template id,
+/// process-local block id of the Call terminator)`. Consulted by the `&mut`
+/// executor; outputs may target module nets. Empty ⇒ no frame-task calls.
+pub type TaskCallProc = std::collections::BTreeMap<(u32, u32), TaskCallInfo>;
+
+/// B2: NESTED task-call sites (a task call inside a task body), keyed by the
+/// GLOBAL `ir.blocks` index of the Call terminator. Consulted by `&self`
+/// `run_task`; outputs must be frame-local nets of the calling task.
+pub type TaskCallFunc = std::collections::BTreeMap<u32, TaskCallInfo>;
+
 /// Engine-facing side tables produced by one elaboration — ALL out-of-band
 /// (`SimOpts` fields / `.velab` trailers, each serialized as its OWN postcard
 /// segment for append-only compatibility); none ever enters the golden `SimIr`.
@@ -260,6 +287,10 @@ pub struct Sidecars {
     /// B1 frame-call metadata, index-aligned to `ir.funcs`. EMPTY ⇒ no
     /// automatic/recursive functions ⇒ golden-neutral.
     pub func_table: FuncTable,
+    /// B2 frame-call: task-call sites in process bodies (executor-facing).
+    pub task_calls_proc: TaskCallProc,
+    /// B2 frame-call: nested task-call sites in task bodies (`run_task`-facing).
+    pub task_calls_func: TaskCallFunc,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -329,6 +360,8 @@ pub fn elaborate_with_timescale_roots(
         defer_marks: std::mem::take(&mut el.defer_marks),
         defer_acts: std::mem::take(&mut el.defer_acts),
         func_table: std::mem::take(&mut el.func_metas), // B1 (empty until frame funcs lower)
+        task_calls_proc: std::mem::take(&mut el.task_calls_proc), // B2
+        task_calls_func: std::mem::take(&mut el.task_calls_func), // B2
         net_names: el.net_name_table(),                 // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -1106,6 +1139,22 @@ struct Elaborator<'s> {
     /// like `func_table`) so a sibling module never diverts to a stale id. The
     /// call-site divert (`inline_function`) consults this; empty ⇒ pure inline.
     frame_idx: BTreeMap<String, u32>,
+    /// B2 frame-call: names of recursive TASKS needing a frame → reserved FuncId.
+    /// PER-INSTANCE (saved/restored). The task-call divert (`inline_task`) emits a
+    /// `Terminator::Call` + a `TaskCallInfo` when the callee is here.
+    task_frame_idx: BTreeMap<String, u32>,
+    /// B2: accumulated process-body task-call sites (→ `Sidecars.task_calls_proc`).
+    task_calls_proc: TaskCallProc,
+    /// B2: accumulated nested (task-body) task-call sites (→ `task_calls_func`).
+    task_calls_func: TaskCallFunc,
+    /// B2: true while lowering a frame-task BODY (so a nested task call registers
+    /// into `pending_task_calls` keyed by its process-LOCAL block, rebased to a
+    /// global `task_calls_func` key on append; false ⇒ a process body → register
+    /// `task_calls_proc` directly).
+    frame_task_lowering: bool,
+    /// B2: nested task-call sites collected during the current task-body lowering,
+    /// keyed by process-LOCAL block id (rebased by +base when the body appends).
+    pending_task_calls: Vec<(u32, TaskCallInfo)>,
     // NetId → per-unpacked-dimension DESCENDING flag (`mem[3:0]` ⇒ [true]).
     // Recorded only when some dim is descending (absent = all ascending);
     // array ASSIGNMENT pairs elements positionally left-to-right in DECLARED
@@ -1293,6 +1342,11 @@ impl<'s> Elaborator<'s> {
             funcs: Vec::new(),
             func_blocks: Vec::new(),
             frame_idx: BTreeMap::new(),
+            task_frame_idx: BTreeMap::new(),
+            task_calls_proc: BTreeMap::new(),
+            task_calls_func: BTreeMap::new(),
+            frame_task_lowering: false,
+            pending_task_calls: Vec::new(),
             array_dim_desc: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -1736,9 +1790,10 @@ impl<'s> Elaborator<'s> {
         // module's call must never divert to this module's func). The global
         // `funcs`/`func_blocks`/`func_metas` arenas are NOT saved (they accumulate).
         let saved_frame_idx = std::mem::take(&mut self.frame_idx);
-        // Named SVA seq/prop decls collected in the SAME whole-body prescan, so an
-        // `assert property(p)` BEFORE `property p; …` (forward reference) resolves —
-        // identical mechanism to func/task. Saved/restored alongside.
+        let saved_task_frame_idx = std::mem::take(&mut self.task_frame_idx); // B2
+                                                                             // Named SVA seq/prop decls collected in the SAME whole-body prescan, so an
+                                                                             // `assert property(p)` BEFORE `property p; …` (forward reference) resolves —
+                                                                             // identical mechanism to func/task. Saved/restored alongside.
         let saved_seqs = std::mem::take(&mut self.seq_table);
         let saved_props = std::mem::take(&mut self.prop_table);
         for item in &module.body {
@@ -1934,6 +1989,7 @@ impl<'s> Elaborator<'s> {
         self.func_table = saved_funcs;
         self.task_table = saved_tasks;
         self.frame_idx = saved_frame_idx;
+        self.task_frame_idx = saved_task_frame_idx;
         self.seq_table = saved_seqs;
         self.prop_table = saved_props;
         self.cur_prefix = saved_prefix;
@@ -4836,7 +4892,8 @@ impl<'s> Elaborator<'s> {
     /// the module declares no automatic/recursive functions.
     fn lower_frame_funcs(&mut self) {
         let frame_set = self.build_frame_set();
-        if frame_set.is_empty() {
+        let task_set = self.build_task_frame_set(); // B2
+        if frame_set.is_empty() && task_set.is_empty() {
             return;
         }
         // RESERVE (sorted name order = deterministic net/FuncId allocation).
@@ -4848,7 +4905,16 @@ impl<'s> Elaborator<'s> {
                 .clone();
             self.reserve_frame_func(name, &func);
         }
-        // LOWER each body (sorted) — every frame_idx is now reserved.
+        // B2: reserve frame TASKS (after functions; sorted within tasks).
+        for name in &task_set {
+            let task = self
+                .task_table
+                .get(name)
+                .expect("frame task in table")
+                .clone();
+            self.reserve_frame_task(name, &task);
+        }
+        // LOWER each function body (sorted) — every frame_idx is now reserved.
         for name in &frame_set {
             let func = self
                 .func_table
@@ -4858,6 +4924,39 @@ impl<'s> Elaborator<'s> {
             let fid = self.frame_idx[name];
             self.lower_frame_func_body(name, &func, fid);
         }
+        // B2: lower each frame TASK body (sorted) — task_frame_idx all reserved,
+        // so self + mutual task recursion resolves.
+        for name in &task_set {
+            let task = self
+                .task_table
+                .get(name)
+                .expect("frame task in table")
+                .clone();
+            let fid = self.task_frame_idx[name];
+            self.lower_frame_task_body(name, &task, fid);
+        }
+    }
+
+    /// B2: THIS module's recursive TASKS (self or mutual). A non-recursive task
+    /// (even automatic) is still handled by the byte-identical `inline_task` path;
+    /// only recursion needs a frame.
+    fn build_task_frame_set(&self) -> std::collections::BTreeSet<String> {
+        let mut edges: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+        for (name, t) in &self.task_table {
+            let mut callees = std::collections::BTreeSet::new();
+            collect_callee_stmt(&t.body, &mut callees);
+            callees.retain(|c| self.task_table.contains_key(c));
+            edges.insert(name.clone(), callees);
+        }
+        let mut set = std::collections::BTreeSet::new();
+        for (name, t) in &self.task_table {
+            // automatic OR recursive (self/mutual). A static non-recursive task —
+            // even with control flow — still inlines byte-identically.
+            if t.automatic || reaches(name, name, &edges) {
+                set.insert(name.clone());
+            }
+        }
+        set
     }
 
     /// The set of THIS module's functions needing a frame: every `automatic`
@@ -4996,25 +5095,204 @@ impl<'s> Elaborator<'s> {
         }
         self.funcs[fid as usize].entry = base + entry;
         let m = self.func_metas[fid as usize];
-        self.validate_frame_body(name, base, m.base_net, m.locals_len);
+        self.validate_frame_body(name, base, m.base_net, m.locals_len, false);
     }
 
-    /// Loud-reject any construct unsupported in a B1 frame function body: a non-
-    /// `Goto`/`Branch`/`Return` terminator (timing/suspend/fork), a non-blocking-
-    /// assign statement (`$display`/NBA/force/release), or a blocking-assign lvalue
-    /// that is not a WHOLE frame-local net (a module-net write or a part/array
-    /// select). One diagnostic per offending function (it fails elaboration).
-    fn validate_frame_body(&mut self, name: &str, block_base: u32, net_base: u32, locals_len: u32) {
+    /// B2: reserve a frame TASK — allocate its formal nets (input + output, in
+    /// declared order) then body_decls under a `$func$<name>` scope; push a
+    /// `FuncDef{is_task:true}` + `FuncMeta` (no return var) and the name→FuncId
+    /// task divert.
+    fn reserve_frame_task(&mut self, name: &str, task: &ast::TaskDef) {
+        let fid = self.funcs.len() as u32;
+        let base_net = self.nets.len() as u32;
+        let n_params = task.ports.len() as u32;
+        let scope_seg = format!("$func${name}");
+        self.with_scope(&scope_seg, |s| {
+            // [0..n_params): formals (input AND output, declared order).
+            for p in &task.ports {
+                let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
+                let (w, msb, lsb, signed) = s.range_to_dims(kind, p.range.as_ref(), p.signed);
+                s.add_net(
+                    &p.name.name,
+                    ir::NetVar {
+                        kind: map_net_kind_or_wire(kind),
+                        width: w,
+                        msb,
+                        lsb,
+                        signed,
+                        array_len: 1,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(kind, w),
+                    },
+                );
+            }
+            // [n_params..): body_decls, source order (scalars).
+            for d in &task.body_decls {
+                for decl in &d.names {
+                    let (w, msb, lsb, signed) = s.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                    s.add_net(
+                        &decl.name.name,
+                        ir::NetVar {
+                            kind: map_net_kind_or_wire(d.kind),
+                            width: w,
+                            msb,
+                            lsb,
+                            signed,
+                            array_len: 1,
+                            dir: ir::PortDir::Internal,
+                            init: default_init(d.kind, w),
+                        },
+                    );
+                }
+            }
+        });
+        let locals_len = self.nets.len() as u32 - base_net;
+        self.task_frame_idx.insert(name.to_string(), fid);
+        self.funcs.push(ir::FuncDef {
+            entry: 0, // filled by lower_frame_task_body
+            n_params,
+            locals_len,
+            is_task: true,
+        });
+        self.func_metas.push(FuncMeta {
+            base_net,
+            n_params,
+            return_slot: 0, // unused for tasks (no func-named return var)
+            locals_len,
+            is_automatic: task.automatic,
+            ret_width: 1,
+            ret_signed: false,
+        });
+    }
+
+    /// B2: lower a frame TASK body into the global `func_blocks` arena — like
+    /// `lower_frame_func_body`, but a NESTED task call (`inline_task` divert)
+    /// registers into `pending_task_calls` (keyed by the process-LOCAL block),
+    /// which is rebased by `+base` into `task_calls_func` on append.
+    fn lower_frame_task_body(&mut self, name: &str, task: &ast::TaskDef, fid: u32) {
+        let scope_seg = format!("$func${name}");
+        let base = self.func_blocks.len() as u32;
+        let saved_ftl = self.frame_task_lowering;
+        let saved_pending = std::mem::take(&mut self.pending_task_calls);
+        self.frame_task_lowering = true;
+        let (body, entry) = self.with_scope(&scope_seg, |s| {
+            let mut b = ProcessBuilder::new();
+            s.lower_stmt(&mut b, &task.body);
+            b.finish()
+        });
+        let pending = std::mem::replace(&mut self.pending_task_calls, saved_pending);
+        self.frame_task_lowering = saved_ftl;
+        for mut blk in body {
+            rebase_terminator(&mut blk.term, base);
+            self.func_blocks.push(blk);
+        }
+        self.funcs[fid as usize].entry = base + entry;
+        // rebase the nested task-call sites' (process-local) block keys to global.
+        for (local_block, info) in pending {
+            self.task_calls_func.insert(base + local_block, info);
+        }
+        let m = self.func_metas[fid as usize];
+        self.validate_frame_body(name, base, m.base_net, m.locals_len, true);
+    }
+
+    /// B2: emit a frame-TASK call. Seals the current block with `Terminator::Call`
+    /// plus a continuation block, and registers the positional arg↔formal binding
+    /// into `task_calls_proc` for a process-body call or `pending_task_calls` for a
+    /// nested task-body call. Input actuals lower in the caller scope; an output or
+    /// inout actual must be a simple net (lowered to a whole-net `Lvalue`).
+    fn emit_frame_task_call(
+        &mut self,
+        b: &mut ProcessBuilder,
+        fid: u32,
+        task: &ast::TaskDef,
+        args: &[ast::Expr],
+    ) {
+        let tname = &task.name.name;
+        if args.len() != task.ports.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "task `{tname}`: {} args for {} formals",
+                    args.len(),
+                    task.ports.len()
+                ),
+            );
+            return;
+        }
+        let mut in_binds: Vec<(u32, u32)> = Vec::new();
+        let mut out_binds: Vec<(u32, ir::Lvalue)> = Vec::new();
+        for (slot, (p, a)) in task.ports.iter().zip(args).enumerate() {
+            let slot = slot as u32;
+            match p.dir {
+                ast::PortDir::Input => {
+                    let eid = self.lower_expr(a);
+                    in_binds.push((slot, eid));
+                }
+                ast::PortDir::Output | ast::PortDir::Inout => {
+                    if matches!(p.dir, ast::PortDir::Inout) {
+                        let eid = self.lower_expr(a); // inout reads in too
+                        in_binds.push((slot, eid));
+                    }
+                    match &a.kind {
+                        ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
+                            let net = self.resolve_net(path);
+                            out_binds.push((slot, whole_net_lvalue(net)));
+                        }
+                        _ => self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!("frame task `{tname}` output/inout arg must be a simple net"),
+                        ),
+                    }
+                }
+            }
+        }
+        let info = TaskCallInfo {
+            callee: fid,
+            in_binds,
+            out_binds,
+        };
+        let call_block = b.cur_id();
+        let ret = b.new_block();
+        b.end_block_with(ir::Terminator::Call {
+            target: self.funcs[fid as usize].entry,
+            ret_bb: ret.raw(),
+        });
+        b.start_block(ret);
+        if self.frame_task_lowering {
+            // nested: process-LOCAL block key, rebased to global on append.
+            self.pending_task_calls.push((call_block, info));
+        } else {
+            // top-level: keyed by (process template, process-local block).
+            self.task_calls_proc
+                .insert((self.cur_proc, call_block), info);
+        }
+    }
+
+    /// Loud-reject any construct unsupported in a frame function/task body: a
+    /// timing/suspend/fork terminator, a non-blocking-assign statement
+    /// (`$display`/NBA/force/release), or a blocking-assign lvalue that is not a
+    /// WHOLE frame-local net (a module-net write or a part/array select). For
+    /// tasks (`allow_call`), a `Terminator::Call` (a nested frame-task call) is
+    /// permitted. One diagnostic per offending function (it fails elaboration).
+    fn validate_frame_body(
+        &mut self,
+        name: &str,
+        block_base: u32,
+        net_base: u32,
+        locals_len: u32,
+        allow_call: bool,
+    ) {
         let (lo, hi) = (net_base, net_base + locals_len);
         let mut why: Option<&'static str> = None;
         for bi in block_base as usize..self.func_blocks.len() {
             let blk = &self.func_blocks[bi];
-            if !matches!(
+            let term_ok = matches!(
                 blk.term,
                 ir::Terminator::Goto { .. }
                     | ir::Terminator::Branch { .. }
                     | ir::Terminator::Return
-            ) {
+            ) || (allow_call && matches!(blk.term, ir::Terminator::Call { .. }));
+            if !term_ok {
                 why = Some("a timing/suspend/fork control (#delay, @, wait, fork)");
             }
             for &sid in &blk.stmts {
@@ -5038,9 +5316,9 @@ impl<'s> Elaborator<'s> {
             self.error(
                 MsgCode::ElabUnsupported,
                 &format!(
-                    "frame function `{name}` body uses {w}, which is outside the B1 \
+                    "frame function/task `{name}` body uses {w}, which is outside the \
                      frame-call subset (only blocking assigns to its own locals, \
-                     plus if/else/case/loops, are supported)"
+                     if/else/case/loops, and nested task calls are supported)"
                 ),
             );
         }
@@ -5181,14 +5459,15 @@ impl<'s> Elaborator<'s> {
                 return;
             }
         };
-        if task.automatic {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!("automatic task `{tname}` (frame-call deferred)"),
-            );
+        // B2 frame-call: a recursive/automatic task is LOWERED to the func arena
+        // (reserved in step 6.5) — emit a Terminator::Call + register the binding.
+        if let Some(&fid) = self.task_frame_idx.get(tname.as_str()) {
+            self.emit_frame_task_call(b, fid, &task, args);
             return;
         }
         if self.inline_stack.iter().any(|n| n == &tname) {
+            // A recursive task not framed (build_task_frame_set missed the cycle):
+            // the inline guard still catches it loud rather than looping forever.
             self.error(
                 MsgCode::ElabUnsupported,
                 &format!("recursive task `{tname}` (frame-call deferred)"),
@@ -7277,6 +7556,12 @@ impl ProcessBuilder {
     fn start_block(&mut self, b: BlockId) {
         debug_assert!(self.cur.is_none(), "start_block over an open cursor");
         self.cur = Some(b);
+    }
+
+    /// B2 frame-call: the process-local id of the currently open block (the block
+    /// a `Terminator::Call` will seal — its sidecar key).
+    fn cur_id(&self) -> u32 {
+        self.cur.expect("cur_id with no open block (INV-1)").raw()
     }
 
     /// Record an already-built `StmtId` (from the global arena) in the current
