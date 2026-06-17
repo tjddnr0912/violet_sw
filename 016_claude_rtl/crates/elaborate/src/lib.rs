@@ -640,6 +640,17 @@ fn port_list_dirs(module: &ast::ModuleDecl) -> Vec<(String, ir::PortDir)> {
 }
 
 /// A concurrent assertion (`assert property(@(clk) ante |-> cons)`) collected
+/// A hierarchical READ reference (`tb.dut.x`) deferred during expression lowering
+/// (N3). The placeholder `Signal` at `eid` is patched to the resolved NetId after
+/// all instances are elaborated; `prefix` is the scope path in effect at lowering
+/// (so the resolver can walk downward → outward → absolute), `path` the dotted
+/// segments.
+struct DeferredHier {
+    eid: u32,
+    prefix: String,
+    path: Vec<String>,
+}
+
 /// during statement lowering and materialized AFTER the module's process loop as
 /// a synthesized clocked checker (v8 SVA subset). It is a continuously-checking
 /// background process, not a one-shot procedural statement, so it cannot be
@@ -1429,6 +1440,13 @@ struct Elaborator<'s> {
     // v8 SVA: concurrent assertions collected during statement lowering, drained
     // into synthesized clocked checker processes after each module's process loop.
     pending_sva: Vec<PendingSva>,
+    // N3: hierarchical READ references (`tb.dut.x`) collected during expression
+    // lowering. A downward ref cannot resolve at lowering time (the child instance's
+    // nets are created in pass 8, AFTER the parent body is lowered in pass 7), so each
+    // is recorded with a PLACEHOLDER `Signal` expr id + the lowering-time scope prefix
+    // and dotted path, then resolved against the now-complete `symbols` table after all
+    // instances are elaborated (`resolve_deferred_hier`). Out-of-band (golden-free).
+    deferred_hier: Vec<DeferredHier>,
     // §16.4 deferred immediate asserts (out-of-band, engine-facing): marker
     // StmtId → region, and action StmtId → (marker StmtId, region). See
     // [`DeferMarkTable`]/[`DeferActTable`].
@@ -1500,6 +1518,7 @@ impl<'s> Elaborator<'s> {
             event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
             pending_sva: Vec::new(),
+            deferred_hier: Vec::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             cur_defer: None,
@@ -1763,8 +1782,134 @@ impl<'s> Elaborator<'s> {
             self.elaborate_instance(top, &top_path, None, &[], PortBinding::None, &map);
         }
 
+        // N3: resolve hierarchical READ references now that EVERY instance's nets are
+        // in `symbols` (deferred during pass-7 lowering because child nets are created
+        // in pass 8). Patches each placeholder `Signal` to its resolved NetId.
+        self.resolve_deferred_hier();
+
         // whole-net multidriver check over the WHOLE flat IR (instance-agnostic).
         self.check_whole_net_multidriver();
+    }
+
+    /// Resolve the N3 deferred hierarchical READ references against the completed
+    /// `symbols` table and patch each placeholder `Signal` expr to the real NetId.
+    /// Resolution walks the lowering-time scope prefix DOWNWARD (`prefix.path`) then
+    /// strips it OUTWARD (sibling / ancestor scopes) and finally tries the path as an
+    /// ABSOLUTE root-relative name — the first hit wins (downward preferred, the common
+    /// `tb` → `dut.x` case). An unresolved name, or a resolved net that has no readable
+    /// whole value (a named event, a dynamic-storage handle, or a whole unpacked array),
+    /// is loud-rejected; the placeholder stays `POISON_NET`.
+    fn resolve_deferred_hier(&mut self) {
+        let deferred = std::mem::take(&mut self.deferred_hier);
+        for d in deferred {
+            let Some(net) = self.hier_lookup(&d.prefix, &d.path) else {
+                self.error(
+                    MsgCode::ElabUnresolvedName,
+                    &format!(
+                        "undeclared hierarchical name `{}` (no such cross-instance net)",
+                        d.path.join(".")
+                    ),
+                );
+                continue;
+            };
+            // Read-context guards (mirror the single-net Ident arm): these constructs
+            // have no plain readable whole value, AND — critically — element/array
+            // selects on a hierarchical base do NOT route through `expr_array_chain`/
+            // `expr_packed_chain` (those require a single-segment Ident), so a
+            // `dut.mem[i]` or multi-dim packed `dut.pm[i]` select would mis-lower to a
+            // flat bit-select (review N3 HIGH: silent wrong value/width on packed
+            // multi-dim). Loud-reject the whole net here; a hierarchical element select
+            // is a deferred follow-on lane.
+            let bad = self.event_nets.contains(&net)
+                || self.is_dyn_handle_net(net)
+                || self.net_is_static_array(net)
+                || self.packed_dims.contains_key(&net);
+            if bad {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "hierarchical read of `{}` is unsupported (a named event, a \
+                         dynamic handle, a whole unpacked array, or a multi-dimensional \
+                         packed net has no plain readable value; a hierarchical element \
+                         select is a deferred follow-on)",
+                        d.path.join(".")
+                    ),
+                );
+                continue;
+            }
+            if let Some(ir::Expr::Signal { net: slot, .. }) = self.exprs.get_mut(d.eid as usize) {
+                *slot = net;
+            }
+        }
+    }
+
+    /// Resolve a dotted hierarchical `path` (length ≥ 2) from scope `prefix` per IEEE
+    /// 1800 §23.6 upward name resolution: resolve the LEADING segment to a scope,
+    /// COMMITTING to the innermost enclosing scope where it is found, then resolve the
+    /// remaining path WITHIN that scope. Crucially, once the leading segment is found —
+    /// as a child scope, a singleton generate block (`g` ⇒ `g[0]`), or a NET — the
+    /// search STOPS: a missing remainder there is unresolved, NOT a reason to keep
+    /// walking outward (review N3 HIGH: the old whole-tail outward strip silently
+    /// grabbed an unrelated outer net when the leading segment matched an inner scope
+    /// whose remainder was invalid, e.g. `b.v` / a local-shadowed `cfg.mode`).
+    fn hier_lookup(&self, prefix: &str, path: &[String]) -> Option<u32> {
+        let first = &path[0];
+        let tail = path.join(".");
+        let rest = path[1..].join(".");
+        let mut segs: Vec<&str> = if prefix.is_empty() {
+            Vec::new()
+        } else {
+            prefix.split('.').collect()
+        };
+        loop {
+            let level = segs.join("."); // "" at the outermost (absolute) level
+            let base = if level.is_empty() {
+                first.clone()
+            } else {
+                format!("{level}.{first}")
+            };
+            // (a) leading segment names a child SCOPE (module/genblock instance) here.
+            if self.is_hier_scope(&base) {
+                let full = if level.is_empty() {
+                    tail.clone()
+                } else {
+                    format!("{level}.{tail}")
+                };
+                return self.symbols.get(&full).copied(); // committed: Some=net, None=unresolved
+            }
+            // (b) SINGLETON generate block: vita names a named `if`/`begin` block `g[0]`,
+            // but the hierarchical name is the bare `g` (IEEE: the implicit [0] is not
+            // part of the name). Map only the leading segment.
+            let base0 = format!("{base}[0]");
+            if self.is_hier_scope(&base0) {
+                let full = if rest.is_empty() {
+                    base0
+                } else {
+                    format!("{base0}.{rest}")
+                };
+                return self.symbols.get(&full).copied();
+            }
+            // (c) leading segment names a NET (not a scope) here: `.member` on a plain
+            // net is unsupported (committed → unresolved, loud).
+            if self.symbols.contains_key(&base) {
+                return None;
+            }
+            // not found at this level → walk one scope outward.
+            if segs.is_empty() {
+                return None;
+            }
+            segs.pop();
+        }
+    }
+
+    /// True iff `base` is a hierarchical SCOPE — some net is named `base.<…>`. Used by
+    /// `hier_lookup` to commit the leading path segment to a scope (instance/genblock).
+    fn is_hier_scope(&self, base: &str) -> bool {
+        let probe = format!("{base}.");
+        self.symbols
+            .range(probe.clone()..)
+            .next()
+            .is_some_and(|(k, _)| k.starts_with(&probe))
     }
 
     /// Recursively elaborate ONE module instance into the flat SimIr.
@@ -4387,6 +4532,35 @@ impl<'s> Elaborator<'s> {
                         return self.const_param_expr(v);
                     }
                 }
+                // N3: a multi-segment path that is NOT already a known dotted symbol
+                // (an interface member alias `i.sig`, inserted at port-binding BEFORE
+                // this body lowers) is a hierarchical cross-instance READ — the child
+                // instance's net may not exist yet (created in pass 8, after this pass-7
+                // lowering), so emit a PLACEHOLDER `Signal` and DEFER resolution to
+                // `resolve_deferred_hier` (run once all instances are elaborated). A
+                // hierarchical WRITE stays loud: `lower_lvalue` calls `resolve_net`,
+                // whose multi-segment branch still rejects (read-only subset).
+                if path.segments.len() > 1 {
+                    let joined = path
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    if self.lookup_net_scoped(&joined).is_none() {
+                        let eid = self.push_expr(ir::Expr::Signal {
+                            net: POISON_NET,
+                            word: None,
+                        });
+                        self.deferred_hier.push(DeferredHier {
+                            eid,
+                            prefix: self.cur_prefix.clone(),
+                            path: path.segments.iter().map(|s| s.name.clone()).collect(),
+                        });
+                        return eid;
+                    }
+                    // else: a known dotted symbol (interface member) — fall through.
+                }
                 let net = self.resolve_net(path);
                 if self.event_nets.contains(&net) {
                     self.error(
@@ -5043,10 +5217,14 @@ impl<'s> Elaborator<'s> {
             if let Some(id) = self.lookup_net_scoped(&joined) {
                 return id;
             }
-            // hierarchical cross-ref (tb.dut.x in an expression) still DEFERRED.
+            // A hierarchical READ in an expression is supported (N3 — deferred and
+            // resolved in `resolve_deferred_hier`); reaching `resolve_net` with an
+            // unresolved multi-segment path means a WRITE target / lvalue context,
+            // which the read-only subset does not support.
             self.error(
                 MsgCode::ElabUnsupported,
-                "hierarchical name reference in expression (deferred)",
+                "a hierarchical name as an assignment target is unsupported in this \
+                 subset (hierarchical READS in expressions are supported)",
             );
             return POISON_NET;
         }
