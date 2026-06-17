@@ -989,6 +989,22 @@ endmodule
         ),
         "a nonblocking assign in a frame function body must be loud-rejected"
     );
+    // B3: `disable <funcname>` (self-disabling a FUNCTION) is illegal — iverilog
+    // rejects it ("cannot disable functions"); a TASK self-disable is the legal
+    // form. Only named-BLOCK disables (break/continue) are allowed in a function.
+    assert!(
+        elaborate_rejects(
+            r#"
+module tb;
+  function automatic integer f(input integer n);
+    begin f = 0; if (n < 0) disable f; f = n; end
+  endfunction
+  initial $display("%0d", f(3));
+endmodule
+"#
+        ),
+        "self-disabling a frame FUNCTION must be loud-rejected (iverilog: cannot disable functions)"
+    );
 }
 
 #[test]
@@ -1031,6 +1047,56 @@ module tb;
 endmodule
 "#;
     check(src, "120\n1\n5040");
+}
+
+#[test]
+fn e2e_frame_function_disable_break() {
+    // B3: the `disable <named block>` break/continue idiom inside a frame
+    // function. `disable scan` ends the current loop-body block (= continue), so
+    // the LAST set bit wins (matches iverilog's block-disable semantics).
+    let src = r#"
+module tb;
+  function automatic integer lastset(input integer mask);
+    integer i;
+    begin
+      lastset = -1;
+      for (i = 0; i < 8; i = i + 1) begin: scan
+        if (mask[i]) begin lastset = i; disable scan; end
+      end
+    end
+  endfunction
+  initial begin
+    $display("%0d", lastset(8'b00101000));
+    $display("%0d", lastset(8'b00000000));
+    $display("%0d", lastset(8'b10000001));
+  end
+endmodule
+"#;
+    check(src, "5\n-1\n7");
+}
+
+#[test]
+fn e2e_task_self_disable_early_return() {
+    // B3: `disable <taskname>` inside a frame task is a self-disable = early
+    // return (the single-frame unwind). clampt(-3) returns with r still 0.
+    let src = r#"
+module tb;
+  task automatic clampt(input integer n, output integer r);
+    begin
+      r = 0;
+      if (n < 0) disable clampt;
+      r = n * 2;
+    end
+  endtask
+  integer r;
+  initial begin
+    clampt(5, r);  $display("%0d", r);
+    clampt(-3, r); $display("%0d", r);
+    clampt(0, r);  $display("%0d", r);
+  end
+endmodule
+"#;
+    check(src, "10\n0\n0");
 }
 
 #[test]

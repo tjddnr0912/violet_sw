@@ -5084,9 +5084,13 @@ impl<'s> Elaborator<'s> {
     fn lower_frame_func_body(&mut self, name: &str, func: &ast::FunctionDef, fid: u32) {
         let scope_seg = format!("$func${name}");
         let base = self.func_blocks.len() as u32;
+        // A FUNCTION cannot be self-disabled (IEEE / iverilog "cannot disable
+        // functions") — pass `false` so `disable <funcname>` falls to the loud
+        // reject. A `disable <inner named block>` (break/continue) still lowers
+        // via `lower_stmt` either way.
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
-            s.lower_stmt(&mut b, &func.body);
+            s.lower_frame_body_stmt(&mut b, &func.body, name, false);
             b.finish()
         });
         for mut blk in body {
@@ -5175,9 +5179,10 @@ impl<'s> Elaborator<'s> {
         let saved_ftl = self.frame_task_lowering;
         let saved_pending = std::mem::take(&mut self.pending_task_calls);
         self.frame_task_lowering = true;
+        let self_disable = stmt_disables_name(&task.body, name);
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
-            s.lower_stmt(&mut b, &task.body);
+            s.lower_frame_body_stmt(&mut b, &task.body, name, self_disable);
             b.finish()
         });
         let pending = std::mem::replace(&mut self.pending_task_calls, saved_pending);
@@ -5268,6 +5273,32 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// B3: lower a frame function/task body, registering a self-disable target
+    /// (`disable <name>` = early return) ONLY when the body contains one — then
+    /// the name resolves to a convergence exit block all paths flow into. Without
+    /// a self-disable the body lowers exactly as before (byte-identical CFG).
+    fn lower_frame_body_stmt(
+        &mut self,
+        b: &mut ProcessBuilder,
+        body: &ast::Stmt,
+        name: &str,
+        self_disable: bool,
+    ) {
+        if !self_disable {
+            self.lower_stmt(b, body);
+            return;
+        }
+        // A `disable <name>` (and every normal exit) jumps to this block, which
+        // Returns — the single-frame unwind. `disable_fork_floor` is already 0 at
+        // step 6.5 (no fork/process context), so the name is visible to the lookup.
+        let exit = b.new_block();
+        self.disable_stack.push((name.to_string(), exit));
+        self.lower_stmt(b, body);
+        b.goto(exit);
+        b.start_block(exit);
+        self.disable_stack.pop();
+    }
+
     /// Loud-reject any construct unsupported in a frame function/task body: a
     /// timing/suspend/fork terminator, a non-blocking-assign statement
     /// (`$display`/NBA/force/release), or a blocking-assign lvalue that is not a
@@ -5308,6 +5339,17 @@ impl<'s> Elaborator<'s> {
                             }
                         }
                     }
+                    // B3: `disable <enclosing named block>` (the break/continue
+                    // idiom) lowers to a no-op `Disable{Scope}` marker PLUS a `Goto`
+                    // to the block's exit — the Goto does the unwinding and is
+                    // honored by the frame BB loop; the marker is a pure no-op in
+                    // `run_frame_call`/`run_task` (only BlockingAssign mutates). A
+                    // `disable fork` (`Fork`) has no fork to target in a frame body,
+                    // so it falls through to the loud arm.
+                    ir::Stmt::Disable {
+                        scope_kind: ir::DisableKind::Scope,
+                        ..
+                    } => {}
                     _ => why = Some("a $systask / nonblocking / force / release statement"),
                 }
             }
@@ -12225,6 +12267,32 @@ fn collect_callee_expr(e: &ast::Expr, out: &mut std::collections::BTreeSet<Strin
             }
         }
         _ => {}
+    }
+}
+
+/// B3 frame-call: does this body contain a `disable <name>` targeting the frame
+/// function/task ITSELF (a self-disable = early return)? Used to lazily add the
+/// convergence exit block ONLY when needed (otherwise the body is byte-identical).
+fn stmt_disables_name(s: &ast::Stmt, name: &str) -> bool {
+    use ast::Stmt::*;
+    match s {
+        Disable { target, .. } => target.segments.len() == 1 && target.segments[0].name == name,
+        Block { stmts, .. } | Fork { stmts, .. } => {
+            stmts.iter().any(|st| stmt_disables_name(st, name))
+        }
+        If { then_s, else_s, .. } => {
+            stmt_disables_name(then_s, name)
+                || else_s.as_ref().is_some_and(|e| stmt_disables_name(e, name))
+        }
+        Case { items, .. } => items.iter().any(|it| match it {
+            ast::CaseItem::Match { body, .. } | ast::CaseItem::Default { body, .. } => {
+                stmt_disables_name(body, name)
+            }
+        }),
+        For { body, .. } | While { body, .. } | Repeat { body, .. } | Forever { body, .. } => {
+            stmt_disables_name(body, name)
+        }
+        _ => false,
     }
 }
 
