@@ -691,6 +691,16 @@ pub enum Sequence {
         seq1: Box<Sequence>,
         seq2: Box<Sequence>,
     },
+    /// A multi-clock re-clocking boundary (slice N2a): `@(clock) seq`. Emitted by
+    /// the parser at a `##`-boundary clocking event inside a sequence (e.g.
+    /// `a ##1 @(c2) b`), where `clock` re-establishes the sampling clock for `seq`
+    /// from that boundary onward (IEEE 1800 §16.13/§16.16 clock flow). Lowered by a
+    /// dedicated cross-clock handoff synthesis (`synth_crossclock`); a `Clocked`
+    /// node reaching the single-clock sequence pipeline is a routing bug → loud.
+    Clocked {
+        clock: Sensitivity,
+        seq: Box<Sequence>,
+    },
     /// A NAMED property/sequence instance: `assert property(NAME)` (a property
     /// instance) or a future parameterized reference. The parser emits this ONLY
     /// at the property-instance position (a bare `NAME` inside a sequence body

@@ -3839,19 +3839,20 @@ impl<'t, 's> Parser<'t, 's> {
     /// or more repetition postfixes — `[*n]`/`[*m:n]` consecutive, `[->n]` goto,
     /// or `[=n]` nonconsecutive.
     fn parse_seq_primary(&mut self) -> Sequence {
-        // A second `@(...)` clocking event inside a property body (after the
-        // leading property clock, which `parse_concurrent_assert` already
-        // consumed) is a MULTI-CLOCK property (slice S15) — deferred. Emit one
-        // dedicated diagnostic and consume the `@(...)` so the generic
-        // "expected expression, found At" + lvalue-recovery cascade is suppressed;
-        // the run aborts on the error regardless.
+        // A `@(...)` clocking event at a sequence primary is a multi-clock RE-CLOCKING
+        // boundary (slice N2a): `a ##1 @(c2) b`. The leading property clock was already
+        // consumed by `parse_concurrent_assert`, so a `@` here re-establishes the
+        // sampling clock for the following primary from this `##`-boundary onward
+        // (IEEE 1800 §16.13/§16.16 clock flow). Wrap the following primary in
+        // `Sequence::Clocked`; elaborate's `synth_crossclock` handles the supported
+        // `a ##1 @(c2) b` shape and loud-rejects the rest.
         if self.peek() == Some(TokenKind::At) {
-            self.error(
-                "a single-clock property (multi-clock concurrent assertions — a \
-                 second `@` clocking event inside a property — are unsupported in \
-                 this subset)",
-            );
-            let _ = self.parse_sensitivity();
+            let clock = self.parse_sensitivity();
+            let seq = self.parse_seq_primary();
+            return Sequence::Clocked {
+                clock,
+                seq: Box::new(seq),
+            };
         }
         // A `( boolean , local_var = expr {, …} )` match-item paren (slice A2) is a
         // sequence LOCAL-VARIABLE assignment — a top-level comma just inside the paren
@@ -4606,6 +4607,10 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                 fix_sequence(seq1, from, to);
                 fix_sequence(seq2, from, to);
             }
+            // A re-clocking boundary: recurse into the inner sequence. The clock is a
+            // module-level signal (never a loop index — you cannot clock on a genvar),
+            // so its sensitivity is not renamed.
+            Sequence::Clocked { seq, .. } => fix_sequence(seq, from, to),
             // A named instance: the `name` is a sequence/property identifier (not a
             // loop index), so it is never renamed; only the (reserved) actual-arg
             // expressions are.
