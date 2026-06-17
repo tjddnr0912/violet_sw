@@ -1093,6 +1093,19 @@ struct Elaborator<'s> {
     /// in `lower_frame_func`; drained into `Sidecars.func_table`. EMPTY until a
     /// frame (automatic/recursive) function lowers.
     func_metas: Vec<FuncMeta>,
+    /// B1 frame-call: the GLOBAL `FuncDef` arena (→ `ir.funcs`). Accumulates
+    /// across instances; index-aligned to `func_metas`. EMPTY for designs with
+    /// no frame functions (golden-neutral: `ir.funcs` stays empty).
+    funcs: Vec<ir::FuncDef>,
+    /// B1 frame-call: the GLOBAL func-body block arena (→ `ir.blocks`). Each
+    /// frame function's lowered CFG is appended here with its `Goto`/`Branch`
+    /// targets rebased; `FuncDef.entry` is a global index into it.
+    func_blocks: Vec<ir::BasicBlock>,
+    /// B1 frame-call: names of functions that need a frame (automatic OR on a
+    /// recursion cycle), and their reserved FuncId. PER-INSTANCE (saved/restored
+    /// like `func_table`) so a sibling module never diverts to a stale id. The
+    /// call-site divert (`inline_function`) consults this; empty ⇒ pure inline.
+    frame_idx: BTreeMap<String, u32>,
     // NetId → per-unpacked-dimension DESCENDING flag (`mem[3:0]` ⇒ [true]).
     // Recorded only when some dim is descending (absent = all ascending);
     // array ASSIGNMENT pairs elements positionally left-to-right in DECLARED
@@ -1277,6 +1290,9 @@ impl<'s> Elaborator<'s> {
             cu_imports: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
             func_metas: Vec::new(),
+            funcs: Vec::new(),
+            func_blocks: Vec::new(),
+            frame_idx: BTreeMap::new(),
             array_dim_desc: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -1353,10 +1369,13 @@ impl<'s> Elaborator<'s> {
             nets: self.nets,
             processes: self.processes, // ← v2: procedural lowering
             cont_assigns: self.cont_assigns,
-            funcs: Vec::new(), // ← NEXT SLICE (function/task)
+            // B1 frame-call: automatic/recursive functions lowered to the func
+            // arena. EMPTY for every design with no frame functions (the inline
+            // path is unchanged) → `ir.funcs`/`ir.blocks` stay empty, golden-neutral.
+            funcs: self.funcs,
             exprs: self.exprs,
-            stmts: self.stmts,  // ← v2: per-BB straight-line stmt arena
-            blocks: Vec::new(), // funcs body arena — reserved (deferred past v2)
+            stmts: self.stmts,        // ← v2: per-BB straight-line stmt arena
+            blocks: self.func_blocks, // B1 frame-call: func-body CFGs (global, rebased)
             consts: self.consts,
         }
     }
@@ -1713,6 +1732,10 @@ impl<'s> Elaborator<'s> {
         //       hierarchical in v1, so the bare name is the key.
         let saved_funcs = std::mem::take(&mut self.func_table);
         let saved_tasks = std::mem::take(&mut self.task_table);
+        // B1 frame-call: the frame-func name→id map is module-local (a sibling
+        // module's call must never divert to this module's func). The global
+        // `funcs`/`func_blocks`/`func_metas` arenas are NOT saved (they accumulate).
+        let saved_frame_idx = std::mem::take(&mut self.frame_idx);
         // Named SVA seq/prop decls collected in the SAME whole-body prescan, so an
         // `assert property(p)` BEFORE `property p; …` (forward reference) resolves —
         // identical mechanism to func/task. Saved/restored alongside.
@@ -1842,6 +1865,14 @@ impl<'s> Elaborator<'s> {
         // (6) port-connection cont-assigns (parent expr ↔ child port net).
         self.wire_ports(module, binding, &saved_prefix);
 
+        // (6.5) B1 frame-call: RESERVE + LOWER every automatic/recursive function
+        //       BEFORE the body lowering below, so a call site (step 7) can divert
+        //       to a reserved FuncId. Runs AFTER the net_count freeze (5) so frame
+        //       nets land OUTSIDE this Instance's [first_net, +net_count) slice;
+        //       module scope is still active (module nets in `symbols`). No-op when
+        //       the module declares no frame functions (frame_idx stays empty).
+        self.lower_frame_funcs();
+
         // (7) lower THIS body: cont-assigns + processes (reuse v1/v2 helpers).
         for item in &module.body {
             match item {
@@ -1902,6 +1933,7 @@ impl<'s> Elaborator<'s> {
         self.bits_prescan = saved_prescan;
         self.func_table = saved_funcs;
         self.task_table = saved_tasks;
+        self.frame_idx = saved_frame_idx;
         self.seq_table = saved_seqs;
         self.prop_table = saved_props;
         self.cur_prefix = saved_prefix;
@@ -4704,15 +4736,16 @@ impl<'s> Elaborator<'s> {
             }
         };
 
-        // SD2: automatic ⇒ frame-call, deferred. Direct/mutual recursion is caught
-        // by the inline_stack guard.
-        if func.automatic {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!("automatic function `{fname}` (frame-call deferred)"),
-            );
-            return self.placeholder_expr();
+        // B1 frame-call: a function in the frame set (automatic OR on a recursion
+        // cycle) is LOWERED to the func arena (reserved in step 6.5), not inlined.
+        // Emit an `Expr::Call` to its FuncId — the args are lowered in the CALLER
+        // scope (they read caller nets / outer subst, never the callee formals).
+        if let Some(&fid) = self.frame_idx.get(fname.as_str()) {
+            return self.emit_frame_call(fid, &func, args);
         }
+        // A non-framed recursive function reaching here means the recursion cycle
+        // was missed by `build_frame_set` (it should have been framed) — the inline
+        // path's `inline_stack` guard still catches it loud below.
         if self.inline_stack.iter().any(|n| n == &fname) {
             self.error(
                 MsgCode::ElabUnsupported,
@@ -4759,6 +4792,272 @@ impl<'s> Elaborator<'s> {
         let result = self.reduce_function_body(&func, &inputs, &actual_ids);
         self.inline_stack.pop();
         result
+    }
+
+    // ── B1 frame-call: automatic/recursive function lowering ────────────────
+
+    /// Emit an `Expr::Call` to a reserved frame `FuncId` (the call-site divert).
+    /// Args are lowered in the CALLER scope (caller nets / outer subst). Returns a
+    /// placeholder on an arity / out-formal violation (after the diagnostic).
+    fn emit_frame_call(&mut self, fid: u32, func: &ast::FunctionDef, args: &[ast::Expr]) -> u32 {
+        let fname = &func.name.name;
+        if func
+            .ports
+            .iter()
+            .any(|p| !matches!(p.dir, ast::PortDir::Input))
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("function `{fname}` has an output/inout formal (illegal)"),
+            );
+            return self.placeholder_expr();
+        }
+        if args.len() != func.ports.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "function `{fname}`: {} args for {} formals",
+                    args.len(),
+                    func.ports.len()
+                ),
+            );
+            return self.placeholder_expr();
+        }
+        let actual_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+        self.push_expr(ir::Expr::Call {
+            func: fid,
+            args: actual_ids,
+        })
+    }
+
+    /// Reserve + lower every frame function of the CURRENT module instance. Runs
+    /// at step 6.5: RESERVE all (sorted) so a call to a not-yet-lowered frame func
+    /// resolves (breaks self + mutual recursion), then lower each body. No-op when
+    /// the module declares no automatic/recursive functions.
+    fn lower_frame_funcs(&mut self) {
+        let frame_set = self.build_frame_set();
+        if frame_set.is_empty() {
+            return;
+        }
+        // RESERVE (sorted name order = deterministic net/FuncId allocation).
+        for name in &frame_set {
+            let func = self
+                .func_table
+                .get(name)
+                .expect("frame func in table")
+                .clone();
+            self.reserve_frame_func(name, &func);
+        }
+        // LOWER each body (sorted) — every frame_idx is now reserved.
+        for name in &frame_set {
+            let func = self
+                .func_table
+                .get(name)
+                .expect("frame func in table")
+                .clone();
+            let fid = self.frame_idx[name];
+            self.lower_frame_func_body(name, &func, fid);
+        }
+    }
+
+    /// The set of THIS module's functions needing a frame: every `automatic`
+    /// function, plus every function on a recursion cycle (direct or mutual). A
+    /// missed call edge is loud-safe (the function stays inline → `inline_stack`
+    /// rejects), but the walk covers the common AST shapes.
+    fn build_frame_set(&self) -> std::collections::BTreeSet<String> {
+        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (name, f) in &self.func_table {
+            // A function is framed when it is `automatic`, recursive (below), or its
+            // body is NOT straight-line foldable (has control flow / a construct the
+            // inline path rejects) — framing handles all three with one machine.
+            if f.automatic || body_needs_frame(&f.body) {
+                set.insert(name.clone());
+            }
+        }
+        // call-graph edges restricted to known function names.
+        let mut edges: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+        for (name, f) in &self.func_table {
+            let mut callees = std::collections::BTreeSet::new();
+            collect_callee_stmt(&f.body, &mut callees);
+            callees.retain(|c| self.func_table.contains_key(c));
+            edges.insert(name.clone(), callees);
+        }
+        // f needs a frame iff f can reach f (direct or mutual recursion).
+        for name in self.func_table.keys() {
+            if reaches(name, name, &edges) {
+                set.insert(name.clone());
+            }
+        }
+        set
+    }
+
+    /// Allocate this frame function's nets (formals, return-var, body_decls — in
+    /// that slot order) under a synthetic `$func$<name>` scope, push a placeholder
+    /// `FuncDef` + the complete `FuncMeta`, and record the name→FuncId divert.
+    fn reserve_frame_func(&mut self, name: &str, func: &ast::FunctionDef) {
+        let fid = self.funcs.len() as u32;
+        let base_net = self.nets.len() as u32;
+        let n_params = func.ports.len() as u32;
+        let (ret_width, ret_signed) = self.func_return_dims(func);
+        let scope_seg = format!("$func${name}");
+        let ret_name = name.to_string();
+        self.with_scope(&scope_seg, |s| {
+            // [0..n_params): input formals, port order.
+            for p in &func.ports {
+                let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
+                let (w, msb, lsb, signed) = s.range_to_dims(kind, p.range.as_ref(), p.signed);
+                s.add_net(
+                    &p.name.name,
+                    ir::NetVar {
+                        kind: map_net_kind_or_wire(kind),
+                        width: w,
+                        msb,
+                        lsb,
+                        signed,
+                        array_len: 1,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(kind, w),
+                    },
+                );
+            }
+            // [n_params]: the function-named RETURN var (declared range/sign).
+            s.add_net(
+                &ret_name,
+                ir::NetVar {
+                    kind: if ret_width == 32 && ret_signed {
+                        ir::NetKind::Integer
+                    } else {
+                        ir::NetKind::Reg
+                    },
+                    width: ret_width,
+                    msb: ret_width.saturating_sub(1),
+                    lsb: 0,
+                    signed: ret_signed,
+                    array_len: 1,
+                    dir: ir::PortDir::Internal,
+                    init: default_init(ast::NetVarKind::Reg, ret_width),
+                },
+            );
+            // [n_params+1..]: body_decls, source order (scalars only — a frame-
+            // local array/dyn/string is outside the B1 cut and lowers as a 1-elem
+            // net here; the body validator rejects any select/array lvalue use).
+            for d in &func.body_decls {
+                for decl in &d.names {
+                    let (w, msb, lsb, signed) = s.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                    s.add_net(
+                        &decl.name.name,
+                        ir::NetVar {
+                            kind: map_net_kind_or_wire(d.kind),
+                            width: w,
+                            msb,
+                            lsb,
+                            signed,
+                            array_len: 1,
+                            dir: ir::PortDir::Internal,
+                            init: default_init(d.kind, w),
+                        },
+                    );
+                }
+            }
+        });
+        let locals_len = self.nets.len() as u32 - base_net;
+        self.frame_idx.insert(name.to_string(), fid);
+        self.funcs.push(ir::FuncDef {
+            entry: 0, // filled by lower_frame_func_body
+            n_params,
+            locals_len,
+            is_task: false,
+        });
+        self.func_metas.push(FuncMeta {
+            base_net,
+            n_params,
+            return_slot: n_params, // convention: return var right after the formals
+            locals_len,
+            is_automatic: func.automatic,
+            ret_width,
+            ret_signed,
+        });
+    }
+
+    /// Lower a frame function's body into the GLOBAL `func_blocks` arena: build a
+    /// process-local CFG (reusing `lower_stmt`), append it with every `Goto`/
+    /// `Branch` target rebased by `+base`, set `FuncDef.entry`, then validate.
+    fn lower_frame_func_body(&mut self, name: &str, func: &ast::FunctionDef, fid: u32) {
+        let scope_seg = format!("$func${name}");
+        let base = self.func_blocks.len() as u32;
+        let (body, entry) = self.with_scope(&scope_seg, |s| {
+            let mut b = ProcessBuilder::new();
+            s.lower_stmt(&mut b, &func.body);
+            b.finish()
+        });
+        for mut blk in body {
+            rebase_terminator(&mut blk.term, base);
+            self.func_blocks.push(blk);
+        }
+        self.funcs[fid as usize].entry = base + entry;
+        let m = self.func_metas[fid as usize];
+        self.validate_frame_body(name, base, m.base_net, m.locals_len);
+    }
+
+    /// Loud-reject any construct unsupported in a B1 frame function body: a non-
+    /// `Goto`/`Branch`/`Return` terminator (timing/suspend/fork), a non-blocking-
+    /// assign statement (`$display`/NBA/force/release), or a blocking-assign lvalue
+    /// that is not a WHOLE frame-local net (a module-net write or a part/array
+    /// select). One diagnostic per offending function (it fails elaboration).
+    fn validate_frame_body(&mut self, name: &str, block_base: u32, net_base: u32, locals_len: u32) {
+        let (lo, hi) = (net_base, net_base + locals_len);
+        let mut why: Option<&'static str> = None;
+        for bi in block_base as usize..self.func_blocks.len() {
+            let blk = &self.func_blocks[bi];
+            if !matches!(
+                blk.term,
+                ir::Terminator::Goto { .. }
+                    | ir::Terminator::Branch { .. }
+                    | ir::Terminator::Return
+            ) {
+                why = Some("a timing/suspend/fork control (#delay, @, wait, fork)");
+            }
+            for &sid in &blk.stmts {
+                match &self.stmts[sid as usize] {
+                    ir::Stmt::BlockingAssign { lhs, .. } => {
+                        for c in &lhs.chunks {
+                            let whole = c.offset.is_none() && c.word.is_none() && c.width.is_none();
+                            let in_frame = c.net >= lo && c.net < hi;
+                            if !whole {
+                                why = Some("a part-select / array-element assignment");
+                            } else if !in_frame {
+                                why = Some("an assignment to a net outside the function");
+                            }
+                        }
+                    }
+                    _ => why = Some("a $systask / nonblocking / force / release statement"),
+                }
+            }
+        }
+        if let Some(w) = why {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "frame function `{name}` body uses {w}, which is outside the B1 \
+                     frame-call subset (only blocking assigns to its own locals, \
+                     plus if/else/case/loops, are supported)"
+                ),
+            );
+        }
+    }
+
+    /// Declared return self-width + signedness of a function (`function [15:0]`,
+    /// `function integer`, `function signed [7:0]`, bare `function`).
+    fn func_return_dims(&mut self, func: &ast::FunctionDef) -> (u32, bool) {
+        let kind = match func.ret_type {
+            ast::ParamType::Integer => ast::NetVarKind::Integer,
+            ast::ParamType::Real => ast::NetVarKind::Real,
+            ast::ParamType::Realtime => ast::NetVarKind::Realtime,
+            ast::ParamType::Time => ast::NetVarKind::Time,
+            ast::ParamType::Implicit => ast::NetVarKind::Reg,
+        };
+        let (w, _msb, _lsb, signed) = self.range_to_dims(kind, func.range.as_ref(), func.signed);
+        (w, signed)
     }
 
     /// Fold a straight-line combinational function body to one return ExprId.
@@ -11470,6 +11769,233 @@ fn expr_to_lvalue(e: &ast::Expr) -> Option<ast::Lvalue> {
             })
         }
         _ => None,
+    }
+}
+
+/// B1 frame-call: does this function body need a frame (is it NOT straight-line
+/// foldable by the inline path)? True for any control flow (if/case/loop/fork),
+/// non-blocking assign, $systask, or timing — exactly the constructs
+/// `fold_straight_line` rejects. A straight-line body (`Null`/`Block`/`Blocking`)
+/// stays on the byte-identical inline path unless it is automatic/recursive.
+fn body_needs_frame(s: &ast::Stmt) -> bool {
+    use ast::Stmt::*;
+    match s {
+        Null(_) | Blocking { .. } => false,
+        Block { stmts, .. } => stmts.iter().any(body_needs_frame),
+        _ => true,
+    }
+}
+
+/// B1 frame-call: collect single-segment user-function/task call names reachable
+/// from a statement (for recursion detection). Incomplete coverage is loud-safe
+/// (a missed edge leaves the function on the inline path → `inline_stack` rejects).
+fn collect_callee_stmt(s: &ast::Stmt, out: &mut std::collections::BTreeSet<String>) {
+    use ast::Stmt::*;
+    match s {
+        Blocking { rhs, .. } => collect_callee_expr(rhs, out),
+        NonBlocking { rhs, .. } => collect_callee_expr(rhs, out),
+        If {
+            cond,
+            then_s,
+            else_s,
+            ..
+        } => {
+            collect_callee_expr(cond, out);
+            collect_callee_stmt(then_s, out);
+            if let Some(e) = else_s {
+                collect_callee_stmt(e, out);
+            }
+        }
+        Case {
+            scrutinee, items, ..
+        } => {
+            collect_callee_expr(scrutinee, out);
+            for it in items {
+                match it {
+                    ast::CaseItem::Match { labels, body, .. } => {
+                        for g in labels {
+                            collect_callee_expr(g, out);
+                        }
+                        collect_callee_stmt(body, out);
+                    }
+                    ast::CaseItem::Default { body, .. } => collect_callee_stmt(body, out),
+                }
+            }
+        }
+        For {
+            init,
+            cond,
+            step,
+            body,
+            ..
+        } => {
+            collect_callee_stmt(init, out);
+            collect_callee_expr(cond, out);
+            collect_callee_stmt(step, out);
+            collect_callee_stmt(body, out);
+        }
+        While { cond, body, .. } => {
+            collect_callee_expr(cond, out);
+            collect_callee_stmt(body, out);
+        }
+        Repeat { count, body, .. } => {
+            collect_callee_expr(count, out);
+            collect_callee_stmt(body, out);
+        }
+        Forever { body, .. } => collect_callee_stmt(body, out),
+        Block { stmts, .. } | Fork { stmts, .. } => {
+            for st in stmts {
+                collect_callee_stmt(st, out);
+            }
+        }
+        SysTaskCall { args, .. } => {
+            for a in args {
+                collect_callee_expr(a, out);
+            }
+        }
+        UserTaskCall { name, args, .. } => {
+            if name.segments.len() == 1 {
+                out.insert(name.segments[0].name.clone());
+            }
+            for a in args {
+                collect_callee_expr(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// B1 frame-call: collect call names reachable from an expression (companion to
+/// [`collect_callee_stmt`]).
+fn collect_callee_expr(e: &ast::Expr, out: &mut std::collections::BTreeSet<String>) {
+    use ast::ExprKind::*;
+    match &e.kind {
+        Call { name, args } => {
+            if name.segments.len() == 1 {
+                out.insert(name.segments[0].name.clone());
+            }
+            for a in args {
+                collect_callee_expr(a, out);
+            }
+        }
+        Unary { operand, .. } => collect_callee_expr(operand, out),
+        Binary { lhs, rhs, .. } => {
+            collect_callee_expr(lhs, out);
+            collect_callee_expr(rhs, out);
+        }
+        Ternary {
+            cond,
+            then_e,
+            else_e,
+        } => {
+            collect_callee_expr(cond, out);
+            collect_callee_expr(then_e, out);
+            collect_callee_expr(else_e, out);
+        }
+        BitSelect { base, index } => {
+            collect_callee_expr(base, out);
+            collect_callee_expr(index, out);
+        }
+        PartSelect { base, msb, lsb } => {
+            collect_callee_expr(base, out);
+            collect_callee_expr(msb, out);
+            collect_callee_expr(lsb, out);
+        }
+        IndexedPart {
+            base,
+            offset,
+            width,
+            ..
+        } => {
+            collect_callee_expr(base, out);
+            collect_callee_expr(offset, out);
+            collect_callee_expr(width, out);
+        }
+        Concat { parts } => {
+            for p in parts {
+                collect_callee_expr(p, out);
+            }
+        }
+        Replicate { count, value } => {
+            collect_callee_expr(count, out);
+            for v in value {
+                collect_callee_expr(v, out);
+            }
+        }
+        SysCall { args, .. } => {
+            for a in args {
+                collect_callee_expr(a, out);
+            }
+        }
+        Paren { inner } => collect_callee_expr(inner, out),
+        MinTypMax { min, typ, max } => {
+            collect_callee_expr(min, out);
+            collect_callee_expr(typ, out);
+            collect_callee_expr(max, out);
+        }
+        New { size, src } => {
+            collect_callee_expr(size, out);
+            if let Some(s) = src {
+                collect_callee_expr(s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// B1 frame-call: can `start` reach `target` over the call-graph `edges`
+/// (`start == target` ⇒ "is `start` recursive?", direct OR mutual)? Iterative
+/// DFS from `start`'s callees.
+fn reaches(
+    start: &str,
+    target: &str,
+    edges: &BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> bool {
+    let mut stack: Vec<&str> = edges
+        .get(start)
+        .into_iter()
+        .flatten()
+        .map(|s| s.as_str())
+        .collect();
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    while let Some(n) = stack.pop() {
+        if n == target {
+            return true;
+        }
+        if !seen.insert(n) {
+            continue;
+        }
+        if let Some(cs) = edges.get(n) {
+            stack.extend(cs.iter().map(|s| s.as_str()));
+        }
+    }
+    false
+}
+
+/// B1 frame-call: rebase a process-local terminator's block target(s) by `+base`
+/// when the lowered func CFG is appended to the GLOBAL `ir.blocks` arena. A valid
+/// frame body only carries `Goto`/`Branch`/`Return`; the suspend/fork variants are
+/// rebased defensively (the body validator rejects them) so no index dangles.
+fn rebase_terminator(t: &mut ir::Terminator, base: u32) {
+    match t {
+        ir::Terminator::Goto { target } => *target += base,
+        ir::Terminator::Branch {
+            then_bb, else_bb, ..
+        } => {
+            *then_bb += base;
+            *else_bb += base;
+        }
+        ir::Terminator::Delay { resume, .. } | ir::Terminator::Wait { resume, .. } => {
+            *resume += base
+        }
+        ir::Terminator::Fork {
+            join, resume_bb, ..
+        } => {
+            *join += base;
+            *resume_bb += base;
+        }
+        ir::Terminator::Call { ret_bb, .. } => *ret_bb += base,
+        ir::Terminator::Return => {}
     }
 }
 

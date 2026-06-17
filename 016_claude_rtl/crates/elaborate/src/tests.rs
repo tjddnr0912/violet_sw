@@ -2881,10 +2881,10 @@ fn ft_e5_unknown_function_errors() {
     assert!(err_codes(&sink).contains(&MsgCode::ElabUnresolvedName));
 }
 
-// ft-e6. recursive function → E-ELAB-UNSUPPORTED (frame-call deferred), no
-//        infinite expansion.
+// ft-e6. recursive function → B1 frame-call: lowered to the func arena (no
+//        infinite inline expansion), the call site emits an `Expr::Call`.
 #[test]
-fn ft_e6_recursive_function_unsupported() {
+fn ft_e6_recursive_function_framed() {
     let unit = module(
         "m",
         vec![
@@ -2904,15 +2904,40 @@ fn ft_e6_recursive_function_unsupported() {
         ],
     );
     let sink = CollectSink::default();
-    let out = elaborate(&unit, &sink);
-    assert!(out.is_none(), "recursive function must fail elaboration");
-    assert!(err_codes(&sink).contains(&MsgCode::ElabUnsupported));
+    let s = elaborate(&unit, &sink).expect("recursive function now frames (B1)");
+    // exactly one FuncDef, well-formed (entry in range, 1 param, not a task).
+    assert_eq!(s.funcs.len(), 1, "one frame func");
+    let fd = s.funcs[0];
+    assert!(!fd.is_task);
+    assert_eq!(fd.n_params, 1);
+    assert!(
+        (fd.entry as usize) < s.blocks.len(),
+        "entry indexes the func arena"
+    );
+    // the cont-assign RHS is an Expr::Call to func 0 with one arg.
+    let ca = &s.cont_assigns[0];
+    match &s.exprs[ca.rhs as usize] {
+        ir::Expr::Call { func, args } => {
+            assert_eq!(*func, 0);
+            assert_eq!(args.len(), 1);
+        }
+        other => panic!("cont-assign RHS must be a frame Call, got {other:?}"),
+    }
+    // the recursive call inside the body lowered to a Call too (no inline blowup).
+    assert!(
+        s.exprs
+            .iter()
+            .filter(|e| matches!(e, ir::Expr::Call { func: 0, .. }))
+            .count()
+            >= 2,
+        "both the call site AND the body self-call are Expr::Call"
+    );
 }
 
-// ft-e7. function whose body has CONTROL FLOW (if) → not reducible to an
-//        expression → E-ELAB-UNSUPPORTED.
+// ft-e7. function whose body has CONTROL FLOW (if/else) → B1 frame-call: lowered
+//        to a multi-BB CFG (the `if` is a `Branch` terminator), no longer rejected.
 #[test]
-fn ft_e7_control_flow_function_unsupported() {
+fn ft_e7_control_flow_function_framed() {
     let if_body = ast::Stmt::If {
         cond: id_expr("x"),
         then_s: Box::new(bassign("f", dec("1"))),
@@ -2934,9 +2959,39 @@ fn ft_e7_control_flow_function_unsupported() {
         ],
     );
     let sink = CollectSink::default();
-    let out = elaborate(&unit, &sink);
-    assert!(out.is_none(), "control-flow function must fail elaboration");
-    assert!(err_codes(&sink).contains(&MsgCode::ElabUnsupported));
+    let s = elaborate(&unit, &sink).expect("control-flow function now frames (B1)");
+    assert_eq!(s.funcs.len(), 1);
+    let fd = s.funcs[0];
+    assert!((fd.entry as usize) < s.blocks.len());
+    // the `if/else` lowered to >1 block, and the entry block branches (multi-BB
+    // exercises the +base terminator rebase — a single-BB body would not).
+    assert!(s.blocks.len() >= 2, "if/else is a multi-BB CFG");
+    assert!(
+        matches!(
+            s.blocks[fd.entry as usize].term,
+            ir::Terminator::Branch { .. }
+        ),
+        "the func entry block ends in a Branch (the `if`)"
+    );
+    // every Branch/Goto target in the func arena is in range (rebase correct).
+    for b in &s.blocks {
+        match b.term {
+            ir::Terminator::Branch {
+                then_bb, else_bb, ..
+            } => {
+                assert!((then_bb as usize) < s.blocks.len());
+                assert!((else_bb as usize) < s.blocks.len());
+            }
+            ir::Terminator::Goto { target } => assert!((target as usize) < s.blocks.len()),
+            _ => {}
+        }
+    }
+    // the call site is an Expr::Call.
+    let ca = &s.cont_assigns[0];
+    assert!(matches!(
+        &s.exprs[ca.rhs as usize],
+        ir::Expr::Call { func: 0, .. }
+    ));
 }
 
 // ── FORK 16. nested fork is a hard ElabUnsupported error (v1 MVP boundary) ────

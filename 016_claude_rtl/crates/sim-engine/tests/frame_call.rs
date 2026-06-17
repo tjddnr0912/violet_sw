@@ -770,8 +770,73 @@ fn check(src: &str, expect: &str) {
     }
 }
 
+/// Elaborate `src` and report whether it was LOUD-REJECTED (no IR produced). Used
+/// for the deliberate B1 frame-body cuts (iverilog ACCEPTS these, so they are
+/// vita-side rejects, NOT differentials).
+fn elaborate_rejects(src: &str) -> bool {
+    let (toks, _) = hdl_lexer::lex(src);
+    let (su, _) = hdl_parser::parse(&toks, src);
+    let sink = DiagSink::default();
+    let (ir, _sc) = elaborate::elaborate_with_timescale(
+        &su.expect("source unit"),
+        &sink,
+        &std::collections::BTreeMap::new(),
+        -9,
+    );
+    ir.is_none()
+}
+
 #[test]
-#[ignore = "B1 Increment 5: green once the elaborate front-end (Increment 4) lands"]
+fn frame_body_loud_rejects_unsupported_constructs() {
+    // A $systask in a frame body: the engine's eval_call runs only BlockingAssign,
+    // so a $display would be SILENTLY DROPPED — loud-reject instead. (iverilog
+    // accepts it: a deliberate B1 cut.)
+    assert!(
+        elaborate_rejects(
+            r#"
+module tb;
+  function automatic integer noisy(input integer n);
+    begin $display("x"); noisy = n; end
+  endfunction
+  initial $display("%0d", noisy(3));
+endmodule
+"#
+        ),
+        "a $systask in a frame function body must be loud-rejected"
+    );
+    // Writing a MODULE net from a frame function: the &self eval path cannot write
+    // the flat store — loud-reject, never a silent mis-route.
+    assert!(
+        elaborate_rejects(
+            r#"
+module tb;
+  integer g;
+  function automatic integer bad(input integer n);
+    begin g = n; bad = n; end
+  endfunction
+  initial $display("%0d", bad(3));
+endmodule
+"#
+        ),
+        "a module-net write from a frame function body must be loud-rejected"
+    );
+    // A non-blocking assign inside a frame body — also outside the subset.
+    assert!(
+        elaborate_rejects(
+            r#"
+module tb;
+  function automatic integer nb(input integer n);
+    nb <= n;
+  endfunction
+  initial $display("%0d", nb(3));
+endmodule
+"#
+        ),
+        "a nonblocking assign in a frame function body must be loud-rejected"
+    );
+}
+
+#[test]
 fn e2e_recursive_automatic_function_factorial() {
     let src = r#"
 module tb;
@@ -788,4 +853,102 @@ module tb;
 endmodule
 "#;
     check(src, "fact(5)=120\nfact(0)=1\nfact(1)=1\nfact(10)=3628800");
+}
+
+#[test]
+fn e2e_static_vs_automatic_corruption() {
+    // The lifetime discriminator through the REAL pipeline + iverilog: automatic
+    // keeps a per-frame `acc` (probe(3)=60); static shares one slot, clobbered to
+    // the deepest frame's 10 (probe(3)=30).
+    let src = r#"
+module tb;
+  function automatic integer probe_auto(input integer n);
+    integer acc;
+    begin
+      acc = n * 10;
+      if (n > 1) probe_auto = probe_auto(n - 1) + acc;
+      else probe_auto = acc;
+    end
+  endfunction
+  function integer probe_static(input integer n);
+    integer acc;
+    begin
+      acc = n * 10;
+      if (n > 1) probe_static = probe_static(n - 1) + acc;
+      else probe_static = acc;
+    end
+  endfunction
+  initial begin
+    $display("auto=%0d", probe_auto(3));
+    $display("static=%0d", probe_static(3));
+  end
+endmodule
+"#;
+    check(src, "auto=60\nstatic=30");
+}
+
+#[test]
+fn e2e_mutual_recursion() {
+    // Mutual recursion: both is_even/is_odd are reserved BEFORE either body
+    // lowers, so the cross-call resolves. is_even(4)=1, is_odd(4)=0.
+    let src = r#"
+module tb;
+  function automatic integer is_even(input integer n);
+    if (n == 0) is_even = 1;
+    else is_even = is_odd(n - 1);
+  endfunction
+  function automatic integer is_odd(input integer n);
+    if (n == 0) is_odd = 0;
+    else is_odd = is_even(n - 1);
+  endfunction
+  initial begin
+    $display("even4=%0d", is_even(4));
+    $display("odd4=%0d", is_odd(4));
+    $display("even7=%0d", is_even(7));
+  end
+endmodule
+"#;
+    check(src, "even4=1\nodd4=0\neven7=0");
+}
+
+#[test]
+fn e2e_control_flow_static_function() {
+    // A non-recursive, non-automatic function with control flow — framed via the
+    // `body_needs_frame` rule (the inline path can't fold an if/else). Static
+    // storage is harmless without recursion.
+    let src = r#"
+module tb;
+  function integer clamp(input integer x);
+    if (x > 100) clamp = 100;
+    else if (x < 0) clamp = 0;
+    else clamp = x;
+  endfunction
+  initial begin
+    $display("%0d", clamp(150));
+    $display("%0d", clamp(-5));
+    $display("%0d", clamp(42));
+  end
+endmodule
+"#;
+    check(src, "100\n0\n42");
+}
+
+#[test]
+fn e2e_non_default_return_width() {
+    // `function [15:0]` — an UNSIGNED 16-bit return truncates: fact16(8)=40320
+    // fits, fact16(9)=9*40320 wraps to 16 bits. The exact wrap is iverilog's
+    // (the differential pins it).
+    let src = r#"
+module tb;
+  function automatic [15:0] fact16(input integer n);
+    if (n <= 1) fact16 = 1;
+    else fact16 = n * fact16(n - 1);
+  endfunction
+  initial begin
+    $display("%0d", fact16(8));
+    $display("%0d", fact16(9));
+  end
+endmodule
+"#;
+    check(src, "40320\n35200");
 }
