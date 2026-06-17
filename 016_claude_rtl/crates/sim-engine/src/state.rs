@@ -255,6 +255,32 @@ pub(crate) struct SimState<'a> {
 
     // ── postponed region ($strobe FIFO + global $monitor singleton) ──
     pub postponed: Postponed,
+
+    // ── B1 frame-call (automatic/recursive functions) ──
+    /// Frame-call metadata (from `SimOpts.func_table`), index-aligned to
+    /// `ir.funcs`. EMPTY ⇒ no frame functions ⇒ the routing tables stay all-false
+    /// and every read/width/VCD path is byte-identical.
+    pub func_table: crate::FuncTable,
+    /// DERIVED per-net "is a frame-local" bitmap (len `ir.nets.len()`), built in
+    /// `build_func_routing` from `func_table`. Hot-path sibling of `dyn_is_handle`;
+    /// always full-length so `read_net` indexes it directly (no `is_empty` guard).
+    pub frame_local: Vec<bool>,
+    /// DERIVED net → `(func_idx, slot)` routing (len `ir.nets.len()`); `slot =
+    /// net - base_net`. `None` for non-frame nets.
+    pub frame_route: Vec<Option<(u32, u32)>>,
+    /// AUTOMATIC call windows (LIFO stack); each window is a `Vec<Value>` of
+    /// `locals_len` slots. `RefCell` because the function evaluator runs on the
+    /// `&self` read path. Empty steady-state.
+    pub frame_stack: std::cell::RefCell<Vec<Vec<Value>>>,
+    /// STATIC per-function persistent slabs (FuncId → `Vec<Value>`), X-init once,
+    /// never restored (shared-slot lifetime). `BTreeMap` = deterministic; never
+    /// serialized.
+    pub static_store: std::cell::RefCell<std::collections::BTreeMap<u32, Vec<Value>>>,
+    /// Live frame-call nesting depth (runaway-recursion guard). `Cell` (no borrow).
+    pub call_depth: Cell<u32>,
+    /// Latched by `eval_call` when `call_depth` hits the cap (a `&self` path
+    /// cannot return a `Step`); the scheduler converts it to `FinishReason::Error`.
+    pub call_fatal: Cell<bool>,
 }
 
 impl<'a> SimState<'a> {
@@ -285,7 +311,10 @@ impl<'a> SimState<'a> {
                 }
             })
             .collect();
-        let wt = crate::width::WidthTable::build(ir); // single forward pass
+        // Built with an EMPTY func table here; `simulate()` rebuilds with the real
+        // `func_table` once it is installed (a from-`new()` SimState keeps today's
+        // behavior since no `Expr::Call` is reachable without a frame func).
+        let wt = crate::width::WidthTable::build(ir, &crate::FuncTable::new());
         let nnets = ir.nets.len();
         SimState {
             ir,
@@ -354,6 +383,44 @@ impl<'a> SimState<'a> {
             sink,
             run_range_count: Cell::new(0),
             postponed: Postponed::default(),
+            func_table: crate::FuncTable::new(),
+            frame_local: vec![false; nnets],
+            frame_route: vec![None; nnets],
+            frame_stack: std::cell::RefCell::new(Vec::new()),
+            static_store: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            call_depth: Cell::new(0),
+            call_fatal: Cell::new(false),
+        }
+    }
+
+    /// B1: derive the per-net frame-local routing tables from `func_table` (the
+    /// `dyn_is_handle` build pattern). VALIDATES the hand-built/elaborated sidecar
+    /// (index alignment + in-range slots) and latches a loud fatal rather than
+    /// risking an out-of-bounds panic on a malformed table. No-op for an EMPTY
+    /// table (every existing design byte-identical).
+    pub fn build_func_routing(&mut self) {
+        let nnets = self.ir.nets.len();
+        self.frame_local = vec![false; nnets];
+        self.frame_route = vec![None; nnets];
+        if self.func_table.is_empty() {
+            return;
+        }
+        if self.func_table.len() != self.ir.funcs.len() {
+            self.fatal_run("frame-call func_table length != ir.funcs length");
+            return;
+        }
+        for (fi, m) in self.func_table.iter().enumerate() {
+            if m.return_slot >= m.locals_len
+                || (m.base_net as usize) + (m.locals_len as usize) > nnets
+            {
+                self.fatal_run("frame-call FuncMeta slot range out of bounds");
+                return;
+            }
+            for slot in 0..m.locals_len {
+                let net = (m.base_net + slot) as usize;
+                self.frame_local[net] = true;
+                self.frame_route[net] = Some((fi as u32, slot));
+            }
         }
     }
 
@@ -413,6 +480,23 @@ impl<'a> SimState<'a> {
             }));
         }
         self.run_range_count.set(n.saturating_add(1));
+    }
+
+    /// Emit a loud `RunFatal` (F-RUN-FATAL / exit class Fatal — same code as user
+    /// `$fatal`) and latch `had_fatal`/`finished`. Used for malformed engine input
+    /// that must not silently mis-route (e.g. a corrupt frame `func_table`), as a
+    /// hardened alternative to a raw out-of-bounds panic.
+    pub fn fatal_run(&mut self, what: &str) {
+        self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+            severity: Severity::Fatal,
+            code: MsgCode::RunFatal,
+            message: what.to_string(),
+            location: None,
+            context: Vec::new(),
+            sim_time: Some(diag::TimeStamp { ticks: self.now }),
+        }));
+        self.had_fatal = true;
+        self.finished = true;
     }
 
     // ── reads ────────────────────────────────────────────────────────────
@@ -1051,6 +1135,234 @@ impl<'a> SimState<'a> {
     }
 }
 
+/// Runaway-recursion guard for the frame-call evaluator. NOT a host-stack
+/// bound — it caps the LOGICAL nesting of `eval_call` re-entries. Set well
+/// above any legal depth an oracle (iverilog) completes (`cnt(20000)` is
+/// fine); the deep-recursion corpus is run on a large-stack worker thread (the
+/// CLI / test harness spawns it) so a native stack overflow cannot fire first.
+/// Hitting the cap latches `call_fatal` → the scheduler ends with
+/// `FinishReason::Error` (same exit class as user `$fatal`).
+pub(crate) const MAX_CALL_DEPTH: u32 = 65536;
+
+/// RAII decrement of `call_depth` on EVERY exit of `eval_call` (normal return,
+/// fatal-return, or a panic unwinding through it) so a missed early-return can
+/// never permanently inflate the live nesting count. `Cell` (not `RefCell`):
+/// `get`/`set` never borrow, so the guard never contends with the read path.
+struct DepthGuard<'c>(&'c Cell<u32>);
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+}
+
+impl<'a> SimState<'a> {
+    /// Build a read-only `EvalCtx` over `&self` holding ZERO frame borrow
+    /// (mirrors the scheduler's `eval`/`truthy` ctor). An `EvalCtx` can live
+    /// across a nested `Expr::Call` because it touches the frame arena only
+    /// transitively through `read_net`, which clones-and-releases. `$time`/
+    /// `$realtime` inside a frame body run on the ambient `cur_time_mult` (a
+    /// frame func is rejected at elaborate if it reads them — B1 cut).
+    fn mk_eval_ctx(&self) -> crate::eval::EvalCtx<'_, SimState<'a>> {
+        crate::eval::EvalCtx {
+            ir: self.ir,
+            nets: self,
+            now: self.now,
+            wt: &self.wt,
+            time_mult: self.cur_time_mult,
+            rng: &self.rng,
+            plusargs: &self.plusargs,
+        }
+    }
+
+    /// Read frame slot `slot` of function `func`: the top AUTOMATIC window, or
+    /// the shared STATIC slab. Borrow → clone → drop-at-return (never held
+    /// across a nested eval — §borrowDiscipline rule 1).
+    fn frame_slot_read(&self, func: u32, automatic: bool, slot: u32) -> Value {
+        if automatic {
+            self.frame_stack
+                .borrow()
+                .last()
+                .expect("frame read: no active call window")[slot as usize]
+                .clone()
+        } else {
+            self.static_store
+                .borrow()
+                .get(&func)
+                .expect("static read: no storage slab")[slot as usize]
+                .clone()
+        }
+    }
+
+    /// Store `v` into frame slot `slot` (arg binding). `v` is an already-owned
+    /// Value (computed before any borrow); the `borrow_mut` is scoped to the
+    /// single index-store — NO eval inside (§borrowDiscipline rule 3).
+    fn frame_slot_write(&self, func: u32, automatic: bool, slot: u32, v: Value) {
+        if automatic {
+            let mut g = self.frame_stack.borrow_mut();
+            g.last_mut().expect("arg bind: no active call window")[slot as usize] = v;
+        } else {
+            let mut g = self.static_store.borrow_mut();
+            g.get_mut(&func).expect("arg bind: no storage slab")[slot as usize] = v;
+        }
+    }
+
+    /// Store the fully-evaluated `v` into a whole-net frame-local lvalue. The
+    /// value is resized to the slot net's declared width/sign in a LOCAL first,
+    /// THEN a scoped `borrow_mut` does the index-store with no eval inside
+    /// (§borrowDiscipline rule 2). Part-select / array / module-net lvalues are
+    /// rejected at ELABORATE, so the engine only ever sees a whole-net chunk;
+    /// the `debug_assert` is a release-stripped backstop.
+    fn frame_write_lvalue(&self, automatic: bool, lhs: &Lvalue, v: Value) {
+        debug_assert_eq!(
+            lhs.chunks.len(),
+            1,
+            "frame lvalue is a single whole-net chunk"
+        );
+        let c = &lhs.chunks[0];
+        let net = c.net as usize;
+        debug_assert!(
+            self.frame_local[net] && c.offset.is_none() && c.word.is_none() && c.width.is_none(),
+            "frame write must target a whole frame-local net"
+        );
+        let (fidx, slot) = self.frame_route[net].expect("frame lvalue net is routed");
+        let nv = &self.ir.nets[net];
+        let val = v.resize_keep_sign(nv.width.max(1), nv.signed);
+        self.frame_slot_write(fidx, automatic, slot, val);
+    }
+
+    /// B1 frame-call evaluator. Runs user function `func`'s lowered body (in the
+    /// GLOBAL `ir.blocks` arena from `FuncDef.entry`) against a per-invocation
+    /// frame, returning its return-var Value resized to the declared return
+    /// width/sign. `&self` (read path) + interior-mutable frame arena; the body
+    /// BB loop is iterative, native recursion occurs ONLY on a nested
+    /// `Expr::Call` (heap-bounded by the window stack, capped at
+    /// `MAX_CALL_DEPTH`). `None` ⇒ a corrupt/empty sidecar (the eval arm
+    /// X-poisons) — but `build_func_routing` validates the table, so a populated
+    /// table reaching here is well-formed.
+    fn run_frame_call(&self, func: u32, args: &[Value]) -> Option<Value> {
+        use sim_ir::{Stmt, Terminator};
+        if self.func_table.is_empty() {
+            return None; // non-frame Call → the eval arm X-poisons
+        }
+        let m = self.func_table[func as usize];
+        let (rw, rsig) = (m.ret_width.max(1), m.ret_signed);
+
+        // ── runaway-recursion guard (heap depth, NOT host stack) ──
+        let d = self.call_depth.get();
+        if d >= MAX_CALL_DEPTH {
+            if !self.call_fatal.get() {
+                self.call_fatal.set(true);
+                self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                    severity: Severity::Fatal,
+                    code: MsgCode::RunFatal,
+                    message: format!(
+                        "frame-call recursion exceeded the depth limit ({MAX_CALL_DEPTH})"
+                    ),
+                    location: None,
+                    context: Vec::new(),
+                    sim_time: Some(TimeStamp { ticks: self.now }),
+                }));
+            }
+            // Finish THIS in-flight eval cleanly with all-X; the scheduler will
+            // convert the latched `call_fatal` to FinishReason::Error.
+            return Some(Value::xs(rw, rsig));
+        }
+        self.call_depth.set(d + 1);
+        let _g = DepthGuard(&self.call_depth); // decrements on EVERY exit
+
+        let fd = self.ir.funcs[func as usize];
+        debug_assert!(
+            !fd.is_task,
+            "tasks are rejected at elaborate (B2 frame-call)"
+        );
+        debug_assert!(
+            self.ir.nets[(m.base_net + m.return_slot) as usize].width == m.ret_width
+                && self.ir.nets[(m.base_net + m.return_slot) as usize].signed == m.ret_signed,
+            "return-var net width/sign must equal the declared ret_width/ret_signed"
+        );
+        let automatic = m.is_automatic;
+        let base = m.base_net;
+        let nloc = m.locals_len;
+        let np = fd.n_params;
+
+        // ── FRAME SETUP: build the fresh window in a LOCAL, push under ONE
+        //    scoped borrow. AUTOMATIC = a new X-init window per call; STATIC =
+        //    one slab, X-init ONCE and never reset (shared-slot persistence). ──
+        let fresh: Vec<Value> = (0..nloc)
+            .map(|s| {
+                let nv = &self.ir.nets[(base + s) as usize];
+                Value::xs(nv.width.max(1), nv.signed)
+            })
+            .collect();
+        if automatic {
+            self.frame_stack.borrow_mut().push(fresh);
+        } else {
+            self.static_store.borrow_mut().entry(func).or_insert(fresh);
+        }
+
+        // ── BIND ARGS into the formal slots (resize to the formal's width). ──
+        for i in 0..np {
+            let nv = &self.ir.nets[(base + i) as usize];
+            let v = args
+                .get(i as usize)
+                .cloned()
+                .unwrap_or_else(|| Value::xs(nv.width.max(1), nv.signed))
+                .resize_keep_sign(nv.width.max(1), nv.signed);
+            self.frame_slot_write(func, automatic, i, v);
+        }
+
+        // ── BB LOOP over the GLOBAL func arena from `fd.entry`. Process bodies
+        //    live in a SEPARATE `Process.body` space and are never touched. ──
+        let mut cur = fd.entry;
+        loop {
+            debug_assert!(
+                (cur as usize) < self.ir.blocks.len(),
+                "frame CFG target in range (rebase complete)"
+            );
+            let blk = &self.ir.blocks[cur as usize];
+            for &sid in &blk.stmts {
+                if let Stmt::BlockingAssign { lhs, rhs } = &self.ir.stmts[sid as usize] {
+                    let lw = self.lvalue_width(lhs);
+                    let sw = self.wt.get(*rhs);
+                    // OWNED Value FIRST — its nested Calls may recurse into
+                    // run_frame_call, fine: THIS frame holds NO live borrow now.
+                    let v = self
+                        .mk_eval_ctx()
+                        .eval_ctx(*rhs, lw.max(sw.width), sw.signed);
+                    // THEN store (borrow scoped to the index-store only).
+                    self.frame_write_lvalue(automatic, lhs, v);
+                }
+                // SysTask/NBA/delay/event in a func body are rejected at
+                // ELABORATE (B1 cut) → never reach here.
+            }
+            match &blk.term {
+                Terminator::Goto { target } => cur = *target,
+                Terminator::Branch {
+                    cond,
+                    then_bb,
+                    else_bb,
+                } => {
+                    let taken = self.mk_eval_ctx().truthy(*cond); // X/Z cond → else
+                    cur = if taken { *then_bb } else { *else_bb };
+                }
+                Terminator::Return => break,
+                // Delay/Wait/Fork/Call are illegal in a pure func body (rejected
+                // at elaborate); break defensively (rebase keeps targets valid).
+                _ => break,
+            }
+        }
+
+        // ── READ the return slot (clone + release), resize to declared width. ──
+        let rv = self
+            .frame_slot_read(func, automatic, m.return_slot)
+            .resize_keep_sign(rw, rsig);
+        if automatic {
+            self.frame_stack.borrow_mut().pop(); // static: leave the slab (persistence)
+        }
+        Some(rv) // _g drops here → call_depth decremented
+    }
+}
+
 impl<'a> NetReader for SimState<'a> {
     fn dyn_size(&self, net: u32) -> Option<u64> {
         // Only a dyn HANDLE answers; a missing heap entry IS the empty object
@@ -1178,7 +1490,37 @@ impl<'a> NetReader for SimState<'a> {
             _ => false,
         })
     }
+    fn eval_call(&self, func: u32, args: &[Value]) -> Option<Value> {
+        self.run_frame_call(func, args)
+    }
+    fn formal_width(&self, func: u32, i: usize) -> Option<(u32, bool)> {
+        // The i-th formal is `base_net + i` (port order, [0..n_params)); its
+        // NetVar carries the declared (width, signed). Out of range (the call
+        // passes MORE actuals than the func has formals) ⇒ None → the eval arm
+        // falls back to the actual's self-width.
+        let m = self.func_table.get(func as usize)?;
+        if (i as u32) >= m.n_params {
+            return None;
+        }
+        let nv = &self.ir.nets[(m.base_net + i as u32) as usize];
+        Some((nv.width.max(1), nv.signed))
+    }
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
+        // B1 frame-call: a frame-local net reads from the ACTIVE call window
+        // (automatic) or the shared static slab — never the flat store. One
+        // bitmap load on the hot path (sibling of `dyn_is_handle`, always
+        // full-length so it indexes directly). EMPTY func_table ⇒ all-false ⇒
+        // byte-identical. The read clones the slot Value and releases the frame
+        // borrow at the `return` BEFORE control re-enters any evaluator.
+        if self.frame_local[net as usize] {
+            let (fidx, slot) = self.frame_route[net as usize].expect("frame-local net is routed");
+            debug_assert!(
+                word.is_none(),
+                "B1 frame-local nets are scalar (no array word)"
+            );
+            let automatic = self.func_table[fidx as usize].is_automatic;
+            return self.frame_slot_read(fidx, automatic, slot);
+        }
         // v5 (C)-3b: a dyn HANDLE never reads the flat store — its elements
         // live in the heap. One bitmap load on the hot path.
         if self.dyn_is_handle[net as usize] {

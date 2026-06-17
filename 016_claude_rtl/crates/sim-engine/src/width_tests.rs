@@ -181,7 +181,7 @@ fn with_sched<R>(ir: &SimIr, f: impl FnOnce(&Scheduler) -> R) -> R {
 }
 
 fn table(ir: &SimIr) -> WidthTable {
-    WidthTable::build(ir)
+    WidthTable::build(ir, &crate::FuncTable::new())
 }
 
 // ── T1: self-width table values ─────────────────────────────────────────────

@@ -60,11 +60,11 @@ impl WidthTable {
     /// Build the self-width table by a single forward pass over `ir.exprs`.
     /// PRECONDITION (verified §1): every child ExprId < its parent ExprId, so a
     /// forward scan reads only already-filled entries.
-    pub(crate) fn build(ir: &SimIr) -> WidthTable {
+    pub(crate) fn build(ir: &SimIr, ft: &crate::FuncTable) -> WidthTable {
         let n = ir.exprs.len();
         let mut sw: Vec<SelfWidth> = Vec::with_capacity(n);
         for i in 0..n {
-            let s = Self::self_width_of(ir, &sw, i as u32);
+            let s = Self::self_width_of(ir, ft, &sw, i as u32);
             debug_assert_eq!(sw.len(), i, "forward pass invariant");
             sw.push(s);
         }
@@ -86,7 +86,7 @@ fn child(sw: &[SelfWidth], parent: u32, child: u32) -> SelfWidth {
 }
 
 impl WidthTable {
-    fn self_width_of(ir: &SimIr, sw: &[SelfWidth], i: u32) -> SelfWidth {
+    fn self_width_of(ir: &SimIr, ft: &crate::FuncTable, sw: &[SelfWidth], i: u32) -> SelfWidth {
         match &ir.exprs[i as usize] {
             // ── leaves ──────────────────────────────────────────────────────
             Expr::Const { val } => {
@@ -360,13 +360,23 @@ impl WidthTable {
                 },
             },
 
-            // ── user function call: 1-bit X (v1) — mirrors eval.rs:53. ─────────
-            // NOTE: elaborate v1 NEVER actually emits `ir::Expr::Call`; this arm is
-            // defensive/unreachable in practice, kept for exhaustive-match safety.
-            Expr::Call { .. } => SelfWidth {
-                width: 1,
-                signed: false,
-            },
+            // ── user function call (B1): self-width = the DECLARED return width
+            // from the frame-call sidecar (`Expr::Call` has no net id of its own).
+            // Empty/absent ⇒ 1-bit (byte-identical to the pre-B1 stub, and the
+            // matching eval arm X-poisons a Call with no sidecar entry). The arm
+            // reads `ft` (an independent table, NOT a child expr) so the
+            // child<parent forward-pass invariant is untouched; `ret_width` is the
+            // declared width, never body-derived → no circular dependency.
+            Expr::Call { func, .. } => ft
+                .get(*func as usize)
+                .map(|m| SelfWidth {
+                    width: clamp_w(m.ret_width.max(1)),
+                    signed: m.ret_signed,
+                })
+                .unwrap_or(SelfWidth {
+                    width: 1,
+                    signed: false,
+                }),
         }
     }
 }

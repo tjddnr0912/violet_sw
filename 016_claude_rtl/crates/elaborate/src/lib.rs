@@ -186,6 +186,52 @@ pub type QueueBoundTable = std::collections::BTreeMap<u32, u32>;
 /// (`mem[4]`, `g[1][2]`). Out-of-band like every other sidecar.
 pub type NetDimsTable = std::collections::BTreeMap<u32, Vec<(u32, u32)>>;
 
+/// Frame-call metadata (B1, automatic/recursive functions), INDEX-ALIGNED to
+/// `ir.funcs[i]` by construction (pushed in the same `lower_frame_func` that
+/// writes `ir.funcs[idx]`). The frozen `FuncDef` carries only `entry/n_params/
+/// locals_len/is_task`; everything the engine needs to ROUTE a frame call rides
+/// here, out-of-band, so the golden `SimIr` root (and `schema_hash`/
+/// `format_version`) is byte-unchanged. EMPTY by default ⇒ no frame functions ⇒
+/// every existing design byte-identical.
+///
+/// SLOT LAYOUT (contiguous `ir.nets` ids from `base_net`, declaration order):
+/// `[0..n_params)` = input formals (port order); `[n_params]` = the func-named
+/// RETURN var (allocated at exactly the declared return range/sign); `[n_params+
+/// 1..locals_len)` = `body_decls` (source order). All are REAL `ir.nets` entries
+/// (so `width.rs`/`read_net`/lvalue lowering see correct width/signed); they are
+/// flagged frame-local ONLY here (a `NetVar` has no spare bit).
+///
+/// CONTRACT (engine debug-asserts): `return_slot == n_params`, and
+/// `ir.nets[base_net + return_slot].width == ret_width &&  .signed == ret_signed`
+/// — the return-var net is allocated at exactly the declared width/sign so the
+/// engine's read-slot-then-resize is idempotent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FuncMeta {
+    /// First `ir.nets` id of this function's frame window.
+    pub base_net: u32,
+    /// Number of input formals (== `FuncDef.n_params`).
+    pub n_params: u32,
+    /// LOCAL slot index (0..`locals_len`) of the func-named return var
+    /// (== `n_params` by the layout convention above).
+    pub return_slot: u32,
+    /// Total frame slots (formals + return-var + body_decls; == `FuncDef.locals_len`).
+    pub locals_len: u32,
+    /// `true` ⇒ fresh window per call (push/pop). `false` ⇒ ONE shared static
+    /// slab (no restore → the deepest write clobbers = the iverilog-faithful
+    /// static-lifetime corruption). The only storage-policy discriminator.
+    pub is_automatic: bool,
+    /// Declared return self-width (`FunctionDef.range`; `integer` ⇒ 32, signed).
+    /// Hoisted because `Expr::Call` has no net id of its own — `width.rs` sizes
+    /// the call from this.
+    pub ret_width: u32,
+    /// Declared return signedness.
+    pub ret_signed: bool,
+}
+
+/// Frame-call sidecar (B1): `Vec<FuncMeta>` index-aligned to `ir.funcs`.
+/// `Default` (empty) ⇒ golden-neutral.
+pub type FuncTable = Vec<FuncMeta>;
+
 /// Engine-facing side tables produced by one elaboration — ALL out-of-band
 /// (`SimOpts` fields / `.velab` trailers, each serialized as its OWN postcard
 /// segment for append-only compatibility); none ever enters the golden `SimIr`.
@@ -211,6 +257,9 @@ pub struct Sidecars {
     pub defer_marks: DeferMarkTable,
     /// §16.4 deferred-assert actions: action StmtId → (marker StmtId, region).
     pub defer_acts: DeferActTable,
+    /// B1 frame-call metadata, index-aligned to `ir.funcs`. EMPTY ⇒ no
+    /// automatic/recursive functions ⇒ golden-neutral.
+    pub func_table: FuncTable,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -279,7 +328,8 @@ pub fn elaborate_with_timescale_roots(
         final_procs: el.final_procs.clone(),
         defer_marks: std::mem::take(&mut el.defer_marks),
         defer_acts: std::mem::take(&mut el.defer_acts),
-        net_names: el.net_name_table(), // BEFORE finish() consumes `el`
+        func_table: std::mem::take(&mut el.func_metas), // B1 (empty until frame funcs lower)
+        net_names: el.net_name_table(),                 // BEFORE finish() consumes `el`
     };
     if el.had_error {
         (None, sc)
@@ -1039,6 +1089,10 @@ struct Elaborator<'s> {
     /// P2-E: ProcIds of `final` blocks — engine side table (never the IR):
     /// skipped at arming, run once at end of simulation.
     pub final_procs: std::collections::BTreeSet<u32>,
+    /// B1 frame-call metadata, index-aligned to `self.funcs`/`ir.funcs`. Pushed
+    /// in `lower_frame_func`; drained into `Sidecars.func_table`. EMPTY until a
+    /// frame (automatic/recursive) function lowers.
+    func_metas: Vec<FuncMeta>,
     // NetId → per-unpacked-dimension DESCENDING flag (`mem[3:0]` ⇒ [true]).
     // Recorded only when some dim is descending (absent = all ascending);
     // array ASSIGNMENT pairs elements positionally left-to-right in DECLARED
@@ -1222,6 +1276,7 @@ impl<'s> Elaborator<'s> {
             pkg_tasks: BTreeMap::new(),
             cu_imports: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
+            func_metas: Vec::new(),
             array_dim_desc: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),

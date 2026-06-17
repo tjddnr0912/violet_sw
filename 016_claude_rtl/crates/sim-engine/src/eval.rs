@@ -99,6 +99,20 @@ pub trait NetReader {
     /// the W4020 warn-once funnel; the no-op default keeps non-engine readers
     /// (native-eval test fakes) unchanged.
     fn dyn_warn(&self, _net: u32, _msg: &str) {}
+    /// B1 frame-call: evaluate user function `func` with already-evaluated
+    /// `args` (caller-context Values), returning the return-var Value. `None`
+    /// (the default) ⇒ no frame-call support (native-eval test fakes / a Call
+    /// with no sidecar entry) ⇒ the eval arm X-poisons. Only the engine
+    /// (`SimState`) overrides this with the real frame evaluator.
+    fn eval_call(&self, _func: u32, _args: &[Value]) -> Option<Value> {
+        None
+    }
+    /// B1 frame-call: the i-th formal's (width, signed) so the eval arm can size
+    /// each actual to the FORMAL type (IEEE 1800 §13.4.3) BEFORE the call. `None`
+    /// (default / no sidecar) ⇒ fall back to the actual's self-width.
+    fn formal_width(&self, _func: u32, _i: usize) -> Option<(u32, bool)> {
+        None
+    }
     /// v5 ⑤: is `net` an ASSOC handle? Gates the i64-key read path in the
     /// Signal arm (assoc keys cannot ride the u32 word funnel). Default false
     /// — non-engine readers never see assoc nets.
@@ -344,9 +358,29 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             // ── system functions ───────────────────────────────────────────
             Expr::SysFunc { which, args } => self.eval_sysfunc_ctx(*which, args, w, eff_signed),
 
-            // ── user call: 1-bit X (v1), extend to `w` (= 1.max(ctx_width)) ──
-            // elaborate v1 NEVER emits `Expr::Call`; defensive/unreachable arm.
-            Expr::Call { .. } => Value::x1().resize_keep_sign(w, false),
+            // ── user function call (B1) ──────────────────────────────────────
+            // Evaluate each actual at the FORMAL's width/sign (§13.4.3 — the
+            // formal type is the assignment context), call the engine frame
+            // evaluator, then resize the result to THIS call site's context.
+            // `eval_call` returning `None` (empty sidecar / test fake) X-poisons
+            // exactly like the pre-B1 stub, so func-free designs are unchanged.
+            Expr::Call { func, args } => {
+                let argv: Vec<Value> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &a)| {
+                        let (fw, fs) = self.nets.formal_width(*func, i).unwrap_or_else(|| {
+                            let s = self.wt.get(a);
+                            (s.width, s.signed)
+                        });
+                        self.eval_ctx(a, fw, fs)
+                    })
+                    .collect();
+                match self.nets.eval_call(*func, &argv) {
+                    Some(r) => r.resize_keep_sign(w, eff_signed),
+                    None => Value::x1().resize_keep_sign(w, false),
+                }
+            }
         }
     }
 

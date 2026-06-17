@@ -44,14 +44,25 @@ use crate::width::WidthTable;
 /// instead of popping and silently diverge. (Queue PUSHES stay codegen-able:
 /// they are SysTasks riding the shared kernel dispatch.)
 ///
+/// B1 frame-call: a body that REACHES an `Expr::Call` (a user-function call) is
+/// also excluded. The frame evaluator runs ONLY on the `&self` interpreter read
+/// path (re-entrant frame arena + the left-to-right operand order that static
+/// recursion depends on); the VM's native/`EvalForLval` funnels must never
+/// reorder or short-circuit it. `expr_has_call` walks the RHS / cond / arg
+/// subtrees (the arena is post-order, so the recursion is bounded by ExprId
+/// depth). The interpreter is then the SOLE executor of any Call, and the P5
+/// differential gate passes vacuously for frame designs.
+///
 /// Anything not on the allow-list falls back to the interpreter, so an unknown or
 /// future terminator/statement variant is safe by default.
 pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock]) -> bool {
     body.iter().all(|block| {
-        let term_ok = matches!(
-            block.term,
-            Terminator::Goto { .. } | Terminator::Branch { .. } | Terminator::Return
-        );
+        let term_ok = match block.term {
+            Terminator::Goto { .. } | Terminator::Return => true,
+            // A Branch condition can itself be a Call (`if (fact(n) > 5)`).
+            Terminator::Branch { cond, .. } => !expr_has_call(exprs, cond),
+            _ => false,
+        };
         let stmts_ok = block.stmts.iter().all(|&sid| {
             // v5 ④ pops + v6 assoc-iteration calls: both WRITE state from an
             // rhs position (queue shrink / ref key arg), so both are
@@ -96,7 +107,22 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
                 )
             );
             let pop_rhs = pop_rhs || seeded_random_rhs || value_plusargs_rhs;
+            // B1: any expr position that can REACH a frame Call excludes the body.
+            let has_call = match &stmts[sid as usize] {
+                Stmt::BlockingAssign { rhs, .. } | Stmt::Force { rhs, .. } => {
+                    expr_has_call(exprs, *rhs)
+                }
+                Stmt::NonblockingAssign { rhs, delay, .. } => {
+                    expr_has_call(exprs, *rhs) || delay.is_some_and(|d| expr_has_call(exprs, d))
+                }
+                Stmt::SysTask { fmt, args, .. } => {
+                    fmt.is_some_and(|f| expr_has_call(exprs, f))
+                        || args.iter().any(|&a| expr_has_call(exprs, a))
+                }
+                Stmt::Disable { .. } | Stmt::Release { .. } => false,
+            };
             !pop_rhs
+                && !has_call
                 && !matches!(
                     stmts[sid as usize],
                     // Disable: Phase-2 control flow we will not bake into compiled
@@ -112,6 +138,44 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
         });
         term_ok && stmts_ok
     })
+}
+
+/// B1: does the expr subtree rooted at `eid` REACH an `Expr::Call`? Walks all
+/// child ExprId edges; the frozen arena is post-order (every child < its
+/// parent), so the recursion depth is bounded by the expression nesting.
+fn expr_has_call(exprs: &[Expr], eid: u32) -> bool {
+    match exprs.get(eid as usize) {
+        Some(Expr::Call { .. }) => true,
+        None | Some(Expr::Const { .. } | Expr::Signal { .. }) => false,
+        Some(Expr::Select {
+            base,
+            offset,
+            width,
+            ..
+        }) => {
+            expr_has_call(exprs, *base)
+                || expr_has_call(exprs, *offset)
+                || expr_has_call(exprs, *width)
+        }
+        Some(Expr::Concat { parts }) => parts.iter().any(|&p| expr_has_call(exprs, p)),
+        Some(Expr::Replicate { count, value }) => {
+            expr_has_call(exprs, *count) || expr_has_call(exprs, *value)
+        }
+        Some(Expr::Unary { operand, .. }) => expr_has_call(exprs, *operand),
+        Some(Expr::Binary { lhs, rhs, .. }) => {
+            expr_has_call(exprs, *lhs) || expr_has_call(exprs, *rhs)
+        }
+        Some(Expr::Ternary {
+            cond,
+            then_e,
+            else_e,
+        }) => {
+            expr_has_call(exprs, *cond)
+                || expr_has_call(exprs, *then_e)
+                || expr_has_call(exprs, *else_e)
+        }
+        Some(Expr::SysFunc { args, .. }) => args.iter().any(|&a| expr_has_call(exprs, a)),
+    }
 }
 
 // ── Stage C: bytecode VM (P0a) ─────────────────────────────────────────────
@@ -520,6 +584,72 @@ mod tests {
             },
         )];
         assert!(!is_codegen_able(&a, &[], &call));
+    }
+
+    /// B1 frame-call: a process body that REACHES an `Expr::Call` (a user
+    /// function call) in a RHS, a Branch cond, or a $systask arg is
+    /// interpreter-only — the VM must never run the re-entrant frame evaluator
+    /// (it would reorder the operand eval that static recursion depends on).
+    #[test]
+    fn frame_call_in_body_is_not_codegen_able() {
+        // RHS: `r = 1 + fact(n)` (the Call is NESTED under a Binary).
+        let exprs = vec![
+            Expr::Signal { net: 0, word: None }, // 0: n
+            Expr::Call {
+                func: 0,
+                args: vec![0],
+            }, // 1: fact(n)
+            Expr::Const { val: 0 },              // 2: 1
+            Expr::Binary {
+                op: sim_ir::BinOp::Add,
+                lhs: 2,
+                rhs: 1,
+            }, // 3: 1 + fact(n)
+        ];
+        let rhs_assign = vec![Stmt::BlockingAssign {
+            lhs: Lvalue { chunks: vec![] },
+            rhs: 3,
+        }];
+        let body = vec![block(vec![0], Terminator::Return)];
+        assert!(
+            !is_codegen_able(&rhs_assign, &exprs, &body),
+            "a frame Call nested in an RHS must exclude the body"
+        );
+
+        // Branch cond: `if (fact(n)) ...` — the Call rides the terminator.
+        let cond_body = vec![block(
+            vec![],
+            Terminator::Branch {
+                cond: 1, // fact(n)
+                then_bb: 0,
+                else_bb: 0,
+            },
+        )];
+        assert!(
+            !is_codegen_able(&arena(), &exprs, &cond_body),
+            "a frame Call in a Branch cond must exclude the body"
+        );
+
+        // $display arg: `$display(fact(n))`.
+        let task = vec![Stmt::SysTask {
+            which: SysTaskId::Display,
+            fmt: None,
+            args: vec![1], // fact(n)
+        }];
+        assert!(
+            !is_codegen_able(&task, &exprs, &body),
+            "a frame Call in a $systask arg must exclude the body"
+        );
+
+        // Negative control: the same arena WITHOUT a Call stays codegen-able.
+        let no_call = vec![Stmt::BlockingAssign {
+            lhs: Lvalue { chunks: vec![] },
+            rhs: 2, // the Const
+        }];
+        assert!(
+            is_codegen_able(&no_call, &exprs, &body),
+            "a Call-free body must stay codegen-able"
+        );
     }
 
     #[test]
