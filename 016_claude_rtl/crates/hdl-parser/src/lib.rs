@@ -3269,6 +3269,7 @@ impl<'t, 's> Parser<'t, 's> {
                 consequent_clock: None,
                 pass,
                 fail,
+                prop_expr: None,
                 span: start.to(self.prev_span()),
             };
         }
@@ -3304,11 +3305,19 @@ impl<'t, 's> Parser<'t, 's> {
                 consequent_clock: None,
                 pass,
                 fail,
+                prop_expr: None,
                 span: start.to(self.prev_span()),
             };
         }
-        let (clock, disable_iff, antecedent, implication_kind, consequent, consequent_clock) =
-            self.parse_property_spec(start);
+        let (
+            clock,
+            disable_iff,
+            antecedent,
+            implication_kind,
+            consequent,
+            consequent_clock,
+            prop_expr,
+        ) = self.parse_property_spec(start);
         self.expect(TokenKind::RParen, "')'");
         // action_block ::= statement_or_null | [statement] `else` statement_or_null
         // (slice S11). A bare `;` leaves both None (default $error, no pass).
@@ -3322,6 +3331,7 @@ impl<'t, 's> Parser<'t, 's> {
             consequent_clock,
             pass,
             fail,
+            prop_expr,
             span: start.to(self.prev_span()),
         }
     }
@@ -3352,6 +3362,7 @@ impl<'t, 's> Parser<'t, 's> {
         ImplicationKind,
         Sequence,
         Option<Sensitivity>,
+        Option<PropExpr>,
     ) {
         // Sequence/property LOCAL VARIABLES (slice A2): a typed declaration at the
         // body start (`property p; int x; @(clk) …`) needs per-attempt thread storage
@@ -3404,6 +3415,29 @@ impl<'t, 's> Parser<'t, 's> {
         } else {
             None
         };
+        // Property-level `and`/`or` (slice N2d): when the body uses a top-level
+        // (paren-depth-0) `and`/`or` property operator, parse a `PropExpr` TREE
+        // instead of the flat `seq impl seq`. The flat fields then hold inert
+        // placeholders; elaborate dispatches on `Some(prop_expr)`. This detection
+        // keeps every and/or-free property (the whole existing corpus) on the
+        // byte-identical flat path below — including slice A3 multi-clock, whose
+        // `@(c2)` consequent clock the tree grammar does NOT carry (combining
+        // and/or with multi-clock is out of subset → loud at elaborate). `and`/`or`
+        // inside the clocking event or a parenthesized sub-expr is at depth > 0 and
+        // ignored.
+        if self.prop_has_toplevel_andor() {
+            let pe = self.parse_prop_expr();
+            let true_lit = Self::sva_true_lit(start);
+            return (
+                clock,
+                disable_iff,
+                Sequence::Boolean(true_lit.clone()),
+                ImplicationKind::Overlap,
+                Sequence::Boolean(true_lit),
+                None,
+                Some(pe),
+            );
+        }
         // `seq [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
         // implication) desugars to `1'b1 |-> expr`; `seq [ |-> | |=> ] seq` — the
         // consequent is also a Sequence (slice S14). A leading `@(c2)` on the
@@ -3418,6 +3452,7 @@ impl<'t, 's> Parser<'t, 's> {
                 ImplicationKind::Overlap,
                 self.parse_sequence(),
                 cons_clock,
+                None,
             )
         } else if self.eat(TokenKind::PipeEqArrow) {
             let cons_clock = self.parse_optional_consequent_clock(false);
@@ -3428,6 +3463,7 @@ impl<'t, 's> Parser<'t, 's> {
                 ImplicationKind::NonOverlap,
                 self.parse_sequence(),
                 cons_clock,
+                None,
             )
         } else {
             let true_lit = Self::sva_true_lit(start);
@@ -3440,6 +3476,7 @@ impl<'t, 's> Parser<'t, 's> {
                     ImplicationKind::Overlap,
                     Sequence::Boolean(e),
                     None,
+                    None,
                 ),
                 other => {
                     self.error("an implication `|->`/`|=>` (a bare sequence property is unsupported in this subset)");
@@ -3450,8 +3487,158 @@ impl<'t, 's> Parser<'t, 's> {
                         ImplicationKind::Overlap,
                         Sequence::Boolean(true_lit),
                         None,
+                        None,
                     )
                 }
+            }
+        }
+    }
+
+    /// Bounded paren/bracket-balanced lookahead from the cursor (which sits at the
+    /// start of a property expression, after the clock + `disable iff`): true iff a
+    /// property-level `and`/`or` keyword appears at depth 0 before the property's
+    /// closing `)` (inline `assert property( … )`) or its `;` (a `property NAME; …;
+    /// endproperty` declaration). Decisive and cannot be poisoned by a later
+    /// construct — it stops at the first depth-underflow `)` / depth-0 `;` /
+    /// `endproperty` / module boundary / EOF. `and`/`or` nested in the clocking
+    /// event or a parenthesized sub-expression is at depth > 0 and ignored.
+    fn prop_has_toplevel_andor(&self) -> bool {
+        const BUDGET: usize = 65536;
+        let mut i = 0usize;
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek_at(i) {
+                None => return false,
+                // SVA repeat-open tokens (`[*` / `[->` / `[=`) open a bracket that
+                // closes with a plain `]` (RBracket), so they must count for depth
+                // or the `]` underflows and a trailing top-level `and`/`or` is missed
+                // (review N2d — the same new-token-vs-bracket-scan hazard as N2a-1).
+                Some(
+                    TokenKind::LParen
+                    | TokenKind::LBracket
+                    | TokenKind::LBracketStar
+                    | TokenKind::LBracketArrow
+                    | TokenKind::LBracketEq,
+                ) => depth += 1,
+                Some(TokenKind::RParen | TokenKind::RBracket) => {
+                    if depth == 0 {
+                        return false; // the property's closing `)` (inline form)
+                    }
+                    depth -= 1;
+                }
+                Some(TokenKind::Semi) if depth == 0 => return false, // decl body terminator
+                Some(TokenKind::Word(WordKind::Keyword(Kw::And | Kw::Or))) if depth == 0 => {
+                    return true
+                }
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Module | Kw::Endmodule)))
+                    if depth == 0 =>
+                {
+                    return false
+                }
+                _ => {}
+            }
+            if self.peek_at(i).is_some() && self.text_at(i) == "endproperty" {
+                return false;
+            }
+            i += 1;
+            if i > BUDGET {
+                return false;
+            }
+        }
+    }
+
+    /// Parse a property expression (slice N2d). Precedence loosest→tightest:
+    /// `or` < `and` < implication < primary. Reached only when
+    /// `prop_has_toplevel_andor` detected a property-level `and`/`or`.
+    fn parse_prop_expr(&mut self) -> PropExpr {
+        self.parse_prop_or()
+    }
+
+    fn parse_prop_or(&mut self) -> PropExpr {
+        let mut lhs = self.parse_prop_and();
+        while self.at_kw(Kw::Or) {
+            self.bump(); // `or`
+            let rhs = self.parse_prop_and();
+            lhs = PropExpr::Or(Box::new(lhs), Box::new(rhs));
+        }
+        lhs
+    }
+
+    fn parse_prop_and(&mut self) -> PropExpr {
+        let mut lhs = self.parse_prop_impl();
+        while self.at_kw(Kw::And) {
+            self.bump(); // `and`
+            let rhs = self.parse_prop_impl();
+            lhs = PropExpr::And(Box::new(lhs), Box::new(rhs));
+        }
+        lhs
+    }
+
+    /// A property primary, optionally the antecedent of a single implication. A
+    /// parenthesized PROPERTY `( … |-> … )` / `( … and … )` recurses; a
+    /// parenthesized boolean expression `(a && b)` is left to `parse_sequence`
+    /// (the implication antecedent). The consequent of `|->`/`|=>` is a full
+    /// property expression, so `1'b1 |=> p` (the recursion site) parses with `p`
+    /// as a bare `Seq(Boolean(Ident))` leaf resolved at elaborate.
+    fn parse_prop_impl(&mut self) -> PropExpr {
+        if self.peek() == Some(TokenKind::LParen) && self.paren_group_is_property() {
+            self.bump(); // `(`
+            let inner = self.parse_prop_expr();
+            self.expect(TokenKind::RParen, "')' to close a parenthesized property");
+            return inner;
+        }
+        let ante = self.parse_sequence();
+        if self.eat(TokenKind::PipeArrow) {
+            PropExpr::Impl {
+                ante,
+                kind: ImplicationKind::Overlap,
+                cons: Box::new(self.parse_prop_expr()),
+            }
+        } else if self.eat(TokenKind::PipeEqArrow) {
+            PropExpr::Impl {
+                ante,
+                kind: ImplicationKind::NonOverlap,
+                cons: Box::new(self.parse_prop_expr()),
+            }
+        } else {
+            PropExpr::Seq(ante)
+        }
+    }
+
+    /// Cursor on `(`: true iff the balanced paren group contains, at the depth just
+    /// inside this paren, a property operator (`|->`/`|=>`/`and`/`or`) — i.e. it is
+    /// a parenthesized PROPERTY rather than a parenthesized boolean expression
+    /// (which `parse_sequence` handles as an implication antecedent / leaf).
+    fn paren_group_is_property(&self) -> bool {
+        const BUDGET: usize = 65536;
+        let mut i = 0usize;
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek_at(i) {
+                None => return false,
+                // SVA repeat-open tokens count for depth (see `prop_has_toplevel_andor`).
+                Some(
+                    TokenKind::LParen
+                    | TokenKind::LBracket
+                    | TokenKind::LBracketStar
+                    | TokenKind::LBracketArrow
+                    | TokenKind::LBracketEq,
+                ) => depth += 1,
+                Some(TokenKind::RParen | TokenKind::RBracket) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return false; // closed without a property operator
+                    }
+                }
+                Some(TokenKind::PipeArrow | TokenKind::PipeEqArrow) if depth == 1 => return true,
+                Some(TokenKind::Word(WordKind::Keyword(Kw::And | Kw::Or))) if depth == 1 => {
+                    return true
+                }
+                _ => {}
+            }
+            i += 1;
+            if i > BUDGET {
+                return false;
             }
         }
     }
@@ -3583,8 +3770,15 @@ impl<'t, 's> Parser<'t, 's> {
         let name = self.ident()?;
         let formals = self.parse_sva_formals();
         self.expect(TokenKind::Semi, "';' after property name");
-        let (clock, disable_iff, antecedent, implication_kind, consequent, consequent_clock) =
-            self.parse_property_spec(start);
+        let (
+            clock,
+            disable_iff,
+            antecedent,
+            implication_kind,
+            consequent,
+            consequent_clock,
+            prop_expr,
+        ) = self.parse_property_spec(start);
         self.expect(TokenKind::Semi, "';' after property body");
         if self.at_ident_kw("endproperty") {
             self.bump();
@@ -3601,6 +3795,7 @@ impl<'t, 's> Parser<'t, 's> {
             implication_kind,
             consequent,
             consequent_clock,
+            prop_expr,
             span: start.to(self.prev_span()),
         }))
     }
@@ -4621,6 +4816,24 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             }
         }
     }
+    /// Rename a loop index inside an N2d property-expression tree (foreach desugar
+    /// completeness — the antecedent sequences and nested consequents must all be
+    /// renamed, mirroring `fix_sequence`). Property/recursion names are
+    /// identifiers, not loop indices, so they are not renamed (they parse as bare
+    /// `Seq(Boolean(Ident))` leaves and resolve at elaborate).
+    fn fix_prop_expr(pe: &mut PropExpr, from: &str, to: &str) {
+        match pe {
+            PropExpr::Seq(s) => fix_sequence(s, from, to),
+            PropExpr::Impl { ante, cons, .. } => {
+                fix_sequence(ante, from, to);
+                fix_prop_expr(cons, from, to);
+            }
+            PropExpr::And(l, r) | PropExpr::Or(l, r) => {
+                fix_prop_expr(l, from, to);
+                fix_prop_expr(r, from, to);
+            }
+        }
+    }
     fn fix_expr(e: &mut Expr, from: &str, to: &str) {
         match &mut e.kind {
             ExprKind::Ident(p) => {
@@ -4880,12 +5093,13 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             consequent,
             pass,
             fail,
+            prop_expr,
             ..
         } => {
             // Rename every operand (clock sensitivity exprs + disable iff +
-            // antecedent + consequent + action-block statements) — same
-            // completeness lesson as EventCtrl above (an unrenamed operand would
-            // silently capture the outer signal).
+            // antecedent + consequent + action-block statements + the N2d
+            // property-expression tree) — same completeness lesson as EventCtrl
+            // above (an unrenamed operand would silently capture the outer signal).
             if let Sensitivity::List(evs) = clock {
                 for ev in evs {
                     fix_expr(&mut ev.expr, from, to);
@@ -4896,6 +5110,9 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             }
             fix_sequence(antecedent, from, to);
             fix_sequence(consequent, from, to);
+            if let Some(pe) = prop_expr {
+                fix_prop_expr(pe, from, to);
+            }
             if let Some(s) = pass {
                 rename_ident_in_stmt(s, from, to);
             }

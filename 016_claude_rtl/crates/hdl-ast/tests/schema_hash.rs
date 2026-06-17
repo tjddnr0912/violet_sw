@@ -12,11 +12,17 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-17 B4 frame-call variable-lifetime override
+/// Re-pinned 2026-06-17 N2d recursive-property + property-level `and`/`or`
+/// (`PropExpr` enum + `ConcurrentAssert.prop_expr` / `PropDecl.prop_expr:
+/// Option<PropExpr>` — the `and`/`or`/recursion layer above a flat implication;
+/// `None` = the byte-identical flat path; all `.vu` artifacts are stale, no
+/// sim-ir/format_version change, pure IR-0: `synth_prop_expr` reduces the tree to
+/// a per-clock boolean violation check). (Previous re-pins:
+/// 2026-06-17 B4 frame-call variable-lifetime override
 /// (`NetVarDecl.lifetime: Option<bool>` — `automatic int x;` in a frame
 /// function/task body_decl gives that local fresh-per-call storage; all `.vu`
 /// artifacts are stale, no sim-ir/format_version change, pure IR-0: the per-slot
-/// lifetime rides the engine routing side table out-of-band). (Previous re-pins:
+/// lifetime rides the engine routing side table out-of-band).
 /// 2026-06-17 N2a-1 multi-clock SVA sequence boundary
 /// (`Sequence::Clocked { clock, seq }` — a `##`-boundary re-clocking event
 /// `a ##1 @(c2) b`; all `.vu` artifacts are stale, no sim-ir/format_version change,
@@ -57,8 +63,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    203, 117, 139, 101, 210, 67, 173, 11, 15, 140, 77, 26, 120, 248, 19, 165, 55, 38, 41, 154, 133,
-    29, 60, 180, 125, 87, 14, 27, 0, 124, 197, 137,
+    89, 113, 136, 213, 227, 94, 135, 179, 133, 157, 81, 36, 156, 190, 209, 41, 148, 248, 56, 42,
+    68, 126, 62, 47, 243, 135, 28, 234, 144, 118, 19, 210,
 ];
 
 #[test]

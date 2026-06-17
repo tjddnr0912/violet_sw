@@ -661,6 +661,15 @@ struct PendingSva {
     /// two-process handoff synthesis for `@(c1) ante |=> @(c2) cons`. Out-of-band
     /// (elaborate-internal, NOT serialized → golden-free).
     cons_clock: Option<ast::Sensitivity>,
+    /// Property-expression tree (slice N2d): `Some(_)` selects `synth_prop_expr`
+    /// (the property-level `and`/`or` / recursion reduction) instead of the flat
+    /// implication path. When set, `ante/kind/cons` hold inert placeholders.
+    prop_expr: Option<ast::PropExpr>,
+    /// The own name of the property being synthesized, when this `PendingSva` came
+    /// from splicing a named `property NAME` whose body has a `prop_expr`. Used to
+    /// recognise the legal tail-`|=>` self-reference (recursion) during synthesis.
+    /// `None` for an inline `assert property(...)` (no name ⇒ no recursion site).
+    prop_self_name: Option<String>,
     span: ast::Span,
 }
 
@@ -8675,6 +8684,14 @@ impl<'s> Elaborator<'s> {
                 );
                 continue;
             }
+            // Property-level `and`/`or` / recursion (slice N2d): a `prop_expr` tree
+            // reduces to a per-clock boolean violation check by `synth_prop_expr`
+            // (the flat `ante/kind/cons` fields hold placeholders). Dispatched FIRST
+            // so the placeholder fields never reach the cross-clock / flat paths.
+            if sva.prop_expr.is_some() {
+                self.synth_prop_expr(sva, sp);
+                continue;
+            }
             // Cross-clock SEQUENCE antecedent (slice N2a-1): `@(c1) a ##1 @(c2) b |-> c`
             // — a `##1 @(c2)` boundary re-clocks MID-ANTECEDENT (distinct from A3,
             // where the IMPLICATION crosses clocks). Routed to a dedicated dual-clock
@@ -8955,6 +8972,322 @@ impl<'s> Elaborator<'s> {
             let proc = self.lower_proc_block(&pb);
             self.push_process(proc);
         }
+    }
+
+    /// Synthesize a clocked checker for a property-level `and`/`or` / recursive
+    /// property (slice N2d). Reduces the `PropExpr` tree to a SINGLE per-clock
+    /// boolean VIOLATION expression (`prop_expr_violation`) and emits
+    /// `always @(clk) if (violation) <fail>; <pend/prev NBAs>` — pure IR-0 (no
+    /// sim-ir change). Out-of-subset feature combinations (a consequent clock,
+    /// `disable iff`, a pass action) are loud-rejected; per-operand restrictions
+    /// (boolean-only operands, legal recursion sites) are enforced in the reduction.
+    fn synth_prop_expr(&mut self, sva: PendingSva, sp: ast::Span) {
+        let Some(pe) = sva.prop_expr.clone() else {
+            return; // dispatched only when Some
+        };
+        if sva.cons_clock.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a multi-clock consequent combined with a property-level `and`/`or` \
+                 is unsupported in this subset",
+            );
+            return;
+        }
+        if sva.disable_iff.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "`disable iff` combined with a property-level `and`/`or` is \
+                 unsupported in this subset",
+            );
+            return;
+        }
+        if sva.pass.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a pass action combined with a property-level `and`/`or` is \
+                 unsupported in this subset",
+            );
+            return;
+        }
+        let self_name = sva.prop_self_name.clone();
+        let mut regs = SvaRegs::default();
+        let mut pend_nbas: Vec<ast::Stmt> = Vec::new();
+        // The returned top-level skew only shifts WHEN a verdict is reported
+        // (verdict-safe — the attempt-aligned operands are enforced internally).
+        let Some((violation, _skew)) =
+            self.prop_expr_violation(&pe, self_name.as_deref(), &mut regs, &mut pend_nbas, 0, sp)
+        else {
+            return; // a loud diagnostic was already emitted
+        };
+        // Fail action: the call-site `else` statement, or the default `$error`.
+        let fail_stmt_raw = match sva.fail {
+            Some(s) => *s,
+            None => ast::Stmt::SysTaskCall {
+                name: ast::Ident {
+                    name: "$error".to_string(),
+                    span: sp,
+                },
+                args: vec![ast::Expr {
+                    kind: ast::ExprKind::StrLit {
+                        raw: "\"Assertion property violation\"".to_string(),
+                    },
+                    span: sp,
+                }],
+                span: sp,
+            },
+        };
+        let fail_stmt = self.rewrite_sampled_stmt(&fail_stmt_raw, &mut regs);
+        let if_fail = ast::Stmt::If {
+            cond: violation,
+            then_s: Box::new(fail_stmt),
+            else_s: None,
+            span: sp,
+        };
+        // Check FIRST (reads the prior clock's pend/prev regs), then the NBA updates
+        // apply in the NBA region for the next clock.
+        let mut stmts = vec![if_fail];
+        stmts.extend(regs.nbas);
+        stmts.extend(pend_nbas);
+        let body = if stmts.len() == 1 {
+            stmts.pop().unwrap()
+        } else {
+            ast::Stmt::Block {
+                label: None,
+                decls: Vec::new(),
+                stmts,
+                span: sp,
+            }
+        };
+        let pb = ast::ProceduralBlock {
+            kind: ast::ProcKind::Always,
+            sensitivity: Some(sva.clock),
+            body: Box::new(body),
+            span: sp,
+        };
+        let proc = self.lower_proc_block(&pb);
+        self.push_process(proc);
+    }
+
+    /// The per-clock VIOLATION expression of a property expression (true ⇒ the
+    /// property fails THIS clock), appending pend-reg NBAs (`pend <= |ante`) to
+    /// `pend_nbas` and prev-reg sampling NBAs (via `rewrite_sampled`) to `regs`.
+    ///
+    /// Recursion: `self_name` is the recursive property's own name. A `… |=> NAME`
+    /// consequent is the legal TAIL recursion — its next-clock obligation is
+    /// discharged by the per-clock re-attempt that `assert property(NAME)` spawns,
+    /// so the whole implication contributes NO violation (drops to `1'b0`). The
+    /// reduction is exact for the canonical idioms: `always` (`b and (1'b1 |=> p)`
+    /// → `if(!b)`) and weak-until (`q or (b and (1'b1 |=> p))` → `if(!q && !b)`).
+    ///
+    /// Returns `(viol, skew)` — the per-clock violation expression and the CLOCK
+    /// SKEW of the sub-property (the number of clocks by which its verdict lands
+    /// AFTER the attempt-start clock: a boolean / overlap leaf is skew 0, a `|=>`
+    /// is skew 1). A whole-tree top-level skew only shifts WHEN a verdict is
+    /// reported (verdict-safe), but the operands of one `and`/`or` (and an `|->`/
+    /// `|=>` consequent) MUST be skew-aligned: combining a skew-1 `|=>` with a
+    /// skew-0 sibling would pair two DIFFERENT attempt-start clocks (review N2d:
+    /// `(a |=> b) or q` produced both a false pass and a false fire). A skew
+    /// mismatch — and a `|=>`/`|->` consequent with a non-zero skew (which would
+    /// need a multi-stage pend network, beyond this subset) — is loud-rejected.
+    /// Also returns `None` (after a loud diagnostic) for a non-boolean sequence
+    /// operand, a recursion reference outside a `|=>` consequent, or a nesting
+    /// depth beyond `SVA_SEQ_ALT_CAP` (a robustness cap — the recursive reduction
+    /// would otherwise overflow the stack on a pathological `a and a and …` chain).
+    fn prop_expr_violation(
+        &mut self,
+        pe: &ast::PropExpr,
+        self_name: Option<&str>,
+        regs: &mut SvaRegs,
+        pend_nbas: &mut Vec<ast::Stmt>,
+        depth: u32,
+        sp: ast::Span,
+    ) -> Option<(ast::Expr, u32)> {
+        if depth as usize > SVA_SEQ_ALT_CAP {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "a property-level `and`/`or` nesting exceeds the depth cap ({SVA_SEQ_ALT_CAP}); narrow it"
+                ),
+            );
+            return None;
+        }
+        match pe {
+            ast::PropExpr::Seq(seq) => {
+                // A bare sequence used as a property holds iff the (boolean) seq is
+                // true → viol = !b. Same-clock leaf (skew 0).
+                let b = self.prop_bool_operand(seq, self_name)?;
+                Some((sva_unary(ast::UnOp::LogNot, b, sp), 0))
+            }
+            ast::PropExpr::Impl { ante, kind, cons } => {
+                // Tail recursion `a |=> NAME` drops to no-violation BEFORE touching
+                // the antecedent (no pend reg, no sampled-value reg for `a`). The
+                // constant `1'b0` carries skew 0 (it combines with any sibling).
+                if matches!(kind, ast::ImplicationKind::NonOverlap)
+                    && self.prop_cons_is_self_recursion(cons, self_name)
+                {
+                    return Some((sva_zero(sp), 0));
+                }
+                let a = self.prop_bool_operand(ante, self_name)?;
+                let a = self.rewrite_sampled(&a, regs);
+                let (vc, cons_skew) =
+                    self.prop_expr_violation(cons, self_name, regs, pend_nbas, depth + 1, sp)?;
+                // A consequent that is itself skewed (a nested `|=>`) would need a
+                // multi-stage pend network to stay attempt-aligned — out of subset.
+                if cons_skew != 0 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a nested multi-clock-skew implication consequent (e.g. \
+                         `a |=> (c |=> d)`) inside a property-level `and`/`or` is \
+                         unsupported in this subset",
+                    );
+                    return None;
+                }
+                match kind {
+                    ast::ImplicationKind::Overlap => {
+                        // `a |-> cons` (same clock): viol = a && viol(cons). Skew 0.
+                        // A self-reference in `cons` is NOT a `|=>` consequent → it
+                        // reaches `prop_bool_operand` and is loud-rejected (an
+                        // overlap same-tick recursion is an illegal fixpoint).
+                        Some((sva_binary(ast::BinOp::LogAnd, a, vc, sp), 0))
+                    }
+                    ast::ImplicationKind::NonOverlap => {
+                        // Non-recursive `a |=> cons`: a 1-bit pend reg delays the
+                        // (reduction-OR) antecedent one clock; viol = pend &&
+                        // viol(cons), so `cons` is effectively checked next clock.
+                        // Skew 1 (the verdict lands one clock after the attempt).
+                        let pend = self.fresh_sva_reg(1, "pend");
+                        let pend_path = ast::HierPath {
+                            segments: vec![ast::Ident {
+                                name: pend.clone(),
+                                span: sp,
+                            }],
+                            span: sp,
+                        };
+                        pend_nbas.push(ast::Stmt::NonBlocking {
+                            lhs: ast::Lvalue::Ident(pend_path),
+                            delay: None,
+                            event: None,
+                            rhs: sva_unary(ast::UnOp::RedOr, a, sp),
+                            span: sp,
+                        });
+                        Some((
+                            sva_binary(ast::BinOp::LogAnd, sva_ident_expr(&pend, sp), vc, sp),
+                            1,
+                        ))
+                    }
+                }
+            }
+            // `L and R` holds iff both hold → viol = viol(L) || viol(R).
+            ast::PropExpr::And(l, r) => {
+                let (vl, sl) =
+                    self.prop_expr_violation(l, self_name, regs, pend_nbas, depth + 1, sp)?;
+                let (vr, sr) =
+                    self.prop_expr_violation(r, self_name, regs, pend_nbas, depth + 1, sp)?;
+                let s = self.unify_prop_skew(sl, sr)?;
+                Some((sva_binary(ast::BinOp::LogOr, vl, vr, sp), s))
+            }
+            // `L or R` holds iff either holds → viol = viol(L) && viol(R).
+            ast::PropExpr::Or(l, r) => {
+                let (vl, sl) =
+                    self.prop_expr_violation(l, self_name, regs, pend_nbas, depth + 1, sp)?;
+                let (vr, sr) =
+                    self.prop_expr_violation(r, self_name, regs, pend_nbas, depth + 1, sp)?;
+                let s = self.unify_prop_skew(sl, sr)?;
+                Some((sva_binary(ast::BinOp::LogAnd, vl, vr, sp), s))
+            }
+        }
+    }
+
+    /// Require both operands of a property-level `and`/`or` to share a clock skew;
+    /// otherwise loud-reject (combining a skew-1 `|=>` with a skew-0 same-clock
+    /// operand would pair two different attempt-start clocks — review N2d).
+    fn unify_prop_skew(&mut self, sl: u32, sr: u32) -> Option<u32> {
+        if sl != sr {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "the operands of a property-level `and`/`or` have different clock \
+                 skews (a `|=>` operand mixed with a same-clock operand) — combine \
+                 only same-skew operands (all `|=>`, or all `|->`/boolean) in this \
+                 subset",
+            );
+            return None;
+        }
+        Some(sl)
+    }
+
+    /// Extract the boolean expression of a sequence operand in a property tree
+    /// (slice N2d). Loud-rejects (returns `None`) a multi-term / clocked / named
+    /// sequence operand (only a boolean leaf is in subset), a BARE recursion
+    /// reference (a self-name not in a `|=>` consequent position), and a reference
+    /// to ANOTHER declared property (cross-property trees are out of subset).
+    fn prop_bool_operand(
+        &mut self,
+        seq: &ast::Sequence,
+        self_name: Option<&str>,
+    ) -> Option<ast::Expr> {
+        let ast::Sequence::Boolean(e) = seq else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a property-level `and`/`or` operand must be a boolean (a multi-term \
+                 / re-clocked / named sequence operand is unsupported in this subset)",
+            );
+            return None;
+        };
+        if let ast::ExprKind::Ident(p) = &e.kind {
+            if p.segments.len() == 1 && self.lookup_net_scoped(&p.segments[0].name).is_none() {
+                let n = &p.segments[0].name;
+                if Some(n.as_str()) == self_name {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "a recursive reference to property `{n}` is legal only as the \
+                             consequent of `|=>` (a bare / overlap / antecedent recursion \
+                             is unsupported in this subset)"
+                        ),
+                    );
+                    return None;
+                }
+                if self.prop_table.contains_key(n) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "a reference to another property `{n}` inside a property-level \
+                             `and`/`or` is unsupported in this subset"
+                        ),
+                    );
+                    return None;
+                }
+                if self.seq_table.contains_key(n) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "a reference to named sequence `{n}` inside a property-level \
+                             `and`/`or` is unsupported in this subset"
+                        ),
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(e.clone())
+    }
+
+    /// True iff `cons` is exactly a bare reference to the recursive property's own
+    /// name (`self_name`), not shadowed by a real net — the legal tail-`|=>`
+    /// recursion site `… |=> NAME`.
+    fn prop_cons_is_self_recursion(&self, cons: &ast::PropExpr, self_name: Option<&str>) -> bool {
+        let Some(sn) = self_name else {
+            return false;
+        };
+        let ast::PropExpr::Seq(ast::Sequence::Boolean(e)) = cons else {
+            return false;
+        };
+        if let ast::ExprKind::Ident(p) = &e.kind {
+            return p.segments.len() == 1
+                && p.segments[0].name == sn
+                && self.lookup_net_scoped(sn).is_none();
+        }
+        false
     }
 
     /// Reject an SVA repetition count that exceeds the synthesis cap
@@ -10954,6 +11287,7 @@ impl<'s> Elaborator<'s> {
                 consequent_clock,
                 pass,
                 fail,
+                prop_expr,
                 span,
             } => {
                 // Named-property INSTANCE: `assert property(NAME)` parses to an empty
@@ -10979,6 +11313,9 @@ impl<'s> Elaborator<'s> {
                         }
                         Some(pd) if pd.formals.is_empty() => {
                             // Byte-identical to before slice A1 (no substitution).
+                            // N2d: a `prop_expr` body carries the property's own NAME
+                            // as `prop_self_name` so `synth_prop_expr` recognises the
+                            // legal tail-`|=>` recursion (`… |=> NAME`).
                             self.pending_sva.push(PendingSva {
                                 clock: pd.clock,
                                 disable_iff: pd.disable_iff,
@@ -10988,8 +11325,20 @@ impl<'s> Elaborator<'s> {
                                 pass: pass.clone(),
                                 fail: fail.clone(),
                                 cons_clock: pd.consequent_clock,
+                                prop_expr: pd.prop_expr,
+                                prop_self_name: Some(name.name.clone()),
                                 span: *span,
                             });
+                        }
+                        Some(pd) if pd.prop_expr.is_some() => {
+                            // N2d: a property-level `and`/`or` tree combined with
+                            // FORMAL arguments (slice A1) is out of subset — the
+                            // synthesis reduction does not substitute through a tree.
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a parameterized property with property-level \
+                                 `and`/`or` is unsupported in this subset",
+                            );
                         }
                         Some(pd) => {
                             // Parameterized property: bind actuals → formals and
@@ -11008,6 +11357,8 @@ impl<'s> Elaborator<'s> {
                                     .consequent_clock
                                     .as_ref()
                                     .map(|s| subst_sensitivity(s, &map)),
+                                prop_expr: None,
+                                prop_self_name: None,
                                 span: *span,
                             });
                         }
@@ -11034,6 +11385,8 @@ impl<'s> Elaborator<'s> {
                         }
                     }
                 } else {
+                    // Inline `assert property(...)`: a `prop_expr` (N2d and/or tree)
+                    // has NO self-name (anonymous ⇒ no recursion site).
                     self.pending_sva.push(PendingSva {
                         clock: clock.clone(),
                         disable_iff: disable_iff.clone(),
@@ -11043,6 +11396,8 @@ impl<'s> Elaborator<'s> {
                         pass: pass.clone(),
                         fail: fail.clone(),
                         cons_clock: consequent_clock.clone(),
+                        prop_expr: prop_expr.clone(),
+                        prop_self_name: None,
                         span: *span,
                     });
                 }

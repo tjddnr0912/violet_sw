@@ -581,6 +581,15 @@ pub enum Stmt {
         /// both `None` (default $error, no pass action).
         pass: Option<Box<Stmt>>,
         fail: Option<Box<Stmt>>,
+        /// Property-expression tree (slice N2d): the `and`/`or`/recursive-property
+        /// layer above a flat implication. `None` (the common case) means the
+        /// property is a single flat implication carried by the
+        /// `antecedent/implication_kind/consequent` fields above — the byte-
+        /// identical lowering. `Some(_)` means the body uses property-level
+        /// `and`/`or` (or a legal tail-`|=>` recursion); the flat fields then hold
+        /// placeholders and elaborate's `synth_prop_expr` reduces the tree to a
+        /// per-clock boolean violation check. Pure IR-0 (no sim-ir change).
+        prop_expr: Option<PropExpr>,
         span: Span,
     },
     // procedural-continuous family (§2.7):
@@ -716,6 +725,39 @@ pub enum Sequence {
     },
 }
 
+/// SVA property expression (slice N2d) — the property-level `and`/`or` /
+/// recursive-property layer above a flat implication. A property whose body is a
+/// single flat implication (`a |-> b`) does NOT use this enum (it stays in the
+/// flat `antecedent/implication_kind/consequent` fields with `prop_expr: None`,
+/// byte-identical). A body using `and`/`or`, a parenthesized property, or a
+/// (legal tail-`|=>`) self-reference parses to a `PropExpr` tree, and elaborate's
+/// `synth_prop_expr` reduces it to a per-clock boolean violation check (pure IR-0).
+///
+/// A bare property/recursion reference is NOT a dedicated variant — it parses as
+/// `Seq(Sequence::Boolean(Ident))` and elaborate resolves the identifier against
+/// the property table / the recursive self-name. Precedence (loosest→tightest):
+/// `or` < `and` < implication (`|->`/`|=>`, whose LHS is a sequence per IEEE 1800
+/// §16.12) < primary (a sequence leaf or a parenthesized property).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum PropExpr {
+    /// A bare sequence used as a property — it holds iff the sequence matches this
+    /// clock. The subset restricts the operand to a boolean leaf (a multi-term
+    /// sequence operand of `and`/`or` is loud-rejected at elaborate).
+    Seq(Sequence),
+    /// An implication leaf `ante |-> cons` / `ante |=> cons`. Per IEEE the
+    /// antecedent is a sequence; the consequent is itself a property expression, so
+    /// `1'b1 |=> p` can reference a property name `p` (the recursion site).
+    Impl {
+        ante: Sequence,
+        kind: ImplicationKind,
+        cons: Box<PropExpr>,
+    },
+    /// `lhs and rhs` — both must hold (violation = either side violates).
+    And(Box<PropExpr>, Box<PropExpr>),
+    /// `lhs or rhs` — at least one must hold (violation = both sides violate).
+    Or(Box<PropExpr>, Box<PropExpr>),
+}
+
 /// A named SVA sequence declaration: `sequence NAME [(formals)]; <seq>; endsequence`
 /// (IEEE 1800 §16.8). Stored at elaborate and INLINED at each use site (reusing the
 /// existing sequence desugar). `formals` is reserved for the parameterized follow-on
@@ -745,6 +787,9 @@ pub struct PropDecl {
     /// Optional consequent clocking event (slice A3, multi-clock) — see
     /// [`Stmt::ConcurrentAssert`]'s `consequent_clock`. `None` = single-clock.
     pub consequent_clock: Option<Sensitivity>,
+    /// Property-expression tree (slice N2d) — see [`Stmt::ConcurrentAssert`]'s
+    /// `prop_expr`. `None` = a flat implication (the byte-identical path).
+    pub prop_expr: Option<PropExpr>,
     pub span: Span,
 }
 /// SVA repetition operator (slices S4/S5/S8).
