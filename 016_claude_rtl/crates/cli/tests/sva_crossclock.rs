@@ -10,9 +10,9 @@
 //! expectation is derived from §16.13/§16.16 + value-pinned. The clocks here are
 //! c1 posedges @5,15,25,… and c2 posedges @8,18,28,… (c2 always 3 after c1).
 //!
-//! LOUD (deferred to N2a-2 / unsupported): a `|=>` consequent, a multi-term segment,
-//! `##n` (n≠1) across clocks, >2 clock domains, an explicit consequent clock,
-//! `disable iff` / a custom action.
+//! `|=>` and >2 clock domains are now handled by N2a-2 (see sva_crossclock_n2a2.rs).
+//! STILL LOUD here / unsupported: a same-clock multi-term segment, `##n` (n≠1) across
+//! clocks, an explicit consequent clock, `disable iff` / a custom action.
 //!
 //! HAND-IEEE PINS (review N2a-1): (1) a redundant SAME-clock re-clock
 //! `@(clk) a ##1 @(clk) b` is folded to the single-clock pipeline (a §16.13 no-op) so
@@ -151,10 +151,12 @@ fn first_segment_arms_on_c1_a_zero_is_vacuous() {
 }
 
 #[test]
-fn nonoverlap_crossclock_is_loud() {
-    // `|=>` across the sequence boundary (c on the NEXT c2 — a second handoff) is
-    // deferred to N2a-2 → loud, not silently mis-synthesized.
-    let (_o, err, code) = run(&format!(
+fn nonoverlap_crossclock_now_synthesizes() {
+    // N2a-2: `|=>` across the sequence boundary (c on the NEXT c2 — an extra handoff
+    // stage) now SYNTHESIZES (was loud in N2a-1). With c=0 it must FIRE (exit 1 with a
+    // genuine assertion violation), NOT be loud-rejected. (Review N2a-2 MEDIUM: this
+    // test formerly asserted loud-reject and passed vacuously once `|=>` synthesized.)
+    let (out, err, code) = run(&format!(
         "module top;\n{CLKS}reg a=1, b=1, c=0;\n\
          property p; @(posedge c1) a ##1 @(posedge c2) b |=> c; endproperty\n\
          initial assert property(p);\n\
@@ -164,14 +166,22 @@ fn nonoverlap_crossclock_is_loud() {
     assert_eq!(
         code,
         Some(1),
-        "a `|=>` cross-clock sequence must be loud. {err}"
+        "a `|=>` cross-clock with c=0 must fire. {err}"
     );
-    assert!(err.contains("VITA-E"), "{err}");
+    assert!(
+        !err.contains("unsupported"),
+        "must synthesize, not loud-reject:\n{err}"
+    );
+    assert!(
+        format!("{err}{out}").contains("Assertion property violation"),
+        "must be a genuine violation, not an elaboration error:\n{err}\n{out}"
+    );
 }
 
 #[test]
 fn multiterm_first_segment_is_loud() {
-    // `a ##1 d ##1 @(c2) b` — a multi-term first segment is deferred to N2a-2 → loud.
+    // `a ##1 d ##1 @(c2) b` — a same-clock multi-term first segment is deferred (the
+    // multi-term lane, beyond N2a-2) → loud.
     let (_o, err, code) = run(&format!(
         "module top;\n{CLKS}reg a=1, d=1, b=1, c=0;\n\
          property p; @(posedge c1) a ##1 d ##1 @(posedge c2) b |-> c; endproperty\n\

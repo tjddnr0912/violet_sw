@@ -756,6 +756,42 @@ fn sva_zero(sp: ast::Span) -> ast::Expr {
     }
 }
 
+/// The default SVA violation reporter `$error("Assertion property violation")`
+/// (the no-action-block fail handler — routes to the diagnostic stream + exit
+/// class 1, mirroring an immediate-assert severity).
+fn sva_error_stmt(sp: ast::Span) -> ast::Stmt {
+    ast::Stmt::SysTaskCall {
+        name: ast::Ident {
+            name: "$error".to_string(),
+            span: sp,
+        },
+        args: vec![ast::Expr {
+            kind: ast::ExprKind::StrLit {
+                raw: "\"Assertion property violation\"".to_string(),
+            },
+            span: sp,
+        }],
+        span: sp,
+    }
+}
+
+/// A 1-bit NBA `<name> <= 1'b1` / `1'b0` — an SVA handoff arm / discharge.
+fn sva_nb_set(name: &str, one: bool, sp: ast::Span) -> ast::Stmt {
+    ast::Stmt::NonBlocking {
+        lhs: ast::Lvalue::Ident(ast::HierPath {
+            segments: vec![ast::Ident {
+                name: name.to_string(),
+                span: sp,
+            }],
+            span: sp,
+        }),
+        delay: None,
+        event: None,
+        rhs: if one { sva_one(sp) } else { sva_zero(sp) },
+        span: sp,
+    }
+}
+
 /// Wrap an obligation NBA's RHS in `dis ? 1'b0 : rhs` so a `disable iff (dis)`
 /// reset clears in-flight pipeline/pending state on the clock it is asserted
 /// (slice S12). Only NonBlocking stmts occur in the obligation list; any other
@@ -8439,106 +8475,68 @@ impl<'s> Elaborator<'s> {
         self.push_process(proc_b);
     }
 
-    /// Cross-clock SEQUENCE antecedent (slice N2a-1): the canonical two-clock form
-    /// `@(c1) a ##1 @(c2) b |-> c`. Unlike A3 (`synth_multiclock`), where the
-    /// IMPLICATION crosses clocks, here the cross-clock boundary is INSIDE the
-    /// antecedent sequence (the `##1 @(c2)`). `a` is sampled on c1 and arms a 1-bit
-    /// handoff; the FIRST c2 edge after consumes it and samples `b` — the antecedent
-    /// completing on that c2, the OVERLAP `|->` checks `c` on the SAME c2 edge:
-    ///   always @(c1) if (|a) handoff <= 1'b1;        // arm (set-only, persists)
-    ///   always @(c2) if (handoff) begin              // first c2 after the c1 arm
-    ///     if (|b && !c) $error(...);                 //   b ⇒ antecedent done ⇒ check c
-    ///     handoff <= 1'b0;                            //   consume the exact `##1` window
-    ///   end
-    /// Pure IR-0 two-process synthesis (sim-ir untouched). Separate `SvaRegs` per
-    /// process, so a `$past` in `a` samples on c1 and one in `b`/`c` on c2.
+    /// Cross-clock SEQUENCE antecedent (slices N2a-1, N2a-2): a `##1`-connected chain
+    /// of re-clocked booleans `@(c1) s0 ##1 @(c2) s1 ##1 @(c3) s2 … |-> c` (or `|=>`).
+    /// Unlike A3 (`synth_multiclock`), where the IMPLICATION crosses clocks, here the
+    /// cross-clock boundaries are INSIDE the antecedent (each `##1 @(ck)`). Each segment
+    /// is sampled on its own clock and a 1-bit handoff carries the partial match forward:
+    /// segment k's clock arms `hf[k]`, and the FIRST edge of segment k+1's clock consumes
+    /// it (the exact one-cycle `##1` window). When the final segment matches, the OVERLAP
+    /// `|->` checks `c` on that SAME final edge; the NON-OVERLAP `|=>` checks it on the
+    /// NEXT edge of the final clock (one more handoff stage `hf_final`). N2a-1 was the
+    /// two-segment overlap case; N2a-2 generalizes to N segments + `|=>`.
     ///
-    /// TIE (oracle-free hand-IEEE pin, same as A3): when c1 and c2 coincide the c2
-    /// process reads the PRIOR-edge handoff (proc A's NBA settles after the c2 Active
-    /// read) — the conservative "advance to the next DISTINCT c2" reading of `##1`.
-    /// (A REDUNDANT same-clock re-clock `@(c1) … @(c1) …` is folded to the single-clock
-    /// pipeline upstream by `strip_redundant_clocks`, so it never reaches here.)
+    ///   always @(c1) if (|s0) hf0 <= 1'b1;                 // arm seg 0 (set-only)
+    ///   always @(c2) if (hf0) begin                         // first c2 after
+    ///     if (|s1) hf1 <= 1'b1; hf0 <= 1'b0; end            //   advance / discharge
+    ///   … one process per `##1` boundary …
+    ///   always @(cN) if (hf_{N-2}) begin                    // final segment, |->
+    ///     if (|s_{N-1} && !c) $error(...); hf_{N-2} <= 1'b0; end
     ///
-    /// COUNT FIDELITY (hand-IEEE pin, review N2a-1): the handoff is a single bit, so
-    /// several c1 attempts that fall DUE on the SAME c2 edge collapse into one report.
-    /// This is VERDICT-SAFE — attempts due on the same c2 edge sample identical `b`/`c`
-    /// and therefore share one pass/fail verdict, so a real failure is never missed and
-    /// a pass is never spuriously failed; only DUPLICATE failure reports are merged
-    /// (a count under-fidelity, not a detection error). Exact per-attempt counting
-    /// would need an N-deep handoff (N = max concurrent in-flight = the c1/c2 rate
-    /// ratio, data-dependent) — disproportionate for the verdict-safe gain.
+    /// Pure IR-0. Each process carries its own `SvaRegs` (per-clock `$past` sampling).
     ///
-    /// LOUD (deferred to N2a-2 / unsupported): a `|=>` consequent (`c` on the NEXT
-    /// c2 — a second handoff), a multi-term segment (either side not a plain boolean),
-    /// `##n` (n≠1) cross-clock (only `##1` is well-defined §16.13; `##0` across
-    /// distinct clocks is illegal §16.13.4), >2 clock domains, an explicit consequent
-    /// clock, an OR-of-clocks edge, or `disable iff` / a custom action.
+    /// TIE / COUNT FIDELITY (oracle-free hand-IEEE pins, as N2a-1): a coincident
+    /// boundary edge reads the PRIOR-edge handoff (the NBA settles after the Active
+    /// read) — the conservative "advance to the next DISTINCT edge" reading of `##1`;
+    /// and each handoff is a single bit, so several attempts due on the same boundary
+    /// edge merge into ONE report (VERDICT-SAFE — they sample identical downstream
+    /// booleans, so only duplicate reports are merged, never a missed/spurious verdict).
+    /// A redundant same-as-property-clock re-clock is folded upstream by
+    /// `strip_redundant_clocks`.
+    ///
+    /// LOUD (deferred / unsupported): a MULTI-TERM segment (a `##1` operand that is not
+    /// a single re-clocked boolean — N2a-2 multi-term lane), a non-`##1` connector
+    /// (`##0` across distinct clocks is illegal §16.13.4; `##n` n>1 deferred), an
+    /// OR-of-clocks edge, an explicit consequent clock, or `disable iff` / a custom
+    /// action.
     fn synth_crossclock(&mut self, sva: PendingSva, sp: ast::Span) {
-        // ── shape: antecedent = `Boolean(a) ##1 Clocked{c2, Boolean(b)}` ──
-        let ast::Sequence::Delay { min, max, lhs, rhs } = &sva.ante else {
+        let c1 = sva.clock.clone();
+        if sva_clock_signal(&c1).is_none() {
             self.error(
                 MsgCode::ElabUnsupported,
-                "a cross-clock antecedent must be the two-clock form `a ##1 @(c2) b` in this subset",
-            );
-            return;
-        };
-        if *min != 1 || *max != Some(1) {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "only `##1` connects a cross-clock sequence boundary in this subset \
-                 (`##0` across distinct clocks is illegal §16.13.4; `##n` n>1 is deferred)",
+                "a cross-clock property's leading clock must be a single edge in this subset \
+                 (an OR-of-clocks / `@(*)` boundary is unsupported)",
             );
             return;
         }
-        let ast::Sequence::Boolean(a_e) = &**lhs else {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "the first segment of a cross-clock antecedent must be a boolean in this subset \
-                 (a multi-term first segment is deferred to N2a-2)",
-            );
-            return;
+        // Flatten the `##1`-connected chain into ordered (clock, boolean) segments.
+        let Some(segs) = self.collect_xclock_segments(&sva.ante, &c1) else {
+            return; // a specific loud diagnostic was already emitted
         };
-        let ast::Sequence::Clocked {
-            clock: c2_clock,
-            seq: rhs_seq,
-        } = &**rhs
-        else {
+        let n = segs.len();
+        if n < 2 {
+            // Reached only via `seq_has_clocked` (a Clocked node exists), so a single
+            // segment means a degenerate shape the flattener could not split.
             self.error(
                 MsgCode::ElabUnsupported,
-                "a cross-clock antecedent must re-clock its second segment `@(c2) b` in this subset",
-            );
-            return;
-        };
-        let ast::Sequence::Boolean(b_e) = &**rhs_seq else {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "the re-clocked segment of a cross-clock antecedent must be a boolean in this \
-                 subset (a multi-term or further-clocked segment is deferred to N2a-2)",
-            );
-            return;
-        };
-        // both clocks single edges; c1 = the property (leading) clock.
-        let c1 = sva.clock.clone();
-        if sva_clock_signal(&c1).is_none() || sva_clock_signal(c2_clock).is_none() {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "a cross-clock property's clocks must each be a single edge in this subset \
-                 (an OR-of-clocks / `@(*)` boundary is unsupported)",
+                "a cross-clock antecedent must contain at least one `##1 @(ck)` boundary",
             );
             return;
         }
         if sva.cons_clock.is_some() {
             self.error(
                 MsgCode::ElabUnsupported,
-                "an explicit consequent clock combined with a cross-clock antecedent is deferred (N2a-2)",
-            );
-            return;
-        }
-        if !matches!(sva.kind, ast::ImplicationKind::Overlap) {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "a cross-clock antecedent currently supports only the overlap `|->` implication \
-                 (`|=>` is deferred to N2a-2)",
+                "an explicit consequent clock combined with a cross-clock antecedent is unsupported",
             );
             return;
         }
@@ -8557,103 +8555,194 @@ impl<'s> Elaborator<'s> {
             );
             return;
         }
-        let (a_e, b_e, c_e) = (a_e.clone(), b_e.clone(), c_e.clone());
-        let c2_clock = c2_clock.clone();
+        let c_e = c_e.clone();
+        let is_overlap = matches!(sva.kind, ast::ImplicationKind::Overlap);
 
-        // 1-bit handoff (X-init: no spurious fire before the first c1 arm).
-        let handoff = self.fresh_sva_reg(1, "cc_pend");
-        let handoff_path = ast::HierPath {
-            segments: vec![ast::Ident {
-                name: handoff.clone(),
-                span: sp,
-            }],
-            span: sp,
+        // One handoff per `##1` boundary (`hf[i]` = "segments 0..=i matched, awaiting
+        // segment i+1's clock"); the `|=>` form adds `hf_final` to delay the consequent
+        // check one final-clock edge. X-init = no fire before the first arm.
+        let handoffs: Vec<String> = (0..n - 1)
+            .map(|_| self.fresh_sva_reg(1, "cc_pend"))
+            .collect();
+        let hf_final = if is_overlap {
+            None
+        } else {
+            Some(self.fresh_sva_reg(1, "cc_pend"))
         };
 
-        // PROCESS A @ c1: SET-only arm on `a` (the obligation persists until the c2
-        // side consumes it — a later c1 with a=0 must NOT clear a pending handoff;
-        // same set-only lesson as A3).
-        let mut regs_a = SvaRegs::default();
-        let a_b = self.rewrite_sampled(&a_e, &mut regs_a);
-        let arm = ast::Stmt::If {
-            cond: sva_unary(ast::UnOp::RedOr, a_b, sp),
-            then_s: Box::new(ast::Stmt::NonBlocking {
-                lhs: ast::Lvalue::Ident(handoff_path.clone()),
-                delay: None,
-                event: None,
-                rhs: sva_one(sp),
+        // Segment 0 @ its (property) clock: SET-only arm of hf[0] (the obligation
+        // persists until consumed — a later arm-clock edge with s0=0 must NOT clear a
+        // pending handoff; the A3 set-only lesson).
+        {
+            let mut regs = SvaRegs::default();
+            let s0 = self.rewrite_sampled(&segs[0].1, &mut regs);
+            let arm = ast::Stmt::If {
+                cond: sva_unary(ast::UnOp::RedOr, s0, sp),
+                then_s: Box::new(sva_nb_set(&handoffs[0], true, sp)),
+                else_s: None,
                 span: sp,
-            }),
-            else_s: None,
-            span: sp,
-        };
-        let mut body_a = vec![arm];
-        body_a.extend(regs_a.nbas);
-        let proc_a = self.lower_proc_block(&ast::ProceduralBlock {
-            kind: ast::ProcKind::Always,
-            sensitivity: Some(c1),
-            body: Box::new(sva_block_or_single(body_a, sp)),
-            span: sp,
-        });
-        self.push_process(proc_a);
+            };
+            let mut body = vec![arm];
+            body.extend(regs.nbas);
+            let proc = self.lower_proc_block(&ast::ProceduralBlock {
+                kind: ast::ProcKind::Always,
+                sensitivity: Some(segs[0].0.clone()),
+                body: Box::new(sva_block_or_single(body, sp)),
+                span: sp,
+            });
+            self.push_process(proc);
+        }
 
-        // PROCESS B @ c2: at the FIRST c2 after the arm — if `b`, the antecedent
-        // completes and the overlap `|->` checks `c` on this same c2 edge; then
-        // discharge unconditionally (the `##1` window is EXACTLY one c2 edge, so a
-        // missed `b` lets the attempt expire with no obligation).
-        let mut regs_b = SvaRegs::default();
-        let b_b = self.rewrite_sampled(&b_e, &mut regs_b);
-        let c_b = self.rewrite_sampled(&c_e, &mut regs_b);
-        let fire = ast::Stmt::If {
-            cond: sva_binary(
-                ast::BinOp::LogAnd,
-                sva_unary(ast::UnOp::RedOr, b_b, sp),
-                sva_unary(ast::UnOp::LogNot, c_b, sp),
-                sp,
-            ),
-            then_s: Box::new(ast::Stmt::SysTaskCall {
-                name: ast::Ident {
-                    name: "$error".to_string(),
+        // Segments 1..n: one process per `##1` boundary, @ segment i's clock, consuming
+        // hf[i-1]. Intermediate boundaries advance to hf[i]; the final segment completes
+        // the antecedent (overlap → check `c` now; |=> → arm hf_final, check next edge).
+        for i in 1..n {
+            let mut regs = SvaRegs::default();
+            let si = self.rewrite_sampled(&segs[i].1, &mut regs);
+            let prev = handoffs[i - 1].clone();
+            let is_last = i == n - 1;
+            let mut body: Vec<ast::Stmt> = Vec::new();
+            // For the |=> final segment, the hf_final consume (the PRIOR edge's
+            // completion) runs FIRST so it reads the prior arm before this edge re-arms
+            // hf_final (the same check-then-arm ordering as the single-clock |=> pend).
+            if is_last && !is_overlap {
+                let hf = hf_final.clone().unwrap();
+                let c_b = self.rewrite_sampled(&c_e, &mut regs);
+                body.push(ast::Stmt::If {
+                    cond: sva_ident_expr(&hf, sp),
+                    then_s: Box::new(sva_block_or_single(
+                        vec![
+                            ast::Stmt::If {
+                                cond: sva_unary(ast::UnOp::LogNot, c_b, sp),
+                                then_s: Box::new(sva_error_stmt(sp)),
+                                else_s: None,
+                                span: sp,
+                            },
+                            sva_nb_set(&hf, false, sp),
+                        ],
+                        sp,
+                    )),
+                    else_s: None,
                     span: sp,
-                },
-                args: vec![ast::Expr {
-                    kind: ast::ExprKind::StrLit {
-                        raw: "\"Assertion property violation\"".to_string(),
+                });
+            }
+            // Consume body of hf[i-1].
+            let consume_body: Vec<ast::Stmt> = if !is_last {
+                // intermediate: advance to hf[i] on a match, then discharge hf[i-1].
+                vec![
+                    ast::Stmt::If {
+                        cond: sva_unary(ast::UnOp::RedOr, si, sp),
+                        then_s: Box::new(sva_nb_set(&handoffs[i], true, sp)),
+                        else_s: None,
+                        span: sp,
                     },
-                    span: sp,
-                }],
+                    sva_nb_set(&prev, false, sp),
+                ]
+            } else if is_overlap {
+                // antecedent completes on this edge ⇒ overlap `|->` checks `c` now.
+                let c_b = self.rewrite_sampled(&c_e, &mut regs);
+                vec![
+                    ast::Stmt::If {
+                        cond: sva_binary(
+                            ast::BinOp::LogAnd,
+                            sva_unary(ast::UnOp::RedOr, si, sp),
+                            sva_unary(ast::UnOp::LogNot, c_b, sp),
+                            sp,
+                        ),
+                        then_s: Box::new(sva_error_stmt(sp)),
+                        else_s: None,
+                        span: sp,
+                    },
+                    sva_nb_set(&prev, false, sp),
+                ]
+            } else {
+                // |=>: antecedent completes ⇒ arm hf_final; the consequent is checked at
+                // the NEXT final-clock edge by the hf_final consume prepended above.
+                vec![
+                    ast::Stmt::If {
+                        cond: sva_unary(ast::UnOp::RedOr, si, sp),
+                        then_s: Box::new(sva_nb_set(hf_final.as_ref().unwrap(), true, sp)),
+                        else_s: None,
+                        span: sp,
+                    },
+                    sva_nb_set(&prev, false, sp),
+                ]
+            };
+            body.push(ast::Stmt::If {
+                cond: sva_ident_expr(&prev, sp),
+                then_s: Box::new(sva_block_or_single(consume_body, sp)),
+                else_s: None,
                 span: sp,
-            }),
-            else_s: None,
-            span: sp,
-        };
-        let discharge = ast::Stmt::NonBlocking {
-            lhs: ast::Lvalue::Ident(handoff_path.clone()),
-            delay: None,
-            event: None,
-            rhs: sva_zero(sp),
-            span: sp,
-        };
-        let consume = ast::Stmt::If {
-            cond: sva_ident_expr(&handoff, sp),
-            then_s: Box::new(ast::Stmt::Block {
-                label: None,
-                decls: Vec::new(),
-                stmts: vec![fire, discharge],
+            });
+            body.extend(regs.nbas);
+            let proc = self.lower_proc_block(&ast::ProceduralBlock {
+                kind: ast::ProcKind::Always,
+                sensitivity: Some(segs[i].0.clone()),
+                body: Box::new(sva_block_or_single(body, sp)),
                 span: sp,
-            }),
-            else_s: None,
-            span: sp,
-        };
-        let mut body_b = vec![consume];
-        body_b.extend(regs_b.nbas);
-        let proc_b = self.lower_proc_block(&ast::ProceduralBlock {
-            kind: ast::ProcKind::Always,
-            sensitivity: Some(c2_clock),
-            body: Box::new(sva_block_or_single(body_b, sp)),
-            span: sp,
-        });
-        self.push_process(proc_b);
+            });
+            self.push_process(proc);
+        }
+    }
+
+    /// Flatten a cross-clock antecedent — a left-nested `##1` chain — into ordered
+    /// `(clock, boolean)` segments. The leftmost (deepest) operand is segment 0 at the
+    /// property clock `c1`; each `##1` right operand must be a single re-clocked boolean
+    /// `@(ck) b`. Emits a specific loud diagnostic and returns `None` for a non-`##1`
+    /// connector, a non-re-clocked / multi-term segment, or an OR-of-clocks edge.
+    fn collect_xclock_segments(
+        &mut self,
+        seq: &ast::Sequence,
+        c1: &ast::Sensitivity,
+    ) -> Option<Vec<(ast::Sensitivity, ast::Expr)>> {
+        match seq {
+            ast::Sequence::Boolean(e) => Some(vec![(c1.clone(), e.clone())]),
+            ast::Sequence::Delay { min, max, lhs, rhs } => {
+                if *min != 1 || *max != Some(1) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "only `##1` connects a cross-clock sequence boundary in this subset \
+                         (`##0` across distinct clocks is illegal §16.13.4; `##n` n>1 is deferred)",
+                    );
+                    return None;
+                }
+                let mut segs = self.collect_xclock_segments(lhs, c1)?;
+                let ast::Sequence::Clocked { clock, seq: inner } = &**rhs else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "each cross-clock segment after a `##1` must be re-clocked `@(ck) b` \
+                         in this subset (a same-clock multi-term segment is deferred — multi-term lane)",
+                    );
+                    return None;
+                };
+                let ast::Sequence::Boolean(e) = &**inner else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a re-clocked cross-clock segment must be a single boolean in this \
+                         subset (a multi-term re-clocked segment is deferred — multi-term lane)",
+                    );
+                    return None;
+                };
+                if sva_clock_signal(clock).is_none() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a cross-clock segment clock must be a single edge in this subset \
+                         (an OR-of-clocks / `@(*)` boundary is unsupported)",
+                    );
+                    return None;
+                }
+                segs.push((clock.clone(), e.clone()));
+                Some(segs)
+            }
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a cross-clock antecedent must be a `##1`-connected chain of re-clocked \
+                     booleans `a ##1 @(c2) b [##1 @(c3) c …]` in this subset",
+                );
+                None
+            }
+        }
     }
 
     /// v8 SVA: drain `pending_sva` into synthesized clocked checker processes.
