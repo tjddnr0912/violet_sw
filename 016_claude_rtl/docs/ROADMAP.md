@@ -175,7 +175,7 @@ loud-reject로 확인됨(이제 참):**
 | ~~full `string` 타입~~ ✅ v7(잔여 컷: concat=loud→$sformatf 우회·decl init·port·string-키 foreach ref-var·atoi/itoa류 메서드=loud) · wildcard assoc `[*]`(loud) | ~~P2-C~~ 잔여 컷만 후속 |
 | ~~파일 I/O · `$readmem*` · random · plusargs · `$stime`~~ ✅ v7 | math transcendentals만 잔존(libm 3-OS 리스크 — 순수-Rust libm 핀 결정 대기) |
 | ~~`final` · fork 고급 · automatic/recursive frame-call (E3009)~~ ✅ P2-E + **B-track**(frame-call 2026-06-17, §4.1) | 완료 (잔여: cross-frame disable·block-local `automatic` form 2=loud) |
-| ~~`assert property`~~ ✅ P2-F(SVA 서브셋, Phase-3) · ~~`assert #0`/`final` 연기형 assertion~~ ✅ **22탄**(`592cb10` — Observed/Reactive 리전, IR-0) · ~~repeat-event intra-assign~~ ✅ **blocking `= [repeat(n)]@(ev)`**(`cfef719`, iverilog 차분; NBA `<= @(ev)` 형만 loud 잔존) · clocking block (loud) | ~~P2-F~~ — clocking block·NBA repeat-event만 후속 |
+| ~~`assert property`~~ ✅ P2-F(SVA 서브셋, Phase-3) · ~~`assert #0`/`final` 연기형 assertion~~ ✅ **22탄**(`592cb10` — Observed/Reactive 리전, IR-0) · ~~repeat-event intra-assign~~ ✅ **blocking `= [repeat(n)]@(ev)`**(`cfef719`) **+ NBA `<= [repeat(n)]@(ev)`**(`f4aab23`=N1, capture-now/`fork…join_none`/NBA-write, iverilog 차분) · clocking block (loud) | ~~P2-F~~ — clocking block만 후속 |
 | ~~instance array · 다차원 슬라이스/whole-array 대입 · per-dim bounds · `$dump*` 배열 · casez/casex 정밀 · `assign #d` inertial · wide 산술~~ ✅ Phase-1.x 정밀화 소묶음 전량(2026-06-12) + casez/casex는 v7 슬라이스 2 | 완료 — 잔여는 doc-01 표 정본 |
 | `defparam` (E3009) | **해제 안 함 권장** — IEEE deprecated, `#(.param())` override로 충분(정책 박제) |
 | hierarchical 이름/함수/태스크 참조 (E3009) | P2 소항목(읽기 한정 검토) 또는 유지 |
@@ -214,14 +214,14 @@ loud-reject로 확인됨(이제 참):**
 - **그 외 결정 후보**(스코프 결정 영역) — **§4.4 스케줄 표 정본**: class/OOP·`program`·union(검증 생태계) · 커버리지 · math transcendentals(순수-Rust libm 핀). **~~automatic/recursive 콜스택 모델~~ ✅ B-track 2026-06-17 완료**(§4.1). **SVA 트랙 A1–A4 + R2(outer-`|=>` skew 기본형) 완료**; 잔여 SVA(별개·후속)=multi-term 시퀀스 cross-clock(A3 확장)·outer-`|=>` prop-ref skew **고급형**(2-cycle·시퀀스 antecedent·중첩·cross-clock; 기본형 ✅ `3ba7763`)·action block의 sampled local var·sequence local variable·recursive property.
 - 조건부/장기 트랙(PDES·cycle-based·native lane·VHDL)은 각자의 트리거(워크로드 증거/수요) 충족 시에만.
 
-### 4.4 다음 구현 스케줄 (2026-06-17 — B-track 완주 후 갱신)
+### 4.4 다음 구현 스케줄 (2026-06-17 — N1 완료 후 갱신)
 
-> Phase-1 큐 + Phase-2 system-tasks + SVA 트랙 A + **frame-call B-track** 소진 후 남은 언어/검증 커버리지 후보. 원칙 불변: IR-무변경(IR-0) 선행, 오라클(iverilog) 차분 가능 영역 우선, frozen-IR 변경은 한 번의 bump에 일괄, 진입 전 §F식 관문 평가(스파이크→설계→구현). 권장 순서 = 표의 **추천** 열(⭐ = 다음 착수 권장).
+> Phase-1 큐 + Phase-2 system-tasks + SVA 트랙 A + **frame-call B-track** + **N1(NBA repeat-event)** 소진 후 남은 언어/검증 커버리지 후보. 원칙 불변: IR-무변경(IR-0) 선행, 오라클(iverilog) 차분 가능 영역 우선, frozen-IR 변경은 한 번의 bump에 일괄, 진입 전 §F식 관문 평가(스파이크→설계→구현). 권장 순서 = 표의 **추천** 열(⭐ = 다음 착수 권장).
 
 | 항목 | 제목 | 설명 | 추천 |
 |---|---|---|---|
-| **N1** | NBA repeat-event (`x <= [repeat(n)] @(ev) rhs`) | §9.4.5 nonblocking intra-assignment event control — 이미 완료된 blocking 형(`cfef719`)의 쌍둥이. capture-now/wait-n/NBA-write desugar, EventCtrl lowering 재사용. 작고 iverilog 차분 오라클 有. IR-0(AST 무변경 가능성 높음). | ⭐ **High** — 가장 작음·family 완결·오라클 |
-| **N2** | SVA 잔여(multi-term cross-clock·고급 prop-ref skew·sequence local var·recursive property) | 입증된 SVA 트랙 A의 LOUD-거부 고급형 해제. 대부분 IR-0 desugar, iverilog 미지원→hand-IEEE. A3 두-프로세스 핸드오프 확장·local var per-attempt 저장소. | **High** — 검증된 트랙 연장·IR-0·증분 |
+| ~~**N1**~~ | ~~NBA repeat-event (`x <= [repeat(n)] @(ev) rhs`)~~ | ✅ **2026-06-17 완료(`f4aab23`, 1161 green)**: capture-now(RHS+LHS-index)/`fork…join_none`/NBA-write desugar, EventCtrl 재사용·`repeat(0)`=plain NBA. 순수 IR-0(sim-ir/fmt_ver 8 무변경, `Stmt::NonBlocking.event` AST flip=`.vu` 재핀). iverilog 차분 오라클 tick-for-tick. 적대 4렌즈→**2 silent-wrong 수정(blocking 쌍둥이 동봉)**: X/Z 상수 count=0회(런타임 오분류 수정)·const part-select `[msb:lsb]` lvalue 1-bit temp(width fold Add/Sub 재귀). 동시-틱 region tie=pin(committed 값 일치, vita LRM-faithful). | ✅ 완료 |
+| **N2** | SVA 잔여(multi-term cross-clock·고급 prop-ref skew·sequence local var·recursive property) | 입증된 SVA 트랙 A의 LOUD-거부 고급형 해제. 대부분 IR-0 desugar, iverilog 미지원→hand-IEEE. A3 두-프로세스 핸드오프 확장·local var per-attempt 저장소. | ⭐ **High** — 검증된 트랙 연장·IR-0·증분 |
 | **N3** | hierarchical 이름 참조(읽기 한정) | `tb.dut.x`를 식에서 참조(현 E3009). 인스턴스 경계 넘는 read-only 해소(symbols FQ 경로). 멀티모듈 TB 흔함. 중간 공수·iverilog 오라클. | **Medium** — 흔한 TB 패턴 해소 |
 | **N4** | clocking block | `clocking cb @(posedge clk); … endclocking` + cycle-delay(`##`) 샘플링. SVA/TB 인접, 신규 타이밍 표면. 중간 공수. | **Medium** — SVA/TB 생태계 |
 | **N5** | 커버리지(covergroup/coverpoint/cross) | 기능 커버리지 서브시스템(샘플링·bin·cross). 大 공수·신규 트랙·iverilog 부분 지원. 검증 생태계 핵심. | **Medium** — 大규모 신규 트랙 |
