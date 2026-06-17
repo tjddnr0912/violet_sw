@@ -853,6 +853,12 @@ fn dumpvars(st: &mut SimState, args: &[u32]) {
     let mut word_ids: Vec<Vec<Option<IdCode>>> = vec![Vec::new(); st.ir.nets.len()];
     let st_dims = st.net_dims.clone();
     let dump_filter = st.dump_filter.clone();
+    // B1 frame-call: frame-local nets are REAL ir.nets entries (for width/
+    // metadata) but live in the call frame arena, never the flat store — they
+    // have no VCD surface and must not be declared/dumped. Captured here (like
+    // `st_dims`) so the borrow block below need not re-borrow `st`. Empty
+    // func_table ⇒ all-false ⇒ byte-identical (no net is skipped).
+    let frame_local = st.frame_local.clone();
     // Hierarchical naming when the elaborate side table is present (one FQ name per
     // net); otherwise the legacy flat `top` scope + synthetic `n{i}`.
     let use_names = st.net_names.len() == st.ir.nets.len();
@@ -889,6 +895,10 @@ fn dumpvars(st: &mut SimState, args: &[u32]) {
                     let seg = scope[cur.len()];
                     let _ = w.push_scope(ScopeType::Module, seg);
                     cur.push(seg);
+                }
+                // B1: frame-local nets have no VCD surface (see capture above).
+                if frame_local[i] {
+                    continue;
                 }
                 // v5 (C): dyn handles have no $var form (variable length) —
                 // never declared, so no initial dump and no change records.
@@ -935,6 +945,9 @@ fn dumpvars(st: &mut SimState, args: &[u32]) {
         } else {
             let _ = w.push_scope(ScopeType::Module, "top");
             for (i, nv) in nets.iter().enumerate() {
+                if frame_local[i] {
+                    continue; // B1: frame-local nets have no VCD surface
+                }
                 if matches!(
                     nv.kind,
                     sim_ir::NetKind::DynArray

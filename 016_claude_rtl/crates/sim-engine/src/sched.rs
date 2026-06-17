@@ -510,6 +510,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             // Drain the current time to a stable point.
             self.delta_count = 0;
             loop {
+                // B1: a frame-call runaway latched during a prior region's eval
+                // (or the settle just below) surfaces here — every region action
+                // `continue`s back to this loop top, so one check covers them all.
+                if self.check_call_fatal() {
+                    return FinishReason::Error;
+                }
                 // ACTIVE: continuous assigns settle, then drain processes.
                 match self.settle_cont_assigns() {
                     None => return FinishReason::DeltaLimit, // cont-assign oscillator
@@ -520,6 +526,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     Some(true) => self.propagate_changes(),
                     Some(false) => {}
                 }
+                // A cont-assign RHS (`assign y = deep_recursive_fn(x);`) can latch
+                // the fatal during settle, then `break` out below if all region
+                // buckets are empty — so it MUST be caught HERE, before the break.
+                if self.check_call_fatal() {
+                    return FinishReason::Error;
+                }
                 if !self.cur.active.is_empty() {
                     // Take the batch so wakes triggered DURING it land in a fresh
                     // `cur.active`; iterate borrowed (`Ready: Copy`) so the Vec can
@@ -529,6 +541,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     for &r in &batch {
                         if self.st.finished {
                             return self.finish_kind();
+                        }
+                        // B1: a runaway latched in a PRIOR process body of THIS
+                        // batch ends the run before the next body can read a
+                        // corrupt static slab (the residue is never observed).
+                        if self.check_call_fatal() {
+                            return FinishReason::Error;
                         }
                         match self.run_body(r.proc, r.block) {
                             // P1-6 (IEEE 1364-2005 §5.4/§17): drain the CURRENT
@@ -733,6 +751,26 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         } else {
             FinishReason::Finish
         }
+    }
+
+    /// B1 frame-call: surface a runaway-recursion fatal LATCHED on the `&self`
+    /// read path. `eval_call` cannot return a `Step`, so it sets `call_fatal`
+    /// (a `Cell`) and finishes its in-flight eval with X; the scheduler polls
+    /// this at the region seams where an eval can have fired (cont-assign
+    /// settle, a process body, a deferred-action arg, a Branch cond). On the
+    /// first consume it mirrors the user-`$fatal` termination (drain deferred,
+    /// flush postponed, latch finished/had_fatal) so the run ends before any
+    /// subsequent call can read a corrupt static slab. Returns true once it is
+    /// consumed (the caller then returns `FinishReason::Error`).
+    fn check_call_fatal(&mut self) -> bool {
+        if self.st.call_fatal.get() && !self.st.finished {
+            self.st.finished = true;
+            self.st.had_fatal = true;
+            self.drain_deferred_on_finish();
+            self.flush_postponed();
+            return true;
+        }
+        false
     }
 
     // ── §16.4 deferred immediate assertions ───────────────────────────────

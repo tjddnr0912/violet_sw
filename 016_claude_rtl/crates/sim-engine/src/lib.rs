@@ -47,8 +47,9 @@ use sim_ir::SimIr;
 /// Re-exported from `elaborate` so callers thread the join-mode side table into
 /// `SimOpts.fork_modes` without naming the `elaborate` crate directly.
 pub use elaborate::{
-    AssignRankTable, DeferActTable, DeferMarkTable, DeferRegion, ForkModeTable, JoinMode,
-    NetDimsTable, NetNameTable, QueueBoundTable, RadixTable, SeverityKind, SeverityTable, Sidecars,
+    AssignRankTable, DeferActTable, DeferMarkTable, DeferRegion, ForkModeTable, FuncMeta,
+    FuncTable, JoinMode, NetDimsTable, NetNameTable, QueueBoundTable, RadixTable, SeverityKind,
+    SeverityTable, Sidecars, TaskCallFunc, TaskCallInfo, TaskCallProc,
 };
 pub use sched::FinishReason;
 
@@ -161,6 +162,13 @@ pub struct SimOpts {
     pub defer_marks: DeferMarkTable,
     /// §16.4 deferred-assert actions: action StmtId → (marker StmtId, region).
     pub defer_acts: DeferActTable,
+    /// B1 frame-call metadata, index-aligned to `ir.funcs`. EMPTY default ⇒ no
+    /// automatic/recursive functions ⇒ every existing caller byte-identical.
+    pub func_table: FuncTable,
+    /// B2 frame-call: process-body task-call sites (executor-facing).
+    pub task_calls_proc: TaskCallProc,
+    /// B2 frame-call: nested (task-body) task-call sites (`run_task`-facing).
+    pub task_calls_func: TaskCallFunc,
 }
 
 impl Default for SimOpts {
@@ -186,6 +194,9 @@ impl Default for SimOpts {
             final_procs: std::collections::BTreeSet::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
+            func_table: FuncTable::new(),
+            task_calls_proc: TaskCallProc::new(),
+            task_calls_func: TaskCallFunc::new(),
         }
     }
 }
@@ -249,6 +260,15 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.final_procs = opts.final_procs.clone();
     st.defer_marks = opts.defer_marks.clone();
     st.defer_acts = opts.defer_acts.clone();
+    // B1 frame-call: install the sidecar, derive the per-net routing tables, and
+    // REBUILD the width table so `Expr::Call` widths come from the func metadata.
+    // Order is load-bearing: `func_table` must be on `st` before routing/width.
+    // EMPTY table ⇒ no-op (routing all-false, width rebuild byte-identical).
+    st.func_table = opts.func_table.clone();
+    st.build_func_routing();
+    st.wt = crate::width::WidthTable::build(ir, &st.func_table);
+    st.task_calls_proc = opts.task_calls_proc.clone(); // B2
+    st.task_calls_func = opts.task_calls_func.clone(); // B2
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

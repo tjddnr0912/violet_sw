@@ -956,7 +956,19 @@ fn lower(
             }
             Some(())
         }
-        // sysfunc / call / array-indexed signal: deferred increment.
+        // B1 frame-call: the VM never compiles a Call-bearing body
+        // (`is_codegen_able`'s `expr_has_call` exclusion), so the native path
+        // must NEVER reach a user `Expr::Call`. Assert the contract in debug;
+        // bail to the oracle (kernel `eval_ctx`, which runs the real frame
+        // evaluator) in release — safe either way.
+        Expr::Call { .. } => {
+            debug_assert!(
+                false,
+                "is_codegen_able must keep Expr::Call off the native/VM path"
+            );
+            None
+        }
+        // sysfunc / array-indexed signal: deferred increment.
         _ => None,
     }
 }
@@ -1754,7 +1766,7 @@ mod tests {
         ctx_signed: bool,
         fake: &impl NetReader,
     ) {
-        let wt = WidthTable::build(ir);
+        let wt = WidthTable::build(ir, &crate::FuncTable::new());
         let oracle = {
             let rng = crate::state::RngCells::default();
             let ctx = crate::eval::EvalCtx {
@@ -1913,7 +1925,7 @@ mod tests {
             vec![],
             vec![nv(200, false), nv(200, false)],
         );
-        let wt = WidthTable::build(&ir);
+        let wt = WidthTable::build(&ir, &crate::FuncTable::new());
         assert!(try_compile(&ir, &wt, 2, 200, false).is_none());
     }
 
@@ -1933,7 +1945,7 @@ mod tests {
             vec![],
             vec![nv(32, false)],
         );
-        let wt = WidthTable::build(&ir);
+        let wt = WidthTable::build(&ir, &crate::FuncTable::new());
         assert!(try_compile(&ir, &wt, 2, 64, false).is_none());
     }
 
@@ -2752,7 +2764,7 @@ mod tests {
 
     #[test]
     fn wide_lane_bails_outside_subset() {
-        let wt_of = |ir: &SimIr| WidthTable::build(ir);
+        let wt_of = |ir: &SimIr| WidthTable::build(ir, &crate::FuncTable::new());
         // SIGNED >64-bit arith: the oracle X-poisons via a different route —
         // conservatively out of the native subset.
         let ir = ir_of(
