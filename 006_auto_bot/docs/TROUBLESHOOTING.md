@@ -56,6 +56,21 @@
 
 ---
 
+## WaveDrom 파형이 본문 설명과 모순됨 (래치가 D를 안 따라감 등) — AI 의미론 오류
+
+- **증상**: 다이어그램은 이미지로 잘 렌더되는데 **파형의 의미가 틀림**. 예: 글은 "레벨 민감 래치는 CLK High 동안 D를 즉시 따라가 글리치까지 새어 나간다"고 써놓고, 정작 Latch 파형은 D의 중간 dip을 무시한 채 High를 유지. **글과 그림이 모순**.
+- **원인**: 렌더/정규화 버그가 **아님**. AI가 생성한 **wave 소스 데이터 자체가 의미론적으로 틀림**(Latch wave에 D의 dip이 애초에 없었음). `_collapse_wave`는 `ch == held`(같은 레벨)일 때만 `.`로 접으므로 **전이를 절대 제거하지 못함**(transition-preserving) → 파이프라인이 dip을 지운 게 아니라 소스에 dip이 없던 것.
+- **해결**: (의미론 정확성은 코드로 강제 불가) 프롬프트 레버로만 방어 — `research_orchestrator.py` `_SYNTH_PROMPT_TEMPLATE` + 글로벌 스킬 `telegram-qa`/`blogger-html`에 **파형 자기일관성 가드** 추가: 레벨 민감 래치=High 동안 D 즉시 추종(글리치·하강 통과)·Low면 hold / 엣지 FF=엣지의 D만 포착 / 글-그림 모순 금지. (2026-06-17)
+- **복구 절차**: (a) 렌더 PNG를 받아 육안으로 파형 의미 검증 (b) `_collapse_wave`가 transition-preserving임을 재확인(원본 소스 결함이지 정규화 결함 아님) (c) 올바른 wave 소스를 작성→`render_kroki_png(src,"wavedrom")`로 재렌더→`upload_media`로 새 PNG→`GET /posts?slug=…&context=edit`의 content.raw에서 이미지 URL 2곳(썸네일+라이트박스) 교체→`POST /posts/{id}` PATCH. (라이트박스 `href`/`id`(digest)는 서로 일치만 하면 되니 건드릴 필요 없음 — post 254 선례.)
+- **관련 사고**: 2026-06-17.
+- **레벨 민감성 함정(2회 재지적)**: 래치는 **CLK High 동안만** D를 추종(투과), Low면 hold. 비투과 동작은 파형에서 오해를 부른다 — ①D 전이가 CLK Low면 래치가 다음 엣지까지 hold→**엣지 전이**해 FF처럼 보임("왜 latch가 FF처럼 엣지에서 떨어지지?"), ②hold 시연용 CLK-Low 펄스 차단은 "D는 dip인데 Latch flat"이 **래치가 D를 안 따라가는 오류처럼** 보임("D와 Latch 코드가 같아야 하는 거 아냐?"). ⭐교훈: 교육용 파형은 **모든 D 전이를 CLK High 안에** 두어 **Latch wave ≡ D wave(투과)**로 그리고 FF(엣지 샘플)와의 대비에만 집중, hold는 **본문 텍스트로** 설명. 그림 바꾸면 본문도 맞춤.
+- **연관(SystemVerilog non-blocking)**: `always_latch`의 `q <= d`(non-blocking)는 **올바름** — 래치=레벨 민감 **순차** 소자라 FF처럼 non-blocking, 조합 `always_comb`만 blocking(`=`). `iverilog -g2012`로 컴파일 검증 가능. 코드 트집 전에 이 규칙(조합=blocking / 순차·래치=non-blocking) 확인.
+- **재발 감지**: 발행된 wavedrom 이미지의 **의미**를 본문 설명과 대조(특히 래치 투과/hold, FF 엣지 샘플, 글리치 누설). 톱니/raw-코드 같은 *렌더* 버그와 달리 테스트로 못 잡음 — 검토 시 그림 의미를 직접 읽을 것.
+
+> Claude 진단 미스: 없음. 단, **교훈**: "다이어그램이 이상하다"는 두 부류로 갈림 — ① 렌더/파이프라인 버그(전부 raw·톱니 → `_RE_DIAGRAM_BLOCK`/`_collapse_wave` 등 **결정론적 코드 수정** 가능) vs ② AI 의미론 콘텐츠 오류(이미지는 멀쩡한데 파형 뜻이 틀림 → **프롬프트 레버만** 가능). 이번 건은 이전 렌더 버그 연쇄 뒤라 정규화(`_collapse_wave`)를 의심할 유혹이 있었으나, **transition-preserving임을 증명**해 ②로 곧장 분류. 첫 의심: 그림이 렌더는 됐는데 *뜻*만 틀리면 정규화/렌더가 아니라 **소스 데이터(AI 출력)**부터 본다.
+
+---
+
 ## d2/wavedrom 다이어그램이 이미지가 아니라 원본 코드로 발행됨
 
 - **증상**: 발행 글에서 d2(아키텍처)·wavedrom(타이밍) 코드블록이 PNG로 안 바뀌고 `<pre><code class="language-d2/wavedrom">` 원본 그대로 노출. 같은 글의 mermaid는 정상 이미지.

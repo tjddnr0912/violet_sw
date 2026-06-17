@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-06-17: [fix] WaveDrom 파형 의미론 오류(래치가 D 미추종) + 자기일관성 가드
+
+- **증상**: `flip-flop-vs-latch-chip-design-control`(post 254) 글에서 Latch 파형이 **본문 설명과 모순** — 글은 "레벨 민감 래치는 CLK High 동안 D를 즉시 따라가 글리치까지 새어 나간다"고 하는데, 파형의 Latch는 D의 중간 dip을 무시한 채 High 유지.
+- **원인**: 렌더/정규화 버그가 **아님**. AI가 만든 **wave 소스 자체가 의미론적으로 틀림**(Latch wave에 dip이 없음). `_collapse_wave`는 같은 레벨일 때만 `.`로 접어 **전이를 절대 못 지움**(transition-preserving)을 증명 → 파이프라인 무관, AI 콘텐츠 오류로 분류.
+- **해결(이 글)**: 올바른 wave 소스(래치=투과+글리치 통과+CLK Low hold, FF=엣지 샘플) 작성→`render_kroki_png`로 재렌더→`upload_media`→post 254 content.raw의 이미지 URL 2곳(썸네일+라이트박스) 교체 PATCH. 라이브 반영.
+- **후속 정정 2회(레벨 민감성)**: ①1차본: D 하강이 **CLK Low**라 래치가 다음 엣지까지 hold→엣지 falling=FF처럼 보임(사용자 지적). ②2차본: hold 시연용 **CLK Low 펄스를 래치가 막는** 구간을 넣었더니 "D는 dip인데 Latch는 flat"이 **래치가 D를 안 따라가는 오류처럼** 보임(재지적: "D와 Latch 코드가 같아야 하는 거 아냐?"). **최종본**: 모든 D 전이를 **CLK High 윈도우 안**에만 배치 → 래치가 D를 항상 즉시 추종 → **Latch wave ≡ D wave**(rise·glitch·fall 동일), 유일한 차이는 FF(엣지 샘플·글리치 무시). hold는 본문 텍스트로만 설명(파형엔 비노출). ⭐교훈: 레벨 민감 래치의 **비투과 동작(hold·엣지 catch-up)은 파형에서 거의 항상 오해를 부른다** → 교육용 파형은 D를 CLK High에서만 바꿔 **Latch≡D(투과)**로 그리고 FF와의 대비에만 집중, hold는 글로 설명.
+- **SystemVerilog 샘플 검증(non-blocking in always_latch)**: 의도적 래치의 `latch_q <= d;`(non-blocking) 정당성 확인 — `iverilog -g2012` 컴파일 OK + 표준 가이드라인(래치=레벨 민감 **순차** 소자라 FF처럼 non-blocking; 조합 `always_comb`만 blocking). 샘플은 always_ff `<=`·always_comb `=`·always_latch `<=`로 **일관**. 코드를 바꾸지 않고 **설명 주석**을 추가(왜 non-blocking인지 + 시뮬레이션 race/sim-synth 불일치 방지).
+- **해결(재발 방지)**: 의미론 정확성은 코드로 강제 불가 → **프롬프트 레버**로 방어. `shared/research_orchestrator.py` `_SYNTH_PROMPT_TEMPLATE` + 글로벌 스킬 `telegram-qa`/`blogger-html`에 **파형 자기일관성 가드** 추가(래치 투과/hold·FF 엣지·글-그림 모순 금지·`0000`→`.`).
+- **교훈**: "다이어그램이 이상하다" = ① 렌더 버그(전부 raw·톱니 → 결정론적 코드 수정) vs ② AI 의미론 오류(이미지는 멀쩡, 뜻만 틀림 → 프롬프트만). 그림이 렌더는 됐는데 뜻만 틀리면 소스 데이터(AI 출력)부터 본다. → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
 ## 2026-06-17: [fix] 미리보기에 CSS 누수 + 코드 블록 미화(다크 카드)
 
 - **[fix] 메인 미리보기/메타설명에 `.gm-lb{display:none…}` CSS가 노출**: 라이트박스/코드 보정용으로 본문 맨 앞에 주입한 `<style>` 블록을, `auto_excerpt`가 태그만 벗기고 **CSS 텍스트는 남겨** 발췌로 써버림(Rank Math meta description도 오염). `auto_excerpt`가 이제 `<style>·<script>·<pre>` 블록을 **내용째 제거**한 뒤 발췌 생성. 누수된 기존 글 4건(254/238/229/249) 발췌 재설정+PATCH.

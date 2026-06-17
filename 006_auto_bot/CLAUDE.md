@@ -27,7 +27,7 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 |------|------|
 | `investment_bot.py` | 통합 오케스트레이터 (뉴스+버핏+섹터 스케줄 관리) |
 | `buffett_bot.py` | 버핏/멍거 관점 일일 투자 분석 (Claude CLI) |
-| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. 발행 시 **WordPress 카테고리를 버튼으로 선택**(무선택 타임아웃 시 취소). 발행 워크플로우: 한글 HTML 생성→선택 카테고리로 **WordPress(grace-moon.com) 발행**(전 카테고리 한글 그대로. 영문 변환·raw 첨부·블로그스팟·로컬 백업 폐지)→텔레그램에 발행 URL 통지. **전제 가드**: 질문=주제/의도로만(전제 미확인 시 교정), 독자는 질문 미열람→독립 기사로(인용·되묻기 금지). 기술 주제는 근거 있을 때만 d2/wavedrom/mermaid 펜스 직접 포함 |
+| `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. 발행 시 **WordPress 카테고리를 버튼으로 선택**(무선택 타임아웃 시 취소). 발행 워크플로우: 한글 HTML 생성→선택 카테고리로 **WordPress(grace-moon.com) 발행**(전 카테고리 한글 그대로. 영문 변환·raw 첨부·블로그스팟·로컬 백업 폐지)→텔레그램에 발행 URL 통지. **전제 가드**: 질문=주제/의도로만(전제 미확인 시 교정), 독자는 질문 미열람→독립 기사로(인용·되묻기 금지). 기술 주제는 근거 있을 때만 d2/wavedrom/mermaid 펜스 직접 포함(파형은 의미론·본문 일치 가드: 래치 투과/hold·FF 엣지) |
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
 | `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
