@@ -651,6 +651,21 @@ struct DeferredHier {
     path: Vec<String>,
 }
 
+/// A hierarchical INDEXED read `base[i]` whose `base` is a 2-segment hierarchical
+/// reference (slice N3.1). Deferred like [`DeferredHier`] — the base net does not
+/// exist at lowering time — but resolution must choose the SELECT KIND from the
+/// resolved net's shape (an array element word vs a vector bit-select), which is
+/// only known after elaboration. The index is LOWERED AT LOWERING TIME (with the
+/// full param/genvar/function-formal context) into `idx_eid`; the fixup only builds
+/// the select around it (review N3.1: re-lowering the index at fixup lost that
+/// context — a function-formal index silently resolved to a shadowing outer net).
+struct DeferredHierSelect {
+    eid: u32,
+    prefix: String,
+    path: Vec<String>,
+    idx_eid: u32,
+}
+
 /// during statement lowering and materialized AFTER the module's process loop as
 /// a synthesized clocked checker (v8 SVA subset). It is a continuously-checking
 /// background process, not a one-shot procedural statement, so it cannot be
@@ -1447,6 +1462,9 @@ struct Elaborator<'s> {
     // and dotted path, then resolved against the now-complete `symbols` table after all
     // instances are elaborated (`resolve_deferred_hier`). Out-of-band (golden-free).
     deferred_hier: Vec<DeferredHier>,
+    // N3.1: hierarchical INDEXED reads `dut.mem[i]` — resolved (with the lowering
+    // scope restored) into an array element / bit select after all instances.
+    deferred_hier_sel: Vec<DeferredHierSelect>,
     // §16.4 deferred immediate asserts (out-of-band, engine-facing): marker
     // StmtId → region, and action StmtId → (marker StmtId, region). See
     // [`DeferMarkTable`]/[`DeferActTable`].
@@ -1519,6 +1537,7 @@ impl<'s> Elaborator<'s> {
             proc_scopes: Vec::new(),
             pending_sva: Vec::new(),
             deferred_hier: Vec::new(),
+            deferred_hier_sel: Vec::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             cur_defer: None,
@@ -1782,13 +1801,99 @@ impl<'s> Elaborator<'s> {
             self.elaborate_instance(top, &top_path, None, &[], PortBinding::None, &map);
         }
 
-        // N3: resolve hierarchical READ references now that EVERY instance's nets are
-        // in `symbols` (deferred during pass-7 lowering because child nets are created
-        // in pass 8). Patches each placeholder `Signal` to its resolved NetId.
+        // N3.1: resolve hierarchical INDEXED reads FIRST (their index lowering may
+        // itself defer a whole-net hierarchical read into `deferred_hier`)…
+        self.resolve_deferred_hier_sel();
+        // N3: …then resolve the whole-net hierarchical READ references, now that EVERY
+        // instance's nets are in `symbols` (deferred during pass-7 lowering because
+        // child nets are created in pass 8). Patches each placeholder to the real NetId.
         self.resolve_deferred_hier();
 
         // whole-net multidriver check over the WHOLE flat IR (instance-agnostic).
         self.check_whole_net_multidriver();
+    }
+
+    /// Resolve the N3.1 deferred hierarchical INDEXED reads (`dut.mem[i]`). The index
+    /// is already lowered (`idx_eid`, with the original lowering context); here we
+    /// resolve the base net and build the correct select FROM ITS SHAPE around that
+    /// index — a single-dim unpacked array → element word (`net[idx-lo]`), a scalar/
+    /// vector → bit-select — and overwrite the placeholder. A multi-dim packed net, a
+    /// dynamic handle / event source, a multi-dim array (single index = partial
+    /// slice), or an unresolved name is loud-rejected (those element selects are
+    /// deferred follow-ons).
+    fn resolve_deferred_hier_sel(&mut self) {
+        let pending = std::mem::take(&mut self.deferred_hier_sel);
+        for d in pending {
+            let Some(net) = self.hier_lookup(&d.prefix, &d.path) else {
+                self.error(
+                    MsgCode::ElabUnresolvedName,
+                    &format!(
+                        "undeclared hierarchical name `{}` (no such cross-instance net)",
+                        d.path.join(".")
+                    ),
+                );
+                continue;
+            };
+            let built = if self.event_nets.contains(&net)
+                || self.is_dyn_handle_net(net)
+                || self.packed_dims.contains_key(&net)
+            {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "a hierarchical indexed read of `{}` is unsupported (an event, a \
+                         dynamic handle, or a multi-dimensional packed net — a hierarchical \
+                         packed-element select is a deferred follow-on)",
+                        d.path.join(".")
+                    ),
+                );
+                continue;
+            } else if self.net_is_static_array(net) {
+                // Unpacked array element. A single-dim array's element word is the
+                // lo-normalized index (matching `flatten_word`'s 1-D case); a multi-dim
+                // array indexed by ONE index is a partial slice → loud follow-on.
+                let dims = self.net_dim_extents(net);
+                if dims.len() != 1 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "a hierarchical element read of multi-dimensional array `{}` is \
+                             a deferred follow-on (index every dimension)",
+                            d.path.join(".")
+                        ),
+                    );
+                    continue;
+                }
+                let lo = dims[0].0;
+                let word = if lo == 0 {
+                    d.idx_eid
+                } else {
+                    let lo_c = self.const_u32_expr(lo, 32);
+                    self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::Sub,
+                        lhs: d.idx_eid,
+                        rhs: lo_c,
+                    })
+                };
+                self.push_expr(ir::Expr::Signal {
+                    net,
+                    word: Some(word),
+                })
+            } else {
+                // scalar / vector → a plain bit-select (mirrors the BitSelect arm).
+                let base_sig = self.push_expr(ir::Expr::Signal { net, word: None });
+                let offset = self.norm_offset_for_net(net, d.idx_eid);
+                let width = self.const_u32_expr(1, 32);
+                self.push_expr(ir::Expr::Select {
+                    base: base_sig,
+                    offset,
+                    width,
+                    kind: ir::SelKind::Bit,
+                })
+            };
+            let e = self.exprs[built as usize].clone();
+            self.exprs[d.eid as usize] = e;
+        }
     }
 
     /// Resolve the N3 deferred hierarchical READ references against the completed
@@ -4713,6 +4818,35 @@ impl<'s> Elaborator<'s> {
                 }
                 if let Some((net, idxs)) = self.expr_packed_chain(base, index) {
                     return self.lower_packed_read(net, &idxs);
+                }
+                // N3.1: a hierarchical INDEXED read `dut.mem[i]` / `dut.x[i]` — the
+                // base is a 2-segment hierarchical ref whose net does not exist yet
+                // (created in pass 8). The SELECT KIND (array-element word vs vector
+                // bit) depends on the resolved net's shape, so defer the whole indexed
+                // read and resolve it in `resolve_deferred_hier_sel`. (A known dotted
+                // symbol — an interface member — keeps the normal path below.)
+                if let ast::ExprKind::Ident(p) = &base.kind {
+                    if p.segments.len() == 2 {
+                        let joined = format!("{}.{}", p.segments[0].name, p.segments[1].name);
+                        if self.lookup_net_scoped(&joined).is_none() {
+                            // Lower the index NOW, with the full lowering context
+                            // (params/genvars/function-formal `subst`) — re-lowering it
+                            // at fixup would lose that (review N3.1 HIGH).
+                            let idx_eid = self.lower_expr(index);
+                            let path = p.segments.iter().map(|s| s.name.clone()).collect();
+                            let eid = self.push_expr(ir::Expr::Signal {
+                                net: POISON_NET,
+                                word: None,
+                            });
+                            self.deferred_hier_sel.push(DeferredHierSelect {
+                                eid,
+                                prefix: self.cur_prefix.clone(),
+                                path,
+                                idx_eid,
+                            });
+                            return eid;
+                        }
+                    }
                 }
                 let base_id = self.lower_expr(base);
                 if self.expr_is_real(base_id) {

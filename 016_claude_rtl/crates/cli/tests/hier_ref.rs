@@ -289,19 +289,158 @@ fn packed_multidim_element_read_is_loud() {
     assert!(err.contains("VITA-E"), "{err}");
 }
 
+// ───────────────── N3.1: hierarchical array-element reads ─────────────────
+
 #[test]
-fn unpacked_array_element_read_is_loud() {
-    // `dut.mem[2]` (unpacked array element) is a deferred follow-on → loud (verdict-safe).
-    let (out, err, code) = run(
-        "module sub; reg [7:0] mem [0:3]; initial begin mem[2]=8'hCC; end endmodule\n\
+fn unpacked_array_element_read_const_index() {
+    // `dut.mem[2]` (single-dim unpacked array element) now RESOLVES (N3.1). iverilog:
+    // m0=170 m2=204. (Was loud in N3; N3.1 routes it through the array-element path.)
+    let (out, err, _c) = run("module sub; reg [7:0] mem [0:3];\n\
+           initial begin mem[0]=8'hAA; mem[2]=8'hCC; end\n\
+         endmodule\n\
          module top; sub dut();\n\
-           initial #1 $display(\"m=%0d\", dut.mem[2]);\n\
-         endmodule\n",
+           initial #1 $display(\"m0=%0d m2=%0d\", dut.mem[0], dut.mem[2]);\n\
+         endmodule\n");
+    assert!(
+        !err.contains("VITA-E"),
+        "array element read must resolve:\n{err}"
     );
+    assert!(out.contains("m0=170 m2=204"), "out:\n{out}\nerr:\n{err}");
+}
+
+#[test]
+fn unpacked_array_element_read_var_index() {
+    // Variable index `dut.mem[i]` (loop var) — the index lowers in its own scope at
+    // the fixup. iverilog: e0=1 e1=2 e2=3 e3=4.
+    let (out, err, _c) = run("module sub; reg [7:0] mem [0:3];\n\
+           initial begin mem[0]=1; mem[1]=2; mem[2]=3; mem[3]=4; end\n\
+         endmodule\n\
+         module top; sub dut(); integer i;\n\
+           initial begin #1; for (i=0;i<4;i=i+1) $display(\"e%0d=%0d\", i, dut.mem[i]); end\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "{err}");
+    assert!(
+        out.contains("e0=1")
+            && out.contains("e1=2")
+            && out.contains("e2=3")
+            && out.contains("e3=4"),
+        "variable-index array element read must track:\n{out}"
+    );
+}
+
+#[test]
+fn array_element_read_in_clocked_compare() {
+    // The DUT-memory check idiom: read a child memory element synchronously.
+    let (out, err, _c) = run("module sub(input wire clk);\n\
+           reg [7:0] mem [0:3];\n\
+           initial mem[1] = 8'd0;\n\
+           always @(posedge clk) mem[1] <= mem[1] + 1;\n\
+         endmodule\n\
+         module top;\n\
+           reg clk=0; always #5 clk=~clk;\n\
+           sub dut(.clk(clk)); reg hit=0;\n\
+           always @(posedge clk) if (dut.mem[1] == 8'd2) hit <= 1;\n\
+           initial begin #40 $display(\"hit=%b\", hit); $finish; end\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "{err}");
+    assert!(
+        out.contains("hit=1"),
+        "child memory compare must work:\n{out}\n{err}"
+    );
+}
+
+#[test]
+fn multidim_array_element_read_is_loud() {
+    // A multi-dim unpacked array indexed with a SINGLE hierarchical index is a partial
+    // slice → loud (full multi-dim hierarchical element select is a follow-on).
+    let (out, err, code) = run("module sub; reg [7:0] grid [0:1][0:1];\n\
+           initial begin grid[0][0]=8'd5; end\n\
+         endmodule\n\
+         module top; sub dut();\n\
+           initial #1 $display(\"g=%0d\", dut.grid[0][0]);\n\
+         endmodule\n");
     assert_ne!(
         code,
         Some(0),
-        "hierarchical array-element read must be loud:\n{err}\n{out}"
+        "multi-dim hierarchical element read must be loud:\n{err}\n{out}"
     );
     assert!(err.contains("VITA-E"), "{err}");
+}
+
+// ───── review N3.1: the index is lowered at LOWERING time (full context) ─────
+// The index must see params / genvars / function formals as it did at the read
+// site — re-lowering at fixup lost that (a function-formal index silently read a
+// shadowing outer net). Each test below diverged before the lower-at-lower-time fix.
+
+#[test]
+fn array_element_index_is_a_function_formal() {
+    // HIGH (review N3.1): the index `j` is a function FORMAL that shadows `top.j`.
+    // It must read mem[3] (formal=3), NOT silently use top.j=0 → mem[0]. iverilog: 13.
+    let (out, err, _c) = run("module sub; reg [7:0] mem [0:3];\n\
+           initial begin mem[0]=10; mem[1]=11; mem[2]=12; mem[3]=13; end\n\
+         endmodule\n\
+         module top; sub dut(); reg [7:0] j; initial j = 8'd0;\n\
+           function [7:0] pick(input [7:0] j); pick = dut.mem[j]; endfunction\n\
+           initial #1 $display(\"f=%0d\", pick(8'd3));\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "{err}");
+    assert!(
+        out.contains("f=13"),
+        "function-formal index must bind to the formal:\n{out}\n{err}"
+    );
+}
+
+#[test]
+fn array_element_index_is_a_localparam() {
+    // iverilog: p=55 (mem[5] = 5*11). The localparam P must fold at the read site.
+    let (out, err, _c) = run("module sub; reg [7:0] mem [0:7]; integer k;\n\
+           initial for (k=0;k<8;k=k+1) mem[k]=k*11;\n\
+         endmodule\n\
+         module top; sub dut(); localparam P = 5;\n\
+           initial #1 $display(\"p=%0d\", dut.mem[P]);\n\
+         endmodule\n");
+    assert!(
+        !err.contains("VITA-E"),
+        "localparam index must fold:\n{err}"
+    );
+    assert!(out.contains("p=55"), "out:\n{out}");
+}
+
+#[test]
+fn array_element_index_is_a_genvar() {
+    // A generate-for genvar index. iverilog: g0=5 g1=6 g2=7 g3=8.
+    let (out, err, _c) = run("module sub; reg [7:0] mem [0:3];\n\
+           initial begin mem[0]=8'd5; mem[1]=8'd6; mem[2]=8'd7; mem[3]=8'd8; end\n\
+         endmodule\n\
+         module top; sub dut(); genvar g;\n\
+           generate for (g=0;g<4;g=g+1) begin : gl\n\
+             initial #1 $display(\"g%0d=%0d\", g, dut.mem[g]);\n\
+           end endgenerate\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "genvar index must fold:\n{err}");
+    assert!(
+        out.contains("g0=5")
+            && out.contains("g1=6")
+            && out.contains("g2=7")
+            && out.contains("g3=8"),
+        "out:\n{out}"
+    );
+}
+
+#[test]
+fn array_element_index_is_a_nested_hier_read() {
+    // The index is itself a hierarchical array-element read — the inner read defers
+    // recursively at lowering time, resolved in the same fixup pass. iverilog: 20
+    // (mem[0]=10, 10>>3=1, mem[1]=20).
+    let (out, err, _c) = run("module sub; reg [7:0] mem [0:3];\n\
+           initial begin mem[0]=8'd10; mem[1]=8'd20; mem[2]=8'd30; mem[3]=8'd40; end\n\
+         endmodule\n\
+         module top; sub dut();\n\
+           initial begin #1; $display(\"nested=%0d\", dut.mem[dut.mem[0]>>3]); end\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "{err}");
+    assert!(
+        out.contains("nested=20"),
+        "nested hierarchical index must resolve:\n{out}\n{err}"
+    );
 }
