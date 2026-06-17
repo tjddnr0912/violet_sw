@@ -417,10 +417,11 @@ pub enum Sensitivity {
     Star,                 // @(*) / @* (both map here; M5 note)
     List(Vec<EventExpr>), // @(posedge clk or negedge rst or a)
 }
-/// Intra-assignment EVENT control after `=` (IEEE 1800 §9.4.5): `@(event)` or
-/// `repeat(n) @(event)`. The RHS is captured at the statement, the process waits
-/// for the event (`repeat` times when present), then the captured value is written.
-/// Carried only on `Stmt::Blocking` — the non-blocking form stays a parse advisory.
+/// Intra-assignment EVENT control after `=`/`<=` (IEEE 1800 §9.4.5): `@(event)` or
+/// `repeat(n) @(event)`. The RHS (and any LHS index) is captured at the statement,
+/// then the value is written after the event occurs (`repeat` times when present).
+/// On `Stmt::Blocking` the process BLOCKS until the write; on `Stmt::NonBlocking`
+/// (slice N1) it does NOT block — a detached helper performs the NBA write later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct IntraEvent {
     /// `repeat(n)` count; `None` is a plain `@(event)` (one occurrence).
@@ -459,6 +460,9 @@ pub enum Stmt {
     NonBlocking {
         lhs: Lvalue,
         delay: Option<Delay>,
+        /// Intra-assignment event control `<= @(ev) rhs` / `<= repeat(n) @(ev) rhs`
+        /// (mutually exclusive with `delay`). `None` for a plain `<=`. (Slice N1.)
+        event: Option<IntraEvent>,
         rhs: Expr,
         span: Span,
     }, // <=

@@ -2987,12 +2987,13 @@ impl<'t, 's> Parser<'t, 's> {
             }
             Some(TokenKind::LtEq) => {
                 self.bump();
-                let (delay, _event) = self.parse_intra_assign_timing(false);
+                let (delay, event) = self.parse_intra_assign_timing(false);
                 let rhs = self.expr(0);
                 self.expect(TokenKind::Semi, "';'");
                 Stmt::NonBlocking {
                     lhs,
                     delay,
+                    event,
                     rhs,
                     span: start.to(self.prev_span()),
                 }
@@ -3026,23 +3027,20 @@ impl<'t, 's> Parser<'t, 's> {
 
     /// Intra-assignment timing control after `=`/`<=` (IEEE 1800 §9.4.5): a `#d`
     /// delay (CAPTURED into `delay`), an `@(ev)` event control, or `repeat(n) @(ev)`
-    /// (both CAPTURED into `event` for a BLOCKING `=` — the elaborator lowers them
-    /// as capture-now/wait/write). For a non-blocking `<=`, event control stays a
-    /// parse-and-DISCARD advisory so the RHS still parses cleanly (the `<=` event
-    /// form is out of this subset).
-    fn parse_intra_assign_timing(&mut self, blocking: bool) -> (Option<Delay>, Option<IntraEvent>) {
+    /// (both CAPTURED into `event`). The elaborator lowers the event form as
+    /// capture-now/wait/write for a blocking `=` (process blocks), and as a
+    /// capture-now/`fork … join_none` desugar for a non-blocking `<=` (slice N1 —
+    /// the process does not block). The `blocking` flag is retained for symmetry and
+    /// future per-form diagnostics; both forms capture identically here.
+    fn parse_intra_assign_timing(
+        &mut self,
+        _blocking: bool,
+    ) -> (Option<Delay>, Option<IntraEvent>) {
         match self.peek() {
             Some(TokenKind::Hash) => (self.parse_delay(), None),
             Some(TokenKind::At) => {
                 let ctrl = self.parse_sensitivity(); // consumes `@(…)`
-                if blocking {
-                    (None, Some(IntraEvent { repeat: None, ctrl }))
-                } else {
-                    self.error(
-                        "intra-assignment event control on `<=` (not yet supported; ignored)",
-                    );
-                    (None, None)
-                }
+                (None, Some(IntraEvent { repeat: None, ctrl }))
             }
             _ if self.at_kw(Kw::Repeat) => {
                 self.bump(); // repeat
@@ -3051,20 +3049,13 @@ impl<'t, 's> Parser<'t, 's> {
                 self.expect(TokenKind::RParen, "')'");
                 if self.peek() == Some(TokenKind::At) {
                     let ctrl = self.parse_sensitivity();
-                    if blocking {
-                        (
-                            None,
-                            Some(IntraEvent {
-                                repeat: Some(count),
-                                ctrl,
-                            }),
-                        )
-                    } else {
-                        self.error(
-                            "intra-assignment `repeat` event control on `<=` (not yet supported; ignored)",
-                        );
-                        (None, None)
-                    }
+                    (
+                        None,
+                        Some(IntraEvent {
+                            repeat: Some(count),
+                            ctrl,
+                        }),
+                    )
                 } else {
                     self.error("`@(event)` after `repeat(n)` in an intra-assignment control");
                     (None, None)

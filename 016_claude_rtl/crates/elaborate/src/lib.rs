@@ -717,6 +717,7 @@ fn sva_nb(name: &str, rhs: ast::Expr, sp: ast::Span) -> ast::Stmt {
             span: sp,
         }),
         delay: None,
+        event: None,
         rhs,
         span: sp,
     }
@@ -755,11 +756,13 @@ fn gate_nba_with_disable(stmt: ast::Stmt, dis: &ast::Expr, sp: ast::Span) -> ast
         ast::Stmt::NonBlocking {
             lhs,
             delay,
+            event,
             rhs,
             span,
         } => ast::Stmt::NonBlocking {
             lhs,
             delay,
+            event,
             rhs: ast::Expr {
                 kind: ast::ExprKind::Ternary {
                     cond: Box::new(dis.clone()),
@@ -3695,16 +3698,43 @@ impl<'s> Elaborator<'s> {
             .max(1)
     }
 
-    /// Read back a const width edge this elaboration pushed (`Expr::Const`).
+    /// Read back a const width edge this elaboration pushed. A constant `[msb:lsb]`
+    /// part-select width is the tree `Add(Sub(msb,lsb), 1)` (see
+    /// [`Self::width_from_msb_lsb_checked`]), NOT a bare `Const`, so this MUST fold
+    /// `Add`/`Sub` recursively — exactly mirroring the engine's
+    /// `sim_engine::width::const_u32_of_expr`. (Folding only `Const` here sized a
+    /// part-select capture temp at width 1, silently dropping all but the LSB of an
+    /// intra-assignment `a[msb:lsb] = / <= [@ev/#d] rhs` — review finding, also
+    /// affected the blocking twins.)
     fn const_of_expr_u32(&self, eid: u32) -> Option<u32> {
-        if let ir::Expr::Const { val } = self.exprs.get(eid as usize)? {
-            let c = self.consts.get(*val as usize)?;
-            if c.bits.unk.iter().any(|&u| u != 0) {
-                return None;
+        match self.exprs.get(eid as usize)? {
+            ir::Expr::Const { val } => {
+                let c = self.consts.get(*val as usize)?;
+                if c.bits.unk.iter().any(|&u| u != 0) {
+                    return None;
+                }
+                u32::try_from(c.bits.val.first().copied().unwrap_or(0)).ok()
             }
-            return u32::try_from(c.bits.val.first().copied().unwrap_or(0)).ok();
+            // OUTER `(msb - lsb) + 1`.
+            ir::Expr::Binary {
+                op: ir::BinOp::Add,
+                lhs,
+                rhs,
+            } => Some(
+                self.const_of_expr_u32(*lhs)?
+                    .saturating_add(self.const_of_expr_u32(*rhs)?),
+            ),
+            // INNER `msb - lsb`.
+            ir::Expr::Binary {
+                op: ir::BinOp::Sub,
+                lhs,
+                rhs,
+            } => Some(
+                self.const_of_expr_u32(*lhs)?
+                    .saturating_sub(self.const_of_expr_u32(*rhs)?),
+            ),
+            _ => None,
         }
-        None
     }
 
     /// Lower a blocking intra-assignment EVENT control `lhs = [repeat(n)] @(ev) rhs`
@@ -3745,6 +3775,7 @@ impl<'s> Elaborator<'s> {
                     }
                     c as u32
                 }
+                None if count_lit_is_xz(n) => 0, // X/Z CONSTANT ⇒ 0 iterations (IEEE)
                 None => {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -3785,6 +3816,192 @@ impl<'s> Elaborator<'s> {
             rhs: tmp_read,
         });
         b.push_stmt_id(wr);
+    }
+
+    /// N1: lower a NON-BLOCKING intra-assignment event control
+    /// `lhs <= [repeat(n)] @(ev) rhs` (IEEE 1800 §9.4.5). The twin of
+    /// [`lower_intra_event_assign`], but the process must NOT block: the RHS — and
+    /// any LHS index — are captured NOW, then a detached `fork … join_none` helper
+    /// waits for the event `n` times and performs the NBA write of the captured
+    /// value, while the parent continues immediately. `repeat(0)` degenerates to a
+    /// plain same-tick NBA (the captured value joins the current NBA region).
+    ///
+    /// Documented DIVERGENCES from iverilog (hand-IEEE pins, like prior slices):
+    /// (1) the count must fold to a constant — a genuinely runtime count is LOUD
+    /// here (iverilog accepts it), matching the blocking-form precedent (an X/Z
+    /// CONSTANT count is 0 iterations per IEEE, NOT runtime — see `count_lit_is_xz`);
+    /// (2) same-site self-overlapping in-flight captures share the per-site temp,
+    /// whereas iverilog carries an independent value per in-flight assignment;
+    /// (3) SAME-TICK region tie (the project's "동시-틱 tie = 도구-발산" zone): at the
+    /// helper's write tick, a process woken by the SAME edge that reads the lhs in the
+    /// Active/`#0` region sees the OLD value here (LRM-faithful — an NBA is invisible
+    /// in the write tick's active region) but the NEW value under iverilog. The
+    /// committed value matches exactly ($strobe/postponed + every later tick + final);
+    /// the fork+NBA desugar cannot place its write one region earlier without an
+    /// engine event-armed-NBA mechanism.
+    fn lower_intra_event_nba(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        ie: &ast::IntraEvent,
+        rhs: &ast::Expr,
+        span: ast::Span,
+    ) {
+        // Fold the repeat count FIRST (loud-and-return before emitting any IR).
+        let waits: u32 = match &ie.repeat {
+            None => 1,
+            Some(n) => match self.const_eval_in_scope(n) {
+                Some(c) => {
+                    let c = c.max(0); // repeat(0)/repeat(<0) ⇒ zero iterations (IEEE)
+                    if c > REPEAT_UNROLL_CAP as i64 {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "a non-blocking intra-assignment `repeat(n)` count exceeds the unroll cap ({REPEAT_UNROLL_CAP})"
+                            ),
+                        );
+                        return;
+                    }
+                    c as u32
+                }
+                None if count_lit_is_xz(n) => 0, // X/Z CONSTANT ⇒ 0 iterations (IEEE)
+                None => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a runtime (non-constant) `repeat(n)` count in a non-blocking \
+                         intra-assignment event control is unsupported (n must fold to a constant)",
+                    );
+                    return;
+                }
+            },
+        };
+
+        // repeat(0) ⇒ no wait ⇒ a plain same-tick NBA: the normal NBA path samples
+        // the RHS and any LHS index at execution time and joins the current NBA
+        // region — exactly the degenerate semantics (no helper needed).
+        if waits == 0 {
+            let rhs_id = self.lower_expr(rhs);
+            let lv = self.lower_lvalue(lhs);
+            self.check_lvalue_kind(&lv, true); // P1-9 (E3018)
+            let sid = self.push_stmt(ir::Stmt::NonblockingAssign {
+                lhs: lv,
+                rhs: rhs_id,
+                delay: None,
+            });
+            b.push_stmt_id(sid);
+            return;
+        }
+
+        // The detached helper is a fork child; a fork nested inside a fork child is
+        // the v1 MVP cut (§6.2). Reject loudly rather than emit a nested Fork.
+        if self.in_fork {
+            self.error_unsupported(
+                span,
+                "a non-blocking intra-assignment event control inside a fork is \
+                 unsupported in v1 (the helper would be a nested fork)",
+            );
+            return;
+        }
+
+        // ── CAPTURE NOW (parent block, before the fork) ──
+        // RHS → a private per-site temp.
+        let rhs_id = self.lower_expr(rhs);
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
+        let w = self.ir_lvalue_width(&lv);
+        let tmp = self.fresh_ia_tmp(w);
+        let cap = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: whole_net_lvalue(tmp),
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(cap);
+        // Any LHS index/offset is sampled NOW too (asymmetric with the blocking
+        // form, which samples the lvalue at WRITE time — verified vs iverilog).
+        let lv_now = self.capture_lvalue_indices_now(b, &lv);
+
+        // ── FORK (join_none): the parent resumes IMMEDIATELY at resume_bb ──
+        // INV-2: allocate every named block before sealing with Fork.
+        let join_bb = b.new_block();
+        let resume_bb = b.new_block();
+        let child_entry = b.new_block();
+        self.record_fork_mode(ast::JoinKind::JoinNone, join_bb.raw());
+        b.end_block_with(ir::Terminator::Fork {
+            children: vec![child_entry.raw()],
+            join: join_bb.raw(),
+            resume_bb: resume_bb.raw(),
+        });
+
+        // ── CHILD: wait for the event `waits` times, then NBA-write the capture ──
+        let prev_in_fork = self.in_fork;
+        self.in_fork = true;
+        let prev_floor = self.disable_fork_floor;
+        self.disable_fork_floor = self.disable_stack.len();
+        b.start_block(child_entry);
+        let evt = ast::Stmt::EventCtrl {
+            ctrl: ie.ctrl.clone(),
+            body: None,
+            span,
+        };
+        for _ in 0..waits {
+            self.lower_stmt(b, &evt);
+        }
+        let tmp_read = self.push_expr(ir::Expr::Signal {
+            net: tmp,
+            word: None,
+        });
+        let wr = self.push_stmt(ir::Stmt::NonblockingAssign {
+            lhs: lv_now,
+            rhs: tmp_read,
+            delay: None,
+        });
+        b.push_stmt_id(wr);
+        b.goto(join_bb);
+        self.disable_fork_floor = prev_floor;
+        self.in_fork = prev_in_fork;
+
+        // Seal join_bb → resume_bb (never-executed sentinel; the engine intercepts
+        // the child at join_bb) and open resume_bb as the single continuation.
+        b.start_block(join_bb);
+        b.goto(resume_bb);
+        b.start_block(resume_bb);
+    }
+
+    /// Capture every DYNAMIC lvalue index/offset (`Some(ExprId)`) into a fresh temp
+    /// (sampled NOW) and rebuild the lvalue to read from those temps. A scalar /
+    /// whole-net lvalue (no `word`/`offset`) passes through with no extra IR.
+    fn capture_lvalue_indices_now(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lv: &ir::Lvalue,
+    ) -> ir::Lvalue {
+        let chunks = lv
+            .chunks
+            .iter()
+            .map(|ch| ir::LvalChunk {
+                net: ch.net,
+                word: ch.word.map(|e| self.capture_index_now(b, e)),
+                offset: ch.offset.map(|e| self.capture_index_now(b, e)),
+                width: ch.width,
+                kind: ch.kind,
+            })
+            .collect();
+        ir::Lvalue { chunks }
+    }
+
+    /// Capture an index/offset ExprId NOW into a fresh temp; return a `Signal` read
+    /// of that temp (for use in the deferred lvalue rebuild).
+    fn capture_index_now(&mut self, b: &mut ProcessBuilder, e: u32) -> u32 {
+        let w = self.ir_bits_of(e).unwrap_or(32).max(1);
+        let tmp = self.fresh_ia_tmp(w);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: whole_net_lvalue(tmp),
+            rhs: e,
+        });
+        b.push_stmt_id(sid);
+        self.push_expr(ir::Expr::Signal {
+            net: tmp,
+            word: None,
+        })
     }
 
     /// Synthesize a private capture temp for an intra-assignment delay site
@@ -8039,6 +8256,7 @@ impl<'s> Elaborator<'s> {
             then_s: Box::new(ast::Stmt::NonBlocking {
                 lhs: ast::Lvalue::Ident(handoff_path.clone()),
                 delay: None,
+                event: None,
                 rhs: sva_one(sp),
                 span: sp,
             }),
@@ -8083,6 +8301,7 @@ impl<'s> Elaborator<'s> {
         let discharge = ast::Stmt::NonBlocking {
             lhs: ast::Lvalue::Ident(handoff_path),
             delay: None,
+            event: None,
             rhs: sva_zero(sp),
             span: sp,
         };
@@ -8286,6 +8505,7 @@ impl<'s> Elaborator<'s> {
                     let nba = ast::Stmt::NonBlocking {
                         lhs: ast::Lvalue::Ident(pend_path),
                         delay: None,
+                        event: None,
                         rhs: sva_unary(ast::UnOp::RedOr, ante, sp),
                         span: sp,
                     };
@@ -8901,6 +9121,7 @@ impl<'s> Elaborator<'s> {
                     pipeline_nbas.push(ast::Stmt::NonBlocking {
                         lhs: ast::Lvalue::Ident(armed_path),
                         delay: None,
+                        event: None,
                         rhs: latch_rhs,
                         span: sp,
                     });
@@ -9072,6 +9293,7 @@ impl<'s> Elaborator<'s> {
         pipeline_nbas.push(ast::Stmt::NonBlocking {
             lhs: ast::Lvalue::Ident(r_path),
             delay: None,
+            event: None,
             rhs: cur,
             span: sp,
         });
@@ -9328,11 +9550,13 @@ impl<'s> Elaborator<'s> {
             S::NonBlocking {
                 lhs,
                 delay,
+                event,
                 rhs,
                 span,
             } => S::NonBlocking {
                 lhs: lhs.clone(),
                 delay: delay.clone(),
+                event: event.clone(),
                 rhs: self.rewrite_sampled(rhs, regs),
                 span: *span,
             },
@@ -9392,6 +9616,7 @@ impl<'s> Elaborator<'s> {
         regs.nbas.push(ast::Stmt::NonBlocking {
             lhs: ast::Lvalue::Ident(prev_path),
             delay: None,
+            event: None,
             rhs: sig_expr.clone(),
             span: sp,
         });
@@ -9846,8 +10071,19 @@ impl<'s> Elaborator<'s> {
                 }
             }
             ast::Stmt::NonBlocking {
-                lhs, delay, rhs, ..
+                lhs,
+                delay,
+                event,
+                rhs,
+                span,
             } => {
+                // N1: non-blocking intra-assignment EVENT control
+                // (`a <= [repeat(n)] @(ev) rhs`). Capture-now / fork-join_none /
+                // NBA-write desugar — the process does NOT block.
+                if let Some(ie) = event {
+                    self.lower_intra_event_nba(b, lhs, ie, rhs, *span);
+                    return;
+                }
                 // `a <= #d rhs` (v5 increment A): a VALUE-CARRYING transport
                 // delay — RHS and any LHS index are sampled at execution time,
                 // the update joins the NBA region of t+d, and overlapping
@@ -11852,6 +12088,25 @@ fn const_eval_i64_lit(e: &ast::Expr) -> Option<i64> {
         return Some(v as i64);
     }
     i64::try_from(v).ok()
+}
+
+/// IEEE 1800 §11.4.2 / §9.4.5: a `repeat`/replication count whose CONSTANT value
+/// carries X/Z bits evaluates to 0. [`Self::const_eval_in_scope`] is X/Z-blind — it
+/// returns `None` for an X/Z literal exactly as it does for a genuinely runtime
+/// value — so an intra-assignment count fold must use THIS to distinguish a constant
+/// literal that folded to X/Z (⇒ 0 iterations / immediate write) from a runtime
+/// count (⇒ loud). Peels `(…)` and unary `+`/`-`/`~` down to the int-literal operand.
+/// (Review finding: `repeat(2'bx1) @(ev)` was wrongly rejected as runtime; iverilog
+/// treats it as 0 iterations.)
+fn count_lit_is_xz(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ast::ExprKind::IntLit { kind, raw } => parse_int_literal(raw, *kind)
+            .map(|cv| cv.bits.unk.iter().any(|&w| w != 0))
+            .unwrap_or(false),
+        ast::ExprKind::Paren { inner } => count_lit_is_xz(inner),
+        ast::ExprKind::Unary { operand, .. } => count_lit_is_xz(operand),
+        _ => false,
+    }
 }
 
 /// `**` in the i64 const domain. Negative exponents follow the IEEE integer

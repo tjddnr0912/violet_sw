@@ -164,3 +164,59 @@ fn repeat_event_runs_deterministically() {
     let (o2, e2, c2) = run(src);
     assert_eq!((o1, e1, c1), (o2, e2, c2), "must be deterministic");
 }
+
+// ── Regressions for two latent bugs the N1 adversarial review surfaced in the
+//    SHARED capture-temp machinery (they affected this BLOCKING form too). ──
+
+#[test]
+fn xz_constant_count_writes_immediately() {
+    // REVIEW fix (2026-06-17): an X/Z-bearing CONSTANT count (`2'bx1`) is a compile-time
+    // constant ⇒ 0 iterations (IEEE) ⇒ immediate blocking write, NOT a loud "runtime
+    // count" error. iverilog: a=11 at t=0.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0; reg [7:0] a=0, b=0;\n\
+         always #5 clk=~clk;\n\
+         initial begin b = 8'd11; a = repeat(2'bx1) @(posedge clk) b; $display(\"t=%0t a=%0d\", $time, a); $finish; end\n\
+         endmodule\n");
+    assert_eq!(
+        code,
+        Some(0),
+        "X/Z constant count must NOT be loud. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        out.contains("t=0 a=11"),
+        "X/Z constant count ⇒ 0 iterations ⇒ immediate write (a=11 at t=0). out:\n{out}\nerr:\n{err}"
+    );
+}
+
+#[test]
+fn const_part_select_lhs_writes_full_width() {
+    // REVIEW fix (2026-06-17): a constant part-select `a[7:4]` lvalue must capture the
+    // RHS at the part-select width (4), not 1. Affected both the event form (here) and
+    // the `= #d` form below. iverilog: a=11110000.
+    let (out, err, code) = run("module t;\n\
+         reg [7:0] a; reg clk=0;\n\
+         always #5 clk=~clk;\n\
+         initial begin a=0; a[7:4] = @(posedge clk) 4'hF; $display(\"a=%b\", a); $finish; end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "must run clean. stderr:\n{err}\nout:\n{out}");
+    assert!(
+        out.contains("a=11110000"),
+        "constant part-select lhs must write all 4 bits, not just the LSB. out:\n{out}\nerr:\n{err}"
+    );
+}
+
+#[test]
+fn delay_const_part_select_lhs_writes_full_width() {
+    // The `= #d` intra-assignment delay shares the same capture-temp sizing path.
+    // a[5:2] = #1 4'hF ⇒ a=00111100 (was 00000100 — only the LSB). iverilog: 00111100.
+    let (out, err, code) = run("module t;\n\
+         reg [7:0] a;\n\
+         initial begin a=0; a[5:2] = #1 4'hF; $display(\"a=%b\", a); $finish; end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "must run clean. stderr:\n{err}\nout:\n{out}");
+    assert!(
+        out.contains("a=00111100"),
+        "constant part-select lhs with `#d` must write all 4 bits. out:\n{out}\nerr:\n{err}"
+    );
+}

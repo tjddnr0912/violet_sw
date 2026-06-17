@@ -17,10 +17,16 @@ use vita_schema::schema_hash;
 /// function/task body_decl gives that local fresh-per-call storage; all `.vu`
 /// artifacts are stale, no sim-ir/format_version change, pure IR-0: the per-slot
 /// lifetime rides the engine routing side table out-of-band). (Previous re-pins:
+/// 2026-06-17 N1 non-blocking intra-assignment event control
+/// (`Stmt::NonBlocking.event: Option<IntraEvent>` — `lhs <= [repeat(n)] @(ev) rhs`;
+/// all `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0:
+/// capture-now / `fork … join_none` / NBA-write desugar). (Previous re-pins:
+/// 2026-06-17 B4 per-variable lifetime override (`NetVarDecl.lifetime:
+/// Option<bool>` — block-/variable-level `automatic` for frame functions/tasks);
 /// 2026-06-16 deferred immediate assertions (`Stmt::DeferredAssert` +
 /// `AssertDefer` enum — `assert #0` (Observed) / `assert final` (Reactive); all
 /// `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0: a
-/// flush-marker + region maturation queues carried out-of-band). (Previous re-pins:
+/// flush-marker + region maturation queues carried out-of-band).
 /// 2026-06-16 intra-assignment event control (`Stmt::Blocking.event:
 /// Option<IntraEvent>` + new `IntraEvent` struct — `lhs = [repeat(n)] @(ev) rhs`;
 /// all `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0
@@ -47,8 +53,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    174, 45, 223, 111, 133, 56, 186, 113, 199, 196, 163, 206, 68, 228, 215, 25, 105, 111, 42, 117,
-    200, 63, 153, 106, 252, 176, 55, 249, 142, 134, 177, 35,
+    85, 96, 200, 79, 149, 56, 199, 6, 197, 180, 3, 175, 111, 221, 18, 172, 253, 19, 192, 50, 238,
+    234, 6, 118, 22, 104, 32, 161, 14, 171, 47, 183,
 ];
 
 #[test]

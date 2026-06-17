@@ -1074,6 +1074,7 @@ fn nb(lhs: &str, rhs: ast::Expr) -> ast::Stmt {
     ast::Stmt::NonBlocking {
         lhs: lv_id(lhs),
         delay: None,
+        event: None,
         rhs,
         span: SP,
     }
