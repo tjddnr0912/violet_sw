@@ -1144,7 +1144,10 @@ const SVA_SEQ_ALT_CAP: usize = 256;
 
 /// Is `name` (incl. the leading `$`) an SVA sampled-value function we desugar?
 fn is_sva_sampled_fn(name: &str) -> bool {
-    matches!(name, "$past" | "$rose" | "$fell" | "$stable")
+    matches!(
+        name,
+        "$past" | "$rose" | "$fell" | "$stable" | "$changed" | "$sampled"
+    )
 }
 
 fn sva_ident_expr(name: &str, sp: ast::Span) -> ast::Expr {
@@ -10872,6 +10875,13 @@ impl<'s> Elaborator<'s> {
                     );
                     return e.clone();
                 }
+                // $sampled(e) = e (identity): the sampled value equals the current
+                // value in our region model (no Preponed region — same approximation
+                // as the existing $past family). Accepts any expression and recurses
+                // so a nested sampled fn still resolves to its prev-register.
+                if name.name == "$sampled" {
+                    return self.rewrite_sampled(&args[0], regs);
+                }
                 let ast::ExprKind::Ident(path) = &args[0].kind else {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -10903,6 +10913,8 @@ impl<'s> Elaborator<'s> {
                 match name.name.as_str() {
                     "$past" => prev_ref,
                     "$stable" => sva_binary(ast::BinOp::CaseEq, prev_ref, args[0].clone(), sp),
+                    // $changed(e) = (prev !== e): the negation of $stable, 1-bit.
+                    "$changed" => sva_binary(ast::BinOp::CaseNe, prev_ref, args[0].clone(), sp),
                     "$rose" => sva_binary(
                         ast::BinOp::BitAnd,
                         sva_unary(ast::UnOp::BitNot, sva_bit0(prev_ref, sp), sp),
