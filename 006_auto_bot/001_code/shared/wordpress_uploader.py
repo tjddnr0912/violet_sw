@@ -349,18 +349,33 @@ def _normalize_wavedrom(code: str) -> str:
     )
 
 
-def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40) -> Optional[bytes]:
+def render_kroki_png(
+    code: str,
+    diagram_type: str = "mermaid",
+    timeout: int = 40,
+    errors: Optional[List[str]] = None,
+) -> Optional[bytes]:
     """다이어그램 소스 → PNG 바이트. 실패 시 None.
 
     diagram_type: 코드펜스 언어명(mermaid/d2/graphviz/wavedrom/plantuml…) 또는 kroki 경로명.
     kroki가 PNG를 주면 그대로, **SVG만 주는 타입(d2/wavedrom 등)은 SVG→PNG 로컬 래스터화**.
+
+    errors: 주어지면 실패 사유 문자열을 append 한다(호출부가 운영자 알림에 사용).
+        kroki 컴파일 오류(잘못된 d2 문법 등)는 HTTP 400 본문에 그대로 담겨 오므로
+        그 메시지를 그대로 넘긴다 — "왜 코드로 박혔는지"가 한눈에 보이게.
     """
+    def _note(msg: str):
+        if errors is not None:
+            errors.append(msg)
+
     code = _html.unescape(code or "").strip()
     if not code:
+        _note("빈 다이어그램 소스")
         return None
     t = (diagram_type or "").strip().lower()
     kroki_type = _LANG_TO_KROKI.get(t, t)
     if not kroki_type:
+        _note(f"알 수 없는 다이어그램 타입 {t!r}")
         return None
     if kroki_type == "wavedrom":
         code = _normalize_wavedrom(code)  # 리터럴 반복(0000) → '.'(톱니 제거)
@@ -376,7 +391,10 @@ def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40
                 timeout=timeout,
             )
             if r.status_code != 200:
-                logger.warning(f"{kroki_type}/{fmt} 렌더 실패 {r.status_code}: {r.text[:120]}")
+                # kroki 400 = 소스 컴파일 실패(문법 오류). 메시지를 그대로 보존.
+                reason = f"kroki {kroki_type}/{fmt} HTTP {r.status_code}: {r.text.strip()[:160]}"
+                logger.warning(reason)
+                _note(reason)
                 continue
             if fmt == "png":
                 if r.content[:8] == b"\x89PNG\r\n\x1a\n":
@@ -387,9 +405,13 @@ def render_kroki_png(code: str, diagram_type: str = "mermaid", timeout: int = 40
                     png = _svg_to_png(r.content)
                     if png:
                         return png
-                    logger.warning(f"{kroki_type}: svg→png 래스터화 실패(Chrome 확인)")
+                    reason = f"{kroki_type}: SVG→PNG 래스터화 실패(Chrome 미발견/오류)"
+                    logger.warning(reason)
+                    _note(reason)
     except Exception as e:
-        logger.error(f"{kroki_type} 렌더 오류: {e}")
+        reason = f"{kroki_type} 렌더 오류: {e}"
+        logger.error(reason)
+        _note(reason)
     return None
 
 
@@ -609,6 +631,9 @@ class WordPressUploader:
         self.strip_ads_default = strip_ads_default
         # True면 status 인자와 무관하게 항상 draft로 발행(자동봇 일시정지용)
         self.force_draft = force_draft
+        # 직전 _render_diagrams_in_html 호출에서 렌더 실패한 다이어그램 목록
+        # (create_post가 발행 후 운영자에게 알림을 보내는 데 사용).
+        self._last_diagram_failures: List[Dict] = []
 
     # --- 상태 ---
     def is_configured(self) -> bool:
@@ -740,10 +765,12 @@ class WordPressUploader:
         - 렌더/업로드 실패 시 원본 블록 유지.
         - 각 다이어그램 이미지는 클릭 시 원본 크기로 확대되는 라이트박스(순수 CSS)로 감싼다.
         """
+        self._last_diagram_failures = []  # 이번 호출의 렌더 실패 누적(create_post가 알림)
         if not html_content or "language-" not in html_content:
             return html_content
 
         rendered = []  # 라이트박스 <style> 1회 주입 판단용
+        failures = self._last_diagram_failures
 
         def _repl(m):
             lang = (m.group(1) or "").lower()
@@ -751,8 +778,22 @@ class WordPressUploader:
             if not kroki_type:
                 return m.group(0)  # 일반 코드 블록 — 변환하지 않음
             code = _html.unescape(m.group(2) or "").strip()
-            png = render_kroki_png(code, kroki_type)
+            errs: List[str] = []
+            png = render_kroki_png(code, kroki_type, errors=errs)
             if not png:
+                # 작성자가 다이어그램을 의도했는데 렌더 실패 → 조용히 raw 코드로
+                # 두지 말고 시끄럽게(loud) 기록한다. 발행 자체는 막지 않는다.
+                first_line = next(
+                    (ln.strip() for ln in code.splitlines() if ln.strip()), ""
+                )
+                reason = "; ".join(errs) or "원인 미상"
+                failures.append(
+                    {"lang": lang, "first_line": first_line[:80], "reason": reason[:200]}
+                )
+                logger.error(
+                    "다이어그램 렌더 실패 — raw 코드블록으로 발행됨 (lang=%s, 첫줄=%r): %s",
+                    lang, first_line[:80], reason[:200],
+                )
                 return m.group(0)
             digest = hashlib.md5(f"{kroki_type}|{code}".encode("utf-8")).hexdigest()[:12]
             media = self.upload_media(png, f"diagram-{kroki_type}-{digest}.png", "image/png")
@@ -777,6 +818,38 @@ class WordPressUploader:
         if rendered and "data-gm-lightbox" not in out:
             out = _LIGHTBOX_STYLE + out
         return out
+
+    def _alert_diagram_failures(self, title: str, failures: List[Dict]) -> None:
+        """다이어그램 렌더 실패를 운영자에게 알린다(로그 + best-effort 텔레그램).
+
+        발행 자체는 막지 않는다 — 실패한 블록은 raw 코드로 남는다. 목적은
+        "코드가 그대로 박힌 글"이 조용히 공개되는 일을 발행 시점에 잡는 것.
+        텔레그램 토큰/챗이 없거나 전송이 실패해도 절대 예외를 올리지 않는다.
+        """
+        if not failures:
+            return
+        lines = [
+            f"⚠️ 다이어그램 렌더 실패 {len(failures)}건 — raw 코드로 발행됨",
+            f"글: {title[:80]}",
+        ]
+        for f in failures[:5]:
+            lines.append(f"· [{f['lang']}] {f['first_line']} → {f['reason']}")
+        if len(failures) > 5:
+            lines.append(f"… 외 {len(failures) - 5}건")
+        msg = "\n".join(lines)
+        logger.error("다이어그램 발행 경보: %s", msg.replace("\n", " | "))
+
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        chat = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        if not (token and chat):
+            return
+        try:
+            from shared.telegram_api import TelegramClient
+            TelegramClient(token, chat).send_message(
+                _html.escape(msg), parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"다이어그램 실패 텔레그램 알림 불가: {e}")
 
     # --- 발행 ---
     def create_post(
@@ -804,6 +877,9 @@ class WordPressUploader:
             content_html = strip_raw_source(content_html)
         if render_diagrams:
             content_html = self._render_diagrams_in_html(content_html)
+            # 렌더 실패한 다이어그램이 있으면 운영자에게 알림(발행은 계속).
+            if self._last_diagram_failures:
+                self._alert_diagram_failures(title, self._last_diagram_failures)
         # 테마가 글 제목을 <h1>로 렌더 → 본문 h1은 h2로 강등(Single-H1, Rank Math)
         content_html = demote_body_h1(content_html)
         # 출처를 결정론적으로 '참고 자료' 외부 링크 섹션으로 추가(Rank Math outbound).

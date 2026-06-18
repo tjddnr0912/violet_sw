@@ -84,6 +84,19 @@
 
 ---
 
+## d2가 코드로 발행됨 — kroki 컴파일 실패(문법 오류) + 조용한 폴백 (위 Chrome 케이스와 구분)
+
+- **증상**: 한 글 안에서 **일부** d2만 PNG로 안 바뀌고 `<pre><code class="language-d2">` 원본 코드로 노출. 같은 글의 mermaid·다른 d2는 정상 이미지. (위 "d2/wavedrom…" 항목은 *모든* svg-only 타입이 Chrome 부재로 실패하는 케이스 — 여기는 **특정 d2 블록만** 실패.)
+- **원인**: 해당 d2 소스의 **문법 오류** → kroki가 HTTP 400(컴파일 실패) 반환 → `render_kroki_png`=None → `_render_diagrams_in_html._repl`이 **아무 경고 없이** 원본 코드블록 유지(조용한 폴백). 실제 2건: ① `shape: database`(mermaid엔 있으나 d2엔 없는 shape — d2는 `cylinder`/`stored_data`) ② `font-weight: bold`(CSS 키워드 — d2는 `bold: true`). LLM이 d2 문법을 다른 다이어그램/CSS 방언과 혼동해 생성. 같은 글 mermaid가 정상 렌더돼 문제를 가림.
+- **해결**: (1) **loud 실패**(2026-06-19): `render_kroki_png(errors=[...])`가 kroki 400 본문 캡처 → `_render_diagrams_in_html`이 `_last_diagram_failures` 수집·`logger.error` → `create_post`가 `_alert_diagram_failures`로 운영자 텔레그램 경보(best-effort, 발행 불차단). (2) **생성 가드**: `_SYNTH_PROMPT_TEMPLATE`·`telegram-qa/SKILL.md`에 유효 d2 shape 목록·`database`→`cylinder/stored_data`·`font-weight`→`bold:true` 명시. (3) 라이브 글은 d2 소스 교정→`_render_diagrams_in_html` 재실행→`POST /posts/{id}` content 갱신.
+- **복구 절차**: (a) `curl -X POST --data-binary @x.d2 https://kroki.io/d2/svg` 로 **컴파일 상태 직접 확인** — 400이면 본문에 `unknown shape "…"`·`invalid style keyword "…"` 등 정확한 위치·사유가 그대로 옴 (b) 사유대로 소스 교정 후 재-POST가 200인지 확인 (c) 라이브 글이면 content만 PUT 재발행.
+- **관련 사고**: 2026-06-19 (post 292, why-soc-bandwidth-designed-narrow).
+- **재발 감지**: 발행 후 `다이어그램 발행 경보` 로그·텔레그램 알림이 1차 신호(이제 조용히 안 묻힘). 글에 `language-d2` 잔존 grep도 보조 점검.
+
+> Claude 진단 미스: **초기 가설이 "d2는 svg-only라 Chrome 래스터화 단계에서 실패(바로 위 항목의 원인)"였으나, kroki에 소스를 직접 POST해보니 래스터화 이전에 HTTP 400 컴파일 실패**(`unknown shape "database"`)였음 — Chrome은 정상 탐지·동작. 방향 전환 지점 = 두 d2 소스를 `render_kroki_png`/kroki에 직접 통과시킨 Bash 테스트. 교훈: **"다이어그램이 코드로 박힘" 디버깅 시 Chrome/래스터화(위 항목)보다 먼저 `curl kroki/<type>/svg` 컴파일 상태(400 여부+에러 본문)를 본다.** *일부* d2만 실패=환경(Chrome)이 아니라 **그 소스의 문법** 문제일 가능성이 높다(환경 문제면 같은 타입 전부 실패). 결정 명령 = `curl -X POST --data-binary @src https://kroki.io/d2/svg`.
+
+---
+
 ## 발행 글이 "AI가 쓴 느낌" / 질문의 부정확한 전제가 사실처럼 섞임
 
 - **증상**: 텔레그램봇으로 질문해 발행한 글에서, 내가 질문에 담았던 (틀릴 수도 있는) 전제·가정·수치가 검증 없이 사실처럼 본문에 들어감. 글이 "주제에 대한 독립 기사"가 아니라 "내 질문에 대한 답변"처럼 읽혀 AI 생성 티가 남.

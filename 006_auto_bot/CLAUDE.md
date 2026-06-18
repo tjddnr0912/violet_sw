@@ -31,7 +31,7 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
 | `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
-| `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·**다이어그램→PNG(kroki 다중 타입: mermaid/d2/wavedrom/graphviz/plantuml…, 일반 코드블록은 미변환)**·AdSense/raw strip·**출처→'참고 자료' 외부 링크 섹션**(`sources` 인자, dofollow)·**타이틀 카드 featured image 자동 첨부**(`AUTO_FEATURED_CARD`)·Blogger 드롭인 호환 어댑터), **title_card** (제목·카테고리→1200×630 다크 og:image, Pillow 로컬·무료·무네트워크), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표) |
+| `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·**다이어그램→PNG(kroki 다중 타입: mermaid/d2/wavedrom/graphviz/plantuml…, 일반 코드블록은 미변환·렌더 실패 시 운영자 텔레그램 경보)**·AdSense/raw strip·**출처→'참고 자료' 외부 링크 섹션**(`sources` 인자, dofollow)·**타이틀 카드 featured image 자동 첨부**(`AUTO_FEATURED_CARD`)·Blogger 드롭인 호환 어댑터), **title_card** (제목·카테고리→1200×630 다크 og:image, Pillow 로컬·무료·무네트워크), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표) |
 
 ## 핵심 참조
 

@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-06-19: [fix] d2 문법 오류가 코드로 박히던 버그 — loud 실패 알림 + 생성 가드
+
+- **증상**: `why-soc-bandwidth-designed-narrow`(post 292)에서 **특정 d2 블록만** PNG로 안 바뀌고 `<pre><code class="language-d2">` 원본 코드로 발행. 같은 글의 mermaid는 정상 이미지.
+- **원인**: 해당 d2 소스의 **문법 오류** → kroki HTTP 400(컴파일 실패) → `render_kroki_png`=None → `_render_diagrams_in_html._repl`이 **아무 경고 없이** 원본 코드 유지(조용한 폴백). 실제 2건: ① `shape: database`(mermaid엔 있으나 d2엔 없음 → d2는 `cylinder`/`stored_data`) ② `font-weight: bold`(CSS 키워드 → d2는 `bold: true`). LLM이 d2 문법을 다른 다이어그램/CSS 방언과 혼동. mermaid 정상 렌더가 문제를 가림. **Chrome/래스터화는 무관**(정상 동작).
+- **해결**: (1) **loud 실패** — `render_kroki_png(errors=[...])`가 kroki 400 본문 캡처 → `_render_diagrams_in_html`이 `_last_diagram_failures` 수집·`logger.error` → `create_post`가 `_alert_diagram_failures`로 **운영자 텔레그램 경보**(best-effort, 발행 불차단·실패 블록은 raw 유지). (2) **생성 가드** — `_SYNTH_PROMPT_TEMPLATE`(`research_orchestrator.py`)+`telegram-qa/SKILL.md`에 유효 d2 shape 목록·`database`→`cylinder/stored_data`·`font-weight`→`bold:true` 명시. (3) 라이브 글 292는 d2 소스 교정→`_render_diagrams_in_html` 재실행→`POST /posts/292` content 갱신(d2 2개 PNG 정상 게시).
+- **교훈**: "다이어그램이 코드로 박힘" 디버깅 시 **Chrome/래스터화보다 먼저 `curl kroki/<type>/svg` 컴파일 상태(400+에러 본문)를 본다.** *일부* d2만 실패 = 환경이 아니라 **그 소스의 문법** 문제. 조용한 폴백을 loud로 바꾼 게 핵심(이제 깨지면 발행 시점에 알림). → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+- 파일: `shared/wordpress_uploader.py`, `shared/research_orchestrator.py`, (런타임 외부·미커밋) `~/.claude/skills/telegram-qa/SKILL.md`.
+
 ## 2026-06-17: [fix] WaveDrom 파형 의미론 오류(래치가 D 미추종) + 자기일관성 가드
 
 - **증상**: `flip-flop-vs-latch-chip-design-control`(post 254) 글에서 Latch 파형이 **본문 설명과 모순** — 글은 "레벨 민감 래치는 CLK High 동안 D를 즉시 따라가 글리치까지 새어 나간다"고 하는데, 파형의 Latch는 D의 중간 dip을 무시한 채 High 유지.
