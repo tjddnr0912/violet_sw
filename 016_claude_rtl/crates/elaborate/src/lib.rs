@@ -5029,6 +5029,24 @@ impl<'s> Elaborator<'s> {
 
             // ── selects → Select{base,offset,width,kind} (all ExprIds) ──
             ast::ExprKind::BitSelect { base, index } => {
+                // N3.4 follow-on: a RANGE select cannot be further indexed —
+                // `x[3:2][0]` / `x[c+:w][0]`. iverilog rejects this universally
+                // ("All but the final index in a chain of indices must be a single
+                // value, not a range."), on plain vectors too. vita used to silently
+                // bit-select bit `index` of the already-narrowed range result (a
+                // silent-wrong value), so this is a loud E3009, not a fall-through.
+                if matches!(
+                    &base.kind,
+                    ast::ExprKind::PartSelect { .. } | ast::ExprKind::IndexedPart { .. }
+                ) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "all but the final index in a chain of indices must be a \
+                         single value, not a range",
+                    );
+                    let _ = index;
+                    return self.placeholder_expr();
+                }
                 // v5 ⑥: dyn-handle element read (`d[i]`, `q[$]`, `a[k]`) —
                 // BEFORE the static array/packed chains (handles have
                 // `array_len 0`, so those would mis-route to bit-select).
@@ -5120,6 +5138,12 @@ impl<'s> Elaborator<'s> {
                 width,
                 dir,
             } => {
+                // N3.4 follow-on: a constant indexed part-select on a bare/array
+                // multi-dim packed net selects whole outer elements (`x[2+:2]` ≡
+                // `x[3:2]`); a variable offset is loud (iverilog 13.0 aborts).
+                if let Some(sel) = self.try_packed_indexed_part(base, offset, width, dir) {
+                    return sel;
+                }
                 let base_id = self.lower_expr(base);
                 if self.expr_is_real(base_id) {
                     self.error(
@@ -5508,6 +5532,12 @@ impl<'s> Elaborator<'s> {
                 dir,
                 ..
             } => {
+                // N3.4 follow-on: constant indexed part-select on multi-dim packed
+                // writes whole outer elements; variable offset is loud.
+                if let Some(chunk) = self.try_packed_indexed_part_lval(base, offset, width, dir) {
+                    out.push(chunk);
+                    return;
+                }
                 let (net, word) = self.lval_part_base(base);
                 let raw_off = self.lower_expr(offset);
                 let off = self.norm_offset_for_net(net, raw_off);
@@ -7499,13 +7529,10 @@ impl<'s> Elaborator<'s> {
         msb: &ast::Expr,
         lsb: &ast::Expr,
     ) -> Option<u32> {
-        let ast::ExprKind::Ident(path) = &base.kind else {
-            return None;
-        };
-        let net = self.bare_packed_net(path)?;
+        let (net, word) = self.packed_ps_base(base)?;
         match self.packed_outer_part_select(net, msb, lsb)? {
             Ok((offset, width)) => {
-                let base_id = self.push_expr(ir::Expr::Signal { net, word: None });
+                let base_id = self.push_expr(ir::Expr::Signal { net, word });
                 Some(self.push_expr(ir::Expr::Select {
                     base: base_id,
                     offset,
@@ -7520,6 +7547,141 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// N3.4 follow-on: a constant indexed part-select (`x[c+:w]` / `x[c-:w]`) on a
+    /// multi-dim packed net (bare or an array-of-packed element) addresses whole
+    /// OUTER elements just like `[msb:lsb]` — `x[2+:2]` ≡ `x[3:2]` (iverilog folds
+    /// the const form to a range). A VARIABLE offset (`x[i+:2]`) is loud: iverilog
+    /// 13.0 aborts on it, so the bit-vs-element unit is undefined and vita rejects
+    /// rather than guess. `None` ⇒ non-packed base ⇒ the generic path (a plain
+    /// vector indexed part-select is correct flat-bits).
+    fn try_packed_indexed_part(
+        &mut self,
+        base: &ast::Expr,
+        offset: &ast::Expr,
+        width: &ast::Expr,
+        dir: &ast::PartDir,
+    ) -> Option<u32> {
+        let (net, word) = self.packed_ps_base(base)?;
+        match self.packed_indexed_range(net, offset, width, dir) {
+            Ok((off, w)) => {
+                let base_id = self.push_expr(ir::Expr::Signal { net, word });
+                Some(self.push_expr(ir::Expr::Select {
+                    base: base_id,
+                    offset: off,
+                    width: w,
+                    kind: ir::SelKind::PartIdxUp,
+                }))
+            }
+            Err(()) => Some(self.placeholder_expr()),
+        }
+    }
+
+    /// Resolve the base of a part-select / indexed part-select to a multi-dim
+    /// PACKED net plus an optional element-word selector:
+    ///   - a bare `Ident` ⇒ `(net, None)` (the whole net is the packed word);
+    ///   - `arr[idx]` where `arr` is a 1-D array of multi-dim packed ⇒
+    ///     `(net, Some(elem_word))` (N3.4 follow-on `qm[i][3:2]` — a part-select
+    ///     WITHIN an array element), the element word flattened over the array's
+    ///     unpacked dims exactly as [`Self::lower_array_read`] does.
+    ///
+    /// Yields `None` for a plain vector, a non-array/non-packed base, or a deeper
+    /// nesting (multi-D unpacked array, or partial/surplus indices) — the caller
+    /// then falls through to the generic path (a plain vector is correct flat-bits).
+    fn packed_ps_base(&mut self, base: &ast::Expr) -> Option<(u32, Option<u32>)> {
+        match &base.kind {
+            ast::ExprKind::Ident(path) => self.bare_packed_net(path).map(|n| (n, None)),
+            ast::ExprKind::BitSelect { base: b, index } => {
+                let (net, idxs) = self.expr_array_chain(b, index)?;
+                // element must itself be multi-dim packed, and EVERY unpacked dim
+                // indexed (full element select — partial/surplus ⇒ None ⇒ generic).
+                if self.packed_dims.get(&net).is_none_or(|d| d.len() < 2) {
+                    return None;
+                }
+                let dims = self.net_dim_extents(net);
+                if idxs.len() != dims.len() {
+                    return None;
+                }
+                let word = self.flatten_word(&dims, &idxs, &[]);
+                Some((net, Some(word)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Write-side twin of [`Self::packed_ps_base`] over `Lvalue` nodes.
+    fn packed_ps_base_lval(&mut self, base: &ast::Lvalue) -> Option<(u32, Option<u32>)> {
+        match base {
+            ast::Lvalue::Ident(path) => self.bare_packed_net(path).map(|n| (n, None)),
+            ast::Lvalue::BitSelect { base: b, index, .. } => {
+                let (net, idxs) = self.lval_array_chain(b, index)?;
+                if self.packed_dims.get(&net).is_none_or(|d| d.len() < 2) {
+                    return None;
+                }
+                let dims = self.net_dim_extents(net);
+                if idxs.len() != dims.len() {
+                    return None;
+                }
+                let word = self.flatten_word(&dims, &idxs, &[]);
+                Some((net, Some(word)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Shared `(m, l)` resolution for a constant indexed part-select on multi-dim
+    /// packed `net`: `+:` ⇒ `[c+w-1 : c]`, `-:` ⇒ `[c : c-w+1]`. A non-const offset
+    /// ⇒ E3009 (`Err`, iverilog aborts); width is the const element count. Underflow
+    /// of `-:` and over-range are out-of-bounds (`Err` via [`Self::packed_outer_range`]).
+    fn packed_indexed_range(
+        &mut self,
+        net: u32,
+        offset: &ast::Expr,
+        width: &ast::Expr,
+        dir: &ast::PartDir,
+    ) -> Result<(u32, u32), ()> {
+        let Some(w) = const_eval_u32(width) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "indexed part-select width must be constant",
+            );
+            return Err(());
+        };
+        if w == 0 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "indexed part-select width must be ≥ 1",
+            );
+            return Err(());
+        }
+        let Some(c) = const_eval_u32(offset) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "variable indexed part-select on a multi-dim packed array is \
+                 unsupported (iverilog 13.0 also rejects it; the bit-vs-element \
+                 unit is undefined)",
+            );
+            return Err(());
+        };
+        let (m, l) = match dir {
+            ast::PartDir::PlusColon => (c + w - 1, c),
+            ast::PartDir::MinusColon => {
+                if c + 1 < w {
+                    // c-w+1 < 0 — below the lowest element index.
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "part-select range exceeds the declared bounds of the packed array",
+                    );
+                    return Err(());
+                }
+                // low index = c-w+1; add BEFORE subtract so the legal low-end case
+                // (c-w+1 == 0, e.g. `x[0-:1]`/`x[1-:2]`) does not underflow u32 — the
+                // guard above already ensures `c + 1 >= w` (review M1).
+                (c, (c + 1) - w)
+            }
+        };
+        self.packed_outer_range(net, m, l)
+    }
+
     /// Write-side twin of [`Self::try_packed_part_select`]: a `[msb:lsb] = …`
     /// part-select on a bare multi-dim PACKED net → one whole-element-range
     /// `LvalChunk` (offset/width in the outer-dim element scale, `PartIdxUp`),
@@ -7531,27 +7693,54 @@ impl<'s> Elaborator<'s> {
         msb: &ast::Expr,
         lsb: &ast::Expr,
     ) -> Option<ir::LvalChunk> {
-        let ast::Lvalue::Ident(path) = base else {
-            return None;
-        };
-        let net = self.bare_packed_net(path)?;
+        let (net, word) = self.packed_ps_base_lval(base)?;
         match self.packed_outer_part_select(net, msb, lsb)? {
             Ok((offset, width)) => Some(ir::LvalChunk {
                 net,
-                word: None,
+                word,
                 offset: Some(offset),
                 width: Some(width),
                 kind: ir::SelKind::PartIdxUp,
             }),
             // out-of-range: E3009 already emitted — a loud POISON placeholder
             // chunk (so the generic path does not silently write past the net).
-            Err(()) => Some(ir::LvalChunk {
-                net: POISON_NET,
-                word: None,
-                offset: None,
-                width: None,
-                kind: ir::SelKind::Bit,
+            Err(()) => Some(Self::poison_chunk()),
+        }
+    }
+
+    /// Write-side twin of [`Self::try_packed_indexed_part`]: a constant indexed
+    /// part-select LHS (`x[c+:w] = …`, `qm[i][c+:w] = …`) on multi-dim packed →
+    /// one whole-element-range chunk; a variable offset is loud (POISON chunk).
+    fn try_packed_indexed_part_lval(
+        &mut self,
+        base: &ast::Lvalue,
+        offset: &ast::Expr,
+        width: &ast::Expr,
+        dir: &ast::PartDir,
+    ) -> Option<ir::LvalChunk> {
+        let (net, word) = self.packed_ps_base_lval(base)?;
+        match self.packed_indexed_range(net, offset, width, dir) {
+            Ok((off, w)) => Some(ir::LvalChunk {
+                net,
+                word,
+                offset: Some(off),
+                width: Some(w),
+                kind: ir::SelKind::PartIdxUp,
             }),
+            Err(()) => Some(Self::poison_chunk()),
+        }
+    }
+
+    /// A loud POISON lvalue chunk — the write-side counterpart of
+    /// [`Self::placeholder_expr`], used after a loud E3009 so the generic path does
+    /// not silently write past / into the wrong net.
+    fn poison_chunk() -> ir::LvalChunk {
+        ir::LvalChunk {
+            net: POISON_NET,
+            word: None,
+            offset: None,
+            width: None,
+            kind: ir::SelKind::Bit,
         }
     }
 
@@ -7581,30 +7770,53 @@ impl<'s> Elaborator<'s> {
         msb: &ast::Expr,
         lsb: &ast::Expr,
     ) -> Option<Result<(u32, u32), ()>> {
-        let dims = self.packed_dims.get(&net)?.clone();
         let (m, l) = (const_eval_u32(msb)?, const_eval_u32(lsb)?);
         if m < l {
             return None; // ascending [lsb:msb] — generic path loud-rejects
         }
-        // the FULL [lsb:msb] span must lie inside the outer dim (dims[0]); the
-        // lsb alone is not enough — msb sets the high end. iverilog rejects an
-        // over-bounds part-select at compile time.
-        let (olo, osize, _) = dims[0];
+        Some(self.packed_outer_range(net, m, l))
+    }
+
+    /// Core of [`Self::packed_outer_part_select`]: a DESCENDING outer-dim range
+    /// `[m:l]` (`m >= l`, both already resolved to constants) on multi-dim packed
+    /// `net`, also reached by a constant indexed part-select (`x[c+:w]` ⇒ `[c+w-1:c]`).
+    /// Returns `Ok((lsb-element flat bit-offset eid, count×elem_w width eid))` for an
+    /// in-range select, or `Err(())` after emitting E3009 for an out-of-range select
+    /// or an ASCENDING outer dim (the pre-existing ascending-part-select limitation;
+    /// iverilog supports it but vita does not yet). `offset = (l-olo)*elem_w` is the
+    /// const form of [`Self::flatten_word`] for one descending outer index, so the
+    /// element-range select lands byte-identically to the existing N3.4 path.
+    fn packed_outer_range(&mut self, net: u32, m: u32, l: u32) -> Result<(u32, u32), ()> {
+        let dims = self.packed_dims[&net].clone();
+        let (olo, osize, ascending) = dims[0];
+        if ascending {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "ascending [lo:hi] part-select on a multi-dim packed array is \
+                 unsupported (pre-existing limitation)",
+            );
+            return Err(());
+        }
+        // the FULL [m:l] span must lie inside the outer dim (dims[0]); `l` alone
+        // is not enough — `m` sets the high end. iverilog rejects an over-bounds
+        // part-select at compile time (a variable indexed part-select aborts in
+        // 13.0, which `try_packed_indexed_part` handles separately).
         let ohi = olo + osize - 1;
         if l < olo || m > ohi {
             self.error(
                 MsgCode::ElabUnsupported,
                 "part-select range exceeds the declared bounds of the packed array",
             );
-            return Some(Err(()));
+            return Err(());
         }
-        // outer dim is dims[0]; an element is the product of the inner dims.
+        // outer dim is dims[0]; an element is the product of the inner dims, which
+        // is exactly the outer dim's stride in `flatten_word`.
         let elem_w: u64 = dims[1..].iter().map(|&(_, w, _)| w as u64).product();
         let count = (m - l + 1) as u64;
-        let (ext, dirs) = Self::packed_split(&dims);
-        let offset = self.flatten_word(&ext, &[lsb], &dirs);
+        let coord = (l - olo) as u64; // descending: element `l` sits at coord (l-olo)
+        let offset = self.const_u32_expr((coord * elem_w).min(u32::MAX as u64) as u32, 32);
         let width = self.const_u32_expr((count * elem_w).min(u32::MAX as u64) as u32, 32);
-        Some(Ok((offset, width)))
+        Ok((offset, width))
     }
 
     /// Write-side twin of [`Self::expr_array_chain`] over `Lvalue` nodes.
