@@ -5236,12 +5236,12 @@ impl<'s> Elaborator<'s> {
                 // guard MUST stay in sync with `file_read_int_special`.
                 if matches!(
                     name.name.as_str(),
-                    "$fgetc" | "$feof" | "$ungetc" | "$fgets" | "$fread"
+                    "$fgetc" | "$feof" | "$ungetc" | "$fgets" | "$fread" | "$fscanf" | "$sscanf"
                 ) {
                     self.error(
                         MsgCode::ElabUnsupported,
-                        "$fgetc/$feof/$ungetc/$fgets/$fread are supported only as \
-                         the direct rhs of a blocking assignment (v9)",
+                        "$fgetc/$feof/$ungetc/$fgets/$fread/$fscanf/$sscanf are \
+                         supported only as the direct rhs of a blocking assignment (v9)",
                     );
                     return self.placeholder_expr();
                 }
@@ -11538,6 +11538,12 @@ impl<'s> Elaborator<'s> {
                 if self.fread_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // v9 SYS-READ: `n = $fscanf(fd, fmt, args...)` /
+                // `n = $sscanf(str, fmt, args...)` — the scanf parser writes the
+                // matched ref args + returns the count, same family.
+                if self.scanf_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -12724,6 +12730,80 @@ impl<'s> Elaborator<'s> {
         }
         let rhs_id = self.push_expr(ir::Expr::SysFunc {
             which: ir::SysFuncId::Fread,
+            args: sf_args,
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
+    /// v9 `$fscanf(fd, fmt, args...)` / `$sscanf(str, fmt, args...)` special
+    /// form: the scanf parser WRITES every matched ref arg (a whole-net Signal)
+    /// AND, for `$fscanf`, advances the fd — a statement-level effect (WRITE
+    /// phase) in the `$value$plusargs` family, and the FIRST multi-ref-write
+    /// intercept. Legal ONLY as the direct rhs of a blocking assign; the
+    /// conversion count is assigned to `lhs`. Stays in sync with the lower_expr
+    /// loud-reject guard.
+    fn scanf_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        let which = match name.name.as_str() {
+            "$fscanf" => ir::SysFuncId::Fscanf,
+            "$sscanf" => ir::SysFuncId::Sscanf,
+            _ => return false,
+        };
+        if args.len() < 2 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$fscanf/$sscanf take (source, format, args...)",
+            );
+            return true;
+        }
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "intra-assignment delay on $fscanf/$sscanf is unsupported (v9)",
+            );
+            return true;
+        }
+        if !matches!(args[1].kind, ast::ExprKind::StrLit { .. }) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$fscanf/$sscanf need a string-literal format (v9)",
+            );
+            return true;
+        }
+        let src_id = self.lower_expr(&args[0]);
+        let fmt_id = self.lower_expr(&args[1]);
+        let mut sf_args = vec![src_id, fmt_id];
+        for a in &args[2..] {
+            let id = self.lower_expr(a);
+            if !matches!(
+                self.exprs.get(id as usize),
+                Some(ir::Expr::Signal { word: None, .. })
+            ) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$fscanf/$sscanf destination arguments must be plain variables (v9)",
+                );
+                return true;
+            }
+            sf_args.push(id);
+        }
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which,
             args: sf_args,
         });
         let lv = self.lower_lvalue(lhs);

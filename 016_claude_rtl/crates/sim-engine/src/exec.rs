@@ -140,6 +140,19 @@ pub(crate) trait Kernel {
     /// slot fill; a partial fill leaves the unread LOW bytes at their prior
     /// value); returns the total byte count.
     fn k_fread(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$fscanf(fd, fmt, args...)` (v9)? It parses the fd byte
+    /// stream and WRITES the matched ref args — statement-level effect (the
+    /// FIRST multi-ref-write intercept), direct-rhs only.
+    fn k_fscanf_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: run the scanf parser over the fd stream, writing each matched
+    /// conversion to its ref arg; returns the conversion count (−1 at EOF
+    /// before any input).
+    fn k_fscanf(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$sscanf(str, fmt, args...)` (v9)? Like `Fscanf` but the
+    /// source is a string VALUE, not an fd.
+    fn k_sscanf_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: run the scanf parser over the source string; see `k_fscanf`.
+    fn k_sscanf(&mut self, rhs: u32) -> Value;
     /// WRITE: `disable fork` — kill every active descendant of the calling
     /// process (P2-E; the activity arena marks them dead, stale queue
     /// entries drop at the dispatch choke).
@@ -510,6 +523,17 @@ enum StmtEffect<'s> {
         rhs: u32,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is `$fscanf`/`$sscanf` (v9): the scanf parser
+    /// WRITES every matched ref arg AND (for `$fscanf`) advances the fd — WRITE
+    /// phase, the `$value$plusargs` family (the conversion count → `lhs`). This
+    /// is the first MULTI-ref-write intercept; the N writes loop inside the
+    /// kernel worker, so the effect still rides the single `{lhs, rhs, offsets}`.
+    Scanf {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+        is_file: bool,
+    },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
@@ -653,6 +677,24 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
                     offsets,
                 };
             }
+            if k.k_fscanf_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Scanf {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                    is_file: true,
+                };
+            }
+            if k.k_sscanf_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Scanf {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                    is_file: false,
+                };
+            }
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
             let offsets = k.k_resolve_lvalue_offsets(lhs); // dynamic index NOW
             StmtEffect::Blocking {
@@ -762,6 +804,22 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::Fread { lhs, rhs, offsets } => {
             let value = k.k_fread(rhs); // binary read + target write (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Scanf {
+            lhs,
+            rhs,
+            offsets,
+            is_file,
+        } => {
+            // the parser writes every matched ref arg internally (WRITE phase);
+            // the conversion count is written to lhs.
+            let value = if is_file {
+                k.k_fscanf(rhs)
+            } else {
+                k.k_sscanf(rhs)
+            };
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }

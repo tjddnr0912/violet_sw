@@ -40,6 +40,338 @@ fn fill_reg_slots(prior: &Value, w: u32, bytes: &[u8]) -> Value {
     v
 }
 
+// ── v9 scanf parser ($fscanf / $sscanf), the FIRST multi-ref-write intercept ──
+fn scan_is_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+/// Next source byte. For `$fscanf` (fd = Some) it comes from the file stream
+/// (honoring the `$ungetc`/scanf pushback); for `$sscanf` (fd = None) from the
+/// `src` buffer at `*pos` (advanced). Returns None at end of input.
+fn scan_next(sched: &mut Scheduler, fd: Option<u32>, src: &[u8], pos: &mut usize) -> Option<u8> {
+    match fd {
+        Some(fd) => crate::builtins::file_read_byte(sched, fd),
+        None => {
+            let b = src.get(*pos).copied();
+            if b.is_some() {
+                *pos += 1;
+            }
+            b
+        }
+    }
+}
+
+/// Put one over-read byte back. For `$fscanf` it pushes onto the fd pushback
+/// stack (so it survives to the next directive AND the next call); for
+/// `$sscanf` it rewinds the cursor.
+fn scan_unget(sched: &mut Scheduler, fd: Option<u32>, pos: &mut usize, b: u8) {
+    match fd {
+        Some(fd) => sched.st.read_state.entry(fd).or_default().pushback.push(b),
+        None => *pos = pos.saturating_sub(1),
+    }
+}
+
+/// Pack bytes MSB-first (first byte = most significant) into a Value of width
+/// 8×len — the §5.9 string packing the dest write funnel then resizes.
+fn scan_pack_str(bytes: &[u8]) -> Value {
+    let w = (bytes.len() as u32 * 8).max(8);
+    let mut v = Value::zeros(w, false);
+    for (i, &by) in bytes.iter().rev().enumerate() {
+        let bit = i * 8;
+        v.val[bit / 64] |= (by as u64) << (bit % 64);
+    }
+    v
+}
+
+fn scan_write_dst(sched: &mut Scheduler, net: u32, v: Value) {
+    let lv = Lvalue {
+        chunks: vec![sim_ir::LvalChunk {
+            net,
+            word: None,
+            offset: None,
+            width: None,
+            kind: sim_ir::SelKind::Bit,
+        }],
+    };
+    let off = sched.resolve_lvalue_offsets(&lv);
+    sched.k_write_lvalue(&lv, v, &off);
+}
+
+/// Build a numeric scanf value sized to `dst_w` from the collected digit
+/// chars. Decimal (radix 10): parse `[sign][digits]` into a 128-bit two's-
+/// complement magnitude (wrapping), then sign-extend / truncate to `dst_w`
+/// (negative fills the high bits with 1, positive with 0). Hex/oct/bin:
+/// per-digit 4-state groups MSB-first (`x`/`X` → an X group, `z`/`Z`/`?` → a
+/// Z group), then extend to `dst_w` filling the high bits with x/z when the
+/// value's MSB is x/z and with 0 otherwise — the Verilog 4-state extension
+/// rule iverilog applies (e.g. `"x"` %h → all-X, `"1x"` → `001x`, `"ff"` →
+/// zero-extended).
+fn scan_build_numeric(chars: &[u8], radix: u32, dst_w: u32) -> Value {
+    let dst_w = dst_w.max(1);
+    let mut v = Value::zeros(dst_w, false);
+    if radix == 10 {
+        let neg = chars.first() == Some(&b'-');
+        let mut mag: u128 = 0;
+        for &c in chars {
+            if let Some(d) = (c as char).to_digit(10) {
+                mag = mag.wrapping_mul(10).wrapping_add(d as u128);
+            }
+        }
+        let raw = if neg {
+            (mag as i128).wrapping_neg() as u128
+        } else {
+            mag
+        };
+        for i in 0..dst_w.min(128) {
+            if (raw >> i) & 1 == 1 {
+                v.set_vu(i, 1, 0);
+            }
+        }
+        if neg && dst_w > 128 {
+            for i in 128..dst_w {
+                v.set_vu(i, 1, 0);
+            }
+        }
+        return v;
+    }
+    let bits_per: u32 = match radix {
+        16 => 4,
+        8 => 3,
+        _ => 1,
+    };
+    let mask = (1u64 << bits_per) - 1;
+    let ndig = chars.len();
+    let nbits = ndig as u32 * bits_per;
+    for (idx, &c) in chars.iter().enumerate() {
+        let base = (ndig - 1 - idx) as u32 * bits_per; // LSB bit of this digit
+        let (gv, gu): (u64, u64) = match c {
+            b'x' | b'X' => (0, mask),
+            b'z' | b'Z' | b'?' => (mask, mask),
+            _ => ((c as char).to_digit(radix).unwrap_or(0) as u64, 0),
+        };
+        for k in 0..bits_per {
+            let bit = base + k;
+            if bit < dst_w {
+                v.set_vu(bit, (gv >> k) & 1, (gu >> k) & 1);
+            }
+        }
+    }
+    // 4-state extension: fill the high bits using the value's MSB (x/z → x/z,
+    // known → 0).
+    if nbits < dst_w && nbits > 0 {
+        let (mv, mu) = v.get_vu(nbits - 1);
+        if mu != 0 {
+            for bit in nbits..dst_w {
+                v.set_vu(bit, mv, mu);
+            }
+        }
+    }
+    v
+}
+
+/// The shared scanf engine. Walks `fmt`, matching whitespace runs (zero+ input
+/// ws), literal chars (exact, a mismatch stops), and `%` conversions
+/// (`d`/`h`/`x`/`o`/`b`/`c`/`s`, optional `*` suppress + width). Each
+/// non-suppressed successful conversion writes `dsts[di]` and counts. Returns
+/// the conversion count, or −1 when NO source byte was ever available
+/// (genuine EOF; whitespace-only input that converts nothing returns 0).
+fn scan_run(sched: &mut Scheduler, fd: Option<u32>, src: &[u8], fmt: &[u8], dsts: &[u32]) -> Value {
+    let mut pos = 0usize;
+    let mut count: i64 = 0;
+    let mut di = 0usize;
+    let mut fi = 0usize;
+
+    // The -1 (EOF) vs 0 (matched nothing) decision is based on whether ANY
+    // source byte is AVAILABLE at entry — not on whether the scan read one
+    // (an empty format / an unsupported first conversion still returns 0 on a
+    // non-empty source). Peek one byte and put it back.
+    let at_eof = match scan_next(sched, fd, src, &mut pos) {
+        Some(b) => {
+            scan_unget(sched, fd, &mut pos, b);
+            false
+        }
+        None => true,
+    };
+
+    macro_rules! next {
+        () => {
+            scan_next(sched, fd, src, &mut pos)
+        };
+    }
+
+    'fmt: while fi < fmt.len() {
+        let fc = fmt[fi];
+        if scan_is_ws(fc) {
+            fi += 1;
+            while let Some(b) = next!() {
+                if !scan_is_ws(b) {
+                    scan_unget(sched, fd, &mut pos, b);
+                    break;
+                }
+            }
+            continue;
+        }
+        if fc != b'%' {
+            // literal char: must match exactly (a mismatch stops the scan).
+            fi += 1;
+            match next!() {
+                Some(b) if b == fc => {}
+                Some(b) => {
+                    scan_unget(sched, fd, &mut pos, b);
+                    break 'fmt;
+                }
+                None => break 'fmt,
+            }
+            continue;
+        }
+        // '%' — parse the conversion spec.
+        fi += 1;
+        if fi < fmt.len() && fmt[fi] == b'%' {
+            fi += 1;
+            match next!() {
+                Some(b'%') => {}
+                Some(b) => {
+                    scan_unget(sched, fd, &mut pos, b);
+                    break 'fmt;
+                }
+                None => break 'fmt,
+            }
+            continue;
+        }
+        let suppress = fi < fmt.len() && fmt[fi] == b'*';
+        if suppress {
+            fi += 1;
+        }
+        let mut width = 0usize;
+        let mut had_width = false;
+        while fi < fmt.len() && fmt[fi].is_ascii_digit() {
+            had_width = true;
+            // saturate: any width >= the input length already means "read all",
+            // so clamping to usize::MAX is harmless and avoids a `*10` overflow.
+            width = width
+                .saturating_mul(10)
+                .saturating_add((fmt[fi] - b'0') as usize);
+            fi += 1;
+        }
+        // an EXPLICIT field width of 0 (`%0d`) reads nothing => the conversion
+        // matches nothing; an ABSENT width is unbounded.
+        let width = if had_width { width } else { usize::MAX };
+        let Some(&conv) = fmt.get(fi) else { break };
+        fi += 1;
+
+        let value: Option<Value> = match conv {
+            b'c' => {
+                // exactly ONE char, NO leading-ws skip — iverilog IGNORES any
+                // explicit width on %c (reads one), EXCEPT an explicit `%0c`
+                // reads zero (matches nothing).
+                let w = if had_width && width == 0 { 0 } else { 1 };
+                let mut bytes = Vec::new();
+                for _ in 0..w {
+                    match next!() {
+                        Some(b) => bytes.push(b),
+                        None => break,
+                    }
+                }
+                (!bytes.is_empty()).then(|| scan_pack_str(&bytes))
+            }
+            b's' | b'S' => {
+                // skip leading ws, then a ws-delimited run (up to width).
+                while let Some(b) = next!() {
+                    if !scan_is_ws(b) {
+                        scan_unget(sched, fd, &mut pos, b);
+                        break;
+                    }
+                }
+                let mut bytes = Vec::new();
+                while bytes.len() < width {
+                    match next!() {
+                        Some(b) if scan_is_ws(b) => {
+                            scan_unget(sched, fd, &mut pos, b);
+                            break;
+                        }
+                        Some(b) => bytes.push(b),
+                        None => break,
+                    }
+                }
+                (!bytes.is_empty()).then(|| scan_pack_str(&bytes))
+            }
+            b'd' | b'D' | b'h' | b'H' | b'x' | b'X' | b'o' | b'O' | b'b' | b'B' => {
+                let radix: u32 = match conv {
+                    b'd' | b'D' => 10,
+                    b'o' | b'O' => 8,
+                    b'b' | b'B' => 2,
+                    _ => 16,
+                };
+                let is_dec = radix == 10;
+                // skip leading ws.
+                while let Some(b) = next!() {
+                    if !scan_is_ws(b) {
+                        scan_unget(sched, fd, &mut pos, b);
+                        break;
+                    }
+                }
+                // read [sign?][digits] up to `width` chars. A sign is honored
+                // ONLY for %d (iverilog rejects +/- for %h/%o/%b); the 4-state
+                // digits x/X/z/Z/? are honored ONLY for %h/%o/%b (iverilog's
+                // %d on x/z aborts — out of scope).
+                let mut chars: Vec<u8> = Vec::new();
+                while chars.len() < width {
+                    match next!() {
+                        Some(b) => {
+                            let ok = (chars.is_empty() && is_dec && (b == b'-' || b == b'+'))
+                                || (b as char).is_digit(radix)
+                                || (!is_dec && matches!(b, b'x' | b'X' | b'z' | b'Z' | b'?'));
+                            if ok {
+                                chars.push(b);
+                            } else {
+                                scan_unget(sched, fd, &mut pos, b);
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                let has_digit = chars.iter().any(|&c| {
+                    (c as char).is_digit(radix)
+                        || (!is_dec && matches!(c, b'x' | b'X' | b'z' | b'Z' | b'?'))
+                });
+                if !has_digit {
+                    None
+                } else {
+                    let dst_w = dsts
+                        .get(di)
+                        .and_then(|&n| sched.st.ir.nets.get(n as usize))
+                        .map(|nv| nv.width.max(1))
+                        .unwrap_or(64);
+                    Some(scan_build_numeric(&chars, radix, dst_w))
+                }
+            }
+            _ => break, // unsupported conversion -> stop
+        };
+
+        match value {
+            Some(v) => {
+                if !suppress {
+                    if let Some(&net) = dsts.get(di) {
+                        scan_write_dst(sched, net, v);
+                    }
+                    di += 1;
+                    count += 1;
+                }
+            }
+            None => break 'fmt, // a matching failure stops the scan
+        }
+    }
+
+    if count > 0 {
+        Value::from_i128(count as i128, 32, true)
+    } else if at_eof {
+        Value::from_i128(-1, 32, true) // genuine EOF: no source byte available
+    } else {
+        Value::from_i128(0, 32, true) // input present but nothing converted
+    }
+}
+
 /// A schedulable process resume. `proc` is a runtime ACTIVITY id (index into
 /// `Scheduler::activities`), NOT a declaration index: top-level processes seed
 /// activities `0..nproc` 1:1, and `fork` APPENDS child activities (id ≥ nproc).
@@ -2709,6 +3041,72 @@ impl Kernel for Scheduler<'_, '_> {
             }
         }
         Value::from_i128(rc as i128, 32, true)
+    }
+    fn k_fscanf_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Fscanf,
+                ..
+            })
+        )
+    }
+    fn k_fscanf(&mut self, rhs: u32) -> Value {
+        // args = [fd, fmt strconst, dst0, dst1, ...] — elaborate's contract.
+        let args: Vec<u32> = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() >= 2 => args.clone(),
+            _ => return Value::from_i128(-1, 32, true),
+        };
+        let fdv = self.eval(args[0]);
+        if fdv.has_xz() {
+            return Value::from_i128(-1, 32, true);
+        }
+        let fd = fdv.to_u64().unwrap_or(0) as u32;
+        let fmt: Vec<u8> = match self.st.ir.exprs.get(args[1] as usize) {
+            Some(sim_ir::Expr::Const { val }) => {
+                crate::builtins::const_string(self.st.ir, *val).into_bytes()
+            }
+            _ => return Value::from_i128(-1, 32, true),
+        };
+        let dsts: Vec<u32> = args[2..]
+            .iter()
+            .filter_map(|&a| match self.st.ir.exprs.get(a as usize) {
+                Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                _ => None,
+            })
+            .collect();
+        scan_run(self, Some(fd), &[], &fmt, &dsts)
+    }
+    fn k_sscanf_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Sscanf,
+                ..
+            })
+        )
+    }
+    fn k_sscanf(&mut self, rhs: u32) -> Value {
+        // args = [source string-VALUE, fmt strconst, dst0, ...].
+        let args: Vec<u32> = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() >= 2 => args.clone(),
+            _ => return Value::from_i128(-1, 32, true),
+        };
+        let src: Vec<u8> = self.eval(args[0]).to_str_bytes();
+        let fmt: Vec<u8> = match self.st.ir.exprs.get(args[1] as usize) {
+            Some(sim_ir::Expr::Const { val }) => {
+                crate::builtins::const_string(self.st.ir, *val).into_bytes()
+            }
+            _ => return Value::from_i128(-1, 32, true),
+        };
+        let dsts: Vec<u32> = args[2..]
+            .iter()
+            .filter_map(|&a| match self.st.ir.exprs.get(a as usize) {
+                Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                _ => None,
+            })
+            .collect();
+        scan_run(self, None, &src, &fmt, &dsts)
     }
     fn k_sformatf_rhs(&self, rhs: u32) -> bool {
         matches!(
