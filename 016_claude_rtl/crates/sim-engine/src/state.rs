@@ -72,11 +72,6 @@ pub(crate) struct MonitorState {
     /// rendered-string diff would (e.g. `4'b00xx → 4'b0x00` under `%d`, both
     /// printing "x", is correctly detected as a change here).
     pub last_vals: Option<Vec<Value>>,
-    /// `$monitoroff` clears this; `$monitoron` re-sets + resets `last_vals` to
-    /// force a print. DEFERRED for the MVP (no SysTaskId bound) — field present,
-    /// always `true`, so the flush logic is already on/off-aware when the tasks
-    /// land.
-    pub enabled: bool,
 }
 
 /// A pending deferred-immediate-assertion report (IEEE 1800-2017 §16.4) captured
@@ -111,6 +106,15 @@ pub(crate) struct Postponed {
     pub strobes: Vec<FmtCapture>,
     /// The global monitor (replace-on-redefine). `None` until first `$monitor`.
     pub monitor: Option<MonitorState>,
+    /// v9 rank 6: the GLOBAL monitor-enable, modeled as `$monitoroff`-disabled
+    /// (IEEE 1364-2005 §17.1). It is independent of monitor (re-)establishment —
+    /// `$monitor` does NOT reset it — and persists across re-`$monitor`, so a
+    /// `$monitoroff` issued before/around a `$monitor` keeps suppressing
+    /// change-reprints. `false` (default) = enabled; the inverted spelling lets
+    /// `#[derive(Default)]` give the correct "enabled" default. The ESTABLISHMENT
+    /// print (and `$monitoron`-forced reprint, both `last_vals == None`) bypass
+    /// this flag — only change-triggered reprints obey it.
+    pub monitor_disabled: bool,
     /// `assert #0` pending reports, keyed by `(marker StmtId, activity id,
     /// generation)` so a re-reach of the SAME assertion instance REPLACES its
     /// prior report (flush-on-re-reach). Drained at the Observed region each

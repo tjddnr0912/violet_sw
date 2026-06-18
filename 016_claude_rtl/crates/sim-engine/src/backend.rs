@@ -111,7 +111,11 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
                             | SysFuncId::Fgets
                             | SysFuncId::Fread
                             | SysFuncId::Fscanf
-                            | SysFuncId::Sscanf,
+                            | SysFuncId::Sscanf
+                            // v9 rank 6: $dist_uniform writes the ref seed; $cast
+                            // writes the ref dst — both statement-level intercepts.
+                            | SysFuncId::DistUniform
+                            | SysFuncId::Cast,
                         ..
                     })
                 )

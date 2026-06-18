@@ -1296,7 +1296,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         //     `Option::take` is used so the old baseline is moved out (not
         //     cloned) and the slot is rewritten unconditionally below.
         let mon = match self.st.postponed.monitor.as_mut() {
-            Some(m) if m.enabled => {
+            Some(m) => {
                 let fmt = m.cap.fmt;
                 let args = m.cap.args.clone();
                 let tmult = m.cap.time_mult; // monitoring module's M (see (a) above)
@@ -1305,7 +1305,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 let prev = m.last_vals.take(); // moves baseline out; slot now None
                 Some((fmt, args, tmult, radix, scope, prev))
             }
-            // disabled (`$monitoroff`) or no monitor established → nothing to do.
+            // no monitor established → nothing to do. (DISABLED is no longer
+            // gated here: the establishment print must fire even when disabled,
+            // so the enable check moved INTO the change-detection below.)
             _ => None,
         };
         if let Some((fmt, args, tmult, radix, scope, prev)) = mon {
@@ -1339,6 +1341,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                         }
                     )
                 };
+                // v9 rank 6: an ESTABLISHMENT (or `$monitoron`-forced) flush —
+                // `prev == None` — ALWAYS prints, bypassing `$monitoroff` (the
+                // establishment line is bound to the `$monitor` time-step; a
+                // same-tick or prior `$monitoroff` does not cancel it). Only
+                // CHANGE-triggered reprints (`prev == Some`) obey the global flag.
+                let was_establishment = prev.is_none();
+                let monitor_disabled = self.st.postponed.monitor_disabled;
                 // P3-2: reuse the previous baseline Vec — evaluate each arg,
                 // compare against the old slot, then overwrite IN PLACE (one
                 // allocation per monitor lifetime, not one per timestep).
@@ -1379,7 +1388,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                         (changed, old)
                     }
                 };
-                if changed {
+                // establishment / forced reprint prints unconditionally; a
+                // change-reprint prints only while the monitor is enabled.
+                let do_print = was_establishment || (changed && !monitor_disabled);
+                if do_print {
                     let mut line = format_args_str(self, fmt, &args, radix);
                     line.push('\n');
                     write_out(self.st, &line);
@@ -2517,6 +2529,100 @@ impl Kernel for Scheduler<'_, '_> {
         let off = self.resolve_lvalue_offsets(&lv);
         self.k_write_lvalue(&lv, sv, &off);
         Value::from_i128(r as i128, 32, true)
+    }
+    fn k_dist_seeded_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::DistUniform,
+                args,
+            }) if args.len() == 3
+        )
+    }
+    fn k_dist_seeded(&mut self, rhs: u32) -> Value {
+        // shape guaranteed by `k_dist_seeded_rhs` + elaborate's whole-net seed
+        // contract; everything below defends a hand-built IR.
+        let (seed_net, start_arg, end_arg) = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() == 3 => {
+                let net = match self.st.ir.exprs.get(args[0] as usize) {
+                    Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                    _ => None,
+                };
+                (net, args[1], args[2])
+            }
+            _ => return Value::xs(32, true),
+        };
+        let Some(net) = seed_net else {
+            return Value::xs(32, true);
+        };
+        // start/end are `integer` (signed 32-bit); X/Z reads as 0.
+        let start = self.eval(start_arg).to_u64().unwrap_or(0) as u32 as i32;
+        let end = self.eval(end_arg).to_u64().unwrap_or(0) as u32 as i32;
+        // seed in: low 32 bits; X/Z → 0 (uninitialized-reg parity), then the
+        // Annex `69069*s+1` advance applies.
+        let cur = self.st.read_net(net, None);
+        let mut s = if cur.has_xz() {
+            0
+        } else {
+            (cur.to_u64().unwrap_or(0) & 0xffff_ffff) as u32
+        };
+        let r = crate::rng::dist_uniform(&mut s, start, end);
+        let lv = Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: None,
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        };
+        let sv = Value::from_i128(s as i32 as i128, 32, true);
+        let off = self.resolve_lvalue_offsets(&lv);
+        self.k_write_lvalue(&lv, sv, &off);
+        Value::from_i128(r as i128, 32, true)
+    }
+    fn k_cast_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Cast,
+                args,
+            }) if args.len() == 2
+        )
+    }
+    fn k_cast(&mut self, rhs: u32) -> Value {
+        // func-form `ok = $cast(dst, src)`: write the resized `src` into the `dst`
+        // ref arg and return 1. iverilog 13.0 does NOT support $cast (no oracle):
+        // hand-IEEE §6.24.2 — an integral assignment always succeeds in this
+        // class-free subset, so the status is always 1 (failure=0 needs class /
+        // strict-enum range checks vita does not model).
+        let (dst_net, src_arg) = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() == 2 => {
+                let net = match self.st.ir.exprs.get(args[0] as usize) {
+                    Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                    _ => None,
+                };
+                (net, args[1])
+            }
+            _ => return Value::from_i128(0, 32, true),
+        };
+        let Some(net) = dst_net else {
+            return Value::from_i128(0, 32, true);
+        };
+        let lv = Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: None,
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        };
+        // context-size `src` to the dst width, then write through the funnel.
+        let v = self.eval_for_lvalue(&lv, src_arg);
+        let off = self.resolve_lvalue_offsets(&lv);
+        self.k_write_lvalue(&lv, v, &off);
+        Value::from_i128(1, 32, true)
     }
     fn k_value_plusargs_rhs(&self, rhs: u32) -> bool {
         matches!(

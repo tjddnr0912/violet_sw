@@ -5274,6 +5274,20 @@ impl<'s> Elaborator<'s> {
                     );
                     return self.placeholder_expr();
                 }
+                // v9 rank 6: $dist_uniform advances the ref seed, $cast (func form)
+                // writes the dst ref — both direct-rhs-only (the legal placements
+                // intercept in lower_stmt before lower_expr). Reaching here is an
+                // illegal nested placement — loud, never a silent unseeded draw /
+                // dropped cast. MUST stay in sync with dist_uniform_special /
+                // cast_special.
+                if matches!(name.name.as_str(), "$dist_uniform" | "$cast") {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "$dist_uniform / $cast (function form) are supported only as \
+                         the direct rhs of a blocking assignment (v9)",
+                    );
+                    return self.placeholder_expr();
+                }
                 // v7: the $test$plusargs query must be a string literal (the
                 // full string type lands with P2-C).
                 if name.name == "$test$plusargs"
@@ -11856,6 +11870,14 @@ impl<'s> Elaborator<'s> {
                 if self.random_seeded_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // v9 rank 6: `x = $dist_uniform(seed, start, end)` — seeded family.
+                if self.dist_uniform_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
+                // v9 rank 6: `ok = $cast(dst, src)` (func form) — writes dst ref.
+                if self.cast_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 // v7: `ok = $value$plusargs(fmt, var)` — same family.
                 if self.value_plusargs_special(b, lhs, delay.as_ref(), rhs) {
                     return;
@@ -12688,10 +12710,26 @@ impl<'s> Elaborator<'s> {
             which: ir::SysFuncId::Random,
             args: vec![seed_id],
         });
+        self.emit_blocking_intercept(b, lhs, delay, rhs_id);
+        true
+    }
+
+    /// Shared tail for the seeded / ref-writing blocking intercepts (`$random`,
+    /// `$dist_uniform`, `$cast`): push the `lhs = <intercept rhs>` blocking
+    /// assign, honoring an intra-assignment delay with capture-now/write-later
+    /// (the draw / ref write happens at the capture; only the lhs write delays).
+    /// The IR is byte-identical to the prior inline `$random` lowering (IR-0).
+    fn emit_blocking_intercept(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs_id: u32,
+    ) {
         let lv = self.lower_lvalue(lhs);
         self.check_lvalue_kind(&lv, true);
         if let Some(d) = delay {
-            // capture-now/write-later: the DRAW (and seed update) happens at
+            // capture-now/write-later: the DRAW (and seed/ref update) happens at
             // the capture statement; only the lhs write is delayed.
             let w = self.ir_lvalue_width(&lv);
             let tmp = self.fresh_ia_tmp(w);
@@ -12724,6 +12762,103 @@ impl<'s> Elaborator<'s> {
             });
             b.push_stmt_id(sid);
         }
+    }
+
+    /// v9 rank 6: `x = $dist_uniform(seed, start, end)` — the seeded-`$random`
+    /// family (the engine advances `seed` in the WRITE phase). The seed must
+    /// lower to a plain whole-net Signal; `start`/`end` are any expressions.
+    fn dist_uniform_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$dist_uniform" {
+            return false;
+        }
+        if args.len() != 3 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$dist_uniform takes (seed, start, end)",
+            );
+            return true;
+        }
+        let seed_id = self.lower_expr(&args[0]);
+        let seed_net = match self.exprs.get(seed_id as usize) {
+            Some(ir::Expr::Signal { net, word: None }) => Some(*net),
+            _ => None,
+        };
+        let Some(seed_net) = seed_net else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$dist_uniform seed must be a plain integral variable (v9)",
+            );
+            return true;
+        };
+        // iverilog rejects a seed narrower than 32 bits: the 32-bit Annex LCG
+        // state would be truncated on write-back, silently corrupting the
+        // sequence. Match it with a loud E3009 (review M1).
+        if self.nets[seed_net as usize].width < 32 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$dist_uniform seed variable must be at least 32 bits \
+                 (a narrower seed would truncate the RNG state)",
+            );
+            return true;
+        }
+        let start_id = self.lower_expr(&args[1]);
+        let end_id = self.lower_expr(&args[2]);
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::DistUniform,
+            args: vec![seed_id, start_id, end_id],
+        });
+        self.emit_blocking_intercept(b, lhs, delay, rhs_id);
+        true
+    }
+
+    /// v9 rank 6: `ok = $cast(dst, src)` (function form) — the `$value$plusargs`
+    /// family (the engine writes the `dst` ref arg in the WRITE phase, returns 1).
+    /// `dst` must lower to a plain whole-net Signal; `src` is any expression.
+    /// iverilog 13.0 does not support `$cast` (no oracle): hand-IEEE §6.24.2,
+    /// integral assignment always succeeds. (The task form is in `map_systask`.)
+    fn cast_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$cast" {
+            return false;
+        }
+        if args.len() != 2 {
+            self.error(MsgCode::ElabUnsupported, "$cast takes (dest, source)");
+            return true;
+        }
+        let dst_id = self.lower_expr(&args[0]);
+        if !matches!(
+            self.exprs.get(dst_id as usize),
+            Some(ir::Expr::Signal { word: None, .. })
+        ) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$cast destination must be a plain integral variable (v9 subset)",
+            );
+            return true;
+        }
+        let src_id = self.lower_expr(&args[1]);
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Cast,
+            args: vec![dst_id, src_id],
+        });
+        self.emit_blocking_intercept(b, lhs, delay, rhs_id);
         true
     }
 
@@ -14048,6 +14183,27 @@ impl<'s> Elaborator<'s> {
                 return None;
             }
         };
+        // v9 rank 6: the $cast TASK form `$cast(dst, src);` must carry the SAME
+        // loud guards as the func form (cast_special) — a non-plain destination
+        // (memory element / select / concat) or wrong arity is E3009, NOT a silent
+        // dropped no-op in the engine's cast_task (review H1).
+        if matches!(which, ir::SysTaskId::Cast) {
+            if args.len() != 2 {
+                self.error(MsgCode::ElabUnsupported, "$cast takes (dest, source)");
+                return None;
+            }
+            let dst_id = self.lower_expr(&args[0]);
+            if !matches!(
+                self.exprs.get(dst_id as usize),
+                Some(ir::Expr::Signal { word: None, .. })
+            ) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$cast destination must be a plain integral variable (v9 subset)",
+                );
+                return None;
+            }
+        }
         let takes_fmt = matches!(
             which,
             ir::SysTaskId::Display
@@ -14354,6 +14510,12 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         "$sformat" => Some(ir::SysTaskId::Sformat),
         "$fdisplay" | "$fdisplayb" | "$fdisplayo" | "$fdisplayh" => Some(ir::SysTaskId::Fdisplay),
         "$fwrite" | "$fwriteb" | "$fwriteo" | "$fwriteh" => Some(ir::SysTaskId::Fwrite),
+        // v9 rank 6: monitor enable/disable + the $cast TASK form (`$cast(d, s);`
+        // as a statement — the func form `ok = $cast(d, s)` is a direct-rhs
+        // intercept, see `cast_special`).
+        "$monitoron" => Some(ir::SysTaskId::MonitorOn),
+        "$monitoroff" => Some(ir::SysTaskId::MonitorOff),
+        "$cast" => Some(ir::SysTaskId::Cast),
         _ => None,
     }
 }

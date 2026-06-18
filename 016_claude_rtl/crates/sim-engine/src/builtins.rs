@@ -333,8 +333,11 @@ pub(crate) fn dispatch(
                     scope: sched.st.cur_scope.clone(),
                 },
                 last_vals: None,
-                enabled: true,
             });
+            // v9 rank 6: (re-)establishing a monitor does NOT touch the global
+            // enable flag — a standing `$monitoroff` persists across re-`$monitor`
+            // (the establishment line still prints, see the flush). So this does
+            // NOT reset `monitor_disabled`.
             Ctl::Continue
         }
         SysTaskId::Finish => Ctl::Finish,
@@ -496,9 +499,58 @@ pub(crate) fn dispatch(
             writemem(sched, args, matches!(which, SysTaskId::WritememH));
             Ctl::Continue
         }
-        // v9 shape-bump placeholders: $cast (task form) + $monitoron/off land
-        // in Medium-bundle rank 6 (still no-op).
-        SysTaskId::Cast | SysTaskId::MonitorOn | SysTaskId::MonitorOff => Ctl::Continue,
+        // v9 rank 6: $monitoroff disables change-triggered reprints. The flag is
+        // GLOBAL (sim-wide, not per-monitor) so it works even before any $monitor
+        // and survives re-`$monitor` (IEEE 1364-2005 §17.1).
+        SysTaskId::MonitorOff => {
+            sched.st.postponed.monitor_disabled = true;
+            Ctl::Continue
+        }
+        // v9 rank 6: $monitoron re-enables AND forces a reprint of the current
+        // values at the next postponed flush by clearing the baseline (None ⇒
+        // "establishment" ⇒ print regardless of change), independent of whether a
+        // monitor is currently established.
+        SysTaskId::MonitorOn => {
+            sched.st.postponed.monitor_disabled = false;
+            if let Some(m) = sched.st.postponed.monitor.as_mut() {
+                m.last_vals = None;
+            }
+            Ctl::Continue
+        }
+        // v9 rank 6: $cast TASK form `$cast(dst, src);` — write resized src into
+        // dst (no status). The func form `ok = $cast(...)` is a direct-rhs
+        // intercept (k_cast). Hand-IEEE §6.24.2 (iverilog 13.0 rejects $cast):
+        // an integral cast always succeeds in this class-free subset.
+        SysTaskId::Cast => {
+            cast_task(sched, args);
+            Ctl::Continue
+        }
+    }
+}
+
+/// v9 rank 6: the `$cast(dst, src);` TASK form — assign the resized `src` into
+/// the whole-net `dst` ref arg (the func-form mirror, minus the status return).
+fn cast_task(sched: &mut Scheduler, args: &[u32]) {
+    if args.len() != 2 {
+        return;
+    }
+    let dst = match sched.st.ir.exprs.get(args[0] as usize) {
+        Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+        _ => None,
+    };
+    if let Some(net) = dst {
+        let lv = sim_ir::Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: None,
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        };
+        let v = sched.eval_for_lvalue(&lv, args[1]); // context-size src to dst width
+        let off = sched.resolve_lvalue_offsets(&lv);
+        sched.st.write_lvalue(&lv, v, &off);
     }
 }
 

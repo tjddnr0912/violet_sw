@@ -92,6 +92,19 @@ pub(crate) trait Kernel {
     /// WRITE: one Annex-N draw seeded from the ref variable; writes the
     /// updated seed back to its net and returns the 32-bit signed draw.
     fn k_random_seeded(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$dist_uniform(seed, start, end)` (v9, rank 6)? It writes
+    /// the advanced seed back into the ref seed variable — the seeded-$random
+    /// family; elaborate enforces direct-rhs placement.
+    fn k_dist_seeded_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: one Annex `rtl_dist_uniform` draw over `[start, end]` seeded from
+    /// the ref variable; writes the updated seed back and returns the draw.
+    fn k_dist_seeded(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$cast(dst, src)` func-form (v9, rank 6)? It writes the
+    /// `dst` ref arg — the `$value$plusargs` family (direct-rhs only).
+    fn k_cast_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: assign (resize) `src` into the `dst` ref arg and return 1 — an
+    /// integral `$cast` always succeeds in this class-free subset (IEEE §6.24.2).
+    fn k_cast(&mut self, rhs: u32) -> Value;
     /// READ: is `rhs` a `$value$plusargs(fmt, var)` call (v7)? It writes the
     /// ref VAR on a match — statement-level effect, the seeded-$random family.
     fn k_value_plusargs_rhs(&self, rhs: u32) -> bool;
@@ -468,6 +481,22 @@ enum StmtEffect<'s> {
         rhs: u32,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is `$dist_uniform(seed, start, end)` (v9, rank
+    /// 6): the draw writes the updated seed back into the seed variable — WRITE
+    /// phase, same family as `SeededRandom`.
+    SeededDist {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
+    /// Blocking assign whose rhs is `ok = $cast(dst, src)` (v9, rank 6): the
+    /// cast writes the `dst` ref arg (resized `src`) and returns 1 — WRITE phase,
+    /// same family as `$value$plusargs`.
+    Cast {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
     /// Blocking assign whose rhs is `$value$plusargs(fmt, var)` (v7): the
     /// match writes the ref var — WRITE phase, same family.
     ValuePlusargs {
@@ -601,6 +630,24 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
             if k.k_random_seeded_rhs(*rhs) {
                 let offsets = k.k_resolve_lvalue_offsets(lhs);
                 return StmtEffect::SeededRandom {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
+            // v9 rank 6: a $dist_uniform(seed, ...) rhs writes the seed back.
+            if k.k_dist_seeded_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::SeededDist {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
+            // v9 rank 6: a $cast(dst, src) func-form writes the dst ref arg.
+            if k.k_cast_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Cast {
                     lhs,
                     rhs: *rhs,
                     offsets,
@@ -764,6 +811,16 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::SeededRandom { lhs, rhs, offsets } => {
             let value = k.k_random_seeded(rhs); // seed write + draw (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::SeededDist { lhs, rhs, offsets } => {
+            let value = k.k_dist_seeded(rhs); // seed write + dist draw (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Cast { lhs, rhs, offsets } => {
+            let value = k.k_cast(rhs); // dst ref write + status (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }
