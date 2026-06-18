@@ -7,6 +7,7 @@ use std::io::Write;
 use sim_ir::SysTaskId;
 use vcd_writer::{IdCode, ScopeType};
 
+use crate::eval::NetReader;
 use crate::sched::Scheduler;
 use crate::state::{vcd_var_type, FmtCapture, MonitorState, SimState};
 use crate::value::Value;
@@ -490,11 +491,14 @@ pub(crate) fn dispatch(
         // (they orphan-exist in the enum until Medium-bundle ranks 5-6 wire the
         // name→id mapping AND the engine semantics together), so this arm is
         // dead. A defensive no-op keeps the bump provably inert.
-        SysTaskId::WritememB
-        | SysTaskId::WritememH
-        | SysTaskId::Cast
-        | SysTaskId::MonitorOn
-        | SysTaskId::MonitorOff => Ctl::Continue,
+        // v9 (Medium-bundle rank 5): the write-side mirror of $readmem*.
+        SysTaskId::WritememB | SysTaskId::WritememH => {
+            writemem(sched, args, matches!(which, SysTaskId::WritememH));
+            Ctl::Continue
+        }
+        // v9 shape-bump placeholders: $cast (task form) + $monitoron/off land
+        // in Medium-bundle rank 6 (still no-op).
+        SysTaskId::Cast | SysTaskId::MonitorOn | SysTaskId::MonitorOff => Ctl::Continue,
     }
 }
 
@@ -639,6 +643,158 @@ fn readmem(sched: &mut Scheduler, args: &[u32], hex: bool) {
                  [{start}:{finish}] ({wrote} of {window}); rest unchanged"
             ),
         );
+    }
+}
+
+/// v9 `$writememb/h(file, mem[, start[, finish]])` — the write-side mirror of
+/// `readmem`, iverilog-pinned: the FIRST line is ALWAYS the literal
+/// `// 0x00000000` header (it never reflects the base/start); each element is
+/// one line (every line incl the last ends '\n'); the optional (start[,finish])
+/// is an inclusive declared-index window, descending when finish < start; an
+/// out-of-range start/finish is non-fatal (a warning, the file is NOT created,
+/// the sim continues). Element values come from the engine word-read path; hex
+/// uses per-nibble X/Z compression, bin is per-bit uncompressed.
+fn writemem(sched: &mut Scheduler, args: &[u32], hex: bool) {
+    let warn = |sched: &mut Scheduler, msg: String| {
+        sched
+            .st
+            .sink
+            .emit(diag::LogEvent::Diagnostic(diag::Diagnostic {
+                severity: diag::Severity::Warning,
+                code: diag::MsgCode::RunReadmem,
+                message: msg,
+                location: None,
+                context: Vec::new(),
+                sim_time: Some(diag::TimeStamp {
+                    ticks: sched.st.now,
+                }),
+            }));
+    };
+    let Some(&a0) = args.first() else { return };
+    let name = match sched.st.ir.exprs.get(a0 as usize) {
+        Some(sim_ir::Expr::Const { val }) => const_string(sched.st.ir, *val),
+        _ => return,
+    };
+    let net = match args.get(1).and_then(|&a| sched.st.ir.exprs.get(a as usize)) {
+        Some(sim_ir::Expr::Signal { net, word: None }) => *net,
+        _ => {
+            warn(sched, "$writemem target is not a memory".to_string());
+            return;
+        }
+    };
+    let (alen, w) = {
+        let nv = &sched.st.ir.nets[net as usize];
+        (nv.array_len.max(1) as u64, nv.width.max(1))
+    };
+    // declared base = min index of dim 0 (sparse table; absent ⇒ 0-based).
+    let base = sched
+        .st
+        .net_dims
+        .get(&net)
+        .and_then(|d| d.first())
+        .map(|&(lo, hi)| lo.min(hi) as u64)
+        .unwrap_or(0);
+    let last = base + alen - 1;
+    // range window (declared-index domain). Default: full array ascending.
+    let r_start = args.get(2).and_then(|&a| sched.eval(a).to_u64());
+    let r_finish = args.get(3).and_then(|&a| sched.eval(a).to_u64());
+    let (start, finish) = match (r_start, r_finish) {
+        (Some(s), Some(f)) => (s, f),
+        (Some(s), None) => (s, last),
+        _ => (base, last),
+    };
+    // OOB start/finish is non-fatal AND the file is NOT created (iverilog
+    // validates before opening — file never appears). Mirror its report text.
+    for (label, idx) in [("Start", start), ("Finish", finish)] {
+        if idx < base || idx > last {
+            warn(
+                sched,
+                format!(
+                    "$writemem('{name}'): {label} address {idx} is out of bounds \
+                     for the memory [{base}:{last}]; file not written"
+                ),
+            );
+            return;
+        }
+    }
+    let step: i64 = if start <= finish { 1 } else { -1 };
+    let mut body = String::from("// 0x00000000\n");
+    let mut addr = start as i64;
+    loop {
+        let word = (addr as u64 - base) as u32;
+        let v = sched.st.read_net(net, Some(word));
+        if hex {
+            fmt_writemem_hex(&v, w, &mut body);
+        } else {
+            fmt_writemem_bin(&v, w, &mut body);
+        }
+        body.push('\n');
+        if addr as u64 == finish {
+            break;
+        }
+        addr += step;
+    }
+    if let Err(e) = std::fs::write(&name, body) {
+        warn(
+            sched,
+            format!("$writemem: unable to open '{name}' for writing: {e}"),
+        );
+    }
+}
+
+/// One memory element → a `$writememh` hex field: ceil(w/4) lowercase digits,
+/// MSB-first, with iverilog's per-nibble X/Z compression. The compression
+/// examines ONLY the REAL bits of each nibble — a partial top nibble's phantom
+/// zero-pad bit does NOT participate (iverilog-pinned: an all-x 3-bit top
+/// nibble renders 'x', not 'X'). Rules: clean ⇒ hex digit; all-x ⇒ 'x';
+/// all-z ⇒ 'z'; any x mixed in ⇒ 'X' (X dominates Z); else z mixed ⇒ 'Z'.
+fn fmt_writemem_hex(v: &Value, w: u32, out: &mut String) {
+    let ndig = w.div_ceil(4);
+    for nib in (0..ndig).rev() {
+        let (mut xc, mut zc, mut nbits, mut val) = (0u32, 0u32, 0u32, 0u32);
+        for k in 0..4 {
+            let bit = nib * 4 + k;
+            if bit >= w {
+                continue; // phantom pad bit — excluded from value AND compression
+            }
+            nbits += 1;
+            let (bv, bu) = v.get_vu(bit);
+            if bu != 0 {
+                if bv != 0 {
+                    zc += 1;
+                } else {
+                    xc += 1;
+                }
+            } else if bv != 0 {
+                val |= 1 << k;
+            }
+        }
+        let ch = if xc == 0 && zc == 0 {
+            std::char::from_digit(val, 16).unwrap()
+        } else if xc == nbits {
+            'x'
+        } else if zc == nbits {
+            'z'
+        } else if xc > 0 {
+            'X'
+        } else {
+            'Z'
+        };
+        out.push(ch);
+    }
+}
+
+/// One memory element → a `$writememb` binary field: exactly `w` per-bit chars,
+/// MSB-first, NO compression (0/1/x/z lowercase).
+fn fmt_writemem_bin(v: &Value, w: u32, out: &mut String) {
+    for bit in (0..w).rev() {
+        let (bv, bu) = v.get_vu(bit);
+        out.push(match (bv != 0, bu != 0) {
+            (false, false) => '0',
+            (true, false) => '1',
+            (false, true) => 'x',
+            (true, true) => 'z',
+        });
     }
 }
 

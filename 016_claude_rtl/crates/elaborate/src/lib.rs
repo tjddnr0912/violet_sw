@@ -13490,8 +13490,13 @@ impl<'s> Elaborator<'s> {
                     // Phase-1.x ② whole-array loud check must not fire here.
                     // v7: $readmem's MEMORY argument is the same whole-array
                     // Signal shape (the engine writes elements via the funnel).
-                    let readmem_family =
-                        matches!(which, ir::SysTaskId::ReadmemB | ir::SysTaskId::ReadmemH);
+                    let readmem_family = matches!(
+                        which,
+                        ir::SysTaskId::ReadmemB
+                            | ir::SysTaskId::ReadmemH
+                            | ir::SysTaskId::WritememB
+                            | ir::SysTaskId::WritememH
+                    );
                     if dump_family || readmem_family {
                         if let Some((net, lead)) = self.expr_array_view(a) {
                             if lead.is_empty() {
@@ -13696,6 +13701,9 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         // v7 file I/O ($fopen is a special form — it returns the fd).
         "$readmemb" => Some(ir::SysTaskId::ReadmemB),
         "$readmemh" => Some(ir::SysTaskId::ReadmemH),
+        // v9: the write-side mirror of $readmem* (Medium-bundle rank 5).
+        "$writememb" => Some(ir::SysTaskId::WritememB),
+        "$writememh" => Some(ir::SysTaskId::WritememH),
         "$fclose" => Some(ir::SysTaskId::Fclose),
         "$sformat" => Some(ir::SysTaskId::Sformat),
         "$fdisplay" | "$fdisplayb" | "$fdisplayo" | "$fdisplayh" => Some(ir::SysTaskId::Fdisplay),
