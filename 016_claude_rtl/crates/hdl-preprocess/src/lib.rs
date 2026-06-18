@@ -582,6 +582,10 @@ fn is_directive_kw(name: &str) -> bool {
             | "resetall"
             | "line"
             | "pragma"
+            | "begin_keywords"
+            | "end_keywords"
+            | "unconnected_drive"
+            | "nounconnected_drive"
     )
 }
 
@@ -775,6 +779,52 @@ fn substitute(body: &str, params: &[String], actuals: &[String]) -> String {
                 let end = scan_block_comment(body, i);
                 out.push_str(&body[i..end]);
                 i = end;
+            }
+            // Token-paste ``` `` ``` (IEEE 1800 §22.5.2): delete the two-backtick operator
+            // so the surrounding (already-substituted) tokens abut. iverilog does NOT
+            // trim adjacent whitespace, so `a``b` => `ab` but `a `` b` => `a  b`.
+            0x60 if i + 1 < bytes.len() && bytes[i + 1] == 0x60 => {
+                i += 2;
+            }
+            // Stringification `"…`" (IEEE 1800 §22.5.1): emit a real `"`, substitute
+            // params inside, and turn the embedded `\`"` escape into `\"`. Closing `"`
+            // ends the literal. Unlike a real `"…"`, params ARE substituted inside.
+            0x60 if i + 1 < bytes.len() && bytes[i + 1] == b'"' => {
+                out.push('"');
+                i += 2;
+                loop {
+                    if i >= bytes.len() {
+                        break; // unterminated — emit what we have, the lexer will diag
+                    }
+                    let b = bytes[i];
+                    if b == 0x60
+                        && i + 3 < bytes.len()
+                        && bytes[i + 1] == b'\\'
+                        && bytes[i + 2] == 0x60
+                        && bytes[i + 3] == b'"'
+                    {
+                        out.push_str("\\\""); // `\`"  =>  \"
+                        i += 4;
+                    } else if b == 0x60 && i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                        out.push('"'); // closing `"
+                        i += 2;
+                        break;
+                    } else if b == 0x60 && i + 1 < bytes.len() && bytes[i + 1] == 0x60 {
+                        i += 2; // token-paste operator inside a stringify: delete it (iverilog parity)
+                    } else if is_ident_start(b) {
+                        let (name, end) = parse_ident(body, i).unwrap();
+                        if let Some(idx) = params.iter().position(|p| p == name) {
+                            out.push_str(actuals.get(idx).map(|s| s.as_str()).unwrap_or(""));
+                        } else {
+                            out.push_str(name);
+                        }
+                        i = end;
+                    } else {
+                        let ch_len = utf8_len(b);
+                        out.push_str(&body[i..(i + ch_len).min(bytes.len())]);
+                        i += ch_len;
+                    }
+                }
             }
             _ if is_ident_start(c) => {
                 let (name, end) = parse_ident(body, i).unwrap();
@@ -1224,10 +1274,13 @@ impl Preprocessor<'_> {
 
         match &mac.params {
             None => {
-                // Object-like: NEVER consumes a following `(`.
+                // Object-like: NEVER consumes a following `(`. Route through
+                // `substitute` (empty params = identity except token-paste ` `` ` and
+                // stringify ` `" `, which an object-like body may also use).
+                let body = substitute(&mac.body, &[], &[]);
                 self.active.insert(name.to_string());
                 self.macro_depth += 1;
-                self.scan_text(&mac.body, site, depth + 1);
+                self.scan_text(&body, site, depth + 1);
                 self.macro_depth = self.macro_depth.saturating_sub(1);
                 self.active.remove(name);
                 name_end
@@ -1372,7 +1425,17 @@ impl Preprocessor<'_> {
                 line.cursor
             }
             "default_nettype" => self.consume_one_token(src, file, name_end),
-            "celldefine" | "endcelldefine" | "resetall" => name_end,
+            // `begin_keywords "spec"` and `unconnected_drive pull1|pull0` carry an
+            // argument on their line; consume the whole logical line (accept-ignore —
+            // we keep the full keyword set / drive state). IEEE 1800 §22.14, §22.10.
+            "begin_keywords" | "unconnected_drive" => self.consume_one_token(src, file, name_end),
+            // `end_keywords` / `nounconnected_drive` take no argument — strip the
+            // directive token only, like `celldefine`.
+            "celldefine"
+            | "endcelldefine"
+            | "resetall"
+            | "end_keywords"
+            | "nounconnected_drive" => name_end,
             _ => name_end,
         }
     }
@@ -2043,6 +2106,111 @@ mod tests {
         let r = pp("`define MAX(a,b) ((a)>(b)?(a):(b))\nassign y = `MAX(p, q);\n");
         assert!(r.diags.is_empty());
         assert_eq!(r.text, "\nassign y = ((p)>(q)?(p):(q));\n");
+    }
+
+    // DIR-PP: token-paste `` in a function-like macro body (IEEE 1800 §22.5.2).
+    #[test]
+    fn token_paste_function_macro() {
+        let r = pp("`define CAT(a,b) a``b\n`CAT(foo,bar)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\nfoobar\n");
+    }
+
+    // DIR-PP: paste a prefix onto an argument to build an identifier.
+    #[test]
+    fn token_paste_prefix_ident() {
+        let r = pp("`define REG(n) reg_``n\n`REG(count)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\nreg_count\n");
+    }
+
+    // DIR-PP: chained paste a``b``c.
+    #[test]
+    fn token_paste_chained() {
+        let r = pp("`define D(a,b,c) a``b``c\n`D(x,y,z)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\nxyz\n");
+    }
+
+    // DIR-PP: paste deletes the two-backtick operator but PRESERVES adjacent
+    // whitespace (iverilog parity: `a `` b` => `a  b`, NOT `ab`).
+    #[test]
+    fn token_paste_preserves_surrounding_whitespace() {
+        let r = pp("`define C(a,b) a `` b\n`C(foo,bar)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\nfoo  bar\n");
+    }
+
+    // DIR-PP: token-paste operator INSIDE a stringification is also deleted
+    // (whitespace preserved): `"a `` b`" => "a  b"; tight `"a``b`" => "xy".
+    #[test]
+    fn token_paste_inside_stringify() {
+        let r = pp("`define J(a,b) `\"a `` b`\"\n`J(x,y)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\n\"x  y\"\n");
+        let r2 = pp("`define J2(a,b) `\"a``b`\"\n`J2(x,y)\n");
+        assert!(r2.diags.is_empty(), "{:?}", r2.diags);
+        assert_eq!(r2.text, "\n\"xy\"\n");
+    }
+
+    // DIR-PP: object-like macro paste (no params) — routed through substitute too.
+    #[test]
+    fn token_paste_object_macro() {
+        let r = pp("`define J x``y\n`J\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\nxy\n");
+    }
+
+    // DIR-PP: stringification `"x`" with argument substitution (IEEE 1800 §22.5.1).
+    #[test]
+    fn stringify_basic() {
+        let r = pp("`define STR(x) `\"x`\"\n`STR(hi)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\n\"hi\"\n");
+    }
+
+    // DIR-PP: stringify preserves literal text + spaces around the arg.
+    #[test]
+    fn stringify_spaces_and_text() {
+        let r = pp("`define P(a,b) `\"a and b`\"\n`P(x,y)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\n\"x and y\"\n");
+    }
+
+    // DIR-PP: `\`" inside a stringify produces an escaped quote (=> `\"`).
+    #[test]
+    fn stringify_embedded_escaped_quote() {
+        let r = pp("`define Q(x) `\"a `\\`\"x`\\`\" b`\"\n`Q(z)\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        // expansion: "a \"z\" b"
+        assert_eq!(r.text, "\n\"a \\\"z\\\" b\"\n");
+    }
+
+    // DIR-PP: object-like stringify.
+    #[test]
+    fn stringify_object_macro() {
+        let r = pp("`define LIT `\"text`\"\n`LIT\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert_eq!(r.text, "\n\"text\"\n");
+    }
+
+    // DIR-PP: `begin_keywords/`end_keywords are accepted and stripped (no diag).
+    #[test]
+    fn begin_end_keywords_accepted() {
+        let r = pp("`begin_keywords \"1364-2005\"\nmodule m; endmodule\n`end_keywords\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert!(r.text.contains("module m; endmodule"));
+        assert!(!r.text.contains("begin_keywords"));
+        assert!(!r.text.contains("end_keywords"));
+    }
+
+    // DIR-PP: `unconnected_drive/`nounconnected_drive accepted and stripped.
+    #[test]
+    fn unconnected_drive_accepted() {
+        let r = pp("`unconnected_drive pull1\nmodule m; endmodule\n`nounconnected_drive\n");
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
+        assert!(r.text.contains("module m; endmodule"));
+        assert!(!r.text.contains("unconnected_drive"));
     }
 
     // 3. multi-line continuation in a macro body
