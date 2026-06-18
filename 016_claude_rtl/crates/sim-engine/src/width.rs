@@ -328,7 +328,21 @@ impl WidthTable {
                 | SysFuncId::TestPlusargs
                 | SysFuncId::ValuePlusargs
                 | SysFuncId::StrLen
-                | SysFuncId::StrCmp => SelfWidth {
+                | SysFuncId::StrCmp
+                // v9: file-read family + $dist_* + $cast — all `int` returns.
+                | SysFuncId::Fgets
+                | SysFuncId::Fscanf
+                | SysFuncId::Sscanf
+                | SysFuncId::Fread
+                | SysFuncId::Feof
+                | SysFuncId::Fgetc
+                | SysFuncId::Ungetc
+                | SysFuncId::DistUniform
+                | SysFuncId::DistNormal
+                | SysFuncId::DistExponential
+                | SysFuncId::DistPoisson
+                | SysFuncId::DistChiSquare
+                | SysFuncId::Cast => SelfWidth {
                     width: 32,
                     signed: true,
                 },

@@ -3,12 +3,14 @@
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full SimIr-closure canonical string. Locked at
-/// format_version 8 (2026-06-14: +WaitCause::Fork unit variant — `wait fork;`
-/// IR. The Process cluster reaches WaitCause via SuspendState, so its sub-pin
-/// ALSO flips this bump — that is expected, not corruption). Shape-only bump;
-/// the wait-fork / SVA features land in follow-on slices.
+/// format_version 9 (2026-06-18: +13 SysFuncId variants (file-read family +
+/// $dist_* + $cast) and +5 SysTaskId variants ($writememb/$writememh/$cast/
+/// $monitoron/$monitoroff). SysFuncId/SysTaskId are reached from SimIr via the
+/// Expr/Stmt arenas, so the root hash flips; the Process cluster reaches them
+/// only through arena INDICES (u32), so its sub-pin is UNCHANGED this bump.
+/// Shape-only bump; the system-task semantics land in Medium-bundle ranks 5-6.
 const EXPECTED_SIMIR_HASH: &str =
-    "093e32ff7b5946f880b591949c97c6a7afc3a5e69ace88ed1a32e035f25930d3";
+    "ff9d5beee31b3e6ca2c4724d30f02f97823e954ea756c00385e597a3973dc51d";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "61db2e207ed69c2ff1dbf3fc0473b7ed9906fbeb6c42128ef9edf382b081f277";

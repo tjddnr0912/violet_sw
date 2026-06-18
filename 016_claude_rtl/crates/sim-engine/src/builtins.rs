@@ -486,6 +486,15 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        // v9 shape-bump placeholders: elaborate maps no task NAME to these yet
+        // (they orphan-exist in the enum until Medium-bundle ranks 5-6 wire the
+        // name→id mapping AND the engine semantics together), so this arm is
+        // dead. A defensive no-op keeps the bump provably inert.
+        SysTaskId::WritememB
+        | SysTaskId::WritememH
+        | SysTaskId::Cast
+        | SysTaskId::MonitorOn
+        | SysTaskId::MonitorOff => Ctl::Continue,
     }
 }
 

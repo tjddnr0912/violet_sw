@@ -1517,6 +1517,25 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             // legal direct-rhs forms are intercepted statement-level).
             SysFuncId::Fopen | SysFuncId::ValuePlusargs => Value::xs(32, true),
             SysFuncId::Sformatf => Value::xs(8, false),
+            // v9 shape-bump placeholders: the side-effecting file-read family,
+            // $dist_*, and the $cast function form are all intercepted at the
+            // statement level (direct rhs of a blocking assign) once ranks 5-6
+            // wire them; in a non-intercepted eval context they yield X (the
+            // same contract as `Fopen`/`ValuePlusargs`). elaborate emits none
+            // of these yet, so this arm is dead until then.
+            SysFuncId::Fgets
+            | SysFuncId::Fscanf
+            | SysFuncId::Sscanf
+            | SysFuncId::Fread
+            | SysFuncId::Feof
+            | SysFuncId::Fgetc
+            | SysFuncId::Ungetc
+            | SysFuncId::DistUniform
+            | SysFuncId::DistNormal
+            | SysFuncId::DistExponential
+            | SysFuncId::DistPoisson
+            | SysFuncId::DistChiSquare
+            | SysFuncId::Cast => Value::xs(32, true),
         }
     }
 

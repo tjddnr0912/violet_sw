@@ -234,6 +234,45 @@ pub enum SysFuncId {
     /// operators (packed compare zero-extends MSB-side, which is NOT
     /// lexicographic for unequal lengths).
     StrCmp,
+    // ── v9 (2026-06-18): file-read family + $dist_* + $cast (Medium bundle
+    //    rank 4 shape bump; semantics land in ranks 5-6 as post-bump IR-0
+    //    slices, so elaborate emits none of these yet — the bump is inert). ──
+    /// `$fgets(str, fd)` (v9) — read a line into the str VAR; returns the byte
+    /// count. Side-effecting (writes str + advances fd) — statement-level
+    /// intercept as the direct rhs of a blocking assign, like `Fopen`.
+    Fgets,
+    /// `$fscanf(fd, fmt, args...)` (v9) — formatted read from fd; returns the
+    /// match count and writes the ref VAR args. Statement-level intercept.
+    Fscanf,
+    /// `$sscanf(str, fmt, args...)` (v9) — like `Fscanf` but reads from a string
+    /// VALUE instead of a file descriptor.
+    Sscanf,
+    /// `$fread(target, fd)` (v9) — binary read into a reg/memory; returns the
+    /// byte count. Statement-level intercept.
+    Fread,
+    /// `$feof(fd)` (v9) — nonzero once fd is at end-of-file (lazy/post-read).
+    Feof,
+    /// `$fgetc(fd)` (v9) — next byte from fd, or -1 (0xFFFF_FFFF) at EOF.
+    Fgetc,
+    /// `$ungetc(c, fd)` (v9) — push a byte back onto fd; returns the byte
+    /// (own contract: 0 on failure).
+    Ungetc,
+    /// `$dist_uniform(seed, start, end)` (v9) — seeded; writes the ref seed VAR
+    /// (statement-level intercept). IEEE Annex K integer algorithm, ported
+    /// faithfully for 3-OS byte-identical streams.
+    DistUniform,
+    /// `$dist_normal(seed, mean, std_dev)` (v9) — see `DistUniform`.
+    DistNormal,
+    /// `$dist_exponential(seed, mean)` (v9) — see `DistUniform`.
+    DistExponential,
+    /// `$dist_poisson(seed, mean)` (v9) — see `DistUniform`.
+    DistPoisson,
+    /// `$dist_chi_square(seed, degree_of_freedom)` (v9) — see `DistUniform`.
+    DistChiSquare,
+    /// `$cast(dest, source)` FUNCTION form (v9) — returns 1 on a legal cast
+    /// (and writes dest), 0 otherwise. Statement-level intercept (writes the
+    /// dest VAR). The TASK form is `SysTaskId::Cast`.
+    Cast,
 }
 
 /// Expression arena node (§1).
@@ -336,6 +375,22 @@ pub enum SysTaskId {
     /// string `.putc(i, c)` (v7; args = [handle, i, c]) — in-place byte
     /// write; OOB index or NUL byte = no-op (IEEE §6.16.3).
     StrPutC,
+    // ── v9 (2026-06-18): $writememb/h, $cast (task form), $monitoron/off
+    //    (Medium bundle rank 4 shape bump; semantics land in ranks 5-6, so
+    //    elaborate emits none of these yet — the bump is inert). ──
+    /// `$writememb(file, mem[, start[, finish]])` (v9) — binary memory dump,
+    /// the write-side mirror of `ReadmemB`.
+    WritememB,
+    /// `$writememh(file, mem[, start[, finish]])` (v9) — hex memory dump.
+    WritememH,
+    /// `$cast(dest, source)` TASK form (v9) — performs the cast for side effect
+    /// (an illegal cast is a runtime error). The FUNCTION form that returns a
+    /// success flag is `SysFuncId::Cast`.
+    Cast,
+    /// `$monitoron` (v9) — (re)enable the `$monitor` change-watch (default on).
+    MonitorOn,
+    /// `$monitoroff` (v9) — disable the `$monitor` change-watch.
+    MonitorOff,
 }
 
 /// Disable kind (§2).

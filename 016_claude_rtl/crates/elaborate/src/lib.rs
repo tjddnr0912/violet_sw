@@ -13136,7 +13136,21 @@ impl<'s> Elaborator<'s> {
                     | F::TestPlusargs
                     | F::ValuePlusargs
                     | F::StrLen
-                    | F::StrCmp => 32,
+                    | F::StrCmp
+                    // v9 file-read family + $dist_* + $cast: all return `int`.
+                    | F::Fgets
+                    | F::Fscanf
+                    | F::Sscanf
+                    | F::Fread
+                    | F::Feof
+                    | F::Fgetc
+                    | F::Ungetc
+                    | F::DistUniform
+                    | F::DistNormal
+                    | F::DistExponential
+                    | F::DistPoisson
+                    | F::DistChiSquare
+                    | F::Cast => 32,
                     F::AssocExists | F::OneHot | F::OneHot0 | F::IsUnknown => 1,
                     F::StrGetC => 8,
                     // element-typed pops / dynamic-length string producers

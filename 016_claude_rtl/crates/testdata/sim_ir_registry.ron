@@ -732,6 +732,45 @@
         35: {
             "StrCmp": UNIT,
         },
+        36: {
+            "Fgets": UNIT,
+        },
+        37: {
+            "Fscanf": UNIT,
+        },
+        38: {
+            "Sscanf": UNIT,
+        },
+        39: {
+            "Fread": UNIT,
+        },
+        40: {
+            "Feof": UNIT,
+        },
+        41: {
+            "Fgetc": UNIT,
+        },
+        42: {
+            "Ungetc": UNIT,
+        },
+        43: {
+            "DistUniform": UNIT,
+        },
+        44: {
+            "DistNormal": UNIT,
+        },
+        45: {
+            "DistExponential": UNIT,
+        },
+        46: {
+            "DistPoisson": UNIT,
+        },
+        47: {
+            "DistChiSquare": UNIT,
+        },
+        48: {
+            "Cast": UNIT,
+        },
     }),
     "SysTaskId": ENUM({
         0: {
@@ -814,6 +853,21 @@
         },
         26: {
             "StrPutC": UNIT,
+        },
+        27: {
+            "WritememB": UNIT,
+        },
+        28: {
+            "WritememH": UNIT,
+        },
+        29: {
+            "Cast": UNIT,
+        },
+        30: {
+            "MonitorOn": UNIT,
+        },
+        31: {
+            "MonitorOff": UNIT,
         },
     }),
     "Terminator": ENUM({
