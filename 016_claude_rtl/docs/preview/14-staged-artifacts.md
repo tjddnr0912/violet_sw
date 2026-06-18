@@ -46,7 +46,7 @@ work/
 `work/lib.toml` (매니페스트):
 
 ```toml
-format_version = 1
+format_version = 8   # work/lib.toml 매니페스트 포맷(현재 8). 산출물 컨테이너 format_version도 8 (CURRENT_FORMAT_VERSION).
 tool           = { version = "0.1.0", git_sha = "…", dirty = false, profile = "release" }
 [library]
 name = "work"                # 논리 라이브러리 이름 (D3 — 기본 work)
@@ -108,6 +108,8 @@ SimIr 루트 1개:
   - 해소된 초기값(time-0 x/z), builtin-call 노드(+ dump-family 마커)
   - arena/interner 평탄 벡터 (u32 인덱스 엣지 — 재로드 시 포인터 fixup 0)
 ```
+
+> **엔진-facing 사이드테이블 트레일러(골든 SimIr 프레임 밖, append-only — 현재 13개).** 골든 `SimIr` postcard 프레임 뒤에 out-of-band 트레일러 세그먼트를 `write_velab_file`이 다음 순서로 append한다: ① fork_modes ② net_names ③ timescale(proc_multipliers+global_prec) ④ severities ⑤ radixes ⑥ proc_scopes ⑦ assign_ranks ⑧ queue_bounds ⑨ WorkConsumed(worklib v1; legacy explicit-path 빌드도 항상 기록) ⑩ net_dims(per-element VCD) ⑪ final_procs(P2-E `final`) ⑫ defer_marks ⑬ defer_acts(§16.4 deferred immediate assert). 이들은 `SimOpts`/elaborate IR-0 합성으로 **골든 해시(SimIr 루트)에 무영향** — SVA 체커·named-event·wait fork·frame-call 등 IR-0 기능이 여기 또는 elaborate-합성으로 얹힌다. format_version은 8 유지.
 
 > **SCHEMA_HASH 루트 = `sim_ir::SimIr` (M3 동결, doc 17).** §5의 구조적 해시는 위 `SimIr` 루트(arena 전체를 `Vec`로 by-value 보유 → `Expr`/`Stmt`/`NetVar`/`ConstVal`까지 도달)에서 산출한다. `Process`만으로는 cross-arena u32 엣지라 arena에 미도달 → `Process`는 런타임 클러스터 sub-pin 골든. `Expr`/`Stmt`/`Lvalue`/`Terminator`/`Sensitivity`/`NetVar`/arena 형상은 doc 17이 동결.
 
@@ -448,7 +450,7 @@ canonical 경로가 두 번 나오는 경우만 dedup하되, 두 occurrence가 *
 
 ```
 vrun <top>.velab:
-  1. 헤더만 디코드 (본문 역직렬화 전): magic, format_version, schema_hash 확인
+  1. 헤더만 디코드 (본문 역직렬화 전): magic, format_version(현재 8), schema_hash 확인
      → format/schema 불일치면 hard error + 재빌드 힌트 (본문 안 읽고 거부)
   2. 스냅샷의 consumed[(lib:unit, src_sha256)] 각 항목에 대해:
        라이브 소스를 재전처리(상속 반영) → 다이제스트 재계산 → 박힌 값과 대조

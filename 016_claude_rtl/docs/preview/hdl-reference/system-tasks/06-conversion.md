@@ -7,9 +7,12 @@
 `$rtoi`/`$itor`는 정수-실수 값 변환을,
 `$realtobits`/`$bitstoreal`는 IEEE 754 비트 패턴의 포트 통과에 쓰인다.
 
-## 지원 Phase
+## 지원 Phase (vitamin 구현 상태)
 
-- **Phase 2**: 전 항목 — `$signed`, `$unsigned`, `$rtoi`, `$itor`, `$realtobits`, `$bitstoreal`
+- **✅ 구현됨 (Phase-2/v7)**: `$signed`, `$unsigned`, `$rtoi`, `$itor`, `$realtobits`, `$bitstoreal`
+  (전부 `map_sysfunc` 등록).
+- **미구현 (silent-degrade)**: `$shortrealtobits`, `$bitstoshortreal`(shortreal↔32-bit) — 미매핑
+  → WARN + skip. 아래 본문 언급은 IEEE 표준 레퍼런스다.
 
 ---
 
@@ -190,14 +193,14 @@ decoded = $bitstoreal(encoded);   // real NaN
 
 ## Icarus / Verilator 지원
 
-| 함수 | Icarus | Verilator |
-|------|--------|-----------|
-| `$signed` | 완전 지원 | Generally supported |
-| `$unsigned` | 완전 지원 | Generally supported |
-| `$rtoi` | 완전 지원 | Generally supported |
-| `$itor` | 완전 지원 | Generally supported |
-| `$realtobits` | 완전 지원 | Generally supported |
-| `$bitstoreal` | 완전 지원 | Generally supported |
+| 함수 | Icarus | Verilator | vitamin |
+|------|--------|-----------|---------|
+| `$signed` | 완전 지원 | Generally supported | ✅ |
+| `$unsigned` | 완전 지원 | Generally supported | ✅ |
+| `$rtoi` | 완전 지원 | Generally supported | ✅ |
+| `$itor` | 완전 지원 | Generally supported | ✅ |
+| `$realtobits` | 완전 지원 | Generally supported | ✅ |
+| `$bitstoreal` | 완전 지원 | Generally supported | ✅ |
 
 ---
 

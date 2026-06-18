@@ -60,7 +60,7 @@ spec §4에서 합의된 근거 다섯 가지:
 
 ### 진단: `miette` (결정) — `codespan-reporting` fallback
 
-- **miette** 7.6.0 (2025-04-27, Apache-2.0) — **채택.** `code()`/`url()`/`related()`를 네이티브로 제공해 143-코드 에러 카탈로그(15: 본문 36 + 부록 A 107)·multi-span Frame(13)에 1:1 매핑된다. 13의 진단 데이터 모델이 이미 miette 어휘(`code()`/`url()`/`related()`)로 설계돼 있다. **MSRV 1.82**(manifest 실측 `rust-version = "1.82.0"`; crates.io에 노출된 1.70은 stale). leaf `diag` 크레이트는 IO/터미널 순수성(04: "IO 없음 → leaf")을 위해 **`default-features = false` 필수** — 기본 `fancy` 피처가 `owo-colors`/`supports-color`/`terminal_size`를 끌어들이기 때문이다. 터미널 렌더링(`fancy`)은 `vita-log` 크레이트에서만 활성화한다.
+- **miette** 7.6.0 (2025-04-27, Apache-2.0) — **채택.** `code()`/`url()`/`related()`를 네이티브로 제공해 에러 카탈로그(15: 본문 full-entry **55개**(`MsgCode` enum 등재, 2026-06-12 v7 기준) + 부록 A 예약 107)·multi-span Frame(13)에 1:1 매핑된다. 13의 진단 데이터 모델이 이미 miette 어휘(`code()`/`url()`/`related()`)로 설계돼 있다. **MSRV 1.82**(manifest 실측 `rust-version = "1.82.0"`; crates.io에 노출된 1.70은 stale). leaf `diag` 크레이트는 IO/터미널 순수성(04: "IO 없음 → leaf")을 위해 **`default-features = false` 필수** — 기본 `fancy` 피처가 `owo-colors`/`supports-color`/`terminal_size`를 끌어들이기 때문이다. 터미널 렌더링(`fancy`)은 `vita-log` 크레이트에서만 활성화한다.
 - **codespan-reporting** 0.13.1 (2025-10-22, Apache-2.0) — **fallback.** 성숙도 높고(1억+ 다운로드, MSRV 1.67) multi-span label+note 지원. miette의 dep-tree/바이너리 footprint가 installed-binary 크기 기준으로 블로킹이면 `code()`/`url()`/`explain` glue만 재구현해 스왑한다. `MsgCode`/`Diagnostic`/`Frame` 모델은 owner 소유 leaf `diag`에 있어 렌더 백엔드는 교체 가능하다.
 - **ariadne** 0.6.0 (2025-10-28, MIT) — **미채택.** 유일 강점이던 "chumsky 동저자 시너지"가 chumsky archived로 소멸했고, `related()` 부재로 multi-span 카탈로그에 덜 맞는다. (참고: 02 이전 판의 "ariadne MSRV 1.85"는 manifest에 `rust-version` 필드 미선언 — "검증됨" 표기를 철회한다.)
 

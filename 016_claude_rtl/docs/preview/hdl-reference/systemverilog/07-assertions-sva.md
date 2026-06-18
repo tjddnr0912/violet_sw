@@ -17,8 +17,12 @@ IEEE 1800-2017 §16 기준.
 > `Stmt::If`로 desugar(AST 동결 유지, X/Z cond → 실패 분기 = `if` 의미론과 동일).
 > else절 생략 시 IEEE 디폴트 동작 `$error("Assertion failed")` 합성(stderr 진단 +
 > exit 1, 런 계속). `assert property`(동시)는 **구현됨**(아래 '§16.14 Concurrent
-> Assertion' 섹션의 vitamin 구현 상태 참조). `assert #0`/`assert final`(연기형)은
-> **loud 파스 에러**, `assume`/`cover`는 미지원(키워드 아님 → loud).
+> Assertion' 섹션의 vitamin 구현 상태 참조). ✅ `assert #0`(Observed 연기)/`assert final`(Reactive
+> 연기) 충실 구현(2026-06-16) — `Stmt::DeferredAssert`로 파스, 어셔션당 flush 마커 +
+> `defer_marks`/`defer_acts` 사이드카(순수 IR-0, format_version 8 무변경), 엔진이 NBA-후
+> 진짜 Observed→Reactive 성숙 큐를 돌려 reach 시점에 평가·later region에 보고(`(marker,aid,gen)`
+> 키로 flush-once, 재활용 aid 세대 스탬프). 非-`#0`/非-zero `#n` 어셔션 딜레이는 여전히 **loud**,
+> `assume`/`cover`는 미지원(키워드 아님 → loud).
 
 ```systemverilog
 always_ff @(posedge clk) begin

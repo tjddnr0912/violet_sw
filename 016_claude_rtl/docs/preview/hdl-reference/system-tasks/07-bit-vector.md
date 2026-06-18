@@ -9,7 +9,10 @@
 
 ## 지원 Phase
 
-- **Phase 2**: `$bits`, `$clog2`, `$countones`, `$countbits`, `$onehot`, `$onehot0`, `$isunknown`
+- ✅ **구현됨 (2026-06-12, format_version 7)**: `$bits`, `$clog2`, `$countones`, `$onehot`, `$onehot0`, `$isunknown`.
+  `$bits`/`$clog2`는 elaboration-time const-fold(`$bits`=array view/ir_bits_of/decl-order prescan 3-레인),
+  `$countones`/`$onehot`/`$onehot0`/`$isunknown`은 word-parallel 런타임 조회(`SysFuncId::{CountOnes,OneHot,OneHot0,IsUnknown}`).
+- ⏳ **미구현 (loud-reject E3009)**: `$countbits` — `SysFuncId`에 미배선이라 elaborate가 "unsupported system function"으로 거부한다. 등가식 `$countbits(v,1'b1)`은 구현된 `$countones`로, `$countbits(v,1'bx,1'bz)!=0`은 `$isunknown`으로 우회 가능.
 
 ---
 
@@ -116,7 +119,11 @@ always_comb weight = $countones(data);
 
 ---
 
-### `$countbits`
+### `$countbits` ⏳ 미구현 (loud-reject)
+
+> **vitamin 구현 상태**: `$countbits`는 아직 `SysFuncId`에 배선되지 않아 elaborate가
+> `E3009 "unsupported system function"`으로 거부한다. 아래는 IEEE 의미론 참조 문서다.
+> 우회: `$countbits(v,1'b1)`=`$countones(v)`(구현됨), `$countbits(v,1'bx,1'bz)!=0`=`$isunknown(v)`(구현됨).
 
 - **시그니처**: `$countbits(expression, control_bit [, control_bit ...])` → `int`
 - **표준**: IEEE 1800-2017 §20.9
@@ -269,9 +276,10 @@ $onehot0(v)              ≡ $countbits(v, 1'b1) <= 1
   반환 타입: signed integer (IEEE 표준 준수). edge case: `$clog2(0) = 0`, `$clog2(1) = 0`.
 - `$countones`: Rust `u64::count_ones()` (2-state 환경) / 4-state는 1-bit 슬라이스 순회.
 - `$countbits`: 4-state 비트별 순회, control_bit 집합과 일치 여부 카운트.
-- `$onehot`: `$countbits(v, 1'b1) == 1` 구현.
-- `$onehot0`: `$countbits(v, 1'b1) <= 1` 구현.
-- `$isunknown`: 4-state 벡터에서 x 또는 z 비트 존재 여부 확인.
+- `$onehot`: word-parallel — 1-bit가 정확히 1개(`SysFuncId::OneHot`).
+- `$onehot0`: word-parallel — 1-bit가 최대 1개(`SysFuncId::OneHot0`).
+- `$isunknown`: 4-state 벡터에서 x 또는 z 비트 존재 여부 확인(`SysFuncId::IsUnknown`).
+- `$countbits`: ⏳ 미구현(loud-reject E3009) — `SysFuncId` 미배선. 향후 4-state 비트별 순회로 추가 예정.
 
 ## Sources
 

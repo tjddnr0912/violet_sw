@@ -232,3 +232,43 @@ loud-reject로 확인됨(이제 참):**
 | **N7** | class / OOP (+`program`·union) | `class`/handle/동적 디스패치/`new`/상속 — SV 검증언어 대형 기능. 힙+vtable 모델 신규, 大大 공수. | **Low** — 大大규모, 후순위 |
 
 > 조건부/장기(PDES BSP·cycle-based 컴파일드·native-eval 잔여 lane·VHDL front-end) = §4.1 하단 행, 트리거 충족 시.
+
+### 4.5 미구현 기능 전체 인벤토리 (HEAD `7d2f9b4`, format_version 8, ~1252 tests green)
+
+> **2026-06-18 작성** — `docs/preview/` SPEC 전수 감사(워크플로우 6 버킷 audit→적대 verify→synth, 각 항목 `crates/` grep 라이브 확인) 결과를 단일 표로 통합. **권장 구현 우선순위 순**(작은 정확성 핀 → 결정-차단 소형 → 대형 검증 트랙 → SVA/계층 후속 → 조건부/NO-GO → 장기 → 비계획). `N3.2`/`N4`/`N5`/`N6`/`N7`은 §4.4 라이브 트래커 id 재사용. 상태 의미: `silent-degrade`=정확성 결함(우선) · `loud-reject`=명시적 거부(안전) · `deferred`/`NO-GO`=결정·차단 대기 · `won't-fix`/`out-of-scope`=계획 없음. **이미 구현된 기능은 §4.1~§4.4 + doc-01 freeze 표가 정본**(여기 안 나오면 구현됨).
+
+#### 계획됨 (Planned)
+
+| 순위 | id | 항목 | 상태 | 우선순위 | 비고 / blocked-on |
+|---|---|---|---|---|---|
+| 1 | N3.2 | LOCAL array-of-packed 서브원소 read/write (`qm[i][j]`) | silent-degrade (pre-existing) | High | IR-0·small·iverilog 오라클. `lib.rs:1924` read/write 양쪽 silent 1-bit(packed byte여야). 계층 read 슬라이스(N3.1-followon)는 loud-reject로 회귀 차단했으나 LOCAL 경로 잔존 → **가장 먼저 할 정확성 핀** |
+| 2 | N6 | math transcendentals on real (`$ln`/`$log10`/`$exp`/`$sqrt`/`$sin`/`$cos`/`$tan`/`$pow(real)` 등) | deferred (decision-blocked) | Conditional | **blocked: 순수-Rust libm 핀 결정**(3-OS f64 last-ulp 결정성 발산). 정수 `$pow`·`$clog2`만 구현. expr-form=E3009 loud. 결정만 내리면 소형 |
+| 3 | SYS-READ | file READ family (`$fread`/`$fscanf`/`$fgets`/`$sscanf`/`$feof`/`$fgetc`) + `$writememb`/`$writememh` | not-implemented (WARN+skip) | Medium | WRITE family·`$readmem*`는 v7 DONE. READ·writemem은 SysTaskId 없음(grep 0)→미인식 task=W-ELAB-FEATURE-LIMIT WARN+skip(no-op) |
+| 4 | SYS-INTRO | introspection (`$typename`/`$cast`/`$size`/`$left`/`$right`/`$low`/`$high`/`$increment`/`$isunbounded`/`$dimensions`) + `$changed`/`$sampled` + `$dist_*` + `$countbits` + `$monitoron/off` + `$exit` + `$system` | not-implemented (E3009 / WARN+skip) | Medium | expr-form=E3009, stmt-form(`$exit`/`$system` task/`$monitoron/off`)=WARN+skip(감사 'E3009' over-claim 정정). `$cast` class-form·array-query는 N7·array-descriptor 의존. `$changed`=`$past(e)!==e` trivial, `$countbits`=`$countones`/`$isunknown` 합성 우회 |
+| 5 | DIR-PP | 전처리기 잔여: `` `define `` token-paste(``` `` ```)·stringification(`` `" ``)·`` `begin_keywords ``/`` `end_keywords ``·`` `unconnected_drive `` | not-implemented (token-paste=broken passthrough) | Medium | function-like+multi-line 매크로 DONE. token-paste/stringify arm 부재→본문 verbatim 통과(broken). `` `celldefine ``/`` `resetall ``/`` `line ``=accept-ignore(benign). escaped ident는 DONE(gap 아님) |
+| 6 | N5 | coverage (covergroup/coverpoint/cross/bins) | not-implemented | Low | 대규모 신규 검증 서브시스템. 키워드 grep 0. 검증 가치 높으나 대형 |
+| 7 | N7 | class/OOP + randomization + `program` + `union` + virtual interface + chandle | not-implemented | Low | 대규모(heap+vtable+dynamic dispatch+`new`/`extends`/`super`/`::`). randomization=constraint solver 의존. union/program/vif 동반. `lib.rs:1871` 'unpacked struct/union out of v1 scope'. Phase-3+ |
+| 8 | SVA-REST | SVA 잔여: `until`/`implies`/`always`/`s_eventually`·`assume`/`cover` property·`[*0:n]`/`[*0:$]`/`sig[*]`/`sig[+]`·multi-term cross-clock·sequence local var(N2c)·outer-`\|=>` prop-ref skew 고급형·`$assertoff/on/kill`·`let` | loud-reject / deferred | Low | 시퀀스 서브셋·multi-clock·named/formal·prop-level and/or·recursive(tail)·action sampled·disable iff는 DONE. N2c=honest loud(per-attempt thread storage가 thread-collapsing와 근본 상충) |
+| 9 | HIER-REST | 계층 참조 잔여: hierarchical WRITE·3-seg indexed(`m.l.mem[i]`)·indexed-segment parse(`g[0].x`)·iface-member array element·`$dumpvars` hier arg·hierarchical parameter | loud-reject (deferred) | Low | READ(`tb.dut.x`/`dut.mem[i]`/`dut.grid[i][j]`/packed `dut.pm[i]`)은 N3~N3.1-followon DONE. WRITE는 read-only subset이라 loud(`resolve_net` multi-seg 거부) |
+| 10 | SVPART | 부분 SV caveat: 2-state X-free init·string-키 foreach(8-byte ref-var)·assoc first/next narrow truncate·modport subroutine import/export·import ambiguous-at-use-site·`$unit`/`$root`·package `export ::*` | impl-with-caveat / likely loud | Low | 기능은 IN이나 부분/edge. 2-state init-to-0 distinct 미확정(over-claim 금지). modport subroutine import/export=grep 0→likely loud |
+| 11 | GATE | gate-level primitives(and/or/nand/nor/xor/buf/not/bufif/notif) + UDP(primitive/table) + gate delays + drive strength | not-implemented (loud, missing-module fall-through) | Low | 키워드 lex되나 parser arm 부재→plain ident→missing-module loud(E2002). RTL always로 우회 가능, 우선순위 낮음 |
+
+#### 조건부 / 장기 (Conditional / Long-term)
+
+| 순위 | id | 항목 | 상태 | 우선순위 | 비고 / blocked-on |
+|---|---|---|---|---|---|
+| 12 | MVP-CUT | MVP 의도적 컷: string concat/decl-init/port·atoi/itoa·string-키 foreach·wildcard assoc `[*]`·queue range-slice `q[0:2]`·array 메소드(sort/find/sum/with)·package var/internal import/scoped call·cross-frame disable·block-local `automatic`(form2)·staged-vrun frame-call 사이드카 직렬화 | loud-reject (documented cut) | Conditional | 각 IN 기능의 의도적 컷(loud). string은 DONE이나 concat=`lib.rs:5107` loud('use `$sformatf`'). frame-call은 DONE이나 staged-vrun 미직렬화(one-shot `vita`만). 필요 시 개별 해제 |
+| 13 | N4 | clocking block (clocking/endclocking, `cb.sig` 입력 샘플, `@(cb)`, default/skew/`#1step`) | NO-GO (conditional) | Conditional | **blocked: Preponed/sampled-value 스케줄링 리전 도입.** 스파이크 후 revert(`@(cb);x=cb.sig`서 NBA 샘플러 1 clocking-cycle lag→`cb.q=11` vs 정답 `12` silent-wrong). iverilog 거부=오라클 無 |
+| 14 | BACKEND | compiled/JIT native-eval 잔여 lane(signed>64·>128bit·sysfunc·real) + PDES BSP v1 / cycle-based compiled mode | deferred / NO-GO | Conditional | **blocked(PDES): 지속 W≥64 + grain≥200ns 실워크로드**(Amdahl 상한 T4≈2.5x). native lane=저-ROI VM-only(P5 차분 게이트가 정확성 강제). 현 `--threads`=VCD writer 스레드(byte-identical)만 |
+| 15 | VCD-EXT | 확장 VCD `$dumpports*` / FST 파형 포맷 | deferred / out-of-scope | Low | 표준 7 `$dump` 태스크 DONE. `$dumpports*`=deferred(grep 0). FST=명시적 비목표 |
+| 16 | VHDL | VHDL 프론트엔드 (entity/architecture/process/wait, std_logic_1164/numeric_std) | deferred (long-term) | Low | Phase-4+. 별도 lexer/parser/AST를 공유 sim-ir 위에('parse까지만 언어 의존' 근거). E7xxx VHDL 밴드 예약. SV 트랙 완료 후 |
+
+#### 비계획 (정책 / out-of-scope)
+
+| 순위 | id | 항목 | 상태 | 우선순위 | 비고 |
+|---|---|---|---|---|---|
+| 17 | DEFPARAM | `defparam` | won't-fix | Wont-fix | 파서는 AST 수용, elaborate가 E3009 loud(`lib.rs:2521`). IEEE deprecated; `#(.param())`로 충분. W3052 예약. 계획 없음 |
+| 18 | IMPLICIT-NET | `` `default_nettype `` / implicit nets (추론) | policy loud-reject (E3010) | Wont-fix | 정책=명시 에러(추론 없음, 사실상 `default_nettype none`). W2003 예약. worklib 이후 옵션화만 검토 |
+| 19 | OOS | synthesis tool 자체·waveform GUI viewer·UPF/power·SDF back-annotation·DPI-C·shortreal·trireg charge-strength/scalared/vectored·UVM ecosystem(N5 제외)·`unique`/`priority` 다중-match 검사 | out-of-scope | Out-of-scope | 설계 의도상 비목표(gap 아님). shortreal=키워드 없음(real만). trireg=bare 선언만 parse. 계획 없음 |
+
+> **요약:** 정확성 핀 1건(N3.2, High) · system-task 잔여 2 묶음(SYS-READ·SYS-INTRO, Medium)+전처리기 1(DIR-PP) · 대형 검증 트랙 2(N5 coverage·N7 class) · SVA/계층 후속 2(SVA-REST·HIER-REST) · 부분 caveat·gate-level · 조건부 4(MVP-CUT·N4 clocking·BACKEND·VCD-EXT)+장기 1(VHDL) · 비계획 3(defparam·implicit-net·out-of-scope). **다음 착수 권장 = N3.2**(작은 IR-0 정확성 핀, iverilog 오라클).

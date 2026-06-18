@@ -47,15 +47,17 @@ VHDL(IEEE 1076)은 다른 언어이므로 별도 프론트엔드(lexer/parser/el
 **주요 언어 기능:** `interface` / `modport`, `package`, `struct` / `enum` / `typedef`, `foreach`, `unique` / `priority` (구조적 SV)
 
 > `always_comb`/`always_ff`/`always_latch`는 합성가능 RTL이므로 **Phase 1로 이동**한다. 1차 근거는 06 엔진 스펙의 Phase-1 예제·auto-sensitivity 동작이며, `W-ELAB-ALWCOMBORDER`(W3046, §15 부록 A의 MVP-SIM 인벤토리 코드)도 이를 전제한다. Phase 2에는 구조적 SV만 남는다.
+>
+> **✅ Phase 2 전 항목 완료(2026-06-12, format_version 7).** `interface`/`modport`·`package`/`import`/`pkg::`·`struct`/`enum`/`typedef`·`foreach`·`unique`/`priority`·full `string`·동적 배열/queue/연관 배열 전부 IN 승격. 파일 I/O·`$readmemb/h`·`$random`(Annex N)·plusargs·bit-vector(`$bits`/`$countones`/`$onehot(0)`/`$isunknown`)도 함께 승격. **잔여 컷(loud)**: 파일 READ 패밀리(`$fread`/`$fscanf`/`$fgets`/`$sscanf`)·`$writememb/h`·math transcendentals(N6)·introspection(`$typename`/`$cast`/`$size`/`$left`/`$right` 등)·`$changed`/`$sampled`.
 
 **system tasks 확장 셋 (Phase 2):**
 
-- 파일 I/O: `$fopen` / `$fclose` / `$fwrite` / `$fdisplay` / `$fread` / `$fscanf` / `$fgets` / `$sscanf` / `$sformat` / `$sformatf`
-- 메모리 로드: `$readmemh` / `$readmemb` / `$writememh` / `$writememb`
+- 파일 I/O: ✅ `$fopen` / `$fclose` / `$fwrite` / `$fdisplay`(구현, v7 — b/o/h·MCD) · `$sformat` / `$sformatf`(구현) · `$fread` / `$fscanf` / `$fgets` / `$sscanf`(*READ 패밀리=후속, loud*)
+- 메모리 로드: ✅ `$readmemh` / `$readmemb`(구현, v7) · `$writememh` / `$writememb`(후속, loud)
 - 변환: `$signed` / `$unsigned` / `$rtoi` / `$itor` / `$bitstoreal` / `$realtobits`
-- 비트벡터: `$bits` / `$clog2` / `$countones` / `$countbits` / `$onehot` / `$onehot0` / `$isunknown`
-- 수학: `$pow` / `$ln` / `$log10` / `$exp` / `$sqrt` / `$sin` / `$cos` / `$tan`
-- random: `$random` / `$urandom` / `$urandom_range` / `$dist_*`
+- 비트벡터: ✅ `$bits` / `$clog2` / `$countones` / `$onehot` / `$onehot0` / `$isunknown`(구현, v7) · `$countbits`(후속)
+- 수학: `$pow`(정수=구현) · `$ln` / `$log10` / `$exp` / `$sqrt` / `$sin` / `$cos` / `$tan`(*math transcendentals — N6, pure-Rust libm 3-OS 결정성 핀 대기로 loud reject*)
+- random: ✅ `$random`(IEEE Annex N) / `$urandom` / `$urandom_range`(구현, v7 — 자체 계약) · `$dist_*`(후속, loud)
 - assertion 샘플링: ✅ `$past` / `$rose` / `$fell` / `$stable`(*구현 — prev-reg desugar, Phase-3 SVA 트랙*) / `$changed` / `$sampled`(후속)
 - introspection: `$typename` / `$cast` / `$size` / `$left` / `$right` / `$low` / `$high` / `$increment`
 - 기타: `$value$plusargs` / `$test$plusargs` / `$system`
@@ -71,8 +73,11 @@ VHDL(IEEE 1076)은 다른 언어이므로 별도 프론트엔드(lexer/parser/el
 ## Phase 3 — VHDL
 
 > **현 상태(2026-06):** Phase 3은 **SVA(SystemVerilog Assertions) 서브셋 트랙으로 먼저 진입·완료**됐다
-> (format_version 8, 순수 IR-0 desugar — 단일/다중-클럭 concurrent assert·전 시퀀스 연산자·sampled
-> value func·named property/sequence+formal args·generate-scope; 상세 = `docs/ROADMAP.md` §4.3 #6).
+> (format_version 8, 순수 IR-0 desugar — 단일/다중-클럭 concurrent assert·전 시퀀스 연산자(`##n`/`##[m:n]`/`##[m:$]`/`[*n]`/`[*m:n]`/`throughout`/`[->n]`/`[=n]`/`within`)·sampled
+> value func·named property/sequence+formal args·property-level `and`/`or`·recursive property(tail)·cross-clock N-clock chains·generate-scope·disable iff·module-level assert property·action block; 상세 = `docs/ROADMAP.md` §4.3 #6).
+> **이어 frame-call(automatic/recursive 콜스택, B-track 2026-06-17)·repeat-event NBA(N1)·계층 read-only 이름 참조(N3/N3.1)도 완료**(전부 순수 IR-0).
+> **faithful deferred immediate asserts**(`assert #0`=Observed·`assert final`=Reactive)도 구현(22탄). 잔여 SVA(loud, 후속) = multi-term cross-clock segment lane·sequence local variable(N2c=조건부 defer)·outer-`|=>` prop-ref skew 고급형.
+> **clocking block은 조건부 NO-GO**(N4 — Preponed/sampled-value 스케줄링 리전 부재로 `@(cb); x=cb.sig`서 1-cycle lag silent-wrong, 스파이크 후 revert).
 > 아래 VHDL 프론트엔드는 Phase-3의 **후속** 트랙이며 아직 미착수다.
 
 **범위:** IEEE 1076 프론트엔드를 별도로 구축하되, elaborate 이후 공유 IR 위에 얹는다.

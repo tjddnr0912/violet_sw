@@ -381,6 +381,9 @@ fn schema_hash_is_pinned() {
     assert_eq!(hex::encode(got), EXPECTED,
         "SCHEMA_HASH 변경 — frozen sim-ir 타입의 형상/serde 속성이 이동.\n\
          의도적이면: 모든 .velab 무효 → format_version bump + 골든 갱신.");
+    // (현재 골든 컨테이너 format_version = 8. v2→8 사이 의도적 re-freeze: real(v3)·#delay ExprId(v4)·
+    //  NBA transport delay+dyn array/queue/assoc(v5)·queue insert/assoc iter/string key(v6)·
+    //  casez/casex·$random·file I/O·readmem·package·string(v7)·WaitCause::Fork wait-fork(v8).)
 }
 ```
 모든 CI OS/arch(x86_64/aarch64 × linux-gnu/apple-darwin)에서 실행. 정규 문자열이 byte-identical(위)이므로 해시 동일 → *같은* `EXPECTED` literal이 전 플랫폼 통과 — 그것이 2-플랫폼 계약(§5 line 491). platform-의존 해시면 최소 한 runner 실패.

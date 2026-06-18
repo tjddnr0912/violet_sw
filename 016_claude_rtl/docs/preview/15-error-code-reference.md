@@ -46,8 +46,8 @@
 | `2xxx` | PARSE | 어휘·구문·설계단위 |
 | `3xxx` | ELABORATE | 파라미터 해소·계층·연결성·elaboration severity |
 | `4xxx` | RUNTIME | 시뮬레이션·RTL severity 태스크·assert |
-| `5xxx` | ASSERTION / SVA | 동시 assert·assume·cover·unique 위반 (예약, Phase 2 — 부록 A 인벤토리 보유) |
-| `6xxx` | SV-TYPE | enum·const·$cast·class 등 SV 데이터타입 (예약 — 부록 A) |
+| `5xxx` | ASSERTION / SVA | 동시 assert·assume·cover·unique 위반 (예약 — SVA **기능**은 Phase-3 구현됐으나 실패는 합성 체커의 E4003로 방출, 5xxx enum 등재는 미발화 예약. assume/cover/SVA 전용 코드는 부록 A 인벤토리 보유) |
+| `6xxx` | SV-TYPE | enum·const·$cast·class 등 SV 데이터타입 (예약 — 부록 A. 단 enum/typedef/packed struct·dynamic array/queue/assoc·string은 이미 **구현됨**(별도 6xxx 코드 미발화); class/OOP·$cast는 미구현 N7) |
 | `7xxx` | VHDL | VHDL 진단 (예약, Phase 3 — 부록 A) |
 | `8xxx` | FILELIST | `.f` 전개(`-f`/`-F`) |
 | `9xxx` | ARTIFACT | 산출물 staleness·버전 게이트 |
@@ -400,8 +400,10 @@ module m(input i); endmodule  module t; m u1(); endmodule   // 포트 미연결
 **action block 없는 assert 실패 — 묵시 `$error` severity.** immediate `assert(...)` 또는
 concurrent `assert property(...)`가 거짓이고 `else`(fail) 블록이 없을 때, IEEE §16.3상 묵시
 `$error` severity를 갖는다. RTL `$error`와 **같은 게이트**로 라우팅, 실패 플래그 기록 후 계속.
-(immediate `assert`=Phase-1.x. concurrent `assert property`(SVA)는 **Phase-3 구현됨** — 단, 실패는
-합성 clocked-always 체커의 `$error`(→`E-RUN-USER-ERROR` E4003)로 방출되어 이 코드 자체는 **예약-미발화**.)
+(immediate `assert`(✅ else $error/$fatal severity)·deferred `assert #0`/`assert final`(✅ 22탄)·
+concurrent `assert property`(SVA, ✅ Phase-3 — full 시퀀스 서브셋·multi-clock·named property/sequence까지)
+모두 구현됨 — 단, 실패는 합성 clocked-always 체커 또는 severity 팩터의 `$error`
+(→`E-RUN-USER-ERROR` E4003)로 방출되어 이 코드 자체는 **예약-미발화**.)
 ```
 always @(posedge clk) assert (state != ERR_STATE);   // state==ERR_STATE 시 실패
 ->  error[VITA-E4001] E-RUN-ASSERT-FAIL: assertion failed at tb.dut.fsm (state.sv:42) time=1750ns

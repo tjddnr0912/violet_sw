@@ -10,8 +10,9 @@ seed 처리 방식에서 차이가 있어 혼용 시 주의가 필요하다.
 
 ## 지원 Phase
 
-- **Phase 2**: `$random`, `$urandom`, `$urandom_range`
-- **Phase 2**: `$dist_uniform`, `$dist_normal`, `$dist_exponential`, `$dist_poisson`, `$dist_chi_square`, `$dist_t`, `$dist_erlang`
+- ✅ **구현됨 (2026-06-12, format_version 7)**: `$random`, `$urandom`, `$urandom_range`.
+  `$random`=IEEE 1364 Annex N(69069 LCG, signed 32-bit, 시드형은 ref-VAR 쓰기 → blocking-assign 직접 rhs statement-level 인터셉트)·`$urandom`/`$urandom_range`=splitmix64 자체 계약(unsigned, 3-OS 결정성, `$urandom_range`는 arg 자동 스왑).
+- ⏳ **미구현 (loud-reject E3009)**: `$dist_uniform`, `$dist_normal`, `$dist_exponential`, `$dist_poisson`, `$dist_chi_square`, `$dist_t`, `$dist_erlang` — `SysFuncId`에 미배선이라 elaborate가 거부한다(Annex N inout-seed 포팅은 향후 과제).
 
 ---
 
@@ -120,7 +121,11 @@ v = $urandom_range(15, 8);   // 8 ~ 15
 
 ---
 
-### `$dist_*` 계열 — 확률 분포 난수
+### `$dist_*` 계열 — 확률 분포 난수 ⏳ 미구현 (loud-reject)
+
+> **vitamin 구현 상태**: `$dist_uniform`/`$dist_normal`/`$dist_exponential`/`$dist_poisson`/`$dist_chi_square`/`$dist_t`/`$dist_erlang`는
+> 아직 `SysFuncId`에 배선되지 않아 elaborate가 `E3009 "unsupported system function"`으로 거부한다.
+> 아래는 IEEE 의미론 참조 문서다. (`$random`/`$urandom`/`$urandom_range`는 구현 완료.)
 
 $dist_* 함수들은 IEEE 1364-2005 §17.9 기반 PLI 함수다.
 IEEE 1800-2017 Annex N에 알고리즘의 C 소스 코드가 수록되어 있어
@@ -259,13 +264,10 @@ RTL 내부에서 난수를 생성해야 하는 경우(LFSR 등)는 별도 회로
 
 ## 본 프로젝트 구현 메모
 
-- `$random`: 시뮬레이터 전역 RNG 싱글턴. Rust `rand` crate의 전역 상태로 구현 가능.
-- `$urandom` / `$urandom_range`: 각 프로세스/코루틴에 독립 RNG 인스턴스 바인딩.
-  Rust의 `rand::rngs::SmallRng` + per-thread storage 패턴 검토.
-- Hierarchical seeding: 부모 thread RNG에서 u64 값 추출 → 자식 thread RNG 초기화.
-- `$dist_*`: Annex N 알고리즘을 Rust로 포팅하거나 수학적으로 동등한 구현.
-  seed inout 동작: seed 변수에 대한 mutable reference 전달.
-- `$urandom_range(max, min)`: max < min 입력은 시뮬 경고 후 min/max 교환 처리 권장.
+- ✅ `$random` (구현됨): IEEE 1364 Annex N(69069 LCG) + float-mantissa, signed 32-bit. 시드형 `$random(seed)`은 ref-VAR을 쓰는 부작용이라 blocking-assign 직접 rhs일 때만 허용(statement-level 인터셉트), 그 외 위치는 `E3009`(`crates/sim-engine/src/rng.rs`).
+- ✅ `$urandom` / `$urandom_range` (구현됨): splitmix64 자체 계약(implementation-defined를 vita가 핀, 3-OS 결정성). `$urandom_range`는 IEEE §18.13.3대로 `max<min` 시 arg 자동 스왑.
+- ⏳ `$dist_*` (미구현, loud-reject E3009): Annex N inout-seed 알고리즘을 Rust로 포팅하는 향후 과제. seed inout = seed 변수 mutable reference 전달 설계.
+- ℹ️ thread-local RNG / hierarchical seeding: 현재 단일 RNG 상태 기반. 동적 thread별 독립 RNG 인스턴스 + 부모 RNG 시드 파생은 향후 과제.
 
 ## Sources
 

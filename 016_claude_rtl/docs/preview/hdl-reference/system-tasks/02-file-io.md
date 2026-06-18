@@ -7,10 +7,15 @@
 포스트 프로세싱하는 용도로 사용한다.
 합성 불가능(simulation-only)이며 `hdl-builtins` file-io 카테고리가 구현한다.
 
-## 지원 Phase
+## 지원 Phase (vitamin 구현 상태)
 
-- **Phase 2**: `$fopen`, `$fclose`, `$fwrite`/`$fdisplay`/`$fmonitor`/`$fstrobe`,
-  `$fread`, `$fscanf`, `$fgets`, `$sscanf`, `$sformat`, `$sformatf`
+- **✅ 구현됨 (WRITE family + string format, Phase-2)**: `$fopen`(mcd/fd 모드 분기, **$fopen은
+  대입 RHS 특수형으로만 지원** — direct rhs 외엔 loud E3009), `$fclose`, `$fwrite`/`$fdisplay`
+  (+b/o/h 변형, MCD bit0=stdout 브로드캐스트, closed-fd=W4022), `$sformat`, `$sformatf`
+  ($sformatf도 대입 RHS 특수형 — string-literal 포맷 필수).
+- **미구현 (silent-degrade — 미인식 $task은 WARN + skip, IR 미생성)**: `$fmonitor`, `$fstrobe`,
+  READ family `$fread`/`$fscanf`/`$fgets`/`$sscanf`(+`$feof`/`$fgetc`). 본 페이지의 해당 항목은 IEEE
+  표준 레퍼런스이며 vitamin 지원 표기가 아니다.
 
 ---
 
@@ -303,20 +308,20 @@ string msg = $sformatf("[%s] mismatch at addr=%h", prefix, addr);
 
 ---
 
-## Icarus / Verilator 동작 차이
+## Icarus / Verilator 동작 차이 + vitamin 구현 상태
 
-| 태스크 | Icarus Verilog | Verilator |
-|--------|---------------|-----------|
-| `$fopen` (mcd/fd 양방식) | 완전 지원 | Generally supported |
-| `$fclose` | 완전 지원 | Generally supported |
-| `$fdisplay` / `$fwrite` | 완전 지원 | Generally supported |
-| `$fstrobe` / `$fmonitor` | 완전 지원 | Generally supported |
-| `$fread` | 완전 지원 | 미명시 (확인 불가) |
-| `$fscanf` | 완전 지원 | Generally supported |
-| `$fgets` / `$fgetc` | 완전 지원 | Generally supported |
-| `$sscanf` | 완전 지원 | Generally supported |
-| `$sformat` | 완전 지원 | 미명시 |
-| `$sformatf` | 완전 지원 | 미명시 |
+| 태스크 | Icarus Verilog | Verilator | vitamin |
+|--------|---------------|-----------|---------|
+| `$fopen` (mcd/fd 양방식) | 완전 지원 | Generally supported | ✅ (대입 RHS 특수형) |
+| `$fclose` | 완전 지원 | Generally supported | ✅ |
+| `$fdisplay` / `$fwrite` | 완전 지원 | Generally supported | ✅ (+b/o/h, MCD) |
+| `$fstrobe` / `$fmonitor` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
+| `$fread` | 완전 지원 | 미명시 (확인 불가) | ❌ 미구현 (silent-degrade) |
+| `$fscanf` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
+| `$fgets` / `$fgetc` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
+| `$sscanf` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
+| `$sformat` | 완전 지원 | 미명시 | ✅ |
+| `$sformatf` | 완전 지원 | 미명시 | ✅ (대입 RHS 특수형) |
 
 ---
 
@@ -328,10 +333,14 @@ string msg = $sformatf("[%s] mismatch at addr=%h", prefix, addr);
 
 ## 본 프로젝트 구현 메모
 
-- `hdl-builtins` 크레이트 `file_io` 카테고리가 담당
-- mcd 방식 레거시 지원과 fd 방식 현대 지원을 동일 `$fopen` 핸들러에서 모드 유무로 분기
-- `$fread`의 바이너리 읽기와 메모리 로드는 `$readmemh`/`$readmemb`와 구현 경계 정의 필요
-- `$sformatf`는 SV Phase 2에서 string 타입 지원과 함께 구현
+- WRITE family는 `sim-engine` `builtins.rs`가 실행(`hdl-builtins`는 stub; 기능은 sim-engine 인라인).
+- **✅ mcd/fd 분기 구현(Phase-2/v7)**: `$fopen`을 대입 RHS 특수형(`fopen_special`, `elaborate`)으로
+  처리 — 모드 유무로 mcd(`reg [31:0]`)/fd 분기, 인자=string literal 필수, intra-assignment delay 불가.
+  fd 핸들 0x8000_0003…, MCD bit1…(bit0=stdout 브로드캐스트), closed-fd=W4022 warn-once.
+- **✅ `$sformatf` 구현(Phase-2/v7, string 타입과 함께)**: 대입 RHS 특수형(`sformatf_special`),
+  string-literal 포맷 필수. `$sformat`은 일반 task(`Sformat`)로 매핑.
+- **미구현**: `$fread`(바이너리 stream)·`$fscanf`·`$fgets`·`$sscanf`·`$fmonitor`·`$fstrobe`는
+  미매핑 → silent-degrade. `$readmemh`/`$readmemb`(ASCII 텍스트 포맷)와의 구현 경계는 자연 분리됨.
 
 ## Sources
 

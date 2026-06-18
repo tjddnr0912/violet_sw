@@ -6,10 +6,12 @@
 가장 단순한 테스트벤치에서도 `$finish` 없이는 시뮬이 끝나지 않으므로
 Phase 1 MVP의 필수 항목이다.
 
-## 지원 Phase
+## 지원 Phase (vitamin 구현 상태)
 
-- **Phase 1**: `$finish`, `$stop`
-- **Phase 2**: `$exit` (SV program 블록 전용, testbench scope)
+- **✅ 구현됨 (Phase 1)**: `$finish`, `$stop`. severity 파라미터(0|1|2)는 **수용-무시**
+  (verbosity 미구현; exit code와 무관). `$finish` 시 현 타임스텝 postponed 영역($strobe/$monitor)
+  드레인 후 종료(P1-6).
+- **미구현 (silent-degrade — program 블록 미지원)**: `$exit`. 미인식 $task이므로 WARN + skip.
 
 ---
 
@@ -102,7 +104,10 @@ end
 
 ---
 
-### `$exit` (SV only — Phase 2)
+### `$exit` (SV only — vitamin 미구현)
+
+> **vitamin: 미구현.** `$exit`는 미인식 $task으로 WARN + skip(silent-degrade)된다. program 블록
+> tracking 미지원이 전제. 아래는 IEEE 표준 레퍼런스다.
 
 - **시그니처**: `$exit;`
 - **표준**: IEEE 1800-2017 §20.2
@@ -136,8 +141,8 @@ endprogram
 
 - Phase 1: `$finish`, `$stop` 구현. severity 파라미터(0|1|2)는 **수용-무시**(verbosity 미구현; exit code와 무관).
 - `$finish` 호출 시 현 타임스텝 postponed 영역($strobe/$monitor)을 드레인한 뒤 종료(IEEE §17, P1-6).
-- exit code 전달 방식은 simulator runner 레이어에서 결정 (hdl-builtins 범위 밖).
-- Phase 2: `$exit` (program 블록 tracking 필요)
+- exit code 전달 방식은 simulator runner(CLI) 레이어에서 결정 (`FinishReason`→exit class 매핑).
+- `$exit`: **미구현** (program 블록 tracking 미지원 → 미매핑 → WARN + skip).
 
 ## Sources
 
