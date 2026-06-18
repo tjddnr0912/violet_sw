@@ -5229,6 +5229,19 @@ impl<'s> Elaborator<'s> {
                     );
                     return self.placeholder_expr();
                 }
+                // v9 SYS-READ: the file-read functions advance/mutate the fd
+                // read state, so they are direct-rhs-only special forms (the
+                // legal placements intercept in lower_stmt BEFORE lower_expr is
+                // reached). Reaching here = an illegal nested placement. This
+                // guard MUST stay in sync with `file_read_int_special`.
+                if matches!(name.name.as_str(), "$fgetc" | "$feof" | "$ungetc") {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "$fgetc/$feof/$ungetc are supported only as the direct \
+                         rhs of a blocking assignment (v9)",
+                    );
+                    return self.placeholder_expr();
+                }
                 // v7: the $test$plusargs query must be a string literal (the
                 // full string type lands with P2-C).
                 if name.name == "$test$plusargs"
@@ -11506,6 +11519,12 @@ impl<'s> Elaborator<'s> {
                 if self.sformatf_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // v9 SYS-READ: `c = $fgetc(fd)` / `e = $feof(fd)` /
+                // `r = $ungetc(c, fd)` — each advances/mutates the fd read
+                // state, statement-level intercept (the only legal placement).
+                if self.file_read_int_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -12508,6 +12527,58 @@ impl<'s> Elaborator<'s> {
             );
             return true;
         }
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
+    /// v9 file-READ int-returning special forms: `c = $fgetc(fd)`,
+    /// `e = $feof(fd)`, `r = $ungetc(c, fd)`. Each reads/advances the fd read
+    /// state, so it is a statement-level effect (WRITE phase) like `$fopen` —
+    /// legal ONLY as the direct rhs of a blocking assign; the int result is
+    /// assigned to `lhs`. Returns false (unhandled) when `rhs` is some other
+    /// SysCall. This recognizer + the lower_expr loud-reject guard MUST stay in
+    /// sync (the guard catches any non-direct-rhs placement of these names).
+    fn file_read_int_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        let (which, arity, sig) = match name.name.as_str() {
+            "$fgetc" => (ir::SysFuncId::Fgetc, 1usize, "$fgetc(fd)"),
+            "$feof" => (ir::SysFuncId::Feof, 1, "$feof(fd)"),
+            "$ungetc" => (ir::SysFuncId::Ungetc, 2, "$ungetc(c, fd)"),
+            _ => return false,
+        };
+        if args.len() != arity {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("{sig} takes {arity} argument(s)"),
+            );
+            return true;
+        }
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("intra-assignment delay on {sig} is unsupported (v9)"),
+            );
+            return true;
+        }
+        let arg_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which,
+            args: arg_ids,
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
         let sid = self.push_stmt(ir::Stmt::BlockingAssign {
             lhs: lv,
             rhs: rhs_id,

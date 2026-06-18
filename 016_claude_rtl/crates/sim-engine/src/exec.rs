@@ -104,6 +104,25 @@ pub(crate) trait Kernel {
     /// WRITE: open the file (mode form → 0x8000_0003… fd; MCD form → channel
     /// bit) and return the descriptor value; failure returns 0.
     fn k_fopen(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$fgetc(fd)` (v9)? Reading a byte advances the fd read
+    /// position — a statement-level effect, direct-rhs only (like `Fopen`).
+    fn k_fgetc_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: read one byte from the fd (honoring `$ungetc` pushback); a 32-bit
+    /// signed int, or −1 (0xffff_ffff) at EOF / bad fd.
+    fn k_fgetc(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$feof(fd)` (v9)? It reads the lazy-EOF flag a prior
+    /// failed read set — routed through the same direct-rhs family so a fd read
+    /// and its EOF test share one evaluation order.
+    fn k_feof_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: nonzero once the fd has hit EOF; a bad/closed fd returns −1
+    /// (iverilog parity — NOT 0).
+    fn k_feof(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$ungetc(c, fd)` (v9)? It mutates the fd pushback
+    /// buffer — statement-level effect, direct-rhs only.
+    fn k_ungetc_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: push byte `c` back onto the fd (1-deep, last-push-wins) and clear
+    /// EOF; 0 on success, −1 if `c` is EOF (−1) or the fd is bad.
+    fn k_ungetc(&mut self, rhs: u32) -> Value;
     /// WRITE: `disable fork` — kill every active descendant of the calling
     /// process (P2-E; the activity arena marks them dead, stale queue
     /// entries drop at the dispatch choke).
@@ -440,6 +459,24 @@ enum StmtEffect<'s> {
         rhs: u32,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is a v9 file-READ int function ($fgetc/$feof/
+    /// $ungetc): the read / pushback mutates the fd read state — WRITE phase,
+    /// same family as `Fopen`. The int result writes to `lhs`.
+    Fgetc {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
+    Feof {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
+    Ungetc {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
@@ -539,6 +576,34 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
                     offsets,
                 };
             }
+            // v9 SYS-READ: $fgetc/$feof/$ungetc read/advance the fd read state —
+            // same family. Resolve the lhs offsets in the READ phase but do NOT
+            // evaluate the rhs (that read must happen in the WRITE phase, after
+            // the dest offsets are pinned — the deterministic-ordering rule).
+            if k.k_fgetc_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Fgetc {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
+            if k.k_feof_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Feof {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
+            if k.k_ungetc_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Ungetc {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
             let offsets = k.k_resolve_lvalue_offsets(lhs); // dynamic index NOW
             StmtEffect::Blocking {
@@ -623,6 +688,21 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::Sformatf { lhs, rhs, offsets } => {
             let value = k.k_sformatf(rhs); // kernel-side render (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Fgetc { lhs, rhs, offsets } => {
+            let value = k.k_fgetc(rhs); // byte read + fd advance (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Feof { lhs, rhs, offsets } => {
+            let value = k.k_feof(rhs); // lazy-EOF flag read (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Ungetc { lhs, rhs, offsets } => {
+            let value = k.k_ungetc(rhs); // pushback mutation (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }

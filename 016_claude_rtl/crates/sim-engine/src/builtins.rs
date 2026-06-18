@@ -873,8 +873,52 @@ fn file_write(sched: &mut Scheduler, fd: u32, text: &str) {
     }
 }
 
+/// Read one byte from an fd-form descriptor for the v9 SYS-READ family,
+/// honoring the `$ungetc` pushback stack and tracking lazy EOF. Returns
+/// `Some(byte)` or `None` at EOF / bad-fd / write-only-fd. Only fd-form
+/// descriptors (bit 31 set) opened with read capability (a mode containing
+/// 'r' or '+') are readable — MCD channels are write-only broadcast masks, and
+/// a plain "w"/"a" descriptor is write-only. A genuinely bad/closed fd warns
+/// once (W4022); a valid-but-write-only fd returns `None` WITHOUT a warning and
+/// WITHOUT latching EOF (iverilog parity — `$fgetc`=-1 yet `$feof`=0). The lazy
+/// EOF flag is set only by a FAILED read on a READABLE fd (a read returning
+/// zero bytes), matching iverilog's `$feof` timing.
+pub(crate) fn file_read_byte(sched: &mut Scheduler, fd: u32) -> Option<u8> {
+    // a pushed-back byte ($ungetc) is served before the underlying stream
+    // (LIFO — the top of the pushback stack). Only readable fds ever carry a
+    // pushback (k_ungetc rejects write-only/bad fds), so this is safe first.
+    if let Some(s) = sched.st.read_state.get_mut(&fd) {
+        if let Some(b) = s.pushback.pop() {
+            return Some(b);
+        }
+    }
+    if fd & 0x8000_0000 == 0 || !sched.st.files.contains_key(&fd) {
+        bad_fd_warn(sched, fd);
+        return None;
+    }
+    if !sched.st.readable_fds.contains(&fd) {
+        // a valid but write-only ("w"/"a") fd: reads fail WITHOUT a warning and
+        // WITHOUT latching EOF (iverilog: $fgetc=-1, $feof stays 0).
+        return None;
+    }
+    let file = sched
+        .st
+        .files
+        .get_mut(&fd)
+        .expect("readable fd is in files");
+    let mut buf = [0u8; 1];
+    match std::io::Read::read(file, &mut buf) {
+        Ok(1) => Some(buf[0]),
+        // EOF (0 bytes) or a read error sets the lazy EOF flag.
+        _ => {
+            sched.st.read_state.entry(fd).or_default().eof = true;
+            None
+        }
+    }
+}
+
 /// W4022 once-per-descriptor (the dyn W4020 latch pattern).
-fn bad_fd_warn(sched: &mut Scheduler, fd: u32) {
+pub(crate) fn bad_fd_warn(sched: &mut Scheduler, fd: u32) {
     if !sched.st.bad_fd_warned.insert(fd) {
         return;
     }

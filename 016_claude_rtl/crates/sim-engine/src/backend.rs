@@ -101,7 +101,17 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
                     Some(Expr::SysFunc {
                         which: SysFuncId::ValuePlusargs
                             | SysFuncId::Fopen
-                            | SysFuncId::Sformatf,
+                            | SysFuncId::Sformatf
+                            // v9 SYS-READ: the file-read family advances/mutates
+                            // fd state via a statement-level intercept — the VM's
+                            // pure EvalForLval funnel would X-poison them.
+                            | SysFuncId::Fgetc
+                            | SysFuncId::Feof
+                            | SysFuncId::Ungetc
+                            | SysFuncId::Fgets
+                            | SysFuncId::Fread
+                            | SysFuncId::Fscanf
+                            | SysFuncId::Sscanf,
                         ..
                     })
                 )

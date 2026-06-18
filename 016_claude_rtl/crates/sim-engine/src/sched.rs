@@ -2288,12 +2288,14 @@ impl Kernel for Scheduler<'_, '_> {
             });
         let open = |mode: &str| -> std::io::Result<std::fs::File> {
             let mut o = std::fs::OpenOptions::new();
+            // a '+' mode (r+/w+/a+) is read-AND-write; plain w/a are write-only.
+            let plus = mode.contains('+');
             match mode.trim_end_matches('b') {
-                "r" | "r+" => o.read(true).write(mode.contains('+')),
-                "a" | "a+" => o.create(true).append(true),
+                "r" | "r+" => o.read(true).write(plus),
+                "a" | "a+" => o.create(true).append(true).read(plus),
                 // "w"/"w+" and anything unrecognized: truncate-write (the
                 // overwhelmingly common TB mode; unknown modes behave as "w").
-                _ => o.create(true).write(true).truncate(true),
+                _ => o.create(true).write(true).truncate(true).read(plus),
             };
             o.open(&name)
         };
@@ -2304,6 +2306,11 @@ impl Kernel for Scheduler<'_, '_> {
                     self.st.next_fd += 1;
                     let fd = 0x8000_0000 | n;
                     self.st.files.insert(fd, f);
+                    // v9 SYS-READ: a mode with 'r' or '+' is read-capable
+                    // (r/r+/w+/a+); plain "w"/"a" stays write-only and absent.
+                    if m.contains('r') || m.contains('+') {
+                        self.st.readable_fds.insert(fd);
+                    }
                     fd
                 }
                 Err(_) => 0, // IEEE: $fopen failure returns 0
@@ -2324,6 +2331,111 @@ impl Kernel for Scheduler<'_, '_> {
         let mut v = Value::zeros(32, true);
         v.val[0] = fd as u64;
         v
+    }
+    // ── v9 SYS-READ: file-read int functions ($fgetc/$feof/$ungetc) ──
+    fn k_fgetc_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Fgetc,
+                ..
+            })
+        )
+    }
+    fn k_fgetc(&mut self, rhs: u32) -> Value {
+        let fd_arg = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if !args.is_empty() => args[0],
+            _ => return Value::from_i128(-1, 32, true),
+        };
+        let fdv = self.eval(fd_arg);
+        if fdv.has_xz() {
+            return Value::from_i128(-1, 32, true);
+        }
+        let fd = fdv.to_u64().unwrap_or(0) as u32;
+        match crate::builtins::file_read_byte(self, fd) {
+            Some(b) => Value::from_i128(b as i128, 32, true),
+            None => Value::from_i128(-1, 32, true),
+        }
+    }
+    fn k_feof_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Feof,
+                ..
+            })
+        )
+    }
+    fn k_feof(&mut self, rhs: u32) -> Value {
+        let fd_arg = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if !args.is_empty() => args[0],
+            _ => return Value::from_i128(-1, 32, true),
+        };
+        let fdv = self.eval(fd_arg);
+        if fdv.has_xz() {
+            return Value::from_i128(-1, 32, true);
+        }
+        let fd = fdv.to_u64().unwrap_or(0) as u32;
+        // a bad/closed fd → −1 (iverilog parity, NOT 0); an open fd that has
+        // not yet hit EOF → 0.
+        if fd & 0x8000_0000 == 0 || !self.st.files.contains_key(&fd) {
+            crate::builtins::bad_fd_warn(self, fd);
+            return Value::from_i128(-1, 32, true);
+        }
+        let eof = self.st.read_state.get(&fd).map(|s| s.eof).unwrap_or(false);
+        Value::from_i128(if eof { 1 } else { 0 }, 32, true)
+    }
+    fn k_ungetc_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Ungetc,
+                ..
+            })
+        )
+    }
+    fn k_ungetc(&mut self, rhs: u32) -> Value {
+        let (c_arg, fd_arg) = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() >= 2 => (args[0], args[1]),
+            _ => return Value::from_i128(-1, 32, true),
+        };
+        let cv = self.eval(c_arg);
+        let fdv = self.eval(fd_arg);
+        if fdv.has_xz() {
+            return Value::from_i128(-1, 32, true);
+        }
+        let fd = fdv.to_u64().unwrap_or(0) as u32;
+        // The EOF sentinel is ONLY the exact int −1 (0xffff_ffff, fully known).
+        // iverilog treats every other c — INCLUDING a value with x/z bits — as
+        // a normal char and pushes its low byte (x/z bits coerced to 0).
+        if !cv.has_xz() && (cv.to_u64().unwrap_or(0) as u32) == 0xffff_ffff {
+            return Value::from_i128(-1, 32, true);
+        }
+        // a bad/closed fd warns + returns −1; a valid but write-only ("w"/"a")
+        // fd returns −1 WITHOUT a warning (iverilog: a write stream is not
+        // pushable and never becomes readable). Only a read-capable fd accepts
+        // a pushback.
+        if fd & 0x8000_0000 == 0 || !self.st.files.contains_key(&fd) {
+            crate::builtins::bad_fd_warn(self, fd);
+            return Value::from_i128(-1, 32, true);
+        }
+        if !self.st.readable_fds.contains(&fd) {
+            return Value::from_i128(-1, 32, true);
+        }
+        // the pushed byte = the low 8 bits with x/z bits coerced to 0.
+        let mut byte = 0u8;
+        for i in 0..8 {
+            let (v, u) = cv.get_vu(i);
+            if u == 0 && v != 0 {
+                byte |= 1 << i;
+            }
+        }
+        // LIFO push (iverilog retains every pushed byte); pushing clears EOF
+        // (there is data to read again).
+        let st = self.st.read_state.entry(fd).or_default();
+        st.pushback.push(byte);
+        st.eof = false;
+        Value::from_i128(0, 32, true)
     }
     fn k_sformatf_rhs(&self, rhs: u32) -> bool {
         matches!(

@@ -121,6 +121,21 @@ pub(crate) struct Postponed {
     pub deferred_reactive: std::collections::BTreeMap<(u32, u32, u32), DeferredReport>,
 }
 
+/// Per-fd read bookkeeping (v9 SYS-READ): the lazy end-of-file flag and the
+/// `$ungetc` pushback stack. The OS file offset lives on the `std::fs::File`;
+/// this captures the read-side state that offset cannot.
+#[derive(Default)]
+pub struct FdReadState {
+    /// Set true by the first read that returns zero bytes (lazy EOF: it is the
+    /// FAILED read that sets it, not data exhaustion). Cleared by `$ungetc`.
+    pub eof: bool,
+    /// Bytes pushed back by `$ungetc`, a LIFO stack (iverilog-pinned: it is
+    /// NOT 1-deep — pushing A,B,C then reading yields C,B,A before the file
+    /// resumes). The next `$fgetc`/`$fgets` byte pops the top of this stack
+    /// before touching the file.
+    pub pushback: Vec<u8>,
+}
+
 pub(crate) struct SimState<'a> {
     pub ir: &'a SimIr,
     pub now: u64,
@@ -220,6 +235,16 @@ pub(crate) struct SimState<'a> {
     pub next_mcd_bit: u32,
     /// W4022 once-per-descriptor latch (bad/closed fd writes).
     pub bad_fd_warned: std::collections::BTreeSet<u32>,
+    /// v9 per-fd read bookkeeping (Medium-bundle rank 5, SYS-READ): lazy EOF
+    /// flag + `$ungetc` pushback stack. Keyed by the FULL fd (0x8000_0000|n),
+    /// mirroring `files`. The OS file offset on `std::fs::File` carries the read
+    /// position; this side table adds the state that offset cannot express.
+    pub read_state: std::collections::BTreeMap<u32, FdReadState>,
+    /// v9 fd-form descriptors opened with READ capability (a `$fopen` mode
+    /// containing 'r' or '+': r/r+/w+/a+). A plain "w"/"a" fd is write-only and
+    /// is NOT in this set — `$fgetc`/`$ungetc` on it return -1 (iverilog parity)
+    /// without becoming readable. Keyed by the FULL fd.
+    pub readable_fds: std::collections::BTreeSet<u32>,
     /// Instance path of the process CURRENTLY executing — set per `run_process`
     /// (like `cur_time_mult`), read by the `%m` format spec.
     pub cur_scope: String,
@@ -382,6 +407,8 @@ impl<'a> SimState<'a> {
             next_fd: 3,
             next_mcd_bit: 1,
             bad_fd_warned: std::collections::BTreeSet::new(),
+            read_state: std::collections::BTreeMap::new(),
+            readable_fds: std::collections::BTreeSet::new(),
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             radixes: crate::RadixTable::new(),
