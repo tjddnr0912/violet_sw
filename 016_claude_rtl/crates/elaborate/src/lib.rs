@@ -7620,12 +7620,18 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Lower a read `net[idxs…]`: first D indices → flat word; ONE optional trailing
-    /// index → a bit-select into the element word (`g[i][j][k]`). Fewer than D
-    /// indices is a partial unpacked slice; more than D+1 is a bit-of-bit select —
-    /// both unsupported in v1 (loud, not silent). The trailing cap is SYMMETRIC with
-    /// the write path (`collect_array_write`), so over-indexing is rejected the same
-    /// way on read and write rather than silently yielding X on one side.
+    /// Lower a read `net[idxs…]`: first D indices → flat word (the array element).
+    /// Fewer than D indices is a partial unpacked slice (loud). The trailing
+    /// index(es) select INSIDE the element:
+    ///   - array-of-PACKED element (`reg [3:0][7:0] qm[0:1]`, in `packed_dims`):
+    ///     the trailing indices walk the element's packed dims — `qm[i][j]` picks the
+    ///     j-th packed sub-vector (a byte here), NOT a single bit (N3.2 fix). Offset
+    ///     and width mirror [`Self::lower_packed_read`]; `> packed_dims.len()` trailing
+    ///     indices is a bit-of-bit select (loud).
+    ///   - plain element (flat vector): ONE trailing index → a single bit-select; more
+    ///     than one is a bit-of-bit select (loud). Byte-identical to the pre-N3.2 path.
+    ///
+    /// The trailing handling is SYMMETRIC with the write path (`collect_array_write`).
     fn lower_array_read(&mut self, net: u32, idxs: &[&ast::Expr]) -> u32 {
         let dims = self.net_dim_extents(net);
         let d = dims.len();
@@ -7636,20 +7642,41 @@ impl<'s> Elaborator<'s> {
             );
             return self.placeholder_expr();
         }
-        if idxs.len() > d + 1 {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "bit-select then bit-select on a multi-dim array element (v1: single bit/part)",
-            );
-            return self.placeholder_expr();
-        }
         let word = self.flatten_word(&dims, &idxs[..d]);
         let val = self.push_expr(ir::Expr::Signal {
             net,
             word: Some(word),
         });
-        if let Some(bidx) = idxs.get(d) {
-            let offset = self.lower_expr(bidx);
+        let trailing = &idxs[d..];
+        if trailing.is_empty() {
+            return val;
+        }
+        // Array-of-packed: trailing indices select within the element's packed bit
+        // space (`flatten_word(packed_dims, …)` offset, product-of-remaining width).
+        if let Some(pdims) = self.packed_dims.get(&net).cloned() {
+            if trailing.len() > pdims.len() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "bit-select then bit-select on a multi-dim array element (v1: single bit/part)",
+                );
+                return self.placeholder_expr();
+            }
+            let offset = self.flatten_word(&pdims, trailing);
+            let elem_w: u64 = pdims[trailing.len()..]
+                .iter()
+                .map(|&(_, w)| w as u64)
+                .product();
+            let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
+            return self.push_expr(ir::Expr::Select {
+                base: val,
+                offset,
+                width,
+                kind: ir::SelKind::PartIdxUp,
+            });
+        }
+        // Plain (flat-vector) element: a single trailing bit-select.
+        if trailing.len() == 1 {
+            let offset = self.lower_expr(trailing[0]);
             let width = self.const_u32_expr(1, 32);
             return self.push_expr(ir::Expr::Select {
                 base: val,
@@ -7658,12 +7685,23 @@ impl<'s> Elaborator<'s> {
                 kind: ir::SelKind::Bit,
             });
         }
-        val
+        self.error(
+            MsgCode::ElabUnsupported,
+            "bit-select then bit-select on a multi-dim array element (v1: single bit/part)",
+        );
+        self.placeholder_expr()
     }
 
     /// Lower a write `net[idxs…] = …` into one `LvalChunk`: first D indices → flat
-    /// word; one trailing index → a single bit-select on the element. `< D` indices
-    /// (partial slice) and `> D+1` indices (bit-of-bit LHS) are unsupported (loud).
+    /// word (the array element). Trailing indices select inside the element, the
+    /// write-side twin of [`Self::lower_array_read`]:
+    ///   - array-of-PACKED element: trailing indices walk the element's packed dims
+    ///     (`qm[i][j] = …` writes the j-th packed sub-vector, a byte here — N3.2 fix),
+    ///     mirroring [`Self::collect_packed_write`]; `> packed_dims.len()` trailing
+    ///     indices is a bit-of-bit LHS (loud). Engine `write_chunk` lands a
+    ///     `{word:Some, PartIdxUp}` chunk at `base + offset` for `width` bits.
+    ///   - plain element: ONE trailing index → single bit-select (byte-identical to
+    ///     pre-N3.2); `< D` (partial slice) and `> D+1` (bit-of-bit) are loud.
     fn collect_array_write(&mut self, net: u32, idxs: &[&ast::Expr], out: &mut Vec<ir::LvalChunk>) {
         let dims = self.net_dim_extents(net);
         let d = dims.len();
@@ -7683,6 +7721,40 @@ impl<'s> Elaborator<'s> {
         }
         let word = self.flatten_word(&dims, &idxs[..d]);
         let trailing = &idxs[d..];
+        // Array-of-packed: trailing indices → an indexed part-select on the element.
+        if !trailing.is_empty() {
+            if let Some(pdims) = self.packed_dims.get(&net).cloned() {
+                if trailing.len() > pdims.len() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "nested bit-select on a multi-dim array lvalue (v1: single bit/part)",
+                    );
+                    out.push(ir::LvalChunk {
+                        net: POISON_NET,
+                        word: None,
+                        offset: None,
+                        width: None,
+                        kind: ir::SelKind::Bit,
+                    });
+                    return;
+                }
+                let offset = self.flatten_word(&pdims, trailing);
+                let elem_w: u64 = pdims[trailing.len()..]
+                    .iter()
+                    .map(|&(_, w)| w as u64)
+                    .product();
+                let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
+                out.push(ir::LvalChunk {
+                    net,
+                    word: Some(word),
+                    offset: Some(offset),
+                    width: Some(width),
+                    kind: ir::SelKind::PartIdxUp,
+                });
+                return;
+            }
+        }
+        // Plain (flat-vector) element: whole word (0 trailing) or single bit (1).
         let (offset, width) = match trailing.len() {
             0 => (None, None),
             1 => {
