@@ -2437,6 +2437,80 @@ impl Kernel for Scheduler<'_, '_> {
         st.eof = false;
         Value::from_i128(0, 32, true)
     }
+    fn k_fgets_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Fgets,
+                ..
+            })
+        )
+    }
+    fn k_fgets(&mut self, rhs: u32) -> Value {
+        // args = [str-dest whole-net Signal, fd] — elaborate's contract.
+        let (dest_net, fd_arg) = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() >= 2 => {
+                let net = match self.st.ir.exprs.get(args[0] as usize) {
+                    Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                    _ => None,
+                };
+                (net, args[1])
+            }
+            _ => (None, u32::MAX),
+        };
+        let Some(net) = dest_net else {
+            return Value::from_i128(0, 32, true);
+        };
+        let fdv = self.eval(fd_arg);
+        if fdv.has_xz() {
+            return Value::from_i128(0, 32, true);
+        }
+        let fd = fdv.to_u64().unwrap_or(0) as u32;
+        // capacity = the dest in whole bytes (iverilog reads the FULL width N,
+        // not C's N-1 — no NUL is reserved).
+        let width = self.st.ir.nets[net as usize].width.max(1);
+        let max_bytes = (width / 8) as usize;
+        // read up to max_bytes, stopping early after a newline (retained).
+        let mut bytes: Vec<u8> = Vec::new();
+        while bytes.len() < max_bytes {
+            match crate::builtins::file_read_byte(self, fd) {
+                Some(b) => {
+                    bytes.push(b);
+                    if b == b'\n' {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        if bytes.is_empty() {
+            // EOF / bad-fd / write-only / zero-capacity dest: leave the
+            // destination UNCHANGED and return 0 (iverilog parity).
+            return Value::from_i128(0, 32, true);
+        }
+        let n = bytes.len();
+        // pack right-justified, MSB-first (the first byte is most significant —
+        // IEEE §5.9 string packing, same as $value$plusargs %s); the write
+        // funnel zero-extends to the net width.
+        let w = (n as u32) * 8;
+        let mut v = Value::zeros(w, false);
+        for (i, &by) in bytes.iter().rev().enumerate() {
+            let bit = i * 8;
+            v.val[bit / 64] |= (by as u64) << (bit % 64);
+        }
+        let lv = Lvalue {
+            chunks: vec![sim_ir::LvalChunk {
+                net,
+                word: None,
+                offset: None,
+                width: None,
+                kind: sim_ir::SelKind::Bit,
+            }],
+        };
+        let off = self.resolve_lvalue_offsets(&lv);
+        self.k_write_lvalue(&lv, v, &off);
+        Value::from_i128(n as i128, 32, true)
+    }
     fn k_sformatf_rhs(&self, rhs: u32) -> bool {
         matches!(
             self.st.ir.exprs.get(rhs as usize),

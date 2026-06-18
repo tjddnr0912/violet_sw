@@ -5234,11 +5234,14 @@ impl<'s> Elaborator<'s> {
                 // legal placements intercept in lower_stmt BEFORE lower_expr is
                 // reached). Reaching here = an illegal nested placement. This
                 // guard MUST stay in sync with `file_read_int_special`.
-                if matches!(name.name.as_str(), "$fgetc" | "$feof" | "$ungetc") {
+                if matches!(
+                    name.name.as_str(),
+                    "$fgetc" | "$feof" | "$ungetc" | "$fgets"
+                ) {
                     self.error(
                         MsgCode::ElabUnsupported,
-                        "$fgetc/$feof/$ungetc are supported only as the direct \
-                         rhs of a blocking assignment (v9)",
+                        "$fgetc/$feof/$ungetc/$fgets are supported only as the \
+                         direct rhs of a blocking assignment (v9)",
                     );
                     return self.placeholder_expr();
                 }
@@ -11525,6 +11528,11 @@ impl<'s> Elaborator<'s> {
                 if self.file_read_int_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // v9 SYS-READ: `n = $fgets(str, fd)` — writes the str dest +
+                // returns the byte count, the $value$plusargs family.
+                if self.fgets_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -12576,6 +12584,62 @@ impl<'s> Elaborator<'s> {
         let rhs_id = self.push_expr(ir::Expr::SysFunc {
             which,
             args: arg_ids,
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
+    /// v9 `$fgets(str, fd)` special form: reads a line, ADVANCING the fd and
+    /// WRITING the str destination (arg 0, a whole-net Signal) — a statement-
+    /// level effect (WRITE phase) in the `$value$plusargs` family. Legal ONLY
+    /// as the direct rhs of a blocking assign; the byte count is assigned to
+    /// `lhs`. Returns false when `rhs` is some other SysCall. Stays in sync with
+    /// the lower_expr loud-reject guard.
+    fn fgets_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$fgets" {
+            return false;
+        }
+        if args.len() != 2 {
+            self.error(MsgCode::ElabUnsupported, "$fgets takes (str, fd)");
+            return true;
+        }
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "intra-assignment delay on $fgets is unsupported (v9)",
+            );
+            return true;
+        }
+        let str_id = self.lower_expr(&args[0]);
+        if !matches!(
+            self.exprs.get(str_id as usize),
+            Some(ir::Expr::Signal { word: None, .. })
+        ) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$fgets target must be a plain variable (v9)",
+            );
+            return true;
+        }
+        let fd_id = self.lower_expr(&args[1]);
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Fgets,
+            args: vec![str_id, fd_id],
         });
         let lv = self.lower_lvalue(lhs);
         self.check_lvalue_kind(&lv, true);
