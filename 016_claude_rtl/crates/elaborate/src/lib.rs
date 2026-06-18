@@ -1317,6 +1317,14 @@ struct Elaborator<'s> {
     // index order (IEEE 1800 §7.6), so the copy expansion needs the declared
     // direction that `(lo, size)` extents erase. elaborate-LOCAL only.
     array_dim_desc: BTreeMap<u32, Vec<bool>>,
+    // NetId → SYS-INTRO dimension descriptor: ordered `(left, right)` endpoints
+    // per dimension (UNPACKED dims in declaration order, THEN packed dims), plus
+    // the count of leading unpacked dims. Computed from the AST ranges at decl
+    // time so `$size`/`$left`/`$right`/`$low`/`$high`/`$increment`/`$dimensions`/
+    // `$unpacked_dimensions` const-fold (IR-0). A true scalar (`reg s`) has an
+    // EMPTY descriptor (0 dims), distinguishing it from `reg [0:0] x` (1 dim) —
+    // which `nv.msb`/`nv.lsb` alone cannot. elaborate-LOCAL only.
+    dim_desc: BTreeMap<u32, (Vec<(i64, i64)>, usize)>,
     // Every net DECLARED with static unpacked dims — including 1-element
     // arrays (`reg x [0:0]`), which `array_len > 1` cannot distinguish from
     // scalars (adversarial find #5). elaborate-LOCAL only.
@@ -1517,6 +1525,7 @@ impl<'s> Elaborator<'s> {
             frame_task_lowering: false,
             pending_task_calls: Vec::new(),
             array_dim_desc: BTreeMap::new(),
+            dim_desc: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
             dollar_subst: None,
@@ -3867,6 +3876,12 @@ impl<'s> Elaborator<'s> {
                         self.packed_dims.insert(id, packed_ext);
                     }
                 }
+                // SYS-INTRO descriptor for the port (packed dims; ANSI ports carry
+                // no unpacked dims). Without this a multi-dim packed port would fall
+                // back to a single derived dim (silent-wrong $size/$dimensions).
+                if let Some(&id) = self.symbols.get(&self.fq(&p.name.name)) {
+                    self.record_dim_desc(id, kind, p.range.as_ref(), &p.packed, &[]);
+                }
                 if !net_kind_supported(kind) {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -4174,6 +4189,10 @@ impl<'s> Elaborator<'s> {
                 if let Some(&id) = self.symbols.get(&key) {
                     self.array_dim_desc.insert(id, desc);
                 }
+            }
+            // SYS-INTRO dimension descriptor for $size/$left/.../$dimensions.
+            if let Some(&id) = self.symbols.get(&self.fq(&decl.name.name)) {
+                self.record_dim_desc(id, d.kind, d.range.as_ref(), &d.packed, &decl.unpacked);
             }
             // Declared array-ness — covers `[0:0]` (1-element) arrays that
             // `array_len > 1` cannot distinguish from scalars.
@@ -5160,6 +5179,11 @@ impl<'s> Elaborator<'s> {
                 // (whole-array reads are loud by design).
                 if name.name == "$bits" && args.len() == 1 {
                     return self.lower_bits_fold(&args[0]);
+                }
+                // SYS-INTRO: array-query / dimension introspection const-folds
+                // (IR-0, like $bits). A TYPE/net reference, not evaluated.
+                if let Some(folded) = self.try_introspect_fold(&name.name, args) {
+                    return folded;
                 }
                 // v7: a SEEDED $random updates its ref argument — legal ONLY
                 // as the direct rhs of a blocking assign (the special form
@@ -12722,6 +12746,173 @@ impl<'s> Elaborator<'s> {
                 self.placeholder_expr()
             }
         }
+    }
+
+    // ── SYS-INTRO array-query / dimension const-folds (Medium bundle rank 2, IR-0) ──
+    /// Fold `$size`/`$left`/`$right`/`$low`/`$high`/`$increment`/`$dimensions`/
+    /// `$unpacked_dimensions`/`$isunbounded` to a 32-bit Const at elaborate (the
+    /// argument is a TYPE/net reference, never evaluated — IEEE 1800 §20.6.2/§20.7).
+    /// Returns `Some(const_eid)` if `name` is one of these AND the net resolves;
+    /// `None` falls through (unknown func → the normal loud path). Dimension order
+    /// = unpacked dims (decl order) then packed dims; `$increment = left>=right ? 1
+    /// : -1`; a 0-dimension scalar with a dim query folds to 32-bit X (iverilog).
+    fn try_introspect_fold(&mut self, name: &str, args: &[ast::Expr]) -> Option<u32> {
+        // $isunbounded(x): 1 iff x is the `$` token, else 0 (hand-IEEE: iverilog
+        // rejects; we const-fold). No unbounded ranges in v1 ⇒ almost always 0.
+        if name == "$isunbounded" && args.len() == 1 {
+            let v = matches!(args[0].kind, ast::ExprKind::Dollar) as i64;
+            return Some(self.const_param_expr(v));
+        }
+        let with_dim = matches!(
+            name,
+            "$size" | "$left" | "$right" | "$low" | "$high" | "$increment"
+        );
+        let no_dim = matches!(name, "$dimensions" | "$unpacked_dimensions");
+        if !(with_dim || no_dim) || args.is_empty() {
+            return None;
+        }
+        let net = self.resolve_intro_net(&args[0])?;
+        let (dims, unpacked) = self.net_dims_desc(net)?;
+        if name == "$dimensions" {
+            return Some(self.const_param_expr(dims.len() as i64));
+        }
+        if name == "$unpacked_dimensions" {
+            return Some(self.const_param_expr(unpacked as i64));
+        }
+        // 1-based dimension index, default 1 (the outermost dimension).
+        let d = if args.len() >= 2 {
+            self.const_eval_in_scope(&args[1])?
+        } else {
+            1
+        };
+        if d < 1 || (d as usize) > dims.len() {
+            return Some(self.const_x32_expr()); // 0-dim / out-of-range ⇒ X (iverilog)
+        }
+        let (left, right) = dims[(d - 1) as usize];
+        let val = match name {
+            "$left" => left,
+            "$right" => right,
+            "$low" => left.min(right),
+            "$high" => left.max(right),
+            "$size" => (left - right).abs() + 1,
+            "$increment" => {
+                if left >= right {
+                    1
+                } else {
+                    -1
+                }
+            }
+            _ => return None,
+        };
+        Some(self.const_param_expr(val))
+    }
+
+    /// Resolve the net targeted by an introspection query: a (parenthesized)
+    /// single-segment net ident. Indexed/typed/expression args return `None`
+    /// (the query stays loud — pre-existing behavior, not a regression).
+    fn resolve_intro_net(&self, e: &ast::Expr) -> Option<u32> {
+        match &e.kind {
+            ast::ExprKind::Paren { inner } => self.resolve_intro_net(inner),
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                self.lookup_net_scoped(&p.segments[0].name)
+            }
+            _ => None,
+        }
+    }
+
+    /// Record the SYS-INTRO dimension descriptor for net `id` from its AST shape:
+    /// UNPACKED dims (declaration order) THEN packed dims (`range` then extra
+    /// `packed` ranges), each as `(left, right)` const-folded endpoints. An
+    /// integral ATOM type with no explicit packed range carries an IMPLICIT packed
+    /// dim — `integer`⇒`[31:0]`, `time`⇒`[63:0]` (matching iverilog) — while
+    /// dimensionless `real`/`realtime`/`event` and a 1-bit scalar get an EMPTY
+    /// descriptor (0 dims). Stored for EVERY name so the fold is unambiguous and a
+    /// scalar (`reg s`, empty) is distinct from `reg [0:0] x` (one dim).
+    fn record_dim_desc(
+        &mut self,
+        id: u32,
+        kind: ast::NetVarKind,
+        range: Option<&ast::Range>,
+        packed: &[ast::Range],
+        unpacked: &[ast::Dim],
+    ) {
+        let mut dims: Vec<(i64, i64)> = Vec::new();
+        for u in unpacked {
+            match u {
+                ast::Dim::Range(r) => {
+                    if let (Some(m), Some(l)) = (
+                        self.const_eval_in_scope(&r.msb),
+                        self.const_eval_in_scope(&r.lsb),
+                    ) {
+                        dims.push((m, l));
+                    }
+                }
+                // `[N]` shorthand = `[0:N-1]` (IEEE 1800 §7.4.2).
+                ast::Dim::Size(e) => {
+                    if let Some(n) = self.const_eval_in_scope(e) {
+                        dims.push((0, (n - 1).max(0)));
+                    }
+                }
+                ast::Dim::Dyn | ast::Dim::Queue(_) | ast::Dim::Assoc(_) => {}
+            }
+        }
+        let unpacked_n = dims.len();
+        for r in range.into_iter().chain(packed.iter()) {
+            if let (Some(m), Some(l)) = (
+                self.const_eval_in_scope(&r.msb),
+                self.const_eval_in_scope(&r.lsb),
+            ) {
+                dims.push((m, l));
+            }
+        }
+        // Implicit packed dim for an integral atom with no explicit packed range.
+        if range.is_none() && packed.is_empty() {
+            match kind {
+                ast::NetVarKind::Integer => dims.push((31, 0)),
+                ast::NetVarKind::Time => dims.push((63, 0)),
+                _ => {} // real/realtime/event/scalar: genuinely dimensionless here
+            }
+        }
+        self.dim_desc.insert(id, (dims, unpacked_n));
+    }
+
+    /// The SYS-INTRO dimension descriptor for `net`: the decl-time `dim_desc`
+    /// entry when present (authoritative — distinguishes a scalar from `[0:0]`),
+    /// otherwise derived from `NetVar` (ports/params): a vector contributes one
+    /// packed `(msb,lsb)` dim, `array_len>1` prepends an unpacked `(0,len-1)`,
+    /// and a width-1 unranged net is a 0-dim scalar.
+    fn net_dims_desc(&self, net: u32) -> Option<(Vec<(i64, i64)>, usize)> {
+        if let Some(d) = self.dim_desc.get(&net) {
+            return Some(d.clone());
+        }
+        let nv = self.nets.get(net as usize)?;
+        let mut dims: Vec<(i64, i64)> = Vec::new();
+        let unpacked = if nv.array_len > 1 {
+            dims.push((0, nv.array_len as i64 - 1));
+            1
+        } else {
+            0
+        };
+        if nv.width > 1 || nv.msb != nv.lsb {
+            dims.push((nv.msb as i64, nv.lsb as i64));
+        }
+        Some((dims, unpacked))
+    }
+
+    /// A 32-bit all-X Const expr (the iverilog result of an introspection dim
+    /// query on a 0-dimension object).
+    fn const_x32_expr(&mut self) -> u32 {
+        let cv = ir::ConstVal {
+            width: 32,
+            signed: false,
+            repr: ir::ConstRepr::Numeric,
+            bits: ir::BitPacked {
+                val: vec![0],
+                unk: vec![0xFFFF_FFFF],
+            },
+        };
+        let cid = self.intern_const(cv);
+        self.push_expr(ir::Expr::Const { val: cid })
     }
 
     /// Width of the shapes `$bits` can take WITHOUT lowering: a static-array
