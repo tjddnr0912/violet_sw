@@ -1321,11 +1321,14 @@ struct Elaborator<'s> {
     // arrays (`reg x [0:0]`), which `array_len > 1` cannot distinguish from
     // scalars (adversarial find #5). elaborate-LOCAL only.
     unpacked_array_nets: BTreeSet<u32>,
-    // NetId → per-PACKED-dimension `(lo, width)` for multi-dim packed arrays
-    // (`logic [3:0][7:0]` ⇒ [(0,4),(0,8)]). The net is a flat `product(width)`-bit
-    // vector; a select `m[i]` is the bit-SLICE `[i*stride +: elem_width]` (vs the
-    // unpacked word-select). elaborate-LOCAL — NEVER in the frozen sim-ir.
-    packed_dims: BTreeMap<u32, Vec<(u32, u32)>>,
+    // NetId → per-PACKED-dimension `(lo, width, ascending)` for multi-dim packed
+    // arrays (`logic [3:0][7:0]` ⇒ [(0,4,false),(0,8,false)]). The net is a flat
+    // `product(width)`-bit vector; a select `m[i]` is the bit-SLICE
+    // `[coord*stride +: elem_width]`. `ascending` records a little-endian `[lo:hi]`
+    // dim (msb<lsb): the source index maps to `coord = hi - i` instead of `i - lo`
+    // (N3.3 — mirrors `norm_offset_for_net` for plain vectors). elaborate-LOCAL —
+    // NEVER in the frozen sim-ir.
+    packed_dims: BTreeMap<u32, Vec<(u32, u32, bool)>>,
     // v5 ⑥: the active `$` substitution while lowering a QUEUE element index —
     // the ExprId of `size(handle)-1`. Save/restore around each queue index so
     // nested selects (`q[$ - r[$]]`) bind each `$` to ITS OWN queue. `None`
@@ -1946,7 +1949,7 @@ impl<'s> Elaborator<'s> {
             );
             return None;
         }
-        let word = self.flatten_word_eids(&dims, &idx_eids[..d]);
+        let word = self.flatten_word_eids(&dims, &idx_eids[..d], &[]);
         let val = self.push_expr(ir::Expr::Signal {
             net,
             word: Some(word),
@@ -1982,10 +1985,11 @@ impl<'s> Elaborator<'s> {
             );
             return None;
         }
-        let offset = self.flatten_word_eids(&dims, idx_eids);
+        let (ext, dirs) = Self::packed_split(&dims);
+        let offset = self.flatten_word_eids(&ext, idx_eids, &dirs);
         let elem_w: u64 = dims[idx_eids.len()..]
             .iter()
-            .map(|&(_, w)| w as u64)
+            .map(|&(_, w, _)| w as u64)
             .product();
         let base = self.push_expr(ir::Expr::Signal { net, word: None });
         let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
@@ -2004,7 +2008,12 @@ impl<'s> Elaborator<'s> {
     /// the local lowering path's push order — and thus every existing design's golden
     /// IR — is byte-for-byte untouched; this runs ONLY in the hierarchical fixup, on
     /// fresh exprs appended after all designs are lowered.
-    fn flatten_word_eids(&mut self, extents: &[(u32, u32)], idx_eids: &[u32]) -> u32 {
+    fn flatten_word_eids(
+        &mut self,
+        extents: &[(u32, u32)],
+        idx_eids: &[u32],
+        ascending: &[bool],
+    ) -> u32 {
         let d = extents.len();
         let mut strides = vec![1u64; d];
         for k in (0..d.saturating_sub(1)).rev() {
@@ -2042,7 +2051,14 @@ impl<'s> Elaborator<'s> {
                     }),
                 });
             }
-            let coord = if lo == 0 {
+            let coord = if ascending.get(k).copied().unwrap_or(false) {
+                let hi_c = self.const_u32_expr(lo.saturating_add(size - 1), 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Sub,
+                    lhs: hi_c,
+                    rhs: i_eid,
+                })
+            } else if lo == 0 {
                 i_eid
             } else {
                 let lo_c = self.const_u32_expr(lo, 32);
@@ -3828,7 +3844,7 @@ impl<'s> Elaborator<'s> {
                 if !p.packed.is_empty() {
                     width = packed_ext
                         .iter()
-                        .fold(1u32, |a, &(_, w)| a.saturating_mul(w.max(1)));
+                        .fold(1u32, |a, &(_, w, _)| a.saturating_mul(w.max(1)));
                     msb = width.saturating_sub(1);
                 }
                 let dir = map_port_dir(p.dir);
@@ -3954,7 +3970,7 @@ impl<'s> Elaborator<'s> {
             if !d.packed.is_empty() {
                 width = packed_ext
                     .iter()
-                    .fold(1u32, |a, &(_, w)| a.saturating_mul(w.max(1)));
+                    .fold(1u32, |a, &(_, w, _)| a.saturating_mul(w.max(1)));
                 msb = width.saturating_sub(1);
             }
             // ── v7 P2-C: `string s` — heap-handle declaration ──
@@ -4178,14 +4194,16 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Per-PACKED-dim `(lo, width)` extents of `[range][packed…]` (outer→inner). The
-    /// product of the widths is the flat vector width; `lo` is the dim's lower bound
-    /// (subtracted to 0-base a source index). Empty for a scalar/plain vector.
+    /// Per-PACKED-dim `(lo, width, ascending)` extents of `[range][packed…]`
+    /// (outer→inner). The product of the widths is the flat vector width; `lo` is the
+    /// dim's lower bound (subtracted to 0-base a descending source index). `ascending`
+    /// is true for a little-endian `[lo:hi]` dim (msb<lsb), where the index maps to
+    /// `coord = hi - i` instead (N3.3). Empty for a scalar/plain vector.
     fn packed_extents(
         &mut self,
         range: Option<&ast::Range>,
         packed: &[ast::Range],
-    ) -> Vec<(u32, u32)> {
+    ) -> Vec<(u32, u32, bool)> {
         let mut out = Vec::new();
         for r in range.into_iter().chain(packed.iter()) {
             // Negative folded bounds (underflow artifact) clamp to 0 — width math
@@ -4193,7 +4211,7 @@ impl<'s> Elaborator<'s> {
             let msb = clamp_bound_u32(self.const_eval_in_scope(&r.msb));
             let lsb = clamp_bound_u32(self.const_eval_in_scope(&r.lsb));
             let w = (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32;
-            out.push((msb.min(lsb), w.max(1)));
+            out.push((msb.min(lsb), w.max(1), msb < lsb));
         }
         out
     }
@@ -5500,7 +5518,7 @@ impl<'s> Elaborator<'s> {
                 let dims = self.net_dim_extents(net);
                 let d = dims.len();
                 if idxs.len() == d {
-                    let word = self.flatten_word(&dims, &idxs);
+                    let word = self.flatten_word(&dims, &idxs, &[]);
                     return (net, Some(word));
                 }
                 self.error(
@@ -7396,8 +7414,12 @@ impl<'s> Elaborator<'s> {
             );
             return self.placeholder_expr();
         }
-        let offset = self.flatten_word(&dims, idxs);
-        let elem_w: u64 = dims[idxs.len()..].iter().map(|&(_, w)| w as u64).product();
+        let (ext, dirs) = Self::packed_split(&dims);
+        let offset = self.flatten_word(&ext, idxs, &dirs);
+        let elem_w: u64 = dims[idxs.len()..]
+            .iter()
+            .map(|&(_, w, _)| w as u64)
+            .product();
         let base = self.push_expr(ir::Expr::Signal { net, word: None });
         let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
         self.push_expr(ir::Expr::Select {
@@ -7492,8 +7514,12 @@ impl<'s> Elaborator<'s> {
             });
             return;
         }
-        let offset = self.flatten_word(&dims, idxs);
-        let elem_w: u64 = dims[idxs.len()..].iter().map(|&(_, w)| w as u64).product();
+        let (ext, dirs) = Self::packed_split(&dims);
+        let offset = self.flatten_word(&ext, idxs, &dirs);
+        let elem_w: u64 = dims[idxs.len()..]
+            .iter()
+            .map(|&(_, w, _)| w as u64)
+            .product();
         let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
         out.push(ir::LvalChunk {
             net,
@@ -7514,13 +7540,31 @@ impl<'s> Elaborator<'s> {
             .unwrap_or_else(|| vec![(0, self.nets[net as usize].array_len.max(1))])
     }
 
+    /// Split a packed-dim table `(lo, size, ascending)` into the `(lo, size)` extents
+    /// `flatten_word` consumes plus the per-dim `ascending` flags (N3.3). Lets the
+    /// packed read/write paths share `flatten_word` with the unpacked path.
+    fn packed_split(dims: &[(u32, u32, bool)]) -> (Vec<(u32, u32)>, Vec<bool>) {
+        let ext = dims.iter().map(|&(l, s, _)| (l, s)).collect();
+        let dirs = dims.iter().map(|&(_, _, a)| a).collect();
+        (ext, dirs)
+    }
+
     /// Row-major flat word ExprId for the first `extents.len()` indices. Each index
     /// is normalized to a 0-based slot by subtracting its dim's `lo` (`mem[4]` on a
     /// `[4:7]` dim → `i-4`); strides are the suffix products of the dim sizes. A
     /// `lo` of 0 emits NO `Sub` and a stride of 1 emits NO `Mul`, so a plain 0-based
     /// 1-D `mem[i]` still lowers to exactly `lower_expr(i)` — the golden IR for the
     /// common case is byte-for-byte preserved.
-    fn flatten_word(&mut self, extents: &[(u32, u32)], word_idxs: &[&ast::Expr]) -> u32 {
+    ///
+    /// `ascending[k]` (per packed dim; empty/short ⇒ all `false` = descending, the
+    /// unpacked-array + descending-packed byte-identical path) flips dim `k` to
+    /// `coord = hi - idx` (N3.3, little-endian `[lo:hi]`).
+    fn flatten_word(
+        &mut self,
+        extents: &[(u32, u32)],
+        word_idxs: &[&ast::Expr],
+        ascending: &[bool],
+    ) -> u32 {
         let d = extents.len();
         // strides[k] = product(size[k+1..]) as u64 (saturating into u32 at use).
         let mut strides = vec![1u64; d];
@@ -7570,8 +7614,18 @@ impl<'s> Elaborator<'s> {
                     }),
                 });
             }
-            // normalized 0-based coordinate: `idx - lo` (lo==0 ⇒ raw index, no Sub).
-            let coord = if lo == 0 {
+            // normalized 0-based coordinate. Descending (or unpacked): `idx - lo`
+            // (lo==0 ⇒ raw index, no Sub). Ascending `[lo:hi]`: `hi - idx` where
+            // hi = lo+size-1 is the lsb endpoint — internal bit 0 (mirrors
+            // `norm_offset_for_net`).
+            let coord = if ascending.get(k).copied().unwrap_or(false) {
+                let hi_c = self.const_u32_expr(lo.saturating_add(size - 1), 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Sub,
+                    lhs: hi_c,
+                    rhs: i_eid,
+                })
+            } else if lo == 0 {
                 i_eid
             } else {
                 let lo_c = self.const_u32_expr(lo, 32);
@@ -7642,7 +7696,7 @@ impl<'s> Elaborator<'s> {
             );
             return self.placeholder_expr();
         }
-        let word = self.flatten_word(&dims, &idxs[..d]);
+        let word = self.flatten_word(&dims, &idxs[..d], &[]);
         let val = self.push_expr(ir::Expr::Signal {
             net,
             word: Some(word),
@@ -7661,10 +7715,11 @@ impl<'s> Elaborator<'s> {
                 );
                 return self.placeholder_expr();
             }
-            let offset = self.flatten_word(&pdims, trailing);
+            let (ext, dirs) = Self::packed_split(&pdims);
+            let offset = self.flatten_word(&ext, trailing, &dirs);
             let elem_w: u64 = pdims[trailing.len()..]
                 .iter()
-                .map(|&(_, w)| w as u64)
+                .map(|&(_, w, _)| w as u64)
                 .product();
             let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
             return self.push_expr(ir::Expr::Select {
@@ -7719,7 +7774,7 @@ impl<'s> Elaborator<'s> {
             });
             return;
         }
-        let word = self.flatten_word(&dims, &idxs[..d]);
+        let word = self.flatten_word(&dims, &idxs[..d], &[]);
         let trailing = &idxs[d..];
         // Array-of-packed: trailing indices → an indexed part-select on the element.
         if !trailing.is_empty() {
@@ -7738,10 +7793,11 @@ impl<'s> Elaborator<'s> {
                     });
                     return;
                 }
-                let offset = self.flatten_word(&pdims, trailing);
+                let (ext, dirs) = Self::packed_split(&pdims);
+                let offset = self.flatten_word(&ext, trailing, &dirs);
                 let elem_w: u64 = pdims[trailing.len()..]
                     .iter()
-                    .map(|&(_, w)| w as u64)
+                    .map(|&(_, w, _)| w as u64)
                     .product();
                 let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
                 out.push(ir::LvalChunk {
@@ -8102,8 +8158,8 @@ impl<'s> Elaborator<'s> {
         let s_offs = Self::residual_word_offsets(s_res, &s_desc);
         // Leading (user) indices lower ONCE; every element shares the base
         // ExprId (pure reads — sharing is the function-inline precedent).
-        let t_base = (!t_lead.is_empty()).then(|| self.flatten_word(&t_dims, &t_lead));
-        let s_base = (!s_lead.is_empty()).then(|| self.flatten_word(&s_dims, &s_lead));
+        let t_base = (!t_lead.is_empty()).then(|| self.flatten_word(&t_dims, &t_lead, &[]));
+        let s_base = (!s_lead.is_empty()).then(|| self.flatten_word(&s_dims, &s_lead, &[]));
         let delay_id = if nonblocking {
             delay.map(|d| self.lower_delay(d).0)
         } else {

@@ -17,10 +17,10 @@
 //! already lands at `base + off` in `write_chunk`).
 //!
 //! ORACLE: iverilog 13.0 supports array-of-packed sub-element select — used as the
-//! differential oracle for the DESCENDING packed case. The ASCENDING packed direction
-//! (`[0:3]`) is a SEPARATE pre-existing bug shared with plain `lower_packed_read`
-//! (tracked as N3.3); this slice keeps array-of-packed BYTE-CONSISTENT with plain
-//! packed (proven by `ascending_matches_plain_packed_n33`), not iverilog-correct.
+//! differential oracle for both DESCENDING and (since N3.3) ASCENDING packed dims.
+//! N3.3 made `flatten_word` direction-aware (`coord = hi - i` for a little-endian
+//! `[lo:hi]` dim), so array-of-packed and plain `lower_packed_read` are both
+//! iverilog-correct AND byte-consistent (see `ascending_matches_plain_packed_n33`).
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -181,10 +181,9 @@ fn plain_byte_array_bit_select_is_unchanged() {
 
 #[test]
 fn ascending_matches_plain_packed_n33() {
-    // ASCENDING packed `[0:3]` direction is a SEPARATE pre-existing bug (N3.3) shared
-    // with plain `lower_packed_read`. This slice only guarantees array-of-packed is
-    // BYTE-CONSISTENT with plain packed: am[0][j] === pa[j] for the same value.
-    // (Both diverge from iverilog on direction until N3.3 — documented, not silent.)
+    // N3.3: ASCENDING packed `[0:3]` — index 0 is the MSB byte (iverilog: am[0][0]=AA,
+    // am[0][3]=DD for AABBCCDD). array-of-packed reuses the same `flatten_word`, so it
+    // is BOTH iverilog-correct AND byte-consistent with plain packed (am[0][j]===pa[j]).
     let (out, _err, _c) = run("module top;\n\
          reg [0:3][7:0] am [0:1];\n\
          reg [0:3][7:0] pa;\n\
@@ -193,9 +192,9 @@ fn ascending_matches_plain_packed_n33() {
            $display(\"a0=%h p0=%h a3=%h p3=%h\", am[0][0], pa[0], am[0][3], pa[3]);\n\
          end\n\
          endmodule\n");
-    // array-of-packed must match plain-packed byte-for-byte (consistency invariant).
+    // iverilog-correct (ascending: idx 0 = MSB byte) AND consistent (am === pa).
     assert!(
-        out.contains("a0=dd p0=dd") && out.contains("a3=aa p3=aa"),
-        "array-of-packed must be byte-consistent with plain packed:\n{out}"
+        out.contains("a0=aa p0=aa a3=dd p3=dd"),
+        "ascending array-of-packed must match iverilog + plain packed:\n{out}"
     );
 }
