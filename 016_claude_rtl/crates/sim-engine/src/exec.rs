@@ -132,6 +132,14 @@ pub(crate) trait Kernel {
     /// into the str destination right-justified; returns the byte count, or 0
     /// at EOF (leaving the destination UNCHANGED).
     fn k_fgets(&mut self, rhs: u32) -> Value;
+    /// READ: is `rhs` a `$fread(target, fd[, start[, count]])` (v9)? It reads
+    /// binary bytes into a reg or memory — statement-level effect, direct-rhs
+    /// only (the `$value$plusargs` family).
+    fn k_fread_rhs(&self, rhs: u32) -> bool;
+    /// WRITE: binary-read into the target reg/memory (big-endian, MSB-first
+    /// slot fill; a partial fill leaves the unread LOW bytes at their prior
+    /// value); returns the total byte count.
+    fn k_fread(&mut self, rhs: u32) -> Value;
     /// WRITE: `disable fork` — kill every active descendant of the calling
     /// process (P2-E; the activity arena marks them dead, stale queue
     /// entries drop at the dispatch choke).
@@ -494,6 +502,14 @@ enum StmtEffect<'s> {
         rhs: u32,
         offsets: Offsets,
     },
+    /// Blocking assign whose rhs is `$fread(target, fd[, start[, count]])` (v9):
+    /// binary-reads into the target reg/memory AND advances the fd — WRITE
+    /// phase, the `$value$plusargs` family (the byte count → `lhs`).
+    Fread {
+        lhs: &'s Lvalue,
+        rhs: u32,
+        offsets: Offsets,
+    },
     /// Nonblocking assign: RHS SAMPLED now; the LHS index is sampled inside
     /// `schedule_nba` at schedule time (Active region), so it is NOT resolved here —
     /// preserving `a[i] <= x; i = i + 1;` using the old `i`.
@@ -629,6 +645,14 @@ fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<
                     offsets,
                 };
             }
+            if k.k_fread_rhs(*rhs) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::Fread {
+                    lhs,
+                    rhs: *rhs,
+                    offsets,
+                };
+            }
             let value = k.k_eval_for_lvalue(lhs, *rhs); // CONTEXT-SIZED to lhs width
             let offsets = k.k_resolve_lvalue_offsets(lhs); // dynamic index NOW
             StmtEffect::Blocking {
@@ -733,6 +757,11 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
         }
         StmtEffect::Fgets { lhs, rhs, offsets } => {
             let value = k.k_fgets(rhs); // line read + str dest write (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
+        StmtEffect::Fread { lhs, rhs, offsets } => {
+            let value = k.k_fread(rhs); // binary read + target write (WRITE phase)
             k.k_write_lvalue(lhs, value, &offsets);
             None
         }

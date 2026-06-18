@@ -5236,12 +5236,12 @@ impl<'s> Elaborator<'s> {
                 // guard MUST stay in sync with `file_read_int_special`.
                 if matches!(
                     name.name.as_str(),
-                    "$fgetc" | "$feof" | "$ungetc" | "$fgets"
+                    "$fgetc" | "$feof" | "$ungetc" | "$fgets" | "$fread"
                 ) {
                     self.error(
                         MsgCode::ElabUnsupported,
-                        "$fgetc/$feof/$ungetc/$fgets are supported only as the \
-                         direct rhs of a blocking assignment (v9)",
+                        "$fgetc/$feof/$ungetc/$fgets/$fread are supported only as \
+                         the direct rhs of a blocking assignment (v9)",
                     );
                     return self.placeholder_expr();
                 }
@@ -11533,6 +11533,11 @@ impl<'s> Elaborator<'s> {
                 if self.fgets_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // v9 SYS-READ: `rc = $fread(target, fd[, start[, count]])` —
+                // binary read into a reg/memory, same family.
+                if self.fread_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -12640,6 +12645,86 @@ impl<'s> Elaborator<'s> {
         let rhs_id = self.push_expr(ir::Expr::SysFunc {
             which: ir::SysFuncId::Fgets,
             args: vec![str_id, fd_id],
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
+    /// v9 `$fread(target, fd[, start[, count]])` special form: binary-reads into
+    /// the target (arg 0 = a single reg/vector OR a WHOLE memory; an element
+    /// select like `mem[i]` is loud, matching iverilog) AND advances the fd — a
+    /// statement-level effect (WRITE phase) in the `$value$plusargs` family.
+    /// Legal ONLY as the direct rhs of a blocking assign; the byte count is
+    /// assigned to `lhs`. Stays in sync with the lower_expr loud-reject guard.
+    fn fread_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$fread" {
+            return false;
+        }
+        if !(2..=4).contains(&args.len()) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$fread takes (target, fd[, start[, count]])",
+            );
+            return true;
+        }
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "intra-assignment delay on $fread is unsupported (v9)",
+            );
+            return true;
+        }
+        // target: a WHOLE memory (array view, no trailing index) or a single
+        // reg/vector. An element select (mem[i]) is loud — iverilog: "$fread's
+        // first argument must be an integral variable or memory".
+        let target_id = if let Some((net, lead)) = self.expr_array_view(&args[0]) {
+            if !lead.is_empty() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$fread target must be a whole memory or a variable, not an element select (v9)",
+                );
+                return true;
+            }
+            self.push_expr(ir::Expr::Signal { net, word: None })
+        } else {
+            let id = self.lower_expr(&args[0]);
+            if !matches!(
+                self.exprs.get(id as usize),
+                Some(ir::Expr::Signal { word: None, .. })
+            ) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$fread target must be an integral variable or memory (v9)",
+                );
+                return true;
+            }
+            id
+        };
+        let mut sf_args = vec![target_id, self.lower_expr(&args[1])];
+        if let Some(a) = args.get(2) {
+            sf_args.push(self.lower_expr(a));
+        }
+        if let Some(a) = args.get(3) {
+            sf_args.push(self.lower_expr(a));
+        }
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Fread,
+            args: sf_args,
         });
         let lv = self.lower_lvalue(lhs);
         self.check_lvalue_kind(&lv, true);

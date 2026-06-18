@@ -19,6 +19,27 @@ use crate::state::{scalar_bit0, SimState};
 use crate::value::Value;
 use crate::DeferRegion;
 
+/// v9 `$fread` byte-into-register fill (iverilog-pinned). The `bytes` read from
+/// the file (the first is most significant) fill the `w`-bit register's byte
+/// slots from the MSB end: byte `i` → slot `capacity-1-i` (slot `k` = bits
+/// `[k*8 .. min((k+1)*8, w))`, so the top slot is partial when `w` is not a
+/// multiple of 8). Slots left unwritten (a partial fill, when fewer than
+/// `capacity` bytes were read) KEEP their prior value, so `prior` is the
+/// register's current value. A full read overwrites every slot.
+fn fill_reg_slots(prior: &Value, w: u32, bytes: &[u8]) -> Value {
+    let capacity = w.div_ceil(8) as usize;
+    let mut v = prior.clone();
+    for (i, &byte) in bytes.iter().enumerate().take(capacity) {
+        let slot = capacity - 1 - i; // from the LSB; byte 0 fills the top slot
+        let lo = (slot * 8) as u32;
+        let sw = 8u32.min(w - lo); // the top slot may be narrower than a byte
+        for k in 0..sw {
+            v.set_vu(lo + k, ((byte >> k) & 1) as u64, 0);
+        }
+    }
+    v
+}
+
 /// A schedulable process resume. `proc` is a runtime ACTIVITY id (index into
 /// `Scheduler::activities`), NOT a declaration index: top-level processes seed
 /// activities `0..nproc` 1:1, and `fork` APPENDS child activities (id ≥ nproc).
@@ -2470,35 +2491,7 @@ impl Kernel for Scheduler<'_, '_> {
         // not C's N-1 — no NUL is reserved).
         let width = self.st.ir.nets[net as usize].width.max(1);
         let max_bytes = (width / 8) as usize;
-        // read up to max_bytes, stopping early after a newline (retained).
-        let mut bytes: Vec<u8> = Vec::new();
-        while bytes.len() < max_bytes {
-            match crate::builtins::file_read_byte(self, fd) {
-                Some(b) => {
-                    bytes.push(b);
-                    if b == b'\n' {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
-        if bytes.is_empty() {
-            // EOF / bad-fd / write-only / zero-capacity dest: leave the
-            // destination UNCHANGED and return 0 (iverilog parity).
-            return Value::from_i128(0, 32, true);
-        }
-        let n = bytes.len();
-        // pack right-justified, MSB-first (the first byte is most significant —
-        // IEEE §5.9 string packing, same as $value$plusargs %s); the write
-        // funnel zero-extends to the net width.
-        let w = (n as u32) * 8;
-        let mut v = Value::zeros(w, false);
-        for (i, &by) in bytes.iter().rev().enumerate() {
-            let bit = i * 8;
-            v.val[bit / 64] |= (by as u64) << (bit % 64);
-        }
-        let lv = Lvalue {
+        let whole_net = |net: u32| Lvalue {
             chunks: vec![sim_ir::LvalChunk {
                 net,
                 word: None,
@@ -2507,9 +2500,215 @@ impl Kernel for Scheduler<'_, '_> {
                 kind: sim_ir::SelKind::Bit,
             }],
         };
+        if max_bytes == 0 {
+            // sub-byte dest (width < 8): iverilog reads NO stream byte but
+            // CLEARS the dest to 0 (C fgets into a too-small buffer => empty
+            // string written), returning 0.
+            let lv = whole_net(net);
+            let off = self.resolve_lvalue_offsets(&lv);
+            self.k_write_lvalue(&lv, Value::zeros(width, false), &off);
+            return Value::from_i128(0, 32, true);
+        }
+        // read the line: up to max_bytes OR through a newline (retained).
+        let mut raw: Vec<u8> = Vec::new();
+        let mut any_read = false;
+        while raw.len() < max_bytes {
+            match crate::builtins::file_read_byte(self, fd) {
+                Some(b) => {
+                    any_read = true;
+                    raw.push(b);
+                    if b == b'\n' {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        if !any_read {
+            // genuine EOF / bad-fd / write-only: dest UNCHANGED, count 0.
+            return Value::from_i128(0, 32, true);
+        }
+        // the RETURNED string stops at the first NUL (C string semantics); the
+        // bytes after it were still consumed from the stream above, so the file
+        // position matches iverilog.
+        let n = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+        // pack the first n bytes right-justified MSB-first (first byte = most
+        // significant) into a width-wide value; n == 0 (leading NUL) leaves it
+        // all-zero, which CLEARS the dest — iverilog writes 0, not the prior
+        // value. n*8 <= width because n <= max_bytes = width / 8.
+        let mut v = Value::zeros(width, false);
+        for (i, &by) in raw[..n].iter().rev().enumerate() {
+            let bit = i * 8;
+            v.val[bit / 64] |= (by as u64) << (bit % 64);
+        }
+        let lv = whole_net(net);
         let off = self.resolve_lvalue_offsets(&lv);
         self.k_write_lvalue(&lv, v, &off);
         Value::from_i128(n as i128, 32, true)
+    }
+    fn k_fread_rhs(&self, rhs: u32) -> bool {
+        matches!(
+            self.st.ir.exprs.get(rhs as usize),
+            Some(sim_ir::Expr::SysFunc {
+                which: sim_ir::SysFuncId::Fread,
+                ..
+            })
+        )
+    }
+    fn k_fread(&mut self, rhs: u32) -> Value {
+        // args = [target whole-net Signal, fd, start?, count?] — elaborate's
+        // contract (a single reg OR a whole memory; element-select is loud).
+        let (net, fd_arg, start_arg, count_arg) = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() >= 2 => {
+                let net = match self.st.ir.exprs.get(args[0] as usize) {
+                    Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                    _ => None,
+                };
+                (net, args[1], args.get(2).copied(), args.get(3).copied())
+            }
+            _ => (None, u32::MAX, None, None),
+        };
+        let Some(net) = net else {
+            return Value::from_i128(0, 32, true);
+        };
+        let fdv = self.eval(fd_arg);
+        if fdv.has_xz() {
+            return Value::from_i128(0, 32, true);
+        }
+        let fd = fdv.to_u64().unwrap_or(0) as u32;
+        let (w, alen) = {
+            let nv = &self.st.ir.nets[net as usize];
+            (nv.width.max(1), nv.array_len.max(1) as u64)
+        };
+        let cap_per = ((w + 7) / 8) as usize; // bytes per element/reg
+        if alen <= 1 {
+            // ── single reg/vector: read ceil(w/8) bytes, MSB-slot fill ──
+            let mut got: Vec<u8> = Vec::new();
+            for _ in 0..cap_per {
+                match crate::builtins::file_read_byte(self, fd) {
+                    Some(b) => got.push(b),
+                    None => break,
+                }
+            }
+            if got.is_empty() {
+                return Value::from_i128(0, 32, true); // EOF: dest UNCHANGED
+            }
+            let prior = self.st.read_net(net, None);
+            let v = fill_reg_slots(&prior, w, &got);
+            let lv = Lvalue {
+                chunks: vec![sim_ir::LvalChunk {
+                    net,
+                    word: None,
+                    offset: None,
+                    width: None,
+                    kind: sim_ir::SelKind::Bit,
+                }],
+            };
+            let off = self.resolve_lvalue_offsets(&lv);
+            self.k_write_lvalue(&lv, v, &off);
+            return Value::from_i128(got.len() as i128, 32, true);
+        }
+        // ── memory: fill elements ascending from `start` (declared index) ──
+        let base = self
+            .st
+            .net_dims
+            .get(&net)
+            .and_then(|d| d.first())
+            .map(|&(lo, hi)| lo.min(hi) as u64)
+            .unwrap_or(0);
+        let last = base + alen - 1;
+        // iverilog evaluates the start/count operands by coercing each x/z bit
+        // to 0 (NOT by treating an x/z operand as absent), so a present operand
+        // always counts — `4'b001x` => 2, `3'bxxx` => 0 (an explicit count 0).
+        let coerce_xz0 = |v: &Value| -> u64 {
+            v.val.first().copied().unwrap_or(0) & !v.unk.first().copied().unwrap_or(0)
+        };
+        let start = match start_arg {
+            Some(a) => {
+                let v = self.eval(a);
+                coerce_xz0(&v)
+            }
+            None => base,
+        };
+        let count = count_arg.map(|a| {
+            let v = self.eval(a);
+            coerce_xz0(&v)
+        });
+        let warn = |sched: &mut Scheduler, msg: String| {
+            sched
+                .st
+                .sink
+                .emit(diag::LogEvent::Diagnostic(diag::Diagnostic {
+                    severity: diag::Severity::Warning,
+                    code: diag::MsgCode::RunReadmem,
+                    message: msg,
+                    location: None,
+                    context: Vec::new(),
+                    sim_time: Some(diag::TimeStamp {
+                        ticks: sched.st.now,
+                    }),
+                }));
+        };
+        if start < base || start > last {
+            warn(
+                self,
+                format!(
+                    "$fread start argument ({start}) is outside the memory range [{base}:{last}]"
+                ),
+            );
+            return Value::from_i128(0, 32, true);
+        }
+        let avail = last - start + 1;
+        let n_elems = match count {
+            Some(c) if c > avail => {
+                warn(
+                    self,
+                    format!("$fread count argument ({c}) is too large for start ({start}) and the memory range [{base}:{last}]; clamped"),
+                );
+                avail
+            }
+            Some(c) => c,
+            None => avail,
+        };
+        let mut rc: u64 = 0;
+        for e in 0..n_elems {
+            let word = (start + e - base) as u32;
+            let mut got: Vec<u8> = Vec::new();
+            let mut hit_eof = false;
+            for _ in 0..cap_per {
+                match crate::builtins::file_read_byte(self, fd) {
+                    Some(b) => got.push(b),
+                    None => {
+                        hit_eof = true;
+                        break;
+                    }
+                }
+            }
+            if got.is_empty() {
+                break; // no more data — leave this and later elements untouched
+            }
+            rc += got.len() as u64;
+            let prior = self.st.read_net(net, Some(word));
+            let v = fill_reg_slots(&prior, w, &got);
+            let lv = Lvalue {
+                chunks: vec![sim_ir::LvalChunk {
+                    net,
+                    word: Some(0),
+                    offset: None,
+                    width: None,
+                    kind: sim_ir::SelKind::Bit,
+                }],
+            };
+            let off = crate::exec::Offsets::Inline {
+                buf: [(0, word), (0, 0)],
+                len: 1,
+            };
+            self.st.write_lvalue(&lv, v, &off);
+            if hit_eof {
+                break;
+            }
+        }
+        Value::from_i128(rc as i128, 32, true)
     }
     fn k_sformatf_rhs(&self, rhs: u32) -> bool {
         matches!(

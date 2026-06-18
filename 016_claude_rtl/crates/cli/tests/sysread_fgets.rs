@@ -126,3 +126,70 @@ fn fgets_nested_placement_is_loud() {
         "nested $fgets must be loud: {out} code={code:?}"
     );
 }
+
+#[test]
+fn fgets_stops_at_embedded_nul_but_consumes_line() {
+    // "AB\0CD\nEF": the returned string STOPS at the first NUL (n=2, value AB),
+    // yet the whole line is consumed from the stream (the next $fgetc returns
+    // 'E'=69). iverilog-pinned (C fgets + NUL-terminated buffer).
+    let (out, _c) = run(
+        "module t;\n\
+         reg [128:1] line; integer fd, n, c;\n\
+         initial begin\n\
+           fd = $fopen(\"in.txt\", \"r\");\n\
+           n = $fgets(line, fd); $display(\"L %0d %h\", n, line);\n\
+           c = $fgetc(fd); $display(\"next %0d\", c);\n\
+         end\n\
+         endmodule\n",
+        &[("in.txt", &[0x41, 0x42, 0x00, 0x43, 0x44, 0x0a, 0x45, 0x46])],
+    );
+    assert!(
+        out.contains("L 2 00000000000000000000000000004142"),
+        "fgets stops at NUL:\n{out}"
+    );
+    assert!(
+        out.contains("next 69"),
+        "line consumed past the NUL:\n{out}"
+    );
+}
+
+#[test]
+fn fgets_leading_nul_clears_dest() {
+    // "\0ABC": a leading NUL => empty string => n=0 AND the dest is CLEARED to
+    // 0 (NOT left at its prior value — distinct from genuine EOF). iverilog-pin.
+    let (out, _c) = run(
+        "module t;\n\
+         reg [64:1] w8; integer fd, n;\n\
+         initial begin\n\
+           w8 = 64'hDEADBEEFDEADBEEF;\n\
+           fd = $fopen(\"in.txt\", \"r\");\n\
+           n = $fgets(w8, fd); $display(\"NS %0d %h\", n, w8);\n\
+         end\n\
+         endmodule\n",
+        &[("in.txt", &[0x00, 0x41, 0x42, 0x43])],
+    );
+    assert!(
+        out.contains("NS 0 0000000000000000"),
+        "leading NUL clears:\n{out}"
+    );
+}
+
+#[test]
+fn fgets_sub_byte_dest_clears_without_consuming() {
+    // a dest narrower than one byte (reg[3:0]): iverilog reads NO stream byte
+    // but CLEARS the dest to 0 (n=0); the next $fgetc still returns byte 1.
+    let (out, _c) = run(
+        "module t;\n\
+         reg [3:0] nib; integer fd, n, c;\n\
+         initial begin\n\
+           nib = 4'ha;\n\
+           fd = $fopen(\"in.txt\", \"r\");\n\
+           n = $fgets(nib, fd); $display(\"NB %0d %h\", n, nib);\n\
+           c = $fgetc(fd); $display(\"nbnext %0d\", c);\n\
+         end\n\
+         endmodule\n",
+        &[("in.txt", &[0x01, 0x02, 0x03])],
+    );
+    assert!(out.contains("NB 0 0"), "sub-byte dest cleared:\n{out}");
+    assert!(out.contains("nbnext 1"), "no stream byte consumed:\n{out}");
+}
