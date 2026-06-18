@@ -5091,6 +5091,11 @@ impl<'s> Elaborator<'s> {
                 })
             }
             ast::ExprKind::PartSelect { base, msb, lsb } => {
+                // N3.4: a part-select on a bare multi-dim PACKED net selects
+                // whole outer-dim elements, not flat bits.
+                if let Some(sel) = self.try_packed_part_select(base, msb, lsb) {
+                    return sel;
+                }
                 let base_id = self.lower_expr(base);
                 if self.expr_is_real(base_id) {
                     self.error(
@@ -5474,6 +5479,12 @@ impl<'s> Elaborator<'s> {
                 }
             }
             ast::Lvalue::PartSelect { base, msb, lsb, .. } => {
+                // N3.4: a part-select on a bare multi-dim PACKED net writes whole
+                // outer-dim elements, not flat bits.
+                if let Some(chunk) = self.try_packed_part_select_lval(base, msb, lsb) {
+                    out.push(chunk);
+                    return;
+                }
                 // `g[i][j][msb:lsb] = …` — part-select WITHIN an array element word.
                 // `lval_part_base` resolves the element (net + flat word); a scalar
                 // base gives `(net, None)` ⇒ the classic `r[msb:lsb]` chunk.
@@ -7471,6 +7482,129 @@ impl<'s> Elaborator<'s> {
             width,
             kind: ir::SelKind::PartIdxUp,
         })
+    }
+
+    /// N3.4: a `[msb:lsb]` part-select on a BARE multi-dim PACKED net (e.g.
+    /// `reg [3:0][7:0] x; x[3:2]`) addresses the OUTER packed dimension — it
+    /// selects whole `elem_w`-bit sub-elements, NOT flat bits. Without this the
+    /// generic flat-bit path silently reads `(msb-lsb+1)` raw bits of element 0
+    /// (`x[3:2]` => `3`, not `aabb`). Returns `Some(Select)` for the handled
+    /// case (a bare net in `packed_dims`, ≥2 dims, const DESCENDING bounds);
+    /// `None` otherwise, so a plain vector, a non-const, or an ascending
+    /// `[lsb:msb]` select falls through to the existing path (the latter is
+    /// loud-rejected there, the pre-existing ascending-part-select limitation).
+    fn try_packed_part_select(
+        &mut self,
+        base: &ast::Expr,
+        msb: &ast::Expr,
+        lsb: &ast::Expr,
+    ) -> Option<u32> {
+        let ast::ExprKind::Ident(path) = &base.kind else {
+            return None;
+        };
+        let net = self.bare_packed_net(path)?;
+        match self.packed_outer_part_select(net, msb, lsb)? {
+            Ok((offset, width)) => {
+                let base_id = self.push_expr(ir::Expr::Signal { net, word: None });
+                Some(self.push_expr(ir::Expr::Select {
+                    base: base_id,
+                    offset,
+                    width,
+                    kind: ir::SelKind::PartIdxUp,
+                }))
+            }
+            // out-of-range: E3009 already emitted — a loud placeholder (NOT a
+            // fall-through to the generic flat-bit path, which would silently
+            // read past the net).
+            Err(()) => Some(self.placeholder_expr()),
+        }
+    }
+
+    /// Write-side twin of [`Self::try_packed_part_select`]: a `[msb:lsb] = …`
+    /// part-select on a bare multi-dim PACKED net → one whole-element-range
+    /// `LvalChunk` (offset/width in the outer-dim element scale, `PartIdxUp`),
+    /// instead of the flat-bit chunk that silently writes `(msb-lsb+1)` bits of
+    /// element 0. `None` ⇒ fall through to the generic lvalue path.
+    fn try_packed_part_select_lval(
+        &mut self,
+        base: &ast::Lvalue,
+        msb: &ast::Expr,
+        lsb: &ast::Expr,
+    ) -> Option<ir::LvalChunk> {
+        let ast::Lvalue::Ident(path) = base else {
+            return None;
+        };
+        let net = self.bare_packed_net(path)?;
+        match self.packed_outer_part_select(net, msb, lsb)? {
+            Ok((offset, width)) => Some(ir::LvalChunk {
+                net,
+                word: None,
+                offset: Some(offset),
+                width: Some(width),
+                kind: ir::SelKind::PartIdxUp,
+            }),
+            // out-of-range: E3009 already emitted — a loud POISON placeholder
+            // chunk (so the generic path does not silently write past the net).
+            Err(()) => Some(ir::LvalChunk {
+                net: POISON_NET,
+                word: None,
+                offset: None,
+                width: None,
+                kind: ir::SelKind::Bit,
+            }),
+        }
+    }
+
+    /// A single-segment path that resolves to a multi-dim (≥2) PACKED net.
+    fn bare_packed_net(&self, path: &ast::HierPath) -> Option<u32> {
+        if path.segments.len() != 1 {
+            return None;
+        }
+        let net = self.lookup_net_scoped(&path.segments[0].name)?;
+        let dims = self.packed_dims.get(&net)?;
+        (dims.len() >= 2).then_some(net)
+    }
+
+    /// N3.4 shared resolution for an outer-dim part-select on multi-dim packed
+    /// `net`. The outer `Option` distinguishes NOT-APPLICABLE (a non-const or
+    /// ascending `[lsb:msb]` select ⇒ `None` ⇒ caller falls through to the
+    /// existing generic path, which loud-rejects ascending) from APPLICABLE; the
+    /// inner `Result` is `Ok((lsb-element flat bit-offset eid, count×elem_w width
+    /// eid))` for an in-range select, or `Err(())` for an OUT-OF-RANGE select —
+    /// in which case E3009 has already been emitted (iverilog rejects an
+    /// over-bounds part-select at compile, so vita does too rather than silently
+    /// reading/writing past the net). Mirrors [`Self::lower_packed_read`] with
+    /// one outer index but a multi-element width.
+    fn packed_outer_part_select(
+        &mut self,
+        net: u32,
+        msb: &ast::Expr,
+        lsb: &ast::Expr,
+    ) -> Option<Result<(u32, u32), ()>> {
+        let dims = self.packed_dims.get(&net)?.clone();
+        let (m, l) = (const_eval_u32(msb)?, const_eval_u32(lsb)?);
+        if m < l {
+            return None; // ascending [lsb:msb] — generic path loud-rejects
+        }
+        // the FULL [lsb:msb] span must lie inside the outer dim (dims[0]); the
+        // lsb alone is not enough — msb sets the high end. iverilog rejects an
+        // over-bounds part-select at compile time.
+        let (olo, osize, _) = dims[0];
+        let ohi = olo + osize - 1;
+        if l < olo || m > ohi {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "part-select range exceeds the declared bounds of the packed array",
+            );
+            return Some(Err(()));
+        }
+        // outer dim is dims[0]; an element is the product of the inner dims.
+        let elem_w: u64 = dims[1..].iter().map(|&(_, w, _)| w as u64).product();
+        let count = (m - l + 1) as u64;
+        let (ext, dirs) = Self::packed_split(&dims);
+        let offset = self.flatten_word(&ext, &[lsb], &dirs);
+        let width = self.const_u32_expr((count * elem_w).min(u32::MAX as u64) as u32, 32);
+        Some(Ok((offset, width)))
     }
 
     /// Write-side twin of [`Self::expr_array_chain`] over `Lvalue` nodes.
