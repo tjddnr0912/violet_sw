@@ -267,26 +267,21 @@ fn named_generate_block_read() {
 // ───────────────── review N3: element/array selects are loud (deferred) ─────────────────
 
 #[test]
-fn packed_multidim_element_read_is_loud() {
-    // `dut.pm[1]` on a packed [1:0][7:0] must be LOUD, NOT a silent 1-bit bit-select
-    // (review N3 HIGH — it formerly printed r=01 instead of bb). A hierarchical
-    // element select on a multi-dim net is a deferred follow-on lane.
-    let (out, err, code) = run(
+fn packed_multidim_element_read() {
+    // `dut.pm[i]` on a packed [1:0][7:0] now RESOLVES to a bit-SLICE (N3.1 follow-on),
+    // NOT a silent 1-bit bit-select (review N3 HIGH formerly printed r=01). iverilog:
+    // pm[0]=aa pm[1]=bb. Mirrors the local `lower_packed_read` (element word = 8 bits).
+    let (out, err, _c) = run(
         "module sub; reg [1:0][7:0] pm; initial begin pm[0]=8'hAA; pm[1]=8'hBB; end endmodule\n\
-         module top; sub dut(); reg [7:0] r;\n\
-           initial #1 begin r = dut.pm[1]; $display(\"r=%h\", r); end\n\
+         module top; sub dut(); reg [7:0] r0, r1;\n\
+           initial #1 begin r0 = dut.pm[0]; r1 = dut.pm[1]; $display(\"p0=%h p1=%h\", r0, r1); end\n\
          endmodule\n",
     );
-    assert_ne!(
-        code,
-        Some(0),
-        "packed multi-dim hierarchical read must be loud:\n{err}\n{out}"
-    );
     assert!(
-        !out.contains("r=01"),
-        "must NOT silently 1-bit-select:\n{out}"
+        !err.contains("VITA-E"),
+        "packed element read must resolve:\n{err}"
     );
-    assert!(err.contains("VITA-E"), "{err}");
+    assert!(out.contains("p0=aa p1=bb"), "out:\n{out}\nerr:\n{err}");
 }
 
 // ───────────────── N3.1: hierarchical array-element reads ─────────────────
@@ -350,20 +345,33 @@ fn array_element_read_in_clocked_compare() {
 }
 
 #[test]
-fn multidim_array_element_read_is_loud() {
-    // A multi-dim unpacked array indexed with a SINGLE hierarchical index is a partial
-    // slice → loud (full multi-dim hierarchical element select is a follow-on).
-    let (out, err, code) = run("module sub; reg [7:0] grid [0:1][0:1];\n\
-           initial begin grid[0][0]=8'd5; end\n\
+fn multidim_array_element_read_fully_indexed() {
+    // A multi-dim unpacked array with EVERY dimension indexed now RESOLVES (N3.1
+    // follow-on), reading the same flat word a local `grid[i][j]` would. iverilog: 5.
+    let (out, err, _c) = run("module sub; reg [7:0] grid [0:1][0:1];\n\
+           initial begin grid[0][0]=8'd5; grid[1][1]=8'd9; end\n\
          endmodule\n\
          module top; sub dut();\n\
-           initial #1 $display(\"g=%0d\", dut.grid[0][0]);\n\
+           initial #1 $display(\"g00=%0d g11=%0d\", dut.grid[0][0], dut.grid[1][1]);\n\
          endmodule\n");
-    assert_ne!(
-        code,
-        Some(0),
-        "multi-dim hierarchical element read must be loud:\n{err}\n{out}"
+    assert!(
+        !err.contains("VITA-E"),
+        "fully-indexed multi-dim read must resolve:\n{err}"
     );
+    assert!(out.contains("g00=5 g11=9"), "out:\n{out}\nerr:\n{err}");
+}
+
+#[test]
+fn partial_multidim_slice_is_loud() {
+    // A multi-dim unpacked array indexed with FEWER than D indices (a partial slice)
+    // stays loud — iverilog rejects it too ("needs 2 indices, but got only 1").
+    let (out, err, code) = run("module sub; reg [7:0] grid [0:1][0:2];\n\
+           initial grid[0][0]=8'd5;\n\
+         endmodule\n\
+         module top; sub dut(); reg [7:0] r;\n\
+           initial #1 r = dut.grid[0];\n\
+         endmodule\n");
+    assert_ne!(code, Some(0), "partial slice must be loud:\n{err}\n{out}");
     assert!(err.contains("VITA-E"), "{err}");
 }
 
@@ -443,4 +451,189 @@ fn array_element_index_is_a_nested_hier_read() {
         out.contains("nested=20"),
         "nested hierarchical index must resolve:\n{out}\n{err}"
     );
+}
+
+// ───── N3.1 follow-on: multi-dim unpacked + multi-dim packed element reads ─────
+// Every dimension indexed; the read reproduces the LOCAL (non-hierarchical) value
+// byte-for-byte (the fixup mirrors `lower_array_read` / `lower_packed_read`). iverilog
+// 13.0 supports all of these → strong differential oracle (values pinned to iverilog).
+
+#[test]
+fn multidim_array_variable_index() {
+    // Both indices are loop variables; the row-major flat word tracks each element.
+    // iverilog: g00=10 g01=11 g02=12 g10=20 g11=21 g12=22.
+    let (out, err, _c) = run("module sub; reg [7:0] grid [0:1][0:2];\n\
+           initial begin grid[0][0]=10; grid[0][1]=11; grid[0][2]=12;\n\
+                          grid[1][0]=20; grid[1][1]=21; grid[1][2]=22; end\n\
+         endmodule\n\
+         module top; sub dut(); integer i,j;\n\
+           initial begin #1; for(i=0;i<2;i=i+1) for(j=0;j<3;j=j+1)\n\
+             $display(\"g%0d%0d=%0d\", i, j, dut.grid[i][j]); end\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "{err}");
+    for s in ["g00=10", "g01=11", "g02=12", "g10=20", "g11=21", "g12=22"] {
+        assert!(out.contains(s), "missing {s}:\n{out}");
+    }
+}
+
+#[test]
+fn multidim_array_element_trailing_bit_select() {
+    // A trailing bit-select into the element word (`dut.grid[i][j][k]`). iverilog:
+    // grid[1][2]=22=8'b00010110 → bit0=0, bit1=1, bit2=1.
+    let (out, err, _c) = run("module sub; reg [7:0] grid [0:1][0:2];\n\
+           initial grid[1][2]=8'd22;\n\
+         endmodule\n\
+         module top; sub dut();\n\
+           initial #1 $display(\"b0=%b b1=%b b2=%b\",\n\
+             dut.grid[1][2][0], dut.grid[1][2][1], dut.grid[1][2][2]);\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "{err}");
+    assert!(out.contains("b0=0 b1=1 b2=1"), "out:\n{out}\nerr:\n{err}");
+}
+
+#[test]
+fn multidim_array_inner_oob_matches_local_x() {
+    // An inner-dim out-of-range index lands inside the flat space; vita's per-dim guard
+    // yields X (hand-pinned IEEE §7.4.6, same as the LOCAL multi-dim path). The
+    // hierarchical read must match the local read — both X — not silently alias.
+    let (out, err, _c) = run("module sub; reg [7:0] grid [0:1][0:2];\n\
+           initial begin grid[0][0]=8'd10; grid[0][1]=8'd11; grid[0][2]=8'd12; end\n\
+         endmodule\n\
+         module top; sub dut(); reg [7:0] lg [0:1][0:2];\n\
+           initial begin lg[0][0]=8'd10; lg[0][1]=8'd11; lg[0][2]=8'd12;\n\
+             #1; $display(\"h=%0d l=%0d\", dut.grid[0][5], lg[0][5]); end\n\
+         endmodule\n");
+    // Both render the unknown word as `x` — identical hierarchical vs local behavior.
+    assert!(
+        out.contains("h=x l=x"),
+        "hier OOB must match local X:\n{out}\n{err}"
+    );
+}
+
+#[test]
+fn packed_multidim_element_variable_index() {
+    // Packed [3:0][3:0] with a variable index → element bit-slice. iverilog (qm=0x1234):
+    // qm[0]=4 qm[1]=3 qm[2]=2 qm[3]=1.
+    let (out, err, _c) = run(
+        "module sub; reg [3:0][3:0] qm; initial qm=16'h1234; endmodule\n\
+         module top; sub dut(); integer i;\n\
+           initial begin #1; for(i=0;i<4;i=i+1) $display(\"q%0d=%0h\", i, dut.qm[i]); end\n\
+         endmodule\n",
+    );
+    assert!(!err.contains("VITA-E"), "{err}");
+    for s in ["q0=4", "q1=3", "q2=2", "q3=1"] {
+        assert!(out.contains(s), "missing {s}:\n{out}");
+    }
+}
+
+#[test]
+fn packed_multidim_element_then_bit_select() {
+    // Both packed dims indexed → a single-bit slice (`dut.qm[i][j]`). iverilog:
+    // qm[2]=2=4'b0010 → bit0=0, bit1=1.
+    let (out, err, _c) = run(
+        "module sub; reg [3:0][3:0] qm; initial qm=16'h1234; endmodule\n\
+         module top; sub dut();\n\
+           initial #1 $display(\"b0=%b b1=%b\", dut.qm[2][0], dut.qm[2][1]);\n\
+         endmodule\n",
+    );
+    assert!(!err.contains("VITA-E"), "{err}");
+    assert!(out.contains("b0=0 b1=1"), "out:\n{out}\nerr:\n{err}");
+}
+
+#[test]
+fn scalar_over_index_is_loud() {
+    // A multi-index chain on a plain vector (`dut.s[0][1]`) is a bit-of-bit → loud.
+    // iverilog rejects it too ("number of indices (2) is greater than ... (1)").
+    let (out, err, code) = run("module sub; reg [7:0] s; initial s=8'hF0; endmodule\n\
+         module top; sub dut(); reg r;\n\
+           initial #1 r = dut.s[0][1];\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "scalar over-index must be loud:\n{err}\n{out}"
+    );
+    assert!(err.contains("VITA-E"), "{err}");
+}
+
+#[test]
+fn multidim_hierarchical_write_is_loud() {
+    // The read-only subset extends to multi-dim element writes: `dut.grid[i][j] = ...`
+    // stays loud (no silent cross-instance write).
+    let (out, err, code) = run("module sub; reg [7:0] grid [0:1][0:2]; endmodule\n\
+         module top; sub dut();\n\
+           initial #1 dut.grid[0][0] = 8'd9;\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "multi-dim hierarchical write must be loud:\n{err}\n{out}"
+    );
+    assert!(err.contains("VITA-E"), "{err}");
+}
+
+#[test]
+fn multidim_array_index_is_a_function_formal() {
+    // Parity with the single-dim review N3.1 HIGH: a multi-dim index that is a function
+    // FORMAL must bind to the formal, not a shadowing outer net. grid[1][2]=22; the
+    // formal r=1,c=2 ⇒ 22 (NOT outer r=c=0 ⇒ grid[0][0]=10). iverilog: 22.
+    let (out, err, _c) = run("module sub; reg [7:0] grid [0:1][0:2];\n\
+           initial begin grid[0][0]=8'd10; grid[1][2]=8'd22; end\n\
+         endmodule\n\
+         module top; sub dut(); reg [7:0] r, c; initial begin r=0; c=0; end\n\
+           function [7:0] pick(input [7:0] r, input [7:0] c); pick = dut.grid[r][c]; endfunction\n\
+           initial #1 $display(\"f=%0d\", pick(8'd1, 8'd2));\n\
+         endmodule\n");
+    assert!(!err.contains("VITA-E"), "{err}");
+    assert!(
+        out.contains("f=22"),
+        "formal multi-dim index must bind to formals:\n{out}\n{err}"
+    );
+}
+
+#[test]
+fn array_of_packed_whole_element_read() {
+    // `reg [3:0][7:0] qm [0:1]` is BOTH an unpacked array AND a multi-dim packed net.
+    // The WHOLE-element read `dut.qm[i]` (exactly the unpacked-dim count) reads the full
+    // 32-bit packed element word. iverilog: q0=aabbccdd q1=11223344.
+    let (out, err, _c) = run("module sub; reg [3:0][7:0] qm [0:1];\n\
+           initial begin qm[0]=32'hAABBCCDD; qm[1]=32'h11223344; end\n\
+         endmodule\n\
+         module top; sub dut();\n\
+           initial #1 $display(\"q0=%h q1=%h\", dut.qm[0], dut.qm[1]);\n\
+         endmodule\n");
+    assert!(
+        !err.contains("VITA-E"),
+        "whole array-of-packed element read must resolve:\n{err}"
+    );
+    assert!(
+        out.contains("q0=aabbccdd q1=11223344"),
+        "out:\n{out}\nerr:\n{err}"
+    );
+}
+
+#[test]
+fn array_of_packed_sub_index_is_loud_not_silent() {
+    // ADVERSARIAL-REVIEW TEETH: a sub-index INTO the packed element of an array-of-packed
+    // net (`dut.qm[i][j]`) must be LOUD, NOT a silent 1-bit bit-select. iverilog reads the
+    // packed BYTE (qm[0][2]=bb); vita's single-trailing-bit path would silently return
+    // bit 2 (=1). The whole-element read works (above), so only the sub-index is deferred.
+    // (The LOCAL `qm[i][j]` path shares this gap on read AND write — a separate pre-existing
+    // follow-on; here we just refuse to regress hierarchical reads into silent-wrong.)
+    let (out, err, code) = run("module sub; reg [3:0][7:0] qm [0:1];\n\
+           initial begin qm[0]=32'hAABBCCDD; qm[1]=32'h11223344; end\n\
+         endmodule\n\
+         module top; sub dut(); reg [7:0] r;\n\
+           initial #1 begin r = dut.qm[0][2]; $display(\"r=%h\", r); end\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "array-of-packed sub-index must be loud:\n{err}\n{out}"
+    );
+    assert!(
+        !out.contains("r=01"),
+        "must NOT silently 1-bit-select (would print r=01):\n{out}"
+    );
+    assert!(err.contains("VITA-E"), "{err}");
 }

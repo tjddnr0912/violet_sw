@@ -651,19 +651,23 @@ struct DeferredHier {
     path: Vec<String>,
 }
 
-/// A hierarchical INDEXED read `base[i]` whose `base` is a 2-segment hierarchical
-/// reference (slice N3.1). Deferred like [`DeferredHier`] — the base net does not
-/// exist at lowering time — but resolution must choose the SELECT KIND from the
-/// resolved net's shape (an array element word vs a vector bit-select), which is
-/// only known after elaboration. The index is LOWERED AT LOWERING TIME (with the
-/// full param/genvar/function-formal context) into `idx_eid`; the fixup only builds
-/// the select around it (review N3.1: re-lowering the index at fixup lost that
-/// context — a function-formal index silently resolved to a shadowing outer net).
+/// A hierarchical INDEXED read `base[i]…[k]` whose `base` is a 2-segment hierarchical
+/// reference (slice N3.1 + multi-dim follow-on). Deferred like [`DeferredHier`] — the
+/// base net does not exist at lowering time — but resolution must choose the SELECT
+/// KIND and arity from the resolved net's shape (a single-/multi-dim unpacked array
+/// element word, a multi-dim packed bit-slice, or a vector bit-select), which is only
+/// known after elaboration. EVERY index is LOWERED AT LOWERING TIME (with the full
+/// param/genvar/function-formal context) into `idx_eids`; the fixup only builds the
+/// flat-word/offset arithmetic and select around those eids (review N3.1: re-lowering
+/// an index at fixup lost that context — a function-formal index silently resolved to
+/// a shadowing outer net).
 struct DeferredHierSelect {
     eid: u32,
     prefix: String,
     path: Vec<String>,
-    idx_eid: u32,
+    /// Indices in SOURCE order (`grid[i][j]` → `[i, j]`). Length 1 = the N3.1 scalar/
+    /// vector/single-dim-array case; ≥2 = a multi-dim unpacked/packed element select.
+    idx_eids: Vec<u32>,
 }
 
 /// during statement lowering and materialized AFTER the module's process loop as
@@ -1834,55 +1838,51 @@ impl<'s> Elaborator<'s> {
                 );
                 continue;
             };
-            let built = if self.event_nets.contains(&net)
-                || self.is_dyn_handle_net(net)
-                || self.packed_dims.contains_key(&net)
-            {
+            // Events and dynamic handles have no indexable readable value here (a dyn
+            // element read routes through `dyn_select_read` at lowering, on a 1-seg
+            // base — never a hierarchical ref). Loud-reject.
+            if self.event_nets.contains(&net) || self.is_dyn_handle_net(net) {
                 self.error(
                     MsgCode::ElabUnsupported,
                     &format!(
-                        "a hierarchical indexed read of `{}` is unsupported (an event, a \
-                         dynamic handle, or a multi-dimensional packed net — a hierarchical \
-                         packed-element select is a deferred follow-on)",
+                        "a hierarchical indexed read of `{}` is unsupported (an event or a \
+                         dynamic-storage handle has no plain indexable value)",
                         d.path.join(".")
                     ),
                 );
                 continue;
-            } else if self.net_is_static_array(net) {
-                // Unpacked array element. A single-dim array's element word is the
-                // lo-normalized index (matching `flatten_word`'s 1-D case); a multi-dim
-                // array indexed by ONE index is a partial slice → loud follow-on.
-                let dims = self.net_dim_extents(net);
-                if dims.len() != 1 {
+            }
+            let path = d.path.join(".");
+            let built = if self.net_is_static_array(net) {
+                // Unpacked array element — single- OR multi-dim, mirroring the local
+                // `lower_array_read` path so `dut.grid[i][j]` reads exactly what a local
+                // `grid[i][j]` would. A partial slice (< D indices) and a bit-of-bit
+                // (> D+1) stay loud.
+                match self.build_hier_array_read(net, &d.idx_eids, &path) {
+                    Some(e) => e,
+                    None => continue,
+                }
+            } else if self.packed_dims.contains_key(&net) {
+                // Multi-dim PACKED element → a bit-slice (mirrors `lower_packed_read`).
+                match self.build_hier_packed_read(net, &d.idx_eids, &path) {
+                    Some(e) => e,
+                    None => continue,
+                }
+            } else {
+                // scalar / vector → a plain bit-select (mirrors the BitSelect arm). A
+                // multi-index chain on a scalar/vector is a bit-of-bit → loud.
+                if d.idx_eids.len() != 1 {
                     self.error(
                         MsgCode::ElabUnsupported,
                         &format!(
-                            "a hierarchical element read of multi-dimensional array `{}` is \
-                             a deferred follow-on (index every dimension)",
-                            d.path.join(".")
+                            "too many indices in hierarchical read of `{path}` (a scalar/vector \
+                             takes a single bit-select)"
                         ),
                     );
                     continue;
                 }
-                let lo = dims[0].0;
-                let word = if lo == 0 {
-                    d.idx_eid
-                } else {
-                    let lo_c = self.const_u32_expr(lo, 32);
-                    self.push_expr(ir::Expr::Binary {
-                        op: ir::BinOp::Sub,
-                        lhs: d.idx_eid,
-                        rhs: lo_c,
-                    })
-                };
-                self.push_expr(ir::Expr::Signal {
-                    net,
-                    word: Some(word),
-                })
-            } else {
-                // scalar / vector → a plain bit-select (mirrors the BitSelect arm).
                 let base_sig = self.push_expr(ir::Expr::Signal { net, word: None });
-                let offset = self.norm_offset_for_net(net, d.idx_eid);
+                let offset = self.norm_offset_for_net(net, d.idx_eids[0]);
                 let width = self.const_u32_expr(1, 32);
                 self.push_expr(ir::Expr::Select {
                     base: base_sig,
@@ -1893,6 +1893,195 @@ impl<'s> Elaborator<'s> {
             };
             let e = self.exprs[built as usize].clone();
             self.exprs[d.eid as usize] = e;
+        }
+    }
+
+    /// Build a hierarchical unpacked-array element read from PRE-LOWERED index eids,
+    /// mirroring [`Self::lower_array_read`] (first D indices → row-major flat word; one
+    /// trailing index → a bit-select into the element). `None` (after a loud error) for
+    /// a partial slice (`< D` indices) or a bit-of-bit (`> D+1`). The index eids were
+    /// lowered at the read site (full param/genvar/formal context), so this only builds
+    /// the flat-word arithmetic and the select.
+    fn build_hier_array_read(&mut self, net: u32, idx_eids: &[u32], path: &str) -> Option<u32> {
+        let dims = self.net_dim_extents(net);
+        let d = dims.len();
+        if idx_eids.len() < d {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "a partial hierarchical slice of unpacked array `{path}` is unsupported \
+                     (index every dimension)"
+                ),
+            );
+            return None;
+        }
+        // An array element that is ITSELF a multi-dim PACKED net (`reg [3:0][7:0] qm [0:1]`
+        // is BOTH `net_is_static_array` AND in `packed_dims`). The whole-element read
+        // `dut.qm[i]` (exactly D unpacked indices) is supported and reads the full packed
+        // word — but a further sub-index INTO the packed element (`dut.qm[i][j]`) needs a
+        // packed-element bit-slice, NOT the single trailing bit-select below (which would
+        // silently return 1 bit instead of iverilog's byte). The LOCAL array path
+        // (`lower_array_read`/`collect_array_write`) shares this gap (it 1-bit-selects on
+        // BOTH read and write), so rather than diverge — or silently mis-read — we
+        // loud-reject the hierarchical sub-index as a deferred follow-on (restoring the
+        // pre-follow-on loudness for this exact form; the whole-element read stays correct).
+        if idx_eids.len() > d && self.packed_dims.contains_key(&net) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "a hierarchical sub-element select into the packed element of array \
+                     `{path}` is a deferred follow-on (read the whole element `[i]`, or \
+                     index the packed element in its own scope)"
+                ),
+            );
+            return None;
+        }
+        if idx_eids.len() > d + 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "too many indices in hierarchical read of `{path}` (a multi-dim array \
+                     element takes a single trailing bit-select)"
+                ),
+            );
+            return None;
+        }
+        let word = self.flatten_word_eids(&dims, &idx_eids[..d]);
+        let val = self.push_expr(ir::Expr::Signal {
+            net,
+            word: Some(word),
+        });
+        if let Some(&bidx) = idx_eids.get(d) {
+            // Trailing bit-select into the element word — `lower_array_read` uses the
+            // raw lowered index as the offset (the element's bit 0 is its LSB), so no
+            // `norm_offset_for_net` here, keeping parity with the local path.
+            let width = self.const_u32_expr(1, 32);
+            return Some(self.push_expr(ir::Expr::Select {
+                base: val,
+                offset: bidx,
+                width,
+                kind: ir::SelKind::Bit,
+            }));
+        }
+        Some(val)
+    }
+
+    /// Build a hierarchical PACKED multi-dim element read from PRE-LOWERED index eids,
+    /// mirroring [`Self::lower_packed_read`] (first `k` indices → bit offset via
+    /// `flatten_word_eids`; result width = product of the un-indexed inner dims → an
+    /// indexed part-select). `None` (after a loud error) for over-indexing.
+    fn build_hier_packed_read(&mut self, net: u32, idx_eids: &[u32], path: &str) -> Option<u32> {
+        let dims = self.packed_dims[&net].clone();
+        if idx_eids.len() > dims.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "too many indices in hierarchical read of packed array `{path}` (more \
+                     than its dimensions)"
+                ),
+            );
+            return None;
+        }
+        let offset = self.flatten_word_eids(&dims, idx_eids);
+        let elem_w: u64 = dims[idx_eids.len()..]
+            .iter()
+            .map(|&(_, w)| w as u64)
+            .product();
+        let base = self.push_expr(ir::Expr::Signal { net, word: None });
+        let width = self.const_u32_expr(elem_w.min(u32::MAX as u64) as u32, 32);
+        Some(self.push_expr(ir::Expr::Select {
+            base,
+            offset,
+            width,
+            kind: ir::SelKind::PartIdxUp,
+        }))
+    }
+
+    /// PRE-LOWERED-eid twin of [`Self::flatten_word`]: identical row-major offset
+    /// arithmetic and per-dim bounds guards (`d ≥ 2` → `idx∈[lo,hi]` conjunction, OOB
+    /// sentinel `0x8000_0000`), but the per-index `i_eid` comes from `idx_eids` (lowered
+    /// at the read site) instead of `lower_expr`. Kept SEPARATE from `flatten_word` so
+    /// the local lowering path's push order — and thus every existing design's golden
+    /// IR — is byte-for-byte untouched; this runs ONLY in the hierarchical fixup, on
+    /// fresh exprs appended after all designs are lowered.
+    fn flatten_word_eids(&mut self, extents: &[(u32, u32)], idx_eids: &[u32]) -> u32 {
+        let d = extents.len();
+        let mut strides = vec![1u64; d];
+        for k in (0..d.saturating_sub(1)).rev() {
+            strides[k] = strides[k + 1].saturating_mul(extents[k + 1].1 as u64);
+        }
+        let guard_dims = d >= 2;
+        let mut valid: Option<u32> = None;
+        let mut acc: Option<u32> = None;
+        for (k, &i_eid) in idx_eids.iter().enumerate() {
+            let (lo, size) = extents[k];
+            if guard_dims {
+                let lo_c = self.const_u32_expr(lo, 32);
+                let hi_c = self.const_u32_expr(lo.saturating_add(size - 1), 32);
+                let ge = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Ge,
+                    lhs: i_eid,
+                    rhs: lo_c,
+                });
+                let le = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Le,
+                    lhs: i_eid,
+                    rhs: hi_c,
+                });
+                let both = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::LogAnd,
+                    lhs: ge,
+                    rhs: le,
+                });
+                valid = Some(match valid {
+                    None => both,
+                    Some(v) => self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::LogAnd,
+                        lhs: v,
+                        rhs: both,
+                    }),
+                });
+            }
+            let coord = if lo == 0 {
+                i_eid
+            } else {
+                let lo_c = self.const_u32_expr(lo, 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Sub,
+                    lhs: i_eid,
+                    rhs: lo_c,
+                })
+            };
+            let term = if strides[k] == 1 {
+                coord
+            } else {
+                let s = self.const_u32_expr(strides[k].min(u32::MAX as u64) as u32, 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Mul,
+                    lhs: coord,
+                    rhs: s,
+                })
+            };
+            acc = Some(match acc {
+                None => term,
+                Some(a) => self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Add,
+                    lhs: a,
+                    rhs: term,
+                }),
+            });
+        }
+        let flat = acc.unwrap_or_else(|| self.const_u32_expr(0, 32));
+        match valid {
+            None => flat,
+            Some(cond) => {
+                let oob = self.const_u32_expr(0x8000_0000, 32);
+                self.push_expr(ir::Expr::Ternary {
+                    cond,
+                    then_e: flat,
+                    else_e: oob,
+                })
+            }
         }
     }
 
@@ -4819,34 +5008,30 @@ impl<'s> Elaborator<'s> {
                 if let Some((net, idxs)) = self.expr_packed_chain(base, index) {
                     return self.lower_packed_read(net, &idxs);
                 }
-                // N3.1: a hierarchical INDEXED read `dut.mem[i]` / `dut.x[i]` — the
-                // base is a 2-segment hierarchical ref whose net does not exist yet
-                // (created in pass 8). The SELECT KIND (array-element word vs vector
-                // bit) depends on the resolved net's shape, so defer the whole indexed
+                // N3.1 (+ multi-dim follow-on): a hierarchical INDEXED read
+                // `dut.mem[i]` / `dut.x[i]` / `dut.grid[i][j]` / packed `dut.pm[i]` —
+                // the base chain bottoms out at a 2-segment hierarchical ref whose net
+                // does not exist yet (created in pass 8). The SELECT KIND and arity
+                // (single-/multi-dim array element word vs packed bit-slice vs vector
+                // bit) depend on the resolved net's shape, so defer the whole indexed
                 // read and resolve it in `resolve_deferred_hier_sel`. (A known dotted
                 // symbol — an interface member — keeps the normal path below.)
-                if let ast::ExprKind::Ident(p) = &base.kind {
-                    if p.segments.len() == 2 {
-                        let joined = format!("{}.{}", p.segments[0].name, p.segments[1].name);
-                        if self.lookup_net_scoped(&joined).is_none() {
-                            // Lower the index NOW, with the full lowering context
-                            // (params/genvars/function-formal `subst`) — re-lowering it
-                            // at fixup would lose that (review N3.1 HIGH).
-                            let idx_eid = self.lower_expr(index);
-                            let path = p.segments.iter().map(|s| s.name.clone()).collect();
-                            let eid = self.push_expr(ir::Expr::Signal {
-                                net: POISON_NET,
-                                word: None,
-                            });
-                            self.deferred_hier_sel.push(DeferredHierSelect {
-                                eid,
-                                prefix: self.cur_prefix.clone(),
-                                path,
-                                idx_eid,
-                            });
-                            return eid;
-                        }
-                    }
+                if let Some((path, idx_asts)) = self.hier_sel_chain(base, index) {
+                    // Lower EVERY index NOW, with the full lowering context
+                    // (params/genvars/function-formal `subst`) — re-lowering at fixup
+                    // would lose that (review N3.1 HIGH).
+                    let idx_eids: Vec<u32> = idx_asts.iter().map(|e| self.lower_expr(e)).collect();
+                    let eid = self.push_expr(ir::Expr::Signal {
+                        net: POISON_NET,
+                        word: None,
+                    });
+                    self.deferred_hier_sel.push(DeferredHierSelect {
+                        eid,
+                        prefix: self.cur_prefix.clone(),
+                        path,
+                        idx_eids,
+                    });
+                    return eid;
                 }
                 let base_id = self.lower_expr(base);
                 if self.expr_is_real(base_id) {
@@ -7096,6 +7281,49 @@ impl<'s> Elaborator<'s> {
     // reversed and the outermost index appended last.
 
     /// Collect a read-side `base[index]` chain rooted at an array `Ident`.
+    /// Walk a read-context BitSelect chain `base[i]…[k]` that bottoms out at a
+    /// TWO-segment hierarchical Ident (`dut.grid`) whose dotted name is NOT already a
+    /// known net (an interface-member alias keeps the normal path). Returns the path
+    /// segments and the indices in SOURCE order (`dut.grid[i][j]` → `[i, j]`). This is
+    /// the hierarchical twin of [`Self::expr_array_chain`]/[`Self::expr_packed_chain`]
+    /// — but it stops at a 2-seg Ident (cross-instance) instead of a 1-seg local net,
+    /// and it does NOT yet know the net's shape (resolved post-elaboration), so it only
+    /// captures the path + index ASTs for the deferred fixup. `None` if the chain does
+    /// not bottom at such a hierarchical base.
+    fn hier_sel_chain<'a>(
+        &self,
+        base: &'a ast::Expr,
+        index: &'a ast::Expr,
+    ) -> Option<(Vec<String>, Vec<&'a ast::Expr>)> {
+        let mut outer_first: Vec<&ast::Expr> = Vec::new();
+        let mut cur = base;
+        let path = loop {
+            match &cur.kind {
+                ast::ExprKind::BitSelect { base: b, index: i } => {
+                    outer_first.push(i);
+                    cur = b;
+                }
+                ast::ExprKind::Ident(p) if p.segments.len() == 2 => {
+                    let joined = format!("{}.{}", p.segments[0].name, p.segments[1].name);
+                    // A known dotted symbol (interface member) is a real net — not a
+                    // cross-instance hierarchical ref. Let the normal path handle it.
+                    if self.lookup_net_scoped(&joined).is_some() {
+                        return None;
+                    }
+                    break p
+                        .segments
+                        .iter()
+                        .map(|s| s.name.clone())
+                        .collect::<Vec<_>>();
+                }
+                _ => return None,
+            }
+        };
+        outer_first.reverse(); // base-chain → source order
+        outer_first.push(index); // outermost index is last in source order
+        Some((path, outer_first))
+    }
+
     fn expr_array_chain<'a>(
         &self,
         base: &'a ast::Expr,
