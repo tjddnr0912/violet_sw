@@ -283,13 +283,14 @@ fn a8_all_hit_100_none_0() {
 
 #[test]
 fn a9_unsupported_forms_are_loud_not_silent() {
-    // wildcard / transition / fixed-array / per-bin iff must be LOUD (never silently
-    // dropped — the pre-slice-A parser swallowed these).
+    // wildcard / transition / fixed-array / iff-on-ignore must be LOUD (never silently
+    // dropped — the pre-slice-A parser swallowed these). (Per-bin iff on a REGULAR bin
+    // is supported in slice B; iff on ignore/illegal stays loud — static subtraction.)
     for body in [
         "wildcard bins w = {4'b1??0};",
         "bins t = (0 => 1 => 2);",
         "bins fa[3] = {[0:7]};",
-        "bins g = {0,1} iff (en);",
+        "ignore_bins ig = {0} iff (en);",
     ] {
         let src = format!(
             "module t;\n reg [3:0] x; reg en;\n\
@@ -306,19 +307,109 @@ fn a9_unsupported_forms_are_loud_not_silent() {
     }
 }
 
+// ─────────────── slice B: iff guards (coverpoint-level + per-bin) ───────────────
+
 #[test]
-fn a10_coverpoint_iff_is_loud() {
-    // coverpoint-level `iff` is reserved for slice B — must be loud, not silently
-    // computing unconditional coverage.
-    let (out, code) = run("module t;\n\
+fn b1_coverpoint_iff_gates_whole_sample() {
+    // `coverpoint x iff(en)` — when en=0 the sample is DROPPED (no bin credited);
+    // when en=1 it samples normally. Two bins a={0}, b={1}.
+    let (gated, _c) = run("module t;\n\
          reg [3:0] x; reg en;\n\
-         covergroup cg; coverpoint x iff (en) { bins a = {0}; } endgroup\n\
+         covergroup cg; coverpoint x iff (en) { bins a = {0}; bins b = {1}; } endgroup\n\
          cg c = new;\n\
-         initial begin x=0; c.sample(); $display(\"%0d\", c.get_coverage()); end\n\
+         initial begin en=0; x=0; c.sample(); $display(\"B1 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(gated.contains("B1 0"), "iff=0 drops sample:\n{gated}");
+    let (open, _c) = run("module t;\n\
+         reg [3:0] x; reg en;\n\
+         covergroup cg; coverpoint x iff (en) { bins a = {0}; bins b = {1}; } endgroup\n\
+         cg c = new;\n\
+         initial begin en=1; x=0; c.sample(); $display(\"B1 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(open.contains("B1 50"), "iff=1 samples (1/2):\n{open}");
+}
+
+#[test]
+fn b2_per_bin_iff() {
+    // per-bin `bins a={0} iff(g)` — bin a counts only when g is true; bin b unguarded.
+    let (off, _c) = run("module t;\n\
+         reg [3:0] x; reg g;\n\
+         covergroup cg; coverpoint x { bins a = {0} iff (g); bins b = {1}; } endgroup\n\
+         cg c = new;\n\
+         initial begin g=0; x=0; c.sample(); $display(\"B2 %0d\", c.get_coverage()); end\n\
          endmodule\n");
     assert!(
-        out.contains("VITA-E") || code == Some(1),
-        "coverpoint iff must be loud (slice B):\n{out} {code:?}"
+        off.contains("B2 0"),
+        "per-bin iff=0 not credited (0/2):\n{off}"
+    );
+    let (on, _c) = run("module t;\n\
+         reg [3:0] x; reg g;\n\
+         covergroup cg; coverpoint x { bins a = {0} iff (g); bins b = {1}; } endgroup\n\
+         cg c = new;\n\
+         initial begin g=1; x=0; c.sample(); $display(\"B2 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(on.contains("B2 50"), "per-bin iff=1 credited (1/2):\n{on}");
+}
+
+#[test]
+fn b3_auto_bins_iff() {
+    // coverpoint-level iff on an AUTO-bin coverpoint (no explicit body). 2-bit ⇒ 4 bins.
+    // en=0 ⇒ sample dropped ⇒ 0; en=1, x=1 ⇒ 1/4 = 25.
+    let (off, _c) = run("module t;\n\
+         reg [1:0] x; reg en;\n\
+         covergroup cg; coverpoint x iff (en); endgroup\n\
+         cg c = new;\n\
+         initial begin en=0; x=1; c.sample(); $display(\"B3 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(off.contains("B3 0"), "auto iff=0 drops:\n{off}");
+    let (on, _c) = run("module t;\n\
+         reg [1:0] x; reg en;\n\
+         covergroup cg; coverpoint x iff (en); endgroup\n\
+         cg c = new;\n\
+         initial begin en=1; x=1; c.sample(); $display(\"B3 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(on.contains("B3 25"), "auto iff=1 samples (1/4):\n{on}");
+}
+
+#[test]
+fn b4_iff_evaluated_at_sample_time() {
+    // The guard is read AT each sample(): first sample en=0 (dropped), then en=1 (kept).
+    let (out, _c) = run("module t;\n\
+         reg [3:0] x; reg en;\n\
+         covergroup cg; coverpoint x iff (en) { bins a = {5}; bins b = {6}; } endgroup\n\
+         cg c = new;\n\
+         initial begin en=0; x=5; c.sample(); en=1; x=6; c.sample();\n\
+           $display(\"B4 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    // first sample dropped (en=0), second credits b ⇒ 1/2 = 50.
+    assert!(out.contains("B4 50"), "iff sampled per-call:\n{out}");
+}
+
+#[test]
+fn b5_coverpoint_iff_gates_illegal_error() {
+    // A coverpoint `iff` gates the WHOLE sample including the illegal_bins $error:
+    // sampling an illegal value while the guard is FALSE must NOT fire $error.
+    let (gated, _c) = run("module t;\n\
+         reg [3:0] x; reg en;\n\
+         covergroup cg; coverpoint x iff (en) { bins a = {[0:3]}; illegal_bins bad = {9}; } endgroup\n\
+         cg c = new;\n\
+         initial begin en=0; x=9; c.sample(); $display(\"B5 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(gated.contains("B5 0"), "iff=0 gates sample:\n{gated}");
+    assert!(
+        !gated.contains("illegal coverage bin"),
+        "iff=0 must gate the illegal $error too:\n{gated}"
+    );
+    // guard TRUE: the illegal hit fires $error.
+    let (open, code) = run("module t;\n\
+         reg [3:0] x; reg en;\n\
+         covergroup cg; coverpoint x iff (en) { bins a = {[0:3]}; illegal_bins bad = {9}; } endgroup\n\
+         cg c = new;\n\
+         initial begin en=1; x=9; c.sample(); $display(\"B5 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        open.contains("illegal coverage bin") || code == Some(1),
+        "iff=1 illegal hit must fire $error:\n{open} {code:?}"
     );
 }
 

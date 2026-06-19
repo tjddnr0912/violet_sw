@@ -706,7 +706,7 @@ struct DeferredHierWrite {
 /// N5: one coverpoint's runtime tracker. The hit-bitmap is a fresh 64-bit reg; each
 /// `sample()` ORs in `1 << bin(value)`, and `get_coverage()` reports
 /// `$countones(bitmap) * 100 / num_bins`. Pure IR-0 (ordinary nets + synthesized ops).
-/// One resolved bin of an explicit-bin coverpoint (slice A).
+/// One resolved bin of an explicit-bin coverpoint (slice A; `iff` slice B).
 #[derive(Clone)]
 struct ResolvedBin {
     kind: ast::BinKind,
@@ -716,6 +716,10 @@ struct ResolvedBin {
     /// `Some(i)` ⇒ a COUNTING bin occupying bitmap bit `i` (regular, non-default,
     /// non-empty). `None` ⇒ ignore/illegal (feeds gating + `$error`, never counted).
     bit: Option<u32>,
+    /// Per-bin `iff (G)` guard (slice B): the bin's bit is set only when `G` is true
+    /// at sample time. `None` ⇒ unguarded. (Only on regular/counting bins; a guard on
+    /// ignore/illegal is loud-rejected, as the precedence subtraction is static.)
+    iff: Option<ast::Expr>,
 }
 
 #[derive(Clone)]
@@ -731,6 +735,9 @@ struct CoverpointTracker {
     /// to ZERO counting bins ⇒ vacuous (must NOT fall back to auto-bins)". Sampling
     /// dispatch keys on THIS, never on `bins.is_empty()`.
     has_explicit: bool,
+    /// Coverpoint-level `iff (G)` guard (slice B): the whole sample (every bin update
+    /// and the illegal `$error`) is gated on `G`. `None` ⇒ unguarded.
+    cp_iff: Option<ast::Expr>,
 }
 
 struct DeferredHierSelWrite {
@@ -1301,6 +1308,36 @@ fn cov_int_lit_pos(v: i128, sp: ast::Span) -> ast::Expr {
             kind: ast::IntLitKind::Decimal,
             raw: v.to_string(),
         },
+        span: sp,
+    }
+}
+
+/// The auto-bin sample statement `bitmap = bitmap | (64'd1 << (expr & 63))` as AST
+/// (used only on the guarded `coverpoint x iff(g)` auto path — same semantics as the
+/// IR-direct legacy path, but lowerable inside an `if (g)`).
+fn cov_auto_sample_stmt(bitmap: &str, expr: &ast::Expr, sp: ast::Span) -> ast::Stmt {
+    let bm = || sva_ident_expr(bitmap, sp);
+    let masked = sva_binary(ast::BinOp::BitAnd, expr.clone(), cov_int_lit(63, sp), sp);
+    let one64 = ast::Expr {
+        kind: ast::ExprKind::IntLit {
+            kind: ast::IntLitKind::Sized,
+            raw: "64'd1".to_string(),
+        },
+        span: sp,
+    };
+    let shifted = sva_binary(ast::BinOp::Shl, one64, masked, sp);
+    let newv = sva_binary(ast::BinOp::BitOr, bm(), shifted, sp);
+    ast::Stmt::Blocking {
+        lhs: ast::Lvalue::Ident(ast::HierPath {
+            segments: vec![ast::Ident {
+                name: bitmap.to_string(),
+                span: sp,
+            }],
+            span: sp,
+        }),
+        delay: None,
+        event: None,
+        rhs: newv,
         span: sp,
     }
 }
@@ -10521,17 +10558,19 @@ impl<'s> Elaborator<'s> {
     /// >64 bins) are loud-rejected.
     fn resolve_explicit_bins(&mut self, cp: &ast::Coverpoint) -> (Vec<ResolvedBin>, u32) {
         let (w, signed) = self.coverpoint_domain(&cp.expr);
-        if cp.iff.is_some() {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "coverpoint `iff` guard (follow-on slice)",
-            );
-        }
         // Pass 1: gather ignore ∪ illegal (the excluded set) and the illegal set.
+        // A guard on ignore/illegal is loud-rejected: the precedence subtraction is
+        // STATIC (resolve-time), so a runtime-guarded exclusion can't be modeled here.
         let mut excluded: Vec<(i64, i64)> = Vec::new();
         let mut illegal: Vec<(i64, i64)> = Vec::new();
         for bin in &cp.bins {
             if matches!(bin.kind, ast::BinKind::Ignore | ast::BinKind::Illegal) {
+                if bin.iff.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "`iff` guard on ignore_bins/illegal_bins (follow-on)",
+                    );
+                }
                 match self.resolve_bin_ranges(bin, w, signed) {
                     Some(rs) => {
                         excluded.extend(rs.iter().copied());
@@ -10553,18 +10592,13 @@ impl<'s> Elaborator<'s> {
                 kind: ast::BinKind::Illegal,
                 ranges: illegal,
                 bit: None,
+                iff: None,
             });
         }
         // Pass 2: regular bins, with the excluded set subtracted from each.
         let mut next_bit: u32 = 0;
         let mut capped = false;
         for bin in &cp.bins {
-            if bin.iff.is_some() {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "per-bin `iff` guard (follow-on slice)",
-                );
-            }
             if let ast::BinArray::Fixed(_) = bin.array {
                 self.error(
                     MsgCode::ElabUnsupported,
@@ -10613,6 +10647,7 @@ impl<'s> Elaborator<'s> {
                                 kind: ast::BinKind::Regular,
                                 ranges: vec![(v, v)],
                                 bit: Some(next_bit),
+                                iff: bin.iff.clone(),
                             });
                             next_bit += 1;
                             v += 1;
@@ -10628,6 +10663,7 @@ impl<'s> Elaborator<'s> {
                         kind: ast::BinKind::Regular,
                         ranges: effective,
                         bit: Some(next_bit),
+                        iff: bin.iff.clone(),
                     });
                     next_bit += 1;
                 }
@@ -10661,12 +10697,6 @@ impl<'s> Elaborator<'s> {
             if cp.bins.is_empty() {
                 // Auto-bin fallback — the byte-identical legacy path (allocation
                 // order preserved: num_bins read before the bitmap reg alloc).
-                if cp.iff.is_some() {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "coverpoint `iff` guard (follow-on slice)",
-                    );
-                }
                 let num_bins = self.coverpoint_num_bins(&cp.expr);
                 let bitmap = self.fresh_sva_reg(64, "cov");
                 trackers.push(CoverpointTracker {
@@ -10675,6 +10705,7 @@ impl<'s> Elaborator<'s> {
                     bins: Vec::new(),
                     num_bins,
                     has_explicit: false,
+                    cp_iff: cp.iff.clone(),
                 });
             } else {
                 let (bins, num_bins) = self.resolve_explicit_bins(cp);
@@ -10685,6 +10716,7 @@ impl<'s> Elaborator<'s> {
                     bins,
                     num_bins,
                     has_explicit: true,
+                    cp_iff: cp.iff.clone(),
                 });
             }
         }
@@ -10721,6 +10753,20 @@ impl<'s> Elaborator<'s> {
             let Some(bnet) = self.lookup_net_scoped(&t.bitmap) else {
                 continue;
             };
+            // Auto-bins with a coverpoint `iff` (slice B): gate the `1<<(v&63)` sample
+            // on the guard. Built as AST (no byte-identity constraint — guarded sampling
+            // is new behavior); the UNGUARDED path below stays the byte-identical legacy.
+            if let Some(g) = &t.cp_iff {
+                let sp = t.expr.span;
+                let gated = ast::Stmt::If {
+                    cond: g.clone(),
+                    then_s: Box::new(cov_auto_sample_stmt(&t.bitmap, &t.expr, sp)),
+                    else_s: None,
+                    span: sp,
+                };
+                self.lower_stmt(b, &gated);
+                continue;
+            }
             let val = self.lower_expr(&t.expr);
             let mask = self.const_u32_expr(63, 32);
             let masked = self.push_expr(ir::Expr::Binary {
@@ -10751,21 +10797,25 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Explicit-bin sample: for each COUNTING bin, `if (match) bitmap[bit] = 1'b1;`
-    /// (its `ranges` are the EFFECTIVE set — ignore/illegal already subtracted, so no
-    /// runtime gating is needed); then, if any illegal bins exist,
-    /// `if (any_illegal) $error(...)`. Built as AST and lowered via `lower_stmt`,
-    /// reusing the standard if/compare/bit-select machinery. `t` is borrowed from the
-    /// CLONED tracker list, so `&mut self.lower_stmt` is free.
+    /// Explicit-bin sample: for each COUNTING bin, `if (match [&& bin_iff]) bitmap[bit]
+    /// = 1'b1;` (its `ranges` are the EFFECTIVE set — ignore/illegal already subtracted,
+    /// so no precedence gating is needed); then, if any illegal bins exist,
+    /// `if (any_illegal) $error(...)`. The whole body is wrapped in `if (cp_iff)` when
+    /// the coverpoint has a guard (slice B). Built as AST and lowered via `lower_stmt`.
+    /// `t` is borrowed from the CLONED tracker list, so `&mut self.lower_stmt` is free.
     fn synth_cover_sample_explicit(&mut self, b: &mut ProcessBuilder, t: &CoverpointTracker) {
         let sp = t.expr.span;
         let any_illegal = cov_match_any(&t.bins, &t.expr, ast::BinKind::Illegal, sp);
+        let mut stmts: Vec<ast::Stmt> = Vec::new();
         for rb in &t.bins {
             let Some(bit) = rb.bit else {
                 continue; // only counting (regular) bins set a bit
             };
-            let cond = cov_bin_match(&t.expr, &rb.ranges, sp);
-            let set = ast::Stmt::If {
+            let mut cond = cov_bin_match(&t.expr, &rb.ranges, sp);
+            if let Some(g) = &rb.iff {
+                cond = sva_binary(ast::BinOp::LogAnd, cond, g.clone(), sp);
+            }
+            stmts.push(ast::Stmt::If {
                 cond,
                 then_s: Box::new(ast::Stmt::Blocking {
                     lhs: ast::Lvalue::BitSelect {
@@ -10786,11 +10836,10 @@ impl<'s> Elaborator<'s> {
                 }),
                 else_s: None,
                 span: sp,
-            };
-            self.lower_stmt(b, &set);
+            });
         }
         if let Some(il) = any_illegal {
-            let err = ast::Stmt::If {
+            stmts.push(ast::Stmt::If {
                 cond: il,
                 then_s: Box::new(ast::Stmt::SysTaskCall {
                     name: ast::Ident {
@@ -10807,8 +10856,24 @@ impl<'s> Elaborator<'s> {
                 }),
                 else_s: None,
                 span: sp,
+            });
+        }
+        if stmts.is_empty() {
+            return;
+        }
+        // Coverpoint-level `iff`: gate the whole sample on the guard.
+        if let Some(g) = &t.cp_iff {
+            let wrapped = ast::Stmt::If {
+                cond: g.clone(),
+                then_s: Box::new(sva_block_or_single(stmts, sp)),
+                else_s: None,
+                span: sp,
             };
-            self.lower_stmt(b, &err);
+            self.lower_stmt(b, &wrapped);
+        } else {
+            for s in &stmts {
+                self.lower_stmt(b, s);
+            }
         }
     }
 
