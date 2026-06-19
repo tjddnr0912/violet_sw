@@ -7641,6 +7641,12 @@ impl<'s> Elaborator<'s> {
         self.push_expr(ir::Expr::Const { val: cid })
     }
 
+    /// A real (f64) literal Const expr — e.g. `"100.0"` (N5 coverage real %).
+    fn real_const_expr(&mut self, raw: &str) -> u32 {
+        let cid = self.intern_const(parse_real_literal(raw));
+        self.push_expr(ir::Expr::Const { val: cid })
+    }
+
     /// Lower an i64-domain param/genvar VALUE to a Const expr (P0-6). The
     /// legacy `0..=u32::MAX` range keeps the exact old shape (unsigned 32-bit,
     /// byte-identical golden bytes for every pre-existing design); a negative
@@ -10910,7 +10916,13 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// `c.get_coverage()` — `sum($countones(bitmap)) * 100 / sum(num_bins)` (int %).
+    /// `c.get_coverage()` — the REAL (f64) weighted average of each coverpoint's
+    /// coverage (§19.5): `cp_cov_i = $countones(bitmap_i) * 100.0 / num_bins_i`, then
+    /// `avg = sum(cp_cov_i) / N` over the N coverpoints with ≥1 counting bin (default
+    /// equal weights; coverpoints with 0 counting bins are excluded — not a coverage
+    /// target). Returns `0.0` if there are no counting coverpoints. (Per-coverpoint
+    /// average, NOT the old pooled `sum(covered)/sum(total)` — they differ for
+    /// heterogeneous coverpoints; `option.weight` is a follow-on.)
     fn synth_cover_get(&mut self, inst: &str) -> u32 {
         let Some(trackers) = self.cover_inst(inst) else {
             self.error(
@@ -10919,12 +10931,13 @@ impl<'s> Elaborator<'s> {
             );
             return self.placeholder_expr();
         };
-        if trackers.is_empty() {
-            return self.const_u32_expr(0, 32);
-        }
-        let mut total_bins = 0u32;
-        let mut num: Option<u32> = None;
+        let hundred = self.real_const_expr("100.0");
+        let mut sum: Option<u32> = None;
+        let mut n: u32 = 0;
         for t in &trackers {
+            if t.num_bins == 0 {
+                continue; // not a coverage target — excluded from the average
+            }
             let bnet = self.lookup_net_scoped(&t.bitmap).unwrap_or(POISON_NET);
             let bm = self.push_expr(ir::Expr::Signal {
                 net: bnet,
@@ -10934,28 +10947,36 @@ impl<'s> Elaborator<'s> {
                 which: ir::SysFuncId::CountOnes,
                 args: vec![bm],
             });
-            num = Some(match num {
-                None => ones,
+            // ones * 100.0 (int promoted to real) / num_bins → real per-cp coverage.
+            let ones100 = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Mul,
+                lhs: ones,
+                rhs: hundred,
+            });
+            let nb = self.const_u32_expr(t.num_bins, 32);
+            let cp_cov = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Div,
+                lhs: ones100,
+                rhs: nb,
+            });
+            sum = Some(match sum {
+                None => cp_cov,
                 Some(acc) => self.push_expr(ir::Expr::Binary {
                     op: ir::BinOp::Add,
                     lhs: acc,
-                    rhs: ones,
+                    rhs: cp_cov,
                 }),
             });
-            total_bins = total_bins.saturating_add(t.num_bins);
+            n += 1;
         }
-        let num = num.unwrap();
-        let hundred = self.const_u32_expr(100, 32);
-        let num100 = self.push_expr(ir::Expr::Binary {
-            op: ir::BinOp::Mul,
-            lhs: num,
-            rhs: hundred,
-        });
-        let tb = self.const_u32_expr(total_bins.max(1), 32);
+        let Some(sum) = sum else {
+            return self.real_const_expr("0.0"); // no counting coverpoints
+        };
+        let nexpr = self.const_u32_expr(n, 32);
         self.push_expr(ir::Expr::Binary {
             op: ir::BinOp::Div,
-            lhs: num100,
-            rhs: tb,
+            lhs: sum,
+            rhs: nexpr,
         })
     }
 

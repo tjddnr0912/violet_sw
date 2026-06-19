@@ -29,15 +29,17 @@ fn run(src: &str) -> (String, Option<i32>) {
 
 #[test]
 fn single_coverpoint_auto_bins() {
-    // x is 4-bit ⇒ 16 auto-bins; values {0,5} hit 2 bins ⇒ 2*100/16 = 12%.
+    // x is 4-bit ⇒ 16 auto-bins; values {0,5} hit 2 bins ⇒ 2*100/16 = 12.5% (REAL).
+    // get_coverage() returns a real (§19.5); `%g` shows 12.5 (vs `%0d` which rounds
+    // a real to 13).
     let (out, _c) = run("module t;\n\
          reg [3:0] x;\n\
          covergroup cg; cp_x: coverpoint x; endgroup\n\
          cg c = new;\n\
          initial begin x=0; c.sample(); x=5; c.sample(); x=5; c.sample();\n\
-           $display(\"COV %0d\", c.get_coverage()); end\n\
+           $display(\"COV %g\", c.get_coverage()); end\n\
          endmodule\n");
-    assert!(out.contains("COV 12"), "auto-bins coverage:\n{out}");
+    assert!(out.contains("COV 12.5"), "auto-bins real coverage:\n{out}");
 }
 
 #[test]
@@ -530,4 +532,56 @@ fn f3_auto_and_explicit_sample_coexist() {
            $display(\"F3 %0d\", c.get_coverage()); end\n\
          endmodule\n");
     assert!(out.contains("F3 50"), "auto+explicit coexist:\n{out}");
+}
+
+// ─────────────── slice E: real-% return + per-coverpoint weighted average ───────────────
+
+#[test]
+fn e1_get_coverage_returns_real() {
+    // get_coverage() is a real (§19.5): a fractional % shows exactly via %g/%f.
+    let (out, _c) = run("module t;\n\
+         reg [2:0] a;\n\
+         covergroup cg; coverpoint a; endgroup\n\
+         cg c = new;\n\
+         initial begin a=0;c.sample(); a=1;c.sample(); a=2;c.sample();\n\
+           $display(\"E1g %g\", c.get_coverage());\n\
+           $display(\"E1f %f\", c.get_coverage()); end\n\
+         endmodule\n");
+    // 3 of 8 bins ⇒ 37.5%.
+    assert!(out.contains("E1g 37.5"), "real %g:\n{out}");
+    assert!(out.contains("E1f 37.50000"), "real %f:\n{out}");
+}
+
+#[test]
+fn e2_per_coverpoint_average_not_pooled() {
+    // §19.5: a covergroup's coverage is the AVERAGE of its coverpoints' coverages,
+    // NOT the pooled sum(covered)/sum(total). cpa: 1/1=100%, cpb: 1/4=25% ⇒
+    // average (100+25)/2 = 62.5% (pooled would be 2/5 = 40%).
+    let (out, _c) = run("module t;\n\
+         reg [3:0] a; reg [1:0] b;\n\
+         covergroup cg; cpa: coverpoint a { bins z = {0}; } cpb: coverpoint b; endgroup\n\
+         cg c = new;\n\
+         initial begin a=0; b=0; c.sample();\n\
+           $display(\"E2 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("E2 62.5"), "per-coverpoint average:\n{out}");
+}
+
+#[test]
+fn e3_zero_bin_coverpoint_excluded_from_average() {
+    // a coverpoint with 0 counting bins (all ignored) is EXCLUDED from the average,
+    // not counted as 0%. cpa 0 bins (dropped), cpb 1/1=100% ⇒ average over {cpb} = 100.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] a; reg [1:0] b;\n\
+         covergroup cg;\n\
+           cpa: coverpoint a { bins lo = {[0:1]}; ignore_bins ig = {[0:1]}; }\n\
+           cpb: coverpoint b { bins z = {2}; }\n\
+         endgroup\n\
+         cg c = new;\n\
+         initial begin a=0; b=2; c.sample(); $display(\"E3 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("E3 100"),
+        "zero-bin cp excluded from average:\n{out}"
+    );
 }
