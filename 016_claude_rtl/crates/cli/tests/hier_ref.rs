@@ -14,8 +14,10 @@
 //! iverilog 13.0 SUPPORTS hierarchical reads → strong differential oracle; every
 //! expected value below was confirmed against iverilog.
 //!
-//! READ-ONLY: a hierarchical WRITE (`dut.x = ...`) stays loud. Hierarchical PARAM
-//! refs (`dut.WIDTH`) and event/dyn-handle/whole-array reads are loud (deferred).
+//! A hierarchical WHOLE-net WRITE (`dut.x = ...`) is supported (HIER-REST; see
+//! `hier_write.rs`); a hierarchical ELEMENT/part-select write (`dut.grid[i][j]`)
+//! stays loud (follow-on). Hierarchical PARAM refs (`dut.WIDTH`) and
+//! event/dyn-handle/whole-array reads are loud (deferred).
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -154,25 +156,19 @@ fn hier_read_deterministic() {
     assert_eq!(a, b, "hierarchical-read output must be deterministic");
 }
 
-// ─────────────────────────── loud rejects ───────────────────────────
-
 #[test]
-fn hierarchical_write_is_loud() {
-    // Read-only subset: a hierarchical WRITE (assignment target) stays loud.
-    let (out, err, code) = run("module sub; reg [7:0] x = 8'd0; endmodule\n\
+fn hierarchical_write_round_trips() {
+    // HIER-REST: a hierarchical WHOLE-net WRITE is now supported (was loud) —
+    // `dut.x = 5` then a hierarchical read prints 5. (LIVE iverilog 13.0.)
+    // Full battery in `hier_write.rs`.
+    let (out, _err, _code) = run("module sub; reg [7:0] x = 8'd0; endmodule\n\
          module top; sub dut();\n\
-           initial begin #1 dut.x = 8'd5; $display(\"%0d\", dut.x); end\n\
+           initial begin #1 dut.x = 8'd5; $display(\"V=%0d\", dut.x); end\n\
          endmodule\n");
-    assert_ne!(
-        code,
-        Some(0),
-        "hierarchical write must be loud:\n{err}\n{out}"
-    );
-    assert!(
-        err.to_lowercase().contains("hierarchical") || err.contains("VITA-E"),
-        "expected a loud hierarchical-write diagnostic:\n{err}"
-    );
+    assert!(out.contains("V=5"), "hierarchical write round-trips:\n{out}");
 }
+
+// ─────────────────────────── loud rejects ───────────────────────────
 
 #[test]
 fn unresolved_hierarchical_name_is_loud() {
@@ -558,8 +554,8 @@ fn scalar_over_index_is_loud() {
 
 #[test]
 fn multidim_hierarchical_write_is_loud() {
-    // The read-only subset extends to multi-dim element writes: `dut.grid[i][j] = ...`
-    // stays loud (no silent cross-instance write).
+    // A multi-dim ELEMENT write `dut.grid[i][j] = ...` stays loud (only a
+    // whole-net hierarchical write is supported — no silent cross-instance write).
     let (out, err, code) = run("module sub; reg [7:0] grid [0:1][0:2]; endmodule\n\
          module top; sub dut();\n\
            initial #1 dut.grid[0][0] = 8'd9;\n\

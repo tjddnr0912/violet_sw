@@ -71,6 +71,15 @@ const MAX_ARRAY_LEN: u64 = 1 << 24;
 /// (COVERAGE verdict MEDIUM.)
 const POISON_NET: u32 = u32::MAX;
 
+/// Base of the sentinel net-id range used for a DEFERRED hierarchical WRITE
+/// target (`tb.dut.x = …`): the real net does not exist when the lvalue is
+/// lowered (the child instance's nets are created later), so the `LvalChunk`
+/// gets `HIER_WRITE_SENTINEL_BASE + i` and `resolve_deferred_hier_write` patches
+/// it to the real NetId (or `POISON_NET`) once every instance is elaborated.
+/// Far above any real net id and below `POISON_NET`, so a surviving sentinel is
+/// detectable and never aliases a real net.
+const HIER_WRITE_SENTINEL_BASE: u32 = 0xFF00_0000;
+
 /// Public entry point. Returns `Some(SimIr)` iff no hard error was emitted;
 /// every error path still produces valid placeholder arena edges so the partial
 /// IR is never structurally broken (the result is simply discarded on error).
@@ -647,6 +656,19 @@ fn port_list_dirs(module: &ast::ModuleDecl) -> Vec<(String, ir::PortDir)> {
 /// segments.
 struct DeferredHier {
     eid: u32,
+    prefix: String,
+    path: Vec<String>,
+}
+
+/// A hierarchical WRITE target (`tb.dut.x = …`) whose net does not exist when the
+/// lvalue is lowered. The `LvalChunk` is emitted with the sentinel net
+/// `HIER_WRITE_SENTINEL_BASE + index-in-this-Vec`; `resolve_deferred_hier_write`
+/// resolves `prefix`/`path` (same IEEE §23.6 walk as the read side, via
+/// `hier_lookup`), applies the write-context guards (no event/dyn/array/packed
+/// whole-net, no procedural write to a `wire`), and patches every matching chunk
+/// in the statement arena to the real NetId (or `POISON_NET` on error). Whole-net
+/// only — a hierarchical element/part-select write stays a loud follow-on.
+struct DeferredHierWrite {
     prefix: String,
     path: Vec<String>,
 }
@@ -1483,6 +1505,9 @@ struct Elaborator<'s> {
     // N3.1: hierarchical INDEXED reads `dut.mem[i]` — resolved (with the lowering
     // scope restored) into an array element / bit select after all instances.
     deferred_hier_sel: Vec<DeferredHierSelect>,
+    /// Deferred hierarchical WRITE targets (`tb.dut.x = …`); see [`DeferredHierWrite`].
+    /// Out-of-band (golden-free) — patched into the statement arena post-elaboration.
+    deferred_hier_write: Vec<DeferredHierWrite>,
     // §16.4 deferred immediate asserts (out-of-band, engine-facing): marker
     // StmtId → region, and action StmtId → (marker StmtId, region). See
     // [`DeferMarkTable`]/[`DeferActTable`].
@@ -1557,6 +1582,7 @@ impl<'s> Elaborator<'s> {
             pending_sva: Vec::new(),
             deferred_hier: Vec::new(),
             deferred_hier_sel: Vec::new(),
+            deferred_hier_write: Vec::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             cur_defer: None,
@@ -1827,6 +1853,9 @@ impl<'s> Elaborator<'s> {
         // instance's nets are in `symbols` (deferred during pass-7 lowering because
         // child nets are created in pass 8). Patches each placeholder to the real NetId.
         self.resolve_deferred_hier();
+        // N3 follow-on (HIER-REST): patch deferred hierarchical WRITE targets
+        // (`tb.dut.x = …`) — BEFORE the multidriver scan so it sees real net ids.
+        self.resolve_deferred_hier_write();
 
         // whole-net multidriver check over the WHOLE flat IR (instance-agnostic).
         self.check_whole_net_multidriver();
@@ -2161,6 +2190,106 @@ impl<'s> Elaborator<'s> {
             }
             if let Some(ir::Expr::Signal { net: slot, .. }) = self.exprs.get_mut(d.eid as usize) {
                 *slot = net;
+            }
+        }
+    }
+
+    /// Record a deferred hierarchical WRITE target and return its sentinel net id
+    /// (`HIER_WRITE_SENTINEL_BASE + index`). The chunk carries this sentinel until
+    /// `resolve_deferred_hier_write` patches it. Falls back to a loud `resolve_net`
+    /// (→ POISON) only if the sentinel range is exhausted (≈16M deferred writes —
+    /// unreachable in practice).
+    fn defer_hier_write(&mut self, path: &ast::HierPath) -> u32 {
+        let idx = self.deferred_hier_write.len() as u32;
+        if idx >= POISON_NET - HIER_WRITE_SENTINEL_BASE {
+            return self.resolve_net(path);
+        }
+        self.deferred_hier_write.push(DeferredHierWrite {
+            prefix: self.cur_prefix.clone(),
+            path: path.segments.iter().map(|s| s.name.clone()).collect(),
+        });
+        HIER_WRITE_SENTINEL_BASE + idx
+    }
+
+    /// Resolve the deferred hierarchical WRITE targets (`tb.dut.x = …`) once every
+    /// instance's nets are in `symbols`. Mirrors `resolve_deferred_hier` (the read
+    /// side) but patches `LvalChunk.net` across the statement arena: build a
+    /// `sentinel → NetId` map (applying the write-context guards on the resolved
+    /// net), then scan every lvalue-bearing statement and replace any sentinel
+    /// chunk net. Whole-net only — a hierarchical element/part-select write never
+    /// reaches here (it stays loud in the generic lvalue path).
+    fn resolve_deferred_hier_write(&mut self) {
+        let pending = std::mem::take(&mut self.deferred_hier_write);
+        if pending.is_empty() {
+            return;
+        }
+        let mut patch: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        for (i, d) in pending.iter().enumerate() {
+            let sentinel = HIER_WRITE_SENTINEL_BASE + i as u32;
+            let real = match self.hier_lookup(&d.prefix, &d.path) {
+                None => {
+                    self.error(
+                        MsgCode::ElabUnresolvedName,
+                        &format!(
+                            "undeclared hierarchical write target `{}` (no such cross-instance net)",
+                            d.path.join(".")
+                        ),
+                    );
+                    POISON_NET
+                }
+                Some(net) => {
+                    // Same shape guards as the read side: these have no plain whole
+                    // value to write, and a hierarchical element/part-select write is
+                    // a deferred follow-on (it would mis-lower to a flat write here).
+                    if self.event_nets.contains(&net)
+                        || self.is_dyn_handle_net(net)
+                        || self.net_is_static_array(net)
+                        || self.packed_dims.contains_key(&net)
+                    {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "hierarchical write of `{}` is unsupported (a named event, a \
+                                 dynamic handle, a whole unpacked array, or a multi-dimensional \
+                                 packed net is not a plain whole-net write target; a hierarchical \
+                                 element select is a deferred follow-on)",
+                                d.path.join(".")
+                            ),
+                        );
+                        POISON_NET
+                    } else if matches!(
+                        self.nets.get(net as usize).map(|nv| &nv.kind),
+                        Some(ir::NetKind::Wire)
+                    ) {
+                        // P1-9 (E3018) for the deferred path: a procedural hierarchical
+                        // write may not target a `wire` (iverilog rejects it too).
+                        self.error(
+                            MsgCode::ElabLvalueKind,
+                            &format!(
+                                "procedural hierarchical write to net `{}` (declare it reg/logic)",
+                                d.path.join(".")
+                            ),
+                        );
+                        POISON_NET
+                    } else {
+                        net
+                    }
+                }
+            };
+            patch.insert(sentinel, real);
+        }
+        for s in &mut self.stmts {
+            let chunks = match s {
+                ir::Stmt::BlockingAssign { lhs, .. }
+                | ir::Stmt::NonblockingAssign { lhs, .. }
+                | ir::Stmt::Force { lhs, .. }
+                | ir::Stmt::Release { lhs, .. } => &mut lhs.chunks,
+                _ => continue,
+            };
+            for c in chunks {
+                if let Some(&real) = patch.get(&c.net) {
+                    c.net = real;
+                }
             }
         }
     }
@@ -4872,8 +5001,9 @@ impl<'s> Elaborator<'s> {
                 // instance's net may not exist yet (created in pass 8, after this pass-7
                 // lowering), so emit a PLACEHOLDER `Signal` and DEFER resolution to
                 // `resolve_deferred_hier` (run once all instances are elaborated). A
-                // hierarchical WRITE stays loud: `lower_lvalue` calls `resolve_net`,
-                // whose multi-segment branch still rejects (read-only subset).
+                // hierarchical WHOLE-net WRITE is the symmetric deferred lvalue path
+                // (`collect_lval_chunks` → `defer_hier_write`); an element/part-select
+                // write is still a loud follow-on.
                 if path.segments.len() > 1 {
                     let joined = path
                         .segments
@@ -5437,7 +5567,29 @@ impl<'s> Elaborator<'s> {
                     self.out_subst_lookup(&path.segments[0].name)
                         .unwrap_or_else(|| self.resolve_net(path))
                 } else {
-                    self.resolve_net(path)
+                    // Multi-segment: a known dotted symbol (interface-member alias)
+                    // resolves directly; an UNKNOWN hierarchical name is a cross-
+                    // instance WRITE target (`tb.dut.x = …`) — defer it like the read
+                    // side and patch the chunk once every instance's nets exist
+                    // (`resolve_deferred_hier_write`, which applies the write guards).
+                    let joined = path
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    if let Some(id) = self.lookup_net_scoped(&joined) {
+                        id
+                    } else {
+                        out.push(ir::LvalChunk {
+                            net: self.defer_hier_write(path),
+                            word: None,
+                            offset: None,
+                            width: None,
+                            kind: ir::SelKind::Bit,
+                        });
+                        return;
+                    }
                 };
                 if self.event_nets.contains(&net) {
                     self.error(
@@ -5652,14 +5804,16 @@ impl<'s> Elaborator<'s> {
             if let Some(id) = self.lookup_net_scoped(&joined) {
                 return id;
             }
-            // A hierarchical READ in an expression is supported (N3 — deferred and
-            // resolved in `resolve_deferred_hier`); reaching `resolve_net` with an
-            // unresolved multi-segment path means a WRITE target / lvalue context,
-            // which the read-only subset does not support.
+            // A hierarchical READ in an expression is deferred (N3) and a hierarchical
+            // WHOLE-net WRITE is deferred (`collect_lval_chunks` → `defer_hier_write`),
+            // so reaching `resolve_net` with an unresolved multi-segment path is a
+            // hierarchical name used as a SELECT base (`tb.dut.x[3] = …`) or another
+            // lvalue context the whole-net subset does not cover — a loud follow-on.
             self.error(
                 MsgCode::ElabUnsupported,
-                "a hierarchical name as an assignment target is unsupported in this \
-                 subset (hierarchical READS in expressions are supported)",
+                "a hierarchical name in this lvalue context is unsupported in this \
+                 subset (a whole-net hierarchical write `tb.dut.x = …` is supported; a \
+                 hierarchical element/part-select write is a follow-on)",
             );
             return POISON_NET;
         }
