@@ -497,10 +497,87 @@ impl<'t, 's> Parser<'t, 's> {
     /// primary, then postfix loop: [idx]/[m:l]/[b+:w]; call(args) handled in primary.
     fn expr_postfix(&mut self) -> Expr {
         let mut e = self.expr_primary();
-        while self.peek() == Some(TokenKind::LBracket) {
-            e = self.parse_select(e);
+        loop {
+            match self.peek() {
+                Some(TokenKind::LBracket) => e = self.parse_select(e),
+                // HIER-REST②: a `.` after a `name[idx]` select is a hierarchical
+                // reference into a generate / instance-array element (`g[0].x`,
+                // `bank[3].c.r`). Fold the CONSTANT index into the scope-segment name
+                // (`g`+`[0]` ⇒ `g[0]`) so the normal hierarchical resolver handles it
+                // — no new IR. (A deeper `g[0].sub[2].y` re-enters via this loop.)
+                Some(TokenKind::Dot) if Self::is_indexed_hier_base(&e) => {
+                    e = self.parse_indexed_hier(e);
+                }
+                _ => break,
+            }
         }
         e
+    }
+
+    /// True when `e` is `name[idx]` / `path[idx]` — a bit-select rooted at a plain
+    /// Ident, the shape a following `.` turns into a generate/instance-array
+    /// hierarchical reference. (HIER-REST②.)
+    fn is_indexed_hier_base(e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::BitSelect { base, .. }
+            if matches!(base.kind, ExprKind::Ident(_)))
+    }
+
+    /// Parse `path[idx].member(.member)*` into a hierarchical `Ident` whose indexed
+    /// segment folds the CONSTANT index into the scope-segment name. Reuses the normal
+    /// hierarchical resolver (no new AST/IR). A non-plain-decimal index is a loud parse
+    /// error (documented sub-limitation). (HIER-REST②.)
+    fn parse_indexed_hier(&mut self, base: Expr) -> Expr {
+        let start = base.span;
+        let mut segs: Vec<Ident> = Vec::new();
+        if let ExprKind::BitSelect { base: b, index } = base.kind {
+            if let ExprKind::Ident(p) = b.kind {
+                let n = p.segments.len();
+                for (i, seg) in p.segments.into_iter().enumerate() {
+                    if i + 1 == n {
+                        let idx_str = self.const_index_string(&index);
+                        segs.push(Ident {
+                            name: format!("{}[{idx_str}]", seg.name),
+                            span: seg.span,
+                        });
+                    } else {
+                        segs.push(seg);
+                    }
+                }
+            }
+        }
+        // Consume `.member` segments (plain names; a following `[k].` re-enters the
+        // outer postfix loop, a leaf `[k]` is a normal bit-select on the whole path).
+        while self.eat(TokenKind::Dot) {
+            match self.ident() {
+                Some(id) => segs.push(id),
+                None => break,
+            }
+        }
+        let hi = segs.last().map(|s| s.span).unwrap_or(start);
+        Expr {
+            kind: ExprKind::Ident(HierPath {
+                segments: segs,
+                span: start.to(hi),
+            }),
+            span: start.to(hi),
+        }
+    }
+
+    /// Format a CONSTANT generate-array index as a decimal scope-segment string.
+    /// Supports a plain (unsized, base-less) decimal literal — the common `g[0]` form,
+    /// whose value equals the generate iteration's scope index. Anything else is loud.
+    fn const_index_string(&mut self, idx: &Expr) -> String {
+        if let ExprKind::IntLit { raw, .. } = &idx.kind {
+            let digits: String = raw.chars().filter(|c| *c != '_').collect();
+            if !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()) {
+                return digits;
+            }
+        }
+        self.error_at(
+            idx.span,
+            "a plain decimal generate-array index in a hierarchical reference",
+        );
+        "0".to_string()
     }
 
     fn parse_select(&mut self, base: Expr) -> Expr {
@@ -2229,57 +2306,103 @@ impl<'t, 's> Parser<'t, 's> {
         } else {
             Lvalue::Ident(path)
         };
-        while self.peek() == Some(TokenKind::LBracket) {
-            let start = lv.span();
-            self.bump();
-            let first = self.expr(0);
-            lv = match self.peek() {
-                Some(TokenKind::Colon) => {
-                    self.bump();
-                    let lsb = self.expr(0);
-                    self.expect(TokenKind::RBracket, "']'");
-                    Lvalue::PartSelect {
-                        base: Box::new(lv),
-                        msb: Box::new(first),
-                        lsb: Box::new(lsb),
-                        span: start.to(self.prev_span()),
+        loop {
+            if self.peek() == Some(TokenKind::LBracket) {
+                let start = lv.span();
+                self.bump();
+                let first = self.expr(0);
+                lv = match self.peek() {
+                    Some(TokenKind::Colon) => {
+                        self.bump();
+                        let lsb = self.expr(0);
+                        self.expect(TokenKind::RBracket, "']'");
+                        Lvalue::PartSelect {
+                            base: Box::new(lv),
+                            msb: Box::new(first),
+                            lsb: Box::new(lsb),
+                            span: start.to(self.prev_span()),
+                        }
                     }
-                }
-                Some(TokenKind::PlusColon) => {
-                    self.bump();
-                    let w = self.expr(0);
-                    self.expect(TokenKind::RBracket, "']'");
-                    Lvalue::IndexedPart {
-                        base: Box::new(lv),
-                        offset: Box::new(first),
-                        width: Box::new(w),
-                        dir: PartDir::PlusColon,
-                        span: start.to(self.prev_span()),
+                    Some(TokenKind::PlusColon) => {
+                        self.bump();
+                        let w = self.expr(0);
+                        self.expect(TokenKind::RBracket, "']'");
+                        Lvalue::IndexedPart {
+                            base: Box::new(lv),
+                            offset: Box::new(first),
+                            width: Box::new(w),
+                            dir: PartDir::PlusColon,
+                            span: start.to(self.prev_span()),
+                        }
                     }
-                }
-                Some(TokenKind::MinusColon) => {
-                    self.bump();
-                    let w = self.expr(0);
-                    self.expect(TokenKind::RBracket, "']'");
-                    Lvalue::IndexedPart {
-                        base: Box::new(lv),
-                        offset: Box::new(first),
-                        width: Box::new(w),
-                        dir: PartDir::MinusColon,
-                        span: start.to(self.prev_span()),
+                    Some(TokenKind::MinusColon) => {
+                        self.bump();
+                        let w = self.expr(0);
+                        self.expect(TokenKind::RBracket, "']'");
+                        Lvalue::IndexedPart {
+                            base: Box::new(lv),
+                            offset: Box::new(first),
+                            width: Box::new(w),
+                            dir: PartDir::MinusColon,
+                            span: start.to(self.prev_span()),
+                        }
                     }
-                }
-                _ => {
-                    self.expect(TokenKind::RBracket, "']'");
-                    Lvalue::BitSelect {
-                        base: Box::new(lv),
-                        index: Box::new(first),
-                        span: start.to(self.prev_span()),
+                    _ => {
+                        self.expect(TokenKind::RBracket, "']'");
+                        Lvalue::BitSelect {
+                            base: Box::new(lv),
+                            index: Box::new(first),
+                            span: start.to(self.prev_span()),
+                        }
                     }
-                }
-            };
+                };
+            } else if self.peek() == Some(TokenKind::Dot) && Self::is_indexed_hier_lval(&lv) {
+                // HIER-REST②: `g[0].x = …` — fold the constant index into the
+                // scope-segment name, mirroring the expression side.
+                lv = self.parse_indexed_hier_lval(lv);
+            } else {
+                break;
+            }
         }
         lv
+    }
+
+    /// True when `lv` is `name[idx]` — a bit-select lvalue rooted at a plain Ident.
+    fn is_indexed_hier_lval(lv: &Lvalue) -> bool {
+        matches!(lv, Lvalue::BitSelect { base, .. } if matches!(**base, Lvalue::Ident(_)))
+    }
+
+    /// LVALUE twin of [`Self::parse_indexed_hier`]: `g[0].x = …`.
+    fn parse_indexed_hier_lval(&mut self, base: Lvalue) -> Lvalue {
+        let start = base.span();
+        let mut segs: Vec<Ident> = Vec::new();
+        if let Lvalue::BitSelect { base: b, index, .. } = base {
+            if let Lvalue::Ident(p) = *b {
+                let n = p.segments.len();
+                for (i, seg) in p.segments.into_iter().enumerate() {
+                    if i + 1 == n {
+                        let idx_str = self.const_index_string(&index);
+                        segs.push(Ident {
+                            name: format!("{}[{idx_str}]", seg.name),
+                            span: seg.span,
+                        });
+                    } else {
+                        segs.push(seg);
+                    }
+                }
+            }
+        }
+        while self.eat(TokenKind::Dot) {
+            match self.ident() {
+                Some(id) => segs.push(id),
+                None => break,
+            }
+        }
+        let hi = segs.last().map(|s| s.span).unwrap_or(start);
+        Lvalue::Ident(HierPath {
+            segments: segs,
+            span: start.to(hi),
+        })
     }
 }
 
