@@ -506,6 +506,8 @@ pub enum Kw {
     Property,
     // --- SV functional coverage subset (N5, Phase-3) ---
     Covergroup, Endgroup, Coverpoint,
+    // --- SV 2-state integer types (SVPART) ---
+    Bit, Byte, Shortint, Int, Longint,
 }
 
 impl Kw {
@@ -576,6 +578,8 @@ impl Kw {
             "property" => Property,
             "covergroup" => Covergroup, "endgroup" => Endgroup,
             "coverpoint" => Coverpoint,
+            "bit" => Bit, "byte" => Byte, "shortint" => Shortint,
+            "int" => Int, "longint" => Longint,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

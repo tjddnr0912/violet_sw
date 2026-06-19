@@ -156,6 +156,10 @@ pub(crate) struct SimState<'a> {
     /// no-op for that net — only `force_write`/`release` touch it. Whole-net
     /// granularity (bit/part-select force targets are rejected at elaborate).
     pub forced: Vec<bool>,
+    /// SVPART: per-net flag — a 2-state variable (`bit`/`int`/…). The write funnel
+    /// coerces any X/Z bit to 0 (IEEE §6.11.3: a 2-state var can never hold X).
+    /// All-false unless a 2-state net exists ⇒ byte-identical for every prior design.
+    pub two_state: Vec<bool>,
     /// IEEE §9.3.2 continuous-force registry: net → (whole-net lvalue, rhs
     /// ExprId, forcing module's time multiplier). BTreeMap ⇒ deterministic
     /// re-evaluation order; empty unless a force is live (zero steady cost).
@@ -371,6 +375,7 @@ impl<'a> SimState<'a> {
             dirty: Vec::new(),
             dirty_flag: vec![false; nnets],
             forced: vec![false; nnets],
+            two_state: vec![false; nnets],
             active_forces: std::collections::BTreeMap::new(),
             latent_assigns: std::collections::BTreeMap::new(),
             dyn_heap: std::collections::BTreeMap::new(),
@@ -740,6 +745,21 @@ impl<'a> SimState<'a> {
         if self.forced[net] {
             return false;
         }
+        // SVPART: a 2-state variable can never hold X/Z (IEEE §6.11.3) — coerce any
+        // unknown bit of the incoming value to 0 before it lands. Only fires for the
+        // (new) 2-state nets, so every prior design is byte-identical.
+        let coerced;
+        let piece = if self.two_state[net] && piece.unk.iter().any(|&u| u != 0) {
+            let mut v = piece.clone();
+            for k in 0..v.unk.len() {
+                v.val[k] &= !v.unk[k]; // X (val0/unk1) & Z (val1/unk1) → 0
+                v.unk[k] = 0;
+            }
+            coerced = v;
+            &coerced
+        } else {
+            piece
+        };
         // `c.word` is an ExprId; `raw_word` is the caller-evaluated array index
         // (the runtime `k` of `mem[k] = …`). None ⇒ index 0. An out-of-range word
         // write is IGNORED (spec E-RUN-RANGE) — clamping to the last element would

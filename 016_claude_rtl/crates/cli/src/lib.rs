@@ -619,6 +619,8 @@ fn run_vita_str_gated(
         func_table: sc.func_table,
         task_calls_proc: sc.task_calls_proc,
         task_calls_func: sc.task_calls_func,
+        // SVPART: 2-state nets coerce X/Z→0 on write (one-shot path only).
+        two_state_nets: sc.two_state_nets,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };

@@ -12,7 +12,11 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-19 N5 slice D coverage options (`Coverpoint.at_least`/`weight:
+/// Re-pinned 2026-06-19 SVPART 2-state integer types (`NetVarKind::{Bit,Byte,
+/// Shortint,Int,Longint}` — `bit`/`byte`/`shortint`/`int`/`longint`; all `.vu`
+/// artifacts are stale, no sim-ir/format_version change, pure IR-0: these map to
+/// `NetKind::Reg` storage with fixed widths/sign and a 2-state 0-init). (Previous re-pins:
+/// 2026-06-19 N5 slice D coverage options (`Coverpoint.at_least`/`weight:
 /// Option<Expr>` + `CovergroupDecl.at_least: Option<Expr>` — `option.at_least`/
 /// `option.weight`; all `.vu` artifacts are stale, no sim-ir/format_version change,
 /// pure IR-0: at_least>1 uses per-bin saturating counters, weight enters the
@@ -88,8 +92,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    221, 77, 145, 122, 100, 35, 95, 77, 25, 61, 59, 207, 185, 210, 31, 236, 158, 130, 26, 180, 243,
-    112, 83, 24, 124, 243, 181, 125, 46, 20, 62, 242,
+    182, 8, 65, 190, 227, 81, 212, 114, 39, 126, 242, 193, 59, 61, 205, 217, 195, 4, 254, 153, 165,
+    32, 144, 86, 128, 7, 36, 239, 120, 221, 84, 204,
 ];
 
 #[test]

@@ -169,6 +169,11 @@ pub struct SimOpts {
     pub task_calls_proc: TaskCallProc,
     /// B2 frame-call: nested (task-body) task-call sites (`run_task`-facing).
     pub task_calls_func: TaskCallFunc,
+    /// SVPART: NetIds of 2-state variables — the engine coerces X/Z→0 on every
+    /// write (IEEE §6.11.3). EMPTY default ⇒ no 2-state nets ⇒ byte-identical.
+    /// One-shot `vita` only (the staged trailer does not serialise it; 2-state
+    /// INIT-to-0 rides the golden SimIr and so works on both paths).
+    pub two_state_nets: std::collections::BTreeSet<u32>,
 }
 
 impl Default for SimOpts {
@@ -197,6 +202,7 @@ impl Default for SimOpts {
             func_table: FuncTable::new(),
             task_calls_proc: TaskCallProc::new(),
             task_calls_func: TaskCallFunc::new(),
+            two_state_nets: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -260,6 +266,12 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.final_procs = opts.final_procs.clone();
     st.defer_marks = opts.defer_marks.clone();
     st.defer_acts = opts.defer_acts.clone();
+    // SVPART: mark 2-state nets so write_chunk coerces X/Z→0 (one-shot only).
+    for &n in &opts.two_state_nets {
+        if (n as usize) < st.two_state.len() {
+            st.two_state[n as usize] = true;
+        }
+    }
     // B1 frame-call: install the sidecar, derive the per-net routing tables, and
     // REBUILD the width table so `Expr::Call` widths come from the func metadata.
     // Order is load-bearing: `func_table` must be on `st` before routing/width.

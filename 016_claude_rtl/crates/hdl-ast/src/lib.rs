@@ -467,6 +467,15 @@ pub enum NetVarKind {
     Event,
     /// SV `string` variable (v7 P2-C — heap-handle storage, dyn precedent).
     String,
+    // SV 2-state integer types (SVPART): X-free — they default-initialise to 0,
+    // never X. `bit` carries an optional packed range (default 1-bit, unsigned);
+    // `byte`/`shortint`/`int`/`longint` are signed atom types of fixed width
+    // (8/16/32/64). Stored like a `reg` in the IR; only the init differs.
+    Bit,
+    Byte,
+    Shortint,
+    Int,
+    Longint,
 }
 
 /// `[msb:lsb]`. Bounds are exprs (usually const), NOT pre-evaluated.

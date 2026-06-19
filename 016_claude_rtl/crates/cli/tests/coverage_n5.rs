@@ -782,3 +782,153 @@ fn d6_at_least_array_and_iff_interactions() {
         "at_least + iff counter gating:\n{iff}"
     );
 }
+
+// ── Slice G: precise expr-coverpoint width ────────────────────────────────────
+// A coverpoint on an EXPRESSION (not a bare net) must derive its auto-bin count
+// from the expression's self-determined width, not a hardcoded default. Before G,
+// any non-ident expr defaulted to w=6 ⇒ 64 bins, so small-domain exprs reported a
+// wildly diluted %. iverilog rejects covergroup ⇒ HAND-IEEE (§19.5): every % is
+// hand-computed from the precise width.
+
+#[test]
+fn g1_binop_width_xor_two_bit() {
+    // a,b are 2-bit ⇒ (a^b) is 2-bit ⇒ 4 auto-bins. 2 distinct values ⇒ 2/4 = 50%.
+    // (Pre-G: w=6 default ⇒ 64 bins ⇒ 2/64 ≈ 3%.)
+    let (out, _c) = run("module t;\n\
+         reg [1:0] a, b;\n\
+         covergroup cg; coverpoint (a^b); endgroup\n\
+         cg c = new;\n\
+         initial begin a=0;b=1;c.sample(); a=2;b=2;c.sample();\n\
+           $display(\"G1 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G1 50"),
+        "xor 2-bit domain ⇒ 4 bins ⇒ 50%:\n{out}"
+    );
+}
+
+#[test]
+fn g2_partselect_width() {
+    // x[2:0] is 3-bit ⇒ 8 auto-bins. values {0,5} ⇒ 2 distinct ⇒ 2/8 = 25%.
+    let (out, _c) = run("module t;\n\
+         reg [7:0] x;\n\
+         covergroup cg; coverpoint x[2:0]; endgroup\n\
+         cg c = new;\n\
+         initial begin x=8'h00;c.sample(); x=8'h05;c.sample();\n\
+           $display(\"G2 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G2 25"),
+        "x[2:0] ⇒ 3-bit ⇒ 8 bins ⇒ 25%:\n{out}"
+    );
+}
+
+#[test]
+fn g3_concat_width_sum() {
+    // {a,b} with a,b 1-bit each ⇒ 2-bit concat ⇒ 4 auto-bins. values {2'b01,2'b10}
+    // ⇒ 2 distinct ⇒ 2/4 = 50%.
+    let (out, _c) = run("module t;\n\
+         reg a, b;\n\
+         covergroup cg; coverpoint {a,b}; endgroup\n\
+         cg c = new;\n\
+         initial begin a=0;b=1;c.sample(); a=1;b=0;c.sample();\n\
+           $display(\"G3 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G3 50"),
+        "{{a,b}} ⇒ 2-bit ⇒ 4 bins ⇒ 50%:\n{out}"
+    );
+}
+
+#[test]
+fn g4_comparison_is_one_bit() {
+    // (a > b) is a 1-bit (relational) domain ⇒ 2 auto-bins. one true + one false
+    // ⇒ 2/2 = 100%.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] a, b;\n\
+         covergroup cg; coverpoint (a > b); endgroup\n\
+         cg c = new;\n\
+         initial begin a=5;b=2;c.sample(); a=1;b=9;c.sample();\n\
+           $display(\"G4 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G4 100"),
+        "(a>b) ⇒ 1-bit ⇒ 2 bins ⇒ 100%:\n{out}"
+    );
+}
+
+// Adversarial-found CARDINAL bug (workflow wnvzdxh6d): the sampled value was
+// masked with a hardcoded `& 63` but binned against the now-precise num_bins, so a
+// context-widened value (shift/add/mul/signed) could set a bit beyond num_bins ⇒
+// IMPOSSIBLE >100% coverage. Fix: bin index = value & (num_bins-1) — truncates to
+// the self-determined low bits AND caps the index < num_bins.
+
+#[test]
+fn g5_shift_truncates_to_self_width() {
+    // (a<<b): W = width(lhs) = width(a) = 2 ⇒ 4 bins, mask=3. Six samples
+    // {1,2,4,8,16,32} truncate to {1,2,0,0,0,0} ⇒ 3 distinct bins ⇒ 3/4 = 75%.
+    // (Pre-fix: bit 4/8/16/32 set ⇒ $countones=6 ⇒ 6/4 = 150%, impossible.)
+    let (out, _c) = run("module t;\n\
+         reg [1:0] a; reg [2:0] b;\n\
+         covergroup cg; coverpoint (a << b); endgroup\n\
+         cg c = new;\n\
+         initial begin a=1;b=0;c.sample(); a=1;b=1;c.sample(); a=1;b=2;c.sample();\n\
+           a=1;b=3;c.sample(); a=1;b=4;c.sample(); a=1;b=5;c.sample();\n\
+           $display(\"G5 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G5 75"),
+        "shift truncates to W=2 ⇒ 75% (not 150%):\n{out}"
+    );
+}
+
+#[test]
+fn g6_add_overflow_truncated() {
+    // (a+b), a,b 2-bit ⇒ W=2, 4 bins. {0, 3+1=4→0, 2+2=4→0} ⇒ 1 distinct ⇒ 25%.
+    let (out, _c) = run("module t;\n\
+         reg [1:0] a, b;\n\
+         covergroup cg; coverpoint (a+b); endgroup\n\
+         cg c = new;\n\
+         initial begin a=0;b=0;c.sample(); a=3;b=1;c.sample(); a=2;b=2;c.sample();\n\
+           $display(\"G6 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G6 25"),
+        "add overflow truncates ⇒ 25%:\n{out}"
+    );
+}
+
+#[test]
+fn g7_signed_add_never_exceeds_100() {
+    // signed (a+b), a,b [2:0] ⇒ W=3, 8 bins. {-2→6, 2, -6→2} ⇒ {6,2} = 2 distinct
+    // ⇒ 25%. Pre-fix the negatives sign-extended to bits 62/58 ⇒ 37.5%.
+    let (out, _c) = run("module t;\n\
+         reg signed [2:0] a, b;\n\
+         covergroup cg; coverpoint (a+b); endgroup\n\
+         cg c = new;\n\
+         initial begin a=-1;b=-1;c.sample(); a=1;b=1;c.sample(); a=-3;b=-3;c.sample();\n\
+           $display(\"G7 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G7 25"),
+        "signed add ⇒ low-3-bit bins ⇒ 25%:\n{out}"
+    );
+}
+
+#[test]
+fn g8_function_call_return_width() {
+    // coverpoint on a 2-bit function call ⇒ 4 bins (from the declared return type),
+    // all 4 values sampled ⇒ 100% (pre-fix: DEFAULT w=6 ⇒ 64 bins ⇒ 6.25%).
+    let (out, _c) = run("module t;\n\
+         reg [1:0] a;\n\
+         function [1:0] f(input [1:0] z); f = z; endfunction\n\
+         covergroup cg; coverpoint f(a); endgroup\n\
+         cg c = new;\n\
+         initial begin a=0;c.sample(); a=1;c.sample(); a=2;c.sample(); a=3;c.sample();\n\
+           $display(\"G8 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("G8 100"),
+        "2-bit function-call coverpoint ⇒ 4 bins ⇒ 100%:\n{out}"
+    );
+}

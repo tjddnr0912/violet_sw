@@ -326,6 +326,10 @@ pub struct Sidecars {
     pub task_calls_proc: TaskCallProc,
     /// B2 frame-call: nested task-call sites in task bodies (`run_task`-facing).
     pub task_calls_func: TaskCallFunc,
+    /// SVPART: NetIds of 2-state variables (`bit`/`byte`/`shortint`/`int`/
+    /// `longint`). The engine coerces X/Z→0 on every write to these (IEEE §6.11.3
+    /// — a 2-state var can never hold X). EMPTY ⇒ no 2-state nets ⇒ golden-neutral.
+    pub two_state_nets: std::collections::BTreeSet<u32>,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -397,7 +401,15 @@ pub fn elaborate_with_timescale_roots(
         func_table: std::mem::take(&mut el.func_metas), // B1 (empty until frame funcs lower)
         task_calls_proc: std::mem::take(&mut el.task_calls_proc), // B2
         task_calls_func: std::mem::take(&mut el.task_calls_func), // B2
-        net_names: el.net_name_table(),                 // BEFORE finish() consumes `el`
+        // SVPART: 2-state net ids, derived from the decl-time kind map (reuses the
+        // $typename `intro_kind` table — no extra elaborate state).
+        two_state_nets: el
+            .intro_kind
+            .iter()
+            .filter(|(_, k)| net_kind_is_two_state(**k))
+            .map(|(&id, _)| id)
+            .collect(),
+        net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
         (None, sc)
@@ -1341,9 +1353,14 @@ fn cov_int_lit_pos(v: i128, sp: ast::Span) -> ast::Expr {
 /// The auto-bin sample statement `bitmap = bitmap | (64'd1 << (expr & 63))` as AST
 /// (used only on the guarded `coverpoint x iff(g)` auto path — same semantics as the
 /// IR-direct legacy path, but lowerable inside an `if (g)`).
-fn cov_auto_sample_stmt(bitmap: &str, expr: &ast::Expr, sp: ast::Span) -> ast::Stmt {
+fn cov_auto_sample_stmt(bitmap: &str, expr: &ast::Expr, mask: u32, sp: ast::Span) -> ast::Stmt {
     let bm = || sva_ident_expr(bitmap, sp);
-    let masked = sva_binary(ast::BinOp::BitAnd, expr.clone(), cov_int_lit(63, sp), sp);
+    let masked = sva_binary(
+        ast::BinOp::BitAnd,
+        expr.clone(),
+        cov_int_lit(mask as i64, sp),
+        sp,
+    );
     let one64 = ast::Expr {
         kind: ast::ExprKind::IntLit {
             kind: ast::IntLitKind::Sized,
@@ -1662,6 +1679,9 @@ struct Elaborator<'s> {
     // EMPTY descriptor (0 dims), distinguishing it from `reg [0:0] x` (1 dim) —
     // which `nv.msb`/`nv.lsb` alone cannot. elaborate-LOCAL only.
     dim_desc: BTreeMap<u32, (Vec<(i64, i64)>, usize)>,
+    // SYS-INTRO잔여: the declared base type-kind per net, for `$typename`'s
+    // canonical string (reg/logic/wire ⇒ "logic", integer ⇒ "integer", …).
+    intro_kind: BTreeMap<u32, ast::NetVarKind>,
     // Every net DECLARED with static unpacked dims — including 1-element
     // arrays (`reg x [0:0]`), which `array_len > 1` cannot distinguish from
     // scalars (adversarial find #5). elaborate-LOCAL only.
@@ -1883,6 +1903,7 @@ impl<'s> Elaborator<'s> {
             pending_task_calls: Vec::new(),
             array_dim_desc: BTreeMap::new(),
             dim_desc: BTreeMap::new(),
+            intro_kind: BTreeMap::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
             dollar_subst: None,
@@ -3123,8 +3144,22 @@ impl<'s> Elaborator<'s> {
                 _ => None,
             }))
             .collect();
+        // SVPART: wildcard-import ambiguity (IEEE §26.8). Track each wildcard-bound
+        // name's origin package and the names bound by an EXPLICIT import (which
+        // always wins). A name made available by two DIFFERENT wildcard imports is
+        // ambiguous → unbound, so referencing it is a loud "undefined" at the use
+        // site (never a silent last-wins value), while an UNUSED ambiguous name is
+        // no error — exactly IEEE's "ambiguous only when referenced".
+        let mut wc_origin: BTreeMap<String, String> = BTreeMap::new();
+        let mut explicit_imports: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for imp in &import_list {
-            self.apply_import_consts(imp, &mut saved_params);
+            self.apply_import_consts(
+                imp,
+                &mut saved_params,
+                &mut wc_origin,
+                &mut explicit_imports,
+            );
         }
 
         // (3b) BODY-level `parameter`/`localparam` (a `ModuleItem::Param`, NOT in
@@ -3253,9 +3288,15 @@ impl<'s> Elaborator<'s> {
             }
         }
         // (3.6) v7 P2-D: imported functions/tasks — LOCAL definitions win
-        // (skip-if-present, no spurious redeclare warning).
+        // (skip-if-present, no spurious redeclare warning). SVPART: the same
+        // wildcard-ambiguity rule as consts — a routine name from two different
+        // wildcard imports is unbound (loud "unknown function" at the call site,
+        // never a silent first-wins), and an explicit import always wins.
+        let mut wc_rtn: BTreeMap<String, String> = BTreeMap::new();
+        let mut explicit_rtn: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for imp in &import_list {
-            self.apply_import_routines(imp);
+            self.apply_import_routines(imp, &mut wc_rtn, &mut explicit_rtn);
         }
 
         // (4) this instance's nets: ANSI ports, then body NetVarDecls (decl order).
@@ -5590,6 +5631,14 @@ impl<'s> Elaborator<'s> {
         if matches!(kind, ast::NetVarKind::Integer) {
             return (32, 31, 0, true);
         }
+        // SVPART 2-state signed atom types (fixed width, IEEE §6.11.1).
+        match kind {
+            ast::NetVarKind::Byte => return (8, 7, 0, true),
+            ast::NetVarKind::Shortint => return (16, 15, 0, true),
+            ast::NetVarKind::Int => return (32, 31, 0, true),
+            ast::NetVarKind::Longint => return (64, 63, 0, true),
+            _ => {}
+        }
         // `real`/`realtime` are dimensionless 64-bit signed (no [msb:lsb] range).
         if matches!(kind, ast::NetVarKind::Real | ast::NetVarKind::Realtime) {
             return (64, 63, 0, true);
@@ -6157,6 +6206,11 @@ impl<'s> Elaborator<'s> {
                 // (IR-0, like $bits). A TYPE/net reference, not evaluated.
                 if let Some(folded) = self.try_introspect_fold(&name.name, args) {
                     return folded;
+                }
+                // SYS-INTRO잔여: `$countbits(expr, ctrl…)` desugars to a per-bit
+                // case-eq sum (IR-0, no new SysFuncId). iverilog 13.0 crashes on it.
+                if name.name == "$countbits" {
+                    return self.lower_countbits(args);
                 }
                 // v7: a SEEDED $random updates its ref argument — legal ONLY
                 // as the direct rhs of a blocking assign (the special form
@@ -10594,15 +10648,10 @@ impl<'s> Elaborator<'s> {
 
     // ── N5: functional-coverage synthesis (hand-IEEE; iverilog rejects covergroup) ──
     /// Auto-bin count for a coverpoint: `min(2^W, 64)` where W is the sampled expr's
-    /// width (from a simple net ref; a complex expr defaults to 64 bins).
+    /// self-determined width (slice G — precise for nets, binops, selects, concat,
+    /// replicate, reductions/comparisons; truly-unknown kinds keep the legacy w=6).
     fn coverpoint_num_bins(&self, e: &ast::Expr) -> u32 {
-        let w = match &e.kind {
-            ast::ExprKind::Ident(p) if p.segments.len() == 1 => self
-                .lookup_net_scoped(&p.segments[0].name)
-                .map(|n| self.nets[n as usize].width)
-                .unwrap_or(6),
-            _ => 6,
-        };
+        let w = self.coverpoint_domain(e).0;
         if w >= 6 {
             64
         } else {
@@ -10610,16 +10659,106 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// `(width, signed)` of a coverpoint's sampled domain — used for `$`-endpoint
-    /// clamping. Single-ident net → its declared shape; else the `w=6` default
-    /// (precise expr width is slice G).
+    /// `(width, signed)` of a coverpoint's sampled domain — used both for auto-bin
+    /// counting and `$`-endpoint clamping. Slice G computes the self-determined
+    /// width of an arbitrary expression (mirroring `ir_bits_of`'s rules but on the
+    /// AST, pre-lowering); a kind we can't resolve falls back to the legacy
+    /// `(6, false)` default so unhandled shapes keep their prior behavior.
     fn coverpoint_domain(&self, e: &ast::Expr) -> (u32, bool) {
+        const DEFAULT: (u32, bool) = (6, false);
         match &e.kind {
+            ast::ExprKind::Paren { inner } => self.coverpoint_domain(inner),
             ast::ExprKind::Ident(p) if p.segments.len() == 1 => self
                 .lookup_net_scoped(&p.segments[0].name)
                 .map(|n| (self.nets[n as usize].width, self.nets[n as usize].signed))
-                .unwrap_or((6, false)),
-            _ => (6, false),
+                .unwrap_or(DEFAULT),
+            ast::ExprKind::Unary { op, operand } => match op {
+                // size-preserving unary: width & sign of the operand.
+                ast::UnOp::Plus | ast::UnOp::Minus | ast::UnOp::BitNot => {
+                    self.coverpoint_domain(operand)
+                }
+                // reductions and logical-not are 1-bit unsigned.
+                _ => (1, false),
+            },
+            ast::ExprKind::Binary { op, lhs, rhs } => match op {
+                // arithmetic / bitwise: max operand width, signed iff both signed.
+                ast::BinOp::Add
+                | ast::BinOp::Sub
+                | ast::BinOp::Mul
+                | ast::BinOp::Div
+                | ast::BinOp::Mod
+                | ast::BinOp::Pow
+                | ast::BinOp::BitAnd
+                | ast::BinOp::BitOr
+                | ast::BinOp::BitXor
+                | ast::BinOp::BitXnor => {
+                    let (lw, ls) = self.coverpoint_domain(lhs);
+                    let (rw, rs) = self.coverpoint_domain(rhs);
+                    (lw.max(rw), ls && rs)
+                }
+                // shifts take the left operand's width & sign.
+                ast::BinOp::Shl | ast::BinOp::Shr | ast::BinOp::AShl | ast::BinOp::AShr => {
+                    self.coverpoint_domain(lhs)
+                }
+                // relational / equality / logical → 1-bit unsigned.
+                _ => (1, false),
+            },
+            ast::ExprKind::Ternary { then_e, else_e, .. } => {
+                let (tw, ts) = self.coverpoint_domain(then_e);
+                let (ew, es) = self.coverpoint_domain(else_e);
+                (tw.max(ew), ts && es)
+            }
+            ast::ExprKind::BitSelect { .. } => (1, false),
+            ast::ExprKind::PartSelect { msb, lsb, .. } => {
+                match (self.const_eval_in_scope(msb), self.const_eval_in_scope(lsb)) {
+                    (Some(m), Some(l)) => ((m - l).unsigned_abs() as u32 + 1, false),
+                    _ => DEFAULT,
+                }
+            }
+            ast::ExprKind::IndexedPart { width, .. } => match self.const_eval_in_scope(width) {
+                Some(w) if w >= 1 => (w as u32, false),
+                _ => DEFAULT,
+            },
+            ast::ExprKind::Concat { parts } => {
+                let mut sum = 0u32;
+                for p in parts {
+                    sum = sum.saturating_add(self.coverpoint_domain(p).0);
+                }
+                (sum.max(1), false)
+            }
+            ast::ExprKind::Replicate { count, value } => {
+                let Some(c) = self.const_eval_in_scope(count) else {
+                    return DEFAULT;
+                };
+                let mut sum = 0u32;
+                for p in value {
+                    sum = sum.saturating_add(self.coverpoint_domain(p).0);
+                }
+                (sum.saturating_mul(c.max(0) as u32).max(1), false)
+            }
+            // A user-function-call coverpoint takes the declared return width/sign
+            // (looked up in the func table) — else the default. (`ir_bits_of` can't
+            // help here: it returns None for a Call.)
+            ast::ExprKind::Call { name, .. } if name.segments.len() == 1 => {
+                match self.func_table.get(&name.segments[0].name) {
+                    Some(f) => match &f.range {
+                        Some(r) => match (
+                            self.const_eval_in_scope(&r.msb),
+                            self.const_eval_in_scope(&r.lsb),
+                        ) {
+                            (Some(m), Some(l)) => ((m - l).unsigned_abs() as u32 + 1, f.signed),
+                            _ => DEFAULT,
+                        },
+                        None => match f.ret_type {
+                            ast::ParamType::Integer => (32, true),
+                            ast::ParamType::Time => (64, false),
+                            _ => (1, f.signed), // implicit scalar / real
+                        },
+                    },
+                    None => DEFAULT,
+                }
+            }
+            _ => DEFAULT,
         }
     }
 
@@ -11110,7 +11249,12 @@ impl<'s> Elaborator<'s> {
                 let sp = t.expr.span;
                 let gated = ast::Stmt::If {
                     cond: g.clone(),
-                    then_s: Box::new(cov_auto_sample_stmt(&t.bitmap, &t.expr, sp)),
+                    then_s: Box::new(cov_auto_sample_stmt(
+                        &t.bitmap,
+                        &t.expr,
+                        t.num_bins.saturating_sub(1),
+                        sp,
+                    )),
                     else_s: None,
                     span: sp,
                 };
@@ -11118,7 +11262,13 @@ impl<'s> Elaborator<'s> {
                 continue;
             }
             let val = self.lower_expr(&t.expr);
-            let mask = self.const_u32_expr(63, 32);
+            // Bin index = value & (num_bins-1). num_bins is a power of two ≤ 64, so
+            // this both (a) truncates the context-widened value to the coverpoint's
+            // self-determined low bits (the auto-bin domain) and (b) keeps the index
+            // < num_bins so $countones(bitmap) can never exceed num_bins (no >100%).
+            // For a bare W-bit net (value < 2^W = num_bins) this equals the legacy
+            // `& 63`, so those designs stay byte-identical.
+            let mask = self.const_u32_expr(t.num_bins.saturating_sub(1), 32);
             let masked = self.push_expr(ir::Expr::Binary {
                 op: ir::BinOp::BitAnd,
                 lhs: val,
@@ -15401,6 +15551,8 @@ impl<'s> Elaborator<'s> {
         &mut self,
         imp: &ast::ImportDecl,
         saved_params: &mut Vec<(String, Option<i64>)>,
+        wc_origin: &mut BTreeMap<String, String>,
+        explicit_imports: &mut std::collections::BTreeSet<String>,
     ) {
         let pkg = imp.pkg.name.as_str();
         let Some(consts) = self.pkg_consts.get(pkg) else {
@@ -15415,12 +15567,34 @@ impl<'s> Elaborator<'s> {
                 let all: Vec<(String, i64)> = consts.iter().map(|(k, &v)| (k.clone(), v)).collect();
                 for (name, v) in all {
                     let key = self.fq(&name);
-                    saved_params.push((key.clone(), self.params.insert(key, v)));
+                    // An explicit import of this name always wins — skip the wildcard.
+                    if explicit_imports.contains(&key) {
+                        continue;
+                    }
+                    match wc_origin.get(&key).map(String::as_str) {
+                        // "" sentinel = already ambiguous: stays unbound.
+                        Some("") => continue,
+                        // A different package already wildcard-bound this name ⇒
+                        // ambiguous. Unbind it (save the prior value for restore) so a
+                        // reference is loud-undefined, and mark it ambiguous.
+                        Some(prev) if prev != pkg => {
+                            let prev_val = self.params.remove(&key);
+                            saved_params.push((key.clone(), prev_val));
+                            wc_origin.insert(key, String::new());
+                        }
+                        // Same package re-import: idempotent, keep the binding.
+                        Some(_) => {}
+                        None => {
+                            saved_params.push((key.clone(), self.params.insert(key.clone(), v)));
+                            wc_origin.insert(key, pkg.to_string());
+                        }
+                    }
                 }
             }
             Some(sym) => {
                 if let Some(&v) = consts.get(&sym.name) {
                     let key = self.fq(&sym.name);
+                    explicit_imports.insert(key.clone());
                     saved_params.push((key.clone(), self.params.insert(key, v)));
                 } else if !self
                     .pkg_funcs
@@ -15442,31 +15616,73 @@ impl<'s> Elaborator<'s> {
 
     /// Bind one import's FUNCTION/TASK symbols (local definitions win —
     /// skip-if-present, called after the module's own (3.5) collection).
-    fn apply_import_routines(&mut self, imp: &ast::ImportDecl) {
-        let pkg = imp.pkg.name.as_str();
-        let (funcs, tasks) = match (self.pkg_funcs.get(pkg), self.pkg_tasks.get(pkg)) {
+    fn apply_import_routines(
+        &mut self,
+        imp: &ast::ImportDecl,
+        wc_rtn: &mut BTreeMap<String, String>,
+        explicit_rtn: &mut std::collections::BTreeSet<String>,
+    ) {
+        let pkg = imp.pkg.name.to_string();
+        let (funcs, tasks) = match (self.pkg_funcs.get(&pkg), self.pkg_tasks.get(&pkg)) {
             (Some(f), Some(t)) => (f.clone(), t.clone()),
             _ => return, // unknown package already diagnosed in the const pass
         };
         match &imp.item {
             None => {
                 for (n, f) in funcs {
-                    self.func_table.entry(n).or_insert(f);
+                    if explicit_rtn.contains(&n) {
+                        continue; // explicit import wins
+                    }
+                    // a LOCAL definition (present, not from a wildcard import) wins.
+                    if self.func_table.contains_key(&n) && !wc_rtn.contains_key(&n) {
+                        continue;
+                    }
+                    match wc_rtn.get(&n).map(String::as_str) {
+                        Some("") => {
+                            self.func_table.remove(&n); // already ambiguous: stay unbound
+                        }
+                        Some(prev) if prev != pkg => {
+                            self.func_table.remove(&n); // two wildcard imports ⇒ ambiguous
+                            wc_rtn.insert(n, String::new());
+                        }
+                        Some(_) => {} // same package, idempotent
+                        None => {
+                            self.func_table.insert(n.clone(), f);
+                            wc_rtn.insert(n, pkg.clone());
+                        }
+                    }
                 }
                 for (n, t) in tasks {
-                    self.task_table.entry(n).or_insert(t);
+                    if explicit_rtn.contains(&n) {
+                        continue;
+                    }
+                    if self.task_table.contains_key(&n) && !wc_rtn.contains_key(&n) {
+                        continue;
+                    }
+                    match wc_rtn.get(&n).map(String::as_str) {
+                        Some("") => {
+                            self.task_table.remove(&n);
+                        }
+                        Some(prev) if prev != pkg => {
+                            self.task_table.remove(&n);
+                            wc_rtn.insert(n, String::new());
+                        }
+                        Some(_) => {}
+                        None => {
+                            self.task_table.insert(n.clone(), t);
+                            wc_rtn.insert(n, pkg.clone());
+                        }
+                    }
                 }
             }
             Some(sym) => {
+                // explicit import always wins (override + protect from wildcards).
+                explicit_rtn.insert(sym.name.clone());
                 if let Some(f) = funcs.get(&sym.name) {
-                    self.func_table
-                        .entry(sym.name.clone())
-                        .or_insert_with(|| f.clone());
+                    self.func_table.insert(sym.name.clone(), f.clone());
                 }
                 if let Some(t) = tasks.get(&sym.name) {
-                    self.task_table
-                        .entry(sym.name.clone())
-                        .or_insert_with(|| t.clone());
+                    self.task_table.insert(sym.name.clone(), t.clone());
                 }
             }
         }
@@ -15518,6 +15734,97 @@ impl<'s> Elaborator<'s> {
         true
     }
 
+    // ── $countbits desugar (SYS-INTRO잔여, IR-0) ───────────────────
+    /// `$countbits(expr, ctrl1, …)` → 32-bit count of the bits of `expr` that
+    /// 4-state-match ANY control bit. Each control arg is reduced to its bit 0
+    /// (a 1-bit 0/1/x/z constant). The result is `Σ_i ((expr[i]===c0)||…) ? 1 : 0`
+    /// — pure IR-0 over Select/CaseEq/Ternary/Add (iverilog 13.0 crashes ⇒ hand-
+    /// IEEE §20.9). At least one control bit is required (E3009 otherwise).
+    fn lower_countbits(&mut self, args: &[ast::Expr]) -> u32 {
+        if args.len() < 2 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$countbits needs an expression and at least one control bit \
+                 (e.g. $countbits(v, 1) / $countbits(v, 1'bx))",
+            );
+            return self.placeholder_expr();
+        }
+        let base = self.lower_expr(&args[0]);
+        // Integral-only operand (IEEE §20.9) — a real would silently popcount its
+        // IEEE-754 storage. Mirror the sibling $countones guard (loud E3009).
+        if self.expr_is_real(base) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "real operand is not legal for a bit-vector system function",
+            );
+            return self.placeholder_expr();
+        }
+        let Some(w) = self.ir_bits_of(base).filter(|&w| w > 0) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "$countbits operand has an unresolved width",
+            );
+            return self.placeholder_expr();
+        };
+        // `Select.offset`/`.width` are const-expr EDGES (ExprIds), not literals.
+        let one_w = self.const_u32_expr(1, 32); // width-1 edge (shared)
+        let off0 = self.const_u32_expr(0, 32); // bit-0 offset edge (shared)
+                                               // Reduce each control arg to its bit 0 (a 1-bit 4-state constant).
+        let ctrls: Vec<u32> = args[1..]
+            .iter()
+            .map(|c| {
+                let cid = self.lower_expr(c);
+                self.push_expr(ir::Expr::Select {
+                    base: cid,
+                    offset: off0,
+                    width: one_w,
+                    kind: ir::SelKind::Bit,
+                })
+            })
+            .collect();
+        let one = self.const_u32_expr(1, 32);
+        let zero = self.const_u32_expr(0, 32);
+        let mut acc = zero;
+        for i in 0..w {
+            let off_i = self.const_u32_expr(i, 32);
+            let bit = self.push_expr(ir::Expr::Select {
+                base,
+                offset: off_i,
+                width: one_w,
+                kind: ir::SelKind::Bit,
+            });
+            // OR of (bit === ctrl_j) across all control bits.
+            let mut matches: Option<u32> = None;
+            for &c in &ctrls {
+                let eq = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::CaseEq,
+                    lhs: bit,
+                    rhs: c,
+                });
+                matches = Some(match matches {
+                    None => eq,
+                    Some(m) => self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::BitOr,
+                        lhs: m,
+                        rhs: eq,
+                    }),
+                });
+            }
+            let cond = matches.unwrap(); // ≥1 control guaranteed above
+            let term = self.push_expr(ir::Expr::Ternary {
+                cond,
+                then_e: one,
+                else_e: zero,
+            });
+            acc = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Add,
+                lhs: acc,
+                rhs: term,
+            });
+        }
+        acc
+    }
+
     // ── $bits const-fold (v7, IR-0) ────────────────────────────────
     /// `$bits(arg)` → 32-bit Const. The argument is a TYPE reference, never
     /// evaluated; unsupported shapes are LOUD (E3009), never a silent 0.
@@ -15558,6 +15865,15 @@ impl<'s> Elaborator<'s> {
         if name == "$isunbounded" && args.len() == 1 {
             let v = matches!(args[0].kind, ast::ExprKind::Dollar) as i64;
             return Some(self.const_param_expr(v));
+        }
+        // SYS-INTRO잔여: `$typename(net)` const-folds to a packed-ASCII string of
+        // vita's canonical type spelling (hand-IEEE — iverilog rejects $typename).
+        // A net arg resolves; a type-literal / indexed / expression arg stays loud.
+        if name == "$typename" && args.len() == 1 {
+            let net = self.resolve_intro_net(&args[0])?;
+            let s = self.typename_string(net);
+            let cid = self.intern_const(parse_str_literal(&format!("\"{s}\"")));
+            return Some(self.push_expr(ir::Expr::Const { val: cid }));
         }
         let with_dim = matches!(
             name,
@@ -15664,12 +15980,16 @@ impl<'s> Elaborator<'s> {
         // Implicit packed dim for an integral atom with no explicit packed range.
         if range.is_none() && packed.is_empty() {
             match kind {
-                ast::NetVarKind::Integer => dims.push((31, 0)),
-                ast::NetVarKind::Time => dims.push((63, 0)),
-                _ => {} // real/realtime/event/scalar: genuinely dimensionless here
+                ast::NetVarKind::Integer | ast::NetVarKind::Int => dims.push((31, 0)),
+                ast::NetVarKind::Time | ast::NetVarKind::Longint => dims.push((63, 0)),
+                ast::NetVarKind::Byte => dims.push((7, 0)),
+                ast::NetVarKind::Shortint => dims.push((15, 0)),
+                // `bit` with no packed range is a 1-bit scalar (like reg): 0-dim.
+                _ => {} // real/realtime/event/bit-scalar/string: dimensionless here
             }
         }
         self.dim_desc.insert(id, (dims, unpacked_n));
+        self.intro_kind.insert(id, kind);
     }
 
     /// The SYS-INTRO dimension descriptor for `net`: the decl-time `dim_desc`
@@ -15693,6 +16013,55 @@ impl<'s> Elaborator<'s> {
             dims.push((nv.msb as i64, nv.lsb as i64));
         }
         Some((dims, unpacked))
+    }
+
+    /// vita's canonical `$typename` spelling for a net (hand-IEEE — no oracle).
+    /// Atom types (`integer`/`time`/`real`) print bare; vector/array data types
+    /// print as `<base>[msb:lsb]…` for packed dims with unpacked dims appended as
+    /// `$[lo:hi]` (IEEE 1800 §20.6.1 form). reg/logic/wire all canonicalise to
+    /// "logic" (they are the same 4-state data type).
+    fn typename_string(&self, net: u32) -> String {
+        use ast::NetVarKind as K;
+        // The `string` decl branch never populates `intro_kind`, so detect it first.
+        if self.is_string_net(net) {
+            return "string".to_string();
+        }
+        let kind = self.intro_kind.get(&net).copied().unwrap_or(K::Logic);
+        // Atom types render bare regardless of any implicit packed dim.
+        match kind {
+            K::Integer => return "integer".to_string(),
+            K::Time => return "time".to_string(),
+            K::Real => return "real".to_string(),
+            K::Realtime => return "realtime".to_string(),
+            K::Event => return "event".to_string(),
+            K::String => return "string".to_string(),
+            K::Byte => return "byte".to_string(),
+            K::Shortint => return "shortint".to_string(),
+            K::Int => return "int".to_string(),
+            K::Longint => return "longint".to_string(),
+            _ => {}
+        }
+        // `bit` is the 2-state vector data type; reg/logic/wire/tri/… are 4-state.
+        let base = if matches!(kind, K::Bit) {
+            "bit"
+        } else {
+            "logic"
+        };
+        let (dims, unpacked_n) = self.net_dims_desc(net).unwrap_or((Vec::new(), 0));
+        let mut s = base.to_string();
+        // carry the signedness qualifier (IEEE canonical) when the net is signed.
+        if self.nets.get(net as usize).is_some_and(|n| n.signed) {
+            s.push_str(" signed");
+        }
+        // packed dims (after the unpacked prefix) directly follow the base.
+        for &(l, r) in dims.iter().skip(unpacked_n) {
+            s.push_str(&format!("[{l}:{r}]"));
+        }
+        // unpacked dims trail as `$[lo:hi]`.
+        for &(l, r) in dims.iter().take(unpacked_n) {
+            s.push_str(&format!("$[{l}:{r}]"));
+        }
+        s
     }
 
     /// A 32-bit all-X Const expr (the iverilog result of an introspection dim
@@ -16495,6 +16864,9 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         "$monitor" | "$monitorb" | "$monitoro" | "$monitorh" => Some(ir::SysTaskId::Monitor),
         "$strobe" | "$strobeb" | "$strobeo" | "$strobeh" => Some(ir::SysTaskId::Strobe),
         "$finish" => Some(ir::SysTaskId::Finish),
+        // SYS-INTRO잔여: `$exit` waits for program blocks then ends; with no
+        // `program` constructs in vita it is exactly `$finish` (IR-0, no new id).
+        "$exit" => Some(ir::SysTaskId::Finish),
         "$stop" => Some(ir::SysTaskId::Stop),
         "$dumpfile" => Some(ir::SysTaskId::DumpFile),
         "$dumpvars" => Some(ir::SysTaskId::DumpVars),
@@ -17149,6 +17521,9 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
         Time => ir::NetKind::Reg,
         // named event → its 64-bit counter reg (v5 batch B desugar).
         Event => ir::NetKind::Reg,
+        // SVPART 2-state types → Reg storage (procedural-assignable, user `assign`
+        // rejected). Width/sign from range_to_dims, 2-state 0-init from default_init.
+        Bit | Byte | Shortint | Int | Longint => ir::NetKind::Reg,
         // Wire + all net aliases (Tri/Uwire/Wand/...) behave as Wire in v1.
         _ => ir::NetKind::Wire,
     }
@@ -17170,7 +17545,17 @@ fn lval_root_path(lv: &ast::Lvalue) -> Option<&ast::HierPath> {
 
 fn net_is_variable(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
-    matches!(k, Reg | Logic | Integer | Time)
+    matches!(
+        k,
+        Reg | Logic | Integer | Time | Bit | Byte | Shortint | Int | Longint
+    )
+}
+
+/// SVPART: the X-free 2-state integer types (`bit`/`byte`/`shortint`/`int`/
+/// `longint`). The engine coerces X/Z→0 on every write to these nets.
+fn net_kind_is_two_state(k: ast::NetVarKind) -> bool {
+    use ast::NetVarKind::*;
+    matches!(k, Bit | Byte | Shortint | Int | Longint)
 }
 
 /// True iff an lvalue is exactly ONE whole-net chunk (no bit/part-select, no
@@ -17193,7 +17578,21 @@ fn net_kind_supported(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
     matches!(
         k,
-        Wire | Tri | Uwire | Reg | Logic | Integer | Real | Realtime | Time | Event | String
+        Wire | Tri
+            | Uwire
+            | Reg
+            | Logic
+            | Integer
+            | Real
+            | Realtime
+            | Time
+            | Event
+            | String
+            | Bit
+            | Byte
+            | Shortint
+            | Int
+            | Longint
     )
 }
 
@@ -17213,6 +17612,21 @@ fn default_init(kind: ast::NetVarKind, width: u32) -> ir::BitPacked {
         return ir::BitPacked {
             val: vec![0],
             unk: vec![0],
+        };
+    }
+    // SVPART: 2-state types are X-free — they default-initialise to 0, never X.
+    if matches!(
+        kind,
+        ast::NetVarKind::Bit
+            | ast::NetVarKind::Byte
+            | ast::NetVarKind::Shortint
+            | ast::NetVarKind::Int
+            | ast::NetVarKind::Longint
+    ) {
+        let nwords = ((width as usize).div_ceil(64)).max(1);
+        return ir::BitPacked {
+            val: vec![0u64; nwords],
+            unk: vec![0u64; nwords],
         };
     }
     let nwords = (((width as usize) + 63) / 64).max(1);

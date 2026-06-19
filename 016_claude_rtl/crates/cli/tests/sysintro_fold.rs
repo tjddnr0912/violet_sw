@@ -169,14 +169,112 @@ fn packed_multidim_port_dimensions() {
     assert!(out.contains("R 2 4 8 3 7"), "{out}");
 }
 
+// ── SYS-INTRO잔여 (non-libm): $countbits, $typename, $exit ─────────────────────
+// All three are PURE IR-0 (no format_version bump): $countbits desugars to a
+// per-bit case-eq sum, $typename const-folds to a packed-ASCII string from the
+// net's type metadata, $exit reuses SysTaskId::Finish. iverilog 13.0 crashes on
+// $countbits and rejects $typename ⇒ HAND-IEEE.
+
 #[test]
-fn typename_is_deferred_loud() {
-    // $typename is deferred (string formatting, hand-IEEE) — stays a clean loud
-    // E3009, not a silent wrong value.
+fn countbits_counts_ones_and_zeros() {
+    // v = 8'b1010_0011 ⇒ four 1s, four 0s; both ⇒ all 8 known bits.
+    let (out, _c) = run("module t; reg [7:0] v;\n\
+        initial begin v=8'b1010_0011;\n\
+          $display(\"ones=%0d zeros=%0d both=%0d\", $countbits(v,1), $countbits(v,0), $countbits(v,0,1));\n\
+        end endmodule\n");
+    assert!(
+        out.contains("ones=4 zeros=4 both=8"),
+        "countbits 0/1:\n{out}"
+    );
+}
+
+#[test]
+fn countbits_counts_x_and_z() {
+    // v = 4'b10xz ⇒ bit3=1, bit2=0, bit1=x, bit0=z.
+    let (out, _c) = run("module t; reg [3:0] v;\n\
+        initial begin v=4'b10xz;\n\
+          $display(\"one=%0d zero=%0d x=%0d z=%0d\", $countbits(v,1), $countbits(v,0), $countbits(v,1'bx), $countbits(v,1'bz));\n\
+        end endmodule\n");
+    assert!(
+        out.contains("one=1 zero=1 x=1 z=1"),
+        "countbits x/z:\n{out}"
+    );
+}
+
+#[test]
+fn countbits_needs_a_control_bit() {
+    // $countbits(expr) with no control bit is illegal (≥1 control required).
     let (out, code) =
-        run("module t; reg [7:0] v; initial $display(\"%s\", $typename(v)); endmodule\n");
+        run("module t; reg [3:0] v; initial $display(\"%0d\", $countbits(v)); endmodule\n");
     assert!(
         out.contains("VITA-E3009") || code == Some(1),
-        "typename should be loud: {out} code={code:?}"
+        "countbits without control should be loud: {out} code={code:?}"
+    );
+}
+
+#[test]
+fn typename_folds_to_type_string() {
+    // $typename const-folds to vita's canonical type string (hand-IEEE: reg≡logic).
+    let (out, _c) = run(
+        "module t; reg [7:0] v; reg s; integer i; reg [7:0] m [0:3];\n\
+        initial begin\n\
+          $display(\"vec=<%s>\", $typename(v));\n\
+          $display(\"scl=<%s>\", $typename(s));\n\
+          $display(\"int=<%s>\", $typename(i));\n\
+          $display(\"arr=<%s>\", $typename(m));\n\
+        end endmodule\n",
+    );
+    assert!(out.contains("vec=<logic[7:0]>"), "vector typename:\n{out}");
+    assert!(out.contains("scl=<logic>"), "scalar typename:\n{out}");
+    assert!(out.contains("int=<integer>"), "integer typename:\n{out}");
+    assert!(
+        out.contains("arr=<logic[7:0]$[0:3]>"),
+        "array typename:\n{out}"
+    );
+}
+
+#[test]
+fn exit_terminates_like_finish() {
+    // $exit ends simulation like $finish: "A" prints, "B" does not.
+    let (out, _c) =
+        run("module t; initial begin $display(\"A\"); $exit; $display(\"B\"); end endmodule\n");
+    assert!(out.contains("A"), "$exit should run prior stmts:\n{out}");
+    assert!(!out.contains("B"), "$exit should terminate (no B):\n{out}");
+}
+
+// Adversarial-found fixes (workflow wyrhi3ukf):
+
+#[test]
+fn typename_string_var_is_string_not_logic() {
+    // HIGH: the `string` decl branch skips intro_kind, so $typename used to default
+    // to "logic". It must report "string".
+    let (out, _c) = run(
+        "module t; string str; initial begin $display(\"<%s>\", $typename(str)); end endmodule\n",
+    );
+    assert!(out.contains("<string>"), "string typename:\n{out}");
+}
+
+#[test]
+fn typename_carries_signed_qualifier() {
+    // MEDIUM: a signed vector must carry the `signed` qualifier (was silently dropped).
+    let (out, _c) = run(
+        "module t; logic signed [7:0] s8; initial begin $display(\"<%s>\", $typename(s8)); end endmodule\n",
+    );
+    assert!(
+        out.contains("<logic signed[7:0]>"),
+        "signed typename:\n{out}"
+    );
+}
+
+#[test]
+fn countbits_rejects_real_operand() {
+    // MEDIUM: a real operand must be loud (like the sibling $countones), not a silent
+    // popcount of the IEEE-754 storage.
+    let (out, code) = run(
+        "module t; real r; initial begin r=3.5; $display(\"%0d\", $countbits(r,1)); end endmodule\n",
+    );
+    assert!(
+        out.contains("VITA-E3009") || code == Some(1),
+        "countbits(real) must be loud: {out} code={code:?}"
     );
 }
