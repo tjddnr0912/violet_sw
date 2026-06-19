@@ -4,9 +4,10 @@
 //! flat-bit path silently read/wrote `(msb-lsb+1)` raw bits of element 0
 //! (`x[3:2]` => `3`, a write was a no-op). Pure IR-0 (elaborate lowering only).
 //!
-//! Every expected value is pinned to LIVE iverilog 13.0. The ascending
-//! `[lsb:msb]` form stays a loud E3009 (the pre-existing ascending-part-select
-//! limitation — NOT a silent wrong value).
+//! Every expected value is pinned to LIVE iverilog 13.0. The ascending `[lo:hi]`
+//! form on an ascending net (`reg [0:3][7:0]; x[0:1]`) selects whole outer
+//! elements too (`x[0:1]` = `aabb`, elem 0 is the MSB). A direction-MISMATCHED
+//! ("out of order") select is a loud E3009, matching iverilog — NOT a silent value.
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -148,17 +149,94 @@ fn non_zero_base_outer_dim() {
 }
 
 #[test]
-fn ascending_packed_part_select_is_loud() {
-    // the ascending `[lsb:msb]` form stays a clean loud E3009 (pre-existing
-    // limitation), NOT a silent wrong value.
+fn ascending_read_selects_whole_outer_elements() {
+    // reg [0:3][7:0] y = {aa,bb,cc,dd}: the ascending outer dim makes the LEFT
+    // index the MSB element, so y[0:1] = {y[0],y[1]} = aabb, y[1:2] = bbcc,
+    // y[0:3] = aabbccdd, y[0:0] = aa. (LIVE iverilog 13.0.)
+    let (out, _c) = run("module t;\n\
+         reg [0:3][7:0] y;\n\
+         initial begin\n\
+           y[0]=8'haa; y[1]=8'hbb; y[2]=8'hcc; y[3]=8'hdd;\n\
+           $display(\"A01 %h\", y[0:1]);\n\
+           $display(\"A12 %h\", y[1:2]);\n\
+           $display(\"A03 %h\", y[0:3]);\n\
+           $display(\"A00 %h\", y[0:0]);\n\
+         end\n\
+         endmodule\n");
+    assert!(out.contains("A01 aabb"), "y[0:1] = elems 0,1:\n{out}");
+    assert!(out.contains("A12 bbcc"), "y[1:2] = elems 1,2:\n{out}");
+    assert!(out.contains("A03 aabbccdd"), "y[0:3] = whole:\n{out}");
+    assert!(out.contains("A00 aa"), "y[0:0] = elem 0:\n{out}");
+}
+
+#[test]
+fn ascending_write_targets_whole_outer_elements() {
+    // y[0:1] = 16'h1234 writes elems 0,1 (=> y[0]=12, y[1]=34), not 2 flat bits.
+    let (out, _c) = run("module t;\n\
+         reg [0:3][7:0] y;\n\
+         initial begin\n\
+           y[0]=0;y[1]=0;y[2]=0;y[3]=0;\n\
+           y[0:1]=16'h1234;\n\
+           $display(\"AW %h %h %h %h\", y[0], y[1], y[2], y[3]);\n\
+         end\n\
+         endmodule\n");
+    assert!(
+        out.contains("AW 12 34 00 00"),
+        "ascending write elems 0,1:\n{out}"
+    );
+}
+
+#[test]
+fn ascending_indexed_part_select() {
+    // indexed part-selects are direction-agnostic: y[0+:2] = elems {0,1} = aabb,
+    // y[3-:2] = elems {2,3} = ccdd (LIVE iverilog 13.0).
+    let (out, _c) = run("module t;\n\
+         reg [0:3][7:0] y;\n\
+         initial begin\n\
+           y[0]=8'haa; y[1]=8'hbb; y[2]=8'hcc; y[3]=8'hdd;\n\
+           $display(\"IP %h\", y[0+:2]);\n\
+           $display(\"IM %h\", y[3-:2]);\n\
+         end\n\
+         endmodule\n");
+    assert!(out.contains("IP aabb"), "y[0+:2] = elems 0,1:\n{out}");
+    assert!(out.contains("IM ccdd"), "y[3-:2] = elems 2,3:\n{out}");
+}
+
+#[test]
+fn ascending_out_of_range_part_select_is_loud() {
+    // y[2:4] on reg [0:3][7:0] (hi=4 > outer hi=3): iverilog rejects at compile;
+    // vita must be loud (E3009), NOT a silent read past the net.
     let (out, code) = run("module t;\n\
          reg [0:3][7:0] y;\n\
          initial begin\n\
-           y[0]=8'h11; $display(\"YPS %h\", y[0:1]);\n\
+           y[0]=8'h11; $display(\"%h\", y[2:4]);\n\
          end\n\
          endmodule\n");
     assert!(
         out.contains("VITA-E3009") || code == Some(1),
-        "ascending packed part-select must be loud: {out} code={code:?}"
+        "ascending over-range y[2:4] must be loud: {out} code={code:?}"
+    );
+}
+
+#[test]
+fn reversed_part_select_is_out_of_order_loud() {
+    // A descending select on an ascending net (y[1:0] on reg [0:3]) is "out of
+    // order" — iverilog: "part select ... is out of order." vita must be loud,
+    // NOT a silent value. Likewise an ascending select on a descending net.
+    let (a, ac) = run("module t;\n\
+         reg [0:3][7:0] y;\n\
+         initial begin y[0]=8'h11; $display(\"%h\", y[1:0]); end\n\
+         endmodule\n");
+    assert!(
+        a.contains("VITA-E3009") || ac == Some(1),
+        "descending select on ascending net must be loud: {a} code={ac:?}"
+    );
+    let (b, bc) = run("module t;\n\
+         reg [3:0][7:0] x;\n\
+         initial begin x[0]=8'h11; $display(\"%h\", x[0:1]); end\n\
+         endmodule\n");
+    assert!(
+        b.contains("VITA-E3009") || bc == Some(1),
+        "ascending select on descending net must be loud: {b} code={bc:?}"
     );
 }

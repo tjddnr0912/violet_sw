@@ -7533,10 +7533,11 @@ impl<'s> Elaborator<'s> {
     /// selects whole `elem_w`-bit sub-elements, NOT flat bits. Without this the
     /// generic flat-bit path silently reads `(msb-lsb+1)` raw bits of element 0
     /// (`x[3:2]` => `3`, not `aabb`). Returns `Some(Select)` for the handled
-    /// case (a bare net in `packed_dims`, ≥2 dims, const DESCENDING bounds);
-    /// `None` otherwise, so a plain vector, a non-const, or an ascending
-    /// `[lsb:msb]` select falls through to the existing path (the latter is
-    /// loud-rejected there, the pre-existing ascending-part-select limitation).
+    /// case (a bare net in `packed_dims`, ≥2 dims, const bounds — either a
+    /// descending `[msb:lsb]` select on a descending net or an ascending
+    /// `[lo:hi]` select on an ascending net, both whole-element ranges); `None`
+    /// only for a plain vector or a non-const select. A direction-MISMATCHED
+    /// ("out of order") select is loud (`Some(Err)`), matching iverilog.
     fn try_packed_part_select(
         &mut self,
         base: &ast::Expr,
@@ -7676,8 +7677,11 @@ impl<'s> Elaborator<'s> {
             );
             return Err(());
         };
-        let (m, l) = match dir {
-            ast::PartDir::PlusColon => (c + w - 1, c),
+        // selected element index SET, direction-agnostic (`[c+:w]` = {c..c+w-1},
+        // `[c-:w]` = {c-w+1..c}); `packed_outer_range` maps it to flat bits per the
+        // net's own dimension direction (ascending or descending).
+        let (lo, hi) = match dir {
+            ast::PartDir::PlusColon => (c, c + w - 1),
             ast::PartDir::MinusColon => {
                 if c + 1 < w {
                     // c-w+1 < 0 — below the lowest element index.
@@ -7690,10 +7694,10 @@ impl<'s> Elaborator<'s> {
                 // low index = c-w+1; add BEFORE subtract so the legal low-end case
                 // (c-w+1 == 0, e.g. `x[0-:1]`/`x[1-:2]`) does not underflow u32 — the
                 // guard above already ensures `c + 1 >= w` (review M1).
-                (c, (c + 1) - w)
+                ((c + 1) - w, c)
             }
         };
-        self.packed_outer_range(net, m, l)
+        self.packed_outer_range(net, lo, hi)
     }
 
     /// Write-side twin of [`Self::try_packed_part_select`]: a `[msb:lsb] = …`
@@ -7769,54 +7773,59 @@ impl<'s> Elaborator<'s> {
     }
 
     /// N3.4 shared resolution for an outer-dim part-select on multi-dim packed
-    /// `net`. The outer `Option` distinguishes NOT-APPLICABLE (a non-const or
-    /// ascending `[lsb:msb]` select ⇒ `None` ⇒ caller falls through to the
-    /// existing generic path, which loud-rejects ascending) from APPLICABLE; the
-    /// inner `Result` is `Ok((lsb-element flat bit-offset eid, count×elem_w width
-    /// eid))` for an in-range select, or `Err(())` for an OUT-OF-RANGE select —
-    /// in which case E3009 has already been emitted (iverilog rejects an
-    /// over-bounds part-select at compile, so vita does too rather than silently
-    /// reading/writing past the net). Mirrors [`Self::lower_packed_read`] with
-    /// one outer index but a multi-element width.
+    /// `net`. The outer `Option` distinguishes NOT-APPLICABLE (a non-const select
+    /// ⇒ `None` ⇒ caller falls through to the generic path) from APPLICABLE; the
+    /// inner `Result` is `Ok((base-element flat bit-offset eid, count×elem_w width
+    /// eid))` for an in-range select, or `Err(())` for an OUT-OF-RANGE or a
+    /// direction-MISMATCHED ("out of order") select — in which case E3009 has
+    /// already been emitted (iverilog rejects both at compile, so vita does too
+    /// rather than silently reading/writing past or against the net). Handles BOTH
+    /// directions: a descending net takes `[msb:lsb]` (a≥b), an ascending net takes
+    /// `[lo:hi]` (a≤b). Mirrors [`Self::lower_packed_read`] with one outer index but
+    /// a multi-element width.
     fn packed_outer_part_select(
         &mut self,
         net: u32,
         msb: &ast::Expr,
         lsb: &ast::Expr,
     ) -> Option<Result<(u32, u32), ()>> {
-        let (m, l) = (const_eval_u32(msb)?, const_eval_u32(lsb)?);
-        if m < l {
-            return None; // ascending [lsb:msb] — generic path loud-rejects
-        }
-        Some(self.packed_outer_range(net, m, l))
-    }
-
-    /// Core of [`Self::packed_outer_part_select`]: a DESCENDING outer-dim range
-    /// `[m:l]` (`m >= l`, both already resolved to constants) on multi-dim packed
-    /// `net`, also reached by a constant indexed part-select (`x[c+:w]` ⇒ `[c+w-1:c]`).
-    /// Returns `Ok((lsb-element flat bit-offset eid, count×elem_w width eid))` for an
-    /// in-range select, or `Err(())` after emitting E3009 for an out-of-range select
-    /// or an ASCENDING outer dim (the pre-existing ascending-part-select limitation;
-    /// iverilog supports it but vita does not yet). `offset = (l-olo)*elem_w` is the
-    /// const form of [`Self::flatten_word`] for one descending outer index, so the
-    /// element-range select lands byte-identically to the existing N3.4 path.
-    fn packed_outer_range(&mut self, net: u32, m: u32, l: u32) -> Result<(u32, u32), ()> {
-        let dims = self.packed_dims[&net].clone();
-        let (olo, osize, ascending) = dims[0];
-        if ascending {
+        let (a, b) = (const_eval_u32(msb)?, const_eval_u32(lsb)?);
+        // The part-select direction must match the net's outer-dim direction — a
+        // descending net (`[3:0]`) takes a descending select (`x[3:2]`, a≥b), an
+        // ascending net (`[0:3]`) takes an ascending select (`x[0:1]`, a≤b). A
+        // reversed select is "out of order" (iverilog rejects it at compile). Either
+        // way the selected element index SET is `[min(a,b) ..= max(a,b)]`.
+        let ascending = self.packed_dims[&net][0].2;
+        let dir_ok = if ascending { a <= b } else { a >= b };
+        if !dir_ok {
             self.error(
                 MsgCode::ElabUnsupported,
-                "ascending [lo:hi] part-select on a multi-dim packed array is \
-                 unsupported (pre-existing limitation)",
+                "reversed part-select on a multi-dim packed array is out of order \
+                 (the select direction must match the declared dimension)",
             );
-            return Err(());
+            return Some(Err(()));
         }
-        // the FULL [m:l] span must lie inside the outer dim (dims[0]); `l` alone
-        // is not enough — `m` sets the high end. iverilog rejects an over-bounds
-        // part-select at compile time (a variable indexed part-select aborts in
-        // 13.0, which `try_packed_indexed_part` handles separately).
+        Some(self.packed_outer_range(net, a.min(b), a.max(b)))
+    }
+
+    /// Core of [`Self::packed_outer_part_select`]: an outer-dim element range
+    /// `[lo ..= hi]` (`lo ≤ hi`, the selected index SET, both already resolved to
+    /// constants) on multi-dim packed `net`, also reached by a constant indexed
+    /// part-select (`x[c+:w]` ⇒ {c..c+w-1}). Returns `Ok((base-element flat bit-offset
+    /// eid, count×elem_w width eid))` for an in-range select, or `Err(())` after
+    /// emitting E3009 for an out-of-range select. The base coord is the const form of
+    /// [`Self::flatten_word`] for the range's lowest-addressed element — `lo-olo`
+    /// (descending) or `ohi-hi` (ascending) — so each direction lands byte-identically
+    /// to its single-element read.
+    fn packed_outer_range(&mut self, net: u32, lo: u32, hi: u32) -> Result<(u32, u32), ()> {
+        let dims = self.packed_dims[&net].clone();
+        let (olo, osize, ascending) = dims[0];
+        // the FULL `[lo ..= hi]` span (the selected index SET, `lo ≤ hi`) must lie
+        // inside the outer dim (dims[0]). iverilog rejects an over-bounds part-select
+        // at compile time (a variable indexed part-select aborts in 13.0, which
+        // `try_packed_indexed_part` handles separately).
         let ohi = olo + osize - 1;
-        if l < olo || m > ohi {
+        if lo < olo || hi > ohi {
             self.error(
                 MsgCode::ElabUnsupported,
                 "part-select range exceeds the declared bounds of the packed array",
@@ -7826,8 +7835,16 @@ impl<'s> Elaborator<'s> {
         // outer dim is dims[0]; an element is the product of the inner dims, which
         // is exactly the outer dim's stride in `flatten_word`.
         let elem_w: u64 = dims[1..].iter().map(|&(_, w, _)| w as u64).product();
-        let count = (m - l + 1) as u64;
-        let coord = (l - olo) as u64; // descending: element `l` sits at coord (l-olo)
+        let count = (hi - lo + 1) as u64;
+        // flat-bit coord of the range's lowest-addressed element (its base), exactly
+        // as `flatten_word`/`flatten_word_eids` map one outer index:
+        //   descending net: idx → coord (idx − olo)  ⇒ lowest = lo
+        //   ascending  net: idx → coord (ohi − idx)  ⇒ lowest = ohi − hi
+        let coord = if ascending {
+            (ohi - hi) as u64
+        } else {
+            (lo - olo) as u64
+        };
         let offset = self.const_u32_expr((coord * elem_w).min(u32::MAX as u64) as u32, 32);
         let width = self.const_u32_expr((count * elem_w).min(u32::MAX as u64) as u32, 32);
         Ok((offset, width))
