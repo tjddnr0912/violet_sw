@@ -2,9 +2,9 @@
 
 오픈소스 Rust RTL 시뮬레이터. CLI: `vita`(원샷) / `vcmp`(compile) / `velab`(elaborate) / `vrun`(simulate). SystemVerilog 합성가능 RTL 서브셋(Verilog-2005 RTL 전부 포함)이 Phase-1 MVP.
 
-> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 VCD+stdout 산출. Phase-1 합성 RTL 대부분(timescale·다차원 unpacked/packed 배열·casex/casez·fork-join·func/task·SV 자료형 enum/typedef/packed struct) + Phase-2(worklib·package·string·dyn/queue/assoc·정밀화 IR) + Phase-3(SVA 시퀀스 서브셋·deferred immediate asserts·automatic/recursive 콜스택·**HIER-REST 완결**=계층 참조 read+write·element/bit/part-select·whole 다차원 packed·indexed-segment `g[0].x`·Medium 묶음 rank 1-6) 구현·검증. **1470 테스트 green**, iverilog 차분 일치, 3-OS CI green, **format_version 9**.
+> **상태:** **전 파이프라인 동작** — one-shot `vita design.sv` + staged `vcmp→velab→vrun` 모두 VCD+stdout 산출. Phase-1 합성 RTL 대부분(timescale·다차원 unpacked/packed 배열·casex/casez·fork-join·func/task·SV 자료형 enum/typedef/packed struct) + Phase-2(worklib·package·string·dyn/queue/assoc·정밀화 IR) + Phase-3(SVA 시퀀스 서브셋·deferred immediate asserts·automatic/recursive 콜스택·**HIER-REST 완결**=계층 참조 read+write·element/bit/part-select·whole 다차원 packed·indexed-segment `g[0].x`·Medium 묶음 rank 1-6·NBA repeat-event(N1)·multi-clock/recursive/prop-level and-or SVA(N2)·per-variable lifetime(B4)·functional coverage MVP(N5)·indexed-part-select underflow 수정(P0-IPU)) 구현·검증. **1485 테스트 green**, iverilog 차분 일치, 3-OS CI green, **format_version 9**.
 >
-> 슬라이스별 개발 이력(Stage C 바이트코드 VM · profile-driven ~6x · native-eval · 1탄~41탄 전부) → **[docs/DEVLOG.md](docs/DEVLOG.md)**. 향후 과제·전략 = **[docs/ROADMAP.md](docs/ROADMAP.md)**, 잔여 작업 트래커 = [docs/REMAINING_WORK.md](docs/REMAINING_WORK.md). SPEC `docs/preview/`가 단일 진실 공급원.
+> 슬라이스별 개발 이력(Stage C 바이트코드 VM · profile-driven ~6x · native-eval · 1탄~45탄 전부) → **[docs/DEVLOG.md](docs/DEVLOG.md)**. 향후 과제·전략 = **[docs/ROADMAP.md](docs/ROADMAP.md)**, 잔여 작업 트래커 = [docs/REMAINING_WORK.md](docs/REMAINING_WORK.md). SPEC `docs/preview/`가 단일 진실 공급원.
 
 ## 실행 (cargo-only · build.rs 없음)
 
@@ -53,7 +53,7 @@ MSRV **1.82** (`rust-toolchain.toml` 고정), **edition 2021**(edition 2024는 r
 | HDL 레퍼런스 | `docs/preview/hdl-reference/{verilog,systemverilog,vhdl,system-tasks}` |
 | 가속 분석·실측 | [18-acceleration-analysis](docs/preview/18-acceleration-analysis.md) (§실측 = profile-driven ~6x 이력) |
 | **향후 과제·로드맵** | **[ROADMAP](docs/ROADMAP.md)** · 잔여작업 트래커 [REMAINING_WORK](docs/REMAINING_WORK.md) |
-| 개발 이력 (슬라이스별) | [DEVLOG](docs/DEVLOG.md) (Stage C VM ~ 41탄 누적 로그) |
+| 개발 이력 (슬라이스별) | [DEVLOG](docs/DEVLOG.md) (Stage C VM ~ 45탄 누적 로그) |
 | 구현 계획 | `docs/superpowers/plans/` (PR1-B·PR2·M3 · [Stage C 바이트코드 VM](docs/superpowers/plans/2026-06-06-bytecode-vm-stage-c.md)) |
 
 ## 개발 주의
