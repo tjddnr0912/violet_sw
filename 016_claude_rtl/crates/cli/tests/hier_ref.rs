@@ -16,8 +16,10 @@
 //!
 //! A hierarchical WHOLE-net WRITE (`dut.x = ...`) is supported (HIER-REST; see
 //! `hier_write.rs`); a hierarchical ELEMENT/part-select write (`dut.grid[i][j]`)
-//! stays loud (follow-on). Hierarchical PARAM refs (`dut.WIDTH`) and
-//! event/dyn-handle/whole-array reads are loud (deferred).
+//! stays loud (follow-on). A hierarchical PARAM ref (`dut.WIDTH`) in a RUNTIME
+//! expression folds to the instance's value (see `hier_param.rs`); in a CONSTANT
+//! context (a width) it hits the pre-existing non-const-width degrade.
+//! Event/dyn-handle/whole-array reads are loud (deferred).
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -165,7 +167,10 @@ fn hierarchical_write_round_trips() {
          module top; sub dut();\n\
            initial begin #1 dut.x = 8'd5; $display(\"V=%0d\", dut.x); end\n\
          endmodule\n");
-    assert!(out.contains("V=5"), "hierarchical write round-trips:\n{out}");
+    assert!(
+        out.contains("V=5"),
+        "hierarchical write round-trips:\n{out}"
+    );
 }
 
 // ─────────────────────────── loud rejects ───────────────────────────

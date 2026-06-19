@@ -1386,6 +1386,10 @@ struct Elaborator<'s> {
     // FQ param-name → const value, visible while lowering an instance scope.
     // Re-points the v1 free `const_eval_u32` SLOT so `[W-1:0]` folds to a width.
     params: BTreeMap<String, i64>,
+    // PERSISTENT FQ param-name → value, NEVER restored (unlike `params`). Lets a
+    // post-elaboration hierarchical READ (`dut.WIDTH`) fold to the sibling
+    // instance's param value. Out-of-band (golden-free).
+    hier_params: BTreeMap<String, i64>,
     // module names on the active instantiation path — the recursion cycle guard.
     inst_stack: Vec<String>,
     // Instance id of the instance whose body is currently being lowered. Set in
@@ -1562,6 +1566,7 @@ impl<'s> Elaborator<'s> {
             modport_readonly: BTreeSet::new(),
             cur_prefix: String::new(),
             params: BTreeMap::new(),
+            hier_params: BTreeMap::new(),
             inst_stack: Vec::new(),
             cur_inst: 0,
             func_table: BTreeMap::new(),
@@ -2154,13 +2159,22 @@ impl<'s> Elaborator<'s> {
         let deferred = std::mem::take(&mut self.deferred_hier);
         for d in deferred {
             let Some(net) = self.hier_lookup(&d.prefix, &d.path) else {
-                self.error(
-                    MsgCode::ElabUnresolvedName,
-                    &format!(
-                        "undeclared hierarchical name `{}` (no such cross-instance net)",
-                        d.path.join(".")
-                    ),
-                );
+                // Not a net — maybe a hierarchical PARAMETER read (`dut.WIDTH`),
+                // which folds to a const in this runtime/expression context (a
+                // const-context hierarchical param is loud — the sibling instance
+                // is not yet elaborated when the const-eval needs the value).
+                if let Some(v) = self.hier_lookup_param(&d.prefix, &d.path) {
+                    self.patch_expr_param_const(d.eid, v);
+                } else {
+                    self.error(
+                        MsgCode::ElabUnresolvedName,
+                        &format!(
+                            "undeclared hierarchical name `{}` (no such cross-instance \
+                             net or parameter)",
+                            d.path.join(".")
+                        ),
+                    );
+                }
                 continue;
             };
             // Read-context guards (mirror the single-net Ident arm): these constructs
@@ -2304,6 +2318,36 @@ impl<'s> Elaborator<'s> {
     /// grabbed an unrelated outer net when the leading segment matched an inner scope
     /// whose remainder was invalid, e.g. `b.v` / a local-shadowed `cfg.mode`).
     fn hier_lookup(&self, prefix: &str, path: &[String]) -> Option<u32> {
+        self.hier_resolve(prefix, path, &self.symbols)
+    }
+
+    /// Hierarchical READ of a cross-instance PARAMETER (`dut.WIDTH`): the same
+    /// §23.6 commit-to-scope walk as [`Self::hier_lookup`] but against the
+    /// persistent `hier_params` table. (Params are restored out of `self.params`
+    /// after each instance, so a post-elaboration read needs the persistent copy.)
+    /// Folded only in a RUNTIME/expression context — a hierarchical param in a
+    /// CONSTANT context (a width / `localparam`) is loud, since the sibling
+    /// instance is not yet elaborated when the const-eval needs the value.
+    fn hier_lookup_param(&self, prefix: &str, path: &[String]) -> Option<i64> {
+        self.hier_resolve(prefix, path, &self.hier_params)
+    }
+
+    /// Shared commit-to-scope resolution for a dotted hierarchical `path`
+    /// (length ≥ 2), generic over the leaf `table` (`symbols` for nets,
+    /// `hier_params` for parameters). Resolve the LEADING segment to a scope,
+    /// COMMITTING to the innermost enclosing scope where it is found, then resolve
+    /// the remaining path WITHIN that scope. Once the leading segment is found — a
+    /// child scope, a singleton generate block (`g` ⇒ `g[0]`), or a NET leaf — the
+    /// search STOPS: a missing remainder is unresolved, NOT a reason to keep
+    /// walking outward (review N3 HIGH: the old whole-tail outward strip silently
+    /// grabbed an unrelated outer net when the leading segment matched an inner
+    /// scope whose remainder was invalid, e.g. `b.v` / a local-shadowed `cfg.mode`).
+    fn hier_resolve<V: Copy>(
+        &self,
+        prefix: &str,
+        path: &[String],
+        table: &std::collections::BTreeMap<String, V>,
+    ) -> Option<V> {
         let first = &path[0];
         let tail = path.join(".");
         let rest = path[1..].join(".");
@@ -2326,7 +2370,7 @@ impl<'s> Elaborator<'s> {
                 } else {
                     format!("{level}.{tail}")
                 };
-                return self.symbols.get(&full).copied(); // committed: Some=net, None=unresolved
+                return table.get(&full).copied(); // committed: Some=hit, None=unresolved
             }
             // (b) SINGLETON generate block: vita names a named `if`/`begin` block `g[0]`,
             // but the hierarchical name is the bare `g` (IEEE: the implicit [0] is not
@@ -2338,7 +2382,7 @@ impl<'s> Elaborator<'s> {
                 } else {
                     format!("{base0}.{rest}")
                 };
-                return self.symbols.get(&full).copied();
+                return table.get(&full).copied();
             }
             // (c) leading segment names a NET (not a scope) here: `.member` on a plain
             // net is unsupported (committed → unresolved, loud).
@@ -2353,14 +2397,22 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// True iff `base` is a hierarchical SCOPE — some net is named `base.<…>`. Used by
-    /// `hier_lookup` to commit the leading path segment to a scope (instance/genblock).
+    /// True iff `base` is a hierarchical SCOPE — some net OR parameter is named
+    /// `base.<…>`. Used by `hier_resolve` to commit the leading path segment to a
+    /// scope (instance/genblock); the `hier_params` arm lets a param-only child
+    /// module (no nets) still register as a scope.
     fn is_hier_scope(&self, base: &str) -> bool {
         let probe = format!("{base}.");
+        let hit = |k: &String| k.starts_with(&probe);
         self.symbols
             .range(probe.clone()..)
             .next()
-            .is_some_and(|(k, _)| k.starts_with(&probe))
+            .is_some_and(|(k, _)| hit(k))
+            || self
+                .hier_params
+                .range(probe.clone()..)
+                .next()
+                .is_some_and(|(k, _)| hit(k))
     }
 
     /// Recursively elaborate ONE module instance into the flat SimIr.
@@ -2465,6 +2517,9 @@ impl<'s> Elaborator<'s> {
                         0
                     });
                     let key = self.fq(&p.name.name);
+                    // persistent copy for a hierarchical read (`dut.LP`) of a body
+                    // parameter/localparam (mirrors the header path in bind_params).
+                    self.hier_params.insert(key.clone(), v);
                     saved_params.push((key.clone(), self.params.insert(key, v)));
                 }
                 ast::ModuleItem::NetVar(d) => self.prescan_net_bits(d),
@@ -3167,6 +3222,7 @@ impl<'s> Elaborator<'s> {
                             0
                         });
                         let key = self.fq(&pp.name.name);
+                        self.hier_params.insert(key.clone(), v);
                         saved_params.push((key.clone(), self.params.insert(key, v)));
                     }
                 }
@@ -3629,6 +3685,9 @@ impl<'s> Elaborator<'s> {
                 0
             });
             let key = self.fq(&p.name.name);
+            // Persistent copy for hierarchical reads (`dut.WIDTH`) — `self.params`
+            // is restored after the instance, so the read side needs this.
+            self.hier_params.insert(key.clone(), v);
             saved.push((key.clone(), self.params.insert(key, v)));
         }
         saved
@@ -6868,6 +6927,24 @@ impl<'s> Elaborator<'s> {
         };
         let cid = self.intern_const(cv);
         self.push_expr(ir::Expr::Const { val: cid })
+    }
+
+    /// Overwrite the deferred placeholder at `eid` (a `Signal`) with a `Const`
+    /// folding the i64 hierarchical-param value `v` — same width/sign as
+    /// [`Self::const_param_expr`] (byte-identical to how a bare param folds), but
+    /// written IN PLACE so the existing arena edge keeps pointing at it.
+    fn patch_expr_param_const(&mut self, eid: u32, v: i64) {
+        let cv = if let Ok(u) = u32::try_from(v) {
+            make_const_u32(u, 32)
+        } else if i32::try_from(v).is_ok() {
+            make_const_i64(v, 32, true)
+        } else {
+            make_const_i64(v, 64, v < 0)
+        };
+        let cid = self.intern_const(cv);
+        if let Some(slot) = self.exprs.get_mut(eid as usize) {
+            *slot = ir::Expr::Const { val: cid };
+        }
     }
 
     /// Normalize a select offset (a SOURCE bit index) into an internal-bit position
