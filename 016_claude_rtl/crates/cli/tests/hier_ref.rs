@@ -558,19 +558,17 @@ fn scalar_over_index_is_loud() {
 }
 
 #[test]
-fn multidim_hierarchical_write_is_loud() {
-    // A multi-dim ELEMENT write `dut.grid[i][j] = ...` stays loud (only a
-    // whole-net hierarchical write is supported — no silent cross-instance write).
-    let (out, err, code) = run("module sub; reg [7:0] grid [0:1][0:2]; endmodule\n\
+fn multidim_hierarchical_element_write_round_trips() {
+    // A multi-dim ELEMENT write `dut.grid[i][j] = ...` is now supported (HIER-REST①,
+    // see hier_elem_rw.rs): it writes exactly element [0][0], not a silent flat write.
+    let (out, err, _code) = run("module sub; reg [7:0] grid [0:1][0:2]; endmodule\n\
          module top; sub dut();\n\
-           initial #1 dut.grid[0][0] = 8'd9;\n\
+           initial begin dut.grid[0][0] = 8'd9; #1 $display(\"R %0d\", dut.grid[0][0]); end\n\
          endmodule\n");
-    assert_ne!(
-        code,
-        Some(0),
-        "multi-dim hierarchical write must be loud:\n{err}\n{out}"
+    assert!(
+        out.contains("R 9"),
+        "multi-dim hierarchical element write round-trips:\n{err}\n{out}"
     );
-    assert!(err.contains("VITA-E"), "{err}");
 }
 
 #[test]

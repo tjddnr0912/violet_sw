@@ -161,16 +161,16 @@ fn write_to_whole_array_is_loud() {
 }
 
 #[test]
-fn hierarchical_element_write_is_loud() {
-    // a hierarchical element/bit-select write (`dut.mem[i] = …`) is a deferred
-    // follow-on — loud, NOT a silent mis-lowered flat write.
-    let (out, code) = run("module sub; reg [7:0] mem [0:3]; endmodule\n\
+fn hierarchical_element_write_round_trips() {
+    // a hierarchical element write (`dut.mem[i] = …`) is now supported (HIER-REST①,
+    // see hier_elem_rw.rs); it writes exactly element `i`, NOT a silent flat write.
+    let (out, _c) = run("module sub; reg [7:0] mem [0:3]; endmodule\n\
          module top; sub dut();\n\
-           initial begin dut.mem[1] = 8'h42; end\n\
+           initial begin dut.mem[1] = 8'h42; #1 $display(\"R %h\", dut.mem[1]); end\n\
          endmodule\n");
     assert!(
-        is_loud(&out, code),
-        "hierarchical element write must be loud: {out} {code:?}"
+        out.contains("R 42"),
+        "hierarchical element write round-trips:\n{out}"
     );
 }
 
