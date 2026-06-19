@@ -621,6 +621,13 @@ fn run_vita_str_gated(
         task_calls_func: sc.task_calls_func,
         // SVPART: 2-state nets coerce X/Z→0 on write (one-shot path only).
         two_state_nets: sc.two_state_nets,
+        // N7 class/OOP sidecars (one-shot path only).
+        class_handle_nets: sc.class_handle_nets,
+        class_new_sites: sc.class_new_sites,
+        class_layouts: sc.class_layouts,
+        class_vtable: sc.class_vtable,
+        class_calls: sc.class_calls,
+        class_field_widths: sc.class_field_widths,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };
@@ -1163,6 +1170,8 @@ fn run_vcmp_gated(
                 }
                 // v7: packages are units too (importable from libraries).
                 hdl_ast::TopItem::Package(m) => Some(("package".to_string(), m.name.name.clone())),
+                // N7: a top-level class is a unit too (importable like a package).
+                hdl_ast::TopItem::Class(c) => Some(("class".to_string(), c.name.name.clone())),
                 hdl_ast::TopItem::Import(_) | hdl_ast::TopItem::Error(_) => None,
             })
             .collect();
@@ -1633,6 +1642,7 @@ fn run_velab_lib_gated(
                 hdl_ast::TopItem::Module(m)
                 | hdl_ast::TopItem::Interface(m)
                 | hdl_ast::TopItem::Package(m) => Some(m.name.name.clone()),
+                hdl_ast::TopItem::Class(c) => Some(c.name.name.clone()),
                 hdl_ast::TopItem::Import(_) | hdl_ast::TopItem::Error(_) => None,
             };
             if let Some(n) = name {

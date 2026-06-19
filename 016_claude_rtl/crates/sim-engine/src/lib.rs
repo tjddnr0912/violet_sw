@@ -174,6 +174,21 @@ pub struct SimOpts {
     /// One-shot `vita` only (the staged trailer does not serialise it; 2-state
     /// INIT-to-0 rides the golden SimIr and so works on both paths).
     pub two_state_nets: std::collections::BTreeSet<u32>,
+    // ── N7 class/OOP (out-of-band, golden-free; one-shot `vita` only) ──
+    /// NetIds that are class handles (drives `State.class_is_handle`).
+    pub class_handle_nets: std::collections::BTreeSet<u32>,
+    /// `new` allocation sites: StmtId → class_id.
+    pub class_new_sites: std::collections::BTreeMap<u32, u32>,
+    /// Per-class field layout: `class_layouts[class_id]` = `[(width, signed,
+    /// four_state)]` in stable field-id order.
+    pub class_layouts: Vec<Vec<(u32, bool, bool)>>,
+    /// Virtual dispatch table: `class_vtable[class_id][vslot]` = concrete FuncId.
+    pub class_vtable: Vec<Vec<u32>>,
+    /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
+    pub class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
+    /// Class field-read `Signal` ExprId → `(field_width, field_signed)`. Patches
+    /// the width table (a field Signal's net is the 32-bit handle, not the field).
+    pub class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
 }
 
 impl Default for SimOpts {
@@ -203,6 +218,12 @@ impl Default for SimOpts {
             task_calls_proc: TaskCallProc::new(),
             task_calls_func: TaskCallFunc::new(),
             two_state_nets: std::collections::BTreeSet::new(),
+            class_handle_nets: std::collections::BTreeSet::new(),
+            class_new_sites: std::collections::BTreeMap::new(),
+            class_layouts: Vec::new(),
+            class_vtable: Vec::new(),
+            class_calls: std::collections::BTreeMap::new(),
+            class_field_widths: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -272,6 +293,23 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
             st.two_state[n as usize] = true;
         }
     }
+    // N7 class/OOP: install the class sidecars (out-of-band, golden-free). EMPTY
+    // ⇒ class_is_handle all-false ⇒ byte-identical for every prior design.
+    for &n in &opts.class_handle_nets {
+        if (n as usize) < st.class_is_handle.len() {
+            st.class_is_handle[n as usize] = true;
+        }
+    }
+    st.class_new_sites = opts.class_new_sites.clone();
+    st.class_layouts = opts
+        .class_layouts
+        .iter()
+        .map(|fields| crate::state::ClassLayout {
+            fields: fields.clone(),
+        })
+        .collect();
+    st.class_vtable = opts.class_vtable.clone();
+    st.class_calls = opts.class_calls.clone();
     // B1 frame-call: install the sidecar, derive the per-net routing tables, and
     // REBUILD the width table so `Expr::Call` widths come from the func metadata.
     // Order is load-bearing: `func_table` must be on `st` before routing/width.
@@ -279,6 +317,9 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.func_table = opts.func_table.clone();
     st.build_func_routing();
     st.wt = crate::width::WidthTable::build(ir, &st.func_table);
+    // N7: a class field-read Signal's net is the 32-bit handle; patch its
+    // self-width to the FIELD's width (carried per-ExprId from elaborate).
+    st.wt.patch_class_fields(&opts.class_field_widths);
     st.task_calls_proc = opts.task_calls_proc.clone(); // B2
     st.task_calls_func = opts.task_calls_func.clone(); // B2
 

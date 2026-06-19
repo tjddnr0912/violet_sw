@@ -12,7 +12,18 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-19 SVPART 2-state integer types (`NetVarKind::{Bit,Byte,
+/// Re-pinned 2026-06-19 N7 `return` statement (`Stmt::Return{value: Option<Expr>}`
+/// — SV `return [expr];`, used pervasively by class methods; all `.vu` artifacts
+/// stale, no sim-ir/format_version change, pure IR-0: lowers to a return-var
+/// assign + jump to the body exit block). (Previous re-pins:
+/// 2026-06-19 N7 class/OOP skeleton (`TopItem::Class` +
+/// `ModuleItem::Class` + `ClassDecl`/`ClassItem` + `NetVarKind::ClassHandle` +
+/// `NetVarDecl.class_type: Option<Ident>` + `ExprKind::{ClassNew,Null}` —
+/// `class`/`extends`/`virtual`/`new`/`null`; all `.vu` artifacts are stale, no
+/// sim-ir/format_version change, pure IR-0: class objects live in the engine
+/// `class_heap` with `NetKind::Integer` handle nets + layout/vtable sidecars).
+/// (Previous re-pins:
+/// 2026-06-19 SVPART 2-state integer types (`NetVarKind::{Bit,Byte,
 /// Shortint,Int,Longint}` — `bit`/`byte`/`shortint`/`int`/`longint`; all `.vu`
 /// artifacts are stale, no sim-ir/format_version change, pure IR-0: these map to
 /// `NetKind::Reg` storage with fixed widths/sign and a 2-state 0-init). (Previous re-pins:
@@ -92,8 +103,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    182, 8, 65, 190, 227, 81, 212, 114, 39, 126, 242, 193, 59, 61, 205, 217, 195, 4, 254, 153, 165,
-    32, 144, 86, 128, 7, 36, 239, 120, 221, 84, 204,
+    202, 131, 177, 121, 231, 139, 246, 234, 184, 79, 144, 194, 109, 66, 141, 97, 98, 189, 56, 185,
+    214, 80, 29, 47, 30, 111, 10, 220, 173, 244, 164, 18,
 ];
 
 #[test]

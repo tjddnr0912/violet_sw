@@ -52,6 +52,8 @@ struct TypeInfo {
     signed: bool,
     range: Option<Range>,
     packed: Vec<Range>,
+    /// N7: for a `NetVarKind::ClassHandle` alias, the class name; else `None`.
+    class_name: Option<String>,
 }
 
 /// Flat bit layout of a packed struct: members are placed MSB-first into one
@@ -704,6 +706,14 @@ impl<'t, 's> Parser<'t, 's> {
                     span: start,
                 }
             }
+            // N7: `null` — the null class-handle literal.
+            Some(T::Word(WordKind::Keyword(Kw::Null))) => {
+                self.bump();
+                Expr {
+                    kind: ExprKind::Null,
+                    span: start,
+                }
+            }
             // identifier / hierarchical name / function call
             _ if self.is_ident() => {
                 let path = self.hier_path().unwrap();
@@ -748,6 +758,22 @@ impl<'t, 's> Parser<'t, 's> {
                             size: Box::new(size),
                             src,
                         },
+                        span: start.to(self.prev_span()),
+                    };
+                }
+                // N7: contextual class `new` / `new(args)` — the ident `new` NOT
+                // followed by `[` (the dyn-array form is handled just above). The
+                // class is inferred from the assignment LHS handle at elaborate;
+                // a V2005 program using `new` as a plain net is unaffected because
+                // elaborate falls back when no class-handle LHS is in play.
+                if path.segments.len() == 1 && path.segments[0].name == "new" {
+                    let args = if self.peek() == Some(T::LParen) {
+                        self.call_args()
+                    } else {
+                        Vec::new()
+                    };
+                    return Expr {
+                        kind: ExprKind::ClassNew { args },
                         span: start.to(self.prev_span()),
                     };
                 }
@@ -1089,6 +1115,11 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     pub fn parse_source_unit(&mut self) -> SourceUnit {
+        // N7: pre-scan the token stream for every `class NAME` (any nesting) so a
+        // class-typed declaration `Packet p;` parses through the ordinary
+        // typed-decl path even when the variable precedes the class decl
+        // (forward reference) — registered as a `NetVarKind::Class` type alias.
+        self.prescan_class_names();
         let start = self.cur_span();
         let mut items = Vec::new();
         while !self.at_eof() {
@@ -1123,6 +1154,15 @@ impl<'t, 's> Parser<'t, 's> {
                 // v7 P2-D: compilation-unit-scope import.
                 match self.parse_import_decl() {
                     Some(i) => items.push(TopItem::Import(i)),
+                    None => {
+                        items.push(TopItem::Error(self.prev_span()));
+                        self.synchronize();
+                    }
+                }
+            } else if self.at_kw(Kw::Class) {
+                // N7: top-level `class … endclass`.
+                match self.parse_class_decl() {
+                    Some(c) => items.push(TopItem::Class(c)),
                     None => {
                         items.push(TopItem::Error(self.prev_span()));
                         self.synchronize();
@@ -1503,6 +1543,10 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Typedef) {
             return self.parse_typedef();
         }
+        // N7: `class NAME …; … endclass` declared inside a module/package body.
+        if self.at_kw(Kw::Class) {
+            return self.parse_class_decl().map(ModuleItem::Class);
+        }
         // v5 ⑥: `modport mp (input a, output b);` — interface body item.
         if self.at_kw(Kw::Modport) {
             return self.parse_modport().map(ModuleItem::Modport);
@@ -1556,16 +1600,19 @@ impl<'t, 's> Parser<'t, 's> {
         // (`pending_sva`); the checker is materialized at module level
         // regardless, so this is a pure parser-placement change (no AST shape
         // change, no sim-ir change).
-        if self.at_kw(Kw::Assert) {
+        if self.at_kw(Kw::Assert) || self.at_kw(Kw::Assume) {
             let start = self.cur_span();
-            self.bump(); // `assert`
+            self.bump(); // `assert` / `assume`
             if !self.at_kw(Kw::Property) {
                 self.error(
-                    "`property` after `assert` at module level (immediate \
+                    "`property` after `assert`/`assume` at module level (immediate \
                      assertions are procedural-only)",
                 );
                 return Some(ModuleItem::Error(start.to(self.prev_span())));
             }
+            // SVA-REST: `assume property` is checked exactly like `assert property`
+            // in simulation (IEEE §16.12 — the assumption is verified); the same
+            // synthesized checker is materialized.
             let stmt = self.parse_concurrent_assert(start);
             let span = start.to(self.prev_span());
             return Some(ModuleItem::Proc(ProceduralBlock {
@@ -2564,6 +2611,7 @@ impl<'t, 's> Parser<'t, 's> {
             packed,
             names,
             lifetime: None,
+            class_type: None,
             span: start.to(self.prev_span()),
         })
     }
@@ -2623,6 +2671,11 @@ impl<'t, 's> Parser<'t, 's> {
                 self.var_struct.insert(n.name.name.clone(), tyname.clone());
             }
         }
+        // N7: a class-typed alias carries the class name through to elaborate.
+        let class_type = info.class_name.as_ref().map(|c| Ident {
+            name: c.clone(),
+            span: start,
+        });
         Some(NetVarDecl {
             kind: info.kind,
             signed: info.signed,
@@ -2630,6 +2683,7 @@ impl<'t, 's> Parser<'t, 's> {
             packed: info.packed,
             names,
             lifetime: None,
+            class_type,
             span: start.to(self.prev_span()),
         })
     }
@@ -2689,12 +2743,14 @@ impl<'t, 's> Parser<'t, 's> {
                 signed: false,
                 range: Some(r.clone()),
                 packed: Vec::new(),
+                class_name: None,
             },
             None => TypeInfo {
                 kind: NetVarKind::Integer,
                 signed: true,
                 range: None,
                 packed: Vec::new(),
+                class_name: None,
             },
         };
         self.typedefs.insert(tname.name.clone(), info);
@@ -2722,6 +2778,7 @@ impl<'t, 's> Parser<'t, 's> {
                 signed,
                 range: range.clone(),
                 packed: packed.clone(),
+                class_name: None,
             },
         );
         Some(ModuleItem::Typedef(TypedefDecl {
@@ -2813,6 +2870,7 @@ impl<'t, 's> Parser<'t, 's> {
                 signed: false,
                 range: Some(Self::dec_range(total.saturating_sub(1))),
                 packed: Vec::new(),
+                class_name: None,
             },
         );
         Some(ModuleItem::Typedef(TypedefDecl {
@@ -3398,14 +3456,199 @@ impl<'t, 's> Parser<'t, 's> {
     /// ParamType::{Implicit,Integer,Real,Realtime,Time} (a `reg [N]` return maps to
     /// Implicit + range — ParamType has no Reg/Logic). Ports may be ANSI (in the
     /// paren list) or non-ANSI (input/output decls in the body prefix, hoisted).
+    /// N7: register every `class NAME` in the token stream as a class-typed
+    /// alias so `NAME var;` parses (forward-reference safe; any nesting).
+    fn prescan_class_names(&mut self) {
+        let mut names: Vec<String> = Vec::new();
+        for i in 0..self.toks.len() {
+            if matches!(
+                self.toks[i].kind,
+                TokenKind::Word(WordKind::Keyword(Kw::Class))
+            ) {
+                if let Some(t) = self.toks.get(i + 1) {
+                    if matches!(t.kind, TokenKind::Word(WordKind::Ident)) {
+                        names.push(self.src[t.span.clone()].to_string());
+                    }
+                }
+            }
+        }
+        for n in names {
+            self.typedefs.entry(n.clone()).or_insert(TypeInfo {
+                kind: NetVarKind::ClassHandle,
+                signed: false,
+                range: None,
+                packed: Vec::new(),
+                class_name: Some(n.clone()),
+            });
+        }
+    }
+
+    /// `class NAME [extends BASE] ; { class_item } endclass [: NAME]` (N7).
+    /// Parameterized classes (`class C #(…)`) and `virtual class` (abstract) are
+    /// loud-deferred at elaborate; here we parse the plain single-inheritance
+    /// form. Returns `None` only on a missing class name.
+    fn parse_class_decl(&mut self) -> Option<ClassDecl> {
+        let start = self.cur_span();
+        self.bump(); // 'class'
+        let name = self.ident()?;
+        let extends = if self.eat_kw(Kw::Extends) {
+            self.ident()
+        } else {
+            None
+        };
+        self.expect(TokenKind::Semi, "';' after class header");
+        let mut items = Vec::new();
+        while !self.at_eof() && !self.at_kw(Kw::Endclass) {
+            let before = self.pos;
+            if let Some(it) = self.parse_class_item() {
+                items.push(it);
+            }
+            if self.pos == before {
+                self.bump(); // guarantee forward progress
+            }
+        }
+        self.expect(
+            TokenKind::Word(WordKind::Keyword(Kw::Endclass)),
+            "'endclass'",
+        );
+        self.opt_block_label(); // optional `: name`
+        Some(ClassDecl {
+            name,
+            extends,
+            items,
+            span: start.to(self.prev_span()),
+        })
+    }
+
+    /// One class member: `[virtual] function/task …`, a data member `T name;`,
+    /// or a loud-rejected deferred qualifier (`rand`/`local`/`static`/…).
+    fn parse_class_item(&mut self) -> Option<ClassItem> {
+        if self.at_lex_error() {
+            let s = self.cur_span();
+            self.bump();
+            return Some(ClassItem::Error(s));
+        }
+        let is_virtual = self.eat_kw(Kw::Virtual);
+        if self.at_kw(Kw::Function) {
+            return Some(ClassItem::Func {
+                is_virtual,
+                def: self.parse_function_def(),
+            });
+        }
+        if self.at_kw(Kw::Task) {
+            return Some(ClassItem::Task {
+                is_virtual,
+                def: self.parse_task_def(),
+            });
+        }
+        if is_virtual {
+            self.error("`function` or `task` after `virtual` in a class body");
+            let s = self.cur_span();
+            self.skip_class_item_recover();
+            return Some(ClassItem::Error(s));
+        }
+        // Loud-reject the deferred member qualifiers so they never silently parse
+        // as a net type name (N7 MVP: plain data members + methods only).
+        for kw in [
+            "rand",
+            "randc",
+            "local",
+            "protected",
+            "static",
+            "const",
+            "constraint",
+            "pure",
+            "extern",
+        ] {
+            if self.at_ident_kw(kw) {
+                self.error(
+                    "a plain data member or method (N7 MVP does not support \
+                     rand/randc/local/protected/static/const/constraint/pure/\
+                     extern class members)",
+                );
+                let s = self.cur_span();
+                self.skip_class_item_recover();
+                return Some(ClassItem::Error(s));
+            }
+        }
+        // Data member: a net/var declaration, a typedef-name, or a class-typed
+        // handle (registered as a `NetVarKind::Class` alias in the prescan).
+        if self.net_var_kind().is_some() {
+            return self.parse_net_var().map(ClassItem::Property);
+        }
+        if let Some(info) = self.peek_typedef_name() {
+            return self.parse_typed_decl(info).map(ClassItem::Property);
+        }
+        self.error("class member (data member or `function`/`task` method)");
+        let s = self.cur_span();
+        self.skip_class_item_recover();
+        Some(ClassItem::Error(s))
+    }
+
+    /// Recover from a malformed class item by skipping to the next `;` or
+    /// `endclass` (consuming the `;`), without re-reporting.
+    fn skip_class_item_recover(&mut self) {
+        while !self.at_eof() && !self.at_kw(Kw::Endclass) {
+            let semi = self.peek() == Some(TokenKind::Semi);
+            self.bump();
+            if semi {
+                break;
+            }
+        }
+    }
+
     fn parse_function_def(&mut self) -> FunctionDef {
         let start = self.cur_span();
         self.bump(); // 'function'
         let automatic = self.eat_kw(Kw::Automatic);
-        // return-type signedness/range/type, in V2005 order: [signed] [range] [type]
-        let mut signed = self.opt_signed();
-        let range = self.opt_range();
-        let ret_type = self.opt_param_type();
+        // N7/SV: a return-type KIND keyword (`logic`/`reg`/`bit`/`int`/`byte`/
+        // `shortint`/`longint`) — `function int f` / `function logic [7:0] g`.
+        // `integer`/`real`/`realtime`/`time` stay in `opt_param_type` below.
+        // 2-state atoms imply a fixed signed range; `int` maps to the 32-bit
+        // signed `Integer` return path (exact width/sign).
+        let mut signed = false;
+        let mut range = None;
+        let mut ret_type = ParamType::Implicit;
+        let kw_kind = match self.peek() {
+            Some(TokenKind::Word(WordKind::Keyword(
+                k @ (Kw::Logic
+                | Kw::Reg
+                | Kw::Bit
+                | Kw::Int
+                | Kw::Byte
+                | Kw::Shortint
+                | Kw::Longint),
+            ))) => Some(k),
+            _ => None,
+        };
+        if let Some(k) = kw_kind {
+            self.bump(); // the kind keyword
+            match k {
+                Kw::Int => ret_type = ParamType::Integer, // 32-bit signed 2-state
+                Kw::Byte => {
+                    range = Some(Self::dec_range(7));
+                    signed = true;
+                }
+                Kw::Shortint => {
+                    range = Some(Self::dec_range(15));
+                    signed = true;
+                }
+                Kw::Longint => {
+                    range = Some(Self::dec_range(63));
+                    signed = true;
+                }
+                _ => {} // logic/reg/bit: width from an explicit range below
+            }
+            signed = signed || self.opt_signed();
+            if range.is_none() {
+                range = self.opt_range();
+            }
+        } else {
+            // return-type signedness/range/type, in V2005 order: [signed] [range] [type]
+            signed = self.opt_signed();
+            range = self.opt_range();
+            ret_type = self.opt_param_type();
+        }
         // a second `signed` after an integer-ish return is tolerated.
         signed = signed || self.opt_signed();
         let name = self.ident().unwrap_or_else(|| Ident {
@@ -3613,7 +3856,30 @@ impl<'t, 's> Parser<'t, 's> {
         let body = if self.at_tf_end(end) {
             Stmt::Null(self.cur_span()) // empty body: `function f; endfunction`
         } else {
-            self.parse_statement()
+            // SV: a function/task body may hold MULTIPLE statements with no
+            // explicit `begin`/`end` (`function f; a=1; b=2; endfunction`). Collect
+            // them all (until the closer) and wrap in an implicit sequential block.
+            // A SINGLE statement is returned bare — byte-identical to the V2005
+            // one-statement form, so every existing design is unaffected.
+            let start = self.cur_span();
+            let mut stmts = Vec::new();
+            while !self.at_eof() && !self.at_tf_end(end) {
+                let before = self.pos;
+                stmts.push(self.parse_statement());
+                if self.pos == before {
+                    self.bump(); // guarantee forward progress
+                }
+            }
+            if stmts.len() == 1 {
+                stmts.pop().unwrap()
+            } else {
+                Stmt::Block {
+                    label: None,
+                    decls: Vec::new(),
+                    stmts,
+                    span: start.to(self.prev_span()),
+                }
+            }
         };
         (body_decls, body)
     }
@@ -3759,12 +4025,34 @@ impl<'t, 's> Parser<'t, 's> {
                 Kw::Deassign => self.parse_deassign(),
                 Kw::Force => self.parse_force(),
                 Kw::Release => self.parse_release(),
-                Kw::Assert => self.parse_assert(),
+                // SVA-REST: `assume` parses like `assert` (sim-checked the same).
+                Kw::Assert | Kw::Assume => self.parse_assert(),
                 _ => self.stmt_error(),
             },
             Some(T::SystemTask) => self.parse_systask_call(),
+            // N7: SV `return [expr];` — contextual (not a V2005 reserved word), so
+            // a net literally named `return` in legacy code still parses as an
+            // assign/call (the `return EXPR;` / `return;` shape is unambiguous in
+            // statement position: a V2005 program has no `return` statement).
+            _ if self.at_ident_kw("return") => self.parse_return(),
             _ if self.is_ident() => self.parse_assign_or_call(),
             _ => self.stmt_error(),
+        }
+    }
+
+    /// `return [expr] ;` (N7).
+    fn parse_return(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // 'return'
+        let value = if self.peek() == Some(TokenKind::Semi) {
+            None
+        } else {
+            Some(self.expr(0))
+        };
+        self.expect(TokenKind::Semi, "';' after return");
+        Stmt::Return {
+            value,
+            span: start.to(self.prev_span()),
         }
     }
 
@@ -5328,6 +5616,7 @@ impl<'t, 's> Parser<'t, 's> {
                 span: id.span,
             }],
             lifetime: None,
+            class_type: None,
             span: id.span,
         };
         Stmt::Block {
@@ -5724,9 +6013,15 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                     fix_expr(s, from, to);
                 }
             }
+            ExprKind::ClassNew { args } => {
+                for a in args {
+                    fix_expr(a, from, to);
+                }
+            }
             ExprKind::IntLit { .. }
             | ExprKind::RealLit { .. }
             | ExprKind::StrLit { .. }
+            | ExprKind::Null
             | ExprKind::Dollar
             | ExprKind::Error => {}
         }
@@ -5955,6 +6250,11 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             fix_expr(cond, from, to);
             rename_ident_in_stmt(then_s, from, to);
             rename_ident_in_stmt(else_s, from, to);
+        }
+        Stmt::Return { value, .. } => {
+            if let Some(e) = value {
+                fix_expr(e, from, to);
+            }
         }
         Stmt::WaitFork { .. } | Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
     }

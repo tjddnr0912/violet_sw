@@ -107,6 +107,14 @@ pub trait NetReader {
     fn eval_call(&self, _func: u32, _args: &[Value]) -> Option<Value> {
         None
     }
+    /// N7 virtual dispatch: given a method-call site (`call_eid`), its static
+    /// target `static_fid`, and the already-evaluated `args` (args[0] = the
+    /// receiver handle's object-id), return the FuncId to actually run. For a
+    /// non-virtual site (no sidecar / fakes) this is `static_fid` (the default);
+    /// the engine overrides it to index the receiver's runtime-class vtable.
+    fn resolve_virtual_call(&self, _call_eid: u32, static_fid: u32, _args: &[Value]) -> u32 {
+        static_fid
+    }
     /// B1 frame-call: the i-th formal's (width, signed) so the eval arm can size
     /// each actual to the FORMAL type (IEEE 1800 §13.4.3) BEFORE the call. `None`
     /// (default / no sidecar) ⇒ fall back to the actual's self-width.
@@ -376,7 +384,10 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                         self.eval_ctx(a, fw, fs)
                     })
                     .collect();
-                match self.nets.eval_call(*func, &argv) {
+                // N7: virtual dispatch redirects `func` to the receiver's runtime
+                // class override; a non-virtual / non-class call keeps `*func`.
+                let target = self.nets.resolve_virtual_call(eid, *func, &argv);
+                match self.nets.eval_call(target, &argv) {
                     Some(r) => r.resize_keep_sign(w, eff_signed),
                     None => Value::x1().resize_keep_sign(w, false),
                 }

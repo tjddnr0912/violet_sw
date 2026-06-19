@@ -330,6 +330,78 @@ pub struct Sidecars {
     /// `longint`). The engine coerces X/Z→0 on every write to these (IEEE §6.11.3
     /// — a 2-state var can never hold X). EMPTY ⇒ no 2-state nets ⇒ golden-neutral.
     pub two_state_nets: std::collections::BTreeSet<u32>,
+    // ── N7 class/OOP sidecars (out-of-band, golden-free) ──
+    /// NetIds that are class handles (engine `class_is_handle` bitmap).
+    pub class_handle_nets: std::collections::BTreeSet<u32>,
+    /// `new` allocation sites: StmtId → class_id.
+    pub class_new_sites: std::collections::BTreeMap<u32, u32>,
+    /// Per-class field layout: `[class_id]` → `[(width, signed, four_state)]` in
+    /// stable field-id order (base-class fields first).
+    pub class_layouts: Vec<Vec<(u32, bool, bool)>>,
+    /// Virtual dispatch table: `[class_id][vslot]` → concrete FuncId.
+    pub class_vtable: Vec<Vec<u32>>,
+    /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
+    pub class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
+    /// Class field-read Signal ExprId → `(field_width, field_signed)` — patches
+    /// the engine width table (a field Signal's net is the 32-bit handle).
+    pub class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
+}
+
+/// N7: resolved metadata for one class, built by the whole-design prescan
+/// (forward-reference safe). `fields` are in stable field-id order with
+/// BASE-class fields FIRST (so a derived object up-cast to its base reads the
+/// same field-ids). `methods` are the directly-declared methods (inherited ones
+/// resolve by walking `base`).
+#[derive(Clone)]
+struct ClassInfo {
+    id: u32,
+    base: Option<String>,
+    fields: Vec<ClassField>,
+    methods: Vec<ClassMethod>,
+}
+
+/// One class data member (resolved layout).
+#[derive(Clone)]
+struct ClassField {
+    name: String,
+    width: u32,
+    signed: bool,
+    /// 4-state (logic/reg/integer) ⇒ default X; 2-state (int/bit/handle) ⇒ default 0.
+    four_state: bool,
+    /// For a class-typed (handle) member, the sub-class name (nested handles).
+    class_type: Option<String>,
+}
+
+/// N7 type-gate classification of an expression (handle vs integral).
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum HKind {
+    /// A class-handle value (`obj`, `this`, `new`, a handle field).
+    Handle,
+    /// The `null` literal.
+    Null,
+    /// A call that might return a handle — lenient (never false-reject).
+    Unknown,
+    /// A clearly-integral value (literal, arithmetic, non-handle net, …).
+    Other,
+}
+
+/// One class method (declared directly in a class). `fid`/`vslot` are filled in
+/// when the body lowers (S3/S5). The constructor is the method named `new`.
+#[derive(Clone)]
+struct ClassMethod {
+    name: String,
+    is_virtual: bool,
+    func: Option<ast::FunctionDef>,
+    task: Option<ast::TaskDef>,
+    fid: Option<u32>,
+    vslot: Option<u32>,
+    /// The frame net allocated for the implicit `this` (slot 0), filled at
+    /// reservation. Used to set `cur_this` while lowering the body.
+    this_net: Option<u32>,
+    /// A frame-local 64-bit scratch net that discards the result of a nested
+    /// void call (`super.new()` / `obj.m();` inside the body) — its write must
+    /// land in-frame, not on a freshly-allocated module net.
+    discard_net: Option<u32>,
 }
 
 /// Like [`elaborate`], but also returns the [`ForkModeTable`] the simulate path
@@ -409,6 +481,13 @@ pub fn elaborate_with_timescale_roots(
             .filter(|(_, k)| net_kind_is_two_state(**k))
             .map(|(&id, _)| id)
             .collect(),
+        // N7 class/OOP sidecars.
+        class_handle_nets: std::mem::take(&mut el.class_handle_nets),
+        class_new_sites: std::mem::take(&mut el.class_new_sites),
+        class_layouts: el.class_layout_table(),
+        class_vtable: std::mem::take(&mut el.class_vtable),
+        class_calls: std::mem::take(&mut el.class_calls),
+        class_field_widths: std::mem::take(&mut el.class_field_widths),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -1753,6 +1832,36 @@ struct Elaborator<'s> {
     // keeps SVA correctness independent of func/task inline state).
     sva_inline_stack: Vec<String>,
 
+    // ── N7 class/OOP ──
+    // All declared classes, name → resolved metadata. Built by a whole-design
+    // prescan (forward-reference safe, like seq_table) before any lowering, so a
+    // class used before its textual decl still resolves. `class_order[id]` is the
+    // inverse (stable class_id → name), keeping the engine sidecars (layouts/
+    // vtable, indexed by id) aligned.
+    class_table: BTreeMap<String, ClassInfo>,
+    class_order: Vec<String>,
+    // A class-handle NetId → its declared (STATIC) class name. Drives `obj.field`
+    // / method resolution (the layout + method set come from the static type;
+    // virtual dispatch refines to the dynamic type at run time).
+    net_class: BTreeMap<u32, String>,
+    // While lowering a method body: the `this` handle net + its class name, so a
+    // bare field / `this.field` resolves against the enclosing object.
+    cur_this: Option<(u32, String)>,
+    // While lowering a method/function body: `(Some(return-var net) | None for a
+    // void task, exit BB)`. A `return [expr]` assigns the return var and jumps to
+    // the exit block. `None` outside any method body (a stray `return` is loud).
+    cur_return: Option<(Option<u32>, BlockId)>,
+    // Frame-local discard slot for the method body currently lowering (the net a
+    // nested void call writes its result into). `None` in a process body, where a
+    // fresh module net is used instead.
+    cur_discard: Option<u32>,
+    // Sidecar accumulators (drained into `Sidecars`):
+    class_handle_nets: std::collections::BTreeSet<u32>,
+    class_new_sites: std::collections::BTreeMap<u32, u32>,
+    class_vtable: Vec<Vec<u32>>,
+    class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
+    class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
+
     // Substitution scope: a formal-param NAME currently bound to an actual ExprId
     // (a function/task INPUT formal during inlining). `lower_expr`'s Ident arm
     // consults this FIRST: a bare single-segment Ident matching a key lowers to the
@@ -1920,6 +2029,17 @@ impl<'s> Elaborator<'s> {
             seq_table: BTreeMap::new(),
             prop_table: BTreeMap::new(),
             sva_inline_stack: Vec::new(),
+            class_table: BTreeMap::new(),
+            class_order: Vec::new(),
+            net_class: BTreeMap::new(),
+            cur_this: None,
+            cur_return: None,
+            cur_discard: None,
+            class_handle_nets: std::collections::BTreeSet::new(),
+            class_new_sites: std::collections::BTreeMap::new(),
+            class_vtable: Vec::new(),
+            class_calls: std::collections::BTreeMap::new(),
+            class_field_widths: std::collections::BTreeMap::new(),
             subst: Vec::new(),
             out_subst: Vec::new(),
             inline_stack: Vec::new(),
@@ -2141,6 +2261,12 @@ impl<'s> Elaborator<'s> {
                 self.cu_imports.push(i.clone());
             }
         }
+        // N7: register every class (whole-design prescan, forward-reference safe)
+        // before any module lowers, so a class-handle decl / `new` / method call
+        // resolves regardless of declaration order, then lower every method into
+        // the global func arena (fids resolve at module-body call sites).
+        self.register_classes(unit);
+        self.lower_class_methods();
         if order.is_empty() {
             // "no module at all" is a missing-construct condition, not a failed
             // *instance* resolution → ElabUnsupported reads truer.
@@ -4997,6 +5123,71 @@ impl<'s> Elaborator<'s> {
                 }
                 continue;
             }
+            // ── N7: class-handle declaration (`Packet p;`) ──
+            // A scalar 32-bit object-id net (0 = null), recorded in
+            // `class_handle_nets` (engine routing) + `net_class` (static type for
+            // field/method resolution). The object lives in the engine heap.
+            if matches!(d.kind, ast::NetVarKind::ClassHandle) {
+                if d.range.is_some() || !d.packed.is_empty() || !decl.unpacked.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a class handle takes no packed/unpacked dimensions (N7 MVP)",
+                    );
+                    continue;
+                }
+                if decl.init.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a class-handle declaration initializer is outside the N7 MVP \
+                         (assign `new`/`null` in a procedural block)",
+                    );
+                    continue;
+                }
+                let cname = match &d.class_type {
+                    Some(c) if self.class_table.contains_key(&c.name) => c.name.clone(),
+                    Some(c) => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!("`{}` does not name a class", c.name),
+                        );
+                        continue;
+                    }
+                    None => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "class handle without a class type",
+                        );
+                        continue;
+                    }
+                };
+                let dir = self.dir_for_name(&decl.name.name, ports, body);
+                if dir != ir::PortDir::Internal {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a class handle cannot be a port (N7 MVP)",
+                    );
+                    continue;
+                }
+                let next_id = self.nets.len() as u32;
+                self.add_net(
+                    &decl.name.name,
+                    ir::NetVar {
+                        kind: ir::NetKind::Integer,
+                        width: 32,
+                        msb: 31,
+                        lsb: 0,
+                        signed: false,
+                        array_len: 1,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(ast::NetVarKind::ClassHandle, 32),
+                    },
+                );
+                if self.nets.len() as u32 > next_id {
+                    self.class_handle_nets.insert(next_id);
+                    self.net_class.insert(next_id, cname);
+                }
+                continue;
+            }
             let dim_extents = self.array_dim_extents(&decl.unpacked);
             let array_len = dim_extents
                 .iter()
@@ -5622,6 +5813,952 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    // ── N7 class/OOP: registration + layout + resolution helpers ──────────────
+
+    /// Whole-design class prescan: collect every `class … endclass` (top-level +
+    /// module/package body), assign a stable `class_id`, resolve own fields, and
+    /// record methods (lowered later). Then flatten the inheritance chain so a
+    /// derived class's field list is `[base fields …, own fields …]` (base-first
+    /// = field-id stability under up-cast). Forward-reference safe.
+    fn register_classes(&mut self, unit: &ast::SourceUnit) {
+        let mut decls: Vec<&ast::ClassDecl> = Vec::new();
+        for it in &unit.items {
+            match it {
+                ast::TopItem::Class(c) => decls.push(c),
+                ast::TopItem::Module(m) | ast::TopItem::Interface(m) | ast::TopItem::Package(m) => {
+                    for bi in &m.body {
+                        if let ast::ModuleItem::Class(c) = bi {
+                            decls.push(c);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Pass 1: own fields + methods + base name, in declaration order.
+        for c in &decls {
+            if self.class_table.contains_key(&c.name.name) {
+                self.error(
+                    MsgCode::DupUnit,
+                    &format!("class `{}` declared more than once", c.name.name),
+                );
+                continue;
+            }
+            let id = self.class_order.len() as u32;
+            let mut fields = Vec::new();
+            let mut methods = Vec::new();
+            for item in &c.items {
+                match item {
+                    ast::ClassItem::Property(d) => self.collect_class_fields(d, &mut fields),
+                    ast::ClassItem::Func { is_virtual, def } => methods.push(ClassMethod {
+                        name: def.name.name.clone(),
+                        is_virtual: *is_virtual,
+                        func: Some(def.clone()),
+                        task: None,
+                        fid: None,
+                        vslot: None,
+                        this_net: None,
+                        discard_net: None,
+                    }),
+                    ast::ClassItem::Task { is_virtual, def } => methods.push(ClassMethod {
+                        name: def.name.name.clone(),
+                        is_virtual: *is_virtual,
+                        func: None,
+                        task: Some(def.clone()),
+                        fid: None,
+                        vslot: None,
+                        this_net: None,
+                        discard_net: None,
+                    }),
+                    ast::ClassItem::Error(_) => {}
+                }
+            }
+            self.class_order.push(c.name.name.clone());
+            self.class_table.insert(
+                c.name.name.clone(),
+                ClassInfo {
+                    id,
+                    base: c.extends.as_ref().map(|b| b.name.clone()),
+                    fields,
+                    methods,
+                },
+            );
+        }
+        // Pass 2: flatten the inheritance chain into base-first field lists, using
+        // a SNAPSHOT of each class's OWN fields (mutation-order independent). A
+        // missing/cyclic base is loud (never an infinite loop).
+        let own: std::collections::BTreeMap<String, Vec<ClassField>> = self
+            .class_table
+            .iter()
+            .map(|(k, v)| (k.clone(), v.fields.clone()))
+            .collect();
+        let names = self.class_order.clone();
+        for name in &names {
+            // Walk self→base→…→root, guarding against cycles / unknown bases.
+            let mut chain: Vec<String> = Vec::new();
+            let mut cur = Some(name.clone());
+            let mut guard = 0;
+            while let Some(n) = cur {
+                if chain.contains(&n) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!("cyclic class inheritance involving `{n}`"),
+                    );
+                    break;
+                }
+                let base = self.class_table.get(&n).and_then(|ci| ci.base.clone());
+                chain.push(n);
+                cur = match base {
+                    Some(b) if own.contains_key(&b) => Some(b),
+                    Some(b) => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!("class extends unknown class `{b}`"),
+                        );
+                        None
+                    }
+                    None => None,
+                };
+                guard += 1;
+                if guard > 256 {
+                    break;
+                }
+            }
+            // Emit root→self (reverse of the chain). A derived field whose name
+            // collides with a base field is SHADOWING — IEEE §8.14 gives the two
+            // distinct storage, which the single-slot layout cannot model, so it
+            // is loud (NOT a silent merge into one slot).
+            let mut flat: Vec<ClassField> = Vec::new();
+            let mut shadow = false;
+            for n in chain.iter().rev() {
+                if let Some(fs) = own.get(n) {
+                    for f in fs {
+                        if flat.iter().any(|o| o.name == f.name) {
+                            shadow = true;
+                        } else {
+                            flat.push(f.clone());
+                        }
+                    }
+                }
+            }
+            if shadow {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "class `{name}` redeclares an inherited field name (member \
+                         shadowing is outside the N7 MVP — distinct base/derived \
+                         storage is unsupported)"
+                    ),
+                );
+            }
+            if let Some(ci) = self.class_table.get_mut(name) {
+                ci.fields = flat;
+            }
+        }
+    }
+
+    /// Resolve a class property declaration into `ClassField`s (one per name).
+    fn collect_class_fields(&mut self, d: &ast::NetVarDecl, out: &mut Vec<ClassField>) {
+        // Class-typed (handle) member: a 32-bit object-id, default null (0).
+        if matches!(d.kind, ast::NetVarKind::ClassHandle) {
+            let ct = d.class_type.as_ref().map(|i| i.name.clone());
+            for n in &d.names {
+                if !n.unpacked.is_empty() {
+                    // an array of handles is outside the MVP — loud, NOT a silent
+                    // scalar-handle that drops the `[N]`.
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "an array-of-handles class member is outside the N7 MVP",
+                    );
+                    continue;
+                }
+                out.push(ClassField {
+                    name: n.name.name.clone(),
+                    width: 32,
+                    signed: false,
+                    four_state: false,
+                    class_type: ct.clone(),
+                });
+            }
+            return;
+        }
+        // Real members are deferred (the heap default-init + read/write would
+        // need a real lane) — loud, not a silent X-as-real.
+        if matches!(d.kind, ast::NetVarKind::Real | ast::NetVarKind::Realtime) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "real class members are outside the N7 MVP",
+            );
+            return;
+        }
+        if matches!(d.kind, ast::NetVarKind::String) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "string class members are outside the N7 MVP",
+            );
+            return;
+        }
+        let (base_w, _, _, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+        let mut width = base_w;
+        for pr in &d.packed {
+            let (pw, _, _, _) = self.range_to_dims(ast::NetVarKind::Logic, Some(pr), false);
+            width = width.saturating_mul(pw.max(1));
+        }
+        let four_state = !net_kind_is_two_state(d.kind);
+        for n in &d.names {
+            if !n.unpacked.is_empty() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "array class members are outside the N7 MVP",
+                );
+                continue;
+            }
+            out.push(ClassField {
+                name: n.name.name.clone(),
+                width,
+                signed,
+                four_state,
+                class_type: None,
+            });
+        }
+    }
+
+    /// Drain `class_table` into the engine sidecar: `[class_id]` → per-field
+    /// `(width, signed, four_state)` in stable field-id order.
+    fn class_layout_table(&self) -> Vec<Vec<(u32, bool, bool)>> {
+        self.class_order
+            .iter()
+            .map(|name| {
+                self.class_table
+                    .get(name)
+                    .map(|ci| {
+                        ci.fields
+                            .iter()
+                            .map(|f| (f.width, f.signed, f.four_state))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// Field-id (index into the flattened field list) of `field` in `class`.
+    fn class_field_id(&self, class: &str, field: &str) -> Option<(u32, ClassField)> {
+        let ci = self.class_table.get(class)?;
+        ci.fields
+            .iter()
+            .position(|f| f.name == field)
+            .map(|i| (i as u32, ci.fields[i].clone()))
+    }
+
+    /// N7 type gate: classify an expression as a class HANDLE value, the NULL
+    /// literal, an UNKNOWN (a call that might return a handle — be lenient), or
+    /// OTHER (a clearly-integral value). Used to reject mixing handles with
+    /// integral operands (IEEE §8.4/§11.4) — closes the forge/use-after-free hole.
+    fn ast_handle_kind(&self, e: &ast::Expr) -> HKind {
+        match &e.kind {
+            ast::ExprKind::Null => HKind::Null,
+            ast::ExprKind::ClassNew { .. } => HKind::Handle,
+            ast::ExprKind::Paren { inner } => self.ast_handle_kind(inner),
+            // A function/method call MIGHT return a handle — be lenient so a
+            // legitimate `h = factory()` / `int x = f()` is never false-rejected.
+            ast::ExprKind::Call { .. } => HKind::Unknown,
+            ast::ExprKind::Ident(p) => {
+                if p.segments.len() == 1 {
+                    let n = &p.segments[0].name;
+                    if n == "this" || n == "super" {
+                        return HKind::Handle;
+                    }
+                    if let Some(net) = self.lookup_net_scoped(n) {
+                        return if self.net_class.contains_key(&net) {
+                            HKind::Handle
+                        } else {
+                            HKind::Other
+                        };
+                    }
+                }
+                // `obj.field` / bare member where the field is itself a handle.
+                if let Some((_, cls, field)) = self.resolve_class_member(p) {
+                    if let Some((_, f)) = self.class_field_id(&cls, &field) {
+                        return if f.class_type.is_some() {
+                            HKind::Handle
+                        } else {
+                            HKind::Other
+                        };
+                    }
+                }
+                HKind::Other
+            }
+            _ => HKind::Other, // literals, arithmetic, selects, concat, …
+        }
+    }
+
+    /// N7 type gate for an assignment `lhs = rhs` (blocking/nonblocking/cont).
+    /// Loud-rejects forging a handle from an integral, leaking a handle to an
+    /// integral, and assigning `null` to an integral. No-op for non-class code.
+    fn check_handle_assign(&mut self, lhs: &ast::Lvalue, rhs: &ast::Expr) {
+        let lhs_is_handle = self.lhs_class_name(lhs).is_some();
+        let rk = self.ast_handle_kind(rhs);
+        if lhs_is_handle {
+            // a class handle may only be assigned a handle / null / new / call.
+            if rk == HKind::Other {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "cannot assign a non-handle value to a class handle (IEEE §8.4 \
+                     — handles are not integral; use `new`, another handle, or `null`)",
+                );
+            }
+        } else if matches!(rk, HKind::Handle | HKind::Null) {
+            // a handle/null may not be assigned into an integral variable.
+            self.error(
+                MsgCode::ElabUnsupported,
+                "cannot assign a class handle / `null` to a non-handle variable (IEEE §8.4)",
+            );
+        }
+    }
+
+    /// Resolve a member-access path to `(handle_net, static_class, field_name)`.
+    /// Forms: `obj.field` (a class-handle variable), `this.field` (inside a
+    /// method), or a bare single-segment `field` (a member of the enclosing
+    /// `this` object). `None` for any non-class path (so the caller's normal
+    /// hierarchical / scalar logic runs unchanged).
+    fn resolve_class_member(&self, path: &ast::HierPath) -> Option<(u32, String, String)> {
+        let segs = &path.segments;
+        if segs.len() == 1 {
+            // bare `field` inside a method body ⇒ `this.field` — UNLESS a
+            // frame-local formal/local of the same name shadows it (IEEE
+            // innermost-wins, §8.10/§13.4): then it is the net, not the property.
+            if let Some((net, cls)) = self.cur_this.clone() {
+                let f = &segs[0].name;
+                if self.lookup_net_scoped(f).is_some() {
+                    return None; // a shadowing local/formal net wins
+                }
+                if self.class_field_id(&cls, f).is_some() {
+                    return Some((net, cls, f.clone()));
+                }
+            }
+            return None;
+        }
+        if segs.len() == 2 {
+            let obj = &segs[0].name;
+            let field = segs[1].name.clone();
+            if obj == "this" {
+                if let Some((net, cls)) = &self.cur_this {
+                    return Some((*net, cls.clone(), field));
+                }
+            }
+            if let Some(net) = self.lookup_net_scoped(obj) {
+                if let Some(cls) = self.net_class.get(&net) {
+                    return Some((net, cls.clone(), field));
+                }
+            }
+        }
+        None
+    }
+
+    /// The static class name of a `new`-assignment lvalue: a handle variable
+    /// (`h = new`) or a class-handle member (`obj.h = new` / `this.h = new`).
+    fn lhs_class_name(&self, lhs: &ast::Lvalue) -> Option<String> {
+        let ast::Lvalue::Ident(path) = lhs else {
+            return None;
+        };
+        if path.segments.len() == 1 {
+            if let Some(net) = self.lookup_net_scoped(&path.segments[0].name) {
+                if let Some(c) = self.net_class.get(&net) {
+                    return Some(c.clone());
+                }
+            }
+        }
+        if let Some((_, class, field)) = self.resolve_class_member(path) {
+            if let Some((_, f)) = self.class_field_id(&class, &field) {
+                return f.class_type;
+            }
+        }
+        None
+    }
+
+    /// Does `class` (or a base) declare a method named `name`?
+    fn class_find_method(&self, class: &str, name: &str) -> Option<(String, ClassMethod)> {
+        let mut cur = Some(class.to_string());
+        let mut guard = 0;
+        while let Some(c) = cur {
+            if let Some(ci) = self.class_table.get(&c) {
+                if let Some(m) = ci.methods.iter().find(|m| m.name == name) {
+                    return Some((c.clone(), m.clone()));
+                }
+                cur = ci.base.clone();
+            } else {
+                return None;
+            }
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Intercept `h = new` / `h = new(args)` (class allocation). Emits a
+    /// placeholder blocking-assign tagged in `class_new_sites` (the engine
+    /// allocates a heap object + writes its id), then chains the constructor
+    /// (`new` method) if one exists. Returns true iff the rhs was a `ClassNew`.
+    fn class_blocking_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::ClassNew { args } = &rhs.kind else {
+            return false;
+        };
+        let Some(class_name) = self.lhs_class_name(lhs) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "`new` (class allocation) must be assigned to a class handle",
+            );
+            return true;
+        };
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "an intra-assignment delay on `new` is unsupported (N7)",
+            );
+        }
+        let class_id = self.class_table[&class_name].id;
+        // Placeholder rhs (never evaluated — the engine overrides via the marker).
+        let rhs0 = self.const_u32_expr(0, 32);
+        let lv = self.lower_lvalue(lhs);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign { lhs: lv, rhs: rhs0 });
+        self.class_new_sites.insert(sid, class_id);
+        b.push_stmt_id(sid);
+        // Constructor chain (S2): run the `new` method on the freshly-allocated
+        // object, passing the handle as `this`.
+        if self.class_find_method(&class_name, "new").is_some() {
+            self.lower_ctor_call(b, lhs, &class_name, args);
+        } else if !args.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "class `{class_name}` has no constructor for {} argument(s)",
+                    args.len()
+                ),
+            );
+        }
+        true
+    }
+
+    // ── N7 method lowering ─────────────────────────────────────────────────
+    // Every method (function OR task) is lowered as a frame-FUNCTION with `this`
+    // injected as formal slot 0; a call is an `Expr::Call{fid, [this, …args]}`
+    // (a void task-method's call expression is simply discarded). This reuses the
+    // B-track frame-call machinery verbatim and sidesteps `TaskCallInfo`. Field
+    // writes inside a body route to the heap (the frame executor + validator are
+    // taught the class-field exception). Output (`output`/`ref`) task ports are
+    // outside this MVP (loud at the call site).
+
+    /// Reserve a method's FuncDef + frame nets (slot 0 = `this`, then params,
+    /// then — for functions — the return var, then body_decls). Records the fid +
+    /// this-net back into the class method entry.
+    fn reserve_class_method(&mut self, cname: &str, mi: usize) {
+        let method = self.class_table[cname].methods[mi].clone();
+        let fid = self.funcs.len() as u32;
+        let base_net = self.nets.len() as u32;
+        let scope_seg = format!("$class${cname}${}", method.name);
+        let is_func = method.func.is_some();
+        let (ret_width, ret_signed) = match &method.func {
+            Some(f) => self.func_return_dims(f),
+            None => (1, false), // task: a dummy 1-bit return, discarded by the caller
+        };
+        let (ports, body_decls): (Vec<ast::TfPort>, Vec<ast::NetVarDecl>) =
+            match (&method.func, &method.task) {
+                (Some(f), _) => (f.ports.clone(), f.body_decls.clone()),
+                (_, Some(t)) => (t.ports.clone(), t.body_decls.clone()),
+                _ => (Vec::new(), Vec::new()),
+            };
+        // Output/inout method ports need copy-OUT to the caller lvalue, which the
+        // discarded-`Expr::Call` model does not provide — loud, NOT a silent drop
+        // of the write-back. (Methods communicate via `this`/fields + the return.)
+        if ports.iter().any(|p| p.dir != ast::PortDir::Input) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "method `{cname}::{}` has an output/inout port — outside the N7 MVP \
+                     (use the return value or object fields)",
+                    method.name
+                ),
+            );
+        }
+        let nports = ports.len() as u32;
+        let n_params = 1 + nports; // `this` + declared formals
+        let mname = method.name.clone();
+        let cname_s = cname.to_string();
+        let this_net = self.with_scope(&scope_seg, |s| {
+            // slot 0: implicit `this` (a 32-bit class handle).
+            let tn = s.nets.len() as u32;
+            s.add_net(
+                "this",
+                ir::NetVar {
+                    kind: ir::NetKind::Integer,
+                    width: 32,
+                    msb: 31,
+                    lsb: 0,
+                    signed: false,
+                    array_len: 1,
+                    dir: ir::PortDir::Internal,
+                    init: default_init(ast::NetVarKind::ClassHandle, 32),
+                },
+            );
+            s.class_handle_nets.insert(tn);
+            s.net_class.insert(tn, cname_s.clone());
+            // slots 1..=nports: declared formals.
+            for p in &ports {
+                let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
+                let (w, msb, lsb, signed) = s.range_to_dims(kind, p.range.as_ref(), p.signed);
+                s.add_net(
+                    &p.name.name,
+                    ir::NetVar {
+                        kind: map_net_kind_or_wire(kind),
+                        width: w,
+                        msb,
+                        lsb,
+                        signed,
+                        array_len: 1,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(kind, w),
+                    },
+                );
+            }
+            // Return var at slot `n_params`, named after the method. ALWAYS
+            // allocated (even for void task-methods — they get a discarded 1-bit
+            // dummy) so `return_slot < locals_len` holds and the frame router's
+            // range check passes; only a FUNCTION's body assigns it.
+            let _ = is_func;
+            s.add_net(
+                &mname,
+                ir::NetVar {
+                    kind: if ret_width == 32 && ret_signed {
+                        ir::NetKind::Integer
+                    } else {
+                        ir::NetKind::Reg
+                    },
+                    width: ret_width,
+                    msb: ret_width.saturating_sub(1),
+                    lsb: 0,
+                    signed: ret_signed,
+                    array_len: 1,
+                    dir: ir::PortDir::Internal,
+                    init: default_init(ast::NetVarKind::Reg, ret_width),
+                },
+            );
+            // body_decls (scalars).
+            for d in &body_decls {
+                for decl in &d.names {
+                    let (w, msb, lsb, signed) = s.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                    s.add_net(
+                        &decl.name.name,
+                        ir::NetVar {
+                            kind: map_net_kind_or_wire(d.kind),
+                            width: w,
+                            msb,
+                            lsb,
+                            signed,
+                            array_len: 1,
+                            dir: ir::PortDir::Internal,
+                            init: default_init(d.kind, w),
+                        },
+                    );
+                }
+            }
+            // A frame-local 64-bit scratch slot for discarding nested void-call
+            // results inside this body (the write must land in-frame).
+            let dn = s.nets.len() as u32;
+            s.add_net(
+                "$discard",
+                ir::NetVar {
+                    kind: ir::NetKind::Reg,
+                    width: 64,
+                    msb: 63,
+                    lsb: 0,
+                    signed: false,
+                    array_len: 1,
+                    dir: ir::PortDir::Internal,
+                    init: default_init(ast::NetVarKind::Reg, 64),
+                },
+            );
+            (tn, dn)
+        });
+        let (this_net, discard_net) = this_net;
+        let locals_len = self.nets.len() as u32 - base_net;
+        self.funcs.push(ir::FuncDef {
+            entry: 0,
+            n_params,
+            locals_len,
+            is_task: false,
+        });
+        self.func_metas.push(FuncMeta {
+            base_net,
+            n_params,
+            return_slot: n_params, // return var sits right after this+formals
+            locals_len,
+            is_automatic: true, // class methods are automatic (fresh locals per call)
+            ret_width,
+            ret_signed,
+            auto_override: 0,
+        });
+        if let Some(ci) = self.class_table.get_mut(cname) {
+            ci.methods[mi].fid = Some(fid);
+            ci.methods[mi].this_net = Some(this_net);
+            ci.methods[mi].discard_net = Some(discard_net);
+        }
+    }
+
+    /// Lower a method body into the global func-block arena with `cur_this` set so
+    /// `this.field` / bare-member accesses resolve against the enclosing object.
+    fn lower_class_method_body(&mut self, cname: &str, mi: usize) {
+        let method = self.class_table[cname].methods[mi].clone();
+        let (Some(fid), Some(this_net)) = (method.fid, method.this_net) else {
+            return;
+        };
+        let body = match (&method.func, &method.task) {
+            (Some(f), _) => f.body.clone(),
+            (_, Some(t)) => t.body.clone(),
+            _ => return,
+        };
+        let scope_seg = format!("$class${cname}${}", method.name);
+        let base = self.func_blocks.len() as u32;
+        let saved_this = self.cur_this.take();
+        let saved_ret = self.cur_return.take();
+        let saved_discard = self.cur_discard.take();
+        self.cur_this = Some((this_net, cname.to_string()));
+        self.cur_discard = method.discard_net;
+        // Return var (functions) = base_net + return_slot; None for a void task.
+        let m = self.func_metas[fid as usize];
+        let retvar = method.func.as_ref().map(|_| m.base_net + m.return_slot);
+        let (blocks, entry) = self.with_scope(&scope_seg, |s| {
+            let mut b = ProcessBuilder::new();
+            // A single exit block: `return` jumps here; the body also falls
+            // through to it. `finish()` gives it the implicit `Return` terminator.
+            let exit = b.new_block();
+            s.cur_return = Some((retvar, exit));
+            s.lower_stmt(&mut b, &body);
+            b.goto(exit);
+            b.start_block(exit);
+            b.finish()
+        });
+        self.cur_this = saved_this;
+        self.cur_return = saved_ret;
+        self.cur_discard = saved_discard;
+        for mut blk in blocks {
+            rebase_terminator(&mut blk.term, base);
+            self.func_blocks.push(blk);
+        }
+        self.funcs[fid as usize].entry = base + entry;
+        let m = self.func_metas[fid as usize];
+        self.validate_frame_body(&method.name, base, m.base_net, m.locals_len, false);
+    }
+
+    /// Lower every class method (reserve all fids first so mutual/forward method
+    /// calls resolve, then lower bodies). Methods are global, self-contained
+    /// (this + formals + locals + fields + other methods), so they lower before
+    /// any module. Assign virtual slots (S5) before reserving.
+    fn lower_class_methods(&mut self) {
+        if self.class_order.is_empty() {
+            return;
+        }
+        self.assign_vtables();
+        let order = self.class_order.clone();
+        for cname in &order {
+            let n = self.class_table[cname].methods.len();
+            for mi in 0..n {
+                self.reserve_class_method(cname, mi);
+            }
+        }
+        // fids now known → fill the vtable (most-derived override per slot).
+        self.finalize_vtables();
+        for cname in &order {
+            let n = self.class_table[cname].methods.len();
+            for mi in 0..n {
+                self.lower_class_method_body(cname, mi);
+            }
+        }
+    }
+
+    /// S5: assign a virtual slot per virtual method name (shared across the
+    /// inheritance chain so an override reuses the base's slot), and build
+    /// `class_vtable[class_id][vslot] = most-derived fid`. Non-virtual methods get
+    /// no slot. Run after fids are known — so call it AFTER reservation? No: vslots
+    /// must exist at reservation-independent time; we assign slot NUMBERS here
+    /// (pre-reservation) and fill the fid table in `finalize_vtables` post-reserve.
+    fn assign_vtables(&mut self) {
+        // Slot numbering: per ROOT class lineage, a virtual method name gets a
+        // stable slot. A derived override of a base virtual reuses the base slot.
+        let order = self.class_order.clone();
+        for cname in &order {
+            // Collect the virtual method names visible in this class (base chain),
+            // base-first, deduped → slot index = position.
+            let mut slots: Vec<String> = Vec::new();
+            let chain = self.class_chain_rootfirst(cname);
+            for c in &chain {
+                let methods = self.class_table[c].methods.clone();
+                for m in &methods {
+                    if m.is_virtual && !slots.contains(&m.name) {
+                        slots.push(m.name.clone());
+                    }
+                }
+            }
+            // Assign vslot to THIS class's own methods by name position. A method
+            // gets a slot if it is declared `virtual` OR its name matches an
+            // ancestor virtual (IEEE §8.20: virtuality is INHERITED — an override
+            // need not repeat the keyword), so a keyword-less override still
+            // dispatches dynamically.
+            let nm = self.class_table[cname].methods.len();
+            for mi in 0..nm {
+                let name = self.class_table[cname].methods[mi].name.clone();
+                // In `slots` ⇒ the name is virtual somewhere in the chain (self or
+                // an ancestor) ⇒ this method occupies that vtable slot.
+                if let Some(pos) = slots.iter().position(|s| *s == name) {
+                    self.class_table.get_mut(cname).unwrap().methods[mi].vslot = Some(pos as u32);
+                }
+            }
+        }
+    }
+
+    /// The inheritance chain root→…→self (deterministic, cycle-guarded).
+    fn class_chain_rootfirst(&self, cname: &str) -> Vec<String> {
+        let mut chain = Vec::new();
+        let mut cur = Some(cname.to_string());
+        let mut guard = 0;
+        while let Some(c) = cur {
+            if chain.contains(&c) {
+                break;
+            }
+            cur = self.class_table.get(&c).and_then(|ci| ci.base.clone());
+            chain.push(c);
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// After all method fids are reserved, fill `class_vtable[class_id][vslot]`
+    /// with the most-derived override fid for each class.
+    fn finalize_vtables(&mut self) {
+        let order = self.class_order.clone();
+        // Determine the max vslot across all classes.
+        let mut max_slot = 0u32;
+        for cname in &order {
+            for m in &self.class_table[cname].methods {
+                if let Some(v) = m.vslot {
+                    max_slot = max_slot.max(v + 1);
+                }
+            }
+        }
+        self.class_vtable = vec![Vec::new(); order.len()];
+        for cname in &order {
+            let cid = self.class_table[cname].id as usize;
+            let mut table = vec![u32::MAX; max_slot as usize];
+            // Walk root→self; a later (more-derived) class overrides the slot.
+            for c in self.class_chain_rootfirst(cname) {
+                for m in &self.class_table[&c].methods {
+                    if let (Some(v), Some(fid)) = (m.vslot, m.fid) {
+                        table[v as usize] = fid;
+                    }
+                }
+            }
+            self.class_vtable[cid] = table;
+        }
+    }
+
+    /// Build the call to a class method: `Expr::Call{fid, [this, …args]}`. Resolves
+    /// the static method (walking the base chain), records virtual-dispatch info
+    /// in `class_calls` keyed by the Call ExprId, and returns the ExprId. `None`
+    /// if `path` is not an `obj.method` / `this.method` / `super.method` call.
+    fn try_class_method_call(&mut self, name: &ast::HierPath, args: &[ast::Expr]) -> Option<u32> {
+        let segs = &name.segments;
+        // A bare `m(args)` inside a method body is a self-call `this.m(args)` —
+        // but only if `m` is a method of the enclosing object's class (else it is
+        // an ordinary free function, left to `inline_function`).
+        if segs.len() == 1 {
+            let (tnet, cls) = self.cur_this.clone()?;
+            let meth = segs[0].name.clone();
+            self.class_find_method(&cls, &meth)?;
+            let this_e = self.push_expr(ir::Expr::Signal {
+                net: tnet,
+                word: None,
+            });
+            return self.build_class_call(this_e, &cls, &meth, args, false);
+        }
+        if segs.len() != 2 {
+            return None;
+        }
+        let recv = &segs[0].name;
+        let meth = &segs[1].name;
+        // Resolve the receiver handle + its static class, and whether this is a
+        // `super.` call (forces a static, non-virtual dispatch to the base).
+        let (this_eid, class, is_super) = if recv == "super" {
+            let (tnet, cls) = self.cur_this.clone()?;
+            let base = self.class_table.get(&cls).and_then(|ci| ci.base.clone())?;
+            let this_e = self.push_expr(ir::Expr::Signal {
+                net: tnet,
+                word: None,
+            });
+            (this_e, base, true)
+        } else if recv == "this" {
+            let (tnet, cls) = self.cur_this.clone()?;
+            let this_e = self.push_expr(ir::Expr::Signal {
+                net: tnet,
+                word: None,
+            });
+            (this_e, cls, false)
+        } else {
+            let net = self.lookup_net_scoped(recv)?;
+            let cls = self.net_class.get(&net)?.clone();
+            let this_e = self.push_expr(ir::Expr::Signal { net, word: None });
+            (this_e, cls, false)
+        };
+        let meth = meth.clone();
+        self.build_class_call(this_eid, &class, &meth, args, is_super)
+    }
+
+    /// Common method-call builder: resolve `class::meth` (base-chain walk), build
+    /// `Expr::Call{fid, [this, …args]}`, and (unless `is_super`) record virtual
+    /// dispatch in `class_calls` keyed by the Call ExprId.
+    fn build_class_call(
+        &mut self,
+        this_eid: u32,
+        class: &str,
+        meth: &str,
+        args: &[ast::Expr],
+        is_super: bool,
+    ) -> Option<u32> {
+        let (_owner, method) = self.class_find_method(class, meth)?;
+        let fid = match method.fid {
+            Some(f) => f,
+            None => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!("method `{class}::{meth}` was not lowered"),
+                );
+                return Some(self.placeholder_expr());
+            }
+        };
+        // Output/ref task ports are outside the MVP (only `this` + inputs bind).
+        let mut call_args = vec![this_eid];
+        for a in args {
+            call_args.push(self.lower_expr(a));
+        }
+        let eid = self.push_expr(ir::Expr::Call {
+            func: fid,
+            args: call_args,
+        });
+        // Virtual dispatch: a `super.` call is ALWAYS static; otherwise a virtual
+        // method redirects at run time via the receiver's dynamic class.
+        let vslot = if is_super { None } else { method.vslot };
+        if vslot.is_some() {
+            self.class_calls.insert(eid, (vslot, fid));
+        }
+        Some(eid)
+    }
+
+    /// Run the constructor on the freshly-`new`ed object (`lhs`). Lowers a
+    /// discarded `Expr::Call` to the `new` method with `this` = the new handle.
+    fn lower_ctor_call(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        class_name: &str,
+        args: &[ast::Expr],
+    ) {
+        let Some((_owner, method)) = self.class_find_method(class_name, "new") else {
+            return;
+        };
+        let Some(fid) = method.fid else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("constructor of `{class_name}` was not lowered"),
+            );
+            return;
+        };
+        // `this` = read the freshly-allocated handle (the lvalue as a value).
+        let this_eid = self.ctor_this_expr(lhs);
+        let mut call_args = vec![this_eid];
+        for a in args {
+            call_args.push(self.lower_expr(a));
+        }
+        let call = self.push_expr(ir::Expr::Call {
+            func: fid,
+            args: call_args,
+        });
+        // A ctor is a void method (no virtual dispatch — IEEE: `new` is not
+        // virtual). Discard the call result via a throwaway assign to a fresh net.
+        self.emit_discarded_call(b, call);
+    }
+
+    /// Read the handle VALUE of a `new`-lvalue (single-seg net, or `obj.field` /
+    /// `this.field` handle member) to pass as the ctor's `this`.
+    fn ctor_this_expr(&mut self, lhs: &ast::Lvalue) -> u32 {
+        if let ast::Lvalue::Ident(path) = lhs {
+            if path.segments.len() == 1 {
+                if let Some(net) = self.lookup_net_scoped(&path.segments[0].name) {
+                    return self.push_expr(ir::Expr::Signal { net, word: None });
+                }
+            }
+            // obj.h / this.h handle member → read the field (the new handle id).
+            if let Some(eid) = self.try_class_field_read(path) {
+                return eid;
+            }
+        }
+        self.placeholder_expr()
+    }
+
+    /// Emit a statement that evaluates `call` (for its side effects) and discards
+    /// the result. Inside a METHOD body the target is the frame-local `$discard`
+    /// slot (the write must land in-frame); in a process body a fresh module net.
+    fn emit_discarded_call(&mut self, b: &mut ProcessBuilder, call: u32) {
+        let tmp = match self.cur_discard {
+            Some(d) => d,
+            None => {
+                let w = self.ir_bits_of(call).unwrap_or(32).max(1);
+                self.fresh_ia_tmp(w)
+            }
+        };
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: whole_net_lvalue(tmp),
+            rhs: call,
+        });
+        b.push_stmt_id(sid);
+    }
+
+    /// Lower a class field READ (`obj.field`) to `Signal{net, word: field-id}`.
+    /// `None` if `path` is not a class member access.
+    fn try_class_field_read(&mut self, path: &ast::HierPath) -> Option<u32> {
+        let (net, class, field) = self.resolve_class_member(path)?;
+        match self.class_field_id(&class, &field) {
+            Some((fid, f)) => {
+                let word = self.const_u32_expr(fid, 32);
+                let eid = self.push_expr(ir::Expr::Signal {
+                    net,
+                    word: Some(word),
+                });
+                // The Signal's net is the 32-bit handle; record the FIELD width so
+                // the engine width table reports `obj.field`'s width correctly.
+                self.class_field_widths.insert(eid, (f.width, f.signed));
+                Some(eid)
+            }
+            None => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!("class `{class}` has no member `{field}`"),
+                );
+                Some(self.placeholder_expr())
+            }
+        }
+    }
+
     fn range_to_dims(
         &mut self,
         kind: ast::NetVarKind,
@@ -5650,6 +6787,10 @@ impl<'s> Elaborator<'s> {
         // a named event is dimensionless; its counter desugar is 64-bit unsigned.
         if matches!(kind, ast::NetVarKind::Event) {
             return (64, 63, 0, false);
+        }
+        // N7: a class handle is a dimensionless 32-bit unsigned object-id.
+        if matches!(kind, ast::NetVarKind::ClassHandle) {
+            return (32, 31, 0, false);
         }
         match range {
             None => (1, 0, 0, signed),
@@ -5855,6 +6996,13 @@ impl<'s> Elaborator<'s> {
                         return self.const_param_expr(v);
                     }
                 }
+                // N7: a class field read (`obj.field` / `this.field` / bare member
+                // inside a method) → `Signal{handle, word: field-id}`. Checked
+                // BEFORE the hierarchical-reference path (which would otherwise
+                // treat `obj.field` as a cross-instance ref).
+                if let Some(eid) = self.try_class_field_read(path) {
+                    return eid;
+                }
                 // N3: a multi-segment path that is NOT already a known dotted symbol
                 // (an interface member alias `i.sig`, inserted at port-binding BEFORE
                 // this body lowers) is a hierarchical cross-instance READ — the child
@@ -5941,6 +7089,30 @@ impl<'s> Elaborator<'s> {
                 self.push_expr(ir::Expr::Unary { op: irop, operand })
             }
             ast::ExprKind::Binary { op, lhs, rhs } => {
+                // N7 handle type gate (IEEE §8.4/§11.4): a class handle / `null`
+                // is only a legal binary operand of `==`/`!=` against ANOTHER
+                // handle/null. Arithmetic/relational on a handle, or `==` with a
+                // mismatched integral, is loud — not silent object-id math.
+                {
+                    let lk = self.ast_handle_kind(lhs);
+                    let rk = self.ast_handle_kind(rhs);
+                    let any_handle = matches!(lk, HKind::Handle | HKind::Null)
+                        || matches!(rk, HKind::Handle | HKind::Null);
+                    if any_handle {
+                        let is_eq = matches!(op, ast::BinOp::Eq | ast::BinOp::Ne);
+                        // both sides handle/null/unknown ⇒ a legal handle compare.
+                        let both_ok = matches!(lk, HKind::Handle | HKind::Null | HKind::Unknown)
+                            && matches!(rk, HKind::Handle | HKind::Null | HKind::Unknown);
+                        if !is_eq || !both_ok {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a class handle / `null` is only a legal operand of \
+                                 `==`/`!=` against another handle or `null` (IEEE §8.4)",
+                            );
+                            return self.placeholder_expr();
+                        }
+                    }
+                }
                 // v7 P2-C: a comparison with a STRING-domain operand routes
                 // through StrCmp (packed compare zero-extends MSB-side, which
                 // is NOT lexicographic for unequal lengths; sizing the
@@ -6331,7 +7503,15 @@ impl<'s> Elaborator<'s> {
                     }
                 }
             }
-            ast::ExprKind::Call { name, args } => self.inline_function(name, args),
+            ast::ExprKind::Call { name, args } => {
+                // N7: a class method call (`obj.m(args)` / `this.m()` / `super.m()`)
+                // → `Expr::Call{method_fid, [this, …args]}`. Checked before the
+                // ordinary function-inline path (which expects a free function).
+                if let Some(eid) = self.try_class_method_call(name, args) {
+                    return eid;
+                }
+                self.inline_function(name, args)
+            }
 
             // ── transparent / placeholder ──────────────────────────
             ast::ExprKind::Paren { inner } => self.lower_expr(inner), // unwrap, no IR node
@@ -6391,6 +7571,18 @@ impl<'s> Elaborator<'s> {
                     self.placeholder_expr()
                 }
             },
+            // N7: `null` — the null class handle (object-id 0, 32-bit).
+            ast::ExprKind::Null => self.const_u32_expr(0, 32),
+            // N7: `new`/`new(args)` (class allocation) is only valid as the
+            // DIRECT rhs of a blocking assignment to a class handle, where it is
+            // intercepted (`lower_class_new_assign`). Any other position is loud.
+            ast::ExprKind::ClassNew { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "`new` (class object allocation) is only valid as the rhs of an assignment to a class handle",
+                );
+                self.placeholder_expr()
+            }
             ast::ExprKind::Error => {
                 self.error(
                     MsgCode::ElabUnsupported,
@@ -6426,6 +7618,37 @@ impl<'s> Elaborator<'s> {
         }
         match lv {
             ast::Lvalue::Ident(path) => {
+                // N7: a class field WRITE (`obj.field = v` / `this.field = v` /
+                // bare member inside a method) → `LvalChunk{handle, word:field-id}`.
+                // Checked BEFORE the hierarchical-write path. Whole-net writes of
+                // the handle itself (ref-copy / `h = null`) are single-segment and
+                // fall through to the normal net path below.
+                if let Some((hnet, class, field)) = self.resolve_class_member(path) {
+                    match self.class_field_id(&class, &field) {
+                        Some((fid, f)) => {
+                            let word = self.const_u32_expr(fid, 32);
+                            // Encode the FIELD width so `chunk_width` reports it (the
+                            // chunk's net is the 32-bit handle; a `None` width would
+                            // size the write context to 32 and TRUNCATE a >32-bit
+                            // field). The engine's class-field write branch ignores
+                            // offset/width and resizes to the field itself.
+                            let off0 = self.const_u32_expr(0, 32);
+                            let fw = self.const_u32_expr(f.width.max(1), 32);
+                            out.push(ir::LvalChunk {
+                                net: hnet,
+                                word: Some(word),
+                                offset: Some(off0),
+                                width: Some(fw),
+                                kind: ir::SelKind::PartIdxUp,
+                            });
+                        }
+                        None => self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!("class `{class}` has no member `{field}`"),
+                        ),
+                    }
+                    return;
+                }
                 // An output/inout task formal written by an inlined body targets the
                 // caller's net directly (symmetric with the read side in lower_expr).
                 let net = if path.segments.len() == 1 {
@@ -7384,6 +8607,13 @@ impl<'s> Elaborator<'s> {
                 match &self.stmts[sid as usize] {
                     ir::Stmt::BlockingAssign { lhs, .. } => {
                         for c in &lhs.chunks {
+                            // N7: a class field write (`this.f = v` / `obj.f = v`) is a
+                            // HEAP write through a class handle, not a frame-slot write —
+                            // allowed regardless of word/in-frame (the handle that
+                            // carries it is itself a frame-local or module net).
+                            if self.class_handle_nets.contains(&c.net) && c.word.is_some() {
+                                continue;
+                            }
                             let whole = c.offset.is_none() && c.word.is_none() && c.width.is_none();
                             let in_frame = c.net >= lo && c.net < hi;
                             if !whole {
@@ -14010,6 +15240,10 @@ impl<'s> Elaborator<'s> {
                     self.lower_intra_event_assign(b, lhs, ie, rhs, *span);
                     return;
                 }
+                // N7: `h = new` / `h = new(args)` — class allocation + ctor.
+                if self.class_blocking_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 // v5 ⑥: `d = new[n]` / `x = q.pop_*()` special forms.
                 if self.dyn_blocking_special(b, lhs, delay.as_ref(), rhs) {
                     return;
@@ -14065,6 +15299,9 @@ impl<'s> Elaborator<'s> {
                 if self.scanf_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // N7: reject forging a handle from an integral / leaking a handle
+                // to an integral (closes the use-after-free hole).
+                self.check_handle_assign(lhs, rhs);
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
@@ -14132,6 +15369,7 @@ impl<'s> Elaborator<'s> {
                 if self.array_assign_special(b, lhs, delay.as_ref(), rhs, true) {
                     return;
                 }
+                self.check_handle_assign(lhs, rhs); // N7 handle type gate
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018)
@@ -14498,7 +15736,45 @@ impl<'s> Elaborator<'s> {
                 // caller: exactly one open block, at the parent's continuation point.
                 b.start_block(resume_bb);
             }
-            ast::Stmt::UserTaskCall { name, args, .. } => self.inline_task(b, name, args),
+            ast::Stmt::UserTaskCall { name, args, .. } => {
+                // N7: a class void-method call as a statement (`obj.run(x);`) is a
+                // frame-FUNCTION call whose result is discarded.
+                if name.segments.len() == 2 {
+                    if let Some(call) = self.try_class_method_call(name, args) {
+                        self.emit_discarded_call(b, call);
+                        return;
+                    }
+                }
+                self.inline_task(b, name, args)
+            }
+            // N7: `return [expr];` — assign the enclosing method/function's return
+            // var (if a value method) and jump to the body exit block.
+            ast::Stmt::Return { value, .. } => match self.cur_return {
+                Some((retvar, exit)) => {
+                    if let Some(val) = value {
+                        let rhs = self.lower_expr(val);
+                        if let Some(rv) = retvar {
+                            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                                lhs: whole_net_lvalue(rv),
+                                rhs,
+                            });
+                            b.push_stmt_id(sid);
+                        } else {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "`return <expr>` in a void task/method (use `return;`)",
+                            );
+                        }
+                    }
+                    b.goto(exit);
+                    let dead = b.new_block(); // statements after `return` are unreachable
+                    b.start_block(dead);
+                }
+                None => self.error(
+                    MsgCode::ElabUnsupported,
+                    "`return` outside a function/task method body",
+                ),
+            },
             // P1-2: these were warn+no-op — values never changed and an `@(ev)`
             // waited forever. A hard error beats silent misbehavior (defparam
             // precedent); real semantics are a Phase-2 item.
@@ -15829,6 +17105,15 @@ impl<'s> Elaborator<'s> {
     /// `$bits(arg)` → 32-bit Const. The argument is a TYPE reference, never
     /// evaluated; unsupported shapes are LOUD (E3009), never a silent 0.
     fn lower_bits_fold(&mut self, arg: &ast::Expr) -> u32 {
+        // N7: `$bits(obj.field)` = the FIELD width. The field Signal's net is the
+        // 32-bit handle, so the generic `ir_bits_of` would wrongly report 32.
+        if let ast::ExprKind::Ident(p) = &arg.kind {
+            if let Some((_, class, field)) = self.resolve_class_member(p) {
+                if let Some((_, f)) = self.class_field_id(&class, &field) {
+                    return self.const_u32_expr(f.width, 32);
+                }
+            }
+        }
         let n = self
             .bits_of_view(arg, false)
             .or_else(|| {
@@ -17524,6 +18809,10 @@ fn map_net_kind_or_wire(k: ast::NetVarKind) -> ir::NetKind {
         // SVPART 2-state types → Reg storage (procedural-assignable, user `assign`
         // rejected). Width/sign from range_to_dims, 2-state 0-init from default_init.
         Bit | Byte | Shortint | Int | Longint => ir::NetKind::Reg,
+        // N7: a class handle is a 32-bit unsigned integer reg holding an object-id
+        // (0 = null); the object itself lives in the engine `class_heap`. Reg
+        // storage = procedural-assignable, user `assign` rejected.
+        ClassHandle => ir::NetKind::Integer,
         // Wire + all net aliases (Tri/Uwire/Wand/...) behave as Wire in v1.
         _ => ir::NetKind::Wire,
     }
@@ -17547,7 +18836,7 @@ fn net_is_variable(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
     matches!(
         k,
-        Reg | Logic | Integer | Time | Bit | Byte | Shortint | Int | Longint
+        Reg | Logic | Integer | Time | Bit | Byte | Shortint | Int | Longint | ClassHandle
     )
 }
 
@@ -17593,6 +18882,7 @@ fn net_kind_supported(k: ast::NetVarKind) -> bool {
             | Shortint
             | Int
             | Longint
+            | ClassHandle
     )
 }
 
@@ -17609,6 +18899,14 @@ fn default_init(kind: ast::NetVarKind, width: u32) -> ir::BitPacked {
     // A named-event counter starts at ZERO, never X: `e = e + 1` on an all-X
     // start would stay X forever and no `@(e)` edge could ever fire.
     if matches!(kind, ast::NetVarKind::Event) {
+        return ir::BitPacked {
+            val: vec![0],
+            unk: vec![0],
+        };
+    }
+    // N7: a class handle defaults to `null` = object-id 0 (NOT X) — IEEE §8.4;
+    // `h == null` must be TRUE for an uninitialized handle.
+    if matches!(kind, ast::NetVarKind::ClassHandle) {
         return ir::BitPacked {
             val: vec![0],
             unk: vec![0],

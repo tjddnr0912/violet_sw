@@ -95,6 +95,11 @@ pub enum TopItem {
     /// Compilation-unit-scope `import pkg::*;` / `import pkg::sym;` (v7) —
     /// one item per comma-separated term.
     Import(ImportDecl),
+    /// `class NAME [extends BASE]; … endclass` (N7). Top-level OOP class
+    /// declaration. Elaborate lowers to an engine-side heap (`class_heap`) +
+    /// sidecar layout/vtable tables — pure IR-0 (no sim-ir/format_version
+    /// change), like interfaces/packages.
+    Class(ClassDecl),
     /// Recovery placeholder for an unparseable top-level construct.
     Error(Span),
 }
@@ -105,6 +110,32 @@ pub struct ImportDecl {
     pub pkg: Ident,
     pub item: Option<Ident>,
     pub span: Span,
+}
+
+/// `class NAME [extends BASE]; … endclass` (N7). Data members (`Property`) and
+/// methods (`Func`/`Task`, possibly `virtual`). Lowered by elaborate to a
+/// `class_heap` (engine side) + layout/vtable sidecars — pure IR-0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ClassDecl {
+    pub name: Ident,
+    /// `extends BASE` single-inheritance base name (`None` = root class).
+    pub extends: Option<Ident>,
+    pub items: Vec<ClassItem>,
+    pub span: Span,
+}
+
+/// A member of a [`ClassDecl`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum ClassItem {
+    /// A data member: `int x;`, `logic [7:0] b;`, a class-typed handle, etc.
+    Property(NetVarDecl),
+    /// A method `[virtual] function … endfunction` (the constructor is a
+    /// function named `new`). `is_virtual` drives the vtable.
+    Func { is_virtual: bool, def: FunctionDef },
+    /// A method `[virtual] task … endtask`.
+    Task { is_virtual: bool, def: TaskDef },
+    /// Recovery placeholder for an unparseable class item.
+    Error(Span),
 }
 
 // ──────────────────────────── Module ────────────────────────────
@@ -192,6 +223,8 @@ pub enum ModuleItem {
     Covergroup(CovergroupDecl),
     /// `cg c = new;` — a covergroup instance; registers a coverage tracker.
     CoverInstance(CoverInstance),
+    /// `class NAME …; … endclass` declared inside a module/package body (N7).
+    Class(ClassDecl),
     /// Recovery placeholder for an unparseable item.
     Error(Span),
 }
@@ -406,6 +439,9 @@ pub struct NetVarDecl {
     /// enclosing function/task default. Honored only on a frame function/task
     /// body_decl (IEEE §6.21; iverilog rejects the override outright).
     pub lifetime: Option<bool>,
+    /// N7: when `kind == ClassHandle`, the declared class name (`Packet p;` ⇒
+    /// `Some("Packet")`). `None` for every non-class declaration.
+    pub class_type: Option<Ident>,
     pub span: Span,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
@@ -476,6 +512,12 @@ pub enum NetVarKind {
     Shortint,
     Int,
     Longint,
+    /// SV class-typed handle variable (N7). The declared class NAME rides the
+    /// sibling `NetVarDecl.class_type` field (this enum stays `Copy`). Lowered by
+    /// elaborate to a 32-bit `NetKind::Integer` net holding an object-id (0 =
+    /// `null`) + a `class_handle_nets` sidecar entry; the object itself lives in
+    /// the engine `class_heap`. Pure IR-0 (no sim-ir change).
+    ClassHandle,
 }
 
 /// `[msb:lsb]`. Bounds are exprs (usually const), NOT pre-evaluated.
@@ -580,6 +622,13 @@ pub enum Stmt {
         cond: Expr,
         then_s: Box<Stmt>,
         else_s: Option<Box<Stmt>>,
+        span: Span,
+    },
+    /// SV `return [expr];` (N7 — used pervasively by class methods). In a value
+    /// function/method, `expr` assigns the return var; in a void task/method,
+    /// `expr` is absent. Lowers to a return-var assign + a jump to the body exit.
+    Return {
+        value: Option<Expr>,
         span: Span,
     },
     Case {
@@ -1026,6 +1075,15 @@ pub enum ExprKind {
         size: Box<Expr>,
         src: Option<Box<Expr>>,
     },
+    /// `new` / `new(args)` — class object allocation (N7). Distinct from the
+    /// dynamic-array `New{size,src}` (which is `new[n]`). The class is inferred
+    /// from the assignment LHS handle's declared type at elaborate.
+    ClassNew {
+        args: Vec<Expr>,
+    },
+    /// `null` — the null class handle literal (N7). Lowers to a 0-valued
+    /// 32-bit handle; dereferencing it yields X + a warn-once diagnostic.
+    Null,
     /// Bare `$` — the queue last-index (`q[$]`, `q[$-1]`). Only meaningful
     /// inside a queue element select; elaborate substitutes `size()-1` there
     /// and loud-rejects it anywhere else.

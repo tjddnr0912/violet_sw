@@ -508,6 +508,10 @@ pub enum Kw {
     Covergroup, Endgroup, Coverpoint,
     // --- SV 2-state integer types (SVPART) ---
     Bit, Byte, Shortint, Int, Longint,
+    // --- SV class/OOP subset (N7) ---
+    Class, Endclass, Extends, Virtual, Null,
+    // --- SVA-REST ---
+    Assume,
 }
 
 impl Kw {
@@ -580,6 +584,11 @@ impl Kw {
             "coverpoint" => Coverpoint,
             "bit" => Bit, "byte" => Byte, "shortint" => Shortint,
             "int" => Int, "longint" => Longint,
+            // --- SV class/OOP subset (N7) ---
+            "class" => Class, "endclass" => Endclass, "extends" => Extends,
+            "virtual" => Virtual, "null" => Null,
+            // --- SVA-REST: assumption property (sim-checked like assert) ---
+            "assume" => Assume,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

@@ -333,6 +333,75 @@ pub(crate) struct SimState<'a> {
     pub func_has_auto: Vec<bool>,
     /// B4: per-func "has ≥1 static slot" — the frame keeps a persistent slab iff true.
     pub func_has_static: Vec<bool>,
+
+    // ── N7 class/OOP (sibling of `dyn_heap`; never in the frozen SimIr) ──
+    /// Class objects, keyed by a MONOTONIC allocation-id (NOT a net-id — multiple
+    /// handles may alias one object and a handle may be re-`new`ed). A handle net
+    /// holds `obj_id` in the flat store (0 = `null`). Empty unless classes used.
+    /// `RefCell` because a value-returning METHOD evaluates on the `&self` read
+    /// path yet may write object fields (sibling of `frame_stack`'s interior
+    /// mutability); the borrow is always scoped to a single read/insert.
+    pub class_heap: std::cell::RefCell<std::collections::BTreeMap<u32, ClassObj>>,
+    /// Next allocation-id (monotonic, never recycled → no use-after-free aliasing
+    /// hazard). Starts at 1 so 0 stays reserved for `null`. `Cell`: the alloc
+    /// happens in the `&mut` write phase but the counter bump needs no borrow.
+    pub class_obj_next: Cell<u32>,
+    /// Per-class field layout (indexed by `class_id`), from `SimOpts.class_layouts`.
+    /// Drives `new` default-init + field resize-on-write. Empty ⇒ no classes.
+    pub class_layouts: Vec<ClassLayout>,
+    /// Per-net "is a class handle" bitmap (len `ir.nets.len()`), built in
+    /// `simulate()` from `SimOpts.class_handle_nets`. A field-select read/write of
+    /// such a net routes to the heap; a bare (word-less) read is the integer id.
+    /// EMPTY/all-false ⇒ byte-identical for every prior design.
+    pub class_is_handle: Vec<bool>,
+    /// `new` allocation sites (StmtId → class_id), from `SimOpts.class_new_sites`.
+    /// The tagged blocking-assign allocates a fresh `ClassObj` and writes its id.
+    pub class_new_sites: std::collections::BTreeMap<u32, u32>,
+    /// Virtual-dispatch table: `class_vtable[class_id][vslot]` = concrete method
+    /// FuncId (most-derived override). From `SimOpts.class_vtable`. Empty ⇒ no
+    /// virtual methods.
+    pub class_vtable: Vec<Vec<u32>>,
+    /// Per method-CALL-site dispatch info: call-ExprId → `(vslot, static_fid)`.
+    /// A `Some(vslot)` triggers dynamic dispatch via `class_vtable[class][vslot]`.
+    pub class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
+    /// Warn-once latch for null/X-handle dereference, per handle net (sibling of
+    /// `dyn_warned`). `RefCell`: the READ path (`&self`) must latch too.
+    pub class_null_warned: std::cell::RefCell<std::collections::BTreeSet<u32>>,
+}
+
+/// A heap-allocated class object (N7). `class_id` is the DYNAMIC type (set at
+/// `new`, never changed by handle ref-copy) — it drives virtual dispatch. Fields
+/// are a flat `Vec<Value>` indexed by a stable field-id assigned at elaborate
+/// (base-class fields FIRST, so a derived object up-cast to its base reads the
+/// same field-ids).
+#[derive(Debug, Clone)]
+pub struct ClassObj {
+    pub class_id: u32,
+    pub fields: Vec<Value>,
+}
+
+/// Per-class field layout (N7): field-id → `(width, signed, four_state)` in
+/// stable field-id order (base-class fields first). Drives `new` default-init +
+/// field resize-on-write. A 4-state field defaults to X; a 2-state field
+/// (`int`/`bit`/handle) defaults to 0 (IEEE §8.8 class-property defaults).
+#[derive(Debug, Clone, Default)]
+pub struct ClassLayout {
+    pub fields: Vec<(u32, bool, bool)>,
+}
+impl ClassLayout {
+    fn field_width(&self, i: u32) -> (u32, bool) {
+        self.fields
+            .get(i as usize)
+            .map(|&(w, s, _)| (w, s))
+            .unwrap_or((1, false))
+    }
+    fn default_value(&self, i: u32) -> Value {
+        match self.fields.get(i as usize) {
+            Some(&(w, s, four)) if four => Value::xs(w.max(1), s),
+            Some(&(w, s, _)) => Value::zeros(w.max(1), s),
+            None => Value::xs(1, false),
+        }
+    }
 }
 
 impl<'a> SimState<'a> {
@@ -450,6 +519,14 @@ impl<'a> SimState<'a> {
             frame_slot_auto: vec![false; nnets],
             func_has_auto: Vec::new(),
             func_has_static: Vec::new(),
+            class_heap: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            class_obj_next: Cell::new(1),
+            class_layouts: Vec::new(),
+            class_is_handle: vec![false; nnets],
+            class_new_sites: std::collections::BTreeMap::new(),
+            class_vtable: Vec::new(),
+            class_calls: std::collections::BTreeMap::new(),
+            class_null_warned: std::cell::RefCell::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -740,6 +817,13 @@ impl<'a> SimState<'a> {
         // v5 (C)-3b: dyn-handle element write → heap (never the flat store).
         if self.dyn_is_handle[net] {
             return self.dyn_write(c, raw_word, piece);
+        }
+        // N7: a class-handle field-select write (`obj.f = v`, `word = field-id`)
+        // goes to the heap; a bare word-less write (the handle id itself —
+        // ref-copy / `h = null` / `h = new` placeholder) falls through to the
+        // flat store below.
+        if self.class_is_handle[net] && c.word.is_some() {
+            return self.class_field_write(c, raw_word, piece);
         }
         // A forced net ignores every normal driver until release (§9.3.2).
         if self.forced[net] {
@@ -1069,6 +1153,117 @@ impl<'a> SimState<'a> {
         }
     }
 
+    // ── N7 class/OOP heap accessors (sibling of the dyn_* family) ──────────
+    /// Warn-once (per handle net) for a null/X dereference or a stale-object
+    /// access. Never escalates to a fatal — IEEE makes null deref a runtime
+    /// error, but vita degrades to X (read) / no-op (write) + this warning so a
+    /// faulty testbench does not abort the whole run.
+    pub(crate) fn class_warn_null(&self, net: u32, msg: &str) {
+        if !self.class_null_warned.borrow_mut().insert(net) {
+            return;
+        }
+        self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+            severity: Severity::Warning,
+            code: MsgCode::RunDynDegrade,
+            message: msg.to_string(),
+            location: None,
+            context: Vec::new(),
+            sim_time: Some(TimeStamp { ticks: self.now }),
+        }));
+    }
+
+    /// The object-id a handle net currently points to, or `None` if it is
+    /// `null` (id 0) or holds X/Z. Reads the handle's own integer value from the
+    /// flat store (word-less read falls through the class branch in `read_net`).
+    fn read_handle_id(&self, net: u32) -> Option<u32> {
+        let v = self.read_net(net, None);
+        if v.unk.iter().any(|&u| u != 0) {
+            return None; // X/Z handle ⇒ null-like
+        }
+        match v.val.first().copied().unwrap_or(0) {
+            0 => None, // null
+            id => Some(id as u32),
+        }
+    }
+
+    /// The field `(width, signed)` for field-id `field` of the object `id`
+    /// belongs to (its DYNAMIC type). `(1,false)` fallback if unknown.
+    fn class_field_width(&self, id: u32, field: u32) -> (u32, bool) {
+        let cid = self.class_heap.borrow().get(&id).map(|o| o.class_id);
+        cid.and_then(|c| self.class_layouts.get(c as usize))
+            .map(|l| l.field_width(field))
+            .unwrap_or((1, false))
+    }
+
+    /// N7: read field `field` of the object the handle points to. Null/X handle,
+    /// a stale object, or a field-id past the layout ⇒ warn-once + X (never a
+    /// panic). Returned at the field's natural width; `eval_ctx` resizes to ctx.
+    fn class_field_read(&self, net: u32, field: u32) -> Value {
+        match self.read_handle_id(net) {
+            Some(id) => {
+                let fw = self.class_field_width(id, field);
+                let heap = self.class_heap.borrow();
+                match heap.get(&id) {
+                    Some(obj) if (field as usize) < obj.fields.len() => {
+                        obj.fields[field as usize].clone()
+                    }
+                    _ => {
+                        drop(heap);
+                        self.class_warn_null(net, "class field read of a stale/short object (X)");
+                        Value::xs(fw.0.max(1), fw.1)
+                    }
+                }
+            }
+            None => {
+                self.class_warn_null(net, "null/X class handle dereference (read X)");
+                Value::xs(1, false)
+            }
+        }
+    }
+
+    /// N7: write field `field` of the object the handle points to. `&self` (the
+    /// `RefCell` heap) so a value-method's body — running on the read path — can
+    /// still mutate fields. Null/X handle or stale object ⇒ warn-once + no-op
+    /// (not a panic). The value is resized to the field's declared width/sign.
+    fn class_field_write(&self, c: &sim_ir::LvalChunk, field: u32, piece: &Value) -> bool {
+        let net = c.net;
+        let Some(id) = self.read_handle_id(net) else {
+            self.class_warn_null(net, "null/X class handle dereference (write ignored)");
+            return false;
+        };
+        let fw = self.class_field_width(id, field);
+        let resized = piece.clone().resize_keep_sign(fw.0.max(1), fw.1);
+        let mut heap = self.class_heap.borrow_mut();
+        match heap.get_mut(&id) {
+            Some(obj) if (field as usize) < obj.fields.len() => {
+                obj.fields[field as usize] = resized;
+            }
+            _ => {
+                drop(heap);
+                self.class_warn_null(net, "class field write to a stale/short object (ignored)");
+            }
+        }
+        false
+    }
+
+    /// N7: allocate a fresh object of `class_id`, default-init its fields per the
+    /// layout, and return its monotonic object-id (≥1; never recycled). `&self`
+    /// (interior-mutable heap) so a ctor invoked on the read path can allocate.
+    pub(crate) fn class_alloc(&self, class_id: u32) -> u32 {
+        let id = self.class_obj_next.get();
+        self.class_obj_next.set(id + 1);
+        let fields = match self.class_layouts.get(class_id as usize) {
+            Some(layout) => (0..layout.fields.len() as u32)
+                .map(|i| layout.default_value(i))
+                .collect(),
+            None => Vec::new(),
+        };
+        self.class_heap
+            .borrow_mut()
+            .insert(id, ClassObj { class_id, fields });
+        id
+    }
+
     /// v5 (C)-3b/④: indexed WRITE of a dyn handle. Shared rules: X-index /
     /// bit-select within an element → IGNORED + warn-once (clamping or
     /// auto-grow would silently corrupt). Kind split (iverilog live):
@@ -1338,6 +1533,25 @@ impl<'a> SimState<'a> {
         self.frame_slot_write(fidx, self.frame_slot_auto[net], slot, val);
     }
 
+    /// N7: store a frame-body blocking-assign value, routing a class FIELD write
+    /// (`this.f = v` / `obj.f = v`) to the heap (`class_field_write`) and every
+    /// other (whole frame-local net) write to `frame_write_lvalue`. `&self` —
+    /// both targets are interior-mutable (the `RefCell` heap / the frame arena).
+    fn frame_or_class_write(&self, lhs: &Lvalue, v: Value) {
+        if lhs.chunks.len() == 1 {
+            let c = &lhs.chunks[0];
+            if self.class_is_handle[c.net as usize] && c.word.is_some() {
+                let field = c
+                    .word
+                    .and_then(|w| crate::width::const_u32_of_expr(self.ir, w))
+                    .unwrap_or(0);
+                self.class_field_write(c, field, &v);
+                return;
+            }
+        }
+        self.frame_write_lvalue(lhs, v);
+    }
+
     /// B1 frame-call evaluator. Runs user function `func`'s lowered body (in the
     /// GLOBAL `ir.blocks` arena from `FuncDef.entry`) against a per-invocation
     /// frame, returning its return-var Value resized to the declared return
@@ -1445,8 +1659,9 @@ impl<'a> SimState<'a> {
                     let v = self
                         .mk_eval_ctx()
                         .eval_ctx(*rhs, lw.max(sw.width), sw.signed);
-                    // THEN store (borrow scoped to the index-store only).
-                    self.frame_write_lvalue(lhs, v);
+                    // THEN store (borrow scoped to the index-store only). N7: a
+                    // class field write routes to the heap, not a frame slot.
+                    self.frame_or_class_write(lhs, v);
                 }
                 // SysTask/NBA/delay/event in a func body are rejected at
                 // ELABORATE (B1 cut) → never reach here.
@@ -1585,7 +1800,7 @@ impl<'a> SimState<'a> {
                     let v = self
                         .mk_eval_ctx()
                         .eval_ctx(*rhs, lw.max(sw.width), sw.signed);
-                    self.frame_write_lvalue(lhs, v);
+                    self.frame_or_class_write(lhs, v);
                 }
             }
             match &blk.term {
@@ -1794,6 +2009,34 @@ impl<'a> NetReader for SimState<'a> {
     fn eval_call(&self, func: u32, args: &[Value]) -> Option<Value> {
         self.run_frame_call(func, args)
     }
+    fn resolve_virtual_call(&self, call_eid: u32, static_fid: u32, args: &[Value]) -> u32 {
+        // Only a virtual call site (sidecar `vslot = Some`) redirects.
+        let Some(&(Some(vslot), _)) = self.class_calls.get(&call_eid) else {
+            return static_fid;
+        };
+        // args[0] = the receiver handle's object-id; X / null → static target
+        // (the body then null-derefs to X — never a vtable OOB).
+        let Some(this_v) = args.first() else {
+            return static_fid;
+        };
+        if this_v.unk.iter().any(|&u| u != 0) {
+            return static_fid;
+        }
+        let id = this_v.val.first().copied().unwrap_or(0) as u32;
+        if id == 0 {
+            return static_fid;
+        }
+        let class_id = match self.class_heap.borrow().get(&id) {
+            Some(o) => o.class_id,
+            None => return static_fid,
+        };
+        self.class_vtable
+            .get(class_id as usize)
+            .and_then(|t| t.get(vslot as usize))
+            .copied()
+            .filter(|&f| f != u32::MAX)
+            .unwrap_or(static_fid)
+    }
     fn formal_width(&self, func: u32, i: usize) -> Option<(u32, bool)> {
         // The i-th formal is `base_net + i` (port order, [0..n_params)); its
         // NetVar carries the declared (width, signed). Out of range (the call
@@ -1807,6 +2050,15 @@ impl<'a> NetReader for SimState<'a> {
         Some((nv.width.max(1), nv.signed))
     }
     fn read_net(&self, net: u32, word: Option<u32>) -> Value {
+        // N7: a class-handle FIELD-select read (`obj.f` / `this.f`, word = field-id)
+        // goes to the heap. Checked FIRST so a method's `this` slot — which is also
+        // a frame-local net — routes to the field, not the frame window. A bare
+        // (word-less) handle read falls through (frame window or flat store = the id).
+        if self.class_is_handle[net as usize] {
+            if let Some(field) = word {
+                return self.class_field_read(net, field);
+            }
+        }
         // B1 frame-call: a frame-local net reads from the ACTIVE call window
         // (automatic) or the shared static slab — never the flat store. One
         // bitmap load on the hot path (sibling of `dyn_is_handle`, always

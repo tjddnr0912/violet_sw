@@ -36,6 +36,21 @@ impl WidthTable {
     pub(crate) fn signed(&self, eid: u32) -> bool {
         self.sw[eid as usize].signed
     }
+    /// N7: override the self-width of class field-read `Signal`s. Such a Signal's
+    /// net is the 32-bit handle, so the generic build gives it width 32; the real
+    /// width is the FIELD's, computed at elaborate and carried here per-ExprId.
+    /// EMPTY ⇒ no-op (byte-identical for every prior design).
+    pub(crate) fn patch_class_fields(
+        &mut self,
+        map: &std::collections::BTreeMap<u32, (u32, bool)>,
+    ) {
+        for (&eid, &(w, signed)) in map {
+            if let Some(slot) = self.sw.get_mut(eid as usize) {
+                slot.width = clamp_w(w.max(1));
+                slot.signed = signed;
+            }
+        }
+    }
 }
 
 const WIDTH_MAX: u32 = 1 << 24;

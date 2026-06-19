@@ -207,6 +207,13 @@ pub(crate) trait Kernel {
     fn k_max_deltas(&self) -> u64;
     /// CONTROL: flag a fatal (delta-limit) termination (mirror exec.rs:178).
     fn k_mark_fatal(&mut self);
+    /// READ (N7): the class_id this StmtId allocates via `new`, or `None` for a
+    /// plain blocking assign. A `Some` makes the executor build a `ClassNew`
+    /// effect (allocate a heap object) instead of evaluating the placeholder rhs.
+    fn k_class_new_site(&self, sid: u32) -> Option<u32>;
+    /// WRITE (N7): allocate a fresh object of `class_id` on the heap, returning
+    /// its object-id as a 32-bit handle Value to store into the lhs.
+    fn k_class_alloc(&mut self, class_id: u32) -> Value;
 }
 
 /// Execute activity `pi` starting at body block `start`. `pi` is a runtime
@@ -594,6 +601,14 @@ enum StmtEffect<'s> {
     Release { lhs: &'s Lvalue, sid: u32 },
     /// `disable fork` (P2-E): kills the caller's active descendants.
     DisableFork,
+    /// N7: a `new` allocation site — the tagged blocking-assign allocates a fresh
+    /// heap object of `class_id` (WRITE phase) and writes its id to `lhs` (the
+    /// placeholder rhs is never evaluated). Same write-phase family as `QPop`.
+    ClassNew {
+        lhs: &'s Lvalue,
+        class_id: u32,
+        offsets: Offsets,
+    },
     /// `disable <block>`: the Goto desugar did the control-flow work at
     /// elaborate; the statement itself is a marker no-op.
     Nop,
@@ -606,6 +621,17 @@ enum StmtEffect<'s> {
 fn compute_effect<'s, K: Kernel>(k: &K, stmt: &'s Stmt, sid: u32) -> StmtEffect<'s> {
     match stmt {
         Stmt::BlockingAssign { lhs, rhs } => {
+            // N7: a `new` allocation site — keyed by StmtId, so check it FIRST so
+            // the placeholder rhs (a const 0) is never evaluated. The write phase
+            // allocates the heap object and stores its id into `lhs`.
+            if let Some(class_id) = k.k_class_new_site(sid) {
+                let offsets = k.k_resolve_lvalue_offsets(lhs);
+                return StmtEffect::ClassNew {
+                    lhs,
+                    class_id,
+                    offsets,
+                };
+            }
             // v5 ④: a queue-pop rhs is a statement-level EFFECT (it mutates
             // the queue) — defer the pop itself to the write phase.
             if k.k_queue_pop_rhs(*rhs) {
@@ -920,6 +946,15 @@ fn apply_effect<K: Kernel>(k: &mut K, effect: StmtEffect<'_>) -> Option<Step> {
             Ctl::Fatal => Some(Step::Fatal),
             Ctl::Continue => None,
         },
+        StmtEffect::ClassNew {
+            lhs,
+            class_id,
+            offsets,
+        } => {
+            let value = k.k_class_alloc(class_id); // allocate heap object (WRITE phase)
+            k.k_write_lvalue(lhs, value, &offsets);
+            None
+        }
         StmtEffect::Nop => None,
     }
 }
