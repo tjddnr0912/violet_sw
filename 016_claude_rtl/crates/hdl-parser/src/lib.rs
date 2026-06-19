@@ -1574,6 +1574,22 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Property) {
             return self.parse_property_decl();
         }
+        // N5: functional-coverage model `covergroup NAME; … endgroup`.
+        if self.at_kw(Kw::Covergroup) {
+            return self.parse_covergroup();
+        }
+        // N5: a covergroup INSTANCE `CG_TYPE NAME = new;` — distinguished from a module
+        // instantiation (`CG_TYPE NAME ( … )`) by the `=` at lookahead 2. Placed before
+        // the bare-ident instantiation arm.
+        if self.is_ident()
+            && matches!(
+                self.peek_at(1),
+                Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
+            )
+            && self.peek_at(2) == Some(TokenKind::Eq)
+        {
+            return self.parse_cover_instance();
+        }
         // bare ident at module-item position ⇒ module instantiation.
         // (No keyword-led item matched above; in V2005 module scope a leading
         //  bare identifier can ONLY begin an instantiation — there is no
@@ -1637,6 +1653,111 @@ impl<'t, 's> Parser<'t, 's> {
             instances,
             span: start.to(self.prev_span()),
         }
+    }
+
+    // ───────────────────────── N5: functional coverage ─────────────────────
+    /// `covergroup NAME [(args)] [@(event)]; ([LABEL:] coverpoint EXPR [{..}|iff..];)*
+    /// endgroup` — a functional-coverage model. The header tail (args / sampling event)
+    /// and any per-coverpoint bins/iff are SKIPPED to `;` in this slice (auto-bins,
+    /// explicit `sample()`); only the coverpoint EXPR is captured.
+    fn parse_covergroup(&mut self) -> Option<ModuleItem> {
+        let start = self.cur_span();
+        self.bump(); // `covergroup`
+        let name = self.ident()?;
+        // skip the header tail (`(args)`, `@(event)`) up to the first `;`.
+        while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
+            self.bump();
+        }
+        self.expect(TokenKind::Semi, "';' after covergroup header");
+        let mut points = Vec::new();
+        loop {
+            if self.at_kw(Kw::Endgroup) || self.peek().is_none() {
+                break;
+            }
+            // optional `LABEL :`
+            let label = if self.is_ident() && self.peek_at(1) == Some(TokenKind::Colon) {
+                let l = self.ident().unwrap();
+                self.bump(); // ':'
+                Some(l)
+            } else {
+                None
+            };
+            if self.at_kw(Kw::Coverpoint) {
+                let cp_start = self.cur_span();
+                self.bump(); // `coverpoint`
+                let expr = self.expr(0);
+                // skip an optional `iff(..)` and `{ bins.. }` body to `;` (follow-on).
+                while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
+                    self.bump();
+                }
+                self.expect(TokenKind::Semi, "';' after coverpoint");
+                points.push(Coverpoint {
+                    label,
+                    expr,
+                    span: cp_start.to(self.prev_span()),
+                });
+            } else {
+                // an unsupported covergroup item (cross / option / …) — loud, skip to `;`.
+                self.error("`coverpoint` in covergroup (cross/option are a follow-on)");
+                while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
+                    self.bump();
+                }
+                self.eat(TokenKind::Semi);
+            }
+        }
+        if self.at_kw(Kw::Endgroup) {
+            self.bump();
+        } else {
+            self.error("`endgroup`");
+        }
+        // optional `: NAME` after endgroup
+        if self.peek() == Some(TokenKind::Colon) {
+            self.bump();
+            let _ = self.ident();
+        }
+        Some(ModuleItem::Covergroup(CovergroupDecl {
+            name,
+            points,
+            span: start.to(self.prev_span()),
+        }))
+    }
+
+    /// `CG_TYPE NAME = new [(args)] ;` — a covergroup instance.
+    fn parse_cover_instance(&mut self) -> Option<ModuleItem> {
+        let start = self.cur_span();
+        let cg_type = self.ident()?;
+        let name = self.ident()?;
+        self.expect(TokenKind::Eq, "'=' in covergroup instance");
+        if self.at_ident_kw("new") {
+            self.bump();
+        } else {
+            self.error("`new` in covergroup instance");
+        }
+        // optional `( args )` — skip balanced.
+        if self.peek() == Some(TokenKind::LParen) {
+            let mut depth = 0i32;
+            loop {
+                match self.peek() {
+                    Some(TokenKind::LParen) => depth += 1,
+                    Some(TokenKind::RParen) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            self.bump();
+                            break;
+                        }
+                    }
+                    None => break,
+                    _ => {}
+                }
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::Semi, "';' after covergroup instance");
+        Some(ModuleItem::CoverInstance(CoverInstance {
+            cg_type,
+            name,
+            span: start.to(self.prev_span()),
+        }))
     }
 
     /// Parse `( param_overrides )` after a consumed `#`.

@@ -703,6 +703,16 @@ struct DeferredHierWrite {
 /// offset arithmetic around those eids and patches the placeholder chunk
 /// (sentinel net `HIER_SEL_WRITE_SENTINEL_BASE + index`). Out-of-band
 /// (golden-free). The write twin of [`DeferredHierSelect`].
+/// N5: one coverpoint's runtime tracker. The hit-bitmap is a fresh 64-bit reg; each
+/// `sample()` ORs in `1 << bin(value)`, and `get_coverage()` reports
+/// `$countones(bitmap) * 100 / num_bins`. Pure IR-0 (ordinary nets + synthesized ops).
+#[derive(Clone)]
+struct CoverpointTracker {
+    bitmap: String,
+    expr: ast::Expr,
+    num_bins: u32,
+}
+
 struct DeferredHierSelWrite {
     prefix: String,
     path: Vec<String>,
@@ -1564,6 +1574,13 @@ struct Elaborator<'s> {
     /// HIER-REST①: deferred hierarchical ELEMENT/bit-select WRITE targets
     /// (`dut.mem[i] = …`); see [`DeferredHierSelWrite`]. Out-of-band (golden-free).
     deferred_hier_sel_write: Vec<DeferredHierSelWrite>,
+    /// N5 functional coverage: covergroup TYPE name → its declaration (registered in
+    /// the prescan so an instance can be lowered regardless of source order).
+    cover_types: std::collections::BTreeMap<String, ast::CovergroupDecl>,
+    /// N5: FQ instance name → its per-coverpoint trackers (hit-bitmap reg + sampled
+    /// expr + auto-bin count). `sample()`/`get_coverage()` synthesize against these —
+    /// pure IR-0 (the bitmap regs are ordinary nets; no sim-ir change).
+    cover_insts: std::collections::BTreeMap<String, Vec<CoverpointTracker>>,
     // §16.4 deferred immediate asserts (out-of-band, engine-facing): marker
     // StmtId → region, and action StmtId → (marker StmtId, region). See
     // [`DeferMarkTable`]/[`DeferActTable`].
@@ -1641,6 +1658,8 @@ impl<'s> Elaborator<'s> {
             deferred_hier_sel: Vec::new(),
             deferred_hier_write: Vec::new(),
             deferred_hier_sel_write: Vec::new(),
+            cover_types: std::collections::BTreeMap::new(),
+            cover_insts: std::collections::BTreeMap::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             cur_defer: None,
@@ -2967,6 +2986,12 @@ impl<'s> Elaborator<'s> {
                 // genvar binding) so a reference resolves regardless of loop trip
                 // count or which branch the const-cond later selects.
                 ast::ModuleItem::Generate(g) => self.collect_gen_sva_decls(&g.items),
+                // N5: register covergroup TYPES (an instance can precede the decl).
+                ast::ModuleItem::Covergroup(cg) => {
+                    self.cover_types
+                        .entry(cg.name.name.clone())
+                        .or_insert_with(|| cg.clone());
+                }
                 _ => {}
             }
         }
@@ -3062,6 +3087,15 @@ impl<'s> Elaborator<'s> {
         //       module scope is still active (module nets in `symbols`). No-op when
         //       the module declares no frame functions (frame_idx stays empty).
         self.lower_frame_funcs();
+
+        // N5: register covergroup INSTANCES (allocate their hit-bitmap regs) BEFORE
+        // lowering processes, so a `c.sample()` in any process finds the bitmaps
+        // regardless of source order.
+        for item in &module.body {
+            if let ast::ModuleItem::CoverInstance(ci) = item {
+                self.register_cover_instance(ci);
+            }
+        }
 
         // (7) lower THIS body: cont-assigns + processes (reuse v1/v2 helpers).
         for item in &module.body {
@@ -6449,6 +6483,11 @@ impl<'s> Elaborator<'s> {
         // v5 ⑥: `handle.method(args)` — a 2-segment call whose head is a dyn
         // handle is a METHOD, not a hierarchical call.
         if name.segments.len() == 2 {
+            // N5: covergroup method in expression position (`c.get_coverage()`).
+            if self.cover_inst(&name.segments[0].name).is_some() {
+                return self
+                    .synth_cover_method_expr(&name.segments[0].name, &name.segments[1].name);
+            }
             if let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) {
                 return self.lower_dyn_method_expr(net, kind, &name.segments[1].name, args);
             }
@@ -7177,6 +7216,16 @@ impl<'s> Elaborator<'s> {
         // v5 ⑥: `handle.method(args);` — a 2-segment task enable whose head is
         // a dyn handle is a METHOD statement, not a hierarchical call.
         if name.segments.len() == 2 {
+            // N5: covergroup method statement (`c.sample();`).
+            if self.cover_inst(&name.segments[0].name).is_some() {
+                self.synth_cover_method_stmt(
+                    b,
+                    &name.segments[0].name,
+                    &name.segments[1].name,
+                    args,
+                );
+                return;
+            }
             if let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) {
                 self.lower_dyn_method_stmt(b, net, kind, &name.segments[1].name, args);
                 return;
@@ -10254,6 +10303,198 @@ impl<'s> Elaborator<'s> {
         };
         self.add_net(&name, nv);
         name
+    }
+
+    // ── N5: functional-coverage synthesis (hand-IEEE; iverilog rejects covergroup) ──
+    /// Auto-bin count for a coverpoint: `min(2^W, 64)` where W is the sampled expr's
+    /// width (from a simple net ref; a complex expr defaults to 64 bins).
+    fn coverpoint_num_bins(&self, e: &ast::Expr) -> u32 {
+        let w = match &e.kind {
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => self
+                .lookup_net_scoped(&p.segments[0].name)
+                .map(|n| self.nets[n as usize].width)
+                .unwrap_or(6),
+            _ => 6,
+        };
+        if w >= 6 {
+            64
+        } else {
+            1u32 << w
+        }
+    }
+
+    /// Register a covergroup instance: allocate one 64-bit hit-bitmap reg per
+    /// coverpoint and record the trackers under the instance's FQ name.
+    fn register_cover_instance(&mut self, ci: &ast::CoverInstance) {
+        let Some(cg) = self.cover_types.get(&ci.cg_type.name).cloned() else {
+            self.error(
+                MsgCode::ElabUnresolvedName,
+                &format!(
+                    "unknown covergroup type `{}` (instance `{}`)",
+                    ci.cg_type.name, ci.name.name
+                ),
+            );
+            return;
+        };
+        let mut trackers = Vec::new();
+        for cp in &cg.points {
+            let num_bins = self.coverpoint_num_bins(&cp.expr);
+            let bitmap = self.fresh_sva_reg(64, "cov");
+            trackers.push(CoverpointTracker {
+                bitmap,
+                expr: cp.expr.clone(),
+                num_bins,
+            });
+        }
+        let key = self.fq(&ci.name.name);
+        self.cover_insts.insert(key, trackers);
+    }
+
+    /// Trackers for a covergroup instance named at a call site (current scope).
+    fn cover_inst(&self, name: &str) -> Option<Vec<CoverpointTracker>> {
+        self.cover_insts.get(&self.fq(name)).cloned()
+    }
+
+    /// `c.sample();` — OR `1 << (value & 63)` into each coverpoint's hit bitmap.
+    fn synth_cover_sample(&mut self, b: &mut ProcessBuilder, inst: &str) {
+        let Some(trackers) = self.cover_inst(inst) else {
+            self.error(
+                MsgCode::ElabUnresolvedName,
+                &format!("`{inst}.sample()` on an unknown covergroup instance"),
+            );
+            return;
+        };
+        for t in &trackers {
+            let Some(bnet) = self.lookup_net_scoped(&t.bitmap) else {
+                continue;
+            };
+            let val = self.lower_expr(&t.expr);
+            let mask = self.const_u32_expr(63, 32);
+            let masked = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::BitAnd,
+                lhs: val,
+                rhs: mask,
+            });
+            let one = self.const_u32_expr(1, 64);
+            let shifted = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Shl,
+                lhs: one,
+                rhs: masked,
+            });
+            let cur = self.push_expr(ir::Expr::Signal {
+                net: bnet,
+                word: None,
+            });
+            let newbm = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::BitOr,
+                lhs: cur,
+                rhs: shifted,
+            });
+            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: whole_net_lvalue(bnet),
+                rhs: newbm,
+            });
+            b.push_stmt_id(sid);
+        }
+    }
+
+    /// `c.get_coverage()` — `sum($countones(bitmap)) * 100 / sum(num_bins)` (int %).
+    fn synth_cover_get(&mut self, inst: &str) -> u32 {
+        let Some(trackers) = self.cover_inst(inst) else {
+            self.error(
+                MsgCode::ElabUnresolvedName,
+                &format!("`{inst}.get_coverage()` on an unknown covergroup instance"),
+            );
+            return self.placeholder_expr();
+        };
+        if trackers.is_empty() {
+            return self.const_u32_expr(0, 32);
+        }
+        let mut total_bins = 0u32;
+        let mut num: Option<u32> = None;
+        for t in &trackers {
+            let bnet = self.lookup_net_scoped(&t.bitmap).unwrap_or(POISON_NET);
+            let bm = self.push_expr(ir::Expr::Signal {
+                net: bnet,
+                word: None,
+            });
+            let ones = self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::CountOnes,
+                args: vec![bm],
+            });
+            num = Some(match num {
+                None => ones,
+                Some(acc) => self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Add,
+                    lhs: acc,
+                    rhs: ones,
+                }),
+            });
+            total_bins = total_bins.saturating_add(t.num_bins);
+        }
+        let num = num.unwrap();
+        let hundred = self.const_u32_expr(100, 32);
+        let num100 = self.push_expr(ir::Expr::Binary {
+            op: ir::BinOp::Mul,
+            lhs: num,
+            rhs: hundred,
+        });
+        let tb = self.const_u32_expr(total_bins.max(1), 32);
+        self.push_expr(ir::Expr::Binary {
+            op: ir::BinOp::Div,
+            lhs: num100,
+            rhs: tb,
+        })
+    }
+
+    /// A covergroup method in STATEMENT position (`c.sample();`).
+    fn synth_cover_method_stmt(
+        &mut self,
+        b: &mut ProcessBuilder,
+        inst: &str,
+        method: &str,
+        args: &[ast::Expr],
+    ) {
+        match method {
+            "sample" => {
+                if !args.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "covergroup sample() takes no arguments in this slice",
+                    );
+                }
+                self.synth_cover_sample(b, inst);
+            }
+            "get_coverage" => self.error(
+                MsgCode::ElabUnsupported,
+                "get_coverage() result must be used (it returns the coverage %)",
+            ),
+            _ => self.error(
+                MsgCode::ElabUnsupported,
+                &format!("unsupported covergroup method `.{method}()`"),
+            ),
+        }
+    }
+
+    /// A covergroup method in EXPRESSION position (`c.get_coverage()`).
+    fn synth_cover_method_expr(&mut self, inst: &str, method: &str) -> u32 {
+        match method {
+            "get_coverage" => self.synth_cover_get(inst),
+            "sample" => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "sample() is a statement, not an expression",
+                );
+                self.placeholder_expr()
+            }
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!("unsupported covergroup method `.{method}()`"),
+                );
+                self.placeholder_expr()
+            }
+        }
     }
 
     /// Multi-clock canonical pattern (slice A3): `@(c1) ante |=> @(c2) cons`. The

@@ -37,6 +37,10 @@ use vita_schema::schema_hash;
 /// `AssertDefer` enum — `assert #0` (Observed) / `assert final` (Reactive); all
 /// `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0: a
 /// flush-marker + region maturation queues carried out-of-band).
+/// 2026-06-19 N5 functional coverage (`ModuleItem::{Covergroup,CoverInstance}` plus
+/// the `CovergroupDecl`/`Coverpoint`/`CoverInstance` structs — `covergroup … endgroup`
+/// and `cg c = new;`; all `.vu` artifacts are stale, no sim-ir/format_version change,
+/// pure IR-0 bitmap-synthesis). (Previous re-pins:
 /// 2026-06-16 intra-assignment event control (`Stmt::Blocking.event:
 /// Option<IntraEvent>` + new `IntraEvent` struct — `lhs = [repeat(n)] @(ev) rhs`;
 /// all `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0
@@ -63,8 +67,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    89, 113, 136, 213, 227, 94, 135, 179, 133, 157, 81, 36, 156, 190, 209, 41, 148, 248, 56, 42,
-    68, 126, 62, 47, 243, 135, 28, 234, 144, 118, 19, 210,
+    201, 37, 221, 224, 232, 79, 214, 34, 97, 39, 18, 99, 233, 195, 241, 234, 15, 173, 162, 199,
+    195, 125, 225, 228, 111, 46, 5, 141, 21, 57, 215, 227,
 ];
 
 #[test]

@@ -187,8 +187,37 @@ pub enum ModuleItem {
     /// Named SVA `property NAME; …; endproperty` (Phase-3 named-SVA slice). Spliced
     /// at `assert property(NAME)` by elaborate; pure IR-0.
     PropertyDecl(PropDecl),
+    /// `covergroup NAME; coverpoint EXPR; … endgroup` — functional coverage model
+    /// (N5). Lowered to a CoverageModel side-table (out-of-band, golden-free).
+    Covergroup(CovergroupDecl),
+    /// `cg c = new;` — a covergroup instance; registers a coverage tracker.
+    CoverInstance(CoverInstance),
     /// Recovery placeholder for an unparseable item.
     Error(Span),
+}
+
+/// A functional-coverage model `covergroup NAME; (coverpoint EXPR;)* endgroup` (N5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct CovergroupDecl {
+    pub name: Ident,
+    pub points: Vec<Coverpoint>,
+    pub span: Span,
+}
+
+/// A `[LABEL:] coverpoint EXPR;` inside a covergroup. Auto-bins only in this slice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct Coverpoint {
+    pub label: Option<Ident>,
+    pub expr: Expr,
+    pub span: Span,
+}
+
+/// A covergroup instance declaration `CG_TYPE NAME = new;` (N5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct CoverInstance {
+    pub cg_type: Ident,
+    pub name: Ident,
+    pub span: Span,
 }
 
 /// An interface modport: a named direction view over interface members.

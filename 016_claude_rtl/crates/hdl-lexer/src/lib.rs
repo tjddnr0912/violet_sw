@@ -504,6 +504,8 @@ pub enum Kw {
     Do, Unique, Priority, Final,
     // --- SVA concurrent assertion subset (v8, Phase-3) ---
     Property,
+    // --- SV functional coverage subset (N5, Phase-3) ---
+    Covergroup, Endgroup, Coverpoint,
 }
 
 impl Kw {
@@ -572,6 +574,8 @@ impl Kw {
             "do" => Do, "unique" => Unique, "priority" => Priority,
             "final" => Final,
             "property" => Property,
+            "covergroup" => Covergroup, "endgroup" => Endgroup,
+            "coverpoint" => Coverpoint,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)
