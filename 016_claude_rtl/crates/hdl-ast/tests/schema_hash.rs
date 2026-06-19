@@ -101,10 +101,12 @@ use vita_schema::schema_hash;
 /// `TopItem::{Package,Import}`+`ImportDecl`+`ModuleItem::Import`+
 /// `ExprKind::PkgScoped`+`NetVarKind::String`; 2026-06-11 v6 `AssocKey::Str`;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
-/// 2026-06-05 `TypedefKind::Struct`.)
+/// 2026-06-05 `TypedefKind::Struct`; 2026-06-20 SVA-REST property operators
+/// `PropExpr::{Not,Until,Eventually,Always}` + `Stmt::CoverProperty` +
+/// `ModuleItem::LetDecl`/`LetDecl`.)
 const EXPECTED: [u8; 32] = [
-    202, 131, 177, 121, 231, 139, 246, 234, 184, 79, 144, 194, 109, 66, 141, 97, 98, 189, 56, 185,
-    214, 80, 29, 47, 30, 111, 10, 220, 173, 244, 164, 18,
+    35, 3, 122, 129, 42, 171, 109, 160, 85, 244, 22, 176, 15, 144, 212, 6, 46, 62, 175, 196, 158,
+    64, 241, 144, 59, 58, 26, 168, 146, 99, 129, 63,
 ];
 
 #[test]

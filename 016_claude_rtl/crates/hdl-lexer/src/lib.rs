@@ -243,6 +243,11 @@ pub enum TokenKind {
     LBracketArrow, // SVA goto-repetition `[->n]` (Phase-3, slice S8)
     #[token("[=")]
     LBracketEq, // SVA nonconsecutive-repetition `[=n]` (Phase-3, slice S8)
+    // SVA-REST `[+]` consecutive-repetition sugar = `[*1:$]` (one-or-more). An ATOMIC
+    // 3-char token so it can NEVER mis-lex a `[+x]` indexed expression (logos matches
+    // `[+]` only when a `]` immediately follows the `+`; `[+x]` stays `[` `+` `x` `]`).
+    #[token("[+]")]
+    BracketPlus,
     #[token("]")]
     RBracket,
     #[token("{")]

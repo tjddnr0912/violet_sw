@@ -628,6 +628,8 @@ fn run_vita_str_gated(
         class_vtable: sc.class_vtable,
         class_calls: sc.class_calls,
         class_field_widths: sc.class_field_widths,
+        assert_fire: sc.assert_fire,
+        assert_ctl: sc.assert_ctl,
         timescale_unit: timescale_unit_string(rt.global_prec_exp),
         ..opts.sim_opts()
     };

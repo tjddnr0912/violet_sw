@@ -45,7 +45,7 @@ violet_sw/
 | 012_stock_dashboard | 글로벌 시장 대시보드 (Bloomberg-style, port 5002) | `./run_dashboard.sh` | [CLAUDE.md](012_stock_dashboard/CLAUDE.md) |
 | 013_shortcut | 비주얼 블록 Apple Shortcuts 빌더 (iOS/macOS) | `xcodegen generate` | [CLAUDE.md](013_shortcut/CLAUDE.md) |
 | 014_casper | **미장봇 (US Stock Bot)** — SPMO 50%/GEM 30%/Casper(ORB+FVG) 20% 멀티 bucket, 자본 $5k/$10k에서 MTUM·QUAL·Clenow 자동 활성화 | `./run_casper.sh start` | [CLAUDE.md](014_casper/CLAUDE.md) |
-| 016_claude_rtl | **vitamin** — 오픈소스 Rust RTL 시뮬레이터 (SystemVerilog/Verilog, cargo 워크스페이스). 전 파이프라인 동작 + Phase-3 SVA 서브셋 + deferred immediate asserts + frame-call 콜스택 + **HIER-REST 완결** + **functional coverage 완성(N5+N5-G)** + 2-state 정수타입·게이트 프리미티브 + **N7 class/OOP(코어+상속+가상 동적 디스패치)** + **SVA-REST `assume property`** (1578 tests green, format_version 9·N7=전부 IR-0) | `cargo test --workspace --locked` | [CLAUDE.md](016_claude_rtl/CLAUDE.md) |
+| 016_claude_rtl | **vitamin** — 오픈소스 Rust RTL 시뮬레이터 (SystemVerilog/Verilog, cargo 워크스페이스). 전 파이프라인 동작 + Phase-3 SVA 서브셋 + deferred immediate asserts + frame-call 콜스택 + **HIER-REST 완결** + **functional coverage 완성(N5+N5-G)** + 2-state 정수타입·게이트 프리미티브 + **N7 class/OOP(코어+상속+가상 동적 디스패치)** + **SVA-REST 완결**(property ops `always`/`until`/`implies`/`s_eventually`·`cover property`·`let`·`$assertoff/on/kill`·`assume property`·`seq[+]`) (1607 tests green, format_version 9·SVA-REST=전부 IR-0) | `cargo test --workspace --locked` | [CLAUDE.md](016_claude_rtl/CLAUDE.md) |
 
 ## Development Guidelines
 

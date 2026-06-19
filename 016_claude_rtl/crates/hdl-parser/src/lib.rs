@@ -203,6 +203,16 @@ impl<'t, 's> Parser<'t, 's> {
             false
         }
     }
+    /// Consume a CONTEXTUAL keyword (an `Ident` token whose text is `name`, e.g. the
+    /// SVA `until`/`implies`/`s_eventually` operators), returning whether it matched.
+    fn eat_ident_kw(&mut self, name: &str) -> bool {
+        if self.at_ident_kw(name) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
     /// Consume `k` or record an error (does NOT advance — caller decides to sync).
     fn expect(&mut self, k: TokenKind, what: &'static str) -> bool {
         if self.peek() == Some(k) {
@@ -1621,6 +1631,33 @@ impl<'t, 's> Parser<'t, 's> {
                 body: Box::new(stmt),
                 span,
             }));
+        }
+        // SVA-REST: module-level `cover property(@(clk) seq);` — wrapped in a synthetic
+        // `initial` (like module-level `assert property`) so it flows through the same
+        // procedural collection; the counter/report is materialized at module level.
+        if self.at_ident_kw("cover")
+            && self.peek_at(1) == Some(TokenKind::Word(WordKind::Keyword(Kw::Property)))
+        {
+            let start = self.cur_span();
+            let stmt = self.parse_cover_property();
+            let span = start.to(self.prev_span());
+            return Some(ModuleItem::Proc(ProceduralBlock {
+                kind: ProcKind::Initial,
+                sensitivity: None,
+                body: Box::new(stmt),
+                span,
+            }));
+        }
+        // SVA-REST: `let NAME [(formals)] = expr;` (IEEE 1800 §11.13) — a named
+        // expression macro. `let` is contextual (an SV reserved word, never a legal
+        // net name), recognized only when followed by an identifier.
+        if self.at_ident_kw("let")
+            && matches!(
+                self.peek_at(1),
+                Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
+            )
+        {
+            return self.parse_let_decl();
         }
         // Named SVA declarations (Phase-3 named-SVA slice). `sequence` /
         // `endsequence` / `endproperty` are CONTEXTUAL keywords (`at_ident_kw`,
@@ -4035,6 +4072,14 @@ impl<'t, 's> Parser<'t, 's> {
             // assign/call (the `return EXPR;` / `return;` shape is unambiguous in
             // statement position: a V2005 program has no `return` statement).
             _ if self.at_ident_kw("return") => self.parse_return(),
+            // SVA-REST: `cover property(@(clk) seq);` — `cover` is contextual (an SV
+            // reserved word, never a legal net name) and recognized only when
+            // immediately followed by `property`.
+            _ if self.at_ident_kw("cover")
+                && self.peek_at(1) == Some(TokenKind::Word(WordKind::Keyword(Kw::Property))) =>
+            {
+                self.parse_cover_property()
+            }
             _ if self.is_ident() => self.parse_assign_or_call(),
             _ => self.stmt_error(),
         }
@@ -4450,6 +4495,73 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    /// SVA-REST: `cover property(@(clk) [disable iff(e)] seq);` — a coverage
+    /// statement (counts sequence matches, reports the hit count at end-of-sim).
+    /// Shares the clock + `disable iff` + sequence grammar with a property spec; an
+    /// optional cover action block is loud-rejected (unsupported — never silently
+    /// dropped). Cursor on `cover`.
+    fn parse_cover_property(&mut self) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // `cover`
+        self.bump(); // `property` (Kw::Property)
+        self.expect(TokenKind::LParen, "'(' after 'property'");
+        let clock = if self.peek() == Some(TokenKind::At) {
+            self.parse_sensitivity()
+        } else {
+            self.error("'@(...)' clocking event in cover property");
+            Sensitivity::List(Vec::new())
+        };
+        let disable_iff = if self.at_kw(Kw::Disable) {
+            self.bump(); // `disable`
+            if self.at_ident_kw("iff") {
+                self.bump();
+            } else {
+                self.error("`iff` after `disable` in a cover property");
+            }
+            self.expect(TokenKind::LParen, "'(' after `disable iff`");
+            let e = self.expr(0);
+            self.expect(TokenKind::RParen, "')' after `disable iff` condition");
+            Some(e)
+        } else {
+            None
+        };
+        let seq = self.parse_sequence();
+        self.expect(TokenKind::RParen, "')'");
+        if !self.eat(TokenKind::Semi) {
+            // A `cover property(...) <stmt>` success-action block is unsupported in
+            // this subset — loud (do not silently drop the action), then skip the
+            // statement for recovery.
+            self.error(
+                "';' after `cover property(...)` (a cover action block is unsupported \
+                 in this subset)",
+            );
+            let _ = self.parse_statement();
+        }
+        Stmt::CoverProperty {
+            clock,
+            disable_iff,
+            seq,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// SVA-REST: `let NAME [(formals)] = expr ;` (IEEE 1800 §11.13). Cursor on `let`.
+    fn parse_let_decl(&mut self) -> Option<ModuleItem> {
+        let start = self.cur_span();
+        self.bump(); // `let`
+        let name = self.ident()?;
+        let formals = self.parse_sva_formals();
+        self.expect(TokenKind::Eq, "'=' in a let declaration");
+        let body = self.expr(0);
+        self.expect(TokenKind::Semi, "';' after a let declaration");
+        Some(ModuleItem::LetDecl(LetDecl {
+            name,
+            formals,
+            body,
+            span: start.to(self.prev_span()),
+        }))
+    }
+
     /// A synthetic `1` literal expr (the bare-property `1'b1 |-> e` sentinel and
     /// the named-instance placeholder consequent).
     fn sva_true_lit(span: Span) -> Expr {
@@ -4529,17 +4641,18 @@ impl<'t, 's> Parser<'t, 's> {
         } else {
             None
         };
-        // Property-level `and`/`or` (slice N2d): when the body uses a top-level
-        // (paren-depth-0) `and`/`or` property operator, parse a `PropExpr` TREE
-        // instead of the flat `seq impl seq`. The flat fields then hold inert
-        // placeholders; elaborate dispatches on `Some(prop_expr)`. This detection
-        // keeps every and/or-free property (the whole existing corpus) on the
-        // byte-identical flat path below — including slice A3 multi-clock, whose
-        // `@(c2)` consequent clock the tree grammar does NOT carry (combining
-        // and/or with multi-clock is out of subset → loud at elaborate). `and`/`or`
-        // inside the clocking event or a parenthesized sub-expr is at depth > 0 and
-        // ignored.
-        if self.prop_has_toplevel_andor() {
+        // Property-level operators (slice N2d + SVA-REST): when the body uses a
+        // top-level (paren-depth-0) property operator — `and`/`or` (N2d), or
+        // `not`/`always`/`until`/`s_until`/`implies`/`iff`/`s_eventually`/`nexttime`
+        // (SVA-REST) — parse a `PropExpr` TREE instead of the flat `seq impl seq`.
+        // The flat fields then hold inert placeholders; elaborate dispatches on
+        // `Some(prop_expr)`. This detection keeps every operator-free property (the
+        // whole existing flat corpus) on the byte-identical flat path below —
+        // including slice A3 multi-clock, whose `@(c2)` consequent clock the tree
+        // grammar does NOT carry (combining a tree with multi-clock is out of subset
+        // → loud at elaborate). An operator inside the clocking event or a
+        // parenthesized sub-expression is at depth > 0 and ignored.
+        if self.prop_has_toplevel_op() {
             let pe = self.parse_prop_expr();
             let true_lit = Self::sva_true_lit(start);
             return (
@@ -4616,7 +4729,7 @@ impl<'t, 's> Parser<'t, 's> {
     /// construct — it stops at the first depth-underflow `)` / depth-0 `;` /
     /// `endproperty` / module boundary / EOF. `and`/`or` nested in the clocking
     /// event or a parenthesized sub-expression is at depth > 0 and ignored.
-    fn prop_has_toplevel_andor(&self) -> bool {
+    fn prop_has_toplevel_op(&self) -> bool {
         const BUDGET: usize = 65536;
         let mut i = 0usize;
         let mut depth: i32 = 0;
@@ -4625,7 +4738,7 @@ impl<'t, 's> Parser<'t, 's> {
                 None => return false,
                 // SVA repeat-open tokens (`[*` / `[->` / `[=`) open a bracket that
                 // closes with a plain `]` (RBracket), so they must count for depth
-                // or the `]` underflows and a trailing top-level `and`/`or` is missed
+                // or the `]` underflows and a trailing top-level operator is missed
                 // (review N2d — the same new-token-vs-bracket-scan hazard as N2a-1).
                 Some(
                     TokenKind::LParen
@@ -4641,13 +4754,23 @@ impl<'t, 's> Parser<'t, 's> {
                     depth -= 1;
                 }
                 Some(TokenKind::Semi) if depth == 0 => return false, // decl body terminator
-                Some(TokenKind::Word(WordKind::Keyword(Kw::And | Kw::Or))) if depth == 0 => {
-                    return true
-                }
+                // N2d keyword property operators (`and`/`or`) + SVA-REST prefix
+                // `not`/`always`.
+                Some(TokenKind::Word(WordKind::Keyword(
+                    Kw::And | Kw::Or | Kw::Not | Kw::Always,
+                ))) if depth == 0 => return true,
                 Some(TokenKind::Word(WordKind::Keyword(Kw::Module | Kw::Endmodule)))
                     if depth == 0 =>
                 {
                     return false
+                }
+                // SVA-REST contextual property operators (`until`/`implies`/
+                // `s_eventually`/`nexttime`/…) — reserved SV words, so a property body
+                // identifier never legitimately collides with them.
+                Some(TokenKind::Word(WordKind::Ident)) if depth == 0 => {
+                    if Self::is_prop_op_text(self.text_at(i)) {
+                        return true;
+                    }
                 }
                 _ => {}
             }
@@ -4661,11 +4784,74 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Parse a property expression (slice N2d). Precedence loosest→tightest:
-    /// `or` < `and` < implication < primary. Reached only when
-    /// `prop_has_toplevel_andor` detected a property-level `and`/`or`.
+    /// True for a CONTEXTUAL (non-keyword in our lexer, but reserved in SV) property
+    /// operator word — the infix `until`/`s_until`/`implies`/`iff` and prefix
+    /// `eventually`/`s_eventually`/`nexttime`/`s_nexttime`/`s_always`. These are
+    /// IEEE 1800 reserved words, so a property-body identifier never legitimately
+    /// shadows them (unlike a hand-rolled keyword guess).
+    fn is_prop_op_text(s: &str) -> bool {
+        matches!(
+            s,
+            "until"
+                | "s_until"
+                | "implies"
+                | "iff"
+                | "eventually"
+                | "s_eventually"
+                | "nexttime"
+                | "s_nexttime"
+                | "s_always"
+        )
+    }
+
+    /// Parse a property expression (slice N2d + SVA-REST). Precedence loosest→
+    /// tightest: `implies`/`iff` < `until`/`s_until` < `or` < `and` < unary prefix
+    /// (`not`/`always`/`s_eventually`/`nexttime`) < sequence-implication < primary.
+    /// Reached only when `prop_has_toplevel_op` detected a property-level operator.
     fn parse_prop_expr(&mut self) -> PropExpr {
-        self.parse_prop_or()
+        self.parse_prop_implies()
+    }
+
+    /// `lhs implies rhs` / `lhs iff rhs` (SVA-REST) — desugared to the `and`/`or`/`not`
+    /// core: `p implies q` ≡ `(not p) or q`; `p iff q` ≡ `(p implies q) and (q implies
+    /// p)`. Right-associative (`a implies b implies c` = `a implies (b implies c)`).
+    fn parse_prop_implies(&mut self) -> PropExpr {
+        let lhs = self.parse_prop_until();
+        if self.eat_ident_kw("implies") {
+            let rhs = self.parse_prop_implies();
+            // p implies q ≡ (not p) or q
+            return PropExpr::Or(Box::new(PropExpr::Not(Box::new(lhs))), Box::new(rhs));
+        }
+        if self.eat_ident_kw("iff") {
+            let rhs = self.parse_prop_implies();
+            // p iff q ≡ (not p or q) and (not q or p)
+            let pq = PropExpr::Or(
+                Box::new(PropExpr::Not(Box::new(lhs.clone()))),
+                Box::new(rhs.clone()),
+            );
+            let qp = PropExpr::Or(Box::new(PropExpr::Not(Box::new(rhs))), Box::new(lhs));
+            return PropExpr::And(Box::new(pq), Box::new(qp));
+        }
+        lhs
+    }
+
+    /// `lhs until rhs` / `lhs s_until rhs` (SVA-REST, non-associative single use).
+    fn parse_prop_until(&mut self) -> PropExpr {
+        let lhs = self.parse_prop_or();
+        let strong = if self.at_ident_kw("s_until") {
+            self.bump();
+            true
+        } else if self.eat_ident_kw("until") {
+            false
+        } else {
+            return lhs;
+        };
+        let rhs = self.parse_prop_or();
+        PropExpr::Until {
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            strong,
+        }
     }
 
     fn parse_prop_or(&mut self) -> PropExpr {
@@ -4679,13 +4865,88 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     fn parse_prop_and(&mut self) -> PropExpr {
-        let mut lhs = self.parse_prop_impl();
+        let mut lhs = self.parse_prop_unary();
         while self.at_kw(Kw::And) {
             self.bump(); // `and`
-            let rhs = self.parse_prop_impl();
+            let rhs = self.parse_prop_unary();
             lhs = PropExpr::And(Box::new(lhs), Box::new(rhs));
         }
         lhs
+    }
+
+    /// Unary prefix property operators (SVA-REST): `not p`, `always p`,
+    /// `s_eventually p`, `nexttime p` (right-recursive: `not always p` =
+    /// `Not(Always(p))`). `nexttime`/`s_nexttime` desugar to `1'b1 |=> p`. The bounded
+    /// forms (`s_eventually [m:n]`, `nexttime [n]`, `s_always`) and weak unbounded
+    /// `eventually` are loud-rejected (recovery: parse the operand so the rest syncs).
+    fn parse_prop_unary(&mut self) -> PropExpr {
+        if self.eat_kw(Kw::Not) {
+            return PropExpr::Not(Box::new(self.parse_prop_unary()));
+        }
+        if self.eat_kw(Kw::Always) {
+            return PropExpr::Always(Box::new(self.parse_prop_unary()));
+        }
+        if self.at_ident_kw("s_eventually") || self.at_ident_kw("eventually") {
+            let strong = self.cur_text() == "s_eventually";
+            self.bump();
+            if self.peek() == Some(TokenKind::LBracket) {
+                self.error(
+                    "an unbounded `s_eventually` (a bounded `s_eventually [m:n]` range \
+                     is unsupported in this subset)",
+                );
+                // consume the `[ … ]` for recovery.
+                let mut d = 0i32;
+                while let Some(t) = self.peek() {
+                    match t {
+                        TokenKind::LBracket => d += 1,
+                        TokenKind::RBracket => {
+                            d -= 1;
+                            if d == 0 {
+                                self.bump();
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.bump();
+                }
+            }
+            if !strong {
+                self.error(
+                    "`s_eventually` (a weak unbounded `eventually` has no bounded-sim \
+                     verdict; use `s_eventually`)",
+                );
+            }
+            return PropExpr::Eventually {
+                strong: true,
+                prop: Box::new(self.parse_prop_unary()),
+            };
+        }
+        if self.at_ident_kw("nexttime") || self.at_ident_kw("s_nexttime") {
+            self.bump();
+            if self.peek() == Some(TokenKind::LBracket) {
+                self.error(
+                    "an unbounded `nexttime` (a bounded `nexttime [n]` is unsupported \
+                     in this subset)",
+                );
+            }
+            // `nexttime p` ≡ `1'b1 |=> p`.
+            let sp = self.prev_span();
+            return PropExpr::Impl {
+                ante: Sequence::Boolean(Self::sva_true_lit(sp)),
+                kind: ImplicationKind::NonOverlap,
+                cons: Box::new(self.parse_prop_unary()),
+            };
+        }
+        if self.at_ident_kw("s_always") {
+            self.error(
+                "`always` (a bounded `s_always` strong-always is unsupported in this \
+                 subset)",
+            );
+            self.bump();
+            return PropExpr::Always(Box::new(self.parse_prop_unary()));
+        }
+        self.parse_prop_impl()
     }
 
     /// A property primary, optionally the antecedent of a single implication. A
@@ -4745,8 +5006,13 @@ impl<'t, 's> Parser<'t, 's> {
                     }
                 }
                 Some(TokenKind::PipeArrow | TokenKind::PipeEqArrow) if depth == 1 => return true,
-                Some(TokenKind::Word(WordKind::Keyword(Kw::And | Kw::Or))) if depth == 1 => {
-                    return true
+                Some(TokenKind::Word(WordKind::Keyword(
+                    Kw::And | Kw::Or | Kw::Not | Kw::Always,
+                ))) if depth == 1 => return true,
+                Some(TokenKind::Word(WordKind::Ident)) if depth == 1 => {
+                    if Self::is_prop_op_text(self.text_at(i)) {
+                        return true;
+                    }
                 }
                 _ => {}
             }
@@ -5191,6 +5457,18 @@ impl<'t, 's> Parser<'t, 's> {
                         kind: RepeatKind::Consec,
                     };
                 }
+                // SVA-REST `seq[+]` consecutive-repetition sugar ≡ `seq[*1:$]`
+                // (one-or-more, unbounded — the S13 run-latch). `seq[*]` (≡ `[*0:$]`,
+                // a zero-or-more EMPTY match) stays loud via `parse_seq_repeat_bounds`.
+                Some(TokenKind::BracketPlus) => {
+                    self.bump(); // `[+]`
+                    seq = Sequence::Repeat {
+                        seq: Box::new(seq),
+                        min: 1,
+                        max: None,
+                        kind: RepeatKind::Consec,
+                    };
+                }
                 Some(tok @ (TokenKind::LBracketArrow | TokenKind::LBracketEq)) => {
                     self.bump(); // `[->` / `[=`
                     let (which, kind) = if tok == TokenKind::LBracketArrow {
@@ -5253,6 +5531,16 @@ impl<'t, 's> Parser<'t, 's> {
     /// `[*0:n]` (empty) and `[*0:$]` (zero-or-more / empty match) are deferred
     /// (loud, recovered positive). Caller consumed `[*`; this stops before `]`.
     fn parse_seq_repeat_bounds(&mut self) -> (u32, Option<u32>) {
+        // Bare `[*]` ≡ `[*0:$]` — a zero-or-more (EMPTY-match) repetition. The empty-
+        // sequence concatenation algebra is not expressible in the fixed shift-pipeline
+        // desugar → loud (use `[+]`/`[*1:$]` for one-or-more). Recover positive.
+        if self.peek() == Some(TokenKind::RBracket) {
+            self.error(
+                "a repetition count (a bare `[*]` ≡ `[*0:$]` zero-or-more empty match \
+                 is unsupported in this subset; use `[+]` / `[*1:$]` for one-or-more)",
+            );
+            return (1, None);
+        }
         let lo = self.parse_small_const("a repetition count in `[*n]`");
         if self.peek() == Some(TokenKind::Colon) {
             self.bump(); // ':'
@@ -5947,6 +6235,13 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                 fix_prop_expr(l, from, to);
                 fix_prop_expr(r, from, to);
             }
+            PropExpr::Not(p) => fix_prop_expr(p, from, to),
+            PropExpr::Until { lhs, rhs, .. } => {
+                fix_prop_expr(lhs, from, to);
+                fix_prop_expr(rhs, from, to);
+            }
+            PropExpr::Eventually { prop, .. } => fix_prop_expr(prop, from, to),
+            PropExpr::Always(p) => fix_prop_expr(p, from, to),
         }
     }
     fn fix_expr(e: &mut Expr, from: &str, to: &str) {
@@ -6255,6 +6550,22 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             if let Some(e) = value {
                 fix_expr(e, from, to);
             }
+        }
+        Stmt::CoverProperty {
+            clock,
+            disable_iff,
+            seq,
+            ..
+        } => {
+            if let Sensitivity::List(evs) = clock {
+                for ev in evs {
+                    fix_expr(&mut ev.expr, from, to);
+                }
+            }
+            if let Some(e) = disable_iff {
+                fix_expr(e, from, to);
+            }
+            fix_sequence(seq, from, to);
         }
         Stmt::WaitFork { .. } | Stmt::Disable { .. } | Stmt::Null(_) | Stmt::Error(_) => {}
     }

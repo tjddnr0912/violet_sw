@@ -28,6 +28,19 @@ pub(crate) fn dispatch(
     args: &[u32],
     sid: u32,
 ) -> Ctl {
+    // SVA-REST assertion control. A `$assertoff`/`$asserton`/`$assertkill` site is a
+    // no-op `Display` whose StmtId is in `assert_ctl`: flip the global enable instead
+    // of printing. A gated assertion FIRE (`assert_fire`) is SUPPRESSED while disabled
+    // (no diag, no exit-class bump). Both checked before the deferred/severity paths.
+    if let Some(&kind) = sched.st.assert_ctl.get(&sid) {
+        // 0 = off, 1 = on, 2 = kill (kill = off; the gate prevents fires while
+        // disabled — in-flight pipeline regs persist but cannot report).
+        sched.st.assert_disabled = kind != 1;
+        return Ctl::Continue;
+    }
+    if sched.st.assert_disabled && sched.st.assert_fire.contains(&sid) {
+        return Ctl::Continue;
+    }
     // §16.4 DEFERRED immediate assertion: a flush MARKER (cancel prior pending
     // report) or a deferred ACTION (enqueue for Observed/Reactive maturation) is
     // intercepted here and does NOT fire inline. Bypassed while the engine is

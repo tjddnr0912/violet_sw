@@ -189,6 +189,13 @@ pub struct SimOpts {
     /// Class field-read `Signal` ExprId → `(field_width, field_signed)`. Patches
     /// the width table (a field Signal's net is the 32-bit handle, not the field).
     pub class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
+    /// SVA-REST: StmtIds of synthesized assertion FIRE reports. Suppressed while
+    /// assertions are disabled by a standing `$assertoff`/`$assertkill`.
+    pub assert_fire: std::collections::BTreeSet<u32>,
+    /// SVA-REST: `$assertoff`/`$asserton`/`$assertkill` control-site StmtId → kind
+    /// (0 = off, 1 = on, 2 = kill). Lowered as no-op `Display`; the engine flips the
+    /// global assertion-enable on reach.
+    pub assert_ctl: std::collections::BTreeMap<u32, u8>,
 }
 
 impl Default for SimOpts {
@@ -224,6 +231,8 @@ impl Default for SimOpts {
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
+            assert_fire: std::collections::BTreeSet::new(),
+            assert_ctl: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -320,6 +329,9 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     // N7: a class field-read Signal's net is the 32-bit handle; patch its
     // self-width to the FIELD's width (carried per-ExprId from elaborate).
     st.wt.patch_class_fields(&opts.class_field_widths);
+    // SVA-REST: assertion-control sidecars (gated fires + `$assertoff/on/kill` sites).
+    st.assert_fire = opts.assert_fire.clone();
+    st.assert_ctl = opts.assert_ctl.clone();
     st.task_calls_proc = opts.task_calls_proc.clone(); // B2
     st.task_calls_func = opts.task_calls_func.clone(); // B2
 

@@ -225,6 +225,13 @@ pub(crate) struct SimState<'a> {
     pub plusargs: Vec<String>,
     /// P2-E `final` ProcIds (from `SimOpts.final_procs`).
     pub final_procs: std::collections::BTreeSet<u32>,
+    /// SVA-REST: StmtIds of assertion FIRE reports gated by assertion control.
+    pub assert_fire: std::collections::BTreeSet<u32>,
+    /// SVA-REST: `$assertoff/on/kill` control-site StmtId → kind (0=off,1=on,2=kill).
+    pub assert_ctl: std::collections::BTreeMap<u32, u8>,
+    /// SVA-REST: global assertion-enable state — `true` while a standing
+    /// `$assertoff`/`$assertkill` suppresses gated fires (cleared by `$asserton`).
+    pub assert_disabled: bool,
     /// §16.4 deferred-assert flush markers (from `SimOpts.defer_marks`): marker
     /// StmtId → region. Empty ⇒ no deferred asserts in the design.
     pub defer_marks: crate::DeferMarkTable,
@@ -478,6 +485,9 @@ impl<'a> SimState<'a> {
             rng: RngCells::default(),
             plusargs: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
+            assert_fire: std::collections::BTreeSet::new(),
+            assert_ctl: std::collections::BTreeMap::new(),
+            assert_disabled: false,
             defer_marks: crate::DeferMarkTable::new(),
             defer_acts: crate::DeferActTable::new(),
             files: std::collections::BTreeMap::new(),

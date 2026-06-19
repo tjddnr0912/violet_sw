@@ -225,8 +225,24 @@ pub enum ModuleItem {
     CoverInstance(CoverInstance),
     /// `class NAME …; … endclass` declared inside a module/package body (N7).
     Class(ClassDecl),
+    /// `let NAME [(formals)] = expr;` (SVA-REST, IEEE 1800 §11.13) — a named
+    /// expression macro. Substituted at each use site by elaborate (a use is a plain
+    /// `Ident` / `Call` that resolves against the let table); pure IR-0.
+    LetDecl(LetDecl),
     /// Recovery placeholder for an unparseable item.
     Error(Span),
+}
+
+/// A `let NAME [(formals)] = expr;` declaration (SVA-REST, IEEE 1800 §11.13). The
+/// body is substituted (with positional formal→actual binding) at each use site by
+/// elaborate — pure IR-0 (no sim-ir change). Mirrors [`SeqDecl`] but for a plain
+/// expression rather than a sequence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct LetDecl {
+    pub name: Ident,
+    pub formals: Vec<Ident>,
+    pub body: Expr,
+    pub span: Span,
 }
 
 /// A functional-coverage model `covergroup NAME [@(event)]; (coverpoint EXPR;)*
@@ -784,6 +800,17 @@ pub enum Stmt {
         else_s: Box<Stmt>,
         span: Span,
     },
+    /// Cover property (SVA-REST, IEEE 1800 §16.13): `cover property(@(clk) seq);`.
+    /// In simulation this COUNTS sequence matches and reports the hit count at
+    /// end-of-sim (a coverage statement, not a pass/fail assertion). The desugar is a
+    /// synthesized clocked counter + a `final` `$display` of the hit count — pure
+    /// IR-0. A bare boolean `seq` is `Sequence::Boolean`.
+    CoverProperty {
+        clock: Sensitivity,
+        disable_iff: Option<Expr>,
+        seq: Sequence,
+        span: Span,
+    },
     Null(Span), // bare ;
     /// Recovery placeholder for an unparseable / not-yet-implemented statement.
     Error(Span),
@@ -915,6 +942,33 @@ pub enum PropExpr {
     And(Box<PropExpr>, Box<PropExpr>),
     /// `lhs or rhs` — at least one must hold (violation = both sides violate).
     Or(Box<PropExpr>, Box<PropExpr>),
+    /// `not p` (SVA-REST) — holds iff `p` does NOT hold (violation = `p` holds).
+    /// The operand must reduce to a same-clock (skew-0) verdict (a boolean / `|->`
+    /// leaf); `not` of a multi-clock-skew (`|=>`) operand is loud-rejected.
+    Not(Box<PropExpr>),
+    /// `lhs until rhs` / `lhs s_until rhs` (SVA-REST, IEEE 1800 §16.12.9). The
+    /// (skew-0) safety obligation is "`lhs` holds at every clock up to and
+    /// including the clock before `rhs` first holds" → per-clock violation =
+    /// `!held(lhs) && !held(rhs)`. `strong` (`s_until`) ADDS the liveness
+    /// obligation that `rhs` eventually holds (checked by an end-of-sim `final`
+    /// block); weak `until` (the default) does not. Both operands must be skew-0.
+    Until {
+        lhs: Box<PropExpr>,
+        rhs: Box<PropExpr>,
+        strong: bool,
+    },
+    /// `s_eventually p` (SVA-REST, IEEE 1800 §16.12.10) — the strong liveness
+    /// obligation that `p` (a skew-0 verdict) eventually holds. There is no
+    /// per-clock safety violation; an unfulfilled obligation is reported by an
+    /// end-of-sim `final` block. Unbounded only (`strong` is always true; the
+    /// bounded `s_eventually [m:n]` / weak unbounded `eventually` forms are loud).
+    Eventually { strong: bool, prop: Box<PropExpr> },
+    /// `always p` (SVA-REST, IEEE 1800 §16.12.10) — `p` holds at every clock from
+    /// the attempt start. At the TOP level of a per-clock-re-attempted assertion
+    /// this is exactly `p` (every clock re-checks `p`), so elaborate reduces a
+    /// top-level `Always(p)` to `p`'s per-clock violation. A NESTED `always` (e.g.
+    /// `a |-> always b`, which needs a "once armed, forever" latch) is loud-rejected.
+    Always(Box<PropExpr>),
 }
 
 /// A named SVA sequence declaration: `sequence NAME [(formals)]; <seq>; endsequence`

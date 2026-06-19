@@ -345,6 +345,15 @@ pub struct Sidecars {
     /// Class field-read Signal ExprId → `(field_width, field_signed)` — patches
     /// the engine width table (a field Signal's net is the 32-bit handle).
     pub class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
+    // ── SVA-REST assertion-control sidecars (out-of-band, golden-free) ──
+    /// StmtIds of synthesized SVA-checker FIRE reports (`$error`/action). Gated by
+    /// a standing `$assertoff`/`$assertkill` (the engine suppresses these when
+    /// assertions are disabled). EMPTY ⇒ no assertions ⇒ golden-neutral.
+    pub assert_fire: std::collections::BTreeSet<u32>,
+    /// `$assertoff`/`$asserton`/`$assertkill` control sites: StmtId → kind
+    /// (0 = off, 1 = on, 2 = kill). Lowered to a no-op `Display`; the engine
+    /// flips the global assertion-enable on reach. EMPTY ⇒ no control tasks.
+    pub assert_ctl: std::collections::BTreeMap<u32, u8>,
 }
 
 /// N7: resolved metadata for one class, built by the whole-design prescan
@@ -488,6 +497,9 @@ pub fn elaborate_with_timescale_roots(
         class_vtable: std::mem::take(&mut el.class_vtable),
         class_calls: std::mem::take(&mut el.class_calls),
         class_field_widths: std::mem::take(&mut el.class_field_widths),
+        // SVA-REST assertion control.
+        assert_fire: std::mem::take(&mut el.assert_fire),
+        assert_ctl: std::mem::take(&mut el.assert_ctl),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -928,6 +940,16 @@ struct PendingSva {
     span: ast::Span,
 }
 
+/// A `cover property(@(clk) [disable iff(e)] seq)` collected during lowering and
+/// materialized after the module loop as a clocked match counter + an end-of-sim
+/// `$display` of the hit count (SVA-REST). Out-of-band (golden-free).
+struct PendingCover {
+    clock: ast::Sensitivity,
+    disable_iff: Option<ast::Expr>,
+    seq: ast::Sequence,
+    span: ast::Span,
+}
+
 /// Collected sampled-value state for one concurrent assertion: each distinct
 /// sampled signal gets ONE prev-register (shared across `$past`/`$rose`/etc.),
 /// plus the per-clock `prev <= signal` NBA updates that maintain them.
@@ -1007,6 +1029,35 @@ fn sva_zero(sp: ast::Span) -> ast::Expr {
             kind: ast::IntLitKind::Sized,
             raw: "1'b0".to_string(),
         },
+        span: sp,
+    }
+}
+
+/// Peel a TOP-LEVEL `always` wrapper from a property expression (recursively):
+/// `always p` at the top of a per-clock-re-attempted assertion is exactly `p` (the
+/// re-attempt supplies the "every clock"), and `always s_eventually p` (recurrent
+/// liveness) is `s_eventually p`. A NESTED `always` is left in place (loud-rejected).
+fn peel_top_always(pe: ast::PropExpr) -> ast::PropExpr {
+    match pe {
+        ast::PropExpr::Always(inner) => peel_top_always(*inner),
+        other => other,
+    }
+}
+
+/// A 1-bit non-blocking assignment `<name> <= <rhs>;` (an SVA pend/liveness reg
+/// update appended to a synthesized clocked checker body).
+fn sva_nba_1bit(name: &str, rhs: ast::Expr, sp: ast::Span) -> ast::Stmt {
+    ast::Stmt::NonBlocking {
+        lhs: ast::Lvalue::Ident(ast::HierPath {
+            segments: vec![ast::Ident {
+                name: name.to_string(),
+                span: sp,
+            }],
+            span: sp,
+        }),
+        delay: None,
+        event: None,
+        rhs,
         span: sp,
     }
 }
@@ -1827,6 +1878,9 @@ struct Elaborator<'s> {
     // namespace precedent). Inlined at use sites → pure IR-0, golden untouched.
     seq_table: BTreeMap<String, ast::SeqDecl>,
     prop_table: BTreeMap<String, ast::PropDecl>,
+    /// SVA-REST `let NAME [(formals)] = expr;` declarations, inlined at use sites
+    /// (the named-sequence precedent). Pure IR-0.
+    let_table: BTreeMap<String, ast::LetDecl>,
     // Recursion guard for named-sequence inlining (separate from `inline_stack`,
     // which is empty by the time SVA checkers materialize, but a dedicated stack
     // keeps SVA correctness independent of func/task inline state).
@@ -1861,6 +1915,13 @@ struct Elaborator<'s> {
     class_vtable: Vec<Vec<u32>>,
     class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
     class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
+    // SVA-REST assertion control: StmtIds of synthesized assertion-fire reports +
+    // `$assertoff/on/kill` control sites. `in_assert_synth` is true while a
+    // synthesized SVA checker body is lowering, so each fire `$error`'s StmtId is
+    // captured into `assert_fire`.
+    assert_fire: std::collections::BTreeSet<u32>,
+    assert_ctl: std::collections::BTreeMap<u32, u8>,
+    in_assert_synth: bool,
 
     // Substitution scope: a formal-param NAME currently bound to an actual ExprId
     // (a function/task INPUT formal during inlining). `lower_expr`'s Ident arm
@@ -1940,6 +2001,9 @@ struct Elaborator<'s> {
     // v8 SVA: concurrent assertions collected during statement lowering, drained
     // into synthesized clocked checker processes after each module's process loop.
     pending_sva: Vec<PendingSva>,
+    // SVA-REST: `cover property` statements collected during lowering, drained into
+    // synthesized counter + end-of-sim `$display` processes (golden-free).
+    pending_cover: Vec<PendingCover>,
     // N3: hierarchical READ references (`tb.dut.x`) collected during expression
     // lowering. A downward ref cannot resolve at lowering time (the child instance's
     // nets are created in pass 8, AFTER the parent body is lowered in pass 7), so each
@@ -2028,6 +2092,7 @@ impl<'s> Elaborator<'s> {
             task_table: BTreeMap::new(),
             seq_table: BTreeMap::new(),
             prop_table: BTreeMap::new(),
+            let_table: BTreeMap::new(),
             sva_inline_stack: Vec::new(),
             class_table: BTreeMap::new(),
             class_order: Vec::new(),
@@ -2040,6 +2105,9 @@ impl<'s> Elaborator<'s> {
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
+            assert_fire: std::collections::BTreeSet::new(),
+            assert_ctl: std::collections::BTreeMap::new(),
+            in_assert_synth: false,
             subst: Vec::new(),
             out_subst: Vec::new(),
             inline_stack: Vec::new(),
@@ -2051,6 +2119,7 @@ impl<'s> Elaborator<'s> {
             event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
             pending_sva: Vec::new(),
+            pending_cover: Vec::new(),
             deferred_hier: Vec::new(),
             deferred_hier_sel: Vec::new(),
             deferred_hier_write: Vec::new(),
@@ -3368,6 +3437,7 @@ impl<'s> Elaborator<'s> {
                                                                              // identical mechanism to func/task. Saved/restored alongside.
         let saved_seqs = std::mem::take(&mut self.seq_table);
         let saved_props = std::mem::take(&mut self.prop_table);
+        let saved_lets = std::mem::take(&mut self.let_table);
         for item in &module.body {
             match item {
                 ast::ModuleItem::Func(f) => {
@@ -3399,6 +3469,7 @@ impl<'s> Elaborator<'s> {
                 // would keep the LAST, contradicting "first declaration used").
                 ast::ModuleItem::SequenceDecl(s) => self.register_seq_decl(s),
                 ast::ModuleItem::PropertyDecl(p) => self.register_prop_decl(p),
+                ast::ModuleItem::LetDecl(l) => self.register_let_decl(l),
                 // SVA decls inside a `generate` block are module-global too (slice
                 // A4): the prescan walks generate structurally (no const-eval / no
                 // genvar binding) so a reference resolves regardless of loop trip
@@ -3561,6 +3632,9 @@ impl<'s> Elaborator<'s> {
         //       the process loop above as a synthesized clocked checker process.
         //       Drained here (this instance's scope) so child instances start clean.
         self.materialize_sva_checkers();
+        // (7.6) SVA-REST: materialize each `cover property` as a clocked counter +
+        //       end-of-sim `$display` report.
+        self.materialize_cover();
 
         // (8) recurse into child instances, in body declaration order — including
         //     those nested inside a generate construct (Instances phase).
@@ -3585,6 +3659,7 @@ impl<'s> Elaborator<'s> {
         self.task_frame_idx = saved_task_frame_idx;
         self.seq_table = saved_seqs;
         self.prop_table = saved_props;
+        self.let_table = saved_lets;
         self.cur_prefix = saved_prefix;
         self.cur_inst = saved_inst;
         self.cur_time_mult = saved_mult;
@@ -6995,6 +7070,18 @@ impl<'s> Elaborator<'s> {
                     if let Some(v) = self.lookup_scoped(seg) {
                         return self.const_param_expr(v);
                     }
+                    // SVA-REST `let NAME = expr;` (0 formals): substitute the declared
+                    // body. Resolved AFTER nets/params/formals (a real net/param of the
+                    // same name always wins — a `let` never shadows hardware) and only
+                    // when no net AND no function/task binds the name (the genuine
+                    // callable wins — review: illegal co-declaration must not silent-shadow).
+                    if self.let_table.contains_key(seg)
+                        && self.lookup_net_scoped(seg).is_none()
+                        && !self.func_table.contains_key(seg)
+                        && !self.task_table.contains_key(seg)
+                    {
+                        return self.lower_let_use(seg, &[], e.span);
+                    }
                 }
                 // N7: a class field read (`obj.field` / `this.field` / bare member
                 // inside a method) → `Signal{handle, word: field-id}`. Checked
@@ -7504,6 +7591,18 @@ impl<'s> Elaborator<'s> {
                 }
             }
             ast::ExprKind::Call { name, args } => {
+                // SVA-REST `let NAME(formals) = expr;` call: substitute the body with
+                // positional formal→actual binding. A real FUNCTION/TASK of the same
+                // name WINS (it is the genuine callable) — IEEE 1800 §11.13 requires a
+                // `let` name to be unique in scope, but if a design illegally co-declares
+                // both, the function must not be silently shadowed by the let (review).
+                if name.segments.len() == 1
+                    && self.let_table.contains_key(&name.segments[0].name)
+                    && !self.func_table.contains_key(&name.segments[0].name)
+                    && !self.task_table.contains_key(&name.segments[0].name)
+                {
+                    return self.lower_let_use(&name.segments[0].name.clone(), args, e.span);
+                }
                 // N7: a class method call (`obj.m(args)` / `this.m()` / `super.m()`)
                 // → `Expr::Call{method_fid, [this, …args]}`. Checked before the
                 // ordinary function-inline path (which expects a free function).
@@ -11566,6 +11665,58 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// Lower a `let` use (SVA-REST): positional formal→actual binding, then lower the
+    /// substituted body (a 0-formal `let` lowers its body verbatim). Pure IR-0: the
+    /// body is an ordinary expression, so this is a macro expansion at lowering time.
+    /// Arity mismatch, an unknown name, and self/mutual recursion are loud (returning
+    /// a placeholder so elaboration continues).
+    fn lower_let_use(&mut self, name: &str, args: &[ast::Expr], _sp: ast::Span) -> u32 {
+        let Some(decl) = self.let_table.get(name).cloned() else {
+            return self.placeholder_expr();
+        };
+        if decl.formals.len() != args.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "`let {}` expects {} argument(s), got {}",
+                    name,
+                    decl.formals.len(),
+                    args.len()
+                ),
+            );
+            return self.placeholder_expr();
+        }
+        if self.sva_inline_stack.iter().any(|n| n == name) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("recursive `let {name}` is illegal (IEEE 1800 §11.13)"),
+            );
+            return self.placeholder_expr();
+        }
+        let body = if decl.formals.is_empty() {
+            decl.body.clone()
+        } else {
+            subst_expr(&decl.body, &sva_formal_map(&decl.formals, args))
+        };
+        self.sva_inline_stack.push(name.to_string());
+        let eid = self.lower_expr(&body);
+        self.sva_inline_stack.pop();
+        eid
+    }
+
+    /// Register a `let` declaration (SVA-REST, first-wins + redeclare warning). See
+    /// [`Self::register_seq_decl`].
+    fn register_let_decl(&mut self, l: &ast::LetDecl) {
+        if self.let_table.contains_key(&l.name.name) {
+            self.warn(&format!(
+                "let `{}` redeclared; first declaration used",
+                l.name.name
+            ));
+        } else {
+            self.let_table.insert(l.name.name.clone(), l.clone());
+        }
+    }
+
     /// Collect `sequence`/`property` declarations from a generate block into the
     /// module-global tables (slice A4). Walks the generate STRUCTURE — For/If/Case/
     /// Block bodies and nested generates — WITHOUT const-eval or genvar binding: a
@@ -11847,6 +11998,30 @@ impl<'s> Elaborator<'s> {
             array_len: 1,
             dir: ir::PortDir::Internal,
             init: default_init(ast::NetVarKind::Reg, w),
+        };
+        self.add_net(&name, nv);
+        name
+    }
+
+    /// A fresh ZERO-initialized SVA reg (liveness `pend`, SVA-REST). Like
+    /// `fresh_sva_reg` but 0-init (`fresh_sva_reg`'s X-init would make a never-armed
+    /// `pend` poison the end-of-sim `if (pend)` check), mirroring `fresh_cover_counter`.
+    fn fresh_sva_reg0(&mut self, width: u32, tag: &str) -> String {
+        let w = width.max(1);
+        let name = format!("__sva_{tag}_{}", self.nets.len());
+        let nwords = w.div_ceil(64).max(1) as usize;
+        let nv = ir::NetVar {
+            kind: ir::NetKind::Reg,
+            width: w,
+            msb: w.saturating_sub(1),
+            lsb: 0,
+            signed: false,
+            array_len: 1,
+            dir: ir::PortDir::Internal,
+            init: ir::BitPacked {
+                val: vec![0; nwords],
+                unk: vec![0; nwords],
+            },
         };
         self.add_net(&name, nv);
         name
@@ -13208,6 +13383,12 @@ impl<'s> Elaborator<'s> {
     /// assert severity shape (routes to the diagnostic stream + exit class 1).
     fn materialize_sva_checkers(&mut self) {
         let pending = std::mem::take(&mut self.pending_sva);
+        // SVA-REST: while a checker body lowers, every fire `$error`'s StmtId is
+        // captured into `assert_fire` (so `$assertoff`/`$assertkill` can suppress it).
+        // Scoped to this whole pass — it dispatches to synth_prop_expr/liveness/multi/
+        // crossclock, which all emit fires. Cover (a separate pass) keeps it false.
+        let saved_synth = self.in_assert_synth;
+        self.in_assert_synth = true;
         for mut sva in pending {
             let sp = sva.span;
             // A concurrent assertion must have a SINGLE clocking event (slice
@@ -13227,12 +13408,19 @@ impl<'s> Elaborator<'s> {
                 );
                 continue;
             }
-            // Property-level `and`/`or` / recursion (slice N2d): a `prop_expr` tree
-            // reduces to a per-clock boolean violation check by `synth_prop_expr`
+            // Property-level operators (slice N2d + SVA-REST): a `prop_expr` tree
             // (the flat `ante/kind/cons` fields hold placeholders). Dispatched FIRST
-            // so the placeholder fields never reach the cross-clock / flat paths.
+            // so the placeholder fields never reach the cross-clock / flat paths. A
+            // tree containing a LIVENESS operator (`s_eventually` / `s_until`) routes
+            // to `synth_liveness` (which emits an end-of-sim `final` obligation check);
+            // a SAFETY-only tree (`and`/`or`/`not`/`always`/weak-`until`/recursion)
+            // reduces to a per-clock boolean violation by `synth_prop_expr`.
             if sva.prop_expr.is_some() {
-                self.synth_prop_expr(sva, sp);
+                if Self::prop_expr_has_liveness(sva.prop_expr.as_ref().unwrap()) {
+                    self.synth_liveness(sva, sp);
+                } else {
+                    self.synth_prop_expr(sva, sp);
+                }
                 continue;
             }
             // Cross-clock SEQUENCE antecedent (slice N2a-1): `@(c1) a ##1 @(c2) b |-> c`
@@ -13275,65 +13463,7 @@ impl<'s> Elaborator<'s> {
             // single 1-term alternative reproduces the flat-property path
             // byte-for-byte; bounded ranges produce >1 alternative.
             let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
-            // Peel a top-level NAMED-sequence reference to its declared body FIRST, so
-            // a named sequence whose body is a top-level `within` reaches synth_within
-            // exactly like the literal-antecedent path — otherwise the inlined `within`
-            // body hit the unconditional reject in expand_sequence's Within arm (review
-            // 2026-06-16: named ≠ inline for `within`). Cycle-guarded; byte-identical
-            // for a literal antecedent (no top-level name to peel) and for a named
-            // non-`within` antecedent (the body still flows through expand_sequence).
-            let resolved_ante = self.resolve_named_top(&sva.ante);
-            let ante = if let ast::Sequence::Within { seq1, seq2 } = &resolved_ante {
-                // `seq1 within seq2` combines two sub-pipelines — synthesized
-                // whole rather than as a (term, hop) alternative list.
-                self.synth_within(seq1, seq2, &mut regs, &mut pipeline_nbas, sp)
-            } else {
-                let mut alternatives = self.expand_sequence(&resolved_ante, &mut regs);
-                if alternatives.len() > SVA_SEQ_ALT_CAP {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        &format!(
-                            "an SVA sequence expanded to {} alternatives (cap {}); narrow the bounded ranges",
-                            alternatives.len(),
-                            SVA_SEQ_ALT_CAP
-                        ),
-                    );
-                    alternatives.truncate(SVA_SEQ_ALT_CAP);
-                }
-                let match_sigs: Vec<ast::Expr> = alternatives
-                    .into_iter()
-                    .map(|(terms, guard)| {
-                        // Flat byte-identical path: a single PLAIN BOOLEAN term
-                        // with no throughout guard reproduces the old `ante`
-                        // exactly. A single goto/nonconsec term still needs the
-                        // FSM (synth).
-                        if terms.len() == 1 && guard.is_none() {
-                            if let SeqTerm::Bool(_) = terms[0].0 {
-                                let (SeqTerm::Bool(e), _) = terms.into_iter().next().unwrap()
-                                else {
-                                    unreachable!()
-                                };
-                                return e;
-                            }
-                        }
-                        self.synth_seq_pipeline(terms, guard, &mut pipeline_nbas, sp)
-                    })
-                    .collect();
-                // OR the alternatives' match signals. A single signal stays raw
-                // (flat byte-identical); multiple are each reduced to a boolean
-                // (reduction-OR) before the bitwise OR.
-                if match_sigs.len() == 1 {
-                    match_sigs.into_iter().next().unwrap()
-                } else {
-                    let mut it = match_sigs.into_iter();
-                    let mut acc = sva_unary(ast::UnOp::RedOr, it.next().unwrap(), sp);
-                    for m in it {
-                        let mb = sva_unary(ast::UnOp::RedOr, m, sp);
-                        acc = sva_binary(ast::BinOp::BitOr, acc, mb, sp);
-                    }
-                    acc
-                }
-            };
+            let ante = self.synth_seq_match(&sva.ante, &mut regs, &mut pipeline_nbas, sp);
             // Consequent (slice S14). A boolean consequent is rewritten here (so
             // its prev-reg allocation order — and the byte-identical lowering —
             // is preserved); a sequence consequent is built as an obligation
@@ -13515,6 +13645,436 @@ impl<'s> Elaborator<'s> {
             let proc = self.lower_proc_block(&pb);
             self.push_process(proc);
         }
+        self.in_assert_synth = saved_synth;
+    }
+
+    /// Synthesize the boolean MATCH-THIS-CLOCK expression of a sequence antecedent:
+    /// peel a top-level named sequence, route a top `within` to `synth_within`, else
+    /// expand into a disjunction of (term-list, throughout-guard) alternatives, build
+    /// each one's match signal (a shift-register pipeline for ≥2 terms / a goto/
+    /// nonconsec FSM), and OR them. A single plain-boolean alternative returns the raw
+    /// expression (flat byte-identical). Shared by the flat assertion path and
+    /// `cover property` (SVA-REST) — extracting it changes neither's net allocation.
+    fn synth_seq_match(
+        &mut self,
+        ante: &ast::Sequence,
+        regs: &mut SvaRegs,
+        pipeline_nbas: &mut Vec<ast::Stmt>,
+        sp: ast::Span,
+    ) -> ast::Expr {
+        // Peel a top-level NAMED-sequence reference to its declared body FIRST, so a
+        // named sequence whose body is a top-level `within` reaches synth_within
+        // exactly like the literal-antecedent path (review 2026-06-16: named ≠ inline
+        // for `within`). Cycle-guarded; byte-identical for a literal antecedent.
+        let resolved_ante = self.resolve_named_top(ante);
+        if let ast::Sequence::Within { seq1, seq2 } = &resolved_ante {
+            // `seq1 within seq2` combines two sub-pipelines — synthesized whole.
+            return self.synth_within(seq1, seq2, regs, pipeline_nbas, sp);
+        }
+        let mut alternatives = self.expand_sequence(&resolved_ante, regs);
+        if alternatives.len() > SVA_SEQ_ALT_CAP {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "an SVA sequence expanded to {} alternatives (cap {}); narrow the bounded ranges",
+                    alternatives.len(),
+                    SVA_SEQ_ALT_CAP
+                ),
+            );
+            alternatives.truncate(SVA_SEQ_ALT_CAP);
+        }
+        let match_sigs: Vec<ast::Expr> = alternatives
+            .into_iter()
+            .map(|(terms, guard)| {
+                // Flat byte-identical path: a single PLAIN BOOLEAN term with no
+                // throughout guard reproduces the old `ante` exactly. A single goto/
+                // nonconsec term still needs the FSM (synth).
+                if terms.len() == 1 && guard.is_none() {
+                    if let SeqTerm::Bool(_) = terms[0].0 {
+                        let (SeqTerm::Bool(e), _) = terms.into_iter().next().unwrap() else {
+                            unreachable!()
+                        };
+                        return e;
+                    }
+                }
+                self.synth_seq_pipeline(terms, guard, pipeline_nbas, sp)
+            })
+            .collect();
+        // OR the alternatives' match signals. A single signal stays raw (flat byte-
+        // identical); multiple are each reduced to a boolean before the bitwise OR.
+        if match_sigs.len() == 1 {
+            match_sigs.into_iter().next().unwrap()
+        } else {
+            let mut it = match_sigs.into_iter();
+            let mut acc = sva_unary(ast::UnOp::RedOr, it.next().unwrap(), sp);
+            for m in it {
+                let mb = sva_unary(ast::UnOp::RedOr, m, sp);
+                acc = sva_binary(ast::BinOp::BitOr, acc, mb, sp);
+            }
+            acc
+        }
+    }
+
+    /// Materialize each collected `cover property` (SVA-REST) into a clocked match
+    /// COUNTER plus an end-of-sim `final` `$display` of the hit count. Pure IR-0:
+    /// `always @(clk) if (match && !dis) cnt <= cnt + 1;` + `final $display("…%0d…",
+    /// cnt);`. The match signal reuses the same sequence machinery as an assertion
+    /// antecedent (`synth_seq_match`); a single clocking event is required.
+    fn materialize_cover(&mut self) {
+        let pending = std::mem::take(&mut self.pending_cover);
+        for cov in pending {
+            let sp = cov.span;
+            let single_clock = matches!(&cov.clock, ast::Sensitivity::List(evs) if evs.len() == 1);
+            if !single_clock {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a cover property must have a single clocking event \
+                     (multi-clock cover is unsupported in this subset)",
+                );
+                continue;
+            }
+            // Reject a re-clocked / multi-clock sequence (handoff machinery is for
+            // assertions only) — keep cover to a single-clock match.
+            if seq_has_clocked(&cov.seq) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a re-clocked (`@(c2)`) sequence inside `cover property` is \
+                     unsupported in this subset",
+                );
+                continue;
+            }
+            let mut regs = SvaRegs::default();
+            let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
+            let matched = self.synth_seq_match(&cov.seq, &mut regs, &mut pipeline_nbas, sp);
+            let dis = cov
+                .disable_iff
+                .as_ref()
+                .map(|e| sva_unary(ast::UnOp::RedOr, self.rewrite_sampled(e, &mut regs), sp));
+            // hit condition (1-bit), gated by `!dis`.
+            let mut hit = sva_unary(ast::UnOp::RedOr, matched, sp);
+            if let Some(d) = &dis {
+                hit = sva_binary(
+                    ast::BinOp::LogAnd,
+                    sva_unary(ast::UnOp::LogNot, d.clone(), sp),
+                    hit,
+                    sp,
+                );
+            }
+            // 32-bit 0-init hit counter (`fresh_cover_counter`).
+            let cnt = self.fresh_cover_counter(32);
+            let cnt_e = sva_ident_expr(&cnt, sp);
+            // `if (hit) cnt <= cnt + 1;`
+            let incr = ast::Stmt::If {
+                cond: hit,
+                then_s: Box::new(sva_nba_1bit(
+                    &cnt,
+                    sva_binary(ast::BinOp::Add, cnt_e.clone(), sva_one(sp), sp),
+                    sp,
+                )),
+                else_s: None,
+                span: sp,
+            };
+            let mut stmts = vec![incr];
+            stmts.extend(regs.nbas);
+            // `disable iff`: clear the antecedent pipeline obligations on the dis clock.
+            if let Some(d) = &dis {
+                for s in pipeline_nbas {
+                    stmts.push(gate_nba_with_disable(s, d, sp));
+                }
+            } else {
+                stmts.extend(pipeline_nbas);
+            }
+            let body = if stmts.len() == 1 {
+                stmts.pop().unwrap()
+            } else {
+                ast::Stmt::Block {
+                    label: None,
+                    decls: Vec::new(),
+                    stmts,
+                    span: sp,
+                }
+            };
+            let pb = ast::ProceduralBlock {
+                kind: ast::ProcKind::Always,
+                sensitivity: Some(cov.clock.clone()),
+                body: Box::new(body),
+                span: sp,
+            };
+            let proc = self.lower_proc_block(&pb);
+            self.push_process(proc);
+            // End-of-sim coverage report: `final $display("Cover ...: %0d hits", cnt);`.
+            let report = ast::Stmt::SysTaskCall {
+                name: ast::Ident {
+                    name: "$display".to_string(),
+                    span: sp,
+                },
+                args: vec![
+                    ast::Expr {
+                        kind: ast::ExprKind::StrLit {
+                            raw: "\"Cover property hits: %0d\"".to_string(),
+                        },
+                        span: sp,
+                    },
+                    cnt_e,
+                ],
+                span: sp,
+            };
+            let fpb = ast::ProceduralBlock {
+                kind: ast::ProcKind::Final,
+                sensitivity: None,
+                body: Box::new(report),
+                span: sp,
+            };
+            let fproc = self.lower_proc_block(&fpb);
+            self.push_process(fproc);
+        }
+    }
+
+    /// True iff a property-expression tree contains a STRONG liveness operator
+    /// (`s_eventually` or `s_until`) anywhere — those need an end-of-sim `final`
+    /// obligation check (`synth_liveness`) rather than the per-clock safety reducer.
+    fn prop_expr_has_liveness(pe: &ast::PropExpr) -> bool {
+        match pe {
+            ast::PropExpr::Seq(_) => false,
+            ast::PropExpr::Impl { cons, .. } => Self::prop_expr_has_liveness(cons),
+            ast::PropExpr::And(l, r) | ast::PropExpr::Or(l, r) => {
+                Self::prop_expr_has_liveness(l) || Self::prop_expr_has_liveness(r)
+            }
+            ast::PropExpr::Not(p) | ast::PropExpr::Always(p) => Self::prop_expr_has_liveness(p),
+            ast::PropExpr::Until { lhs, rhs, strong } => {
+                *strong || Self::prop_expr_has_liveness(lhs) || Self::prop_expr_has_liveness(rhs)
+            }
+            ast::PropExpr::Eventually { .. } => true,
+        }
+    }
+
+    /// Synthesize a LIVENESS property (`s_eventually` / `s_until`, SVA-REST). A
+    /// liveness obligation has no per-clock safety verdict — instead a 0-init
+    /// `pend` reg tracks "an attempt is still waiting for its target", maintained in
+    /// a clocked `always @(clk)`, and an end-of-sim `final` block reports
+    /// `if (pend) $error`. A single flag collapses all overlapping attempts (they
+    /// discharge together at the first target match — exact for the canonical idioms).
+    ///
+    /// Recognized shapes (else loud-reject — never silently miss a liveness check):
+    /// `s_eventually p` (arm EVERY clock), `req |-> s_eventually p` (arm on `req` this
+    /// clock), `req |=> s_eventually p` (arm one clock later via a `pend_req` reg), and
+    /// `lhs s_until rhs` (per-clock safety `!l && !r` plus liveness on `rhs`).
+    ///
+    /// A top-level `always` wrapper (recurrent liveness, `always s_eventually p`) is
+    /// peeled (≡ `s_eventually p` under re-attempt). `req` is restricted to a boolean
+    /// (a multi-term antecedent is loud). The unsupported feature combos (a consequent
+    /// clock, `disable iff`, a pass action) are loud-rejected like `synth_prop_expr`.
+    fn synth_liveness(&mut self, sva: PendingSva, sp: ast::Span) {
+        let Some(pe) = sva.prop_expr.clone() else {
+            return;
+        };
+        if sva.cons_clock.is_some() || sva.disable_iff.is_some() || sva.pass.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a liveness property (`s_eventually` / `s_until`) combined with a \
+                 consequent clock, `disable iff`, or a pass action is unsupported in \
+                 this subset",
+            );
+            return;
+        }
+        let pe = peel_top_always(pe);
+        let mut regs = SvaRegs::default();
+        let mut nbas: Vec<ast::Stmt> = Vec::new();
+        let mut check_stmts: Vec<ast::Stmt> = Vec::new();
+        // The liveness `pend` reg (0-init: a never-armed attempt must not fire).
+        let pend = self.fresh_sva_reg0(1, "live");
+        let pend_e = sva_ident_expr(&pend, sp);
+        // `arm & clear` per shape. `clear` is the 1-bit "target HELD this clock"; the
+        // pend recurrence is `pend <= (pend | arm) & !clear`.
+        let (arm, clear) = match &pe {
+            // `s_eventually p` — arm every clock; target = held(p).
+            ast::PropExpr::Eventually { prop, .. } => {
+                let Some(held) = self.liveness_held(prop, &mut regs, sp) else {
+                    return;
+                };
+                (sva_one(sp), held)
+            }
+            // `req |-> s_eventually p` / `req |=> s_eventually p`.
+            ast::PropExpr::Impl { ante, kind, cons } => {
+                let ast::PropExpr::Eventually { prop, .. } = cons.as_ref() else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a liveness implication consequent must be `s_eventually p` in \
+                         this subset",
+                    );
+                    return;
+                };
+                let Some(req) = self.liveness_bool_ante(ante, &mut regs, sp) else {
+                    return;
+                };
+                let Some(held) = self.liveness_held(prop, &mut regs, sp) else {
+                    return;
+                };
+                let arm = match kind {
+                    ast::ImplicationKind::Overlap => req,
+                    ast::ImplicationKind::NonOverlap => {
+                        // `pend_req <= req;` — arm the eventually one clock later.
+                        let pr = self.fresh_sva_reg0(1, "livereq");
+                        nbas.push(sva_nba_1bit(&pr, req, sp));
+                        sva_ident_expr(&pr, sp)
+                    }
+                };
+                (arm, held)
+            }
+            // `lhs s_until rhs` — per-clock safety `!l && !r`; liveness on rhs.
+            ast::PropExpr::Until { lhs, rhs, .. } => {
+                let Some((vl, sl)) =
+                    self.prop_expr_violation(lhs, None, &mut regs, &mut nbas, 0, sp)
+                else {
+                    return;
+                };
+                let Some((vr, sr)) =
+                    self.prop_expr_violation(rhs, None, &mut regs, &mut nbas, 0, sp)
+                else {
+                    return;
+                };
+                if sl != 0 || sr != 0 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "an `s_until` operand with a multi-clock (`|=>`) skew is \
+                         unsupported in this subset",
+                    );
+                    return;
+                }
+                // Safety: `if (!held(l) && !held(r)) $error` = `if (viol(l) && viol(r))`.
+                let safety = sva_binary(
+                    ast::BinOp::LogAnd,
+                    sva_unary(ast::UnOp::RedOr, vl, sp),
+                    sva_unary(ast::UnOp::RedOr, vr.clone(), sp),
+                    sp,
+                );
+                check_stmts.push(ast::Stmt::If {
+                    cond: safety,
+                    then_s: Box::new(sva_error_stmt(sp)),
+                    else_s: None,
+                    span: sp,
+                });
+                // Liveness target = held(rhs) = !viol(rhs); arm every clock.
+                let held = sva_unary(ast::UnOp::LogNot, sva_unary(ast::UnOp::RedOr, vr, sp), sp);
+                (sva_one(sp), held)
+            }
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "this liveness property shape is unsupported in this subset \
+                     (supported: `s_eventually p`, `req |->/|=> s_eventually p`, \
+                     `lhs s_until rhs`)",
+                );
+                return;
+            }
+        };
+        // pend recurrence: `pend <= (pend | arm) & !clear` (1-bit).
+        let not_clear = sva_unary(
+            ast::UnOp::LogNot,
+            sva_unary(ast::UnOp::RedOr, clear, sp),
+            sp,
+        );
+        let armed = sva_binary(ast::BinOp::BitOr, pend_e.clone(), arm, sp);
+        let next = sva_binary(ast::BinOp::BitAnd, armed, not_clear, sp);
+        nbas.push(sva_nba_1bit(&pend, next, sp));
+        // Clocked maintenance process: safety check (if any) FIRST, then NBAs.
+        let mut stmts = check_stmts;
+        stmts.extend(regs.nbas);
+        stmts.extend(nbas);
+        let body = if stmts.len() == 1 {
+            stmts.pop().unwrap()
+        } else {
+            ast::Stmt::Block {
+                label: None,
+                decls: Vec::new(),
+                stmts,
+                span: sp,
+            }
+        };
+        let pb = ast::ProceduralBlock {
+            kind: ast::ProcKind::Always,
+            sensitivity: Some(sva.clock.clone()),
+            body: Box::new(body),
+            span: sp,
+        };
+        let proc = self.lower_proc_block(&pb);
+        self.push_process(proc);
+        // End-of-sim obligation: `final if (pend) $error`. A separate `final` process
+        // (registered in `final_procs`) reads the module-level `pend` reg.
+        let final_body = ast::Stmt::If {
+            cond: pend_e,
+            then_s: Box::new(ast::Stmt::SysTaskCall {
+                name: ast::Ident {
+                    name: "$error".to_string(),
+                    span: sp,
+                },
+                args: vec![ast::Expr {
+                    kind: ast::ExprKind::StrLit {
+                        raw: "\"Liveness property not satisfied (s_eventually/s_until)\""
+                            .to_string(),
+                    },
+                    span: sp,
+                }],
+                span: sp,
+            }),
+            else_s: None,
+            span: sp,
+        };
+        let fpb = ast::ProceduralBlock {
+            kind: ast::ProcKind::Final,
+            sensitivity: None,
+            body: Box::new(final_body),
+            span: sp,
+        };
+        let fproc = self.lower_proc_block(&fpb);
+        self.push_process(fproc);
+    }
+
+    /// The 1-bit "HELD this clock" expression of a skew-0 liveness target property
+    /// (`held = !viol`). Loud-rejects a multi-clock-skew target (a `|=>` target would
+    /// need the obligation deferred a clock — out of this subset).
+    fn liveness_held(
+        &mut self,
+        prop: &ast::PropExpr,
+        regs: &mut SvaRegs,
+        sp: ast::Span,
+    ) -> Option<ast::Expr> {
+        let mut nbas = Vec::new();
+        let (viol, skew) = self.prop_expr_violation(prop, None, regs, &mut nbas, 0, sp)?;
+        if skew != 0 || !nbas.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a multi-clock-skew liveness target (e.g. `s_eventually (a |=> b)`) is \
+                 unsupported in this subset",
+            );
+            return None;
+        }
+        Some(sva_unary(
+            ast::UnOp::LogNot,
+            sva_unary(ast::UnOp::RedOr, viol, sp),
+            sp,
+        ))
+    }
+
+    /// The 1-bit boolean match of a liveness implication antecedent. Restricted to a
+    /// boolean sequence (a multi-term antecedent is loud); `$past`/`$rose`/etc. are
+    /// rewritten onto the shared prev-regs.
+    fn liveness_bool_ante(
+        &mut self,
+        ante: &ast::Sequence,
+        regs: &mut SvaRegs,
+        sp: ast::Span,
+    ) -> Option<ast::Expr> {
+        let ast::Sequence::Boolean(e) = ante else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a liveness implication antecedent must be a boolean (a multi-term \
+                 sequence antecedent is unsupported in this subset)",
+            );
+            return None;
+        };
+        let e = self.rewrite_sampled(e, regs);
+        Some(sva_unary(ast::UnOp::RedOr, e, sp))
     }
 
     /// Synthesize a clocked checker for a property-level `and`/`or` / recursive
@@ -13528,6 +14088,10 @@ impl<'s> Elaborator<'s> {
         let Some(pe) = sva.prop_expr.clone() else {
             return; // dispatched only when Some
         };
+        // A top-level `always p` is exactly `p` under per-clock re-attempt — peel it
+        // (recursively) so the per-clock reducer sees `p`. A nested `always` stays in
+        // `pe` and is loud-rejected by `prop_expr_violation`'s `Always` arm.
+        let pe = peel_top_always(pe);
         if sva.cons_clock.is_some() {
             self.error(
                 MsgCode::ElabUnsupported,
@@ -13737,6 +14301,59 @@ impl<'s> Elaborator<'s> {
                     self.prop_expr_violation(r, self_name, regs, pend_nbas, depth + 1, sp)?;
                 let s = self.unify_prop_skew(sl, sr)?;
                 Some((sva_binary(ast::BinOp::LogAnd, vl, vr, sp), s))
+            }
+            // `not p` (SVA-REST) — holds iff `p` does NOT → viol = held(p) = !viol(p).
+            // Skew preserved (a `not` of a `|=>` keeps the verdict one clock later).
+            ast::PropExpr::Not(p) => {
+                let (vp, s) =
+                    self.prop_expr_violation(p, self_name, regs, pend_nbas, depth + 1, sp)?;
+                Some((sva_unary(ast::UnOp::LogNot, vp, sp), s))
+            }
+            // Weak `lhs until rhs` (SVA-REST, safety) — at every clock `lhs` must hold
+            // until `rhs` first does → viol = `!held(lhs) && !held(rhs)` = viol(lhs) &&
+            // viol(rhs). Both operands must be skew-0 (the temporal obligation aligns
+            // same-clock verdicts). The STRONG form (`s_until`) is routed to
+            // `synth_liveness` and never reaches here.
+            ast::PropExpr::Until {
+                lhs,
+                rhs,
+                strong: false,
+            } => {
+                let (vl, sl) =
+                    self.prop_expr_violation(lhs, self_name, regs, pend_nbas, depth + 1, sp)?;
+                let (vr, sr) =
+                    self.prop_expr_violation(rhs, self_name, regs, pend_nbas, depth + 1, sp)?;
+                if sl != 0 || sr != 0 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a `until` operand with a multi-clock (`|=>`) skew is \
+                         unsupported in this subset",
+                    );
+                    return None;
+                }
+                Some((sva_binary(ast::BinOp::LogAnd, vl, vr, sp), 0))
+            }
+            // A top-level `always p` is reduced to `p` BEFORE the per-clock reduction
+            // (every clock re-checks `p`, so it is exactly `p`'s violation). A NESTED
+            // `always` reaching here (e.g. `a |-> always b`, which needs an arm-then-
+            // hold-forever latch) is loud-rejected. Likewise a STRONG liveness operator
+            // (`s_eventually`/`s_until`) reaching this per-clock reducer is a routing
+            // error (it should have gone to `synth_liveness`) → loud.
+            ast::PropExpr::Always(_) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a nested `always` (e.g. `a |-> always b`) is unsupported in this \
+                     subset (only a top-level `always p` is supported)",
+                );
+                None
+            }
+            ast::PropExpr::Until { strong: true, .. } | ast::PropExpr::Eventually { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a liveness operator (`s_eventually` / `s_until`) nested inside a \
+                     property-level `and`/`or`/`not` is unsupported in this subset",
+                );
+                None
             }
         }
     }
@@ -16030,6 +16647,21 @@ impl<'s> Elaborator<'s> {
                     });
                 }
             }
+            // SVA-REST cover property: collected like a concurrent assertion and
+            // materialized (counter + end-of-sim `$display`) after the module loop.
+            ast::Stmt::CoverProperty {
+                clock,
+                disable_iff,
+                seq,
+                span,
+            } => {
+                self.pending_cover.push(PendingCover {
+                    clock: clock.clone(),
+                    disable_iff: disable_iff.clone(),
+                    seq: seq.clone(),
+                    span: *span,
+                });
+            }
             // Parse error is the ONE genuinely-fatal stmt: keep self.error.
             ast::Stmt::Error(_) => {
                 self.error(
@@ -17821,6 +18453,42 @@ impl<'s> Elaborator<'s> {
     /// literal, becomes `fmt`; the rest are value args. Non-print tasks
     /// ($finish/$dumpfile/...) carry `fmt: None`, every arg in `args`.
     fn lower_systask(&mut self, name: &ast::Ident, args: &[ast::Expr]) -> Option<u32> {
+        // SVA-REST `$assertoff`/`$asserton`/`$assertkill` (IEEE 1800 §20.11): runtime
+        // assertion control. Lowered to a no-op `Display` (no fmt/args) whose StmtId is
+        // recorded in `assert_ctl`; the engine flips the global assertion-enable when it
+        // reaches the stmt and suppresses gated fires (`assert_fire`) while disabled. A
+        // hierarchical/`level` argument is accepted-and-ignored (global subset).
+        if let Some(kind) = match name.name.as_str() {
+            "$assertoff" => Some(0u8),
+            "$asserton" => Some(1u8),
+            "$assertkill" => Some(2u8),
+            _ => None,
+        } {
+            // Only the GLOBAL no-argument form is supported. A `levels`/`scope_list`
+            // argument (`$assertoff(1, top.cA)`, IEEE 1800 §20.12) would restrict the
+            // control to named scopes — vita has no per-scope assertion grouping, so
+            // accept-and-ignoring the scope would SILENTLY over-disable (suppress a
+            // sibling scope's legitimate violation → false PASS). Loud-reject instead.
+            if !args.is_empty() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "`{}` with a levels/scope argument is unsupported (only the global \
+                         no-argument form is supported; a scoped control would silently \
+                         over-disable)",
+                        name.name
+                    ),
+                );
+                return None;
+            }
+            let sid = self.push_stmt(ir::Stmt::SysTask {
+                which: ir::SysTaskId::Display,
+                fmt: None,
+                args: Vec::new(),
+            });
+            self.assert_ctl.insert(sid, kind);
+            return Some(sid);
+        }
         // P1-1: `$fatal`/`$error`/`$warning`/`$info` lower as `Display` stmts plus
         // an out-of-band SeverityTable entry (the frozen SysTaskId has no severity
         // variants; the engine intercepts by StmtId and routes to the diag stream).
@@ -18020,6 +18688,12 @@ impl<'s> Elaborator<'s> {
             args: arg_ids,
         });
         self.severities.insert(sid, sev);
+        // SVA-REST: a fire `$error` lowered while a checker body is being synthesized
+        // is an ASSERTION fire — record its StmtId so `$assertoff`/`$assertkill` can
+        // suppress it at runtime.
+        if self.in_assert_synth {
+            self.assert_fire.insert(sid);
+        }
         sid
     }
 
