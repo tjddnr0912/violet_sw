@@ -762,20 +762,27 @@ impl<'a> SimState<'a> {
         // `eval_select` already does on the READ side.
         let ir = self.ir;
         let fold = |eid: u32| crate::width::const_u32_of_expr(ir, eid);
-        let (off, width) = match c.kind {
+        // P0-IPU: the low (LSB) net-bit position is SIGNED — an underflowing indexed
+        // part-select (`v[-2+:4]`, `v[1-:3]`) extends below bit 0, and only the
+        // in-range bits are written (the low OOB bits are dropped, NOT shifted up or
+        // wrapped). Mirror the READ side (`eval_select`): keep `lsb` an `i64` and let
+        // the bit loop clamp at both ends. `raw_off` arrives as the offset's 32-bit
+        // 2's-complement; sign-extend it (bit positions never exceed i32 range).
+        let off_i = raw_off as i32 as i64;
+        let (lsb, width) = match c.kind {
             SelKind::Bit => {
                 if c.offset.is_none() && c.width.is_none() {
-                    (0, net_w) // whole net
+                    (0i64, net_w) // whole net
                 } else {
-                    (raw_off, 1)
+                    (off_i, 1)
                 }
             }
             SelKind::PartConst | SelKind::PartIdxUp => {
-                (raw_off, c.width.and_then(fold).unwrap_or(net_w))
+                (off_i, c.width.and_then(fold).unwrap_or(net_w))
             }
             SelKind::PartIdxDown => {
                 let w = c.width.and_then(fold).unwrap_or(net_w);
-                (raw_off.saturating_sub(w.saturating_sub(1)), w)
+                (off_i - (w as i64) + 1, w)
             }
         };
 
@@ -789,7 +796,7 @@ impl<'a> SimState<'a> {
         // words, so masking the top word cannot clobber a neighbouring element packed in
         // the same word. Everything else (part/bit-select, unaligned base, OOR) falls
         // through to the proven bit-serial path below — byte-identical by construction.
-        if off == 0 && width == net_w && base % 64 == 0 && (slot.array_len <= 1 || net_w % 64 == 0)
+        if lsb == 0 && width == net_w && base % 64 == 0 && (slot.array_len <= 1 || net_w % 64 == 0)
         {
             let wbase = (base / 64) as usize;
             let nw = nwords(net_w).max(1);
@@ -821,14 +828,15 @@ impl<'a> SimState<'a> {
 
         let mut changed = false;
         for i in 0..width {
-            // saturating: a `u32::MAX` sentinel offset (X/Z dynamic index) or any
-            // out-of-range index drops the bit cleanly instead of overflowing.
-            let dst = off.saturating_add(i);
-            if dst >= net_w {
-                continue; // out-of-range bit drop (v1 RunRange simplification)
+            // P0-IPU: the destination net-bit is `lsb + i` in a SIGNED domain — a bit
+            // below 0 (underflow) OR at/above `net_w` (overflow) is dropped cleanly
+            // (matching the READ side and iverilog), so only in-range bits are written.
+            let dst = lsb + i as i64;
+            if dst < 0 || dst as u32 >= net_w {
+                continue;
             }
             let (v, u) = piece.get_vu(i);
-            if set_bit(&mut slot.cur, base + dst, v, u) {
+            if set_bit(&mut slot.cur, base + dst as u32, v, u) {
                 changed = true;
             }
         }
