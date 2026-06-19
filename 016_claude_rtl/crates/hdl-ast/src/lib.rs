@@ -196,11 +196,14 @@ pub enum ModuleItem {
     Error(Span),
 }
 
-/// A functional-coverage model `covergroup NAME; (coverpoint EXPR;)* endgroup` (N5).
+/// A functional-coverage model `covergroup NAME [@(event)]; (coverpoint EXPR;)*
+/// endgroup` (N5). `clock` is the optional sampling event (slice F): each instance
+/// auto-samples on it (`always @(clock) inst.sample();`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct CovergroupDecl {
     pub name: Ident,
     pub points: Vec<Coverpoint>,
+    pub clock: Option<Sensitivity>,
     pub span: Span,
 }
 

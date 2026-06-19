@@ -12,7 +12,11 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-19 N5 slice A explicit coverage bins (`Coverpoint.iff:
+/// Re-pinned 2026-06-19 N5 slice F covergroup sampling event (`CovergroupDecl.clock:
+/// Option<Sensitivity>` — `covergroup cg @(posedge clk);` auto-samples each instance;
+/// all `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0: a
+/// synthesized `always @(clk) inst.sample();` per clocked instance). (Previous re-pins:
+/// 2026-06-19 N5 slice A explicit coverage bins (`Coverpoint.iff:
 /// Option<Expr>` + `Coverpoint.bins: Vec<BinSpec>` + the `BinSpec`/`BinKind`/
 /// `BinArray`/`CoverRange`/`RangeEnd` types — `coverpoint x [iff(g)] { bins a =
 /// {0,[2:4]}; ignore_bins/illegal_bins/default … }`; all `.vu` artifacts are stale,
@@ -74,8 +78,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    128, 136, 159, 34, 240, 17, 73, 189, 59, 117, 151, 49, 24, 5, 179, 92, 253, 165, 116, 0, 107,
-    147, 10, 59, 108, 126, 139, 88, 28, 106, 210, 248,
+    199, 218, 40, 200, 93, 9, 34, 226, 199, 9, 174, 46, 138, 95, 231, 115, 70, 109, 234, 103, 36,
+    220, 149, 16, 33, 88, 187, 76, 228, 130, 121, 104,
 ];
 
 #[test]

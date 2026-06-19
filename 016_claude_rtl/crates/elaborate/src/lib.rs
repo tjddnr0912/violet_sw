@@ -10722,6 +10722,39 @@ impl<'s> Elaborator<'s> {
         }
         let key = self.fq(&ci.name.name);
         self.cover_insts.insert(key, trackers);
+        // Slice F: a clocked covergroup (`covergroup cg @(ev);`) AUTO-samples each
+        // instance on its event — synthesize `always @(ev) inst.sample();` (the call
+        // dispatches through the normal inline-task path back to `synth_cover_sample`).
+        // Explicit `inst.sample()` still works and coexists (idempotent bitmap OR).
+        // Runs in the cover-instance pre-sweep, so module scope is active for `ev`.
+        if let Some(clock) = &cg.clock {
+            let sp = ci.span;
+            let sample_call = ast::Stmt::UserTaskCall {
+                name: ast::HierPath {
+                    segments: vec![
+                        ast::Ident {
+                            name: ci.name.name.clone(),
+                            span: sp,
+                        },
+                        ast::Ident {
+                            name: "sample".to_string(),
+                            span: sp,
+                        },
+                    ],
+                    span: sp,
+                },
+                args: Vec::new(),
+                span: sp,
+            };
+            let pb = ast::ProceduralBlock {
+                kind: ast::ProcKind::Always,
+                sensitivity: Some(clock.clone()),
+                body: Box::new(sample_call),
+                span: sp,
+            };
+            let proc = self.lower_proc_block(&pb);
+            self.push_process(proc);
+        }
     }
 
     /// Trackers for a covergroup instance named at a call site (current scope).

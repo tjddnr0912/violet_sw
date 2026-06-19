@@ -1664,7 +1664,32 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         self.bump(); // `covergroup`
         let name = self.ident()?;
-        // skip the header tail (`(args)`, `@(event)`) up to the first `;`.
+        // optional `( ports )` — skip balanced (covergroup args, slice-future).
+        if self.peek() == Some(TokenKind::LParen) {
+            let mut depth = 0i32;
+            loop {
+                match self.peek() {
+                    Some(TokenKind::LParen) => depth += 1,
+                    Some(TokenKind::RParen) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            self.bump();
+                            break;
+                        }
+                    }
+                    None => break,
+                    _ => {}
+                }
+                self.bump();
+            }
+        }
+        // optional `@(event)` sampling clock (slice F): auto-sample on this event.
+        let clock = if self.peek() == Some(TokenKind::At) {
+            Some(self.parse_sensitivity())
+        } else {
+            None
+        };
+        // skip any remaining header tail (`with function sample(...)`, etc.) to `;`.
         while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
             self.bump();
         }
@@ -1726,6 +1751,7 @@ impl<'t, 's> Parser<'t, 's> {
         Some(ModuleItem::Covergroup(CovergroupDecl {
             name,
             points,
+            clock,
             span: start.to(self.prev_span()),
         }))
     }

@@ -93,9 +93,10 @@ fn multi_coverpoint() {
 }
 
 #[test]
-fn sampling_event_header_is_skipped() {
-    // a `covergroup cg @(posedge clk);` header is accepted (sampling event not
-    // modeled — explicit sample() drives coverage). x=1 once ⇒ 1/4 = 25%.
+fn sampling_event_header_no_edge_keeps_explicit() {
+    // a `covergroup cg @(posedge clk);` header is accepted; with clk never toggling
+    // the auto-sample never fires, so explicit sample() still drives coverage. x=1
+    // once ⇒ 1/4 = 25% (slice F coexistence: auto + explicit).
     let (out, _c) = run("module t;\n\
          reg clk; reg [1:0] x;\n\
          covergroup cg @(posedge clk); coverpoint x; endgroup\n\
@@ -473,4 +474,60 @@ fn a12_multi_cp_zero_bins_no_impossible_percent() {
         out.contains("MC 100"),
         "multi-cp with a zero-bin cp must be 100, not 200:\n{out}"
     );
+}
+
+// ─────────────── slice F: sampling-event auto-sample ───────────────
+
+#[test]
+fn f1_auto_sample_on_clock() {
+    // `covergroup cg @(posedge clk);` auto-samples on each posedge — NO explicit
+    // sample() call. 3 posedges at x=0,1,2 ⇒ 3 of 4 auto-bins ⇒ 75%.
+    let (out, _c) = run("module t;\n\
+         reg clk; reg [1:0] x;\n\
+         covergroup cg @(posedge clk); coverpoint x; endgroup\n\
+         cg c = new;\n\
+         initial begin\n\
+           clk=0; x=0;\n\
+           #1 clk=1; #1 clk=0;\n\
+           x=1; #1 clk=1; #1 clk=0;\n\
+           x=2; #1 clk=1; #1 clk=0;\n\
+           $display(\"F1 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("F1 75"), "auto-sample on clock:\n{out}");
+}
+
+#[test]
+fn f2_auto_sample_explicit_bins() {
+    // clocked covergroup with EXPLICIT bins — auto-samples each posedge into the bins.
+    let (out, _c) = run("module t;\n\
+         reg clk; reg [3:0] x;\n\
+         covergroup cg @(posedge clk); coverpoint x { bins a = {0}; bins b = {1}; } endgroup\n\
+         cg c = new;\n\
+         initial begin\n\
+           clk=0; x=0; #1 clk=1; #1 clk=0;\n\
+           x=1; #1 clk=1; #1 clk=0;\n\
+           $display(\"F2 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("F2 100"),
+        "clocked explicit-bin auto-sample:\n{out}"
+    );
+}
+
+#[test]
+fn f3_auto_and_explicit_sample_coexist() {
+    // auto-sample (on negedge) AND an explicit sample() both update the same bitmap.
+    // The `#1` after the negedge lets the auto-sample observe x=0 BEFORE the initial
+    // block advances x to 3 (without it, the same-timestep negedge process sees the
+    // already-updated x=3 — a real race). auto x=0 + explicit x=3 ⇒ 2 of 4 ⇒ 50%.
+    let (out, _c) = run("module t;\n\
+         reg clk; reg [1:0] x;\n\
+         covergroup cg @(negedge clk); coverpoint x; endgroup\n\
+         cg c = new;\n\
+         initial begin\n\
+           clk=1; x=0; #1 clk=0; #1;\n\
+           x=3; c.sample();\n\
+           $display(\"F3 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("F3 50"), "auto+explicit coexist:\n{out}");
 }
