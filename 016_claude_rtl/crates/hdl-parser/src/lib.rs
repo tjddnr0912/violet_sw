@@ -1695,6 +1695,7 @@ impl<'t, 's> Parser<'t, 's> {
         }
         self.expect(TokenKind::Semi, "';' after covergroup header");
         let mut points = Vec::new();
+        let mut crosses = Vec::new();
         loop {
             if self.at_kw(Kw::Endgroup) || self.peek().is_none() {
                 break;
@@ -1707,6 +1708,12 @@ impl<'t, 's> Parser<'t, 's> {
             } else {
                 None
             };
+            if self.at_ident_kw("cross") {
+                if let Some(cr) = self.parse_cross(label) {
+                    crosses.push(cr);
+                }
+                continue;
+            }
             if self.at_kw(Kw::Coverpoint) {
                 let cp_start = self.cur_span();
                 self.bump(); // `coverpoint`
@@ -1751,6 +1758,7 @@ impl<'t, 's> Parser<'t, 's> {
         Some(ModuleItem::Covergroup(CovergroupDecl {
             name,
             points,
+            crosses,
             clock,
             span: start.to(self.prev_span()),
         }))
@@ -1792,6 +1800,57 @@ impl<'t, 's> Parser<'t, 's> {
             name,
             span: start.to(self.prev_span()),
         }))
+    }
+
+    /// `[LABEL:] cross cp_a, cp_b [, …] [{ … }] ;` — a cross of named coverpoints
+    /// (slice C; the `cross` ident is at the cursor, LABEL already consumed). A cross
+    /// SELECT body `{ binsof/intersect }` is loud-rejected and balanced-skipped.
+    fn parse_cross(&mut self, label: Option<Ident>) -> Option<CrossSpec> {
+        let start = self.cur_span();
+        self.bump(); // `cross`
+        let mut points = Vec::new();
+        loop {
+            let before = self.pos;
+            if let Some(id) = self.ident() {
+                points.push(id);
+            }
+            if self.pos == before {
+                self.bump(); // forward-progress guard
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        // optional cross SELECT body `{ binsof … }` — follow-on; loud + balanced skip.
+        if self.peek() == Some(TokenKind::LBrace) {
+            self.error("cross select body (binsof/intersect) (follow-on)");
+            let mut depth = 0i32;
+            loop {
+                match self.peek() {
+                    Some(TokenKind::LBrace) => {
+                        depth += 1;
+                        self.bump();
+                    }
+                    Some(TokenKind::RBrace) => {
+                        depth -= 1;
+                        self.bump();
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    None => break,
+                    _ => {
+                        self.bump();
+                    }
+                }
+            }
+        }
+        self.expect(TokenKind::Semi, "';' after cross");
+        Some(CrossSpec {
+            name: label,
+            points,
+            span: start.to(self.prev_span()),
+        })
     }
 
     /// Optional `iff ( expr )` guard after a coverpoint expr or a bin RHS (slice B).

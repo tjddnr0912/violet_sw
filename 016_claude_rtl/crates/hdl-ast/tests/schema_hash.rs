@@ -12,7 +12,12 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-19 N5 slice F covergroup sampling event (`CovergroupDecl.clock:
+/// Re-pinned 2026-06-19 N5 slice C cross coverage (`CovergroupDecl.crosses:
+/// Vec<CrossSpec>` + the `CrossSpec` struct — `cross cp_a, cp_b;`; all `.vu`
+/// artifacts are stale, no sim-ir/format_version change, pure IR-0: a product
+/// hit-bitmap whose bit fires when every constituent coverpoint's bin matches the
+/// same sample). (Previous re-pins:
+/// 2026-06-19 N5 slice F covergroup sampling event (`CovergroupDecl.clock:
 /// Option<Sensitivity>` — `covergroup cg @(posedge clk);` auto-samples each instance;
 /// all `.vu` artifacts are stale, no sim-ir/format_version change, pure IR-0: a
 /// synthesized `always @(clk) inst.sample();` per clocked instance). (Previous re-pins:
@@ -78,8 +83,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    199, 218, 40, 200, 93, 9, 34, 226, 199, 9, 174, 46, 138, 95, 231, 115, 70, 109, 234, 103, 36,
-    220, 149, 16, 33, 88, 187, 76, 228, 130, 121, 104,
+    51, 55, 20, 199, 166, 76, 111, 11, 98, 151, 145, 131, 241, 49, 241, 230, 56, 107, 124, 65, 160,
+    3, 16, 57, 155, 216, 233, 145, 125, 119, 235, 164,
 ];
 
 #[test]

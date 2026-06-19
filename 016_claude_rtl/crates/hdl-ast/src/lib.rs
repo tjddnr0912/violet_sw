@@ -203,7 +203,17 @@ pub enum ModuleItem {
 pub struct CovergroupDecl {
     pub name: Ident,
     pub points: Vec<Coverpoint>,
+    pub crosses: Vec<CrossSpec>,
     pub clock: Option<Sensitivity>,
+    pub span: Span,
+}
+
+/// `[LABEL:] cross cp_a, cp_b [, …];` — a cross of named coverpoints (N5 slice C).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct CrossSpec {
+    pub name: Option<Ident>,
+    /// The crossed coverpoint names (labels, or the implicit single-ident name).
+    pub points: Vec<Ident>,
     pub span: Span,
 }
 

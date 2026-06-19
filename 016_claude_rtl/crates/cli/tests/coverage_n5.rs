@@ -585,3 +585,81 @@ fn e3_zero_bin_coverpoint_excluded_from_average() {
         "zero-bin cp excluded from average:\n{out}"
     );
 }
+
+// ─────────────── slice C: cross coverage ───────────────
+
+#[test]
+fn c1_basic_cross() {
+    // cpa{0,1} × cpb{0,1} = 4 cross-bins. Sample (0,0) and (1,1) ⇒ cross 2/4=50.
+    // cpa both hit ⇒ 100, cpb both hit ⇒ 100. avg (100+100+50)/3 = 83.333.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] a, b;\n\
+         covergroup cg;\n\
+           cpa: coverpoint a { bins a0={0}; bins a1={1}; }\n\
+           cpb: coverpoint b { bins b0={0}; bins b1={1}; }\n\
+           ab: cross cpa, cpb;\n\
+         endgroup\n\
+         cg c = new;\n\
+         initial begin a=0;b=0;c.sample(); a=1;b=1;c.sample();\n\
+           $display(\"C1 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("C1 83.333"), "basic cross:\n{out}");
+}
+
+#[test]
+fn c2_cross_full_and_partial() {
+    // 2×2 cross; sampling all 4 combinations ⇒ cross 100. Each cp also 100. avg 100.
+    let (full, _c) = run("module t;\n\
+         reg [3:0] a, b;\n\
+         covergroup cg;\n\
+           cpa: coverpoint a { bins a0={0}; bins a1={1}; }\n\
+           cpb: coverpoint b { bins b0={0}; bins b1={1}; }\n\
+           ab: cross cpa, cpb;\n\
+         endgroup\n\
+         cg c = new;\n\
+         initial begin\n\
+           a=0;b=0;c.sample(); a=0;b=1;c.sample();\n\
+           a=1;b=0;c.sample(); a=1;b=1;c.sample();\n\
+           $display(\"C2 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(full.contains("C2 100"), "full cross:\n{full}");
+    // sample only (0,0) ⇒ cross 1/4=25; cpa 1/2=50; cpb 1/2=50. avg (50+50+25)/3 = 41.667.
+    let (part, _c) = run("module t;\n\
+         reg [3:0] a, b;\n\
+         covergroup cg;\n\
+           cpa: coverpoint a { bins a0={0}; bins a1={1}; }\n\
+           cpb: coverpoint b { bins b0={0}; bins b1={1}; }\n\
+           ab: cross cpa, cpb;\n\
+         endgroup\n\
+         cg c = new;\n\
+         initial begin a=0;b=0;c.sample(); $display(\"C2 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(part.contains("C2 41.66"), "partial cross:\n{part}");
+}
+
+#[test]
+fn c3_cross_unsupported_is_loud() {
+    // cross of unknown cp / >64 product / binsof body must be LOUD (never silent).
+    let probes = [
+        // unknown coverpoint
+        "module t; reg [3:0] a;\n\
+         covergroup cg; cpa: coverpoint a { bins z={0}; } x: cross cpa, nope; endgroup\n\
+         cg c=new; initial begin a=0;c.sample(); $display(\"%g\",c.get_coverage()); end endmodule",
+        // 16×16 = 256 > 64
+        "module t; reg [3:0] a,b;\n\
+         covergroup cg; cpa: coverpoint a; cpb: coverpoint b; x: cross cpa,cpb; endgroup\n\
+         cg c=new; initial begin a=0;b=0;c.sample(); $display(\"%g\",c.get_coverage()); end endmodule",
+        // binsof select body
+        "module t; reg [3:0] a,b;\n\
+         covergroup cg; cpa: coverpoint a {bins z={0};} cpb: coverpoint b {bins z={0};}\n\
+           x: cross cpa,cpb { bins q = binsof(cpa); } endgroup\n\
+         cg c=new; initial begin a=0;b=0;c.sample(); $display(\"%g\",c.get_coverage()); end endmodule",
+    ];
+    for src in probes {
+        let (out, code) = run(src);
+        assert!(
+            out.contains("VITA-E") || code == Some(1),
+            "cross unsupported form must be loud:\n{out} {code:?}"
+        );
+    }
+}

@@ -738,6 +738,22 @@ struct CoverpointTracker {
     /// Coverpoint-level `iff (G)` guard (slice B): the whole sample (every bin update
     /// and the illegal `$error`) is gated on `G`. `None` ⇒ unguarded.
     cp_iff: Option<ast::Expr>,
+    /// The coverpoint's name for `cross` resolution (slice C): the explicit label,
+    /// else the implicit single-ident expr name, else `None`.
+    name: Option<String>,
+}
+
+/// One cross constituent: `(sampled expr, [effective ranges per counting bin])`.
+type CrossPoint = (ast::Expr, Vec<Vec<(i64, i64)>>);
+
+/// One cross of named coverpoints (N5 slice C): a product hit-bitmap whose bit
+/// `idx` (mixed-radix over the constituents' counting bins) is set when EVERY
+/// constituent's bin at that index matches the SAME sample.
+#[derive(Clone)]
+struct CrossTracker {
+    bitmap: String,
+    num_bins: u32,
+    points: Vec<CrossPoint>,
 }
 
 struct DeferredHierSelWrite {
@@ -1742,6 +1758,9 @@ struct Elaborator<'s> {
     /// expr + auto-bin count). `sample()`/`get_coverage()` synthesize against these —
     /// pure IR-0 (the bitmap regs are ordinary nets; no sim-ir change).
     cover_insts: std::collections::BTreeMap<String, Vec<CoverpointTracker>>,
+    /// N5 slice C: FQ instance name → its cross trackers (product hit-bitmap + the
+    /// constituent coverpoints' match data). Sampled/averaged alongside `cover_insts`.
+    cross_insts: std::collections::BTreeMap<String, Vec<CrossTracker>>,
     // §16.4 deferred immediate asserts (out-of-band, engine-facing): marker
     // StmtId → region, and action StmtId → (marker StmtId, region). See
     // [`DeferMarkTable`]/[`DeferActTable`].
@@ -1821,6 +1840,7 @@ impl<'s> Elaborator<'s> {
             deferred_hier_sel_write: Vec::new(),
             cover_types: std::collections::BTreeMap::new(),
             cover_insts: std::collections::BTreeMap::new(),
+            cross_insts: std::collections::BTreeMap::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             cur_defer: None,
@@ -10700,6 +10720,17 @@ impl<'s> Elaborator<'s> {
         };
         let mut trackers = Vec::new();
         for cp in &cg.points {
+            // Name for `cross` resolution: explicit label, else implicit single-ident.
+            let name = cp
+                .label
+                .as_ref()
+                .map(|l| l.name.clone())
+                .or_else(|| match &cp.expr.kind {
+                    ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                        Some(p.segments[0].name.clone())
+                    }
+                    _ => None,
+                });
             if cp.bins.is_empty() {
                 // Auto-bin fallback — the byte-identical legacy path (allocation
                 // order preserved: num_bins read before the bitmap reg alloc).
@@ -10712,6 +10743,7 @@ impl<'s> Elaborator<'s> {
                     num_bins,
                     has_explicit: false,
                     cp_iff: cp.iff.clone(),
+                    name,
                 });
             } else {
                 let (bins, num_bins) = self.resolve_explicit_bins(cp);
@@ -10723,11 +10755,17 @@ impl<'s> Elaborator<'s> {
                     num_bins,
                     has_explicit: true,
                     cp_iff: cp.iff.clone(),
+                    name,
                 });
             }
         }
+        // Slice C: resolve crosses (cartesian product of constituents' counting bins).
+        let crosses = self.resolve_crosses(&cg.crosses, &trackers);
         let key = self.fq(&ci.name.name);
-        self.cover_insts.insert(key, trackers);
+        self.cover_insts.insert(key.clone(), trackers);
+        if !crosses.is_empty() {
+            self.cross_insts.insert(key, crosses);
+        }
         // Slice F: a clocked covergroup (`covergroup cg @(ev);`) AUTO-samples each
         // instance on its event — synthesize `always @(ev) inst.sample();` (the call
         // dispatches through the normal inline-task path back to `synth_cover_sample`).
@@ -10766,6 +10804,130 @@ impl<'s> Elaborator<'s> {
     /// Trackers for a covergroup instance named at a call site (current scope).
     fn cover_inst(&self, name: &str) -> Option<Vec<CoverpointTracker>> {
         self.cover_insts.get(&self.fq(name)).cloned()
+    }
+
+    /// Cross trackers for a covergroup instance named at a call site.
+    fn cross_inst(&self, name: &str) -> Option<Vec<CrossTracker>> {
+        self.cross_insts.get(&self.fq(name)).cloned()
+    }
+
+    /// Resolve each `cross cp_a, cp_b;` into a [`CrossTracker`]: look up the named
+    /// constituent coverpoints, collect their COUNTING-bin match data (auto-bin
+    /// coverpoints expand to one (i,i) bin per auto-bin), and allocate a product
+    /// hit-bitmap. Loud-rejects: unknown coverpoint name, `iff`-guarded constituent,
+    /// or a product exceeding the 64-bit bitmap. A constituent with 0 counting bins
+    /// yields a 0-bin cross (silently dropped — nothing to cover).
+    fn resolve_crosses(
+        &mut self,
+        specs: &[ast::CrossSpec],
+        trackers: &[CoverpointTracker],
+    ) -> Vec<CrossTracker> {
+        if specs.is_empty() {
+            return Vec::new();
+        }
+        let mut by_name: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for (i, t) in trackers.iter().enumerate() {
+            if let Some(n) = &t.name {
+                by_name.insert(n.as_str(), i);
+            }
+        }
+        let mut out = Vec::new();
+        for cr in specs {
+            let mut pts: Vec<CrossPoint> = Vec::new();
+            let mut product: u64 = 1;
+            let mut ok = true;
+            for pn in &cr.points {
+                let Some(&ti) = by_name.get(pn.name.as_str()) else {
+                    self.error(
+                        MsgCode::ElabUnresolvedName,
+                        &format!("cross references unknown coverpoint `{}`", pn.name),
+                    );
+                    ok = false;
+                    break;
+                };
+                let t = &trackers[ti];
+                if t.cp_iff.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "cross of an `iff`-guarded coverpoint (follow-on)",
+                    );
+                    ok = false;
+                    break;
+                }
+                let bins: Vec<Vec<(i64, i64)>> = if t.has_explicit {
+                    t.bins
+                        .iter()
+                        .filter(|b| b.bit.is_some())
+                        .map(|b| b.ranges.clone())
+                        .collect()
+                } else {
+                    // auto-bins: bin i matches the single value i.
+                    (0..t.num_bins as i64).map(|i| vec![(i, i)]).collect()
+                };
+                product = product.saturating_mul(bins.len() as u64);
+                pts.push((t.expr.clone(), bins));
+            }
+            if !ok || product == 0 {
+                continue;
+            }
+            if product > 64 {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "cross product exceeds the 64-bin bitmap",
+                );
+                continue;
+            }
+            let bitmap = self.fresh_sva_reg(64, "covx");
+            out.push(CrossTracker {
+                bitmap,
+                num_bins: product as u32,
+                points: pts,
+            });
+        }
+        out
+    }
+
+    /// Sample a cross: for each product index (mixed-radix over the constituents'
+    /// counting bins), `if (match_0 && match_1 && …) crossmap[idx] = 1'b1;`.
+    fn synth_cross_sample(&mut self, b: &mut ProcessBuilder, cx: &CrossTracker) {
+        let sp = cx.points[0].0.span;
+        for idx in 0..cx.num_bins as usize {
+            let mut rem = idx;
+            let mut cond: Option<ast::Expr> = None;
+            for (expr, bins) in cx.points.iter().rev() {
+                let bi = rem % bins.len();
+                rem /= bins.len();
+                let m = cov_bin_match(expr, &bins[bi], sp);
+                cond = Some(match cond {
+                    None => m,
+                    Some(c) => sva_binary(ast::BinOp::LogAnd, m, c, sp),
+                });
+            }
+            let set = ast::Stmt::If {
+                cond: cond.unwrap(),
+                then_s: Box::new(ast::Stmt::Blocking {
+                    lhs: ast::Lvalue::BitSelect {
+                        base: Box::new(ast::Lvalue::Ident(ast::HierPath {
+                            segments: vec![ast::Ident {
+                                name: cx.bitmap.clone(),
+                                span: sp,
+                            }],
+                            span: sp,
+                        })),
+                        index: Box::new(cov_int_lit(idx as i64, sp)),
+                        span: sp,
+                    },
+                    delay: None,
+                    event: None,
+                    rhs: sva_one(sp),
+                    span: sp,
+                }),
+                else_s: None,
+                span: sp,
+            };
+            self.lower_stmt(b, &set);
+        }
     }
 
     /// `c.sample();` — record this sample into each coverpoint's hit bitmap.
@@ -10833,6 +10995,12 @@ impl<'s> Elaborator<'s> {
                 rhs: newbm,
             });
             b.push_stmt_id(sid);
+        }
+        // Slice C: sample any crosses of this instance (product-bin matches).
+        if let Some(crosses) = self.cross_inst(inst) {
+            for cx in &crosses {
+                self.synth_cross_sample(b, cx);
+            }
         }
     }
 
@@ -10968,6 +11136,41 @@ impl<'s> Elaborator<'s> {
                 }),
             });
             n += 1;
+        }
+        // Slice C: crosses join the weighted average as additional terms
+        // (cross coverage = $countones(crossmap) * 100.0 / product_bins).
+        if let Some(crosses) = self.cross_inst(inst) {
+            for cx in &crosses {
+                let bnet = self.lookup_net_scoped(&cx.bitmap).unwrap_or(POISON_NET);
+                let bm = self.push_expr(ir::Expr::Signal {
+                    net: bnet,
+                    word: None,
+                });
+                let ones = self.push_expr(ir::Expr::SysFunc {
+                    which: ir::SysFuncId::CountOnes,
+                    args: vec![bm],
+                });
+                let ones100 = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Mul,
+                    lhs: ones,
+                    rhs: hundred,
+                });
+                let nb = self.const_u32_expr(cx.num_bins, 32);
+                let cx_cov = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Div,
+                    lhs: ones100,
+                    rhs: nb,
+                });
+                sum = Some(match sum {
+                    None => cx_cov,
+                    Some(acc) => self.push_expr(ir::Expr::Binary {
+                        op: ir::BinOp::Add,
+                        lhs: acc,
+                        rhs: cx_cov,
+                    }),
+                });
+                n += 1;
+            }
         }
         let Some(sum) = sum else {
             return self.real_const_expr("0.0"); // no counting coverpoints
