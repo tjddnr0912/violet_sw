@@ -210,15 +210,15 @@ fn release_on_hierarchical_element_is_loud() {
 }
 
 #[test]
-fn hierarchical_part_select_write_is_loud() {
-    // a hierarchical PART-select (range) write `dut.v[3:0] = …` is a separate
-    // follow-on (element/bit selects are supported); it stays loud, NOT silent.
-    let (out, code) = run("module sub; reg [7:0] v; endmodule\n\
+fn hierarchical_part_select_write_round_trips() {
+    // a hierarchical PART-select (range) write `dut.v[3:0] = …` is now supported
+    // (HIER-REST-PS, see hier_part_write.rs); it writes exactly bits 3..0.
+    let (out, _code) = run("module sub; reg [7:0] v; endmodule\n\
          module top; sub dut();\n\
-           initial begin dut.v=8'h00; dut.v[3:0]=4'hc; end\n\
+           initial begin dut.v=8'h00; dut.v[3:0]=4'hc; #1 $display(\"R %h\", dut.v); end\n\
          endmodule\n");
     assert!(
-        is_loud(&out, code),
-        "hierarchical part-select write must be loud (follow-on): {out} {code:?}"
+        out.contains("R 0c"),
+        "hierarchical part-select write round-trips:\n{out}"
     );
 }

@@ -707,6 +707,19 @@ struct DeferredHierSelWrite {
     prefix: String,
     path: Vec<String>,
     idx_eids: Vec<u32>,
+    /// `Some` for a hierarchical PART-select write (`dut.v[3:0]=…`, `dut.v[o+:w]=…`,
+    /// or array-element `dut.mem[i][3:0]=…`): the (already-lowered) raw offset edge,
+    /// the width edge, and the select kind. `None` for an element / bit-select write.
+    part: Option<HierPart>,
+}
+
+/// A hierarchical part-select spec, deferred until the target net's range is known
+/// (the offset is normalized against the net's LSB at resolution time).
+#[derive(Clone, Copy)]
+struct HierPart {
+    raw_off: u32,
+    width: u32,
+    kind: ir::SelKind,
 }
 
 /// A hierarchical INDEXED read `base[i]…[k]` whose `base` is a 2-segment hierarchical
@@ -2357,7 +2370,12 @@ impl<'s> Elaborator<'s> {
     /// net the placeholder `LvalChunk` carries until `resolve_deferred_hier_sel_write`
     /// rebuilds it. Falls back to `POISON_NET` (loud downstream) if the sentinel range
     /// is exhausted (~16M deferred element writes — unreachable in practice).
-    fn defer_hier_sel_write(&mut self, path: Vec<String>, idx_eids: Vec<u32>) -> u32 {
+    fn defer_hier_sel_write(
+        &mut self,
+        path: Vec<String>,
+        idx_eids: Vec<u32>,
+        part: Option<HierPart>,
+    ) -> u32 {
         let idx = self.deferred_hier_sel_write.len() as u32;
         if idx >= HIER_WRITE_SENTINEL_BASE - HIER_SEL_WRITE_SENTINEL_BASE {
             return POISON_NET;
@@ -2366,6 +2384,7 @@ impl<'s> Elaborator<'s> {
             prefix: self.cur_prefix.clone(),
             path,
             idx_eids,
+            part,
         });
         HIER_SEL_WRITE_SENTINEL_BASE + idx
     }
@@ -2421,7 +2440,7 @@ impl<'s> Elaborator<'s> {
                         );
                         poison_chunk()
                     } else {
-                        self.build_hier_sel_write_chunk(net, &d.idx_eids, &path)
+                        self.build_hier_sel_write_chunk(net, &d.idx_eids, d.part, &path)
                     }
                 }
             };
@@ -2462,17 +2481,67 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// Build the `LvalChunk` for a hierarchical element/bit-select write from
-    /// PRE-LOWERED index eids and the resolved net's shape, mirroring the local
-    /// `collect_array_write` / `collect_packed_write` / bit-select paths (but driven by
-    /// `flatten_word_eids`, preserving the index context from the write site). A poison
-    /// chunk (after a loud error) for an out-of-range index arity.
+    /// Build the `LvalChunk` for a hierarchical element/bit-select OR part-select write
+    /// from PRE-LOWERED index eids and the resolved net's shape, mirroring the local
+    /// `collect_array_write` / `collect_packed_write` / part-select lvalue paths (driven
+    /// by `flatten_word_eids`, preserving the write-site index context). A poison chunk
+    /// (after a loud error) for an out-of-range index arity.
     fn build_hier_sel_write_chunk(
         &mut self,
         net: u32,
         idx_eids: &[u32],
+        part: Option<HierPart>,
         path: &str,
     ) -> ir::LvalChunk {
+        // HIER-REST-PS: a part-select write. `idx_eids` (if any) selects an array
+        // ELEMENT word; the part-select then applies within it. A bare scalar/vector
+        // base has no indices. The offset is normalized against the net's LSB here
+        // (parity with the local part-select lvalue path).
+        if let Some(p) = part {
+            let word = if self.net_is_static_array(net) {
+                let dims = self.net_dim_extents(net);
+                let d = dims.len();
+                if idx_eids.len() != d {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "a hierarchical part-select of unpacked array `{path}` must index \
+                             every dimension to one element"
+                        ),
+                    );
+                    return poison_chunk();
+                }
+                Some(self.flatten_word_eids(&dims, idx_eids, &[]))
+            } else if self.packed_dims.contains_key(&net) {
+                // a part-select on a bare multi-dim PACKED net selects whole outer
+                // elements (N3.4) — a deferred follow-on for the hierarchical lane.
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "a hierarchical part-select of multi-dim packed `{path}` is a follow-on \
+                         (write whole elements `[i]` or the whole net)"
+                    ),
+                );
+                return poison_chunk();
+            } else {
+                if !idx_eids.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!("too many indices in hierarchical part-select of `{path}`"),
+                    );
+                    return poison_chunk();
+                }
+                None
+            };
+            let offset = self.norm_offset_for_net(net, p.raw_off);
+            return ir::LvalChunk {
+                net,
+                word,
+                offset: Some(offset),
+                width: Some(p.width),
+                kind: p.kind,
+            };
+        }
         if self.net_is_static_array(net) {
             let dims = self.net_dim_extents(net);
             let d = dims.len();
@@ -6109,7 +6178,7 @@ impl<'s> Elaborator<'s> {
                     // `resolve_deferred_hier_sel_write` (the write twin of the read-side
                     // `resolve_deferred_hier_sel`).
                     let idx_eids: Vec<u32> = idx_asts.iter().map(|e| self.lower_expr(e)).collect();
-                    let sentinel = self.defer_hier_sel_write(path, idx_eids);
+                    let sentinel = self.defer_hier_sel_write(path, idx_eids, None);
                     out.push(ir::LvalChunk {
                         net: sentinel,
                         word: None,
@@ -6136,6 +6205,29 @@ impl<'s> Elaborator<'s> {
                 // outer-dim elements, not flat bits.
                 if let Some(chunk) = self.try_packed_part_select_lval(base, msb, lsb) {
                     out.push(chunk);
+                    return;
+                }
+                // HIER-REST-PS: a hierarchical part-select write (`dut.v[3:0]=…`,
+                // array-element `dut.mem[i][3:0]=…`) — the target net does not exist
+                // yet; defer with the (lowered) lsb offset + const width and rebuild.
+                if let Some((path, idx_asts)) = self.lval_hier_chain(base) {
+                    let idx_eids: Vec<u32> = idx_asts.iter().map(|e| self.lower_expr(e)).collect();
+                    let lsb_id = self.lower_expr(lsb);
+                    let msb_id = self.lower_expr(msb);
+                    let width = self.width_from_msb_lsb_checked(msb, lsb, msb_id, lsb_id);
+                    let part = HierPart {
+                        raw_off: lsb_id,
+                        width,
+                        kind: ir::SelKind::PartConst,
+                    };
+                    let sentinel = self.defer_hier_sel_write(path, idx_eids, Some(part));
+                    out.push(ir::LvalChunk {
+                        net: sentinel,
+                        word: None,
+                        offset: None,
+                        width: None,
+                        kind: ir::SelKind::Bit,
+                    });
                     return;
                 }
                 // `g[i][j][msb:lsb] = …` — part-select WITHIN an array element word.
@@ -6167,14 +6259,35 @@ impl<'s> Elaborator<'s> {
                     out.push(chunk);
                     return;
                 }
-                let (net, word) = self.lval_part_base(base);
-                let raw_off = self.lower_expr(offset);
-                let off = self.norm_offset_for_net(net, raw_off);
-                let w = self.lower_expr(width);
                 let kind = match dir {
                     ast::PartDir::PlusColon => ir::SelKind::PartIdxUp,
                     ast::PartDir::MinusColon => ir::SelKind::PartIdxDown,
                 };
+                // HIER-REST-PS: a hierarchical indexed part-select write
+                // (`dut.v[o+:w]=…`) — defer with the (lowered) raw offset + width.
+                if let Some((path, idx_asts)) = self.lval_hier_chain(base) {
+                    let idx_eids: Vec<u32> = idx_asts.iter().map(|e| self.lower_expr(e)).collect();
+                    let raw_off = self.lower_expr(offset);
+                    let w = self.lower_expr(width);
+                    let part = HierPart {
+                        raw_off,
+                        width: w,
+                        kind,
+                    };
+                    let sentinel = self.defer_hier_sel_write(path, idx_eids, Some(part));
+                    out.push(ir::LvalChunk {
+                        net: sentinel,
+                        word: None,
+                        offset: None,
+                        width: None,
+                        kind: ir::SelKind::Bit,
+                    });
+                    return;
+                }
+                let (net, word) = self.lval_part_base(base);
+                let raw_off = self.lower_expr(offset);
+                let off = self.norm_offset_for_net(net, raw_off);
+                let w = self.lower_expr(width);
                 out.push(ir::LvalChunk {
                     net,
                     word,
@@ -8082,14 +8195,14 @@ impl<'s> Elaborator<'s> {
         Some((path, outer_first))
     }
 
-    /// LVALUE twin of [`Self::hier_sel_chain`]: `Some((path, idxs))` when an lvalue
-    /// `base[i]…[k]` bottoms out at a multi-segment cross-instance hierarchical ref
-    /// (`dut.mem[i] = …`, `m.l.v[3] <= …`). A single-segment local lvalue or a known
-    /// dotted interface-member alias returns None (handled by the normal lvalue path).
-    fn lval_hier_sel_chain<'a>(
+    /// Core of the lvalue hierarchical-chain detectors: walk an lvalue `base` of
+    /// nested BitSelects down to a multi-segment cross-instance hierarchical Ident,
+    /// returning the dotted path and the element indices (source order). A
+    /// single-segment local lvalue or a known dotted interface-member alias returns
+    /// None (handled by the normal lvalue path).
+    fn lval_hier_chain<'a>(
         &self,
         base: &'a ast::Lvalue,
-        index: &'a ast::Expr,
     ) -> Option<(Vec<String>, Vec<&'a ast::Expr>)> {
         let mut outer_first: Vec<&ast::Expr> = Vec::new();
         let mut cur = base;
@@ -8121,8 +8234,20 @@ impl<'s> Elaborator<'s> {
             }
         };
         outer_first.reverse(); // base-chain → source order
-        outer_first.push(index); // outermost index is last in source order
         Some((path, outer_first))
+    }
+
+    /// LVALUE twin of [`Self::hier_sel_chain`]: `Some((path, idxs))` when an lvalue
+    /// `base[i]…[k]` bottoms out at a multi-segment cross-instance hierarchical ref
+    /// (`dut.mem[i] = …`, `m.l.v[3] <= …`).
+    fn lval_hier_sel_chain<'a>(
+        &self,
+        base: &'a ast::Lvalue,
+        index: &'a ast::Expr,
+    ) -> Option<(Vec<String>, Vec<&'a ast::Expr>)> {
+        let (path, mut idxs) = self.lval_hier_chain(base)?;
+        idxs.push(index); // outermost index is last in source order
+        Some((path, idxs))
     }
 
     fn expr_array_chain<'a>(
