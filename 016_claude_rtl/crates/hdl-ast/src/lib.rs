@@ -204,12 +204,62 @@ pub struct CovergroupDecl {
     pub span: Span,
 }
 
-/// A `[LABEL:] coverpoint EXPR;` inside a covergroup. Auto-bins only in this slice.
+/// A `[LABEL:] coverpoint EXPR [iff (G)] [{ bin* }];` inside a covergroup.
+/// `bins` EMPTY ⇒ auto-bins (the byte-identical legacy path). `iff` is reserved
+/// for the guard slice (parsed now, elaborate loud-rejects until implemented).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct Coverpoint {
     pub label: Option<Ident>,
     pub expr: Expr,
+    /// Coverpoint-level `iff (G)` sampling guard (slice B).
+    pub iff: Option<Expr>,
+    /// Explicit bin list. EMPTY ⇒ auto-bins fallback (byte-identical).
+    pub bins: Vec<BinSpec>,
     pub span: Span,
+}
+
+/// One explicit bin inside a coverpoint body: `KIND NAME[array] = RHS [iff (G)];`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct BinSpec {
+    pub name: Ident,
+    pub kind: BinKind,
+    pub array: BinArray,
+    /// Value set (range list). EMPTY iff `is_default` (a `default` catch-all bin).
+    pub values: Vec<CoverRange>,
+    pub is_default: bool,
+    /// Per-bin `iff (G)` guard (slice B).
+    pub iff: Option<Expr>,
+    pub span: Span,
+}
+
+/// `bins` (regular, counts), `ignore_bins` (excluded), `illegal_bins` (runtime error).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum BinKind {
+    Regular,
+    Ignore,
+    Illegal,
+}
+
+/// Bin array form: `b` (scalar), `b[]` (one bin per value), `b[N]` (fixed N bins).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum BinArray {
+    Scalar,
+    Unsized,
+    Fixed(Expr),
+}
+
+/// One open_range_list entry: a single value (`lo==hi`) or inclusive `[lo:hi]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct CoverRange {
+    pub lo: RangeEnd,
+    pub hi: RangeEnd,
+}
+
+/// A range endpoint: a constant expression, or `$` (the coverpoint type extreme).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum RangeEnd {
+    Val(Expr),
+    TypeExtreme,
 }
 
 /// A covergroup instance declaration `CG_TYPE NAME = new;` (N5).

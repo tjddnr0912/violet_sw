@@ -128,3 +128,258 @@ fn unknown_covergroup_type_is_loud() {
         "unknown covergroup type must be loud: {out} {code:?}"
     );
 }
+
+// ─────────────── slice A: explicit bins (hand-IEEE, no live oracle) ───────────────
+// iverilog 13.0 rejects covergroup entirely; every expected % is hand-computed from
+// the per-bin model: coverage = covered_counting_bins / counting_bins * 100 (int).
+
+#[test]
+fn a1_value_list_bin() {
+    // `bins a = {0,1,2}` — ONE counting bin (set membership). x=0 hits it, x=5 misses.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; cp_x: coverpoint x { bins a = {0,1,2}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=0; c.sample(); x=5; c.sample();\n\
+           $display(\"A1 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("A1 100"), "value-list bin:\n{out}");
+}
+
+#[test]
+fn a2_range_bins() {
+    // two range bins ⇒ 2 counting bins; x=2 hits lo, x=7 hits neither ⇒ 1/2 = 50.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins lo = {[0:3]}; bins hi = {[12:15]}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=2; c.sample(); x=7; c.sample();\n\
+           $display(\"A2 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("A2 50"), "range bins:\n{out}");
+}
+
+#[test]
+fn a3_mixed_open_range_list() {
+    // `bins m = {0,[2:4],7}` — ONE bin over {0,2,3,4,7}. x=3 ∈ set ⇒ 100; x=1 ∉ ⇒ 0.
+    let (hit, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins m = {0,[2:4],7}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=3; c.sample(); $display(\"A3 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(hit.contains("A3 100"), "mixed hit:\n{hit}");
+    let (miss, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins m = {0,[2:4],7}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=1; c.sample(); $display(\"A3 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(miss.contains("A3 0"), "mixed miss:\n{miss}");
+}
+
+#[test]
+fn a4_array_bins_one_bit_per_value() {
+    // `bins arr[] = {[0:3]}` ⇒ 4 counting bins (one per value). x=0,1 ⇒ 2/4 = 50.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins arr[] = {[0:3]}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=0; c.sample(); x=1; c.sample();\n\
+           $display(\"A4 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("A4 50"), "array-bins partial:\n{out}");
+    // all four sampled ⇒ 100.
+    let (full, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins arr[] = {[0:3]}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=0;c.sample(); x=1;c.sample(); x=2;c.sample(); x=3;c.sample();\n\
+           $display(\"A4 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(full.contains("A4 100"), "array-bins full:\n{full}");
+}
+
+#[test]
+fn a5_ignore_removes_from_denominator() {
+    // `bins arr[]={[0:3]}` (4 elems) + `ignore_bins ig={1,2}` ⇒ effective {0,3} = 2
+    // counting bins. x=0 ⇒ 1/2 = 50 (ignored 1,2 are removed, NOT capped at 25).
+    let (out, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins arr[] = {[0:3]}; ignore_bins ig = {1,2}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=0; c.sample();\n\
+           $display(\"A5 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("A5 50"),
+        "ignore removes from denominator:\n{out}"
+    );
+}
+
+#[test]
+fn a6_illegal_bin_errors_and_excluded() {
+    // `illegal_bins bad={8,9}` ⇒ sampling x=8 fires $error, not counted. bin a={[0:7]}
+    // is the only counting bin; x=3 covers it ⇒ 100, and one illegal error printed.
+    let (out, code) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins a = {[0:7]}; illegal_bins bad = {8,9}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=8; c.sample(); x=3; c.sample();\n\
+           $display(\"A6 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("A6 100"),
+        "illegal excluded from coverage:\n{out}"
+    );
+    assert!(
+        out.contains("illegal coverage bin") || out.contains("VITA-E") || code == Some(1),
+        "illegal bin hit must be loud:\n{out} {code:?}"
+    );
+}
+
+#[test]
+fn a7_default_bin_never_counts() {
+    // `bins rest = default` does NOT contribute (§19.5.1). Only `a` counts. x=10 hits
+    // neither a counting bin ⇒ 0; x=2 covers a ⇒ 100.
+    let (miss, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins a = {[0:3]}; bins rest = default; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=10; c.sample(); $display(\"A7 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        miss.contains("A7 0"),
+        "default never counts (miss):\n{miss}"
+    );
+    let (hit, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins a = {[0:3]}; bins rest = default; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=2; c.sample(); $display(\"A7 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(hit.contains("A7 100"), "default never counts (hit):\n{hit}");
+}
+
+#[test]
+fn a8_all_hit_100_none_0() {
+    // four single-value bins; sample all four ⇒ 100; sample only an out-of-bin value ⇒ 0.
+    let (full, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins b0={0}; bins b1={1}; bins b2={2}; bins b3={3}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=0;c.sample(); x=1;c.sample(); x=2;c.sample(); x=3;c.sample();\n\
+           $display(\"A8 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(full.contains("A8 100"), "all hit:\n{full}");
+    let (none, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { bins b0={0}; bins b1={1}; bins b2={2}; bins b3={3}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=15; c.sample(); $display(\"A8 %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(none.contains("A8 0"), "none hit:\n{none}");
+}
+
+#[test]
+fn a9_unsupported_forms_are_loud_not_silent() {
+    // wildcard / transition / fixed-array / per-bin iff must be LOUD (never silently
+    // dropped — the pre-slice-A parser swallowed these).
+    for body in [
+        "wildcard bins w = {4'b1??0};",
+        "bins t = (0 => 1 => 2);",
+        "bins fa[3] = {[0:7]};",
+        "bins g = {0,1} iff (en);",
+    ] {
+        let src = format!(
+            "module t;\n reg [3:0] x; reg en;\n\
+             covergroup cg; coverpoint x {{ {body} }} endgroup\n\
+             cg c = new;\n\
+             initial begin x=0; c.sample(); $display(\"U %0d\", c.get_coverage()); end\n\
+             endmodule\n"
+        );
+        let (out, code) = run(&src);
+        assert!(
+            out.contains("VITA-E") || code == Some(1),
+            "unsupported bin form must be loud: `{body}`\n{out} {code:?}"
+        );
+    }
+}
+
+#[test]
+fn a10_coverpoint_iff_is_loud() {
+    // coverpoint-level `iff` is reserved for slice B — must be loud, not silently
+    // computing unconditional coverage.
+    let (out, code) = run("module t;\n\
+         reg [3:0] x; reg en;\n\
+         covergroup cg; coverpoint x iff (en) { bins a = {0}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=0; c.sample(); $display(\"%0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("VITA-E") || code == Some(1),
+        "coverpoint iff must be loud (slice B):\n{out} {code:?}"
+    );
+}
+
+#[test]
+fn a11_zero_counting_bins_never_falls_back_to_auto() {
+    // Adversarial regression: an EXPLICIT body that resolves to ZERO counting bins
+    // (all values ignored, reversed range, empty set, only ignore_bins) must report
+    // honest coverage — NOT silently revert to the auto-bin `1<<(v&63)` path (which
+    // produced 100% / impossible 200%+). The dispatch keys on "had a body", not on
+    // "resolved bins is empty".
+    let cases = [
+        // all values ignored ⇒ 0 counting bins ⇒ 0%
+        (
+            "coverpoint x { bins a = {[0:15]}; ignore_bins ig = {[0:15]}; }",
+            "0",
+        ),
+        // reversed range ⇒ empty ⇒ 0%
+        ("coverpoint x { bins a = {[5:1]}; }", "0"),
+        // empty value set ⇒ 0%
+        ("coverpoint x { bins a = {}; }", "0"),
+        // only ignore_bins, no regular ⇒ 0 counting bins ⇒ 0%
+        ("coverpoint x { ignore_bins ig = {5}; }", "0"),
+        // empty array after ignore ⇒ 0%
+        (
+            "coverpoint x { bins r[] = {[2:3]}; ignore_bins ig = {[2:3]}; }",
+            "0",
+        ),
+    ];
+    for (cp, want) in cases {
+        let src = format!(
+            "module t;\n reg [3:0] x;\n\
+             covergroup cg; {cp} endgroup\n\
+             cg c = new;\n\
+             initial begin x=2; c.sample(); x=3; c.sample();\n\
+               $display(\"ZB %0d\", c.get_coverage()); end\n\
+             endmodule\n"
+        );
+        let (out, _c) = run(&src);
+        assert!(
+            out.contains(&format!("ZB {want}")),
+            "zero-counting-bin coverpoint must report {want}%, not auto-bin fallback: `{cp}`\n{out}"
+        );
+    }
+}
+
+#[test]
+fn a12_multi_cp_zero_bins_no_impossible_percent() {
+    // Multi-coverpoint: one cp resolves to ZERO counting bins, the other has 1. The
+    // result must be sum(covered)/sum(counting) = 1/1 = 100, NOT an impossible 200%.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] a; reg [1:0] b;\n\
+         covergroup cg;\n\
+           cpa: coverpoint a { bins lo = {[0:1]}; ignore_bins ig = {[0:1]}; }\n\
+           cpb: coverpoint b { bins z = {2}; }\n\
+         endgroup\n\
+         cg c = new;\n\
+         initial begin a=0; b=2; c.sample();\n\
+           $display(\"MC %0d\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("MC 100"),
+        "multi-cp with a zero-bin cp must be 100, not 200:\n{out}"
+    );
+}

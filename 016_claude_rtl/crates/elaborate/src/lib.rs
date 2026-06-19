@@ -706,11 +706,31 @@ struct DeferredHierWrite {
 /// N5: one coverpoint's runtime tracker. The hit-bitmap is a fresh 64-bit reg; each
 /// `sample()` ORs in `1 << bin(value)`, and `get_coverage()` reports
 /// `$countones(bitmap) * 100 / num_bins`. Pure IR-0 (ordinary nets + synthesized ops).
+/// One resolved bin of an explicit-bin coverpoint (slice A).
+#[derive(Clone)]
+struct ResolvedBin {
+    kind: ast::BinKind,
+    /// Closed integer ranges (single value ⇒ `lo==hi`); `$` already clamped to the
+    /// coverpoint domain.
+    ranges: Vec<(i64, i64)>,
+    /// `Some(i)` ⇒ a COUNTING bin occupying bitmap bit `i` (regular, non-default,
+    /// non-empty). `None` ⇒ ignore/illegal (feeds gating + `$error`, never counted).
+    bit: Option<u32>,
+}
+
 #[derive(Clone)]
 struct CoverpointTracker {
     bitmap: String,
     expr: ast::Expr,
+    /// Resolved explicit bins (may be empty even when `has_explicit` — e.g. every
+    /// regular bin fully subtracted by ignore/illegal, a reversed/empty range).
+    bins: Vec<ResolvedBin>,
     num_bins: u32,
+    /// `true` iff the SOURCE coverpoint had a `{ bins… }` body. Distinguishes
+    /// "no body ⇒ auto-bins (legacy 1<<(v&63))" from "explicit body that resolved
+    /// to ZERO counting bins ⇒ vacuous (must NOT fall back to auto-bins)". Sampling
+    /// dispatch keys on THIS, never on `bins.is_empty()`.
+    has_explicit: bool,
 }
 
 struct DeferredHierSelWrite {
@@ -1263,6 +1283,110 @@ fn sva_unary(op: ast::UnOp, operand: ast::Expr, sp: ast::Span) -> ast::Expr {
         },
         span: sp,
     }
+}
+
+/// A decimal integer literal expr from an `i64` (N5 coverage bin bounds). A negative
+/// value is `-` (unary minus) over the positive magnitude (a bare `-N` literal raw is
+/// not a single token the literal parser accepts).
+fn cov_int_lit(v: i64, sp: ast::Span) -> ast::Expr {
+    if v < 0 {
+        return sva_unary(ast::UnOp::Minus, cov_int_lit_pos(-(v as i128), sp), sp);
+    }
+    cov_int_lit_pos(v as i128, sp)
+}
+
+fn cov_int_lit_pos(v: i128, sp: ast::Span) -> ast::Expr {
+    ast::Expr {
+        kind: ast::ExprKind::IntLit {
+            kind: ast::IntLitKind::Decimal,
+            raw: v.to_string(),
+        },
+        span: sp,
+    }
+}
+
+/// Membership predicate for one bin: `OR` over its ranges of `(v == k)` (single
+/// value, `lo==hi`) or `(v >= lo) && (v <= hi)`. Empty ranges ⇒ `1'b0` (never match).
+fn cov_bin_match(expr: &ast::Expr, ranges: &[(i64, i64)], sp: ast::Span) -> ast::Expr {
+    let mut acc: Option<ast::Expr> = None;
+    for &(lo, hi) in ranges {
+        let term = if lo == hi {
+            sva_binary(ast::BinOp::Eq, expr.clone(), cov_int_lit(lo, sp), sp)
+        } else {
+            sva_binary(
+                ast::BinOp::LogAnd,
+                sva_binary(ast::BinOp::Ge, expr.clone(), cov_int_lit(lo, sp), sp),
+                sva_binary(ast::BinOp::Le, expr.clone(), cov_int_lit(hi, sp), sp),
+                sp,
+            )
+        };
+        acc = Some(match acc {
+            None => term,
+            Some(a) => sva_binary(ast::BinOp::LogOr, a, term, sp),
+        });
+    }
+    acc.unwrap_or_else(|| sva_zero(sp))
+}
+
+/// `base \ excl` over closed integer ranges, returned normalized (sorted, disjoint).
+/// `excl` is first merged (overlapping/adjacent integer ranges unioned); each base
+/// range then has the excluded spans carved out. Used to apply ignore/illegal
+/// precedence to a regular bin's declared value set (§19.5.1).
+fn subtract_ranges(base: &[(i64, i64)], excl: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    let mut e: Vec<(i64, i64)> = excl.iter().copied().filter(|&(l, h)| l <= h).collect();
+    e.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::new();
+    for (l, h) in e {
+        if let Some(last) = merged.last_mut() {
+            if l <= last.1.saturating_add(1) {
+                last.1 = last.1.max(h);
+                continue;
+            }
+        }
+        merged.push((l, h));
+    }
+    let mut out = Vec::new();
+    for &(bl, bh) in base {
+        if bl > bh {
+            continue;
+        }
+        let mut cur = bl;
+        for &(el, eh) in &merged {
+            if eh < cur || el > bh {
+                continue;
+            }
+            if el > cur {
+                out.push((cur, el - 1));
+            }
+            cur = cur.max(eh.saturating_add(1));
+            if cur > bh {
+                break;
+            }
+        }
+        if cur <= bh {
+            out.push((cur, bh));
+        }
+    }
+    out
+}
+
+/// `OR` of the membership predicates of every bin of `kind` (the `any_illegal`
+/// runtime `$error` gate). `None` when no bin of that kind exists.
+fn cov_match_any(
+    bins: &[ResolvedBin],
+    expr: &ast::Expr,
+    kind: ast::BinKind,
+    sp: ast::Span,
+) -> Option<ast::Expr> {
+    let mut acc: Option<ast::Expr> = None;
+    for rb in bins.iter().filter(|b| b.kind == kind) {
+        let m = cov_bin_match(expr, &rb.ranges, sp);
+        acc = Some(match acc {
+            None => m,
+            Some(a) => sva_binary(ast::BinOp::LogOr, a, m, sp),
+        });
+    }
+    acc
 }
 
 /// The `(edge, signal-name)` of a single bare-identifier clocking event
@@ -10323,6 +10447,202 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// `(width, signed)` of a coverpoint's sampled domain — used for `$`-endpoint
+    /// clamping. Single-ident net → its declared shape; else the `w=6` default
+    /// (precise expr width is slice G).
+    fn coverpoint_domain(&self, e: &ast::Expr) -> (u32, bool) {
+        match &e.kind {
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => self
+                .lookup_net_scoped(&p.segments[0].name)
+                .map(|n| (self.nets[n as usize].width, self.nets[n as usize].signed))
+                .unwrap_or((6, false)),
+            _ => (6, false),
+        }
+    }
+
+    /// Resolve a `$` (type extreme) / constant range endpoint to its integer value.
+    /// `$` clamps to the coverpoint domain extreme (signed: ±2^(W-1); unsigned:
+    /// 0..2^W-1, clamped to the i64 domain at W≥63). A non-constant `Val` → `None`.
+    fn resolve_range_end(
+        &self,
+        end: &ast::RangeEnd,
+        w: u32,
+        signed: bool,
+        is_hi: bool,
+    ) -> Option<i64> {
+        match end {
+            ast::RangeEnd::TypeExtreme => {
+                let ww = w.min(63);
+                Some(if signed {
+                    let bits = ww.saturating_sub(1);
+                    if is_hi {
+                        (1i64 << bits) - 1
+                    } else {
+                        -(1i64 << bits)
+                    }
+                } else if is_hi {
+                    if ww >= 63 {
+                        i64::MAX
+                    } else {
+                        (1i64 << ww) - 1
+                    }
+                } else {
+                    0
+                })
+            }
+            ast::RangeEnd::Val(e) => self.const_eval_in_scope(e),
+        }
+    }
+
+    /// Fold a bin's value set (`{0,[2:4],$}`) to closed integer ranges; `None` if any
+    /// endpoint is non-constant (the bin is then loud-rejected by the caller).
+    fn resolve_bin_ranges(
+        &self,
+        bin: &ast::BinSpec,
+        w: u32,
+        signed: bool,
+    ) -> Option<Vec<(i64, i64)>> {
+        let mut ranges = Vec::new();
+        for r in &bin.values {
+            let lo = self.resolve_range_end(&r.lo, w, signed, false)?;
+            let hi = self.resolve_range_end(&r.hi, w, signed, true)?;
+            ranges.push((lo, hi));
+        }
+        Some(ranges)
+    }
+
+    /// Resolve a coverpoint's explicit `{ bin* }` body into `(ResolvedBin*, num_bins)`.
+    /// Precedence (illegal > ignore > regular, §19.5.1) is realized by SUBTRACTING the
+    /// `ignore ∪ illegal` value set from each regular bin's declared set: a regular bin
+    /// counts only if its EFFECTIVE set is non-empty, and credits only effective
+    /// values. Regular bins become counting bitmap bits (`[]` arrays expand one bit per
+    /// effective value); the illegal set is kept (no bit) to fire `$error`; `default`
+    /// is excluded (§19.5.1). Unsupported forms (`iff`, fixed `[N]`, non-const value,
+    /// >64 bins) are loud-rejected.
+    fn resolve_explicit_bins(&mut self, cp: &ast::Coverpoint) -> (Vec<ResolvedBin>, u32) {
+        let (w, signed) = self.coverpoint_domain(&cp.expr);
+        if cp.iff.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "coverpoint `iff` guard (follow-on slice)",
+            );
+        }
+        // Pass 1: gather ignore ∪ illegal (the excluded set) and the illegal set.
+        let mut excluded: Vec<(i64, i64)> = Vec::new();
+        let mut illegal: Vec<(i64, i64)> = Vec::new();
+        for bin in &cp.bins {
+            if matches!(bin.kind, ast::BinKind::Ignore | ast::BinKind::Illegal) {
+                match self.resolve_bin_ranges(bin, w, signed) {
+                    Some(rs) => {
+                        excluded.extend(rs.iter().copied());
+                        if matches!(bin.kind, ast::BinKind::Illegal) {
+                            illegal.extend(rs);
+                        }
+                    }
+                    None => self.error(
+                        MsgCode::ElabUnsupported,
+                        "non-constant coverage bin value (follow-on)",
+                    ),
+                }
+            }
+        }
+        let mut resolved: Vec<ResolvedBin> = Vec::new();
+        if !illegal.is_empty() {
+            // No bit — its only role is the runtime `$error` gate.
+            resolved.push(ResolvedBin {
+                kind: ast::BinKind::Illegal,
+                ranges: illegal,
+                bit: None,
+            });
+        }
+        // Pass 2: regular bins, with the excluded set subtracted from each.
+        let mut next_bit: u32 = 0;
+        let mut capped = false;
+        for bin in &cp.bins {
+            if bin.iff.is_some() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "per-bin `iff` guard (follow-on slice)",
+                );
+            }
+            if let ast::BinArray::Fixed(_) = bin.array {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "fixed-size bin array `[N]` (follow-on)",
+                );
+                continue;
+            }
+            if bin.is_default {
+                continue; // `default` bins are EXCLUDED from coverage (§19.5.1).
+            }
+            if !matches!(bin.kind, ast::BinKind::Regular) {
+                continue; // ignore/illegal handled in pass 1.
+            }
+            let Some(declared) = self.resolve_bin_ranges(bin, w, signed) else {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "non-constant coverage bin value (follow-on)",
+                );
+                continue;
+            };
+            let effective = subtract_ranges(&declared, &excluded);
+            if effective.is_empty() {
+                continue; // every declared value is ignored/illegal → does not count.
+            }
+            match bin.array {
+                ast::BinArray::Unsized => {
+                    let count: i128 = effective
+                        .iter()
+                        .map(|&(l, h)| h as i128 - l as i128 + 1)
+                        .sum();
+                    if count > 64 {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "array bin `[]` exceeds the 64-bin bitmap",
+                        );
+                        continue;
+                    }
+                    for &(l, h) in &effective {
+                        let mut v = l;
+                        while v <= h {
+                            if next_bit >= 64 {
+                                capped = true;
+                                break;
+                            }
+                            resolved.push(ResolvedBin {
+                                kind: ast::BinKind::Regular,
+                                ranges: vec![(v, v)],
+                                bit: Some(next_bit),
+                            });
+                            next_bit += 1;
+                            v += 1;
+                        }
+                    }
+                }
+                _ => {
+                    if next_bit >= 64 {
+                        capped = true;
+                        continue;
+                    }
+                    resolved.push(ResolvedBin {
+                        kind: ast::BinKind::Regular,
+                        ranges: effective,
+                        bit: Some(next_bit),
+                    });
+                    next_bit += 1;
+                }
+            }
+        }
+        if capped {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "coverpoint has more than 64 explicit bins (64-bit bitmap cap)",
+            );
+        }
+        let num_bins = resolved.iter().filter(|b| b.bit.is_some()).count() as u32;
+        (resolved, num_bins)
+    }
+
     /// Register a covergroup instance: allocate one 64-bit hit-bitmap reg per
     /// coverpoint and record the trackers under the instance's FQ name.
     fn register_cover_instance(&mut self, ci: &ast::CoverInstance) {
@@ -10338,13 +10658,35 @@ impl<'s> Elaborator<'s> {
         };
         let mut trackers = Vec::new();
         for cp in &cg.points {
-            let num_bins = self.coverpoint_num_bins(&cp.expr);
-            let bitmap = self.fresh_sva_reg(64, "cov");
-            trackers.push(CoverpointTracker {
-                bitmap,
-                expr: cp.expr.clone(),
-                num_bins,
-            });
+            if cp.bins.is_empty() {
+                // Auto-bin fallback — the byte-identical legacy path (allocation
+                // order preserved: num_bins read before the bitmap reg alloc).
+                if cp.iff.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "coverpoint `iff` guard (follow-on slice)",
+                    );
+                }
+                let num_bins = self.coverpoint_num_bins(&cp.expr);
+                let bitmap = self.fresh_sva_reg(64, "cov");
+                trackers.push(CoverpointTracker {
+                    bitmap,
+                    expr: cp.expr.clone(),
+                    bins: Vec::new(),
+                    num_bins,
+                    has_explicit: false,
+                });
+            } else {
+                let (bins, num_bins) = self.resolve_explicit_bins(cp);
+                let bitmap = self.fresh_sva_reg(64, "cov");
+                trackers.push(CoverpointTracker {
+                    bitmap,
+                    expr: cp.expr.clone(),
+                    bins,
+                    num_bins,
+                    has_explicit: true,
+                });
+            }
         }
         let key = self.fq(&ci.name.name);
         self.cover_insts.insert(key, trackers);
@@ -10355,7 +10697,10 @@ impl<'s> Elaborator<'s> {
         self.cover_insts.get(&self.fq(name)).cloned()
     }
 
-    /// `c.sample();` — OR `1 << (value & 63)` into each coverpoint's hit bitmap.
+    /// `c.sample();` — record this sample into each coverpoint's hit bitmap.
+    /// Auto-bin coverpoints OR `1 << (value & 63)` (the byte-identical legacy path);
+    /// explicit-bin coverpoints set the matching counting bin's bit (with
+    /// ignore/illegal precedence gating) and fire `$error` on an illegal hit.
     fn synth_cover_sample(&mut self, b: &mut ProcessBuilder, inst: &str) {
         let Some(trackers) = self.cover_inst(inst) else {
             self.error(
@@ -10365,6 +10710,14 @@ impl<'s> Elaborator<'s> {
             return;
         };
         for t in &trackers {
+            if t.has_explicit {
+                // Explicit-bin coverpoint — even if it resolved to ZERO counting bins
+                // (all values ignored/illegal, reversed/empty range), it must take the
+                // explicit path (sets only counting bits + illegal `$error`), NEVER the
+                // auto-bin fallback below.
+                self.synth_cover_sample_explicit(b, t);
+                continue;
+            }
             let Some(bnet) = self.lookup_net_scoped(&t.bitmap) else {
                 continue;
             };
@@ -10395,6 +10748,67 @@ impl<'s> Elaborator<'s> {
                 rhs: newbm,
             });
             b.push_stmt_id(sid);
+        }
+    }
+
+    /// Explicit-bin sample: for each COUNTING bin, `if (match) bitmap[bit] = 1'b1;`
+    /// (its `ranges` are the EFFECTIVE set — ignore/illegal already subtracted, so no
+    /// runtime gating is needed); then, if any illegal bins exist,
+    /// `if (any_illegal) $error(...)`. Built as AST and lowered via `lower_stmt`,
+    /// reusing the standard if/compare/bit-select machinery. `t` is borrowed from the
+    /// CLONED tracker list, so `&mut self.lower_stmt` is free.
+    fn synth_cover_sample_explicit(&mut self, b: &mut ProcessBuilder, t: &CoverpointTracker) {
+        let sp = t.expr.span;
+        let any_illegal = cov_match_any(&t.bins, &t.expr, ast::BinKind::Illegal, sp);
+        for rb in &t.bins {
+            let Some(bit) = rb.bit else {
+                continue; // only counting (regular) bins set a bit
+            };
+            let cond = cov_bin_match(&t.expr, &rb.ranges, sp);
+            let set = ast::Stmt::If {
+                cond,
+                then_s: Box::new(ast::Stmt::Blocking {
+                    lhs: ast::Lvalue::BitSelect {
+                        base: Box::new(ast::Lvalue::Ident(ast::HierPath {
+                            segments: vec![ast::Ident {
+                                name: t.bitmap.clone(),
+                                span: sp,
+                            }],
+                            span: sp,
+                        })),
+                        index: Box::new(cov_int_lit(bit as i64, sp)),
+                        span: sp,
+                    },
+                    delay: None,
+                    event: None,
+                    rhs: sva_one(sp),
+                    span: sp,
+                }),
+                else_s: None,
+                span: sp,
+            };
+            self.lower_stmt(b, &set);
+        }
+        if let Some(il) = any_illegal {
+            let err = ast::Stmt::If {
+                cond: il,
+                then_s: Box::new(ast::Stmt::SysTaskCall {
+                    name: ast::Ident {
+                        name: "$error".to_string(),
+                        span: sp,
+                    },
+                    args: vec![ast::Expr {
+                        kind: ast::ExprKind::StrLit {
+                            raw: "\"illegal coverage bin hit\"".to_string(),
+                        },
+                        span: sp,
+                    }],
+                    span: sp,
+                }),
+                else_s: None,
+                span: sp,
+            };
+            self.lower_stmt(b, &err);
         }
     }
 

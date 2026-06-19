@@ -1686,14 +1686,22 @@ impl<'t, 's> Parser<'t, 's> {
                 let cp_start = self.cur_span();
                 self.bump(); // `coverpoint`
                 let expr = self.expr(0);
-                // skip an optional `iff(..)` and `{ bins.. }` body to `;` (follow-on).
-                while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
-                    self.bump();
-                }
-                self.expect(TokenKind::Semi, "';' after coverpoint");
+                // optional coverpoint-level `iff (G)` guard (slice B).
+                let iff = self.parse_cover_iff();
+                // optional `{ bin* }` body (else a bare `;`).
+                let bins = if self.peek() == Some(TokenKind::LBrace) {
+                    let b = self.parse_coverpoint_bins();
+                    self.eat(TokenKind::Semi); // `;` after `}` is optional
+                    b
+                } else {
+                    self.expect(TokenKind::Semi, "';' after coverpoint");
+                    Vec::new()
+                };
                 points.push(Coverpoint {
                     label,
                     expr,
+                    iff,
+                    bins,
                     span: cp_start.to(self.prev_span()),
                 });
             } else {
@@ -1758,6 +1766,198 @@ impl<'t, 's> Parser<'t, 's> {
             name,
             span: start.to(self.prev_span()),
         }))
+    }
+
+    /// Optional `iff ( expr )` guard after a coverpoint expr or a bin RHS (slice B).
+    /// `iff` is a contextual ident here (not a reserved keyword globally).
+    fn parse_cover_iff(&mut self) -> Option<Expr> {
+        if !self.at_ident_kw("iff") {
+            return None;
+        }
+        self.bump(); // `iff`
+        self.expect(TokenKind::LParen, "'(' after iff");
+        let g = self.expr(0);
+        self.expect(TokenKind::RParen, "')' after iff guard");
+        Some(g)
+    }
+
+    /// Parse a coverpoint body `{ bin* }` (the opening `{` is at the cursor).
+    /// Each bin is `KIND NAME[array] = ( {range_list} | default ) [iff(G)] ;`.
+    /// Unsupported forms (wildcard/transition/`binsof`/`intersect`/junk) are
+    /// LOUD-rejected and balanced-skipped — never silently dropped.
+    fn parse_coverpoint_bins(&mut self) -> Vec<BinSpec> {
+        self.bump(); // `{`
+        let mut bins = Vec::new();
+        loop {
+            if matches!(self.peek(), Some(TokenKind::RBrace) | None) {
+                break;
+            }
+            let before = self.pos;
+            if let Some(b) = self.parse_bin_spec() {
+                bins.push(b);
+            }
+            if self.pos == before {
+                self.bump(); // forward-progress guard
+            }
+        }
+        self.eat(TokenKind::RBrace);
+        bins
+    }
+
+    /// One `KIND NAME[array] = RHS [iff(G)] ;` bin. Returns `None` (after a loud
+    /// diagnostic + balanced skip to the bin's `;`) for unsupported forms.
+    fn parse_bin_spec(&mut self) -> Option<BinSpec> {
+        let start = self.cur_span();
+        // `wildcard bins …` — follow-on; loud-reject.
+        if self.at_ident_kw("wildcard") {
+            self.error("wildcard coverage bins (follow-on)");
+            self.skip_bin_to_semi();
+            return None;
+        }
+        let kind = if self.at_ident_kw("bins") {
+            BinKind::Regular
+        } else if self.at_ident_kw("ignore_bins") {
+            BinKind::Ignore
+        } else if self.at_ident_kw("illegal_bins") {
+            BinKind::Illegal
+        } else {
+            // `cross`/`option`/junk inside a coverpoint body — loud-reject.
+            self.error("`bins`/`ignore_bins`/`illegal_bins` in coverpoint body");
+            self.skip_bin_to_semi();
+            return None;
+        };
+        self.bump(); // the bins-kind ident
+        let name = self.ident()?;
+        // optional array suffix: `[]` (unsized) or `[N]` (fixed).
+        let array = if self.peek() == Some(TokenKind::LBracket) {
+            self.bump(); // `[`
+            if self.eat(TokenKind::RBracket) {
+                BinArray::Unsized
+            } else {
+                let n = self.expr(0);
+                self.expect(TokenKind::RBracket, "']' in bin array size");
+                BinArray::Fixed(n)
+            }
+        } else {
+            BinArray::Scalar
+        };
+        self.expect(TokenKind::Eq, "'=' in bin definition");
+        // RHS: `default` | `{ open_range_list }` | `( trans_list )`(loud).
+        let (values, is_default) = if self.at_kw(Kw::Default) {
+            self.bump(); // `default`
+            if self.at_ident_kw("sequence") {
+                self.error("default sequence (transition) bins (follow-on)");
+                self.skip_bin_to_semi();
+                return None;
+            }
+            (Vec::new(), true)
+        } else if self.peek() == Some(TokenKind::LParen) {
+            self.error("transition coverage bins (follow-on)");
+            self.skip_bin_to_semi();
+            return None;
+        } else if self.peek() == Some(TokenKind::LBrace) {
+            (self.parse_open_range_list(), false)
+        } else {
+            self.error("bin value set `{...}` or `default`");
+            self.skip_bin_to_semi();
+            return None;
+        };
+        let iff = self.parse_cover_iff();
+        self.expect(TokenKind::Semi, "';' after bin");
+        Some(BinSpec {
+            name,
+            kind,
+            array,
+            values,
+            is_default,
+            iff,
+            span: start.to(self.prev_span()),
+        })
+    }
+
+    /// Parse `{ range (, range)* }` (the opening `{` is at the cursor).
+    fn parse_open_range_list(&mut self) -> Vec<CoverRange> {
+        self.bump(); // `{`
+        let mut out = Vec::new();
+        loop {
+            if matches!(self.peek(), Some(TokenKind::RBrace) | None) {
+                break;
+            }
+            let before = self.pos;
+            if let Some(r) = self.parse_cover_range() {
+                out.push(r);
+            }
+            if self.pos == before {
+                self.bump(); // forward-progress guard
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.eat(TokenKind::RBrace);
+        out
+    }
+
+    /// One open_range_list element: `[ end : end ]` (inclusive range) or a single
+    /// value `expr` (`lo==hi`). A transition arrow `=>` after a value is loud-rejected.
+    fn parse_cover_range(&mut self) -> Option<CoverRange> {
+        if self.peek() == Some(TokenKind::LBracket) {
+            self.bump(); // `[`
+            let lo = self.parse_range_end();
+            self.expect(TokenKind::Colon, "':' in range");
+            let hi = self.parse_range_end();
+            self.expect(TokenKind::RBracket, "']' in range");
+            Some(CoverRange { lo, hi })
+        } else {
+            let v = self.expr(0);
+            // transition `=>` (lexes as `=` then `>`) — follow-on.
+            if self.peek() == Some(TokenKind::Eq) && self.peek_at(1) == Some(TokenKind::Gt) {
+                self.error("transition coverage bins (follow-on)");
+                return None;
+            }
+            let end = RangeEnd::Val(v);
+            Some(CoverRange {
+                lo: end.clone(),
+                hi: end,
+            })
+        }
+    }
+
+    /// A range endpoint: `$` (type extreme) or a constant expression.
+    fn parse_range_end(&mut self) -> RangeEnd {
+        if self.peek() == Some(TokenKind::Dollar) {
+            self.bump();
+            RangeEnd::TypeExtreme
+        } else {
+            RangeEnd::Val(self.expr(0))
+        }
+    }
+
+    /// Balanced skip to the terminating `;` of a malformed bin (recovery). Stops at
+    /// a depth-0 `}` (the body terminator) without consuming it.
+    fn skip_bin_to_semi(&mut self) {
+        let mut depth = 0i32;
+        loop {
+            match self.peek() {
+                None => break,
+                Some(TokenKind::RBrace) if depth == 0 => break,
+                Some(TokenKind::Semi) if depth == 0 => {
+                    self.bump();
+                    break;
+                }
+                Some(TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace) => {
+                    depth += 1;
+                    self.bump();
+                }
+                Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace) => {
+                    depth -= 1;
+                    self.bump();
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
     }
 
     /// Parse `( param_overrides )` after a consumed `#`.

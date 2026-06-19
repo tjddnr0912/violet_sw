@@ -12,7 +12,14 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-17 N2d recursive-property + property-level `and`/`or`
+/// Re-pinned 2026-06-19 N5 slice A explicit coverage bins (`Coverpoint.iff:
+/// Option<Expr>` + `Coverpoint.bins: Vec<BinSpec>` + the `BinSpec`/`BinKind`/
+/// `BinArray`/`CoverRange`/`RangeEnd` types — `coverpoint x [iff(g)] { bins a =
+/// {0,[2:4]}; ignore_bins/illegal_bins/default … }`; all `.vu` artifacts are stale,
+/// no sim-ir/format_version change, pure IR-0: per-bin membership predicate →
+/// counting-bin bits in the existing 64-bit hit-bitmap. `iff` is reserved here
+/// (parsed, elaborate loud-rejects) for the guard slice. (Previous re-pins:
+/// 2026-06-17 N2d recursive-property + property-level `and`/`or`
 /// (`PropExpr` enum + `ConcurrentAssert.prop_expr` / `PropDecl.prop_expr:
 /// Option<PropExpr>` — the `and`/`or`/recursion layer above a flat implication;
 /// `None` = the byte-identical flat path; all `.vu` artifacts are stale, no
@@ -67,8 +74,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    201, 37, 221, 224, 232, 79, 214, 34, 97, 39, 18, 99, 233, 195, 241, 234, 15, 173, 162, 199,
-    195, 125, 225, 228, 111, 46, 5, 141, 21, 57, 215, 227,
+    128, 136, 159, 34, 240, 17, 73, 189, 59, 117, 151, 49, 24, 5, 179, 92, 253, 165, 116, 0, 107,
+    147, 10, 59, 108, 126, 139, 88, 28, 106, 210, 248,
 ];
 
 #[test]
