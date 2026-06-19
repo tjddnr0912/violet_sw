@@ -2243,18 +2243,21 @@ impl<'s> Elaborator<'s> {
             // flat bit-select (review N3 HIGH: silent wrong value/width on packed
             // multi-dim). Loud-reject the whole net here; a hierarchical element select
             // is a deferred follow-on lane.
+            // HIER-REST-MP: a WHOLE multi-dim packed net IS a plain flat vector — its
+            // whole-net read (`dut.pm`) reads the flat value, so it is NOT rejected
+            // here. (An element select `dut.pm[i]` takes the deferred-sel lane, never
+            // this whole-net path.) Events / dyn handles / whole unpacked arrays still
+            // have no plain whole value.
             let bad = self.event_nets.contains(&net)
                 || self.is_dyn_handle_net(net)
-                || self.net_is_static_array(net)
-                || self.packed_dims.contains_key(&net);
+                || self.net_is_static_array(net);
             if bad {
                 self.error(
                     MsgCode::ElabUnsupported,
                     &format!(
                         "hierarchical read of `{}` is unsupported (a named event, a \
-                         dynamic handle, a whole unpacked array, or a multi-dimensional \
-                         packed net has no plain readable value; a hierarchical element \
-                         select is a deferred follow-on)",
+                         dynamic handle, or a whole unpacked array has no plain readable \
+                         value; a hierarchical element select is a deferred follow-on)",
                         d.path.join(".")
                     ),
                 );
@@ -2310,21 +2313,21 @@ impl<'s> Elaborator<'s> {
                     POISON_NET
                 }
                 Some(net) => {
-                    // Same shape guards as the read side: these have no plain whole
-                    // value to write, and a hierarchical element/part-select write is
-                    // a deferred follow-on (it would mis-lower to a flat write here).
+                    // HIER-REST-MP: a WHOLE multi-dim packed net is a plain flat vector
+                    // — `dut.pm = …` writes the flat value (the element write
+                    // `dut.pm[i] = …` takes the deferred-sel lane). Events / dyn handles
+                    // / whole unpacked arrays still have no plain whole write target.
                     if self.event_nets.contains(&net)
                         || self.is_dyn_handle_net(net)
                         || self.net_is_static_array(net)
-                        || self.packed_dims.contains_key(&net)
                     {
                         self.error(
                             MsgCode::ElabUnsupported,
                             &format!(
                                 "hierarchical write of `{}` is unsupported (a named event, a \
-                                 dynamic handle, a whole unpacked array, or a multi-dimensional \
-                                 packed net is not a plain whole-net write target; a hierarchical \
-                                 element select is a deferred follow-on)",
+                                 dynamic handle, or a whole unpacked array is not a plain \
+                                 whole-net write target; a hierarchical element select is a \
+                                 deferred follow-on)",
                                 d.path.join(".")
                             ),
                         );
