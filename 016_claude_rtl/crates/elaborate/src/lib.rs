@@ -4418,8 +4418,13 @@ impl<'s> Elaborator<'s> {
         for r in range.into_iter().chain(packed.iter()) {
             // Negative folded bounds (underflow artifact) clamp to 0 — width math
             // stays small instead of the old u32-wrap explosion.
-            let msb = clamp_bound_u32(self.const_eval_in_scope(&r.msb));
-            let lsb = clamp_bound_u32(self.const_eval_in_scope(&r.lsb));
+            let msb_v = self.const_eval_in_scope(&r.msb);
+            let lsb_v = self.const_eval_in_scope(&r.lsb);
+            // P0-NCW: net/hierarchical-referenced (non-constant) packed bound is loud.
+            self.check_const_range_bound(&r.msb, msb_v);
+            self.check_const_range_bound(&r.lsb, lsb_v);
+            let msb = clamp_bound_u32(msb_v);
+            let lsb = clamp_bound_u32(lsb_v);
             let w = (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32;
             out.push((msb.min(lsb), w.max(1), msb < lsb));
         }
@@ -4434,28 +4439,39 @@ impl<'s> Elaborator<'s> {
     /// a degenerate `[0:0]` dim contributes one word. The product of the sizes is
     /// the flat `array_len`.
     fn array_dim_extents(&mut self, dims: &[ast::Dim]) -> Vec<(u32, u32)> {
-        dims.iter()
-            .map(|d| match d {
+        let mut out = Vec::with_capacity(dims.len());
+        for d in dims {
+            out.push(match d {
                 ast::Dim::Range(r) => {
-                    let msb = clamp_bound_u32(self.const_eval_in_scope(&r.msb));
-                    let lsb = clamp_bound_u32(self.const_eval_in_scope(&r.lsb));
+                    let msb_v = self.const_eval_in_scope(&r.msb);
+                    let lsb_v = self.const_eval_in_scope(&r.lsb);
+                    // P0-NCW: net/hierarchical-referenced (non-constant) unpacked
+                    // bound is loud, NOT a silent length-1 dim.
+                    self.check_const_range_bound(&r.msb, msb_v);
+                    self.check_const_range_bound(&r.lsb, lsb_v);
+                    let msb = clamp_bound_u32(msb_v);
+                    let lsb = clamp_bound_u32(lsb_v);
                     let size = (((msb.abs_diff(lsb) as u64) + 1).min(u32::MAX as u64)) as u32;
                     (msb.min(lsb), size.max(1))
                 }
-                ast::Dim::Size(e) => (
-                    0,
-                    self.const_eval_in_scope(e)
-                        .map_or(1, |v| {
+                ast::Dim::Size(e) => {
+                    let v = self.const_eval_in_scope(e);
+                    self.check_const_range_bound(e, v);
+                    (
+                        0,
+                        v.map_or(1, |v| {
                             u32::try_from(v).unwrap_or(if v < 0 { 1 } else { u32::MAX })
                         })
                         .max(1),
-                ),
+                    )
+                }
                 // v5 ⑥: dyn dims never reach the static-extent path
                 // (`elaborate_netvar_decl` routes them to handle nets first) —
                 // neutral extent, defensive only.
                 ast::Dim::Dyn | ast::Dim::Queue(_) | ast::Dim::Assoc(_) => (0, 1),
-            })
-            .collect()
+            });
+        }
+        out
     }
 
     /// Total bit width of a LOWERED lvalue (mirrors the engine's
@@ -4833,6 +4849,89 @@ impl<'s> Elaborator<'s> {
     /// `u64` and rejected above [`MAX_NET_WIDTH`] with `ElabUnsupported` (the net
     /// is then clamped to width 1 so the arena stays valid). A `[N:0]` with
     /// `N = u32::MAX` no longer panics. (COVERAGE verdict HIGH.)
+    /// P0-NCW: a declared range bound that fails to const-fold AND references a
+    /// net/variable or a hierarchical name is NOT a constant expression — iverilog
+    /// rejects it ("not allowed in a constant expression"). Emit a loud E3009
+    /// instead of the OLD silent width-1 (the bound clamped to 0). The caller then
+    /// proceeds with a degenerate extent, but the run is already loud (exit 1).
+    /// A const-but-unfoldable bound vita simply cannot fold yet (e.g. a constant
+    /// function call `f(3)`, which iverilog DOES accept) carries no net/hier ref,
+    /// so it is left silent — unchanged behavior, NOT a new false-loud.
+    fn check_const_range_bound(&mut self, e: &ast::Expr, folded: Option<i64>) {
+        if folded.is_some() {
+            return;
+        }
+        if let Some(reason) = self.nonconst_bound_reason(e) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("{reason} is not allowed in a constant range bound"),
+            );
+        }
+    }
+
+    /// First sub-expression that makes a range bound non-constant: a reference to a
+    /// net/variable (single-segment name that is a net, not a param/genvar), or any
+    /// hierarchical (multi-segment) name. Mirrors iverilog's constant-expression
+    /// rule. Returns a human message fragment, or None when nothing runtime/
+    /// hierarchical is present (const-but-unfoldable — left as-is). System/user
+    /// function CALLS are NOT descended into: `$bits(net)` is a legal constant and
+    /// a constant function `f(x)` is accepted by iverilog, so flagging their args
+    /// would be a false-loud.
+    fn nonconst_bound_reason(&self, e: &ast::Expr) -> Option<String> {
+        use ast::ExprKind as K;
+        let r = |s: &Self, x: &ast::Expr| s.nonconst_bound_reason(x);
+        match &e.kind {
+            K::Ident(path) => {
+                if path.segments.len() > 1 {
+                    let joined = path
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    return Some(format!("a hierarchical reference (`{joined}`)"));
+                }
+                let name = &path.segments[0].name;
+                if self.lookup_scoped(name).is_none() && self.lookup_net_scoped(name).is_some() {
+                    return Some(format!("a reference to net/variable `{name}`"));
+                }
+                None
+            }
+            K::Unary { operand, .. } => r(self, operand),
+            K::Binary { lhs, rhs, .. } => r(self, lhs).or_else(|| r(self, rhs)),
+            K::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => r(self, cond)
+                .or_else(|| r(self, then_e))
+                .or_else(|| r(self, else_e)),
+            K::Paren { inner } => r(self, inner),
+            K::BitSelect { base, index } => r(self, base).or_else(|| r(self, index)),
+            K::PartSelect { base, msb, lsb } => r(self, base)
+                .or_else(|| r(self, msb))
+                .or_else(|| r(self, lsb)),
+            K::IndexedPart {
+                base,
+                offset,
+                width,
+                ..
+            } => r(self, base)
+                .or_else(|| r(self, offset))
+                .or_else(|| r(self, width)),
+            K::Concat { parts } => parts.iter().find_map(|p| r(self, p)),
+            K::Replicate { count, value } => {
+                r(self, count).or_else(|| value.iter().find_map(|p| r(self, p)))
+            }
+            K::MinTypMax { min, typ, max } => r(self, min)
+                .or_else(|| r(self, typ))
+                .or_else(|| r(self, max)),
+            // literals · PkgScoped · SysCall · Call · New · Dollar · Error: no bare
+            // net/hier ref of their own (function calls are not descended — see doc).
+            _ => None,
+        }
+    }
+
     fn range_to_dims(
         &mut self,
         kind: ast::NetVarKind,
@@ -4861,6 +4960,10 @@ impl<'s> Elaborator<'s> {
                 // `W` to the bound parameter value in the current instance scope.
                 let msb_v = self.const_eval_in_scope(&r.msb);
                 let lsb_v = self.const_eval_in_scope(&r.lsb);
+                // P0-NCW: a net/hierarchical-referenced (non-constant) bound is loud,
+                // NOT a silent width-1.
+                self.check_const_range_bound(&r.msb, msb_v);
+                self.check_const_range_bound(&r.lsb, lsb_v);
                 // A bound that folds NEGATIVE is the degenerate `[W-1:0]`-with-W==0
                 // underflow artifact (the signed i64 domain shows it directly; the
                 // old u32 wrap needed Sub-shape detection): clamp to width 1 + warn,
