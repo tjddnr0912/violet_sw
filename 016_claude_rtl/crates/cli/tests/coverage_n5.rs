@@ -663,3 +663,122 @@ fn c3_cross_unsupported_is_loud() {
         );
     }
 }
+
+// ─────────────── slice D: option.at_least + option.weight ───────────────
+
+#[test]
+fn d1_at_least_counter() {
+    // option.at_least=2: a bin is covered only after 2 hits. bins a={5}, b={6}.
+    // x=5 once ⇒ counter 1<2 ⇒ a NOT covered ⇒ 0/2=0. x=5 twice ⇒ a covered ⇒ 1/2=50.
+    let (once, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { option.at_least = 2; bins a={5}; bins b={6}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=5; c.sample(); $display(\"D1 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        once.contains("D1 0"),
+        "at_least: 1 hit not covered:\n{once}"
+    );
+    let (twice, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { option.at_least = 2; bins a={5}; bins b={6}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=5; c.sample(); x=5; c.sample(); $display(\"D1 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        twice.contains("D1 50"),
+        "at_least: 2 hits covered:\n{twice}"
+    );
+}
+
+#[test]
+fn d2_covergroup_level_at_least() {
+    // covergroup-level option.at_least applies to all coverpoints; a coverpoint-level
+    // option overrides. cg default 2; x=7 sampled 3× ⇒ covered (>=2) ⇒ 1/1=100.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; option.at_least = 2; coverpoint x { bins a={7}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=7;c.sample(); x=7;c.sample(); x=7;c.sample();\n\
+           $display(\"D2 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("D2 100"), "covergroup-level at_least:\n{out}");
+}
+
+#[test]
+fn d3_weight_weighted_average() {
+    // option.weight: cpa weight 3 (100%), cpb weight 1 (0%) ⇒ (3*100 + 1*0)/(3+1) = 75.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] a, b;\n\
+         covergroup cg;\n\
+           cpa: coverpoint a { option.weight = 3; bins z={0}; }\n\
+           cpb: coverpoint b { option.weight = 1; bins z={5}; }\n\
+         endgroup\n\
+         cg c = new;\n\
+         initial begin a=0; b=0; c.sample(); $display(\"D3 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("D3 75"), "weighted average:\n{out}");
+}
+
+#[test]
+fn d4_at_least_on_auto_bins_is_loud() {
+    // option.at_least>1 on an auto-bin coverpoint (no explicit bins) is loud — the
+    // bitmap model has no per-value counters.
+    let (out, code) = run("module t;\n\
+         reg [1:0] x;\n\
+         covergroup cg; option.at_least = 2; coverpoint x; endgroup\n\
+         cg c = new;\n\
+         initial begin x=0; c.sample(); $display(\"%g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("VITA-E") || code == Some(1),
+        "at_least>1 on auto-bins must be loud:\n{out} {code:?}"
+    );
+}
+
+#[test]
+fn d5_other_options_accepted_ignored() {
+    // option.goal / option.comment / type_option.* don't change the measured % —
+    // accepted and ignored (not loud, not silently wrong). bins z={0}, a=0 ⇒ 100.
+    let (out, _c) = run("module t;\n\
+         reg [3:0] a;\n\
+         covergroup cg;\n\
+           option.goal = 90; option.comment = \"hi\"; option.per_instance = 1;\n\
+           coverpoint a { option.goal = 100; bins z={0}; }\n\
+         endgroup\n\
+         cg c = new;\n\
+         initial begin a=0; c.sample(); $display(\"D5 %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(out.contains("D5 100"), "other options ignored:\n{out}");
+}
+
+#[test]
+fn d6_at_least_array_and_iff_interactions() {
+    // at_least with array bins: each element has its OWN counter. arr[]={[0:1]},
+    // at_least=2: x=0 twice (arr[0] covered), x=1 once (arr[1] not) ⇒ 1/2=50.
+    let (arr, _c) = run("module t;\n\
+         reg [3:0] x;\n\
+         covergroup cg; coverpoint x { option.at_least=2; bins arr[]={[0:1]}; } endgroup\n\
+         cg c = new;\n\
+         initial begin x=0;c.sample();c.sample(); x=1;c.sample();\n\
+           $display(\"D6a %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        arr.contains("D6a 50"),
+        "at_least array per-element counters:\n{arr}"
+    );
+    // at_least + per-bin iff: the counter only increments when the guard holds.
+    // guard=0 for 3 samples (no increment), guard=1 for 2 samples ⇒ covered ⇒ 100.
+    let (iff, _c) = run("module t;\n\
+         reg [3:0] x; reg g;\n\
+         covergroup cg; coverpoint x { bins a={5} iff(g); option.at_least=2; } endgroup\n\
+         cg c = new;\n\
+         initial begin g=0; x=5; c.sample(); c.sample(); c.sample();\n\
+           g=1; c.sample(); c.sample(); $display(\"D6b %g\", c.get_coverage()); end\n\
+         endmodule\n");
+    assert!(
+        iff.contains("D6b 100"),
+        "at_least + iff counter gating:\n{iff}"
+    );
+}

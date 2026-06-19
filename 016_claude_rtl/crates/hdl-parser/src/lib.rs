@@ -1696,6 +1696,7 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::Semi, "';' after covergroup header");
         let mut points = Vec::new();
         let mut crosses = Vec::new();
+        let mut cg_at_least: Option<Expr> = None;
         loop {
             if self.at_kw(Kw::Endgroup) || self.peek().is_none() {
                 break;
@@ -1714,26 +1715,39 @@ impl<'t, 's> Parser<'t, 's> {
                 }
                 continue;
             }
+            // covergroup-level `option.NAME = expr;` (slice D): only `at_least` affects
+            // the measured %; other options (goal/comment/per_instance/…) are accepted
+            // and ignored (they do not change the coverage value in this model).
+            if self.at_ident_kw("option") || self.at_ident_kw("type_option") {
+                if let Some((name, val)) = self.parse_cover_option() {
+                    if name == "at_least" {
+                        cg_at_least = Some(val);
+                    }
+                }
+                continue;
+            }
             if self.at_kw(Kw::Coverpoint) {
                 let cp_start = self.cur_span();
                 self.bump(); // `coverpoint`
                 let expr = self.expr(0);
                 // optional coverpoint-level `iff (G)` guard (slice B).
                 let iff = self.parse_cover_iff();
-                // optional `{ bin* }` body (else a bare `;`).
-                let bins = if self.peek() == Some(TokenKind::LBrace) {
-                    let b = self.parse_coverpoint_bins();
+                // optional `{ bin* | option* }` body (else a bare `;`).
+                let (bins, at_least, weight) = if self.peek() == Some(TokenKind::LBrace) {
+                    let b = self.parse_coverpoint_body();
                     self.eat(TokenKind::Semi); // `;` after `}` is optional
                     b
                 } else {
                     self.expect(TokenKind::Semi, "';' after coverpoint");
-                    Vec::new()
+                    (Vec::new(), None, None)
                 };
                 points.push(Coverpoint {
                     label,
                     expr,
                     iff,
                     bins,
+                    at_least,
+                    weight,
                     span: cp_start.to(self.prev_span()),
                 });
             } else {
@@ -1760,6 +1774,7 @@ impl<'t, 's> Parser<'t, 's> {
             points,
             crosses,
             clock,
+            at_least: cg_at_least,
             span: start.to(self.prev_span()),
         }))
     }
@@ -1866,19 +1881,32 @@ impl<'t, 's> Parser<'t, 's> {
         Some(g)
     }
 
-    /// Parse a coverpoint body `{ bin* }` (the opening `{` is at the cursor).
-    /// Each bin is `KIND NAME[array] = ( {range_list} | default ) [iff(G)] ;`.
-    /// Unsupported forms (wildcard/transition/`binsof`/`intersect`/junk) are
-    /// LOUD-rejected and balanced-skipped — never silently dropped.
-    fn parse_coverpoint_bins(&mut self) -> Vec<BinSpec> {
+    /// Parse a coverpoint body `{ (bin | option)* }` (the opening `{` is at the
+    /// cursor). Returns `(bins, at_least, weight)`. Each bin is `KIND NAME[array] =
+    /// ( {range_list} | default ) [iff(G)] ;`. Unsupported bin forms
+    /// (wildcard/transition/`binsof`/`intersect`/junk) are LOUD-rejected and
+    /// balanced-skipped — never silently dropped. `option.at_least`/`option.weight`
+    /// are captured; other `option.*` are accepted and ignored.
+    #[allow(clippy::type_complexity)]
+    fn parse_coverpoint_body(&mut self) -> (Vec<BinSpec>, Option<Expr>, Option<Expr>) {
         self.bump(); // `{`
         let mut bins = Vec::new();
+        let mut at_least = None;
+        let mut weight = None;
         loop {
             if matches!(self.peek(), Some(TokenKind::RBrace) | None) {
                 break;
             }
             let before = self.pos;
-            if let Some(b) = self.parse_bin_spec() {
+            if self.at_ident_kw("option") || self.at_ident_kw("type_option") {
+                if let Some((name, val)) = self.parse_cover_option() {
+                    match name.as_str() {
+                        "at_least" => at_least = Some(val),
+                        "weight" => weight = Some(val),
+                        _ => {} // accepted-ignored (does not change the measured %)
+                    }
+                }
+            } else if let Some(b) = self.parse_bin_spec() {
                 bins.push(b);
             }
             if self.pos == before {
@@ -1886,7 +1914,19 @@ impl<'t, 's> Parser<'t, 's> {
             }
         }
         self.eat(TokenKind::RBrace);
-        bins
+        (bins, at_least, weight)
+    }
+
+    /// `option.NAME = expr ;` / `type_option.NAME = expr ;` (the `option` ident is at
+    /// the cursor). Returns `(NAME, value-expr)`. Slice D.
+    fn parse_cover_option(&mut self) -> Option<(String, Expr)> {
+        self.bump(); // `option` / `type_option`
+        self.expect(TokenKind::Dot, "'.' after option");
+        let name = self.ident()?;
+        self.expect(TokenKind::Eq, "'=' in option");
+        let val = self.expr(0);
+        self.expect(TokenKind::Semi, "';' after option");
+        Some((name.name, val))
     }
 
     /// One `KIND NAME[array] = RHS [iff(G)] ;` bin. Returns `None` (after a loud

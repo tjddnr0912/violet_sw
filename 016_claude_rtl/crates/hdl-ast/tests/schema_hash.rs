@@ -12,7 +12,12 @@
 use vita_schema::schema_hash;
 
 /// Pinned root hash of `hdl_ast::SourceUnit`'s full type closure.
-/// Re-pinned 2026-06-19 N5 slice C cross coverage (`CovergroupDecl.crosses:
+/// Re-pinned 2026-06-19 N5 slice D coverage options (`Coverpoint.at_least`/`weight:
+/// Option<Expr>` + `CovergroupDecl.at_least: Option<Expr>` — `option.at_least`/
+/// `option.weight`; all `.vu` artifacts are stale, no sim-ir/format_version change,
+/// pure IR-0: at_least>1 uses per-bin saturating counters, weight enters the
+/// get_coverage weighted average). (Previous re-pins:
+/// 2026-06-19 N5 slice C cross coverage (`CovergroupDecl.crosses:
 /// Vec<CrossSpec>` + the `CrossSpec` struct — `cross cp_a, cp_b;`; all `.vu`
 /// artifacts are stale, no sim-ir/format_version change, pure IR-0: a product
 /// hit-bitmap whose bit fires when every constituent coverpoint's bin matches the
@@ -83,8 +88,8 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`.)
 const EXPECTED: [u8; 32] = [
-    51, 55, 20, 199, 166, 76, 111, 11, 98, 151, 145, 131, 241, 49, 241, 230, 56, 107, 124, 65, 160,
-    3, 16, 57, 155, 216, 233, 145, 125, 119, 235, 164,
+    221, 77, 145, 122, 100, 35, 95, 77, 25, 61, 59, 207, 185, 210, 31, 236, 158, 130, 26, 180, 243,
+    112, 83, 24, 124, 243, 181, 125, 46, 20, 62, 242,
 ];
 
 #[test]

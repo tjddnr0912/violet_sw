@@ -720,6 +720,10 @@ struct ResolvedBin {
     /// at sample time. `None` ⇒ unguarded. (Only on regular/counting bins; a guard on
     /// ignore/illegal is loud-rejected, as the precedence subtraction is static.)
     iff: Option<ast::Expr>,
+    /// Per-bin saturating hit COUNTER reg (slice D, `option.at_least > 1`): the
+    /// covered-bit is set only once this counter reaches `at_least`. `None` ⇒
+    /// `at_least == 1` (the bit is set on the first match — byte-identical path).
+    counter: Option<String>,
 }
 
 #[derive(Clone)]
@@ -741,6 +745,12 @@ struct CoverpointTracker {
     /// The coverpoint's name for `cross` resolution (slice C): the explicit label,
     /// else the implicit single-ident expr name, else `None`.
     name: Option<String>,
+    /// `option.at_least` (slice D): hits required before a bin counts as covered
+    /// (default 1). >1 uses per-bin counters (see `ResolvedBin.counter`).
+    at_least: u32,
+    /// `option.weight` (slice D): this coverpoint's weight in the covergroup average
+    /// (default 1).
+    weight: u32,
 }
 
 /// One cross constituent: `(sampled expr, [effective ranges per counting bin])`.
@@ -1354,6 +1364,72 @@ fn cov_auto_sample_stmt(bitmap: &str, expr: &ast::Expr, sp: ast::Span) -> ast::S
         delay: None,
         event: None,
         rhs: newv,
+        span: sp,
+    }
+}
+
+/// `bitmap[bit] = 1'b1;` — set one coverpoint bin's covered-bit (N5).
+fn cov_set_bit_stmt(bitmap: &str, bit: u32, sp: ast::Span) -> ast::Stmt {
+    ast::Stmt::Blocking {
+        lhs: ast::Lvalue::BitSelect {
+            base: Box::new(ast::Lvalue::Ident(ast::HierPath {
+                segments: vec![ast::Ident {
+                    name: bitmap.to_string(),
+                    span: sp,
+                }],
+                span: sp,
+            })),
+            index: Box::new(cov_int_lit(bit as i64, sp)),
+            span: sp,
+        },
+        delay: None,
+        event: None,
+        rhs: sva_one(sp),
+        span: sp,
+    }
+}
+
+/// `option.at_least > 1` then-block (slice D): `begin if (ctr < N) ctr = ctr + 1;
+/// if (ctr >= N) bitmap[bit] = 1'b1; end`. Blocking assigns so the second `if` sees
+/// the incremented counter — the covered-bit is set exactly when the N-th hit lands.
+fn cov_counter_then(
+    bitmap: &str,
+    bit: u32,
+    counter: &str,
+    at_least: u32,
+    sp: ast::Span,
+) -> ast::Stmt {
+    let ctr = sva_ident_expr(counter, sp);
+    let ctr_path = ast::Lvalue::Ident(ast::HierPath {
+        segments: vec![ast::Ident {
+            name: counter.to_string(),
+            span: sp,
+        }],
+        span: sp,
+    });
+    let n = || cov_int_lit(at_least as i64, sp);
+    let inc = ast::Stmt::If {
+        cond: sva_binary(ast::BinOp::Lt, ctr.clone(), n(), sp),
+        then_s: Box::new(ast::Stmt::Blocking {
+            lhs: ctr_path,
+            delay: None,
+            event: None,
+            rhs: sva_binary(ast::BinOp::Add, ctr.clone(), cov_int_lit(1, sp), sp),
+            span: sp,
+        }),
+        else_s: None,
+        span: sp,
+    };
+    let setb = ast::Stmt::If {
+        cond: sva_binary(ast::BinOp::Ge, ctr, n(), sp),
+        then_s: Box::new(cov_set_bit_stmt(bitmap, bit, sp)),
+        else_s: None,
+        span: sp,
+    };
+    ast::Stmt::Block {
+        label: None,
+        decls: Vec::new(),
+        stmts: vec![inc, setb],
         span: sp,
     }
 }
@@ -10492,6 +10568,30 @@ impl<'s> Elaborator<'s> {
         name
     }
 
+    /// A fresh ZERO-initialized reg (N5 `option.at_least` counter, slice D). Unlike
+    /// `fresh_sva_reg` (X-init), this starts at a KNOWN 0 so `ctr < N` / `ctr + 1`
+    /// behave from the first sample (an X-init counter would compare X forever).
+    fn fresh_cover_counter(&mut self, width: u32) -> String {
+        let w = width.max(1);
+        let name = format!("__sva_covctr_{}", self.nets.len());
+        let nwords = w.div_ceil(64).max(1) as usize;
+        let nv = ir::NetVar {
+            kind: ir::NetKind::Reg,
+            width: w,
+            msb: w.saturating_sub(1),
+            lsb: 0,
+            signed: false,
+            array_len: 1,
+            dir: ir::PortDir::Internal,
+            init: ir::BitPacked {
+                val: vec![0; nwords],
+                unk: vec![0; nwords],
+            },
+        };
+        self.add_net(&name, nv);
+        name
+    }
+
     // ── N5: functional-coverage synthesis (hand-IEEE; iverilog rejects covergroup) ──
     /// Auto-bin count for a coverpoint: `min(2^W, 64)` where W is the sampled expr's
     /// width (from a simple net ref; a complex expr defaults to 64 bins).
@@ -10619,6 +10719,7 @@ impl<'s> Elaborator<'s> {
                 ranges: illegal,
                 bit: None,
                 iff: None,
+                counter: None,
             });
         }
         // Pass 2: regular bins, with the excluded set subtracted from each.
@@ -10674,6 +10775,7 @@ impl<'s> Elaborator<'s> {
                                 ranges: vec![(v, v)],
                                 bit: Some(next_bit),
                                 iff: bin.iff.clone(),
+                                counter: None,
                             });
                             next_bit += 1;
                             v += 1;
@@ -10690,6 +10792,7 @@ impl<'s> Elaborator<'s> {
                         ranges: effective,
                         bit: Some(next_bit),
                         iff: bin.iff.clone(),
+                        counter: None,
                     });
                     next_bit += 1;
                 }
@@ -10703,6 +10806,31 @@ impl<'s> Elaborator<'s> {
         }
         let num_bins = resolved.iter().filter(|b| b.bit.is_some()).count() as u32;
         (resolved, num_bins)
+    }
+
+    /// Fold a coverage `option.*` value (a positive constant); non-const or `< 1` is
+    /// loud (follow-on) and yields `default`. Slice D.
+    fn fold_cover_opt(&mut self, e: Option<&ast::Expr>, default: u32) -> u32 {
+        match e {
+            None => default,
+            Some(e) => match self.const_eval_in_scope(e) {
+                Some(v) if v >= 1 => v as u32,
+                Some(_) => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "coverage option value must be a positive constant",
+                    );
+                    default
+                }
+                None => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "non-constant coverage option value (follow-on)",
+                    );
+                    default
+                }
+            },
+        }
     }
 
     /// Register a covergroup instance: allocate one 64-bit hit-bitmap reg per
@@ -10731,9 +10859,20 @@ impl<'s> Elaborator<'s> {
                     }
                     _ => None,
                 });
+            // Slice D options: effective at_least (cp override, else covergroup
+            // default, else 1) and weight (cp, else 1).
+            let at_least = self.fold_cover_opt(cp.at_least.as_ref().or(cg.at_least.as_ref()), 1);
+            let weight = self.fold_cover_opt(cp.weight.as_ref(), 1);
             if cp.bins.is_empty() {
                 // Auto-bin fallback — the byte-identical legacy path (allocation
                 // order preserved: num_bins read before the bitmap reg alloc).
+                if at_least > 1 {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "`option.at_least > 1` on an auto-bin coverpoint (declare \
+                         explicit bins — follow-on)",
+                    );
+                }
                 let num_bins = self.coverpoint_num_bins(&cp.expr);
                 let bitmap = self.fresh_sva_reg(64, "cov");
                 trackers.push(CoverpointTracker {
@@ -10744,9 +10883,17 @@ impl<'s> Elaborator<'s> {
                     has_explicit: false,
                     cp_iff: cp.iff.clone(),
                     name,
+                    at_least: 1, // auto path always sets on first match
+                    weight,
                 });
             } else {
-                let (bins, num_bins) = self.resolve_explicit_bins(cp);
+                let (mut bins, num_bins) = self.resolve_explicit_bins(cp);
+                // at_least > 1: a per-bin saturating counter gates the covered-bit.
+                if at_least > 1 {
+                    for rb in bins.iter_mut().filter(|b| b.bit.is_some()) {
+                        rb.counter = Some(self.fresh_cover_counter(32));
+                    }
+                }
                 let bitmap = self.fresh_sva_reg(64, "cov");
                 trackers.push(CoverpointTracker {
                     bitmap,
@@ -10756,6 +10903,8 @@ impl<'s> Elaborator<'s> {
                     has_explicit: true,
                     cp_iff: cp.iff.clone(),
                     name,
+                    at_least,
+                    weight,
                 });
             }
         }
@@ -11022,25 +11171,15 @@ impl<'s> Elaborator<'s> {
             if let Some(g) = &rb.iff {
                 cond = sva_binary(ast::BinOp::LogAnd, cond, g.clone(), sp);
             }
+            // at_least == 1 (counter None): set the bit on first match. at_least > 1:
+            // a saturating counter gates the covered-bit (set only at the N-th hit).
+            let then_s = match &rb.counter {
+                None => cov_set_bit_stmt(&t.bitmap, bit, sp),
+                Some(ctr) => cov_counter_then(&t.bitmap, bit, ctr, t.at_least, sp),
+            };
             stmts.push(ast::Stmt::If {
                 cond,
-                then_s: Box::new(ast::Stmt::Blocking {
-                    lhs: ast::Lvalue::BitSelect {
-                        base: Box::new(ast::Lvalue::Ident(ast::HierPath {
-                            segments: vec![ast::Ident {
-                                name: t.bitmap.clone(),
-                                span: sp,
-                            }],
-                            span: sp,
-                        })),
-                        index: Box::new(cov_int_lit(bit as i64, sp)),
-                        span: sp,
-                    },
-                    delay: None,
-                    event: None,
-                    rhs: sva_one(sp),
-                    span: sp,
-                }),
+                then_s: Box::new(then_s),
                 else_s: None,
                 span: sp,
             });
@@ -11101,7 +11240,7 @@ impl<'s> Elaborator<'s> {
         };
         let hundred = self.real_const_expr("100.0");
         let mut sum: Option<u32> = None;
-        let mut n: u32 = 0;
+        let mut total_weight: u32 = 0;
         for t in &trackers {
             if t.num_bins == 0 {
                 continue; // not a coverage target — excluded from the average
@@ -11127,15 +11266,27 @@ impl<'s> Elaborator<'s> {
                 lhs: ones100,
                 rhs: nb,
             });
+            // weight == 1 ⇒ the bare term (byte-identical to the unweighted average);
+            // weight N ⇒ N * cp_cov in the numerator, N added to the weight total.
+            let term = if t.weight == 1 {
+                cp_cov
+            } else {
+                let w = self.const_u32_expr(t.weight, 32);
+                self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Mul,
+                    lhs: w,
+                    rhs: cp_cov,
+                })
+            };
             sum = Some(match sum {
-                None => cp_cov,
+                None => term,
                 Some(acc) => self.push_expr(ir::Expr::Binary {
                     op: ir::BinOp::Add,
                     lhs: acc,
-                    rhs: cp_cov,
+                    rhs: term,
                 }),
             });
-            n += 1;
+            total_weight += t.weight;
         }
         // Slice C: crosses join the weighted average as additional terms
         // (cross coverage = $countones(crossmap) * 100.0 / product_bins).
@@ -11169,13 +11320,13 @@ impl<'s> Elaborator<'s> {
                         rhs: cx_cov,
                     }),
                 });
-                n += 1;
+                total_weight += 1; // crosses default to weight 1
             }
         }
         let Some(sum) = sum else {
             return self.real_const_expr("0.0"); // no counting coverpoints
         };
-        let nexpr = self.const_u32_expr(n, 32);
+        let nexpr = self.const_u32_expr(total_weight.max(1), 32);
         self.push_expr(ir::Expr::Binary {
             op: ir::BinOp::Div,
             lhs: sum,

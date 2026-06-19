@@ -205,6 +205,9 @@ pub struct CovergroupDecl {
     pub points: Vec<Coverpoint>,
     pub crosses: Vec<CrossSpec>,
     pub clock: Option<Sensitivity>,
+    /// Covergroup-level `option.at_least = N` — the default `at_least` for every
+    /// coverpoint that does not override it (slice D). `None` ⇒ 1.
+    pub at_least: Option<Expr>,
     pub span: Span,
 }
 
@@ -228,6 +231,12 @@ pub struct Coverpoint {
     pub iff: Option<Expr>,
     /// Explicit bin list. EMPTY ⇒ auto-bins fallback (byte-identical).
     pub bins: Vec<BinSpec>,
+    /// `option.at_least = N` — a bin is covered only after N hits (slice D). `None`
+    /// ⇒ inherit the covergroup default (else 1).
+    pub at_least: Option<Expr>,
+    /// `option.weight = N` — this coverpoint's weight in the covergroup average
+    /// (slice D). `None` ⇒ 1.
+    pub weight: Option<Expr>,
     pub span: Span,
 }
 
