@@ -570,7 +570,10 @@ impl<'t, 's> Parser<'t, 's> {
         if let ExprKind::IntLit { raw, .. } = &idx.kind {
             let digits: String = raw.chars().filter(|c| *c != '_').collect();
             if !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()) {
-                return digits;
+                // Normalize the value (strip leading zeros: `g[00]` ⇒ scope `g[0]`).
+                if let Ok(v) = digits.parse::<u64>() {
+                    return v.to_string();
+                }
             }
         }
         self.error_at(

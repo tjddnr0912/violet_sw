@@ -8266,8 +8266,18 @@ impl<'s> Elaborator<'s> {
                     outer_first.push(i);
                     cur = b;
                 }
-                ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
-                    match self.lookup_net_scoped(&p.segments[0].name) {
+                // A 1-segment local net OR a multi-segment RESOLVABLE hierarchical
+                // net (a same-module generate scope `g[0].mem`, already elaborated —
+                // HIER-REST②). A cross-instance ref whose net is not yet created folds
+                // to None here and takes the deferred-sel lane (`hier_sel_chain`).
+                ast::ExprKind::Ident(p) => {
+                    let joined = p
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    match self.lookup_net_scoped(&joined) {
                         // Declared array-ness, NOT `array_len > 1`: a `[0:0]`
                         // array's element access is still an ELEMENT access
                         // (adversarial find #5 — it used to bit-select word 0).
@@ -8298,8 +8308,17 @@ impl<'s> Elaborator<'s> {
                     outer_first.push(i);
                     cur = b;
                 }
-                ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
-                    match self.lookup_net_scoped(&p.segments[0].name) {
+                // 1-segment local OR multi-segment resolvable hierarchical packed net
+                // (same-module generate scope `g[0].pm` — HIER-REST②). Cross-instance
+                // unresolved → None → deferred-sel lane.
+                ast::ExprKind::Ident(p) => {
+                    let joined = p
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    match self.lookup_net_scoped(&joined) {
                         Some(n) if self.packed_dims.contains_key(&n) => break n,
                         _ => return None,
                     }
@@ -8679,8 +8698,17 @@ impl<'s> Elaborator<'s> {
                     outer_first.push(i);
                     cur = b;
                 }
-                ast::Lvalue::Ident(p) if p.segments.len() == 1 => {
-                    match self.lookup_net_scoped(&p.segments[0].name) {
+                // 1-segment local OR multi-segment resolvable hierarchical array
+                // (same-module generate scope — HIER-REST②). Cross-instance unresolved
+                // → None → deferred-sel write lane.
+                ast::Lvalue::Ident(p) => {
+                    let joined = p
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    match self.lookup_net_scoped(&joined) {
                         // Same declared-array-ness rule as expr_array_chain.
                         Some(n) if self.net_is_static_array(n) => break n,
                         _ => return None,
@@ -8710,8 +8738,17 @@ impl<'s> Elaborator<'s> {
                     outer_first.push(i);
                     cur = b;
                 }
-                ast::Lvalue::Ident(p) if p.segments.len() == 1 => {
-                    match self.lookup_net_scoped(&p.segments[0].name) {
+                // 1-segment local OR multi-segment resolvable hierarchical packed net
+                // (same-module generate scope — HIER-REST②). Cross-instance unresolved
+                // → None → deferred-sel write lane.
+                ast::Lvalue::Ident(p) => {
+                    let joined = p
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    match self.lookup_net_scoped(&joined) {
                         Some(n) if self.packed_dims.contains_key(&n) => break n,
                         _ => return None,
                     }

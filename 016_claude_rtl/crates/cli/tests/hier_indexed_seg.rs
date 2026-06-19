@@ -6,9 +6,13 @@
 //! hierarchical resolver handles read AND write with NO new AST/IR (the segment is
 //! a plain string). Pure IR-0 (parser-only; the AST shape is unchanged).
 //!
-//! Values pinned to LIVE iverilog 13.0. Sub-limitations (both loud, never silent):
-//! a NON-literal index (`g[P].x`) and a same-module generate ARRAY-element select
-//! (`g[0].mem[i]`) stay loud follow-ons.
+//! Same-module generate ARRAY / multi-dim-PACKED element selects (`g[0].mem[i]`,
+//! `g[0].pm[k]`) resolve correctly — the array/packed chain detectors accept a
+//! multi-segment resolvable generate-scope net (this also closed a silent-wrong
+//! where `g[0].pm[k]` flat-bit-selected). The one remaining sub-limitation is a
+//! NON-literal index (`g[P].x`), which stays LOUD (never silent).
+//!
+//! Values pinned to LIVE iverilog 13.0.
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -139,15 +143,49 @@ fn non_literal_generate_index_is_loud() {
 }
 
 #[test]
-fn same_module_generate_array_element_is_loud_followon() {
-    // `g[0].mem[i]` (a same-module generate-block ARRAY element) is a loud follow-on
-    // (cross-instance `dut.sub.mem[i]` works via the deferred-sel lane). Not silent.
-    let (out, code) = run("module t; genvar i;\n\
+fn same_module_generate_array_element_read() {
+    // `g[0].mem[i]` (a same-module generate-block ARRAY element) reads the element —
+    // the array/packed chain detectors resolve the multi-segment generate-scope net.
+    let (out, _c) = run("module t; genvar i;\n\
          generate for(i=0;i<2;i=i+1) begin:g reg [7:0] mem [0:3]; initial mem[1]=8'h7e; end endgenerate\n\
          initial #1 $display(\"R %h\", g[0].mem[1]);\n\
          endmodule\n");
+    assert!(out.contains("R 7e"), "g[0].mem[1] element read:\n{out}");
+}
+
+#[test]
+fn same_module_generate_packed_element_read() {
+    // `g[0].pm[k]` (a same-module generate-block multi-dim PACKED element) reads the
+    // packed sub-vector, NOT a flat bit (the silent-wrong the chain generalization
+    // closed). pm=cafe ⇒ [1]=ca, [0]=fe.
+    let (out, _c) = run("module t; genvar gi;\n\
+         generate for(gi=0;gi<1;gi=gi+1) begin:g reg [1:0][7:0] pm; end endgenerate\n\
+         initial begin g[0].pm=16'hcafe; #1 $display(\"R %h %h\", g[0].pm[1], g[0].pm[0]); end\n\
+         endmodule\n");
     assert!(
-        is_loud(&out, code),
-        "same-module generate array element must be loud (follow-on): {out} {code:?}"
+        out.contains("R ca fe"),
+        "g[0].pm[k] packed element read:\n{out}"
     );
+}
+
+#[test]
+fn same_module_generate_packed_element_write() {
+    let (out, _c) = run("module t; genvar gi;\n\
+         generate for(gi=0;gi<1;gi=gi+1) begin:g reg [1:0][7:0] pm; end endgenerate\n\
+         initial begin g[0].pm=16'h0; g[0].pm[1]=8'haa; g[0].pm[0]=8'hbb; #1 $display(\"R %h\", g[0].pm); end\n\
+         endmodule\n");
+    assert!(
+        out.contains("R aabb"),
+        "g[0].pm[k] packed element write:\n{out}"
+    );
+}
+
+#[test]
+fn leading_zero_generate_index() {
+    // `g[00].x` normalizes to scope `g[0]` (the value, not the spelling).
+    let (out, _c) = run("module t; genvar gi;\n\
+         generate for(gi=0;gi<2;gi=gi+1) begin:g reg [7:0] x; initial x=gi+8'hf0; end endgenerate\n\
+         initial #1 $display(\"R %h\", g[00].x);\n\
+         endmodule\n");
+    assert!(out.contains("R f0"), "leading-zero generate index:\n{out}");
 }
