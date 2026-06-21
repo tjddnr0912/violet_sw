@@ -48,19 +48,19 @@ VHDL(IEEE 1076)은 다른 언어이므로 별도 프론트엔드(lexer/parser/el
 
 > `always_comb`/`always_ff`/`always_latch`는 합성가능 RTL이므로 **Phase 1로 이동**한다. 1차 근거는 06 엔진 스펙의 Phase-1 예제·auto-sensitivity 동작이며, `W-ELAB-ALWCOMBORDER`(W3046, §15 부록 A의 MVP-SIM 인벤토리 코드)도 이를 전제한다. Phase 2에는 구조적 SV만 남는다.
 >
-> **✅ Phase 2 전 항목 완료(2026-06-12, format_version 7).** `interface`/`modport`·`package`/`import`/`pkg::`·`struct`/`enum`/`typedef`·`foreach`·`unique`/`priority`·full `string`·동적 배열/queue/연관 배열 전부 IN 승격. 파일 I/O·`$readmemb/h`·`$random`(Annex N)·plusargs·bit-vector(`$bits`/`$countones`/`$onehot(0)`/`$isunknown`)도 함께 승격. **잔여 컷(loud)**: 파일 READ 패밀리(`$fread`/`$fscanf`/`$fgets`/`$sscanf`)·`$writememb/h`·math transcendentals(N6)·introspection(`$typename`/`$cast`/`$size`/`$left`/`$right` 등)·`$changed`/`$sampled`.
+> **✅ Phase 2 전 항목 완료(2026-06-12, format_version 7).** `interface`/`modport`·`package`/`import`/`pkg::`·`struct`/`enum`/`typedef`·`foreach`·`unique`/`priority`·full `string`·동적 배열/queue/연관 배열 전부 IN 승격. 파일 I/O·`$readmemb/h`·`$random`(Annex N)·plusargs·bit-vector(`$bits`/`$countones`/`$onehot(0)`/`$isunknown`)도 함께 승격. **이후 v9(2026-06-18)에서 추가 승격**: 파일 READ 패밀리(`$fread`/`$fscanf`/`$fgets`/`$sscanf`/`$feof`/`$fgetc`)·`$writememb/h`·`$countbits`·introspection(`$typename`/`$cast`/`$size`/`$left`/`$right`/`$low`/`$high`/`$increment`/`$dimensions`/`$isunbounded`)·`$changed`/`$sampled`·`$exit`(=`$finish` 별칭)·`$monitoron/off`·`$dist_uniform`. **잔여 컷(loud)**: math transcendentals(N6)·비-uniform `$dist_*`(`$dist_normal`/`$dist_exponential` 등)·`$system`·`$assertcontrol`.
 
 **system tasks 확장 셋 (Phase 2):**
 
-- 파일 I/O: ✅ `$fopen` / `$fclose` / `$fwrite` / `$fdisplay`(구현, v7 — b/o/h·MCD) · `$sformat` / `$sformatf`(구현) · `$fread` / `$fscanf` / `$fgets` / `$sscanf`(*READ 패밀리=후속, loud*)
-- 메모리 로드: ✅ `$readmemh` / `$readmemb`(구현, v7) · `$writememh` / `$writememb`(후속, loud)
+- 파일 I/O: ✅ `$fopen` / `$fclose` / `$fwrite` / `$fdisplay`(구현, v7 — b/o/h·MCD) · `$sformat` / `$sformatf`(구현) · `$fread` / `$fscanf` / `$fgets` / `$sscanf` / `$feof` / `$fgetc`(✅ 구현, v9 — blocking-assign rhs)
+- 메모리 로드: ✅ `$readmemh` / `$readmemb`(구현, v7) · `$writememh` / `$writememb`(✅ 구현, v9)
 - 변환: `$signed` / `$unsigned` / `$rtoi` / `$itor` / `$bitstoreal` / `$realtobits`
-- 비트벡터: ✅ `$bits` / `$clog2` / `$countones` / `$onehot` / `$onehot0` / `$isunknown`(구현, v7) · `$countbits`(후속)
+- 비트벡터: ✅ `$bits` / `$clog2` / `$countones` / `$onehot` / `$onehot0` / `$isunknown`(구현, v7) · `$countbits`(✅ 구현, v9)
 - 수학: `$pow`(정수=구현) · `$ln` / `$log10` / `$exp` / `$sqrt` / `$sin` / `$cos` / `$tan`(*math transcendentals — N6, pure-Rust libm 3-OS 결정성 핀 대기로 loud reject*)
-- random: ✅ `$random`(IEEE Annex N) / `$urandom` / `$urandom_range`(구현, v7 — 자체 계약) · `$dist_*`(후속, loud)
-- assertion 샘플링: ✅ `$past` / `$rose` / `$fell` / `$stable`(*구현 — prev-reg desugar, Phase-3 SVA 트랙*) / `$changed` / `$sampled`(후속)
-- introspection: `$typename` / `$cast` / `$size` / `$left` / `$right` / `$low` / `$high` / `$increment`
-- 기타: `$value$plusargs` / `$test$plusargs` / `$system`
+- random: ✅ `$random`(IEEE Annex N) / `$urandom` / `$urandom_range`(구현, v7 — 자체 계약) · `$dist_uniform`(✅ 구현, v9) · 비-uniform `$dist_*`(`$dist_normal`/`$dist_exponential` 등, 후속·loud)
+- assertion 샘플링: ✅ `$past` / `$rose` / `$fell` / `$stable` / `$changed` / `$sampled`(*전부 구현 — prev-reg desugar, Phase-3 SVA 트랙*)
+- introspection: ✅ `$typename` / `$cast` / `$size` / `$left` / `$right` / `$low` / `$high` / `$increment` / `$dimensions` / `$isunbounded`(✅ 구현, v9 — const-fold/태스크·함수 양형)
+- 기타: ✅ `$value$plusargs` / `$test$plusargs`(구현) · `$exit`(✅ 구현, v9 — `$finish` 별칭) · `$system`(후속·loud)
 
 **Phase 2 마일스톤:**
 

@@ -105,7 +105,23 @@ pub(crate) fn dispatch(
                 .get(net as usize)
                 .map(|nv| (nv.width.max(1), nv.signed))
                 .unwrap_or((1, false));
-            let mut elems = vec![Value::xs(w, signed); n];
+            // IEEE 1800-2017 §7.5.2: each `new[]` element takes its type's
+            // default — 0 for 2-state element types (int/bit/byte/shortint/
+            // longint), X for 4-state. The per-net `two_state` flag carries the
+            // element type's 2-state-ness; honoring it here keeps dyn arrays
+            // consistent with scalar/fixed-unpacked/assoc defaults.
+            let elem_default = if sched
+                .st
+                .two_state
+                .get(net as usize)
+                .copied()
+                .unwrap_or(false)
+            {
+                Value::zeros(w, signed)
+            } else {
+                Value::xs(w, signed)
+            };
+            let mut elems = vec![elem_default; n];
             // copy form `new[n](src)`: prefix-copy from the src handle.
             if let Some(src_net) = dyn_handle_net(sched, args.get(2)) {
                 if let Some(crate::state::DynObj::DynArray { elems: src }) =

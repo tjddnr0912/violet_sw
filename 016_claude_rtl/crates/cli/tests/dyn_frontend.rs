@@ -79,6 +79,40 @@ endmodule
     assert_eq!(run_vita(src), "3\n10 20 30\n5 20 30\n0\n");
 }
 
+#[test]
+fn dyn_array_two_state_default_is_zero() {
+    // IEEE 1800-2017 §7.5.2 / doc-02: a `new[N]` element takes its type's
+    // default — 0 for 2-state (int/bit/byte/shortint/longint), X for 4-state.
+    // Oracle: iverilog live — int=0 0 0 / bit=0 0 / byte=0 0 / 4-state X / grow tail 0.
+    let src = r#"
+module t;
+  int        di [];
+  bit  [7:0] db [];
+  byte       by [];
+  logic[3:0] lg [];   // 4-state: X is correct, must NOT be coerced to 0
+  int        gr [];
+  initial begin
+    di = new[3];
+    db = new[2];
+    by = new[2];
+    lg = new[2];
+    gr = new[2];
+    gr[0] = 7; gr[1] = 9;
+    gr = new[4](gr);   // grow: prefix copied, new tail = 2-state default 0
+    $display("int=%0d %0d %0d", di[0], di[1], di[2]);
+    $display("bit=%0d %0d", db[0], db[1]);
+    $display("byte=%0d %0d", by[0], by[1]);
+    $display("logic=%b %b", lg[0], lg[1]);
+    $display("grow=%0d %0d %0d %0d", gr[0], gr[1], gr[2], gr[3]);
+  end
+endmodule
+"#;
+    assert_eq!(
+        run_vita(src),
+        "int=0 0 0\nbit=0 0\nbyte=0 0\nlogic=xxxx xxxx\ngrow=7 9 0 0\n"
+    );
+}
+
 // ───────────────────────── queue (iverilog-pinned) ─────────────────────────
 
 #[test]

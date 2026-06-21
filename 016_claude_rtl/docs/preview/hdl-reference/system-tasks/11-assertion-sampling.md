@@ -11,10 +11,13 @@ SVA(SystemVerilog Assertions) concurrent assertion에서 사용되는
 
 ## 구현 상태
 
-- **구현됨 (2026-06-16, hand-IEEE)**: `$past`, `$rose`, `$fell`, `$stable` — signal당 공유
-  prev-reg desugar(`rewrite_sampled`)로 합성되며, SVA antecedent 시퀀스 + pass/fail action block
-  내부에서 사용할 수 있다. ⚠️ iverilog 13.0이 이들을 거부('not defined')해 차분 오라클이 없어 hand-IEEE 핀.
-- **미구현 (참조)**: `$changed`, `$sampled`, `$assertoff`, `$asserton`, `$assertkill`, `$assertcontrol`.
+- **구현됨 (2026-06-16, hand-IEEE)**: `$past`, `$rose`, `$fell`, `$stable`, `$changed`, `$sampled` —
+  signal당 공유 prev-reg desugar(`rewrite_sampled`)로 합성되며, SVA antecedent 시퀀스 + pass/fail
+  action block 내부에서 사용할 수 있다(`$changed`=`$past(e)!==e`, `$sampled`=action-block prev-reg 조회).
+  ⚠️ iverilog 13.0이 이들을 거부('not defined')해 차분 오라클이 없어 hand-IEEE 핀.
+- **구현됨 (✅ SVA-REST)**: `$assertoff`, `$asserton`, `$assertkill` — 전역 fire-gate 런타임 제어
+  (`$assertoff`/`$assertkill`=후속 fire 억제, `$asserton`=재활성화; scoped `$assertoff(level, scope)` 폼은 loud).
+- **미구현 (참조)**: `$assertcontrol`.
 
 ---
 
@@ -342,8 +345,9 @@ $assertcontrol(4, 255, 2);
 - **구현 방식 (2026-06-16)**: `$past`/`$rose`/`$fell`/`$stable`은 Observed-region 훅·circular
   buffer가 아니라 **순수 IR-0 prev-reg desugar**로 구현됐다 — `rewrite_sampled`가 signal당 공유
   full-width `prev` reg를 합성하고 NBA `prev<=sig`로 1-사이클 지연시킨다(`$past(e,n)`=n-스테이지 시프트,
-  `$rose`=`~prev[0]&e[0]`·`$fell`=`prev[0]&~e[0]`·`$stable`=`prev===e`). hand-IEEE 핀(iverilog 13.0 거부).
-  **아래 항목은 미구현 함수(`$changed`/`$sampled`/`$assert*`)의 향후 설계 메모다.**
+  `$rose`=`~prev[0]&e[0]`·`$fell`=`prev[0]&~e[0]`·`$stable`=`prev===e`·`$changed`=`prev!==e`). hand-IEEE 핀(iverilog 13.0 거부).
+  `$sampled`(action-block prev-reg 조회)와 `$assertoff`/`$asserton`/`$assertkill`(전역 fire-gate)도 구현 완료(✅).
+  **아래 항목은 미구현 함수(`$assertcontrol`)의 향후 설계 메모다.**
 - **샘플링 타이밍**: assertion 평가 엔진은 Observed 리전에서 호출되어야 한다.
   NBA 완료 후 신호 스냅샷을 캡처하는 훅이 필요.
 - **$past 이력 버퍼**: 각 concurrent assertion이 참조하는 신호에 대해

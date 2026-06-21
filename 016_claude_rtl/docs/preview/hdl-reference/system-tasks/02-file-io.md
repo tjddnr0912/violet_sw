@@ -13,9 +13,10 @@
   대입 RHS 특수형으로만 지원** — direct rhs 외엔 loud E3009), `$fclose`, `$fwrite`/`$fdisplay`
   (+b/o/h 변형, MCD bit0=stdout 브로드캐스트, closed-fd=W4022), `$sformat`, `$sformatf`
   ($sformatf도 대입 RHS 특수형 — string-literal 포맷 필수).
-- **미구현 (silent-degrade — 미인식 $task은 WARN + skip, IR 미생성)**: `$fmonitor`, `$fstrobe`,
-  READ family `$fread`/`$fscanf`/`$fgets`/`$sscanf`(+`$feof`/`$fgetc`). 본 페이지의 해당 항목은 IEEE
-  표준 레퍼런스이며 vitamin 지원 표기가 아니다.
+- **✅ 구현됨 (READ family, v9)**: `$fread`/`$fscanf`/`$fgets`/`$sscanf`/`$feof`/`$fgetc` — 모두 blocking
+  assign의 직접 rhs 형태(`n = $fscanf(...)`)로만 지원(statement-level intercept; ref-VAR/메모리 쓰기).
+- **미구현 (silent-degrade — 미인식 $task은 WARN + skip, IR 미생성)**: `$fmonitor`, `$fstrobe`.
+  본 페이지의 IEEE 표준 레퍼런스 항목은 vitamin 지원 표기가 아니다.
 
 ---
 
@@ -316,10 +317,10 @@ string msg = $sformatf("[%s] mismatch at addr=%h", prefix, addr);
 | `$fclose` | 완전 지원 | Generally supported | ✅ |
 | `$fdisplay` / `$fwrite` | 완전 지원 | Generally supported | ✅ (+b/o/h, MCD) |
 | `$fstrobe` / `$fmonitor` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
-| `$fread` | 완전 지원 | 미명시 (확인 불가) | ❌ 미구현 (silent-degrade) |
-| `$fscanf` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
-| `$fgets` / `$fgetc` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
-| `$sscanf` | 완전 지원 | Generally supported | ❌ 미구현 (silent-degrade) |
+| `$fread` | 완전 지원 | 미명시 (확인 불가) | ✅ (v9 — blocking-assign rhs) |
+| `$fscanf` | 완전 지원 | Generally supported | ✅ (v9 — blocking-assign rhs) |
+| `$fgets` / `$fgetc` | 완전 지원 | Generally supported | ✅ (v9 — blocking-assign rhs) |
+| `$sscanf` | 완전 지원 | Generally supported | ✅ (v9 — blocking-assign rhs) |
 | `$sformat` | 완전 지원 | 미명시 | ✅ |
 | `$sformatf` | 완전 지원 | 미명시 | ✅ (대입 RHS 특수형) |
 
@@ -339,8 +340,9 @@ string msg = $sformatf("[%s] mismatch at addr=%h", prefix, addr);
   fd 핸들 0x8000_0003…, MCD bit1…(bit0=stdout 브로드캐스트), closed-fd=W4022 warn-once.
 - **✅ `$sformatf` 구현(Phase-2/v7, string 타입과 함께)**: 대입 RHS 특수형(`sformatf_special`),
   string-literal 포맷 필수. `$sformat`은 일반 task(`Sformat`)로 매핑.
-- **미구현**: `$fread`(바이너리 stream)·`$fscanf`·`$fgets`·`$sscanf`·`$fmonitor`·`$fstrobe`는
-  미매핑 → silent-degrade. `$readmemh`/`$readmemb`(ASCII 텍스트 포맷)와의 구현 경계는 자연 분리됨.
+- **✅ READ family 구현(v9)**: `$fread`(바이너리 stream)·`$fscanf`·`$fgets`·`$sscanf`·`$feof`·`$fgetc`는
+  blocking assign rhs 전용 statement-level intercept(`k_fscanf`/`k_fgets`/`k_fread` 등, `sim-engine`)로 구현됨.
+  `$fmonitor`/`$fstrobe`만 미매핑(silent-degrade).
 
 ## Sources
 

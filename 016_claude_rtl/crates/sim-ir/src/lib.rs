@@ -235,8 +235,11 @@ pub enum SysFuncId {
     /// lexicographic for unequal lengths).
     StrCmp,
     // ── v9 (2026-06-18): file-read family + $dist_* + $cast (Medium bundle
-    //    rank 4 shape bump; semantics land in ranks 5-6 as post-bump IR-0
-    //    slices, so elaborate emits none of these yet — the bump is inert). ──
+    //    rank 4 shape bump; semantics landed in ranks 5-6 as post-bump IR-0
+    //    slices). WIRED & emitted by elaborate: Fgets, Fscanf, Sscanf, Fread,
+    //    Feof, Fgetc, Ungetc, DistUniform, Cast (FUNCTION form). Still inert
+    //    (not yet emitted): DistNormal/DistExponential/DistPoisson/DistChiSquare
+    //    (non-uniform `$dist_*` remain loud-reject). ──
     /// `$fgets(str, fd)` (v9) — read a line into the str VAR; returns the byte
     /// count. Side-effecting (writes str + advances fd) — statement-level
     /// intercept as the direct rhs of a blocking assign, like `Fopen`.
@@ -376,8 +379,9 @@ pub enum SysTaskId {
     /// write; OOB index or NUL byte = no-op (IEEE §6.16.3).
     StrPutC,
     // ── v9 (2026-06-18): $writememb/h, $cast (task form), $monitoron/off
-    //    (Medium bundle rank 4 shape bump; semantics land in ranks 5-6, so
-    //    elaborate emits none of these yet — the bump is inert). ──
+    //    (Medium bundle rank 4 shape bump; semantics landed in ranks 5-6).
+    //    All five are WIRED & emitted by elaborate: WritememB, WritememH, Cast
+    //    (TASK form), MonitorOn, MonitorOff. ──
     /// `$writememb(file, mem[, start[, finish]])` (v9) — binary memory dump,
     /// the write-side mirror of `ReadmemB`.
     WritememB,

@@ -12,8 +12,8 @@ ROM 초기화, 테스트 벡터 로드, 시뮬레이션 메모리 덤프 등에 
 - **✅ 구현됨 (Phase-2/v7)**: `$readmemh`, `$readmemb` — `@addr`(hex)·`//`/`/* */` 주석·`_`·`x`/`z`,
   1364-2005 lowest-ascending, 디렉티브-유무 shortfall 규칙, 범위 인자(start/finish), 초과 시 W4023.
   iverilog 차분 핀.
-- **미구현 (silent-degrade — 미인식 $task은 WARN + skip)**: `$writememh`, `$writememb`. 본 페이지의
-  해당 항목은 IEEE 표준 레퍼런스이며 vitamin 지원 표기가 아니다.
+- **✅ 구현됨 (Phase-2/v9)**: `$writememh`, `$writememb` — `$readmemh/b`가 다시 읽을 수 있는 포맷으로
+  메모리 배열을 파일에 덤프(주소별 `@<hex>` 헤더, x/z nibble 압축, 범위 인자 start/finish, OOB=W-warn).
 
 ---
 
@@ -243,8 +243,8 @@ DE AD BE EF   // 주소 0~3
 | `@addr` 지시자 | 지원 | 지원 |
 | `//`, `/* */` 주석 | 지원 | 지원 |
 | `_` 언더스코어 | 지원 | 지원 여부 불확실 |
-| `$writememh` | 지원 | 미명시 (불확실) |  *(vitamin: ❌ 미구현, silent-degrade)*
-| `$writememb` | 지원 | 미명시 (불확실) |  *(vitamin: ❌ 미구현, silent-degrade)*
+| `$writememh` | 지원 | 미명시 (불확실) |  *(vitamin: ✅ 구현, v9)*
+| `$writememb` | 지원 | 미명시 (불확실) |  *(vitamin: ✅ 구현, v9)*
 | 다차원 배열 | 지원 | **미지원** |
 
 **Verilator 제약**: `$readmemh`/`$readmemb`는 1차원 배열(`reg [N:0] mem [0:M]`)만 지원한다.
@@ -267,9 +267,10 @@ DE AD BE EF   // 주소 0~3
 - `$readmemh`/`$readmemb`는 `sim-engine` `builtins.rs` `readmem()`이 실행(`hdl-builtins`는 stub).
 - **✅ 파서 구현**: `@addr`(hex), `//`, `/* */`, `_`, `x`/`z` 모두 처리. 선언-인덱스 도메인 @addr,
   1364-2005 lowest-ascending, 디렉티브 유무에 따른 shortfall 규칙, 범위 초과 시 W4023.
-- `$fread`(binary stream)는 **미구현**(silent-degrade); `$readmem*`(ASCII 텍스트)만 지원.
+- `$fread`(binary stream)는 별도 file-io 카테고리에서 구현(v9); 본 카테고리는 `$readmem*`(ASCII 텍스트).
 - 주소 범위 인자(start/finish): 명시적 start/finish가 배열 선언 범위보다 우선, 로드 범위 외=stopped.
-- `$writememh`/`$writememb`: **미구현**(미매핑 → WARN + skip).
+- `$writememh`/`$writememb`: **✅ 구현(v9)** — `sim-engine` `builtins.rs` `writemem()`; 주소별 `@<hex>` 헤더,
+  x/z nibble 압축, 범위 인자(start/finish), OOB=비치명 warn.
 
 ## Sources
 

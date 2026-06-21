@@ -489,6 +489,9 @@ pub fn elaborate_with_timescale_roots(
             .iter()
             .filter(|(_, k)| net_kind_is_two_state(**k))
             .map(|(&id, _)| id)
+            // Heap handles (dyn/queue/assoc) with 2-state elements skip
+            // `intro_kind` but still need the 2-state default (§7.5.2).
+            .chain(el.two_state_heap_handles.iter().copied())
             .collect(),
         // N7 class/OOP sidecars.
         class_handle_nets: std::mem::take(&mut el.class_handle_nets),
@@ -1812,6 +1815,13 @@ struct Elaborator<'s> {
     // SYS-INTRO잔여: the declared base type-kind per net, for `$typename`'s
     // canonical string (reg/logic/wire ⇒ "logic", integer ⇒ "integer", …).
     intro_kind: BTreeMap<u32, ast::NetVarKind>,
+    // Heap-handle nets (dyn array/queue/assoc) whose ELEMENT type is 2-state
+    // (int/bit/byte/shortint/longint). These skip the regular `record_dim_desc`
+    // path (and thus `intro_kind`), so the `two_state_nets` sidecar would miss
+    // them — making `new[]` default elements to X instead of the IEEE §7.5.2
+    // 2-state default of 0. Recorded separately to avoid leaking the element
+    // kind into `$typename`/`$size` for the handle net. elaborate-LOCAL only.
+    two_state_heap_handles: std::collections::BTreeSet<u32>,
     // Every net DECLARED with static unpacked dims — including 1-element
     // arrays (`reg x [0:0]`), which `array_len > 1` cannot distinguish from
     // scalars (adversarial find #5). elaborate-LOCAL only.
@@ -2077,6 +2087,7 @@ impl<'s> Elaborator<'s> {
             array_dim_desc: BTreeMap::new(),
             dim_desc: BTreeMap::new(),
             intro_kind: BTreeMap::new(),
+            two_state_heap_handles: BTreeSet::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
             dollar_subst: None,
@@ -5191,9 +5202,15 @@ impl<'s> Elaborator<'s> {
                         init: default_init(d.kind, width),
                     },
                 );
-                if let Some(b) = queue_bound {
-                    if self.nets.len() as u32 > next_id {
+                if self.nets.len() as u32 > next_id {
+                    if let Some(b) = queue_bound {
                         self.queue_bounds.insert(next_id, b);
+                    }
+                    // IEEE §7.5.2: a 2-state element type defaults to 0, not X.
+                    // The handle skips `record_dim_desc`, so flag it here so the
+                    // `two_state_nets` sidecar reaches the engine's `new[]` fill.
+                    if net_kind_is_two_state(d.kind) {
+                        self.two_state_heap_handles.insert(next_id);
                     }
                 }
                 continue;
