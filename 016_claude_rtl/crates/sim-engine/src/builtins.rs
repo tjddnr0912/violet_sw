@@ -1870,52 +1870,11 @@ fn fmt_real_e(x: f64, prec: Option<usize>) -> String {
 }
 
 /// %g: shortest of %e/%f with trailing zeros stripped, per C/LRM. `prec` is the
-/// total significant-digit precision P (default 6).
+/// total significant-digit precision P (default 6). REALG-DEDUP: delegates to the
+/// single shared `vcd_writer::fmt_g` so the `$display %g` and VCD `%g` formatters
+/// can never drift apart.
 fn format_g(x: f64, prec: Option<usize>) -> String {
-    if !x.is_finite() {
-        return format!("{x}"); // inf / -inf / NaN
-    }
-    if x == 0.0 {
-        return "0".to_string(); // both +0.0 and -0.0 → "0" under %g zero-strip
-    }
-    let p: i32 = prec.unwrap_or(6).max(1) as i32;
-    // Decimal exponent AFTER rounding to P significant digits, derived from
-    // Rust's deterministic `{:e}` formatter — NOT `log10` (a libm transcendental
-    // not guaranteed 3-OS byte-identical, and which reports the PRE-rounding
-    // exponent: `9.9999e5` at P=6 must select exp 6, not 5).
-    let sci = format!("{:.*e}", (p - 1) as usize, x); // e.g. "1.50000e3"
-    let exp: i32 = sci
-        .split_once('e')
-        .and_then(|(_, e)| e.parse().ok())
-        .unwrap_or(0);
-    if exp < -4 || exp >= p {
-        // exponent form: reuse the already-rounded mantissa, LRM exponent normalize.
-        let (mant, e) = sci.split_once('e').unwrap();
-        let mant = strip_trailing_zeros(mant);
-        let (sgn, dig) = match e.strip_prefix('-') {
-            Some(d) => ('-', d),
-            None => ('+', e),
-        };
-        let dig = if dig.len() < 2 {
-            format!("{dig:0>2}")
-        } else {
-            dig.to_string()
-        };
-        format!("{mant}e{sgn}{dig}")
-    } else {
-        let prec = (p - 1 - exp).max(0) as usize;
-        let body = format!("{x:.prec$}"); // fixed form
-        strip_trailing_zeros(&body)
-    }
-}
-
-/// Strip insignificant trailing zeros after a decimal point, and a bare trailing '.'.
-fn strip_trailing_zeros(s: &str) -> String {
-    if !s.contains('.') {
-        return s.to_string();
-    }
-    let t = s.trim_end_matches('0');
-    t.trim_end_matches('.').to_string()
+    vcd_writer::fmt_g(x, prec.unwrap_or(6).max(1) as i32)
 }
 
 /// %h/%o/%b: group bits per digit (1=bin,3=oct,4=hex), MSB-first; a group with

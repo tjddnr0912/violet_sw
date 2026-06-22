@@ -364,7 +364,7 @@ impl<W: Write> VcdWriter<W> {
     fn encode_real_into(buf: &mut Vec<u8>, id: IdCode, bits: &BitPacked) {
         let x = f64::from_bits(bits.val.first().copied().unwrap_or(0));
         // `Vec<u8>` as `io::Write` is infallible.
-        let _ = write!(buf, "r{} {id}", fmt_g16(x));
+        let _ = write!(buf, "r{} {id}", fmt_g(x, 16));
     }
 
     /// Append a single integral change to `buf` (no trailing newline): scalar
@@ -533,24 +533,25 @@ impl VcdWriter<Vec<u8>> {
     }
 }
 
-/// C `printf %.16g` of a finite f64: 16 significant digits, `%e`/`%f` chosen by
-/// the decimal exponent, trailing zeros stripped (VCD real value-change format,
-/// IEEE 1364 §18.x). Deterministic across OSes — uses only Rust's `{:e}`/`{:.*}`
-/// (Ryū/Grisu), never a libm transcendental.
-fn fmt_g16(x: f64) -> String {
+/// C `printf %.{p}g` of a finite f64: `p` significant digits, `%e`/`%f` chosen by
+/// the decimal exponent, trailing zeros stripped. The SINGLE deterministic `%g`
+/// shared (REALG-DEDUP) by the VCD real value-change format (`p = 16`) and
+/// `$display %g` (`prec.unwrap_or(6).max(1)`). Deterministic across OSes — uses
+/// only Rust's `{:e}`/`{:.*}`, never a libm transcendental.
+pub fn fmt_g(x: f64, p: i32) -> String {
     if !x.is_finite() {
         return format!("{x}"); // inf / -inf / NaN
     }
     if x == 0.0 {
         return "0".to_string();
     }
-    const P: i32 = 16;
-    let sci = format!("{:.*e}", (P - 1) as usize, x); // 15 fractional → 16 sig digits
+    let p = p.max(1);
+    let sci = format!("{:.*e}", (p - 1) as usize, x); // p-1 fractional → p sig digits
     let exp: i32 = sci
         .split_once('e')
         .and_then(|(_, e)| e.parse().ok())
         .unwrap_or(0);
-    if !(-4..P).contains(&exp) {
+    if exp < -4 || exp >= p {
         let (mant, e) = sci.split_once('e').unwrap();
         let mant = strip_trailing_zeros(mant);
         let (sgn, dig) = match e.strip_prefix('-') {
@@ -564,7 +565,7 @@ fn fmt_g16(x: f64) -> String {
         };
         format!("{mant}e{sgn}{dig}")
     } else {
-        let prec = (P - 1 - exp).max(0) as usize;
+        let prec = (p - 1 - exp).max(0) as usize;
         strip_trailing_zeros(&format!("{x:.prec$}"))
     }
 }
@@ -861,5 +862,35 @@ b000z #
         assert!(s.ends_with("1 !"));
         // total length: 'b' + 80 chars + ' ' + '!' = 83
         assert_eq!(s.len(), 1 + 80 + 1 + 1);
+    }
+
+    // REALG-DEDUP: an adversarial determinism table for the SINGLE shared `fmt_g`
+    // (the VCD `%g` has no external oracle, so this golden table is the oracle
+    // surrogate). Exercises both the VCD precision (p=16) and `$display` default
+    // (p=6), incl. the exponent-form boundary (`exp >= p`), subnormal-ish small
+    // values, and the non-finite / signed-zero specials.
+    #[test]
+    fn fmt_g_determinism_golden() {
+        let cases: &[(f64, i32, &str)] = &[
+            (9.9999e5, 6, "999990"),
+            (999999.0, 6, "999999"),
+            (1234567.0, 6, "1.23457e+06"), // rounds up into exp form (exp 6 >= p 6)
+            (123456.0, 6, "123456"),
+            (1500.0, 6, "1500"),
+            (1.0, 6, "1"),
+            (0.0001, 6, "0.0001"),
+            (0.00001, 6, "1e-05"), // exp -5 < -4 → exp form
+            (6.022e23, 16, "6.022e+23"),
+            (1.0e16, 16, "1e+16"), // exp 16 >= p 16 → exp form
+            (0.1, 16, "0.1"),
+            (2.5, 16, "2.5"),
+            (-0.0, 6, "0"),
+            (f64::INFINITY, 6, "inf"),
+            (f64::NEG_INFINITY, 6, "-inf"),
+            (f64::NAN, 6, "NaN"),
+        ];
+        for &(x, p, want) in cases {
+            assert_eq!(fmt_g(x, p), want, "fmt_g({x:e}, {p})");
+        }
     }
 }
