@@ -1687,6 +1687,19 @@ fn mw_add(a: &[u64], b: &[u64]) -> Vec<u64> {
     out
 }
 
+/// In-place `dest += b` on the word grid; bit-identical to
+/// `dest = mw_add(&dest, b)` but reuses `dest`'s allocation (hot in the
+/// restoring-division loop, where `b` is the pre-negated divisor).
+fn mw_add_inplace(dest: &mut [u64], b: &[u64]) {
+    let mut carry = 0u64;
+    for (k, d) in dest.iter_mut().enumerate() {
+        let (s1, c1) = d.overflowing_add(b.get(k).copied().unwrap_or(0));
+        let (s2, c2) = s1.overflowing_add(carry);
+        *d = s2;
+        carry = (c1 as u64) + (c2 as u64);
+    }
+}
+
 /// Two's complement on the word grid (`!a + 1`); caller masks to width.
 pub(crate) fn mw_neg(a: &[u64]) -> Vec<u64> {
     let mut out = vec![0u64; a.len()];
@@ -1770,6 +1783,9 @@ fn mw_divmod(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
     let mut rem = vec![0u64; n + 1];
     let mut bx = b.to_vec();
     bx.push(0);
+    // `bx` is loop-invariant, so its two's complement is too — negate once and
+    // subtract in place (was `mw_neg(&bx)` + a fresh `mw_add` Vec every bit).
+    let neg_bx = mw_neg(&bx);
     let mut q = vec![0u64; n];
     for i in (0..n as u32 * 64).rev() {
         // rem = (rem << 1) | bit i of a
@@ -1780,7 +1796,7 @@ fn mw_divmod(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
             carry = top;
         }
         if mw_cmp(&rem, &bx) != std::cmp::Ordering::Less {
-            rem = mw_add(&rem, &mw_neg(&bx));
+            mw_add_inplace(&mut rem, &neg_bx);
             q[(i / 64) as usize] |= 1 << (i % 64);
         }
     }

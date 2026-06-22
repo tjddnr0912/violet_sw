@@ -2,9 +2,10 @@
 //! with a per-bit `get_vu(i)` loop while every sibling 4-state op is
 //! word-parallel. These tests pin the IEEE-correct behavior across the cases a
 //! naive word-parallel rewrite could break:
-//!   - a difference that lives ONLY in a high word (word-0-only bug → wrong eq),
-//!   - an x/z anywhere making `==`/`!=` return X but `===`/`!==` stay known,
-//!   - mixed-sign width unification (zero-extend unless BOTH signed).
+//! - a difference that lives ONLY in a high word (word-0-only bug → wrong eq),
+//! - an x/z anywhere making `==`/`!=` return X but `===`/`!==` stay known,
+//! - mixed-sign width unification (zero-extend unless BOTH signed).
+//!
 //! They must stay green before AND after the word-parallel rewrite.
 
 use diag::{LogEvent, LogSink};
