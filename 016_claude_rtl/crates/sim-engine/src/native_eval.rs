@@ -324,6 +324,10 @@ pub(crate) struct NativeProg {
     ops: Vec<NOp>,
     root_w: u32,
     root_signed: bool,
+    /// VM-WIDEZERO: true iff the program uses the wide (u128-pair) stack
+    /// (`wmax > 0`). A narrow-only program skips the wide-stack zero-init in
+    /// `run`, which is otherwise a per-eval tax on every narrow expression.
+    needs_wide: bool,
 }
 
 /// P3-5: the run-time value stacks are FIXED arrays (zero per-call heap
@@ -497,6 +501,7 @@ pub(crate) fn try_compile(
         ops,
         root_w,
         root_signed,
+        needs_wide: wmax > 0, // VM-WIDEZERO
     })
 }
 
@@ -984,10 +989,19 @@ pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
         buf: &mut buf,
         sp: &mut sp,
     };
-    let mut wbuf = [(0u128, 0u128); WIDE_STACK];
+    // VM-WIDEZERO: only zero-init the 256 B wide stack for programs that use it;
+    // a narrow-only program (wmax==0) never executes a W* opcode, so leave `wbuf`
+    // uninitialized and hand the wide stack an empty slice (never indexed).
+    let mut wbuf: [(u128, u128); WIDE_STACK];
+    let wbuf_slice: &mut [(u128, u128)] = if prog.needs_wide {
+        wbuf = [(0u128, 0u128); WIDE_STACK];
+        &mut wbuf
+    } else {
+        &mut []
+    };
     let mut wsp = 0usize;
     let mut wstack = FixedStack {
-        buf: &mut wbuf,
+        buf: wbuf_slice,
         sp: &mut wsp,
     };
     for op in &prog.ops {
