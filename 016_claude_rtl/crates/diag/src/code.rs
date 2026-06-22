@@ -78,6 +78,7 @@ msgcodes! {
     RunDumpMulti           => ("W-RUN-DUMP-MULTI",           "VITA-W4021", Warning, "extra $dumpvars call ignored (v1: the first call wins)"),
     RunBadFd               => ("W-RUN-BAD-FD",               "VITA-W4022", Warning, "file operation on an invalid/closed descriptor ignored"),
     RunReadmem             => ("W-RUN-READMEM",              "VITA-W4023", Warning, "$readmemb/h problem (missing file / word-count mismatch); memory partially loaded"),
+    RunClassLimit          => ("F-RUN-CLASS-LIMIT",         "VITA-F4024", Fatal,   "class object budget exceeded (class heap is not garbage-collected)"),
     // 8xxx FILELIST
     FlistCycle             => ("E-FLIST-CYCLE",             "VITA-E8001", Error,   "filelist cycle"),
     FlistDepth             => ("E-FLIST-DEPTH",             "VITA-E8002", Error,   "filelist nesting exceeded depth cap"),

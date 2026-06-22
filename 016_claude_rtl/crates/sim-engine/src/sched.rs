@@ -3383,6 +3383,13 @@ impl Kernel for Scheduler<'_, '_> {
     }
     fn k_class_alloc(&mut self, class_id: u32) -> Value {
         let id = self.st.class_alloc(class_id);
+        // CLASS-HEAP-CAP: the heap is never garbage-collected, so an unbounded
+        // `new()` in a loop would grow without limit. Bound it to a loud fatal
+        // (graceful $finish) instead of an OOM — this is the single allocation
+        // chokepoint (`class_alloc`'s only caller).
+        if self.st.class_heap.borrow().len() as u64 > self.st.max_class_objs {
+            self.st.fatal_class_limit();
+        }
         // The handle holds the object-id as a 32-bit unsigned integer (0 = null).
         Value::from_i128(id as i128, 32, false)
     }

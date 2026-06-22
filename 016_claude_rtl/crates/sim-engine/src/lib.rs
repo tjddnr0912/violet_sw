@@ -98,6 +98,12 @@ pub struct SimOpts {
     pub vcd_date: String,
     /// Max delta cycles per time-step before the infinite-delta guard fires.
     pub max_deltas: u64,
+    /// CLASS-HEAP-CAP: max live class objects before a graceful fatal fires. The
+    /// class heap is never garbage-collected, so an unbounded `new()` in a loop
+    /// would grow without limit; this bounds it to a loud `F-RUN-CLASS-LIMIT`
+    /// (implicit `$finish`) instead of an OOM. Default 1_000_000 (≈160 MiB) —
+    /// far above any N7-level testbench's live-object count.
+    pub max_class_objs: u64,
     /// Hard cap on advanced simulation time (ticks). `None` ⇒ unbounded.
     pub time_limit: Option<u64>,
     /// Join-mode side table from `elaborate::elaborate_with_modes`, keyed
@@ -209,6 +215,7 @@ impl Default for SimOpts {
             timescale_unit: "1ns".to_string(),
             vcd_date: "vitamin-sim".to_string(),
             max_deltas: 1_000_000,
+            max_class_objs: 1_000_000,
             time_limit: None,
             fork_modes: ForkModeTable::new(),
             net_names: Vec::new(),
@@ -341,6 +348,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.assert_ctl = opts.assert_ctl.clone();
     st.task_calls_proc = opts.task_calls_proc.clone(); // B2
     st.task_calls_func = opts.task_calls_func.clone(); // B2
+    st.max_class_objs = opts.max_class_objs; // CLASS-HEAP-CAP
 
     let reason = {
         let mut sched = Scheduler::new(&mut st, opts.max_deltas, opts.time_limit, opts.fork_modes);

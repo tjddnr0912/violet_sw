@@ -284,6 +284,10 @@ pub(crate) struct SimState<'a> {
     pub finished: bool,
     pub had_error: bool,
     pub had_fatal: bool,
+    /// CLASS-HEAP-CAP: max live class objects before a graceful fatal fires
+    /// (see `SimOpts::max_class_objs`). Set by `simulate()` from the opts; the
+    /// `SimState::new` default is the same 1M so engine-direct tests are bounded.
+    pub max_class_objs: u64,
 
     // ── runtime diagnostics ──
     /// Direct handle to the diagnostic sink (same `&dyn LogSink` the `out` writer
@@ -523,6 +527,7 @@ impl<'a> SimState<'a> {
             finished: false,
             had_error: false,
             had_fatal: false,
+            max_class_objs: 1_000_000,
             sink,
             run_range_count: Cell::new(0),
             postponed: Postponed::default(),
@@ -667,6 +672,31 @@ impl<'a> SimState<'a> {
             context: Vec::new(),
             sim_time: Some(diag::TimeStamp { ticks: self.now }),
         }));
+        self.had_fatal = true;
+        self.finished = true;
+    }
+
+    /// CLASS-HEAP-CAP: the class-object budget (`max_class_objs`) was exceeded.
+    /// Emit a single loud `F-RUN-CLASS-LIMIT` and latch `had_fatal`/`finished`
+    /// for a graceful `$finish` (exit class Fatal) instead of an OOM — the class
+    /// heap is never garbage-collected, so an unbounded `new()` in a loop would
+    /// grow without limit. Single-shot (guarded by `had_fatal`).
+    pub fn fatal_class_limit(&mut self) {
+        if !self.had_fatal {
+            self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                severity: Severity::Fatal,
+                code: MsgCode::RunClassLimit,
+                message: format!(
+                    "class object budget ({}) exceeded — likely an unbounded `new()` \
+                     (the class heap is not garbage-collected); raise \
+                     SimOpts::max_class_objs if intended",
+                    self.max_class_objs
+                ),
+                location: None,
+                context: Vec::new(),
+                sim_time: Some(diag::TimeStamp { ticks: self.now }),
+            }));
+        }
         self.had_fatal = true;
         self.finished = true;
     }
