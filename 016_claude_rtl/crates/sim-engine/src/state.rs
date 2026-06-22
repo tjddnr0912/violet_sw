@@ -246,8 +246,6 @@ pub(crate) struct SimState<'a> {
     pub mcd_files: std::collections::BTreeMap<u32, std::fs::File>,
     /// Next fd-form counter (low bits; the returned fd is 0x8000_0000|n).
     pub next_fd: u32,
-    /// Next MCD channel bit.
-    pub next_mcd_bit: u32,
     /// W4022 once-per-descriptor latch (bad/closed fd writes).
     pub bad_fd_warned: std::collections::BTreeSet<u32>,
     /// v9 per-fd read bookkeeping (Medium-bundle rank 5, SYS-READ): lazy EOF
@@ -511,7 +509,6 @@ impl<'a> SimState<'a> {
             files: std::collections::BTreeMap::new(),
             mcd_files: std::collections::BTreeMap::new(),
             next_fd: 3,
-            next_mcd_bit: 1,
             bad_fd_warned: std::collections::BTreeSet::new(),
             read_state: std::collections::BTreeMap::new(),
             readable_fds: std::collections::BTreeSet::new(),

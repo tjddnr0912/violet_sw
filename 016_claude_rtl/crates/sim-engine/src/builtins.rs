@@ -450,6 +450,13 @@ pub(crate) fn dispatch(
                     if sched.st.files.remove(&fd).is_none() {
                         bad_fd_warn(sched, fd);
                     }
+                    // FD-RECLAIM: drop this fd's auxiliary bookkeeping so a long
+                    // open/close cycle doesn't leak read_state/readable_fds, and
+                    // the bad-fd latch resets. fd numbers stay monotonic, so this
+                    // is pure hygiene (no observable output change).
+                    sched.st.read_state.remove(&fd);
+                    sched.st.readable_fds.remove(&fd);
+                    sched.st.bad_fd_warned.remove(&fd);
                 }
                 // MCD form: close every set channel bit (bit 0 = stdout, kept).
                 Some(mcd) => {

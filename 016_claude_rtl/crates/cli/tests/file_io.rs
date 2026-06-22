@@ -161,3 +161,55 @@ fn append_mode_accumulates() {
     let a = std::fs::read_to_string(d.join("a.txt")).unwrap();
     assert_eq!(a, "one\ntwo\n");
 }
+
+// MCD-RECLAIM (ROADMAP §5.3, 2026-06-23): MCD channel bits were handed out by
+// a monotonic counter (`next_mcd_bit`) and never reclaimed on $fclose, so the
+// 30-channel space exhausted after 30 lifetime opens even if all were closed.
+// Allocate the lowest currently-unused bit instead (iverilog reclaims), so a
+// closed bit is reused. Byte-identical when nothing is freed (lowest-unused ==
+// next sequential), so fopen_fd_values_and_file_contents still sees mcd=2.
+#[test]
+fn mcd_channel_bit_is_reclaimed_on_close() {
+    let (out, err, code, _d) = run_in_dir(
+        "module top;\n\
+         integer m1, m2, m3;\n\
+         initial begin\n\
+           m1 = $fopen(\"a.txt\");\n\
+           m2 = $fopen(\"b.txt\");\n\
+           $fclose(m1);\n\
+           m3 = $fopen(\"c.txt\");\n\
+           $display(\"m1=%0d m2=%0d m3=%0d\", m1, m2, m3);\n\
+           $finish;\n\
+         end\n\
+         endmodule\n",
+    );
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    // bit1=2, bit2=4; closing m1 frees bit1, so m3 reuses bit1 (=2), not bit3 (=8).
+    assert!(out.contains("m1=2 m2=4 m3=2"), "got:\n{out}");
+}
+
+// FD-RECLAIM (ROADMAP §5.3, 2026-06-23): a readable fd's auxiliary maps
+// (read_state/readable_fds/bad_fd_warned) were not cleaned on $fclose and
+// next_fd was an unguarded `+= 1`. The fix (saturating add + aux-map cleanup)
+// has no observable output change (fd numbers stay monotonic), so this is a
+// regression characterization: repeatedly open/close readable fds and confirm
+// the run stays correct.
+#[test]
+fn readable_fd_open_close_cycle_stays_correct() {
+    let (out, err, code, _d) = run_in_dir(
+        "module top;\n\
+         integer fd, k;\n\
+         initial begin\n\
+           for (k = 0; k < 8; k = k + 1) begin\n\
+             fd = $fopen(\"r.txt\", \"w+\");\n\
+             $fdisplay(fd, \"row %0d\", k);\n\
+             $fclose(fd);\n\
+           end\n\
+           $display(\"ok\");\n\
+           $finish;\n\
+         end\n\
+         endmodule\n",
+    );
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok"), "got:\n{out}");
+}

@@ -2787,7 +2787,7 @@ impl Kernel for Scheduler<'_, '_> {
             Some(m) => match open(&m) {
                 Ok(f) => {
                     let n = self.st.next_fd;
-                    self.st.next_fd += 1;
+                    self.st.next_fd = self.st.next_fd.saturating_add(1); // FD-RECLAIM: no wrap
                     let fd = 0x8000_0000 | n;
                     self.st.files.insert(fd, f);
                     // v9 SYS-READ: a mode with 'r' or '+' is read-capable
@@ -2801,13 +2801,17 @@ impl Kernel for Scheduler<'_, '_> {
             },
             None => match open("w") {
                 Ok(f) => {
-                    let bit = self.st.next_mcd_bit;
-                    if bit >= 31 {
-                        return Value::from_i128(0, 32, true); // channel space full
+                    // MCD-RECLAIM: hand out the LOWEST channel bit not currently
+                    // open (bit 0 = stdout, reserved), so a $fclose'd bit is
+                    // reused (iverilog reclaims). Byte-identical to the old
+                    // monotonic counter when nothing has been freed.
+                    match (1..31u32).find(|b| !self.st.mcd_files.contains_key(b)) {
+                        Some(bit) => {
+                            self.st.mcd_files.insert(bit, f);
+                            1u32 << bit
+                        }
+                        None => return Value::from_i128(0, 32, true), // space full
                     }
-                    self.st.next_mcd_bit += 1;
-                    self.st.mcd_files.insert(bit, f);
-                    1u32 << bit
                 }
                 Err(_) => 0,
             },
