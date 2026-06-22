@@ -1903,6 +1903,9 @@ struct Elaborator<'s> {
     // which is empty by the time SVA checkers materialize, but a dedicated stack
     // keeps SVA correctness independent of func/task inline state).
     sva_inline_stack: Vec<String>,
+    /// SEQ-DEPTH: live `expand_sequence` recursion depth, capped so a pathological
+    /// 35k-deep nested `##`/`[*]` sequence is a loud reject, not a stack overflow.
+    sva_seq_depth: u32,
 
     // ── N7 class/OOP ──
     // All declared classes, name → resolved metadata. Built by a whole-design
@@ -2113,6 +2116,7 @@ impl<'s> Elaborator<'s> {
             prop_table: BTreeMap::new(),
             let_table: BTreeMap::new(),
             sva_inline_stack: Vec::new(),
+            sva_seq_depth: 0,
             class_table: BTreeMap::new(),
             class_order: Vec::new(),
             net_class: BTreeMap::new(),
@@ -14667,7 +14671,29 @@ impl<'s> Elaborator<'s> {
         r
     }
 
+    /// SEQ-DEPTH guard: `expand_sequence` recurses on `##`/`[*]`/`and`/`or`/
+    /// `within` sub-sequences with no depth cap, so a 35k-deep nested sequence
+    /// overflows the elaborate stack (raw SIGABRT). Cap the recursion at
+    /// `SVA_SEQ_ALT_CAP` (256 — the same robustness budget the prop-level and/or
+    /// reduction and the per-attempt alternative count use) → loud
+    /// `ElabUnsupported` + a never-matching alternative (`had_error` discards the
+    /// IR, so the never-alt is never actually simulated).
     fn expand_sequence(&mut self, seq: &ast::Sequence, regs: &mut SvaRegs) -> Vec<SeqAlt> {
+        self.sva_seq_depth += 1;
+        if self.sva_seq_depth as usize > SVA_SEQ_ALT_CAP {
+            self.sva_seq_depth -= 1;
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("sequence nesting exceeds the depth cap ({SVA_SEQ_ALT_CAP}); narrow it"),
+            );
+            return sva_never_alt(seq);
+        }
+        let r = self.expand_sequence_inner(seq, regs);
+        self.sva_seq_depth -= 1;
+        r
+    }
+
+    fn expand_sequence_inner(&mut self, seq: &ast::Sequence, regs: &mut SvaRegs) -> Vec<SeqAlt> {
         match seq {
             ast::Sequence::Boolean(e) => {
                 // A bare single-segment identifier that names a declared sequence is
