@@ -1400,6 +1400,114 @@ impl StagedExtraSidecars {
     }
 }
 
+/// One RULE-V fast-path stamp: (whole seconds since `UNIX_EPOCH`, sub-second
+/// nanos, byte length) of a consumed file AT THE INSTANT velab verified its
+/// content still hashed to the recorded digest. Decomposed `SystemTime` (no i64
+/// epoch nanos) so it never overflows and stays exact across the FS round-trip.
+type FileStamp = (u64, u32, u64);
+
+/// 15th `.velab` trailer (RULEV-MTIME, 2026-06-23 ROADMAP §5 option A): per-entry
+/// `(mtime, size)` fast-path stamps PARALLEL (same order, same length) to the 9th
+/// `WorkConsumed` trailer's `libs`/`blobs`/`files` vecs.
+///
+/// velab records `Some(stamp)` for an entry ONLY after it has re-read the path and
+/// CONFIRMED the bytes still hash to the recorded digest — so the stamped mtime is
+/// tied to exactly that content. Capturing it at any looser point (e.g. blindly at
+/// velab-write time) would reopen the very vcmp→velab staleness window that ruled
+/// out the storage-free `source_mtime < velab_mtime` shortcut. `None` = "could not
+/// verify, always rehash". At vrun, RULE-V stats the path: a matching `(mtime,size)`
+/// trusts the recorded hash and skips the read+blake3; any mismatch (or absent
+/// stamp, e.g. a legacy `.velab` with no 15th segment) falls back to the
+/// authoritative rehash. Out-of-band side table → no `format_version` bump; ~3
+/// length-zero bytes for explicit-path/legacy artifacts.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct WorkStamps {
+    libs: Vec<Option<FileStamp>>,
+    blobs: Vec<Option<FileStamp>>,
+    files: Vec<Option<FileStamp>>,
+}
+
+/// Re-read `path` and, IFF its bytes hash to `want`, return its verified
+/// `(mtime, size)` stamp. Any read/hash/metadata/time failure → `None` (the
+/// entry will always be rehashed at vrun — never a silent skip).
+fn stamp_verified(path: &std::path::Path, want: &[u8; 32]) -> Option<FileStamp> {
+    let data = std::fs::read(path).ok()?;
+    if blake3::hash(&data).as_bytes() != want {
+        return None;
+    }
+    let meta = std::fs::metadata(path).ok()?;
+    // Guard a write between the read and the stat: an inconsistent length means
+    // the mtime no longer describes the bytes we hashed.
+    if meta.len() != data.len() as u64 {
+        return None;
+    }
+    let dur = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some((dur.as_secs(), dur.subsec_nanos(), meta.len()))
+}
+
+impl WorkStamps {
+    /// Stamp every entry of `consumed`, verifying each path's content against its
+    /// recorded digest first. One-time at velab write (never a sim hot path).
+    fn from_consumed(consumed: &worklib::WorkConsumed) -> Self {
+        WorkStamps {
+            libs: consumed
+                .libs
+                .iter()
+                .map(|(_n, dir, h)| stamp_verified(&std::path::Path::new(dir).join("lib.toml"), h))
+                .collect(),
+            blobs: consumed
+                .blobs
+                .iter()
+                .map(|(p, h)| stamp_verified(std::path::Path::new(p), h))
+                .collect(),
+            files: consumed
+                .files
+                .iter()
+                .map(|(p, h)| stamp_verified(std::path::Path::new(p), h))
+                .collect(),
+        }
+    }
+}
+
+/// RULE-V freshness of one recorded `(path, hash)` with an optional fast-path
+/// stamp. A matching live `(mtime, size)` trusts the recorded hash and skips the
+/// read+blake3; anything else rehashes authoritatively.
+enum Freshness {
+    Fresh,
+    Changed,
+    Unreadable(std::io::Error),
+}
+
+fn check_fresh(path: &std::path::Path, want: &[u8; 32], stamp: Option<FileStamp>) -> Freshness {
+    // Fast-path: velab proved this path's content hashed to `want` at the stamped
+    // (mtime,size). If the live fingerprint still matches, trust it (the standard
+    // make-style mtime assumption: content-change ⇒ fingerprint-change). A
+    // sub-granularity or mtime-frozen rewrite is the documented residual hole.
+    if let Some((secs, nanos, size)) = stamp {
+        if let Ok(meta) = std::fs::metadata(path) {
+            let live = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok());
+            if let Some(dur) = live {
+                if meta.len() == size && dur.as_secs() == secs && dur.subsec_nanos() == nanos {
+                    return Freshness::Fresh;
+                }
+            }
+        }
+        // stamp/stat mismatch → fall through to the authoritative rehash.
+    }
+    match std::fs::read(path) {
+        Ok(b) if blake3::hash(&b).as_bytes() == want => Freshness::Fresh,
+        Ok(_) => Freshness::Changed,
+        Err(e) => Freshness::Unreadable(e),
+    }
+}
+
 /// Serialize and atomically write a `.velab`: golden `SimIr` frame + the
 /// append-only side-table trailers (+ the optional 9th WorkConsumed trailer —
 /// legacy explicit-path builds write NOTHING extra, so their bytes are
@@ -1473,6 +1581,14 @@ fn write_velab_file(
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&StagedExtraSidecars::from_sidecars(sc))
             .expect("extra-sidecars trailer postcard encode infallible"),
+    );
+    // 15th segment (RULEV-MTIME): per-entry (mtime,size) fast-path stamps parallel
+    // to the 9th WorkConsumed trailer. velab verifies each path's content against
+    // its recorded digest before stamping, so vrun can trust a matching stat and
+    // skip the rehash. Empty (~3 bytes) for explicit-path .velab. Out-of-band.
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&WorkStamps::from_consumed(consumed.unwrap_or(&wc_default)))
+            .expect("work-stamps trailer postcard encode infallible"),
     );
     let vheader = artifact_header(
         vita_schema::schema_hash::<sim_ir::SimIr>(),
@@ -2045,11 +2161,13 @@ fn run_vrun_gated(
     };
     // 14th (STAGED-DROP audit fix): class/frame-call/2-state/assert-ctl sidecars.
     // Tolerant → all-default for legacy/pre-audit `.velab`s (segment absent), so
-    // those decode exactly as before (and plain RTL never populated these).
-    let extra: StagedExtraSidecars = if rest14.is_empty() {
-        StagedExtraSidecars::default()
+    // those decode exactly as before (and plain RTL never populated these). Decode
+    // with `take_from_bytes` (not `from_bytes`) so the 15th segment that now
+    // follows is exposed as `rest15` instead of being silently ignored.
+    let (extra, rest15): (StagedExtraSidecars, &[u8]) = if rest14.is_empty() {
+        (StagedExtraSidecars::default(), rest14)
     } else {
-        match postcard::from_bytes(rest14) {
+        match postcard::take_from_bytes(rest14) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
@@ -2061,20 +2179,43 @@ fn run_vrun_gated(
             }
         }
     };
-    // ── RULE V auto-gate (doc-14 vrun 재검증): re-hash the LIVE upstream the
+    // 15th (RULEV-MTIME): per-entry (mtime,size) fast-path stamps. Tolerant →
+    // empty for legacy/explicit-path `.velab`s ⇒ every RULE-V entry rehashes, the
+    // exact pre-optimization behavior.
+    let stamps: WorkStamps = if rest15.is_empty() {
+        WorkStamps::default()
+    } else {
+        match postcard::from_bytes(rest15) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab work-stamps trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // ── RULE V auto-gate (doc-14 vrun 재검증): re-verify the LIVE upstream the
     //    snapshot recorded — manifest bytes, CU blobs, and raw source/include
-    //    files. Content hashes only (never mtime); ANY mismatch refuses to
-    //    simulate a stale snapshot (E-ART-STALE-UPSTREAM, exit class 2). ──
+    //    files. The authoritative check is the content hash; ANY mismatch refuses
+    //    to simulate a stale snapshot (E-ART-STALE-UPSTREAM, exit class 2). The
+    //    15th-trailer (mtime,size) stamps (RULEV-MTIME) let an unchanged entry
+    //    skip the read+blake3 — a fast-path, never a relaxation: a stamp miss
+    //    rehashes, so a mismatch is still caught (modulo the documented mtime
+    //    hole: a sub-granularity / mtime-frozen rewrite of identical length). ──
     {
         let stale = |message: String| vita_artifact::ArtifactError {
             code: diag::MsgCode::ArtStaleUpstream,
             message,
         };
-        for (name, dir, h) in &consumed.libs {
+        let at = |v: &[Option<FileStamp>], i: usize| v.get(i).copied().flatten();
+        for (i, (name, dir, h)) in consumed.libs.iter().enumerate() {
             let mpath = std::path::Path::new(dir).join("lib.toml");
-            match std::fs::read(&mpath) {
-                Ok(b) if blake3::hash(&b).as_bytes() == h => {}
-                Ok(_) => {
+            match check_fresh(&mpath, h, at(&stamps.libs, i)) {
+                Freshness::Fresh => {}
+                Freshness::Changed => {
                     return emit_artifact_error(
                         sink,
                         &stale(format!(
@@ -2083,7 +2224,7 @@ fn run_vrun_gated(
                         )),
                     )
                 }
-                Err(e) => {
+                Freshness::Unreadable(e) => {
                     return emit_artifact_error(
                         sink,
                         &stale(format!(
@@ -2094,10 +2235,10 @@ fn run_vrun_gated(
                 }
             }
         }
-        for (path, h) in &consumed.blobs {
-            match std::fs::read(path) {
-                Ok(b) if blake3::hash(&b).as_bytes() == h => {}
-                Ok(_) => {
+        for (i, (path, h)) in consumed.blobs.iter().enumerate() {
+            match check_fresh(std::path::Path::new(path), h, at(&stamps.blobs, i)) {
+                Freshness::Fresh => {}
+                Freshness::Changed => {
                     return emit_artifact_error(
                         sink,
                         &stale(format!(
@@ -2105,7 +2246,7 @@ fn run_vrun_gated(
                         )),
                     )
                 }
-                Err(e) => {
+                Freshness::Unreadable(e) => {
                     return emit_artifact_error(
                         sink,
                         &stale(format!("{path}: {e} (re-run `vcmp --work` + velab)")),
@@ -2113,10 +2254,10 @@ fn run_vrun_gated(
                 }
             }
         }
-        for (path, h) in &consumed.files {
-            match std::fs::read(path) {
-                Ok(b) if blake3::hash(&b).as_bytes() == h => {}
-                Ok(_) => {
+        for (i, (path, h)) in consumed.files.iter().enumerate() {
+            match check_fresh(std::path::Path::new(path), h, at(&stamps.files, i)) {
+                Freshness::Fresh => {}
+                Freshness::Changed => {
                     return emit_artifact_error(
                         sink,
                         &stale(format!(
@@ -2124,7 +2265,7 @@ fn run_vrun_gated(
                         )),
                     )
                 }
-                Err(e) => {
+                Freshness::Unreadable(e) => {
                     return emit_artifact_error(
                         sink,
                         &stale(format!("{path}: {e} (re-run `vcmp --work` + velab)")),
@@ -2823,6 +2964,32 @@ mod tests {
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\
+             If intentional: bump format_version + regen with REGEN_GOLDEN=1."
+        );
+    }
+
+    // RULEV-MTIME wire pin: the 15th `WorkStamps` trailer is also a hand-maintained
+    // cli-local struct riding outside the SimIr frame. A field add / reorder / type
+    // change to it (or to `FileStamp`) silently mis-decodes old artifacts unless the
+    // format_version bumps. Pin a populated fixture's postcard shape the same way.
+    #[test]
+    fn work_stamps_wire_shape_is_pinned() {
+        let s = WorkStamps {
+            libs: vec![Some((1_700_000_000, 123, 4096))],
+            blobs: vec![None, Some((1_700_000_001, 0, 64))],
+            files: vec![Some((1_700_000_002, 999_999_999, 1))],
+        };
+        let bytes = postcard::to_stdvec(&s).expect("postcard encode");
+        let got = blake3::hash(&bytes).to_hex().to_string();
+        // REGEN_GOLDEN=1 cargo test -p cli work_stamps_wire_shape -- --nocapture
+        if std::env::var("REGEN_GOLDEN").is_ok() {
+            println!("REGEN WorkStamps wire = {got}");
+            return;
+        }
+        const EXPECTED: &str = "923a29a56aa0974671e5453f2e9bab0dcd96e57662cd63aed6c858113e6efb38";
+        assert_eq!(
+            got, EXPECTED,
+            "WorkStamps wire shape changed — a 15th-trailer field moved.\n\
              If intentional: bump format_version + regen with REGEN_GOLDEN=1."
         );
     }
