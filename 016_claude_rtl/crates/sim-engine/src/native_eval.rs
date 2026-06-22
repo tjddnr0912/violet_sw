@@ -1961,7 +1961,15 @@ mod tests {
     #[test]
     fn pow_const_small_exponent_matches_oracle() {
         // (ctx width, exponent) pairs: n>=2 and w*n <= 128.
-        for (w, n) in [(16u32, 2u64), (16, 3), (16, 4), (16, 8), (8, 16), (64, 2), (32, 4)] {
+        for (w, n) in [
+            (16u32, 2u64),
+            (16, 3),
+            (16, 4),
+            (16, 8),
+            (8, 16),
+            (64, 2),
+            (32, 4),
+        ] {
             let ir = ir_of(
                 vec![sig(0), Expr::Const { val: 0 }, bin(BinOp::Pow, 0, 1)],
                 vec![cnum(8, n)],
@@ -1992,17 +2000,35 @@ mod tests {
             try_compile(&ir, &wt, 2, w, signed).is_some()
         };
         // a ** 0 : oracle X-poisons an X base, but a Const-1 would say 1.
-        assert!(!compiles(vec![cnum(8, 0)], Expr::Const { val: 0 }, 16, false), "a**0 must bail");
+        assert!(
+            !compiles(vec![cnum(8, 0)], Expr::Const { val: 0 }, 16, false),
+            "a**0 must bail"
+        );
         // a ** 1 : native passthrough keeps an X base, but the oracle X-poisons it.
-        assert!(!compiles(vec![cnum(8, 1)], Expr::Const { val: 0 }, 16, false), "a**1 must bail");
+        assert!(
+            !compiles(vec![cnum(8, 1)], Expr::Const { val: 0 }, 16, false),
+            "a**1 must bail"
+        );
         // a ** 17 : over POW_MAX.
-        assert!(!compiles(vec![cnum(8, 17)], Expr::Const { val: 0 }, 16, false), "a**17 must bail");
+        assert!(
+            !compiles(vec![cnum(8, 17)], Expr::Const { val: 0 }, 16, false),
+            "a**17 must bail"
+        );
         // a ** 4 at w=64 : w*n = 256 > 128 (oracle overflow-to-0 quirk reachable).
-        assert!(!compiles(vec![cnum(8, 4)], Expr::Const { val: 0 }, 64, false), "wide w*n>128 must bail");
+        assert!(
+            !compiles(vec![cnum(8, 4)], Expr::Const { val: 0 }, 64, false),
+            "wide w*n>128 must bail"
+        );
         // a ** b (non-const exponent).
-        assert!(!compiles(vec![], sig(1), 16, false), "a**b (non-const) must bail");
+        assert!(
+            !compiles(vec![], sig(1), 16, false),
+            "a**b (non-const) must bail"
+        );
         // signed Pow uses ipow_signed — bail.
-        assert!(!compiles(vec![cnum(8, 2)], Expr::Const { val: 0 }, 16, true), "signed a**2 must bail");
+        assert!(
+            !compiles(vec![cnum(8, 2)], Expr::Const { val: 0 }, 16, true),
+            "signed a**2 must bail"
+        );
     }
 
     #[test]

@@ -2819,8 +2819,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str =
-            "6378a55d8f357f6ee0cac3fabc765a246252922618cf463595a0f886fb5b5f1d";
+        const EXPECTED: &str = "6378a55d8f357f6ee0cac3fabc765a246252922618cf463595a0f886fb5b5f1d";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\

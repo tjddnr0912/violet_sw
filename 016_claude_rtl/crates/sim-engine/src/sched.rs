@@ -1582,13 +1582,15 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // value; a static sensitivity (arm=None) fires on any net change.
         let mut level_fire = std::mem::take(&mut self.scratch_level_fire); // WAITER-POOL
         level_fire.clear();
-        level_fire.extend(self.waiters.iter().map(|w| match (&w.cause, &w.arm) {
-            (WaitCause::Level { nets }, Some(arm)) => nets
-                .iter()
-                .zip(arm)
-                .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
-            (WaitCause::Level { nets }, None) => nets.iter().any(|n| changed_nets.contains(n)),
-            _ => false,
+        level_fire.extend(self.waiters.iter().map(|w| {
+            match (&w.cause, &w.arm) {
+                (WaitCause::Level { nets }, Some(arm)) => nets
+                    .iter()
+                    .zip(arm)
+                    .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
+                (WaitCause::Level { nets }, None) => nets.iter().any(|n| changed_nets.contains(n)),
+                _ => false,
+            }
         }));
         let mut woken: Vec<Ready> = Vec::new();
         let mut wi = 0usize;

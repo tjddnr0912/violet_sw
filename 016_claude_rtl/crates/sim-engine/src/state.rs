@@ -2082,7 +2082,10 @@ impl<'a> NetReader for SimState<'a> {
     fn resolve_virtual_call(&self, call_eid: u32, static_fid: u32, args: &[Value]) -> u32 {
         // Only a virtual call site (sidecar `vslot = Some`) redirects. CLS-CALL-VEC:
         // O(1) ExprId index; out-of-range (non-class / smaller Vec) ⇒ None.
-        let Some(&(Some(vslot), _)) = self.class_calls.get(call_eid as usize).and_then(|o| o.as_ref())
+        let Some(&(Some(vslot), _)) = self
+            .class_calls
+            .get(call_eid as usize)
+            .and_then(|o| o.as_ref())
         else {
             return static_fid;
         };
