@@ -1353,6 +1353,53 @@ fn decode_vu_unit(
     Ok((unit, unit_exp, global_prec_exp))
 }
 
+/// 14th `.velab` trailer (2026-06-22 STAGED-DROP audit fix): the engine-facing
+/// sidecars that were previously threaded ONLY through one-shot `vita` and
+/// silently dropped on the staged `velab→vrun` path — N7 class/OOP, B-track
+/// frame-call, 2-state nets, and assertion control. Bundling them in ONE named
+/// struct makes the field order the single source of truth, so the encode/decode
+/// coupling cannot skew (the trailer-coupling fragility the audit flagged). All
+/// fields are out-of-band side tables, never the golden `SimIr` root → no
+/// `format_version` bump; empty for plain RTL (≈13 length-zero bytes).
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct StagedExtraSidecars {
+    func_table: sim_engine::FuncTable,
+    task_calls_proc: sim_engine::TaskCallProc,
+    task_calls_func: sim_engine::TaskCallFunc,
+    two_state_nets: std::collections::BTreeSet<u32>,
+    class_handle_nets: std::collections::BTreeSet<u32>,
+    class_new_sites: std::collections::BTreeMap<u32, u32>,
+    class_layouts: Vec<Vec<(u32, bool, bool)>>,
+    class_field_inits: Vec<Vec<Option<sim_ir::BitPacked>>>,
+    class_vtable: Vec<Vec<u32>>,
+    class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
+    class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
+    assert_fire: std::collections::BTreeSet<u32>,
+    assert_ctl: std::collections::BTreeMap<u32, u8>,
+}
+
+impl StagedExtraSidecars {
+    /// Snapshot the extra sidecars from an elaboration result. Clones (one-time
+    /// at artifact write, never a sim hot path) so the wire struct owns its data.
+    fn from_sidecars(sc: &elaborate::Sidecars) -> Self {
+        StagedExtraSidecars {
+            func_table: sc.func_table.clone(),
+            task_calls_proc: sc.task_calls_proc.clone(),
+            task_calls_func: sc.task_calls_func.clone(),
+            two_state_nets: sc.two_state_nets.clone(),
+            class_handle_nets: sc.class_handle_nets.clone(),
+            class_new_sites: sc.class_new_sites.clone(),
+            class_layouts: sc.class_layouts.clone(),
+            class_field_inits: sc.class_field_inits.clone(),
+            class_vtable: sc.class_vtable.clone(),
+            class_calls: sc.class_calls.clone(),
+            class_field_widths: sc.class_field_widths.clone(),
+            assert_fire: sc.assert_fire.clone(),
+            assert_ctl: sc.assert_ctl.clone(),
+        }
+    }
+}
+
 /// Serialize and atomically write a `.velab`: golden `SimIr` frame + the
 /// append-only side-table trailers (+ the optional 9th WorkConsumed trailer —
 /// legacy explicit-path builds write NOTHING extra, so their bytes are
@@ -1420,6 +1467,12 @@ fn write_velab_file(
     velab_body.extend_from_slice(
         &postcard::to_stdvec(&sc.defer_acts)
             .expect("defer-acts trailer postcard encode infallible"),
+    );
+    // 14th segment (STAGED-DROP audit fix): class/frame-call/2-state/assert-ctl
+    // sidecars, one append-only struct. Empty for plain RTL; out-of-band.
+    velab_body.extend_from_slice(
+        &postcard::to_stdvec(&StagedExtraSidecars::from_sidecars(sc))
+            .expect("extra-sidecars trailer postcard encode infallible"),
     );
     let vheader = artifact_header(
         vita_schema::schema_hash::<sim_ir::SimIr>(),
@@ -1975,16 +2028,34 @@ fn run_vrun_gated(
             }
         }
     };
-    let defer_acts: sim_engine::DeferActTable = if rest13.is_empty() {
-        sim_engine::DeferActTable::new()
+    let (defer_acts, rest14): (sim_engine::DeferActTable, &[u8]) = if rest13.is_empty() {
+        (sim_engine::DeferActTable::new(), rest13)
     } else {
-        match postcard::from_bytes(rest13) {
+        match postcard::take_from_bytes(rest13) {
             Ok(x) => x,
             Err(e) => {
                 return emit_artifact_error(
                     sink,
                     &vita_artifact::ArtifactError::format(&format!(
                         "undecodable .velab defer-acts trailer: {e}"
+                    )),
+                )
+            }
+        }
+    };
+    // 14th (STAGED-DROP audit fix): class/frame-call/2-state/assert-ctl sidecars.
+    // Tolerant → all-default for legacy/pre-audit `.velab`s (segment absent), so
+    // those decode exactly as before (and plain RTL never populated these).
+    let extra: StagedExtraSidecars = if rest14.is_empty() {
+        StagedExtraSidecars::default()
+    } else {
+        match postcard::from_bytes(rest14) {
+            Ok(x) => x,
+            Err(e) => {
+                return emit_artifact_error(
+                    sink,
+                    &vita_artifact::ArtifactError::format(&format!(
+                        "undecodable .velab extra-sidecars trailer: {e}"
                     )),
                 )
             }
@@ -2077,6 +2148,23 @@ fn run_vrun_gated(
         final_procs,
         defer_marks,
         defer_acts,
+        // 14th-trailer sidecars (STAGED-DROP fix): without these the staged
+        // path silently dropped N7 class/OOP, frame-call, 2-state, and
+        // assertion-control behavior (class read 0/X, recursive automatic fn
+        // returned X — both exit 0). Now value-identical to one-shot.
+        func_table: extra.func_table,
+        task_calls_proc: extra.task_calls_proc,
+        task_calls_func: extra.task_calls_func,
+        two_state_nets: extra.two_state_nets,
+        class_handle_nets: extra.class_handle_nets,
+        class_new_sites: extra.class_new_sites,
+        class_layouts: extra.class_layouts,
+        class_field_inits: extra.class_field_inits,
+        class_vtable: extra.class_vtable,
+        class_calls: extra.class_calls,
+        class_field_widths: extra.class_field_widths,
+        assert_fire: extra.assert_fire,
+        assert_ctl: extra.assert_ctl,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };

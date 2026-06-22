@@ -575,3 +575,79 @@ fn staged_assign_rank_trailer_roundtrip() {
         let _ = std::fs::remove_file(p);
     }
 }
+
+/// STAGED-DROP (2026-06-22 audit): the N7 class sidecars (layouts/vtable/field
+/// inits/new-sites/handle-nets/field-widths) must survive the `.velab` trailer.
+/// Without them the staged `vrun` reads `c.x` as the bare default (0/X) instead
+/// of the ctor-assigned 42 — previously a SILENT-WRONG: one-shot printed 42 but
+/// staged printed 0 with exit 0. The self-checking `$fatal` turns that into a
+/// loud staged-vs-one-shot divergence (exit 1) the round-trip must prevent.
+#[test]
+fn staged_class_sidecars_trailer_roundtrip() {
+    let src = tmp("sv");
+    write(
+        &src,
+        "class C; int x; function new(); x = 42; endfunction endclass\n\
+         module tb; C c;\n\
+           initial begin\n\
+             c = new;\n\
+             if (c.x !== 32'd42) $fatal(1, \"class sidecars lost across the .velab trailer\");\n\
+             $finish;\n\
+           end\n\
+         endmodule",
+    );
+    let vu = tmp("vu");
+    let velab = tmp("velab");
+    let opts = cli::VitaOpts::default();
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &opts),
+        cli::EXIT_OK
+    );
+    assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vrun(&s(&velab), &opts),
+        cli::EXIT_OK,
+        "staged vrun must read c.x=42 (class layout/field-init sidecars round-trip)"
+    );
+    for p in [&src, &vu, &velab] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// STAGED-DROP (2026-06-22 audit): the B-track frame-call sidecars (func_table +
+/// task-call binding tables) must survive the `.velab` trailer. Without them a
+/// recursive automatic function silently returns X across the staged path —
+/// `fac(5)` was 120 one-shot but X staged with exit 0 (fully silent-wrong, the
+/// worst defect class). The `$fatal` makes the divergence loud.
+#[test]
+fn staged_frame_call_sidecars_trailer_roundtrip() {
+    let src = tmp("sv");
+    write(
+        &src,
+        "module tb;\n\
+           function automatic int fac(int n);\n\
+             if (n <= 1) fac = 1; else fac = n * fac(n - 1);\n\
+           endfunction\n\
+           initial begin\n\
+             if (fac(5) !== 32'd120) $fatal(1, \"frame-call sidecars lost across the .velab trailer\");\n\
+             $finish;\n\
+           end\n\
+         endmodule",
+    );
+    let vu = tmp("vu");
+    let velab = tmp("velab");
+    let opts = cli::VitaOpts::default();
+    assert_eq!(
+        cli::run_vcmp(&[s(&src)], Some(&*s(&vu)), &opts),
+        cli::EXIT_OK
+    );
+    assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &opts), cli::EXIT_OK);
+    assert_eq!(
+        cli::run_vrun(&s(&velab), &opts),
+        cli::EXIT_OK,
+        "staged vrun must compute fac(5)=120 (frame-call sidecars round-trip)"
+    );
+    for p in [&src, &vu, &velab] {
+        let _ = std::fs::remove_file(p);
+    }
+}
