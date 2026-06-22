@@ -15129,6 +15129,10 @@ impl<'s> Elaborator<'s> {
                     for _ in 0..m.saturating_sub(1) {
                         cur = self.seq_delay_reg(cur, pipeline_nbas, sp);
                     }
+                    // This-clock activation (pre-latch). For m==0 the range admits
+                    // d=0 — the term in the SAME clock as the prefix — which the
+                    // prior-value `armed` read drops; keep it to OR back in below.
+                    let cur_now = cur.clone();
                     let armed = self.fresh_sva_reg(1, "arm");
                     let armed_path = ast::HierPath {
                         segments: vec![ast::Ident {
@@ -15146,7 +15150,18 @@ impl<'s> Elaborator<'s> {
                         rhs: latch_rhs,
                         span: sp,
                     });
-                    cur = sva_ident_expr(&armed, sp);
+                    // m≥1: the term arrives strictly after the (m-1)-delayed prefix,
+                    // so prior-clock `armed` == "matched ≥ m clocks ago" exactly.
+                    // m==0: `##[0:$]` also admits d=0 (term in the prefix's own
+                    // clock), which the one-clock-late `armed` omits — OR the
+                    // this-clock activation back in so the same-clock completion
+                    // fires too (matches IEEE 1800 §16.9.2.1; prior code silently
+                    // dropped it). d≥1 is unaffected since `armed` already covers it.
+                    cur = if m == 0 {
+                        sva_binary(ast::BinOp::BitOr, sva_ident_expr(&armed, sp), cur_now, sp)
+                    } else {
+                        sva_ident_expr(&armed, sp)
+                    };
                 }
             }
             // Apply the term to the (post-hop) activation `cur`:
