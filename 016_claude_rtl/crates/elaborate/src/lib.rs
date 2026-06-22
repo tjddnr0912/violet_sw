@@ -55,6 +55,13 @@ const GENERATE_UNROLL_CAP: u32 = 4096;
 /// pathological recursion; deep-nesting beyond this is deferred per PR scope.
 const GENERATE_DEPTH_CAP: u32 = 32;
 
+/// ELAB-ERR-CAP: soft cap on emitted error diagnostics. A broken construct
+/// unrolled across a large/nested generate would otherwise emit one error per
+/// iteration (thousands of identical lines). After this many, emission stops
+/// (with one suppression notice); `had_error` stays latched so the run is still
+/// loud (exit 1). 200 ≫ any realistic multi-error report (parser caps at 50).
+const MAX_ELAB_ERRORS: usize = 200;
+
 /// Hard cap on a single net's declared bit width. Above this we reject the decl
 /// with `ElabUnsupported` rather than `vec![0u64; huge]` (which would OOM) or
 /// overflow the `+1` width arithmetic. 2^20 bits = 16 KiB of planes per net —
@@ -1727,6 +1734,11 @@ fn sva_bit0(e: ast::Expr, sp: ast::Span) -> ast::Expr {
 struct Elaborator<'s> {
     sink: &'s dyn LogSink,
     had_error: bool,
+    /// ELAB-ERR-CAP: count of error diagnostics emitted so far. Emission is soft-
+    /// capped at `MAX_ELAB_ERRORS` so a broken construct unrolled across a large
+    /// generate cannot flood unbounded stderr/memory (`had_error` still latches,
+    /// so the run stays loud). Parser-side precedent: `error_limit = 50`.
+    error_count: usize,
 
     // ── growing sim-ir arenas (insertion-ordered → deterministic) ──
     nets: Vec<ir::NetVar>,
@@ -2070,6 +2082,7 @@ impl<'s> Elaborator<'s> {
         Self {
             sink,
             had_error: false,
+            error_count: 0,
             nets: Vec::new(),
             exprs: Vec::new(),
             consts: Vec::new(),
@@ -2258,6 +2271,25 @@ impl<'s> Elaborator<'s> {
     /// HOOK: when elaborate grows a span side-table, fill `SourceLoc` here.
     fn error(&mut self, code: MsgCode, msg: &str) {
         self.had_error = true;
+        self.error_count += 1;
+        // ELAB-ERR-CAP: past the cap, suppress the flood (one final notice at the
+        // boundary). The IR is already doomed (`had_error`), so dropping the tail
+        // of an identical-error storm loses no diagnostic value.
+        if self.error_count > MAX_ELAB_ERRORS {
+            if self.error_count == MAX_ELAB_ERRORS + 1 {
+                self.sink.emit(LogEvent::Diagnostic(Diagnostic {
+                    severity: Severity::Error,
+                    code: MsgCode::ElabUnsupported,
+                    message: format!(
+                        "too many elaborate errors; further diagnostics suppressed (cap {MAX_ELAB_ERRORS})"
+                    ),
+                    location: None,
+                    context: Vec::new(),
+                    sim_time: None,
+                }));
+            }
+            return;
+        }
         self.sink.emit(LogEvent::Diagnostic(Diagnostic {
             severity: Severity::Error,
             code,
