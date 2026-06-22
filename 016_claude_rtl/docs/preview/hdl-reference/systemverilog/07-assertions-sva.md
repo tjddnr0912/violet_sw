@@ -71,14 +71,19 @@ assert (expr) else $info("note");                     // 정보
 > - **named 선언**: `sequence NAME;…endsequence`·`property NAME;…endproperty` + `assert property(NAME)`
 >   + **formal arguments**(`sequence s(x,y)` 위치 바인딩) + generate-scope 선언 + property-references-property(overlap inner).
 > - **action block** `[pass] else fail` · **disable iff**.
+> - **SVA-REST 완결 (2026-06-14~16)**: `assume property`·`cover property`(히트 카운트)·property 연산자
+>   `always`/`not`/`implies`/`iff`/`until`/`s_until`/`s_eventually`/`nexttime`·`let` 매크로·`$assertoff`/`$asserton`/`$assertkill`
+>   런타임 게이트·`seq[+]`(=`[*1:$]`). liveness(`s_eventually`/`s_until`)는 end-of-sim `final` pend 체크로 실패 발행.
 >
 > **⭐오라클 NULL → 전면 hand-IEEE 핀**: iverilog 13.0이 concurrent assertion·named property/sequence·
 > `$past`/`$rose`/`$fell`/`$stable`를 **모두 거부**('not supported'/'not defined')해 차분 오라클이 없다 —
 > 검증은 named≡inline 행동 등가 + 합성 체커 byte-identity로 수행.
 >
 > **LOUD(미구현·거부)**: multi-term 시퀀스 cross-clock·sequence local variable·recursive property·
-> outer-`|=>` prop-ref skew. `assume`/`cover` property·`s_eventually`/`always`/`until(_with)`/`implies`
-> 등 property 연산자도 미지원(loud).
+> outer-`|=>` prop-ref skew. **선행-`##` consequent**(`a |-> ##1 b` / `a |-> ##[1:3] b` — consequent가 `##`로
+> 시작하는 형태)는 현재 파서가 `E2002 'expected expression, found HashHash'`로 **loud-reject**한다(아래 예시는
+> 의미상 `a |=> b`와 같으며 그 형태는 동작) — 잔여 파서 작업(REMAINING_WORK). consequent의 range/goto/
+> nonconsec/unbounded/throughout/within도 loud(antecedent에서는 동작).
 
 ```systemverilog
 // property + assert property 분리 선언 (권장)
@@ -91,7 +96,9 @@ assert property (req_ack_handshake)
     else $error("ack did not arrive within 3 cycles of req");
 
 // 인라인 선언
-assert property (@(posedge clk) req |-> ##1 gnt)
+// ⚠️ consequent가 `##`로 시작하는 이 형태는 현재 파서가 loud-reject한다(위 LOUD 항목).
+// 등가 형태 `req |=> gnt`(non-overlap)를 쓰거나 boolean-선두 consequent로 작성한다.
+assert property (@(posedge clk) req |=> gnt)
     else $warning("gnt not granted in 1 cycle");
 
 // cover — 커버리지 수집

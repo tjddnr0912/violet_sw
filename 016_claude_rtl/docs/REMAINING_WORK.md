@@ -6,6 +6,22 @@
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
 
+## 2026-06-22 적대적 스펙-감사 — silent-wrong 4종 수정 + 잔여 loud 갭
+
+> 6영역 스펙↔구현 적대 감사(라이브 vita-vs-iverilog 프로브). **confirmed silent-wrong 4종 = 전부 수정 완료**(TDD, 1613 green, golden/clippy/fmt clean, format_version 9 불변 — 전부 사이드카/엔진/포맷-렌더러라 IR-0). 나머지는 LOUD(안전)이라 추적만.
+
+**✅ 수정 완료 (silent-wrong → 정정):**
+- [x] **SW1** class 필드 선언 초기화자 `int x=42` 무시(읽기 0) — ✅ `collect_class_fields`가 `fold_init`으로 상수 폴딩 → `class_field_inits` 사이드카(SimOpts) → 엔진 `class_alloc` 기본값 override(IEEE §8.8). 비상수 init=loud. 회귀 `class_oop::field_declaration_initializer_applied`.
+- [x] **SW2** derived ctor가 `super.new()` 생략 시 base ctor 미실행(필드 0) — ✅ `lower_class_method_body`가 `new` 본문 선두에 `super.new()` 자동 주입(IEEE §8.13, `body_calls_super_new`로 중복 방지, static 디스패치). 회귀 `auto_super_new_runs_base_ctor`+`explicit_super_new_still_works`. iverilog 오라클 일치(`d.x=5`).
+- [x] **SW3** `%0N` 제로패딩(`%06d`→`42`, `%06h`→`a`) — ✅ `render_template`/`fmt_radix`가 `min_zero`를 width 유무와 분리: `%0d`=minimal·`%0Nd`=zero-pad(부호인지 `-00042`)·`%Nd`=space-pad·`%h`=full width. iverilog byte 일치. 회귀 `display_semantics::zero_pad_format_specifiers`.
+- [x] **SW4** VCD `real` 신호가 `r<%.16g>` 대신 64-bit 바이너리 벡터 방출(GTKWave 오표시) — ✅ vcd-writer가 `VarType::Real` id를 기억(`VarMeta.is_real`)해 `r<value> <id>` 자동 포맷(`encode_real`+`fmt_g16`, 결정성 Ryū 기반). spec 07:164 일치. 회귀 `vcd-writer::real_var_emits_r_format`.
+
+**⬜ 잔여 LOUD 갭 (현실=loud-reject·doc 정직화 완료, 구현은 future):**
+- [ ] **고정크기 unpacked `foreach`** — `foreach(int a[0:N])`가 v6 `.first/.next` desugar의 메서드 호출을 `inline_function`이 거부(`E3009`). dyn/queue/assoc는 동작. 정밀화=고정크기 경로 plain 인덱스 walk desugar + 오진단 메시지 교체.
+- [ ] **자유/모듈/패키지 함수 `return` 키워드** — class 메서드에서만 동작. 프레임-함수 lowering이 `cur_return` 미설정. 수정 시 프레임-함수 CFG에 exit-block 추가 = **golden 형상 flip → format_version bump 동반**(별도 세션).
+- [ ] **`function void` 반환형 · typed `parameter int W`** — `void` 키워드 부재(void=`task`로 회피)·type-키워드 둔 파라미터 미파싱. 렉서/파서 확장.
+- [ ] **leading-`##` SVA consequent** (`a |-> ##1 b`) — `parse_seq_concat`이 선두 `##`를 거부(E2002). `a |=> b` 등가는 동작. 파서가 암묵 `1` leaf 합성하면 해소(golden-neutral, 현재 통과 디자인 0).
+
 ## Gemini shift fix 검토 결과 (2026-06-10 · 채택)
 
 `const_eval_in_scope`의 `wrapping_shl/shr` → `checked_shl/shr().unwrap_or(0)` (elaborate/src/lib.rs:1379-1382):

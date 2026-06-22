@@ -338,6 +338,9 @@ pub struct Sidecars {
     /// Per-class field layout: `[class_id]` → `[(width, signed, four_state)]` in
     /// stable field-id order (base-class fields first).
     pub class_layouts: Vec<Vec<(u32, bool, bool)>>,
+    /// SW1: per-class folded field initializers, parallel to `class_layouts`
+    /// (`[class_id][field_id]` → `Some(bits)` if `= const`, else `None`).
+    pub class_field_inits: Vec<Vec<Option<sim_ir::BitPacked>>>,
     /// Virtual dispatch table: `[class_id][vslot]` → concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -379,6 +382,10 @@ struct ClassField {
     four_state: bool,
     /// For a class-typed (handle) member, the sub-class name (nested handles).
     class_type: Option<String>,
+    /// SW1 (IEEE §8.8): a folded constant declaration initializer (`int x = 42`),
+    /// applied at `new` instead of the bare type default. `None` = no initializer
+    /// (use the type default 0/X). Non-constant initializers loud-reject.
+    init: Option<ir::BitPacked>,
 }
 
 /// N7 type-gate classification of an expression (handle vs integral).
@@ -497,6 +504,7 @@ pub fn elaborate_with_timescale_roots(
         class_handle_nets: std::mem::take(&mut el.class_handle_nets),
         class_new_sites: std::mem::take(&mut el.class_new_sites),
         class_layouts: el.class_layout_table(),
+        class_field_inits: el.class_field_inits(),
         class_vtable: std::mem::take(&mut el.class_vtable),
         class_calls: std::mem::take(&mut el.class_calls),
         class_field_widths: std::mem::take(&mut el.class_field_widths),
@@ -6070,6 +6078,9 @@ impl<'s> Elaborator<'s> {
                     signed: false,
                     four_state: false,
                     class_type: ct.clone(),
+                    // A handle field defaults to null (0); an explicit `= expr`
+                    // handle initializer is outside the MVP (null is the default).
+                    init: None,
                 });
             }
             return;
@@ -6105,12 +6116,30 @@ impl<'s> Elaborator<'s> {
                 );
                 continue;
             }
+            // SW1: a declaration initializer (`int x = 42`) is folded to a constant
+            // sized to the field width and applied at `new` (IEEE §8.8). A
+            // non-constant initializer loud-rejects (no silent drop, no runtime fold).
+            let init = match &n.init {
+                Some(e) => match fold_init(e, width) {
+                    Some(bits) => Some(bits),
+                    None => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "a non-constant class field initializer is outside the N7 MVP \
+                             (assign it in the constructor)",
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
             out.push(ClassField {
                 name: n.name.name.clone(),
                 width,
                 signed,
                 four_state,
                 class_type: None,
+                init,
             });
         }
     }
@@ -6129,6 +6158,21 @@ impl<'s> Elaborator<'s> {
                             .map(|f| (f.width, f.signed, f.four_state))
                             .collect()
                     })
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// SW1: per-class folded field initializers, parallel to `class_layout_table`
+    /// (`[class_id][field_id]` → `Some(bits)` if the field has a `= const`
+    /// initializer, else `None`). Consumed by the engine `new` default-init.
+    fn class_field_inits(&self) -> Vec<Vec<Option<ir::BitPacked>>> {
+        self.class_order
+            .iter()
+            .map(|name| {
+                self.class_table
+                    .get(name)
+                    .map(|ci| ci.fields.iter().map(|f| f.init.clone()).collect())
                     .unwrap_or_default()
             })
             .collect()
@@ -6527,12 +6571,35 @@ impl<'s> Elaborator<'s> {
         // Return var (functions) = base_net + return_slot; None for a void task.
         let m = self.func_metas[fid as usize];
         let retvar = method.func.as_ref().map(|_| m.base_net + m.return_slot);
+        // SW2 (IEEE §8.13): a derived ctor that omits an explicit `super.new()`
+        // gets one auto-inserted as its first statement, so the base constructor
+        // runs. `class_find_method(base,"new")` walks the base chain (a ctor-less
+        // intermediate resolves to the nearest ancestor ctor).
+        let inject_super: Option<String> = if method.name == "new" {
+            self.class_table
+                .get(cname)
+                .and_then(|ci| ci.base.clone())
+                .filter(|base| self.class_find_method(base, "new").is_some())
+                .filter(|_| !body_calls_super_new(&body))
+        } else {
+            None
+        };
         let (blocks, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
             // A single exit block: `return` jumps here; the body also falls
             // through to it. `finish()` gives it the implicit `Return` terminator.
             let exit = b.new_block();
             s.cur_return = Some((retvar, exit));
+            // SW2: auto-inserted super.new() (static dispatch to the base ctor).
+            if let Some(base) = &inject_super {
+                let this_e = s.push_expr(ir::Expr::Signal {
+                    net: this_net,
+                    word: None,
+                });
+                if let Some(call) = s.build_class_call(this_e, base, "new", &[], true) {
+                    s.emit_discarded_call(&mut b, call);
+                }
+            }
             s.lower_stmt(&mut b, &body);
             b.goto(exit);
             b.start_block(exit);
@@ -19049,6 +19116,22 @@ fn const_delay_ticks(e: &ast::Expr, mult: u64) -> Option<u32> {
 
 /// Const-fold a net/var initializer literal into a `BitPacked` of `width`.
 /// Non-literal initializers → None (procedural; deferred), caller defaults.
+/// SW2: does a constructor body already contain an explicit `super.new(...)`
+/// call? Scans the top-level statements (recursing into nested `begin…end`
+/// blocks) for a `super.new` subroutine call — IEEE §8.13 requires it be the
+/// first statement, but scanning the block is robust against placement.
+fn body_calls_super_new(body: &ast::Stmt) -> bool {
+    match body {
+        ast::Stmt::UserTaskCall { name, .. } => {
+            name.segments.len() == 2
+                && name.segments[0].name == "super"
+                && name.segments[1].name == "new"
+        }
+        ast::Stmt::Block { stmts, .. } => stmts.iter().any(body_calls_super_new),
+        _ => false,
+    }
+}
+
 fn fold_init(e: &ast::Expr, width: u32) -> Option<ir::BitPacked> {
     match &e.kind {
         ast::ExprKind::IntLit { kind, raw } => {

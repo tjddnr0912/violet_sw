@@ -44,6 +44,33 @@ fn run(src: &str) -> String {
     out
 }
 
+/// SW3 (2026-06-22 audit): `%0N` zero-padding. Spec 01-display-io.md:186 prints
+/// `$display("%06d",42)=="000042"`, but the renderer treated ANY leading `0` as
+/// "minimal width" and dropped both the width AND the zero-pad (printed "42").
+/// iverilog-pinned: `%0d`/`%0h` bare = minimal; `%0Nd` = zero-pad to N (sign-aware:
+/// `-42` → `-00042`); `%Nd` = space-pad; `%h` = full vector width.
+#[test]
+fn zero_pad_format_specifiers() {
+    let out = run(r#"
+module t;
+  initial begin
+    $display("[%06d]", 42);
+    $display("[%06h]", 8'hA);
+    $display("[%6d]", 42);
+    $display("[%0d]", 42);
+    $display("[%0h]", 8'hA);
+    $display("[%h]", 8'hA);
+    $display("[%04b]", 2'b10);
+    $display("[%06d]", -42);
+  end
+endmodule
+"#);
+    assert_eq!(
+        out,
+        "[000042]\n[00000a]\n[    42]\n[42]\n[a]\n[0a]\n[0010]\n[-00042]\n"
+    );
+}
+
 /// P0-8①: arguments after the leading format string print in the default
 /// radix instead of being silently dropped.
 #[test]

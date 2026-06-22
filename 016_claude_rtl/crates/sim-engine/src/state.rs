@@ -394,6 +394,9 @@ pub struct ClassObj {
 #[derive(Debug, Clone, Default)]
 pub struct ClassLayout {
     pub fields: Vec<(u32, bool, bool)>,
+    /// SW1: per-field folded initializer (`int x = 42`), parallel to `fields`.
+    /// `Some(bits)` overrides the bare type default at `new`; `None` = default.
+    pub inits: Vec<Option<sim_ir::BitPacked>>,
 }
 impl ClassLayout {
     fn field_width(&self, i: u32) -> (u32, bool) {
@@ -403,6 +406,12 @@ impl ClassLayout {
             .unwrap_or((1, false))
     }
     fn default_value(&self, i: u32) -> Value {
+        // SW1 (IEEE §8.8): a folded declaration initializer wins over the bare
+        // type default (2-state→0 / 4-state→X).
+        if let Some(Some(bits)) = self.inits.get(i as usize) {
+            let (w, s) = self.field_width(i);
+            return Value::from_packed(bits, w.max(1), s);
+        }
         match self.fields.get(i as usize) {
             Some(&(w, s, four)) if four => Value::xs(w.max(1), s),
             Some(&(w, s, _)) => Value::zeros(w.max(1), s),

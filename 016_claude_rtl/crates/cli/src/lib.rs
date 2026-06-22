@@ -625,6 +625,7 @@ fn run_vita_str_gated(
         class_handle_nets: sc.class_handle_nets,
         class_new_sites: sc.class_new_sites,
         class_layouts: sc.class_layouts,
+        class_field_inits: sc.class_field_inits,
         class_vtable: sc.class_vtable,
         class_calls: sc.class_calls,
         class_field_widths: sc.class_field_widths,

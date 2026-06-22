@@ -182,6 +182,10 @@ pub struct SimOpts {
     /// Per-class field layout: `class_layouts[class_id]` = `[(width, signed,
     /// four_state)]` in stable field-id order.
     pub class_layouts: Vec<Vec<(u32, bool, bool)>>,
+    /// SW1: per-class folded field initializers, parallel to `class_layouts`
+    /// (`[class_id][field_id]` → `Some(bits)` if the field has a `= const`
+    /// initializer, else `None`). Drives the `new` default-init (IEEE §8.8).
+    pub class_field_inits: Vec<Vec<Option<sim_ir::BitPacked>>>,
     /// Virtual dispatch table: `class_vtable[class_id][vslot]` = concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -228,6 +232,7 @@ impl Default for SimOpts {
             class_handle_nets: std::collections::BTreeSet::new(),
             class_new_sites: std::collections::BTreeMap::new(),
             class_layouts: Vec::new(),
+            class_field_inits: Vec::new(),
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
@@ -313,8 +318,10 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.class_layouts = opts
         .class_layouts
         .iter()
-        .map(|fields| crate::state::ClassLayout {
+        .enumerate()
+        .map(|(ci, fields)| crate::state::ClassLayout {
             fields: fields.clone(),
+            inits: opts.class_field_inits.get(ci).cloned().unwrap_or_default(),
         })
         .collect();
     st.class_vtable = opts.class_vtable.clone();

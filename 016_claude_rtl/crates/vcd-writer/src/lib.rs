@@ -169,6 +169,9 @@ impl<W: Write> Write for Counting<W> {
 struct VarMeta {
     id: IdCode,
     width: u32,
+    /// `real`/`realtime` vars emit `r<%.16g> <id>` value changes (IEEE 1364
+    /// §18.x), not the 4-state `b…`/scalar form.
+    is_real: bool,
 }
 
 /// vitamin VCD generator — one instance per simulation.
@@ -303,7 +306,8 @@ impl<W: Write> VcdWriter<W> {
         let id = self.next_id;
         self.next_id = self.next_id.next();
         let idx = self.vars.len();
-        self.vars.push(VarMeta { id, width });
+        let is_real = matches!(var_type, VarType::Real | VarType::Realtime);
+        self.vars.push(VarMeta { id, width, is_real });
         self.by_id.insert(id, idx);
         writeln!(
             self.out,
@@ -344,6 +348,28 @@ impl<W: Write> VcdWriter<W> {
         }
     }
 
+    /// Whether `id` was declared as a `real`/`realtime` var.
+    fn is_real(&self, id: IdCode) -> bool {
+        self.by_id.get(&id).is_some_and(|&i| self.vars[i].is_real)
+    }
+
+    /// A `real` value change: `r<%.16g> <id>` (no space after `r`, space before
+    /// the id), e.g. `r3.14159 !`. The 64-bit `bits` carry the IEEE-754 pattern
+    /// in word 0 (vitamin stores reals as raw bits in a `BitPacked`).
+    fn encode_real(id: IdCode, bits: &BitPacked) -> String {
+        let x = f64::from_bits(bits.val.first().copied().unwrap_or(0));
+        format!("r{} {id}", fmt_g16(x))
+    }
+
+    /// Encode either a real (`r…`) or an integral (`encode_value`) change.
+    fn encode_change(&self, id: IdCode, bits: &BitPacked, width: u32) -> String {
+        if self.is_real(id) {
+            Self::encode_real(id, bits)
+        } else {
+            Self::encode_value(id, bits, width)
+        }
+    }
+
     /// The value string for a single change (no trailing newline):
     /// scalar `1!`, vector `b1010 !` (MSB..LSB, space before id).
     fn encode_value(id: IdCode, bits: &BitPacked, width: u32) -> String {
@@ -369,7 +395,7 @@ impl<W: Write> VcdWriter<W> {
         if !self.dumping || self.check_limit()? {
             return Ok(());
         }
-        let s = Self::encode_value(id, bits, width);
+        let s = self.encode_change(id, bits, width);
         writeln!(self.out, "{s}")?;
         Ok(())
     }
@@ -402,7 +428,7 @@ impl<W: Write> VcdWriter<W> {
     {
         writeln!(self.out, "$dumpvars")?;
         for (id, bits, width) in vars {
-            let s = Self::encode_value(id, bits, width);
+            let s = self.encode_change(id, bits, width);
             writeln!(self.out, "{s}")?;
         }
         writeln!(self.out, "$end")?;
@@ -420,7 +446,7 @@ impl<W: Write> VcdWriter<W> {
         }
         writeln!(self.out, "$dumpall")?;
         for (id, bits, width) in vars {
-            let s = Self::encode_value(id, bits, width);
+            let s = self.encode_change(id, bits, width);
             writeln!(self.out, "{s}")?;
         }
         writeln!(self.out, "$end")?;
@@ -462,7 +488,7 @@ impl<W: Write> VcdWriter<W> {
         }
         writeln!(self.out, "$dumpon")?;
         for (id, bits, width) in vars {
-            let s = Self::encode_value(id, bits, width);
+            let s = self.encode_change(id, bits, width);
             writeln!(self.out, "{s}")?;
         }
         writeln!(self.out, "$end")?;
@@ -483,6 +509,50 @@ impl VcdWriter<Vec<u8>> {
     pub fn into_string(self) -> String {
         String::from_utf8(self.out.inner).expect("VCD output is ASCII/UTF-8")
     }
+}
+
+/// C `printf %.16g` of a finite f64: 16 significant digits, `%e`/`%f` chosen by
+/// the decimal exponent, trailing zeros stripped (VCD real value-change format,
+/// IEEE 1364 §18.x). Deterministic across OSes — uses only Rust's `{:e}`/`{:.*}`
+/// (Ryū/Grisu), never a libm transcendental.
+fn fmt_g16(x: f64) -> String {
+    if !x.is_finite() {
+        return format!("{x}"); // inf / -inf / NaN
+    }
+    if x == 0.0 {
+        return "0".to_string();
+    }
+    const P: i32 = 16;
+    let sci = format!("{:.*e}", (P - 1) as usize, x); // 15 fractional → 16 sig digits
+    let exp: i32 = sci
+        .split_once('e')
+        .and_then(|(_, e)| e.parse().ok())
+        .unwrap_or(0);
+    if !(-4..P).contains(&exp) {
+        let (mant, e) = sci.split_once('e').unwrap();
+        let mant = strip_trailing_zeros(mant);
+        let (sgn, dig) = match e.strip_prefix('-') {
+            Some(d) => ('-', d),
+            None => ('+', e),
+        };
+        let dig = if dig.len() < 2 {
+            format!("{dig:0>2}")
+        } else {
+            dig.to_string()
+        };
+        format!("{mant}e{sgn}{dig}")
+    } else {
+        let prec = (P - 1 - exp).max(0) as usize;
+        strip_trailing_zeros(&format!("{x:.prec$}"))
+    }
+}
+
+/// Strip insignificant trailing zeros after a decimal point (and a bare `.`).
+fn strip_trailing_zeros(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 #[cfg(test)]
@@ -538,6 +608,36 @@ mod tests {
         assert_eq!(
             VcdWriter::<Vec<u8>>::encode_value(id, &bp(0b10, 0b11), 2),
             "bzx !"
+        );
+    }
+
+    #[test]
+    fn real_var_emits_r_format() {
+        // SW4 (2026-06-22 audit): a `real`/`realtime` var's value change must be
+        // `r<%.16g> <id>` (spec 07-vcd-format.md:164-169), NOT a 64-bit binary
+        // `b...` vector of the IEEE-754 bit pattern (silent waveform corruption in
+        // GTKWave/Surfer). The initial $dumpvars value must use r-format too.
+        let mut w = VcdWriter::new(Vec::new());
+        w.write_preamble("d", "1ns").unwrap();
+        w.push_scope(ScopeType::Module, "t").unwrap();
+        let r = w.declare_var(VarType::Real, 64, "r").unwrap();
+        w.pop_scope().unwrap();
+        w.write_header().unwrap();
+        let zero = bp(0.0_f64.to_bits(), 0);
+        w.dump_initial(std::iter::once((r, &zero, 64))).unwrap();
+        // 0.1 is NOT exactly representable → exercises %.16g rounding + zero-strip.
+        let bits = bp(0.1_f64.to_bits(), 0);
+        w.set_time(1).unwrap();
+        w.value_change(r, &bits, 64).unwrap();
+        let neg = bp((-2.5_f64).to_bits(), 0);
+        w.value_change(r, &neg, 64).unwrap();
+        let s = w.into_string();
+        assert!(s.contains(&format!("r0 {r}")), "initial r0 missing:\n{s}");
+        assert!(s.contains(&format!("r0.1 {r}")), "got:\n{s}");
+        assert!(s.contains(&format!("r-2.5 {r}")), "got:\n{s}");
+        assert!(
+            !s.contains("b010") && !s.contains("b110") && !s.contains("b00000"),
+            "real must not emit a binary vector:\n{s}"
         );
     }
 

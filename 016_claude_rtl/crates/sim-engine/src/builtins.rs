@@ -1549,9 +1549,9 @@ fn push_default_radix(v: &Value, out: &mut String, radix: Option<u8>) {
         return;
     }
     match radix {
-        Some(2) => out.push_str(&fmt_radix(v, 1, false)),
-        Some(8) => out.push_str(&fmt_radix(v, 3, false)),
-        Some(16) => out.push_str(&fmt_radix(v, 4, false)),
+        Some(2) => out.push_str(&fmt_radix(v, 1, false, None)),
+        Some(8) => out.push_str(&fmt_radix(v, 3, false, None)),
+        Some(16) => out.push_str(&fmt_radix(v, 4, false, None)),
         _ => {
             let s = fmt_dec(v);
             let fw = dec_field_width(v.width);
@@ -1652,27 +1652,45 @@ fn render_template(
                 // (digit count of its max value). An X/Z prints as a right-justified
                 // `x`/`z` in that field, like a numeric value.
                 let s = fmt_dec(&v);
-                let fw = if min_zero {
-                    0
-                } else {
-                    field_width.unwrap_or_else(|| dec_field_width(v.width))
+                // `%0d` (bare leading zero, no width) = minimal; `%0Nd` = zero-pad
+                // to N (sign-aware: "-42"→"-00042"); `%Nd` = space-pad to N; bare
+                // `%d` = the operand's default decimal field width (iverilog-pinned).
+                let fw = match (min_zero, field_width) {
+                    (true, Some(0)) => 0,
+                    (_, Some(n)) => n,
+                    (_, None) => dec_field_width(v.width),
                 };
                 if s.len() < fw {
-                    out.push_str(&" ".repeat(fw - s.len()));
+                    let pad = fw - s.len();
+                    if min_zero {
+                        // zero-pad AFTER any leading sign: "-42" → "-00042".
+                        if let Some(rest) = s.strip_prefix('-') {
+                            out.push('-');
+                            out.push_str(&"0".repeat(pad));
+                            out.push_str(rest);
+                        } else {
+                            out.push_str(&"0".repeat(pad));
+                            out.push_str(&s);
+                        }
+                    } else {
+                        out.push_str(&" ".repeat(pad));
+                        out.push_str(&s);
+                    }
+                } else {
+                    out.push_str(&s);
                 }
-                out.push_str(&s);
             }
             'h' | 'H' | 'x' | 'X' => {
                 let v = next_arg(sched, args, argi);
-                out.push_str(&fmt_radix(&v, 4, min_zero));
+                out.push_str(&fmt_radix(&v, 4, min_zero, field_width));
             }
             'o' | 'O' => {
                 let v = next_arg(sched, args, argi);
-                out.push_str(&fmt_radix(&v, 3, min_zero));
+                out.push_str(&fmt_radix(&v, 3, min_zero, field_width));
             }
             'b' | 'B' => {
                 let v = next_arg(sched, args, argi);
-                out.push_str(&fmt_radix(&v, 1, min_zero));
+                out.push_str(&fmt_radix(&v, 1, min_zero, field_width));
             }
             'f' | 'F' | 'g' | 'G' | 'e' | 'E' => {
                 let v = next_arg(sched, args, argi);
@@ -1895,7 +1913,7 @@ fn strip_trailing_zeros(s: &str) -> String {
 
 /// %h/%o/%b: group bits per digit (1=bin,3=oct,4=hex), MSB-first; a group with
 /// any X → 'x', any Z (no X) → 'z'.
-fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool) -> String {
+fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool, field_width: Option<usize>) -> String {
     if v.width == 0 {
         return "0".to_string();
     }
@@ -1931,17 +1949,30 @@ fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool) -> String {
             std::char::from_digit(val, 16).unwrap()
         });
     }
-    // `%0h`/`%0b`/`%0o`: minimum width — strip leading zeros (keep ≥1 digit).
-    // Plain `%h`/etc. keep the full vector width (leading zeros retained).
-    if min_zero {
+    // Width/flag handling (iverilog-pinned):
+    //   `%h`   → full vector width (leading zeros retained)
+    //   `%0h`  → minimum width: strip leading zeros (keep ≥1 digit)
+    //   `%0Nh` → zero-pad to N digits
+    //   `%Nh`  → space-pad to N digits (over the full-width form)
+    let base = if min_zero && field_width == Some(0) {
         let trimmed = s.trim_start_matches('0');
-        return if trimmed.is_empty() {
+        if trimmed.is_empty() {
             "0".to_string()
         } else {
             trimmed.to_string()
-        };
+        }
+    } else {
+        s
+    };
+    match field_width {
+        Some(w) if base.len() < w => {
+            let pad = if min_zero { '0' } else { ' ' };
+            let mut p: String = std::iter::repeat(pad).take(w - base.len()).collect();
+            p.push_str(&base);
+            p
+        }
+        _ => base,
     }
-    s
 }
 
 fn char_of(v: &Value) -> char {

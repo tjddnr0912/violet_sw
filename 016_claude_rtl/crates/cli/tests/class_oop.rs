@@ -72,6 +72,56 @@ fn ref_copy_aliasing() {
 }
 
 #[test]
+fn field_declaration_initializer_applied() {
+    // SW1 (2026-06-22 audit): a class field declared `int x = 42` must read back
+    // 42 at construction (IEEE §8.8: member initializers run as part of new()),
+    // NOT the bare type default 0. Plain non-derived class — previously dropped
+    // the initializer silently (x=0, exit 0).
+    let (out, code) = run(
+        "class C; int x = 42; logic [3:0] y = 4'hA; int z; endclass\n\
+        module t; C c;\n\
+        initial begin c = new;\n\
+          $display(\"x=%0d y=%h z=%0d\", c.x, c.y, c.z);\n\
+        end endmodule\n",
+    );
+    assert!(out.contains("x=42 y=a z=0"), "field init:\n{out}");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn auto_super_new_runs_base_ctor() {
+    // SW2 (2026-06-22 audit): when a derived class has its OWN constructor that
+    // omits super.new(), the compiler auto-inserts super.new() as the first
+    // statement (IEEE §8.13 / spec 06-classes-oop.md:121), so the base ctor runs.
+    // Previously the base ctor was silently skipped (x=0, exit 0).
+    let (out, code) = run(
+        "class Base; int x; function new(); x = 5; endfunction endclass\n\
+        class Der extends Base; int y; function new(); y = 9; endfunction endclass\n\
+        module t; Der d;\n\
+        initial begin d = new;\n\
+          $display(\"x=%0d y=%0d\", d.x, d.y);\n\
+        end endmodule\n",
+    );
+    assert!(out.contains("x=5 y=9"), "auto super.new:\n{out}");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn explicit_super_new_still_works() {
+    // Guard: an explicit super.new() must NOT double-run the base ctor.
+    let (out, _) = run(
+        "class Base; int x; function new(); x = x + 5; endfunction endclass\n\
+        class Der extends Base; int y; function new(); super.new(); y = 9; endfunction endclass\n\
+        module t; Der d;\n\
+        initial begin d = new;\n\
+          $display(\"x=%0d y=%0d\", d.x, d.y);\n\
+        end endmodule\n",
+    );
+    // base ctor runs exactly once: x = 0 + 5 = 5 (not 10).
+    assert!(out.contains("x=5 y=9"), "explicit super.new once:\n{out}");
+}
+
+#[test]
 fn null_deref_is_x_not_panic() {
     // An unset handle is null; dereferencing it reads X (+ a warn-once), never a
     // panic. `h == null` is TRUE for an unset handle (handle value 0).
