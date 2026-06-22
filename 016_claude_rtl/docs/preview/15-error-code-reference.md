@@ -578,6 +578,17 @@ N7 class 객체 수가 `SimOpts::max_class_objs`(기본 1,000,000) 한도를 초
 - **원인**: 매 사이클 `h = new();`처럼 핸들을 덮어쓰며 객체를 무한 생성(이전 객체는 회수 불가).
 - **해결**: 라이브 객체 재사용, 또는 의도된 대량 할당이면 `SimOpts::max_class_objs`를 상향.
 
+### VITA-W4025 · `W-RUN-WIDE-ARITH` (Warning)
+
+multi-word 산술(`*`/`/`/`%`/`**`)의 피연산자 폭이 `WIDE_ARITH_CAP`(2^20, `MAX_NET_WIDTH`와 동일)을 초과 — 선언-합법 net은 2^20 이하지만 replication concat(`{16{a}}`)이 *피연산자*를 16M-bit까지 부풀릴 수 있다. 초과 시 super-linear 커널(`*` O(n²)·복원 `/`·`%` O(bits·n)·`**` square-multiply)이 수십~수백 초 stall하므로 결과를 X로 poison한다(div-by-zero degrade 선례). `simulate` 시작 시 해당 노드가 존재하면 1회 loud 경고. `+`/`-`는 O(n)이라 어떤 폭에서도 정확.
+
+```
+->  warning[VITA-W4025] W-RUN-WIDE-ARITH: multi-word arithmetic exceeds the width cap; result poisoned to X
+```
+
+- **원인**: replication/concat로 2^20-bit를 넘는 곱셈·나눗셈·거듭제곱(예: `{2{a}} * {2{a}}`, `a`는 2^20-bit).
+- **해결**: 피연산자 폭을 `MAX_NET_WIDTH` 이하로 줄인다(2^20-bit 초과 산술은 v1 범위 밖).
+
 ### VITA-E8001 · `E-FLIST-CYCLE` (Error)
 **filelist 사이클 — 활성 스택에 이미 있는 `.f`를 재포함.** 중첩 `-f`/`-F`가 (베이스 해소+lexical
 canonical 후) 현재 열린 `.f` active-stack의 경로로 해소될 때. 평탄화는 트리여야 하므로 back-edge는

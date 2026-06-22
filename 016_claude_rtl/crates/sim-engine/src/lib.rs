@@ -343,6 +343,37 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     // N7: a class field-read Signal's net is the 32-bit handle; patch its
     // self-width to the FIELD's width (carried per-ExprId from elaborate).
     st.wt.patch_class_fields(&opts.class_field_widths);
+    // WIDE-ARITH-CAP: a multi-word `*`/`/`/`%`/`**` wider than the cap is poisoned
+    // to X at eval (the kernels would otherwise stall). Warn ONCE here, by a
+    // single static scan, so the degradation is loud, not silent. Uses each
+    // arith node's self-width — the width every reachable eval sees, since a
+    // wider assignment context would need a net wider than MAX_NET_WIDTH (which
+    // elaborate already rejects).
+    if ir.exprs.iter().enumerate().any(|(i, e)| {
+        matches!(
+            e,
+            sim_ir::Expr::Binary {
+                op: sim_ir::BinOp::Mul
+                    | sim_ir::BinOp::Div
+                    | sim_ir::BinOp::Mod
+                    | sim_ir::BinOp::Pow,
+                ..
+            }
+        ) && st.wt.width(i as u32) > crate::eval::WIDE_ARITH_CAP
+    }) {
+        sink.emit(LogEvent::Diagnostic(diag::Diagnostic {
+            severity: diag::Severity::Warning,
+            code: diag::MsgCode::RunWideArith,
+            message: format!(
+                "multi-word arithmetic exceeds the {}-bit width cap; result poisoned to X \
+                 (the kernel would otherwise stall — narrow the operands)",
+                crate::eval::WIDE_ARITH_CAP
+            ),
+            location: None,
+            context: Vec::new(),
+            sim_time: None,
+        }));
+    }
     // SVA-REST: assertion-control sidecars (gated fires + `$assertoff/on/kill` sites).
     st.assert_fire = opts.assert_fire.clone();
     st.assert_ctl = opts.assert_ctl.clone();

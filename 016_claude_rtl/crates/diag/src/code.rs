@@ -79,6 +79,7 @@ msgcodes! {
     RunBadFd               => ("W-RUN-BAD-FD",               "VITA-W4022", Warning, "file operation on an invalid/closed descriptor ignored"),
     RunReadmem             => ("W-RUN-READMEM",              "VITA-W4023", Warning, "$readmemb/h problem (missing file / word-count mismatch); memory partially loaded"),
     RunClassLimit          => ("F-RUN-CLASS-LIMIT",         "VITA-F4024", Fatal,   "class object budget exceeded (class heap is not garbage-collected)"),
+    RunWideArith           => ("W-RUN-WIDE-ARITH",          "VITA-W4025", Warning, "multi-word arithmetic exceeds the width cap; result poisoned to X"),
     // 8xxx FILELIST
     FlistCycle             => ("E-FLIST-CYCLE",             "VITA-E8001", Error,   "filelist cycle"),
     FlistDepth             => ("E-FLIST-DEPTH",             "VITA-E8002", Error,   "filelist nesting exceeded depth cap"),

@@ -12,6 +12,15 @@ use sim_ir::{BinOp, ConstRepr, Expr, SelKind, SimIr, SysFuncId, UnOp};
 
 use crate::value::{and_w, low_mask, not1, not_w, nwords, or_w, xnor_w, xor_w, Value};
 
+/// WIDE-ARITH-CAP: width above which the super-linear arithmetic kernels
+/// (`*` O(n²), restoring `/`·`%` O(bits·n), `**` square-multiply) poison to X
+/// instead of running. A declaration-legal net is ≤ `MAX_NET_WIDTH` (2^20), but
+/// a replication concat (`{16{a}}`) can push an *operand* far past it (16M bits →
+/// 34 s mul / 163 s div). Mirrors `elaborate`'s `MAX_NET_WIDTH` (same value), so
+/// any operand within the declarable width regime is always computed exactly.
+/// `simulate` warns once (W-RUN-WIDE-ARITH) when such a node exists.
+pub(crate) const WIDE_ARITH_CAP: u32 = 1 << 20;
+
 /// A word-parallel 4-state primitive: `(av,au, bv,bu) -> (rv,ru)`, 64 bits/op.
 type WordBinOp = fn(u64, u64, u64, u64) -> (u64, u64);
 
@@ -754,6 +763,14 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
     /// power. Division signs per IEEE: quotient truncates toward zero, the
     /// remainder takes the DIVIDEND's sign.
     fn arith_wide(&self, op: BinOp, l: &Value, r: &Value, w: u32, both_signed: bool) -> Value {
+        // WIDE-ARITH-CAP: the super-linear kernels would stall for tens of seconds
+        // once a replication concat pushes an operand past the cap. Poison to X
+        // above it (the div-by-zero degrade precedent); Add/Sub are O(n) and stay
+        // exact at any width. The matching loud warning is emitted once in
+        // `simulate` (W-RUN-WIDE-ARITH) so the degradation is never silent.
+        if w > WIDE_ARITH_CAP && matches!(op, BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow) {
+            return Value::xs(w, both_signed);
+        }
         let n = nwords(w).max(1);
         let le = l.clone().resize_keep_sign(w, both_signed);
         let re = r.clone().resize_keep_sign(w, both_signed);
