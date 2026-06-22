@@ -551,6 +551,13 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// the alternative per-call `Vec::new` allocates on every delta).
     scratch_changed: Vec<u32>,
     scratch_edges: Vec<(u32, FourState, FourState)>,
+    /// FORCE-REEVAL: reused entry buffer for `reeval_active_forces` (was a
+    /// fresh `.cloned().collect()` Vec every delta a force is live).
+    scratch_force_entries: Vec<(sim_ir::Lvalue, u32, u64, bool)>,
+    /// WAITER-POOL: reused `expr_now`/`level_fire` precompute buffers in
+    /// `propagate_changes` (was two fresh `Vec<bool>` per non-idle delta).
+    scratch_expr_now: Vec<bool>,
+    scratch_level_fire: Vec<bool>,
     /// Recycled wheel-bucket Vecs: `wheel.remove` would otherwise drop one
     /// bucket allocation per distinct simulation time (O(timesteps) churn).
     bucket_pool: Vec<Vec<(RegionTag, Ready)>>,
@@ -602,6 +609,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             time_limit,
             scratch_changed: Vec::new(),
             scratch_edges: Vec::new(),
+            scratch_force_entries: Vec::new(),
+            scratch_expr_now: Vec::new(),
+            scratch_level_fire: Vec::new(),
             bucket_pool: Vec::new(),
             cur_gen: 0,
         }
@@ -1451,15 +1461,22 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // ACTIVE pins only — both force (§9.3.2) and proc-assign (§9.3.1)
         // re-evaluate continuously; a latent (force-displaced) assign does not
         // run until release re-pins it.
-        let entries: Vec<(sim_ir::Lvalue, u32, u64, bool)> =
-            self.st.active_forces.values().cloned().collect();
+        // FORCE-REEVAL: reuse a scratch buffer (mem::take also frees the loop to
+        // call `&mut self` methods — `entries` is a local, not a self borrow).
+        // The element clones remain (a force RHS eval must not alias the live
+        // registry); only the per-delta Vec allocation is eliminated.
+        let mut entries = std::mem::take(&mut self.scratch_force_entries);
+        entries.clear();
+        entries.extend(self.st.active_forces.values().cloned());
         let saved = self.st.cur_time_mult;
-        for (lhs, rhs, mult, _weak) in entries {
-            self.st.cur_time_mult = mult;
-            let v = self.eval_for_lvalue(&lhs, rhs);
-            self.st.force_write(&lhs, v);
+        for e in &entries {
+            self.st.cur_time_mult = e.2;
+            let v = self.eval_for_lvalue(&e.0, e.1);
+            self.st.force_write(&e.0, v);
         }
         self.st.cur_time_mult = saved;
+        entries.clear();
+        self.scratch_force_entries = entries;
     }
 
     fn propagate_changes(&mut self) {
@@ -1534,29 +1551,25 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // becomes true — pre-evaluated here because the `retain` closure cannot
         // also borrow `&self` for `truthy`. (Previously Expr fell through `_ =>
         // true` and never woke, so a `false→true` transition hung the process.)
-        let expr_now: Vec<bool> = self
-            .waiters
-            .iter()
-            .map(|w| match &w.cause {
-                WaitCause::Expr { expr } => self.truthy(*expr),
-                _ => false,
-            })
-            .collect();
+        let mut expr_now = std::mem::take(&mut self.scratch_expr_now); // WAITER-POOL
+        expr_now.clear();
+        expr_now.extend(self.waiters.iter().map(|w| match &w.cause {
+            WaitCause::Expr { expr } => self.truthy(*expr),
+            _ => false,
+        }));
         // Pre-compute Level firing (the retain closure cannot also borrow `&self`):
         // an in-body `@(sig)` (arm=Some) fires when a net differs from its ARM-TIME
         // value; a static sensitivity (arm=None) fires on any net change.
-        let level_fire: Vec<bool> = self
-            .waiters
-            .iter()
-            .map(|w| match (&w.cause, &w.arm) {
-                (WaitCause::Level { nets }, Some(arm)) => nets
-                    .iter()
-                    .zip(arm)
-                    .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
-                (WaitCause::Level { nets }, None) => nets.iter().any(|n| changed_nets.contains(n)),
-                _ => false,
-            })
-            .collect();
+        let mut level_fire = std::mem::take(&mut self.scratch_level_fire); // WAITER-POOL
+        level_fire.clear();
+        level_fire.extend(self.waiters.iter().map(|w| match (&w.cause, &w.arm) {
+            (WaitCause::Level { nets }, Some(arm)) => nets
+                .iter()
+                .zip(arm)
+                .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
+            (WaitCause::Level { nets }, None) => nets.iter().any(|n| changed_nets.contains(n)),
+            _ => false,
+        }));
         let mut woken: Vec<Ready> = Vec::new();
         let mut wi = 0usize;
         self.waiters.retain(|w| {
@@ -1590,6 +1603,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         }
         self.scratch_changed = changed_nets;
         self.scratch_edges = edges;
+        expr_now.clear();
+        self.scratch_expr_now = expr_now; // WAITER-POOL: hand the capacity back
+        level_fire.clear();
+        self.scratch_level_fire = level_fire;
     }
 
     /// P2-3: every delta-limit overflow path (t0/run-loop settle, the
