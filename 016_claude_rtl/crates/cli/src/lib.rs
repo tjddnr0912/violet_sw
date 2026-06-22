@@ -2785,6 +2785,49 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    // TRAILER-PIN (ROADMAP §5.3, 2026-06-23): the `.velab` trailers ride OUTSIDE
+    // the SchemaHash-pinned SimIr frame, so a silent shape edit to one (e.g. a new
+    // field on the hand-maintained `StagedExtraSidecars`) that forgets a
+    // format_version bump makes old artifacts decode wrong. Pin the postcard wire
+    // shape of a populated `StagedExtraSidecars` fixture: any field add / remove /
+    // reorder / type change flips the hash. (The other trailers are plain
+    // sim-engine/sim-ir types under their own coverage; this is the cli-local one
+    // the STAGED-DROP audit flagged as the fragile, hand-maintained trailer.)
+    #[test]
+    fn staged_extra_sidecars_wire_shape_is_pinned() {
+        let mut s = StagedExtraSidecars::default();
+        s.two_state_nets.insert(7);
+        s.class_handle_nets.insert(2);
+        s.class_new_sites.insert(3, 9);
+        s.class_layouts = vec![vec![(1, true, false)], vec![(2, false, true)]];
+        s.class_field_inits = vec![vec![
+            None,
+            Some(sim_ir::BitPacked {
+                val: vec![5],
+                unk: vec![0],
+            }),
+        ]];
+        s.class_vtable = vec![vec![10, 11]];
+        s.class_calls.insert(5, (Some(2), 11));
+        s.class_field_widths.insert(8, (16, true));
+        s.assert_fire.insert(6);
+        s.assert_ctl.insert(4, 2);
+        let bytes = postcard::to_stdvec(&s).expect("postcard encode");
+        let got = blake3::hash(&bytes).to_hex().to_string();
+        // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
+        if std::env::var("REGEN_GOLDEN").is_ok() {
+            println!("REGEN StagedExtraSidecars wire = {got}");
+            return;
+        }
+        const EXPECTED: &str =
+            "6378a55d8f357f6ee0cac3fabc765a246252922618cf463595a0f886fb5b5f1d";
+        assert_eq!(
+            got, EXPECTED,
+            "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\
+             If intentional: bump format_version + regen with REGEN_GOLDEN=1."
+        );
+    }
+
     /// Run `run_vita` against an on-disk temp file holding `src`; return the exit
     /// code. The temp path is unique per call so tests stay parallel-safe.
     fn run_on_temp(src: &str, opts: &VitaOpts) -> (i32, String) {
