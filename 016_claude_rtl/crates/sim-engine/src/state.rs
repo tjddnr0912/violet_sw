@@ -1266,14 +1266,17 @@ impl<'a> SimState<'a> {
     fn class_field_read(&self, net: u32, field: u32) -> Value {
         match self.read_handle_id(net) {
             Some(id) => {
-                let fw = self.class_field_width(id, field);
                 let heap = self.class_heap.borrow();
                 match heap.get(&id) {
                     Some(obj) if (field as usize) < obj.fields.len() => {
                         obj.fields[field as usize].clone()
                     }
                     _ => {
+                        // CLS-FIELD-RD: fw (heap borrow + layout lookup) is only
+                        // used on this cold stale/short arm — compute it here, not
+                        // on the hot happy path above.
                         drop(heap);
+                        let fw = self.class_field_width(id, field);
                         self.class_warn_null(net, "class field read of a stale/short object (X)");
                         Value::xs(fw.0.max(1), fw.1)
                     }
