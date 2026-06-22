@@ -378,6 +378,11 @@ pub(crate) struct SimState<'a> {
     /// Warn-once latch for null/X-handle dereference, per handle net (sibling of
     /// `dyn_warned`). `RefCell`: the READ path (`&self`) must latch too.
     pub class_null_warned: std::cell::RefCell<std::collections::BTreeSet<u32>>,
+    /// FMT-CACHE: lazily memoized decode of each format/string `Const` (indexed
+    /// by ConstId) so a `$display`/`$write` in a loop unpacks the packed const
+    /// once instead of every call. `RefCell` because the format path runs on the
+    /// read side (`&self`); byte-identical (`const_string` is a pure fn of cid).
+    pub fmt_cache: std::cell::RefCell<Vec<Option<Box<str>>>>,
 }
 
 /// A heap-allocated class object (N7). `class_id` is the DYNAMIC type (set at
@@ -551,7 +556,21 @@ impl<'a> SimState<'a> {
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_null_warned: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            fmt_cache: std::cell::RefCell::new(vec![None; ir.consts.len()]),
         }
+    }
+
+    /// FMT-CACHE: decode a format/string const, memoized by ConstId. The
+    /// expensive bit-unpack + UTF-8 validation (`const_string`) runs once per
+    /// const; later calls clone the cached text. Byte-identical to calling
+    /// `const_string(self.ir, cid)` directly.
+    pub(crate) fn fmt_const_string(&self, cid: u32) -> String {
+        let mut cache = self.fmt_cache.borrow_mut();
+        let slot = &mut cache[cid as usize];
+        if slot.is_none() {
+            *slot = Some(crate::builtins::const_string(self.ir, cid).into_boxed_str());
+        }
+        slot.as_deref().unwrap().to_string()
     }
 
     /// B1: derive the per-net frame-local routing tables from `func_table` (the

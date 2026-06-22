@@ -1463,7 +1463,7 @@ fn arg_string(sched: &Scheduler, eid: Option<u32>) -> String {
 /// Resolve an ExprId that is a `Const{val}` into its const string (format str).
 fn expr_const_string(st: &SimState, eid: u32) -> String {
     if let sim_ir::Expr::Const { val } = &st.ir.exprs[eid as usize] {
-        const_string(st.ir, *val)
+        st.fmt_const_string(*val) // FMT-CACHE: memoized by ConstId
     } else {
         String::new()
     }
@@ -1533,7 +1533,7 @@ pub(crate) fn format_args_str(
 fn str_const_of_expr(st: &SimState, eid: u32) -> Option<String> {
     if let sim_ir::Expr::Const { val } = &st.ir.exprs[eid as usize] {
         if st.ir.consts[*val as usize].repr == sim_ir::ConstRepr::StrUtf8 {
-            return Some(const_string(st.ir, *val));
+            return Some(st.fmt_const_string(*val)); // FMT-CACHE
         }
     }
     None
