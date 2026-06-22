@@ -191,6 +191,10 @@ pub struct VcdWriter<W: Write> {
     dumping: bool,
     byte_limit: Option<u64>,
     limit_hit: bool,
+    /// VCD-SCRATCH: reused per-change encode buffer. Each value change builds its
+    /// record bytes here (cleared, capacity retained) instead of allocating a
+    /// fresh `String` per change — the dump hot path no longer allocates.
+    scratch: Vec<u8>,
 }
 
 impl<W: Write> VcdWriter<W> {
@@ -210,6 +214,7 @@ impl<W: Write> VcdWriter<W> {
             dumping: true,
             byte_limit: None,
             limit_hit: false,
+            scratch: Vec::new(),
         }
     }
 
@@ -353,40 +358,62 @@ impl<W: Write> VcdWriter<W> {
         self.by_id.get(&id).is_some_and(|&i| self.vars[i].is_real)
     }
 
-    /// A `real` value change: `r<%.16g> <id>` (no space after `r`, space before
-    /// the id), e.g. `r3.14159 !`. The 64-bit `bits` carry the IEEE-754 pattern
-    /// in word 0 (vitamin stores reals as raw bits in a `BitPacked`).
-    fn encode_real(id: IdCode, bits: &BitPacked) -> String {
+    /// Append a `real` value change `r<%.16g> <id>` (no space after `r`, space
+    /// before the id), e.g. `r3.14159 !`, to `buf`. The 64-bit `bits` carry the
+    /// IEEE-754 pattern in word 0 (vitamin stores reals as raw bits).
+    fn encode_real_into(buf: &mut Vec<u8>, id: IdCode, bits: &BitPacked) {
         let x = f64::from_bits(bits.val.first().copied().unwrap_or(0));
-        format!("r{} {id}", fmt_g16(x))
+        // `Vec<u8>` as `io::Write` is infallible.
+        let _ = write!(buf, "r{} {id}", fmt_g16(x));
     }
 
-    /// Encode either a real (`r…`) or an integral (`encode_value`) change.
-    fn encode_change(&self, id: IdCode, bits: &BitPacked, width: u32) -> String {
-        if self.is_real(id) {
-            Self::encode_real(id, bits)
-        } else {
-            Self::encode_value(id, bits, width)
-        }
-    }
-
-    /// The value string for a single change (no trailing newline):
-    /// scalar `1!`, vector `b1010 !` (MSB..LSB, space before id).
-    fn encode_value(id: IdCode, bits: &BitPacked, width: u32) -> String {
+    /// Append a single integral change to `buf` (no trailing newline): scalar
+    /// `1!`, vector `b1010 !` (MSB..LSB, space before id).
+    fn encode_value_into(buf: &mut Vec<u8>, id: IdCode, bits: &BitPacked, width: u32) {
         if width <= 1 {
             // scalar: <char><id>, NO space.
-            format!("{}{id}", Self::bit_char(bits, 0))
+            buf.push(Self::bit_char(bits, 0) as u8);
+            let _ = write!(buf, "{id}");
         } else {
             // vector: b<MSB..LSB> <id>, space before id.
-            let mut s = String::with_capacity(width as usize + 4);
-            s.push('b');
+            buf.push(b'b');
             for i in (0..width).rev() {
-                s.push(Self::bit_char(bits, i));
+                buf.push(Self::bit_char(bits, i) as u8);
             }
-            s.push(' ');
-            s.push_str(&id.to_string());
-            s
+            buf.push(b' ');
+            let _ = write!(buf, "{id}");
         }
+    }
+
+    /// Append a real (`r…`) or integral change to `buf`. `real` is precomputed by
+    /// the caller so this needs no `&self`, letting the hot path borrow
+    /// `self.scratch` mutably alongside an immutable `is_real` lookup.
+    fn encode_change_into(buf: &mut Vec<u8>, real: bool, id: IdCode, bits: &BitPacked, width: u32) {
+        if real {
+            Self::encode_real_into(buf, id, bits);
+        } else {
+            Self::encode_value_into(buf, id, bits, width);
+        }
+    }
+
+    /// The value string for a single integral change (no trailing newline).
+    /// Thin `String` wrapper over [`Self::encode_value_into`] — the byte writer
+    /// is the single source of truth, so tests and the hot path can't diverge.
+    #[cfg(test)]
+    fn encode_value(id: IdCode, bits: &BitPacked, width: u32) -> String {
+        let mut buf = Vec::new();
+        Self::encode_value_into(&mut buf, id, bits, width);
+        String::from_utf8(buf).expect("value encoding is ASCII")
+    }
+
+    /// Build one change record into the reused `scratch` buffer (no per-change
+    /// `String` allocation) and write `<value>\n` to `out`.
+    fn write_change(&mut self, id: IdCode, bits: &BitPacked, width: u32) -> io::Result<()> {
+        let real = self.is_real(id);
+        self.scratch.clear();
+        Self::encode_change_into(&mut self.scratch, real, id, bits, width);
+        self.scratch.push(b'\n');
+        self.out.write_all(&self.scratch)
     }
 
     /// Emit a value-change record `<value>\n` for `id`.
@@ -395,9 +422,7 @@ impl<W: Write> VcdWriter<W> {
         if !self.dumping || self.check_limit()? {
             return Ok(());
         }
-        let s = self.encode_change(id, bits, width);
-        writeln!(self.out, "{s}")?;
-        Ok(())
+        self.write_change(id, bits, width)
     }
 
     // ── time + dump ─────────────────────────────────────────────────────────────
@@ -428,8 +453,7 @@ impl<W: Write> VcdWriter<W> {
     {
         writeln!(self.out, "$dumpvars")?;
         for (id, bits, width) in vars {
-            let s = self.encode_change(id, bits, width);
-            writeln!(self.out, "{s}")?;
+            self.write_change(id, bits, width)?;
         }
         writeln!(self.out, "$end")?;
         Ok(())
@@ -446,8 +470,7 @@ impl<W: Write> VcdWriter<W> {
         }
         writeln!(self.out, "$dumpall")?;
         for (id, bits, width) in vars {
-            let s = self.encode_change(id, bits, width);
-            writeln!(self.out, "{s}")?;
+            self.write_change(id, bits, width)?;
         }
         writeln!(self.out, "$end")?;
         Ok(())
@@ -488,8 +511,7 @@ impl<W: Write> VcdWriter<W> {
         }
         writeln!(self.out, "$dumpon")?;
         for (id, bits, width) in vars {
-            let s = self.encode_change(id, bits, width);
-            writeln!(self.out, "{s}")?;
+            self.write_change(id, bits, width)?;
         }
         writeln!(self.out, "$end")?;
         Ok(())
@@ -608,6 +630,31 @@ mod tests {
         assert_eq!(
             VcdWriter::<Vec<u8>>::encode_value(id, &bp(0b10, 0b11), 2),
             "bzx !"
+        );
+    }
+
+    /// VCD-SCRATCH (2026-06-22 audit): pin the EXACT bytes `value_change` emits
+    /// for scalar + multi-id vector changes, so the scratch-buffer refactor
+    /// (no per-change String alloc) stays byte-identical. Characterization test:
+    /// green before AND after the refactor.
+    #[test]
+    fn value_change_byte_exact_scalar_and_vector() {
+        let mut w = VcdWriter::new(Vec::new());
+        w.write_preamble("d", "1ns").unwrap();
+        w.push_scope(ScopeType::Module, "t").unwrap();
+        let a = w.declare_var(VarType::Wire, 1, "a").unwrap(); // scalar, id "!"
+        let b = w.declare_var(VarType::Wire, 4, "b").unwrap(); // vector, id """
+        w.pop_scope().unwrap();
+        w.write_header().unwrap();
+        w.set_time(0).unwrap();
+        w.value_change(a, &bp(1, 0), 1).unwrap(); // "1!\n"
+        w.value_change(b, &bp(0b0101, 0), 4).unwrap(); // "b0101 \"\n"
+        let s = w.into_string();
+        let tail = &s[s.find("#0").unwrap()..];
+        assert_eq!(
+            tail,
+            format!("#0\n1{a}\nb0101 {b}\n"),
+            "value_change byte stream must be exact"
         );
     }
 
