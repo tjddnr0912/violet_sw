@@ -206,10 +206,10 @@ fn expr_has_call(exprs: &[Expr], eid: u32) -> bool {
 /// `take` the produced value without a clone. Each slot is written (by its `EvalForLval`)
 /// before it is read, so reuse across activations would be sound — C2 allocates per
 /// activation (structural-milestone simplicity; pooling is a C9 perf item).
-type RegFile = Vec<Option<Value>>;
+pub(crate) type RegFile = Vec<Option<Value>>;
 /// Per-activation offset register file: one slot per blocking assign, holding the
 /// `(bit-offset, array-word)` pairs `ResolveOff` sampled at statement time (P8 #3).
-type OffFile = Vec<Option<crate::exec::Offsets>>;
+pub(crate) type OffFile = Vec<Option<crate::exec::Offsets>>;
 
 /// A compiled process body, built ONCE per codegen-able **template** and cached
 /// out-of-band on `SimState` (never in the frozen `SimIr`). Block indices are 1:1 with
@@ -225,8 +225,8 @@ pub(crate) struct CompiledBody {
     /// `None` ctx) or no RHS qualified.
     natives: Vec<NativeProg>,
     /// How many value / offset registers a single activation needs.
-    nregs: u32,
-    noffs: u32,
+    pub(crate) nregs: u32,
+    pub(crate) noffs: u32,
 }
 
 struct CompiledBlock {
@@ -421,9 +421,17 @@ pub(crate) fn compile_body(
 /// writer — see `Scheduler::vm_run_body`); this function owns ONLY the body's control
 /// flow plus the per-activation termination guard (a byte-mirror of exec.rs:176-180).
 /// Byte-identical to `run_process` on the codegen-able class — the P5 gate enforces it.
-pub(crate) fn vm_exec(k: &mut impl Kernel, body: &CompiledBody, proc: u32, mut bb: u32) -> Step {
-    let mut regs: RegFile = vec![None; body.nregs as usize];
-    let mut offs: OffFile = vec![None; body.noffs as usize];
+// VM-REGPOOL: `regs`/`offs` are leased from the Scheduler's pool by the caller
+// (`vm_run_body`) and returned afterwards, so a per-activation `vec![None; n]`
+// pair is no longer allocated on every process step. The caller pre-sizes them.
+pub(crate) fn vm_exec(
+    k: &mut impl Kernel,
+    body: &CompiledBody,
+    proc: u32,
+    mut bb: u32,
+    regs: &mut RegFile,
+    offs: &mut OffFile,
+) -> Step {
     let mut guard: u64 = 0;
     loop {
         let block = &body.blocks[bb as usize];

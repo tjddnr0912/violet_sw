@@ -558,6 +558,10 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// `propagate_changes` (was two fresh `Vec<bool>` per non-idle delta).
     scratch_expr_now: Vec<bool>,
     scratch_level_fire: Vec<bool>,
+    /// VM-REGPOOL: recycled bytecode-VM register/offset files (was a fresh
+    /// `vec![None; n]` pair per `vm_exec` activation). Leased in `vm_run_body`.
+    vm_regs_pool: Vec<crate::backend::RegFile>,
+    vm_offs_pool: Vec<crate::backend::OffFile>,
     /// Recycled wheel-bucket Vecs: `wheel.remove` would otherwise drop one
     /// bucket allocation per distinct simulation time (O(timesteps) churn).
     bucket_pool: Vec<Vec<(RegionTag, Ready)>>,
@@ -612,6 +616,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             scratch_force_entries: Vec::new(),
             scratch_expr_now: Vec::new(),
             scratch_level_fire: Vec::new(),
+            vm_regs_pool: Vec::new(),
+            vm_offs_pool: Vec::new(),
             bucket_pool: Vec::new(),
             cur_gen: 0,
         }
@@ -873,7 +879,21 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             .copied()
             .unwrap_or(1)
             .max(1) as u64;
-        crate::backend::vm_exec(self, &body, proc, block)
+        // VM-REGPOOL: lease the register/offset files from the pool, sized to this
+        // body, and return them afterwards (a `pop` yields an OWNED buffer, so it no
+        // longer borrows `self` and cannot alias the `&mut self` kernel call).
+        let mut regs = self.vm_regs_pool.pop().unwrap_or_default();
+        regs.clear();
+        regs.resize(body.nregs as usize, None);
+        let mut offs = self.vm_offs_pool.pop().unwrap_or_default();
+        offs.clear();
+        offs.resize(body.noffs as usize, None);
+        let step = crate::backend::vm_exec(self, &body, proc, block, &mut regs, &mut offs);
+        regs.clear();
+        self.vm_regs_pool.push(regs);
+        offs.clear();
+        self.vm_offs_pool.push(offs);
+        step
     }
 
     pub fn run(&mut self) -> FinishReason {
