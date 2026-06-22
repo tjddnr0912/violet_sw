@@ -454,6 +454,31 @@ fn classify_binop(op: BinOp) -> Option<BinClass> {
     })
 }
 
+/// POW-LANE: the largest exponent we expand into a native Mul chain.
+const POW_MAX: u128 = 16;
+
+/// POW-LANE: `Some(n)` iff `eid` is a `Const` exponent that is X-free and a small
+/// integer `2..=POW_MAX`. A non-const, X-bearing, <2, negative, or too-large
+/// exponent returns `None` (the `**` node then stays oracle-bound). Exponent 1 is
+/// excluded on purpose: `a**1` is `a` natively, but the oracle routes it through
+/// `arith(Pow,…)` which X-poisons ANY X bit to all-X — only a chain with an actual
+/// Mul (n>=2) reproduces that, so n==1 is left to the oracle.
+fn const_pow_exponent(ir: &SimIr, eid: u32) -> Option<u32> {
+    let Expr::Const { val } = ir.exprs.get(eid as usize)? else {
+        return None;
+    };
+    let v = const_value(ir, *val)?; // None for a real const
+    if v.has_xz() {
+        return None;
+    }
+    let n = v.to_u128()?; // a negative signed const reads huge here → rejected below
+    if (2..=POW_MAX).contains(&n) {
+        Some(n as u32)
+    } else {
+        None
+    }
+}
+
 /// Try to compile `eid` evaluated in context `(ctx_width, ctx_signed)` — the SAME
 /// context `eval_for_lvalue` passes (`ctx_width = max(lvalue_w, self_w(rhs))`,
 /// `ctx_signed = rhs self-sign`). `None` ⇒ outside the supported subset ⇒ fall back.
@@ -798,6 +823,37 @@ fn lower(
                             signed: eff_signed,
                         }
                     });
+                    Some(())
+                }
+                // POWER: native only for a small const exponent n>=2, expanded to a
+                // Mul chain (a*a*…). For n>=2 the X-poison matches the oracle's Pow
+                // exactly (any X bit → all-X, identical to repeated Mul's arith
+                // X-guard; n==1 is excluded above because it would skip the Mul).
+                // Two guards keep VALUES byte-identical to the oracle:
+                //  - bail when eff_signed (signed uses ipow_signed, a different path),
+                //  - require w*n <= 128 so a^n < 2^128 — the oracle computes a^n in a
+                //    u128 and returns 0 on u128 OVERFLOW (`checked_pow().unwrap_or(0)`)
+                //    rather than wrapping, a quirk a per-step mod-2^w chain can't mimic.
+                B::Pow => {
+                    let n = const_pow_exponent(ir, *rhs)?;
+                    if eff_signed || (w as u128) * (n as u128) > 128 {
+                        return None;
+                    }
+                    lower(ir, wt, *lhs, w, eff_signed, ops)?;
+                    for _ in 1..n {
+                        lower(ir, wt, *lhs, w, eff_signed, ops)?;
+                        ops.push(if wide {
+                            NOp::WArith {
+                                kind: ArithKind::Mul,
+                                w,
+                            }
+                        } else {
+                            NOp::Arith {
+                                kind: ArithKind::Mul,
+                                w,
+                            }
+                        });
+                    }
                     Some(())
                 }
                 _ => {
@@ -1897,6 +1953,56 @@ mod tests {
             let b = v64_xz(0b1100_0011, 0b0011_0000);
             assert_matches_oracle(&ir, 2, 16, false, &[a, b]);
         }
+    }
+
+    // POW-LANE: a small positive const exponent lowers to a native Mul chain;
+    // for every (w, n) with w*n <= 128 the result is byte-identical to the oracle
+    // (clean values AND X-poison), so backend selection stays transparent.
+    #[test]
+    fn pow_const_small_exponent_matches_oracle() {
+        // (ctx width, exponent) pairs: n>=2 and w*n <= 128.
+        for (w, n) in [(16u32, 2u64), (16, 3), (16, 4), (16, 8), (8, 16), (64, 2), (32, 4)] {
+            let ir = ir_of(
+                vec![sig(0), Expr::Const { val: 0 }, bin(BinOp::Pow, 0, 1)],
+                vec![cnum(8, n)],
+                vec![nv(w, false)],
+            );
+            for a in [0u64, 1, 2, 3, 7, 255, 0x1234, 0xFFFF] {
+                assert_matches_oracle(&ir, 2, w, false, &[v64(a)]);
+            }
+            // X anywhere in the base must X-poison exactly like the oracle's Pow.
+            assert_matches_oracle(&ir, 2, w, false, &[v64_xz(0x12, 0x0F)]);
+        }
+    }
+
+    // POW-LANE bail boundary: exponent 0 / over POW_MAX / w*n>128 / non-const must
+    // NOT compile natively (they stay oracle-bound), or values would diverge from
+    // the oracle's u128-`checked_pow().unwrap_or(0)` overflow quirk.
+    #[test]
+    fn pow_uncompilable_cases_bail_to_oracle() {
+        let wt_none = crate::FuncTable::new();
+        let compiles = |consts: Vec<sim_ir::ConstVal>, rhs: Expr, w: u32, signed: bool| {
+            // two nets so a non-const `rhs = sig(1)` resolves (net 1 unused otherwise).
+            let ir = ir_of(
+                vec![sig(0), rhs, bin(BinOp::Pow, 0, 1)],
+                consts,
+                vec![nv(w, signed), nv(w, false)],
+            );
+            let wt = WidthTable::build(&ir, &wt_none);
+            try_compile(&ir, &wt, 2, w, signed).is_some()
+        };
+        // a ** 0 : oracle X-poisons an X base, but a Const-1 would say 1.
+        assert!(!compiles(vec![cnum(8, 0)], Expr::Const { val: 0 }, 16, false), "a**0 must bail");
+        // a ** 1 : native passthrough keeps an X base, but the oracle X-poisons it.
+        assert!(!compiles(vec![cnum(8, 1)], Expr::Const { val: 0 }, 16, false), "a**1 must bail");
+        // a ** 17 : over POW_MAX.
+        assert!(!compiles(vec![cnum(8, 17)], Expr::Const { val: 0 }, 16, false), "a**17 must bail");
+        // a ** 4 at w=64 : w*n = 256 > 128 (oracle overflow-to-0 quirk reachable).
+        assert!(!compiles(vec![cnum(8, 4)], Expr::Const { val: 0 }, 64, false), "wide w*n>128 must bail");
+        // a ** b (non-const exponent).
+        assert!(!compiles(vec![], sig(1), 16, false), "a**b (non-const) must bail");
+        // signed Pow uses ipow_signed — bail.
+        assert!(!compiles(vec![cnum(8, 2)], Expr::Const { val: 0 }, 16, true), "signed a**2 must bail");
     }
 
     #[test]
