@@ -34,6 +34,14 @@ pub struct PreOpts {
     pub max_macro_depth: u32,
     /// Hard cap on include nesting depth (in addition to the cycle guard). Default 64.
     pub max_include_depth: u32,
+    /// Cumulative cap on TOTAL expanded output bytes (PP-FANOUT-CAP). The depth
+    /// guard bounds nesting but NOT fan-out: chained doubling macros
+    /// (`` `Mi = `Mi-1 `Mi-1 ``) materialize 2^N copies at depth N, so a ~30-line
+    /// file can OOM (≈8 GiB at N=24) before parse. This bounds the expansion so
+    /// such a file fails loud instead. Default 256 MiB — generous for any real
+    /// design, and well under `u32::MAX` so the `as u32` segment offsets (which
+    /// index `self.out`) can never wrap.
+    pub max_output_bytes: usize,
 }
 
 impl Default for PreOpts {
@@ -43,6 +51,7 @@ impl Default for PreOpts {
             cli_defines: Vec::new(),
             max_macro_depth: 256,
             max_include_depth: 64,
+            max_output_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -512,6 +521,12 @@ struct Preprocessor<'a> {
     /// identity fast path is taken (single 1:1 segment).
     saw_directive: bool,
 
+    /// PP-FANOUT-CAP: set once `out` would exceed `opts.max_output_bytes`. After
+    /// it trips, every emit is a no-op and `scan_text` returns immediately, so a
+    /// fan-out recursion (2^N nodes) unwinds in O(depth) — bounding CPU, not just
+    /// memory — instead of grinding through the whole expansion as no-ops.
+    budget_blown: bool,
+
     /// `` `timescale `` regions captured in EXPANDED-text order (offset, scale).
     timescales: Vec<(usize, TimeScale)>,
 }
@@ -922,8 +937,35 @@ fn strip_trailing_line_comment(s: &str) -> &str {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl Preprocessor<'_> {
+    /// PP-FANOUT-CAP cumulative-output budget. Returns false (caller emits
+    /// nothing) once `out` would exceed `opts.max_output_bytes`, emitting one
+    /// loud `PpRecursiveMacro` diagnostic on the trip. The cap is well under
+    /// `u32::MAX`, so the `as u32` segment offsets below never wrap.
+    fn output_budget_ok(&mut self, incoming: usize) -> bool {
+        if self.budget_blown {
+            return false;
+        }
+        if self.out.len().saturating_add(incoming) > self.opts.max_output_bytes {
+            self.budget_blown = true;
+            self.err(
+                MsgCode::PpRecursiveMacro,
+                format!(
+                    "macro expansion exceeded the {}-byte output budget \
+                     (likely exponential macro fan-out)",
+                    self.opts.max_output_bytes
+                ),
+                self.out.len(),
+            );
+            return false;
+        }
+        true
+    }
+
     fn emit_verbatim(&mut self, s: &str, file: FileId, orig_start: u32) {
         if s.is_empty() {
+            return;
+        }
+        if !self.output_budget_ok(s.len()) {
             return;
         }
         let exp_start = self.out.len() as u32;
@@ -951,6 +993,9 @@ impl Preprocessor<'_> {
 
     fn emit_collapsed(&mut self, s: &str, file: FileId, site_byte: u32) {
         if s.is_empty() {
+            return;
+        }
+        if !self.output_budget_ok(s.len()) {
             return;
         }
         let exp_start = self.out.len() as u32;
@@ -1043,6 +1088,7 @@ impl<'a> Preprocessor<'a> {
             pending_nl: None,
             pending_cont: 0,
             saw_directive: false,
+            budget_blown: false,
             timescales: Vec::new(),
         }
     }
@@ -1091,6 +1137,11 @@ impl Preprocessor<'_> {
 
     /// Walk synthetic macro-expansion text; every emit collapses to `site`.
     fn scan_text(&mut self, text: &str, site: (FileId, u32), depth: u32) {
+        // PP-FANOUT-CAP: once the output budget is blown, abandon the expansion
+        // immediately so a 2^N fan-out recursion unwinds in O(depth), not O(2^N).
+        if self.budget_blown {
+            return;
+        }
         if depth > self.opts.max_macro_depth {
             self.err(
                 MsgCode::PpRecursiveMacro,
@@ -1965,6 +2016,43 @@ mod tests {
 
     fn pp(src: &str) -> PpResult {
         preprocess_str(Path::new("/virtual"), "top.sv", src, &PreOpts::default())
+    }
+
+    /// PP-FANOUT-CAP (2026-06-22 audit): chained doubling macros
+    /// (`` `Mi = `Mi-1 `Mi-1 ``) expand to 2^N copies at depth N, so the depth
+    /// guard never trips and a ~30-line file OOMs (≈8 GiB at N=24, measured
+    /// 2.1 GiB at N=22). The cumulative-output budget must turn this into a loud
+    /// bounded error instead of unbounded materialization.
+    #[test]
+    fn macro_fanout_is_bounded_not_oom() {
+        let mut src = String::from("`define M0 xx\n");
+        for i in 1..=20 {
+            src.push_str(&format!("`define M{i} `M{} `M{}\n", i - 1, i - 1));
+        }
+        // expand OUTSIDE a string literal so the substitution actually fires.
+        src.push_str("module t; initial $display(\"%0d\", $bits({`M20})); endmodule\n");
+        let opts = PreOpts {
+            max_output_bytes: 64 * 1024, // small so the test is fast
+            ..PreOpts::default()
+        };
+        let r = preprocess_str(Path::new("/virtual"), "top.sv", &src, &opts);
+        assert!(
+            r.has_errors(),
+            "exponential fan-out must fail loud, not silently expand"
+        );
+        assert!(
+            r.diags
+                .iter()
+                .any(|d| d.code == MsgCode::PpRecursiveMacro && d.message.contains("budget")),
+            "expected the output-budget diagnostic, got {:?}",
+            r.diags
+        );
+        // the materialized text must stay near the cap, not balloon to MBs.
+        assert!(
+            r.text.len() <= 64 * 1024 + 4096,
+            "output must stay bounded by the budget, got {} bytes",
+            r.text.len()
+        );
     }
 
     #[test]
