@@ -4699,13 +4699,19 @@ impl<'s> Elaborator<'s> {
     /// read-only check, the iface-instance lookup) can never drift from the
     /// value-level lookups.
     fn walk_scopes_key(&self, name: &str, hit: impl Fn(&str) -> bool) -> Option<String> {
+        use std::fmt::Write;
         let mut prefix = self.cur_prefix.as_str();
+        // GEN-3X-STR (part b): reuse ONE scratch String across the outward walk
+        // instead of a fresh `format!` allocation per scope level (byte-identical
+        // keys; on a hit the scratch is moved out as the owned return).
+        let mut key = String::new();
         loop {
-            let key = if prefix.is_empty() {
-                name.to_string()
+            key.clear();
+            if prefix.is_empty() {
+                key.push_str(name);
             } else {
-                format!("{prefix}.{name}")
-            };
+                let _ = write!(key, "{prefix}.{name}");
+            }
             if hit(&key) {
                 return Some(key);
             }
