@@ -922,18 +922,24 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         let ctx_signed = l.signed && r.signed;
         let le = l.clone().resize_keep_sign(w, ctx_signed);
         let re = r.clone().resize_keep_sign(w, ctx_signed);
-        let mut diff = false;
-        for i in 0..w {
-            let (lv, lu) = le.get_vu(i);
-            let (rv, ru) = re.get_vu(i);
-            if lu != 0 || ru != 0 {
-                return Value::x1();
-            }
-            if lv != rv {
-                diff = true;
-            }
+        // Word-parallel (was a per-bit `get_vu` loop): any x/z on either side
+        // (`unk`) poisons the result to X; otherwise compare the val planes.
+        // `resize_keep_sign` canonicalizes both operands (planes masked past
+        // `width`), so a word-wise scan is bit-exact for the live width.
+        let mut unk = 0u64;
+        let mut diff = 0u64;
+        for k in 0..nwords(w) {
+            let lu = le.unk.get(k).copied().unwrap_or(0);
+            let ru = re.unk.get(k).copied().unwrap_or(0);
+            let lv = le.val.get(k).copied().unwrap_or(0);
+            let rv = re.val.get(k).copied().unwrap_or(0);
+            unk |= lu | ru;
+            diff |= lv ^ rv;
         }
-        let eq = !diff;
+        if unk != 0 {
+            return Value::x1();
+        }
+        let eq = diff == 0;
         Value::logic(if op == BinOp::Eq { eq } else { !eq })
     }
 
@@ -953,13 +959,17 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
         let ctx_signed = l.signed && r.signed;
         let le = l.clone().resize_keep_sign(w, ctx_signed);
         let re = r.clone().resize_keep_sign(w, ctx_signed);
-        let mut eq = true;
-        for i in 0..w {
-            if le.get_vu(i) != re.get_vu(i) {
-                eq = false;
-                break;
-            }
+        // Word-parallel exact 4-state compare (both planes), canonical after
+        // `resize_keep_sign`; was a per-bit `get_vu` loop.
+        let mut neq = 0u64;
+        for k in 0..nwords(w) {
+            let lv = le.val.get(k).copied().unwrap_or(0);
+            let rv = re.val.get(k).copied().unwrap_or(0);
+            let lu = le.unk.get(k).copied().unwrap_or(0);
+            let ru = re.unk.get(k).copied().unwrap_or(0);
+            neq |= (lv ^ rv) | (lu ^ ru);
         }
+        let eq = neq == 0;
         Value::logic(if op == BinOp::CaseEq { eq } else { !eq })
     }
 
