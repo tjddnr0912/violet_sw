@@ -67,6 +67,14 @@ const MAX_ELAB_ERRORS: usize = 200;
 /// overflow the `+1` width arithmetic. 2^20 bits = 16 KiB of planes per net —
 /// generous for real RTL, hostile-input-safe. (COVERAGE verdict HIGH.)
 const MAX_NET_WIDTH: u64 = 1 << 20;
+
+/// GEN-NET-CAP: hard cap on the TOTAL net/variable arena. `GENERATE_UNROLL_CAP`
+/// bounds each loop individually, but nested generates multiply
+/// (1000 × 1000 = 1M live nets ≈ 670 MiB), so the aggregate needs its own budget
+/// (the `MAX_NET_WIDTH` idiom, applied to count instead of width). 2^17 nets
+/// (≈85 MiB of planes) ≫ any realistic v1 design; above it `add_net` no-ops and
+/// the run is loud (the pathological 1000×1000 is still rejected).
+const MAX_TOTAL_NETS: usize = 1 << 17;
 /// P2-6: unpacked-array element cap (16M elements; with the 1 MiB-bit width cap
 /// the worst legal net is still bounded far below an OOM-kill allocation).
 const MAX_ARRAY_LEN: u64 = 1 << 24;
@@ -1739,6 +1747,10 @@ struct Elaborator<'s> {
     /// generate cannot flood unbounded stderr/memory (`had_error` still latches,
     /// so the run stays loud). Parser-side precedent: `error_limit = 50`.
     error_count: usize,
+    /// GEN-NET-CAP: latched once the total net arena hits `MAX_TOTAL_NETS`, so the
+    /// loud "too many nets" diagnostic fires exactly once (not per subsequent
+    /// `add_net`). Past it, `add_net` is a no-op → the arena stops growing.
+    net_budget_blown: bool,
 
     // ── growing sim-ir arenas (insertion-ordered → deterministic) ──
     nets: Vec<ir::NetVar>,
@@ -2083,6 +2095,7 @@ impl<'s> Elaborator<'s> {
             sink,
             had_error: false,
             error_count: 0,
+            net_budget_blown: false,
             nets: Vec::new(),
             exprs: Vec::new(),
             consts: Vec::new(),
@@ -5852,6 +5865,21 @@ impl<'s> Elaborator<'s> {
                 MsgCode::ElabUnsupported,
                 &format!("net/variable `{key}` redeclared (duplicate declaration)"),
             );
+            return;
+        }
+        // GEN-NET-CAP: bound the aggregate net arena. Past the cap, no-op (the
+        // arena stops growing) and report once — `had_error` makes the run loud.
+        if self.nets.len() >= MAX_TOTAL_NETS {
+            if !self.net_budget_blown {
+                self.net_budget_blown = true;
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "total net/variable count exceeds the v1 cap ({MAX_TOTAL_NETS}); \
+                         the design is too large or a generate loop is pathological"
+                    ),
+                );
+            }
             return;
         }
         let id = self.nets.len() as u32;
