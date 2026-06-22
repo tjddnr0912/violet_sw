@@ -82,6 +82,9 @@ pub struct Parser<'t, 's> {
     /// P2-5: live expression-recursion depth; capped so a pathological
     /// `((((…))))` yields a parse error instead of a stack overflow.
     expr_depth: u32,
+    /// STMT-DEPTH: live statement-recursion depth; capped so pathological
+    /// `begin begin … end end` nesting yields a parse error, not a SIGABRT.
+    stmt_depth: u32,
     /// SV user-defined type names (`typedef … name;`) → resolved underlying type.
     /// Accumulates across the source unit; lets `name var;` parse as a typed decl.
     typedefs: std::collections::HashMap<String, TypeInfo>,
@@ -101,6 +104,7 @@ impl<'t, 's> Parser<'t, 's> {
             errors: Vec::new(),
             error_limit: 50,
             expr_depth: 0,
+            stmt_depth: 0,
             typedefs: std::collections::HashMap::new(),
             struct_layouts: std::collections::HashMap::new(),
             var_struct: std::collections::HashMap::new(),
@@ -4020,7 +4024,29 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     // ─────────────────────── 2. statement dispatcher ───────────────────────
+    /// STMT-DEPTH guard: cap statement-recursion so pathological `begin begin …`
+    /// nesting is a clean parse error, never a SIGABRT. 256 is ≫ any real RTL
+    /// (deepest practical nesting is <30) and the deepest frame reached at the
+    /// cap (≈3 frames/level: parse_statement → parse_seq_block → block_body)
+    /// fits a 2 MiB test-thread stack even in debug — 1024 overflowed it. The
+    /// cap path consumes no token, but the `block_body` loop's `pos == before`
+    /// guard bumps one, so recovery always makes progress (no spin).
+    const MAX_STMT_DEPTH: u32 = 256;
+
     fn parse_statement(&mut self) -> Stmt {
+        self.stmt_depth += 1;
+        if self.stmt_depth > Self::MAX_STMT_DEPTH {
+            self.stmt_depth -= 1;
+            let s = self.cur_span();
+            self.error("statement nesting too deep (cap 256)");
+            return Stmt::Error(s);
+        }
+        let r = self.parse_statement_inner();
+        self.stmt_depth -= 1;
+        r
+    }
+
+    fn parse_statement_inner(&mut self) -> Stmt {
         use TokenKind as T;
         if self.at_lex_error() {
             let s = self.cur_span();
