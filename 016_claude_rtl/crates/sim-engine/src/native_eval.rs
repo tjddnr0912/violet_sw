@@ -1005,6 +1005,13 @@ pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
         sp: &mut wsp,
     };
     for op in &prog.ops {
+        // VM-ARITY-ASSERT: verify each op's actual stack movement matches arity()
+        // (which try_compile trusts for the fixed-stack cap check). Debug-only, so
+        // release is byte-identical with zero overhead. Catches both a wrong
+        // explicit arity entry and a NEW NOp variant silently routed to the
+        // `_ => (2,1,0,0)` catchall.
+        #[cfg(debug_assertions)]
+        let (sp_dbg, wsp_dbg) = (*stack.sp, *wstack.sp);
         match *op {
             NOp::Const { val, unk } => stack.push((val, unk)),
             NOp::LoadScalar { net, w, signed } => {
@@ -1665,6 +1672,20 @@ pub(crate) fn run(prog: &NativeProg, nets: &dyn NetReader) -> Value {
                 };
                 stack.push(res);
             }
+        }
+        #[cfg(debug_assertions)]
+        {
+            let (np, npu, wp, wpu) = arity(op);
+            debug_assert_eq!(
+                *stack.sp as i64,
+                sp_dbg as i64 - np as i64 + npu as i64,
+                "VM-ARITY-ASSERT: narrow-stack drift (arity npop={np} npush={npu})"
+            );
+            debug_assert_eq!(
+                *wstack.sp as i64,
+                wsp_dbg as i64 - wp as i64 + wpu as i64,
+                "VM-ARITY-ASSERT: wide-stack drift (arity wpop={wp} wpush={wpu})"
+            );
         }
     }
     let mut out = Value::zeros(prog.root_w, prog.root_signed);
