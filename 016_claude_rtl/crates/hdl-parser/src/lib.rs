@@ -85,6 +85,15 @@ pub struct Parser<'t, 's> {
     /// STMT-DEPTH: live statement-recursion depth; capped so pathological
     /// `begin begin … end end` nesting yields a parse error, not a SIGABRT.
     stmt_depth: u32,
+    /// PARSE-CONCAT-CAP: cumulative count of parsed expression nodes (every
+    /// `expr()` call). A flat `{a,a,…}` concat / arg list builds one `Expr` (80 B)
+    /// per element with no depth, so the expr comma-loops are bounded by this
+    /// GLOBAL budget (`MAX_AST_NODES`) rather than per-list — robust against the
+    /// many-lists bypass too. Monotonic (never decremented).
+    node_count: usize,
+    /// Latched once `node_count` passes `MAX_AST_NODES`; the expr comma-loops stop
+    /// pushing so the AST cannot exceed the budget, and the diagnostic fires once.
+    node_budget_blown: bool,
     /// SV user-defined type names (`typedef … name;`) → resolved underlying type.
     /// Accumulates across the source unit; lets `name var;` parse as a typed decl.
     typedefs: std::collections::HashMap<String, TypeInfo>,
@@ -105,6 +114,8 @@ impl<'t, 's> Parser<'t, 's> {
             error_limit: 50,
             expr_depth: 0,
             stmt_depth: 0,
+            node_count: 0,
+            node_budget_blown: false,
             typedefs: std::collections::HashMap::new(),
             struct_layouts: std::collections::HashMap::new(),
             var_struct: std::collections::HashMap::new(),
@@ -447,11 +458,33 @@ impl<'t, 's> Parser<'t, 's> {
     /// even in debug builds (~5 fat frames per paren level).
     const MAX_EXPR_DEPTH: u32 = 256;
 
+    /// PARSE-CONCAT-CAP global budget on parsed expression nodes (user decision,
+    /// 2026-06-22). 2^21 ≈ 2.1 M nodes × 80 B ≈ 168 MiB of `Expr` — ~80,000× the
+    /// largest concat in the test corpus (26 elements), so any realistic v1
+    /// single-file design is far below it, while a `{a,a,…,4M}` flood is a loud,
+    /// bounded parse error instead of an OOM.
+    const MAX_AST_NODES: usize = 1 << 21;
+
     pub fn expr(&mut self, min_bp: u8) -> Expr {
         self.expr_depth += 1;
         if self.expr_depth > Self::MAX_EXPR_DEPTH {
             self.expr_depth -= 1;
             self.error("expression nesting too deep (cap 256)");
+            return Expr {
+                kind: ExprKind::Error,
+                span: self.cur_span(),
+            };
+        }
+        // PARSE-CONCAT-CAP: count every expression node; past the budget, latch
+        // `node_budget_blown` (the expr comma-loops check it and stop pushing) and
+        // report once. Returns an Error leaf so no further nodes are built here.
+        self.node_count += 1;
+        if self.node_count > Self::MAX_AST_NODES {
+            if !self.node_budget_blown {
+                self.node_budget_blown = true;
+                self.error("expression too large (AST node budget 2097152 exceeded)");
+            }
+            self.expr_depth -= 1;
             return Expr {
                 kind: ExprKind::Error,
                 span: self.cur_span(),
@@ -884,7 +917,8 @@ impl<'t, 's> Parser<'t, 's> {
         if self.peek() != Some(TokenKind::RParen) {
             loop {
                 args.push(self.expr(0));
-                if !self.eat(TokenKind::Comma) {
+                // PARSE-CONCAT-CAP: stop consuming once the node budget is blown.
+                if self.node_budget_blown || !self.eat(TokenKind::Comma) {
                     break;
                 }
             }
@@ -903,7 +937,7 @@ impl<'t, 's> Parser<'t, 's> {
             // replication: first = count, inner {…} = the repeated element list.
             self.bump(); // inner '{'
             let mut value = vec![self.expr(0)];
-            while self.eat(TokenKind::Comma) {
+            while !self.node_budget_blown && self.eat(TokenKind::Comma) {
                 value.push(self.expr(0));
             }
             self.expect(TokenKind::RBrace, "'}' closing replication value");
@@ -917,7 +951,7 @@ impl<'t, 's> Parser<'t, 's> {
             };
         }
         let mut parts = vec![first];
-        while self.eat(TokenKind::Comma) {
+        while !self.node_budget_blown && self.eat(TokenKind::Comma) {
             parts.push(self.expr(0));
         }
         self.expect(TokenKind::RBrace, "'}'");
@@ -3404,7 +3438,7 @@ impl<'t, 's> Parser<'t, 's> {
             };
         }
         let mut labels = vec![self.expr(0)];
-        while self.eat(TokenKind::Comma) {
+        while !self.node_budget_blown && self.eat(TokenKind::Comma) {
             labels.push(self.expr(0));
         }
         self.expect(TokenKind::Colon, "':' in generate-case item");
@@ -5666,7 +5700,7 @@ impl<'t, 's> Parser<'t, 's> {
             };
         }
         let mut labels = vec![self.expr(0)];
-        while self.eat(TokenKind::Comma) {
+        while !self.node_budget_blown && self.eat(TokenKind::Comma) {
             labels.push(self.expr(0));
         }
         self.expect(TokenKind::Colon, "':' in case item");
