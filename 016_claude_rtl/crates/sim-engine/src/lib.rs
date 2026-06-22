@@ -332,7 +332,17 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
         })
         .collect();
     st.class_vtable = opts.class_vtable.clone();
-    st.class_calls = opts.class_calls.clone();
+    // CLS-CALL-VEC: index per-call-site dispatch info by ExprId (O(1) Vec) instead
+    // of a BTreeMap (O(log n)) — siblings (class_vtable/class_is_handle) are Vec
+    // too. Non-class designs keep an EMPTY Vec (get() returns None for all eids ⇒
+    // byte-identical, zero allocation); only class designs pay the exprs-length Vec.
+    if !opts.class_calls.is_empty() {
+        let mut cc = vec![None; ir.exprs.len()];
+        for (&eid, &v) in &opts.class_calls {
+            cc[eid as usize] = Some(v);
+        }
+        st.class_calls = cc;
+    }
     // B1 frame-call: install the sidecar, derive the per-net routing tables, and
     // REBUILD the width table so `Expr::Call` widths come from the func metadata.
     // Order is load-bearing: `func_table` must be on `st` before routing/width.

@@ -370,9 +370,11 @@ pub(crate) struct SimState<'a> {
     /// FuncId (most-derived override). From `SimOpts.class_vtable`. Empty ⇒ no
     /// virtual methods.
     pub class_vtable: Vec<Vec<u32>>,
-    /// Per method-CALL-site dispatch info: call-ExprId → `(vslot, static_fid)`.
-    /// A `Some(vslot)` triggers dynamic dispatch via `class_vtable[class][vslot]`.
-    pub class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
+    /// Per method-CALL-site dispatch info, indexed by call-ExprId (CLS-CALL-VEC):
+    /// `Some((vslot, static_fid))` at a call site. A `Some(vslot)` triggers dynamic
+    /// dispatch via `class_vtable[class][vslot]`. EMPTY for non-class designs (an
+    /// out-of-range `get` returns `None` ⇒ no dispatch, byte-identical).
+    pub class_calls: Vec<Option<(Option<u32>, u32)>>,
     /// Warn-once latch for null/X-handle dereference, per handle net (sibling of
     /// `dyn_warned`). `RefCell`: the READ path (`&self`) must latch too.
     pub class_null_warned: std::cell::RefCell<std::collections::BTreeSet<u32>>,
@@ -551,7 +553,7 @@ impl<'a> SimState<'a> {
             class_is_handle: vec![false; nnets],
             class_new_sites: std::collections::BTreeMap::new(),
             class_vtable: Vec::new(),
-            class_calls: std::collections::BTreeMap::new(),
+            class_calls: Vec::new(),
             class_null_warned: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             fmt_cache: std::cell::RefCell::new(vec![None; ir.consts.len()]),
         }
@@ -2078,8 +2080,10 @@ impl<'a> NetReader for SimState<'a> {
         self.run_frame_call(func, args)
     }
     fn resolve_virtual_call(&self, call_eid: u32, static_fid: u32, args: &[Value]) -> u32 {
-        // Only a virtual call site (sidecar `vslot = Some`) redirects.
-        let Some(&(Some(vslot), _)) = self.class_calls.get(&call_eid) else {
+        // Only a virtual call site (sidecar `vslot = Some`) redirects. CLS-CALL-VEC:
+        // O(1) ExprId index; out-of-range (non-class / smaller Vec) ⇒ None.
+        let Some(&(Some(vslot), _)) = self.class_calls.get(call_eid as usize).and_then(|o| o.as_ref())
+        else {
             return static_fid;
         };
         // args[0] = the receiver handle's object-id; X / null → static target
