@@ -2205,9 +2205,23 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // Spawn each child as a NEW activity. Deterministic: declaration order ==
         // the order of `children`; each child's tie composes parent.tie + child idx.
         // NOTE: nested fork is an elaborate ERROR, so `parent_tmpl` here is always a
-        // TOP-LEVEL process and `parent.tie` a small dense top-level index —
-        // compose_child_tie can never overflow or alias (one shift, never chained).
+        // TOP-LEVEL process and `parent.tie` its dense top-level declaration index.
         let parent_tie = self.activities[parent_aid as usize].tie;
+        // FORK-TIE-CAP: `compose_child_tie` packs `(parent_tie + 1)` into the high
+        // 16 bits and the child index into the low 16. Past ~65535 top-level
+        // processes the high half overflows the u32 (`(parent_tie+1) << 16`); past
+        // ~65536 arms the low half aliases (`child_idx & 0xFFFF`). Either silently
+        // collides sibling ties → nondeterministic ordering. Reject loud (graceful
+        // fatal) — both limits are far above any real testbench.
+        if parent_tie >= 0xFFFF || children.len() > 0x1_0000 {
+            self.st.fatal_run(&format!(
+                "fork exceeds the v1 tie-encoding limit (parent process tie {parent_tie}, \
+                 {} arms); deterministic ordering supports \u{2264} 65534 top-level \
+                 processes and \u{2264} 65536 arms per fork",
+                children.len()
+            ));
+            return None; // parent parks; run loop sees `finished` and ends the run
+        }
         for (child_idx, &child_entry) in children.iter().enumerate() {
             let child_tie = compose_child_tie(parent_tie, child_idx as u32);
             let child = Activity {
@@ -3406,11 +3420,13 @@ fn push_sorted(q: &mut Vec<Ready>, r: Ready) {
 /// Child tie = `(parent_tie+1)` in the high 16 bits, child declaration index in
 /// the low 16. `parent` is ALWAYS a top-level process (nested fork is an
 /// elaborate ERROR), so `parent_tie ∈ [0, nproc)` is a small dense int and the
-/// shift is applied EXACTLY ONCE — never chained — so it can never overflow or
-/// alias. The `+1` offset makes children sort STRICTLY AFTER their parent for all
-/// `parent_tie` (including 0), while preserving relative parent ordering and
-/// declaration order among siblings. v1 limits: ≤ 65534 top-level processes,
-/// ≤ 65535 children per fork (far above any MVP testbench).
+/// shift is applied EXACTLY ONCE — never chained. The `+1` offset makes children
+/// sort STRICTLY AFTER their parent for all `parent_tie` (including 0), while
+/// preserving relative parent ordering and declaration order among siblings. v1
+/// limits — ≤ 65534 top-level processes and ≤ 65536 children per fork — are
+/// ENFORCED at the spawn site (FORK-TIE-CAP in `exec_fork`); above them the high
+/// or low half would overflow/alias, so this helper is only ever reached within
+/// the safe range.
 fn compose_child_tie(parent_tie: u32, child_idx: u32) -> u32 {
     ((parent_tie + 1) << 16) | (child_idx & 0xFFFF)
 }
