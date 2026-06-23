@@ -6473,7 +6473,83 @@ impl<'s> Elaborator<'s> {
                     }
                 }
             }
+            ExprKind::Binary {
+                op: BinOp::LogOr, ..
+            } => {
+                // A top-level OR over a SINGLE field (e.g. a desugared `inside
+                // {1,3,[10:15]}`) narrows the field's domain to the UNION bounding
+                // interval, so rejection sampling can actually reach the set (a
+                // full-width random would almost never land in it). The predicate
+                // still filters to the EXACT membership.
+                if let Some((f, lo, hi)) = self.expr_field_interval(e) {
+                    if let Some(b) = bounds.iter_mut().find(|(n, ..)| *n == f) {
+                        b.4 = b.4.max(lo);
+                        b.5 = b.5.min(hi);
+                    }
+                }
+            }
+            ExprKind::Paren { inner } => self.apply_constraint_expr(inner, bounds),
             _ => {}
+        }
+    }
+
+    /// The bounding `[lo,hi]` interval of the SINGLE rand field constrained by `e`
+    /// (an over-approximation: OR ⇒ union, AND ⇒ intersect, leaf comparison ⇒
+    /// half/point/range). `None` if `e` constrains more than one field or none —
+    /// then no single-field domain narrowing applies. Used to size the sampling
+    /// domain for `inside` / disjunctive single-field constraints.
+    fn expr_field_interval(&self, e: &ast::Expr) -> Option<(String, i64, i64)> {
+        use ast::{BinOp, ExprKind};
+        match &e.kind {
+            ExprKind::Paren { inner } => self.expr_field_interval(inner),
+            ExprKind::Binary {
+                op: BinOp::LogOr,
+                lhs,
+                rhs,
+            } => {
+                let (fl, llo, lhi) = self.expr_field_interval(lhs)?;
+                let (fr, rlo, rhi) = self.expr_field_interval(rhs)?;
+                if fl != fr {
+                    return None;
+                }
+                Some((fl, llo.min(rlo), lhi.max(rhi)))
+            }
+            ExprKind::Binary {
+                op: BinOp::LogAnd,
+                lhs,
+                rhs,
+            } => {
+                let (fl, llo, lhi) = self.expr_field_interval(lhs)?;
+                let (fr, rlo, rhi) = self.expr_field_interval(rhs)?;
+                if fl != fr {
+                    return None;
+                }
+                Some((fl, llo.max(rlo), lhi.min(rhi)))
+            }
+            ExprKind::Binary { op, lhs, rhs }
+                if matches!(
+                    op,
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq
+                ) =>
+            {
+                let (f, c, op) = if let Some(f) = rand_field_ident(lhs) {
+                    (f, self.const_eval_in_scope(rhs)?, *op)
+                } else if let Some(f) = rand_field_ident(rhs) {
+                    (f, self.const_eval_in_scope(lhs)?, flip_cmp(*op))
+                } else {
+                    return None;
+                };
+                let (lo, hi) = match op {
+                    BinOp::Lt => (i64::MIN, c.saturating_sub(1)),
+                    BinOp::Le => (i64::MIN, c),
+                    BinOp::Gt => (c.saturating_add(1), i64::MAX),
+                    BinOp::Ge => (c, i64::MAX),
+                    BinOp::Eq => (c, c),
+                    _ => return None,
+                };
+                Some((f, lo, hi))
+            }
+            _ => None,
         }
     }
 

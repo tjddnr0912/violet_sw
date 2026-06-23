@@ -420,6 +420,19 @@ fn bin_op(k: TokenKind) -> BinOp {
         _ => unreachable!("bin_op called on non-binary token"),
     }
 }
+/// Build a binary `Expr` spanning its operands (used by the `inside` desugar).
+fn mk_bin(op: BinOp, l: Expr, r: Expr) -> Expr {
+    let span = l.span.to(r.span);
+    Expr {
+        kind: ExprKind::Binary {
+            op,
+            lhs: Box::new(l),
+            rhs: Box::new(r),
+        },
+        span,
+    }
+}
+
 fn prefix_op(k: TokenKind) -> Option<UnOp> {
     use TokenKind as T;
     Some(match k {
@@ -519,6 +532,41 @@ impl<'t, 's> Parser<'t, 's> {
                 };
                 continue;
             }
+            // `lhs inside { items }` (IEEE §11.4.13): a SET-membership test that
+            // desugars at parse time to an OR of equality / range tests (relational
+            // binding power, lvl7) — so there is no new AST node, and it works in
+            // constraints AND ordinary `if (x inside {…})` for free.
+            if self.at_ident_kw("inside") {
+                if 17 < min_bp {
+                    break;
+                }
+                self.bump(); // `inside`
+                lhs = self.parse_inside(lhs);
+                continue;
+            }
+            // `a -> b` constraint/property implication ≡ `!a || b`. Lowest binding
+            // (below ternary), right-assoc; desugared at parse time (no new node).
+            // A LEADING `->` is an event-trigger STATEMENT (handled at stmt level),
+            // so reaching here means infix position.
+            if op == TokenKind::Arrow {
+                const IMP_LBP: u8 = 2;
+                const IMP_RBP: u8 = 1;
+                if IMP_LBP < min_bp {
+                    break;
+                }
+                self.bump(); // ->
+                let rhs = self.expr(IMP_RBP);
+                let lspan = lhs.span;
+                let not_lhs = Expr {
+                    kind: ExprKind::Unary {
+                        op: UnOp::LogNot,
+                        operand: Box::new(lhs),
+                    },
+                    span: lspan,
+                };
+                lhs = mk_bin(BinOp::LogOr, not_lhs, rhs);
+                continue;
+            }
             let Some((l_bp, r_bp)) = infix_bp(op) else {
                 break;
             };
@@ -546,6 +594,55 @@ impl<'t, 's> Parser<'t, 's> {
             }
         }
         lhs
+    }
+
+    /// Desugar `lhs inside { item, … }` to an OR of equality (`lhs == v`) and range
+    /// (`lhs >= lo && lhs <= hi`) tests. `lhs` is cloned per item (constraint / `if`
+    /// operands are side-effect-free). An empty set never matches (`1'b0`).
+    fn parse_inside(&mut self, lhs: Expr) -> Expr {
+        let start = lhs.span;
+        self.expect(TokenKind::LBrace, "'{' to open an `inside` set");
+        let mut terms: Vec<Expr> = Vec::new();
+        while self.peek() != Some(TokenKind::RBrace) && self.peek().is_some() {
+            let before = self.pos;
+            let term = if self.peek() == Some(TokenKind::LBracket) {
+                self.bump(); // [
+                let lo = self.expr(0);
+                self.expect(TokenKind::Colon, "':' in an `inside` range");
+                let hi = self.expr(0);
+                self.expect(TokenKind::RBracket, "']' to close an `inside` range");
+                let ge = mk_bin(BinOp::Ge, lhs.clone(), lo);
+                let le = mk_bin(BinOp::Le, lhs.clone(), hi);
+                mk_bin(BinOp::LogAnd, ge, le)
+            } else {
+                let v = self.expr(0);
+                mk_bin(BinOp::Eq, lhs.clone(), v)
+            };
+            terms.push(term);
+            if self.peek() == Some(TokenKind::Comma) {
+                self.bump();
+            }
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}' to close an `inside` set");
+        let span = start.to(self.prev_span());
+        let mut it = terms.into_iter();
+        let mut acc = it.next().unwrap_or(Expr {
+            kind: ExprKind::IntLit {
+                kind: IntLitKind::Sized,
+                raw: "1'b0".to_string(),
+            },
+            span,
+        });
+        for t in it {
+            acc = mk_bin(BinOp::LogOr, acc, t);
+        }
+        Expr {
+            kind: acc.kind,
+            span,
+        }
     }
 
     fn expr_prefix(&mut self) -> Expr {

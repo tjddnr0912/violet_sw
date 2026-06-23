@@ -428,3 +428,71 @@ fn staged_inter_variable_carries() {
         "staged path dropped the B2 constraint predicate"
     );
 }
+
+#[test]
+fn randomize_inside_set_constraint() {
+    // `x inside {1, 3, [10:15], 99}` — the domain narrows to the set's bounding
+    // [1,99] and the predicate filters to exact membership.
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           constraint c { x inside {1, 3, [10:15], 99}; }\n\
+         endclass\n\
+         module top; P p; integer i; integer ok;\n\
+         initial begin\n\
+           p = new; ok = 1;\n\
+           for (i = 0; i < 200; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (!(p.x == 1 || p.x == 3 || (p.x >= 10 && p.x <= 15) || p.x == 99)) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("ok=1"),
+        "x must stay in the inside set:\n{out}"
+    );
+}
+
+#[test]
+fn inside_in_ordinary_expression() {
+    // `inside` also works in a plain `if` (it desugars to OR-of-comparisons).
+    let (out, _err, code) = run("module top;\n\
+         reg [7:0] v;\n\
+         initial begin\n\
+           v = 12;\n\
+           if (v inside {1, [10:15], 99}) $display(\"IN\"); else $display(\"OUT\");\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0));
+    assert!(out.contains("IN"), "12 is inside {{1,[10:15],99}}:\n{out}");
+}
+
+#[test]
+fn randomize_implication_constraint() {
+    // `mode == 1 -> x inside {[10:20]}` — when mode is 1, x must be in [10,20];
+    // otherwise x is unconstrained (within its range). (`a -> b` ≡ `!a || b`.)
+    let (out, err, code) = run("class P;\n\
+           rand int mode;\n\
+           rand int x;\n\
+           constraint c { mode inside {0,1}; x >= 0; x <= 100; mode == 1 -> x inside {[10:20]}; }\n\
+         endclass\n\
+         module top; P p; integer i; integer ok; integer saw0;\n\
+         initial begin\n\
+           p = new; ok = 1; saw0 = 0;\n\
+           for (i = 0; i < 300; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (p.mode == 1 && (p.x < 10 || p.x > 20)) ok = 0;\n\
+             if (p.mode == 0) saw0 = 1;\n\
+           end\n\
+           $display(\"ok=%0d saw0=%0d\", ok, saw0); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok=1"), "mode==1 ⇒ x in [10,20]:\n{out}");
+    assert!(
+        out.contains("saw0=1"),
+        "mode==0 must be reachable (implication vacuous):\n{out}"
+    );
+}
