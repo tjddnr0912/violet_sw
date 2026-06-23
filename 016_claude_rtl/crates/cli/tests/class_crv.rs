@@ -496,3 +496,85 @@ fn randomize_implication_constraint() {
         "mode==0 must be reachable (implication vacuous):\n{out}"
     );
 }
+
+// ───────── B2 adversarial-hunt fixes (randomize return value + wide-field eval) ─────────
+
+#[test]
+fn randomize_returns_zero_on_unsatisfiable() {
+    // §18.11: an unsatisfiable constraint → randomize() returns 0 (was hardcoded 1),
+    // and the fields are left unchanged.
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           rand int y;\n\
+           constraint c { x >= 0; x <= 10; y >= 0; y <= 10; x < y; y < x; }\n\
+         endclass\n\
+         module top; P p; integer r;\n\
+         initial begin p = new; r = p.randomize(); $display(\"r=%0d\", r); $finish; end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("r=0"),
+        "unsatisfiable randomize() must return 0:\n{out}"
+    );
+}
+
+#[test]
+fn randomize_returns_one_on_success() {
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           constraint c { x >= 1; x <= 6; }\n\
+         endclass\n\
+         module top; P p; integer r;\n\
+         initial begin p = new; r = p.randomize(); $display(\"r=%0d ok=%0d\", r, (p.x>=1 && p.x<=6)); $finish; end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("r=1 ok=1"),
+        "satisfiable randomize() returns 1:\n{out}"
+    );
+}
+
+#[test]
+fn randomize_wide_signed_negative_range() {
+    // A signed field wider than 64 bits with a negative range: draws must be in
+    // range (the copy-out must SIGN-extend the high words, not zero-pad).
+    let (out, err, code) = run("class P;\n\
+           rand bit signed [127:0] x;\n\
+           constraint c { x >= -100; x <= -50; }\n\
+         endclass\n\
+         module top; P p; integer i; integer ok;\n\
+         initial begin\n\
+           p = new; ok = 1;\n\
+           for (i = 0; i < 30; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (p.x < -128'sd100 || p.x > -128'sd50) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("ok=1"),
+        "signed wide negative range must hold:\n{out}"
+    );
+}
+
+#[test]
+fn wide_field_general_constraint_is_loud() {
+    // A general (non-range) constraint on a >64-bit field is honestly loud-rejected
+    // (the i64 predicate lane cannot faithfully evaluate it) rather than silently
+    // accepting out-of-constraint draws.
+    let (_o, err, code) = run("class P;\n\
+           rand bit signed [127:0] x;\n\
+           rand bit signed [127:0] y;\n\
+           constraint c { x < y; }\n\
+         endclass\n\
+         module top; P p; initial begin p = new; p.randomize(); $finish; end\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "a >64-bit general constraint must be loud-rejected"
+    );
+    assert!(err.contains("VITA-E3009"), "expected E3009:\n{err}");
+}

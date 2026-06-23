@@ -6590,27 +6590,33 @@ impl<'s> Elaborator<'s> {
         let Some(fields) = self.class_table.get(name).map(|ci| ci.fields.clone()) else {
             return Vec::new();
         };
-        // rand field name → field-id (same id as `class_rand`'s `RandBound.0`).
-        let mut name_to_idx: std::collections::HashMap<String, u32> = Default::default();
+        // rand field name → (field-id, width, signed). The field-id matches
+        // `class_rand`'s `RandBound.0`; width/signed gate the i64 predicate lane.
+        let mut map: std::collections::HashMap<String, (u32, u32, bool)> = Default::default();
         for (idx, f) in fields.iter().enumerate() {
             if rand_names.contains(&f.name) {
-                name_to_idx.insert(f.name.clone(), idx as u32);
+                map.insert(f.name.clone(), (idx as u32, f.width, f.signed));
             }
         }
         let mut preds: Vec<Vec<sim_ir::COp>> = Vec::new();
         for c in &constraints.clone() {
             for e in &c.exprs {
-                self.collect_constraint_preds(e, &name_to_idx, &mut preds);
+                self.collect_constraint_preds(e, &map, &mut preds);
             }
         }
         preds
     }
 
-    /// Split top-level `&&` into independent predicates; compile each leaf.
+    /// Split top-level `&&` into independent predicates; compile each leaf. A pure
+    /// single-field range/equality (`x </<=/>/>=/== const`) is SKIPPED — it is
+    /// captured exactly by the `[lo,hi]` sampling domain (`apply_constraint_expr`),
+    /// so it needs no predicate (and skipping it keeps a WIDE-field range constraint
+    /// off the i64 predicate lane, which only handles ≤64-bit signed / ≤63-bit
+    /// unsigned).
     fn collect_constraint_preds(
         &mut self,
         e: &ast::Expr,
-        map: &std::collections::HashMap<String, u32>,
+        map: &std::collections::HashMap<String, (u32, u32, bool)>,
         preds: &mut Vec<Vec<sim_ir::COp>>,
     ) {
         if let ast::ExprKind::Binary {
@@ -6627,10 +6633,30 @@ impl<'s> Elaborator<'s> {
             self.collect_constraint_preds(inner, map, preds);
             return;
         }
+        if self.is_single_field_range(e) {
+            return; // captured by the [lo,hi] domain — no predicate needed
+        }
         let mut prog: Vec<sim_ir::COp> = Vec::new();
         if self.compile_constraint_pred(e, map, &mut prog) {
             preds.push(prog);
         }
+    }
+
+    /// A pure `field </<=/>/>=/== const` comparison (captured by the `[lo,hi]`
+    /// domain). `!=` is NOT included — it is not a range narrowing and needs a
+    /// predicate.
+    fn is_single_field_range(&self, e: &ast::Expr) -> bool {
+        if let ast::ExprKind::Binary { op, lhs, rhs } = &e.kind {
+            if matches!(
+                op,
+                ast::BinOp::Lt | ast::BinOp::Le | ast::BinOp::Gt | ast::BinOp::Ge | ast::BinOp::Eq
+            ) {
+                let l = rand_field_ident(lhs).is_some() && self.const_eval_in_scope(rhs).is_some();
+                let r = rand_field_ident(rhs).is_some() && self.const_eval_in_scope(lhs).is_some();
+                return l || r;
+            }
+        }
+        false
     }
 
     /// Post-order compile a constraint expression to a postfix predicate. Returns
@@ -6638,14 +6664,32 @@ impl<'s> Elaborator<'s> {
     fn compile_constraint_pred(
         &mut self,
         e: &ast::Expr,
-        map: &std::collections::HashMap<String, u32>,
+        map: &std::collections::HashMap<String, (u32, u32, bool)>,
         out: &mut Vec<sim_ir::COp>,
     ) -> bool {
         use ast::{ExprKind, UnOp};
         match &e.kind {
             ExprKind::Paren { inner } => self.compile_constraint_pred(inner, map, out),
             ExprKind::Ident(path) if path.segments.len() == 1 => {
-                if let Some(&idx) = map.get(&path.segments[0].name) {
+                if let Some(&(idx, width, signed)) = map.get(&path.segments[0].name) {
+                    // The predicate lane evaluates in i64: a value fits iff the field
+                    // is ≤63 bits (any sign), or exactly 64-bit SIGNED. A >64-bit field
+                    // or a ≥64-bit UNSIGNED field cannot be faithfully compared in i64
+                    // (it would truncate / mis-sign), so reject it loudly here rather
+                    // than silently accept out-of-constraint draws. (Pure single-field
+                    // range constraints on such fields are still honored via [lo,hi].)
+                    if width > 64 || (width >= 64 && !signed) {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "a general (non-range) constraint on rand field `{}` is \
+                                 unsupported for its width/signedness (B2 predicates \
+                                 evaluate in i64: ≤63-bit, or 64-bit signed)",
+                                path.segments[0].name
+                            ),
+                        );
+                        return false;
+                    }
                     out.push(sim_ir::COp::Field(idx));
                     return true;
                 }
@@ -7366,17 +7410,53 @@ impl<'s> Elaborator<'s> {
             return true;
         }
         let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        // When the call captures a result (`r = obj.randomize()`), allocate a 32-bit
+        // status net and pass it as args[1]; the engine writes the §18.11 verdict
+        // (1=success, 0=fail) there, and the result lvalue is assigned FROM it (not a
+        // hardcoded 1 — so an unsatisfiable / null randomize reports 0 correctly).
+        let mut task_args = vec![handle];
+        let status_net = result.map(|_| {
+            let sn = self.nets.len() as u32;
+            let sname = format!("__rand_status_{sn}");
+            self.add_net(
+                &sname,
+                ir::NetVar {
+                    kind: ir::NetKind::Reg,
+                    width: 32,
+                    msb: 31,
+                    lsb: 0,
+                    signed: false,
+                    array_len: 1,
+                    dir: ir::PortDir::Internal,
+                    init: default_init(ast::NetVarKind::Reg, 32),
+                },
+            );
+            sn
+        });
+        if let Some(sn) = status_net {
+            let status_sig = self.push_expr(ir::Expr::Signal {
+                net: sn,
+                word: None,
+            });
+            task_args.push(status_sig);
+        }
         let sid = self.push_stmt(ir::Stmt::SysTask {
             which: ir::SysTaskId::ClassRandomize,
             fmt: None,
-            args: vec![handle],
+            args: task_args,
         });
         b.push_stmt_id(sid);
-        if let Some(lv) = result {
-            let one = self.const_u32_expr(1, 32);
+        if let (Some(lv), Some(sn)) = (result, status_net) {
+            let status_rd = self.push_expr(ir::Expr::Signal {
+                net: sn,
+                word: None,
+            });
             let lvv = self.lower_lvalue(lv);
             self.check_lvalue_kind(&lvv, true);
-            let sid2 = self.push_stmt(ir::Stmt::BlockingAssign { lhs: lvv, rhs: one });
+            let sid2 = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: lvv,
+                rhs: status_rd,
+            });
             b.push_stmt_id(sid2);
         }
         true

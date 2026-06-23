@@ -578,26 +578,65 @@ pub(crate) fn dispatch(
 /// seeded draw), and write the values back into the heap object. A null/X handle is
 /// a no-op (IEEE §18.6 — randomize on a null handle is illegal; here it is benign).
 fn class_randomize(sched: &mut Scheduler, args: &[u32]) {
+    let success = class_randomize_run(sched, args);
+    // IEEE 1800 §18.11: randomize() returns 1 on success, 0 on failure. When the
+    // call captured a result (`r = obj.randomize()`), elaborate passes the result
+    // status net as args[1]; write the verdict there (was hardcoded to 1, so a
+    // failed/unsatisfiable/null randomize silently reported success).
+    if let Some(&status_e) = args.get(1) {
+        let net = match sched.st.ir.exprs.get(status_e as usize) {
+            Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+            _ => None,
+        };
+        if let Some(net) = net {
+            let lv = sim_ir::Lvalue {
+                chunks: vec![sim_ir::LvalChunk {
+                    net,
+                    word: None,
+                    offset: None,
+                    width: None,
+                    kind: sim_ir::SelKind::Bit,
+                }],
+            };
+            let v = Value::from_packed(
+                &sim_ir::BitPacked {
+                    val: vec![success as u64],
+                    unk: vec![0],
+                },
+                32,
+                false,
+            );
+            let off = sched.resolve_lvalue_offsets(&lv);
+            sched.st.write_lvalue(&lv, v, &off);
+        }
+    }
+}
+
+/// Run the randomize() draw; returns whether it SUCCEEDED (§18.11). A null/X
+/// handle fails (0); a class with no rand fields succeeds trivially (1); the
+/// rejection sampler succeeds when it finds a satisfying assignment within the
+/// cap, else fails (fields left unchanged).
+fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
     let Some(&handle_e) = args.first() else {
-        return;
+        return false;
     };
     let hv = sched.eval_ctx_top(handle_e, 32, false);
     if hv.unk.iter().any(|&u| u != 0) {
-        return; // X/Z handle
+        return false; // X/Z handle → fail
     }
     let id = hv.val.first().copied().unwrap_or(0) as u32;
     if id == 0 {
-        return; // null handle
+        return false; // null handle → fail
     }
     let class_id = match sched.st.class_heap.borrow().get(&id) {
         Some(o) => o.class_id,
-        None => return,
+        None => return false,
     };
     let Some(rand) = sched.st.class_rand.get(class_id as usize).cloned() else {
-        return;
+        return true; // no rand table → nothing to randomize → success
     };
     if rand.is_empty() {
-        return;
+        return true; // no rand fields → trivially succeeds
     }
     let preds: Vec<Vec<sim_ir::COp>> = sched
         .st
@@ -634,15 +673,19 @@ fn class_randomize(sched: &mut Scheduler, args: &[u32]) {
         }
     }
     sched.st.randomize_seed.set(seed);
-    if let Some(updates) = accepted {
-        let mut heap = sched.st.class_heap.borrow_mut();
-        if let Some(obj) = heap.get_mut(&id) {
-            for (idx, v) in updates {
-                if let Some(slot) = obj.fields.get_mut(idx as usize) {
-                    *slot = v;
+    match accepted {
+        Some(updates) => {
+            let mut heap = sched.st.class_heap.borrow_mut();
+            if let Some(obj) = heap.get_mut(&id) {
+                for (idx, v) in updates {
+                    if let Some(slot) = obj.fields.get_mut(idx as usize) {
+                        *slot = v;
+                    }
                 }
             }
+            true
         }
+        None => false, // cap exhausted / unsatisfiable → fields unchanged, fail
     }
 }
 
@@ -742,10 +785,22 @@ fn draw_u64(seed: &mut u32) -> u64 {
 /// A `width`-bit `Value` holding the low bits of `bits` (two's-complement when
 /// signed); used for a ranged rand draw.
 fn value_from_bits(bits: u64, width: u32, signed: bool) -> Value {
+    // The drawn value lives in the LOW word. For a field wider than 64 bits, the
+    // high words must be SIGN-filled for a negative signed draw (a `[-100,-50]`
+    // constraint on a `rand bit signed [127:0]`); a plain single-word pack would
+    // zero-pad and silently store a huge positive out-of-range value.
+    let n = (width.max(1) as usize).div_ceil(64);
+    let fill = if signed && (bits as i64) < 0 {
+        u64::MAX
+    } else {
+        0
+    };
+    let mut val = vec![fill; n];
+    val[0] = bits;
     Value::from_packed(
         &sim_ir::BitPacked {
-            val: vec![bits],
-            unk: vec![0],
+            val,
+            unk: vec![0; n],
         },
         width.max(1),
         signed,
