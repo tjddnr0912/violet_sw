@@ -369,6 +369,9 @@ pub(crate) struct SimState<'a> {
     pub class_dist: Vec<Vec<crate::DistField>>,
     /// N7-REST B2: per-class `randc` fields.
     pub class_randc: Vec<Vec<crate::RandcField>>,
+    /// N7-REST B-CRV final: per-call inline `randomize() with {…}` constraints,
+    /// indexed by the with-id Const arg of each `ClassRandomize`.
+    pub randomize_with: Vec<crate::RandWithCall>,
     /// N7-REST B2: per-(object,field) `randc` cyclic state — (permutation, position).
     pub randc_state: std::collections::HashMap<(u32, u32), (Vec<i64>, usize)>,
     /// N7-REST: the deterministic `randomize()` draw seed. A dedicated stream
@@ -571,6 +574,7 @@ impl<'a> SimState<'a> {
             class_constraints: Vec::new(),
             class_dist: Vec::new(),
             class_randc: Vec::new(),
+            randomize_with: Vec::new(),
             randc_state: std::collections::HashMap::new(),
             // A fixed nonzero start so the first draw is well-defined and the
             // sequence is reproducible on every OS (dist_uniform substitutes 0

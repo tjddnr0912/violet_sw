@@ -630,6 +630,7 @@ fn run_vita_str_gated(
         class_constraints: sc.class_constraints,
         class_dist: sc.class_dist,
         class_randc: sc.class_randc,
+        randomize_with: sc.randomize_with,
         class_vtable: sc.class_vtable,
         class_calls: sc.class_calls,
         class_field_widths: sc.class_field_widths,
@@ -1386,6 +1387,9 @@ struct StagedExtraSidecars {
     class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
     class_dist: Vec<Vec<sim_engine::DistField>>,
     class_randc: Vec<Vec<sim_engine::RandcField>>,
+    /// N7-REST B-CRV final: per-call inline `randomize() with {…}` constraints
+    /// (staged velab→vrun must carry them or inline `with` is silently dropped).
+    randomize_with: Vec<sim_engine::RandWithCall>,
 }
 
 impl StagedExtraSidecars {
@@ -1410,6 +1414,7 @@ impl StagedExtraSidecars {
             class_constraints: sc.class_constraints.clone(),
             class_dist: sc.class_dist.clone(),
             class_randc: sc.class_randc.clone(),
+            randomize_with: sc.randomize_with.clone(),
         }
     }
 }
@@ -2319,6 +2324,7 @@ fn run_vrun_gated(
         class_constraints: extra.class_constraints,
         class_dist: extra.class_dist,
         class_randc: extra.class_randc,
+        randomize_with: extra.randomize_with,
         class_vtable: extra.class_vtable,
         class_calls: extra.class_calls,
         class_field_widths: extra.class_field_widths,
@@ -2988,6 +2994,20 @@ mod tests {
             vec![(3, vec![(0, 0, 1)])],
         ];
         s.class_randc = vec![vec![(2, 0, 15)], vec![(4, -8, 7)]];
+        s.randomize_with = vec![
+            (
+                vec![(0, 1, 9), (1, -3, 3)],
+                vec![vec![
+                    sim_ir::COp::Field(0),
+                    sim_ir::COp::Field(1),
+                    sim_ir::COp::Bin(sim_ir::CBinOp::Lt),
+                ]],
+            ),
+            (
+                vec![],
+                vec![vec![sim_ir::COp::SoftMarker, sim_ir::COp::Field(2)]],
+            ),
+        ];
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -2995,7 +3015,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "766f1afb25286df466d5d8bb50d3157c9456f6535a43f6bd823fff78e3b174c4";
+        const EXPECTED: &str = "256d9945804a43a6eada644a9cbea319f769537e89858e5003ae8358eaf47466";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\

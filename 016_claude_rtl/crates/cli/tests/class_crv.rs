@@ -702,3 +702,90 @@ fn dist_range_spread_vs_per_value() {
         "spread vs per-value mass should be balanced:\n{out}"
     );
 }
+
+// ───────────────────────── inline `randomize() with {…}` (B-CRV final) ─────────
+
+#[test]
+fn inline_with_equality() {
+    // `randomize() with { v == 5; }` adds a per-call equality constraint (§18.7);
+    // every draw must be exactly 5 even though the class has no constraint.
+    let (out, err, code) = run("class C;\n\
+           rand int v;\n\
+         endclass\n\
+         module top; C c; integer i; integer ok;\n\
+         initial begin\n\
+           c = new; ok = 1;\n\
+           for (i = 0; i < 10; i = i + 1) begin\n\
+             c.randomize() with { v == 5; };\n\
+             if (c.v != 5) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok=1"), "inline-with equality:\n{out}");
+}
+
+#[test]
+fn inline_with_range() {
+    // `randomize() with { v >= 10; v < 20; }` — per-call range; all draws in [10,19].
+    let (out, err, code) = run("class C;\n\
+           rand int v;\n\
+         endclass\n\
+         module top; C c; integer i; integer ok;\n\
+         initial begin\n\
+           c = new; ok = 1;\n\
+           for (i = 0; i < 30; i = i + 1) begin\n\
+             c.randomize() with { v >= 10; v < 20; };\n\
+             if (c.v < 10 || c.v >= 20) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok=1"), "inline-with range:\n{out}");
+}
+
+#[test]
+fn inline_with_adds_to_class_constraint() {
+    // §18.7: inline constraints are ADDED to the class constraint, not replacing it.
+    // Class says v in [1,100]; inline says v < 10 → draws in [1,9].
+    let (out, err, code) = run("class C;\n\
+           rand int v;\n\
+           constraint base { v >= 1; v <= 100; }\n\
+         endclass\n\
+         module top; C c; integer i; integer ok;\n\
+         initial begin\n\
+           c = new; ok = 1;\n\
+           for (i = 0; i < 30; i = i + 1) begin\n\
+             c.randomize() with { v < 10; };\n\
+             if (c.v < 1 || c.v >= 10) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok=1"), "inline-with intersects class:\n{out}");
+}
+
+#[test]
+fn inline_with_result_and_intervar() {
+    // Captured result form `r = obj.randomize() with {…}` + inter-variable predicate.
+    let (out, err, code) = run("class C;\n\
+           rand int a; rand int b;\n\
+           constraint dom { a >= 0; a <= 20; b >= 0; b <= 20; }\n\
+         endclass\n\
+         module top; C c; integer i; integer ok; integer r;\n\
+         initial begin\n\
+           c = new; ok = 1;\n\
+           for (i = 0; i < 30; i = i + 1) begin\n\
+             r = c.randomize() with { a < b; };\n\
+             if (r != 1) ok = 0;\n\
+             if (!(c.a < c.b)) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok=1"), "inline-with result+intervar:\n{out}");
+}

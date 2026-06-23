@@ -612,6 +612,25 @@ fn class_randomize(sched: &mut Scheduler, args: &[u32]) {
     }
 }
 
+/// N7-REST B-CRV final: resolve the inline-`with` per-call constraints for a
+/// `ClassRandomize`. `args[0]` is the handle (Signal) and an optional status is a
+/// Signal too; the with-id is the lone `Const` arg. None ⇒ a plain randomize().
+fn inline_with_call(sched: &Scheduler, args: &[u32]) -> Option<crate::RandWithCall> {
+    for &e in args.get(1..)? {
+        if let Some(sim_ir::Expr::Const { val }) = sched.st.ir.exprs.get(e as usize) {
+            let idx = sched
+                .st
+                .ir
+                .consts
+                .get(*val as usize)
+                .and_then(|c| c.bits.val.first().copied())
+                .unwrap_or(0) as usize;
+            return sched.st.randomize_with.get(idx).cloned();
+        }
+    }
+    None
+}
+
 /// Run the randomize() draw; returns whether it SUCCEEDED (§18.11). A null/X
 /// handle fails (0); a class with no rand fields succeeds trivially (1); the
 /// rejection sampler succeeds when it finds a satisfying assignment within the
@@ -632,18 +651,35 @@ fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
         Some(o) => o.class_id,
         None => return false,
     };
-    let Some(rand) = sched.st.class_rand.get(class_id as usize).cloned() else {
+    let Some(mut rand) = sched.st.class_rand.get(class_id as usize).cloned() else {
         return true; // no rand table → nothing to randomize → success
     };
     if rand.is_empty() {
         return true; // no rand fields → trivially succeeds
     }
-    let preds: Vec<Vec<sim_ir::COp>> = sched
+    let mut preds: Vec<Vec<sim_ir::COp>> = sched
         .st
         .class_constraints
         .get(class_id as usize)
         .cloned()
         .unwrap_or_default();
+    // N7-REST B-CRV final: inline `randomize() with {…}` (IEEE §18.7) — the with-id
+    // is a Const arg. Its per-call domain overrides INTERSECT the class `[lo,hi]`
+    // (an empty intersection ⇒ infeasible ⇒ fail BEFORE drawing); its predicates
+    // are ANDed with the class predicates. Absent ⇒ byte-identical to B2.
+    if let Some((domains, extra)) = inline_with_call(sched, args) {
+        for (fi, ilo, ihi) in domains {
+            if let Some(b) = rand.iter_mut().find(|r| r.0 == fi) {
+                b.3 = b.3.max(ilo);
+                b.4 = b.4.min(ihi);
+                b.5 = true; // constrained ⇒ draw within the narrowed [lo,hi]
+                if b.3 > b.4 {
+                    return false; // inline ∩ class is empty → randomize fails (§18.11)
+                }
+            }
+        }
+        preds.extend(extra);
+    }
     let mut seed = sched.st.randomize_seed.get();
     // Rejection sampling (B2): draw every rand field from its `class_rand` domain,
     // keep the candidate only if every predicate holds. Draw order + the per-field

@@ -715,6 +715,14 @@ pub enum Stmt {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `obj.randomize() with { … };` as a void statement (result discarded). The
+    /// inline constraints ride a per-call `randomize_with` sidecar (B-CRV final).
+    RandomizeWith {
+        name: HierPath,
+        args: Vec<Expr>,
+        constraints: Vec<Expr>,
+        span: Span,
+    },
     DelayCtrl {
         delay: Delay,
         body: Option<Box<Stmt>>,
@@ -1058,6 +1066,15 @@ pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
+
+/// Boxed payload of `ExprKind::RandomizeWith` (`obj.randomize() with { … }`). Held
+/// behind a `Box` so the variant stays pointer-sized (see the variant's note).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct RandomizeWithExpr {
+    pub name: HierPath,
+    pub args: Vec<Expr>,
+    pub constraints: Vec<Expr>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ExprKind {
     // literals: raw lexeme + kind; value parse deferred to elaborate.
@@ -1125,6 +1142,14 @@ pub enum ExprKind {
         name: HierPath,
         args: Vec<Expr>,
     }, // func(args)
+    /// `obj.randomize() with { c1; c2; … }` (IEEE 1800 §18.7) — a per-call
+    /// constrained-random draw. The payload is BOXED so this rare variant does not
+    /// enlarge `ExprKind`: the expression parser recurses through `ExprKind`-sized
+    /// frames and a fat inline variant shrinks the recursion-depth-cap margin (it
+    /// tipped `depth_guard.rs`'s deep-nesting test into a stack overflow). B-CRV
+    /// final slice. `constraints` are extra constraint expressions ADDED to the
+    /// object's class constraints for this one call.
+    RandomizeWith(Box<RandomizeWithExpr>),
     /// `$time`, `$signed(x)`. NOTE (verdict M6): `name.name` retains the leading
     /// `$` (the lexer's `SystemTask` lexeme includes it), parallel to EscapedIdent.
     SysCall {

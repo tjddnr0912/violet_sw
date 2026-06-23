@@ -101,6 +101,13 @@ pub type DistField = (u32, Vec<(i64, i64, i64)>);
 /// (per-instance state in the engine).
 pub type RandcField = (u32, i64, i64);
 
+/// N7-REST B-CRV final: one inline `randomize() with {…}` call's per-call extra
+/// constraints — `(domain overrides, predicates)`. The engine reads the with-id
+/// from a `Const` arg of `ClassRandomize`, INTERSECTS each `(field_id, lo, hi)`
+/// override into the class `[lo,hi]` domain, and ANDs the predicates with the
+/// class predicates (IEEE §18.7).
+pub type RandWithCall = (Vec<(u32, i64, i64)>, Vec<Vec<sim_ir::COp>>);
+
 /// Caller-tunable knobs. All have deterministic, documented defaults.
 #[derive(Debug, Clone)]
 pub struct SimOpts {
@@ -220,6 +227,9 @@ pub struct SimOpts {
     pub class_dist: Vec<Vec<DistField>>,
     /// N7-REST B2: per-class `randc` cyclic fields.
     pub class_randc: Vec<Vec<RandcField>>,
+    /// N7-REST B-CRV final: per-call inline `randomize() with {…}` constraints,
+    /// indexed by the with-id Const arg of each `ClassRandomize`. EMPTY ⇒ none.
+    pub randomize_with: Vec<RandWithCall>,
     /// Virtual dispatch table: `class_vtable[class_id][vslot]` = concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -272,6 +282,7 @@ impl Default for SimOpts {
             class_constraints: Vec::new(),
             class_dist: Vec::new(),
             class_randc: Vec::new(),
+            randomize_with: Vec::new(),
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
@@ -368,6 +379,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.class_constraints = opts.class_constraints.clone();
     st.class_dist = opts.class_dist.clone();
     st.class_randc = opts.class_randc.clone();
+    st.randomize_with = opts.randomize_with.clone();
     // CLS-CALL-VEC: index per-call-site dispatch info by ExprId (O(1) Vec) instead
     // of a BTreeMap (O(log n)) — siblings (class_vtable/class_is_handle) are Vec
     // too. Non-class designs keep an EMPTY Vec (get() returns None for all eids ⇒

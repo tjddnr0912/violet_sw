@@ -570,6 +570,19 @@ impl<'t, 's> Parser<'t, 's> {
                 lhs = self.parse_dist(lhs);
                 continue;
             }
+            // `obj.randomize() with { c; … }` (IEEE §18.7): per-call inline
+            // constraints. Postfix on a method CALL; the brace `{` after `with`
+            // disambiguates from the array-method `with (expr)` iterator form.
+            // B-CRV final slice. The body is a `#[inline(never)]` helper so it does
+            // NOT enlarge this hot recursive frame — the expr-depth cap relies on
+            // `expr_capped` staying small (`depth_guard.rs` deep-nesting test).
+            if self.at_ident_kw("with")
+                && self.peek_at(1) == Some(TokenKind::LBrace)
+                && matches!(lhs.kind, ExprKind::Call { .. })
+            {
+                lhs = self.parse_randomize_with_postfix(lhs);
+                continue;
+            }
             // `a -> b` constraint/property implication ≡ `!a || b`. Lowest binding
             // (below ternary), right-assoc; desugared at parse time (no new node).
             // A LEADING `->` is an event-trigger STATEMENT (handled at stmt level),
@@ -3968,6 +3981,62 @@ impl<'t, 's> Parser<'t, 's> {
         }))
     }
 
+    /// `obj.randomize() with { … }` postfix: consume `with`, parse the inline
+    /// constraint block, and wrap the Call `lhs` into `ExprKind::RandomizeWith`.
+    /// `#[inline(never)]` so its locals never inflate the recursive `expr_capped`
+    /// frame (the expr-depth cap depends on a small hot frame).
+    #[inline(never)]
+    fn parse_randomize_with_postfix(&mut self, lhs: Expr) -> Expr {
+        self.bump(); // `with`
+        let constraints = self.parse_with_constraints();
+        let span = lhs.span.to(self.prev_span());
+        let (name, args) = match lhs.kind {
+            ExprKind::Call { name, args } => (name, args),
+            _ => unreachable!("caller gates on ExprKind::Call"),
+        };
+        Expr {
+            kind: ExprKind::RandomizeWith(Box::new(RandomizeWithExpr {
+                name,
+                args,
+                constraints,
+            })),
+            span,
+        }
+    }
+
+    /// Parse `{ (constraint_expr ;)* }` after `with` for inline `randomize() with`
+    /// (IEEE §18.7). Mirrors the constraint-block body. `soft` inside an inline
+    /// `with` is a v1 loud reject (the per-call sidecar carries hard predicates
+    /// only — class-level `soft` is unaffected).
+    fn parse_with_constraints(&mut self) -> Vec<Expr> {
+        self.expect(
+            TokenKind::LBrace,
+            "'{' to open an inline `with` constraint block",
+        );
+        let mut exprs = Vec::new();
+        while self.peek() != Some(TokenKind::RBrace) && self.peek().is_some() {
+            let before = self.pos;
+            if self.at_ident_kw("soft") {
+                self.error(
+                    "`soft` inside inline `randomize() with` is unsupported \
+                     (v1: hard constraints only)",
+                );
+                self.bump();
+            }
+            let e = self.expr(0);
+            exprs.push(e);
+            self.expect(TokenKind::Semi, "';' after an inline constraint expression");
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.expect(
+            TokenKind::RBrace,
+            "'}' to close an inline `with` constraint block",
+        );
+        exprs
+    }
+
     /// Recover from a malformed class item by skipping to the next `;` or
     /// `endclass` (consuming the `;`), without re-reporting.
     fn skip_class_item_recover(&mut self) {
@@ -4558,6 +4627,18 @@ impl<'t, 's> Parser<'t, 's> {
                     } else {
                         Vec::new()
                     };
+                    // `obj.randomize() with { … };` as a void statement (§18.7).
+                    if self.at_ident_kw("with") && self.peek_at(1) == Some(TokenKind::LBrace) {
+                        self.bump(); // `with`
+                        let constraints = self.parse_with_constraints();
+                        self.expect(TokenKind::Semi, "';'");
+                        return Stmt::RandomizeWith {
+                            name: path,
+                            args,
+                            constraints,
+                            span: start.to(self.prev_span()),
+                        };
+                    }
                     self.expect(TokenKind::Semi, "';'");
                     Stmt::UserTaskCall {
                         name: path,
@@ -6699,6 +6780,11 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                     fix_expr(a, from, to);
                 }
             }
+            ExprKind::RandomizeWith(b) => {
+                for a in b.args.iter_mut().chain(b.constraints.iter_mut()) {
+                    fix_expr(a, from, to);
+                }
+            }
             ExprKind::Paren { inner } => fix_expr(inner, from, to),
             ExprKind::MinTypMax { min, typ, max } => {
                 fix_expr(min, from, to);
@@ -6882,6 +6968,13 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
         }
         Stmt::SysTaskCall { args, .. } | Stmt::UserTaskCall { args, .. } => {
             for a in args {
+                fix_expr(a, from, to);
+            }
+        }
+        Stmt::RandomizeWith {
+            args, constraints, ..
+        } => {
+            for a in args.iter_mut().chain(constraints.iter_mut()) {
                 fix_expr(a, from, to);
             }
         }

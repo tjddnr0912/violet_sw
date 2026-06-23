@@ -323,6 +323,14 @@ pub type DistField = (u32, Vec<(i64, i64, i64)>);
 /// N7-REST B2: a `randc` (cyclic) field — `(field_id, lo, hi)`.
 pub type RandcField = (u32, i64, i64);
 
+/// N7-REST B-CRV final: one inline `randomize() with {…}` call's per-call extra
+/// constraints — `(domain overrides, predicates)`. Indexed by a with-id passed
+/// as a `Const` arg of the `ClassRandomize` SysTask. Each domain override
+/// `(field_id, lo, hi)` further-narrows the class `[lo,hi]` for that call;
+/// predicates are ANDed with the class predicates (IEEE §18.7 — inline
+/// constraints are ADDED to the class constraints).
+pub type RandWithCall = (Vec<(u32, i64, i64)>, Vec<Vec<sim_ir::COp>>);
+
 #[derive(Debug, Clone, Default)]
 pub struct Sidecars {
     pub fork_modes: ForkModeTable,
@@ -381,6 +389,10 @@ pub struct Sidecars {
     pub class_dist: Vec<Vec<DistField>>,
     /// N7-REST B2: per-class `randc` (cyclic) fields (`[class_id]` → fields).
     pub class_randc: Vec<Vec<RandcField>>,
+    /// N7-REST B-CRV final: per-call inline `randomize() with {…}` constraints,
+    /// indexed by the with-id `Const` arg of each `ClassRandomize` SysTask. EMPTY
+    /// ⇒ no inline `with` calls ⇒ golden-neutral.
+    pub randomize_with: Vec<RandWithCall>,
     /// Virtual dispatch table: `[class_id][vslot]` → concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -564,6 +576,7 @@ pub fn elaborate_with_timescale_roots(
         class_vtable: std::mem::take(&mut el.class_vtable),
         class_calls: std::mem::take(&mut el.class_calls),
         class_field_widths: std::mem::take(&mut el.class_field_widths),
+        randomize_with: std::mem::take(&mut el.randomize_with),
         // SVA-REST assertion control.
         assert_fire: std::mem::take(&mut el.assert_fire),
         assert_ctl: std::mem::take(&mut el.assert_ctl),
@@ -2024,6 +2037,9 @@ struct Elaborator<'s> {
     class_vtable: Vec<Vec<u32>>,
     class_calls: std::collections::BTreeMap<u32, (Option<u32>, u32)>,
     class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
+    // N7-REST B-CRV final: per-call inline `randomize() with` constraints, pushed
+    // (and indexed) as each `obj.randomize() with {…}` is lowered.
+    randomize_with: Vec<RandWithCall>,
     // SVA-REST assertion control: StmtIds of synthesized assertion-fire reports +
     // `$assertoff/on/kill` control sites. `in_assert_synth` is true while a
     // synthesized SVA checker body is lowering, so each fire `$error`'s StmtId is
@@ -2219,6 +2235,7 @@ impl<'s> Elaborator<'s> {
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
+            randomize_with: Vec::new(),
             assert_fire: std::collections::BTreeSet::new(),
             assert_ctl: std::collections::BTreeMap::new(),
             in_assert_synth: false,
@@ -7575,6 +7592,66 @@ impl<'s> Elaborator<'s> {
         self.build_class_call(this_eid, &class, &meth, args, is_super)
     }
 
+    /// N7-REST B-CRV final: fold one inline `randomize() with {…}` block into a
+    /// per-call sidecar entry and return its with-id (the index the engine reads
+    /// from a Const arg). Mirrors the class-constraint fold: single-field ranges
+    /// narrow per-field `[lo,hi]` DOMAINS (`apply_constraint_expr`), everything
+    /// else compiles to PREDICATES (`collect_constraint_preds`). The field map is
+    /// the RECEIVER's flattened layout (base fields first), so the indices match
+    /// the heap object's `class_rand`/`class_constraints`. The engine INTERSECTS
+    /// these domains with the class domains and ANDs the predicates (§18.7).
+    fn fold_inline_with(&mut self, class_name: &str, constraints: &[ast::Expr]) -> u32 {
+        let id = self.randomize_with.len() as u32;
+        // Inherited rand-field names (self→base→…→root), like `class_rand_for`.
+        let mut rand_names: std::collections::BTreeSet<String> = Default::default();
+        let mut cur = Some(class_name.to_string());
+        let mut guard = 0;
+        while let Some(n) = cur {
+            let Some(ci) = self.class_table.get(&n) else {
+                break;
+            };
+            rand_names.extend(ci.rand_fields.iter().cloned());
+            cur = ci.base.clone();
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        let fields = self
+            .class_table
+            .get(class_name)
+            .map(|ci| ci.fields.clone())
+            .unwrap_or_default();
+        let mut map: std::collections::HashMap<String, (u32, u32, bool)> = Default::default();
+        let mut bounds: Vec<(String, u32, u32, bool, i64, i64)> = Vec::new();
+        for (idx, f) in fields.iter().enumerate() {
+            if rand_names.contains(&f.name) {
+                map.insert(f.name.clone(), (idx as u32, f.width, f.signed));
+                let (lo, hi) = rand_type_range(f.width, f.signed);
+                bounds.push((f.name.clone(), idx as u32, f.width, f.signed, lo, hi));
+            }
+        }
+        // Single-field ranges → per-field domain narrowing (engine intersects with
+        // the class domain). Emitted verbatim — a contradictory `[lo>hi]` is caught
+        // (as infeasible → randomize fails) by the engine BEFORE it draws.
+        for e in constraints {
+            self.apply_constraint_expr(e, &mut bounds);
+        }
+        let mut domains: Vec<(u32, i64, i64)> = Vec::new();
+        for (_fname, idx, width, signed, lo, hi) in &bounds {
+            if (*lo, *hi) != rand_type_range(*width, *signed) {
+                domains.push((*idx, *lo, *hi));
+            }
+        }
+        // Everything else → predicates (inter-variable, !=, inside, implication, …).
+        let mut preds: Vec<Vec<sim_ir::COp>> = Vec::new();
+        for e in constraints {
+            self.collect_constraint_preds(e, &map, false, &mut preds);
+        }
+        self.randomize_with.push((domains, preds));
+        id
+    }
+
     /// N7-REST: intercept `obj.randomize()`. Emits a `ClassRandomize` SysTask that
     /// (at run time) draws the object's `rand` fields per the folded constraint
     /// bounds; if `result` is given, also assigns 1 (success) to it. Returns true
@@ -7585,6 +7662,7 @@ impl<'s> Elaborator<'s> {
         b: &mut ProcessBuilder,
         name: &ast::HierPath,
         args: &[ast::Expr],
+        constraints: Option<&[ast::Expr]>,
         result: Option<&ast::Lvalue>,
     ) -> bool {
         if name.segments.len() != 2 || name.segments[1].name != "randomize" {
@@ -7599,10 +7677,17 @@ impl<'s> Elaborator<'s> {
         if !args.is_empty() {
             self.error(
                 MsgCode::ElabUnsupported,
-                "randomize() takes no arguments in Phase B1 (inline `with {…}` is B2)",
+                "randomize() takes no positional arguments (use inline `with {…}` for \
+                 per-call constraints)",
             );
             return true;
         }
+        // N7-REST B-CRV final: fold any inline `with {…}` constraints into a
+        // per-call sidecar entry; the with-id rides a Const arg the engine reads.
+        let with_id = constraints.map(|cs| {
+            let class_name = self.net_class.get(&net).cloned().unwrap_or_default();
+            self.fold_inline_with(&class_name, cs)
+        });
         let handle = self.push_expr(ir::Expr::Signal { net, word: None });
         // When the call captures a result (`r = obj.randomize()`), allocate a 32-bit
         // status net and pass it as args[1]; the engine writes the §18.11 verdict
@@ -7633,6 +7718,13 @@ impl<'s> Elaborator<'s> {
                 word: None,
             });
             task_args.push(status_sig);
+        }
+        // The inline-`with` id is a Const arg (the engine distinguishes it from the
+        // status Signal by expr kind). Absent for a plain randomize() → no extra
+        // arg → byte-identical to B1/B2.
+        if let Some(wid) = with_id {
+            let wid_e = self.const_u32_expr(wid, 32);
+            task_args.push(wid_e);
         }
         let sid = self.push_stmt(ir::Stmt::SysTask {
             which: ir::SysTaskId::ClassRandomize,
@@ -8561,6 +8653,19 @@ impl<'s> Elaborator<'s> {
                         self.placeholder_expr()
                     }
                 }
+            }
+            // N7-REST B-CRV final: a bare `obj.randomize() with {…}` value-expression
+            // (e.g. inside `if (...)`) is outside v1 — only the statement form and the
+            // direct-assign rhs `r = obj.randomize() with {…}` are lowered (both route
+            // through `try_emit_randomize` before reaching here). Loud, never silent.
+            ast::ExprKind::RandomizeWith(_) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "inline `randomize() with {…}` is supported as a statement or a direct \
+                     assignment rhs (`r = obj.randomize() with {…};`), not as a nested \
+                     value-expression",
+                );
+                self.placeholder_expr()
             }
             ast::ExprKind::Call { name, args } => {
                 // SVA-REST `let NAME(formals) = expr;` call: substitute the body with
@@ -10846,11 +10951,16 @@ impl<'s> Elaborator<'s> {
                 b.push_stmt_id(sid);
                 true
             }
+            // N7-REST B-CRV final: `r = obj.randomize() with {…};` — per-call inline
+            // constraints. Handled before the plain Call arm.
+            ast::ExprKind::RandomizeWith(rw) if rw.name.segments.len() == 2 => {
+                self.try_emit_randomize(b, &rw.name, &rw.args, Some(&rw.constraints), Some(lhs))
+            }
             ast::ExprKind::Call { name, args } if name.segments.len() == 2 => {
                 let m = name.segments[1].name.as_str();
                 // N7-REST: `r = obj.randomize();` — draw the rand fields and assign
                 // the success result to `lhs`.
-                if m == "randomize" && self.try_emit_randomize(b, name, args, Some(lhs)) {
+                if m == "randomize" && self.try_emit_randomize(b, name, args, None, Some(lhs)) {
                     return true;
                 }
                 // A2: fixed-size unpacked array `foreach`. The parser desugars
@@ -17692,9 +17802,23 @@ impl<'s> Elaborator<'s> {
                 // caller: exactly one open block, at the parent's continuation point.
                 b.start_block(resume_bb);
             }
+            ast::Stmt::RandomizeWith {
+                name,
+                args,
+                constraints,
+                ..
+            } => {
+                // N7-REST B-CRV final: `obj.randomize() with {…};` as a void statement.
+                if !self.try_emit_randomize(b, name, args, Some(constraints), None) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "inline `randomize() with {…}` is only valid on a class handle",
+                    );
+                }
+            }
             ast::Stmt::UserTaskCall { name, args, .. } => {
                 // N7-REST: `obj.randomize();` as a statement (discards the result).
-                if self.try_emit_randomize(b, name, args, None) {
+                if self.try_emit_randomize(b, name, args, None, None) {
                     return;
                 }
                 // N7: a class void-method call as a statement (`obj.run(x);`) is a

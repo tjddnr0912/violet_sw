@@ -104,10 +104,11 @@ use vita_schema::schema_hash;
 /// 2026-06-05 `TypedefKind::Struct`; 2026-06-20 SVA-REST property operators
 /// `PropExpr::{Not,Until,Eventually,Always}` + `Stmt::CoverProperty` +
 /// `ModuleItem::LetDecl`/`LetDecl`; 2026-06-23 N7-REST `ClassItem::{RandProperty,
-/// Constraint}` + `ConstraintDecl`.)
+/// Constraint}` + `ConstraintDecl`; 2026-06-24 N7-REST B-CRV final
+/// `ExprKind::RandomizeWith` + `Stmt::RandomizeWith` (inline `randomize() with`).)
 const EXPECTED: [u8; 32] = [
-    55, 31, 85, 60, 162, 183, 251, 71, 143, 153, 125, 103, 213, 107, 162, 171, 185, 115, 4, 207, 5,
-    214, 143, 243, 1, 92, 146, 180, 56, 206, 75, 191,
+    22, 199, 81, 33, 225, 134, 235, 163, 185, 186, 233, 107, 7, 238, 210, 89, 106, 105, 9, 57, 242,
+    133, 27, 21, 105, 146, 10, 198, 23, 82, 158, 181,
 ];
 
 #[test]
