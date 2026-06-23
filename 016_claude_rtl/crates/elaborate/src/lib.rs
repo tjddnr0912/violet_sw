@@ -6405,7 +6405,12 @@ impl<'s> Elaborator<'s> {
             bounds.push((f.name.clone(), idx as u32, f.width, f.signed, lo, hi));
         }
         for c in &constraints.clone() {
-            for e in &c.exprs {
+            for (i, e) in c.exprs.iter().enumerate() {
+                // SOFT constraints must NOT narrow the [lo,hi] domain — they have to
+                // stay droppable predicates (a hard domain can't be dropped).
+                if c.soft.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
                 self.apply_constraint_expr(e, &mut bounds);
             }
         }
@@ -6600,8 +6605,9 @@ impl<'s> Elaborator<'s> {
         }
         let mut preds: Vec<Vec<sim_ir::COp>> = Vec::new();
         for c in &constraints.clone() {
-            for e in &c.exprs {
-                self.collect_constraint_preds(e, &map, &mut preds);
+            for (i, e) in c.exprs.iter().enumerate() {
+                let is_soft = c.soft.get(i).copied().unwrap_or(false);
+                self.collect_constraint_preds(e, &map, is_soft, &mut preds);
             }
         }
         preds
@@ -6617,6 +6623,7 @@ impl<'s> Elaborator<'s> {
         &mut self,
         e: &ast::Expr,
         map: &std::collections::HashMap<String, (u32, u32, bool)>,
+        is_soft: bool,
         preds: &mut Vec<Vec<sim_ir::COp>>,
     ) {
         if let ast::ExprKind::Binary {
@@ -6625,18 +6632,23 @@ impl<'s> Elaborator<'s> {
             rhs,
         } = &e.kind
         {
-            self.collect_constraint_preds(lhs, map, preds);
-            self.collect_constraint_preds(rhs, map, preds);
+            self.collect_constraint_preds(lhs, map, is_soft, preds);
+            self.collect_constraint_preds(rhs, map, is_soft, preds);
             return;
         }
         if let ast::ExprKind::Paren { inner } = &e.kind {
-            self.collect_constraint_preds(inner, map, preds);
+            self.collect_constraint_preds(inner, map, is_soft, preds);
             return;
         }
-        if self.is_single_field_range(e) {
-            return; // captured by the [lo,hi] domain — no predicate needed
+        // A HARD single-field range is captured by the [lo,hi] domain (no predicate).
+        // A SOFT one must stay a predicate so it can be dropped, so don't skip it.
+        if !is_soft && self.is_single_field_range(e) {
+            return;
         }
         let mut prog: Vec<sim_ir::COp> = Vec::new();
+        if is_soft {
+            prog.push(sim_ir::COp::SoftMarker);
+        }
         if self.compile_constraint_pred(e, map, &mut prog) {
             preds.push(prog);
         }

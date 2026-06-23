@@ -578,3 +578,49 @@ fn wide_field_general_constraint_is_loud() {
     );
     assert!(err.contains("VITA-E3009"), "expected E3009:\n{err}");
 }
+
+#[test]
+fn soft_constraint_preferred_when_feasible() {
+    // `soft x == 50` within a hard `[0:100]` domain: every draw should be 50.
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           constraint c { x inside {[0:100]}; soft x == 50; }\n\
+         endclass\n\
+         module top; P p; integer i; integer all50;\n\
+         initial begin\n\
+           p = new; all50 = 1;\n\
+           for (i = 0; i < 30; i = i + 1) begin p.randomize(); if (p.x != 50) all50 = 0; end\n\
+           $display(\"all50=%0d\", all50); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("all50=1"),
+        "feasible soft constraint must be honored:\n{out}"
+    );
+}
+
+#[test]
+fn soft_constraint_dropped_when_conflicting() {
+    // `soft x == 5` conflicts with hard `x != 5`: the soft is dropped, randomize()
+    // still succeeds (r==1) and the hard constraint holds.
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           constraint c { x inside {[0:10]}; x != 5; soft x == 5; }\n\
+         endclass\n\
+         module top; P p; integer i; integer ok; integer r;\n\
+         initial begin\n\
+           p = new; ok = 1;\n\
+           for (i = 0; i < 30; i = i + 1) begin\n\
+             r = p.randomize();\n\
+             if (p.x < 0 || p.x > 10 || p.x == 5 || r != 1) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("ok=1"),
+        "conflicting soft is dropped, hard holds:\n{out}"
+    );
+}

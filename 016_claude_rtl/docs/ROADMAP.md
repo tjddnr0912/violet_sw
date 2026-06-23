@@ -160,7 +160,11 @@ loud-reject로 확인됨(이제 참):**
 >
 > ⓑ **검증 생태계 대형 트랙**(N7-REST = **randomization/constraint solver**·program·union·virtual interface·parameterized class·array 메서드) = 大~大大, UVM류 CRV 핵심 차별점. **사용자 결정 "B는 검증 플랫폼으로 키워. N7-REST 진행"→B1 착수·완료.**
 >
-> **✅ N7-REST B1 = Phase B에서 완료**(format_version 9→10, 1707 green): `rand` 멤버 + `constraint`(range/relational·`&&`) + `obj.randomize()`(결정적 seeded `dist_uniform`·3-OS byte-identical·`class_rand` 사이드카 IR-0·`SysTaskId::ClassRandomize`만 bump). 적대 hunt가 광폭-필드 제약-drop silent-wrong 1건 즉수정(i64 draw lane). **B2 잔여(대형 트랙)**: 일반 constraint solver = `inside`·`dist`·implication·**inter-variable**(`x<y`=SAT/CSP)·soft·`randc` cyclic·inline `with` — 전부 현재 loud-reject. program·union·virtual interface·parameterized class·array 메서드(`sort/find/sum/with`)·string 메서드도 ⓑ 잔여. **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
+> **✅ N7-REST B1 = 완료**(format_version 9→10): `rand` 멤버 + `constraint`(range/relational·`&&`) + `obj.randomize()`(결정적 seeded `dist_uniform`·3-OS byte-identical·`class_rand` 사이드카 IR-0). 적대 hunt가 광폭-필드 제약-drop 1건 즉수정.
+>
+> **✅ N7-REST B2 코어 = 완료**(2026-06-23, format_version 10→11, **1741 green**): **일반 constraint solver = rejection sampling**(`COp` 포스트픽스 술어 바이트코드, sim-ir 비-frozen 타입=schema/canonical/RON 골든 무영향) — **inter-variable**(`x<y`·`a+b==50`)·**`inside {set/[lo:hi]}`**(파서 desugar=OR-of-비교, `if`에서도 동작·도메인 narrowing으로 sparse-set 수렴)·**implication `a->b`**(`!a||b` 파서 desugar). `class_constraints` 사이드카=14번째 trailer(staged 동반)→**format_version 11 bump**(artifact-only; sim-ir 불변). **적대 hunt(8 confirmed) 처리**: (A) `randomize()` 반환값 §18.11 0/1(미satisfiable·null→0; 하드코딩 1 silent-wrong 수정)·(B) signed>64bit 음수 draw sign-extend·>64bit/unsigned-64 술어는 i64-unsafe→loud-reject. **B2 잔여(각 별개 슬라이스)**: `soft`·`dist`(가중 sampling)·`randc`(cyclic 순열)·inline `randomize() with`. **별개 pre-existing(B2 외)**: `int/byte/shortint/longint unsigned`가 range_to_dims에서 signed 취급(broad 타입-시스템 버그, tri-state signedness 필요).
+>
+> **ⓑ-breadth 잔여**: program·union·virtual interface·parameterized class·array 메서드(`sort/find/sum/with`)·string 메서드. **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
 
 ### 4.1 스코프 확장 트랙
 

@@ -3841,10 +3841,14 @@ impl<'t, 's> Parser<'t, 's> {
         };
         self.expect(TokenKind::LBrace, "'{' to open a constraint block");
         let mut exprs = Vec::new();
+        let mut soft = Vec::new();
         while self.peek() != Some(TokenKind::RBrace) && self.peek().is_some() {
             let before = self.pos;
+            // optional `soft` qualifier (IEEE §18.5.14) before a constraint expr.
+            let is_soft = self.eat_ident_kw("soft");
             let e = self.expr(0);
             exprs.push(e);
+            soft.push(is_soft);
             self.expect(TokenKind::Semi, "';' after a constraint expression");
             // Guard against a non-advancing error loop.
             if self.pos == before {
@@ -3855,6 +3859,7 @@ impl<'t, 's> Parser<'t, 's> {
         Some(ClassItem::Constraint(ConstraintDecl {
             name,
             exprs,
+            soft,
             span: start.to(self.prev_span()),
         }))
     }

@@ -150,6 +150,9 @@ pub enum ClassItem {
 pub struct ConstraintDecl {
     pub name: Ident,
     pub exprs: Vec<Expr>,
+    /// Parallel to `exprs`: whether each constraint expression was declared `soft`
+    /// (IEEE §18.5.14). A soft constraint is satisfied if feasible, else dropped.
+    pub soft: Vec<bool>,
     pub span: Span,
 }
 

@@ -646,31 +646,18 @@ fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
         .unwrap_or_default();
     let mut seed = sched.st.randomize_seed.get();
     // Rejection sampling (B2): draw every rand field from its `class_rand` domain,
-    // then keep the candidate only if EVERY predicate holds. Draw order + the per-
-    // field draw are IDENTICAL to B1, so a design with no general predicate (range-
-    // only / unconstrained) accepts on the FIRST try — byte-identical to B1. A
-    // satisfiable inter-variable / inside / implication constraint converges in a
-    // few tries; an UNSATISFIABLE one exhausts the cap and leaves fields unchanged
-    // (randomize "fails", IEEE §18.7). The seed stream is consumed deterministically
-    // either way → reproducible + 3-OS byte-identical.
-    const MAX_TRIES: u32 = 10_000;
-    let mut accepted: Option<Vec<(u32, Value)>> = None;
-    for _ in 0..MAX_TRIES {
-        let mut cand: std::collections::HashMap<u32, i64> = Default::default();
-        let mut draws: Vec<(u32, Value)> = Vec::with_capacity(rand.len());
-        for &(field_idx, width, signed, lo, hi, constrained) in &rand {
-            let v = if constrained {
-                draw_in_range(&mut seed, lo, hi, width, signed)
-            } else {
-                random_full_width(&mut seed, width, signed)
-            };
-            cand.insert(field_idx, value_to_i64(&v, width, signed));
-            draws.push((field_idx, v));
-        }
-        if preds.iter().all(|p| eval_pred(p, &cand)) {
-            accepted = Some(draws);
-            break;
-        }
+    // keep the candidate only if every predicate holds. Draw order + the per-field
+    // draw are IDENTICAL to B1, so a design with no general predicate accepts on the
+    // FIRST try — byte-identical to B1. SOFT constraints (§18.5.14) are tried first
+    // (phase 1 = hard+soft); if that is infeasible, the soft predicates are dropped
+    // and only the hard ones retried (phase 2). The seed stream is consumed
+    // deterministically → reproducible + 3-OS byte-identical.
+    let has_soft = preds
+        .iter()
+        .any(|p| matches!(p.first(), Some(sim_ir::COp::SoftMarker)));
+    let mut accepted = try_solve(&rand, &preds, &mut seed, false);
+    if accepted.is_none() && has_soft {
+        accepted = try_solve(&rand, &preds, &mut seed, true);
     }
     sched.st.randomize_seed.set(seed);
     match accepted {
@@ -687,6 +674,42 @@ fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
         }
         None => false, // cap exhausted / unsatisfiable → fields unchanged, fail
     }
+}
+
+/// One rejection-sampling pass: draw every field, accept the first candidate that
+/// satisfies all predicates (skipping SOFT predicates when `drop_soft`). Returns
+/// the accepted draws, or None if the cap is exhausted. The per-field draw matches
+/// B1 exactly so a constraint-free design is byte-identical.
+fn try_solve(
+    rand: &[crate::RandBound],
+    preds: &[Vec<sim_ir::COp>],
+    seed: &mut u32,
+    drop_soft: bool,
+) -> Option<Vec<(u32, Value)>> {
+    const MAX_TRIES: u32 = 10_000;
+    for _ in 0..MAX_TRIES {
+        let mut cand: std::collections::HashMap<u32, i64> = Default::default();
+        let mut draws: Vec<(u32, Value)> = Vec::with_capacity(rand.len());
+        for &(field_idx, width, signed, lo, hi, constrained) in rand {
+            let v = if constrained {
+                draw_in_range(seed, lo, hi, width, signed)
+            } else {
+                random_full_width(seed, width, signed)
+            };
+            cand.insert(field_idx, value_to_i64(&v, width, signed));
+            draws.push((field_idx, v));
+        }
+        let ok = preds.iter().all(|p| {
+            if drop_soft && matches!(p.first(), Some(sim_ir::COp::SoftMarker)) {
+                return true; // soft predicate dropped this phase
+            }
+            eval_pred(p, &cand)
+        });
+        if ok {
+            return Some(draws);
+        }
+    }
+    None
 }
 
 /// Extract the signed i64 value of a drawn field for constraint-predicate eval
@@ -713,6 +736,7 @@ fn eval_pred(prog: &[sim_ir::COp], cand: &std::collections::HashMap<u32, i64>) -
                 let a = stack.pop().unwrap_or(0);
                 stack.push((a == 0) as i64);
             }
+            sim_ir::COp::SoftMarker => {} // tag only — no stack effect
             sim_ir::COp::Bin(b) => {
                 let r = stack.pop().unwrap_or(0);
                 let l = stack.pop().unwrap_or(0);

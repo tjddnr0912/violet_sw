@@ -710,6 +710,12 @@ pub enum COp {
     Bin(CBinOp),
     /// Pop `a`; push `1` if `a == 0` else `0` (logical NOT).
     Not,
+    /// SOFT-constraint marker (IEEE §18.5.14): a no-op stack effect that tags this
+    /// predicate as soft. The rejection solver first tries to satisfy hard+soft; if
+    /// that is infeasible it DROPS the soft predicates and retries with hard only.
+    /// Always the FIRST op of a soft predicate. Appended variant ⇒ existing
+    /// (hard-only) sidecars decode unchanged (no format/schema impact).
+    SoftMarker,
 }
 
 /// Binary operator for a [`COp::Bin`] step (Phase B2 constraint predicate).
