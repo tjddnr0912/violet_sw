@@ -658,19 +658,51 @@ fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
         .get(class_id as usize)
         .cloned()
         .unwrap_or_default();
+    let randc: Vec<crate::RandcField> = sched
+        .st
+        .class_randc
+        .get(class_id as usize)
+        .cloned()
+        .unwrap_or_default();
+    // `randc` fields (cyclic, B2 v1 = unconstrained) are drawn SEPARATELY via a
+    // per-instance permutation (a value visited once per cycle), not through the
+    // rejection loop. The non-randc fields go through `try_solve`.
+    let mut randc_updates: Vec<(u32, Value)> = Vec::new();
+    for &(field_idx, lo, hi) in &randc {
+        let (w, s) = rand
+            .iter()
+            .find(|r| r.0 == field_idx)
+            .map(|r| (r.1, r.2))
+            .unwrap_or((32, false));
+        let v = draw_randc(
+            &mut sched.st.randc_state,
+            &mut seed,
+            (id, field_idx),
+            lo,
+            hi,
+            w,
+            s,
+        );
+        randc_updates.push((field_idx, v));
+    }
+    let rand_rej: Vec<crate::RandBound> = rand
+        .iter()
+        .filter(|r| !randc.iter().any(|rc| rc.0 == r.0))
+        .cloned()
+        .collect();
     let has_soft = preds
         .iter()
         .any(|p| matches!(p.first(), Some(sim_ir::COp::SoftMarker)));
-    let mut accepted = try_solve(&rand, &preds, &dist, &mut seed, false);
+    let mut accepted = try_solve(&rand_rej, &preds, &dist, &mut seed, false);
     if accepted.is_none() && has_soft {
-        accepted = try_solve(&rand, &preds, &dist, &mut seed, true);
+        accepted = try_solve(&rand_rej, &preds, &dist, &mut seed, true);
     }
     sched.st.randomize_seed.set(seed);
     match accepted {
         Some(updates) => {
             let mut heap = sched.st.class_heap.borrow_mut();
             if let Some(obj) = heap.get_mut(&id) {
-                for (idx, v) in updates {
+                for (idx, v) in updates.into_iter().chain(randc_updates) {
                     if let Some(slot) = obj.fields.get_mut(idx as usize) {
                         *slot = v;
                     }
@@ -680,6 +712,34 @@ fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
         }
         None => false, // cap exhausted / unsatisfiable → fields unchanged, fail
     }
+}
+
+/// Draw the next value of a `randc` field: a random permutation of `[lo,hi]` per
+/// (object, field) is consumed one value at a time, reshuffled when exhausted
+/// (seeded Fisher-Yates → deterministic + reproducible).
+fn draw_randc(
+    state: &mut std::collections::HashMap<(u32, u32), (Vec<i64>, usize)>,
+    seed: &mut u32,
+    key: (u32, u32),
+    lo: i64,
+    hi: i64,
+    width: u32,
+    signed: bool,
+) -> Value {
+    let entry = state.entry(key).or_insert((Vec::new(), 0));
+    if entry.0.is_empty() || entry.1 >= entry.0.len() {
+        let n = (hi - lo + 1).max(1) as usize;
+        let mut perm: Vec<i64> = (0..n as i64).map(|i| lo + i).collect();
+        for i in (1..n).rev() {
+            let j = crate::rng::dist_uniform(seed, 0, i as i32) as usize;
+            perm.swap(i, j);
+        }
+        entry.0 = perm;
+        entry.1 = 0;
+    }
+    let v = entry.0[entry.1];
+    entry.1 += 1;
+    value_from_bits(v as u64, width, signed)
 }
 
 /// One rejection-sampling pass: draw every field, accept the first candidate that

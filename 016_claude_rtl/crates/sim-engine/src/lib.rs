@@ -96,6 +96,11 @@ pub type RandBound = (u32, u32, bool, i64, i64, bool);
 /// (then a uniform pick within the chosen entry's [lo,hi]).
 pub type DistField = (u32, Vec<(i64, i64, i64)>);
 
+/// N7-REST B2: a `randc` (cyclic) field — `(field_id, lo, hi)`. `randomize()` draws
+/// a random PERMUTATION of `[lo,hi]`, visiting every value once before repeating
+/// (per-instance state in the engine).
+pub type RandcField = (u32, i64, i64);
+
 /// Caller-tunable knobs. All have deterministic, documented defaults.
 #[derive(Debug, Clone)]
 pub struct SimOpts {
@@ -213,6 +218,8 @@ pub struct SimOpts {
     pub class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
     /// N7-REST B2: per-class `dist` weighted distributions (field → entries).
     pub class_dist: Vec<Vec<DistField>>,
+    /// N7-REST B2: per-class `randc` cyclic fields.
+    pub class_randc: Vec<Vec<RandcField>>,
     /// Virtual dispatch table: `class_vtable[class_id][vslot]` = concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -264,6 +271,7 @@ impl Default for SimOpts {
             class_rand: Vec::new(),
             class_constraints: Vec::new(),
             class_dist: Vec::new(),
+            class_randc: Vec::new(),
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
@@ -359,6 +367,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.class_rand = opts.class_rand.clone();
     st.class_constraints = opts.class_constraints.clone();
     st.class_dist = opts.class_dist.clone();
+    st.class_randc = opts.class_randc.clone();
     // CLS-CALL-VEC: index per-call-site dispatch info by ExprId (O(1) Vec) instead
     // of a BTreeMap (O(log n)) — siblings (class_vtable/class_is_handle) are Vec
     // too. Non-class designs keep an EMPTY Vec (get() returns None for all eids ⇒

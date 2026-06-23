@@ -231,12 +231,40 @@ fn randomize_longint_single_sided_constraint() {
 }
 
 #[test]
-fn randc_is_loud_rejected() {
+fn randc_visits_each_value_once_per_cycle() {
+    // A `randc bit[2:0]` cycles through all 8 values once before repeating
+    // (a random permutation) — 8 draws give 8 distinct values.
+    let (out, err, code) = run("class P;\n\
+           randc bit [2:0] x;\n\
+         endclass\n\
+         module top; P p; integer i; integer seen[0:7]; integer dup; integer all;\n\
+         initial begin\n\
+           p = new; for (i=0;i<8;i=i+1) seen[i]=0; dup=0;\n\
+           for (i=0;i<8;i=i+1) begin p.randomize(); if (seen[p.x]) dup=1; seen[p.x]=1; end\n\
+           all=1; for (i=0;i<8;i=i+1) if (!seen[i]) all=0;\n\
+           $display(\"dup=%0d all=%0d\", dup, all); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("dup=0 all=1"),
+        "randc must visit each value once:\n{out}"
+    );
+}
+
+#[test]
+fn constrained_randc_is_loud() {
+    // A constraint on a `randc` field is unsupported in B2 v1 (loud, not silent).
     let (_, err, code) = run("class P;\n\
-           randc bit [1:0] x;\n\
+           randc bit [3:0] x;\n\
+           constraint c { x < 5; }\n\
          endclass\n\
          module top; P p; initial begin p = new; p.randomize(); $finish; end endmodule\n");
-    assert_ne!(code, Some(0), "must reject randc; stderr:\n{err}");
+    assert_ne!(
+        code,
+        Some(0),
+        "a constrained randc must be loud; stderr:\n{err}"
+    );
     assert!(err.contains("randc"), "expected a randc diagnostic:\n{err}");
 }
 

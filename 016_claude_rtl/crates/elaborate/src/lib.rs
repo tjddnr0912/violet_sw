@@ -320,6 +320,9 @@ pub type RandBound = (u32, u32, bool, i64, i64, bool);
 /// N7-REST B2: one rand field's `dist` distribution — `(field_id, [(lo,hi,weight)])`.
 pub type DistField = (u32, Vec<(i64, i64, i64)>);
 
+/// N7-REST B2: a `randc` (cyclic) field — `(field_id, lo, hi)`.
+pub type RandcField = (u32, i64, i64);
+
 #[derive(Debug, Clone, Default)]
 pub struct Sidecars {
     pub fork_modes: ForkModeTable,
@@ -376,6 +379,8 @@ pub struct Sidecars {
     pub class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
     /// N7-REST B2: per-class `dist` weighted distributions (`[class_id]` → fields).
     pub class_dist: Vec<Vec<DistField>>,
+    /// N7-REST B2: per-class `randc` (cyclic) fields (`[class_id]` → fields).
+    pub class_randc: Vec<Vec<RandcField>>,
     /// Virtual dispatch table: `[class_id][vslot]` → concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -408,6 +413,9 @@ struct ClassInfo {
     /// N7-REST: names of this class's OWN `rand` data members (inherited rand-ness
     /// is recovered by walking the base chain when bounds are built).
     rand_fields: Vec<String>,
+    /// N7-REST B2: names of this class's OWN `randc` (cyclic) members (a subset of
+    /// `rand_fields` — they are also drawn, but cyclically not uniformly).
+    randc_fields: Vec<String>,
     /// N7-REST: this class's OWN `constraint` blocks (base constraints apply too).
     constraints: Vec<ast::ConstraintDecl>,
 }
@@ -517,10 +525,12 @@ pub fn elaborate_with_timescale_roots(
     let class_rand = el.class_rand_table();
     let class_constraints = el.class_constraints_table();
     let class_dist = el.class_dist_table();
+    let class_randc = el.class_randc_table();
     let sc = Sidecars {
         class_rand,
         class_constraints,
         class_dist,
+        class_randc,
         fork_modes: std::mem::take(&mut el.fork_modes),
         proc_multipliers: std::mem::take(&mut el.proc_multipliers),
         severities: std::mem::take(&mut el.severities),
@@ -6126,23 +6136,22 @@ impl<'s> Elaborator<'s> {
             let mut fields = Vec::new();
             let mut methods = Vec::new();
             let mut rand_fields = Vec::new();
+            let mut randc_fields = Vec::new();
             let mut constraints = Vec::new();
             for item in &c.items {
                 match item {
                     ast::ClassItem::Property(d) => self.collect_class_fields(d, &mut fields),
                     ast::ClassItem::RandProperty { randc, decl } => {
-                        if *randc {
-                            // `randc` (cyclic random) needs per-instance permutation
-                            // state — outside Phase B1. Loud, never a silent `rand`.
-                            self.error(
-                                MsgCode::ElabUnsupported,
-                                "`randc` (cyclic random) is outside Phase B1 (use `rand`)",
-                            );
-                        }
                         let before = fields.len();
                         self.collect_class_fields(decl, &mut fields);
                         for f in &fields[before..] {
                             rand_fields.push(f.name.clone());
+                            // `randc` (cyclic random, B2): also a rand field, but drawn
+                            // as a random permutation that visits every value once per
+                            // cycle (per-instance state in the engine).
+                            if *randc {
+                                randc_fields.push(f.name.clone());
+                            }
                         }
                     }
                     ast::ClassItem::Constraint(cd) => constraints.push(cd.clone()),
@@ -6178,6 +6187,7 @@ impl<'s> Elaborator<'s> {
                     fields,
                     methods,
                     rand_fields,
+                    randc_fields,
                     constraints,
                 },
             );
@@ -6579,6 +6589,68 @@ impl<'s> Elaborator<'s> {
     fn class_dist_table(&mut self) -> Vec<Vec<DistField>> {
         let names = self.class_order.clone();
         names.iter().map(|n| self.class_dist_for(n)).collect()
+    }
+
+    /// Phase B2: per-class `randc` (cyclic) fields. B2 v1 cycles each over its FULL
+    /// type range with NO constraints (a constraint on a randc field, or a range
+    /// wider than 16 bits, is loud-rejected — the cyclic permutation must be
+    /// finite/unconstrained in this subset).
+    fn class_randc_table(&mut self) -> Vec<Vec<RandcField>> {
+        let names = self.class_order.clone();
+        names.iter().map(|n| self.class_randc_for(n)).collect()
+    }
+
+    fn class_randc_for(&mut self, name: &str) -> Vec<RandcField> {
+        let mut randc_names: std::collections::BTreeSet<String> = Default::default();
+        let mut constraints: Vec<ast::ConstraintDecl> = Vec::new();
+        let mut cur = Some(name.to_string());
+        let mut guard = 0;
+        while let Some(n) = cur {
+            let Some(ci) = self.class_table.get(&n) else {
+                break;
+            };
+            randc_names.extend(ci.randc_fields.iter().cloned());
+            constraints.extend(ci.constraints.iter().cloned());
+            cur = ci.base.clone();
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        if randc_names.is_empty() {
+            return Vec::new();
+        }
+        let Some(fields) = self.class_table.get(name).map(|ci| ci.fields.clone()) else {
+            return Vec::new();
+        };
+        let mut out: Vec<RandcField> = Vec::new();
+        for (idx, f) in fields.iter().enumerate() {
+            if !randc_names.contains(&f.name) {
+                continue;
+            }
+            let (lo, hi) = rand_type_range(f.width, f.signed);
+            if (hi as i128 - lo as i128 + 1) > 65536 {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a `randc` field wider than 16 bits is unsupported (cyclic \
+                     permutation cap)",
+                );
+                continue;
+            }
+            if constraints
+                .iter()
+                .any(|c| c.exprs.iter().any(|e| expr_mentions_field(e, &f.name)))
+            {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a constraint on a `randc` field is unsupported in B2 (a randc \
+                     field cycles over its full range)",
+                );
+                continue;
+            }
+            out.push((idx as u32, lo, hi));
+        }
+        out
     }
 
     fn class_dist_for(&mut self, name: &str) -> Vec<DistField> {
@@ -20575,6 +20647,38 @@ fn map_cbinop(op: ast::BinOp) -> Option<sim_ir::CBinOp> {
         B::LogOr => C::Or,
         _ => return None,
     })
+}
+
+/// Whether the constraint expression `e` references the field named `name`
+/// anywhere (used to loud-reject a constraint on a `randc` field).
+fn expr_mentions_field(e: &ast::Expr, name: &str) -> bool {
+    use ast::ExprKind as K;
+    match &e.kind {
+        K::Ident(p) => p.segments.len() == 1 && p.segments[0].name == name,
+        K::Unary { operand, .. } => expr_mentions_field(operand, name),
+        K::Binary { lhs, rhs, .. } => {
+            expr_mentions_field(lhs, name) || expr_mentions_field(rhs, name)
+        }
+        K::Paren { inner } => expr_mentions_field(inner, name),
+        K::Ternary {
+            cond,
+            then_e,
+            else_e,
+        } => {
+            expr_mentions_field(cond, name)
+                || expr_mentions_field(then_e, name)
+                || expr_mentions_field(else_e, name)
+        }
+        K::Dist { value, items } => {
+            expr_mentions_field(value, name)
+                || items.iter().any(|it| {
+                    expr_mentions_field(&it.lo, name)
+                        || it.hi.as_ref().is_some_and(|h| expr_mentions_field(h, name))
+                        || expr_mentions_field(&it.weight, name)
+                })
+        }
+        _ => false,
+    }
 }
 
 /// A bare single-segment ident (a class field reference inside a constraint).
