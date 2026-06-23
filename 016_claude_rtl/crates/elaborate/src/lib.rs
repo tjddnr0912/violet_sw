@@ -1063,6 +1063,23 @@ fn sva_one(sp: ast::Span) -> ast::Expr {
     }
 }
 
+/// IEEE 1800 §16.13.5 boolean match: a boolean expression in a sequence/property
+/// matches ONLY if it evaluates to true (1); X/Z (and 0) are a NON-match. The
+/// plain reduction `|e` leaves X as X, which downstream `if(X)`/`!X` then treat
+/// leniently (no-fire) — a false-negative. Case-comparing the reduced truthiness
+/// against `1'b1` yields a hard 0 for X/Z (and 0) and 1 only for a definitely-
+/// nonzero value, so X/Z becomes a real non-match. Used at every CONSEQUENT
+/// boolean site (the antecedent vacates naturally: a fire requires `LogAnd(ante,
+/// !match)` and `LogAnd(X, _)` never takes the fire branch).
+fn sva_match(e: ast::Expr, sp: ast::Span) -> ast::Expr {
+    sva_binary(
+        ast::BinOp::CaseEq,
+        sva_unary(ast::UnOp::RedOr, e, sp),
+        sva_one(sp),
+        sp,
+    )
+}
+
 /// The 1-bit constant `1'b0` — a never-matching antecedent (e.g. a `within`
 /// whose seq1 is longer than every seq2 window).
 fn sva_zero(sp: ast::Span) -> ast::Expr {
@@ -1863,6 +1880,12 @@ struct Elaborator<'s> {
     // SYS-INTRO잔여: the declared base type-kind per net, for `$typename`'s
     // canonical string (reg/logic/wire ⇒ "logic", integer ⇒ "integer", …).
     intro_kind: BTreeMap<u32, ast::NetVarKind>,
+    // §13.4.1: a STATIC (non-automatic) task's formals are a SINGLE instance,
+    // retained across calls. Inline-path tasks (all static — automatic/recursive
+    // divert to the frame path) therefore share ONE formal-local net per formal,
+    // allocated at the first call site and reused at every later site (keyed by
+    // task name → per-formal net ids, in port order). elaborate-LOCAL only.
+    task_arg_locals: std::collections::HashMap<String, Vec<u32>>,
     // Heap-handle nets (dyn array/queue/assoc) whose ELEMENT type is 2-state
     // (int/bit/byte/shortint/longint). These skip the regular `record_dim_desc`
     // path (and thus `intro_kind`), so the `two_state_nets` sidecar would miss
@@ -2140,6 +2163,7 @@ impl<'s> Elaborator<'s> {
             array_dim_desc: BTreeMap::new(),
             dim_desc: BTreeMap::new(),
             intro_kind: BTreeMap::new(),
+            task_arg_locals: std::collections::HashMap::new(),
             two_state_heap_handles: BTreeSet::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -5418,9 +5442,21 @@ impl<'s> Elaborator<'s> {
                 continue;
             }
             let dir = self.dir_for_name(&decl.name.name, ports, body);
-            // init: const-fold a literal initializer; otherwise time-0 default.
+            // init: const-fold the initializer (§6.8: a ONE-TIME value at creation).
+            // A literal folds directly; a non-literal CONSTANT (param / constant
+            // expression, e.g. `int x = P;` or `reg [31:0] y = A+B;`) is const-eval'd
+            // — previously only literals folded, so a param/expr initializer silently
+            // defaulted to X/0 (a now-fixed pre-existing silent-wrong, and the value
+            // that the 2-state `is_var` change relies on instead of a cont-assign).
             let init = match &decl.init {
-                Some(e) => fold_init(e, width).unwrap_or_else(|| default_init(d.kind, width)),
+                Some(e) => fold_init(e, width)
+                    .or_else(|| {
+                        self.const_eval_in_scope(e).map(|v| {
+                            let cv = make_const_i64(v, 64, true);
+                            resize_bits(&cv.bits, cv.width, width, cv.signed)
+                        })
+                    })
+                    .unwrap_or_else(|| default_init(d.kind, width)),
                 None => default_init(d.kind, width),
             };
             self.add_net(
@@ -7381,6 +7417,15 @@ impl<'s> Elaborator<'s> {
                 | ast::NetVarKind::Realtime
                 | ast::NetVarKind::Time
                 | ast::NetVarKind::Event
+                // 2-state integer types are VARIABLES (§6.8): an initializer is a
+                // one-time value at creation, NOT an implicit continuous assign.
+                // Omitting them wired `int x = 5;` as a driver that re-applied 5
+                // every settle, silently discarding later procedural writes.
+                | ast::NetVarKind::Bit
+                | ast::NetVarKind::Byte
+                | ast::NetVarKind::Shortint
+                | ast::NetVarKind::Int
+                | ast::NetVarKind::Longint
         );
         if is_var {
             return;
@@ -9375,22 +9420,92 @@ impl<'s> Elaborator<'s> {
             return;
         }
 
-        // Bind formals, lowering actuals in the CALLER scope, BEFORE inlining.
+        // Bind formals via formal-WIDTH local nets for OUTPUT/INOUT (IEEE 1800
+        // §13.5.1 / §13.5.3 copy-in/copy-out). The old direct aliasing (formal ==
+        // caller net) discarded the formal's declared width/sign, leaked every
+        // intermediate write to the caller (visible to concurrent logic + the VCD),
+        // corrupted a caller net passed as BOTH an input and an output, lost the
+        // static-storage value across calls, and never copied out a default for an
+        // unassigned output — a cluster of silent-wrongs. Each output/inout formal
+        // now gets a real local of the formal's declared type (per-call-site storage
+        // that, for a STATIC task, persists across calls at this site). INOUT copies
+        // the caller value IN at entry (truncated to the formal width); OUTPUT starts
+        // at the type default (X for 4-state, 0 for 2-state — the net's `init`); a
+        // SINGLE copy-out at exit resizes the final value (sign/zero-extended per the
+        // formal's signedness) onto the caller net. INPUTs keep the caller-scope
+        // substitution. No output/inout formals ⇒ byte-identical to before.
         let subst_base = self.subst.len();
         let out_base = self.out_subst.len();
-        for (p, a) in task.ports.iter().zip(args) {
+        // §13.4.1: a non-automatic task's formals are a SINGLE static instance. The
+        // inline path only ever handles static tasks (automatic/recursive diverted to
+        // the frame path above), so allocate ONE formal-local net per formal at the
+        // FIRST call site and reuse it at every later site (keyed by task name) — the
+        // value then persists across calls (e.g. an unwritten output retains its prior
+        // value, an inout accumulates). The net `init` (X for 4-state, 0 for 2-state)
+        // is the first-call default. 2-state locals are registered for X/Z→0 coercion.
+        let locals: Vec<u32> = match self.task_arg_locals.get(&tname) {
+            Some(c) => c.clone(),
+            None => {
+                let mut v = Vec::with_capacity(task.ports.len());
+                for p in &task.ports {
+                    let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
+                    let (w, msb, lsb, signed) =
+                        self.range_to_dims(kind, p.range.as_ref(), p.signed);
+                    let local = self.nets.len() as u32;
+                    let lname = format!("__taskarg_{}_{}_{}", tname, p.name.name, local);
+                    self.add_net(
+                        &lname,
+                        ir::NetVar {
+                            kind: map_net_kind_or_wire(kind),
+                            width: w,
+                            msb,
+                            lsb,
+                            signed,
+                            array_len: 1,
+                            dir: ir::PortDir::Internal,
+                            init: default_init(kind, w),
+                        },
+                    );
+                    if net_kind_is_two_state(kind) {
+                        self.intro_kind.insert(local, kind);
+                    }
+                    v.push(local);
+                }
+                self.task_arg_locals.insert(tname.clone(), v.clone());
+                v
+            }
+        };
+        // (caller_net, local_net), in arg order — copied out at task exit.
+        let mut copy_out: Vec<(u32, u32)> = Vec::new();
+        for (i, (p, a)) in task.ports.iter().zip(args).enumerate() {
+            let local = locals[i];
             match p.dir {
                 ast::PortDir::Input => {
-                    let eid = self.lower_expr(a); // caller-scope read
-                    self.subst.push((p.name.name.clone(), eid));
+                    // Copy the actual IN to the formal-width local (a SNAPSHOT,
+                    // truncated to the formal width); bind the formal to a read of that
+                    // local — so body reads see the formal width (§13.5.3), not the
+                    // actual's, and a later change to the actual does not leak in.
+                    let actual_eid = self.lower_expr(a); // caller-scope read (pre-bind)
+                    let cin = self.push_stmt(ir::Stmt::BlockingAssign {
+                        lhs: whole_net_lvalue(local),
+                        rhs: actual_eid,
+                    });
+                    b.push_stmt_id(cin);
+                    let rd = self.push_expr(ir::Expr::Signal {
+                        net: local,
+                        word: None,
+                    });
+                    self.subst.push((p.name.name.clone(), rd));
                 }
                 ast::PortDir::Output | ast::PortDir::Inout => {
-                    // v1: actual must be a bare net Ident → bind formal name → its
-                    // NetId so body reads/writes of the formal hit the caller net.
-                    match &a.kind {
+                    let caller_net = match &a.kind {
                         ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
-                            let net = self.resolve_net(path);
-                            self.out_subst.push((p.name.name.clone(), net));
+                            // A nested call may pass an OUTER output/inout formal as
+                            // the actual — it is already bound to its formal-local net,
+                            // so route the copy-out to that local (the outer copy-out
+                            // then carries it on to the outer caller).
+                            self.out_subst_lookup(&path.segments[0].name)
+                                .unwrap_or_else(|| self.resolve_net(path))
                         }
                         _ => {
                             self.error(
@@ -9399,8 +9514,40 @@ impl<'s> Elaborator<'s> {
                                     "task `{tname}` output/inout arg must be a simple net (v1)"
                                 ),
                             );
+                            continue;
                         }
+                    };
+                    // The actual must be a SCALAR net — a whole unpacked array can't
+                    // bind to a scalar formal; reject loud rather than silently copy
+                    // out word 0 (the prior aliasing path rejected this on read).
+                    if self
+                        .nets
+                        .get(caller_net as usize)
+                        .map(|n| n.array_len != 1)
+                        .unwrap_or(false)
+                    {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!("task `{tname}` output/inout arg must be a simple net (v1)"),
+                        );
+                        continue;
                     }
+                    // INOUT copies the caller value IN at entry (truncated to formal
+                    // width). Read the caller net BEFORE binding the formal name so the
+                    // read resolves the caller net, not the just-bound local.
+                    if matches!(p.dir, ast::PortDir::Inout) {
+                        let rd = self.push_expr(ir::Expr::Signal {
+                            net: caller_net,
+                            word: None,
+                        });
+                        let cin = self.push_stmt(ir::Stmt::BlockingAssign {
+                            lhs: whole_net_lvalue(local),
+                            rhs: rd,
+                        });
+                        b.push_stmt_id(cin);
+                    }
+                    self.out_subst.push((p.name.name.clone(), local));
+                    copy_out.push((caller_net, local));
                 }
             }
         }
@@ -9422,6 +9569,23 @@ impl<'s> Elaborator<'s> {
             self.lower_stmt(b, &task.body);
         }
         self.inline_stack.pop();
+
+        // Copy-OUT each output/inout formal to its caller net AFTER the body. A
+        // single write per formal (no intermediate caller-net glitch); the
+        // assignment resizes (sign/zero-extends per the formal's signedness) from
+        // the formal width to the caller width. For a `return`-bearing body this
+        // sits in the convergence exit block, so it runs on every return path.
+        for (caller_net, local) in &copy_out {
+            let rd = self.push_expr(ir::Expr::Signal {
+                net: *local,
+                word: None,
+            });
+            let cout = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: whole_net_lvalue(*caller_net),
+                rhs: rd,
+            });
+            b.push_stmt_id(cout);
+        }
 
         // pop our frames so sibling/outer code is unaffected.
         self.subst.truncate(subst_base);
@@ -13662,7 +13826,8 @@ impl<'s> Elaborator<'s> {
         let mut regs_b = SvaRegs::default();
         let cons_b = self.rewrite_sampled(cons_e, &mut regs_b);
         let fire = ast::Stmt::If {
-            cond: sva_unary(ast::UnOp::LogNot, cons_b, sp),
+            // §16.13.5: consequent X/Z = non-match → fire (sva_match makes X a hard 0).
+            cond: sva_unary(ast::UnOp::LogNot, sva_match(cons_b, sp), sp),
             then_s: Box::new(ast::Stmt::SysTaskCall {
                 name: ast::Ident {
                     name: "$error".to_string(),
@@ -13846,7 +14011,8 @@ impl<'s> Elaborator<'s> {
                     then_s: Box::new(sva_block_or_single(
                         vec![
                             ast::Stmt::If {
-                                cond: sva_unary(ast::UnOp::LogNot, c_b, sp),
+                                // §16.13.5: consequent X/Z = non-match → fire.
+                                cond: sva_unary(ast::UnOp::LogNot, sva_match(c_b, sp), sp),
                                 then_s: Box::new(sva_error_stmt(sp)),
                                 else_s: None,
                                 span: sp,
@@ -13879,7 +14045,8 @@ impl<'s> Elaborator<'s> {
                         cond: sva_binary(
                             ast::BinOp::LogAnd,
                             sva_unary(ast::UnOp::RedOr, si, sp),
-                            sva_unary(ast::UnOp::LogNot, c_b, sp),
+                            // §16.13.5: consequent X/Z = non-match → fire.
+                            sva_unary(ast::UnOp::LogNot, sva_match(c_b, sp), sp),
                             sp,
                         ),
                         then_s: Box::new(sva_error_stmt(sp)),
@@ -14107,7 +14274,9 @@ impl<'s> Elaborator<'s> {
             let dis = sva
                 .disable_iff
                 .as_ref()
-                .map(|e| sva_unary(ast::UnOp::RedOr, self.rewrite_sampled(e, &mut regs), sp));
+                // §16.13.5: an X/Z disable condition is NOT definitely-true → it does
+                // NOT disable (X-strict), so a real violation is not silently masked.
+                .map(|e| sva_match(self.rewrite_sampled(e, &mut regs), sp));
             // Action-block sampled values (slice A2): rewrite $past/$rose/$fell/$stable
             // inside the fail/pass action statements to the SAME shared prev-regs the
             // property body uses. Done AFTER the antecedent/consequent/disable rewrites
@@ -14149,15 +14318,22 @@ impl<'s> Elaborator<'s> {
             // obligation state (reset by `disable iff` like the antecedent).
             let mut cons_chain_nbas: Vec<ast::Stmt> = Vec::new();
             let (violation_core, success_core) = match cons_boolean {
-                Some(cons) => (
-                    sva_binary(
-                        ast::BinOp::LogAnd,
-                        cond_lhs.clone(),
-                        sva_unary(ast::UnOp::LogNot, cons.clone(), sp),
-                        sp,
-                    ),
-                    sva_binary(ast::BinOp::LogAnd, cond_lhs.clone(), cons, sp),
-                ),
+                Some(cons) => {
+                    // §16.13.5: the consequent matches only when it is definitely
+                    // true (X/Z = non-match → violation). `sva_match` makes the X
+                    // case a hard 0 so `!match` fires; a definitely-nonzero value
+                    // (e.g. multi-bit `4'b0100`) still matches.
+                    let cons_match = sva_match(cons, sp);
+                    (
+                        sva_binary(
+                            ast::BinOp::LogAnd,
+                            cond_lhs.clone(),
+                            sva_unary(ast::UnOp::LogNot, cons_match.clone(), sp),
+                            sp,
+                        ),
+                        sva_binary(ast::BinOp::LogAnd, cond_lhs.clone(), cons_match, sp),
+                    )
+                }
                 None => self.build_seq_consequent(
                     &sva.cons,
                     &cond_lhs,
@@ -14353,7 +14529,9 @@ impl<'s> Elaborator<'s> {
             let dis = cov
                 .disable_iff
                 .as_ref()
-                .map(|e| sva_unary(ast::UnOp::RedOr, self.rewrite_sampled(e, &mut regs), sp));
+                // §16.13.5: an X/Z disable condition is NOT definitely-true → it does
+                // NOT disable (X-strict), so a real violation is not silently masked.
+                .map(|e| sva_match(self.rewrite_sampled(e, &mut regs), sp));
             // hit condition (1-bit), gated by `!dis`.
             let mut hit = sva_unary(ast::UnOp::RedOr, matched, sp);
             if let Some(d) = &dis {
@@ -14678,7 +14856,9 @@ impl<'s> Elaborator<'s> {
             return None;
         };
         let e = self.rewrite_sampled(e, regs);
-        Some(sva_unary(ast::UnOp::RedOr, e, sp))
+        // §16.13.5: an X/Z antecedent is a non-match → it does not arm the
+        // eventuality (X-strict, so the `pend` reg never holds X).
+        Some(sva_match(e, sp))
     }
 
     /// Synthesize a clocked checker for a property-level `and`/`or` / recursive
@@ -14825,9 +15005,13 @@ impl<'s> Elaborator<'s> {
         match pe {
             ast::PropExpr::Seq(seq) => {
                 // A bare sequence used as a property holds iff the (boolean) seq is
-                // true → viol = !b. Same-clock leaf (skew 0).
+                // true → viol = !match(b). Same-clock leaf (skew 0). §16.13.5: an
+                // X/Z boolean is a non-match → it does NOT hold → viol = 1 (fire).
+                // `sva_match` makes this the single X-strict chokepoint for ALL the
+                // property-level combinators (and/or/not/until/implies); since it
+                // yields 0/1, no X leaks into the combined violation.
                 let b = self.prop_bool_operand(seq, self_name)?;
-                Some((sva_unary(ast::UnOp::LogNot, b, sp), 0))
+                Some((sva_unary(ast::UnOp::LogNot, sva_match(b, sp), sp), 0))
             }
             ast::PropExpr::Impl { ante, kind, cons } => {
                 // Tail recursion `a |=> NAME` drops to no-violation BEFORE touching
@@ -15839,9 +16023,9 @@ impl<'s> Elaborator<'s> {
             let SeqTerm::Bool(e) = term else {
                 unreachable!("ok-check guarantees Bool terms")
             };
-            let tb = sva_unary(ast::UnOp::RedOr, e, sp); // |term_k
-                                                         // Delay the obligation by the hop BEFORE this term (hop_0 unused: the
-                                                         // first term is due the seed clock).
+            let tb = sva_match(e, sp); // |term_k === 1'b1 (§16.13.5: X/Z = non-match)
+                                       // Delay the obligation by the hop BEFORE this term (hop_0 unused: the
+                                       // first term is due the seed clock).
             if k > 0 {
                 if let SeqHop::Fixed(d) = hop {
                     for _ in 0..d {

@@ -2857,21 +2857,26 @@ fn ft_e4_task_output_writeback_inline() {
         ],
     );
     let s = elab_ok(&unit);
-    // one process; its entry block holds one BlockingAssign onto net y (=1), rhs a.
+    // §13.5.1/§13.5.3 copy-in/copy-out. Nets: a (=0), y (=1), then the formal-width
+    // locals — the INPUT d (=2) and the OUTPUT q (=3). The entry block holds THREE
+    // statements: copy-in `d_local = a`, the body `q_local = d_local`, and the
+    // copy-out `y = q_local`.
     assert_eq!(s.processes.len(), 1);
     let p = &s.processes[0];
     let entry = &p.body[p.entry as usize];
-    assert_eq!(entry.stmts.len(), 1);
-    match &s.stmts[entry.stmts[0] as usize] {
-        ir::Stmt::BlockingAssign { lhs, rhs } => {
-            assert_eq!(lhs.chunks[0].net, 1); // caller net y
-            assert!(matches!(
-                s.exprs[*rhs as usize],
-                ir::Expr::Signal { net: 0, .. } // caller net a
-            ));
+    assert_eq!(entry.stmts.len(), 3);
+    let assign = |i: usize| -> (u32, &ir::Expr) {
+        match &s.stmts[entry.stmts[i] as usize] {
+            ir::Stmt::BlockingAssign { lhs, rhs } => (lhs.chunks[0].net, &s.exprs[*rhs as usize]),
+            other => panic!("expected BlockingAssign at stmt {i}, got {other:?}"),
         }
-        other => panic!("expected BlockingAssign, got {other:?}"),
-    }
+    };
+    // stmt[0]: copy-IN d_local (=2) = a (=0).
+    assert!(matches!(assign(0), (2, ir::Expr::Signal { net: 0, .. })));
+    // stmt[1]: body q_local (=3) = d_local (=2).
+    assert!(matches!(assign(1), (3, ir::Expr::Signal { net: 2, .. })));
+    // stmt[2]: copy-OUT y (=1) = q_local (=3).
+    assert!(matches!(assign(2), (1, ir::Expr::Signal { net: 3, .. })));
 }
 
 // ft-e5. unknown function call → E-ELAB-UNRESOLVED-NAME (IR discarded).

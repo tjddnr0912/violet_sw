@@ -184,11 +184,18 @@ fn sva_rose_holds_when_consequent_high() {
 fn sva_past_tracks_previous_value() {
     // b must equal a's value one clock earlier. Wired so it HOLDS, proving $past
     // delivers the prior sampled value (not the current one).
+    //
+    // NOTE (§16.13.5): at the FIRST posedge `$past(a)` is X (no history), so an
+    // unguarded `b == $past(a)` would be `0 == X` = X — a non-match that fires (as
+    // VCS/Questa do; the prior lenient X-as-hold was a false-negative). Guard with
+    // a `started` reg so the meaningful tracking check begins at the 2nd clock; the
+    // first cycle is vacuous, not a spurious fire.
     let (out, err, code) = run("module top;\n\
-         reg clk=0;\n\
+         reg clk=0, started=0;\n\
          reg [3:0] a=0, b=0;\n\
          always #5 clk=~clk;\n\
-         initial assert property(@(posedge clk) (b == $past(a)));\n\
+         always @(posedge clk) started<=1;\n\
+         initial assert property(@(posedge clk) started |-> (b == $past(a)));\n\
          initial begin\n\
            a=4'd3; b=4'd0;\n\
            #10 a=4'd7; b=4'd3;\n\
