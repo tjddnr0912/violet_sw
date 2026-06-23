@@ -90,6 +90,12 @@ pub enum Backend {
 /// `constrained` ⇒ draw within [lo, hi]; else full-width.
 pub type RandBound = (u32, u32, bool, i64, i64, bool);
 
+/// N7-REST B2: one rand field's `dist` weighted distribution — `(field_id, entries)`
+/// where each entry is `(lo, hi, weight)`: a value (lo==hi) or `[lo:hi]` range whose
+/// TOTAL weight is `weight`. `randomize()` weighted-samples the field from these
+/// (then a uniform pick within the chosen entry's [lo,hi]).
+pub type DistField = (u32, Vec<(i64, i64, i64)>);
+
 /// Caller-tunable knobs. All have deterministic, documented defaults.
 #[derive(Debug, Clone)]
 pub struct SimOpts {
@@ -205,6 +211,8 @@ pub struct SimOpts {
     /// then keeps a candidate only when every predicate evaluates true (rejection
     /// sampling). Out-of-band sidecar (IR-0).
     pub class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
+    /// N7-REST B2: per-class `dist` weighted distributions (field → entries).
+    pub class_dist: Vec<Vec<DistField>>,
     /// Virtual dispatch table: `class_vtable[class_id][vslot]` = concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -255,6 +263,7 @@ impl Default for SimOpts {
             class_field_inits: Vec::new(),
             class_rand: Vec::new(),
             class_constraints: Vec::new(),
+            class_dist: Vec::new(),
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
@@ -349,6 +358,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.class_vtable = opts.class_vtable.clone();
     st.class_rand = opts.class_rand.clone();
     st.class_constraints = opts.class_constraints.clone();
+    st.class_dist = opts.class_dist.clone();
     // CLS-CALL-VEC: index per-call-site dispatch info by ExprId (O(1) Vec) instead
     // of a BTreeMap (O(log n)) — siblings (class_vtable/class_is_handle) are Vec
     // too. Non-class designs keep an EMPTY Vec (get() returns None for all eids ⇒

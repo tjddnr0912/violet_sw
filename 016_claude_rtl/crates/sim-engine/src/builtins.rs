@@ -652,12 +652,18 @@ fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
     // (phase 1 = hard+soft); if that is infeasible, the soft predicates are dropped
     // and only the hard ones retried (phase 2). The seed stream is consumed
     // deterministically → reproducible + 3-OS byte-identical.
+    let dist: Vec<crate::DistField> = sched
+        .st
+        .class_dist
+        .get(class_id as usize)
+        .cloned()
+        .unwrap_or_default();
     let has_soft = preds
         .iter()
         .any(|p| matches!(p.first(), Some(sim_ir::COp::SoftMarker)));
-    let mut accepted = try_solve(&rand, &preds, &mut seed, false);
+    let mut accepted = try_solve(&rand, &preds, &dist, &mut seed, false);
     if accepted.is_none() && has_soft {
-        accepted = try_solve(&rand, &preds, &mut seed, true);
+        accepted = try_solve(&rand, &preds, &dist, &mut seed, true);
     }
     sched.st.randomize_seed.set(seed);
     match accepted {
@@ -683,6 +689,7 @@ fn class_randomize_run(sched: &mut Scheduler, args: &[u32]) -> bool {
 fn try_solve(
     rand: &[crate::RandBound],
     preds: &[Vec<sim_ir::COp>],
+    dist: &[crate::DistField],
     seed: &mut u32,
     drop_soft: bool,
 ) -> Option<Vec<(u32, Value)>> {
@@ -691,7 +698,10 @@ fn try_solve(
         let mut cand: std::collections::HashMap<u32, i64> = Default::default();
         let mut draws: Vec<(u32, Value)> = Vec::with_capacity(rand.len());
         for &(field_idx, width, signed, lo, hi, constrained) in rand {
-            let v = if constrained {
+            let v = if let Some((_, entries)) = dist.iter().find(|(fi, _)| *fi == field_idx) {
+                // `dist`: weighted-sample from the distribution (§18.5.4).
+                draw_dist(seed, entries, width, signed)
+            } else if constrained {
                 draw_in_range(seed, lo, hi, width, signed)
             } else {
                 random_full_width(seed, width, signed)
@@ -710,6 +720,44 @@ fn try_solve(
         }
     }
     None
+}
+
+/// Weighted-sample a `dist` field: pick an entry with probability proportional to
+/// its total weight, then a uniform value within that entry's `[lo,hi]`. Seeded /
+/// deterministic. An empty / all-zero-weight distribution draws 0.
+fn draw_dist(seed: &mut u32, entries: &[(i64, i64, i64)], width: u32, signed: bool) -> Value {
+    let total: i64 = entries.iter().map(|e| e.2).sum();
+    if total <= 0 {
+        return value_from_bits(0, width, signed);
+    }
+    let r = if total - 1 <= i32::MAX as i64 {
+        crate::rng::dist_uniform(seed, 0, (total - 1) as i32) as i64
+    } else {
+        (draw_u64(seed) % total as u64) as i64
+    };
+    let mut acc = 0i64;
+    for &(lo, hi, w) in entries {
+        acc += w;
+        if r < acc {
+            let v = draw_i64_range(seed, lo, hi);
+            return value_from_bits(v as u64, width, signed);
+        }
+    }
+    value_from_bits(entries[0].0 as u64, width, signed)
+}
+
+/// A uniform i64 in `[lo, hi]` (matches `draw_in_range`'s value lane: ≤i32 fast
+/// path, else i128-span modulo). `lo == hi` ⇒ `lo` with no draw.
+fn draw_i64_range(seed: &mut u32, lo: i64, hi: i64) -> i64 {
+    if lo >= hi {
+        return lo;
+    }
+    if lo >= i32::MIN as i64 && hi <= i32::MAX as i64 {
+        crate::rng::dist_uniform(seed, lo as i32, hi as i32) as i64
+    } else {
+        let span = (hi as i128 - lo as i128 + 1) as u128;
+        lo + (draw_u64(seed) as u128 % span) as i64
+    }
 }
 
 /// Extract the signed i64 value of a drawn field for constraint-predicate eval

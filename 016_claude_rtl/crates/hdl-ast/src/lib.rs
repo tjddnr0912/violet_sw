@@ -1160,8 +1160,26 @@ pub enum ExprKind {
     /// inside a queue element select; elaborate substitutes `size()-1` there
     /// and loud-rejects it anywhere else.
     Dollar,
+    /// `value dist { item, … }` — weighted-distribution constraint (IEEE §18.5.4),
+    /// valid only inside a constraint. The `randomize()` solver samples `value`
+    /// from the weighted distribution (a SAMPLER, not a boolean predicate).
+    Dist {
+        value: Box<Expr>,
+        items: Vec<DistItem>,
+    },
     /// Recovery placeholder so the Pratt loop can keep folding past an error.
     Error,
+}
+
+/// One weighted item of a `dist { … }`: a single value (`hi == None`) or a
+/// `[lo:hi]` range, with a weight applied PER-VALUE (`:=`, `per_range == false`)
+/// or SPREAD across the range (`:/`, `per_range == true`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct DistItem {
+    pub lo: Box<Expr>,
+    pub hi: Option<Box<Expr>>,
+    pub weight: Box<Expr>,
+    pub per_range: bool,
 }
 
 /// Unary / reduction operators — names mirror sim-ir `UnOp` 1:1 (verified

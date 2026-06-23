@@ -628,6 +628,7 @@ fn run_vita_str_gated(
         class_field_inits: sc.class_field_inits,
         class_rand: sc.class_rand,
         class_constraints: sc.class_constraints,
+        class_dist: sc.class_dist,
         class_vtable: sc.class_vtable,
         class_calls: sc.class_calls,
         class_field_widths: sc.class_field_widths,
@@ -1382,6 +1383,7 @@ struct StagedExtraSidecars {
     class_rand: Vec<Vec<sim_engine::RandBound>>,
     /// N7-REST B2 constraint predicates (staged velab→vrun must carry them too).
     class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
+    class_dist: Vec<Vec<sim_engine::DistField>>,
 }
 
 impl StagedExtraSidecars {
@@ -1404,6 +1406,7 @@ impl StagedExtraSidecars {
             assert_ctl: sc.assert_ctl.clone(),
             class_rand: sc.class_rand.clone(),
             class_constraints: sc.class_constraints.clone(),
+            class_dist: sc.class_dist.clone(),
         }
     }
 }
@@ -2311,6 +2314,7 @@ fn run_vrun_gated(
         class_field_inits: extra.class_field_inits,
         class_rand: extra.class_rand,
         class_constraints: extra.class_constraints,
+        class_dist: extra.class_dist,
         class_vtable: extra.class_vtable,
         class_calls: extra.class_calls,
         class_field_widths: extra.class_field_widths,
@@ -2975,6 +2979,10 @@ mod tests {
             ]],
             vec![vec![sim_ir::COp::Const(7), sim_ir::COp::Not]],
         ];
+        s.class_dist = vec![
+            vec![(0, vec![(1, 1, 10), (2, 5, 20)])],
+            vec![(3, vec![(0, 0, 1)])],
+        ];
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -2982,7 +2990,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "f5abdc1ca931608cc70cbe6886cfc1dd84f6f394fea7d165b5ee8443d03dcb36";
+        const EXPECTED: &str = "4bdedcbda8dc6fdd9dcb2e8c20bd9d3e43be97381a97621c570a24210c5da734";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\

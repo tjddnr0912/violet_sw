@@ -624,3 +624,53 @@ fn soft_constraint_dropped_when_conflicting() {
         "conflicting soft is dropped, hard holds:\n{out}"
     );
 }
+
+#[test]
+fn dist_weighted_distribution() {
+    // `x dist {1 := 10, 2 := 90}`: ~10% land on 1, ~90% on 2 (seeded, so the exact
+    // counts are deterministic; assert the gross weighting n2 >> n1 and coverage).
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           constraint c { x dist {1 := 10, 2 := 90}; }\n\
+         endclass\n\
+         module top; P p; integer i; integer n1; integer n2;\n\
+         initial begin\n\
+           p = new; n1 = 0; n2 = 0;\n\
+           for (i = 0; i < 400; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (p.x == 1) n1 = n1 + 1; else if (p.x == 2) n2 = n2 + 1;\n\
+           end\n\
+           $display(\"cov=%0d wt=%0d\", (n1+n2==400), (n2 > 3*n1)); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("cov=1 wt=1"),
+        "dist must weight 2 far above 1:\n{out}"
+    );
+}
+
+#[test]
+fn dist_range_spread_vs_per_value() {
+    // `[10:19] :/ 50` (spread 50 over the range) vs `100 := 50` (value weight 50):
+    // roughly equal mass on the range and on 100.
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           constraint c { x dist {[10:19] :/ 50, 100 := 50}; }\n\
+         endclass\n\
+         module top; P p; integer i; integer nr; integer nv;\n\
+         initial begin\n\
+           p = new; nr = 0; nv = 0;\n\
+           for (i = 0; i < 400; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (p.x >= 10 && p.x <= 19) nr = nr + 1; else if (p.x == 100) nv = nv + 1;\n\
+           end\n\
+           $display(\"cov=%0d bal=%0d\", (nr+nv==400), (nr > 100 && nv > 100)); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("cov=1 bal=1"),
+        "spread vs per-value mass should be balanced:\n{out}"
+    );
+}

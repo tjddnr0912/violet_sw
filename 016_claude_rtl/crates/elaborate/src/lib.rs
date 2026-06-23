@@ -317,6 +317,9 @@ pub type TaskCallFunc = std::collections::BTreeMap<u32, TaskCallInfo>;
 /// else a full-width draw over the whole field.
 pub type RandBound = (u32, u32, bool, i64, i64, bool);
 
+/// N7-REST B2: one rand field's `dist` distribution — `(field_id, [(lo,hi,weight)])`.
+pub type DistField = (u32, Vec<(i64, i64, i64)>);
+
 #[derive(Debug, Clone, Default)]
 pub struct Sidecars {
     pub fork_modes: ForkModeTable,
@@ -371,6 +374,8 @@ pub struct Sidecars {
     /// keeps a candidate only when EVERY predicate evaluates true. Inter-variable
     /// (`x < y`), `inside`, and implication all lower to these (no `[lo,hi]` fold).
     pub class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
+    /// N7-REST B2: per-class `dist` weighted distributions (`[class_id]` → fields).
+    pub class_dist: Vec<Vec<DistField>>,
     /// Virtual dispatch table: `[class_id][vslot]` → concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -511,9 +516,11 @@ pub fn elaborate_with_timescale_roots(
     el.run(unit);
     let class_rand = el.class_rand_table();
     let class_constraints = el.class_constraints_table();
+    let class_dist = el.class_dist_table();
     let sc = Sidecars {
         class_rand,
         class_constraints,
+        class_dist,
         fork_modes: std::mem::take(&mut el.fork_modes),
         proc_multipliers: std::mem::take(&mut el.proc_multipliers),
         severities: std::mem::take(&mut el.severities),
@@ -6567,6 +6574,104 @@ impl<'s> Elaborator<'s> {
             .collect()
     }
 
+    /// Phase B2: per-class `dist` weighted distributions (parallel to the rand/
+    /// constraint tables).
+    fn class_dist_table(&mut self) -> Vec<Vec<DistField>> {
+        let names = self.class_order.clone();
+        names.iter().map(|n| self.class_dist_for(n)).collect()
+    }
+
+    fn class_dist_for(&mut self, name: &str) -> Vec<DistField> {
+        let mut rand_names: std::collections::BTreeSet<String> = Default::default();
+        let mut constraints: Vec<ast::ConstraintDecl> = Vec::new();
+        let mut cur = Some(name.to_string());
+        let mut guard = 0;
+        while let Some(n) = cur {
+            let Some(ci) = self.class_table.get(&n) else {
+                break;
+            };
+            rand_names.extend(ci.rand_fields.iter().cloned());
+            constraints.extend(ci.constraints.iter().cloned());
+            cur = ci.base.clone();
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        if rand_names.is_empty() {
+            return Vec::new();
+        }
+        let Some(fields) = self.class_table.get(name).map(|ci| ci.fields.clone()) else {
+            return Vec::new();
+        };
+        let mut map: std::collections::HashMap<String, u32> = Default::default();
+        for (idx, f) in fields.iter().enumerate() {
+            if rand_names.contains(&f.name) {
+                map.insert(f.name.clone(), idx as u32);
+            }
+        }
+        let mut out: Vec<DistField> = Vec::new();
+        for c in &constraints.clone() {
+            for e in &c.exprs {
+                if let ast::ExprKind::Dist { value, items } = &e.kind {
+                    if let Some(df) = self.fold_dist(value, items, &map) {
+                        out.push(df);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Const-fold a `dist` constraint into `(field_id, [(lo,hi,total_weight)])`. The
+    /// value must be a rand field; each item's bounds + weight are constants. A `:=`
+    /// (per-value) range carries total weight `w·count`; a `:/` (spread) range carries
+    /// total `w`. Non-positive / empty items are dropped.
+    fn fold_dist(
+        &mut self,
+        value: &ast::Expr,
+        items: &[ast::DistItem],
+        map: &std::collections::HashMap<String, u32>,
+    ) -> Option<DistField> {
+        let fname = rand_field_ident(value)?;
+        let Some(&idx) = map.get(&fname) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a `dist` value must be a rand field of this class (B2)",
+            );
+            return None;
+        };
+        let mut entries: Vec<(i64, i64, i64)> = Vec::new();
+        for it in items {
+            let Some(lo) = self.const_eval_in_scope(&it.lo) else {
+                self.error(MsgCode::ElabUnsupported, "a `dist` bound must be constant");
+                return None;
+            };
+            let hi = match &it.hi {
+                Some(h) => self.const_eval_in_scope(h)?,
+                None => lo,
+            };
+            let Some(w) = self.const_eval_in_scope(&it.weight) else {
+                self.error(MsgCode::ElabUnsupported, "a `dist` weight must be constant");
+                return None;
+            };
+            if hi < lo || w <= 0 {
+                continue;
+            }
+            let count = hi - lo + 1;
+            let total_w = if it.per_range {
+                w
+            } else {
+                w.saturating_mul(count)
+            };
+            entries.push((lo, hi, total_w));
+        }
+        if entries.is_empty() {
+            return None;
+        }
+        Some((idx, entries))
+    }
+
     /// Compile every constraint expression of class `name` (inherited included) to
     /// a postfix predicate over candidate rand-field values. A top-level `&&` is
     /// split into independent predicates. Each predicate references rand fields by
@@ -6626,6 +6731,11 @@ impl<'s> Elaborator<'s> {
         is_soft: bool,
         preds: &mut Vec<Vec<sim_ir::COp>>,
     ) {
+        // A `dist` constraint is a weighted SAMPLER, not a boolean predicate — it
+        // rides the `class_dist` sidecar, so it contributes no predicate here.
+        if matches!(e.kind, ast::ExprKind::Dist { .. }) {
+            return;
+        }
         if let ast::ExprKind::Binary {
             op: ast::BinOp::LogAnd,
             lhs,
@@ -8469,6 +8579,13 @@ impl<'s> Elaborator<'s> {
                 self.error(
                     MsgCode::ElabUnsupported,
                     "`new` (class object allocation) is only valid as the rhs of an assignment to a class handle",
+                );
+                self.placeholder_expr()
+            }
+            ast::ExprKind::Dist { .. } => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "`dist` is only valid inside a constraint",
                 );
                 self.placeholder_expr()
             }

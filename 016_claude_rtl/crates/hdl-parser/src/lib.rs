@@ -560,6 +560,16 @@ impl<'t, 's> Parser<'t, 's> {
                 lhs = self.parse_inside(lhs);
                 continue;
             }
+            // `value dist { item, … }` (IEEE §18.5.4) — weighted distribution.
+            // Relational binding power (lvl7), like `inside`.
+            if self.at_ident_kw("dist") {
+                if 17 < min_bp {
+                    break;
+                }
+                self.bump(); // `dist`
+                lhs = self.parse_dist(lhs);
+                continue;
+            }
             // `a -> b` constraint/property implication ≡ `!a || b`. Lowest binding
             // (below ternary), right-assoc; desugared at parse time (no new node).
             // A LEADING `->` is an event-trigger STATEMENT (handled at stmt level),
@@ -657,6 +667,71 @@ impl<'t, 's> Parser<'t, 's> {
         }
         Expr {
             kind: acc.kind,
+            span,
+        }
+    }
+
+    /// Parse `value dist { item, … }` into `ExprKind::Dist`. Each item is a single
+    /// value or a `[lo:hi]` range, optionally followed by `:= weight` (per-value) or
+    /// `:/ weight` (weight spread over the range); the default weight is `:= 1`.
+    fn parse_dist(&mut self, lhs: Expr) -> Expr {
+        let start = lhs.span;
+        self.expect(TokenKind::LBrace, "'{' to open a `dist` set");
+        let mut items: Vec<DistItem> = Vec::new();
+        while self.peek() != Some(TokenKind::RBrace) && self.peek().is_some() {
+            let before = self.pos;
+            let (lo, hi) = if self.peek() == Some(TokenKind::LBracket) {
+                self.bump(); // [
+                let lo = self.expr(0);
+                self.expect(TokenKind::Colon, "':' in a `dist` range");
+                let hi = self.expr(0);
+                self.expect(TokenKind::RBracket, "']' to close a `dist` range");
+                (lo, Some(Box::new(hi)))
+            } else {
+                (self.expr(0), None)
+            };
+            // weight: `:= w` (per-value) or `:/ w` (spread); default `:= 1`.
+            let (weight, per_range) = if self.peek() == Some(TokenKind::Colon) {
+                self.bump(); // :
+                let per_range = if self.eat(TokenKind::Slash) {
+                    true
+                } else {
+                    self.expect(TokenKind::Eq, "'=' or '/' after ':' in a `dist` weight");
+                    false
+                };
+                (Box::new(self.expr(0)), per_range)
+            } else {
+                (
+                    Box::new(Expr {
+                        kind: ExprKind::IntLit {
+                            kind: IntLitKind::Decimal,
+                            raw: "1".to_string(),
+                        },
+                        span: self.cur_span(),
+                    }),
+                    false,
+                )
+            };
+            items.push(DistItem {
+                lo: Box::new(lo),
+                hi,
+                weight,
+                per_range,
+            });
+            if self.peek() == Some(TokenKind::Comma) {
+                self.bump();
+            }
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}' to close a `dist` set");
+        let span = start.to(self.prev_span());
+        Expr {
+            kind: ExprKind::Dist {
+                value: Box::new(lhs),
+                items,
+            },
             span,
         }
     }
@@ -6639,6 +6714,16 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             ExprKind::ClassNew { args } => {
                 for a in args {
                     fix_expr(a, from, to);
+                }
+            }
+            ExprKind::Dist { value, items } => {
+                fix_expr(value, from, to);
+                for it in items {
+                    fix_expr(&mut it.lo, from, to);
+                    if let Some(h) = &mut it.hi {
+                        fix_expr(h, from, to);
+                    }
+                    fix_expr(&mut it.weight, from, to);
                 }
             }
             ExprKind::IntLit { .. }
