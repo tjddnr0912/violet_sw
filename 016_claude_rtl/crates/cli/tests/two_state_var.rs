@@ -30,6 +30,41 @@ fn run(src: &str) -> String {
     )
 }
 
+// ── §6.11.1: an explicit `unsigned` on a 2-state atom type makes it UNSIGNED ──
+#[test]
+fn unsigned_atom_compares_and_prints_unsigned() {
+    let o = run("module top;\n\
+         int unsigned a; int unsigned b;\n\
+         initial begin\n\
+           a = 32'hFFFF_FFF0; b = 32'd16;\n\
+           $display(\"lt=%0d a=%0d\", (a < b), a);\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    // unsigned: a (4294967280) > b (16) → lt=0, and a prints unsigned.
+    assert!(
+        o.contains("lt=0") && o.contains("a=4294967280"),
+        "`int unsigned` must compare and print as unsigned, not signed:\n{o}"
+    );
+}
+
+#[test]
+fn signed_atom_default_and_explicit_signed_unchanged() {
+    // bare `int` (default signed) and `int signed` both stay signed.
+    let o = run("module top;\n\
+         int a; int signed b;\n\
+         initial begin\n\
+           a = -16; b = -16;\n\
+           $display(\"a=%0d b=%0d lt=%0d\", a, b, (a < 0));\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    assert!(
+        o.contains("a=-16 b=-16 lt=1"),
+        "default `int` and `int signed` stay signed:\n{o}"
+    );
+}
+
 // ── §6.8: an `int` initializer is a one-time value, not a continuous driver ──
 #[test]
 fn int_initializer_is_not_continuous_driver() {

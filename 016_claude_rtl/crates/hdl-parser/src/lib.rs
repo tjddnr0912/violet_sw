@@ -420,6 +420,22 @@ fn bin_op(k: TokenKind) -> BinOp {
         _ => unreachable!("bin_op called on non-binary token"),
     }
 }
+/// The default signedness of a declared kind when no `signed`/`unsigned` is given:
+/// the 2-state integer atom types (and `integer`) default SIGNED (IEEE §6.11.1);
+/// nets / `reg` / `logic` / `bit` default unsigned.
+fn atom_default_signed(kind: Option<NetVarKind>) -> bool {
+    matches!(
+        kind,
+        Some(
+            NetVarKind::Byte
+                | NetVarKind::Shortint
+                | NetVarKind::Int
+                | NetVarKind::Longint
+                | NetVarKind::Integer
+        )
+    )
+}
+
 /// Build a binary `Expr` spanning its operands (used by the `inside` desugar).
 fn mk_bin(op: BinOp, l: Expr, r: Expr) -> Expr {
     let span = l.span.to(r.span);
@@ -1061,14 +1077,27 @@ impl<'t, 's> Parser<'t, 's> {
 
 // ───────────── module / port / param / decl / contassign ─────────────
 impl<'t, 's> Parser<'t, 's> {
-    fn opt_signed(&mut self) -> bool {
-        // `unsigned` is the redundant explicit form of the default (reg/wire are
-        // unsigned) — consume it and report signed=false, so `reg unsigned [7:0]`
-        // parses like `reg [7:0]`. `signed` reports true.
+    /// Parse an optional signing qualifier. Returns `Some(true)` for `signed`,
+    /// `Some(false)` for `unsigned`, `None` for neither — so the caller can apply
+    /// the TYPE's default (2-state atom types default signed, reg/wire/logic/bit
+    /// default unsigned). Conflating `unsigned` with "absent" lost the distinction
+    /// for atom types (`int unsigned` was treated as signed).
+    fn opt_signed(&mut self) -> Option<bool> {
         if self.eat_kw(Kw::Unsigned) {
-            return false;
+            return Some(false);
         }
-        self.eat_kw(Kw::Signed)
+        if self.eat_kw(Kw::Signed) {
+            return Some(true);
+        }
+        None
+    }
+
+    /// Resolve an optional signing qualifier to the EFFECTIVE signedness using the
+    /// declared kind's default (atom types `byte`/`shortint`/`int`/`longint`/
+    /// `integer` default SIGNED; everything else defaults unsigned).
+    fn signed_eff(&mut self, kind: Option<NetVarKind>) -> bool {
+        self.opt_signed()
+            .unwrap_or_else(|| atom_default_signed(kind))
     }
     /// `[msb:lsb]` packed range (requires `:`).
     fn opt_range(&mut self) -> Option<Range> {
@@ -1568,7 +1597,7 @@ impl<'t, 's> Parser<'t, 's> {
         if net_or_var.is_some() {
             self.bump();
         }
-        let mut signed = self.opt_signed();
+        let mut signed = self.signed_eff(net_or_var);
         let mut range = self.opt_range();
         let mut packed = self.opt_packed_dims(); // additional packed dims `[3:0][7:0]`
                                                  // A pure continuation (no own direction/type/range/signed) inherits the
@@ -1618,7 +1647,7 @@ impl<'t, 's> Parser<'t, 's> {
             self.eat_kw(Kw::Parameter);
             ParamKind::Parameter
         };
-        let mut signed = self.opt_signed();
+        let mut signed = self.opt_signed().unwrap_or(false);
         // SV typed parameter: a data-type KIND keyword may lead — `parameter int W`,
         // `parameter logic [3:0] X`, `byte`/`shortint`/`longint`. 2-state atoms imply
         // a fixed signed range; `int` maps to the 32-bit signed Integer path. The
@@ -1655,7 +1684,7 @@ impl<'t, 's> Parser<'t, 's> {
                 }
                 _ => {} // logic/reg/bit: width from an explicit range below
             }
-            signed = signed || self.opt_signed();
+            signed = signed || self.opt_signed().unwrap_or(false);
         } else {
             ty = match self.peek() {
                 Some(TokenKind::Word(WordKind::Keyword(Kw::Integer))) => {
@@ -2800,7 +2829,7 @@ impl<'t, 's> Parser<'t, 's> {
         if net_or_var.is_some() {
             self.bump();
         }
-        let signed = self.opt_signed();
+        let signed = self.signed_eff(net_or_var);
         let range = self.opt_range();
         let mut names = Vec::new();
         loop {
@@ -2826,7 +2855,7 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         let kind = self.net_var_kind().unwrap();
         self.bump();
-        let signed = self.opt_signed();
+        let signed = self.signed_eff(Some(kind));
         let range = self.opt_range();
         let packed = self.opt_packed_dims(); // additional packed dims `logic [3:0][7:0]`
         let names = self.parse_decl_name_list()?;
@@ -2993,7 +3022,7 @@ impl<'t, 's> Parser<'t, 's> {
     fn parse_typedef_alias(&mut self, start: Span) -> Option<ModuleItem> {
         let kind = self.net_var_kind().unwrap();
         self.bump(); // kind keyword
-        let signed = self.opt_signed();
+        let signed = self.signed_eff(Some(kind));
         let range = self.opt_range();
         let packed = self.opt_packed_dims();
         let tname = self.ident()?;
@@ -3043,7 +3072,7 @@ impl<'t, 's> Parser<'t, 's> {
                 break;
             };
             self.bump(); // kind keyword
-            let signed = self.opt_signed();
+            let signed = self.signed_eff(Some(kind));
             let range = self.opt_range();
             loop {
                 let Some(name) = self.ident() else { break };
@@ -3915,7 +3944,11 @@ impl<'t, 's> Parser<'t, 's> {
             if let Some(k) = kw_kind {
                 self.bump(); // the kind keyword
                 match k {
-                    Kw::Int => ret_type = ParamType::Integer, // 32-bit signed 2-state
+                    // `int` is 32-bit SIGNED 2-state (defaults signed).
+                    Kw::Int => {
+                        ret_type = ParamType::Integer;
+                        signed = true;
+                    }
                     Kw::Byte => {
                         range = Some(Self::dec_range(7));
                         signed = true;
@@ -3930,18 +3963,23 @@ impl<'t, 's> Parser<'t, 's> {
                     }
                     _ => {} // logic/reg/bit: width from an explicit range below
                 }
-                signed = signed || self.opt_signed();
+                // An explicit trailing `unsigned` must override the atom default.
+                if let Some(s) = self.opt_signed() {
+                    signed = s;
+                }
                 if range.is_none() {
                     range = self.opt_range();
                 }
             } else {
                 // return-type signedness/range/type, V2005 order: [signed] [range] [type]
-                signed = self.opt_signed();
+                let sign_kw = self.opt_signed();
                 range = self.opt_range();
                 ret_type = self.opt_param_type();
+                // `integer` defaults SIGNED; an explicit qualifier wins.
+                signed = sign_kw.unwrap_or(matches!(ret_type, ParamType::Integer));
             }
             // a second `signed` after an integer-ish return is tolerated.
-            signed = signed || self.opt_signed();
+            signed = signed || self.opt_signed().unwrap_or(false);
         }
         let name = self.ident().unwrap_or_else(|| Ident {
             name: String::new(),
@@ -4074,7 +4112,7 @@ impl<'t, 's> Parser<'t, 's> {
         if net_or_var.is_some() {
             self.bump();
         }
-        let signed = self.opt_signed();
+        let signed = self.signed_eff(net_or_var);
         let range = self.opt_range();
         let name = self.ident().unwrap_or_else(|| Ident {
             name: String::new(),
@@ -4207,7 +4245,7 @@ impl<'t, 's> Parser<'t, 's> {
         if net_or_var.is_some() {
             self.bump();
         }
-        let signed = self.opt_signed();
+        let signed = self.signed_eff(net_or_var);
         let range = self.opt_range();
         loop {
             let n_start = self.cur_span();

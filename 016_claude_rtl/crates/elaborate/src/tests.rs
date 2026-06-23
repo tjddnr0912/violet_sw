@@ -270,9 +270,12 @@ fn t3_reg_default_init_is_x_wire_is_z() {
 // ───────────────────────── 4. integer is fixed 32-bit signed ─────────────────────────
 #[test]
 fn t4_integer_is_32bit_signed() {
+    // `integer` defaults SIGNED — the parser resolves the default via `signed_eff`,
+    // so a faithful decl carries signed=true (range_to_dims now honors the flag
+    // rather than hardcoding it, so `integer unsigned` can be unsigned).
     let unit = module(
         "m",
-        vec![netvar(ast::NetVarKind::Integer, None, false, &["i"])],
+        vec![netvar(ast::NetVarKind::Integer, None, true, &["i"])],
     );
     let s = elab_ok(&unit);
     let i = &s.nets[0];

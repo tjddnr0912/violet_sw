@@ -7616,14 +7616,20 @@ impl<'s> Elaborator<'s> {
         signed: bool,
     ) -> (u32, u32, u32, bool) {
         if matches!(kind, ast::NetVarKind::Integer) {
-            return (32, 31, 0, true);
+            // `integer` defaults signed; honor an explicit `unsigned` (the parser
+            // resolves the default + qualifier into `signed`).
+            return (32, 31, 0, signed);
         }
-        // SVPART 2-state signed atom types (fixed width, IEEE §6.11.1).
+        // 2-state integer atom types (fixed width, IEEE §6.11.1): signed by default,
+        // but `int unsigned` / `byte unsigned` / … must stay UNSIGNED. The parser
+        // resolves the kind default + signing qualifier into `signed`, so honor it
+        // here rather than hardcoding signed=true (which silently mis-signed every
+        // `… unsigned` atom in comparisons / `%0d`).
         match kind {
-            ast::NetVarKind::Byte => return (8, 7, 0, true),
-            ast::NetVarKind::Shortint => return (16, 15, 0, true),
-            ast::NetVarKind::Int => return (32, 31, 0, true),
-            ast::NetVarKind::Longint => return (64, 63, 0, true),
+            ast::NetVarKind::Byte => return (8, 7, 0, signed),
+            ast::NetVarKind::Shortint => return (16, 15, 0, signed),
+            ast::NetVarKind::Int => return (32, 31, 0, signed),
+            ast::NetVarKind::Longint => return (64, 63, 0, signed),
             _ => {}
         }
         // `real`/`realtime` are dimensionless 64-bit signed (no [msb:lsb] range).
