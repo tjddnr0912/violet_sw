@@ -6,6 +6,20 @@
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
 
+## 2026-06-23 Phase B — N7-REST 검증 플랫폼 착수(constrained-random verification B1)
+
+> 사용자 결정 "B는 검증 플랫폼으로 키워. N7-REST 진행". **B1 완료**(1707 green·clippy/fmt clean·**format_version 9→10 bump**). vitamin이 "RTL 시뮬"에서 "CRV 가능 검증 플랫폼"으로 진입.
+>
+> **구현(B1):**
+> - **파서**: `rand`/`randc` 데이터 멤버 + `constraint NAME { expr; … }` 블록(`parse_class_item`/`parse_constraint`, AST `ClassItem::{RandProperty,Constraint}`+`ConstraintDecl` → `.vu` AST hash 재핀).
+> - **elaborate**: 제약 폴딩 `apply_constraint_expr`(`FIELD </<=/>/>=/== CONST`·`&&` 결합·`const OP field` flip) → per-field `[lo,hi]` 바운드(상속 체인 union·모순=loud). `randomize()` 인터셉트(`try_emit_randomize`: 문장·`r=…` 대입 양형) → **`class_rand` 사이드카(IR-0)**.
+> - **sim-ir/engine**: 유일 IR 추가 `SysTaskId::ClassRandomize`(args=[obj_handle]) → **format_version 10**. 엔진 `class_randomize`가 obj→class_id→`class_rand` 조회 후 각 rand 필드를 **결정적 seeded `dist_uniform`**(iverilog-pinned·순수 f64·3-OS byte-identical)로 [lo,hi] 균일추출(≤i32=fast path·광폭/대경계=i64 modulo lane). 전용 `randomize_seed` 스트림(=$random/$urandom와 격리).
+> - **staged**: `class_rand`를 14번째 `StagedExtraSidecars` trailer에 추가(STAGED-DROP 회피)·trailer-pin 재생성.
+>
+> **⚠️ 적대 silent-wrong hunt(4-에이전트·무iverilog 오라클=IEEE§18+통계 invariant)가 1건 발굴→즉수정**: 폭>32비트 또는 경계>i32인 제약 필드가 `[lo,hi]`를 무시하고 full-width 추출(`ranged=fits-i32` 게이트가 제약을 silently drop). ✅ 판정을 `constrained=(lo,hi)≠type_range`로 교체 + i64 draw lane(`draw_in_range`/`draw_u64`)으로 임의 폭에서 바운드 honor. ≤32비트 경계 의미론은 14프로브로 전부 정확 확인(strict 배제·inclusive 포함·`==` pin·역형 flip·음수/zero-straddle). 회귀: `class_crv.rs` 13종(폭40/63·상한 unsigned·longint 단측·상속·다필드·conjunction·staged·randc/모순 reject).
+>
+> **B2 deferred(전부 loud-reject·honest)**: `randc`(cyclic 순열상태)·`x inside {…}`·`dist`·implication `a -> b`·inter-variable(`x < y`)·soft constraint·inline `randomize() with {…}`·`rand` real/string/array 멤버. 일반 SAT/CSP 솔버 트랙.
+
 ## 2026-06-23 Phase A — Tier ⓐ honest-loud 갭 4종 닫기 + 적대 hunt silent-wrong 3종 수정
 
 > 사용자 결정 "A: 3개 닫기 + 잔여 2개 권장반영". **닫기 완료(전부 IR-0·format_version 9 불변·1694 green)**: ① `function void`(모듈/free=내부 TaskDef 변환·class=discard-at-call) + typed `parameter int/byte/shortint/longint/logic[W]`(lexer `void` kw + `parse_param_decl`/`parse_function_def` type-kw 분기) ② 고정크기 unpacked `foreach`(`lower_fixed_foreach_step` plain 인덱스 walk, **선언방향 존중**=descending는 hi→lo, signed 비교) ③ leading-`##` SVA consequent(`parse_seq_concat`이 암묵 `1` leaf 합성) ④ **`return` 키워드 = IR-0로 판명**(투자 전 read-only 검증이 doc의 "format_version bump 동반" 주장 **반증**: frame-func가 class-method와 동일 exit-block+`cur_return` 기구 재사용 가능 → 모듈/free 함수·태스크 `return` 지원, `body_has_return` 게이트로 return-free 본문은 byte-identical).

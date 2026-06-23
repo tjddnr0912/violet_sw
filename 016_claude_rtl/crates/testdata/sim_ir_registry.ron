@@ -869,6 +869,9 @@
         31: {
             "MonitorOff": UNIT,
         },
+        32: {
+            "ClassRandomize": UNIT,
+        },
     }),
     "Terminator": ENUM({
         0: {

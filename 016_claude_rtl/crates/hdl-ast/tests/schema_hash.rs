@@ -103,10 +103,11 @@ use vita_schema::schema_hash;
 /// 2026-06-11 v5 ⑥ front-end batch; 2026-06-11 `NetVarKind::Event`;
 /// 2026-06-05 `TypedefKind::Struct`; 2026-06-20 SVA-REST property operators
 /// `PropExpr::{Not,Until,Eventually,Always}` + `Stmt::CoverProperty` +
-/// `ModuleItem::LetDecl`/`LetDecl`.)
+/// `ModuleItem::LetDecl`/`LetDecl`; 2026-06-23 N7-REST `ClassItem::{RandProperty,
+/// Constraint}` + `ConstraintDecl`.)
 const EXPECTED: [u8; 32] = [
-    35, 3, 122, 129, 42, 171, 109, 160, 85, 244, 22, 176, 15, 144, 212, 6, 46, 62, 175, 196, 158,
-    64, 241, 144, 59, 58, 26, 168, 146, 99, 129, 63,
+    45, 81, 71, 60, 227, 240, 97, 0, 84, 184, 190, 184, 130, 188, 144, 9, 81, 159, 107, 54, 63, 47,
+    176, 229, 37, 24, 133, 115, 35, 114, 122, 156,
 ];
 
 #[test]

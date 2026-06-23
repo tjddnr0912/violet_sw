@@ -358,6 +358,14 @@ pub(crate) struct SimState<'a> {
     /// Per-class field layout (indexed by `class_id`), from `SimOpts.class_layouts`.
     /// Drives `new` default-init + field resize-on-write. Empty ⇒ no classes.
     pub class_layouts: Vec<ClassLayout>,
+    /// N7-REST: per-class `rand` field bounds (from `SimOpts.class_rand`), indexed
+    /// by class_id: `[(field_id, width, signed, lo, hi, ranged)]`. Drives
+    /// `randomize()`. Empty ⇒ no rand members.
+    pub class_rand: Vec<Vec<crate::RandBound>>,
+    /// N7-REST: the deterministic `randomize()` draw seed. A dedicated stream
+    /// (separate from `$random`/`$urandom`) so randomize() draws are reproducible
+    /// and isolated. `Cell` — advanced in the `&mut` write phase but borrow-free.
+    pub randomize_seed: Cell<u32>,
     /// Per-net "is a class handle" bitmap (len `ir.nets.len()`), built in
     /// `simulate()` from `SimOpts.class_handle_nets`. A field-select read/write of
     /// such a net routes to the heap; a bare (word-less) read is the integer id.
@@ -550,6 +558,11 @@ impl<'a> SimState<'a> {
             class_heap: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             class_obj_next: Cell::new(1),
             class_layouts: Vec::new(),
+            class_rand: Vec::new(),
+            // A fixed nonzero start so the first draw is well-defined and the
+            // sequence is reproducible on every OS (dist_uniform substitutes 0
+            // anyway, but pinning it keeps the contract explicit).
+            randomize_seed: Cell::new(1),
             class_is_handle: vec![false; nnets],
             class_new_sites: std::collections::BTreeMap::new(),
             class_vtable: Vec::new(),

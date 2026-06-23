@@ -395,6 +395,11 @@ pub enum SysTaskId {
     MonitorOn,
     /// `$monitoroff` (v9) — disable the `$monitor` change-watch.
     MonitorOff,
+    /// N7-REST `obj.randomize()` (v10) — draw the receiver's `rand` fields per the
+    /// folded constraint bounds (`SimOpts.class_rand`). args = `[obj_handle]`. The
+    /// success flag (always 1 in Phase B1, with feasible constraints) is assigned by
+    /// a sibling `BlockingAssign` the lowering emits for `r = obj.randomize()`.
+    ClassRandomize,
 }
 
 /// Disable kind (§2).

@@ -86,6 +86,10 @@ pub enum Backend {
     Bytecode,
 }
 
+/// N7-REST: one rand field's draw spec — `(field_id, width, signed, lo, hi, constrained)`.
+/// `constrained` ⇒ draw within [lo, hi]; else full-width.
+pub type RandBound = (u32, u32, bool, i64, i64, bool);
+
 /// Caller-tunable knobs. All have deterministic, documented defaults.
 #[derive(Debug, Clone)]
 pub struct SimOpts {
@@ -192,6 +196,10 @@ pub struct SimOpts {
     /// (`[class_id][field_id]` → `Some(bits)` if the field has a `= const`
     /// initializer, else `None`). Drives the `new` default-init (IEEE §8.8).
     pub class_field_inits: Vec<Vec<Option<sim_ir::BitPacked>>>,
+    /// N7-REST: per-class `rand` fields with folded constraint bounds.
+    /// `class_rand[class_id]` = `[(field_id, width, signed, lo, hi, ranged)]`.
+    /// `ranged` ⇒ `randomize()` draws `dist_uniform(lo, hi)`; else a full-width draw.
+    pub class_rand: Vec<Vec<RandBound>>,
     /// Virtual dispatch table: `class_vtable[class_id][vslot]` = concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -240,6 +248,7 @@ impl Default for SimOpts {
             class_new_sites: std::collections::BTreeMap::new(),
             class_layouts: Vec::new(),
             class_field_inits: Vec::new(),
+            class_rand: Vec::new(),
             class_vtable: Vec::new(),
             class_calls: std::collections::BTreeMap::new(),
             class_field_widths: std::collections::BTreeMap::new(),
@@ -332,6 +341,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
         })
         .collect();
     st.class_vtable = opts.class_vtable.clone();
+    st.class_rand = opts.class_rand.clone();
     // CLS-CALL-VEC: index per-call-site dispatch info by ExprId (O(1) Vec) instead
     // of a BTreeMap (O(log n)) — siblings (class_vtable/class_is_handle) are Vec
     // too. Non-class designs keep an EMPTY Vec (get() returns None for all eids ⇒

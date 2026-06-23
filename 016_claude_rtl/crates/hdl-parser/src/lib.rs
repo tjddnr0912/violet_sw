@@ -3677,19 +3677,33 @@ impl<'t, 's> Parser<'t, 's> {
             self.skip_class_item_recover();
             return Some(ClassItem::Error(s));
         }
-        // Loud-reject the deferred member qualifiers so they never silently parse
-        // as a net type name (N7 MVP: plain data members + methods only).
-        for kw in [
-            "rand",
-            "randc",
-            "local",
-            "protected",
-            "static",
-            "const",
-            "constraint",
-            "pure",
-            "extern",
-        ] {
+        // N7-REST: `rand`/`randc` data member — consume the qualifier, parse the
+        // member declaration, and tag it for `randomize()`.
+        let randc = self.at_ident_kw("randc");
+        if randc || self.at_ident_kw("rand") {
+            self.bump(); // the rand/randc qualifier (an Ident, not a lexer keyword)
+            let decl = if self.net_var_kind().is_some() {
+                self.parse_net_var()
+            } else if let Some(info) = self.peek_typedef_name() {
+                self.parse_typed_decl(info)
+            } else {
+                self.error("a data member declaration after `rand`/`randc`");
+                let s = self.cur_span();
+                self.skip_class_item_recover();
+                return Some(ClassItem::Error(s));
+            };
+            return Some(match decl {
+                Some(d) => ClassItem::RandProperty { randc, decl: d },
+                None => ClassItem::Error(self.prev_span()),
+            });
+        }
+        // N7-REST: `constraint NAME { expr; … }` block.
+        if self.at_ident_kw("constraint") {
+            return self.parse_constraint();
+        }
+        // Loud-reject the remaining deferred member qualifiers so they never
+        // silently parse as a net type name (N7 MVP: plain data members + methods).
+        for kw in ["local", "protected", "static", "const", "pure", "extern"] {
             if self.at_ident_kw(kw) {
                 self.error(
                     "a plain data member or method (N7 MVP does not support \
@@ -3713,6 +3727,39 @@ impl<'t, 's> Parser<'t, 's> {
         let s = self.cur_span();
         self.skip_class_item_recover();
         Some(ClassItem::Error(s))
+    }
+
+    /// `constraint NAME { constraint_expr ; … }` (N7-REST). The `constraint`
+    /// qualifier is the current token. Each body item is a boolean expression
+    /// terminated by `;`; unsupported forms (`inside`/`dist`/`->`) parse-fail loud,
+    /// and elaborate loud-rejects any expr it cannot fold to a per-field bound.
+    fn parse_constraint(&mut self) -> Option<ClassItem> {
+        let start = self.cur_span();
+        self.bump(); // `constraint` (an Ident)
+        let Some(name) = self.ident() else {
+            self.error("a constraint name after `constraint`");
+            let s = self.cur_span();
+            self.skip_class_item_recover();
+            return Some(ClassItem::Error(s));
+        };
+        self.expect(TokenKind::LBrace, "'{' to open a constraint block");
+        let mut exprs = Vec::new();
+        while self.peek() != Some(TokenKind::RBrace) && self.peek().is_some() {
+            let before = self.pos;
+            let e = self.expr(0);
+            exprs.push(e);
+            self.expect(TokenKind::Semi, "';' after a constraint expression");
+            // Guard against a non-advancing error loop.
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}' to close a constraint block");
+        Some(ClassItem::Constraint(ConstraintDecl {
+            name,
+            exprs,
+            span: start.to(self.prev_span()),
+        }))
     }
 
     /// Recover from a malformed class item by skipping to the next `;` or

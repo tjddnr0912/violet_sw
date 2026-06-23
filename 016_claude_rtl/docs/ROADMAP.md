@@ -156,7 +156,9 @@ loud-reject로 확인됨(이제 참):**
 >
 > **✅ ⓐ honest-loud 소형 갭 = Phase A에서 닫음**(사용자 결정 "A: 3개 닫기 + 잔여 2개 권장반영", 1694 green·IR-0·format_version 9 불변): `function void`+typed `parameter int/byte/...` · 고정크기 `foreach`(선언방향 존중) · leading-`##` SVA consequent · **`return` kw**(투자 전 검증이 "format_version bump 동반" 주장 **반증**→IR-0로 닫음). 잔여 ⓐ=empty-match `[*0:n]`/`sig[*]`(보류·저빈도). **닫기 직후 적대 hunt가 silent-wrong 3종 즉수정**(param 값 coercion·foreach 하강순서·frame 2-state 기본값; 전부 iverilog parity). **→ pre-existing 광범위 silent-wrong 2종 신규 surface(§4.5 데시전): (i) task output-formal copy-out 위반 (ii) SVA 시퀀스 X/Z 불리언을 match 처리.** 둘 다 실행/eval 모델 변경=광범위·회귀위험→단독 슬라이스 GO/NO-GO.
 >
-> ⓑ **검증 생태계 대형 트랙**(N7-REST = **randomization/constraint solver**·program·union·virtual interface·parameterized class·array 메서드) = 大~大大, UVM류 CRV 핵심 차별점. **사용자 결정 "B는 검증 플랫폼으로 키워. N7-REST 진행"→착수.** **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
+> ⓑ **검증 생태계 대형 트랙**(N7-REST = **randomization/constraint solver**·program·union·virtual interface·parameterized class·array 메서드) = 大~大大, UVM류 CRV 핵심 차별점. **사용자 결정 "B는 검증 플랫폼으로 키워. N7-REST 진행"→B1 착수·완료.**
+>
+> **✅ N7-REST B1 = Phase B에서 완료**(format_version 9→10, 1707 green): `rand` 멤버 + `constraint`(range/relational·`&&`) + `obj.randomize()`(결정적 seeded `dist_uniform`·3-OS byte-identical·`class_rand` 사이드카 IR-0·`SysTaskId::ClassRandomize`만 bump). 적대 hunt가 광폭-필드 제약-drop silent-wrong 1건 즉수정(i64 draw lane). **B2 잔여(대형 트랙)**: 일반 constraint solver = `inside`·`dist`·implication·**inter-variable**(`x<y`=SAT/CSP)·soft·`randc` cyclic·inline `with` — 전부 현재 loud-reject. program·union·virtual interface·parameterized class·array 메서드(`sort/find/sum/with`)·string 메서드도 ⓑ 잔여. **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
 
 ### 4.1 스코프 확장 트랙
 

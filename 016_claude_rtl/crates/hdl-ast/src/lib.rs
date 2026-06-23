@@ -129,6 +129,12 @@ pub struct ClassDecl {
 pub enum ClassItem {
     /// A data member: `int x;`, `logic [7:0] b;`, a class-typed handle, etc.
     Property(NetVarDecl),
+    /// A `rand`/`randc` data member (N7-REST). `randc` = cyclic random. The
+    /// declaration is an ordinary data member; the flag drives `randomize()`.
+    RandProperty { randc: bool, decl: NetVarDecl },
+    /// A `constraint NAME { expr; … }` block (N7-REST). Each expr is a boolean
+    /// constraint over the class's rand members.
+    Constraint(ConstraintDecl),
     /// A method `[virtual] function … endfunction` (the constructor is a
     /// function named `new`). `is_virtual` drives the vtable.
     Func { is_virtual: bool, def: FunctionDef },
@@ -136,6 +142,15 @@ pub enum ClassItem {
     Task { is_virtual: bool, def: TaskDef },
     /// Recovery placeholder for an unparseable class item.
     Error(Span),
+}
+
+/// `constraint NAME { constraint_expr ; … }` (N7-REST). The body is a list of
+/// boolean constraint expressions over the enclosing class's `rand` members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ConstraintDecl {
+    pub name: Ident,
+    pub exprs: Vec<Expr>,
+    pub span: Span,
 }
 
 // ──────────────────────────── Module ────────────────────────────

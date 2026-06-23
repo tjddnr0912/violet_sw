@@ -626,6 +626,7 @@ fn run_vita_str_gated(
         class_new_sites: sc.class_new_sites,
         class_layouts: sc.class_layouts,
         class_field_inits: sc.class_field_inits,
+        class_rand: sc.class_rand,
         class_vtable: sc.class_vtable,
         class_calls: sc.class_calls,
         class_field_widths: sc.class_field_widths,
@@ -1376,6 +1377,8 @@ struct StagedExtraSidecars {
     class_field_widths: std::collections::BTreeMap<u32, (u32, bool)>,
     assert_fire: std::collections::BTreeSet<u32>,
     assert_ctl: std::collections::BTreeMap<u32, u8>,
+    /// N7-REST rand-field bounds (so staged velab→vrun doesn't drop randomize()).
+    class_rand: Vec<Vec<sim_engine::RandBound>>,
 }
 
 impl StagedExtraSidecars {
@@ -1396,6 +1399,7 @@ impl StagedExtraSidecars {
             class_field_widths: sc.class_field_widths.clone(),
             assert_fire: sc.assert_fire.clone(),
             assert_ctl: sc.assert_ctl.clone(),
+            class_rand: sc.class_rand.clone(),
         }
     }
 }
@@ -2301,6 +2305,7 @@ fn run_vrun_gated(
         class_new_sites: extra.class_new_sites,
         class_layouts: extra.class_layouts,
         class_field_inits: extra.class_field_inits,
+        class_rand: extra.class_rand,
         class_vtable: extra.class_vtable,
         class_calls: extra.class_calls,
         class_field_widths: extra.class_field_widths,
@@ -2953,6 +2958,10 @@ mod tests {
         s.class_field_widths.insert(8, (16, true));
         s.assert_fire.insert(6);
         s.assert_ctl.insert(4, 2);
+        s.class_rand = vec![
+            vec![(0, 32, true, 1, 6, true)],
+            vec![(1, 64, false, 0, 0, false)],
+        ];
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -2960,7 +2969,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "6378a55d8f357f6ee0cac3fabc765a246252922618cf463595a0f886fb5b5f1d";
+        const EXPECTED: &str = "341a78284e00e53fd3e43c092dfa57d3a3bc58f0a1b26159521a1b96d4aa5b9d";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\

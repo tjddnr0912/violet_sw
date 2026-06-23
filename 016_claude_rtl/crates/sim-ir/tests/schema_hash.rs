@@ -3,14 +3,14 @@
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full SimIr-closure canonical string. Locked at
-/// format_version 9 (2026-06-18: +13 SysFuncId variants (file-read family +
-/// $dist_* + $cast) and +5 SysTaskId variants ($writememb/$writememh/$cast/
-/// $monitoron/$monitoroff). SysFuncId/SysTaskId are reached from SimIr via the
-/// Expr/Stmt arenas, so the root hash flips; the Process cluster reaches them
-/// only through arena INDICES (u32), so its sub-pin is UNCHANGED this bump.
-/// Shape-only bump; the system-task semantics land in Medium-bundle ranks 5-6.
+/// format_version 10 (2026-06-23: +1 SysTaskId variant `ClassRandomize` for
+/// N7-REST `obj.randomize()`). SysTaskId is reached from SimIr via the Stmt
+/// arena, so the root hash flips; the Process cluster reaches it only through
+/// arena INDICES (u32), so its sub-pin is UNCHANGED this bump. (2026-06-18 v9:
+/// +13 SysFuncId + 5 SysTaskId for the file-read/$dist_*/$cast/$writemem*/
+/// $monitoron-off family.)
 const EXPECTED_SIMIR_HASH: &str =
-    "ff9d5beee31b3e6ca2c4724d30f02f97823e954ea756c00385e597a3973dc51d";
+    "0cff11673f50bf2d6c74faffc7615fa1d65d28a941db8d66eb936c7df8a3a50a";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "61db2e207ed69c2ff1dbf3fc0473b7ed9906fbeb6c42128ef9edf382b081f277";

@@ -312,6 +312,11 @@ pub type TaskCallFunc = std::collections::BTreeMap<u32, TaskCallInfo>;
 /// Engine-facing side tables produced by one elaboration — ALL out-of-band
 /// (`SimOpts` fields / `.velab` trailers, each serialized as its OWN postcard
 /// segment for append-only compatibility); none ever enters the golden `SimIr`.
+/// N7-REST: one rand field's resolved draw spec — `(field_id, width, signed, lo,
+/// hi, constrained)`. `constrained` ⇒ `randomize()` draws uniformly in [lo, hi];
+/// else a full-width draw over the whole field.
+pub type RandBound = (u32, u32, bool, i64, i64, bool);
+
 #[derive(Debug, Clone, Default)]
 pub struct Sidecars {
     pub fork_modes: ForkModeTable,
@@ -356,6 +361,10 @@ pub struct Sidecars {
     /// SW1: per-class folded field initializers, parallel to `class_layouts`
     /// (`[class_id][field_id]` → `Some(bits)` if `= const`, else `None`).
     pub class_field_inits: Vec<Vec<Option<sim_ir::BitPacked>>>,
+    /// N7-REST: per-class `rand` fields with folded constraint bounds.
+    /// `[class_id]` → `[(field_id, width, signed, lo, hi, ranged)]`. `ranged` ⇒
+    /// draw `dist_uniform(lo, hi)`; else a full-width seeded draw.
+    pub class_rand: Vec<Vec<RandBound>>,
     /// Virtual dispatch table: `[class_id][vslot]` → concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -385,6 +394,11 @@ struct ClassInfo {
     base: Option<String>,
     fields: Vec<ClassField>,
     methods: Vec<ClassMethod>,
+    /// N7-REST: names of this class's OWN `rand` data members (inherited rand-ness
+    /// is recovered by walking the base chain when bounds are built).
+    rand_fields: Vec<String>,
+    /// N7-REST: this class's OWN `constraint` blocks (base constraints apply too).
+    constraints: Vec<ast::ConstraintDecl>,
 }
 
 /// One class data member (resolved layout).
@@ -489,7 +503,9 @@ pub fn elaborate_with_timescale_roots(
     el.global_prec_exp = global_prec_exp;
     el.root_override = roots.map(<[String]>::to_vec);
     el.run(unit);
+    let class_rand = el.class_rand_table();
     let sc = Sidecars {
+        class_rand,
         fork_modes: std::mem::take(&mut el.fork_modes),
         proc_multipliers: std::mem::take(&mut el.proc_multipliers),
         severities: std::mem::take(&mut el.severities),
@@ -6058,9 +6074,27 @@ impl<'s> Elaborator<'s> {
             let id = self.class_order.len() as u32;
             let mut fields = Vec::new();
             let mut methods = Vec::new();
+            let mut rand_fields = Vec::new();
+            let mut constraints = Vec::new();
             for item in &c.items {
                 match item {
                     ast::ClassItem::Property(d) => self.collect_class_fields(d, &mut fields),
+                    ast::ClassItem::RandProperty { randc, decl } => {
+                        if *randc {
+                            // `randc` (cyclic random) needs per-instance permutation
+                            // state — outside Phase B1. Loud, never a silent `rand`.
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "`randc` (cyclic random) is outside Phase B1 (use `rand`)",
+                            );
+                        }
+                        let before = fields.len();
+                        self.collect_class_fields(decl, &mut fields);
+                        for f in &fields[before..] {
+                            rand_fields.push(f.name.clone());
+                        }
+                    }
+                    ast::ClassItem::Constraint(cd) => constraints.push(cd.clone()),
                     ast::ClassItem::Func { is_virtual, def } => methods.push(ClassMethod {
                         name: def.name.name.clone(),
                         is_virtual: *is_virtual,
@@ -6092,6 +6126,8 @@ impl<'s> Elaborator<'s> {
                     base: c.extends.as_ref().map(|b| b.name.clone()),
                     fields,
                     methods,
+                    rand_fields,
+                    constraints,
                 },
             );
         }
@@ -6272,6 +6308,150 @@ impl<'s> Elaborator<'s> {
                     .unwrap_or_default()
             })
             .collect()
+    }
+
+    /// N7-REST: build the per-class `rand`-field bounds sidecar (`[class_id]` →
+    /// `[(field_id, width, signed, lo, hi, ranged)]`). For each class, walk the
+    /// base chain to gather inherited rand-field names + constraints, then fold each
+    /// constraint to per-field `[lo, hi]` bounds (IEEE 1800 §18). A `rand` field with
+    /// no constraint draws over its full type range.
+    fn class_rand_table(&mut self) -> Vec<Vec<RandBound>> {
+        let names = self.class_order.clone();
+        names.iter().map(|n| self.class_rand_for(n)).collect()
+    }
+
+    fn class_rand_for(&mut self, name: &str) -> Vec<RandBound> {
+        // Gather inherited rand-field names + constraints (self→base→…→root).
+        let mut rand_names: std::collections::BTreeSet<String> = Default::default();
+        let mut constraints: Vec<ast::ConstraintDecl> = Vec::new();
+        let mut cur = Some(name.to_string());
+        let mut guard = 0;
+        while let Some(n) = cur {
+            let Some(ci) = self.class_table.get(&n) else {
+                break;
+            };
+            rand_names.extend(ci.rand_fields.iter().cloned());
+            constraints.extend(ci.constraints.iter().cloned());
+            cur = ci.base.clone();
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        if rand_names.is_empty() {
+            return Vec::new();
+        }
+        let Some(fields) = self.class_table.get(name).map(|ci| ci.fields.clone()) else {
+            return Vec::new();
+        };
+        // Per-rand-field bounds (name, field_id, width, signed, lo, hi), full range.
+        let mut bounds: Vec<(String, u32, u32, bool, i64, i64)> = Vec::new();
+        for (idx, f) in fields.iter().enumerate() {
+            if !rand_names.contains(&f.name) {
+                continue;
+            }
+            if f.class_type.is_some() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a `rand` class-handle member is outside Phase B1 (integral only)",
+                );
+                continue;
+            }
+            let (lo, hi) = rand_type_range(f.width, f.signed);
+            bounds.push((f.name.clone(), idx as u32, f.width, f.signed, lo, hi));
+        }
+        for c in &constraints.clone() {
+            for e in &c.exprs {
+                self.apply_constraint_expr(e, &mut bounds);
+            }
+        }
+        let mut tab = Vec::new();
+        for (fname, idx, width, signed, lo, hi) in bounds {
+            if lo > hi {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "contradictory constraint on rand field `{fname}` (empty solution set)"
+                    ),
+                );
+                continue;
+            }
+            // `constrained` ⇒ at least one constraint narrowed the field below its
+            // full type range, so the engine MUST draw within [lo, hi] (regardless of
+            // width — a wide field with small bounds, or large i64 bounds, both honor
+            // the range). An unconstrained field keeps the full range and is drawn
+            // full-width. (Earlier this gated on `fits-i32`, which SILENTLY dropped
+            // the constraint for wide/large-bound fields — a silent-wrong.)
+            let constrained = (lo, hi) != rand_type_range(width, signed);
+            tab.push((idx, width, signed, lo, hi, constrained));
+        }
+        tab
+    }
+
+    /// Fold one constraint expr into per-field bound narrowings. Supports
+    /// `FIELD </<=/>/>=/== CONST` (field on either side) and top-level `&&`
+    /// conjunctions. Anything else is loud (Phase B2: inside/dist/implication/
+    /// inter-variable/soft). `bounds` entries are `(name, id, width, signed, lo, hi)`.
+    fn apply_constraint_expr(
+        &mut self,
+        e: &ast::Expr,
+        bounds: &mut [(String, u32, u32, bool, i64, i64)],
+    ) {
+        use ast::{BinOp, ExprKind};
+        match &e.kind {
+            ExprKind::Binary {
+                op: BinOp::LogAnd,
+                lhs,
+                rhs,
+            } => {
+                self.apply_constraint_expr(lhs, bounds);
+                self.apply_constraint_expr(rhs, bounds);
+            }
+            ExprKind::Binary { op, lhs, rhs }
+                if matches!(
+                    op,
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq
+                ) =>
+            {
+                let (fname, cval, op) = if let Some(fname) = rand_field_ident(lhs) {
+                    let Some(cv) = self.const_eval_in_scope(rhs) else {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "constraint compares a rand field to a non-constant (Phase B1)",
+                        );
+                        return;
+                    };
+                    (fname, cv, *op)
+                } else if let Some(fname) = rand_field_ident(rhs) {
+                    let Some(cv) = self.const_eval_in_scope(lhs) else {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "constraint compares a rand field to a non-constant (Phase B1)",
+                        );
+                        return;
+                    };
+                    (fname, cv, flip_cmp(*op)) // `const OP field` ⇒ flip
+                } else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "constraint must relate a rand field to a constant (Phase B1)",
+                    );
+                    return;
+                };
+                let Some(b) = bounds.iter_mut().find(|(n, ..)| *n == fname) else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!("constraint references non-rand field `{fname}` (Phase B1)"),
+                    );
+                    return;
+                };
+                apply_cmp_bound(op, cval, &mut b.4, &mut b.5);
+            }
+            _ => self.error(
+                MsgCode::ElabUnsupported,
+                "unsupported constraint form (Phase B1: range/relational on a rand field)",
+            ),
+        }
     }
 
     /// SW1: per-class folded field initializers, parallel to `class_layout_table`
@@ -6892,6 +7072,51 @@ impl<'s> Elaborator<'s> {
         };
         let meth = meth.clone();
         self.build_class_call(this_eid, &class, &meth, args, is_super)
+    }
+
+    /// N7-REST: intercept `obj.randomize()`. Emits a `ClassRandomize` SysTask that
+    /// (at run time) draws the object's `rand` fields per the folded constraint
+    /// bounds; if `result` is given, also assigns 1 (success) to it. Returns true
+    /// iff this was a randomize() on a class handle we own. `randomize()` takes no
+    /// args in Phase B1 (no inline `with {…}` constraint).
+    fn try_emit_randomize(
+        &mut self,
+        b: &mut ProcessBuilder,
+        name: &ast::HierPath,
+        args: &[ast::Expr],
+        result: Option<&ast::Lvalue>,
+    ) -> bool {
+        if name.segments.len() != 2 || name.segments[1].name != "randomize" {
+            return false;
+        }
+        let Some(net) = self.lookup_net_scoped(&name.segments[0].name) else {
+            return false;
+        };
+        if !self.net_class.contains_key(&net) {
+            return false; // not a class handle → not our randomize
+        }
+        if !args.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "randomize() takes no arguments in Phase B1 (inline `with {…}` is B2)",
+            );
+            return true;
+        }
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let sid = self.push_stmt(ir::Stmt::SysTask {
+            which: ir::SysTaskId::ClassRandomize,
+            fmt: None,
+            args: vec![handle],
+        });
+        b.push_stmt_id(sid);
+        if let Some(lv) = result {
+            let one = self.const_u32_expr(1, 32);
+            let lvv = self.lower_lvalue(lv);
+            self.check_lvalue_kind(&lvv, true);
+            let sid2 = self.push_stmt(ir::Stmt::BlockingAssign { lhs: lvv, rhs: one });
+            b.push_stmt_id(sid2);
+        }
+        true
     }
 
     /// Common method-call builder: resolve `class::meth` (base-chain walk), build
@@ -9945,6 +10170,11 @@ impl<'s> Elaborator<'s> {
             }
             ast::ExprKind::Call { name, args } if name.segments.len() == 2 => {
                 let m = name.segments[1].name.as_str();
+                // N7-REST: `r = obj.randomize();` — draw the rand fields and assign
+                // the success result to `lhs`.
+                if m == "randomize" && self.try_emit_randomize(b, name, args, Some(lhs)) {
+                    return true;
+                }
                 // A2: fixed-size unpacked array `foreach`. The parser desugars
                 // `foreach (a[i])` uniformly to `__st = a.first/next(__foreach_i)`;
                 // a STATIC array has no dyn handle and no `.first/.next`, so walk a
@@ -16765,6 +16995,10 @@ impl<'s> Elaborator<'s> {
                 b.start_block(resume_bb);
             }
             ast::Stmt::UserTaskCall { name, args, .. } => {
+                // N7-REST: `obj.randomize();` as a statement (discards the result).
+                if self.try_emit_randomize(b, name, args, None) {
+                    return;
+                }
                 // N7: a class void-method call as a statement (`obj.run(x);`) is a
                 // frame-FUNCTION call whose result is discarded.
                 if name.segments.len() == 2 {
@@ -19671,6 +19905,65 @@ fn body_has_return(s: &ast::Stmt) -> bool {
             body_has_return(body)
         }
         _ => false,
+    }
+}
+
+/// N7-REST: the full draw range of an integral rand field. Width ≥ 63 falls back to
+/// i64 extremes (the engine's full-width seeded path handles those).
+fn rand_type_range(width: u32, signed: bool) -> (i64, i64) {
+    if width == 0 {
+        return (0, 0);
+    }
+    if width >= 63 {
+        return if signed {
+            (i64::MIN, i64::MAX)
+        } else {
+            (0, i64::MAX)
+        };
+    }
+    if signed {
+        (-(1i64 << (width - 1)), (1i64 << (width - 1)) - 1)
+    } else {
+        (0, (1i64 << width) - 1)
+    }
+}
+
+/// A bare single-segment ident (a class field reference inside a constraint).
+fn rand_field_ident(e: &ast::Expr) -> Option<String> {
+    if let ast::ExprKind::Ident(p) = &e.kind {
+        if p.segments.len() == 1 {
+            return Some(p.segments[0].name.clone());
+        }
+    }
+    None
+}
+
+/// Flip a comparison for a `const OP field` constraint into `field FLIP(OP) const`.
+fn flip_cmp(op: ast::BinOp) -> ast::BinOp {
+    use ast::BinOp::*;
+    match op {
+        Lt => Gt,
+        Le => Ge,
+        Gt => Lt,
+        Ge => Le,
+        other => other, // Eq is symmetric
+    }
+}
+
+/// Narrow `[lo, hi]` by `field OP const`. Saturating so an extreme constant cannot
+/// overflow the i64 bound.
+fn apply_cmp_bound(op: ast::BinOp, c: i64, lo: &mut i64, hi: &mut i64) {
+    use ast::BinOp::*;
+    match op {
+        Lt => *hi = (*hi).min(c.saturating_sub(1)),
+        Le => *hi = (*hi).min(c),
+        Gt => *lo = (*lo).max(c.saturating_add(1)),
+        Ge => *lo = (*lo).max(c),
+        Eq => {
+            *lo = (*lo).max(c);
+            *hi = (*hi).min(c);
+        }
+        _ => {}
     }
 }
 

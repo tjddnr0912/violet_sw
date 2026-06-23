@@ -144,6 +144,13 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        // N7-REST: `obj.randomize()` — draw the receiver's rand fields per the folded
+        // constraint bounds and write them into the heap object. Deterministic
+        // (seeded `dist_uniform`); a null/X handle is a no-op.
+        SysTaskId::ClassRandomize => {
+            class_randomize(sched, args);
+            Ctl::Continue
+        }
         // v5 (C)-④: queue pushes. args = [handle, value]; the value is CAST
         // to the element type with assignment semantics (§5.5: evaluate at
         // max(element, self) width with the SOURCE's signedness, then truncate
@@ -566,6 +573,109 @@ pub(crate) fn dispatch(
 
 /// v9 rank 6: the `$cast(dst, src);` TASK form — assign the resized `src` into
 /// the whole-net `dst` ref arg (the func-form mirror, minus the status return).
+/// N7-REST randomize() body: resolve the receiver object, draw each rand field per
+/// its folded `[lo, hi]` bound (`dist_uniform` when `ranged`, else a full-width
+/// seeded draw), and write the values back into the heap object. A null/X handle is
+/// a no-op (IEEE §18.6 — randomize on a null handle is illegal; here it is benign).
+fn class_randomize(sched: &mut Scheduler, args: &[u32]) {
+    let Some(&handle_e) = args.first() else {
+        return;
+    };
+    let hv = sched.eval_ctx_top(handle_e, 32, false);
+    if hv.unk.iter().any(|&u| u != 0) {
+        return; // X/Z handle
+    }
+    let id = hv.val.first().copied().unwrap_or(0) as u32;
+    if id == 0 {
+        return; // null handle
+    }
+    let class_id = match sched.st.class_heap.borrow().get(&id) {
+        Some(o) => o.class_id,
+        None => return,
+    };
+    let Some(rand) = sched.st.class_rand.get(class_id as usize).cloned() else {
+        return;
+    };
+    if rand.is_empty() {
+        return;
+    }
+    let mut seed = sched.st.randomize_seed.get();
+    let mut updates: Vec<(u32, Value)> = Vec::with_capacity(rand.len());
+    for (field_idx, width, signed, lo, hi, constrained) in rand {
+        let v = if constrained {
+            draw_in_range(&mut seed, lo, hi, width, signed)
+        } else {
+            random_full_width(&mut seed, width, signed)
+        };
+        updates.push((field_idx, v));
+    }
+    sched.st.randomize_seed.set(seed);
+    let mut heap = sched.st.class_heap.borrow_mut();
+    if let Some(obj) = heap.get_mut(&id) {
+        for (idx, v) in updates {
+            if let Some(slot) = obj.fields.get_mut(idx as usize) {
+                *slot = v;
+            }
+        }
+    }
+}
+
+/// Draw a uniform value in the inclusive `[lo, hi]` constraint range, honoring the
+/// bound at ANY width: bounds that fit i32 use the iverilog-pinned `dist_uniform`
+/// (preserving the verified ≤32-bit draws); wider i64 bounds use a 64-bit draw
+/// reduced modulo the (u128) span. The result is masked to the field width.
+fn draw_in_range(seed: &mut u32, lo: i64, hi: i64, width: u32, signed: bool) -> Value {
+    if lo > hi {
+        return value_from_bits(0, width, signed); // empty range (elaborate rejected)
+    }
+    if lo >= i32::MIN as i64 && hi <= i32::MAX as i64 {
+        let drawn = crate::rng::dist_uniform(seed, lo as i32, hi as i32);
+        return value_from_bits(drawn as i64 as u64, width, signed);
+    }
+    // Wide/large bounds: a 64-bit draw mapped into the span. The span fits u128 even
+    // for [i64::MIN, i64::MAX]; for power-of-two spans the modulo is exactly uniform.
+    let span = (hi as i128 - lo as i128 + 1) as u128;
+    let r = draw_u64(seed) as u128;
+    let v = lo as i128 + (r % span) as i128;
+    value_from_bits(v as i64 as u64, width, signed)
+}
+
+/// A 64-bit seeded draw assembled from two `dist_uniform` half-word draws (shares
+/// the one deterministic `randomize()` stream).
+fn draw_u64(seed: &mut u32) -> u64 {
+    let hi = crate::rng::dist_uniform(seed, i32::MIN, i32::MAX) as u32 as u64;
+    let lo = crate::rng::dist_uniform(seed, i32::MIN, i32::MAX) as u32 as u64;
+    (hi << 32) | lo
+}
+
+/// A `width`-bit `Value` holding the low bits of `bits` (two's-complement when
+/// signed); used for a ranged rand draw.
+fn value_from_bits(bits: u64, width: u32, signed: bool) -> Value {
+    Value::from_packed(
+        &sim_ir::BitPacked {
+            val: vec![bits],
+            unk: vec![0],
+        },
+        width.max(1),
+        signed,
+    )
+}
+
+/// A full-width seeded random `Value` (an UNCONSTRAINED rand field), one 64-bit
+/// `draw_u64` per word, masked to `width`.
+fn random_full_width(seed: &mut u32, width: u32, signed: bool) -> Value {
+    let nwords = (width as usize).div_ceil(64).max(1);
+    let words: Vec<u64> = (0..nwords).map(|_| draw_u64(seed)).collect();
+    Value::from_packed(
+        &sim_ir::BitPacked {
+            val: words,
+            unk: vec![0; nwords],
+        },
+        width.max(1),
+        signed,
+    )
+}
+
 fn cast_task(sched: &mut Scheduler, args: &[u32]) {
     if args.len() != 2 {
         return;
