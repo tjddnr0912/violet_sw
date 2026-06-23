@@ -517,6 +517,8 @@ pub enum Kw {
     Class, Endclass, Extends, Virtual, Null,
     // --- SVA-REST ---
     Assume,
+    // --- SV void return type (typed-param/void close) ---
+    Void,
 }
 
 impl Kw {
@@ -594,6 +596,8 @@ impl Kw {
             "virtual" => Virtual, "null" => Null,
             // --- SVA-REST: assumption property (sim-checked like assert) ---
             "assume" => Assume,
+            // --- SV void return type ---
+            "void" => Void,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

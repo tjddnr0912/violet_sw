@@ -1521,27 +1521,69 @@ impl<'t, 's> Parser<'t, 's> {
             self.eat_kw(Kw::Parameter);
             ParamKind::Parameter
         };
-        let signed = self.opt_signed();
-        let ty = match self.peek() {
-            Some(TokenKind::Word(WordKind::Keyword(Kw::Integer))) => {
-                self.bump();
-                ParamType::Integer
-            }
-            Some(TokenKind::Word(WordKind::Keyword(Kw::Real))) => {
-                self.bump();
-                ParamType::Real
-            }
-            Some(TokenKind::Word(WordKind::Keyword(Kw::Realtime))) => {
-                self.bump();
-                ParamType::Realtime
-            }
-            Some(TokenKind::Word(WordKind::Keyword(Kw::Time))) => {
-                self.bump();
-                ParamType::Time
-            }
-            _ => ParamType::Implicit,
+        let mut signed = self.opt_signed();
+        // SV typed parameter: a data-type KIND keyword may lead — `parameter int W`,
+        // `parameter logic [3:0] X`, `byte`/`shortint`/`longint`. 2-state atoms imply
+        // a fixed signed range; `int` maps to the 32-bit signed Integer path. The
+        // V2005 `integer`/`real`/`realtime`/`time` types stay in the else branch.
+        let mut ty = ParamType::Implicit;
+        let mut forced_range = None;
+        let kw_kind = match self.peek() {
+            Some(TokenKind::Word(WordKind::Keyword(
+                k @ (Kw::Logic
+                | Kw::Reg
+                | Kw::Bit
+                | Kw::Int
+                | Kw::Byte
+                | Kw::Shortint
+                | Kw::Longint),
+            ))) => Some(k),
+            _ => None,
         };
-        let range = self.opt_range();
+        if let Some(k) = kw_kind {
+            self.bump(); // the kind keyword
+            match k {
+                Kw::Int => ty = ParamType::Integer, // 32-bit signed 2-state
+                Kw::Byte => {
+                    forced_range = Some(Self::dec_range(7));
+                    signed = true;
+                }
+                Kw::Shortint => {
+                    forced_range = Some(Self::dec_range(15));
+                    signed = true;
+                }
+                Kw::Longint => {
+                    forced_range = Some(Self::dec_range(63));
+                    signed = true;
+                }
+                _ => {} // logic/reg/bit: width from an explicit range below
+            }
+            signed = signed || self.opt_signed();
+        } else {
+            ty = match self.peek() {
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Integer))) => {
+                    self.bump();
+                    ParamType::Integer
+                }
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Real))) => {
+                    self.bump();
+                    ParamType::Real
+                }
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Realtime))) => {
+                    self.bump();
+                    ParamType::Realtime
+                }
+                Some(TokenKind::Word(WordKind::Keyword(Kw::Time))) => {
+                    self.bump();
+                    ParamType::Time
+                }
+                _ => ParamType::Implicit,
+            };
+        }
+        let range = match forced_range {
+            Some(r) => Some(r),
+            None => self.opt_range(),
+        };
         let name = self.ident()?;
         self.expect(TokenKind::Eq, "'=' in parameter");
         let value = self.expr(0);
@@ -1627,7 +1669,20 @@ impl<'t, 's> Parser<'t, 's> {
         }
         // function/endfunction and task/endtask definitions.
         if self.at_kw(Kw::Function) {
-            return Some(ModuleItem::Func(self.parse_function_def()));
+            let (fd, is_void) = self.parse_function_def();
+            if is_void {
+                // `function void` in module/package scope ⇒ task-equivalent: reuse the
+                // full task machinery (statement call, output formals, control flow).
+                return Some(ModuleItem::Task(TaskDef {
+                    automatic: fd.automatic,
+                    name: fd.name,
+                    ports: fd.ports,
+                    body_decls: fd.body_decls,
+                    body: fd.body,
+                    span: fd.span,
+                }));
+            }
+            return Some(ModuleItem::Func(fd));
         }
         if self.at_kw(Kw::Task) {
             return Some(ModuleItem::Task(self.parse_task_def()));
@@ -3607,7 +3662,7 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Function) {
             return Some(ClassItem::Func {
                 is_virtual,
-                def: self.parse_function_def(),
+                def: self.parse_function_def().0,
             });
         }
         if self.at_kw(Kw::Task) {
@@ -3672,7 +3727,12 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    fn parse_function_def(&mut self) -> FunctionDef {
+    /// Returns the parsed `FunctionDef` plus a `is_void` flag. A `function void`
+    /// in module/package scope is task-equivalent (statement-called, output
+    /// formals, control flow) — the module-item caller converts it to a `TaskDef`
+    /// to reuse the full task machinery. Class methods ignore the flag (a void
+    /// method is just a frame-function whose result is discarded at the call).
+    fn parse_function_def(&mut self) -> (FunctionDef, bool) {
         let start = self.cur_span();
         self.bump(); // 'function'
         let automatic = self.eat_kw(Kw::Automatic);
@@ -3684,48 +3744,56 @@ impl<'t, 's> Parser<'t, 's> {
         let mut signed = false;
         let mut range = None;
         let mut ret_type = ParamType::Implicit;
-        let kw_kind = match self.peek() {
-            Some(TokenKind::Word(WordKind::Keyword(
-                k @ (Kw::Logic
-                | Kw::Reg
-                | Kw::Bit
-                | Kw::Int
-                | Kw::Byte
-                | Kw::Shortint
-                | Kw::Longint),
-            ))) => Some(k),
-            _ => None,
-        };
-        if let Some(k) = kw_kind {
-            self.bump(); // the kind keyword
-            match k {
-                Kw::Int => ret_type = ParamType::Integer, // 32-bit signed 2-state
-                Kw::Byte => {
-                    range = Some(Self::dec_range(7));
-                    signed = true;
-                }
-                Kw::Shortint => {
-                    range = Some(Self::dec_range(15));
-                    signed = true;
-                }
-                Kw::Longint => {
-                    range = Some(Self::dec_range(63));
-                    signed = true;
-                }
-                _ => {} // logic/reg/bit: width from an explicit range below
-            }
-            signed = signed || self.opt_signed();
-            if range.is_none() {
-                range = self.opt_range();
-            }
+        let is_void = self.eat_kw(Kw::Void);
+        if is_void {
+            // `function void f(...)`: no return value. In module/package scope the
+            // caller converts to a TaskDef (task-equivalent); inside a class it is a
+            // frame-function whose result is discarded. ret_type stays Implicit with
+            // no range (the slot is never read). No AST shape change (IR-0).
         } else {
-            // return-type signedness/range/type, in V2005 order: [signed] [range] [type]
-            signed = self.opt_signed();
-            range = self.opt_range();
-            ret_type = self.opt_param_type();
+            let kw_kind = match self.peek() {
+                Some(TokenKind::Word(WordKind::Keyword(
+                    k @ (Kw::Logic
+                    | Kw::Reg
+                    | Kw::Bit
+                    | Kw::Int
+                    | Kw::Byte
+                    | Kw::Shortint
+                    | Kw::Longint),
+                ))) => Some(k),
+                _ => None,
+            };
+            if let Some(k) = kw_kind {
+                self.bump(); // the kind keyword
+                match k {
+                    Kw::Int => ret_type = ParamType::Integer, // 32-bit signed 2-state
+                    Kw::Byte => {
+                        range = Some(Self::dec_range(7));
+                        signed = true;
+                    }
+                    Kw::Shortint => {
+                        range = Some(Self::dec_range(15));
+                        signed = true;
+                    }
+                    Kw::Longint => {
+                        range = Some(Self::dec_range(63));
+                        signed = true;
+                    }
+                    _ => {} // logic/reg/bit: width from an explicit range below
+                }
+                signed = signed || self.opt_signed();
+                if range.is_none() {
+                    range = self.opt_range();
+                }
+            } else {
+                // return-type signedness/range/type, V2005 order: [signed] [range] [type]
+                signed = self.opt_signed();
+                range = self.opt_range();
+                ret_type = self.opt_param_type();
+            }
+            // a second `signed` after an integer-ish return is tolerated.
+            signed = signed || self.opt_signed();
         }
-        // a second `signed` after an integer-ish return is tolerated.
-        signed = signed || self.opt_signed();
         let name = self.ident().unwrap_or_else(|| Ident {
             name: String::new(),
             span: self.cur_span(),
@@ -3738,17 +3806,20 @@ impl<'t, 's> Parser<'t, 's> {
             "'endfunction'",
         );
         self.opt_block_label(); // optional `: name` after endfunction → discard
-        FunctionDef {
-            automatic,
-            signed,
-            range,
-            ret_type,
-            name,
-            ports,
-            body_decls,
-            body: Box::new(body),
-            span: start.to(self.prev_span()),
-        }
+        (
+            FunctionDef {
+                automatic,
+                signed,
+                range,
+                ret_type,
+                name,
+                ports,
+                body_decls,
+                body: Box::new(body),
+                span: start.to(self.prev_span()),
+            },
+            is_void,
+        )
     }
 
     /// `task [automatic] name [(tf_ports)] ; {body_decl} body_stmt endtask`
@@ -5455,7 +5526,17 @@ impl<'t, 's> Parser<'t, 's> {
 
     /// `##`-concatenation chain over sequence primaries (left-associative).
     fn parse_seq_concat(&mut self) -> Sequence {
-        let mut lhs = self.parse_seq_primary();
+        // A leading `##N` with no left operand — e.g. the consequent of
+        // `a |-> ##1 b`. Per IEEE 1800 §16.9, `##N b` ≡ `1 ##N b` (a true leaf
+        // delayed by N). Synthesize the implicit `1` so the delay chain has a left
+        // operand; this produces the SAME pipeline `a |=> b` / `1 ##1 b` already do
+        // (golden-neutral). Without it the primary parser hits `##` as an expression
+        // and reports a spurious E2002.
+        let mut lhs = if self.peek() == Some(TokenKind::HashHash) {
+            Sequence::Boolean(Self::sva_true_lit(self.cur_span()))
+        } else {
+            self.parse_seq_primary()
+        };
         while self.peek() == Some(TokenKind::HashHash) {
             self.bump(); // `##`
             let (min, max) = self.parse_seq_delay();

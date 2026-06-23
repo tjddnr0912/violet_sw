@@ -152,7 +152,11 @@ loud-reject로 확인됨(이제 참):**
 > 해제 시 합류 트랙 매핑). 원칙은 그대로: **frozen-IR 변경은 한 번의 v7 bump에 일괄**(§F 선례),
 > IR-무변경 항목 선행, 오라클(iverilog) 차분 가능 영역 우선, 진입 전 §F식 관문 평가(스파이크→설계→bump).
 >
-> **🎯 완성도 레버 결정 포인트(2026-06-23):** §4.5 Planned=비었음(silent-wrong 0) · §5 하드닝 백로그=착수 권장 0(전부 완료/비권고/워크로드-게이트). 남은 완성도 레버는 **두 갈래**: ⓐ **honest-loud 소형 갭**(고정크기 `foreach`·자유함수 `return` kw[**format_version bump 동반**]·`function void`/typed `parameter int`·leading-`##` SVA consequent·empty-match `[*0:n]`) = 각 小, 실무 빈도 중, iverilog 차분 대부분 가능 → *"막히면 바로 닫기"* + 다음 format-bump 때 `return`-kw 합류. ⓑ **검증 생태계 대형 트랙**(N7-REST = **randomization/constraint solver**·program·union·virtual interface·parameterized class·array 메서드) = 大~大大, UVM류 CRV 워크플로의 핵심 차별점, 오라클 부분적 → 수요 확인 후 별도 전략 결정. **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급). **권장: ⓐ를 기회주의적으로 닫아 언어 surface 정합을 올리고, ⓑ(특히 constraint solver)는 단독 대형 트랙으로 GO/NO-GO 의사결정.**
+> **🎯 완성도 레버 결정 포인트(2026-06-23, Phase A 후 갱신):** §4.5 Planned=비었음(silent-wrong 0) · §5 하드닝 백로그=착수 권장 0.
+>
+> **✅ ⓐ honest-loud 소형 갭 = Phase A에서 닫음**(사용자 결정 "A: 3개 닫기 + 잔여 2개 권장반영", 1694 green·IR-0·format_version 9 불변): `function void`+typed `parameter int/byte/...` · 고정크기 `foreach`(선언방향 존중) · leading-`##` SVA consequent · **`return` kw**(투자 전 검증이 "format_version bump 동반" 주장 **반증**→IR-0로 닫음). 잔여 ⓐ=empty-match `[*0:n]`/`sig[*]`(보류·저빈도). **닫기 직후 적대 hunt가 silent-wrong 3종 즉수정**(param 값 coercion·foreach 하강순서·frame 2-state 기본값; 전부 iverilog parity). **→ pre-existing 광범위 silent-wrong 2종 신규 surface(§4.5 데시전): (i) task output-formal copy-out 위반 (ii) SVA 시퀀스 X/Z 불리언을 match 처리.** 둘 다 실행/eval 모델 변경=광범위·회귀위험→단독 슬라이스 GO/NO-GO.
+>
+> ⓑ **검증 생태계 대형 트랙**(N7-REST = **randomization/constraint solver**·program·union·virtual interface·parameterized class·array 메서드) = 大~大大, UVM류 CRV 핵심 차별점. **사용자 결정 "B는 검증 플랫폼으로 키워. N7-REST 진행"→착수.** **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
 
 ### 4.1 스코프 확장 트랙
 

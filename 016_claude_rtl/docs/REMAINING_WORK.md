@@ -6,6 +6,17 @@
 > 이전 트래커(2026-06-05 생성: 감사52 + Stage A/B/C 이력)는 **전항목 완결로 아카이브** — 이 파일의 git 이력(`b3651fa` 시점 버전) · perf 시계열 = [doc-18 §실측](preview/18-acceleration-analysis.md) · 전략 = [ROADMAP](ROADMAP.md). 요약은 맨 아래 §아카이브.
 > 미해결 `- [ ]` / 해결 `- [x]` + 커밋·날짜. 우선순위: **P0**(silent-wrong 정확성) > **P1**(시뮬 의미론: warn-후-오동작) > **P2**(운용/CLI/진단) > **P3**(메모리/장기 안정) > **P4**(병렬화·신규 트랙) > **P5**(문서부채).
 
+## 2026-06-23 Phase A — Tier ⓐ honest-loud 갭 4종 닫기 + 적대 hunt silent-wrong 3종 수정
+
+> 사용자 결정 "A: 3개 닫기 + 잔여 2개 권장반영". **닫기 완료(전부 IR-0·format_version 9 불변·1694 green)**: ① `function void`(모듈/free=내부 TaskDef 변환·class=discard-at-call) + typed `parameter int/byte/shortint/longint/logic[W]`(lexer `void` kw + `parse_param_decl`/`parse_function_def` type-kw 분기) ② 고정크기 unpacked `foreach`(`lower_fixed_foreach_step` plain 인덱스 walk, **선언방향 존중**=descending는 hi→lo, signed 비교) ③ leading-`##` SVA consequent(`parse_seq_concat`이 암묵 `1` leaf 합성) ④ **`return` 키워드 = IR-0로 판명**(투자 전 read-only 검증이 doc의 "format_version bump 동반" 주장 **반증**: frame-func가 class-method와 동일 exit-block+`cur_return` 기구 재사용 가능 → 모듈/free 함수·태스크 `return` 지원, `body_has_return` 게이트로 return-free 본문은 byte-identical).
+>
+> **⚠️ 닫기 직후 적대 silent-wrong hunt(5-에이전트, 라이브 iverilog 차분)가 3종 발굴→즉수정**(전부 iverilog parity 재검):
+> - [x] **typed/ranged param 값 미coercion** — `parameter byte B=200`→200(틀림, -56이어야)·`signed [7:0]=8'hA5`→165(틀림, -91). 근본=param이 bare i64로 저장돼 선언폭/부호 미적용(**pre-existing**: `signed [7:0]`도 동일). ✅ `coerce_param_value`(3 bind site)가 선언폭 truncate+signed sign-extend(unsized/`time`은 full 유지·`int`/`integer`은 암묵 signed). 1694 green=기존 param 테스트 0 회귀.
+> - [x] **foreach 하강범위 반복순서 역전** — `int b[3:0]`을 0,1,2,3로 순회(틀림; IEEE §12.7.3=선언순 3,2,1,0). ✅ `array_dim_desc`로 방향 판정. (위 ②에 포함된 수정)
+> - [x] **frame-func 2-state 로컬/return-slot 기본값 X** — `int z`(미대입)을 X로 초기화(틀림; IEEE §6.4 2-state=0), `case(z)`가 wrong arm(제어흐름 오염). 근본=`run_frame_call`/`run_task_call`이 `Value::xs`로 전 슬롯 X-fill(net의 `init` 무시). ✅ `Value::from_packed(&nv.init,…)`로 교체(4-state=X·2-state=0 보존).
+>
+> **⬜ 적대 hunt가 발굴한 pre-existing 광범위 silent-wrong 2종 → 의사결정 대기(별도 슬라이스, ROADMAP §4.5):** (a) **task output formal copy-out 위반** — output formal이 직접-바인딩(`out_subst`)이라 미대입 경로에서 caller 이전값 유지(IEEE §13.5.1=무조건 copy-out, 미대입=기본값). 태스크 실행모델 변경=광범위. (b) **SVA 시퀀스 X/Z 불리언을 match 처리** — IEEE §16.13.5=true(1)만 match, X/Z/0 불match→consequent X는 FIRE여야 하나 vita는 HOLD(false-negative assertion). 코어 SVA eval 변경=전 SVA 회귀위험. 둘 다 leading-`##`와 무관(`a |=> b`로도 재현=pre-existing).
+
 ## 2026-06-22 적대적 스펙-감사 — silent-wrong 4종 수정 + 잔여 loud 갭
 
 > 6영역 스펙↔구현 적대 감사(라이브 vita-vs-iverilog 프로브). **confirmed silent-wrong 4종 = 전부 수정 완료**(TDD, 1613 green, golden/clippy/fmt clean, format_version 9 불변 — 전부 사이드카/엔진/포맷-렌더러라 IR-0). 나머지는 LOUD(안전)이라 추적만.
@@ -16,11 +27,11 @@
 - [x] **SW3** `%0N` 제로패딩(`%06d`→`42`, `%06h`→`a`) — ✅ `render_template`/`fmt_radix`가 `min_zero`를 width 유무와 분리: `%0d`=minimal·`%0Nd`=zero-pad(부호인지 `-00042`)·`%Nd`=space-pad·`%h`=full width. iverilog byte 일치. 회귀 `display_semantics::zero_pad_format_specifiers`.
 - [x] **SW4** VCD `real` 신호가 `r<%.16g>` 대신 64-bit 바이너리 벡터 방출(GTKWave 오표시) — ✅ vcd-writer가 `VarType::Real` id를 기억(`VarMeta.is_real`)해 `r<value> <id>` 자동 포맷(`encode_real`+`fmt_g16`, 결정성 Ryū 기반). spec 07:164 일치. 회귀 `vcd-writer::real_var_emits_r_format`.
 
-**⬜ 잔여 LOUD 갭 (현실=loud-reject·doc 정직화 완료, 구현은 future):**
-- [ ] **고정크기 unpacked `foreach`** — `foreach(int a[0:N])`가 v6 `.first/.next` desugar의 메서드 호출을 `inline_function`이 거부(`E3009`). dyn/queue/assoc는 동작. 정밀화=고정크기 경로 plain 인덱스 walk desugar + 오진단 메시지 교체.
-- [ ] **자유/모듈/패키지 함수 `return` 키워드** — class 메서드에서만 동작. 프레임-함수 lowering이 `cur_return` 미설정. 수정 시 프레임-함수 CFG에 exit-block 추가 = **golden 형상 flip → format_version bump 동반**(별도 세션).
-- [ ] **`function void` 반환형 · typed `parameter int W`** — `void` 키워드 부재(void=`task`로 회피)·type-키워드 둔 파라미터 미파싱. 렉서/파서 확장.
-- [ ] **leading-`##` SVA consequent** (`a |-> ##1 b`) — `parse_seq_concat`이 선두 `##`를 거부(E2002). `a |=> b` 등가는 동작. 파서가 암묵 `1` leaf 합성하면 해소(golden-neutral, 현재 통과 디자인 0).
+**✅ 잔여 LOUD 갭 4종 = 2026-06-23 Phase A에서 전부 닫힘(위 섹션):**
+- [x] **고정크기 unpacked `foreach`** — ✅ `lower_fixed_foreach_step`(선언방향 존중). 잔여 loud=`break`(키워드 미지원·E3010), multi-dim `foreach(m[i,j])`(E2002) — 둘 다 honest.
+- [x] **자유/모듈/패키지 함수 `return` 키워드** — ✅ IR-0(format-bump 주장 반증)·`body_has_return` 게이트. 잔여 loud=함수/태스크 본문 내 `$display`/NBA/force(frame-call subset, E3009).
+- [x] **`function void` 반환형 · typed `parameter int W`** — ✅ lexer `void` + parser type-kw 분기. (값 coercion=위 hunt 수정에 포함). 잔여 loud=`longint L=64'h…`(64-bit 사이즈드 리터럴 폴딩 불가, E3009).
+- [x] **leading-`##` SVA consequent** (`a |-> ##1 b`) — ✅ 암묵 `1` leaf 합성(golden-neutral).
 
 ## Gemini shift fix 검토 결과 (2026-06-10 · 채택)
 

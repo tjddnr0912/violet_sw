@@ -1683,10 +1683,14 @@ impl<'a> SimState<'a> {
         //    The per-call WINDOW holds automatic slots (push/pop); the persistent
         //    STATIC slab (X-init ONCE, never reset) holds static slots. A func with
         //    no lifetime overrides uses exactly one of them (byte-identical to B1). ──
+        // Each fresh frame slot defaults to its NET's declared init — X for 4-state
+        // (reg/logic/integer), 0 for 2-state (bit/byte/int/shortint/longint) per IEEE
+        // §6.4. (Using `Value::xs` unconditionally mis-defaulted 2-state locals to X,
+        // silently corrupting reads/branches of an unassigned 2-state local.)
         let fresh: Vec<Value> = (0..nloc)
             .map(|s| {
                 let nv = &self.ir.nets[(base + s) as usize];
-                Value::xs(nv.width.max(1), nv.signed)
+                Value::from_packed(&nv.init, nv.width.max(1), nv.signed)
             })
             .collect();
         match (has_auto, has_static) {
@@ -1820,10 +1824,14 @@ impl<'a> SimState<'a> {
         let has_static = self.func_has_static[callee as usize];
 
         // ── FRAME SETUP (window for automatic slots; persistent slab for static). ──
+        // Each fresh frame slot defaults to its NET's declared init — X for 4-state
+        // (reg/logic/integer), 0 for 2-state (bit/byte/int/shortint/longint) per IEEE
+        // §6.4. (Using `Value::xs` unconditionally mis-defaulted 2-state locals to X,
+        // silently corrupting reads/branches of an unassigned 2-state local.)
         let fresh: Vec<Value> = (0..nloc)
             .map(|s| {
                 let nv = &self.ir.nets[(base + s) as usize];
-                Value::xs(nv.width.max(1), nv.signed)
+                Value::from_packed(&nv.init, nv.width.max(1), nv.signed)
             })
             .collect();
         match (has_auto, has_static) {

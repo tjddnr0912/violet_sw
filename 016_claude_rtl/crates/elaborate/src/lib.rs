@@ -3448,6 +3448,7 @@ impl<'s> Elaborator<'s> {
                         );
                         0
                     });
+                    let v = self.coerce_param_value(v, p);
                     let key = self.fq(&p.name.name);
                     // persistent copy for a hierarchical read (`dut.LP`) of a body
                     // parameter/localparam (mirrors the header path in bind_params).
@@ -4180,6 +4181,7 @@ impl<'s> Elaborator<'s> {
                             );
                             0
                         });
+                        let v = self.coerce_param_value(v, pp);
                         let key = self.fq(&pp.name.name);
                         self.hier_params.insert(key.clone(), v);
                         saved_params.push((key.clone(), self.params.insert(key, v)));
@@ -4568,6 +4570,44 @@ impl<'s> Elaborator<'s> {
     /// The instantiation overrides are ALREADY resolved in the PARENT scope (Fix 1
     /// / Finding M1), so a `child #(.W(PARENT_W))` override carries the parent's
     /// `PARENT_W` value — no longer folds to 0 in the child scope.
+    /// Coerce a folded parameter value to its DECLARED type's (width, signedness),
+    /// matching IEEE 1800 §6.20 param typing: a ranged or integer-typed param
+    /// truncates to its width and sign-extends when signed (so `parameter byte B =
+    /// 200` is -56, `parameter signed [7:0] = 8'hA5` is -91); an UNSIZED param (no
+    /// range, untyped) keeps its full value (the common width-defining `parameter W
+    /// = 8`). Real-typed params are not integer-coerced. `int`/`integer` are signed
+    /// even without an explicit `signed` keyword; `time` (64-bit) keeps its value.
+    fn coerce_param_value(&mut self, v: i64, p: &ast::ParamDecl) -> i64 {
+        if matches!(p.ty, ast::ParamType::Real | ast::ParamType::Realtime) {
+            return v;
+        }
+        let width = if let Some(r) = &p.range {
+            match (
+                self.const_eval_in_scope(&r.msb),
+                self.const_eval_in_scope(&r.lsb),
+            ) {
+                (Some(m), Some(l)) => Some(m.abs_diff(l) as u32 + 1),
+                _ => None, // unfoldable bound: leave the value untouched (loud elsewhere)
+            }
+        } else if matches!(p.ty, ast::ParamType::Integer) {
+            Some(32) // `integer`/`int` are 32-bit
+        } else {
+            None // unsized, or `time` (64-bit): keep the full i64
+        };
+        let Some(w) = width else { return v };
+        if w == 0 || w >= 64 {
+            return v;
+        }
+        let signed = p.signed || matches!(p.ty, ast::ParamType::Integer);
+        let mask = (1i64 << w) - 1;
+        let trunc = v & mask;
+        if signed && (trunc & (1i64 << (w - 1))) != 0 {
+            trunc - (1i64 << w) // sign-extend
+        } else {
+            trunc
+        }
+    }
+
     fn bind_params(
         &mut self,
         module: &ast::ModuleDecl,
@@ -4643,6 +4683,7 @@ impl<'s> Elaborator<'s> {
                 );
                 0
             });
+            let v = self.coerce_param_value(v, p);
             let key = self.fq(&p.name.name);
             // Persistent copy for hierarchical reads (`dut.WIDTH`) — `self.params`
             // is restored after the instance, so the read side needs this.
@@ -8605,15 +8646,36 @@ impl<'s> Elaborator<'s> {
     fn lower_frame_func_body(&mut self, name: &str, func: &ast::FunctionDef, fid: u32) {
         let scope_seg = format!("$func${name}");
         let base = self.func_blocks.len() as u32;
+        // return-kw: a frame function's `return [expr]` assigns the func-named return
+        // var (base_net + return_slot) and jumps to a single exit block; the body also
+        // falls through to it. Mirrors class-method lowering — IR-0 (exit BB + Goto/
+        // Return are existing shapes, no schema change). Gated on `body_has_return` so
+        // a return-free frame function (plain automatic/recursive) keeps its exact
+        // prior block structure (byte-identical golden output).
+        let has_ret = body_has_return(&func.body);
+        let retvar = {
+            let m = self.func_metas[fid as usize];
+            m.base_net + m.return_slot
+        };
+        let saved_ret = self.cur_return.take();
         // A FUNCTION cannot be self-disabled (IEEE / iverilog "cannot disable
         // functions") — pass `false` so `disable <funcname>` falls to the loud
         // reject. A `disable <inner named block>` (break/continue) still lowers
         // via `lower_stmt` either way.
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
-            s.lower_frame_body_stmt(&mut b, &func.body, name, false);
+            if has_ret {
+                let exit = b.new_block();
+                s.cur_return = Some((Some(retvar), exit));
+                s.lower_frame_body_stmt(&mut b, &func.body, name, false);
+                b.goto(exit);
+                b.start_block(exit);
+            } else {
+                s.lower_frame_body_stmt(&mut b, &func.body, name, false);
+            }
             b.finish()
         });
+        self.cur_return = saved_ret;
         for mut blk in body {
             rebase_terminator(&mut blk.term, base);
             self.func_blocks.push(blk);
@@ -8710,11 +8772,24 @@ impl<'s> Elaborator<'s> {
         let saved_pending = std::mem::take(&mut self.pending_task_calls);
         self.frame_task_lowering = true;
         let self_disable = stmt_disables_name(&task.body, name);
+        // return-kw (void): a `return;` in a frame task jumps to a single exit block.
+        // Gated on `body_has_return` for byte-identical IR when absent.
+        let has_ret = body_has_return(&task.body);
+        let saved_ret = self.cur_return.take();
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
-            s.lower_frame_body_stmt(&mut b, &task.body, name, self_disable);
+            if has_ret {
+                let exit = b.new_block();
+                s.cur_return = Some((None, exit));
+                s.lower_frame_body_stmt(&mut b, &task.body, name, self_disable);
+                b.goto(exit);
+                b.start_block(exit);
+            } else {
+                s.lower_frame_body_stmt(&mut b, &task.body, name, self_disable);
+            }
             b.finish()
         });
+        self.cur_return = saved_ret;
         let pending = std::mem::replace(&mut self.pending_task_calls, saved_pending);
         self.frame_task_lowering = saved_ftl;
         for mut blk in body {
@@ -9105,9 +9180,22 @@ impl<'s> Elaborator<'s> {
             }
         }
 
-        // INLINE the body into the current process via normal stmt lowering.
+        // INLINE the body into the current process via normal stmt lowering. A
+        // `return;` in the task jumps to a continuation block scoped to THIS task
+        // (cur_return saved/restored so a nested return never escapes to the caller's
+        // function exit). Gated on `body_has_return` for byte-identical IR when absent.
         self.inline_stack.push(tname.clone());
-        self.lower_stmt(b, &task.body);
+        if body_has_return(&task.body) {
+            let saved_ret = self.cur_return.take();
+            let exit = b.new_block();
+            self.cur_return = Some((None, exit));
+            self.lower_stmt(b, &task.body);
+            b.goto(exit);
+            b.start_block(exit);
+            self.cur_return = saved_ret;
+        } else {
+            self.lower_stmt(b, &task.body);
+        }
         self.inline_stack.pop();
 
         // pop our frames so sibling/outer code is unaffected.
@@ -9271,6 +9359,14 @@ impl<'s> Elaborator<'s> {
     /// Append a `Const` expr of literal `n` (width `w`); returns its ExprId.
     fn const_u32_expr(&mut self, n: u32, w: u32) -> u32 {
         let cid = self.intern_const(make_const_u32(n, w));
+        self.push_expr(ir::Expr::Const { val: cid })
+    }
+
+    /// Append a SIGNED 32-bit `Const` expr of value `v`; returns its ExprId. Used
+    /// where a comparison/arithmetic must be signed (e.g. a descending foreach walk
+    /// whose index transiently goes below 0).
+    fn const_s32_expr(&mut self, v: i32) -> u32 {
+        let cid = self.intern_const(make_const_i64(v as i64, 32, true));
         self.push_expr(ir::Expr::Const { val: cid })
     }
 
@@ -9848,10 +9944,33 @@ impl<'s> Elaborator<'s> {
                 true
             }
             ast::ExprKind::Call { name, args } if name.segments.len() == 2 => {
+                let m = name.segments[1].name.as_str();
+                // A2: fixed-size unpacked array `foreach`. The parser desugars
+                // `foreach (a[i])` uniformly to `__st = a.first/next(__foreach_i)`;
+                // a STATIC array has no dyn handle and no `.first/.next`, so walk a
+                // plain index over the first dim `[lo, lo+size)` instead. Gated to
+                // the synthetic `__foreach_*` index (the user surface stays
+                // assoc-only). Must precede the `dyn_handle` early-return below.
+                if matches!(m, "first" | "next")
+                    && delay.is_none()
+                    && args.len() == 1
+                    && matches!(
+                        &args[0].kind,
+                        ast::ExprKind::Ident(p)
+                            if p.segments.len() == 1
+                                && p.segments[0].name.starts_with("__foreach_")
+                    )
+                    && self.dyn_handle(&name.segments[0].name).is_none()
+                {
+                    if let Some(arr) = self.lookup_net_scoped(&name.segments[0].name) {
+                        if self.net_is_static_array(arr) {
+                            return self.lower_fixed_foreach_step(b, lhs, arr, m, &args[0]);
+                        }
+                    }
+                }
                 let Some((net, kind)) = self.dyn_handle(&name.segments[0].name) else {
                     return false;
                 };
-                let m = name.segments[1].name.as_str();
                 // v6: iteration methods — `st = h.first(k);` (ref key arg).
                 if matches!(m, "first" | "next" | "last" | "prev") {
                     return self.lower_iter_special(b, lhs, delay, net, kind, m, args);
@@ -9893,6 +10012,107 @@ impl<'s> Elaborator<'s> {
             }
             _ => false,
         }
+    }
+
+    /// A2: synthesize ONE step of a fixed-size-array `foreach` walk. The parser
+    /// desugar emits `__st = arr.first/next(__foreach_i)` uniformly; a static array
+    /// has no `.first/.next`, so walk a plain index over the FIRST dim `[lo, lo+size)`:
+    ///   first → `__i = lo; __st = 1;`   (a fixed array always has ≥1 element)
+    ///   next  → `__i = __i + 1; __st = (__i <= hi) ? 1 : -1;`
+    /// The caller's `while (__st == 1)` then visits every element exactly once. The
+    /// index variable carries the DECLARED index value (`a[2:5]` walks 2..5), so the
+    /// body's `a[i]` selects the right element. Returns true (statement consumed).
+    fn lower_fixed_foreach_step(
+        &mut self,
+        b: &mut ProcessBuilder,
+        st_lhs: &ast::Lvalue,
+        arr_net: u32,
+        method: &str,
+        key_arg: &ast::Expr,
+    ) -> bool {
+        let key_net = match &key_arg.kind {
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                self.lookup_net_scoped(&p.segments[0].name)
+            }
+            _ => None,
+        };
+        let Some(knet) = key_net else {
+            return false; // not a plain index — let the normal path diagnose
+        };
+        let (lo, size) = self
+            .net_dim_extents(arr_net)
+            .first()
+            .copied()
+            .unwrap_or((0, 1));
+        let hi = lo.saturating_add(size.saturating_sub(1));
+        // IEEE 1800 §12.7.3: `foreach` traverses the declared bounds left-to-right.
+        // A descending range (`a[hi:lo]`) walks hi DOWN to lo; ascending walks lo up
+        // to hi. `array_dim_desc` records the first unpacked dim's direction. All
+        // walk arithmetic is SIGNED (the index is `integer`) so a descending walk's
+        // transient `lo-1` (e.g. -1 when lo=0) terminates instead of wrapping.
+        let desc = self
+            .array_dim_desc
+            .get(&arr_net)
+            .and_then(|v| v.first().copied())
+            .unwrap_or(false);
+        let (lo_i, hi_i) = (lo as i32, hi as i32);
+        let st_lv = self.lower_lvalue(st_lhs);
+        self.check_lvalue_kind(&st_lv, true);
+        if method == "first" {
+            let start = self.const_s32_expr(if desc { hi_i } else { lo_i });
+            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: whole_net_lvalue(knet),
+                rhs: start,
+            });
+            b.push_stmt_id(sid);
+            let one = self.const_s32_expr(1);
+            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: st_lv,
+                rhs: one,
+            });
+            b.push_stmt_id(sid);
+        } else {
+            // next: __i = __i ± 1 (sub when descending, add when ascending)
+            let cur = self.push_expr(ir::Expr::Signal {
+                net: knet,
+                word: None,
+            });
+            let one = self.const_s32_expr(1);
+            let step = self.push_expr(ir::Expr::Binary {
+                op: if desc { ir::BinOp::Sub } else { ir::BinOp::Add },
+                lhs: cur,
+                rhs: one,
+            });
+            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: whole_net_lvalue(knet),
+                rhs: step,
+            });
+            b.push_stmt_id(sid);
+            // __st = (descending ? __i >= lo : __i <= hi) ? 1 : -1
+            let cur2 = self.push_expr(ir::Expr::Signal {
+                net: knet,
+                word: None,
+            });
+            let bound = self.const_s32_expr(if desc { lo_i } else { hi_i });
+            let cmp = self.push_expr(ir::Expr::Binary {
+                op: if desc { ir::BinOp::Ge } else { ir::BinOp::Le },
+                lhs: cur2,
+                rhs: bound,
+            });
+            let one = self.const_s32_expr(1);
+            let neg1 = self.const_s32_expr(-1);
+            let tern = self.push_expr(ir::Expr::Ternary {
+                cond: cmp,
+                then_e: one,
+                else_e: neg1,
+            });
+            let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                lhs: st_lv,
+                rhs: tern,
+            });
+            b.push_stmt_id(sid);
+        }
+        true
     }
 
     /// v6: `st = h.first(k);` / next/last/prev — the iteration special form
@@ -19427,6 +19647,30 @@ fn body_needs_frame(s: &ast::Stmt) -> bool {
         Null(_) | Blocking { .. } => false,
         Block { stmts, .. } => stmts.iter().any(body_needs_frame),
         _ => true,
+    }
+}
+
+/// Does any statement in `s` lower a `return`? Gates the return-exit-block setup
+/// in the frame-function/task and inline-task paths, so a body WITHOUT `return`
+/// keeps its exact prior IR (byte-identical golden output) and only return-using
+/// bodies pay for the extra exit block. Coverage mirrors [`stmt_disables_name`].
+fn body_has_return(s: &ast::Stmt) -> bool {
+    use ast::Stmt::*;
+    match s {
+        Return { .. } => true,
+        Block { stmts, .. } | Fork { stmts, .. } => stmts.iter().any(body_has_return),
+        If { then_s, else_s, .. } => {
+            body_has_return(then_s) || else_s.as_ref().is_some_and(|e| body_has_return(e))
+        }
+        Case { items, .. } => items.iter().any(|it| match it {
+            ast::CaseItem::Match { body, .. } | ast::CaseItem::Default { body, .. } => {
+                body_has_return(body)
+            }
+        }),
+        For { body, .. } | While { body, .. } | Repeat { body, .. } | Forever { body, .. } => {
+            body_has_return(body)
+        }
+        _ => false,
     }
 }
 
