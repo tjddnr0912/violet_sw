@@ -12,7 +12,7 @@ pub const MAGIC_VELAB: [u8; 8] = *b"VELAB\0\0\0";
 pub const MAGIC_VU: [u8; 8] = *b"VU\0\0\0\0\0\0";
 
 /// Container format version. Bumped whenever the header layout changes.
-pub const CURRENT_FORMAT_VERSION: u32 = 10; // v10 (2026-06-23): +SysTaskId::ClassRandomize (N7-REST `obj.randomize()`). Phase B1 constrained-random; rand-field bounds ride the `class_rand` sidecar (IR-0), only the randomize() call node is in the frozen IR. // v9 (2026-06-18): +SysFuncId×13 (file-read + $dist_* + $cast) + SysTaskId×5 ($writememb/h, $cast, $monitoron/off).
+pub const CURRENT_FORMAT_VERSION: u32 = 11; // v11 (2026-06-23): N7-REST B2 constraint solver — `class_constraints` predicates added to the 14th `StagedExtraSidecars` trailer (artifact wire shape change; sim-ir UNCHANGED, so the SimIr schema hash / canonical / RON goldens are untouched — only the staged trailer + this constant). // v10 (2026-06-23): +SysTaskId::ClassRandomize (N7-REST `obj.randomize()`). Phase B1 constrained-random; rand-field bounds ride the `class_rand` sidecar (IR-0), only the randomize() call node is in the frozen IR. // v9 (2026-06-18): +SysFuncId×13 (file-read + $dist_* + $cast) + SysTaskId×5 ($writememb/h, $cast, $monitoron/off).
 
 /// Build provenance (Layer 2). Stamped for traceability, NEVER a staleness key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

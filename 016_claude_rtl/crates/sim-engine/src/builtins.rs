@@ -599,24 +599,115 @@ fn class_randomize(sched: &mut Scheduler, args: &[u32]) {
     if rand.is_empty() {
         return;
     }
+    let preds: Vec<Vec<sim_ir::COp>> = sched
+        .st
+        .class_constraints
+        .get(class_id as usize)
+        .cloned()
+        .unwrap_or_default();
     let mut seed = sched.st.randomize_seed.get();
-    let mut updates: Vec<(u32, Value)> = Vec::with_capacity(rand.len());
-    for (field_idx, width, signed, lo, hi, constrained) in rand {
-        let v = if constrained {
-            draw_in_range(&mut seed, lo, hi, width, signed)
-        } else {
-            random_full_width(&mut seed, width, signed)
-        };
-        updates.push((field_idx, v));
+    // Rejection sampling (B2): draw every rand field from its `class_rand` domain,
+    // then keep the candidate only if EVERY predicate holds. Draw order + the per-
+    // field draw are IDENTICAL to B1, so a design with no general predicate (range-
+    // only / unconstrained) accepts on the FIRST try — byte-identical to B1. A
+    // satisfiable inter-variable / inside / implication constraint converges in a
+    // few tries; an UNSATISFIABLE one exhausts the cap and leaves fields unchanged
+    // (randomize "fails", IEEE §18.7). The seed stream is consumed deterministically
+    // either way → reproducible + 3-OS byte-identical.
+    const MAX_TRIES: u32 = 10_000;
+    let mut accepted: Option<Vec<(u32, Value)>> = None;
+    for _ in 0..MAX_TRIES {
+        let mut cand: std::collections::HashMap<u32, i64> = Default::default();
+        let mut draws: Vec<(u32, Value)> = Vec::with_capacity(rand.len());
+        for &(field_idx, width, signed, lo, hi, constrained) in &rand {
+            let v = if constrained {
+                draw_in_range(&mut seed, lo, hi, width, signed)
+            } else {
+                random_full_width(&mut seed, width, signed)
+            };
+            cand.insert(field_idx, value_to_i64(&v, width, signed));
+            draws.push((field_idx, v));
+        }
+        if preds.iter().all(|p| eval_pred(p, &cand)) {
+            accepted = Some(draws);
+            break;
+        }
     }
     sched.st.randomize_seed.set(seed);
-    let mut heap = sched.st.class_heap.borrow_mut();
-    if let Some(obj) = heap.get_mut(&id) {
-        for (idx, v) in updates {
-            if let Some(slot) = obj.fields.get_mut(idx as usize) {
-                *slot = v;
+    if let Some(updates) = accepted {
+        let mut heap = sched.st.class_heap.borrow_mut();
+        if let Some(obj) = heap.get_mut(&id) {
+            for (idx, v) in updates {
+                if let Some(slot) = obj.fields.get_mut(idx as usize) {
+                    *slot = v;
+                }
             }
         }
+    }
+}
+
+/// Extract the signed i64 value of a drawn field for constraint-predicate eval
+/// (the draw is always 2-state). Sign-extends a signed field narrower than 64;
+/// a field ≥64 bits uses its low 64 bits (B2 evaluates predicates in i64).
+fn value_to_i64(v: &Value, width: u32, signed: bool) -> i64 {
+    let bits = v.val.first().copied().unwrap_or(0);
+    if signed && width < 64 {
+        let shift = 64 - width;
+        ((bits << shift) as i64) >> shift
+    } else {
+        bits as i64
+    }
+}
+
+/// Evaluate a postfix constraint predicate against the candidate field values.
+fn eval_pred(prog: &[sim_ir::COp], cand: &std::collections::HashMap<u32, i64>) -> bool {
+    let mut stack: Vec<i64> = Vec::with_capacity(8);
+    for op in prog {
+        match op {
+            sim_ir::COp::Field(idx) => stack.push(cand.get(idx).copied().unwrap_or(0)),
+            sim_ir::COp::Const(v) => stack.push(*v),
+            sim_ir::COp::Not => {
+                let a = stack.pop().unwrap_or(0);
+                stack.push((a == 0) as i64);
+            }
+            sim_ir::COp::Bin(b) => {
+                let r = stack.pop().unwrap_or(0);
+                let l = stack.pop().unwrap_or(0);
+                stack.push(apply_cbin(*b, l, r));
+            }
+        }
+    }
+    stack.pop().map(|v| v != 0).unwrap_or(false)
+}
+
+fn apply_cbin(op: sim_ir::CBinOp, l: i64, r: i64) -> i64 {
+    use sim_ir::CBinOp as C;
+    match op {
+        C::Add => l.wrapping_add(r),
+        C::Sub => l.wrapping_sub(r),
+        C::Mul => l.wrapping_mul(r),
+        C::Div => {
+            if r == 0 {
+                0
+            } else {
+                l.wrapping_div(r)
+            }
+        }
+        C::Mod => {
+            if r == 0 {
+                0
+            } else {
+                l.wrapping_rem(r)
+            }
+        }
+        C::Lt => (l < r) as i64,
+        C::Le => (l <= r) as i64,
+        C::Gt => (l > r) as i64,
+        C::Ge => (l >= r) as i64,
+        C::Eq => (l == r) as i64,
+        C::Ne => (l != r) as i64,
+        C::And => ((l != 0) && (r != 0)) as i64,
+        C::Or => ((l != 0) || (r != 0)) as i64,
     }
 }
 

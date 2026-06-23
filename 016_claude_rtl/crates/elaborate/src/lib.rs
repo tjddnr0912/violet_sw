@@ -365,6 +365,12 @@ pub struct Sidecars {
     /// `[class_id]` → `[(field_id, width, signed, lo, hi, ranged)]`. `ranged` ⇒
     /// draw `dist_uniform(lo, hi)`; else a full-width seeded draw.
     pub class_rand: Vec<Vec<RandBound>>,
+    /// N7-REST B2: per-class general constraint PREDICATES (`[class_id]` → list of
+    /// postfix programs over candidate rand-field values). The `randomize()`
+    /// rejection-sampling solver draws from `class_rand`'s `[lo,hi]` domains, then
+    /// keeps a candidate only when EVERY predicate evaluates true. Inter-variable
+    /// (`x < y`), `inside`, and implication all lower to these (no `[lo,hi]` fold).
+    pub class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
     /// Virtual dispatch table: `[class_id][vslot]` → concrete FuncId.
     pub class_vtable: Vec<Vec<u32>>,
     /// Per method-call-site dispatch: key (StmtId/ExprId) → `(vslot, static_fid)`.
@@ -504,8 +510,10 @@ pub fn elaborate_with_timescale_roots(
     el.root_override = roots.map(<[String]>::to_vec);
     el.run(unit);
     let class_rand = el.class_rand_table();
+    let class_constraints = el.class_constraints_table();
     let sc = Sidecars {
         class_rand,
+        class_constraints,
         fork_modes: std::mem::take(&mut el.fork_modes),
         proc_multipliers: std::mem::take(&mut el.proc_multipliers),
         severities: std::mem::take(&mut el.severities),
@@ -6424,10 +6432,12 @@ impl<'s> Elaborator<'s> {
         tab
     }
 
-    /// Fold one constraint expr into per-field bound narrowings. Supports
-    /// `FIELD </<=/>/>=/== CONST` (field on either side) and top-level `&&`
-    /// conjunctions. Anything else is loud (Phase B2: inside/dist/implication/
-    /// inter-variable/soft). `bounds` entries are `(name, id, width, signed, lo, hi)`.
+    /// Best-effort: narrow a rand field's `[lo,hi]` SAMPLING DOMAIN for the
+    /// single-field range forms `FIELD </<=/>/>=/== CONST` (and top-level `&&`).
+    /// Any OTHER form (inter-variable `x<y`, inside, implication, arithmetic, …)
+    /// is a NO-OP here — it is enforced EXACTLY by the compiled predicate
+    /// (`class_constraints_for`), which is the loud authority. So this only ever
+    /// shrinks the rejection-sampling domain; it never errors.
     fn apply_constraint_expr(
         &mut self,
         e: &ast::Expr,
@@ -6449,44 +6459,185 @@ impl<'s> Elaborator<'s> {
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq
                 ) =>
             {
-                let (fname, cval, op) = if let Some(fname) = rand_field_ident(lhs) {
-                    let Some(cv) = self.const_eval_in_scope(rhs) else {
-                        self.error(
-                            MsgCode::ElabUnsupported,
-                            "constraint compares a rand field to a non-constant (Phase B1)",
-                        );
-                        return;
-                    };
-                    (fname, cv, *op)
+                let narrow = if let Some(fname) = rand_field_ident(lhs) {
+                    self.const_eval_in_scope(rhs).map(|cv| (fname, cv, *op))
                 } else if let Some(fname) = rand_field_ident(rhs) {
-                    let Some(cv) = self.const_eval_in_scope(lhs) else {
-                        self.error(
-                            MsgCode::ElabUnsupported,
-                            "constraint compares a rand field to a non-constant (Phase B1)",
-                        );
-                        return;
-                    };
-                    (fname, cv, flip_cmp(*op)) // `const OP field` ⇒ flip
+                    self.const_eval_in_scope(lhs)
+                        .map(|cv| (fname, cv, flip_cmp(*op)))
                 } else {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "constraint must relate a rand field to a constant (Phase B1)",
-                    );
-                    return;
+                    None
                 };
-                let Some(b) = bounds.iter_mut().find(|(n, ..)| *n == fname) else {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        &format!("constraint references non-rand field `{fname}` (Phase B1)"),
-                    );
-                    return;
-                };
-                apply_cmp_bound(op, cval, &mut b.4, &mut b.5);
+                if let Some((fname, cval, op)) = narrow {
+                    if let Some(b) = bounds.iter_mut().find(|(n, ..)| *n == fname) {
+                        apply_cmp_bound(op, cval, &mut b.4, &mut b.5);
+                    }
+                }
             }
-            _ => self.error(
-                MsgCode::ElabUnsupported,
-                "unsupported constraint form (Phase B1: range/relational on a rand field)",
-            ),
+            _ => {}
+        }
+    }
+
+    /// Phase B2: per-class constraint PREDICATES (parallel to `class_rand_table`).
+    fn class_constraints_table(&mut self) -> Vec<Vec<Vec<sim_ir::COp>>> {
+        let names = self.class_order.clone();
+        names
+            .iter()
+            .map(|n| self.class_constraints_for(n))
+            .collect()
+    }
+
+    /// Compile every constraint expression of class `name` (inherited included) to
+    /// a postfix predicate over candidate rand-field values. A top-level `&&` is
+    /// split into independent predicates. Each predicate references rand fields by
+    /// their field-id (matching `class_rand`); only rand fields + constants are in
+    /// the B2 subset (a non-rand / unsupported reference is loud).
+    fn class_constraints_for(&mut self, name: &str) -> Vec<Vec<sim_ir::COp>> {
+        let mut rand_names: std::collections::BTreeSet<String> = Default::default();
+        let mut constraints: Vec<ast::ConstraintDecl> = Vec::new();
+        let mut cur = Some(name.to_string());
+        let mut guard = 0;
+        while let Some(n) = cur {
+            let Some(ci) = self.class_table.get(&n) else {
+                break;
+            };
+            rand_names.extend(ci.rand_fields.iter().cloned());
+            constraints.extend(ci.constraints.iter().cloned());
+            cur = ci.base.clone();
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        if rand_names.is_empty() {
+            return Vec::new();
+        }
+        let Some(fields) = self.class_table.get(name).map(|ci| ci.fields.clone()) else {
+            return Vec::new();
+        };
+        // rand field name → field-id (same id as `class_rand`'s `RandBound.0`).
+        let mut name_to_idx: std::collections::HashMap<String, u32> = Default::default();
+        for (idx, f) in fields.iter().enumerate() {
+            if rand_names.contains(&f.name) {
+                name_to_idx.insert(f.name.clone(), idx as u32);
+            }
+        }
+        let mut preds: Vec<Vec<sim_ir::COp>> = Vec::new();
+        for c in &constraints.clone() {
+            for e in &c.exprs {
+                self.collect_constraint_preds(e, &name_to_idx, &mut preds);
+            }
+        }
+        preds
+    }
+
+    /// Split top-level `&&` into independent predicates; compile each leaf.
+    fn collect_constraint_preds(
+        &mut self,
+        e: &ast::Expr,
+        map: &std::collections::HashMap<String, u32>,
+        preds: &mut Vec<Vec<sim_ir::COp>>,
+    ) {
+        if let ast::ExprKind::Binary {
+            op: ast::BinOp::LogAnd,
+            lhs,
+            rhs,
+        } = &e.kind
+        {
+            self.collect_constraint_preds(lhs, map, preds);
+            self.collect_constraint_preds(rhs, map, preds);
+            return;
+        }
+        if let ast::ExprKind::Paren { inner } = &e.kind {
+            self.collect_constraint_preds(inner, map, preds);
+            return;
+        }
+        let mut prog: Vec<sim_ir::COp> = Vec::new();
+        if self.compile_constraint_pred(e, map, &mut prog) {
+            preds.push(prog);
+        }
+    }
+
+    /// Post-order compile a constraint expression to a postfix predicate. Returns
+    /// false (after a loud diagnostic) on a form outside the B2 subset.
+    fn compile_constraint_pred(
+        &mut self,
+        e: &ast::Expr,
+        map: &std::collections::HashMap<String, u32>,
+        out: &mut Vec<sim_ir::COp>,
+    ) -> bool {
+        use ast::{ExprKind, UnOp};
+        match &e.kind {
+            ExprKind::Paren { inner } => self.compile_constraint_pred(inner, map, out),
+            ExprKind::Ident(path) if path.segments.len() == 1 => {
+                if let Some(&idx) = map.get(&path.segments[0].name) {
+                    out.push(sim_ir::COp::Field(idx));
+                    return true;
+                }
+                if let Some(v) = self.const_eval_in_scope(e) {
+                    out.push(sim_ir::COp::Const(v));
+                    return true;
+                }
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "constraint references `{}` — only rand fields and constants are \
+                         supported (B2; a non-rand class field is a follow-on)",
+                        path.segments[0].name
+                    ),
+                );
+                false
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                let Some(cop) = map_cbinop(*op) else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "unsupported operator in a constraint expression (B2)",
+                    );
+                    return false;
+                };
+                if !self.compile_constraint_pred(lhs, map, out) {
+                    return false;
+                }
+                if !self.compile_constraint_pred(rhs, map, out) {
+                    return false;
+                }
+                out.push(sim_ir::COp::Bin(cop));
+                true
+            }
+            ExprKind::Unary {
+                op: UnOp::LogNot,
+                operand,
+            } => {
+                if !self.compile_constraint_pred(operand, map, out) {
+                    return false;
+                }
+                out.push(sim_ir::COp::Not);
+                true
+            }
+            ExprKind::Unary {
+                op: UnOp::Minus,
+                operand,
+            } => {
+                out.push(sim_ir::COp::Const(0));
+                if !self.compile_constraint_pred(operand, map, out) {
+                    return false;
+                }
+                out.push(sim_ir::COp::Bin(sim_ir::CBinOp::Sub));
+                true
+            }
+            _ => {
+                // A whole-subexpr constant (e.g. `P*2`) folds to one Const.
+                if let Some(v) = self.const_eval_in_scope(e) {
+                    out.push(sim_ir::COp::Const(v));
+                    return true;
+                }
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "unsupported constraint expression form (B2: relational/arithmetic/\
+                     logical over rand fields and constants)",
+                );
+                false
+            }
         }
     }
 
@@ -20110,6 +20261,29 @@ fn rand_type_range(width: u32, signed: bool) -> (i64, i64) {
     } else {
         (0, (1i64 << width) - 1)
     }
+}
+
+/// Map an AST binary operator to a B2 constraint-predicate op (`None` ⇒ outside
+/// the subset, e.g. shifts / bitwise — loud-rejected by the caller).
+fn map_cbinop(op: ast::BinOp) -> Option<sim_ir::CBinOp> {
+    use ast::BinOp as B;
+    use sim_ir::CBinOp as C;
+    Some(match op {
+        B::Add => C::Add,
+        B::Sub => C::Sub,
+        B::Mul => C::Mul,
+        B::Div => C::Div,
+        B::Mod => C::Mod,
+        B::Lt => C::Lt,
+        B::Le => C::Le,
+        B::Gt => C::Gt,
+        B::Ge => C::Ge,
+        B::Eq => C::Eq,
+        B::Ne => C::Ne,
+        B::LogAnd => C::And,
+        B::LogOr => C::Or,
+        _ => return None,
+    })
 }
 
 /// A bare single-segment ident (a class field reference inside a constraint).

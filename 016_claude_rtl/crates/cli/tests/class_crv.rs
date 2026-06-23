@@ -319,3 +319,112 @@ fn randomize_unconstrained_field_varies() {
     assert_eq!(code, Some(0), "stderr:\n{err}");
     assert!(out.contains("seen_hi=1"), "got:\n{out}");
 }
+
+// ───────────────────────── Phase B2: general constraint solver ─────────────────────────
+
+#[test]
+fn randomize_inter_variable_lt() {
+    // INTER-VARIABLE `x < y` (no single-field [lo,hi] can express it) — enforced by
+    // the rejection-sampling solver. Every draw must satisfy x < y.
+    let (out, err, code) = run("class P;\n\
+           rand int x;\n\
+           rand int y;\n\
+           constraint c { x >= 0; x <= 100; y >= 0; y <= 100; x < y; }\n\
+         endclass\n\
+         module top; P p; integer i; integer ok;\n\
+         initial begin\n\
+           p = new; ok = 1;\n\
+           for (i = 0; i < 80; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (!(p.x < p.y)) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok=1"), "x<y must always hold:\n{out}");
+}
+
+#[test]
+fn randomize_arithmetic_inter_variable() {
+    // Arithmetic inter-variable `a + b == 50` — the solver must find satisfying pairs.
+    let (out, err, code) = run("class P;\n\
+           rand int a;\n\
+           rand int b;\n\
+           constraint c { a >= 0; a <= 50; b >= 0; b <= 50; a + b == 50; }\n\
+         endclass\n\
+         module top; P p; integer i; integer ok;\n\
+         initial begin\n\
+           p = new; ok = 1;\n\
+           for (i = 0; i < 200; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (p.a + p.b != 50) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("ok=1"), "a+b==50 must always hold:\n{out}");
+}
+
+#[test]
+fn randomize_inter_variable_deterministic() {
+    // The rejection-sampling solver consumes the seed deterministically: the same
+    // program run twice produces the identical accepted draw sequence.
+    let src = "class P;\n\
+           rand int x;\n\
+           rand int y;\n\
+           constraint c { x >= 0; x <= 1000; y >= 0; y <= 1000; x < y; }\n\
+         endclass\n\
+         module top; P p; integer i;\n\
+         initial begin\n\
+           p = new;\n\
+           for (i = 0; i < 5; i = i + 1) begin p.randomize(); $display(\"%0d %0d\", p.x, p.y); end\n\
+           $finish;\n\
+         end\n\
+         endmodule\n";
+    let (a, _, _) = run(src);
+    let (b, _, _) = run(src);
+    assert_eq!(a, b, "the accepted draw sequence must be deterministic");
+}
+
+#[test]
+fn staged_inter_variable_carries() {
+    // The staged vcmp→velab→vrun path must carry the B2 `class_constraints` predicate
+    // (else x<y is dropped → the $fatal-on-violation fires → non-zero exit).
+    let src = "class P;\n\
+           rand int x;\n\
+           rand int y;\n\
+           constraint c { x >= 0; x <= 100; y >= 0; y <= 100; x < y; }\n\
+         endclass\n\
+         module top; P p; integer i;\n\
+         initial begin\n\
+           p = new;\n\
+           for (i = 0; i < 8; i = i + 1) begin\n\
+             p.randomize();\n\
+             if (!(p.x < p.y)) $fatal(1, \"inter-variable constraint dropped\");\n\
+           end\n\
+           $finish;\n\
+         end\n\
+         endmodule\n";
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("vita_crvb2_{}_{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sv = dir.join("t.sv");
+    std::fs::write(&sv, src).unwrap();
+    let s = |p: &std::path::Path| p.to_str().unwrap().to_string();
+    let vu = dir.join("t.vu");
+    let velab = dir.join("t.velab");
+    let o = cli::VitaOpts::default();
+    assert_eq!(
+        cli::run_vcmp(&[s(&sv)], Some(&s(&vu)), &o),
+        0,
+        "vcmp failed"
+    );
+    assert_eq!(cli::run_velab(&s(&vu), &s(&velab), &o), 0, "velab failed");
+    assert_eq!(
+        cli::run_vrun(&s(&velab), &o),
+        0,
+        "staged path dropped the B2 constraint predicate"
+    );
+}

@@ -692,3 +692,40 @@ pub struct SimIr {
     pub blocks: Vec<sim_ir::BasicBlock>,
     pub consts: Vec<sim_ir::ConstVal>,
 }
+
+/// Phase B2 constraint-solver predicate, compiled to a flat POSTFIX program over
+/// candidate `rand`-field values (as i64), evaluated by the `randomize()`
+/// rejection-sampling solver. NOT part of the frozen `SimIr` root and NOT
+/// `SchemaHash`-derived — it rides the out-of-band `class_constraints` sidecar
+/// (no schema-hash / format-version impact), exactly like the `class_rand`
+/// `[lo,hi]` bounds. `inside`/implication lower to these ops (set membership ⇒
+/// `||` of `==`/range tests; `a -> b` ⇒ `!a || b`), so one evaluator covers them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum COp {
+    /// Push the candidate value (sign-extended i64) of rand field `field_idx`.
+    Field(u32),
+    /// Push a constant.
+    Const(i64),
+    /// Pop `b`, then `a`; push `a OP b` (relational/logical results are 0/1).
+    Bin(CBinOp),
+    /// Pop `a`; push `1` if `a == 0` else `0` (logical NOT).
+    Not,
+}
+
+/// Binary operator for a [`COp::Bin`] step (Phase B2 constraint predicate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+    And,
+    Or,
+}

@@ -627,6 +627,7 @@ fn run_vita_str_gated(
         class_layouts: sc.class_layouts,
         class_field_inits: sc.class_field_inits,
         class_rand: sc.class_rand,
+        class_constraints: sc.class_constraints,
         class_vtable: sc.class_vtable,
         class_calls: sc.class_calls,
         class_field_widths: sc.class_field_widths,
@@ -1379,6 +1380,8 @@ struct StagedExtraSidecars {
     assert_ctl: std::collections::BTreeMap<u32, u8>,
     /// N7-REST rand-field bounds (so staged velab→vrun doesn't drop randomize()).
     class_rand: Vec<Vec<sim_engine::RandBound>>,
+    /// N7-REST B2 constraint predicates (staged velab→vrun must carry them too).
+    class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
 }
 
 impl StagedExtraSidecars {
@@ -1400,6 +1403,7 @@ impl StagedExtraSidecars {
             assert_fire: sc.assert_fire.clone(),
             assert_ctl: sc.assert_ctl.clone(),
             class_rand: sc.class_rand.clone(),
+            class_constraints: sc.class_constraints.clone(),
         }
     }
 }
@@ -2306,6 +2310,7 @@ fn run_vrun_gated(
         class_layouts: extra.class_layouts,
         class_field_inits: extra.class_field_inits,
         class_rand: extra.class_rand,
+        class_constraints: extra.class_constraints,
         class_vtable: extra.class_vtable,
         class_calls: extra.class_calls,
         class_field_widths: extra.class_field_widths,
@@ -2962,6 +2967,14 @@ mod tests {
             vec![(0, 32, true, 1, 6, true)],
             vec![(1, 64, false, 0, 0, false)],
         ];
+        s.class_constraints = vec![
+            vec![vec![
+                sim_ir::COp::Field(0),
+                sim_ir::COp::Field(1),
+                sim_ir::COp::Bin(sim_ir::CBinOp::Lt),
+            ]],
+            vec![vec![sim_ir::COp::Const(7), sim_ir::COp::Not]],
+        ];
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -2969,7 +2982,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "341a78284e00e53fd3e43c092dfa57d3a3bc58f0a1b26159521a1b96d4aa5b9d";
+        const EXPECTED: &str = "f5abdc1ca931608cc70cbe6886cfc1dd84f6f394fea7d165b5ee8443d03dcb36";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\

@@ -362,6 +362,9 @@ pub(crate) struct SimState<'a> {
     /// by class_id: `[(field_id, width, signed, lo, hi, ranged)]`. Drives
     /// `randomize()`. Empty ⇒ no rand members.
     pub class_rand: Vec<Vec<crate::RandBound>>,
+    /// N7-REST B2: per-class constraint predicates (postfix programs), the
+    /// rejection-sampling solver's acceptance test. Indexed by class_id.
+    pub class_constraints: Vec<Vec<Vec<sim_ir::COp>>>,
     /// N7-REST: the deterministic `randomize()` draw seed. A dedicated stream
     /// (separate from `$random`/`$urandom`) so randomize() draws are reproducible
     /// and isolated. `Cell` — advanced in the `&mut` write phase but borrow-free.
@@ -559,6 +562,7 @@ impl<'a> SimState<'a> {
             class_obj_next: Cell::new(1),
             class_layouts: Vec::new(),
             class_rand: Vec::new(),
+            class_constraints: Vec::new(),
             // A fixed nonzero start so the first draw is well-defined and the
             // sequence is reproducible on every OS (dist_uniform substitutes 0
             // anyway, but pinning it keeps the contract explicit).
