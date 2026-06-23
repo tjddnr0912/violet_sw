@@ -151,6 +151,8 @@ loud-reject로 확인됨(이제 참):**
 > 두 축으로 펼친다: §4.1 스코프 확장 트랙(결정 대기) · §4.2 의도적 MVP 컷 인벤토리(전부 loud/문서화 —
 > 해제 시 합류 트랙 매핑). 원칙은 그대로: **frozen-IR 변경은 한 번의 v7 bump에 일괄**(§F 선례),
 > IR-무변경 항목 선행, 오라클(iverilog) 차분 가능 영역 우선, 진입 전 §F식 관문 평가(스파이크→설계→bump).
+>
+> **🎯 완성도 레버 결정 포인트(2026-06-23):** §4.5 Planned=비었음(silent-wrong 0) · §5 하드닝 백로그=착수 권장 0(전부 완료/비권고/워크로드-게이트). 남은 완성도 레버는 **두 갈래**: ⓐ **honest-loud 소형 갭**(고정크기 `foreach`·자유함수 `return` kw[**format_version bump 동반**]·`function void`/typed `parameter int`·leading-`##` SVA consequent·empty-match `[*0:n]`) = 각 小, 실무 빈도 중, iverilog 차분 대부분 가능 → *"막히면 바로 닫기"* + 다음 format-bump 때 `return`-kw 합류. ⓑ **검증 생태계 대형 트랙**(N7-REST = **randomization/constraint solver**·program·union·virtual interface·parameterized class·array 메서드) = 大~大大, UVM류 CRV 워크플로의 핵심 차별점, 오라클 부분적 → 수요 확인 후 별도 전략 결정. **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급). **권장: ⓐ를 기회주의적으로 닫아 언어 surface 정합을 올리고, ⓑ(특히 constraint solver)는 단독 대형 트랙으로 GO/NO-GO 의사결정.**
 
 ### 4.1 스코프 확장 트랙
 
