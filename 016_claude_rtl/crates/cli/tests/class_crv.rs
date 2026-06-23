@@ -789,3 +789,112 @@ fn inline_with_result_and_intervar() {
     assert_eq!(code, Some(0), "stderr:\n{err}");
     assert!(out.contains("ok=1"), "inline-with result+intervar:\n{out}");
 }
+
+// ───── inline-with adversarial-hunt fixes (silent-wrong → loud / correct) ──────
+
+#[test]
+fn inline_with_unknown_field_is_loud() {
+    // HUNT finding 1/5: a single-field RANGE constraint on a typo'd / unresolvable
+    // field name was SILENTLY dropped (field drawn unconstrained, exit 0), while the
+    // `!=` form correctly loud-rejected. Must be loud (matching the `!=` path).
+    let (_out, err, code) = run("class C; rand int value;\n\
+         endclass\n\
+         module top; C c; integer i;\n\
+         initial begin\n\
+           c = new;\n\
+           for (i = 0; i < 5; i = i + 1) c.randomize() with { valu < 5; };\n\
+           $display(\"done\"); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "typo'd inline field must be loud, not silent:\n{err}"
+    );
+}
+
+#[test]
+fn inline_with_on_randc_field_is_loud() {
+    // HUNT finding 2: an inline range on a `randc` field was silently dropped (randc
+    // drew full range, success=1). Class constraints loud-reject randc constraints;
+    // the inline path must too.
+    let (_out, err, code) = run("class P; randc bit [3:0] x;\n\
+         endclass\n\
+         module top; P p; integer i;\n\
+         initial begin\n\
+           p = new;\n\
+           for (i = 0; i < 4; i = i + 1) p.randomize() with { x < 4; };\n\
+           $display(\"done\"); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "inline constraint on randc must be loud:\n{err}"
+    );
+}
+
+#[test]
+fn inline_with_referencing_randc_field_is_loud() {
+    // HUNT finding 3: an inline predicate referencing a randc field read it as a
+    // stale 0, silently corrupting the inter-variable constraint. Must be loud.
+    let (_out, err, code) = run("class P; randc bit [3:0] c; rand bit [3:0] r;\n\
+         endclass\n\
+         module top; P p; integer i;\n\
+         initial begin\n\
+           p = new;\n\
+           for (i = 0; i < 4; i = i + 1) p.randomize() with { r > c; };\n\
+           $display(\"done\"); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "inline predicate referencing randc must be loud:\n{err}"
+    );
+}
+
+#[test]
+fn inline_with_range_on_dist_field_constrains() {
+    // HUNT finding 4: an inline range on a `dist` field was silently dropped (the
+    // out-of-range dist value 200 kept appearing). The inline range must exclude it.
+    let (out, err, code) = run("class P; rand bit [7:0] x;\n\
+           constraint dc { x dist { 10 := 1, 20 := 1, 200 := 1 }; }\n\
+         endclass\n\
+         module top; P p; integer i; integer ok;\n\
+         initial begin\n\
+           p = new; ok = 1;\n\
+           for (i = 0; i < 24; i = i + 1) begin\n\
+             p.randomize() with { x < 100; };\n\
+             if (p.x >= 100) ok = 0;\n\
+           end\n\
+           $display(\"ok=%0d\", ok); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(
+        out.contains("ok=1"),
+        "inline range must exclude out-of-range dist value:\n{out}"
+    );
+}
+
+#[test]
+fn class_constraint_unknown_field_range_is_loud() {
+    // Pre-existing sibling of finding 1: a CLASS single-field range on a typo'd
+    // field was also silently dropped. Fixed by the same predicate-skip gate.
+    let (_out, err, code) = run("class C; rand int value;\n\
+           constraint c { valu < 5; }\n\
+         endclass\n\
+         module top; C c; integer i;\n\
+         initial begin\n\
+           c = new;\n\
+           for (i = 0; i < 5; i = i + 1) c.randomize();\n\
+           $display(\"done\"); $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_ne!(
+        code,
+        Some(0),
+        "typo'd class-constraint field must be loud:\n{err}"
+    );
+}

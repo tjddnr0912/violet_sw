@@ -6768,6 +6768,7 @@ impl<'s> Elaborator<'s> {
     /// the B2 subset (a non-rand / unsupported reference is loud).
     fn class_constraints_for(&mut self, name: &str) -> Vec<Vec<sim_ir::COp>> {
         let mut rand_names: std::collections::BTreeSet<String> = Default::default();
+        let mut randc_names: std::collections::BTreeSet<String> = Default::default();
         let mut constraints: Vec<ast::ConstraintDecl> = Vec::new();
         let mut cur = Some(name.to_string());
         let mut guard = 0;
@@ -6776,6 +6777,7 @@ impl<'s> Elaborator<'s> {
                 break;
             };
             rand_names.extend(ci.rand_fields.iter().cloned());
+            randc_names.extend(ci.randc_fields.iter().cloned());
             constraints.extend(ci.constraints.iter().cloned());
             cur = ci.base.clone();
             guard += 1;
@@ -6797,11 +6799,21 @@ impl<'s> Elaborator<'s> {
                 map.insert(f.name.clone(), (idx as u32, f.width, f.signed));
             }
         }
+        // PLAIN rand fields (range constraints on these ARE captured by [lo,hi]):
+        // exclude `randc` (cyclic draw ignores the domain) and `dist` (weighted draw
+        // ignores it). A single-field range on a non-plain or unknown field stays a
+        // predicate (→ enforced after the draw, or loud-rejected if the name is bad).
+        let dist_names = dist_field_names(&constraints);
+        let plain_rand: std::collections::BTreeSet<String> = rand_names
+            .iter()
+            .filter(|n| !randc_names.contains(*n) && !dist_names.contains(*n))
+            .cloned()
+            .collect();
         let mut preds: Vec<Vec<sim_ir::COp>> = Vec::new();
         for c in &constraints.clone() {
             for (i, e) in c.exprs.iter().enumerate() {
                 let is_soft = c.soft.get(i).copied().unwrap_or(false);
-                self.collect_constraint_preds(e, &map, is_soft, &mut preds);
+                self.collect_constraint_preds(e, &map, &plain_rand, is_soft, &mut preds);
             }
         }
         preds
@@ -6817,6 +6829,7 @@ impl<'s> Elaborator<'s> {
         &mut self,
         e: &ast::Expr,
         map: &std::collections::HashMap<String, (u32, u32, bool)>,
+        plain_rand: &std::collections::BTreeSet<String>,
         is_soft: bool,
         preds: &mut Vec<Vec<sim_ir::COp>>,
     ) {
@@ -6831,18 +6844,27 @@ impl<'s> Elaborator<'s> {
             rhs,
         } = &e.kind
         {
-            self.collect_constraint_preds(lhs, map, is_soft, preds);
-            self.collect_constraint_preds(rhs, map, is_soft, preds);
+            self.collect_constraint_preds(lhs, map, plain_rand, is_soft, preds);
+            self.collect_constraint_preds(rhs, map, plain_rand, is_soft, preds);
             return;
         }
         if let ast::ExprKind::Paren { inner } = &e.kind {
-            self.collect_constraint_preds(inner, map, is_soft, preds);
+            self.collect_constraint_preds(inner, map, plain_rand, is_soft, preds);
             return;
         }
-        // A HARD single-field range is captured by the [lo,hi] domain (no predicate).
-        // A SOFT one must stay a predicate so it can be dropped, so don't skip it.
-        if !is_soft && self.is_single_field_range(e) {
-            return;
+        // A HARD single-field range is captured by the [lo,hi] sampling domain — but
+        // ONLY when the field is a PLAIN rand field (the domain is the authority).
+        // If the field is UNKNOWN (typo / not a member), `dist` (domain ignored by
+        // the weighted draw), or `randc` (cyclic, domain ignored), the range MUST
+        // stay a predicate so `compile_constraint_pred` either loud-rejects the
+        // unknown name (E3009, symmetric with the `!=` path) or enforces the range
+        // after the draw. A SOFT range also stays a predicate (so it can be dropped).
+        if !is_soft {
+            if let Some(f) = self.single_range_field(e) {
+                if plain_rand.contains(&f) {
+                    return;
+                }
+            }
         }
         let mut prog: Vec<sim_ir::COp> = Vec::new();
         if is_soft {
@@ -6853,21 +6875,29 @@ impl<'s> Elaborator<'s> {
         }
     }
 
-    /// A pure `field </<=/>/>=/== const` comparison (captured by the `[lo,hi]`
-    /// domain). `!=` is NOT included — it is not a range narrowing and needs a
-    /// predicate.
-    fn is_single_field_range(&self, e: &ast::Expr) -> bool {
+    /// The rand-field name of a pure `field OP const` / `const OP field` comparison
+    /// (OP ∈ {<,<=,>,>=,==}) — the form captured by the `[lo,hi]` sampling domain.
+    /// `None` for `!=` (not a range narrowing) and for inter-variable `field OP
+    /// field` (the OTHER side must const-evaluate), which both need a predicate.
+    fn single_range_field(&self, e: &ast::Expr) -> Option<String> {
         if let ast::ExprKind::Binary { op, lhs, rhs } = &e.kind {
             if matches!(
                 op,
                 ast::BinOp::Lt | ast::BinOp::Le | ast::BinOp::Gt | ast::BinOp::Ge | ast::BinOp::Eq
             ) {
-                let l = rand_field_ident(lhs).is_some() && self.const_eval_in_scope(rhs).is_some();
-                let r = rand_field_ident(rhs).is_some() && self.const_eval_in_scope(lhs).is_some();
-                return l || r;
+                if let Some(f) = rand_field_ident(lhs) {
+                    if self.const_eval_in_scope(rhs).is_some() {
+                        return Some(f);
+                    }
+                }
+                if let Some(f) = rand_field_ident(rhs) {
+                    if self.const_eval_in_scope(lhs).is_some() {
+                        return Some(f);
+                    }
+                }
             }
         }
-        false
+        None
     }
 
     /// Post-order compile a constraint expression to a postfix predicate. Returns
@@ -7602,8 +7632,11 @@ impl<'s> Elaborator<'s> {
     /// these domains with the class domains and ANDs the predicates (§18.7).
     fn fold_inline_with(&mut self, class_name: &str, constraints: &[ast::Expr]) -> u32 {
         let id = self.randomize_with.len() as u32;
-        // Inherited rand-field names (self→base→…→root), like `class_rand_for`.
+        // Inherited rand-field names + class constraints + randc names (self→base→…
+        // →root), like `class_rand_for`/`class_constraints_for`.
         let mut rand_names: std::collections::BTreeSet<String> = Default::default();
+        let mut randc_names: std::collections::BTreeSet<String> = Default::default();
+        let mut class_constraints: Vec<ast::ConstraintDecl> = Vec::new();
         let mut cur = Some(class_name.to_string());
         let mut guard = 0;
         while let Some(n) = cur {
@@ -7611,11 +7644,28 @@ impl<'s> Elaborator<'s> {
                 break;
             };
             rand_names.extend(ci.rand_fields.iter().cloned());
+            randc_names.extend(ci.randc_fields.iter().cloned());
+            class_constraints.extend(ci.constraints.iter().cloned());
             cur = ci.base.clone();
             guard += 1;
             if guard > 256 {
                 break;
             }
+        }
+        // §18.7 + B2: an inline constraint that references a `randc` field is
+        // unsupported — same loud-reject as a CLASS constraint on a randc field
+        // (`class_randc_for`). A randc field is drawn cyclically OUTSIDE the solver,
+        // so an inline predicate/range on it would be silently ignored (the field
+        // would draw its full range / be read as a stale 0). Loud, never silent.
+        let mentions_randc = constraints
+            .iter()
+            .any(|e| randc_names.iter().any(|rn| expr_mentions_field(e, rn)));
+        if mentions_randc {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "an inline `with` constraint referencing a `randc` field is unsupported \
+                 in B2 (a randc field cycles over its full range, outside the solver)",
+            );
         }
         let fields = self
             .class_table
@@ -7631,22 +7681,34 @@ impl<'s> Elaborator<'s> {
                 bounds.push((f.name.clone(), idx as u32, f.width, f.signed, lo, hi));
             }
         }
-        // Single-field ranges → per-field domain narrowing (engine intersects with
-        // the class domain). Emitted verbatim — a contradictory `[lo>hi]` is caught
-        // (as infeasible → randomize fails) by the engine BEFORE it draws.
+        // PLAIN rand fields (range constraints captured by [lo,hi]): exclude randc +
+        // dist (the dist may come from a CLASS constraint, e.g. `x dist {…}` in the
+        // class with an inline `x < 100` — that inline range must stay a predicate so
+        // it actually excludes the out-of-range dist value).
+        let dist_names = dist_field_names(&class_constraints);
+        let plain_rand: std::collections::BTreeSet<String> = rand_names
+            .iter()
+            .filter(|n| !randc_names.contains(*n) && !dist_names.contains(*n))
+            .cloned()
+            .collect();
+        // Single-field ranges on PLAIN fields → per-field domain narrowing (engine
+        // intersects with the class domain; a contradictory `[lo>hi]` is caught as
+        // infeasible BEFORE drawing). A range on a dist field does NOT narrow the
+        // (ignored) domain — it rides the predicate path below.
         for e in constraints {
             self.apply_constraint_expr(e, &mut bounds);
         }
         let mut domains: Vec<(u32, i64, i64)> = Vec::new();
-        for (_fname, idx, width, signed, lo, hi) in &bounds {
-            if (*lo, *hi) != rand_type_range(*width, *signed) {
+        for (fname, idx, width, signed, lo, hi) in &bounds {
+            if plain_rand.contains(fname) && (*lo, *hi) != rand_type_range(*width, *signed) {
                 domains.push((*idx, *lo, *hi));
             }
         }
-        // Everything else → predicates (inter-variable, !=, inside, implication, …).
+        // Everything else → predicates (inter-variable, !=, inside, implication,
+        // dist-field ranges, and unknown-name ranges → loud E3009 in compile).
         let mut preds: Vec<Vec<sim_ir::COp>> = Vec::new();
         for e in constraints {
-            self.collect_constraint_preds(e, &map, false, &mut preds);
+            self.collect_constraint_preds(e, &map, &plain_rand, false, &mut preds);
         }
         self.randomize_with.push((domains, preds));
         id
@@ -20802,6 +20864,40 @@ fn expr_mentions_field(e: &ast::Expr, name: &str) -> bool {
                 })
         }
         _ => false,
+    }
+}
+
+/// Names of the rand fields a constraint list draws via a `dist` weighted sampler
+/// (`field dist { … }`). Their `[lo,hi]` domain is IGNORED by the weighted draw,
+/// so a single-field range on a dist field must stay a PREDICATE (checked after
+/// the draw), not be folded into the domain.
+fn dist_field_names(constraints: &[ast::ConstraintDecl]) -> std::collections::BTreeSet<String> {
+    let mut s = std::collections::BTreeSet::new();
+    for c in constraints {
+        for e in &c.exprs {
+            collect_dist_fields(e, &mut s);
+        }
+    }
+    s
+}
+
+fn collect_dist_fields(e: &ast::Expr, s: &mut std::collections::BTreeSet<String>) {
+    match &e.kind {
+        ast::ExprKind::Dist { value, .. } => {
+            if let Some(n) = rand_field_ident(value) {
+                s.insert(n);
+            }
+        }
+        ast::ExprKind::Paren { inner } => collect_dist_fields(inner, s),
+        ast::ExprKind::Binary {
+            op: ast::BinOp::LogAnd,
+            lhs,
+            rhs,
+        } => {
+            collect_dist_fields(lhs, s);
+            collect_dist_fields(rhs, s);
+        }
+        _ => {}
     }
 }
 
