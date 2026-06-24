@@ -122,12 +122,12 @@ fn select_of_frame_local_actual_is_loud_not_panic() {
         .output()
         .expect("run vita");
     let _ = std::fs::remove_file(&path);
-    assert!(!out.status.success(), "expected a loud reject (nonzero exit)");
-    let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !err.contains("panicked"),
-        "must not panic, got:\n{err}"
+        !out.status.success(),
+        "expected a loud reject (nonzero exit)"
     );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked"), "must not panic, got:\n{err}");
     assert!(
         err.contains("frame-local"),
         "expected a frame-local diagnostic, got:\n{err}"

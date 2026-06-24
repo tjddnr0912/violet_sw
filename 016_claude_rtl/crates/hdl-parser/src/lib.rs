@@ -4545,6 +4545,7 @@ impl<'t, 's> Parser<'t, 's> {
         let mut signed = false;
         let mut range = None;
         let mut ret_type = ParamType::Implicit;
+        let mut ret_two_state = false;
         let is_void = self.eat_kw(Kw::Void);
         if is_void {
             // `function void f(...)`: no return value. In module/package scope the
@@ -4566,6 +4567,9 @@ impl<'t, 's> Parser<'t, 's> {
             };
             if let Some(k) = kw_kind {
                 self.bump(); // the kind keyword
+                             // int/byte/shortint/longint/bit are 2-state integral return types.
+                ret_two_state =
+                    matches!(k, Kw::Int | Kw::Byte | Kw::Shortint | Kw::Longint | Kw::Bit);
                 match k {
                     // `int` is 32-bit SIGNED 2-state (defaults signed).
                     Kw::Int => {
@@ -4622,6 +4626,7 @@ impl<'t, 's> Parser<'t, 's> {
                 signed,
                 range,
                 ret_type,
+                ret_two_state,
                 name,
                 ports,
                 body_decls,

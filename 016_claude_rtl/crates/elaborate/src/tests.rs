@@ -2627,6 +2627,7 @@ fn func_def(
             span: SP,
         }),
         ret_type: ast::ParamType::Implicit,
+        ret_two_state: false,
         name: ident(name),
         ports,
         body_decls,

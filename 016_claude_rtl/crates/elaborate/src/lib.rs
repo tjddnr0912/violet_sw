@@ -9892,10 +9892,12 @@ impl<'s> Elaborator<'s> {
     fn build_frame_set(&self) -> std::collections::BTreeSet<String> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (name, f) in &self.func_table {
-            // A function is framed when it is `automatic`, recursive (below), or its
+            // A function is framed when it is `automatic`, recursive (below), its
             // body is NOT straight-line foldable (has control flow / a construct the
-            // inline path rejects) — framing handles all three with one machine.
-            if f.automatic || body_needs_frame(&f.body) {
+            // inline path rejects), OR its return type is 2-state (so the frame
+            // return slot coerces X/Z→0, §6.11.3 — the inline fold has no slot to
+            // coerce). Framing handles all of these with one machine.
+            if f.automatic || f.ret_two_state || body_needs_frame(&f.body) {
                 set.insert(name.clone());
             }
         }
@@ -9996,6 +9998,7 @@ impl<'s> Elaborator<'s> {
                 }
             }
             // [n_params]: the function-named RETURN var (declared range/sign).
+            let ret_net = s.nets.len() as u32;
             s.add_net(
                 &ret_name,
                 ir::NetVar {
@@ -10013,6 +10016,18 @@ impl<'s> Elaborator<'s> {
                     init: default_init(ast::NetVarKind::Reg, ret_width),
                 },
             );
+            // A 2-state return type can never hold X/Z — register the return slot
+            // so `frame_slot_write` coerces the return assignment (§6.11.3). The
+            // specific 2-state kind is immaterial to coercion; pick one by width.
+            if func.ret_two_state {
+                let k = match ret_width {
+                    0..=8 => ast::NetVarKind::Byte,
+                    9..=16 => ast::NetVarKind::Shortint,
+                    17..=32 => ast::NetVarKind::Int,
+                    _ => ast::NetVarKind::Longint,
+                };
+                s.intro_kind.insert(ret_net, k);
+            }
             // [n_params+1..]: body_decls, source order (scalars only — a frame-
             // local array/dyn/string is outside the B1 cut and lowers as a 1-elem
             // net here; the body validator rejects any select/array lvalue use).

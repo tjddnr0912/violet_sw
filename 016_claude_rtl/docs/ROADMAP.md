@@ -338,7 +338,7 @@ loud-reject로 확인됨(이제 참):**
 | ① ✅ | task output/inout select actual | **✅ 완료**(`fccec9c`, 1928 green; 회귀 PANIC→loud) | — | — | iverilog |
 | ① ✅ | 2-state frame copy-in/write X→0 coercion | **✅ 완료**(`2d3be2c`, 1935 green) | — | — | iverilog |
 | ① ✅ | indexed-part `[X+:w]` WRITE X-index discard | **✅ 완료**(`9b7a034`, 1942 green) | — | — | iverilog |
-| ① | **return-slot 2-state coercion**(`function int/byte f; f=x;`) | **silent-wrong**(X 보유, 정확성 결함) | `ParamType`/`FunctionDef`에 2-state 구분 필드 추가(`.vu` 재핀)→inline+frame 두 return 경로 coercion | 中 | iverilog ✓ |
+| ① ✅ | **return-slot 2-state coercion**(`function int/byte f; f=x;`) | **✅ 완료**(`<this>`, 1950 green) — `FunctionDef.ret_two_state`(AST·`.vu` 재핀)+2-state-return을 frame 경로로 라우팅(`build_frame_set`)+return slot `intro_kind` 등록→`frame_slot_write` coercion. inline·frame 통합(2-state-return=frame). 4-state(`logic`/`integer`) 보존. sim-ir 불변(format 18) | — | iverilog ✓ |
 | ① | **struct-member ascending** part-select `s.f[…]` | **silent-wrong**(narrow, indexed만; regular/bit=loud) | struct 필드 방향 메타데이터(flatten 시 보존) | 中 | ⚠️iverilog 자체 버그(hand-IEEE) |
 | ① | **wide-OOR index**(`a[2^32+:w]`) WRITE | **silent-wrong**(narrow) | offset eval signed i64 도메인(beyond-i32=discard, small-neg=partial 구분) | 小 | iverilog ✓ |
 | ① | non-literal generate idx `g[P].x` | loud E2002(안전·커버리지) | 파서가 index 소스 캡처→elaborate const-fold(scope-seg `g[P]`→`g[2]`) | 中(parser+elaborate) | iverilog ✓ |

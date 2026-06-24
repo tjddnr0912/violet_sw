@@ -1450,6 +1450,12 @@ pub struct FunctionDef {
     pub signed: bool,
     pub range: Option<Range>,
     pub ret_type: ParamType,
+    /// The return type is a 2-state integral (`int`/`byte`/`shortint`/`longint`/
+    /// `bit`) — it can never hold X/Z (§6.11.3), so the return assignment coerces
+    /// any unknown to 0. `ParamType` cannot carry this (`int` shares
+    /// `ParamType::Integer` with 4-state `integer`; byte/shortint/longint reach
+    /// elaborate as a bare range like `reg [N]`), so the parser records it here.
+    pub ret_two_state: bool,
     pub name: Ident,
     pub ports: Vec<TfPort>,
     pub body_decls: Vec<NetVarDecl>,

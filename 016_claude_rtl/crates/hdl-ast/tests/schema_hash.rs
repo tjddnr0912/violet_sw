@@ -113,10 +113,14 @@ use vita_schema::schema_hash;
 /// the `ClassParam` struct, and `NetVarDecl.class_args: Vec<Expr>` (`class C #(int
 /// W=8)` / `C #(16) h;`). Pure parser monomorphization — no sim-ir/format change.
 /// 2026-06-24 ⓑ-breadth virtual interface: `NetVarKind::VirtualIface`
-/// (`virtual bus_if vif;`) — elaborate static-alias, IR-0.)
+/// (`virtual bus_if vif;`) — elaborate static-alias, IR-0.
+/// 2026-06-25 return-slot 2-state: `FunctionDef.ret_two_state: bool` — records
+/// that a `function int/byte/shortint/longint/bit` return is 2-state (can't hold
+/// X/Z, §6.11.3) so the frame return slot coerces; `ParamType` could not carry it.
+/// Pure parser/elaborate (the function routes to the frame path); no sim-ir change.)
 const EXPECTED: [u8; 32] = [
-    90, 118, 73, 40, 185, 47, 233, 22, 132, 205, 189, 217, 204, 38, 175, 56, 141, 158, 248, 126,
-    243, 4, 121, 148, 221, 15, 50, 28, 222, 140, 180, 61,
+    35, 68, 38, 105, 239, 118, 62, 50, 163, 31, 244, 114, 54, 16, 142, 40, 87, 42, 194, 1, 93, 71,
+    238, 170, 248, 175, 168, 18, 50, 74, 250, 41,
 ];
 
 #[test]
