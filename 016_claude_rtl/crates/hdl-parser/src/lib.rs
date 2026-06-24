@@ -7302,11 +7302,22 @@ fn subst_stmt(s: &mut Stmt, map: &std::collections::BTreeMap<String, Expr>) {
         }
         Stmt::Forever { body, .. } => subst_stmt(body, map),
         Stmt::Block { decls, stmts, .. } | Stmt::Fork { decls, stmts, .. } => {
-            for d in decls {
+            // A block-local declared with a parameter's name SHADOWS it: its decl
+            // ranges/inits still use the outer params, but inside the block that
+            // name must NOT be substituted (else a local read silently becomes the
+            // parameter value — a silent-wrong).
+            for d in decls.iter_mut() {
                 subst_netvar(d, map);
             }
-            for st in stmts {
-                subst_stmt(st, map);
+            let inner = map_without(
+                map,
+                decls
+                    .iter()
+                    .flat_map(|d| d.names.iter().map(|n| &n.name.name)),
+            );
+            let m = inner.as_ref().unwrap_or(map);
+            for st in stmts.iter_mut() {
+                subst_stmt(st, m);
             }
         }
         Stmt::SysTaskCall { args, .. } => {
@@ -7330,6 +7341,24 @@ fn subst_stmt(s: &mut Stmt, map: &std::collections::BTreeMap<String, Expr>) {
     }
 }
 
+/// A copy of `map` with `names` removed, or `None` when nothing was removed (so
+/// the caller can keep using the original by reference — no allocation in the
+/// common no-shadow case).
+fn map_without<'a>(
+    map: &std::collections::BTreeMap<String, Expr>,
+    names: impl Iterator<Item = &'a String>,
+) -> Option<std::collections::BTreeMap<String, Expr>> {
+    let drop: Vec<&String> = names.filter(|n| map.contains_key(*n)).collect();
+    if drop.is_empty() {
+        return None;
+    }
+    let mut m = map.clone();
+    for n in drop {
+        m.remove(n);
+    }
+    Some(m)
+}
+
 fn subst_class_item(it: &mut ClassItem, map: &std::collections::BTreeMap<String, Expr>) {
     match it {
         ClassItem::Property(d) => subst_netvar(d, map),
@@ -7341,9 +7370,36 @@ fn subst_class_item(it: &mut ClassItem, map: &std::collections::BTreeMap<String,
         }
         ClassItem::Func { def, .. } => {
             subst_range(&mut def.range, map);
-            subst_stmt(&mut def.body, map);
+            for p in &mut def.ports {
+                subst_range(&mut p.range, map);
+            }
+            for d in &mut def.body_decls {
+                subst_netvar(d, map);
+            }
+            // method args / locals shadow class params inside the body.
+            let shadow = def.ports.iter().map(|p| &p.name.name).chain(
+                def.body_decls
+                    .iter()
+                    .flat_map(|d| d.names.iter().map(|n| &n.name.name)),
+            );
+            let inner = map_without(map, shadow);
+            subst_stmt(&mut def.body, inner.as_ref().unwrap_or(map));
         }
-        ClassItem::Task { def, .. } => subst_stmt(&mut def.body, map),
+        ClassItem::Task { def, .. } => {
+            for p in &mut def.ports {
+                subst_range(&mut p.range, map);
+            }
+            for d in &mut def.body_decls {
+                subst_netvar(d, map);
+            }
+            let shadow = def.ports.iter().map(|p| &p.name.name).chain(
+                def.body_decls
+                    .iter()
+                    .flat_map(|d| d.names.iter().map(|n| &n.name.name)),
+            );
+            let inner = map_without(map, shadow);
+            subst_stmt(&mut def.body, inner.as_ref().unwrap_or(map));
+        }
         ClassItem::Error(_) => {}
     }
 }
@@ -7380,8 +7436,25 @@ fn monomorphize_class(
     let mut c = template.clone();
     c.name.name = new_name.to_string();
     c.params = Vec::new();
+    // A class MEMBER (field/method) named like a parameter shadows it (a degenerate
+    // §13.3 collision); the member wins. Excluding such names keeps the field/method
+    // working — a width that then references the (shadowed) param is a non-constant
+    // ref → loud at elaborate, never a silent miscompile.
+    let members = c.items.iter().flat_map(|it| -> Vec<&String> {
+        match it {
+            ClassItem::Property(d) => d.names.iter().map(|n| &n.name.name).collect(),
+            ClassItem::RandProperty { decl, .. } => {
+                decl.names.iter().map(|n| &n.name.name).collect()
+            }
+            ClassItem::Func { def, .. } => vec![&def.name.name],
+            ClassItem::Task { def, .. } => vec![&def.name.name],
+            _ => Vec::new(),
+        }
+    });
+    let eff = map_without(map, members);
+    let m = eff.as_ref().unwrap_or(map);
     for it in &mut c.items {
-        subst_class_item(it, map);
+        subst_class_item(it, m);
     }
     c
 }

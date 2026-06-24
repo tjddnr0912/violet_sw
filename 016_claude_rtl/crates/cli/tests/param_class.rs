@@ -99,3 +99,62 @@ fn multi_param() {
     );
     assert_eq!(out, "30\n");
 }
+
+// ── Adversarial-hunt regressions (silent-wrongs found 2026-06-24) ────────────
+
+#[test]
+fn param_in_method_local_width() {
+    // HUNT #1: a method-local whose width uses the param must take the substituted
+    // width (was collapsing to 1 bit → 255&1=1).
+    let out = run("class C #(int W = 8);\n\
+           function int f(); logic [W-1:0] t; t = 8'hFF; return t; endfunction\n\
+         endclass\n\
+         module t; C c; initial begin c = new; $display(\"%0d\", c.f()); end endmodule\n");
+    assert_eq!(out, "255\n");
+}
+
+#[test]
+fn method_arg_shadows_param() {
+    // HUNT #2: a method formal named like the param must SHADOW it (was substituted).
+    let out = run("class C #(int W = 8);\n\
+           function int f(int W); return W; endfunction\n\
+         endclass\n\
+         module t; C c; initial begin c = new; $display(\"%0d\", c.f(3)); end endmodule\n");
+    assert_eq!(out, "3\n");
+}
+
+#[test]
+fn method_local_shadows_param() {
+    // HUNT #2: a method-local named like the param shadows it.
+    let out = run("class C #(int W = 8);\n\
+           function int f(); int W; W = 5; return W; endfunction\n\
+         endclass\n\
+         module t; C c; initial begin c = new; $display(\"%0d\", c.f()); end endmodule\n");
+    assert_eq!(out, "5\n");
+}
+
+#[test]
+fn class_field_shadows_param() {
+    // HUNT #2 (field collision): a member named like the param wins (not the value).
+    let out = run("class C #(int W = 8);\n\
+           int W;\n\
+           function void s(); W = 5; endfunction\n\
+           function int g(); return W; endfunction\n\
+         endclass\n\
+         module t; C c; initial begin c = new; c.s(); $display(\"%0d\", c.g()); end endmodule\n");
+    assert_eq!(out, "5\n");
+}
+
+#[test]
+fn non_literal_spec_arg_is_loud() {
+    // v1: a non-integer-literal spec arg is a loud reject, never silent.
+    let (_, err, ok) = run_full(
+        "class C #(int W = 8); int v; function new(); v = W; endfunction endclass\n\
+         module t; localparam P = 4; C #(P) c; initial begin c = new; $display(\"%0d\", c.v); end endmodule\n",
+    );
+    assert!(!ok, "non-literal spec arg must exit non-zero");
+    assert!(
+        err.contains("E2") || err.contains("E3"),
+        "expected a loud E-code; got:\n{err}"
+    );
+}
