@@ -6399,31 +6399,20 @@ impl<'s> Elaborator<'s> {
                 }
             }
             // Emit root→self (reverse of the chain). A derived field whose name
-            // collides with a base field is SHADOWING — IEEE §8.14 gives the two
-            // distinct storage, which the single-slot layout cannot model, so it
-            // is loud (NOT a silent merge into one slot).
+            // SHADOWS an inherited base field (IEEE §8.14) gets its OWN slot,
+            // appended AFTER the base's — distinct storage. Because the order is
+            // root→self, the base field keeps its low slot (so a base method
+            // reaches it) and the most-derived field is last (so a derived method
+            // and external `obj.f` reach it — `class_field_id` resolves by the LAST
+            // matching name). A base field's slot is therefore identical in the
+            // base and every derived layout, keeping per-object storage consistent.
             let mut flat: Vec<ClassField> = Vec::new();
-            let mut shadow = false;
             for n in chain.iter().rev() {
                 if let Some(fs) = own.get(n) {
                     for f in fs {
-                        if flat.iter().any(|o| o.name == f.name) {
-                            shadow = true;
-                        } else {
-                            flat.push(f.clone());
-                        }
+                        flat.push(f.clone());
                     }
                 }
-            }
-            if shadow {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    &format!(
-                        "class `{name}` redeclares an inherited field name (member \
-                         shadowing is outside the N7 MVP — distinct base/derived \
-                         storage is unsupported)"
-                    ),
-                );
             }
             if let Some(ci) = self.class_table.get_mut(name) {
                 ci.fields = flat;
@@ -7169,9 +7158,14 @@ impl<'s> Elaborator<'s> {
     /// Field-id (index into the flattened field list) of `field` in `class`.
     fn class_field_id(&self, class: &str, field: &str) -> Option<(u32, ClassField)> {
         let ci = self.class_table.get(class)?;
+        // LAST match wins (IEEE §8.14 shadowing): in the root→self flat layout the
+        // most-derived field of a shadowed name sits last, so a reference resolved
+        // against the derived class picks the derived slot; against a base class
+        // (a base method) the base layout only holds the base slot. Without
+        // shadowing each name is unique, so this is identical to a first-match.
         ci.fields
             .iter()
-            .position(|f| f.name == field)
+            .rposition(|f| f.name == field)
             .map(|i| (i as u32, ci.fields[i].clone()))
     }
 

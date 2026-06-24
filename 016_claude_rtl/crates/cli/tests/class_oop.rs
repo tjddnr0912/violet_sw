@@ -428,16 +428,20 @@ fn wide_field_not_truncated() {
 }
 
 #[test]
-fn field_shadowing_is_loud() {
-    // MEDIUM: a derived field redeclaring a base field name used to merge into
-    // one slot — now loud (distinct base/derived storage unsupported in MVP).
-    let (out, code) = run("class Base; int x; endclass\n\
+fn field_shadowing_distinct_storage() {
+    // ⓑ-breadth: a derived field redeclaring a base field name (IEEE §8.14) now
+    // gets DISTINCT storage — a derived/external reference reaches the derived
+    // field, a base method reaches the base field. (Was loud.) See
+    // class_field_shadow.rs for the full characterization.
+    let (out, code) = run("class Base; int x;\n\
+          function int gx(); return x; endfunction\n\
+          function void sx(int v); x = v; endfunction endclass\n\
         class Der extends Base; int x; endclass\n\
-        module t; initial $display(\"R\"); endmodule\n");
-    assert!(
-        out.contains("VITA-E") || code == Some(1),
-        "field shadowing must be loud:\n{out}"
-    );
+        module t; Der d;\n\
+        initial begin d = new; d.sx(1); d.x = 2; $display(\"d=%0d b=%0d\", d.x, d.gx()); end\n\
+        endmodule\n");
+    assert_eq!(code, Some(0), "shadowing must elaborate:\n{out}");
+    assert!(out.contains("d=2 b=1"), "distinct storage:\n{out}");
 }
 
 #[test]
