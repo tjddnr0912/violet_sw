@@ -103,6 +103,14 @@ pub trait NetReader {
     fn dyn_size(&self, _net: u32) -> Option<u64> {
         None
     }
+    /// ⓑ-breadth (v15): element-value snapshot of a dyn handle in deterministic
+    /// order, for the array reduction/ordering/locator methods. `None` for a
+    /// non-handle / string handle (the caller X-poisons); `Some(vec![])` for an
+    /// empty array. Default `None` keeps non-engine readers (native-eval test
+    /// fakes) unchanged.
+    fn dyn_values(&self, _net: u32) -> Option<Vec<Value>> {
+        None
+    }
     /// v5 ④: report a dyn-storage degradation observed DURING eval (e.g. a
     /// queue pop in an unsupported placement). The engine latches it through
     /// the W4020 warn-once funnel; the no-op default keeps non-engine readers
@@ -1271,6 +1279,49 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                         v
                     }
                     None => Value::xs(1, false),
+                }
+            }
+            // ⓑ-breadth (v15): array reduction methods (IEEE §7.12.3). PURE —
+            // a read query that left-folds the element snapshot. The result
+            // takes the element (handle) type; an empty array yields the
+            // element-type 0; x/z elements propagate through the normal 4-state
+            // arithmetic/bitwise so the fold never panics.
+            SysFuncId::ArrSum
+            | SysFuncId::ArrProduct
+            | SysFuncId::ArrAnd
+            | SysFuncId::ArrOr
+            | SysFuncId::ArrXor => {
+                let net = args
+                    .first()
+                    .and_then(|&a| match self.ir.exprs.get(a as usize) {
+                        Some(Expr::Signal { net, word: None }) => Some(*net),
+                        _ => None,
+                    });
+                let (w, signed) = net
+                    .and_then(|n| self.ir.nets.get(n as usize))
+                    .map(|nv| (nv.width.max(1), nv.signed))
+                    .unwrap_or((32, true));
+                match net.and_then(|n| self.nets.dyn_values(n)) {
+                    Some(elems) if !elems.is_empty() => {
+                        let mut acc = elems[0].clone();
+                        acc.signed = signed;
+                        for e in &elems[1..] {
+                            let mut e = e.clone();
+                            e.signed = signed;
+                            acc = match which {
+                                SysFuncId::ArrSum => self.arith(BinOp::Add, &acc, &e),
+                                SysFuncId::ArrProduct => self.arith(BinOp::Mul, &acc, &e),
+                                SysFuncId::ArrAnd => self.bitwise(&acc, &e, and_w),
+                                SysFuncId::ArrOr => self.bitwise(&acc, &e, or_w),
+                                _ => self.bitwise(&acc, &e, xor_w),
+                            };
+                        }
+                        acc.resize_keep_sign(w, signed)
+                    }
+                    // empty array → element-type 0 (documented pin)
+                    Some(_) => Value::zeros(w, signed),
+                    // non-handle / string handle → defensive X
+                    None => Value::xs(w, signed),
                 }
             }
             SysFuncId::Time => {

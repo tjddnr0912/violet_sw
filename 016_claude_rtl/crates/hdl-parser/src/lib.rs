@@ -278,13 +278,29 @@ impl<'t, 's> Parser<'t, 's> {
             None
         }
     }
+    /// Member name after a `.`: a normal identifier, OR one of the array-method
+    /// names the lexer classifies as a keyword because it reuses an operator
+    /// spelling (`and`/`or`/`xor` — IEEE §7.12.3 reduction methods). Reading the
+    /// source span keeps the segment name intact regardless of token kind.
+    fn member_ident(&mut self) -> Option<Ident> {
+        if self.is_ident() || self.at_kw(Kw::And) || self.at_kw(Kw::Or) || self.at_kw(Kw::Xor) {
+            let t = self.bump().unwrap();
+            Some(Ident {
+                name: self.src[t.span.clone()].to_string(),
+                span: Self::sp(&t.span),
+            })
+        } else {
+            self.error("member name");
+            None
+        }
+    }
     fn hier_path(&mut self) -> Option<HierPath> {
         let first = self.ident()?;
         let lo = first.span;
         let mut segs = vec![first];
         while self.peek() == Some(TokenKind::Dot) {
             self.bump();
-            match self.ident() {
+            match self.member_ident() {
                 Some(id) => segs.push(id),
                 None => break,
             }

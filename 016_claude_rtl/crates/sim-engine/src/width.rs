@@ -286,7 +286,15 @@ impl WidthTable {
                 // its whole-net Signal) — the signedness drives the §5.5
                 // assignment extension (a signed byte −1 pops as −1 into an
                 // int, an unsigned 255 stays 255; iverilog live).
-                SysFuncId::QPopBack | SysFuncId::QPopFront => args
+                // ⓑ-breadth (v15): array reductions (sum/product/and/or/xor) are
+                // also element-typed — same handle-net recipe as the pops.
+                SysFuncId::QPopBack
+                | SysFuncId::QPopFront
+                | SysFuncId::ArrSum
+                | SysFuncId::ArrProduct
+                | SysFuncId::ArrAnd
+                | SysFuncId::ArrOr
+                | SysFuncId::ArrXor => args
                     .first()
                     .and_then(|&a| match ir.exprs.get(a as usize) {
                         Some(Expr::Signal { net, .. }) => ir.nets.get(*net as usize),

@@ -10806,6 +10806,32 @@ impl<'s> Elaborator<'s> {
                     args: vec![handle, key],
                 })
             }
+            // ⓑ-breadth (v15): array reduction methods (IEEE §7.12.3). Element-
+            // typed scalar result; legal on the ordered/keyed element kinds
+            // (dyn array / queue / assoc) — NOT on strings (a string is a byte
+            // sequence, not a numeric array; `.sum()` there is a kind error).
+            (
+                "sum" | "product" | "and" | "or" | "xor",
+                K::DynArray | K::Queue | K::Assoc | K::AssocStr,
+            ) => {
+                if !args.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "array reduction methods take no arguments (with-clause is a separate slice)",
+                    );
+                }
+                let which = match method {
+                    "sum" => ir::SysFuncId::ArrSum,
+                    "product" => ir::SysFuncId::ArrProduct,
+                    "and" => ir::SysFuncId::ArrAnd,
+                    "or" => ir::SysFuncId::ArrOr,
+                    _ => ir::SysFuncId::ArrXor,
+                };
+                self.push_expr(ir::Expr::SysFunc {
+                    which,
+                    args: vec![handle],
+                })
+            }
             ("pop_back" | "pop_front", K::Queue) => {
                 self.error(
                     MsgCode::ElabUnsupported,
@@ -19752,13 +19778,20 @@ impl<'s> Elaborator<'s> {
                     | F::Cast => 32,
                     F::AssocExists | F::OneHot | F::OneHot0 | F::IsUnknown => 1,
                     F::StrGetC => 8,
-                    // element-typed pops / dynamic-length string producers
+                    // element-typed pops / dynamic-length string producers /
+                    // element-typed array reductions — width is the element
+                    // (handle) type, not a SysFunc-intrinsic constant.
                     F::QPopBack
                     | F::QPopFront
                     | F::Sformatf
                     | F::StrSubstr
                     | F::StrToUpper
-                    | F::StrToLower => return None,
+                    | F::StrToLower
+                    | F::ArrSum
+                    | F::ArrProduct
+                    | F::ArrAnd
+                    | F::ArrOr
+                    | F::ArrXor => return None,
                 }
             }
             ir::Expr::Call { .. } => return None,

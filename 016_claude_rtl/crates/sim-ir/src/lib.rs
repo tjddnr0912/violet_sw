@@ -276,6 +276,23 @@ pub enum SysFuncId {
     /// (and writes dest), 0 otherwise. Statement-level intercept (writes the
     /// dest VAR). The TASK form is `SysTaskId::Cast`.
     Cast,
+    // ── v15 (2026-06-24): array reduction methods (IEEE §7.12.3). args =
+    //    [handle Signal]. The result takes the ELEMENT type (width/sign of the
+    //    handle net); the fold runs left-to-right starting from element 0 and
+    //    wraps at the element width. An empty array yields the element-type 0
+    //    (documented pin — IEEE leaves the empty case to the accumulator
+    //    default). x/z elements propagate through the engine's normal 4-state
+    //    arithmetic/bitwise. PURE (a read query — no heap mutation). ──
+    /// array `.sum()` — left-fold `+` over the elements.
+    ArrSum,
+    /// array `.product()` — left-fold `*`.
+    ArrProduct,
+    /// array `.and()` — left-fold bitwise `&`.
+    ArrAnd,
+    /// array `.or()` — left-fold bitwise `|`.
+    ArrOr,
+    /// array `.xor()` — left-fold bitwise `^`.
+    ArrXor,
 }
 
 /// Expression arena node (§1).

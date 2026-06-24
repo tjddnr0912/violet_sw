@@ -771,6 +771,21 @@
         48: {
             "Cast": UNIT,
         },
+        49: {
+            "ArrSum": UNIT,
+        },
+        50: {
+            "ArrProduct": UNIT,
+        },
+        51: {
+            "ArrAnd": UNIT,
+        },
+        52: {
+            "ArrOr": UNIT,
+        },
+        53: {
+            "ArrXor": UNIT,
+        },
     }),
     "SysTaskId": ENUM({
         0: {

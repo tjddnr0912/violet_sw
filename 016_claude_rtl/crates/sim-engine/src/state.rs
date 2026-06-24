@@ -2003,6 +2003,29 @@ impl<'a> NetReader for SimState<'a> {
             _ => None,
         }
     }
+    /// ⓑ-breadth (v15): snapshot the element VALUES of a dyn handle in
+    /// deterministic order, for the array reduction/ordering/locator methods.
+    /// dyn array / queue iterate insertion order; assoc iterates its BTree key
+    /// order (the IEEE iteration order). A non-handle (or a string handle, which
+    /// is a byte sequence, not an element array) returns None → the caller
+    /// X-poisons. A missing heap entry IS the empty array (`Some(vec![])`).
+    fn dyn_values(&self, net: u32) -> Option<Vec<Value>> {
+        match self.ir.nets.get(net as usize).map(|n| n.kind) {
+            Some(
+                sim_ir::NetKind::DynArray
+                | sim_ir::NetKind::Queue
+                | sim_ir::NetKind::Assoc
+                | sim_ir::NetKind::AssocStr,
+            ) => Some(match self.dyn_heap.get(&net) {
+                Some(DynObj::DynArray { elems }) => elems.clone(),
+                Some(DynObj::Queue { elems }) => elems.iter().cloned().collect(),
+                Some(DynObj::Assoc { map }) => map.values().cloned().collect(),
+                Some(DynObj::AssocStr { map }) => map.values().cloned().collect(),
+                _ => Vec::new(),
+            }),
+            _ => None,
+        }
+    }
     fn dyn_warn(&self, net: u32, msg: &str) {
         // The eval-side degradation hook (e.g. a pop outside its statement
         // intercept) — same W4020 once-per-net latch as every other lane.
