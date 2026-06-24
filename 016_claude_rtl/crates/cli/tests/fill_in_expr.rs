@@ -221,6 +221,33 @@ fn fill_as_task_input_arg() {
 }
 
 #[test]
+fn fill_in_static_function_return_and_local() {
+    // A bare fill assigned to a STATIC (non-automatic) function's return var or a
+    // body-local sizes to the LHS width (was 1-bit).
+    let out = run("module t;\n\
+           function [7:0]  s_direct(); s_direct = '1; endfunction\n\
+           function [15:0] wide();     wide     = '1; endfunction\n\
+           function [31:0] f_arith; logic [15:0] hw; begin hw = '1; f_arith = hw + 1; end endfunction\n\
+           initial begin\n\
+             $display(\"%h\", s_direct());\n\
+             $display(\"%h\", wide());\n\
+             $display(\"%h\", f_arith());\n\
+           end endmodule\n");
+    assert_eq!(out, "ff\nffff\n00010000\n");
+}
+
+#[test]
+fn fill_as_repeat_count_is_one_iteration() {
+    let out = run("module t;\n\
+           reg [7:0] c;\n\
+           initial begin\n\
+             c = 0; repeat ('1) c = c + 1; $display(\"%0d\", c);\n\
+             c = 0; repeat ('0) c = c + 1; $display(\"%0d\", c);\n\
+           end endmodule\n");
+    assert_eq!(out, "1\n0\n");
+}
+
+#[test]
 fn fill_as_port_connection() {
     let out = run("module child(input [63:0] p);\n\
            initial #1 $display(\"%h\", p);\n\
