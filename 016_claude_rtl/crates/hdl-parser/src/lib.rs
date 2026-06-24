@@ -119,6 +119,14 @@ pub struct Parser<'t, 's> {
     struct_layouts: std::collections::HashMap<String, StructLayout>,
     /// Variable name → its struct type name (module-scoped; cleared per module).
     var_struct: std::collections::HashMap<String, String>,
+    /// Module-scope `localparam` name → its constant value, but ONLY when the value
+    /// is a pure literal constant (no `parameter` dependency). Used to fold a
+    /// constant generate-array hier index (`g[P].x`, P a localparam). Safe because a
+    /// `localparam` is non-overridable, so a literal value is fixed at parse time; a
+    /// `parameter` (overridable) is never recorded → its index stays loud, never
+    /// silently folding to a value an instance override could disagree with.
+    /// Module-scoped; cleared per module.
+    const_locals: std::collections::HashMap<String, i64>,
     /// ⓑ-breadth (§8.25): override specializations of parameterized classes,
     /// produced by `monomorphize_param_classes` and appended at top level.
     pending_mono_specs: Vec<ClassDecl>,
@@ -140,6 +148,7 @@ impl<'t, 's> Parser<'t, 's> {
             typedefs: std::collections::HashMap::new(),
             struct_layouts: std::collections::HashMap::new(),
             var_struct: std::collections::HashMap::new(),
+            const_locals: std::collections::HashMap::new(),
             pending_mono_specs: Vec::new(),
         }
     }
@@ -880,22 +889,59 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Format a CONSTANT generate-array index as a decimal scope-segment string.
-    /// Supports a plain (unsized, base-less) decimal literal — the common `g[0]` form,
-    /// whose value equals the generate iteration's scope index. Anything else is loud.
-    fn const_index_string(&mut self, idx: &Expr) -> String {
-        if let ExprKind::IntLit { raw, .. } = &idx.kind {
-            let digits: String = raw.chars().filter(|c| *c != '_').collect();
-            if !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()) {
-                // Normalize the value (strip leading zeros: `g[00]` ⇒ scope `g[0]`).
-                if let Ok(v) = digits.parse::<u64>() {
-                    return v.to_string();
+    /// Const-fold a generate-array hier index to its non-negative value: a decimal
+    /// literal, literal arithmetic (`P-1`, `1+2`), or a module-scope literal-valued
+    /// `localparam` (recorded in `const_locals`). A `parameter` / param-derived value
+    /// is NOT in `const_locals`, so it does not fold (its index stays loud — folding
+    /// it could disagree with an instance override). Returns `None` if not foldable.
+    fn try_const_index(&self, e: &Expr) -> Option<i64> {
+        match &e.kind {
+            ExprKind::IntLit {
+                kind: IntLitKind::Decimal,
+                raw,
+            } => raw
+                .chars()
+                .filter(|c| *c != '_')
+                .collect::<String>()
+                .parse::<i64>()
+                .ok(),
+            ExprKind::Ident(p) if p.segments.len() == 1 => {
+                self.const_locals.get(&p.segments[0].name).copied()
+            }
+            ExprKind::Paren { inner } => self.try_const_index(inner),
+            ExprKind::Unary {
+                op: UnOp::Minus,
+                operand,
+            } => Some(-self.try_const_index(operand)?),
+            ExprKind::Binary { op, lhs, rhs } => {
+                let a = self.try_const_index(lhs)?;
+                let b = self.try_const_index(rhs)?;
+                match op {
+                    BinOp::Add => Some(a + b),
+                    BinOp::Sub => Some(a - b),
+                    BinOp::Mul => Some(a * b),
+                    _ => None,
                 }
+            }
+            _ => None,
+        }
+    }
+
+    /// Format a CONSTANT generate-array index as a decimal scope-segment string. A
+    /// decimal literal (`g[0]`), literal arithmetic, or a literal-valued
+    /// `localparam` (`g[P]`) folds; anything else (a `parameter`, a runtime value)
+    /// is a loud parse error.
+    fn const_index_string(&mut self, idx: &Expr) -> String {
+        if let Some(v) = self.try_const_index(idx) {
+            if v >= 0 {
+                // Normalize the value (strip leading zeros: `g[00]` ⇒ scope `g[0]`).
+                return v.to_string();
             }
         }
         self.error_at(
             idx.span,
-            "a plain decimal generate-array index in a hierarchical reference",
+            "a constant generate-array index (decimal literal or literal-valued \
+             localparam) in a hierarchical reference",
         );
         "0".to_string()
     }
@@ -1683,6 +1729,7 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         // Variable→struct bindings are module-scoped (type *names* are not).
         self.var_struct.clear();
+        self.const_locals.clear();
         let is_macromodule = self.at_kw(Kw::Macromodule);
         self.bump(); // module / macromodule / interface
         let name = self.ident()?;
@@ -2049,6 +2096,14 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Parameter) || self.at_kw(Kw::Localparam) {
             let p = self.parse_param_decl()?;
             self.expect(TokenKind::Semi, "';'");
+            // Record a module-scope `localparam` whose value is a pure literal
+            // constant, so a constant generate hier index `g[P].x` can fold it.
+            // A `parameter` is overridable → never recorded (its index stays loud).
+            if p.kind == ParamKind::Localparam {
+                if let Some(v) = self.try_const_index(&p.value) {
+                    self.const_locals.insert(p.name.name.clone(), v);
+                }
+            }
             return Some(ModuleItem::Param(p));
         }
         // continuous assign
