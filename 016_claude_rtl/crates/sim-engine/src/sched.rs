@@ -1717,11 +1717,23 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             }
         }
         let ev = |eid: u32| {
-            // X/Z or beyond-u32 index → u32::MAX OOR sentinel (write dropped),
-            // never a wrapped small offset (P0-4).
-            self.eval(eid)
-                .to_u64()
-                .and_then(|v| u32::try_from(v).ok())
+            let v = self.eval(eid);
+            // An X/Z index makes the bit position UNKNOWN — the whole select
+            // write is DROPPED (iverilog parity), distinct from a real negative
+            // index (`a[-1+:4]`) which partial-writes via P0-IPU. A real `-1`
+            // resolves to `u32::MAX` (off_i = -1, a small in-range negative), so
+            // X/Z cannot share that sentinel. `OOR_DROP` (2^30) sits far above
+            // any net width (≤2^20) so every selected bit lands out of range and
+            // the write is discarded for bit/part/indexed-part and array-word
+            // chunks alike, without colliding with `-1`.
+            const OOR_DROP: u32 = 1 << 30;
+            if v.has_xz() {
+                return OOR_DROP;
+            }
+            // A clean beyond-u32 index keeps the legacy u32::MAX sentinel
+            // (never a wrapped small offset, P0-4).
+            v.to_u64()
+                .and_then(|x| u32::try_from(x).ok())
                 .unwrap_or(u32::MAX)
         };
         let pair = |c: &sim_ir::LvalChunk| {
