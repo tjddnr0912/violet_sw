@@ -1605,6 +1605,11 @@ impl<'a> SimState<'a> {
     /// Value (computed before any borrow); the `borrow_mut` is scoped to the
     /// single index-store — NO eval inside (§borrowDiscipline rule 3).
     fn frame_slot_write(&self, func: u32, automatic: bool, slot: u32, v: Value) {
+        // A 2-state frame slot (byte/int/shortint/longint/bit) can never hold X/Z
+        // (IEEE §6.11.3). Frame slot writes bypass `write_chunk`, so the coercion
+        // it applies (val &= !unk; unk = 0) must be repeated here — for the arg
+        // copy-IN, body-local assignments, and the return slot alike.
+        let v = self.coerce_two_state_frame(func, slot, v);
         if automatic {
             let mut g = self.frame_stack.borrow_mut();
             g.last_mut().expect("arg bind: no active call window")[slot as usize] = v;
@@ -1612,6 +1617,26 @@ impl<'a> SimState<'a> {
             let mut g = self.static_store.borrow_mut();
             g.get_mut(&func).expect("arg bind: no storage slab")[slot as usize] = v;
         }
+    }
+
+    /// Coerce X/Z bits of `v` to 0 when the frame slot `(func, slot)` is a 2-state
+    /// net (registered in `two_state`). The slot's flat net id is
+    /// `func_table[func].base_net + slot`. A non-2-state slot returns `v` unchanged.
+    fn coerce_two_state_frame(&self, func: u32, slot: u32, mut v: Value) -> Value {
+        let Some(net) = self
+            .func_table
+            .get(func as usize)
+            .map(|m| (m.base_net + slot) as usize)
+        else {
+            return v;
+        };
+        if net < self.two_state.len() && self.two_state[net] && v.unk.iter().any(|&u| u != 0) {
+            for k in 0..v.unk.len() {
+                v.val[k] &= !v.unk[k]; // X (val0/unk1) & Z (val1/unk1) → 0
+                v.unk[k] = 0;
+            }
+        }
+        v
     }
 
     /// Store the fully-evaluated `v` into a whole-net frame-local lvalue. The

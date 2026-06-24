@@ -9938,6 +9938,7 @@ impl<'s> Elaborator<'s> {
                 }
                 let (w, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
                 let slot = self.nets.len() as u32 - base_net;
+                let net = self.nets.len() as u32;
                 self.add_net(
                     &decl.name.name,
                     ir::NetVar {
@@ -9951,6 +9952,9 @@ impl<'s> Elaborator<'s> {
                         init: default_init(d.kind, w),
                     },
                 );
+                if net_kind_is_two_state(d.kind) {
+                    self.intro_kind.insert(net, d.kind);
+                }
                 if d.lifetime == Some(true) && slot < 64 {
                     auto_override |= 1u64 << slot;
                 }
@@ -9971,6 +9975,7 @@ impl<'s> Elaborator<'s> {
             for p in &func.ports {
                 let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
                 let (w, msb, lsb, signed) = s.range_to_dims(kind, p.range.as_ref(), p.signed);
+                let net = s.nets.len() as u32;
                 s.add_net(
                     &p.name.name,
                     ir::NetVar {
@@ -9984,6 +9989,11 @@ impl<'s> Elaborator<'s> {
                         init: default_init(kind, w),
                     },
                 );
+                // A 2-state formal (byte/int/shortint/longint/bit) can never hold
+                // X/Z — register it so the engine coerces frame slot writes (§6.11.3).
+                if net_kind_is_two_state(kind) {
+                    s.intro_kind.insert(net, kind);
+                }
             }
             // [n_params]: the function-named RETURN var (declared range/sign).
             s.add_net(
@@ -10012,6 +10022,7 @@ impl<'s> Elaborator<'s> {
             for d in &func.body_decls {
                 for decl in &d.names {
                     let (w, msb, lsb, signed) = s.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                    let net = s.nets.len() as u32;
                     s.add_net(
                         &decl.name.name,
                         ir::NetVar {
@@ -10025,6 +10036,9 @@ impl<'s> Elaborator<'s> {
                             init: default_init(d.kind, w),
                         },
                     );
+                    if net_kind_is_two_state(d.kind) {
+                        s.intro_kind.insert(net, d.kind);
+                    }
                     if d.lifetime == Some(true) && slot < 64 {
                         auto_override |= 1u64 << slot;
                     }
@@ -10122,6 +10136,7 @@ impl<'s> Elaborator<'s> {
             for p in &task.ports {
                 let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
                 let (w, msb, lsb, signed) = s.range_to_dims(kind, p.range.as_ref(), p.signed);
+                let net = s.nets.len() as u32;
                 s.add_net(
                     &p.name.name,
                     ir::NetVar {
@@ -10135,6 +10150,9 @@ impl<'s> Elaborator<'s> {
                         init: default_init(kind, w),
                     },
                 );
+                if net_kind_is_two_state(kind) {
+                    s.intro_kind.insert(net, kind);
+                }
             }
             // [n_params..): body_decls, source order (scalars). B4: a body_decl
             // declared `automatic` sets its slot's override bit.
@@ -10143,6 +10161,7 @@ impl<'s> Elaborator<'s> {
             for d in &task.body_decls {
                 for decl in &d.names {
                     let (w, msb, lsb, signed) = s.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                    let net = s.nets.len() as u32;
                     s.add_net(
                         &decl.name.name,
                         ir::NetVar {
@@ -10156,6 +10175,9 @@ impl<'s> Elaborator<'s> {
                             init: default_init(d.kind, w),
                         },
                     );
+                    if net_kind_is_two_state(d.kind) {
+                        s.intro_kind.insert(net, d.kind);
+                    }
                     if d.lifetime == Some(true) && slot < 64 {
                         auto_override |= 1u64 << slot;
                     }
