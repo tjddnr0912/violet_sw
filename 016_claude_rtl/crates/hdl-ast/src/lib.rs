@@ -569,6 +569,12 @@ pub enum NetVarKind {
     /// `null`) + a `class_handle_nets` sidecar entry; the object itself lives in
     /// the engine `class_heap`. Pure IR-0 (no sim-ir change).
     ClassHandle,
+    /// SV `virtual INTERFACE vif;` handle (ⓑ-breadth, §25.9). The interface type
+    /// name rides `NetVarDecl.class_type`. Elaborate resolves it as a STATIC ALIAS:
+    /// when `vif` is bound once to a concrete interface instance (`vif = bif;`),
+    /// every `vif.member` access is symbol-aliased to that instance's flattened net.
+    /// Dynamic / conditional re-binding is a v1 loud-reject (never silent).
+    VirtualIface,
 }
 
 /// `[msb:lsb]`. Bounds are exprs (usually const), NOT pre-evaluated.

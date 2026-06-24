@@ -109,12 +109,14 @@ use vita_schema::schema_hash;
 /// 2026-06-24 ⓑ-breadth array locator + `with` iterator
 /// `ExprKind::ArrayMethodWith(Box<ArrayMethodWithExpr>)` + the `ArrayMethodWithExpr`
 /// struct — `arr.sum() with (item*2)` / `arr.find() with (item>2)`;
-/// 2026-06-24 ⓑ-breadth parameterized classes `ClassDecl.params: Vec<ClassParam>` +
-/// the `ClassParam` struct + `NetVarDecl.class_args: Vec<Expr>` (`class C #(int W=8)`
-/// + `C #(16) h;`). Pure parser monomorphization — no sim-ir/format change.)
+/// 2026-06-24 ⓑ-breadth parameterized classes: `ClassDecl.params: Vec<ClassParam>`,
+/// the `ClassParam` struct, and `NetVarDecl.class_args: Vec<Expr>` (`class C #(int
+/// W=8)` / `C #(16) h;`). Pure parser monomorphization — no sim-ir/format change.
+/// 2026-06-24 ⓑ-breadth virtual interface: `NetVarKind::VirtualIface`
+/// (`virtual bus_if vif;`) — elaborate static-alias, IR-0.)
 const EXPECTED: [u8; 32] = [
-    163, 168, 192, 47, 163, 16, 71, 49, 225, 169, 157, 210, 247, 252, 188, 206, 31, 163, 183, 98,
-    177, 253, 145, 8, 249, 247, 228, 176, 15, 254, 107, 197,
+    90, 118, 73, 40, 185, 47, 233, 22, 132, 205, 189, 217, 204, 38, 175, 56, 141, 158, 248, 126,
+    243, 4, 121, 148, 221, 15, 50, 28, 222, 140, 180, 61,
 ];
 
 #[test]

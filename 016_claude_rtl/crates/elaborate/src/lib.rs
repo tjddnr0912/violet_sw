@@ -1961,6 +1961,10 @@ struct Elaborator<'s> {
     // (FQ path → interface name) consulted by interface-port binding.
     ifaces: BTreeMap<String, ast::ModuleDecl>,
     iface_insts: BTreeMap<String, String>,
+    /// ⓑ-breadth (§25.9): fully-qualified names of `virtual interface` handles, so
+    /// the static binding assignment `vif = inst;` is skipped at statement lowering
+    /// (the binding is resolved to a member alias at net-elaboration time).
+    vif_handles: std::collections::BTreeSet<String>,
     /// v6 ②: symbol keys aliased through a modport whose direction is INPUT —
     /// writes through these names are loud (§25.5). Keyed at alias-copy time;
     /// empty unless a modport binding is live (zero steady cost).
@@ -2221,6 +2225,7 @@ impl<'s> Elaborator<'s> {
             array_iter_elem: None,
             ifaces: BTreeMap::new(),
             iface_insts: BTreeMap::new(),
+            vif_handles: std::collections::BTreeSet::new(),
             modport_readonly: BTreeSet::new(),
             cur_prefix: String::new(),
             params: BTreeMap::new(),
@@ -3733,6 +3738,16 @@ impl<'s> Elaborator<'s> {
             }
         }
 
+        // (5d) ⓑ-breadth (§25.9): resolve `virtual interface` handles NOW — the
+        // bound interface instances exist, so the member alias can be wired.
+        for item in &module.body {
+            if let ast::ModuleItem::NetVar(d) = item {
+                if d.kind == ast::NetVarKind::VirtualIface {
+                    self.elaborate_virtual_iface(d, &module.body);
+                }
+            }
+        }
+
         // (6) port-connection cont-assigns (parent expr ↔ child port net).
         self.wire_ports(module, binding, &saved_prefix);
 
@@ -4195,6 +4210,94 @@ impl<'s> Elaborator<'s> {
     /// in the LATE pass only (`wire_phase` — pass 8, when every parent net
     /// exists); the early 4c pass flattens for parent-body visibility.
     /// Non-ANSI / interface-typed header ports stay loud.
+    /// ⓑ-breadth (§25.9): resolve a `virtual INTERFACE vif;` handle as a STATIC
+    /// ALIAS. Scan the module body for the single binding `vif = inst;`, validate
+    /// the interface type, and alias every `vif.member` symbol to the bound
+    /// instance's flattened member net. 0 bindings / dynamic re-binding / a
+    /// non-instance rhs are loud (never silent).
+    fn elaborate_virtual_iface(&mut self, d: &ast::NetVarDecl, body: &[ast::ModuleItem]) {
+        let Some(iface_ty) = d.class_type.as_ref().map(|i| i.name.clone()) else {
+            return;
+        };
+        for n in &d.names {
+            let vif = &n.name.name;
+            self.vif_handles.insert(self.fq(vif));
+            // collect the distinct instances `vif` is bound to.
+            let mut bound: Vec<String> = Vec::new();
+            for it in body {
+                if let ast::ModuleItem::Proc(p) = it {
+                    collect_vif_bindings(&p.body, vif, &mut bound);
+                }
+            }
+            bound.dedup();
+            let inst = match bound.as_slice() {
+                [one] => one.clone(),
+                [] => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!("virtual interface `{vif}` is never bound (`{vif} = instance;`)"),
+                    );
+                    continue;
+                }
+                _ => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "virtual interface `{vif}` is bound to more than one instance \
+                             (dynamic re-binding is outside v1)"
+                        ),
+                    );
+                    continue;
+                }
+            };
+            // resolve the bound instance + verify its interface type.
+            let inst_path = self.child_prefix(&inst);
+            let Some(actual_iface) = self.iface_insts.get(&inst_path).cloned() else {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!("virtual interface `{vif}` is bound to `{inst}`, which is not an interface instance"),
+                );
+                continue;
+            };
+            if actual_iface != iface_ty {
+                self.error(
+                    MsgCode::ElabPortMismatch,
+                    &format!("virtual interface `{vif}` is typed `{iface_ty}` but `{inst}` is `{actual_iface}`"),
+                );
+                continue;
+            }
+            // alias each interface member: `<mod>.vif.member` → the bound net.
+            let members = self.iface_member_names(&actual_iface);
+            let vif_fq = self.fq(vif);
+            for m in members {
+                let src = format!("{inst_path}.{m}");
+                let dst = format!("{vif_fq}.{m}");
+                if let Some(&net) = self.symbols.get(&src) {
+                    self.symbols.insert(dst, net);
+                    if let Some(c) = self.net_class.get(&net).cloned() {
+                        self.net_class.insert(net, c);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The signal member names of an interface declaration (for vif aliasing).
+    fn iface_member_names(&self, iface: &str) -> Vec<String> {
+        let Some(decl) = self.ifaces.get(iface) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for it in &decl.body {
+            if let ast::ModuleItem::NetVar(nv) = it {
+                for n in &nv.names {
+                    out.push(n.name.name.clone());
+                }
+            }
+        }
+        out
+    }
+
     fn elaborate_iface_instances(&mut self, mi: &ast::ModuleInstance, wire_phase: bool) {
         let iface_name = mi.module_name.name.clone();
         let Some(decl) = self.ifaces.get(&iface_name).cloned() else {
@@ -5263,6 +5366,12 @@ impl<'s> Elaborator<'s> {
         ports: &ast::PortList,
         body: &[ast::ModuleItem],
     ) {
+        // ⓑ-breadth (§25.9): a `virtual INTERFACE vif;` handle is NOT a net — it is
+        // a STATIC ALIAS resolved in the post-instance pass (`resolve_virtual_ifaces`),
+        // AFTER the bound interface instances are flattened. No net here.
+        if d.kind == ast::NetVarKind::VirtualIface {
+            return;
+        }
         if !net_kind_supported(d.kind) {
             self.error(MsgCode::ElabUnsupported, "unsupported net/var kind (v1)");
             // still emit a Wire-shaped net per name so references resolve.
@@ -17689,6 +17798,16 @@ impl<'s> Elaborator<'s> {
                 rhs,
                 span,
             } => {
+                // ⓑ-breadth (§25.9): the `vif = inst;` binding of a virtual
+                // interface is resolved to a member alias at net-elaboration time —
+                // skip it here (the handle is not a real net to assign).
+                if let ast::Lvalue::Ident(p) = lhs {
+                    if p.segments.len() == 1
+                        && self.vif_handles.contains(&self.fq(&p.segments[0].name))
+                    {
+                        return;
+                    }
+                }
                 // Intra-assignment EVENT control `= [repeat(n)] @(ev) rhs` (IEEE
                 // §9.4.5): capture-now / wait / write. Handled FIRST — the rhs is a
                 // plain captured value (a special form like `new`/`pop` combined with
@@ -21620,6 +21739,53 @@ fn net_kind_supported(k: ast::NetVarKind) -> bool {
             | Longint
             | ClassHandle
     )
+}
+
+/// ⓑ-breadth (§25.9): collect the instance names a virtual-interface handle is
+/// bound to (`vif = inst;` blocking assigns), recursing through procedural control
+/// flow. Only a plain `vif = bare_ident` shape counts as a binding.
+fn collect_vif_bindings(s: &ast::Stmt, vif: &str, out: &mut Vec<String>) {
+    use ast::Stmt::*;
+    match s {
+        Blocking {
+            lhs: ast::Lvalue::Ident(p),
+            rhs,
+            ..
+        } if p.segments.len() == 1 && p.segments[0].name == vif => {
+            if let ast::ExprKind::Ident(rp) = &rhs.kind {
+                if rp.segments.len() == 1 {
+                    out.push(rp.segments[0].name.clone());
+                }
+            }
+        }
+        Block { stmts, .. } | Fork { stmts, .. } => {
+            for st in stmts {
+                collect_vif_bindings(st, vif, out);
+            }
+        }
+        If { then_s, else_s, .. } => {
+            collect_vif_bindings(then_s, vif, out);
+            if let Some(e) = else_s {
+                collect_vif_bindings(e, vif, out);
+            }
+        }
+        For { body, .. } | While { body, .. } | Repeat { body, .. } | Forever { body, .. } => {
+            collect_vif_bindings(body, vif, out)
+        }
+        Case { items, .. } => {
+            for it in items {
+                let b = match it {
+                    ast::CaseItem::Match { body, .. } => body,
+                    ast::CaseItem::Default { body, .. } => body,
+                };
+                collect_vif_bindings(b, vif, out);
+            }
+        }
+        DelayCtrl { body: Some(b), .. } | EventCtrl { body: Some(b), .. } => {
+            collect_vif_bindings(b, vif, out)
+        }
+        _ => {}
+    }
 }
 
 /// Time-0 default `init`: variables (reg/logic/integer) start all-X; nets start

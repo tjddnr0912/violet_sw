@@ -2063,6 +2063,14 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Typedef) {
             return self.parse_typedef();
         }
+        // ⓑ-breadth (§25.9): `virtual INTERFACE vif [, vif2];` handle declaration.
+        // Distinguished from a `virtual function/task` method by the keyword that
+        // follows: an interface/type NAME (an ident) vs `function`/`task`.
+        if self.at_kw(Kw::Virtual)
+            && matches!(self.peek_at(1), Some(TokenKind::Word(WordKind::Ident)))
+        {
+            return self.parse_virtual_iface_decl().map(ModuleItem::NetVar);
+        }
         // N7: `class NAME …; … endclass` declared inside a module/package body.
         if self.at_kw(Kw::Class) {
             return self.parse_class_decl().map(ModuleItem::Class);
@@ -4167,6 +4175,41 @@ impl<'t, 's> Parser<'t, 's> {
     /// Parameterized classes (`class C #(…)`) and `virtual class` (abstract) are
     /// loud-deferred at elaborate; here we parse the plain single-inheritance
     /// form. Returns `None` only on a missing class name.
+    /// `virtual [interface] IFACE name [, name2];` (ⓑ-breadth, §25.9) — a virtual
+    /// interface handle. The interface type name rides `class_type`; elaborate
+    /// resolves the static binding alias.
+    fn parse_virtual_iface_decl(&mut self) -> Option<NetVarDecl> {
+        let start = self.cur_span();
+        self.bump(); // `virtual`
+        let _ = self.eat_kw(Kw::Interface); // optional `interface` keyword
+        let iface = self.ident()?;
+        let mut names = Vec::new();
+        loop {
+            let Some(name) = self.ident() else { break };
+            names.push(DeclName {
+                span: name.span,
+                name,
+                unpacked: Vec::new(),
+                init: None,
+            });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::Semi, "';' after a virtual interface declaration");
+        Some(NetVarDecl {
+            kind: NetVarKind::VirtualIface,
+            signed: false,
+            range: None,
+            packed: Vec::new(),
+            names,
+            lifetime: None,
+            class_type: Some(iface),
+            class_args: Vec::new(),
+            span: start.to(self.prev_span()),
+        })
+    }
+
     fn parse_class_decl(&mut self) -> Option<ClassDecl> {
         let start = self.cur_span();
         self.bump(); // 'class'
