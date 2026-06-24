@@ -101,6 +101,9 @@ pub struct Parser<'t, 's> {
     struct_layouts: std::collections::HashMap<String, StructLayout>,
     /// Variable name → its struct type name (module-scoped; cleared per module).
     var_struct: std::collections::HashMap<String, String>,
+    /// ⓑ-breadth (§8.25): override specializations of parameterized classes,
+    /// produced by `monomorphize_param_classes` and appended at top level.
+    pending_mono_specs: Vec<ClassDecl>,
 }
 
 impl<'t, 's> Parser<'t, 's> {
@@ -119,6 +122,7 @@ impl<'t, 's> Parser<'t, 's> {
             typedefs: std::collections::HashMap::new(),
             struct_layouts: std::collections::HashMap::new(),
             var_struct: std::collections::HashMap::new(),
+            pending_mono_specs: Vec::new(),
         }
     }
 
@@ -1476,10 +1480,187 @@ impl<'t, 's> Parser<'t, 's> {
                 self.bump();
             }
         }
+        // ⓑ-breadth (§8.25): expand parameterized classes into concrete
+        // specializations (no-op when no class is parameterized).
+        self.monomorphize_param_classes(&mut items);
+        items.extend(
+            std::mem::take(&mut self.pending_mono_specs)
+                .into_iter()
+                .map(TopItem::Class),
+        );
         SourceUnit {
             items,
             span: start.to(self.prev_span()),
         }
+    }
+
+    /// ⓑ-breadth (§8.25): MONOMORPHIZE parameterized classes. For each distinct
+    /// `C #(args)` used at a handle declaration (plus the all-defaults instance),
+    /// generate a fully-concrete class with the parameter values substituted, and
+    /// rewrite each handle's type to the specialization. The default specialization
+    /// keeps the bare class name (so `C h;` resolves); overrides get a mangled name
+    /// (`C__16`). v1: positional INTEGER-LITERAL spec args only (a non-literal arg
+    /// is a loud reject — its value is not foldable into a stable specialization).
+    fn monomorphize_param_classes(&mut self, items: &mut [TopItem]) {
+        use std::collections::BTreeMap;
+        // Pass 1: collect parameterized templates by name.
+        let mut templates: BTreeMap<String, ClassDecl> = BTreeMap::new();
+        let mut collect = |c: &ClassDecl| {
+            if !c.params.is_empty() {
+                templates.insert(c.name.name.clone(), c.clone());
+            }
+        };
+        for it in items.iter() {
+            match it {
+                TopItem::Class(c) => collect(c),
+                TopItem::Module(m) | TopItem::Interface(m) | TopItem::Package(m) => {
+                    for bi in &m.body {
+                        if let ModuleItem::Class(c) = bi {
+                            collect(c);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if templates.is_empty() {
+            return;
+        }
+        // Build the param map (param → value-expr) for a given spec's args.
+        // Missing trailing args fall back to the parameter default; an unfilled
+        // parameter with no default is a loud reject.
+        let mut new_specs: Vec<ClassDecl> = Vec::new();
+        let mut spec_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut errors: Vec<(Span, &'static str)> = Vec::new();
+        // The map of every (orig handle) → its rewritten class name is applied by a
+        // second walk; here we just register the needed specs and remember the name
+        // each (template,args) maps to via `mangle`.
+        let mangle = |tmpl: &str, args: &[Expr]| -> Option<String> {
+            if args.is_empty() {
+                return Some(tmpl.to_string());
+            }
+            let mut parts = Vec::new();
+            for a in args {
+                parts.push(arg_render(a)?);
+            }
+            Some(format!("{tmpl}__{}", parts.join("_")))
+        };
+        // Register a spec (idempotent) given its template + args.
+        let mut register = |tmpl_name: &str, args: &[Expr], at: Span| -> String {
+            let tmpl = &templates[tmpl_name];
+            let Some(name) = mangle(tmpl_name, args) else {
+                errors.push((
+                    at,
+                    "a parameterized class specialization argument (an integer literal, `C #(16)`)",
+                ));
+                return tmpl_name.to_string();
+            };
+            if spec_seen.insert(name.clone()) {
+                // build param map
+                let mut map: BTreeMap<String, Expr> = BTreeMap::new();
+                let mut ok = true;
+                for (i, p) in tmpl.params.iter().enumerate() {
+                    let val = args.get(i).cloned().or_else(|| p.default.clone());
+                    match val {
+                        Some(v) => {
+                            map.insert(p.name.name.clone(), v);
+                        }
+                        None => {
+                            errors.push((
+                                at,
+                                "a specialization argument for a parameterized class parameter \
+                                 that has no default",
+                            ));
+                            ok = false;
+                        }
+                    }
+                }
+                if ok {
+                    new_specs.push(monomorphize_class(tmpl, &name, &map));
+                }
+            }
+            name
+        };
+        // Pass 2: walk every handle decl; rewrite its type and register the spec.
+        // Module-level handles (`ModuleItem::NetVar`) and class-field handles
+        // (`ClassItem::Property`) are covered.
+        fn rewrite_netvar(
+            d: &mut NetVarDecl,
+            templates: &BTreeMap<String, ClassDecl>,
+            register: &mut dyn FnMut(&str, &[Expr], Span) -> String,
+        ) {
+            let Some(ct) = &d.class_type else { return };
+            if !templates.contains_key(&ct.name) {
+                return;
+            }
+            let new_name = register(&ct.name.clone(), &d.class_args, d.span);
+            if let Some(ci) = &mut d.class_type {
+                ci.name = new_name;
+            }
+            d.class_args = Vec::new();
+        }
+        for it in items.iter_mut() {
+            match it {
+                TopItem::Class(c) => {
+                    for item in &mut c.items {
+                        if let ClassItem::Property(d) = item {
+                            rewrite_netvar(d, &templates, &mut register);
+                        }
+                    }
+                }
+                TopItem::Module(m) | TopItem::Interface(m) | TopItem::Package(m) => {
+                    for bi in &mut m.body {
+                        match bi {
+                            ModuleItem::NetVar(d) => {
+                                rewrite_netvar(d, &templates, &mut register);
+                            }
+                            ModuleItem::Class(c) => {
+                                for item in &mut c.items {
+                                    if let ClassItem::Property(d) = item {
+                                        rewrite_netvar(d, &templates, &mut register);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Always register the all-defaults instance for each template (so `C h;`
+        // resolves even if every concrete handle overrode the parameters).
+        let tmpl_names: Vec<String> = templates.keys().cloned().collect();
+        for t in &tmpl_names {
+            let _ = register(t, &[], templates[t].name.span);
+        }
+        for (sp, msg) in errors {
+            self.error_at(sp, msg);
+        }
+        // Pass 3: replace each template ClassDecl with its DEFAULT specialization
+        // (bare name) and append the override specializations at top level.
+        for it in items.iter_mut() {
+            if let TopItem::Class(c) = it {
+                if let Some(def) = new_specs.iter().find(|s| s.name.name == c.name.name) {
+                    *c = def.clone();
+                }
+            }
+            if let TopItem::Module(m) | TopItem::Interface(m) | TopItem::Package(m) = it {
+                for bi in &mut m.body {
+                    if let ModuleItem::Class(c) = bi {
+                        if let Some(def) = new_specs.iter().find(|s| s.name.name == c.name.name) {
+                            *c = def.clone();
+                        }
+                    }
+                }
+            }
+        }
+        // The OVERRIDE specs (mangled names, not matching any template) are added as
+        // fresh top-level classes via the returned list (handled by the caller).
+        self.pending_mono_specs = new_specs
+            .into_iter()
+            .filter(|s| !templates.contains_key(&s.name.name))
+            .collect();
     }
 
     fn parse_module(&mut self) -> Option<ModuleDecl> {
@@ -2991,6 +3172,7 @@ impl<'t, 's> Parser<'t, 's> {
             names,
             lifetime: None,
             class_type: None,
+            class_args: Vec::new(),
             span: start.to(self.prev_span()),
         })
     }
@@ -3041,6 +3223,14 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         let tyname = self.cur_text().to_string();
         self.bump(); // the type-name identifier
+                     // ⓑ-breadth (§8.25): a parameterized class handle override `C #(16) h;`.
+                     // Only a class-typed name takes specialization args; for any other type a
+                     // `#` here is not ours (left for the caller / a loud error downstream).
+        let class_args = if info.class_name.is_some() && self.peek() == Some(TokenKind::Hash) {
+            self.parse_param_override_args()
+        } else {
+            Vec::new()
+        };
         let names = self.parse_decl_name_list()?;
         self.expect(TokenKind::Semi, "';'");
         // If this is a struct type, bind each declared name → type so `var.field`
@@ -3063,8 +3253,29 @@ impl<'t, 's> Parser<'t, 's> {
             names,
             lifetime: None,
             class_type,
+            class_args,
             span: start.to(self.prev_span()),
         })
+    }
+
+    /// Parse a parameterized class handle's `#( expr, expr, … )` specialization
+    /// arguments (ⓑ-breadth, §8.25). Positional value args only (named `.W(16)`
+    /// is a v1 loud-reject left to elaborate). The leading `#` is at the cursor.
+    fn parse_param_override_args(&mut self) -> Vec<Expr> {
+        self.bump(); // `#`
+        let mut args = Vec::new();
+        if self.expect(TokenKind::LParen, "'(' after `#` in a class specialization") {
+            if self.peek() != Some(TokenKind::RParen) {
+                loop {
+                    args.push(self.expr(0));
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(TokenKind::RParen, "')' to close class specialization args");
+        }
+        args
     }
 
     /// `typedef enum [base] { L0, L1 = expr, … } name;` (Phase-2). Registers
@@ -3960,6 +4171,12 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         self.bump(); // 'class'
         let name = self.ident()?;
+        // ⓑ-breadth (§8.25): `class C #(int W = 8, …)` value parameter list.
+        let params = if self.peek() == Some(TokenKind::Hash) {
+            self.parse_class_param_list()
+        } else {
+            Vec::new()
+        };
         let extends = if self.eat_kw(Kw::Extends) {
             self.ident()
         } else {
@@ -3983,10 +4200,46 @@ impl<'t, 's> Parser<'t, 's> {
         self.opt_block_label(); // optional `: name`
         Some(ClassDecl {
             name,
+            params,
             extends,
             items,
             span: start.to(self.prev_span()),
         })
+    }
+
+    /// Parse `#( [parameter] [type] NAME [= DEFAULT], … )` class value parameters
+    /// (ⓑ-breadth, §8.25). The optional `parameter` keyword and a leading type
+    /// (`int`/`logic [W]`/…) are accepted and ignored for layout (the value is what
+    /// matters); a missing default is allowed (the spec must then override it).
+    fn parse_class_param_list(&mut self) -> Vec<ClassParam> {
+        self.bump(); // `#`
+        let mut params = Vec::new();
+        if !self.expect(TokenKind::LParen, "'(' after `#` in a class parameter list") {
+            return params;
+        }
+        if self.peek() != Some(TokenKind::RParen) {
+            loop {
+                let _ = self.eat_kw(Kw::Parameter); // optional `parameter`
+                                                    // optional leading type: a net/var kind keyword + optional range.
+                if self.net_var_kind().is_some() {
+                    self.bump();
+                    let _ = self.opt_signed();
+                    let _ = self.opt_range();
+                }
+                let Some(name) = self.ident() else { break };
+                let default = if self.eat(TokenKind::Eq) {
+                    Some(self.expr(0))
+                } else {
+                    None
+                };
+                params.push(ClassParam { name, default });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RParen, "')' to close the class parameter list");
+        params
     }
 
     /// One class member: `[virtual] function/task …`, a data member `T name;`,
@@ -6572,6 +6825,7 @@ impl<'t, 's> Parser<'t, 's> {
             }],
             lifetime: None,
             class_type: None,
+            class_args: Vec::new(),
             span: id.span,
         };
         Stmt::Block {
@@ -6847,6 +7101,291 @@ pub fn parse(tokens: &[Spanned], src: &str) -> (Option<SourceUnit>, Vec<ParseErr
 /// (the last two were review finding 2026-06-11: a missed arm silently binds
 /// the reference to the OUTER variable). Multi-segment paths are left alone
 /// (`x.y` never names the loop index).
+// ──────────── ⓑ-breadth (§8.25): parameterized-class monomorphization ────────
+// Substitute class value parameters (`name → value-expr`) throughout a class's
+// declarations so each specialization is a fully-concrete class. Coverage is the
+// procedural/declarative subset a class body uses; any un-covered position simply
+// keeps the parameter name, which then fails LOUD at elaborate (undeclared) — never
+// a silent miscompile.
+
+/// Replace every single-segment `Ident` matching a key in `map` with that key's
+/// value-expression (cloned). Recurses through the full `ExprKind` closure.
+fn subst_expr(e: &mut Expr, map: &std::collections::BTreeMap<String, Expr>) {
+    match &mut e.kind {
+        ExprKind::Ident(p) => {
+            if p.segments.len() == 1 {
+                if let Some(v) = map.get(&p.segments[0].name) {
+                    let span = e.span;
+                    *e = v.clone();
+                    e.span = span;
+                }
+            }
+        }
+        ExprKind::Unary { operand, .. } => subst_expr(operand, map),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            subst_expr(lhs, map);
+            subst_expr(rhs, map);
+        }
+        ExprKind::Ternary {
+            cond,
+            then_e,
+            else_e,
+        } => {
+            subst_expr(cond, map);
+            subst_expr(then_e, map);
+            subst_expr(else_e, map);
+        }
+        ExprKind::BitSelect { base, index } => {
+            subst_expr(base, map);
+            subst_expr(index, map);
+        }
+        ExprKind::PartSelect { base, msb, lsb } => {
+            subst_expr(base, map);
+            subst_expr(msb, map);
+            subst_expr(lsb, map);
+        }
+        ExprKind::IndexedPart {
+            base,
+            offset,
+            width,
+            ..
+        } => {
+            subst_expr(base, map);
+            subst_expr(offset, map);
+            subst_expr(width, map);
+        }
+        ExprKind::Concat { parts } => {
+            for p in parts {
+                subst_expr(p, map);
+            }
+        }
+        ExprKind::Replicate { count, value } => {
+            subst_expr(count, map);
+            for v in value {
+                subst_expr(v, map);
+            }
+        }
+        ExprKind::Call { args, .. } | ExprKind::SysCall { args, .. } => {
+            for a in args {
+                subst_expr(a, map);
+            }
+        }
+        ExprKind::RandomizeWith(b) => {
+            for a in b.args.iter_mut().chain(b.constraints.iter_mut()) {
+                subst_expr(a, map);
+            }
+        }
+        ExprKind::ArrayMethodWith(b) => subst_expr(&mut b.with_expr, map),
+        ExprKind::Paren { inner } => subst_expr(inner, map),
+        ExprKind::MinTypMax { min, typ, max } => {
+            subst_expr(min, map);
+            subst_expr(typ, map);
+            subst_expr(max, map);
+        }
+        ExprKind::New { size, src } => {
+            subst_expr(size, map);
+            if let Some(s) = src {
+                subst_expr(s, map);
+            }
+        }
+        ExprKind::ClassNew { args } => {
+            for a in args {
+                subst_expr(a, map);
+            }
+        }
+        ExprKind::Dist { value, items } => {
+            subst_expr(value, map);
+            for it in items {
+                subst_expr(&mut it.lo, map);
+                if let Some(h) = &mut it.hi {
+                    subst_expr(h, map);
+                }
+                subst_expr(&mut it.weight, map);
+            }
+        }
+        ExprKind::IntLit { .. }
+        | ExprKind::RealLit { .. }
+        | ExprKind::StrLit { .. }
+        | ExprKind::PkgScoped { .. }
+        | ExprKind::Null
+        | ExprKind::Dollar
+        | ExprKind::Error => {}
+    }
+}
+
+fn subst_opt_expr(e: &mut Option<Expr>, map: &std::collections::BTreeMap<String, Expr>) {
+    if let Some(x) = e {
+        subst_expr(x, map);
+    }
+}
+
+fn subst_range(r: &mut Option<Range>, map: &std::collections::BTreeMap<String, Expr>) {
+    if let Some(rng) = r {
+        subst_expr(&mut rng.msb, map);
+        subst_expr(&mut rng.lsb, map);
+    }
+}
+
+fn subst_netvar(d: &mut NetVarDecl, map: &std::collections::BTreeMap<String, Expr>) {
+    subst_range(&mut d.range, map);
+    for p in &mut d.packed {
+        subst_expr(&mut p.msb, map);
+        subst_expr(&mut p.lsb, map);
+    }
+    for n in &mut d.names {
+        for dim in &mut n.unpacked {
+            match dim {
+                Dim::Range(rg) => {
+                    subst_expr(&mut rg.msb, map);
+                    subst_expr(&mut rg.lsb, map);
+                }
+                Dim::Size(e) => subst_expr(e, map),
+                Dim::Dyn | Dim::Queue(_) | Dim::Assoc(_) => {}
+            }
+        }
+        subst_opt_expr(&mut n.init, map);
+    }
+}
+
+/// Substitute params through the common procedural statement forms a class method
+/// body uses. Un-covered forms keep the parameter (→ loud at elaborate).
+fn subst_stmt(s: &mut Stmt, map: &std::collections::BTreeMap<String, Expr>) {
+    match s {
+        Stmt::Blocking { rhs, .. } | Stmt::NonBlocking { rhs, .. } => subst_expr(rhs, map),
+        Stmt::If {
+            cond,
+            then_s,
+            else_s,
+            ..
+        } => {
+            subst_expr(cond, map);
+            subst_stmt(then_s, map);
+            if let Some(e) = else_s {
+                subst_stmt(e, map);
+            }
+        }
+        Stmt::Return { value, .. } => subst_opt_expr(value, map),
+        Stmt::Case {
+            scrutinee, items, ..
+        } => {
+            subst_expr(scrutinee, map);
+            for it in items {
+                match it {
+                    CaseItem::Match { labels, body, .. } => {
+                        for l in labels {
+                            subst_expr(l, map);
+                        }
+                        subst_stmt(body, map);
+                    }
+                    CaseItem::Default { body, .. } => subst_stmt(body, map),
+                }
+            }
+        }
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+            ..
+        } => {
+            subst_stmt(init, map);
+            subst_expr(cond, map);
+            subst_stmt(step, map);
+            subst_stmt(body, map);
+        }
+        Stmt::While { cond, body, .. }
+        | Stmt::Repeat {
+            count: cond, body, ..
+        } => {
+            subst_expr(cond, map);
+            subst_stmt(body, map);
+        }
+        Stmt::Forever { body, .. } => subst_stmt(body, map),
+        Stmt::Block { decls, stmts, .. } | Stmt::Fork { decls, stmts, .. } => {
+            for d in decls {
+                subst_netvar(d, map);
+            }
+            for st in stmts {
+                subst_stmt(st, map);
+            }
+        }
+        Stmt::SysTaskCall { args, .. } => {
+            for a in args {
+                subst_expr(a, map);
+            }
+        }
+        Stmt::UserTaskCall { args, .. } => {
+            for a in args {
+                subst_expr(a, map);
+            }
+        }
+        Stmt::RandomizeWith {
+            args, constraints, ..
+        } => {
+            for a in args.iter_mut().chain(constraints.iter_mut()) {
+                subst_expr(a, map);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn subst_class_item(it: &mut ClassItem, map: &std::collections::BTreeMap<String, Expr>) {
+    match it {
+        ClassItem::Property(d) => subst_netvar(d, map),
+        ClassItem::RandProperty { decl, .. } => subst_netvar(decl, map),
+        ClassItem::Constraint(cd) => {
+            for e in &mut cd.exprs {
+                subst_expr(e, map);
+            }
+        }
+        ClassItem::Func { def, .. } => {
+            subst_range(&mut def.range, map);
+            subst_stmt(&mut def.body, map);
+        }
+        ClassItem::Task { def, .. } => subst_stmt(&mut def.body, map),
+        ClassItem::Error(_) => {}
+    }
+}
+
+/// Build a fully-concrete specialization of a parameterized class: clone the
+/// template, substitute the parameter values, clear the param list, and rename.
+/// Render a parameterized-class specialization argument to an identifier-safe
+/// string for the mangled class name. v1 accepts integer literals (and a leading
+/// `-`/parens); anything else returns `None` (→ a loud reject upstream).
+fn arg_render(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::IntLit { raw, .. } => {
+            let s: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        ExprKind::Unary {
+            op: UnOp::Minus,
+            operand,
+        } => arg_render(operand).map(|s| format!("n{s}")),
+        ExprKind::Paren { inner } => arg_render(inner),
+        _ => None,
+    }
+}
+
+fn monomorphize_class(
+    template: &ClassDecl,
+    new_name: &str,
+    map: &std::collections::BTreeMap<String, Expr>,
+) -> ClassDecl {
+    let mut c = template.clone();
+    c.name.name = new_name.to_string();
+    c.params = Vec::new();
+    for it in &mut c.items {
+        subst_class_item(it, map);
+    }
+    c
+}
+
 fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
     let fix_path = |p: &mut HierPath| {
         if p.segments.len() == 1 && p.segments[0].name == from {

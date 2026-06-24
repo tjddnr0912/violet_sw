@@ -108,10 +108,13 @@ use vita_schema::schema_hash;
 /// `ExprKind::RandomizeWith` + `Stmt::RandomizeWith` (inline `randomize() with`);
 /// 2026-06-24 ⓑ-breadth array locator + `with` iterator
 /// `ExprKind::ArrayMethodWith(Box<ArrayMethodWithExpr>)` + the `ArrayMethodWithExpr`
-/// struct — `arr.sum() with (item*2)` / `arr.find() with (item>2)`.)
+/// struct — `arr.sum() with (item*2)` / `arr.find() with (item>2)`;
+/// 2026-06-24 ⓑ-breadth parameterized classes `ClassDecl.params: Vec<ClassParam>` +
+/// the `ClassParam` struct + `NetVarDecl.class_args: Vec<Expr>` (`class C #(int W=8)`
+/// + `C #(16) h;`). Pure parser monomorphization — no sim-ir/format change.)
 const EXPECTED: [u8; 32] = [
-    96, 44, 110, 230, 242, 154, 173, 138, 67, 42, 160, 109, 169, 214, 108, 227, 101, 227, 208, 55,
-    151, 130, 25, 79, 235, 133, 178, 229, 34, 198, 150, 0,
+    163, 168, 192, 47, 163, 16, 71, 49, 225, 169, 157, 210, 247, 252, 188, 206, 31, 163, 183, 98,
+    177, 253, 145, 8, 249, 247, 228, 176, 15, 254, 107, 197,
 ];
 
 #[test]

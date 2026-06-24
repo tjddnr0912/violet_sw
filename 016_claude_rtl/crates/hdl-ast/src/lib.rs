@@ -118,10 +118,23 @@ pub struct ImportDecl {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub struct ClassDecl {
     pub name: Ident,
+    /// `class C #(int W = 8, …)` value parameters (ⓑ-breadth, §8.25). Empty for a
+    /// non-parameterized class. Elaborate MONOMORPHIZES: each distinct `C #(args)`
+    /// specialization is a concrete class with the params substituted by value.
+    pub params: Vec<ClassParam>,
     /// `extends BASE` single-inheritance base name (`None` = root class).
     pub extends: Option<Ident>,
     pub items: Vec<ClassItem>,
     pub span: Span,
+}
+
+/// A class value parameter `#(int NAME = DEFAULT)` (ⓑ-breadth, §8.25). v1 supports
+/// value parameters (no `type` parameters); `default` is `None` for a parameter
+/// with no default (every specialization must then override it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ClassParam {
+    pub name: Ident,
+    pub default: Option<Expr>,
 }
 
 /// A member of a [`ClassDecl`].
@@ -476,6 +489,10 @@ pub struct NetVarDecl {
     /// N7: when `kind == ClassHandle`, the declared class name (`Packet p;` ⇒
     /// `Some("Packet")`). `None` for every non-class declaration.
     pub class_type: Option<Ident>,
+    /// ⓑ-breadth (§8.25): a parameterized class handle's specialization arguments
+    /// (`C #(16) h;` ⇒ `[16]`). Empty = the default specialization (or a
+    /// non-parameterized class). Elaborate folds these to the monomorphized class.
+    pub class_args: Vec<Expr>,
     pub span: Span,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
