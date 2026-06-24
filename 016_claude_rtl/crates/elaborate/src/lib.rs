@@ -8879,8 +8879,16 @@ impl<'s> Elaborator<'s> {
                 }
                 let lsb_id = self.lower_expr(lsb);
                 let msb_id = self.lower_expr(msb);
-                let width = self.width_from_msb_lsb_checked(msb, lsb, msb_id, lsb_id);
-                let offset = self.norm_offset_if_net(base, lsb_id);
+                let asc = self.base_net_ascending(base);
+                let width = self.width_from_msb_lsb_dir(msb, lsb, msb_id, lsb_id, asc);
+                // Ascending: normalize via the root net (handles array elements,
+                // whose base is not a single-segment ident). Descending: the classic
+                // single-seg path (raw for array elements) — byte-identical.
+                let offset = if asc {
+                    self.norm_offset_ascending(base, lsb_id)
+                } else {
+                    self.norm_offset_if_net(base, lsb_id)
+                };
                 self.push_expr(ir::Expr::Select {
                     base: base_id,
                     offset,
@@ -8908,12 +8916,17 @@ impl<'s> Elaborator<'s> {
                     );
                 }
                 let raw_off = self.lower_expr(offset);
-                let off = self.norm_offset_if_net(base, raw_off);
-                let width = self.lower_expr(width);
-                let kind = match dir {
-                    ast::PartDir::PlusColon => ir::SelKind::PartIdxUp,
-                    ast::PartDir::MinusColon => ir::SelKind::PartIdxDown,
+                let asc = self.base_net_ascending(base);
+                // Ascending net: a source-index range maps onto DECREASING internal
+                // bits, so `+:` becomes a downward internal select and `-:` upward;
+                // the offset is the base index normalized via the root net.
+                let off = if asc {
+                    self.norm_offset_ascending(base, raw_off)
+                } else {
+                    self.norm_offset_if_net(base, raw_off)
                 };
+                let width = self.lower_expr(width);
+                let kind = indexed_sel_kind(dir, asc);
                 self.push_expr(ir::Expr::Select {
                     base: base_id,
                     offset: off,
@@ -9437,7 +9450,8 @@ impl<'s> Elaborator<'s> {
                 let (net, word) = self.lval_part_base(base);
                 let lsb_id = self.lower_expr(lsb);
                 let msb_id = self.lower_expr(msb);
-                let width = self.width_from_msb_lsb_checked(msb, lsb, msb_id, lsb_id);
+                let asc = self.net_ascending(net);
+                let width = self.width_from_msb_lsb_dir(msb, lsb, msb_id, lsb_id, asc);
                 let offset = self.norm_offset_for_net(net, lsb_id);
                 out.push(ir::LvalChunk {
                     net,
@@ -9489,6 +9503,9 @@ impl<'s> Elaborator<'s> {
                 let raw_off = self.lower_expr(offset);
                 let off = self.norm_offset_for_net(net, raw_off);
                 let w = self.lower_expr(width);
+                // Ascending net: flip the indexed direction (the offset is already
+                // normalized by `norm_offset_for_net`). Descending keeps `kind`.
+                let kind = indexed_sel_kind(dir, self.net_ascending(net));
                 out.push(ir::LvalChunk {
                     net,
                     word,
@@ -11369,15 +11386,54 @@ impl<'s> Elaborator<'s> {
         self.push_expr(ir::Expr::Const { val: cid })
     }
 
-    /// width = (msb - lsb) + 1 as an arena expr tree (no const-fold in v1).
-    /// `msb`/`lsb` are the already-lowered ExprIds of the select bounds.
-    ///
-    /// GUARD (LOWERING verdict MINOR): if both bounds const-fold and
-    /// `msb_const < lsb_const` — i.e. a part-select on a little-endian/ascending
-    /// `[0:N]` net — the `Sub` would underflow as an unsigned arena op. v1 only
-    /// supports descending `[N:0]` part-selects, so we emit `ElabUnsupported` and
-    /// still synthesize the (well-formed but inert) width tree to keep the arena
-    /// valid. The original-AST bounds are passed in only for the const check.
+    /// Resolve a part-select base expression to its ROOT single-segment net,
+    /// peeling `(…)` and array `name[i][j]…` indexing — so an array element
+    /// (`m[2]`) resolves to the array net `m` (whose packed range is the element
+    /// shape). A computed/concat/field/hierarchical base yields `None`.
+    fn base_root_net(&self, base: &ast::Expr) -> Option<u32> {
+        let mut cur = base;
+        loop {
+            match &cur.kind {
+                ast::ExprKind::Paren { inner } => cur = inner,
+                ast::ExprKind::BitSelect { base, .. } => cur = base,
+                ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
+                    return self.lookup_net_scoped(&path.segments[0].name);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Is the net (or array-element packed shape) named by `base` declared
+    /// ASCENDING (`[lo:hi]`, `msb < lsb`)? A base that does not resolve to a net is
+    /// `false` (treated as the classic descending `[N:0]`).
+    fn base_net_ascending(&self, base: &ast::Expr) -> bool {
+        self.base_root_net(base)
+            .map(|net| self.net_ascending(net))
+            .unwrap_or(false)
+    }
+
+    /// Offset normalization for a part-select base on an ASCENDING net: peel the
+    /// base to its root net and map the source index onto an internal-bit position
+    /// (`norm_offset_for_net`). Only used when `base_net_ascending(base)` is true,
+    /// so `base_root_net` is guaranteed `Some`.
+    fn norm_offset_ascending(&mut self, base: &ast::Expr, raw_off: u32) -> u32 {
+        match self.base_root_net(base) {
+            Some(net) => self.norm_offset_for_net(net, raw_off),
+            None => raw_off,
+        }
+    }
+
+    /// Is net `net` declared ascending (`[lo:hi]`)? Out-of-range id ⇒ `false`.
+    fn net_ascending(&self, net: u32) -> bool {
+        self.nets
+            .get(net as usize)
+            .map(|nv| nv.msb < nv.lsb)
+            .unwrap_or(false)
+    }
+
+    /// Descending-default wrapper for [`Self::width_from_msb_lsb_dir`] — used where
+    /// the net direction is not yet known (deferred hierarchical part-select write).
     fn width_from_msb_lsb_checked(
         &mut self,
         msb_ast: &ast::Expr,
@@ -11385,11 +11441,47 @@ impl<'s> Elaborator<'s> {
         msb_id: u32,
         lsb_id: u32,
     ) -> u32 {
-        if let (Some(m), Some(l)) = (const_eval_u32(msb_ast), const_eval_u32(lsb_ast)) {
-            if m < l {
+        self.width_from_msb_lsb_dir(msb_ast, lsb_ast, msb_id, lsb_id, false)
+    }
+
+    /// Part-select width, direction-aware.
+    ///
+    /// DESCENDING net (`ascending == false`): the legal select is `[msb:lsb]` with
+    /// `msb ≥ lsb`; width = `(msb - lsb) + 1` as an UNFOLDED arena tree (no
+    /// const-fold in v1 — the golden IR shape). `msb_const < lsb_const` is a
+    /// direction mismatch ("out of order") → `ElabUnsupported` (the inert width
+    /// tree is still synthesized to keep the arena valid).
+    ///
+    /// ASCENDING net (`ascending == true`, `[lo:hi]`): the legal select is
+    /// `[msb:lsb]` with `msb ≤ lsb`; width = `(lsb - msb) + 1` folded to a `Const`
+    /// (the unsigned `msb_id - lsb_id` arena Sub would underflow). `msb_const >
+    /// lsb_const` is a direction mismatch → `ElabUnsupported`. The offset machinery
+    /// (`norm_offset_for_net`) already maps the larger source index onto internal
+    /// bit 0, so only the width differs.
+    fn width_from_msb_lsb_dir(
+        &mut self,
+        msb_ast: &ast::Expr,
+        lsb_ast: &ast::Expr,
+        msb_id: u32,
+        lsb_id: u32,
+        ascending: bool,
+    ) -> u32 {
+        let folded = (const_eval_u32(msb_ast), const_eval_u32(lsb_ast));
+        if let (Some(m), Some(l)) = folded {
+            if ascending {
+                if m > l {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "part-select bounds [msb:lsb] descend but the net is ascending [lo:hi] (out of order)",
+                    );
+                } else {
+                    // width = (l - m) + 1, folded; offset handled by norm_offset.
+                    return self.const_u32_expr(l - m + 1, 32);
+                }
+            } else if m < l {
                 self.error(
                     MsgCode::ElabUnsupported,
-                    "ascending/little-endian part-select [lsb:msb] not supported (v1: [msb:lsb])",
+                    "part-select bounds [msb:lsb] ascend but the net is descending [hi:lo] (out of order)",
                 );
             }
         }
@@ -22123,6 +22215,23 @@ fn map_port_dir(d: ast::PortDir) -> ir::PortDir {
         ast::PortDir::Input => ir::PortDir::Input,
         ast::PortDir::Output => ir::PortDir::Output,
         ast::PortDir::Inout => ir::PortDir::Inout,
+    }
+}
+
+/// Internal-bit select direction for an indexed part-select `[base ± width]`.
+/// On a DESCENDING net the source-index direction equals the internal-bit
+/// direction (`+:` ⇒ up, `-:` ⇒ down). On an ASCENDING (`[lo:hi]`) net the source
+/// index runs opposite to the internal bit (index 0 is the MSB), so `+:` moves
+/// DOWN in internal bits and `-:` UP — the offset (`norm_offset_for_net`) already
+/// maps the base index onto its internal bit. IEEE 1800 §11.5.1 + §7.4.3.
+fn indexed_sel_kind(dir: &ast::PartDir, ascending: bool) -> ir::SelKind {
+    match (dir, ascending) {
+        (ast::PartDir::PlusColon, false) | (ast::PartDir::MinusColon, true) => {
+            ir::SelKind::PartIdxUp
+        }
+        (ast::PartDir::MinusColon, false) | (ast::PartDir::PlusColon, true) => {
+            ir::SelKind::PartIdxDown
+        }
     }
 }
 
