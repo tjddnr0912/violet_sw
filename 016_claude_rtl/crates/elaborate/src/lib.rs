@@ -1924,6 +1924,12 @@ struct Elaborator<'s> {
     // allocated at the first call site and reused at every later site (keyed by
     // task name → per-formal net ids, in port order). elaborate-LOCAL only.
     task_arg_locals: std::collections::HashMap<String, Vec<u32>>,
+    // Monotonic counter giving each inline-task call site a UNIQUE body-local
+    // scope (`$itask$<name>$<n>`), so an assigned body-local resolves and two
+    // call sites never collide. Inline-task body-locals therefore get fresh
+    // per-call storage (automatic semantics — a documented divergence from a
+    // static task's persistent-local, an uncommon pattern). elaborate-LOCAL only.
+    itask_seq: u64,
     // Heap-handle nets (dyn array/queue/assoc) whose ELEMENT type is 2-state
     // (int/bit/byte/shortint/longint). These skip the regular `record_dim_desc`
     // path (and thus `intro_kind`), so the `two_state_nets` sidecar would miss
@@ -2217,6 +2223,7 @@ impl<'s> Elaborator<'s> {
             dim_desc: BTreeMap::new(),
             intro_kind: BTreeMap::new(),
             task_arg_locals: std::collections::HashMap::new(),
+            itask_seq: 0,
             two_state_heap_handles: BTreeSet::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -4955,13 +4962,17 @@ impl<'s> Elaborator<'s> {
                 return None;
             }
             // The innermost segment about to be stripped: only continue walking
-            // outward if it is a generate-block scope (`label[idx]`). Stopping at
-            // an instance-boundary segment preserves per-instance name isolation.
+            // outward if it is a generate-block scope (`label[idx]`) or an
+            // inline-task body-local scope (`$itask$…`, which must see the
+            // enclosing module's nets — a task body can read/write module signals).
+            // Stopping at an instance-boundary segment preserves per-instance name
+            // isolation; a frame `$func$…` scope is NOT transparent (a frame body
+            // is validated to touch only its own locals).
             let last_seg = match prefix.rfind('.') {
                 Some(i) => &prefix[i + 1..],
                 None => prefix,
             };
-            if !Self::is_gen_scope_segment(last_seg) {
+            if !Self::is_gen_scope_segment(last_seg) && !last_seg.starts_with("$itask$") {
                 return None;
             }
             prefix = match prefix.rfind('.') {
@@ -9629,7 +9640,10 @@ impl<'s> Elaborator<'s> {
         let mut set = std::collections::BTreeSet::new();
         for (name, t) in &self.task_table {
             // automatic OR recursive (self/mutual). A static non-recursive task —
-            // even with control flow — still inlines byte-identically.
+            // even with control flow OR body-locals — still inlines (the inline
+            // path hoists its body-locals under a per-call scope; see
+            // `inline_task`). Framing a static task would wrongly subject it to the
+            // frame-call subset (no $display / module-net writes).
             if t.automatic || reaches(name, name, &edges) {
                 set.insert(name.clone());
             }
@@ -9671,6 +9685,46 @@ impl<'s> Elaborator<'s> {
     /// Allocate this frame function's nets (formals, return-var, body_decls — in
     /// that slot order) under a synthetic `$func$<name>` scope, push a placeholder
     /// `FuncDef` + the complete `FuncMeta`, and record the name→FuncId divert.
+    /// Reserve a frame body's block-local declarations (`begin int tmp; …`) under
+    /// the current `$func$<name>` scope, in source order, AFTER the formals /
+    /// return / top-level `body_decls`. A name already reserved (a formal, the
+    /// return var, a top-level local, or an earlier same-named block) is COALESCED
+    /// (shared net) — like the process-body hoist for two sequential blocks reusing
+    /// `int tmp;`. Returns the `automatic`-override bits for the freshly reserved
+    /// slots. The slot index is read from the live net count so it stays aligned
+    /// with the frame's flat slot order even when some decls coalesce.
+    fn reserve_frame_block_locals(&mut self, body: &ast::Stmt, base_net: u32) -> u64 {
+        let mut decls = Vec::new();
+        collect_block_local_decls(body, &mut decls);
+        let mut auto_override = 0u64;
+        for d in &decls {
+            for decl in &d.names {
+                if self.symbols.contains_key(&self.fq(&decl.name.name)) {
+                    continue; // coalesce with an already-reserved formal/local
+                }
+                let (w, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                let slot = self.nets.len() as u32 - base_net;
+                self.add_net(
+                    &decl.name.name,
+                    ir::NetVar {
+                        kind: map_net_kind_or_wire(d.kind),
+                        width: w,
+                        msb,
+                        lsb,
+                        signed,
+                        array_len: 1,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(d.kind, w),
+                    },
+                );
+                if d.lifetime == Some(true) && slot < 64 {
+                    auto_override |= 1u64 << slot;
+                }
+            }
+        }
+        auto_override
+    }
+
     fn reserve_frame_func(&mut self, name: &str, func: &ast::FunctionDef) {
         let fid = self.funcs.len() as u32;
         let base_net = self.nets.len() as u32;
@@ -9743,6 +9797,9 @@ impl<'s> Elaborator<'s> {
                     slot += 1;
                 }
             }
+            // Block-locals declared inside a `begin … end` in the body (after the
+            // top-level body_decls in the flat slot order).
+            auto_override |= s.reserve_frame_block_locals(&func.body, base_net);
             auto_override
         });
         let locals_len = self.nets.len() as u32 - base_net;
@@ -9789,8 +9846,13 @@ impl<'s> Elaborator<'s> {
         // via `lower_stmt` either way.
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
-            // §13.4.4: run body-local declaration initializers at entry.
+            // §13.4.4: run body-local declaration initializers at entry (top-level
+            // body_decls, then block-locals — at frame entry, an approximation of
+            // per-block-entry init that is exact for the common single-entry case).
             s.emit_frame_local_inits(&mut b, &func.body_decls);
+            let mut block_locals = Vec::new();
+            collect_block_local_decls(&func.body, &mut block_locals);
+            s.emit_frame_local_inits(&mut b, &block_locals);
             if has_ret {
                 let exit = b.new_block();
                 s.cur_return = Some((Some(retvar), exit));
@@ -9866,6 +9928,8 @@ impl<'s> Elaborator<'s> {
                     slot += 1;
                 }
             }
+            // Block-locals declared inside a `begin … end` in the body.
+            auto_override |= s.reserve_frame_block_locals(&task.body, base_net);
             auto_override
         });
         let locals_len = self.nets.len() as u32 - base_net;
@@ -9905,8 +9969,12 @@ impl<'s> Elaborator<'s> {
         let saved_ret = self.cur_return.take();
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
-            // §13.4.4: run body-local declaration initializers at entry.
+            // §13.4.4: run body-local declaration initializers at entry (top-level
+            // body_decls, then block-locals).
             s.emit_frame_local_inits(&mut b, &task.body_decls);
+            let mut block_locals = Vec::new();
+            collect_block_local_decls(&task.body, &mut block_locals);
+            s.emit_frame_local_inits(&mut b, &block_locals);
             if has_ret {
                 let exit = b.new_block();
                 s.cur_return = Some((None, exit));
@@ -10439,17 +10507,24 @@ impl<'s> Elaborator<'s> {
         // `return;` in the task jumps to a continuation block scoped to THIS task
         // (cur_return saved/restored so a nested return never escapes to the caller's
         // function exit). Gated on `body_has_return` for byte-identical IR when absent.
+        //
+        // A static task's BODY-LOCAL declarations (top-level `body_decls` and any
+        // `begin … end` block-locals) are hoisted into nets under a UNIQUE per-call
+        // scope (`$itask$<name>$<n>`) so an assigned local resolves (previously
+        // E3010). A task with NO body-locals takes the exact prior path — no scope,
+        // no extra nets — so its IR is byte-identical.
+        let mut tlocals = task.body_decls.clone();
+        collect_block_local_decls(&task.body, &mut tlocals);
         self.inline_stack.push(tname.clone());
-        if body_has_return(&task.body) {
-            let saved_ret = self.cur_return.take();
-            let exit = b.new_block();
-            self.cur_return = Some((None, exit));
-            self.lower_stmt(b, &task.body);
-            b.goto(exit);
-            b.start_block(exit);
-            self.cur_return = saved_ret;
+        if tlocals.is_empty() {
+            self.inline_task_body(b, &task.body);
         } else {
-            self.lower_stmt(b, &task.body);
+            self.itask_seq += 1;
+            let scope = format!("$itask${tname}${}", self.itask_seq);
+            self.with_scope(&scope, |s| {
+                s.hoist_inline_task_locals(b, &tlocals);
+                s.inline_task_body(b, &task.body);
+            });
         }
         self.inline_stack.pop();
 
@@ -10473,6 +10548,60 @@ impl<'s> Elaborator<'s> {
         // pop our frames so sibling/outer code is unaffected.
         self.subst.truncate(subst_base);
         self.out_subst.truncate(out_base);
+    }
+
+    /// Lower an inline-task body with the `return`-exit-block gating (a `return;`
+    /// jumps to a fresh convergence block scoped to THIS task; cur_return is
+    /// saved/restored so a nested return never escapes to the caller's exit).
+    fn inline_task_body(&mut self, b: &mut ProcessBuilder, body: &ast::Stmt) {
+        if body_has_return(body) {
+            let saved_ret = self.cur_return.take();
+            let exit = b.new_block();
+            self.cur_return = Some((None, exit));
+            self.lower_stmt(b, body);
+            b.goto(exit);
+            b.start_block(exit);
+            self.cur_return = saved_ret;
+        } else {
+            self.lower_stmt(b, body);
+        }
+    }
+
+    /// Reserve an inline-task's body-local declarations as nets under the current
+    /// (unique per-call) scope and run their declaration initializers at entry. A
+    /// name already bound in this scope is skipped (a block-local shadowing a
+    /// formal is illegal SV; this guards it harmlessly). 2-state locals register
+    /// for X/Z→0 coercion, mirroring the formal-local path.
+    fn hoist_inline_task_locals(&mut self, b: &mut ProcessBuilder, decls: &[ast::NetVarDecl]) {
+        for d in decls {
+            for decl in &d.names {
+                let key = self.fq(&decl.name.name);
+                if self.symbols.contains_key(&key) {
+                    continue;
+                }
+                let (w, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                self.add_net(
+                    &decl.name.name,
+                    ir::NetVar {
+                        kind: map_net_kind_or_wire(d.kind),
+                        width: w,
+                        msb,
+                        lsb,
+                        signed,
+                        array_len: 1,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(d.kind, w),
+                    },
+                );
+                if net_kind_is_two_state(d.kind) {
+                    if let Some(&net) = self.symbols.get(&key) {
+                        self.intro_kind.insert(net, d.kind);
+                    }
+                }
+            }
+        }
+        // §13.4.4: body-local declaration initializers run at entry (per call).
+        self.emit_frame_local_inits(b, decls);
     }
 
     // ── const + expr helpers (single arena append points) ──────────
@@ -21314,6 +21443,42 @@ fn body_needs_frame(s: &ast::Stmt) -> bool {
         Null(_) | Blocking { .. } => false,
         Block { stmts, .. } => stmts.iter().any(body_needs_frame),
         _ => true,
+    }
+}
+
+/// Collect every `begin`/`fork` block-local declaration in `s`, in source order
+/// (recursing into nested blocks and control-flow bodies). Used to reserve a
+/// frame body's block-locals under its `$func$<name>` scope so a local declared
+/// inside a `begin … end` resolves (previously unresolved → E3010, for frame
+/// functions AND tasks alike).
+fn collect_block_local_decls(s: &ast::Stmt, out: &mut Vec<ast::NetVarDecl>) {
+    use ast::Stmt::*;
+    match s {
+        Block { decls, stmts, .. } | Fork { decls, stmts, .. } => {
+            out.extend(decls.iter().cloned());
+            for st in stmts {
+                collect_block_local_decls(st, out);
+            }
+        }
+        If { then_s, else_s, .. } => {
+            collect_block_local_decls(then_s, out);
+            if let Some(e) = else_s {
+                collect_block_local_decls(e, out);
+            }
+        }
+        Case { items, .. } => {
+            for it in items {
+                match it {
+                    ast::CaseItem::Match { body, .. } | ast::CaseItem::Default { body, .. } => {
+                        collect_block_local_decls(body, out)
+                    }
+                }
+            }
+        }
+        For { body, .. } | While { body, .. } | Repeat { body, .. } | Forever { body, .. } => {
+            collect_block_local_decls(body, out)
+        }
+        _ => {}
     }
 }
 
