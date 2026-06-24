@@ -10976,24 +10976,26 @@ impl<'s> Elaborator<'s> {
         let mut first_call = false;
         for d in decls {
             for decl in &d.names {
-                // An UNPACKED-ARRAY body-local (`int arr [0:1];`) is not yet backed
-                // by array storage on this inline-task path (it would allocate a
-                // single scalar net, silently corrupting element read/write). Refuse
-                // loudly rather than miscompute (correct-or-loud); a scalar/packed
-                // local is unaffected.
-                if !decl.unpacked.is_empty() {
+                let key = self.fq(&decl.name.name);
+                if self.symbols.contains_key(&key) {
+                    continue;
+                }
+                // An UNPACKED-ARRAY body-local (`int arr [0:1];`) gets real element
+                // storage, mirroring a module-level array (`array_len` + the
+                // addressing sidecars below) — a static-lifetime local for a
+                // non-automatic task, so it persists across calls.
+                let dim_extents = self.array_dim_extents(&decl.unpacked);
+                let array_len = dim_extents
+                    .iter()
+                    .fold(1u32, |acc, &(_, n)| acc.saturating_mul(n.max(1)));
+                if (array_len as u64) > MAX_ARRAY_LEN {
                     self.error(
                         MsgCode::ElabUnsupported,
                         &format!(
-                            "unpacked-array local `{}` in a (non-automatic) task is \
-                             unsupported (v1: scalar/packed locals only)",
-                            decl.name.name
+                            "unpacked-array local `{}` has {} elements (cap {MAX_ARRAY_LEN})",
+                            decl.name.name, array_len
                         ),
                     );
-                    continue;
-                }
-                let key = self.fq(&decl.name.name);
-                if self.symbols.contains_key(&key) {
                     continue;
                 }
                 first_call = true;
@@ -11006,15 +11008,40 @@ impl<'s> Elaborator<'s> {
                         msb,
                         lsb,
                         signed,
-                        array_len: 1,
+                        array_len,
                         dir: ir::PortDir::Internal,
                         init: default_init(d.kind, w),
                     },
                 );
+                let Some(&id) = self.symbols.get(&key) else {
+                    continue;
+                };
                 if net_kind_is_two_state(d.kind) {
-                    if let Some(&net) = self.symbols.get(&key) {
-                        self.intro_kind.insert(net, d.kind);
+                    self.intro_kind.insert(id, d.kind);
+                }
+                // Element-addressing sidecars (only for an actual unpacked array),
+                // mirroring the module-level decl path so `arr[i]` resolves.
+                if !decl.unpacked.is_empty() {
+                    if dim_extents.len() >= 2 || dim_extents.iter().any(|&(lo, _)| lo != 0) {
+                        self.array_dims.insert(id, dim_extents);
                     }
+                    let desc: Vec<bool> = decl
+                        .unpacked
+                        .iter()
+                        .map(|dm| match dm {
+                            ast::Dim::Range(r) => {
+                                let m = self.const_eval_in_scope(&r.msb);
+                                let l = self.const_eval_in_scope(&r.lsb);
+                                matches!((m, l), (Some(m), Some(l)) if m > l)
+                            }
+                            _ => false,
+                        })
+                        .collect();
+                    if desc.iter().any(|&x| x) {
+                        self.array_dim_desc.insert(id, desc);
+                    }
+                    self.record_dim_desc(id, d.kind, d.range.as_ref(), &d.packed, &decl.unpacked);
+                    self.unpacked_array_nets.insert(id);
                 }
             }
         }

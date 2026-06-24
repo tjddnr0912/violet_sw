@@ -131,34 +131,15 @@ fn frame_function_block_local() {
 }
 
 #[test]
-fn unpacked_array_task_local_is_loud() {
-    // An unpacked-array body-local in a (non-automatic) task is not yet backed by
-    // array storage on the inline path, so it is LOUD-rejected (correct-or-loud)
-    // rather than silently miscomputing element read/writes.
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("vita_tbl_arr_{}_{n}.sv", std::process::id()));
-    std::fs::write(
-        &path,
-        "module t;\n\
+fn unpacked_array_task_local_works() {
+    // An unpacked-array body-local in a (non-automatic) task now gets real element
+    // storage (was loud "scalar/packed locals only"). arr[0]+arr[1] = 5+9 = 14.
+    // Oracle: iverilog. (Broader coverage in tests/task_unpacked_local.rs.)
+    let out = run("module t;\n\
            task tk; int arr [0:1]; begin arr[0]=5; arr[1]=9; $display(\"%0d\", arr[0]+arr[1]); end endtask\n\
            initial tk();\n\
-         endmodule\n",
-    )
-    .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_vita"))
-        .arg(&path)
-        .output()
-        .expect("run vita");
-    let _ = std::fs::remove_file(&path);
-    assert!(
-        !out.status.success(),
-        "expected a loud reject (nonzero exit)"
-    );
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("unpacked-array local"),
-        "expected unpacked-array diagnostic, got:\n{err}"
-    );
+         endmodule\n");
+    assert_eq!(out, "14\n");
 }
 
 #[test]
