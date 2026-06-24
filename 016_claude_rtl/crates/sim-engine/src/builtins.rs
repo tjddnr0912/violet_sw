@@ -547,6 +547,50 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        // ⓑ-breadth (v18): number→string conversions (IEEE §6.16.14-17). Render
+        // the value argument in the requested base (minimal form, no leading
+        // zeros; itoa signed-decimal, the rest the unsigned bit pattern) and
+        // OVERWRITE the string handle.
+        SysTaskId::StrItoa | SysTaskId::StrHextoa | SysTaskId::StrOcttoa | SysTaskId::StrBintoa => {
+            let net = args
+                .first()
+                .and_then(|&a| match sched.st.ir.exprs.get(a as usize) {
+                    Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
+                    _ => None,
+                });
+            if let Some(net) = net {
+                let v = args
+                    .get(1)
+                    .map(|&a| sched.eval(a))
+                    .unwrap_or(Value::xs(32, true));
+                let text = match which {
+                    SysTaskId::StrItoa => {
+                        let sv = if v.signed {
+                            v.to_i128_signed().unwrap_or(0)
+                        } else {
+                            v.to_u128().unwrap_or(0) as i128
+                        };
+                        format!("{sv}")
+                    }
+                    SysTaskId::StrHextoa => format!("{:x}", v.to_u128().unwrap_or(0)),
+                    SysTaskId::StrOcttoa => format!("{:o}", v.to_u128().unwrap_or(0)),
+                    _ => format!("{:b}", v.to_u128().unwrap_or(0)),
+                };
+                let sv = Value::from_str_bytes(text.as_bytes());
+                let lv = sim_ir::Lvalue {
+                    chunks: vec![sim_ir::LvalChunk {
+                        net,
+                        word: None,
+                        offset: None,
+                        width: None,
+                        kind: sim_ir::SelKind::Bit,
+                    }],
+                };
+                let off = sched.resolve_lvalue_offsets(&lv);
+                sched.st.write_lvalue(&lv, sv, &off);
+            }
+            Ctl::Continue
+        }
         // v7 P2-C `$sformat(dest, fmt, args…)` — renders through the SAME
         // format engine and writes dest (string net = byte store; packed =
         // the normal funnel with §6.16 conversion).

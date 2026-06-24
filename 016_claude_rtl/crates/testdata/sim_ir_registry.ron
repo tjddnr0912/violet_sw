@@ -799,6 +799,21 @@
         53: {
             "ArrXor": UNIT,
         },
+        54: {
+            "StrAtoi": UNIT,
+        },
+        55: {
+            "StrAtohex": UNIT,
+        },
+        56: {
+            "StrAtooct": UNIT,
+        },
+        57: {
+            "StrAtobin": UNIT,
+        },
+        58: {
+            "StrAtoreal": UNIT,
+        },
     }),
     "SysTaskId": ENUM({
         0: {
@@ -910,6 +925,18 @@
             "ArrReverse": UNIT,
         },
         36: {
+            "StrItoa": UNIT,
+        },
+        37: {
+            "StrHextoa": UNIT,
+        },
+        38: {
+            "StrOcttoa": UNIT,
+        },
+        39: {
+            "StrBintoa": UNIT,
+        },
+        40: {
             "ArrLocator": UNIT,
         },
     }),

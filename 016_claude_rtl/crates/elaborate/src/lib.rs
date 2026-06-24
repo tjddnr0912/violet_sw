@@ -10706,12 +10706,19 @@ impl<'s> Elaborator<'s> {
             "toupper" if arity_ok(0) => ir::SysFuncId::StrToUpper,
             "tolower" if arity_ok(0) => ir::SysFuncId::StrToLower,
             "compare" if arity_ok(1) => ir::SysFuncId::StrCmp,
+            // ⓑ-breadth (v18): string→number conversions (IEEE §6.16.9-13).
+            "atoi" if arity_ok(0) => ir::SysFuncId::StrAtoi,
+            "atohex" if arity_ok(0) => ir::SysFuncId::StrAtohex,
+            "atooct" if arity_ok(0) => ir::SysFuncId::StrAtooct,
+            "atobin" if arity_ok(0) => ir::SysFuncId::StrAtobin,
+            "atoreal" if arity_ok(0) => ir::SysFuncId::StrAtoreal,
             _ => {
                 self.error(
                     MsgCode::ElabUnsupported,
                     &format!(
-                        "string method `{method}` (with this arity) is outside \
-                         the v7 scope (len/getc/substr/toupper/tolower/compare/putc)"
+                        "string method `{method}` (with this arity) is outside the scope \
+                         (len/getc/substr/toupper/tolower/compare/putc/atoi/atohex/atooct/\
+                         atobin/atoreal)"
                     ),
                 );
                 return self.placeholder_expr();
@@ -10730,18 +10737,30 @@ impl<'s> Elaborator<'s> {
         method: &str,
         args: &[ast::Expr],
     ) {
-        if method != "putc" || args.len() != 2 {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!("string method statement `{method}` is outside the v7 scope (putc)"),
-            );
-            return;
-        }
+        // ⓑ-breadth (v18): number→string conversions (IEEE §6.16.14-18) — in-place
+        // mutators taking the value to render.
+        let which = match (method, args.len()) {
+            ("putc", 2) => ir::SysTaskId::StrPutC,
+            ("itoa", 1) => ir::SysTaskId::StrItoa,
+            ("hextoa", 1) => ir::SysTaskId::StrHextoa,
+            ("octtoa", 1) => ir::SysTaskId::StrOcttoa,
+            ("bintoa", 1) => ir::SysTaskId::StrBintoa,
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "string method statement `{method}` is outside the scope \
+                         (putc/itoa/hextoa/octtoa/bintoa)"
+                    ),
+                );
+                return;
+            }
+        };
         let handle = self.push_expr(ir::Expr::Signal { net, word: None });
         let mut ids = vec![handle];
         ids.extend(args.iter().map(|a| self.lower_expr(a)));
         let sid = self.push_stmt(ir::Stmt::SysTask {
-            which: ir::SysTaskId::StrPutC,
+            which,
             fmt: None,
             args: ids,
         });
@@ -20008,7 +20027,9 @@ impl<'s> Elaborator<'s> {
             ir::Expr::SysFunc { which, args } => {
                 use ir::SysFuncId as F;
                 match which {
-                    F::Time | F::Realtime | F::Itor | F::BitsToReal | F::RealToBits => 64,
+                    F::Time | F::Realtime | F::Itor | F::BitsToReal | F::RealToBits
+                    // v18: `.atoreal()` → 64-bit real.
+                    | F::StrAtoreal => 64,
                     F::Signed | F::Unsigned => {
                         let a = *args.first()?;
                         self.ir_bits_of(a)?
@@ -20044,7 +20065,12 @@ impl<'s> Elaborator<'s> {
                     | F::DistExponential
                     | F::DistPoisson
                     | F::DistChiSquare
-                    | F::Cast => 32,
+                    | F::Cast
+                    // v18: string→int conversions — all `int`.
+                    | F::StrAtoi
+                    | F::StrAtohex
+                    | F::StrAtooct
+                    | F::StrAtobin => 32,
                     F::AssocExists | F::OneHot | F::OneHot0 | F::IsUnknown => 1,
                     F::StrGetC => 8,
                     // element-typed pops / dynamic-length string producers /

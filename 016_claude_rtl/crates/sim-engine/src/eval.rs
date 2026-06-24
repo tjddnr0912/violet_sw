@@ -92,6 +92,56 @@ pub(crate) fn value_str_bytes(v: &Value) -> Vec<u8> {
     out
 }
 
+/// ⓑ-breadth (v18): parse the leading integer prefix of `bytes` in `radix`
+/// (IEEE §6.16.9-12 conversion family). Skips leading ASCII whitespace; honors a
+/// single leading `+`/`-` when `signed`; accumulates `radix`-digits until the
+/// first non-digit; empty/garbage yields 0. Wrapping accumulation matches the
+/// C `strtol`-style overflow behavior the callers then truncate to 32 bits.
+pub(crate) fn parse_radix_prefix(bytes: &[u8], radix: u32, signed: bool) -> i64 {
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    let mut neg = false;
+    if signed && i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+        neg = bytes[i] == b'-';
+        i += 1;
+    }
+    let mut acc: i64 = 0;
+    while i < bytes.len() {
+        match (bytes[i] as char).to_digit(radix) {
+            Some(d) => {
+                acc = acc.wrapping_mul(radix as i64).wrapping_add(d as i64);
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    if neg {
+        acc.wrapping_neg()
+    } else {
+        acc
+    }
+}
+
+/// ⓑ-breadth (v18): parse the leading real prefix of `bytes` (IEEE §6.16.13
+/// `atoreal`). Trims leading whitespace and parses the longest leading substring
+/// that is a valid `f64`; non-numeric / empty yields 0.0.
+pub(crate) fn parse_real_prefix(bytes: &[u8]) -> f64 {
+    let s = String::from_utf8_lossy(bytes);
+    let t = s.trim_start();
+    // Longest valid f64 prefix (Rust's parser is whole-string, so shrink to fit).
+    let end = t.len();
+    for n in (1..=end).rev() {
+        if t.is_char_boundary(n) {
+            if let Ok(v) = t[..n].parse::<f64>() {
+                return v;
+            }
+        }
+    }
+    0.0
+}
+
 /// Read-only net access the evaluator needs. The engine state implements it.
 pub trait NetReader {
     /// Current 4-state value of net `net`, optional array word index.
@@ -1648,6 +1698,31 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     _ => Value::xs(32, true),
                 }
             }
+            // ⓑ-breadth (v18): string→number conversions (IEEE §6.16.9-13).
+            // Parse the leading numeric prefix in the requested base; a leading
+            // sign is honored for decimal (IEEE §6.16.9 — note iverilog 13 drops
+            // it, its bug). Empty / non-numeric prefix → 0. Result truncates to
+            // a 32-bit int.
+            SysFuncId::StrAtoi
+            | SysFuncId::StrAtohex
+            | SysFuncId::StrAtooct
+            | SysFuncId::StrAtobin => match self.handle_str_bytes(args.first()) {
+                Some(b) => {
+                    let (radix, signed) = match which {
+                        SysFuncId::StrAtoi => (10, true),
+                        SysFuncId::StrAtohex => (16, false),
+                        SysFuncId::StrAtooct => (8, false),
+                        _ => (2, false),
+                    };
+                    let n = parse_radix_prefix(&b, radix, signed);
+                    Value::from_i128((n as i32) as i128, 32, true)
+                }
+                None => Value::xs(32, true),
+            },
+            SysFuncId::StrAtoreal => match self.handle_str_bytes(args.first()) {
+                Some(b) => Value::from_f64(parse_real_prefix(&b)),
+                None => Value::xs(64, true),
+            },
             // v7 shape, features not wired yet (elaborate still rejects the
             // names): defensive X at each func's declared self-width.
             // `ValuePlusargs`/`Sformatf` here = unsupported placement (the

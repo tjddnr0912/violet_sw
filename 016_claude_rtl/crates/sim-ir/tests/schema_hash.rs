@@ -3,7 +3,10 @@
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full SimIr-closure canonical string. Locked at
-/// format_version 17 (2026-06-24: `Expr::ArrayItem` (the with-clause iterator)
+/// format_version 18 (2026-06-24: 5 SysFuncId `StrAtoi`/`StrAtohex`/`StrAtooct`/
+/// `StrAtobin`/`StrAtoreal` + 4 SysTaskId `StrItoa`/`StrHextoa`/`StrOcttoa`/
+/// `StrBintoa` for the ⓑ-breadth string conversion methods, IEEE §6.16.9-17).
+/// (2026-06-24 v17: `Expr::ArrayItem` (the with-clause iterator)
 /// plus the `SysTaskId::ArrLocator` variant for the ⓑ-breadth array locator
 /// methods, IEEE §7.12.1). Both are reached from SimIr via the Expr/Stmt arenas,
 /// so the root hash flips; the Process cluster reaches them only through arena
@@ -15,7 +18,7 @@ use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 /// 2026-06-18 v9: 13 SysFuncId and 5 SysTaskId for the file-read/$dist_*/$cast/
 /// $writemem*/$monitoron-off family.)
 const EXPECTED_SIMIR_HASH: &str =
-    "12bb6c4bf2624500386453313ce2fb6f2b8690c10a5c39cc2bfc24f182610fa0";
+    "6b1df1ca8d62e2ec448701bfad8d84e1ffb959bd7794f41f29c15d0ab0bfc961";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "61db2e207ed69c2ff1dbf3fc0473b7ed9906fbeb6c42128ef9edf382b081f277";

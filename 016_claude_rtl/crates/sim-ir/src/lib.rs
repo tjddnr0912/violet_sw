@@ -293,6 +293,21 @@ pub enum SysFuncId {
     ArrOr,
     /// array `.xor()` — left-fold bitwise `^`.
     ArrXor,
+    // ── v18 (2026-06-24): ⓑ-breadth string→number conversion methods
+    //    (IEEE §6.16.9-12). args = [str handle]. Each returns a 32-bit int (or
+    //    real for `atoreal`) by parsing the leading numeric prefix in the given
+    //    base; a leading sign is honored (atoi); parsing stops at the first
+    //    non-matching character; empty/garbage → 0. ──
+    /// string `.atoi()` — decimal ASCII → int (leading sign honored, §6.16.9).
+    StrAtoi,
+    /// string `.atohex()` — hex ASCII → int.
+    StrAtohex,
+    /// string `.atooct()` — octal ASCII → int.
+    StrAtooct,
+    /// string `.atobin()` — binary ASCII → int.
+    StrAtobin,
+    /// string `.atoreal()` — ASCII → real (64-bit, §6.16.13).
+    StrAtoreal,
 }
 
 /// Expression arena node (§1).
@@ -439,6 +454,17 @@ pub enum SysTaskId {
     ArrRsort,
     /// array `.reverse()` — in-place element reversal.
     ArrReverse,
+    // ── v18 (2026-06-24): ⓑ-breadth number→string conversion methods
+    //    (IEEE §6.16.14-18). In-place mutators: write the ASCII rendering of the
+    //    value argument into the string handle. args = [str handle, value]. ──
+    /// string `.itoa(i)` — decimal rendering (leading `-` for negatives).
+    StrItoa,
+    /// string `.hextoa(i)` — lowercase hex rendering.
+    StrHextoa,
+    /// string `.octtoa(i)` — octal rendering.
+    StrOcttoa,
+    /// string `.bintoa(i)` — binary rendering.
+    StrBintoa,
     /// ⓑ-breadth (v17): array LOCATOR methods that yield a queue (IEEE §7.12.1).
     /// Statement-level (only valid as the direct rhs of a blocking assign — the
     /// result is a whole queue, written into the dst handle). args =

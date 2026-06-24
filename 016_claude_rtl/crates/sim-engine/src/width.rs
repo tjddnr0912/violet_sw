@@ -370,8 +370,18 @@ impl WidthTable {
                 | SysFuncId::DistExponential
                 | SysFuncId::DistPoisson
                 | SysFuncId::DistChiSquare
-                | SysFuncId::Cast => SelfWidth {
+                | SysFuncId::Cast
+                // v18: string→int conversions — all `int` returns.
+                | SysFuncId::StrAtoi
+                | SysFuncId::StrAtohex
+                | SysFuncId::StrAtooct
+                | SysFuncId::StrAtobin => SelfWidth {
                     width: 32,
+                    signed: true,
+                },
+                // v18: `.atoreal()` → real (64-bit, real-ness set at eval time).
+                SysFuncId::StrAtoreal => SelfWidth {
+                    width: 64,
                     signed: true,
                 },
                 // v7: unsigned-32 funcs ($urandom family per §18.13, $stime's
