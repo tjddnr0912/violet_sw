@@ -10291,6 +10291,40 @@ impl<'s> Elaborator<'s> {
                             let net = self.resolve_net(path);
                             out_binds.push((slot, whole_net_lvalue(net)));
                         }
+                        // §13.5.3: a part/bit/indexed select or array element actual —
+                        // copy out through its lowered lvalue (the inout copy-in above
+                        // already read it via lower_ctx_or_plain). A select of a
+                        // FRAME-LOCAL (an automatic local) cannot be routed by the
+                        // engine's frame copy-out (whole-net only) — loud-reject.
+                        ast::ExprKind::PartSelect { .. }
+                        | ast::ExprKind::BitSelect { .. }
+                        | ast::ExprKind::IndexedPart { .. }
+                            if self
+                                .actual_root_net(a)
+                                .map(|n| self.net_is_frame_local(n))
+                                .unwrap_or(false) =>
+                        {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!(
+                                    "frame task `{tname}` output/inout arg cannot be a select of an automatic (frame-local) variable"
+                                ),
+                            );
+                        }
+                        ast::ExprKind::PartSelect { .. }
+                        | ast::ExprKind::BitSelect { .. }
+                        | ast::ExprKind::IndexedPart { .. } => match expr_to_lvalue(a) {
+                            Some(lv_ast) => {
+                                let lv = self.lower_lvalue(&lv_ast);
+                                out_binds.push((slot, lv));
+                            }
+                            None => self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!(
+                                    "frame task `{tname}` output/inout arg must be a simple net or select"
+                                ),
+                            ),
+                        },
                         _ => self.error(
                             MsgCode::ElabUnsupported,
                             &format!("frame task `{tname}` output/inout arg must be a simple net"),
@@ -10702,8 +10736,8 @@ impl<'s> Elaborator<'s> {
                 v
             }
         };
-        // (caller_net, local_net), in arg order — copied out at task exit.
-        let mut copy_out: Vec<(u32, u32)> = Vec::new();
+        // (caller lvalue, local_net), in arg order — copied out at task exit.
+        let mut copy_out: Vec<(ir::Lvalue, u32)> = Vec::new();
         for (i, (p, a)) in task.ports.iter().zip(args).enumerate() {
             let local = locals[i];
             match p.dir {
@@ -10728,56 +10762,99 @@ impl<'s> Elaborator<'s> {
                     self.subst.push((p.name.name.clone(), rd));
                 }
                 ast::PortDir::Output | ast::PortDir::Inout => {
-                    let caller_net = match &a.kind {
+                    // Resolve the copy-OUT target lvalue in CALLER scope, BEFORE the
+                    // formal name is bound, so its base resolves the caller net (not
+                    // the just-bound local). An `inout` also copies the actual's value
+                    // IN at entry. The actual may be: a simple net (incl. a nested
+                    // outer formal routed via out_subst), or a part/bit/indexed select
+                    // or array element (§13.5.3 — any variable lvalue).
+                    let is_inout = matches!(p.dir, ast::PortDir::Inout);
+                    let out_lval: ir::Lvalue = match &a.kind {
                         ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
-                            // A nested call may pass an OUTER output/inout formal as
-                            // the actual — it is already bound to its formal-local net,
-                            // so route the copy-out to that local (the outer copy-out
-                            // then carries it on to the outer caller).
-                            self.out_subst_lookup(&path.segments[0].name)
-                                .unwrap_or_else(|| self.resolve_net(path))
+                            let caller_net = self
+                                .out_subst_lookup(&path.segments[0].name)
+                                .unwrap_or_else(|| self.resolve_net(path));
+                            // A whole unpacked array can't bind to a scalar formal —
+                            // reject rather than silently copy out word 0.
+                            if self
+                                .nets
+                                .get(caller_net as usize)
+                                .map(|n| n.array_len != 1)
+                                .unwrap_or(false)
+                            {
+                                self.error(
+                                    MsgCode::ElabUnsupported,
+                                    &format!(
+                                        "task `{tname}` output/inout arg must be a simple net (v1)"
+                                    ),
+                                );
+                                continue;
+                            }
+                            if is_inout {
+                                let rd = self.push_expr(ir::Expr::Signal {
+                                    net: caller_net,
+                                    word: None,
+                                });
+                                let cin = self.push_stmt(ir::Stmt::BlockingAssign {
+                                    lhs: whole_net_lvalue(local),
+                                    rhs: rd,
+                                });
+                                b.push_stmt_id(cin);
+                            }
+                            whole_net_lvalue(caller_net)
+                        }
+                        ast::ExprKind::PartSelect { .. }
+                        | ast::ExprKind::BitSelect { .. }
+                        | ast::ExprKind::IndexedPart { .. } => {
+                            // A select of a FRAME-LOCAL (automatic local) cannot be a
+                            // copy-out target the engine can route — loud-reject.
+                            if self
+                                .actual_root_net(a)
+                                .map(|n| self.net_is_frame_local(n))
+                                .unwrap_or(false)
+                            {
+                                self.error(
+                                    MsgCode::ElabUnsupported,
+                                    &format!(
+                                        "task `{tname}` output/inout arg cannot be a select of an automatic (frame-local) variable"
+                                    ),
+                                );
+                                continue;
+                            }
+                            let Some(lv_ast) = expr_to_lvalue(a) else {
+                                self.error(
+                                    MsgCode::ElabUnsupported,
+                                    &format!(
+                                        "task `{tname}` output/inout arg must be a simple net or select (v1)"
+                                    ),
+                                );
+                                continue;
+                            };
+                            if is_inout {
+                                // Read the actual select IN (formal-width context).
+                                let fw =
+                                    self.nets.get(local as usize).map(|n| n.width).unwrap_or(32);
+                                let rd = self.lower_ctx_or_plain(a, fw);
+                                let cin = self.push_stmt(ir::Stmt::BlockingAssign {
+                                    lhs: whole_net_lvalue(local),
+                                    rhs: rd,
+                                });
+                                b.push_stmt_id(cin);
+                            }
+                            self.lower_lvalue(&lv_ast)
                         }
                         _ => {
                             self.error(
                                 MsgCode::ElabUnsupported,
                                 &format!(
-                                    "task `{tname}` output/inout arg must be a simple net (v1)"
+                                    "task `{tname}` output/inout arg must be a simple net or select (v1)"
                                 ),
                             );
                             continue;
                         }
                     };
-                    // The actual must be a SCALAR net — a whole unpacked array can't
-                    // bind to a scalar formal; reject loud rather than silently copy
-                    // out word 0 (the prior aliasing path rejected this on read).
-                    if self
-                        .nets
-                        .get(caller_net as usize)
-                        .map(|n| n.array_len != 1)
-                        .unwrap_or(false)
-                    {
-                        self.error(
-                            MsgCode::ElabUnsupported,
-                            &format!("task `{tname}` output/inout arg must be a simple net (v1)"),
-                        );
-                        continue;
-                    }
-                    // INOUT copies the caller value IN at entry (truncated to formal
-                    // width). Read the caller net BEFORE binding the formal name so the
-                    // read resolves the caller net, not the just-bound local.
-                    if matches!(p.dir, ast::PortDir::Inout) {
-                        let rd = self.push_expr(ir::Expr::Signal {
-                            net: caller_net,
-                            word: None,
-                        });
-                        let cin = self.push_stmt(ir::Stmt::BlockingAssign {
-                            lhs: whole_net_lvalue(local),
-                            rhs: rd,
-                        });
-                        b.push_stmt_id(cin);
-                    }
                     self.out_subst.push((p.name.name.clone(), local));
-                    copy_out.push((caller_net, local));
+                    copy_out.push((out_lval, local));
                 }
             }
         }
@@ -10815,13 +10892,13 @@ impl<'s> Elaborator<'s> {
         // assignment resizes (sign/zero-extends per the formal's signedness) from
         // the formal width to the caller width. For a `return`-bearing body this
         // sits in the convergence exit block, so it runs on every return path.
-        for (caller_net, local) in &copy_out {
+        for (caller_lval, local) in &copy_out {
             let rd = self.push_expr(ir::Expr::Signal {
                 net: *local,
                 word: None,
             });
             let cout = self.push_stmt(ir::Stmt::BlockingAssign {
-                lhs: whole_net_lvalue(*caller_net),
+                lhs: caller_lval.clone(),
                 rhs: rd,
             });
             b.push_stmt_id(cout);
@@ -11411,6 +11488,37 @@ impl<'s> Elaborator<'s> {
         self.base_root_net(base)
             .map(|net| self.net_ascending(net))
             .unwrap_or(false)
+    }
+
+    /// Resolve a WHOLE select expression (`name[i]` / `name[m:l]` / `name[b+:w]`,
+    /// nested + parenthesized) to its root single-segment net. Unlike
+    /// [`Self::base_root_net`] this also peels the select operators themselves, so
+    /// it is used on a task ARGUMENT actual (the whole `tmp[3:0]`, not its base).
+    fn actual_root_net(&self, a: &ast::Expr) -> Option<u32> {
+        let mut cur = a;
+        loop {
+            match &cur.kind {
+                ast::ExprKind::Paren { inner } => cur = inner,
+                ast::ExprKind::BitSelect { base, .. }
+                | ast::ExprKind::PartSelect { base, .. }
+                | ast::ExprKind::IndexedPart { base, .. } => cur = base,
+                ast::ExprKind::Ident(path) if path.segments.len() == 1 => {
+                    return self.lookup_net_scoped(&path.segments[0].name);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Is `net` a FRAME-LOCAL (an automatic/frame task or function's local slot,
+    /// in some `FuncMeta`'s `[base_net, base_net+locals_len)` range)? The engine's
+    /// frame copy-out (`frame_write_lvalue`) can only write a WHOLE frame-local
+    /// net, so a part/bit/indexed SELECT of a frame-local as an output/inout actual
+    /// must be loud-rejected rather than fed to a select lvalue it cannot route.
+    fn net_is_frame_local(&self, net: u32) -> bool {
+        self.func_metas
+            .iter()
+            .any(|m| net >= m.base_net && net < m.base_net + m.locals_len)
     }
 
     /// Offset normalization for a part-select base on an ASCENDING net: peel the
