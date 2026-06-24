@@ -7536,6 +7536,12 @@ impl<'s> Elaborator<'s> {
             (_, Some(t)) => t.body.clone(),
             _ => return,
         };
+        // §13.4.4: a method body-local declaration initializer runs at entry.
+        let body_decls = match (&method.func, &method.task) {
+            (Some(f), _) => f.body_decls.clone(),
+            (_, Some(t)) => t.body_decls.clone(),
+            _ => Vec::new(),
+        };
         let scope_seg = format!("$class${cname}${}", method.name);
         let base = self.func_blocks.len() as u32;
         let saved_this = self.cur_this.take();
@@ -7565,6 +7571,7 @@ impl<'s> Elaborator<'s> {
             // through to it. `finish()` gives it the implicit `Return` terminator.
             let exit = b.new_block();
             s.cur_return = Some((retvar, exit));
+            s.emit_frame_local_inits(&mut b, &body_decls);
             // SW2: auto-inserted super.new() (static dispatch to the base ctor).
             if let Some(base) = &inject_super {
                 let this_e = s.push_expr(ir::Expr::Signal {
@@ -9779,6 +9786,8 @@ impl<'s> Elaborator<'s> {
         // via `lower_stmt` either way.
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
+            // §13.4.4: run body-local declaration initializers at entry.
+            s.emit_frame_local_inits(&mut b, &func.body_decls);
             if has_ret {
                 let exit = b.new_block();
                 s.cur_return = Some((Some(retvar), exit));
@@ -9893,6 +9902,8 @@ impl<'s> Elaborator<'s> {
         let saved_ret = self.cur_return.take();
         let (body, entry) = self.with_scope(&scope_seg, |s| {
             let mut b = ProcessBuilder::new();
+            // §13.4.4: run body-local declaration initializers at entry.
+            s.emit_frame_local_inits(&mut b, &task.body_decls);
             if has_ret {
                 let exit = b.new_block();
                 s.cur_return = Some((None, exit));
@@ -9997,6 +10008,30 @@ impl<'s> Elaborator<'s> {
     /// (`disable <name>` = early return) ONLY when the body contains one — then
     /// the name resolves to a convergence exit block all paths flow into. Without
     /// a self-disable the body lowers exactly as before (byte-identical CFG).
+    /// Run a frame function/task's body-local declaration initializers (`int x =
+    /// 10;`) at frame ENTRY — they were previously dropped, leaving the local at
+    /// its X/0 default (a §13.4.4 silent-wrong). Emitted in declaration order
+    /// (use-before-init reads the default, per IEEE). vita's frame locals reset per
+    /// call, so per-call initialization is the consistent semantics.
+    fn emit_frame_local_inits(&mut self, b: &mut ProcessBuilder, body_decls: &[ast::NetVarDecl]) {
+        for d in body_decls {
+            for decl in &d.names {
+                let Some(init) = &decl.init else { continue };
+                let stmt = ast::Stmt::Blocking {
+                    lhs: ast::Lvalue::Ident(ast::HierPath {
+                        segments: vec![decl.name.clone()],
+                        span: decl.name.span,
+                    }),
+                    delay: None,
+                    event: None,
+                    rhs: init.clone(),
+                    span: decl.span,
+                };
+                self.lower_stmt(b, &stmt);
+            }
+        }
+    }
+
     fn lower_frame_body_stmt(
         &mut self,
         b: &mut ProcessBuilder,
