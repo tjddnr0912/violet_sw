@@ -98,3 +98,25 @@ fn valid_index_write_unaffected() {
          endmodule\n");
     assert_eq!(out, "00f0\n");
 }
+
+#[test]
+fn beyond_u32_index_discards() {
+    // A clean index past u32 (2^32) is out of the bit-position domain — discard
+    // the write entirely (iverilog), NOT partial-write as if it were -1.
+    let out = run("module top;\n\
+           reg [15:0] a; longint b;\n\
+           initial begin a = 16'h1234; b = 64'h1_0000_0000; a[b+:4] = 4'hF; $display(\"%h\", a); end\n\
+         endmodule\n");
+    assert_eq!(out, "1234\n");
+}
+
+#[test]
+fn unsigned_huge_index_discards() {
+    // An UNSIGNED 0xFFFFFFFF index is a huge positive (4294967295), not -1 — it is
+    // out of range, so discard (iverilog). A SIGNED -1 still partial-writes.
+    let out = run("module top;\n\
+           reg [15:0] a; bit [31:0] b;\n\
+           initial begin a = 16'h1234; b = 32'hFFFFFFFF; a[b+:4] = 4'hF; $display(\"%h\", a); end\n\
+         endmodule\n");
+    assert_eq!(out, "1234\n");
+}
