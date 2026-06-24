@@ -57,19 +57,37 @@ struct TypeInfo {
 }
 
 /// Flat bit layout of a packed struct: members are placed MSB-first into one
-/// `logic [total-1:0]` vector. `fields` carries `(name, lsb_offset, width)` so a
-/// `s.field` access desugars to the constant part-select `s[off+w-1 : off]`.
+/// `logic [total-1:0]` vector. `fields` carries `(name, lsb_offset, width,
+/// ascending)` so a `s.field` access desugars to the constant part-select
+/// `s[off+w-1 : off]`, and a trailing sub-select (`s.f[i]` / `s.f[a:b]` /
+/// `s.f[base±:w]`) can be remapped onto the flat vector with the member's
+/// declared direction (`ascending` = `logic [0:N]`, field index 0 = MSB).
 #[derive(Clone)]
 struct StructLayout {
-    fields: Vec<(String, u32, u32)>,
+    fields: Vec<(String, u32, u32, bool)>,
 }
 impl StructLayout {
-    fn field(&self, name: &str) -> Option<(u32, u32)> {
+    fn field(&self, name: &str) -> Option<(u32, u32, bool)> {
         self.fields
             .iter()
-            .find(|(n, _, _)| n == name)
-            .map(|(_, o, w)| (*o, *w))
+            .find(|(n, _, _, _)| n == name)
+            .map(|(_, o, w, asc)| (*o, *w, *asc))
     }
+}
+
+/// A trailing READ sub-select on a packed-struct member, normalized to an
+/// indexed part-select *relative to the field part-select* `pv = s[off+w-1:off]`
+/// (so elaborate's `IndexedPart`-on-`PartSelect` fold keeps it FIELD-bounded —
+/// out-of-field bits read X, never leak into an adjacent member). Every form
+/// (bit / regular `[a:b]` / indexed `[base±:w]`) collapses to one indexed shape:
+/// the offset/width address `pv[w-1:0]`, where `pv[k]` = flat bit `off+k`.
+enum FieldSel {
+    Whole, // `s.f` — read the whole field
+    Indexed {
+        offset: Expr,
+        width: Expr,
+        dir: PartDir,
+    },
 }
 
 pub struct Parser<'t, 's> {
@@ -1053,19 +1071,11 @@ impl<'t, 's> Parser<'t, 's> {
                     };
                 }
                 // packed-struct member access `s.field` → constant part-select.
-                if let Some((base, off, w)) = self.struct_field_select(&path) {
-                    let span = path.span;
-                    return Expr {
-                        kind: ExprKind::PartSelect {
-                            base: Box::new(Expr {
-                                kind: ExprKind::Ident(base),
-                                span,
-                            }),
-                            msb: Box::new(Self::dec_lit(off + w - 1, span)),
-                            lsb: Box::new(Self::dec_lit(off, span)),
-                        },
-                        span,
-                    };
+                // Extracted to a non-inlined helper so the (rare) struct-field
+                // locals never inflate `expr_primary`'s frame on the hot paren-
+                // recursion path (the MAX_EXPR_DEPTH stack budget is frame-sized).
+                if let Some((base, off, w, asc)) = self.struct_field_select(&path) {
+                    return self.struct_member_expr(base, off, w, asc, path.span);
                 }
                 if self.peek() == Some(T::LParen) {
                     let args = self.call_args();
@@ -3460,7 +3470,12 @@ impl<'t, 's> Parser<'t, 's> {
         let mut fields = Vec::with_capacity(members.len());
         for (m, w) in members.iter().zip(&widths) {
             off -= w;
-            fields.push((m.name.name.clone(), off, *w));
+            fields.push((
+                m.name.name.clone(),
+                off,
+                *w,
+                Self::member_ascending(&m.range),
+            ));
         }
         self.struct_layouts
             .insert(tname.name.clone(), StructLayout { fields });
@@ -3547,7 +3562,14 @@ impl<'t, 's> Parser<'t, 's> {
         let fields = members
             .iter()
             .zip(&widths)
-            .map(|(m, w)| (m.name.name.clone(), 0u32, *w))
+            .map(|(m, w)| {
+                (
+                    m.name.name.clone(),
+                    0u32,
+                    *w,
+                    Self::member_ascending(&m.range),
+                )
+            })
             .collect();
         self.struct_layouts
             .insert(tname.name.clone(), StructLayout { fields });
@@ -3634,12 +3656,12 @@ impl<'t, 's> Parser<'t, 's> {
 
     /// If `path` is `var.field` where `var` is a packed-struct variable and `field`
     /// is one of its members, return `(base_path_to_var, lsb_offset, width)`.
-    fn struct_field_select(&self, path: &HierPath) -> Option<(HierPath, u32, u32)> {
+    fn struct_field_select(&self, path: &HierPath) -> Option<(HierPath, u32, u32, bool)> {
         if path.segments.len() != 2 {
             return None;
         }
         let tyname = self.var_struct.get(&path.segments[0].name)?;
-        let (off, w) = self
+        let (off, w, asc) = self
             .struct_layouts
             .get(tyname)?
             .field(&path.segments[1].name)?;
@@ -3647,7 +3669,163 @@ impl<'t, 's> Parser<'t, 's> {
             segments: vec![path.segments[0].clone()],
             span: path.segments[0].span,
         };
-        Some((base, off, w))
+        Some((base, off, w, asc))
+    }
+
+    /// Is a packed-struct member declared with an ascending range (`logic [0:N]`,
+    /// so field index 0 is the MSB)? Scalar members (no range) are not ascending.
+    fn member_ascending(range: &Option<Range>) -> bool {
+        match range {
+            Some(r) => match (Self::const_lit(&r.msb), Self::const_lit(&r.lsb)) {
+                (Some(m), Some(l)) => m < l,
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Build the read-side `Expr` for a packed-struct member access. The base is
+    /// always the field part-select `pv = s[off+w-1 : off]`; a trailing sub-select
+    /// becomes an `IndexedPart` on `pv` (FIELD-bounded, direction-aware).
+    /// `#[inline(never)]` keeps these locals out of the recursive `expr_primary`
+    /// frame (see MAX_EXPR_DEPTH).
+    #[inline(never)]
+    fn struct_member_expr(
+        &mut self,
+        base: HierPath,
+        off: u32,
+        w: u32,
+        asc: bool,
+        span: Span,
+    ) -> Expr {
+        let pv = Expr {
+            kind: ExprKind::PartSelect {
+                base: Box::new(Expr {
+                    kind: ExprKind::Ident(base),
+                    span,
+                }),
+                msb: Box::new(Self::dec_lit(off + w - 1, span)),
+                lsb: Box::new(Self::dec_lit(off, span)),
+            },
+            span,
+        };
+        match self.parse_struct_field_sel(w, asc) {
+            FieldSel::Whole => pv,
+            FieldSel::Indexed { offset, width, dir } => Expr {
+                kind: ExprKind::IndexedPart {
+                    base: Box::new(pv),
+                    offset: Box::new(offset),
+                    width: Box::new(width),
+                    dir,
+                },
+                span: span.to(self.prev_span()),
+            },
+        }
+    }
+
+    /// Map a member-relative bit index `e` onto the field part-select `pv[w-1:0]`.
+    /// Descending member: `pv[e]` (identity). Ascending member: `pv[w-1-e]`
+    /// (field index 0 is the field MSB, which is `pv`'s high bit). `e` may be
+    /// runtime; constant `w` folds in elaborate.
+    fn remap_pv_idx(w: u32, ascending: bool, e: Expr) -> Expr {
+        if ascending {
+            let sp = e.span;
+            mk_bin(BinOp::Sub, Self::dec_lit(w - 1, sp), e)
+        } else {
+            e
+        }
+    }
+
+    /// Parse the trailing `[...]` of a packed-struct member READ sub-select and
+    /// normalize it to one indexed part-select on the field part-select `pv`. No
+    /// `[` ⇒ `Whole`. Every form is FIELD-bounded by `pv` (OOB reads X). For an
+    /// ascending member the `+:`/`-:` direction flips and the offset mirrors,
+    /// matching an ascending NET part-select; a reversed regular range (`s.f[3:0]`
+    /// on `logic [0:N]`, or `s.f[0:3]` on `logic [N:0]`) is a loud parse error.
+    fn parse_struct_field_sel(&mut self, w: u32, ascending: bool) -> FieldSel {
+        if self.peek() != Some(TokenKind::LBracket) {
+            return FieldSel::Whole;
+        }
+        self.bump(); // '['
+        let first = self.expr(0);
+        let sel = match self.peek() {
+            // regular `[a:b]` — bounds must be constant and run in the member's
+            // declared direction (a≥b descending, a≤b ascending). Normalize to the
+            // equivalent indexed part `[min(a,b) +: |a-b|+1]` and reuse the indexed
+            // remap below, so an out-of-field range X-extends on the correct end
+            // (the indexed path is differentially validated against the NET oracle).
+            Some(TokenKind::Colon) => {
+                self.bump();
+                let last = self.expr(0);
+                match (Self::const_lit(&first), Self::const_lit(&last)) {
+                    (Some(a), Some(b)) if (ascending && a <= b) || (!ascending && a >= b) => {
+                        let lo = a.min(b).max(0) as u32;
+                        let width = (a - b).unsigned_abs() as u32 + 1;
+                        let dir = if ascending {
+                            PartDir::MinusColon
+                        } else {
+                            PartDir::PlusColon
+                        };
+                        FieldSel::Indexed {
+                            offset: Self::remap_pv_idx(w, ascending, Self::dec_lit(lo, first.span)),
+                            width: Self::dec_lit(width, first.span),
+                            dir,
+                        }
+                    }
+                    _ => {
+                        self.error_at(
+                            first.span,
+                            "packed-struct member part-select must be a constant range in the \
+                             member's declared direction",
+                        );
+                        FieldSel::Indexed {
+                            offset: Self::dec_lit(0, first.span),
+                            width: Self::dec_lit(1, first.span),
+                            dir: PartDir::PlusColon,
+                        }
+                    }
+                }
+            }
+            Some(TokenKind::PlusColon) => {
+                self.bump();
+                let width = self.expr(0);
+                let dir = if ascending {
+                    PartDir::MinusColon
+                } else {
+                    PartDir::PlusColon
+                };
+                FieldSel::Indexed {
+                    offset: Self::remap_pv_idx(w, ascending, first),
+                    width,
+                    dir,
+                }
+            }
+            Some(TokenKind::MinusColon) => {
+                self.bump();
+                let width = self.expr(0);
+                let dir = if ascending {
+                    PartDir::PlusColon
+                } else {
+                    PartDir::MinusColon
+                };
+                FieldSel::Indexed {
+                    offset: Self::remap_pv_idx(w, ascending, first),
+                    width,
+                    dir,
+                }
+            }
+            // bit-select `[i]` — a width-1 indexed part-select on `pv`.
+            _ => {
+                let span = first.span;
+                FieldSel::Indexed {
+                    offset: Self::remap_pv_idx(w, ascending, first),
+                    width: Self::dec_lit(1, span),
+                    dir: PartDir::PlusColon,
+                }
+            }
+        };
+        self.expect(TokenKind::RBracket, "']'");
+        sel
     }
 
     fn parse_cont_assign(&mut self) -> Option<ContinuousAssign> {
@@ -3744,7 +3922,10 @@ impl<'t, 's> Parser<'t, 's> {
             return Lvalue::Error(s);
         };
         // packed-struct member target `s.field = …` → constant part-select lvalue.
-        let mut lv = if let Some((base, off, w)) = self.struct_field_select(&path) {
+        // A trailing WRITE sub-select (`s.f[…] = …`) is left to the loop below,
+        // which nests it on the field part-select → loud "nested lvalue select"
+        // (v1: a field-bounded sub-field WRITE needs elaborate lvalue support).
+        let mut lv = if let Some((base, off, w, _asc)) = self.struct_field_select(&path) {
             let span = path.span;
             Lvalue::PartSelect {
                 base: Box::new(Lvalue::Ident(base)),
