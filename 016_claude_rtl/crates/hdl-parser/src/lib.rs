@@ -408,7 +408,7 @@ fn infix_bp(k: TokenKind) -> Option<(u8, u8)> {
         T::Shl | T::Shr | T::ShlA | T::ShrA => (19, 20),           // << >> <<< >>> lvl6
         T::Plus | T::Minus => (21, 22),                            // + -  lvl5
         T::Star | T::Slash | T::Percent => (23, 24),               // * / % lvl4
-        T::StarStar => (26, 25),                                   // **   lvl3 right-assoc
+        T::StarStar => (26, 27), // **   lvl3 LEFT-assoc (IEEE Table 11-2 / iverilog: `2**2**3` = (2**2)**3)
         _ => return None,
     })
 }
@@ -8365,13 +8365,14 @@ endmodule
                                                   // reaching here without hang is the assertion
     }
 
-    // 15. ** right-assoc and unary precedence:  -a ** b  =>  (-a) ** b ; 2**3**4 right
+    // 15. ** LEFT-assoc and unary precedence:  -a ** b  =>  (-a) ** b ; 2**3**4
+    //     => (2**3)**4 (IEEE Table 11-2 / iverilog).
     #[test]
     fn t15_pow_assoc_and_unary() {
         let e = expr_of("2 ** 3 ** 4");
-        let (op, _l, r) = bin(&e);
+        let (op, l, _r) = bin(&e);
         assert_eq!(op, BinOp::Pow);
-        assert_eq!(bin(&r.clone()).0, BinOp::Pow); // right child is 3**4 (right-assoc)
+        assert_eq!(bin(&l.clone()).0, BinOp::Pow); // LEFT child is 2**3 (left-assoc)
         let e2 = expr_of("- a ** b");
         let (op2, l2, _r2) = bin(&e2);
         assert_eq!(op2, BinOp::Pow); // top is **

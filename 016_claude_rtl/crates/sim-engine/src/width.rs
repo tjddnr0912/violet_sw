@@ -217,12 +217,14 @@ impl WidthTable {
                         width: clamp_w(l.width.max(r.width).max(1)),
                         signed: l.signed && r.signed,
                     },
-                    // power: width = max(L,R) (IEEE Table 5-22), but the EXPONENT is
-                    // SELF-DETERMINED, so it does NOT participate in the both-signed
-                    // fold. `**` is signed iff the BASE is signed — an unsigned
-                    // exponent must NOT demote a signed base to unsigned.
+                    // power: width = LEFT (base) operand width (IEEE Table 11-21,
+                    // like shifts), NOT max(L,R). The EXPONENT is SELF-determined —
+                    // it affects neither the result width nor the sign. `**` is
+                    // signed iff the BASE is signed (an unsigned exponent must not
+                    // demote a signed base to unsigned). `b4 ** e8` with `b4`
+                    // declared [3:0] is a 4-bit result (iverilog parity).
                     BinOp::Pow => SelfWidth {
-                        width: clamp_w(l.width.max(r.width).max(1)),
+                        width: l.width.max(1),
                         signed: l.signed, // BASE sign only
                     },
                     // comparisons / case-eq (incl. v7 casez/casex match) /

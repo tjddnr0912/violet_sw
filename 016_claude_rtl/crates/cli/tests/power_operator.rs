@@ -71,6 +71,37 @@ fn wide_base_wraps_mod_2w() {
 }
 
 #[test]
+fn left_associative() {
+    // IEEE Table 11-2 / iverilog: `**` is left-associative.
+    let out = run("module t; initial begin\n\
+           $display(\"%0d\", 2 ** 2 ** 3);\n\
+           $display(\"%0d\", 2 ** 3 ** 2);\n\
+         end endmodule\n");
+    // left-assoc: (2**2)**3 = 4**3 = 64 ; (2**3)**2 = 8**2 = 64.
+    assert_eq!(out, "64\n64\n");
+}
+
+#[test]
+fn self_determined_width_is_left_operand() {
+    // IEEE Table 11-21: result width = left operand width. In a self-determined
+    // context, `b4 ** e8` (b4 is [3:0]) is a 4-bit result.
+    let out = run("module t;\n\
+           logic [3:0] b4; logic [7:0] e8;\n\
+           initial begin\n\
+             b4 = 3; e8 = 4; $display(\"%0d\", b4 ** e8);\n\
+             b4 = 5; $display(\"%0d\", b4 ** 3);\n\
+             $display(\"%b\", 4'bx ** 2);\n\
+           end endmodule\n");
+    assert_eq!(out, "1\n13\nxxxx\n");
+}
+
+#[test]
+fn zero_to_negative_is_x() {
+    let out = run("module t; initial $display(\"%b\", 0 ** (-1)); endmodule\n");
+    assert_eq!(out, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n");
+}
+
+#[test]
 fn exponent_zero_and_one() {
     let out = run("module t;\n\
            logic [31:0] a;\n\

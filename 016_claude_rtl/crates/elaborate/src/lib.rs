@@ -20684,10 +20684,12 @@ impl<'s> Elaborator<'s> {
             ir::Expr::Binary { op, lhs, rhs } => {
                 use ir::BinOp::*;
                 match op {
-                    Add | Sub | Mul | Div | Mod | Pow | BitAnd | BitOr | BitXor | BitXnor => {
+                    Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | BitXnor => {
                         self.ir_bits_of(*lhs)?.max(self.ir_bits_of(*rhs)?)
                     }
-                    Shl | Shr | AShl | AShr => self.ir_bits_of(*lhs)?,
+                    // power / shifts: width = LEFT operand (IEEE Table 11-21); the
+                    // RHS (exponent / shift amount) is self-determined.
+                    Pow | Shl | Shr | AShl | AShr => self.ir_bits_of(*lhs)?,
                     _ => 1, // comparisons / case(z/x) / logical
                 }
             }
@@ -20879,11 +20881,79 @@ impl<'s> Elaborator<'s> {
         }
         match const_eval_u32(count) {
             Some(n) if n <= REPEAT_UNROLL_CAP => {
+                // small constant ⇒ straight unroll (byte-identical to before).
                 for _ in 0..n {
                     self.lower_stmt(b, body);
                 }
             }
-            _ => self.warn("repeat with non-constant or large count skipped (v2); body omitted"),
+            _ => {
+                // A RUNTIME (or large-constant) count: desugar to a signed
+                // down-counter while-loop — `cnt = count; while (cnt > 0) { body;
+                // cnt = cnt - 1; }`. The count is evaluated ONCE (IEEE §12.7.3); a
+                // negative/zero count runs the body zero times. (Previously this
+                // warned and OMITTED the body — `repeat(n)` with a variable `n`
+                // silently ran zero times.)
+                let cnt_net = {
+                    let name = format!("$repeat_cnt${}", self.nets.len());
+                    let nv = ir::NetVar {
+                        kind: ir::NetKind::Integer, // signed 32-bit
+                        width: 32,
+                        msb: 31,
+                        lsb: 0,
+                        signed: true,
+                        array_len: 1,
+                        dir: ir::PortDir::Internal,
+                        init: default_init(ast::NetVarKind::Integer, 32),
+                    };
+                    self.add_net(&name, nv);
+                    (self.nets.len() - 1) as u32
+                };
+                let count_id = self.lower_expr(count);
+                let init = self.push_stmt(ir::Stmt::BlockingAssign {
+                    lhs: whole_net_lvalue(cnt_net),
+                    rhs: count_id,
+                });
+                b.push_stmt_id(init);
+                let head = b.new_block();
+                let body_bb = b.new_block();
+                let exit = b.new_block();
+                b.goto(head);
+                b.start_block(head);
+                let cnt_rd = self.push_expr(ir::Expr::Signal {
+                    net: cnt_net,
+                    word: None,
+                });
+                let zero = self.const_s32_expr(0);
+                let cond = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Gt,
+                    lhs: cnt_rd,
+                    rhs: zero,
+                });
+                b.end_block_with(ir::Terminator::Branch {
+                    cond,
+                    then_bb: body_bb.raw(),
+                    else_bb: exit.raw(),
+                });
+                b.start_block(body_bb);
+                self.lower_stmt(b, body);
+                let cnt_rd2 = self.push_expr(ir::Expr::Signal {
+                    net: cnt_net,
+                    word: None,
+                });
+                let one = self.const_s32_expr(1);
+                let dec = self.push_expr(ir::Expr::Binary {
+                    op: ir::BinOp::Sub,
+                    lhs: cnt_rd2,
+                    rhs: one,
+                });
+                let dec_stmt = self.push_stmt(ir::Stmt::BlockingAssign {
+                    lhs: whole_net_lvalue(cnt_net),
+                    rhs: dec,
+                });
+                b.push_stmt_id(dec_stmt);
+                b.goto(head);
+                b.start_block(exit);
+            }
         }
     }
 

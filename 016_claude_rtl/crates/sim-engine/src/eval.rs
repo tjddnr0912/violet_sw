@@ -625,6 +625,15 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 // widen turned `1'b1` into a 1-bit signed -1 ⇒ `2 ** 1'b1` = 0.)
                 let mut exp = self.eval(rhs).resize(w);
                 exp.signed = base.signed;
+                // IEEE Table 11-6: a 0 base with a NEGATIVE exponent is x (it is a
+                // 0^(-k) division-by-zero). `2 ** -1` (|base| > 1) stays 0.
+                if !base.has_xz()
+                    && !exp.has_xz()
+                    && base.to_u128() == Some(0)
+                    && exp.to_i128_signed().map(|e| e < 0).unwrap_or(false)
+                {
+                    return Value::xs(w, base.signed);
+                }
                 self.arith(op, &base, &exp) // result width = base width = w
             }
 
