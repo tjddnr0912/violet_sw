@@ -153,6 +153,22 @@ fn fill_in_class_field_and_return() {
 }
 
 #[test]
+fn fill_case_label_sized_to_scrutinee() {
+    // A `'1` case label is sized to the case-expression width, so `case(8'hFF)`
+    // matches `'1:` (label = 8'hFF). Previously the 32-bit label never matched
+    // and silently fell through to default — a control-flow silent-wrong.
+    let out = run("module t;\n\
+           logic [7:0] x;\n\
+           initial begin\n\
+             x = 8'hFF;\n\
+             case (x) '1: $display(\"ones\"); '0: $display(\"zero\"); default: $display(\"def\"); endcase\n\
+             x = 8'h00;\n\
+             case (x) '1: $display(\"b-ones\"); '0: $display(\"b-zero\"); default: $display(\"b-def\"); endcase\n\
+           end endmodule\n");
+    assert_eq!(out, "ones\nb-zero\n");
+}
+
+#[test]
 fn fill_in_continuous_assign_binary_op() {
     let out = run("module t;\n\
            logic [63:0] w;\n\

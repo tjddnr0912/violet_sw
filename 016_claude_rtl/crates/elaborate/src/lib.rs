@@ -20725,7 +20725,15 @@ impl<'s> Elaborator<'s> {
     /// which was exact for casex but over-lenient for casez (it wildcarded x
     /// too — `casez(1x10)` falsely matched `1010`; iverilog-pinned strict).
     fn case_label_eq(&mut self, scrut_id: u32, label: &ast::Expr, kind: ast::CaseKind) -> u32 {
-        let lbl_id = self.lower_expr(label);
+        // §11.6: a case label is sized to the case-expression width, so a fill
+        // label grows to it (`case(x8) '1:` ⇒ the label is 8'hFF, not 32 bits —
+        // otherwise it never matches). Non-fill labels lower byte-identically.
+        let lbl_id = if expr_contains_fill(label) {
+            let w = self.ir_bits_of(scrut_id).unwrap_or(32);
+            self.lower_expr_ctx(label, w)
+        } else {
+            self.lower_expr(label)
+        };
         let op = match kind {
             ast::CaseKind::Case => ir::BinOp::CaseEq,
             ast::CaseKind::Casez => ir::BinOp::CasezEq,
