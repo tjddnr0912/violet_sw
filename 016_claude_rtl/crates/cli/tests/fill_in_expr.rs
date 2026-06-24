@@ -221,6 +221,15 @@ fn fill_as_task_input_arg() {
 }
 
 #[test]
+fn fill_as_port_connection() {
+    let out = run("module child(input [63:0] p);\n\
+           initial #1 $display(\"%h\", p);\n\
+         endmodule\n\
+         module t; child c(.p('1)); endmodule\n");
+    assert_eq!(out, "ffffffffffffffff\n");
+}
+
+#[test]
 fn fill_in_continuous_assign_binary_op() {
     let out = run("module t;\n\
            logic [63:0] w;\n\

@@ -4684,7 +4684,14 @@ impl<'s> Elaborator<'s> {
                         ));
                     }
                     self.cur_prefix = parent_prefix.to_string();
-                    let rhs = self.lower_expr(conn_expr);
+                    // §11.6: the actual is in the child port's width context, so a
+                    // fill grows to it (non-fill ⇒ byte-identical via lower_expr).
+                    let pw = self
+                        .nets
+                        .get(child_id as usize)
+                        .map(|n| n.width)
+                        .unwrap_or(32);
+                    let rhs = self.lower_ctx_or_plain(conn_expr, pw);
                     self.cur_prefix = child_prefix;
                     let lhs = whole_net_lvalue(child_id);
                     self.cont_assigns.push(ir::ContAssign {
