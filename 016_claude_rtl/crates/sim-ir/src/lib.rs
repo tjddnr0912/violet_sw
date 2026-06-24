@@ -340,6 +340,18 @@ pub enum Expr {
         func: u32,
         args: Vec<u32>,
     },
+    /// ⓑ-breadth (v17): the per-element iterator value inside an array method's
+    /// `with` clause (IEEE §7.12). `index=false` reads the current element's
+    /// VALUE (sized to `width`/`signed` = the element type); `index=true` reads
+    /// its 0-based position (`width`/`signed` = 32-bit signed). The engine drives a
+    /// scratch register during the reduction/locator fold; outside a fold it reads
+    /// X (defensive — elaborate only emits this inside a with-expr). The `width`/
+    /// `signed` ride in the node so the static width table can size it.
+    ArrayItem {
+        index: bool,
+        width: u32,
+        signed: bool,
+    },
 }
 
 /// System-task id (§2).
@@ -427,6 +439,15 @@ pub enum SysTaskId {
     ArrRsort,
     /// array `.reverse()` — in-place element reversal.
     ArrReverse,
+    /// ⓑ-breadth (v17): array LOCATOR methods that yield a queue (IEEE §7.12.1).
+    /// Statement-level (only valid as the direct rhs of a blocking assign — the
+    /// result is a whole queue, written into the dst handle). args =
+    /// `[dst_handle, src_handle, kind_const, with_expr?]` where `kind_const` is a
+    /// Const expr selecting the locator (0=min 1=max 2=unique 3=find 4=find_index
+    /// 5=find_first 6=find_last 7=find_first_index 8=find_last_index 9=unique_index)
+    /// and `with_expr` (present for the find* family) is the per-element predicate
+    /// expression referencing `ArrayItem`.
+    ArrLocator,
 }
 
 /// Disable kind (§2).

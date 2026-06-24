@@ -130,6 +130,11 @@ impl WidthTable {
                     signed: nv.signed,
                 }
             }
+            // ⓑ-breadth (v17): the with-clause iterator carries its element type.
+            Expr::ArrayItem { width, signed, .. } => SelfWidth {
+                width: clamp_w((*width).max(1)),
+                signed: *signed,
+            },
 
             // ── select: bit=1 (UNSIGNED), part=`width` operand (UNSIGNED) ─────
             // IEEE §5.4.1: bit-select and part-select results are ALWAYS unsigned.

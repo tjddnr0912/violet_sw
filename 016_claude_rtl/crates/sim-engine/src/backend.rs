@@ -160,7 +160,7 @@ pub(crate) fn is_codegen_able(stmts: &[Stmt], exprs: &[Expr], body: &[BasicBlock
 fn expr_has_call(exprs: &[Expr], eid: u32) -> bool {
     match exprs.get(eid as usize) {
         Some(Expr::Call { .. }) => true,
-        None | Some(Expr::Const { .. } | Expr::Signal { .. }) => false,
+        None | Some(Expr::Const { .. } | Expr::Signal { .. } | Expr::ArrayItem { .. }) => false,
         Some(Expr::Select {
             base,
             offset,

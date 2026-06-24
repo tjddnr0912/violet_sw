@@ -111,6 +111,19 @@ pub trait NetReader {
     fn dyn_values(&self, _net: u32) -> Option<Vec<Value>> {
         None
     }
+    /// ⓑ-breadth (v17): read the current `with`-clause iterator. `index=false`
+    /// → the element value; `index=true` → the 0-based position (32-bit signed).
+    /// Outside a fold the scratch is empty → X (defensive). Default X keeps
+    /// non-engine readers unchanged.
+    fn array_item(&self, _index: bool) -> Value {
+        Value::xs(32, true)
+    }
+    /// ⓑ-breadth (v17): install a new with-clause iterator value (element +
+    /// 0-based index) and return the previous one, so a fold can save/restore the
+    /// scratch around each element evaluation (nested with-clauses bind their own).
+    fn swap_array_item(&self, _v: Option<(Value, u64)>) -> Option<(Value, u64)> {
+        None
+    }
     /// v5 ④: report a dyn-storage degradation observed DURING eval (e.g. a
     /// queue pop in an unsupported placement). The engine latches it through
     /// the W4020 warn-once funnel; the no-op default keeps non-engine readers
@@ -303,6 +316,11 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                 });
                 let base = self.nets.read_net(*net, widx);
                 base.resize_keep_sign(w, eff_signed)
+            }
+
+            // ⓑ-breadth (v17): with-clause iterator — read the engine scratch.
+            Expr::ArrayItem { index, .. } => {
+                self.nets.array_item(*index).resize_keep_sign(w, eff_signed)
             }
 
             // ── unary ──────────────────────────────────────────────────────
@@ -1281,11 +1299,12 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     None => Value::xs(1, false),
                 }
             }
-            // ⓑ-breadth (v15): array reduction methods (IEEE §7.12.3). PURE —
-            // a read query that left-folds the element snapshot. The result
-            // takes the element (handle) type; an empty array yields the
-            // element-type 0; x/z elements propagate through the normal 4-state
-            // arithmetic/bitwise so the fold never panics.
+            // ⓑ-breadth (v15/v17): array reduction methods (IEEE §7.12.3). PURE —
+            // a read query that left-folds the element snapshot. Without a `with`
+            // clause the result takes the element (handle) type and folds the raw
+            // elements; WITH a `with (expr)` clause (args[1]) the result takes the
+            // with-expr type and folds `expr(item)` per element. Empty → 0; x/z
+            // propagates through the normal 4-state arithmetic/bitwise.
             SysFuncId::ArrSum
             | SysFuncId::ArrProduct
             | SysFuncId::ArrAnd
@@ -1297,26 +1316,55 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                         Some(Expr::Signal { net, word: None }) => Some(*net),
                         _ => None,
                     });
-                let (w, signed) = net
+                let with_eid = args.get(1).copied();
+                let elem_signed = net
                     .and_then(|n| self.ir.nets.get(n as usize))
-                    .map(|nv| (nv.width.max(1), nv.signed))
-                    .unwrap_or((32, true));
+                    .map(|nv| nv.signed)
+                    .unwrap_or(true);
+                // result type: with-expr width/sign, else element type
+                let (w, signed) = match with_eid {
+                    Some(weid) => {
+                        let sw = self.wt.get(weid);
+                        (sw.width.max(1), sw.signed)
+                    }
+                    None => net
+                        .and_then(|n| self.ir.nets.get(n as usize))
+                        .map(|nv| (nv.width.max(1), nv.signed))
+                        .unwrap_or((32, true)),
+                };
+                let fold = |this: &Self, acc: &Value, e: &Value| -> Value {
+                    match which {
+                        SysFuncId::ArrSum => this.arith(BinOp::Add, acc, e),
+                        SysFuncId::ArrProduct => this.arith(BinOp::Mul, acc, e),
+                        SysFuncId::ArrAnd => this.bitwise(acc, e, and_w),
+                        SysFuncId::ArrOr => this.bitwise(acc, e, or_w),
+                        _ => this.bitwise(acc, e, xor_w),
+                    }
+                };
                 match net.and_then(|n| self.nets.dyn_values(n)) {
                     Some(elems) if !elems.is_empty() => {
-                        let mut acc = elems[0].clone();
-                        acc.signed = signed;
-                        for e in &elems[1..] {
-                            let mut e = e.clone();
-                            e.signed = signed;
-                            acc = match which {
-                                SysFuncId::ArrSum => self.arith(BinOp::Add, &acc, &e),
-                                SysFuncId::ArrProduct => self.arith(BinOp::Mul, &acc, &e),
-                                SysFuncId::ArrAnd => self.bitwise(&acc, &e, and_w),
-                                SysFuncId::ArrOr => self.bitwise(&acc, &e, or_w),
-                                _ => self.bitwise(&acc, &e, xor_w),
+                        let saved = self.nets.swap_array_item(None);
+                        let mut acc: Option<Value> = None;
+                        for (i, e) in elems.iter().enumerate() {
+                            let v = match with_eid {
+                                Some(weid) => {
+                                    self.nets.swap_array_item(Some((e.clone(), i as u64)));
+                                    self.eval(weid)
+                                }
+                                None => {
+                                    let mut x = e.clone();
+                                    x.signed = elem_signed;
+                                    x
+                                }
                             };
+                            acc = Some(match acc {
+                                None => v,
+                                Some(a) => fold(self, &a, &v),
+                            });
                         }
-                        acc.resize_keep_sign(w, signed)
+                        self.nets.swap_array_item(saved);
+                        acc.unwrap_or_else(|| Value::zeros(w, signed))
+                            .resize_keep_sign(w, signed)
                     }
                     // empty array → element-type 0 (documented pin)
                     Some(_) => Value::zeros(w, signed),

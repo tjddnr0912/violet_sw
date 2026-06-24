@@ -343,6 +343,11 @@ pub(crate) struct SimState<'a> {
     /// B4: per-func "has ≥1 static slot" — the frame keeps a persistent slab iff true.
     pub func_has_static: Vec<bool>,
 
+    // ── ⓑ-breadth (v17): array-method `with`-clause iterator scratch ──────────
+    /// The current `(element value, 0-based index)` while a reduction/locator fold
+    /// evaluates its `with` expression. `RefCell` because the fold runs on the
+    /// `&self` read path. `None` outside a fold → `ArrayItem` reads X (defensive).
+    pub array_item_scratch: std::cell::RefCell<Option<(Value, u64)>>,
     // ── N7 class/OOP (sibling of `dyn_heap`; never in the frozen SimIr) ──
     /// Class objects, keyed by a MONOTONIC allocation-id (NOT a net-id — multiple
     /// handles may alias one object and a handle may be re-`new`ed). A handle net
@@ -567,6 +572,7 @@ impl<'a> SimState<'a> {
             frame_slot_auto: vec![false; nnets],
             func_has_auto: Vec::new(),
             func_has_static: Vec::new(),
+            array_item_scratch: std::cell::RefCell::new(None),
             class_heap: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             class_obj_next: Cell::new(1),
             class_layouts: Vec::new(),
@@ -2025,6 +2031,23 @@ impl<'a> NetReader for SimState<'a> {
             }),
             _ => None,
         }
+    }
+    fn array_item(&self, index: bool) -> Value {
+        match &*self.array_item_scratch.borrow() {
+            Some((val, idx)) => {
+                if index {
+                    let mut v = Value::zeros(32, true);
+                    v.val[0] = (*idx).min(i32::MAX as u64);
+                    v
+                } else {
+                    val.clone()
+                }
+            }
+            None => Value::xs(32, true),
+        }
+    }
+    fn swap_array_item(&self, v: Option<(Value, u64)>) -> Option<(Value, u64)> {
+        self.array_item_scratch.replace(v)
     }
     fn dyn_warn(&self, net: u32, msg: &str) {
         // The eval-side degradation hook (e.g. a pop outside its statement

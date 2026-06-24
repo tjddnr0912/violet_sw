@@ -279,11 +279,17 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
     /// Member name after a `.`: a normal identifier, OR one of the array-method
-    /// names the lexer classifies as a keyword because it reuses an operator
-    /// spelling (`and`/`or`/`xor` — IEEE §7.12.3 reduction methods). Reading the
-    /// source span keeps the segment name intact regardless of token kind.
+    /// names the lexer classifies as a keyword because it reuses an operator/
+    /// qualifier spelling (`and`/`or`/`xor` reductions §7.12.3, `unique` locator
+    /// §7.12.1). Reading the source span keeps the segment name intact regardless
+    /// of token kind.
     fn member_ident(&mut self) -> Option<Ident> {
-        if self.is_ident() || self.at_kw(Kw::And) || self.at_kw(Kw::Or) || self.at_kw(Kw::Xor) {
+        if self.is_ident()
+            || self.at_kw(Kw::And)
+            || self.at_kw(Kw::Or)
+            || self.at_kw(Kw::Xor)
+            || self.at_kw(Kw::Unique)
+        {
             let t = self.bump().unwrap();
             Some(Ident {
                 name: self.src[t.span.clone()].to_string(),
@@ -586,17 +592,18 @@ impl<'t, 's> Parser<'t, 's> {
                 lhs = self.parse_dist(lhs);
                 continue;
             }
-            // `obj.randomize() with { c; … }` (IEEE §18.7): per-call inline
-            // constraints. Postfix on a method CALL; the brace `{` after `with`
-            // disambiguates from the array-method `with (expr)` iterator form.
-            // B-CRV final slice. The body is a `#[inline(never)]` helper so it does
-            // NOT enlarge this hot recursive frame — the expr-depth cap relies on
-            // `expr_capped` staying small (`depth_guard.rs` deep-nesting test).
+            // A `with` postfix on a method CALL: `obj.randomize() with { c; … }`
+            // (IEEE §18.7) OR the array-method `arr.sum()/find() with (expr)`
+            // iterator clause (IEEE §7.12). Both dispatch into ONE `#[inline(never)]`
+            // helper (`parse_with_postfix`, brace vs paren) so this hot recursive
+            // frame stays small — the expr-depth cap relies on `expr_capped` not
+            // growing (`depth_guard.rs` deep-nesting test; a second inline branch
+            // here tipped it into a stack overflow).
             if self.at_ident_kw("with")
-                && self.peek_at(1) == Some(TokenKind::LBrace)
+                && matches!(self.peek_at(1), Some(TokenKind::LBrace | TokenKind::LParen))
                 && matches!(lhs.kind, ExprKind::Call { .. })
             {
-                lhs = self.parse_randomize_with_postfix(lhs);
+                lhs = self.parse_with_postfix(lhs);
                 continue;
             }
             // `a -> b` constraint/property implication ≡ `!a || b`. Lowest binding
@@ -4020,6 +4027,64 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    /// Dispatch a `with` postfix on a method call: brace ⇒ inline `randomize()
+    /// with {…}` (§18.7), paren ⇒ array-method `with (expr)` iterator (§7.12).
+    /// `#[inline(never)]` so the hot recursive `expr` frame stays small (the
+    /// caller is guarded to brace/paren lookahead).
+    #[inline(never)]
+    fn parse_with_postfix(&mut self, lhs: Expr) -> Expr {
+        if self.peek_at(1) == Some(TokenKind::LBrace) {
+            self.parse_randomize_with_postfix(lhs)
+        } else {
+            self.parse_array_with_postfix(lhs)
+        }
+    }
+
+    /// Parse `arr.method(opt_iter_var) with (expr)` (IEEE §7.12). `#[inline(never)]`
+    /// so it does not enlarge the hot recursive `expr` frame (same depth-cap
+    /// discipline as `parse_randomize_with_postfix`). The receiver method call has
+    /// already been parsed into `lhs` (an `ExprKind::Call`); we split its path into
+    /// receiver + method and capture the optional single bare-ident iterator var.
+    #[inline(never)]
+    fn parse_array_with_postfix(&mut self, lhs: Expr) -> Expr {
+        self.bump(); // `with`
+        self.expect(TokenKind::LParen, "'(' to open a `with` iterator clause");
+        let with_expr = self.expr(0);
+        self.expect(TokenKind::RParen, "')' to close a `with` iterator clause");
+        let span = lhs.span.to(self.prev_span());
+        let (mut path, args) = match lhs.kind {
+            ExprKind::Call { name, args } => (name, args),
+            _ => unreachable!("caller gates on ExprKind::Call"),
+        };
+        // method = last path segment; receiver = the rest.
+        let method = path.segments.pop().unwrap_or(Ident {
+            name: String::new(),
+            span,
+        });
+        let recv = HierPath {
+            span,
+            segments: path.segments,
+        };
+        // A single bare-identifier method arg is the named iterator variable
+        // (`find(x) with (x>2)`); anything else means the default `item`.
+        let iter_var = match args.as_slice() {
+            [Expr {
+                kind: ExprKind::Ident(p),
+                ..
+            }] if p.segments.len() == 1 => Some(p.segments[0].clone()),
+            _ => None,
+        };
+        Expr {
+            kind: ExprKind::ArrayMethodWith(Box::new(ArrayMethodWithExpr {
+                recv,
+                method,
+                iter_var,
+                with_expr,
+            })),
+            span,
+        }
+    }
+
     /// Parse `{ (constraint_expr ;)* }` after `with` for inline `randomize() with`
     /// (IEEE §18.7). Mirrors the constraint-block body. `soft` inside an inline
     /// `with` is a v1 loud reject (the per-call sidecar carries hard predicates
@@ -6801,6 +6866,7 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                     fix_expr(a, from, to);
                 }
             }
+            ExprKind::ArrayMethodWith(b) => fix_expr(&mut b.with_expr, from, to),
             ExprKind::Paren { inner } => fix_expr(inner, from, to),
             ExprKind::MinTypMax { min, typ, max } => {
                 fix_expr(min, from, to);

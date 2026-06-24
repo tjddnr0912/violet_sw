@@ -15,7 +15,7 @@ fn binop_fieldless_enum() {
 fn expr_has_fq_child_refs() {
     assert_eq!(
         Expr::local_shape(),
-        "repr=@#[]enum{#[]Const{#[]val:u32},#[]Signal{#[]net:u32,#[]word:Option<u32>},#[]Select{#[]base:u32,#[]offset:u32,#[]width:u32,#[]kind:sim_ir::SelKind},#[]Concat{#[]parts:Vec<u32>},#[]Replicate{#[]count:u32,#[]value:u32},#[]Unary{#[]op:sim_ir::UnOp,#[]operand:u32},#[]Binary{#[]op:sim_ir::BinOp,#[]lhs:u32,#[]rhs:u32},#[]Ternary{#[]cond:u32,#[]then_e:u32,#[]else_e:u32},#[]SysFunc{#[]which:sim_ir::SysFuncId,#[]args:Vec<u32>},#[]Call{#[]func:u32,#[]args:Vec<u32>}}"
+        "repr=@#[]enum{#[]Const{#[]val:u32},#[]Signal{#[]net:u32,#[]word:Option<u32>},#[]Select{#[]base:u32,#[]offset:u32,#[]width:u32,#[]kind:sim_ir::SelKind},#[]Concat{#[]parts:Vec<u32>},#[]Replicate{#[]count:u32,#[]value:u32},#[]Unary{#[]op:sim_ir::UnOp,#[]operand:u32},#[]Binary{#[]op:sim_ir::BinOp,#[]lhs:u32,#[]rhs:u32},#[]Ternary{#[]cond:u32,#[]then_e:u32,#[]else_e:u32},#[]SysFunc{#[]which:sim_ir::SysFuncId,#[]args:Vec<u32>},#[]Call{#[]func:u32,#[]args:Vec<u32>},#[]ArrayItem{#[]index:bool,#[]width:u32,#[]signed:bool}}"
     );
 }
 

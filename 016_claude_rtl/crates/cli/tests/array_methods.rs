@@ -118,67 +118,155 @@ fn reduction_on_string_handle_is_loud() {
 
 #[test]
 fn queue_sort_ascending() {
-    let out = run(
-        "module top; int q[$];\n\
+    let out = run("module top; int q[$];\n\
          initial begin\n\
            q.push_back(3); q.push_back(1); q.push_back(2);\n\
            q.sort();\n\
            $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
-         end endmodule\n",
-    );
+         end endmodule\n");
     assert_eq!(out, "1 2 3\n");
 }
 
 #[test]
 fn queue_rsort_descending() {
-    let out = run(
-        "module top; int q[$];\n\
+    let out = run("module top; int q[$];\n\
          initial begin\n\
            q.push_back(3); q.push_back(1); q.push_back(2);\n\
            q.rsort();\n\
            $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
-         end endmodule\n",
-    );
+         end endmodule\n");
     assert_eq!(out, "3 2 1\n");
 }
 
 #[test]
 fn queue_reverse() {
-    let out = run(
-        "module top; int q[$];\n\
+    let out = run("module top; int q[$];\n\
          initial begin\n\
            q.push_back(10); q.push_back(20); q.push_back(30);\n\
            q.reverse();\n\
            $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
-         end endmodule\n",
-    );
+         end endmodule\n");
     assert_eq!(out, "30 20 10\n");
 }
 
 #[test]
 fn sort_signed_orders_negatives_first() {
     // signed byte elements: -5 < -1 < 3 (signed ordering, not raw bits).
-    let out = run(
-        "module top; byte q[$];\n\
+    let out = run("module top; byte q[$];\n\
          initial begin\n\
            q.push_back(3); q.push_back(-5); q.push_back(-1);\n\
            q.sort();\n\
            $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
-         end endmodule\n",
-    );
+         end endmodule\n");
     assert_eq!(out, "-5 -1 3\n");
 }
 
 #[test]
 fn dyn_array_sort_in_place() {
-    let out = run(
-        "module top; int d[];\n\
+    let out = run("module top; int d[];\n\
          initial begin\n\
            d = new[4];\n\
            d[0]=40; d[1]=10; d[2]=30; d[3]=20;\n\
            d.sort();\n\
            $display(\"%0d %0d %0d %0d\", d[0], d[1], d[2], d[3]);\n\
-         end endmodule\n",
-    );
+         end endmodule\n");
     assert_eq!(out, "10 20 30 40\n");
+}
+
+// ── `with` clause on reductions (item iterator) ──────────────────────────────
+
+#[test]
+fn sum_with_expression() {
+    // sum of item*2 over {1,2,3} = 12.
+    let out = run("module top; int q[$]; int s;\n\
+         initial begin\n\
+           q.push_back(1); q.push_back(2); q.push_back(3);\n\
+           s = q.sum() with (item * 2);\n\
+           $display(\"s=%0d\", s);\n\
+         end endmodule\n");
+    assert_eq!(out, "s=12\n");
+}
+
+#[test]
+fn sum_with_index() {
+    // sum of item.index over {7,7,7} = 0+1+2 = 3.
+    let out = run("module top; int q[$]; int s;\n\
+         initial begin\n\
+           q.push_back(7); q.push_back(7); q.push_back(7);\n\
+           s = q.sum() with (item.index);\n\
+           $display(\"s=%0d\", s);\n\
+         end endmodule\n");
+    assert_eq!(out, "s=3\n");
+}
+
+// ── Locator methods returning a queue ────────────────────────────────────────
+
+#[test]
+fn min_max_return_queue() {
+    let out = run("module top; int q[$]; int mn[$]; int mx[$];\n\
+         initial begin\n\
+           q.push_back(5); q.push_back(1); q.push_back(9); q.push_back(3);\n\
+           mn = q.min();\n\
+           mx = q.max();\n\
+           $display(\"min=%0d max=%0d\", mn[0], mx[0]);\n\
+         end endmodule\n");
+    assert_eq!(out, "min=1 max=9\n");
+}
+
+#[test]
+fn unique_returns_distinct() {
+    // unique() returns the distinct values in first-seen order: {3,1,2}.
+    let out = run("module top; int q[$]; int u[$];\n\
+         initial begin\n\
+           q.push_back(3); q.push_back(1); q.push_back(3); q.push_back(2); q.push_back(1);\n\
+           u = q.unique();\n\
+           $display(\"n=%0d %0d %0d %0d\", u.size(), u[0], u[1], u[2]);\n\
+         end endmodule\n");
+    assert_eq!(out, "n=3 3 1 2\n");
+}
+
+#[test]
+fn find_with_predicate() {
+    // find() with (item > 2): {5,9,3} of {5,1,9,3}.
+    let out = run("module top; int q[$]; int f[$];\n\
+         initial begin\n\
+           q.push_back(5); q.push_back(1); q.push_back(9); q.push_back(3);\n\
+           f = q.find() with (item > 2);\n\
+           $display(\"n=%0d %0d %0d %0d\", f.size(), f[0], f[1], f[2]);\n\
+         end endmodule\n");
+    assert_eq!(out, "n=3 5 9 3\n");
+}
+
+#[test]
+fn find_index_with_predicate() {
+    // find_index() with (item > 2): indices {0,2,3} of {5,1,9,3}.
+    let out = run("module top; int q[$]; int idx[$];\n\
+         initial begin\n\
+           q.push_back(5); q.push_back(1); q.push_back(9); q.push_back(3);\n\
+           idx = q.find_index() with (item > 2);\n\
+           $display(\"n=%0d %0d %0d %0d\", idx.size(), idx[0], idx[1], idx[2]);\n\
+         end endmodule\n");
+    assert_eq!(out, "n=3 0 2 3\n");
+}
+
+#[test]
+fn find_first_index_with_predicate() {
+    // find_first_index() with (item > 2): first matching index = 0.
+    let out = run("module top; int q[$]; int fi[$];\n\
+         initial begin\n\
+           q.push_back(1); q.push_back(5); q.push_back(9);\n\
+           fi = q.find_first_index() with (item > 2);\n\
+           $display(\"n=%0d %0d\", fi.size(), fi[0]);\n\
+         end endmodule\n");
+    assert_eq!(out, "n=1 1\n");
+}
+
+#[test]
+fn empty_min_returns_empty_queue() {
+    let out = run("module top; int q[$]; int mn[$];\n\
+         initial begin\n\
+           mn = q.min();\n\
+           $display(\"n=%0d\", mn.size());\n\
+         end endmodule\n");
+    assert_eq!(out, "n=0\n");
 }

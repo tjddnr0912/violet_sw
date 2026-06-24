@@ -105,10 +105,13 @@ use vita_schema::schema_hash;
 /// `PropExpr::{Not,Until,Eventually,Always}` + `Stmt::CoverProperty` +
 /// `ModuleItem::LetDecl`/`LetDecl`; 2026-06-23 N7-REST `ClassItem::{RandProperty,
 /// Constraint}` + `ConstraintDecl`; 2026-06-24 N7-REST B-CRV final
-/// `ExprKind::RandomizeWith` + `Stmt::RandomizeWith` (inline `randomize() with`).)
+/// `ExprKind::RandomizeWith` + `Stmt::RandomizeWith` (inline `randomize() with`);
+/// 2026-06-24 ⓑ-breadth array locator + `with` iterator
+/// `ExprKind::ArrayMethodWith(Box<ArrayMethodWithExpr>)` + the `ArrayMethodWithExpr`
+/// struct — `arr.sum() with (item*2)` / `arr.find() with (item>2)`.)
 const EXPECTED: [u8; 32] = [
-    22, 199, 81, 33, 225, 134, 235, 163, 185, 186, 233, 107, 7, 238, 210, 89, 106, 105, 9, 57, 242,
-    133, 27, 21, 105, 146, 10, 198, 23, 82, 158, 181,
+    96, 44, 110, 230, 242, 154, 173, 138, 67, 42, 160, 109, 169, 214, 108, 227, 101, 227, 208, 55,
+    151, 130, 25, 79, 235, 133, 178, 229, 34, 198, 150, 0,
 ];
 
 #[test]

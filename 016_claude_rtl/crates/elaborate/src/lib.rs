@@ -1948,6 +1948,14 @@ struct Elaborator<'s> {
     // nested selects (`q[$ - r[$]]`) bind each `$` to ITS OWN queue. `None`
     // outside a queue index ⇒ a bare `$` is loud-rejected.
     dollar_subst: Option<u32>,
+    // ⓑ-breadth (v17): the active array-method `with`-clause iterator name
+    // (`item` by default, or the named `find(x)` variable). When set, a matching
+    // single-segment Ident lowers to `Expr::ArrayItem{index:false}` and `iter.index`
+    // to `{index:true}`. `None` outside a with-expr.
+    array_iter: Option<String>,
+    // The (width, signed) of the iterated array's ELEMENT type, so a bare `item`
+    // is sized correctly in the with-expr. `None` ⇒ default int (32, signed).
+    array_iter_elem: Option<(u32, bool)>,
     // v5 ⑥ (D): interface declarations (OWNED clones — avoids threading the
     // unit lifetime) + the registry of elaborated interface INSTANCES
     // (FQ path → interface name) consulted by interface-port binding.
@@ -2209,6 +2217,8 @@ impl<'s> Elaborator<'s> {
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
             dollar_subst: None,
+            array_iter: None,
+            array_iter_elem: None,
             ifaces: BTreeMap::new(),
             iface_insts: BTreeMap::new(),
             modport_readonly: BTreeSet::new(),
@@ -8166,6 +8176,30 @@ impl<'s> Elaborator<'s> {
                 }
             }
             ast::ExprKind::Ident(path) => {
+                // ⓑ-breadth (v17): inside an array-method `with` clause, the
+                // iterator name (`item`/named) is the per-element value; `iter.index`
+                // is its 0-based position. Checked before all other name resolution.
+                if self.array_iter.is_some() {
+                    let iter = self.array_iter.clone().unwrap();
+                    match path.segments.as_slice() {
+                        [s] if s.name == iter => {
+                            let (width, signed) = self.array_iter_elem.unwrap_or((32, true));
+                            return self.push_expr(ir::Expr::ArrayItem {
+                                index: false,
+                                width,
+                                signed,
+                            });
+                        }
+                        [s, ix] if s.name == iter && ix.name == "index" => {
+                            return self.push_expr(ir::Expr::ArrayItem {
+                                index: true,
+                                width: 32,
+                                signed: true,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
                 // INLINE substitution (function/task formals). A single-segment name
                 // bound to an actual-arg ExprId lowers to that ExprId directly — no
                 // new IR node, exactly like `Paren` unwrapping. Innermost wins.
@@ -8729,6 +8763,10 @@ impl<'s> Elaborator<'s> {
                 );
                 self.placeholder_expr()
             }
+            // ⓑ-breadth (v17): `arr.METHOD() with (expr)`. A REDUCTION yields a
+            // scalar and lowers here; a LOCATOR yields a queue (statement-level
+            // only, routed through `dyn_blocking_special`) → loud in expr position.
+            ast::ExprKind::ArrayMethodWith(amw) => self.lower_reduction_with_expr(amw),
             ast::ExprKind::Call { name, args } => {
                 // SVA-REST `let NAME(formals) = expr;` call: substitute the body with
                 // positional formal→actual binding. A real FUNCTION/TASK of the same
@@ -10767,6 +10805,185 @@ impl<'s> Elaborator<'s> {
         }))
     }
 
+    /// ⓑ-breadth (v17): lower the iterator `with`-expression with the iterator
+    /// name (`item` or named) bound to `Expr::ArrayItem`, restoring the prior
+    /// context afterward (nested with-clauses bind their own iterator). `elem` is
+    /// the iterated array's element (width, signed) so a bare `item` sizes right.
+    fn lower_with_expr(
+        &mut self,
+        amw: &ast::ArrayMethodWithExpr,
+        elem: Option<(u32, bool)>,
+    ) -> u32 {
+        let name = amw
+            .iter_var
+            .as_ref()
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| "item".to_string());
+        let saved = self.array_iter.replace(name);
+        let saved_elem = self.array_iter_elem.take();
+        self.array_iter_elem = elem;
+        let eid = self.lower_expr(&amw.with_expr);
+        self.array_iter = saved;
+        self.array_iter_elem = saved_elem;
+        eid
+    }
+
+    /// The element (width, signed) of a dyn handle net, for sizing a `with`
+    /// iterator's `item`.
+    fn handle_elem_type(&self, net: u32) -> Option<(u32, bool)> {
+        self.nets
+            .get(net as usize)
+            .map(|nv| (nv.width.max(1), nv.signed))
+    }
+
+    /// ⓑ-breadth (v17): `arr.sum() with (expr)` (and product/and/or/xor) — a
+    /// reduction with a per-element expression. Element-typed scalar result; the
+    /// with-expr is folded instead of the raw element. A locator method here is a
+    /// statement-only form (loud).
+    fn lower_reduction_with_expr(&mut self, amw: &ast::ArrayMethodWithExpr) -> u32 {
+        let which = match amw.method.name.as_str() {
+            "sum" => ir::SysFuncId::ArrSum,
+            "product" => ir::SysFuncId::ArrProduct,
+            "and" => ir::SysFuncId::ArrAnd,
+            "or" => ir::SysFuncId::ArrOr,
+            "xor" => ir::SysFuncId::ArrXor,
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a locator method with `with` (find*/min/max/unique) must be the \
+                     direct rhs of a blocking assign to a queue (`q2 = q.find() with (…);`)",
+                );
+                return self.placeholder_expr();
+            }
+        };
+        if amw.recv.segments.len() != 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "array `with`-method receiver must be a simple handle name",
+            );
+            return self.placeholder_expr();
+        }
+        let Some((net, kind)) = self.dyn_handle(&amw.recv.segments[0].name) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "array reduction `with` applies to a dynamic array / queue / assoc handle",
+            );
+            return self.placeholder_expr();
+        };
+        if !matches!(
+            kind,
+            ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc | ir::NetKind::AssocStr
+        ) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "array reduction on a non-array handle",
+            );
+            return self.placeholder_expr();
+        }
+        let elem = self.handle_elem_type(net);
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let with_eid = self.lower_with_expr(amw, elem);
+        self.push_expr(ir::Expr::SysFunc {
+            which,
+            args: vec![handle, with_eid],
+        })
+    }
+
+    /// ⓑ-breadth (v17): `dst = src.LOCATOR()[ with (pred)]` — a queue-returning
+    /// locator (IEEE §7.12.1), lowered to the statement-level `ArrLocator` SysTask.
+    /// `dst` must be a queue handle (the locator result type). Returns `true` once
+    /// it has handled (or loud-rejected) the form.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_locator_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        src_net: u32,
+        src_kind: ir::NetKind,
+        method: &str,
+        amw: Option<&ast::ArrayMethodWithExpr>,
+    ) -> bool {
+        let (code, needs_pred) = match method {
+            "min" => (0u32, false),
+            "max" => (1, false),
+            "unique" => (2, false),
+            "find" => (3, true),
+            "find_index" => (4, true),
+            "find_first" => (5, true),
+            "find_last" => (6, true),
+            "find_first_index" => (7, true),
+            "find_last_index" => (8, true),
+            "unique_index" => (9, false),
+            _ => return false,
+        };
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a delayed locator assignment is outside the MVP",
+            );
+            return true;
+        }
+        if !matches!(
+            src_kind,
+            ir::NetKind::DynArray | ir::NetKind::Queue | ir::NetKind::Assoc | ir::NetKind::AssocStr
+        ) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a locator method applies to a dynamic array / queue / assoc handle",
+            );
+            return true;
+        }
+        let dst = match lhs {
+            ast::Lvalue::Ident(p) if p.segments.len() == 1 => self.dyn_handle(&p.segments[0].name),
+            _ => None,
+        };
+        let Some((dst_net, ir::NetKind::Queue)) = dst else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a locator result must be assigned to a queue handle (`int r[$]; r = q.min();`)",
+            );
+            return true;
+        };
+        if needs_pred && amw.is_none() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "find* locators require a `with (condition)` clause",
+            );
+            return true;
+        }
+        let dst_h = self.push_expr(ir::Expr::Signal {
+            net: dst_net,
+            word: None,
+        });
+        let src_h = self.push_expr(ir::Expr::Signal {
+            net: src_net,
+            word: None,
+        });
+        let elem = self.handle_elem_type(src_net);
+        let kc = self.const_u32_expr(code, 32);
+        let mut args = vec![dst_h, src_h, kc];
+        if let Some(amw) = amw {
+            if needs_pred {
+                let pred = self.lower_with_expr(amw, elem);
+                args.push(pred);
+            } else {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "min/max/unique with a `with` key-expression is outside v1",
+                );
+                return true;
+            }
+        }
+        let sid = self.push_stmt(ir::Stmt::SysTask {
+            which: ir::SysTaskId::ArrLocator,
+            fmt: None,
+            args,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
     /// Method-call EXPRESSION on a dyn handle (`d.size()`, `a.exists(k)`…).
     /// Pops reaching HERE are NOT the direct rhs of a blocking assign (that
     /// shape is intercepted in `dyn_blocking_special`) — loud, per the engine
@@ -11066,6 +11283,25 @@ impl<'s> Elaborator<'s> {
             ast::ExprKind::RandomizeWith(rw) if rw.name.segments.len() == 2 => {
                 self.try_emit_randomize(b, &rw.name, &rw.args, Some(&rw.constraints), Some(lhs))
             }
+            // ⓑ-breadth (v17): `dst = src.find() with (pred)` — a queue-returning
+            // locator. A reduction-with (`s = q.sum() with (…)`) is a SCALAR rhs →
+            // fall through (return false) to the normal expr-rhs path.
+            ast::ExprKind::ArrayMethodWith(amw) => {
+                if matches!(
+                    amw.method.name.as_str(),
+                    "sum" | "product" | "and" | "or" | "xor"
+                ) {
+                    return false;
+                }
+                if amw.recv.segments.len() != 1 {
+                    return false;
+                }
+                let Some((net, kind)) = self.dyn_handle(&amw.recv.segments[0].name) else {
+                    return false;
+                };
+                let method = amw.method.name.clone();
+                self.lower_locator_special(b, lhs, delay, net, kind, &method, Some(amw))
+            }
             ast::ExprKind::Call { name, args } if name.segments.len() == 2 => {
                 let m = name.segments[1].name.as_str();
                 // N7-REST: `r = obj.randomize();` — draw the rand fields and assign
@@ -11102,6 +11338,12 @@ impl<'s> Elaborator<'s> {
                 // v6: iteration methods — `st = h.first(k);` (ref key arg).
                 if matches!(m, "first" | "next" | "last" | "prev") {
                     return self.lower_iter_special(b, lhs, delay, net, kind, m, args);
+                }
+                // ⓑ-breadth (v17): no-predicate locators returning a queue
+                // (`r = q.min();`). The find* family needs a `with` clause and so
+                // arrives via the `ArrayMethodWith` arm, never as a plain Call.
+                if matches!(m, "min" | "max" | "unique" | "unique_index") && args.is_empty() {
+                    return self.lower_locator_special(b, lhs, delay, net, kind, m, None);
                 }
                 if m != "pop_back" && m != "pop_front" {
                     return false; // size()/exists() etc. ride the normal expr path
@@ -17203,6 +17445,9 @@ impl<'s> Elaborator<'s> {
                 }
             }
             ir::Expr::Call { .. } => {}
+            // ⓑ-breadth (v17): the with-clause iterator reads the engine scratch,
+            // not a net — no sensitivity contribution.
+            ir::Expr::ArrayItem { .. } => {}
         }
     }
 
@@ -19758,6 +20003,8 @@ impl<'s> Elaborator<'s> {
             ir::Expr::Ternary { then_e, else_e, .. } => {
                 self.ir_bits_of(*then_e)?.max(self.ir_bits_of(*else_e)?)
             }
+            // ⓑ-breadth (v17): with-clause iterator carries its own width.
+            ir::Expr::ArrayItem { width, .. } => (*width).max(1),
             ir::Expr::SysFunc { which, args } => {
                 use ir::SysFuncId as F;
                 match which {

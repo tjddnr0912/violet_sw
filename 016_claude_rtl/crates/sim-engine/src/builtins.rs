@@ -170,8 +170,19 @@ pub(crate) fn dispatch(
                 }
             }
             if bad_kind {
-                dyn_warn_once(sched, net, "ordering method on a non-ordered handle (ignored)");
+                dyn_warn_once(
+                    sched,
+                    net,
+                    "ordering method on a non-ordered handle (ignored)",
+                );
             }
+            Ctl::Continue
+        }
+        // ⓑ-breadth (v17): locator methods returning a queue (min/max/unique/
+        // find*). args = [dst, src, kind_const, with_pred?]. Snapshot the source,
+        // compute the result vector, write the dst handle as a fresh queue.
+        SysTaskId::ArrLocator => {
+            arr_locator(sched, args);
             Ctl::Continue
         }
         // N7-REST: `obj.randomize()` — draw the receiver's rand fields per the folded
@@ -2444,6 +2455,128 @@ fn apply_order(slice: &mut [Value], which: SysTaskId, signed: bool) {
         SysTaskId::ArrRsort => slice.sort_by(|a, b| arr_cmp(b, a, signed)),
         _ => slice.reverse(),
     }
+}
+
+/// ⓑ-breadth (v17): execute a queue-returning locator method (IEEE §7.12.1).
+/// `args = [dst, src, kind_const, with_pred?]`. The source is snapshotted up
+/// front so `dst == src` aliasing (`q = q.unique();`) is safe. Result elements
+/// are cast to the dst element type before storage.
+fn arr_locator(sched: &mut Scheduler, args: &[u32]) {
+    let Some(dst_net) = dyn_handle_net(sched, args.first()) else {
+        return;
+    };
+    let Some(src_net) = dyn_handle_net(sched, args.get(1)) else {
+        return;
+    };
+    let code = args
+        .get(2)
+        .and_then(|&e| match sched.st.ir.exprs.get(e as usize) {
+            Some(sim_ir::Expr::Const { val }) => sched
+                .st
+                .ir
+                .consts
+                .get(*val as usize)
+                .and_then(|c| c.bits.val.first().copied()),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let pred = args.get(3).copied();
+    let signed = sched
+        .st
+        .ir
+        .nets
+        .get(src_net as usize)
+        .map(|nv| nv.signed)
+        .unwrap_or(true);
+    let (dw, dsigned) = sched
+        .st
+        .ir
+        .nets
+        .get(dst_net as usize)
+        .map(|nv| (nv.width.max(1), nv.signed))
+        .unwrap_or((32, true));
+    let elems = sched.st.dyn_values(src_net).unwrap_or_default();
+    let idx_val = |i: usize| {
+        let mut v = Value::zeros(32, true);
+        v.val[0] = (i as u64).min(i32::MAX as u64);
+        v
+    };
+    let mut result: Vec<Value> = Vec::new();
+    match code {
+        0 => {
+            if let Some(m) = elems.iter().min_by(|a, b| arr_cmp(a, b, signed)) {
+                result.push(m.clone());
+            }
+        }
+        1 => {
+            if let Some(m) = elems.iter().max_by(|a, b| arr_cmp(a, b, signed)) {
+                result.push(m.clone());
+            }
+        }
+        2 => {
+            for e in &elems {
+                if !result.iter().any(|r| r == e) {
+                    result.push(e.clone());
+                }
+            }
+        }
+        9 => {
+            let mut seen: Vec<Value> = Vec::new();
+            for (i, e) in elems.iter().enumerate() {
+                if !seen.iter().any(|r| r == e) {
+                    seen.push(e.clone());
+                    result.push(idx_val(i));
+                }
+            }
+        }
+        // find family — predicate-driven (`with` clause)
+        _ => {
+            if let Some(pred) = pred {
+                let saved = sched.st.swap_array_item(None);
+                let mut matches: Vec<(usize, Value)> = Vec::new();
+                for (i, e) in elems.iter().enumerate() {
+                    sched.st.swap_array_item(Some((e.clone(), i as u64)));
+                    if sched.truthy(pred) {
+                        matches.push((i, e.clone()));
+                    }
+                }
+                sched.st.swap_array_item(saved);
+                match code {
+                    3 => result.extend(matches.iter().map(|(_, e)| e.clone())),
+                    4 => result.extend(matches.iter().map(|(i, _)| idx_val(*i))),
+                    5 => {
+                        if let Some((_, e)) = matches.first() {
+                            result.push(e.clone());
+                        }
+                    }
+                    6 => {
+                        if let Some((_, e)) = matches.last() {
+                            result.push(e.clone());
+                        }
+                    }
+                    7 => {
+                        if let Some((i, _)) = matches.first() {
+                            result.push(idx_val(*i));
+                        }
+                    }
+                    8 => {
+                        if let Some((i, _)) = matches.last() {
+                            result.push(idx_val(*i));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let elems: std::collections::VecDeque<Value> = result
+        .into_iter()
+        .map(|v| v.resize_keep_sign(dw, dsigned))
+        .collect();
+    sched
+        .st
+        .dyn_heap
+        .insert(dst_net, crate::state::DynObj::Queue { elems });
 }
 
 /// One W-RUN-DYN-DEGRADE per handle net (latched in `dyn_warned`) — a degraded

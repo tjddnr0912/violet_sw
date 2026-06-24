@@ -1075,6 +1075,21 @@ pub struct RandomizeWithExpr {
     pub args: Vec<Expr>,
     pub constraints: Vec<Expr>,
 }
+
+/// Boxed payload of `ExprKind::ArrayMethodWith` — an array reduction/locator
+/// method call carrying a `with (expr)` iterator clause (IEEE 1800 §7.12).
+/// BOXED for the same reason as `RandomizeWithExpr` (keep `ExprKind` pointer-
+/// sized so the expr-recursion depth cap is unaffected). `recv` is the source
+/// handle path, `method` the method name. `iter_var` is the optional named
+/// iterator declared in the method's parens (`find(x) with (x>2)`); `None` means
+/// the default `item`. `with_expr` is the per-element expression.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ArrayMethodWithExpr {
+    pub recv: HierPath,
+    pub method: Ident,
+    pub iter_var: Option<Ident>,
+    pub with_expr: Expr,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ExprKind {
     // literals: raw lexeme + kind; value parse deferred to elaborate.
@@ -1150,6 +1165,12 @@ pub enum ExprKind {
     /// final slice. `constraints` are extra constraint expressions ADDED to the
     /// object's class constraints for this one call.
     RandomizeWith(Box<RandomizeWithExpr>),
+    /// `q.sum() with (item*2)` / `q.find() with (item>2)` (IEEE §7.12) — an array
+    /// reduction or locator method with a `with` iterator clause. BOXED (see the
+    /// payload note). Reductions yield a scalar; locators yield a queue (only
+    /// valid as the direct rhs of a blocking assign, intercepted at statement
+    /// level like the queue pops).
+    ArrayMethodWith(Box<ArrayMethodWithExpr>),
     /// `$time`, `$signed(x)`. NOTE (verdict M6): `name.name` retains the leading
     /// `$` (the lexer's `SystemTask` lexeme includes it), parallel to EscapedIdent.
     SysCall {

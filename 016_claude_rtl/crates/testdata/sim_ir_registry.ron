@@ -273,6 +273,19 @@
                 },
             ]),
         },
+        10: {
+            "ArrayItem": STRUCT([
+                {
+                    "index": BOOL,
+                },
+                {
+                    "width": U32,
+                },
+                {
+                    "signed": BOOL,
+                },
+            ]),
+        },
     }),
     "FourState": ENUM({
         0: {
@@ -895,6 +908,9 @@
         },
         35: {
             "ArrReverse": UNIT,
+        },
+        36: {
+            "ArrLocator": UNIT,
         },
     }),
     "Terminator": ENUM({
