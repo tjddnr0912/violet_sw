@@ -10938,6 +10938,28 @@ impl<'s> Elaborator<'s> {
                 );
                 return;
             }
+            // ⓑ-breadth (v16): ordering methods — in-place mutators on an
+            // ORDERED collection (dyn array / queue). Assoc has no positional
+            // order to sort (`.sort()` there is a kind error → the catch-all).
+            ("sort" | "rsort" | "reverse", K::DynArray | K::Queue, 0) => {
+                let which = match method {
+                    "sort" => ir::SysTaskId::ArrSort,
+                    "rsort" => ir::SysTaskId::ArrRsort,
+                    _ => ir::SysTaskId::ArrReverse,
+                };
+                ir::Stmt::SysTask {
+                    which,
+                    fmt: None,
+                    args: vec![handle],
+                }
+            }
+            ("sort" | "rsort" | "reverse", K::DynArray | K::Queue, _) => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "array ordering methods take no arguments (with-clause is a separate slice)",
+                );
+                return;
+            }
             ("pop_back" | "pop_front", K::Queue, _) => {
                 self.error(
                     MsgCode::ElabUnsupported,

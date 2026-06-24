@@ -3,16 +3,17 @@
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full SimIr-closure canonical string. Locked at
-/// format_version 15 (2026-06-24: +5 SysFuncId variants `ArrSum`/`ArrProduct`/
-/// `ArrAnd`/`ArrOr`/`ArrXor` for the ⓑ-breadth array reduction methods, IEEE
-/// §7.12.3). SysFuncId is reached from SimIr via the Expr arena, so the root
+/// format_version 16 (2026-06-24: 3 extra SysTaskId variants `ArrSort`/
+/// `ArrRsort`/`ArrReverse` for the ⓑ-breadth array ordering methods, IEEE
+/// §7.12.2). SysTaskId is reached from SimIr via the Stmt arena, so the root
 /// hash flips; the Process cluster reaches it only through arena INDICES (u32),
-/// so its sub-pin is UNCHANGED this bump. (2026-06-23 v10: one extra SysTaskId
-/// variant `ClassRandomize` for N7-REST `obj.randomize()`. 2026-06-18 v9: 13
-/// SysFuncId and 5 SysTaskId for the file-read/$dist_*/$cast/$writemem*/
-/// $monitoron-off family.)
+/// so its sub-pin is UNCHANGED this bump. (2026-06-24 v15: 5 SysFuncId variants
+/// `ArrSum`/`ArrProduct`/`ArrAnd`/`ArrOr`/`ArrXor` for the array reductions,
+/// §7.12.3. 2026-06-23 v10: one extra SysTaskId variant `ClassRandomize` for
+/// N7-REST `obj.randomize()`. 2026-06-18 v9: 13 SysFuncId and 5 SysTaskId for
+/// the file-read/$dist_*/$cast/$writemem*/$monitoron-off family.)
 const EXPECTED_SIMIR_HASH: &str =
-    "94d31fb722d034c49c8d9ccb9b774be0d333de032f24d17f15272a536fb24f2f";
+    "5f1aaf23b5c819aad6231ebd31fa9246a20147ee3a5475ae3fd16db90fc6f702";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "61db2e207ed69c2ff1dbf3fc0473b7ed9906fbeb6c42128ef9edf382b081f277";

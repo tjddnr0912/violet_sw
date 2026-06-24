@@ -113,3 +113,72 @@ fn reduction_on_string_handle_is_loud() {
         "sum on string",
     );
 }
+
+// ── Ordering methods (in-place mutators) ─────────────────────────────────────
+
+#[test]
+fn queue_sort_ascending() {
+    let out = run(
+        "module top; int q[$];\n\
+         initial begin\n\
+           q.push_back(3); q.push_back(1); q.push_back(2);\n\
+           q.sort();\n\
+           $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
+         end endmodule\n",
+    );
+    assert_eq!(out, "1 2 3\n");
+}
+
+#[test]
+fn queue_rsort_descending() {
+    let out = run(
+        "module top; int q[$];\n\
+         initial begin\n\
+           q.push_back(3); q.push_back(1); q.push_back(2);\n\
+           q.rsort();\n\
+           $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
+         end endmodule\n",
+    );
+    assert_eq!(out, "3 2 1\n");
+}
+
+#[test]
+fn queue_reverse() {
+    let out = run(
+        "module top; int q[$];\n\
+         initial begin\n\
+           q.push_back(10); q.push_back(20); q.push_back(30);\n\
+           q.reverse();\n\
+           $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
+         end endmodule\n",
+    );
+    assert_eq!(out, "30 20 10\n");
+}
+
+#[test]
+fn sort_signed_orders_negatives_first() {
+    // signed byte elements: -5 < -1 < 3 (signed ordering, not raw bits).
+    let out = run(
+        "module top; byte q[$];\n\
+         initial begin\n\
+           q.push_back(3); q.push_back(-5); q.push_back(-1);\n\
+           q.sort();\n\
+           $display(\"%0d %0d %0d\", q[0], q[1], q[2]);\n\
+         end endmodule\n",
+    );
+    assert_eq!(out, "-5 -1 3\n");
+}
+
+#[test]
+fn dyn_array_sort_in_place() {
+    let out = run(
+        "module top; int d[];\n\
+         initial begin\n\
+           d = new[4];\n\
+           d[0]=40; d[1]=10; d[2]=30; d[3]=20;\n\
+           d.sort();\n\
+           $display(\"%0d %0d %0d %0d\", d[0], d[1], d[2], d[3]);\n\
+         end endmodule\n",
+    );
+    assert_eq!(out, "10 20 30 40\n");
+}

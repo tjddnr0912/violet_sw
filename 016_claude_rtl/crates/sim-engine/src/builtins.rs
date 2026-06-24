@@ -144,6 +144,36 @@ pub(crate) fn dispatch(
             }
             Ctl::Continue
         }
+        // ⓑ-breadth (v16): array ordering methods — in-place mutators on an
+        // ORDERED collection. A missing heap entry IS the empty array (no-op).
+        SysTaskId::ArrSort | SysTaskId::ArrRsort | SysTaskId::ArrReverse => {
+            let Some(net) = dyn_handle_net(sched, args.first()) else {
+                return Ctl::Continue;
+            };
+            let signed = sched
+                .st
+                .ir
+                .nets
+                .get(net as usize)
+                .map(|nv| nv.signed)
+                .unwrap_or(true);
+            let mut bad_kind = false;
+            if let Some(obj) = sched.st.dyn_heap.get_mut(&net) {
+                match obj {
+                    crate::state::DynObj::DynArray { elems } => {
+                        apply_order(elems.as_mut_slice(), which, signed)
+                    }
+                    crate::state::DynObj::Queue { elems } => {
+                        apply_order(elems.make_contiguous(), which, signed)
+                    }
+                    _ => bad_kind = true,
+                }
+            }
+            if bad_kind {
+                dyn_warn_once(sched, net, "ordering method on a non-ordered handle (ignored)");
+            }
+            Ctl::Continue
+        }
         // N7-REST: `obj.randomize()` — draw the receiver's rand fields per the folded
         // constraint bounds and write them into the heap object. Deterministic
         // (seeded `dist_uniform`); a null/X handle is a no-op.
@@ -2383,6 +2413,36 @@ fn dyn_handle_net(sched: &Scheduler, arg: Option<&u32>) -> Option<u32> {
     match sched.st.ir.exprs.get(eid as usize) {
         Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
         _ => None,
+    }
+}
+
+/// ⓑ-breadth (v16): total order over array elements for `sort`/`rsort`. CLEAN
+/// (no x/z) values compare by signed/unsigned numeric value; x/z values sort
+/// AFTER all clean values, among themselves by a deterministic raw-bit order so
+/// the sort is stable across runs/OSes and never panics (IEEE leaves the x/z
+/// ordering implementation-defined).
+fn arr_cmp(a: &Value, b: &Value, signed: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.has_xz(), b.has_xz()) {
+        (false, false) => {
+            if signed {
+                a.to_i128_signed().cmp(&b.to_i128_signed())
+            } else {
+                a.to_u128().cmp(&b.to_u128())
+            }
+        }
+        (false, true) => Ordering::Less,
+        (true, false) => Ordering::Greater,
+        (true, true) => (&*a.unk, &*a.val).cmp(&(&*b.unk, &*b.val)),
+    }
+}
+
+/// Apply an in-place ordering method to a contiguous element slice.
+fn apply_order(slice: &mut [Value], which: SysTaskId, signed: bool) {
+    match which {
+        SysTaskId::ArrSort => slice.sort_by(|a, b| arr_cmp(a, b, signed)),
+        SysTaskId::ArrRsort => slice.sort_by(|a, b| arr_cmp(b, a, signed)),
+        _ => slice.reverse(),
     }
 }
 

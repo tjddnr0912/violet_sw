@@ -417,6 +417,16 @@ pub enum SysTaskId {
     /// success flag (always 1 in Phase B1, with feasible constraints) is assigned by
     /// a sibling `BlockingAssign` the lowering emits for `r = obj.randomize()`.
     ClassRandomize,
+    // ── v16 (2026-06-24): ⓑ-breadth array ordering methods (IEEE §7.12.2).
+    //    In-place mutators on a dyn array / queue handle. args = [handle]. Sort
+    //    uses the element's signed/unsigned numeric order; x/z elements fall
+    //    back to a deterministic raw-bit total order (never panics). ──
+    /// array `.sort()` — ascending in-place sort.
+    ArrSort,
+    /// array `.rsort()` — descending in-place sort.
+    ArrRsort,
+    /// array `.reverse()` — in-place element reversal.
+    ArrReverse,
 }
 
 /// Disable kind (§2).
