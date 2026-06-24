@@ -616,6 +616,11 @@ struct ResolvedOverride {
     name: Option<String>,
     value: Option<i64>,
     is_named: bool,
+    /// Set when the override expression IS an unsized fill literal (`'1`/`'0`/…).
+    /// Its width is the CHILD param's declared width — unknown here in the parent
+    /// — so resolution defers sizing to `bind_params`, which re-folds the fill at
+    /// the param width (else `#(.P('1))` would silently truncate to 32 bits).
+    fill: Option<(ast::IntLitKind, String)>,
 }
 
 /// Build the module-name map + the declaration-ordered list. First decl wins on a
@@ -1924,12 +1929,6 @@ struct Elaborator<'s> {
     // allocated at the first call site and reused at every later site (keyed by
     // task name → per-formal net ids, in port order). elaborate-LOCAL only.
     task_arg_locals: std::collections::HashMap<String, Vec<u32>>,
-    // Monotonic counter giving each inline-task call site a UNIQUE body-local
-    // scope (`$itask$<name>$<n>`), so an assigned body-local resolves and two
-    // call sites never collide. Inline-task body-locals therefore get fresh
-    // per-call storage (automatic semantics — a documented divergence from a
-    // static task's persistent-local, an uncommon pattern). elaborate-LOCAL only.
-    itask_seq: u64,
     // Heap-handle nets (dyn array/queue/assoc) whose ELEMENT type is 2-state
     // (int/bit/byte/shortint/longint). These skip the regular `record_dim_desc`
     // path (and thus `intro_kind`), so the `two_state_nets` sidecar would miss
@@ -1985,6 +1984,13 @@ struct Elaborator<'s> {
     // FQ param-name → const value, visible while lowering an instance scope.
     // Re-points the v1 free `const_eval_u32` SLOT so `[W-1:0]` folds to a width.
     params: BTreeMap<String, i64>,
+    // FQ param-name → (DECLARED width, signed), for params with a determinate
+    // declared width (an explicit range or `integer`/`int`). A typed-param READ
+    // materializes at THIS width — not the value-inferred 32 bits — so
+    // `localparam logic [63:0] P = '1` is a 64-bit all-ones const, not `ffffffff`
+    // (IEEE §6.20.2). Parallel-keyed to `params`; absent ⇒ value-inference.
+    // elaborate-LOCAL (golden-neutral — only changes a typed param's const width).
+    param_meta: BTreeMap<String, (u32, bool)>,
     // PERSISTENT FQ param-name → value, NEVER restored (unlike `params`). Lets a
     // post-elaboration hierarchical READ (`dut.WIDTH`) fold to the sibling
     // instance's param value. Out-of-band (golden-free).
@@ -2141,6 +2147,13 @@ struct Elaborator<'s> {
     event_nets: std::collections::BTreeSet<u32>,
     // Per-ProcId instance path for `%m` (P2-11); lockstep with `processes`.
     proc_scopes: Vec<String>,
+    // §6.8: a VARIABLE declaration initializer whose value is NON-constant
+    // (`logic [7:0] b = a;`) is a one-time assignment at time 0, equivalent to
+    // `initial b = a;`. A constant init folds into the net's `init` field; a
+    // non-constant one is collected here (in declaration order) and drained into
+    // ONE synthesized `initial` process after the module's item loop, so `b`
+    // sees `a`'s value instead of silently keeping its X/0 default. (lvalue, rhs).
+    pending_var_inits: Vec<(ast::Lvalue, ast::Expr)>,
     // v8 SVA: concurrent assertions collected during statement lowering, drained
     // into synthesized clocked checker processes after each module's process loop.
     pending_sva: Vec<PendingSva>,
@@ -2223,7 +2236,6 @@ impl<'s> Elaborator<'s> {
             dim_desc: BTreeMap::new(),
             intro_kind: BTreeMap::new(),
             task_arg_locals: std::collections::HashMap::new(),
-            itask_seq: 0,
             two_state_heap_handles: BTreeSet::new(),
             unpacked_array_nets: BTreeSet::new(),
             packed_dims: BTreeMap::new(),
@@ -2236,6 +2248,7 @@ impl<'s> Elaborator<'s> {
             modport_readonly: BTreeSet::new(),
             cur_prefix: String::new(),
             params: BTreeMap::new(),
+            param_meta: BTreeMap::new(),
             hier_params: BTreeMap::new(),
             inst_stack: Vec::new(),
             cur_inst: 0,
@@ -2271,6 +2284,7 @@ impl<'s> Elaborator<'s> {
             queue_bounds: QueueBoundTable::new(),
             event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
+            pending_var_inits: Vec::new(),
             pending_sva: Vec::new(),
             pending_cover: Vec::new(),
             deferred_hier: Vec::new(),
@@ -2886,7 +2900,8 @@ impl<'s> Elaborator<'s> {
                 // const-context hierarchical param is loud — the sibling instance
                 // is not yet elaborated when the const-eval needs the value).
                 if let Some(v) = self.hier_lookup_param(&d.prefix, &d.path) {
-                    self.patch_expr_param_const(d.eid, v);
+                    let meta = self.hier_lookup_param_meta(&d.prefix, &d.path);
+                    self.patch_expr_param_const_w(d.eid, v, meta);
                 } else {
                     self.error(
                         MsgCode::ElabUnresolvedName,
@@ -3354,6 +3369,15 @@ impl<'s> Elaborator<'s> {
         self.hier_resolve(prefix, path, &self.hier_params)
     }
 
+    /// The `(declared width, signed)` of a hierarchical param read (`dut.W`), when
+    /// the param has a determinate declared width — so the cross-instance const is
+    /// materialized at THAT width, not the value-inferred 32 bits (mirrors the
+    /// bare-param read path). `param_meta` is persistent (never restored), so it is
+    /// visible after the sibling instance has bound its params.
+    fn hier_lookup_param_meta(&self, prefix: &str, path: &[String]) -> Option<(u32, bool)> {
+        self.hier_resolve(prefix, path, &self.param_meta)
+    }
+
     /// Shared commit-to-scope resolution for a dotted hierarchical `path`
     /// (length ≥ 2), generic over the leaf `table` (`symbols` for nets,
     /// `hier_params` for parameters). Resolve the LEADING segment to a scope,
@@ -3542,21 +3566,27 @@ impl<'s> Elaborator<'s> {
                     // Unfoldable value = LOUD error (never a silent 0): a parameter
                     // bound to a wrong default poisons every downstream width with
                     // no trace (P0-5). 0 stays only as the post-error recovery value.
-                    let v = self.const_eval_in_scope(&p.value).unwrap_or_else(|| {
-                        self.error(
-                            MsgCode::ElabUnsupported,
-                            &format!(
-                                "parameter `{}` value is not a foldable constant expression",
-                                p.name.name
-                            ),
-                        );
-                        0
-                    });
+                    let meta = self.param_decl_width(p);
+                    let v = self
+                        .eval_param_init(&p.value, meta.map(|(w, _)| w))
+                        .unwrap_or_else(|| {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                &format!(
+                                    "parameter `{}` value is not a foldable constant expression",
+                                    p.name.name
+                                ),
+                            );
+                            0
+                        });
                     let v = self.coerce_param_value(v, p);
                     let key = self.fq(&p.name.name);
                     // persistent copy for a hierarchical read (`dut.LP`) of a body
                     // parameter/localparam (mirrors the header path in bind_params).
                     self.hier_params.insert(key.clone(), v);
+                    if let Some(m) = meta {
+                        self.param_meta.insert(key.clone(), m);
+                    }
                     saved_params.push((key.clone(), self.params.insert(key, v)));
                 }
                 ast::ModuleItem::NetVar(d) => self.prescan_net_bits(d),
@@ -3775,6 +3805,17 @@ impl<'s> Elaborator<'s> {
             }
         }
 
+        // (6.9) §6.8: emit non-constant variable initializers (`int b = a;`) as ONE
+        //       synthesized `initial` BEFORE user processes, so it has a lower ProcId
+        //       and runs first at time 0 (a user `initial` then reads the set value,
+        //       not the X/0 default). Constant inits already folded into net.init.
+        for item in &module.body {
+            if let ast::ModuleItem::NetVar(d) = item {
+                self.collect_var_init_drivers(d);
+            }
+        }
+        self.flush_pending_var_inits();
+
         // (7) lower THIS body: cont-assigns + processes (reuse v1/v2 helpers).
         for item in &module.body {
             match item {
@@ -3894,6 +3935,7 @@ impl<'s> Elaborator<'s> {
                         name: None,
                         value,
                         is_named: false,
+                        fill: expr_as_fill(e).map(|(k, r)| (k, r.to_string())),
                     });
                 }
                 ast::ParamConn::Named { name, value, .. } => {
@@ -3912,6 +3954,9 @@ impl<'s> Elaborator<'s> {
                         name: Some(name.name.clone()),
                         value: v,
                         is_named: true,
+                        fill: value
+                            .as_ref()
+                            .and_then(|e| expr_as_fill(e).map(|(k, r)| (k, r.to_string()))),
                     });
                 }
             }
@@ -4324,6 +4369,7 @@ impl<'s> Elaborator<'s> {
                         name: None,
                         value,
                         is_named: false,
+                        fill: expr_as_fill(e).map(|(k, r)| (k, r.to_string())),
                     });
                 }
                 ast::ParamConn::Named { name, value, .. } => {
@@ -4341,6 +4387,9 @@ impl<'s> Elaborator<'s> {
                         name: Some(name.name.clone()),
                         value: v,
                         is_named: true,
+                        fill: value
+                            .as_ref()
+                            .and_then(|e| expr_as_fill(e).map(|(k, r)| (k, r.to_string()))),
                     });
                 }
             }
@@ -4786,28 +4835,54 @@ impl<'s> Elaborator<'s> {
     /// range, untyped) keeps its full value (the common width-defining `parameter W
     /// = 8`). Real-typed params are not integer-coerced. `int`/`integer` are signed
     /// even without an explicit `signed` keyword; `time` (64-bit) keeps its value.
-    fn coerce_param_value(&mut self, v: i64, p: &ast::ParamDecl) -> i64 {
+    /// The DECLARED `(width, signed)` of a parameter, when determinate: an
+    /// explicit `[msb:lsb]` range (foldable bounds) or `integer`/`int` (32-bit).
+    /// `None` for an untyped/unsized param (width inferred from its value) or a
+    /// `real`/`time` (no fixed packed width here). Single source of truth shared
+    /// by value coercion and the typed-param read-width (`param_meta`).
+    fn param_decl_width(&self, p: &ast::ParamDecl) -> Option<(u32, bool)> {
         if matches!(p.ty, ast::ParamType::Real | ast::ParamType::Realtime) {
-            return v;
+            return None;
         }
-        let width = if let Some(r) = &p.range {
+        if let Some(r) = &p.range {
             match (
                 self.const_eval_in_scope(&r.msb),
                 self.const_eval_in_scope(&r.lsb),
             ) {
-                (Some(m), Some(l)) => Some(m.abs_diff(l) as u32 + 1),
-                _ => None, // unfoldable bound: leave the value untouched (loud elsewhere)
+                (Some(m), Some(l)) => Some((m.abs_diff(l) as u32 + 1, p.signed)),
+                _ => None, // unfoldable bound: leave it value-inferred (loud elsewhere)
             }
         } else if matches!(p.ty, ast::ParamType::Integer) {
-            Some(32) // `integer`/`int` are 32-bit
+            Some((32, true)) // `integer`/`int` are 32-bit signed
         } else {
+            // Untyped/implicit param: an explicitly-SIZED literal initializer
+            // (`localparam P = 8'hAB`) sets the param width to the literal width
+            // (8), so `$bits`/concat match iverilog. A plain decimal / unsized-based
+            // / expression initializer keeps the value-inferred width (≥32) — None.
+            let mut e = &p.value;
+            while let ast::ExprKind::Paren { inner } = &e.kind {
+                e = inner;
+            }
+            if let ast::ExprKind::IntLit {
+                kind: ast::IntLitKind::Sized,
+                raw,
+            } = &e.kind
+            {
+                return literal::parse_int_literal(raw, ast::IntLitKind::Sized)
+                    .map(|cv| (cv.width, cv.signed));
+            }
             None // unsized, or `time` (64-bit): keep the full i64
+        }
+    }
+
+    fn coerce_param_value(&mut self, v: i64, p: &ast::ParamDecl) -> i64 {
+        let Some((w, signed)) = self.param_decl_width(p) else {
+            return v;
         };
-        let Some(w) = width else { return v };
         if w == 0 || w >= 64 {
             return v;
         }
-        let signed = p.signed || matches!(p.ty, ast::ParamType::Integer);
+        let signed = signed || matches!(p.ty, ast::ParamType::Integer);
         let mask = (1i64 << w) - 1;
         let trunc = v & mask;
         if signed && (trunc & (1i64 << (w - 1))) != 0 {
@@ -4817,14 +4892,29 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// Evaluate a parameter/localparam INITIALIZER to its i64 value, sizing an
+    /// unsized fill literal (`'0`/`'1`/`'x`/`'z`) to the DECLARED width (IEEE
+    /// §5.7.1 / §11.6 — the fill is context-determined, here by the param type).
+    /// Without a fill, this is exactly `const_eval_in_scope`. `'1` into a 64-bit
+    /// param therefore yields all-64-ones, not the 32-bit `0xFFFFFFFF`.
+    fn eval_param_init(&self, e: &ast::Expr, width: Option<u32>) -> Option<i64> {
+        if let (Some(w), Some((kind, raw))) = (width, expr_as_fill(e)) {
+            return fill_to_i64(kind, raw, w);
+        }
+        self.const_eval_in_scope(e)
+    }
+
     fn bind_params(
         &mut self,
         module: &ast::ModuleDecl,
         overrides: &[ResolvedOverride],
     ) -> Vec<(String, Option<i64>)> {
         // Build name→value from the resolved overrides. Positional binds to the
-        // i-th declaration index (matches module.params order).
+        // i-th declaration index (matches module.params order). A fill-literal
+        // override (`#(.P('1))`) is carried as `(kind, raw)` and re-folded at the
+        // CHILD param's declared width below.
         let mut ovr_by_name: BTreeMap<&str, Option<i64>> = BTreeMap::new();
+        let mut ovr_fill: BTreeMap<&str, &(ast::IntLitKind, String)> = BTreeMap::new();
         let mut pos_i = 0usize;
         for ov in overrides {
             if ov.is_named {
@@ -4836,6 +4926,9 @@ impl<'s> Elaborator<'s> {
                     Some(p) => {
                         if let Some(v) = ov.value {
                             ovr_by_name.insert(p.name.name.as_str(), Some(v));
+                        }
+                        if let Some(f) = &ov.fill {
+                            ovr_fill.insert(p.name.name.as_str(), f);
                         }
                         // `.W()` with no value ⇒ keep default (no insert).
                     }
@@ -4850,6 +4943,9 @@ impl<'s> Elaborator<'s> {
                 match module.params.get(pos_i) {
                     Some(p) => {
                         ovr_by_name.insert(p.name.name.as_str(), ov.value);
+                        if let Some(f) = &ov.fill {
+                            ovr_fill.insert(p.name.name.as_str(), f);
+                        }
                     }
                     None => {
                         self.error(
@@ -4864,21 +4960,27 @@ impl<'s> Elaborator<'s> {
 
         let mut saved = Vec::new();
         for p in &module.params {
+            let meta = self.param_decl_width(p);
+            let pw = meta.map(|(w, _)| w);
+            // A fill-literal override re-folds at THIS param's declared width.
+            let ovr_fill_v = ovr_fill
+                .get(p.name.name.as_str())
+                .and_then(|(k, raw)| pw.and_then(|w| fill_to_i64(*k, raw, w)));
             let chosen_val: Option<i64> = match ovr_by_name.get(p.name.name.as_str()) {
                 // override present + param is overridable → use it (None = fold-fail
-                // → fall back to the declared default).
-                Some(ovr) if matches!(p.kind, ast::ParamKind::Parameter) => {
-                    (*ovr).or_else(|| self.const_eval_in_scope(&p.value))
-                }
+                // → fall back to the declared default). A fill override wins.
+                Some(ovr) if matches!(p.kind, ast::ParamKind::Parameter) => ovr_fill_v
+                    .or(*ovr)
+                    .or_else(|| self.eval_param_init(&p.value, pw)),
                 // override targeting a localparam → error, keep declared value.
                 Some(_) => {
                     self.error(
                         MsgCode::ElabPortMismatch,
                         &format!("cannot override localparam `{}`", p.name.name),
                     );
-                    self.const_eval_in_scope(&p.value)
+                    self.eval_param_init(&p.value, pw)
                 }
-                None => self.const_eval_in_scope(&p.value),
+                None => self.eval_param_init(&p.value, pw),
             };
             // Unfoldable param value = LOUD error, never a silent 0 (P0-5);
             // 0 is only the post-error recovery value.
@@ -4897,6 +4999,9 @@ impl<'s> Elaborator<'s> {
             // Persistent copy for hierarchical reads (`dut.WIDTH`) — `self.params`
             // is restored after the instance, so the read side needs this.
             self.hier_params.insert(key.clone(), v);
+            if let Some(m) = meta {
+                self.param_meta.insert(key.clone(), m);
+            }
             saved.push((key.clone(), self.params.insert(key, v)));
         }
         saved
@@ -5347,6 +5452,29 @@ impl<'s> Elaborator<'s> {
                         continue;
                     }
                     self.elaborate_netvar_decl(d, ports, body);
+                    // §6.8/§6.21: a NON-constant PROCESS block-local initializer
+                    // (`begin logic x = g+1; …`) is STATIC-lifetime — applied ONCE
+                    // at time 0 (the block-local net is module-flattened), NOT on
+                    // each block entry. So it rides the SAME synthesized var-init
+                    // `initial` as a module-scope non-const var-init (matches
+                    // iverilog for an `always`/`for` body, which freezes the t0
+                    // value). A constant init already folded into net.init (skip).
+                    if netvar_kind_is_var(d.kind) {
+                        for name in &d.names {
+                            let Some(init) = &name.init else { continue };
+                            if name.unpacked.is_empty()
+                                && fold_init(init, 1).is_none()
+                                && self.const_eval_in_scope(init).is_none()
+                            {
+                                let path = ast::HierPath {
+                                    segments: vec![name.name.clone()],
+                                    span: name.name.span,
+                                };
+                                self.pending_var_inits
+                                    .push((ast::Lvalue::Ident(path), init.clone()));
+                            }
+                        }
+                    }
                 }
                 for st in stmts {
                     self.hoist_block_local_nets(st, ports, body);
@@ -8220,32 +8348,44 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// §6.8: collect a VARIABLE declaration's NON-constant initializer
+    /// (`logic [7:0] b = a;`) into `pending_var_inits` so a pre-sweep can emit it
+    /// as a synthesized `initial b = a;` that runs BEFORE user initial blocks. A
+    /// constant initializer is already folded into the net's `init` field at
+    /// declaration, so it is skipped here (byte-identical IR for those designs).
+    /// A net (wire) decl is not a variable — its initializer is a continuous
+    /// driver, handled by `elaborate_net_init_drivers`.
+    fn collect_var_init_drivers(&mut self, d: &ast::NetVarDecl) {
+        if !netvar_kind_is_var(d.kind) {
+            return;
+        }
+        for name in &d.names {
+            let Some(init) = &name.init else {
+                continue;
+            };
+            let (w, ..) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+            if fold_init(init, w).is_some() || self.const_eval_in_scope(init).is_some() {
+                continue; // constant ⇒ already folded into net.init
+            }
+            let path = ast::HierPath {
+                segments: vec![name.name.clone()],
+                span: name.name.span,
+            };
+            self.pending_var_inits
+                .push((ast::Lvalue::Ident(path), init.clone()));
+        }
+    }
+
     // ── PASS 2: continuous assigns ─────────────────────────────────
     /// A NET-type declaration initializer (`wire [3:0] x = a & b;`) is an IMPLICIT
     /// continuous assign — a driver, equivalent to a separate `assign x = a & b;`.
     /// A variable (reg/logic/integer/real/…) initializer is instead a one-time
     /// value applied at net creation, so it is skipped here.
     fn elaborate_net_init_drivers(&mut self, d: &ast::NetVarDecl) {
-        let is_var = matches!(
-            d.kind,
-            ast::NetVarKind::Reg
-                | ast::NetVarKind::Logic
-                | ast::NetVarKind::Integer
-                | ast::NetVarKind::Real
-                | ast::NetVarKind::Realtime
-                | ast::NetVarKind::Time
-                | ast::NetVarKind::Event
-                // 2-state integer types are VARIABLES (§6.8): an initializer is a
-                // one-time value at creation, NOT an implicit continuous assign.
-                // Omitting them wired `int x = 5;` as a driver that re-applied 5
-                // every settle, silently discarding later procedural writes.
-                | ast::NetVarKind::Bit
-                | ast::NetVarKind::Byte
-                | ast::NetVarKind::Shortint
-                | ast::NetVarKind::Int
-                | ast::NetVarKind::Longint
-        );
-        if is_var {
+        if netvar_kind_is_var(d.kind) {
+            // A variable's initializer is handled by `collect_var_init_drivers`
+            // (a pre-sweep, so the synthesized `initial` runs before user blocks);
+            // here a variable decl contributes no continuous driver.
             return;
         }
         for name in &d.names {
@@ -8264,6 +8404,44 @@ impl<'s> Elaborator<'s> {
                 delay: None,
             });
         }
+    }
+
+    /// Drain `pending_var_inits` into ONE synthesized `initial` process whose body
+    /// assigns each non-constant variable initializer in declaration order (§6.8).
+    /// Lowered in the current instance scope; a no-op when none were collected (so
+    /// a design with no such initializer adds no process — byte-identical IR).
+    fn flush_pending_var_inits(&mut self) {
+        if self.pending_var_inits.is_empty() {
+            return;
+        }
+        let inits = std::mem::take(&mut self.pending_var_inits);
+        let sp = inits[0].1.span;
+        let stmts: Vec<ast::Stmt> = inits
+            .into_iter()
+            .map(|(lhs, rhs)| {
+                let span = rhs.span;
+                ast::Stmt::Blocking {
+                    lhs,
+                    delay: None,
+                    event: None,
+                    rhs,
+                    span,
+                }
+            })
+            .collect();
+        let pb = ast::ProceduralBlock {
+            kind: ast::ProcKind::Initial,
+            sensitivity: None,
+            body: Box::new(ast::Stmt::Block {
+                label: None,
+                decls: vec![],
+                stmts,
+                span: sp,
+            }),
+            span: sp,
+        };
+        let proc = self.lower_proc_block(&pb);
+        self.push_process(proc);
     }
 
     fn elaborate_cont_assign(&mut self, ca: &ast::ContinuousAssign) {
@@ -8393,7 +8571,11 @@ impl<'s> Elaborator<'s> {
                     // Resolved before `resolve_net` so a param never errors as an
                     // undeclared net (mirrors `const_eval_in_scope`'s lookup_scoped).
                     if let Some(v) = self.lookup_scoped(seg) {
-                        return self.const_param_expr(v);
+                        // A TYPED param (`logic [63:0] P`, `int W`) materializes at
+                        // its DECLARED width, not the value-inferred 32 bits — so
+                        // `$display("%h", P)` of a 64-bit param shows all 16 nibbles.
+                        let meta = self.walk_scopes(seg, &self.param_meta);
+                        return self.const_param_expr_w(v, meta);
                     }
                     // SVA-REST `let NAME = expr;` (0 formals): substitute the declared
                     // body. Resolved AFTER nets/params/formals (a real net/param of the
@@ -10588,19 +10770,22 @@ impl<'s> Elaborator<'s> {
         // (cur_return saved/restored so a nested return never escapes to the caller's
         // function exit). Gated on `body_has_return` for byte-identical IR when absent.
         //
-        // A static task's BODY-LOCAL declarations (top-level `body_decls` and any
-        // `begin … end` block-locals) are hoisted into nets under a UNIQUE per-call
-        // scope (`$itask$<name>$<n>`) so an assigned local resolves (previously
-        // E3010). A task with NO body-locals takes the exact prior path — no scope,
-        // no extra nets — so its IR is byte-identical.
+        // §13.4.1: a static (non-automatic) task's BODY-LOCAL declarations
+        // (top-level `body_decls` and any `begin … end` block-locals) have STATIC
+        // storage — ONE instance per task, RETAINED across calls. They are hoisted
+        // into nets under a scope keyed by the TASK NAME (`$itask$<name>$L`),
+        // SHARED by every call site, and their declaration initializers run ONCE
+        // (at the first call), NOT on every entry — so `task t; int c=0; c=c+1;`
+        // called 3× prints 1,2,3, not 1,1,1 (an inline task is always static;
+        // automatic/recursive tasks divert to the per-call frame path). A task with
+        // NO body-locals takes the exact prior path (no scope, byte-identical IR).
         let mut tlocals = task.body_decls.clone();
         collect_block_local_decls(&task.body, &mut tlocals);
         self.inline_stack.push(tname.clone());
         if tlocals.is_empty() {
             self.inline_task_body(b, &task.body);
         } else {
-            self.itask_seq += 1;
-            let scope = format!("$itask${tname}${}", self.itask_seq);
+            let scope = format!("$itask${tname}$L");
             self.with_scope(&scope, |s| {
                 s.hoist_inline_task_locals(b, &tlocals);
                 s.inline_task_body(b, &task.body);
@@ -10653,12 +10838,34 @@ impl<'s> Elaborator<'s> {
     /// formal is illegal SV; this guards it harmlessly). 2-state locals register
     /// for X/Z→0 coercion, mirroring the formal-local path.
     fn hoist_inline_task_locals(&mut self, b: &mut ProcessBuilder, decls: &[ast::NetVarDecl]) {
+        // The scope is shared per-task (static retention), so a SECOND call finds
+        // every local already bound: it allocates nothing and re-runs no
+        // initializer. `first_call` is true only when this call allocated a local
+        // — i.e. the FIRST inline of this task — gating the one-time init below.
+        let mut first_call = false;
         for d in decls {
             for decl in &d.names {
+                // An UNPACKED-ARRAY body-local (`int arr [0:1];`) is not yet backed
+                // by array storage on this inline-task path (it would allocate a
+                // single scalar net, silently corrupting element read/write). Refuse
+                // loudly rather than miscompute (correct-or-loud); a scalar/packed
+                // local is unaffected.
+                if !decl.unpacked.is_empty() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "unpacked-array local `{}` in a (non-automatic) task is \
+                             unsupported (v1: scalar/packed locals only)",
+                            decl.name.name
+                        ),
+                    );
+                    continue;
+                }
                 let key = self.fq(&decl.name.name);
                 if self.symbols.contains_key(&key) {
                     continue;
                 }
+                first_call = true;
                 let (w, msb, lsb, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
                 self.add_net(
                     &decl.name.name,
@@ -10680,8 +10887,11 @@ impl<'s> Elaborator<'s> {
                 }
             }
         }
-        // §13.4.4: body-local declaration initializers run at entry (per call).
-        self.emit_frame_local_inits(b, decls);
+        // §13.4.1/§6.21: a static local's initializer runs ONCE (before time 0),
+        // not on each call — so emit the inits only at the first call site.
+        if first_call {
+            self.emit_frame_local_inits(b, decls);
+        }
     }
 
     // ── const + expr helpers (single arena append points) ──────────
@@ -11058,6 +11268,22 @@ impl<'s> Elaborator<'s> {
         self.push_expr(ir::Expr::Const { val: cid })
     }
 
+    /// Materialize a param read at its DECLARED `(width, signed)` when known
+    /// (`param_meta`), else fall back to the value-inferred width
+    /// ([`Self::const_param_expr`]). A typed param's const therefore carries its
+    /// real width: `localparam logic [63:0] P = '1` reads as a 64-bit all-ones
+    /// const, and `logic [3:0] x = 5` reads as a 4-bit const, matching iverilog.
+    fn const_param_expr_w(&mut self, v: i64, meta: Option<(u32, bool)>) -> u32 {
+        match meta {
+            Some((w, signed)) if (1..=64).contains(&w) => {
+                let cv = make_const_i64(v, w, signed);
+                let cid = self.intern_const(cv);
+                self.push_expr(ir::Expr::Const { val: cid })
+            }
+            _ => self.const_param_expr(v),
+        }
+    }
+
     /// Overwrite the deferred placeholder at `eid` (a `Signal`) with a `Const`
     /// folding the i64 hierarchical-param value `v` — same width/sign as
     /// [`Self::const_param_expr`] (byte-identical to how a bare param folds), but
@@ -11069,6 +11295,24 @@ impl<'s> Elaborator<'s> {
             make_const_i64(v, 32, true)
         } else {
             make_const_i64(v, 64, v < 0)
+        };
+        let cid = self.intern_const(cv);
+        if let Some(slot) = self.exprs.get_mut(eid as usize) {
+            *slot = ir::Expr::Const { val: cid };
+        }
+    }
+
+    /// Width-aware [`Self::patch_expr_param_const`]: a hierarchical read of a TYPED
+    /// param (`dut.W` where `W` is `logic [63:0]`) materializes at its DECLARED
+    /// width, mirroring the bare-param [`Self::const_param_expr_w`]. `None` meta
+    /// (untyped param / no recorded width) falls back to value-inference.
+    fn patch_expr_param_const_w(&mut self, eid: u32, v: i64, meta: Option<(u32, bool)>) {
+        let cv = match meta {
+            Some((w, signed)) if (1..=64).contains(&w) => make_const_i64(v, w, signed),
+            _ => {
+                self.patch_expr_param_const(eid, v);
+                return;
+            }
         };
         let cid = self.intern_const(cv);
         if let Some(slot) = self.exprs.get_mut(eid as usize) {
@@ -18410,6 +18654,9 @@ impl<'s> Elaborator<'s> {
                 // allocate an exit BB so the disable lowers as a Goto (doc-17
                 // lowering row). Allocation is LAZY (pre-scan) so unlabeled /
                 // never-disabled blocks lower byte-identically to the old CFG.
+                // (A process block-local NON-const initializer is static-lifetime —
+                // applied ONCE at t0 by the synthesized var-init `initial`, NOT on
+                // each block entry — see `hoist_block_local_nets`.)
                 let exit = label.as_ref().and_then(|lab| {
                     stmts
                         .iter()
@@ -20565,7 +20812,14 @@ impl<'s> Elaborator<'s> {
                         return None; // formal — resolve via the lowering path
                     }
                     if me.lookup_scoped(name).is_some() {
-                        return Some(32); // param/genvar (width-less i64 domain)
+                        // A TYPED param/localparam has a declared width (`logic
+                        // [11:0] P` ⇒ 12); `$bits` must report THAT, not the
+                        // value-inferred 32. An untyped param / genvar (no recorded
+                        // width) stays 32 (the width-less i64 domain).
+                        if let Some((w, _)) = me.walk_scopes(name, &me.param_meta) {
+                            return Some(w);
+                        }
+                        return Some(32);
                     }
                     if let Some(net) = me.lookup_net_scoped(name) {
                         let nv = me.nets.get(net as usize)?;
@@ -21685,6 +21939,27 @@ fn fill_literal_ast(e: &ast::Expr) -> Option<(&str, ast::IntLitKind)> {
     }
 }
 
+/// Fold a fill literal `(kind, raw)` to its i64 value at `width` (low 64 bits;
+/// a >64-bit param is already outside the i64 param model). `'1`@64 → all ones
+/// (i64 `-1`), `'1`@48 → `0xFFFFFFFFFFFF`, `'0` → 0.
+fn fill_to_i64(kind: ast::IntLitKind, raw: &str, width: u32) -> Option<i64> {
+    literal::fill_literal_const(raw, kind, width)
+        .map(|cv| cv.bits.val.first().copied().unwrap_or(0) as i64)
+}
+
+/// If `e` (peeling `(…)`) IS an unsized fill literal, return its `(kind, raw)`.
+/// Used by the parameter-init path to size a bare `'1`/`'0`/`'x`/`'z` to the
+/// declared param width before const-folding.
+fn expr_as_fill(e: &ast::Expr) -> Option<(ast::IntLitKind, &str)> {
+    match &e.kind {
+        ast::ExprKind::Paren { inner } => expr_as_fill(inner),
+        ast::ExprKind::IntLit { kind, raw } if literal::is_fill_literal(raw, *kind) => {
+            Some((*kind, raw.as_str()))
+        }
+        _ => None,
+    }
+}
+
 /// Does `e` contain an unsized fill literal in a CONTEXT-PROPAGATING position
 /// (the operands of arith/bitwise/shift/ternary/unary, or a concat/replication
 /// element)? Recurses only into those node types — a fill buried in a select
@@ -22429,6 +22704,27 @@ fn net_is_variable(k: ast::NetVarKind) -> bool {
 fn net_kind_is_two_state(k: ast::NetVarKind) -> bool {
     use ast::NetVarKind::*;
     matches!(k, Bit | Byte | Shortint | Int | Longint)
+}
+
+/// True iff `k` is a VARIABLE kind (reg/logic/integer/real/time/event + the
+/// 2-state integer types) as opposed to a net (wire) — a variable's declaration
+/// initializer is a one-time value at time 0, not a continuous driver (§6.8).
+fn netvar_kind_is_var(k: ast::NetVarKind) -> bool {
+    use ast::NetVarKind::*;
+    matches!(
+        k,
+        Reg | Logic
+            | Integer
+            | Real
+            | Realtime
+            | Time
+            | Event
+            | Bit
+            | Byte
+            | Shortint
+            | Int
+            | Longint
+    )
 }
 
 /// True iff an lvalue is exactly ONE whole-net chunk (no bit/part-select, no

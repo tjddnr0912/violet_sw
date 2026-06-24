@@ -131,6 +131,63 @@ fn frame_function_block_local() {
 }
 
 #[test]
+fn unpacked_array_task_local_is_loud() {
+    // An unpacked-array body-local in a (non-automatic) task is not yet backed by
+    // array storage on the inline path, so it is LOUD-rejected (correct-or-loud)
+    // rather than silently miscomputing element read/writes.
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("vita_tbl_arr_{}_{n}.sv", std::process::id()));
+    std::fs::write(
+        &path,
+        "module t;\n\
+           task tk; int arr [0:1]; begin arr[0]=5; arr[1]=9; $display(\"%0d\", arr[0]+arr[1]); end endtask\n\
+           initial tk();\n\
+         endmodule\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_vita"))
+        .arg(&path)
+        .output()
+        .expect("run vita");
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        !out.status.success(),
+        "expected a loud reject (nonzero exit)"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("unpacked-array local"),
+        "expected unpacked-array diagnostic, got:\n{err}"
+    );
+}
+
+#[test]
+fn static_task_persistent_local() {
+    // IEEE §6.21 / §13.4.1: a non-automatic (static) task's local has STATIC
+    // storage; its `= 0` initializer runs ONCE before time 0 and the value is
+    // retained across calls. Three calls must print 1,2,3 — not 1,1,1 (the
+    // pre-fix per-call-fresh-storage divergence). Oracle: iverilog.
+    let out = run("module t;\n\
+           task tk; int cnt = 0; cnt = cnt + 1; $display(\"%0d\", cnt); endtask\n\
+           initial begin tk(); tk(); tk(); end\n\
+         endmodule\n");
+    assert_eq!(out, "1\n2\n3\n");
+}
+
+#[test]
+fn static_task_persistent_no_initializer() {
+    // A static local without an initializer still has persistent storage: the
+    // accumulator survives across calls.
+    let out = run("module t;\n\
+           int o;\n\
+           task tk(output int r); int acc; acc = acc + 5; r = acc; endtask\n\
+           initial begin tk(o); $display(\"%0d\", o); tk(o); $display(\"%0d\", o); end\n\
+         endmodule\n");
+    // First call: acc starts 0 (2-state default) -> 5. Second: 5 -> 10.
+    assert_eq!(out, "5\n10\n");
+}
+
+#[test]
 fn static_task_no_locals_still_inlines() {
     // CONTROL: a static task with no body-locals keeps inlining (byte-identical
     // path); just confirm it still computes correctly.
