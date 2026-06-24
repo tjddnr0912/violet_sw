@@ -174,7 +174,9 @@ loud-reject로 확인됨(이제 참):**
 >
 > **✅ frame-local var-decl initializer drop 수정**(2026-06-24, §13.4.4, **1825 green**): function/task/class-method 본문의 `int x=10;` 로컬 초기화자가 silently drop(로컬=X/0)되던 광범위 pre-existing silent-wrong(클래스 무관 재현) — `emit_frame_local_inits`가 frame 진입 시 선언순으로 실행(per-call·vita reset-per-call frame 모델 일치). IR-0(합성 entry assign). (task body-local 중 *대입되는* 로컬의 별도 pre-existing 해소 갭은 잔존=별개.)
 >
-> **ⓑ-breadth 잔여(별개 후속 슬라이스)**: string concat `{a,b}`(현재 loud `use $sformatf`)·**`'1`/`'0`/`'x`/`'z` 비사이즈 fill의 context-determined 폭**(현재 32bit 자기결정→폭>32 필드는 low 32bit만 채움 §11.4.4/§5.7.1; correct fix=fill const에 context-width 마커 전파=width-system 슬라이스)·task body-local 대입 해소 갭. **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
+> **✅ `'1`/`'0`/`'x`/`'z` 비사이즈 fill의 context-determined 폭 수정**(2026-06-24, §5.7.1/§11.4.4, **1835 green**): unsized 단일비트 fill이 self-determined 32bit로 고정돼 폭>32 대입 타깃은 low 32bit만 채우던 silent-wrong(param-class hunt surface) — fill은 **assignment-context 폭**(IEEE §11.6.1)이라 `a = '1`(64bit reg)=all-64-ones. **IR-0 elaborate 폭전파**: `fill_literal_const(raw,kind,width)`(unsigned, iverilog parity `'1>0`=true)를 (1) `fold_init`(decl/class-field 초기화자) (2) 절차 blocking/non-blocking + continuous assign 3 사이트의 `resize_fill_rhs`(rhs는 정상 lower 후 lvalue width≠32일 때만 재사이즈→**32bit context는 byte-identical=골든 불변**, non-fill rhs는 lvalue width 미조회=error-recovery lvalue 무해)로 적용. part-select(48bit)·array-element 타깃도 `ir_lvalue_width`로 정확(`.get()` 가드로 OOB net panic 차단). **잔여(별개·문서화 known-limit)**: 순수 self-determined `$display("%h",'1)`는 32bit 유지(iverilog는 1bit=`1`; binary-op context는 32bit가 정답이라 1bit화하면 `'1+0` 발산→full 식-context 폭전파는 별 width-system 슬라이스).
+>
+> **ⓑ-breadth 잔여(별개 후속 슬라이스)**: string concat `{a,b}`(현재 loud `use $sformatf`)·task body-local 대입 해소 갭(static/inline task의 body-local이 assign되면 E3010=loud, frame/automatic은 정상). **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
 
 ### 4.1 스코프 확장 트랙
 

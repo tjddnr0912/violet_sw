@@ -224,6 +224,56 @@ fn ext_fill(bits: &[Bit]) -> Bit {
     }
 }
 
+/// The fill `Bit` of an unsized single-bit fill literal (`'0`/`'1`/`'x`/`'z`,
+/// IEEE §5.7.1) — `None` for any other literal. A fill is unsized (no size
+/// prefix), an optional `s`, then exactly one of `0 1 x X z Z ?`.
+fn fill_bit(raw: &str, kind: IntLitKind) -> Option<Bit> {
+    if kind != IntLitKind::UnsizedBased {
+        return None;
+    }
+    let tick = raw.find('\'')?;
+    if tick != 0 {
+        return None; // a fill literal carries no explicit width
+    }
+    let mut rest = raw[1..].chars();
+    let mut c = rest.next()?;
+    if matches!(c, 's' | 'S') {
+        c = rest.next()?;
+    }
+    let fill = match c {
+        '0' => B0,
+        '1' => B1,
+        'x' | 'X' => BX,
+        'z' | 'Z' | '?' => BZ,
+        _ => return None,
+    };
+    if rest.next().is_some() {
+        return None; // trailing junk ⇒ not a bare fill
+    }
+    Some(fill)
+}
+
+/// Is `raw`/`kind` an unsized single-bit fill literal (`'0`/`'1`/`'x`/`'z`)?
+/// A cheap predicate the caller uses to decide whether to apply context-width
+/// sizing (IEEE §5.7.1 / §11.4.4) before computing the assignment target width.
+pub fn is_fill_literal(raw: &str, kind: IntLitKind) -> bool {
+    fill_bit(raw, kind).is_some()
+}
+
+/// Build the `ConstVal` of a fill literal at the CONTEXT width `width` (the fill
+/// bit replicated across all `width` bits). `None` if `raw`/`kind` is not a fill
+/// literal. Fills are UNSIGNED (iverilog parity: `'1 > 0` is true); the engine
+/// therefore does not sign-extend them in narrower-than-context uses.
+pub fn fill_literal_const(raw: &str, kind: IntLitKind, width: u32) -> Option<ConstVal> {
+    let fill = fill_bit(raw, kind)?;
+    Some(ConstVal {
+        width,
+        signed: false,
+        repr: ConstRepr::Numeric,
+        bits: pack_bits(&[], alloc_width(width), fill),
+    })
+}
+
 /// Parse a raw IntLit lexeme into a `ConstVal`. `None` ⇒ malformed (caller emits
 /// a diagnostic and substitutes a zero const).
 pub fn parse_int_literal(raw: &str, kind: IntLitKind) -> Option<ConstVal> {

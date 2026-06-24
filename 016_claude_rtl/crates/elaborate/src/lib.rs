@@ -5791,7 +5791,9 @@ impl<'s> Elaborator<'s> {
             .map(|c| match c.kind {
                 ir::SelKind::Bit => {
                     if c.offset.is_none() && c.width.is_none() {
-                        self.nets[c.net as usize].width
+                        // `.get()` (not index) so an error-recovery lvalue with an
+                        // out-of-range net id degrades to 1 instead of panicking.
+                        self.nets.get(c.net as usize).map(|n| n.width).unwrap_or(1)
                     } else {
                         1
                     }
@@ -8268,6 +8270,7 @@ impl<'s> Elaborator<'s> {
             // legacy `reg r = init` forms stay accepted).
             self.check_lvalue_kind(&lhs, false);
             let rhs_id = self.lower_expr(rhs);
+            let rhs_id = self.resize_fill_rhs(rhs, rhs_id, &lhs);
             self.cont_assigns.push(ir::ContAssign {
                 lhs,
                 rhs: rhs_id,
@@ -10581,6 +10584,30 @@ impl<'s> Elaborator<'s> {
                 }
             }
         }
+    }
+
+    /// §5.7.1: re-size a fill-literal rhs to the assignment-context width. An
+    /// unsized single-bit FILL literal (`'0`/`'1`/`'x`/`'z`) is CONTEXT-determined
+    /// — `a = '1` into a 64-bit reg means all 64 ones, not the self-determined
+    /// 32-bit default. The caller lowers `rhs` NORMALLY first (so non-fill ExprId
+    /// ordering is untouched); this returns a fresh Const sized to the lvalue
+    /// width ONLY when `rhs` is a fill AND that width != 32 (the 32-bit case is
+    /// already correct and stays byte-identical — every existing golden keeps its
+    /// bytes). For a NON-fill rhs the lvalue width is never even read, so an
+    /// error-recovery lvalue (e.g. `x = 1` for undeclared `x`) is untouched.
+    fn resize_fill_rhs(&mut self, rhs: &ast::Expr, rhs_id: u32, lv: &ir::Lvalue) -> u32 {
+        let Some((raw, kind)) = fill_literal_ast(rhs) else {
+            return rhs_id;
+        };
+        let lv_width = self.ir_lvalue_width(lv);
+        if lv_width == 32 {
+            return rhs_id;
+        }
+        if let Some(cv) = literal::fill_literal_const(raw, kind, lv_width) {
+            let cid = self.intern_const(cv);
+            return self.push_expr(ir::Expr::Const { val: cid });
+        }
+        rhs_id
     }
 
     fn lower_int_literal(&mut self, kind: ast::IntLitKind, raw: &str) -> u32 {
@@ -17916,6 +17943,8 @@ impl<'s> Elaborator<'s> {
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018): no proc write to a net
+                                                   // §5.7.1: context-determined fill literal → lvalue width.
+                let rhs_id = self.resize_fill_rhs(rhs, rhs_id, &lv);
                 if let Some(d) = delay {
                     // IEEE §9.2.2 intra-assignment delay: the RHS evaluates NOW,
                     // the process suspends `d`, THEN the write happens. Lower as
@@ -17984,6 +18013,8 @@ impl<'s> Elaborator<'s> {
                 let rhs_id = self.lower_expr(rhs);
                 let lv = self.lower_lvalue(lhs);
                 self.check_lvalue_kind(&lv, true); // P1-9 (E3018)
+                                                   // §5.7.1: context-determined fill literal → lvalue width.
+                let rhs_id = self.resize_fill_rhs(rhs, rhs_id, &lv);
                 let delay_id = delay.as_ref().map(|d| self.lower_delay(d).0);
                 let sid = self.push_stmt(ir::Stmt::NonblockingAssign {
                     lhs: lv,
@@ -21076,8 +21107,27 @@ fn body_calls_super_new(body: &ast::Stmt) -> bool {
     }
 }
 
+/// If `e` (looking through `Paren`) is an unsized single-bit fill literal
+/// (`'0`/`'1`/`'x`/`'z`, IEEE §5.7.1), return its `(raw, kind)` so the caller can
+/// size it to the context width. `None` for any other expression.
+fn fill_literal_ast(e: &ast::Expr) -> Option<(&str, ast::IntLitKind)> {
+    match &e.kind {
+        ast::ExprKind::IntLit { kind, raw } if literal::is_fill_literal(raw, *kind) => {
+            Some((raw.as_str(), *kind))
+        }
+        ast::ExprKind::Paren { inner } => fill_literal_ast(inner),
+        _ => None,
+    }
+}
+
 fn fold_init(e: &ast::Expr, width: u32) -> Option<ir::BitPacked> {
     match &e.kind {
+        // A fill literal is context-determined: replicate the fill bit across the
+        // full target `width` (§5.7.1), not the self-determined 32-bit default.
+        ast::ExprKind::IntLit { kind, raw } if literal::is_fill_literal(raw, *kind) => {
+            let cv = literal::fill_literal_const(raw, *kind, width)?;
+            Some(cv.bits)
+        }
         ast::ExprKind::IntLit { kind, raw } => {
             let cv = parse_int_literal(raw, *kind)?;
             Some(resize_bits(&cv.bits, cv.width, width, cv.signed))
