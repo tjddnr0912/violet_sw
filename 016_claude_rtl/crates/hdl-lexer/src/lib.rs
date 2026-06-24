@@ -501,6 +501,8 @@ pub enum Kw {
     Assert,
     // --- SV interface (v5 ⑥, Phase-2 gateway item D) ---
     Interface, Endinterface, Modport,
+    // --- SV program block (ⓑ-breadth, §24 — parsed into the module AST) ---
+    Program, Endprogram,
     // --- SV foreach (v5 ⑥ follow-on — parse-desugar, no AST/IR change) ---
     Foreach,
     // --- SV package + string type (v7 P2-C/P2-D) ---
@@ -581,6 +583,7 @@ impl Kw {
             "union" => Union, "packed" => Packed,
             "assert" => Assert,
             "interface" => Interface, "endinterface" => Endinterface,
+            "program" => Program, "endprogram" => Endprogram,
             "modport" => Modport, "foreach" => Foreach,
             "package" => Package, "endpackage" => Endpackage,
             "import" => Import, "string" => String,

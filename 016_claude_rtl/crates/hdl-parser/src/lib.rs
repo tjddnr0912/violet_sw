@@ -1426,6 +1426,18 @@ impl<'t, 's> Parser<'t, 's> {
                         self.synchronize();
                     }
                 }
+            } else if self.at_kw(Kw::Program) {
+                // ⓑ-breadth (§24): `program … endprogram` parses into the module
+                // AST and elaborates as a top-level module container. The §24
+                // Reactive-region scheduling of program processes is approximated
+                // as Active (documented limitation). Pure parser addition (IR-0).
+                match self.parse_module_like(Kw::Program, Kw::Endprogram) {
+                    Some(m) => items.push(TopItem::Module(m)),
+                    None => {
+                        items.push(TopItem::Error(self.prev_span()));
+                        self.synchronize();
+                    }
+                }
             } else if self.at_kw(Kw::Package) {
                 // v7 P2-D: `package … endpackage` — body shape reuses modules.
                 match self.parse_module_like(Kw::Package, Kw::Endpackage) {
