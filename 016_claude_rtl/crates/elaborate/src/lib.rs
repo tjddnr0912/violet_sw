@@ -8296,6 +8296,16 @@ impl<'s> Elaborator<'s> {
         match &e.kind {
             // ── leaves ──────────────────────────────────────────────
             ast::ExprKind::IntLit { kind, raw } => {
+                // §5.7.1/§11.6: a fill literal reaching here is in a SELF-determined
+                // position (a bare `$display` arg, a `$signed`/`$unsigned` arg, a
+                // select index, …) → 1 bit, minimal. Context-determined positions
+                // widen it through `lower_expr_ctx` before reaching this arm.
+                if literal::is_fill_literal(raw, *kind) {
+                    let cv = literal::fill_literal_const(raw, *kind, 1)
+                        .unwrap_or_else(|| make_const_u32(0, 1));
+                    let cid = self.intern_const(cv);
+                    return self.push_expr(ir::Expr::Const { val: cid });
+                }
                 let cid = self.lower_int_literal(*kind, raw);
                 self.push_expr(ir::Expr::Const { val: cid })
             }
@@ -10044,18 +10054,30 @@ impl<'s> Elaborator<'s> {
             );
             return;
         }
+        // §11.6: an input/inout actual is in the formal's width context (the frame
+        // formal net sits at base_net + slot), so a fill grows to it.
+        let base_net = self
+            .func_metas
+            .get(fid as usize)
+            .map(|m| m.base_net)
+            .unwrap_or(0);
         let mut in_binds: Vec<(u32, u32)> = Vec::new();
         let mut out_binds: Vec<(u32, ir::Lvalue)> = Vec::new();
         for (slot, (p, a)) in task.ports.iter().zip(args).enumerate() {
             let slot = slot as u32;
+            let fw = self
+                .nets
+                .get((base_net + slot) as usize)
+                .map(|n| n.width)
+                .unwrap_or(32);
             match p.dir {
                 ast::PortDir::Input => {
-                    let eid = self.lower_expr(a);
+                    let eid = self.lower_ctx_or_plain(a, fw);
                     in_binds.push((slot, eid));
                 }
                 ast::PortDir::Output | ast::PortDir::Inout => {
                     if matches!(p.dir, ast::PortDir::Inout) {
-                        let eid = self.lower_expr(a); // inout reads in too
+                        let eid = self.lower_ctx_or_plain(a, fw); // inout reads in too
                         in_binds.push((slot, eid));
                     }
                     match &a.kind {
@@ -10454,7 +10476,10 @@ impl<'s> Elaborator<'s> {
                     // truncated to the formal width); bind the formal to a read of that
                     // local — so body reads see the formal width (§13.5.3), not the
                     // actual's, and a later change to the actual does not leak in.
-                    let actual_eid = self.lower_expr(a); // caller-scope read (pre-bind)
+                    // §11.6: the actual is in the formal's width context, so a fill
+                    // grows to it (non-fill ⇒ byte-identical via lower_expr).
+                    let fw = self.nets.get(local as usize).map(|n| n.width).unwrap_or(32);
+                    let actual_eid = self.lower_ctx_or_plain(a, fw); // caller-scope read (pre-bind)
                     let cin = self.push_stmt(ir::Stmt::BlockingAssign {
                         lhs: whole_net_lvalue(local),
                         rhs: actual_eid,
@@ -10844,8 +10869,26 @@ impl<'s> Elaborator<'s> {
                 else_e,
             } => {
                 let c = self.lower_expr(cond); // condition self-determined
-                let t = self.lower_ctx_or_plain(then_e, ctx);
-                let f = self.lower_ctx_or_plain(else_e, ctx);
+                                               // branches are sized to max(ctx, both branch self-widths) — like a
+                                               // binary op, so a fill branch grows to its sibling's width even in a
+                                               // self-determined outer context (`(c)?'1:32'd7` ⇒ 32-bit).
+                let tf = expr_contains_fill(then_e);
+                let ff = expr_contains_fill(else_e);
+                let (t, f) = if tf && !ff {
+                    let f = self.lower_expr(else_e);
+                    let w = ctx.max(self.ir_bits_of(f).unwrap_or(32));
+                    (self.lower_expr_ctx(then_e, w), f)
+                } else if ff && !tf {
+                    let t = self.lower_expr(then_e);
+                    let w = ctx.max(self.ir_bits_of(t).unwrap_or(32));
+                    (t, self.lower_expr_ctx(else_e, w))
+                } else {
+                    let w = ctx.max(1);
+                    (
+                        self.lower_expr_ctx(then_e, w),
+                        self.lower_expr_ctx(else_e, w),
+                    )
+                };
                 self.push_expr(ir::Expr::Ternary {
                     cond: c,
                     then_e: t,
@@ -20681,7 +20724,9 @@ impl<'s> Elaborator<'s> {
                     | F::ArrXor => return None,
                 }
             }
-            ir::Expr::Call { .. } => return None,
+            // A user function call's width is its declared return width (so a fill
+            // sibling — `case(f8()) '1:`, `x == f16()` — sizes to it, not 32).
+            ir::Expr::Call { func, .. } => self.func_metas.get(*func as usize)?.ret_width.max(1),
         })
     }
 

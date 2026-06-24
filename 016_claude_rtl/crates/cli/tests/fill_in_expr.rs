@@ -169,6 +169,58 @@ fn fill_case_label_sized_to_scrutinee() {
 }
 
 #[test]
+fn fill_in_signed_unsigned_is_one_bit() {
+    // $signed/$unsigned arg is self-determined ⇒ a bare fill is 1 bit.
+    let out = run("module t; initial begin\n\
+           $display(\"%0d\", $unsigned('1));\n\
+           $display(\"%0d\", $unsigned('1) >> 1);\n\
+         end endmodule\n");
+    assert_eq!(out, "1\n0\n");
+}
+
+#[test]
+fn fill_ternary_in_self_determined_context() {
+    // A ternary that is itself a self-determined operand ($display arg) still
+    // sizes a fill branch to its sibling branch's width.
+    let out = run("module t;\n\
+           logic [31:0] a = 32'd10;\n\
+           initial begin\n\
+             $display(\"%h\", (a > 5) ? '1 : 32'd7);\n\
+             $display(\"%h\", (a > 5) ? '1 : 8'd7);\n\
+             $display(\"%h\", (a > 5) ? '1 : 64'd7);\n\
+           end endmodule\n");
+    assert_eq!(out, "ffffffff\nff\nffffffffffffffff\n");
+}
+
+#[test]
+fn fill_as_select_index_is_value_one() {
+    let out = run("module t;\n\
+           reg [15:0] vec; reg [3:0] ps;\n\
+           initial begin vec = 16'hABCD; ps = vec['1 +: 4]; $display(\"%h\", ps); end\n\
+         endmodule\n");
+    assert_eq!(out, "6\n");
+}
+
+#[test]
+fn fill_sized_to_function_call_sibling() {
+    let out = run("module t;\n\
+           function automatic [7:0] f(); f = 8'hFF; endfunction\n\
+           initial case (f()) '1: $display(\"ones\"); default: $display(\"def\"); endcase\n\
+         endmodule\n");
+    assert_eq!(out, "ones\n");
+}
+
+#[test]
+fn fill_as_task_input_arg() {
+    let out = run("module t;\n\
+           logic [63:0] g;\n\
+           task tset(input logic [63:0] x); g = x; endtask\n\
+           initial begin tset('1); $display(\"%h\", g); tset('x); $display(\"%h\", g); end\n\
+         endmodule\n");
+    assert_eq!(out, "ffffffffffffffff\nxxxxxxxxxxxxxxxx\n");
+}
+
+#[test]
 fn fill_in_continuous_assign_binary_op() {
     let out = run("module t;\n\
            logic [63:0] w;\n\
