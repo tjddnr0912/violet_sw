@@ -18044,6 +18044,10 @@ impl<'s> Elaborator<'s> {
                 if self.sformatf_special(b, lhs, delay.as_ref(), rhs) {
                     return;
                 }
+                // ⓑ-breadth: `s = {a, b, …}` string concat → $sformatf desugar.
+                if self.string_concat_special(b, lhs, delay.as_ref(), rhs) {
+                    return;
+                }
                 // v9 SYS-READ: `c = $fgetc(fd)` / `e = $feof(fd)` /
                 // `r = $ungetc(c, fd)` — each advances/mutates the fd read
                 // state, statement-level intercept (the only legal placement).
@@ -19803,6 +19807,93 @@ impl<'s> Elaborator<'s> {
         let rhs_id = self.push_expr(ir::Expr::SysFunc {
             which: ir::SysFuncId::Sformatf,
             args: arg_ids,
+        });
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
+    /// String concatenation `lhs = {a, b, …}` or replication `lhs = {N{a, …}}`
+    /// (IEEE §6.16 / §11.4.12) where at least one part is a string — desugared to
+    /// the existing `$sformatf("%s%s…", a, b, …)` render path (the static `Concat`
+    /// node cannot carry a dynamic-width string result). Only the direct-rhs-of-a-
+    /// blocking-assign placement is handled (the dominant string-building pattern);
+    /// a string concat in any other context stays loud (the `lower_expr` reject).
+    /// Each part renders through `%s` — string vars/literals and integral byte
+    /// values alike (IEEE §6.16: an integral concat element is its character
+    /// bytes), matching iverilog. A `real` part is loud (no string segment).
+    fn string_concat_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let mut inner = rhs;
+        while let ast::ExprKind::Paren { inner: i } = &inner.kind {
+            inner = i;
+        }
+        // The ordered list of part expressions (a replication flattens to its
+        // value list repeated `count` times). `None` ⇒ not a string concat.
+        let part_exprs: Vec<&ast::Expr> = match &inner.kind {
+            ast::ExprKind::Concat { parts } => {
+                if !parts.iter().any(|p| self.expr_is_string_ast(p)) {
+                    return false; // no string part ⇒ ordinary bit-concat (byte-identical)
+                }
+                parts.iter().collect()
+            }
+            ast::ExprKind::Replicate { count, value } => {
+                if !value.iter().any(|p| self.expr_is_string_ast(p)) {
+                    return false; // ordinary bit-replicate (byte-identical)
+                }
+                let Some(n) = self.const_eval_in_scope(count) else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a non-constant replication count on a string is unsupported",
+                    );
+                    return true;
+                };
+                let n = n.max(0) as usize; // a 0/negative count ⇒ empty string
+                let mut v = Vec::with_capacity(n.saturating_mul(value.len()));
+                for _ in 0..n {
+                    v.extend(value.iter());
+                }
+                v
+            }
+            _ => return false,
+        };
+        if delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "an intra-assignment delay on a string concatenation is unsupported",
+            );
+            return true;
+        }
+        // fmt = "%s"×N (the parts pass as %s args, so a `%` in any part value is
+        // rendered literally, not as a conversion).
+        let fmt = "%s".repeat(part_exprs.len());
+        let fmt_cid = self.intern_const(literal::str_const_from_bytes(fmt.as_bytes()));
+        let fmt_eid = self.push_expr(ir::Expr::Const { val: fmt_cid });
+        let mut args = vec![fmt_eid];
+        for p in part_exprs {
+            let pid = self.lower_expr(p);
+            if self.expr_is_real(pid) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a real value may not be a string-concatenation element",
+                );
+                return true;
+            }
+            args.push(pid);
+        }
+        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Sformatf,
+            args,
         });
         let lv = self.lower_lvalue(lhs);
         self.check_lvalue_kind(&lv, true);

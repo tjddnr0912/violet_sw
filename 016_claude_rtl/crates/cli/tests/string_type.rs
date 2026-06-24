@@ -146,12 +146,32 @@ fn sformat_task_writes_dest() {
 }
 
 #[test]
-fn string_concat_is_loud_use_sformatf() {
-    let (_o, err, code) = run("module top;\n\
+fn string_concat_assignment_works() {
+    // ⓑ-breadth: `c = {a, b}` as the direct rhs of a string assignment now
+    // desugars to $sformatf("%s%s", a, b) (was loud). See string_concat.rs for
+    // the full characterization.
+    let (out, err, code) = run("module top;\n\
          string a, b, c;\n\
          initial begin\n\
            a = \"x\"; b = \"y\";\n\
            c = {a, b};\n\
+           $display(\"c=%s\", c);\n\
+           $finish;\n\
+         end\n\
+         endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("c=xy"), "got:\n{out}");
+}
+
+#[test]
+fn string_concat_in_expr_context_is_loud() {
+    // Only the direct-rhs placement is desugared; a string concat in any other
+    // context (here a $display argument) stays loud (use $sformatf).
+    let (_o, err, code) = run("module top;\n\
+         string a, b;\n\
+         initial begin\n\
+           a = \"x\"; b = \"y\";\n\
+           $display(\"%s\", {a, b});\n\
            $finish;\n\
          end\n\
          endmodule\n");
