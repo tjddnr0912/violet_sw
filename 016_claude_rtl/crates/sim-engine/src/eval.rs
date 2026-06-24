@@ -616,7 +616,14 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             // base's so `arith`'s both-signed reduction follows the base.
             Pow => {
                 let base = self.eval_ctx(lhs, w, eff_signed);
-                let mut exp = self.eval(rhs);
+                // The exponent is SELF-determined: its value is read with its OWN
+                // signedness. A narrow UNSIGNED exponent (`1'b1` = +1, `2'd2` = +2)
+                // must NOT be reinterpreted as signed — widen it to `w` using its
+                // own sign FIRST (so `1'b1` zero-extends to +1, a genuine `-1`
+                // sign-extends to -1), THEN restamp to the base's sign so `arith`'s
+                // both-signed reduction follows the base. (Restamping before the
+                // widen turned `1'b1` into a 1-bit signed -1 ⇒ `2 ** 1'b1` = 0.)
+                let mut exp = self.eval(rhs).resize(w);
                 exp.signed = base.signed;
                 self.arith(op, &base, &exp) // result width = base width = w
             }
@@ -813,7 +820,26 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
                     }
                     a % b
                 }
-                BinOp::Pow => a.checked_pow(b as u32).unwrap_or(0),
+                // Square-and-multiply mod 2^128 (then masked to `w`) — a^n WRAPS
+                // mod 2^w like iverilog, instead of the old `checked_pow(..)
+                // .unwrap_or(0)` that returned 0 on u128 overflow (`64'hF..F ** 3`
+                // is all-ones, not 0). For w*n <= 128 the value never wraps, so
+                // this is byte-identical to the old result there.
+                BinOp::Pow => {
+                    let mut acc: u128 = 1;
+                    let mut base = a;
+                    let mut e = b;
+                    while e > 0 {
+                        if e & 1 == 1 {
+                            acc = acc.wrapping_mul(base);
+                        }
+                        e >>= 1;
+                        if e > 0 {
+                            base = base.wrapping_mul(base);
+                        }
+                    }
+                    acc
+                }
                 _ => unreachable!(),
             }
         };
