@@ -3076,6 +3076,9 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Struct) {
             return self.parse_typedef_struct(start);
         }
+        if self.at_kw(Kw::Union) {
+            return self.parse_typedef_union(start);
+        }
         if !self.at_kw(Kw::Enum) {
             // `typedef logic [7:0] byte_t;` — plain alias to a net/var type.
             if self.net_var_kind().is_some() {
@@ -3240,6 +3243,93 @@ impl<'t, 's> Parser<'t, 's> {
             off -= w;
             fields.push((m.name.name.clone(), off, *w));
         }
+        self.struct_layouts
+            .insert(tname.name.clone(), StructLayout { fields });
+        self.typedefs.insert(
+            tname.name.clone(),
+            TypeInfo {
+                kind: NetVarKind::Logic,
+                signed: false,
+                range: Some(Self::dec_range(total.saturating_sub(1))),
+                packed: Vec::new(),
+                class_name: None,
+            },
+        );
+        Some(ModuleItem::Typedef(TypedefDecl {
+            name: tname,
+            kind: TypedefKind::Struct { members },
+            span: start.to(self.prev_span()),
+        }))
+    }
+
+    /// `typedef union packed { <type> f1; … } name;` (ⓑ-breadth, IEEE §7.3.1).
+    /// A packed union OVERLAYS its members — every member shares bit 0, and the
+    /// union width is the MAX member width (vs the struct's SUM). Recorded in the
+    /// same `struct_layouts` map, so `u.field` desugars to a part-select exactly
+    /// like a struct; a write to one member is visible through every other
+    /// (different-width members read/write their own low bits). Pure parser
+    /// addition (IR-0) — reuses `TypedefKind::Struct` for the AST node.
+    fn parse_typedef_union(&mut self, start: Span) -> Option<ModuleItem> {
+        self.bump(); // `union`
+        if !self.eat_kw(Kw::Packed) {
+            self.error("`packed` after `union` (unpacked union unsupported in v1)");
+            self.synchronize();
+            return Some(ModuleItem::Error(start.to(self.prev_span())));
+        }
+        let _ = self.opt_signed();
+        self.expect(TokenKind::LBrace, "'{' for union body");
+        let mut members = Vec::new();
+        while self.peek() != Some(TokenKind::RBrace) && !self.at_eof() {
+            let before = self.pos;
+            let m_start = self.cur_span();
+            let Some(kind) = self.net_var_kind() else {
+                self.error("a net/var type in union member");
+                break;
+            };
+            self.bump(); // kind keyword
+            let signed = self.signed_eff(Some(kind));
+            let range = self.opt_range();
+            loop {
+                let Some(name) = self.ident() else { break };
+                members.push(StructMember {
+                    name,
+                    kind,
+                    signed,
+                    range: range.clone(),
+                    span: m_start.to(self.prev_span()),
+                });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Semi, "';'");
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}' to close union body");
+        let tname = self.ident()?;
+        self.expect(TokenKind::Semi, "';'");
+        let mut widths = Vec::with_capacity(members.len());
+        for m in &members {
+            match self.member_width(&m.range) {
+                Some(w) if w > 0 => widths.push(w),
+                _ => {
+                    self.error_at(
+                        m.span,
+                        "union member width must be a constant-literal range in v1",
+                    );
+                    widths.push(1);
+                }
+            }
+        }
+        // OVERLAY: union width = MAX member width; every member starts at bit 0.
+        let total: u32 = widths.iter().copied().max().unwrap_or(1);
+        let fields = members
+            .iter()
+            .zip(&widths)
+            .map(|(m, w)| (m.name.name.clone(), 0u32, *w))
+            .collect();
         self.struct_layouts
             .insert(tname.name.clone(), StructLayout { fields });
         self.typedefs.insert(
