@@ -8286,6 +8286,13 @@ impl<'s> Elaborator<'s> {
 
     // ── expression lowering: post-order arena append, returns ExprId ──
     fn lower_expr(&mut self, e: &ast::Expr) -> u32 {
+        // §11.6: an expression whose operands carry an unsized FILL literal is
+        // lowered width-aware (self-determined context = 0 here, so a bare fill in
+        // a self-determined position stays minimal). Only context-propagating node
+        // types are scanned, so a fill-free design pays an O(1) type check.
+        if is_ctx_node(e) && expr_contains_fill(e) {
+            return self.lower_expr_ctx(e, 0);
+        }
         match &e.kind {
             // ── leaves ──────────────────────────────────────────────
             ast::ExprKind::IntLit { kind, raw } => {
@@ -9524,7 +9531,15 @@ impl<'s> Elaborator<'s> {
         // (1) Lower each ACTUAL arg in the CALLER scope FIRST (before pushing the
         //     substitution frame) so args see the caller's nets and any OUTER
         //     substitution (nested inlining), never the function's own formals.
-        let actual_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+        //     §11.6: an arg is in the context of its FORMAL's width, so a fill
+        //     grows to that width (non-fill ⇒ byte-identical via lower_expr).
+        let mut actual_ids: Vec<u32> = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            let p = &inputs[i];
+            let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
+            let (w, _, _, _) = self.range_to_dims(kind, p.range.as_ref(), p.signed);
+            actual_ids.push(self.lower_ctx_or_plain(a, w));
+        }
 
         // (2) Reduce the straight-line body → an ExprId, formals bound to actuals.
         self.inline_stack.push(fname.clone());
@@ -9562,7 +9577,16 @@ impl<'s> Elaborator<'s> {
             );
             return self.placeholder_expr();
         }
-        let actual_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+        // §11.6: each arg is in the context of its FORMAL's width (a fill grows to
+        // it; non-fill ⇒ byte-identical via lower_expr).
+        let ports = func.ports.clone();
+        let mut actual_ids: Vec<u32> = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            let p = &ports[i];
+            let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
+            let (w, _, _, _) = self.range_to_dims(kind, p.range.as_ref(), p.signed);
+            actual_ids.push(self.lower_ctx_or_plain(a, w));
+        }
         self.push_expr(ir::Expr::Call {
             func: fid,
             args: actual_ids,
@@ -10719,18 +10743,159 @@ impl<'s> Elaborator<'s> {
     /// bytes). For a NON-fill rhs the lvalue width is never even read, so an
     /// error-recovery lvalue (e.g. `x = 1` for undeclared `x`) is untouched.
     fn resize_fill_rhs(&mut self, rhs: &ast::Expr, rhs_id: u32, lv: &ir::Lvalue) -> u32 {
-        let Some((raw, kind)) = fill_literal_ast(rhs) else {
+        // The rhs has no fill in a context-propagating position ⇒ untouched
+        // (byte-identical; `lower_expr` already produced the right IR).
+        if !expr_contains_fill(rhs) {
             return rhs_id;
-        };
+        }
         let lv_width = self.ir_lvalue_width(lv);
-        if lv_width == 32 {
-            return rhs_id;
+        // Re-lower the rhs with the lvalue width as the assignment context so every
+        // fill in a context-determined position grows to that width (IEEE §11.6).
+        // The originally-lowered `rhs_id` (sized self-determined) becomes dead — a
+        // fill-bearing rhs has no golden to preserve, so this is harmless.
+        self.lower_expr_ctx(rhs, lv_width)
+    }
+
+    /// Lower `e` in a context of width `ctx` (IEEE §11.6/§11.8.1), propagating the
+    /// width to context-determined operand positions so an unsized fill grows to
+    /// the context width. Only reached for fill-bearing expressions (the gate in
+    /// `lower_expr` and `lower_ctx_or_plain`); a non-fill sub-expression falls
+    /// through to the byte-identical `lower_expr`.
+    fn lower_expr_ctx(&mut self, e: &ast::Expr, ctx: u32) -> u32 {
+        use ast::ExprKind::*;
+        match &e.kind {
+            Paren { inner } => self.lower_expr_ctx(inner, ctx),
+            // A fill literal → a const of the context width (≥ 1 bit).
+            IntLit { kind, raw } if literal::is_fill_literal(raw, *kind) => {
+                let w = ctx.max(1);
+                let cv = literal::fill_literal_const(raw, *kind, w)
+                    .unwrap_or_else(|| make_const_u32(0, w));
+                let cid = self.intern_const(cv);
+                self.push_expr(ir::Expr::Const { val: cid })
+            }
+            Binary { op, lhs, rhs } => {
+                use ast::BinOp::*;
+                let irop = map_binop(*op);
+                // logical &&/|| : operands self-determined (1-bit truth) — ctx stops.
+                if matches!(op, LogAnd | LogOr) {
+                    let l = self.lower_ctx_or_plain(lhs, 0);
+                    let r = self.lower_ctx_or_plain(rhs, 0);
+                    return self.push_expr(ir::Expr::Binary {
+                        op: irop,
+                        lhs: l,
+                        rhs: r,
+                    });
+                }
+                // shifts: LEFT operand context-determined, RIGHT self-determined.
+                if matches!(op, Shl | Shr | AShl | AShr) {
+                    let l = self.lower_ctx_or_plain(lhs, ctx);
+                    let r = self.lower_expr(rhs);
+                    return self.push_expr(ir::Expr::Binary {
+                        op: irop,
+                        lhs: l,
+                        rhs: r,
+                    });
+                }
+                // arith/bitwise: operands sized to max(ctx, both self-widths).
+                // comparison: operands sized to max of the two self-widths ONLY (the
+                // 1-bit result does not let the outer ctx into the operands).
+                let is_cmp = matches!(op, Eq | Ne | Lt | Le | Gt | Ge | CaseEq | CaseNe);
+                let base = if is_cmp { 0 } else { ctx };
+                let lf = expr_contains_fill(lhs);
+                let rf = expr_contains_fill(rhs);
+                let (l, r) = if lf && !rf {
+                    // lower the NON-fill side first; its width sets the fill side's ctx.
+                    let r = self.lower_expr(rhs);
+                    let w = base.max(self.ir_bits_of(r).unwrap_or(32));
+                    let l = self.lower_expr_ctx(lhs, w);
+                    (l, r)
+                } else if rf && !lf {
+                    let l = self.lower_expr(lhs);
+                    let w = base.max(self.ir_bits_of(l).unwrap_or(32));
+                    let r = self.lower_expr_ctx(rhs, w);
+                    (l, r)
+                } else {
+                    // both fills (or a fill nested under each) — size to ctx (≥1).
+                    let w = base.max(1);
+                    (self.lower_expr_ctx(lhs, w), self.lower_expr_ctx(rhs, w))
+                };
+                self.push_expr(ir::Expr::Binary {
+                    op: irop,
+                    lhs: l,
+                    rhs: r,
+                })
+            }
+            Unary { op, operand } => {
+                use ast::UnOp::*;
+                // reductions / ! : operand self-determined; +,-,~ : context-determined.
+                let self_det = matches!(
+                    op,
+                    LogNot | RedAnd | RedNand | RedOr | RedNor | RedXor | RedXnor
+                );
+                let o = self.lower_ctx_or_plain(operand, if self_det { 0 } else { ctx });
+                self.push_expr(ir::Expr::Unary {
+                    op: map_unop(*op),
+                    operand: o,
+                })
+            }
+            Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => {
+                let c = self.lower_expr(cond); // condition self-determined
+                let t = self.lower_ctx_or_plain(then_e, ctx);
+                let f = self.lower_ctx_or_plain(else_e, ctx);
+                self.push_expr(ir::Expr::Ternary {
+                    cond: c,
+                    then_e: t,
+                    else_e: f,
+                })
+            }
+            // concat/replication operands are SELF-determined → a fill is 1 bit.
+            Concat { parts } => {
+                if parts.iter().any(|p| self.expr_is_string_ast(p)) {
+                    return self.lower_expr(e); // string concat path (loud / desugar)
+                }
+                let part_ids: Vec<u32> = parts
+                    .iter()
+                    .map(|p| self.lower_ctx_or_plain(p, 0))
+                    .collect();
+                if part_ids.iter().any(|&p| self.expr_is_real(p)) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "real may not appear in concatenation (use $realtobits)",
+                    );
+                }
+                self.push_expr(ir::Expr::Concat { parts: part_ids })
+            }
+            Replicate { count, value } => {
+                let count = self.lower_expr(count);
+                let part_ids: Vec<u32> = value
+                    .iter()
+                    .map(|p| self.lower_ctx_or_plain(p, 0))
+                    .collect();
+                if part_ids.iter().any(|&p| self.expr_is_real(p)) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "real may not appear in concatenation (use $realtobits)",
+                    );
+                }
+                let value = self.push_expr(ir::Expr::Concat { parts: part_ids });
+                self.push_expr(ir::Expr::Replicate { count, value })
+            }
+            _ => self.lower_expr(e),
         }
-        if let Some(cv) = literal::fill_literal_const(raw, kind, lv_width) {
-            let cid = self.intern_const(cv);
-            return self.push_expr(ir::Expr::Const { val: cid });
+    }
+
+    /// Lower `e` with context width `ctx` if it contains a fill in a context-
+    /// propagating position; otherwise the byte-identical plain `lower_expr`.
+    fn lower_ctx_or_plain(&mut self, e: &ast::Expr, ctx: u32) -> u32 {
+        if expr_contains_fill(e) {
+            self.lower_expr_ctx(e, ctx)
+        } else {
+            self.lower_expr(e)
         }
-        rhs_id
     }
 
     fn lower_int_literal(&mut self, kind: ast::IntLitKind, raw: &str) -> u32 {
@@ -18539,7 +18704,18 @@ impl<'s> Elaborator<'s> {
             ast::Stmt::Return { value, .. } => match self.cur_return {
                 Some((retvar, exit)) => {
                     if let Some(val) = value {
-                        let rhs = self.lower_expr(val);
+                        // §11.6: the return value is in the context of the return
+                        // var's width, so a fill grows to that width (non-fill ⇒
+                        // byte-identical via lower_expr).
+                        let ctx_w = match retvar {
+                            Some(rv) => self.nets.get(rv as usize).map(|n| n.width).unwrap_or(32),
+                            None => 0,
+                        };
+                        let rhs = if ctx_w == 0 {
+                            self.lower_expr(val)
+                        } else {
+                            self.lower_ctx_or_plain(val, ctx_w)
+                        };
                         if let Some(rv) = retvar {
                             let sid = self.push_stmt(ir::Stmt::BlockingAssign {
                                 lhs: whole_net_lvalue(rv),
@@ -21332,6 +21508,49 @@ fn fill_literal_ast(e: &ast::Expr) -> Option<(&str, ast::IntLitKind)> {
         ast::ExprKind::Paren { inner } => fill_literal_ast(inner),
         _ => None,
     }
+}
+
+/// Does `e` contain an unsized fill literal in a CONTEXT-PROPAGATING position
+/// (the operands of arith/bitwise/shift/ternary/unary, or a concat/replication
+/// element)? Recurses only into those node types — a fill buried in a select
+/// index or call arg is not width-propagated by the binary/concat lowering
+/// (those self-determined contexts are handled at their own sites). Bounded by
+/// the parser's expr depth cap, so this stays near-linear over a design.
+fn expr_contains_fill(e: &ast::Expr) -> bool {
+    use ast::ExprKind::*;
+    if fill_literal_ast(e).is_some() {
+        return true;
+    }
+    match &e.kind {
+        Paren { inner } => expr_contains_fill(inner),
+        Unary { operand, .. } => expr_contains_fill(operand),
+        Binary { lhs, rhs, .. } => expr_contains_fill(lhs) || expr_contains_fill(rhs),
+        Ternary {
+            cond,
+            then_e,
+            else_e,
+        } => expr_contains_fill(cond) || expr_contains_fill(then_e) || expr_contains_fill(else_e),
+        Concat { parts } => parts.iter().any(expr_contains_fill),
+        Replicate { count, value } => {
+            expr_contains_fill(count) || value.iter().any(expr_contains_fill)
+        }
+        _ => false,
+    }
+}
+
+/// Is `e` a node type whose lowering propagates a context width to its operands
+/// (so a contained fill must be sized contextually)? Used to gate the width-aware
+/// path in `lower_expr` cheaply — a non-context node skips the fill scan.
+fn is_ctx_node(e: &ast::Expr) -> bool {
+    matches!(
+        e.kind,
+        ast::ExprKind::Binary { .. }
+            | ast::ExprKind::Unary { .. }
+            | ast::ExprKind::Ternary { .. }
+            | ast::ExprKind::Concat { .. }
+            | ast::ExprKind::Replicate { .. }
+            | ast::ExprKind::Paren { .. }
+    )
 }
 
 fn fold_init(e: &ast::Expr, width: u32) -> Option<ir::BitPacked> {
