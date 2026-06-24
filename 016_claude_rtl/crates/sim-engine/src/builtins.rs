@@ -2476,14 +2476,28 @@ fn dyn_handle_net(sched: &Scheduler, arg: Option<&u32>) -> Option<u32> {
 /// AFTER all clean values, among themselves by a deterministic raw-bit order so
 /// the sort is stable across runs/OSes and never panics (IEEE leaves the x/z
 /// ordering implementation-defined).
+///
+/// `signed` is the array's DECLARED element type (§6.11.1), NOT each element's
+/// stored provenance: a `32'h80000000` pushed into a signed `int q[$]` must sort
+/// as a negative. We therefore force the comparison-domain sign onto a clone (the
+/// stored `Value.signed` reflects how the element literal was written, which is
+/// irrelevant to the array's order) rather than calling `to_i128_signed` on the
+/// raw element, whose own `self.signed` gate would otherwise leak the literal's
+/// provenance.
 fn arr_cmp(a: &Value, b: &Value, signed: bool) -> std::cmp::Ordering {
     use std::cmp::Ordering;
+    // Sign-extend at the element width regardless of the element's stored flag.
+    let signed_key = |v: &Value| -> i128 {
+        let mut t = v.clone();
+        t.signed = true;
+        t.to_i128_signed().unwrap_or(0)
+    };
     match (a.has_xz(), b.has_xz()) {
         (false, false) => {
             if signed {
-                a.to_i128_signed().cmp(&b.to_i128_signed())
+                signed_key(a).cmp(&signed_key(b))
             } else {
-                a.to_u128().cmp(&b.to_u128())
+                a.to_u128().unwrap_or(0).cmp(&b.to_u128().unwrap_or(0))
             }
         }
         (false, true) => Ordering::Less,

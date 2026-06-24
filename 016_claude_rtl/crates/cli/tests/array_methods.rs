@@ -270,3 +270,68 @@ fn empty_min_returns_empty_queue() {
          end endmodule\n");
     assert_eq!(out, "n=0\n");
 }
+
+// ── Adversarial-hunt regressions (silent-wrongs found 2026-06-24) ────────────
+
+#[test]
+fn sort_signed_by_declared_type_not_literal_provenance() {
+    // HUNT bug 1: an `int q[$]` element written as a hex literal (32'h80000000,
+    // stored with signed=false) must STILL sort as a negative — the order keys
+    // off the DECLARED element type (§6.11.1 int is signed), not how the literal
+    // was spelled. Before the fix vita sorted unsigned: "0 5 100 -2147483648 -1".
+    let out = run("module top; int q[$];\n\
+         initial begin\n\
+           q.push_back(-1); q.push_back(5); q.push_back(32'h80000000);\n\
+           q.push_back(100); q.push_back(0);\n\
+           q.sort();\n\
+           $display(\"%0d %0d %0d %0d %0d\", q[0],q[1],q[2],q[3],q[4]);\n\
+         end endmodule\n");
+    assert_eq!(out, "-2147483648 -1 0 5 100\n");
+}
+
+#[test]
+fn min_max_signed_by_declared_type() {
+    // HUNT bug 1 (same root): min/max of a signed queue with a hex-written
+    // negative must return the signed extremum.
+    let out = run("module top; int q[$]; int mn[$]; int mx[$];\n\
+         initial begin\n\
+           q.push_back(5); q.push_back(32'hFFFFFFFF); q.push_back(100);\n\
+           mn = q.min(); mx = q.max();\n\
+           $display(\"min=%0d max=%0d\", mn[0], mx[0]);\n\
+         end endmodule\n");
+    // 32'hFFFFFFFF as a signed int is -1 → min=-1, max=100.
+    assert_eq!(out, "min=-1 max=100\n");
+}
+
+#[test]
+fn same_named_queue_local_across_blocks_is_loud() {
+    // HUNT bug 2: two named blocks each declaring `int q[$]` would share one
+    // flattened net + heap (blk2 sees blk1's elements). v1 has no per-block heap,
+    // so this is now a loud reject rather than a silent contaminated reduction.
+    assert_loud_reject(
+        "module t;\n\
+           initial begin : blk1 int q[$]; q.push_back(10); end\n\
+           initial begin : blk2 int q[$]; q.push_back(2); $display(\"%0d\", q.sum()); end\n\
+         endmodule\n",
+        "same-named queue local across blocks",
+    );
+}
+
+#[test]
+fn with_clause_accumulator_follows_with_expr_type() {
+    // DESIGN PIN (hunt bug 3 — resolved toward commercial-tool parity, NOT the
+    // strict §7.12.3 element-type reading): the reduction accumulator/return type
+    // follows the WITH-EXPRESSION's self-determined type, so `with (item)` over a
+    // byte queue wraps at byte width (-112) while `with (item+0)` widens to int
+    // (400). This is the VCS/Questa behavior that makes the standard
+    // `with (T'(item))` overflow-avoidance idiom work; a plain `sum()` (no with)
+    // still uses the element type. Documented in ROADMAP §4.
+    let out = run("module t; byte q[$]; int s;\n\
+         initial begin\n\
+           q.push_back(100); q.push_back(100); q.push_back(100); q.push_back(100);\n\
+           s = q.sum();            $display(\"plain=%0d\", s);\n\
+           s = q.sum() with (item);   $display(\"item=%0d\", s);\n\
+           s = q.sum() with (item+0); $display(\"widen=%0d\", s);\n\
+         end endmodule\n");
+    assert_eq!(out, "plain=-112\nitem=-112\nwiden=400\n");
+}

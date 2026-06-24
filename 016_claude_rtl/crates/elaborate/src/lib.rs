@@ -5201,11 +5201,28 @@ impl<'s> Elaborator<'s> {
                     // "redeclared" — two SEQUENTIAL named blocks reusing the same
                     // temp name (`integer local_v;`) then share one net, which is
                     // correct since they never overlap in time.
-                    let exists = d
+                    let existing = d
                         .names
                         .first()
-                        .is_some_and(|n| self.symbols.contains_key(&self.fq(&n.name.name)));
-                    if exists {
+                        .and_then(|n| self.symbols.get(&self.fq(&n.name.name)).copied());
+                    if let Some(net) = existing {
+                        // ⓑ-breadth fix: a SCALAR local safely coalesces (the net
+                        // is just overwritten in time), but a DYNAMIC-STORAGE local
+                        // (queue/dyn-array/assoc/string) is backed by a persistent
+                        // heap that is NOT reset on block entry — sharing one net
+                        // across two blocks leaks the first block's elements into
+                        // the second (a silent-wrong the array reductions/`size()`
+                        // then compute over). v1 has no per-block scope to give them
+                        // distinct heaps, so reject loudly rather than miscompute.
+                        if self.is_dyn_handle_net(net) || self.is_string_net(net) {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a dynamic-storage local (queue / dynamic array / associative \
+                                 array / string) declared under the same name in another block \
+                                 is unsupported (v1 flattens block-locals to one module net with \
+                                 no per-block heap); rename one of them",
+                            );
+                        }
                         continue;
                     }
                     self.elaborate_netvar_decl(d, ports, body);
