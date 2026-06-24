@@ -170,7 +170,9 @@ loud-reject로 확인됨(이제 참):**
 >
 > **✅ ⓑ-breadth string 메서드 완료**(2026-06-24, format_version 17→18, **1793 green**): `atoi/atohex/atooct/atobin`(string→int 식)·`atoreal`(string→real)·`itoa/hextoa/octtoa/bintoa`(number→string in-place mutator). SysFuncId×5+SysTaskId×4. atoi는 leading sign 존중(§6.16.9; **iverilog 13은 drop=버그→vita는 hand-IEEE**)·atooct/atobin은 iverilog 미지원(hand-IEEE)·나머지는 iverilog live oracle.
 >
-> **ⓑ-breadth 잔여**: program·union·virtual interface·parameterized class. **공통 비용**: 큰 AST flip + 엔진 신규 + **iverilog 부분/미지원→hand-IEEE hunt**. (string concat `{a,b}`은 별개 후속=현재 loud `use $sformatf`.) **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
+> **✅ ⓑ-breadth program·union·parameterized class·virtual interface 완료**(2026-06-24, **1822 green**): **program**(`program…endprogram`=module AST로 파싱, top-level container; Reactive-region은 Active 근사·문서화; lexer Program/Endprogram·IR-0)·**union packed**(`typedef union packed`=member overlay[offset 0·width=max], struct flat-layout 재사용·IR-0)·**parameterized class**(`class C #(int W=8)`+`C #(16) h` 파스타임 monomorphization: spec별 param 값 치환 concrete class·default=bare name·override=mangled; method-local/arg/block-local/field 셰도잉 존중·미치환=elaborate loud; AST flip[ClassDecl.params·NetVarDecl.class_args]·IR-0; 5-lens 적대 hunt→silent-wrong 4종[param-class 2종 즉수정: formal/local 폭 미치환·셰도잉 무시; 광범위 pre-existing 2종=`'1` 32bit 자기결정·frame-local var-decl init drop은 별도 슬라이스])·**virtual interface**(`virtual IFACE vif`+단일 정적 binding `vif=inst`→member alias[post-instance pass]; unbound/dynamic-rebind/type-mismatch=loud·no silent-wrong; NetVarKind::VirtualIface·IR-0). iverilog 13은 param-class·vif 미지원→hand-IEEE.
+>
+> **ⓑ-breadth 잔여(별개 후속 슬라이스)**: string concat `{a,b}`(현재 loud `use $sformatf`)·param-class hunt가 surface한 광범위 pre-existing silent-wrong 2종(`'1`/`'0`/`'x`/`'z` 비사이즈 fill이 32bit 자기결정→폭>32 필드는 low 32bit만 채움 §11.4.4; frame/function local var-decl initializer drop §13.4.4 — 둘 다 클래스 없이 재현·언어 전역). **throughput 축(Verilator 대비)은 §4 밖**=조건부② cycle-based 컴파일드 모드(별제품급).
 
 ### 4.1 스코프 확장 트랙
 
