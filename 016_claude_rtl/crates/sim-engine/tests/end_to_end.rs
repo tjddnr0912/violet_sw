@@ -1017,14 +1017,14 @@ fn no_arg_monitor_emits_nothing() {
 #[test]
 fn monitor_reprints_on_unknown_to_unknown_value_change() {
     // IEEE-correctness regression for value-level (not rendered-string) change
-    // detection. q is a 4-bit reg. Under `%d`, EVERY value containing any X
-    // renders to literal "x" (builtins fmt_dec returns "x" on any_unknown). So a
-    // rendered-string diff would suppress the second print. Value-level 4-state
-    // equality detects 4'b00xx → 4'b0x00 as a genuine change → reprint.
+    // detection. q is a 4-bit reg. Each value is PARTIALLY unknown (known 0s + x),
+    // so `%d` renders the uppercase letter `X` (§21.2.1.2) — and 4'b00xx and
+    // 4'b0x00 render to the SAME string "X". So a rendered-string diff would
+    // suppress the second print; value-level 4-state equality detects the change.
     //
-    //   t=0  establish: q = 4'b00xx → "x"   (print)
-    //   t=5  q = 4'b0x00           → "x"   (DIFFERENT value, same string → MUST print)
-    //   t=10 q = 4'b0x00           → "x"   (unchanged value+string → silent)
+    //   t=0  establish: q = 4'b00xx → "X"   (print)
+    //   t=5  q = 4'b0x00           → "X"   (DIFFERENT value, same string → MUST print)
+    //   t=10 q = 4'b0x00           → "X"   (unchanged value+string → silent)
     let src = "module m; reg [3:0] q; \
                initial begin q=4'b00xx; \
                  $monitor(\"q=%d\", q); \
@@ -1035,9 +1035,9 @@ fn monitor_reprints_on_unknown_to_unknown_value_change() {
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
     // Three lines? No — two: establish + the X→X value change. The third step is
     // a true no-op (identical (val,unk) planes) and stays silent. All three
-    // render to "q= x" (4-bit %d field width 2, X right-justified); only value-level
-    // equality distinguishes them.
-    assert_eq!(out, "q= x\nq= x\n");
+    // render to "q= X" (4-bit %d field width 2, X right-justified); only value-level
+    // equality distinguishes them. (iverilog-pinned.)
+    assert_eq!(out, "q= X\nq= X\n");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2482,8 +2482,12 @@ fn continuous_assign_delay_propagates_after_d() {
                  $finish; end endmodule";
     let ir = build(src);
     let (_res, out) = simulate_capture(&ir, SimOpts::default());
-    // y undriven (x) until t=5 then 7; a=3 at t=6 → y=3 at t=11 (seen at t=12).
-    assert_eq!(out, "t2 y=x\nt6 y=7\nt12 y=3\n");
+    // y reads high-Z until the delayed driver propagates at t=5, then 7; a=3 at
+    // t=6 → y=3 at t=11 (seen at t=12). `%0d` of an all-Z field prints `z` per
+    // §21.2.1.2. (vita reads the not-yet-propagated net as Z [LRM unconnected-net];
+    // iverilog reads X here — impl-defined for the pre-propagation window. The
+    // delay-propagation behavior under test, t6=7/t12=3, is identical.)
+    assert_eq!(out, "t2 y=z\nt6 y=7\nt12 y=3\n");
 }
 
 // ── bare @(sig) any-change wait blocks until the NEXT change after it arms

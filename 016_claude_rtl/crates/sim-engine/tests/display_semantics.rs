@@ -71,6 +71,31 @@ endmodule
     );
 }
 
+/// IEEE 1800 §21.2.1.2 unknown-value letter case for `%d`/`%h`/`%o`: the letter is
+/// LOWERCASE only when the field (whole value for `%d`, a digit for `%h`/`%o`) is
+/// UNIFORM — no known bit AND a single unknown kind (`x` if entirely x, `z` if
+/// entirely z). ANY mixing — known+unknown, or x and z together — is UPPERCASE
+/// (`X` if any x, else `Z`). Previously vita collapsed every unknown to lowercase
+/// `x` (so all-z showed `x`, partial-unknown and x+z-mixed lost uppercasing).
+/// iverilog-pinned (e.g. `8'bxxxxzzzz`→`X`, `8'bzzzzzzzz`→`z`, `8'bx0000001`→`X`).
+#[test]
+fn unknown_value_letter_case() {
+    let out = run(r#"
+module t;
+  initial begin
+    // %d whole-field: all-x, all-z, partial-x, partial-z, partial-mixed, all-unknown-mixed
+    $display("%0d %0d %0d %0d %0d %0d",
+             8'bxxxxxxxx, 8'bzzzzzzzz, 8'bx0000001, 8'bz0000001, 8'bx000z001, 8'bxxxxzzzz);
+    // %h per-nibble: all-x→x, partial-x→X, partial-z→Z, all-z→z
+    $display("%h %h %h %h", 8'bxxxxxxxx, 8'b0000x001, 8'bz0000001, 8'b0000zzzz);
+    // %o per-digit: all-x→x, partial-x→X, partial-z→Z
+    $display("%o %o %o", 9'bxxxxxxxxx, 9'bx00000001, 9'b00z000000);
+  end
+endmodule
+"#);
+    assert_eq!(out, "x z X Z X X\nxx 0X Z1 0z\nxxx X01 Z00\n");
+}
+
 /// P0-8①: arguments after the leading format string print in the default
 /// radix instead of being silently dropped.
 #[test]

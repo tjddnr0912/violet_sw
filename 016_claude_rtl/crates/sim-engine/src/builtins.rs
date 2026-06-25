@@ -2287,10 +2287,6 @@ fn next_arg(sched: &Scheduler, args: &[u32], argi: &mut usize) -> Value {
     e.map(|x| sched.eval(x)).unwrap_or_else(Value::x1)
 }
 
-fn any_unknown(v: &Value) -> bool {
-    v.has_xz()
-}
-
 /// IEEE %d default field width = decimal digit count of an `n`-bit operand's max
 /// value (`2^n − 1`): 1-bit→1, 8-bit→3, 32-bit→10. Computed exactly up to 128 bits,
 /// then via `n·log10(2)` (a column-alignment hint; exactness beyond 128 is moot).
@@ -2310,16 +2306,49 @@ fn dec_field_width(n: u32) -> usize {
     }
 }
 
-/// %d: decimal; any X/Z → "x". A real ROUNDS half-away (saturating to i64
-/// extremes; NaN → 0).
+/// IEEE 1800 §21.2.1.2 letter for a bit range `[lo,hi)` that contains ≥1 unknown
+/// bit. The letter is LOWERCASE only when the group is UNIFORM — no known bit AND
+/// a single unknown kind (entirely x → `x`, entirely z → `z`). ANY mixing —
+/// known+unknown, or x+z together — is UPPERCASE (`X` if any x, else `Z`). x takes
+/// precedence over z. `None` when the group is fully known. (iverilog-pinned: e.g.
+/// `8'bxxxxzzzz` prints `X`, not `x`.)
+fn unknown_group_char(v: &Value, lo: u32, hi: u32) -> Option<char> {
+    let (mut has_known, mut has_x, mut has_z) = (false, false, false);
+    for i in lo..hi {
+        let (val, unk) = v.get_vu(i);
+        if unk == 1 {
+            if val == 0 {
+                has_x = true; // x = (val0, unk1); z = (val1, unk1)
+            } else {
+                has_z = true;
+            }
+        } else {
+            has_known = true;
+        }
+    }
+    if !has_x && !has_z {
+        return None;
+    }
+    let uppercase = has_known || (has_x && has_z);
+    Some(match (uppercase, has_x) {
+        (false, true) => 'x',  // uniform all-x, no known
+        (false, false) => 'z', // uniform all-z, no known
+        (true, true) => 'X',   // mixed (known and/or x+z), some x
+        (true, false) => 'Z',  // mixed, all unknowns are z
+    })
+}
+
+/// %d: decimal. A value with any X/Z renders one §21.2.1.2 letter for the whole
+/// field (`x`/`z` if entirely unknown, `X`/`Z` if partially). A real ROUNDS
+/// half-away (saturating to i64 extremes; NaN → 0).
 fn fmt_dec(v: &Value) -> String {
     if v.is_real {
         let x = v.to_f64().unwrap_or(0.0);
         // round half-away; large |x| SATURATES to i64::MAX/MIN; NaN.round() as i64 == 0.
         return format!("{}", x.round() as i64);
     }
-    if any_unknown(v) {
-        return "x".to_string();
+    if let Some(c) = unknown_group_char(v, 0, v.width) {
+        return c.to_string();
     }
     // Exact decimal at ANY width (Phase-1.x ⑥): a wide signed value renders
     // sign + two's-complement magnitude; unsigned long-divides by 10^19.
@@ -2429,6 +2458,7 @@ fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool, field_width: Option
         let mut val = 0u32;
         let mut has_x = false;
         let mut has_z = false;
+        let mut has_known = false;
         for k in 0..bits_per_digit {
             let bi = base + k;
             if bi >= v.width {
@@ -2437,6 +2467,7 @@ fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool, field_width: Option
             let (b, u) = v.get_vu(bi);
             match (b, u) {
                 (_, 0) => {
+                    has_known = true;
                     if b == 1 {
                         val |= 1 << k;
                     }
@@ -2446,10 +2477,17 @@ fn fmt_radix(v: &Value, bits_per_digit: u32, min_zero: bool, field_width: Option
                 _ => {}
             }
         }
-        s.push(if has_x {
-            'x'
-        } else if has_z {
-            'z'
+        // §21.2.1.2 per-digit: lowercase x/z only when the digit is UNIFORM (no
+        // known bit AND a single unknown kind); any mixing (known+unknown, or x+z)
+        // is uppercase X/Z. x takes precedence over z.
+        s.push(if has_x || has_z {
+            let uppercase = has_known || (has_x && has_z);
+            match (uppercase, has_x) {
+                (false, true) => 'x',
+                (false, false) => 'z',
+                (true, true) => 'X',
+                (true, false) => 'Z',
+            }
         } else {
             std::char::from_digit(val, 16).unwrap()
         });
