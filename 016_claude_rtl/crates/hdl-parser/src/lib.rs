@@ -2739,12 +2739,25 @@ impl<'t, 's> Parser<'t, 's> {
                 continue;
             };
             // Optional skew `#delay` / `#1step` — captured raw so elaborate can
-            // honest-loud it (v1 = default skew only).
+            // accept `#1step` (the explicit default) or honest-loud others.
+            // `#1step` is TWO tokens after `#`: IntDecimal("1") + Word(Ident("step")).
             let skew_raw = if self.peek() == Some(TokenKind::Hash) {
-                self.bump(); // `#`
-                let txt = self.cur_text().to_string();
-                self.bump();
-                Some(txt)
+                self.bump(); // consume `#`
+                             // Special-case `#1step`: IntDecimal "1" followed immediately by
+                             // Word(Ident "step"). Maximal-munch does NOT merge them.
+                let is_1step = matches!(self.peek(), Some(TokenKind::IntDecimal))
+                    && self.cur_text() == "1"
+                    && matches!(self.peek_at(1), Some(TokenKind::Word(WordKind::Ident)))
+                    && self.text_at(1) == "step";
+                if is_1step {
+                    self.bump(); // consume `1`
+                    self.bump(); // consume `step`
+                    Some("#1step".to_string())
+                } else {
+                    let txt = self.cur_text().to_string();
+                    self.bump();
+                    Some(txt)
+                }
             } else {
                 None
             };

@@ -16780,12 +16780,21 @@ impl<'s> Elaborator<'s> {
             self.all_clocking_names.insert(cb_name.clone());
             let mut pairs: Vec<(u32, u32)> = Vec::new();
             for it in &cb.items {
-                if it.skew_raw.is_some() {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "a clocking skew (`#…`) is unsupported in this subset (default skew only)",
-                    );
-                    continue;
+                if let Some(skew) = &it.skew_raw {
+                    let s = skew.trim();
+                    if s != "#1step" {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "clocking skew `{s}` is unsupported in this subset \
+                                 (`#1step` is accepted as the explicit default; \
+                                 `#0`/`#N`/`##N` need a different sampling region — follow-on slice)"
+                            ),
+                        );
+                        continue;
+                    }
+                    // `#1step` IS the default input skew (preponed value entering the slot).
+                    // No change to the holding-net synthesis — fall through.
                 }
                 if !matches!(it.dir, ast::ClockingDir::Input) {
                     self.error(

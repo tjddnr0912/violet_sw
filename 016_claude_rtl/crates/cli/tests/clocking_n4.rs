@@ -215,14 +215,37 @@ fn output_driver_is_loud() {
 }
 
 #[test]
-fn explicit_skew_is_loud() {
+fn input_skew_1step_is_default_behavior() {
+    // `input #1step q` is semantically identical to `input q` (default skew IS
+    // #1step = preponed). Explicit #1step must be accepted, not loud-rejected.
+    let (o, e, c) = run("module t;\n\
+         logic clk=0; integer q=0;\n\
+         always #5 clk=~clk;\n\
+         always @(posedge clk) q <= q+1;\n\
+         clocking cb @(posedge clk); input #1step q; endclocking\n\
+         initial begin repeat(4) @(posedge clk); \
+         $display(\"q=%0d cbq=%0d\", q, cb.q); $finish; end\n\
+         endmodule\n");
+    clean(
+        &o,
+        &e,
+        c,
+        "q=3 cbq=3",
+        "#1step explicit = same as default preponed sampling",
+    );
+}
+
+#[test]
+fn explicit_skew_other_than_1step_is_loud() {
+    // Only `#1step` (= default) is accepted. `#1` (1 time unit before edge)
+    // requires time-travel sampling — honest-loud until a proper skew engine slice.
     let (o, e, c) = run("module t;\n\
          logic clk=0, a=0;\n\
          always #5 clk=~clk;\n\
          clocking cb @(posedge clk); input #1 a; endclocking\n\
          initial #20 $finish;\n\
          endmodule\n");
-    loud(&o, &e, c, "explicit input skew");
+    loud(&o, &e, c, "non-#1step input skew");
 }
 
 #[test]
