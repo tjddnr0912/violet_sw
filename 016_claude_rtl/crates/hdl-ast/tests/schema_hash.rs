@@ -122,9 +122,13 @@ use vita_schema::schema_hash;
 /// / `ClockingItem` / `ClockingDir` types — `clocking cb @(clk); input/output sig;
 /// endclocking` (§14). Front-end foundation; the preponed-region sampler is a
 /// pending engine slice (elaborate honest-loud until then). No sim-ir change.)
+/// 2026-06-25 SV cast `casting_type'(expr)` (§6.24): adds `ExprKind::Cast`
+/// (target, expr) plus the `CastTarget` / `CastPrim` types — covering `int'(e)`,
+/// `8'(e)`, `signed'(e)`, `name'(e)`. Pure front-end and elaborate lowering to
+/// existing IR (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
 const EXPECTED: [u8; 32] = [
-    18, 172, 111, 153, 63, 43, 168, 5, 18, 8, 18, 50, 199, 239, 187, 242, 17, 194, 211, 106, 156,
-    41, 47, 253, 228, 30, 212, 162, 143, 218, 153, 25,
+    4, 93, 101, 41, 203, 233, 209, 102, 209, 140, 197, 96, 202, 137, 76, 51, 29, 156, 20, 103, 15,
+    156, 93, 242, 94, 43, 58, 131, 96, 138, 101, 204,
 ];
 
 #[test]

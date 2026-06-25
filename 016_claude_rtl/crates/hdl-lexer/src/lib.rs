@@ -282,6 +282,16 @@ pub enum TokenKind {
     #[token("$")]
     Dollar, // bare `$` — queue last-index (`q[$]`) / `[$]` queue dim (v5 ⑥)
 
+    // Standalone `'` — ONLY reachable for SV cast `type'(...)` / `N'(...)` and the
+    // (still-unsupported) assignment-pattern `'{...}`. Logos longest-match keeps
+    // `8'hFF`→IntSized and `'0/'1/'x/'z/'hFF`→IntUnsizedBased intact: those regexes
+    // consume ≥2 chars while this token is 1 char, so the literal always wins. A
+    // bare `'` followed by `(` or `{` (which neither literal regex matches) was a
+    // lex error before; this token upgrades it to a clean Apostrophe. No valid
+    // construct regresses (see `cast_apostrophe_is_additive` test below).
+    #[token("'")]
+    Apostrophe,
+
     #[token("=")]
     Eq, // blocking assign / param assign / net init
     #[token("<=")]
@@ -683,6 +693,32 @@ mod tests {
         assert!(errs.is_empty());
         let lit = toks.iter().find(|t| t.kind == IntSized).unwrap();
         assert_eq!(&"assign y = a & 8'hFF;"[lit.span.clone()], "8'hFF");
+    }
+
+    #[test]
+    fn cast_apostrophe_is_additive() {
+        use TokenKind::*;
+        // Sized/unsized/fill literals must STILL lex as one atomic token
+        // (logos longest-match beats the new 1-char Apostrophe).
+        assert_eq!(kinds("8'hFF"), vec![IntSized]);
+        assert_eq!(kinds("4'sd5"), vec![IntSized]);
+        assert_eq!(kinds("'hFF"), vec![IntUnsizedBased]);
+        for fill in ["'0", "'1", "'x", "'z"] {
+            assert_eq!(kinds(fill), vec![IntUnsizedBased], "{fill}");
+        }
+        // Cast forms: a bare `'` followed by `(` is now a clean Apostrophe token.
+        assert_eq!(kinds("8'("), vec![IntDecimal, Apostrophe, LParen]);
+        assert_eq!(
+            kinds("int'("),
+            vec![Word(WordKind::Keyword(Kw::Int)), Apostrophe, LParen]
+        );
+        assert_eq!(
+            kinds("signed'("),
+            vec![Word(WordKind::Keyword(Kw::Signed)), Apostrophe, LParen]
+        );
+        // Assignment-pattern `'{` is NOT fused — it splits into Apostrophe + LBrace
+        // and stays a parser-level loud reject (unsupported), never a cast.
+        assert_eq!(kinds("'{"), vec![Apostrophe, LBrace]);
     }
 
     #[test]

@@ -834,10 +834,82 @@ impl<'t, 's> Parser<'t, 's> {
                 Some(TokenKind::Dot) if Self::is_indexed_hier_base(&e) => {
                     e = self.parse_indexed_hier(e);
                 }
+                // SV size/typedef cast `N'(e)` / `(W+1)'(e)` / `name'(e)` (§6.24):
+                // a `'(` immediately after a primary. The already-parsed primary
+                // `e` IS the casting type — do NOT re-parse it. REQUIRES `(` after
+                // the apostrophe; a bare `'` or `'{` (assignment pattern, still
+                // unsupported) is left for the diagnostic, never silently eaten.
+                Some(TokenKind::Apostrophe) if self.peek_at(1) == Some(TokenKind::LParen) => {
+                    e = self.parse_size_or_named_cast(e);
+                }
                 _ => break,
             }
         }
         e
+    }
+
+    /// Finish a size/typedef cast whose casting type is the already-parsed primary
+    /// `ty` and whose cursor is at `'(`. A plain `Ident` casting type → `Named`
+    /// (resolved at elaborate; class casts loud-reject there); any other primary
+    /// (number, `(W+1)`, arithmetic) → `Size`. (SV §6.24.)
+    fn parse_size_or_named_cast(&mut self, ty: Expr) -> Expr {
+        let start = ty.span;
+        self.bump(); // '
+        self.expect(TokenKind::LParen, "'(' to open a cast");
+        let operand = self.expr(0);
+        self.expect(TokenKind::RParen, "')' closing a cast");
+        let target = match ty.kind {
+            ExprKind::Ident(path) => CastTarget::Named(path),
+            _ => CastTarget::Size(Box::new(ty)),
+        };
+        Expr {
+            kind: ExprKind::Cast {
+                target,
+                expr: Box::new(operand),
+            },
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// Map a casting-type keyword (`int`/`byte`/…/`signed`/`unsigned`) to its
+    /// `CastTarget`, or `None` if the keyword is not a casting type. `realtime'`
+    /// folds to `real`. (SV §6.24.)
+    fn cast_type_kw(kw: Kw) -> Option<CastTarget> {
+        use CastPrim as P;
+        use CastTarget as C;
+        Some(match kw {
+            Kw::Int => C::Prim(P::Int),
+            Kw::Integer => C::Prim(P::Integer),
+            Kw::Byte => C::Prim(P::Byte),
+            Kw::Shortint => C::Prim(P::Shortint),
+            Kw::Longint => C::Prim(P::Longint),
+            Kw::Bit => C::Prim(P::Bit),
+            Kw::Logic => C::Prim(P::Logic),
+            Kw::Reg => C::Prim(P::Reg),
+            Kw::Time => C::Prim(P::Time),
+            Kw::Real | Kw::Realtime => C::Prim(P::Real),
+            Kw::Signed => C::Signing { signed: true },
+            Kw::Unsigned => C::Signing { signed: false },
+            _ => return None,
+        })
+    }
+
+    /// Finish a keyword cast `int'(e)` / `signed'(e)` whose cursor is at the type
+    /// keyword and where `'(` is already confirmed to follow. (SV §6.24.)
+    fn parse_keyword_cast(&mut self, target: CastTarget) -> Expr {
+        let start = self.cur_span();
+        self.bump(); // type keyword
+        self.bump(); // '
+        self.expect(TokenKind::LParen, "'(' to open a cast");
+        let operand = self.expr(0);
+        self.expect(TokenKind::RParen, "')' closing a cast");
+        Expr {
+            kind: ExprKind::Cast {
+                target,
+                expr: Box::new(operand),
+            },
+            span: start.to(self.prev_span()),
+        }
     }
 
     /// True when `e` is `name[idx]` / `path[idx]` — a bit-select rooted at a plain
@@ -1003,6 +1075,16 @@ impl<'t, 's> Parser<'t, 's> {
                     kind: ExprKind::Error,
                     span: start,
                 }
+            }
+            // SV type/signing cast `int'(e)` / `signed'(e)` (§6.24): a casting-type
+            // keyword followed by `'(`. The guard requires `'(` so a bare type kw
+            // (not a primary today) still falls to the `_ => error` arm unchanged.
+            Some(T::Word(WordKind::Keyword(kw)))
+                if self.peek_at(1) == Some(T::Apostrophe)
+                    && self.peek_at(2) == Some(T::LParen)
+                    && Self::cast_type_kw(kw).is_some() =>
+            {
+                self.parse_keyword_cast(Self::cast_type_kw(kw).unwrap())
             }
             // numeric / string literals
             Some(T::IntDecimal) => self.lit_int(IntLitKind::Decimal),
@@ -7584,6 +7666,14 @@ fn subst_expr(e: &mut Expr, map: &std::collections::BTreeMap<String, Expr>) {
                 subst_expr(&mut it.weight, map);
             }
         }
+        ExprKind::Cast { target, expr } => {
+            // Substitute the operand AND (for a size cast) the width expression —
+            // a param-width cast `WIDTH'(x)` must monomorphize the WIDTH too.
+            if let CastTarget::Size(w) = target {
+                subst_expr(w, map);
+            }
+            subst_expr(expr, map);
+        }
         ExprKind::IntLit { .. }
         | ExprKind::RealLit { .. }
         | ExprKind::StrLit { .. }
@@ -7989,6 +8079,12 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
                     fix_expr(&mut it.weight, from, to);
                 }
             }
+            ExprKind::Cast { target, expr } => {
+                if let CastTarget::Size(w) = target {
+                    fix_expr(w, from, to);
+                }
+                fix_expr(expr, from, to);
+            }
             ExprKind::IntLit { .. }
             | ExprKind::RealLit { .. }
             | ExprKind::StrLit { .. }
@@ -8256,6 +8352,110 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// SV cast `casting_type'(expr)` (§6.24) parses to `ExprKind::Cast` with the
+    /// right `CastTarget`; malformed casts are loud parse errors (never silent).
+    #[test]
+    fn cast_parse_forms_and_malformed() {
+        fn rhs_of(src_body: &str) -> Option<ExprKind> {
+            let src = format!("module t; initial x = {src_body}; endmodule");
+            let (toks, le) = hdl_lexer::lex(&src);
+            assert!(le.is_empty(), "lex errors in {src_body:?}: {le:?}");
+            let (unit, errs) = parse(&toks, &src);
+            if !errs.is_empty() {
+                return None; // signals a (loud) parse error to the caller
+            }
+            let TopItem::Module(ref m) = unit.as_ref()?.items[0] else {
+                return None;
+            };
+            let ModuleItem::Proc(ref pb) = m.body[0] else {
+                return None;
+            };
+            // initial <stmt>; — dig out the blocking-assign rhs.
+            fn find_rhs(s: &Stmt) -> Option<ExprKind> {
+                match s {
+                    Stmt::Blocking { rhs, .. } => Some(rhs.kind.clone()),
+                    Stmt::Block { stmts, .. } => stmts.iter().find_map(find_rhs),
+                    _ => None,
+                }
+            }
+            find_rhs(&pb.body)
+        }
+        use CastPrim as P;
+        // type cast → Prim
+        assert!(matches!(
+            rhs_of("int'(8'hFF)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Prim(P::Int),
+                ..
+            })
+        ));
+        assert!(matches!(
+            rhs_of("byte'(a)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Prim(P::Byte),
+                ..
+            })
+        ));
+        assert!(matches!(
+            rhs_of("logic'(a)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Prim(P::Logic),
+                ..
+            })
+        ));
+        // signing cast → Signing
+        assert!(matches!(
+            rhs_of("signed'(a)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Signing { signed: true },
+                ..
+            })
+        ));
+        assert!(matches!(
+            rhs_of("unsigned'(a)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Signing { signed: false },
+                ..
+            })
+        ));
+        // size cast → Size; typedef/class name → Named
+        assert!(matches!(
+            rhs_of("8'(a)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Size(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            rhs_of("(W+1)'(a)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Size(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            rhs_of("my_t'(a)"),
+            Some(ExprKind::Cast {
+                target: CastTarget::Named(_),
+                ..
+            })
+        ));
+        // precedence: cast binds tighter than `+` → `(8'(a)) + b`
+        assert!(matches!(rhs_of("8'(a) + b"), Some(ExprKind::Binary { .. })));
+        // replication wrapping a cast still parses
+        assert!(matches!(
+            rhs_of("{2{8'(a)}}"),
+            Some(ExprKind::Replicate { .. })
+        ));
+        // malformed casts → loud parse error (None)
+        for bad in ["int'", "int'(", "8'(", "8'(a", "signed'5"] {
+            assert!(
+                rhs_of(bad).is_none(),
+                "expected loud parse error for {bad:?}"
+            );
+        }
+    }
+
     /// v7 AST flip: package/import/string/pkg:: parse to their dedicated
     /// shapes (semantics land in the follow-on slices — parse-only here).
     #[test]

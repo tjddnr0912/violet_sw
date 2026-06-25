@@ -1278,8 +1278,49 @@ pub enum ExprKind {
         value: Box<Expr>,
         items: Vec<DistItem>,
     },
+    /// SV static cast `casting_type'(expr)` (IEEE 1800 §6.24). `target` carries
+    /// the casting type (a primitive type keyword, a `signed`/`unsigned` signing,
+    /// a size expression `N'(e)`, or a typedef/class name); `expr` is the operand.
+    /// BOXED to keep this rare variant from enlarging `ExprKind` and shrinking the
+    /// expr-parser recursion-depth margin (same rationale as `RandomizeWith`).
+    Cast {
+        target: CastTarget,
+        expr: Box<Expr>,
+    },
     /// Recovery placeholder so the Pratt loop can keep folding past an error.
     Error,
+}
+
+/// The casting type in `casting_type'(expr)` (IEEE 1800 §6.24).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum CastTarget {
+    /// A primitive integral/real type keyword: `int'(e)`, `byte'(e)`, `real'(e)`…
+    Prim(CastPrim),
+    /// A signing cast: `signed'(e)` (`signed:true`) / `unsigned'(e)`. Width is
+    /// PRESERVED; only the operand's sign interpretation flips.
+    Signing { signed: bool },
+    /// A size cast `N'(e)` / `(W+1)'(e)`: the result is `N` bits wide. Signedness
+    /// is INHERITED from the operand (sign-extend iff operand signed). The width
+    /// expression is constant-folded at elaborate.
+    Size(Box<Expr>),
+    /// A typedef/class-name cast `name'(e)`. Numeric typedefs are resolved at
+    /// elaborate; class casts `Base'(d)` are loud-rejected (no oracle yet).
+    Named(HierPath),
+}
+
+/// Primitive casting-type keywords for `CastTarget::Prim`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum CastPrim {
+    Int,      // 32-bit signed 2-state
+    Integer,  // 32-bit signed 4-state
+    Byte,     // 8-bit signed 2-state
+    Shortint, // 16-bit signed 2-state
+    Longint,  // 64-bit signed 2-state
+    Bit,      // 1-bit unsigned 2-state
+    Logic,    // 1-bit unsigned 4-state
+    Reg,      // 1-bit unsigned 4-state (alias of logic)
+    Time,     // 64-bit unsigned 4-state
+    Real,     // double-precision real (also `realtime'`)
 }
 
 /// One weighted item of a `dist { … }`: a single value (`hi == None`) or a

@@ -8560,6 +8560,415 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    // ── SV static cast `casting_type'(expr)` (IEEE 1800 §6.24) ──────────────
+    // Lowered entirely to EXISTING IR (IR-0; format_version unchanged). Numeric,
+    // size, and signing casts are iverilog-pinned; class/typedef-name casts have
+    // no oracle yet → loud-reject (correct-or-loud, never silent-wrong).
+    fn lower_cast(&mut self, target: &ast::CastTarget, operand: &ast::Expr) -> u32 {
+        match target {
+            // signed'(e) / unsigned'(e): PRESERVE width, flip the sign attribute.
+            ast::CastTarget::Signing { signed } => {
+                let e = self.lower_expr(operand);
+                if self.cast_operand_is_real(operand, e) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "signed'/unsigned' cast is not defined on a real operand",
+                    );
+                    return self.placeholder_expr();
+                }
+                let which = if *signed {
+                    ir::SysFuncId::Signed
+                } else {
+                    ir::SysFuncId::Unsigned
+                };
+                self.push_expr(ir::Expr::SysFunc {
+                    which,
+                    args: vec![e],
+                })
+            }
+            // N'(e): result is N bits; signedness INHERITED from the operand.
+            ast::CastTarget::Size(w_expr) => {
+                let n = match self.const_eval_in_scope(w_expr) {
+                    Some(n) if n >= 1 && (n as u64) <= MAX_NET_WIDTH => n as u32,
+                    _ => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "size cast width must be a positive constant expression",
+                        );
+                        return self.placeholder_expr();
+                    }
+                };
+                let e = self.lower_expr(operand);
+                if self.cast_operand_is_real(operand, e) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "size cast is not defined on a real operand (use int'/longint')",
+                    );
+                    return self.placeholder_expr();
+                }
+                self.lower_size_cast(e, n)
+            }
+            ast::CastTarget::Prim(p) => self.lower_prim_cast(*p, operand),
+            // `name'(e)`: a bare single identifier that folds to a constant
+            // parameter/localparam is a legal SIZE cast `W'(e)` (§6.24 casting_type
+            // = constant_primary). Otherwise it is a typedef/class NAME cast, which
+            // has no oracle yet → loud. `const_eval_in_scope` folds ONLY genuine
+            // constants (a net/typedef/class name yields None), so correct-or-loud
+            // is preserved.
+            ast::CastTarget::Named(path) => {
+                if path.segments.len() == 1 {
+                    let id_expr = ast::Expr {
+                        kind: ast::ExprKind::Ident(path.clone()),
+                        span: path.span,
+                    };
+                    if let Some(n) = self.const_eval_in_scope(&id_expr) {
+                        if n >= 1 && (n as u64) <= MAX_NET_WIDTH {
+                            let e = self.lower_expr(operand);
+                            if self.cast_operand_is_real(operand, e) {
+                                self.error(
+                                    MsgCode::ElabUnsupported,
+                                    "size cast is not defined on a real operand (use int'/longint')",
+                                );
+                                return self.placeholder_expr();
+                            }
+                            return self.lower_size_cast(e, n as u32);
+                        }
+                    }
+                }
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "typedef/class cast `name'(expr)` is outside the v1 cast scope \
+                     (int'/byte'/…/N'/signed' casts are supported)",
+                );
+                self.placeholder_expr()
+            }
+        }
+    }
+
+    /// `N'(e)` — width N, INHERITING the operand's signedness (§6.24.1).
+    fn lower_size_cast(&mut self, e: u32, n: u32) -> u32 {
+        let w = self.ir_bits_of(e).unwrap_or(32);
+        let signed_op = self.expr_self_signed(e);
+        let resized = match n.cmp(&w) {
+            // Same width: `e` already carries its own (inherited) sign — return it.
+            std::cmp::Ordering::Equal => return e,
+            // Extend: sign-extend iff the operand is signed (§6.24.1), 4-state-
+            // preserving (a bitwise `| 0` would corrupt Z→X).
+            std::cmp::Ordering::Greater => self.extend_to(e, w, n, signed_op),
+            // Truncate to the low N bits (Select is unsigned).
+            std::cmp::Ordering::Less => self.select_low(e, n),
+        };
+        // A size cast INHERITS the operand's signedness; Concat/Select are
+        // unsigned, so re-stamp $signed when the operand was signed.
+        if signed_op {
+            self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Signed,
+                args: vec![resized],
+            })
+        } else {
+            resized
+        }
+    }
+
+    /// `keyword'(e)` — a primitive-type cast. Width/sign/state come from the named
+    /// type; the EXTEND direction follows the OPERAND's sign (engine-resized),
+    /// while the RESULT sign is the target's. 2-state targets coerce X/Z→0.
+    fn lower_prim_cast(&mut self, p: ast::CastPrim, operand: &ast::Expr) -> u32 {
+        use ast::CastPrim as P;
+        // real target: real'(real)=identity; real'(integral)=$itor.
+        if matches!(p, P::Real) {
+            let e = self.lower_expr(operand);
+            if self.cast_operand_is_real(operand, e) {
+                return e;
+            }
+            return self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Itor,
+                args: vec![e],
+            });
+        }
+        let (tw, tsigned, t2state) = match p {
+            P::Int => (32u32, true, true),
+            P::Integer => (32, true, false),
+            P::Byte => (8, true, true),
+            P::Shortint => (16, true, true),
+            P::Longint => (64, true, true),
+            P::Bit => (1, false, true),
+            P::Logic | P::Reg => (1, false, false),
+            P::Time => (64, false, false),
+            P::Real => unreachable!("handled above"),
+        };
+        let e = self.lower_expr(operand);
+        // real operand → integral target: round half away from zero, then narrow.
+        if self.cast_operand_is_real(operand, e) {
+            return self.lower_real_to_int_cast(e, tw, tsigned, t2state);
+        }
+        // integral operand: resize to the target width (sign-extend per the
+        // OPERAND's sign), coerce X/Z for 2-state, then stamp the target sign.
+        let w = self.ir_bits_of(e).unwrap_or(32);
+        let resized = match tw.cmp(&w) {
+            std::cmp::Ordering::Equal => e,
+            // Sign-extend iff the operand is signed (§6.24/§11.6.1); 4-state-
+            // preserving Concat (a `| 0` would zero-extend a signed operand AND
+            // corrupt Z→X — the two extend-path silent-wrongs the hunt found).
+            std::cmp::Ordering::Greater => {
+                let signed_op = self.expr_self_signed(e);
+                self.extend_to(e, w, tw, signed_op)
+            }
+            std::cmp::Ordering::Less => self.select_low(e, tw),
+        };
+        let coerced = if t2state {
+            self.coerce_two_state(resized, tw)
+        } else {
+            resized
+        };
+        let which = if tsigned {
+            ir::SysFuncId::Signed
+        } else {
+            ir::SysFuncId::Unsigned
+        };
+        self.push_expr(ir::Expr::SysFunc {
+            which,
+            args: vec![coerced],
+        })
+    }
+
+    /// real → integral cast: ROUND HALF AWAY FROM ZERO (§6.24.1), NOT `$rtoi`
+    /// truncation. `round = $rtoi(e + (e >= 0.0 ? 0.5 : -0.5))`. `$rtoi` yields a
+    /// 32-bit int, so a >32-bit integral target from real is loud (v1 scope).
+    fn lower_real_to_int_cast(&mut self, e: u32, tw: u32, tsigned: bool, _t2state: bool) -> u32 {
+        if tw > 32 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "real→longint/time cast is outside the v1 cast scope (use int')",
+            );
+            return self.placeholder_expr();
+        }
+        let zero_r = self.real_const_expr("0.0");
+        let half_p = self.real_const_expr("0.5");
+        let half_p2 = self.real_const_expr("0.5");
+        let half_n = self.push_expr(ir::Expr::Unary {
+            op: ir::UnOp::Minus,
+            operand: half_p2,
+        });
+        let ge = self.push_expr(ir::Expr::Binary {
+            op: ir::BinOp::Ge,
+            lhs: e,
+            rhs: zero_r,
+        });
+        let adj = self.push_expr(ir::Expr::Ternary {
+            cond: ge,
+            then_e: half_p,
+            else_e: half_n,
+        });
+        let sum = self.push_expr(ir::Expr::Binary {
+            op: ir::BinOp::Add,
+            lhs: e,
+            rhs: adj,
+        });
+        let rounded = self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::Rtoi,
+            args: vec![sum],
+        }); // 32-bit signed
+        if tw == 32 {
+            return if tsigned {
+                rounded
+            } else {
+                self.push_expr(ir::Expr::SysFunc {
+                    which: ir::SysFuncId::Unsigned,
+                    args: vec![rounded],
+                })
+            };
+        }
+        // narrow ≤32-bit target, stamping the target sign.
+        let sel = self.select_low(rounded, tw);
+        let which = if tsigned {
+            ir::SysFuncId::Signed
+        } else {
+            ir::SysFuncId::Unsigned
+        };
+        self.push_expr(ir::Expr::SysFunc {
+            which,
+            args: vec![sel],
+        })
+    }
+
+    /// Per-bit X/Z→0 coercion for a 2-state cast target (§6.11.3). Bitwise ops
+    /// propagate X, but case-equality RESOLVES it: bit `i` becomes `(e[i] === 1'b1)`
+    /// (1 iff known-1, else 0). Re-assembled MSB-first into a `tw`-bit value.
+    fn coerce_two_state(&mut self, e: u32, tw: u32) -> u32 {
+        let one = self.const_u32_expr(1, 1);
+        let mut parts: Vec<u32> = Vec::with_capacity(tw as usize);
+        for i in (0..tw).rev() {
+            let off = self.const_u32_expr(i, 32);
+            let wid = self.const_u32_expr(1, 32);
+            let bit = self.push_expr(ir::Expr::Select {
+                base: e,
+                offset: off,
+                width: wid,
+                kind: ir::SelKind::Bit,
+            });
+            let known = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::CaseEq,
+                lhs: bit,
+                rhs: one,
+            });
+            parts.push(known);
+        }
+        self.push_expr(ir::Expr::Concat { parts })
+    }
+
+    /// `Select(e, 0, n)` — the unsigned low `n` value-bits (truncate primitive).
+    fn select_low(&mut self, e: u32, n: u32) -> u32 {
+        let off = self.const_u32_expr(0, 32);
+        let wid = self.const_u32_expr(n, 32);
+        self.push_expr(ir::Expr::Select {
+            base: e,
+            offset: off,
+            width: wid,
+            kind: ir::SelKind::PartConst,
+        })
+    }
+
+    /// Widen `e` (self-width `w`) to `n` bits (n > w), PRESERVING 4-state X/Z.
+    /// Sign-extend (fill = the operand's MSB) iff `signed_op`, else zero-extend.
+    /// Built from `Concat[Replicate(n-w, fill_bit), e]` so the operand bits and the
+    /// fill survive verbatim — a bitwise `e | 0` would both zero-extend a signed
+    /// operand AND collapse Z→X (`z | 0 = x`), the two extend-path silent-wrongs.
+    fn extend_to(&mut self, e: u32, w: u32, n: u32, signed_op: bool) -> u32 {
+        let fill_bit = if signed_op {
+            let off = self.const_u32_expr(w.saturating_sub(1), 32);
+            let wid = self.const_u32_expr(1, 32);
+            self.push_expr(ir::Expr::Select {
+                base: e,
+                offset: off,
+                width: wid,
+                kind: ir::SelKind::Bit,
+            })
+        } else {
+            self.const_u32_expr(0, 1)
+        };
+        let count = self.const_u32_expr(n - w, 32);
+        let fill = self.push_expr(ir::Expr::Replicate {
+            count,
+            value: fill_bit,
+        });
+        // Concat is MSB-first: the high fill, then the operand's low bits.
+        self.push_expr(ir::Expr::Concat {
+            parts: vec![fill, e],
+        })
+    }
+
+    /// True when the cast operand is real-valued. Reuses the IR `expr_is_real` for
+    /// the common shapes, and additionally recognizes a user real-returning function
+    /// call REACHABLE through the real-propagating positions (unary `+/-`, real
+    /// arithmetic, ternary, parens) — the IR `Call` node carries no real flag, so
+    /// `expr_is_real` alone mis-treats `int'(real_fn())` / `int'(-real_fn())` as
+    /// integral (a bit-reinterpret) instead of routing through the real→int round
+    /// path. The engine itself evaluates the real arithmetic correctly (the return
+    /// net is `NetKind::Real`); only this elaborate routing decision needs the call.
+    fn cast_operand_is_real(&self, operand: &ast::Expr, eid: u32) -> bool {
+        self.expr_is_real(eid) || self.ast_has_real_call(operand)
+    }
+
+    /// AST-side companion to `expr_is_real`: does `e` evaluate to real *because* it
+    /// reaches a real-returning user function call through a real-propagating
+    /// position (the same operators `expr_is_real` recurses through)?
+    fn ast_has_real_call(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Paren { inner } => self.ast_has_real_call(inner),
+            ast::ExprKind::Unary { op, operand } => {
+                matches!(op, ast::UnOp::Plus | ast::UnOp::Minus) && self.ast_has_real_call(operand)
+            }
+            ast::ExprKind::Binary { op, lhs, rhs } => {
+                matches!(
+                    op,
+                    ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::Mul | ast::BinOp::Div
+                ) && (self.ast_has_real_call(lhs) || self.ast_has_real_call(rhs))
+            }
+            ast::ExprKind::Ternary { then_e, else_e, .. } => {
+                self.ast_has_real_call(then_e) || self.ast_has_real_call(else_e)
+            }
+            ast::ExprKind::Call { name, .. } => {
+                name.segments.len() == 1
+                    && self
+                        .func_table
+                        .get(&name.segments[0].name)
+                        .is_some_and(|f| {
+                            matches!(f.ret_type, ast::ParamType::Real | ast::ParamType::Realtime)
+                        })
+            }
+            _ => false,
+        }
+    }
+
+    /// Self-determined signedness of an ALREADY-LOWERED IR expr (IEEE §11.8.1),
+    /// faithful to the engine width-table rule (`sim-engine/src/width.rs`). Only
+    /// consulted where a cast must INHERIT the operand sign (size-cast truncate);
+    /// function calls / exotic system functions conservatively report unsigned.
+    fn expr_self_signed(&self, eid: u32) -> bool {
+        match self.exprs.get(eid as usize) {
+            Some(ir::Expr::Const { val }) => self
+                .consts
+                .get(*val as usize)
+                .map(|c| {
+                    matches!(c.repr, ir::ConstRepr::Real)
+                        || (matches!(c.repr, ir::ConstRepr::Numeric) && c.signed)
+                })
+                .unwrap_or(false),
+            Some(ir::Expr::Signal { net, .. }) => self
+                .nets
+                .get(*net as usize)
+                .map(|n| n.signed)
+                .unwrap_or(false),
+            Some(ir::Expr::ArrayItem { signed, .. }) => *signed,
+            // bit/part-select, concat, replicate are ALWAYS unsigned (§5.4.1).
+            Some(ir::Expr::Select { .. })
+            | Some(ir::Expr::Concat { .. })
+            | Some(ir::Expr::Replicate { .. }) => false,
+            // context-determined unary (+/-/~) follows the operand's sign;
+            // reductions / logical-not are 1-bit unsigned.
+            Some(ir::Expr::Unary {
+                op: ir::UnOp::Plus | ir::UnOp::Minus | ir::UnOp::BitNot,
+                operand,
+            }) => self.expr_self_signed(*operand),
+            Some(ir::Expr::Unary { .. }) => false,
+            Some(ir::Expr::Binary { op, lhs, rhs }) => match op {
+                ir::BinOp::Add
+                | ir::BinOp::Sub
+                | ir::BinOp::Mul
+                | ir::BinOp::Div
+                | ir::BinOp::Mod
+                | ir::BinOp::BitAnd
+                | ir::BinOp::BitOr
+                | ir::BinOp::BitXor
+                | ir::BinOp::BitXnor => self.expr_self_signed(*lhs) && self.expr_self_signed(*rhs),
+                // power & shifts: sign follows the LEFT (base) operand only.
+                ir::BinOp::Pow
+                | ir::BinOp::Shl
+                | ir::BinOp::Shr
+                | ir::BinOp::AShl
+                | ir::BinOp::AShr => self.expr_self_signed(*lhs),
+                _ => false, // comparisons / case-eq / logical: 1-bit unsigned
+            },
+            Some(ir::Expr::Ternary { then_e, else_e, .. }) => {
+                self.expr_self_signed(*then_e) && self.expr_self_signed(*else_e)
+            }
+            Some(ir::Expr::SysFunc { which, .. }) => matches!(
+                which,
+                ir::SysFuncId::Signed
+                    | ir::SysFuncId::DynSize
+                    | ir::SysFuncId::AssocNum
+                    | ir::SysFuncId::AssocFirst
+                    | ir::SysFuncId::AssocNext
+                    | ir::SysFuncId::AssocLast
+                    | ir::SysFuncId::AssocPrev
+                    | ir::SysFuncId::Rtoi
+                    | ir::SysFuncId::Stime
+            ),
+            _ => false, // Call / unhandled: conservatively unsigned
+        }
+    }
+
     // ── expression lowering: post-order arena append, returns ExprId ──
     fn lower_expr(&mut self, e: &ast::Expr) -> u32 {
         // §11.6: an expression whose operands carry an unsized FILL literal is
@@ -9062,6 +9471,9 @@ impl<'s> Elaborator<'s> {
                 let value = self.push_expr(ir::Expr::Concat { parts: part_ids });
                 self.push_expr(ir::Expr::Replicate { count, value })
             }
+
+            // ── SV static cast `casting_type'(expr)` (§6.24) ───────
+            ast::ExprKind::Cast { target, expr } => self.lower_cast(target, expr),
 
             // ── calls ──────────────────────────────────────────────
             ast::ExprKind::SysCall { name, args } => {
