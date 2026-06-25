@@ -1782,7 +1782,76 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             | SysFuncId::DistExponential
             | SysFuncId::DistPoisson
             | SysFuncId::DistChiSquare
+            | SysFuncId::DistT
+            | SysFuncId::DistErlang
             | SysFuncId::Cast => Value::xs(32, true),
+            // ── v19: N6 real-math (IEEE §20.8.2), computed via the vendored
+            //   pure-Rust libm (3-OS byte-identical). An integral argument
+            //   coerces to real (signed); a real argument is used as-is. Domain
+            //   errors (e.g. $sqrt(-1), $acos(2), $ln(0)) propagate NaN/±inf
+            //   exactly like C/iverilog. PURE — no seed/heap mutation. ──
+            SysFuncId::Ln
+            | SysFuncId::Log10
+            | SysFuncId::Exp
+            | SysFuncId::Sqrt
+            | SysFuncId::Pow
+            | SysFuncId::Floor
+            | SysFuncId::Ceil
+            | SysFuncId::Sin
+            | SysFuncId::Cos
+            | SysFuncId::Tan
+            | SysFuncId::Asin
+            | SysFuncId::Acos
+            | SysFuncId::Atan
+            | SysFuncId::Atan2
+            | SysFuncId::Hypot
+            | SysFuncId::Sinh
+            | SysFuncId::Cosh
+            | SysFuncId::Tanh
+            | SysFuncId::Asinh
+            | SysFuncId::Acosh
+            | SysFuncId::Atanh => {
+                let real_arg = |i: usize| -> f64 {
+                    match args.get(i) {
+                        Some(&a) => {
+                            let v = self.eval(a);
+                            if v.is_real {
+                                v.to_f64().unwrap_or(0.0)
+                            } else {
+                                // integral operand → real (signed); X/Z → 0.0.
+                                v.to_i128_signed().unwrap_or(0) as f64
+                            }
+                        }
+                        None => 0.0,
+                    }
+                };
+                let x = real_arg(0);
+                let r = match which {
+                    SysFuncId::Ln => libm::log(x),
+                    SysFuncId::Log10 => libm::log10(x),
+                    SysFuncId::Exp => libm::exp(x),
+                    SysFuncId::Sqrt => libm::sqrt(x),
+                    SysFuncId::Pow => libm::pow(x, real_arg(1)),
+                    SysFuncId::Floor => libm::floor(x),
+                    SysFuncId::Ceil => libm::ceil(x),
+                    SysFuncId::Sin => libm::sin(x),
+                    SysFuncId::Cos => libm::cos(x),
+                    SysFuncId::Tan => libm::tan(x),
+                    SysFuncId::Asin => libm::asin(x),
+                    SysFuncId::Acos => libm::acos(x),
+                    SysFuncId::Atan => libm::atan(x),
+                    SysFuncId::Atan2 => libm::atan2(x, real_arg(1)),
+                    SysFuncId::Hypot => libm::hypot(x, real_arg(1)),
+                    SysFuncId::Sinh => libm::sinh(x),
+                    SysFuncId::Cosh => libm::cosh(x),
+                    SysFuncId::Tanh => libm::tanh(x),
+                    SysFuncId::Asinh => libm::asinh(x),
+                    SysFuncId::Acosh => libm::acosh(x),
+                    SysFuncId::Atanh => libm::atanh(x),
+                    _ => unreachable!("real-math arm gates on the same id set"),
+                };
+                Value::from_f64(r)
+            }
         }
     }
 

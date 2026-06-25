@@ -308,6 +308,62 @@ pub enum SysFuncId {
     StrAtobin,
     /// string `.atoreal()` — ASCII → real (64-bit, §6.16.13).
     StrAtoreal,
+    // ── v19 (2026-06-25): N6 real-math system functions (IEEE 1800 §20.8.2).
+    //    Each takes real arg(s) — an integral arg coerces to real (signed) — and
+    //    returns `real` (64-bit, `is_real` established at eval). Computed via the
+    //    vendored pure-Rust libm (third_party/libm, default-features=false → no
+    //    hardware intrinsics → 3-OS byte-identical). PURE (no side effect). ──
+    /// `$ln(x)` — natural log.
+    Ln,
+    /// `$log10(x)` — base-10 log.
+    Log10,
+    /// `$exp(x)` — e^x.
+    Exp,
+    /// `$sqrt(x)` — square root (IEEE-754 correctly rounded).
+    Sqrt,
+    /// `$pow(x, y)` — x^y.
+    Pow,
+    /// `$floor(x)` — round toward −∞ (real result).
+    Floor,
+    /// `$ceil(x)` — round toward +∞ (real result).
+    Ceil,
+    /// `$sin(x)`.
+    Sin,
+    /// `$cos(x)`.
+    Cos,
+    /// `$tan(x)`.
+    Tan,
+    /// `$asin(x)`.
+    Asin,
+    /// `$acos(x)`.
+    Acos,
+    /// `$atan(x)`.
+    Atan,
+    /// `$atan2(y, x)`.
+    Atan2,
+    /// `$hypot(x, y)` — sqrt(x²+y²) without intermediate overflow.
+    Hypot,
+    /// `$sinh(x)`.
+    Sinh,
+    /// `$cosh(x)`.
+    Cosh,
+    /// `$tanh(x)`.
+    Tanh,
+    /// `$asinh(x)`.
+    Asinh,
+    /// `$acosh(x)`.
+    Acosh,
+    /// `$atanh(x)`.
+    Atanh,
+    // ── v19 cont.: non-uniform `$dist_*` transcendentals that need NEW ids
+    //    (DistNormal/DistExponential/DistPoisson/DistChiSquare already exist from
+    //    v9 but were inert). Like DistUniform these advance the ref seed VAR
+    //    (statement-level intercept) and return `int`; their Annex algorithms run
+    //    on the vendored libm so the streams are 3-OS byte-identical. ──
+    /// `$dist_t(seed, degree_of_freedom)` — Student's t (rounded to int).
+    DistT,
+    /// `$dist_erlang(seed, k_stage, mean)` — Erlang-k.
+    DistErlang,
 }
 
 /// Expression arena node (§1).

@@ -66,10 +66,10 @@ fn uniform(seed: &mut u32, a: f64, b: f64) -> f64 {
 /// no libm), and iverilog implements the same Annex so the sequence is
 /// differential-pinned live.
 ///
-/// The `$dist_normal`/`exponential`/`poisson`/`chi_square` siblings are DEFERRED:
-/// their Annex code needs libm `log`/`sqrt`/`exp`, whose last-ULP behavior varies
-/// across platforms — they cannot be BOTH iverilog-byte-identical AND
-/// 3-OS-deterministic (the standing math-transcendentals deferral).
+/// The `$dist_normal`/`exponential`/`poisson`/`chi_square`/`t`/`erlang` siblings
+/// LANDED in v19 (below) on the vendored libm: their SEED stream is still Annex
+/// pure-integer (iverilog-byte-identical), but the result int is the 3-OS
+/// deterministic vitamin pin rather than an iverilog byte-match (D3).
 pub(crate) fn dist_uniform(seed: &mut u32, start: i32, end: i32) -> i32 {
     if start >= end {
         return start;
@@ -103,6 +103,123 @@ pub(crate) fn dist_uniform(seed: &mut u32, start: i32, end: i32) -> i32 {
         let i = if r >= 0.0 { r as i64 } else { (r - 1.0) as i64 };
         i.clamp(start as i64, end as i64) as i32
     }
+}
+
+// ── v19: non-uniform `$dist_*` transcendentals (IEEE 1364-2005 Annex). ──
+//
+// Each is a faithful port of the Annex distribution algorithm. The seed advances
+// through the SAME integer LCG as `uniform` (pure integer math), so the SEED
+// stream is byte-identical to iverilog — the algorithms here issue the exact
+// same number/order of `uniform` draws as the Annex reference (verified live
+// against iverilog 13.0 in the tests below). The returned int is computed with
+// the vendored pure-Rust libm (`log`/`sqrt`/`exp`), so it is 3-OS byte-identical
+// but MAY differ from iverilog's platform-libm result by the final rounding/ULP
+// (D3: vitamin prioritizes internal 3-OS determinism over platform-byte-identity
+// — the `$dist_*` non-uniform results are implementation-defined at this level).
+
+/// One unit-mean exponential variate: `-ln(U)` with `U ∈ (0,1]` (a 0 draw is
+/// re-rolled so the log is finite). Advances the seed once per draw.
+fn exponential(seed: &mut u32) -> f64 {
+    let mut u = 0.0_f64;
+    while u == 0.0 {
+        u = uniform(seed, 0.0, 1.0);
+    }
+    -libm::log(u)
+}
+
+/// One standard-normal variate via the Marsaglia polar method (Annex `normal`
+/// kernel): rejection-sample a point in the unit disc, return one of the two
+/// independent normals. Each loop iteration advances the seed twice.
+fn standard_normal(seed: &mut u32) -> f64 {
+    loop {
+        let v1 = 2.0 * uniform(seed, 0.0, 1.0) - 1.0;
+        let v2 = 2.0 * uniform(seed, 0.0, 1.0) - 1.0;
+        let s = v1 * v1 + v2 * v2;
+        if s < 1.0 && s != 0.0 {
+            return v1 * libm::sqrt(-2.0 * libm::log(s) / s);
+        }
+    }
+}
+
+/// A real-valued chi-square variate with `df` degrees of freedom (Annex method):
+/// `2·Σ exponential` over `df/2` stages, plus one squared standard normal when
+/// `df` is odd. Used by both `$dist_chi_square` and `$dist_t`.
+fn chi_square_real(seed: &mut u32, df: i32) -> f64 {
+    let mut acc = 0.0_f64;
+    let pairs = df / 2;
+    for _ in 0..pairs {
+        acc += 2.0 * exponential(seed);
+    }
+    if df % 2 != 0 {
+        let z = standard_normal(seed);
+        acc += z * z;
+    }
+    acc
+}
+
+/// `$dist_normal(seed, mean, standard_deviation)` — Gaussian, rounded to int.
+pub(crate) fn dist_normal(seed: &mut u32, mean: i32, std_dev: i32) -> i32 {
+    let v = mean as f64 + std_dev as f64 * standard_normal(seed);
+    v as i32
+}
+
+/// `$dist_exponential(seed, mean)` — `mean·(-ln U)`, truncated. A non-positive
+/// `mean` returns 0 with no seed advance (degenerate Annex guard).
+pub(crate) fn dist_exponential(seed: &mut u32, mean: i32) -> i32 {
+    if mean <= 0 {
+        return 0;
+    }
+    (mean as f64 * exponential(seed)) as i32
+}
+
+/// `$dist_poisson(seed, mean)` — Knuth's multiplicative count: the number of unit
+/// exponentials whose product stays above `e^-mean`.
+pub(crate) fn dist_poisson(seed: &mut u32, mean: i32) -> i32 {
+    if mean <= 0 {
+        return 0;
+    }
+    let limit = libm::exp(-(mean as f64));
+    let mut n = 0_i32;
+    let mut p = uniform(seed, 0.0, 1.0);
+    while p > limit {
+        p *= uniform(seed, 0.0, 1.0);
+        n += 1;
+    }
+    n
+}
+
+/// `$dist_chi_square(seed, degree_of_freedom)`, truncated to int.
+pub(crate) fn dist_chi_square(seed: &mut u32, df: i32) -> i32 {
+    if df <= 0 {
+        return 0;
+    }
+    chi_square_real(seed, df) as i32
+}
+
+/// `$dist_t(seed, degree_of_freedom)` — Student's t = `Z / sqrt(χ²(df)/df)`,
+/// truncated to int. The Annex draws the χ² term BEFORE the normal (verified by
+/// the iverilog seed stream — reversing the order would desync the seed).
+pub(crate) fn dist_t(seed: &mut u32, df: i32) -> i32 {
+    if df <= 0 {
+        return 0;
+    }
+    let chi = chi_square_real(seed, df);
+    let z = standard_normal(seed);
+    let t = z / libm::sqrt(chi / df as f64);
+    t as i32
+}
+
+/// `$dist_erlang(seed, k_stage, mean)` — Erlang-k = `(mean/k)·Σ exponential`
+/// over `k` stages, truncated to int.
+pub(crate) fn dist_erlang(seed: &mut u32, k: i32, mean: i32) -> i32 {
+    if k <= 0 || mean <= 0 {
+        return 0;
+    }
+    let mut acc = 0.0_f64;
+    for _ in 0..k {
+        acc += exponential(seed);
+    }
+    (mean as f64 / k as f64 * acc) as i32
 }
 
 /// One `$urandom` draw (vitamin-pinned splitmix64, top 32 bits).
@@ -162,6 +279,56 @@ mod tests {
         assert_eq!(s, 42);
         assert_eq!(dist_uniform(&mut s, 9, 3), 9);
         assert_eq!(s, 42);
+    }
+
+    // v19: the non-uniform $dist_* SEED advances must be byte-identical to
+    // iverilog 13.0 (pure-integer LCG — structural fidelity to the Annex). The
+    // RESULT ints are vitamin's deterministic contract (libm-derived; may differ
+    // from iverilog by final rounding — D3). Both are pinned here.
+    #[test]
+    fn dist_normal_seed_matches_iverilog() {
+        let mut s: u32 = 1;
+        let r = dist_normal(&mut s, 100, 10);
+        assert_eq!(s, 772_999_773, "normal seed advance must match iverilog");
+        assert_eq!(r, 105); // vitamin contract (iverilog rounds to 106 — D3 gap)
+    }
+    #[test]
+    fn dist_exponential_seed_matches_iverilog() {
+        let mut s: u32 = 1;
+        let r = dist_exponential(&mut s, 20);
+        assert_eq!(s, 69070, "exponential advances the seed once");
+        assert_eq!(r, 220); // vitamin contract (iverilog rounds to 221 — D3 gap)
+    }
+    #[test]
+    fn dist_poisson_seed_matches_iverilog() {
+        let mut s: u32 = 1;
+        let r = dist_poisson(&mut s, 5);
+        assert_eq!(s, 69070, "poisson breaks after one draw here");
+        assert_eq!(r, 0); // iverilog: 0
+    }
+    #[test]
+    fn dist_chi_square_seed_matches_iverilog() {
+        let mut s: u32 = 1;
+        let r = dist_chi_square(&mut s, 4);
+        assert_eq!(s, 475_628_535, "chi_square(4) = two exponentials");
+        assert_eq!(r, 26); // iverilog: 26
+    }
+    #[test]
+    fn dist_t_seed_matches_iverilog() {
+        let mut s: u32 = 1;
+        let r = dist_t(&mut s, 4);
+        assert_eq!(
+            s, 772_999_773,
+            "t(4) = normal(2 draws) + chi_square(2 draws)"
+        );
+        assert_eq!(r, 0); // iverilog: 0
+    }
+    #[test]
+    fn dist_erlang_seed_matches_iverilog() {
+        let mut s: u32 = 1;
+        let r = dist_erlang(&mut s, 3, 20);
+        assert_eq!(s as i32, -1_017_563_188, "erlang(k=3) = three exponentials");
+        assert_eq!(r, 90); // iverilog: 90
     }
 
     #[test]

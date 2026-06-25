@@ -341,8 +341,31 @@ impl WidthTable {
                     signed: true,
                 },
                 // $itor / $bitstoreal: real return → 64-bit signed (real-domain;
-                // the is_real flag is established at eval time).
-                SysFuncId::Itor | SysFuncId::BitsToReal => SelfWidth {
+                // the is_real flag is established at eval time). v19: the N6
+                // real-math functions (§20.8.2) are likewise real-returning.
+                SysFuncId::Itor
+                | SysFuncId::BitsToReal
+                | SysFuncId::Ln
+                | SysFuncId::Log10
+                | SysFuncId::Exp
+                | SysFuncId::Sqrt
+                | SysFuncId::Pow
+                | SysFuncId::Floor
+                | SysFuncId::Ceil
+                | SysFuncId::Sin
+                | SysFuncId::Cos
+                | SysFuncId::Tan
+                | SysFuncId::Asin
+                | SysFuncId::Acos
+                | SysFuncId::Atan
+                | SysFuncId::Atan2
+                | SysFuncId::Hypot
+                | SysFuncId::Sinh
+                | SysFuncId::Cosh
+                | SysFuncId::Tanh
+                | SysFuncId::Asinh
+                | SysFuncId::Acosh
+                | SysFuncId::Atanh => SelfWidth {
                     width: 64,
                     signed: true,
                 },
@@ -372,6 +395,8 @@ impl WidthTable {
                 | SysFuncId::DistExponential
                 | SysFuncId::DistPoisson
                 | SysFuncId::DistChiSquare
+                | SysFuncId::DistT
+                | SysFuncId::DistErlang
                 | SysFuncId::Cast
                 // v18: string→int conversions — all `int` returns.
                 | SysFuncId::StrAtoi

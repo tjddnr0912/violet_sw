@@ -2612,40 +2612,70 @@ impl Kernel for Scheduler<'_, '_> {
     fn k_dist_seeded_rhs(&self, rhs: u32) -> bool {
         matches!(
             self.st.ir.exprs.get(rhs as usize),
-            Some(sim_ir::Expr::SysFunc {
-                which: sim_ir::SysFuncId::DistUniform,
-                args,
-            }) if args.len() == 3
+            Some(sim_ir::Expr::SysFunc { which, args })
+                if matches!(
+                    which,
+                    sim_ir::SysFuncId::DistUniform
+                        | sim_ir::SysFuncId::DistNormal
+                        | sim_ir::SysFuncId::DistExponential
+                        | sim_ir::SysFuncId::DistPoisson
+                        | sim_ir::SysFuncId::DistChiSquare
+                        | sim_ir::SysFuncId::DistT
+                        | sim_ir::SysFuncId::DistErlang
+                ) && !args.is_empty()
         )
     }
     fn k_dist_seeded(&mut self, rhs: u32) -> Value {
         // shape guaranteed by `k_dist_seeded_rhs` + elaborate's whole-net seed
         // contract; everything below defends a hand-built IR.
-        let (seed_net, start_arg, end_arg) = match self.st.ir.exprs.get(rhs as usize) {
-            Some(sim_ir::Expr::SysFunc { args, .. }) if args.len() == 3 => {
+        let (which, seed_net, params) = match self.st.ir.exprs.get(rhs as usize) {
+            Some(sim_ir::Expr::SysFunc { which, args }) if !args.is_empty() => {
                 let net = match self.st.ir.exprs.get(args[0] as usize) {
                     Some(sim_ir::Expr::Signal { net, word: None }) => Some(*net),
                     _ => None,
                 };
-                (net, args[1], args[2])
+                (*which, net, args[1..].to_vec())
             }
             _ => return Value::xs(32, true),
         };
         let Some(net) = seed_net else {
             return Value::xs(32, true);
         };
-        // start/end are `integer` (signed 32-bit); X/Z reads as 0.
-        let start = self.eval(start_arg).to_u64().unwrap_or(0) as u32 as i32;
-        let end = self.eval(end_arg).to_u64().unwrap_or(0) as u32 as i32;
-        // seed in: low 32 bits; X/Z → 0 (uninitialized-reg parity), then the
-        // Annex `69069*s+1` advance applies.
+        // dist params are `integer` (signed 32-bit); X/Z reads as 0.
+        let p: Vec<i32> = params
+            .iter()
+            .map(|&a| self.eval(a).to_u64().unwrap_or(0) as u32 as i32)
+            .collect();
+        // seed in: low 32 bits; X/Z → 0 (uninitialized-reg parity). The dist
+        // kernels advance it via the Annex `69069*s+1` integer LCG.
         let cur = self.st.read_net(net, None);
         let mut s = if cur.has_xz() {
             0
         } else {
             (cur.to_u64().unwrap_or(0) & 0xffff_ffff) as u32
         };
-        let r = crate::rng::dist_uniform(&mut s, start, end);
+        let r = match which {
+            sim_ir::SysFuncId::DistUniform => {
+                crate::rng::dist_uniform(&mut s, *p.first().unwrap_or(&0), *p.get(1).unwrap_or(&0))
+            }
+            sim_ir::SysFuncId::DistNormal => {
+                crate::rng::dist_normal(&mut s, *p.first().unwrap_or(&0), *p.get(1).unwrap_or(&0))
+            }
+            sim_ir::SysFuncId::DistExponential => {
+                crate::rng::dist_exponential(&mut s, *p.first().unwrap_or(&0))
+            }
+            sim_ir::SysFuncId::DistPoisson => {
+                crate::rng::dist_poisson(&mut s, *p.first().unwrap_or(&0))
+            }
+            sim_ir::SysFuncId::DistChiSquare => {
+                crate::rng::dist_chi_square(&mut s, *p.first().unwrap_or(&0))
+            }
+            sim_ir::SysFuncId::DistT => crate::rng::dist_t(&mut s, *p.first().unwrap_or(&0)),
+            sim_ir::SysFuncId::DistErlang => {
+                crate::rng::dist_erlang(&mut s, *p.first().unwrap_or(&0), *p.get(1).unwrap_or(&0))
+            }
+            _ => 0,
+        };
         let lv = Lvalue {
             chunks: vec![sim_ir::LvalChunk {
                 net,

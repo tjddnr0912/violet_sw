@@ -540,7 +540,14 @@ impl VcdWriter<Vec<u8>> {
 /// only Rust's `{:e}`/`{:.*}`, never a libm transcendental.
 pub fn fmt_g(x: f64, p: i32) -> String {
     if !x.is_finite() {
-        return format!("{x}"); // inf / -inf / NaN
+        // C / iverilog spell NaN lowercase ("nan", any sign); ±inf already match
+        // Rust's "inf"/"-inf". Rust's default Display gives "NaN" — a silent-wrong
+        // for `$display` parity until coerced here.
+        return if x.is_nan() {
+            "nan".to_string()
+        } else {
+            format!("{x}") // "inf" / "-inf"
+        };
     }
     if x == 0.0 {
         return "0".to_string();
@@ -887,7 +894,7 @@ b000z #
             (-0.0, 6, "0"),
             (f64::INFINITY, 6, "inf"),
             (f64::NEG_INFINITY, 6, "-inf"),
-            (f64::NAN, 6, "NaN"),
+            (f64::NAN, 6, "nan"), // C/iverilog lowercase (was "NaN", a $display silent-wrong)
         ];
         for &(x, p, want) in cases {
             assert_eq!(fmt_g(x, p), want, "fmt_g({x:e}, {p})");

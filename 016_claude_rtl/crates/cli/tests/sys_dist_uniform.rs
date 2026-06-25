@@ -4,9 +4,10 @@
 //! so it is BOTH 3-OS deterministic AND iverilog-byte-identical (every value
 //! here is pinned to LIVE iverilog 13.0).
 //!
-//! (`$dist_normal`/`exponential`/`poisson`/`chi_square` are DEFERRED: their Annex
-//! code needs libm `log`/`sqrt`/`exp`, which cannot be both iverilog-identical and
-//! 3-OS deterministic — they stay loud, see `unmapped_dist_funcs_are_loud`.)
+//! (`$dist_normal`/`exponential`/`poisson`/`chi_square`/`t`/`erlang` LANDED in
+//! v19 via the vendored libm — see `crates/cli/tests/dist_transcendental.rs`.
+//! Their SEED stream is iverilog-byte-identical; the result int is vitamin's
+//! 3-OS deterministic pin, NOT an iverilog byte-match — D3.)
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -108,21 +109,24 @@ fn nondirect_placement_is_loud() {
 }
 
 #[test]
-fn unmapped_dist_funcs_are_loud() {
-    // the transcendental siblings need libm (3-OS non-deterministic) → DEFERRED,
-    // and stay loud E3009 (unmapped $func), never a silent wrong draw.
+fn nonuniform_dist_funcs_now_work() {
+    // v19: the transcendental siblings LANDED (vendored libm). As a direct-rhs
+    // seeded draw each succeeds (exit 0) — full value/seed pins live in
+    // dist_transcendental.rs; here we just confirm they are no longer loud.
     for f in [
         "$dist_normal(s,50,10)",
         "$dist_exponential(s,10)",
         "$dist_poisson(s,5)",
         "$dist_chi_square(s,4)",
+        "$dist_t(s,4)",
+        "$dist_erlang(s,3,10)",
     ] {
         let (out, code) = run(&format!(
-            "module t;\n integer s, r;\n initial begin s=3; r={f}; end\nendmodule\n"
+            "module t;\n integer s, r;\n initial begin s=3; r={f}; $display(\"%0d\", r); end\nendmodule\n"
         ));
         assert!(
-            out.contains("VITA-E3009") || code == Some(1),
-            "{f} must be loud (deferred): {out} code={code:?}"
+            code == Some(0) && !out.contains("VITA-E3009"),
+            "{f} must now succeed: {out} code={code:?}"
         );
     }
 }

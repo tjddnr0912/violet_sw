@@ -3,7 +3,13 @@
 use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 
 /// blake3 of the full SimIr-closure canonical string. Locked at
-/// format_version 18 (2026-06-24: 5 SysFuncId `StrAtoi`/`StrAtohex`/`StrAtooct`/
+/// format_version 19 (2026-06-25: N6 real-math — 21 SysFuncId variants
+/// `Ln`/`Log10`/`Exp`/`Sqrt`/`Pow`/`Floor`/`Ceil`/`Sin`/`Cos`/`Tan`/`Asin`/
+/// `Acos`/`Atan`/`Atan2`/`Hypot`/`Sinh`/`Cosh`/`Tanh`/`Asinh`/`Acosh`/`Atanh`,
+/// IEEE §20.8.2 — plus 2 non-uniform `$dist_*` ids `DistT`/`DistErlang`. All
+/// reached from SimIr via the Expr arena, so the root hash flips; the Process
+/// cluster reaches Expr only via arena INDICES (u32), so its sub-pin is
+/// UNCHANGED. Earlier: format_version 18 (2026-06-24: 5 SysFuncId `StrAtoi`/`StrAtohex`/`StrAtooct`/
 /// `StrAtobin`/`StrAtoreal` + 4 SysTaskId `StrItoa`/`StrHextoa`/`StrOcttoa`/
 /// `StrBintoa` for the ⓑ-breadth string conversion methods, IEEE §6.16.9-17).
 /// (2026-06-24 v17: `Expr::ArrayItem` (the with-clause iterator)
@@ -18,7 +24,7 @@ use vita_schema::{schema_hash, SchemaShape, ShapeRegistry};
 /// 2026-06-18 v9: 13 SysFuncId and 5 SysTaskId for the file-read/$dist_*/$cast/
 /// $writemem*/$monitoron-off family.)
 const EXPECTED_SIMIR_HASH: &str =
-    "6b1df1ca8d62e2ec448701bfad8d84e1ffb959bd7794f41f29c15d0ab0bfc961";
+    "37fa4f1f37d433ad94a8a6f03d4ee6dd9d03317ac322b4bdb885a4030194aad6";
 /// Sub-pin: the runtime Process cluster (cheap regression signal; NOT the gate).
 const EXPECTED_PROCESS_HASH: &str =
     "61db2e207ed69c2ff1dbf3fc0473b7ed9906fbeb6c42128ef9edf382b081f277";

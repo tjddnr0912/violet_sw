@@ -1488,13 +1488,15 @@ fn real_unary_minus() {
     assert_eq!(out.trim(), "-2.5");
 }
 
-// 14b. signed-zero display: %g canonicalizes -0.0→"0"; %f keeps the sign.
+// 14b. signed-zero display: -0.0 canonicalizes to "0"/"0.000000" across %g AND
+// %f/%e, matching iverilog (which flushes a constant/literal -0.0 to +0.0). Prior
+// vita kept the sign in %f ("-0.000000") — a $display silent-wrong vs iverilog.
 #[test]
 fn real_negative_zero_display() {
     let out = run_sv(
         "module t; real r; initial begin r = -(0.0); $display(\"%g|%f\", r, r); end endmodule",
     );
-    assert_eq!(out.trim(), "0|-0.000000");
+    assert_eq!(out.trim(), "0|0.000000");
 }
 
 // 16. %d of a NaN real → "0"; %d of a huge real saturates to i64::MAX.
@@ -1548,7 +1550,7 @@ fn float_format_determinism_golden() {
     // the n*LOG10_2 path → field width 61. Reconstruct both widths via format! so
     // they are self-documenting, not a fragile wall of literal spaces.
     let expected = format!(
-        "0.333333\n1.500000e+03\n1e-05\n0|-0.000000\ninf\n{:>20}\n[{:>61}]\n3\n",
+        "0.333333\n1.500000e+03\n1e-05\n0|0.000000\ninf\n{:>20}\n[{:>61}]\n3\n",
         3, 123456,
     );
     assert_eq!(out, expected);

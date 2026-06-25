@@ -814,6 +814,75 @@
         58: {
             "StrAtoreal": UNIT,
         },
+        59: {
+            "Ln": UNIT,
+        },
+        60: {
+            "Log10": UNIT,
+        },
+        61: {
+            "Exp": UNIT,
+        },
+        62: {
+            "Sqrt": UNIT,
+        },
+        63: {
+            "Pow": UNIT,
+        },
+        64: {
+            "Floor": UNIT,
+        },
+        65: {
+            "Ceil": UNIT,
+        },
+        66: {
+            "Sin": UNIT,
+        },
+        67: {
+            "Cos": UNIT,
+        },
+        68: {
+            "Tan": UNIT,
+        },
+        69: {
+            "Asin": UNIT,
+        },
+        70: {
+            "Acos": UNIT,
+        },
+        71: {
+            "Atan": UNIT,
+        },
+        72: {
+            "Atan2": UNIT,
+        },
+        73: {
+            "Hypot": UNIT,
+        },
+        74: {
+            "Sinh": UNIT,
+        },
+        75: {
+            "Cosh": UNIT,
+        },
+        76: {
+            "Tanh": UNIT,
+        },
+        77: {
+            "Asinh": UNIT,
+        },
+        78: {
+            "Acosh": UNIT,
+        },
+        79: {
+            "Atanh": UNIT,
+        },
+        80: {
+            "DistT": UNIT,
+        },
+        81: {
+            "DistErlang": UNIT,
+        },
     }),
     "SysTaskId": ENUM({
         0: {

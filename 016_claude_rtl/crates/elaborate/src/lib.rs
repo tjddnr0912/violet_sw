@@ -9054,11 +9054,21 @@ impl<'s> Elaborator<'s> {
                 // illegal nested placement — loud, never a silent unseeded draw /
                 // dropped cast. MUST stay in sync with dist_uniform_special /
                 // cast_special.
-                if matches!(name.name.as_str(), "$dist_uniform" | "$cast") {
+                if matches!(
+                    name.name.as_str(),
+                    "$dist_uniform"
+                        | "$dist_normal"
+                        | "$dist_exponential"
+                        | "$dist_poisson"
+                        | "$dist_chi_square"
+                        | "$dist_t"
+                        | "$dist_erlang"
+                        | "$cast"
+                ) {
                     self.error(
                         MsgCode::ElabUnsupported,
-                        "$dist_uniform / $cast (function form) are supported only as \
-                         the direct rhs of a blocking assignment (v9)",
+                        "$dist_* / $cast (function form) are supported only as \
+                         the direct rhs of a blocking assignment (v9/v19)",
                     );
                     return self.placeholder_expr();
                 }
@@ -11110,10 +11120,12 @@ impl<'s> Elaborator<'s> {
             Some(ir::Expr::Ternary { then_e, else_e, .. }) => {
                 self.expr_is_real(*then_e) || self.expr_is_real(*else_e)
             }
-            Some(ir::Expr::SysFunc { which, .. }) => matches!(
-                which,
-                ir::SysFuncId::Realtime | ir::SysFuncId::Itor | ir::SysFuncId::BitsToReal
-            ),
+            Some(ir::Expr::SysFunc { which, .. }) => {
+                matches!(
+                    which,
+                    ir::SysFuncId::Realtime | ir::SysFuncId::Itor | ir::SysFuncId::BitsToReal
+                ) || real_math_arity(*which).is_some()
+            }
             _ => false,
         }
     }
@@ -19775,13 +19787,23 @@ impl<'s> Elaborator<'s> {
         let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
             return false;
         };
-        if name.name != "$dist_uniform" {
-            return false;
-        }
-        if args.len() != 3 {
+        // v9 `$dist_uniform` + v19 the non-uniform `$dist_*` siblings: each
+        // advances the ref seed VAR (a statement-level intercept, like
+        // `$random(seed)`) and returns an int. Name → (id, total arity incl. seed).
+        let (which, arity): (ir::SysFuncId, usize) = match name.name.as_str() {
+            "$dist_uniform" => (ir::SysFuncId::DistUniform, 3),
+            "$dist_normal" => (ir::SysFuncId::DistNormal, 3),
+            "$dist_exponential" => (ir::SysFuncId::DistExponential, 2),
+            "$dist_poisson" => (ir::SysFuncId::DistPoisson, 2),
+            "$dist_chi_square" => (ir::SysFuncId::DistChiSquare, 2),
+            "$dist_t" => (ir::SysFuncId::DistT, 2),
+            "$dist_erlang" => (ir::SysFuncId::DistErlang, 3),
+            _ => return false,
+        };
+        if args.len() != arity {
             self.error(
                 MsgCode::ElabUnsupported,
-                "$dist_uniform takes (seed, start, end)",
+                "a $dist_* function takes (seed, …) with the distribution's fixed arity",
             );
             return true;
         }
@@ -19793,7 +19815,7 @@ impl<'s> Elaborator<'s> {
         let Some(seed_net) = seed_net else {
             self.error(
                 MsgCode::ElabUnsupported,
-                "$dist_uniform seed must be a plain integral variable (v9)",
+                "a $dist_* seed must be a plain integral variable (v9)",
             );
             return true;
         };
@@ -19803,17 +19825,16 @@ impl<'s> Elaborator<'s> {
         if self.nets[seed_net as usize].width < 32 {
             self.error(
                 MsgCode::ElabUnsupported,
-                "$dist_uniform seed variable must be at least 32 bits \
+                "a $dist_* seed variable must be at least 32 bits \
                  (a narrower seed would truncate the RNG state)",
             );
             return true;
         }
-        let start_id = self.lower_expr(&args[1]);
-        let end_id = self.lower_expr(&args[2]);
-        let rhs_id = self.push_expr(ir::Expr::SysFunc {
-            which: ir::SysFuncId::DistUniform,
-            args: vec![seed_id, start_id, end_id],
-        });
+        let mut ids = vec![seed_id];
+        for a in &args[1..] {
+            ids.push(self.lower_expr(a));
+        }
+        let rhs_id = self.push_expr(ir::Expr::SysFunc { which, args: ids });
         self.emit_blocking_intercept(b, lhs, delay, rhs_id);
         true
     }
@@ -21221,7 +21242,29 @@ impl<'s> Elaborator<'s> {
                 match which {
                     F::Time | F::Realtime | F::Itor | F::BitsToReal | F::RealToBits
                     // v18: `.atoreal()` → 64-bit real.
-                    | F::StrAtoreal => 64,
+                    | F::StrAtoreal
+                    // v19: N6 real-math (§20.8.2) — all return 64-bit real.
+                    | F::Ln
+                    | F::Log10
+                    | F::Exp
+                    | F::Sqrt
+                    | F::Pow
+                    | F::Floor
+                    | F::Ceil
+                    | F::Sin
+                    | F::Cos
+                    | F::Tan
+                    | F::Asin
+                    | F::Acos
+                    | F::Atan
+                    | F::Atan2
+                    | F::Hypot
+                    | F::Sinh
+                    | F::Cosh
+                    | F::Tanh
+                    | F::Asinh
+                    | F::Acosh
+                    | F::Atanh => 64,
                     F::Signed | F::Unsigned => {
                         let a = *args.first()?;
                         self.ir_bits_of(a)?
@@ -21257,6 +21300,8 @@ impl<'s> Elaborator<'s> {
                     | F::DistExponential
                     | F::DistPoisson
                     | F::DistChiSquare
+                    | F::DistT
+                    | F::DistErlang
                     | F::Cast
                     // v18: string→int conversions — all `int`.
                     | F::StrAtoi
@@ -22355,6 +22400,42 @@ fn map_sysfunc(dollar_name: &str) -> Option<ir::SysFuncId> {
         "$urandom" => Some(ir::SysFuncId::Urandom),
         "$urandom_range" => Some(ir::SysFuncId::UrandomRange),
         "$stime" => Some(ir::SysFuncId::Stime),
+        // v19: N6 real-math (IEEE §20.8.2) — pure value functions, lowered like
+        // any other SysFunc. The non-uniform $dist_* are NOT here — they advance
+        // the ref seed and route through `dist_seeded_special` (direct-rhs only).
+        "$ln" => Some(ir::SysFuncId::Ln),
+        "$log10" => Some(ir::SysFuncId::Log10),
+        "$exp" => Some(ir::SysFuncId::Exp),
+        "$sqrt" => Some(ir::SysFuncId::Sqrt),
+        "$pow" => Some(ir::SysFuncId::Pow),
+        "$floor" => Some(ir::SysFuncId::Floor),
+        "$ceil" => Some(ir::SysFuncId::Ceil),
+        "$sin" => Some(ir::SysFuncId::Sin),
+        "$cos" => Some(ir::SysFuncId::Cos),
+        "$tan" => Some(ir::SysFuncId::Tan),
+        "$asin" => Some(ir::SysFuncId::Asin),
+        "$acos" => Some(ir::SysFuncId::Acos),
+        "$atan" => Some(ir::SysFuncId::Atan),
+        "$atan2" => Some(ir::SysFuncId::Atan2),
+        "$hypot" => Some(ir::SysFuncId::Hypot),
+        "$sinh" => Some(ir::SysFuncId::Sinh),
+        "$cosh" => Some(ir::SysFuncId::Cosh),
+        "$tanh" => Some(ir::SysFuncId::Tanh),
+        "$asinh" => Some(ir::SysFuncId::Asinh),
+        "$acosh" => Some(ir::SysFuncId::Acosh),
+        "$atanh" => Some(ir::SysFuncId::Atanh),
+        _ => None,
+    }
+}
+
+/// The N6 real-math system functions (IEEE §20.8.2) — all return `real`. Their
+/// declared arity: `$pow`/`$atan2`/`$hypot` take 2 args, the rest take 1.
+fn real_math_arity(which: ir::SysFuncId) -> Option<usize> {
+    use ir::SysFuncId::*;
+    match which {
+        Pow | Atan2 | Hypot => Some(2),
+        Ln | Log10 | Exp | Sqrt | Floor | Ceil | Sin | Cos | Tan | Asin | Acos | Atan | Sinh
+        | Cosh | Tanh | Asinh | Acosh | Atanh => Some(1),
         _ => None,
     }
 }

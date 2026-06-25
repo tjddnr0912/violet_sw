@@ -9,6 +9,9 @@ license.workspace = true
 sim-ir     = { path = "../sim-ir" }
 diag       = { path = "../diag" }
 vcd-writer = { path = "../vcd-writer" }
+# Vendored pure-Rust libm (3-OS deterministic, default-features=false) for the
+# N6 real-math transcendentals ($ln/$sin/…) and non-uniform $dist_*.
+libm       = { workspace = true }
 # `elaborate` is a prod dep ONLY for the engine-facing `ForkModeTable`/`JoinMode`
 # join-mode side channel (SimOpts.fork_modes). No dependency cycle: elaborate does
 # NOT depend on sim-engine. The IR contract (SimIr) is unchanged.

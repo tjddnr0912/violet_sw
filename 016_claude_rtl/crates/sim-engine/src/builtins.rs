@@ -2338,15 +2338,44 @@ fn fmt_dec(v: &Value) -> String {
     }
 }
 
+/// C/iverilog spelling of a non-finite f64: lowercase `nan` (any sign — iverilog
+/// never prints `-nan`) and `inf`/`-inf`. Rust's Display gives `NaN`, so every
+/// real formatter must coerce here for `$display` parity (a silent-wrong
+/// otherwise — caught by the N6 real-math domain-error oracle).
+fn nonfinite_c(x: f64) -> String {
+    if x.is_nan() {
+        "nan".to_string()
+    } else if x < 0.0 {
+        "-inf".to_string()
+    } else {
+        "inf".to_string()
+    }
+}
+
 /// `%f`/`%e`/`%g` of a real Value (the arg may be an integer promoted to real).
 /// `width`/`prec` are the optional field-width / precision modifiers (`%8.2f`).
 fn fmt_real(v: &Value, spec: char, width: Option<usize>, prec: Option<usize>) -> String {
+    // Normalize IEEE-754 negative zero to +0.0 so every real spec displays it as
+    // a plain "0" (the %g path / VCD `fmt_g` already do). iverilog prints a
+    // constant/literal -0.0 as "0"/"0.000000"; matching it here keeps %f/%e/%g
+    // internally consistent and was a $display silent-wrong (Rust's "{:.6}" of
+    // -0.0 emits "-0.000000"). NOTE: a -0.0 deliberately CONSTRUCTED at runtime
+    // (e.g. `-5.0*0.0`) also normalizes here — iverilog keeps that one's sign
+    // ("-0"); that single corner is an accepted, documented divergence (negative
+    // zero display is implementation-defined; IEEE 1800 does not pin it).
     let x = v.to_f64().unwrap_or(0.0);
-    let body = match spec {
-        'f' | 'F' => format!("{:.*}", prec.unwrap_or(6), x), // default 6 fractional digits
-        'e' | 'E' => fmt_real_e(x, prec),
-        'g' | 'G' => format_g(x, prec),
-        _ => format!("{x}"),
+    let x = if x == 0.0 { 0.0 } else { x };
+    let body = if !x.is_finite() {
+        // nan / inf / -inf — spelled the C way for every spec (incl. %g, which
+        // fmt_g would also lowercase; routing here keeps all specs consistent).
+        nonfinite_c(x)
+    } else {
+        match spec {
+            'f' | 'F' => format!("{:.*}", prec.unwrap_or(6), x), // default 6 fractional digits
+            'e' | 'E' => fmt_real_e(x, prec),
+            'g' | 'G' => format_g(x, prec),
+            _ => format!("{x}"),
+        }
     };
     if let Some(w) = width {
         if body.len() < w {
@@ -2357,11 +2386,12 @@ fn fmt_real(v: &Value, spec: char, width: Option<usize>, prec: Option<usize>) ->
 }
 
 /// %e → C/printf/LRM form: `prec` mantissa fraction digits (default 6), signed
-/// exponent zero-padded to AT LEAST 2 digits (`1.500000e+03`). Non-finite passes
-/// through as Rust prints it (`inf`/`-inf`/`NaN`).
+/// exponent zero-padded to AT LEAST 2 digits (`1.500000e+03`). Non-finite is
+/// handled by the caller (`fmt_real` short-circuits via `nonfinite_c`); this
+/// guard defends direct callers.
 fn fmt_real_e(x: f64, prec: Option<usize>) -> String {
     if !x.is_finite() {
-        return format!("{x}"); // inf / -inf / NaN
+        return nonfinite_c(x); // inf / -inf / nan
     }
     let p = prec.unwrap_or(6);
     let s = format!("{x:.p$e}"); // e.g. "1.500000e3" or "1.234500e-5"
