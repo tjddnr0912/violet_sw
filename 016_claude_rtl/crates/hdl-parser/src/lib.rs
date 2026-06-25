@@ -6663,7 +6663,7 @@ impl<'t, 's> Parser<'t, 's> {
                 }
                 // SVA-REST `seq[+]` consecutive-repetition sugar ≡ `seq[*1:$]`
                 // (one-or-more, unbounded — the S13 run-latch). `seq[*]` (≡ `[*0:$]`,
-                // a zero-or-more EMPTY match) stays loud via `parse_seq_repeat_bounds`.
+                // a zero-or-more EMPTY match) is `parse_seq_repeat_bounds` → (0, None).
                 Some(TokenKind::BracketPlus) => {
                     self.bump(); // `[+]`
                     seq = Sequence::Repeat {
@@ -6731,44 +6731,28 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// `[*n]` repetition bounds: `[*n]` → (n, Some(n)), bounded range `[*m:n]`
-    /// → (m, Some(n)), or unbounded `[*m:$]` → (m, None) (slice S13). `[*0]` /
-    /// `[*0:n]` (empty) and `[*0:$]` (zero-or-more / empty match) are deferred
-    /// (loud, recovered positive). Caller consumed `[*`; this stops before `]`.
+    /// → (m, Some(n)), unbounded `[*m:$]` → (m, None) (slice S13), or a zero
+    /// lower bound — `[*0]`/`[*0:0]` → (0, Some(0)) (exactly empty), `[*0:n]` →
+    /// (0, Some(n)), bare `[*]`/`[*0:$]` → (0, None) (empty-or-more). The empty
+    /// (zero-repetition) match is synthesized for SUFFIX/MIDDLE positions
+    /// (`a ##1 b[*0:n]`); a leading/standalone empty is honest-loud at elaborate
+    /// (the empty SEED's -1 offset is not expressible). See `sva_empty_match.rs`.
+    /// Caller consumed `[*`; this stops before `]`.
     fn parse_seq_repeat_bounds(&mut self) -> (u32, Option<u32>) {
-        // Bare `[*]` ≡ `[*0:$]` — a zero-or-more (EMPTY-match) repetition. The empty-
-        // sequence concatenation algebra is not expressible in the fixed shift-pipeline
-        // desugar → loud (use `[+]`/`[*1:$]` for one-or-more). Recover positive.
+        // Bare `[*]` ≡ `[*0:$]` — zero-or-more (empty-or-more).
         if self.peek() == Some(TokenKind::RBracket) {
-            self.error(
-                "a repetition count (a bare `[*]` ≡ `[*0:$]` zero-or-more empty match \
-                 is unsupported in this subset; use `[+]` / `[*1:$]` for one-or-more)",
-            );
-            return (1, None);
+            return (0, None);
         }
         let lo = self.parse_small_const("a repetition count in `[*n]`");
         if self.peek() == Some(TokenKind::Colon) {
             self.bump(); // ':'
             if self.peek() == Some(TokenKind::Dollar) {
                 self.bump(); // `$` — unbounded upper bound: `[*m:$]` (>= m)
-                if lo == 0 {
-                    self.error("a positive lower bound in `[*m:$]` (`[*0:$]` empty match is unsupported in this subset)");
-                    return (1, None);
-                }
                 return (lo, None);
             }
             let hi = self.parse_small_const("an upper bound in `[*m:n]`");
             let (lo, hi) = (lo.min(hi), lo.max(hi));
-            if lo == 0 {
-                self.error("a positive repetition lower bound (`[*0:n]` empty match is unsupported in this subset)");
-                return (1, Some(hi.max(1)));
-            }
             return (lo, Some(hi));
-        }
-        if lo == 0 {
-            self.error(
-                "a positive repetition count (`[*0]` empty match is unsupported in this subset)",
-            );
-            return (1, Some(1));
         }
         (lo, Some(lo))
     }
@@ -9387,21 +9371,35 @@ endmodule
         );
     }
 
-    // Still-deferred sequence forms (empty unbounded `[*0:$]`, empty `[*0]`,
-    // goto/nonconsec RANGES) stay LOUD — they pin the slice boundary (bounded
-    // `[*m:n]` / unbounded `[*m:$]` with m>=1 are now supported, above).
+    // goto/nonconsec RANGES stay parser-LOUD (single counts only). Empty-match
+    // repetition `[*0:..]` now PARSES (2026-06-25) — a leading/standalone empty
+    // is honest-loud at ELABORATE instead (see cli `sva_empty_match.rs`), so it
+    // no longer belongs in this parser-level rejection net.
     #[test]
     fn concurrent_assert_deferred_seq_forms_are_loud() {
         for src in [
-            "module m;\ninitial assert property (@(posedge clk) a[*0:$] |-> b);\nendmodule",
-            "module m;\ninitial assert property (@(posedge clk) a[*0] |-> b);\nendmodule",
             "module m;\ninitial assert property (@(posedge clk) a ##1 b[->1:2] |-> c);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a ##1 b[=1:2] |-> c);\nendmodule",
         ] {
             let (_, errs) = p(src);
             assert!(
                 !errs.is_empty(),
                 "deferred sequence form must be loud: {src}"
             );
+        }
+    }
+
+    // Empty-match repetition now parses cleanly (the loud-ness moved to elaborate).
+    #[test]
+    fn empty_match_repetition_parses() {
+        for src in [
+            "module m;\ninitial assert property (@(posedge clk) a ##1 b[*0:$] |-> c);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a ##1 b[*0:2] |-> c);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a ##1 b[*] |-> c);\nendmodule",
+            "module m;\ninitial assert property (@(posedge clk) a ##1 b[*0] |-> c);\nendmodule",
+        ] {
+            let (_, errs) = p(src);
+            assert!(errs.is_empty(), "empty-match must parse: {src} -> {errs:?}");
         }
     }
 

@@ -1070,6 +1070,14 @@ enum SeqTerm {
     /// a gated run-latch (a chain of 1-bit regs that saturates at the count `m`)
     /// rather than a fixed shift, since the upper bound is unbounded.
     ConsecAtLeast(ast::Expr, u32),
+    /// The EMPTY (zero-repetition) match of `b[*0:..]` — a zero-extent thread that
+    /// carries no boolean. Supported ONLY with `##1` delays on both sides, where
+    /// the fusion is window-length-verifiable (`a ##1 b[*0:n] ##1 c ≡ a ##1 c`, the
+    /// empty consuming exactly one `##1`): `synth_seq_pipeline` passes the thread
+    /// through with no net advance and no AND. Other adjacencies (`##0`/`##2+`/
+    /// `##[m:$]`) and the SEED position are honest-loud (subtle §16.9.2.1 algebra
+    /// with no differential oracle — never a guessed/silent delay).
+    Empty,
 }
 
 /// One expanded sequence alternative: an ordered (term, hop) list plus an
@@ -1519,6 +1527,15 @@ fn sva_formal_map(formals: &[ast::Ident], actuals: &[ast::Expr]) -> BTreeMap<Str
 /// the worst-case reg count quadratically (≈cap²/2), not linearly. That still
 /// elaborates deterministically at the cap; prefix-sharing is a perf follow-on.
 const SVA_SEQ_ALT_CAP: usize = 256;
+
+/// Loud message for an empty-match repetition `b[*0:..]` adjacent to a delay other
+/// than `##1`. Only `##1` adjacency has a window-length-verifiable fusion
+/// (`a ##1 b[*0:n] ##1 c ≡ a ##1 c`); other adjacencies are subtle §16.9.2.1
+/// algebra with no differential oracle, so they are honest-loud (never guessed).
+const EMPTY_MATCH_HASH1_ONLY: &str =
+    "an empty-match repetition `b[*0:..]` is supported only with `##1` delays on \
+     both sides (e.g. `a ##1 b[*0:n] ##1 c`); a different adjacent delay (`##0`, \
+     `##2+`, `##[m:$]`) is unsupported in this subset";
 
 /// Is `name` (incl. the leading `$`) an SVA sampled-value function we desugar?
 fn is_sva_sampled_fn(name: &str) -> bool {
@@ -17578,7 +17595,9 @@ impl<'s> Elaborator<'s> {
             } => {
                 // `b[*m:$]` — unbounded consecutive repeat (≥ m). Cannot fan out;
                 // synthesize a gated run-latch (a single ConsecAtLeast term).
-                // Boolean operand only (S8 goto/nonconsec precedent).
+                // Boolean operand only (S8 goto/nonconsec precedent). `[*0:$]` /
+                // `[*]` (m == 0, empty-or-more) also yields the EMPTY alternative.
+                let want_empty = *min == 0;
                 let m = (*min).max(1);
                 if !self.sva_count_within_cap(m, "unbounded consecutive repetition") {
                     return sva_never_alt(seq);
@@ -17594,10 +17613,15 @@ impl<'s> Elaborator<'s> {
                     )];
                 };
                 let bt = self.rewrite_sampled(b, regs);
-                vec![(
+                let mut out = Vec::new();
+                if want_empty {
+                    out.push((vec![(SeqTerm::Empty, SeqHop::Fixed(0))], None));
+                }
+                out.push((
                     vec![(SeqTerm::ConsecAtLeast(bt, m), SeqHop::Fixed(0))],
                     None,
-                )]
+                ));
+                out
             }
             ast::Sequence::Repeat {
                 seq,
@@ -17605,9 +17629,17 @@ impl<'s> Elaborator<'s> {
                 max,
                 kind: ast::RepeatKind::Consec,
             } => {
+                // `[*0:n]` (m == 0) admits the EMPTY (zero-repetition) alternative
+                // ALONGSIDE the `[*1:n]` fan-out. `[*0]` / `[*0:0]` (hi == 0) is
+                // EXACTLY empty — the pure zero-extent match, no non-empty alts.
+                let want_empty = *min == 0;
+                let hi_raw = max.unwrap_or(*min); // this arm only fires for max: Some(_)
+                if hi_raw == 0 {
+                    return vec![(vec![(SeqTerm::Empty, SeqHop::Fixed(0))], None)];
+                }
                 let base = self.expand_sequence(seq, regs);
                 let lo = (*min).max(1);
-                let hi = max.unwrap_or(*min).max(lo);
+                let hi = hi_raw.max(lo);
                 // Cap the upper count: each copy adds `base`'s terms to every
                 // alternative (an `n`-term shift pipeline for the exact `[*n]`
                 // case, which the post-expansion alternative-COUNT cap misses),
@@ -17616,6 +17648,9 @@ impl<'s> Elaborator<'s> {
                     return sva_never_alt(seq);
                 }
                 let mut out = Vec::new();
+                if want_empty {
+                    out.push((vec![(SeqTerm::Empty, SeqHop::Fixed(0))], None));
+                }
                 'kloop: for k in lo..=hi {
                     // k copies of `base`, each copy after the first prefixed with
                     // `##1`. A multi-alternative base makes this a k-fold product.
@@ -17815,9 +17850,46 @@ impl<'s> Elaborator<'s> {
             SeqTerm::ConsecAtLeast(b, m) => {
                 self.consec_run_fsm(sva_one(sp), b, m, pipeline_nbas, sp)
             }
+            // An empty match as the SEED is a leading / standalone `b[*0:..]` —
+            // its zero-extent thread starts one clock "before" the attempt, an
+            // offset the start-of-pipeline cannot carry. Honest-loud (never a
+            // silent miss); recover with a never-matching `1'b0`.
+            SeqTerm::Empty => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "an empty-match repetition `b[*0:..]` as the leading or standalone \
+                     term of a sequence is unsupported in this subset (place it after a \
+                     term, e.g. `a ##1 b[*0:n]`)",
+                );
+                sva_zero(sp)
+            }
         };
         let mut cur = guard_and(seed);
+        // True once an EMPTY (zero-repetition) term has been emitted: the hop of
+        // the term that FOLLOWS it must be `##1` (see below).
+        let mut after_empty = false;
         for (term, hop) in it {
+            // Empty-match fusion is only VERIFIABLE for `##1` adjacency: by the
+            // window-length argument `a ##1 b[*0:n] ##1 c ≡ a ##1 c` (the empty
+            // consumes exactly one `##1`). The fused delay for any OTHER adjacency
+            // (`##0`, `##2+`, `##[m:$]`) is subtle (IEEE 1800-2017 §16.9.2.1) and
+            // has NO differential oracle (iverilog rejects concurrent SVA), so it
+            // is HONEST-LOUD rather than a guessed (silent-wrong) delay. The hop
+            // FOLLOWING an empty must be `##1`:
+            if after_empty && !matches!(hop, SeqHop::Fixed(1)) {
+                self.error(MsgCode::ElabUnsupported, EMPTY_MATCH_HASH1_ONLY);
+            }
+            after_empty = false;
+            // An EMPTY term: the hop BEFORE it must likewise be `##1` (`a ##1 ε`
+            // collapses that `##1`), so the thread passes through with NO net
+            // advance and NO boolean AND.
+            if matches!(term, SeqTerm::Empty) {
+                if !matches!(hop, SeqHop::Fixed(1)) {
+                    self.error(MsgCode::ElabUnsupported, EMPTY_MATCH_HASH1_ONLY);
+                }
+                after_empty = true;
+                continue;
+            }
             match hop {
                 SeqHop::Fixed(d) => {
                     for _ in 0..d {
@@ -17880,6 +17952,8 @@ impl<'s> Elaborator<'s> {
                 SeqTerm::Goto(b, n) => self.goto_fsm(cur, b, n, pipeline_nbas, sp),
                 SeqTerm::Nonconsec(b, n) => self.nonconsec_fsm(cur, b, n, pipeline_nbas, sp),
                 SeqTerm::ConsecAtLeast(b, m) => self.consec_run_fsm(cur, b, m, pipeline_nbas, sp),
+                // Handled (advance + passthrough) by the `continue` arm above.
+                SeqTerm::Empty => unreachable!("empty term is handled before the hop loop"),
             };
         }
         cur

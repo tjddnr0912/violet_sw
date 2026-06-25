@@ -1228,7 +1228,10 @@ fn sva_seq_consec_unbounded_mid_sequence_fires() {
 
 #[test]
 fn sva_seq_consec_unbounded_empty_is_loud() {
-    // `[*0:$]` (zero-or-more, empty match allowed) is deferred -> loud.
+    // `b[*0:$]` as a LEADING / standalone antecedent has an empty (zero-rep) SEED
+    // alternative — the empty match's -1 start offset is unrepresentable here →
+    // honest-loud at elaborate (2026-06-25; in SUFFIX/MIDDLE it is supported, see
+    // cli `sva_empty_match.rs`).
     let (out, err, code) = run("module top;\n\
          reg clk=0, b=0, c=0;\n\
          always #5 clk=~clk;\n\
@@ -1238,7 +1241,7 @@ fn sva_seq_consec_unbounded_empty_is_loud() {
     assert_ne!(
         code,
         Some(0),
-        "[*0:$] must be loud. stderr:\n{err}\nout:\n{out}"
+        "leading b[*0:$] must be loud. stderr:\n{err}\nout:\n{out}"
     );
 }
 

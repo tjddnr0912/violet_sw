@@ -377,28 +377,35 @@ fn consec_plus_sugar_equals_explicit() {
 }
 
 #[test]
-fn bare_star_empty_match_is_loud() {
-    // `b[*]` (≡ `[*0:$]` empty match) is unsupported → a loud error (exit 1), never a
-    // silent miscompile.
-    let (_o, code) = run("module t;\n\
+fn bare_star_empty_match_now_supported_in_suffix() {
+    // 2026-06-25: `b[*]` (≡ `[*0:$]` empty-or-more) LANDED in SUFFIX position. With
+    // no stimulus the antecedent `a ##1 b[*]` never matches → a clean run (exit 0),
+    // never a parse error. Full empty-match semantics live in `sva_empty_match.rs`.
+    let (out, code) = run("module t;\n\
         logic clk=0, a=0, b=0;\n\
         always #5 clk = ~clk;\n\
         assert property(@(posedge clk) a ##1 b[*] |-> b);\n\
         initial begin #10 $finish; end\n\
         endmodule\n");
-    assert_eq!(code, Some(1), "bare [*] empty match is a loud error");
+    assert_eq!(code, Some(0), "a ##1 b[*] (suffix) now runs cleanly: {out}");
+    assert!(!out.contains("VITA-E2002"), "must parse, not error: {out}");
 }
 
 #[test]
-fn zero_repeat_range_is_loud() {
-    // `b[*0:2]` (empty match) is unsupported → loud.
-    let (_o, code) = run("module t;\n\
+fn zero_repeat_range_now_supported_in_suffix() {
+    // `b[*0:2]` empty-match in SUFFIX position is supported; no stimulus → clean.
+    let (out, code) = run("module t;\n\
         logic clk=0, a=0, b=0;\n\
         always #5 clk = ~clk;\n\
         assert property(@(posedge clk) a ##1 b[*0:2] |-> b);\n\
         initial begin #10 $finish; end\n\
         endmodule\n");
-    assert_eq!(code, Some(1), "[*0:2] empty match is a loud error");
+    assert_eq!(
+        code,
+        Some(0),
+        "a ##1 b[*0:2] (suffix) now runs cleanly: {out}"
+    );
+    assert!(!out.contains("VITA-E2002"), "must parse, not error: {out}");
 }
 
 #[test]
