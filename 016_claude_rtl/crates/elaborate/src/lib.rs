@@ -1086,12 +1086,14 @@ enum SeqTerm {
     /// rather than a fixed shift, since the upper bound is unbounded.
     ConsecAtLeast(ast::Expr, u32),
     /// The EMPTY (zero-repetition) match of `b[*0:..]` — a zero-extent thread that
-    /// carries no boolean. Supported ONLY with `##1` delays on both sides, where
-    /// the fusion is window-length-verifiable (`a ##1 b[*0:n] ##1 c ≡ a ##1 c`, the
-    /// empty consuming exactly one `##1`): `synth_seq_pipeline` passes the thread
-    /// through with no net advance and no AND. Other adjacencies (`##0`/`##2+`/
-    /// `##[m:$]`) and the SEED position are honest-loud (subtle §16.9.2.1 algebra
-    /// with no differential oracle — never a guessed/silent delay).
+    /// carries no boolean. For `X ##hop_in b[*0:n] ##hop_out Y` with FIXED hop_in>=1
+    /// AND FIXED hop_out>=1, `synth_seq_pipeline` fuses the empty branch with net
+    /// delay D=(hop_in-1)+hop_out (§16.9.2.1 `(r ##n ε)=(r ##(n-1) `true)`, the
+    /// empty absorbing exactly one clock of hop_in): the empty emits its `hop_in-1`
+    /// remaining shifts with no AND, then Y's hop loop applies the hop_out shifts.
+    /// Honest-loud (subtle §16.9.2.1 algebra, no differential oracle — never a
+    /// guessed/silent delay): leading `##0` (an absorption discontinuity), trailing
+    /// `##0` (a bitten off-by-one), `##[m:$]` (a range), and the SEED position.
     Empty,
 }
 
@@ -1543,14 +1545,17 @@ fn sva_formal_map(formals: &[ast::Ident], actuals: &[ast::Expr]) -> BTreeMap<Str
 /// elaborates deterministically at the cap; prefix-sharing is a perf follow-on.
 const SVA_SEQ_ALT_CAP: usize = 256;
 
-/// Loud message for an empty-match repetition `b[*0:..]` adjacent to a delay other
-/// than `##1`. Only `##1` adjacency has a window-length-verifiable fusion
-/// (`a ##1 b[*0:n] ##1 c ≡ a ##1 c`); other adjacencies are subtle §16.9.2.1
-/// algebra with no differential oracle, so they are honest-loud (never guessed).
+/// Loud message for an empty-match repetition `b[*0:..]` adjacent to a delay the
+/// fusion cannot verify. Any FIXED hop_in>=1 AND FIXED hop_out>=1 fuses with net
+/// delay D=(hop_in-1)+hop_out (slice A.1, §16.9.2.1 `(r ##n ε)=(r ##(n-1) `true)`).
+/// The RESIDUAL loud set is: leading `##0` (a genuine §16.9.2.1 absorption
+/// discontinuity, D=hop_out not hop_out-1), trailing `##0` (a historically-bitten
+/// off-by-one), and `##[m:$]` (an unverifiable range) — all with no differential
+/// oracle (iverilog rejects concurrent SVA), so honest-loud (never guessed).
 const EMPTY_MATCH_HASH1_ONLY: &str =
-    "an empty-match repetition `b[*0:..]` is supported only with `##1` delays on \
-     both sides (e.g. `a ##1 b[*0:n] ##1 c`); a different adjacent delay (`##0`, \
-     `##2+`, `##[m:$]`) is unsupported in this subset";
+    "an empty-match repetition `b[*0:..]` requires a FIXED `##d` (d>=1) delay on \
+     both sides (e.g. `a ##2 b[*0:n] ##1 c`); a leading/trailing `##0` or an \
+     `##[m:$]` adjacent to the empty is unsupported in this subset";
 
 /// Is `name` (incl. the leading `$`) an SVA sampled-value function we desugar?
 fn is_sva_sampled_fn(name: &str) -> bool {
@@ -18633,23 +18638,33 @@ impl<'s> Elaborator<'s> {
         // the term that FOLLOWS it must be `##1` (see below).
         let mut after_empty = false;
         for (term, hop) in it {
-            // Empty-match fusion is only VERIFIABLE for `##1` adjacency: by the
-            // window-length argument `a ##1 b[*0:n] ##1 c ≡ a ##1 c` (the empty
-            // consumes exactly one `##1`). The fused delay for any OTHER adjacency
-            // (`##0`, `##2+`, `##[m:$]`) is subtle (IEEE 1800-2017 §16.9.2.1) and
-            // has NO differential oracle (iverilog rejects concurrent SVA), so it
-            // is HONEST-LOUD rather than a guessed (silent-wrong) delay. The hop
-            // FOLLOWING an empty must be `##1`:
-            if after_empty && !matches!(hop, SeqHop::Fixed(1)) {
+            // Empty-match fusion (IEEE 1800-2017 §16.9.2.1, `(r ##n ε)=(r ##(n-1)
+            // `true)`): for `X ##hop_in b[*0:n] ##hop_out Y` the empty branch has
+            // net delay D = (hop_in-1) + hop_out — the length-0 empty absorbs
+            // exactly ONE clock of hop_in. This holds for any FIXED hop_in>=1 AND
+            // FIXED hop_out>=1 (slice A.1, "P1"). The hop FOLLOWING an empty
+            // (= hop_out) may be any `Fixed(d>=1)`; Y's own hop loop below applies
+            // those d shifts. Trailing `##0` (Fixed(0)) is a historically-bitten
+            // off-by-one and `##[m:$]` (AtLeast) is a range with no oracle — both
+            // stay HONEST-LOUD rather than a guessed (silent-wrong) delay:
+            if after_empty && !matches!(hop, SeqHop::Fixed(d) if d >= 1) {
                 self.error(MsgCode::ElabUnsupported, EMPTY_MATCH_HASH1_ONLY);
             }
             after_empty = false;
-            // An EMPTY term: the hop BEFORE it must likewise be `##1` (`a ##1 ε`
-            // collapses that `##1`), so the thread passes through with NO net
-            // advance and NO boolean AND.
+            // An EMPTY term: its own hop (= hop_in) must be `Fixed(d>=1)`. The
+            // empty consumes exactly one clock of that hop (the length-0 match),
+            // so emit the remaining `d-1` shifts here, then pass the thread on with
+            // NO boolean AND. Leading `##0` (Fixed(0)) is a genuine §16.9.2.1
+            // absorption discontinuity (D=hop_out, not hop_out-1) with no oracle,
+            // and `##[m:$]` (AtLeast) is an unverifiable range — both HONEST-LOUD.
             if matches!(term, SeqTerm::Empty) {
-                if !matches!(hop, SeqHop::Fixed(1)) {
-                    self.error(MsgCode::ElabUnsupported, EMPTY_MATCH_HASH1_ONLY);
+                match hop {
+                    SeqHop::Fixed(d) if d >= 1 => {
+                        for _ in 0..(d - 1) {
+                            cur = guard_and(self.seq_delay_reg(cur, pipeline_nbas, sp));
+                        }
+                    }
+                    _ => self.error(MsgCode::ElabUnsupported, EMPTY_MATCH_HASH1_ONLY),
                 }
                 after_empty = true;
                 continue;

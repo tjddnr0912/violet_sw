@@ -207,17 +207,114 @@ fn leading_zero_delay_before_empty_is_loud() {
     loud(&out, &err, code, "leading ##0 before empty");
 }
 
+// ── SLICE A.1: empty-match at NON-`##1` adjacency, P1 (hop_in>=1 AND ──
+// ── hop_out>=1, both Fixed). §16.9.2.1 `(r ##n empty)=(r ##(n-1) `true)`:        ──
+// ── for `X ##hop_in b[*0:n] ##hop_out Y` the empty branch has net delay          ──
+// ── D = (hop_in-1) + hop_out (the empty's length-0 absorbs exactly one clock of  ──
+// ── hop_in). Validated by hand clock-count; iverilog has no SVA oracle.          ──
+
 #[test]
-fn non_unit_delay_around_empty_is_loud() {
-    // `a ##2 b[*0:1] ##3 c |-> e`: `##2`/`##3` adjacency — the fused delay is not
-    // window-length-verifiable (is it ##3? ##4?) and has no oracle → loud.
+fn a1_middle_fixed_hops_empty_fires() {
+    // TC1: `a ##2 b[*0:2] ##1 c |-> d`. Empty branch D=(2-1)+1=2: a's start clock
+    // +2 → completion. a@t15 (start), NO b, c@t35, d=0 → empty alt completes @t35,
+    // obliges d@t35, d=0 → FIRES.
     let (out, err, code) = run("module top;\n\
-         reg clk=0, a=0, b=0, c=0, e=0;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
          always #5 clk=~clk;\n\
-         initial assert property(@(posedge clk) a ##2 b[*0:1] ##3 c |-> e);\n\
+         initial assert property(@(posedge clk) a ##2 b[*0:2] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0;\n\
+           #10 c=1; d=0;\n\
+           #10 c=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    fires(&out, &err, code, "a ##2 b[*0:2] ##1 c, empty branch D=2");
+}
+
+#[test]
+fn a1_middle_fixed_hops_k1_fanout_fires() {
+    // TC2 (k=1 fan-out regression at non-##1 hop_in): same prop. a@t15, b@t35,
+    // c@t45, d=0. k=1 branch = `a ##2 b ##1 c`: a@t15, b two clocks later @t35,
+    // c one clock later @t45 → FIRES @t45.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##2 b[*0:2] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0;\n\
+           #10 b=1;\n\
+           #10 b=0; c=1; d=0;\n\
+           #10 c=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    fires(
+        &out,
+        &err,
+        code,
+        "a ##2 b[*0:2] ##1 c, k=1 fan-out @non-##1 hop_in",
+    );
+}
+
+#[test]
+fn a1_middle_fixed_hop_out_empty_fires() {
+    // TC3: `a ##1 b[*0:1] ##2 c |-> d`. Empty branch D=(1-1)+2=2: a@t15 (start),
+    // NO b, c@t35, d=0 → empty alt completes @t35 → FIRES.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b[*0:1] ##2 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0;\n\
+           #10 c=1; d=0;\n\
+           #10 c=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    fires(&out, &err, code, "a ##1 b[*0:1] ##2 c, empty branch D=2");
+}
+
+#[test]
+fn a1_middle_pins_delay_two_not_one_holds() {
+    // TC4: TC1 prop `a ##2 b[*0:2] ##1 c |-> d`, but c high ONLY @t25 (one clock
+    // too early for D=2). If the fused delay were wrongly D=1 the empty alt would
+    // complete @t25 and fire; with the correct D=2 NO alternative completes (c is
+    // gone by t35) → no obligation → clean (exit 0). Pins the off-by-one.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##2 b[*0:2] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0; c=1; d=0;\n\
+           #10 c=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    holds(
+        &out,
+        &err,
+        code,
+        "a ##2 b[*0:2] ##1 c pins D=2 (c@t25 too early)",
+    );
+}
+
+#[test]
+fn a1_unbounded_hop_around_empty_is_loud() {
+    // TC7 (KEEP-LOUD P4): `a ##[1:$] b[*0:1] ##1 c |-> d`. An `##[m:$]` adjacent to
+    // the empty is a NON-Fixed hop — the fused delay is a range with no window-
+    // length argument and no oracle → honest-loud (NOT a guessed delay).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##[1:$] b[*0:1] ##1 c |-> d);\n\
          initial begin #10 a=1; #60 $finish; end\n\
          endmodule\n");
-    loud(&out, &err, code, "##2/##3 delays around empty");
+    loud(&out, &err, code, "a ##[1:$] b[*0:1] ##1 c (AtLeast hop)");
 }
 
 // ── UNBOUNDED `[*0:$]` and the `[*]` / `sig[*]` sugars ──
