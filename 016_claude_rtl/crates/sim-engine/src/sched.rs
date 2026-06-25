@@ -843,6 +843,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         if self.activities.get(proc as usize).is_some_and(|a| a.dead) {
             return Step::Done;
         }
+        // N4 clocking: commit handlers are applied at EDGE DETECTION in
+        // `propagate_changes` (before the Active batch), never run here — so no
+        // hot-path check is needed in `run_body`.
         self.cur_aid = proc;
         self.cur_gen = self.activities[proc as usize].gen;
         match self.st.backend {
@@ -897,6 +900,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     }
 
     pub fn run(&mut self) -> FinishReason {
+        // N4 clocking: seed the preponed snapshot for the FIRST time slot (t=0) —
+        // a clocking edge at t=0 then samples the init values. No-op without
+        // clocking blocks ⇒ byte-identical.
+        self.st.snapshot_preponed();
         loop {
             if self.st.finished {
                 return self.finish_kind();
@@ -1094,6 +1101,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 }
             }
             self.st.now = next;
+            // N4 clocking: take the PREPONED snapshot of clocking inputs at the
+            // START of the new time slot (before any slot activity — the true
+            // preponed value entering the slot). No-op when no clocking blocks ⇒
+            // byte-identical for the whole non-clocking corpus.
+            self.st.snapshot_preponed();
             // No prev snapshot needed here (R2): at the settled point every
             // mutation path has been swept — `propagate_changes` step (c)
             // already refreshed `prev` for every changed net, and unchanged
@@ -1561,6 +1573,17 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 // not re-enter an `always` until it completes and re-arms. Its
                 // legitimate in-body wake comes via the waiter path (b) below.
                 if edge_fires(kind, prev, new) && !self.activities[ready.proc as usize].busy {
+                    // N4: a clocking-commit handler applies `preponed_buf → holding`
+                    // HERE — at edge DETECTION, before the Active batch drains — so
+                    // EVERY same-slot reader of `cb.sig` sees the committed sample,
+                    // independent of process tie order. Crucially this fixes the
+                    // cross-hierarchy case (`dut.cb.sig` read from a parent whose
+                    // process tie sorts BEFORE the submodule's handler). The handler
+                    // carries no real body, so it is not run in Active.
+                    // `commit_clocking` returns true iff `proc` was a handler.
+                    if self.st.commit_clocking(ready.proc) {
+                        continue;
+                    }
                     push_sorted(&mut self.cur.active, ready);
                 }
             }

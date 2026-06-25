@@ -225,6 +225,16 @@ pub(crate) struct SimState<'a> {
     pub plusargs: Vec<String>,
     /// P2-E `final` ProcIds (from `SimOpts.final_procs`).
     pub final_procs: std::collections::BTreeSet<u32>,
+    // ── N4 clocking (from the clocking sidecars; EMPTY ⇒ no clocking) ──
+    /// Source NetIds snapshotted into `preponed_buf` at each time advance (the
+    /// true preponed value, before any slot activity).
+    pub clocking_inputs: Vec<u32>,
+    /// Marked commit-handler ProcId → `[(holding_net, source_net)]`. When such a
+    /// process fires (its clocking edge), the engine commits `preponed_buf[source]
+    /// → holding` (blocking, same-slot — no NBA lag).
+    pub clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// Preponed snapshot: source NetId → its value at the start of the time slot.
+    pub preponed_buf: std::collections::BTreeMap<u32, crate::value::Value>,
     /// SVA-REST: StmtIds of assertion FIRE reports gated by assertion control.
     pub assert_fire: std::collections::BTreeSet<u32>,
     /// SVA-REST: `$assertoff/on/kill` control-site StmtId → kind (0=off,1=on,2=kill).
@@ -528,6 +538,9 @@ impl<'a> SimState<'a> {
             rng: RngCells::default(),
             plusargs: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
+            clocking_inputs: Vec::new(),
+            clocking_commit: std::collections::BTreeMap::new(),
+            preponed_buf: std::collections::BTreeMap::new(),
             assert_fire: std::collections::BTreeSet::new(),
             assert_ctl: std::collections::BTreeMap::new(),
             assert_disabled: false,
@@ -1051,6 +1064,71 @@ impl<'a> SimState<'a> {
             self.note_change(net as u32, word);
         }
         changed
+    }
+
+    /// N4 clocking: commit a whole-net SCALAR value into a holding net (the
+    /// preponed sample → `cb.sig`), blocking + same-slot, marking it changed for
+    /// propagation. Mirrors `write_chunk`'s word-parallel whole-net fast path
+    /// (holding nets are scalar `Reg`s: `array_len == 1`, never forced/2-state).
+    pub fn commit_clocking_sample(&mut self, net: u32, v: &Value) -> bool {
+        let i = net as usize;
+        let net_w = self.nets[i].width;
+        let nw = nwords(net_w).max(1);
+        let m = top_mask(net_w);
+        let slot = &mut self.nets[i];
+        let mut changed = false;
+        for k in 0..nw {
+            let mut nv = v.val.get(k).copied().unwrap_or(0);
+            let mut nu = v.unk.get(k).copied().unwrap_or(0);
+            if k == nw - 1 {
+                nv &= m;
+                nu &= m;
+            }
+            if slot.cur.val.len() <= k {
+                slot.cur.val.resize(k + 1, 0);
+                slot.cur.unk.resize(k + 1, 0);
+            }
+            if slot.cur.val[k] != nv || slot.cur.unk[k] != nu {
+                slot.cur.val[k] = nv;
+                slot.cur.unk[k] = nu;
+                changed = true;
+            }
+        }
+        if changed {
+            self.note_change(net, 0);
+        }
+        changed
+    }
+
+    /// N4 clocking: take the PREPONED snapshot of every clocking-input source net
+    /// at the start of a time slot (called right after time advances, BEFORE any
+    /// slot activity — so each source holds the value it had ENTERING the slot, the
+    /// true preponed value). EMPTY `clocking_inputs` ⇒ no-op ⇒ byte-identical.
+    pub(crate) fn snapshot_preponed(&mut self) {
+        if self.clocking_inputs.is_empty() {
+            return;
+        }
+        for idx in 0..self.clocking_inputs.len() {
+            let src = self.clocking_inputs[idx];
+            let v = self.read_net(src, None);
+            self.preponed_buf.insert(src, v);
+        }
+    }
+
+    /// N4 clocking: a marked commit-handler proc fired on its clocking edge —
+    /// commit `preponed_buf[source] → holding` for each of its inputs (blocking,
+    /// same-slot). Returns `true` iff this proc was a clocking handler (so the
+    /// scheduler skips the no-op body dispatch).
+    pub(crate) fn commit_clocking(&mut self, proc: u32) -> bool {
+        let Some(pairs) = self.clocking_commit.get(&proc).cloned() else {
+            return false;
+        };
+        for (hold, src) in pairs {
+            if let Some(v) = self.preponed_buf.get(&src).cloned() {
+                self.commit_clocking_sample(hold, &v);
+            }
+        }
+        true
     }
 
     /// Record an ACTUAL bit change on `net`: mark it for the next

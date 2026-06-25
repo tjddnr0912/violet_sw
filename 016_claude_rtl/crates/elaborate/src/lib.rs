@@ -409,6 +409,15 @@ pub struct Sidecars {
     /// (0 = off, 1 = on, 2 = kill). Lowered to a no-op `Display`; the engine
     /// flips the global assertion-enable on reach. EMPTY ⇒ no control tasks.
     pub assert_ctl: std::collections::BTreeMap<u32, u8>,
+    // ── N4 clocking sidecars (out-of-band, golden-free) ──
+    /// Source NetIds sampled into the PREPONED buffer at each time advance (a
+    /// clocking input's bound signal). The engine snapshots these BEFORE any
+    /// slot activity (the true preponed value). EMPTY ⇒ no clocking ⇒ byte-identical.
+    pub clocking_inputs: std::collections::BTreeSet<u32>,
+    /// Marked clocking-commit handler procs: ProcId → `[(holding_net, source_net)]`.
+    /// When such a process fires (on its clocking event), the engine commits
+    /// `preponed_buf[source] → holding` (blocking, same-slot — no NBA lag).
+    pub clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
 }
 
 /// N7: resolved metadata for one class, built by the whole-design prescan
@@ -580,6 +589,8 @@ pub fn elaborate_with_timescale_roots(
         // SVA-REST assertion control.
         assert_fire: std::mem::take(&mut el.assert_fire),
         assert_ctl: std::mem::take(&mut el.assert_ctl),
+        clocking_inputs: std::mem::take(&mut el.clocking_inputs),
+        clocking_commit: std::mem::take(&mut el.clocking_commit),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -2088,6 +2099,19 @@ struct Elaborator<'s> {
     assert_fire: std::collections::BTreeSet<u32>,
     assert_ctl: std::collections::BTreeMap<u32, u8>,
     in_assert_synth: bool,
+    // N4 clocking: source NetIds to snapshot in the preponed buffer + marked
+    // commit-handler ProcId → [(holding_net, source_net)]. `clocking_events` maps a
+    // clocking-block name to its clocking event so `@(cb)` lowers to `@(clk)`.
+    clocking_inputs: std::collections::BTreeSet<u32>,
+    clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    clocking_events: std::collections::BTreeMap<String, ast::Sensitivity>,
+    /// Holding NetIds of clocking INPUTs (`cb.sig`) — read-only; an lvalue write
+    /// to one is loud (you cannot drive a clocking input, §14.3).
+    clocking_hold_nets: std::collections::BTreeSet<u32>,
+    /// Every clocking-block name in the whole design (never cleared) — diagnostic
+    /// only: lets a cross-hierarchy `@(inst.cb)` event control emit an accurate
+    /// "unsupported clocking-event" message instead of a generic hier-name error.
+    all_clocking_names: std::collections::BTreeSet<String>,
 
     // Substitution scope: a formal-param NAME currently bound to an actual ExprId
     // (a function/task INPUT formal during inlining). `lower_expr`'s Ident arm
@@ -2240,6 +2264,11 @@ impl<'s> Elaborator<'s> {
             pkg_tasks: BTreeMap::new(),
             cu_imports: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
+            clocking_inputs: std::collections::BTreeSet::new(),
+            clocking_commit: std::collections::BTreeMap::new(),
+            clocking_events: std::collections::BTreeMap::new(),
+            clocking_hold_nets: std::collections::BTreeSet::new(),
+            all_clocking_names: std::collections::BTreeSet::new(),
             func_metas: Vec::new(),
             funcs: Vec::new(),
             func_blocks: Vec::new(),
@@ -2539,6 +2568,7 @@ impl<'s> Elaborator<'s> {
         // the global func arena (fids resolve at module-body call sites).
         self.register_classes(unit);
         self.lower_class_methods();
+        self.prescan_clocking_names(unit);
         if order.is_empty() {
             // "no module at all" is a missing-construct condition, not a failed
             // *instance* resolution → ElabUnsupported reads truer.
@@ -3009,11 +3039,18 @@ impl<'s> Elaborator<'s> {
                     POISON_NET
                 }
                 Some(net) => {
-                    // HIER-REST-MP: a WHOLE multi-dim packed net is a plain flat vector
-                    // — `dut.pm = …` writes the flat value (the element write
-                    // `dut.pm[i] = …` takes the deferred-sel lane). Events / dyn handles
-                    // / whole unpacked arrays still have no plain whole write target.
-                    if self.event_nets.contains(&net)
+                    // N4 §14.3: a clocking INPUT is read-only — a HIERARCHICAL drive
+                    // from a parent (`dut.cb.sig = v`) must be loud, NOT a silent write
+                    // to the holding reg (the in-module guard at `collect_lval_chunks`
+                    // cannot see a cross-instance name, so it is caught HERE on the
+                    // resolved net).
+                    if self.clocking_hold_nets.contains(&net) {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "cannot drive a clocking INPUT (`cb.sig` is read-only, §14.3)",
+                        );
+                        POISON_NET
+                    } else if self.event_nets.contains(&net)
                         || self.is_dyn_handle_net(net)
                         || self.net_is_static_array(net)
                     {
@@ -3116,7 +3153,15 @@ impl<'s> Elaborator<'s> {
                     poison_chunk()
                 }
                 Some(net) => {
-                    if self.event_nets.contains(&net) || self.is_dyn_handle_net(net) {
+                    if self.clocking_hold_nets.contains(&net) {
+                        // N4 §14.3: a clocking INPUT is read-only — a hierarchical
+                        // SELECT drive (`dut.cb.sig[i] = v`) is loud too.
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "cannot drive a clocking INPUT (`cb.sig` is read-only, §14.3)",
+                        );
+                        poison_chunk()
+                    } else if self.event_nets.contains(&net) || self.is_dyn_handle_net(net) {
                         self.error(
                             MsgCode::ElabUnsupported,
                             &format!(
@@ -3701,19 +3746,8 @@ impl<'s> Elaborator<'s> {
                         .entry(cg.name.name.clone())
                         .or_insert_with(|| cg.clone());
                 }
-                // N4: clocking blocks parse into the AST (lexer/parser/AST
-                // foundation); the functional lowering — a preponed-region sampler
-                // synthesizing holding nets + a marked commit handler — is the next
-                // engine slice. Until then they are HONEST-LOUD (never silently
-                // dropped: a dropped clocking block would leave `cb.sig` unresolved
-                // and the design silently mis-sampled).
-                ast::ModuleItem::Clocking(_) => {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "clocking blocks are not yet supported in this subset (the \
-                         preponed-region sampler is a pending engine slice)",
-                    );
-                }
+                // N4: clocking blocks are lowered by `lower_clocking_blocks` (after
+                // the net-creation passes, before the process loop) — see step (6.5).
                 _ => {}
             }
         }
@@ -3845,6 +3879,12 @@ impl<'s> Elaborator<'s> {
             }
         }
         self.flush_pending_var_inits();
+
+        // (6.5) N4 clocking: synthesize preponed-sampled holding nets + a marked
+        // commit handler per clocking block, and register `@(cb)` events — AFTER the
+        // net passes (source nets resolve) and BEFORE the process loop (so `cb.sig`
+        // resolves to its holding net and `@(cb)` to the clocking event).
+        self.lower_clocking_blocks(&module.body);
 
         // (7) lower THIS body: cont-assigns + processes (reuse v1/v2 helpers).
         for item in &module.body {
@@ -6439,6 +6479,27 @@ impl<'s> Elaborator<'s> {
     /// record methods (lowered later). Then flatten the inheritance chain so a
     /// derived class's field list is `[base fields …, own fields …]` (base-first
     /// = field-id stability under up-cast). Forward-reference safe.
+    /// N4: whole-design prescan of clocking-block NAMES (diagnostic only). Runs
+    /// before any module lowers, so a cross-hierarchy `@(inst.cb)` event control —
+    /// lowered in a PARENT before the child module's clocking block — is recognized
+    /// for an accurate "unsupported clocking-event" message (not a generic
+    /// hier-name error). Soundness is unaffected (the construct is loud either way).
+    fn prescan_clocking_names(&mut self, unit: &ast::SourceUnit) {
+        for it in &unit.items {
+            if let ast::TopItem::Module(m) | ast::TopItem::Interface(m) | ast::TopItem::Package(m) =
+                it
+            {
+                for bi in &m.body {
+                    if let ast::ModuleItem::Clocking(cb) = bi {
+                        if let Some(n) = &cb.name {
+                            self.all_clocking_names.insert(n.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn register_classes(&mut self, unit: &ast::SourceUnit) {
         let mut decls: Vec<&ast::ClassDecl> = Vec::new();
         for it in &unit.items {
@@ -9298,6 +9359,25 @@ impl<'s> Elaborator<'s> {
         if let Some(path) = lval_root_path(lv) {
             let path = path.clone();
             self.check_modport_write(&path);
+            // N4 §14.3: a clocking INPUT (`cb.sig`) is read-only — driving it is
+            // illegal. Resolve quietly (the joined alias) and reject if it targets
+            // a clocking-input holding net (never a silent write to the holding reg).
+            if !self.clocking_hold_nets.is_empty() {
+                let joined = path
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                if let Some(id) = self.lookup_net_scoped(&joined) {
+                    if self.clocking_hold_nets.contains(&id) {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "cannot drive a clocking INPUT (`cb.sig` is read-only, §14.3)",
+                        );
+                    }
+                }
+            }
         }
         match lv {
             ast::Lvalue::Ident(path) => {
@@ -16246,6 +16326,153 @@ impl<'s> Elaborator<'s> {
         }
     }
 
+    /// N4 (§14): lower each `clocking` block in `body` into preponed-sampled
+    /// holding nets + a marked commit handler, and register `@(cb)` events. Runs
+    /// AFTER the net passes (source nets resolve) and BEFORE the process loop (so
+    /// `cb.sig` resolves to its holding net and `@(cb)` to the clocking event).
+    ///
+    /// v1 = default-skew INPUT sampling + `@(cb)`. Each input gets a holding net
+    /// (clean VCD name `__clk_<cb>_<sig>`) plus an alias symbol `cb.sig` so reads
+    /// resolve to it (the interface-alias path in `resolve_net`). A synthesized
+    /// `always @(clk);` handler is marked in `clocking_commit`; the engine, on the
+    /// clocking edge, commits `preponed_buf[source] → holding` (blocking, same-slot
+    /// — no NBA lag). HONEST-LOUD (follow-on slices): output/inout DRIVERS (need the
+    /// Observed/Reactive region), explicit skews, multi-clock / anonymous blocks,
+    /// and a non-net-reference input bind.
+    fn lower_clocking_blocks(&mut self, body: &[ast::ModuleItem]) {
+        // `@(cb)` resolution is module-local: clear the previous module's map.
+        self.clocking_events.clear();
+        for item in body {
+            let ast::ModuleItem::Clocking(cb) = item else {
+                continue;
+            };
+            if !matches!(&cb.clock, ast::Sensitivity::List(evs) if evs.len() == 1) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a clocking block must have a single clocking event \
+                     (multi-clock / `@*` is unsupported in this subset)",
+                );
+                continue;
+            }
+            let Some(cb_name) = cb.name.as_ref().map(|n| n.name.clone()) else {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "an anonymous clocking block is unsupported in this subset (name it)",
+                );
+                continue;
+            };
+            // `@(cb)` → the clocking event (module-local). Also record the name
+            // design-globally (diagnostic: cross-hier `@(inst.cb)` message).
+            self.clocking_events
+                .insert(cb_name.clone(), cb.clock.clone());
+            self.all_clocking_names.insert(cb_name.clone());
+            let mut pairs: Vec<(u32, u32)> = Vec::new();
+            for it in &cb.items {
+                if it.skew_raw.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a clocking skew (`#…`) is unsupported in this subset (default skew only)",
+                    );
+                    continue;
+                }
+                if !matches!(it.dir, ast::ClockingDir::Input) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a clocking OUTPUT/INOUT driver is unsupported in this subset \
+                         (input sampling only; the synchronized driver needs the \
+                         Observed/Reactive region — a follow-on slice)",
+                    );
+                    continue;
+                }
+                // Source net = the bind expr (a net reference) or the signal name.
+                let src_name = match &it.expr {
+                    None => it.name.name.clone(),
+                    Some(e) => match &e.kind {
+                        ast::ExprKind::Ident(p) => p
+                            .segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("."),
+                        _ => {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a clocking input bind must be a net reference in this subset",
+                            );
+                            continue;
+                        }
+                    },
+                };
+                let Some(src_id) = self.lookup_net_scoped(&src_name) else {
+                    self.error(
+                        MsgCode::ElabUnresolvedName,
+                        &format!("undeclared clocking input signal `{}`", self.fq(&src_name)),
+                    );
+                    continue;
+                };
+                // Holding reg: same width/sign as the source, X-init (cb.sig is X
+                // before the first clocking edge — iverilog parity).
+                let sv = &self.nets[src_id as usize];
+                let (w, msb, lsb, signed) = (sv.width, sv.msb, sv.lsb, sv.signed);
+                let clean = format!("__clk_{}_{}", cb_name, it.name.name);
+                let nv = ir::NetVar {
+                    kind: ir::NetKind::Reg,
+                    width: w,
+                    msb,
+                    lsb,
+                    signed,
+                    array_len: 1,
+                    dir: ir::PortDir::Internal,
+                    init: default_init(ast::NetVarKind::Reg, w),
+                };
+                let hid_before = self.nets.len() as u32;
+                self.add_net(&clean, nv);
+                let hid = self.lookup_net_scoped(&clean).unwrap_or(hid_before);
+                // Alias `cb.sig` → the holding net (resolution only; the net keeps its
+                // clean VCD name). Manual insert mirrors interface-member aliasing.
+                let alias = self.fq(&format!("{}.{}", cb_name, it.name.name));
+                self.symbols.insert(alias, hid);
+                pairs.push((hid, src_id));
+                self.clocking_inputs.insert(src_id);
+                self.clocking_hold_nets.insert(hid); // read-only: a write is loud
+            }
+            if pairs.is_empty() {
+                continue;
+            }
+            // Marked commit handler `always @(clk);` (Null body — the engine does the
+            // preponed→holding commit when this proc fires on the clocking edge).
+            let pb = ast::ProceduralBlock {
+                kind: ast::ProcKind::Always,
+                sensitivity: Some(cb.clock.clone()),
+                body: Box::new(ast::Stmt::Null(cb.span)),
+                span: cb.span,
+            };
+            let proc = self.lower_proc_block(&pb);
+            let pid = self.processes.len() as u32;
+            self.push_process(proc);
+            self.clocking_commit.insert(pid, pairs);
+        }
+    }
+
+    /// If `sens` is a bare `@(cb)` whose `cb` names a clocking block (registered by
+    /// `lower_clocking_blocks`), return the clocking event to substitute. `None`
+    /// for any other sensitivity (a normal signal/edge list passes through).
+    fn clocking_event_subst(&self, sens: Option<&ast::Sensitivity>) -> Option<ast::Sensitivity> {
+        let ast::Sensitivity::List(l) = sens? else {
+            return None;
+        };
+        if l.len() != 1 || !matches!(l[0].edge, ast::Edge::NoEdge) {
+            return None;
+        }
+        let ast::ExprKind::Ident(p) = &l[0].expr.kind else {
+            return None;
+        };
+        if p.segments.len() != 1 {
+            return None;
+        }
+        self.clocking_events.get(&p.segments[0].name).cloned()
+    }
+
     /// v8 SVA: drain `pending_sva` into synthesized clocked checker processes.
     /// `assert property(@(clk) ante |-> cons)` ≡ `always @(clk) if (ante &&
     /// !cons) $error(...)`. For `|=>` (non-overlapping) the antecedent is delayed
@@ -18703,6 +18930,11 @@ impl<'s> Elaborator<'s> {
         sens: Option<&ast::Sensitivity>,
         force_edge: bool,
     ) -> ir::Sensitivity {
+        // N4: a bare `@(cb)` where `cb` names a clocking block lowers to the
+        // clocking event (`@(posedge clk)`). Recurse with the substituted event.
+        if let Some(ev) = self.clocking_event_subst(sens) {
+            return self.classify_event_list(Some(&ev), force_edge);
+        }
         let list = match sens {
             Some(ast::Sensitivity::List(l)) => l.as_slice(),
             Some(ast::Sensitivity::Star) | None => {
@@ -18753,6 +18985,26 @@ impl<'s> Elaborator<'s> {
     fn sens_event_net(&mut self, e: &ast::Expr, edge_ctx: bool) -> u32 {
         match &e.kind {
             ast::ExprKind::Ident(path) => {
+                // N4: a multi-segment `@(u0.cb)` whose LAST segment names a clocking
+                // block is a CROSS-HIERARCHY clocking-event control — give an accurate
+                // event-control message (not the lvalue/hier-WRITE text `resolve_net`
+                // would emit). The cross-hier VALUE read `u0.cb.sig` IS supported; an
+                // in-module `@(cb)` IS supported; cross-hier event wakeup is not (the
+                // clocking-event table is keyed by bare module-local name).
+                if path.segments.len() > 1
+                    && path
+                        .segments
+                        .last()
+                        .is_some_and(|s| self.all_clocking_names.contains(&s.name))
+                {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a cross-hierarchy clocking-event control `@(inst.cb)` is unsupported \
+                         in this subset (the cross-hierarchy value read `inst.cb.sig` and an \
+                         in-module `@(cb)` event are supported)",
+                    );
+                    return POISON_NET;
+                }
                 let n = self.resolve_net(path);
                 if self.is_dyn_handle_net(n) || self.is_string_net(n) {
                     // v5 ⑥/v7: handles carry no dirty channel — they can
@@ -21647,6 +21899,10 @@ impl<'s> Elaborator<'s> {
     /// silently waiting on the FIRST term only changed wake semantics — P1-4).
     /// `@(*)` is handled by the `EventCtrl` arm (read-set patch), not here.
     fn lower_event_wait_cause(&mut self, ctrl: &ast::Sensitivity) -> ir::WaitCause {
+        // N4: in-body `@(cb)` → the clocking event (`@(posedge clk)`).
+        if let Some(ev) = self.clocking_event_subst(Some(ctrl)) {
+            return self.lower_event_wait_cause(&ev);
+        }
         match ctrl {
             ast::Sensitivity::Star => {
                 unreachable!("in-body @(*) is lowered by the EventCtrl arm")

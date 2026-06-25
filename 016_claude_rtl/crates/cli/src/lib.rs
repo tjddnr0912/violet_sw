@@ -612,6 +612,10 @@ fn run_vita_str_gated(
         proc_scopes: sc.proc_scopes,
         net_dims: sc.net_dims,
         final_procs: sc.final_procs,
+        // N4 clocking: thread the preponed-sampler sidecars (one-shot path; empty
+        // for designs with no clocking block → byte-identical).
+        clocking_inputs: sc.clocking_inputs,
+        clocking_commit: sc.clocking_commit,
         defer_marks: sc.defer_marks,
         defer_acts: sc.defer_acts,
         // B1/B2 frame-call: thread the func/task sidecars on the one-shot path
@@ -1390,6 +1394,10 @@ struct StagedExtraSidecars {
     /// N7-REST B-CRV final: per-call inline `randomize() with {…}` constraints
     /// (staged velab→vrun must carry them or inline `with` is silently dropped).
     randomize_with: Vec<sim_engine::RandWithCall>,
+    /// N4 clocking: preponed-sampler sidecars (staged velab→vrun must carry them or
+    /// `cb.sig` is silently never sampled = stuck at X).
+    clocking_inputs: std::collections::BTreeSet<u32>,
+    clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
 }
 
 impl StagedExtraSidecars {
@@ -1415,6 +1423,8 @@ impl StagedExtraSidecars {
             class_dist: sc.class_dist.clone(),
             class_randc: sc.class_randc.clone(),
             randomize_with: sc.randomize_with.clone(),
+            clocking_inputs: sc.clocking_inputs.clone(),
+            clocking_commit: sc.clocking_commit.clone(),
         }
     }
 }
@@ -2330,6 +2340,8 @@ fn run_vrun_gated(
         class_field_widths: extra.class_field_widths,
         assert_fire: extra.assert_fire,
         assert_ctl: extra.assert_ctl,
+        clocking_inputs: extra.clocking_inputs,
+        clocking_commit: extra.clocking_commit,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
@@ -3008,6 +3020,9 @@ mod tests {
                 vec![vec![sim_ir::COp::SoftMarker, sim_ir::COp::Field(2)]],
             ),
         ];
+        s.clocking_inputs = std::collections::BTreeSet::from([3u32, 7u32]);
+        s.clocking_commit =
+            std::collections::BTreeMap::from([(5u32, vec![(8u32, 3u32), (9u32, 7u32)])]);
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -3015,7 +3030,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "256d9945804a43a6eada644a9cbea319f769537e89858e5003ae8358eaf47466";
+        const EXPECTED: &str = "c16eecd00f0bd55c82faa8790d62d3799137188a25b12775d134bc5dd9e5f24d";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\

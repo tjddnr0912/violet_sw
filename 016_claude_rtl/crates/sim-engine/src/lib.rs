@@ -180,6 +180,11 @@ pub struct SimOpts {
     /// ascending ProcId order) after the main loop ends, whatever the finish
     /// reason. EMPTY default keeps every existing caller unchanged.
     pub final_procs: std::collections::BTreeSet<u32>,
+    /// N4 clocking: source NetIds to snapshot into the preponed buffer at each
+    /// time advance. EMPTY ⇒ no clocking ⇒ byte-identical.
+    pub clocking_inputs: std::collections::BTreeSet<u32>,
+    /// N4 clocking: marked commit-handler ProcId → `[(holding_net, source_net)]`.
+    pub clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
     /// Runtime plusargs (v7, `+name[=value]` with the '+' stripped, CLI
     /// order). `$test$plusargs` prefix-probes them; `$value$plusargs`
     /// converts the first match's remainder. Pure runtime input — never
@@ -268,6 +273,8 @@ impl Default for SimOpts {
             threads: 1,
             plusargs: Vec::new(),
             final_procs: std::collections::BTreeSet::new(),
+            clocking_inputs: std::collections::BTreeSet::new(),
+            clocking_commit: std::collections::BTreeMap::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             func_table: FuncTable::new(),
@@ -349,6 +356,9 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.threads = opts.threads;
     st.plusargs = opts.plusargs.clone();
     st.final_procs = opts.final_procs.clone();
+    // N4 clocking: source nets to snapshot (ordered, deterministic) + commit handlers.
+    st.clocking_inputs = opts.clocking_inputs.iter().copied().collect();
+    st.clocking_commit = opts.clocking_commit.clone();
     st.defer_marks = opts.defer_marks.clone();
     st.defer_acts = opts.defer_acts.clone();
     // SVPART: mark 2-state nets so write_chunk coerces X/Z→0 (one-shot only).
