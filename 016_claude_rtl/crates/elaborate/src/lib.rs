@@ -15157,16 +15157,39 @@ impl<'s> Elaborator<'s> {
         // outer antecedent, an inner property whose own sides are property refs)
         // falls through to the overlap flattener's loud `|=>`-as-consequent reject.
         if matches!(sva.kind, ast::ImplicationKind::Overlap) {
-            let outer_ante = match &sva.ante {
-                ast::Sequence::Boolean(a) => Some(a.clone()),
-                _ => None,
-            };
-            if let Some(a) = outer_ante {
-                if let Some((b, c)) = self.peel_nonoverlap_property(&name, &sva.clock) {
-                    sva.ante = ast::Sequence::Boolean(sva_binary(ast::BinOp::LogAnd, a, b, sp));
-                    sva.cons = ast::Sequence::Boolean(c);
-                    sva.kind = ast::ImplicationKind::NonOverlap;
-                    return;
+            match &sva.ante {
+                // BOOLEAN outer antecedent (fast path — kept verbatim for
+                // byte-identity): `a |-> (b |=> c)` ≡ `(a && b) |=> c`. a and b are
+                // fused at the same clock = a single boolean conjunction.
+                ast::Sequence::Boolean(a) => {
+                    let a = a.clone();
+                    if let Some((b, c)) = self.peel_nonoverlap_property(&name, &sva.clock) {
+                        sva.ante = ast::Sequence::Boolean(sva_binary(ast::BinOp::LogAnd, a, b, sp));
+                        sva.cons = ast::Sequence::Boolean(c);
+                        sva.kind = ast::ImplicationKind::NonOverlap;
+                        return;
+                    }
+                }
+                // SEQUENCE outer antecedent (slice A.3): `seq |-> (b |=> c)`
+                // ≡ `(seq ##0 b) |=> c` (IEEE 1800 §16.12). The overlap `|->` fuses
+                // b onto the END of `seq` at the SAME clock (the `##0` connector); the
+                // inner `|=>` then skews b→c by one clock, supplied by the top-level
+                // `|=>` pend reg. So rewrite the antecedent to the SEQUENCE
+                // `seq ##0 b` (kind→NonOverlap) and let the existing sequence pipeline
+                // + pend-reg machinery produce the obligation — no new synthesis.
+                orig_ante => {
+                    let orig_ante = orig_ante.clone();
+                    if let Some((b, c)) = self.peel_nonoverlap_property(&name, &sva.clock) {
+                        sva.ante = ast::Sequence::Delay {
+                            min: 0,
+                            max: Some(0),
+                            lhs: Box::new(orig_ante),
+                            rhs: Box::new(ast::Sequence::Boolean(b)),
+                        };
+                        sva.cons = ast::Sequence::Boolean(c);
+                        sva.kind = ast::ImplicationKind::NonOverlap;
+                        return;
+                    }
                 }
             }
         }
@@ -15182,23 +15205,26 @@ impl<'s> Elaborator<'s> {
         // Deeper chains (inner consequent is itself a property ref) and a sequence
         // outer antecedent fall through to the overlap flattener's loud `|=>` reject.
         if matches!(sva.kind, ast::ImplicationKind::NonOverlap) {
-            let outer_ante = match &sva.ante {
-                ast::Sequence::Boolean(a) => Some(a.clone()),
-                _ => None,
+            // Both the boolean and sequence outer-antecedent cases produce the SAME
+            // rewrite `(orig_ante ##1 b) |=> c`; the only difference is whether
+            // `orig_ante` is wrapped `Boolean(a)` (fast path, kept verbatim for
+            // byte-identity) or an already-built sequence (slice A.3:
+            // `seq |=> (b |=> c)` ≡ `(seq ##1 b) |=> c`, §16.12). The outer `|=>`
+            // skews orig_ante→b by one clock (`##1`); the inner `|=>` skews b→c by one
+            // more, supplied by the top-level pend reg (a total 2-clock obligation).
+            let orig_ante = match &sva.ante {
+                ast::Sequence::Boolean(a) => ast::Sequence::Boolean(a.clone()),
+                other => other.clone(),
             };
-            if let Some(a) = outer_ante {
-                if let Some((b, c)) = self.peel_nonoverlap_property(&name, &sva.clock) {
-                    sva.ante = ast::Sequence::Delay {
-                        min: 1,
-                        max: Some(1),
-                        lhs: Box::new(ast::Sequence::Boolean(a)),
-                        rhs: Box::new(ast::Sequence::Boolean(b)),
-                    };
-                    sva.cons = ast::Sequence::Boolean(c);
-                    // kind stays NonOverlap: the `##1` gives the a→b skew, the pend
-                    // reg the b→c skew (a total 2-clock obligation).
-                    return;
-                }
+            if let Some((b, c)) = self.peel_nonoverlap_property(&name, &sva.clock) {
+                sva.ante = ast::Sequence::Delay {
+                    min: 1,
+                    max: Some(1),
+                    lhs: Box::new(orig_ante),
+                    rhs: Box::new(ast::Sequence::Boolean(b)),
+                };
+                sva.cons = ast::Sequence::Boolean(c);
+                return;
             }
         }
         match self.flatten_overlap_property(&name, &sva.clock, sp) {
