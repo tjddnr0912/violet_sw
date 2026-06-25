@@ -2290,6 +2290,16 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_kw(Kw::Covergroup) {
             return self.parse_covergroup();
         }
+        // N4: `clocking …` / `default clocking …` block (IEEE 1800 §14).
+        if self.at_kw(Kw::Clocking)
+            || (self.at_kw(Kw::Default)
+                && matches!(
+                    self.peek_at(1),
+                    Some(TokenKind::Word(WordKind::Keyword(Kw::Clocking)))
+                ))
+        {
+            return self.parse_clocking();
+        }
         // N5: a covergroup INSTANCE `CG_TYPE NAME = new;` — distinguished from a module
         // instantiation (`CG_TYPE NAME ( … )`) by the `=` at lookahead 2. Placed before
         // the bare-ident instantiation arm.
@@ -2594,6 +2604,109 @@ impl<'t, 's> Parser<'t, 's> {
     /// endgroup` — a functional-coverage model. The header tail (args / sampling event)
     /// and any per-coverpoint bins/iff are SKIPPED to `;` in this slice (auto-bins,
     /// explicit `sample()`); only the coverpoint EXPR is captured.
+    /// N4: `[default] clocking [NAME] @(event); { [default] input/output [skew]
+    /// sig [= expr] {, …}; } endclocking [: NAME]` (IEEE 1800 §14). v1 scope =
+    /// default-skew INPUT/OUTPUT + `@(cb)`; an explicit skew (`#…`) is captured in
+    /// `skew_raw` so elaborate can honest-loud it. A clocking-wide `default
+    /// input/output …;` skew setter is loud here (out of v1 scope).
+    fn parse_clocking(&mut self) -> Option<ModuleItem> {
+        let start = self.cur_span();
+        let is_default = self.eat_kw(Kw::Default);
+        self.eat_kw(Kw::Clocking); // guaranteed by the dispatch in parse_module_item
+                                   // Optional clocking-block name (`clocking cb @(...)` vs anonymous `clocking
+                                   // @(...)`). Present iff the next token is an identifier (the `@` starts the
+                                   // event otherwise).
+        let name = if self.is_ident() { self.ident() } else { None };
+        let clock = if self.peek() == Some(TokenKind::At) {
+            self.parse_sensitivity()
+        } else {
+            self.error("'@(event)' clocking event");
+            Sensitivity::Star
+        };
+        self.expect(TokenKind::Semi, "';' after clocking header");
+        let mut items = Vec::new();
+        loop {
+            if self.at_kw(Kw::Endclocking) || self.peek().is_none() {
+                break;
+            }
+            // Clocking-wide skew setter `default input/output [skew];` — out of v1
+            // scope (skews unsupported). Loud, then skip to its `;`.
+            if self.at_kw(Kw::Default) {
+                self.error(
+                    "a clocking-wide `default input/output` skew is unsupported in \
+                     this subset (default skew only)",
+                );
+                while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
+                    self.bump();
+                }
+                self.eat(TokenKind::Semi);
+                continue;
+            }
+            let dir = if self.eat_kw(Kw::Input) {
+                ClockingDir::Input
+            } else if self.eat_kw(Kw::Inout) {
+                ClockingDir::Inout
+            } else if self.eat_kw(Kw::Output) {
+                ClockingDir::Output
+            } else {
+                self.error("'input'/'output' in a clocking block");
+                while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
+                    self.bump();
+                }
+                self.eat(TokenKind::Semi);
+                continue;
+            };
+            // Optional skew `#delay` / `#1step` — captured raw so elaborate can
+            // honest-loud it (v1 = default skew only).
+            let skew_raw = if self.peek() == Some(TokenKind::Hash) {
+                self.bump(); // `#`
+                let txt = self.cur_text().to_string();
+                self.bump();
+                Some(txt)
+            } else {
+                None
+            };
+            // Signal list: `sig [= expr] {, sig [= expr]}` ;
+            loop {
+                let isp = self.cur_span();
+                let Some(sig) = self.ident() else {
+                    self.error("a clocking signal name");
+                    break;
+                };
+                let expr = if self.eat(TokenKind::Eq) {
+                    Some(self.expr(0))
+                } else {
+                    None
+                };
+                items.push(ClockingItem {
+                    dir,
+                    skew_raw: skew_raw.clone(),
+                    name: sig,
+                    expr,
+                    span: isp,
+                });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Semi, "';' after a clocking item");
+        }
+        if !self.eat_kw(Kw::Endclocking) {
+            self.error("'endclocking'");
+        }
+        // Optional `: NAME` label.
+        if self.eat(TokenKind::Colon) {
+            self.ident();
+        }
+        Some(ModuleItem::Clocking(ClockingDecl {
+            name,
+            is_default,
+            clock,
+            items,
+            span: start,
+        }))
+    }
+
     fn parse_covergroup(&mut self) -> Option<ModuleItem> {
         let start = self.cur_span();
         self.bump(); // `covergroup`

@@ -3701,6 +3701,19 @@ impl<'s> Elaborator<'s> {
                         .entry(cg.name.name.clone())
                         .or_insert_with(|| cg.clone());
                 }
+                // N4: clocking blocks parse into the AST (lexer/parser/AST
+                // foundation); the functional lowering — a preponed-region sampler
+                // synthesizing holding nets + a marked commit handler — is the next
+                // engine slice. Until then they are HONEST-LOUD (never silently
+                // dropped: a dropped clocking block would leave `cb.sig` unresolved
+                // and the design silently mis-sampled).
+                ast::ModuleItem::Clocking(_) => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "clocking blocks are not yet supported in this subset (the \
+                         preponed-region sampler is a pending engine slice)",
+                    );
+                }
                 _ => {}
             }
         }

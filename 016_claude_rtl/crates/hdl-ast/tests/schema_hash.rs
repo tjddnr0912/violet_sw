@@ -117,10 +117,14 @@ use vita_schema::schema_hash;
 /// 2026-06-25 return-slot 2-state: `FunctionDef.ret_two_state: bool` — records
 /// that a `function int/byte/shortint/longint/bit` return is 2-state (can't hold
 /// X/Z, §6.11.3) so the frame return slot coerces; `ParamType` could not carry it.
-/// Pure parser/elaborate (the function routes to the frame path); no sim-ir change.)
+/// Pure parser/elaborate (the function routes to the frame path); no sim-ir change.
+/// 2026-06-25 N4 clocking: `ModuleItem::Clocking(ClockingDecl)` + the `ClockingDecl`
+/// / `ClockingItem` / `ClockingDir` types — `clocking cb @(clk); input/output sig;
+/// endclocking` (§14). Front-end foundation; the preponed-region sampler is a
+/// pending engine slice (elaborate honest-loud until then). No sim-ir change.)
 const EXPECTED: [u8; 32] = [
-    35, 68, 38, 105, 239, 118, 62, 50, 163, 31, 244, 114, 54, 16, 142, 40, 87, 42, 194, 1, 93, 71,
-    238, 170, 248, 175, 168, 18, 50, 74, 250, 41,
+    18, 172, 111, 153, 63, 43, 168, 5, 18, 8, 18, 50, 199, 239, 187, 242, 17, 194, 211, 106, 156,
+    41, 47, 253, 228, 30, 212, 162, 143, 218, 153, 25,
 ];
 
 #[test]

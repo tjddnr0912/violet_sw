@@ -521,6 +521,8 @@ pub enum Kw {
     Assume,
     // --- SV void return type (typed-param/void close) ---
     Void,
+    // --- SV clocking block (N4, §14) ---
+    Clocking, Endclocking,
 }
 
 impl Kw {
@@ -601,6 +603,8 @@ impl Kw {
             "assume" => Assume,
             // --- SV void return type ---
             "void" => Void,
+            // --- SV clocking block (N4) ---
+            "clocking" => Clocking, "endclocking" => Endclocking,
             _ => return WordKind::Ident,
         };
         WordKind::Keyword(kw)

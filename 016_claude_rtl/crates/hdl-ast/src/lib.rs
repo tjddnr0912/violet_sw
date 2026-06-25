@@ -260,8 +260,50 @@ pub enum ModuleItem {
     /// expression macro. Substituted at each use site by elaborate (a use is a plain
     /// `Ident` / `Call` that resolves against the let table); pure IR-0.
     LetDecl(LetDecl),
+    /// `clocking NAME @(event); input/output sig; endclocking` (N4, IEEE 1800 §14).
+    /// Elaborate synthesizes preponed-sampled holding nets for the inputs + a marked
+    /// clocking-commit handler; `cb.sig` resolves to the holding net, `@(cb)` to the
+    /// clocking event. Out-of-band sidecars (golden-free for non-clocking designs).
+    Clocking(ClockingDecl),
     /// Recovery placeholder for an unparseable item.
     Error(Span),
+}
+
+/// A `clocking [NAME] @(event); { [default] input/output [skew] sig [= expr]; }
+/// endclocking` block (N4, IEEE 1800 §14). v1 supports default-skew INPUT sampling
+/// + `@(cb)`; output drivers and explicit skews are honest-loud at elaborate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ClockingDecl {
+    /// `None` for an anonymous `clocking @(clk); … endclocking` (rare).
+    pub name: Option<Ident>,
+    /// `true` for `default clocking …`.
+    pub is_default: bool,
+    /// The clocking event, e.g. `@(posedge clk)`.
+    pub clock: Sensitivity,
+    pub items: Vec<ClockingItem>,
+    pub span: Span,
+}
+
+/// One `input/output [skew] sig [= expr];` member of a clocking block. `skew_raw`
+/// holds any explicit skew text (`#1`, `#1step`, …) so elaborate can honest-loud it
+/// (v1 = default skew only); `None` is the default skew.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct ClockingItem {
+    pub dir: ClockingDir,
+    pub skew_raw: Option<String>,
+    pub name: Ident,
+    /// The bound expression for `input sig = dut.q;`; `None` ⇒ the signal `name`
+    /// itself (`input q;` binds to the net `q` in scope).
+    pub expr: Option<Expr>,
+    pub span: Span,
+}
+
+/// Clocking-item direction (IEEE 1800 §14.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub enum ClockingDir {
+    Input,
+    Output,
+    Inout,
 }
 
 /// A `let NAME [(formals)] = expr;` declaration (SVA-REST, IEEE 1800 §11.13). The
