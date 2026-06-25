@@ -233,6 +233,8 @@ pub(crate) struct SimState<'a> {
     /// process fires (its clocking edge), the engine commits `preponed_buf[source]
     /// → holding` (blocking, same-slot — no NBA lag).
     pub clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// N4 clocking output pairs: ProcId → `[(source_net, holding_net)]`. EMPTY ⇒ no outputs.
+    pub clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
     /// Preponed snapshot: source NetId → its value at the start of the time slot.
     pub preponed_buf: std::collections::BTreeMap<u32, crate::value::Value>,
     /// SVA-REST: StmtIds of assertion FIRE reports gated by assertion control.
@@ -540,6 +542,7 @@ impl<'a> SimState<'a> {
             final_procs: std::collections::BTreeSet::new(),
             clocking_inputs: Vec::new(),
             clocking_commit: std::collections::BTreeMap::new(),
+            clocking_outputs: std::collections::BTreeMap::new(),
             preponed_buf: std::collections::BTreeMap::new(),
             assert_fire: std::collections::BTreeSet::new(),
             assert_ctl: std::collections::BTreeMap::new(),
@@ -1117,15 +1120,31 @@ impl<'a> SimState<'a> {
 
     /// N4 clocking: a marked commit-handler proc fired on its clocking edge —
     /// commit `preponed_buf[source] → holding` for each of its inputs (blocking,
-    /// same-slot). Returns `true` iff this proc was a clocking handler (so the
-    /// scheduler skips the no-op body dispatch).
+    /// same-slot), then drive `source = holding` for each of its outputs.
+    /// Returns `true` iff this proc was a clocking handler (so the scheduler
+    /// skips the no-op body dispatch).
     pub(crate) fn commit_clocking(&mut self, proc: u32) -> bool {
-        let Some(pairs) = self.clocking_commit.get(&proc).cloned() else {
+        let is_input_handler = self.clocking_commit.contains_key(&proc);
+        let is_output_handler = self.clocking_outputs.contains_key(&proc);
+        if !is_input_handler && !is_output_handler {
             return false;
-        };
-        for (hold, src) in pairs {
-            if let Some(v) = self.preponed_buf.get(&src).cloned() {
-                self.commit_clocking_sample(hold, &v);
+        }
+        // INPUT phase: preponed_buf[source] → holding_net (existing).
+        if let Some(pairs) = self.clocking_commit.get(&proc).cloned() {
+            for (hold, src) in pairs {
+                if let Some(v) = self.preponed_buf.get(&src).cloned() {
+                    self.commit_clocking_sample(hold, &v);
+                }
+            }
+        }
+        // OUTPUT phase: current_value(holding_net) → source_net (new).
+        // Simplified synchronous model: drive in Active region at edge detection,
+        // after INPUT commits. Hand-IEEE (no Reactive region; covers typical TB use).
+        // NOTE: tuple is (source_net, holding_net) — REVERSED from clocking_commit.
+        if let Some(out_pairs) = self.clocking_outputs.get(&proc).cloned() {
+            for (src, hold) in out_pairs {
+                let v = self.read_net(hold, None);
+                self.commit_clocking_sample(src, &v);
             }
         }
         true

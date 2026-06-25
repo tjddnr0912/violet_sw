@@ -616,6 +616,7 @@ fn run_vita_str_gated(
         // for designs with no clocking block → byte-identical).
         clocking_inputs: sc.clocking_inputs,
         clocking_commit: sc.clocking_commit,
+        clocking_outputs: sc.clocking_outputs,
         defer_marks: sc.defer_marks,
         defer_acts: sc.defer_acts,
         // B1/B2 frame-call: thread the func/task sidecars on the one-shot path
@@ -1398,6 +1399,8 @@ struct StagedExtraSidecars {
     /// `cb.sig` is silently never sampled = stuck at X).
     clocking_inputs: std::collections::BTreeSet<u32>,
     clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// N4 clocking output pairs (staged sidecar — must survive vcmp→vrun).
+    clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
 }
 
 impl StagedExtraSidecars {
@@ -1425,6 +1428,7 @@ impl StagedExtraSidecars {
             randomize_with: sc.randomize_with.clone(),
             clocking_inputs: sc.clocking_inputs.clone(),
             clocking_commit: sc.clocking_commit.clone(),
+            clocking_outputs: sc.clocking_outputs.clone(),
         }
     }
 }
@@ -2342,6 +2346,7 @@ fn run_vrun_gated(
         assert_ctl: extra.assert_ctl,
         clocking_inputs: extra.clocking_inputs,
         clocking_commit: extra.clocking_commit,
+        clocking_outputs: extra.clocking_outputs,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
@@ -3023,6 +3028,7 @@ mod tests {
         s.clocking_inputs = std::collections::BTreeSet::from([3u32, 7u32]);
         s.clocking_commit =
             std::collections::BTreeMap::from([(5u32, vec![(8u32, 3u32), (9u32, 7u32)])]);
+        s.clocking_outputs = std::collections::BTreeMap::from([(6u32, vec![(4u32, 9u32)])]);
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -3030,10 +3036,10 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "c16eecd00f0bd55c82faa8790d62d3799137188a25b12775d134bc5dd9e5f24d";
+        const EXPECTED: &str = "4eb2349e63218dc30bc60751f784c0a86c0bab64394d878fd2fb1a8c540148af";
         assert_eq!(
             got, EXPECTED,
-            "StagedExtraSidecars wire shape changed — a 14th-trailer field moved.\n\
+            "StagedExtraSidecars wire shape changed — a 15th-trailer field moved.\n\
              If intentional: bump format_version + regen with REGEN_GOLDEN=1."
         );
     }

@@ -204,14 +204,97 @@ fn cross_hierarchy_reader_matches_in_module_reader() {
 // ── honest-loud: out-of-v1-scope forms ──
 
 #[test]
-fn output_driver_is_loud() {
+fn output_drives_source_at_next_clocking_edge() {
+    // testbench writes `drv.data <= 8'hAB` (NBA into holding net).
+    // At the NEXT posedge clk, the commit handler drives `data = drv.data`.
+    // §14.7 simplified model: synchronous drive in Active region at edge.
+    // (Hand-IEEE: iverilog 13 does not support clocking blocks.)
+    let (o, e, c) = run("`timescale 1ns/1ns\nmodule t;\n\
+         logic clk=0; logic [7:0] data=8'h00;\n\
+         always #5 clk=~clk;\n\
+         clocking drv @(posedge clk);\n\
+           output data;\n\
+         endclocking\n\
+         initial begin\n\
+           @(posedge clk);        // edge 0→1: t=5\n\
+           drv.data <= 8'hAB;     // NBA into holding net (queued for t=5)\n\
+           @(posedge clk);        // wait for t=15: commit handler drives data=drv.data\n\
+           #1 $display(\"data=%h\", data); $finish;\n\
+         end\n\
+         endmodule\n");
+    clean(
+        &o,
+        &e,
+        c,
+        "data=ab",
+        "output drives source at next clocking edge",
+    );
+}
+
+#[test]
+fn output_initial_value_is_x() {
+    // Before first clocking edge, the output holding net is X (undriven).
+    // The source signal retains its initial value until the first edge commit.
+    let (o, e, c) = run("`timescale 1ns/1ns\nmodule t;\n\
+         logic clk=0; logic d=1'b0;\n\
+         always #5 clk=~clk;\n\
+         clocking drv @(posedge clk);\n\
+           output d;\n\
+         endclocking\n\
+         initial begin\n\
+           #2 $display(\"before=%b\", d);\n\
+           @(posedge clk); #1 $display(\"after_no_write=%b\", d); $finish;\n\
+         end\n\
+         endmodule\n");
+    // Before edge: d=0 (initial). After edge with no write to drv.d: holding=X → d=X.
+    assert_eq!(c, Some(0), "exit 0:\n{e}{o}");
+    assert!(o.contains("before=0"), "pre-edge initial:\n{o}");
+    assert!(
+        o.contains("after_no_write=x"),
+        "post-edge with X holding:\n{o}"
+    );
+}
+
+#[test]
+fn output_and_input_coexist() {
+    // A clocking block can have both input (sampling) and output (driving) ports.
+    // Input `q` is sampled preponed; output `d` is driven from holding to source.
+    let (o, e, c) = run("`timescale 1ns/1ns\nmodule t;\n\
+         logic clk=0; integer q=0; logic [3:0] d=4'h0;\n\
+         always #5 clk=~clk;\n\
+         always @(posedge clk) q <= q+1;\n\
+         clocking cb @(posedge clk);\n\
+           input  q;\n\
+           output d;\n\
+         endclocking\n\
+         initial begin\n\
+           @(posedge clk);          // edge 1: t=5; q NBA→1\n\
+           cb.d <= 4'hF;            // NBA into holding; committed next edge\n\
+           @(posedge clk);          // edge 2: t=15; input cb.q=1, output d=F\n\
+           #1 $display(\"cbq=%0d d=%h\", cb.q, d); $finish;\n\
+         end\n\
+         endmodule\n");
+    // cb.q = preponed q entering t=15 = 1 (NBA updated q to 1 at t=5).
+    // d = 0xF (driven by output commit at t=15).
+    clean(
+        &o,
+        &e,
+        c,
+        "cbq=1 d=f",
+        "input+output coexist in same clocking block",
+    );
+}
+
+#[test]
+fn output_inout_still_loud_for_inout_direction() {
+    // `inout` clocking direction is not supported (uncommon; IEEE §14.3).
     let (o, e, c) = run("module t;\n\
          logic clk=0, d=0;\n\
          always #5 clk=~clk;\n\
-         clocking cb @(posedge clk); output d; endclocking\n\
+         clocking cb @(posedge clk); inout d; endclocking\n\
          initial #20 $finish;\n\
          endmodule\n");
-    loud(&o, &e, c, "clocking output driver");
+    loud(&o, &e, c, "clocking inout direction");
 }
 
 #[test]

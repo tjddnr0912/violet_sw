@@ -418,6 +418,9 @@ pub struct Sidecars {
     /// When such a process fires (on its clocking event), the engine commits
     /// `preponed_buf[source] → holding` (blocking, same-slot — no NBA lag).
     pub clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// N4 clocking output pairs (staged velab→vrun must carry them or
+    /// OUTPUT direction is silently dropped). ProcId → `[(source_net, holding_net)]`.
+    pub clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
 }
 
 /// N7: resolved metadata for one class, built by the whole-design prescan
@@ -591,6 +594,7 @@ pub fn elaborate_with_timescale_roots(
         assert_ctl: std::mem::take(&mut el.assert_ctl),
         clocking_inputs: std::mem::take(&mut el.clocking_inputs),
         clocking_commit: std::mem::take(&mut el.clocking_commit),
+        clocking_outputs: std::mem::take(&mut el.clocking_outputs),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -2104,6 +2108,9 @@ struct Elaborator<'s> {
     // clocking-block name to its clocking event so `@(cb)` lowers to `@(clk)`.
     clocking_inputs: std::collections::BTreeSet<u32>,
     clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// N4 clocking output pairs collected per-clocking-block commit proc.
+    /// Flushed into `SimOpts::clocking_outputs` at elaboration end.
+    clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
     clocking_events: std::collections::BTreeMap<String, ast::Sensitivity>,
     /// Holding NetIds of clocking INPUTs (`cb.sig`) — read-only; an lvalue write
     /// to one is loud (you cannot drive a clocking input, §14.3).
@@ -2268,6 +2275,7 @@ impl<'s> Elaborator<'s> {
             final_procs: std::collections::BTreeSet::new(),
             clocking_inputs: std::collections::BTreeSet::new(),
             clocking_commit: std::collections::BTreeMap::new(),
+            clocking_outputs: std::collections::BTreeMap::new(),
             clocking_events: std::collections::BTreeMap::new(),
             clocking_hold_nets: std::collections::BTreeSet::new(),
             all_clocking_names: std::collections::BTreeSet::new(),
@@ -16786,6 +16794,7 @@ impl<'s> Elaborator<'s> {
                 .insert(cb_name.clone(), cb.clock.clone());
             self.all_clocking_names.insert(cb_name.clone());
             let mut pairs: Vec<(u32, u32)> = Vec::new();
+            let mut out_pairs: Vec<(u32, u32)> = Vec::new(); // (source_net, holding_net)
             for it in &cb.items {
                 if let Some(skew) = &it.skew_raw {
                     let s = skew.trim();
@@ -16803,14 +16812,70 @@ impl<'s> Elaborator<'s> {
                     // `#1step` IS the default input skew (preponed value entering the slot).
                     // No change to the holding-net synthesis — fall through.
                 }
-                if !matches!(it.dir, ast::ClockingDir::Input) {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "a clocking OUTPUT/INOUT driver is unsupported in this subset \
-                         (input sampling only; the synchronized driver needs the \
-                         Observed/Reactive region — a follow-on slice)",
-                    );
-                    continue;
+                match it.dir {
+                    ast::ClockingDir::Input => {} // INPUT: fall through to holding-net synthesis below
+                    ast::ClockingDir::Output => {
+                        // OUTPUT: synthesize a WRITABLE holding reg + drive source at each edge.
+                        // Simplified synchronous model: `source = holding` in Active region at edge.
+                        // (No Observed/Reactive region — hand-IEEE, covers common TB patterns.)
+                        let src_name = match &it.expr {
+                            None => it.name.name.clone(),
+                            Some(e) => match &e.kind {
+                                ast::ExprKind::Ident(p) => p
+                                    .segments
+                                    .iter()
+                                    .map(|s| s.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("."),
+                                _ => {
+                                    self.error(
+                                        MsgCode::ElabUnsupported,
+                                        "a clocking output bind must be a net reference in this subset",
+                                    );
+                                    continue;
+                                }
+                            },
+                        };
+                        let Some(src_id) = self.lookup_net_scoped(&src_name) else {
+                            self.error(
+                                MsgCode::ElabUnresolvedName,
+                                &format!(
+                                    "undeclared clocking output signal `{}`",
+                                    self.fq(&src_name)
+                                ),
+                            );
+                            continue;
+                        };
+                        let sv = &self.nets[src_id as usize];
+                        let (w, msb, lsb, signed) = (sv.width, sv.msb, sv.lsb, sv.signed);
+                        let clean = format!("__clkout_{}_{}", cb_name, it.name.name);
+                        let nv = ir::NetVar {
+                            kind: ir::NetKind::Reg,
+                            width: w,
+                            msb,
+                            lsb,
+                            signed,
+                            array_len: 1,
+                            dir: ir::PortDir::Internal,
+                            init: default_init(ast::NetVarKind::Reg, w), // X-init
+                        };
+                        let hid_before = self.nets.len() as u32;
+                        self.add_net(&clean, nv);
+                        let hid = self.lookup_net_scoped(&clean).unwrap_or(hid_before);
+                        // Alias `cb.sig` → holding net (writable — NOT added to clocking_hold_nets).
+                        let alias = self.fq(&format!("{}.{}", cb_name, it.name.name));
+                        self.symbols.insert(alias, hid);
+                        // Store output pair for this block's commit proc.
+                        out_pairs.push((src_id, hid)); // (source_net, holding_net)
+                        continue;
+                    }
+                    ast::ClockingDir::Inout => {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "a clocking INOUT driver is unsupported in this subset",
+                        );
+                        continue;
+                    }
                 }
                 // Source net = the bind expr (a net reference) or the signal name.
                 let src_name = match &it.expr {
@@ -16864,8 +16929,8 @@ impl<'s> Elaborator<'s> {
                 self.clocking_inputs.insert(src_id);
                 self.clocking_hold_nets.insert(hid); // read-only: a write is loud
             }
-            if pairs.is_empty() {
-                continue;
+            if pairs.is_empty() && out_pairs.is_empty() {
+                continue; // no valid items in this clocking block
             }
             // Marked commit handler `always @(clk);` (Null body — the engine does the
             // preponed→holding commit when this proc fires on the clocking edge).
@@ -16878,7 +16943,12 @@ impl<'s> Elaborator<'s> {
             let proc = self.lower_proc_block(&pb);
             let pid = self.processes.len() as u32;
             self.push_process(proc);
-            self.clocking_commit.insert(pid, pairs);
+            if !pairs.is_empty() {
+                self.clocking_commit.insert(pid, pairs);
+            }
+            if !out_pairs.is_empty() {
+                self.clocking_outputs.insert(pid, out_pairs);
+            }
         }
     }
 

@@ -185,6 +185,10 @@ pub struct SimOpts {
     pub clocking_inputs: std::collections::BTreeSet<u32>,
     /// N4 clocking: marked commit-handler ProcId → `[(holding_net, source_net)]`.
     pub clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// N4 clocking output pairs: ProcId → `[(source_net, holding_net)]`.
+    /// At each clocking-edge commit, drive `source_net = current_value(holding_net)`.
+    /// EMPTY ⇒ no output clocking ⇒ byte-identical to designs without OUTPUT ports.
+    pub clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
     /// Runtime plusargs (v7, `+name[=value]` with the '+' stripped, CLI
     /// order). `$test$plusargs` prefix-probes them; `$value$plusargs`
     /// converts the first match's remainder. Pure runtime input — never
@@ -275,6 +279,7 @@ impl Default for SimOpts {
             final_procs: std::collections::BTreeSet::new(),
             clocking_inputs: std::collections::BTreeSet::new(),
             clocking_commit: std::collections::BTreeMap::new(),
+            clocking_outputs: std::collections::BTreeMap::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             func_table: FuncTable::new(),
@@ -359,6 +364,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     // N4 clocking: source nets to snapshot (ordered, deterministic) + commit handlers.
     st.clocking_inputs = opts.clocking_inputs.iter().copied().collect();
     st.clocking_commit = opts.clocking_commit.clone();
+    st.clocking_outputs = opts.clocking_outputs.clone();
     st.defer_marks = opts.defer_marks.clone();
     st.defer_acts = opts.defer_acts.clone();
     // SVPART: mark 2-state nets so write_chunk coerces X/Z→0 (one-shot only).
