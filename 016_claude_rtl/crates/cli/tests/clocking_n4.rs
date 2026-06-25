@@ -249,14 +249,26 @@ fn explicit_skew_other_than_1step_is_loud() {
 }
 
 #[test]
-fn anonymous_clocking_is_loud() {
+fn anonymous_block_compiles_without_error() {
+    // An anonymous `clocking @(posedge clk); … endclocking` has no `cb` name
+    // for alias (`cb.sig` is inaccessible) but must NOT be loud. The block
+    // still synthesizes preponed infrastructure (useful inside program blocks
+    // — a follow-on slice). The design runs to $finish cleanly.
+    // Note: q increments on posedge via NBA; after 4 posedges the display
+    // fires in the same Active region before the 4th NBA commits, so q=3.
     let (o, e, c) = run("module t;\n\
-         logic clk=0, a=0;\n\
+         logic clk=0; integer q=0;\n\
          always #5 clk=~clk;\n\
-         clocking @(posedge clk); input a; endclocking\n\
-         initial #20 $finish;\n\
+         always @(posedge clk) q <= q+1;\n\
+         clocking @(posedge clk); input q; endclocking\n\
+         initial begin repeat(4) @(posedge clk); $display(\"q=%0d\", q); $finish; end\n\
          endmodule\n");
-    loud(&o, &e, c, "anonymous clocking block");
+    assert_eq!(
+        c,
+        Some(0),
+        "anonymous clocking block must compile cleanly:\n{e}{o}"
+    );
+    assert!(o.contains("q=3"), "design runs normally:\n{o}");
 }
 
 #[test]

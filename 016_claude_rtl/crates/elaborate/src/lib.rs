@@ -2112,6 +2112,8 @@ struct Elaborator<'s> {
     /// only: lets a cross-hierarchy `@(inst.cb)` event control emit an accurate
     /// "unsupported clocking-event" message instead of a generic hier-name error.
     all_clocking_names: std::collections::BTreeSet<String>,
+    /// Auto-increment counter for anonymous clocking blocks (N4-v2b).
+    anon_clocking_count: u32,
 
     // Substitution scope: a formal-param NAME currently bound to an actual ExprId
     // (a function/task INPUT formal during inlining). `lower_expr`'s Ident arm
@@ -2269,6 +2271,7 @@ impl<'s> Elaborator<'s> {
             clocking_events: std::collections::BTreeMap::new(),
             clocking_hold_nets: std::collections::BTreeSet::new(),
             all_clocking_names: std::collections::BTreeSet::new(),
+            anon_clocking_count: 0,
             func_metas: Vec::new(),
             funcs: Vec::new(),
             func_blocks: Vec::new(),
@@ -16766,12 +16769,16 @@ impl<'s> Elaborator<'s> {
                 );
                 continue;
             }
-            let Some(cb_name) = cb.name.as_ref().map(|n| n.name.clone()) else {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "an anonymous clocking block is unsupported in this subset (name it)",
-                );
-                continue;
+            let cb_name = match cb.name.as_ref().map(|n| n.name.clone()) {
+                Some(n) => n,
+                None => {
+                    // Anonymous block: synthesize internal name. No `cb.sig` alias
+                    // (no name = no user-visible prefix). Preponed infrastructure is
+                    // still synthesized for future program-block / default-clocking use.
+                    let n = format!("__anon_clk_{}", self.anon_clocking_count);
+                    self.anon_clocking_count += 1;
+                    n
+                }
             };
             // `@(cb)` → the clocking event (module-local). Also record the name
             // design-globally (diagnostic: cross-hier `@(inst.cb)` message).
