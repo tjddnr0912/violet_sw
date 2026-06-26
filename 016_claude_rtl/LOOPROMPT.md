@@ -12,7 +12,9 @@
 
 ## 1. 아이템 선택 (ROADMAP에서 1개)
 - `docs/ROADMAP.md` 잔여 항목 확인(특히 §4.5.x의 발굴된 pre-existing silent-wrong·개발예정 목록).
+- **선택 전 후보를 오라클로 재현 검증**: 문서화된 "미수정 버그"가 이미 오라클과 일치할 수 있음(misdiagnosed·이전 슬라이스가 부수 수정·특정 트리거 필요). 재현 안 되면 비목표로 기록하고 다음 후보로. (이번 루프: `@*` t0·`@*` Comb self-write·#5 mixed-edge가 전부 이미 일치였음.)
 - **우선순위: ① 오라클 있는 CRITICAL silent-wrong > ② 오라클 있는 기능 갭 > ③ 전제조건 충족된 honest-loud 승격.** 오라클 없음·전제조건 미충족(예: arm-slot 추적·deferred hier-edge-sens 필요)은 **건드리지 말고 honest-loud 유지**.
+- **"byte-identity 리스크가 커 보여 defer"는 측정으로 검증**: 우려가 과대평가일 수 있음(이번 루프: narrow-posedge 와이드화의 "다수 골든 flip" 우려가 측정상 미현실화=t0 무영향·전체 스위트 무회귀). defer 전 실제 영향 케이스를 오라클로 핀.
 - 선택 즉시 격리 브랜치: `git checkout -b feat-<slug>` (main에서 직접 구현 금지).
 
 ## 2. 사전 리뷰 = 오라클 그라운딩 (브레인스토밍)
