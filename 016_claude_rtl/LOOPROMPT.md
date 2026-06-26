@@ -13,7 +13,8 @@
 ## 1. 아이템 선택 (ROADMAP에서 1개)
 - `docs/ROADMAP.md` 잔여 항목 확인(특히 §4.5.x의 발굴된 pre-existing silent-wrong·개발예정 목록).
 - **선택 전 후보를 오라클로 재현 검증**: 문서화된 "미수정 버그"가 이미 오라클과 일치할 수 있음(misdiagnosed·이전 슬라이스가 부수 수정·특정 트리거 필요). 재현 안 되면 비목표로 기록하고 다음 후보로. (이번 루프: `@*` t0·`@*` Comb self-write·#5 mixed-edge가 전부 이미 일치였음.)
-- **우선순위: ① 오라클 있는 CRITICAL silent-wrong > ② 오라클 있는 기능 갭 > ③ 전제조건 충족된 honest-loud 승격.** 오라클 없음·전제조건 미충족(예: arm-slot 추적·deferred hier-edge-sens 필요)은 **건드리지 말고 honest-loud 유지**.
+- **우선순위: ① 오라클 있는 CRITICAL silent-wrong > ② 오라클 있는 기능 갭(loud→supported) > ③ 전제조건 충족된 honest-loud 승격.** 오라클 없음·전제조건 미충족(예: arm-slot 추적·deferred hier-edge-sens 필요)은 **건드리지 말고 honest-loud 유지**.
+- **쉬운 silent-wrong 소진 시 ②(loud→supported)로 전환**: vita가 loud-reject하나 iverilog가 지원하는 흔한 구문을 오라클로 찾을 것(예: multi-driver tristate). **loud→supported는 additive라 byte-identity가 강력**(거부되던 구문은 기존 디자인에 전무)=silent-wrong 수정보다 저위험. ⚠️ **단, elaborate가 허용을 시작하는 집합 = 엔진이 실제 처리하는 집합이 EXACTLY 동일해야 함**(불일치=허용됐으나 미처리=last-wins silent-wrong). 둘의 eligibility 술어를 같게 쓰고 적대 리뷰로 집합 동일성을 검증.
 - **"byte-identity 리스크가 커 보여 defer"는 측정으로 검증**: 우려가 과대평가일 수 있음(이번 루프: narrow-posedge 와이드화의 "다수 골든 flip" 우려가 측정상 미현실화=t0 무영향·전체 스위트 무회귀). defer 전 실제 영향 케이스를 오라클로 핀.
 - 선택 즉시 격리 브랜치: `git checkout -b feat-<slug>` (main에서 직접 구현 금지).
 
