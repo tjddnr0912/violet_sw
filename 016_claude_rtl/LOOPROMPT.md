@@ -7,7 +7,7 @@
 ## 0. 컨텍스트 고정값 (재발견 금지)
 - 빌드/게이트: `cargo build -p cli --locked` (바이너리 `target/debug/vita`) · 전체 게이트 `cargo test --workspace --locked` · `cargo clippy --workspace --all-targets --locked -- -D warnings` · `cargo fmt --all -- --check`.
 - 오라클: **iverilog 13.0** `/opt/homebrew/bin/iverilog` (compile `iverilog -g2012 -o x.vvp f.v`, run `vvp x.vvp`). ⚠️ iverilog는 **concurrent assertion(SVA)·clocking block을 거부** → 그 영역은 **vita-내부 차분**(검증된 등가식과 비교)이 teeth. macOS엔 `timeout` 없음 → SV 안에 `#N $finish` 워치독.
-- 불변식: **format_version 19**(루트 SchemaHash). frozen sim-ir 형상 변경만 bump(드묾·골든 재생성 동반). 그 외 전부 **IR-0**(엔진/elaborate-local·사이드카). **3-OS byte-identical**이 perf보다 우선.
+- 불변식: **format_version 19**(루트 SchemaHash=sim-ir SimIr). frozen sim-ir 형상 변경만 bump(드묾·골든 재생성 동반). 그 외 전부 **IR-0**(엔진/elaborate-local·사이드카). **3-OS byte-identical**이 perf보다 우선. ⚠️ **AST(hdl-ast) 필드 추가 = `.vu` 스키마 해시만 re-pin**(별개 게이트 `hdl-ast/tests/schema_hash.rs` EXPECTED+doc줄 갱신)·format_version은 불변(sim-ir 아님). 실패하면 새 해시로 갱신=의도된 변경.
 - 정본 문서: SPEC=`docs/preview/` · 잔여/전략=`docs/ROADMAP.md` · 이력=`docs/DEVLOG.md`.
 
 ## 1. 아이템 선택 (ROADMAP에서 1개)
@@ -27,7 +27,9 @@
 - 가능한 IR-0. 단일 write/엣지 등 **공통경로엔 청크포인트가 하나인지 먼저 확인**(인터프리터+VM 공유 funnel 여부). 모든 동치 경로를 빠짐없이 커버.
 - 비-대상 디자인은 byte-identical 유지(가드/사이드카=값 다를 때만).
 - **per-net 사이드카는 net 생성하는 ALL 경로에 populate**(이번 루프 CRITICAL): body decl·**ANSI `elaborate_ports`**·**non-ANSI `PortDecl` 루프**·heap-handle/dyn-array 분기가 전부 별개 add_net 사이트. body decl 한 곳만 채우면 `output wand` 등 포트 net이 사이드카 누락→default 처리로 silent-wrong. 구현 전 `grep add_net`로 사이트 전수 열거.
-- **staged 경로(velab→vrun) 패리티는 필수, "한계로 문서화"는 금지**(이번 루프 정정): 엔진-facing 사이드카가 one-shot `vita`만 타고 staged서 드롭되면 = 경로별 결과 불일치 = silent-wrong. `StagedExtraSidecars` 14th `.velab` 트레일러에 **append-only**로 추가(struct 필드·`from_sidecars` clone·vrun apply 3곳)+`staged_extra_sidecars_wire_shape_is_pinned` 픽스처 갱신+`REGEN_GOLDEN=1`로 핀 해시 재생성. out-of-band 트레일러라 **format_version bump 불필요**(선례=clocking/ca_delays). staged 회귀 테스트=`$fatal`-on-wrong로 exit-code 검증(`cli::run_vcmp/velab/vrun` lib API).
+- **staged 경로(velab→vrun) 패리티는 필수, "한계로 문서화"는 금지**(정정): 엔진-facing 사이드카가 one-shot `vita`만 타고 staged서 드롭되면 = 경로별 결과 불일치 = silent-wrong. `StagedExtraSidecars` 14th `.velab` 트레일러에 **append-only**로 추가(struct 필드·`from_sidecars` clone·vrun apply 3곳)+`staged_extra_sidecars_wire_shape_is_pinned` 픽스처 갱신+`REGEN_GOLDEN=1`로 핀 해시 재생성. out-of-band 트레일러라 **format_version bump 불필요**(선례=clocking/ca_delays). staged 회귀 테스트=`$fatal`-on-wrong로 exit-code 검증(`cli::run_vcmp/velab/vrun` lib API). **단 기존 사이드카(예: `ca_delays`)로 desugar하면 staged는 무료**(이미 trailer에 있음).
+- **"기존 path로 desugar" 슬라이스는 그 path가 도는 ALL elaborate 컨텍스트를 전수**(이번 루프 generate silent-wrong): 같은 desugar 함수(예: `elaborate_net_init_drivers`)가 module-item body 루프엔 연결됐어도 **generate-Logic phase·block-local 등 다른 컨텍스트의 dispatch arm이 누락**이면 그 컨텍스트서 driver가 silently drop. 신규 구문이 거기서 파스되면 pre-existing drop이 신규 silent-wrong로 노출. `grep '<desugar_fn>'`·`grep 'GenPhase::Logic'`로 호출 컨텍스트 전수 확인 → 누락 arm 추가(무delay pre-existing도 동시 수정됨).
+- **파서가 새 구문을 수용하면 그 파서 경로가 도는 ALL 스코프 점검**(이번 루프 procedural delay-swallow): 한 파서 함수(예: `parse_net_var`)가 module/generate/block/func/task/class 6곳서 호출되면, 새 구문이 elaborate가 **실제 처리하는 스코프**서만 수용되도록 플래그(`allow_*: bool`) 스코핑. 안 그러면 미처리 스코프서 silently 삼킴(=이전 parse-error를 silent로 격하). = §1 eligibility-set parity의 **스코프판**.
 
 ## 4. 사후 리뷰 = 적대 서브에이전트 (이번 루프서 CRITICAL 회귀 1건을 여기서 잡음=`output wand` 포트 net이 body-decl과 별개 생성 경로라 사이드카 누락→wire-x silent-wrong; differential이 포트/계층/generate 변형 probe로 발굴 — 절대 생략 금지)
 - **병렬 ≥2 서브에이전트**, 각 다른 렌즈: (a) **differential silent-wrong 헌트**(오라클로 수십 케이스 차분, byte-identity 위반·신규 divergence) (b) **로직 soundness**(staleness·reset 타이밍·완전성·통합지점=force/clocking/NBA/다른 write 경로). 4축(Architecture·Performance·Maintainability·Robustness) 포함.
@@ -38,6 +40,7 @@
 
 ## 5. 게이트
 - `cargo test --workspace --locked` 0 fail·카운트 증가(신규 회귀 테스트 포함, 오라클 핀; 오라클 없으면 vita-내부 차분 핀). clippy·fmt clean. format_version 의도대로 불변.
+- **"기존 구문으로 desugar" 슬라이스의 최강 회귀 테스트 = vita-내부 등가 differential**(이번 루프): 신규 형태가 등가 기존 형태와 **byte-identical stdout**임을 assert(`wire #3 w=a` ≡ `wire w; assign #3 w=a`). 오라클 비의존+pre-existing 양자(예: delay pre-drive z/x)에 견고=구현이 정확히 그 path로 가는지 직접 증명. 오라클 차분은 settled 값만(pre-drive 윈도 회피).
 - **실패 테스트 = 옛 버그 동작 인코딩 의심**(의미론/스케줄러 수정 시 흔함): 수정 중인 구문(예: `a=~a` 오실레이터·글리치)을 기존 테스트에서 grep해 **선제 점검**. 실패 테스트가 오라클과 불일치하면 **올바른 구조로 갱신**(삭제 말고)·주석에 옛 가정이 왜 틀렸는지 명시. (이번 루프: differential 리뷰가 옛-무한루프 테스트 2건 발굴.)
 
 ## 6. 문서
