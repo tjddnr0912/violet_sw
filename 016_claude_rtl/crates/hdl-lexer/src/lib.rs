@@ -362,6 +362,37 @@ pub enum TokenKind {
     #[token(">>>")]
     ShrA, // arithmetic right shift
 
+    // ---- increment / decrement + compound assignment (SV §11.4.1/§11.4.2) ----
+    // logos longest-match keeps these distinct from `+`/`=`/`<<`/`|=>` etc.
+    #[token("++")]
+    PlusPlus,
+    #[token("--")]
+    MinusMinus,
+    #[token("+=")]
+    PlusEq,
+    #[token("-=")]
+    MinusEq,
+    #[token("*=")]
+    StarEq,
+    #[token("/=")]
+    SlashEq,
+    #[token("%=")]
+    PercentEq,
+    #[token("&=")]
+    AmpEq,
+    #[token("|=")]
+    PipeEq,
+    #[token("^=")]
+    CaretEq,
+    #[token("<<=")]
+    ShlEq,
+    #[token(">>=")]
+    ShrEq,
+    #[token("<<<=")]
+    ShlAEq,
+    #[token(">>>=")]
+    ShrAEq,
+
     // ---- error sentinel (never produced by logos directly; built at iterator) ----
     /// Placed into the stream wherever a `LexError` occurred so the parser sees a
     /// concrete token at that position and can recover. Carries the reason; the

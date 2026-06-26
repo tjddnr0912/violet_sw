@@ -3839,6 +3839,172 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    /// Inverse of `expr_to_lvalue`: rebuild the read-side `Expr` for an already-
+    /// parsed lvalue. Used to desugar a compound assignment / increment
+    /// (`lvalue += e` → `lvalue = lvalue + e`; `lvalue++` → `lvalue = lvalue + 1`):
+    /// the lvalue appears on BOTH sides, so the rhs needs its expression form.
+    /// The lvalue↔expr select shapes are 1:1, so this is a structural clone.
+    /// A free associated fn (no `self`): it reads nothing from the parser state.
+    fn lvalue_to_expr(lv: &Lvalue) -> Expr {
+        match lv {
+            Lvalue::Ident(p) => Expr {
+                span: p.span,
+                kind: ExprKind::Ident(p.clone()),
+            },
+            Lvalue::BitSelect { base, index, span } => Expr {
+                span: *span,
+                kind: ExprKind::BitSelect {
+                    base: Box::new(Self::lvalue_to_expr(base)),
+                    index: index.clone(),
+                },
+            },
+            Lvalue::PartSelect {
+                base,
+                msb,
+                lsb,
+                span,
+            } => Expr {
+                span: *span,
+                kind: ExprKind::PartSelect {
+                    base: Box::new(Self::lvalue_to_expr(base)),
+                    msb: msb.clone(),
+                    lsb: lsb.clone(),
+                },
+            },
+            Lvalue::IndexedPart {
+                base,
+                offset,
+                width,
+                dir,
+                span,
+            } => Expr {
+                span: *span,
+                kind: ExprKind::IndexedPart {
+                    base: Box::new(Self::lvalue_to_expr(base)),
+                    offset: offset.clone(),
+                    width: width.clone(),
+                    dir: *dir,
+                },
+            },
+            Lvalue::Concat { parts, span } => Expr {
+                span: *span,
+                kind: ExprKind::Concat {
+                    parts: parts.iter().map(Self::lvalue_to_expr).collect(),
+                },
+            },
+            Lvalue::Error(span) => Expr {
+                span: *span,
+                kind: ExprKind::Error,
+            },
+        }
+    }
+
+    /// Map a compound-assignment / increment operator token to its binary op
+    /// (SV §11.4.1/§11.4.2). `None` for any non-compound token. `++`/`--` reuse
+    /// Add/Sub (with a synthesized `1`); `<<<=`/`>>>=` are the arithmetic shifts.
+    fn compound_assign_binop(t: TokenKind) -> Option<BinOp> {
+        use TokenKind as T;
+        Some(match t {
+            T::PlusEq | T::PlusPlus => BinOp::Add,
+            T::MinusEq | T::MinusMinus => BinOp::Sub,
+            T::StarEq => BinOp::Mul,
+            T::SlashEq => BinOp::Div,
+            T::PercentEq => BinOp::Mod,
+            T::AmpEq => BinOp::BitAnd,
+            T::PipeEq => BinOp::BitOr,
+            T::CaretEq => BinOp::BitXor,
+            T::ShlEq => BinOp::Shl,
+            T::ShrEq => BinOp::Shr,
+            T::ShlAEq => BinOp::AShl,
+            T::ShrAEq => BinOp::AShr,
+            _ => return None,
+        })
+    }
+
+    /// If the cursor is on a compound-assign (`+=`…) or postfix `++`/`--`, consume
+    /// it (plus the rhs for a compound op) and return the desugared blocking
+    /// assignment `lvalue = lvalue <op> operand` (`++`/`--` use a literal `1`).
+    /// Does NOT consume a trailing `;` (the caller owns that — statement vs
+    /// for-clause). `None` ⇒ not a compound/inc-dec operator (caller handles
+    /// `=`/`<=`/task-call). Side-effect-bearing EXPRESSION forms (`a = i++`) are
+    /// NOT parsed here — they stay a loud error (correct-or-loud).
+    ///
+    /// The lvalue appears on both sides, so any index/select sub-expression is
+    /// re-read on the rhs — but this is BYTE-IDENTICAL to the explicit
+    /// `lvalue = lvalue <op> e` it desugars to (verified by differential), so the
+    /// transform itself is exact. (A pure index reads the same value twice; a
+    /// side-effecting index like `arr[f()]` follows the SAME path as the explicit
+    /// form, where vita's pre-existing index-eval semantics already apply — that
+    /// quirk is out of scope here, not introduced by this desugar.)
+    fn try_compound_assign(&mut self, lhs: &Lvalue, start: Span) -> Option<Stmt> {
+        let t = self.peek()?;
+        let op = Self::compound_assign_binop(t)?;
+        let is_incdec = matches!(t, TokenKind::PlusPlus | TokenKind::MinusMinus);
+        self.bump(); // the operator
+        let operand = if is_incdec {
+            Expr {
+                span: self.prev_span(),
+                kind: ExprKind::IntLit {
+                    kind: IntLitKind::Decimal,
+                    raw: "1".to_string(),
+                },
+            }
+        } else {
+            self.expr(0)
+        };
+        let span = start.to(self.prev_span());
+        let lhs_expr = Self::lvalue_to_expr(lhs);
+        let rhs = Expr {
+            span,
+            kind: ExprKind::Binary {
+                op,
+                lhs: Box::new(lhs_expr),
+                rhs: Box::new(operand),
+            },
+        };
+        Some(Stmt::Blocking {
+            lhs: lhs.clone(),
+            delay: None,
+            event: None,
+            rhs,
+            span,
+        })
+    }
+
+    /// `++lvalue` / `--lvalue` (prefix). As a STATEMENT the pre/post distinction is
+    /// invisible (the value is discarded), so this desugars identically to
+    /// `lvalue = lvalue ± 1`. Cursor is on `++`/`--`. Does NOT consume `;`.
+    fn parse_pre_incdec(&mut self, start: Span) -> Stmt {
+        let t = self.peek().expect("caller checked ++/--");
+        let op = Self::compound_assign_binop(t).expect("caller checked ++/--");
+        self.bump(); // ++ / --
+        let lhs = self.parse_lvalue();
+        let span = start.to(self.prev_span());
+        let lhs_expr = Self::lvalue_to_expr(&lhs);
+        let one = Expr {
+            span,
+            kind: ExprKind::IntLit {
+                kind: IntLitKind::Decimal,
+                raw: "1".to_string(),
+            },
+        };
+        let rhs = Expr {
+            span,
+            kind: ExprKind::Binary {
+                op,
+                lhs: Box::new(lhs_expr),
+                rhs: Box::new(one),
+            },
+        };
+        Stmt::Blocking {
+            lhs,
+            delay: None,
+            event: None,
+            rhs,
+            span,
+        }
+    }
+
     // ───────────────────────── N5: functional coverage ─────────────────────
     /// `covergroup NAME [(args)] [@(event)]; ([LABEL:] coverpoint EXPR [{..}|iff..];)*
     /// endgroup` — a functional-coverage model. The header tail (args / sampling event)
@@ -6863,6 +7029,14 @@ impl<'t, 's> Parser<'t, 's> {
             Some(T::At) => self.parse_event_stmt(),
             Some(T::Arrow) => self.parse_trigger_stmt(),
             Some(T::LBrace) => self.parse_assign_or_call(), // {a,b} = … concat lvalue
+            // SV §11.4.2 prefix `++i;` / `--i;` (statement form). As a statement the
+            // pre/post distinction is invisible → `i = i ± 1`.
+            Some(T::PlusPlus) | Some(T::MinusMinus) => {
+                let start = self.cur_span();
+                let s = self.parse_pre_incdec(start);
+                self.expect(TokenKind::Semi, "';'");
+                s
+            }
             Some(T::Word(WordKind::Keyword(kw))) => match kw {
                 Kw::Begin => self.parse_seq_block(),
                 Kw::Fork => self.parse_par_block(),
@@ -6956,6 +7130,13 @@ impl<'t, 's> Parser<'t, 's> {
     fn parse_assign_or_call(&mut self) -> Stmt {
         let start = self.cur_span();
         let lhs = self.parse_lvalue();
+        // SV §11.4.1/§11.4.2 statement form: `lvalue += e;` / `lvalue++;` desugar to
+        // a blocking `lvalue = lvalue <op> …`. An expression-embedded `a = i++` is
+        // NOT handled (the expr parser has no `++`) → stays a loud parse error.
+        if let Some(stmt) = self.try_compound_assign(&lhs, start) {
+            self.expect(TokenKind::Semi, "';'");
+            return stmt;
+        }
         match self.peek() {
             Some(TokenKind::Eq) => {
                 self.bump();
@@ -8759,7 +8940,19 @@ impl<'t, 's> Parser<'t, 's> {
     /// A single blocking assignment WITHOUT a trailing `;` (for-init / for-step).
     fn parse_for_assign(&mut self) -> Stmt {
         let start = self.cur_span();
+        // for-init / for-step may use the SV §11.4 shorthands: `++i`, `i++`,
+        // `i += n`. Prefix form first (leads with the operator), then the lvalue
+        // forms (postfix / compound), else a plain `i = e`.
+        if matches!(
+            self.peek(),
+            Some(TokenKind::PlusPlus) | Some(TokenKind::MinusMinus)
+        ) {
+            return self.parse_pre_incdec(start);
+        }
         let lhs = self.parse_lvalue();
+        if let Some(stmt) = self.try_compound_assign(&lhs, start) {
+            return stmt;
+        }
         self.expect(TokenKind::Eq, "'=' in for-clause assignment");
         let rhs = self.expr(0);
         Stmt::Blocking {
