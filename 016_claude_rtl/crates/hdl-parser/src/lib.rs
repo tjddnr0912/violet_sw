@@ -7211,20 +7211,129 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         self.bump(); // for
         self.expect(TokenKind::LParen, "'(' after 'for'");
-        let init = Box::new(self.parse_for_assign()); // `i = 0`, no trailing ';'
+        // SV §12.7.1: a TYPED loop-variable declaration in the for-init
+        // (`for (int i = 0; …)`). When a type keyword leads the init we parse a
+        // local `NetVarDecl` and WRAP the whole For in an (unlabeled) block whose
+        // `decls` carries the loop-var decl, so `hoist_block_local_nets` flattens
+        // it to a module net just like any other block-local. v1 elaborate has NO
+        // per-block scoping (block-locals share the module namespace), so a decl
+        // named like an outer variable would be SKIPPED and the loop would alias
+        // / clobber that outer var (silent-wrong vs iverilog, where the for-init
+        // variable is implicitly local). So — exactly as `parse_foreach` does for
+        // its index — we rename the loop variable to a synthetic UNIQUE name and
+        // rewrite its references inside the for's init/cond/step/body. A nested
+        // for / foreach reusing the same name renames ITS subtree first, so this
+        // pass only ever sees its own occurrences (the rename helper's block arm
+        // also stops at any inner redeclaration). An unlabeled wrapping block
+        // lowers byte-identically to lowering the For alone.
+        let typed_init = if self.net_var_kind().is_some() {
+            self.parse_for_typed_init()
+        } else {
+            None
+        };
+        let init = Box::new(match &typed_init {
+            // The synthesized `i = init` assign (typed init always has one).
+            Some((_, init_assign, _)) => init_assign.clone(),
+            None => self.parse_for_assign(), // `i = 0`, no trailing ';'
+        });
         self.expect(TokenKind::Semi, "';' after for-init");
         let cond = self.expr(0);
         self.expect(TokenKind::Semi, "';' after for-cond");
         let step = Box::new(self.parse_for_assign()); // `i = i+1`, no trailing ';'
         self.expect(TokenKind::RParen, "')'");
         let body = Box::new(self.parse_statement());
-        Stmt::For {
+        let span = start.to(self.prev_span());
+
+        let mut for_stmt = Stmt::For {
             init,
             cond,
             step,
             body,
-            span: start.to(self.prev_span()),
+            span,
+        };
+
+        if let Some((decl, _, orig_name)) = typed_init {
+            // Rewrite every reference to the original loop-var name across the
+            // whole For → the synthetic name. The For's `init` was synthesized to
+            // already carry the synthetic name (no `orig_name` occurrences), so the
+            // rename only rebinds cond/step/body. `rename_ident_in_stmt`'s block
+            // arm stops at any inner redeclaration, so a nested block/loop that
+            // shadows the name keeps its own binding.
+            let synth = decl.names[0].name.name.clone();
+            rename_ident_in_stmt(&mut for_stmt, &orig_name.name, &synth);
+            Stmt::Block {
+                label: None,
+                decls: vec![decl],
+                stmts: vec![for_stmt],
+                span,
+            }
+        } else {
+            for_stmt
         }
+    }
+
+    /// SV §12.7.1 typed for-init: `int i = 0` (or `integer` / `byte` /
+    /// `logic [3:0]` / …). Parses the loop-variable declaration WITHOUT consuming
+    /// the trailing `;` (the for-clause owns that). The declared variable is given
+    /// a synthetic UNIQUE name (`__forvar_<name>_<span>`) so it never aliases a
+    /// same-named outer var under v1's flat block-local namespace; the original
+    /// name is returned so `parse_for` can rewrite the cond/step/body references.
+    /// Returns the renamed `NetVarDecl`, the synthesized `i = init` blocking
+    /// assign (already pointing at the synthetic name), and the ORIGINAL `Ident`.
+    /// `None` when there is no `=` initializer to seed the loop (loud).
+    fn parse_for_typed_init(&mut self) -> Option<(NetVarDecl, Stmt, Ident)> {
+        let start = self.cur_span();
+        let kind = self.net_var_kind().unwrap();
+        self.bump(); // the type keyword
+        let signed = self.signed_eff(Some(kind));
+        let range = self.opt_range();
+        let packed = self.opt_packed_dims();
+        // SV §12.7.1 allows ONE loop variable; parse a single declarator (no
+        // comma-list) so a stray comma stays a loud error rather than being
+        // silently swallowed as a second for-init variable.
+        let n_start = self.cur_span();
+        let orig = self.ident()?;
+        let init_expr = if self.eat(TokenKind::Eq) {
+            self.expr(0)
+        } else {
+            // No initializer — the For has no defined start value. Emit loud and
+            // bail rather than fabricate a `0`; the caller's `None` arm then falls
+            // back to the plain-assign path (which errors on the leftover token).
+            self.error("'=' initializer in a for-loop variable declaration");
+            return None;
+        };
+        let synth = Ident {
+            name: format!("__forvar_{}_{}", orig.name, start.lo),
+            span: orig.span,
+        };
+        let decl_span = start.to(self.prev_span());
+        let decl = NetVarDecl {
+            kind,
+            signed,
+            range,
+            packed,
+            names: vec![DeclName {
+                name: synth.clone(),
+                unpacked: Vec::new(),
+                init: None, // seeded via the synthesized init assign below, not a static var-init
+                span: n_start.to(self.prev_span()),
+            }],
+            lifetime: None,
+            class_type: None,
+            class_args: Vec::new(),
+            span: decl_span,
+        };
+        let init_assign = Stmt::Blocking {
+            lhs: Lvalue::Ident(HierPath {
+                segments: vec![synth.clone()],
+                span: synth.span,
+            }),
+            delay: None,
+            event: None,
+            rhs: init_expr,
+            span: n_start.to(self.prev_span()),
+        };
+        Some((decl, init_assign, orig))
     }
 
     /// A single blocking assignment WITHOUT a trailing `;` (for-init / for-step).
