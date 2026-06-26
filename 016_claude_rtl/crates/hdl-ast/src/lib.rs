@@ -856,6 +856,12 @@ pub enum Stmt {
         /// placeholders and elaborate's `synth_prop_expr` reduces the tree to a
         /// per-clock boolean violation check. Pure IR-0 (no sim-ir change).
         prop_expr: Option<PropExpr>,
+        /// Sequence/property LOCAL VARIABLE declarations (slice N2c, IEEE §16.10):
+        /// the `int x;` at the body start. Empty (the common case) keeps the
+        /// byte-identical lowering — the data-tracking machinery only activates when
+        /// a declaration (and a `MatchItem` capture) is present. Out-of-band of the
+        /// frozen sim-ir (elaborate lowers it to extra regs + NBA shifts, pure IR-0).
+        local_vars: Vec<SvaLocalDecl>,
         span: Span,
     },
     // procedural-continuous family (§2.7):
@@ -1000,6 +1006,41 @@ pub enum Sequence {
         args: Vec<Expr>,
         span: Span,
     },
+    /// A sequence MATCH-ITEM with local-variable assignments (slice N2c, IEEE
+    /// 1800-2017 §16.10): `(b, x = e {, y = f})` — a boolean term `b` that, when it
+    /// matches, CAPTURES one or more local variables. The capture is a
+    /// data-tracking idiom (`(req, d=data) ##1 grant |-> (rdata == d)`): the value
+    /// is read at a LATER term/consequent within the same match attempt. Elaborate
+    /// lowers a FIXED-DELAY single-capture carrier to a parallel DATA shift register
+    /// shifted in lockstep with the liveness pipeline (the shift register has at
+    /// most one attempt per stage → no collision); ranged delays (which let two
+    /// attempts CONVERGE on one stage, a data collision) are loud-rejected.
+    MatchItem {
+        seq: Box<Sequence>,
+        /// `(name, expr)` captures — the assigned local variable(s) and the value
+        /// expression captured when `seq` matches. v1 supports a single capture.
+        assigns: Vec<(Ident, Expr)>,
+    },
+}
+
+/// A sequence/property LOCAL VARIABLE declaration (slice N2c, IEEE 1800-2017
+/// §16.10): a typed `int x;` / `bit [7:0] y;` at the body start of a
+/// `property`/`assert property`. The declared width/sign governs the synthesized
+/// DATA-tracking shift register storage and the read. `init` is the optional `= e`
+/// (carried for completeness; the v1 subset loud-rejects a non-`None` initializer
+/// since it would need per-attempt re-seeding state).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
+pub struct SvaLocalDecl {
+    pub name: Ident,
+    /// Storage width in bits, resolved at parse time from the type keyword
+    /// (`int`/`integer` = 32, `byte` = 8, `shortint` = 16, `longint` = 64,
+    /// `bit`/`logic`/`reg` = 1 unless a packed range widens it).
+    pub width: u32,
+    /// Signedness: `int`/`byte`/`shortint`/`longint`/`integer` are signed;
+    /// `bit`/`logic`/`reg` are unsigned (matching the 2-state/4-state defaults).
+    pub signed: bool,
+    pub init: Option<Expr>,
+    pub span: Span,
 }
 
 /// SVA property expression (slice N2d) — the property-level `and`/`or` /
@@ -1094,6 +1135,9 @@ pub struct PropDecl {
     /// Property-expression tree (slice N2d) — see [`Stmt::ConcurrentAssert`]'s
     /// `prop_expr`. `None` = a flat implication (the byte-identical path).
     pub prop_expr: Option<PropExpr>,
+    /// Sequence/property LOCAL VARIABLE declarations (slice N2c) — see
+    /// [`Stmt::ConcurrentAssert`]'s `local_vars`. Empty keeps the byte-identical path.
+    pub local_vars: Vec<SvaLocalDecl>,
     pub span: Span,
 }
 /// SVA repetition operator (slices S4/S5/S8).

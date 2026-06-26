@@ -1037,6 +1037,10 @@ struct PendingSva {
     /// recognise the legal tail-`|=>` self-reference (recursion) during synthesis.
     /// `None` for an inline `assert property(...)` (no name ⇒ no recursion site).
     prop_self_name: Option<String>,
+    /// Sequence/property LOCAL VARIABLE declarations (slice N2c, IEEE §16.10). Empty
+    /// (the common case) keeps the byte-identical lowering; a non-empty list routes
+    /// the assertion to `synth_local_var_assert` (the data-tracking shift register).
+    local_vars: Vec<ast::SvaLocalDecl>,
     span: ast::Span,
 }
 
@@ -1101,6 +1105,16 @@ enum SeqTerm {
 /// optional already-reduced (1-bit) `throughout` guard that must hold at every
 /// clock of the window.
 type SeqAlt = (Vec<(SeqTerm, SeqHop)>, Option<ast::Expr>);
+
+/// A flattened FIXED-DELAY antecedent term carrying sequence local-variable
+/// captures (slice N2c): the boolean term, the `##d` hop BEFORE it (0 for the first
+/// term), and the `(name, expr)` captures triggered when the term matches. Built by
+/// `flatten_lv_antecedent`, consumed by `synth_local_var_assert`.
+struct FlatLvTerm {
+    term: ast::Expr,
+    hop: u32,
+    captures: Vec<(ast::Ident, ast::Expr)>,
+}
 
 /// Build a `name <= rhs;` NBA to an already-named synthesized reg.
 fn sva_nb(name: &str, rhs: ast::Expr, sp: ast::Span) -> ast::Stmt {
@@ -1298,6 +1312,7 @@ fn seq_span(seq: &ast::Sequence) -> ast::Span {
         ast::Sequence::Within { seq1, .. } => seq_span(seq1),
         ast::Sequence::Clocked { seq, .. } => seq_span(seq),
         ast::Sequence::Instance { span, .. } => *span,
+        ast::Sequence::MatchItem { seq, .. } => seq_span(seq),
     }
 }
 
@@ -1312,6 +1327,24 @@ fn seq_has_clocked(seq: &ast::Sequence) -> bool {
         ast::Sequence::Repeat { seq, .. } => seq_has_clocked(seq),
         ast::Sequence::Throughout { seq, .. } => seq_has_clocked(seq),
         ast::Sequence::Within { seq1, seq2 } => seq_has_clocked(seq1) || seq_has_clocked(seq2),
+        ast::Sequence::MatchItem { seq, .. } => seq_has_clocked(seq),
+    }
+}
+
+/// True iff `seq` contains a local-variable CAPTURE `(b, x = e)` anywhere (slice
+/// N2c) — used to route an assertion carrying captures to `synth_local_var_assert`
+/// (the data-tracking shift register) instead of the byte-identical flat path.
+fn seq_has_match_item(seq: &ast::Sequence) -> bool {
+    match seq {
+        ast::Sequence::MatchItem { .. } => true,
+        ast::Sequence::Boolean(_) | ast::Sequence::Instance { .. } => false,
+        ast::Sequence::Delay { lhs, rhs, .. } => seq_has_match_item(lhs) || seq_has_match_item(rhs),
+        ast::Sequence::Repeat { seq, .. } => seq_has_match_item(seq),
+        ast::Sequence::Throughout { seq, .. } => seq_has_match_item(seq),
+        ast::Sequence::Within { seq1, seq2 } => {
+            seq_has_match_item(seq1) || seq_has_match_item(seq2)
+        }
+        ast::Sequence::Clocked { seq, .. } => seq_has_match_item(seq),
     }
 }
 
@@ -1363,6 +1396,10 @@ fn strip_redundant_clocks(seq: &ast::Sequence, prop_clock: &ast::Sensitivity) ->
         ast::Sequence::Within { seq1, seq2 } => ast::Sequence::Within {
             seq1: Box::new(strip_redundant_clocks(seq1, prop_clock)),
             seq2: Box::new(strip_redundant_clocks(seq2, prop_clock)),
+        },
+        ast::Sequence::MatchItem { seq, assigns } => ast::Sequence::MatchItem {
+            seq: Box::new(strip_redundant_clocks(seq, prop_clock)),
+            assigns: assigns.clone(),
         },
         ast::Sequence::Boolean(_) | ast::Sequence::Instance { .. } => seq.clone(),
     }
@@ -1453,6 +1490,69 @@ fn subst_expr(e: &ast::Expr, map: &BTreeMap<String, ast::Expr>) -> ast::Expr {
     ast::Expr { kind, span: sp }
 }
 
+/// True iff `e` reads a bare single-segment identifier named `name` anywhere (slice
+/// N2c — detect a local-variable READ). Conservative: only a single-segment `Ident`
+/// counts (a hierarchical `u.name` is a different signal). Recurses structurally.
+fn expr_reads_ident(e: &ast::Expr, name: &str) -> bool {
+    use ast::ExprKind as K;
+    match &e.kind {
+        K::Ident(p) => p.segments.len() == 1 && p.segments[0].name == name,
+        K::Unary { operand, .. } => expr_reads_ident(operand, name),
+        K::Binary { lhs, rhs, .. } => expr_reads_ident(lhs, name) || expr_reads_ident(rhs, name),
+        K::Ternary {
+            cond,
+            then_e,
+            else_e,
+        } => {
+            expr_reads_ident(cond, name)
+                || expr_reads_ident(then_e, name)
+                || expr_reads_ident(else_e, name)
+        }
+        K::BitSelect { base, index } => {
+            expr_reads_ident(base, name) || expr_reads_ident(index, name)
+        }
+        K::PartSelect { base, msb, lsb } => {
+            expr_reads_ident(base, name)
+                || expr_reads_ident(msb, name)
+                || expr_reads_ident(lsb, name)
+        }
+        K::IndexedPart {
+            base,
+            offset,
+            width,
+            ..
+        } => {
+            expr_reads_ident(base, name)
+                || expr_reads_ident(offset, name)
+                || expr_reads_ident(width, name)
+        }
+        K::Concat { parts } => parts.iter().any(|x| expr_reads_ident(x, name)),
+        K::Replicate { count, value } => {
+            expr_reads_ident(count, name) || value.iter().any(|x| expr_reads_ident(x, name))
+        }
+        K::Call { args, .. } | K::SysCall { args, .. } => {
+            args.iter().any(|x| expr_reads_ident(x, name))
+        }
+        K::Paren { inner } => expr_reads_ident(inner, name),
+        K::MinTypMax { min, typ, max } => {
+            expr_reads_ident(min, name)
+                || expr_reads_ident(typ, name)
+                || expr_reads_ident(max, name)
+        }
+        _ => false,
+    }
+}
+
+/// Substitute every bare single-segment identifier named `name` in `e` with a clone
+/// of `repl` (slice N2c — substitute a local-variable READ with its data register
+/// read / captured value). Structural rebuild so the substitution reaches nested
+/// operands. A hierarchical `u.name` is NOT a match (a different signal).
+fn subst_ident_expr(e: &ast::Expr, name: &str, repl: &ast::Expr) -> ast::Expr {
+    let mut map = BTreeMap::new();
+    map.insert(name.to_string(), repl.clone());
+    subst_expr(e, &map)
+}
+
 /// Substitute SVA formals (slice A1) through a `Sequence`, recursing into the
 /// boolean leaves / guards. A nested named-sequence `Instance` whose NAME is itself
 /// a formal bound to a bare-ident actual is renamed; its args are substituted too.
@@ -1506,6 +1606,13 @@ fn subst_sequence(seq: &ast::Sequence, map: &BTreeMap<String, ast::Expr>) -> ast
                 span: *span,
             }
         }
+        S::MatchItem { seq, assigns } => S::MatchItem {
+            seq: Box::new(subst_sequence(seq, map)),
+            assigns: assigns
+                .iter()
+                .map(|(n, v)| (n.clone(), subst_expr(v, map)))
+                .collect(),
+        },
     }
 }
 
@@ -17169,6 +17276,20 @@ impl<'s> Elaborator<'s> {
                 );
                 continue;
             }
+            // Sequence/property LOCAL VARIABLES (slice N2c, IEEE §16.10): a property
+            // that declares a local var OR carries a `(b, x = e)` capture routes to the
+            // data-tracking synthesis (a parallel DATA shift register, shifted in
+            // lockstep with the liveness pipeline). Dispatched BEFORE the prop_expr /
+            // cross-clock / flat paths so a capture never reaches them. Guarded so an
+            // assertion with NO local vars and NO capture is byte-identical (the common
+            // case allocates ZERO data-tracking nets).
+            if !sva.local_vars.is_empty()
+                || seq_has_match_item(&sva.ante)
+                || seq_has_match_item(&sva.cons)
+            {
+                self.synth_local_var_assert(sva, sp);
+                continue;
+            }
             // Property-level operators (slice N2d + SVA-REST): a `prop_expr` tree
             // (the flat `ante/kind/cons` fields hold placeholders). Dispatched FIRST
             // so the placeholder fields never reach the cross-clock / flat paths. A
@@ -17416,6 +17537,406 @@ impl<'s> Elaborator<'s> {
             self.push_process(proc);
         }
         self.in_assert_synth = saved_synth;
+    }
+
+    /// A fresh DATA-tracking register (slice N2c) of the given width/sign, X-init
+    /// (`fresh_sva_reg` semantics — an X stage never spuriously matches a `==`
+    /// consequent before any value has been captured). Used for the parallel data
+    /// shift register that carries a captured local-variable value alongside the
+    /// liveness pipeline.
+    fn fresh_sva_data_reg(&mut self, width: u32, signed: bool) -> String {
+        let w = width.max(1);
+        let name = format!("__sva_lv_{}", self.nets.len());
+        let nv = ir::NetVar {
+            kind: ir::NetKind::Reg,
+            width: w,
+            msb: w.saturating_sub(1),
+            lsb: 0,
+            signed,
+            array_len: 1,
+            dir: ir::PortDir::Internal,
+            init: default_init(ast::NetVarKind::Reg, w),
+        };
+        self.add_net(&name, nv);
+        name
+    }
+
+    /// Synthesize a concurrent assertion carrying a sequence/property LOCAL VARIABLE
+    /// (slice N2c, IEEE 1800-2017 §16.10): the data-tracking idiom
+    /// `(req, d=data) ##1 grant |-> (rdata == d)` — capture a value at one term and
+    /// read it at a LATER term/consequent within the SAME match attempt.
+    ///
+    /// CORRECTNESS (why a single register per var, no thread table): the liveness
+    /// pipeline is a SHIFT register — stage k is the attempt that started k clocks
+    /// ago. The seed boolean fires at most ONCE per clock, so each stage holds at
+    /// most one attempt. A PARALLEL data register `c[0] <= data; c[j] <= c[j-1]`
+    /// shifted in lockstep carries the captured value with no collision between
+    /// concurrent (pipelined) attempts — they occupy different time-stages of the
+    /// same register. The ONLY collision is CONVERGENCE: a RANGED delay lets two
+    /// attempts reach one stage via different paths → two data values collide → LOUD.
+    ///
+    /// SCOPE (correct-or-loud): a SINGLE var, captured at exactly one FIXED-DELAY
+    /// term (`##d` / fixed `[*n]`-free) on a SINGLE clock, read in the consequent.
+    /// Any range, cross-clock, sequence consequent, multiple write, read-before-
+    /// capture, disjunction/throughout/within, or `disable iff` is loud-rejected.
+    fn synth_local_var_assert(&mut self, sva: PendingSva, sp: ast::Span) {
+        // ── 0. Out-of-scope fast loud-rejects ──────────────────────────────────
+        // A `prop_expr` cannot reach here (routed before the local-var gate), but a
+        // multi-clock consequent / cross-clock antecedent / `disable iff` would need
+        // the data registers threaded through extra handoff/reset machinery — loud.
+        if sva.cons_clock.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a multi-clock (`|=> @(c2)`) consequent with a sequence local variable \
+                 is unsupported in this subset",
+            );
+            return;
+        }
+        if seq_has_clocked(&sva.ante) || seq_has_clocked(&sva.cons) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a cross-clock (`@(c2)`) sequence with a local variable is unsupported \
+                 in this subset",
+            );
+            return;
+        }
+        if sva.disable_iff.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "`disable iff` combined with a sequence local variable is unsupported \
+                 in this subset",
+            );
+            return;
+        }
+        // The consequent must be a plain boolean (a SEQUENCE consequent would need the
+        // data shifted through the obligation chain too — out of subset).
+        let ast::Sequence::Boolean(cons_e) = &sva.cons else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a SEQUENCE consequent with a sequence local variable is unsupported \
+                 in this subset (use a boolean consequent `|-> (rdata == d)`)",
+            );
+            return;
+        };
+
+        // ── 1. Flatten the antecedent to an ordered fixed-delay term list ───────
+        // Each term is (boolean, hop-before-term, captures). A range / goto / nonconsec
+        // / repetition / within / throughout / nested capture-under-repeat is loud.
+        let mut flat: Vec<FlatLvTerm> = Vec::new();
+        if !self.flatten_lv_antecedent(&sva.ante, &mut flat) {
+            return; // flatten already emitted the loud diagnostic
+        }
+        if flat.is_empty() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "an empty sequence local-variable antecedent is unsupported",
+            );
+            return;
+        }
+
+        // ── 2. Resolve the SINGLE captured var (name → declared width/sign) ─────
+        // Collect every capture across the flattened terms. v1 supports exactly ONE
+        // write to ONE variable; a multiple-write (same or different var) is a
+        // convergence/aliasing hazard → loud.
+        let mut captures: Vec<(usize, String, ast::Expr)> = Vec::new(); // (term_idx, name, expr)
+        for (idx, t) in flat.iter().enumerate() {
+            for (n, e) in &t.captures {
+                captures.push((idx, n.name.clone(), e.clone()));
+            }
+        }
+        if captures.len() != 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "exactly one local-variable capture is supported in this subset \
+                 (multiple writes converge / alias — unsupported)",
+            );
+            return;
+        }
+        let (cap_idx, cap_name, cap_expr) = captures.into_iter().next().unwrap();
+        // The var must be DECLARED (so its width/sign govern the data register). An
+        // undeclared capture target is loud (never a silent default width).
+        let Some(decl) = sva.local_vars.iter().find(|d| d.name.name == cap_name) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "sequence local variable `{cap_name}` is captured but not declared \
+                     (add a `<type> {cap_name};` at the property body start)"
+                ),
+            );
+            return;
+        };
+        if decl.init.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "an initialized sequence local variable (`int x = e;`) is unsupported \
+                 in this subset",
+            );
+            return;
+        }
+        // The var must NOT be read BEFORE its capture: a read in a term at or before
+        // the capture term (or in the consequent for an antecedent-only-capture this
+        // is always after) — only later-term / consequent reads are well-defined. We
+        // support reads in the CONSEQUENT only (a read in a later antecedent BOOLEAN
+        // term is loud — its data-stage substitution is a follow-on). Reject a read in
+        // ANY antecedent term (including before the capture).
+        for t in flat.iter() {
+            if expr_reads_ident(&t.term, &cap_name) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "sequence local variable `{cap_name}` read inside an antecedent \
+                         term is unsupported in this subset (read it in the consequent)"
+                    ),
+                );
+                return;
+            }
+            // A self-referential capture `(b, x = f(x))` has no defined value (x is
+            // not yet captured at its own term). Reject it with a targeted message
+            // (otherwise the unresolved `x` would surface as a misleading
+            // undeclared-net E3010).
+            if t.captures
+                .iter()
+                .any(|(_, e)| expr_reads_ident(e, &cap_name))
+            {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "sequence local variable `{cap_name}` read inside its own capture \
+                         expression `(b, {cap_name} = … {cap_name} …)` is unsupported \
+                         (a self-referential capture has no defined value)"
+                    ),
+                );
+                return;
+            }
+        }
+        // The consequent MUST read the var (otherwise the capture is dead — that is not
+        // wrong, but it signals a likely typo; still, a dead capture is harmless, so we
+        // do not require it). Substitution below is a no-op if absent.
+
+        // ── 3. Build liveness + parallel data shift register in lockstep ────────
+        // The liveness pipeline mirrors `synth_seq_pipeline`'s fixed-delay path. The
+        // captured value is COMBINATIONAL at the capture term's clock; each liveness
+        // `seq_delay_reg` shift AFTER the capture is mirrored by ONE data register so
+        // the value travels in lockstep. `data_chain[k]` reads = the captured value
+        // delayed by (k+1) clocks; after S shifts from capture to completion, the read
+        // = `data_chain[S-1]` (delay S) — or the COMBINATIONAL captured value when
+        // S == 0 (capture and completion are the SAME clock, e.g. an overlap
+        // single-term antecedent). This is the load-bearing alignment: the data read
+        // stage = the liveness shift count from the capture term to the read site.
+        let mut regs = SvaRegs::default();
+        let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
+        let cap_width = decl.width;
+        let cap_signed = decl.signed;
+        // The combinational captured value at its term's clock (the seed of the chain).
+        let cap_value = self.rewrite_sampled(&cap_expr, &mut regs);
+
+        // Liveness seed = |term0 (combinational, this clock).
+        let term0 = self.rewrite_sampled(&flat[0].term, &mut regs);
+        let mut cur = sva_unary(ast::UnOp::RedOr, term0, sp);
+        // `data_chain[k]` read = captured value delayed by (k+1) clocks. Empty until a
+        // shift occurs AFTER the capture term. `capturing` becomes true once the
+        // capture term has been visited (the seed of the chain is `cap_value`).
+        let mut data_chain: Vec<String> = Vec::new();
+        let mut capturing = cap_idx == 0;
+        // The value feeding the NEXT data shift: combinational `cap_value` for the
+        // first shift after capture, else a read of the chain tail.
+        let data_feed = |chain: &[String], cap: &ast::Expr| -> ast::Expr {
+            match chain.last() {
+                Some(r) => sva_ident_expr(r, sp),
+                None => cap.clone(),
+            }
+        };
+
+        // Walk the remaining terms applying hops (shifts) + the boolean AND, mirroring
+        // each liveness shift onto the data chain once capturing has begun.
+        for (idx, t) in flat.iter().enumerate().skip(1) {
+            let hop = t.hop;
+            for _ in 0..hop {
+                cur = self.seq_delay_reg(cur, &mut pipeline_nbas, sp);
+                if capturing {
+                    // Shift the data one stage in lockstep with the liveness shift.
+                    let feed = data_feed(&data_chain, &cap_value);
+                    let next = self.fresh_sva_data_reg(cap_width, cap_signed);
+                    pipeline_nbas.push(sva_nb(&next, feed, sp));
+                    data_chain.push(next);
+                }
+            }
+            // The capture happens at term `cap_idx`'s OWN clock (after its hops): from
+            // here on, shifts carry the captured value.
+            if idx == cap_idx {
+                capturing = true;
+            }
+            // Apply the boolean term to the liveness activation.
+            let tb = self.rewrite_sampled(&t.term, &mut regs);
+            cur = sva_binary(
+                ast::BinOp::BitAnd,
+                cur,
+                sva_unary(ast::UnOp::RedOr, tb, sp),
+                sp,
+            );
+        }
+        let ante = cur;
+
+        // ── 4. Resolve the data-read value at the completion stage ──────────────
+        // The chain tail reads = the captured value delayed by `data_chain.len()`
+        // clocks = exactly the number of shifts from the capture term to the LAST
+        // term (the completion). For `|->` (overlap) the consequent reads at the
+        // completion clock → that tail (or the combinational `cap_value` when the
+        // chain is empty: capture == completion). For `|=>` (non-overlap) the
+        // consequent is one clock later → register the read value ONE more stage.
+        let read_value = match sva.kind {
+            ast::ImplicationKind::Overlap => data_feed(&data_chain, &cap_value),
+            ast::ImplicationKind::NonOverlap => {
+                // One extra shift stage so the data survives to the consequent clock.
+                let feed = data_feed(&data_chain, &cap_value);
+                let extra = self.fresh_sva_data_reg(cap_width, cap_signed);
+                pipeline_nbas.push(sva_nb(&extra, feed, sp));
+                sva_ident_expr(&extra, sp)
+            }
+        };
+
+        // ── 5. Substitute the var read in the consequent, then lower the check ──
+        let cons_sub = subst_ident_expr(cons_e, &cap_name, &read_value);
+        let cons_rw = self.rewrite_sampled(&cons_sub, &mut regs);
+
+        // `cond_lhs` is the antecedent match (overlap) or a 1-clock-delayed pend reg
+        // (non-overlap), mirroring the flat path.
+        let (cond_lhs, pending_nba) = match sva.kind {
+            ast::ImplicationKind::Overlap => (ante, None),
+            ast::ImplicationKind::NonOverlap => {
+                let pend = self.fresh_sva_reg(1, "pend");
+                let nba = sva_nb(&pend, sva_unary(ast::UnOp::RedOr, ante, sp), sp);
+                (sva_ident_expr(&pend, sp), Some(nba))
+            }
+        };
+        // §16.13.5: the consequent matches only when DEFINITELY true (X/Z = non-match).
+        let cons_match = sva_match(cons_rw, sp);
+        let violation = sva_binary(
+            ast::BinOp::LogAnd,
+            cond_lhs,
+            sva_unary(ast::UnOp::LogNot, cons_match, sp),
+            sp,
+        );
+        let fail_stmt = match sva.fail {
+            Some(s) => self.rewrite_sampled_stmt(&s, &mut regs),
+            None => sva_error_stmt(sp),
+        };
+        let if_fail = ast::Stmt::If {
+            cond: violation,
+            then_s: Box::new(fail_stmt),
+            else_s: None,
+            span: sp,
+        };
+        // A pass action is supported (non-vacuous success); but to keep this slice
+        // tight we loud-reject a pass action (its success signal would need the same
+        // completion-stage gating — a follow-on).
+        if sva.pass.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a `pass` action block with a sequence local variable is unsupported \
+                 in this subset",
+            );
+            return;
+        }
+        let mut stmts = vec![if_fail];
+        stmts.extend(regs.nbas);
+        stmts.extend(pipeline_nbas);
+        if let Some(nba) = pending_nba {
+            stmts.push(nba);
+        }
+        let body = if stmts.len() == 1 {
+            stmts.pop().unwrap()
+        } else {
+            ast::Stmt::Block {
+                label: None,
+                decls: Vec::new(),
+                stmts,
+                span: sp,
+            }
+        };
+        let pb = ast::ProceduralBlock {
+            kind: ast::ProcKind::Always,
+            sensitivity: Some(sva.clock),
+            body: Box::new(body),
+            span: sp,
+        };
+        let proc = self.lower_proc_block(&pb);
+        self.push_process(proc);
+    }
+
+    /// Flatten a fixed-delay local-variable antecedent into an ordered list of
+    /// (boolean-term, hop-before-term, captures). Returns `false` (after a loud
+    /// diagnostic) for any out-of-subset form: a ranged / unbounded delay, a
+    /// repetition, goto/nonconsec, within/throughout, a nested re-clock, or a capture
+    /// under a repetition. The first term's hop is 0.
+    fn flatten_lv_antecedent(&mut self, seq: &ast::Sequence, out: &mut Vec<FlatLvTerm>) -> bool {
+        match seq {
+            ast::Sequence::Boolean(e) => {
+                out.push(FlatLvTerm {
+                    term: e.clone(),
+                    hop: if out.is_empty() { 0 } else { 1 },
+                    captures: Vec::new(),
+                });
+                true
+            }
+            ast::Sequence::MatchItem { seq, assigns } => {
+                // The match-item's inner sequence must be a plain boolean (a capture on
+                // a multi-term / repeated sub-sequence is out of subset).
+                let ast::Sequence::Boolean(e) = &**seq else {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a local-variable capture requires a boolean term `(b, x = e)` \
+                         in this subset",
+                    );
+                    return false;
+                };
+                out.push(FlatLvTerm {
+                    term: e.clone(),
+                    hop: if out.is_empty() { 0 } else { 1 },
+                    captures: assigns.clone(),
+                });
+                true
+            }
+            ast::Sequence::Delay { min, max, lhs, rhs } => {
+                // FIXED delay only: `##d` (min == max). A RANGE `##[m:n]` / unbounded
+                // `##[m:$]` lets two attempts CONVERGE on one completion stage (a data
+                // collision) → loud, the cardinal correctness boundary of this slice.
+                if *max != Some(*min) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a RANGED delay (`##[m:n]` / `##[m:$]`) in a sequence carrying a \
+                         local variable is unsupported (two attempts converge on one \
+                         data stage — a collision) in this subset",
+                    );
+                    return false;
+                }
+                if !self.flatten_lv_antecedent(lhs, out) {
+                    return false;
+                }
+                // The first term of `rhs` is reached via the `##min` hop. Flatten rhs
+                // into a temp, set its first term's hop to `min`, and append.
+                let mark = out.len();
+                if !self.flatten_lv_antecedent(rhs, out) {
+                    return false;
+                }
+                if let Some(first) = out.get_mut(mark) {
+                    first.hop = *min;
+                }
+                true
+            }
+            // Every other form (Repeat / Throughout / Within / Clocked / Instance)
+            // carries either a convergence hazard (ranges/repetition), a multi-stage
+            // guard, or no oracle — loud (never a silent capture drop).
+            _ => {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a sequence local variable is only supported on a FIXED-DELAY \
+                     boolean sequence (no repetition / range / goto / within / \
+                     throughout / re-clock) in this subset",
+                );
+                false
+            }
+        }
     }
 
     /// Synthesize the boolean MATCH-THIS-CLOCK expression of a sequence antecedent:
@@ -18640,6 +19161,24 @@ impl<'s> Elaborator<'s> {
                     vec![(SeqTerm::Bool(sva_zero(seq_span(seq))), SeqHop::Fixed(0))],
                     None,
                 )]
+            }
+            ast::Sequence::MatchItem { seq, .. } => {
+                // A local-variable CAPTURE `(b, x = e)` reaching the generic expansion
+                // is in an UNSUPPORTED position: the data-tracking single-capture path
+                // (`synth_local_var_assert`) handles a fixed-delay antecedent capture
+                // WHOLE before this point. A capture inside a consequent, a disjunction,
+                // a repetition, or a ranged antecedent is out of subset → loud (never a
+                // silent drop of the capture). Recover by expanding the bare boolean
+                // term (the liveness is still correct; only the capture is dropped, and
+                // the loud error discards the IR so it is never simulated).
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "a sequence local-variable capture `(b, x = e)` is only supported in \
+                     a single-clock FIXED-DELAY antecedent read in the consequent \
+                     (ranges / disjunction / repetition / capture-in-consequent are \
+                     unsupported in this subset)",
+                );
+                self.expand_sequence(seq, regs)
             }
         }
     }
@@ -20493,6 +21032,7 @@ impl<'s> Elaborator<'s> {
                 pass,
                 fail,
                 prop_expr,
+                local_vars,
                 span,
             } => {
                 // Named-property INSTANCE: `assert property(NAME)` parses to an empty
@@ -20532,6 +21072,7 @@ impl<'s> Elaborator<'s> {
                                 cons_clock: pd.consequent_clock,
                                 prop_expr: pd.prop_expr,
                                 prop_self_name: Some(name.name.clone()),
+                                local_vars: pd.local_vars,
                                 span: *span,
                             });
                         }
@@ -20543,6 +21084,17 @@ impl<'s> Elaborator<'s> {
                                 MsgCode::ElabUnsupported,
                                 "a parameterized property with property-level \
                                  `and`/`or` is unsupported in this subset",
+                            );
+                        }
+                        Some(pd) if !pd.local_vars.is_empty() => {
+                            // N2c: a property with sequence/property LOCAL VARIABLES
+                            // combined with FORMAL arguments is out of subset — the
+                            // formal substitution would have to thread through the
+                            // capture/read sites of the data-tracking machinery. Loud.
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a parameterized property with sequence/property local \
+                                 variables is unsupported in this subset",
                             );
                         }
                         Some(pd) => {
@@ -20564,6 +21116,7 @@ impl<'s> Elaborator<'s> {
                                     .map(|s| subst_sensitivity(s, &map)),
                                 prop_expr: None,
                                 prop_self_name: None,
+                                local_vars: Vec::new(),
                                 span: *span,
                             });
                         }
@@ -20603,6 +21156,7 @@ impl<'s> Elaborator<'s> {
                         cons_clock: consequent_clock.clone(),
                         prop_expr: prop_expr.clone(),
                         prop_self_name: None,
+                        local_vars: local_vars.clone(),
                         span: *span,
                     });
                 }

@@ -126,9 +126,17 @@ use vita_schema::schema_hash;
 /// (target, expr) plus the `CastTarget` / `CastPrim` types — covering `int'(e)`,
 /// `8'(e)`, `signed'(e)`, `name'(e)`. Pure front-end and elaborate lowering to
 /// existing IR (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
+/// 2026-06-26 N2c SVA sequence/property LOCAL VARIABLES (§16.10): adds
+/// `Sequence::MatchItem { seq, assigns }` (a `(b, x = e)` capture), the
+/// `SvaLocalDecl` struct, and `local_vars: Vec<SvaLocalDecl>` on `Stmt::Concurrent
+/// Assert` + `PropDecl`. The data-tracking single-capture idiom
+/// `(req, d=data) ##1 grant |-> (rdata == d)` lowers to a parallel DATA shift
+/// register (elaborate IR-0 — wider regs + NBA shifts + a read substitution);
+/// ranges / multi-write / cross-clock are loud. No sim-ir change (format_version
+/// stays 19). Re-pins this .vu hash.
 const EXPECTED: [u8; 32] = [
-    4, 93, 101, 41, 203, 233, 209, 102, 209, 140, 197, 96, 202, 137, 76, 51, 29, 156, 20, 103, 15,
-    156, 93, 242, 94, 43, 58, 131, 96, 138, 101, 204,
+    248, 106, 139, 220, 243, 28, 162, 118, 189, 231, 113, 139, 161, 37, 71, 82, 50, 33, 198, 250,
+    221, 155, 234, 73, 180, 95, 117, 243, 236, 240, 185, 220,
 ];
 
 #[test]

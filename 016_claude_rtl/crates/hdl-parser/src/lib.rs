@@ -90,6 +90,23 @@ enum FieldSel {
     },
 }
 
+/// The components of a parsed `property_spec` (the body shared by an inline
+/// `assert property(<spec>)` and a named `property NAME; <spec>; endproperty`):
+/// `(clock, disable_iff, antecedent, implication_kind, consequent,
+/// consequent_clock, prop_expr, local_vars)`. A flat implication leaves `prop_expr`
+/// `None`; a property-operator tree fills it (the flat fields then hold
+/// placeholders). `local_vars` (slice N2c) is the body-start `int x;` declarations.
+type PropertySpecParts = (
+    Sensitivity,
+    Option<Expr>,
+    Sequence,
+    ImplicationKind,
+    Sequence,
+    Option<Sensitivity>,
+    Option<PropExpr>,
+    Vec<SvaLocalDecl>,
+);
+
 pub struct Parser<'t, 's> {
     toks: &'t [Spanned],
     src: &'s str,
@@ -5831,6 +5848,7 @@ impl<'t, 's> Parser<'t, 's> {
                 pass,
                 fail,
                 prop_expr: None,
+                local_vars: Vec::new(),
                 span: start.to(self.prev_span()),
             };
         }
@@ -5867,6 +5885,7 @@ impl<'t, 's> Parser<'t, 's> {
                 pass,
                 fail,
                 prop_expr: None,
+                local_vars: Vec::new(),
                 span: start.to(self.prev_span()),
             };
         }
@@ -5878,6 +5897,7 @@ impl<'t, 's> Parser<'t, 's> {
             consequent,
             consequent_clock,
             prop_expr,
+            local_vars,
         ) = self.parse_property_spec(start);
         self.expect(TokenKind::RParen, "')'");
         // action_block ::= statement_or_null | [statement] `else` statement_or_null
@@ -5893,6 +5913,7 @@ impl<'t, 's> Parser<'t, 's> {
             pass,
             fail,
             prop_expr,
+            local_vars,
             span: start.to(self.prev_span()),
         }
     }
@@ -5980,34 +6001,22 @@ impl<'t, 's> Parser<'t, 's> {
     /// body shared by an inline `assert property( <spec> )` and a named
     /// `property NAME; <spec>; endproperty`. Does NOT consume the surrounding
     /// parens / terminators; the caller does.
-    fn parse_property_spec(
-        &mut self,
-        start: Span,
-    ) -> (
-        Sensitivity,
-        Option<Expr>,
-        Sequence,
-        ImplicationKind,
-        Sequence,
-        Option<Sensitivity>,
-        Option<PropExpr>,
-    ) {
-        // Sequence/property LOCAL VARIABLES (slice A2): a typed declaration at the
-        // body start (`property p; int x; @(clk) …`) needs per-attempt thread storage
-        // that is not synthesizable to a single register — unsupported. Detect it here
-        // for a TARGETED diagnostic (instead of the generic "'@(...)'" cascade) and
-        // skip the declaration(s) up to the real clocking event so the rest recovers.
-        if self.at_sva_local_var_decl() {
-            self.error(
-                "no sequence/property local variables (e.g. `int x; (a, x=d)`) — \
-                 they need per-attempt thread storage, not synthesizable RTL",
-            );
-            // Skip the declaration(s) — each is `<type> <name> [= e] ;` — landing the
-            // cursor on the real `@` clocking event. Each decl ends at its own `;`
-            // (which precedes the clock), so we consume THROUGH that `;` and repeat
-            // while another decl follows (review 2026-06-16: stopping ON the first
-            // `;` left the cursor before `@` and never cleared a second decl).
-            while self.at_sva_local_var_decl() {
+    fn parse_property_spec(&mut self, start: Span) -> PropertySpecParts {
+        // Sequence/property LOCAL VARIABLES (slice N2c, IEEE 1800-2017 §16.10): typed
+        // declarations at the body start (`property p; int x; @(clk) …`). Captured at
+        // a `(b, x = e)` match-item and read at a later term/consequent within the
+        // SAME match attempt. Elaborate lowers a FIXED-DELAY single-capture to a
+        // parallel DATA shift register (no per-attempt collision); ranges / multi-write
+        // / cross-clock are loud-rejected there (the convergence cases). Parse the
+        // declarations here into AST; each is `<type> <name> [= e] ;` and ends at its
+        // own `;` (which precedes the clock).
+        let mut local_vars: Vec<SvaLocalDecl> = Vec::new();
+        while self.at_sva_local_var_decl() {
+            if let Some(decl) = self.parse_sva_local_decl() {
+                local_vars.push(decl);
+            } else {
+                // Malformed decl — recover by skipping to the next `;` / `@` so the
+                // rest of the property still parses (never silently swallow it).
                 while !matches!(
                     self.peek(),
                     Some(TokenKind::Semi) | Some(TokenKind::At) | None
@@ -6015,7 +6024,7 @@ impl<'t, 's> Parser<'t, 's> {
                     self.bump();
                 }
                 if !self.eat(TokenKind::Semi) {
-                    break; // hit `@` / EOF before a `;` — stop skipping
+                    break;
                 }
             }
         }
@@ -6043,6 +6052,24 @@ impl<'t, 's> Parser<'t, 's> {
         } else {
             None
         };
+        // Sequence/property LOCAL VARIABLES can ALSO follow the clocking event (IEEE
+        // §16.10 `property_spec`: the assertion_variable_declaration comes after the
+        // clocking_event) — `@(clk) int x; (a, x=d) ##1 b |-> …`. Parse them here too
+        // (the before-clock loop above covers the named-property `property p; int x;`
+        // form). A type keyword at the property-expression start is unambiguously a
+        // local-var decl (a sequence term never begins with a bare type keyword).
+        while self.at_sva_local_var_decl() {
+            if let Some(decl) = self.parse_sva_local_decl() {
+                local_vars.push(decl);
+            } else {
+                while !matches!(self.peek(), Some(TokenKind::Semi) | None) {
+                    self.bump();
+                }
+                if !self.eat(TokenKind::Semi) {
+                    break;
+                }
+            }
+        }
         // Property-level operators (slice N2d + SVA-REST): when the body uses a
         // top-level (paren-depth-0) property operator — `and`/`or` (N2d), or
         // `not`/`always`/`until`/`s_until`/`implies`/`iff`/`s_eventually`/`nexttime`
@@ -6065,6 +6092,7 @@ impl<'t, 's> Parser<'t, 's> {
                 Sequence::Boolean(true_lit),
                 None,
                 Some(pe),
+                local_vars,
             );
         }
         // `seq [ |-> | |=> ] expr` — a bare `property(@(clk) expr)` (no
@@ -6082,6 +6110,7 @@ impl<'t, 's> Parser<'t, 's> {
                 self.parse_sequence(),
                 cons_clock,
                 None,
+                local_vars,
             )
         } else if self.eat(TokenKind::PipeEqArrow) {
             let cons_clock = self.parse_optional_consequent_clock(false);
@@ -6093,6 +6122,7 @@ impl<'t, 's> Parser<'t, 's> {
                 self.parse_sequence(),
                 cons_clock,
                 None,
+                local_vars,
             )
         } else {
             let true_lit = Self::sva_true_lit(start);
@@ -6106,6 +6136,7 @@ impl<'t, 's> Parser<'t, 's> {
                     Sequence::Boolean(e),
                     None,
                     None,
+                    local_vars,
                 ),
                 other => {
                     self.error("an implication `|->`/`|=>` (a bare sequence property is unsupported in this subset)");
@@ -6117,6 +6148,7 @@ impl<'t, 's> Parser<'t, 's> {
                         Sequence::Boolean(true_lit),
                         None,
                         None,
+                        local_vars,
                     )
                 }
             }
@@ -6560,6 +6592,7 @@ impl<'t, 's> Parser<'t, 's> {
             consequent,
             consequent_clock,
             prop_expr,
+            local_vars,
         ) = self.parse_property_spec(start);
         self.expect(TokenKind::Semi, "';' after property body");
         if self.at_ident_kw("endproperty") {
@@ -6578,6 +6611,7 @@ impl<'t, 's> Parser<'t, 's> {
             consequent,
             consequent_clock,
             prop_expr,
+            local_vars,
             span: start.to(self.prev_span()),
         }))
     }
@@ -6657,6 +6691,64 @@ impl<'t, 's> Parser<'t, 's> {
             )
     }
 
+    /// Parse ONE sequence/property local-variable declaration (slice N2c, IEEE
+    /// §16.10): `<type> [packed_range] <name> [= init] ;`. The cursor is on the type
+    /// keyword (`at_sva_local_var_decl` is true). Returns the resolved width/sign so
+    /// elaborate can size the data-tracking register. `None` on a malformed decl (the
+    /// caller recovers by skipping to the next `;`). Only the integral atom types and
+    /// a literal packed range are supported; the type keyword itself is consumed.
+    fn parse_sva_local_decl(&mut self) -> Option<SvaLocalDecl> {
+        let start = self.cur_span();
+        let kind = self.net_var_kind()?;
+        self.bump(); // the type keyword
+                     // Atom storage width by kind; a packed range (below) overrides for the
+                     // vector-capable kinds (bit/logic/reg).
+        let (atom_width, ranged_ok): (u32, bool) = match kind {
+            NetVarKind::Byte => (8, false),
+            NetVarKind::Shortint => (16, false),
+            NetVarKind::Int | NetVarKind::Integer => (32, false),
+            NetVarKind::Longint | NetVarKind::Time => (64, false),
+            NetVarKind::Bit | NetVarKind::Logic | NetVarKind::Reg => (1, true),
+            // Real / string / event / nets / class are not a synthesizable
+            // data-tracking var — leave it for elaborate to loud-reject (carry
+            // a 1-bit placeholder; the capture path validates the type there).
+            _ => (1, false),
+        };
+        // Optional packed range `[msb:lsb]` (vector kinds only). Literal bounds only;
+        // a non-literal bound recovers via `parse_small_const` (loud) → width fallback.
+        let width = if ranged_ok && self.peek() == Some(TokenKind::LBracket) {
+            self.bump(); // `[`
+            let msb = self.parse_small_const("a packed-range MSB in an SVA local var");
+            self.expect(TokenKind::Colon, "':' in an SVA local-var packed range");
+            let lsb = self.parse_small_const("a packed-range LSB in an SVA local var");
+            self.expect(
+                TokenKind::RBracket,
+                "']' to close an SVA local-var packed range",
+            );
+            msb.abs_diff(lsb) + 1
+        } else {
+            atom_width
+        };
+        let signed = atom_default_signed(Some(kind));
+        let name = self.ident()?;
+        let init = if self.eat(TokenKind::Eq) {
+            Some(self.expr(0))
+        } else {
+            None
+        };
+        self.expect(
+            TokenKind::Semi,
+            "';' after an SVA local-variable declaration",
+        );
+        Some(SvaLocalDecl {
+            name,
+            width,
+            signed,
+            init,
+            span: start.to(self.prev_span()),
+        })
+    }
+
     /// True if the upcoming `( … )` (cursor on `(`) contains a comma at paren-depth
     /// one — a sequence MATCH-ITEM local-variable list `(bool, x = e, …)` (slice A2).
     /// A parenthesized sequence has no top-level comma; concat/select commas nest
@@ -6734,33 +6826,6 @@ impl<'t, 's> Parser<'t, 's> {
             }
         }
         false
-    }
-
-    /// Consume a balanced `( … )` group starting at the current `(` (recovery). Tracks
-    /// only paren depth (a nested `[ ]`/`{ }` contains no stray `)`). No-op if not at `(`.
-    fn skip_balanced_paren_group(&mut self) {
-        if self.peek() != Some(TokenKind::LParen) {
-            return;
-        }
-        let mut depth = 0usize;
-        while let Some(k) = self.peek() {
-            match k {
-                TokenKind::LParen => {
-                    depth += 1;
-                    self.bump();
-                }
-                TokenKind::RParen => {
-                    self.bump();
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {
-                    self.bump();
-                }
-            }
-        }
     }
 
     /// Consume an optional `: label` after `endsequence`/`endproperty`
@@ -6881,18 +6946,14 @@ impl<'t, 's> Parser<'t, 's> {
                 seq: Box::new(seq),
             };
         }
-        // A `( boolean , local_var = expr {, …} )` match-item paren (slice A2) is a
-        // sequence LOCAL-VARIABLE assignment — a top-level comma just inside the paren
-        // distinguishes it from a parenthesized sequence (which has none). Per-attempt
-        // capture storage is not synthesizable to a single register → loud + skip,
-        // instead of the generic `expected ')'` cascade.
+        // A `( boolean , local_var = expr {, …} )` match-item paren (slice N2c, IEEE
+        // §16.10) is a sequence LOCAL-VARIABLE capture — a top-level comma just inside
+        // the paren distinguishes it from a parenthesized sequence (which has none).
+        // Parse the boolean term + the `name = expr` assignment list into a
+        // `Sequence::MatchItem`; elaborate lowers a fixed-delay single capture to a
+        // parallel data shift register (and loud-rejects the convergence cases).
         if self.at_sva_match_item_paren() {
-            self.error(
-                "no sequence/property local variables (e.g. `(a, x=d)` match-item \
-                 capture) — they need per-attempt thread storage, not synthesizable RTL",
-            );
-            self.skip_balanced_paren_group();
-            return Sequence::Boolean(Self::sva_true_lit(self.prev_span()));
+            return self.parse_seq_match_item();
         }
         // A parenthesized SUB-SEQUENCE `( … ## … )` (slice A.2 cross-clock multi-term
         // segment) — `self.expr(0)` cannot parse a `##` cycle-delay, so when the group
@@ -6908,6 +6969,40 @@ impl<'t, 's> Parser<'t, 's> {
         let e = self.expr(0);
         let seq = Sequence::Boolean(e);
         self.parse_seq_postfix(seq)
+    }
+
+    /// Parse a sequence MATCH-ITEM `( <bool> , <name> = <expr> {, <name> = <expr>} )`
+    /// (slice N2c, IEEE §16.10): a boolean term that CAPTURES local variable(s) when
+    /// it matches. The cursor is on `(` and `at_sva_match_item_paren` is true (a
+    /// top-level comma was seen). Emits `Sequence::MatchItem`; the postfix loop still
+    /// applies (a `(...)[*n]` repeated capture is parsed but elaborate loud-rejects it
+    /// — repetition would converge multiple captures, a data collision).
+    fn parse_seq_match_item(&mut self) -> Sequence {
+        self.bump(); // `(`
+        let term = self.expr(0); // the boolean term
+        let mut assigns: Vec<(Ident, Expr)> = Vec::new();
+        // At least one `, name = expr` (the detector guaranteed a top-level comma).
+        while self.eat(TokenKind::Comma) {
+            let name = match self.ident() {
+                Some(id) => id,
+                None => {
+                    self.error("a local-variable name in a sequence match-item `(b, x = e)`");
+                    break;
+                }
+            };
+            if !self.eat(TokenKind::Eq) {
+                self.error("`=` in a sequence match-item local-variable assignment");
+                break;
+            }
+            let val = self.expr(0);
+            assigns.push((name, val));
+        }
+        self.expect(TokenKind::RParen, "')' to close a sequence match-item");
+        let mi = Sequence::MatchItem {
+            seq: Box::new(Sequence::Boolean(term)),
+            assigns,
+        };
+        self.parse_seq_postfix(mi)
     }
 
     /// Apply the trailing repetition postfixes (`[*n]`/`[*m:n]` consecutive, `[+]`,
@@ -8036,6 +8131,15 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             Sequence::Instance { args, .. } => {
                 for a in args.iter_mut() {
                     fix_expr(a, from, to);
+                }
+            }
+            // A match-item capture `(b, x = e)`: recurse into the boolean term and the
+            // captured value expressions (a generate-loop index may appear in `e`); the
+            // local-variable NAMES are not loop indices, so they are not renamed.
+            Sequence::MatchItem { seq, assigns } => {
+                fix_sequence(seq, from, to);
+                for (_, val) in assigns.iter_mut() {
+                    fix_expr(val, from, to);
                 }
             }
         }

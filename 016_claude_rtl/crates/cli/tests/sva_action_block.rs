@@ -121,13 +121,16 @@ fn plain_action_block_without_sampled_is_unaffected() {
     );
 }
 
-// ── sequence/property local variables → LOUD (clear message) ───────────────
+// ── sequence/property local variables (slice N2c) — declared-but-unused / a
+//    capture of an undeclared net stay LOUD (the supported idiom is a single
+//    fixed-delay capture read in the consequent; see `sva_local_var.rs`). ────────
 
 #[test]
-fn typed_local_variable_decl_is_loud_with_clear_message() {
-    // `property p; int x; @(posedge clk) …` — a typed local-var decl at the property
-    // body start must produce a TARGETED 'local variables unsupported' message, not
-    // the generic "'@(...)' clocking event" cascade.
+fn typed_local_variable_decl_without_capture_is_loud() {
+    // `property p; int x; @(posedge clk) a |=> b` — declares a local var but never
+    // captures it (no `(b, x=e)` match-item). N2c routes this to the data-tracking
+    // path, which requires exactly one capture → loud (a dead decl is not a silent
+    // pass). The diagnostic names the missing capture.
     let (_o, err, code) = run("module top;\n\
          reg clk=0, a=0, b=0;\n\
          reg [7:0] d=0;\n\
@@ -136,15 +139,19 @@ fn typed_local_variable_decl_is_loud_with_clear_message() {
          initial assert property(p);\n\
          initial #20 $finish;\n\
          endmodule\n");
-    assert_eq!(code, Some(1), "a local-var decl must be loud. {err}");
+    assert_eq!(
+        code,
+        Some(1),
+        "a declared-but-uncaptured local var must be loud. {err}"
+    );
     assert!(
-        err.to_lowercase().contains("local variable"),
-        "the message must name local variables as unsupported:\n{err}"
+        err.contains("VITA-E") && err.to_lowercase().contains("capture"),
+        "the message must name the missing capture:\n{err}"
     );
 }
 
 #[test]
-fn keyword_typed_local_variable_decl_is_loud() {
+fn keyword_typed_local_variable_decl_without_capture_is_loud() {
     // Same, but a KEYWORD type (`logic`) — exercises the net_var_kind detection path.
     let (_o, err, code) = run("module top;\n\
          reg clk=0, a=0, b=0;\n\
@@ -156,20 +163,19 @@ fn keyword_typed_local_variable_decl_is_loud() {
     assert_eq!(
         code,
         Some(1),
-        "a keyword-typed local-var decl must be loud. {err}"
+        "a keyword-typed declared-but-uncaptured local var must be loud. {err}"
     );
     assert!(
-        err.to_lowercase().contains("local variable"),
-        "the message must name local variables as unsupported:\n{err}"
+        err.contains("VITA-E") && err.to_lowercase().contains("capture"),
+        "the message must name the missing capture:\n{err}"
     );
 }
 
 #[test]
-fn multiple_typed_local_var_decls_recover_cleanly() {
-    // REVIEW (recovery lens, 2026-06-16): the skip-to-@ must clear MULTIPLE local-var
-    // decls and land on the real `@(clk)` — not stop on the first decl's `;` and
-    // cascade. A clean recovery means the property body parses (no leftover-decl
-    // "expected `endproperty`" cascade), with only the one targeted diagnostic.
+fn multiple_typed_local_var_decls_parse_cleanly() {
+    // REVIEW (recovery lens): MULTIPLE local-var decls at the body start must parse
+    // (no leftover-decl "expected `endproperty`" cascade); the property is then loud
+    // for the missing capture (still a single, targeted diagnostic).
     let (_o, err, code) = run("module top;\n\
          reg clk=0, a=1, b=1;\n\
          always #5 clk=~clk;\n\
@@ -177,21 +183,26 @@ fn multiple_typed_local_var_decls_recover_cleanly() {
          initial assert property(p);\n\
          initial begin #20 $finish; end\n\
          endmodule\n");
-    assert_eq!(code, Some(1), "local-var decls must be loud. {err}");
+    assert_eq!(
+        code,
+        Some(1),
+        "the missing-capture diagnostic must be loud. {err}"
+    );
     assert!(
-        err.to_lowercase().contains("local variable"),
+        err.contains("VITA-E"),
         "the targeted message must appear:\n{err}"
     );
     assert!(
         !err.contains("endproperty") && !err.contains("clocking event"),
-        "recovery must clear BOTH decls and reach @(clk) — no cascade:\n{err}"
+        "parsing must clear BOTH decls and reach @(clk) — no cascade:\n{err}"
     );
 }
 
 #[test]
-fn match_item_assignment_is_loud_with_clear_message() {
-    // Inline `(a, x=d)` match-item local-variable assignment in a sequence primary
-    // must produce the local-var message, not the generic `')'` cascade.
+fn match_item_capture_of_undeclared_net_is_loud() {
+    // Inline `(a, x=d)` where `x` is a REAL net (no local-var decl): N2c requires the
+    // capture target to be a DECLARED local var (its width/sign size the data
+    // register), so capturing into an undeclared net is loud — never a silent default.
     let (_o, err, code) = run("module top;\n\
          reg clk=0, a=0, b=0;\n\
          reg [7:0] d=0, x=0;\n\
@@ -202,10 +213,10 @@ fn match_item_assignment_is_loud_with_clear_message() {
     assert_eq!(
         code,
         Some(1),
-        "a match-item local-var assignment must be loud. {err}"
+        "a capture of an undeclared net must be loud. {err}"
     );
     assert!(
-        err.to_lowercase().contains("local variable"),
-        "the message must name local variables as unsupported:\n{err}"
+        err.contains("VITA-E") && err.to_lowercase().contains("not declared"),
+        "the message must say the capture target is not declared:\n{err}"
     );
 }
