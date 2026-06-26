@@ -12,9 +12,10 @@
 //! iverilog 13.0 rejects all concurrent assertions (NULL oracle) → hand-IEEE;
 //! every expected value below is derived by clock-counting from §16.12 and
 //! value-pinned. clk posedge every 10ns starting t=5 (always #5 clk=~clk, clk
-//! starts 0 → first posedge at t=5, then t=15, t=25, …). STILL LOUD (deferred): a
-//! deeper mixed chain (`a|=>(b|=>(d|=>e))`), a different/multi clock, formals,
-//! `disable iff`.
+//! starts 0 → first posedge at t=5, then t=15, t=25, …). Deeper HOMOGENEOUS `|=>`
+//! chains are now synthesized (slice #6, see `sva_propref_chain.rs`); STILL LOUD
+//! (deferred): a MIXED `|=>…|->` chain, a different/multi clock, formals, `disable
+//! iff`, a recursive property.
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 

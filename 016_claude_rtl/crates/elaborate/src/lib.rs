@@ -15734,6 +15734,27 @@ impl<'s> Elaborator<'s> {
                         sva.kind = ast::ImplicationKind::NonOverlap;
                         return;
                     }
+                    // Slice #6 deeper homogeneous chain: `a |-> (b |=> c |=> … |=> z)`
+                    // ≡ `((a && b) ##1 rest) |=> z` — the overlap `|->` fuses a and the
+                    // first link's antecedent b at the SAME clock (`a && b`), then each
+                    // remaining `|=>` adds one `##1` into the antecedent sequence (rest =
+                    // `c ##1 …`), terminating at the top-level `|=>` pend reg.
+                    if let Some((b, rest, z)) = self.peel_nonoverlap_chain(&name, &sva.clock) {
+                        sva.ante = ast::Sequence::Delay {
+                            min: 1,
+                            max: Some(1),
+                            lhs: Box::new(ast::Sequence::Boolean(sva_binary(
+                                ast::BinOp::LogAnd,
+                                a,
+                                b,
+                                sp,
+                            ))),
+                            rhs: Box::new(rest),
+                        };
+                        sva.cons = ast::Sequence::Boolean(z);
+                        sva.kind = ast::ImplicationKind::NonOverlap;
+                        return;
+                    }
                 }
                 // SEQUENCE outer antecedent (slice A.3): `seq |-> (b |=> c)`
                 // ≡ `(seq ##0 b) |=> c` (IEEE 1800 §16.12). The overlap `|->` fuses
@@ -15752,6 +15773,27 @@ impl<'s> Elaborator<'s> {
                             rhs: Box::new(ast::Sequence::Boolean(b)),
                         };
                         sva.cons = ast::Sequence::Boolean(c);
+                        sva.kind = ast::ImplicationKind::NonOverlap;
+                        return;
+                    }
+                    // Slice #6 deeper homogeneous chain: `seq |-> (b |=> c |=> … |=> z)`
+                    // ≡ `(seq ##0 b ##1 rest) |=> z` — the overlap `|->` fuses b onto the
+                    // END of `seq` at the SAME clock (`##0`), then each remaining `|=>`
+                    // adds one `##1` (rest = `c ##1 …`), to the top-level pend reg.
+                    if let Some((b, rest, z)) = self.peel_nonoverlap_chain(&name, &sva.clock) {
+                        let seq_b = ast::Sequence::Delay {
+                            min: 0,
+                            max: Some(0),
+                            lhs: Box::new(orig_ante),
+                            rhs: Box::new(ast::Sequence::Boolean(b)),
+                        };
+                        sva.ante = ast::Sequence::Delay {
+                            min: 1,
+                            max: Some(1),
+                            lhs: Box::new(seq_b),
+                            rhs: Box::new(rest),
+                        };
+                        sva.cons = ast::Sequence::Boolean(z);
                         sva.kind = ast::ImplicationKind::NonOverlap;
                         return;
                     }
@@ -15789,6 +15831,27 @@ impl<'s> Elaborator<'s> {
                     rhs: Box::new(ast::Sequence::Boolean(b)),
                 };
                 sva.cons = ast::Sequence::Boolean(c);
+                return;
+            }
+            // Slice #6 deeper homogeneous chain: `a |=> (b |=> c |=> … |=> z)`
+            // ≡ `(a ##1 b ##1 rest) |=> z` — the outer `|=>` skews a→b by one clock
+            // (`##1`) and each remaining `|=>` adds one more `##1` (rest = `c ##1 …`),
+            // terminating at the top-level `|=>` pend reg. The same rewrite serves a
+            // boolean or sequence outer antecedent (only the leading term differs).
+            if let Some((b, rest, z)) = self.peel_nonoverlap_chain(&name, &sva.clock) {
+                let ante_b = ast::Sequence::Delay {
+                    min: 1,
+                    max: Some(1),
+                    lhs: Box::new(orig_ante),
+                    rhs: Box::new(ast::Sequence::Boolean(b)),
+                };
+                sva.ante = ast::Sequence::Delay {
+                    min: 1,
+                    max: Some(1),
+                    lhs: Box::new(ante_b),
+                    rhs: Box::new(rest),
+                };
+                sva.cons = ast::Sequence::Boolean(z);
                 return;
             }
         }
@@ -15834,6 +15897,137 @@ impl<'s> Elaborator<'s> {
         Some((b.clone(), c.clone()))
     }
 
+    /// Slice #6: a DEEPER homogeneous non-overlap chain whose inner consequent is
+    /// itself a property reference (`q1: b |=> q2`, `q2: c |=> q3`, … terminating in
+    /// a boolean). Returns `(b, rest, z)` where `b` is `q1`'s antecedent boolean,
+    /// `rest` is the SEQUENCE `c ##1 d ##1 … ##1 y` (every later property's antecedent
+    /// joined by exactly one `##1` per `|=>`, IEEE 1800-2017 §16.12 textual
+    /// substitution), and `z` is the final consequent boolean. The full inner
+    /// antecedent is `b ##1 rest`; each caller prepends its own connector to `b`.
+    ///
+    /// Returns `None` (silently → caller falls through to the loud overlap flattener /
+    /// E3009) for ANY non-deeper or unsupported shape, so the strict 2-deep fast paths
+    /// — which the callers try FIRST and which are kept verbatim — own those cases
+    /// byte-identically. A `None` is returned for: a 2-deep leaf (`q1`'s consequent is
+    /// boolean), a non-boolean antecedent anywhere, a sequence/mixed consequent, a
+    /// non-overlap-mixing inner, formals / `disable iff` / consequent-clock /
+    /// `prop_expr` / local-vars on any link, a clock mismatch on any link, or a cyclic
+    /// reference (caught LOUD via `sva_inline_stack` so it rejects, not hangs).
+    fn peel_nonoverlap_chain(
+        &mut self,
+        name: &str,
+        clock: &ast::Sensitivity,
+    ) -> Option<(ast::Expr, ast::Sequence, ast::Expr)> {
+        // q1 itself must be a clean non-overlap link whose antecedent is boolean.
+        let pd = self.prop_table.get(name)?.clone();
+        let b = self.chain_link_antecedent(&pd, clock)?;
+        // q1's consequent MUST be a bare property name for a DEEPER chain. A boolean
+        // consequent is the 2-deep case — already handled byte-identically by the
+        // fast path; return None so this never disturbs it.
+        let inner = self.chain_consequent_property(&pd)?;
+        // The full inner antecedent of the rest of the chain (`c ##1 … ##1 y`) and the
+        // final boolean consequent, recursing under the cycle guard.
+        self.sva_inline_stack.push(name.to_string());
+        let rest = self.peel_chain_full(&inner, clock);
+        self.sva_inline_stack.pop();
+        let (rest_seq, z) = rest?;
+        Some((b, rest_seq, z))
+    }
+
+    /// The recursive worker for [`Self::peel_nonoverlap_chain`]: returns the FULL inner
+    /// antecedent sequence of property `name` plus its final boolean consequent. A leaf
+    /// link (`q: y |=> z`, `z` boolean) returns `(Boolean(y), z)`; a deeper link
+    /// (`q: y |=> q_next`) returns `(y ##1 <full inner antecedent of q_next>, z)` —
+    /// exactly one `##1` per `|=>`. Cycle-guarded via `sva_inline_stack` (a self- or
+    /// mutually-recursive property emits the loud `recursive property` diagnostic and
+    /// returns `None`, so it rejects rather than hangs).
+    fn peel_chain_full(
+        &mut self,
+        name: &str,
+        clock: &ast::Sensitivity,
+    ) -> Option<(ast::Sequence, ast::Expr)> {
+        if self.sva_inline_stack.iter().any(|n| n == name) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!("recursive property `{name}` is illegal (IEEE 1800 §16.12)"),
+            );
+            return None;
+        }
+        let pd = self.prop_table.get(name)?.clone();
+        let y = self.chain_link_antecedent(&pd, clock)?;
+        // Boolean consequent ⇒ leaf: the full inner antecedent is just `y`.
+        if let ast::Sequence::Boolean(z) = &pd.consequent {
+            if !self.is_property_name(z) {
+                return Some((ast::Sequence::Boolean(y), z.clone()));
+            }
+        }
+        // Property-named consequent ⇒ recurse, prepending `y ##1` (one clock per `|=>`).
+        let inner = self.chain_consequent_property(&pd)?;
+        self.sva_inline_stack.push(name.to_string());
+        let deeper = self.peel_chain_full(&inner, clock);
+        self.sva_inline_stack.pop();
+        let (deeper_seq, z) = deeper?;
+        Some((
+            ast::Sequence::Delay {
+                min: 1,
+                max: Some(1),
+                lhs: Box::new(ast::Sequence::Boolean(y)),
+                rhs: Box::new(deeper_seq),
+            },
+            z,
+        ))
+    }
+
+    /// Validate one chain link `pd` is a clean single-clock NON-OVERLAP property with a
+    /// BOOLEAN antecedent and no formals / `disable iff` / consequent-clock /
+    /// `prop_expr` / local-vars, and the SAME bare-ident clock as the outer assertion.
+    /// Returns the antecedent boolean expression, or `None` for any disqualifying shape
+    /// (the caller then falls through to the loud path). RED-preserving: every guard the
+    /// 2-deep peel enforces is re-checked on every deeper link.
+    fn chain_link_antecedent(
+        &self,
+        pd: &ast::PropDecl,
+        clock: &ast::Sensitivity,
+    ) -> Option<ast::Expr> {
+        if !matches!(pd.implication_kind, ast::ImplicationKind::NonOverlap)
+            || !pd.formals.is_empty()
+            || pd.disable_iff.is_some()
+            || pd.consequent_clock.is_some()
+            || pd.prop_expr.is_some()
+            || !pd.local_vars.is_empty()
+        {
+            return None;
+        }
+        let outer = sva_clock_signal(clock);
+        if outer.is_none() || outer != sva_clock_signal(&pd.clock) {
+            return None;
+        }
+        let ast::Sequence::Boolean(ante) = &pd.antecedent else {
+            return None;
+        };
+        // A property-named antecedent is a nested shape we do not model here → loud.
+        if self.is_property_name(ante) {
+            return None;
+        }
+        Some(ante.clone())
+    }
+
+    /// If `pd`'s consequent is a bare property-name reference, return that name; else
+    /// `None` (a boolean / sequence / non-property consequent — not a deeper link).
+    fn chain_consequent_property(&self, pd: &ast::PropDecl) -> Option<String> {
+        if let ast::Sequence::Boolean(e) = &pd.consequent {
+            if let ast::ExprKind::Ident(p) = &e.kind {
+                if p.segments.len() == 1 {
+                    let n = &p.segments[0].name;
+                    if self.lookup_net_scoped(n).is_none() && self.prop_table.contains_key(n) {
+                        return Some(n.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// True iff `e` is a single-segment identifier that names a declared property
     /// and NOT a net of the same name (a real net wins the leaf path).
     fn is_property_name(&self, e: &ast::Expr) -> bool {
@@ -15867,6 +16061,25 @@ impl<'s> Elaborator<'s> {
             return None;
         }
         let pd = self.prop_table.get(name).cloned()?;
+        // A named property whose body is a property-LEVEL operator tree
+        // (`always`/`not`/`s_eventually`/`nexttime`/…) is stored as `prop_expr` with
+        // INERT placeholder flat fields (antecedent/consequent = `1'b1`, kind =
+        // Overlap). Without this guard the overlap fold would compute `!1 || 1 = 1`
+        // and SILENTLY replace the real obligation with constant-true (a dropped
+        // assertion — found by the #6 adversarial review). The same form used
+        // standalone is already loud (`always p` as a nested consequent is
+        // unsupported), so correct-or-loud demands a loud reject here too. (The
+        // sequence/chain peelers already guard on `prop_expr`; this is the
+        // pre-existing hole in the overlap flattener.)
+        if pd.prop_expr.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a named property with a property-level operator \
+                 (`always`/`not`/`s_eventually`/`nexttime`/…) used as a consequent \
+                 is unsupported in this subset",
+            );
+            return None;
+        }
         if !pd.formals.is_empty() {
             self.error(
                 MsgCode::ElabUnsupported,

@@ -9,9 +9,9 @@
 //!
 //! iverilog 13.0 rejects all of this (NULL oracle) → hand-IEEE. The 2-cycle skew
 //! (outer `|=>` AND inner `|=>`) is now synthesized as `(a ##1 b) |=> c` (slice N2b,
-//! see `sva_propref_2cycle.rs`). STILL LOUD (deferred): a sequence outer antecedent,
-//! a DEEPER chain (inner consequent is itself a property reference), a different/multi
-//! clock, formals, or `disable iff`.
+//! see `sva_propref_2cycle.rs`); a DEEPER homogeneous `|=>` chain is now synthesized
+//! too (slice #6, see `sva_propref_chain.rs`). STILL LOUD (deferred): a MIXED
+//! `|=>…|->` chain, a different/multi clock, formals, `disable iff`, or recursion.
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 

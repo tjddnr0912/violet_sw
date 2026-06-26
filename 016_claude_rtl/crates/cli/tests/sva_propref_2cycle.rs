@@ -8,9 +8,11 @@
 //! produce both skews — pure IR-0 (sim-ir frozen, format_version 8; NO AST change).
 //!
 //! iverilog 13.0 rejects all concurrent assertions (NULL oracle) → hand-IEEE; every
-//! expected value below is derived from §16.12 + value-pinned. STILL LOUD (deferred):
-//! a DEEPER chain (`a |=> (b |=> (d |=> e))`, inner consequent itself a property), a
-//! sequence outer antecedent, a different/multi clock, formals, or `disable iff`.
+//! expected value below is derived from §16.12 + value-pinned. A DEEPER homogeneous
+//! chain (`a |=> (b |=> (d |=> e))`, inner consequent itself a property) is now
+//! synthesized as `(a ##1 b ##1 d) |=> e` (slice #6, see `sva_propref_chain.rs`).
+//! STILL LOUD (deferred): a MIXED `|=>…|->` chain, a different/multi clock, formals,
+//! `disable iff`, or a recursive property.
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -130,10 +132,13 @@ fn inner_antecedent_false_is_vacuous() {
 }
 
 #[test]
-fn deeper_three_cycle_chain_is_loud() {
-    // `a |=> (b |=> (d |=> e))` (inner consequent is itself a property ref) is a
-    // 3-cycle chain beyond N2b core → loud (deferred), not silently mis-synthesized.
-    let (_o, err, code) = run("module top;\n\
+fn deeper_three_cycle_chain_now_synthesized() {
+    // SLICE #6: `a |=> (b |=> (d |=> e))` (inner consequent is itself a property ref)
+    // ≡ `(a ##1 b ##1 d) |=> e` (§16.12, +1 per `|=>`) is now SYNTHESIZED (was loud
+    // pre-#6). a=b=d=1, e=0 always → antecedent matches every clock, e=0 three clocks
+    // later → fires an ASSERTION violation (NOT a VITA-E unsupported reject). The exact
+    // +3 cycle is pinned by the off-by-one discriminators in `sva_propref_chain.rs`.
+    let (out, err, code) = run("module top;\n\
          reg clk=0, a=1, b=1, d=1, e=0; always #5 clk=~clk;\n\
          property r; @(posedge clk) d |=> e; endproperty\n\
          property q; @(posedge clk) b |=> r; endproperty\n\
@@ -141,8 +146,15 @@ fn deeper_three_cycle_chain_is_loud() {
          initial assert property(p);\n\
          initial #46 $finish;\n\
          endmodule\n");
-    assert_eq!(code, Some(1), "a deeper 3-cycle chain must be loud. {err}");
-    assert!(err.contains("VITA-E"), "{err}");
+    assert_eq!(
+        code,
+        Some(1),
+        "a deeper 3-cycle chain with e=0 must FIRE (now synthesized). stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("assertion") && !err.contains("unsupported"),
+        "must be an assertion violation, not a loud unsupported reject:\n{err}\n{out}"
+    );
 }
 
 #[test]
