@@ -567,6 +567,15 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// the alternative per-call `Vec::new` allocates on every delta).
     scratch_changed: Vec<u32>,
     scratch_edges: Vec<(u32, FourState, FourState)>,
+    /// N4 / multi-edge dedup: per-`propagate_changes` markers so a process
+    /// sensitive to MULTIPLE nets that ALL change in the SAME delta is woken
+    /// EXACTLY ONCE (IEEE §9: an `always @(posedge c1 or posedge c2)` ticks once
+    /// per slot even when both edges occur together — vita previously pushed it
+    /// twice → ran the body twice). `seen[proc]` marks an already-queued proc this
+    /// pass; `marked` records the touched indices so cleanup is O(#fired), not
+    /// O(#procs). Empty/untouched for single-edge designs ⇒ byte-identical.
+    scratch_edge_seen: Vec<bool>,
+    scratch_edge_marked: Vec<u32>,
     /// C-FORCE-REEVAL-p2: reused buffer of the force KEYS (target nets) selected
     /// for re-eval this delta (changed-net-triggered ∪ always-reeval), kept
     /// sorted to preserve the BTreeMap re-eval order contract.
@@ -633,6 +642,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             time_limit,
             scratch_changed: Vec::new(),
             scratch_edges: Vec::new(),
+            scratch_edge_seen: Vec::new(),
+            scratch_edge_marked: Vec::new(),
             scratch_force_keys: Vec::new(),
             scratch_expr_now: Vec::new(),
             scratch_level_fire: Vec::new(),
@@ -1667,6 +1678,15 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         }));
 
         // (a) wake statically edge-sensitive `always` processes.
+        // Multi-edge dedup: a process sensitive to SEVERAL nets that all change in
+        // THIS delta must be queued ONCE (IEEE §9: `always @(posedge c1 or posedge
+        // c2)` ticks once even when both edges land together). Borrow the markers
+        // out for the pass (take/restore avoids a per-delta alloc).
+        let mut edge_seen = std::mem::take(&mut self.scratch_edge_seen);
+        let mut edge_marked = std::mem::take(&mut self.scratch_edge_marked);
+        if edge_seen.len() < self.activities.len() {
+            edge_seen.resize(self.activities.len(), false);
+        }
         for &(net, prev, new) in &edges {
             // P3-4: index loop instead of cloning the per-net waiter list every
             // delta — the body only pushes into `cur.active`, never mutates
@@ -1689,10 +1709,26 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     if self.st.commit_clocking(ready.proc) {
                         continue;
                     }
+                    // Dedup: this proc may also be registered on another net that
+                    // fired this delta — push it to Active only once.
+                    let p = ready.proc as usize;
+                    if edge_seen[p] {
+                        continue;
+                    }
+                    edge_seen[p] = true;
+                    edge_marked.push(ready.proc);
                     push_sorted(&mut self.cur.active, ready);
                 }
             }
         }
+        // Restore the markers, clearing ONLY the touched entries (O(#fired), not
+        // O(#procs)) so the buffer stays all-false for the next delta.
+        for &p in &edge_marked {
+            edge_seen[p as usize] = false;
+        }
+        edge_marked.clear();
+        self.scratch_edge_seen = edge_seen;
+        self.scratch_edge_marked = edge_marked;
 
         // (b) wake in-body waiters. `wait(expr)` (WaitCause::Expr) RE-CHECKS its
         // predicate against the post-change net values and resumes only when it

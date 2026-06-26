@@ -4,7 +4,10 @@
 //! activity), synthesized as a holding net committed by a marked handler from an
 //! engine preponed snapshot taken at each time advance. `@(cb)` ≡ the clocking
 //! event. Output drivers (need the Observed/Reactive region), explicit skews,
-//! multi-clock/anonymous blocks, and non-net binds are HONEST-LOUD (E3009).
+//! anonymous blocks, and non-net binds are HONEST-LOUD (E3009). Multi-event
+//! clocking `@(posedge c1 or posedge c2)` IS supported (YELLOW #2): the block
+//! ticks once per slot (preponed sample + `@(cb)` fire once) even on simultaneous
+//! edges, resting on the engine's multi-edge dedup.
 //!
 //! iverilog 13 supports NO clocking blocks → every verdict is HAND-IEEE (no
 //! differential oracle), independently cross-checked. Clock: `always #5 clk=~clk`
@@ -427,4 +430,57 @@ fn driving_a_clocking_input_is_loud() {
          initial begin @(posedge clk); cb.q = 99; $finish; end\n\
          endmodule\n");
     loud(&o, &e, c, "driving a clocking input");
+}
+
+// ── YELLOW #2: multi-event clocking `@(posedge c1 or posedge c2)` ──
+
+#[test]
+fn multi_event_clock_ticks_once_per_slot() {
+    // §14.3: the block ticks on ANY listed edge; SIMULTANEOUS c1+c2 = ONE tick.
+    // c1, c2, then simultaneous ⇒ 3 ticks, preponed `cb.d` sampled at each.
+    let (o, e, c) = run("module t;\n\
+         reg c1, c2, d; integer ticks;\n\
+         clocking cb @(posedge c1 or posedge c2); input d; endclocking\n\
+         always @(cb) begin ticks=ticks+1; $display(\"tick=%0d d=%b\", ticks, cb.d); end\n\
+         initial begin\n\
+           ticks=0; c1=0; c2=0; d=0;\n\
+           #1 d=1;\n\
+           #1 c1=1;\n\
+           #1 c1=0; d=0;\n\
+           #1 c2=1;\n\
+           #1 c1=0; c2=0; d=1;\n\
+           #1 c1=1; c2=1;\n\
+           #1 $display(\"total=%0d\", ticks); $finish;\n\
+         end endmodule\n");
+    clean(&o, &e, c, "tick=1 d=1", "multi-event tick1 preponed sample");
+    clean(&o, &e, c, "tick=2 d=0", "multi-event tick2 preponed sample");
+    clean(&o, &e, c, "tick=3 d=1", "multi-event tick3 preponed sample");
+    // simultaneous c1+c2 ⇒ ONE tick (total 3, not 4).
+    clean(&o, &e, c, "total=3", "multi-event one-tick-per-slot");
+}
+
+#[test]
+fn multi_event_mixed_edges() {
+    // `@(posedge c1 or negedge c2)` — mixed posedge/negedge edge list is accepted.
+    let (o, e, c) = run("module t;\n\
+         reg c1, c2, d; integer ticks;\n\
+         clocking cb @(posedge c1 or negedge c2); input d; endclocking\n\
+         always @(cb) ticks=ticks+1;\n\
+         initial begin\n\
+           ticks=0; c1=0; c2=1; d=0;\n\
+           #1 c1=1;\n\
+           #1 c2=0;\n\
+           #1 $display(\"ticks=%0d\", ticks); $finish;\n\
+         end endmodule\n");
+    clean(&o, &e, c, "ticks=2", "mixed posedge/negedge multi-event");
+}
+
+#[test]
+fn level_clocking_event_is_loud() {
+    // A non-edge (level) clocking event stays loud (only edges are valid).
+    let (o, e, c) = run("module t;\n\
+         reg clk, d;\n\
+         clocking cb @(clk); input d; endclocking\n\
+         initial begin #1 $finish; end endmodule\n");
+    loud(&o, &e, c, "level clocking event");
 }

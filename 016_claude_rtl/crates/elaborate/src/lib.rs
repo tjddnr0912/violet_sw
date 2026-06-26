@@ -17381,11 +17381,19 @@ impl<'s> Elaborator<'s> {
             let ast::ModuleItem::Clocking(cb) = item else {
                 continue;
             };
-            if !matches!(&cb.clock, ast::Sensitivity::List(evs) if evs.len() == 1) {
+            // The clocking event must be an edge list `@(posedge c1 [or posedge c2…])`
+            // — one OR MORE edge terms (YELLOW #2: multi-event clock). `@*`, an empty
+            // list, or any non-edge (level) term stays loud. The engine arms the
+            // commit handler on every listed edge and (with the multi-edge dedup in
+            // `propagate_changes`) ticks exactly once per slot even on simultaneous
+            // edges, so the preponed sample / `@(cb)` fire once.
+            let clock_ok = matches!(&cb.clock, ast::Sensitivity::List(evs)
+                if !evs.is_empty() && evs.iter().all(|e| !matches!(e.edge, ast::Edge::NoEdge)));
+            if !clock_ok {
                 self.error(
                     MsgCode::ElabUnsupported,
-                    "a clocking block must have a single clocking event \
-                     (multi-clock / `@*` is unsupported in this subset)",
+                    "a clocking block clocking event must be one or more edges \
+                     (`@(posedge c1 [or posedge c2 …])`; `@*` / level events are unsupported)",
                 );
                 continue;
             }
