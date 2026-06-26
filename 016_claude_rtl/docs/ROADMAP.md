@@ -431,14 +431,33 @@ loud-reject로 확인됨(이제 참):**
 | 7 | SVA empty-match `##0` 인접 융합(고정) | **런타임 cycle offset**(컴파일타임 상수 아님)·**과거 silent-wrong 피격 클래스**(trailing-`##0`)·오라클 없음. #6/#3과 달리 hand-trace로 단정 불가 | 4 corner(leading/trailing/혼합) 전부 hand-trace + 만장일치 리뷰 후 corner별 GO(leading-`##0` D=0이 최단순) |
 
 **ℹ️ 발견된 pre-existing 코어 스케줄러/elaborate silent-wrong(이번 배치 #2 fuzzer 발굴·stash-verified 독립·각각 별개 슬라이스 후보):**
-1. **(CRITICAL) 동일-슬롯 블로킹 글리치 wake-collapse**: `a=1;a=0;`(net 0→0 endpoints)에서 dirty-sweep `cur!=prev`가 중간 0→1 이벤트를 drop→`always @(a)` 미발화(iverilog 1회 발화). 의도적 A→B→A round-trip-drop 최적화(perf 민감)라 수정=event-per-transition 재설계.
-2. (CRITICAL) #1과 동일 root, 엣지/multi-net 리스트(`@(posedge a or posedge b)`)서도 발생.
-3. **(CRITICAL) SELF-RETRIGGER over-fire**: `always @(a) begin cnt++; if(a) a=0; end`의 body 내 self-write가 같은 슬롯에 재트리거(iverilog: body 실행 중 proc은 @에서 미서스펜드→self-write 재arm 안함). NBA self-write는 정상.
+1. ~~**(CRITICAL) 동일-슬롯 블로킹 글리치 wake-collapse**~~ ✅ **수정 완료(2026-06-27, branch `feat-sched-glitch`, §4.5.5 참조)** — `a=1;a=0;`(net 0→0 endpoints)에서 dirty-sweep `cur!=prev`가 중간 0→1 이벤트를 drop→`always @(a)` 미발화. **수정=dirty 멤버십을 changed set으로 사용(endpoint 필터 제거)**, event-per-transition 재설계 불필요(iverilog는 글리치를 1회 collapse). byte-identical(글리치셋=정상디자인 공집합).
+2. ~~(CRITICAL) #1과 동일 root, 엣지/multi-net 리스트(`@(posedge a or posedge b)`)서도 발생~~ ✅ **수정 완료(§4.5.5)** — **per-net intra-slot edge mask(`slot_edge`) 누적**으로 글리치 posedge/negedge 복원(단일 write면 endpoint와 동일=byte-identical).
+3. **(CRITICAL) SELF-RETRIGGER over-fire**: `always @(a) begin cnt++; if(a) a=0; end`의 body 내 self-write가 같은 슬롯에 재트리거(iverilog: body 실행 중 proc은 @에서 미서스펜드→self-write 재arm 안함). NBA self-write는 정상. **[잔존 — §4.5.5 글리치 수정과 독립, 별개 슬라이스]**
 4. (IMPORTANT) gated/derived clock **cross-delta 동일-timestep double-fire**: `@(posedge clk or posedge gclk)`(gclk=clk&en이 1 delta 늦게 derive)→2회 발화·iverilog는 timestep당 1회 collapse. delta-scoped 디둡(#2)은 정확하나 timestep-scoped 디둡 필요.
 5. (MINOR) mixed edge+level `@(posedge c1 or c2)`의 level term c2가 t0에 X→0일 때 spurious 발화(AnyEdge가 X→known에 발화·pure-level `@(c2)`는 안함). root=classify_event_list AnyEdge lowering.
 6. (IMPORTANT) `always @*` t0 spurious 실행(always_comb is_comb_inferred t0-kick에 혼입; §9.2.2.2.1상 always_comb만 t0 실행).
 
 **적대 리뷰 방법론 노트(오라클 없는 SVA)**: iverilog 13.0이 **모든 concurrent assertion을 거부**(verilator 부재)하므로 SVA(#6/#3)는 외부 차분 불가 → **vita-내부 차분**을 teeth로 사용(중첩/local-var 형태를 검증된 시퀀스 파이프라인 등가식과 비교). #6/#3은 cycle/stage가 **컴파일타임 상수/구조적**이라 hand-trace로 단정 가능 = GO; #7은 **런타임 offset**이라 honest-loud.
+
+#### 4.5.5 블로킹/NBA 글리치 wake-collapse 수정 (2026-06-27, branch `feat-sched-glitch`, §4.5.4 스케줄러버그 #1+#2)
+
+> §4.5.4가 발굴한 CRITICAL #1+#2(동일-슬롯 A→B→A 글리치를 dirty-sweep `cur!=prev` 필터가 silent-drop). **사전 그라운딩(11종 오라클 차분으로 정확한 IEEE §9 규칙 확정: 글리치는 1회 collapse, event-per-transition 아님) → 구현 → 사후 적대 리뷰(2 서브에이전트: differential 54-케이스 + soundness) → CRITICAL 회귀 1종 수정 → 재검증 CLEAN**. 전부 IR-0·format_version 19 불변. **2279 green**(베이스라인 2269 + 신규 10).
+
+**✅ 수정(엔진 only, 2 메커니즘, 둘 다 비-글리치 디자인서 byte-identical):**
+| 메커니즘 | 코드 | 복원 케이스(iverilog 핀) |
+|---|---|---|
+| **changed_nets = full dirty set**(endpoint `cur!=prev` 필터 제거) | `sched.rs` propagate_changes | `@(a)`/`@(v)`/`@(a or b)` Level(scalar·multibit·NBA) — dirty 멤버십=슬롯 내 최소 1회 실전이. 글리치셋(dirty&&cur==prev)=정상디자인 공집합→byte-identical |
+| **per-net intra-slot edge mask `slot_edge`**(전이별 `edge_fires` OR 누적; write 청크포인트+commit_clocking_sample에서, `is_edge_target` gated) | `state.rs` write_chunk/note_change/accumulate_edge + `sched.rs` edge_fires_slot | `@(posedge/negedge)` always step(a)·in-body `@(posedge x)` 절차적 wait step(b)·mixed `@(posedge clk or rst)` AnyEdge 레벨항. 단일 write면 mask==endpoint→byte-identical |
+
+`is_edge_target`=정적 `@(posedge…)` sens + 절차적 `Wait{Edge}`(프로세스-로컬 body + 전역 func/task blocks) init 스캔. 비-edge net은 비용 0.
+
+**🔬 사후 적대 리뷰 성과:** differential 헌터=**CLEAN(54케이스 0 new divergence)**. soundness 리뷰=**CRITICAL 1종 발굴→수정**: `commit_clocking_sample`(N4 holding net writer)가 `note_change`(slot_edge 리셋)는 호출하나 `accumulate_edge`는 안 함→`@(posedge cb.sig)`가 slot_edge=0으로 남아 silent-drop(=회귀; stash 차분으로 pre-fix `FIRED` vs post-fix `행` 확인)→write_chunk 패턴 미러로 수정, 재검증 CLOSED+CLEAN.
+
+**ℹ️ 본 슬라이스가 부수 발굴한 별개 pre-existing(글리치 수정과 독립·각 별개 슬라이스 후보):**
+1. **(narrow posedge/negedge)** vita의 `is_posedge`=`new==1 && prev!=1`(좁은 정의)라 `0→x`/`0→z`/`x→1`/`z→1`이 posedge로 안 잡힘(iverilog 와이드 정의는 잡음). 비-글리치 `0→x→1`서도 vita f=1 vs iverilog 2. **와이드화는 t0 `x→known` 전이가 모든 reg서 엣지가 되어 다수 골든 flip**→전용 슬라이스+신중한 오라클 필요.
+2. **(arm=Some in-body `@(a)` 글리치)** in-body `@(a)`(arm-기반 레벨)가 글리치 후 arm 값으로 복귀 시 미발화. **수정 시도가 `@(*)`를 arming 슬롯서 조기발화시켜(differential 회귀) revert**→arm-slot 추적 필요한 narrow corner, honest 유지.
+3. **(cont-assign 글리치 전파)** `assign b=a; @(posedge b)`에서 a 글리치가 b로 전파 안 됨(vita가 cont-assign을 최종 settled 값으로 평가). pre-fix=post-fix 동일(회귀 아님)·아키텍처적 별개.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 

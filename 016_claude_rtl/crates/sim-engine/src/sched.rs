@@ -6,16 +6,14 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use sim_ir::{
-    BitPacked, EdgeKind, EdgeTerm, FourState, Lvalue, RegionTag, SensKind, Terminator, WaitCause,
-};
+use sim_ir::{BitPacked, EdgeKind, EdgeTerm, Lvalue, RegionTag, SensKind, Terminator, WaitCause};
 
 use elaborate::{ForkModeTable, JoinMode};
 
 use crate::builtins::{format_args_str, write_out};
 use crate::eval::{EvalCtx, NetReader};
 use crate::exec::{run_process, Kernel, Offsets, Step};
-use crate::state::{scalar_bit0, SimState};
+use crate::state::SimState;
 use crate::value::Value;
 use crate::DeferRegion;
 
@@ -566,7 +564,12 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// Scratch buffers reused across `propagate_changes` calls (take/restore —
     /// the alternative per-call `Vec::new` allocates on every delta).
     scratch_changed: Vec<u32>,
-    scratch_edges: Vec<(u32, FourState, FourState)>,
+    /// GLITCH: per-changed-net `(net, slot_edge_mask)` — the mask is the net's
+    /// intra-slot bit0 edge summary (`SimState::slot_edge`), so both the static
+    /// edge-wake pass (a) and the in-body `Edge` waiter pass (b) fire on a glitch
+    /// the endpoint `prev/cur` compare would lose. For a net written once per
+    /// slot the mask equals `edge_fires(kind, prev, cur)` ⇒ byte-identical.
+    scratch_edges: Vec<(u32, u8)>,
     /// N4 / multi-edge dedup: per-`propagate_changes` markers so a process
     /// sensitive to MULTIPLE nets that ALL change in the SAME delta is woken
     /// EXACTLY ONCE (IEEE §9: an `always @(posedge c1 or posedge c2)` ticks once
@@ -1641,22 +1644,24 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // fresh Vec pair per call was measurable allocator traffic.
         let mut changed_nets = std::mem::take(&mut self.scratch_changed);
         changed_nets.clear();
-        // Dirty sweep (scheduler R2): only nets that took an actual bit change
-        // since the last sweep are candidates — the previous full O(nets)
+        // Dirty sweep (scheduler R2): every net that took an ACTUAL bit change
+        // since the last sweep is a candidate — the previous full O(nets)
         // `cur != prev` scan taxed every idle net on every delta (512 idle
         // regs ≈ 9x the 8-net wall-clock). Sorting restores the old scan's
-        // ascending order (byte-identity); the `cur != prev` filter drops
-        // A→B→A round-trips within the delta. Soundness: `prev` only changes
-        // in step (c) below / `snapshot_prev` (both set prev = cur), so any
-        // net with `cur != prev` MUST have taken a marked write since the
-        // last sweep — the dirty list cannot miss a changed net.
+        // ascending order (byte-identity). GLITCH FIX: `dirty` membership ALONE
+        // is the changed set — a net is on `dirty` iff `note_change` saw a real
+        // transition, so an A→B→A round-trip (cur ends == prev) is STILL a
+        // change the observer must see (IEEE §9 fires a glitch once). The old
+        // `cur != prev` endpoint filter silently dropped exactly those nets,
+        // leaving `always @(a)`/`@(posedge a)` un-fired. The dropped set is
+        // EMPTY for any design without a same-slot round-trip, so non-glitch
+        // designs stay byte-identical; the bit0 edge KIND for the wake is
+        // recovered from `slot_edge` (built per transition, not from endpoints).
         let mut cand = std::mem::take(&mut self.st.dirty);
         cand.sort_unstable();
         for &n in &cand {
             self.st.dirty_flag[n as usize] = false;
-            if self.st.nets[n as usize].cur != self.st.nets[n as usize].prev {
-                changed_nets.push(n);
-            }
+            changed_nets.push(n);
         }
         cand.clear();
         self.st.dirty = cand; // hand the capacity back for the next writes
@@ -1665,17 +1670,20 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             return;
         }
 
-        // Precompute scalar (bit0) prev→new for each changed net (still pre-refresh).
+        // Precompute the per-net intra-slot edge mask for each changed net. The
+        // mask (`slot_edge`) is maintained by the write funnel for every
+        // `is_edge_target` net and is fresh for any net on `changed_nets` (the
+        // first-dirty reset ran this slot). For a non-edge-target net the mask is
+        // unused below (it is in no `net_to_edge` list and no `Edge` waiter), so
+        // a stale value is harmless. Snapshotting into `edges` lets the `retain`
+        // closure in (b) read the mask without re-borrowing `self.st`.
         let mut edges = std::mem::take(&mut self.scratch_edges);
         edges.clear();
-        edges.extend(changed_nets.iter().map(|&net| {
-            let i = net as usize;
-            (
-                net,
-                scalar_bit0(&self.st.nets[i].prev),
-                scalar_bit0(&self.st.nets[i].cur),
-            )
-        }));
+        edges.extend(
+            changed_nets
+                .iter()
+                .map(|&net| (net, self.st.slot_edge[net as usize])),
+        );
 
         // (a) wake statically edge-sensitive `always` processes.
         // Multi-edge dedup: a process sensitive to SEVERAL nets that all change in
@@ -1687,7 +1695,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         if edge_seen.len() < self.activities.len() {
             edge_seen.resize(self.activities.len(), false);
         }
-        for &(net, prev, new) in &edges {
+        for &(net, mask) in &edges {
             // P3-4: index loop instead of cloning the per-net waiter list every
             // delta — the body only pushes into `cur.active`, never mutates
             // `net_to_edge`, so the indexed re-borrow is sound.
@@ -1697,7 +1705,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 // edge entry is permanent (never deregistered), but IEEE does
                 // not re-enter an `always` until it completes and re-arms. Its
                 // legitimate in-body wake comes via the waiter path (b) below.
-                if edge_fires(kind, prev, new) && !self.activities[ready.proc as usize].busy {
+                // GLITCH: fire from the intra-slot `mask` (== endpoint for a
+                // single write) so an A→B→A clock pulse still ticks once.
+                if edge_fires_slot(mask, kind) && !self.activities[ready.proc as usize].busy {
                     // N4: a clocking-commit handler applies `preponed_buf → holding`
                     // HERE — at edge DETECTION, before the Active batch drains — so
                     // EVERY same-slot reader of `cb.sig` sees the committed sample,
@@ -1757,6 +1767,15 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         if self.n_level_waiters > 0 {
             level_fire.extend(self.waiters.iter().map(|w| {
                 match (&w.cause, &w.arm) {
+                    // An in-body `@(sig)`/`@(*)` (arm=Some) fires when a watched net
+                    // differs from its ARM-TIME value. NOTE: this intentionally does
+                    // NOT consult `changed_nets` — a same-slot change that happened
+                    // BEFORE the arm (e.g. `@(*)` arming at t0 right after its inputs
+                    // were initialized) is already reflected in `arm`, so firing on
+                    // dirtiness would spuriously re-run it in the arming slot. The
+                    // cost is one narrow miss: an in-body `@(a)` waiting through a
+                    // glitch that RETURNS to the arm value (ROADMAP §4.5.4) — a far
+                    // rarer corner than the `@(*)` t0 behavior this preserves.
                     (WaitCause::Level { nets }, Some(arm)) => nets
                         .iter()
                         .zip(arm)
@@ -1781,9 +1800,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             let keep = match &w.cause {
                 // Level + inferred-comb: fire per the pre-computed arm/any-change test.
                 WaitCause::Level { .. } => !level_fire[wi],
+                // GLITCH: an in-body `@(posedge x)` fires from the intra-slot
+                // mask, so a clock pulse that glitches back wakes the waiter.
                 WaitCause::Edge { net, kind } => !edges
                     .iter()
-                    .any(|&(en, prev, new)| en == *net && edge_fires(*kind, prev, new)),
+                    .any(|&(en, mask)| en == *net && edge_fires_slot(mask, *kind)),
                 // wait(expr): consume + resume only when the predicate is now true.
                 WaitCause::Expr { .. } => !expr_now[wi],
                 _ => true,
@@ -3728,17 +3749,17 @@ fn compose_child_tie(parent_tie: u32, child_idx: u32) -> u32 {
     ((parent_tie + 1) << 16) | (child_idx & 0xFFFF)
 }
 
-fn is_posedge(prev: FourState, new: FourState) -> bool {
-    new == FourState::One && prev != FourState::One
-}
-fn is_negedge(prev: FourState, new: FourState) -> bool {
-    new == FourState::Zero && prev != FourState::Zero
-}
-fn edge_fires(kind: EdgeKind, prev: FourState, new: FourState) -> bool {
+/// GLITCH: edge firing from a net's intra-slot `slot_edge` accumulator mask
+/// (bit0 = posedge occurred, bit1 = negedge, bit2 = bit0 changed at all). For a
+/// net written ONCE in the slot the mask is exactly `{is_posedge, is_negedge,
+/// prev!=cur}` of the single `prev→cur` transition, so this returns the same as
+/// `edge_fires(kind, prev, cur)` — only an A→B→A glitch (which the endpoint
+/// compare loses) diverges, recovering the IEEE §9 "fire once per slot".
+fn edge_fires_slot(mask: u8, kind: EdgeKind) -> bool {
     match kind {
-        EdgeKind::Posedge => is_posedge(prev, new),
-        EdgeKind::Negedge => is_negedge(prev, new),
-        EdgeKind::AnyEdge => prev != new,
+        EdgeKind::Posedge => mask & 1 != 0,
+        EdgeKind::Negedge => mask & 2 != 0,
+        EdgeKind::AnyEdge => mask & 4 != 0,
     }
 }
 

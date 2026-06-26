@@ -160,6 +160,23 @@ pub(crate) struct SimState<'a> {
     /// coerces any X/Z bit to 0 (IEEE §6.11.3: a 2-state var can never hold X).
     /// All-false unless a 2-state net exists ⇒ byte-identical for every prior design.
     pub two_state: Vec<bool>,
+    /// GLITCH: per-net intra-slot bit0 edge summary (cleared on a net's FIRST
+    /// dirtying each slot, OR-accumulated on every later same-slot transition).
+    /// bit0 = a `posedge` (→1) occurred, bit1 = a `negedge` (→0), bit2 = bit0
+    /// changed at all (AnyEdge). For a net written ONCE per slot it equals the
+    /// endpoint `edge_fires(kind, prev, cur)` exactly ⇒ byte-identical. Only
+    /// MAINTAINED for `is_edge_target` nets and only READ in `propagate_changes`
+    /// for those nets, so a single-write/non-glitch design never diverges; the
+    /// accumulator's whole purpose is to recover an A→B→A round-trip that the
+    /// endpoint `cur != prev` test loses (IEEE §9: a glitch fires the observer
+    /// ONCE).
+    pub slot_edge: Vec<u8>,
+    /// GLITCH: per-net flag — the net is the target of SOME edge-sensitive wake
+    /// (a static `@(posedge/negedge …)` sensitivity OR a procedural `@(edge …)`
+    /// wait). Computed once at construction (static); gates the `slot_edge`
+    /// maintenance so non-clock nets pay nothing. A net never edge-watched has
+    /// its `slot_edge` neither reset nor read.
+    pub is_edge_target: Vec<bool>,
     /// IEEE §9.3.2 continuous-force registry: net → (whole-net lvalue, rhs
     /// ExprId, forcing module's time multiplier). BTreeMap ⇒ deterministic
     /// re-evaluation order; empty unless a force is live (zero steady cost).
@@ -521,6 +538,48 @@ impl<'a> SimState<'a> {
         // behavior since no `Expr::Call` is reachable without a frame func).
         let wt = crate::width::WidthTable::build(ir, &crate::FuncTable::new());
         let nnets = ir.nets.len();
+        // GLITCH: a net is an edge target if it appears in a STATIC edge
+        // sensitivity (`@(posedge clk …)` on an `always`) OR in a PROCEDURAL
+        // edge wait (`@(posedge x)` inside a body → `Terminator::Wait` carrying
+        // `WaitCause::Edge`). Both are compile-time-fixed net ids, so one scan
+        // at construction yields the complete set; `slot_edge` is then only
+        // maintained/consulted for these nets (every other net byte-identical).
+        let mut is_edge_target = vec![false; nnets];
+        let mark_edge = |net: u32, set: &mut Vec<bool>| {
+            if (net as usize) < nnets {
+                set[net as usize] = true;
+            }
+        };
+        for p in &ir.processes {
+            // Static edge sensitivity (`always @(posedge clk …)`).
+            if p.sensitivity.kind == sim_ir::SensKind::Edge {
+                for et in &p.sensitivity.edges {
+                    mark_edge(et.net, &mut is_edge_target);
+                }
+            }
+            // Procedural edge wait (`@(posedge x)` in this process's body — its
+            // blocks are PROCESS-LOCAL in `body`, NOT in the global `ir.blocks`
+            // arena, which holds only func/task bodies).
+            for blk in &p.body {
+                if let sim_ir::Terminator::Wait {
+                    cond: sim_ir::WaitCause::Edge { net, .. },
+                    ..
+                } = &blk.term
+                {
+                    mark_edge(*net, &mut is_edge_target);
+                }
+            }
+        }
+        // Func/task bodies (global arena) may also carry an `@(edge …)` wait.
+        for blk in &ir.blocks {
+            if let sim_ir::Terminator::Wait {
+                cond: sim_ir::WaitCause::Edge { net, .. },
+                ..
+            } = &blk.term
+            {
+                mark_edge(*net, &mut is_edge_target);
+            }
+        }
         SimState {
             ir,
             now: 0,
@@ -529,6 +588,8 @@ impl<'a> SimState<'a> {
             dirty_flag: vec![false; nnets],
             forced: vec![false; nnets],
             two_state: vec![false; nnets],
+            slot_edge: vec![0u8; nnets],
+            is_edge_target,
             active_forces: std::collections::BTreeMap::new(),
             force_net_to_forces: std::collections::BTreeMap::new(),
             force_always_reeval: std::collections::BTreeSet::new(),
@@ -1034,6 +1095,16 @@ impl<'a> SimState<'a> {
             }
         };
 
+        // GLITCH: capture scalar bit0 BEFORE the mutation so a same-slot re-write
+        // (A→B→A) records its real `B→A` transition (the endpoint compare would
+        // see only A==A). Gated on `is_edge_target`, so non-clock nets pay nothing.
+        let track_edge = self.is_edge_target[net];
+        let old_b0 = if track_edge {
+            scalar_bit0(&self.nets[net].cur)
+        } else {
+            sim_ir::FourState::Zero
+        };
+
         let slot = &mut self.nets[net];
 
         // WORD-PARALLEL fast path: a whole-element write to a 64-aligned destination
@@ -1070,6 +1141,9 @@ impl<'a> SimState<'a> {
             }
             if changed {
                 self.note_change(net as u32, word);
+                if track_edge {
+                    self.accumulate_edge(net, old_b0);
+                }
             }
             return changed;
         }
@@ -1090,6 +1164,9 @@ impl<'a> SimState<'a> {
         }
         if changed {
             self.note_change(net as u32, word);
+            if track_edge {
+                self.accumulate_edge(net, old_b0);
+            }
         }
         changed
     }
@@ -1103,6 +1180,17 @@ impl<'a> SimState<'a> {
         let net_w = self.nets[i].width;
         let nw = nwords(net_w).max(1);
         let m = top_mask(net_w);
+        // GLITCH: a holding net can itself be an edge target (`@(posedge cb.sig)`),
+        // so this write must feed the same intra-slot edge accumulator as the
+        // normal funnel — `note_change` alone RESETS `slot_edge`, so without the
+        // matching `accumulate_edge` a posedge on the committed sample would be
+        // silently lost (the pre-fix endpoint compare caught it via `cur != prev`).
+        let track_edge = self.is_edge_target[i];
+        let old_b0 = if track_edge {
+            scalar_bit0(&self.nets[i].cur)
+        } else {
+            sim_ir::FourState::Zero
+        };
         let slot = &mut self.nets[i];
         let mut changed = false;
         for k in 0..nw {
@@ -1124,6 +1212,9 @@ impl<'a> SimState<'a> {
         }
         if changed {
             self.note_change(net, 0);
+            if track_edge {
+                self.accumulate_edge(i, old_b0);
+            }
         }
         changed
     }
@@ -1184,8 +1275,33 @@ impl<'a> SimState<'a> {
         if !self.dirty_flag[i] {
             self.dirty_flag[i] = true;
             self.dirty.push(net);
+            // GLITCH: first dirtying this slot — start the bit0 edge accumulator
+            // fresh. (Later same-slot writes OR into it via `accumulate_edge`.)
+            if self.is_edge_target[i] {
+                self.slot_edge[i] = 0;
+            }
         }
         self.emit_vcd_change(net, word);
+    }
+
+    /// GLITCH: OR this write's bit0 transition (`old_b0 → current bit0`) into the
+    /// net's intra-slot edge accumulator. Called AFTER `note_change` (so the
+    /// first-dirty reset has already run), only for `is_edge_target` whole-net /
+    /// element-0 writes. `old_b0` is the net's scalar bit0 captured BEFORE the
+    /// write.
+    fn accumulate_edge(&mut self, net: usize, old_b0: sim_ir::FourState) {
+        let new_b0 = scalar_bit0(&self.nets[net].cur);
+        let mut m = 0u8;
+        if fs_is_posedge(old_b0, new_b0) {
+            m |= 1;
+        }
+        if fs_is_negedge(old_b0, new_b0) {
+            m |= 2;
+        }
+        if old_b0 != new_b0 {
+            m |= 4;
+        }
+        self.slot_edge[net] |= m;
     }
 
     /// Emit a VCD value_change for the net word that changed. Arrays carry one
@@ -2705,6 +2821,19 @@ pub(crate) fn scalar_bit0(b: &BitPacked) -> sim_ir::FourState {
         (0, 1) => sim_ir::FourState::X,
         _ => sim_ir::FourState::Z,
     }
+}
+
+/// GLITCH: bit0 edge predicates, kept here next to `scalar_bit0` and identical
+/// to the scheduler's `is_posedge`/`is_negedge` (a posedge is a transition TO 1
+/// from any non-1; a negedge a transition TO 0 from any non-0). The write funnel
+/// ORs these per transition to recover glitches the endpoint compare loses.
+#[inline]
+fn fs_is_posedge(prev: sim_ir::FourState, new: sim_ir::FourState) -> bool {
+    new == sim_ir::FourState::One && prev != sim_ir::FourState::One
+}
+#[inline]
+fn fs_is_negedge(prev: sim_ir::FourState, new: sim_ir::FourState) -> bool {
+    new == sim_ir::FourState::Zero && prev != sim_ir::FourState::Zero
 }
 
 #[cfg(test)]
