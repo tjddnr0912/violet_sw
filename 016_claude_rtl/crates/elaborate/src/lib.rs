@@ -19016,7 +19016,25 @@ impl<'s> Elaborator<'s> {
                 // `synth_seq_pipeline`). `n == m` is a single `Fixed(n)` either way.
                 let hops: Vec<SeqHop> = match max {
                     None => vec![SeqHop::AtLeast(*min)],
-                    Some(n) if collapse_window() && *n > *min => vec![SeqHop::Range(*min, *n)],
+                    Some(n) if collapse_window() && *n > *min => {
+                        // SVA-QUAD collapse: ONE `Range(m,n)` hop carries the whole
+                        // window, but it MUST respect the SAME alternative cap as the
+                        // fan-out path (which would loud-reject `n-m+1 > SVA_SEQ_ALT_CAP`
+                        // alternatives at `alternatives.len()` post-expansion). Without
+                        // this, collapse would silently run a window the fan-out oracle
+                        // rejects (a loud-vs-correct divergence that breaks the
+                        // differential premise) and would allocate `n-m` 1-bit regs
+                        // uncapped (`##[1:5_000_000]` → OOM). Capping the window depth
+                        // makes collapse and fan-out agree at the boundary AND bounds
+                        // the sliding-OR reg allocation.
+                        if self.sva_count_within_cap(*n - *min + 1, "`##[m:n]` window") {
+                            vec![SeqHop::Range(*min, *n)]
+                        } else {
+                            // Error already emitted; degrade to a single Fixed hop so
+                            // elaboration recovers (the assertion is already invalid).
+                            vec![SeqHop::Fixed(*min)]
+                        }
+                    }
                     Some(n) => (*min..=*n).map(SeqHop::Fixed).collect(),
                 };
                 for hop in hops {

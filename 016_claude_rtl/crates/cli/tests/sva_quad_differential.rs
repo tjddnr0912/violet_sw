@@ -527,3 +527,23 @@ fn diff_fuzz_multi_term_left_operand() {
         );
     }
 }
+
+#[test]
+fn diff_window_over_alt_cap_both_loud() {
+    // CAP-BOUNDARY: a window whose size n-m+1 exceeds SVA_SEQ_ALT_CAP (256) must be
+    // loud-rejected by BOTH impls — the fan-out path caps the post-expansion
+    // alternative count, and the collapse path applies the SAME cap to the window
+    // depth (so they agree at the boundary AND the sliding-OR reg allocation is
+    // bounded, no OOM on `##[1:5_000_000]`). Without the cap on the collapse side,
+    // collapse would silently run a window fan-out rejects (loud-vs-correct
+    // divergence) — this is the case the original differential corpus missed.
+    assert_verdict_equiv(
+        &design(
+            "a ##[1:300] b |-> c",
+            "reg a=0,b=0,c=0;",
+            "",
+            &["a=1;", "a=0;"],
+        ),
+        "##[1:300] window exceeds the 256 alternative cap (both loud)",
+    );
+}
