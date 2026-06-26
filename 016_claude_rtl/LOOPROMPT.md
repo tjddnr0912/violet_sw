@@ -27,6 +27,8 @@
 ## 4. 사후 리뷰 = 적대 서브에이전트 (이번 루프서 CRITICAL 회귀 1건을 여기서 잡음 — 절대 생략 금지)
 - **병렬 ≥2 서브에이전트**, 각 다른 렌즈: (a) **differential silent-wrong 헌트**(오라클로 수십 케이스 차분, byte-identity 위반·신규 divergence) (b) **로직 soundness**(staleness·reset 타이밍·완전성·통합지점=force/clocking/NBA/다른 write 경로). 4축(Architecture·Performance·Maintainability·Robustness) 포함.
 - 각 발견을 (a)신규 silent-wrong (b)pre-existing 무관 (c)문서화된 out-of-scope로 분류. **(a)는 즉시 디버깅·수정**.
+- **soundness(hand-proof)와 differential(라이브 오라클)이 충돌하면 differential이 이긴다.** (이번 루프: soundness가 per-timestep 디둡을 "SOUND"라 했으나 differential이 CRITICAL 회귀 발굴→옳았음. hand-proof는 가정 누락 가능, 라이브 차분은 실측.) 수정 후엔 라이브 오라클로 재확인.
+- **fix 입도(granularity)는 경계 케이스로 측정해 확정**(예측 금지): 같은 버그군서 collapse돼야 할 케이스 vs 재발화해야 할 케이스를 둘 다 오라클로 핀해 정확한 축(per-net? per-timestep? region/cluster 경계?)을 찾을 것.
 - **silent issue 1건이라도 → 수정 후 사후 리뷰 재시작. CLEAN 나올 때까지 반복.** stash 차분으로 pre/post 회귀를 실증.
 
 ## 5. 게이트
