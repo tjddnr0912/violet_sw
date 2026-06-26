@@ -455,7 +455,7 @@ loud-reject로 확인됨(이제 참):**
 **🔬 사후 적대 리뷰 성과:** differential 헌터=**CLEAN(54케이스 0 new divergence)**. soundness 리뷰=**CRITICAL 1종 발굴→수정**: `commit_clocking_sample`(N4 holding net writer)가 `note_change`(slot_edge 리셋)는 호출하나 `accumulate_edge`는 안 함→`@(posedge cb.sig)`가 slot_edge=0으로 남아 silent-drop(=회귀; stash 차분으로 pre-fix `FIRED` vs post-fix `행` 확인)→write_chunk 패턴 미러로 수정, 재검증 CLOSED+CLEAN.
 
 **ℹ️ 본 슬라이스가 부수 발굴한 별개 pre-existing(글리치 수정과 독립·각 별개 슬라이스 후보):**
-1. **(narrow posedge/negedge)** vita의 `is_posedge`=`new==1 && prev!=1`(좁은 정의)라 `0→x`/`0→z`/`x→1`/`z→1`이 posedge로 안 잡힘(iverilog 와이드 정의는 잡음). 비-글리치 `0→x→1`서도 vita f=1 vs iverilog 2. **와이드화는 t0 `x→known` 전이가 모든 reg서 엣지가 되어 다수 골든 flip**→전용 슬라이스+신중한 오라클 필요.
+1. ~~**(narrow posedge/negedge)**~~ ✅ **수정 완료(2026-06-27, branch `feat-sched-wideedge`, §4.5.8 참조)** — vita `is_posedge`=`new==1 && prev!=1`(좁은 정의)가 `0→x`/`0→z`(posedge)·`1→x`/`1→z`(negedge)를 누락하던 silent-wrong. **와이드화=IEEE 1364 §5.1.2 전 12 전이 iverilog 일치**. 우려했던 "골든 flip"은 **현실화 안 됨**: t0는 `x→known`(narrow도 `→1` 잡음)이라 무영향, 신규 케이스는 `0/1→x/z`(신호 unknown化)뿐 → **전체 스위트 무회귀**(byte-identical).
 2. **(arm=Some in-body `@(a)` 글리치)** in-body `@(a)`(arm-기반 레벨)가 글리치 후 arm 값으로 복귀 시 미발화. **수정 시도가 `@(*)`를 arming 슬롯서 조기발화시켜(differential 회귀) revert**→arm-slot 추적 필요한 narrow corner, honest 유지.
 3. **(cont-assign 글리치 전파)** `assign b=a; @(posedge b)`에서 a 글리치가 b로 전파 안 됨(vita가 cont-assign을 최종 settled 값으로 평가). pre-fix=post-fix 동일(회귀 아님)·아키텍처적 별개.
 
@@ -478,6 +478,16 @@ loud-reject로 확인됨(이제 참):**
 **✅ 수정(엔진 only):** per-process `scratch_edge_seen` 마커를 **per-delta→per-CLUSTER**로 승격 — pass 끝 리셋 제거(클러스터 내 delta 간 persist), `reset_edge_seen_marks()`를 3개 region 경계(inactive promotion·NBA apply·time advance)서 호출. **byte-identical**: 클러스터당 1엣지/proc(정상 flop)은 마커가 2차 wake를 막을 일 없음.
 
 **🔬 사후 리뷰 성과:** 1차 적대 리뷰가 **CRITICAL 회귀 발굴**(첫 시도=per-TIMESTEP scope가 `@(posedge clk or negedge rst)`의 `#0`/NBA 독립 `negedge rst`를 over-collapse→cnt=1 should-be-2). soundness 리뷰는 "per-timestep SOUND"이라 했으나 **differential이 옳음**(net이 아닌 event-provenance 문제)→per-cluster로 재설계. 재검증: differential CLEAN(이전 회귀 8종 수정·NBA-body gated collapse 유지·mixed·500-cycle byte-identity). **교훈**: per-net(differential 1차 제안)은 D1 un-fix(clk≠gclk)·per-timestep은 over-collapse → **region/cluster 경계가 정답**.
+
+#### 4.5.8 wide 4-state posedge/negedge (2026-06-27, branch `feat-sched-wideedge`, §4.5.5 narrow-posedge 발견)
+
+> §4.5.5 부수 발견. **사전 그라운딩(전 12 four-state 전이 오라클 차분으로 정확한 IEEE 표 확정) → 구현 → 사후 적대 2-서브에이전트(differential 66-probe + soundness 16-쌍 전수증명) → 둘 다 CLEAN**. 전부 IR-0·format_version 19 불변. **2306 green**(2303 + 신규 11).
+
+**오라클로 확정한 규칙(IEEE 1364 §5.1.2):** posedge=1로의 전이 `{0→1, 0→x, 0→z, x→1, z→1}`·negedge=0으로의 전이 `{1→0, 1→x, 1→z, x→0, z→0}`·`x→z`/`z→x`=neither. vita narrow(`new==1 && prev!=1`)는 **`0→x`/`0→z`(posedge)·`1→x`/`1→z`(negedge) 누락**(엣지-net이 mid-sim에 unknown化하면 silent miss).
+
+**✅ 수정(엔진 only):** `state.rs` `fs_is_posedge`/`fs_is_negedge`(slot_edge 마스크 단일 소스)를 와이드화 — `posedge=(prev==0 && new!=0)||(new==1 && prev!=1)`·`negedge=(prev==1 && new!=1)||(new==0 && prev!=0)`. SVA `$rose`/`$fell`은 별개 elaborate 머신(narrow·오라클 없음·IEEE 1800 §17 clocked semantics)=의도적 미변경. **byte-identical**: 신규 disjunct는 `0/1→x/z` 전이서만 발동→정상 0/1 클럭 무영향(전체 스위트 무회귀 확인).
+
+**🔬 사후 리뷰 성과:** differential=**CLEAN(66 probe·0 divergence)**(전 12 전이·멀티비트 LSB·글리치 through-x·async-rst-to-x·sometimes-x 클럭·tristate·이전 fix·정상 클럭 byte-identity). soundness=**SOUND**(16-쌍 predicate 전수증명=IEEE 정확 일치·single-source 완전성[VM/clocking도 동일 경로·$rose 별개 확인]·glitch 누적·AnyEdge 불변·0/1 byte-identity 해석증명). **우려했던 "다수 골든 flip" 미현실화**=신규 케이스가 신호-unknown化뿐이라 정상 RTL 무영향.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 

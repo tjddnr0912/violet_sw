@@ -2846,17 +2846,23 @@ pub(crate) fn scalar_bit0(b: &BitPacked) -> sim_ir::FourState {
     }
 }
 
-/// GLITCH: bit0 edge predicates, kept here next to `scalar_bit0` and identical
-/// to the scheduler's `is_posedge`/`is_negedge` (a posedge is a transition TO 1
-/// from any non-1; a negedge a transition TO 0 from any non-0). The write funnel
-/// ORs these per transition to recover glitches the endpoint compare loses.
+/// WIDE-EDGE: bit0 edge predicates per IEEE 1364 §5.1.2 (Table — confirmed vs
+/// iverilog 13.0 across all 12 four-state transitions). A `posedge` is a
+/// transition TOWARD 1: `0→1`, `0→x`, `0→z`, `x→1`, `z→1`. A `negedge` is a
+/// transition TOWARD 0: `1→0`, `1→x`, `1→z`, `x→0`, `z→0`. (`x→z`/`z→x` are
+/// neither.) The old narrow form (`new==1 && prev!=1`) missed the `0→x`/`0→z`
+/// rises and `1→x`/`1→z` falls — a silent-wrong for any edge net that goes to an
+/// UNKNOWN value mid-sim. The write funnel ORs these per transition into the
+/// `slot_edge` mask, the single source of procedural `@(posedge/negedge)` firing.
 #[inline]
 fn fs_is_posedge(prev: sim_ir::FourState, new: sim_ir::FourState) -> bool {
-    new == sim_ir::FourState::One && prev != sim_ir::FourState::One
+    use sim_ir::FourState::{One, Zero};
+    (prev == Zero && new != Zero) || (new == One && prev != One)
 }
 #[inline]
 fn fs_is_negedge(prev: sim_ir::FourState, new: sim_ir::FourState) -> bool {
-    new == sim_ir::FourState::Zero && prev != sim_ir::FourState::Zero
+    use sim_ir::FourState::{One, Zero};
+    (prev == One && new != One) || (new == Zero && prev != Zero)
 }
 
 #[cfg(test)]
