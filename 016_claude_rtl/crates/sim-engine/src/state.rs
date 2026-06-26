@@ -167,10 +167,14 @@ pub(crate) struct SimState<'a> {
     /// Proc-assigns displaced by an overriding `force` (§9.3.1): net → the
     /// parked (lvalue, rhs ExprId, time-mult). `release` re-pins from here.
     pub latent_assigns: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64)>,
-    /// v5 (C): dynamic-storage heap, keyed by HANDLE NetId (deterministic —
-    /// declaration order). A missing entry IS the empty object (lazy). Dyn
-    /// objects never live in the flat BitPacked store.
-    pub dyn_heap: std::collections::BTreeMap<u32, DynObj>,
+    /// v5 (C): dynamic-storage heap, NetId-indexed (`None` == missing entry,
+    /// the lazy empty-object contract). Flat `Vec<Option<DynObj>>` sized to
+    /// `ir.nets.len()` — same memory class as `nets`/`dirty`/`forced`/
+    /// `two_state` (per-net), with zero `DynObj` allocs for non-dyn designs.
+    /// Ordering is never observed (every access is a point op on a single
+    /// HANDLE NetId), so the flat layout is byte-identical to the old BTreeMap.
+    /// Dyn objects never live in the flat BitPacked store.
+    pub dyn_heap: Vec<Option<DynObj>>,
     /// Warn-once latch for dyn degradations (X-size new[], OOB, …) — one
     /// W-RUN-DYN-DEGRADE per handle net, never a per-iteration spam. RefCell:
     /// the READ path (`read_net` is `&self`) must latch too.
@@ -509,7 +513,7 @@ impl<'a> SimState<'a> {
             two_state: vec![false; nnets],
             active_forces: std::collections::BTreeMap::new(),
             latent_assigns: std::collections::BTreeMap::new(),
-            dyn_heap: std::collections::BTreeMap::new(),
+            dyn_heap: (0..nnets).map(|_| None).collect(),
             dyn_warned: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             dyn_is_handle: ir
                 .nets
@@ -1328,7 +1332,7 @@ impl<'a> SimState<'a> {
             // v7 P2-C: a STRING handle's whole-value read IS its packed
             // materialization (8×len, is_str — context resizing bypassed).
             if nv.kind == NetKind::String {
-                let bytes: &[u8] = match self.dyn_heap.get(&net) {
+                let bytes: &[u8] = match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
                     Some(DynObj::Str { bytes }) => bytes,
                     _ => &[],
                 };
@@ -1339,7 +1343,7 @@ impl<'a> SimState<'a> {
             self.dyn_warn_once_at(net, "dyn handle read without an index");
             return xs();
         };
-        match self.dyn_heap.get(&net) {
+        match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
             Some(DynObj::DynArray { elems }) if (i as usize) < elems.len() => {
                 elems[i as usize].clone()
             }
@@ -1475,6 +1479,19 @@ impl<'a> SimState<'a> {
     /// beyond that → IGNORED + warn.
     /// Returns false ALWAYS: dyn content changes do not participate in the net
     /// dirty channel (design §4 — no sensitivity on handles, no VCD records).
+    /// `dyn_heap` lazy-create accessor — the `BTreeMap::entry(net).or_insert_with`
+    /// replacement for the flat `Vec<Option<DynObj>>` layout. Sets the slot to
+    /// `Some(f())` only if it is currently `None`, then hands back `&mut DynObj`.
+    /// `net` is always a valid HANDLE NetId (`< ir.nets.len()`), so the slot
+    /// exists; the `expect` is unreachable by construction.
+    pub(crate) fn dyn_entry(&mut self, net: u32, f: impl FnOnce() -> DynObj) -> &mut DynObj {
+        let slot = &mut self.dyn_heap[net as usize];
+        if slot.is_none() {
+            *slot = Some(f());
+        }
+        slot.as_mut().expect("dyn_entry: slot just set to Some")
+    }
+
     fn dyn_write(&mut self, c: &sim_ir::LvalChunk, raw_word: u32, piece: &Value) -> bool {
         let net = c.net;
         let w = self.ir.nets[net as usize].width.max(1);
@@ -1487,7 +1504,7 @@ impl<'a> SimState<'a> {
             && c.width.is_none()
         {
             let bytes = piece.to_str_bytes();
-            self.dyn_heap.insert(net, DynObj::Str { bytes });
+            self.dyn_heap[net as usize] = Some(DynObj::Str { bytes });
             return false; // no net dirty channel (design §4, dyn precedent)
         }
         if c.word.is_none() || c.offset.is_some() || c.width.is_some() {
@@ -1512,11 +1529,9 @@ impl<'a> SimState<'a> {
         if self.ir.nets[net as usize].kind == NetKind::Queue {
             // A missing entry IS the empty queue: the append lane must be
             // reachable on a never-touched handle (`q[0] = v` creates it).
-            let DynObj::Queue { elems } =
-                self.dyn_heap.entry(net).or_insert_with(|| DynObj::Queue {
-                    elems: std::collections::VecDeque::new(),
-                })
-            else {
+            let DynObj::Queue { elems } = self.dyn_entry(net, || DynObj::Queue {
+                elems: std::collections::VecDeque::new(),
+            }) else {
                 return false; // kind-mismatched entry: unreachable by construction
             };
             let len = elems.len();
@@ -1538,7 +1553,7 @@ impl<'a> SimState<'a> {
             }
             return false;
         }
-        match self.dyn_heap.get_mut(&net) {
+        match self.dyn_heap.get_mut(net as usize).and_then(|o| o.as_mut()) {
             Some(DynObj::DynArray { elems }) if i < elems.len() => {
                 elems[i] = piece.clone().resize(w);
                 false
@@ -1563,7 +1578,7 @@ impl<'a> SimState<'a> {
         };
         // Cap BEFORE the entry borrow (the warn latch needs `&self` while the
         // map borrow holds `&mut self`); replacing an existing key is exempt.
-        let (len, exists) = match self.dyn_heap.get(&net) {
+        let (len, exists) = match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
             Some(DynObj::Assoc { map }) => (map.len(), map.contains_key(&k)),
             _ => (0, false),
         };
@@ -1572,7 +1587,7 @@ impl<'a> SimState<'a> {
             return;
         }
         // A missing entry IS the empty assoc (lazy, like every dyn object).
-        let entry = self.dyn_heap.entry(net).or_insert_with(|| DynObj::Assoc {
+        let entry = self.dyn_entry(net, || DynObj::Assoc {
             map: std::collections::BTreeMap::new(),
         });
         if let DynObj::Assoc { map } = entry {
@@ -1588,7 +1603,7 @@ impl<'a> SimState<'a> {
             self.dyn_warn_once_at(net, "assoc key is X/Z (write ignored)");
             return;
         };
-        let (len, exists) = match self.dyn_heap.get(&net) {
+        let (len, exists) = match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
             Some(DynObj::AssocStr { map }) => (map.len(), map.contains_key(k)),
             _ => (0, false),
         };
@@ -1596,12 +1611,9 @@ impl<'a> SimState<'a> {
             self.dyn_warn_once_at(net, "assoc exceeds the element cap (1<<24); write dropped");
             return;
         }
-        let entry = self
-            .dyn_heap
-            .entry(net)
-            .or_insert_with(|| DynObj::AssocStr {
-                map: std::collections::BTreeMap::new(),
-            });
+        let entry = self.dyn_entry(net, || DynObj::AssocStr {
+            map: std::collections::BTreeMap::new(),
+        });
         if let DynObj::AssocStr { map } = entry {
             map.insert(k.clone(), value.clone().resize(w));
         }
@@ -1617,7 +1629,9 @@ impl<'a> SimState<'a> {
         };
         let cap = b as usize + 1;
         let mut dropped = false;
-        if let Some(DynObj::Queue { elems }) = self.dyn_heap.get_mut(&net) {
+        if let Some(DynObj::Queue { elems }) =
+            self.dyn_heap.get_mut(net as usize).and_then(|o| o.as_mut())
+        {
             while elems.len() > cap {
                 elems.pop_back();
                 dropped = true;
@@ -2127,7 +2141,13 @@ impl<'a> NetReader for SimState<'a> {
                 | sim_ir::NetKind::Queue
                 | sim_ir::NetKind::Assoc
                 | sim_ir::NetKind::AssocStr,
-            ) => Some(self.dyn_heap.get(&net).map(|o| o.len() as u64).unwrap_or(0)),
+            ) => Some(
+                self.dyn_heap
+                    .get(net as usize)
+                    .and_then(|o| o.as_ref())
+                    .map(|o| o.len() as u64)
+                    .unwrap_or(0),
+            ),
             _ => None,
         }
     }
@@ -2144,13 +2164,15 @@ impl<'a> NetReader for SimState<'a> {
                 | sim_ir::NetKind::Queue
                 | sim_ir::NetKind::Assoc
                 | sim_ir::NetKind::AssocStr,
-            ) => Some(match self.dyn_heap.get(&net) {
-                Some(DynObj::DynArray { elems }) => elems.clone(),
-                Some(DynObj::Queue { elems }) => elems.iter().cloned().collect(),
-                Some(DynObj::Assoc { map }) => map.values().cloned().collect(),
-                Some(DynObj::AssocStr { map }) => map.values().cloned().collect(),
-                _ => Vec::new(),
-            }),
+            ) => Some(
+                match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
+                    Some(DynObj::DynArray { elems }) => elems.clone(),
+                    Some(DynObj::Queue { elems }) => elems.iter().cloned().collect(),
+                    Some(DynObj::Assoc { map }) => map.values().cloned().collect(),
+                    Some(DynObj::AssocStr { map }) => map.values().cloned().collect(),
+                    _ => Vec::new(),
+                },
+            ),
             _ => None,
         }
     }
@@ -2201,7 +2223,7 @@ impl<'a> NetReader for SimState<'a> {
             self.dyn_warn_once_at(net, "assoc key is X/Z (read X)");
             return Value::xs(w, signed);
         };
-        match self.dyn_heap.get(&net) {
+        match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
             Some(DynObj::Assoc { map }) => map.get(&k).cloned().unwrap_or_else(|| {
                 self.dyn_warn_once_at(net, "assoc key not found (read X)");
                 Value::xs(w, signed)
@@ -2223,19 +2245,23 @@ impl<'a> NetReader for SimState<'a> {
             self.dyn_warn_once_at(net, "assoc key is X/Z (exists 0)");
             return Some(false);
         };
-        Some(match self.dyn_heap.get(&net) {
-            Some(DynObj::Assoc { map }) => map.contains_key(&k),
-            _ => false,
-        })
+        Some(
+            match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
+                Some(DynObj::Assoc { map }) => map.contains_key(&k),
+                _ => false,
+            },
+        )
     }
     fn str_bytes(&self, net: u32) -> Option<Vec<u8>> {
         if self.ir.nets.get(net as usize).map(|n| n.kind) != Some(NetKind::String) {
             return None;
         }
-        Some(match self.dyn_heap.get(&net) {
-            Some(DynObj::Str { bytes }) => bytes.clone(),
-            _ => Vec::new(),
-        })
+        Some(
+            match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
+                Some(DynObj::Str { bytes }) => bytes.clone(),
+                _ => Vec::new(),
+            },
+        )
     }
     fn is_assoc_str(&self, net: u32) -> bool {
         self.dyn_is_handle
@@ -2258,7 +2284,7 @@ impl<'a> NetReader for SimState<'a> {
             self.dyn_warn_once_at(net, "assoc key is X/Z (read X)");
             return Value::xs(w, signed);
         };
-        match self.dyn_heap.get(&net) {
+        match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
             Some(DynObj::AssocStr { map }) => map.get(k).cloned().unwrap_or_else(|| {
                 self.dyn_warn_once_at(net, "assoc key not found (read X)");
                 Value::xs(w, signed)
@@ -2277,10 +2303,12 @@ impl<'a> NetReader for SimState<'a> {
             self.dyn_warn_once_at(net, "assoc key is X/Z (exists 0)");
             return Some(false);
         };
-        Some(match self.dyn_heap.get(&net) {
-            Some(DynObj::AssocStr { map }) => map.contains_key(k),
-            _ => false,
-        })
+        Some(
+            match self.dyn_heap.get(net as usize).and_then(|o| o.as_ref()) {
+                Some(DynObj::AssocStr { map }) => map.contains_key(k),
+                _ => false,
+            },
+        )
     }
     fn eval_call(&self, func: u32, args: &[Value]) -> Option<Value> {
         self.run_frame_call(func, args)

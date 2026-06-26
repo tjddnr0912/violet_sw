@@ -1943,7 +1943,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             Int(i64),
             Str(Vec<u8>),
         }
-        let hit: Option<Hit> = match self.st.dyn_heap.get(&hnet) {
+        let hit: Option<Hit> = match self.st.dyn_heap.get(hnet as usize).and_then(|o| o.as_ref()) {
             Some(crate::state::DynObj::Assoc { map }) => {
                 let cur = cur_val.as_ref().map(|v| {
                     // Current key from the var's OWN width/signedness (the
@@ -3484,7 +3484,12 @@ impl Kernel for Scheduler<'_, '_> {
                     .get(n as usize)
                     .map(|nv| (nv.width.max(1), nv.signed))
                     .unwrap_or((1, false));
-                match self.st.dyn_heap.get_mut(&n) {
+                match self
+                    .st
+                    .dyn_heap
+                    .get_mut(n as usize)
+                    .and_then(|o| o.as_mut())
+                {
                     Some(crate::state::DynObj::Queue { elems }) if !elems.is_empty() => {
                         let v = if front {
                             elems.pop_front()

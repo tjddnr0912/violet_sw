@@ -124,23 +124,23 @@ pub(crate) fn dispatch(
             let mut elems = vec![elem_default; n];
             // copy form `new[n](src)`: prefix-copy from the src handle.
             if let Some(src_net) = dyn_handle_net(sched, args.get(2)) {
-                if let Some(crate::state::DynObj::DynArray { elems: src }) =
-                    sched.st.dyn_heap.get(&src_net)
+                if let Some(crate::state::DynObj::DynArray { elems: src }) = sched
+                    .st
+                    .dyn_heap
+                    .get(src_net as usize)
+                    .and_then(|o| o.as_ref())
                 {
                     for (dst, s) in elems.iter_mut().zip(src.iter()) {
                         *dst = s.clone();
                     }
                 }
             }
-            sched
-                .st
-                .dyn_heap
-                .insert(net, crate::state::DynObj::DynArray { elems });
+            sched.st.dyn_heap[net as usize] = Some(crate::state::DynObj::DynArray { elems });
             Ctl::Continue
         }
         SysTaskId::DynDelete => {
             if let Some(net) = dyn_handle_net(sched, args.first()) {
-                sched.st.dyn_heap.remove(&net); // absent entry IS the empty object
+                sched.st.dyn_heap[net as usize].take(); // absent entry IS the empty object
             }
             Ctl::Continue
         }
@@ -158,7 +158,12 @@ pub(crate) fn dispatch(
                 .map(|nv| nv.signed)
                 .unwrap_or(true);
             let mut bad_kind = false;
-            if let Some(obj) = sched.st.dyn_heap.get_mut(&net) {
+            if let Some(obj) = sched
+                .st
+                .dyn_heap
+                .get_mut(net as usize)
+                .and_then(|o| o.as_mut())
+            {
                 match obj {
                     crate::state::DynObj::DynArray { elems } => {
                         apply_order(elems.as_mut_slice(), which, signed)
@@ -223,7 +228,13 @@ pub(crate) fn dispatch(
             // Cap BEFORE taking the entry borrow (the warn needs `&mut sched`).
             // No silent caps (P2-6 class): a runaway push loop is a runtime
             // OOM hazard — warn (once per net) and DROP the push.
-            let len = sched.st.dyn_heap.get(&net).map(|o| o.len()).unwrap_or(0);
+            let len = sched
+                .st
+                .dyn_heap
+                .get(net as usize)
+                .and_then(|o| o.as_ref())
+                .map(|o| o.len())
+                .unwrap_or(0);
             if len >= crate::state::MAX_DYN_ELEMS {
                 dyn_warn_once(
                     sched,
@@ -233,14 +244,9 @@ pub(crate) fn dispatch(
                 return Ctl::Continue;
             }
             // A missing entry IS the empty queue (lazy, like every dyn object).
-            let entry =
-                sched
-                    .st
-                    .dyn_heap
-                    .entry(net)
-                    .or_insert_with(|| crate::state::DynObj::Queue {
-                        elems: std::collections::VecDeque::new(),
-                    });
+            let entry = sched.st.dyn_entry(net, || crate::state::DynObj::Queue {
+                elems: std::collections::VecDeque::new(),
+            });
             if let crate::state::DynObj::Queue { elems } = entry {
                 if which == SysTaskId::QPushFront {
                     elems.push_front(v);
@@ -279,7 +285,13 @@ pub(crate) fn dispatch(
             // evaluates to a huge unsigned here and lands in the same OOB arm
             // (warn + no-op) — identical surface either way.
             let idx = args.get(1).and_then(|&a| sched.eval(a).to_u64());
-            let len = sched.st.dyn_heap.get(&net).map(|o| o.len()).unwrap_or(0);
+            let len = sched
+                .st
+                .dyn_heap
+                .get(net as usize)
+                .and_then(|o| o.as_ref())
+                .map(|o| o.len())
+                .unwrap_or(0);
             if which == SysTaskId::QInsert {
                 let ok = matches!(idx, Some(i) if i <= len as u64);
                 if !ok {
@@ -306,14 +318,9 @@ pub(crate) fn dispatch(
                     }
                     None => Value::xs(w, false),
                 };
-                let entry =
-                    sched
-                        .st
-                        .dyn_heap
-                        .entry(net)
-                        .or_insert_with(|| crate::state::DynObj::Queue {
-                            elems: std::collections::VecDeque::new(),
-                        });
+                let entry = sched.st.dyn_entry(net, || crate::state::DynObj::Queue {
+                    elems: std::collections::VecDeque::new(),
+                });
                 if let crate::state::DynObj::Queue { elems } = entry {
                     elems.insert(idx.unwrap_or(0) as usize, v);
                 }
@@ -324,7 +331,11 @@ pub(crate) fn dispatch(
                     dyn_warn_once(sched, net, "queue delete index out of range or X (skipped)");
                     return Ctl::Continue;
                 }
-                if let Some(crate::state::DynObj::Queue { elems }) = sched.st.dyn_heap.get_mut(&net)
+                if let Some(crate::state::DynObj::Queue { elems }) = sched
+                    .st
+                    .dyn_heap
+                    .get_mut(net as usize)
+                    .and_then(|o| o.as_mut())
                 {
                     elems.remove(idx.unwrap_or(0) as usize);
                 }
@@ -343,8 +354,11 @@ pub(crate) fn dispatch(
                     match args.get(1).and_then(|&k| sched.assoc_str_key_of(k)) {
                         None => dyn_warn_once(sched, net, "assoc delete key is X/Z (ignored)"),
                         Some(k) => {
-                            if let Some(crate::state::DynObj::AssocStr { map }) =
-                                sched.st.dyn_heap.get_mut(&net)
+                            if let Some(crate::state::DynObj::AssocStr { map }) = sched
+                                .st
+                                .dyn_heap
+                                .get_mut(net as usize)
+                                .and_then(|o| o.as_mut())
                             {
                                 map.remove(&k);
                             }
@@ -359,8 +373,11 @@ pub(crate) fn dispatch(
                 match args.get(1).and_then(|&k| sched.assoc_key_of(k)) {
                     None => dyn_warn_once(sched, net, "assoc delete key is X/Z (ignored)"),
                     Some(k) => {
-                        if let Some(crate::state::DynObj::Assoc { map }) =
-                            sched.st.dyn_heap.get_mut(&net)
+                        if let Some(crate::state::DynObj::Assoc { map }) = sched
+                            .st
+                            .dyn_heap
+                            .get_mut(net as usize)
+                            .and_then(|o| o.as_mut())
                         {
                             map.remove(&k);
                         }
@@ -536,8 +553,11 @@ pub(crate) fn dispatch(
             if let (Some(net), Some(i), Some(c)) = (net, i, c) {
                 let c = (c & 0xff) as u8;
                 if c != 0 {
-                    if let Some(crate::state::DynObj::Str { bytes }) =
-                        sched.st.dyn_heap.get_mut(&net)
+                    if let Some(crate::state::DynObj::Str { bytes }) = sched
+                        .st
+                        .dyn_heap
+                        .get_mut(net as usize)
+                        .and_then(|o| o.as_mut())
                     {
                         if let Some(slot) = bytes.get_mut(i as usize) {
                             *slot = c;
@@ -2699,10 +2719,7 @@ fn arr_locator(sched: &mut Scheduler, args: &[u32]) {
         .into_iter()
         .map(|v| v.resize_keep_sign(dw, dsigned))
         .collect();
-    sched
-        .st
-        .dyn_heap
-        .insert(dst_net, crate::state::DynObj::Queue { elems });
+    sched.st.dyn_heap[dst_net as usize] = Some(crate::state::DynObj::Queue { elems });
 }
 
 /// One W-RUN-DYN-DEGRADE per handle net (latched in `dyn_warned`) — a degraded
