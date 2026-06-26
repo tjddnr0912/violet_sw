@@ -1635,6 +1635,19 @@ impl<'t, 's> Parser<'t, 's> {
                         self.synchronize();
                     }
                 }
+            } else if self.at_kw(Kw::Primitive) {
+                // YELLOW #1: combinational User-Defined Primitive (IEEE 1364 §29).
+                // DESUGARED in the parser (mirroring `parse_gate_primitive`) into a
+                // synthetic ordinary `ModuleDecl` — so it auto-registers in the module
+                // map, root-picks, and instantiates with ZERO downstream change. No new
+                // AST node / no `.vu` schema-hash flip / IR-0.
+                match self.parse_udp_decl() {
+                    Some(m) => items.push(TopItem::Module(m)),
+                    None => {
+                        items.push(TopItem::Error(self.prev_span()));
+                        self.synchronize();
+                    }
+                }
             } else {
                 self.error("'module'");
                 let s = self.cur_span();
@@ -2667,6 +2680,405 @@ impl<'t, 's> Parser<'t, 's> {
                 out.push((self.expr_to_lvalue(terms[0].clone()), rhs));
             }
         }
+    }
+
+    /// Combinational User-Defined Primitive (IEEE 1364 §29), DESUGARED in the parser
+    /// (mirroring [`parse_gate_primitive`]) into a synthetic ordinary [`ModuleDecl`].
+    /// The module body is one `always @(*)` whose if/else-if cascade realizes the
+    /// truth table with iverilog-faithful semantics. (1) Each input column is matched
+    /// 4-state-EXACT (`===`), NOT `casez` — a `0`/`1`/`x` column matches only that
+    /// value; `?` matches anything (incl. z); `b` matches 0 or 1 only (never x/z).
+    /// casez would wildcard the SCRUTINEE's x/z and silently mis-match (the cardinal
+    /// trap). (2) Conflicting rows resolve order-INDEPENDENTLY by priority 0 > 1 > x:
+    /// `if (any-0-row) o=0; else if (any-1-row) o=1; else o=x;`. (3) Any combination
+    /// matched by no row (and every `x`-output row) → x (the trailing `else`).
+    ///
+    /// Honest-loud rejects (combinational only — sequential UDPs are slice #9):
+    /// `reg` output / a second `:` (sequential current-state form) / edge & `z`
+    /// symbols / `z`/`-` outputs / multi-output / wrong column count.
+    fn parse_udp_decl(&mut self) -> Option<ModuleDecl> {
+        #[derive(Clone, Copy)]
+        enum InSym {
+            Zero,
+            One,
+            X,
+            Q,
+            B,
+        }
+        #[derive(Clone, Copy)]
+        enum OutSym {
+            Zero,
+            One,
+            X,
+        }
+        let start = self.cur_span();
+        self.bump(); // `primitive`
+        let name = self.ident()?;
+        // ── header port list: ( out, in0, in1, … ) ;  (positional names only) ──
+        self.expect(TokenKind::LParen, "'(' after primitive name");
+        let mut port_names: Vec<Ident> = Vec::new();
+        loop {
+            let before = self.pos;
+            if let Some(id) = self.ident() {
+                port_names.push(id);
+            }
+            if self.pos == before {
+                self.bump(); // forward-progress guard
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')' after primitive ports");
+        self.expect(TokenKind::Semi, "';' after primitive header");
+        if port_names.len() < 2 {
+            self.error_at(
+                name.span,
+                "a UDP with one output and at least one input port",
+            );
+            return None;
+        }
+        // ── direction declarations: `output OUT;`, `input a, b;` (any order) ──
+        let mut out_name: Option<Ident> = None;
+        let mut in_names: Vec<Ident> = Vec::new();
+        while !self.at_kw(Kw::Table) && !self.at_eof() {
+            if self.at_kw(Kw::Output) {
+                self.bump();
+                if self.at_kw(Kw::Reg) {
+                    self.error(
+                        "a combinational UDP ('reg' output is a sequential UDP — not yet supported)",
+                    );
+                    return None;
+                }
+                loop {
+                    let before = self.pos;
+                    if let Some(id) = self.ident() {
+                        if out_name.is_some() {
+                            self.error_at(id.span, "exactly one UDP output port");
+                            return None;
+                        }
+                        out_name = Some(id);
+                    }
+                    if self.pos == before {
+                        self.bump();
+                    }
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::Semi, "';' after UDP output declaration");
+            } else if self.at_kw(Kw::Input) {
+                self.bump();
+                loop {
+                    let before = self.pos;
+                    if let Some(id) = self.ident() {
+                        in_names.push(id);
+                    }
+                    if self.pos == before {
+                        self.bump();
+                    }
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::Semi, "';' after UDP input declaration");
+            } else {
+                self.error("'output', 'input', or 'table' in a UDP body");
+                return None;
+            }
+        }
+        let out_name = match out_name {
+            Some(o) => o,
+            None => {
+                self.error_at(name.span, "a UDP 'output' declaration");
+                return None;
+            }
+        };
+        // output must be the FIRST port; the rest (in port-list order) are inputs.
+        if out_name.name != port_names[0].name {
+            self.error_at(out_name.span, "the UDP output to be the first port");
+            return None;
+        }
+        let ordered_inputs: Vec<Ident> = port_names[1..].to_vec();
+        {
+            // every non-first port must be declared `input`, and vice versa.
+            let decl_in: std::collections::BTreeSet<&str> =
+                in_names.iter().map(|i| i.name.as_str()).collect();
+            let port_in: std::collections::BTreeSet<&str> =
+                ordered_inputs.iter().map(|i| i.name.as_str()).collect();
+            if decl_in != port_in {
+                self.error_at(
+                    name.span,
+                    "every UDP input port to be declared `input` (and vice versa)",
+                );
+                return None;
+            }
+        }
+        let n_in = ordered_inputs.len();
+        // ── table … endtable ──
+        if !self.at_kw(Kw::Table) {
+            self.error("'table' in a UDP body");
+            return None;
+        }
+        self.bump(); // `table`
+        let mut rows: Vec<(Vec<InSym>, OutSym)> = Vec::new();
+        while !self.at_kw(Kw::Endtable) && !self.at_eof() {
+            let row_start = self.cur_span();
+            // collect input-symbol chars up to ':' (one symbol per char, re-scanned
+            // from each token's source text so compact `111` ⇒ ['1','1','1']).
+            let mut in_chars: Vec<char> = Vec::new();
+            loop {
+                if self.at_eof() || self.at_kw(Kw::Endtable) {
+                    self.error("':' in a UDP table row");
+                    return None;
+                }
+                if matches!(self.peek(), Some(TokenKind::Colon)) {
+                    break;
+                }
+                in_chars.extend(self.cur_text().chars());
+                self.bump();
+            }
+            self.bump(); // ':'
+                         // collect output-symbol chars up to ';' (a second ':' = sequential row).
+            let mut out_chars: Vec<char> = Vec::new();
+            loop {
+                if self.at_eof() || self.at_kw(Kw::Endtable) {
+                    self.error("';' to end a UDP table row");
+                    return None;
+                }
+                if matches!(self.peek(), Some(TokenKind::Semi)) {
+                    break;
+                }
+                if matches!(self.peek(), Some(TokenKind::Colon)) {
+                    self.error(
+                        "a combinational UDP table row (a second ':' is a sequential UDP — not yet supported)",
+                    );
+                    return None;
+                }
+                out_chars.extend(self.cur_text().chars());
+                self.bump();
+            }
+            self.bump(); // ';'
+            let mut in_syms: Vec<InSym> = Vec::with_capacity(in_chars.len());
+            for c in &in_chars {
+                in_syms.push(match c {
+                    '0' => InSym::Zero,
+                    '1' => InSym::One,
+                    'x' | 'X' => InSym::X,
+                    '?' => InSym::Q,
+                    'b' | 'B' => InSym::B,
+                    _ => {
+                        self.error_at(row_start, "a UDP input symbol (0 1 x ? b)");
+                        return None;
+                    }
+                });
+            }
+            if in_syms.len() != n_in {
+                self.error_at(row_start, "a UDP table row with one symbol per input port");
+                return None;
+            }
+            if out_chars.len() != 1 {
+                self.error_at(row_start, "a single UDP output symbol");
+                return None;
+            }
+            let out_sym = match out_chars[0] {
+                '0' => OutSym::Zero,
+                '1' => OutSym::One,
+                'x' | 'X' => OutSym::X,
+                _ => {
+                    self.error_at(row_start, "a combinational UDP output symbol (0 1 x)");
+                    return None;
+                }
+            };
+            rows.push((in_syms, out_sym));
+        }
+        if !self.at_kw(Kw::Endtable) {
+            self.error("'endtable'");
+            return None;
+        }
+        self.bump(); // `endtable`
+        if !self.at_kw(Kw::Endprimitive) {
+            self.error("'endprimitive'");
+            return None;
+        }
+        self.bump(); // `endprimitive`
+        if rows.is_empty() {
+            // An empty `table … endtable` is an illegal UDP form (iverilog: "Empty
+            // UDP table") — loud-reject rather than silently synthesize an always-x
+            // primitive.
+            self.error_at(name.span, "a non-empty UDP table");
+            return None;
+        }
+
+        // ── desugar: build the synthetic combinational module ──
+        let span = start.to(self.prev_span());
+        let mk_eq = |raw: &str, lhs: Expr| Expr {
+            span,
+            kind: ExprKind::Binary {
+                op: BinOp::CaseEq,
+                lhs: Box::new(lhs),
+                rhs: Box::new(Expr {
+                    span,
+                    kind: ExprKind::IntLit {
+                        kind: IntLitKind::Sized,
+                        raw: raw.to_string(),
+                    },
+                }),
+            },
+        };
+        // match condition for one row: AND of per-column 4-state-exact tests
+        // (label-only wildcard — `?` contributes nothing; `b` is 0-or-1).
+        let row_cond = |in_syms: &[InSym]| -> Expr {
+            let mut conds: Vec<Expr> = Vec::new();
+            for (i, s) in in_syms.iter().enumerate() {
+                let in_e = Expr {
+                    span,
+                    kind: ExprKind::Ident(HierPath {
+                        segments: vec![ordered_inputs[i].clone()],
+                        span,
+                    }),
+                };
+                match s {
+                    InSym::Zero => conds.push(mk_eq("1'b0", in_e)),
+                    InSym::One => conds.push(mk_eq("1'b1", in_e)),
+                    // IEEE 1364 §29.3.4: a `z` on a UDP input is treated as `x` for
+                    // table matching, so an `x` table symbol matches BOTH x and z.
+                    // (A bare `in === 1'bx` would miss a z input → silent-wrong.)
+                    InSym::X => conds.push(Expr {
+                        span,
+                        kind: ExprKind::Binary {
+                            op: BinOp::LogOr,
+                            lhs: Box::new(mk_eq("1'bx", in_e.clone())),
+                            rhs: Box::new(mk_eq("1'bz", in_e)),
+                        },
+                    }),
+                    InSym::Q => {} // `?` → no constraint (matches 0/1/x/z)
+                    InSym::B => conds.push(Expr {
+                        span,
+                        kind: ExprKind::Binary {
+                            op: BinOp::LogOr,
+                            lhs: Box::new(mk_eq("1'b0", in_e.clone())),
+                            rhs: Box::new(mk_eq("1'b1", in_e)),
+                        },
+                    }),
+                }
+            }
+            conds
+                .into_iter()
+                .reduce(|a, b| Expr {
+                    span,
+                    kind: ExprKind::Binary {
+                        op: BinOp::LogAnd,
+                        lhs: Box::new(a),
+                        rhs: Box::new(b),
+                    },
+                })
+                .unwrap_or(Expr {
+                    span,
+                    kind: ExprKind::IntLit {
+                        kind: IntLitKind::Sized,
+                        raw: "1'b1".to_string(), // all-`?` row → always matches
+                    },
+                })
+        };
+        let or_fold = |conds: Vec<Expr>| -> Option<Expr> {
+            conds.into_iter().reduce(|a, b| Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op: BinOp::LogOr,
+                    lhs: Box::new(a),
+                    rhs: Box::new(b),
+                },
+            })
+        };
+        let mut zero_conds: Vec<Expr> = Vec::new();
+        let mut one_conds: Vec<Expr> = Vec::new();
+        for (in_syms, out) in &rows {
+            match out {
+                OutSym::Zero => zero_conds.push(row_cond(in_syms)),
+                OutSym::One => one_conds.push(row_cond(in_syms)),
+                OutSym::X => {} // x-output rows → covered by the trailing else (x)
+            }
+        }
+        let out_lval = Lvalue::Ident(HierPath {
+            segments: vec![port_names[0].clone()],
+            span,
+        });
+        let assign = |raw: &str| Stmt::Blocking {
+            lhs: out_lval.clone(),
+            delay: None,
+            event: None,
+            rhs: Expr {
+                span,
+                kind: ExprKind::IntLit {
+                    kind: IntLitKind::Sized,
+                    raw: raw.to_string(),
+                },
+            },
+            span,
+        };
+        let mut inner = assign("1'bx"); // unmatched / x-output → x
+        if let Some(any1) = or_fold(one_conds) {
+            inner = Stmt::If {
+                cond: any1,
+                then_s: Box::new(assign("1'b1")),
+                else_s: Some(Box::new(inner)),
+                span,
+            };
+        }
+        if let Some(any0) = or_fold(zero_conds) {
+            inner = Stmt::If {
+                cond: any0,
+                then_s: Box::new(assign("1'b0")),
+                else_s: Some(Box::new(inner)),
+                span,
+            };
+        }
+        let always = ProceduralBlock {
+            kind: ProcKind::Always,
+            sensitivity: Some(Sensitivity::Star),
+            body: Box::new(Stmt::Block {
+                label: None,
+                decls: Vec::new(),
+                stmts: vec![inner],
+                span,
+            }),
+            span,
+        };
+        // ── ports: output (reg, procedurally driven) first, then inputs ──
+        let mut ports: Vec<AnsiPort> = Vec::with_capacity(port_names.len());
+        ports.push(AnsiPort {
+            dir: PortDir::Output,
+            net_or_var: Some(NetVarKind::Reg),
+            signed: false,
+            range: None,
+            packed: Vec::new(),
+            name: port_names[0].clone(),
+            default: None,
+            iface: None,
+            span,
+        });
+        for inp in &ordered_inputs {
+            ports.push(AnsiPort {
+                dir: PortDir::Input,
+                net_or_var: None, // default wire
+                signed: false,
+                range: None,
+                packed: Vec::new(),
+                name: inp.clone(),
+                default: None,
+                iface: None,
+                span,
+            });
+        }
+        Some(ModuleDecl {
+            is_macromodule: false,
+            name,
+            params: Vec::new(),
+            ports: PortList::Ansi(ports),
+            body: vec![ModuleItem::Proc(always)],
+            span,
+        })
     }
 
     /// Convert a gate OUTPUT terminal expression into an `Lvalue` (an output is a
