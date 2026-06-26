@@ -6703,16 +6703,21 @@ impl<'t, 's> Parser<'t, 's> {
         self.bump(); // the type keyword
                      // Atom storage width by kind; a packed range (below) overrides for the
                      // vector-capable kinds (bit/logic/reg).
-        let (atom_width, ranged_ok): (u32, bool) = match kind {
-            NetVarKind::Byte => (8, false),
-            NetVarKind::Shortint => (16, false),
-            NetVarKind::Int | NetVarKind::Integer => (32, false),
-            NetVarKind::Longint | NetVarKind::Time => (64, false),
-            NetVarKind::Bit | NetVarKind::Logic | NetVarKind::Reg => (1, true),
-            // Real / string / event / nets / class are not a synthesizable
-            // data-tracking var — leave it for elaborate to loud-reject (carry
-            // a 1-bit placeholder; the capture path validates the type there).
-            _ => (1, false),
+                     // `unsupported`: the declared type is NOT a synthesizable fixed-width
+                     // integral var, so a capture into it has no data-tracking register in this
+                     // subset. The width/sign below are a 1-bit placeholder; elaborate's
+                     // `synth_local_var_assert` reads this flag and LOUD-rejects the capture —
+                     // never a silent 1-bit truncation that flips the assertion verdict.
+        let (atom_width, ranged_ok, unsupported): (u32, bool, bool) = match kind {
+            NetVarKind::Byte => (8, false, false),
+            NetVarKind::Shortint => (16, false, false),
+            NetVarKind::Int | NetVarKind::Integer => (32, false, false),
+            NetVarKind::Longint | NetVarKind::Time => (64, false, false),
+            NetVarKind::Bit | NetVarKind::Logic | NetVarKind::Reg => (1, true, false),
+            // Real / realtime / string / event / nets / class are not a
+            // synthesizable data-tracking var — flag them so elaborate loud-rejects
+            // (carry a 1-bit placeholder width; the type is validated at the capture).
+            _ => (1, false, true),
         };
         // Optional packed range `[msb:lsb]` (vector kinds only). Literal bounds only;
         // a non-literal bound recovers via `parse_small_const` (loud) → width fallback.
@@ -6744,6 +6749,7 @@ impl<'t, 's> Parser<'t, 's> {
             name,
             width,
             signed,
+            unsupported_type: unsupported,
             init,
             span: start.to(self.prev_span()),
         })

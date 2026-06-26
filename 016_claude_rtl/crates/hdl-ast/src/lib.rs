@@ -1039,6 +1039,13 @@ pub struct SvaLocalDecl {
     /// Signedness: `int`/`byte`/`shortint`/`longint`/`integer` are signed;
     /// `bit`/`logic`/`reg` are unsigned (matching the 2-state/4-state defaults).
     pub signed: bool,
+    /// `true` when the declared type is NOT a synthesizable fixed-width integral
+    /// var (`real`/`realtime`/`string`/`event`/class/a net kind). Such a type has
+    /// no fixed-width data-tracking shift register in this subset; the parser sets
+    /// this flag (the `width`/`signed` fields are a 1-bit placeholder) and elaborate
+    /// loud-rejects the capture (`synth_local_var_assert`) — NEVER a silent 1-bit
+    /// truncation that would flip the assertion verdict.
+    pub unsupported_type: bool,
     pub init: Option<Expr>,
     pub span: Span,
 }

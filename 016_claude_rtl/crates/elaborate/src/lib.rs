@@ -17665,6 +17665,24 @@ impl<'s> Elaborator<'s> {
             );
             return;
         };
+        // The declared type must be a synthesizable FIXED-WIDTH INTEGRAL var
+        // (`int`/`integer`/`byte`/`shortint`/`longint`/`bit`/`logic`/`reg`). A
+        // `real`/`realtime`/`string`/`event`/class/net type has no data-tracking
+        // shift register in this subset; the parser carried a 1-bit placeholder
+        // width, so capturing into it would SILENTLY truncate the value to 1 bit and
+        // flip the assertion verdict. Loud-reject it (never a silent default width).
+        if decl.unsupported_type {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "a non-integral sequence local variable `{cap_name}` \
+                     (real/realtime/string/event/class) is unsupported in this subset \
+                     — only fixed-width integral types (`int`/`byte`/`bit`/…) have a \
+                     data-tracking register"
+                ),
+            );
+            return;
+        }
         if decl.init.is_some() {
             self.error(
                 MsgCode::ElabUnsupported,

@@ -498,6 +498,121 @@ fn disable_iff_with_local_var_is_loud() {
     loud(&out, &err, code, "disable iff with a local var");
 }
 
+// ── NON-INTEGRAL local-var TYPE = LOUD (never a silent 1-bit truncation) ───────
+// A `real`/`string`/`realtime`/`event`/class-typed SVA local var has no
+// synthesizable fixed-width data-tracking register in this subset. The parser must
+// flag the type and elaborate must loud-reject — otherwise the value is silently
+// truncated to a 1-bit register, flipping the verdict (a silent-wrong). The
+// integral idiom (`int`/`bit`/`byte`/…) is unaffected.
+//
+// The stimulus is deliberately the SILENT-PASS direction (data=4, rdata=0): a
+// 1-bit truncation captures `4 & 1 = 0`, so `rdata=0 == 0` would spuriously HOLD
+// (exit 0, NO diagnostic) while hand-IEEE `0 == 4.0` is FALSE → a missed violation.
+// A bare `loud()` would be satisfied by an UNRELATED property-violation E4003 in
+// the other direction, so `loud_unsupported_type` additionally requires the
+// `VITA-E3009` type rejection (not a spurious verdict).
+fn loud_unsupported_type(out: &str, err: &str, code: Option<i32>, ctx: &str) {
+    assert_ne!(code, Some(0), "{ctx}: must not silently pass.\n{err}{out}");
+    let combined = format!("{err}{out}");
+    assert!(
+        combined.contains("VITA-E3009"),
+        "{ctx}: expected the E3009 unsupported-type rejection (not a spurious \
+         verdict).\nstderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        combined.contains("non-integral") || combined.contains("integral"),
+        "{ctx}: the diagnostic should name the non-integral type rejection.\n\
+         stderr:\n{err}\nout:\n{out}"
+    );
+}
+
+#[test]
+fn real_typed_local_var_is_loud() {
+    // 1-bit truncation captures `4 & 1 = 0` → `rdata=0 == 0` spuriously HOLDS while
+    // hand-IEEE `0 == 4.0` is a violation. Must be loud (E3009), not a silent pass.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, req=0, grant=0;\n\
+         reg [7:0] data=0, rdata=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) real d; (req, d=data) ##1 grant |-> (rdata == d));\n\
+         initial begin #10 req=1; data=4; #10 req=0; grant=1; rdata=0; #30 $finish; end\n\
+         endmodule\n");
+    loud_unsupported_type(&out, &err, code, "real-typed SVA local var");
+}
+
+#[test]
+fn string_typed_local_var_is_loud() {
+    // `string d;` is a heap-handle, not a fixed-width capture register → loud (E3009).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, req=0, grant=0;\n\
+         reg [7:0] data=0, rdata=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) string d; (req, d=data) ##1 grant |-> (rdata == d));\n\
+         initial begin #10 req=1; data=4; #10 req=0; grant=1; rdata=0; #30 $finish; end\n\
+         endmodule\n");
+    loud_unsupported_type(&out, &err, code, "string-typed SVA local var");
+}
+
+#[test]
+fn realtime_typed_local_var_is_loud() {
+    // `realtime d;` (a real-valued time) is non-integral → loud (not 1-bit truncated).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, req=0, grant=0;\n\
+         reg [7:0] data=0, rdata=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) realtime d; (req, d=data) ##1 grant |-> (rdata == d));\n\
+         initial begin #10 req=1; data=4; #10 req=0; grant=1; rdata=0; #30 $finish; end\n\
+         endmodule\n");
+    loud_unsupported_type(&out, &err, code, "realtime-typed SVA local var");
+}
+
+#[test]
+fn event_typed_local_var_is_loud() {
+    // `event d;` is a 64-bit counter desugar, not a capturable value type → loud.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, req=0, grant=0;\n\
+         reg [7:0] data=0, rdata=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) event d; (req, d=data) ##1 grant |-> (rdata == d));\n\
+         initial begin #10 req=1; data=4; #10 req=0; grant=1; rdata=0; #30 $finish; end\n\
+         endmodule\n");
+    loud_unsupported_type(&out, &err, code, "event-typed SVA local var");
+}
+
+#[test]
+fn real_typed_named_property_local_var_is_loud() {
+    // The same non-integral type via a NAMED property body-start decl (the other
+    // local-var parse position) must also be loud, not a silent 1-bit truncation.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, req=0, grant=0;\n\
+         reg [7:0] data=0, rdata=0;\n\
+         always #5 clk=~clk;\n\
+         property p; real d; @(posedge clk) (req, d=data) ##1 grant |-> (rdata == d); endproperty\n\
+         initial assert property(p);\n\
+         initial begin #10 req=1; data=4; #10 req=0; grant=1; rdata=0; #30 $finish; end\n\
+         endmodule\n");
+    loud_unsupported_type(&out, &err, code, "real-typed named-property SVA local var");
+}
+
+#[test]
+fn integral_local_var_still_works_after_type_guard() {
+    // Regression guard: the type rejection must NOT disturb the integral idiom. The
+    // same data=4/rdata=4 with `int d;` HOLDS (a wide capture, no truncation).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, req=0, grant=0;\n\
+         reg [7:0] data=0, rdata=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) int d; (req, d=data) ##1 grant |-> (rdata == d));\n\
+         initial begin #10 req=1; data=4; #10 req=0; grant=1; rdata=4; #30 $finish; end\n\
+         endmodule\n");
+    holds(
+        &out,
+        &err,
+        code,
+        "int-typed capture still holds (data=4 not truncated)",
+    );
+}
+
 // ── BYTE-IDENTITY: a no-local-var SVA design is unaffected ─────────────────────
 
 #[test]

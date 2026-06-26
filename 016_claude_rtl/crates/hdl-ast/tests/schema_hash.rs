@@ -134,9 +134,16 @@ use vita_schema::schema_hash;
 /// register (elaborate IR-0 — wider regs + NBA shifts + a read substitution);
 /// ranges / multi-write / cross-clock are loud. No sim-ir change (format_version
 /// stays 19). Re-pins this .vu hash.
+/// 2026-06-26 N2c fix: `SvaLocalDecl.unsupported_type: bool` — records that the
+/// declared local-var type is NON-integral (`real`/`realtime`/`string`/`event`/
+/// class/net) and has no fixed-width data-tracking register. The parser sets it
+/// (the width/sign fields are a 1-bit placeholder) and elaborate's
+/// `synth_local_var_assert` loud-rejects the capture, closing a silent 1-bit
+/// truncation that flipped the assertion verdict. No sim-ir change (format_version
+/// stays 19). Re-pins this .vu hash.
 const EXPECTED: [u8; 32] = [
-    248, 106, 139, 220, 243, 28, 162, 118, 189, 231, 113, 139, 161, 37, 71, 82, 50, 33, 198, 250,
-    221, 155, 234, 73, 180, 95, 117, 243, 236, 240, 185, 220,
+    200, 58, 4, 170, 136, 199, 2, 189, 238, 89, 179, 177, 94, 133, 174, 91, 181, 246, 166, 207, 51,
+    125, 151, 197, 218, 21, 118, 231, 65, 174, 199, 53,
 ];
 
 #[test]
