@@ -58,20 +58,24 @@ struct TypeInfo {
 
 /// Flat bit layout of a packed struct: members are placed MSB-first into one
 /// `logic [total-1:0]` vector. `fields` carries `(name, lsb_offset, width,
-/// ascending)` so a `s.field` access desugars to the constant part-select
+/// ascending, signed)` so a `s.field` access desugars to the constant part-select
 /// `s[off+w-1 : off]`, and a trailing sub-select (`s.f[i]` / `s.f[a:b]` /
 /// `s.f[base±:w]`) can be remapped onto the flat vector with the member's
 /// declared direction (`ascending` = `logic [0:N]`, field index 0 = MSB).
+/// `signed` is the member's EFFECTIVE signedness (atom types `int`/`byte`/… and
+/// `signed`-qualified vectors are signed); the WHOLE-field read is wrapped in a
+/// `$signed()` so a signed member reads back negative (a sub-select stays
+/// unsigned per §5.4.1, matching iverilog).
 #[derive(Clone)]
 struct StructLayout {
-    fields: Vec<(String, u32, u32, bool)>,
+    fields: Vec<(String, u32, u32, bool, bool)>,
 }
 impl StructLayout {
-    fn field(&self, name: &str) -> Option<(u32, u32, bool)> {
+    fn field(&self, name: &str) -> Option<(u32, u32, bool, bool)> {
         self.fields
             .iter()
-            .find(|(n, _, _, _)| n == name)
-            .map(|(_, o, w, asc)| (*o, *w, *asc))
+            .find(|(n, _, _, _, _)| n == name)
+            .map(|(_, o, w, asc, sgn)| (*o, *w, *asc, *sgn))
     }
 }
 
@@ -459,6 +463,13 @@ fn infix_bp(k: TokenKind) -> Option<(u8, u8)> {
 const TERNARY_LBP: u8 = 4; // lvl14, right-assoc; rbp = 3
 const TERNARY_RBP: u8 = 3;
 const UNARY_BP: u8 = 27; // lvl2, prefix right-assoc — binds tighter than **
+
+/// Flat bit index used to encode a DROPPED struct-member bit-select WRITE (OOB
+/// source index): any net is at most `MAX_NET_WIDTH` (1<<20) bits, so a write to
+/// bit `1<<21` always falls off the end and the engine drops it (no-op) — exactly
+/// iverilog's behaviour for `s.f[i]` with `i` past the member, with no risk of
+/// leaking into a neighbouring member however wide the struct.
+const OOB_DROP_BIT: u32 = 1 << 21;
 
 fn bin_op(k: TokenKind) -> BinOp {
     use TokenKind as T;
@@ -1219,8 +1230,8 @@ impl<'t, 's> Parser<'t, 's> {
                 // Extracted to a non-inlined helper so the (rare) struct-field
                 // locals never inflate `expr_primary`'s frame on the hot paren-
                 // recursion path (the MAX_EXPR_DEPTH stack budget is frame-sized).
-                if let Some((base, off, w, asc)) = self.struct_field_select(&path) {
-                    return self.struct_member_expr(base, off, w, asc, path.span);
+                if let Some((base, off, w, asc, sgn)) = self.struct_field_select(&path) {
+                    return self.struct_member_expr(base, off, w, asc, sgn, path.span);
                 }
                 if self.peek() == Some(T::LParen) {
                     let args = self.call_args();
@@ -3730,15 +3741,18 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::RBrace, "'}' to close struct body");
         let tname = self.ident()?;
         self.expect(TokenKind::Semi, "';'");
-        // Compute each member width (constant-literal ranges only in v1).
+        // Compute each member width. A named integer-atom kind (`int`/`byte`/…)
+        // carries a fixed width from its TYPE; a vector kind (`bit`/`logic`) sizes
+        // from a constant-literal range (`None` ⇒ 1).
         let mut widths = Vec::with_capacity(members.len());
         for m in &members {
-            match self.member_width(&m.range) {
+            match self.member_width_kind(m.kind, &m.range) {
                 Some(w) if w > 0 => widths.push(w),
                 _ => {
                     self.error_at(
                         m.span,
-                        "struct member width must be a constant-literal range in v1",
+                        "struct member width must be a named integer type or a \
+                         constant-literal range in v1",
                     );
                     widths.push(1);
                 }
@@ -3755,14 +3769,24 @@ impl<'t, 's> Parser<'t, 's> {
                 off,
                 *w,
                 Self::member_ascending(&m.range),
+                m.signed,
             ));
         }
         self.struct_layouts
             .insert(tname.name.clone(), StructLayout { fields });
+        // §7.2.1: an all-2-state struct is itself 2-state — back it with a 2-state
+        // `bit` vector so it defaults to 0, not X (matches iverilog). Any 4-state
+        // member (`logic`/`integer`/`time`/net) makes the whole struct 4-state.
+        let struct_kind =
+            if !members.is_empty() && members.iter().all(|m| Self::member_kind_two_state(m.kind)) {
+                NetVarKind::Bit
+            } else {
+                NetVarKind::Logic
+            };
         self.typedefs.insert(
             tname.name.clone(),
             TypeInfo {
-                kind: NetVarKind::Logic,
+                kind: struct_kind,
                 signed: false,
                 range: Some(Self::dec_range(total.saturating_sub(1))),
                 packed: Vec::new(),
@@ -3826,12 +3850,13 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::Semi, "';'");
         let mut widths = Vec::with_capacity(members.len());
         for m in &members {
-            match self.member_width(&m.range) {
+            match self.member_width_kind(m.kind, &m.range) {
                 Some(w) if w > 0 => widths.push(w),
                 _ => {
                     self.error_at(
                         m.span,
-                        "union member width must be a constant-literal range in v1",
+                        "union member width must be a named integer type or a \
+                         constant-literal range in v1",
                     );
                     widths.push(1);
                 }
@@ -3848,15 +3873,24 @@ impl<'t, 's> Parser<'t, 's> {
                     0u32,
                     *w,
                     Self::member_ascending(&m.range),
+                    m.signed,
                 )
             })
             .collect();
         self.struct_layouts
             .insert(tname.name.clone(), StructLayout { fields });
+        // §7.2.1: an all-2-state union is itself 2-state (defaults to 0); any
+        // 4-state member makes the whole union 4-state (defaults to X).
+        let union_kind =
+            if !members.is_empty() && members.iter().all(|m| Self::member_kind_two_state(m.kind)) {
+                NetVarKind::Bit
+            } else {
+                NetVarKind::Logic
+            };
         self.typedefs.insert(
             tname.name.clone(),
             TypeInfo {
-                kind: NetVarKind::Logic,
+                kind: union_kind,
                 signed: false,
                 range: Some(Self::dec_range(total.saturating_sub(1))),
                 packed: Vec::new(),
@@ -3881,6 +3915,50 @@ impl<'t, 's> Parser<'t, 's> {
                 Some(msb.abs_diff(lsb) as u32 + 1)
             }
         }
+    }
+
+    /// Is this member kind a 2-state type (`bit`/`byte`/`shortint`/`int`/`longint`)?
+    /// IEEE §7.2.1: a packed struct is 2-state iff EVERY member is 2-state — then
+    /// it defaults to 0, not X. `integer`/`time`/`logic`/`reg`/nets are 4-state.
+    /// Mirrors `elaborate::net_kind_is_two_state` exactly (the engine's default-fill
+    /// reads the same predicate via the `two_state_nets` sidecar).
+    fn member_kind_two_state(kind: NetVarKind) -> bool {
+        matches!(
+            kind,
+            NetVarKind::Bit
+                | NetVarKind::Byte
+                | NetVarKind::Shortint
+                | NetVarKind::Int
+                | NetVarKind::Longint
+        )
+    }
+
+    /// Fixed bit-width of a named integer-atom type used as a struct/union member,
+    /// or `None` for a vector-capable kind (`bit`/`logic`/`reg`/nets) whose width
+    /// is given by the range instead (`member_width`). The atom types carry an
+    /// implicit width that no `[msb:lsb]` range follows, so a member declared with
+    /// a bare named type (`int a;`) must size from the type — NOT default to 1.
+    /// Mirrors the SVA-local-var atom table (`parse_sva_local_decl`) and §6.11.
+    fn atom_member_width(kind: NetVarKind) -> Option<u32> {
+        match kind {
+            NetVarKind::Byte => Some(8),
+            NetVarKind::Shortint => Some(16),
+            NetVarKind::Int | NetVarKind::Integer => Some(32),
+            NetVarKind::Longint | NetVarKind::Time => Some(64),
+            _ => None,
+        }
+    }
+
+    /// Width of a struct/union member from its declared kind AND range. A named
+    /// integer-atom kind (`int`/`byte`/…) carries a fixed width (the range, if any,
+    /// is not a packed dimension on an atom in this subset); a vector-capable kind
+    /// (`bit`/`logic`/`reg`) sizes from the range (`None` ⇒ 1). Returns the width
+    /// or `None` when a vector range is present but non-constant.
+    fn member_width_kind(&self, kind: NetVarKind, range: &Option<Range>) -> Option<u32> {
+        if let Some(w) = Self::atom_member_width(kind) {
+            return Some(w);
+        }
+        self.member_width(range)
     }
 
     /// Fold a constant-literal expression to `i64` at parse time (decimal literals
@@ -3935,13 +4013,14 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// If `path` is `var.field` where `var` is a packed-struct variable and `field`
-    /// is one of its members, return `(base_path_to_var, lsb_offset, width)`.
-    fn struct_field_select(&self, path: &HierPath) -> Option<(HierPath, u32, u32, bool)> {
+    /// is one of its members, return `(base_path_to_var, lsb_offset, width,
+    /// ascending, signed)`.
+    fn struct_field_select(&self, path: &HierPath) -> Option<(HierPath, u32, u32, bool, bool)> {
         if path.segments.len() != 2 {
             return None;
         }
         let tyname = self.var_struct.get(&path.segments[0].name)?;
-        let (off, w, asc) = self
+        let (off, w, asc, sgn) = self
             .struct_layouts
             .get(tyname)?
             .field(&path.segments[1].name)?;
@@ -3949,7 +4028,7 @@ impl<'t, 's> Parser<'t, 's> {
             segments: vec![path.segments[0].clone()],
             span: path.segments[0].span,
         };
-        Some((base, off, w, asc))
+        Some((base, off, w, asc, sgn))
     }
 
     /// Is a packed-struct member declared with an ascending range (`logic [0:N]`,
@@ -3969,6 +4048,12 @@ impl<'t, 's> Parser<'t, 's> {
     /// becomes an `IndexedPart` on `pv` (FIELD-bounded, direction-aware).
     /// `#[inline(never)]` keeps these locals out of the recursive `expr_primary`
     /// frame (see MAX_EXPR_DEPTH).
+    ///
+    /// `sgn` is the member's effective signedness. A WHOLE-field read of a signed
+    /// member (`int`/`byte`/… or a `signed`-qualified vector) is wrapped in a
+    /// `signed'(pv)` cast so it reads back negative — a packed-struct member ref is
+    /// TYPED, not a raw part-select, so iverilog preserves member signedness here.
+    /// A sub-select (`s.f[a:b]`) stays unsigned (§5.4.1), matching iverilog.
     #[inline(never)]
     fn struct_member_expr(
         &mut self,
@@ -3976,6 +4061,7 @@ impl<'t, 's> Parser<'t, 's> {
         off: u32,
         w: u32,
         asc: bool,
+        sgn: bool,
         span: Span,
     ) -> Expr {
         let pv = Expr {
@@ -3990,6 +4076,13 @@ impl<'t, 's> Parser<'t, 's> {
             span,
         };
         match self.parse_struct_field_sel(w, asc) {
+            FieldSel::Whole if sgn => Expr {
+                kind: ExprKind::Cast {
+                    target: CastTarget::Signing { signed: true },
+                    expr: Box::new(pv),
+                },
+                span,
+            },
             FieldSel::Whole => pv,
             FieldSel::Indexed { offset, width, dir } => Expr {
                 kind: ExprKind::IndexedPart {
@@ -4202,16 +4295,24 @@ impl<'t, 's> Parser<'t, 's> {
             return Lvalue::Error(s);
         };
         // packed-struct member target `s.field = …` → constant part-select lvalue.
-        // A trailing WRITE sub-select (`s.f[…] = …`) is left to the loop below,
-        // which nests it on the field part-select → loud "nested lvalue select"
-        // (v1: a field-bounded sub-field WRITE needs elaborate lvalue support).
-        let mut lv = if let Some((base, off, w, _asc)) = self.struct_field_select(&path) {
+        // A trailing WRITE sub-select (`s.f[a:b] = …` / `s.f[i] = …`) folds to a
+        // FLAT field-bounded part-select on the struct net, mirroring the READ-side
+        // normalization (`parse_struct_field_sel`): the member's declared direction
+        // and offset map the source index onto the flat vector, so the write never
+        // leaks past the member region. An indexed `[i±:w]` / runtime / reverse
+        // sub-select stays loud (iverilog 13.0 itself refuses those struct-member
+        // writes — "sorry: not yet supported" — so there is no oracle to match).
+        let mut lv = if let Some((base, off, w, asc, _sgn)) = self.struct_field_select(&path) {
             let span = path.span;
-            Lvalue::PartSelect {
-                base: Box::new(Lvalue::Ident(base)),
-                msb: Box::new(Self::dec_lit(off + w - 1, span)),
-                lsb: Box::new(Self::dec_lit(off, span)),
-                span,
+            if self.peek() == Some(TokenKind::LBracket) {
+                self.parse_struct_field_lval(base, off, w, asc, span)
+            } else {
+                Lvalue::PartSelect {
+                    base: Box::new(Lvalue::Ident(base)),
+                    msb: Box::new(Self::dec_lit(off + w - 1, span)),
+                    lsb: Box::new(Self::dec_lit(off, span)),
+                    span,
+                }
             }
         } else {
             Lvalue::Ident(path)
@@ -4275,6 +4376,130 @@ impl<'t, 's> Parser<'t, 's> {
             }
         }
         lv
+    }
+
+    /// Parse the trailing `[...]` of a packed-struct member WRITE sub-select and
+    /// fold it to a FLAT, field-bounded lvalue on the struct net `base[total-1:0]`.
+    /// The cursor is on the `[`. `off`/`w`/`asc` are the member's flat offset, width
+    /// and declared direction (ascending = `logic [0:N]`, source index 0 = field
+    /// MSB). This is the WRITE twin of [`Self::parse_struct_field_sel`]: every form
+    /// maps a SOURCE index `k` onto flat bit `off + k` (descending) or
+    /// `off + (w-1-k)` (ascending), so the write stays inside the member region —
+    /// never leaking into an adjacent member.
+    ///
+    /// SCOPE (correct-or-loud): only a CONSTANT range `[a:b]` running in the
+    /// member's declared direction and a CONSTANT bit-select `[i]` are folded —
+    /// these are exactly the forms iverilog 13.0 supports for a struct-member
+    /// write. An indexed `[i±:w]`, a runtime/non-constant index, or a reversed
+    /// range is a loud parse error (iverilog refuses the indexed/runtime forms
+    /// outright; the reversed range stays loud to match the READ side). An OOB
+    /// bit-select drops (no-op), matching iverilog; an OOB range is loud (iverilog
+    /// itself asserts on it — no oracle).
+    fn parse_struct_field_lval(
+        &mut self,
+        base: HierPath,
+        off: u32,
+        w: u32,
+        asc: bool,
+        span: Span,
+    ) -> Lvalue {
+        self.bump(); // '['
+        let first = self.expr(0);
+        match self.peek() {
+            // Regular `[a:b]` — must be constant and run in the member's direction.
+            Some(TokenKind::Colon) => {
+                self.bump();
+                let last = self.expr(0);
+                let end = self.cur_span();
+                self.expect(TokenKind::RBracket, "']'");
+                match (Self::const_lit(&first), Self::const_lit(&last)) {
+                    // In-direction range, both bounds inside the field [0, w).
+                    (Some(a), Some(b))
+                        if ((asc && a <= b) || (!asc && a >= b))
+                            && a >= 0
+                            && b >= 0
+                            && (a as u32) < w
+                            && (b as u32) < w =>
+                    {
+                        let (ka, kb) = (a as u32, b as u32);
+                        // Map source MSB/LSB index onto the flat vector. Ascending:
+                        // source index k → flat `off + (w-1-k)`; descending: `off + k`.
+                        let (fmsb, flsb) = if asc {
+                            (off + (w - 1 - ka), off + (w - 1 - kb))
+                        } else {
+                            (off + ka, off + kb)
+                        };
+                        Lvalue::PartSelect {
+                            base: Box::new(Lvalue::Ident(base)),
+                            msb: Box::new(Self::dec_lit(fmsb, span)),
+                            lsb: Box::new(Self::dec_lit(flsb, span)),
+                            span: span.to(self.prev_span()),
+                        }
+                    }
+                    _ => {
+                        self.error_at(
+                            span.to(end),
+                            "a constant in-bounds packed-struct member range WRITE in the \
+                             member's declared direction",
+                        );
+                        Lvalue::Error(span.to(self.prev_span()))
+                    }
+                }
+            }
+            // Bit-select `[i]` — constant index; OOB drops (no-op), matching iverilog.
+            Some(TokenKind::RBracket) => {
+                self.bump(); // ']'
+                match Self::const_lit(&first) {
+                    Some(i) if i >= 0 && (i as u32) < w => {
+                        let fbit = if asc {
+                            off + (w - 1 - i as u32)
+                        } else {
+                            off + i as u32
+                        };
+                        Lvalue::BitSelect {
+                            base: Box::new(Lvalue::Ident(base)),
+                            index: Box::new(Self::dec_lit(fbit, span)),
+                            span: span.to(self.prev_span()),
+                        }
+                    }
+                    Some(_) => {
+                        // OOB bit-select: iverilog drops it (no-op). Address a flat
+                        // bit guaranteed past the struct net so the engine drops the
+                        // write too — never a leak into a neighbour member.
+                        Lvalue::BitSelect {
+                            base: Box::new(Lvalue::Ident(base)),
+                            index: Box::new(Self::dec_lit(OOB_DROP_BIT, span)),
+                            span: span.to(self.prev_span()),
+                        }
+                    }
+                    None => {
+                        self.error_at(
+                            span.to(self.prev_span()),
+                            "a constant packed-struct member bit-select WRITE index",
+                        );
+                        Lvalue::Error(span.to(self.prev_span()))
+                    }
+                }
+            }
+            // Indexed `[i+:w]` / `[i-:w]`: iverilog refuses these for a struct-member
+            // write ("sorry: not yet supported"), so there is no oracle — loud.
+            Some(TokenKind::PlusColon) | Some(TokenKind::MinusColon) => {
+                self.bump();
+                let _ = self.expr(0);
+                let _ = self.expect(TokenKind::RBracket, "']'");
+                self.error_at(
+                    span.to(self.prev_span()),
+                    "a constant `[a:b]` range or bit-select on a packed-struct member \
+                     WRITE (an indexed `[i+:w]`/`[i-:w]` is unsupported — iverilog \
+                     refuses it too)",
+                );
+                Lvalue::Error(span.to(self.prev_span()))
+            }
+            _ => {
+                self.error_at(span, "']' or ':' after a struct-member sub-select index");
+                Lvalue::Error(span.to(self.prev_span()))
+            }
+        }
     }
 
     /// True when `lv` is `name[idx]` — a bit-select lvalue rooted at a plain Ident.

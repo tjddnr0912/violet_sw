@@ -13,8 +13,13 @@
 //! the equivalent ascending NET `logic [0:7] a` (which iverilog handles
 //! correctly — a struct field must match it).
 //!
-//! WRITES to a sub-field (`s.f[…] = …`) are a loud "nested lvalue select" in v1
-//! (a field-bounded sub-field write needs elaborate lvalue support — follow-on).
+//! WRITES to a sub-field (`s.f[…] = …`) mirror the READ-side field-bounded
+//! normalization to a FLAT part-select on the struct net: a CONSTANT in-direction
+//! range `[a:b]` and a CONSTANT bit-select `[i]` fold (the only forms iverilog
+//! 13.0 supports for a struct-member write); an OOB bit-select drops (no-op). An
+//! indexed `[i±:w]`, a runtime/non-constant index, or a reversed range stays loud
+//! (iverilog refuses the indexed/runtime forms; the reversed range matches the
+//! loud READ side).
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -220,10 +225,10 @@ fn whole_field_read_unchanged() {
     assert_eq!(out, "a5 3c\n");
 }
 
-// ── Sub-field WRITE is a loud "nested lvalue select" in v1 (follow-on) ────────
+// ── Indexed sub-field WRITE stays loud (iverilog refuses `[i±:w]` writes) ─────
 
 #[test]
-fn asc_subfield_write_is_loud() {
+fn asc_indexed_subfield_write_is_loud() {
     run_loud(
         "module top;\n\
         typedef struct packed { logic [0:7] a; logic [7:0] b; } st_t;\n\
@@ -234,7 +239,7 @@ fn asc_subfield_write_is_loud() {
 }
 
 #[test]
-fn desc_subfield_write_is_loud() {
+fn desc_indexed_subfield_write_is_loud() {
     run_loud(
         "module top;\n\
         typedef struct packed { logic [7:0] a; logic [7:0] b; } st_t;\n\
@@ -242,6 +247,101 @@ fn desc_subfield_write_is_loud() {
         initial begin s.a = 8'hA5; s.a[0+:4] = 4'hF; $display(\"%h\", s.a); end\n\
       endmodule\n",
     );
+}
+
+#[test]
+fn reversed_range_subfield_write_is_loud() {
+    // A range running AGAINST the member's declared direction stays loud (matches
+    // the loud READ side); iverilog accepts it with quirky semantics — no oracle.
+    run_loud(
+        "module top;\n\
+        typedef struct packed { logic [0:7] a; logic [7:0] b; } st_t;\n\
+        st_t s;\n\
+        initial begin s.a[3:2] = 2'b11; $display(\"%b\", s.a); end\n\
+      endmodule\n",
+    );
+}
+
+// ── Field-bounded sub-field WRITE (constant range / bit-select), iverilog-pinned
+
+#[test]
+fn asc_subfield_range_write() {
+    // `logic [0:7] f`: `f[2:3]=11` sets MSB-first bits 2,3 → 00110000 (iverilog).
+    let out = run("module top;\n\
+        typedef struct packed { logic [0:7] f; logic [7:0] g; } p;\n\
+        p s;\n\
+        initial begin s = 0; s.f[2:3] = 2'b11; $display(\"%b %b\", s.f, s.g); end\n\
+      endmodule\n");
+    assert_eq!(out, "00110000 00000000\n");
+}
+
+#[test]
+fn desc_subfield_range_write() {
+    // `logic [7:0] g`: `g[3:2]=11` sets bits 3,2 → 00001100 (iverilog).
+    let out = run("module top;\n\
+        typedef struct packed { logic [0:7] f; logic [7:0] g; } p;\n\
+        p s;\n\
+        initial begin s = 0; s.g[3:2] = 2'b11; $display(\"%b %b\", s.f, s.g); end\n\
+      endmodule\n");
+    assert_eq!(out, "00000000 00001100\n");
+}
+
+#[test]
+fn asc_subfield_bit_write() {
+    let out = run("module top;\n\
+        typedef struct packed { logic [0:7] f; logic [7:0] g; } p;\n\
+        p s;\n\
+        initial begin s = 0; s.f[2] = 1'b1; $display(\"%b %b\", s.f, s.g); end\n\
+      endmodule\n");
+    assert_eq!(out, "00100000 00000000\n");
+}
+
+#[test]
+fn desc_subfield_bit_write() {
+    let out = run("module top;\n\
+        typedef struct packed { logic [0:7] f; logic [7:0] g; } p;\n\
+        p s;\n\
+        initial begin s = 0; s.g[2] = 1'b1; $display(\"%b %b\", s.f, s.g); end\n\
+      endmodule\n");
+    assert_eq!(out, "00000000 00000100\n");
+}
+
+#[test]
+fn subfield_write_no_neighbour_leak() {
+    // Preload the whole struct, write into ONE field; the other field and the rest
+    // of the written field keep their bits (iverilog: 16'hABCD with f[2:3]:=00).
+    let out = run("module top;\n\
+        typedef struct packed { logic [0:7] f; logic [7:0] g; } p;\n\
+        p s;\n\
+        initial begin s = 16'hABCD; s.f[2:3] = 2'b00;\n\
+          $display(\"%b %b %b\", s.f, s.g, s); end\n\
+      endmodule\n");
+    assert_eq!(out, "10001011 11001101 1000101111001101\n");
+}
+
+#[test]
+fn oob_bit_write_drops_no_op() {
+    // `f` is 8 bits (indices 0..7); `s.f[8]=1` is out of bounds and drops (no-op)
+    // — never leaking into the neighbour `g`. (iverilog 13.0 has no defined
+    // behaviour here — it aborts at compile — so this is vita's correct-or-loud
+    // safe choice, not an iverilog match.)
+    let out = run("module top;\n\
+        typedef struct packed { logic [0:7] f; logic [7:0] g; } p;\n\
+        p s;\n\
+        initial begin s = 0; s.f[8] = 1'b1; $display(\"%b %b\", s.f, s.g); end\n\
+      endmodule\n");
+    assert_eq!(out, "00000000 00000000\n");
+}
+
+#[test]
+fn asc_subfield_range_write_spanning() {
+    // A wider in-direction range `f[1:6]=6'b111111` over the ascending member.
+    let out = run("module top;\n\
+        typedef struct packed { logic [0:7] f; logic [7:0] g; } p;\n\
+        p s;\n\
+        initial begin s = 0; s.f[1:6] = 6'b111111; $display(\"%b %b\", s.f, s.g); end\n\
+      endmodule\n");
+    assert_eq!(out, "01111110 00000000\n");
 }
 
 // ── Whole-field WRITE still works (regression guard) ─────────────────────────
