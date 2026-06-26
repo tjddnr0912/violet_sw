@@ -26,8 +26,10 @@
 ## 3. 구현
 - 가능한 IR-0. 단일 write/엣지 등 **공통경로엔 청크포인트가 하나인지 먼저 확인**(인터프리터+VM 공유 funnel 여부). 모든 동치 경로를 빠짐없이 커버.
 - 비-대상 디자인은 byte-identical 유지(가드/사이드카=값 다를 때만).
+- **per-net 사이드카는 net 생성하는 ALL 경로에 populate**(이번 루프 CRITICAL): body decl·**ANSI `elaborate_ports`**·**non-ANSI `PortDecl` 루프**·heap-handle/dyn-array 분기가 전부 별개 add_net 사이트. body decl 한 곳만 채우면 `output wand` 등 포트 net이 사이드카 누락→default 처리로 silent-wrong. 구현 전 `grep add_net`로 사이트 전수 열거.
+- **staged 경로(velab→vrun) 패리티는 필수, "한계로 문서화"는 금지**(이번 루프 정정): 엔진-facing 사이드카가 one-shot `vita`만 타고 staged서 드롭되면 = 경로별 결과 불일치 = silent-wrong. `StagedExtraSidecars` 14th `.velab` 트레일러에 **append-only**로 추가(struct 필드·`from_sidecars` clone·vrun apply 3곳)+`staged_extra_sidecars_wire_shape_is_pinned` 픽스처 갱신+`REGEN_GOLDEN=1`로 핀 해시 재생성. out-of-band 트레일러라 **format_version bump 불필요**(선례=clocking/ca_delays). staged 회귀 테스트=`$fatal`-on-wrong로 exit-code 검증(`cli::run_vcmp/velab/vrun` lib API).
 
-## 4. 사후 리뷰 = 적대 서브에이전트 (이번 루프서 CRITICAL 회귀 1건을 여기서 잡음 — 절대 생략 금지)
+## 4. 사후 리뷰 = 적대 서브에이전트 (이번 루프서 CRITICAL 회귀 1건을 여기서 잡음=`output wand` 포트 net이 body-decl과 별개 생성 경로라 사이드카 누락→wire-x silent-wrong; differential이 포트/계층/generate 변형 probe로 발굴 — 절대 생략 금지)
 - **병렬 ≥2 서브에이전트**, 각 다른 렌즈: (a) **differential silent-wrong 헌트**(오라클로 수십 케이스 차분, byte-identity 위반·신규 divergence) (b) **로직 soundness**(staleness·reset 타이밍·완전성·통합지점=force/clocking/NBA/다른 write 경로). 4축(Architecture·Performance·Maintainability·Robustness) 포함.
 - 각 발견을 (a)신규 silent-wrong (b)pre-existing 무관 (c)문서화된 out-of-scope로 분류. **(a)는 즉시 디버깅·수정**.
 - **soundness(hand-proof)와 differential(라이브 오라클)이 충돌하면 differential이 이긴다.** (이번 루프: soundness가 per-timestep 디둡을 "SOUND"라 했으나 differential이 CRITICAL 회귀 발굴→옳았음. hand-proof는 가정 누락 가능, 라이브 차분은 실측.) 수정 후엔 라이브 오라클로 재확인.
