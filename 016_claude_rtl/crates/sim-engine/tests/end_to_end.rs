@@ -2946,6 +2946,43 @@ fn force_volatile_time_rhs_reevaluates_every_delta() {
 }
 
 #[test]
+fn force_chain_downstream_force_tracks_upstream_repin() {
+    // C-FORCE-REEVAL-p2 CHAIN TEETH: `force x = src; force y = x + 1;` is a
+    // force-feeds-force chain — force y's RHS reads net x, which is force x's
+    // TARGET. When `src` changes, force x re-pins net x; that re-pin must in turn
+    // re-trigger force y so y tracks (x + 1). IEEE 1364 §9.3.2 makes both forces
+    // continuous assignments, so the chain settles like `assign x = src; assign
+    // y = x + 1;` (iverilog evaluates a force-RHS once, so it cannot oracle this;
+    // hand-derived).
+    //
+    // The defect this guards against: the net-sensitivity reeval ran ONCE per
+    // `propagate_changes` and the dirty list it triggered off was then consumed
+    // by the sweep — so force x's re-pin dirtied net x but force y was never
+    // re-selected, FREEZING y at its stale value (silent-wrong). The fixpoint
+    // loop re-selects forces fed by nets a force re-pin changed, within the same
+    // call, so y tracks x.
+    let ir = build(
+        "module tb; reg [7:0] src; wire [7:0] x; wire [7:0] y; \
+           initial begin \
+             src = 5; \
+             force x = src; \
+             force y = x + 1; \
+             #1 $display(\"t1 x=%0d y=%0d\", x, y); \
+             src = 7; \
+             #1 $display(\"t2 x=%0d y=%0d\", x, y); \
+             #1 $display(\"t3 x=%0d y=%0d\", x, y); \
+             $finish; \
+           end \
+         endmodule",
+    );
+    let (res, out) = simulate_capture(&ir, SimOpts::default());
+    assert_eq!(res.finish_reason, FinishReason::Finish);
+    // t1: x=src=5, y=x+1=6. t2: src→7 re-pins x=7, and the SAME reeval pass
+    // re-triggers force y ⇒ y=8 (NOT frozen at 6). t3: steady, x=7 y=8.
+    assert_eq!(out, "t1 x=5 y=6\nt2 x=7 y=8\nt3 x=7 y=8\n");
+}
+
+#[test]
 fn immediate_assert_actions_follow_verilog_truthiness() {
     // Oracle (iverilog -g2012, probed live → p1 f2 f3 f4 p5): an X condition
     // FAILS the assert (if-(x) takes else per IEEE 1800 §16.3), pass/else
