@@ -8899,6 +8899,12 @@ impl<'s> Elaborator<'s> {
             // here a variable decl contributes no continuous driver.
             return;
         }
+        // IEEE §6.1.3: an optional net-declaration delay (`wire #3 w = a;`) applies
+        // to EVERY net-decl-assignment in this decl, IDENTICAL to a delay on the
+        // equivalent `assign #3 w = a;` — fold it the same way (uniform delay +
+        // distinct rise/fall/turnoff `ca_delays` sidecar). `None` (no delay, the
+        // common case) ⇒ `(None, None)` ⇒ byte-identical to before.
+        let (delay, rft) = self.fold_ca_delay(d.delay.as_ref());
         for name in &d.names {
             let Some(init) = &name.init else {
                 continue;
@@ -8909,10 +8915,16 @@ impl<'s> Elaborator<'s> {
             };
             let lhs = self.lower_lvalue(&ast::Lvalue::Ident(path));
             let rhs_id = self.lower_expr(init);
+            // The index of THIS cont-assign is the len BEFORE the push (matches
+            // `elaborate_cont_assign`'s sidecar keying).
+            let idx = self.cont_assigns.len() as u32;
+            if let Some(rft) = rft {
+                self.ca_delays.insert(idx, rft);
+            }
             self.cont_assigns.push(ir::ContAssign {
                 lhs,
                 rhs: rhs_id,
-                delay: None,
+                delay,
             });
         }
     }
@@ -8955,21 +8967,17 @@ impl<'s> Elaborator<'s> {
         self.push_process(proc);
     }
 
-    fn elaborate_cont_assign(&mut self, ca: &ast::ContinuousAssign) {
-        // Delay: hdl-ast Delay values are exprs; sim-ir delay is Option<u32>.
-        // The FROZEN `ContAssign.delay` keeps `Some(rise)` (values[0]) so the
-        // "has delay" check and the uniform fast-path are untouched.
+    /// Fold an AST continuous-assign / net-declaration delay into the two engine
+    /// forms: the uniform `ContAssign.delay` (= `Some(rise)` from `values[0]`,
+    /// preserving the frozen "has delay" fast-path) and, ONLY when rise/fall/turnoff
+    /// are NOT all equal, a `(rise, fall, turnoff)` sidecar triple. `#5`, `#(3,3)`,
+    /// `#(3,3,3)`, and no-delay all yield `(uniform, None)` → byte-identical. A
+    /// value that fails to const-fold drops to `None` (no delay) — the pre-existing
+    /// `assign #d` behavior, now shared so `wire #d w = e` desugars identically.
+    fn fold_ca_delay(&self, delay: Option<&ast::Delay>) -> (Option<u32>, Option<(u32, u32, u32)>) {
         let mult = self.cur_time_mult;
-        let delay = ca
-            .delay
-            .as_ref()
-            .and_then(|d| d.values.first().and_then(|e| const_delay_ticks(e, mult)));
-        // S1: fold ALL delay values (rise, fall, [turnoff]). Register a (rise,
-        // fall, turnoff) sidecar ONLY when the folded values are NOT all equal —
-        // so `#5`, `#(3,3)`, `#(3,3,3)`, and no-delay stay byte-identical (no
-        // sidecar entry → engine uses the uniform `ContAssign.delay`). If any
-        // value fails to const-fold, register nothing (fall back to uniform).
-        let rft = ca.delay.as_ref().and_then(|d| {
+        let uniform = delay.and_then(|d| d.values.first().and_then(|e| const_delay_ticks(e, mult)));
+        let rft = delay.and_then(|d| {
             // Only 2- or 3-value specs can carry a distinct fall/turnoff.
             if d.values.len() < 2 {
                 return None;
@@ -8995,6 +9003,15 @@ impl<'s> Elaborator<'s> {
                 Some((rise, fall, turnoff))
             }
         });
+        (uniform, rft)
+    }
+
+    fn elaborate_cont_assign(&mut self, ca: &ast::ContinuousAssign) {
+        // Delay: hdl-ast Delay values are exprs; sim-ir delay is Option<u32>.
+        // The FROZEN `ContAssign.delay` keeps `Some(rise)` (values[0]) so the
+        // "has delay" check and the uniform fast-path are untouched. S1: a
+        // distinct rise/fall/turnoff rides the `ca_delays` sidecar.
+        let (delay, rft) = self.fold_ca_delay(ca.delay.as_ref());
         for (lv, rhs) in &ca.assigns {
             let lhs = self.lower_lvalue(lv);
             // P1-9 (E3018): a user `assign` may not drive a Reg/Integer/Real
@@ -15488,6 +15505,15 @@ impl<'s> Elaborator<'s> {
             // LOGIC phase: cont-assigns + processes.
             (GenPhase::Logic, ast::ModuleItem::ContAssign(ca)) => {
                 self.elaborate_cont_assign(ca);
+            }
+            // A net-declaration INITIALIZER inside generate (`wire w = a;` /
+            // `wire #3 w = a;`) is an implicit continuous assign — lower it as a
+            // driver here, exactly like the module-item body path (the net itself
+            // was created in the Nets phase). Without this arm the driver was
+            // silently dropped (net stuck at z) — a silent-wrong for both the
+            // delayed and the plain form.
+            (GenPhase::Logic, ast::ModuleItem::NetVar(d)) => {
+                self.elaborate_net_init_drivers(d);
             }
             (GenPhase::Logic, ast::ModuleItem::Proc(p)) => {
                 let proc = self.lower_proc_block(p);

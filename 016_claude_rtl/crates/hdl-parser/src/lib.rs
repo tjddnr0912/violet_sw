@@ -2323,7 +2323,9 @@ impl<'t, 's> Parser<'t, 's> {
         }
         // net/var declaration
         if self.net_var_kind().is_some() {
-            return self.parse_net_var().map(ModuleItem::NetVar);
+            // Module-item scope (also reached for generate items via
+            // parse_gen_item → parse_module_item): a net-decl delay IS allowed.
+            return self.parse_net_var(true).map(ModuleItem::NetVar);
         }
         // typedef-name declaration: `color_t c, d;` where `color_t` was typedef'd.
         if let Some(info) = self.peek_typedef_name() {
@@ -3466,6 +3468,7 @@ impl<'t, 's> Parser<'t, 's> {
                 signed: false,
                 range: None,
                 packed: Vec::new(),
+                delay: None,
                 names: vec![DeclName {
                     name: shadow_name(k),
                     unpacked: Vec::new(),
@@ -4591,13 +4594,28 @@ impl<'t, 's> Parser<'t, 's> {
         })
     }
 
-    fn parse_net_var(&mut self) -> Option<NetVarDecl> {
+    /// `allow_net_delay`: only a MODULE-ITEM / GENERATE-scope net declaration may
+    /// carry an IEEE §6.1.3 net-declaration delay (it desugars to a continuous
+    /// assign, which only those scopes elaborate). In a procedural block / function
+    /// / task / class body a `wire #3 w = a;` is illegal — the caller passes `false`
+    /// so the `#` is left to error as before (correct-or-loud: never parse a delay
+    /// we would then silently drop).
+    fn parse_net_var(&mut self, allow_net_delay: bool) -> Option<NetVarDecl> {
         let start = self.cur_span();
         let kind = self.net_var_kind().unwrap();
         self.bump();
         let signed = self.signed_eff(Some(kind));
         let range = self.opt_range();
         let packed = self.opt_packed_dims(); // additional packed dims `logic [3:0][7:0]`
+                                             // IEEE §6.1.3 net-declaration delay (`wire #3 w = a;` / `wire #(2,3) w = a;`):
+                                             // after the range, before the name list. Only a NET kind in a delay-permitting
+                                             // scope takes one — a `#` after a variable range, or any `#` in a procedural /
+                                             // class scope, stays a loud error (never silently accept `reg #3 r`).
+        let delay = if allow_net_delay && kind.is_net() && self.peek() == Some(TokenKind::Hash) {
+            self.parse_delay()
+        } else {
+            None
+        };
         let names = self.parse_decl_name_list()?;
         self.expect(TokenKind::Semi, "';'");
         Some(NetVarDecl {
@@ -4605,6 +4623,7 @@ impl<'t, 's> Parser<'t, 's> {
             signed,
             range,
             packed,
+            delay,
             names,
             lifetime: None,
             class_type: None,
@@ -4686,6 +4705,7 @@ impl<'t, 's> Parser<'t, 's> {
             signed: info.signed,
             range: info.range,
             packed: info.packed,
+            delay: None,
             names,
             lifetime: None,
             class_type,
@@ -6015,6 +6035,7 @@ impl<'t, 's> Parser<'t, 's> {
             signed: false,
             range: None,
             packed: Vec::new(),
+            delay: None,
             names,
             lifetime: None,
             class_type: Some(iface),
@@ -6169,7 +6190,7 @@ impl<'t, 's> Parser<'t, 's> {
         if randc || self.at_ident_kw("rand") {
             self.bump(); // the rand/randc qualifier (an Ident, not a lexer keyword)
             let decl = if self.net_var_kind().is_some() {
-                self.parse_net_var()
+                self.parse_net_var(false) // class data member: no net delay
             } else if let Some(info) = self.peek_typedef_name() {
                 self.parse_typed_decl(info)
             } else {
@@ -6206,7 +6227,9 @@ impl<'t, 's> Parser<'t, 's> {
         // handle (registered as a `NetVarKind::Class` alias in the prescan). The
         // leading `local`/`protected` access qualifier rides as `vis`.
         if self.net_var_kind().is_some() {
-            return self.parse_net_var().map(|d| ClassItem::Property(vis, d));
+            return self
+                .parse_net_var(false) // class property: no net delay
+                .map(|d| ClassItem::Property(vis, d));
         }
         if let Some(info) = self.peek_typedef_name() {
             return self
@@ -6648,7 +6671,8 @@ impl<'t, 's> Parser<'t, 's> {
             {
                 self.bump(); // 'automatic'
                 let before = self.pos;
-                if let Some(mut d) = self.parse_net_var() {
+                if let Some(mut d) = self.parse_net_var(false) {
+                    // function/task body decl: no net delay
                     d.lifetime = Some(true);
                     body_decls.push(d);
                 }
@@ -6659,7 +6683,8 @@ impl<'t, 's> Parser<'t, 's> {
             }
             if self.net_var_kind().is_some() {
                 let before = self.pos;
-                if let Some(d) = self.parse_net_var() {
+                if let Some(d) = self.parse_net_var(false) {
+                    // function/task body decl: no net delay
                     body_decls.push(d);
                 }
                 if self.pos == before {
@@ -8706,6 +8731,7 @@ impl<'t, 's> Parser<'t, 's> {
             signed,
             range,
             packed,
+            delay: None,
             names: vec![DeclName {
                 name: synth.clone(),
                 unpacked: Vec::new(),
@@ -8955,6 +8981,7 @@ impl<'t, 's> Parser<'t, 's> {
             signed: true,
             range: None,
             packed: Vec::new(),
+            delay: None,
             names: vec![DeclName {
                 name: id.clone(),
                 unpacked: Vec::new(),
@@ -9051,7 +9078,8 @@ impl<'t, 's> Parser<'t, 's> {
         let mut decls = Vec::new();
         while !self.at_eof() && !self.at_block_end(end) && self.net_var_kind().is_some() {
             let before = self.pos;
-            if let Some(d) = self.parse_net_var() {
+            if let Some(d) = self.parse_net_var(false) {
+                // procedural block-local decl: no net delay
                 decls.push(d);
             }
             if self.pos == before {

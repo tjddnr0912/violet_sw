@@ -148,9 +148,15 @@ use vita_schema::schema_hash;
 /// (correct-or-loud: an out-of-scope read/write/call of a local/protected member
 /// is a loud E3009, never a silent read of inaccessible storage). Pure front-end
 /// and elaborate (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
+/// 2026-06-27 net-declaration delays (§6.1.3): adds `delay: Option<Delay>` to
+/// `NetVarDecl` — `wire #3 w = a;` / `wire #(2,4) w = a;`. Parsed only for NET
+/// kinds; elaborate desugars each net-decl-assignment through the SAME delayed
+/// continuous-assign path (uniform `ContAssign.delay` + distinct rise/fall/turnoff
+/// `ca_delays` sidecar) it already uses for `assign #d`. Pure front-end + elaborate
+/// (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
 const EXPECTED: [u8; 32] = [
-    103, 86, 68, 222, 69, 111, 255, 250, 59, 249, 136, 151, 207, 149, 7, 64, 7, 218, 35, 253, 232,
-    198, 246, 124, 35, 228, 79, 118, 85, 99, 88, 103,
+    164, 104, 56, 8, 250, 205, 51, 121, 53, 245, 152, 215, 160, 224, 200, 206, 236, 206, 59, 80,
+    65, 87, 193, 231, 64, 218, 13, 225, 240, 136, 137, 37,
 ];
 
 #[test]

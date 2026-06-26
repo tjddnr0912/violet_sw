@@ -546,6 +546,12 @@ pub struct NetVarDecl {
     pub signed: bool,
     pub range: Option<Range>, // packed/vector [msb:lsb] (the FIRST/outer packed dim)
     pub packed: Vec<Range>,   // ADDITIONAL packed dims: `logic [3:0][7:0]` ⇒ packed=[[7:0]]
+    /// IEEE §6.1.3 net declaration delay (`wire #3 w = a;` / `wire #(2,3) w = a;`).
+    /// Applies to EVERY net-declaration-assignment in this decl, identical to a
+    /// delay on the equivalent `assign #d net = expr;`. `None` = no delay (the
+    /// common case → byte-identical). Parsed only for NET kinds (a `#` after a
+    /// variable range stays a loud error). Var kinds always carry `None`.
+    pub delay: Option<Delay>,
     pub names: Vec<DeclName>, // one decl, possibly many names
     /// B4: per-declaration lifetime OVERRIDE (`automatic int x;` / `static int y;`).
     /// `Some(true)` = automatic, `Some(false)` = static, `None` = follow the
@@ -641,6 +647,28 @@ pub enum NetVarKind {
     /// every `vif.member` access is symbol-aliased to that instance's flattened net.
     /// Dynamic / conditional re-binding is a v1 loud-reject (never silent).
     VirtualIface,
+}
+
+impl NetVarKind {
+    /// True for the wire-family NET kinds (as opposed to variable kinds). Only a
+    /// net kind may carry an IEEE §6.1.3 net-declaration delay (`wire #3 w = a`).
+    pub fn is_net(self) -> bool {
+        use NetVarKind::*;
+        matches!(
+            self,
+            Wire | Tri
+                | Wand
+                | Triand
+                | Wor
+                | Trior
+                | Tri0
+                | Tri1
+                | Supply0
+                | Supply1
+                | Trireg
+                | Uwire
+        )
+    }
 }
 
 /// `[msb:lsb]`. Bounds are exprs (usually const), NOT pre-evaluated.

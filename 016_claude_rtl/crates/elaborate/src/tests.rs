@@ -76,6 +76,7 @@ fn netvar(
         signed,
         range,
         packed: Vec::new(),
+        delay: None,
         names: names
             .iter()
             .map(|n| ast::DeclName {
@@ -743,6 +744,7 @@ fn reg_mem(bit_msb: u32, depth_msb: u32, name: &str) -> ast::ModuleItem {
             span: SP,
         }),
         packed: Vec::new(),
+        delay: None,
         names: vec![ast::DeclName {
             name: ident(name),
             unpacked: vec![ast::Dim::Range(ast::Range {
@@ -2400,6 +2402,7 @@ fn wire_range_expr(msb: ast::Expr, names: &[&str]) -> ast::ModuleItem {
             span: SP,
         }),
         packed: Vec::new(),
+        delay: None,
         names: names
             .iter()
             .map(|n| ast::DeclName {
@@ -2699,6 +2702,7 @@ fn netvar_decl_reg(name: &str) -> ast::NetVarDecl {
             span: SP,
         }),
         packed: Vec::new(),
+        delay: None,
         names: vec![ast::DeclName {
             name: ident(name),
             unpacked: Vec::new(),
