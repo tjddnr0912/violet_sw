@@ -26,6 +26,8 @@
 ## 3. 구현
 - 가능한 IR-0. 단일 write/엣지 등 **공통경로엔 청크포인트가 하나인지 먼저 확인**(인터프리터+VM 공유 funnel 여부). 모든 동치 경로를 빠짐없이 커버.
 - 비-대상 디자인은 byte-identical 유지(가드/사이드카=값 다를 때만).
+- **순수 파서 desugar(기존 AST 노드 재사용)는 최저위험 loud→supported**(이번 루프 inc/compound): 신규 구문이 기존 구문의 shorthand면(`i+=e`≡`i=i+e`·`i++`≡`i=i+1`) elaborate/IR 손대지 말고 **파서서 기존 `Stmt::Blocking` 등으로 desugar**→AST/sim-ir/`.vu` 해시 전부 불변(신규 AST 타입 0). lvalue가 양변에 등장하면 `lvalue_to_expr`(역 `expr_to_lvalue`)로 rhs 합성·precedence는 operand를 `expr(0)` 전체 파스 후 wrap. 부수효과 expr 형태(`a=i++`)는 Pratt expr 파서에 미추가→loud 유지(scope 분리).
+- **렉서 토큰 추가 시 logos longest-match를 prefix 공유 ALL 기존 토큰과 대조**(이번 루프 14 토큰): 다char 연산자 충돌 전수(SVA `|=>`/`|->` vs 신규 `|=`·`<<=` vs `<=`/`<<`/`<<<`·`>>>=` vs `>>>`). **필요한 모든 길이가 정의돼야** longest-match가 기존 스트림 보존(공백 없는 `a++b`만 신규 융합=iverilog도 loud=무해). SVA/unary-`+`/shift/reduction repro로 byte-identity 실측.
 - **per-net 사이드카는 net 생성하는 ALL 경로에 populate**(이번 루프 CRITICAL): body decl·**ANSI `elaborate_ports`**·**non-ANSI `PortDecl` 루프**·heap-handle/dyn-array 분기가 전부 별개 add_net 사이트. body decl 한 곳만 채우면 `output wand` 등 포트 net이 사이드카 누락→default 처리로 silent-wrong. 구현 전 `grep add_net`로 사이트 전수 열거.
 - **staged 경로(velab→vrun) 패리티는 필수, "한계로 문서화"는 금지**(정정): 엔진-facing 사이드카가 one-shot `vita`만 타고 staged서 드롭되면 = 경로별 결과 불일치 = silent-wrong. `StagedExtraSidecars` 14th `.velab` 트레일러에 **append-only**로 추가(struct 필드·`from_sidecars` clone·vrun apply 3곳)+`staged_extra_sidecars_wire_shape_is_pinned` 픽스처 갱신+`REGEN_GOLDEN=1`로 핀 해시 재생성. out-of-band 트레일러라 **format_version bump 불필요**(선례=clocking/ca_delays). staged 회귀 테스트=`$fatal`-on-wrong로 exit-code 검증(`cli::run_vcmp/velab/vrun` lib API). **단 기존 사이드카(예: `ca_delays`)로 desugar하면 staged는 무료**(이미 trailer에 있음).
 - **"기존 path로 desugar" 슬라이스는 그 path가 도는 ALL elaborate 컨텍스트를 전수**(이번 루프 generate silent-wrong): 같은 desugar 함수(예: `elaborate_net_init_drivers`)가 module-item body 루프엔 연결됐어도 **generate-Logic phase·block-local 등 다른 컨텍스트의 dispatch arm이 누락**이면 그 컨텍스트서 driver가 silently drop. 신규 구문이 거기서 파스되면 pre-existing drop이 신규 silent-wrong로 노출. `grep '<desugar_fn>'`·`grep 'GenPhase::Logic'`로 호출 컨텍스트 전수 확인 → 누락 arm 추가(무delay pre-existing도 동시 수정됨).
@@ -36,6 +38,7 @@
 - 각 발견을 (a)신규 silent-wrong (b)pre-existing 무관 (c)문서화된 out-of-scope로 분류. **(a)는 즉시 디버깅·수정**.
 - **soundness(hand-proof)와 differential(라이브 오라클)이 충돌하면 differential이 이긴다.** (이번 루프: soundness가 per-timestep 디둡을 "SOUND"라 했으나 differential이 CRITICAL 회귀 발굴→옳았음. hand-proof는 가정 누락 가능, 라이브 차분은 실측.) 수정 후엔 라이브 오라클로 재확인.
 - **fix 입도(granularity)는 경계 케이스로 측정해 확정**(예측 금지): 같은 버그군서 collapse돼야 할 케이스 vs 재발화해야 할 케이스를 둘 다 오라클로 핀해 정확한 축(per-net? per-timestep? region/cluster 경계?)을 찾을 것.
+- **soundness의 이론적 silent-wrong 제기는 측정으로 검증(가정 금지)**(이번 루프 "double-eval"): desugar 슬라이스면 ① 신규형 ≡ explicit-desugar-target byte-identical 확인(=transform 정확) ② 의심 quirk가 explicit 단독서도 재현되는지 격리(재현=pre-existing·무관). 둘 다 통과면 신규 silent-wrong 아님(별개 pre-existing 후보로만 기록).
 - **silent issue 1건이라도 → 수정 후 사후 리뷰 재시작. CLEAN 나올 때까지 반복.** stash 차분으로 pre/post 회귀를 실증.
 
 ## 5. 게이트
