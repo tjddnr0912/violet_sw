@@ -564,12 +564,15 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// Scratch buffers reused across `propagate_changes` calls (take/restore —
     /// the alternative per-call `Vec::new` allocates on every delta).
     scratch_changed: Vec<u32>,
-    /// GLITCH: per-changed-net `(net, slot_edge_mask)` — the mask is the net's
-    /// intra-slot bit0 edge summary (`SimState::slot_edge`), so both the static
-    /// edge-wake pass (a) and the in-body `Edge` waiter pass (b) fire on a glitch
-    /// the endpoint `prev/cur` compare would lose. For a net written once per
-    /// slot the mask equals `edge_fires(kind, prev, cur)` ⇒ byte-identical.
-    scratch_edges: Vec<(u32, u8)>,
+    /// GLITCH/SELF-RETRIG: per-changed-net `(net, slot_edge_mask, blocking_writer)`.
+    /// `mask` = the net's intra-slot bit0 edge summary (`SimState::slot_edge`), so
+    /// both the static edge-wake pass (a) and the in-body `Edge` waiter pass (b)
+    /// fire on a glitch the endpoint `prev/cur` compare would lose (single write ⇒
+    /// mask == `edge_fires(kind, prev, cur)` ⇒ byte-identical). `blocking_writer` =
+    /// the activity that authored the change via a BLOCKING write (`u32::MAX`
+    /// otherwise); snapshotting it here lets the `retain` closure suppress
+    /// re-firing a process on a net it itself wrote without re-borrowing `self.st`.
+    scratch_edges: Vec<(u32, u8, u32)>,
     /// N4 / multi-edge dedup: per-`propagate_changes` markers so a process
     /// sensitive to MULTIPLE nets that ALL change in the SAME delta is woken
     /// EXACTLY ONCE (IEEE §9: an `always @(posedge c1 or posedge c2)` ticks once
@@ -898,7 +901,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // hot-path check is needed in `run_body`.
         self.cur_aid = proc;
         self.cur_gen = self.activities[proc as usize].gen;
-        match self.st.backend {
+        // SELF-RETRIG: tag blocking writes made by THIS body to their author, so
+        // it is not re-triggered by its own write. Cleared on return — NBA apply,
+        // cont-assign settle and clocking commit (all outside `run_body`) then
+        // author their writes as `None` (= re-fire normally).
+        self.st.blocking_writer = Some(proc);
+        let step = match self.st.backend {
             crate::Backend::Interpreter => run_process(self, proc, block),
             crate::Backend::Bytecode => {
                 let tmpl = self.activity_template(proc) as usize;
@@ -907,7 +915,9 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     None => run_process(self, proc, block),
                 }
             }
-        }
+        };
+        self.st.blocking_writer = None;
+        step
     }
 
     /// Bytecode-VM body entry (Stage C / C2). The P9 predicate (via `vm_compiled`) has
@@ -1679,11 +1689,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // closure in (b) read the mask without re-borrowing `self.st`.
         let mut edges = std::mem::take(&mut self.scratch_edges);
         edges.clear();
-        edges.extend(
-            changed_nets
-                .iter()
-                .map(|&net| (net, self.st.slot_edge[net as usize])),
-        );
+        edges.extend(changed_nets.iter().map(|&net| {
+            (
+                net,
+                self.st.slot_edge[net as usize],
+                self.st.last_blocking_writer[net as usize],
+            )
+        }));
 
         // (a) wake statically edge-sensitive `always` processes.
         // Multi-edge dedup: a process sensitive to SEVERAL nets that all change in
@@ -1695,7 +1707,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         if edge_seen.len() < self.activities.len() {
             edge_seen.resize(self.activities.len(), false);
         }
-        for &(net, mask) in &edges {
+        for &(net, mask, writer) in &edges {
             // P3-4: index loop instead of cloning the per-net waiter list every
             // delta — the body only pushes into `cur.active`, never mutates
             // `net_to_edge`, so the indexed re-borrow is sound.
@@ -1707,7 +1719,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 // legitimate in-body wake comes via the waiter path (b) below.
                 // GLITCH: fire from the intra-slot `mask` (== endpoint for a
                 // single write) so an A→B→A clock pulse still ticks once.
-                if edge_fires_slot(mask, kind) && !self.activities[ready.proc as usize].busy {
+                // SELF-RETRIG: skip a process firing on a net IT itself
+                // blocking-wrote — it already saw the value before re-arming.
+                if edge_fires_slot(mask, kind)
+                    && !self.activities[ready.proc as usize].busy
+                    && writer != ready.proc
+                {
                     // N4: a clocking-commit handler applies `preponed_buf → holding`
                     // HERE — at edge DETECTION, before the Active batch drains — so
                     // EVERY same-slot reader of `cb.sig` sees the committed sample,
@@ -1776,13 +1793,18 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     // cost is one narrow miss: an in-body `@(a)` waiting through a
                     // glitch that RETURNS to the arm value (ROADMAP §4.5.4) — a far
                     // rarer corner than the `@(*)` t0 behavior this preserves.
-                    (WaitCause::Level { nets }, Some(arm)) => nets
-                        .iter()
-                        .zip(arm)
-                        .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
-                    (WaitCause::Level { nets }, None) => {
-                        nets.iter().any(|n| changed_nets.contains(n))
+                    // SELF-RETRIG: a watched net the waiter's OWN process
+                    // blocking-wrote does not wake it (it saw the value pre-rearm).
+                    (WaitCause::Level { nets }, Some(arm)) => {
+                        nets.iter().zip(arm).any(|(&n, av)| {
+                            self.st.nets[n as usize].cur != *av
+                                && self.st.last_blocking_writer[n as usize] != w.ready.proc
+                        })
                     }
+                    (WaitCause::Level { nets }, None) => nets.iter().any(|&n| {
+                        changed_nets.contains(&n)
+                            && self.st.last_blocking_writer[n as usize] != w.ready.proc
+                    }),
                     _ => false,
                 }
             }));
@@ -1802,9 +1824,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 WaitCause::Level { .. } => !level_fire[wi],
                 // GLITCH: an in-body `@(posedge x)` fires from the intra-slot
                 // mask, so a clock pulse that glitches back wakes the waiter.
-                WaitCause::Edge { net, kind } => !edges
-                    .iter()
-                    .any(|&(en, mask)| en == *net && edge_fires_slot(mask, *kind)),
+                // SELF-RETRIG: but not on a net this waiter's own process wrote.
+                WaitCause::Edge { net, kind } => !edges.iter().any(|&(en, mask, writer)| {
+                    en == *net && edge_fires_slot(mask, *kind) && writer != w.ready.proc
+                }),
                 // wait(expr): consume + resume only when the predicate is now true.
                 WaitCause::Expr { .. } => !expr_now[wi],
                 _ => true,

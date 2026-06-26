@@ -60,17 +60,21 @@ fn run(src: &str) -> (SimResult, String, Vec<String>) {
     run_with(src, Backend::Interpreter)
 }
 
-/// A zero-delay event feedback loop (`@(a) a = ~a` re-triggering itself in the
-/// same timestep) blows the per-timestep delta budget: the run must end with a
-/// `F-RUN-NO-CONVERGE` FATAL diagnostic, not a bare exit code. (A pure
-/// `assign a = ~a` is X-stable in 4-state, so a definite seed is required.)
+/// A zero-delay event feedback loop blows the per-timestep delta budget: the run
+/// must end with a `F-RUN-NO-CONVERGE` FATAL diagnostic, not a bare exit code.
+/// Two processes ping-pong (`@(a) b=~b; @(b) a=~a;`) so neither ever settles —
+/// a genuine CROSS-process loop. NOTE: a single-process self-write oscillator
+/// (`@(a) a=~a`) is NOT infinite (IEEE §9, matched by iverilog: ticks once), so a
+/// definite seed plus two procs are required. (A pure `assign a = ~a` is X-stable
+/// in 4-state.)
 #[test]
 fn delta_limit_event_loop_emits_diag() {
     let (res, _out, diags) = run(r#"
 module t;
-  reg a;
+  reg [3:0] a, b;
   initial a = 0;
-  always @(a) a = ~a;
+  always @(a) b = a + 1;
+  always @(b) a = b;
 endmodule
 "#);
     assert_eq!(res.finish_reason, FinishReason::DeltaLimit);

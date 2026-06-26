@@ -177,6 +177,21 @@ pub(crate) struct SimState<'a> {
     /// maintenance so non-clock nets pay nothing. A net never edge-watched has
     /// its `slot_edge` neither reset nor read.
     pub is_edge_target: Vec<bool>,
+    /// SELF-RETRIG: the activity currently executing a PROCEDURAL body, or `None`
+    /// outside body execution (NBA-region apply, cont-assign settle, clocking
+    /// commit). Set/cleared around `run_body`. Lets the write funnel attribute a
+    /// BLOCKING write to its author so the author is not re-triggered by its own
+    /// write (IEEE §9: a process suspended on `@(sig)` does not respond to a
+    /// blocking change it made before re-arming — `always @(a) a=~a` ticks once,
+    /// not forever; an NBA self-write DOES re-fire because it lands post-rearm).
+    pub blocking_writer: Option<u32>,
+    /// SELF-RETRIG: per-net author of the LAST value change this slot — an
+    /// activity id for a blocking proc write, or `u32::MAX` for any other writer
+    /// (NBA/cont-assign/clocking/force = not a blocking self-write). Overwritten
+    /// on every `note_change`, so it is always fresh for a net in `changed_nets`;
+    /// `propagate_changes` suppresses firing a process on a net it itself
+    /// blocking-wrote. `u32::MAX` (no real activity id) means "re-fire normally".
+    pub last_blocking_writer: Vec<u32>,
     /// IEEE §9.3.2 continuous-force registry: net → (whole-net lvalue, rhs
     /// ExprId, forcing module's time multiplier). BTreeMap ⇒ deterministic
     /// re-evaluation order; empty unless a force is live (zero steady cost).
@@ -590,6 +605,8 @@ impl<'a> SimState<'a> {
             two_state: vec![false; nnets],
             slot_edge: vec![0u8; nnets],
             is_edge_target,
+            blocking_writer: None,
+            last_blocking_writer: vec![u32::MAX; nnets],
             active_forces: std::collections::BTreeMap::new(),
             force_net_to_forces: std::collections::BTreeMap::new(),
             force_always_reeval: std::collections::BTreeSet::new(),
@@ -1281,6 +1298,12 @@ impl<'a> SimState<'a> {
                 self.slot_edge[i] = 0;
             }
         }
+        // SELF-RETRIG: record who authored this change. A BLOCKING write by an
+        // executing procedural body (`blocking_writer = Some`) tags the net so the
+        // author isn't re-fired on it; every other writer (NBA/cont-assign/
+        // clocking/force, `blocking_writer = None`) tags `u32::MAX` = re-fire
+        // normally. Overwritten each change, so it is fresh for the next sweep.
+        self.last_blocking_writer[i] = self.blocking_writer.unwrap_or(u32::MAX);
         self.emit_vcd_change(net, word);
     }
 

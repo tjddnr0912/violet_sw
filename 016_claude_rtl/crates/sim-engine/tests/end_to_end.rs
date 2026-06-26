@@ -531,10 +531,15 @@ fn comb_loop_settles_to_x_not_infinite() {
 
 #[test]
 fn infinite_delta_guard_trips() {
-    // `always @(a) a = a + 1;` re-triggers itself every delta (a never settles:
-    // 0→1→2→…) and never advances time → the infinite-delta guard must fire.
-    let src = "module m; reg [3:0] a; \
-               always @(a) a = a + 1; \
+    // Two processes ping-pong: each change of `a` bumps `b`, each change of `b`
+    // copies back to `a`, so a/b increment forever (4-bit wrap) and never settle
+    // → the infinite-delta guard must fire. NOTE: a single-process self-write
+    // oscillator (`always @(a) a = a + 1;`) is NOT infinite — IEEE §9 (matched by
+    // iverilog: ticks once, a settles at 1) does not re-trigger a process on its
+    // OWN blocking write, so this uses a genuine CROSS-process loop instead.
+    let src = "module m; reg [3:0] a, b; \
+               always @(a) b = a + 1; \
+               always @(b) a = b; \
                initial begin a = 0; #1 $finish; end endmodule";
     let ir = build(src);
     let opts = SimOpts {

@@ -433,10 +433,10 @@ loud-reject로 확인됨(이제 참):**
 **ℹ️ 발견된 pre-existing 코어 스케줄러/elaborate silent-wrong(이번 배치 #2 fuzzer 발굴·stash-verified 독립·각각 별개 슬라이스 후보):**
 1. ~~**(CRITICAL) 동일-슬롯 블로킹 글리치 wake-collapse**~~ ✅ **수정 완료(2026-06-27, branch `feat-sched-glitch`, §4.5.5 참조)** — `a=1;a=0;`(net 0→0 endpoints)에서 dirty-sweep `cur!=prev`가 중간 0→1 이벤트를 drop→`always @(a)` 미발화. **수정=dirty 멤버십을 changed set으로 사용(endpoint 필터 제거)**, event-per-transition 재설계 불필요(iverilog는 글리치를 1회 collapse). byte-identical(글리치셋=정상디자인 공집합).
 2. ~~(CRITICAL) #1과 동일 root, 엣지/multi-net 리스트(`@(posedge a or posedge b)`)서도 발생~~ ✅ **수정 완료(§4.5.5)** — **per-net intra-slot edge mask(`slot_edge`) 누적**으로 글리치 posedge/negedge 복원(단일 write면 endpoint와 동일=byte-identical).
-3. **(CRITICAL) SELF-RETRIGGER over-fire**: `always @(a) begin cnt++; if(a) a=0; end`의 body 내 self-write가 같은 슬롯에 재트리거(iverilog: body 실행 중 proc은 @에서 미서스펜드→self-write 재arm 안함). NBA self-write는 정상. **[잔존 — §4.5.5 글리치 수정과 독립, 별개 슬라이스]**
+3. ~~**(CRITICAL) SELF-RETRIGGER over-fire**~~ ✅ **수정 완료(2026-06-27, branch `feat-sched-selfretrig`, §4.5.6 참조)** — `always @(a) begin cnt++; if(a) a=0; end`/`always @(a) a=~a`(오실레이터 무한루프)의 블로킹 self-write가 재트리거. **수정=write provenance(`blocking_writer`/`last_blocking_writer`)로 author proc skip**; NBA self-write(별개 region)·cross-proc는 정상 유지. byte-identical(skip은 self-feedback에서만 발동). 명시적 sensitivity 한정(`@*`/Comb는 #6 클러스터=잔존).
 4. (IMPORTANT) gated/derived clock **cross-delta 동일-timestep double-fire**: `@(posedge clk or posedge gclk)`(gclk=clk&en이 1 delta 늦게 derive)→2회 발화·iverilog는 timestep당 1회 collapse. delta-scoped 디둡(#2)은 정확하나 timestep-scoped 디둡 필요.
 5. (MINOR) mixed edge+level `@(posedge c1 or c2)`의 level term c2가 t0에 X→0일 때 spurious 발화(AnyEdge가 X→known에 발화·pure-level `@(c2)`는 안함). root=classify_event_list AnyEdge lowering.
-6. (IMPORTANT) `always @*` t0 spurious 실행(always_comb is_comb_inferred t0-kick에 혼입; §9.2.2.2.1상 always_comb만 t0 실행).
+6. (IMPORTANT) `always @*` t0 spurious 실행(always_comb is_comb_inferred t0-kick에 혼입; §9.2.2.2.1상 always_comb만 t0 실행). **[관련 발견(§4.5.6 self-retrig 리뷰): `@*`/Comb self-write가 explicit `@(net)`와 달리 재트리거 잔존(Comb 추론 re-fire 경로)·observer 중복발화(이미-active-queue된 proc이 self-write author와 다르면 재스케줄)=둘 다 #6 observer/Comb 클러스터]**
 
 **적대 리뷰 방법론 노트(오라클 없는 SVA)**: iverilog 13.0이 **모든 concurrent assertion을 거부**(verilator 부재)하므로 SVA(#6/#3)는 외부 차분 불가 → **vita-내부 차분**을 teeth로 사용(중첩/local-var 형태를 검증된 시퀀스 파이프라인 등가식과 비교). #6/#3은 cycle/stage가 **컴파일타임 상수/구조적**이라 hand-trace로 단정 가능 = GO; #7은 **런타임 offset**이라 honest-loud.
 
@@ -458,6 +458,16 @@ loud-reject로 확인됨(이제 참):**
 1. **(narrow posedge/negedge)** vita의 `is_posedge`=`new==1 && prev!=1`(좁은 정의)라 `0→x`/`0→z`/`x→1`/`z→1`이 posedge로 안 잡힘(iverilog 와이드 정의는 잡음). 비-글리치 `0→x→1`서도 vita f=1 vs iverilog 2. **와이드화는 t0 `x→known` 전이가 모든 reg서 엣지가 되어 다수 골든 flip**→전용 슬라이스+신중한 오라클 필요.
 2. **(arm=Some in-body `@(a)` 글리치)** in-body `@(a)`(arm-기반 레벨)가 글리치 후 arm 값으로 복귀 시 미발화. **수정 시도가 `@(*)`를 arming 슬롯서 조기발화시켜(differential 회귀) revert**→arm-slot 추적 필요한 narrow corner, honest 유지.
 3. **(cont-assign 글리치 전파)** `assign b=a; @(posedge b)`에서 a 글리치가 b로 전파 안 됨(vita가 cont-assign을 최종 settled 값으로 평가). pre-fix=post-fix 동일(회귀 아님)·아키텍처적 별개.
+
+#### 4.5.6 블로킹 self-write self-retrigger 수정 (2026-06-27, branch `feat-sched-selfretrig`, §4.5.4 스케줄러버그 #3)
+
+> §4.5.4 발굴 CRITICAL #3. **사전 그라운딩(8 오라클 차분으로 규칙 확정) → 구현 → 사후 적대 2-서브에이전트 리뷰(differential 58-케이스 + soundness 5-렌즈) → 테스트 회귀 2건 수정 → 재확인**. 전부 IR-0·format_version 19 불변. **2286 green**(2279 + 신규 7).
+
+**오라클로 확정한 규칙:** 프로세스는 자기 **블로킹** write로 일으킨 sensitivity-net 변화엔 재트리거 안 됨(`@(a) a=~a`=iverilog 1회 tick·무한루프 아님; `if(a) a=0`=cnt 2). 단 **NBA** self-write(`a<=0`)는 NBA region이 re-arm 후라 재트리거 O(cnt 3). 다른 proc은 정상 발화(skip은 per-process).
+
+**✅ 수정(엔진 only):** write provenance — `SimState.blocking_writer`(run_body 중에만 `Some(proc)`)가 `note_change`서 `last_blocking_writer[net]` 기록(블로킹=author proc·NBA/cont-assign/clocking/force=`u32::MAX`). propagate_changes 4개 발화 사이트(static edge·Level arm=None/Some·Edge waiter)가 `writer == fired_proc`면 skip(`edges` 튜플에 writer 스냅샷=retain 클로저용). **byte-identical**: skip은 proc이 자기 sensitivity-net을 블로킹-self-write할 때만 발동=정상 flop/comb 무영향.
+
+**🔬 사후 리뷰 성과:** soundness=**SOUND**(re-entrancy 없음·NBA/cont/clocking None 확인·freshness·id-recycling·4 사이트·byte-identity 5-렌즈 전수 hand-trace). differential 58-케이스=엔진 로직 **0 new divergence**; **테스트 회귀 2건 발굴→수정**(`infinite_delta_guard_trips`·`delta_limit_event_loop_emits_diag`가 `always @(a) a=~a`로 옛 무한루프 동작 인코딩→cross-proc ping-pong `b=a+1;a=b`로 교체). 부수 발굴(별개 슬라이스 후보, 둘 다 §4.5.4 #6 observer/Comb 클러스터): **`@*`/Comb self-write 재트리거 잔존**(explicit `@(net)`는 수정됨)·**observer 중복발화**(self-write author와 다른 이미-queued proc 재스케줄). force-on-own-trigger 재트리거(iverilog와 차이)=pre-existing·무관.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
