@@ -9050,12 +9050,16 @@ impl<'s> Elaborator<'s> {
 
     /// real → integral cast: ROUND HALF AWAY FROM ZERO (§6.24.1), NOT `$rtoi`
     /// truncation. `round = $rtoi(e + (e >= 0.0 ? 0.5 : -0.5))`. `$rtoi` yields a
-    /// 32-bit int, so a >32-bit integral target from real is loud (v1 scope).
+    /// 32-bit int; a 33..=64-bit target (`longint'`/`time'`) splits the rounded
+    /// real into hi/lo 32-bit words in the REAL domain and concatenates them
+    /// (IR-0, bit-exact for every f64-representable value in range — both vita
+    /// and iverilog share the 53-bit f64 mantissa, so the differential stays in
+    /// parity beyond 2^53). A >64-bit target cannot arise from a primitive cast.
     fn lower_real_to_int_cast(&mut self, e: u32, tw: u32, tsigned: bool, _t2state: bool) -> u32 {
-        if tw > 32 {
+        if tw > 64 {
             self.error(
                 MsgCode::ElabUnsupported,
-                "real→longint/time cast is outside the v1 cast scope (use int')",
+                "real→integer cast wider than 64 bits is outside the cast scope",
             );
             return self.placeholder_expr();
         }
@@ -9081,6 +9085,119 @@ impl<'s> Elaborator<'s> {
             lhs: e,
             rhs: adj,
         });
+        // 33..=64-bit target: decompose the round-half-away integer of `e` into a
+        // high and low 32-bit word in the real domain. We must NOT reuse `sum`
+        // (= e±0.5): for an exactly-representable ODD integer `e` with |e| in
+        // [2^52, 2^53) (f64 ulp = 1.0), `e+0.5` rounds to even = `e+1`, so a
+        // floor/ceil of `sum` is off by one (a CRITICAL silent-wrong the hunt
+        // found). Instead compute the integer part `te = trunc-toward-zero(e)`
+        // and the fractional part `frac = e - te ∈ (-1,1)`, then round HALF AWAY
+        // FROM ZERO with an exact ±1 bump: `ts = te + (frac>=0.5 ? 1 : frac<=-0.5
+        // ? -1 : 0)`. For |e| >= 2^52 `e` is already integer-valued so `frac = 0`
+        // and `ts = e` exactly. All ops stay on integer-valued reals (< 2^63), so
+        // `hi = $rtoi($floor(ts/2^32))`, `lo = $rtoi(ts - hi_real*2^32)` and the
+        // `{hi, lo}` join (parts[0]=MSB) reconstruct the 64-bit two's-complement
+        // value exactly. iverilog `longint'`/`time'`-identical across small/
+        // fractional/negative/>2^31/odd-in-[2^52,2^53)/min/max sweeps.
+        if tw > 32 {
+            // te = trunc-toward-zero(e) (`ge` = `e >= 0`, computed above).
+            let floor_e = self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Floor,
+                args: vec![e],
+            });
+            let ceil_e = self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Ceil,
+                args: vec![e],
+            });
+            let te = self.push_expr(ir::Expr::Ternary {
+                cond: ge,
+                then_e: floor_e,
+                else_e: ceil_e,
+            });
+            let frac = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Sub,
+                lhs: e,
+                rhs: te,
+            }); // (-1, 1)
+            let p_half = self.real_const_expr("0.5");
+            let n_half = self.real_const_expr("-0.5");
+            let one_r = self.real_const_expr("1.0");
+            let neg_one_r = self.real_const_expr("-1.0");
+            let zero_bump = self.real_const_expr("0.0");
+            let ge_half = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Ge,
+                lhs: frac,
+                rhs: p_half,
+            });
+            let le_nhalf = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Le,
+                lhs: frac,
+                rhs: n_half,
+            });
+            // bump = frac<=-0.5 ? -1 : 0   (inner), then frac>=0.5 ? 1 : inner.
+            let inner = self.push_expr(ir::Expr::Ternary {
+                cond: le_nhalf,
+                then_e: neg_one_r,
+                else_e: zero_bump,
+            });
+            let bump = self.push_expr(ir::Expr::Ternary {
+                cond: ge_half,
+                then_e: one_r,
+                else_e: inner,
+            });
+            let ts = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Add,
+                lhs: te,
+                rhs: bump,
+            }); // integer-valued, round-half-away(e), EXACT
+            let two32 = self.real_const_expr("4294967296.0");
+            let two32b = self.real_const_expr("4294967296.0");
+            let quot = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Div,
+                lhs: ts,
+                rhs: two32,
+            });
+            let floor_q = self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Floor,
+                args: vec![quot],
+            }); // real, integer-valued
+            let hi = self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Rtoi,
+                args: vec![floor_q],
+            }); // 32-bit: high word bit pattern
+            let prod = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Mul,
+                lhs: floor_q,
+                rhs: two32b,
+            }); // real = hi * 2^32
+            let lo_real = self.push_expr(ir::Expr::Binary {
+                op: ir::BinOp::Sub,
+                lhs: ts,
+                rhs: prod,
+            }); // real in [0, 2^32)
+            let lo = self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Rtoi,
+                args: vec![lo_real],
+            }); // 32-bit: low word bit pattern
+                // {hi, lo}: parts[0] is the MSB half (high 32 bits).
+            let combined = self.push_expr(ir::Expr::Concat {
+                parts: vec![hi, lo],
+            }); // 64-bit
+            let sel = if tw < 64 {
+                self.select_low(combined, tw)
+            } else {
+                combined
+            };
+            let which = if tsigned {
+                ir::SysFuncId::Signed
+            } else {
+                ir::SysFuncId::Unsigned
+            };
+            return self.push_expr(ir::Expr::SysFunc {
+                which,
+                args: vec![sel],
+            });
+        }
         let rounded = self.push_expr(ir::Expr::SysFunc {
             which: ir::SysFuncId::Rtoi,
             args: vec![sum],

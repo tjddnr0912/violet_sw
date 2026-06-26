@@ -11,8 +11,10 @@
 //!    real→integral ROUNDS HALF AWAY FROM ZERO (not $rtoi truncation).
 //!  - SIGNING cast `signed'/unsigned'(e)`: PRESERVE width, flip sign, preserve X/Z.
 //!
-//! Lowered entirely to existing IR (IR-0; format_version unchanged). Class/typedef
-//! `name'(e)` and real→longint/time are LOUD (no oracle / out of v1 scope).
+//! Lowered entirely to existing IR (IR-0; format_version unchanged). real→longint/
+//! time decomposes the trunc-toward-zero integer into hi/lo 32-bit words in the
+//! real domain (bit-exact vs iverilog). Class/typedef `name'(e)` down-casts stay
+//! LOUD (no oracle; a `Derived'(base)` needs a runtime type check = `$cast`).
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -182,10 +184,44 @@ fn class_or_typedef_name_cast_is_loud() {
 }
 
 #[test]
-fn real_to_longint_cast_is_loud() {
-    // $rtoi cannot reach 64-bit; a real→longint/time cast is loud (v1 scope), not
-    // a silently truncated value.
-    loud("    longint x; x = longint'(3.5);");
+fn real_to_longint_and_time_cast_round_half_away() {
+    // real→longint/time decomposes the trunc-toward-zero integer into hi/lo 32-bit
+    // words in the real domain ({hi,lo}, IR-0). Round HALF AWAY FROM ZERO, wide
+    // magnitude preserved, negatives correct. All values are iverilog-13 outputs.
+    line(
+        "    real r;\n\
+         \x20   r=3.7;  $display(\"%0d\", longint'(r));\n\
+         \x20   r=-2.5; $display(\"%0d\", longint'(r));\n\
+         \x20   r=1234567890123.0;  $display(\"%0d\", longint'(r));\n\
+         \x20   r=-1234567890123.0; $display(\"%0d\", longint'(r));\n\
+         \x20   r=-0.4; $display(\"%0d\", longint'(r));\n\
+         \x20   r=4294967296.5; $display(\"%0d\", longint'(r));\n\
+         \x20   r=100.0; $display(\"%0d\", time'(r));",
+        "4",
+    );
+    // negative wide magnitude exact (the trunc-toward-zero fix, not floor).
+    line(
+        "    real r=-1234567890123.0; $display(\"%0d\", longint'(r));",
+        "-1234567890123",
+    );
+    // |x| < 0.5 rounds to 0 even when negative (the off-by-one the floor path hit).
+    line("    real r=-0.4; $display(\"%0d\", longint'(r));", "0");
+    // wide value beyond 32-bit magnitude is preserved (32-bit $rtoi would lose it).
+    line(
+        "    real r=4294967296.5; $display(\"%0d\", longint'(r));",
+        "4294967297",
+    );
+    // HUNT SW: an exactly-representable ODD integer in [2^52,2^53) (f64 ulp=1.0)
+    // must NOT be perturbed by the round step — a `+0.5` pre-add would round it to
+    // even (off by one). 2^53-1 = 9007199254740991 stays exact (both signs).
+    line(
+        "    real r=9007199254740991.0; $display(\"%0d\", longint'(r));",
+        "9007199254740991",
+    );
+    line(
+        "    real r=-9007199254740991.0; $display(\"%0d\", longint'(r));",
+        "-9007199254740991",
+    );
 }
 
 // ── post-implementation adversarial-hunt regressions ──
@@ -247,17 +283,15 @@ fn cast_of_real_returning_function_call_rounds() {
 }
 
 #[test]
-fn real_call_through_unary_to_longint_is_loud() {
-    // The real→longint loud-reject must also fire when the real call is reached
-    // through a unary `-` (was silently bit-reinterpreting before the 2nd-round fix).
+fn real_call_through_unary_to_longint_rounds() {
+    // The real→longint cast must still treat a real call reached through a unary
+    // `-` as REAL (not bit-reinterpret it) — and now produce the correct rounded
+    // 64-bit value: longint'(-2.5) = -3 (round half away). iverilog parity.
     let src = "module t;\n  function automatic real getr(); getr = 2.5; endfunction\n\
                \x20 initial begin longint x; x = longint'(-getr()); $display(\"%0d\", x); end\nendmodule\n";
     let (out, err, code) = run(src);
-    assert_ne!(code, Some(0), "must be loud, not silent.\n{out}{err}");
-    assert!(
-        format!("{err}{out}").contains("VITA-E"),
-        "expected a loud E-diagnostic.\n{out}{err}"
-    );
+    assert_eq!(code, Some(0), "expected exit 0.\n{err}{out}");
+    assert!(out.lines().any(|l| l == "-3"), "expected -3.\n{out}{err}");
 }
 
 #[test]
