@@ -164,6 +164,21 @@ pub(crate) struct SimState<'a> {
     /// ExprId, forcing module's time multiplier). BTreeMap ⇒ deterministic
     /// re-evaluation order; empty unless a force is live (zero steady cost).
     pub active_forces: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64, bool)>,
+    /// C-FORCE-REEVAL-p2 sidecar: net (a source the force RHS reads) → the set
+    /// of force keys (`active_forces` keys = target nets) whose RHS reads that
+    /// net. Rebuilt incrementally at every `active_forces` insert/remove, NEVER
+    /// per delta. Lets `reeval_active_forces` re-evaluate only the forces whose
+    /// inputs actually changed this delta. BTreeSet preserves the BTreeMap
+    /// re-eval order contract (a re-pin can feed another force → order matters).
+    pub force_net_to_forces: std::collections::BTreeMap<u32, std::collections::BTreeSet<u32>>,
+    /// C-FORCE-REEVAL-p2 sidecar: force keys (target nets) that must ALWAYS
+    /// re-evaluate regardless of net changes — a force whose RHS is `volatile`
+    /// (reads `$time`/`$realtime`/`$stime`/`$random`/`$urandom`/`$urandom_range`,
+    /// which yield a fresh value each delta) OR reads ZERO design nets (e.g.
+    /// `force x = 5;` re-pin is cheap and a const RHS never appears in the
+    /// net→forces map, so it would otherwise never re-eval). Net-sensitivity
+    /// skipping such a force would silently FREEZE it.
+    pub force_always_reeval: std::collections::BTreeSet<u32>,
     /// Proc-assigns displaced by an overriding `force` (§9.3.1): net → the
     /// parked (lvalue, rhs ExprId, time-mult). `release` re-pins from here.
     pub latent_assigns: std::collections::BTreeMap<u32, (sim_ir::Lvalue, u32, u64)>,
@@ -512,6 +527,8 @@ impl<'a> SimState<'a> {
             forced: vec![false; nnets],
             two_state: vec![false; nnets],
             active_forces: std::collections::BTreeMap::new(),
+            force_net_to_forces: std::collections::BTreeMap::new(),
+            force_always_reeval: std::collections::BTreeSet::new(),
             latent_assigns: std::collections::BTreeMap::new(),
             dyn_heap: (0..nnets).map(|_| None).collect(),
             dyn_warned: std::cell::RefCell::new(std::collections::BTreeSet::new()),
@@ -1227,6 +1244,124 @@ impl<'a> SimState<'a> {
     /// (no settle entry exists for it) — both fall out of just clearing the flag.
     pub fn release(&mut self, lhs: &Lvalue) {
         self.forced[lhs.chunks[0].net as usize] = false;
+    }
+
+    // ── C-FORCE-REEVAL-p2: force-RHS net-sensitivity sidecar ─────────────────
+
+    /// Walk a force RHS expression, collecting every design net it READS (so a
+    /// per-delta reeval can skip a force whose inputs are unchanged) and whether
+    /// it is `volatile` — i.e. it contains a `$time`/`$realtime`/`$stime` or
+    /// `$random`/`$urandom`/`$urandom_range` leaf, which yields a DIFFERENT value
+    /// each delta even with frozen net inputs. The walk recurses every child
+    /// ExprId (children are all `u32` arena indices). A `Signal{net, word}` reads
+    /// `net` AND (recursively) its `word` index expr. Defensive on a malformed /
+    /// out-of-range ExprId (treat as a volatile leaf so it is always re-evaluated
+    /// — never silently dropped).
+    pub fn collect_force_reads(&self, eid: u32) -> (Vec<u32>, bool) {
+        let mut nets = Vec::new();
+        let mut volatile = false;
+        self.walk_force_reads(eid, &mut nets, &mut volatile);
+        nets.sort_unstable();
+        nets.dedup();
+        (nets, volatile)
+    }
+
+    fn walk_force_reads(&self, eid: u32, nets: &mut Vec<u32>, volatile: &mut bool) {
+        use sim_ir::Expr;
+        let Some(e) = self.ir.exprs.get(eid as usize) else {
+            // Unresolvable node → be conservative: force always re-evaluates.
+            *volatile = true;
+            return;
+        };
+        match e {
+            Expr::Const { .. } | Expr::ArrayItem { .. } => {}
+            Expr::Signal { net, word } => {
+                nets.push(*net);
+                if let Some(w) = word {
+                    self.walk_force_reads(*w, nets, volatile);
+                }
+            }
+            Expr::Select { base, offset, .. } => {
+                self.walk_force_reads(*base, nets, volatile);
+                self.walk_force_reads(*offset, nets, volatile);
+            }
+            Expr::Concat { parts } => {
+                for &p in parts {
+                    self.walk_force_reads(p, nets, volatile);
+                }
+            }
+            Expr::Replicate { count, value } => {
+                self.walk_force_reads(*count, nets, volatile);
+                self.walk_force_reads(*value, nets, volatile);
+            }
+            Expr::Unary { operand, .. } => self.walk_force_reads(*operand, nets, volatile),
+            Expr::Binary { lhs, rhs, .. } => {
+                self.walk_force_reads(*lhs, nets, volatile);
+                self.walk_force_reads(*rhs, nets, volatile);
+            }
+            Expr::Ternary {
+                cond,
+                then_e,
+                else_e,
+            } => {
+                self.walk_force_reads(*cond, nets, volatile);
+                self.walk_force_reads(*then_e, nets, volatile);
+                self.walk_force_reads(*else_e, nets, volatile);
+            }
+            Expr::SysFunc { which, args } => {
+                use sim_ir::SysFuncId as F;
+                if matches!(
+                    which,
+                    F::Time | F::Realtime | F::Stime | F::Random | F::Urandom | F::UrandomRange
+                ) {
+                    *volatile = true;
+                }
+                for &a in args {
+                    self.walk_force_reads(a, nets, volatile);
+                }
+            }
+            Expr::Call { args, .. } => {
+                // A user function call could read state the net-sensitivity map
+                // cannot see (statics, side effects). Conservatively volatile so
+                // it always re-evaluates (never silently frozen).
+                *volatile = true;
+                for &a in args {
+                    self.walk_force_reads(a, nets, volatile);
+                }
+            }
+        }
+    }
+
+    /// Register (or refresh) a force's net-sensitivity in the sidecar. Called at
+    /// every `active_forces` insert so the per-delta reeval can target only the
+    /// affected forces. `key` is the target net (the `active_forces` map key).
+    pub fn register_force_sensitivity(&mut self, key: u32, rhs: u32) {
+        // Refresh: a re-force on the same key may change the RHS — drop the old
+        // sensitivity first so stale net→force edges never linger.
+        self.unregister_force_sensitivity(key);
+        let (reads, volatile) = self.collect_force_reads(rhs);
+        if volatile || reads.is_empty() {
+            // Volatile RHS ($time/$random/…) or a const/zero-net RHS: ALWAYS
+            // re-evaluate. A const RHS reads no net, so the net→forces map would
+            // never trigger it; treating it as always-reeval preserves today's
+            // unconditional behavior (a same-value re-pin is dropped downstream).
+            self.force_always_reeval.insert(key);
+        } else {
+            for n in reads {
+                self.force_net_to_forces.entry(n).or_default().insert(key);
+            }
+        }
+    }
+
+    /// Drop a force's net-sensitivity from the sidecar (on release/displace).
+    pub fn unregister_force_sensitivity(&mut self, key: u32) {
+        self.force_always_reeval.remove(&key);
+        // Remove `key` from every net's trigger set; prune emptied entries so
+        // the map stays minimal (and the per-delta union loop stays cheap).
+        self.force_net_to_forces.retain(|_, set| {
+            set.remove(&key);
+            !set.is_empty()
+        });
     }
 
     // ── VCD lifecycle (driven by $dumpfile/$dumpvars) ────────────────────

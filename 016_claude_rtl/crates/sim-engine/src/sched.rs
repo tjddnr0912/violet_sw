@@ -561,9 +561,10 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// the alternative per-call `Vec::new` allocates on every delta).
     scratch_changed: Vec<u32>,
     scratch_edges: Vec<(u32, FourState, FourState)>,
-    /// FORCE-REEVAL: reused entry buffer for `reeval_active_forces` (was a
-    /// fresh `.cloned().collect()` Vec every delta a force is live).
-    scratch_force_entries: Vec<(sim_ir::Lvalue, u32, u64, bool)>,
+    /// C-FORCE-REEVAL-p2: reused buffer of the force KEYS (target nets) selected
+    /// for re-eval this delta (changed-net-triggered ∪ always-reeval), kept
+    /// sorted to preserve the BTreeMap re-eval order contract.
+    scratch_force_keys: Vec<u32>,
     /// WAITER-POOL: reused `expr_now`/`level_fire` precompute buffers in
     /// `propagate_changes` (was two fresh `Vec<bool>` per non-idle delta).
     scratch_expr_now: Vec<bool>,
@@ -625,7 +626,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             time_limit,
             scratch_changed: Vec::new(),
             scratch_edges: Vec::new(),
-            scratch_force_entries: Vec::new(),
+            scratch_force_keys: Vec::new(),
             scratch_expr_now: Vec::new(),
             scratch_level_fire: Vec::new(),
             vm_regs_pool: Vec::new(),
@@ -1506,22 +1507,45 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // ACTIVE pins only — both force (§9.3.2) and proc-assign (§9.3.1)
         // re-evaluate continuously; a latent (force-displaced) assign does not
         // run until release re-pins it.
-        // FORCE-REEVAL: reuse a scratch buffer (mem::take also frees the loop to
-        // call `&mut self` methods — `entries` is a local, not a self borrow).
-        // The element clones remain (a force RHS eval must not alias the live
-        // registry); only the per-delta Vec allocation is eliminated.
-        let mut entries = std::mem::take(&mut self.scratch_force_entries);
-        entries.clear();
-        entries.extend(self.st.active_forces.values().cloned());
+        // C-FORCE-REEVAL-p2: select only the forces whose inputs changed this
+        // delta (via the net→forces sidecar) PLUS every always-reeval force
+        // (volatile $time/$random RHS, or zero-net const RHS — these yield a
+        // fresh value with frozen inputs, so a net-sensitivity skip would
+        // silently FREEZE them). The selected keys are SORTED, so the executed
+        // subset re-evaluates in the exact BTreeMap (ascending-key) order the
+        // old all-forces loop used for that subset — a force's re-pin can write
+        // a net feeding another force, so order is load-bearing for output.
+        let mut keys = std::mem::take(&mut self.scratch_force_keys);
+        keys.clear();
+        // Changed-net-triggered forces. `self.st.dirty` (still unconsumed at this
+        // point in `propagate_changes`) is the same changed-net set that gates
+        // this call; using it raw (not the cur!=prev–filtered set) is a safe
+        // superset — it never skips a force the old unconditional loop ran.
+        for &n in &self.st.dirty {
+            if let Some(set) = self.st.force_net_to_forces.get(&n) {
+                keys.extend(set.iter().copied());
+            }
+        }
+        // Always-reeval forces.
+        keys.extend(self.st.force_always_reeval.iter().copied());
+        keys.sort_unstable();
+        keys.dedup();
+
         let saved = self.st.cur_time_mult;
-        for e in &entries {
-            self.st.cur_time_mult = e.2;
-            let v = self.eval_for_lvalue(&e.0, e.1);
-            self.st.force_write(&e.0, v);
+        for &k in &keys {
+            // Look up live registry data by key. A key could have been removed
+            // by an earlier force's re-pin side effects in THIS loop (none do
+            // today, but be defensive); skip a vanished entry.
+            let Some((lv, rhs, mult, _weak)) = self.st.active_forces.get(&k).cloned() else {
+                continue;
+            };
+            self.st.cur_time_mult = mult;
+            let v = self.eval_for_lvalue(&lv, rhs);
+            self.st.force_write(&lv, v);
         }
         self.st.cur_time_mult = saved;
-        entries.clear();
-        self.scratch_force_entries = entries;
+        keys.clear();
+        self.scratch_force_keys = keys;
     }
 
     fn propagate_changes(&mut self) {
@@ -2564,6 +2588,10 @@ impl Kernel for Scheduler<'_, '_> {
         self.st
             .active_forces
             .insert(net, (lhs.clone(), rhs, mult, weak));
+        // C-FORCE-REEVAL-p2: refresh this force's net→forces sensitivity (or
+        // mark it always-reeval if volatile / zero-net) so the per-delta reeval
+        // can skip forces whose inputs are unchanged.
+        self.st.register_force_sensitivity(net, rhs);
     }
     fn k_release(&mut self, lhs: &Lvalue, sid: u32) {
         let net = lhs.chunks[0].net;
@@ -2574,6 +2602,7 @@ impl Kernel for Scheduler<'_, '_> {
             self.st.latent_assigns.remove(&net);
             if matches!(self.st.active_forces.get(&net), Some((.., true))) {
                 self.st.active_forces.remove(&net);
+                self.st.unregister_force_sensitivity(net);
                 self.st.release(lhs);
             }
             return;
@@ -2585,6 +2614,7 @@ impl Kernel for Scheduler<'_, '_> {
             Some((.., true)) => {} // assign active, no force: release is a no-op
             _ => {
                 self.st.active_forces.remove(&net);
+                self.st.unregister_force_sensitivity(net);
                 self.st.release(lhs);
                 if let Some((alv, arhs, amult)) = self.st.latent_assigns.remove(&net) {
                     let saved = self.st.cur_time_mult;
@@ -2593,6 +2623,8 @@ impl Kernel for Scheduler<'_, '_> {
                     self.st.force_write(&alv, v);
                     self.st.cur_time_mult = saved;
                     self.st.active_forces.insert(net, (alv, arhs, amult, true));
+                    // Re-register the resumed latent assign's sensitivity.
+                    self.st.register_force_sensitivity(net, arhs);
                 }
             }
         }
