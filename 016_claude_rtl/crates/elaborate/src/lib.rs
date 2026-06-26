@@ -1073,6 +1073,13 @@ struct SvaRegs {
 enum SeqHop {
     Fixed(u32),
     AtLeast(u32),
+    /// A BOUNDED range `##[m:n]` (m <= n) carried as a SINGLE hop rather than
+    /// fanned out into `n-m+1` `Fixed(d)` alternatives (SVA-QUAD collapse). Emitted
+    /// only when `collapse_window()` is on; `synth_seq_pipeline` lowers it to a
+    /// shared O(n-m) sliding-OR window (one shift chain whose every depth is OR-ed),
+    /// verdict-identical to the fan-out (proven by the OR-vs-delay commutation lemma,
+    /// `reg(x|y) == reg(x)|reg(y)`). Pure IR-0 (internal enum, never serialized).
+    Range(u32, u32),
 }
 
 /// A term in a flattened sequence alternative: a plain boolean, or a
@@ -1289,6 +1296,11 @@ fn window_len(terms: &[(SeqTerm, SeqHop)]) -> u32 {
         .map(|(_, h)| match h {
             SeqHop::Fixed(d) => *d,
             SeqHop::AtLeast(_) => 0,
+            // The window's MAX length (largest fan-out alternative). `window_len` is
+            // only consumed by `synth_within` / `build_seq_consequent`, both of which
+            // loud-reject a non-`Fixed` hop before reaching here, so this is a defined-
+            // but-unreached fallback (kept total).
+            SeqHop::Range(_, n) => *n,
         })
         .sum::<u32>()
 }
@@ -1651,6 +1663,27 @@ fn sva_formal_map(formals: &[ast::Ident], actuals: &[ast::Expr]) -> BTreeMap<Str
 /// the worst-case reg count quadratically (≈cap²/2), not linearly. That still
 /// elaborates deterministically at the cap; prefix-sharing is a perf follow-on.
 const SVA_SEQ_ALT_CAP: usize = 256;
+
+/// SVA-QUAD collapse selector. When ON, a bounded `##[m:n]` (m < n) delay is
+/// lowered to ONE shared O(n-m) sliding-OR window (`SeqHop::Range`) instead of
+/// `n-m+1` fanned `Fixed(d)` alternatives (the O(N^2) prefix-rebuild). The two
+/// lowerings are VERDICT-IDENTICAL (the differential gate in
+/// `crates/cli/tests/sva_quad_differential.rs` proves it across a directed +
+/// randomized fuzz corpus); the collapse only changes the internal SVA-checker reg
+/// COUNT/NAMES, so the emitted VCD's internal `__sva_*` net set differs for
+/// `##[m:n]` designs — that is checker plumbing, NOT observable design behavior,
+/// and assertion verdicts (fire/hold + exit + diagnostics) are preserved exactly.
+///
+/// Default = OFF (fan-out), so the WHOLE existing suite — including any full-VCD
+/// byte-identity goldens on `##[m:n]` designs — is byte-identical to today. The
+/// fan-out impl is retained as the PERMANENT differential oracle. Set
+/// `VITA_SVA_COLLAPSE` to enable the collapse (the differential test sets it on one
+/// of its two runs to compare verdict streams). Flipping the default is a one-line
+/// change here once a full-VCD audit clears the net-set blast radius (deferred —
+/// see `impl2-SVA-QUAD-collapse.md`).
+fn collapse_window() -> bool {
+    std::env::var_os("VITA_SVA_COLLAPSE").is_some()
+}
 
 /// Loud message for an empty-match repetition `b[*0:..]` adjacent to a delay the
 /// fusion cannot verify. Any FIXED hop_in>=1 AND FIXED hop_out>=1 fuses with net
@@ -18976,9 +19009,14 @@ impl<'s> Elaborator<'s> {
                 let mut out = Vec::new();
                 // An unbounded `##[m:$]` cannot fan out — it becomes one
                 // `AtLeast(m)` hop (synthesized as a latch). A bounded `##[m:n]`
-                // fans into the n-m+1 `Fixed(d)` delay alternatives.
+                // fans into the n-m+1 `Fixed(d)` delay alternatives (the O(N^2)
+                // path), UNLESS the SVA-QUAD collapse is enabled and the range is
+                // non-degenerate (n > m), in which case ONE `Range(m,n)` hop carries
+                // the whole window (lowered to a shared O(n-m) sliding-OR in
+                // `synth_seq_pipeline`). `n == m` is a single `Fixed(n)` either way.
                 let hops: Vec<SeqHop> = match max {
                     None => vec![SeqHop::AtLeast(*min)],
+                    Some(n) if collapse_window() && *n > *min => vec![SeqHop::Range(*min, *n)],
                     Some(n) => (*min..=*n).map(SeqHop::Fixed).collect(),
                 };
                 for hop in hops {
@@ -19364,6 +19402,34 @@ impl<'s> Elaborator<'s> {
                     for _ in 0..d {
                         cur = guard_and(self.seq_delay_reg(cur, pipeline_nbas, sp));
                     }
+                }
+                // SVA-QUAD collapse: a bounded `##[m:n]` (m < n) lowered as ONE
+                // shared sliding-OR window instead of `n-m+1` fanned alternatives.
+                // Entering, `cur` = `guard_and(seed)` = the guard-anded COMBINATIONAL
+                // this-clock prefix activation. Reach depth d=m (m shifts), seed the
+                // window there, then OR each further depth d=m+1..n. The window union
+                // feeds the term AND below.
+                //
+                // Hazard #1 (m==0 same-clock): with m==0 the first loop runs 0 times,
+                // so the window seed is the COMBINATIONAL `cur` (NOT a reg read) — the
+                // d=0 (b in a's own clock) completion is present without any OR-back
+                // (unlike `AtLeast`, whose latch reads one clock late). Hazard #2
+                // (throughout): every shift is `guard_and`-wrapped and the seed was
+                // guard-anded, so window element-d carries `guard@[T-d..T]`, identical
+                // to fan-out alt-d (the shared chain propagates the guard into every
+                // deeper element). Hazard #3 (trailing hop): `cur = win` (the union)
+                // feeds the next term, so it samples the whole window, not one delay.
+                // Verdict-identical to the fan-out by `reg(x|y) == reg(x)|reg(y)`.
+                SeqHop::Range(m, n) => {
+                    for _ in 0..m {
+                        cur = guard_and(self.seq_delay_reg(cur, pipeline_nbas, sp));
+                    }
+                    let mut win = cur.clone(); // depth d=m (combinational when m==0)
+                    for _ in 0..(n - m) {
+                        cur = guard_and(self.seq_delay_reg(cur, pipeline_nbas, sp));
+                        win = sva_binary(ast::BinOp::BitOr, win, cur.clone(), sp);
+                    }
+                    cur = win;
                 }
                 SeqHop::AtLeast(m) => {
                     // `##[m:$]`: delay `m-1` fixed clocks, then a never-reset
