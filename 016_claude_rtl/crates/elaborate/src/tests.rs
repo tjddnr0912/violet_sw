@@ -874,10 +874,28 @@ fn t15_duplicate_net_name_errors() {
     assert_eq!(diags[0].code, MsgCode::ElabUnsupported);
 }
 
-// ───────────────────────── 16. whole-net multidriver → error ─────────────────────────
+// ───────────────────────── 16. multidriver: whole-net legal, partial-overlap error ─────────────────────────
+fn multidriver_codes(unit: &ast::SourceUnit) -> (bool, Vec<MsgCode>) {
+    let sink = CollectSink::default();
+    let out = elaborate(unit, &sink);
+    let codes = sink
+        .events
+        .borrow()
+        .iter()
+        .filter_map(|e| match e {
+            LogEvent::Diagnostic(d) => Some(d.code),
+            _ => None,
+        })
+        .collect();
+    (out.is_some(), codes)
+}
+
 #[test]
-fn t16_whole_net_multidriver_errors() {
-    // wire a,b,y; assign y = a; assign y = b;  → y double-driven.
+fn t16a_whole_net_multidriver_now_legal() {
+    // `wire a,b,y; assign y = a; assign y = b;` — two WHOLE-NET non-delayed
+    // drivers are a tristate/bus pattern, RESOLVED by the engine (4-state wire
+    // resolution), so elaboration must SUCCEED with no ElabMultidriver. (Was a
+    // hard E3001 reject before the multi-driver feature.)
     let unit = module(
         "m",
         vec![
@@ -886,17 +904,37 @@ fn t16_whole_net_multidriver_errors() {
             cont_assign(lv_id("y"), id_expr("b")),
         ],
     );
-    let sink = CollectSink::default();
-    let out = elaborate(&unit, &sink);
-    assert!(out.is_none(), "multidriver must fail elaboration");
-    let events = sink.events.borrow();
-    let codes: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            LogEvent::Diagnostic(d) => Some(d.code),
-            _ => None,
-        })
-        .collect();
+    let (ok, codes) = multidriver_codes(&unit);
+    assert!(ok, "whole-net multidriver must now elaborate");
+    assert!(
+        !codes.contains(&MsgCode::ElabMultidriver),
+        "no E3001 for an all-whole-net multidriver"
+    );
+}
+
+#[test]
+fn t16b_partial_overlap_still_errors() {
+    // `wire [7:0] a,y; wire b; assign y = a; assign y[3] = b;` — a whole-net
+    // driver overlapping a PARTIAL (bit-select) driver is OUT OF SCOPE (the
+    // engine resolves only all-whole-net nets), so it must still loud-reject.
+    let unit = module(
+        "m",
+        vec![
+            wire_vec(7, 0, &["a", "y"]),
+            wire_vec(0, 0, &["b"]),
+            cont_assign(lv_id("y"), id_expr("a")),
+            cont_assign(
+                ast::Lvalue::BitSelect {
+                    base: Box::new(lv_id("y")),
+                    index: Box::new(dec("3")),
+                    span: SP,
+                },
+                id_expr("b"),
+            ),
+        ],
+    );
+    let (ok, codes) = multidriver_codes(&unit);
+    assert!(!ok, "partial-overlap multidriver must still fail");
     assert!(codes.contains(&MsgCode::ElabMultidriver));
 }
 

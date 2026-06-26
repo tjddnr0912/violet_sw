@@ -552,6 +552,18 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// invalidating any pending write carrying an older generation (the
     /// inertial cancel; see `DelayedWrite`).
     ca_gen: Vec<u64>,
+    /// MULTI-DRIVER: nets driven by ≥2 cont-assigns that are ALL whole-net,
+    /// non-delayed targets → `(net, driver cont-assign indices)`. Settled by
+    /// per-bit 4-state WIRE resolution (z = high-Z yields; equal non-z keeps;
+    /// conflicting non-z → x) instead of last-write-wins. Empty for every
+    /// single-driver design ⇒ byte-identical (multi-driver was E3001-rejected
+    /// before, so no existing design carries one). Partial/dynamic/array/delayed
+    /// overlaps stay E3001 (whole-net tristate buses are the v1 scope).
+    md_nets: Vec<(u32, Vec<usize>)>,
+    /// MULTI-DRIVER: per-cont-assign flag — this driver is a member of an
+    /// `md_nets` group, so the per-driver individual write in `settle_cont_assigns`
+    /// is SKIPPED (the net is written once by the resolution instead).
+    ca_md: Vec<bool>,
     /// Pending inertial-delay cont-assign writes, keyed by absolute apply tick.
     delayed_ca: BTreeMap<u64, Vec<DelayedWrite>>,
     /// Transport NBAs (`q <= #d v`, v5 increment A): updates due at a FUTURE
@@ -622,6 +634,37 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
     ) -> Self {
         let nnets = st.nets.len();
         let nca = st.ir.cont_assigns.len();
+        // MULTI-DRIVER: identify nets driven by ≥2 cont-assigns that are ALL
+        // whole-net (single chunk, no word/offset/width select) and non-delayed.
+        // A net with ANY partial/dynamic/array/delayed driver is excluded (those
+        // overlaps stay E3001 at elaborate). Computed once from `ir.cont_assigns`
+        // — no sidecar. Empty unless a design actually has a multi-driven net.
+        let mut whole: std::collections::BTreeMap<u32, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        let mut excluded: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        for (ci, ca) in st.ir.cont_assigns.iter().enumerate() {
+            let is_whole = ca.delay.is_none() && ca.lhs.chunks.len() == 1 && {
+                let c = &ca.lhs.chunks[0];
+                c.word.is_none() && c.offset.is_none() && c.width.is_none()
+            };
+            if is_whole {
+                whole.entry(ca.lhs.chunks[0].net).or_default().push(ci);
+            } else {
+                for c in &ca.lhs.chunks {
+                    excluded.insert(c.net);
+                }
+            }
+        }
+        let mut md_nets: Vec<(u32, Vec<usize>)> = Vec::new();
+        let mut ca_md = vec![false; nca];
+        for (net, cis) in whole {
+            if cis.len() >= 2 && !excluded.contains(&net) {
+                for &ci in &cis {
+                    ca_md[ci] = true;
+                }
+                md_nets.push((net, cis));
+            }
+        }
         Scheduler {
             st,
             cur: SlotQueues::default(),
@@ -641,6 +684,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             last_ca: vec![None; nca],
             last_ca_drv: vec![None; nca],
             ca_gen: vec![0; nca],
+            md_nets,
+            ca_md,
             delayed_ca: BTreeMap::new(),
             delayed_nba: BTreeMap::new(),
             delta_count: 0,
@@ -680,11 +725,38 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 if self.st.ir.cont_assigns[ci].delay.is_some() {
                     continue; // a delayed `assign #d` is scheduled below, not now
                 }
+                if self.ca_md[ci] {
+                    continue; // MULTI-DRIVER member: written once by resolution below
+                }
                 let ca_rhs = self.st.ir.cont_assigns[ci].rhs;
                 let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
                 let v = self.eval_for_lvalue(&lhs, ca_rhs); // CONTEXT-SIZED to lhs width
                 let offs = self.resolve_lvalue_offsets(&lhs); // dynamic index NOW (settle time)
                 changed |= self.st.write_lvalue(&lhs, v, &offs);
+            }
+            // MULTI-DRIVER: resolve each multi-driven net from ALL its whole-net
+            // drivers by 4-state wire resolution, then write the net once. Part of
+            // the same fixpoint (a driver's RHS can depend on another resolved net).
+            for mi in 0..self.md_nets.len() {
+                let net = self.md_nets[mi].0;
+                let net_w = self.st.nets[net as usize].width;
+                // Accumulator starts at all-Z (the wire-resolution identity).
+                let mut acc = Value::zeros(net_w, false);
+                for w in 0..acc.val.len() {
+                    acc.val[w] = u64::MAX;
+                    acc.unk[w] = u64::MAX;
+                }
+                acc.mask_top();
+                let cis = self.md_nets[mi].1.clone();
+                for ci in cis {
+                    let ca_rhs = self.st.ir.cont_assigns[ci].rhs;
+                    let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
+                    let v = self.eval_for_lvalue(&lhs, ca_rhs);
+                    resolve_wire_into(&mut acc, &v);
+                }
+                let lhs = self.st.ir.cont_assigns[self.md_nets[mi].1[0]].lhs.clone();
+                let offs = self.resolve_lvalue_offsets(&lhs);
+                changed |= self.st.write_lvalue(&lhs, acc, &offs);
             }
             if !changed {
                 break;
@@ -3815,6 +3887,32 @@ fn edge_fires_slot(mask: u8, kind: EdgeKind) -> bool {
         EdgeKind::Negedge => mask & 2 != 0,
         EdgeKind::AnyEdge => mask & 4 != 0,
     }
+}
+
+/// MULTI-DRIVER: fold one driver value `d` into accumulator `acc` by IEEE 1364
+/// 4-state WIRE resolution, bitwise per word. Encoding (val,unk): (0,0)=0,
+/// (1,0)=1, (0,1)=X, (1,1)=Z. Z (=val&unk) is the identity — it yields to the
+/// other driver; two equal non-Z bits keep the value; two differing non-Z bits
+/// (a 0/1 conflict, or any X) resolve to X. Commutative + associative, so
+/// folding every driver from an all-Z start is order-independent (matches the
+/// oracle table verified across all 16 (a,b) pairs). `acc` and `d` share width.
+fn resolve_wire_into(acc: &mut Value, d: &Value) {
+    let n = acc.val.len();
+    for w in 0..n {
+        let av = acc.val[w];
+        let au = acc.unk[w];
+        let bv = d.val.get(w).copied().unwrap_or(0);
+        let bu = d.unk.get(w).copied().unwrap_or(0);
+        let az = av & au; // acc bit is Z
+        let bz = bv & bu; // driver bit is Z
+        let same = !(av ^ bv) & !(au ^ bu); // (av,au) == (bv,bu)
+        let take_b = az; // acc Z → take the driver
+        let take_a = !az & (bz | same); // driver Z, or equal → keep acc
+        let x_bits = !az & !bz & !same; // both non-Z and differ → X
+        acc.val[w] = (take_b & bv) | (take_a & av);
+        acc.unk[w] = (take_b & bu) | (take_a & au) | x_bits;
+    }
+    acc.mask_top();
 }
 
 /// S1: effective inertial delay for a delayed continuous-assign / gate-prim
