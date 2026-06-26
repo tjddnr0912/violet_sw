@@ -354,6 +354,57 @@ loud-reject로 확인됨(이제 참):**
 
 > **요약:** 정확성 핀(N3.2~N3.4-followon ✅) · Medium 묶음(SYS-READ·SYS-INTRO·DIR-PP) ✅ · HIER-REST ✅ · P0-IPU ✅ · N5 coverage ✅ · 잔여 low-priority 4종(N5-G·SYS-INTRO잔여·SVPART·GATE) ✅(DEVLOG 47탄) · **🏁 N7 class/OOP 코어+상속+가상 완료(2026-06-19, 1578 green, DEVLOG 48탄): class·필드·new/ctor·this·handle/null·ref-copy·extends/super·virtual 동적 디스패치(vtable, hand-IEEE)·value+void 메서드·return; 동반 파서갭 수정(typed func-return·return 문·begin-less 다중문 바디); 적대 6렌즈→8 silent-wrong 수정; defer=randomization/program/union/vif/chandle/parameterized/static/local/real/string/array 멤버** · **🏁 SVA-REST 완결(2026-06-20, 1607 green, DEVLOG 49탄)**: property ops(`always`/`not`/`implies`/`iff`/`until`/`s_until`/`s_eventually`/`nexttime`)·`cover property`·`let` 매크로·`$assertoff/on/kill` 런타임 게이트·`seq[+]`=`[*1:$]`·`assume property` — 전부 IR-0(sim-ir/fmt_ver 9 무변경, AST `.vu` 재핀만). liveness=end-of-sim `final` pend 체크. · **N6=✅ 완료(2026-06-25, vendored 순수-Rust libm, format_version 19)** — real-math 21종 + 비균등 `$dist_*` 6종. · **🔴 dyn array `new[N]` 2-state 원소 기본값 수정(2026-06-20, 1608 green, DEVLOG 50탄)**: spec 전수 재감사가 적발한 유일 신규 silent-wrong — `int/bit/byte/shortint` dyn 원소가 X(정답 0, iverilog 오라클)였음. `two_state_heap_handles` 사이드카+`DynNew` 2-state 분기로 수정(IR-0). OOB/missing-element read의 X-default는 별개 문서화 design pin이라 미변경. **➡️ Planned silent-wrong 0 — 잔여는 전부 honest loud(비-silent)**: **2026-06-26 batch로 empty-match 비-`##1` 고정 양측 P1·cross-clock multi-term segment·prop-ref skew seq-antecedent 전부 ✅완료**(2081 green, IR-0). **2026-06-26 batch 2차**: N2c seq local var 단일-capture ✅완료(`374f7cd`+`493fe10`, 2109 green, 병렬 데이터 시프트 레지스터·고정-delay만·적대 리뷰가 real/string type silent-truncation 발굴→fix)·SVA-QUAD collapse ✅구현(`7826c84`+`95bd154`, 2125 green, `VITA_SVA_COLLAPSE` opt-in·default OFF·차분 17종 0 divergence·cap-boundary fix). 잔여 honest-loud = empty-match `##0`/unbounded(`##[m:$]`) 융합(§16.9.2.1 흡수 불연속·오라클 부재)·N2c full(중첩 attempt 각자 데이터=L-규모)·outer-`\|=>` prop-ref skew 고급형(2-cycle/중첩/cross-clock)·SVA-QUAD default-flip(full-VCD audit 선행). **✅ N7-REST B-CRV 완결(2026-06-24, format_version 14, 1760 green)**: B1·B2(inter-var/inside/implication/soft/dist/randc)·**inline `randomize() with {…}`**(§18.7; 적대 6-lens hunt→silent-wrong 5 즉수정, 2는 class-constraint 경로 pre-existing=unknown-field range·dist-field range silently drop). 조건부/장기 = **N7-REST ⓑ-breadth**(array 메서드·string 메서드·program·union·virtual interface·parameterized class — 각 새 SysFuncId/AST flip + hand-IEEE hunt)·MVP-CUT·N4 clocking·BACKEND·VCD-EXT·VHDL. 비계획 = defparam·implicit-net·out-of-scope. 저우선 후속(별개 슬라이스, loud·비-silent) = non-literal generate idx `g[P].x`·`$dist_*` transcendental(libm)·`$system`·UDP·multi-driver tristate bus. (~~ascending outer-dim packed part-select~~·~~class 멤버 shadowing~~ ✅ 완료; ascending **packed-struct 멤버** part-select=별개 struct-member-direction 슬라이스).
 
+#### 4.5.3 Honest-loud 배치 + 잔여 항목 트리아지 (2026-06-26, branch `feat-hlb`)
+
+> 24개 honest-loud/미구현 기능을 iverilog 13.0 오라클에 전수 트리아지(병렬 워크플로) 후, **오라클 검증 가능(GREEN)은 구현**(슬라이스별 구현→iverilog 차분→적대 리뷰→커밋), **오라클 없음·대형·전제조건 필요(YELLOW/RED)은 플랜과 사유로 문서화→사람 재결정**. 전부 IR-0·format_version 19 불변. 적대 리뷰가 **CRITICAL silent-wrong 3종**을 차단(아래 ✅ 항목의 괄호).
+
+**✅ 구현 완료(GREEN, 이번 배치):**
+
+| 항목 | 커밋 | 핵심 | 오라클 |
+|---|---|---|---|
+| gate/assign rise·fall·turnoff 지연 **silent-wrong 수정** | `080c424` | `#(r,f[,t])`가 모든 전이에 rise만 쓰던 broad silent-wrong→IR-0 `ca_delays` 사이드카·atomic-at-max per-bit dest-delay·baseline=gate 자체 last-landed 출력(supersede 정확) | iverilog ✓ (적대 리뷰가 supersede CRITICAL 발굴→수정) |
+| real→longint/time cast | `5a2836d` | IR-0 hi/lo real-도메인 분해(trunc-toward-zero)·bit-exact | iverilog ✓ (적대 리뷰가 odd-int [2^52,2^53) off-by-one CRITICAL 발굴→수정) |
+| string concat 비대입 컨텍스트 | `c4e371b` | `{a,b}` in $display/비교/중첩/replicate·공유 헬퍼·`$sformatf` 표현식 평가기 | iverilog ✓ |
+| typed for-init `for(int i=0;…)` | `6282c9c` | parser-only synthetic-rename block-local(동명 모듈넷 alias 방지) | iverilog ✓ |
+| named-type 패킹구조체 필드 폭 **silent-wrong 수정** + ascending 멤버 WRITE | `d681f04` | `int a;` 멤버가 1-bit로 깔리던 silent-wrong→kind 폭(int=32)·signedness·2-state init; ascending part-select WRITE(상수 range/bit·field-bounded) | iverilog ✓ |
+| class `local`/`protected` 접근제어 | `f39b816` | IEEE §8.18 elaborate accessing-class context 강제(AST flip `.vu` 재핀) | iverilog ✓(under-enforce→correct-or-loud-stricter) |
+
+**🟡 YELLOW — 구현 가능하나 iverilog 오라클 부재(hand-IEEE)·사람 재결정 대기**(플랜은 트리아지 산출):
+
+| 항목 | 공수 | 플랜 | silent-wrong 리스크 |
+|---|---|---|---|
+| N4 multi-event clock `@(posedge c1 or c2)` | S | `lower_clocking_blocks` 단일-event 가드(elaborate ~17384) 완화·각 term=edge 검증. 엔진 multi-event always는 검증됨 | 동시-edge 1회 commit·OR-clock preponed 샘플 타이밍(오라클 부재→hand-IEEE 트레이스+적대 리뷰 필수) |
+| SVA seq local var **later-antecedent read** | S~M | `synth_local_var_assert` later-term 읽기 가드 완화·`data_chain[stage]` 치환(consequent와 동일 기계). 범위형 수렴은 RED | shift stage off-by-one→오판(오라클 부재) |
+| N4 INOUT clocking | M | input(preponed read)+output(edge-commit) 합집합·단일 clockvar의 read=preponed/write=drive 해소 | read-after-write가 preponed 유지 필요 |
+| N4 cross-hier `@(u0.cb)` event | M | clocking_events를 instance-path별 기록·clock expr ident를 인스턴스 prefix로 rebase | sub-instance 실제 clock에 arm 필요(잘못된 스코프=조용한 오arm) |
+| SVA nested prop-ref skew(same-clock) | M | `peel_nonoverlap_property` 재귀(각 `|=>`를 `##1 b_k` 누적)·cycle cap. cross-clock consequent는 RED | 누적 `##1` skew off-by-one |
+| SVA empty-match `##0` 인접 융합(고정) | M | §16.9.2.1 `Fixed(0)` arm(net delay D=hop_out)·directed window-length 특성화 선행 | 흡수 off-by-one(코드가 과거 피격한 클래스) |
+| N4 `#0` skew(Observed-region 샘플) | M | commit 시점 source의 CURRENT 값(preponed 아님)·post-NBA 발화 | 입력이 edge slot 내 토글 시 Active vs Observed 타이밍 |
+| comb UDP `primitive…endprimitive` | M | 새 AST `TopItem::Udp`+파서+comb always/casez lowering. **iverilog 풀 오라클 있음(GREEN화 가능)** — 본 배치 미착수(L 규모·시간) | 오라클로 차분 가능(낮음) |
+| sequential UDP(edge table) | L | state reg+edge-symbol((01)/r/f/*/`-` no-change) 모듈 합성 | edge-symbol/level 모호 매치·iverilog 풀 오라클로 fuzz 가능 |
+| N7 real/string/array/static/chandle 멤버 | L | class-heap에 lane 추가·static=class-level 스토리지·chandle=opaque 64-bit. local/protected만 본 배치 완료 | 대부분 iverilog 미지원(real/array=crash)→hand-IEEE |
+
+**🔴 RED — 대형 재설계·오라클 없음·전제조건 필요·사람 재결정 대기:**
+
+| 항목 | 사유 |
+|---|---|
+| class **down-cast** `Derived'(base)` | §6.24.2는 런타임 타입체크(실패시 error/null)를 요구 — 맹목 handle-identity는 silent-wrong(X를 읽음). `$cast` 런타임 인프라 필요. iverilog 클래스 cast 전부 거부 |
+| multidim 패킹 `x[i+:2]`(변수 offset) | iverilog 13.0 crash(오라클 없음)·bit-vs-element 단위 모호(vita 상수경로는 element 선택=비표준 가능) |
+| `g[P].x`(파라미터-값 generate idx) | parse-time fold는 override 시 silent-wrong→elaborate post-override 해소 필요(파서 AST+elaborate scope-bind 재설계) |
+| `$unit::`/`$root` 스코프 | compilation-unit 스코프 서브시스템 부재($unit), $root는 오라클 없음 |
+| drive-strength/multi-driver tristate bus | wired-net 다중드라이버 resolver(단일-드라이버 가정 교체)·IEEE §28.11 강도표 |
+| modport subroutine import/`export ::*` | 인터페이스 내 subroutine 본체+계층 호출 서브시스템 미구축(전제조건)·오라클 없음 |
+| SVA ranged `##[m:n]` local-var 수렴 | per-attempt thread table 서브시스템 필요 |
+| N4 `#N`/`##N` skew | per-source 값-히스토리 ring buffer 필요 |
+| SVA empty-match unbounded `##[m:$]` 인접 | sliding-OR seeding과 결합·흡수 offset 복합 |
+| SVA-QUAD default-flip | full-VCD 골든 audit 선행(perf 항목·정확성 아님) |
+
+**ℹ️ 발견된 pre-existing silent-wrong(이번 배치 부수 발견·별개 슬라이스 후보):**
+- **NaN/±inf real→정수 cast** = vita가 garbage 정수 산출(iverilog=`x`). 전 real→int 경로(`$rtoi`/`int'` 포함) broad. iverilog 권위적(NaN=X).
+- **struct ascending 멤버 indexed READ** `s.f[2+:2]` = vita `01` vs iverilog `00`(상수-range `s.f[2:3]`은 정상). READ 측 인덱스-부 별개 슬라이스.
+
+**✅ 부수 정정(stale 문서)**: `qm[0][3:2]`(array-of-packed part-select)·`x[3:2][0]`(불법 SV·올바른 거부)·proc-assign expr-rhs·`q<=#d`·typed func-return = **이미 동작**(false gap, 트리아지 확인).
+
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
 SYS-READ·SYS-INTRO·DIR-PP를 IR-0-now vs 단일 **v9 bump**으로 분할(워크플로우 understand×3+probe×4→synth). **원칙: IR-0 슬라이스 먼저, frozen-IR(새 SysFuncId/SysTaskId)은 한 번의 v9 bump에 일괄, iverilog 오라클 우선.** ⚠️ 진단 비대칭: 미인식 `$func`=E3009-LOUD(전 디자인 kill) vs `$task`=W3056-skip → 미구현 introspection func가 디자인 전체를 죽이므로 const-fold(rank 2)가 고가치.
