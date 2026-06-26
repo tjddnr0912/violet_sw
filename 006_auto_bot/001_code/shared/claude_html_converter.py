@@ -170,7 +170,7 @@ def convert_md_to_html_via_claude(
 
     logger.info(f"Calling Claude CLI for HTML conversion ({len(md_content)} chars)...")
 
-    raw_output = _run_claude_cli(full_prompt, timeout=900)  # 15분 (HTML 디자인 생성)
+    raw_output = _run_claude_cli(full_prompt, timeout=900, model='opus')  # opus: 긴 HTML 생성 시 출력 잘림 방지
 
     # 제목 추출
     blog_title = extract_title_from_response(raw_output)
