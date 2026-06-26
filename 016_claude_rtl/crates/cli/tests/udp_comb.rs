@@ -257,15 +257,18 @@ fn rejects(src: &str, needle: &str) {
 }
 
 #[test]
-fn udp_reg_output_is_loud() {
-    rejects(
-        "primitive p(o,a);\n\
+fn udp_reg_output_is_now_sequential() {
+    // YELLOW #9: `output reg` + a two-colon row is a SEQUENTIAL UDP — no longer a
+    // loud reject (it was "not yet supported" before slice #9). It now compiles and
+    // runs (full sequential coverage lives in udp_seq.rs).
+    let (out, err, code) = run("primitive p(o,a);\n\
            output reg o; input a;\n\
-           table 0:0:0; endtable\n\
+           table 0:?:0; 1:?:1; endtable\n\
          endprimitive\n\
-         module top; reg a; wire o; p u(o,a); initial $display(\"x\"); endmodule\n",
-        "sequential UDP",
-    );
+         module top; reg a; wire o; p u(o,a);\n\
+         initial begin a=0;#1 a=1;#1 $display(\"seq ok=%b\",o); end endmodule\n");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    expect_lines(&out, &["seq ok=1"]);
 }
 
 #[test]
@@ -288,7 +291,7 @@ fn udp_z_output_is_loud() {
            table 0:z; endtable\n\
          endprimitive\n\
          module top; reg a; wire o; p u(o,a); initial $display(\"x\"); endmodule\n",
-        "output symbol (0 1 x)",
+        "next-state symbol (0 1 x -)",
     );
 }
 
@@ -300,7 +303,7 @@ fn udp_z_input_is_loud() {
            table z:0; endtable\n\
          endprimitive\n\
          module top; reg a; wire o; p u(o,a); initial $display(\"x\"); endmodule\n",
-        "input symbol (0 1 x ? b)",
+        "input symbol (0 1 x ? b r f p n * or (vw))",
     );
 }
 
