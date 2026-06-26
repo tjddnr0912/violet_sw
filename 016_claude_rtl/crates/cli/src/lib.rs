@@ -629,6 +629,8 @@ fn run_vita_str_gated(
         task_calls_func: sc.task_calls_func,
         // SVPART: 2-state nets coerce X/Z→0 on write (one-shot path only).
         two_state_nets: sc.two_state_nets,
+        wired_and_nets: sc.wired_and_nets,
+        wired_or_nets: sc.wired_or_nets,
         // N7 class/OOP sidecars (one-shot path only).
         class_handle_nets: sc.class_handle_nets,
         class_new_sites: sc.class_new_sites,
@@ -1406,9 +1408,15 @@ struct StagedExtraSidecars {
     clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
     /// S1 gate/assign rise·fall·turnoff delay (staged sidecar — must survive
     /// vcmp→vrun or falling/turnoff transitions silently use the rise delay).
-    /// APPEND-ONLY (kept LAST so the wire stays an additive extension). EMPTY ⇒
-    /// no differing delays ⇒ byte-identical.
+    /// EMPTY ⇒ no differing delays ⇒ byte-identical.
     ca_delays: std::collections::BTreeMap<u32, (u32, u32, u32)>,
+    /// wand/wor wired-logic nets (staged sidecar — must survive vcmp→vrun or a
+    /// multi-driven `wand`/`wor` net silently falls back to plain wire resolution
+    /// = wrong value). Net IDs whose multi-driver resolution is wired-AND / -OR
+    /// instead of wire. APPEND-ONLY (kept LAST so the wire stays an additive
+    /// extension). EMPTY ⇒ no wand/wor nets ⇒ byte-identical.
+    wired_and_nets: std::collections::BTreeSet<u32>,
+    wired_or_nets: std::collections::BTreeSet<u32>,
 }
 
 impl StagedExtraSidecars {
@@ -1438,6 +1446,8 @@ impl StagedExtraSidecars {
             clocking_commit: sc.clocking_commit.clone(),
             clocking_outputs: sc.clocking_outputs.clone(),
             ca_delays: sc.ca_delays.clone(),
+            wired_and_nets: sc.wired_and_nets.clone(),
+            wired_or_nets: sc.wired_or_nets.clone(),
         }
     }
 }
@@ -2357,6 +2367,11 @@ fn run_vrun_gated(
         clocking_commit: extra.clocking_commit,
         clocking_outputs: extra.clocking_outputs,
         ca_delays: extra.ca_delays,
+        // wand/wor wired-logic resolution kinds (STAGED-DROP parity: without
+        // these a multi-driven wand/wor net silently used wire resolution on the
+        // staged path = wrong value while one-shot was correct).
+        wired_and_nets: extra.wired_and_nets,
+        wired_or_nets: extra.wired_or_nets,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
@@ -3040,6 +3055,8 @@ mod tests {
             std::collections::BTreeMap::from([(5u32, vec![(8u32, 3u32), (9u32, 7u32)])]);
         s.clocking_outputs = std::collections::BTreeMap::from([(6u32, vec![(4u32, 9u32)])]);
         s.ca_delays = std::collections::BTreeMap::from([(0u32, (1u32, 2u32, 3u32))]);
+        s.wired_and_nets = std::collections::BTreeSet::from([11u32, 13u32]);
+        s.wired_or_nets = std::collections::BTreeSet::from([17u32]);
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -3047,7 +3064,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "2af0d94a7b7ac9287a89e92e52add64e3c80d96fa4427c63460f846053e21e3c";
+        const EXPECTED: &str = "2dd69cf878a913d6293f00a6849642d52f025420bf0d1fd28ad1c47e3b27b06c";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 15th-trailer field moved.\n\

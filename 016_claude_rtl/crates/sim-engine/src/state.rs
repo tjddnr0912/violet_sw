@@ -160,6 +160,10 @@ pub(crate) struct SimState<'a> {
     /// coerces any X/Z bit to 0 (IEEE §6.11.3: a 2-state var can never hold X).
     /// All-false unless a 2-state net exists ⇒ byte-identical for every prior design.
     pub two_state: Vec<bool>,
+    /// WAND/WOR: NetIds resolved by wired-AND / wired-OR when multi-driven
+    /// (filled from SimOpts in `simulate`; empty for a from-`new()` state).
+    pub wired_and_nets: std::collections::BTreeSet<u32>,
+    pub wired_or_nets: std::collections::BTreeSet<u32>,
     /// GLITCH: per-net intra-slot bit0 edge summary (cleared on a net's FIRST
     /// dirtying each slot, OR-accumulated on every later same-slot transition).
     /// bit0 = a `posedge` (→1) occurred, bit1 = a `negedge` (→0), bit2 = bit0
@@ -603,6 +607,8 @@ impl<'a> SimState<'a> {
             dirty_flag: vec![false; nnets],
             forced: vec![false; nnets],
             two_state: vec![false; nnets],
+            wired_and_nets: std::collections::BTreeSet::new(),
+            wired_or_nets: std::collections::BTreeSet::new(),
             slot_edge: vec![0u8; nnets],
             is_edge_target,
             blocking_writer: None,

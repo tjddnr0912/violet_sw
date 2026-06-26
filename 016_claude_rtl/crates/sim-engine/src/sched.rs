@@ -553,13 +553,13 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// inertial cancel; see `DelayedWrite`).
     ca_gen: Vec<u64>,
     /// MULTI-DRIVER: nets driven by ≥2 cont-assigns that are ALL whole-net,
-    /// non-delayed targets → `(net, driver cont-assign indices)`. Settled by
-    /// per-bit 4-state WIRE resolution (z = high-Z yields; equal non-z keeps;
-    /// conflicting non-z → x) instead of last-write-wins. Empty for every
-    /// single-driver design ⇒ byte-identical (multi-driver was E3001-rejected
-    /// before, so no existing design carries one). Partial/dynamic/array/delayed
-    /// overlaps stay E3001 (whole-net tristate buses are the v1 scope).
-    md_nets: Vec<(u32, Vec<usize>)>,
+    /// non-delayed targets → `(net, driver cont-assign indices, resolution kind)`.
+    /// kind 0=WIRE (z yields; equal keeps; conflict→x), 1=WAND (wired-AND),
+    /// 2=WOR (wired-OR) — z is the identity for all three. Settled by per-bit
+    /// 4-state resolution instead of last-write-wins. Empty for every single-driver
+    /// design ⇒ byte-identical (multi-driver was E3001-rejected before). Partial/
+    /// dynamic/array/delayed overlaps stay E3001 (whole-net buses are the v1 scope).
+    md_nets: Vec<(u32, Vec<usize>, u8)>,
     /// MULTI-DRIVER: per-cont-assign flag — this driver is a member of an
     /// `md_nets` group, so the per-driver individual write in `settle_cont_assigns`
     /// is SKIPPED (the net is written once by the resolution instead).
@@ -655,14 +655,22 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 }
             }
         }
-        let mut md_nets: Vec<(u32, Vec<usize>)> = Vec::new();
+        let mut md_nets: Vec<(u32, Vec<usize>, u8)> = Vec::new();
         let mut ca_md = vec![false; nca];
         for (net, cis) in whole {
             if cis.len() >= 2 && !excluded.contains(&net) {
                 for &ci in &cis {
                     ca_md[ci] = true;
                 }
-                md_nets.push((net, cis));
+                // WAND/WOR resolution kind (default WIRE).
+                let kind = if st.wired_and_nets.contains(&net) {
+                    1
+                } else if st.wired_or_nets.contains(&net) {
+                    2
+                } else {
+                    0
+                };
+                md_nets.push((net, cis, kind));
             }
         }
         Scheduler {
@@ -748,11 +756,16 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 }
                 acc.mask_top();
                 let cis = self.md_nets[mi].1.clone();
+                let kind = self.md_nets[mi].2;
                 for ci in cis {
                     let ca_rhs = self.st.ir.cont_assigns[ci].rhs;
                     let lhs = self.st.ir.cont_assigns[ci].lhs.clone();
                     let v = self.eval_for_lvalue(&lhs, ca_rhs);
-                    resolve_wire_into(&mut acc, &v);
+                    match kind {
+                        1 => resolve_wand_into(&mut acc, &v),
+                        2 => resolve_wor_into(&mut acc, &v),
+                        _ => resolve_wire_into(&mut acc, &v),
+                    }
                 }
                 let lhs = self.st.ir.cont_assigns[self.md_nets[mi].1[0]].lhs.clone();
                 let offs = self.resolve_lvalue_offsets(&lhs);
@@ -3911,6 +3924,55 @@ fn resolve_wire_into(acc: &mut Value, d: &Value) {
         let x_bits = !az & !bz & !same; // both non-Z and differ → X
         acc.val[w] = (take_b & bv) | (take_a & av);
         acc.unk[w] = (take_b & bu) | (take_a & au) | x_bits;
+    }
+    acc.mask_top();
+}
+
+/// MULTI-DRIVER (WAND): fold a driver into `acc` by IEEE wired-AND resolution
+/// (oracle-verified 16 pairs). Z is the identity; a 0 on any driver forces 0;
+/// two 1s give 1; anything else with an X gives X.
+fn resolve_wand_into(acc: &mut Value, d: &Value) {
+    for w in 0..acc.val.len() {
+        let (av, au) = (acc.val[w], acc.unk[w]);
+        let bv = d.val.get(w).copied().unwrap_or(0);
+        let bu = d.unk.get(w).copied().unwrap_or(0);
+        let az = av & au;
+        let bz = bv & bu;
+        let take_b = az;
+        let take_a = !az & bz;
+        let rest = !az & !bz;
+        let a0 = !av & !au;
+        let b0 = !bv & !bu;
+        let a1 = av & !au;
+        let b1 = bv & !bu;
+        let one = rest & a1 & b1;
+        let xx = rest & !(a0 | b0) & !(a1 & b1);
+        acc.val[w] = (take_b & bv) | (take_a & av) | one;
+        acc.unk[w] = (take_b & bu) | (take_a & au) | xx;
+    }
+    acc.mask_top();
+}
+
+/// MULTI-DRIVER (WOR): fold a driver into `acc` by IEEE wired-OR resolution.
+/// Z is the identity; a 1 on any driver forces 1; two 0s give 0; else X.
+fn resolve_wor_into(acc: &mut Value, d: &Value) {
+    for w in 0..acc.val.len() {
+        let (av, au) = (acc.val[w], acc.unk[w]);
+        let bv = d.val.get(w).copied().unwrap_or(0);
+        let bu = d.unk.get(w).copied().unwrap_or(0);
+        let az = av & au;
+        let bz = bv & bu;
+        let take_b = az;
+        let take_a = !az & bz;
+        let rest = !az & !bz;
+        let a0 = !av & !au;
+        let b0 = !bv & !bu;
+        let a1 = av & !au;
+        let b1 = bv & !bu;
+        let one = rest & (a1 | b1);
+        let xx = rest & !(a1 | b1) & !(a0 & b0);
+        acc.val[w] = (take_b & bv) | (take_a & av) | one;
+        acc.unk[w] = (take_b & bu) | (take_a & au) | xx;
     }
     acc.mask_top();
 }

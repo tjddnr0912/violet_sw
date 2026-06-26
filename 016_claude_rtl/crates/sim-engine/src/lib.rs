@@ -216,6 +216,10 @@ pub struct SimOpts {
     /// One-shot `vita` only (the staged trailer does not serialise it; 2-state
     /// INIT-to-0 rides the golden SimIr and so works on both paths).
     pub two_state_nets: std::collections::BTreeSet<u32>,
+    /// WAND/WOR: NetIds whose MULTI-driver resolution is wired-AND / wired-OR
+    /// (instead of the default wire resolution). One-shot `vita` only.
+    pub wired_and_nets: std::collections::BTreeSet<u32>,
+    pub wired_or_nets: std::collections::BTreeSet<u32>,
     // ── N7 class/OOP (out-of-band, golden-free; one-shot `vita` only) ──
     /// NetIds that are class handles (drives `State.class_is_handle`).
     pub class_handle_nets: std::collections::BTreeSet<u32>,
@@ -292,6 +296,8 @@ impl Default for SimOpts {
             task_calls_proc: TaskCallProc::new(),
             task_calls_func: TaskCallFunc::new(),
             two_state_nets: std::collections::BTreeSet::new(),
+            wired_and_nets: std::collections::BTreeSet::new(),
+            wired_or_nets: std::collections::BTreeSet::new(),
             class_handle_nets: std::collections::BTreeSet::new(),
             class_new_sites: std::collections::BTreeMap::new(),
             class_layouts: Vec::new(),
@@ -374,6 +380,9 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.ca_delays = opts.ca_delays.clone();
     st.defer_marks = opts.defer_marks.clone();
     st.defer_acts = opts.defer_acts.clone();
+    // WAND/WOR: per-net multi-driver resolution kind (one-shot only).
+    st.wired_and_nets = opts.wired_and_nets.clone();
+    st.wired_or_nets = opts.wired_or_nets.clone();
     // SVPART: mark 2-state nets so write_chunk coerces X/Z→0 (one-shot only).
     for &n in &opts.two_state_nets {
         if (n as usize) < st.two_state.len() {

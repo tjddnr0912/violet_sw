@@ -364,6 +364,10 @@ pub struct Sidecars {
     /// `longint`). The engine coerces X/Z→0 on every write to these (IEEE §6.11.3
     /// — a 2-state var can never hold X). EMPTY ⇒ no 2-state nets ⇒ golden-neutral.
     pub two_state_nets: std::collections::BTreeSet<u32>,
+    /// WAND/WOR: NetIds declared `wand`/`wor` (wired-AND / wired-OR resolution).
+    /// EMPTY ⇒ golden-neutral. Only consulted for MULTI-driven nets.
+    pub wired_and_nets: std::collections::BTreeSet<u32>,
+    pub wired_or_nets: std::collections::BTreeSet<u32>,
     // ── N7 class/OOP sidecars (out-of-band, golden-free) ──
     /// NetIds that are class handles (engine `class_is_handle` bitmap).
     pub class_handle_nets: std::collections::BTreeSet<u32>,
@@ -585,6 +589,8 @@ pub fn elaborate_with_timescale_roots(
         task_calls_func: std::mem::take(&mut el.task_calls_func), // B2
         // SVPART: 2-state net ids, derived from the decl-time kind map (reuses the
         // $typename `intro_kind` table — no extra elaborate state).
+        wired_and_nets: std::mem::take(&mut el.wired_and_nets),
+        wired_or_nets: std::mem::take(&mut el.wired_or_nets),
         two_state_nets: el
             .intro_kind
             .iter()
@@ -2025,6 +2031,10 @@ struct Elaborator<'s> {
     exprs: Vec<ir::Expr>,
     consts: Vec<ir::ConstVal>,
     cont_assigns: Vec<ir::ContAssign>,
+    /// WAND/WOR: NetIds declared `wand`/`wor` — the engine resolves a MULTI-driven
+    /// such net by wired-AND / wired-OR instead of the default wire resolution.
+    wired_and_nets: BTreeSet<u32>,
+    wired_or_nets: BTreeSet<u32>,
     instances: Vec<ir::Instance>,
 
     // ── v2: procedural lowering arenas ──
@@ -2424,6 +2434,8 @@ impl<'s> Elaborator<'s> {
             exprs: Vec::new(),
             consts: Vec::new(),
             cont_assigns: Vec::new(),
+            wired_and_nets: BTreeSet::new(),
+            wired_or_nets: BTreeSet::new(),
             instances: Vec::new(),
             processes: Vec::new(),
             stmts: Vec::new(),
@@ -3975,6 +3987,16 @@ impl<'s> Elaborator<'s> {
                             init: init.clone(),
                         },
                     );
+                    // WAND/WOR: non-ANSI port net also needs its resolution sidecar.
+                    if matches!(kind, ast::NetVarKind::Wand | ast::NetVarKind::Wor) {
+                        if let Some(&id) = self.symbols.get(&self.fq(&name.name)) {
+                            if matches!(kind, ast::NetVarKind::Wand) {
+                                self.wired_and_nets.insert(id);
+                            } else {
+                                self.wired_or_nets.insert(id);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -5664,6 +5686,18 @@ impl<'s> Elaborator<'s> {
                 if let Some(&id) = self.symbols.get(&self.fq(&p.name.name)) {
                     self.record_dim_desc(id, kind, p.range.as_ref(), &p.packed, &[]);
                 }
+                // WAND/WOR: a port net declared `output wand`/`wor` (etc.) also
+                // needs its resolution-kind sidecar — multi-driven INSIDE the
+                // module (≥2 internal `assign`s) resolves wired-AND/OR, not wire.
+                if matches!(kind, ast::NetVarKind::Wand | ast::NetVarKind::Wor) {
+                    if let Some(&id) = self.symbols.get(&self.fq(&p.name.name)) {
+                        if matches!(kind, ast::NetVarKind::Wand) {
+                            self.wired_and_nets.insert(id);
+                        } else {
+                            self.wired_or_nets.insert(id);
+                        }
+                    }
+                }
                 if !net_kind_supported(kind) {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -6067,6 +6101,20 @@ impl<'s> Elaborator<'s> {
                 let key = self.fq(&decl.name.name);
                 if let Some(&id) = self.symbols.get(&key) {
                     self.event_nets.insert(id);
+                }
+            }
+            // WAND/WOR: record the wired-AND / wired-OR resolution kind for the
+            // engine (looked up post-add, robust to a duplicate-decl skip). The
+            // net itself is a plain Wire in the IR; the sidecar drives multi-driver
+            // resolution only.
+            if matches!(d.kind, ast::NetVarKind::Wand | ast::NetVarKind::Wor) {
+                let key = self.fq(&decl.name.name);
+                if let Some(&id) = self.symbols.get(&key) {
+                    if matches!(d.kind, ast::NetVarKind::Wand) {
+                        self.wired_and_nets.insert(id);
+                    } else {
+                        self.wired_or_nets.insert(id);
+                    }
                 }
             }
             // Record per-dim extents when addressing is NOT plain 0-based: any
@@ -25386,6 +25434,8 @@ fn net_kind_supported(k: ast::NetVarKind) -> bool {
         k,
         Wire | Tri
             | Uwire
+            | Wand
+            | Wor
             | Reg
             | Logic
             | Integer
