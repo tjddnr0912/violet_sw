@@ -421,6 +421,12 @@ pub struct Sidecars {
     /// N4 clocking output pairs (staged velab→vrun must carry them or
     /// OUTPUT direction is silently dropped). ProcId → `[(source_net, holding_net)]`.
     pub clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// S1 gate/assign rise·fall·turnoff delay: cont-assign index → (rise, fall,
+    /// turnoff) in scaled ticks. Populated ONLY when the folded delay values are
+    /// NOT all equal (so `#5`, `#(3,3)`, and no-delay stay byte-identical). The
+    /// frozen `ContAssign.delay` keeps `Some(rise)` so the uniform path is
+    /// untouched. EMPTY ⇒ no differing rise/fall/turnoff ⇒ byte-identical.
+    pub ca_delays: std::collections::BTreeMap<u32, (u32, u32, u32)>,
 }
 
 /// N7: resolved metadata for one class, built by the whole-design prescan
@@ -595,6 +601,7 @@ pub fn elaborate_with_timescale_roots(
         clocking_inputs: std::mem::take(&mut el.clocking_inputs),
         clocking_commit: std::mem::take(&mut el.clocking_commit),
         clocking_outputs: std::mem::take(&mut el.clocking_outputs),
+        ca_delays: std::mem::take(&mut el.ca_delays),
         net_names: el.net_name_table(), // BEFORE finish() consumes `el`
     };
     if el.had_error {
@@ -2256,6 +2263,9 @@ struct Elaborator<'s> {
     /// N4 clocking output pairs collected per-clocking-block commit proc.
     /// Flushed into `SimOpts::clocking_outputs` at elaboration end.
     clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// S1 gate/assign rise·fall·turnoff delay: cont-assign index → (rise, fall,
+    /// turnoff). Populated only when the folded values are not all equal.
+    ca_delays: std::collections::BTreeMap<u32, (u32, u32, u32)>,
     clocking_events: std::collections::BTreeMap<String, ast::Sensitivity>,
     /// Holding NetIds of clocking INPUTs (`cb.sig`) — read-only; an lvalue write
     /// to one is loud (you cannot drive a clocking input, §14.3).
@@ -2421,6 +2431,7 @@ impl<'s> Elaborator<'s> {
             clocking_inputs: std::collections::BTreeSet::new(),
             clocking_commit: std::collections::BTreeMap::new(),
             clocking_outputs: std::collections::BTreeMap::new(),
+            ca_delays: std::collections::BTreeMap::new(),
             clocking_events: std::collections::BTreeMap::new(),
             clocking_hold_nets: std::collections::BTreeSet::new(),
             all_clocking_names: std::collections::BTreeSet::new(),
@@ -8758,12 +8769,44 @@ impl<'s> Elaborator<'s> {
 
     fn elaborate_cont_assign(&mut self, ca: &ast::ContinuousAssign) {
         // Delay: hdl-ast Delay values are exprs; sim-ir delay is Option<u32>.
-        // v1 const-folds a literal rise delay; non-const → None (note slot).
+        // The FROZEN `ContAssign.delay` keeps `Some(rise)` (values[0]) so the
+        // "has delay" check and the uniform fast-path are untouched.
         let mult = self.cur_time_mult;
         let delay = ca
             .delay
             .as_ref()
             .and_then(|d| d.values.first().and_then(|e| const_delay_ticks(e, mult)));
+        // S1: fold ALL delay values (rise, fall, [turnoff]). Register a (rise,
+        // fall, turnoff) sidecar ONLY when the folded values are NOT all equal —
+        // so `#5`, `#(3,3)`, `#(3,3,3)`, and no-delay stay byte-identical (no
+        // sidecar entry → engine uses the uniform `ContAssign.delay`). If any
+        // value fails to const-fold, register nothing (fall back to uniform).
+        let rft = ca.delay.as_ref().and_then(|d| {
+            // Only 2- or 3-value specs can carry a distinct fall/turnoff.
+            if d.values.len() < 2 {
+                return None;
+            }
+            let folded: Option<Vec<u32>> = d
+                .values
+                .iter()
+                .map(|e| const_delay_ticks(e, mult))
+                .collect();
+            let folded = folded?;
+            let rise = folded[0];
+            let fall = folded[1];
+            // turnoff: explicit 3rd value, else default min(rise, fall).
+            let turnoff = if folded.len() >= 3 {
+                folded[2]
+            } else {
+                rise.min(fall)
+            };
+            // All equal ⇒ uniform ⇒ no sidecar (byte-identical to today).
+            if rise == fall && fall == turnoff {
+                None
+            } else {
+                Some((rise, fall, turnoff))
+            }
+        });
         for (lv, rhs) in &ca.assigns {
             let lhs = self.lower_lvalue(lv);
             // P1-9 (E3018): a user `assign` may not drive a Reg/Integer/Real
@@ -8773,6 +8816,11 @@ impl<'s> Elaborator<'s> {
             self.check_lvalue_kind(&lhs, false);
             let rhs_id = self.lower_expr(rhs);
             let rhs_id = self.resize_fill_rhs(rhs, rhs_id, &lhs);
+            // The index of THIS cont-assign is the len BEFORE the push.
+            let idx = self.cont_assigns.len() as u32;
+            if let Some(rft) = rft {
+                self.ca_delays.insert(idx, rft);
+            }
             self.cont_assigns.push(ir::ContAssign {
                 lhs,
                 rhs: rhs_id,

@@ -544,6 +544,12 @@ pub(crate) struct Scheduler<'a, 'ir> {
     /// Last RHS value seen per cont-assign — only used by DELAYED `assign #d`
     /// (change detection, so a delayed write schedules once per RHS change).
     last_ca: Vec<Option<Value>>,
+    /// S1: last value this cont-assign actually DROVE onto the net (the gate's
+    /// own output node — a superseded/inertially-cancelled pending write never
+    /// updates it). This is the baseline for the per-bit rise/fall/turnoff delay
+    /// (IEEE 1364 §7.14: a transition's delay is measured from the value the net
+    /// CURRENTLY holds, not the previous RHS — they differ on inertial supersede).
+    last_ca_drv: Vec<Option<Value>>,
     /// Per-cont-assign schedule generation — bumped on every new RHS change,
     /// invalidating any pending write carrying an older generation (the
     /// inertial cancel; see `DelayedWrite`).
@@ -618,6 +624,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             free_barriers: Vec::new(),
             fork_modes,
             last_ca: vec![None; nca],
+            last_ca_drv: vec![None; nca],
             ca_gen: vec![0; nca],
             delayed_ca: BTreeMap::new(),
             delayed_nba: BTreeMap::new(),
@@ -689,10 +696,25 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             if self.last_ca[ci].as_ref() == Some(&v) {
                 continue; // RHS unchanged → no new scheduled write
             }
+            // S1: the per-bit rise/fall/turnoff delay is measured from the value
+            // the net CURRENTLY holds — i.e. the last value this assign actually
+            // DROVE (`last_ca_drv`), NOT the previous RHS (`last_ca`). The two
+            // differ on inertial supersede (a new RHS change before the prior
+            // delayed write lands): the pending write never updated `last_ca_drv`,
+            // so the baseline correctly stays the net's present output.
+            let old = self.last_ca_drv[ci].clone();
             self.last_ca[ci] = Some(v.clone());
             self.ca_gen[ci] += 1;
             let offs = self.resolve_lvalue_offsets(&lhs);
-            let tick = self.st.now + d as u64;
+            // S1: when this cont-assign has differing rise/fall/turnoff delays,
+            // the net updates atomically at `now + max(per-changed-bit dest
+            // delay)`. Absent a sidecar entry, the uniform `d` is used (byte-
+            // identical to the old behaviour).
+            let eff_d = match self.st.ca_delays.get(&(ci as u32)) {
+                Some(&(rise, fall, toff)) => transition_delay(old.as_ref(), &v, rise, fall, toff),
+                None => d,
+            };
+            let tick = self.st.now + eff_d as u64;
             self.delayed_ca.entry(tick).or_default().push((
                 ci as u32,
                 self.ca_gen[ci],
@@ -1140,6 +1162,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                     if self.ca_gen[ci as usize] != gen {
                         continue;
                     }
+                    // S1: this write actually LANDS — record it as the gate's
+                    // output for the next transition's delay baseline. (Stale
+                    // superseded writes `continue` above, so they never update it.)
+                    self.last_ca_drv[ci as usize] = Some(v.clone());
                     moved |= self.st.write_lvalue(&lhs, v, &offs);
                 }
                 if moved {
@@ -3678,4 +3704,51 @@ fn edge_fires(kind: EdgeKind, prev: FourState, new: FourState) -> bool {
         EdgeKind::Negedge => is_negedge(prev, new),
         EdgeKind::AnyEdge => prev != new,
     }
+}
+
+/// S1: effective inertial delay for a delayed continuous-assign / gate-prim
+/// value change `old → new` with distinct rise/fall/turnoff specs (IEEE 1364
+/// §7.14 / §28 — confirmed against iverilog 13.0 as ATOMIC-at-max, not per-bit
+/// separate arrival). The whole net updates at `now + D` where `D` is the MAX,
+/// over every bit `i` that actually changes (`old[i] != new[i]`), of that bit's
+/// DESTINATION-based delay:
+///   new bit → 1  : `rise`
+///   new bit → 0  : `fall`
+///   new bit → z  : `turnoff`
+///   new bit → x  : `min(rise, fall, turnoff)`
+/// First drive (`old == None`) treats ALL bits as changed. `get_vu` 4-state
+/// encoding: (0,0)=0, (1,0)=1, (0,1)=X, (1,1)=Z. This is only reached when the
+/// value actually changed, so at least one bit differs; the `rise` fallback for
+/// the impossible no-change case is harmless.
+fn transition_delay(old: Option<&Value>, new: &Value, rise: u32, fall: u32, toff: u32) -> u32 {
+    let x_delay = rise.min(fall).min(toff);
+    let mut d: Option<u32> = None;
+    for i in 0..new.width {
+        let (nv, nu) = new.get_vu(i);
+        // A bit is "changed" if there is no prior value (first drive) or the old
+        // bit differs from the new bit.
+        let changed = match old {
+            None => true,
+            Some(o) => {
+                // Compare only within the old value's width; bits beyond it (the
+                // first-drive case for wider news) count as changed.
+                if i < o.width {
+                    o.get_vu(i) != (nv, nu)
+                } else {
+                    true
+                }
+            }
+        };
+        if !changed {
+            continue;
+        }
+        let bit_d = match (nv, nu) {
+            (1, 0) => rise, // → 1
+            (0, 0) => fall, // → 0
+            (1, 1) => toff, // → z
+            _ => x_delay,   // → x  (0,1)
+        };
+        d = Some(d.map_or(bit_d, |m| m.max(bit_d)));
+    }
+    d.unwrap_or(rise)
 }

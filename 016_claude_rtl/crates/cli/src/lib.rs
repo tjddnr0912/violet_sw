@@ -617,6 +617,9 @@ fn run_vita_str_gated(
         clocking_inputs: sc.clocking_inputs,
         clocking_commit: sc.clocking_commit,
         clocking_outputs: sc.clocking_outputs,
+        // S1 gate/assign rise·fall·turnoff delay (one-shot path; empty unless a
+        // delay has differing rise/fall/turnoff → byte-identical otherwise).
+        ca_delays: sc.ca_delays,
         defer_marks: sc.defer_marks,
         defer_acts: sc.defer_acts,
         // B1/B2 frame-call: thread the func/task sidecars on the one-shot path
@@ -1401,6 +1404,11 @@ struct StagedExtraSidecars {
     clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
     /// N4 clocking output pairs (staged sidecar — must survive vcmp→vrun).
     clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// S1 gate/assign rise·fall·turnoff delay (staged sidecar — must survive
+    /// vcmp→vrun or falling/turnoff transitions silently use the rise delay).
+    /// APPEND-ONLY (kept LAST so the wire stays an additive extension). EMPTY ⇒
+    /// no differing delays ⇒ byte-identical.
+    ca_delays: std::collections::BTreeMap<u32, (u32, u32, u32)>,
 }
 
 impl StagedExtraSidecars {
@@ -1429,6 +1437,7 @@ impl StagedExtraSidecars {
             clocking_inputs: sc.clocking_inputs.clone(),
             clocking_commit: sc.clocking_commit.clone(),
             clocking_outputs: sc.clocking_outputs.clone(),
+            ca_delays: sc.ca_delays.clone(),
         }
     }
 }
@@ -2347,6 +2356,7 @@ fn run_vrun_gated(
         clocking_inputs: extra.clocking_inputs,
         clocking_commit: extra.clocking_commit,
         clocking_outputs: extra.clocking_outputs,
+        ca_delays: extra.ca_delays,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
@@ -3029,6 +3039,7 @@ mod tests {
         s.clocking_commit =
             std::collections::BTreeMap::from([(5u32, vec![(8u32, 3u32), (9u32, 7u32)])]);
         s.clocking_outputs = std::collections::BTreeMap::from([(6u32, vec![(4u32, 9u32)])]);
+        s.ca_delays = std::collections::BTreeMap::from([(0u32, (1u32, 2u32, 3u32))]);
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -3036,7 +3047,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "4eb2349e63218dc30bc60751f784c0a86c0bab64394d878fd2fb1a8c540148af";
+        const EXPECTED: &str = "2af0d94a7b7ac9287a89e92e52add64e3c80d96fa4427c63460f846053e21e3c";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 15th-trailer field moved.\n\

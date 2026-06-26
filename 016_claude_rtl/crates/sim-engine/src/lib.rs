@@ -189,6 +189,11 @@ pub struct SimOpts {
     /// At each clocking-edge commit, drive `source_net = current_value(holding_net)`.
     /// EMPTY ⇒ no output clocking ⇒ byte-identical to designs without OUTPUT ports.
     pub clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// S1 gate/assign rise·fall·turnoff delay: cont-assign index → (rise, fall,
+    /// turnoff). Populated only when the folded delay values are NOT all equal
+    /// (so `#5`, `#(3,3)`, no-delay carry no entry → the uniform `ContAssign.delay`
+    /// is used). EMPTY ⇒ byte-identical to designs with uniform/no delays.
+    pub ca_delays: std::collections::BTreeMap<u32, (u32, u32, u32)>,
     /// Runtime plusargs (v7, `+name[=value]` with the '+' stripped, CLI
     /// order). `$test$plusargs` prefix-probes them; `$value$plusargs`
     /// converts the first match's remainder. Pure runtime input — never
@@ -280,6 +285,7 @@ impl Default for SimOpts {
             clocking_inputs: std::collections::BTreeSet::new(),
             clocking_commit: std::collections::BTreeMap::new(),
             clocking_outputs: std::collections::BTreeMap::new(),
+            ca_delays: std::collections::BTreeMap::new(),
             defer_marks: DeferMarkTable::new(),
             defer_acts: DeferActTable::new(),
             func_table: FuncTable::new(),
@@ -365,6 +371,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.clocking_inputs = opts.clocking_inputs.iter().copied().collect();
     st.clocking_commit = opts.clocking_commit.clone();
     st.clocking_outputs = opts.clocking_outputs.clone();
+    st.ca_delays = opts.ca_delays.clone();
     st.defer_marks = opts.defer_marks.clone();
     st.defer_acts = opts.defer_acts.clone();
     // SVPART: mark 2-state nets so write_chunk coerces X/Z→0 (one-shot only).

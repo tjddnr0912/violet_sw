@@ -254,6 +254,9 @@ pub(crate) struct SimState<'a> {
     pub clocking_commit: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
     /// N4 clocking output pairs: ProcId → `[(source_net, holding_net)]`. EMPTY ⇒ no outputs.
     pub clocking_outputs: std::collections::BTreeMap<u32, Vec<(u32, u32)>>,
+    /// S1 gate/assign rise·fall·turnoff delay: cont-assign index → (rise, fall,
+    /// turnoff). EMPTY ⇒ uniform/no delays ⇒ byte-identical.
+    pub ca_delays: std::collections::BTreeMap<u32, (u32, u32, u32)>,
     /// Preponed snapshot: source NetId → its value at the start of the time slot.
     pub preponed_buf: std::collections::BTreeMap<u32, crate::value::Value>,
     /// SVA-REST: StmtIds of assertion FIRE reports gated by assertion control.
@@ -564,6 +567,7 @@ impl<'a> SimState<'a> {
             clocking_inputs: Vec::new(),
             clocking_commit: std::collections::BTreeMap::new(),
             clocking_outputs: std::collections::BTreeMap::new(),
+            ca_delays: std::collections::BTreeMap::new(),
             preponed_buf: std::collections::BTreeMap::new(),
             assert_fire: std::collections::BTreeSet::new(),
             assert_ctl: std::collections::BTreeMap::new(),
