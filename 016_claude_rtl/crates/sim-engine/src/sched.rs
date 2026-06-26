@@ -509,6 +509,16 @@ pub(crate) struct Scheduler<'a, 'ir> {
     wheel: BTreeMap<u64, Vec<(RegionTag, Ready)>>,
     /// Processes blocked on Wait conditions.
     waiters: Vec<Waiter>,
+    /// WAITER-POOL p2: running counts of `Expr`/`Level` waiters in `waiters`,
+    /// maintained exactly at the two push sites (`suspend_on` Expr, `arm_
+    /// sensitivity`/`suspend_on` Level) and the single `propagate_changes`
+    /// `retain` removal. When a count is 0 the matching `retain` match-arm
+    /// cannot fire, so `propagate_changes` skips building the corresponding
+    /// `expr_now`/`level_fire` precompute buffer entirely — an all-`Edge`
+    /// design (every flop `always @(posedge clk)`, no `wait(expr)`/`@*`) pays
+    /// nothing for those scans. Byte-identical: the skipped buffer was unused.
+    n_expr_waiters: usize,
+    n_level_waiters: usize,
     /// Activity id currently executing a body (set by `run_body`, the single
     /// dispatch choke) — `disable fork` kills THIS activity's descendants.
     cur_aid: u32,
@@ -597,6 +607,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             nba_seq: 0,
             wheel: BTreeMap::new(),
             waiters: Vec::new(),
+            n_expr_waiters: 0,
+            n_level_waiters: 0,
             cur_aid: 0,
             net_to_edge: vec![Vec::new(); nnets],
             activities: Vec::new(),
@@ -792,6 +804,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                         ready,
                         arm: None, // static sensitivity: re-fire on any change
                     });
+                    self.n_level_waiters += 1; // WAITER-POOL p2
                 }
             }
             _ => {}
@@ -1594,29 +1607,48 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         // becomes true — pre-evaluated here because the `retain` closure cannot
         // also borrow `&self` for `truthy`. (Previously Expr fell through `_ =>
         // true` and never woke, so a `false→true` transition hung the process.)
+        // WAITER-POOL p2: only FILL `expr_now` when an `Expr` waiter actually
+        // exists. When `n_expr_waiters == 0` the `retain` `WaitCause::Expr` arm
+        // below cannot match any waiter, so `expr_now[wi]` is never indexed —
+        // the empty buffer is sound. The fill scanned the FULL waiter vector
+        // every non-idle delta even for all-`Edge` designs.
         let mut expr_now = std::mem::take(&mut self.scratch_expr_now); // WAITER-POOL
         expr_now.clear();
-        expr_now.extend(self.waiters.iter().map(|w| match &w.cause {
-            WaitCause::Expr { expr } => self.truthy(*expr),
-            _ => false,
-        }));
+        if self.n_expr_waiters > 0 {
+            expr_now.extend(self.waiters.iter().map(|w| match &w.cause {
+                WaitCause::Expr { expr } => self.truthy(*expr),
+                _ => false,
+            }));
+        }
         // Pre-compute Level firing (the retain closure cannot also borrow `&self`):
         // an in-body `@(sig)` (arm=Some) fires when a net differs from its ARM-TIME
         // value; a static sensitivity (arm=None) fires on any net change.
+        // p2: same zero-skip guard — no `Level` waiter ⇒ `level_fire` is unused.
         let mut level_fire = std::mem::take(&mut self.scratch_level_fire); // WAITER-POOL
         level_fire.clear();
-        level_fire.extend(self.waiters.iter().map(|w| {
-            match (&w.cause, &w.arm) {
-                (WaitCause::Level { nets }, Some(arm)) => nets
-                    .iter()
-                    .zip(arm)
-                    .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
-                (WaitCause::Level { nets }, None) => nets.iter().any(|n| changed_nets.contains(n)),
-                _ => false,
-            }
-        }));
+        if self.n_level_waiters > 0 {
+            level_fire.extend(self.waiters.iter().map(|w| {
+                match (&w.cause, &w.arm) {
+                    (WaitCause::Level { nets }, Some(arm)) => nets
+                        .iter()
+                        .zip(arm)
+                        .any(|(&n, av)| self.st.nets[n as usize].cur != *av),
+                    (WaitCause::Level { nets }, None) => {
+                        nets.iter().any(|n| changed_nets.contains(n))
+                    }
+                    _ => false,
+                }
+            }));
+        }
         let mut woken: Vec<Ready> = Vec::new();
         let mut wi = 0usize;
+        // WAITER-POOL p2: tally removed Expr/Level waiters here (the retain
+        // closure cannot borrow `&mut self`), apply to the running counts after.
+        // A removed Level waiter that RE-ARMS re-pushes via `arm_sensitivity`/
+        // `suspend_on` on resume → the count re-increments there; a consumed
+        // Expr/Edge does not re-push, so the decrement is net-correct.
+        let mut removed_expr = 0usize;
+        let mut removed_level = 0usize;
         self.waiters.retain(|w| {
             let keep = match &w.cause {
                 // Level + inferred-comb: fire per the pre-computed arm/any-change test.
@@ -1630,10 +1662,17 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             };
             if !keep {
                 woken.push(w.ready); // re-armed on resume (Level/Expr) or consumed (Edge)
+                match &w.cause {
+                    WaitCause::Expr { .. } => removed_expr += 1,
+                    WaitCause::Level { .. } => removed_level += 1,
+                    _ => {}
+                }
             }
             wi += 1;
             keep
         });
+        self.n_expr_waiters -= removed_expr;
+        self.n_level_waiters -= removed_level;
         for r in woken {
             push_sorted(&mut self.cur.active, r);
         }
@@ -2113,6 +2152,12 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             ),
             _ => None,
         };
+        // WAITER-POOL p2: keep the running counts exact at this push site.
+        match &cause {
+            WaitCause::Expr { .. } => self.n_expr_waiters += 1,
+            WaitCause::Level { .. } => self.n_level_waiters += 1,
+            _ => {}
+        }
         self.waiters.push(Waiter { cause, ready, arm });
     }
 
