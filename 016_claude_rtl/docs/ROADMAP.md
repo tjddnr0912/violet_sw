@@ -371,6 +371,8 @@ loud-reject로 확인됨(이제 참):**
 
 **🟡 YELLOW — 구현 가능하나 iverilog 오라클 부재(hand-IEEE)·사람 재결정 대기**(플랜은 트리아지 산출):
 
+> **⤷ 상태 업데이트(2026-06-26, §4.5.4 `feat-yellow-batch`)**: 아래 9종 전부 진행 완료 — **구현 5종(comb UDP·seq UDP·N4 multi-event·SVA nested prop-ref skew·SVA local-var later-read)**, **honest-loud 유지 4종(N4 inout·N4 cross-hier·N4 #0-skew·SVA empty-match `##0`)**. 상세·커밋·unblock 경로는 §4.5.4 참조.
+
 | 항목 | 공수 | 플랜 | silent-wrong 리스크 |
 |---|---|---|---|
 | N4 multi-event clock `@(posedge c1 or c2)` | S | `lower_clocking_blocks` 단일-event 가드(elaborate ~17384) 완화·각 term=edge 검증. 엔진 multi-event always는 검증됨 | 동시-edge 1회 commit·OR-clock preponed 샘플 타이밍(오라클 부재→hand-IEEE 트레이스+적대 리뷰 필수) |
@@ -404,6 +406,39 @@ loud-reject로 확인됨(이제 참):**
 - **struct ascending 멤버 indexed READ** `s.f[2+:2]` = vita `01` vs iverilog `00`(상수-range `s.f[2:3]`은 정상). READ 측 인덱스-부 별개 슬라이스.
 
 **✅ 부수 정정(stale 문서)**: `qm[0][3:2]`(array-of-packed part-select)·`x[3:2][0]`(불법 SV·올바른 거부)·proc-assign expr-rhs·`q<=#d`·typed func-return = **이미 동작**(false gap, 트리아지 확인).
+
+#### 4.5.4 YELLOW 구현 배치 (2026-06-26, branch `feat-yellow-batch`)
+
+> §4.5.3 YELLOW 9종을 사용자 지정 순서(**1→9→2→4→5→8→3→6→7**, UDP·N4·SVA 3 묶음)로 진행. 각 슬라이스 = **사전 그라운딩(병렬 워크플로) → 구현 → 사후 적대 리뷰(silent-wrong 헌트) → 수정 → 커밋**. **오라클 검증 가능(UDP=iverilog 풀 오라클)은 구현; 오라클 없음·전제조건 필요(N4 inout/cross-hier/#0-skew·SVA empty-match)는 정확도 최우선 원칙상 honest-loud 유지 + unblock 경로 문서화**. 전부 IR-0·format_version 19 불변. 적대 리뷰가 **CRITICAL silent-wrong 2종을 차단**(UDP z→x·SVA prop-op obligation drop) + **pre-existing 코어 스케줄러 버그 6종 발굴**.
+
+**✅ 구현 완료(이번 배치, 5 슬라이스, 2269 green):**
+
+| # | 항목 | 커밋 | 핵심 | 오라클 / 적대 리뷰 |
+|---|---|---|---|---|
+| 1 | **comb UDP** `primitive…endprimitive` | `20a2170` | 파서 desugar(gate-primitive 선례)→합성 `TopItem::Module`(새 AST 노드 X·`.vu` flip X). casez 미사용(스크루티니 x/z 와일드카드 함정 회피)·컬럼별 4-state `===`·충돌 0>1>x 순서무관·미매치→x | iverilog 풀 오라클 ✓ — **리뷰가 CRITICAL z→x 입력변환 누락(§29.3.4: `x` 심볼은 z도 매치) 발굴→수정** + empty-table loud |
+| 9 | **sequential UDP**(edge/level table) | `afe842c` | 리터럴 §29 상태표 평가기(NOT flop inference): state reg + shadow regs(prev) + level-first→edge→no-match→x cascade·`-`=hold-no-fallthrough | iverilog ✓ — 구현자 self-fuzz ~4150 테이블 0 div + self-caught 2종; 독립 5-렌즈 리뷰 0 real div(전부 3 비이식 코너로 격리)·**loud-gap 1종(wire출력+seq테이블 silent-accept) 수정** |
+| 2 | **N4 multi-event clock** `@(posedge c1 or c2)` | `09a2ee7` | clocking 가드 N≥1 all-edge 완화 + **pre-existing 코어 스케줄러 버그 수정**: 일반 multi-edge always가 동시 엣지에 body 2회 실행(vita 5 vs iverilog 4)→`propagate_changes` per-delta 디둡 | 일반 fix=iverilog ✓(async-reset DFF·level·mixed MATCH); clocking=hand-IEEE — 리뷰: 디둡 CORRECT+strict no-op(stash-verified) |
+| 6 | **SVA nested prop-ref skew**(same-clock) | `0b8535a` | 깊은 동종 `\|=>` 체인 재귀 peel(§16.12: `\|=>`당 정확히 `##1` 1개)·2-deep fast path verbatim. cross-clock/mixed/recursion/ranged loud | **오라클 없음** → vita-내부 차분(중첩 vs 수동평탄 `(a##1b##1c)\|=>d`)·~2000 fuzz trace 0 skew miscount; **리뷰가 CRITICAL prop-op(always/not/s_eventually/nexttime) obligation silent-drop 발굴→`flatten_overlap_property` prop_expr 가드** |
+| 3 | **SVA seq local-var later-antecedent read** | `ae5a920` | 안테시던트 later-term 읽기 가드 완화·`data_chain[S-1]` 치환(S=고정 hop 합=컴파일타임 상수). ranged=RED loud | **오라클 없음** → vita-내부 차분(local-var vs 명시 RTL shift-reg)·매 클럭 변화 자극; 리뷰 0 stage miscount/0 silent/0 regress(S=1/2/3·summed·overlap·back-to-back) |
+
+**🔒 HONEST-LOUD 유지(이번 배치, 4종 — 정확도 최우선상 강행 거부, reject 유지 + unblock 경로):**
+
+| # | 항목 | 사유(오라클 부재 + 정확성 리스크) | Unblock 경로 |
+|---|---|---|---|
+| 4 | N4 INOUT clocking | 단일-NetId 머신이 표현 못하는 **문맥의존 lvalue(write-hold)/rvalue(read-hold) alias** 필요·**read-after-write 회귀 잡을 오라클 부재**. 한 holding net로 합치면 silent RAW wrong | `{read_hid, write_hid}` 해소 + RAW pin 테스트 후 GO |
+| 5 | N4 cross-hier `@(u0.cb)` event | 부모 proc이 자식 인스턴스보다 **먼저** lower(elab 4069 vs 4062→recurse)→**deferred hier-edge-sensitivity 해소 패스**(별개 오라클 기반 기능=`@(posedge u0.clk)`, 현재 미지원) 필요. 부모 스코프 재해소=silent mis-arm | hier-edge-sensitivity(EdgeTerm.net post-resolution patch, IR-0) 먼저 → `@(u0.cb)`→u0 resolved edge 치환 |
+| 8 | N4 `#0` skew(Observed-region) | input-#0=**post-ALL-NBA Observed settle point 검증 불가**(half-settled read=silent-wrong·오라클 없음); output-#0=NBA-region drive(현재 Active=문서화 hand-IEEE 근사); `#N`/`##N`=오라클 없음 | Observed settle point가 분명히 post-NBA임을 검증 + hand-IEEE 판별 테스트(default cb.q=3 vs #0 cb.q=4) |
+| 7 | SVA empty-match `##0` 인접 융합(고정) | **런타임 cycle offset**(컴파일타임 상수 아님)·**과거 silent-wrong 피격 클래스**(trailing-`##0`)·오라클 없음. #6/#3과 달리 hand-trace로 단정 불가 | 4 corner(leading/trailing/혼합) 전부 hand-trace + 만장일치 리뷰 후 corner별 GO(leading-`##0` D=0이 최단순) |
+
+**ℹ️ 발견된 pre-existing 코어 스케줄러/elaborate silent-wrong(이번 배치 #2 fuzzer 발굴·stash-verified 독립·각각 별개 슬라이스 후보):**
+1. **(CRITICAL) 동일-슬롯 블로킹 글리치 wake-collapse**: `a=1;a=0;`(net 0→0 endpoints)에서 dirty-sweep `cur!=prev`가 중간 0→1 이벤트를 drop→`always @(a)` 미발화(iverilog 1회 발화). 의도적 A→B→A round-trip-drop 최적화(perf 민감)라 수정=event-per-transition 재설계.
+2. (CRITICAL) #1과 동일 root, 엣지/multi-net 리스트(`@(posedge a or posedge b)`)서도 발생.
+3. **(CRITICAL) SELF-RETRIGGER over-fire**: `always @(a) begin cnt++; if(a) a=0; end`의 body 내 self-write가 같은 슬롯에 재트리거(iverilog: body 실행 중 proc은 @에서 미서스펜드→self-write 재arm 안함). NBA self-write는 정상.
+4. (IMPORTANT) gated/derived clock **cross-delta 동일-timestep double-fire**: `@(posedge clk or posedge gclk)`(gclk=clk&en이 1 delta 늦게 derive)→2회 발화·iverilog는 timestep당 1회 collapse. delta-scoped 디둡(#2)은 정확하나 timestep-scoped 디둡 필요.
+5. (MINOR) mixed edge+level `@(posedge c1 or c2)`의 level term c2가 t0에 X→0일 때 spurious 발화(AnyEdge가 X→known에 발화·pure-level `@(c2)`는 안함). root=classify_event_list AnyEdge lowering.
+6. (IMPORTANT) `always @*` t0 spurious 실행(always_comb is_comb_inferred t0-kick에 혼입; §9.2.2.2.1상 always_comb만 t0 실행).
+
+**적대 리뷰 방법론 노트(오라클 없는 SVA)**: iverilog 13.0이 **모든 concurrent assertion을 거부**(verilator 부재)하므로 SVA(#6/#3)는 외부 차분 불가 → **vita-내부 차분**을 teeth로 사용(중첩/local-var 형태를 검증된 시퀀스 파이프라인 등가식과 비교). #6/#3은 cycle/stage가 **컴파일타임 상수/구조적**이라 hand-trace로 단정 가능 = GO; #7은 **런타임 offset**이라 honest-loud.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
