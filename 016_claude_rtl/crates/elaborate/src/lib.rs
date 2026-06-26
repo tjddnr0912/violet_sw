@@ -9870,14 +9870,15 @@ impl<'s> Elaborator<'s> {
 
             // ── structural ─────────────────────────────────────────
             ast::ExprKind::Concat { parts } => {
-                // v7 P2-C: string concatenation needs dynamic-width results
-                // the static Concat node cannot carry — loud, $sformatf works.
+                // G1 (IEEE §6.16): a string concat in ANY context (display arg,
+                // comparison, function/task arg, nested concat) lowers — like the
+                // statement-level concat-ASSIGN desugar — to a `$sformatf("%s…",
+                // parts…)` whose dynamic-width string result the static Concat node
+                // cannot carry. Shared with `string_concat_special` so both paths
+                // render byte-identically.
                 if parts.iter().any(|p| self.expr_is_string_ast(p)) {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "string concatenation is outside the v7 scope (use $sformatf(\"%s%s\", a, b))",
-                    );
-                    return self.placeholder_expr();
+                    let part_refs: Vec<&ast::Expr> = parts.iter().collect();
+                    return self.lower_string_concat_parts(&part_refs);
                 }
                 let part_ids: Vec<u32> = parts.iter().map(|p| self.lower_expr(p)).collect();
                 if part_ids.iter().any(|&p| self.expr_is_real(p)) {
@@ -9889,6 +9890,25 @@ impl<'s> Elaborator<'s> {
                 self.push_expr(ir::Expr::Concat { parts: part_ids })
             }
             ast::ExprKind::Replicate { count, value } => {
+                // G1 (IEEE §6.16): a string replicate `{N{str}}` in any context
+                // flattens to N copies of the value list, then lowers through the
+                // shared `$sformatf("%s…")` desugar (mirrors `string_concat_special`).
+                if value.iter().any(|p| self.expr_is_string_ast(p)) {
+                    let Some(n) = self.const_eval_in_scope(count) else {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "a non-constant replication count on a string is unsupported",
+                        );
+                        return self.placeholder_expr();
+                    };
+                    let n = n.max(0) as usize; // a 0/negative count ⇒ empty string
+                    let mut flat: Vec<&ast::Expr> =
+                        Vec::with_capacity(n.saturating_mul(value.len()));
+                    for _ in 0..n {
+                        flat.extend(value.iter());
+                    }
+                    return self.lower_string_concat_parts(&flat);
+                }
                 // hdl-ast `value: Vec<Expr>` is the element LIST (no wrapper
                 // Concat); sim-ir Replicate wants ONE `value: u32` → wrap in a
                 // Concat node. (For a single element this is a 1-part Concat,
@@ -22488,6 +22508,32 @@ impl<'s> Elaborator<'s> {
             );
             return true;
         }
+        let rhs_id = self.lower_string_concat_parts(&part_exprs);
+        let lv = self.lower_lvalue(lhs);
+        self.check_lvalue_kind(&lv, true);
+        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+            lhs: lv,
+            rhs: rhs_id,
+        });
+        b.push_stmt_id(sid);
+        true
+    }
+
+    /// Shared string-concat lowering (IEEE §6.16): the ordered `part_exprs`
+    /// (a replication already flattened to its repeated value list) lower to a
+    /// `$sformatf("%s%s…%s", part0, part1, …)` expression — the parts pass as
+    /// `%s` args, so each renders as its string/char bytes and a literal `%` in a
+    /// part value is NOT a conversion. Returns the resulting ExprId.
+    ///
+    /// Used by BOTH the statement-level concat-ASSIGN desugar
+    /// (`string_concat_special`) and the general expression path
+    /// (`lower_expr`'s `Concat`/`Replicate` arms) so display args, comparisons,
+    /// function/task args, and nested concats share one oracle-proven impl.
+    ///
+    /// A real part stays LOUD (correct-or-loud): the loud diagnostic is emitted
+    /// and the remaining parts still lower (so the dead `$sformatf` node is
+    /// well-formed), but the surrounding elaboration is already poisoned.
+    fn lower_string_concat_parts(&mut self, part_exprs: &[&ast::Expr]) -> u32 {
         // fmt = "%s"×N (the parts pass as %s args, so a `%` in any part value is
         // rendered literally, not as a conversion).
         let fmt = "%s".repeat(part_exprs.len());
@@ -22501,22 +22547,13 @@ impl<'s> Elaborator<'s> {
                     MsgCode::ElabUnsupported,
                     "a real value may not be a string-concatenation element",
                 );
-                return true;
             }
             args.push(pid);
         }
-        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+        self.push_expr(ir::Expr::SysFunc {
             which: ir::SysFuncId::Sformatf,
             args,
-        });
-        let lv = self.lower_lvalue(lhs);
-        self.check_lvalue_kind(&lv, true);
-        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
-            lhs: lv,
-            rhs: rhs_id,
-        });
-        b.push_stmt_id(sid);
-        true
+        })
     }
 
     // ── $countbits desugar (SYS-INTRO잔여, IR-0) ───────────────────

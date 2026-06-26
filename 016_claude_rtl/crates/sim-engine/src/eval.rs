@@ -1760,10 +1760,37 @@ impl<'a, N: NetReader> EvalCtx<'a, N> {
             },
             // v7 shape, features not wired yet (elaborate still rejects the
             // names): defensive X at each func's declared self-width.
-            // `ValuePlusargs`/`Sformatf` here = unsupported placement (the
-            // legal direct-rhs forms are intercepted statement-level).
+            // `ValuePlusargs` here = unsupported placement (the legal direct-rhs
+            // form is intercepted statement-level).
             SysFuncId::Fopen | SysFuncId::ValuePlusargs => Value::xs(32, true),
-            SysFuncId::Sformatf => Value::xs(8, false),
+            // G1 (IEEE §6.16): an EXPRESSION-context `$sformatf` reaches eval ONLY
+            // as elaborate's string-concat desugar — `$sformatf("%s%s…%s", p0, p1,
+            // …)`, fmt = "%s"×N, args[1..] = the N concat parts. It renders to a
+            // STRING-domain value so `$display("%s", {a,b})`, `{a,b}=="…"`, and
+            // func/task args all see the concatenated bytes. The render matches the
+            // statement-assign path's `%s` handler byte-for-byte (the oracle): a
+            // string-literal Const → its decoded text; a string-domain value → its
+            // exact bytes; any other integral value → its packed char bytes (§6.16).
+            // (The statement-level `s = $sformatf(...)` form is intercepted before
+            // eval; the kernel `format_args_str` honors arbitrary specs there.)
+            SysFuncId::Sformatf => {
+                let mut bytes: Vec<u8> = Vec::new();
+                for &p in args.iter().skip(1) {
+                    if let Some(s) = self.const_str_arg(p) {
+                        bytes.extend_from_slice(s.as_bytes());
+                    } else {
+                        let v = self.eval(p);
+                        if v.is_str {
+                            bytes.extend_from_slice(&v.to_str_bytes());
+                        } else {
+                            bytes.extend_from_slice(
+                                crate::builtins::fmt_packed_chars(&v).as_bytes(),
+                            );
+                        }
+                    }
+                }
+                Value::from_str_bytes(&bytes)
+            }
             // v9 shape-bump placeholders: the side-effecting file-read family,
             // $dist_*, and the $cast function form are all intercepted at the
             // statement level (direct rhs of a blocking assign) once ranks 5-6

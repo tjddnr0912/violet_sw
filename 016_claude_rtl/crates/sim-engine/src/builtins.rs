@@ -2290,7 +2290,7 @@ fn render_template(
 
 /// `%s` on a packed value: width/8 chars MSB-first, NUL bytes render as
 /// spaces (iverilog live pin, probe t7).
-fn fmt_packed_chars(v: &Value) -> String {
+pub(crate) fn fmt_packed_chars(v: &Value) -> String {
     let nbytes = (v.width as usize).div_ceil(8).max(1);
     let mut s = String::with_capacity(nbytes);
     for bi in (0..nbytes).rev() {

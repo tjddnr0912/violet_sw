@@ -164,10 +164,13 @@ fn string_concat_assignment_works() {
 }
 
 #[test]
-fn string_concat_in_expr_context_is_loud() {
-    // Only the direct-rhs placement is desugared; a string concat in any other
-    // context (here a $display argument) stays loud (use $sformatf).
-    let (_o, err, code) = run("module top;\n\
+fn string_concat_in_expr_context_works() {
+    // G1 (IEEE §6.16): a string concat in an EXPRESSION context (here a $display
+    // argument) now lowers through the same $sformatf("%s…") desugar as the
+    // direct-rhs form (was loud). Oracle: iverilog -g2012 prints "xy". See
+    // string_concat.rs::expr_* for the full characterization (compare/nested/
+    // replicate/mixed-byte/real-loud).
+    let (out, err, code) = run("module top;\n\
          string a, b;\n\
          initial begin\n\
            a = \"x\"; b = \"y\";\n\
@@ -175,8 +178,8 @@ fn string_concat_in_expr_context_is_loud() {
            $finish;\n\
          end\n\
          endmodule\n");
-    assert_ne!(code, Some(0));
-    assert!(err.contains("E3009"), "stderr:\n{err}");
+    assert_eq!(code, Some(0), "stderr:\n{err}");
+    assert!(out.contains("xy"), "got:\n{out}");
 }
 
 #[test]
