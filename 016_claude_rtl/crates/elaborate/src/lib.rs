@@ -7420,6 +7420,17 @@ impl<'s> Elaborator<'s> {
             ast::ExprKind::Null => HKind::Null,
             ast::ExprKind::ClassNew { .. } => HKind::Handle,
             ast::ExprKind::Paren { inner } => self.ast_handle_kind(inner),
+            // A.5: a class cast `Base'(expr)` yields a HANDLE (an up-cast is an
+            // identity on the handle value). A single-seg path naming a class is
+            // the class-cast form; any other cast target (size/prim/signing) is
+            // integral → Other. (The legality of the cast itself is checked in
+            // `lower_cast`; here we only classify the RESULT for the assign gate.)
+            ast::ExprKind::Cast {
+                target: ast::CastTarget::Named(p),
+                ..
+            } if p.segments.len() == 1 && self.class_table.contains_key(&p.segments[0].name) => {
+                HKind::Handle
+            }
             // A function/method call MIGHT return a handle — be lenient so a
             // legitimate `h = factory()` / `int x = f()` is never false-rejected.
             ast::ExprKind::Call { .. } => HKind::Unknown,
@@ -7556,6 +7567,60 @@ impl<'s> Elaborator<'s> {
             }
         }
         None
+    }
+
+    /// True iff `anc` is a (strict or improper) ancestor of `desc` — i.e. `desc`
+    /// is `anc` itself or `anc` appears on `desc`'s base chain (IEEE §8.16). The
+    /// 256-iteration guard mirrors `class_find_method` (a malformed cyclic base
+    /// chain terminates loudly rather than spinning). Used to validate a class
+    /// cast: an UP-cast (`anc` = the cast target, `desc` = the operand class) is
+    /// legal; a DOWN-cast / unrelated cast is not.
+    fn class_is_ancestor(&self, anc: &str, desc: &str) -> bool {
+        let mut cur = Some(desc.to_string());
+        let mut guard = 0;
+        while let Some(c) = cur {
+            if c == anc {
+                return true;
+            }
+            cur = self.class_table.get(&c).and_then(|ci| ci.base.clone());
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        false
+    }
+
+    /// The STATIC class name of a cast OPERAND, for cast-relationship validation.
+    /// Resolves only the IEEE-idiomatic forms whose static type vita tracks by
+    /// net id: a bare class-handle variable, `this`, or `obj.field` / bare-field
+    /// (a handle property). Returns `None` for any other expression (a call, an
+    /// arbitrary value, a `null` literal) — the caller treats an unresolvable
+    /// operand as a loud reject (correct-or-loud: a cast it cannot validate must
+    /// not silently pass). `Paren` is unwrapped.
+    fn operand_static_class(&self, e: &ast::Expr) -> Option<String> {
+        match &e.kind {
+            ast::ExprKind::Paren { inner } => self.operand_static_class(inner),
+            ast::ExprKind::Ident(p) => {
+                if p.segments.len() == 1 {
+                    let n = &p.segments[0].name;
+                    if n == "this" {
+                        return self.cur_this.as_ref().map(|(_, c)| c.clone());
+                    }
+                    if let Some(net) = self.lookup_net_scoped(n) {
+                        return self.net_class.get(&net).cloned();
+                    }
+                }
+                // `obj.field` / bare member where the field is itself a handle.
+                if let Some((_, cls, field)) = self.resolve_class_member(p) {
+                    if let Some((_, f)) = self.class_field_id(&cls, &field) {
+                        return f.class_type;
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
     }
 
     /// Intercept `h = new` / `h = new(args)` (class allocation). Emits a
@@ -8648,6 +8713,53 @@ impl<'s> Elaborator<'s> {
                                 return self.placeholder_expr();
                             }
                             return self.lower_size_cast(e, n as u32);
+                        }
+                    }
+                }
+                // A.5: a single-seg path naming a CLASS is a class cast `Base'(d)`
+                // (§6.24.2). v1 supports the UP-cast (and identity): the target is
+                // the operand's class or an ANCESTOR. An up-cast is a pure IDENTITY
+                // on the handle value — the heap object keeps its concrete class_id,
+                // virtual dispatch reads the dynamic type (the static cast type is
+                // irrelevant), and the static type for later member access rides on
+                // the DESTINATION net's own `net_class`, not on this lowered value.
+                // So we just return the operand handle UNCHANGED. A down-cast /
+                // unrelated cast / unresolvable operand is loud (correct-or-loud:
+                // a cast we cannot validate must not silently pass).
+                if path.segments.len() == 1 && self.class_table.contains_key(&path.segments[0].name)
+                {
+                    let target = path.segments[0].name.clone();
+                    match self.operand_static_class(operand) {
+                        Some(op_class)
+                            if target == op_class || self.class_is_ancestor(&target, &op_class) =>
+                        {
+                            // Legal up-cast / identity → handle value unchanged.
+                            return self.lower_expr(operand);
+                        }
+                        Some(op_class) if self.class_is_ancestor(&op_class, &target) => {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a static class DOWN-cast `Derived'(base)` is outside the v1 \
+                                 cast scope (only up-casts to a base class are supported)",
+                            );
+                            return self.placeholder_expr();
+                        }
+                        Some(_) => {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "an UNRELATED class cast (target is neither the operand's class \
+                                 nor a base of it) is illegal (IEEE §6.24.2)",
+                            );
+                            return self.placeholder_expr();
+                        }
+                        None => {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "a class cast `Base'(expr)` requires an operand whose static \
+                                 class is resolvable (a handle variable, `this`, or a handle \
+                                 field) so the cast relationship can be validated",
+                            );
+                            return self.placeholder_expr();
                         }
                     }
                 }
