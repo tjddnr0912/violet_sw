@@ -201,6 +201,23 @@ pub struct Parser<'t, 's> {
     /// ⓑ-breadth (§8.25): override specializations of parameterized classes,
     /// produced by `monomorphize_param_classes` and appended at top level.
     pending_mono_specs: Vec<ClassDecl>,
+    /// SV §11.5 loop-control context stack (one entry per enclosing for/while/
+    /// repeat/forever/foreach being parsed). `break`/`continue` desugar to
+    /// `disable <synthetic-label>` of the innermost loop; the loop is wrapped in
+    /// a synthetic named block ONLY when the corresponding control was used (so a
+    /// loop with no break/continue is byte-identical). The top entry is the
+    /// innermost loop.
+    loop_labels: Vec<LoopLabels>,
+}
+
+/// One enclosing-loop entry for `break`/`continue` desugar. The labels name the
+/// synthetic blocks the loop is wrapped in (`$break$<lo>` around the whole loop,
+/// `$continue$<lo>` around its body); `*_used` records whether that wrap is needed.
+struct LoopLabels {
+    break_label: String,
+    continue_label: String,
+    break_used: bool,
+    continue_used: bool,
 }
 
 impl<'t, 's> Parser<'t, 's> {
@@ -221,6 +238,7 @@ impl<'t, 's> Parser<'t, 's> {
             var_struct: std::collections::HashMap::new(),
             const_locals: std::collections::HashMap::new(),
             pending_mono_specs: Vec::new(),
+            loop_labels: Vec::new(),
         }
     }
 
@@ -7080,6 +7098,16 @@ impl<'t, 's> Parser<'t, 's> {
             {
                 self.parse_cover_property()
             }
+            // SV §11.5 `break;` / `continue;` — contextual (not V2005 reserved), so
+            // a net literally named `break`/`continue` used as `break = x;` still
+            // parses as an assign. Recognized ONLY in the `break;`/`continue;`
+            // statement shape (immediately followed by `;`).
+            _ if self.at_ident_kw("break") && self.peek_at(1) == Some(TokenKind::Semi) => {
+                self.parse_break_continue(true)
+            }
+            _ if self.at_ident_kw("continue") && self.peek_at(1) == Some(TokenKind::Semi) => {
+                self.parse_break_continue(false)
+            }
             _ if self.is_ident() => self.parse_assign_or_call(),
             _ => self.stmt_error(),
         }
@@ -8807,6 +8835,97 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    // ───────────────────────── SV §11.5 break/continue ─────────────────────
+    /// Parse a loop body while tracking `break`/`continue` that target THIS loop.
+    /// Pushes a `LoopLabels` (unique by the loop's start offset), parses the body,
+    /// then — IF `continue` was used — wraps the body in a synthetic named block
+    /// `begin : $continue$<lo> body end` (its exit is the loop's continue point:
+    /// before the for-step / at the while back-edge). Returns the (maybe-wrapped)
+    /// body and whether `break` was used (the caller wraps the whole loop). A loop
+    /// with no break/continue is returned UNWRAPPED ⇒ byte-identical.
+    fn parse_loop_body(&mut self, start: Span) -> (Stmt, bool) {
+        let lo = start.lo;
+        self.loop_labels.push(LoopLabels {
+            break_label: format!("$break${lo}"),
+            continue_label: format!("$continue${lo}"),
+            break_used: false,
+            continue_used: false,
+        });
+        let body = self.parse_statement();
+        let lbl = self.loop_labels.pop().expect("pushed above");
+        let body = if lbl.continue_used {
+            Stmt::Block {
+                label: Some(Ident {
+                    name: lbl.continue_label,
+                    span: start,
+                }),
+                decls: Vec::new(),
+                stmts: vec![body],
+                span: start,
+            }
+        } else {
+            body
+        };
+        (body, lbl.break_used)
+    }
+
+    /// If `break` was used in this loop, wrap the whole loop in a synthetic named
+    /// block `begin : $break$<lo> loop end` (its exit is past the loop). No-op
+    /// (byte-identical) when `break` was not used.
+    fn wrap_break(&self, loop_stmt: Stmt, break_used: bool, start: Span) -> Stmt {
+        if break_used {
+            Stmt::Block {
+                label: Some(Ident {
+                    name: format!("$break${}", start.lo),
+                    span: start,
+                }),
+                decls: Vec::new(),
+                stmts: vec![loop_stmt],
+                span: start,
+            }
+        } else {
+            loop_stmt
+        }
+    }
+
+    /// `break;` / `continue;` (SV §11.5). Desugars to `disable <synthetic-label>`
+    /// of the innermost enclosing loop — `break` jumps past the loop, `continue`
+    /// to the loop's continue point. Records that the wrap is needed. Outside any
+    /// loop it is a loud error (correct-or-loud). Reuses the proven `disable`→Goto
+    /// lowering, so fork-crossing break/continue is loud-rejected at elaborate.
+    fn parse_break_continue(&mut self, is_break: bool) -> Stmt {
+        let start = self.cur_span();
+        self.bump(); // `break` / `continue`
+        self.expect(TokenKind::Semi, "';'");
+        let span = start.to(self.prev_span());
+        match self.loop_labels.last_mut() {
+            Some(ctx) => {
+                let label = if is_break {
+                    ctx.break_used = true;
+                    ctx.break_label.clone()
+                } else {
+                    ctx.continue_used = true;
+                    ctx.continue_label.clone()
+                };
+                Stmt::Disable {
+                    target: HierPath {
+                        segments: vec![Ident { name: label, span }],
+                        span,
+                    },
+                    span,
+                }
+            }
+            None => {
+                self.error(if is_break {
+                    "an enclosing loop for this `break`"
+                } else {
+                    "an enclosing loop for this `continue`"
+                });
+                Stmt::Error(span)
+            }
+        }
+    }
+
     fn parse_for(&mut self) -> Stmt {
         let start = self.cur_span();
         self.bump(); // for
@@ -8841,24 +8960,25 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::Semi, "';' after for-cond");
         let step = Box::new(self.parse_for_assign()); // `i = i+1`, no trailing ';'
         self.expect(TokenKind::RParen, "')'");
-        let body = Box::new(self.parse_statement());
+        let (body, break_used) = self.parse_loop_body(start);
         let span = start.to(self.prev_span());
 
         let mut for_stmt = Stmt::For {
             init,
             cond,
             step,
-            body,
+            body: Box::new(body),
             span,
         };
 
-        if let Some((decl, _, orig_name)) = typed_init {
+        let built = if let Some((decl, _, orig_name)) = typed_init {
             // Rewrite every reference to the original loop-var name across the
             // whole For → the synthetic name. The For's `init` was synthesized to
             // already carry the synthetic name (no `orig_name` occurrences), so the
             // rename only rebinds cond/step/body. `rename_ident_in_stmt`'s block
             // arm stops at any inner redeclaration, so a nested block/loop that
-            // shadows the name keeps its own binding.
+            // shadows the name keeps its own binding. (The synthetic `$continue$`
+            // block has no decls, so the rename descends through it.)
             let synth = decl.names[0].name.name.clone();
             rename_ident_in_stmt(&mut for_stmt, &orig_name.name, &synth);
             Stmt::Block {
@@ -8869,7 +8989,8 @@ impl<'t, 's> Parser<'t, 's> {
             }
         } else {
             for_stmt
-        }
+        };
+        self.wrap_break(built, break_used, start)
     }
 
     /// SV §12.7.1 typed for-init: `int i = 0` (or `integer` / `byte` /
@@ -8970,12 +9091,13 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::LParen, "'(' after 'while'");
         let cond = self.expr(0);
         self.expect(TokenKind::RParen, "')'");
-        let body = Box::new(self.parse_statement());
-        Stmt::While {
+        let (body, break_used) = self.parse_loop_body(start);
+        let loop_stmt = Stmt::While {
             cond,
-            body,
+            body: Box::new(body),
             span: start.to(self.prev_span()),
-        }
+        };
+        self.wrap_break(loop_stmt, break_used, start)
     }
 
     /// P2-E: `do body while (cond);` desugars at parse to
@@ -8985,7 +9107,13 @@ impl<'t, 's> Parser<'t, 's> {
     fn parse_do_while(&mut self) -> Stmt {
         let start = self.cur_span();
         self.bump(); // do
-        let body = self.parse_statement();
+                     // break/continue target THIS do-while (not an enclosing loop). The body
+                     // is `$continue`-wrapped if needed; BOTH desugar copies (the once-run body
+                     // and the while body) carry the same wrap — each is lowered separately so
+                     // the disable stack resolves to the right copy's exit. `continue` in the
+                     // first body falls through to the `while` (re-tests cond); in the while
+                     // body it hits the back-edge. `break` wraps the whole desugar.
+        let (body, break_used) = self.parse_loop_body(start);
         if !self.at_kw(Kw::While) {
             self.error("'while' after a do-body");
             return Stmt::Error(start.to(self.prev_span()));
@@ -9001,12 +9129,13 @@ impl<'t, 's> Parser<'t, 's> {
             body: Box::new(body.clone()),
             span,
         };
-        Stmt::Block {
+        let block = Stmt::Block {
             label: None,
             decls: Vec::new(),
             stmts: vec![body, again],
             span,
-        }
+        };
+        self.wrap_break(block, break_used, start)
     }
 
     /// P2-E: `unique`/`priority` qualified if/case. The qualified statement
@@ -9099,7 +9228,11 @@ impl<'t, 's> Parser<'t, 's> {
         }
         self.expect(TokenKind::RBracket, "']'");
         self.expect(TokenKind::RParen, "')'");
-        let mut body = self.parse_statement();
+        // break/continue target THIS foreach. `continue` wraps the user body in
+        // `$continue`, whose exit falls through to the `__st = next` advance (so
+        // the iterator still advances after a continue); `break` wraps the
+        // synthesized while below.
+        let (mut body, break_used) = self.parse_loop_body(start);
         let span = start.to(self.prev_span());
         // v1 elaborate FLATTENS block-locals into the module namespace (no
         // per-block scoping), so a decl named like an outer variable would be
@@ -9191,11 +9324,15 @@ impl<'t, 's> Parser<'t, 's> {
             decls: vec![decl_of(&ivar), decl_of(&stvar)],
             stmts: vec![
                 st_assign("first"),
-                Stmt::While {
-                    cond,
-                    body: Box::new(loop_body),
-                    span,
-                },
+                self.wrap_break(
+                    Stmt::While {
+                        cond,
+                        body: Box::new(loop_body),
+                        span,
+                    },
+                    break_used,
+                    start,
+                ),
             ],
             span,
         }
@@ -9207,22 +9344,24 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::LParen, "'(' after 'repeat'");
         let count = self.expr(0);
         self.expect(TokenKind::RParen, "')'");
-        let body = Box::new(self.parse_statement());
-        Stmt::Repeat {
+        let (body, break_used) = self.parse_loop_body(start);
+        let loop_stmt = Stmt::Repeat {
             count,
-            body,
+            body: Box::new(body),
             span: start.to(self.prev_span()),
-        }
+        };
+        self.wrap_break(loop_stmt, break_used, start)
     }
 
     fn parse_forever(&mut self) -> Stmt {
         let start = self.cur_span();
         self.bump(); // forever — NO parens, NO count
-        let body = Box::new(self.parse_statement());
-        Stmt::Forever {
-            body,
+        let (body, break_used) = self.parse_loop_body(start);
+        let loop_stmt = Stmt::Forever {
+            body: Box::new(body),
             span: start.to(self.prev_span()),
-        }
+        };
+        self.wrap_break(loop_stmt, break_used, start)
     }
 
     // ─────────────────────── 5. blocks ───────────────────────

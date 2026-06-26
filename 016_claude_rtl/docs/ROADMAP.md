@@ -525,6 +525,14 @@ loud-reject로 확인됨(이제 참):**
 
 **🔬 사후 리뷰 성과:** differential=**CLEAN**(55 probe·0 silent-wrong: 전 op·타입·lvalue[`arr[k]`/part/bit/concat/struct]·for-step·wrap·산술시프트·loud경계·렉서 byte-identity 전부 iverilog 일치). soundness=**SOUND**(렉서 longest-match 전수증명·desugar 정확성·loud 완전성; Minor 4=전부 진단품질/문서·silent-wrong 0). **double-eval 우려를 측정으로 반증**: `arr[f()] += 5`가 explicit `arr[f()] = arr[f()] + 5`와 byte-identical(둘 다 `calls=0`)→desugar 정확; `calls=0`(함수 side-effect가 lvalue index서 미실행)은 plain assign도 동일한 **pre-existing 별개 quirk**. **honest-loud(out-of-scope)**: generate-for step `g++`(별도 파서 경로·iverilog 자체가 all-Z=오라클 부재라 보수적 loud 유지)·expression-embedded 형태.
 
+#### 4.5.13 break / continue loop control (2026-06-27, branch `feat-break-continue`) ✅
+
+> vita가 undeclared-task(E3010)로 거부하던 SV §11.5 `break`/`continue`를 **loud→supported**. 고전 Verilog `disable <label>` idiom으로 **파서에서 desugar**: `continue` 쓰는 루프는 바디를 `begin : $continue$<lo> … end`로 감싸고(continue→해당 블록 disable→루프 continue-point로 Goto), `break` 쓰는 루프는 전체를 `begin : $break$<lo> … end`로 감쌈(break→루프 past로 Goto). vita의 **기존 `disable`→Goto lowering 재사용**→AST/IR/sim-ir 무변경(기존 `Stmt::Disable`/`Stmt::Block` 노드)·`.vu` 해시 불변. break/continue 없는 루프는 unwrapped→byte-identical. **사전 그라운딩(disable-idiom desugar가 iverilog real break/continue와 동일 확정) → 구현(5+1 loop 파서) → 사후 적대 2-서브에이전트 → silent-wrong 1종 수정 → CLEAN**. format_version 19 불변. **2351 green**(2338 + 13 break_continue.rs).
+
+**✅ 구현(파서 전용):** `LoopLabels` 스택(루프별 `$break$/$continue$` 라벨·used 플래그)·`parse_loop_body`(바디 파스+continue-wrap)·`wrap_break`(루프 break-wrap)·`parse_break_continue`(innermost 루프의 `disable` 합성, 루프 밖=loud). dispatcher가 `break;`/`continue;`(뒤 `;` 한정—`break=x;` 변수는 assign으로) 인식. for/while/repeat/forever/foreach/**do-while** 6 루프 전부 배선. **fork-cross break/continue·루프 밖=loud**(disable 머신서리의 fork-floor 재사용). unrolled `repeat`·중첩 루프·typed-for rename은 disable idiom으로 자연 처리.
+
+**🔬 사후 리뷰 성과:** **differential이 silent-wrong 1종 발굴→수정**: `parse_do_while`만 `parse_loop_body` 미사용→do-while 안 break/continue가 **enclosing 루프를 타깃**(do-while을 다른 루프 안에 넣으면 outer 루프를 잘못 종료/continue=silent-wrong). `parse_do_while`도 `parse_loop_body`+`wrap_break` 적용으로 수정(양 desugar 복사본이 wrap 공유·per-copy disable resolution). soundness=**SOUND**(continue→step 타이밍 per-loop 전수증명·스택 규율·typed-for rename descend·fork-floor·byte-identity; do-while 갭은 "honest-loud"로 분류했으나 differential이 silent-wrong 입증→differential 우선). 재-hunt CLEAN.
+
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
 SYS-READ·SYS-INTRO·DIR-PP를 IR-0-now vs 단일 **v9 bump**으로 분할(워크플로우 understand×3+probe×4→synth). **원칙: IR-0 슬라이스 먼저, frozen-IR(새 SysFuncId/SysTaskId)은 한 번의 v9 bump에 일괄, iverilog 오라클 우선.** ⚠️ 진단 비대칭: 미인식 `$func`=E3009-LOUD(전 디자인 kill) vs `$task`=W3056-skip → 미구현 introspection func가 디자인 전체를 죽이므로 const-fold(rank 2)가 고가치.
