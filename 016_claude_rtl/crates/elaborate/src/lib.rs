@@ -18253,19 +18253,22 @@ impl<'s> Elaborator<'s> {
             );
             return;
         }
-        // The var must NOT be read BEFORE its capture: a read in a term at or before
-        // the capture term (or in the consequent for an antecedent-only-capture this
-        // is always after) — only later-term / consequent reads are well-defined. We
-        // support reads in the CONSEQUENT only (a read in a later antecedent BOOLEAN
-        // term is loud — its data-stage substitution is a follow-on). Reject a read in
-        // ANY antecedent term (including before the capture).
-        for t in flat.iter() {
-            if expr_reads_ident(&t.term, &cap_name) {
+        // The var must NOT be read AT OR BEFORE its capture term: a read at a term with
+        // index ≤ cap_idx is undefined (the value is not yet captured, or is captured
+        // combinationally at that same term) → loud (never a silent guess). A read in a
+        // LATER antecedent term (index > cap_idx) IS well-defined: it reads the captured
+        // value delayed by S = the sum of the FIXED hops from cap_idx+1..=idx clocks
+        // (§16.10), substituted in the per-term AND walk below. Reads in the consequent
+        // (always after the antecedent completes) continue to resolve at the completion
+        // stage. A self-referential capture stays separately loud.
+        for (idx, t) in flat.iter().enumerate() {
+            if idx <= cap_idx && expr_reads_ident(&t.term, &cap_name) {
                 self.error(
                     MsgCode::ElabUnsupported,
                     &format!(
-                        "sequence local variable `{cap_name}` read inside an antecedent \
-                         term is unsupported in this subset (read it in the consequent)"
+                        "sequence local variable `{cap_name}` read at or before its \
+                         capture term is unsupported in this subset (read it in a LATER \
+                         antecedent term or the consequent)"
                     ),
                 );
                 return;
@@ -18346,8 +18349,41 @@ impl<'s> Elaborator<'s> {
             if idx == cap_idx {
                 capturing = true;
             }
-            // Apply the boolean term to the liveness activation.
-            let tb = self.rewrite_sampled(&t.term, &mut regs);
+            // Apply the boolean term to the liveness activation. If this term READS the
+            // captured local var (only reachable at idx > cap_idx — earlier/at-capture
+            // reads were rejected above), substitute the read with the data register at
+            // the EXACT shift-stage S = `data_chain.len()` at THIS point = the sum of the
+            // FIXED hops from cap_idx+1..=idx (a COMPILE-TIME CONSTANT). `data_chain`'s
+            // tail (= `data_chain[S-1]`) is the captured value delayed by S clocks = the
+            // value sampled at the capture clock observed at THIS term's clock (§16.10).
+            // The chain length is exact because each fixed hop pushed one data reg in
+            // lockstep with the liveness shift above; a RANGED hop on the path was
+            // already loud-rejected at flatten time, so S is unambiguous (never a guess).
+            let tb = if idx > cap_idx && expr_reads_ident(&t.term, &cap_name) {
+                match data_chain.last().cloned() {
+                    Some(stage_reg) => {
+                        let read_v = sva_ident_expr(&stage_reg, sp);
+                        let sub = subst_ident_expr(&t.term, &cap_name, &read_v);
+                        self.rewrite_sampled(&sub, &mut regs)
+                    }
+                    None => {
+                        // S == 0: an all-`##0` chain coincides the read with the capture
+                        // clock — a degenerate read-at-capture. Loud (correct-or-loud;
+                        // the same-clock combinational path is out of this subset).
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "sequence local variable `{cap_name}` read at the same \
+                                 clock as its capture (an all-`##0` chain to the read) is \
+                                 unsupported in this subset"
+                            ),
+                        );
+                        return;
+                    }
+                }
+            } else {
+                self.rewrite_sampled(&t.term, &mut regs)
+            };
             cur = sva_binary(
                 ast::BinOp::BitAnd,
                 cur,
