@@ -6696,6 +6696,46 @@ impl<'t, 's> Parser<'t, 's> {
         false
     }
 
+    /// True if the upcoming `( … )` (cursor on `(`) is a parenthesized SUB-SEQUENCE
+    /// — it contains a `##` cycle-delay concatenation at paren-depth one (slice A.2
+    /// cross-clock multi-term segment, e.g. `@(c1)(a ##1 b)`). A parenthesized boolean
+    /// expression `(a && b)` has no top-level `##`, so it is left to `self.expr(0)`
+    /// (byte-identical). A match-item paren is detected separately and takes priority.
+    fn at_paren_subsequence(&self) -> bool {
+        if self.peek() != Some(TokenKind::LParen) {
+            return false;
+        }
+        const BUDGET: usize = 8192;
+        let mut depth = 0usize;
+        let mut i = 0usize;
+        while i < BUDGET {
+            match self.peek_at(i) {
+                None => return false,
+                Some(
+                    TokenKind::LParen
+                    | TokenKind::LBracket
+                    | TokenKind::LBrace
+                    | TokenKind::LBracketStar
+                    | TokenKind::LBracketArrow
+                    | TokenKind::LBracketEq,
+                ) => {
+                    depth += 1;
+                    i += 1;
+                }
+                Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace) => {
+                    depth = depth.saturating_sub(1);
+                    i += 1;
+                    if depth == 0 {
+                        return false; // outer paren closed with no top-level `##`
+                    }
+                }
+                Some(TokenKind::HashHash) if depth == 1 => return true,
+                _ => i += 1,
+            }
+        }
+        false
+    }
+
     /// Consume a balanced `( … )` group starting at the current `(` (recovery). Tracks
     /// only paren depth (a nested `[ ]`/`{ }` contains no stray `)`). No-op if not at `(`.
     fn skip_balanced_paren_group(&mut self) {
@@ -6854,8 +6894,26 @@ impl<'t, 's> Parser<'t, 's> {
             self.skip_balanced_paren_group();
             return Sequence::Boolean(Self::sva_true_lit(self.prev_span()));
         }
+        // A parenthesized SUB-SEQUENCE `( … ## … )` (slice A.2 cross-clock multi-term
+        // segment) — `self.expr(0)` cannot parse a `##` cycle-delay, so when the group
+        // carries a top-level `##` recurse into `parse_sequence`. A parenthesized
+        // boolean `(a && b)` has no top-level `##` → falls through to `expr(0)` (byte-
+        // identical). The result still flows through the postfix-repetition loop below.
+        if self.at_paren_subsequence() {
+            self.bump(); // `(`
+            let inner = self.parse_sequence();
+            self.expect(TokenKind::RParen, "')' to close a parenthesized sequence");
+            return self.parse_seq_postfix(inner);
+        }
         let e = self.expr(0);
-        let mut seq = Sequence::Boolean(e);
+        let seq = Sequence::Boolean(e);
+        self.parse_seq_postfix(seq)
+    }
+
+    /// Apply the trailing repetition postfixes (`[*n]`/`[*m:n]` consecutive, `[+]`,
+    /// `[->n]` goto, `[=n]` nonconsecutive) to an already-parsed sequence primary.
+    /// Shared by the boolean-leaf and parenthesized-subsequence primary forms.
+    fn parse_seq_postfix(&mut self, mut seq: Sequence) -> Sequence {
         loop {
             match self.peek() {
                 Some(TokenKind::LBracketStar) => {

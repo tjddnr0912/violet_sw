@@ -236,6 +236,265 @@ fn crossclock3_nonoverlap_combo() {
     );
 }
 
+// ─────────────────── A.2 cross-clock MULTI-TERM segments ───────────────────────
+// A segment may now be a parenthesized MULTI-TERM sequence `@(ck)(x ##1 y)`. Each
+// segment expands to its OWN shift-register pipeline clocked on that segment's clock.
+
+#[test]
+fn xc_multiterm_both_segments_holds() {
+    // `@(c1)(a ##1 b) ##1 @(c2)(d ##1 e) |-> f`. Both segments multi-term. f=1 at every
+    // completion → 0 fires. (Proves the multi-term lane synthesizes, not loud.)
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK2}reg a=1, b=1, d=1, e=1, f=1;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(d ##1 e) |-> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #50 $finish;\n\
+         endmodule\n"
+    ));
+    assert!(
+        !err.contains("VITA-E"),
+        "multi-term segments must synthesize, not loud:\n{err}"
+    );
+    assert_eq!(
+        code,
+        Some(0),
+        "multi-term both-segments holds (f=1). stderr:\n{err}\nout:\n{out}"
+    );
+    assert_eq!(fires(&out, &err), 0, "no fire:\n{err}\n{out}");
+}
+
+#[test]
+fn xc_multiterm_both_segments_fires() {
+    // Same shape but f=0 at completion → the antecedent completes and the overlap `|->`
+    // checks f=0 on the final c2 edge → at least one violation.
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK2}reg a=1, b=1, d=1, e=1, f=0;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(d ##1 e) |-> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #50 $finish;\n\
+         endmodule\n"
+    ));
+    assert_eq!(
+        code,
+        Some(1),
+        "multi-term both-segments fires (f=0). stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(fires(&out, &err) >= 1, "at least one fire:\n{err}\n{out}");
+}
+
+#[test]
+fn xc_multiterm_seg0_only() {
+    // Segment 0 multi-term, segment 1 single-boolean: `@(c1)(a ##1 b) ##1 @(c2) c |-> d`.
+    // a=b=c=1 → the chain completes; d=0 → fires (exercises the seg-0 pipeline + a lone
+    // c2 boolean segment).
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK2}reg a=1, b=1, c=1, d=0;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2) c |-> d; endproperty\n\
+         initial assert property(p);\n\
+         initial #50 $finish;\n\
+         endmodule\n"
+    ));
+    assert!(
+        !err.contains("E3009"),
+        "seg-0 multi-term must synthesize, not loud:\n{err}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "seg-0 multi-term, d=0 → fires. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(fires(&out, &err) >= 1, "at least one fire:\n{err}\n{out}");
+
+    // Holds when d=1.
+    let (o2, e2, c2) = run(&format!(
+        "module top;\n{CLK2}reg a=1, b=1, c=1, d=1;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2) c |-> d; endproperty\n\
+         initial assert property(p);\n\
+         initial #50 $finish;\n\
+         endmodule\n"
+    ));
+    assert_eq!(
+        c2,
+        Some(0),
+        "seg-0 multi-term holds (d=1). stderr:\n{e2}\nout:\n{o2}"
+    );
+}
+
+#[test]
+fn xc_multiterm_seg1_only_advances_on_c2() {
+    // Segment 1 multi-term: `@(c1) a ##1 @(c2)(c ##1 e) |-> f`. The inner `c ##1 e`
+    // pipeline must advance on c2 edges ONLY. a=c=e=1, f=0 → completes & fires.
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK2}reg a=1, c=1, e=1, f=0;\n\
+         property p; @(posedge c1) a ##1 @(posedge c2)(c ##1 e) |-> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #50 $finish;\n\
+         endmodule\n"
+    ));
+    assert!(
+        !err.contains("E3009"),
+        "seg-1 multi-term must synthesize, not loud:\n{err}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "seg-1 multi-term, f=0 → fires. stderr:\n{err}\nout:\n{out}"
+    );
+
+    // c2-ONLY advance proof: c=1 ONLY across the c1 edge @15 (window [14,16]) and 0
+    // everywhere else. The inner `c ##1 e` needs c true on one c2 edge — but c is never
+    // 1 at ANY c2 edge (c2 @8,18,28,…), so the inner sequence NEVER completes → no fire
+    // even with f=0. If the inner shift wrongly clocked on c1 it would capture c@15.
+    let (o2, e2, c2) = run(&format!(
+        "module top;\n{CLK2}reg a=1, c=0, e=1, f=0;\n\
+         property p; @(posedge c1) a ##1 @(posedge c2)(c ##1 e) |-> f; endproperty\n\
+         initial assert property(p);\n\
+         initial begin #14 c=1; #2 c=0; #40 $finish; end\n\
+         endmodule\n"
+    ));
+    assert_eq!(
+        c2,
+        Some(0),
+        "c only at c1@15 (never a c2 edge) → inner never completes → clean. stderr:\n{e2}\nout:\n{o2}"
+    );
+    assert_eq!(fires(&o2, &e2), 0, "c2-only advance: no fire:\n{e2}\n{o2}");
+}
+
+#[test]
+fn xc_multiterm_nonoverlap() {
+    // `|=>` with multi-term segments: `@(c1)(a ##1 b) ##1 @(c2)(c ##1 e) |=> f`. f checked
+    // on the NEXT c2 edge after the chain completes. f=0 → fires.
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK2}reg a=1, b=1, c=1, e=1, f=0;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(c ##1 e) |=> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #55 $finish;\n\
+         endmodule\n"
+    ));
+    assert!(
+        !err.contains("E3009"),
+        "|=> multi-term must synthesize, not loud:\n{err}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "|=> multi-term f=0 → fires. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(fires(&out, &err) >= 1, "at least one fire:\n{err}\n{out}");
+
+    // Holds when f=1.
+    let (o2, e2, c2) = run(&format!(
+        "module top;\n{CLK2}reg a=1, b=1, c=1, e=1, f=1;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(c ##1 e) |=> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #55 $finish;\n\
+         endmodule\n"
+    ));
+    assert_eq!(
+        c2,
+        Some(0),
+        "|=> multi-term holds (f=1). stderr:\n{e2}\nout:\n{o2}"
+    );
+}
+
+#[test]
+fn xc_multiterm_three_clocks() {
+    // 3-clock chain with a multi-term FIRST and SECOND segment, lone third:
+    // `@(c1)(a ##1 b) ##1 @(c2)(c ##1 d) ##1 @(c3) e |-> g`. g=0 → fires.
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK3}reg a=1, b=1, c=1, d=1, e=1, g=0;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(c ##1 d) ##1 @(posedge c3) e |-> g; endproperty\n\
+         initial assert property(p);\n\
+         initial #55 $finish;\n\
+         endmodule\n"
+    ));
+    assert!(
+        !err.contains("E3009"),
+        "3-clock multi-term must synthesize, not loud:\n{err}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "3-clock multi-term g=0 → fires. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(fires(&out, &err) >= 1, "at least one fire:\n{err}\n{out}");
+
+    // Holds when g=1.
+    let (o2, e2, c2) = run(&format!(
+        "module top;\n{CLK3}reg a=1, b=1, c=1, d=1, e=1, g=1;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(c ##1 d) ##1 @(posedge c3) e |-> g; endproperty\n\
+         initial assert property(p);\n\
+         initial #55 $finish;\n\
+         endmodule\n"
+    ));
+    assert_eq!(
+        c2,
+        Some(0),
+        "3-clock multi-term holds (g=1). stderr:\n{e2}\nout:\n{o2}"
+    );
+}
+
+#[test]
+fn xc_multiterm_broken_inner_no_fire() {
+    // Inner second term of segment 1 is 0: `@(c1)(a ##1 b) ##1 @(c2)(d ##1 e) |-> f`
+    // with e=0 → the inner `d ##1 e` never completes → the chain never completes → no
+    // fire even with f=0 (proves the seg-1 pipeline really gates completion).
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK2}reg a=1, b=1, d=1, e=0, f=0;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(d ##1 e) |-> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #50 $finish;\n\
+         endmodule\n"
+    ));
+    assert_eq!(
+        code,
+        Some(0),
+        "broken inner (e=0) → chain never completes → clean. stderr:\n{err}\nout:\n{out}"
+    );
+    assert_eq!(fires(&out, &err), 0, "no fire:\n{err}\n{out}");
+}
+
+#[test]
+fn xc_multiterm_nested_reclock_is_loud() {
+    // A NESTED re-clock inside a segment (`@(c2)(c ##1 @(c3) d)`) is a 4th clock
+    // boundary — kept LOUD (the segment pipeline is single-clock).
+    let (out, err, code) = run(&format!(
+        "module top;\n{CLK3}reg a=1, c=1, d=1, f=1;\n\
+         property p; @(posedge c1) a ##1 @(posedge c2)(c ##1 @(posedge c3) d) |-> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #45 $finish;\n\
+         endmodule\n"
+    ));
+    assert_ne!(
+        code,
+        Some(0),
+        "nested re-clock must loud-reject. stderr:\n{err}\nout:\n{out}"
+    );
+    assert!(
+        format!("{err}{out}").to_lowercase().contains("nested")
+            || format!("{err}{out}").to_lowercase().contains("unsupported"),
+        "expected a loud nested-reclock diagnostic:\n{err}\n{out}"
+    );
+}
+
+#[test]
+fn xc_multiterm_deterministic() {
+    let src = format!(
+        "module top;\n{CLK2}reg a=1, b=1, d=1, e=1, f=0;\n\
+         property p; @(posedge c1)(a ##1 b) ##1 @(posedge c2)(d ##1 e) |-> f; endproperty\n\
+         initial assert property(p);\n\
+         initial #50 $finish;\n\
+         endmodule\n"
+    );
+    let (o1, e1, r1) = run(&src);
+    let (o2, e2, r2) = run(&src);
+    assert_eq!(
+        (o1, e1, r1),
+        (o2, e2, r2),
+        "multi-term output must be deterministic"
+    );
+}
+
 // ───────────────────────────── determinism + loud ─────────────────────────────
 
 #[test]

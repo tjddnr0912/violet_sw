@@ -439,17 +439,46 @@ fn scoped_assertoff_is_loud() {
 }
 
 #[test]
-fn multiterm_crossclock_is_loud() {
-    // A same-clock MULTI-TERM cross-clock segment (`@(c1) a ##1 b ##1 @(c2) c …`) is
-    // the deferred "multi-term lane" — loud (never a silent miscompile).
-    let (_o, code) = run("module t;\n\
+fn multiterm_crossclock_seg0_now_synthesizes() {
+    // Slice A.2: a same-clock MULTI-TERM cross-clock segment 0 (`@(c1) a ##1 b ##1
+    // @(c2) c …`, segment 0 = `(a ##1 b)`) now synthesizes its own c1-clocked pipeline
+    // instead of loud-rejecting. With the inputs all 0 the antecedent never completes →
+    // no violation, but it must NOT emit a loud E3009 either.
+    let (o, code) = run("module t;\n\
         logic c1=0, c2=0, a=0, b=0, c=0, q=0;\n\
         always #5 c1 = ~c1;\n\
         always #7 c2 = ~c2;\n\
         assert property(@(posedge c1) a ##1 b ##1 @(posedge c2) c |-> q);\n\
         initial begin #40 $finish; end\n\
         endmodule\n");
-    assert_eq!(code, Some(1), "multi-term cross-clock segment is loud");
+    assert!(
+        !o.contains("E3009"),
+        "multi-term seg-0 must synthesize, not loud:\n{o}"
+    );
+    assert_eq!(
+        code,
+        Some(0),
+        "no input ever true → no completion → clean:\n{o}"
+    );
+}
+
+#[test]
+fn nested_reclock_in_segment_is_loud() {
+    // A NESTED re-clock inside a cross-clock segment (`@(c2)(c ##1 @(c3) d)`) is a 4th
+    // clock boundary — still the deferred lane (loud, never a silent miscompile).
+    let (o, code) = run("module t;\n\
+        logic c1=0, c2=0, c3=0, a=1, c=1, d=1, q=1;\n\
+        always #5 c1 = ~c1;\n\
+        always #7 c2 = ~c2;\n\
+        always #9 c3 = ~c3;\n\
+        assert property(@(posedge c1) a ##1 @(posedge c2)(c ##1 @(posedge c3) d) |-> q);\n\
+        initial begin #40 $finish; end\n\
+        endmodule\n");
+    assert_eq!(
+        code,
+        Some(1),
+        "nested re-clock inside a segment is loud:\n{o}"
+    );
 }
 
 #[test]

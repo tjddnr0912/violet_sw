@@ -16608,7 +16608,12 @@ impl<'s> Elaborator<'s> {
         // pending handoff; the A3 set-only lesson).
         {
             let mut regs = SvaRegs::default();
-            let s0 = self.rewrite_sampled(&segs[0].1, &mut regs);
+            // A multi-term segment-0 (`(a ##1 b)`) expands to its own shift-register
+            // pipeline; the pipeline NBAs MUST land in THIS `always @(c1)` block so the
+            // shift regs clock on c1. A lone Boolean reduces to the old `|s0` raw expr
+            // (synth_seq_match's len==1 fast-path) → byte-identical to the old path.
+            let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
+            let s0 = self.synth_seq_match(&segs[0].1, &mut regs, &mut pipeline_nbas, sp);
             let arm = ast::Stmt::If {
                 cond: sva_unary(ast::UnOp::RedOr, s0, sp),
                 then_s: Box::new(sva_nb_set(&handoffs[0], true, sp)),
@@ -16617,6 +16622,7 @@ impl<'s> Elaborator<'s> {
             };
             let mut body = vec![arm];
             body.extend(regs.nbas);
+            body.extend(pipeline_nbas);
             let proc = self.lower_proc_block(&ast::ProceduralBlock {
                 kind: ast::ProcKind::Always,
                 sensitivity: Some(segs[0].0.clone()),
@@ -16631,7 +16637,12 @@ impl<'s> Elaborator<'s> {
         // the antecedent (overlap → check `c` now; |=> → arm hf_final, check next edge).
         for i in 1..n {
             let mut regs = SvaRegs::default();
-            let si = self.rewrite_sampled(&segs[i].1, &mut regs);
+            // Multi-term segment i (`@(ck)(c ##1 e)`): its shift-register pipeline NBAs
+            // go into `pipeline_nbas`, appended to THIS `always @(seg[i].clock)` block so
+            // the shift regs clock on seg i's clock (a c2-only pipeline advances on c2
+            // edges only). A lone Boolean reduces to the old `|si` raw expr (byte-id).
+            let mut pipeline_nbas: Vec<ast::Stmt> = Vec::new();
+            let si = self.synth_seq_match(&segs[i].1, &mut regs, &mut pipeline_nbas, sp);
             let prev = handoffs[i - 1].clone();
             let is_last = i == n - 1;
             let mut body: Vec<ast::Stmt> = Vec::new();
@@ -16710,6 +16721,7 @@ impl<'s> Elaborator<'s> {
                 span: sp,
             });
             body.extend(regs.nbas);
+            body.extend(pipeline_nbas);
             let proc = self.lower_proc_block(&ast::ProceduralBlock {
                 kind: ast::ProcKind::Always,
                 sensitivity: Some(segs[i].0.clone()),
@@ -16721,18 +16733,25 @@ impl<'s> Elaborator<'s> {
     }
 
     /// Flatten a cross-clock antecedent — a left-nested `##1` chain — into ordered
-    /// `(clock, boolean)` segments. The leftmost (deepest) operand is segment 0 at the
-    /// property clock `c1`; each `##1` right operand must be a single re-clocked boolean
-    /// `@(ck) b`. Emits a specific loud diagnostic and returns `None` for a non-`##1`
-    /// connector, a non-re-clocked / multi-term segment, or an OR-of-clocks edge.
+    /// `(clock, sequence)` segments (slice A.2: a segment may now be MULTI-TERM, e.g.
+    /// `@(c1)(a ##1 b) ##1 @(c2)(d ##1 e)`). A clock boundary is a top-spine `##1`
+    /// whose RIGHT operand is `@(ck) seq` — the segment Sequence is `seq` at `ck`. The
+    /// leftmost residue (the first non-clock-boundary subtree) is segment 0 at the
+    /// property clock `c1`. Each segment Sequence is expanded by `synth_seq_match` into
+    /// its own shift-register pipeline.
+    ///
+    /// Emits a specific loud diagnostic and returns `None` for: a non-`##1` connector
+    /// across a boundary, a NESTED re-clock inside one segment (`@(c2)(c ##1 @(c3) d)`
+    /// — a 4th clock boundary, kept LOUD), or an OR-of-clocks edge.
     fn collect_xclock_segments(
         &mut self,
         seq: &ast::Sequence,
         c1: &ast::Sensitivity,
-    ) -> Option<Vec<(ast::Sensitivity, ast::Expr)>> {
-        match seq {
-            ast::Sequence::Boolean(e) => Some(vec![(c1.clone(), e.clone())]),
-            ast::Sequence::Delay { min, max, lhs, rhs } => {
+    ) -> Option<Vec<(ast::Sensitivity, ast::Sequence)>> {
+        // A top-spine `##1` whose RHS is `@(ck) inner` is a clock boundary: peel it,
+        // recurse on the LHS for the preceding chain, then append `(ck, inner)`.
+        if let ast::Sequence::Delay { min, max, lhs, rhs } = seq {
+            if let ast::Sequence::Clocked { clock, seq: inner } = &**rhs {
                 if *min != 1 || *max != Some(1) {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -16742,22 +16761,16 @@ impl<'s> Elaborator<'s> {
                     return None;
                 }
                 let mut segs = self.collect_xclock_segments(lhs, c1)?;
-                let ast::Sequence::Clocked { clock, seq: inner } = &**rhs else {
+                // A NESTED re-clock inside the segment (`@(c2)(c ##1 @(c3) d)`) is a
+                // 4th clock boundary — kept LOUD (the segment pipeline is single-clock).
+                if seq_has_clocked(inner) {
                     self.error(
                         MsgCode::ElabUnsupported,
-                        "each cross-clock segment after a `##1` must be re-clocked `@(ck) b` \
-                         in this subset (a same-clock multi-term segment is deferred — multi-term lane)",
+                        "a re-clocked cross-clock segment must not itself contain a nested \
+                         `@(ck)` re-clock in this subset (a 4th clock boundary is deferred)",
                     );
                     return None;
-                };
-                let ast::Sequence::Boolean(e) = &**inner else {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "a re-clocked cross-clock segment must be a single boolean in this \
-                         subset (a multi-term re-clocked segment is deferred — multi-term lane)",
-                    );
-                    return None;
-                };
+                }
                 if sva_clock_signal(clock).is_none() {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -16766,18 +16779,26 @@ impl<'s> Elaborator<'s> {
                     );
                     return None;
                 }
-                segs.push((clock.clone(), e.clone()));
-                Some(segs)
-            }
-            _ => {
-                self.error(
-                    MsgCode::ElabUnsupported,
-                    "a cross-clock antecedent must be a `##1`-connected chain of re-clocked \
-                     booleans `a ##1 @(c2) b [##1 @(c3) c …]` in this subset",
-                );
-                None
+                segs.push((clock.clone(), (**inner).clone()));
+                return Some(segs);
             }
         }
+        // Not a clock-boundary `##1`: the WHOLE subtree is the leftmost segment 0 at the
+        // property clock `c1`. It may be multi-term (`(a ##1 b)`) — a same-clock `##1`
+        // stays inside the segment. But a `@(ck)` re-clock buried here without a `##1`
+        // boundary at the top spine (e.g. `a ##1 @(c2) b ##1 e` → outer rhs `e` is not
+        // clocked, so the whole `(a ##1 @(c2) b ##1 e)` lands here) is a same-clock
+        // multi-term segment that swallows a re-clock → LOUD.
+        if seq_has_clocked(seq) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "each cross-clock segment after a `##1` must be re-clocked `@(ck) seq` \
+                 in this subset (a same-clock multi-term segment that swallows a re-clock \
+                 is deferred — the trailing operand must be re-clocked)",
+            );
+            return None;
+        }
+        Some(vec![(c1.clone(), seq.clone())])
     }
 
     /// N4 (§14): lower each `clocking` block in `body` into preponed-sampled

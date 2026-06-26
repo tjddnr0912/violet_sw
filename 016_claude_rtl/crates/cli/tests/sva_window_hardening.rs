@@ -217,26 +217,40 @@ fn window_range_mid_sequence_fires() {
     fires(&out, &err, code, "a ##1 b ##[1:2] c, delay-2 alternative");
 }
 
-// ── honest-loud boundary: a parenthesized sub-sequence is rejected, not silently
-//    mismatched. Pinned so a future parser change can't quietly alter the matcher's
-//    input. (Orthogonal to the SVA-QUAD elaborate/sim refactor.) ──
+// ── slice A.2: a parenthesized sub-sequence now PARSES and elaborates via the
+//    existing single-clock pipeline machinery. `##` concat is left-associative, so
+//    `(a ##1 b) ##[1:2] c` is semantically identical to the unparenthesized form —
+//    pinned here so the grouping stays transparent (not silently mismatched). ──
 
 #[test]
-fn parenthesized_subsequence_is_honest_loud() {
-    let (out, err, code) = run("module top;\n\
+fn parenthesized_subsequence_matches_unparenthesized() {
+    // Identical input vector; the parenthesized and unparenthesized antecedents must
+    // produce byte-identical verdicts (parens are transparent for `##` concat).
+    let stim = "initial begin #10 a=1; #10 a=0; b=1; #10 b=0; c=1; #10 c=0; #20 $finish; end\n";
+    let (op, ep, cp) = run(&format!(
+        "module top;\n\
          reg clk=0, a=0, b=0, c=0, d=0;\n\
          always #5 clk=~clk;\n\
          initial assert property(@(posedge clk) (a ##1 b) ##[1:2] c |-> d);\n\
-         initial begin #10 a=1; #40 $finish; end\n\
-         endmodule\n");
-    assert_ne!(
-        code,
-        Some(0),
-        "parenthesized sub-sequence must not silently pass"
-    );
+         {stim}\
+         endmodule\n"
+    ));
+    let (ou, eu, cu) = run(&format!(
+        "module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b ##[1:2] c |-> d);\n\
+         {stim}\
+         endmodule\n"
+    ));
     assert!(
-        format!("{err}{out}").contains("VITA-E2002"),
-        "expected a loud parse diagnostic (E2002).\nstderr:\n{err}\nout:\n{out}"
+        !format!("{ep}{op}").contains("VITA-E2002"),
+        "parenthesized sub-sequence must parse, not error:\n{ep}{op}"
+    );
+    assert_eq!(
+        (op, ep, cp),
+        (ou, eu, cu),
+        "parens are transparent for `##` concat → identical verdict"
     );
 }
 
