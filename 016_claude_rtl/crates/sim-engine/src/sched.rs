@@ -1065,6 +1065,10 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 // INACTIVE (#0): promote to Active.
                 if !self.cur.inactive.is_empty() {
                     self.cur.active = std::mem::take(&mut self.cur.inactive);
+                    // GATED-CLOCK: a #0 batch is a NEW event cluster — an edge it
+                    // produces (e.g. an independent `negedge rst` scheduled via #0)
+                    // must be able to re-fire a process already woken this timestep.
+                    self.reset_edge_seen_marks();
                     self.delta_count += 1;
                     if self.delta_count > self.max_deltas {
                         self.fatal_delta_limit();
@@ -1074,6 +1078,11 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 }
                 // NBA: apply the sampled batch.
                 if !self.nba.is_empty() {
+                    // GATED-CLOCK: the NBA region is a NEW event cluster — an edge
+                    // an NBA update produces must re-fire a process already woken
+                    // this timestep (an independent `rst <= 0` re-fires `@(… or
+                    // negedge rst)`). Reset BEFORE the post-apply propagation.
+                    self.reset_edge_seen_marks();
                     self.apply_nba();
                     self.propagate_changes();
                     self.delta_count += 1;
@@ -1161,6 +1170,8 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 }
             }
             self.st.now = next;
+            // GATED-CLOCK: a new timestep is a fresh edge-collapse cluster.
+            self.reset_edge_seen_marks();
             // N4 clocking: take the PREPONED snapshot of clocking inputs at the
             // START of the new time slot (before any slot activity — the true
             // preponed value entering the slot). No-op when no clocking blocks ⇒
@@ -1640,6 +1651,25 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
         self.scratch_force_keys = keys;
     }
 
+    /// GATED-CLOCK: clear the per-process "edge-woken this CLUSTER" markers. An
+    /// edge-sensitive `always` fires at most once per ACTIVE-region settle cluster
+    /// (so a cont-assign-derived/gated clock whose edge lands a later delta of the
+    /// SAME cluster — `gclk = clk & en` — collapses to one firing, matching
+    /// iverilog). But a GENUINELY NEW event batch from a region boundary (#0
+    /// Inactive promotion, NBA apply, or time advance) is a fresh cluster: those
+    /// edges (e.g. an independent `negedge rst` scheduled via `#0`/NBA into a later
+    /// delta) MUST be able to re-fire the process, so the markers reset at each
+    /// boundary. Within a cluster the markers persist across deltas (cont-assigns
+    /// settle one delta at a time). Clears only the touched entries (O(#woken)).
+    fn reset_edge_seen_marks(&mut self) {
+        for &p in &self.scratch_edge_marked {
+            if let Some(slot) = self.scratch_edge_seen.get_mut(p as usize) {
+                *slot = false;
+            }
+        }
+        self.scratch_edge_marked.clear();
+    }
+
     fn propagate_changes(&mut self) {
         // IEEE §9.3.2 continuous force: while a force with an expression RHS is
         // live, re-evaluate it whenever ANYTHING changed this delta and re-pin
@@ -1748,12 +1778,13 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
                 }
             }
         }
-        // Restore the markers, clearing ONLY the touched entries (O(#fired), not
-        // O(#procs)) so the buffer stays all-false for the next delta.
-        for &p in &edge_marked {
-            edge_seen[p as usize] = false;
-        }
-        edge_marked.clear();
+        // GATED-CLOCK: do NOT clear the markers here — `edge_seen` is now
+        // TIMESTEP-scoped (reset at time advance), so a process woken by one edge
+        // this timestep is NOT re-woken by a later-delta edge of its sensitivity
+        // (a derived/gated clock). `edge_marked` accumulates this timestep's woken
+        // procs across all of its deltas for the O(#woken) reset at time advance.
+        // Within a single delta the same-net/multi-net dedup is unchanged (the
+        // `edge_seen[p]` guard is set during the pass). Restore for the next pass.
         self.scratch_edge_seen = edge_seen;
         self.scratch_edge_marked = edge_marked;
 

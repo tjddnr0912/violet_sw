@@ -434,7 +434,7 @@ loud-reject로 확인됨(이제 참):**
 1. ~~**(CRITICAL) 동일-슬롯 블로킹 글리치 wake-collapse**~~ ✅ **수정 완료(2026-06-27, branch `feat-sched-glitch`, §4.5.5 참조)** — `a=1;a=0;`(net 0→0 endpoints)에서 dirty-sweep `cur!=prev`가 중간 0→1 이벤트를 drop→`always @(a)` 미발화. **수정=dirty 멤버십을 changed set으로 사용(endpoint 필터 제거)**, event-per-transition 재설계 불필요(iverilog는 글리치를 1회 collapse). byte-identical(글리치셋=정상디자인 공집합).
 2. ~~(CRITICAL) #1과 동일 root, 엣지/multi-net 리스트(`@(posedge a or posedge b)`)서도 발생~~ ✅ **수정 완료(§4.5.5)** — **per-net intra-slot edge mask(`slot_edge`) 누적**으로 글리치 posedge/negedge 복원(단일 write면 endpoint와 동일=byte-identical).
 3. ~~**(CRITICAL) SELF-RETRIGGER over-fire**~~ ✅ **수정 완료(2026-06-27, branch `feat-sched-selfretrig`, §4.5.6 참조)** — `always @(a) begin cnt++; if(a) a=0; end`/`always @(a) a=~a`(오실레이터 무한루프)의 블로킹 self-write가 재트리거. **수정=write provenance(`blocking_writer`/`last_blocking_writer`)로 author proc skip**; NBA self-write(별개 region)·cross-proc는 정상 유지. byte-identical(skip은 self-feedback에서만 발동). 명시적 sensitivity 한정(`@*`/Comb는 #6 클러스터=잔존).
-4. (IMPORTANT) gated/derived clock **cross-delta 동일-timestep double-fire**: `@(posedge clk or posedge gclk)`(gclk=clk&en이 1 delta 늦게 derive)→2회 발화·iverilog는 timestep당 1회 collapse. delta-scoped 디둡(#2)은 정확하나 timestep-scoped 디둡 필요.
+4. ~~(IMPORTANT) gated/derived clock **cross-delta 동일-timestep double-fire**~~ ✅ **수정 완료(2026-06-27, branch `feat-sched-gatedclock`, §4.5.7 참조)** — `@(posedge clk or posedge gclk)`(gclk=clk&en이 cont-assign으로 1 delta 늦게 derive)→2회 발화. **수정=edge-wake 디둡을 per-delta→per-ACTIVE-region-CLUSTER로 승격**(region 경계=#0 inactive promotion·NBA apply·time advance서 리셋). cont-assign 파생 ghost(같은 클러스터)는 collapse·#0/NBA 독립 이벤트(`negedge rst`)는 재발화. 적대 리뷰가 **per-timestep(첫 시도)이 #0/NBA 독립엣지를 over-collapse하는 CRITICAL 회귀 발굴→cluster-scoped로 수정**.
 5. (MINOR) mixed edge+level `@(posedge c1 or c2)`의 level term c2가 t0에 X→0일 때 spurious 발화(AnyEdge가 X→known에 발화·pure-level `@(c2)`는 안함). root=classify_event_list AnyEdge lowering.
 6. (IMPORTANT) `always @*` t0 spurious 실행(always_comb is_comb_inferred t0-kick에 혼입; §9.2.2.2.1상 always_comb만 t0 실행). **[관련 발견(§4.5.6 self-retrig 리뷰): `@*`/Comb self-write가 explicit `@(net)`와 달리 재트리거 잔존(Comb 추론 re-fire 경로)·observer 중복발화(이미-active-queue된 proc이 self-write author와 다르면 재스케줄)=둘 다 #6 observer/Comb 클러스터]**
 
@@ -468,6 +468,16 @@ loud-reject로 확인됨(이제 참):**
 **✅ 수정(엔진 only):** write provenance — `SimState.blocking_writer`(run_body 중에만 `Some(proc)`)가 `note_change`서 `last_blocking_writer[net]` 기록(블로킹=author proc·NBA/cont-assign/clocking/force=`u32::MAX`). propagate_changes 4개 발화 사이트(static edge·Level arm=None/Some·Edge waiter)가 `writer == fired_proc`면 skip(`edges` 튜플에 writer 스냅샷=retain 클로저용). **byte-identical**: skip은 proc이 자기 sensitivity-net을 블로킹-self-write할 때만 발동=정상 flop/comb 무영향.
 
 **🔬 사후 리뷰 성과:** soundness=**SOUND**(re-entrancy 없음·NBA/cont/clocking None 확인·freshness·id-recycling·4 사이트·byte-identity 5-렌즈 전수 hand-trace). differential 58-케이스=엔진 로직 **0 new divergence**; **테스트 회귀 2건 발굴→수정**(`infinite_delta_guard_trips`·`delta_limit_event_loop_emits_diag`가 `always @(a) a=~a`로 옛 무한루프 동작 인코딩→cross-proc ping-pong `b=a+1;a=b`로 교체). 부수 발굴(별개 슬라이스 후보, 둘 다 §4.5.4 #6 observer/Comb 클러스터): **`@*`/Comb self-write 재트리거 잔존**(explicit `@(net)`는 수정됨)·**observer 중복발화**(self-write author와 다른 이미-queued proc 재스케줄). force-on-own-trigger 재트리거(iverilog와 차이)=pre-existing·무관.
+
+#### 4.5.7 gated/derived clock per-cluster edge collapse (2026-06-27, branch `feat-sched-gatedclock`, §4.5.4 스케줄러버그 #4)
+
+> §4.5.4 발굴 IMPORTANT #4. **사전 그라운딩(D1-E3 9 오라클 차분으로 규칙 확정) → 구현 → 사후 적대 2-서브에이전트 리뷰 → CRITICAL 회귀 발굴→cluster-scoped 재설계 → 재검증 CLEAN**. 전부 IR-0·format_version 19 불변. **2295 green**(2286 + 신규 9).
+
+**오라클로 확정한 규칙:** 엣지-민감 `always`는 **ACTIVE-region settle 클러스터당 최대 1회 발화**. cont-assign 파생 클럭(`gclk=clk&en`, `g2=g1=clk`)의 ghost 엣지(같은 클러스터 늦은 delta)는 base 발화로 collapse(D1 cnt=2 not 4·D4 settled view log=1·E2/E3 cnt=1). 단 **region 경계(#0 inactive·NBA·time)를 넘는 독립 이벤트**(`#0 rst=0`·NBA `rst<=0`의 `negedge rst`)는 새 클러스터→재발화(cnt=2).
+
+**✅ 수정(엔진 only):** per-process `scratch_edge_seen` 마커를 **per-delta→per-CLUSTER**로 승격 — pass 끝 리셋 제거(클러스터 내 delta 간 persist), `reset_edge_seen_marks()`를 3개 region 경계(inactive promotion·NBA apply·time advance)서 호출. **byte-identical**: 클러스터당 1엣지/proc(정상 flop)은 마커가 2차 wake를 막을 일 없음.
+
+**🔬 사후 리뷰 성과:** 1차 적대 리뷰가 **CRITICAL 회귀 발굴**(첫 시도=per-TIMESTEP scope가 `@(posedge clk or negedge rst)`의 `#0`/NBA 독립 `negedge rst`를 over-collapse→cnt=1 should-be-2). soundness 리뷰는 "per-timestep SOUND"이라 했으나 **differential이 옳음**(net이 아닌 event-provenance 문제)→per-cluster로 재설계. 재검증: differential CLEAN(이전 회귀 8종 수정·NBA-body gated collapse 유지·mixed·500-cycle byte-identity). **교훈**: per-net(differential 1차 제안)은 D1 un-fix(clk≠gclk)·per-timestep은 over-collapse → **region/cluster 경계가 정답**.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
