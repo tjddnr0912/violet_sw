@@ -141,9 +141,16 @@ use vita_schema::schema_hash;
 /// `synth_local_var_assert` loud-rejects the capture, closing a silent 1-bit
 /// truncation that flipped the assertion verdict. No sim-ir change (format_version
 /// stays 19). Re-pins this .vu hash.
+/// 2026-06-26 G5 class member access control `local`/`protected` (§8.18): adds
+/// the `Visibility` enum and threads it onto `ClassItem::Property(Visibility, …)`
+/// as well as a `vis` field on `ClassItem::Func`/`Task`. The parser records the
+/// `local`/`protected`/public access qualifier; elaborate enforces it
+/// (correct-or-loud: an out-of-scope read/write/call of a local/protected member
+/// is a loud E3009, never a silent read of inaccessible storage). Pure front-end
+/// and elaborate (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
 const EXPECTED: [u8; 32] = [
-    200, 58, 4, 170, 136, 199, 2, 189, 238, 89, 179, 177, 94, 133, 174, 91, 181, 246, 166, 207, 51,
-    125, 151, 197, 218, 21, 118, 231, 65, 174, 199, 53,
+    103, 86, 68, 222, 69, 111, 255, 250, 59, 249, 136, 151, 207, 149, 7, 64, 7, 218, 35, 253, 232,
+    198, 246, 124, 35, 228, 79, 118, 85, 99, 88, 103,
 ];
 
 #[test]

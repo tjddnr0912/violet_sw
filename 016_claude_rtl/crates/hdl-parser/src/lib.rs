@@ -1769,7 +1769,7 @@ impl<'t, 's> Parser<'t, 's> {
             match it {
                 TopItem::Class(c) => {
                     for item in &mut c.items {
-                        if let ClassItem::Property(d) = item {
+                        if let ClassItem::Property(_, d) = item {
                             rewrite_netvar(d, &templates, &mut register);
                         }
                     }
@@ -1782,7 +1782,7 @@ impl<'t, 's> Parser<'t, 's> {
                             }
                             ModuleItem::Class(c) => {
                                 for item in &mut c.items {
-                                    if let ClassItem::Property(d) = item {
+                                    if let ClassItem::Property(_, d) = item {
                                         rewrite_netvar(d, &templates, &mut register);
                                     }
                                 }
@@ -4972,28 +4972,66 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// One class member: `[virtual] function/task …`, a data member `T name;`,
-    /// or a loud-rejected deferred qualifier (`rand`/`local`/`static`/…).
+    /// or a loud-rejected deferred qualifier (`rand`/`static`/…). An optional
+    /// leading `local`/`protected` access qualifier (IEEE §8.18) rides as the
+    /// member `Visibility` (the default is public).
     fn parse_class_item(&mut self) -> Option<ClassItem> {
         if self.at_lex_error() {
             let s = self.cur_span();
             self.bump();
             return Some(ClassItem::Error(s));
         }
+        // IEEE §8.18 access control: an optional leading `local`/`protected`
+        // qualifier (contextual idents, not lexer keywords). Consume it once; it
+        // may precede a `[virtual] function/task` or a plain data member. A
+        // duplicate (`local protected x`) is loud — never silently take the last.
+        let vis = if self.eat_ident_kw("local") {
+            Visibility::Local
+        } else if self.eat_ident_kw("protected") {
+            Visibility::Protected
+        } else {
+            Visibility::Public
+        };
+        if vis != Visibility::Public && (self.at_ident_kw("local") || self.at_ident_kw("protected"))
+        {
+            self.error("a single `local`/`protected` access qualifier on a class member");
+            let s = self.cur_span();
+            self.skip_class_item_recover();
+            return Some(ClassItem::Error(s));
+        }
         let is_virtual = self.eat_kw(Kw::Virtual);
         if self.at_kw(Kw::Function) {
             return Some(ClassItem::Func {
                 is_virtual,
+                vis,
                 def: self.parse_function_def().0,
             });
         }
         if self.at_kw(Kw::Task) {
             return Some(ClassItem::Task {
                 is_virtual,
+                vis,
                 def: self.parse_task_def(),
             });
         }
         if is_virtual {
             self.error("`function` or `task` after `virtual` in a class body");
+            let s = self.cur_span();
+            self.skip_class_item_recover();
+            return Some(ClassItem::Error(s));
+        }
+        // A `local`/`protected` qualifier combined with `rand`/`randc`/`constraint`
+        // is outside this slice (access-controlled randomization) — loud, never a
+        // silent drop of the visibility OR the rand-ness.
+        if vis != Visibility::Public
+            && (self.at_ident_kw("rand")
+                || self.at_ident_kw("randc")
+                || self.at_ident_kw("constraint"))
+        {
+            self.error(
+                "a plain data member or method after `local`/`protected` \
+                 (access-controlled rand/constraint members are outside this slice)",
+            );
             let s = self.cur_span();
             self.skip_class_item_recover();
             return Some(ClassItem::Error(s));
@@ -5023,13 +5061,14 @@ impl<'t, 's> Parser<'t, 's> {
             return self.parse_constraint();
         }
         // Loud-reject the remaining deferred member qualifiers so they never
-        // silently parse as a net type name (N7 MVP: plain data members + methods).
-        for kw in ["local", "protected", "static", "const", "pure", "extern"] {
+        // silently parse as a net type name (N7 MVP: plain data members + methods;
+        // `local`/`protected` are handled above, the rest stay deferred — and a
+        // `local static x` combo is still loud here since `static` is caught).
+        for kw in ["static", "const", "pure", "extern"] {
             if self.at_ident_kw(kw) {
                 self.error(
                     "a plain data member or method (N7 MVP does not support \
-                     rand/randc/local/protected/static/const/constraint/pure/\
-                     extern class members)",
+                     rand/randc/static/const/constraint/pure/extern class members)",
                 );
                 let s = self.cur_span();
                 self.skip_class_item_recover();
@@ -5037,12 +5076,15 @@ impl<'t, 's> Parser<'t, 's> {
             }
         }
         // Data member: a net/var declaration, a typedef-name, or a class-typed
-        // handle (registered as a `NetVarKind::Class` alias in the prescan).
+        // handle (registered as a `NetVarKind::Class` alias in the prescan). The
+        // leading `local`/`protected` access qualifier rides as `vis`.
         if self.net_var_kind().is_some() {
-            return self.parse_net_var().map(ClassItem::Property);
+            return self.parse_net_var().map(|d| ClassItem::Property(vis, d));
         }
         if let Some(info) = self.peek_typedef_name() {
-            return self.parse_typed_decl(info).map(ClassItem::Property);
+            return self
+                .parse_typed_decl(info)
+                .map(|d| ClassItem::Property(vis, d));
         }
         self.error("class member (data member or `function`/`task` method)");
         let s = self.cur_span();
@@ -8338,7 +8380,7 @@ fn map_without<'a>(
 
 fn subst_class_item(it: &mut ClassItem, map: &std::collections::BTreeMap<String, Expr>) {
     match it {
-        ClassItem::Property(d) => subst_netvar(d, map),
+        ClassItem::Property(_, d) => subst_netvar(d, map),
         ClassItem::RandProperty { decl, .. } => subst_netvar(decl, map),
         ClassItem::Constraint(cd) => {
             for e in &mut cd.exprs {
@@ -8419,7 +8461,7 @@ fn monomorphize_class(
     // ref → loud at elaborate, never a silent miscompile.
     let members = c.items.iter().flat_map(|it| -> Vec<&String> {
         match it {
-            ClassItem::Property(d) => d.names.iter().map(|n| &n.name.name).collect(),
+            ClassItem::Property(_, d) => d.names.iter().map(|n| &n.name.name).collect(),
             ClassItem::RandProperty { decl, .. } => {
                 decl.names.iter().map(|n| &n.name.name).collect()
             }

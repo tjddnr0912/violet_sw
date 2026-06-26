@@ -464,6 +464,12 @@ struct ClassField {
     /// applied at `new` instead of the bare type default. `None` = no initializer
     /// (use the type default 0/X). Non-constant initializers loud-reject.
     init: Option<ir::BitPacked>,
+    /// IEEE §8.18 access control (`local`/`protected`/public).
+    vis: ast::Visibility,
+    /// The class that DECLARES this field (the visibility owner). In a flattened
+    /// derived layout this is the base class for an inherited field — so a
+    /// `protected` check knows the accessing scope must descend from it.
+    decl_class: String,
 }
 
 /// N7 type-gate classification of an expression (handle vs integral).
@@ -485,6 +491,8 @@ enum HKind {
 struct ClassMethod {
     name: String,
     is_virtual: bool,
+    /// IEEE §8.18 access control (`local`/`protected`/public).
+    vis: ast::Visibility,
     func: Option<ast::FunctionDef>,
     task: Option<ast::TaskDef>,
     fid: Option<u32>,
@@ -6697,12 +6705,22 @@ impl<'s> Elaborator<'s> {
             let mut rand_fields = Vec::new();
             let mut randc_fields = Vec::new();
             let mut constraints = Vec::new();
+            let cname = c.name.name.clone();
             for item in &c.items {
                 match item {
-                    ast::ClassItem::Property(d) => self.collect_class_fields(d, &mut fields),
+                    ast::ClassItem::Property(vis, d) => {
+                        self.collect_class_fields(d, *vis, &cname, &mut fields)
+                    }
                     ast::ClassItem::RandProperty { randc, decl } => {
                         let before = fields.len();
-                        self.collect_class_fields(decl, &mut fields);
+                        // A rand member is always public in this slice (the parser
+                        // rejects `local`/`protected rand`).
+                        self.collect_class_fields(
+                            decl,
+                            ast::Visibility::Public,
+                            &cname,
+                            &mut fields,
+                        );
                         for f in &fields[before..] {
                             rand_fields.push(f.name.clone());
                             // `randc` (cyclic random, B2): also a rand field, but drawn
@@ -6714,9 +6732,14 @@ impl<'s> Elaborator<'s> {
                         }
                     }
                     ast::ClassItem::Constraint(cd) => constraints.push(cd.clone()),
-                    ast::ClassItem::Func { is_virtual, def } => methods.push(ClassMethod {
+                    ast::ClassItem::Func {
+                        is_virtual,
+                        vis,
+                        def,
+                    } => methods.push(ClassMethod {
                         name: def.name.name.clone(),
                         is_virtual: *is_virtual,
+                        vis: *vis,
                         func: Some(def.clone()),
                         task: None,
                         fid: None,
@@ -6724,9 +6747,14 @@ impl<'s> Elaborator<'s> {
                         this_net: None,
                         discard_net: None,
                     }),
-                    ast::ClassItem::Task { is_virtual, def } => methods.push(ClassMethod {
+                    ast::ClassItem::Task {
+                        is_virtual,
+                        vis,
+                        def,
+                    } => methods.push(ClassMethod {
                         name: def.name.name.clone(),
                         is_virtual: *is_virtual,
+                        vis: *vis,
                         func: None,
                         task: Some(def.clone()),
                         fid: None,
@@ -6814,7 +6842,15 @@ impl<'s> Elaborator<'s> {
     }
 
     /// Resolve a class property declaration into `ClassField`s (one per name).
-    fn collect_class_fields(&mut self, d: &ast::NetVarDecl, out: &mut Vec<ClassField>) {
+    /// `vis` is the member's `local`/`protected`/public access control and
+    /// `decl_class` the class that declares it (the visibility owner).
+    fn collect_class_fields(
+        &mut self,
+        d: &ast::NetVarDecl,
+        vis: ast::Visibility,
+        decl_class: &str,
+        out: &mut Vec<ClassField>,
+    ) {
         // Class-typed (handle) member: a 32-bit object-id, default null (0).
         if matches!(d.kind, ast::NetVarKind::ClassHandle) {
             let ct = d.class_type.as_ref().map(|i| i.name.clone());
@@ -6837,6 +6873,8 @@ impl<'s> Elaborator<'s> {
                     // A handle field defaults to null (0); an explicit `= expr`
                     // handle initializer is outside the MVP (null is the default).
                     init: None,
+                    vis,
+                    decl_class: decl_class.to_string(),
                 });
             }
             return;
@@ -6896,6 +6934,8 @@ impl<'s> Elaborator<'s> {
                 four_state,
                 class_type: None,
                 init,
+                vis,
+                decl_class: decl_class.to_string(),
             });
         }
     }
@@ -7560,6 +7600,62 @@ impl<'s> Elaborator<'s> {
             .iter()
             .rposition(|f| f.name == field)
             .map(|i| (i as u32, ci.fields[i].clone()))
+    }
+
+    /// IEEE §8.18 access control: is a member with visibility `vis`, DECLARED in
+    /// `decl_class`, reachable from the scope currently being lowered? The
+    /// accessing class is the class whose METHOD body is being lowered
+    /// (`cur_this`); `None` = module/process scope = "outside any class".
+    ///
+    /// - public: always.
+    /// - protected: accessing class is `decl_class` or a descendant of it.
+    /// - local: accessing class IS exactly `decl_class`.
+    ///
+    /// correct-or-loud: when the accessing scope is outside any class, only public
+    /// is reachable (no silent allow).
+    fn member_access_ok(&self, vis: ast::Visibility, decl_class: &str) -> bool {
+        match vis {
+            ast::Visibility::Public => true,
+            ast::Visibility::Protected => match &self.cur_this {
+                Some((_, accessing)) => self.class_is_ancestor(decl_class, accessing),
+                None => false,
+            },
+            ast::Visibility::Local => match &self.cur_this {
+                Some((_, accessing)) => accessing == decl_class,
+                None => false,
+            },
+        }
+    }
+
+    /// Enforce member access control on a FIELD `decl_class::field` (visibility on
+    /// the resolved `ClassField`). Loud-rejects an out-of-scope read/write of a
+    /// `local`/`protected` field (IEEE §8.18) instead of silently reading the
+    /// wrong/inaccessible storage. No-op for a public field.
+    fn check_field_access(&mut self, _decl_class: &str, field: &str, f: &ClassField) {
+        if self.member_access_ok(f.vis, &f.decl_class) {
+            return;
+        }
+        let kind = match f.vis {
+            ast::Visibility::Local => "local",
+            ast::Visibility::Protected => "protected",
+            ast::Visibility::Public => return,
+        };
+        // Name the member's actual DECLARING class (`f.decl_class`), not the static
+        // handle class `decl_class` passed in — for an inherited member accessed
+        // via a derived handle the two differ, and the access decision itself uses
+        // `f.decl_class`, so the message must agree.
+        self.error(
+            MsgCode::ElabUnsupported,
+            &format!(
+                "cannot access {kind} member `{field}` of class `{}` from \
+                 here (IEEE §8.18: a {kind} member is reachable only from {})",
+                f.decl_class,
+                match f.vis {
+                    ast::Visibility::Local => "the declaring class's own methods",
+                    _ => "the declaring class and its descendants",
+                }
+            ),
+        );
     }
 
     /// N7 type gate: classify an expression as a class HANDLE value, the NULL
@@ -8429,7 +8525,26 @@ impl<'s> Elaborator<'s> {
         args: &[ast::Expr],
         is_super: bool,
     ) -> Option<u32> {
-        let (_owner, method) = self.class_find_method(class, meth)?;
+        let (owner, method) = self.class_find_method(class, meth)?;
+        // IEEE §8.18: loud-reject an out-of-scope call of a local/protected method
+        // (the method is DECLARED in `owner`, the visibility owner). Never silently
+        // dispatch an inaccessible method.
+        if !self.member_access_ok(method.vis, &owner) {
+            let kind = match method.vis {
+                ast::Visibility::Local => "local",
+                ast::Visibility::Protected => "protected",
+                ast::Visibility::Public => "",
+            };
+            if !kind.is_empty() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "cannot call {kind} method `{meth}` of class `{owner}` from here \
+                         (IEEE §8.18)"
+                    ),
+                );
+            }
+        }
         let fid = match method.fid {
             Some(f) => f,
             None => {
@@ -8533,6 +8648,9 @@ impl<'s> Elaborator<'s> {
         let (net, class, field) = self.resolve_class_member(path)?;
         match self.class_field_id(&class, &field) {
             Some((fid, f)) => {
+                // IEEE §8.18: loud-reject an out-of-scope read of a local/protected
+                // field (never silently read inaccessible storage).
+                self.check_field_access(&class, &field, &f);
                 let word = self.const_u32_expr(fid, 32);
                 let eid = self.push_expr(ir::Expr::Signal {
                     net,
@@ -10254,6 +10372,11 @@ impl<'s> Elaborator<'s> {
                 if let Some((hnet, class, field)) = self.resolve_class_member(path) {
                     match self.class_field_id(&class, &field) {
                         Some((fid, f)) => {
+                            // IEEE §8.18: loud-reject an out-of-scope WRITE of a
+                            // local/protected field (never silently write inaccessible
+                            // storage). Still emit the chunk so downstream width logic
+                            // is unaffected — the error makes the run non-zero exit.
+                            self.check_field_access(&class, &field, &f);
                             let word = self.const_u32_expr(fid, 32);
                             // Encode the FIELD width so `chunk_width` reports it (the
                             // chunk's net is the 32-bit handle; a `None` width would

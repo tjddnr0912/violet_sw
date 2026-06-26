@@ -137,11 +137,26 @@ pub struct ClassParam {
     pub default: Option<Expr>,
 }
 
+/// Member access control (IEEE §8.18). `Public` is the default (no qualifier);
+/// `Local`/`Protected` are the `local`/`protected` qualifiers. `static`/`const`/
+/// `pure`/`extern` remain loud-rejected at the parser (separate slices).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaHash, Default)]
+pub enum Visibility {
+    /// No qualifier — accessible everywhere (the default).
+    #[default]
+    Public,
+    /// `local` — accessible only from within the SAME class's own methods.
+    Local,
+    /// `protected` — accessible from the same class AND derived classes.
+    Protected,
+}
+
 /// A member of a [`ClassDecl`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum ClassItem {
     /// A data member: `int x;`, `logic [7:0] b;`, a class-typed handle, etc.
-    Property(NetVarDecl),
+    /// `vis` is the `local`/`protected`/public access control (IEEE §8.18).
+    Property(Visibility, NetVarDecl),
     /// A `rand`/`randc` data member (N7-REST). `randc` = cyclic random. The
     /// declaration is an ordinary data member; the flag drives `randomize()`.
     RandProperty { randc: bool, decl: NetVarDecl },
@@ -149,10 +164,19 @@ pub enum ClassItem {
     /// constraint over the class's rand members.
     Constraint(ConstraintDecl),
     /// A method `[virtual] function … endfunction` (the constructor is a
-    /// function named `new`). `is_virtual` drives the vtable.
-    Func { is_virtual: bool, def: FunctionDef },
+    /// function named `new`). `is_virtual` drives the vtable; `vis` is the
+    /// `local`/`protected`/public access control (IEEE §8.18).
+    Func {
+        is_virtual: bool,
+        vis: Visibility,
+        def: FunctionDef,
+    },
     /// A method `[virtual] task … endtask`.
-    Task { is_virtual: bool, def: TaskDef },
+    Task {
+        is_virtual: bool,
+        vis: Visibility,
+        def: TaskDef,
+    },
     /// Recovery placeholder for an unparseable class item.
     Error(Span),
 }
