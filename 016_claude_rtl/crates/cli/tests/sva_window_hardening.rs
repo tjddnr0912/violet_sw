@@ -254,6 +254,44 @@ fn parenthesized_subsequence_matches_unparenthesized() {
     );
 }
 
+#[test]
+fn grouped_subsequence_repetition_matches_hand_expansion() {
+    // Slice A.2 enabled `(seq)[*n]` (grouped consecutive repetition) as a parser
+    // side-effect. Pin it correct-or-loud: `(a ##1 b)[*2]` ≡ `a ##1 b ##1 a ##1 b`
+    // (the bounded-Consec expand applied to a SEQUENCE operand, not just a boolean)
+    // → must be byte-identical, never silently mismatched.
+    let stim = "initial begin\n\
+           @(posedge clk) a=1; @(posedge clk) a=0; b=1;\n\
+           @(posedge clk) b=0; a=1; @(posedge clk) a=0; b=1;\n\
+           @(posedge clk) b=0; c=0; #100 $finish;\n\
+         end\n";
+    let (og, eg, cg) = run(&format!(
+        "module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) (a ##1 b)[*2] |-> c);\n\
+         {stim}\
+         endmodule\n"
+    ));
+    let (oe, ee, ce) = run(&format!(
+        "module top;\n\
+         reg clk=0, a=0, b=0, c=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##1 b ##1 a ##1 b |-> c);\n\
+         {stim}\
+         endmodule\n"
+    ));
+    assert!(
+        !format!("{eg}{og}").contains("VITA-E2002"),
+        "grouped repetition must parse, not error:\n{eg}{og}"
+    );
+    assert_eq!(
+        (og, eg, cg),
+        (oe, ee, ce),
+        "(a ##1 b)[*2] must equal its hand-expansion a ##1 b ##1 a ##1 b"
+    );
+}
+
 // ── multiple completions inside one window each impose an obligation ──
 
 #[test]

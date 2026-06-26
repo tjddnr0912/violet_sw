@@ -2,19 +2,22 @@
 //! (ROADMAP §4.5 ② SVA residual, slice 2026-06-25). `b[*0:n]` ≡ `empty | b[*1:n]`:
 //! the EMPTY branch (zero repetitions) is a zero-extent match.
 //!
-//! SUPPORTED: the empty branch surrounded by `##1` delays — the canonical idiom
-//! `a ##1 b[*0:n] ##1 c`, whose empty (k=0) alternative is `a ##1 c`. This is the
-//! ONLY adjacency with a window-length-verifiable fusion: `1 ##1 1[*0] ##1 1` ≡
-//! `1 ##1 1` (the empty consumes exactly one `##1`). The suffix `a ##1 b[*0:n]`
-//! (empty ≡ `a`) is likewise supported.
+//! SUPPORTED (P1, slice A.1 2026-06-26): the empty branch surrounded by FIXED
+//! delays `##d` (d ≥ 1) on BOTH sides — `a ##h_in b[*0:n] ##h_out c`, whose empty
+//! (k=0) alternative has net delay `D = (h_in - 1) + h_out` (the empty consumes
+//! exactly one clock of the leading hop, per §16.9.2.1 `(r ##n empty)=(r ##(n-1)
+//! `true)`). The canonical `##1`/`##1` case (D=1) is byte-identical to before.
+//! The suffix `a ##1 b[*0:n]` (empty ≡ `a`) is likewise supported.
 //!
 //! HONEST-LOUD (subtle IEEE 1800-2017 §16.9.2.1 algebra with NO differential
 //! oracle — a guessed delay would be silent-wrong, so it is loud instead): the
-//! empty adjacent to ANY non-`##1` delay (`##0`, `##2+`, `##[m:$]`); the empty as
-//! the SEED (a leading / standalone `b[*0:n]`); the empty in a CONSEQUENT or under
-//! `throughout`/`within`; and `(a, x=d)` per-attempt local vars. (An earlier draft
-//! tried to fuse arbitrary `##d` delays and an adversarial review found a trailing-
-//! `##0` off-by-one — hence the `##1`-only restriction; see the *_is_loud tests.)
+//! empty adjacent to a `##0` delay (leading OR trailing — the absorption is a
+//! genuine §16.9.2.1 discontinuity); an UNBOUNDED `##[m:$]` hop around the empty;
+//! the empty as the SEED (a leading / standalone `b[*0:n]`); the empty in a
+//! CONSEQUENT or under `throughout`/`within`; and `(a, x=d)` per-attempt local
+//! vars. (An earlier draft tried to fuse arbitrary `##d` delays and an adversarial
+//! review found a trailing-`##0` off-by-one — hence `##0`/unbounded stay loud;
+//! see the *_is_loud tests. The fixed-hop non-`##1` cases are P1, supported.)
 //!
 //! iverilog 13 supports NO concurrent assertions → every verdict is HAND-IEEE
 //! (no differential oracle), independently cross-checked before freezing.
@@ -410,4 +413,47 @@ fn positive_bound_repeat_still_fires() {
         code,
         "a ##1 b[*1:2] ##1 c, k=1 (no empty branch)",
     );
+}
+
+// ── regression: exact-empty `[*0]` / `[*0:0]` SINGLE-alt path at non-`##1` ──
+// `b[*0]` lowers to ONLY the Empty alternative (no `[*1:n]` fan-out), a distinct
+// code path from `[*0:n]` (n>=1). Pin that the P1 net-delay D=(h_in-1)+h_out is
+// correct on that path too (hand-IEEE; review A.1 flagged it as live-verified but
+// uncommitted).
+
+#[test]
+fn a1_exact_empty_star0_fixed_hops_fires() {
+    // `a ##2 b[*0] ##1 c |-> d`: ONLY the empty alt exists. D=(2-1)+1=2: a@t15,
+    // c@t35, d=0 → completes @t35 → fire.
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##2 b[*0] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0;\n\
+           #10 c=1; d=0;\n\
+           #10 c=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    fires(&out, &err, code, "a ##2 b[*0] ##1 c exact-empty, D=2");
+}
+
+#[test]
+fn a1_exact_empty_star0_pins_delay_two_holds() {
+    // Same prop, but c high only @t25 (one clock early for D=2). The single empty
+    // alt must NOT complete @t25 → clean (pins the off-by-one on the [*0] path).
+    let (out, err, code) = run("module top;\n\
+         reg clk=0, a=0, b=0, c=0, d=0;\n\
+         always #5 clk=~clk;\n\
+         initial assert property(@(posedge clk) a ##2 b[*0] ##1 c |-> d);\n\
+         initial begin\n\
+           #10 a=1;\n\
+           #10 a=0; c=1; d=0;\n\
+           #10 c=0;\n\
+           #20 $finish;\n\
+         end\n\
+         endmodule\n");
+    holds(&out, &err, code, "a ##2 b[*0] ##1 c pins D=2 (c@t25 early)");
 }
