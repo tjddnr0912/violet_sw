@@ -7130,11 +7130,34 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::Semi, "';' after tf-port declaration");
     }
 
-    /// `@*` | `@(*)` → Star ;  `@(ev or ev , …)` → List.  Consumes the leading `@`.
+    /// `@*` | `@(*)` → Star ;  `@(ev or ev , …)` → List ;  bare `@e` / `@clk`
+    /// → single NO-EDGE event (IEEE 1364 `@ hierarchical_identifier`).  Consumes
+    /// the leading `@`. The bare reference is parsed identically to the paren form,
+    /// so whatever `@(X)` does, `@X` does too: a whole signal/event simulates, while
+    /// a form whose feature is unsupported (single-bit level `@a[2]`, hierarchical
+    /// `@u.s`, a call `@f(x)`) routes to the SAME loud reject as `@(…)` at elaborate.
     fn parse_sensitivity(&mut self) -> Sensitivity {
         self.bump(); // '@'
         if self.eat(TokenKind::Star) {
             return Sensitivity::Star; // `@*`
+        }
+        // Bare, paren-free event control `@ hierarchical_event_identifier` — a
+        // single NO-EDGE reference (`@e`, `@clk`, `@u.s`, `@a[2]`), equivalent to
+        // `@(e)`. Parse a primary+postfix REFERENCE (`expr_postfix`, not a full
+        // `expr(0)`): a bare binary form `@a+b` stops after `a`, and the trailing
+        // `+b` is a loud statement error — matching iverilog, which rejects
+        // `@a+b`/`@a && b`. A bare edge `@posedge clk` is also illegal (parens
+        // required); `posedge`/`negedge` are keywords (not idents), so they fall
+        // through to the `'(' or '*'` error below.
+        if self.is_ident() {
+            let start = self.cur_span();
+            let expr = self.expr_postfix();
+            let span = start.to(self.prev_span());
+            return Sensitivity::List(vec![EventExpr {
+                edge: Edge::NoEdge,
+                expr,
+                span,
+            }]);
         }
         if !self.expect(TokenKind::LParen, "'(' or '*' after '@'") {
             return Sensitivity::List(Vec::new()); // recover; only `@` consumed
