@@ -1577,6 +1577,233 @@ fn expr_reads_ident(e: &ast::Expr, name: &str) -> bool {
     }
 }
 
+/// Does the lvalue (a write target) reference `name` — either as the written
+/// base identifier or inside a select index? Mirrors [`expr_reads_ident`] for the
+/// write side (block-local scope-leak detection).
+fn lvalue_refs_ident(lv: &ast::Lvalue, name: &str) -> bool {
+    use ast::Lvalue as L;
+    match lv {
+        L::Ident(p) => p.segments.len() == 1 && p.segments[0].name == name,
+        L::BitSelect { base, index, .. } => {
+            lvalue_refs_ident(base, name) || expr_reads_ident(index, name)
+        }
+        L::PartSelect { base, msb, lsb, .. } => {
+            lvalue_refs_ident(base, name)
+                || expr_reads_ident(msb, name)
+                || expr_reads_ident(lsb, name)
+        }
+        L::IndexedPart {
+            base,
+            offset,
+            width,
+            ..
+        } => {
+            lvalue_refs_ident(base, name)
+                || expr_reads_ident(offset, name)
+                || expr_reads_ident(width, name)
+        }
+        L::Concat { parts, .. } => parts.iter().any(|p| lvalue_refs_ident(p, name)),
+        L::Error(_) => false,
+    }
+}
+
+/// Does any `begin…end`/`fork` block nested anywhere within `s` have span
+/// `target`? Used to tell a TRUE SIBLING of the declaring block (does not contain
+/// it) from an ANCESTOR (does) during scope-leak detection.
+fn stmt_contains_block_span(s: &ast::Stmt, target: ast::Span) -> bool {
+    use ast::Stmt::*;
+    match s {
+        Block { stmts, span, .. } | Fork { stmts, span, .. } => {
+            *span == target || stmts.iter().any(|st| stmt_contains_block_span(st, target))
+        }
+        If { then_s, else_s, .. } => {
+            stmt_contains_block_span(then_s, target)
+                || else_s
+                    .as_ref()
+                    .is_some_and(|e| stmt_contains_block_span(e, target))
+        }
+        Case { items, .. } => items.iter().any(|it| match it {
+            ast::CaseItem::Match { body, .. } | ast::CaseItem::Default { body, .. } => {
+                stmt_contains_block_span(body, target)
+            }
+        }),
+        For { body, .. } | While { body, .. } | Repeat { body, .. } | Forever { body, .. } => {
+            stmt_contains_block_span(body, target)
+        }
+        Wait { body, .. } | DelayCtrl { body, .. } | EventCtrl { body, .. } => body
+            .as_ref()
+            .is_some_and(|b| stmt_contains_block_span(b, target)),
+        _ => false,
+    }
+}
+
+/// Is `name` referenced (read in any expression, or written as a target) anywhere
+/// in statement `s` EXCEPT inside the block whose span equals `skip`? Used to
+/// detect a block-local that is referenced outside its declaring block — vita's
+/// flat per-function local table would silently resolve such a reference to the
+/// block-local instead of the lexically-correct outer binding (IEEE §6.21 scope).
+/// Conservative: an unhandled statement form simply returns `false` (under-
+/// detection is safe — it only means the loud diagnostic is not raised).
+fn stmt_refs_ident_outside(s: &ast::Stmt, skip: ast::Span, name: &str) -> bool {
+    use ast::Stmt::*;
+    let decl_inits = |decls: &[ast::NetVarDecl]| {
+        decls.iter().any(|d| {
+            d.names
+                .iter()
+                .any(|n| n.init.as_ref().is_some_and(|e| expr_reads_ident(e, name)))
+        })
+    };
+    match s {
+        Block {
+            stmts, decls, span, ..
+        }
+        | Fork {
+            stmts, decls, span, ..
+        } => {
+            if *span == skip {
+                return false; // the declaring block itself — references here are in-scope
+            }
+            // If THIS block ALSO declares `name`, references to `name` inside it
+            // bind to its own local — BUT only when it is a TRUE SIBLING of the
+            // declaring block (does not contain `skip`). If it is an ANCESTOR of
+            // `skip`, references here that are outside `skip` still hit the
+            // coalesced flat slot and are a genuine hazard, so we must recurse
+            // (the recursion returns false once it reaches `skip` itself).
+            if decls
+                .iter()
+                .flat_map(|d| d.names.iter())
+                .any(|n| n.name.name == name)
+                && !stmts.iter().any(|st| stmt_contains_block_span(st, skip))
+            {
+                return false;
+            }
+            decl_inits(decls)
+                || stmts
+                    .iter()
+                    .any(|st| stmt_refs_ident_outside(st, skip, name))
+        }
+        Blocking { lhs, rhs, .. } | NonBlocking { lhs, rhs, .. } => {
+            lvalue_refs_ident(lhs, name) || expr_reads_ident(rhs, name)
+        }
+        If {
+            cond,
+            then_s,
+            else_s,
+            ..
+        } => {
+            expr_reads_ident(cond, name)
+                || stmt_refs_ident_outside(then_s, skip, name)
+                || else_s
+                    .as_ref()
+                    .is_some_and(|e| stmt_refs_ident_outside(e, skip, name))
+        }
+        Return { value, .. } => value.as_ref().is_some_and(|e| expr_reads_ident(e, name)),
+        Case {
+            scrutinee, items, ..
+        } => {
+            expr_reads_ident(scrutinee, name)
+                || items.iter().any(|it| match it {
+                    ast::CaseItem::Match { labels, body, .. } => {
+                        labels.iter().any(|e| expr_reads_ident(e, name))
+                            || stmt_refs_ident_outside(body, skip, name)
+                    }
+                    ast::CaseItem::Default { body, .. } => {
+                        stmt_refs_ident_outside(body, skip, name)
+                    }
+                })
+        }
+        For {
+            init,
+            cond,
+            step,
+            body,
+            ..
+        } => {
+            stmt_refs_ident_outside(init, skip, name)
+                || expr_reads_ident(cond, name)
+                || stmt_refs_ident_outside(step, skip, name)
+                || stmt_refs_ident_outside(body, skip, name)
+        }
+        While { cond, body, .. } => {
+            expr_reads_ident(cond, name) || stmt_refs_ident_outside(body, skip, name)
+        }
+        Repeat { count, body, .. } => {
+            expr_reads_ident(count, name) || stmt_refs_ident_outside(body, skip, name)
+        }
+        Forever { body, .. } => stmt_refs_ident_outside(body, skip, name),
+        Wait { cond, body, .. } => {
+            expr_reads_ident(cond, name)
+                || body
+                    .as_ref()
+                    .is_some_and(|b| stmt_refs_ident_outside(b, skip, name))
+        }
+        DelayCtrl { body, .. } | EventCtrl { body, .. } => body
+            .as_ref()
+            .is_some_and(|b| stmt_refs_ident_outside(b, skip, name)),
+        SysTaskCall { args, .. } | UserTaskCall { args, .. } | RandomizeWith { args, .. } => {
+            args.iter().any(|e| expr_reads_ident(e, name))
+        }
+        _ => false,
+    }
+}
+
+/// Collect every NESTED `begin…end`/`fork` block (i.e. not the top-level body
+/// block) together with the names it declares as locals. `is_top` is true only for
+/// the outermost body statement, whose own decls are function/task-scoped (not
+/// block-scoped) and so are skipped.
+fn gather_nested_block_locals(
+    s: &ast::Stmt,
+    is_top: bool,
+    out: &mut Vec<(ast::Span, Vec<String>)>,
+) {
+    use ast::Stmt::*;
+    match s {
+        Block {
+            stmts, decls, span, ..
+        }
+        | Fork {
+            stmts, decls, span, ..
+        } => {
+            if !is_top && !decls.is_empty() {
+                let names: Vec<String> = decls
+                    .iter()
+                    .flat_map(|d| d.names.iter().map(|n| n.name.name.clone()))
+                    .collect();
+                if !names.is_empty() {
+                    out.push((*span, names));
+                }
+            }
+            for st in stmts {
+                gather_nested_block_locals(st, false, out);
+            }
+        }
+        If { then_s, else_s, .. } => {
+            gather_nested_block_locals(then_s, false, out);
+            if let Some(e) = else_s {
+                gather_nested_block_locals(e, false, out);
+            }
+        }
+        Case { items, .. } => {
+            for it in items {
+                match it {
+                    ast::CaseItem::Match { body, .. } | ast::CaseItem::Default { body, .. } => {
+                        gather_nested_block_locals(body, false, out)
+                    }
+                }
+            }
+        }
+        For { body, .. } | While { body, .. } | Repeat { body, .. } | Forever { body, .. } => {
+            gather_nested_block_locals(body, false, out)
+        }
+        Wait { body, .. } | DelayCtrl { body, .. } | EventCtrl { body, .. } => {
+            if let Some(b) = body {
+                gather_nested_block_locals(b, false, out)
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Substitute every bare single-segment identifier named `name` in `e` with a clone
 /// of `repl` (slice N2c — substitute a local-variable READ with its data register
 /// read / captured value). Structural rebuild so the substitution reaches nested
@@ -3942,6 +4169,7 @@ impl<'s> Elaborator<'s> {
         for item in &module.body {
             match item {
                 ast::ModuleItem::Func(f) => {
+                    self.check_block_local_scope_leaks(&f.body);
                     if self
                         .func_table
                         .insert(f.name.name.clone(), f.clone())
@@ -3954,6 +4182,7 @@ impl<'s> Elaborator<'s> {
                     }
                 }
                 ast::ModuleItem::Task(t) => {
+                    self.check_block_local_scope_leaks(&t.body);
                     if self
                         .task_table
                         .insert(t.name.name.clone(), t.clone())
@@ -3964,6 +4193,9 @@ impl<'s> Elaborator<'s> {
                             t.name.name
                         ));
                     }
+                }
+                ast::ModuleItem::Proc(p) => {
+                    self.check_block_local_scope_leaks(&p.body);
                 }
                 // FIRST declaration wins (insert-if-absent), so the redeclaration
                 // warning text is accurate (review 2026-06-16: `BTreeMap::insert`
@@ -11280,6 +11512,35 @@ impl<'s> Elaborator<'s> {
     /// return / top-level `body_decls`. A name already reserved (a formal, the
     /// return var, a top-level local, or an earlier same-named block) is COALESCED
     /// (shared net) — like the process-body hoist for two sequential blocks reusing
+    /// IEEE §6.21: a local declared in a nested `begin…end` is visible only within
+    /// that block. vita keeps a function/task/procedural body's block-locals in a
+    /// FLAT per-body table, so a reference OUTSIDE the declaring block would
+    /// silently resolve to the block-local instead of the lexically-correct outer
+    /// binding (a module variable, a formal, or an enclosing local). Proper
+    /// per-block scope lowering is a large follow-on (ROADMAP §4.5.18); until then,
+    /// detect that exact leak and reject it LOUD (correct-or-loud) rather than
+    /// produce a silent-wrong. A block-local referenced only inside its own block
+    /// resolves correctly and is left untouched (no diagnostic, byte-identical).
+    fn check_block_local_scope_leaks(&mut self, body: &ast::Stmt) {
+        let mut nested = Vec::new();
+        gather_nested_block_locals(body, true, &mut nested);
+        for (bspan, names) in &nested {
+            for n in names {
+                if stmt_refs_ident_outside(body, *bspan, n) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "block-local `{n}` is referenced outside its `begin…end` block; \
+                             vita cannot resolve this to the outer `{n}` yet (it would silently \
+                             read the block-local) — rename the block-local or hoist its \
+                             declaration to the enclosing scope"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     /// `int tmp;`. Returns the `automatic`-override bits for the freshly reserved
     /// slots. The slot index is read from the live net count so it stays aligned
     /// with the frame's flat slot order even when some decls coalesce.
