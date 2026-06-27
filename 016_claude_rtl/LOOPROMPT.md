@@ -22,6 +22,7 @@
 - **버그/기능을 오라클로 라이브 재현**: 최소 SV repro 여러 개를 iverilog와 vita 양쪽에 돌려 **정확한 IEEE 규칙을 핀**(예측 금지·측정). 엣지/x·z/멀티비트/NBA/경계까지 변형 probe.
 - 관련 코드(파이프라인 해당 단계)를 정독 → **byte-identity 논증**(이 변경이 비대상 디자인서 왜 무영향인지)을 먼저 세움. 못 세우면 범위를 좁히거나 honest-loud.
 - **desugar 슬라이스는 인프라 구축 전에 desugar EXPRESSION 자체를 sim서 검증**(이번 루프 enum `.name()`): 소스 구문뿐 아니라 desugar가 생성할 표현식(예: string/value ternary chain)을 vita에 직접 돌려 결과 정확성 확인. building block이 '돈다'고 의미가 맞는 건 아님(packed-string ternary는 짧은 라벨을 패딩→iverilog dynamic string과 불일치)→불일치 메서드/형태는 **honest-loud로 격리**(메서드-패밀리는 per-method 오라클 지원 기준 분할; 5/6 정확+1 loud ≫ 6/6 중 1 silent-wrong).
+- **context-determined 기능(의미가 타깃 타입에 의존)은 ALL 변종을 구현 전 오라클로 전수 핀**(이번 루프 assignment pattern `'{…}` 중단·revert): "packed='{…}≡concat" 같은 **예측을 측정 없이 구현에 착수→라이브 차분서 오류**(`'{1,0,1,1}` on `logic[3:0]`=각 1비트 `1011`, concat-of-int=`0001`). target packed-width sizing(`W/N`)·unpacked array 방향·비-assign-context loud·미파싱 변종(repl/default/named) 전부 **사전 핀**. 큰 의미공간이면 **전용 슬라이스로 분리·이번 반복 비목표**로 기록(rush 금지=불완전 슬라이스보다 깨끗한 defer가 우월).
 - 계획을 scratchpad에 durable 기록(파일·메커니즘·테스트 매트릭스·loud 유지선).
 
 ## 3. 구현

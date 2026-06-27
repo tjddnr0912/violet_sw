@@ -541,6 +541,10 @@ loud-reject로 확인됨(이제 참):**
 
 **🔬 사후 리뷰 성과:** differential=**CLEAN**(53 probe·0 silent-wrong: 5종·non-contiguous 위치기준·음수·packed base·single/large enum·전 context[assign/case/if/concat/arith]·two-var same/diff type·struct/hier byte-identity·전 loud 경계). soundness=**SOUND**(라벨 folding·위치기준 chain·intercept가 struct/hier 미탈취·empty_call fall-through 전수증명). **soundness가 pre-existing `const_lit` i64 산술 overflow 발굴**(신규 enum-fold path가 호출→adversarial 라벨이 debug panic): **checked arithmetic(`checked_add/sub/mul`/`checked_neg`)으로 수정**(overflow→None→loud, 공유 struct-width path도 견고화). 잔여 inherited: `var_enum` function-local scope 근사(var_struct와 동일·block-local typedef decl은 vita가 E2002라 도달 불가).
 
+#### 4.5.15 (개발 후보·deferred) positional assignment pattern `'{e0,…,eN}` (SV §10.9)
+
+> vita가 E2002로 거부, iverilog 지원. **전 의미론을 사전 그라운딩한 후 전용 슬라이스 필요**(2026-06-27 조사: 단순 desugar 시도가 라이브 차분서 오류 노출→중단·revert). 발견한 핵심 의미론(구현 전 전수 핀 필요): **(1) PACKED 타깃**: 단순 concat 아님—각 elem을 `target_width / N` 비트로 sizing(`'{1,0,1,1}` on `logic[3:0]`=각 1비트→`1011`, NOT concat-of-32bit-ints=`0001`). lvalue 폭 해소(select 처리 포함)+`W%N` edge+elem-sizing-vs-tiling(`'{2'b10,4'hF}` 모호) 오라클 핀 필요. **(2) UNPACKED array 타깃**: 위치 기준 element-wise이나 `net_dim_extents`가 방향(ascending/descending) 손실→array dim 방향 해소 필요. **(3) 비-assignment-context**(`'{…}+1` 등)=loud(불법 SV·concat으로 silent 수용 금지). **(4) 미파싱**: replication `'{n{e}}`·default `'{default:e}`·named `'{key:e}`·nested 2D(전부 honest-loud). AST: `ExprKind::AssignPattern{elems}` 신규(`.vu` re-pin)·intercept는 blocking/nonblocking/net-init 3 사이트.
+
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
 SYS-READ·SYS-INTRO·DIR-PP를 IR-0-now vs 단일 **v9 bump**으로 분할(워크플로우 understand×3+probe×4→synth). **원칙: IR-0 슬라이스 먼저, frozen-IR(새 SysFuncId/SysTaskId)은 한 번의 v9 bump에 일괄, iverilog 오라클 우선.** ⚠️ 진단 비대칭: 미인식 `$func`=E3009-LOUD(전 디자인 kill) vs `$task`=W3056-skip → 미구현 introspection func가 디자인 전체를 죽이므로 const-fold(rank 2)가 고가치.
