@@ -332,13 +332,81 @@ fn for_init_and_step_pattern() {
     );
 }
 
+const STA: &str = "module top; typedef struct packed \
+     { logic [3:0] a; logic [3:0] b; } st_t; st_t arr[3];";
+
 #[test]
-fn array_element_pattern_stays_loud() {
-    // `arr[i] = '{…}` (a non-Ident indexed lvalue) is NOT yet desugared — it must
-    // stay loud, not silently mishandled. (Deferred to a follow-up slice.)
-    let (_out, ok) = run(
-        "module top; typedef struct packed { logic [3:0] a; logic [3:0] b; } st_t; st_t arr[2];\n\
-         initial begin arr[0] = '{4'h1, 4'h2}; $display(\"x\"); #1 $finish; end endmodule\n",
+fn array_element_1d_pattern() {
+    // `arr[i] = '{…}` on a 1-D struct array — the element is a scalar struct, so
+    // it desugars to the same field-width-cast concat (IEEE §10.9.1).
+    let (out, ok) = run(&format!(
+        "{STA} initial begin arr[0]='{{4'h1,4'h2}}; arr[1]='{{4'h3,4'h4}}; arr[2]='{{4'h5,4'h6}}; \
+         $display(\"%h %h %h\", arr[0], arr[1], arr[2]); #1 $finish; end endmodule\n"
+    ));
+    assert!(ok && out.contains("12 34 56"), "got:\n{out}");
+}
+
+#[test]
+fn array_element_variable_index() {
+    // A runtime index in a loop.
+    let (out, ok) = run(
+        "module top; typedef struct packed { logic [3:0] a; logic [3:0] b; } st_t; st_t arr[4];\n\
+         integer i;\n\
+         initial begin for (i=0;i<4;i=i+1) arr[i]='{i[3:0], i[3:0]+4'h1};\n\
+           $display(\"%h %h %h %h\", arr[0],arr[1],arr[2],arr[3]); #1 $finish; end endmodule\n",
     );
-    assert!(!ok, "arr[i] = '{{…}} is deferred and must stay loud");
+    assert!(ok && out.contains("01 12 23 34"), "got:\n{out}");
+}
+
+#[test]
+fn array_element_two_state_coerces() {
+    // A 2-state `byte` field in an array element coerces X/Z→0 (verified via the
+    // whole-element read, since array-of-struct field reads aren't oracle-backed).
+    let (out, ok) = run(
+        "module top; typedef struct packed { byte a; logic [7:0] b; } st_t; st_t arr[2];\n\
+         initial begin arr[0]='{8'hxx,8'hAA}; $display(\"%h\", arr[0]); #1 $finish; end endmodule\n",
+    );
+    assert!(ok && out.contains("00aa"), "got:\n{out}");
+}
+
+#[test]
+fn array_element_non_pattern_unchanged() {
+    // A non-pattern array-element assign is byte-identical (the hook returns rhs).
+    let (out, ok) = run(&format!(
+        "{STA} initial begin arr[0]=8'h5A; arr[1]=8'h3C; \
+         $display(\"%h %h\", arr[0], arr[1]); #1 $finish; end endmodule\n"
+    ));
+    assert!(ok && out.contains("5a 3c"), "got:\n{out}");
+}
+
+#[test]
+fn multidim_and_scalar_bitselect_stay_loud() {
+    // A multi-dim element `arr[i][j] = '{…}` (nested BitSelect base) stays loud —
+    // only 1-D arrays are supported.
+    let (_o1, ok1) = run(
+        "module top; typedef struct packed { logic [3:0] a; logic [3:0] b; } st_t; st_t arr[2][2];\n\
+         initial begin arr[0][0]='{4'h1,4'h2}; $display(\"x\"); #1 $finish; end endmodule\n",
+    );
+    assert!(!ok1, "multi-dim array element must stay loud");
+    // A scalar struct's bit-select `s[i] = '{…}` (not an array element) stays loud
+    // — iverilog rejects it too.
+    let (_o2, ok2) = run(
+        "module top; typedef struct packed { logic [3:0] a; logic [3:0] b; } st_t; st_t s;\n\
+         initial begin s[3]='{4'h1,4'h2}; $display(\"x\"); #1 $finish; end endmodule\n",
+    );
+    assert!(!ok2, "scalar struct bit-select must stay loud");
+}
+
+#[test]
+fn union_array_element_stays_loud() {
+    // A union ARRAY element `arr[i] = '{…}` must stay loud (overlay != concat),
+    // like the scalar union case.
+    let (_o, ok) = run(
+        "module top; typedef union packed { logic [7:0] a; logic [3:0] b; } u_t; u_t arr[2];\n\
+         initial begin arr[0]='{8'hAB,4'hC}; $display(\"x\"); #1 $finish; end endmodule\n",
+    );
+    assert!(
+        !ok,
+        "union array element must stay loud, not silently truncate"
+    );
 }

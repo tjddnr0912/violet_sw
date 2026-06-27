@@ -198,6 +198,11 @@ pub struct Parser<'t, 's> {
     /// here, so `a = '{…}` is left on the unpacked-array path, never mistaken
     /// for a packed-struct concat. Module-scoped; cleared per module.
     struct_scalar_vars: std::collections::HashSet<String>,
+    /// 1-D-array-of-packed-struct variable names (`st_t arr[N]`) — eligible for
+    /// the element pattern `arr[i] = '{…}` (the element is a scalar struct). A
+    /// scalar struct (0 dims, in `struct_scalar_vars`), a multi-dim array (≥2
+    /// dims), and a union array are all excluded. Module-scoped.
+    struct_1d_array_vars: std::collections::HashSet<String>,
     /// Packed-union type names. Unions share `struct_layouts` (for `u.field`
     /// reads) but their overlay layout is NOT a packed concat, so a union var is
     /// kept OUT of `struct_scalar_vars` and its `'{…}` pattern stays loud.
@@ -260,6 +265,7 @@ impl<'t, 's> Parser<'t, 's> {
             struct_layouts: std::collections::HashMap::new(),
             var_struct: std::collections::HashMap::new(),
             struct_scalar_vars: std::collections::HashSet::new(),
+            struct_1d_array_vars: std::collections::HashSet::new(),
             union_type_names: std::collections::HashSet::new(),
             const_locals: std::collections::HashMap::new(),
             pending_mono_specs: Vec::new(),
@@ -2017,6 +2023,7 @@ impl<'t, 's> Parser<'t, 's> {
         // Variable→struct bindings are module-scoped (type *names* are not).
         self.var_struct.clear();
         self.struct_scalar_vars.clear();
+        self.struct_1d_array_vars.clear();
         self.var_enum.clear();
         self.const_locals.clear();
         let is_macromodule = self.at_kw(Kw::Macromodule);
@@ -5035,6 +5042,11 @@ impl<'t, 's> Parser<'t, 's> {
                         let nm = n.name.name.clone();
                         n.init = Some(self.desugar_struct_assign_pattern(&nm, init));
                     }
+                } else if n.unpacked.len() == 1 && !is_union {
+                    // A 1-D array of struct (`st_t arr[N]`): `arr[i] = '{…}` is a
+                    // packed-struct pattern on the element. Multi-dim arrays stay
+                    // loud (the indexed lvalue would be a nested BitSelect).
+                    self.struct_1d_array_vars.insert(n.name.name.clone());
                 }
             }
         }
@@ -5697,13 +5709,21 @@ impl<'t, 's> Parser<'t, 's> {
         {
             return rhs;
         }
+        match self.var_struct.get(var_name).cloned() {
+            Some(tyname) => self.build_struct_pattern_concat(&tyname, rhs),
+            None => rhs,
+        }
+    }
+
+    /// Build the field-width-cast concat for a packed-struct `'{…}` pattern whose
+    /// target resolves to struct type `tyname` (shared by the scalar-variable path
+    /// `s = '{…}` and the 1-D-array-element path `arr[i] = '{…}`). `rhs` must be an
+    /// `AssignPattern`. A count mismatch or a 2-state field wider than 64 bits is a
+    /// loud parse error (returning the pattern unchanged).
+    fn build_struct_pattern_concat(&mut self, tyname: &str, rhs: Expr) -> Expr {
         // Each field's (width, is_two_state) in declaration order (field 0 = MSB =
         // leftmost concat part); cloned out so `self` is free for `error` below.
-        let fields: Vec<(u32, bool)> = match self
-            .var_struct
-            .get(var_name)
-            .and_then(|ty| self.struct_layouts.get(ty))
-        {
+        let fields: Vec<(u32, bool)> = match self.struct_layouts.get(tyname) {
             Some(l) => l
                 .fields
                 .iter()
@@ -5713,7 +5733,7 @@ impl<'t, 's> Parser<'t, 's> {
         };
         let span = rhs.span;
         let ExprKind::AssignPattern(elems) = rhs.kind else {
-            unreachable!("guarded by matches! above")
+            unreachable!("caller guarantees an AssignPattern rhs")
         };
         if elems.len() != fields.len() {
             self.error("exactly one `'{…}` element for each packed-struct field");
@@ -5765,25 +5785,47 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Shared assignment hook for the packed-struct `'{…}` pattern: when the
-    /// target is a whole scalar struct variable (`s = '{…}`, a single-segment
-    /// `Lvalue::Ident`), desugar the RHS. A field / indexed / concat lvalue is
-    /// left untouched (those are not whole-struct assignments). Applied at every
-    /// `lvalue = rhs` site — blocking/nonblocking, decl-init, continuous /
-    /// procedural-continuous / `force` assigns, and for-init/step.
+    /// Shared assignment hook for the packed-struct `'{…}` pattern. Desugars two
+    /// target shapes: a whole scalar struct variable (`s = '{…}`, a single-segment
+    /// `Lvalue::Ident`), and a 1-D struct-array element (`arr[i] = '{…}`, a
+    /// `BitSelect` of a plain Ident in `struct_1d_array_vars`). Every other lvalue
+    /// (field-select, multi-dim/nested index, concat, scalar bit-select) is left
+    /// untouched (loud downstream). Called at every statement/expression
+    /// `lvalue = rhs` site — blocking/nonblocking, continuous /
+    /// procedural-continuous / `force` assigns, and for-init/step. (A scalar
+    /// decl-init `st_t s = '{…}` is desugared by a direct `desugar_struct_assign_pattern`
+    /// call in `parse_typed_decl`, not through this hook.)
     fn maybe_struct_pattern_rhs(&mut self, lhs: &Lvalue, rhs: Expr) -> Expr {
-        // Fast path: only `'{…}` to a whole single-name target can desugar; every
-        // other assignment returns `rhs` untouched (byte-identical) with no clone.
+        // Fast path: only `'{…}` to an eligible target can desugar; every other
+        // assignment returns `rhs` untouched (byte-identical) with no work.
         if !matches!(rhs.kind, ExprKind::AssignPattern(_)) {
             return rhs;
         }
-        if let Lvalue::Ident(p) = lhs {
-            if p.segments.len() == 1 {
+        match lhs {
+            // Whole scalar struct variable `s = '{…}`.
+            Lvalue::Ident(p) if p.segments.len() == 1 => {
                 let nm = p.segments[0].name.clone();
-                return self.desugar_struct_assign_pattern(&nm, rhs);
+                self.desugar_struct_assign_pattern(&nm, rhs)
             }
+            // 1-D struct-array element `arr[i] = '{…}`: the base must be a plain
+            // single-name Ident registered as a 1-D struct array (this excludes a
+            // scalar struct's bit-select `s[i]`, a multi-dim element `arr[i][j]`
+            // whose base is itself a BitSelect, and a union array). The element's
+            // struct type is the array variable's struct type.
+            Lvalue::BitSelect { base, .. } => {
+                if let Lvalue::Ident(p) = base.as_ref() {
+                    if p.segments.len() == 1
+                        && self.struct_1d_array_vars.contains(&p.segments[0].name)
+                    {
+                        if let Some(tyname) = self.var_struct.get(&p.segments[0].name).cloned() {
+                            return self.build_struct_pattern_concat(&tyname, rhs);
+                        }
+                    }
+                }
+                rhs
+            }
+            _ => rhs,
         }
-        rhs
     }
 
     /// Is a packed-struct member declared with an ascending range (`logic [0:N]`,
