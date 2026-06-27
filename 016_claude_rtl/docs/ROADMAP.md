@@ -545,9 +545,17 @@ loud-reject로 확인됨(이제 참):**
 
 > vita가 E2002로 거부, iverilog 지원. **전 의미론을 사전 그라운딩한 후 전용 슬라이스 필요**(2026-06-27 조사: 단순 desugar 시도가 라이브 차분서 오류 노출→중단·revert). 발견한 핵심 의미론(구현 전 전수 핀 필요): **(1) PACKED 타깃**: 단순 concat 아님—각 elem을 `target_width / N` 비트로 sizing(`'{1,0,1,1}` on `logic[3:0]`=각 1비트→`1011`, NOT concat-of-32bit-ints=`0001`). lvalue 폭 해소(select 처리 포함)+`W%N` edge+elem-sizing-vs-tiling(`'{2'b10,4'hF}` 모호) 오라클 핀 필요. **(2) UNPACKED array 타깃**: 위치 기준 element-wise이나 `net_dim_extents`가 방향(ascending/descending) 손실→array dim 방향 해소 필요. **(3) 비-assignment-context**(`'{…}+1` 등)=loud(불법 SV·concat으로 silent 수용 금지). **(4) 미파싱**: replication `'{n{e}}`·default `'{default:e}`·named `'{key:e}`·nested 2D(전부 honest-loud). AST: `ExprKind::AssignPattern{elems}` 신규(`.vu` re-pin)·intercept는 blocking/nonblocking/net-init 3 사이트.
 
-#### 4.5.16 (개발 후보·deferred) function이 module-level 변수 참조 (2026-06-27 조사, **최우선 후보**)
+#### 4.5.16 function이 module-level 변수 참조 (READ) — §4.5.17서 ✅ 해결
 
-> **함수가 module-level 변수를 읽거나 쓰면 E3010**(`undeclared net/variable top.$func$<fn>.<modvar>`)—`g`/`cnt`/`base` 같은 module 변수를 함수 바디서 참조 시 vita가 `$func$<fn>` 스코프-local로 오해, **module 스코프 fallback 실패**. iverilog는 정상(getter `rd=g+1`→g 읽기·side-effect `cnt=cnt+1`→쓰기 전부 지원). pure-local(args만) 함수는 정상(`sq(a)=a*a`). **흔한 패턴**(getter·module-state 함수·`void'(f())` 호출의 근본 의존성)이라 가치 높음. loud(silent 아님)=correct-or-loud 만족이나 기능 갭. 근본=`inline_function` 바디 lowering의 이름 해소가 `$func$` 스코프 고정(`walk_scopes`는 outward walk하나 함수 바디 경로가 이를 미사용 또는 ident pre-rename 의심)—**function 핸들링=코어·high-stakes라 전용 슬라이스+철저 적대리뷰 필요**(rush 금지). 동반 후보: `void'(expr)` void cast(이 갭에 의존)·`$bits(type)`(builtins/typedef/struct=parser-fold 가능, inline param-range=loud)·`unique0` case 한정자.
+> (옛 deferred 후보) 함수가 module 변수를 참조하면 E3010. §4.5.17서 READ 수정 완료(WRITE는 honest-loud 잔존). 상세=§4.5.17.
+
+#### 4.5.17 function/task가 module-level 변수 READ (frame path) (2026-06-27, branch `feat-func-module-var`) ✅
+
+> §4.5.16 해결. **frame-path 함수**(`automatic`·2-state `int` 리턴·recursive·control-flow 바디)가 module 변수를 읽으면 E3010(`top.$func$<fn>.<modvar>`)이던 것을 수정. 근본=`walk_scopes_key`의 outward walk가 `$func$<name>` 세그먼트서 **하드 정지**(generate·`$itask$`만 transparent였음). **1-라인 수정**: `$func$`도 transparent 집합에 추가(`$itask$`와 동일—SV §13.4 함수는 non-pure, module signal READ 정당). formal/local은 `$func$` 스코프 UNDER 등록→innermost-wins로 먼저 발견=shadowing 정확. **WRITE는 honest-loud 유지**(`validate_frame_body`가 frame-call subset=자기 locals만 write 허용). IR-0·format 19 불변·**2368 green**(2360+8). **byte-identical**: 기존 frame func(module 참조 無)는 locals/formals를 `$func$` 스코프서 먼저 발견→walk 미도달=불변; module 참조하던 것은 이전 E3010 error라 additive. **사후 적대 2-서브에이전트**: differential **CLEAN**(40+ probe: read/shadow/recursive/task/write-loud/byte-identity/wrong-scope-leakage 전부 iverilog 일치)·soundness **SOUND**(shadowing order·instance-boundary 정지·write 게이트·runtime read·blast-radius=frame-body lowering 한정 전수증명). **보너스 secondary silent-wrong fix**(soundness 발굴): param-width frame func(`function [W-1:0] f(input [W-1:0] a)`)가 `W`를 `$func$` 스코프서 못 찾아 width 1로 silently fallback하던 것도 동시 수정(`W` resolve, 테스트 핀). **honest-loud 잔존**(별개 후속): module var WRITE from frame func(frame executor+validator 확장 필요).
+
+#### 4.5.18 (개발 후보·deferred) frame/task 바디 inner-block local이 module var collision (pre-existing silent-wrong)
+
+> §4.5.17 differential hunt 부수 발굴(pre-existing·§4.5.17 수정과 무관=**task `$itask$`는 수정 前부터 transparent였는데 동일 오동작**). frame-path/task 함수 바디 안 inner `begin int x; … end` 블록의 local이 module var와 동명이면, **outer 함수 바디의 `x` 읽기가 inner 블록의 uninit slot(0/X)을 잡음**(iverilog=module var 값). 근본=frame/task 경로가 inner begin-block local을 nested key(`$func$f.blk.x`)가 아닌 **flat key(`$func$f.x`)로 등록**→outer 바디 lookup이 inner local을 먼저 발견. inline path는 정상(nested). 수정=frame/task inner-block local을 nested scope key로 등록(inline path 패턴 미러). **별개 슬라이스**.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 

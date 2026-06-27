@@ -5341,17 +5341,25 @@ impl<'s> Elaborator<'s> {
                 return None;
             }
             // The innermost segment about to be stripped: only continue walking
-            // outward if it is a generate-block scope (`label[idx]`) or an
-            // inline-task body-local scope (`$itask$…`, which must see the
-            // enclosing module's nets — a task body can read/write module signals).
+            // outward if it is a generate-block scope (`label[idx]`), an inline-task
+            // body-local scope (`$itask$…`), or a frame function/task scope
+            // (`$func$…`) — all of which must see the enclosing module's nets (a
+            // function/task body may read a module signal; SV §13.4 functions are
+            // not pure). A formal/local is registered UNDER the `$func$…`/`$itask$…`
+            // segment, so it is still found FIRST (innermost-wins) and correctly
+            // shadows a same-named module net; only a NON-local name falls through.
             // Stopping at an instance-boundary segment preserves per-instance name
-            // isolation; a frame `$func$…` scope is NOT transparent (a frame body
-            // is validated to touch only its own locals).
+            // isolation. (A frame body WRITING a module net is still rejected by
+            // `validate_frame_body` — the frame-call subset only writes its own
+            // locals — so this widens reads without enabling an unsupported write.)
             let last_seg = match prefix.rfind('.') {
                 Some(i) => &prefix[i + 1..],
                 None => prefix,
             };
-            if !Self::is_gen_scope_segment(last_seg) && !last_seg.starts_with("$itask$") {
+            if !Self::is_gen_scope_segment(last_seg)
+                && !last_seg.starts_with("$itask$")
+                && !last_seg.starts_with("$func$")
+            {
                 return None;
             }
             prefix = match prefix.rfind('.') {
