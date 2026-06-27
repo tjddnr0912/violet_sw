@@ -569,9 +569,13 @@ loud-reject로 확인됨(이제 참):**
 
 > §4.5.20 differential 부수 발굴 해결. **근본 재진단**: 32-bit specific 아님—**SIGNED** 값의 default `%d` 필드폭이 1 좁았음(`dec_field_width(n)`가 unsigned 폭 `digits(2^n-1)`만 계산·signedness 무시). 정확 룰=**signed 폭 = `1 + digits(2^(n-1))`**(sign char + most-negative magnitude; iverilog 8-bit `-128`=4·32-bit `-2147483648`=11), unsigned=`digits(2^n-1)` 불변. **NOT unsigned+1**: 일부 폭서 일치(10-bit signed `-512`=4 = unsigned 1023=4·64-bit 둘 다 20)이므로 magnitude 직접 계산. `dec_field_width(n, signed)` 2 callsite(`push_default_radix`+explicit `%d`)에 `v.signed` 전달. **n=1 예외**(적대 differential 발굴 silent-wrong): iverilog 1-bit signed 폭=1(NOT 2)→`signed && n>1` 가드(값 0=`[0]`·`-1`은 overflow). IR-0(엔진 fmt-local)·format 19 불변. **blast-radius**: dyn_storage 25 테스트가 옛 좁은 폭 핀(`.num()`/`.size()` signed-int count)→space-only 검증 후 일괄 갱신(strip_spaces 동일성 확인). 적대 differential **1 silent-wrong 발굴→수정 후 CLEAN**(n=1)·soundness **SOUND**(14 폭 formula 검증). 7 신규 oracle-pin 테스트. 2393 green.
 
-#### 4.5.22 (개발 후보·deferred) `%0s`/`%s` of packed reg leading-null 패딩 vs skip (pre-existing silent-wrong)
+#### 4.5.22 `%0s` of packed reg leading-null strip + `%s`/`%0s` x/z byte→space (2026-06-27, branch `feat-zero-s-strip`) ✅
 
-> §4.5.20 differential 부수 발굴(pre-existing·공유). leading null byte를 가진 packed reg(`reg[8*10:1] s; s="hello"`)를 `%0s`/`%s`로 표시 시 vita=`     hello`(null→공백 패딩)·iverilog=`hello`(leading null skip). `$display`/`$sformat`/`$swrite` 공유(`s="hello"` 직접 대입+`$display %0s`만으로 재현=display 경로). 수정=`%s` 렌더가 leading null byte를 skip(iverilog parity). 별개 슬라이스(display-format 경로).
+> §4.5.20 differential 부수 발굴 해결. **재진단**: `%s`는 이미 iverilog 일치(둘 다 full-width 패딩)—차이는 **`%0s`(min-width flag)만**: leading null byte를 vita는 공백 패딩·iverilog는 strip. 정확 룰(오라클 전수 핀): **leading NUL strip, 첫 non-NUL 후로는 전 byte 렌더(embedded/trailing NUL→공백), all-NUL→`""`**. `fmt_packed_chars_min`(strip 변형)+`'s'` arm이 **bare `%0s`만**(`min_zero && field_width==Some(0)`·explicit `%0Ns`는 base 유지=오라클 부재) 라우팅. **+ 적대 differential 발굴 인접 pre-existing silent-wrong fold**(같은 root·명확 오라클·동일 fix): packed `%s`/`%0s`의 **z byte**(vita 4-state val=1→`0xFF` leak)를 iverilog는 공백 렌더—byte 추출 시 `val & !unk`로 x/z 마스크(x[val=0]·z[val=1] 둘 다 0→공백/strip). `fmt_packed_chars`도 동시 수정(x는 무변경·z만 `0xFF`→공백). IR-0·format 19 불변. 적대 differential **1 silent-wrong 발굴(z byte)→fold 수정 후 CLEAN**·soundness **SOUND**(started-flag·byte-identity·branch order). 7 신규 oracle-pin 테스트.
+
+#### 4.5.23 (개발 후보·deferred) explicit `%Ns` field-width for packed/string (pre-existing)
+
+> §4.5.22 differential 부수 발굴(pre-existing·`%s`/`%0s` 공유). vita의 `'s'` arm이 `field_width`를 무시→`%05s`/`%10s`가 패딩 안 됨(iverilog=`%05s` of "hi"→`   hi`[width 5]·vita→full reg width 패딩). `%0s`(field_width 0)·plain `%s`(full reg pad)는 정확하나 explicit `%Ns`(N>0)만 갭. 수정=`'s'` arm서 `field_width=Some(n>0)`이면 n-width 우측정렬 패딩/truncate(iverilog `%Ns` 의미 핀 필요). 별개 슬라이스.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 

@@ -2257,6 +2257,14 @@ fn render_template(
                         let v = sched.eval(eid);
                         if v.is_str {
                             out.push_str(&String::from_utf8_lossy(&v.to_str_bytes()));
+                        } else if min_zero && field_width == Some(0) {
+                            // bare `%0s` (minimal width): strip LEADING NUL bytes,
+                            // then render the rest (embedded/trailing NUL → space). A
+                            // string in a wider packed reg drops its high zero-byte
+                            // padding (iverilog-pinned: 64-bit "hello" → "hello", not
+                            // "   hello"; all-NUL → ""). An explicit `%0Ns` keeps the
+                            // base full-width form (no iverilog oracle for it).
+                            out.push_str(&fmt_packed_chars_min(&v));
                         } else {
                             out.push_str(&fmt_packed_chars(&v));
                         }
@@ -2294,8 +2302,41 @@ pub(crate) fn fmt_packed_chars(v: &Value) -> String {
     let nbytes = (v.width as usize).div_ceil(8).max(1);
     let mut s = String::with_capacity(nbytes);
     for bi in (0..nbytes).rev() {
-        let bit = bi * 8;
-        let byte = (v.val.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) as u8;
+        let byte = packed_byte(v, bi);
+        s.push(if byte == 0 { ' ' } else { byte as char });
+    }
+    s
+}
+
+/// Byte `bi` of a packed value (LSB byte = 0). Unknown (x/z) bits are masked OFF
+/// before the byte is read — so an x byte (val=0) AND a z byte (val=1,unk=1) both
+/// read as `0` (a NUL → rendered as a space), matching iverilog. vita's z-bit
+/// encoding is val=1, which would otherwise leak `0xFF`.
+fn packed_byte(v: &Value, bi: usize) -> u8 {
+    let bit = bi * 8;
+    let w = bit / 64;
+    let known = v.val.get(w).copied().unwrap_or(0) & !v.unk.get(w).copied().unwrap_or(0);
+    (known >> (bit % 64)) as u8
+}
+
+/// `%0s` on a packed value: like [`fmt_packed_chars`] but the LEADING NUL bytes
+/// (the high zero-byte padding of a string in a wider reg) are dropped rather than
+/// rendered as spaces. Once the first non-NUL byte is seen, every later byte is
+/// emitted (an embedded or trailing NUL still becomes a space). An all-NUL value
+/// yields the empty string. iverilog-pinned: 64-bit "hello" → "hello"; "hi\0\0" →
+/// "hi  "; "\0h\0i" → "h i"; all-NUL → "".
+pub(crate) fn fmt_packed_chars_min(v: &Value) -> String {
+    let nbytes = (v.width as usize).div_ceil(8).max(1);
+    let mut s = String::with_capacity(nbytes);
+    let mut started = false;
+    for bi in (0..nbytes).rev() {
+        let byte = packed_byte(v, bi); // x/z masked → 0, so leading x/z also strips
+        if !started {
+            if byte == 0 {
+                continue; // skip leading NUL (and x/z) padding
+            }
+            started = true;
+        }
         s.push(if byte == 0 { ' ' } else { byte as char });
     }
     s
