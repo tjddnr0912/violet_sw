@@ -1616,6 +1616,7 @@ fn inst_named(module: &str, inst: &str, conns: Vec<(&str, ast::Expr)>) -> ast::M
                         span: SP,
                     })
                     .collect(),
+                false,
             ),
             span: SP,
         }],
@@ -1651,6 +1652,7 @@ fn inst_named_param(
                         span: SP,
                     })
                     .collect(),
+                false,
             ),
             span: SP,
         }],
@@ -2122,6 +2124,7 @@ fn inst_named_param_expr(
                         span: SP,
                     })
                     .collect(),
+                false,
             ),
             span: SP,
         }],

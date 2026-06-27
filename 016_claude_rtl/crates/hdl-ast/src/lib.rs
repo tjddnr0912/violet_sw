@@ -1567,7 +1567,10 @@ pub enum ParamConn {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]
 pub enum PortConnList {
-    Named(Vec<PortConn>),
+    /// `.p(e)` / `.p` connections. The trailing `bool` is the `.*` wildcard
+    /// flag (IEEE §23.3.2.5): when set, every port the explicit list does not
+    /// name is connected to a same-named signal in the instantiating scope.
+    Named(Vec<PortConn>, bool),
     Positional(Vec<Option<Expr>>),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaHash)]

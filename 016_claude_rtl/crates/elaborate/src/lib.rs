@@ -638,7 +638,7 @@ type ModuleMap<'a> = BTreeMap<&'a str, (&'a ast::ModuleDecl, usize)>;
 /// Borrows directly from the `ast::ModuleInstance` so no per-port allocation.
 enum PortBinding<'a> {
     None,                                // the top instance — no incoming bindings
-    Named(&'a [ast::PortConn]),          // .p(expr)
+    Named(&'a [ast::PortConn], bool),    // .p(expr); the bool is the `.*` wildcard
     Positional(&'a [Option<ast::Expr>]), // (expr, expr, …) with skip slots
 }
 
@@ -4315,7 +4315,7 @@ impl<'s> Elaborator<'s> {
             }
             let child_path = self.child_prefix(&item.name.name);
             let binding = match &item.conns {
-                ast::PortConnList::Named(v) => PortBinding::Named(v),
+                ast::PortConnList::Named(v, wc) => PortBinding::Named(v, *wc),
                 ast::PortConnList::Positional(v) => PortBinding::Positional(v),
             };
             self.elaborate_instance(
@@ -4451,10 +4451,19 @@ impl<'s> Elaborator<'s> {
             Slice { p: u32, msb: i64, lsb: i64 },
         }
         let conns: Vec<(ast::Ident, Option<&ast::Expr>, ast::Span)> = match &item.conns {
-            ast::PortConnList::Named(v) => v
-                .iter()
-                .map(|pc| (pc.name.clone(), pc.value.as_ref(), pc.span))
-                .collect(),
+            ast::PortConnList::Named(v, wc) => {
+                if *wc {
+                    // v1: `.*` across an instance array would need per-element
+                    // same-name resolution (and possibly slicing) — keep loud.
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "`.*` wildcard on an instance array is not yet supported",
+                    );
+                }
+                v.iter()
+                    .map(|pc| (pc.name.clone(), pc.value.as_ref(), pc.span))
+                    .collect()
+            }
             ast::PortConnList::Positional(v) => v
                 .iter()
                 .enumerate()
@@ -4593,7 +4602,7 @@ impl<'s> Elaborator<'s> {
                 &child_path,
                 Some(parent_inst),
                 overrides,
-                PortBinding::Named(&inst_conns),
+                PortBinding::Named(&inst_conns, false),
                 map,
             );
         }
@@ -4830,7 +4839,9 @@ impl<'s> Elaborator<'s> {
             // by pass 8); the early 4c call leaves them for this pass.
             if wire_phase {
                 let has_conns = match &item.conns {
-                    ast::PortConnList::Named(v) => !v.is_empty(),
+                    // `.*` alone matches zero ports on a port-less module → not
+                    // "connections given", so the wildcard does not count here.
+                    ast::PortConnList::Named(v, _) => !v.is_empty(),
                     ast::PortConnList::Positional(v) => !v.is_empty(),
                 };
                 let has_ports = !matches!(&decl.ports, ast::PortList::None)
@@ -4844,7 +4855,7 @@ impl<'s> Elaborator<'s> {
                 }
                 if has_ports {
                     let binding = match &item.conns {
-                        ast::PortConnList::Named(v) => PortBinding::Named(v),
+                        ast::PortConnList::Named(v, wc) => PortBinding::Named(v, *wc),
                         ast::PortConnList::Positional(v) => PortBinding::Positional(v),
                     };
                     let saved_prefix = std::mem::replace(&mut self.cur_prefix, path.clone());
@@ -5026,15 +5037,78 @@ impl<'s> Elaborator<'s> {
         parent_prefix: &str,
     ) {
         let ports = port_list_dirs(module);
+        // `.*` wildcard (IEEE §23.3.2.5): connect every port the explicit list
+        // does not name to a same-named NET or VARIABLE in the instantiating
+        // scope. A same-named NET is connected; a same-named constant
+        // (parameter/enum-label/function) or no match at all is a LOUD error
+        // (iverilog: "did not find a matching identifier") — never a silent
+        // connect-to-constant or float. Built once before the loop so the loop
+        // can borrow the synthesized expressions.
+        let wildcard_conns: Vec<(String, ast::Expr)> = match &binding {
+            PortBinding::Named(v, true) => {
+                // Decide each port in the PARENT scope (where a connection actual
+                // resolves). `self.symbols` holds nets/variables only, so a hit
+                // means a real signal — a parameter/enum-label is absent here.
+                let saved = std::mem::replace(&mut self.cur_prefix, parent_prefix.to_string());
+                let mut synth = Vec::new();
+                let mut missing = Vec::new();
+                for (pname, _) in ports.iter() {
+                    if v.iter().any(|c| &c.name.name == pname) {
+                        continue; // explicitly named (incl. an open `.p()`)
+                    }
+                    if self
+                        .walk_scopes_key(pname, |k| self.symbols.contains_key(k))
+                        .is_some()
+                    {
+                        synth.push(pname.clone());
+                    } else {
+                        missing.push(pname.clone());
+                    }
+                }
+                self.cur_prefix = saved;
+                for pname in missing {
+                    self.error(
+                        MsgCode::ElabPortMismatch,
+                        &format!("`.*` wildcard found no net or variable matching port `{pname}`"),
+                    );
+                }
+                synth
+                    .into_iter()
+                    .map(|pname| {
+                        let id = ast::Ident {
+                            name: pname.clone(),
+                            span: module.name.span,
+                        };
+                        let e = ast::Expr {
+                            span: module.name.span,
+                            kind: ast::ExprKind::Ident(ast::HierPath {
+                                segments: vec![id],
+                                span: module.name.span,
+                            }),
+                        };
+                        (pname, e)
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         for (i, (pname, dir)) in ports.iter().enumerate() {
             // find the connection expr for this port (None ⇒ unconnected).
             let conn: Option<&ast::Expr> = match &binding {
                 PortBinding::None => None,
                 PortBinding::Positional(v) => v.get(i).and_then(|o| o.as_ref()),
-                PortBinding::Named(v) => v
+                PortBinding::Named(v, _) => v
                     .iter()
                     .find(|c| &c.name.name == pname)
-                    .and_then(|c| c.value.as_ref()),
+                    .and_then(|c| c.value.as_ref())
+                    // not explicitly named → a `.*` wildcard same-name reference,
+                    // if one was synthesized for this port.
+                    .or_else(|| {
+                        wildcard_conns
+                            .iter()
+                            .find(|(n, _)| n == pname)
+                            .map(|(_, e)| e)
+                    }),
             };
             // v5 ⑥ (D): interface-typed port → symbol aliasing, not wiring.
             if let Some(iref) = ansi_iface_ref(module, pname) {
@@ -5145,7 +5219,7 @@ impl<'s> Elaborator<'s> {
                     );
                 }
             }
-            PortBinding::Named(v) => {
+            PortBinding::Named(v, _) => {
                 for c in v.iter() {
                     if !ports.iter().any(|(pname, _)| pname == &c.name.name) {
                         self.error(

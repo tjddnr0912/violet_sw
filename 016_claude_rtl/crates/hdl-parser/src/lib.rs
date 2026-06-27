@@ -4724,37 +4724,36 @@ impl<'t, 's> Parser<'t, 's> {
             self.bump();
             return PortConnList::Positional(Vec::new());
         }
-        // `.*` implicit connection (DEFERRED). `.*` = Dot then Star (no DotStar token).
-        if self.peek() == Some(TokenKind::Dot)
-            && self.toks.get(self.pos + 1).map(|t| t.kind) == Some(TokenKind::Star)
-        {
-            self.error("(.* implicit port connection not yet supported; ignored)");
-            self.bump(); // '.'
-            self.bump(); // '*'
-                         // tolerate any trailing explicit conns after `.*` by skipping to ')'
-            while !self.at_eof() && self.peek() != Some(TokenKind::RParen) {
-                self.bump();
-            }
-            self.expect(TokenKind::RParen, "')' after '.*'");
-            return PortConnList::Named(Vec::new());
-        }
-
-        // named iff the first connection starts with a dot
+        // named iff the first connection starts with a dot (covers `.p(e)`, the
+        // `.p` shorthand, and the `.*` wildcard — all begin with `.`).
         let named = self.peek() == Some(TokenKind::Dot);
         if named {
             let mut conns = Vec::new();
+            let mut wildcard = false;
             loop {
-                let before = self.pos;
-                conns.push(self.parse_named_port_conn());
-                if self.pos == before {
-                    self.bump();
+                // `.*` wildcard item (Dot then Star — there is no DotStar token).
+                if self.peek() == Some(TokenKind::Dot)
+                    && self.toks.get(self.pos + 1).map(|t| t.kind) == Some(TokenKind::Star)
+                {
+                    if wildcard {
+                        self.error("a single `.*` per port connection list");
+                    }
+                    wildcard = true;
+                    self.bump(); // '.'
+                    self.bump(); // '*'
+                } else {
+                    let before = self.pos;
+                    conns.push(self.parse_named_port_conn());
+                    if self.pos == before {
+                        self.bump();
+                    }
                 }
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
             }
             self.expect(TokenKind::RParen, "')' closing port connections");
-            PortConnList::Named(conns)
+            PortConnList::Named(conns, wildcard)
         } else {
             // positional: each element is `expr` OR empty (a skipped port → None).
             let mut conns: Vec<Option<Expr>> = Vec::new();
@@ -12035,7 +12034,7 @@ endmodule
         assert_eq!(mi.instances.len(), 1);
         let it = &mi.instances[0];
         assert_eq!(it.name.name, "u1");
-        let PortConnList::Named(conns) = &it.conns else {
+        let PortConnList::Named(conns, _) = &it.conns else {
             panic!("not named")
         };
         assert_eq!(conns.len(), 3);
@@ -12112,7 +12111,7 @@ endmodule
     #[test]
     fn i7_named_empty_and_empty_list() {
         let mi = inst_of("dff u1(.clk(clk), .q());");
-        let PortConnList::Named(conns) = &mi.instances[0].conns else {
+        let PortConnList::Named(conns, _) = &mi.instances[0].conns else {
             panic!("not named")
         };
         assert_eq!(conns.len(), 2);
@@ -12139,23 +12138,36 @@ endmodule
     #[test]
     fn i9_expression_connection() {
         let mi = inst_of("dff u(.d(a & b), .q(q));");
-        let PortConnList::Named(conns) = &mi.instances[0].conns else {
+        let PortConnList::Named(conns, _) = &mi.instances[0].conns else {
             panic!("not named")
         };
         let (op, _l, _r) = bin(conns[0].value.as_ref().unwrap());
         assert_eq!(op, BinOp::BitAnd);
     }
 
-    // I10. recovery: `.*` implicit connection is stubbed (one error), trailing
-    //      good item still parses (verdict: deferred, recovering).
+    // I10. `.*` implicit wildcard connection now parses cleanly (it used to be a
+    //      stub-with-advisory; the wildcard is now supported, IEEE §23.3.2.5), and
+    //      the trailing item still parses.
     #[test]
-    fn i10_dotstar_stub_recovers() {
+    fn i10_dotstar_parses_as_wildcard() {
         let (su, errs) = p("module m; sub u1(.*); assign y = a;\nendmodule");
-        assert!(!errs.is_empty(), "expected the .* advisory");
+        assert!(errs.is_empty(), "`.*` should no longer emit an advisory");
         let su = su.unwrap();
         let m = first_module(&su);
-        // the instance is still present (as an empty Named list)…
-        assert!(m.body.iter().any(|i| matches!(i, ModuleItem::Instance(_))));
+        // the instance is present with an empty explicit list + wildcard = true.
+        let inst = m
+            .body
+            .iter()
+            .find_map(|i| match i {
+                ModuleItem::Instance(it) => Some(it),
+                _ => None,
+            })
+            .expect("instance present");
+        let PortConnList::Named(conns, wildcard) = &inst.instances[0].conns else {
+            panic!("expected a Named conn list for `.*`");
+        };
+        assert!(conns.is_empty(), "`.*` alone has no explicit conns");
+        assert!(*wildcard, "`.*` sets the wildcard flag");
         // …and the trailing assign still parses.
         assert!(m
             .body
