@@ -16,6 +16,7 @@
 - **우선순위: ① 오라클 있는 CRITICAL silent-wrong > ② 오라클 있는 기능 갭(loud→supported) > ③ 전제조건 충족된 honest-loud 승격.** 오라클 없음·전제조건 미충족(예: arm-slot 추적·deferred hier-edge-sens 필요)은 **건드리지 말고 honest-loud 유지**.
 - **쉬운 silent-wrong 소진 시 ②(loud→supported)로 전환**: vita가 loud-reject하나 iverilog가 지원하는 흔한 구문을 오라클로 찾을 것(예: multi-driver tristate). **loud→supported는 additive라 byte-identity가 강력**(거부되던 구문은 기존 디자인에 전무)=silent-wrong 수정보다 저위험. ⚠️ **단, elaborate가 허용을 시작하는 집합 = 엔진이 실제 처리하는 집합이 EXACTLY 동일해야 함**(불일치=허용됐으나 미처리=last-wins silent-wrong). 둘의 eligibility 술어를 같게 쓰고 적대 리뷰로 집합 동일성을 검증.
 - **"byte-identity 리스크가 커 보여 defer"는 측정으로 검증**: 우려가 과대평가일 수 있음(이번 루프: narrow-posedge 와이드화의 "다수 골든 flip" 우려가 측정상 미현실화=t0 무영향·전체 스위트 무회귀). defer 전 실제 영향 케이스를 오라클로 핀.
+- **후보 탐색은 time-box(3~4개 probe)·쉬운 후보 소진 시 pre-grounded deferred 후보로 직행**(이번 루프 교훈): 한 반복서 8+ 후보 probing은 컨텍스트 낭비. ROADMAP §4.5.x deferred 목록(assignment pattern·function-module-var-scoping 등)을 **먼저** 확인—이미 그라운딩된 후보가 있으면 새 probing 없이 그 전용 슬라이스에 착수. probing이 **deep/high-stakes 코어 변경**(예: function 핸들링·스케줄러)을 드러내면 **즉시 pre-grounded 후보로 기록·defer**(rush 금지=불완전 코어 변경은 silent-wrong 위험). 단, **연속 2회 defer는 신호**=다음 반복은 deferred 후보 1개에 처음부터 전념(그라운딩→구현 전용 반복).
 - 선택 즉시 격리 브랜치: `git checkout -b feat-<slug>` (main에서 직접 구현 금지).
 
 ## 2. 사전 리뷰 = 오라클 그라운딩 (브레인스토밍)
