@@ -170,8 +170,13 @@ impl WidthTable {
             Expr::Replicate { count, value } => {
                 let n = const_u32_of_expr(ir, *count).unwrap_or(0);
                 let vw = child(sw, i, *value).width;
+                // A zero replication `{0{x}}` has width 0 (IEEE §11.4.12.1 — legal
+                // only inside a concatenation, where it contributes nothing). The old
+                // `.max(1)` injected a spurious bit, so e.g. `{4'hA,{0{1'b1}},4'h5}`
+                // sized to 9 bits and printed `45` instead of `a5`. `eval_replicate`
+                // already yields width 0, so this aligns the table with the engine.
                 SelfWidth {
-                    width: clamp_w(mul_w(n, vw).max(1)),
+                    width: clamp_w(mul_w(n, vw)),
                     signed: false,
                 }
             }

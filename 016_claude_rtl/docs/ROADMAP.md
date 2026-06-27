@@ -585,6 +585,10 @@ loud-reject로 확인됨(이제 참):**
 
 > §4.5.24 부수 발굴 해결(format cluster 마지막). `%v` of 멀티비트 net이 vita는 bit 0 strength 1개만(`4'b10xz`→`HiZ`)·iverilog는 비트별 전체(`St1_St0_StX_HiZ`). 근본=`strength_form`이 `v.get_vu(0)`만 읽어 단일 `&str` 반환. 수정: 전 비트 MSB-first 순회→`St0`/`St1`(known 0/1)·`StX`(x)·`HiZ`(z) 매핑→`_` join(`String` 반환). vita는 strength model 없음→driven=강(St) 근사(기존 1-bit과 동일·count만 수정). 1-bit byte-identical. 적대 differential **CLEAN**(24 harness: 1/2/4/8/16/32/64/100/128-bit·word-boundary·all-x/z·`%V`·$write/$monitor 일관)·soundness **SOUND**(MSB-first·get_vu map_or 무panic·wide multi-word). 4 테스트. pre-existing(b·out-of-scope): `%v` of const-literal/real=iverilog VPI 거부·drive-strength syntax(`wire (weak1,weak0)`)=파서 미지원=별개.
 
+#### 4.5.26 zero-count replication `{0{x}}` width (2026-06-27, branch `feat-zero-replicate`) ✅
+
+> format cluster 소진 후 branch-out(arithmetic·string-method·기타 probe 다수 clean)→concat sweep서 신규 silent-wrong 발굴. `{0{x}}`(IEEE §11.4.12.1=width 0·concat 내부서만 합법·contribute nothing)가 vita서 1 bit으로 잘못 계산→`{4'hA,{0{1'b1}},4'h5}`가 9-bit로 sizing돼 `45`(should `a5`)·trailing은 더 심함(`86` vs `c3`). 근본=`width.rs` Replicate self-width `mul_w(n,vw).max(1)`의 **`.max(1)`이 n=0서 spurious 1-bit 주입**(eval_replicate은 이미 width 0 산출→table/eval 불일치). 수정=`.max(1)` 제거(`clamp_w(mul_w(n,vw))`·n=0→0). n≥1·vw≥1은 `.max(1)` no-op이라 byte-identical. 적대 differential **CLEAN**(36 file: leading/middle/trailing/multiple·multi-bit·x/z·param/localparam conditional concat·comparison/ternary/case/port/CA·sign-extend idiom·nonzero byte-identity·$bits)·soundness **SOUND**(`.max(1)` 비-load-bearing=consumer가 lvalue_width 등서 자체 `.max(1)`·eval/table 일치·clamp_w(0)=0). 5 테스트. pre-existing(b·별개): standalone `{0{x}}`·variable replication count=iverilog 거부하나 vita 수용(elaborate 미검증·unchanged).
+
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
 SYS-READ·SYS-INTRO·DIR-PP를 IR-0-now vs 단일 **v9 bump**으로 분할(워크플로우 understand×3+probe×4→synth). **원칙: IR-0 슬라이스 먼저, frozen-IR(새 SysFuncId/SysTaskId)은 한 번의 v9 bump에 일괄, iverilog 오라클 우선.** ⚠️ 진단 비대칭: 미인식 `$func`=E3009-LOUD(전 디자인 kill) vs `$task`=W3056-skip → 미구현 introspection func가 디자인 전체를 죽이므로 const-fold(rank 2)가 고가치.
