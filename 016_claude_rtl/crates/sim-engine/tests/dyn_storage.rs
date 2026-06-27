@@ -167,7 +167,7 @@ fn dyn_new_size_delete_roundtrip() {
     let ir = ir_of(vec![dyn_handle()], vec![int_const(5)], exprs, stmts);
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         5\n         0\n"); // unformatted arg = default-width decimal
+    assert_eq!(out, "          5\n          0\n"); // unformatted arg = default-width decimal
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn dyn_new_copy_form_sizes_by_n() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         6\n");
+    assert_eq!(out, "          6\n");
 }
 
 #[test]
@@ -470,7 +470,7 @@ fn queue_push_ir() -> SimIr {
 fn queue_push_index_size_roundtrip() {
     let (res, out) = simulate_capture(&queue_push_ir(), SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         3\n         5\n        10\n        20\n");
+    assert_eq!(out, "          3\n         5\n        10\n        20\n");
 }
 
 /// pushes {5,10,20}, then x = pop_back (20), y = pop_front (5), size 1.
@@ -525,7 +525,7 @@ fn queue_pop_ir() -> SimIr {
 fn queue_pop_back_front_values_and_size() {
     let (res, out) = simulate_capture(&queue_pop_ir(), SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "        20\n         5\n         1\n");
+    assert_eq!(out, "        20\n         5\n          1\n");
 }
 
 #[test]
@@ -560,7 +560,7 @@ fn queue_pop_empty_is_x_with_one_warn() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         x\n         0\n");
+    assert_eq!(out, "         x\n          0\n");
     let sink = DiagSink::default();
     let res = simulate(&ir, &sink, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
@@ -688,7 +688,7 @@ fn queue_write_at_size_appends_beyond_is_ignored() {
     let ir = ir_of(vec![q_handle(32, false)], consts, exprs, stmts);
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         3\n        33\n");
+    assert_eq!(out, "          3\n        33\n");
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
     let diags = sink.0.into_inner();
@@ -731,7 +731,7 @@ fn queue_delete_empties() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         2\n         0\n");
+    assert_eq!(out, "          2\n          0\n");
 }
 
 #[test]
@@ -790,7 +790,7 @@ fn queue_pop_extends_by_element_signedness() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "        -1\n        44\n       255\n");
+    assert_eq!(out, "         -1\n         44\n       255\n");
 }
 
 #[test]
@@ -840,7 +840,7 @@ fn queue_nba_pop_rhs_is_x_and_queue_intact() {
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(
-        out, "         1\n",
+        out, "          1\n",
         "queue must NOT be drained by an NBA pop"
     );
     let sink = DiagSink::default();
@@ -911,7 +911,7 @@ fn dyn_oob_write_is_ignored_with_warn() {
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(
-        out, "         2\n         7\n",
+        out, "          2\n         7\n",
         "size unchanged, d[0] intact"
     );
 }
@@ -1009,7 +1009,7 @@ fn assoc_rw_ir() -> SimIr {
 fn assoc_write_read_num_roundtrip() {
     let (res, out) = simulate_capture(&assoc_rw_ir(), SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "        10\n        20\n         2\n");
+    assert_eq!(out, "        10\n        20\n          2\n");
 }
 
 #[test]
@@ -1098,7 +1098,7 @@ fn assoc_x_key_read_x_write_ignored_with_warn() {
     let ir = ir_of(vec![a_handle(32, false)], consts, exprs, stmts);
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         x\n         1\n        10\n");
+    assert_eq!(out, "         x\n          1\n        10\n");
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
     let diags = sink.0.into_inner();
@@ -1212,7 +1212,7 @@ fn assoc_delete_ir() -> SimIr {
 fn assoc_delete_key_missing_silent_then_clear() {
     let (res, out) = simulate_capture(&assoc_delete_ir(), SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         1\n0\n         1\n         0\n");
+    assert_eq!(out, "          1\n0\n          1\n          0\n");
     let sink = DiagSink::default();
     simulate(&assoc_delete_ir(), &sink, SimOpts::default());
     let diags = sink.0.into_inner();
@@ -1266,7 +1266,7 @@ fn assoc_element_signedness_extension() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "        -1\n       255\n");
+    assert_eq!(out, "         -1\n        255\n");
 }
 
 #[test]
@@ -1392,7 +1392,7 @@ fn assoc_concat_lvalue_chunk_degrades_loud() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         0\n        77\n");
+    assert_eq!(out, "          0\n        77\n");
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
     let diags = sink.0.into_inner();
@@ -1521,7 +1521,7 @@ fn queue_insert_middle_append_and_oob() {
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(
         out,
-        "         4\n        10\n        99\n         5\n        77\n         5\n"
+        "          4\n        10\n        99\n          5\n        77\n          5\n"
     );
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
@@ -1587,7 +1587,7 @@ fn queue_delete_index_and_oob() {
     let ir = ir_of(vec![q_handle(32, false)], consts, exprs, stmts);
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         2\n        99\n        20\n         2\n");
+    assert_eq!(out, "          2\n        99\n        20\n          2\n");
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
     let diags = sink.0.into_inner();
@@ -1654,7 +1654,7 @@ fn assoc_first_next_ascending_then_exhausted() {
     // st/k pairs: (1,−3) (1,7) (1,100) (0,100 — k UNCHANGED on exhaustion).
     assert_eq!(
         out,
-        "         1\n        -3\n         1\n         7\n         1\n       100\n         0\n       100\n"
+        "          1\n         -3\n          1\n          7\n          1\n        100\n          0\n        100\n"
     );
 }
 
@@ -1664,7 +1664,7 @@ fn assoc_last_prev_descending_then_exhausted() {
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(
         out,
-        "         1\n       100\n         1\n         7\n         1\n        -3\n         0\n        -3\n"
+        "          1\n        100\n          1\n          7\n          1\n         -3\n          0\n         -3\n"
     );
 }
 
@@ -1690,7 +1690,7 @@ fn assoc_first_on_empty_returns_zero_key_unchanged() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         0\n         5\n");
+    assert_eq!(out, "          0\n          5\n");
 }
 
 #[test]
@@ -1731,7 +1731,7 @@ fn assoc_iter_narrow_key_truncates_with_minus1() {
     );
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "        -1\n 44\n");
+    assert_eq!(out, "         -1\n  44\n");
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
     let diags = sink.0.into_inner();
@@ -1778,7 +1778,7 @@ fn queue_dense_first_next_walk() {
     assert_eq!(res.finish_reason, FinishReason::Finish);
     assert_eq!(
         out,
-        "         1\n         0\n         1\n         1\n         0\n         1\n"
+        "          1\n          0\n          1\n          1\n          0\n          1\n"
     );
 }
 
@@ -1899,7 +1899,7 @@ fn assoc_str_write_read_exists_delete_roundtrip() {
     let ir = ir_of(vec![as_handle(32, false)], consts, exprs, stmts);
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         7\n1\n0\n         1\n         0\n");
+    assert_eq!(out, "         7\n1\n0\n          1\n          0\n");
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
     let diags = sink.0.into_inner();
@@ -1962,7 +1962,7 @@ fn assoc_str_first_next_lexicographic() {
     // 64-bit unsigned display pads to 20 columns.
     assert_eq!(
         out,
-        "         1\n               24929\n         1\n                  98\n         0\n"
+        "          1\n               24929\n          1\n                  98\n          0\n"
     );
 }
 
@@ -1997,7 +1997,7 @@ fn assoc_str_x_key_lanes_warn() {
     let ir = ir_of(vec![as_handle(8, false)], consts, exprs, stmts);
     let (res, out) = simulate_capture(&ir, SimOpts::default());
     assert_eq!(res.finish_reason, FinishReason::Finish);
-    assert_eq!(out, "         0\n  x\n0\n");
+    assert_eq!(out, "          0\n  x\n0\n");
     let sink = DiagSink::default();
     simulate(&ir, &sink, SimOpts::default());
     let diags = sink.0.into_inner();

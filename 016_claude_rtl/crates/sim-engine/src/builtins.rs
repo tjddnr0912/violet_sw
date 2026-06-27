@@ -2090,7 +2090,7 @@ fn push_default_radix(v: &Value, out: &mut String, radix: Option<u8>) {
         Some(16) => out.push_str(&fmt_radix(v, 4, false, None)),
         _ => {
             let s = fmt_dec(v);
-            let fw = dec_field_width(v.width);
+            let fw = dec_field_width(v.width, v.signed);
             if s.len() < fw {
                 out.push_str(&" ".repeat(fw - s.len()));
             }
@@ -2194,7 +2194,7 @@ fn render_template(
                 let fw = match (min_zero, field_width) {
                     (true, Some(0)) => 0,
                     (_, Some(n)) => n,
-                    (_, None) => dec_field_width(v.width),
+                    (_, None) => dec_field_width(v.width, v.signed),
                 };
                 if s.len() < fw {
                     let pad = fw - s.len();
@@ -2310,11 +2310,27 @@ fn next_arg(sched: &Scheduler, args: &[u32], argi: &mut usize) -> Value {
 /// IEEE %d default field width = decimal digit count of an `n`-bit operand's max
 /// value (`2^n − 1`): 1-bit→1, 8-bit→3, 32-bit→10. Computed exactly up to 128 bits,
 /// then via `n·log10(2)` (a column-alignment hint; exactness beyond 128 is moot).
-fn dec_field_width(n: u32) -> usize {
+fn dec_field_width(n: u32, signed: bool) -> usize {
     if n == 0 {
         return 1;
     }
-    if n <= 128 {
+    if signed && n > 1 {
+        // A signed `%d` field holds a sign char plus the digits of the most-negative
+        // magnitude 2^(n-1) (iverilog-pinned: 8-bit → "-128" = 4, 32-bit →
+        // "-2147483648" = 11). This is NOT simply unsigned_width + 1 — for some
+        // widths the two coincide (10-bit: signed "-512" and unsigned 1023 are both
+        // 4 wide), so the magnitude must be computed directly. A 1-bit signed value
+        // is the exception: iverilog gives it field width 1 (NOT 2), so n==1 falls
+        // through to the unsigned branch below (the lone `-1` overflows the 1-col
+        // field, as in iverilog).
+        if n <= 128 {
+            let mag: u128 = 1u128 << (n - 1);
+            1 + mag.to_string().len()
+        } else {
+            // wide: digits(2^(n-1)) ≈ (n-1)*log10(2)+1, plus the sign.
+            2 + ((n - 1) as f64 * std::f64::consts::LOG10_2) as usize
+        }
+    } else if n <= 128 {
         let maxv: u128 = if n == 128 {
             u128::MAX
         } else {
