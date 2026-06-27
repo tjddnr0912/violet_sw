@@ -108,24 +108,26 @@ struct TypeInfo {
 
 /// Flat bit layout of a packed struct: members are placed MSB-first into one
 /// `logic [total-1:0]` vector. `fields` carries `(name, lsb_offset, width,
-/// ascending, signed)` so a `s.field` access desugars to the constant part-select
-/// `s[off+w-1 : off]`, and a trailing sub-select (`s.f[i]` / `s.f[a:b]` /
-/// `s.f[base±:w]`) can be remapped onto the flat vector with the member's
-/// declared direction (`ascending` = `logic [0:N]`, field index 0 = MSB).
+/// ascending, signed, two_state)` so a `s.field` access desugars to the constant
+/// part-select `s[off+w-1 : off]`, and a trailing sub-select (`s.f[i]` /
+/// `s.f[a:b]` / `s.f[base±:w]`) can be remapped onto the flat vector with the
+/// member's declared direction (`ascending` = `logic [0:N]`, field index 0 = MSB).
 /// `signed` is the member's EFFECTIVE signedness (atom types `int`/`byte`/… and
 /// `signed`-qualified vectors are signed); the WHOLE-field read is wrapped in a
 /// `$signed()` so a signed member reads back negative (a sub-select stays
-/// unsigned per §5.4.1, matching iverilog).
+/// unsigned per §5.4.1, matching iverilog). `two_state` (the member is `bit`/
+/// `byte`/`int`/`shortint`/`longint`) drives the `'{…}` pattern desugar to coerce
+/// X/Z→0 into that field (§6.11.3), which a 4-state member does not.
 #[derive(Clone)]
 struct StructLayout {
-    fields: Vec<(String, u32, u32, bool, bool)>,
+    fields: Vec<(String, u32, u32, bool, bool, bool)>,
 }
 impl StructLayout {
     fn field(&self, name: &str) -> Option<(u32, u32, bool, bool)> {
         self.fields
             .iter()
-            .find(|(n, _, _, _, _)| n == name)
-            .map(|(_, o, w, asc, sgn)| (*o, *w, *asc, *sgn))
+            .find(|(n, _, _, _, _, _)| n == name)
+            .map(|(_, o, w, asc, sgn, _ts)| (*o, *w, *asc, *sgn))
     }
 }
 
@@ -190,6 +192,17 @@ pub struct Parser<'t, 's> {
     struct_layouts: std::collections::HashMap<String, StructLayout>,
     /// Variable name → its struct type name (module-scoped; cleared per module).
     var_struct: std::collections::HashMap<String, String>,
+    /// Scalar (no unpacked dims) packed-struct variable names — the subset of
+    /// `var_struct` keys eligible for the `'{e0,…}` assignment-pattern desugar
+    /// (§10.9.1). An array-of-struct (`st_t a[4]`) is in `var_struct` but NOT
+    /// here, so `a = '{…}` is left on the unpacked-array path, never mistaken
+    /// for a packed-struct concat. Module-scoped; cleared per module.
+    struct_scalar_vars: std::collections::HashSet<String>,
+    /// Packed-union type names. Unions share `struct_layouts` (for `u.field`
+    /// reads) but their overlay layout is NOT a packed concat, so a union var is
+    /// kept OUT of `struct_scalar_vars` and its `'{…}` pattern stays loud.
+    /// Accumulates across the source unit (type names are not module-scoped).
+    union_type_names: std::collections::HashSet<String>,
     /// Module-scope `localparam` name → its constant value, but ONLY when the value
     /// is a pure literal constant (no `parameter` dependency). Used to fold a
     /// constant generate-array hier index (`g[P].x`, P a localparam). Safe because a
@@ -246,6 +259,8 @@ impl<'t, 's> Parser<'t, 's> {
             typedefs: std::collections::HashMap::new(),
             struct_layouts: std::collections::HashMap::new(),
             var_struct: std::collections::HashMap::new(),
+            struct_scalar_vars: std::collections::HashSet::new(),
+            union_type_names: std::collections::HashSet::new(),
             const_locals: std::collections::HashMap::new(),
             pending_mono_specs: Vec::new(),
             loop_labels: Vec::new(),
@@ -2001,6 +2016,7 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         // Variable→struct bindings are module-scoped (type *names* are not).
         self.var_struct.clear();
+        self.struct_scalar_vars.clear();
         self.var_enum.clear();
         self.const_locals.clear();
         let is_macromodule = self.at_kw(Kw::Macromodule);
@@ -5001,13 +5017,25 @@ impl<'t, 's> Parser<'t, 's> {
         } else {
             Vec::new()
         };
-        let names = self.parse_decl_name_list()?;
+        let mut names = self.parse_decl_name_list()?;
         self.expect(TokenKind::Semi, "';'");
         // If this is a struct type, bind each declared name → type so `var.field`
-        // member accesses can be desugared to part-selects.
+        // member accesses can be desugared to part-selects. A scalar (no unpacked
+        // dims) struct var is additionally eligible for the `'{…}` pattern
+        // desugar, applied here to its decl-init `= '{…}` (§10.9.1).
         if self.struct_layouts.contains_key(&tyname) {
-            for n in &names {
+            let is_union = self.union_type_names.contains(&tyname);
+            for n in &mut names {
                 self.var_struct.insert(n.name.name.clone(), tyname.clone());
+                // A scalar STRUCT (not union, no unpacked dims) is eligible for the
+                // `'{…}` pattern desugar; a union overlay is not (kept loud).
+                if n.unpacked.is_empty() && !is_union {
+                    self.struct_scalar_vars.insert(n.name.name.clone());
+                    if let Some(init) = n.init.take() {
+                        let nm = n.name.name.clone();
+                        n.init = Some(self.desugar_struct_assign_pattern(&nm, init));
+                    }
+                }
             }
         }
         // If this is a (literal-foldable) enum type, bind each name → enum type so
@@ -5265,10 +5293,16 @@ impl<'t, 's> Parser<'t, 's> {
                 *w,
                 Self::member_ascending(&m.range),
                 m.signed,
+                Self::member_kind_two_state(m.kind),
             ));
         }
         self.struct_layouts
             .insert(tname.name.clone(), StructLayout { fields });
+        // If a union with the same name was defined in an earlier module, retract it
+        // from union_type_names so this struct definition wins (consistent with
+        // struct_layouts last-writer-wins semantics; otherwise a later same-named
+        // struct var would be wrongly excluded from '{…} pattern desugar).
+        self.union_type_names.remove(&tname.name);
         // §7.2.1: an all-2-state struct is itself 2-state — back it with a 2-state
         // `bit` vector so it defaults to 0, not X (matches iverilog). Any 4-state
         // member (`logic`/`integer`/`time`/net) makes the whole struct 4-state.
@@ -5369,11 +5403,18 @@ impl<'t, 's> Parser<'t, 's> {
                     *w,
                     Self::member_ascending(&m.range),
                     m.signed,
+                    Self::member_kind_two_state(m.kind),
                 )
             })
             .collect();
         self.struct_layouts
             .insert(tname.name.clone(), StructLayout { fields });
+        // A union shares the `struct_layouts` map (for `u.field` member reads) but
+        // its overlay layout (all fields at offset 0, width = MAX) is NOT a packed
+        // concat — so it is recorded here to EXCLUDE it from the `'{…}` pattern
+        // desugar (which would wrongly concatenate the fields). Pattern on a union
+        // stays loud.
+        self.union_type_names.insert(tname.name.clone());
         // §7.2.1: an all-2-state union is itself 2-state (defaults to 0); any
         // 4-state member makes the whole union 4-state (defaults to X).
         let union_kind =
@@ -5634,6 +5675,113 @@ impl<'t, 's> Parser<'t, 's> {
             span: path.segments[0].span,
         };
         Some((base, off, w, asc, sgn))
+    }
+
+    /// IEEE §10.9.1 packed-struct positional assignment pattern. When `rhs` is
+    /// `'{e0,…,eN}` and `var_name` is a *scalar* packed-struct variable, desugar
+    /// it to the field-width-cast concat `{w0'(e0), …, wN'(eN)}` — field 0 is the
+    /// MSB (leftmost). Each element is sized to its FIELD width (NOT
+    /// self-determined), so an unsized or fill (`'1`/`'x`/`'z`) element grows to
+    /// the field: `'{5,6}` ≠ `{5,6}`. The size cast reuses the existing
+    /// `CastTarget::Size` lowering (which sizes a fill operand in the cast width,
+    /// §11.6), so no elaborate/IR change is needed — struct layout is parser-only.
+    ///
+    /// `rhs` is returned untouched when it is not a pattern or `var_name` is not a
+    /// scalar struct var (an array-of-struct stays on the 1-D unpacked-array path,
+    /// a non-struct var is unaffected) — so every non-struct assignment is
+    /// byte-identical. A struct pattern with the wrong element count is a loud
+    /// parse error (matching iverilog, which rejects a field-count mismatch).
+    fn desugar_struct_assign_pattern(&mut self, var_name: &str, rhs: Expr) -> Expr {
+        if !matches!(rhs.kind, ExprKind::AssignPattern(_))
+            || !self.struct_scalar_vars.contains(var_name)
+        {
+            return rhs;
+        }
+        // Each field's (width, is_two_state) in declaration order (field 0 = MSB =
+        // leftmost concat part); cloned out so `self` is free for `error` below.
+        let fields: Vec<(u32, bool)> = match self
+            .var_struct
+            .get(var_name)
+            .and_then(|ty| self.struct_layouts.get(ty))
+        {
+            Some(l) => l
+                .fields
+                .iter()
+                .map(|(_, _, w, _, _, ts)| (*w, *ts))
+                .collect(),
+            None => return rhs,
+        };
+        let span = rhs.span;
+        let ExprKind::AssignPattern(elems) = rhs.kind else {
+            unreachable!("guarded by matches! above")
+        };
+        if elems.len() != fields.len() {
+            self.error("exactly one `'{…}` element for each packed-struct field");
+            return Expr {
+                kind: ExprKind::AssignPattern(elems),
+                span,
+            };
+        }
+        // A 2-state field is X/Z-coerced by squashing the element through
+        // `longint'(e)` (the widest 2-state prim) before sizing; one wider than 64
+        // bits cannot be squashed this way, so honest-loud rather than silent-wrong.
+        if fields.iter().any(|&(w, ts)| ts && w > 64) {
+            self.error("a 2-state packed-struct field no wider than 64 bits in `'{…}`");
+            return Expr {
+                kind: ExprKind::AssignPattern(elems),
+                span,
+            };
+        }
+        let parts = elems
+            .into_iter()
+            .zip(fields)
+            .map(|(e, (w, two_state))| {
+                // 4-state field: keep the value (plain size cast). 2-state field:
+                // coerce X/Z→0 (§6.11.3) via `w'(longint'(e))` — `longint'` squashes
+                // unknowns to 0; the size cast then takes the field's low `w` bits.
+                let inner = if two_state {
+                    Expr {
+                        kind: ExprKind::Cast {
+                            target: CastTarget::Prim(CastPrim::Longint),
+                            expr: Box::new(e),
+                        },
+                        span,
+                    }
+                } else {
+                    e
+                };
+                Expr {
+                    kind: ExprKind::Cast {
+                        target: CastTarget::Size(Box::new(Self::dec_lit(w, span))),
+                        expr: Box::new(inner),
+                    },
+                    span,
+                }
+            })
+            .collect();
+        Expr {
+            kind: ExprKind::Concat { parts },
+            span,
+        }
+    }
+
+    /// Statement-assignment hook for the packed-struct `'{…}` pattern: when the
+    /// target is a whole scalar struct variable (`s = '{…}`, a single-segment
+    /// `Lvalue::Ident`), desugar the RHS. A field / indexed / concat lvalue is
+    /// left untouched (those are not whole-struct assignments).
+    fn maybe_struct_pattern_rhs(&mut self, lhs: &Lvalue, rhs: Expr) -> Expr {
+        // Fast path: only `'{…}` to a whole single-name target can desugar; every
+        // other assignment returns `rhs` untouched (byte-identical) with no clone.
+        if !matches!(rhs.kind, ExprKind::AssignPattern(_)) {
+            return rhs;
+        }
+        if let Lvalue::Ident(p) = lhs {
+            if p.segments.len() == 1 {
+                let nm = p.segments[0].name.clone();
+                return self.desugar_struct_assign_pattern(&nm, rhs);
+            }
+        }
+        rhs
     }
 
     /// Is a packed-struct member declared with an ascending range (`logic [0:N]`,
@@ -7467,6 +7615,7 @@ impl<'t, 's> Parser<'t, 's> {
                 self.bump();
                 let (delay, event) = self.parse_intra_assign_timing(true);
                 let rhs = self.expr(0);
+                let rhs = self.maybe_struct_pattern_rhs(&lhs, rhs);
                 self.expect(TokenKind::Semi, "';'");
                 Stmt::Blocking {
                     lhs,
@@ -7480,6 +7629,7 @@ impl<'t, 's> Parser<'t, 's> {
                 self.bump();
                 let (delay, event) = self.parse_intra_assign_timing(false);
                 let rhs = self.expr(0);
+                let rhs = self.maybe_struct_pattern_rhs(&lhs, rhs);
                 self.expect(TokenKind::Semi, "';'");
                 Stmt::NonBlocking {
                     lhs,
