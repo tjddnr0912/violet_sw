@@ -2611,6 +2611,16 @@ struct Elaborator<'s> {
     // ONE synthesized `initial` process after the module's item loop, so `b`
     // sees `a`'s value instead of silently keeping its X/0 default. (lvalue, rhs).
     pending_var_inits: Vec<(ast::Lvalue, ast::Expr)>,
+    // Block-local `string s = expr;` initializers (collected by
+    // `hoist_block_local_nets`). A block-local string init can READ a module-scope
+    // string, but `hoist_block_local_nets` runs BEFORE `collect_var_init_drivers`,
+    // so pushing it straight into `pending_var_inits` would order the block-local
+    // assignment ahead of the module one (the block-local would read the module
+    // string's empty default). These are held here and appended to
+    // `pending_var_inits` AFTER the module inits, so the t0 pre-sweep assigns
+    // module strings first. (Block-local INT inits keep their existing slot in
+    // `pending_var_inits` — byte-identical for non-string designs.)
+    pending_block_local_string_inits: Vec<(ast::Lvalue, ast::Expr)>,
     // v8 SVA: concurrent assertions collected during statement lowering, drained
     // into synthesized clocked checker processes after each module's process loop.
     pending_sva: Vec<PendingSva>,
@@ -2753,6 +2763,7 @@ impl<'s> Elaborator<'s> {
             event_nets: std::collections::BTreeSet::new(),
             proc_scopes: Vec::new(),
             pending_var_inits: Vec::new(),
+            pending_block_local_string_inits: Vec::new(),
             pending_sva: Vec::new(),
             pending_cover: Vec::new(),
             deferred_hier: Vec::new(),
@@ -4356,6 +4367,11 @@ impl<'s> Elaborator<'s> {
                 self.collect_var_init_drivers(d);
             }
         }
+        // Deferred block-local string inits run AFTER the module-scope inits above
+        // (a block-local string may read a module string), but still in the same
+        // single t0 pre-sweep `initial`.
+        let mut bl_strings = std::mem::take(&mut self.pending_block_local_string_inits);
+        self.pending_var_inits.append(&mut bl_strings);
         self.flush_pending_var_inits();
 
         // (6.5) N4 clocking: synthesize preponed-sampled holding nets + a marked
@@ -6143,7 +6159,7 @@ impl<'s> Elaborator<'s> {
                         }
                         continue;
                     }
-                    self.elaborate_netvar_decl(d, ports, body, false);
+                    self.elaborate_netvar_decl(d, ports, body, true);
                     // §6.8/§6.21: a NON-constant PROCESS block-local initializer
                     // (`begin logic x = g+1; …`) is STATIC-lifetime — applied ONCE
                     // at time 0 (the block-local net is module-flattened), NOT on
@@ -6151,19 +6167,38 @@ impl<'s> Elaborator<'s> {
                     // `initial` as a module-scope non-const var-init (matches
                     // iverilog for an `always`/`for` body, which freezes the t0
                     // value). A constant init already folded into net.init (skip).
-                    if netvar_kind_is_var(d.kind) {
+                    // A scalar `string s = expr;` block-local has no foldable
+                    // net.init field, so it always rides this t0 pre-sweep (a
+                    // dimensioned string was loud-rejected in `elaborate_netvar_decl`).
+                    let scalar_string = matches!(d.kind, ast::NetVarKind::String)
+                        && d.range.is_none()
+                        && d.packed.is_empty();
+                    if netvar_kind_is_var(d.kind) || scalar_string {
                         for name in &d.names {
                             let Some(init) = &name.init else { continue };
-                            if name.unpacked.is_empty()
-                                && fold_init(init, 1).is_none()
-                                && self.const_eval_in_scope(init).is_none()
-                            {
+                            let push = if scalar_string {
+                                name.unpacked.is_empty()
+                            } else {
+                                name.unpacked.is_empty()
+                                    && fold_init(init, 1).is_none()
+                                    && self.const_eval_in_scope(init).is_none()
+                            };
+                            if push {
                                 let path = ast::HierPath {
                                     segments: vec![name.name.clone()],
                                     span: name.name.span,
                                 };
-                                self.pending_var_inits
-                                    .push((ast::Lvalue::Ident(path), init.clone()));
+                                // A block-local STRING init goes to the deferred
+                                // list so it is assigned AFTER module-scope string
+                                // inits (it may read one); a non-string keeps its
+                                // existing `pending_var_inits` slot (byte-identical).
+                                if scalar_string {
+                                    self.pending_block_local_string_inits
+                                        .push((ast::Lvalue::Ident(path), init.clone()));
+                                } else {
+                                    self.pending_var_inits
+                                        .push((ast::Lvalue::Ident(path), init.clone()));
+                                }
                             }
                         }
                     }

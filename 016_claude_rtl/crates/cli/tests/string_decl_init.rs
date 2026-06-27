@@ -96,16 +96,55 @@ fn string_init_is_one_time_not_continuous() {
 }
 
 #[test]
-fn block_local_string_init_is_loud() {
-    // A string initializer inside a procedural block-local is not yet collected,
-    // so it stays loud (correct-or-loud) — never a silently-dropped init (which an
-    // adversarial review caught when the reject was removed from every scope).
-    let (_o, code) = run("module top; \
-         initial begin string s=\"x\"; #1 $display(\"s=%s\",s); $finish; end endmodule\n");
+fn block_local_string_init_works() {
+    // A string initializer inside a procedural block-local is now supported: it
+    // rides the same t0 pre-sweep `pending_var_inits` path as a block-local int
+    // init (STATIC-lifetime, applied once at time 0). (It was loud in §4.5.31; a
+    // follow-on slice added the block-local collection.)
+    let (out, code) = run("module top; \
+         initial begin string s=\"hi\"; #1 $display(\"s=%s\",s); $finish; end endmodule\n");
+    assert_eq!(code, Some(0));
+    assert!(out.contains("s=hi"), "block-local string init; got:\n{out}");
+}
+
+#[test]
+fn block_local_string_init_then_modify() {
+    // The block-local string is a normal variable after its one-time init.
+    let (out, _c) = run("module top; \
+         initial begin string s=\"abc\"; s={s,\"d\"}; #1 $display(\"s=%s\",s); $finish; end endmodule\n");
+    assert!(
+        out.contains("s=abcd"),
+        "block-local init then modify; got:\n{out}"
+    );
+}
+
+#[test]
+fn block_local_string_init_reads_module_string() {
+    // A block-local string initializer that reads a MODULE-scope string must see
+    // the module string's initialized value, not its empty default. An adversarial
+    // review caught the first cut ordering the block-local assignment before the
+    // module one in the shared t0 pre-sweep (b came out empty); block-local string
+    // inits are now deferred to run after the module-scope inits.
+    let (out, _c) = run("module top; string m=\"HELLO\"; \
+         initial begin string b=m; #1 $display(\"b=%s m=%s\",b,m); $finish; end endmodule\n");
+    assert!(
+        out.contains("b=HELLO m=HELLO"),
+        "block reads module string; got:\n{out}"
+    );
+}
+
+#[test]
+fn coalescing_block_local_string_is_loud() {
+    // Two sibling blocks declaring the same-named string coalesce to one
+    // module-flattened net with no per-block heap — a shared-heap leak — so it
+    // stays loud (correct-or-loud), unaffected by enabling block-local string init.
+    let (_o, code) = run("module top; initial begin \
+         begin string s=\"a\"; end begin string s=\"b\"; #1 $display(\"%s\",s); end \
+         $finish; end endmodule\n");
     assert_ne!(
         code,
         Some(0),
-        "block-local string init must be loud, not silent"
+        "coalescing block-local string must stay loud"
     );
 }
 
