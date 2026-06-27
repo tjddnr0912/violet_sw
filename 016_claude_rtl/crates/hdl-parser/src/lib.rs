@@ -4773,8 +4773,10 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// `.PORT(expr)` | `.PORT()`  → PortConn { name, value, span }.
+    /// `.PORT(expr)` | `.PORT()` | `.PORT`  → PortConn { name, value, span }.
     /// `.PORT()` (explicitly-unconnected) ⇒ value = None.
+    /// `.PORT` (no parens, IEEE §23.3.2.3 implicit-named shorthand) ⇒
+    /// `.PORT(PORT)` — the port binds to a same-named signal in this scope.
     fn parse_named_port_conn(&mut self) -> PortConn {
         let start = self.cur_span();
         self.expect(TokenKind::Dot, "'.' in named port connection");
@@ -4782,6 +4784,24 @@ impl<'t, 's> Parser<'t, 's> {
             name: String::new(),
             span: self.cur_span(),
         });
+        // `.name` shorthand: no `(` ⇒ desugar to `.name(name)`. The synthesized
+        // identifier flows through the ordinary named-connection path, so a
+        // missing same-named signal becomes a normal (loud) bind error — exactly
+        // as iverilog reports it. A bare `.name(...)` is unchanged.
+        if self.peek() != Some(TokenKind::LParen) {
+            let value = (!name.name.is_empty()).then(|| Expr {
+                span: name.span,
+                kind: ExprKind::Ident(HierPath {
+                    segments: vec![name.clone()],
+                    span: name.span,
+                }),
+            });
+            return PortConn {
+                name,
+                value,
+                span: start.to(self.prev_span()),
+            };
+        }
         self.expect(TokenKind::LParen, "'(' after port name");
         let value = if self.peek() == Some(TokenKind::RParen) {
             None // `.clk()` — explicitly unconnected
