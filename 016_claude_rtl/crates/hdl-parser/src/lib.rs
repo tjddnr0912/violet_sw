@@ -7146,6 +7146,39 @@ impl<'t, 's> Parser<'t, 's> {
                 if range.is_none() {
                     range = self.opt_range();
                 }
+            } else if let Some(info) = self.peek_block_typedef_decl() {
+                // A user-defined type name as the return type: `function b_t f;`
+                // (the `<typedef_name> <function_name>` shape — same disambiguation
+                // as a block-local decl). Map the typedef's resolved type onto the
+                // return fields, mirroring the built-in-keyword arm above.
+                self.bump(); // the typedef name
+                             // The function return-type fields carry one packed dimension
+                             // (`range`); a multi-dim packed typedef (`typedef logic [3:0][7:0]
+                             // m_t`) cannot be represented, so loud-reject rather than silently
+                             // return only the first dimension's width (correct-or-loud).
+                if !info.packed.is_empty() {
+                    self.error("a multi-dimension packed type as a function return type");
+                }
+                signed = info.signed;
+                range = info.range.clone();
+                ret_two_state = matches!(
+                    info.kind,
+                    NetVarKind::Bit
+                        | NetVarKind::Byte
+                        | NetVarKind::Int
+                        | NetVarKind::Shortint
+                        | NetVarKind::Longint
+                );
+                // `int`/`integer` carry their 32-bit width via ParamType::Integer;
+                // every other kind sizes from `range` (a named atom with no explicit
+                // range gets its fixed atom width here).
+                if matches!(info.kind, NetVarKind::Int | NetVarKind::Integer) {
+                    ret_type = ParamType::Integer;
+                } else if range.is_none() {
+                    if let Some(w) = Self::atom_member_width(info.kind) {
+                        range = Some(Self::dec_range(w - 1));
+                    }
+                }
             } else {
                 // return-type signedness/range/type, V2005 order: [signed] [range] [type]
                 let sign_kw = self.opt_signed();
