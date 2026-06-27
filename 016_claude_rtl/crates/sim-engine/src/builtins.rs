@@ -2176,8 +2176,12 @@ fn render_template(
             // P2-11: hierarchical scope of the EXECUTING process (was: always
             // the literal "top"). Strobe/monitor renders restore the
             // REGISTERING process's scope first (FmtCapture.scope).
-            'm' => out.push_str(&sched.st.cur_scope),
-            't' => {
+            'm' | 'M' => out.push_str(&sched.st.cur_scope),
+            't' | 'T' => {
+                // `%T` aliases `%t` (consumes one time arg). vita renders `%t` as a
+                // plain decimal (the documented `$timeformat`/field-width limitation);
+                // `%T` shares it. The key fix is consuming the arg — a literal `%T`
+                // left the arg for the next spec (an arg-shift silent-wrong).
                 let v = next_arg(sched, args, argi);
                 out.push_str(&fmt_dec(&v));
             }
@@ -2230,13 +2234,24 @@ fn render_template(
             }
             'f' | 'F' | 'g' | 'G' | 'e' | 'E' => {
                 let v = next_arg(sched, args, argi);
-                out.push_str(&fmt_real(&v, spec, field_width, precision));
+                let s = fmt_real(&v, spec, field_width, precision);
+                // `%E`/`%G` uppercase the exponent letter and non-finite labels
+                // (iverilog: `%E` → "1.5E+20", `%G` → "1E-05", `%E` of inf → "INF").
+                // `%F` is identical to `%f` for ALL values including inf/nan — iverilog
+                // outputs lowercase "inf"/"nan" for `%F` (only `%E`/`%G` uppercase them).
+                if spec == 'E' || spec == 'G' {
+                    // ASCII-only output (digits/`.`/`-`/`+`/`e`/inf/nan) — uppercase
+                    // affects only `e`→`E` and inf/nan→INF/NAN.
+                    out.push_str(&s.to_ascii_uppercase());
+                } else {
+                    out.push_str(&s);
+                }
             }
-            'c' => {
+            'c' | 'C' => {
                 let v = next_arg(sched, args, argi);
                 out.push(char_of(&v));
             }
-            's' => {
+            's' | 'S' => {
                 let e = args.get(*argi).copied();
                 *argi += 1;
                 // Build the content string, then right-justify it in an explicit

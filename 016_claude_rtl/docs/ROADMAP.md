@@ -577,9 +577,13 @@ loud-reject로 확인됨(이제 참):**
 
 > §4.5.22 부수 발굴 해결. vita `'s'` arm이 `field_width`를 무시→`%5s`/`%05s`/`%10s`가 패딩 안 됨(silent-wrong). 룰(오라클 전수 핀): **`%Ns`=content를 width N에 우측정렬(MINIMUM=긴 content는 overflow·truncate 안 함)**. content=string literal/dynamic은 텍스트·packed reg는 **explicit-width(`%0s`/`%Ns`)면 leading-NUL-stripped**(`fmt_packed_chars_min`)·bare `%s`면 full reg-width(`fmt_packed_chars`). 'pad=`n - content.chars().count()`'(packed byte는 byte당 1 char라 column 수 일치). 적대 differential **CLEAN**(88 probe: lit/str/packed·overflow·%05s·all-null·x/z)·soundness **SOUND**(byte-identity bare`%s`/`%0s`·`%0s`=Some(0) clen<0 false=무패딩). bare `%s`/`%0s` byte-identical·`%Ns`만 신규. 6 테스트. **별개 §4.5.24 기록**(`%S` uppercase).
 
-#### 4.5.24 (개발 후보·deferred) `%S` uppercase string spec (pre-existing)
+#### 4.5.24 uppercase format spec letters `%S/%C/%M/%E/%G/%T` (2026-06-27, branch `feat-uppercase-fmt`) ✅
 
-> §4.5.23 differential 부수 발굴(pre-existing). vita `'s'` arm이 소문자 `'s'`만 매칭→`%S`/`%5S`는 `other` arm로 빠져 `%S` 리터럴 출력+arg 미소비(format_args_str trailing loop가 arg를 format으로 재처리=틀림). iverilog `%5S` of "hi"→`   hi`(=`%5s`). 수정=`'s' | 'S'` 매칭(IEEE %S≡%s 확인 필요·uppercase 변환 여부 사전 핀). 부모 커밋 `d6e6f15`서도 재현=pre-existing. 별개 슬라이스(소형).
+> §4.5.23 부수 발굴 해결(+cluster sweep로 확장). vita가 `%S`/`%C`/`%M`/`%T`를 `other` arm로 흘려 리터럴 출력+arg 미소비(arg-shift silent-wrong)·`%E`/`%G`는 소문자 exponent(`e+00` vs iverilog `E+00`). 수정: `%s|%S`·`%c|%C`·`%m|%M`·`%t|%T` 별칭(소문자 핸들러 라우팅·동일 arg 소비)+real arm이 `%E`/`%G`서 `s.to_ascii_uppercase()`(exponent `e→E`·inf/nan→INF/NAN). **적대 differential이 over-eager `%F` uppercase 발굴**(=silent-wrong): iverilog는 `%F`의 inf/nan을 소문자 유지(`%E`/`%G`만 대문자)→가드를 `spec=='E'||spec=='G'`로 좁힘(`%F`는 `%f`와 항상 동일). `%T`=`%t` 별칭(arg 소비 수정·vita의 documented plain-decimal `%t` 한계 공유). byte-identical(소문자 무변경·대문자는 이전 리터럴-출력=additive). 적대 differential **1 silent-wrong(`%F`) 발굴→수정 후 CLEAN**·soundness **SOUND**(arg 소비·to_ascii_uppercase). 7 테스트. **별개 §4.5.25**(`%V` multi-bit strength).
+
+#### 4.5.25 (개발 후보·deferred) `%v`/`%V` multi-bit strength (pre-existing strength model)
+
+> §4.5.24 differential 부수 발굴(pre-existing·`%v`/`%V` 공유). `%v` of 멀티비트 net이 vita는 bit 0 strength 1개(`St1`)만·iverilog는 비트별 전체(`St1_St0_St1_…`). 근본=`strength_form`이 단일 `&str` 반환(`v.get_vu(0)`만). vita는 strength model 없음(driven=강)→비트별 `St0/St1/StX/HiZ`를 `_`로 join하면 iverilog parity 가능(strength는 항상 강제-강 근사). 별개 슬라이스(format-render·strength 근사).
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
