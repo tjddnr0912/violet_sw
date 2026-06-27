@@ -5011,6 +5011,24 @@ impl<'t, 's> Parser<'t, 's> {
         None
     }
 
+    /// Inside a procedural block's decl region, a `<typedef_name> <ident>` opener is
+    /// unambiguously a local declaration — no statement begins that way (`e = x` is
+    /// invalid since `e` is a type, `e::A`/`e'(…)` have a non-ident second token).
+    /// Returns the type only for that shape, so a typedef name used otherwise falls
+    /// through to the statement region. (The module-item parser needs no such guard:
+    /// no statements appear there.)
+    fn peek_block_typedef_decl(&self) -> Option<TypeInfo> {
+        let info = self.peek_typedef_name()?;
+        if matches!(
+            self.peek_at(1),
+            Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
+        ) {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
     /// `T name1, name2 = init, …;` where the leading type-name resolved to `info`.
     fn parse_typed_decl(&mut self, info: TypeInfo) -> Option<NetVarDecl> {
         let start = self.cur_span();
@@ -7363,6 +7381,19 @@ impl<'t, 's> Parser<'t, 's> {
                 let before = self.pos;
                 if let Some(d) = self.parse_net_var(false) {
                     // function/task body decl: no net delay
+                    body_decls.push(d);
+                }
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
+            }
+            // A function/task body decl using a user-defined type name
+            // (`my_enum_t s; byte_t b;`), same `<typedef_name> <ident>` shape as a
+            // block-local decl (see `block_body`).
+            if let Some(info) = self.peek_block_typedef_decl() {
+                let before = self.pos;
+                if let Some(d) = self.parse_typed_decl(info) {
                     body_decls.push(d);
                 }
                 if self.pos == before {
@@ -9930,11 +9961,22 @@ impl<'t, 's> Parser<'t, 's> {
     /// Shared block body: decls-prefix THEN statements, until the closer.
     fn block_body(&mut self, end: BlockEnd) -> (Vec<NetVarDecl>, Vec<Stmt>) {
         let mut decls = Vec::new();
-        while !self.at_eof() && !self.at_block_end(end) && self.net_var_kind().is_some() {
+        while !self.at_eof() && !self.at_block_end(end) {
             let before = self.pos;
-            if let Some(d) = self.parse_net_var(false) {
-                // procedural block-local decl: no net delay
-                decls.push(d);
+            if self.net_var_kind().is_some() {
+                if let Some(d) = self.parse_net_var(false) {
+                    // procedural block-local decl: no net delay
+                    decls.push(d);
+                }
+            } else if let Some(info) = self.peek_block_typedef_decl() {
+                // A procedural block-local declaration using a user-defined type
+                // name (`my_enum_t state = IDLE;` / `byte_t b;` / `s_t s;`),
+                // mirroring the module-item typedef-decl path.
+                if let Some(d) = self.parse_typed_decl(info) {
+                    decls.push(d);
+                }
+            } else {
+                break; // not a declaration → the statement region begins
             }
             if self.pos == before {
                 self.bump(); // guard: malformed decl that consumed nothing
