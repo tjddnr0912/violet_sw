@@ -4236,7 +4236,7 @@ impl<'s> Elaborator<'s> {
         self.elaborate_ports(&module.ports);
         for item in &module.body {
             if let ast::ModuleItem::NetVar(d) = item {
-                self.elaborate_netvar_decl(d, &module.ports, &module.body);
+                self.elaborate_netvar_decl(d, &module.ports, &module.body, true);
             }
         }
         // Non-ANSI port nets: a body `input/output [w] name;` (a `PortDecl`)
@@ -5029,7 +5029,7 @@ impl<'s> Elaborator<'s> {
                 // module body passes (4)/(7).
                 for it in &decl.body {
                     if let ast::ModuleItem::NetVar(d) = it {
-                        self.elaborate_netvar_decl(d, &decl.ports, &decl.body);
+                        self.elaborate_netvar_decl(d, &decl.ports, &decl.body, false);
                     }
                 }
                 for it in &decl.body {
@@ -6143,7 +6143,7 @@ impl<'s> Elaborator<'s> {
                         }
                         continue;
                     }
-                    self.elaborate_netvar_decl(d, ports, body);
+                    self.elaborate_netvar_decl(d, ports, body, false);
                     // §6.8/§6.21: a NON-constant PROCESS block-local initializer
                     // (`begin logic x = g+1; …`) is STATIC-lifetime — applied ONCE
                     // at time 0 (the block-local net is module-flattened), NOT on
@@ -6203,6 +6203,11 @@ impl<'s> Elaborator<'s> {
         d: &ast::NetVarDecl,
         ports: &ast::PortList,
         body: &[ast::ModuleItem],
+        // A `string s = expr;` initializer is supported only in the module body,
+        // whose `collect_var_init_drivers` pass emits the t0 assignment. In other
+        // scopes (block-local, interface, generate) the init is not collected, so
+        // it stays a LOUD reject here rather than a silently-dropped initializer.
+        allow_string_init: bool,
     ) {
         // ⓑ-breadth (§25.9): a `virtual INTERFACE vif;` handle is NOT a net — it is
         // a STATIC ALIAS resolved in the post-instance pass (`resolve_virtual_ifaces`),
@@ -6253,11 +6258,19 @@ impl<'s> Elaborator<'s> {
                     );
                     continue;
                 }
-                if decl.init.is_some() {
+                // A `string s = expr;` initializer is a one-time t0 assignment,
+                // equivalent to `initial s = expr;`. In the module body the net is
+                // registered here and the init is collected (in declaration order)
+                // by `collect_var_init_drivers`, then drained into the synthesized
+                // pre-sweep `initial` (§6.8); the string heap holds no foldable
+                // `init` field, so it always rides that path. In a scope that does
+                // NOT collect the init (block-local/interface/generate) it stays a
+                // loud reject — correct-or-loud, never a silently-dropped init.
+                if decl.init.is_some() && !allow_string_init {
                     self.error(
                         MsgCode::ElabUnsupported,
-                        "a string declaration initializer is outside the v7 \
-                         scope (assign in an initial block)",
+                        "a string declaration initializer is supported only at \
+                         module scope (assign in an initial block here)",
                     );
                     continue;
                 }
@@ -9258,16 +9271,30 @@ impl<'s> Elaborator<'s> {
     /// A net (wire) decl is not a variable — its initializer is a continuous
     /// driver, handled by `elaborate_net_init_drivers`.
     fn collect_var_init_drivers(&mut self, d: &ast::NetVarDecl) {
-        if !netvar_kind_is_var(d.kind) {
+        // A `string s = expr;` initializer (v7): the heap-backed string has no
+        // foldable `init` field, so its initializer ALWAYS rides this t0 pre-sweep
+        // (like a non-constant var init), collected here in declaration order with
+        // the other variable initializers. Only a SCALAR string is registered as a
+        // net (`elaborate_netvar_decl` rejects packed/unpacked dims), so a dimensioned
+        // string's init is skipped here too (the decl already errored loud).
+        let scalar_string =
+            matches!(d.kind, ast::NetVarKind::String) && d.range.is_none() && d.packed.is_empty();
+        if !netvar_kind_is_var(d.kind) && !scalar_string {
             return;
         }
         for name in &d.names {
             let Some(init) = &name.init else {
                 continue;
             };
-            let (w, ..) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
-            if fold_init(init, w).is_some() || self.const_eval_in_scope(init).is_some() {
-                continue; // constant ⇒ already folded into net.init
+            if scalar_string {
+                if !name.unpacked.is_empty() {
+                    continue; // a dimensioned string is loud-rejected at declaration
+                }
+            } else {
+                let (w, ..) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                if fold_init(init, w).is_some() || self.const_eval_in_scope(init).is_some() {
+                    continue; // constant ⇒ already folded into net.init
+                }
             }
             let path = ast::HierPath {
                 segments: vec![name.name.clone()],
@@ -9284,7 +9311,11 @@ impl<'s> Elaborator<'s> {
     /// A variable (reg/logic/integer/real/…) initializer is instead a one-time
     /// value applied at net creation, so it is skipped here.
     fn elaborate_net_init_drivers(&mut self, d: &ast::NetVarDecl) {
-        if netvar_kind_is_var(d.kind) {
+        // A `string` is a heap-backed VARIABLE, not a continuously-driven net — its
+        // initializer is a one-time t0 assignment (`collect_var_init_drivers`), NOT
+        // a continuous driver. Without this guard a `string s = "x";` would gain a
+        // spurious `assign s = "x"` that fights later procedural writes (silent-wrong).
+        if netvar_kind_is_var(d.kind) || matches!(d.kind, ast::NetVarKind::String) {
             // A variable's initializer is handled by `collect_var_init_drivers`
             // (a pre-sweep, so the synthesized `initial` runs before user blocks);
             // here a variable decl contributes no continuous driver.
@@ -15920,7 +15951,7 @@ impl<'s> Elaborator<'s> {
             // NETS phase: only net declarations. No ports inside a generate
             // (LRM forbids port decls) → empty port list/body, dir = Internal.
             (GenPhase::Nets, ast::ModuleItem::NetVar(d)) => {
-                self.elaborate_netvar_decl(d, &ast::PortList::None, &[]);
+                self.elaborate_netvar_decl(d, &ast::PortList::None, &[], false);
             }
             // LOGIC phase: cont-assigns + processes.
             (GenPhase::Logic, ast::ModuleItem::ContAssign(ca)) => {
