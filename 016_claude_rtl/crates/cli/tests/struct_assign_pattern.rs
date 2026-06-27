@@ -258,3 +258,87 @@ fn array_of_struct_uses_array_path_not_struct_concat() {
     );
     assert!(ok && out.contains("arr0=12 arr1=34"), "got:\n{out}");
 }
+
+const ST2: &str = "module top; typedef struct packed \
+     { logic [3:0] a; logic [7:0] b; } st_t; st_t s;";
+
+#[test]
+fn continuous_assign_pattern() {
+    // `assign s = '{…}` on a whole struct net (IEEE §10.9.1) — same desugar as a
+    // procedural assign, applied at the continuous-assign parse site.
+    let (out, ok) = run(&format!(
+        "{ST2} assign s = '{{4'hA, 8'hBC}}; \
+         initial begin #1 $display(\"%h %h %h\", s, s.a, s.b); #10 $finish; end endmodule\n"
+    ));
+    assert!(ok && out.contains("abc a bc"), "got:\n{out}");
+}
+
+#[test]
+fn procedural_assign_pattern() {
+    // Procedural continuous assign `assign s = '{…}` inside a block.
+    let (out, ok) = run(&format!(
+        "{ST2} initial begin assign s = '{{4'h7, 8'h89}}; \
+         #1 $display(\"%h %h %h\", s, s.a, s.b); #10 $finish; end endmodule\n"
+    ));
+    assert!(ok && out.contains("789 7 89"), "got:\n{out}");
+}
+
+#[test]
+fn force_pattern() {
+    // `force s = '{…}` overrides with the pattern value.
+    let (out, ok) = run(&format!(
+        "{ST2} initial begin force s = '{{4'h5, 8'h67}}; \
+         #1 $display(\"%h %h %h\", s, s.a, s.b); #10 $finish; end endmodule\n"
+    ));
+    assert!(ok && out.contains("567 5 67"), "got:\n{out}");
+}
+
+#[test]
+fn continuous_assign_two_state_coerces() {
+    // The 2-state coercion (`w'(longint'(e))`) is a plain expression, so it works
+    // identically in a continuously-evaluated assign.
+    let (out, ok) = run(
+        "module top; typedef struct packed { byte b; logic [7:0] l; } m_t; m_t s;\n\
+         assign s = '{8'hxx, 8'hAA};\n\
+         initial begin #1 $display(\"b=%h l=%h\", s.b, s.l); #10 $finish; end endmodule\n",
+    );
+    assert!(ok && out.contains("b=00 l=aa"), "got:\n{out}");
+}
+
+#[test]
+fn continuous_assign_non_pattern_unchanged() {
+    // A non-pattern continuous assign is byte-identical (the hook returns rhs).
+    let (out, ok) = run(&format!(
+        "{ST2} assign s = 12'hABC; \
+         initial begin #1 $display(\"%h\", s); #10 $finish; end endmodule\n"
+    ));
+    assert!(ok && out.contains("abc"), "got:\n{out}");
+}
+
+#[test]
+fn for_init_and_step_pattern() {
+    // A struct pattern in both the for-init and the for-step clause (IEEE §10.9.1
+    // works wherever an `lvalue = rhs` assignment does).
+    let (out, ok) = run(
+        "module top; typedef struct packed { logic [3:0] a; logic [3:0] b; } st_t; st_t s;\n\
+         initial begin\n\
+           for (s = '{4'h0, 4'h1}; s.a < 3; s = '{s.a+4'h1, s.b}) $display(\"s=%h\", s);\n\
+           #1 $finish;\n\
+         end endmodule\n",
+    );
+    assert!(
+        ok && out.contains("s=01") && out.contains("s=11") && out.contains("s=21"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn array_element_pattern_stays_loud() {
+    // `arr[i] = '{…}` (a non-Ident indexed lvalue) is NOT yet desugared — it must
+    // stay loud, not silently mishandled. (Deferred to a follow-up slice.)
+    let (_out, ok) = run(
+        "module top; typedef struct packed { logic [3:0] a; logic [3:0] b; } st_t; st_t arr[2];\n\
+         initial begin arr[0] = '{4'h1, 4'h2}; $display(\"x\"); #1 $finish; end endmodule\n",
+    );
+    assert!(!ok, "arr[i] = '{{…}} is deferred and must stay loud");
+}

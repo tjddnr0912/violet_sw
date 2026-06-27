@@ -5765,10 +5765,12 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Statement-assignment hook for the packed-struct `'{…}` pattern: when the
+    /// Shared assignment hook for the packed-struct `'{…}` pattern: when the
     /// target is a whole scalar struct variable (`s = '{…}`, a single-segment
     /// `Lvalue::Ident`), desugar the RHS. A field / indexed / concat lvalue is
-    /// left untouched (those are not whole-struct assignments).
+    /// left untouched (those are not whole-struct assignments). Applied at every
+    /// `lvalue = rhs` site — blocking/nonblocking, decl-init, continuous /
+    /// procedural-continuous / `force` assigns, and for-init/step.
     fn maybe_struct_pattern_rhs(&mut self, lhs: &Lvalue, rhs: Expr) -> Expr {
         // Fast path: only `'{…}` to a whole single-name target can desugar; every
         // other assignment returns `rhs` untouched (byte-identical) with no clone.
@@ -5967,6 +5969,9 @@ impl<'t, 's> Parser<'t, 's> {
             let lv = self.parse_lvalue();
             self.expect(TokenKind::Eq, "'=' in assign");
             let rhs = self.expr(0);
+            // §10.9.1 packed-struct `'{…}` pattern on a continuous assign to a
+            // whole struct net (same desugar as a procedural assign).
+            let rhs = self.maybe_struct_pattern_rhs(&lv, rhs);
             assigns.push((lv, rhs));
             if !self.eat(TokenKind::Comma) {
                 break;
@@ -7745,6 +7750,7 @@ impl<'t, 's> Parser<'t, 's> {
         let lhs = self.parse_lvalue();
         self.expect(TokenKind::Eq, "'=' in procedural assign");
         let rhs = self.expr(0);
+        let rhs = self.maybe_struct_pattern_rhs(&lhs, rhs);
         self.expect(TokenKind::Semi, "';'");
         Stmt::Assign {
             lhs,
@@ -7758,6 +7764,7 @@ impl<'t, 's> Parser<'t, 's> {
         let lhs = self.parse_lvalue();
         self.expect(TokenKind::Eq, "'=' in force");
         let rhs = self.expr(0);
+        let rhs = self.maybe_struct_pattern_rhs(&lhs, rhs);
         self.expect(TokenKind::Semi, "';'");
         Stmt::Force {
             lhs,
@@ -9523,6 +9530,7 @@ impl<'t, 's> Parser<'t, 's> {
         }
         self.expect(TokenKind::Eq, "'=' in for-clause assignment");
         let rhs = self.expr(0);
+        let rhs = self.maybe_struct_pattern_rhs(&lhs, rhs);
         Stmt::Blocking {
             lhs,
             delay: None,
