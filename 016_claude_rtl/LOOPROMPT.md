@@ -21,6 +21,7 @@
 ## 2. 사전 리뷰 = 오라클 그라운딩 (브레인스토밍)
 - **버그/기능을 오라클로 라이브 재현**: 최소 SV repro 여러 개를 iverilog와 vita 양쪽에 돌려 **정확한 IEEE 규칙을 핀**(예측 금지·측정). 엣지/x·z/멀티비트/NBA/경계까지 변형 probe.
 - 관련 코드(파이프라인 해당 단계)를 정독 → **byte-identity 논증**(이 변경이 비대상 디자인서 왜 무영향인지)을 먼저 세움. 못 세우면 범위를 좁히거나 honest-loud.
+- **desugar 슬라이스는 인프라 구축 전에 desugar EXPRESSION 자체를 sim서 검증**(이번 루프 enum `.name()`): 소스 구문뿐 아니라 desugar가 생성할 표현식(예: string/value ternary chain)을 vita에 직접 돌려 결과 정확성 확인. building block이 '돈다'고 의미가 맞는 건 아님(packed-string ternary는 짧은 라벨을 패딩→iverilog dynamic string과 불일치)→불일치 메서드/형태는 **honest-loud로 격리**(메서드-패밀리는 per-method 오라클 지원 기준 분할; 5/6 정확+1 loud ≫ 6/6 중 1 silent-wrong).
 - 계획을 scratchpad에 durable 기록(파일·메커니즘·테스트 매트릭스·loud 유지선).
 
 ## 3. 구현
@@ -41,6 +42,7 @@
 - **soundness(hand-proof)와 differential(라이브 오라클)이 충돌하면 differential이 이긴다.** (이번 루프: soundness가 per-timestep 디둡을 "SOUND"라 했으나 differential이 CRITICAL 회귀 발굴→옳았음. hand-proof는 가정 누락 가능, 라이브 차분은 실측.) 수정 후엔 라이브 오라클로 재확인.
 - **fix 입도(granularity)는 경계 케이스로 측정해 확정**(예측 금지): 같은 버그군서 collapse돼야 할 케이스 vs 재발화해야 할 케이스를 둘 다 오라클로 핀해 정확한 축(per-net? per-timestep? region/cluster 경계?)을 찾을 것.
 - **soundness의 이론적 silent-wrong 제기는 측정으로 검증(가정 금지)**(이번 루프 "double-eval"): desugar 슬라이스면 ① 신규형 ≡ explicit-desugar-target byte-identical 확인(=transform 정확) ② 의심 quirk가 explicit 단독서도 재현되는지 격리(재현=pre-existing·무관). 둘 다 통과면 신규 silent-wrong 아님(별개 pre-existing 후보로만 기록).
+- **신규 path가 pre-existing 헬퍼를 호출하면 그 헬퍼의 잠복 버그가 노출됨**(이번 루프 enum-fold가 `const_lit` 호출→i64 산술 overflow가 debug panic): attacker-영향 입력(예: enum 라벨 산술 `{A=i64::MAX+1}`)을 새 경로가 헬퍼에 통과시키면 **panic/overflow 감사**(crash·debug-panic은 correct-or-loud 위반=loud 아님). `grep`로 헬퍼의 unchecked `+`/`-`/`*`/`-neg` 찾아 `checked_*`로 공유 수정(overflow→None→loud, 다른 호출처도 견고화).
 - **silent issue 1건이라도 → 수정 후 사후 리뷰 재시작. CLEAN 나올 때까지 반복.** stash 차분으로 pre/post 회귀를 실증.
 
 ## 5. 게이트
