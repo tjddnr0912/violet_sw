@@ -1390,6 +1390,12 @@ pub enum ExprKind {
         target: CastTarget,
         expr: Box<Expr>,
     },
+    /// SV §10.9 POSITIONAL assignment pattern `'{e0, e1, …, eN}`. v1 supports only
+    /// the positional form bound to a 1-D unpacked array (`int a[N] = '{…};` /
+    /// `a = '{…};`), where each element is assigned to the corresponding array
+    /// slot in order. A named / `default:` / replicated pattern, a packed-array or
+    /// struct target, or any non-array context is loud-rejected at elaborate.
+    AssignPattern(Vec<Expr>),
     /// Recovery placeholder so the Pratt loop can keep folding past an error.
     Error,
 }

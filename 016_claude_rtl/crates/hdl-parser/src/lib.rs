@@ -1172,6 +1172,50 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    /// Parse a POSITIONAL assignment pattern `'{e0, e1, …, eN}` (cursor at `'`).
+    /// A `default:` or `key:value` (named) element is loud-rejected — only the
+    /// positional form is supported (v1). A replicated `'{N{e}}` parses `N`, then
+    /// the trailing `{` fails the `,`/`}` expectation → a loud parse error (which
+    /// matches iverilog, that also rejects it).
+    fn parse_assign_pattern(&mut self) -> Expr {
+        let start = self.cur_span();
+        self.bump(); // '
+        self.expect(TokenKind::LBrace, "'{' to open an assignment pattern");
+        let mut elems = Vec::new();
+        if self.peek() != Some(TokenKind::RBrace) {
+            loop {
+                if self.at_kw(Kw::Default) {
+                    self.error(
+                        "a `default:` assignment pattern (only positional `'{e0,…}` is supported)",
+                    );
+                    while !self.at_eof() && self.peek() != Some(TokenKind::RBrace) {
+                        self.bump();
+                    }
+                    break;
+                }
+                let e = self.expr(0);
+                if self.peek() == Some(TokenKind::Colon) {
+                    self.error(
+                        "a named `key:value` assignment pattern (only positional `'{e0,…}` is supported)",
+                    );
+                    while !self.at_eof() && self.peek() != Some(TokenKind::RBrace) {
+                        self.bump();
+                    }
+                    break;
+                }
+                elems.push(e);
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}' closing an assignment pattern");
+        Expr {
+            kind: ExprKind::AssignPattern(elems),
+            span: start.to(self.prev_span()),
+        }
+    }
+
     fn expr_primary(&mut self) -> Expr {
         use TokenKind as T;
         let start = self.cur_span();
@@ -1183,6 +1227,14 @@ impl<'t, 's> Parser<'t, 's> {
                     kind: ExprKind::Error,
                     span: start,
                 }
+            }
+            // SV §10.9 positional assignment pattern `'{e0, e1, …}`. The lexer
+            // keeps `'{` as Apostrophe + LBrace (a cast is `'(`), so a `'` followed
+            // by `{` opens an assignment pattern. Named/`default:`/replicated forms
+            // are loud (only positional is supported — elaborate binds it to a 1-D
+            // unpacked array).
+            Some(T::Apostrophe) if self.peek_at(1) == Some(T::LBrace) => {
+                self.parse_assign_pattern()
             }
             // SV type/signing cast `int'(e)` / `signed'(e)` (§6.24): a casting-type
             // keyword followed by `'(`. The guard requires `'(` so a bare type kw
@@ -9902,6 +9954,11 @@ fn subst_expr(e: &mut Expr, map: &std::collections::BTreeMap<String, Expr>) {
                 subst_expr(p, map);
             }
         }
+        ExprKind::AssignPattern(elems) => {
+            for el in elems {
+                subst_expr(el, map);
+            }
+        }
         ExprKind::Replicate { count, value } => {
             subst_expr(count, map);
             for v in value {
@@ -10328,6 +10385,11 @@ fn rename_ident_in_stmt(s: &mut Stmt, from: &str, to: &str) {
             ExprKind::Concat { parts } | ExprKind::Replicate { value: parts, .. } => {
                 for p in parts {
                     fix_expr(p, from, to);
+                }
+            }
+            ExprKind::AssignPattern(elems) => {
+                for el in elems {
+                    fix_expr(el, from, to);
                 }
             }
             ExprKind::Call { args, .. } | ExprKind::SysCall { args, .. } => {

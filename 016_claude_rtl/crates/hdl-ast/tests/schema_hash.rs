@@ -155,8 +155,8 @@ use vita_schema::schema_hash;
 /// `ca_delays` sidecar) it already uses for `assign #d`. Pure front-end + elaborate
 /// (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
 const EXPECTED: [u8; 32] = [
-    231, 92, 152, 34, 57, 192, 172, 123, 61, 102, 100, 9, 130, 59, 239, 9, 236, 139, 85, 222, 110,
-    94, 185, 251, 21, 243, 191, 101, 226, 78, 64, 152,
+    203, 187, 112, 169, 170, 251, 130, 201, 103, 206, 71, 81, 253, 223, 64, 167, 134, 226, 195,
+    246, 96, 47, 58, 224, 35, 104, 13, 12, 57, 82, 142, 236,
 ];
 
 #[test]

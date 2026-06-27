@@ -10854,6 +10854,18 @@ impl<'s> Elaborator<'s> {
                 );
                 self.placeholder_expr()
             }
+            ast::ExprKind::AssignPattern(_) => {
+                // An assignment pattern is only valid bound to a 1-D unpacked array
+                // assignment (handled in `array_assign_special` / the decl-init
+                // path). Anywhere else (a sub-expression, a packed/struct target) is
+                // unsupported — loud.
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "an assignment pattern `'{…}` is supported only as the whole \
+                     right-hand side of a 1-D unpacked array assignment",
+                );
+                self.placeholder_expr()
+            }
             ast::ExprKind::Error => {
                 self.error(
                     MsgCode::ElabUnsupported,
@@ -15555,6 +15567,11 @@ impl<'s> Elaborator<'s> {
             let path = path.clone();
             self.check_modport_write(&path);
         }
+        // SV §10.9: a positional assignment pattern RHS (`a = '{e0,…}`) assigns each
+        // element to the corresponding 1-D unpacked array slot (declaration order).
+        if let ast::ExprKind::AssignPattern(elems) = &rhs.kind {
+            return self.lower_array_assign_pattern(b, t_net, &t_lead, elems, delay, nonblocking);
+        }
         let Some((s_net, s_lead)) = self.expr_array_view(rhs) else {
             self.error(
                 MsgCode::ElabUnsupported,
@@ -15667,6 +15684,103 @@ impl<'s> Elaborator<'s> {
             };
             if !kind_checked {
                 self.check_lvalue_kind(&lv, true); // E3018 once (same net throughout)
+                kind_checked = true;
+            }
+            let sid = if nonblocking {
+                self.push_stmt(ir::Stmt::NonblockingAssign {
+                    lhs: lv,
+                    rhs: rhs_id,
+                    delay: delay_id,
+                })
+            } else {
+                self.push_stmt(ir::Stmt::BlockingAssign {
+                    lhs: lv,
+                    rhs: rhs_id,
+                })
+            };
+            b.push_stmt_id(sid);
+        }
+        true
+    }
+
+    /// SV §10.9 positional assignment pattern bound to a 1-D unpacked array
+    /// (`a = '{e0,…,eN};` and, via the synthesized var-init `initial`, the decl
+    /// form `int a[N] = '{…};`). Element k is assigned to the k-th array slot in
+    /// DECLARATION order (which is exactly the order `residual_word_offsets`
+    /// enumerates, so it is correct for ascending, descending and offset bounds).
+    /// A multi-dimensional target, an element-count mismatch, or an intra-assign
+    /// delay is loud (correct-or-loud). Returns `true` (the assignment is consumed).
+    fn lower_array_assign_pattern(
+        &mut self,
+        b: &mut ProcessBuilder,
+        t_net: u32,
+        t_lead: &[&ast::Expr],
+        elems: &[ast::Expr],
+        delay: Option<&ast::Delay>,
+        nonblocking: bool,
+    ) -> bool {
+        let t_dims = self.net_dim_extents(t_net);
+        let t_res = &t_dims[t_lead.len()..];
+        if t_res.len() != 1 {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "an assignment pattern `'{…}` on a multi-dimensional array is not \
+                 yet supported (v1: a 1-D unpacked array)",
+            );
+            return true;
+        }
+        let size = t_res[0].1 as usize;
+        if elems.len() != size {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "assignment pattern has {} element(s) but the array has {} \
+                     (IEEE 1800 §10.9.1 requires an exact match)",
+                    elems.len(),
+                    size
+                ),
+            );
+            return true;
+        }
+        if !nonblocking && delay.is_some() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "intra-assignment delay on an assignment-pattern array assignment",
+            );
+            return true;
+        }
+        let t_desc: Vec<bool> = self
+            .array_dim_desc
+            .get(&t_net)
+            .map(|v| v[t_lead.len()..].to_vec())
+            .unwrap_or_default();
+        let t_offs = Self::residual_word_offsets(t_res, &t_desc);
+        let t_base = (!t_lead.is_empty()).then(|| self.flatten_word(&t_dims, t_lead, &[]));
+        let delay_id = if nonblocking {
+            delay.map(|d| self.lower_delay(d).0)
+        } else {
+            None
+        };
+        let elem_width = self.nets[t_net as usize].width;
+        let mut kind_checked = false;
+        for (k, &t_off) in t_offs.iter().enumerate() {
+            // §11.6: each element is in the array element's width context, so a fill
+            // literal (`'1`/`'x`/`'z`) grows to the element width (a bare `lower_expr`
+            // would size it to 1 bit, then the engine zero-extends it = silent-wrong).
+            // `lower_ctx_or_plain` is byte-identical for a non-fill element.
+            let rhs_id = self.lower_ctx_or_plain(&elems[k], elem_width);
+            let t_word = self.word_expr_at(t_base, t_off);
+            let lv = ir::Lvalue {
+                chunks: vec![ir::LvalChunk {
+                    net: t_net,
+                    word: Some(t_word),
+                    offset: None,
+                    width: None,
+                    kind: ir::SelKind::Bit,
+                }],
+            };
+            if !kind_checked {
+                self.check_lvalue_kind(&lv, true);
                 kind_checked = true;
             }
             let sid = if nonblocking {
