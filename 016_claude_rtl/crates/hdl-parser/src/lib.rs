@@ -2306,6 +2306,32 @@ impl<'t, 's> Parser<'t, 's> {
         })
     }
 
+    /// `defparam hier.path = expr [, hier.path = expr]* ;` (IEEE §23.10.1) — a
+    /// hierarchical parameter override. Each LHS is a hierarchical path whose last
+    /// segment names the parameter and whose prefix names the target instance.
+    fn parse_defparam(&mut self) -> Option<DefparamItem> {
+        let start = self.cur_span();
+        self.bump(); // 'defparam'
+        let mut assigns = Vec::new();
+        loop {
+            let Some(path) = self.hier_path() else {
+                self.error("a hierarchical parameter path after `defparam`");
+                break;
+            };
+            self.expect(TokenKind::Eq, "'=' in defparam");
+            let value = self.expr(0);
+            assigns.push((path, value));
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::Semi, "';' after defparam");
+        Some(DefparamItem {
+            assigns,
+            span: start.to(self.prev_span()),
+        })
+    }
+
     fn parse_module_item(&mut self) -> Option<ModuleItem> {
         // skip a stray lexer error token without re-reporting (already diagnosed)
         if self.at_lex_error() {
@@ -2326,6 +2352,10 @@ impl<'t, 's> Parser<'t, 's> {
                 }
             }
             return Some(ModuleItem::Param(p));
+        }
+        // defparam path = expr [, path = expr]* ;  (IEEE §23.10.1)
+        if self.at_kw(Kw::Defparam) {
+            return self.parse_defparam().map(ModuleItem::Defparam);
         }
         // continuous assign
         if self.at_kw(Kw::Assign) {

@@ -648,6 +648,7 @@ enum PortBinding<'a> {
 /// `None` when the override expr did not const-fold (caller warns; child keeps
 /// its default). Resolving here — not in `bind_params` — is what lets
 /// `child #(.W(PARENT_W))` see the parent's `PARENT_W` (Fix 1 / Finding M1).
+#[derive(Clone)]
 struct ResolvedOverride {
     name: Option<String>,
     value: Option<i64>,
@@ -2197,6 +2198,12 @@ struct Elaborator<'s> {
     // post-elaboration hierarchical READ (`dut.WIDTH`) fold to the sibling
     // instance's param value. Out-of-band (golden-free).
     hier_params: BTreeMap<String, i64>,
+    // `defparam top.u.N = 7;` overrides, keyed by the FULLY-QUALIFIED target
+    // instance path → [(param-name, const value)]. Collected in pass 7 (when the
+    // parent's FQ prefix is current) and consumed by the child's `bind_params` in
+    // pass 8 — so the override is registered before the child binds. v1 supports a
+    // DIRECT-child `inst.param` only (deeper paths / non-const values are loud).
+    defparams: BTreeMap<String, Vec<(String, i64)>>,
     // module names on the active instantiation path — the recursion cycle guard.
     inst_stack: Vec<String>,
     // Instance id of the instance whose body is currently being lowered. Set in
@@ -2483,6 +2490,7 @@ impl<'s> Elaborator<'s> {
             params: BTreeMap::new(),
             param_meta: BTreeMap::new(),
             hier_params: BTreeMap::new(),
+            defparams: BTreeMap::new(),
             inst_stack: Vec::new(),
             cur_inst: 0,
             func_table: BTreeMap::new(),
@@ -2815,6 +2823,19 @@ impl<'s> Elaborator<'s> {
             let top_path = top.name.name.clone();
             self.elaborate_instance(top, &top_path, None, &[], PortBinding::None, &map);
         }
+        // Any defparam still in the map targeted an instance that was never
+        // elaborated — a typo'd or out-of-scope path, or an array `u.N` with no
+        // index. iverilog warns ("Scope of <path> not found") and the target keeps
+        // its default; mirror that with a warning rather than a silent no-op (the
+        // default value is already what an unconsumed override leaves in place).
+        let unmatched: Vec<String> = self.defparams.keys().cloned().collect();
+        for fq in unmatched {
+            self.warn(&format!(
+                "defparam target `{fq}` matched no instance — override ignored \
+                 (the parameter keeps its default)"
+            ));
+        }
+        self.defparams.clear();
 
         // N3.1: resolve hierarchical INDEXED reads FIRST (their index lowering may
         // itself defer a whole-net hierarchical read into `deferred_hier`)…
@@ -3769,7 +3790,35 @@ impl<'s> Elaborator<'s> {
         let saved_mult = std::mem::replace(&mut self.cur_time_mult, new_mult);
 
         // (3) bind params (defaults, then overrides) — BEFORE nets so [W-1:0] folds.
-        let mut saved_params = self.bind_params(module, param_overrides);
+        // Merge any `defparam` overrides targeting THIS instance (FQ `inst_path`)
+        // with the instantiation `#()` overrides. A defparam wins over `#()` per
+        // IEEE §23.10.1, so it is appended LAST (bind_params is last-write-wins).
+        // `remove` CONSUMES the entry — any defparam left in the map after the whole
+        // hierarchy is elaborated matched no instance (a typo, or an array `u.N`
+        // without an index) and is warned about below (iverilog parity: it warns and
+        // the target keeps its default, which is exactly what an unconsumed entry
+        // already produces here).
+        let dp_overrides: Vec<ResolvedOverride> = self
+            .defparams
+            .remove(inst_path)
+            .map(|dps| {
+                dps.into_iter()
+                    .map(|(param, v)| ResolvedOverride {
+                        name: Some(param),
+                        value: Some(v),
+                        is_named: true,
+                        fill: None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut saved_params = if dp_overrides.is_empty() {
+            self.bind_params(module, param_overrides)
+        } else {
+            let mut merged = param_overrides.to_vec();
+            merged.extend(dp_overrides);
+            self.bind_params(module, &merged)
+        };
 
         // (3a.5) v7 P2-D imports — CONST symbols bind first so body params
         //        and ranges can use them; a later LOCAL declaration of the
@@ -4107,8 +4156,36 @@ impl<'s> Elaborator<'s> {
                 // Func/Task are DEFINITIONS, not logic: collected in step (3.5)
                 // and expanded at their call sites (inline). No-op here.
                 ast::ModuleItem::Func(_) | ast::ModuleItem::Task(_) => {}
-                ast::ModuleItem::Defparam(_) => {
-                    self.error(MsgCode::ElabUnsupported, "construct deferred (defparam)");
+                ast::ModuleItem::Defparam(dp) => {
+                    // Collect `defparam inst.param = const;` overrides, keyed by the
+                    // FQ child path (`cur_prefix.inst`). Consumed by the child's
+                    // `bind_params` in pass 8 (recursion runs AFTER this pass, so the
+                    // override is registered first). v1: a DIRECT-child `inst.param`
+                    // (exactly 2 segments) with a CONST value — deeper paths and
+                    // non-const values are loud (correct-or-loud, not silent-skip).
+                    for (path, value) in &dp.assigns {
+                        if path.segments.len() != 2 {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "defparam: only a direct-child `instance.param` target \
+                                 is supported (a multi-level path is a follow-on)",
+                            );
+                            continue;
+                        }
+                        let Some(v) = self.const_eval_in_scope(value) else {
+                            self.error(
+                                MsgCode::ElabUnsupported,
+                                "defparam: a non-constant override value is unsupported",
+                            );
+                            continue;
+                        };
+                        let fq = format!("{}.{}", self.cur_prefix, path.segments[0].name);
+                        let param = path.segments[1].name.clone();
+                        // Last write wins (IEEE §23.10.1) — drop a prior same-param entry.
+                        let entry = self.defparams.entry(fq).or_default();
+                        entry.retain(|(p, _)| p != &param);
+                        entry.push((param, v));
+                    }
                 }
                 // A NET declaration initializer (`wire x = expr;`) is an implicit
                 // continuous assign — lower it as a driver here (the net itself was
