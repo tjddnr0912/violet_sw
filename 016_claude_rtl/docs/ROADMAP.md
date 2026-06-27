@@ -533,6 +533,14 @@ loud-reject로 확인됨(이제 참):**
 
 **🔬 사후 리뷰 성과:** **differential이 silent-wrong 1종 발굴→수정**: `parse_do_while`만 `parse_loop_body` 미사용→do-while 안 break/continue가 **enclosing 루프를 타깃**(do-while을 다른 루프 안에 넣으면 outer 루프를 잘못 종료/continue=silent-wrong). `parse_do_while`도 `parse_loop_body`+`wrap_break` 적용으로 수정(양 desugar 복사본이 wrap 공유·per-copy disable resolution). soundness=**SOUND**(continue→step 타이밍 per-loop 전수증명·스택 규율·typed-for rename descend·fork-floor·byte-identity; do-while 갭은 "honest-loud"로 분류했으나 differential이 silent-wrong 입증→differential 우선). 재-hunt CLEAN.
 
+#### 4.5.14 enum value methods (`.first/.last/.num/.next/.prev`) (2026-06-27, branch `feat-enum-methods`) ✅
+
+> vita가 undeclared-hier-name(E3010)로 거부하던 SV §6.19.5 enum value 메서드 5종을 **loud→supported**. **파서에서 enum 라벨값 위로 desugar**(기존 AST 재사용→AST/IR/sim-ir/`.vu` 무변경): `.first`/`.last`/`.num`=정수 리터럴·`.next`/`.prev`=ternary chain(`.next` last→first wrap·`.prev` first→last wrap, **위치 기준**=non-contiguous 값도 정확). 파서가 `enum_defs`(typedef enum명→folded `(label,value)` 리스트, **모든 값이 literal-foldable일 때만**)·`var_enum`(varname→enum타입, module-scoped)를 추적(`var_struct`/`struct_layouts` 패턴 미러). 사전 그라운딩(iverilog로 5종 + wrap + 비균등값 핀) → 구현 → 사후 적대 2-서브에이전트 → const_lit overflow 수정 → CLEAN. format_version 19 불변. **2360 green**(2351 + 9 enum_methods.rs).
+
+**✅ 구현(파서 전용):** `expr_primary`에서 struct-member 체크 직후 `enum_method_expr` intercept(`x.method`/`x.method()` empty-call만·`x.next(2)` step-arg=fall-through→loud). 헬퍼 `i64_lit`(음수 `-mag`)·`enum_eq`·`enum_step_chain`(위치 기준 (match,result) pair 체인). **byte-identical**: 비-enum path는 `var_enum.get`→None 즉시 fall-through·`peek_at(1)` non-consuming. **honest-loud(미desugar)**: `.name`/`.name()`(packed string-literal ternary가 짧은 라벨을 패딩→iverilog dynamic string과 불일치; dynamic string 생성은 statement 필요=후속 슬라이스)·`.next(N)` step·non-foldable enum(param-valued label)·based-literal label값(`8'hFF`=보수적 loud).
+
+**🔬 사후 리뷰 성과:** differential=**CLEAN**(53 probe·0 silent-wrong: 5종·non-contiguous 위치기준·음수·packed base·single/large enum·전 context[assign/case/if/concat/arith]·two-var same/diff type·struct/hier byte-identity·전 loud 경계). soundness=**SOUND**(라벨 folding·위치기준 chain·intercept가 struct/hier 미탈취·empty_call fall-through 전수증명). **soundness가 pre-existing `const_lit` i64 산술 overflow 발굴**(신규 enum-fold path가 호출→adversarial 라벨이 debug panic): **checked arithmetic(`checked_add/sub/mul`/`checked_neg`)으로 수정**(overflow→None→loud, 공유 struct-width path도 견고화). 잔여 inherited: `var_enum` function-local scope 근사(var_struct와 동일·block-local typedef decl은 vita가 E2002라 도달 불가).
+
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
 SYS-READ·SYS-INTRO·DIR-PP를 IR-0-now vs 단일 **v9 bump**으로 분할(워크플로우 understand×3+probe×4→synth). **원칙: IR-0 슬라이스 먼저, frozen-IR(새 SysFuncId/SysTaskId)은 한 번의 v9 bump에 일괄, iverilog 오라클 우선.** ⚠️ 진단 비대칭: 미인식 `$func`=E3009-LOUD(전 디자인 kill) vs `$task`=W3056-skip → 미구현 introspection func가 디자인 전체를 죽이므로 const-fold(rank 2)가 고가치.

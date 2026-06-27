@@ -208,6 +208,16 @@ pub struct Parser<'t, 's> {
     /// loop with no break/continue is byte-identical). The top entry is the
     /// innermost loop.
     loop_labels: Vec<LoopLabels>,
+    /// SV §6.19.5 enum methods. `typedef enum` name → its ordered `(label, value)`
+    /// list, BUT only when every label value is literal-foldable (`const_lit`);
+    /// an enum with a non-foldable label value (e.g. `B = SOME_PARAM`) is omitted,
+    /// so `x.method()` on it stays a loud error (correct-or-loud). Accumulates
+    /// across the source unit (typedef enums are file-scoped like `typedefs`).
+    enum_defs: std::collections::HashMap<String, Vec<(String, i64)>>,
+    /// Variable name → its enum type name (module-scoped; cleared per module like
+    /// `var_struct`). Lets `x.first/last/next/prev/name/num` desugar to literals /
+    /// ternary chains over the enum's labels.
+    var_enum: std::collections::HashMap<String, String>,
 }
 
 /// One enclosing-loop entry for `break`/`continue` desugar. The labels name the
@@ -239,6 +249,8 @@ impl<'t, 's> Parser<'t, 's> {
             const_locals: std::collections::HashMap::new(),
             pending_mono_specs: Vec::new(),
             loop_labels: Vec::new(),
+            enum_defs: std::collections::HashMap::new(),
+            var_enum: std::collections::HashMap::new(),
         }
     }
 
@@ -1301,6 +1313,23 @@ impl<'t, 's> Parser<'t, 's> {
                 if let Some((base, off, w, asc, sgn)) = self.struct_field_select(&path) {
                     return self.struct_member_expr(base, off, w, asc, sgn, path.span);
                 }
+                // SV §6.19.5 enum method `x.first/last/num/next/prev/name [()]` —
+                // the no-arg form only (a `x.next(2)` step arg falls through to a
+                // Call → loud). Desugars to literals / ternary chains over the
+                // enum's labels; non-enum `x.foo` returns None → normal path.
+                {
+                    let empty_call =
+                        self.peek() == Some(T::LParen) && self.peek_at(1) == Some(T::RParen);
+                    if (self.peek() != Some(T::LParen) || empty_call) && !path.segments.is_empty() {
+                        if let Some(e) = self.enum_method_expr(&path) {
+                            if empty_call {
+                                self.bump(); // (
+                                self.bump(); // )
+                            }
+                            return e;
+                        }
+                    }
+                }
                 if self.peek() == Some(T::LParen) {
                     let args = self.call_args();
                     Expr {
@@ -1920,6 +1949,7 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         // Variable→struct bindings are module-scoped (type *names* are not).
         self.var_struct.clear();
+        self.var_enum.clear();
         self.const_locals.clear();
         let is_macromodule = self.at_kw(Kw::Macromodule);
         self.bump(); // module / macromodule / interface
@@ -4879,6 +4909,13 @@ impl<'t, 's> Parser<'t, 's> {
                 self.var_struct.insert(n.name.name.clone(), tyname.clone());
             }
         }
+        // If this is a (literal-foldable) enum type, bind each name → enum type so
+        // `var.first/last/next/prev/name/num` can desugar to its labels (§6.19.5).
+        if self.enum_defs.contains_key(&tyname) {
+            for n in &names {
+                self.var_enum.insert(n.name.name.clone(), tyname.clone());
+            }
+        }
         // N7: a class-typed alias carries the class name through to elaborate.
         let class_type = info.class_name.as_ref().map(|c| Ident {
             name: c.clone(),
@@ -4987,6 +5024,32 @@ impl<'t, 's> Parser<'t, 's> {
             },
         };
         self.typedefs.insert(tname.name.clone(), info);
+        // SV §6.19.5 enum-method support: fold each label's value (running counter,
+        // reset by an explicit literal-foldable `= expr`). Record the ordered
+        // (label, value) list ONLY if EVERY value folds (`const_lit`) — an enum with
+        // a non-literal label value is omitted, so `x.method()` on it stays loud.
+        {
+            let mut folded: Vec<(String, i64)> = Vec::with_capacity(labels.len());
+            let mut counter: i64 = 0;
+            let mut foldable = true;
+            for lab in &labels {
+                let v = match &lab.value {
+                    None => counter,
+                    Some(e) => match Self::const_lit(e) {
+                        Some(v) => v,
+                        None => {
+                            foldable = false;
+                            break;
+                        }
+                    },
+                };
+                folded.push((lab.name.name.clone(), v));
+                counter = v.wrapping_add(1);
+            }
+            if foldable && !folded.is_empty() {
+                self.enum_defs.insert(tname.name.clone(), folded);
+            }
+        }
         Some(ModuleItem::Typedef(TypedefDecl {
             name: tname,
             kind: TypedefKind::Enum { base, labels },
@@ -5308,14 +5371,17 @@ impl<'t, 's> Parser<'t, 's> {
             ExprKind::Unary {
                 op: UnOp::Minus,
                 operand,
-            } => Some(-Self::const_lit(operand)?),
+            } => Self::const_lit(operand)?.checked_neg(),
             ExprKind::Binary { op, lhs, rhs } => {
                 let a = Self::const_lit(lhs)?;
                 let b = Self::const_lit(rhs)?;
+                // Checked arithmetic: an overflowing constant fold returns None
+                // (→ caller treats the value as non-foldable / loud) rather than
+                // panicking in debug or silently wrapping in release.
                 match op {
-                    BinOp::Add => Some(a + b),
-                    BinOp::Sub => Some(a - b),
-                    BinOp::Mul => Some(a * b),
+                    BinOp::Add => a.checked_add(b),
+                    BinOp::Sub => a.checked_sub(b),
+                    BinOp::Mul => a.checked_mul(b),
                     _ => None,
                 }
             }
@@ -5341,6 +5407,113 @@ impl<'t, 's> Parser<'t, 's> {
             },
             span,
         }
+    }
+
+    // ───────────────────────── SV §6.19.5 enum methods ─────────────────────
+    /// A decimal integer literal for a possibly-negative `i64` (negatives become
+    /// `-<magnitude>`). Used to build the enum-method desugar's constants.
+    fn i64_lit(v: i64, span: Span) -> Expr {
+        let mag = Expr {
+            kind: ExprKind::IntLit {
+                kind: IntLitKind::Decimal,
+                raw: v.unsigned_abs().to_string(),
+            },
+            span,
+        };
+        if v < 0 {
+            Expr {
+                kind: ExprKind::Unary {
+                    op: UnOp::Minus,
+                    operand: Box::new(mag),
+                },
+                span,
+            }
+        } else {
+            mag
+        }
+    }
+
+    /// `var == val` (logical equality), the condition of an enum-method ternary.
+    fn enum_eq(var: &Expr, val: i64, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(var.clone()),
+                rhs: Box::new(Self::i64_lit(val, span)),
+            },
+            span,
+        }
+    }
+
+    /// `.next`/`.prev` → a ternary chain over the ordered label values. `next`
+    /// maps vᵢ→vᵢ₊₁ and wraps the last→first; `prev` maps vᵢ→vᵢ₋₁ and wraps the
+    /// first→last (§6.19.5). The default (an out-of-range value) takes the wrap
+    /// target, matching the boundary case.
+    fn enum_step_chain(var: &Expr, labels: &[(String, i64)], span: Span, is_next: bool) -> Expr {
+        let vals: Vec<i64> = labels.iter().map(|(_, v)| *v).collect();
+        let n = vals.len();
+        // (match_value, result_value) pairs + a default result for any other value.
+        let (pairs, default): (Vec<(i64, i64)>, i64) = if is_next {
+            (
+                (0..n.saturating_sub(1))
+                    .map(|i| (vals[i], vals[i + 1]))
+                    .collect(),
+                vals[0],
+            )
+        } else {
+            let mut p = vec![(vals[0], vals[n - 1])];
+            p.extend((1..n).map(|i| (vals[i], vals[i - 1])));
+            (p, vals[n - 1])
+        };
+        pairs
+            .iter()
+            .rev()
+            .fold(Self::i64_lit(default, span), |else_e, (m, r)| Expr {
+                kind: ExprKind::Ternary {
+                    cond: Box::new(Self::enum_eq(var, *m, span)),
+                    then_e: Box::new(Self::i64_lit(*r, span)),
+                    else_e: Box::new(else_e),
+                },
+                span,
+            })
+    }
+
+    /// If `path` is `var.method` where `var` is a (literal-foldable) enum variable
+    /// and `method` ∈ {first,last,num,next,prev,name}, build the §6.19.5 desugar
+    /// (constants for first/last/num; ternary chains for next/prev/name). `None`
+    /// when it is not such an access — the caller falls through to its normal
+    /// path (so `var.bar` on an enum stays a loud undeclared-name error).
+    fn enum_method_expr(&self, path: &HierPath) -> Option<Expr> {
+        if path.segments.len() != 2 {
+            return None;
+        }
+        let ename = self.var_enum.get(&path.segments[0].name)?;
+        let labels = self.enum_defs.get(ename)?;
+        if labels.is_empty() {
+            return None;
+        }
+        let span = path.span;
+        let var = Expr {
+            kind: ExprKind::Ident(HierPath {
+                segments: vec![path.segments[0].clone()],
+                span,
+            }),
+            span,
+        };
+        Some(match path.segments[1].name.as_str() {
+            "first" => Self::i64_lit(labels[0].1, span),
+            "last" => Self::i64_lit(labels[labels.len() - 1].1, span),
+            "num" => Self::i64_lit(labels.len() as i64, span),
+            "next" => Self::enum_step_chain(&var, labels, span, true),
+            "prev" => Self::enum_step_chain(&var, labels, span, false),
+            // `.name`/`.name()` is honest-loud (NOT desugared): a packed
+            // string-literal ternary chain pads shorter labels to the longest
+            // label's width (a packed-string property iverilog shares for a raw
+            // ternary), whereas iverilog's `.name()` returns a dynamic `string`
+            // of the EXACT length. Producing a dynamic string needs a statement
+            // (string-var assign), not an expression — left to a follow-up slice.
+            _ => return None,
+        })
     }
 
     /// If `path` is `var.field` where `var` is a packed-struct variable and `field`
