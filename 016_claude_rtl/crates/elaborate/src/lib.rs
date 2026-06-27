@@ -24073,6 +24073,32 @@ impl<'s> Elaborator<'s> {
                 return None;
             }
         }
+        // $sformat / $swrite* write the rendered text into args[0], which must be a
+        // whole register or SV string. The engine's Sformat handler writes ONLY a
+        // `Signal{word:None}` dest and silently drops anything else (a part-select,
+        // memory element, or concat) — iverilog loud-rejects those ("first argument
+        // must be a register or SV string"), so match the oracle instead of the
+        // silent no-op. (Mirrors the $cast dest guard above; the check is exactly the
+        // engine's accepted shape, so no destination it CAN write is rejected.)
+        if matches!(which, ir::SysTaskId::Sformat) {
+            let ok = args.first().is_some_and(|a| {
+                let d = self.lower_expr(a);
+                matches!(
+                    self.exprs.get(d as usize),
+                    Some(ir::Expr::Signal { word: None, .. })
+                )
+            });
+            if !ok {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    &format!(
+                        "{}'s first argument must be a whole register or SV string",
+                        name.name
+                    ),
+                );
+                return None;
+            }
+        }
         let takes_fmt = matches!(
             which,
             ir::SysTaskId::Display
@@ -24353,9 +24379,12 @@ fn map_severity(dollar_name: &str) -> Option<SeverityKind> {
 /// `$monitoron`/`$monitoroff` never alias `$monitoro` + a stray suffix).
 fn radix_of_systask(dollar_name: &str) -> Option<u8> {
     match dollar_name {
-        "$displayb" | "$writeb" | "$strobeb" | "$monitorb" | "$fdisplayb" | "$fwriteb" => Some(2),
-        "$displayo" | "$writeo" | "$strobeo" | "$monitoro" | "$fdisplayo" | "$fwriteo" => Some(8),
-        "$displayh" | "$writeh" | "$strobeh" | "$monitorh" | "$fdisplayh" | "$fwriteh" => Some(16),
+        "$displayb" | "$writeb" | "$strobeb" | "$monitorb" | "$fdisplayb" | "$fwriteb"
+        | "$swriteb" => Some(2),
+        "$displayo" | "$writeo" | "$strobeo" | "$monitoro" | "$fdisplayo" | "$fwriteo"
+        | "$swriteo" => Some(8),
+        "$displayh" | "$writeh" | "$strobeh" | "$monitorh" | "$fdisplayh" | "$fwriteh"
+        | "$swriteh" => Some(16),
         _ => None,
     }
 }
@@ -24385,7 +24414,13 @@ fn map_systask(dollar_name: &str) -> Option<ir::SysTaskId> {
         "$writememb" => Some(ir::SysTaskId::WritememB),
         "$writememh" => Some(ir::SysTaskId::WritememH),
         "$fclose" => Some(ir::SysTaskId::Fclose),
-        "$sformat" => Some(ir::SysTaskId::Sformat),
+        // $swrite* — "$write to a string": same engine as $sformat (dest = args[0],
+        // a leading string-literal is the format, every other arg renders $write-
+        // style via `format_args_str`). The b/o/h variants set the default radix of
+        // unformatted args through `radix_of_systask`. IEEE 1364-2005 §21.3.3.
+        "$sformat" | "$swrite" | "$swriteb" | "$swriteo" | "$swriteh" => {
+            Some(ir::SysTaskId::Sformat)
+        }
         "$fdisplay" | "$fdisplayb" | "$fdisplayo" | "$fdisplayh" => Some(ir::SysTaskId::Fdisplay),
         "$fwrite" | "$fwriteb" | "$fwriteo" | "$fwriteh" => Some(ir::SysTaskId::Fwrite),
         // v9 rank 6: monitor enable/disable + the $cast TASK form (`$cast(d, s);`
