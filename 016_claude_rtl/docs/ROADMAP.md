@@ -573,9 +573,13 @@ loud-reject로 확인됨(이제 참):**
 
 > §4.5.20 differential 부수 발굴 해결. **재진단**: `%s`는 이미 iverilog 일치(둘 다 full-width 패딩)—차이는 **`%0s`(min-width flag)만**: leading null byte를 vita는 공백 패딩·iverilog는 strip. 정확 룰(오라클 전수 핀): **leading NUL strip, 첫 non-NUL 후로는 전 byte 렌더(embedded/trailing NUL→공백), all-NUL→`""`**. `fmt_packed_chars_min`(strip 변형)+`'s'` arm이 **bare `%0s`만**(`min_zero && field_width==Some(0)`·explicit `%0Ns`는 base 유지=오라클 부재) 라우팅. **+ 적대 differential 발굴 인접 pre-existing silent-wrong fold**(같은 root·명확 오라클·동일 fix): packed `%s`/`%0s`의 **z byte**(vita 4-state val=1→`0xFF` leak)를 iverilog는 공백 렌더—byte 추출 시 `val & !unk`로 x/z 마스크(x[val=0]·z[val=1] 둘 다 0→공백/strip). `fmt_packed_chars`도 동시 수정(x는 무변경·z만 `0xFF`→공백). IR-0·format 19 불변. 적대 differential **1 silent-wrong 발굴(z byte)→fold 수정 후 CLEAN**·soundness **SOUND**(started-flag·byte-identity·branch order). 7 신규 oracle-pin 테스트.
 
-#### 4.5.23 (개발 후보·deferred) explicit `%Ns` field-width for packed/string (pre-existing)
+#### 4.5.23 explicit `%Ns` field-width for `%s` (2026-06-27, branch `feat-string-fieldwidth`) ✅
 
-> §4.5.22 differential 부수 발굴(pre-existing·`%s`/`%0s` 공유). vita의 `'s'` arm이 `field_width`를 무시→`%05s`/`%10s`가 패딩 안 됨(iverilog=`%05s` of "hi"→`   hi`[width 5]·vita→full reg width 패딩). `%0s`(field_width 0)·plain `%s`(full reg pad)는 정확하나 explicit `%Ns`(N>0)만 갭. 수정=`'s'` arm서 `field_width=Some(n>0)`이면 n-width 우측정렬 패딩/truncate(iverilog `%Ns` 의미 핀 필요). 별개 슬라이스.
+> §4.5.22 부수 발굴 해결. vita `'s'` arm이 `field_width`를 무시→`%5s`/`%05s`/`%10s`가 패딩 안 됨(silent-wrong). 룰(오라클 전수 핀): **`%Ns`=content를 width N에 우측정렬(MINIMUM=긴 content는 overflow·truncate 안 함)**. content=string literal/dynamic은 텍스트·packed reg는 **explicit-width(`%0s`/`%Ns`)면 leading-NUL-stripped**(`fmt_packed_chars_min`)·bare `%s`면 full reg-width(`fmt_packed_chars`). 'pad=`n - content.chars().count()`'(packed byte는 byte당 1 char라 column 수 일치). 적대 differential **CLEAN**(88 probe: lit/str/packed·overflow·%05s·all-null·x/z)·soundness **SOUND**(byte-identity bare`%s`/`%0s`·`%0s`=Some(0) clen<0 false=무패딩). bare `%s`/`%0s` byte-identical·`%Ns`만 신규. 6 테스트. **별개 §4.5.24 기록**(`%S` uppercase).
+
+#### 4.5.24 (개발 후보·deferred) `%S` uppercase string spec (pre-existing)
+
+> §4.5.23 differential 부수 발굴(pre-existing). vita `'s'` arm이 소문자 `'s'`만 매칭→`%S`/`%5S`는 `other` arm로 빠져 `%S` 리터럴 출력+arg 미소비(format_args_str trailing loop가 arg를 format으로 재처리=틀림). iverilog `%5S` of "hi"→`   hi`(=`%5s`). 수정=`'s' | 'S'` 매칭(IEEE %S≡%s 확인 필요·uppercase 변환 여부 사전 핀). 부모 커밋 `d6e6f15`서도 재현=pre-existing. 별개 슬라이스(소형).
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 

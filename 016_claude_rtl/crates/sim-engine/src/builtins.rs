@@ -2239,7 +2239,14 @@ fn render_template(
             's' => {
                 let e = args.get(*argi).copied();
                 *argi += 1;
-                match e {
+                // Build the content string, then right-justify it in an explicit
+                // field width (a MINIMUM — a longer string overflows, it is never
+                // truncated). The content for an explicit-width `%Ns`/`%0s` on a
+                // packed reg is its leading-NUL-stripped form; a bare `%s` keeps the
+                // full reg-width form (NUL → space). A string literal / string-domain
+                // value renders its exact text either way. (iverilog-pinned: 64-bit
+                // "hello" → `%s` "   hello", `%2s` "hello", `%10s` "     hello".)
+                let content = match e {
                     // string LITERAL: decoded text (the classic fmt-arg path).
                     Some(eid)
                         if matches!(
@@ -2247,29 +2254,30 @@ fn render_template(
                             Some(sim_ir::Expr::Const { .. })
                         ) =>
                     {
-                        out.push_str(&arg_string(sched, Some(eid)));
+                        arg_string(sched, Some(eid))
                     }
-                    // packed VALUE: byte-per-char, NUL bytes as spaces
-                    // (iverilog-pinned: 64-bit "hello" prints "   hello").
-                    // v7 P2-C: a STRING-domain value renders its EXACT bytes
-                    // (iverilog: a string prints "hello", never padded).
                     Some(eid) => {
                         let v = sched.eval(eid);
                         if v.is_str {
-                            out.push_str(&String::from_utf8_lossy(&v.to_str_bytes()));
-                        } else if min_zero && field_width == Some(0) {
-                            // bare `%0s` (minimal width): strip LEADING NUL bytes,
-                            // then render the rest (embedded/trailing NUL → space). A
-                            // string in a wider packed reg drops its high zero-byte
-                            // padding (iverilog-pinned: 64-bit "hello" → "hello", not
-                            // "   hello"; all-NUL → ""). An explicit `%0Ns` keeps the
-                            // base full-width form (no iverilog oracle for it).
-                            out.push_str(&fmt_packed_chars_min(&v));
+                            // v7 P2-C: a STRING-domain value renders its EXACT bytes.
+                            String::from_utf8_lossy(&v.to_str_bytes()).into_owned()
+                        } else if field_width.is_some() {
+                            // `%0s` / `%Ns` strip leading NUL padding (all-NUL → "").
+                            fmt_packed_chars_min(&v)
                         } else {
-                            out.push_str(&fmt_packed_chars(&v));
+                            // bare `%s` pads to the reg width (NUL → space).
+                            fmt_packed_chars(&v)
                         }
                     }
-                    None => {}
+                    None => String::new(),
+                };
+                let clen = content.chars().count();
+                match field_width {
+                    Some(n) if clen < n => {
+                        out.push_str(&" ".repeat(n - clen));
+                        out.push_str(&content);
+                    }
+                    _ => out.push_str(&content),
                 }
             }
             // P0-8③: the remaining IEEE specs CONSUME their argument — leaving
