@@ -30,19 +30,15 @@ fn run(src: &str) -> (String, bool) {
 
 #[test]
 fn block_local_enum_decl() {
-    let (o, ok) = run(
-        "module top; typedef enum {A,B,C} e;\n\
-         initial begin e x=B; $display(\"%0d\",x); #1 $finish; end endmodule",
-    );
+    let (o, ok) = run("module top; typedef enum {A,B,C} e;\n\
+         initial begin e x=B; $display(\"%0d\",x); #1 $finish; end endmodule");
     assert!(ok && o.contains('1'), "got:\n{o}");
 }
 
 #[test]
 fn block_local_typedef_and_struct_decl() {
-    let (ot, okt) = run(
-        "module top; typedef logic [7:0] byte_t;\n\
-         initial begin byte_t x=8'hAB; $display(\"%h\",x); #1 $finish; end endmodule",
-    );
+    let (ot, okt) = run("module top; typedef logic [7:0] byte_t;\n\
+         initial begin byte_t x=8'hAB; $display(\"%h\",x); #1 $finish; end endmodule");
     assert!(okt && ot.contains("ab"), "typedef got:\n{ot}");
     let (os, oks) = run(
         "module top; typedef struct packed {logic[3:0] a; logic[3:0] b;} s_t;\n\
@@ -74,11 +70,9 @@ fn task_body_typedef_decl() {
 
 #[test]
 fn function_body_typedef_decl() {
-    let (o, ok) = run(
-        "module top; typedef logic [7:0] b_t;\n\
+    let (o, ok) = run("module top; typedef logic [7:0] b_t;\n\
          function logic [7:0] f; b_t tmp; tmp=8'hCD; f=tmp; endfunction\n\
-         initial begin $display(\"%h\",f()); #1 $finish; end endmodule",
-    );
+         initial begin $display(\"%h\",f()); #1 $finish; end endmodule");
     assert!(ok && o.contains("cd"), "got:\n{o}");
 }
 
@@ -123,9 +117,7 @@ fn statement_using_typedef_name_not_misparsed() {
     // A statement that references a typedef-name (`e::A` scope, or assigning a
     // module-scope enum var) must NOT be grabbed as a decl. Here `g=B` assigns a
     // module-scope enum var — the block has no decls and the statement runs.
-    let (o, ok) = run(
-        "module top; typedef enum {A,B,C} e; e g;\n\
-         initial begin g=B; $display(\"%0d\",g); #1 $finish; end endmodule",
-    );
+    let (o, ok) = run("module top; typedef enum {A,B,C} e; e g;\n\
+         initial begin g=B; $display(\"%0d\",g); #1 $finish; end endmodule");
     assert!(ok && o.contains('1'), "got:\n{o}");
 }
