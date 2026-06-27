@@ -2099,15 +2099,23 @@ fn push_default_radix(v: &Value, out: &mut String, radix: Option<u8>) {
     }
 }
 
-/// iverilog-style `%v` strength form of bit 0: St0/St1/StX/HiZ (vitamin has no
-/// strength model; the driven-strong prefix is the conventional rendering).
-fn strength_form(v: &Value) -> &'static str {
-    match v.get_vu(0) {
-        (0, 0) => "St0",
-        (1, 0) => "St1",
-        (1, 1) => "HiZ",
-        _ => "StX",
-    }
+/// iverilog-style `%v` strength form: per-bit St0/St1/StX/HiZ, MSB-first, joined
+/// by `_` (live pin: `4'b10xz` → "St1_St0_StX_HiZ"). vitamin has no strength model,
+/// so a driven bit takes the conventional STRONG (St) prefix and z is HiZ — an
+/// approximation that matches iverilog for register / strong-net designs. A 1-bit
+/// value yields a single field (e.g. "St1"), unchanged from the old behavior.
+fn strength_form(v: &Value) -> String {
+    let w = v.width.max(1);
+    (0..w)
+        .rev()
+        .map(|bi| match v.get_vu(bi) {
+            (0, 0) => "St0",
+            (1, 0) => "St1",
+            (1, 1) => "HiZ",
+            _ => "StX",
+        })
+        .collect::<Vec<_>>()
+        .join("_")
 }
 
 fn render_template(
@@ -2299,7 +2307,7 @@ fn render_template(
             // them unconsumed shifted every later spec onto the wrong arg.
             'v' | 'V' => {
                 let v = next_arg(sched, args, argi);
-                out.push_str(strength_form(&v));
+                out.push_str(&strength_form(&v));
             }
             // binary-dump specs: consume; vitamin emits no text for them (v1 —
             // the IEEE form writes raw bytes, useless in a text log).

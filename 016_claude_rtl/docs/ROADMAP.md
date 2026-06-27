@@ -581,9 +581,9 @@ loud-reject로 확인됨(이제 참):**
 
 > §4.5.23 부수 발굴 해결(+cluster sweep로 확장). vita가 `%S`/`%C`/`%M`/`%T`를 `other` arm로 흘려 리터럴 출력+arg 미소비(arg-shift silent-wrong)·`%E`/`%G`는 소문자 exponent(`e+00` vs iverilog `E+00`). 수정: `%s|%S`·`%c|%C`·`%m|%M`·`%t|%T` 별칭(소문자 핸들러 라우팅·동일 arg 소비)+real arm이 `%E`/`%G`서 `s.to_ascii_uppercase()`(exponent `e→E`·inf/nan→INF/NAN). **적대 differential이 over-eager `%F` uppercase 발굴**(=silent-wrong): iverilog는 `%F`의 inf/nan을 소문자 유지(`%E`/`%G`만 대문자)→가드를 `spec=='E'||spec=='G'`로 좁힘(`%F`는 `%f`와 항상 동일). `%T`=`%t` 별칭(arg 소비 수정·vita의 documented plain-decimal `%t` 한계 공유). byte-identical(소문자 무변경·대문자는 이전 리터럴-출력=additive). 적대 differential **1 silent-wrong(`%F`) 발굴→수정 후 CLEAN**·soundness **SOUND**(arg 소비·to_ascii_uppercase). 7 테스트. **별개 §4.5.25**(`%V` multi-bit strength).
 
-#### 4.5.25 (개발 후보·deferred) `%v`/`%V` multi-bit strength (pre-existing strength model)
+#### 4.5.25 `%v`/`%V` multi-bit strength (2026-06-27, branch `feat-v-strength`) ✅
 
-> §4.5.24 differential 부수 발굴(pre-existing·`%v`/`%V` 공유). `%v` of 멀티비트 net이 vita는 bit 0 strength 1개(`St1`)만·iverilog는 비트별 전체(`St1_St0_St1_…`). 근본=`strength_form`이 단일 `&str` 반환(`v.get_vu(0)`만). vita는 strength model 없음(driven=강)→비트별 `St0/St1/StX/HiZ`를 `_`로 join하면 iverilog parity 가능(strength는 항상 강제-강 근사). 별개 슬라이스(format-render·strength 근사).
+> §4.5.24 부수 발굴 해결(format cluster 마지막). `%v` of 멀티비트 net이 vita는 bit 0 strength 1개만(`4'b10xz`→`HiZ`)·iverilog는 비트별 전체(`St1_St0_StX_HiZ`). 근본=`strength_form`이 `v.get_vu(0)`만 읽어 단일 `&str` 반환. 수정: 전 비트 MSB-first 순회→`St0`/`St1`(known 0/1)·`StX`(x)·`HiZ`(z) 매핑→`_` join(`String` 반환). vita는 strength model 없음→driven=강(St) 근사(기존 1-bit과 동일·count만 수정). 1-bit byte-identical. 적대 differential **CLEAN**(24 harness: 1/2/4/8/16/32/64/100/128-bit·word-boundary·all-x/z·`%V`·$write/$monitor 일관)·soundness **SOUND**(MSB-first·get_vu map_or 무panic·wide multi-word). 4 테스트. pre-existing(b·out-of-scope): `%v` of const-literal/real=iverilog VPI 거부·drive-strength syntax(`wire (weak1,weak0)`)=파서 미지원=별개.
 
 #### 4.5.1 Medium 묶음 게이트 플랜 (2026-06-18, 8-agent 워크플로우)
 
