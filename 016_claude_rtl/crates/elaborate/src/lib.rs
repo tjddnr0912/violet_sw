@@ -6179,8 +6179,15 @@ impl<'s> Elaborator<'s> {
                             let push = if scalar_string {
                                 name.unpacked.is_empty()
                             } else {
-                                name.unpacked.is_empty()
-                                    && fold_init(init, 1).is_none()
+                                // Mirror `collect_var_init_drivers`: a non-constant
+                                // initializer rides the t0 pre-sweep. This INCLUDES an
+                                // unpacked-array pattern (`int a[4] = '{1,2,3,4}`),
+                                // whose synthesized `a = '{…}` is routed through
+                                // `array_assign_special` — previously a bare
+                                // `name.unpacked.is_empty()` guard silently dropped it.
+                                let (w, ..) =
+                                    self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+                                fold_init(init, w).is_none()
                                     && self.const_eval_in_scope(init).is_none()
                             };
                             if push {
