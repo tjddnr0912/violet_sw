@@ -7219,7 +7219,8 @@ impl<'t, 's> Parser<'t, 's> {
 
     /// Optional ANSI tf-port list `( tf_port {, tf_port} )`. Returns `[]` if there
     /// is no `(` (non-ANSI form — ports come from body input/output decls instead).
-    /// Empty `()` ⇒ `[]`. Direction is sticky across comma-grouped names.
+    /// Empty `()` ⇒ `[]`. Direction AND type are sticky across comma-grouped
+    /// names (a bare `, name` inherits both — see `parse_tf_port`).
     fn opt_tf_port_paren_list(&mut self) -> Vec<TfPort> {
         let mut ports = Vec::new();
         if self.peek() != Some(TokenKind::LParen) {
@@ -7231,10 +7232,12 @@ impl<'t, 's> Parser<'t, 's> {
             return ports;
         }
         let mut inherited = PortDir::Input;
+        let mut inherited_type: (Option<NetVarKind>, bool, Option<Range>) = (None, false, None);
         loop {
             let before = self.pos;
-            let (port, dir) = self.parse_tf_port(inherited);
+            let (port, dir, ty) = self.parse_tf_port(inherited, &inherited_type);
             inherited = dir;
+            inherited_type = ty;
             ports.push(port);
             if self.pos == before {
                 self.bump(); // forward-progress guard
@@ -7248,46 +7251,68 @@ impl<'t, 's> Parser<'t, 's> {
     }
 
     /// One ANSI tf-port: `[input|output|inout] [net_or_var] [signed] [range] name`.
-    /// Returns the port plus the (possibly-inherited) direction so a following
-    /// bare `, name` keeps the same dir.
-    fn parse_tf_port(&mut self, inherited: PortDir) -> (TfPort, PortDir) {
+    /// Returns the port, the (possibly-inherited) direction, and the
+    /// (possibly-inherited) type, so a following bare `, name` keeps both.
+    ///
+    /// §13.3/§23.2.2.3 type stickiness: a bare `, name` (no direction keyword AND
+    /// no type spec) inherits the previous port's full type. A direction keyword
+    /// resets the type (`input y` after `input logic [7:0] x` makes `y` the default
+    /// 1-bit), and any explicit type (net/var keyword, `signed`/`unsigned`, or a
+    /// range) starts a fresh type that itself propagates onward.
+    fn parse_tf_port(
+        &mut self,
+        inherited: PortDir,
+        inherited_type: &(Option<NetVarKind>, bool, Option<Range>),
+    ) -> (TfPort, PortDir, (Option<NetVarKind>, bool, Option<Range>)) {
         let start = self.cur_span();
-        let dir = match self.peek() {
+        let (dir, dir_present) = match self.peek() {
             Some(TokenKind::Word(WordKind::Keyword(Kw::Input))) => {
                 self.bump();
-                PortDir::Input
+                (PortDir::Input, true)
             }
             Some(TokenKind::Word(WordKind::Keyword(Kw::Output))) => {
                 self.bump();
-                PortDir::Output
+                (PortDir::Output, true)
             }
             Some(TokenKind::Word(WordKind::Keyword(Kw::Inout))) => {
                 self.bump();
-                PortDir::Inout
+                (PortDir::Inout, true)
             }
-            _ => inherited, // bare `, b` continues the previous direction
+            _ => (inherited, false), // bare `, b` continues the previous direction
         };
         let net_or_var = self.net_var_kind();
         if net_or_var.is_some() {
             self.bump();
         }
-        let signed = self.signed_eff(net_or_var);
+        let explicit_signed = self.opt_signed();
         let range = self.opt_range();
+        // A port carries its own type when a direction keyword OR any explicit type
+        // token is present; otherwise (a bare `, name`) it inherits the previous
+        // type. The resolved type then propagates to the next bare port.
+        let type_present = net_or_var.is_some() || range.is_some() || explicit_signed.is_some();
+        let (net_or_var, signed, range) = if dir_present || type_present {
+            (
+                net_or_var,
+                explicit_signed.unwrap_or_else(|| atom_default_signed(net_or_var)),
+                range,
+            )
+        } else {
+            inherited_type.clone()
+        };
         let name = self.ident().unwrap_or_else(|| Ident {
             name: String::new(),
             span: self.cur_span(),
         });
-        (
-            TfPort {
-                dir,
-                net_or_var,
-                signed,
-                range,
-                name,
-                span: start.to(self.prev_span()),
-            },
+        let port = TfPort {
             dir,
-        )
+            net_or_var,
+            signed,
+            range,
+            name,
+            span: start.to(self.prev_span()),
+        };
+        let next_type = (port.net_or_var, port.signed, port.range.clone());
+        (port, dir, next_type)
     }
 
     /// Body of a function/task: a decl prefix (net/var decls AND — for the non-ANSI
