@@ -9529,7 +9529,11 @@ impl<'s> Elaborator<'s> {
                         return self.placeholder_expr();
                     }
                 };
-                let e = self.lower_expr(operand);
+                // §11.6: the cast width N is the operand's context, so a fill
+                // literal (`'1`/`'x`/`'z`) grows to N bits (a bare `lower_expr` sizes
+                // it to 1 bit, then `lower_size_cast` zero-extends it = silent-wrong:
+                // `8'('1)` gave `01` instead of `ff`). Byte-identical for a non-fill.
+                let e = self.lower_ctx_or_plain(operand, n);
                 if self.cast_operand_is_real(operand, e) {
                     self.error(
                         MsgCode::ElabUnsupported,
@@ -9554,7 +9558,8 @@ impl<'s> Elaborator<'s> {
                     };
                     if let Some(n) = self.const_eval_in_scope(&id_expr) {
                         if n >= 1 && (n as u64) <= MAX_NET_WIDTH {
-                            let e = self.lower_expr(operand);
+                            // fill literal grows to the cast width N (see Size arm).
+                            let e = self.lower_ctx_or_plain(operand, n as u32);
                             if self.cast_operand_is_real(operand, e) {
                                 self.error(
                                     MsgCode::ElabUnsupported,
@@ -9675,7 +9680,11 @@ impl<'s> Elaborator<'s> {
             P::Time => (64, false, false),
             P::Real => unreachable!("handled above"),
         };
-        let e = self.lower_expr(operand);
+        // The target width `tw` is the operand's context, so a fill literal grows
+        // to `tw` bits (a bare `lower_expr` sizes it to 1 bit, then the resize below
+        // zero-extends it = silent-wrong: `int'('1)` gave `00000001`, not all-ones).
+        // Byte-identical for a non-fill operand.
+        let e = self.lower_ctx_or_plain(operand, tw);
         // real operand → integral target: round half away from zero, then narrow.
         if self.cast_operand_is_real(operand, e) {
             return self.lower_real_to_int_cast(e, tw, tsigned, t2state);
