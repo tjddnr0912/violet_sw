@@ -6371,12 +6371,26 @@ impl<'s> Elaborator<'s> {
                     }
                     _ => None,
                 };
-                if decl.init.is_some() {
-                    self.error(
-                        MsgCode::ElabUnsupported,
-                        "a dynamic-storage handle takes no initializer (use `new[]`/methods at runtime)",
-                    );
-                    continue;
+                if let Some(init) = &decl.init {
+                    // A queue / dynamic-array `'{…}` initializer is EXPANDED to runtime
+                    // ops at t0 by the var-init flush (a push_back sequence / `new[N]` +
+                    // element writes); allow it and register the handle. `allow_string_init`
+                    // gates this to the scopes whose init pass actually runs the flush
+                    // (module body / block-local) — in a generate or interface body the
+                    // var-init is NOT collected, so allowing it there would silently DROP
+                    // the init (the same reason `allow_string_init` guards string inits).
+                    // Any other init (a whole-value copy, a non-pattern expr) or an assoc
+                    // array stays loud — those use runtime methods.
+                    let desugared = allow_string_init
+                        && matches!(&init.kind, ast::ExprKind::AssignPattern(_))
+                        && matches!(handle_kind, ir::NetKind::Queue | ir::NetKind::DynArray);
+                    if !desugared {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "a dynamic-storage handle takes no initializer except a `'{…}` pattern on a queue/dynamic array (whole-value copy/other inits use `new[]`/methods)",
+                        );
+                        continue;
+                    }
                 }
                 if matches!(
                     d.kind,
@@ -9328,6 +9342,12 @@ impl<'s> Elaborator<'s> {
             let Some(init) = &name.init else {
                 continue;
             };
+            // A queue / dynamic-array `'{…}` decl-init has no whole-value init
+            // surface; it rides the normal `pending_var_inits` path (in DECLARATION
+            // order, alongside scalar inits) and is EXPANDED to runtime ops at flush
+            // (a push_back sequence / `new[N]` + element writes) — see
+            // `flush_pending_var_inits`. Keeping it in the one ordered list lets a
+            // scalar init read an earlier queue's `.size()` correctly.
             if scalar_string {
                 if !name.unpacked.is_empty() {
                     continue; // a dimensioned string is loud-rejected at declaration
@@ -9345,6 +9365,87 @@ impl<'s> Elaborator<'s> {
             self.pending_var_inits
                 .push((ast::Lvalue::Ident(path), init.clone()));
         }
+    }
+
+    /// Expand a queue / dynamic-array `'{e0,…,eN}` decl-init into runtime statements
+    /// (called from the var-init flush, in declaration order). A QUEUE pushes each
+    /// element (`q.push_back(e)`); a DYNAMIC ARRAY allocates `d = new[N]` then writes
+    /// each element (`d[i] = e`). Reuses the existing runtime ops — no new engine
+    /// path. (Assoc / non-pattern inits do not reach here; they stay loud at the
+    /// declaration.)
+    fn dyn_decl_init_stmts(
+        &self,
+        name: &ast::Ident,
+        kind: ir::NetKind,
+        elems: &[ast::Expr],
+    ) -> Vec<ast::Stmt> {
+        let mut out: Vec<ast::Stmt> = Vec::new();
+        let span = name.span;
+        let dec = |n: usize| ast::Expr {
+            kind: ast::ExprKind::IntLit {
+                kind: ast::IntLitKind::Decimal,
+                raw: n.to_string(),
+            },
+            span,
+        };
+        let ident_lv = |id: &ast::Ident| {
+            ast::Lvalue::Ident(ast::HierPath {
+                segments: vec![id.clone()],
+                span: id.span,
+            })
+        };
+        match kind {
+            ir::NetKind::Queue => {
+                for e in elems {
+                    out.push(ast::Stmt::UserTaskCall {
+                        name: ast::HierPath {
+                            segments: vec![
+                                name.clone(),
+                                ast::Ident {
+                                    name: "push_back".to_string(),
+                                    span,
+                                },
+                            ],
+                            span,
+                        },
+                        args: vec![e.clone()],
+                        span,
+                    });
+                }
+            }
+            ir::NetKind::DynArray => {
+                // d = new[N]
+                out.push(ast::Stmt::Blocking {
+                    lhs: ident_lv(name),
+                    delay: None,
+                    event: None,
+                    rhs: ast::Expr {
+                        kind: ast::ExprKind::New {
+                            size: Box::new(dec(elems.len())),
+                            src: None,
+                        },
+                        span,
+                    },
+                    span,
+                });
+                // d[i] = e
+                for (i, e) in elems.iter().enumerate() {
+                    out.push(ast::Stmt::Blocking {
+                        lhs: ast::Lvalue::BitSelect {
+                            base: Box::new(ident_lv(name)),
+                            index: Box::new(dec(i)),
+                            span,
+                        },
+                        delay: None,
+                        event: None,
+                        rhs: e.clone(),
+                        span,
+                    });
+                }
+            }
+            _ => {}
+        }
+        out
     }
 
     // ── PASS 2: continuous assigns ─────────────────────────────────
@@ -9403,19 +9504,34 @@ impl<'s> Elaborator<'s> {
         }
         let inits = std::mem::take(&mut self.pending_var_inits);
         let sp = inits[0].1.span;
-        let stmts: Vec<ast::Stmt> = inits
-            .into_iter()
-            .map(|(lhs, rhs)| {
-                let span = rhs.span;
-                ast::Stmt::Blocking {
-                    lhs,
-                    delay: None,
-                    event: None,
-                    rhs,
-                    span,
+        // Each (lvalue, rhs) becomes a `Blocking` t0 assignment — EXCEPT a queue /
+        // dynamic-array `'{…}` init, which has no whole-value surface and is
+        // EXPANDED here (in declaration order, where the handle net is registered) to
+        // runtime ops: a queue pushes each element (`push_back`), a dyn array does
+        // `new[N]` + element writes. Keeping it in the one ordered list means a later
+        // scalar init reads an earlier queue's `.size()` correctly.
+        let mut stmts: Vec<ast::Stmt> = Vec::with_capacity(inits.len());
+        for (lhs, rhs) in inits {
+            if let (ast::Lvalue::Ident(p), ast::ExprKind::AssignPattern(elems)) = (&lhs, &rhs.kind)
+            {
+                if p.segments.len() == 1 {
+                    if let Some((_, kind @ (ir::NetKind::Queue | ir::NetKind::DynArray))) =
+                        self.dyn_handle(&p.segments[0].name)
+                    {
+                        stmts.extend(self.dyn_decl_init_stmts(&p.segments[0], kind, elems));
+                        continue;
+                    }
                 }
-            })
-            .collect();
+            }
+            let span = rhs.span;
+            stmts.push(ast::Stmt::Blocking {
+                lhs,
+                delay: None,
+                event: None,
+                rhs,
+                span,
+            });
+        }
         let pb = ast::ProceduralBlock {
             kind: ast::ProcKind::Initial,
             sensitivity: None,
