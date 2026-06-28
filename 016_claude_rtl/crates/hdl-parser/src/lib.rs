@@ -131,17 +131,26 @@ impl StructLayout {
     }
 }
 
-/// A snapshot of the parser's type-name-keyed registries, used to give a
-/// procedural body-local typedef DEFINITION (`function f; typedef … t; …`)
-/// lexical scope: the maps are snapshotted at the body's first body-local
-/// typedef and restored when the body ends, so the local name is visible inside
-/// the body but does NOT leak out or clobber a same-named outer typedef (which
-/// would be a silent-wrong — iverilog scopes such a typedef).
-struct TypedefScope {
+/// A snapshot of the parser's lexically-scoped registries, used to give a
+/// procedural block its own scope: snapshotted at the block's first body-local
+/// typedef DEFINITION or struct/enum-typed VAR declaration and restored when the
+/// block ends, so a local name is visible inside the block but does NOT leak out
+/// or clobber a same-named outer name (which would be a silent-wrong — iverilog
+/// scopes both). The TYPE-name-keyed maps scope a body-local `typedef`
+/// (§4.5.51); the VAR-name-keyed maps scope a block-local struct/enum variable
+/// whose name shadows an outer struct/enum variable (else a later outer
+/// `x.field` would desugar against the inner layout — `b` instead of `bb`).
+struct ScopeSnapshot {
+    // TYPE-name-keyed (a body-local typedef definition).
     typedefs: std::collections::HashMap<String, TypeInfo>,
     struct_layouts: std::collections::HashMap<String, StructLayout>,
     enum_defs: std::collections::HashMap<String, Vec<(String, i64)>>,
     union_type_names: std::collections::HashSet<String>,
+    // VAR-name-keyed (a block-local struct/enum variable shadowing an outer one).
+    var_struct: std::collections::HashMap<String, String>,
+    var_enum: std::collections::HashMap<String, String>,
+    struct_scalar_vars: std::collections::HashSet<String>,
+    struct_1d_array_vars: std::collections::HashSet<String>,
 }
 
 /// A trailing READ sub-select on a packed-struct member, normalized to an
@@ -5127,24 +5136,34 @@ impl<'t, 's> Parser<'t, 's> {
         args
     }
 
-    /// Snapshot the type-name-keyed registries before a body's first body-local
-    /// typedef, so they can be restored to give that typedef lexical scope.
-    fn snapshot_typedefs(&self) -> TypedefScope {
-        TypedefScope {
+    /// Snapshot the lexically-scoped registries before a block's first body-local
+    /// typedef / struct-or-enum-typed var, so they can be restored to give that
+    /// block its own scope.
+    fn snapshot_scope(&self) -> ScopeSnapshot {
+        ScopeSnapshot {
             typedefs: self.typedefs.clone(),
             struct_layouts: self.struct_layouts.clone(),
             enum_defs: self.enum_defs.clone(),
             union_type_names: self.union_type_names.clone(),
+            var_struct: self.var_struct.clone(),
+            var_enum: self.var_enum.clone(),
+            struct_scalar_vars: self.struct_scalar_vars.clone(),
+            struct_1d_array_vars: self.struct_1d_array_vars.clone(),
         }
     }
 
-    /// Restore the registries to a prior snapshot, dropping any body-local
-    /// typedefs added since (so they do not leak out of / clobber an outer scope).
-    fn restore_typedefs(&mut self, s: TypedefScope) {
+    /// Restore the registries to a prior snapshot, dropping any block-local
+    /// typedefs / struct-var bindings added since (so they do not leak out of or
+    /// clobber an outer scope).
+    fn restore_scope(&mut self, s: ScopeSnapshot) {
         self.typedefs = s.typedefs;
         self.struct_layouts = s.struct_layouts;
         self.enum_defs = s.enum_defs;
         self.union_type_names = s.union_type_names;
+        self.var_struct = s.var_struct;
+        self.var_enum = s.var_enum;
+        self.struct_scalar_vars = s.struct_scalar_vars;
+        self.struct_1d_array_vars = s.struct_1d_array_vars;
     }
 
     /// A procedural body-local typedef DEFINITION (`typedef logic [3:0] t;` inside
@@ -7574,7 +7593,7 @@ impl<'t, 's> Parser<'t, 's> {
         let mut body_decls = Vec::new();
         // Body-local typedef DEFINITIONs are lexically scoped (see `block_body`):
         // snapshot at the first one, restore when the body ends.
-        let mut typedef_scope: Option<TypedefScope> = None;
+        let mut typedef_scope: Option<ScopeSnapshot> = None;
         while !self.at_eof() && !self.at_tf_end(end) {
             if matches!(
                 self.peek(),
@@ -7593,7 +7612,7 @@ impl<'t, 's> Parser<'t, 's> {
             // A body-local typedef DEFINITION (`typedef logic [3:0] t;`).
             if self.at_kw(Kw::Typedef) {
                 if typedef_scope.is_none() {
-                    typedef_scope = Some(self.snapshot_typedefs());
+                    typedef_scope = Some(self.snapshot_scope());
                 }
                 let before = self.pos;
                 self.parse_body_typedef_def();
@@ -7638,8 +7657,16 @@ impl<'t, 's> Parser<'t, 's> {
             }
             // A function/task body decl using a user-defined type name
             // (`my_enum_t s; byte_t b;`), same `<typedef_name> <ident>` shape as a
-            // block-local decl (see `block_body`).
+            // block-local decl (see `block_body`). This writes the VAR-name-keyed
+            // maps, so — exactly as in `block_body` — it triggers the scope
+            // snapshot: a function-local struct var (`inner_s x;`) whose name
+            // shadows an outer one must not leak its layout binding past the body
+            // (a function need NOT do a struct field assign to clobber it, so the
+            // frame-call-subset E3009 does not cover this).
             if let Some(info) = self.peek_block_typedef_decl() {
+                if typedef_scope.is_none() {
+                    typedef_scope = Some(self.snapshot_scope());
+                }
                 let before = self.pos;
                 if let Some(d) = self.parse_typed_decl(info) {
                     body_decls.push(d);
@@ -7681,7 +7708,7 @@ impl<'t, 's> Parser<'t, 's> {
         };
         // Drop body-local typedefs (restore outer scope) after the body is parsed.
         if let Some(scope) = typedef_scope {
-            self.restore_typedefs(scope);
+            self.restore_scope(scope);
         }
         (body_decls, body)
     }
@@ -10454,16 +10481,17 @@ impl<'t, 's> Parser<'t, 's> {
     /// Shared block body: decls-prefix THEN statements, until the closer.
     fn block_body(&mut self, end: BlockEnd) -> (Vec<NetVarDecl>, Vec<Stmt>) {
         let mut decls = Vec::new();
-        // Body-local typedef DEFINITIONs are lexically scoped: snapshot the type
-        // registries at the first one and restore them when the block ends, so a
-        // local name does not leak out of / clobber an outer typedef. `None` until
-        // a body-local typedef appears → zero overhead for the common case.
-        let mut typedef_scope: Option<TypedefScope> = None;
+        // A block is lexically scoped: snapshot the scope registries at the block's
+        // first body-local typedef DEFINITION or struct/enum-typed VAR decl, and
+        // restore them when the block ends, so a local name does not leak out of /
+        // clobber an outer one. `None` until such a decl appears → zero overhead
+        // for the common (plain-var) block.
+        let mut scope: Option<ScopeSnapshot> = None;
         while !self.at_eof() && !self.at_block_end(end) {
             let before = self.pos;
             if self.at_kw(Kw::Typedef) {
-                if typedef_scope.is_none() {
-                    typedef_scope = Some(self.snapshot_typedefs());
+                if scope.is_none() {
+                    scope = Some(self.snapshot_scope());
                 }
                 self.parse_body_typedef_def();
             } else if self.net_var_kind().is_some() {
@@ -10474,7 +10502,13 @@ impl<'t, 's> Parser<'t, 's> {
             } else if let Some(info) = self.peek_block_typedef_decl() {
                 // A procedural block-local declaration using a user-defined type
                 // name (`my_enum_t state = IDLE;` / `byte_t b;` / `s_t s;`),
-                // mirroring the module-item typedef-decl path.
+                // mirroring the module-item typedef-decl path. This writes the
+                // VAR-name-keyed maps, so it too triggers the scope snapshot — a
+                // block-local `s_t x` that shadows an outer `s_t x` must not leak
+                // its layout binding out of the block.
+                if scope.is_none() {
+                    scope = Some(self.snapshot_scope());
+                }
                 if let Some(d) = self.parse_typed_decl(info) {
                     decls.push(d);
                 }
@@ -10493,10 +10527,11 @@ impl<'t, 's> Parser<'t, 's> {
                 self.bump(); // guard: never spin on a stuck statement
             }
         }
-        // Drop body-local typedefs (restore the outer scope) AFTER statements are
-        // parsed — a statement may reference a local typedef (e.g. a cast `t'(x)`).
-        if let Some(scope) = typedef_scope {
-            self.restore_typedefs(scope);
+        // Drop block-local typedefs / struct-var bindings (restore the outer scope)
+        // AFTER statements are parsed — a statement may reference a local typedef
+        // (e.g. a cast `t'(x)`) or a local struct var's `x.field`.
+        if let Some(scope) = scope {
+            self.restore_scope(scope);
         }
         (decls, stmts)
     }
