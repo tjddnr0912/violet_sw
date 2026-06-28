@@ -9532,6 +9532,12 @@ impl<'t, 's> Parser<'t, 's> {
         // lowers byte-identically to lowering the For alone.
         let typed_init = if self.net_var_kind().is_some() {
             self.parse_for_typed_init()
+        } else if let Some(info) = self.peek_block_typedef_decl() {
+            // SV §12.7.1 typed for-init using a user-defined type name
+            // (`for (my_t i=0; …)`). The `<typedef> <ident>` shape is
+            // unambiguously a decl (a plain `i = 0` re-uses an existing var and
+            // `peek_block_typedef_decl` returns None for it).
+            self.parse_for_typed_init_typedef(info)
         } else {
             None
         };
@@ -9594,6 +9600,49 @@ impl<'t, 's> Parser<'t, 's> {
         let signed = self.signed_eff(Some(kind));
         let range = self.opt_range();
         let packed = self.opt_packed_dims();
+        self.build_for_typed_init(start, kind, signed, range, packed)
+    }
+
+    /// SV §12.7.1 typed for-init with a USER-DEFINED type name (`for (my_t i=0; …)`
+    /// where `my_t` is a typedef/enum/struct). The resolved `TypeInfo` supplies
+    /// kind/sign/range/packed — the type NAME is a single token (no inline range),
+    /// so unlike the built-in path there is nothing to `opt_range`/`opt_packed`.
+    /// Mirrors the built-in arm; reuses the SAME `<T> <name>` disambiguation as
+    /// block-local typedef decls and function-return typedefs (§4.5.40/§4.5.41).
+    fn parse_for_typed_init_typedef(
+        &mut self,
+        info: TypeInfo,
+    ) -> Option<(NetVarDecl, Stmt, Ident)> {
+        let start = self.cur_span(); // type-name token span (matches the built-in path)
+        self.bump(); // the type-name identifier
+                     // A class-handle alias cannot be a loop counter (no arithmetic on a
+                     // handle, §8.4). Emit a clear loud error rather than letting a
+                     // ClassHandle decl with no class type flow to elaborate (which would
+                     // report the misleading "class handle without a class type" + a
+                     // cascade). The type name is already consumed, so returning None
+                     // lets the plain-assign fallback parse the `name = init`; elaborate's
+                     // single follow-on is then the (correct) undeclared-loop-var error.
+        if info.class_name.is_some() {
+            // Phrased to fit the parser's "expected <X>, found <token>" template
+            // (the `found` token names the offending class).
+            self.error("a non-class type for the for-loop variable (a class handle has no loop arithmetic)");
+            return None;
+        }
+        self.build_for_typed_init(start, info.kind, info.signed, info.range, info.packed)
+    }
+
+    /// Shared tail of typed for-init parsing: read the single loop-variable
+    /// declarator + `= init`, rename it to a synthetic unique name (so it never
+    /// aliases a same-named outer var under v1's flat block-local namespace), and
+    /// synthesize `(renamed decl, `i = init` assign, ORIGINAL ident)`.
+    fn build_for_typed_init(
+        &mut self,
+        start: Span,
+        kind: NetVarKind,
+        signed: bool,
+        range: Option<Range>,
+        packed: Vec<Range>,
+    ) -> Option<(NetVarDecl, Stmt, Ident)> {
         // SV §12.7.1 allows ONE loop variable; parse a single declarator (no
         // comma-list) so a stray comma stays a loud error rather than being
         // silently swallowed as a second for-init variable.
