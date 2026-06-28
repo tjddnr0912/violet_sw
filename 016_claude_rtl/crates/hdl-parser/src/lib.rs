@@ -5248,6 +5248,38 @@ impl<'t, 's> Parser<'t, 's> {
         }))
     }
 
+    /// Parse a packed struct/union MEMBER's type into `(kind, signed, range)`. A
+    /// built-in keyword resolves directly (§7.2.1); a SIMPLE user-defined type name
+    /// (a vector / enum / atom typedef) resolves to its `TypeInfo`. A nested
+    /// struct/union, a class handle, or a multi-dim packed typedef member needs
+    /// nested-layout machinery not in v1 — honest-loud. Returns `None` (with the
+    /// error already emitted) on a non-type token or an unsupported member type; the
+    /// caller breaks out of the member loop.
+    fn parse_struct_member_type(&mut self) -> Option<(NetVarKind, bool, Option<Range>)> {
+        if let Some(kind) = self.net_var_kind() {
+            self.bump(); // kind keyword
+            let signed = self.signed_eff(Some(kind));
+            let range = self.opt_range();
+            return Some((kind, signed, range));
+        }
+        if let Some(info) = self.peek_typedef_name() {
+            let nm = self.cur_text().to_string();
+            if self.struct_layouts.contains_key(&nm)
+                || info.class_name.is_some()
+                || !info.packed.is_empty()
+            {
+                self.error(
+                    "a simple (non-struct) type for a struct/union member (a nested struct / class / multi-dim packed member is unsupported in v1)",
+                );
+                return None;
+            }
+            self.bump(); // the typedef-name token
+            return Some((info.kind, info.signed, info.range));
+        }
+        self.error("a net/var type in a struct/union member");
+        None
+    }
+
     /// `typedef struct packed { <type> f1, f2; … } name;` (Phase-2). Members are
     /// laid out MSB-first into one flat `logic [W-1:0]` vector; the layout is
     /// recorded so `name var;` resolves and `var.field` desugars to a part-select.
@@ -5266,13 +5298,9 @@ impl<'t, 's> Parser<'t, 's> {
         while self.peek() != Some(TokenKind::RBrace) && !self.at_eof() {
             let before = self.pos;
             let m_start = self.cur_span();
-            let Some(kind) = self.net_var_kind() else {
-                self.error("a net/var type in struct member");
+            let Some((kind, signed, range)) = self.parse_struct_member_type() else {
                 break;
             };
-            self.bump(); // kind keyword
-            let signed = self.signed_eff(Some(kind));
-            let range = self.opt_range();
             loop {
                 let Some(name) = self.ident() else { break };
                 members.push(StructMember {
@@ -5379,13 +5407,9 @@ impl<'t, 's> Parser<'t, 's> {
         while self.peek() != Some(TokenKind::RBrace) && !self.at_eof() {
             let before = self.pos;
             let m_start = self.cur_span();
-            let Some(kind) = self.net_var_kind() else {
-                self.error("a net/var type in union member");
+            let Some((kind, signed, range)) = self.parse_struct_member_type() else {
                 break;
             };
-            self.bump(); // kind keyword
-            let signed = self.signed_eff(Some(kind));
-            let range = self.opt_range();
             loop {
                 let Some(name) = self.ident() else { break };
                 members.push(StructMember {
