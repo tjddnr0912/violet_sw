@@ -106,9 +106,15 @@ fn packed_array_pattern_is_loud() {
 }
 
 #[test]
-fn multidim_pattern_is_loud() {
-    let (_o, code) = run("module top; int a[2][2]='{'{1,2},'{3,4}}; initial $finish; endmodule\n");
-    assert_ne!(code, Some(0), "multi-dim pattern must be loud");
+fn multidim_pattern_now_supported() {
+    // Previously deferred (§4.5.33 "v1: a 1-D unpacked array"); a nested `'{…}` on
+    // a multi-dimensional unpacked array is now supported (§4.5.46), row-major.
+    let (o, code) = run(
+        "module top; int a[2][2]='{'{1,2},'{3,4}};\n\
+         initial begin $display(\"%0d %0d %0d %0d\", a[0][0],a[0][1],a[1][0],a[1][1]); $finish; end endmodule\n",
+    );
+    assert_eq!(code, Some(0), "got:\n{o}");
+    assert!(o.contains("1 2 3 4"), "got:\n{o}");
 }
 
 #[test]

@@ -10987,14 +10987,14 @@ impl<'s> Elaborator<'s> {
                 self.placeholder_expr()
             }
             ast::ExprKind::AssignPattern(_) => {
-                // An assignment pattern is only valid bound to a 1-D unpacked array
-                // assignment (handled in `array_assign_special` / the decl-init
-                // path). Anywhere else (a sub-expression, a packed/struct target) is
-                // unsupported — loud.
+                // An assignment pattern is only valid bound to an unpacked-array
+                // assignment (handled in `array_assign_special` / the decl-init path;
+                // 1-D or multi-dim). Anywhere else (a sub-expression, a packed/struct
+                // target) is unsupported — loud.
                 self.error(
                     MsgCode::ElabUnsupported,
                     "an assignment pattern `'{…}` is supported only as the whole \
-                     right-hand side of a 1-D unpacked array assignment",
+                     right-hand side of an unpacked array assignment",
                 );
                 self.placeholder_expr()
             }
@@ -15938,6 +15938,48 @@ impl<'s> Elaborator<'s> {
     /// enumerates, so it is correct for ascending, descending and offset bounds).
     /// A multi-dimensional target, an element-count mismatch, or an intra-assign
     /// delay is loud (correct-or-loud). Returns `true` (the assignment is consumed).
+    /// Flatten a (possibly nested) assignment pattern `'{…}` into its leaf elements
+    /// in ROW-MAJOR (declaration) order, validating the shape against the residual
+    /// unpacked dimensions `dims`. A 1-D residual is the base case (each element is a
+    /// leaf); a multi-dimensional residual requires a nested `'{…}` per element whose
+    /// shape matches the next dimension (IEEE 1800 §10.9.1). Returns `None` (with a
+    /// loud error already emitted) on a count mismatch or a missing nested pattern.
+    fn flatten_assign_pattern<'a>(
+        &mut self,
+        elems: &'a [ast::Expr],
+        dims: &[(u32, u32)],
+    ) -> Option<Vec<&'a ast::Expr>> {
+        let size = dims[0].1 as usize;
+        if elems.len() != size {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "assignment pattern has {} element(s) but the array dimension has {} \
+                     (IEEE 1800 §10.9.1 requires an exact match)",
+                    elems.len(),
+                    size
+                ),
+            );
+            return None;
+        }
+        if dims.len() == 1 {
+            return Some(elems.iter().collect());
+        }
+        let mut out: Vec<&'a ast::Expr> = Vec::new();
+        for e in elems {
+            let ast::ExprKind::AssignPattern(sub) = &e.kind else {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "each element of a multi-dimensional array pattern must itself be a \
+                     nested assignment pattern `'{…}`",
+                );
+                return None;
+            };
+            out.extend(self.flatten_assign_pattern(sub, &dims[1..])?);
+        }
+        Some(out)
+    }
+
     fn lower_array_assign_pattern(
         &mut self,
         b: &mut ProcessBuilder,
@@ -15949,31 +15991,31 @@ impl<'s> Elaborator<'s> {
     ) -> bool {
         let t_dims = self.net_dim_extents(t_net);
         let t_res = &t_dims[t_lead.len()..];
-        if t_res.len() != 1 {
-            self.error(
-                MsgCode::ElabUnsupported,
-                "an assignment pattern `'{…}` on a multi-dimensional array is not \
-                 yet supported (v1: a 1-D unpacked array)",
-            );
-            return true;
-        }
-        let size = t_res[0].1 as usize;
-        if elems.len() != size {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!(
-                    "assignment pattern has {} element(s) but the array has {} \
-                     (IEEE 1800 §10.9.1 requires an exact match)",
-                    elems.len(),
-                    size
-                ),
-            );
-            return true;
-        }
         if !nonblocking && delay.is_some() {
             self.error(
                 MsgCode::ElabUnsupported,
                 "intra-assignment delay on an assignment-pattern array assignment",
+            );
+            return true;
+        }
+        // Flatten the (possibly nested) pattern into row-major leaves matching the
+        // residual unpacked dims. A 1-D residual is the base case; a multi-dim array
+        // (`int a[2][3] = '{'{1,2,3},'{4,5,6}}`) requires a nested `'{…}` per element,
+        // assigned in the same row-major flat order `residual_word_offsets` produces.
+        let Some(leaves) = self.flatten_assign_pattern(elems, t_res) else {
+            return true; // count mismatch / missing nested pattern — error emitted
+        };
+        // The pattern unrolls one assignment per leaf; bound it like the array-copy
+        // path (a deeply-nested large pattern would otherwise emit unbounded IR).
+        const ARRAY_PATTERN_UNROLL_CAP: usize = 4096;
+        if leaves.len() > ARRAY_PATTERN_UNROLL_CAP {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "an assignment pattern expands to {} elements (v1 cap {})",
+                    leaves.len(),
+                    ARRAY_PATTERN_UNROLL_CAP
+                ),
             );
             return true;
         }
@@ -15996,7 +16038,7 @@ impl<'s> Elaborator<'s> {
             // literal (`'1`/`'x`/`'z`) grows to the element width (a bare `lower_expr`
             // would size it to 1 bit, then the engine zero-extends it = silent-wrong).
             // `lower_ctx_or_plain` is byte-identical for a non-fill element.
-            let rhs_id = self.lower_ctx_or_plain(&elems[k], elem_width);
+            let rhs_id = self.lower_ctx_or_plain(leaves[k], elem_width);
             let t_word = self.word_expr_at(t_base, t_off);
             let lv = ir::Lvalue {
                 chunks: vec![ir::LvalChunk {
