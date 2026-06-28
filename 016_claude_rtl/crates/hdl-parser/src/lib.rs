@@ -131,6 +131,19 @@ impl StructLayout {
     }
 }
 
+/// A snapshot of the parser's type-name-keyed registries, used to give a
+/// procedural body-local typedef DEFINITION (`function f; typedef … t; …`)
+/// lexical scope: the maps are snapshotted at the body's first body-local
+/// typedef and restored when the body ends, so the local name is visible inside
+/// the body but does NOT leak out or clobber a same-named outer typedef (which
+/// would be a silent-wrong — iverilog scopes such a typedef).
+struct TypedefScope {
+    typedefs: std::collections::HashMap<String, TypeInfo>,
+    struct_layouts: std::collections::HashMap<String, StructLayout>,
+    enum_defs: std::collections::HashMap<String, Vec<(String, i64)>>,
+    union_type_names: std::collections::HashSet<String>,
+}
+
 /// A trailing READ sub-select on a packed-struct member, normalized to an
 /// indexed part-select *relative to the field part-select* `pv = s[off+w-1:off]`
 /// (so elaborate's `IndexedPart`-on-`PartSelect` fold keeps it FIELD-bounded —
@@ -5114,6 +5127,51 @@ impl<'t, 's> Parser<'t, 's> {
         args
     }
 
+    /// Snapshot the type-name-keyed registries before a body's first body-local
+    /// typedef, so they can be restored to give that typedef lexical scope.
+    fn snapshot_typedefs(&self) -> TypedefScope {
+        TypedefScope {
+            typedefs: self.typedefs.clone(),
+            struct_layouts: self.struct_layouts.clone(),
+            enum_defs: self.enum_defs.clone(),
+            union_type_names: self.union_type_names.clone(),
+        }
+    }
+
+    /// Restore the registries to a prior snapshot, dropping any body-local
+    /// typedefs added since (so they do not leak out of / clobber an outer scope).
+    fn restore_typedefs(&mut self, s: TypedefScope) {
+        self.typedefs = s.typedefs;
+        self.struct_layouts = s.struct_layouts;
+        self.enum_defs = s.enum_defs;
+        self.union_type_names = s.union_type_names;
+    }
+
+    /// A procedural body-local typedef DEFINITION (`typedef logic [3:0] t;` inside
+    /// a begin/function/task body — IEEE §6.18). The cursor is at the `typedef`
+    /// keyword. Registers the name in `self.typedefs` (and `struct_layouts` for a
+    /// struct/union) so subsequent local decls resolve it; the typedef itself emits
+    /// no runtime decl, so the returned AST node is discarded. An ENUM typedef
+    /// additionally needs elaborate-side label-constant registration (the discarded
+    /// AST node carries the labels) that the body parser cannot perform — so a
+    /// body-local enum typedef is honest-loud (define it at module scope). The
+    /// caller is responsible for snapshotting/restoring the registries for scope.
+    fn parse_body_typedef_def(&mut self) {
+        if matches!(
+            self.peek_at(1),
+            Some(TokenKind::Word(WordKind::Keyword(Kw::Enum)))
+        ) {
+            self.error(
+                "an alias / struct / union typedef in a begin/function/task body (a body-local enum typedef is unsupported in v1 — define it at module scope)",
+            );
+            self.synchronize();
+            return;
+        }
+        // Registration is the functional effect; there is no body slot for the
+        // ModuleItem, and elaborate needs nothing from an alias/struct/union node.
+        let _ = self.parse_typedef();
+    }
+
     /// `typedef enum [base] { L0, L1 = expr, … } name;` (Phase-2). Registers
     /// `name` in `self.typedefs` (so a later `name var;` parses) and returns the
     /// AST node so elaborate can register the labels as integer constants.
@@ -7514,6 +7572,9 @@ impl<'t, 's> Parser<'t, 's> {
     /// closer. `ports` is appended to for non-ANSI formals.
     fn tf_body(&mut self, end: BlockEnd2, ports: &mut Vec<TfPort>) -> (Vec<NetVarDecl>, Stmt) {
         let mut body_decls = Vec::new();
+        // Body-local typedef DEFINITIONs are lexically scoped (see `block_body`):
+        // snapshot at the first one, restore when the body ends.
+        let mut typedef_scope: Option<TypedefScope> = None;
         while !self.at_eof() && !self.at_tf_end(end) {
             if matches!(
                 self.peek(),
@@ -7524,6 +7585,18 @@ impl<'t, 's> Parser<'t, 's> {
                 // non-ANSI formal: `input [7:0] a, b;` → one TfPort per name.
                 let before = self.pos;
                 self.parse_tf_port_decl_into(ports);
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
+            }
+            // A body-local typedef DEFINITION (`typedef logic [3:0] t;`).
+            if self.at_kw(Kw::Typedef) {
+                if typedef_scope.is_none() {
+                    typedef_scope = Some(self.snapshot_typedefs());
+                }
+                let before = self.pos;
+                self.parse_body_typedef_def();
                 if self.pos == before {
                     self.bump();
                 }
@@ -7606,6 +7679,10 @@ impl<'t, 's> Parser<'t, 's> {
                 }
             }
         };
+        // Drop body-local typedefs (restore outer scope) after the body is parsed.
+        if let Some(scope) = typedef_scope {
+            self.restore_typedefs(scope);
+        }
         (body_decls, body)
     }
 
@@ -10377,9 +10454,19 @@ impl<'t, 's> Parser<'t, 's> {
     /// Shared block body: decls-prefix THEN statements, until the closer.
     fn block_body(&mut self, end: BlockEnd) -> (Vec<NetVarDecl>, Vec<Stmt>) {
         let mut decls = Vec::new();
+        // Body-local typedef DEFINITIONs are lexically scoped: snapshot the type
+        // registries at the first one and restore them when the block ends, so a
+        // local name does not leak out of / clobber an outer typedef. `None` until
+        // a body-local typedef appears → zero overhead for the common case.
+        let mut typedef_scope: Option<TypedefScope> = None;
         while !self.at_eof() && !self.at_block_end(end) {
             let before = self.pos;
-            if self.net_var_kind().is_some() {
+            if self.at_kw(Kw::Typedef) {
+                if typedef_scope.is_none() {
+                    typedef_scope = Some(self.snapshot_typedefs());
+                }
+                self.parse_body_typedef_def();
+            } else if self.net_var_kind().is_some() {
                 if let Some(d) = self.parse_net_var(false) {
                     // procedural block-local decl: no net delay
                     decls.push(d);
@@ -10405,6 +10492,11 @@ impl<'t, 's> Parser<'t, 's> {
             if self.pos == before {
                 self.bump(); // guard: never spin on a stuck statement
             }
+        }
+        // Drop body-local typedefs (restore the outer scope) AFTER statements are
+        // parsed — a statement may reference a local typedef (e.g. a cast `t'(x)`).
+        if let Some(scope) = typedef_scope {
+            self.restore_typedefs(scope);
         }
         (decls, stmts)
     }
