@@ -12243,6 +12243,56 @@ impl<'s> Elaborator<'s> {
     /// Supported shapes: a single `f = <expr>;`, or a `begin … end` of blocking
     /// assigns to locals (SSA-by-substitution) ending in the return-var assign.
     /// Anything with control flow / nonblocking / task call ⇒ E-ELAB-UNSUPPORTED.
+    /// Resize an inlined-function assignment's rhs to the LHS-declared (width,
+    /// sign). The inline SSA path (`fold_straight_line`) lowers each `lhs = rhs;`
+    /// to a pure ExprId and never writes a net, so — unlike the frame-call/net
+    /// path, which the engine resizes on every write — the return value and each
+    /// body local otherwise keep their self-determined rhs width/sign. That was a
+    /// silent-wrong: `function logic[3:0] f; f=8'hAB` returned `ab` not `b`;
+    /// `function logic[7:0] f; f=4'hF` returned `f` not `0f`; a signed return read
+    /// in a wider signed context did not sign-extend. Apply §10.7 here: truncate
+    /// to / extend (by the RHS's OWN sign) to the declared width, then stamp the
+    /// TARGET sign so a readback in a wider context extends correctly. A genuine
+    /// no-op when the rhs already matches the declared width and sign — every such
+    /// inline function (the common case) stays byte-identical.
+    fn resize_inline_assign(&mut self, e: u32, w: u32, target_signed: bool) -> u32 {
+        // real values are not bit-resizable — leave them untouched.
+        if self.expr_is_real(e) {
+            return e;
+        }
+        let rw = self.ir_bits_of(e).unwrap_or(w);
+        let rhs_signed = self.expr_self_signed(e);
+        let resized = match w.cmp(&rw) {
+            std::cmp::Ordering::Equal => e,
+            // Extend by the OPERAND's sign (§11.6.1); 4-state-preserving Concat.
+            std::cmp::Ordering::Greater => self.extend_to(e, rw, w, rhs_signed),
+            // Truncate to the low W bits (Select is unsigned).
+            std::cmp::Ordering::Less => self.select_low(e, w),
+        };
+        // extend_to / select_low yield UNSIGNED results; the Equal case keeps `e`'s
+        // own sign. Stamp the target sign ONLY when it differs from what `resized`
+        // already carries — so an unsigned target with an unsigned rhs, or a signed
+        // target with an already-signed rhs, adds no node (byte-identical).
+        let resized_signed = if matches!(w.cmp(&rw), std::cmp::Ordering::Equal) {
+            rhs_signed
+        } else {
+            false
+        };
+        if target_signed && !resized_signed {
+            self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Signed,
+                args: vec![resized],
+            })
+        } else if !target_signed && resized_signed {
+            self.push_expr(ir::Expr::SysFunc {
+                which: ir::SysFuncId::Unsigned,
+                args: vec![resized],
+            })
+        } else {
+            resized
+        }
+    }
+
     fn reduce_function_body(
         &mut self,
         func: &ast::FunctionDef,
@@ -12254,22 +12304,26 @@ impl<'s> Elaborator<'s> {
         for (p, &eid) in inputs.iter().zip(actual_ids) {
             self.subst.push((p.name.name.clone(), eid));
         }
-        // §11.6: width context for fill literals assigned in the body — the return
-        // var (return-type width) and each declared body/block local.
-        let (ret_w, _) = self.func_return_dims(func);
-        let mut local_w: BTreeMap<String, u32> = BTreeMap::new();
+        // §11.6 + §10.7: width/sign context for each body assignment — the return
+        // var (return-type width/sign) and each declared body/block local. Used to
+        // size fill literals AND to resize the assigned value to the LHS-declared
+        // (width, sign), which the inline SSA path otherwise misses (see
+        // `resize_inline_assign`).
+        let (ret_w, ret_signed) = self.func_return_dims(func);
+        let mut local_dims: BTreeMap<String, (u32, bool)> = BTreeMap::new();
         let mut decls = func.body_decls.clone();
         collect_block_local_decls(&func.body, &mut decls);
         for d in &decls {
-            let (w, _, _, _) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
+            let (w, _, _, signed) = self.range_to_dims(d.kind, d.range.as_ref(), d.signed);
             for n in &d.names {
-                local_w.insert(n.name.name.clone(), w);
+                local_dims.insert(n.name.name.clone(), (w, signed));
             }
         }
         // (b) walk the straight-line body, recording the return-var assignment.
         let fname = func.name.name.clone();
         let mut ret: Option<u32> = None;
-        let ok = self.fold_straight_line(&func.body, &fname, ret_w, &local_w, &mut ret);
+        let ok =
+            self.fold_straight_line(&func.body, &fname, ret_w, ret_signed, &local_dims, &mut ret);
         // restore the substitution stack to its pre-call depth.
         self.subst.truncate(frame_base);
 
@@ -12303,7 +12357,8 @@ impl<'s> Elaborator<'s> {
         s: &ast::Stmt,
         fname: &str,
         ret_w: u32,
-        local_w: &BTreeMap<String, u32>,
+        ret_signed: bool,
+        local_dims: &BTreeMap<String, (u32, bool)>,
         ret: &mut Option<u32>,
     ) -> bool {
         match s {
@@ -12311,9 +12366,9 @@ impl<'s> Elaborator<'s> {
             ast::Stmt::Block { stmts, .. } => {
                 // begin-end local decls need NO nets: each local lives only as a
                 // substitution binding (combinational). Fold each stmt in order.
-                stmts
-                    .iter()
-                    .all(|st| self.fold_straight_line(st, fname, ret_w, local_w, ret))
+                stmts.iter().all(|st| {
+                    self.fold_straight_line(st, fname, ret_w, ret_signed, local_dims, ret)
+                })
             }
             ast::Stmt::Blocking {
                 lhs, delay, rhs, ..
@@ -12332,15 +12387,27 @@ impl<'s> Elaborator<'s> {
                 // §11.6: a fill rhs is sized to the LHS width — the return-type width
                 // for `fname = …`, the declared width for a body/block local (non-
                 // fill ⇒ byte-identical via lower_expr).
-                let ctx_w = if target == fname {
-                    ret_w
+                let (ctx_w, ctx_signed) = if target == fname {
+                    (ret_w, ret_signed)
                 } else {
-                    local_w.get(&target).copied().unwrap_or(0)
+                    local_dims.get(&target).copied().unwrap_or((0, false))
                 };
-                let rhs_id = if ctx_w == 0 {
+                let rhs_id0 = if ctx_w == 0 {
                     self.lower_expr(rhs)
                 } else {
                     self.lower_ctx_or_plain(rhs, ctx_w)
+                };
+                // §10.7: apply the LHS-declared width/sign the inline SSA path
+                // otherwise misses (no net write). ctx_w==0 = unknown/implicit
+                // width ⇒ leave untouched (byte-identical). A real-valued rhs —
+                // including a call to a real-returning FRAME function, whose
+                // `Expr::Call` node carries no real flag so the helper's IR-level
+                // `expr_is_real` cannot see it — must NOT be bit-resized/sign-
+                // stamped; guard with the AST-aware check `lower_prim_cast` uses.
+                let rhs_id = if ctx_w == 0 || self.cast_operand_is_real(rhs, rhs_id0) {
+                    rhs_id0
+                } else {
+                    self.resize_inline_assign(rhs_id0, ctx_w, ctx_signed)
                 };
                 if target == fname {
                     *ret = Some(rhs_id); // return assignment

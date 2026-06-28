@@ -2732,9 +2732,40 @@ fn task_call(name: &str, args: Vec<ast::Expr>) -> ast::Stmt {
     }
 }
 
+/// Peel an inline-function §10.7 return/local-width resize wrapper — a low
+/// `Select` (offset 0) and/or a `$signed`/`$unsigned` sign stamp the inline path
+/// now adds to size each assigned value to its declared (width, sign) — to reach
+/// the underlying folded expression, so the structural inline-folding assertions
+/// stay robust to the resize. (These tests' folded bodies contain no legitimate
+/// low-Selects, so peeling is unambiguous here.)
+fn peel_resize(s: &ir::SimIr, mut eid: u32) -> u32 {
+    loop {
+        match &s.exprs[eid as usize] {
+            ir::Expr::Select {
+                base,
+                offset,
+                kind: ir::SelKind::PartConst,
+                ..
+            } if matches!(&s.exprs[*offset as usize],
+                ir::Expr::Const { val } if s.consts[*val as usize].bits.val[0] == 0) =>
+            {
+                eid = *base;
+            }
+            ir::Expr::SysFunc {
+                which: ir::SysFuncId::Signed | ir::SysFuncId::Unsigned,
+                args,
+            } if args.len() == 1 => {
+                eid = args[0];
+            }
+            _ => return eid,
+        }
+    }
+}
+
 // ft-e1. combinational function `function [7:0] add1(input [7:0] x); add1=x+1;
 //        endfunction` called as `assign y = add1(a);` → the Call inlines to
-//        Binary(Add, Signal a, Const 1) and y's cont-assign points at it.
+//        Binary(Add, Signal a, Const 1) (under a return-width resize) and y's
+//        cont-assign points at it.
 #[test]
 fn ft_e1_function_inlines_to_return_expr() {
     let unit = module(
@@ -2756,10 +2787,12 @@ fn ft_e1_function_inlines_to_return_expr() {
     assert!(s.funcs.is_empty());
     assert!(s.blocks.is_empty());
     // one cont-assign onto y (net 1); rhs = Binary(Add, Signal a (net 0), Const 1)
+    // under the §10.7 return-width resize (add1 is 8-bit; `x+1` is a 32-bit add
+    // via the unsized `1`, truncated to the 8-bit return).
     assert_eq!(s.cont_assigns.len(), 1);
     let ca = &s.cont_assigns[0];
     assert_eq!(ca.lhs.chunks[0].net, 1); // y is 2nd net
-    match &s.exprs[ca.rhs as usize] {
+    match &s.exprs[peel_resize(&s, ca.rhs) as usize] {
         ir::Expr::Binary {
             op: ir::BinOp::Add,
             lhs,
@@ -2805,8 +2838,9 @@ fn ft_e2_function_local_var_folds() {
     let s = elab_ok(&unit);
     // exactly 2 nets (a, y) — the local `t` created NONE.
     assert_eq!(s.nets.len(), 2);
-    // rhs root = Add( Add(Signal a, 1), 1 )
-    let root = &s.exprs[s.cont_assigns[0].rhs as usize];
+    // rhs root = Add( Add(Signal a, 1), 1 ), each Add under a return/local-width
+    // resize (8-bit return + 8-bit local `t`, both fed by 32-bit `x+1` adds).
+    let root = &s.exprs[peel_resize(&s, s.cont_assigns[0].rhs) as usize];
     let ir::Expr::Binary {
         op: ir::BinOp::Add,
         lhs,
@@ -2817,8 +2851,8 @@ fn ft_e2_function_local_var_folds() {
     };
     // outer rhs is Const 1
     assert!(matches!(&s.exprs[*rhs as usize], ir::Expr::Const { .. }));
-    // outer lhs is Add(Signal a, Const 1)
-    match &s.exprs[*lhs as usize] {
+    // outer lhs is Add(Signal a, Const 1) (under the local-`t` resize)
+    match &s.exprs[peel_resize(&s, *lhs) as usize] {
         ir::Expr::Binary {
             op: ir::BinOp::Add,
             lhs: l2,
@@ -2861,16 +2895,17 @@ fn ft_e3_nested_function_calls() {
         ],
     );
     let s = elab_ok(&unit);
+    // outer is f = g(a) + 1, under f's 8-bit return resize.
     let ir::Expr::Binary {
         op: ir::BinOp::Add,
         lhs,
         ..
-    } = &s.exprs[s.cont_assigns[0].rhs as usize]
+    } = &s.exprs[peel_resize(&s, s.cont_assigns[0].rhs) as usize]
     else {
         panic!("expected outer Add");
     };
-    // inner is g(a) = Add(Signal a, 1)
-    match &s.exprs[*lhs as usize] {
+    // inner is g(a) = Add(Signal a, 1), under g's own 8-bit return resize.
+    match &s.exprs[peel_resize(&s, *lhs) as usize] {
         ir::Expr::Binary {
             op: ir::BinOp::Add,
             lhs: l2,
