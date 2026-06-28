@@ -9859,7 +9859,12 @@ impl<'t, 's> Parser<'t, 's> {
             return Stmt::Error(start);
         };
         if self.peek() == Some(TokenKind::Comma) {
-            self.error("a single foreach index (multi-dimension foreach is unsupported)");
+            // Multi-dimension foreach (IEEE §12.7.3): `foreach (a[i,j,…])`. `ivar`
+            // is the already-parsed first index (dimension 1); collect the rest and
+            // build the dimension-tagged nested desugar. (An empty LEADING slot
+            // `foreach(a[,j])` is not handled here — `self.ident()` above already
+            // loud-rejected the leading comma; that rare form stays honest-loud.)
+            return self.parse_multidim_foreach(start, arr, ivar);
         }
         self.expect(TokenKind::RBracket, "']'");
         self.expect(TokenKind::RParen, "')'");
@@ -9969,6 +9974,183 @@ impl<'t, 's> Parser<'t, 's> {
                     start,
                 ),
             ],
+            span,
+        }
+    }
+
+    /// Multi-dimension `foreach (a[i,j,…])` (IEEE §12.7.3). `ivar0` is the already-
+    /// parsed first index (dimension 1). Collects the remaining comma-separated
+    /// slots (a named index iterates its 1-indexed dimension; an EMPTY slot leaves
+    /// that dimension un-iterated), parses the loop body, and builds the nested
+    /// per-dimension walk. Row-major: the leftmost named index is the OUTERMOST
+    /// loop; `break`/`continue` target the innermost dimension's loop (matching the
+    /// iverilog nested-for desugar).
+    fn parse_multidim_foreach(&mut self, start: Span, arr: Ident, ivar0: Ident) -> Stmt {
+        let mut named: Vec<(Ident, u32)> = vec![(ivar0, 1)];
+        let mut dim: u32 = 1;
+        while self.peek() == Some(TokenKind::Comma) {
+            self.bump();
+            dim += 1;
+            // An empty slot (next is `,` or `]`) leaves this dimension un-iterated.
+            if matches!(
+                self.peek(),
+                Some(TokenKind::Comma) | Some(TokenKind::RBracket)
+            ) {
+                continue;
+            }
+            if let Some(id) = self.ident() {
+                // Each foreach index must be a distinct name (it declares an
+                // implicit loop variable). A repeat (`foreach(a[i,i])`) is illegal —
+                // iverilog rejects it, and silently aliasing both levels to one net
+                // would mis-iterate. Loud here.
+                if named.iter().any(|(e, _)| e.name == id.name) {
+                    self.error_at(
+                        id.span,
+                        "a distinct name for each foreach index (this one repeats an earlier index)",
+                    );
+                    return Stmt::Error(start);
+                }
+                named.push((id, dim));
+            } else {
+                self.error("a loop-index name in 'foreach (name[index])'");
+                return Stmt::Error(start);
+            }
+        }
+        self.expect(TokenKind::RBracket, "']'");
+        self.expect(TokenKind::RParen, "')'");
+        let (body, break_used) = self.parse_loop_body(start);
+        let span = start.to(self.prev_span());
+        self.build_multi_foreach(&arr, &named, body, break_used, start, span)
+    }
+
+    /// Build the nested per-dimension walk for a multi-dimension `foreach`. Each
+    /// named index `(idx, dim)` becomes one `while` level whose status var is driven
+    /// by `arr.first/next(idx, dim)` — the 2nd (dimension) argument routes elaborate
+    /// to the right unpacked dimension's bounds. Loops nest leftmost-outermost; the
+    /// innermost carries `wrap_break` so `break`/`continue` affect only it.
+    fn build_multi_foreach(
+        &mut self,
+        arr: &Ident,
+        named: &[(Ident, u32)],
+        mut body: Stmt,
+        break_used: bool,
+        start: Span,
+        span: Span,
+    ) -> Stmt {
+        // Each user index → a unique synthetic name (implicit-local, shadow-correct
+        // under v1's flat namespace; a nested foreach reusing a name renamed ITS
+        // body first, so this pass only sees its own occurrences).
+        let synths: Vec<(Ident, u32)> = named
+            .iter()
+            .map(|(id, d)| {
+                let s = Ident {
+                    name: format!("__foreach_{}_{}", id.name, start.lo),
+                    span: id.span,
+                };
+                rename_ident_in_stmt(&mut body, &id.name, &s.name);
+                (s, *d)
+            })
+            .collect();
+        let one_seg = |id: &Ident| HierPath {
+            segments: vec![id.clone()],
+            span: id.span,
+        };
+        let decl_of = |id: &Ident| NetVarDecl {
+            kind: NetVarKind::Integer,
+            signed: true,
+            range: None,
+            packed: Vec::new(),
+            delay: None,
+            names: vec![DeclName {
+                name: id.clone(),
+                unpacked: Vec::new(),
+                init: None,
+                span: id.span,
+            }],
+            lifetime: None,
+            class_type: None,
+            class_args: Vec::new(),
+            span: id.span,
+        };
+        let mut decls: Vec<NetVarDecl> = Vec::new();
+        let mut cur: Stmt = body;
+        let n = synths.len();
+        for (lvl, (idx, d)) in synths.iter().enumerate().rev() {
+            let innermost = lvl + 1 == n;
+            let stvar = Ident {
+                name: format!("__foreach_st{}_{}", lvl, start.lo),
+                span: idx.span,
+            };
+            // `arr.first/next(idx, dim)` — args[1] tags the dimension for elaborate.
+            let iter_call = |method: &str| Expr {
+                kind: ExprKind::Call {
+                    name: HierPath {
+                        segments: vec![
+                            arr.clone(),
+                            Ident {
+                                name: method.to_string(),
+                                span: arr.span,
+                            },
+                        ],
+                        span: arr.span,
+                    },
+                    args: vec![
+                        Expr {
+                            kind: ExprKind::Ident(one_seg(idx)),
+                            span: idx.span,
+                        },
+                        Self::dec_lit(*d, span),
+                    ],
+                },
+                span: arr.span,
+            };
+            let st_assign = |method: &str| Stmt::Blocking {
+                lhs: Lvalue::Ident(one_seg(&stvar)),
+                delay: None,
+                event: None,
+                rhs: iter_call(method),
+                span,
+            };
+            let cond = Expr {
+                kind: ExprKind::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr {
+                        kind: ExprKind::Ident(one_seg(&stvar)),
+                        span: stvar.span,
+                    }),
+                    rhs: Box::new(Self::dec_lit(1, span)),
+                },
+                span,
+            };
+            let loop_body = Stmt::Block {
+                label: None,
+                decls: Vec::new(),
+                stmts: vec![cur, st_assign("next")],
+                span,
+            };
+            let while_stmt = Stmt::While {
+                cond,
+                body: Box::new(loop_body),
+                span,
+            };
+            let wrapped = if innermost {
+                self.wrap_break(while_stmt, break_used, start)
+            } else {
+                while_stmt
+            };
+            cur = Stmt::Block {
+                label: None,
+                decls: Vec::new(),
+                stmts: vec![st_assign("first"), wrapped],
+                span,
+            };
+            decls.push(decl_of(idx));
+            decls.push(decl_of(&stvar));
+        }
+        Stmt::Block {
+            label: None,
+            decls,
+            stmts: vec![cur],
             span,
         }
     }

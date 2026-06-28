@@ -14176,20 +14176,41 @@ impl<'s> Elaborator<'s> {
                 // plain index over the first dim `[lo, lo+size)` instead. Gated to
                 // the synthetic `__foreach_*` index (the user surface stays
                 // assoc-only). Must precede the `dyn_handle` early-return below.
+                // A multi-dim `foreach (a[i,j])` desugars to `a.first/next(idx, DIM)`
+                // (2-arg, the dimension tag); a single-index `foreach (a[i])` stays the
+                // 1-arg form. Both walk a plain index over the named dimension's
+                // declared bounds (a static array has no `.first/.next`). Gated to the
+                // synthetic `__foreach_*` index. Multi-dim on a non-fixed array is loud
+                // (only fixed-size unpacked arrays carry per-dimension bounds here).
                 if matches!(m, "first" | "next")
                     && delay.is_none()
-                    && args.len() == 1
                     && matches!(
-                        &args[0].kind,
-                        ast::ExprKind::Ident(p)
+                        args.first().map(|a| &a.kind),
+                        Some(ast::ExprKind::Ident(p))
                             if p.segments.len() == 1
                                 && p.segments[0].name.starts_with("__foreach_")
                     )
-                    && self.dyn_handle(&name.segments[0].name).is_none()
                 {
-                    if let Some(arr) = self.lookup_net_scoped(&name.segments[0].name) {
-                        if self.net_is_static_array(arr) {
-                            return self.lower_fixed_foreach_step(b, lhs, arr, m, &args[0]);
+                    if args.len() == 2 {
+                        if let Some(arr) = self.lookup_net_scoped(&name.segments[0].name) {
+                            if self.net_is_static_array(arr) {
+                                let dim =
+                                    self.const_eval_in_scope(&args[1]).unwrap_or(1).max(1) as u32;
+                                return self
+                                    .lower_fixed_foreach_step(b, lhs, arr, m, &args[0], dim);
+                            }
+                        }
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "multi-dimension foreach is supported only on fixed-size unpacked arrays",
+                        );
+                        return true;
+                    }
+                    if args.len() == 1 && self.dyn_handle(&name.segments[0].name).is_none() {
+                        if let Some(arr) = self.lookup_net_scoped(&name.segments[0].name) {
+                            if self.net_is_static_array(arr) {
+                                return self.lower_fixed_foreach_step(b, lhs, arr, m, &args[0], 1);
+                            }
                         }
                     }
                 }
@@ -14260,6 +14281,7 @@ impl<'s> Elaborator<'s> {
         arr_net: u32,
         method: &str,
         key_arg: &ast::Expr,
+        dim: u32,
     ) -> bool {
         let key_net = match &key_arg.kind {
             ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
@@ -14270,21 +14292,28 @@ impl<'s> Elaborator<'s> {
         let Some(knet) = key_net else {
             return false; // not a plain index — let the normal path diagnose
         };
-        let (lo, size) = self
-            .net_dim_extents(arr_net)
-            .first()
-            .copied()
-            .unwrap_or((0, 1));
+        // `dim` is the 1-indexed unpacked dimension this index walks (a multi-dim
+        // `foreach (a[i,j])` tags each index with its dimension). A reference past
+        // the array's actual unpacked dimensions is loud (e.g. `a[i,j]` on a 1-D
+        // array), matching iverilog's reject.
+        let extents = self.net_dim_extents(arr_net);
+        let Some(&(lo, size)) = extents.get((dim - 1) as usize) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a foreach index dimension exceeds the array's unpacked dimensions",
+            );
+            return true;
+        };
         let hi = lo.saturating_add(size.saturating_sub(1));
         // IEEE 1800 §12.7.3: `foreach` traverses the declared bounds left-to-right.
         // A descending range (`a[hi:lo]`) walks hi DOWN to lo; ascending walks lo up
-        // to hi. `array_dim_desc` records the first unpacked dim's direction. All
-        // walk arithmetic is SIGNED (the index is `integer`) so a descending walk's
+        // to hi. `array_dim_desc` records each unpacked dim's direction. All walk
+        // arithmetic is SIGNED (the index is `integer`) so a descending walk's
         // transient `lo-1` (e.g. -1 when lo=0) terminates instead of wrapping.
         let desc = self
             .array_dim_desc
             .get(&arr_net)
-            .and_then(|v| v.first().copied())
+            .and_then(|v| v.get((dim - 1) as usize).copied())
             .unwrap_or(false);
         let (lo_i, hi_i) = (lo as i32, hi as i32);
         let st_lv = self.lower_lvalue(st_lhs);
