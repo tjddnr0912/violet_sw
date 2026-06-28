@@ -1573,6 +1573,13 @@ fn expr_reads_ident(e: &ast::Expr, name: &str) -> bool {
                 || expr_reads_ident(typ, name)
                 || expr_reads_ident(max, name)
         }
+        // A cast wraps an operand that may read the ident (`int'(a)` / `signed'(a)`);
+        // a SIZE cast's width expr can too (`a'(5)`). Missing this let a tf-port
+        // default like `int b = int'(a)` bypass the formal-reference guard.
+        K::Cast { target, expr } => {
+            expr_reads_ident(expr, name)
+                || matches!(target, ast::CastTarget::Size(s) if expr_reads_ident(s, name))
+        }
         _ => false,
     }
 }
@@ -11456,6 +11463,64 @@ impl<'s> Elaborator<'s> {
     /// once the formals are substituted by the actual-arg ExprIds. Returns a
     /// placeholder ExprId on any unsupported shape (after emitting the diagnostic)
     /// so arena edges stay valid.
+    /// IEEE §13.5.3: build the effective actual-argument list for a tf call, filling
+    /// omitted TRAILING formals with their default values. Returns None (after a loud
+    /// diagnostic) on too many actuals, or a missing actual for a formal that has no
+    /// default. The default expressions are lowered in the CALLER scope at the call
+    /// site, like any other actual (so a constant / module-scope default just works;
+    /// a default that references an earlier FORMAL resolves in the caller's scope,
+    /// not the formal — out of scope here).
+    fn fill_default_args<'a>(
+        &mut self,
+        fname: &str,
+        ports: &'a [ast::TfPort],
+        args: &'a [ast::Expr],
+    ) -> Option<Vec<&'a ast::Expr>> {
+        if args.len() > ports.len() {
+            self.error(
+                MsgCode::ElabUnsupported,
+                &format!(
+                    "function/task `{fname}`: {} args for {} formals",
+                    args.len(),
+                    ports.len()
+                ),
+            );
+            return None;
+        }
+        let mut eff: Vec<&'a ast::Expr> = args.iter().collect();
+        for p in &ports[args.len()..] {
+            match &p.default {
+                Some(def) => {
+                    // The default is lowered in the CALLER scope; a default that
+                    // references another FORMAL (`int b = a + 1`) would wrongly bind to
+                    // a same-named caller variable (a silent-wrong vs iverilog, which
+                    // resolves it in the subroutine scope). Loud-reject that case.
+                    if ports.iter().any(|q| expr_reads_ident(def, &q.name.name)) {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            &format!(
+                                "function/task `{fname}`: a default argument value that references another formal is unsupported"
+                            ),
+                        );
+                        return None;
+                    }
+                    eff.push(def);
+                }
+                None => {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        &format!(
+                            "function/task `{fname}`: missing actual for formal `{}` (no default value)",
+                            p.name.name
+                        ),
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(eff)
+    }
+
     fn inline_function(&mut self, name: &ast::HierPath, args: &[ast::Expr]) -> u32 {
         // v5 ⑥: `handle.method(args)` — a 2-segment call whose head is a dyn
         // handle is a METHOD, not a hierarchical call.
@@ -11528,25 +11593,17 @@ impl<'s> Elaborator<'s> {
             return self.placeholder_expr();
         }
         let inputs: Vec<ast::TfPort> = func.ports.clone();
-        if args.len() != inputs.len() {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!(
-                    "function `{fname}`: {} args for {} formals",
-                    args.len(),
-                    inputs.len()
-                ),
-            );
+        let Some(eff_args) = self.fill_default_args(&fname, &inputs, args) else {
             return self.placeholder_expr();
-        }
+        };
 
-        // (1) Lower each ACTUAL arg in the CALLER scope FIRST (before pushing the
-        //     substitution frame) so args see the caller's nets and any OUTER
-        //     substitution (nested inlining), never the function's own formals.
-        //     §11.6: an arg is in the context of its FORMAL's width, so a fill
-        //     grows to that width (non-fill ⇒ byte-identical via lower_expr).
-        let mut actual_ids: Vec<u32> = Vec::with_capacity(args.len());
-        for (i, a) in args.iter().enumerate() {
+        // (1) Lower each ACTUAL arg (incl. filled defaults) in the CALLER scope
+        //     FIRST (before pushing the substitution frame) so args see the caller's
+        //     nets and any OUTER substitution (nested inlining), never the function's
+        //     own formals. §11.6: an arg is in the context of its FORMAL's width, so a
+        //     fill grows to that width (non-fill ⇒ byte-identical via lower_expr).
+        let mut actual_ids: Vec<u32> = Vec::with_capacity(eff_args.len());
+        for (i, &a) in eff_args.iter().enumerate() {
             let p = &inputs[i];
             let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
             let (w, _, _, _) = self.range_to_dims(kind, p.range.as_ref(), p.signed);
@@ -11578,22 +11635,15 @@ impl<'s> Elaborator<'s> {
             );
             return self.placeholder_expr();
         }
-        if args.len() != func.ports.len() {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!(
-                    "function `{fname}`: {} args for {} formals",
-                    args.len(),
-                    func.ports.len()
-                ),
-            );
-            return self.placeholder_expr();
-        }
         // §11.6: each arg is in the context of its FORMAL's width (a fill grows to
-        // it; non-fill ⇒ byte-identical via lower_expr).
+        // it; non-fill ⇒ byte-identical via lower_expr). Omitted trailing actuals are
+        // filled with their formals' default values (§13.5.3).
         let ports = func.ports.clone();
-        let mut actual_ids: Vec<u32> = Vec::with_capacity(args.len());
-        for (i, a) in args.iter().enumerate() {
+        let Some(eff_args) = self.fill_default_args(fname, &ports, args) else {
+            return self.placeholder_expr();
+        };
+        let mut actual_ids: Vec<u32> = Vec::with_capacity(eff_args.len());
+        for (i, &a) in eff_args.iter().enumerate() {
             let p = &ports[i];
             let kind = p.net_or_var.unwrap_or(ast::NetVarKind::Reg);
             let (w, _, _, _) = self.range_to_dims(kind, p.range.as_ref(), p.signed);
@@ -12111,17 +12161,9 @@ impl<'s> Elaborator<'s> {
         args: &[ast::Expr],
     ) {
         let tname = &task.name.name;
-        if args.len() != task.ports.len() {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!(
-                    "task `{tname}`: {} args for {} formals",
-                    args.len(),
-                    task.ports.len()
-                ),
-            );
+        let Some(eff_args) = self.fill_default_args(tname.as_str(), &task.ports, args) else {
             return;
-        }
+        };
         // §11.6: an input/inout actual is in the formal's width context (the frame
         // formal net sits at base_net + slot), so a fill grows to it.
         let base_net = self
@@ -12131,7 +12173,7 @@ impl<'s> Elaborator<'s> {
             .unwrap_or(0);
         let mut in_binds: Vec<(u32, u32)> = Vec::new();
         let mut out_binds: Vec<(u32, ir::Lvalue)> = Vec::new();
-        for (slot, (p, a)) in task.ports.iter().zip(args).enumerate() {
+        for (slot, (p, a)) in task.ports.iter().zip(eff_args.iter().copied()).enumerate() {
             let slot = slot as u32;
             let fw = self
                 .nets
@@ -12598,17 +12640,9 @@ impl<'s> Elaborator<'s> {
             );
             return;
         }
-        if args.len() != task.ports.len() {
-            self.error(
-                MsgCode::ElabUnsupported,
-                &format!(
-                    "task `{tname}`: {} args for {} formals",
-                    args.len(),
-                    task.ports.len()
-                ),
-            );
+        let Some(eff_args) = self.fill_default_args(tname.as_str(), &task.ports, args) else {
             return;
-        }
+        };
 
         // Bind formals via formal-WIDTH local nets for OUTPUT/INOUT (IEEE 1800
         // §13.5.1 / §13.5.3 copy-in/copy-out). The old direct aliasing (formal ==
@@ -12667,7 +12701,7 @@ impl<'s> Elaborator<'s> {
         };
         // (caller lvalue, local_net), in arg order — copied out at task exit.
         let mut copy_out: Vec<(ir::Lvalue, u32)> = Vec::new();
-        for (i, (p, a)) in task.ports.iter().zip(args).enumerate() {
+        for (i, (p, a)) in task.ports.iter().zip(eff_args.iter().copied()).enumerate() {
             let local = locals[i];
             match p.dir {
                 ast::PortDir::Input => {

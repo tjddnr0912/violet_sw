@@ -2652,6 +2652,7 @@ fn tf_port(dir: ast::PortDir, range: Option<(u32, u32)>, name: &str) -> ast::TfP
             span: SP,
         }),
         name: ident(name),
+        default: None,
         span: SP,
     }
 }

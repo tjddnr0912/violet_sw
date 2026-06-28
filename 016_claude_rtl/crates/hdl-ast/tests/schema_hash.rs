@@ -154,9 +154,13 @@ use vita_schema::schema_hash;
 /// continuous-assign path (uniform `ContAssign.delay` + distinct rise/fall/turnoff
 /// `ca_delays` sidecar) it already uses for `assign #d`. Pure front-end + elaborate
 /// (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
+/// 2026-06-28 tf-port default arguments (§13.5.3): adds `default: Option<Expr>` to
+/// `TfPort` — `function f(int a, int b = 10)`. Parsed only for ANSI tf-ports;
+/// elaborate fills omitted trailing actuals at the call site. Pure front-end +
+/// elaborate (no sim-ir change; format_version stays 19). Re-pins this .vu hash.
 const EXPECTED: [u8; 32] = [
-    203, 187, 112, 169, 170, 251, 130, 201, 103, 206, 71, 81, 253, 223, 64, 167, 134, 226, 195,
-    246, 96, 47, 58, 224, 35, 104, 13, 12, 57, 82, 142, 236,
+    90, 216, 79, 82, 147, 18, 176, 97, 115, 233, 164, 177, 255, 158, 114, 223, 131, 194, 162, 126,
+    44, 244, 105, 235, 16, 143, 244, 15, 217, 164, 4, 94,
 ];
 
 #[test]

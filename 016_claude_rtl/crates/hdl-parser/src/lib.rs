@@ -7354,12 +7354,20 @@ impl<'t, 's> Parser<'t, 's> {
             name: String::new(),
             span: self.cur_span(),
         });
+        // IEEE §13.5.3: an ANSI tf-port may carry a default argument value
+        // (`int b = 10`), used when a call omits the trailing actual.
+        let default = if self.eat(TokenKind::Eq) {
+            Some(self.expr(0))
+        } else {
+            None
+        };
         let port = TfPort {
             dir,
             net_or_var,
             signed,
             range,
             name,
+            default,
             span: start.to(self.prev_span()),
         };
         let next_type = (port.net_or_var, port.signed, port.range.clone());
@@ -7506,6 +7514,7 @@ impl<'t, 's> Parser<'t, 's> {
                 signed,
                 range: range.clone(),
                 name,
+                default: None, // non-ANSI formals have no default (ANSI-only, §13.5.3)
                 span: n_start.to(self.prev_span()),
             });
             if !self.eat(TokenKind::Comma) {
