@@ -5131,6 +5131,10 @@ impl<'t, 's> Parser<'t, 's> {
             if self.net_var_kind().is_some() {
                 return self.parse_typedef_alias(start);
             }
+            // `typedef base_t alias_t;` — a chained alias of an EXISTING typedef.
+            if let Some(info) = self.peek_typedef_name() {
+                return self.parse_typedef_chained_alias(start, info);
+            }
             // unpacked struct / union forms are out of v1 scope.
             self.error("`enum`, `struct packed`, or a type after `typedef`");
             self.synchronize();
@@ -5243,6 +5247,74 @@ impl<'t, 's> Parser<'t, 's> {
                 signed,
                 range,
                 packed,
+            },
+            span: start.to(self.prev_span()),
+        }))
+    }
+
+    /// `typedef base_t alias_t;` — a chained alias of an EXISTING typedef
+    /// (IEEE §6.18). The new name inherits the base's full registration — type
+    /// info plus any struct/union layout or enum-method binding — so a later
+    /// `alias_t v;` / `v.field` / `v.next` resolves exactly as `base_t v;` would.
+    /// `start` is the span of the leading `typedef` (already consumed); the cursor
+    /// is on the base typedef-name token, whose resolved `info` is passed in.
+    /// Adding packed or unpacked dimensions to an aliased type
+    /// (`typedef base_t [3:0] a_t;` / `typedef base_t a_t [4];`) needs type
+    /// composition not in v1 — honest-loud.
+    fn parse_typedef_chained_alias(&mut self, start: Span, info: TypeInfo) -> Option<ModuleItem> {
+        let base_name = self.cur_text().to_string();
+        self.bump(); // base typedef name
+                     // honest-loud: PACKED dims before the new name (`typedef base_t [3:0] a_t;`).
+        if self.peek() == Some(TokenKind::LBracket) {
+            self.error(
+                "a simple chained typedef alias (adding packed dimensions to an aliased type is unsupported in v1)",
+            );
+            self.synchronize();
+            return Some(ModuleItem::Error(start.to(self.prev_span())));
+        }
+        let tname = self.ident()?;
+        // honest-loud: UNPACKED dims after the new name (`typedef base_t a_t [4];`).
+        if self.peek() == Some(TokenKind::LBracket) {
+            self.error(
+                "a simple chained typedef alias (an unpacked-array typedef of an aliased type is unsupported in v1)",
+            );
+            self.synchronize();
+            return Some(ModuleItem::Error(start.to(self.prev_span())));
+        }
+        self.expect(TokenKind::Semi, "';'");
+        let alias = tname.name.clone();
+        // Mirror the base's registration under the new name. Each side-map is SET
+        // when the base has that property and CLEARED otherwise, so a cross-module
+        // same-name stale entry (the union-desync hazard) cannot leak through.
+        self.typedefs.insert(alias.clone(), info.clone());
+        match self.struct_layouts.get(&base_name).cloned() {
+            Some(layout) => {
+                self.struct_layouts.insert(alias.clone(), layout);
+            }
+            None => {
+                self.struct_layouts.remove(&alias);
+            }
+        }
+        match self.enum_defs.get(&base_name).cloned() {
+            Some(defs) => {
+                self.enum_defs.insert(alias.clone(), defs);
+            }
+            None => {
+                self.enum_defs.remove(&alias);
+            }
+        }
+        if self.union_type_names.contains(&base_name) {
+            self.union_type_names.insert(alias.clone());
+        } else {
+            self.union_type_names.remove(&alias);
+        }
+        Some(ModuleItem::Typedef(TypedefDecl {
+            name: tname,
+            kind: TypedefKind::Alias {
+                kind: info.kind,
+                signed: info.signed,
+                range: info.range,
+                packed: info.packed,
             },
             span: start.to(self.prev_span()),
         }))
