@@ -7406,6 +7406,30 @@ impl<'t, 's> Parser<'t, 's> {
     /// resets the type (`input y` after `input logic [7:0] x` makes `y` the default
     /// 1-bit), and any explicit type (net/var keyword, `signed`/`unsigned`, or a
     /// range) starts a fresh type that itself propagates onward.
+    /// If the cursor is on a user-defined type name usable as a tf-port type
+    /// (`task t(byte_t a)` / `input byte_t a;`), consume it and return its
+    /// `(kind, signed, range)`. A struct / union / class / multi-dim-packed
+    /// typedef port needs per-port layout or method binding not in v1 —
+    /// honest-loud (the diagnostic is emitted, but the name is still consumed so
+    /// it does not cascade as the port name). Returns `None` when the cursor is
+    /// not on a typedef name, so the caller keeps its built-in / inherited-type
+    /// handling. Shared by the ANSI (`parse_tf_port`) and non-ANSI
+    /// (`parse_tf_port_decl_into`) port parsers.
+    fn try_tf_port_typedef(&mut self) -> Option<(NetVarKind, bool, Option<Range>)> {
+        let info = self.peek_typedef_name()?;
+        let nm = self.cur_text().to_string();
+        if self.struct_layouts.contains_key(&nm)
+            || info.class_name.is_some()
+            || !info.packed.is_empty()
+        {
+            self.error(
+                "a simple (non-struct) typedef type for a tf-port (a struct/union/class/multi-dim packed port type is unsupported in v1)",
+            );
+        }
+        self.bump(); // the typedef-name token
+        Some((info.kind, info.signed, info.range))
+    }
+
     fn parse_tf_port(
         &mut self,
         inherited: PortDir,
@@ -7427,12 +7451,24 @@ impl<'t, 's> Parser<'t, 's> {
             }
             _ => (inherited, false), // bare `, b` continues the previous direction
         };
-        let net_or_var = self.net_var_kind();
+        let mut net_or_var = self.net_var_kind();
         if net_or_var.is_some() {
             self.bump();
         }
         let explicit_signed = self.opt_signed();
-        let range = self.opt_range();
+        let mut range = self.opt_range();
+        // A tf-port type given as a user-defined type name (`task t(byte_t a)`).
+        // Resolve a SIMPLE typedef (vector / enum / atom) to its kind/sign/range,
+        // exactly as a built-in keyword type would (struct/union/class/multi-dim =
+        // honest-loud, handled inside the helper).
+        let mut typedef_signed: Option<bool> = None;
+        if net_or_var.is_none() && range.is_none() {
+            if let Some((k, s, r)) = self.try_tf_port_typedef() {
+                net_or_var = Some(k);
+                range = r;
+                typedef_signed = Some(s);
+            }
+        }
         // A port carries its own type when a direction keyword OR any explicit type
         // token is present; otherwise (a bare `, name`) it inherits the previous
         // type. The resolved type then propagates to the next bare port.
@@ -7440,7 +7476,9 @@ impl<'t, 's> Parser<'t, 's> {
         let (net_or_var, signed, range) = if dir_present || type_present {
             (
                 net_or_var,
-                explicit_signed.unwrap_or_else(|| atom_default_signed(net_or_var)),
+                explicit_signed
+                    .or(typedef_signed)
+                    .unwrap_or_else(|| atom_default_signed(net_or_var)),
                 range,
             )
         } else {
@@ -7595,12 +7633,21 @@ impl<'t, 's> Parser<'t, 's> {
                 PortDir::Input
             }
         };
-        let net_or_var = self.net_var_kind();
+        let mut net_or_var = self.net_var_kind();
         if net_or_var.is_some() {
             self.bump();
         }
-        let signed = self.signed_eff(net_or_var);
-        let range = self.opt_range();
+        let mut signed = self.signed_eff(net_or_var);
+        let mut range = self.opt_range();
+        // A non-ANSI tf-port type given as a user-defined type name
+        // (`input byte_t a;`) — resolve a SIMPLE typedef exactly as the ANSI path.
+        if net_or_var.is_none() && range.is_none() {
+            if let Some((k, s, r)) = self.try_tf_port_typedef() {
+                net_or_var = Some(k);
+                signed = s;
+                range = r;
+            }
+        }
         loop {
             let n_start = self.cur_span();
             let Some(name) = self.ident() else { break };
