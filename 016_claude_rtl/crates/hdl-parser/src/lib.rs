@@ -1009,6 +1009,40 @@ impl<'t, 's> Parser<'t, 's> {
         self.expect(TokenKind::LParen, "'(' to open a cast");
         let operand = self.expr(0);
         self.expect(TokenKind::RParen, "')' closing a cast");
+        let end = self.prev_span();
+        // B2 (§6.24.1): `T'(e)` where T is a simple vector/enum typedef → a numeric
+        // cast to T's width and sign. Desugar to the composition of the existing
+        // built-in casts `(signed'|unsigned')(W'(e))` — the size cast sets the
+        // width (extending with the OPERAND's sign), then the signing cast stamps
+        // T's signedness. A struct/union/class/multi-dim/atom/2-state typedef has
+        // no simple (width, signed) form and stays loud (the `Named` arm).
+        if let ExprKind::Ident(path) = &ty.kind {
+            if path.segments.len() == 1 {
+                if let Some((w, signed)) = self.simple_typedef_cast(&path.segments[0].name) {
+                    let width_lit = Expr {
+                        kind: ExprKind::IntLit {
+                            kind: IntLitKind::Decimal,
+                            raw: w.to_string(),
+                        },
+                        span: start,
+                    };
+                    let inner = Expr {
+                        kind: ExprKind::Cast {
+                            target: CastTarget::Size(Box::new(width_lit)),
+                            expr: Box::new(operand),
+                        },
+                        span: start,
+                    };
+                    return Expr {
+                        kind: ExprKind::Cast {
+                            target: CastTarget::Signing { signed },
+                            expr: Box::new(inner),
+                        },
+                        span: start.to(end),
+                    };
+                }
+            }
+        }
         let target = match ty.kind {
             ExprKind::Ident(path) => CastTarget::Named(path),
             _ => CastTarget::Size(Box::new(ty)),
@@ -1018,8 +1052,33 @@ impl<'t, 's> Parser<'t, 's> {
                 target,
                 expr: Box::new(operand),
             },
-            span: start.to(self.prev_span()),
+            span: start.to(end),
         }
+    }
+
+    /// A user typedef name usable as a NUMERIC cast `T'(e)` (B2) → its
+    /// `(width, signed)`. `Some` only for a simple 4-state vector or
+    /// enum-with-logic-base typedef whose range folds to a literal; `None`
+    /// (→ honest-loud at the `Named` cast arm) for a struct / union / class /
+    /// multi-dim-packed / atom (no range, e.g. base-less enum / `int`) / 2-state
+    /// (`bit`) typedef — those need per-field or 2-state-coercion semantics the
+    /// size+sign desugar cannot reproduce.
+    fn simple_typedef_cast(&self, name: &str) -> Option<(i64, bool)> {
+        let info = self.typedefs.get(name)?;
+        if self.struct_layouts.contains_key(name)
+            || self.union_type_names.contains(name)
+            || info.class_name.is_some()
+            || !info.packed.is_empty()
+            || !matches!(info.kind, NetVarKind::Logic | NetVarKind::Reg)
+        {
+            return None;
+        }
+        let range = info.range.as_ref()?;
+        let msb = Self::const_lit(&range.msb)?;
+        let lsb = Self::const_lit(&range.lsb)?;
+        // Direction-agnostic width (overflow-safe `abs_diff`, matching
+        // `member_width`); the range direction does not affect the cast VALUE.
+        Some((msb.abs_diff(lsb) as i64 + 1, info.signed))
     }
 
     /// Map a casting-type keyword (`int`/`byte`/…/`signed`/`unsigned`) to its
