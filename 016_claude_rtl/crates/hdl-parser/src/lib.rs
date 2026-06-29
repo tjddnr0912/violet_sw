@@ -2232,7 +2232,19 @@ impl<'t, 's> Parser<'t, 's> {
         let start = self.cur_span();
         // v5 ⑥: interface-typed port `intf p` / `intf.mp p` — an Ident in the
         // type position followed by Ident/Dot. No direction, no range.
-        if matches!(self.peek(), Some(TokenKind::Word(WordKind::Ident)))
+        //
+        // Guard: if the current Ident is a registered typedef name and the next
+        // token is an Ident (port name), this is `typedef_t portname` — a typedef
+        // port in a comma-continuation context (e.g. `input byte_t a, word_t c`).
+        // Skip the interface heuristic so try_port_typedef() handles it below.
+        // (typedef_t followed by `.` cannot be a valid typedef port, so the `.`
+        // case is intentionally left to the interface heuristic.)
+        let is_typedef_portname_shape = matches!(
+            self.peek_at(1),
+            Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
+        ) && self.peek_typedef_name().is_some();
+        if !is_typedef_portname_shape
+            && matches!(self.peek(), Some(TokenKind::Word(WordKind::Ident)))
             && matches!(
                 self.peek_at(1),
                 Some(TokenKind::Word(WordKind::Ident) | TokenKind::Dot)
@@ -2292,11 +2304,28 @@ impl<'t, 's> Parser<'t, 's> {
         if net_or_var.is_some() {
             self.bump();
         }
-        let mut signed = self.signed_eff(net_or_var);
-        let mut range = self.opt_range();
-        let mut packed = self.opt_packed_dims(); // additional packed dims `[3:0][7:0]`
-                                                 // A pure continuation (no own direction/type/range/signed) inherits the
-                                                 // previous port's type — `input [7:0] a, b` ⇒ b is also `[7:0]`.
+        // `input mode_e m` — a typedef name as the port type (typedef-recognition
+        // family). When no built-in kind keyword matched, a simple vector/enum
+        // typedef resolves to its (kind, signed, range); the typedef name carries
+        // the range, so the normal signed/range/packed reads are SKIPPED for it
+        // (they would otherwise consume the port NAME). Built-in path unchanged.
+        let typedef_ty = if net_or_var.is_none() {
+            self.try_port_typedef()
+        } else {
+            None
+        };
+        let (mut signed, mut range, mut packed) = if let Some((k, s, r)) = typedef_ty {
+            net_or_var = Some(k);
+            (s, r, Vec::new())
+        } else {
+            (
+                self.signed_eff(net_or_var),
+                self.opt_range(),
+                self.opt_packed_dims(), // additional packed dims `[3:0][7:0]`
+            )
+        };
+        // A pure continuation (no own direction/type/range/signed) inherits the
+        // previous port's type — `input [7:0] a, b` ⇒ b is also `[7:0]`.
         if explicit_dir.is_none()
             && net_or_var.is_none()
             && range.is_none()
@@ -4944,12 +4973,23 @@ impl<'t, 's> Parser<'t, 's> {
                 PortDir::Inout
             }
         };
-        let net_or_var = self.net_var_kind();
+        let mut net_or_var = self.net_var_kind();
         if net_or_var.is_some() {
             self.bump();
         }
-        let signed = self.signed_eff(net_or_var);
-        let range = self.opt_range();
+        // `input byte_t a;` — a typedef name as a non-ANSI port type (mirrors the
+        // ANSI path; typedef-recognition family §4.5.36 ALL-variants).
+        let typedef_ty = if net_or_var.is_none() {
+            self.try_port_typedef()
+        } else {
+            None
+        };
+        let (signed, range) = if let Some((k, s, r)) = typedef_ty {
+            net_or_var = Some(k);
+            (s, r)
+        } else {
+            (self.signed_eff(net_or_var), self.opt_range())
+        };
         let mut names = Vec::new();
         loop {
             if let Some(id) = self.ident() {
@@ -7511,6 +7551,35 @@ impl<'t, 's> Parser<'t, 's> {
         }
         self.expect(TokenKind::RParen, "')' closing tf-port list");
         ports
+    }
+
+    /// A typedef name as a MODULE port type (`input mode_e m`, `input byte_t a`) →
+    /// its `(kind, signed, range)`, mirroring `try_tf_port_typedef` for tf-ports
+    /// (typedef-recognition family). REQUIRES the next token to be the port NAME
+    /// (an Ident) so a bare continuation (`input byte_t a, b` — `b` is a name, not a
+    /// type) is NOT misresolved as a type. A struct/union/class/multi-dim-packed
+    /// typedef port type is honest-loud (v1 — the AnsiPort/PortDecl shape carries
+    /// only kind/signed/range, like a tf-port). Used by both the ANSI
+    /// (`parse_ansi_port`) and non-ANSI (`parse_port_decl`) port parsers.
+    fn try_port_typedef(&mut self) -> Option<(NetVarKind, bool, Option<Range>)> {
+        let info = self.peek_typedef_name()?;
+        if !matches!(
+            self.peek_at(1),
+            Some(TokenKind::Word(WordKind::Ident)) | Some(TokenKind::EscapedIdent)
+        ) {
+            return None; // not `<type> <name>` — leave for the continuation/name path
+        }
+        let nm = self.cur_text().to_string();
+        if self.struct_layouts.contains_key(&nm)
+            || info.class_name.is_some()
+            || !info.packed.is_empty()
+        {
+            self.error(
+                "a struct/union/class/multi-dim-packed typedef as a module port type is unsupported in v1 (a simple vector/enum typedef port is supported)",
+            );
+        }
+        self.bump(); // the typedef-name token
+        Some((info.kind, info.signed, info.range))
     }
 
     /// One ANSI tf-port: `[input|output|inout] [net_or_var] [signed] [range] name`.
