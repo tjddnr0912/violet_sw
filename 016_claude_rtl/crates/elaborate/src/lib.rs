@@ -22274,7 +22274,7 @@ impl<'s> Elaborator<'s> {
                 else_s,
                 ..
             } => {
-                let cond_id = self.lower_expr(cond);
+                let cond_id = self.lower_branch_cond(b, cond);
                 let then_bb = b.new_block();
                 let else_bb = b.new_block();
                 let merge = b.new_block();
@@ -23215,32 +23215,26 @@ impl<'s> Elaborator<'s> {
     /// a string LITERAL with at most one conversion spec from the supported
     /// set (%d/%h/%x/%o/%b/%s — %e/%f/%g real conversions are loud-deferred);
     /// `var` must lower to a plain whole-net Signal.
-    fn value_plusargs_special(
-        &mut self,
-        b: &mut ProcessBuilder,
-        lhs: &ast::Lvalue,
-        delay: Option<&ast::Delay>,
-        rhs: &ast::Expr,
-    ) -> bool {
-        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
-            return false;
-        };
-        if name.name != "$value$plusargs" {
-            return false;
-        }
+    /// Validate `$value$plusargs(format, var)` args and build the
+    /// `SysFunc{ValuePlusargs}` ExprId (which writes `var` and returns 1/0 when
+    /// the engine evaluates it). `None` (after emitting a diagnostic) on a bad
+    /// arity / non-literal format / unsupported spec / non-plain-variable target.
+    /// Shared by the statement form (`r = $value$plusargs(…)`) and the
+    /// if-condition form (`if ($value$plusargs(…)) …`, B1).
+    fn value_plusargs_rhs(&mut self, args: &[ast::Expr]) -> Option<u32> {
         if args.len() != 2 {
             self.error(
                 MsgCode::ElabUnsupported,
                 "$value$plusargs takes (format, variable)",
             );
-            return true;
+            return None;
         }
         let ast::ExprKind::StrLit { .. } = &args[0].kind else {
             self.error(
                 MsgCode::ElabUnsupported,
                 "$value$plusargs needs a string-literal format (v7)",
             );
-            return true;
+            return None;
         };
         let fmt_id = self.lower_expr(&args[0]);
         // validate the conversion set on the DECODED text (the const pool
@@ -23272,7 +23266,7 @@ impl<'s> Elaborator<'s> {
                     MsgCode::ElabUnsupported,
                     "$value$plusargs format supports one %d/%h/%x/%o/%b/%s spec (v7)",
                 );
-                return true;
+                return None;
             }
         }
         let var_id = self.lower_expr(&args[1]);
@@ -23284,12 +23278,68 @@ impl<'s> Elaborator<'s> {
                 MsgCode::ElabUnsupported,
                 "$value$plusargs target must be a plain variable (v7)",
             );
-            return true;
+            return None;
         }
-        let rhs_id = self.push_expr(ir::Expr::SysFunc {
+        Some(self.push_expr(ir::Expr::SysFunc {
             which: ir::SysFuncId::ValuePlusargs,
             args: vec![fmt_id, var_id],
-        });
+        }))
+    }
+
+    /// Lower an `if`-CONDITION expression. `$value$plusargs(fmt, var)` (B1, IEEE
+    /// §21.6) is a function that writes `var` (a side effect) and returns 1/0; vita
+    /// supports it only as a blocking-assign RHS because of that write. The common
+    /// idiom is the condition form `if ($value$plusargs("LIMIT=%d", n)) …`, so
+    /// desugar it to a synthetic `__tmp = $value$plusargs(…)` (the supported
+    /// statement form — the write gets a controlled placement BEFORE the branch),
+    /// then branch on `__tmp`. Any other condition lowers normally (a nested
+    /// `$value$plusargs` deeper in an expression stays loud — `lower_expr`).
+    fn lower_branch_cond(&mut self, b: &mut ProcessBuilder, cond: &ast::Expr) -> u32 {
+        // Peel redundant parens — `if (($value$plusargs(…)))` is the same idiom.
+        // A COMPOUND condition (`($value$plusargs(…) && x)`) peels to a Binary,
+        // not the bare call, so it falls through to `lower_expr` and stays loud.
+        let mut inner = cond;
+        while let ast::ExprKind::Paren { inner: i } = &inner.kind {
+            inner = i;
+        }
+        if let ast::ExprKind::SysCall { name, args } = &inner.kind {
+            if name.name == "$value$plusargs" {
+                return match self.value_plusargs_rhs(args) {
+                    Some(rhs_id) => {
+                        let tmp = self.fresh_ia_tmp(32);
+                        let sid = self.push_stmt(ir::Stmt::BlockingAssign {
+                            lhs: whole_net_lvalue(tmp),
+                            rhs: rhs_id,
+                        });
+                        b.push_stmt_id(sid);
+                        self.push_expr(ir::Expr::Signal {
+                            net: tmp,
+                            word: None,
+                        })
+                    }
+                    None => self.placeholder_expr(), // diagnostic already emitted
+                };
+            }
+        }
+        self.lower_expr(cond)
+    }
+
+    fn value_plusargs_special(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        delay: Option<&ast::Delay>,
+        rhs: &ast::Expr,
+    ) -> bool {
+        let ast::ExprKind::SysCall { name, args } = &rhs.kind else {
+            return false;
+        };
+        if name.name != "$value$plusargs" {
+            return false;
+        }
+        let Some(rhs_id) = self.value_plusargs_rhs(args) else {
+            return true; // a diagnostic was already emitted
+        };
         let lv = self.lower_lvalue(lhs);
         self.check_lvalue_kind(&lv, true);
         if let Some(d) = delay {
