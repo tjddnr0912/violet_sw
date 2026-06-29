@@ -10543,6 +10543,14 @@ impl<'s> Elaborator<'s> {
                 if let Some(eid) = self.dyn_select_read(base, index) {
                     return eid;
                 }
+                // String element READ `s[i]` (IEEE §6.16.2): a string variable is a
+                // dynamic byte SEQUENCE, not a packed vector — `s[i]` is the front-
+                // indexed CHARACTER (8-bit byte) at i, 0 if out of range, reusing the
+                // `.getc(i)` primitive. A packed-vector base (`logic[7:0] x; x[0]`)
+                // returns None here and falls through to the plain bit-select.
+                if let Some(eid) = self.string_index_read(base, index) {
+                    return eid;
+                }
                 // SYMMETRY with the LHS (`collect_lval_chunks`): a `base[i]…[k]`
                 // chain rooted at an ARRAY net is a WORD select (the first D indices
                 // flatten row-major to the element word `i0*s0+…+iD`), with any
@@ -11026,6 +11034,22 @@ impl<'s> Elaborator<'s> {
             self.error(
                 MsgCode::ElabUnsupported,
                 "a string inside a concatenation lvalue is outside the v7 scope",
+            );
+        }
+        // A string ELEMENT chunk carries a non-None offset (a partial bit-write into
+        // the materialized vector). The plain `s[i] = c` form is intercepted earlier
+        // and routed to `.putc`; a string element reaching here came through a
+        // single-element concat `{s[0]} = c` (which slips past the multi-chunk guard
+        // above) — a silent-wrong packed bit-write. The supported whole-string write
+        // has offset None, so this never fires on `s = …`. Honest-loud.
+        if chunks
+            .iter()
+            .any(|c| self.is_string_net(c.net) && c.offset.is_some())
+        {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "a string element write inside a concatenation lvalue is outside the \
+                 v7 scope (a plain `s[i] = c` is supported)",
             );
         }
         ir::Lvalue { chunks }
@@ -13626,6 +13650,34 @@ impl<'s> Elaborator<'s> {
     fn string_handle(&self, name: &str) -> Option<u32> {
         let n = self.lookup_net_scoped(name)?;
         (self.nets.get(n as usize)?.kind == ir::NetKind::String).then_some(n)
+    }
+
+    /// The STRING net denoted by a single-segment ident expression (the base of a
+    /// `s[i]` element select), or `None` for anything else (a packed vector, an
+    /// array element, a hierarchical ref). Conservative on purpose — only a bare
+    /// string variable carries the byte-sequence semantics §6.16.2/3 want.
+    fn string_base_expr_net(&self, base: &ast::Expr) -> Option<u32> {
+        match &base.kind {
+            ast::ExprKind::Ident(p) => match p.segments.as_slice() {
+                [seg] => self.string_handle(&seg.name),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// String element READ `s[i]` (IEEE §6.16.2) → the `.getc(i)` byte primitive
+    /// (front-indexed character, 0 if out of range, 8-bit), when `base` is a bare
+    /// string variable. `None` ⇒ not a string element select → the caller falls
+    /// through to the packed bit-select (byte-identical for non-string bases).
+    fn string_index_read(&mut self, base: &ast::Expr, index: &ast::Expr) -> Option<u32> {
+        let net = self.string_base_expr_net(base)?;
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let idx = self.lower_expr(index);
+        Some(self.push_expr(ir::Expr::SysFunc {
+            which: ir::SysFuncId::StrGetC,
+            args: vec![handle, idx],
+        }))
     }
 
     /// v7 P2-C: does this AST expression denote a STRING-domain value?
@@ -21975,6 +22027,26 @@ impl<'s> Elaborator<'s> {
                         return;
                     }
                 }
+                // §6.16.3: a string element write `s[i] = …` is detected FIRST —
+                // ahead of the event/delay early-return and the whole RHS-special
+                // chain below, every one of which would otherwise route through
+                // `lower_lvalue` and emit a silent packed BIT-write into the
+                // materialized vector. The plain form routes to the `.putc(i, c)`
+                // byte primitive; intra-assignment event/delay control (whose byte
+                // write would have to land after the wait) is honest-loud — iverilog
+                // supports it, but a clean reject beats the silent wrong path.
+                if self.is_string_index_lvalue(lhs) {
+                    if event.is_some() || delay.is_some() {
+                        self.error(
+                            MsgCode::ElabUnsupported,
+                            "event/delay control on a string element write `s[i]` \
+                             is unsupported (use a plain blocking assignment)",
+                        );
+                        return;
+                    }
+                    self.string_index_write_putc(b, lhs, rhs);
+                    return;
+                }
                 // Intra-assignment EVENT control `= [repeat(n)] @(ev) rhs` (IEEE
                 // §9.4.5): capture-now / wait / write. Handled FIRST — the rhs is a
                 // plain captured value (a special form like `new`/`pop` combined with
@@ -22100,6 +22172,20 @@ impl<'s> Elaborator<'s> {
                 rhs,
                 span,
             } => {
+                // §6.16.3: a string element write `s[i]` has no defined non-blocking
+                // form (iverilog 13.0 aborts on `s[i] <= c`). Detected FIRST — ahead
+                // of the event early-return — so the intra-event variant `s[i] <=
+                // @(ev) c` is caught too. The packed bit-write the normal path would
+                // emit is a silent-wrong (one bit of the materialized vector, not the
+                // character byte) — honest-loud.
+                if self.is_string_index_lvalue(lhs) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "non-blocking write to a string element `s[i] <= c` is \
+                         unsupported (use a blocking assignment)",
+                    );
+                    return;
+                }
                 // N1: non-blocking intra-assignment EVENT control
                 // (`a <= [repeat(n)] @(ev) rhs`). Capture-now / fork-join_none /
                 // NBA-write desugar — the process does NOT block.
@@ -23830,6 +23916,61 @@ impl<'s> Elaborator<'s> {
         });
         b.push_stmt_id(sid);
         true
+    }
+
+    /// String element WRITE `s[i] = c` (IEEE §6.16.3): a string variable is a
+    /// dynamic byte SEQUENCE, so the assignment mutates the front-indexed CHARACTER
+    /// (byte) at `i` via the `.putc(i, c)` primitive (an OOB index or a NUL byte is a
+    /// silent no-op per spec), NOT a packed bit-write into the materialized vector.
+    /// `false` ⇒ `lhs` is not a bare-string element select → the normal lvalue path
+    /// runs (byte-identical for every non-string lvalue).
+    /// The STRING net of a bare-string element lvalue `s[i]`, or `None` for any
+    /// other lvalue shape (a packed-vector bit-select, an array element, a concat).
+    /// Shared by the blocking write and the non-blocking honest-loud guard.
+    fn string_index_lvalue_net(&self, lhs: &ast::Lvalue) -> Option<u32> {
+        let ast::Lvalue::BitSelect { base, .. } = lhs else {
+            return None;
+        };
+        let ast::Lvalue::Ident(p) = &**base else {
+            return None;
+        };
+        match p.segments.as_slice() {
+            [seg] => self.string_handle(&seg.name),
+            _ => None,
+        }
+    }
+
+    /// Is `lhs` a bare-string element select `s[i]`? (predicate twin of
+    /// `string_index_lvalue_net`, gating both the blocking write route and the
+    /// non-blocking honest-loud guard).
+    fn is_string_index_lvalue(&self, lhs: &ast::Lvalue) -> bool {
+        self.string_index_lvalue_net(lhs).is_some()
+    }
+
+    /// Emit the plain blocking string element write `s[i] = c` as the `.putc(i, c)`
+    /// byte primitive. PRECONDITION: `is_string_index_lvalue(lhs)` holds and the
+    /// caller has already excluded event/delay control — so the shape match is
+    /// infallible here (a defensive `else` keeps it total).
+    fn string_index_write_putc(
+        &mut self,
+        b: &mut ProcessBuilder,
+        lhs: &ast::Lvalue,
+        rhs: &ast::Expr,
+    ) {
+        let (Some(net), ast::Lvalue::BitSelect { index, .. }) =
+            (self.string_index_lvalue_net(lhs), lhs)
+        else {
+            return;
+        };
+        let handle = self.push_expr(ir::Expr::Signal { net, word: None });
+        let idx = self.lower_expr(index);
+        let c = self.lower_expr(rhs);
+        let sid = self.push_stmt(ir::Stmt::SysTask {
+            which: ir::SysTaskId::StrPutC,
+            fmt: None,
+            args: vec![handle, idx, c],
+        });
+        b.push_stmt_id(sid);
     }
 
     /// String concatenation `lhs = {a, b, …}` or replication `lhs = {N{a, …}}`
