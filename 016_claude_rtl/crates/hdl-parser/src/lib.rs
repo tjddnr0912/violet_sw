@@ -5223,6 +5223,29 @@ impl<'t, 's> Parser<'t, 's> {
             self.bump(); // base kind keyword (logic/reg/integer/…)
             let _ = self.opt_signed();
             self.opt_range()
+        } else if let Some(info) = self.peek_typedef_name() {
+            // `enum b_t {…}` — the base type is an existing typedef name. Support a
+            // SIMPLE UNSIGNED vector typedef (`logic`/`bit`/`reg` `[N]`); the enum
+            // then stores as that vector (its range). A SIGNED base (the built-in
+            // `enum logic signed[N]` path also drops signedness — a separate
+            // pre-existing limit), an atom (`int`/`byte` — signed, no explicit
+            // range), or a struct / class / multi-dim-packed typedef cannot be
+            // represented by the enum's `Option<Range>` base model — honest-loud.
+            let nm = self.cur_text().to_string();
+            if self.struct_layouts.contains_key(&nm)
+                || info.class_name.is_some()
+                || info.signed
+                || !info.packed.is_empty()
+                || info.range.is_none()
+            {
+                self.error(
+                    "a simple unsigned vector typedef (logic/bit/reg [N]) as an enum base (a signed / atom / struct / class / multi-dim typedef base is unsupported in v1)",
+                );
+                self.synchronize();
+                return Some(ModuleItem::Error(start.to(self.prev_span())));
+            }
+            self.bump(); // the typedef-name token
+            info.range
         } else {
             self.opt_range()
         };
