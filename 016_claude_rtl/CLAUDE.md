@@ -75,3 +75,16 @@ MSRV **1.82** (`rust-toolchain.toml` 고정), **edition 2021**(edition 2024는 r
 - **동결(freeze) 타입은 verbatim.** sim-ir 직렬화 타입 형상은 SchemaHash로 동결됨 — 필드 추가/삭제/재배열은 루트 해시를 flip시켜 전 `.velab` 무효화. 의도적 변경만(format_version bump 동반).
 - **sim-ir cross-type 필드는 `sim_ir::Foo`로 FQ spelling** (`extern crate self as sim_ir`). bare 참조는 body-ref⊆key 가드(`tests/body_refs.rs`)가 거부.
 - **멀티세션은 `git worktree`로 분리.** 이 모노레포를 여러 Claude 세션이 단일 체크아웃 공유 시 브랜치/HEAD가 발밑에서 바뀌어 커밋이 strand됨(실제 발생). 커밋은 항상 `git add 016_claude_rtl/<path>`로 스코프(타 프로젝트 누수 금지).
+
+## 공개 미러 repo — vitamin-rtl-simulator (동기화 절차)
+
+이 `016_claude_rtl`은 **upstream**(개발 원천, violet_sw 모노레포 소속). 공개 배포본은 별도 repo **[vitamin-rtl-simulator](https://github.com/tjddnr0912/vitamin-rtl-simulator)**(PUBLIC)이며 016의 **스냅샷 미러**다. 개발은 항상 여기(violet_sw/016)서 하고, 변경은 아래 절차로 미러에 반영한다.
+
+- **동기화 방식 = snapshot sync, `git subtree`/`merge` 아님.** 미러는 2026-06-29 **단일 커밋**으로 출발 → violet_sw의 016 history와 공통 조상이 없어 subtree push는 non-FF로 거부된다. 016 파일을 미러 체크아웃에 복사 → commit → push 하는 방식만 쓴다.
+- **미러에서 제외(미러 `.gitignore` 등록)**: dev-meta `LOOPROMPT.md`·`CLAUDE.md`(이 파일), 그리고 `target/`. 동기화 시 반드시 `--exclude`.
+- **push 정책 (미러 main branch protection)**: owner(`tjddnr0912`)는 직접 push 가능(admin 우회 ON), 타인은 fork+PR+**승인 1건** 필수, force-push 금지. 사용자의 미러 반영은 owner 직접 push로 처리.
+- **"vitamin(미러)에 sync/merge" 요청 시 절차** (violet_sw 루트에서 실행, `MIRROR`=영구 clone 경로):
+  1. 미러가 없으면 영구 위치에 clone: `git clone https://github.com/tjddnr0912/vitamin-rtl-simulator.git "$MIRROR"` (⚠️ scratchpad 등 임시 위치 금지 — 세션 종료 시 소실).
+  2. 016→미러 복사(dev-meta·target 제외): `rsync -a --delete --exclude=.git --exclude=target --exclude=LOOPROMPT.md --exclude=CLAUDE.md 016_claude_rtl/ "$MIRROR"/`
+  3. `git -C "$MIRROR" add -A && git -C "$MIRROR" commit -m "Sync from monorepo (<원천 커밋 SHA>)" && git -C "$MIRROR" push origin main`
+  - 변경 없으면 commit 스킵. 커밋 메시지에 원천 violet_sw 커밋 SHA를 넣어 추적성 확보.
