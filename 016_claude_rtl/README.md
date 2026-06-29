@@ -1,10 +1,11 @@
 # vitamin
 
-**vitamin** is an open-source RTL simulator written in Rust. It simulates a
-synthesizable subset of **Verilog-2005** and **SystemVerilog** (the full
-Verilog-2005 RTL subset plus `logic`, `always_ff/comb/latch`, and the
-user-defined types `enum` / `typedef` / packed `struct`), producing a textual
-`$display` transcript and a hierarchical **VCD** waveform.
+**vitamin** is an open-source RTL simulator written in Rust. It simulates the
+full **Verilog-2005** synthesizable RTL subset plus a large **SystemVerilog**
+subset — `logic`, `always_ff/comb/latch`, `enum` / `typedef` / packed `struct`,
+functions/tasks, dynamic / queue / associative arrays, classes, and assertions
+(SVA) — producing a textual `$display` transcript and a hierarchical **VCD**
+waveform.
 
 Its goals are **determinism** (byte-identical output across Linux and macOS) and
 a **clean, source-only `cargo` build** with no C/C++ dependencies.
@@ -13,10 +14,14 @@ a **clean, source-only `cargo` build** with no C/C++ dependencies.
 preprocess → lex → parse → elaborate → sim-ir → sim-engine → VCD
 ```
 
-> **Status — Phase-1 MVP.** The full pipeline works end-to-end in both one-shot
-> and staged modes; 419 tests pass and representative designs match Icarus
-> Verilog (`iverilog`) exactly. Platforms: **Linux and macOS** (Windows is not
-> currently supported). See the [CHANGELOG](CHANGELOG.md).
+> **Status — actively developed (`0.0.0`).** The full pipeline works end-to-end
+> in both one-shot and staged modes, spanning Phase-1 RTL, a broad SystemVerilog
+> subset, and Phase-3 verification features (SVA, classes, constrained-random).
+> **2,600+ tests pass**; behaviour is checked against Icarus Verilog (`iverilog`)
+> by live differential review under a strict **correct-or-loud** rule — the
+> simulator never produces a silently wrong result, and anything unsupported is
+> an explicit diagnostic. Platforms: **Linux and macOS** (Windows is not
+> currently supported).
 
 ## The four CLIs
 
