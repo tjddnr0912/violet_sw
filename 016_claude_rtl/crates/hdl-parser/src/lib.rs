@@ -2052,6 +2052,21 @@ impl<'t, 's> Parser<'t, 's> {
         self.bump(); // module / macromodule / interface
         let name = self.ident()?;
 
+        // ANSI module-header package imports (IEEE §A.1.2 / §26.4): zero or more
+        // `import pkg::item;` between the module name and the parameter/port list.
+        // They exist so the imported symbols are visible to the port list that
+        // follows (`module m import p::*; (input logic [W-1:0] a)`). Collected as
+        // `ModuleItem::Import` at the FRONT of the body — elaborate's import pass
+        // already scans body imports (and applies them before resolving port
+        // widths), so a header import and a body import register identically.
+        let mut header_imports = Vec::new();
+        while self.at_kw(Kw::Import) {
+            match self.parse_import_decl() {
+                Some(i) => header_imports.push(ModuleItem::Import(i)),
+                None => break, // diagnostic already emitted; stop the header loop
+            }
+        }
+
         // ANSI param port list: #( parameter … )
         let mut params = Vec::new();
         if self.peek() == Some(TokenKind::Hash) {
@@ -2072,8 +2087,9 @@ impl<'t, 's> Parser<'t, 's> {
         let ports = self.parse_port_list();
         self.expect(TokenKind::Semi, "';' after module header");
 
-        // body until the end keyword — with forward-progress guard (BLOCKER B3)
-        let mut body = Vec::new();
+        // body until the end keyword — with forward-progress guard (BLOCKER B3).
+        // Header imports lead the body so elaborate registers them first.
+        let mut body = header_imports;
         while !self.at_eof() && !self.at_kw(end_kw) {
             let before = self.pos;
             match self.parse_module_item() {

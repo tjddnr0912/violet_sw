@@ -7144,8 +7144,19 @@ impl<'s> Elaborator<'s> {
                     return Some(format!("a hierarchical reference (`{joined}`)"));
                 }
                 let name = &path.segments[0].name;
-                if self.lookup_scoped(name).is_none() && self.lookup_net_scoped(name).is_some() {
-                    return Some(format!("a reference to net/variable `{name}`"));
+                if self.lookup_scoped(name).is_none() {
+                    if self.lookup_net_scoped(name).is_some() {
+                        return Some(format!("a reference to net/variable `{name}`"));
+                    }
+                    // Neither a param/genvar NOR a net — an undefined name, or a
+                    // wildcard-AMBIGUOUS one (IEEE §26.8 unbinds it). This fn is
+                    // only reached when the bound did NOT fold, so a resolvable
+                    // param/genvar never lands here; an unresolved bare name is
+                    // genuinely undefined → loud, NOT a silent width-1 (`[UNDEF-1:0]`
+                    // used to clamp to 1 bit with no error). The expression path
+                    // already errors on the same name (E3010), so this restores
+                    // parity for the range/width context.
+                    return Some(format!("undefined name `{name}`"));
                 }
                 None
             }
