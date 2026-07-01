@@ -335,8 +335,10 @@ pub type RandWithCall = (Vec<(u32, i64, i64)>, Vec<Vec<sim_ir::COp>>);
 pub struct Sidecars {
     pub fork_modes: ForkModeTable,
     pub net_names: NetNameTable,
-    pub proc_multipliers: Vec<u32>,
+    pub proc_multipliers: Vec<u64>,
     pub severities: SeverityTable,
+    /// StmtIds of `$timeformat` calls (no-op `Display` stmts, §21.3.2).
+    pub timeformat_stmts: std::collections::BTreeSet<u32>,
     pub radixes: RadixTable,
     /// Per-ProcId hierarchical instance path (`"tb.u1"`) — drives `%m` (P2-11).
     /// Parallel to `processes`, like `proc_multipliers`.
@@ -576,6 +578,7 @@ pub fn elaborate_with_timescale_roots(
         fork_modes: std::mem::take(&mut el.fork_modes),
         proc_multipliers: std::mem::take(&mut el.proc_multipliers),
         severities: std::mem::take(&mut el.severities),
+        timeformat_stmts: std::mem::take(&mut el.timeformat_stmts),
         radixes: std::mem::take(&mut el.radixes),
         proc_scopes: std::mem::take(&mut el.proc_scopes),
         assign_ranks: std::mem::take(&mut el.assign_ranks),
@@ -2592,12 +2595,15 @@ struct Elaborator<'s> {
     cur_time_mult: u64,
     // Per-ProcId multiplier table (parallel to `processes`), threaded to the engine via
     // `SimOpts.proc_multipliers` for `$time`/`$realtime` scaling. NEVER in the golden root.
-    proc_multipliers: Vec<u32>,
+    proc_multipliers: Vec<u64>,
 
     // ── severity-task state (engine-facing side channel, NOT in SimIr) ──
     // StmtId → SeverityKind for every `$fatal`/`$error`/`$warning`/`$info` lowered
     // (each as a `SysTaskId::Display` stmt). Threaded via `SimOpts.severities`.
     severities: SeverityTable,
+    // StmtIds of `$timeformat` calls (each a no-op `SysTaskId::Display` stmt —
+    // the assert_ctl/severity pattern). Threaded via `SimOpts.timeformat_stmts`.
+    timeformat_stmts: std::collections::BTreeSet<u32>,
     // StmtId → default radix (2/8/16) for the b/o/h print-task variants (P1-5).
     radixes: RadixTable,
     // StmtIds of Force/Release stmts that are procedural assign/deassign (§9.3.1
@@ -2764,6 +2770,7 @@ impl<'s> Elaborator<'s> {
             inline_stack: Vec::new(),
             fork_modes: ForkModeTable::new(),
             severities: SeverityTable::new(),
+            timeformat_stmts: std::collections::BTreeSet::new(),
             radixes: RadixTable::new(),
             assign_ranks: AssignRankTable::new(),
             queue_bounds: QueueBoundTable::new(),
@@ -2814,8 +2821,11 @@ impl<'s> Elaborator<'s> {
     /// `proc_multipliers.len() == processes.len()`). The engine reads the table from
     /// `SimOpts.proc_multipliers` to scale `$time`/`$realtime` per calling module.
     fn push_process(&mut self, p: ir::Process) {
-        self.proc_multipliers
-            .push(self.cur_time_mult.min(u32::MAX as u64) as u32);
+        // Full-width u64: a `10us/1ps`-class ratio (diff ≥ 10) used to SATURATE at
+        // u32::MAX = a non-power-of-10 M → wrong `$time` scaling and a wrong `%t`
+        // decade (soundness review Q6). The staged trailer stays wire-compatible
+        // (postcard varint encodes the same bytes for values < 2^32).
+        self.proc_multipliers.push(self.cur_time_mult);
         // `%m` scope: the instance path of the module being lowered ("tb.u1");
         // an empty prefix (single top) renders as the top module's own name —
         // but cur_prefix is ALWAYS the instance path incl. the top ("m" / "m.u1").
@@ -25129,6 +25139,45 @@ impl<'s> Elaborator<'s> {
                 args: Vec::new(),
             });
             self.assert_ctl.insert(sid, kind);
+            return Some(sid);
+        }
+        // §21.3.2 `$timeformat[(units, precision, suffix, min_width)]` — a no-op
+        // `Display` stmt + a `timeformat_stmts` side entry (the assert_ctl /
+        // severity pattern; the frozen SysTaskId gains no variant). Args stay
+        // RUNTIME expressions — the engine evaluates them at execution time
+        // (variable units/suffix are legal, iverilog-pinned). Arity is 0 or 4
+        // exactly (iverilog: "$timeformat requires zero or four arguments").
+        if name.name == "$timeformat" {
+            if !(args.is_empty() || args.len() == 4) {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$timeformat requires zero or four arguments (units, precision, \
+                     suffix, min_field_width)",
+                );
+                return None;
+            }
+            // A `$timeformat` as a DEFERRED-assert action would be captured by the
+            // §16.4 push_stmt hook (every SysTask under `cur_defer` lands in
+            // `defer_acts`) and the engine's `try_defer` intercepts BEFORE the
+            // timeformat check — the call would silently print its args at
+            // maturation instead of updating the `%t` state. Loud-reject the
+            // combination (soundness review Q1); use a plain statement instead.
+            if self.cur_defer.is_some() {
+                self.error(
+                    MsgCode::ElabUnsupported,
+                    "$timeformat as a deferred-assertion action is unsupported \
+                     (it would be captured for maturation instead of updating the \
+                     %t format state) — call it as a plain statement",
+                );
+                return None;
+            }
+            let arg_ids: Vec<u32> = args.iter().map(|a| self.lower_expr(a)).collect();
+            let sid = self.push_stmt(ir::Stmt::SysTask {
+                which: ir::SysTaskId::Display,
+                fmt: None,
+                args: arg_ids,
+            });
+            self.timeformat_stmts.insert(sid);
             return Some(sid);
         }
         // P1-1: `$fatal`/`$error`/`$warning`/`$info` lower as `Display` stmts plus

@@ -606,6 +606,10 @@ fn run_vita_str_gated(
         net_names: sc.net_names,
         proc_multipliers: sc.proc_multipliers,
         severities: sc.severities,
+        // §21.3.2 %t/$timeformat: the call-site table + the precision exponent
+        // %t scales against (one-shot path; empty/−9 ⇒ byte-identical).
+        timeformat_stmts: sc.timeformat_stmts,
+        global_prec_exp: rt.global_prec_exp,
         radixes: sc.radixes,
         assign_ranks: sc.assign_ranks,
         queue_bounds: sc.queue_bounds,
@@ -1417,6 +1421,10 @@ struct StagedExtraSidecars {
     /// extension). EMPTY ⇒ no wand/wor nets ⇒ byte-identical.
     wired_and_nets: std::collections::BTreeSet<u32>,
     wired_or_nets: std::collections::BTreeSet<u32>,
+    /// §21.3.2 `$timeformat` call-site StmtIds (staged sidecar — must survive
+    /// vcmp→vrun or a staged `$timeformat` silently degrades to a bare-args
+    /// `$display` print). APPEND-ONLY tail. EMPTY ⇒ byte-identical.
+    timeformat_stmts: std::collections::BTreeSet<u32>,
 }
 
 impl StagedExtraSidecars {
@@ -1448,6 +1456,7 @@ impl StagedExtraSidecars {
             ca_delays: sc.ca_delays.clone(),
             wired_and_nets: sc.wired_and_nets.clone(),
             wired_or_nets: sc.wired_or_nets.clone(),
+            timeformat_stmts: sc.timeformat_stmts.clone(),
         }
     }
 }
@@ -2029,7 +2038,7 @@ fn run_vrun_gated(
     };
     // Timescale trailer (proc multipliers + global precision). Tolerant of an older
     // `.velab` with no trailer → 1ns/1ns base ($time unscaled, preamble 1ns).
-    let ((proc_multipliers, global_prec_exp), rest4): ((Vec<u32>, i8), &[u8]) = if rest3.is_empty()
+    let ((proc_multipliers, global_prec_exp), rest4): ((Vec<u64>, i8), &[u8]) = if rest3.is_empty()
     {
         ((Vec::new(), -9), rest3)
     } else {
@@ -2372,6 +2381,12 @@ fn run_vrun_gated(
         // staged path = wrong value while one-shot was correct).
         wired_and_nets: extra.wired_and_nets,
         wired_or_nets: extra.wired_or_nets,
+        // §21.3.2 %t/$timeformat (STAGED-DROP parity): the call-site table rides
+        // the extra-sidecars trailer; the precision exponent rides the timescale
+        // trailer — without them a staged `%t` mis-scales and a `$timeformat`
+        // prints its args.
+        timeformat_stmts: extra.timeformat_stmts,
+        global_prec_exp,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
     };
@@ -3057,6 +3072,7 @@ mod tests {
         s.ca_delays = std::collections::BTreeMap::from([(0u32, (1u32, 2u32, 3u32))]);
         s.wired_and_nets = std::collections::BTreeSet::from([11u32, 13u32]);
         s.wired_or_nets = std::collections::BTreeSet::from([17u32]);
+        s.timeformat_stmts = std::collections::BTreeSet::from([19u32]);
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -3064,12 +3080,29 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "2dd69cf878a913d6293f00a6849642d52f025420bf0d1fd28ad1c47e3b27b06c";
+        const EXPECTED: &str = "d33cd11cc49343489bf3e864e165c5822ced90e4ad3843471d201fefe68e4b77";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 15th-trailer field moved.\n\
              If intentional: bump format_version + regen with REGEN_GOLDEN=1."
         );
+    }
+
+    // The `%t` M-saturation fix widened `proc_multipliers` from Vec<u32> to
+    // Vec<u64> WITHOUT a format_version bump — legal ONLY because postcard
+    // varint-encodes both identically for every value < 2^32, so an old
+    // artifact's u32-encoded timescale trailer decodes byte-exactly as u64.
+    // This pins that load-bearing wire-compat invariant (if postcard ever
+    // switched to fixed-width ints, this fails and a bump is required).
+    #[test]
+    fn timescale_trailer_u32_to_u64_wire_compat() {
+        let old: (Vec<u32>, i8) = (vec![1, 1000, 1_000_000_000, u32::MAX], -12);
+        let bytes = postcard::to_stdvec(&old).expect("encode u32 trailer");
+        let (new, rest): ((Vec<u64>, i8), &[u8]) =
+            postcard::take_from_bytes(&bytes).expect("decode as u64 trailer");
+        assert!(rest.is_empty());
+        assert_eq!(new.1, -12);
+        assert_eq!(new.0, vec![1u64, 1000, 1_000_000_000, u32::MAX as u64]);
     }
 
     // RULEV-MTIME wire pin: the 15th `WorkStamps` trailer is also a hand-maintained

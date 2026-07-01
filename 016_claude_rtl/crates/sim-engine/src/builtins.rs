@@ -54,6 +54,13 @@ pub(crate) fn dispatch(
     if let Some(sev) = sched.st.severities.get(&sid).copied() {
         return run_severity(sched, sev, fmt, args);
     }
+    // §21.3.2: a `$timeformat` call is a no-op `Display` whose StmtId is in
+    // `timeformat_stmts` (the assert_ctl pattern) — update the live `%t` format
+    // state instead of printing. Args are evaluated HERE, at execution time
+    // (runtime-variable args are legal; iverilog-pinned).
+    if sched.st.timeformat_stmts.contains(&sid) {
+        return run_timeformat(sched, args);
+    }
     // P1-5: the b/o/h variants change the default radix of unformatted args.
     let radix = sched.st.radixes.get(&sid).copied();
     match which {
@@ -2186,12 +2193,13 @@ fn render_template(
             // REGISTERING process's scope first (FmtCapture.scope).
             'm' | 'M' => out.push_str(&sched.st.cur_scope),
             't' | 'T' => {
-                // `%T` aliases `%t` (consumes one time arg). vita renders `%t` as a
-                // plain decimal (the documented `$timeformat`/field-width limitation);
-                // `%T` shares it. The key fix is consuming the arg — a literal `%T`
-                // left the arg for the next spec (an arg-shift silent-wrong).
+                // `%T` aliases `%t` (consumes one time arg). Full §21.3.2 semantics:
+                // the arg (a time in the DISPLAYING module's unit) is rescaled to the
+                // `$timeformat` units (default: the global precision) and justified
+                // in the min field width (default 20; an explicit `%Nt`/`%0t`
+                // OVERRIDES it — iverilog-pinned).
                 let v = next_arg(sched, args, argi);
-                out.push_str(&fmt_dec(&v));
+                out.push_str(&fmt_time_spec(sched, &v, field_width, min_zero));
             }
             'd' | 'D' => {
                 let v = next_arg(sched, args, argi);
@@ -2473,6 +2481,196 @@ fn fmt_dec(v: &Value) -> String {
     } else {
         s
     }
+}
+
+/// `%t` (IEEE 1800 §21.3.2): render a time VALUE (expressed in the displaying
+/// module's time unit) per the live `$timeformat` state. iverilog-pinned:
+/// - display value = arg × M (the module unit in ticks), decimal-shifted by
+///   `units_exp − global_prec_exp` places (default units = the global precision,
+///   so a 1ns/1ps module shows ps: `%0t` of `$time`=5 → "5000");
+/// - INTEGER args are exact decimal-string math and TRUNCATE the fraction to
+///   `prec` digits (9995ns @ −6/prec 1 → "9.9", never rounds); REAL args go
+///   through f64 and round like `%f` (5.556 @ prec 2 → "5.56");
+/// - an unknown-bearing integer keeps its collapsed x/X/z/Z char while the net
+///   shift only APPENDS zeros ("X000", "X.00 ns") and falls back to numeric with
+///   the unknown bits cleared once the shift cuts into the digits ("0.00us");
+/// - the suffix appends verbatim; the result is right-justified in the explicit
+///   `%Nt`/`%0t` width if given, else the min field width (default 20); a
+///   NEGATIVE min width LEFT-justifies in |width|.
+fn fmt_time_spec(
+    sched: &Scheduler,
+    v: &Value,
+    explicit_width: Option<usize>,
+    min_zero: bool,
+) -> String {
+    let (units_exp, prec, suffix, minw): (i32, usize, &str, i64) = match &sched.st.timeformat {
+        Some(tf) => (
+            tf.units_exp,
+            tf.prec as usize,
+            tf.suffix.as_str(),
+            tf.minw as i64,
+        ),
+        None => (sched.st.global_prec_exp as i32, 0, "", 20),
+    };
+    let k = units_exp as i64 - sched.st.global_prec_exp as i64;
+    let m = sched.st.cur_time_mult.max(1);
+    // M is 10^(unit_exp − global_prec_exp) by the timescale-wiring contract, so
+    // ilog10 recovers the exponent and the integer path stays exact string math.
+    let mz = m.ilog10() as i64;
+    debug_assert_eq!(10u64.checked_pow(mz as u32), Some(m));
+    let shift = mz - k; // net decimal shift: ≥0 appends zeros, <0 cuts into digits
+    let body = if v.is_real {
+        // `$realtime`-style value: scale in f64, then %f-round to `prec` digits
+        // (mirrors fmt_real's −0.0 normalization and non-finite C spelling).
+        let x = v.to_f64().unwrap_or(0.0) * (m as f64) / 10f64.powi(k as i32);
+        let x = if x == 0.0 { 0.0 } else { x };
+        if x.is_finite() {
+            format!("{x:.prec$}")
+        } else {
+            nonfinite_c(x)
+        }
+    } else if let Some(c) = unknown_group_char(v, 0, v.width) {
+        if shift >= 0 {
+            // Collapsed unknown char + appended zeros + zero-filled fraction.
+            let frac = if prec > 0 {
+                format!(".{}", "0".repeat(prec))
+            } else {
+                String::new()
+            };
+            format!("{c}{}{frac}", "0".repeat(shift as usize))
+        } else {
+            // Scale-down goes numeric with unknown bits cleared (iverilog live).
+            let mut cleared = v.clone();
+            for i in 0..cleared.val.len() {
+                let u = cleared.unk[i];
+                cleared.val[i] &= !u;
+                cleared.unk[i] = 0;
+            }
+            time_digits_shift(&fmt_dec(&cleared), shift, prec)
+        }
+    } else {
+        time_digits_shift(&fmt_dec(v), shift, prec)
+    };
+    let full = format!("{body}{suffix}");
+    let width: i64 = explicit_width.map(|w| w as i64).unwrap_or(minw);
+    let n = full.chars().count() as i64;
+    if width >= 0 {
+        if n < width {
+            // `%0Nt`: zero-fill; zeros go before any sign char (iverilog-pinned:
+            // `%08t` of -1000 → "000-1000", not sign-aware like `%0Nd`).
+            let fill = if min_zero { "0" } else { " " };
+            return format!("{}{full}", fill.repeat((width - n) as usize));
+        }
+    } else if n < -width {
+        // Negative min width ⇒ left-justify in |width| (iverilog-pinned).
+        return format!("{full}{}", " ".repeat((-width - n) as usize));
+    }
+    full
+}
+
+/// Shift the decimal point of an exact decimal string (optionally `-`-signed) by
+/// `shift` places (≥0 appends zeros; <0 inserts a point) and TRUNCATE/zero-fill
+/// the fraction to `prec` digits — the iverilog `%t` integer behavior (it never
+/// rounds: 9.995 @ prec 1 renders "9.9").
+fn time_digits_shift(digits: &str, shift: i64, prec: usize) -> String {
+    let (sign, mag) = match digits.strip_prefix('-') {
+        Some(m) => ("-", m),
+        None => ("", digits),
+    };
+    let body = if shift >= 0 {
+        // A zero value stays "0" — appending scale zeros would render "0000"
+        // (iverilog-pinned: `%t` of $time=0 in a 1ns/1ps module is "0").
+        let int_part = if mag == "0" {
+            mag.to_string()
+        } else {
+            format!("{mag}{}", "0".repeat(shift as usize))
+        };
+        if prec > 0 {
+            format!("{int_part}.{}", "0".repeat(prec))
+        } else {
+            int_part
+        }
+    } else {
+        let p = (-shift) as usize;
+        // Left-pad so at least one integer digit remains ("2" @ p=3 → "0002").
+        let padded = if mag.len() <= p {
+            format!("{}{mag}", "0".repeat(p + 1 - mag.len()))
+        } else {
+            mag.to_string()
+        };
+        let cut = padded.len() - p;
+        if prec == 0 {
+            padded[..cut].to_string()
+        } else {
+            let frac: String = padded[cut..]
+                .chars()
+                .chain(std::iter::repeat('0'))
+                .take(prec)
+                .collect();
+            format!("{}.{frac}", &padded[..cut])
+        }
+    };
+    format!("{sign}{body}")
+}
+
+/// `$timeformat` executor (§21.3.2): 0 args resets the defaults; 4 args set
+/// (units, precision, suffix, min width). Elaborate guarantees the 0/4 arity
+/// (1–3 args are a compile-time error, iverilog parity). Values are evaluated
+/// at EXECUTION time (runtime-variable args are legal). A negative precision
+/// clamps to 0. Units and min width are taken arithmetically like iverilog, but
+/// each caps at a hostile-input bound (|units−precision| ≤ 64 decimal places,
+/// |min width| ≤ 4096, precision ≤ 64 digits — the WIDE-ARITH-CAP pattern):
+/// `$timeformat(-2_000_000_000, …)` would otherwise make `%t` allocate a
+/// multi-GiB zero string. The caps sit far above every physical unit (the IEEE
+/// table spans 2…−15) so no real testbench can observe them.
+/// The suffix is %s-coerced NOW: a string-domain value keeps its exact bytes; a
+/// packed value renders its NUL-stripped ASCII form (8'h6E → "n").
+fn run_timeformat(sched: &mut Scheduler, args: &[u32]) -> Ctl {
+    if args.is_empty() {
+        sched.st.timeformat = None;
+        return Ctl::Continue;
+    }
+    fn int_arg(sched: &Scheduler, args: &[u32], i: usize) -> i64 {
+        args.get(i)
+            .map(|&e| {
+                sched
+                    .eval(e)
+                    .to_i128_signed()
+                    .unwrap_or(0)
+                    .clamp(i64::MIN as i128, i64::MAX as i128) as i64
+            })
+            .unwrap_or(0)
+    }
+    let gp = sched.st.global_prec_exp as i64;
+    let units_exp = int_arg(sched, args, 0).clamp(gp - 64, gp + 64) as i32;
+    let prec = int_arg(sched, args, 1).clamp(0, 64) as u32;
+    let suffix = match args.get(2).copied() {
+        // String LITERAL: exact text. Every OTHER expr — including a NUMERIC
+        // literal — goes through the same value path (`fmt_packed_chars_min`),
+        // so a literal 8'h6E and a reg holding 8'h6E render the identical "n"
+        // (soundness review Q7: the old const_string route stripped trailing
+        // NULs while the value route spaces them — value-dependent divergence).
+        Some(eid) => match str_const_of_expr(sched.st, eid) {
+            Some(text) => text,
+            None => {
+                let v = sched.eval(eid);
+                if v.is_str {
+                    String::from_utf8_lossy(&v.to_str_bytes()).into_owned()
+                } else {
+                    fmt_packed_chars_min(&v)
+                }
+            }
+        },
+        None => String::new(),
+    };
+    let minw = int_arg(sched, args, 3).clamp(-4096, 4096) as i32;
+    sched.st.timeformat = Some(crate::state::TfState {
+        units_exp,
+        prec,
+        suffix,
+        minw,
+    });
+    Ctl::Continue
 }
 
 /// C/iverilog spelling of a non-finite f64: lowercase `nan` (any sign — iverilog

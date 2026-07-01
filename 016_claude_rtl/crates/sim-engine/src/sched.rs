@@ -1026,7 +1026,7 @@ impl<'a, 'ir> Scheduler<'a, 'ir> {
             .get(tmpl)
             .copied()
             .unwrap_or(1)
-            .max(1) as u64;
+            .max(1);
         // VM-REGPOOL: lease the register/offset files from the pool, sized to this
         // body, and return them afterwards (a `pop` yields an OWNED buffer, so it no
         // longer borrows `self` and cannot alias the `&mut self` kernel call).
