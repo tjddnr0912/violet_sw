@@ -517,6 +517,12 @@ pub(crate) fn dispatch(
                 .and_then(|v| v.to_u64())
                 .map(|v| v as u32);
             match fd {
+                // §21.3.4: the pre-opened STDIN/STDOUT/STDERR cannot be closed —
+                // warn + no-op, the descriptor STAYS usable (iverilog-pinned:
+                // "could not close file descriptor STDOUT", later writes print).
+                Some(fd) if (0x8000_0000..=0x8000_0002).contains(&fd) => {
+                    preopened_close_warn(sched, fd);
+                }
                 // fd form: drop the File (flush+close on Drop).
                 Some(fd) if fd & 0x8000_0000 != 0 => {
                     if sched.st.files.remove(&fd).is_none() {
@@ -1469,6 +1475,24 @@ fn parse_mem_token(tok: &str, w: u32, hex: bool) -> Value {
 fn file_write(sched: &mut Scheduler, fd: u32, text: &str) {
     use std::io::Write as _;
     if fd & 0x8000_0000 != 0 {
+        // §21.3.4 pre-opened descriptors. STDOUT (0x8000_0001) routes through
+        // the SAME deterministic sink as `$display`/MCD-bit-0, so it interleaves
+        // in statement order (iverilog-pinned) inside the golden stdout stream.
+        // STDERR (0x8000_0002) goes to the process stderr like iverilog. A write
+        // to the read-only STDIN (0x8000_0000) falls through to the files-map
+        // miss → W4022 warn + drop (iverilog drops it SILENTLY; the warn is
+        // strictly more diagnostic, output bytes identical).
+        match fd {
+            0x8000_0001 => {
+                write_out(sched.st, text);
+                return;
+            }
+            0x8000_0002 => {
+                let _ = std::io::stderr().write_all(text.as_bytes());
+                return;
+            }
+            _ => {}
+        }
         match sched.st.files.get_mut(&fd) {
             Some(f) => {
                 let _ = f.write_all(text.as_bytes());
@@ -1516,6 +1540,15 @@ pub(crate) fn file_read_byte(sched: &mut Scheduler, fd: u32) -> Option<u8> {
             return Some(b);
         }
     }
+    // §21.3.4: reads on the pre-opened STDOUT/STDERR behave like any write-only
+    // fd — `$fgetc`=-1 with NO warning and NO EOF latch (iverilog-pinned:
+    // fgetc=-1, $feof stays 0). STDIN (0x8000_0000) is DELIBERATELY excluded
+    // from this early return: reading it is a deferred feature (a stdin-driven
+    // sim breaks byte-determinism), so it falls through to the files-map miss
+    // → W4022 warn + -1 (iverilog reads stdin).
+    if fd == 0x8000_0001 || fd == 0x8000_0002 {
+        return None;
+    }
     if fd & 0x8000_0000 == 0 || !sched.st.files.contains_key(&fd) {
         bad_fd_warn(sched, fd);
         return None;
@@ -1539,6 +1572,38 @@ pub(crate) fn file_read_byte(sched: &mut Scheduler, fd: u32) -> Option<u8> {
             None
         }
     }
+}
+
+/// `$fclose` on a pre-opened descriptor: W4022-class warn (once per fd, the
+/// same latch), descriptor STAYS open — iverilog parity ("could not close
+/// file descriptor STDOUT (0x80000001)"; a later write still prints).
+/// LATCH NOTE: STDIN shares the once-latch with its write/read W4022 — a
+/// design that first writes/reads STDIN and then `$fclose`s it gets only the
+/// first warning (accepted: same fd, same "ignored" outcome, bytes identical).
+fn preopened_close_warn(sched: &mut Scheduler, fd: u32) {
+    if !sched.st.bad_fd_warned.insert(fd) {
+        return;
+    }
+    let name = match fd {
+        0x8000_0000 => "STDIN",
+        0x8000_0001 => "STDOUT",
+        _ => "STDERR",
+    };
+    sched
+        .st
+        .sink
+        .emit(diag::LogEvent::Diagnostic(diag::Diagnostic {
+            severity: diag::Severity::Warning,
+            code: diag::MsgCode::RunBadFd,
+            message: format!(
+                "$fclose cannot close the pre-opened {name} descriptor 0x{fd:08x} (ignored)"
+            ),
+            location: None,
+            context: Vec::new(),
+            sim_time: Some(diag::TimeStamp {
+                ticks: sched.st.now,
+            }),
+        }));
 }
 
 /// W4022 once-per-descriptor (the dyn W4020 latch pattern).

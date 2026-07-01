@@ -45,7 +45,7 @@ violet_sw/
 | 012_stock_dashboard | 글로벌 시장 대시보드 (Bloomberg-style, port 5002) | `./run_dashboard.sh` | [CLAUDE.md](012_stock_dashboard/CLAUDE.md) |
 | 013_shortcut | 비주얼 블록 Apple Shortcuts 빌더 (iOS/macOS) | `xcodegen generate` | [CLAUDE.md](013_shortcut/CLAUDE.md) |
 | 014_casper | **미장봇 (US Stock Bot)** — SPMO 50%/GEM 30%/Casper(ORB+FVG) 20% 멀티 bucket, 자본 $5k/$10k에서 MTUM·QUAL·Clenow 자동 활성화 | `./run_casper.sh start` | [CLAUDE.md](014_casper/CLAUDE.md) |
-| 016_claude_rtl | **vitamin** — 오픈소스 Rust RTL 시뮬레이터 (SystemVerilog/Verilog, 17-crate cargo 워크스페이스, `vita`/`vcmp`/`velab`/`vrun`). 전 파이프라인 동작(Phase-1 합성 RTL + Phase-2 worklib/package/string/dyn-storage + Phase-3 SVA·coverage·class/OOP·CRV·real-math·clocking). 정확성 원칙=correct-or-loud(적대 iverilog 차분으로 silent-wrong 상시 사냥). **현황: 2746 테스트 green · format_version 19 · 3-OS CI green**(2026-07-02, 최신=`%t`/`$timeformat` full §21.3.2). 상세 이력·현황=016 CLAUDE.md 상태 블록 + `docs/ROADMAP.md`(§4.5.x)·`docs/DEVLOG.md` | `cargo test --workspace --locked` | [CLAUDE.md](016_claude_rtl/CLAUDE.md) |
+| 016_claude_rtl | **vitamin** — 오픈소스 Rust RTL 시뮬레이터 (SystemVerilog/Verilog, 17-crate cargo 워크스페이스, `vita`/`vcmp`/`velab`/`vrun`). 전 파이프라인 동작(Phase-1 합성 RTL + Phase-2 worklib/package/string/dyn-storage + Phase-3 SVA·coverage·class/OOP·CRV·real-math·clocking). 정확성 원칙=correct-or-loud(적대 iverilog 차분으로 silent-wrong 상시 사냥). **현황: 2753 테스트 green · format_version 19 · 3-OS CI green**(2026-07-02, 최신=pre-opened FD §21.3.4·`%t`/`$timeformat` §21.3.2). 상세 이력·현황=016 CLAUDE.md 상태 블록 + `docs/ROADMAP.md`(§4.5.x)·`docs/DEVLOG.md` | `cargo test --workspace --locked` | [CLAUDE.md](016_claude_rtl/CLAUDE.md) |
 
 ## Development Guidelines
 
