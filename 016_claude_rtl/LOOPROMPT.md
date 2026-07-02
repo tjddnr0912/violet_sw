@@ -26,14 +26,14 @@
 - **additive 파서처럼 보여도 STORAGE/eval-모델 갭일 수 있음** — 값이 어디 저장·어떻게 해소되는지 먼저 grep(single-scalar 모델에 aggregate 욱여넣기=deep, 전용 멀티파트 슬라이스).
 - 선택 즉시 격리 브랜치 `git checkout -b feat-<slug>`(**첫 EDIT 전**=절차 1순위, main 직접 구현 금지·`git rev-parse --abbrev-ref HEAD` 확인).
 
-### NEXT 큐 (2026-07-02 재계획 — A2 체인 최우선, 사용자 지시)
-1. **A2a — module-body array parameter** (`localparam int RHO[0:4]='{…}`): elaborate desugar→**const 변수-배열**(기존 unpacked-array+`'{…}` 경로 재사용)·이후 대입=loud·header/override=v1 loud·const-context 사용=§4.5.55 가드로 자동 loud. teeth=내부 차분 `localparam X`≡`var X; initial X=…`(iverilog는 array param "sorry" 거부). 상세=ROADMAP §2 🆕.
-2. **A2b-prereq — package-level 변수/집합-상수 저장** (현재 E3009 "(v7)"): 단일 인스턴스 lowering(예약 scope NetVar=format 불변)·t0-이전 init·`pkg::x`+import 해소·VCD 제외 v1·MVP-CUT package-var 동시 해제. **iverilog가 package var 지원(2026-07-02 그라운딩)=라이브 차분 오라클** → ② 이상형.
-3. **A2b — package array parameter** = A2a+prereq 결합. acceptance=sha3_pkg `RC_TABLE[0:23]` → **ROADMAP §6 리포트 CLOSE**.
+### NEXT 큐 (2026-07-02 갱신 — A2a ✅ 완료(§4.5.69), 잔여 체인 계속)
+1. **A2b-prereq — package-level 변수/집합-상수 저장** (현재 E3009 "(v7)"): 단일 인스턴스 lowering(예약 scope NetVar=format 불변)·t0-이전 init·`pkg::x`+import 해소·VCD 제외 v1·MVP-CUT package-var 동시 해제. **iverilog가 package var 지원(2026-07-02 그라운딩)=라이브 차분 오라클** → ② 이상형.
+2. **A2b — package array parameter** = A2a(✅) 메커니즘+prereq 결합. acceptance=sha3_pkg `RC_TABLE[0:23]` → **ROADMAP §6 리포트 CLOSE**.
+3. **generate/interface 스코프 배열 `'{…}` decl-init 영구 silent-drop 수정**(§4.5.69 ㉮, **①급 — iverilog 40 vs vita 0 라이브 차분**): §6.8 수집 pass가 module body만 walk. 수집을 scope-qualified로 확장(pending lvalue가 bare-name이라 prefix 문제 주의)+완료 시 A2a scope-gate 2곳(generate 16735·interface 5102 부근) 해제. var에도 적용되는 진짜 silent-wrong.
 4. **OBS-1 — G2 MVP**: `--obs-dir` → run.json+results.jsonl+coverage.json(기존 카운터 직렬화). teeth=결정성 골든(2-run byte-diff)+3-way 대조. SPEC=doc-19 §4.
 5. **OBS-2**: `--probe`→trace.jsonl(transition-only·미해석=loud)+sva.jsonl. 이후 OBS-3~6은 ROADMAP §7 순.
-6. **소형 정확성 슬라이스(사이 슬롯)**: 계단식 CA 체인 t0 전파 그라운딩(vita eager vs Icarus z) · 계층 함수호출 `u1.f(x)`(인스턴스 스코프 바인딩) · compound-const `==?` fold · `%-` 좌측정렬 family · `$fflush` accept · loud-message 품질(`[bit]` 캐스케이드·typedef-키 메시지).
-7. **deep 잔여(저우선)**: inline body NON-fill context-width(§4.5.42)·STDIN read·runtime `==?`·string queue·block-local queue decl·modport 방향 강제·force part-select.
+6. **소형 정확성 슬라이스(사이 슬롯)**: scalar `int unsigned` param 부호 silent-wrong(§4.5.69 ㉲, iverilog ✓) · 계단식 CA 체인 t0 전파 그라운딩(vita eager vs Icarus z) · 계층 함수호출 `u1.f(x)` · compound-const `==?` fold · `%-` 좌측정렬 family · `$fflush` accept · loud-message 품질(`[bit]` 캐스케이드·typedef-키·typedef-요소 param) · hier-write sentinel cont_assigns/out_binds 미패치 panic→진단화(㉱).
+7. **deep 잔여(저우선)**: 크로스모듈 t0 decl-init race(㉯, iverilog ✓·ProcId 순서=golden 리스크 M~L) · SYS-READ hier-element dest 실지원(㉰, iverilog ✓·현 honest-loud) · repl-count 변수/param-element→0(㉳, §4.5.26) · inline body NON-fill context-width(§4.5.42)·STDIN read·runtime `==?`·string queue·block-local queue decl·modport 방향 강제·force part-select.
 
 ## 2. 사전 리뷰 = 오라클 그라운딩
 - 최소 SV repro 여러 개를 iverilog와 vita 양쪽에 돌려 **정확한 IEEE 규칙을 핀**. 엣지(x/z·멀티비트·NBA·경계·0/min/max) 변형 probe.
@@ -46,6 +46,7 @@
 - 가능한 IR-0. 공통경로 funnel(인터프리터+VM 청크포인트 단일 여부) 먼저 확인. 비대상 디자인 byte-identical(가드/사이드카=값 다를 때만).
 - **최저위험 순서**: 순수 파서 desugar(기존 AST 재사용) > 기존 메커니즘 라우팅(disable→Goto·$swrite→$sformat처럼 grep로 등가 기구 먼저) > 단일-속성 primitive **COMPOSE**(예: typedef cast=`Signing(Size(e))`, 신규 결합 primitive는 골든 영향) > 신규 인프라.
 - **ALL-sites 전수(최다 재발 패턴)**: 공유 함수/desugar가 도는 **모든** 스코프·caller·parser 변종(`grep 'fn parse_'`)·assign-site(≥7: `=`,`<=`,decl-init,assign,proc-assign,force,for)·net 생성 경로(`grep add_net`)·statement-dispatch 진입점을 전수 열거. **eligibility-set ≡ process-set**(허용집합=처리집합, 차집합=silent-drop). 미검증 스코프는 `allow_*` scope-gate로 loud 격리. dispatch-chain hook은 최상단(detection-FIRST)에.
+- **쓰기-거부(deny) 훅 신설 체크리스트**: ① lvalue 퍼널(collect_lval_chunks) 훅만으론 부족 — 문서화된 우회 `grep 'bypassing collect_lval_chunks'`(array_assign_special) ② **deferred hier 2-pass**(sentinel이라 퍼널이 실net 못 봄 → resolve 패스에도 훅) ③ SYS-READ dest placeholder(`Signal{POISON_NET}`+pending 레코드 eid로 판별) ④ 엔진-사이드 사이드카 쓰기(clocking_outputs·assoc iter key=bare Signal) ⑤ 합성 §6.8 pre-sweep initial은 **면제 플래그**(자기 decl-init도 일반 stmt lowering 경유=면제 없으면 자기 초기화를 거부) ⑥ 포트-이름 충돌(dir≠Internal)·다중 스코프(generate/interface=decl-init 미수집→scope-gate).
 - 확장은 discriminator-BRANCH(기존 경로 verbatim 보존·재구성 금지)·신규 eligibility set은 기존과 disjoint 증명. 1-D→N-D 확장 전 기존 offset/stride 테이블이 이미 N-D 처리하는지 확인(DIRECTION은 정확히 1곳만 적용=double-flip 방지). control-flow(break/continue) 타깃은 오라클로 핀(nested=innermost).
 - **width/type 축**: self-width table(`width.rs`)과 eval 양쪽 일치 확인. target-width 컨텍스트의 fill(`'1/'x/'z`)은 `lower_ctx_or_plain(e,width)`(bare `lower_expr`=1-bit zero-extend silent-wrong; **bare fill probe 필수**, sized론 안 잡힘). typed→untyped desugar는 per-element 2-state coercion/sign 명시 복원. 4-state raw byte 추출은 `val & !unk`. resize는 RHS 부호로 extend·TARGET 부호로 stamp.
 - **name/scope 축**: comma-list sticky 속성(dir·type·sign·range) 전부 스레드. flat map에 nested scope 도입=lazy snapshot/restore(**TYPE+VAR keyed 맵 모두**·ALL decl-region: block_body+tf_body). alias/copy 등록=그 이름 keyed ALL 사이드맵 전수+**set-or-CLEAR**(stale 잔존 방지). collect→match-apply는 consumption-tracking(leftover=loud/warn, 레벨은 오라클에 맞춤). 합성 name-ref는 referent KIND 명시 검증(일반 해소는 too-permissive). synthetic name은 duplicate collision 검사. name-scanning guard는 traversal이 ALL expr variant 커버하는지(`Cast` 등 `_=>false` 누락=우회).
