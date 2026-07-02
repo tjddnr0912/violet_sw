@@ -456,14 +456,18 @@ impl<'t, 's> Parser<'t, 's> {
     /// Member name after a `.`: a normal identifier, OR one of the array-method
     /// names the lexer classifies as a keyword because it reuses an operator/
     /// qualifier spelling (`and`/`or`/`xor` reductions §7.12.3, `unique` locator
-    /// §7.12.1). Reading the source span keeps the segment name intact regardless
-    /// of token kind.
+    /// §7.12.1), OR a qualifier keyword accepted defensively so a legacy member
+    /// literally named `unique0`/`priority0` keeps parsing in dot position now
+    /// that those are keywords. Reading the source span keeps the segment name
+    /// intact regardless of token kind.
     fn member_ident(&mut self) -> Option<Ident> {
         if self.is_ident()
             || self.at_kw(Kw::And)
             || self.at_kw(Kw::Or)
             || self.at_kw(Kw::Xor)
             || self.at_kw(Kw::Unique)
+            || self.at_kw(Kw::Unique0)
+            || self.at_kw(Kw::Priority0)
         {
             let t = self.bump().unwrap();
             Some(Ident {
@@ -8076,7 +8080,9 @@ impl<'t, 's> Parser<'t, 's> {
                 // P2-E: unique/priority QUALIFIERS on if/case — the violation
                 // check desugars to a synthesized `$warning` arm (IEEE
                 // §12.4/12.5: a no-match is a runtime violation warning).
-                Kw::Unique | Kw::Priority => self.parse_unique_priority(),
+                Kw::Unique | Kw::Priority | Kw::Unique0 | Kw::Priority0 => {
+                    self.parse_unique_priority()
+                }
                 Kw::Foreach => self.parse_foreach(),
                 Kw::Repeat => self.parse_repeat(),
                 Kw::Forever => self.parse_forever(),
@@ -10207,7 +10213,17 @@ impl<'t, 's> Parser<'t, 's> {
     /// is first-match-wins, so overlap is unobservable).
     fn parse_unique_priority(&mut self) -> Stmt {
         let qspan = self.cur_span();
-        self.bump(); // unique / priority
+        // §12.4.2: the `0` variants keep the multi-match intent but SUPPRESS
+        // the no-match violation — so they parse as the PLAIN if/case with no
+        // synthetic warn injection (hand-IEEE: Icarus rejects `unique0 if`
+        // outright and ignores the unique/unique0 distinction on case).
+        let suppress_no_match = matches!(
+            self.peek(),
+            Some(TokenKind::Word(WordKind::Keyword(
+                Kw::Unique0 | Kw::Priority0
+            )))
+        );
+        self.bump(); // unique / priority / unique0 / priority0
         let warn_stmt = |span: Span| Stmt::SysTaskCall {
             name: Ident {
                 name: "$warning".to_string(),
@@ -10225,7 +10241,7 @@ impl<'t, 's> Parser<'t, 's> {
             Some(TokenKind::Word(WordKind::Keyword(Kw::If))) => {
                 let mut s = self.parse_if();
                 if let Stmt::If { else_s, span, .. } = &mut s {
-                    if else_s.is_none() {
+                    if else_s.is_none() && !suppress_no_match {
                         *else_s = Some(Box::new(warn_stmt(*span)));
                     }
                 }
@@ -10240,7 +10256,7 @@ impl<'t, 's> Parser<'t, 's> {
                 let mut s = self.parse_case(kind);
                 if let Stmt::Case { items, span, .. } = &mut s {
                     let has_default = items.iter().any(|i| matches!(i, CaseItem::Default { .. }));
-                    if !has_default {
+                    if !has_default && !suppress_no_match {
                         items.push(CaseItem::Default {
                             body: Box::new(warn_stmt(*span)),
                             span: *span,
