@@ -88,8 +88,9 @@ MSRV **1.82** (`rust-toolchain.toml` 고정), **edition 2021**(edition 2024는 r
 - **동기화 방식 = snapshot sync, `git subtree`/`merge` 아님.** 미러는 2026-06-29 **단일 커밋**으로 출발 → violet_sw의 016 history와 공통 조상이 없어 subtree push는 non-FF로 거부된다. 016 파일을 미러 체크아웃에 복사 → commit → push 하는 방식만 쓴다.
 - **미러에서 제외(미러 `.gitignore` 등록)**: dev-meta `LOOPROMPT.md`·`CLAUDE.md`(이 파일), 그리고 `target/`. 동기화 시 반드시 `--exclude`.
 - **push 정책 (미러 main branch protection)**: owner(`tjddnr0912`)는 직접 push 가능(admin 우회 ON), 타인은 fork+PR+**승인 1건** 필수, force-push 금지. 사용자의 미러 반영은 owner 직접 push로 처리.
-- **"vitamin(미러)에 sync/merge" 요청 시 절차** (violet_sw 루트에서 실행, `MIRROR`=영구 clone 경로):
+- **"vitamin(미러)에 sync/merge" 요청 시 절차** (violet_sw 루트에서 실행, `MIRROR`=`~/project/git/vitamin-rtl-simulator` 영구 clone):
   1. 미러가 없으면 영구 위치에 clone: `git clone https://github.com/tjddnr0912/vitamin-rtl-simulator.git "$MIRROR"` (⚠️ scratchpad 등 임시 위치 금지 — 세션 종료 시 소실).
-  2. 016→미러 복사(dev-meta·target 제외): `rsync -a --delete --exclude=.git --exclude=target --exclude=LOOPROMPT.md --exclude=CLAUDE.md 016_claude_rtl/ "$MIRROR"/`
-  3. `git -C "$MIRROR" add -A && git -C "$MIRROR" commit -m "Sync from monorepo (<원천 커밋 SHA>)" && git -C "$MIRROR" push origin main`
-  - 변경 없으면 commit 스킵. 커밋 메시지에 원천 violet_sw 커밋 SHA를 넣어 추적성 확보.
+  2. **tracked-only 스테이징**(untracked 잡파일 유입 차단): `git archive HEAD -- 016_claude_rtl | tar -x -C <staging>` → `rsync -a --delete --exclude=.git --exclude=target --exclude=LOOPROMPT.md --exclude=CLAUDE.md <staging>/016_claude_rtl/ "$MIRROR"/`
+  3. **미러 `.gitignore` 복원**: rsync가 upstream 것으로 덮어 dev-meta ignore 줄이 지워짐 — `git -C "$MIRROR" restore --staged --worktree .gitignore` (add 후 diff에 .gitignore 보이면 반드시).
+  4. `git -C "$MIRROR" add -A && git -C "$MIRROR" commit -m "Sync from monorepo (<원천 커밋 SHA>)" && git -C "$MIRROR" push origin main`
+  - 변경 없으면 commit 스킵. 커밋 메시지에 원천 violet_sw 커밋 SHA를 넣어 추적성 확보. (최근 sync: 572fec6 → 미러 1150d11, 2026-07-02)
