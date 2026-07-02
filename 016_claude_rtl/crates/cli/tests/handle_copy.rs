@@ -160,20 +160,15 @@ fn kind_and_elem_type_mismatches_are_loud() {
 }
 
 #[test]
-fn non_handle_targets_and_slices_stay_loud() {
-    // `x = q` keeps the pre-existing whole-value-surface loud; the slice form
-    // `q[1:2]` stays loud (broken oracle — see the module doc).
+fn non_handle_targets_stay_loud() {
+    // `x = q` keeps the pre-existing whole-value-surface loud. (The queue
+    // slice `r = q[1:2]` graduated to a supported §7.10.1 read — see
+    // queue_slice.rs — so its old loud assert moved there as positives.)
     let (_, err, code) = run("module t; int q[$]; int x; initial begin\n\
            q.push_back(1); x = q;\n\
            end endmodule\n");
     assert_ne!(code, 0);
     assert!(err.contains("no whole-value surface"), "read loud:\n{err}");
-    let (_, err, code) = run("module t; int q[$]; int r[$]; initial begin\n\
-           q.push_back(1); q.push_back(2); q.push_back(3);\n\
-           r = q[1:2];\n\
-           end endmodule\n");
-    assert_ne!(code, 0);
-    assert!(!err.is_empty(), "slice stays loud:\n{err}");
 }
 
 #[test]

@@ -277,6 +277,9 @@ pub(crate) struct SimState<'a> {
     /// no-op Display StmtId → (dst_net, src_net); the dispatch intercept
     /// deep-clones `dyn_heap[src]` into `dyn_heap[dst]`.
     pub handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
+    /// Queue-slice markers (§7.10.1, from `SimOpts.queue_slice_stmts`):
+    /// no-op Display StmtIds whose args are [dst, src, a, b].
+    pub queue_slice_stmts: std::collections::BTreeSet<u32>,
     /// Live `$timeformat` state (IEEE 1800 §21.3.2). `None` ⇒ the defaults:
     /// units = the global precision, 0 fraction digits, no suffix, min width 20.
     pub timeformat: Option<TfState>,
@@ -699,6 +702,7 @@ impl<'a> SimState<'a> {
             severities: crate::SeverityTable::new(),
             timeformat_stmts: std::collections::BTreeSet::new(),
             handle_copy_stmts: std::collections::BTreeMap::new(),
+            queue_slice_stmts: std::collections::BTreeSet::new(),
             timeformat: None,
             global_prec_exp: -9,
             radixes: crate::RadixTable::new(),

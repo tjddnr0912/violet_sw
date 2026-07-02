@@ -81,6 +81,14 @@ pub(crate) fn dispatch(
         sched.st.enforce_queue_bound(dst);
         return Ctl::Continue;
     }
+    // §7.10.1 queue slice `dst = src[a:b]`: args = [dst, src, a, b]. Bounds are
+    // runtime i64; partial out-of-range CLAMPS, a reversed range / fully-out /
+    // x-z bound yields the EMPTY queue (hand-IEEE — Icarus mis-executes this
+    // form). The subrange is cloned BEFORE the dst slot is written, so a
+    // self-slice `q = q[a:b]` is safe.
+    if sched.st.queue_slice_stmts.contains(&sid) {
+        return run_queue_slice(sched, args);
+    }
     // P1-5: the b/o/h variants change the default radix of unformatted args.
     let radix = sched.st.radixes.get(&sid).copied();
     match which {
@@ -1592,6 +1600,66 @@ pub(crate) fn file_read_byte(sched: &mut Scheduler, fd: u32) -> Option<u8> {
             None
         }
     }
+}
+
+/// §7.10.1 queue-slice executor: args = [dst_handle, src_handle, a, b].
+/// Clamp semantics (hand-IEEE, no oracle — Icarus parses `q[a:b]` but ignores
+/// the bounds): a<0 clamps to 0, b>size-1 clamps to size-1; a>b, a≥size, b<0,
+/// or an x/z bound ⇒ the empty queue (x/z also warns once, the dyn pattern).
+/// The result replaces dst wholesale (value semantics) and then the bounded-
+/// queue post-op runs (mirrors the whole-copy path).
+fn run_queue_slice(sched: &mut Scheduler, args: &[u32]) -> Ctl {
+    let (Some(dst), Some(src)) = (
+        dyn_handle_net(sched, args.first()),
+        dyn_handle_net(sched, args.get(1)),
+    ) else {
+        return Ctl::Continue; // elaborate never emits a malformed marker
+    };
+    let bound = |sched: &mut Scheduler, i: usize| -> Option<i64> {
+        let v = sched.eval(*args.get(i)?);
+        if v.has_xz() {
+            return None;
+        }
+        Some(
+            v.to_i128_signed()
+                .unwrap_or(0)
+                .clamp(i64::MIN as i128, i64::MAX as i128) as i64,
+        )
+    };
+    let a = bound(sched, 2);
+    let b = bound(sched, 3);
+    let elems: std::collections::VecDeque<crate::value::Value> = match (a, b) {
+        (Some(a), Some(b)) => {
+            let n = match sched.st.dyn_heap.get(src as usize).and_then(|o| o.as_ref()) {
+                Some(crate::state::DynObj::Queue { elems }) => elems.len() as i64,
+                _ => 0,
+            };
+            let lo = a.max(0);
+            let hi = b.min(n - 1);
+            if lo > hi {
+                std::collections::VecDeque::new()
+            } else {
+                match sched.st.dyn_heap.get(src as usize).and_then(|o| o.as_ref()) {
+                    Some(crate::state::DynObj::Queue { elems }) => elems
+                        .iter()
+                        .skip(lo as usize)
+                        .take((hi - lo + 1) as usize)
+                        .cloned()
+                        .collect(),
+                    _ => std::collections::VecDeque::new(),
+                }
+            }
+        }
+        _ => {
+            dyn_warn_once(sched, src, "queue slice bound is X/Z; result is empty");
+            std::collections::VecDeque::new()
+        }
+    };
+    if let Some(slot) = sched.st.dyn_heap.get_mut(dst as usize) {
+        *slot = Some(crate::state::DynObj::Queue { elems });
+    }
+    sched.st.enforce_queue_bound(dst);
+    Ctl::Continue
 }
 
 /// `$fclose` on a pre-opened descriptor: W4022-class warn (once per fd, the

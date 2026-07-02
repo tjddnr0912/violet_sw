@@ -159,6 +159,9 @@ pub struct SimOpts {
     /// Whole-handle copy markers (§7.10 `dst = src` deep copy): no-op Display
     /// StmtId → (dst_net, src_net). EMPTY default. Never golden.
     pub handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
+    /// Queue-slice markers (§7.10.1 `dst = src[a:b]`): no-op Display StmtIds
+    /// whose args are [dst, src, a, b]. EMPTY default. Never golden.
+    pub queue_slice_stmts: std::collections::BTreeSet<u32>,
     /// Global precision exponent (power of 10, in seconds, of one simulation
     /// tick) for `%t` unit scaling — −9 (the 1ns/1ns base) by default. Computed
     /// alongside `proc_multipliers` by the CLI timescale wiring. Never golden.
@@ -291,6 +294,7 @@ impl Default for SimOpts {
             severities: SeverityTable::new(),
             timeformat_stmts: std::collections::BTreeSet::new(),
             handle_copy_stmts: std::collections::BTreeMap::new(),
+            queue_slice_stmts: std::collections::BTreeSet::new(),
             global_prec_exp: -9,
             radixes: RadixTable::new(),
             assign_ranks: AssignRankTable::new(),
@@ -381,6 +385,7 @@ pub fn simulate(ir: &SimIr, sink: &dyn LogSink, opts: SimOpts) -> SimResult {
     st.severities = opts.severities.clone();
     st.timeformat_stmts = opts.timeformat_stmts.clone();
     st.handle_copy_stmts = opts.handle_copy_stmts.clone();
+    st.queue_slice_stmts = opts.queue_slice_stmts.clone();
     st.global_prec_exp = opts.global_prec_exp;
     st.radixes = opts.radixes.clone();
     st.assign_ranks = opts.assign_ranks.clone();

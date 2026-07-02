@@ -341,6 +341,8 @@ pub struct Sidecars {
     pub timeformat_stmts: std::collections::BTreeSet<u32>,
     /// Whole-handle copy markers (§7.10): StmtId → (dst_net, src_net).
     pub handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
+    /// Queue-slice markers (§7.10.1): StmtIds with args [dst, src, a, b].
+    pub queue_slice_stmts: std::collections::BTreeSet<u32>,
     pub radixes: RadixTable,
     /// Per-ProcId hierarchical instance path (`"tb.u1"`) — drives `%m` (P2-11).
     /// Parallel to `processes`, like `proc_multipliers`.
@@ -582,6 +584,7 @@ pub fn elaborate_with_timescale_roots(
         severities: std::mem::take(&mut el.severities),
         timeformat_stmts: std::mem::take(&mut el.timeformat_stmts),
         handle_copy_stmts: std::mem::take(&mut el.handle_copy_stmts),
+        queue_slice_stmts: std::mem::take(&mut el.queue_slice_stmts),
         radixes: std::mem::take(&mut el.radixes),
         proc_scopes: std::mem::take(&mut el.proc_scopes),
         assign_ranks: std::mem::take(&mut el.assign_ranks),
@@ -2610,6 +2613,9 @@ struct Elaborator<'s> {
     // Whole-handle copy markers (§7.10 `dst = src` deep copy): no-op Display
     // StmtId → (dst_net, src_net). Threaded via `SimOpts.handle_copy_stmts`.
     handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
+    // Queue-slice markers (§7.10.1 `dst = src[a:b]`): no-op Display StmtIds
+    // whose args are [dst, src, a, b]. Threaded via `SimOpts.queue_slice_stmts`.
+    queue_slice_stmts: std::collections::BTreeSet<u32>,
     // StmtId → default radix (2/8/16) for the b/o/h print-task variants (P1-5).
     radixes: RadixTable,
     // StmtIds of Force/Release stmts that are procedural assign/deassign (§9.3.1
@@ -2778,6 +2784,7 @@ impl<'s> Elaborator<'s> {
             severities: SeverityTable::new(),
             timeformat_stmts: std::collections::BTreeSet::new(),
             handle_copy_stmts: std::collections::BTreeMap::new(),
+            queue_slice_stmts: std::collections::BTreeSet::new(),
             radixes: RadixTable::new(),
             assign_ranks: AssignRankTable::new(),
             queue_bounds: QueueBoundTable::new(),
@@ -14407,6 +14414,83 @@ impl<'s> Elaborator<'s> {
                     args: Vec::new(),
                 });
                 self.handle_copy_stmts.insert(sid, (dst_net, src_net));
+                b.push_stmt_id(sid);
+                true
+            }
+            // §7.10.1 queue SLICE read `dst = src[a:b]` — a new queue holding
+            // the in-range elements (hand-IEEE: Icarus parses this form but
+            // silently ignores the bounds, so the pin is the LRM + the
+            // vita-internal equivalence `q[a:b] ≡ element loop`). `$` in a
+            // bound is the last index (the q[$] dollar_subst machinery).
+            // Bounds are RUNTIME expressions, evaluated by the engine:
+            // partial out-of-range clamps, reversed/fully-out/x-z ⇒ empty.
+            ast::ExprKind::PartSelect { base, msb, lsb } => {
+                let src = match &base.kind {
+                    ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                        self.dyn_handle(&p.segments[0].name)
+                    }
+                    _ => None,
+                };
+                let Some((src_net, ir::NetKind::Queue)) = src else {
+                    return false; // not a queue slice → the plain path louds
+                };
+                let dst = match lhs {
+                    ast::Lvalue::Ident(dp) if dp.segments.len() == 1 => {
+                        self.dyn_handle(&dp.segments[0].name)
+                    }
+                    _ => None,
+                };
+                let Some((dst_net, ir::NetKind::Queue)) = dst else {
+                    return false; // slice read into a non-queue → plain-path loud
+                };
+                if delay.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a delayed queue-slice assignment is outside the MVP",
+                    );
+                    return true;
+                }
+                if self.cur_defer.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a queue slice as a deferred-assertion action is \
+                         unsupported — call it as a plain statement",
+                    );
+                    return true;
+                }
+                let elem_ty = |el: &Self, net: u32| {
+                    let nv = &el.nets[net as usize];
+                    (
+                        nv.width,
+                        nv.signed,
+                        el.two_state_heap_handles.contains(&net),
+                    )
+                };
+                if elem_ty(self, dst_net) != elem_ty(self, src_net) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "queue slice needs matching element types on both sides \
+                         (width/sign/state)",
+                    );
+                    return true;
+                }
+                let dst_h = self.push_expr(ir::Expr::Signal {
+                    net: dst_net,
+                    word: None,
+                });
+                let src_h = self.push_expr(ir::Expr::Signal {
+                    net: src_net,
+                    word: None,
+                });
+                // `$` inside a bound = src.size()-1 (the q[$] machinery).
+                let a_eid = self.lower_dyn_index(src_net, ir::NetKind::Queue, msb);
+                let b_eid = self.lower_dyn_index(src_net, ir::NetKind::Queue, lsb);
+                let sid = self.push_stmt(ir::Stmt::SysTask {
+                    which: ir::SysTaskId::Display,
+                    fmt: None,
+                    args: vec![dst_h, src_h, a_eid, b_eid],
+                });
+                self.queue_slice_stmts.insert(sid);
                 b.push_stmt_id(sid);
                 true
             }
