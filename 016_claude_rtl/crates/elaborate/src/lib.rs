@@ -5869,8 +5869,14 @@ impl<'s> Elaborator<'s> {
                     ast::BinOp::Le => Some((a <= b) as i64),
                     ast::BinOp::Gt => Some((a > b) as i64),
                     ast::BinOp::Ge => Some((a >= b) as i64),
-                    ast::BinOp::Eq | ast::BinOp::CaseEq => Some((a == b) as i64),
-                    ast::BinOp::Ne | ast::BinOp::CaseNe => Some((a != b) as i64),
+                    // `==?`/`!=?` collapse too: a folded const has no x/z, so
+                    // every pattern bit is non-wildcard (§11.4.6 ≡ plain eq).
+                    ast::BinOp::Eq | ast::BinOp::CaseEq | ast::BinOp::WildEq => {
+                        Some((a == b) as i64)
+                    }
+                    ast::BinOp::Ne | ast::BinOp::CaseNe | ast::BinOp::WildNe => {
+                        Some((a != b) as i64)
+                    }
                     ast::BinOp::BitAnd => Some(a & b),
                     ast::BinOp::BitOr => Some(a | b),
                     ast::BinOp::BitXor => Some(a ^ b),
@@ -10438,6 +10444,13 @@ impl<'s> Elaborator<'s> {
                 self.push_expr(ir::Expr::Unary { op: irop, operand })
             }
             ast::ExprKind::Binary { op, lhs, rhs } => {
+                // §11.4.6 wildcard equality intercept — BEFORE every map_binop
+                // route (the string-compare and generic arms below never see
+                // WildEq/WildNe). Comparison operands size each other, not the
+                // outer context, so both lower_expr paths land here.
+                if matches!(op, ast::BinOp::WildEq | ast::BinOp::WildNe) {
+                    return self.lower_wildcard_eq(lhs, rhs, matches!(op, ast::BinOp::WildNe));
+                }
                 // N7 handle type gate (IEEE §8.4/§11.4): a class handle / `null`
                 // is only a legal binary operand of `==`/`!=` against ANOTHER
                 // handle/null. Arithmetic/relational on a handle, or `==` with a
@@ -13178,6 +13191,11 @@ impl<'s> Elaborator<'s> {
             }
             Binary { op, lhs, rhs } => {
                 use ast::BinOp::*;
+                // §11.4.6: wildcard equality is context-INDEPENDENT (a 1-bit
+                // self-determined comparison) — route to the dedicated lowering.
+                if matches!(op, WildEq | WildNe) {
+                    return self.lower_wildcard_eq(lhs, rhs, matches!(op, WildNe));
+                }
                 let irop = map_binop(*op);
                 // logical &&/|| : operands self-determined (1-bit truth) — ctx stops.
                 if matches!(op, LogAnd | LogOr) {
@@ -24832,6 +24850,109 @@ impl<'s> Elaborator<'s> {
     /// 4-state exact. This replaces the v1 `redor(scrut^label) !== 1` formula,
     /// which was exact for casex but over-lenient for casez (it wildcarded x
     /// too — `casez(1x10)` falsely matched `1010`; iverilog-pinned strict).
+    /// §11.4.6 `==?`/`!=?` wildcard equality: the RHS PATTERN's x/z bits are
+    /// don't-care; every other bit compares like plain `==`/`!=` (an LHS x/z in
+    /// a compared position propagates x — UNLIKE `CasexEq`, which wildcards
+    /// EITHER side, so mapping there would be a silent-wrong). Lowered as
+    /// `(lhs & mask) ==/!= cleaned` with mask/cleaned computed from the CONSTANT
+    /// pattern at elaborate time: mask = the pattern's known bits, 1-filled
+    /// through the comparison width (the pattern zero-extends, so extension
+    /// bits stay COMPARED against 0 — iverilog-pinned); cleaned = pattern with
+    /// its wildcard bits cleared. The compare inherits vita's oracle-pinned
+    /// `Eq`/`Ne` 4-state semantics. A NON-constant pattern would need a runtime
+    /// known-bit mask (no frozen-IR primitive exposes the unk plane) →
+    /// honest-loud; iverilog supports it, recorded as a follow-on.
+    fn lower_wildcard_eq(&mut self, lhs: &ast::Expr, rhs: &ast::Expr, ne: bool) -> u32 {
+        let lhs_id = self.lower_expr(lhs);
+        // A fill pattern (`'1`/`'x`/…) sizes to the LHS width, like a case
+        // label (§11.6 — mirrors `case_label_eq`).
+        let rhs_id = if expr_contains_fill(rhs) {
+            let w = self.ir_bits_of(lhs_id).unwrap_or(32);
+            self.lower_expr_ctx(rhs, w)
+        } else {
+            self.lower_expr(rhs)
+        };
+        if self.expr_is_real(lhs_id) || self.expr_is_real(rhs_id) {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "wildcard equality (==?/!=?) is not defined on a real operand",
+            );
+            return self.placeholder_expr();
+        }
+        let cv = match self.exprs.get(rhs_id as usize) {
+            Some(ir::Expr::Const { val }) => self.consts.get(*val as usize).cloned(),
+            _ => None,
+        };
+        // Numeric AND string-literal patterns are fine (a string has packed
+        // known bytes and no x/z, so its mask is all-ones — iverilog accepts
+        // `"ab" ==? "ab"`). Real is guarded above; a COMPOUND const expression
+        // (`{2'b1?,2'b1?}`, `(P|1)`) lowers to a non-Const node and stays loud
+        // (a const-fold walker is a recorded follow-on — honest, iverilog folds).
+        let Some(cv) = cv.filter(|c| c.repr != ir::ConstRepr::Real) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "wildcard equality (==?/!=?) needs a constant right-hand pattern \
+                 (a runtime pattern's x/z mask has no IR primitive; a compound \
+                 const expression is not folded yet — use a literal or parameter)",
+            );
+            return self.placeholder_expr();
+        };
+        // Comparison width = max(operands) (§11.8.2): the pattern zero-extends,
+        // so mask bits ABOVE the pattern width stay 1 (known-0 must match). An
+        // UNSIZABLE lhs is loud: falling back to the pattern width would build
+        // a too-narrow mask whose zero-extension ANDs the lhs's high bits away
+        // — every high bit would silently "match" (the engine widens the And
+        // to max(lhs, mask), so the mask MUST cover the lhs).
+        let Some(aw) = self.ir_bits_of(lhs_id) else {
+            self.error(
+                MsgCode::ElabUnsupported,
+                "wildcard equality (==?/!=?) on a left operand of unsizable \
+                 width is unsupported (the pattern mask must cover it)",
+            );
+            return self.placeholder_expr();
+        };
+        let w = aw.max(cv.width).max(1);
+        let nwords = ((w as usize) + 63) / 64;
+        let mut mask = vec![0u64; nwords];
+        let mut clean = vec![0u64; nwords];
+        for wi in 0..nwords {
+            let cvv = cv.bits.val.get(wi).copied().unwrap_or(0);
+            let cvu = cv.bits.unk.get(wi).copied().unwrap_or(0);
+            mask[wi] = !cvu; // pattern x/z ⇒ 0 (don't-care); known/extension ⇒ 1
+            clean[wi] = cvv & !cvu; // wildcard positions cleared to 0
+        }
+        let top = w % 64;
+        if top != 0 {
+            let m = (1u64 << top) - 1;
+            mask[nwords - 1] &= m;
+            clean[nwords - 1] &= m;
+        }
+        let push_const = |el: &mut Self, bits: Vec<u64>| -> u32 {
+            let cid = el.intern_const(ir::ConstVal {
+                width: w,
+                signed: false,
+                repr: ir::ConstRepr::Numeric,
+                bits: ir::BitPacked {
+                    val: bits,
+                    unk: vec![0u64; nwords],
+                },
+            });
+            el.push_expr(ir::Expr::Const { val: cid })
+        };
+        let m_id = push_const(self, mask);
+        let c_id = push_const(self, clean);
+        let anded = self.push_expr(ir::Expr::Binary {
+            op: ir::BinOp::BitAnd,
+            lhs: lhs_id,
+            rhs: m_id,
+        });
+        self.push_expr(ir::Expr::Binary {
+            op: if ne { ir::BinOp::Ne } else { ir::BinOp::Eq },
+            lhs: anded,
+            rhs: c_id,
+        })
+    }
+
     fn case_label_eq(&mut self, scrut_id: u32, label: &ast::Expr, kind: ast::CaseKind) -> u32 {
         // §11.6: a case label is sized to the case-expression width, so a fill
         // label grows to it (`case(x8) '1:` ⇒ the label is 8'hFF, not 32 bits —
@@ -25905,6 +26026,19 @@ fn map_binop(op: ast::BinOp) -> ir::BinOp {
         Ne => ir::BinOp::Ne,
         CaseEq => ir::BinOp::CaseEq,
         CaseNe => ir::BinOp::CaseNe,
+        // `==?`/`!=?` are intercepted by `lower_wildcard_eq` BEFORE every
+        // map_binop call site (both lower_expr Binary arms). These arms exist
+        // only for match exhaustiveness: a missed interception degrades to the
+        // masked-compare CORE op (plain eq — correct whenever the pattern has
+        // no x/z bits) and trips the debug_assert in a debug build.
+        WildEq => {
+            debug_assert!(false, "WildEq must be lowered via lower_wildcard_eq");
+            ir::BinOp::Eq
+        }
+        WildNe => {
+            debug_assert!(false, "WildNe must be lowered via lower_wildcard_eq");
+            ir::BinOp::Ne
+        }
         BitAnd => ir::BinOp::BitAnd,
         BitXor => ir::BinOp::BitXor,
         BitXnor => ir::BinOp::BitXnor,

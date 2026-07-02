@@ -569,16 +569,16 @@ impl<'t, 's> Parser<'t, 's> {
 fn infix_bp(k: TokenKind) -> Option<(u8, u8)> {
     use TokenKind as T;
     Some(match k {
-        T::PipePipe => (5, 6),                                     // ||   lvl13
-        T::AmpAmp => (7, 8),                                       // &&   lvl12
-        T::Pipe => (9, 10),                                        // |    lvl11
-        T::Caret | T::TildeCaret | T::CaretTilde => (11, 12),      // ^ ~^ ^~ lvl10
-        T::Amp => (13, 14),                                        // &    lvl9
-        T::EqEq | T::BangEq | T::EqEqEq | T::BangEqEq => (15, 16), // == != === !== lvl8
-        T::Lt | T::LtEq | T::Gt | T::GtEq => (17, 18),             // < <= > >= lvl7
-        T::Shl | T::Shr | T::ShlA | T::ShrA => (19, 20),           // << >> <<< >>> lvl6
-        T::Plus | T::Minus => (21, 22),                            // + -  lvl5
-        T::Star | T::Slash | T::Percent => (23, 24),               // * / % lvl4
+        T::PipePipe => (5, 6),                                // ||   lvl13
+        T::AmpAmp => (7, 8),                                  // &&   lvl12
+        T::Pipe => (9, 10),                                   // |    lvl11
+        T::Caret | T::TildeCaret | T::CaretTilde => (11, 12), // ^ ~^ ^~ lvl10
+        T::Amp => (13, 14),                                   // &    lvl9
+        T::EqEq | T::BangEq | T::EqEqEq | T::BangEqEq | T::EqEqQ | T::BangEqQ => (15, 16), // == != === !== ==? !=? lvl8
+        T::Lt | T::LtEq | T::Gt | T::GtEq => (17, 18), // < <= > >= lvl7
+        T::Shl | T::Shr | T::ShlA | T::ShrA => (19, 20), // << >> <<< >>> lvl6
+        T::Plus | T::Minus => (21, 22),                // + -  lvl5
+        T::Star | T::Slash | T::Percent => (23, 24),   // * / % lvl4
         T::StarStar => (26, 27), // **   lvl3 LEFT-assoc (IEEE Table 11-2 / iverilog: `2**2**3` = (2**2)**3)
         _ => return None,
     })
@@ -615,6 +615,8 @@ fn bin_op(k: TokenKind) -> BinOp {
         T::BangEq => BinOp::Ne,
         T::EqEqEq => BinOp::CaseEq,
         T::BangEqEq => BinOp::CaseNe,
+        T::EqEqQ => BinOp::WildEq,
+        T::BangEqQ => BinOp::WildNe,
         T::Amp => BinOp::BitAnd,
         T::Caret => BinOp::BitXor,
         T::TildeCaret | T::CaretTilde => BinOp::BitXnor,

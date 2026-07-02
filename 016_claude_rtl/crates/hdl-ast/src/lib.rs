@@ -1480,6 +1480,13 @@ pub enum BinOp {
     Ne,
     CaseEq,
     CaseNe,
+    /// `==?` wildcard equality (§11.4.6): x/z bits of the RHS pattern are
+    /// don't-care; an LHS x/z in a compared position propagates x (unlike
+    /// `CasexEq`, which wildcards EITHER side). Lowered by elaborate's
+    /// `lower_wildcard_eq` (const-RHS mask & compare), never via `map_binop`.
+    WildEq,
+    /// `!=?` wildcard inequality — the §11.4.6 negation of `WildEq`.
+    WildNe,
     BitAnd,
     BitXor,
     BitXnor,
