@@ -16,9 +16,9 @@
 > - **Phase-3+** — SVA 시퀀스·property ops·`cover property`(SVA-REST)·deferred immediate assert·automatic/recursive 콜스택·HIER-REST(계층 참조)·functional coverage·N7 class/OOP(상속+가상 동적 디스패치)·constrained-random verification(rand/constraint/`randomize() with`/dist/randc)·array·string 메서드·program/union/parameterized class/virtual interface·**N6 real-math**(`$ln/$sin/$exp/$sqrt/$pow/$floor/$ceil/…` 21종 §20.8.2 + 비균등 `$dist_normal/exponential/poisson/chi_square/t/erlang`, vendored 순수-Rust libm).
 > - **정확성 원칙 = "correct-or-loud"**: silent-wrong은 적대 리뷰(라이브 iverilog 차분)마다 모조리 수정. iverilog 미지원분(SVA·OOP·CRV·param-class·virtual interface)은 hand-IEEE 핀.
 >
-> **현재:** **2790 테스트 green** · **format_version 19** · MsgCode 57 · 3-OS CI green.
-> - **🟢 최신 — sigpipe 스레드 EPIPE panic race 수정(2026-07-02, `feat-sigpipe-thread`, ROADMAP §4.5.67, robustness)**: macOS서 워커 스레드의 SIGPIPE **mask**(disposition과 별개)가 broken-pipe write를 EPIPE로 반환→sink `print!` panic(간헐 flake의 실체·재현 15/30). sink 4사이트를 broken-pipe-safe `write_all`로 전환(§4.5.59와 이중방어)→**0/40**·byte-identity 실측·R1 양 렌즈 CLEAN(70-iter 0 panic). 기존 sigpipe 테스트가 결정적으로.
-> - **직전 7건(2026-07-02, §4.5.60~66)**: unique0/priority0 · queue slice §7.10.1 · 🏁 외부 리포트 §6 완결=D docs sync · whole-handle copy · wildcard `==?`+코어 eq 수정 · pre-opened FD · `%t`/`$timeformat`+u64.
+> **현재:** **2794 테스트 green** · **format_version 19** · MsgCode 57 · 3-OS CI green.
+> - **🟢 최신 — assoc typed-key 스펠링 `[int]`/`[longint]`/`[shortint]`/`[byte]`(2026-07-02, `feat-assoc-keys`, ROADMAP §4.5.68, 파서-only)**: keyword-arm 확장→기존 `AssocKey::Integer` 재사용(v5-⑥ uniform i64 key-domain 설계핀=의미 동일·AST/스키마 불변). R1 양 렌즈 CLEAN(스펠링 등가 sweep·비절단 실측·still-loud 전수). 4 테스트.
+> - **직전 8건(2026-07-02, §4.5.60~67)**: sigpipe 스레드 EPIPE race 수정 · unique0/priority0 · queue slice §7.10.1 · 🏁 외부 리포트 §6 완결=D docs sync · whole-handle copy · wildcard `==?`+코어 eq 수정 · pre-opened FD · `%t`/`$timeformat`+u64.
 > - **그 이전 배치(2026-06-29)**: 🏁 외부 리포트 §6 ②(A1·A3·B1·B2·C1=§4.5.55~59·A2=defer-deep) · string `s[i]`(§4.5.54) · 🏁 typedef-family(§4.5.40~53).
 > - **그 이전 누적(§4.5.2~53, 상세=ROADMAP·DEVLOG 정본)**: `'{…}` assignment-pattern cluster · format cluster(signed-fieldwidth~`$swrite`) · port 편의(`.name`/`.*`/defparam) · loud→supported 배치(wand-wor·net-delay·inc/compound·break/continue·enum methods·bare `@e` 등) · 코어 스케줄러 silent-wrong 6종 · SV cast · N4 clocking 코어 · N6 real-math+`$dist_*` · SVA empty-match · CRV(B1/B2)·array/string 메서드·program/union/param-class/virtual-interface. 전부 적대 2-서브 검증.
 >

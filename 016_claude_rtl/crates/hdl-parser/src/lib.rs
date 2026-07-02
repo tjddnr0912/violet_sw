@@ -1690,7 +1690,7 @@ impl<'t, 's> Parser<'t, 's> {
         if self.peek() == Some(TokenKind::LBracketStar) {
             self.bump(); // `[*`
             self.error(
-                "a concrete assoc key type (`[integer]`/`[time]`) — wildcard `[*]` is unsupported",
+                "a concrete assoc key type (`[integer]`/`[int]`/`[longint]`/`[time]`/`[string]`/…) — wildcard `[*]` is unsupported",
             );
             self.expect(TokenKind::RBracket, "']'");
             return Some(Dim::Dyn);
@@ -1717,15 +1717,22 @@ impl<'t, 's> Parser<'t, 's> {
                 self.expect(TokenKind::RBracket, "']'");
                 return Some(Dim::Queue(bound));
             }
-            // `[integer]` / `[time]` — assoc key type (keyword-led, so it can
-            // never shadow a same-named size parameter).
-            Some(TokenKind::Word(WordKind::Keyword(k @ (Kw::Integer | Kw::Time)))) => {
+            // `[integer]` / `[time]` / `[int]` / `[longint]` / `[shortint]` /
+            // `[byte]` — assoc key type (keyword-led, so it can never shadow a
+            // same-named size parameter). Every integral spelling shares the
+            // documented signed-i64 key domain (the ⑥ design pin: keys are NOT
+            // truncated to the declared width — `[integer]`/`[time]` already
+            // behave this way), so the 2-state atoms map onto the same
+            // `AssocKey::Integer` lowering with zero AST/schema change.
+            Some(TokenKind::Word(WordKind::Keyword(
+                k @ (Kw::Integer | Kw::Time | Kw::Int | Kw::Longint | Kw::Shortint | Kw::Byte),
+            ))) => {
                 self.bump();
                 self.expect(TokenKind::RBracket, "']'");
-                return Some(Dim::Assoc(if k == Kw::Integer {
-                    AssocKey::Integer
-                } else {
+                return Some(Dim::Assoc(if k == Kw::Time {
                     AssocKey::Time
+                } else {
+                    AssocKey::Integer
                 }));
             }
             // `[string]` (v6) — since the v7 AST flip `string` is a real
@@ -1740,7 +1747,9 @@ impl<'t, 's> Parser<'t, 's> {
             // parse (recover as a plain dyn dim so the decl still resolves).
             Some(TokenKind::Star) => {
                 self.bump();
-                self.error("a concrete assoc key type (`[integer]`/`[time]`) — wildcard `[*]` is unsupported");
+                self.error(
+                    "a concrete assoc key type (`[integer]`/`[int]`/`[longint]`/`[time]`/`[string]`/…) — wildcard `[*]` is unsupported",
+                );
                 self.expect(TokenKind::RBracket, "']'");
                 return Some(Dim::Dyn);
             }
