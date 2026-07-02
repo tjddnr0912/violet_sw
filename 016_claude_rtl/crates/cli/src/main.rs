@@ -19,9 +19,14 @@
 /// machinery turns into a panic (`failed printing to stdout: Broken pipe`, exit
 /// 101). Resetting to `SIG_DFL` makes the OS terminate the process on the broken
 /// pipe (the conventional producer behaviour, exit 141) — quiet, not a panic.
-/// Process-wide, so it covers the worker thread's writes too. No-op on Windows
-/// (no SIGPIPE). A tiny FFI avoids pulling in `libc` for one call; `SIGPIPE` is
-/// 13 and `SIG_DFL` is 0 on every Unix target vita builds for (Linux/macOS).
+/// Process-wide for the signal DISPOSITION (not the per-thread MASK): on Linux
+/// the worker thread inherits SIG_DFL and dies on the broken-pipe write; on
+/// macOS the spawned thread has SIGPIPE masked, so its writes see EPIPE (no
+/// signal) — that case is handled by StderrSink's broken-pipe-safe
+/// `out_write`/`err_write` (crates/cli/src/lib.rs, the §4.5.59 follow-on).
+/// No-op on Windows (no SIGPIPE). A tiny FFI avoids pulling in `libc` for one
+/// call; `SIGPIPE` is 13 and `SIG_DFL` is 0 on every Unix target vita builds
+/// for (Linux/macOS).
 #[cfg(unix)]
 fn restore_default_sigpipe() {
     const SIGPIPE: i32 = 13;

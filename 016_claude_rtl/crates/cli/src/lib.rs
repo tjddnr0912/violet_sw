@@ -198,6 +198,25 @@ impl StderrSink {
         }
     }
 
+    /// Broken-pipe-safe stdout write (§4.5.59 follow-on): `print!`/`println!`
+    /// PANIC on EPIPE, and on macOS the worker thread can see EPIPE (its
+    /// thread-directed SIGPIPE pends while masked) — the process still dies
+    /// 141 via the pending signal, but the panic message polluted stderr
+    /// first. `write_all` with the error dropped is the conventional
+    /// producer behaviour: stop quietly. NOTE: this also swallows a non-pipe
+    /// write failure (e.g. ENOSPC on a redirected stdout) — a truncated
+    /// transcript instead of a loud panic, the usual Unix CLI convention.
+    fn out_write(s: &str) {
+        use std::io::Write as _;
+        let _ = std::io::stdout().write_all(s.as_bytes());
+    }
+
+    /// Broken-pipe-safe stderr write (same rationale as [`Self::out_write`]).
+    fn err_write(s: &str) {
+        use std::io::Write as _;
+        let _ = std::io::stderr().write_all(s.as_bytes());
+    }
+
     /// doc-13 counts summary epilogue (`errors=E warnings=W notes=N`) — the
     /// unsuppressible end-of-stage spine. A `$fatal`/Fatal counts as an error
     /// here (the run definitely failed); `notes` = Info + Note.
@@ -208,7 +227,7 @@ impl StderrSink {
             self.warnings.get(),
             self.notes.get()
         );
-        eprintln!("{line}");
+        Self::err_write(&format!("{line}\n"));
         self.tee(&format!("{line}\n"));
     }
 
@@ -229,7 +248,7 @@ impl StderrSink {
             Some(loc) => format!("{}:{}:{}: {}", loc.file, loc.line, loc.col, head),
             None => head,
         };
-        eprintln!("{line}");
+        Self::err_write(&format!("{line}\n"));
         self.tee(&format!("{line}\n"));
     }
 }
@@ -246,13 +265,13 @@ impl LogSink for StderrSink {
             LogEvent::Diagnostic(d) => self.render_diagnostic(&d),
             LogEvent::Progress(p) => {
                 if self.verbosity >= 1 {
-                    println!("{}", p.message);
+                    Self::out_write(&format!("{}\n", p.message));
                 }
                 self.tee(&format!("{}\n", p.message));
             }
             LogEvent::RtlOutput(t) => {
                 if self.verbosity >= 1 {
-                    print!("{}", t.text);
+                    Self::out_write(&t.text);
                 }
                 self.tee(&t.text);
             }
