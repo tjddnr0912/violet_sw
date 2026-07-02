@@ -1,6 +1,6 @@
 # CLAUDE.md - 016_claude_rtl (vitamin)
 
-오픈소스 Rust RTL 시뮬레이터. CLI: `vita`(원샷) / `vcmp`(compile) / `velab`(elaborate) / `vrun`(simulate). SystemVerilog 합성가능 RTL 서브셋(Verilog-2005 RTL 전부 포함)이 Phase-1 MVP.
+오픈소스 Rust RTL 시뮬레이터. CLI: `vita`(원샷) / `vcmp`(compile) / `velab`(elaborate) / `vrun`(simulate). SystemVerilog 합성가능 RTL 서브셋(Verilog-2005 RTL 전부 포함)이 Phase-1 MVP. **최종목표 = G1**(icarus·verilator·xcelium·vcs급 정확성, correct-or-loud) + **G2**(2026-07-02 추가: AI-Agent 친화 — LLM 관찰/제어 rail, SPEC=[docs/preview/19](docs/preview/19-ai-agent-observability.md)·트랙=ROADMAP §7).
 
 ## 코드 리뷰 방법론 (구현·설계 이후 리뷰 단계)
 
@@ -17,8 +17,8 @@
 > - **정확성 원칙 = "correct-or-loud"**: silent-wrong은 적대 리뷰(라이브 iverilog 차분)마다 모조리 수정. iverilog 미지원분(SVA·OOP·CRV·param-class·virtual interface)은 hand-IEEE 핀.
 >
 > **현재:** **2794 테스트 green** · **format_version 19** · MsgCode 57 · 3-OS CI green.
-> - **🟢 최신 — assoc typed-key 스펠링 `[int]`/`[longint]`/`[shortint]`/`[byte]`(2026-07-02, `feat-assoc-keys`, ROADMAP §4.5.68, 파서-only)**: keyword-arm 확장→기존 `AssocKey::Integer` 재사용(v5-⑥ uniform i64 key-domain 설계핀=의미 동일·AST/스키마 불변). R1 양 렌즈 CLEAN(스펠링 등가 sweep·비절단 실측·still-loud 전수). 4 테스트.
-> - **직전 8건(2026-07-02, §4.5.60~67)**: sigpipe 스레드 EPIPE race 수정 · unique0/priority0 · queue slice §7.10.1 · 🏁 외부 리포트 §6 완결=D docs sync · whole-handle copy · wildcard `==?`+코어 eq 수정 · pre-opened FD · `%t`/`$timeformat`+u64.
+> - **🟢 최신 — 재계획(2026-07-02, 사용자 지시)**: ① **G2 "AI-Agent 친화 simulator" 최종목표 추가**(SPEC=docs/preview/19·ROADMAP §7 OBS-0~6 트랙 신설·요구 원문=docs/reviews/2026-07-02-ai-sim-observability.md — 결정성=기보유 구조우위·틀린 로그=silent-wrong 동급 원칙) ② **A2 체인 최우선 승격**(A2a body array-param→A2b-prereq package-var 저장[그라운딩: **iverilog가 package var 지원=라이브 오라클**]→A2b RC_TABLE=§6 CLOSE) ③ LOOPROMPT 콤팩트화(82KB→룰 중심·자가발전 §8 명문화)·REMAINING_WORK 라이브 스냅샷 리뉴얼.
+> - **직전 9건(2026-07-02, §4.5.60~68)**: assoc typed-key `[int]`/`[longint]`/`[shortint]`/`[byte]`(파서-only, i64 key-domain 재사용) · sigpipe 스레드 EPIPE race 수정 · unique0/priority0 · queue slice §7.10.1 · 🏁 외부 리포트 §6 완결=D docs sync · whole-handle copy · wildcard `==?`+코어 eq 수정 · pre-opened FD · `%t`/`$timeformat`+u64.
 > - **그 이전 배치(2026-06-29)**: 🏁 외부 리포트 §6 ②(A1·A3·B1·B2·C1=§4.5.55~59·A2=defer-deep) · string `s[i]`(§4.5.54) · 🏁 typedef-family(§4.5.40~53).
 > - **그 이전 누적(§4.5.2~53, 상세=ROADMAP·DEVLOG 정본)**: `'{…}` assignment-pattern cluster · format cluster(signed-fieldwidth~`$swrite`) · port 편의(`.name`/`.*`/defparam) · loud→supported 배치(wand-wor·net-delay·inc/compound·break/continue·enum methods·bare `@e` 등) · 코어 스케줄러 silent-wrong 6종 · SV cast · N4 clocking 코어 · N6 real-math+`$dist_*` · SVA empty-match · CRV(B1/B2)·array/string 메서드·program/union/param-class/virtual-interface. 전부 적대 2-서브 검증.
 >
@@ -70,7 +70,8 @@ MSRV **1.82** (`rust-toolchain.toml` 고정), **edition 2021**(edition 2024는 r
 | 에러코드·SchemaHash·IR백본 freeze | [15-error-code-reference](docs/preview/15-error-code-reference.md) · [16-schema-hash-spec](docs/preview/16-schema-hash-spec.md) · [17-sim-ir-ir-backbone-freeze](docs/preview/17-sim-ir-ir-backbone-freeze.md) |
 | HDL 레퍼런스 | `docs/preview/hdl-reference/{verilog,systemverilog,vhdl,system-tasks}` |
 | 가속 분석·실측 | [18-acceleration-analysis](docs/preview/18-acceleration-analysis.md) (§실측 = profile-driven ~6x 이력) |
-| **향후 과제·로드맵** | **[ROADMAP](docs/ROADMAP.md)** · 잔여작업 트래커 [REMAINING_WORK](docs/REMAINING_WORK.md) |
+| **G2 AI-Agent 관찰(OBS)** | [19-ai-agent-observability](docs/preview/19-ai-agent-observability.md) (자료수집·타당성·방향성·OBS-0~6 계획) · 요구 원문=[docs/reviews/](docs/reviews/2026-07-02-ai-sim-observability.md) |
+| **향후 과제·로드맵** | **[ROADMAP](docs/ROADMAP.md)** (§2 착수순서·§6 외부리포트·§7 OBS) · 잔여작업 스냅샷 [REMAINING_WORK](docs/REMAINING_WORK.md) |
 | 개발 이력 (슬라이스별) | [DEVLOG](docs/DEVLOG.md) (Stage C VM ~ 51탄 + §누적 상태 로그=옛 상태 블록 이관분) |
 | 구현 계획 | `docs/superpowers/plans/` (PR1-B·PR2·M3 · [Stage C 바이트코드 VM](docs/superpowers/plans/2026-06-06-bytecode-vm-stage-c.md)) |
 
