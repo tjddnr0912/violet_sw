@@ -17,8 +17,8 @@
 > - **정확성 원칙 = "correct-or-loud"**: silent-wrong은 적대 리뷰(라이브 iverilog 차분)마다 모조리 수정. iverilog 미지원분(SVA·OOP·CRV·param-class·virtual interface)은 hand-IEEE 핀.
 >
 > **현재:** **2776 테스트 green** · **format_version 19** · MsgCode 57 · 3-OS CI green.
-> - **🟢 최신 — whole-handle copy `dst = src`(queue/dyn/assoc §7.5.1/7.9/7.10)(2026-07-02, `feat-handle-copy`, ROADMAP §4.5.63, IR-0)**: 'queue slice' 후보 그라운딩이 iverilog self-inconsistent(slice 무시=whole-copy)를 드러내며 진짜 갭=**`r=q` deep copy**(vita loud·iverilog 동작) 재분류. no-op Display+StmtId 마커(timeformat 패턴 3번째)→엔진 `dyn_heap` deep-clone. assoc=hand-IEEE 공짜. **적대 R1 양 렌즈 CONVERGE**: bounded `[$:N]` copy가 bound 우회 overfill→`enforce_queue_bound` post-op 1-line fix(오라클 재검증). 옛 loud-assert 2건 flip. 10 테스트.
-> - **직전 3건(2026-07-02)**: wildcard `==?`/`!=?` §11.4.6+코어 `==`/`!=` x-poison 3사이트 수정(§4.5.62) · pre-opened FD §21.3.4(§4.5.61) · `%t`/`$timeformat`+proc_multipliers u64(§4.5.60).
+> - **🟢 최신 — 🏁 외부 리포트 §6 전 항목 완결: D docs sync(2026-07-02, `feat-docs-sync`, ROADMAP §4.5.64, 코드 0)**: `docs/manual/` 5파일이 Phase-1 동결 상태로 실 binary를 대폭 undersell → **전 주장 라이브 프로브 선검증 후 리얼리티 스윕**(003 stale 12곳+§8 마스터표 재작성·004 플래그표 `-o`-only→전 표면+Windows 정정·005 Deferred 전면 재작성·006 casez/`%t`/disable/word-0-VCD 4섹션 제거·doc-15=`vita explain` E3009/W3011 현행화). 프로브가 확정: disable/inertial/instance-array/intra-assign/casez-정밀 전부 동작·unique0/priority0=미파싱(잔여 기록).
+> - **직전 4건(2026-07-02)**: whole-handle copy §7.10(§4.5.63=bounded-copy CONVERGE fix) · wildcard `==?` §11.4.6+코어 eq x-poison 수정(§4.5.62) · pre-opened FD(§4.5.61) · `%t`/`$timeformat`+u64(§4.5.60).
 > - **그 이전 배치(2026-06-29)**: 🏁 외부 리포트 §6 ②(A1·A3·B1·B2·C1=§4.5.55~59·A2=defer-deep) · string `s[i]`(§4.5.54) · 🏁 typedef-family(§4.5.40~53).
 > - **그 이전 누적(§4.5.2~53, 상세=ROADMAP·DEVLOG 정본)**: `'{…}` assignment-pattern cluster · format cluster(signed-fieldwidth~`$swrite`) · port 편의(`.name`/`.*`/defparam) · loud→supported 배치(wand-wor·net-delay·inc/compound·break/continue·enum methods·bare `@e` 등) · 코어 스케줄러 silent-wrong 6종 · SV cast · N4 clocking 코어 · N6 real-math+`$dist_*` · SVA empty-match · CRV(B1/B2)·array/string 메서드·program/union/param-class/virtual-interface. 전부 적대 2-서브 검증.
 >
