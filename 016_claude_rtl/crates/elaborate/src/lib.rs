@@ -339,6 +339,8 @@ pub struct Sidecars {
     pub severities: SeverityTable,
     /// StmtIds of `$timeformat` calls (no-op `Display` stmts, §21.3.2).
     pub timeformat_stmts: std::collections::BTreeSet<u32>,
+    /// Whole-handle copy markers (§7.10): StmtId → (dst_net, src_net).
+    pub handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
     pub radixes: RadixTable,
     /// Per-ProcId hierarchical instance path (`"tb.u1"`) — drives `%m` (P2-11).
     /// Parallel to `processes`, like `proc_multipliers`.
@@ -579,6 +581,7 @@ pub fn elaborate_with_timescale_roots(
         proc_multipliers: std::mem::take(&mut el.proc_multipliers),
         severities: std::mem::take(&mut el.severities),
         timeformat_stmts: std::mem::take(&mut el.timeformat_stmts),
+        handle_copy_stmts: std::mem::take(&mut el.handle_copy_stmts),
         radixes: std::mem::take(&mut el.radixes),
         proc_scopes: std::mem::take(&mut el.proc_scopes),
         assign_ranks: std::mem::take(&mut el.assign_ranks),
@@ -2604,6 +2607,9 @@ struct Elaborator<'s> {
     // StmtIds of `$timeformat` calls (each a no-op `SysTaskId::Display` stmt —
     // the assert_ctl/severity pattern). Threaded via `SimOpts.timeformat_stmts`.
     timeformat_stmts: std::collections::BTreeSet<u32>,
+    // Whole-handle copy markers (§7.10 `dst = src` deep copy): no-op Display
+    // StmtId → (dst_net, src_net). Threaded via `SimOpts.handle_copy_stmts`.
+    handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
     // StmtId → default radix (2/8/16) for the b/o/h print-task variants (P1-5).
     radixes: RadixTable,
     // StmtIds of Force/Release stmts that are procedural assign/deassign (§9.3.1
@@ -2771,6 +2777,7 @@ impl<'s> Elaborator<'s> {
             fork_modes: ForkModeTable::new(),
             severities: SeverityTable::new(),
             timeformat_stmts: std::collections::BTreeSet::new(),
+            handle_copy_stmts: std::collections::BTreeMap::new(),
             radixes: RadixTable::new(),
             assign_ranks: AssignRankTable::new(),
             queue_bounds: QueueBoundTable::new(),
@@ -14314,8 +14321,9 @@ impl<'s> Elaborator<'s> {
         b.push_stmt_id(sid);
     }
 
-    /// `d = new[n] [(src)]` and `x = q.pop_*()` — the two BLOCKING-assign
-    /// special forms (v5 ⑥). True ⇒ fully lowered here.
+    /// `d = new[n] [(src)]`, `x = q.pop_*()`, and whole-handle copy
+    /// `dst = src` — the BLOCKING-assign special forms (v5 ⑥ + §7.10 copy).
+    /// True ⇒ fully lowered here.
     fn dyn_blocking_special(
         &mut self,
         b: &mut ProcessBuilder,
@@ -14324,6 +14332,84 @@ impl<'s> Elaborator<'s> {
         rhs: &ast::Expr,
     ) -> bool {
         match &rhs.kind {
+            // §7.5.1/§7.9/§7.10: whole-handle copy `dst = src` — VALUE
+            // semantics (a DEEP copy: later writes to either side never show
+            // through, iverilog-pinned for dyn/queue; assoc = hand-IEEE, no
+            // oracle). Lowered as a no-op Display + `handle_copy_stmts`
+            // marker (the timeformat pattern) — the engine deep-clones the
+            // src heap object into dst.
+            ast::ExprKind::Ident(p) if p.segments.len() == 1 => {
+                let Some((src_net, src_kind)) = self.dyn_handle(&p.segments[0].name) else {
+                    return false; // rhs is not a handle → the plain path
+                };
+                let dst = match lhs {
+                    ast::Lvalue::Ident(dp) if dp.segments.len() == 1 => {
+                        self.dyn_handle(&dp.segments[0].name)
+                    }
+                    _ => None,
+                };
+                let Some((dst_net, dst_kind)) = dst else {
+                    // handle READ into a non-handle target (`x = q`) keeps its
+                    // existing loud "no whole-value surface" on the plain path.
+                    return false;
+                };
+                if delay.is_some() {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a delayed whole-handle copy is outside the MVP",
+                    );
+                    return true;
+                }
+                if self.cur_defer.is_some() {
+                    // The §16.4 push_stmt hook would capture the marker into
+                    // defer_acts and try_defer would preempt the copy (the
+                    // timeformat-Q1 pattern) — loud-reject the combination.
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "a whole-handle copy as a deferred-assertion action is \
+                         unsupported — call it as a plain statement",
+                    );
+                    return true;
+                }
+                if dst_kind != src_kind {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "whole-handle copy needs the SAME dynamic-storage kind \
+                         on both sides (queue=queue, dynamic=dynamic, assoc=assoc)",
+                    );
+                    return true;
+                }
+                // §7.6 assignment compatibility: equivalent ELEMENT types only
+                // (a deep clone never coerces element values, so a differing
+                // width/sign/2-state elem would silently carry wrong bits).
+                let elem_ty = |el: &Self, net: u32| {
+                    let nv = &el.nets[net as usize];
+                    (
+                        nv.width,
+                        nv.signed,
+                        el.two_state_heap_handles.contains(&net),
+                    )
+                };
+                if elem_ty(self, dst_net) != elem_ty(self, src_net) {
+                    self.error(
+                        MsgCode::ElabUnsupported,
+                        "whole-handle copy needs matching element types on \
+                         both sides (width/sign/state)",
+                    );
+                    return true;
+                }
+                if dst_net == src_net {
+                    return true; // self-copy `q = q;` — a no-op
+                }
+                let sid = self.push_stmt(ir::Stmt::SysTask {
+                    which: ir::SysTaskId::Display,
+                    fmt: None,
+                    args: Vec::new(),
+                });
+                self.handle_copy_stmts.insert(sid, (dst_net, src_net));
+                b.push_stmt_id(sid);
+                true
+            }
             ast::ExprKind::New { size, src } => {
                 // V2005 compat: a net actually named `new` → not the
                 // allocation form; the plain path re-lowers it as a read.

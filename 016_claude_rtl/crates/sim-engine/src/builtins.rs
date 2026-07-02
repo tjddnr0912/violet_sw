@@ -61,6 +61,26 @@ pub(crate) fn dispatch(
     if sched.st.timeformat_stmts.contains(&sid) {
         return run_timeformat(sched, args);
     }
+    // §7.10 whole-handle copy `dst = src`: a no-op Display whose StmtId maps to
+    // (dst, src) — DEEP-clone the src heap object (VALUE semantics: later
+    // writes to either side never show through; iverilog-pinned for dyn/queue,
+    // hand-IEEE for assoc). A never-touched src slot (None) copies as empty.
+    if let Some(&(dst, src)) = sched.st.handle_copy_stmts.get(&sid) {
+        let obj = sched
+            .st
+            .dyn_heap
+            .get(src as usize)
+            .and_then(|o| o.as_ref().cloned());
+        if let Some(slot) = sched.st.dyn_heap.get_mut(dst as usize) {
+            *slot = obj;
+        }
+        // §7.10.2: a whole-assign into a BOUNDED queue truncates to the bound
+        // (+W4020), exactly like the push/insert post-op — without this the
+        // clone silently overfills a `[$:N]` dst (R1 both-lens converged
+        // finding; a no-op for unbounded queues and non-queue kinds).
+        sched.st.enforce_queue_bound(dst);
+        return Ctl::Continue;
+    }
     // P1-5: the b/o/h variants change the default radix of unformatted args.
     let radix = sched.st.radixes.get(&sid).copied();
     match which {

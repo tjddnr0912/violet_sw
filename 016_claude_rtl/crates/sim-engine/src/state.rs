@@ -273,6 +273,10 @@ pub(crate) struct SimState<'a> {
     /// (the `assert_ctl`/severity side-table pattern, from
     /// `SimOpts.timeformat_stmts`); empty ⇒ no `$timeformat` in the design.
     pub timeformat_stmts: std::collections::BTreeSet<u32>,
+    /// Whole-handle copy markers (§7.10, from `SimOpts.handle_copy_stmts`):
+    /// no-op Display StmtId → (dst_net, src_net); the dispatch intercept
+    /// deep-clones `dyn_heap[src]` into `dyn_heap[dst]`.
+    pub handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
     /// Live `$timeformat` state (IEEE 1800 §21.3.2). `None` ⇒ the defaults:
     /// units = the global precision, 0 fraction digits, no suffix, min width 20.
     pub timeformat: Option<TfState>,
@@ -694,6 +698,7 @@ impl<'a> SimState<'a> {
             proc_multipliers: Vec::new(),
             severities: crate::SeverityTable::new(),
             timeformat_stmts: std::collections::BTreeSet::new(),
+            handle_copy_stmts: std::collections::BTreeMap::new(),
             timeformat: None,
             global_prec_exp: -9,
             radixes: crate::RadixTable::new(),

@@ -609,6 +609,7 @@ fn run_vita_str_gated(
         // §21.3.2 %t/$timeformat: the call-site table + the precision exponent
         // %t scales against (one-shot path; empty/−9 ⇒ byte-identical).
         timeformat_stmts: sc.timeformat_stmts,
+        handle_copy_stmts: sc.handle_copy_stmts,
         global_prec_exp: rt.global_prec_exp,
         radixes: sc.radixes,
         assign_ranks: sc.assign_ranks,
@@ -1425,6 +1426,10 @@ struct StagedExtraSidecars {
     /// vcmp→vrun or a staged `$timeformat` silently degrades to a bare-args
     /// `$display` print). APPEND-ONLY tail. EMPTY ⇒ byte-identical.
     timeformat_stmts: std::collections::BTreeSet<u32>,
+    /// §7.10 whole-handle copy markers (staged sidecar — must survive
+    /// vcmp→vrun or a staged `dst = src` silently prints an empty Display
+    /// instead of copying). APPEND-ONLY tail. EMPTY ⇒ byte-identical.
+    handle_copy_stmts: std::collections::BTreeMap<u32, (u32, u32)>,
 }
 
 impl StagedExtraSidecars {
@@ -1457,6 +1462,7 @@ impl StagedExtraSidecars {
             wired_and_nets: sc.wired_and_nets.clone(),
             wired_or_nets: sc.wired_or_nets.clone(),
             timeformat_stmts: sc.timeformat_stmts.clone(),
+            handle_copy_stmts: sc.handle_copy_stmts.clone(),
         }
     }
 }
@@ -2386,6 +2392,7 @@ fn run_vrun_gated(
         // trailer — without them a staged `%t` mis-scales and a `$timeformat`
         // prints its args.
         timeformat_stmts: extra.timeformat_stmts,
+        handle_copy_stmts: extra.handle_copy_stmts,
         global_prec_exp,
         timescale_unit: timescale_unit_string(global_prec_exp),
         ..opts.sim_opts()
@@ -3073,6 +3080,7 @@ mod tests {
         s.wired_and_nets = std::collections::BTreeSet::from([11u32, 13u32]);
         s.wired_or_nets = std::collections::BTreeSet::from([17u32]);
         s.timeformat_stmts = std::collections::BTreeSet::from([19u32]);
+        s.handle_copy_stmts = std::collections::BTreeMap::from([(23u32, (2u32, 5u32))]);
         let bytes = postcard::to_stdvec(&s).expect("postcard encode");
         let got = blake3::hash(&bytes).to_hex().to_string();
         // REGEN_GOLDEN=1 cargo test -p cli staged_extra_sidecars_wire_shape -- --nocapture
@@ -3080,7 +3088,7 @@ mod tests {
             println!("REGEN StagedExtraSidecars wire = {got}");
             return;
         }
-        const EXPECTED: &str = "d33cd11cc49343489bf3e864e165c5822ced90e4ad3843471d201fefe68e4b77";
+        const EXPECTED: &str = "e6a41e8da07266b5275aed5e7156dc0ca5d59b420b04538e98bc3717fd6090ec";
         assert_eq!(
             got, EXPECTED,
             "StagedExtraSidecars wire shape changed — a 15th-trailer field moved.\n\
