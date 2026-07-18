@@ -56,3 +56,6 @@ credentials/
 *.pkl
 *_credentials.json
 *_token.pkl
+
+# Obsidian vault: 리뷰 자료 수집용 (git 추적 제외)
+Review/
