@@ -28,8 +28,9 @@ python weekly_realestate_bot.py --backfill-all 36     # 4종(아파트·오피�
 | `indicators.py` | breadth·믹스보정 중앙가·세그먼트·전세가율 + **`rollup_groups`**(권역 집계+top movers) |
 | `regions_extra.py` | 경기/광역시/세종 코드 + **`group_of`**(지역코드 2자리 prefix→권역명) |
 | `publish_meta.py` | 제목 "날짜, N월 M주차 {AI 헤드라인}" + 7~9 동적 라벨 |
-| `digest.py` | 전국 헤더 → 서울 상세 → 권역 요약 markdown |
+| `digest.py` | 전국 헤더 → 서울 상세 → 권역 요약 markdown. 하이라이트마다 입지 배지 렌더(`location_enrich.format_badge`) |
 | `commentary.py` | Gemini 전국 다문단 시황 (실패 시 빈 문자열 degrade) |
+| `location_enrich.py` | 신고가/신저점 단지 반경 500m 입지 enrichment (카카오 로컬 API). 초등학교·교과학원·지하철(GTX) 카운트 |
 
 엔트리 `weekly_realestate_bot.py`(`build_report`·`synthesize`·`run()`).
 
@@ -43,6 +44,16 @@ python weekly_realestate_bot.py --backfill-all 36     # 4종(아파트·오피�
 
 데이터 깊이: 서울 4종 / 경기·광역시 오피스텔 건수 / 세종 오피스텔 제외. 데이터 없는 권역은 degrade(섹션 생략).
 
+## 입지 enrichment (신고가 단지 반경 500m, 2026-07-18~)
+
+신고가/신저점 하이라이트마다 **초등학교·교과학원·지하철(GTX)** 500m 카운트를 배지로 부착. `weekly_realestate_bot.run()`이 `report["highlights"]`(상위 15)에 `enrich_highlights()`로 `loc` 필드를 달고, `digest`가 각 줄 아래 `🏫 초등학교 N · 📚 교과학원 N · 🚇 역명` 렌더.
+
+- **단일 소스 = 카카오 로컬 API**: 지오코딩(키워드 검색, `아파트` 카테고리 필터 + `dong` 우선 캐스케이드) + 카테고리 반경검색(SC4 학교→초등학교 필터 / AC5 학원→교과 필터 / SW8 지하철). GTX는 SW8이 POI로 잡음(표준 철도 데이터셋보다 신설역 반영 빠름).
+- **교과학원 필터**: AC5 `category_name` leaf에서 예체능·취미(음악/미술/태권도/피아노/요가/요리 등 `_NON_ACADEMIC`) 제외 → 입시·보습·어학 등만 집계. 카카오 카테고리 검색은 밀집지 **pageable_count 상한 45**라 45 초과 학군은 floor("45+")로 표기.
+- **게이트/graceful**: `KAKAO_REST_API_KEY` 있고 `LOCATION_ENRICH_ENABLED!=false`일 때만 동작(키 없으면 배지 없이 그대로 발행). 지오코딩 실패(카카오 POI 없음·MOLIT↔카카오 명칭 불일치)는 그 단지만 배지 생략. run 내 `(gu,apt,dong)` 캐시.
+- **한계**: 아파트에 지번·좌표가 없어(MOLIT MCP 미제공) 지오코딩은 `gu/dong + 단지명` 키워드 의존 → 커버리지 공백 존재(실측 13/15). 학원 정확값(계열·상한無)이 필요하면 [공공데이터 학원표준데이터](https://www.data.go.kr/data/15096277/standard.do)로 교체 여지(미구현).
+- 스킬 검증: `tests/realestate/test_location_enrich.py`(순수 로직·게이트·enrich_one mock).
+
 ## 핵심 개념
 
 - **하이브리드**: 숫자는 전부 코드가 계산, 해석만 Gemini, HTML 변환만 Claude.
@@ -53,6 +64,7 @@ python weekly_realestate_bot.py --backfill-all 36     # 4종(아파트·오피�
 ## 환경변수 / 설정
 
 - `SECTOR_BLOGGER_BLOG_ID`(=`REALESTATE_BLOGGER_BLOG_ID` 기본값 9115231004981625966, OgusInvest), `TELEGRAM_*`, `GEMINI_MODEL`. MOLIT 키는 루트 `.mcp.json`(gitignored).
+- **입지 enrichment**: `KAKAO_REST_API_KEY`(카카오 developers 앱 REST 키 + 앱에서 `카카오맵(OPEN_MAP_AND_LOCAL)` 서비스 활성화 필수. **절대 Git 커밋 금지**), `LOCATION_ENRICH_ENABLED`(기본 true), `LOCATION_ENRICH_RADIUS`(기본 500m). 상세=`docs/CONFIGURATION.md`.
 - `BASELINE_MONTHS=36`("최근 3년"), `SCHEDULE_DAY/TIME`=saturday/01:00.
 - **함정**: `load_dotenv(override=True)`가 `.env` 우선 → 실행 시 `TELEGRAM_ENABLED=false` 환경변수 무시(테스트 중 실제 발송 주의). `--test` 모드도 `build_report`는 DB insert함(델타 선점 주의).
 

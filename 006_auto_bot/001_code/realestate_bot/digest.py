@@ -1,5 +1,5 @@
 """전국 권역 주간 디제스트 markdown 빌드 — 전국 헤더 → 서울 상세 → 권역 요약."""
-from realestate_bot import config, indicators
+from realestate_bot import config, indicators, location_enrich
 
 _METRO_ORDER = ["부산", "대구", "인천", "광주", "대전", "울산"]
 
@@ -35,6 +35,9 @@ def _render_highlights(lines: list, highlights: list, limit: int):
             f"- {badge} **{_gu_short(h['gu'])} {h['apt_name']} {h['area_band']}㎡대** — "
             f"{_fmt_won(h['price_10k'])} ({_fmt_pct(h['pct'])}, "
             f"직전 {_fmt_won(h['ref_price'])} {h['ref_date']}) · {_baseline_label()} 기준")
+        loc_badge = location_enrich.format_badge(h.get("loc"))
+        if loc_badge:
+            lines.append(f"  - {loc_badge}")
 
 
 def _render_seoul(lines: list, s: dict):

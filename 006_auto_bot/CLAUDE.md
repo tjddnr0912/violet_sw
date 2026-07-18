@@ -30,7 +30,7 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 | `telegram_gemini_bot.py` | Telegram Q&A 봇 — 평문=Deep research(default), `/quick`=단발. 발행 시 **WordPress 카테고리를 버튼으로 선택**(무선택 타임아웃 시 취소). 발행 워크플로우: 한글 HTML 생성→선택 카테고리로 **WordPress(grace-moon.com) 발행**(전 카테고리 한글 그대로. 영문 변환·raw 첨부·블로그스팟·로컬 백업 폐지)→텔레그램에 발행 URL 통지. **전제 가드**: 질문=주제/의도로만(전제 미확인 시 교정), 독자는 질문 미열람→독립 기사로(인용·되묻기 금지). 기술 주제는 근거 있을 때만 d2/wavedrom/mermaid 펜스 직접 포함(파형은 의미론·본문 일치 가드: 래치 투과/hold·FF 엣지) |
 | `news_bot/` | RSS 파싱, Gemini 요약, 마크다운 I/O |
 | `sector_bot/` | 11개 섹터 Google Search Grounding, 분석, 상태 관리 |
-| `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구 |
+| `weekly_realestate_bot.py` + `realestate_bot/` | 주간 전국 부동산 다이제스트 (토 01:00). MOLIT 실거래 직접 MCP 수집·diff·집계·digest, 119시군구. **신고가 단지엔 반경 500m 입지 배지(초등·교과학원·지하철/GTX, 카카오 로컬 API — `location_enrich.py`)** |
 | `shared/` | HTML 변환, Telegram API, **wordpress_uploader** (WordPress REST 발행: 카테고리 매핑·태그·**다이어그램→PNG(kroki 다중 타입: mermaid/d2/wavedrom/graphviz/plantuml…, 일반 코드블록은 미변환·렌더 실패 시 운영자 텔레그램 경보)**·AdSense/raw strip·**출처→'참고 자료' 외부 링크 섹션**(`sources` 인자, dofollow)·**타이틀 카드 featured image 자동 첨부**(`AUTO_FEATURED_CARD`)·Blogger 드롭인 호환 어댑터), **title_card** (제목·카테고리→1200×630 다크 og:image, Pillow 로컬·무료·무네트워크), Claude HTML 변환, **web_search** (웹서치: agy Gemini 캐스케이드→Claude fallback), **research_orchestrator** (다라운드 Gemini × Claude 5차원 검증), **editorial/** (편집 레이어: 저자 박스(GraceMoon)+면책/투명성+고유 데이터 표) |
 
 ## 핵심 참조
@@ -42,7 +42,7 @@ python weekly_realestate_bot.py --once       # 부동산봇 즉시 1회 (전국 
 | 뉴스봇 | Daily 06:00 (orchestrator + 5차원 게이트), Weekly 일요일 07:00, Monthly 1일 07:30. `news_bot/orchestrator.py`가 균형/신선도/다양성/출처신뢰/글로벌균형 검증 + Gemini CLI 갭필 |
 | 버핏봇 | 월~금 06:30 (뉴스 기반, Claude CLI 분석) |
 | 섹터봇 | 일요일 12:00~18:40 (11개 섹터, 40분 간격), 19:20 텔레그램 알림, 19:40 종합 보고서. `sector_bot/orchestrator.py`가 5차원 검증 게이트 + 갭필 + 종합 게이트 수행 |
-| 부동산봇 | 토 01:00 전국 119시군구 주간 디제스트(서울 상세 + 경기·6대광역시·세종 권역 요약) → **WordPress(부동산 카테고리)**+Telegram. MOLIT 실거래 직접 MCP(Claude 0콜), 숫자=코드·해석=Gemini·HTML=Claude |
+| 부동산봇 | 토 01:00 전국 119시군구 주간 디제스트(서울 상세 + 경기·6대광역시·세종 권역 요약) → **WordPress(부동산 카테고리)**+Telegram. MOLIT 실거래 직접 MCP(Claude 0콜), 숫자=코드·해석=Gemini·HTML=Claude. 신고가 단지엔 카카오 로컬 API로 500m 입지 배지 부착 |
 
 ## 환경변수 (.env)
 
@@ -60,6 +60,8 @@ AUTO_FEATURED_CARD=true          # featured 미지정 글에 제목·카테고�
 # KROKI_URL=https://kroki.io     # 다이어그램→PNG 렌더 서버 override (mermaid/d2/wavedrom/graphviz/plantuml 등, default kroki.io)
 # CHROME_BIN=                     # headless Chrome 경로 override. kroki가 SVG만 주는 타입(d2/wavedrom 등) SVG→PNG 래스터화용(미지정=자동탐지). 부재 시 해당 다이어그램은 코드블록으로 남음
 BLOGGER_ENABLED=true             # 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). false면 발행 스킵
+KAKAO_REST_API_KEY=              # 부동산봇 입지 enrichment(신고가 500m 초등/학원/지하철·GTX). 카카오 developers REST 키 + 앱에서 카카오맵(OPEN_MAP_AND_LOCAL) 활성화. 절대 Git 커밋 금지. 미설정=자동 비활성
+# LOCATION_ENRICH_ENABLED=true   # false면 키 있어도 입지 배지 스킵. LOCATION_ENRICH_RADIUS=500(반경 m)
 BLOG_SELECTION_TIMEOUT=180       # 텔레그램 카테고리 선택 타임아웃(초). 무선택 시 발행 취소
 EDITORIAL_ENABLED=true           # 편집 레이어(저자 박스 GraceMoon+면책+데이터 표) on/off. default true
 # EDITORIAL_AUTHOR / EDITORIAL_CONTENT_TYPE  # 호출부 미지정 시 기본 author/타입 override. 저자 페르소나=config/authors.json

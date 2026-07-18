@@ -16,6 +16,9 @@
 | `TITLE_CARD_FONT` | ❌ | (자동탐지) | 타이틀 카드 폰트 경로 override. 미지정 시 AppleSDGothicNeo→AppleGothic→NanumGothic→NotoSansCJK 순으로 탐지. |
 | `KROKI_URL` | ❌ | `https://kroki.io` | 다이어그램→PNG 렌더 서버. WordPress 발행 시 mermaid·d2·wavedrom·graphviz·plantuml 등 코드블록을 이미지로 변환. |
 | `CHROME_BIN` | ❌ | (자동탐지) | headless Chrome 경로 override. **kroki가 SVG만 주는 타입(d2/wavedrom 등)을 SVG→PNG 래스터화**할 때 사용. 미지정 시 `/Applications/Google Chrome.app/…` → Chromium → PATH 순 탐지. 부재 시 해당 다이어그램은 원본 코드블록으로 남음(발행은 계속). |
+| `KAKAO_REST_API_KEY` | ❌ | — | **부동산봇 입지 enrichment**(신고가 단지 500m 초등/학원/지하철·GTX). 카카오 developers 앱 REST API 키 + 앱에서 **카카오맵(`OPEN_MAP_AND_LOCAL`) 서비스 활성화** 필요(미활성 시 403 `disabled OPEN_MAP_AND_LOCAL`). 미설정이면 enrichment 자동 비활성(배지 없이 발행). **절대 Git 커밋 금지**. (2026-07-18~) |
+| `LOCATION_ENRICH_ENABLED` | ❌ | `true` | `false`이면 키가 있어도 입지 배지 스킵(`location_enrich.is_enabled()`). |
+| `LOCATION_ENRICH_RADIUS` | ❌ | `500` | 입지 카운트 반경(m). |
 | `BLOGGER_ENABLED` / `NEWS_BLOGGER_ENABLED` | ❌ | — | 각 봇 발행 게이트(레거시 이름, 실제 발행처=WordPress). `false`면 발행 스킵. |
 | `BLOGGER_BLOG_ID` | (레거시) | — | Blogger 시절 잔재. 2026-06-12 WordPress 전환 후 미사용(일부 config 검증에만 잔존). |
 | `BLOG_LIST` | (레거시) | — | 옛 다중 블로그(blogspot) 등록. WordPress 전환 후 미사용(텔레그램 self.blogs 잔재). |

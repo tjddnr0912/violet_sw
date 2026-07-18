@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-07-18: [feat] 부동산봇 입지 enrichment — 신고가 단지 반경 500m 초등/학원/지하철(GTX)
+
+- **기능**: 신고가/신저점 하이라이트마다 반경 500m **초등학교·교과학원·지하철(GTX)** 카운트를 배지로 부착(`🏫 초등학교 N · 📚 교과학원 N · 🚇 역명`). 단일 소스=카카오 로컬 API(지오코딩 키워드 검색 + SC4/AC5/SW8 카테고리 반경검색).
+- **교과 필터**: AC5 `category_name`에서 예체능·취미(음악/미술/태권도/피아노/요가/요리 등) 제외해 입시·보습·어학만 집계. 카카오 카테고리 검색 pageable 상한 45라 밀집 학군은 floor("45+") 표기. GTX는 SW8 POI로 잡음(표준 철도 데이터셋보다 신설역 빠름).
+- **게이트/graceful**: `KAKAO_REST_API_KEY` 있고 `LOCATION_ENRICH_ENABLED!=false`일 때만(키 없으면 배지 없이 발행). 지오코딩 실패(카카오 POI 없음·MOLIT↔카카오 명칭 불일치)는 그 단지만 생략(실측 13/15). 아파트 좌표를 MOLIT MCP가 안 줘 지오코딩은 `gu/dong+단지명` 키워드 의존.
+- **검증**: `weekly_realestate_bot.run()` 실제 실행 → 신고가 재검출 → enrichment 13/15 → 새 글 발행(id 497, id 493 교체·휴지통). 테스트 `tests/realestate/test_location_enrich.py` 28개 + 전체 180 pass.
+- 파일: `realestate_bot/location_enrich.py`(신규), `weekly_realestate_bot.py`(dong 부착+enrich 배선), `digest.py`(배지 렌더), `.env`(KAKAO 키·토글, gitignored).
+
 ## 2026-06-19: [fix] d2 문법 오류가 코드로 박히던 버그 — loud 실패 알림 + 생성 가드
 
 - **증상**: `why-soc-bandwidth-designed-narrow`(post 292)에서 **특정 d2 블록만** PNG로 안 바뀌고 `<pre><code class="language-d2">` 원본 코드로 발행. 같은 글의 mermaid는 정상 이미지.

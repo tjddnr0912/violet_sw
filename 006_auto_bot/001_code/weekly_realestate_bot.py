@@ -19,7 +19,8 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from realestate_bot import config, fetcher, indicators, commentary, digest, mcp_client, publish_meta
+from realestate_bot import (config, fetcher, indicators, commentary, digest,
+                            mcp_client, publish_meta, location_enrich)
 from realestate_bot.regions_extra import group_of
 from realestate_bot.store import RealEstateStore
 from realestate_bot.detector import classify
@@ -85,6 +86,7 @@ def build_report(store: RealEstateStore, regions: dict, months: list, as_of: str
             verdicts.append(v)
             if v.kind in ("HIGH", "LOW"):
                 highlights.append({"gu": gu, "apt_name": r["apt_name"],
+                                   "dong": r.get("dong", ""),
                                    "area_band": r["area_band"], "price_10k": r["price_10k"],
                                    "pct": v.pct, "kind": v.kind,
                                    "ref_price": v.ref_price, "ref_date": v.ref_date})
@@ -210,6 +212,9 @@ class RealEstateBot:
             rollup = indicators.rollup_groups(
                 report["per_gu"], syn["jeonse"], syn["officetel"],
                 syn["officetel_rent"], gu_to_group)
+
+            # 신고가/신저점 단지에 반경 500m 입지(초등/학원/지하철·GTX) 부착
+            location_enrich.enrich_highlights(report["highlights"])
 
             # 하이라이트를 권역별로 분류
             hbg = {}
