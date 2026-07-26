@@ -568,3 +568,131 @@ def test_render_diagrams_keeps_block_on_render_failure(monkeypatch):
     html = _diagram_block("graphviz", "digraph{a->b}")
     out = up._render_diagrams_in_html(html)
     assert out == html  # 실패 시 원본 유지
+
+
+# --- 5xx 재시도 (Cafe24 게이트웨이 502) ---
+
+class _HttpResp:
+    def __init__(self, status_code, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = text
+        self.content = b"{}"
+
+    def json(self):
+        return self._payload
+
+
+def _no_sleep(monkeypatch):
+    """백오프 sleep 제거 + 타이틀 카드(추가 /media POST) 차단."""
+    monkeypatch.setenv("AUTO_FEATURED_CARD", "false")
+    slept = []
+    monkeypatch.setattr(wp.time, "sleep", lambda s: slept.append(s))
+    return slept
+
+
+def test_post_retries_on_502_then_succeeds(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(url)
+        if len(calls) < 3:
+            return _HttpResp(502, text="<html>gateway</html>")
+        return _HttpResp(201, {"id": 9, "link": "https://x/p9", "status": "publish"})
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    monkeypatch.setattr(wp.requests, "get", lambda *a, **k: _HttpResp(200, []))
+    up = _uploader()
+    res = up.create_post("Retry Test ASCII", "<p>body</p>", status="publish")
+    assert res["success"] and res["id"] == 9
+    assert len(calls) == 3          # 2회 실패 후 3번째 성공
+    assert slept == [5.0, 10.0]     # 지수 백오프
+
+
+def test_post_no_retry_on_4xx(monkeypatch):
+    _no_sleep(monkeypatch)
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(url)
+        return _HttpResp(401, text="unauthorized")
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    up = _uploader()
+    res = up.create_post("No Retry ASCII", "<p>body</p>")
+    assert not res["success"]
+    assert len(calls) == 1  # 4xx는 요청 자체 문제 → 재시도 금지
+
+
+def test_post_gives_up_after_max_attempts(monkeypatch):
+    _no_sleep(monkeypatch)
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(url)
+        return _HttpResp(502, text="<html>gateway</html>")
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    monkeypatch.setattr(wp.requests, "get", lambda *a, **k: _HttpResp(200, []))
+    up = _uploader()
+    res = up.create_post("Give Up ASCII", "<p>body</p>")
+    assert not res["success"] and "502" in res["error"]
+    assert len(calls) == wp.POST_RETRY_ATTEMPTS
+
+
+def test_post_retry_detects_post_created_despite_502(monkeypatch):
+    """502가 났지만 서버엔 실제로 글이 생긴 경우 — 중복 생성 대신 그 글을 반환."""
+    _no_sleep(monkeypatch)
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(url)
+        return _HttpResp(502, text="<html>gateway</html>")
+
+    def fake_get(url, params=None, **kw):
+        if url.endswith("/posts") and params and params.get("slug"):
+            return _HttpResp(200, [{"id": 77, "link": "https://x/p77", "status": "draft"}])
+        return _HttpResp(200, [])
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    monkeypatch.setattr(wp.requests, "get", fake_get)
+    up = _uploader()
+    res = up.create_post("Dup Guard ASCII", "<p>body</p>", slug="dup-guard-ascii")
+    assert res["success"] and res["id"] == 77
+    assert len(calls) == 1  # 첫 실패 후 slug 조회로 확인 → 재POST 없음
+
+
+def test_post_retries_on_connection_error(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            raise wp.requests.RequestException("connection reset")
+        return _HttpResp(201, {"id": 3, "link": "https://x/p3", "status": "draft"})
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    monkeypatch.setattr(wp.requests, "get", lambda *a, **k: _HttpResp(200, []))
+    up = _uploader()
+    res = up.create_post("Conn Error ASCII", "<p>body</p>")
+    assert res["success"] and res["id"] == 3
+    assert len(calls) == 2 and slept == [5.0]
+
+
+def test_media_upload_retries_on_5xx(monkeypatch):
+    _no_sleep(monkeypatch)
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            return _HttpResp(503, text="busy")
+        return _HttpResp(201, {"id": 12, "source_url": "https://x/m.png"})
+
+    monkeypatch.setattr(wp.requests, "post", fake_post)
+    up = _uploader()
+    out = up.upload_media(b"\x89PNG", "a.png")
+    assert out == {"id": 12, "url": "https://x/m.png"}
+    assert len(calls) == 2

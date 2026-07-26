@@ -28,6 +28,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Optional, List, Dict, Union
 
 import requests
@@ -44,6 +45,11 @@ CATEGORY_IDS: Dict[str, int] = {
 
 # term_id → 이름 (타이틀 카드 카테고리 라벨용 역매핑)
 CATEGORY_NAMES: Dict[int, str] = {v: k for k, v in CATEGORY_IDS.items()}
+
+# --- POST 재시도 (Cafe24 openresty 게이트웨이가 간헐적으로 502를 낸다) ---
+# 5xx/네트워크 오류만 재시도한다. 4xx는 요청 자체 문제라 재시도해도 같은 결과.
+POST_RETRY_ATTEMPTS = int(os.getenv("WORDPRESS_RETRY_ATTEMPTS", "3"))
+POST_RETRY_BACKOFF = float(os.getenv("WORDPRESS_RETRY_BACKOFF", "5"))  # 초, 지수 증가
 
 
 def auto_draft_enabled() -> bool:
@@ -654,6 +660,51 @@ class WordPressUploader:
             logger.error(f"WP verify 오류: {e}")
             return False
 
+    # --- 재시도 ---
+    def _post_retry(self, url: str, *, on_retry=None, **kwargs):
+        """POST + 5xx/네트워크 오류 지수 백오프 재시도. (response|None, last_error) 반환.
+
+        Cafe24 게이트웨이 502처럼 서버가 잠깐 죽는 경우를 넘긴다. 4xx는 요청
+        자체가 잘못된 것이므로 즉시 반환한다. on_retry(attempt)가 값을 돌려주면
+        (예: 502였지만 글이 실제로 생성됨) 재시도를 멈추고 그 값을 쓴다.
+        """
+        last_err = ""
+        for attempt in range(1, POST_RETRY_ATTEMPTS + 1):
+            try:
+                r = requests.post(url, **kwargs)
+                if r.status_code < 500:
+                    return r, ""
+                last_err = f"{r.status_code} {(r.text or '')[:200]}"
+            except requests.RequestException as e:
+                last_err = str(e)
+            if attempt >= POST_RETRY_ATTEMPTS:
+                break
+            if on_retry is not None:
+                already = on_retry(attempt)
+                if already is not None:
+                    return already, ""
+            wait = POST_RETRY_BACKOFF * (2 ** (attempt - 1))
+            logger.warning("WP POST 실패(%s) → %.0fs 후 재시도 %d/%d",
+                           last_err[:120], wait, attempt + 1, POST_RETRY_ATTEMPTS)
+            time.sleep(wait)
+        return None, last_err
+
+    def find_post_by_slug(self, slug: str) -> Optional[Dict]:
+        """슬러그로 기존 글 조회(draft 포함). 502 재시도 시 중복 생성 방지용."""
+        if not slug:
+            return None
+        try:
+            r = requests.get(f"{self.api}/posts",
+                             params={"slug": slug, "status": "publish,draft,pending,future"},
+                             auth=self.auth, timeout=self.timeout)
+            if r.status_code == 200:
+                items = r.json()
+                if items:
+                    return items[0]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("slug 조회 실패 %r: %s", slug, e)
+        return None
+
     # --- 카테고리/태그 해석 ---
     def resolve_categories(self, categories) -> List[int]:
         """이름('뉴스') 또는 ID(5) 혼합 리스트 → term_id 리스트."""
@@ -710,7 +761,7 @@ class WordPressUploader:
     def upload_media(self, data: bytes, filename: str, mime: str = "image/png") -> Optional[Dict]:
         """이미지 바이트를 WP 미디어로 업로드. 반환 {id, url} 또는 None."""
         try:
-            r = requests.post(
+            r, err = self._post_retry(
                 f"{self.api}/media",
                 data=data,
                 headers={
@@ -720,6 +771,9 @@ class WordPressUploader:
                 auth=self.auth,
                 timeout=self.timeout,
             )
+            if r is None:
+                logger.error(f"미디어 업로드 실패(재시도 {POST_RETRY_ATTEMPTS}회): {err}")
+                return None
             if r.status_code in (200, 201):
                 d = r.json()
                 return {"id": d.get("id"), "url": d.get("source_url")}
@@ -927,9 +981,24 @@ class WordPressUploader:
         if featured_media:
             payload["featured_media"] = featured_media
 
+        def _already_created(attempt: int):
+            """502였지만 서버엔 글이 생겼을 수 있다 — 재POST 전에 슬러그로 확인."""
+            existing = self.find_post_by_slug(payload.get("slug", ""))
+            if existing:
+                logger.warning("5xx 응답이지만 글이 이미 생성됨(id=%s) → 재시도 중단",
+                               existing.get("id"))
+            return existing
+
         try:
-            r = requests.post(f"{self.api}/posts", json=payload,
-                              auth=self.auth, timeout=self.timeout)
+            r, err = self._post_retry(f"{self.api}/posts", json=payload,
+                                      auth=self.auth, timeout=self.timeout,
+                                      on_retry=_already_created)
+            if r is None:
+                logger.error(f"WP 발행 실패(재시도 {POST_RETRY_ATTEMPTS}회): {err}")
+                return {"success": False, "error": err}
+            if isinstance(r, dict):  # 502였지만 서버엔 이미 생성된 글
+                return {"success": True, "id": r.get("id"),
+                        "url": r.get("link"), "status": r.get("status")}
             if r.status_code in (200, 201):
                 d = r.json()
                 logger.info(f"WP 발행 OK id={d.get('id')} {d.get('link')}")
