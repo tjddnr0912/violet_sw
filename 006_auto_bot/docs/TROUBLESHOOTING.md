@@ -110,6 +110,19 @@
 
 ---
 
+## mermaid만 코드로 발행됨 — kroki 엔진 장애(HTTP 500) (위 두 케이스와 구분)
+
+- **증상**: 글에 하나뿐인 mermaid 블록이 PNG로 안 바뀌고 `<pre><code class="language-mermaid">` 원본 그대로 발행. 업로더 로그·텔레그램에 `mermaid 렌더 오류: … Read timed out (read timeout=40)` 경보. 재시도해도 동일.
+- **원인**: **kroki.io의 mermaid 엔진 자체가 죽음**(서버측 장애). 내 소스 문법 문제도, Chrome 부재도 아님. 판별: **최소 예제(`flowchart TD` 3줄)도 500**이고, **같은 서버의 다른 엔진(graphviz)은 200 정상**. kroki의 mermaid는 내부적으로 headless 브라우저를 쓰는 무거운 엔진이라 다른 타입보다 먼저·단독으로 죽는다. 타임아웃(40s)으로 먼저 나타났다가 곧 500으로 굳었다.
+- **해결**: 다이어그램을 **`language-graphviz`로 교체**해 재렌더 → `POST /posts/{id}` content 갱신. 의사결정 플로우차트는 graphviz `shape=diamond`로 동등하게 표현되고 자동 배치라 좌표 계산도 불필요. **한글 라벨은 `fontname="NanumGothic,Noto Sans CJK KR,sans-serif"` 명시 필요**(미지정 시 tofu 위험 — 지정 후 라이브 렌더로 한글 정상 확인함). 색상은 mermaid `style` 대신 `fillcolor`/`color`/`fontcolor`로 옮기면 팔레트 그대로 유지된다.
+- **복구 절차**: (a) `printf 'flowchart TD\n A-->B\n' | curl -X POST --data-binary @- https://kroki.io/mermaid/png -w '%{http_code}'` — **최소 예제로 엔진 생사 확인**(500이면 내 소스 무관) (b) `printf 'digraph{a->b}' | curl -X POST --data-binary @- https://kroki.io/graphviz/png -w '%{http_code}'` — 다른 엔진 생존 확인(200이면 mermaid 단독 장애 확정) (c) graphviz(또는 살아있는 타입)로 소스 교체 후 로컬 렌더 이미지 **눈으로 확인**(한글 깨짐 체크) (d) `_render_diagrams_in_html` 재실행 → 실패 0건 확인 → `POST /posts/{id}`로 content만 갱신.
+- **관련 사고**: 2026-07-31 (post 581, ict-macro-time-filter-ab-backtest).
+- **재발 감지**: 발행 직후 텔레그램 `다이어그램 발행 경보` 확인이 1차 신호. 이 경보는 발행을 막지 않으므로 **놓치면 코드블록이 그대로 공개된 채 남는다.** 글 URL에 `language-` 잔존 grep도 보조 점검.
+
+> Claude 진단 미스: 위 두 항목(Chrome 부재 / d2 문법 오류)이 모두 **"우리 쪽 문제"**였던 탓에 이번에도 소스나 환경을 먼저 의심할 뻔했다. 방향을 가른 건 **최소 예제 + 타 엔진 대조** 두 줄이었다 — 내 다이어그램이 아니라 3줄짜리 `flowchart TD`도 500이었고, 같은 서버 graphviz는 200이었다. 교훈: **"다이어그램이 코드로 박힘" 3종 판별 순서** = ① 최소 예제로 엔진 생사(500=kroki 장애, 이 항목) → ② `curl kroki/<type>/svg` 컴파일 상태(400=내 문법, 윗 항목) → ③ Chrome/래스터화(svg-only 타입 전부 실패, 맨 위 항목). **타입별·소스별 실패 범위가 곧 원인 계층을 가리킨다** — *한 타입 전부* 실패면 backend, *일부 소스만* 실패면 문법, *최소 예제까지* 실패면 서버.
+
+---
+
 ## 발행 글이 "AI가 쓴 느낌" / 질문의 부정확한 전제가 사실처럼 섞임
 
 - **증상**: 텔레그램봇으로 질문해 발행한 글에서, 내가 질문에 담았던 (틀릴 수도 있는) 전제·가정·수치가 검증 없이 사실처럼 본문에 들어감. 글이 "주제에 대한 독립 기사"가 아니라 "내 질문에 대한 답변"처럼 읽혀 AI 생성 티가 남.
